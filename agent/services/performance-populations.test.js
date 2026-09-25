@@ -7,7 +7,8 @@ import { initDB } from '../db.js'
 import { buildPerformancePopulations, readPerformancePopulations, buildDecisionsDaily, buildLatestPrices, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readDecisionAudit } from './performance-populations.js'
 import { stageMatrixStats } from './stage-matrix.js'
 import { getState } from '../db.js'
-import { reportStats, reportLedger, sessionBuckets } from '../shared/performance-populations.js'
+import { reportStats, reportLedger, reportCurrency, reportCurrencyStats, populationStats, emptyPopulation, sessionBuckets } from '../shared/performance-populations.js'
+import { recordDepositCurrency } from './account-money.js'
 import { accountAnalytics } from './account-analytics.js'
 import { auditDecisions } from './decision-audit.js'
 const NOW = Date.UTC(2026, 8, 22, 12)
@@ -44,6 +45,64 @@ test('unattributed records never enter a named account; different accounts retai
   assert.equal(reportStats(r, '30d').pf, null)
   assert.equal(reportStats(r, '30d').moneyState, 'unverified_cross_account_units')
   assert.equal(r.coverage.unattributedAccountN, 1)
+})
+// WEB-7 (8,989-A rows 8-9): money is pooled per recorded deposit currency and
+// never across two. The evidence is written by the production writer, so a
+// drift in its state key fails here rather than silently emptying the pool.
+function registerCurrencies(db) {
+  const acct = db.prepare('INSERT INTO accounts (account_id, is_live) VALUES (?, ?)')
+  for (const [id, live] of [['11', 0], ['22', 0], ['33', 1], ['44', 0], ['55', 0]]) acct.run(id, live)
+  const demo = 'demo.ctraderapi.com', live = 'live.ctraderapi.com'
+  assert.equal(recordDepositCurrency(db, { accountId: '11', host: demo, depositAssetId: 1, currency: 'USD', receivedAt: NOW - 5000 }), true)
+  assert.equal(recordDepositCurrency(db, { accountId: '22', host: demo, depositAssetId: 1, currency: 'USD', receivedAt: NOW - 5000 }), true)
+  assert.equal(recordDepositCurrency(db, { accountId: '33', host: live, depositAssetId: 7, currency: 'SGD', receivedAt: NOW - 5000 }), true)
+  // Evidence for the other host is not this account's currency.
+  assert.equal(recordDepositCurrency(db, { accountId: '44', host: live, depositAssetId: 1, currency: 'USD', receivedAt: NOW - 5000 }), true)
+}
+test('the report names each account deposit currency from broker evidence on its own host, never a default', t => {
+  const { db, add } = setup(t)
+  registerCurrencies(db); add({ pnl: 1 })
+  const r = buildPerformancePopulations(db, { now: NOW })
+  assert.equal(r.currencyByAccount['11'].currency, 'USD')
+  assert.equal(r.currencyByAccount['11'].source, 'broker_asset_list')
+  assert.equal(r.currencyByAccount['33'].currency, 'SGD')
+  assert.deepEqual(r.currencyByAccount['44'], { currency: null, reason: 'deposit_currency_evidence_mismatch' })
+  assert.deepEqual(r.currencyByAccount['55'], { currency: null, reason: 'deposit_currency_not_recorded' })
+  assert.equal(reportCurrency(r, '44'), null)
+  assert.equal(reportCurrency(r, null), null)
+  assert.equal(reportCurrency(r, '99'), null)
+})
+test('money pools within one recorded currency, never across currencies, and a partial pool says so', t => {
+  const { db, add } = setup(t)
+  registerCurrencies(db)
+  add({ account: '11', pnl: 20 }); add({ account: '22', pnl: -5 }); add({ account: '33', pnl: 7 })
+  add({ account: '44', pnl: 100 }); add({ account: null, pnl: 1000 })
+  const r = buildPerformancePopulations(db, { now: NOW })
+  const usd = reportCurrencyStats(r, '30d', 'USD')
+  assert.equal(usd.pnl, 15); assert.equal(usd.n, 2); assert.equal(usd.currency, 'USD')
+  assert.equal(usd.moneyState, 'recorded_currency_units')
+  assert.equal(reportCurrencyStats(r, '30d', 'SGD').pnl, 7)
+  // The account without evidence and the unstamped close are in no currency.
+  assert.equal(reportCurrencyStats(r, '30d', 'USD', g => g.accountId === '44').n, 0)
+  // The pre-existing all-accounts rule is unchanged: no cross-account sum.
+  assert.equal(reportStats(r, '30d').pnl, null)
+  assert.equal(reportStats(r, '30d').moneyState, 'unverified_cross_account_units')
+  assert.equal(reportStats(r, '30d', '11').moneyState, 'recorded_account_units')
+  add({ account: '22', pnl: null })
+  const partial = reportCurrencyStats(buildPerformancePopulations(db, { now: NOW }), '30d', 'USD')
+  assert.equal(partial.pnl, 15); assert.equal(partial.n, 3); assert.equal(partial.pricedN, 2)
+  assert.equal(partial.moneyState, 'partial_recorded_currency_units')
+})
+test('a pool whose groups span two currencies adds nothing, whatever the caller filtered', () => {
+  const g = (accountId, net) => ({ accountId, stats: { ...emptyPopulation(), n: 1, pricedN: 1, net, gw: Math.max(0, net), gl: Math.max(0, -net) } })
+  const currencyOf = id => ({ 11: 'USD', 22: 'USD', 33: 'SGD' })[id] ?? null
+  const mixed = populationStats([g('11', 20), g('33', 7)], { currency: 'USD', currencyOf })
+  assert.equal(mixed.pnl, null); assert.equal(mixed.moneyState, 'unverified_cross_account_units'); assert.equal(mixed.currency, null)
+  assert.equal(populationStats([g('11', 20), g(null, 1)], { currency: 'USD', currencyOf }).pnl, null)
+  assert.equal(populationStats([g('11', 20), g('22', -5)], { currency: 'usd', currencyOf }).pnl, null)
+  assert.equal(populationStats([g('11', 20), g('22', -5)], { currency: 'USD', currencyOf }).pnl, 15)
+  assert.equal(populationStats([g('11', 20), g('22', -5)], { currency: 'USD' }).pnl, null)
+  assert.equal(reportCurrencyStats({ status: 'complete', windows: [{ key: '30d', groups: [] }] }, '30d', null).state, 'unavailable')
 })
 test('zero, unpriced-only, malformed dates and report unavailability are distinct', t => {
   const { db, add } = setup(t)

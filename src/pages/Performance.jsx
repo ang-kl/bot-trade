@@ -18,6 +18,7 @@ import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import CurrentAccountReadings from '../components/CurrentAccountReadings.jsx'
 import { useAccountOverview } from '../lib/use-account-overview.js'
+import { feedDailyStopView, dailyStopWords, cardStopFields } from '../lib/daily-stop-display.js'
 import { currentAccountTotals } from '../lib/current-account-totals.js'
 import { calendarDay } from '../../agent/shared/performance-calendar.js'
 import { useLiveTicks } from '../lib/useLiveTicks.js'
@@ -36,6 +37,7 @@ import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
 import ReportChart from '../components/ReportChart.jsx'
+import { DECISION_FEED_DAYS } from '../lib/performance-curve.js'
 import SessionReview from '../components/SessionReview.jsx'
 import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
 import PerfAccountScope from '../components/PerfAccountScope.jsx'
@@ -52,7 +54,8 @@ import Collapse from '../components/common/Collapse.jsx'
 import { accountNumbers } from "../lib/scope-label.js"
 import { reportStats, reportGroups, reportLedger, sessionBuckets } from '../../agent/shared/performance-populations.js'
 import { SESSION_SOURCE } from '../../agent/shared/report-sessions.js'
-import { performanceGradients } from '../lib/performance-gradients.js'
+import { performanceGradients, gradientData, gradientFoot, OVERLAP_LABEL, OVERLAP_TITLE } from '../lib/performance-gradients.js'
+import { ledgerMoneyNote } from '../lib/partial-money.js'
 import { scopedPerformanceRows } from '../lib/performance-evidence.js'
 import { dataFeedCardScope } from '../lib/data-feed.js'
 
@@ -164,16 +167,21 @@ function SessionClock() {
 // or a quiet "—" when the window has no trades in that market.
 function MarketCell({ st }) {
   if (!st || !st.trades) return <td className={`py-1 px-2 text-right text-(length:--fs-body) ${SUB}`}>—</td>
+  const note = ledgerMoneyNote(st)
   return (
-    <td className="py-1 px-2 text-right tabular-nums">
+    <td className="py-1 px-2 text-right tabular-nums" title={note?.title}>
       {/* No explicit size on the net line: it inherits the ledger's 9.5px cell
           size; the subline below keeps its own tiny 9px (owner: "except those
           tiny information like '5t · 40% · PF 0.76'"). */}
       <div className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</div>
       <div className={`text-(length:--fs-body) ${SUB}`}>{st.trades}t · {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : st.pfInfinite ? '∞' : '—'}</div>
+      {note && <div className={`text-(length:--fs-body) ${SUB}`}>{note.text}</div>}
     </td>
   )
 }
+
+// A partial figure is said to be partial wherever it is quoted in prose.
+const partialTag = (st) => (ledgerMoneyNote(st)?.key === 'partial' ? ' (partial)' : '')
 
 // Auto-insight line for a window: which market led, which dragged, the edge.
 function insight(w) {
@@ -184,8 +192,8 @@ function insight(w) {
   const led = [...cells].sort((a, b) => b.net - a.net)[0]
   const drag = [...cells].sort((a, b) => a.net - b.net)[0]
   const bits = []
-  if (led.net > 0) bits.push(`${led.label} led ${signed(led.net)}`)
-  if (drag !== led && drag.net < 0) bits.push(`${drag.label} dragged ${signed(drag.net)}`)
+  if (led.net > 0) bits.push(`${led.label} led ${signed(led.net)}${partialTag(led)}`)
+  if (drag !== led && drag.net < 0) bits.push(`${drag.label} dragged ${signed(drag.net)}${partialTag(drag)}`)
   if (w.edge != null) bits.push(`edge ${signed(w.edge, 1)}%`)
   return bits.join(' · ') || null
 }
@@ -221,12 +229,12 @@ function WindowDetail({ w }) {
         </div>
       </div>
       {MARKET_COLS.filter(m => w.markets?.[m.key]?.trades > 0).map(m => {
-        const st = w.markets[m.key]
+        const st = w.markets[m.key], note = ledgerMoneyNote(st)
         return (
           <div key={m.key}>
             <div className={`text-(length:--fs-body) uppercase font-bold ${SUB}`}>{m.label}</div>
-            <div className="tabular-nums">
-              <span className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</span> · {st.trades}t · win {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : st.pfInfinite ? '∞' : '—'} · <span className={UP}>{st.tp} TP</span>/<span className={DOWN}>{st.sl} SL</span>
+            <div className="tabular-nums" title={note?.title}>
+              <span className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</span>{note && <span className={SUB}> ({note.text})</span>} · {st.trades}t · win {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : st.pfInfinite ? '∞' : '—'} · <span className={UP}>{st.tp} TP</span>/<span className={DOWN}>{st.sl} SL</span>
             </div>
           </div>
         )
@@ -285,13 +293,28 @@ function toTitle(label) {
 // leak into any other table.
 const GRAD_FONT = 'var(--fs-body)'
 
-function GradientBody({
+// A gradient cell's figure, with its priced count underneath when the figure
+// sums only some of its closes (never shown as if whole).
+function GradientFigure({ c }) {
+  if (!c?.partial) return c?.v ?? null
+  return (
+    <span title={c.partialTitle || undefined} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', lineHeight: 1.15 }}>
+      <span>{c.v}</span>
+      <span style={{ color: P_MU, whiteSpace: 'nowrap' }}>{c.partial}</span>
+    </span>
+  )
+}
+
+export function GradientBody({
   grid, label, cols, rows, foot, groups = null, colW = 'minmax(52px,84px)',
   subtotals = null, banded = false, smallHead = false,
+  subtotalLabel = 'Subtotal', subtotalTitle = undefined,
 }) {
   // Hiding is per row / per column only (owner 2026-07-25: "remove the rows
   // and columns pills ... since I can hide and unhide rows and columns"):
   // click a row label or a column head to hide it, restore from the chip bar.
+  // Columns are keyed by their unique id: three columns once shared the name
+  // "Other", so hiding one hid all three and React keys collided.
   const [hiddenRows, setHiddenRows] = useState(() => new Set())
   const [hiddenCols, setHiddenCols] = useState(() => new Set())
   const rowsOpen = true, colsOpen = true
@@ -306,8 +329,9 @@ function GradientBody({
 
   // Keep the ORIGINAL column index alongside, so subtotals (indexed on the
   // unfiltered set) stay attached to their own column after hiding.
-  const colIdx = cols.map((c, i) => ({ ...c, i }))
-  const visCols = colsOpen ? colIdx.filter(c => !hiddenCols.has(c.name)) : []
+  const colIdx = cols.map((c, i) => ({ ...c, key: c.id ?? c.name, full: c.full ?? c.name, i }))
+  const fullOf = (key) => colIdx.find(c => c.key === key)?.full ?? key
+  const visCols = colsOpen ? colIdx.filter(c => !hiddenCols.has(c.key)) : []
   const visRows = rowsOpen ? rows.filter(r => !hiddenRows.has(r.label)) : []
 
   const template = `${grid} repeat(${visCols.length},${colW})`
@@ -320,6 +344,14 @@ function GradientBody({
   // Empty means empty across the rows you can SEE — hide the only row with a
   // number in it and the column is honestly empty for what is displayed.
   const emptyCol = visCols.map(c => visRows.length > 0 && visRows.every(r => r.cells[c.i]?.raw == null))
+  // An empty column says WHY, from its own cells' reasons — not a blanket
+  // "no closed trades" (which was false for columns of hundreds of closes).
+  const emptyWhy = visCols.map((c, ci) => {
+    if (!emptyCol[ci]) return null
+    const whys = [...new Map(visRows.map(r => r.cells[c.i]?.why).filter(Boolean).map(w => [w.key, w])).values()]
+    return whys.length === 1 ? whys[0]
+      : { short: 'No figure', long: whys.length ? whys.map(w => w.long).join('; ') : 'no money figure in any shown window' }
+  })
 
   // Explicit placement for every child. Auto-placement cannot coexist with the
   // row-spanning "No data" cell: it packs siblings into free slots and shifts
@@ -358,7 +390,7 @@ function GradientBody({
         ))}
         {[...hiddenCols].map(k => (
           <button key={`hc-${k}`} type="button" style={chipS} title="Show this column again"
-            onClick={() => toggleCol(k)}>+ {k}</button>
+            onClick={() => toggleCol(k)}>+ {fullOf(k)}</button>
         ))}
         <button type="button" style={pillS} title="Show everything again"
           onClick={() => { setHiddenRows(new Set()); setHiddenCols(new Set()) }}>Show all</button>
@@ -373,9 +405,9 @@ function GradientBody({
             return groups.map(g => {
               const mine = colIdx.slice(at, at + g.span)
               at += g.span
-              const shown = mine.filter(c => !hiddenCols.has(c.name)).length
+              const shown = mine.filter(c => !hiddenCols.has(c.key)).length
               if (!shown) return null
-              const from = visCols.findIndex(c => c.i === mine.find(m => !hiddenCols.has(m.name)).i)
+              const from = visCols.findIndex(c => c.i === mine.find(m => !hiddenCols.has(m.key)).i)
               return (
                 <span key={`g-${g.name}`} className="t-gridhead"
                   style={{ gridRow: 1, gridColumn: `${from + 2} / span ${shown}`, textAlign: 'center', borderBottom: `1px solid ${P_EDG}`, ...headStyle }}>{g.name}</span>
@@ -385,8 +417,8 @@ function GradientBody({
 
           <span className="t-gridhead" style={{ gridRow: headRow, gridColumn: 1, ...headStyle }}>{toTitle(label)}</span>
           {visCols.map((c, ci) => (
-            <button key={`h-${c.name}`} type="button" className="t-gridhead" title={`${c.name} — click to hide this column`}
-              onClick={() => toggleCol(c.name)}
+            <button key={`h-${c.key}`} type="button" className="t-gridhead" title={`${c.full} — click to hide this column`}
+              onClick={() => toggleCol(c.key)}
               style={{ gridRow: headRow, gridColumn: ci + 2, textAlign: 'center', cursor: 'pointer', fontFamily: 'inherit', border: 0, ...headStyle }}>{toTitle(c.name)}</button>
           ))}
 
@@ -403,23 +435,24 @@ function GradientBody({
           {visCols.map((c, ci) => (
             emptyCol[ci]
               ? (
-                <span key={`nd-${c.name}`} title={`${c.name} — no closed trades in any shown window`}
+                <span key={`nd-${c.key}`} title={`${c.full} — ${emptyWhy[ci].long}`}
                   style={{ gridColumn: ci + 2, gridRow: `${firstDataRow} / ${lastDataRow + 1}`, display: 'flex', alignItems: 'center', justifyContent: 'center', writingMode: 'vertical-rl', fontSize: GRAD_FONT, color: P_MU, background: 'var(--table-head-bg)', borderRadius: 0 }}>
-                  Unavailable
+                  {emptyWhy[ci].short}
                 </span>
               )
               : visRows.map((row, ri) => (
-                <span key={`c-${c.name}-${ri}`}
-                  style={{ ...cellStyle, gridRow: rowNo[ri], gridColumn: ci + 2, background: row.cells[c.i].bg, color: row.cells[c.i].col, borderBottom: `1px solid ${P_EDG}` }}>{row.cells[c.i].v}</span>
+                <span key={`c-${c.key}-${ri}`} title={row.cells[c.i].raw == null ? row.cells[c.i].why?.long : undefined}
+                  style={{ ...cellStyle, gridRow: rowNo[ri], gridColumn: ci + 2, background: row.cells[c.i].bg, color: row.cells[c.i].col, borderBottom: `1px solid ${P_EDG}` }}><GradientFigure c={row.cells[c.i]} /></span>
               ))
           ))}
 
           {subRow != null && (
             <>
               <span style={{ gridRow: subSep, gridColumn: '1 / -1', height: 0, margin: '1px 0', borderTop: `1px solid ${P_GBD}` }} />
-              <span className="t-gridhead" style={{ gridRow: subRow, gridColumn: 1, ...headStyle }}>Subtotal</span>
+              <span className="t-gridhead" title={subtotalTitle} style={{ gridRow: subRow, gridColumn: 1, ...headStyle }}>{subtotalLabel}</span>
               {visCols.map((c, ci) => (
-                <span key={`sub-${c.name}`} style={{ ...cellStyle, gridRow: subRow, gridColumn: ci + 2, color: subtotals[c.i]?.col }}>{subtotals[c.i]?.v}</span>
+                <span key={`sub-${c.key}`} title={subtotals[c.i]?.raw == null ? subtotals[c.i]?.why?.long : undefined}
+                  style={{ ...cellStyle, gridRow: subRow, gridColumn: ci + 2, color: subtotals[c.i]?.col }}><GradientFigure c={subtotals[c.i]} /></span>
               ))}
             </>
           )}
@@ -889,17 +922,30 @@ function AcctCardsGrid({ acctCards }) {
                   <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett today</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(a.gl == null ? null : -a.gl) : '—'}</span></span>
                   <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Forecast · 30D pace</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
                 </div>
-                <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop</span>
+                <DailyStopLine a={a} />
               </div>
             ))}
     </div>
   )
 }
 
+// WEB-2: one line, three places (desktop grid, its ⤢ modal, the phone card).
+// The stop is the engine's enforced cap in its own currency; loss-cap used is
+// the server's measured realised + floating loss ÷ that cap, or a word saying
+// why it is not shown. The tooltip carries the composition.
+function DailyStopLine({ a }) {
+  const w = dailyStopWords(a, money)
+  return (
+    <span style={{ fontSize: 'var(--fs-body)', color: P_MU }} title={a.stopTitle || undefined}>
+      daily stop <span style={{ fontWeight: W_CELL }}>{w.stop}</span>{w.day} · loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{w.used}</span>
+    </span>
+  )
+}
+
 // Copy-as-text for the ledger (owner spec: paste-friendly aligned lines).
 function ledgerToText(windows) {
   const lines = (windows || []).map(w =>
-    `${w.label} · carry ${money(w.carryIn)} → ${money(w.carryOut)} · net ${w.trades ? signed(w.net) : '—'} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0}${w.manual > 0 ? ` · ${w.manual} manual` : ''} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}${!w.trades && w.lastTradeAt ? ` · last fill ${w.lastTradeAt}` : ''}`)
+    `${w.label} · carry ${money(w.carryIn)} → ${money(w.carryOut)} · net ${w.trades ? signed(w.net) : '—'}${ledgerMoneyNote(w) ? ` (${ledgerMoneyNote(w).text})` : ''} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0}${w.manual > 0 ? ` · ${w.manual} manual` : ''} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}${!w.trades && w.lastTradeAt ? ` · last fill ${w.lastTradeAt}` : ''}`)
   return ['Timeframe ledger', ...lines].join('\n')
 }
 
@@ -940,7 +986,7 @@ function LedgerBody({ variant, windows, ledger, error, nowMs, timeZone }) {
         </div>
       )}
       <p className={`mt-1.5 text-(length:--fs-body) ${SUB}`}>
-        Rolling windows (1H…12M) end at the report time. Calendar periods use midnight in {timeZone}; weeks start Monday. Carry balances require cashflow-reconciled history and remain unavailable here. Unknown symbols are included under Other.
+        Rolling windows (1H…12M) end at the report time. Calendar periods use midnight in {timeZone}; weeks start Monday. Carry balances require cashflow-reconciled history and remain unavailable here. Unknown symbols are included under Other. A net marked “partial · n of m priced” sums only the closes with a recorded P&amp;L: it is not a bound in either direction. “Not pooled” means the closes span accounts whose money is not added together here.
       </p>
     </>
   )
@@ -949,11 +995,12 @@ function LedgerBody({ variant, windows, ledger, error, nowMs, timeZone }) {
 // One desktop ledger row, expandable into the market breakdown.
 // `forceOpen` (boolean) overrides the internal state — the expanded modal's
 // "expand all / collapse all" toggle drives it.
-function LedgerRow({ w, forceOpen = null, nowMs, timeZone }) {
+export function LedgerRow({ w, forceOpen = null, nowMs, timeZone }) {
   const [openState, setOpen] = useState(false)
   const open = forceOpen ?? openState
   const empty = !w.trades
   const last = empty ? agoLabel(w.lastTradeAt, nowMs) : null
+  const note = empty ? null : ledgerMoneyNote(w)
   return (
     <>
       {/* A tr can't be a <button>, so it carries the disclosure semantics
@@ -970,8 +1017,9 @@ function LedgerRow({ w, forceOpen = null, nowMs, timeZone }) {
           <div className={`ml-3 text-(length:--fs-body) ${SUB}`}>{dRange(w.from, w.to, timeZone)}</div>
         </td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${SUB}`}>{money(w.carryIn)}</td>
-        <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${pnlTone(empty ? null : w.net)}`}>
+        <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${pnlTone(empty ? null : w.net)}`} title={note?.title}>
           {empty ? <span title={w.lastTradeAt ? `last fill ${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC` : undefined}>{last ? `last ${last}` : '—'}</span> : signed(w.net)}
+          {note && <div className={`text-(length:--fs-body) ${SUB}`}>{note.text}</div>}
         </td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${SUB}`}>{money(w.carryOut)}</td>
         <td className="py-1.5 px-2 text-right tabular-nums text-(length:--fs-body)">
@@ -1008,9 +1056,10 @@ function LedgerRow({ w, forceOpen = null, nowMs, timeZone }) {
 // Mobile ledger card — exact port of the Ledger phone screen's row:
 // 76px 1fr 82px grid, carry in → carry out line, expand → 3-col market
 // mini-cells on the accent tint + the insight line.
-function MobileWindowCard({ w, timeZone }) {
+export function MobileWindowCard({ w, timeZone }) {
   const [open, setOpen] = useState(false)
   const empty = !w.trades
+  const note = empty ? null : ledgerMoneyNote(w)
   return (
     <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, overflow: 'hidden', opacity: empty ? 0.65 : 1 }}>
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
@@ -1023,7 +1072,12 @@ function MobileWindowCard({ w, timeZone }) {
           <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>{money(w.carryIn)} → <span style={{ fontWeight: W_CELL, color: P_TX }}>{money(w.carryOut)}</span></span>
           <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{empty ? 'no closed trades' : `${w.trades} · ${w.winPct != null ? `${nf(0).format(w.winPct)}%` : '—'} · PF ${w.pf != null ? nf(2).format(w.pf) : '—'} · TP/SL ${w.tp + w.part}/${w.sl} · edge `}<span style={{ fontWeight: W_CELL, color: w.edge == null ? P_MU : w.edge >= 0 ? P_UP : P_DN }}>{empty ? '' : (w.edge != null ? `${signed(w.edge, 1)}%` : '—')}</span></span>
         </span>
-        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'right', color: empty ? P_MU : w.net >= 0 ? P_UP : P_DN }}>{empty ? '—' : signed(w.net)}</span>
+        {/* A null net (no priced close, or accounts not pooled) is a dash in
+            the muted colour — `null >= 0` once painted it as a gain. */}
+        <span title={note?.title} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'right', color: empty || w.net == null ? P_MU : w.net >= 0 ? P_UP : P_DN }}>
+          <span>{empty ? '—' : signed(w.net)}</span>
+          {note && <span style={{ color: P_MU }}>{note.text}</span>}
+        </span>
       </button>
       {open && (
         <div style={{ borderTop: `1px solid ${P_EDG}`, background: P_ACS, padding: '6px 11px', display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -1033,12 +1087,13 @@ function MobileWindowCard({ w, timeZone }) {
               <>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 4 }}>
                   {MARKET_COLS.map(m => {
-                    const st = w.markets?.[m.key]
+                    const st = w.markets?.[m.key], mNote = st?.trades ? ledgerMoneyNote(st) : null
                     return (
-                      <span key={m.key} style={{ display: 'flex', flexDirection: 'column', border: `1px solid ${P_EDG}`, borderRadius: 8, padding: '4px 7px' }}>
+                      <span key={m.key} title={mNote?.title} style={{ display: 'flex', flexDirection: 'column', border: `1px solid ${P_EDG}`, borderRadius: 8, padding: '4px 7px' }}>
                         <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>{m.label}</span>
-                        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: st?.trades ? (st.net >= 0 ? P_UP : P_DN) : P_MU }}>{st?.trades ? signed(st.net) : '—'}</span>
+                        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: st?.trades && st.net != null ? (st.net >= 0 ? P_UP : P_DN) : P_MU }}>{st?.trades ? signed(st.net) : '—'}</span>
                         <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{st?.trades ? `PF ${st.pf != null ? nf(1).format(st.pf) : '—'} · ${st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'}` : ''}</span>
+                        {mNote && <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{mNote.text}</span>}
                       </span>
                     )
                   })}
@@ -1114,7 +1169,7 @@ export default function Performance() {
   const [postmortems, setPostmortems] = useState([])
   const [positions, setPositions] = useState([])
   const ledgers = useMemo(() => Object.fromEntries((overview?.accounts || []).map(a => [a.accountId,
-    { ...reportLedger(populationReport, a.accountId), dailyLossPct: a.dailyLossPct }])), [overview, populationReport])
+    reportLedger(populationReport, a.accountId)])), [overview, populationReport])
   const [riskFull, setRiskFull] = useState(null)
   // GET /state/data-feed (WEB-9): measured latency with coverage, stored
   // fees/swap per deposit currency, quote freshness and the broker-day open
@@ -1177,7 +1232,7 @@ export default function Performance() {
       // History reads share a queue with the chart; current money is independent.
       const [pm, dd, rf, df] = await Promise.all([
         readPerformanceReport(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
-        readPerformanceReport(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`).catch(() => null),
+        readPerformanceReport(`/state/decisions-daily?days=${DECISION_FEED_DAYS}&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`).catch(() => null),
         acct === 'all' ? null : agentGet(`/state/risk-full?account=${encodeURIComponent(acct)}`).catch(() => null),
         agentGet(`/state/data-feed${q}`).catch(() => null),
       ])
@@ -1214,7 +1269,7 @@ export default function Performance() {
     const t2 = swrPeek(`/state/trades${q}`)
     const tradeRows = scopedPerformanceRows(t2, acct, 'trades')
     if (tradeRows) setAllTrades(tradeRows)
-    const dd2 = swrPeek(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`)
+    const dd2 = swrPeek(`/state/decisions-daily?days=${DECISION_FEED_DAYS}&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`)
     if (dd2) setDecisionsDaily(dd2.rows || [])
     const p2 = swrPeek(`/state/positions${q}`)
     const positionRows = scopedPerformanceRows(p2, acct, 'positions')
@@ -1385,9 +1440,9 @@ export default function Performance() {
   const sessionStats = useMemo(() => sessionBuckets(populationReport, acct), [populationReport, acct])
 
   // Per-account cards for the accounts detail row (prototype ACC block).
-  // Real sources only: registry row + that account's ledger balance/30D +
-  // today's strictly-stamped trades + risk config dailyLossPct; equity and
-  // floating exist only for the broker-selected account (risk-full margin).
+  // Real sources only: registry row + that account's ledger 30D + today's
+  // strictly-stamped trades + its account-overview row (balance, equity,
+  // floating, and the engine's daily stop — WEB-2).
   const acctCards = useMemo(() => {
     // PORTFOLIO population, not the scoped set: this grid has one card PER ACCOUNT,
     // so reading it from the filtered rows made every other account's day P&L,
@@ -1420,15 +1475,13 @@ export default function Performance() {
     })
     return inPlay.map(a => {
       const led = ledgers[a.account_id]
-      // The account's OWN balance and OWN daily-loss fraction, both from its
-      // ledger (11-09-2026): `balance` is null when the account's key was
-      // never stamped (the card says "not read"), and `dailyLossPct` is the
-      // limit this account trades under. The global risk-full figure used
+      // The account's OWN balance and OWN daily stop, both from its own
+      // overview row (11-09-2026): `balance` is null when the broker has not
+      // answered (the card says "not read"). The global risk-full figure used
       // to stand in for every card, which put the selected demo account's
       // −1,375 daily stop under two unfunded live logins.
       const current = overview?.accounts.find(r => r.accountId === String(a.account_id))
       const bal = current?.balance ?? null
-      const dailyLossPct = led?.dailyLossPct ?? null
       const dayStats = reportStats(populationReport, 'day', String(a.account_id))
       const day = dayStats.pnl, gw = dayStats.gw, gl = dayStats.gl
       const w30 = led?.windows?.find(w => w.key === '30d')
@@ -1436,8 +1489,12 @@ export default function Performance() {
       // E·3: the 30-day money this account made or lost on closes the bot
       // did not decide (adopted, manual in the broker app, another system).
       const ext30 = w30?.external && w30.external.n > 0 ? { n: w30.external.n, net: w30.external.net, byOrigin: w30.external.byOrigin || {} } : null
-      const cap = bal != null && dailyLossPct != null ? bal * dailyLossPct : null
-      const used = null // historical P&L units are not verified against the sizing input
+      // WEB-2: the daily stop the RISK ENGINE enforces on this account and
+      // loss-cap used, both from the server's reading of the engine's own
+      // dailyLossVerdict (account-overview `dailyStop`). Never balance ×
+      // dailyLossPct: that formula skips the USD 200 floor and the 3%/4%
+      // balance tiers, and read −900 on an account the engine caps at 1,191.
+      const stop = cardStopFields(current, { P_MU, P_DN, P_WRN, P_ACC })
       const equity = current?.equity ?? null
       const live = current?.openPnl ?? null
       // A card shown DESPITE being disabled is labelled, so "why is this here"
@@ -1455,10 +1512,11 @@ export default function Performance() {
         ccy: current?.currency || 'currency unavailable',
         currentMoneyVerified: !!current?.currency,
         readingAt: current?.snapshotAt,
-        bal, day, gw, gl, n30, ext30, cap, used, equity, live,
+        bal, day, gw, gl, n30, ext30, equity, live,
+        // cap, used, capState, capCcy, usedState, capLoss, stopTitle, usedCol
+        ...stop,
         hasToday: dayStats.n != null,
         moneyVerified: false,
-        usedCol: used == null ? P_MU : used > 66 ? P_DN : used > 33 ? P_WRN : P_ACC,
       }
     })
   }, [accounts, ledgers, populationReport, overview])
@@ -1474,6 +1532,16 @@ export default function Performance() {
   // balance does exist, in that account's own ledger. Same convention acctCards
   // already uses for per-card equity.
   const feed = useMemo(() => currentAccountTotals(overview, acct), [overview, acct])
+  // The Risk-controls line names the stop IN FORCE for the scoped account (the
+  // engine's reading), not `dailyLossPct` alone: on 46130058 "3%/day" named a
+  // limit that was not the one binding (8,989-A row 11, folded into WEB-2).
+  // The portfolio scope has no single daily stop — each account has its own.
+  // One reading for the card and the account cards: feedDailyStopView takes
+  // the scoped account's own overview row through the dailyStopView that
+  // cardStopFields uses. WEB-9 had built a second daily-loss reader on
+  // /state/risk-full; it was retired when WEB-2 merged, so the page shows one
+  // daily-stop figure from one source (owner principle 6).
+  const feedDailyStop = useMemo(() => feedDailyStopView(overview, acct), [overview, acct])
 
   // Open positions split by MARKET STATE (owner 2026-07-24: open trades sat
   // stuck through a Friday close the UI never surfaced). /state/positions
@@ -1892,9 +1960,9 @@ export default function Performance() {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <div style={{ height: 4, borderRadius: 999, background: P_EDG }}>
-                    <div style={{ height: 4, borderRadius: 999, width: `${Math.max(a.used ?? 0, a.used != null ? 1 : 0)}%`, background: a.usedCol }} />
+                    <div style={{ height: 4, borderRadius: 999, width: `${Math.min(100, Math.max(a.used ?? 0, a.used != null ? 1 : 0))}%`, background: a.usedCol }} />
                   </div>
-                  <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} · configured daily stop; usage requires verified comparable money</span>
+                  <DailyStopLine a={a} />
                 </div>
               </div>
             ))}
@@ -2056,22 +2124,26 @@ export default function Performance() {
               <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — timeframe × account</span>
               <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, color: P_MU }}>
                 <span>Window</span>
-                {gradients.cols.map(c2 => <span key={c2.name} style={{ textAlign: 'center' }}>{c2.name}</span>)}
+                {gradients.cols.map(c2 => <span key={c2.id} title={c2.full} style={{ textAlign: 'center' }}>{c2.name}</span>)}
               </div>
               {gradients.t.map(r => (
                 <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
                   <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{r.label}</span>
-                  {r.cells.map((c2, ci) => <span key={ci} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '2px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}>{c2.v}</span>)}
+                  {r.cells.map((c2, ci) => <span key={gradients.cols[ci]?.id ?? ci} title={c2.why?.long} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '2px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}><GradientFigure c={c2} /></span>)}
                 </div>
               ))}
-              <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>blue = net gain · red = net loss · shaded per column</span>
+              <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>blue = net gain · red = net loss · shaded per column · money per currency, never across currencies · &apos;n of m priced&apos; = partial</span>
             </div>
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — asset × account · 30D</span>
+              <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.assetCols.length},1fr)`, gap: 3, color: P_MU }}>
+                <span>Asset</span>
+                {gradients.assetCols.map(c2 => <span key={c2.id} title={c2.full} style={{ textAlign: 'center' }}>{c2.name}</span>)}
+              </div>
               {gradients.a.map(r => (
-                <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
+                <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.assetCols.length},1fr)`, gap: 3, alignItems: 'center' }}>
                   <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{r.label}</span>
-                  {r.cells.map((c2, ci) => <span key={ci} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '3px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}>{c2.v}</span>)}
+                  {r.cells.map((c2, ci) => <span key={gradients.assetCols[ci]?.id ?? ci} title={c2.why?.long} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '3px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}><GradientFigure c={c2} /></span>)}
                 </div>
               ))}
             </div>
@@ -2100,6 +2172,7 @@ export default function Performance() {
               openCount={positionsAvailable ? positions.length : null}
               {...feedCardScope}
               nowMs={quoteNow}
+              dailyStop={feedDailyStop}
               slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
               tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
             />
@@ -2123,14 +2196,15 @@ export default function Performance() {
 
         {/* Accounts detail row — exact prototype cards: day P&L, balance +
             equity + live floating, TP/SL nett today, 30D forecast pace, and
-            the loss-cap line (real dailyLossPct config × stamped balance). */}
+            the loss-cap line (the risk engine's enforced daily stop and the
+            measured realised + floating loss against it — WEB-2). */}
         {acctCards.length > 0 && (
           <div id="sec-accounts">
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Accounts — capital safety</span>
             <SectionTools id="accounts" title="Accounts — Capital Safety table"
-              data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday && a.gl != null ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, dailyStop: a.cap }))}
-              toText={() => ['Accounts — capital safety', ...acctCards.map(a => `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · loss-cap used ${a.used != null ? `${a.used}%` : '—'} of −${a.cap != null ? money(a.cap, 0) : '—'}`)].join('\n')}
+              data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday && a.gl != null ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, lossCapUsedState: a.usedState, dailyStop: a.cap, dailyStopCcy: a.capCcy, dailyStopState: a.capState }))}
+              toText={() => ['Accounts — capital safety', ...acctCards.map(a => { const w = dailyStopWords(a, money); return `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · daily stop ${w.stop}${w.day} · loss-cap used ${w.used}` })].join('\n')}
               render={() => <AcctCardsGrid acctCards={acctCards} />} />
           </div>
           {/* SCOPE-AWARE cards (owner 2026-07-30): the read-only grid became a
@@ -2369,26 +2443,22 @@ export default function Performance() {
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
-              <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
+              <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>always shows all accounts + overall per currency · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance Gradient — Timeframe × Account table"
-                data={gradients.tWide.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.wideCols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />} />
+                data={gradientData(gradients.tWide, gradients.wideCols, 'window', gradients.tWideSub, OVERLAP_LABEL)}
+                render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} subtotalLabel={OVERLAP_LABEL} subtotalTitle={OVERLAP_TITLE} banded smallHead colW="minmax(46px,72px)" foot={gradientFoot(gradients, 't')} />} />
             </div>
-            <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />
+            <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} subtotalLabel={OVERLAP_LABEL} subtotalTitle={OVERLAP_TITLE} banded smallHead colW="minmax(46px,72px)" foot={gradientFoot(gradients, 't')} />
           </div>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
               <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>rolling 30 days</span>
               <SectionTools id="grad-asset" title="Performance Gradient — Asset Class × Account table" window="30D"
-                data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.assetCols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradients.overallDropped
-                  ? 'same closed-trade ledger, account dimension — Overall is hidden while only one account has closed trades, since it would just repeat that column'
-                  : 'complete recorded closes per account; Overall money needs verified comparable currency units'} />} />
+                data={gradientData(gradients.a, gradients.assetCols, 'asset', gradients.aSub, 'Subtotal')}
+                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradientFoot(gradients, 'a')} />} />
             </div>
-            <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradients.overallDropped
-                  ? 'same closed-trade ledger, account dimension — Overall is hidden while only one account has closed trades, since it would just repeat that column'
-                  : 'complete recorded closes per account; Overall money needs verified comparable currency units'} />
+            <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradientFoot(gradients, 'a')} />
           </div>
         </div>
 
@@ -2487,6 +2557,7 @@ export default function Performance() {
             openCount={positionsAvailable ? positions.length : null}
             {...feedCardScope}
             nowMs={quoteNow}
+            dailyStop={feedDailyStop}
             slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
             tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
           />

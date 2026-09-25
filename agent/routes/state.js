@@ -37,15 +37,19 @@ import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { accountMoney } from '../services/account-money.js'
 import { accountOverview } from '../services/account-overview.js'
+import { dailyStopReading } from '../services/daily-stop-reading.js'
 import { accountHistory } from '../services/account-history.js'
-import { blockerReport } from '../services/blocker-report.js'
+import { validateBlockerRequest } from '../services/blocker-report.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, isReportUnavailable } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
+// V3 C4: the blocker report's request refusals, recognised by message when
+// they come back from the report worker (the worker loses the RangeError type).
+const BLOCKER_REQUEST_ERRORS = new Set(['account not registered', 'explicit account or all required', 'invalid reporting window or page'])
 
 /**
  * P1/P4 "report failures stay honest": a report worker that missed its
@@ -107,15 +111,29 @@ export default function stateRouter(db) {
       res.status(503).json({ error: 'Momentum target status is temporarily unavailable.', code: 'momentum_target_status_unavailable' })
     }
   })
-  router.get('/blocker-report', (req, res) => {
+  // V3 C4 (WP-C PR-C1): the report runs in the isolated report worker, not on
+  // the event loop the protection sweeps share. The request is validated here
+  // first (no SQL); "account not registered" is a SQL read, so it comes back
+  // from the worker by message — a worker error loses its RangeError type.
+  router.get('/blocker-report', async (req, res) => {
     res.set('Cache-Control', 'no-store')
+    let request
     try {
-      res.json(blockerReport(db, { accountId: req.query.account,
+      request = validateBlockerRequest({ accountId: req.query.account,
         from: Number(req.query.from), to: Number(req.query.to),
         limit: req.query.limit == null ? 50 : Number(req.query.limit),
-        offset: req.query.offset == null ? 0 : Number(req.query.offset) }))
+        offset: req.query.offset == null ? 0 : Number(req.query.offset) })
     } catch (error) {
-      res.status(error instanceof RangeError ? 400 : 500).json({ error: error.message })
+      return res.status(400).json({ error: error.message })
+    }
+    try {
+      res.json(await readBlockerReport(db, request))
+    } catch (error) {
+      const message = String(error?.message || error)
+      if (BLOCKER_REQUEST_ERRORS.has(message)) return res.status(400).json({ error: message })
+      if (/worker_capacity|report_deadline|worker_exit/.test(error?.reason || '')
+        && sendReportUnavailable(res, error, { message: 'The blocker report is temporarily unavailable. Please retry.', code: 'blocker_report_unavailable' })) return
+      res.status(500).json({ error: 'The blocker report failed.', code: 'blocker_report_failed', reason: error?.reason ?? null })
     }
   })
   router.get('/watchdog', async (_req, res) => {
@@ -254,7 +272,15 @@ export default function stateRouter(db) {
   router.get('/account-overview', (_req, res) => {
     try {
       const report = accountOverview(db)
-      for (const a of report.accounts) a.dailyLossPct = loadRiskConfig(db, a.accountId)?.dailyLossPct ?? null
+      for (const a of report.accounts) {
+        a.dailyLossPct = loadRiskConfig(db, a.accountId)?.dailyLossPct ?? null
+        // WEB-2: the daily stop the risk engine ENFORCES on this account (its
+        // own dailyLossVerdict — floor, tiers and flat cap included), in the
+        // unit the config states it in, and loss-cap used from the engine's
+        // realised figure plus this row's floating P&L. The cards render this,
+        // never balance × dailyLossPct. See services/daily-stop-reading.js.
+        a.dailyStop = dailyStopReading(db, a.accountId, { nowMs: report.asOfMs, moneyCurrency: a.currency, openPnl: a.openPnl })
+      }
       res.set('Cache-Control', 'no-store').json(report)
     }
     catch { res.status(503).json({ error: 'account readings unavailable' }) }
@@ -4158,51 +4184,6 @@ export default function stateRouter(db) {
               : (balance > 0 ? balance * effective.perTradeRiskPct : 0),
           })
           return { ...p, spentUsd: spent, accountId: id, balance }
-        })(),
-        // THE CAP THE GATE ENFORCES (8,989-A row 11, WEB-9). `dailyPacing`
-        // above is a DISPLAY figure: it sizes off the display balance and
-        // does not pass the owner's floor or two-tier knobs, so on
-        // 25-09-2026 it read "binding usd, cap 150" for accounts whose own
-        // risk_events recorded `daily_cap_usd 1191.42, binding pct, tier 4`
-        // — a number the gate was not holding. This is the gate's own
-        // function with the account pre-gate's own inputs
-        // (account-pregate.js: loadRiskConfig + getAccountBalance +
-        // dailyLossVerdict), so what it says binds is what binds. Pure read.
-        dailyCapEnforced: await (async () => {
-          const id = displayAccountId
-          if (!id) return { status: 'unavailable', reason: 'no account named or selected', accountId: null }
-          try {
-            const { dailyLossVerdict } = await import('../services/risk.js')
-            const cfg = loadRiskConfig(db, id)
-            const gateBalance = getAccountBalance(db, id)
-            const v = dailyLossVerdict(db, cfg, id, { balance: gateBalance })
-            const p = v.pacing
-            return {
-              status: 'computed',
-              source: 'risk.dailyLossVerdict (the gate and the account pre-gate)',
-              accountId: id,
-              capUsd: p.capUsd,
-              uncapped: p.uncapped,
-              binding: p.binding,
-              pctCapUsd: p.pctCapUsd,
-              usdCapUsd: p.usdCapUsd,
-              usdInForce: p.usdInForce,
-              floorUsd: p.floorUsd ?? null,
-              floorBinding: !!p.floorBinding,
-              tierPct: p.tierPct ?? null,
-              pct: p.pct,
-              remainingUsd: p.remainingUsd,
-              todayPnlUsd: v.todayPnl,
-              // The gate's sizing input, as the gate reads it — named so a
-              // reader can see when it differs from the display balance.
-              gateBalanceUsd: gateBalance,
-              blocked: !!v.block,
-              guard: v.block ? v.guard : null,
-              reason: v.block ? v.reason : null,
-            }
-          } catch (e) {
-            return { status: 'unavailable', reason: e.message, accountId: id }
-          }
         })(),
         guardian: {
           enabled: (getState(db, 'guardian') || 'true') !== 'false',

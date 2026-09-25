@@ -1,12 +1,17 @@
-// WEB-9 (8,989-A row 11): GET /state/data-feed and /state/risk-full's
-// `dailyCapEnforced` — the daily cap the GATE enforces, not the configured
-// base % and not the display-balance figure `dailyPacing` reports.
+// WEB-9 (8,989-A row 11): GET /state/data-feed — the Data-feed card's
+// measured latency, stored fees/swap and quote freshness.
+//
+// The card's daily stop is NOT served here. WEB-9 first added a second
+// daily-loss reader (`dailyCapEnforced` on /state/risk-full); at the WEB-2
+// merge it was retired for the account-overview `dailyStop` reading the
+// account cards already print (services/daily-stop-reading.js, pinned by
+// daily-stop-reading.test.js: the tier, the floor, parity with the gate's own
+// verdict and its block). One figure from one source — owner principle 6.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
 import { initDB, setState } from '../db.js'
 import stateRouter from './state.js'
-import { accountPregateVerdict, resetAccountPregate } from '../services/account-pregate.js'
 import { fxDayOpenMs } from '../services/risk.js'
 
 async function server(t) {
@@ -57,55 +62,9 @@ test('data-feed serves latency with coverage, per-currency fees, quote freshness
   assert.deepEqual(unverified.accounts, ['22'], 'an account with no verified currency is never folded into USD')
 })
 
-test('dailyCapEnforced reports the tier % the gate enforces where dailyPacing names the flat cap', async t => {
+test('risk-full carries no second daily-loss reader for the card: the daily stop is the account-overview reading', async t => {
   const { db, get } = await server(t)
-  // Defaults: dailyLossPct 3 %, flat 300, floor 200, tiers 3 % / 4 % at 10,000.
-  // The gate sizes off the STORED account balance (getAccountBalance).
   setState(db, 'acct:46:account_balance_usd', '30004.36')
   const r = await get('/risk-full?account=46')
-  const e = r.dailyCapEnforced
-  assert.equal(e.status, 'computed')
-  assert.equal(e.accountId, '46')
-  assert.equal(e.gateBalanceUsd, 30004.36)
-  assert.equal(e.binding, 'pct')
-  assert.equal(e.tierPct, 0.04)
-  assert.ok(Math.abs(e.capUsd - 1200.1744) < 1e-6, `4 % of 30,004.36, got ${e.capUsd}`)
-  assert.equal(e.usdInForce, null, 'the tier rule takes the flat cap out of force')
-  assert.equal(e.blocked, false)
-  // The display figure this item replaces on the card: no floor or tier knobs.
-  assert.notEqual(r.dailyPacing.capUsd, e.capUsd)
-})
-
-test('dailyCapEnforced reports the floor when the % figure is below it', async t => {
-  const { db, get } = await server(t)
-  setState(db, 'acct:42:account_balance_usd', '56.3')
-  const e = (await get('/risk-full?account=42')).dailyCapEnforced
-  assert.equal(e.binding, 'floor')
-  assert.equal(e.capUsd, 200)
-  assert.equal(e.floorBinding, true)
-})
-
-test('dailyCapEnforced agrees with the account pre-gate: the same loss blocks both', async t => {
-  const { db, get } = await server(t)
-  setState(db, 'acct:47:account_balance_usd', '30004.36')
-  resetAccountPregate()
-  // A close inside the current FX day, deeper than the 4 % tier cap (1,200.17).
-  const closedAt = new Date(fxDayOpenMs(Date.now()) + 1_000).toISOString()
-  db.prepare(`INSERT INTO trades (symbol, status, account_id, closed_at, net_pnl) VALUES ('EURUSD', 'closed', '47', ?, -1300)`).run(closedAt)
-  const e = (await get('/risk-full?account=47')).dailyCapEnforced
-  const gate = accountPregateVerdict(db, '47')
-  assert.equal(gate.ok, false)
-  assert.equal(gate.guard, 'daily_loss_limit_hit')
-  assert.equal(e.blocked, true)
-  assert.equal(e.guard, gate.guard)
-  assert.equal(e.reason, gate.reason)
-  assert.equal(e.remainingUsd, 0)
-  assert.equal(e.todayPnlUsd, -1300)
-})
-
-test('dailyCapEnforced is unavailable, not invented, when no account is named or selected', async t => {
-  const { get } = await server(t)
-  const e = (await get('/risk-full')).dailyCapEnforced
-  assert.equal(e.status, 'unavailable')
-  assert.equal(e.capUsd, undefined)
+  assert.equal(Object.hasOwn(r, 'dailyCapEnforced'), false, 'the retired WEB-9 reader is not served')
 })

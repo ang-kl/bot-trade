@@ -2,7 +2,32 @@ import { useEffect, useState } from 'react'
 import { agentConfigured, agentGet, pageAsleep } from '../lib/agent-api.js'
 import Card from './common/Card.jsx'
 
-const LABELS = { upstream_stop: 'Upstream stops', risk_refusal: 'Risk refusals', post_approval_failure: 'After-approval failures', approved: 'Risk approvals', placement_receipt: 'Placement receipts', other_stop: 'Other recorded stops' }
+const LABELS = { upstream_stop: 'Upstream stops', risk_refusal: 'Risk refusals', post_approval_failure: 'After-approval failures', tick_refusal: 'Tick sidecar refusals', approved: 'Risk approvals', placement_receipt: 'Placement receipts', other_stop: 'Other recorded stops' }
+
+// V3 C4: whether tick entries were evaluated at all. Zero tick refusals on an
+// account the sidecar never checked is not a pass, so the reason is shown.
+function tickStatusText(a) {
+  if (a.status === 'evaluated') return a.stoppedAt ? `Tick entries: evaluated — held at ${a.stoppedAt}: ${a.stoppedReason}` : 'Tick entries: evaluated'
+  if (a.status === 'admitted_not_pushed') return `Tick entries: admitted but not pushed to the sidecar — ${a.because}`
+  return `Tick entries: not evaluated — ${a.because}`
+}
+export function TickEvaluation({ tick }) {
+  if (!tick) return <p>Tick entry evaluation was not included in this report.</p>
+  return <section aria-label="Tick entry evaluation" className="my-2">
+    <h3 className="font-semibold">Tick entries</h3>
+    <p>{tick.evaluationNote}</p>
+    <ul>{tick.accounts.map(a => {
+      const refusals = Object.entries(a.sidecarRefusals || {})
+      return <li key={a.accountId}>Account {a.accountId}: {tickStatusText(a)}.
+        {' '}Readiness blockers: {a.readiness?.unavailable ? `unavailable (${a.readiness.unavailable})` : a.readiness?.blockedReasons?.length ? a.readiness.blockedReasons.join(', ') : 'none recorded'}.
+        {' '}Sidecar refusals by code: {refusals.length ? refusals.map(([code, n]) => `${code} ×${n}`).join(', ') : 'none recorded in this window'}.</li>
+    })}</ul>
+    {tick.accountsTruncated && <p>Only the first 64 registered accounts are listed.</p>}
+    {tick.sides && <ul>{tick.sides.map(s => <li key={s.side}>{s.side}: {s.entry
+      ? `${s.entry.fills ?? 'unrecorded'} shadow fills since sidecar boot; ${s.entry.accounts ?? 'unrecorded'} accounts placing (read ${s.statusAt ?? 'time unrecorded'})`
+      : 'no sidecar tick status recorded'}; signals in this window: {s.signalsInWindow.shadow} shadow, {s.signalsInWindow.shadow_cost} refused on cost, {s.signalsInWindow.shadow_busy} busy, {s.signalsInWindow.other} other.</li>)}</ul>}
+  </section>
+}
 
 export function BlockerReading({ report, error }) {
   if (!report) return <p role="status">Blocker report unavailable{error ? `: ${error}` : '.'}</p>
@@ -29,6 +54,7 @@ export function BlockerReading({ report, error }) {
         </tr>)}</tbody>
       </table></div>}
     <p>Showing records {report.totalRecords ? report.offset + 1 : 0}–{report.offset + report.records.length} of {report.totalRecords}. Totals include every retained record in the window.</p>
+    <TickEvaluation tick={report.tick} />
   </>
 }
 

@@ -5,8 +5,10 @@
 // and anything nobody measures is SAID to be unmeasured rather than drawn as
 // a dash.
 //
-// The numbers come from the agent (GET /state/data-feed and
-// /state/risk-full → dailyCapEnforced). Nothing here recomputes them.
+// The numbers come from the agent (GET /state/data-feed; the equity stop from
+// /state/risk-full). Nothing here recomputes them. The card's daily stop is
+// NOT read here: it is the account-overview `dailyStop` reading the account
+// cards print (daily-stop-display.js), so the two can never disagree.
 // ---------------------------------------------------------------------------
 
 const HOUR_MS = 3_600_000
@@ -120,54 +122,6 @@ export function quoteFreshnessLine(quotes) {
   return `quotes, last 10 min (${w.passes} priced passes): sidecar ${w.fromSidecar ?? '—'} · broker ${w.fromBroker ?? '—'} (stale ${w.stale ?? '—'}) · ${age}`
 }
 
-// Which guard in `dailyLossVerdict` (agent/services/risk.js) raised the
-// block. Only `daily_loss_limit_hit` is the daily cap itself; the other two
-// block through the same verdict but are different facts, and printing them
-// on the cap line as a bare "entries blocked now" would read as the cap.
-const BLOCK_WORDS = {
-  daily_loss_limit_hit: 'entries blocked now: the daily loss limit is hit',
-  campaign_stop: 'entries blocked now by the campaign stop (not the daily cap)',
-  unknown_daily_pnl: "entries blocked now: today's P&L is unresolved (not the daily cap)",
-}
-const blockedSuffix = (enforced) => {
-  if (!enforced?.blocked) return ''
-  const g = enforced.guard
-  return ` · ${BLOCK_WORDS[g] || (g ? `entries blocked now by ${g}` : 'entries blocked now (guard not reported)')}`
-}
-
-const BINDING_WORDS = {
-  pct: 'the % of balance binds',
-  usd: 'the flat USD cap binds',
-  both: 'the % and the flat USD cap are equal',
-  floor: 'the USD floor binds (the % figure is below it)',
-}
-
-/**
- * The daily-loss line from the GATE's figure (risk-full `dailyCapEnforced`).
- *
- * @param {object|null|undefined} enforced
- * @param {{allAccounts?: boolean, depositCurrency?: string|null}} [ctx]
- * @returns {{text: string, note: string|null}}
- */
-export function dailyCapLine(enforced, { allAccounts = false, depositCurrency = null } = {}) {
-  if (allAccounts) return { text: 'daily loss limit per account — select one account to see the cap its gate enforces', note: null }
-  if (!enforced || enforced.status !== 'computed') {
-    return { text: 'daily loss limit unavailable', note: enforced?.reason ? `gate figure not read: ${enforced.reason}` : 'the agent did not report the gate\'s figure' }
-  }
-  if (enforced.uncapped || enforced.capUsd == null) {
-    return { text: 'daily loss limit: none in force — the gate enforces no daily cap on this account', note: null }
-  }
-  const pctPart = enforced.binding === 'pct' && enforced.pct != null ? ` (${+(enforced.pct * 100).toFixed(2)}% of ${money(enforced.gateBalanceUsd)})` : ''
-  const why = BINDING_WORDS[enforced.binding] || 'binding rule unreported'
-  const left = enforced.remainingUsd != null ? ` · ${money(enforced.remainingUsd)} left today` : ''
-  const text = `daily loss limit ${money(enforced.capUsd)} USD/day enforced — ${why}${pctPart}${left}${blockedSuffix(enforced)}`
-  const ccy = typeof depositCurrency === 'string' ? depositCurrency.toUpperCase() : null
-  const note = ccy && ccy !== 'USD'
-    ? `This account deposits in ${ccy}; the gate's figure is USD-named and is not converted.`
-    : null
-  return { text, note }
-}
-
 /**
  * The DataFeed card's account-dependent props, each shown ONLY when its
  * response belongs to the account on screen.
@@ -176,10 +130,14 @@ export function dailyCapLine(enforced, { allAccounts = false, depositCurrency = 
  * use-lens-account.js), and the previous account's `feedReport` / `riskFull`
  * stay in state until the new load finishes both of its waits — the second
  * queues behind the performance-report reads. Checking scope only where the
- * response is STORED therefore let the old account's latency, fees, swap,
- * deposit currency and equity stop paint under the new account's heading.
- * This is the check at RENDER, so a mismatch reads as "did not load" /
- * "unverified" instead of another account's numbers.
+ * response is STORED therefore let the old account's latency, fees, swap
+ * and equity stop paint under the new account's heading. This is the check
+ * at RENDER, so a mismatch reads as "did not load" / "unverified" instead of
+ * another account's numbers.
+ *
+ * The daily stop is not among these: it comes from the account-overview row
+ * of the account on screen (feedDailyStopView), the reading the account
+ * cards use — one source, so no second daily-loss figure is carried here.
  *
  * @param {{acct: string, feedReport?: object|null, riskFull?: object|null, error?: string}} s
  */
@@ -191,9 +149,7 @@ export function dataFeedCardScope({ acct, feedReport = null, riskFull = null, er
   const effective = rf?.risk?.effective ?? null
   return {
     feedReport: feedReport && !feedReport.error && mine(feedReport.accountId) ? feedReport : null,
-    dailyCap: mine(riskFull?.dailyCapEnforced?.accountId) ? riskFull.dailyCapEnforced : null,
     allAccounts: scope === 'all',
-    depositCurrency: rf?.account?.depositCurrency ?? null,
     equityStopPct: effective?.equityStopPct ?? null,
     equityStopArmed: !error && effective ? effective.equityStopPct != null : null,
   }

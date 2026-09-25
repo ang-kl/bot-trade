@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { dailyBarAge, dailyBarNote, dailyBarsSummary, latencyLine, costLines, quoteFreshnessLine, dailyCapLine, dataFeedCardScope } from './data-feed.js'
+import { dailyBarAge, dailyBarNote, dailyBarsSummary, latencyLine, costLines, quoteFreshnessLine, dataFeedCardScope } from './data-feed.js'
 
 const OPEN = Date.parse('2026-09-24T21:00:00Z') // current broker day open
 const NOW = Date.parse('2026-09-25T12:00:00Z')
@@ -92,61 +92,23 @@ describe('quoteFreshnessLine', () => {
   })
 })
 
-describe('dailyCapLine', () => {
-  const pct = { status: 'computed', capUsd: 1200.1744, binding: 'pct', pct: 0.04, gateBalanceUsd: 30004.36, remainingUsd: 1200.1744, uncapped: false, blocked: false }
-  it('prints the enforced cap and what binds, not the configured base %', () => {
-    const { text, note } = dailyCapLine(pct)
-    expect(text).toBe('daily loss limit 1,200.17 USD/day enforced — the % of balance binds (4% of 30,004.36) · 1,200.17 left today')
-    expect(text).not.toContain('3%')
-    expect(note).toBeNull()
-  })
-  it('names the floor and the flat cap when those bind', () => {
-    expect(dailyCapLine({ ...pct, capUsd: 200, binding: 'floor', remainingUsd: 200 }).text).toContain('200.00 USD/day enforced — the USD floor binds')
-    expect(dailyCapLine({ ...pct, capUsd: 150, binding: 'usd', remainingUsd: 14.64 }).text).toContain('150.00 USD/day enforced — the flat USD cap binds · 14.64 left today')
-  })
-  it('says when entries are blocked, and when nothing caps the day', () => {
-    expect(dailyCapLine({ ...pct, blocked: true, guard: 'daily_loss_limit_hit', remainingUsd: 0 }).text)
-      .toContain('entries blocked now: the daily loss limit is hit')
-    expect(dailyCapLine({ status: 'computed', uncapped: true, capUsd: null }).text).toMatch(/none in force/)
-  })
-  it('names the guard that blocks, so a campaign stop or unresolved P&L does not read as the daily cap', () => {
-    const campaign = dailyCapLine({ ...pct, blocked: true, guard: 'campaign_stop' }).text
-    expect(campaign).toContain('entries blocked now by the campaign stop (not the daily cap)')
-    expect(campaign).not.toContain('daily loss limit is hit')
-    const unknown = dailyCapLine({ ...pct, blocked: true, guard: 'unknown_daily_pnl' }).text
-    expect(unknown).toContain("entries blocked now: today's P&L is unresolved (not the daily cap)")
-    expect(unknown).not.toContain('daily loss limit is hit')
-    expect(dailyCapLine({ ...pct, blocked: true, guard: 'some_new_guard' }).text).toContain('entries blocked now by some_new_guard')
-    expect(dailyCapLine({ ...pct, blocked: true, guard: null }).text).toContain('entries blocked now (guard not reported)')
-    expect(dailyCapLine(pct).text).not.toContain('blocked')
-  })
-  it('flags a non-USD deposit currency instead of converting silently', () => {
-    expect(dailyCapLine(pct, { depositCurrency: 'SGD' }).note).toBe("This account deposits in SGD; the gate's figure is USD-named and is not converted.")
-    expect(dailyCapLine(pct, { depositCurrency: 'USD' }).note).toBeNull()
-  })
-  it('does not print a number for the all-accounts view or a missing gate figure', () => {
-    expect(dailyCapLine(pct, { allAccounts: true }).text).toMatch(/per account/)
-    const missing = dailyCapLine(null)
-    expect(missing.text).toBe('daily loss limit unavailable')
-    expect(dailyCapLine({ status: 'unavailable', reason: 'no account named or selected' }).note).toMatch(/no account named/)
-  })
-})
-
 describe('dataFeedCardScope', () => {
   // The state an account switch leaves behind: acct already moved to B,
   // feedReport and riskFull still A's until the new load finishes.
   const feedA = { accountId: 'A', execution: { latency: { measured: 1, of: 1, p50Ms: 5, p90Ms: 5 } } }
+  // risk-full also carries daily-loss figures of its own (`dailyPacing`, and
+  // a gate figure WEB-9 once added). None of them may reach the card: its
+  // daily stop is the account-overview reading the account cards print.
   const riskA = {
     risk: { scopedTo: 'A', effective: { equityStopPct: 0.15 } },
     account: { accountId: 'A', depositCurrency: 'SGD' },
+    dailyPacing: { accountId: 'A', capUsd: 150, binding: 'usd' },
     dailyCapEnforced: { status: 'computed', accountId: 'A', capUsd: 100 },
   }
   it('passes every figure through when the responses belong to the account on screen', () => {
     expect(dataFeedCardScope({ acct: 'A', feedReport: feedA, riskFull: riskA })).toEqual({
       feedReport: feedA,
-      dailyCap: riskA.dailyCapEnforced,
       allAccounts: false,
-      depositCurrency: 'SGD',
       equityStopPct: 0.15,
       equityStopArmed: true,
     })
@@ -154,12 +116,16 @@ describe('dataFeedCardScope', () => {
   it("never hands the previous account's figures to the new account", () => {
     expect(dataFeedCardScope({ acct: 'B', feedReport: feedA, riskFull: riskA })).toEqual({
       feedReport: null,
-      dailyCap: null,
       allAccounts: false,
-      depositCurrency: null,
       equityStopPct: null,
       equityStopArmed: null,
     })
+  })
+  it('carries no daily-loss figure and no second currency reading from risk-full', () => {
+    const s = dataFeedCardScope({ acct: 'A', feedReport: feedA, riskFull: riskA })
+    const flat = JSON.stringify(s)
+    for (const n of ['150', '100', 'SGD']) expect(flat).not.toContain(n)
+    for (const k of ['dailyCap', 'dailyStop', 'dailyPacing', 'depositCurrency']) expect(s).not.toHaveProperty(k)
   })
   it('the all-accounts view carries no single-account figure', () => {
     const s = dataFeedCardScope({ acct: 'all', feedReport: feedA, riskFull: riskA })

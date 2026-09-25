@@ -58,6 +58,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/scanner-comparison.js': { reason: 'verify the registered broker host for comparison evidence; identical profile rules for every account', max: { is_live: 2 } },
   'agent/services/scanner-work.js': { reason: 'select each registered account host for calendar identity; identical activity and deadline rules for every account', max: { is_live: 1 } },
   'agent/services/scanner-candidates.js': { reason: 'verify registered account/feed routing for mirror observations only; no eligibility gate', max: { is_live: 2 } },
+  'agent/services/performance-populations.js': { reason: 'verify each account deposit-currency evidence against its registered broker host (the SELECT and the host pick); one pooling rule for every account', max: { is_live: 2 } },
   // ---- schema and env ------------------------------------------------------
   'agent/db.js': { reason: 'the accounts.is_live column and the entry_intents.environment enum comment — storage, not a gate', max: { is_live: 1, live_str: 1, demo_str: 1 } },
   'agent/lib/entry-contracts.js': { reason: 'ENVIRONMENTS enum on the tick contracts (which sidecar an intent belongs to)', max: { live_str: 1, demo_str: 1 } },

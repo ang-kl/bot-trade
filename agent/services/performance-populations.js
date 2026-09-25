@@ -12,6 +12,27 @@ import { calendarDate, calendarDay, calendarLedgerWindows } from '../shared/perf
 
 const DAY = 86400_000
 const NUMBER = v => v == null || String(v).trim() === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null
+/** Each registered account's broker deposit currency, from the asset-list
+ * evidence account-money.js records (recordDepositCurrency), and only when
+ * that evidence is for this account on its own host. A cTrader account's
+ * deposit asset is fixed, so this names the unit of every P&L it recorded.
+ * Missing or mismatched evidence is null with its reason — never a default. */
+export function depositCurrencies(db) {
+  const evidence = db.prepare('SELECT value FROM agent_state WHERE key = ?')
+  const out = {}
+  for (const row of db.prepare('SELECT account_id, is_live FROM accounts ORDER BY account_id').all()) {
+    const id = String(row.account_id ?? '').trim()
+    if (!/^[1-9]\d*$/.test(id)) continue
+    let ev = null
+    try { ev = JSON.parse(evidence.get(`acct:${id}:deposit_currency_evidence_json`)?.value || 'null') } catch { ev = null }
+    const host = row.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+    const ok = ev?.accountId === id && ev.host === host && /^[A-Z]{3}$/.test(ev.currency || '') && Number.isFinite(ev.receivedAt)
+    out[id] = ok
+      ? { currency: ev.currency, source: ev.source || 'broker_asset_list', observedAt: new Date(ev.receivedAt).toISOString() }
+      : { currency: null, reason: ev ? 'deposit_currency_evidence_mismatch' : 'deposit_currency_not_recorded' }
+  }
+  return out
+}
 function fold(st, row) {
   st.n++
   if (row.pnl != null) {
@@ -109,6 +130,9 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
   }) }))
   return { schemaVersion: 1, status: 'complete', generatedAt: new Date(now).toISOString(), asOfMs: now, timeZone,
     population: 'all_recorded_closes', currency: null, moneyPolicy: 'recorded_units_within_one_stamped_account_only',
+    // The unit of each account's recorded money. Readers may pool accounts
+    // only within one of these (reportCurrencyStats), never across two.
+    currencyByAccount: depositCurrencies(db), currencyPolicy: 'pool_within_one_recorded_deposit_currency_never_across',
     markets: MARKETS, coverage, windows, daily: [...daily.values()], bestByAccount: Object.fromEntries(best),
     lastCloseByAccount: Object.fromEntries([...last].map(([a, t]) => [a, new Date(t).toISOString()])),
     openByAccount: db.prepare('SELECT account_id,count(*) AS n FROM monitored_positions WHERE status=\'active\' GROUP BY account_id').all(),
@@ -219,6 +243,11 @@ export function readLatestPrices(db) { return isolatedReport(db, 'latest-prices'
 export function readStageMatrixStats(db) { return isolatedReport(db, 'stage-matrix-stats') }
 export function readDecisionAudit(db, options) { return isolatedReport(db, 'decision-audit', options) }
 export function readNodeWatchdogContract(db, options) { return isolatedReport(db, 'node-watchdog', options) }
+/** V3 C4 (WP-C PR-C1): GET /state/blocker-report, off the protection event
+ * loop — up to 90 days of three logs plus the tick arm. Pass no `now`: the
+ * in-flight dedupe keys on the options, and a millisecond clock would give
+ * every dashboard request its own worker slot. */
+export function readBlockerReport(db, options) { return isolatedReport(db, 'blocker-report', options) }
 export function readAccountEngineering(db) { return isolatedReport(db, 'account-engineering') }
 export function readPostmortemReport(db, options) { return isolatedReport(db, 'postmortems', options) }
 /** GET /state/storage: the dbstat page walk and per-table COUNT(*) run on a
@@ -278,6 +307,11 @@ async function buildReport(db, kind, options) {
     // All account/work/calendar reads describe one database snapshot. The
     // builder retains its original receipt times; completion is not freshness.
     return db.transaction(() => nodeWatchdogContract(db, options))()
+  }
+  if (kind === 'blocker-report') {
+    const { blockerReport, tickEntryEvaluation } = await import('./blocker-report.js')
+    // One snapshot for the population and the tick evaluation beside it.
+    return db.transaction(() => ({ ...blockerReport(db, options), tick: tickEntryEvaluation(db, options) }))()
   }
   if (kind === 'storage') {
     const { storageReport } = await import('./storage-report.js')

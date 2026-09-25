@@ -143,3 +143,22 @@ export function computeRegime(bars, { period = PERIOD } = {}) {
     volRatio: volRatio != null ? Math.round(volRatio * 100) / 100 : null,
   }
 }
+
+/**
+ * V3 C4 (WP-B B3): the quant phase's regime symbol set. The tick side's
+ * direction filter (tick-permits.js → trendReadingFor) reads the same
+ * `regimes` rows, so the tick universe is a source in its own right instead
+ * of being covered only while it happens to equal the scanned or momentum
+ * lists. Pure: upper-cased, trimmed, deduplicated, in today's order (scanned,
+ * then the momentum universe) with the tick names appended.
+ */
+export function regimeSymbols({ scanned = [], universe = [], tick = [] } = {}) {
+  const out = new Set()
+  for (const list of [scanned, universe, tick]) {
+    for (const raw of Array.isArray(list) ? list : []) {
+      const name = String(raw ?? '').trim().toUpperCase()
+      if (name) out.add(name)
+    }
+  }
+  return [...out]
+}
