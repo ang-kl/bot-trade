@@ -187,18 +187,33 @@ export function getAccountSymbolMap(db, accountId) {
   } catch { return null }
 }
 
-/** Fetch the account's own symbol list and persist it. Throws on a failed fetch. */
+/**
+ * Fetch the account's own symbol list and persist it. Throws on a failed fetch.
+ *
+ * V3 K2 — the one writer of `symbol_id_map:<accountId>` reads THIS account's
+ * list (`perAccount`: never the host-shared cache, which answers with whichever
+ * account on the host was read first) and refuses a response that names
+ * another account: nothing is written, the stored map stays as it was. The
+ * record carries `accountId` — proof it came from that account's own read —
+ * so a map written before K2 is recognisable and re-read once
+ * (services/account-symbol-maps.js). `deps.now` (epoch ms, as resolveSymbolId
+ * already takes it) dates `builtAt`; absent, the wall clock, as before.
+ */
 export async function fetchAccountSymbolMap(db, creds, deps = {}) {
   const list = deps.wsGetSymbolsList ?? (await import('./ctrader-ws.js')).wsGetSymbolsList
   const { host, clientId, clientSecret, accessToken, accountId } = creds
-  const data = await list(host, clientId, clientSecret, accessToken, accountId)
+  const data = await list(host, clientId, clientSecret, accessToken, accountId, undefined, { perAccount: true })
+  if (data?.ctidTraderAccountId != null && String(data.ctidTraderAccountId) !== String(accountId)) {
+    throw new Error(`account_identity_mismatch: the symbol list for …${String(accountId).slice(-4)} names …${String(data.ctidTraderAccountId).slice(-4)}`)
+  }
   const map = {}
   for (const s of (data?.symbol || [])) {
     if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId
   }
   if (Object.keys(map).length > 0) {
     const { setState } = await import('../db.js')
-    setState(db, accountSymbolMapKey(accountId), JSON.stringify({ builtAt: new Date().toISOString(), map }))
+    const builtAt = new Date(Number.isFinite(deps.now) ? deps.now : Date.now()).toISOString()
+    setState(db, accountSymbolMapKey(accountId), JSON.stringify({ builtAt, accountId: String(accountId), map }))
   }
   return map
 }

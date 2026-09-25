@@ -33,6 +33,12 @@
 // Plus the collector's last receipt AND its last persisted skip, and the size
 // of what the watchdog export carries.
 //
+// V3 K2: beside each account's map, the daily map refresher's view of it
+// (account-symbol-maps.js): whether the map is proven to be the account's own
+// list, whether it is due and why, whether it must wait (backoff or the daily
+// read cap) and the last attempt's outcome — so a map that never arrives is
+// shown with the reason, not only as "missing".
+//
 // Owner principle 1: the host comes from registeredCalendarAccounts (routing
 // only); no rule here differs by account environment.
 // ---------------------------------------------------------------------------
@@ -45,6 +51,7 @@ import { CALENDAR_EXPORT_MAX_BYTES } from './scanner-work.js'
 import { nodeWatchdogContract, CONTRACT_MAX_BYTES } from './watchdog-contract.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 import { readWatchlist, hasOwnWatchlist } from './watchlists.js'
+import { accountSymbolMapRefreshView } from './account-symbol-maps.js'
 
 const DAY = 86400_000
 export const COVERAGE_HOLIDAY_DAYS = 14
@@ -69,10 +76,19 @@ function windowDates(now) {
   return Array.from({ length: COVERAGE_HOLIDAY_DAYS + 2 }, (_, i) => new Date(start + i * DAY).toISOString().slice(0, 10))
 }
 
-function blankAccount(account, map) {
+// V3 K2: the refresher's view of this account's map, beside K1's symbolMap.
+function refreshOf(r) {
+  if (!r) return null
+  return { ownList: r.map?.ownList === true, due: r.due, dueReason: r.dueReason, blocked: r.blocked, notBefore: r.notBefore,
+    lastAttemptAt: r.lastAttemptAt, lastResult: r.lastResult, lastError: r.lastError, lastBuiltAt: r.lastBuiltAt,
+    consecutiveFailures: r.consecutiveFailures, readsToday: r.readsToday }
+}
+
+function blankAccount(account, map, refresh) {
   return {
     accountId: account.accountId, host: account.host,
     symbolMap: { status: map.status, builtAt: map.builtAt, ageMs: map.ageMs, size: map.size },
+    symbolMapRefresh: refreshOf(refresh),
     demand: { total: 0, byTier: Object.fromEntries(DEMAND_TIERS.map(t => [t, 0])), missingMap: false, unresolvedNames: 0 },
     status: { OPEN: 0, CLOSED: 0, UNKNOWN: 0 }, unknownReasons: {}, oldestObservedAt: null,
     demandedCoverage: 'missing',
@@ -91,7 +107,9 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
   const contract = nodeWatchdogContract(db, { now })
   const storedKeys = new Set(db.prepare("SELECT key FROM agent_state WHERE key LIKE 'market_calendar:v1:%'").all().map(r => r.key))
   const maps = new Map(registered.map(a => [a.accountId, symbolMapOf(db, a.accountId, now)]))
-  const byAccount = new Map(registered.map(a => [a.accountId, blankAccount(a, maps.get(a.accountId))]))
+  const mapRefresh = accountSymbolMapRefreshView(db, { now })
+  const refreshById = new Map(mapRefresh.accounts.map(r => [r.accountId, r]))
+  const byAccount = new Map(registered.map(a => [a.accountId, blankAccount(a, maps.get(a.accountId), refreshById.get(a.accountId))]))
   const reverse = new Map() // accountId → symbolId → name (feed-tier names)
   const nameOf = (accountId, symbolId) => {
     if (!reverse.has(accountId)) {
@@ -190,6 +208,11 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
       workComplete: contract.workComplete === true, contractReason: contract.reason ?? null,
       knownVersions: versions.size,
     },
+    symbolMapRefresher: {
+      at: mapRefresh.at, ageMs: mapRefresh.ageMs, pass: mapRefresh.pass, passEveryMs: mapRefresh.passEveryMs,
+      refreshAgeMs: mapRefresh.refreshAgeMs, maxReadsPerAccountDay: mapRefresh.maxReadsPerAccountDay,
+      due: mapRefresh.accounts.filter(r => r.due).length, waiting: mapRefresh.accounts.filter(r => r.due && r.blocked).length,
+    },
     collector: {
       receipt: receipt ? { ...receipt, ageMs: ageOf(receipt.at, now) } : null,
       lastSkip: skip ? { ...skip, ageMs: ageOf(skip.at, now) } : null,
@@ -201,6 +224,7 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
       'Advisory evidence only: entries still use the name-keyed symbol_hours gate; gateDisagreements measures that gate against the account calendar at this instant.',
       'demandedCoverage covers the demanded identities only; watchlist symbols outside the demand are listed as notDemanded, never counted as covered.',
       'A bound the broker did not send is reported as omitted; no replacement boundary is invented.',
+      'symbolMapRefresh.ownList false means the stored map is not proven to be the account\'s own symbol list (written before V3 K2); it is re-read once, and until then its ids are shown as stored.',
     ],
   }
 }
