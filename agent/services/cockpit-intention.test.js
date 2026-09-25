@@ -233,3 +233,48 @@ test('snapshot integration: intention rides the endpoint and the revision moves 
   const out2 = cockpitSnapshot(ctx.db, ctx.idA, scope, NOW)
   assert.notEqual(out2.body.meta.revision, out.body.meta.revision)
 })
+
+test('V3 T3: a momentum partial plan shows its trigger as a scale_out — armed while the pass runs, UNAVAILABLE when it is stale', async () => {
+  const { registerPartialPlan } = await import('./momentum-partial-manager.js')
+  const { planMomentumTargets } = await import('./momentum-target-policy.js')
+  const { MOMENTUM_PARTIAL_PASS_KEY } = await import('./momentum-partial-runtime.js')
+  const db = ctx.db
+  const plan = planMomentumTargets({ side: 'BUY', entry: 100, originalStop: 90, requiredRr: 3, costReservePrice: 0.4,
+    digits: 2, volume: 10000, minVolume: 100, stepVolume: 100 })
+  const tid = Number(db.prepare(`INSERT INTO trades (symbol, side, entry_price, volume, opened_at, ctrader_position_id, status, strategy, conviction)
+    VALUES ('ETHUSD', 'long', 100, 1, datetime('now'), '33', 'open', 'tsmom_long', 0.9)`).run().lastInsertRowid)
+  const mpId = db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, initial_risk, account_id, status, strategy, source, paused)
+    VALUES ('ETHUSD', ?, 'long', 100, 90, ?, 10, '11', 'active', 'tsmom_long', 'autopilot', 1)`).run(tid, plan.brokerTarget).lastInsertRowid
+  registerPartialPlan(db, { accountId: '11', tradeId: tid, positionId: '33', plan, evidenceId: 'fixture',
+    identity: { host: 'demo.ctraderapi.com', accountId: '11', symbolId: '22' } })
+  const partialOf = out => out.armedActions.filter(x => x.ruleSource === 'momentum_partial_manager')
+  const build = () => buildIntention(db, fetchRow(db, mpId), { price: 120 }, LIVE_AT, 'r', NOW)
+
+  setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify({ at: new Date(NOW - 60_000).toISOString(), ok: true }))
+  const fresh = build()
+  const [a] = partialOf(fresh)
+  assert.equal(a.kind, 'scale_out'); assert.equal(a.triggerPrice, 130.4)
+  assert.equal(a.armed, true); assert.equal(a.unavailable, null)
+  assert.match(a.trigger, /^close 2600 of 10000 broker units \(26%\) when the bid reaches 130\.4; the runner keeps the broker TP 140\.4$/)
+  assert.ok(Math.abs(a.distance - 10.4) < 1e-9)
+  assert.ok(fresh.targetPlan.some(x => x.ruleSource === 'momentum_partial_manager'), 'the partial is in the target plan, not only the runner TP')
+  assert.ok(fresh.targetPlan.some(x => x.kind === 'tp_exit' && x.triggerPrice === 140.4))
+  for (const id of a.evidence) assert.ok(fresh.evidenceIndex[id], `evidence ${id} resolves`)
+
+  setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify({ at: new Date(NOW - 16 * 60_000).toISOString(), ok: true }))
+  const [stale] = partialOf(build())
+  assert.equal(stale.armed, false, 'a trigger nothing is watching is not armed')
+  assert.match(stale.trigger, /reaches 130\.4.* — UNAVAILABLE: the partial manager pass is stale: last pass .*16 min ago/)
+  assert.match(stale.unavailable, /stale/)
+  assert.equal(stale.triggerPrice, 130.4, 'the trigger is still shown')
+
+  setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify({ at: new Date(NOW - 60_000).toISOString(), ok: true }))
+  db.prepare("UPDATE momentum_partial_plans SET state='AMBIGUOUS', reason='closing_deal_unconfirmed'").run()
+  const [inFlight] = partialOf(build())
+  assert.equal(inFlight.armed, false)
+  assert.match(inFlight.trigger, /^partial close in progress \(AMBIGUOUS: closing_deal_unconfirmed\) — close 2600/)
+
+  db.prepare("UPDATE momentum_partial_plans SET state='CONFIRMED', reason=NULL").run()
+  assert.deepEqual(partialOf(build()), [], 'a confirmed partial is done, not armed')
+  assert.deepEqual(partialOf(buildIntention(db, fetchRow(db, ctx.idA), LIVE, LIVE_AT, 'r', NOW)), [], 'a position with no plan is unchanged')
+})

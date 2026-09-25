@@ -178,6 +178,12 @@ export const CONTROLLERS = {
   // rows, the inspector and the daily report read; a stale one also shows in
   // records_fresh.
   order_lifecycle:     { label: 'Order lifecycle flags',      expectedSec: 600, factor: 3, effect: { key: 'order_lifecycle_last_json', kind: 'json', maxAgeSec: 1800 } },
+  // V3 T3: the momentum partial-TP1 manager's pass, once per main-loop cycle
+  // whatever the scan or the book is doing (plans outlive both switches). It
+  // closes the partial volume at the trigger, so it sits with the other
+  // position writers. The record is the pass's own summary; with no plan it
+  // still runs and still writes it, so "never ran" and "nothing to do" differ.
+  momentum_partial:    { label: 'Momentum partial-TP1 manager', tiedToLoop: true, factor: 3, effect: { key: 'momentum_partial_pass_json', kind: 'json' } },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

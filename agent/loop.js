@@ -5507,6 +5507,32 @@ async function runLoop(db) {
     } // end symbolsJson
 
     // -----------------------------------------------------------------------
+    // MOMENTUM PARTIAL-TP1 MANAGER (V3 T3, P0-2). Every cycle, AFTER the
+    // momentum book (its rank exit reserves a plan before this pass could
+    // send, and its trail pass writes the marks the pre-filter reads), and
+    // deliberately OUTSIDE everything that gates the book: the symbols block,
+    // the scan switch, weekend quiet, ctraderCreds.ready and the book's own
+    // enabled flag. A plan outlives all of those; a partial manager that
+    // stopped when the scan was switched off would be a guard whose trigger
+    // never arrives. Each account uses its own registered credentials.
+    // Inert while no plan exists: no broker call, no credential read. Its own
+    // try/catch, so a failure here is logged and beaten, never fatal.
+    // -----------------------------------------------------------------------
+    try {
+      phase('momentum partials')
+      const { runMomentumPartialPass } = await import('./services/momentum-partial-runtime.js')
+      const { credsForRegisteredAccount } = await import('./lib/ctrader-creds.js')
+      const mp = await runMomentumPartialPass(db, { credsFor: (accountId) => credsForRegisteredAccount(db, accountId), now: Date.now, log })
+      if (mp.activePlans || mp.abandonedBinds.length || mp.scaleOutsRecorded.length || !mp.ok) {
+        log(`momentum partials: ${mp.activePlans} active plan(s) on ${Object.keys(mp.accounts).length} account(s), ${mp.scaleOutsRecorded.length} scale-out(s) journaled, ${mp.abandonedBinds.length} bind(s) abandoned${mp.ok ? '' : ` — ${mp.errors[0] || Object.entries(mp.accounts).filter(([, a]) => a.error).map(([id, a]) => `…${id.slice(-4)} ${a.error}`).join('; ')}`}`)
+      }
+      await hbeat(db, 'momentum_partial', mp.ok, mp.ok ? null : (mp.errors[0] || 'account pass failed — see momentum_partial_pass_json'))
+    } catch (err) {
+      log(`momentum partial pass failed: ${err.message}`)
+      await hbeat(db, 'momentum_partial', false, err.message)
+    }
+
+    // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)
     // -----------------------------------------------------------------------
     if (loopCount % 6 === 0) {

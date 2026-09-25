@@ -27,6 +27,7 @@ import { loadManagedExit } from './managed-exit.js'
 import { loadGlobalGuards } from './global-guards.js'
 import { loadRiskConfig } from './risk.js'
 import { trippedKey } from './equity-stop.js'
+import { momentumPartialForPosition } from './momentum-partial-runtime.js'
 
 const parseJson = (s) => { try { return s ? JSON.parse(s) : null } catch { return null } }
 
@@ -194,6 +195,26 @@ export function buildIntention(db, row, live, liveAt, revision, nowMs = Date.now
     if (guard.trailing?.on) {
       armed.push({ kind: 'trail', trigger: `SL follows price at ${guard.trailing.distancePips} pips (tighten-only)`, triggerPrice: null, distance: null, eta: null, armed: true, ruleSource: 'trade_guard', evidence: [`mp:${mpId}:guard_json`] })
     }
+  }
+  // V3 T3: a momentum book position with a partial-TP1 plan. The partial
+  // manager's pass closes closeVolume when the trigger is reached; the broker
+  // TP further down is the RUNNER's target, not the position's only one
+  // (owner principle 6). While the pass is not running the trigger is still
+  // shown, labelled unavailable and not armed: a trigger nothing is watching
+  // is not an armed action.
+  const partial = momentumPartialForPosition(db, accountId, row.trade_id, nowMs)
+  if (partial && ['ARMED', 'SENDING', 'AMBIGUOUS', 'RECEIVED'].includes(partial.state)) {
+    const p = partial.plan, pid = `partial:${accountId}:${row.trade_id}`
+    ev(pid, 'momentum_partial_plans (immutable plan and its state)', null,
+      { state: partial.state, reason: partial.reason, trigger: p.trigger, closeVolume: p.closeVolume, volume: p.volume, runnerTarget: p.brokerTarget })
+    ev('state:momentum_partial_pass_json', 'agent_state.momentum_partial_pass_json (partial manager pass)', partial.pass.at, { fresh: partial.pass.fresh })
+    const what = `close ${p.closeVolume} of ${p.volume} broker units (${Math.round(p.closePercentage)}%) when the ${p.side === 'BUY' ? 'bid' : 'ask'} reaches ${p.trigger}; the runner keeps the broker TP ${p.brokerTarget}`
+    const inFlight = partial.state !== 'ARMED'
+    const text = inFlight ? `partial close in progress (${partial.state}${partial.reason ? `: ${partial.reason}` : ''}) — ${what}` : what
+    armed.push({ kind: 'scale_out', trigger: partial.pass.fresh ? text : `${text} — UNAVAILABLE: ${partial.pass.why}`,
+      triggerPrice: p.trigger, distance: dist(p.trigger), eta: null, armed: !inFlight && partial.pass.fresh,
+      unavailable: partial.pass.fresh ? null : partial.pass.why, ruleSource: 'momentum_partial_manager',
+      evidence: [pid, 'state:momentum_partial_pass_json'] })
   }
   if (manager === 'position_manager' && row.initial_risk > 0 && row.entry_price > 0) {
     const rTargets = []
