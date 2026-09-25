@@ -1021,17 +1021,17 @@ export function reclassifyBrokerCloses(db) {
   // is on record (02-09-2026) — the reclassifier judges against the level
   // that could have filled, not the one that was asked for.
   const rows = db.prepare(
-    `SELECT id, side, exit_price, COALESCE(broker_sl_initial, sl_price) AS sl_price, tp_price FROM trades
-     WHERE status = 'closed' AND exit_price IS NOT NULL
+    `SELECT t.id, t.side, t.entry_price, t.exit_price, COALESCE(t.broker_sl_initial, t.sl_price) AS sl_price, t.tp_price, mp.current_sl AS moved_current_sl, mp.broker_sl AS moved_broker_sl FROM trades t LEFT JOIN (SELECT trade_id, MAX(id) AS mid FROM monitored_positions WHERE trade_id IS NOT NULL GROUP BY trade_id) lm ON lm.trade_id = t.id LEFT JOIN monitored_positions mp ON mp.id = lm.mid
+     WHERE t.status = 'closed' AND t.exit_price IS NOT NULL
        AND (
-         close_reason LIKE 'closed at the broker%'
+         t.close_reason LIKE 'closed at the broker%'
          -- BACKFILL (2026-07-29). Rows already carrying the FALSE
          -- stopped-beyond-the-SL stamp, written before the null-SL bug above
          -- was fixed. Normally this function never overwrites a reason it did
          -- not write, but leaving these would leave the ledger asserting a
          -- stop existed on positions that ran naked. Narrowly scoped: only
          -- that exact stamp, and only where there is provably no stop.
-         OR (sl_price IS NULL AND close_reason LIKE 'stopped beyond the SL%')
+         OR (t.sl_price IS NULL AND t.close_reason LIKE 'stopped beyond the SL%')
        )`
   ).all()
   const upd = db.prepare('UPDATE trades SET close_reason = ? WHERE id = ?')
@@ -1062,7 +1062,7 @@ export function reclassifyBrokerCloses(db) {
       reason = 'take profit hit — broker-side TP fill (reclassified from the broker exit price)'
     } else if (near(t.sl_price)) {
       reason = 'stop loss hit — broker-side SL fill (reclassified from the broker exit price)'
-    } else if (t.sl_price == null) {
+    } else if (t.sl_price == null && movedStops(t).length === 0) {
       // NO STOP ON RECORD. This branch exists because the one below asserted
       // the opposite (owner report 2026-07-29, an ETHUSD short).
       //
@@ -1078,15 +1078,57 @@ export function reclassifyBrokerCloses(db) {
       // there and missed here.
       reason = 'closed at the broker with NO STOP LOSS on record — this position was unprotected; cause of exit unknown (reclassified from the broker exit price)'
     } else {
-      const sl = Number(t.sl_price)
+      // V3 L2b W12 (CLS-03): the stop that could fill is the one the broker
+      // held LAST, not only the one it held first. A trailed or moved stop
+      // lives on the monitored row (current_sl, the managers' level; broker_sl,
+      // the last broker snapshot) — judging only broker_sl_initial left every
+      // trail fill "closed at the broker" (379 of 1,315 closes unattributed).
       const long = String(t.side || '').toUpperCase() === 'BUY'
-      if (Number.isFinite(sl) && sl > 0 && (long ? exit < sl : exit > sl)) {
+      const moved = movedStops(t)
+      const hitMoved = moved.find(p => near(p))
+      const sl = moved.length ? moved[0] : Number(t.sl_price)
+      if (hitMoved != null) {
+        reason = movedStopReason(t, hitMoved, long)
+      } else if (Number.isFinite(sl) && sl > 0 && (long ? exit < sl : exit > sl)) {
         reason = 'stopped beyond the SL — gap/slippage through the stop or a margin-level liquidation (reclassified from the broker exit price)'
       }
     }
     if (reason) { upd.run(reason, t.id); n++ }
   }
   return n
+}
+
+/**
+ * V3 L2b W12 — the stops a position held AFTER entry, newest-first: the
+ * managers' level (`current_sl`), then the broker's last-seen level
+ * (`broker_sl`), each only when it is a real price different from the stop
+ * at entry. Empty when the stop never moved or the row has no monitor.
+ */
+export function movedStops(t) {
+  const initial = Number(t?.sl_price)
+  const out = []
+  for (const v of [t?.moved_current_sl, t?.moved_broker_sl]) {
+    if (v == null || v === '') continue
+    const p = Number(v)
+    if (!(Number.isFinite(p) && p > 0)) continue
+    if (Number.isFinite(initial) && initial > 0 && Math.abs(p - initial) <= Math.abs(initial) * 1e-9) continue
+    if (!out.includes(p)) out.push(p)
+  }
+  return out
+}
+
+/**
+ * The stamp for an exit AT a moved stop. A stop moved to entry or beyond it
+ * is a profit lock ("locked" — exitKind reads it as a trail exit); one still
+ * on the losing side of entry is a tightened stop (exitKind: stop). Both start
+ * "stop loss hit", as the stop-at-entry stamp does.
+ */
+export function movedStopReason(t, stop, long) {
+  const entry = Number(t?.entry_price)
+  const locked = Number.isFinite(entry) && entry > 0 && (long ? stop >= entry : stop <= entry)
+  return locked
+    ? 'stop loss hit — broker-side fill at a stop moved after entry and locked at or beyond entry (reclassified from the broker exit price)'
+    : 'stop loss hit — broker-side fill at a stop moved after entry (reclassified from the broker exit price)'
 }
 
 /**

@@ -519,16 +519,22 @@ test('known answer: `direction_reason: null` — the value is tested, not the ke
   assert.ok(!subjects(r).includes(`risk_event:${camel}`), 'directionReason is read as position-history.js:99-108 does')
 })
 
-test('known answer: {t,o,h,l,c} bars through the real refusal scorer become no_bars, and PRE-02 names the row', async () => {
+test('known answer: {t,o,h,l,c} bars through the real refusal scorer are SCORED (V3 L2b W13), and PRE-02 names a no_bars row as the defect stored it', async () => {
   const db = initDB(':memory:')
   ins(db, 'risk_events', { symbol: 'EURUSD', side: 'BUY', approved: 0, veto_reason: 'bad_rr 1.50<3', account_id: A, opportunity_key: 'opp-objbars',
     created_at: '2026-09-20 10:00:00', proposal_json: JSON.stringify({ entry: 1.1, sl: 1.09, tp1: 1.13, timeframe: '1h', strategy: 'x' }) })
   const objectBars = Array.from({ length: 60 }, (_, i) => ({ t: Date.parse('2026-09-20T10:00:00Z') + i * 3_600_000, o: 1.1, h: 1.12, l: 1.095, c: 1.11 }))
   await scoreRefusedOpportunities(db, async () => objectBars, { nowMs: NOW - 3_600_000 })
-  assert.equal(db.prepare(`SELECT outcome FROM refusal_scores WHERE opportunity_key = 'opp-objbars'`).get()?.outcome, 'no_bars', 'the scorer filters bars by b?.[0] (refusal-ledger.js:204)')
+  assert.equal(db.prepare(`SELECT outcome FROM refusal_scores WHERE opportunity_key = 'opp-objbars'`).get()?.outcome, 'time_cap', 'W13: the scorer now reads the objects the broker fetch returns (refusal-ledger.js:204)')
+  // The rows the defect wrote before W13 are what PRE-02 still reads: one as stored.
+  const legacy = { opportunity_key: 'opp-legacy', account_id: A, symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: 1.09, tp: 1.13, first_at: '2026-09-20 10:00:00', horizon_min: 2880, scored_at: iso(NOW - 3_600_000), outcome: 'no_bars', bars_used: 0, note: 'no bars stored' }
+  ins(db, 'refusal_scores', legacy)
   const r = one(db, 'PRE-02')
-  assert.deepEqual(subjects(r), ['refusal:opp-objbars'])
-  assert.match(r.note, /scored 0 while no_bars 1/)
+  assert.deepEqual(subjects(r), ['refusal:opp-legacy'], 'the scored row is not a violation; the defect-shaped row is')
+  assert.doesNotMatch(String(r.note ?? ''), /scored 0 while/, 'one row scored: the scorer is scoring')
+  const onlyLegacy = initDB(':memory:')
+  ins(onlyLegacy, 'refusal_scores', legacy)
+  assert.match(one(onlyLegacy, 'PRE-02').note, /scored 0 while no_bars 1/)
 })
 
 test('known answer: #1715 ES.US — adopted, our label, no tag, no approval; opened_at is the adoption stamp', () => {

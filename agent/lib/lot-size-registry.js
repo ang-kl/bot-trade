@@ -283,3 +283,29 @@ export function lotSizeParity(db, symbols = null) {
         + `${unknown} have never been recorded and still fall back to the table.`,
   }
 }
+
+/**
+ * V3 L2b W10 — THE DEAL WRITERS THAT RUN ON THEIR OWN STORE LOTS.
+ *
+ * pnl-backfill and the position capture name deals from a symbol-id map and
+ * nothing else (no extra broker round trip in the trading loop), so every
+ * deal they wrote carried `lots` NULL (broker-history-import.js shapeDeals
+ * divides the deal's volume by `meta.lotSize`). The broker's own lotSize is
+ * usually already on record here — the order path remembers it — so it is
+ * read from this registry. ONLY a broker-declared lot size is used: the table
+ * fallback carries `lotSize: null` by construction (`unitsPerLot`), and a
+ * guessed divisor would store a wrong lot count where NULL is honest.
+ *
+ * `symMeta` is `{ [symbolId]: { symbolName, lotSize? } }`. Mutated and
+ * returned; an entry that already has a lot size is left as it is. Never throws.
+ */
+export function withBrokerLotSizes(db, symMeta) {
+  let map = null
+  try { map = readMap(db) } catch { map = null }
+  for (const meta of Object.values(symMeta || {})) {
+    if (!meta || posNum(meta.lotSize) || !clean(meta.symbolName)) continue
+    const lotSize = entryOf(map, clean(meta.symbolName))?.lotSize ?? null
+    if (lotSize) meta.lotSize = lotSize
+  }
+  return symMeta
+}
