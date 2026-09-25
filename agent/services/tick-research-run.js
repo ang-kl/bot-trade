@@ -49,11 +49,11 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { Worker } from 'node:worker_threads'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { readSegment, toQuoteEvents, FORMAT_VERSION, HEADER_BYTES, RECORD_BYTES } from '../lib/tick-segment.js'
 import { simulate } from '../lib/tick-replay-sim.js'
-import { normalizeParams } from '../lib/tick-strategy.js'
-import { trialIdFor, importTickTrial } from './tick-research.js'
+import { normalizeParams, profileHashFull } from '../lib/tick-strategy.js'
+import { trialIdFor, importTickTrial, testOpeningsFor, recordTestOpening, settleTestOpening, HOLDOUT_UNDECLARED } from './tick-research.js'
 import { loadThresholds, replayChecks } from './tick-validation.js'
 import { loadRepoSchedule, TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
 import { getState } from '../db.js'
@@ -163,9 +163,11 @@ export function listedRecordsPerSegment(listed) {
 
 /**
  * Decode segments into per-symbol oracle quote streams (the replayer's
- * input) and the manifest base. A gap marker invalidates continuity: the
- * sim sees it as a crossed (invalid) quote, which the strategy treats as a
- * warm-up reset. Repeats stay in the stream as unchanged observations
+ * input) and the manifest base. A continuity-breaking gap marker (restart,
+ * reconnect, switched_off) invalidates continuity: the sim sees it as a
+ * crossed (invalid) quote, which the strategy treats as a warm-up reset. A
+ * recorder-only gap (queue_overflow, reserve_pause — PR-Q1) is counted and
+ * listed in the manifest but resets nothing. Repeats stay in the stream as unchanged observations
  * carrying the last quote's sides (they count nowhere, they invalidate
  * nothing) — the last valid quote is kept per symbol in a Map, O(1) per
  * repeat (checker M-2: a reverse scan per repeat was quadratic, 9.3 s on
@@ -175,12 +177,38 @@ export function loadSegments(files, { onlySymbol = null } = {}) {
   const bySymbol = new Map()
   const lastValid = new Map() // symbolId → the last two-sided quote pushed
   let events = 0, torn = 0, firstMs = null, lastMs = null
+  // PR-Q1: the dataset is pinned by content, not by name — a trial names the
+  // bytes it replayed, so a segment rewritten or rotated under the same name
+  // cannot pass as the data the trial saw.
+  const fileDigests = []
+  const environments = new Set()
+  const gapsByReason = {}
+  const gaps = []
+  let warmupResets = 0
   for (const f of files) {
-    const seg = readSegment(readFileSync(f))
+    const buf = readFileSync(f)
+    fileDigests.push({ name: basename(f), bytes: buf.length, sha256: createHash('sha256').update(buf).digest('hex') })
+    const seg = readSegment(buf)
     if (!seg.header) continue
+    environments.add(seg.header.environment)
     if (seg.truncated) torn++
     for (const ev of toQuoteEvents(seg)) {
-      if (ev.gap) { for (const list of bySymbol.values()) list.push({ gapMarker: true }); lastValid.clear(); continue }
+      if (ev.gap) {
+        // PR-Q1: split by reason. queue_overflow and reserve_pause drop only
+        // the RECORDER's queue — the live strategy kept running on every
+        // quote — so they must not reset the replay's warm-up (the sidecar's
+        // strategy did not reset). The quotes they dropped are simply absent,
+        // which the parity report names per window. restart, reconnect and
+        // switched_off are continuity breaks on the live side too: those
+        // still reset, as before. The last valid quote is forgotten either
+        // way, so a repeat after ANY gap is not given sides the dropped span
+        // may have changed.
+        gapsByReason[ev.reason] = (gapsByReason[ev.reason] || 0) + 1
+        if (gaps.length < GAP_LIST_MAX) gaps.push({ reason: ev.reason, recvMs: ev.recvMs, count: ev.count })
+        lastValid.clear()
+        if (!RECORDER_ONLY_GAPS.has(ev.reason)) { warmupResets++; for (const list of bySymbol.values()) list.push({ gapMarker: true }) }
+        continue
+      }
       if (ev.repeat) {
         // An identical repeat carries the SAME prices as the last quote
         // (that is what makes it a repeat); it counts nowhere (plan §4) but
@@ -197,7 +225,13 @@ export function loadSegments(files, { onlySymbol = null } = {}) {
       if (ev.invalid) continue
       if (onlySymbol != null && ev.symbolId !== onlySymbol) continue
       const list = bySymbol.get(ev.symbolId) || []
-      const ms = ev.recvMonoNs / 1e6
+      // PR-Q1: the recorder's receive time is a whole millisecond (u64 recvMs),
+      // and the decoder carries it as recvMs × 1e6 ns — past 2^53, so the
+      // division came back as 1757548800049.9998. The sidecar compares the
+      // same integer ms (latency fill, clock hold cap), so an event exactly
+      // one latency later could fill on one engine and not the other. Rounded
+      // back to the integer the recorder wrote.
+      const ms = Math.round(ev.recvMonoNs / 1e6)
       const q = { seq: ev.seq, recvMs: ms, bid: ev.bid, ask: ev.ask, snapshot: ev.quality.snapshot, crossed: ev.quality.crossed, changed: true }
       list.push(q)
       bySymbol.set(ev.symbolId, list)
@@ -208,8 +242,28 @@ export function loadSegments(files, { onlySymbol = null } = {}) {
     }
   }
   for (const list of bySymbol.values()) for (const q of list) if (q.gapMarker) Object.assign(q, { seq: 0, recvMs: 0, bid: 1, ask: 0, crossed: true, snapshot: false, changed: true })
-  const manifestBase = { files: files.map(f => basename(f)), events, symbols: [...bySymbol.keys()], torn, fromMs: firstMs, toMs: lastMs, decoderVersion: FORMAT_VERSION }
+  const manifestBase = {
+    files: files.map(f => basename(f)), events, symbols: [...bySymbol.keys()], torn, fromMs: firstMs, toMs: lastMs, decoderVersion: FORMAT_VERSION,
+    fileDigests, environments: [...environments].sort(),
+    gapsByReason, gaps, gapsTruncated: Object.values(gapsByReason).reduce((a, b) => a + b, 0) > gaps.length, warmupResets,
+  }
   return { bySymbol, manifestBase }
+}
+
+/** PR-Q1: gap reasons that drop only the recorder's queue (the live strategy kept every quote). */
+export const RECORDER_ONLY_GAPS = new Set(['queue_overflow', 'reserve_pause'])
+/** The manifest lists at most this many gaps with their times; `gapsByReason` counts all of them. */
+export const GAP_LIST_MAX = 200
+
+/** The replayer build that produced a trial: the deploy's commit, or null where the environment does not say. */
+export function replayerCommit(env = process.env) {
+  return env.RAILWAY_GIT_COMMIT_SHA || env.GIT_COMMIT || null
+}
+
+/** A short content hash of the effective sim (sorted keys), so two trials' fill rules compare by value. */
+export function simHash(sim) {
+  const canon = (v) => Array.isArray(v) ? v.map(canon) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canon(v[k])])) : v
+  return createHash('sha256').update(JSON.stringify(canon(sim || {}))).digest('hex').slice(0, 16)
 }
 
 /**
@@ -233,7 +287,17 @@ export function runTrials({ bySymbol, manifestBase }, { stageA = false, params =
       const cls = symbolClass && symbolClass[String(symbolId)]
       const symSim = cls ? { ...sim, costClass: cls } : { ...sim, costs: null, costClass: null }
       const r = simulate(list, p, symSim)
-      const trial = { strategyId: r.strategyId, strategyVersion: r.strategyVersion, profileHash: r.profileHash, params: r.params, sim: r.sim, manifest: { ...manifestBase, symbolId, symbolEvents: list.length }, summary: r.summary, blocks: r.blocks, rejected: r.rejected }
+      // PR-Q1: provenance rides the manifest (and so the trial id): which
+      // bytes (fileDigests, from loadSegments), which replayer build, which
+      // fill rules by hash. A different build over the same bytes is a
+      // different trial, so a replayer fix is never masked by an older row.
+      const manifest = { ...manifestBase, symbolId, symbolEvents: list.length, replayerCommit: replayerCommit(), simHash: simHash(r.sim) }
+      // Withheld, the trial carries the SCOPED counters, never the whole
+      // run's (the cost/no-fill counts over the test period are test-period
+      // information too).
+      const d = r.summary.diagnostics
+      const rejected = r.summary.scope === 'all_blocks' ? r.rejected : { cost: d.costRejected, noFill: d.noFill }
+      const trial = { strategyId: r.strategyId, strategyVersion: r.strategyVersion, profileHash: r.profileHash, params: r.params, sim: r.sim, manifest, summary: r.summary, blocks: r.blocks, rejected, parity: { ...r.parity, symbolId } }
       trial.trialId = trialIdFor(trial)
       trials.push(trial)
     }
@@ -266,7 +330,16 @@ export function replayCostContext(db) {
 /** The request body, normalised once (shared by the in-thread action and the job). */
 export function researchPlan(body = {}, { costSchedule = null, symbolClass = null } = {}) {
   const sim = { ...plain(body.sim) }
-  if (body.includeTest === true) sim.includeTest = true
+  // PR-Q1: ONE reading of "the test block is open" for every door —
+  // body.includeTest or body.sim.includeTest, true and nothing else — so the
+  // refusal below and the replay cannot disagree about whether it was opened.
+  const includeTest = includeTestAsked(body)
+  if (includeTest) sim.includeTest = true
+  else delete sim.includeTest
+  // PR-Q1: maxHoldEvents 0 (what tick-shadow-sim.json ships) is the default
+  // 4N, as the sidecar reads it — normalised here as well as in simulate, so
+  // a 0 and an absent value are the same stored sim and the same trial id.
+  if (!(Number(sim.maxHoldEvents) > 0)) delete sim.maxHoldEvents
   // PR-L (checker, on §16.7): a replay trial used to default `sim` to {} —
   // zero cost — so REPLAY_PASSED could be cleared at no cost while
   // SHADOW_PASSED is now charged. Both rungs of the ladder were free. The
@@ -286,8 +359,14 @@ export function researchPlan(body = {}, { costSchedule = null, symbolClass = nul
   const bounded = maxSegmentsFrom(body)
   return {
     maxSegments: bounded.refuse ? null : bounded.value,
-    stageA: body.stageA !== false,
+    // PR-Q1: the stage-A grid is the DEFAULT only for a withheld run. One
+    // POST with includeTest used to open the holdout for 12 grid points × every
+    // symbol at once; with the test block asked for, the default is the one
+    // declared profile (and an explicit stageA:true is refused before this).
+    stageA: includeTest ? body.stageA === true : body.stageA !== false,
     dryRun: body.dryRun === true,
+    includeTest,
+    declaredProfile: includeTest ? String(body.profileHash).trim().toLowerCase().slice(0, 16) : null,
     params: plain(body.params),
     sim,
     onlySymbol: body.symbol != null && Number.isFinite(Number(body.symbol)) ? Number(body.symbol) : null,
@@ -295,6 +374,48 @@ export function researchPlan(body = {}, { costSchedule = null, symbolClass = nul
     note: rawNote == null ? null : rawNote.slice(0, NOTE_MAX),
     noteTruncated,
   }
+}
+
+/** PR-Q1: whether a research body asks for the test block — body.includeTest or body.sim.includeTest, `true` only. */
+export function includeTestAsked(body = {}) {
+  const b = body || {}
+  return b.includeTest === true || plain(b.sim).includeTest === true
+}
+
+export const INCLUDE_TEST_WHERE = 'the test block is the owner\'s ONE confirmation run (plan §7): ask for it with includeTest:true, stageA absent or false, not a dry run, params for exactly one profile and profileHash naming that profile (16 or 64 hex, from GET /state/tick-research); every opening is recorded on the ledger and a second opening of the same holdout is refused'
+
+/**
+ * PR-Q1 (the ledger blocker, review 25-09-2026): the refusals that need no
+ * database, shared by the route, the in-thread action and the script. A dry
+ * run wrote nothing, so an opening through it was invisible to the ledger
+ * (the result lived only in the job's memory); a stage-A POST opened the
+ * holdout for twelve profiles at once; neither can happen now. `includeTest`
+ * must name exactly ONE declared profile: `profileHash` agrees with `params`.
+ */
+export function includeTestRefusal(body = {}) {
+  const b = body || {}
+  if (!includeTestAsked(b)) return null
+  const refuse = (error, extra = {}) => ({ status: 400, body: { ok: false, error, ...extra, where: INCLUDE_TEST_WHERE } })
+  if (b.dryRun === true) return refuse('include_test_dry_run', { note: 'a dry run writes nothing, so a test-block opening through it would never reach the ledger' })
+  if (b.stageA === true) return refuse('include_test_needs_one_profile', { note: 'a stage-A grid is twelve profiles; the test block is opened for one declared profile' })
+  const named = typeof b.profileHash === 'string' ? b.profileHash.trim().toLowerCase() : ''
+  if (!/^[0-9a-f]{16}([0-9a-f]{48})?$/.test(named)) return refuse('include_test_needs_declared_profile', { profileHash: b.profileHash ?? null })
+  const full = profileHashFull(normalizeParams(plain(b.params)))
+  if (!full.startsWith(named)) return refuse('include_test_profile_mismatch', { profileHash: named, paramsProfile: full.slice(0, 16), note: 'the named profile is not the one these params produce' })
+  return null
+}
+
+/**
+ * PR-Q1: the refusal that needs the ledger — a second opening of the same
+ * holdout. Until PR-Q2 declares a future-only holdout window, the holdout is
+ * the profile's own (HOLDOUT_UNDECLARED), and a profile whose pre-v2 trials
+ * printed the leaking summary has ALREADY been consulted.
+ */
+export function openingRefusal(db, plan) {
+  if (!plan?.includeTest) return null
+  const prior = testOpeningsFor(db, plan.declaredProfile, HOLDOUT_UNDECLARED)
+  if (!prior.consulted) return null
+  return { status: 409, body: { ok: false, error: 'second_opening', profileHash: plan.declaredProfile, holdout: HOLDOUT_UNDECLARED, openings: prior.openings, legacyConsultedTrials: prior.legacyConsultedTrials, where: `the test block of profile ${plan.declaredProfile} has already been consulted (${prior.openings.length} recorded opening(s), ${prior.legacyConsultedTrials} pre-v2 trial(s) whose summary covered the test block); a second opening of the same holdout is refused — a fresh, future-only holdout is PR-Q2's declared window` } }
 }
 
 /**
@@ -328,15 +449,16 @@ export function replayFiles(files, plan, replayThresholds) {
 }
 
 /** The main-thread half: import (unless dry) and shape the reply. */
-function finish(db, plan, replayed, replayThresholds, dir, importTrial, admitted = {}) {
+function finish(db, plan, replayed, replayThresholds, dir, importTrial, admitted = {}, origin = null) {
   const bound = plan.maxSegments == null ? '' : ` (maxSegments ${plan.maxSegments}: ${replayed.manifest.files.length} of ${plan.segmentsAvailable ?? replayed.manifest.files.length} segment(s), oldest first)`
   const noteText = plan.note ?? ((plan.stageA ? 'stage-A grid via POST /actions/tick-research' : 'POST /actions/tick-research') + bound)
   const out = replayed.trials.map(({ trial: t, verdict }) => {
-    const imported = plan.dryRun ? { ok: true, trialId: t.trialId, inserted: false } : importTrial(db, t, { note: noteText })
-    return { trialId: imported.trialId ?? t.trialId, inserted: !plan.dryRun && imported.inserted === true, imported: !plan.dryRun && imported.ok === true, symbolId: t.manifest.symbolId, profileHash: t.profileHash, params: t.params, summary: t.summary, blocks: t.blocks, replay: verdict }
+    const imported = plan.dryRun ? { ok: true, trialId: t.trialId, inserted: false } : importTrial(db, t, { note: noteText, origin })
+    return { trialId: imported.trialId ?? t.trialId, inserted: !plan.dryRun && imported.inserted === true, imported: !plan.dryRun && imported.ok === true, ...(imported.existingOrigin ? { existingOrigin: imported.existingOrigin } : {}), symbolId: t.manifest.symbolId, profileHash: t.profileHash, params: t.params, summary: t.summary, blocks: t.blocks, replay: verdict }
   })
   return {
-    ok: true, dryRun: plan.dryRun, stageA: plan.stageA, segmentsDir: dir, manifest: replayed.manifest, thresholds: replayThresholds,
+    ok: true, dryRun: plan.dryRun, stageA: plan.stageA, includeTest: plan.includeTest === true, segmentsDir: dir, manifest: replayed.manifest, thresholds: replayThresholds,
+    origin,
     // PR-EX: every report of the run says how much of the spool it saw. The
     // manifest already names the FILES replayed (loadSegments, `files`); these
     // three say what was left out and that leaving it out was asked for.
@@ -404,18 +526,39 @@ function admit(segmentsDir, { maxRecords = MAX_RECORDS, maxSegments = null } = {
  * POST /actions/tick-validation), and imports unless dryRun. Used by tests
  * and small runs; the route uses startTickResearchJob.
  */
-export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, segmentsAvailable = null } = {}) {
+export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, segmentsAvailable = null, actor = null } = {}) {
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
+  const itRefused = includeTestRefusal(body)
+  if (itRefused) return itRefused
   const a = withAvailable(admit(segmentsDir, { maxRecords, maxSegments: bounded.value }), segmentsAvailable)
   if (a.refuse) return a.refuse
   const plan = researchPlan(body, replayCostContext(db))
+  const second = openingRefusal(db, plan)
+  if (second) return second
   plan.segmentsAvailable = a.segmentsAvailable
   plan.segmentsDropped = a.segmentsDropped
   const th = thresholds || loadThresholds()
+  const origin = keeperOrigin('keeper_inline', null, actor)
+  // PR-Q1: the opening is written BEFORE the replay reads the test block, so
+  // a replay that throws half-way is still on the ledger as an opening.
+  const opening = plan.includeTest ? recordTestOpening(db, { profileHash: plan.declaredProfile, channel: 'keeper_inline', actor, detail: { files: a.files.map(f => basename(f)), onlySymbol: plan.onlySymbol } }) : null
   const replayed = replayFiles(a.files, plan, th.replay)
-  if (!replayed) return { status: 409, body: { ok: false, error: 'no_segments', where: `${a.files.length} segment file(s) at ${a.dir} decoded to no valid quote event`, segmentsDir: a.dir, segments: a.files.length } }
-  return { status: 200, body: finish(db, plan, replayed, th.replay, a.dir, importTrial, a) }
+  if (!replayed) {
+    if (opening) settleTestOpening(db, opening.id, { status: 'no_data' })
+    return { status: 409, body: { ok: false, error: 'no_segments', where: `${a.files.length} segment file(s) at ${a.dir} decoded to no valid quote event`, segmentsDir: a.dir, segments: a.files.length } }
+  }
+  const out = finish(db, plan, replayed, th.replay, a.dir, importTrial, a, origin)
+  if (opening) {
+    settleTestOpening(db, opening.id, { status: 'opened', trialIds: out.trialIds })
+    out.opening = { id: opening.id, profileHash: plan.declaredProfile, holdout: HOLDOUT_UNDECLARED }
+  }
+  return { status: 200, body: out }
+}
+
+/** PR-Q1: the origin every keeper-replayed trial carries — who asked, which build, which job. */
+export function keeperOrigin(kind, jobId, actor) {
+  return { kind, verified: true, jobId: jobId ?? null, actor: actor ?? null, replayerCommit: replayerCommit(), note: 'replayed by this keeper over the segments its manifest names (fileDigests)' }
 }
 
 // ---- the job: one at a time, off the event loop ----------------------------
@@ -456,15 +599,19 @@ function settle(j, patch) {
  * in-thread action returns) is on GET /state/tick-research-job?id=… once
  * `state` is `done`; the trials are in tick_trials by then.
  */
-export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [] } = {}) {
+export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null } = {}) {
   if (jobs.current) {
     return { status: 409, body: { ok: false, error: 'research_running', jobId: jobs.current.jobId, startedAt: jobs.current.startedAt, where: 'one research job runs at a time; poll GET /state/tick-research-job?id=<jobId> and post again when it is done' } }
   }
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
+  const itRefused = includeTestRefusal(body)
+  if (itRefused) return itRefused
   const a = withAvailable(admit(segmentsDir, { maxRecords, maxSegments: bounded.value }), segmentsAvailable)
   if (a.refuse) return a.refuse
   const plan = researchPlan(body, replayCostContext(db))
+  const second = openingRefusal(db, plan)
+  if (second) return second
   plan.segmentsAvailable = a.segmentsAvailable
   plan.segmentsDropped = a.segmentsDropped
   const th = thresholds || loadThresholds()
@@ -482,22 +629,37 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   }
   j.worker = worker
   jobs.current = j
+  // PR-Q1: the job's opening is on the ledger from the moment the worker can
+  // read the test block, with the job id and the caller; the job record says
+  // so too. A worker that dies before reporting showed its result to no one
+  // and is settled `failed_unseen` (not counted as a consultation); one that
+  // reported is `opened` with its trial ids, whatever the import then does.
+  const origin = keeperOrigin('keeper_job', j.jobId, actor)
+  let opening = null
+  if (plan.includeTest) {
+    opening = recordTestOpening(db, { profileHash: plan.declaredProfile, channel: 'keeper_job', jobId: j.jobId, actor, detail: { files: a.files.map(f => basename(f)), onlySymbol: plan.onlySymbol } })
+    j.opening = { id: opening.id, profileHash: plan.declaredProfile, holdout: HOLDOUT_UNDECLARED }
+  }
+  j.plan.includeTest = plan.includeTest
+  j.origin = origin
+  const settleOpening = (patch) => { if (opening) { try { settleTestOpening(db, opening.id, patch) } catch { /* the row stays 'opened' — the conservative reading */ } } }
   let settled = false
   worker.on('message', (msg) => {
     if (settled) return
     settled = true
     try {
-      if (!msg || !msg.ok) { settle(j, { state: 'failed', error: msg?.error || 'worker returned no result' }); return }
-      if (!msg.replayed) { settle(j, { state: 'failed', error: 'no_segments', result: { ok: false, error: 'no_segments', where: `${a.files.length} segment file(s) at ${a.dir} decoded to no valid quote event`, segmentsDir: a.dir, segments: a.files.length } }); return }
-      const result = finish(db, plan, msg.replayed, th.replay, a.dir, importTrial, a)
+      if (!msg || !msg.ok) { settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'failed', error: msg?.error || 'worker returned no result' }); return }
+      if (!msg.replayed) { settleOpening({ status: 'no_data' }); settle(j, { state: 'failed', error: 'no_segments', result: { ok: false, error: 'no_segments', where: `${a.files.length} segment file(s) at ${a.dir} decoded to no valid quote event`, segmentsDir: a.dir, segments: a.files.length } }); return }
+      settleOpening({ status: 'opened', trialIds: msg.replayed.trials.map(t => t.trial.trialId) })
+      const result = finish(db, plan, msg.replayed, th.replay, a.dir, importTrial, a, origin)
       settle(j, { state: 'done', result })
     } catch (err) {
       settle(j, { state: 'failed', error: `import failed: ${err.message}` })
     }
   })
-  worker.on('error', (err) => { if (settled) return; settled = true; settle(j, { state: 'failed', error: err.message }) })
-  worker.on('exit', (code) => { if (settled) return; settled = true; settle(j, { state: 'failed', error: `worker exited with code ${code} before reporting` }) })
-  return { status: 202, body: { ok: true, jobId: j.jobId, state: 'running', startedAt: j.startedAt, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, ...failedNote, dryRun: plan.dryRun, stageA: plan.stageA, noteTruncated: plan.noteTruncated, poll: `/state/tick-research-job?id=${j.jobId}`, note: 'the replay runs in a worker thread; the result and the imported trial ids are on the poll URL once state is done' } }
+  worker.on('error', (err) => { if (settled) return; settled = true; settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'failed', error: err.message }) })
+  worker.on('exit', (code) => { if (settled) return; settled = true; settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'failed', error: `worker exited with code ${code} before reporting` }) })
+  return { status: 202, body: { ok: true, jobId: j.jobId, state: 'running', startedAt: j.startedAt, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, ...failedNote, dryRun: plan.dryRun, stageA: plan.stageA, includeTest: plan.includeTest, ...(j.opening ? { opening: j.opening } : {}), origin, noteTruncated: plan.noteTruncated, poll: `/state/tick-research-job?id=${j.jobId}`, note: 'the replay runs in a worker thread; the result and the imported trial ids are on the poll URL once state is done' } }
 }
 
 /**
@@ -524,6 +686,12 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
   const segmentsDir = opts.segmentsDir ?? process.env[SEGMENTS_ENV]
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
+  // PR-Q1: an includeTest request that will be refused is refused before a
+  // byte is listed or pulled — the same two rules the job itself applies.
+  const itRefused = includeTestRefusal(body)
+  if (itRefused) return itRefused
+  const second = openingRefusal(db, researchPlan(body))
+  if (second) return second
   const maxSegments = bounded.value
   // A job already running — or a SYNC already running (checker m-3: the job
   // slot was only claimed after the sync, so two concurrent POSTs both

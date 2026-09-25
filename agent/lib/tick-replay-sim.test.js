@@ -18,7 +18,10 @@ const PARAMS = { rangeEvents: 64, momentumEvents: 16 }
 test('a long fills at the first ask after the latency, exits at the bid that crossed the target, net of costs', () => {
   const ev = series([[100, 102], [100, 102], [101, 103], [101, 103, 300], [120, 122], [140, 142], [141, 143]])
   const sig = { seq: 2, recvMs: ev[1].recvMs, side: 'BUY', stopDistance: 10, bid: 100, ask: 102 }
-  const r = simulate(ev, PARAMS, { latencyMs: 250, slippage: 1, commissionPerSide: 2, targetR: 3, minTargetToCost: 1 }, { signalsOverride: [sig] })
+  // blocks: 1 — PR-Q1: a withheld run's summary stops at the test block, and
+  // cutting seven events in three puts this trade's exit in it. The fill and
+  // exit rules are what this test pins, so it asks for one block.
+  const r = simulate(ev, PARAMS, { latencyMs: 250, slippage: 1, commissionPerSide: 2, targetR: 3, minTargetToCost: 1, blocks: 1 }, { signalsOverride: [sig] })
   assert.equal(r.trades.length, 1)
   const t = r.trades[0]
   assert.equal(t.entrySeq, 4, 'the first tradable event at or after signal + 250 ms (seq 3 is only 100 ms later)')
@@ -115,4 +118,71 @@ test('wilsonInterval: null on no trades; Wilson (not normal) bounds at k = 0, 1,
   assert.deepEqual(wilsonInterval(12, 30), { pct: 40, lo: 24.59, hi: 57.68 })
   const full = wilsonInterval(10, 10)
   assert.equal(full.hi, 100); assert.ok(full.lo >= 0 && full.lo < 100)
+})
+
+// ---------------------------------------------------------------------------
+// PR-Q1 (V3 P6/P7, 25-09-2026): replay honesty.
+// ---------------------------------------------------------------------------
+import { readFileSync } from 'node:fs'
+import { normalizeParams as normParams } from './tick-strategy.js'
+import { STATISTICS_VERSION, normalizeMaxHoldEvents } from './tick-replay-sim.js'
+
+/** The reviewer's leak fixture: four planted BUY signals, one in train and three in the last third. */
+function leakFixture() {
+  // 30 events, flat at 100/102, with a jump to 140/142 right after each
+  // planted signal so every trade closes at its target two events later.
+  const spec = []
+  for (let i = 0; i < 30; i++) spec.push([100, 102])
+  for (const i of [3, 22, 25, 28]) { spec[i] = [140, 142]; spec[i + 1] = [100, 102] }
+  const ev = series(spec)
+  const sig = (i) => ({ seq: ev[i].seq, recvMs: ev[i].recvMs, side: 'BUY', stopDistance: 10, bid: 100, ask: 102 })
+  // signals at events 1, 20, 23, 26: each fills on the next event (latency 0)
+  // and exits at the target on the jump (bid 140 >= target)
+  return { ev, signals: [sig(1), sig(20), sig(23), sig(26)] }
+}
+const LEAK_SIM = { latencyMs: 0, minTargetToCost: 1, purgeEvents: 0 }
+
+test('PR-Q1 LEAK FIX: withheld, the summary covers train and validation only — 1 trade, not the 4 whose test-block three could be read by subtraction; includeTest gives all 4', () => {
+  const { ev, signals } = leakFixture()
+  const r = simulate(ev, PARAMS, LEAK_SIM, { signalsOverride: signals })
+  assert.equal(r.trades.length, 4, 'the in-memory run still holds every trade')
+  assert.equal(r.blocks[0].trades, 1); assert.equal(r.blocks[1].trades, 0); assert.equal(r.blocks[2].withheld, true)
+  assert.equal(r.summary.trades, 1, 'RED on the leak: summarize(trades) over all trades reads 4')
+  assert.equal(r.summary.netR, r.blocks[0].netR, 'the summary is the train block\'s trade and nothing else')
+  assert.equal(r.summary.scope, 'train_validation')
+  assert.equal(r.summary.diagnostics.signals, 1, 'the diagnostics stop at the test block too (4 signals were rung, 3 of them in it)')
+  assert.equal(r.summary.diagnostics.events, 20)
+  assert.equal(r.summary.window.events, 20)
+  assert.equal(r.parity.signals.length, 1); assert.equal(r.parity.trades.length, 1, 'the parity record carries no test-block trade either')
+  assert.equal(r.sim.statisticsVersion, STATISTICS_VERSION); assert.equal(STATISTICS_VERSION, 'mtm-moving-block-v2')
+  const all = simulate(ev, PARAMS, { ...LEAK_SIM, includeTest: true }, { signalsOverride: signals })
+  assert.equal(all.summary.trades, 4); assert.equal(all.summary.scope, 'all_blocks'); assert.equal(all.blocks[2].trades, 3)
+  assert.equal(all.summary.netR, +(r.summary.netR + all.blocks[1].netR + all.blocks[2].netR).toFixed(4), 'with includeTest the summary is every trade, unchanged')
+  // a trade that ENTERS before the test block and EXITS inside it read a test price: out of the withheld summary
+  const straddle = simulate(ev, PARAMS, { ...LEAK_SIM }, { signalsOverride: [{ ...signals[0], seq: ev[18].seq, recvMs: ev[18].recvMs }] })
+  assert.equal(straddle.trades.length, 1); assert.ok(straddle.trades[0].exitIdx >= 20 && straddle.trades[0].entryIdx < 20)
+  assert.equal(straddle.summary.trades, 0, 'its exit read a test-block price')
+  // the parity record keeps its ENTRY (the live book took it too) and nothing of its exit
+  assert.deepEqual(straddle.parity.trades.map(t => [t.entrySeq, t.exitMs, t.reason]), [[ev[19].seq, null, 'open_at_scope_end']])
+})
+
+// C++ normalises maxHoldEvents 0 to 4 × rangeEvents (tick_shadow.cpp:84), and
+// agent/config/tick-shadow-sim.json ships 0. The checked-in shadow-book
+// expectations were generated by the replayer with the field ABSENT and are
+// read by test_tick_shadow.cpp with maxHoldEvents 0 — so replaying the case's
+// OWN sim, 0 included, must give the same trades.
+test('PR-Q1: maxHoldEvents 0 is 4N inside simulate — the replayer given the C++ fixture\'s own sim (maxHoldEvents 0) closes the same trades the C++ book is pinned to', () => {
+  const expected = JSON.parse(readFileSync(new URL('../../cpp-exec/src/tests/fixtures/tick_shadow_expected.json', import.meta.url), 'utf8'))
+  const params = normParams({ rangeEvents: 64, momentumEvents: 16, minEfficiency: 0.4, spreadBufferMult: 0.5, confirmations: 2, stopVolMult: 2, minStopPrice: 1, priceIncrement: 1, maxSpread: 200, maxQuoteAgeMs: 60_000 })
+  const zeroCases = expected.cases.filter(c => c.sim.maxHoldEvents === 0)
+  assert.ok(zeroCases.length >= 1, 'the fixture carries a maxHoldEvents 0 case')
+  for (const c of zeroCases) {
+    const r = simulate(buildFixture(), params, c.sim)
+    const got = r.trades.filter(t => t.reason !== 'data_end').map(t => [t.side, t.entrySeq, t.exitSeq, t.reason, t.holdEvents])
+    const want = c.trades.map(t => [t.side, t.entrySeq, t.exitSeq, t.reason, t.holdEvents])
+    assert.deepEqual(got, want, 'RED when 0 is read as a 0-event cap: every trade exits hold_events after one event')
+    assert.equal(r.sim.maxHoldEventsResolved, 4 * 64)
+    assert.equal(r.sim.maxHoldEvents, null, '0 and absent are stored the same way')
+  }
+  assert.equal(normalizeMaxHoldEvents(0, 64), 256); assert.equal(normalizeMaxHoldEvents(null, 64), 256); assert.equal(normalizeMaxHoldEvents(-3, 64), 256); assert.equal(normalizeMaxHoldEvents(40, 64), 40)
 })
