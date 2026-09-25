@@ -37,6 +37,7 @@ import { competingExitRefusal, MANUAL_REFUSED_EXIT_STATES } from '../services/mo
 import { clearErrorLog } from '../services/error-log.js'
 import { desiredGuardFor } from '../services/exec-guard-sync.js'
 import { isAmbiguousOrderOutcome } from '../lib/exec-fallback.js'
+import { registerBrokerReadingsReader } from '../services/broker-readings.js'
 
 /** PR-E: the strategy a manual order carries when the trader names none. */
 export const MANUAL_ORDER_STRATEGY = 'manual_order'
@@ -3063,10 +3064,24 @@ export default function actionsRouter(db, deps = {}) {
   //      — the open-positions guard stands: a blocked compact is reported
   //      as blocked, never forced from here.
   // -----------------------------------------------------------------------
+  //
+  // V3 M2b (M2 check nit 6): the before/after measurements run on the
+  // read-only storage worker (readStorageReport), never on this event loop —
+  // the synchronous walk held it for 20.99 s, twice per purge. Both are
+  // `fresh` (never the cooldown cache; `after` is a walk started after the
+  // purge), each answered inside the storage deadline, partial and labelled
+  // when the walk is longer. A measurement that could not be made is
+  // reported as unavailable with its reason, and the purge still runs. No
+  // walk is left holding a read snapshot across the checkpoint and compact.
   router.post('/storage-purge', async (req, res) => {
     try {
-      const { storageReport } = await import('../services/storage-report.js')
-      const before = storageReport(db)
+      const { readStorageReport, stopStorageWalk, isReportUnavailable } = await import('../services/performance-populations.js')
+      const measure = () => readStorageReport(db, { fresh: true }).catch(error => {
+        if (!isReportUnavailable(error)) throw error
+        return { status: 'unavailable', reason: error.reason, ...(error.detail ? { detail: error.detail } : {}) }
+      })
+      const before = await measure()
+      await stopStorageWalk(db)
 
       const steps = {}
       const overrides = req.body?.retention
@@ -3094,7 +3109,7 @@ export default function actionsRouter(db, deps = {}) {
       const { runCompact } = await import('../services/db-compact.js')
       steps.compact = runCompact(db, { dbPath: process.env.DB_PATH })
 
-      const after = storageReport(db)
+      const after = await measure()
       console.log(`[actions] storage-purge: reports −${steps.reports.deleted} files (${(steps.reports.freedBytes / 1e6).toFixed(0)}MB), `
         + `cupHandle −${steps.operational.cupHandle} rows, outbox −${steps.outbox}, compact ${steps.compact?.ran ? 'ran' : `skipped (${steps.compact?.reason})`}`)
       res.json({ ok: true, before, steps, after })
@@ -4320,11 +4335,12 @@ export default function actionsRouter(db, deps = {}) {
   // box (the owner's "everything is stale"). One in-flight snapshot is shared
   // by every caller, and its result is reused for a short window.
   const readPositions = brokerReadCache()
-  router.post('/broker-positions', async (req, res) => {
-    try {
-      const selectedId = getState(db, 'ctrader_account_id')
-      const requestedId = brokerReadAccount(req.body, selectedId, { allowAll: true })
-      const result = await readPositions(requestedId ?? 'all', async () => {
+  // V3 WEB-4: ONE builder, two callers. The route below serves the pages;
+  // services/broker-readings.js asks for the same all-accounts read once a
+  // minute, so readings and history accrue whether or not a page is open.
+  // Both go through `readPositions`, so a page read and the server read in
+  // flight at once are one broker round.
+  const readBrokerPositions = (requestedId, selectedId) => readPositions(requestedId ?? 'all', async () => {
       const { ctraderEnv } = await import('../lib/ctrader-env.js')
       const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
       if (!accessToken) throw Object.assign(new Error('No access token stored — connect cTrader first'), { httpStatus: 400 })
@@ -4707,7 +4723,13 @@ export default function actionsRouter(db, deps = {}) {
         }
       } catch { /* cache is best-effort */ }
       return { ok: true, accounts: results, fetchedAt }
-      })
+  })
+  registerBrokerReadingsReader(db, () => readBrokerPositions(null, getState(db, 'ctrader_account_id')))
+  router.post('/broker-positions', async (req, res) => {
+    try {
+      const selectedId = getState(db, 'ctrader_account_id')
+      const requestedId = brokerReadAccount(req.body, selectedId, { allowAll: true })
+      const result = await readBrokerPositions(requestedId, selectedId)
       res.json(result)
     } catch (err) {
       console.error('[actions/broker-positions] error:', err.message)

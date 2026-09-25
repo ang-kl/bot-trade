@@ -305,3 +305,53 @@ test('the carry\'s currency is the report\'s currencyByAccount: without it nothi
   assert.equal(bare.carry.in.unknownCurrencyAccounts, 2)
   assert.equal(bare.carryIn, null)
 })
+
+// V3 WEB-5m (the WEB-3 / WEB-5 / WEB-7 merge): ONE currency source and ONE
+// pooling rule. On All, the recorded-money pools (WEB-5), the balance columns
+// (WEB-3) and the ledger's net lines and carry name every account by the SAME
+// recorded deposit currency — the report's currencyByAccount — and no row
+// sums two currencies. 22 is recorded USD while every balance read of it is
+// stamped SGD: its money stays in USD and its balance holds the USD total open
+// ("read not in USD"); neither ever joins SGD. 44 has no recorded currency:
+// its money and its balance are in no currency, and named.
+test('one currency source on All: money pools, balance columns, ledger net and carry all key on the recorded currency', t => {
+  const { db, trader } = fixture(t, [['11', 0], ['22', 0], ['33', 1], ['44', 0]])
+  for (let at = T - 3 * H; at <= T; at += 3 * MIN) { trader('11', at, 100); trader('22', at, 200, 'SGD'); trader('33', at, 50, 'SGD'); trader('44', at, 10) }
+  const close = db.prepare(`INSERT INTO trades(symbol,side,status,account_id,net_pnl,closed_at,closed_at_ms,
+    entry_price,sl_price,tp_price,strategy,close_reason) VALUES('EURUSD','BUY','closed',?,?,?,?,100,99,102,'ema_cross','TP hit')`)
+  const closedAt = T - 10 * MIN
+  for (const [id, pnl] of [['11', 20], ['22', -5], ['33', 7], ['44', 100]]) close.run(id, pnl, new Date(closedAt).toISOString(), closedAt)
+  const r = hourlyActivity(db, { all: true, explicit: true }, { to: T, nowMs: T })
+  const report = buildPerformancePopulations(db, { now: T })
+  const recorded = Object.fromEntries(Object.entries(report.currencyByAccount).map(([id, c]) => [id, c.currency]))
+  assert.deepEqual(recorded, { 11: 'USD', 22: 'USD', 33: 'SGD', 44: null })
+  // Every surface names each account by that one map.
+  assert.deepEqual(Object.fromEntries(r.moneyByAccount.map(a => [a.accountId, a.currency])), recorded)
+  assert.deepEqual(Object.fromEntries(r.balanceHistory.accounts.map(a => [a.accountId, a.currency])), recorded)
+  // Money: USD is 11 + 22, SGD is 33, 44 is in no pool.
+  const hour = r.rows[23]
+  for (const set of [r, hour]) {
+    assert.deepEqual(set.moneyByCurrency.map(c => [c.currency, c.recordedNet, [...c.accountIds].sort(), c.moneyState]),
+      [['SGD', 7, ['33'], 'recorded_currency_units'], ['USD', 15, ['11', '22'], 'recorded_currency_units']])
+    assert.deepEqual(set.unpooled.accountIds, ['44'])
+  }
+  // Balance: the same currencies; 22's SGD-stamped reads hold USD open and
+  // never join SGD (250).
+  assert.deepEqual(hour.balance.close.groups.map(g => [g.currency, g.value, g.reason, g.missingAccounts]),
+    [['SGD', 50, null, []], ['USD', null, 'observation_currency_mismatch', ['22']]])
+  assert.deepEqual(hour.balance.close.unknownAccounts, ['44'])
+  // Ledger: net lines and carry groups on the same currencies.
+  const w = reportLedger(report, 'all').windows.find(x => x.key === '1h')
+  assert.deepEqual(w.byCurrency.map(c => [c.currency, c.net, c.trades, c.moneyState]),
+    [['SGD', 7, 1, 'recorded_currency_units'], ['USD', 15, 2, 'recorded_currency_units']])
+  assert.deepEqual(w.unpooled.accountIds, ['44'])
+  assert.deepEqual(w.carry.out.groups.map(g => [g.currency, g.value]), [['SGD', 50], ['USD', null]])
+  assert.deepEqual(w.carry.out.unknownAccounts, ['44'])
+  assert.equal(w.net, null); assert.equal(w.carryOut, null)
+  const moneyFigures = [...r.moneyByCurrency, ...hour.moneyByCurrency].map(c => c.recordedNet).concat(w.byCurrency.map(c => c.net))
+  const balanceFigures = [...hour.balance.close.groups, ...w.carry.out.groups].map(g => g.value)
+  for (const x of [22, 122, 2, 250, 350, 360]) {
+    assert.ok(!moneyFigures.includes(x), `no cross-currency money sum ${x}`)
+    assert.ok(!balanceFigures.includes(x), `no cross-currency balance sum ${x}`)
+  }
+})

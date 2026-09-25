@@ -9,6 +9,7 @@ import { emptyPopulation } from '../shared/performance-populations.js'
 import { REPORT_SESSIONS, SESSION_SOURCE, SESSION_EXCEPTIONS, sessionIntervals, sessionOpenAt, inIntervals } from '../shared/report-sessions.js'
 import { cupHandleFunnel } from './cup-handle-funnel.js'
 import { calendarDate, calendarDay, calendarLedgerWindows } from '../shared/performance-calendar.js'
+import { storageReport } from './storage-report.js'
 import { ledgerBalanceEdges } from './balance-edges.js'
 import { depositCurrencies } from './deposit-currencies.js'
 // The deposit-currency reader lives in deposit-currencies.js (V3 WEB-3m: one
@@ -147,6 +148,18 @@ const RETRY_AFTER_SEC = {
   performance_report_worker_exit: 15,
   performance_report_deadline: 30,
 }
+// V3 M2b (M2 check nit 2): a report that exceeded one of its FIXED bounds —
+// performance_report_group_bound / _median_bound / _response_bound,
+// order_lifecycle_response_bound, report_session_window_bound — exceeds it
+// again on every retry: the recorded data only grows. It is unavailable, but
+// never offered as retryable: no retry hint, retryable false.
+const FIXED_BOUND = /_bound$/
+// V3 M2b (M2 check nit 1): the driver's own words for a failure with no
+// named code ("no such column: x", "unable to open database file", a worker
+// out-of-memory). Before M2 these routes answered 500 {error: err.message};
+// M2 kept only the generic reason, so a builder bug that fails every time
+// read as a temporary outage forever. Bounded; carried as `detail`.
+const DETAIL_MAX_CHARS = 300
 export class ReportUnavailableError extends Error {
   constructor(cause) {
     const message = cause instanceof Error ? cause.message : String(cause)
@@ -155,7 +168,9 @@ export class ReportUnavailableError extends Error {
     // Named failure codes pass through; a raw driver message (a SQLite error,
     // a worker crash) is reported as one generic code, not echoed as a reason.
     this.reason = /^[a-z][a-z0-9_]{2,63}$/.test(message) ? message : 'performance_report_worker_error'
-    this.retryAfterSec = RETRY_AFTER_SEC[this.reason] ?? 30
+    this.retryable = !FIXED_BOUND.test(this.reason)
+    this.retryAfterSec = this.retryable ? (RETRY_AFTER_SEC[this.reason] ?? 30) : null
+    this.detail = this.reason === 'performance_report_worker_error' ? message.slice(0, DETAIL_MAX_CHARS) : null
   }
 }
 export const isReportUnavailable = error => error instanceof ReportUnavailableError
@@ -163,17 +178,13 @@ const unavailable = error => { throw isReportUnavailable(error) ? error : new Re
 
 const flights = new WeakMap()
 const watchdogFlights = new WeakMap()
-const diagnosticFlights = new WeakMap()
 const lifecycleFlights = new WeakMap()
 // kind → its own bounded pool. The watchdog is polled independently and must
-// not compete with slow dashboard reports; the storage walk (dbstat over every
-// page, measured 20.99 s in production) must not take a slot the loop's
-// decision audit needs. Each reserved slot is held until the worker exits.
-// The storage report takes no options, so a second read coalesces onto the
-// running walk before the capacity check; the capacity is only a backstop.
+// not compete with slow dashboard reports. Each reserved slot is held until
+// the worker exits. The storage walk has its own single walk per database
+// (readStorageReport below), never one of the shared slots.
 const RESERVED_POOLS = {
   'node-watchdog': { pool: watchdogFlights, capacity: 1, error: 'watchdog_report_worker_capacity' },
-  storage: { pool: diagnosticFlights, capacity: 1, error: 'storage_report_worker_capacity' },
   // V3 L1: the order-lifecycle flags. Their own reserved pool so the two
   // dashboard slots cannot starve them (nor they them); identical requests —
   // the 10-minute snapshot and the Reasons page's ?account=all — share one
@@ -184,10 +195,39 @@ const RESERVED_POOLS = {
   'order-lifecycle': { pool: lifecycleFlights, capacity: 2, error: 'order_lifecycle_worker_capacity' },
 }
 const SHARED_POOL = { pool: flights, capacity: 2, error: 'performance_report_worker_capacity' }
+// Production profiling measured the legacy prices/decision scans at up to
+// ~47s/~24s. Isolation protects the event loop; these two preserve their
+// exact historical output instead of converting a slow-but-valid report
+// into a 15s error while follow-up query optimisation is measured.
+const REPORT_DEADLINE_MS = { 'latest-prices': 60000, 'decision-audit': 60000, 'decisions-daily': 30000 }
+const DEFAULT_REPORT_DEADLINE_MS = 15000
+// GET /state/storage (V3 M2b, M2 check nit 9) — see readStorageReport.
+// answerMs: the answer deadline, inside the route's 60 s bound; hardMs: a
+// walk still running is asked to stop (before its next statement, keeping
+// what it measured); cooldownMs: a measurement younger than
+// this is served instead of walking again; stopWaitMs: how long a stop waits
+// for the worker to exit; busyTimeoutMs: the walk's SQLite busy wait, the
+// same 1 s every report worker uses.
+const STORAGE_TIMING = { answerMs: 50_000, hardMs: 180_000, cooldownMs: 300_000, stopWaitMs: 30_000, busyTimeoutMs: 1000 }
+let timingOverride = null
+const reportDeadlineMs = kind => timingOverride?.deadlineMs?.[kind] ?? REPORT_DEADLINE_MS[kind] ?? DEFAULT_REPORT_DEADLINE_MS
+const storageTiming = () => ({ ...STORAGE_TIMING, ...timingOverride?.storage })
+/**
+ * TESTS ONLY (V3 M2b, M2 check nit 4): shorten report deadlines and the
+ * storage walk's timing so a real worker timeout can be exercised end to end
+ * through a route, instead of only by constructing the error object.
+ * `{ deadlineMs: { 'decisions-daily': 200 }, storage: { answerMs: 300 } }`.
+ * Returns the function that restores the previous timing.
+ */
+export function overrideReportTimingForTest(overrides) {
+  const previous = timingOverride
+  timingOverride = overrides
+  return () => { timingOverride = previous }
+}
 /** Disk-backed reads stay off the protection event loop: at most two report
- * workers, one reserved watchdog worker and one reserved diagnostics worker
- * per database, bounded until exit. Every failure rejects as
- * ReportUnavailableError. */
+ * workers and one reserved watchdog worker per database (plus the reserved
+ * order-lifecycle pool and the single storage walk), bounded until exit.
+ * Every failure rejects as ReportUnavailableError. */
 function isolatedReport(db, kind, options = {}) {
   const run = () => buildReport(db, kind, options)
   if (db.memory || db.name === ':memory:') return run().catch(unavailable)
@@ -211,13 +251,7 @@ function isolatedReport(db, kind, options = {}) {
       settled = true; clearTimeout(timer); void worker.terminate()
       if (error) reject(error); else resolve(value)
     }
-    // Production profiling measured the legacy prices/decision scans at up to
-    // ~47s/~24s. Isolation protects the event loop; these two preserve their
-    // exact historical output instead of converting a slow-but-valid report
-    // into a 15s error while follow-up query optimisation is measured.
-    // The storage walk keeps its measured ~21 s inside the same 60 s bound.
-    const deadlineMs = (kind === 'latest-prices' || kind === 'decision-audit' || kind === 'storage') ? 60000 : kind === 'decisions-daily' ? 30000 : 15000
-    const timer = setTimeout(() => finish(new Error('performance_report_deadline')), deadlineMs)
+    const timer = setTimeout(() => finish(new Error('performance_report_deadline')), reportDeadlineMs(kind))
     worker.once('message', msg => finish(msg.ok ? null : new Error(msg.error), msg.report))
     worker.once('error', error => finish(error))
     worker.once('exit', () => {
@@ -246,9 +280,155 @@ export function readNodeWatchdogContract(db, options) { return isolatedReport(db
 export function readBlockerReport(db, options) { return isolatedReport(db, 'blocker-report', options) }
 export function readAccountEngineering(db) { return isolatedReport(db, 'account-engineering') }
 export function readPostmortemReport(db, options) { return isolatedReport(db, 'postmortems', options) }
-/** GET /state/storage: the dbstat page walk and per-table COUNT(*) run on a
- * read-only worker connection, never on the event loop that runs protection. */
-export function readStorageReport(db) { return isolatedReport(db, 'storage') }
+// ---------------------------------------------------------------------------
+// GET /state/storage and POST /actions/storage-purge (V3 M2b, M2 check nit 9).
+//
+// The walk (dbstat over every page, COUNT(*) per table) runs on a read-only
+// worker, never on the event loop that runs protection. It measured 20.99 s
+// at 08:39Z on 25-09 and then grew past its 60 s bound, so the route answered
+// 503 every time and discarded the walk it had paid for — and the next
+// request started another full walk against the protection database's disk.
+// Now:
+//   - the worker reports what it has measured as it goes (storageReport's
+//     progress snapshots);
+//   - at the answer deadline (inside the 60 s bound) the caller gets that
+//     snapshot: status 'partial', partialReason 'answer_deadline', the tables
+//     not yet walked named in `unmeasured` with null values. A measured
+//     number or null — never an estimate;
+//   - the walk is NOT killed at the answer deadline. It runs on, bounded by
+//     hardMs, and its result is kept;
+//   - a measurement younger than cooldownMs is served, labelled
+//     served.source 'cache' with its age, instead of walking again;
+//   - one walk per database at a time, held until its worker exits.
+// Every answer carries `served`: where it came from, when, and whether a
+// walk is still running.
+// ---------------------------------------------------------------------------
+const storageWalks = new WeakMap() // db → { flight, last, lastFailure }
+const storageState = db => {
+  let state = storageWalks.get(db)
+  if (!state) storageWalks.set(db, state = { flight: null, last: null, lastFailure: null })
+  return state
+}
+function servedStorage(report, { source, walkRunning, partialReason = null, state = null }) {
+  const now = Date.now(), measuredAtMs = Date.parse(report?.at)
+  const served = { source, answeredAt: new Date(now).toISOString(),
+    ageMs: Number.isFinite(measuredAtMs) ? Math.max(0, now - measuredAtMs) : null, walkRunning }
+  if (source === 'cache' && state?.lastFailure) served.lastWalkFailed = { ...state.lastFailure }
+  return partialReason ? { ...report, status: 'partial', partialReason, served } : { ...report, served }
+}
+function joinStorageWalk(state, flight) {
+  if (!flight.answered) return flight.answer
+  // Past the answer deadline with the walk still running: what it has
+  // measured by now, not the snapshot the first caller got.
+  if (flight.progress) return Promise.resolve(servedStorage(flight.progress, { source: 'walk', walkRunning: true, partialReason: 'answer_deadline' }))
+  if (state.last) return Promise.resolve(servedStorage(state.last.report, { source: 'cache', walkRunning: true, state }))
+  return Promise.reject(new ReportUnavailableError(new Error('performance_report_deadline')))
+}
+function startStorageWalk(db, state) {
+  const timing = storageTiming()
+  // The walk is stopped cooperatively — a shared flag it reads before every
+  // statement — never with Worker.terminate(): terminating inside a
+  // better-sqlite3 call that then throws aborts the whole process
+  // (storage-report.js, shouldStop).
+  const stopFlag = new Int32Array(new SharedArrayBuffer(4))
+  let worker
+  try {
+    worker = new Worker(new URL(import.meta.url), { workerData: { path: db.name, kind: 'storage', options: {}, busyTimeoutMs: timing.busyTimeoutMs, stopFlag }, resourceLimits: { maxOldGenerationSizeMb: 128 } })
+  } catch (error) {
+    return Promise.reject(new ReportUnavailableError(error))
+  }
+  const flight = { startedAtMs: Date.now(), progress: null, answered: false, stopReason: null }
+  flight.requestStop = reason => { flight.stopReason ??= reason; Atomics.store(stopFlag, 0, 1) }
+  let resolveAnswer, rejectAnswer, markExited
+  flight.answer = new Promise((resolve, reject) => { resolveAnswer = resolve; rejectAnswer = reject })
+  flight.exited = new Promise(resolve => { markExited = resolve })
+  state.flight = flight
+  let finished = false
+  const answer = fn => { if (flight.answered) return; flight.answered = true; clearTimeout(answerTimer); fn() }
+  // A failed walk never replaces the last measurement; that measurement is
+  // served (labelled with the failure) when there is one.
+  const failWalk = error => {
+    state.lastFailure = { reason: error.reason, ...(error.detail ? { detail: error.detail } : {}), atMs: Date.now() }
+    answer(() => state.last
+      ? resolveAnswer(servedStorage(state.last.report, { source: 'cache', walkRunning: false, state }))
+      : rejectAnswer(error))
+  }
+  const answerTimer = setTimeout(() => answer(() => {
+    if (flight.progress) resolveAnswer(servedStorage(flight.progress, { source: 'walk', walkRunning: true, partialReason: 'answer_deadline' }))
+    else if (state.last) resolveAnswer(servedStorage(state.last.report, { source: 'cache', walkRunning: true, state }))
+    else rejectAnswer(new ReportUnavailableError(new Error('performance_report_deadline')))
+  }), timing.answerMs)
+  const hardTimer = setTimeout(() => flight.requestStop('hard_bound'), timing.hardMs)
+  worker.on('message', msg => {
+    if (msg?.progress) { flight.progress = msg.progress; return }
+    if (finished) return
+    finished = true
+    if (msg?.ok) {
+      // A walk that stopped on request says why it is partial.
+      const report = flight.stopReason && msg.report?.status === 'partial' ? { ...msg.report, partialReason: flight.stopReason } : msg.report
+      state.last = { report, atMs: Date.now() }; state.lastFailure = null
+      answer(() => resolveAnswer(servedStorage(report, { source: 'walk', walkRunning: false })))
+    } else failWalk(new ReportUnavailableError(new Error(msg?.error)))
+  })
+  worker.once('error', error => { if (!finished) { finished = true; failWalk(new ReportUnavailableError(error)) } })
+  worker.once('exit', () => {
+    clearTimeout(answerTimer); clearTimeout(hardTimer)
+    if (!finished) {
+      finished = true
+      // Gone without a final word (a crash, the heap limit): what it had
+      // reported measuring is kept as a partial measurement, named so.
+      if (flight.progress) {
+        const partial = { ...flight.progress, status: 'partial', partialReason: 'worker_exit' }
+        state.last = { report: partial, atMs: Date.now() }
+        answer(() => resolveAnswer(servedStorage(partial, { source: 'walk', walkRunning: false })))
+      } else failWalk(new ReportUnavailableError(new Error('performance_report_worker_exit')))
+    }
+    if (state.flight === flight) state.flight = null
+    markExited()
+  })
+  return flight.answer
+}
+/**
+ * Stop the running storage walk of `db`, if any — it stops before its next
+ * statement and keeps what it measured — and wait (bounded by stopWaitMs)
+ * for its worker to exit. POST /actions/storage-purge calls this before its
+ * WAL checkpoint and compact, so no walk holds a read snapshot across them.
+ * @returns {Promise<boolean>} true when no walk is running any more
+ */
+export function stopStorageWalk(db) {
+  const flight = storageWalks.get(db)?.flight
+  if (!flight) return Promise.resolve(true)
+  flight.requestStop('stopped')
+  let timer
+  return Promise.race([flight.exited.then(() => true), new Promise(resolve => { timer = setTimeout(resolve, storageTiming().stopWaitMs, false) })])
+    .finally(() => clearTimeout(timer))
+}
+/**
+ * GET /state/storage: the storage report, answered inside its deadline — a
+ * complete walk, the partial walk so far, or the last measurement served
+ * from cache, each labelled (see the section comment above). Rejects as
+ * ReportUnavailableError only when there is nothing measured to answer with.
+ * `fresh`: never the cooldown cache, and never a walk that started before
+ * this call — a running one is stopped and a new one started (the purge's
+ * before/after measurements).
+ */
+export function readStorageReport(db, { fresh = false } = {}) {
+  if (db.memory || db.name === ':memory:') {
+    return Promise.resolve().then(() => servedStorage(storageReport(db), { source: 'walk', walkRunning: false })).catch(unavailable)
+  }
+  const state = storageState(db)
+  if (!fresh && state.last && Date.now() - state.last.atMs < storageTiming().cooldownMs) {
+    return Promise.resolve(servedStorage(state.last.report, { source: 'cache', walkRunning: !!state.flight, state }))
+  }
+  if (!state.flight) return startStorageWalk(db, state)
+  if (!fresh) return joinStorageWalk(state, state.flight)
+  const stale = state.flight
+  return stopStorageWalk(db).then(() => {
+    if (state.flight === stale) throw new ReportUnavailableError(new Error('storage_report_worker_capacity'))
+    // A walk another caller started after this call is as fresh as ours.
+    return state.flight ? joinStorageWalk(state, state.flight) : startStorageWalk(db, state)
+  })
+}
 /** GET /state/order-lifecycle and the order_lifecycle controller (V3 L1). */
 export function readOrderLifecycle(db, options) { return isolatedReport(db, 'order-lifecycle', options) }
 export function buildDecisionsDaily(db, { days = 90, accountId = null, timeZone = null } = {}) {
@@ -287,7 +467,7 @@ export function buildLatestPrices(db) {
   for (const r of rows) prices[r.symbol] = { price: r.price, bias: r.bias, confidence: r.confidence, at: r.scanned_at }
   return prices
 }
-async function buildReport(db, kind, options) {
+async function buildReport(db, kind, options, hooks = {}) {
   if (kind === 'postmortems') {
     const { postmortemReport } = await import('./postmortem-report.js')
     return db.transaction(() => postmortemReport(db, options))()
@@ -309,10 +489,9 @@ async function buildReport(db, kind, options) {
     // One snapshot for the population and the tick evaluation beside it.
     return db.transaction(() => ({ ...blockerReport(db, options), tick: tickEntryEvaluation(db, options) }))()
   }
-  if (kind === 'storage') {
-    const { storageReport } = await import('./storage-report.js')
-    return storageReport(db)
-  }
+  // The storage walk reports what it has measured as it goes (hooks.onProgress
+  // posts it to the main thread), so its reader can answer a truthful partial.
+  if (kind === 'storage') return storageReport(db, { onProgress: hooks.onProgress ?? null, shouldStop: hooks.shouldStop })
   if (kind === 'order-lifecycle') {
     const { buildOrderLifecycle, RESPONSE_MAX_BYTES } = await import('./order-lifecycle.js')
     // One consistent snapshot across every rule's read, as node-watchdog does.
@@ -346,11 +525,15 @@ async function buildReport(db, kind, options) {
 if (!isMainThread && workerData?.path) {
   let db
   try {
-    db = new Database(workerData.path, { readonly: true, fileMustExist: true, timeout: 1000 })
+    db = new Database(workerData.path, { readonly: true, fileMustExist: true, timeout: workerData.busyTimeoutMs ?? 1000 })
     // Keep this module synchronous on import. Specialized reports load their
     // larger registries lazily inside the worker; the promise is resolved here
     // without turning every importer into an async ESM module.
-    Promise.resolve(buildReport(db, workerData.kind, workerData.options))
+    const stopFlag = workerData.stopFlag
+    const hooks = workerData.kind === 'storage'
+      ? { onProgress: progress => parentPort.postMessage({ progress }), shouldStop: () => !!stopFlag && Atomics.load(stopFlag, 0) === 1 }
+      : {}
+    Promise.resolve(buildReport(db, workerData.kind, workerData.options, hooks))
       .then(report => {
         if (Buffer.byteLength(JSON.stringify(report)) > 8 * 1024 * 1024) throw new Error('performance_report_response_bound')
         parentPort.postMessage({ ok: true, report })
