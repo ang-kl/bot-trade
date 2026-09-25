@@ -87,7 +87,9 @@ test('partial, malformed, mismatched, missing-opening and unclosed histories can
     r => { r.deal[1].positionId = '701' }, r => { r.deal.push(r.deal[1]) },
     r => { r.deal.shift() }, r => { r.deal.pop() }, r => { r.deal[1].closePositionDetail.closedVolume = 41 },
     r => { r.deal[1].closePositionDetail.grossProfit = 'bad' }, r => { r.deal[1].closePositionDetail.commission = 'bad' },
-    r => { r.deal[1].closePositionDetail.pnlConversionFee = 5 }, r => { r.deal[2].executionTimestamp = now + 1 },
+    // V3 B1: a nonzero conversion fee is no longer a refusal (one treatment:
+    // excluded from net, pnl-lifecycle-guard.test.js); an unreadable one is.
+    r => { r.deal[1].closePositionDetail.pnlConversionFee = 'bad' }, r => { r.deal[2].executionTimestamp = now + 1 },
     r => { r.deal[2].symbolId = 11 }, r => { r.deal[1].dealStatus = 4 },
   ]
   for (const mutate of mutations) {

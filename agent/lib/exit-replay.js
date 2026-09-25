@@ -127,7 +127,7 @@ export function replayExit(bars, trade, rule = {}) {
     : num(trade?.tp)
 
   const capMs = rule.timeCapMin != null ? rule.timeCapMin * 60_000 : null
-  const startMs = openedAtMs ?? num(bars[0][T])
+  const startMs = openedAtMs ?? num(toBarTuple(bars[0])[T])
 
   // R at a price, signed by direction.
   const rAt = (price) => (long ? price - entry : entry - price) / risk
@@ -142,7 +142,7 @@ export function replayExit(bars, trade, rule = {}) {
   let peakR = 0
   let used = 0
 
-  for (const b of bars) {
+  for (const b of bars.map(toBarTuple)) { // V3 L2b W13: {t,o,h,l,c} objects read as tuples
     const t = num(b[T]), hi = num(b[H]), lo = num(b[L]), close = num(b[C])
     // Bars before entry are context in the stored window, not part of the trade.
     if (startMs != null && t != null && t < startMs) continue
@@ -240,4 +240,29 @@ function medianOf(xs) {
   const s = [...xs].sort((a, b) => a - b)
   const m = Math.floor(s.length / 2)
   return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2)
+}
+
+/**
+ * V3 L2b W13 — ONE BAR SHAPE.
+ *
+ * The broker fetch (ctrader-ws.js decodeTrendbars, behind the loop's `pmFetch`)
+ * returns `{t,o,h,l,c,v}` objects; the stored replay windows and this module
+ * index `[t,o,h,l,c,v]` tuples. The refusal scorer passed the fetch straight
+ * in, so `b[0]` read undefined on every bar, the window came back empty and
+ * every scored refusal was recorded `no_bars` (31,613 rows) — a finding about
+ * our reader presented as a finding about the market.
+ *
+ * A tuple passes through untouched; an object becomes its tuple; anything
+ * else is returned as it is, so a malformed bar fails where it did before
+ * rather than being read as prices of 0.
+ */
+export function toBarTuple(b) {
+  if (Array.isArray(b)) return b
+  if (b && typeof b === 'object' && 't' in b) return [b.t, b.o, b.h, b.l, b.c, b.v ?? null]
+  return b
+}
+
+/** A fetch's bars as tuples ([] for anything that is not an array). */
+export function normaliseBars(bars) {
+  return Array.isArray(bars) ? bars.map(toBarTuple) : []
 }

@@ -127,6 +127,41 @@ describe('Data-feed card', () => {
     expect(page).toMatch(/const current = overview\?\.accounts\.find\(r => r\.accountId === String\(a\.account_id\)\)/)
     expect(page).toMatch(/const stop = cardStopFields\(current, /)
   })
+  // WEB-9b: the OHLCV chips were five fixed labels over "their receipt times
+  // are not measured". They are now the agent's own receipt times.
+  it('the timeframe chips show real receipt times, and the feed latency is measured on the broker stamp', () => {
+    const now = report.asOfMs
+    const withReceipts = {
+      ...report,
+      barReceipts: {
+        sinceMs: now - 3_600_000,
+        timeframes: [
+          { timeframe: '15m', periodMs: 900_000, lastReceivedAtMs: now - 42_000, sources: [{ source: 'strategy_scan', receivedAtMs: now - 42_000, newestBarOpenMs: now - 60_000, newestBarForming: true, bars: 150, accountId: '46130058' }] },
+          { timeframe: '1d', periodMs: 86_400_000, lastReceivedAtMs: now - 600_000, sources: [{ source: 'daily_bar', receivedAtMs: now - 600_000, newestBarOpenMs: Date.parse('2026-09-23T21:00:00Z'), newestBarForming: false, bars: 2, accountId: '46130058' }] },
+        ],
+      },
+      feedLatency: { status: 'measured', windowMs: 600_000, rangeMs: 60_000, byHost: [{ host: 'demo.ctraderapi.com', events: 212, p50Ms: 38, p90Ms: 120, maxMs: 910, outOfRange: 0, unstamped: 0 }] },
+      notMeasured: [{ key: 'gateway_feed_latency', label: "market-feed latency on the gateways' tick feed (Node holds no broker timestamp for it)" }],
+    }
+    const html = renderToStaticMarkup(<DataFeed feedReport={withReceipts} nowMs={now} />)
+    expect(html).toContain('>15m · 42 s</span>')
+    expect(html).toContain('>1D · 10 min</span>')
+    expect(html).toContain('>1m · none</span>')
+    expect(html).toContain('already closed at receipt')
+    expect(html).toContain('Each chip is how long ago the agent last received')
+    expect(html).toContain('demo.ctraderapi.com p50 38 ms · p90 120 ms · max 910 ms over 212 events')
+    expect(html).not.toContain('receipt times are not measured')
+    expect(html).not.toContain('per-timeframe bar receipt times')
+    // A report without receipts (an older agent) claims no time on a chip.
+    const old = renderToStaticMarkup(<DataFeed feedReport={report} nowMs={now} />)
+    expect(old).toContain('bar receipt times not reported by this agent')
+    expect(old).toContain('market-feed latency not reported by this agent')
+    expect(old).toMatch(/>1h<\/span>/)
+    const none = renderToStaticMarkup(<DataFeed />)
+    expect(none).toContain('bar receipt times unavailable — the data-feed report did not load')
+    expect(none).toContain('market-feed latency unavailable — the data-feed report did not load')
+    expect(none).not.toContain('Not measured:')
+  })
   it('a configured equity stop is not presented as a verified armed state', () => {
     const html = renderToStaticMarkup(<DataFeed equityStopArmed equityStopPct={0.15} />)
     expect(html).toContain('configured 15%')

@@ -60,7 +60,7 @@ import { SESSION_SOURCE } from '../../agent/shared/report-sessions.js'
 import { performanceGradients, gradientData, gradientFoot, OVERLAP_LABEL, OVERLAP_TITLE } from '../lib/performance-gradients.js'
 import { ledgerMoneyNote } from '../lib/partial-money.js'
 import { scopedPerformanceRows } from '../lib/performance-evidence.js'
-import { dataFeedCardScope } from '../lib/data-feed.js'
+import { dataFeedCardScope, quoteReceiptNote } from '../lib/data-feed.js'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -1785,7 +1785,7 @@ export default function Performance() {
       const tick = cryptoTicks[sym]
       const { price, delta } = displayQuote(tick?.accountId === quoteAccount ? tick : null, quoteNow)
       return { sym, price, delta, spread: price == null ? null : tick.ask - tick.bid,
-        quoteNote: tick?.receivedAtMs ? `Broker receipt ${new Date(tick.receivedAtMs).toLocaleTimeString()}` : 'No quote received',
+        quoteNote: quoteReceiptNote(tick),
         pnl: signed(a.pnl), col: a.pnl == null ? P_MU : a.pnl >= 0 ? P_UP : P_DN,
         meta: `${a.n ?? 'unavailable'} closes · ${a.pricedN ?? '—'} priced · ${a.wr == null ? '—' : a.wr.toFixed(1)}% win` }
     }),

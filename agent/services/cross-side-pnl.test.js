@@ -30,10 +30,15 @@ function seed(db, acct, { status = 'closed', positionId = '700', net = null, rr 
       status === 'closed' ? new Date(now - 3600_000).toISOString() : null, rr, net == null ? null : 105).lastInsertRowid)
 }
 const row = (db, id) => db.prepare('SELECT status, account_id, net_pnl, pnl_attempts, realised_rr FROM trades WHERE id = ?').get(id)
-const close = (id = '700') => ({ dealId: '900', positionId: id, symbolId: 10,
-  executionTimestamp: now - 3600_000, executionPrice: 94.5, volume: 100,
-  closePositionDetail: { grossProfit: -500, commission: -50, swap: 0, moneyDigits: 2 } })
-const getter = (calls, items = [close()]) => async (...args) => {
+// V3 B1: the window writes money only for a whole lifecycle — the opening
+// deal among the pulled deals, closed volume equal to opened volume — so the
+// fixture deals carry the opening, the status and the volumes the broker sends.
+const open = (id = '700') => ({ dealId: '800', positionId: id, symbolId: 10, dealStatus: 2,
+  executionTimestamp: now - 7200_000, executionPrice: 100, volume: 100, filledVolume: 100 })
+const close = (id = '700') => ({ dealId: '900', positionId: id, symbolId: 10, dealStatus: 2,
+  executionTimestamp: now - 3600_000, executionPrice: 94.5, volume: 100, filledVolume: 100,
+  closePositionDetail: { grossProfit: -500, commission: -50, swap: 0, moneyDigits: 2, closedVolume: 100 } })
+const getter = (calls, items = [open(), close()]) => async (...args) => {
   calls.push(args)
   return { ctidTraderAccountId: args[4], deal: items.filter(d => d.executionTimestamp >= args[5] && d.executionTimestamp < args[6]) }
 }
@@ -113,7 +118,7 @@ test('a position predating the fetched window cannot receive a partial lifetime 
   const safe = seed(db, '2', { positionId: '701' })
   const missing = seed(db, '2', { positionId: '702' })
   db.prepare('UPDATE trades SET opened_at = ? WHERE id = ?').run(new Date(now - 20 * 86400_000).toISOString(), id)
-  const result = await backfillCrossSidePnl(db, base, [], { getCreds, getDeals: getter([], [close(), { ...close('701'), dealId: '901' }]),
+  const result = await backfillCrossSidePnl(db, base, [], { getCreds, getDeals: getter([], [close(), { ...open('701'), dealId: '801' }, { ...close('701'), dealId: '901' }]),
     getPositionDeals: async () => ({ ctidTraderAccountId: '2', hasMore: true, deal: [close()] }), clock: () => now })
   assert.equal(result.find(r => r.accountId === '2').result.lifetimeSkipped, 1)
   assert.equal(row(db, id).net_pnl, null)
@@ -153,7 +158,7 @@ test('uncovered lifetimes retain their ledger gap but cannot pace or repeatedly 
   await backfillCrossSidePnl(db, base, [], deps)
   assert.equal(calls.length, 0)
   const recent = seed(db, '2', { positionId: '701' })
-  const result = (await backfillCrossSidePnl(db, base, [], { ...deps, getDeals: getter(calls, [{ ...close('701'), dealId: '901' }]) })).find(r => r.accountId === '2').result
+  const result = (await backfillCrossSidePnl(db, base, [], { ...deps, getDeals: getter(calls, [{ ...open('701'), dealId: '801' }, { ...close('701'), dealId: '901' }]) })).find(r => r.accountId === '2').result
   assert.equal(result.backfilled, 1, 'an older uncovered row never postpones a later eligible close')
   assert.equal(row(db, recent).net_pnl, -5.5)
   assert.equal(row(db, old).pnl_attempts, 0)

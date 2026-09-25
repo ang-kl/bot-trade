@@ -2768,11 +2768,14 @@ export default function stateRouter(db) {
   // The capture queue behind the record: what is waiting, what was captured,
   // and — the part worth reading — what this system GAVE UP on, named with
   // the reason. Those rows are closed trades it could not describe.
+  // V3 V1: plus `accounts` — per account, its closes, captures and verdicts
+  // and a status (silent / stalled / verify_failing / ok / no_closes) judged
+  // at read time — so one silent account can no longer hide in the totals.
   router.get('/position-capture', async (_req, res) => {
     try {
-      const { captureQueueView } = await import('../services/position-capture.js')
+      const { positionCaptureView } = await import('../services/position-capture-accounts.js')
       const { verifierStatus } = await import('../lib/verify-client.js')
-      res.json({ ...captureQueueView(db), verifier: verifierStatus() })
+      res.json({ ...positionCaptureView(db), verifier: verifierStatus() })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -3360,15 +3363,23 @@ export default function stateRouter(db) {
   // latest N closes, the fast monitor's quote freshness with the record's
   // age, and the current broker-day open (the same FX-day anchor the risk
   // gate uses) so a daily bar from an earlier day can be labelled as such.
+  // WEB-9b: `barReceipts` (when the agent last received each timeframe's
+  // bars, per source, and whether the newest bar was still forming) and
+  // `feedLatency` (broker spot timestamp → agent receipt over the last 10
+  // minutes, per broker host) from lib/feed-receipts.js. Market data is not
+  // an account's: both are the agent's whole feed under every scope, with
+  // the account each receipt came through named on it.
   // Read-only. See services/data-feed-report.js.
   // -----------------------------------------------------------------------
   router.get('/data-feed', async (req, res) => {
     try {
       const { executionCosts, quoteFreshness, NOT_MEASURED, EXECUTION_WINDOW_DEFAULT } = await import('../services/data-feed-report.js')
+      const { feedReceiptsSnapshot } = await import('../lib/feed-receipts.js')
       const { fxDayOpenMs } = await import('../services/risk.js')
       const scope = requestedAccount(db, req)
       const acct = accountWhere(scope, 'account_id')
       const nowMs = Date.now()
+      const receipts = feedReceiptsSnapshot(nowMs)
       res.json({
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
         scoped: acct.active,
@@ -3376,6 +3387,8 @@ export default function stateRouter(db) {
         brokerDayOpenMs: fxDayOpenMs(nowMs),
         execution: executionCosts(db, { where: acct.where, params: acct.params, limit: req.query?.limit ?? EXECUTION_WINDOW_DEFAULT }),
         quotes: quoteFreshness(db, nowMs),
+        barReceipts: receipts.bars,
+        feedLatency: receipts.feedLatency,
         notMeasured: NOT_MEASURED,
       })
     } catch (e) {

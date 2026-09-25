@@ -135,7 +135,7 @@ export function findIncompleteCloses(db, { windowHours = 48, now = Date.now() } 
     WHERE t.status = 'closed'
       AND t.closed_at_ms IS NOT NULL
       AND t.closed_at_ms < ?
-      AND (t.net_pnl IS NULL OR pm_id IS NULL)
+      AND (t.net_pnl IS NULL OR (pm_id IS NULL AND t.net_pnl != 0)) -- V3 L2b W16: a flat close owes no postmortem (countFlatExemptCloses)
   `).all(cutoff)
 
   return rows.map(r => ({
@@ -172,4 +172,29 @@ export async function runCloseCompletenessSweep(db, opts = {}) {
     await sendMessage(`⚠️ ${stuck.length} closed trade(s) never finished processing:\n${lines.join('\n')}${extra}`)
   } catch { /* alert best-effort — the sweep itself already ran */ }
   return { flagged: stuck.length }
+}
+
+/**
+ * V3 L2b W16 — THE POSTMORTEM EXEMPTION, COUNTED WHERE IT IS APPLIED.
+ *
+ * A close whose broker net P&L is exactly 0 has no outcome to classify, and
+ * the postmortem sweep has always skipped it (loss-postmortem.js
+ * `postmortemExemption`, the one definition). findIncompleteCloses still
+ * counted it "missing a postmortem", so every flat close sat in the
+ * close_completeness goal and the Telegram "never finished processing" list
+ * for ever — a stuck record nothing could ever settle. It is no longer
+ * counted as incomplete; it is counted HERE instead, so the goal names how
+ * many closes the exemption covers rather than dropping them from view.
+ * Same window and grace as findIncompleteCloses. null when the read fails —
+ * never a zero that did not come from a count.
+ */
+export function countFlatExemptCloses(db, { windowHours = 48, now = Date.now() } = {}) {
+  try {
+    return db.prepare(`
+      SELECT COUNT(*) AS n FROM trades t
+       WHERE t.status = 'closed' AND t.closed_at_ms IS NOT NULL AND t.closed_at_ms < ?
+         AND t.net_pnl IS NOT NULL AND t.net_pnl = 0
+         AND NOT EXISTS (SELECT 1 FROM trade_postmortems pm WHERE pm.trade_id = t.id)
+    `).get(now - windowHours * HOUR_MS).n
+  } catch { return null }
 }
