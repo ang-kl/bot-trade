@@ -46,7 +46,7 @@ import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 import { requestedAccount, scopeReport } from '../lib/account-scope.js'
 import { RETIRED_CONTROLLERS } from '../shared/controller-groups.js'
 import { CONTROLLERS, heartbeatView } from './heartbeat.js'
-import { digestState, loadNotifyConfig } from './telegram-digest.js'
+import { digestState, loadNotifyConfig, DIGEST_STATE_SQL, DIGEST_REASON_ROWS_MAX } from './telegram-digest.js'
 
 export const SCHEMA_VERSION = 1
 export const SNAPSHOT_KEY = 'order_lifecycle_last_json'
@@ -1004,12 +1004,12 @@ export const RULES = Object.freeze([
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,
     params: () => [], populationLimit: 1,
     // The readers this rule's meaning depends on, in the pin (order-lifecycle.test.js ruleHash).
-    digest: digestState, notifyLoader: loadNotifyConfig,
+    digest: digestState, notifyLoader: loadNotifyConfig, digestSql: DIGEST_STATE_SQL, digestRowsMax: DIGEST_REASON_ROWS_MAX,
     rows(dbRows, ctx, w, db) {
       // Throws on an unreadable outbox: the rule is then unreadable, never 0.
       const digest = this.digest(db, { nowMs: w.nowMs })
       const out = [{ kind: 'telegram', ...(dbRows[0] || { n: 0 }), digest }]
-      out.push({ kind: 'watchdog', status: ctx.watchdog?.status ?? null, readAt: ctx.watchdog?.readAt ?? null, nodePolicyReadable: digest.configReadable })
+      out.push({ kind: 'watchdog', status: ctx.watchdog?.status ?? null, readAt: ctx.watchdog?.readAt ?? null, nodePolicyOff: digest.configReadable && digest.enabled === false })
       return out
     },
     when: r => (r.kind === 'telegram' ? tsMs(r.queued_at) : null), subject: r => `outbox:${r.kind}`, account: () => null,
@@ -1031,7 +1031,7 @@ export const RULES = Object.freeze([
           missing: ['delivery'], class: 'telegram', since: iso(oldest),
           notify: { enabled: d.enabled, mode: d.mode, configReadable: d.configReadable, configError: d.configError },
           lastFlushAt: d.lastFlushAt, lastError: d.lastError, reasons: d.reasons,
-          detail: `${base}${d.configReadable ? '' : `; ${d.configKey} unreadable, not taken as off`}${d.lastError ? `; last flush error: ${cut(d.lastError, 60)}` : ''}`,
+          detail: `${base}${d.configReadable ? '' : `; ${d.configKey} unreadable, not taken as off`}${d.lastError ? `; last flush error: ${cut(String(d.lastError).replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s+/, ''), 90)}` : ''}`,
         }
       }
       const s = r.status
@@ -1044,16 +1044,17 @@ export const RULES = Object.freeze([
       // Only a field that READS false is a setting that is off; absent or
       // null (an older cpp-verify, a busy reply, a policy older than a day)
       // is unknown, never off. masterEnabled is Node's own policy as relayed:
-      // the contract sends false for an UNREADABLE telegram_notify_json too
-      // (watchdog-contract.js notificationPolicy), so it counts as a setting
-      // only while Node's value is readable.
+      // the contract sends false for an UNREADABLE telegram_notify_json and
+      // for an unknown timezone too (watchdog-contract.js notificationPolicy),
+      // and cpp-verify's copy can be stale, so it counts as a setting only
+      // while Node's own value reads off (checker nit 1, 26-09).
       const settings = [
         ['deploymentDeliveryEnabled', 'the cpp-verify delivery switch'],
         ['incidentOwnerConfigured', 'the cpp-verify incident owner'],
         ['deliveryCredentialsConfigured', 'WATCHDOG_TELEGRAM_TOKEN / WATCHDOG_TELEGRAM_CHAT_ID'],
         ['masterEnabled', "Node's telegram_notify_json as cpp-verify last read it"],
       ]
-      const off = settings.filter(([k]) => s[k] === false && (k !== 'masterEnabled' || r.nodePolicyReadable === true))
+      const off = settings.filter(([k]) => s[k] === false && (k !== 'masterEnabled' || r.nodePolicyOff === true))
       const delivery = Object.fromEntries([...settings.map(([k]) => k), 'effectivePolicyAllowsUrgent'].map(k => [k, s[k] ?? null]))
       if (off.length) {
         const created = items.map(i => Number(i?.createdAtMs)).filter(Number.isFinite)

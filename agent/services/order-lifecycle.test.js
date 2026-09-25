@@ -753,7 +753,7 @@ const PINNED = {
   'CLS-05@1': '2cca97ff9080477d', 'CLS-06@1': 'a4bb8873fe57a5f1', 'CLS-07@1': '77e677b6b8b4b901', 'CLS-08@1': '540f253a1c1c8eab',
   'CLS-09@1': '9985d3c5b7b5b9cf',
   'STK-01@2': '969001ee6208e6c7', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@2': '92e5e73e8c8494e9', 'STK-04@2': '30b119a04d39ebc5',
-  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@2': '2a4476c28e1cd826',
+  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@2': 'f79c388f91fac5d1',
   'STK-09@2': '29a95b3d182e245c', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6', 'STK-12@1': '20bc6106e975e370',
 }
 test('ruleset pin: every rule\'s sql + judge is pinned to its version', () => {
@@ -1156,7 +1156,8 @@ test('STK-08 v2 telegram ON with a recorded flush error: the defect names the er
   const r = one(db, 'STK-08')
   assert.equal(r.violations, 1)
   const e = r.sample.find(x => x.subject === 'outbox:telegram')
-  assert.match(e.detail, /^1 unsent Telegram row\(s\), oldest queued 2026-08-22T10:39; last flush error: 2026-09-25T23:00:00.000Z error: /)
+  // The detail drops the flush's own leading timestamp so the snapshot's cut keeps the error itself (checker nit 3).
+  assert.match(e.detail, /^1 unsent Telegram row\(s\), oldest queued 2026-08-22T10:39; last flush error: error: request to https:\/\/api\.telegram\.org\/bot<redacted>\/sendMessage failed$/)
   assert.match(e.lastError, /bot<redacted>\/sendMessage failed$/)
   assert.doesNotMatch(JSON.stringify(r), /AAbbCC_dd-ee/, 'no credential anywhere in the rule')
 })
@@ -1209,6 +1210,15 @@ test('STK-08 v2 watchdog with its delivery settings OFF: held_by_setting naming 
   const ru = one(unread, 'STK-08')
   assert.equal(ru.classes.held_by_setting, undefined)
   assert.deepEqual(ru.sample.map(e => [e.subject, e.class]), [['outbox:watchdog', 'watchdog']])
+  // Nor is masterEnabled false while Node's OWN readable setting is on (a stale cpp-verify copy,
+  // or the contract's false for an unknown timezone): the defect stays (checker nit 1, 26-09).
+  const nodeOn = initDB(':memory:')
+  setState(nodeOn, 'telegram_notify_json', JSON.stringify({ enabled: true, mode: 'live' }))
+  setState(nodeOn, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, masterEnabled: false }), readAt: iso(NOW) }))
+  const rn = one(nodeOn, 'STK-08')
+  assert.equal(rn.violations, 1)
+  assert.equal(rn.classes.held_by_setting, undefined)
+  assert.deepEqual(rn.sample.map(e => [e.subject, e.class]), [['outbox:watchdog', 'watchdog']])
   // A field that is absent or null is unknown, never off.
   const nulls = initDB(':memory:')
   setState(nulls, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ masterEnabled: null, deploymentDeliveryEnabled: undefined, incidentOwnerConfigured: undefined, deliveryCredentialsConfigured: undefined }), readAt: iso(NOW) }))
