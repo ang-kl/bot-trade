@@ -30,7 +30,7 @@
 
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
-import { p1p4TargetDefaults, p1p4LimitsFromTargets, routeClass } from './p1p4-grade.js'
+import { p1p4TargetDefaults, p1p4LimitsFromTargets, routeClass, p99Below, p99Unknown } from './p1p4-grade.js'
 
 export const GOAL_TABLE_KEY = 'goal_table_json'
 /** The momentum checkpoint's frozen verdict (Wave 3): written once on the date. */
@@ -724,19 +724,28 @@ function eventLoopLagGoal(db, targets, nowMs) {
   const w = rec?.latencyWindows?.eventLoopLag?.last10m
   const age = recordAgeMin(rec, nowMs)
   const stale = age == null || age > BOOT_RECORD_MAX_AGE_MIN
-  const measurable = !!w && !stale && Number(w.n) > 0 && w.maxMs != null
-  const ok = measurable && w.maxMs < limits.lagMaxMs && (w.p99LeMs == null || w.p99LeMs <= limits.lagP99MaxMs)
+  const read = !!w && !stale && Number(w.n) > 0 && w.maxMs != null
+  // p99 against the strict proposal "p99 < limit" (H-P1-1) through the
+  // histogram bound (p1p4-grade.js p99Below): a bound that reaches the limit
+  // cannot show it, so the row is not measurable then — unless the max has
+  // already failed, which decides the row on its own.
+  const maxOk = read && w.maxMs < limits.lagMaxMs
+  const p99 = read ? p99Below(w.p99LeMs, limits.lagP99MaxMs) : null
+  const p99Open = read && maxOk && p99 === 'unknown'
+  const measurable = read && !p99Open
+  const ok = measurable && maxOk && p99 !== 'fail'
   const v = p1p4Verdict(targets, measurable, ok)
   return goal('event_loop_lag', {
     name: 'Event loop answers in time', subsystem: 'process',
     metric: 'event-loop lag over the last 10 min (100 ms probe): max, and p99 as a histogram upper bound',
-    target: `max < ${limits.lagMaxMs} ms · p99 ≤ ${limits.lagP99MaxMs} ms`, horizon: '10 min',
-    current: measurable ? `max ${w.maxMs} ms · p99 ≤ ${w.p99LeMs} ms` : null,
+    target: `max < ${limits.lagMaxMs} ms · p99 < ${limits.lagP99MaxMs} ms`, horizon: '10 min',
+    current: read ? `max ${w.maxMs} ms · p99 ≤ ${w.p99LeMs} ms` : null,
     ...v,
     note: !rec ? 'no boot record (the V3 M1 build is not running yet)'
       : stale ? `the persisted record is ${age == null ? 'undated' : `${Math.round(age)} min old`} — older than ${BOOT_RECORD_MAX_AGE_MIN} min`
-        : !measurable ? 'no probe in the window'
-          : `${w.n} probes; worst ${w.worst?.ms ?? w.maxMs} ms at ${w.worst?.at ?? '?'} (${w.worst?.loopPhase ?? '?'})${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
+        : !read ? 'no probe in the window'
+          : p99Open ? `${p99Unknown(w.p99LeMs, limits.lagP99MaxMs)}; max ${w.maxMs} ms is within its limit`
+            : `${w.n} probes; worst ${w.worst?.ms ?? w.maxMs} ms at ${w.worst?.at ?? '?'} (${w.worst?.loopPhase ?? '?'})${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
     source: '/health latencyWindows.eventLoopLag.last10m',
   })
 }

@@ -30,6 +30,8 @@
 //     Not Verifiable when it could not be.
 // ---------------------------------------------------------------------------
 
+import { LAG_BUCKET_EDGES_MS } from './event-loop-lag.js'
+
 export const PASSED = 'Passed'
 export const FAILED = 'Failed'
 export const NOT_VERIFIABLE = 'Not Verifiable'
@@ -64,7 +66,7 @@ export const P1P4_PROPOSED_LIMITS = Object.freeze({
   startupWindowMin: 15,          // BOOT → BOOT + 15 min (boot-clock.js)
   listeningMaxSec: 15,           // HTTP listening within 15 s of BOOT
   lagMaxMs: 5000,                // event-loop lag max strictly under 5,000 ms
-  lagP99MaxMs: 1000,             // p99 (a histogram upper bound) at most 1,000 ms
+  lagP99MaxMs: 1000,             // p99 strictly under 1,000 ms, shown by the histogram bound (p99Below)
   critical5xxMax: 0,             // /health, heartbeats, manifest, account and protection routes
   report5xxMax: null,            // H-P1-2: whether any report 5xx are tolerated
   recoverySec: 300,              // BOOT → BOOT + 300 s (heartbeat.js BOOT_GRACE_SEC)
@@ -139,6 +141,31 @@ const num = (x) => (x == null || x === '' || typeof x === 'boolean' || !Number.i
 export function percentileOf(sorted, p) {
   if (!sorted.length) return null
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1))]
+}
+
+/**
+ * A p99 UPPER BOUND against the strict limit "p99 < limit" (H-P1-1; the
+ * acceptance doc §6). The lag tap's percentile is the upper edge of the
+ * histogram bucket holding the rank, capped at the observed max
+ * (event-loop-lag.js histogramPercentileLe), so p99 lies in (lower edge,
+ * bound]. The bound shows p99 < limit only when it is itself under the
+ * limit, and shows p99 ≥ limit only when the bucket's lower edge is at or
+ * above it. Between the two — a bound of exactly 1,000 ms against 1,000 —
+ * the histogram cannot say: 'unknown', never a pass and never a failure.
+ * Returns 'pass' | 'fail' | 'unknown', or null with no bound or no limit. Pure.
+ */
+export function p99Below(boundMs, limitMs, edges = LAG_BUCKET_EDGES_MS) {
+  const b = num(boundMs)
+  const lim = num(limitMs)
+  if (b == null || lim == null) return null
+  if (b < lim) return 'pass'
+  const lower = edges.reduce((m, e) => (e < b && e > m ? e : m), 0)
+  return lower >= lim ? 'fail' : 'unknown'
+}
+
+/** The reason line for an 'unknown' p99Below. */
+export function p99Unknown(boundMs, limitMs) {
+  return `the histogram bound (99 % of probes at most ${boundMs} ms) cannot show p99 < ${limitMs} ms — its bucket reaches the limit`
 }
 
 /** Failed wins over Not Verifiable wins over Passed; an empty list is Not Verifiable. */
@@ -484,7 +511,11 @@ export function gradeStartup(boot, limits, { ownRequests = [] } = {}) {
     else if (covered < windowMs - 90_000) out.push(crit('startup.lag_p99', NOT_VERIFIABLE, { value: last.data.lat.lagStart.p99LeMs, limit: limits.lagP99MaxMs, reason: `the last in-window sample covers ${Math.round(covered / 1000)} s of ${windowMs / 1000} s` }))
     else {
       const p99 = num(last.data.lat.lagStart.p99LeMs)
-      out.push(crit('startup.lag_p99', p99 == null ? NOT_VERIFIABLE : p99 <= limits.lagP99MaxMs ? PASSED : FAILED, { value: p99, limit: limits.lagP99MaxMs, reason: p99 == null ? 'no percentile' : 'a histogram upper bound' }))
+      const v = p99Below(p99, limits.lagP99MaxMs)
+      out.push(crit('startup.lag_p99', v === 'pass' ? PASSED : v === 'fail' ? FAILED : NOT_VERIFIABLE, {
+        value: p99, limit: limits.lagP99MaxMs,
+        reason: p99 == null ? 'no percentile' : v === 'unknown' ? p99Unknown(p99, limits.lagP99MaxMs) : 'a histogram upper bound',
+      }))
     }
   }
 
@@ -520,7 +551,14 @@ export function gradeStartup(boot, limits, { ownRequests = [] } = {}) {
   // First protection band: completes, no overrun.
   const band = rec?.first?.band
   if (!rec) out.push(crit('startup.first_band', NOT_VERIFIABLE, { reason: noRecord }))
-  else if (band) out.push(crit('startup.first_band', band.ok === true && band.overran !== true ? PASSED : FAILED, { value: band.ms, limit: limits.bandMaxMs, at: band.at, detail: { overran: band.overran ?? null, error: band.error ?? null } }))
+  else if (band) {
+    const good = band.ok === true && band.overran !== true
+    // A Failed band names its cause on the printed line (formatGrade prints
+    // `reason`, not `detail`): 169d337 printed "Failed value 14790 limit
+    // 60000" while "pnl_watch exceeded its 5s budget" sat only in detail.
+    const why = good ? null : band.error ?? (band.overran === true ? 'the first band overran' : 'the first band reported ok=false')
+    out.push(crit('startup.first_band', good ? PASSED : FAILED, { value: band.ms, limit: limits.bandMaxMs, at: band.at, reason: why, detail: { overran: band.overran ?? null, error: band.error ?? null } }))
+  }
   else out.push(crit('startup.first_band', recoveryDone ? FAILED : NOT_VERIFIABLE, { reason: recoveryDone ? `no band completed by BOOT + ${limits.recoverySec} s` : notYet }))
 
   // First clean all-account Node audit within the recovery window.
@@ -678,13 +716,34 @@ export function gradeRecovery(boot, limits, { samples = [], evidence = null } = 
   // or explicitly quote_unavailable / observe_only. The first evaluation is
   // bounded from the samples: at a sample whose lastCompletedAt still predates
   // BOOT, no evaluation had happened yet.
+  //
+  // THE RECEIPT FILE MUST BE THIS BOOT'S. Every fast-monitor pass rewrites
+  // fast_monitor_position_work_json with its own `at` — also when it holds no
+  // position (fast-monitor.js POSITION_WORK_KEY) — and sets each receipt's
+  // `state` afresh (it is not among the carried fields). A file still dated
+  // before BOOT at the post sample (BOOT + 300 s or later) means no pass has
+  // completed since the restart: exactly the case this criterion exists for,
+  // so it is Failed, and the states in it are the previous process's and
+  // exempt nothing (checker 25-09: a BOOT − 30 min file with both positions
+  // quote_unavailable graded Passed "2/2"). An undated file cannot show its
+  // states are this boot's: those positions are Not Verifiable, not exempt.
   if (!postHb || !postHb.data.work) out.push(crit('recovery.fast_monitor_resumed', NOT_VERIFIABLE, { reason: !postHb ? noPost : 'no fast-monitor receipts in the sample' }))
-  else {
+  else if (toMs(postHb.data.work.at) != null && boot.bootAtMs != null && toMs(postHb.data.work.at) < boot.bootAtMs) {
+    const n = postHb.data.work.positions.filter(p => p.owner == null || p.owner === 'node_fast_monitor').length
+    out.push(crit('recovery.fast_monitor_resumed', FAILED, {
+      value: `0/${n}`, at: new Date(postHb.t).toISOString(),
+      reason: `no fast-monitor pass written since BOOT — receipts at ${postHb.data.work.at}, ${Math.round((boot.bootAtMs - toMs(postHb.data.work.at)) / 1000)} s before BOOT, read at +${Math.round((postHb.t - boot.bootAtMs) / 1000)} s`,
+    }))
+  } else {
     const fails = []
     const nv = []
+    const fileThisBoot = toMs(postHb.data.work.at) != null
     const mine = postHb.data.work.positions.filter(p => p.owner == null || p.owner === 'node_fast_monitor')
     for (const p of mine) {
-      if (['quote_unavailable', 'observe_only'].includes(p.state)) continue
+      if (['quote_unavailable', 'observe_only'].includes(p.state)) {
+        if (!fileThisBoot) nv.push(`${p.a}:${p.id} ${p.state} in an undated receipt file — not shown to be this boot's`)
+        continue
+      }
       const allowMs = (p.cad ?? 60_000) + limits.fastMonitorGraceSec * 1000
       const done = toMs(p.done)
       if (done == null || done < boot.bootAtMs) { fails.push(`${p.a}:${p.id} not evaluated since boot`); continue }
@@ -699,6 +758,14 @@ export function gradeRecovery(boot, limits, { samples = [], evidence = null } = 
 
   // R4 — SL/TP tuples and the entry configuration equal the pre-release
   // snapshot plus changes the evidence attributes.
+  //
+  // THE TUPLES ARE THE VERIFIER'S READING, NOT THE SAMPLE'S. /state/heartbeats
+  // relays cpp-verify's last independent reading, which can predate BOOT at a
+  // post sample taken after it (checker 25-09: a reading at BOOT − 20 s carried
+  // into the BOOT + 310 s sample graded Passed while R1 beside it said Failed).
+  // An account is compared only on a post reading taken after BOOT and after
+  // the pre-release one; otherwise its positions are Not Verifiable, never
+  // "unchanged".
   {
     if (!preOk || !postHb) out.push(crit('recovery.config_and_protection_unchanged', NOT_VERIFIABLE, { reason: !postHb ? noPost : noPre }))
     else {
@@ -711,7 +778,26 @@ export function gradeRecovery(boot, limits, { samples = [], evidence = null } = 
       const attributed = []
       const journalsRead = evidence?.journals && evidence.journalsOk !== false
       const actionsRead = evidence?.actionLog?.ok === true
+      const stamp = (ms) => new Date(ms).toISOString()
+      const preReadAt = new Map((preHb.data.accounts || []).map(a => [a.id, a.ind?.at ?? null]))
+      const postReadAt = new Map((postHb.data.accounts || []).map(a => [a.id, a.ind?.at ?? null]))
+      const notCompared = new Map() // account → why its post reading cannot stand for this boot
+      for (const id of new Set([...preReadAt.keys(), ...postReadAt.keys()])) {
+        const post = postReadAt.get(id) ?? null
+        const pre = preReadAt.get(id) ?? null
+        if (post == null) notCompared.set(id, 'no independent reading in the post sample')
+        else if (post <= boot.bootAtMs) notCompared.set(id, `no post-boot independent reading (reading at ${stamp(post)}, BOOT ${stamp(boot.bootAtMs)})`)
+        else if (pre != null && post <= pre) notCompared.set(id, `the post reading (${stamp(post)}) does not follow the pre-release one (${stamp(pre)})`)
+      }
+      const skipped = new Map() // account → position count left uncompared
+      const accountOf = (key) => key.slice(0, key.indexOf(':'))
+      for (const key of new Set([...before.keys(), ...after.keys()])) {
+        const id = accountOf(key)
+        if (notCompared.has(id)) skipped.set(id, (skipped.get(id) || 0) + 1)
+      }
+      for (const [id, why] of notCompared) unverifiable.push(`${id}: ${skipped.get(id) || 0} position(s) not compared — ${why}`)
       for (const [key, p] of before) {
+        if (notCompared.has(accountOf(key))) continue
         const q = after.get(key)
         if (q && q.sl === p.sl && q.tp === p.tp) continue
         const ev = evidenceFor(evidence, key, fromMs, toMsW)
@@ -720,7 +806,7 @@ export function gradeRecovery(boot, limits, { samples = [], evidence = null } = 
         else if (q && journalsRead && (evidence.journals[key] !== undefined)) unexplained.push(what)
         else unverifiable.push(`${what} (no evidence read for it)`)
       }
-      for (const key of after.keys()) if (!before.has(key)) {
+      for (const key of after.keys()) if (!before.has(key) && !notCompared.has(accountOf(key))) {
         const ev = evidenceFor(evidence, key, fromMs, toMsW)
         if (ev.length) attributed.push({ change: `${key} opened`, evidence: ev.slice(0, 3) })
         else unverifiable.push(`${key} opened (no evidence read for it)`)
@@ -740,7 +826,7 @@ export function gradeRecovery(boot, limits, { samples = [], evidence = null } = 
         }
       } else unverifiable.push('entry configuration: no /state/entry-engines sample on both sides')
       out.push(crit('recovery.config_and_protection_unchanged', unexplained.length ? FAILED : unverifiable.length ? NOT_VERIFIABLE : PASSED, {
-        value: { positionsBefore: before.size, positionsAfter: after.size, attributed: attributed.length, unexplained: unexplained.length, unverifiable: unverifiable.length },
+        value: { positionsBefore: before.size, positionsAfter: after.size, attributed: attributed.length, unexplained: unexplained.length, unverifiable: unverifiable.length, accountsNotCompared: notCompared.size },
         reason: [...unexplained.map(x => `unexplained: ${x}`), ...unverifiable].join('; ') || null,
         detail: attributed.length ? attributed.slice(0, 20) : null,
       }))
@@ -825,6 +911,11 @@ export function gradeSteady(boot, limits, { samples = [], fromMs = null, toMs: u
   const rt = samples.filter(s => s.kind === 'routeTimings' && s.data && inWin(s))
   const hours = end > start ? (end - start) / 3_600_000 : 0
   const out = []
+  // With no /health sample in the window there is no reading to lack a
+  // field: "(V3 M1 not deployed)" or "(0 loops ran)" would be a false cause
+  // (checker 25-09 — every boot tonight carried M1's boot record). The
+  // deployment is named only when samples exist and lack the field.
+  const noHealth = health.length ? null : 'no /health sample in the steady window'
 
   // Main-loop p95: per-loop durations observed through loopCount/lastLoopMs.
   {
@@ -840,13 +931,14 @@ export function gradeSteady(boot, limits, { samples = [], fromMs = null, toMs: u
     }
     const sorted = durations.sort((x, y) => x - y)
     const p95 = percentileOf(sorted, 0.95)
-    if (sorted.length < 10) out.push(crit('steady.main_loop_p95', NOT_VERIFIABLE, { value: p95, limit: limits.mainLoopP95MaxSec * 1000, reason: `${sorted.length} loop duration(s) observed (${ran} loops ran); at least 10 needed` }))
+    if (health.length < 2) out.push(crit('steady.main_loop_p95', NOT_VERIFIABLE, { limit: limits.mainLoopP95MaxSec * 1000, reason: noHealth ?? 'one /health sample in the steady window — two are needed to see a loop end' }))
+    else if (sorted.length < 10) out.push(crit('steady.main_loop_p95', NOT_VERIFIABLE, { value: p95, limit: limits.mainLoopP95MaxSec * 1000, reason: `${sorted.length} loop duration(s) observed (${ran} loops ran); at least 10 needed` }))
     else out.push(crit('steady.main_loop_p95', p95 <= limits.mainLoopP95MaxSec * 1000 ? PASSED : FAILED, { value: p95, limit: limits.mainLoopP95MaxSec * 1000, reason: `${sorted.length} of ${ran} loops observed`, detail: { p50: percentileOf(sorted, 0.5), max: sorted[sorted.length - 1] } }))
   }
 
   const fmFresh = (s) => { const at = toMs(s.data.fm?.at); return at != null && s.t - at <= 5 * 60_000 }
-  out.push(perSample('steady.fast_monitor_skip', health, s => (fmFresh(s) && num(s.data.fm.skipShare10m) != null ? { value: Math.round(s.data.fm.skipShare10m * 1000) / 10, ok: s.data.fm.skipShare10m * 100 <= limits.fastMonitorSkipMaxPct } : null), { limit: limits.fastMonitorSkipMaxPct, emptyReason: 'no fresh fast-monitor pass record' }))
-  out.push(perSample('steady.tick_max', health, s => (fmFresh(s) && num(s.data.fm.max10mMs) != null ? { value: s.data.fm.max10mMs, ok: s.data.fm.max10mMs <= limits.tickMaxMs } : null), { limit: limits.tickMaxMs, emptyReason: 'no fresh fast-monitor pass record' }))
+  out.push(perSample('steady.fast_monitor_skip', health, s => (fmFresh(s) && num(s.data.fm.skipShare10m) != null ? { value: Math.round(s.data.fm.skipShare10m * 1000) / 10, ok: s.data.fm.skipShare10m * 100 <= limits.fastMonitorSkipMaxPct } : null), { limit: limits.fastMonitorSkipMaxPct, emptyReason: noHealth ?? 'no fresh fast-monitor pass record' }))
+  out.push(perSample('steady.tick_max', health, s => (fmFresh(s) && num(s.data.fm.max10mMs) != null ? { value: s.data.fm.max10mMs, ok: s.data.fm.max10mMs <= limits.tickMaxMs } : null), { limit: limits.tickMaxMs, emptyReason: noHealth ?? 'no fresh fast-monitor pass record' }))
 
   // The band: never over its 60 s, no skipped band inside the window.
   {
@@ -856,7 +948,7 @@ export function gradeSteady(boot, limits, { samples = [], fromMs = null, toMs: u
     out.push(grew ? { ...c, verdict: FAILED, reason: `${skips[skips.length - 1] - skips[0]} band(s) skipped in the window${c.reason ? `; ${c.reason}` : ''}` } : c)
   }
 
-  out.push(perSample('steady.budget_overruns', health, s => (num(s.data.lat?.overruns10m) != null ? { value: s.data.lat.overruns10m, ok: s.data.lat.overruns10m <= limits.budgetOverrunsMax } : null), { limit: limits.budgetOverrunsMax, emptyReason: 'no overrun counter on /health (V3 M1 not deployed)' }))
+  out.push(perSample('steady.budget_overruns', health, s => (num(s.data.lat?.overruns10m) != null ? { value: s.data.lat.overruns10m, ok: s.data.lat.overruns10m <= limits.budgetOverrunsMax } : null), { limit: limits.budgetOverrunsMax, emptyReason: noHealth ?? 'no overrun counter on /health (V3 M1 not deployed)' }))
 
   out.push(perSample('steady.independent_age', hb, s => {
     const ages = s.data.accounts.map(a => (a.ind?.at == null ? Infinity : (s.t - a.ind.at) / 1000))
@@ -873,30 +965,50 @@ export function gradeSteady(boot, limits, { samples = [], fromMs = null, toMs: u
   }, { limit: limits.auditAgeMaxSec, emptyReason: 'no heartbeats sample' }))
 
   {
-    const c = perSample('steady.lag', health, s => {
+    // p99 against the strict limit through its histogram bound (p99Below):
+    // a sample whose bound cannot show p99 < limit is not a pass — the
+    // criterion reads Not Verifiable unless another sample failed.
+    let p99Open = 0
+    const c0 = perSample('steady.lag', health, s => {
       const w = s.data.lat?.lag10m
       if (!w || !w.n) return null
-      return { value: w.maxMs, ok: w.maxMs < limits.lagMaxMs && (w.p99LeMs == null || w.p99LeMs <= limits.lagP99MaxMs) }
-    }, { limit: { maxMs: limits.lagMaxMs, p99LeMs: limits.lagP99MaxMs }, emptyReason: 'no lag tap on /health (V3 M1 not deployed)' })
+      const p = p99Below(w.p99LeMs, limits.lagP99MaxMs)
+      if (w.maxMs < limits.lagMaxMs && p === 'unknown') p99Open++
+      return { value: w.maxMs, ok: w.maxMs < limits.lagMaxMs && p !== 'fail' }
+    }, { limit: { maxMs: limits.lagMaxMs, p99LtMs: limits.lagP99MaxMs }, emptyReason: noHealth ?? 'no lag tap on /health (V3 M1 not deployed)' })
+    const c = c0.verdict === PASSED && p99Open ? { ...c0, verdict: NOT_VERIFIABLE, reason: `${p99Open} sample(s) whose p99 bound reaches ${limits.lagP99MaxMs} ms — the histogram cannot show p99 < ${limits.lagP99MaxMs} ms; ${c0.reason}` } : c0
     const overlap = c.verdict === FAILED ? harnessOverlap(health.map(s => s.data.lat?.lag10m?.worst).filter(w => w && w.ms >= limits.lagMaxMs).map(w => w.at), ownRequests) : []
     out.push(overlap.length ? { ...c, reason: `${c.reason}; ${overlap.length} stall(s) overlapped the harness's own slow request — still Failed: any reader of that route causes the same stall`, detail: { failures: c.detail, harnessOverlap: overlap } } : c)
   }
 
-  // 5xx in the window: the delta of route-timings' per-route counters (same boot).
+  // 5xx in the window: the delta of route-timings' per-route counters (same
+  // boot — they are in-memory, route-timing.js, and start at zero at BOOT).
+  // The baseline is the last route-timings sample of this boot at or before
+  // the steady start, when there is one: the harness reads the route every
+  // 5 min, so the first in-window sample can come up to 5 min after BOOT +
+  // 15 min, and a 5xx in that gap would be counted by neither the startup
+  // record (closed at + 15 min) nor this delta (checker 25-09). A baseline
+  // taken before the start can count a late startup-window 5xx here as well
+  // — shown twice, never hidden.
   {
-    if (rt.length < 2) {
-      out.push(crit('steady.critical_5xx', NOT_VERIFIABLE, { limit: limits.critical5xxMax, reason: 'fewer than two /state/route-timings samples in the window' }))
-      out.push(crit('steady.report_5xx', NOT_VERIFIABLE, { limit: limits.report5xxMax, reason: 'fewer than two /state/route-timings samples in the window' }))
+    const bootFrom = boot.bootAtMs ?? boot.firstT
+    const baseline = [...samples].filter(s => s.kind === 'routeTimings' && s.data && s.t >= bootFrom && s.t < start && s.t < boot.toMs).sort((a, b) => a.t - b.t).pop() || null
+    const series = baseline ? [baseline, ...rt] : rt
+    if (series.length < 2) {
+      const why = 'fewer than two /state/route-timings samples of this boot from the steady start (or the last one before it)'
+      out.push(crit('steady.critical_5xx', NOT_VERIFIABLE, { limit: limits.critical5xxMax, reason: why }))
+      out.push(crit('steady.report_5xx', NOT_VERIFIABLE, { limit: limits.report5xxMax, reason: why }))
     } else {
-      const first = new Map(rt[0].data.routes.map(r => [r.route, r['5xx']]))
+      const first = new Map(series[0].data.routes.map(r => [r.route, r['5xx']]))
       const delta = {}
-      for (const r of rt[rt.length - 1].data.routes) { const d = r['5xx'] - (first.get(r.route) || 0); if (d > 0) delta[r.route] = d }
+      for (const r of series[series.length - 1].data.routes) { const d = r['5xx'] - (first.get(r.route) || 0); if (d > 0) delta[r.route] = d }
       const crits = Object.entries(delta).filter(([r]) => routeClass(r) === 'critical')
       const reps = Object.entries(delta).filter(([r]) => routeClass(r) === 'report')
       const cn = crits.reduce((a, [, n]) => a + n, 0)
       const rn = reps.reduce((a, [, n]) => a + n, 0)
-      out.push(crit('steady.critical_5xx', cn > limits.critical5xxMax ? FAILED : PASSED, { value: cn, limit: limits.critical5xxMax, detail: Object.fromEntries(crits) }))
-      out.push(crit('steady.report_5xx', limits.report5xxMax == null ? NOT_VERIFIABLE : rn > limits.report5xxMax ? FAILED : PASSED, { value: rn, limit: limits.report5xxMax, detail: Object.fromEntries(reps), reason: limits.report5xxMax == null ? 'counted and listed; whether any are tolerated is the owner\'s decision (H-P1-2)' : null }))
+      const from = baseline ? `counted from the route-timings sample at BOOT + ${Math.round((baseline.t - bootFrom) / 1000)} s (the last before the steady start)` : null
+      out.push(crit('steady.critical_5xx', cn > limits.critical5xxMax ? FAILED : PASSED, { value: cn, limit: limits.critical5xxMax, detail: Object.fromEntries(crits), reason: from }))
+      out.push(crit('steady.report_5xx', limits.report5xxMax == null ? NOT_VERIFIABLE : rn > limits.report5xxMax ? FAILED : PASSED, { value: rn, limit: limits.report5xxMax, detail: Object.fromEntries(reps), reason: [limits.report5xxMax == null ? 'counted and listed; whether any are tolerated is the owner\'s decision (H-P1-2)' : null, from].filter(Boolean).join('; ') || null }))
     }
   }
 
@@ -923,7 +1035,13 @@ export function gradeRun(samples, { override = null, fromMs = null, toMs: until 
   const gt = [...all].reverse().find(s => (s.kind === 'goalTargets' || s.kind === 'goalTable') && s.data?.targets)
   const fromTargets = p1p4LimitsFromTargets(gt?.data.targets)
   const limits = { ...fromTargets.limits, ...(override || {}) }
-  const own = all.filter(s => s.kind !== 'evidence').map(s => ({ t: s.t, route: s.route, cls: s.cls, status: s.status, ms: s.ms ?? null }))
+  // The harness's own requests include its evidence reads (action_log, the
+  // positions list, cockpit journals — 4.4–4.7 s action-log reads on 25-09,
+  // inside the startup window), so a stall they overlap is annotated too.
+  const own = [
+    ...all.filter(s => s.kind !== 'evidence').map(s => ({ t: s.t, route: s.route, cls: s.cls, status: s.status, ms: s.ms ?? null })),
+    ...all.filter(s => s.kind === 'evidence' && Array.isArray(s.data?.reads)).flatMap(s => s.data.reads.map(r => ({ t: r.t, route: r.route, cls: r.cls, status: r.status ?? null, ms: r.ms ?? null }))),
+  ].sort((a, b) => a.t - b.t)
   const platform = own.filter(r => r.cls === 'platform').map(r => ({ at: new Date(r.t).toISOString(), route: r.route, status: r.status ?? null }))
   const timeouts = own.filter(r => r.cls === 'timeout').map(r => ({ at: new Date(r.t).toISOString(), route: r.route, ms: r.ms }))
   const boots = splitBoots(all).map(b => {

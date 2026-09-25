@@ -423,7 +423,16 @@ test('P1/P4 rows: an open startup window is not measurable, unless a failure has
 test('P1/P4 rows: event-loop lag — boundaries, and a stale record is not measurable', async () => {
   const at = async (lag10m, persistedAt = BOOT + 60 * 60_000, now = BOOT + 61 * 60_000) =>
     byId(await goalTable(withRecord(bootRecord({ lag10m, persistedAt })), { now })).event_loop_lag
-  assert.equal((await at({ n: 6_000, maxMs: 4_999, p99LeMs: 1_000 })).proposedVerdict, 'on_track')
+  // p99 < 1,000 ms (H-P1-1) from the histogram bound: 500 shows it; the
+  // 500–1,000 bucket's bound of 1,000 cannot, so the row is not measurable
+  // rather than on track (checker 25-09: a bound of 1,000 read on track).
+  assert.equal((await at({ n: 6_000, maxMs: 4_999, p99LeMs: 500 })).proposedVerdict, 'on_track')
+  const edge = await at({ n: 6_000, maxMs: 4_999, p99LeMs: 1_000 })
+  assert.equal(edge.verdict, 'not_measurable', `a bound equal to the limit cannot show p99 < 1,000 ms (RED under <=): ${edge.verdict}/${edge.proposedVerdict}`)
+  assert.match(edge.note, /cannot show p99 < 1000 ms/)
+  assert.equal(edge.current, 'max 4999 ms · p99 ≤ 1000 ms', 'the reading is still shown')
+  assert.match(edge.target, /p99 < 1000 ms/)
+  assert.equal((await at({ n: 6_000, maxMs: 5_000, p99LeMs: 1_000 })).proposedVerdict, 'off_track', 'a failed max decides the row on its own')
   assert.equal((await at({ n: 6_000, maxMs: 5_000, p99LeMs: 100 })).proposedVerdict, 'off_track')
   assert.equal((await at({ n: 6_000, maxMs: 1_500, p99LeMs: 2_000 })).proposedVerdict, 'off_track')
   assert.equal((await at({ n: 0, maxMs: null, p99LeMs: null })).verdict, 'not_measurable')
