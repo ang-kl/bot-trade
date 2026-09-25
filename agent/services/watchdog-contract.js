@@ -112,6 +112,6 @@ export function nodeWatchdogContract(db, { now = Date.now() } = {}) {
     limitations: ['Scanner work is published by its actual owner; a Node timer is not a scanner receipt.', 'No closed-market management deadline has been invented.',
       'A work item marked calendarIn "calendars" carries no calendar of its own: its calendar is the calendars entry with the same accountId, host and symbolId.'] }
   if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) out.entryDiagnostics = { schemaVersion: 1, source: 'node_records', observedAtMs: now, complete: false, reason: 'contract_size_bound', accounts: [] }
-  if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) { out.workComplete = false; out.work = []; out.calendars = []; out.calendarsComplete = false; out.reason = 'work_contract_size_bound' }
+  if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) { out.workComplete = false; out.work = []; out.calendars = []; out.calendarsComplete = false; out.exportComplete = false; out.reason = 'work_contract_size_bound' }
   return out
 }

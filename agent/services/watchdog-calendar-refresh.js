@@ -40,9 +40,12 @@ export const DEMAND_TIERS = Object.freeze(['feed', 'position', 'legacy', 'scope'
  *   3 legacy    — the bar scan's instruments on its feed account;
  *   4 scope     — each scope account's OWN identity for each bar-scan name
  *                 (resolved through that account's own symbol map, never the
- *                 feed account's ids), then each tick account's own identity
- *                 for each carried tick name. Both symbol-major, so the cap
- *                 truncates across accounts instead of starving the last.
+ *                 feed account's ids) and each tick account's own identity
+ *                 for each carried tick name. Both feed entry_activity work,
+ *                 so the two sources are merged name by name (the k-th name
+ *                 of every source before any (k+1)-th), each name across its
+ *                 accounts: the cap truncates across sources and accounts
+ *                 instead of starving the tick accounts or the last account.
  * A name missing from an account's own map, a missing map, a foreign host or
  * a refused identity is missing coverage (complete false), never an empty
  * demand. `detail` (key → {tier, symbol}) and `unresolved` (per account) feed
@@ -113,25 +116,24 @@ export function watchdogCalendarDemand(db, now) {
   // 4 — scope. At the cap the rest is left unread, not walked: this runs on
   // the main thread every refresh, and 64 accounts × 512 names would each be
   // resolved only to be refused. Unread pairs are missing coverage.
-  scope: {
-    if (scanFresh && Array.isArray(scan.scopeAccounts)) {
-      const ids = scan.scopeAccounts.slice(0, 64).map(String)
-      for (const i of scan.instruments.slice(0, 512)) {
-        for (const accountId of ids) {
-          if (wanted.size >= MAX_IDENTITIES) { complete = false; break scope }
-          own(accountId, i.symbol, 'scope')
-        }
-      }
-    }
-    // V3 C4 (WP-B B2e): a tick account's entry_activity is judged on its OWN
-    // (account, symbolId) calendar, so each fresh tick permit receipt demands it.
-    for (const receipt of tickEntryReceipts(db, now)) {
-      const ids = receipt.accounts.map(a => String(a?.accountId))
-      for (const name of receipt.symbols) {
-        for (const accountId of ids) {
-          if (wanted.size >= MAX_IDENTITIES) { complete = false; break scope }
-          own(accountId, name, 'scope')
-        }
+  // Sources: the bar scan (its names × its scope accounts) and, V3 C4 (WP-B
+  // B2e), each fresh tick permit receipt (its carried names × its tick
+  // accounts): a tick account's entry_activity is judged on its OWN
+  // (account, symbolId) calendar. K1 checker nit: run one source after the
+  // other and the bar scan's pairs fill the cap before any tick account's, so
+  // the sources are merged name by name instead.
+  const sources = []
+  if (scanFresh && Array.isArray(scan.scopeAccounts)) {
+    sources.push({ names: scan.instruments.slice(0, 512).map(i => i.symbol), ids: scan.scopeAccounts.slice(0, 64).map(String) })
+  }
+  for (const receipt of tickEntryReceipts(db, now)) sources.push({ names: receipt.symbols, ids: receipt.accounts.map(a => String(a?.accountId)) })
+  const longest = sources.reduce((n, s) => Math.max(n, s.names.length), 0)
+  scope: for (let k = 0; k < longest; k++) {
+    for (const source of sources) {
+      if (k >= source.names.length) continue
+      for (const accountId of source.ids) {
+        if (wanted.size >= MAX_IDENTITIES) { complete = false; break scope }
+        own(accountId, source.names[k], 'scope')
       }
     }
   }
@@ -149,12 +151,22 @@ export function createWatchdogCalendarRefresh(db, deps = {}) {
   // V3 K1: a skipped pass used to leave no trace, so an observer outage
   // silently stopped calendar coverage while the last receipt looked current.
   // The skip is persisted apart from the receipt (failure never breaks a pass).
+  // `since` is the start of an UNBROKEN run of the same skip: each skip
+  // records the receipt it saw (`lastReceiptAt`), and a receipt that moved
+  // since the previous skip means a real batch completed in between, so the
+  // run restarts here (K1 checker blocker: skip 12:00, real pass 12:10, skip
+  // 13:00 must read since 13:00, not a 12:00 that was never an unbroken
+  // stop). Compared by the receipt the skip saw, not by clock order: a pass
+  // that started before an in_flight skip and finished after it also breaks
+  // the run.
   const skip = (reason, now) => {
     try {
       const previous = read(db, CALENDAR_REFRESH_SKIP_KEY)
+      const lastReceiptAt = read(db, 'watchdog_calendar_refresh_json')?.at ?? null
       const at = new Date(now).toISOString()
-      setState(db, CALENDAR_REFRESH_SKIP_KEY, JSON.stringify({ at, skipped: reason,
-        since: previous?.skipped === reason && previous?.since ? previous.since : at }))
+      const unbroken = previous?.skipped === reason && typeof previous?.since === 'string'
+        && previous.lastReceiptAt !== undefined && previous.lastReceiptAt === lastReceiptAt
+      setState(db, CALENDAR_REFRESH_SKIP_KEY, JSON.stringify({ at, skipped: reason, since: unbroken ? previous.since : at, lastReceiptAt }))
     } catch { /* observation bookkeeping only */ }
     return { skipped: reason }
   }

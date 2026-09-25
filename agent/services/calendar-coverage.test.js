@@ -232,6 +232,9 @@ test('an identity beyond the export bound keeps its own calendar, in the verifie
   position(db, '46130058', 'EURUSD')
   const out = nodeWatchdogContract(db, { now })
   assert.equal(out.calendarsComplete, false)
+  // K1 checker nit: the export's own cut is reported apart from the demand.
+  assert.equal(out.demandComplete, true, 'every identity was demanded')
+  assert.equal(out.exportComplete, false, 'RED if the byte-bound cut is not recorded on the export itself')
   assert.ok(!out.calendars.some(c => c.identity.symbolId === '7'), 'the position is past the bound')
   const w = out.work.find(x => x.role === 'management')
   assert.equal(w.calendarIn, undefined)
@@ -293,6 +296,8 @@ test('the coverage read: a missing map is missing, reasons are split, disagreeme
   assert.equal(report.collector.receipt, null)
   assert.equal(report.demand.complete, false)
   assert.equal(report.export.demandComplete, false)
+  assert.equal(report.export.calendarsComplete, false)
+  assert.equal(report.export.exportComplete, true, 'the export itself was not cut: only the demand (the missing map) is incomplete')
   assert.equal(report.export.workComplete, true)
   assert.ok(report.export.contractBytes > 0 && report.export.contractBytes < report.export.contractMaxBytes)
   assert.equal(report.export.workItemsSharingAnExportedCalendar, 1, 'the EURUSD management item points at its exported calendar')

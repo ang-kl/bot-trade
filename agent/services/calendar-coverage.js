@@ -183,6 +183,7 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
     export: {
       entries: calendars.length, withCalendar: exportedKeys.size, bytes: Buffer.byteLength(JSON.stringify(calendars)),
       maxBytes: CALENDAR_EXPORT_MAX_BYTES, calendarsComplete: contract.calendarsComplete === true, demandComplete: contract.demandComplete === true,
+      exportComplete: contract.exportComplete === true,
       feed: { demanded: feedKeys.length, exportedWithCalendar: feedKeys.filter(k => exportedKeys.has(k)).length },
       workItemsSharingAnExportedCalendar: (contract.work ?? []).filter(w => w.calendarIn === 'calendars').length,
       contractBytes: Buffer.byteLength(JSON.stringify(contract)), contractMaxBytes: CONTRACT_MAX_BYTES,
