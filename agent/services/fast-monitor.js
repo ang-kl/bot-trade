@@ -32,6 +32,36 @@ import { manageStageAllows } from './stage-matrix.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 import { BoundedMap } from '../lib/bounded-map.js'
 import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
+import { performance } from 'node:perf_hooks'
+import { stampFirst, noteBudgetOverrun } from './runtime-record.js'
+
+// ---------------------------------------------------------------------------
+// PER-POSITION RECEIPT TIMINGS (V3 M1, P1/P4-1). A pass that re-prices a due
+// position writes WHERE its time went: the quote (lastPricingMs — ~0 from the
+// sidecar, up to the 6 s broker timeout on a stale or missing quote), which
+// source and why (lastQuotePick: sidecar | stale | missing), the outcome, and
+// the relVol trendbar fetch (lastVolFetchMs) with the part of it spent parked
+// on the shared 4/s historical token bucket (lastTokenWaitMs; null when the
+// fetch never reached that step). The #1085 boot's first pass took 43 s, more
+// than four 6 s probes — the fetch and the bucket are the candidates, and
+// until now nothing measured them.
+//
+// CARRIED ACROSS not_due PASSES. The tick runs every 3 s and a position is
+// due every minute or more, so the receipt was rewritten ~20 times between
+// two pricings with all of this blank. Each receipt now starts from the
+// preceding one's last* fields; only a pass that actually prices or fetches
+// replaces them.
+// ---------------------------------------------------------------------------
+export const RECEIPT_CARRY_FIELDS = Object.freeze([
+  'lastPricedAt', 'lastPricingMs', 'lastQuoteSource', 'lastQuotePick', 'lastOutcome',
+  'lastVolFetchAt', 'lastVolFetchMs', 'lastTokenWaitMs',
+])
+/** The last* fields of the preceding receipt (nulls when there is none). Pure. */
+export function carryReceipt(prior) {
+  const out = {}
+  for (const k of RECEIPT_CARRY_FIELDS) out[k] = prior?.[k] ?? null
+  return out
+}
 
 // ---------------------------------------------------------------------------
 // QUOTES FROM THE SIDECAR (19-09-2026). The tick re-priced every due position
@@ -349,14 +379,32 @@ export async function runFastMonitor(db, creds, deps = {}) {
     const work = []
     let checked = 0
     let acted = 0
+    // Durations on the monotonic clock: `now` may be a test's fixed clock.
+    const mono = deps.monoNow ?? (() => performance.now())
+    const timing = { priced: 0, pricingMs: 0, brokerQuotes: 0, volFetches: 0, volFetchMs: 0, tokenWaitMs: 0 }
     for (const pos of positions) {
       const accountId = pos.account_id != null ? String(pos.account_id) : String(creds.accountId)
       const prior = previousById.get(`${accountId}:${pos.id}`)
       const receipt = { accountId, positionId: pos.id, brokerPositionId: pos.broker_position_id ?? null,
         symbol: pos.symbol, strategy: pos.strategy, owner: 'node_fast_monitor',
         lastCompletedAt: prior?.lastCompletedAt ?? null, nextDueAt: prior?.nextDueAt ?? null,
-        lastAttemptAt: null, state: 'not_due', quoteSource: null, error: null }
+        lastAttemptAt: null, state: 'not_due', quoteSource: null, error: null,
+        ...carryReceipt(prior) }
       work.push(receipt)
+      let pricingStart = null
+      let priced = false
+      const finishPricing = (pickSource) => {
+        if (priced || pricingStart == null) return
+        priced = true
+        const ms = Math.round(mono() - pricingStart)
+        receipt.lastPricedAt = new Date(now()).toISOString()
+        receipt.lastPricingMs = ms
+        receipt.lastQuoteSource = receipt.quoteSource
+        receipt.lastQuotePick = pickSource ?? null
+        timing.priced++
+        timing.pricingMs += ms
+        if (receipt.quoteSource === 'broker') timing.brokerQuotes++
+      }
       try {
         if (pos.source === 'external') { receipt.state = 'observe_only'; continue }
         if (!manageStageAllows(db, getState, pos.strategy)) {
@@ -386,10 +434,22 @@ export async function runFastMonitor(db, creds, deps = {}) {
         if (!(Number(overrideMin) > 0)) {
           let vc = volCache.get(feedKey)
           if (!vc || now() - vc.at > VOL_TTL_MS) {
+            // V3 M1: timed, with the token-bucket wait reported by the
+            // historical step itself (null when it never reached that step).
+            let tokenWaitMs = null
+            const volStart = mono()
             try {
-              const byTf = await ws.wsGetTrendbarsBatch(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId, ['1m'], 21, 15_000)
+              const byTf = await ws.wsGetTrendbarsBatch(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId, ['1m'], 21, 15_000, 0,
+                { onTokenWait: (ms) => { tokenWaitMs = (tokenWaitMs ?? 0) + (Number(ms) || 0) } })
               relVol = relVolFromBars(byTf['1m'] || [])
             } catch { /* unknown volume → middle pace */ }
+            const volMs = Math.round(mono() - volStart)
+            receipt.lastVolFetchAt = new Date(now()).toISOString()
+            receipt.lastVolFetchMs = volMs
+            receipt.lastTokenWaitMs = tokenWaitMs == null ? null : Math.round(tokenWaitMs)
+            timing.volFetches++
+            timing.volFetchMs += volMs
+            timing.tokenWaitMs += Math.round(tokenWaitMs ?? 0)
             vc = { relVol, at: now() }
             volCache.set(feedKey, vc)
           }
@@ -415,6 +475,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
 
         // Sidecar first (fresh within maxAgeMs on the sidecar's receipt
         // clock), the broker round trip otherwise — exactly as before.
+        pricingStart = mono()
         const sidecarId = lookupId(pos)
         const pick = sidecarId == null
           ? { quote: null, source: 'missing' }
@@ -428,8 +489,10 @@ export async function runFastMonitor(db, creds, deps = {}) {
           quoteCounts.fromBroker++
           q = await ws.wsGetSpotOnce(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId)
         }
+        finishPricing(pick.source)
         const mid = Number.isFinite(q?.bid) && Number.isFinite(q?.ask) && q.bid > 0 && q.ask >= q.bid ? (q.bid + q.ask) / 2 : null
         if (mid == null) {
+          receipt.lastOutcome = 'quote_unavailable'
           receipt.state = 'quote_unavailable'
           noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
           continue
@@ -487,6 +550,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
         )
         checked++
         receipt.state = 'evaluated'
+        receipt.lastOutcome = 'evaluated'
         receipt.action = eval_.action
         receipt.lastCompletedAt = new Date(now()).toISOString()
         receipt.nextDueAt = new Date(now() + receipt.cadenceMs).toISOString()
@@ -522,12 +586,19 @@ export async function runFastMonitor(db, creds, deps = {}) {
       } catch (err) {
         receipt.state = 'error'
         receipt.error = err.message
+        // A throw after pricing began (a broker quote that threw, an action
+        // that failed) is this pass's outcome; one before it leaves the
+        // carried receipt alone.
+        if (pricingStart != null) {
+          finishPricing(null)
+          receipt.lastOutcome = 'error'
+        }
         console.error('[fast-monitor]', pos.symbol, err.message)
       }
     }
     setState(db, POSITION_WORK_KEY, JSON.stringify({ version: 1, at: new Date(now()).toISOString(),
       positions: work.slice(0, 2048), total: work.length, complete: work.length <= 2048 }))
-    return { checked, acted, completed: true, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size }
+    return { checked, acted, completed: true, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size, timing }
   } finally {
     running = false
   }
@@ -588,6 +659,8 @@ export async function withBudget(name, budgetMs, work) {
   if (raced.timedOut) {
     const msg = `${name} exceeded its ${Math.round(budgetMs / 1000)}s budget after ${Math.round((Date.now() - startedAt) / 1000)}s — wait abandoned, run continues detached`
     console.warn(`[fast-monitor] ${msg}`)
+    // V3 M1: counted per 10-minute window — heartbeats keep only last_error.
+    noteBudgetOverrun(name, budgetMs, Date.now() - startedAt)
     return { timedOut: true, error: new Error(msg) }
   }
   if (raced.error) return { error: raced.error }
@@ -817,6 +890,11 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
         () => bandSingleFlight(db, 'protection_audit', () => runProtectionAuditBothSides(db, creds, deps)))
       if (paRes.error) throw paRes.error
       const pa = paRes.value
+      // V3 M1: the first all-account Node protection audit after boot, and
+      // the first one that reached every obliged account without an error.
+      const auditClean = pa.errors.length === 0 && !pa.blind
+      stampFirst('protectionAudit', { ok: auditClean, accounts: pa.accounts, errors: pa.errors.length, unauditable: pa.unauditable.length })
+      if (auditClean) stampFirst('cleanProtectionAudit', { accounts: pa.accounts, unauditable: pa.unauditable.length })
       if (pa.naked || pa.targetless || pa.phantom) {
         console.warn(`[fast-monitor] protection audit: ${pa.naked} naked, ${pa.targetless} targetless, ${pa.phantom} stop disagreement(s) across ${pa.accounts} account(s)`)
       }
@@ -849,6 +927,7 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
   } catch (err) {
     failures.push(err.message)
     console.error('[fast-monitor] protection-audit failed:', err.message)
+    stampFirst('protectionAudit', { ok: false, error: err.message })
     try { hbMod.beat(db, 'protection_audit', { ok: false, error: err.message }) } catch { /* heartbeat is best-effort */ }
   }
   // WATCHDOG BAND. Sub-cadences gated by `due()` — see makeCadenceGate for
@@ -952,6 +1031,9 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   // pricing on every pass that had something due. `at` is this pass's own
   // timestamp, not the record's write time, so staleness is verifiable.
   let lastQuotes = null
+  // V3 M1: the per-pass timing of the last pass that priced or fetched
+  // anything — where a long tick went (see RECEIPT_CARRY_FIELDS above).
+  let lastTiming = null
   let lastBand = { ms: null, overran: false }
   let lastTickRecordAt = 0
   const startedMs = clock()
@@ -1001,6 +1083,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
           // 20-09-2026: the same figure over the last 10 minutes of priced
           // passes, so the acceptance read is not one sample wide.
           quotes10m,
+          lastTiming,
         },
         band: { everyMs: bandMs, lastMs: band.ms, max10mMs: bd.max, overran: band.overran, skippedBands: bandSkipped },
       }))
@@ -1022,10 +1105,12 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     let quotes = null
     let checked = 0
     let completed = false
+    let timing = null
     try {
       const r = await runFastMonitor(db, creds, deps)
       completed = r?.completed === true
       if (r?.quotes) { quotes = r.quotes; checked = r.checked ?? 0 }
+      timing = r?.timing ?? null
     } catch (err) {
       tickErr = err
       console.error('[fast-monitor] tick failed:', err.message)
@@ -1045,7 +1130,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     } catch (err) {
       console.error('[fast-monitor] session-open-guard failed:', err.message)
     }
-    return { err: tickErr, quotes, checked, completed }
+    return { err: tickErr, quotes, checked, completed, timing }
   })
 
   const t = setInterval(async () => {
@@ -1086,6 +1171,10 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       if (!tickErr && r?.completed === true) lastCompletedAt = new Date(clock()).toISOString()
       lastTick = ms
       tickSamples.push({ at: startedAt, ms })
+      const tm = r?.timing
+      if (tm && ((tm.priced || 0) + (tm.volFetches || 0)) > 0) lastTiming = { ...tm, passMs: ms, at: new Date(startedAt).toISOString() }
+      // V3 M1: the first tick after boot, with its outcome.
+      stampFirst('fastTick', { ms, ok: !tickErr, completed: r?.completed === true, checked: r?.checked ?? null })
       writeTickRecord(clock())
       try {
         const hb = deps.heartbeat ?? await import('./heartbeat.js')
@@ -1115,6 +1204,9 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       const ms = endedAt - startedAt
       const overran = bandOverran(ms, bandMs)
       bandSamples.push({ at: startedAt, ms })
+      // V3 M1: the first protection band after boot — did it complete, and
+      // inside its cadence?
+      stampFirst('band', { ms, overran, ok: !bandErr && !overran, error: bandErr ? bandErr.message : null })
       if (overran) console.warn(`[fast-monitor] protection band took ${Math.round(ms / 1000)}s — over its ${Math.round(bandMs / 1000)}s cadence`)
       writeRecord(endedAt, { ms, overran })
       try {
