@@ -28,6 +28,20 @@ Node agent; this sidecar just places, amends, closes, and watches positions.
 | `EXEC_SECRET`           | Shared secret; Node must send it on every call |
 | `PORT`                  | HTTP listen port (default 8091)                |
 | `TELEMETRY_PATH`        | Optional. Path (on a mounted volume, so it survives restarts) for the append-only binary order-telemetry log — every submit/reject/result on `placeOrder`. Unset = disabled, no disk I/O, `/health`'s `telemetryWritten`/`telemetryDropped` report `null`. |
+| `TICK_SPOOL_PATH`       | Optional. Directory for the tick recorder's spool (`tick_recorder.hpp`). Unset = no recorder and no tick block at all; `/tick-status` answers `{enabled:false}`. |
+| `TICK_SPOOL_CAP_BYTES`  | Optional (GW-CAP). The spool cap: sealed + open segments; the oldest sealed segment is retired past it. Default `2GiB`. A whole byte count, optionally with one binary unit (`KiB`, `MiB`, `GiB`, `TiB`); decimal units (`GB`, `G`) are refused as ambiguous. Below one segment (64 MiB) is refused. |
+| `TICK_SPOOL_RESERVE_MIN_BYTES` | Optional (GW-CAP). The free-space reserve's floor. Default `2GiB`. Same format. |
+| `TICK_SPOOL_RESERVE_PCT` | Optional (GW-CAP). The reserve as a percent of the mount; the reserve is the larger of the two. Default `20`. Whole percent 0–90; over 90 is refused. |
+
+A refused value keeps its default and is logged at boot (`tick recorder: TICK_SPOOL_… refused: …`)
+and listed on `/tick-status` `limits.refusals`. `/health` `tick.limits` and `/tick-status` `limits` report
+each limit in force and its source (`default` / `env` / `refused`), the reserve in bytes on this mount,
+and `fitsMount`: whether the cap plus one open segment (and the one queue's worth the writer can drain past
+it before sealing) still leaves the reserve free and the mount under
+its 70 % warning band (WARN is not RECORDING to the keeper's tick readiness) and 85 % stop — a cap that does
+not fit never retires anything; the recorder pauses with gaps instead. The boot log names the largest cap
+that fits. A cap above 500 whole segments (31.25 GiB) is logged too: `GET /tick-segments` lists the oldest
+500 only.
 
 ## How the Node agent delegates
 

@@ -5,8 +5,10 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { initDB, setState } from '../db.js'
-import { recordDecision, recentDecisions, pruneDecisionLog } from './decision-log.js'
+import { recordDecision, recentDecisions, pruneDecisionLog, ATTRIBUTION_MARKED_STAGES, ACCOUNT_ATTRIBUTION_MARK, ROSTER_ONLY_STAGES, ROSTER_STAGES } from './decision-log.js'
+import { REGIME_BLOCK_STAGE } from './gate-skips.js'
 
 function fresh() {
   const db = initDB(':memory:')
@@ -14,18 +16,51 @@ function fresh() {
   return db
 }
 
-test('recordDecision stamps the selected account by default, explicit id wins', () => {
+// V3 WEB-1 (8,989-A row 2): this test used to read "stamps the selected
+// account by default" and pinned the defect — every roster-level stop was
+// charged to whichever account the dashboard had selected (9,970 of 9,970
+// upstream stops on one account in 24 h). An unnamed account is NULL now,
+// which is what the module header always said.
+test('recordDecision never stamps the selected account: no named account is NULL, an explicit id wins', () => {
   const db = fresh()
-  recordDecision(db, { symbol: 'EURUSD', timeframe: '1h', strategy: 'rsi2_reversion', stage: 'lesson_decay', decision: 'skip', reason: 'alpha_decay_cooloff' })
+  recordDecision(db, { symbol: 'EURUSD', timeframe: '1h', strategy: 'rsi2_reversion', stage: 'armed_scope_prefilter', decision: 'skip', reason: 'no armed timeframe' })
   recordDecision(db, { accountId: 'ACC2', symbol: 'XAUUSD', stage: 'style_filter', decision: 'skip', reason: 'all_styles_disabled', detail: { styles: {} } })
   const rows = recentDecisions(db)
   assert.equal(rows.length, 2)
   assert.equal(rows[0].symbol, 'XAUUSD') // newest first
   assert.equal(rows[0].account_id, 'ACC2')
-  assert.equal(JSON.parse(rows[0].detail_json).styles !== undefined, true)
-  assert.equal(rows[1].account_id, 'ACC1')
-  assert.equal(rows[1].stage, 'lesson_decay')
+  assert.deepEqual(JSON.parse(rows[0].detail_json), { styles: {} }, 'an unmarked stage keeps the caller\'s detail exactly')
+  assert.equal(rows[1].account_id, null, 'RED if the selected-account fallback (ACC1) comes back')
+  assert.equal(rows[1].stage, 'armed_scope_prefilter')
   assert.equal(rows[1].decision, 'skip')
+})
+
+test('V3 WEB-1: a stage_matrix or lesson_decay row written WITH an account carries the attribution mark; without one it carries none', () => {
+  const db = fresh()
+  recordDecision(db, { accountId: 'ACC2', symbol: 'EURUSD', stage: 'stage_matrix', decision: 'skip', reason: 'off' })
+  recordDecision(db, { accountId: 'ACC2', symbol: 'EURUSD', stage: 'lesson_decay', decision: 'skip', reason: 'alpha_decay_cooloff', detail: { edge: 'x' } })
+  recordDecision(db, { symbol: 'EURUSD', stage: 'stage_matrix', decision: 'skip', reason: 'off everywhere' })
+  const rows = recentDecisions(db, { limit: 10 }).reverse()
+  assert.deepEqual(JSON.parse(rows[0].detail_json), { attribution: ACCOUNT_ATTRIBUTION_MARK })
+  assert.deepEqual(JSON.parse(rows[1].detail_json), { edge: 'x', attribution: ACCOUNT_ATTRIBUTION_MARK }, 'the caller\'s detail is kept, the mark added')
+  assert.equal(rows[2].account_id, null); assert.equal(rows[2].detail_json, null, 'the roster union\'s row is not marked as an account\'s')
+  assert.deepEqual([...ATTRIBUTION_MARKED_STAGES].sort(), ['lesson_decay', 'stage_matrix'])
+  assert.equal(ROSTER_ONLY_STAGES.includes(REGIME_BLOCK_STAGE), true, 'the literal matches gate-skips.js')
+  assert.equal(ROSTER_STAGES.includes('stage_matrix') && !ROSTER_ONLY_STAGES.includes('stage_matrix'), true, 'stage_matrix has a per-account writer too')
+})
+
+test('V3 WEB-1 wiring (comments stripped): the lesson_decay skip in autoTrade names the order\'s account; the roster stage gate names none', () => {
+  // autoTrade has no injection point short of a live broker order, so the
+  // call site is pinned on source — the last resort, with comments removed.
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(src, /recordDecision\(db, \{ accountId: String\(accountId\), symbol, timeframe: synth\.timeframe, strategy: synth\.strategy, stage: 'lesson_decay'/,
+    'RED if the lesson_decay row goes back to naming no account (the selected-account fallback wrote it)')
+  const roster = src.indexOf('const gate = anyAccountTradeGate(db, getState, {')
+  assert.ok(roster > 0)
+  const call = src.slice(src.indexOf('recordDecision(db, {', roster), src.indexOf('})', src.indexOf('recordDecision(db, {', roster)))
+  assert.match(call, /stage: 'stage_matrix'/)
+  assert.doesNotMatch(call, /accountId/, 'the roster union is roster-wide: no single account')
 })
 
 test('recentDecisions filters by symbol and stage, caps limit', () => {

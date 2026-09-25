@@ -1,9 +1,10 @@
 import { isOurs, parseLabel, labelIntentId, ownedByIntent } from '../lib/trade-labels.js'
-import { recordTradePlan } from './trade-plans.js'
+import { recordTradePlan, planProblems, PLAN_ABSURD_RISK_FRACTION } from './trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
 import { getState, setState as setAgentState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
 import { lotsFromUnits } from '../lib/lot-size-registry.js'
+import { recordPositionEvent } from './position-events.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -102,9 +103,35 @@ export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbo
     db.prepare(`UPDATE monitored_positions SET strategy = COALESCE(strategy, ?) WHERE trade_id = ?`).run(strategy, tradeId)
     const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(tradeId)
     if (!hasPlan) {
+      // X1 / W3 (25-09-2026): the intent's sl/tp are in the units the order
+      // carried them (entry_intents.sl_units / tp_units). A relative leg is
+      // wire points — never a price: it becomes one from the fill (`entry`,
+      // the broker's open price the relative bracket was applied to). Before
+      // this, `it.sl` went in as a price: #1686 JPM.US planned_sl 1,732,000.
+      // A pre-X1 row recorded no units: its value is read as a price only
+      // when it IS price-shaped for this entry (right side, within
+      // planProblems' scale). Wire points cannot pass that test — a stop
+      // 0.1–5 % away is 100–5,000× the price in points — so they fall back to
+      // the broker's own stop / target on the position.
+      const dir = sideWord === 'BUY' ? 1 : -1
+      const e = Number(entry)
+      const haveEntry = entry != null && Number.isFinite(e) && e > 0
+      const legPrice = (value, units, sign, leg) => {
+        const v = Number(value)
+        if (value == null || !Number.isFinite(v)) return null
+        if (units === 'price') return v
+        if (units === 'relative_points') return haveEntry ? e + sign * dir * v / 100_000 : null
+        // planProblems judges the stop's scale only; the target's is judged here.
+        if (units == null && haveEntry && planProblems({ side: sideWord, entry: e, [leg]: v }).length === 0
+          && Math.abs(v - e) / e <= PLAN_ABSURD_RISK_FRACTION) return v
+        return null
+      }
       recordTradePlan(db, tradeId, {
         accountId: acct, symbol: symbolName, side: sideWord, strategy, timeframe: parsed?.timeframe || null,
-        entry: entry ?? null, sl: it.sl ?? sl ?? null, tp: it.tp ?? tp ?? null, source: 'reconciler_adopted_intent',
+        entry: entry ?? null,
+        sl: legPrice(it.sl, it.sl_units, -1, 'sl') ?? sl ?? null,
+        tp: legPrice(it.tp, it.tp_units, +1, 'tp') ?? tp ?? null,
+        source: 'reconciler_adopted_intent',
       })
     }
     return { intentId: tag, origin, strategy, riskEventId }
@@ -312,6 +339,25 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       }
       if (row.broker_volume_units != null && bVol != null && differs(bVol, row.broker_volume_units)) {
         manualChanges.push({ kind: 'volume', symbol: row.symbol, positionId: posId, from: row.broker_volume_units, to: bVol })
+        // A VOLUME THAT FELL IS A PARTIAL CLOSE (V3 B1 checker blocker).
+        // loop.js PARTIAL_EXIT nulls this baseline first, so a fall seen here
+        // was made by hand in cTrader or by a partial writer that does not
+        // reset the baseline (the keeper, the trade guard, the momentum
+        // partial manager — each also leaves its own evidence). Recorded as
+        // indexed evidence for the full close (lib/deal-money.js
+        // openedVolumeOnRecord): without it a manual partial left the later
+        // FULL_EXIT with held = closed volume, writing ONE deal's money for the
+        // whole position (#714's defect, by the manual route). Recorded HERE,
+        // on every account's pass — loop.js's TAMPER alert is reached by the
+        // primary pass only. A distinct kind: it moves no management state
+        // (position-events.js) and names what was observed, not who did it.
+        if (Number(bVol) < Number(row.broker_volume_units)) {
+          recordPositionEvent(db, {
+            accountId: acct, positionId: posId, tradeId: row.trade_id ?? null, symbol: row.symbol,
+            kind: 'volume_reduced', fromValue: row.broker_volume_units, toValue: bVol, source: 'reconciler',
+            reason: 'broker volume fell between reconcile passes (tamper watch): a partial close, writer not identified',
+          })
+        }
       }
       if (!updates.side) { // side flip already adopts SL/TP wholesale
         if (row.broker_sl != null && differs(bSl, row.broker_sl) && differs(bSl, row.current_sl)) {

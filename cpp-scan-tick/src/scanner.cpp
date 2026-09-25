@@ -16,8 +16,8 @@ tick::StrategyParams params(const jsn::Value& input) {
   return p;
 }
 }
-TickScanner::TickScanner(int workers, size_t queue, std::function<long long()> clock)
-  : clock_(std::move(clock)), queueCapacity_(SpscRing<tick::WorkerEvent>(queue).capacity() - 1),
+TickScanner::TickScanner(int workers, size_t queue, std::function<long long()> clock, long long staleAfterMs)
+  : clock_(std::move(clock)), staleAfterMs_(staleAfterMs), queueCapacity_(SpscRing<tick::WorkerEvent>(queue).capacity() - 1),
     pendingPerWorker_(workers > 0 ? workers : 1),
     workers_(workers, queue, [this](int, const auto& event) { consume(event); }) { workers_.start(); }
 TickScanner::~TickScanner() { workers_.stop(); }
@@ -46,15 +46,38 @@ jsn::Value TickScanner::submit(const jsn::Value& batch) {
     if (!in.meta.sourceTime.isNull()) integer(in.meta.sourceTime, 1, 9007199254740991LL);
     in.meta.gap = r.get("gapBefore").asBool(); inputs.push_back(std::move(in));
   }
-  uint32_t slotId; std::shared_ptr<Slot> slot; bool newSlot = false;
+  uint32_t slotId = 0, replaced = 0; std::shared_ptr<Slot> slot; bool newSlot = false;
+  std::string evict;
   {
     std::lock_guard lock(registry_);
-    auto found = ids_.find(ident.key);
-    if (found == ids_.end()) {
-      if (slots_.size() >= 512) throw std::runtime_error("stream_capacity; retire_or_restart_with_rewarm");
-      slotId = nextId_ + 1; newSlot = true;
-      slot = std::make_shared<Slot>(ident, p);
-    } else { slotId = found->second; slot = slots_.at(slotId); }
+    auto found = streams_.find(ident.stream);
+    if (found != streams_.end()) {
+      const auto& stream = found->second;
+      auto current = slots_.at(stream.slot);
+      if (current->identity.epoch == ident.epoch) { slotId = stream.slot; slot = std::move(current); }
+      // A retired epoch (the old process during a deploy overlap) must not
+      // take the stream back; 400 is a rejection the gateway does not retry.
+      else if (std::find(stream.retiredEpochs.begin(), stream.retiredEpochs.end(), ident.epoch) != stream.retiredEpochs.end()) {
+        ++superseded_; throw std::invalid_argument("superseded_feed_epoch");
+      } else { replaced = stream.slot; newSlot = true; }
+    } else {
+      if (streams_.size() >= kStreamCapacity) {
+        // Evict the least recently fed stale stream; none stale is a refusal.
+        long long oldest = 0;
+        for (const auto& [key, stream] : streams_) {
+          const auto& s = slots_.at(stream.slot);
+          std::lock_guard item(s->mutex);
+          if (s->inflight == 0 && now - s->offeredAt >= staleAfterMs_ && (evict.empty() || s->offeredAt < oldest)) { evict = key; oldest = s->offeredAt; }
+        }
+        if (evict.empty()) throw std::runtime_error("stream_capacity; no_stale_stream_to_evict");
+      }
+      newSlot = true;
+    }
+    if (newSlot) {
+      // Draining slots are transient, but they are bounded too.
+      if (slots_.size() >= 2 * kStreamCapacity) throw std::runtime_error("stream_capacity; retired_slots_draining");
+      slotId = nextId_ + 1; slot = std::make_shared<Slot>(ident, p);
+    }
   }
   size_t required = 0;
   {
@@ -71,12 +94,31 @@ jsn::Value TickScanner::submit(const jsn::Value& batch) {
     if (required > queueCapacity_ - pendingPerWorker_[workers_.workerFor(slotId)].load(std::memory_order_acquire))
       throw std::runtime_error("ingress_capacity_retry_batch");
   }
+  // producer_ is held: nothing else admits, dispatches or refreshes a stream
+  // between the decision above and this commit; workers only drain.
   if (newSlot) {
     std::lock_guard lock(registry_);
-    nextId_ = slotId; ids_[ident.key] = slotId; slots_[slotId] = slot;
+    if (!evict.empty()) {
+      const auto victim = streams_.find(evict);
+      slots_.erase(victim->second.slot); streams_.erase(victim); ++evicted_;
+    }
+    nextId_ = slotId; slots_[slotId] = slot;
+    auto& stream = streams_[ident.stream];
+    if (replaced) {
+      // The first record on the new slot is a gap (lastSubmitted 0), so the
+      // strategy rewarms from a snapshot instead of bridging two processes.
+      const auto old = slots_.at(replaced);
+      std::lock_guard item(old->mutex);
+      old->retired = true; ++stream.turnovers; ++turnovers_;
+      stream.retiredEpochs.push_back(old->identity.epoch);
+      if (stream.retiredEpochs.size() > 8) stream.retiredEpochs.pop_front();
+      if (old->inflight == 0) slots_.erase(replaced);
+    }
+    stream.slot = slotId;
   }
   pendingPerWorker_[workers_.workerFor(slotId)].fetch_add(required, std::memory_order_relaxed);
   long long accepted = 0, duplicate = 0, dropped = 0;
+  { std::lock_guard lock(slot->mutex); slot->offeredAt = now; }
   for (auto& in : inputs) {
     {
       std::lock_guard lock(slot->mutex);
@@ -85,11 +127,11 @@ jsn::Value TickScanner::submit(const jsn::Value& batch) {
         || in.meta.receivedAt < slot->lastSubmittedReceipt;
       slot->lastSubmittedReceipt = in.meta.receivedAt; slot->lastSourceSequence = in.meta.sourceSequence;
       slot->lastSubmitted = in.event.seq; slot->calendar = batch.get("calendar");
-      slot->metadata[in.event.seq] = in.meta;
+      slot->metadata[in.event.seq] = in.meta; ++slot->inflight;
     }
     in.event.symbolId = slotId;
     const auto before = workers_.stats().dropped; workers_.dispatch(in.event);
-    if (workers_.stats().dropped > before) { std::lock_guard lock(slot->mutex); slot->metadata.erase(in.event.seq); ++dropped; }
+    if (workers_.stats().dropped > before) { std::lock_guard lock(slot->mutex); slot->metadata.erase(in.event.seq); --slot->inflight; ++dropped; }
     else ++accepted;
   }
   return jsn::Value(jsn::Object{{"accepted", accepted}, {"duplicates", duplicate}, {"dropped", dropped}, {"orderAuthority", false}});
@@ -101,7 +143,25 @@ void TickScanner::consume(const tick::WorkerEvent& event) {
   } completion{pendingPerWorker_[workers_.workerFor(event.symbolId)]};
   std::shared_ptr<Slot> slot;
   { std::lock_guard lock(registry_); slot = slots_.at(event.symbolId); }
-  std::lock_guard lock(slot->mutex);
+  bool drained = false;
+  {
+    std::lock_guard lock(slot->mutex);
+    evaluate(*slot, event);
+    drained = --slot->inflight == 0 && slot->retired;
+  }
+  // A superseded slot is erased at its last event, never earlier: until then
+  // an event in a worker ring still resolves its own slot by id.
+  if (drained) {
+    std::lock_guard lock(registry_);
+    const auto it = slots_.find(event.symbolId);
+    if (it != slots_.end() && it->second == slot) {
+      std::lock_guard item(slot->mutex);
+      if (slot->retired && slot->inflight == 0) slots_.erase(it);
+    }
+  }
+}
+void TickScanner::evaluate(Slot& owner, const tick::WorkerEvent& event) {
+  Slot* slot = &owner;
   auto meta = slot->metadata.at(event.seq); slot->metadata.erase(event.seq);
   tick::StrategyQuote q;
   q.seq = static_cast<uint32_t>(meta.sourceSequence); q.recvMs = event.recvMs;
@@ -135,17 +195,27 @@ void TickScanner::consume(const tick::WorkerEvent& event) {
 jsn::Value TickScanner::status() {
   jsn::Array work; const auto now = clock_();
   std::lock_guard lock(registry_);
-  for (const auto& [id, slot] : slots_) {
+  long long stale = 0;
+  // One row per stream, from its current slot; a draining superseded slot is
+  // counted, not listed (its row id would repeat the stream's).
+  for (const auto& [key, stream] : streams_) {
+    const auto& slot = slots_.at(stream.slot);
     std::lock_guard item(slot->mutex);
-    work.push_back(jsn::Value(jsn::Object{{"id", hash(slot->identity.key)}, {"role", "scanner"},
+    if (slot->inflight == 0 && now - slot->offeredAt >= staleAfterMs_) ++stale;
+    work.push_back(jsn::Value(jsn::Object{{"id", hash(slot->identity.stream)}, {"role", "scanner"},
       {"accountId", slot->identity.feed.get("accountId")}, {"host", slot->identity.feed.get("host")}, {"symbolId", slot->identity.feed.get("symbolId")},
       {"calendar", slot->calendar}, {"lastCompletedAtMs", slot->lastCompleted}, {"lastQuoteAtMs", slot->lastReceived},
       {"quoteMaxAgeMs", slot->strategy.params().maxQuoteAgeMs}, {"pending", static_cast<long long>(slot->metadata.size())},
       {"nextDueMs", slot->metadata.empty() ? jsn::Value() : jsn::Value(slot->metadata.begin()->second.receivedAt)},
-      {"state", slot->metadata.empty() ? "waiting_for_quote" : "queued"}, {"resets", slot->resets}, {"expiredCandidates", slot->expired}}));
+      {"state", slot->metadata.empty() ? "waiting_for_quote" : "queued"}, {"resets", slot->resets}, {"expiredCandidates", slot->expired},
+      {"feedEpoch", slot->identity.epoch}, {"epochTurnovers", stream.turnovers}}));
   }
   const auto stats = workers_.stats();
-  return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-tick"}, {"observedAtMs", now}, {"workComplete", true}, {"work", work},
+  jsn::Value streams(jsn::Object{{"count", static_cast<long long>(streams_.size())}, {"capacity", static_cast<long long>(kStreamCapacity)},
+    {"draining", static_cast<long long>(slots_.size() - streams_.size())}, {"stale", stale}, {"staleAfterMs", staleAfterMs_},
+    {"epochTurnovers", turnovers_}, {"evicted", evicted_}, {"supersededEpochRefusals", superseded_},
+    {"note", "A stream is one registered (feed, config, profile) across gateway feed epochs. A new epoch rewarms the stream on a new slot; the old slot drains."}});
+  return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-tick"}, {"observedAtMs", now}, {"workComplete", true}, {"work", work}, {"streams", streams},
     {"processed", static_cast<long long>(stats.processed)}, {"dropped", static_cast<long long>(stats.dropped)}, {"orderAuthority", false}, {"mode", "mirror"}});
 }
 }

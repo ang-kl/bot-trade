@@ -25,11 +25,12 @@
 //
 // TWO RULES THAT SURVIVE FROM THE FX-DAY VERSION:
 //
-//   1. The BALANCE CARRY must run oldest → newest. It walks backwards from the
-//      current stamped balance, so every row's openBal depends on the row after
-//      it. Reversing the source array before the carry inverts every balance on
-//      the page — a bug that looks like plausible numbers. rollingHourWindows
-//      therefore returns OLDEST FIRST, and the reversal happens afterwards.
+//   1. rollingHourWindows returns OLDEST FIRST, and the reversal happens
+//      afterwards. This used to protect a client-side balance carry that
+//      walked backwards from the current balance; since V3 WEB-3 there is no
+//      carry — each row's open/close balance is the broker balance the server
+//      observed at that row's own edges — so the rule now only keeps the
+//      `isLive` flag on the newest window.
 //
 //   2. The DISPLAY leads with the newest row, because that is the row you look
 //      at first. With a rolling window that is a plain reverse: there are no
@@ -78,7 +79,7 @@ export function rollingWindow(nowMs, count = 24) {
 /**
  * Newest first, with `isLive` on the row whose window ends now.
  *
- * @param {Array} rows  windows WITH balances already carried, oldest first
+ * @param {Array} rows  windows with their evidence attached, oldest first
  */
 export function displayOrder(rows) {
   if (!Array.isArray(rows) || !rows.length) return []

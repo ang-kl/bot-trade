@@ -1,7 +1,9 @@
 #include "../watchdog.hpp"
 #include "../watchdog_http.hpp"
 #include <cassert>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 using jsn::Value; using jsn::Object; using jsn::Array;
 namespace {
 constexpr long long T = 1800000000000LL;
@@ -154,6 +156,64 @@ int main() {
       {"positions", Array{}}, {"missingSl", 0}, {"missingTp", 0}});
     s.protection(Value(Object{{"accounts", Array{a}}, {"sessions", Array{session}}}), T);
     assert(!active(s, "protection:demo.ctraderapi.com:11:unknown"));
+  }
+  {
+    // The no_orders notice's blocker line, driven by the SAME Node item shape
+    // that agent/services/scanner-integration.test.js pins on the Node side:
+    // Node sends `blocker` as a string and the notice must print it.
+    std::ifstream f("src/tests/fixtures/node-entry-activity.json"); assert(f);
+    std::stringstream raw; raw << f.rdbuf(); const auto item = jsn::parse(raw.str()); assert(item && item->get("blocker").isString());
+    verify::WatchState s; const long long now = item->get("lastCompletedAtMs").asNumber();
+    healthy(s, {*item}, now);
+    const auto id = "node:no_orders:11:" + item->get("sessionId").asString();
+    assert(active(s, id));
+    const auto next = s.nextDelivery(now); assert(next.get("incidentId").asString() == id);
+    const auto text = verify::watchNotificationText(next, now);
+    assert(text.find("blocker: " + item->get("blocker").asString()) != std::string::npos);
+    assert(s.status(now).get("incidents").get(id).get("detail").get("blocker").asString() == item->get("blocker").asString());
+  }
+  {
+    // Persist-strip: Node's entryDiagnostics rides every contract (up to
+    // 32 KiB). The relay keeps it in memory; the fsynced state never holds it,
+    // and a state written by an older build is stripped on restore.
+    verify::WatchState s; auto body = contract();
+    body.set("entryDiagnostics", Value(Object{{"schemaVersion", 1}, {"source", "node_records"}, {"complete", true}, {"accounts", Array{}}}));
+    s.probe("node", true, body, T);
+    assert(s.snapshot().get("services").get("node").get("contract").isObject());
+    assert(s.snapshot().get("services").get("node").get("contract").get("entryDiagnostics").isNull());
+    assert(s.nodeEntryDiagnostics().get("source").asString() == "node_records" && s.nodeEntryDiagnosticsAtMs() == T);
+    assert(jsn::dump(s.snapshot()).find("entryDiagnostics") == std::string::npos);
+    // A later contract without the block clears the relay's copy.
+    s.probe("node", true, contract({}, T + 1000), T + 1000);
+    assert(s.nodeEntryDiagnostics().isNull() && s.nodeEntryDiagnosticsAtMs() == T + 1000);
+    // An invalid contract does not replace it.
+    s.probe("node", true, body, T + 2000); auto bad = body; bad.set("workComplete", false); s.probe("node", true, bad, T + 3000);
+    assert(s.nodeEntryDiagnosticsAtMs() == T + 2000);
+    auto old = s.snapshot(); auto services = old.get("services").asObject(); auto node = services["node"].asObject();
+    auto stored = node["contract"].asObject(); stored["entryDiagnostics"] = body.get("entryDiagnostics");
+    node["contract"] = Value(stored); services["node"] = Value(node); old.set("services", Value(services));
+    assert(jsn::dump(old).find("entryDiagnostics") != std::string::npos);
+    verify::WatchState reboot; assert(reboot.restore(old));
+    assert(jsn::dump(reboot.snapshot()).find("entryDiagnostics") == std::string::npos);
+    assert(reboot.nodeEntryDiagnostics().isNull() && reboot.nodeEntryDiagnosticsAtMs() == 0); // never relayed from disk
+  }
+  {
+    // Node's scanner collector is calendar-free liveness: a missing deadline
+    // is a warning, a passed one (plus the service grace) a warning stall.
+    verify::WatchState s; auto w = work("scanner-bridge:collector", "collector"); w.set("calendar", Value());
+    w.set("lastCompletedAtMs", T); w.set("nextDueMs", T + 120000);
+    healthy(s, {w}, T + 179999); assert(!active(s, "node:work:scanner-bridge:collector:stalled"));
+    assert(!active(s, "node:work:scanner-bridge:collector:calendar")); // no calendar is not a calendar fault here
+    healthy(s, {w}, T + 180000); assert(active(s, "node:work:scanner-bridge:collector:stalled"));
+    assert(s.snapshot().get("incidents").get("node:work:scanner-bridge:collector:stalled").get("severity").asString() == "warning");
+    w.set("lastCompletedAtMs", T + 180000); w.set("nextDueMs", T + 300000); healthy(s, {w}, T + 180000);
+    assert(!active(s, "node:work:scanner-bridge:collector:stalled")); // recovers on a fresh round
+    w.set("nextDueMs", Value()); healthy(s, {w}, T + 181000);
+    assert(active(s, "node:work:scanner-bridge:collector:deadline_unknown"));
+    // A gateway's stall stays urgent.
+    auto g = work("reconcile", "gateway"); g.set("calendar", Value()); g.set("nextDueMs", T);
+    healthy(s, {g}, T + 60000);
+    assert(s.snapshot().get("incidents").get("node:work:reconcile:stalled").get("severity").asString() == "urgent");
   }
   std::cout << "watchdog failure, work, recovery and restart checks passed\n";
 }
