@@ -40,7 +40,7 @@
 // ---------------------------------------------------------------------------
 import { readFileSync } from 'node:fs'
 import { TICK_SHADOW_SIM_FILE, rowCostModel, loadRepoSchedule } from '../lib/tick-cost-schedule.js'
-import { normalizeMaxHoldEvents } from '../lib/tick-replay-sim.js'
+import { normalizeMaxHoldEvents, liveFiltersKey } from '../lib/tick-replay-sim.js'
 import { normalizeParams } from '../lib/tick-strategy.js'
 import { RECORDER_ONLY_GAPS } from './tick-research-run.js'
 
@@ -144,6 +144,14 @@ export function simComparison(trialSim, params, shadowSim, sidecarTrades = [], s
   cmp('minTargetToCost', s.minTargetToCost, sh.minTargetToCost)
   cmp('maxHoldMs', s.maxHoldMs, sh.maxHoldMs)
   cmp('maxHoldEvents', normalizeMaxHoldEvents(s.maxHoldEventsResolved ?? s.maxHoldEvents, N), normalizeMaxHoldEvents(sh.maxHoldEvents, N))
+  // PR-Q3: a trial replayed with the live filters under the 'book' model
+  // (sim.liveFilters.model) takes different trades — a refused signal frees
+  // the book for the next one — so against a shadow that runs no such block
+  // it is a different population, not a replayer defect: named here so the
+  // trades read not_comparable rather than a mismatch. Under the 'firer'
+  // model the BOOK is the unfiltered one (the parity record carries the
+  // refused trades it held, flagged vetoedBy), so it compares as before.
+  if (liveFiltersKey(s.liveFilters, { book: true }) !== liveFiltersKey(sh.liveFilters, { book: true })) diffs.push({ field: 'liveFilters', replay: s.liveFilters ?? null, shadow: sh.liveFilters ?? null })
   const replayTerms = Object.fromEntries(COST_TERMS.map(k => [k, Number(s[k]) || 0]))
   if (sidecarTrades.length) {
     for (const t of sidecarTrades) {
