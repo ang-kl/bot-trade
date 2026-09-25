@@ -11,8 +11,11 @@
 // cite, sql, when, judge }: one bounded SQL statement for its population and
 // a pure judge per row. A rule's version is pinned to a hash of its sql,
 // when() and judge() (order-lifecycle.test.js), so changing what a rule means
-// without bumping its version fails the gate. Line citations are at origin/
-// main f1d9223, where the evidence map was read.
+// without bumping its version fails the gate. The shared machinery (context,
+// runRule, summarise, the limits) is pinned the same way under
+// HELPERS_VERSION. Line citations are at the tree this file ships in: the
+// evidence map was read at f1d9223 and each cite was re-anchored to the same
+// code on this branch (the L1 fix round), so a cite names a line that exists.
 //
 // NEW VERSUS LEGACY. `acceptanceStart` (agent/config/order-lifecycle.json)
 // splits a defect made on or after it (NEW: what the goal rows count) from one
@@ -22,8 +25,11 @@
 //
 // A ZERO THAT CAME FROM NO INPUT IS NOT A PASS. A pre-order, order or close
 // rule with no population in its window reports measurable: false with the
-// reason; a stuck rule is current state and always measurable. A rule whose
-// statement fails reports its error, never a count of 0.
+// reason; a stuck rule is current state and measurable unless the account
+// asked for is one nothing knows. A rule whose statement fails reports its
+// error, never a count of 0 — and a stage with an unreadable or truncated
+// rule says so in its summary, its goal row and its daily line, so a zero
+// over the readable rules is never presented as the stage's zero.
 //
 // BOUNDED. Every statement ends in LIMIT; a rule that reaches it says
 // `truncated: true` rather than presenting a prefix as the whole. The four
@@ -39,6 +45,7 @@ import { labelIntentId, isOurs } from '../lib/trade-labels.js'
 import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 import { requestedAccount, scopeReport } from '../lib/account-scope.js'
 import { RETIRED_CONTROLLERS } from '../shared/controller-groups.js'
+import { CONTROLLERS, heartbeatView } from './heartbeat.js'
 
 export const SCHEMA_VERSION = 1
 export const SNAPSHOT_KEY = 'order_lifecycle_last_json'
@@ -56,6 +63,16 @@ export const ABSURD_RISK_FRACTION = 0.5
 export const STAGES = Object.freeze(['pre_order', 'order', 'close', 'stuck'])
 export const SAMPLE_LIMIT = 25
 export const SAMPLE_LIMIT_ONE_RULE = 200
+/**
+ * A snapshot this old is not evidence about now: the goal rows' default
+ * limit (lifecycleSnapshotMaxAgeMin), the controller's own record limit
+ * (heartbeat.js order_lifecycle maxAgeSec 1800) and the falsifiers' coverage.
+ */
+export const SNAPSHOT_FRESH_MS = 30 * 60_000
+/** A trade younger than this is still being written (its plan, its monitored row): ORD-01 and STK-04, the same 10 minutes ORD-09 carries inline. */
+export const WRITE_GRACE_MS = 10 * 60_000
+/** At most this many subjects are named per information class (STK-11's record_stale / never_ran). */
+const INFO_NAMES_MAX = 20
 
 const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000
 const OUT = Symbol('not-in-population')
@@ -328,7 +345,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'PRE-02', key: 'refusal_unscored', version: 1, stage: 'pre_order', severity: 'defect', fix: 'writer',
-    cite: ['refusal-ledger.js:163', 'refusal-ledger.js:204-211', 'refusal-ledger.js:228', 'goal-table.js:407-421'],
+    cite: ['refusal-ledger.js:163', 'refusal-ledger.js:204-211', 'refusal-ledger.js:228', 'goal-table.js:415-429'],
     noun: 'scored refusal row (by scored_at, refusal-ledger.js:228 — not refusals made in the window)',
     populationLimit: REFUSAL_POPULATION_LIMIT,
     sql: `SELECT opportunity_key, account_id, symbol, outcome, scored_at FROM refusal_scores WHERE scored_at >= ? LIMIT ?`,
@@ -341,7 +358,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'PRE-03', key: 'intent_incomplete', version: 1, stage: 'pre_order', severity: 'defect', fix: 'writer',
-    cite: ['exec-engine.js:809', 'loop.js:693-696', 'exec-engine.js:811', 'reconciler.js:93-98', 'db.js:2046-2058'],
+    cite: ['exec-engine.js:809', 'loop.js:693-696', 'exec-engine.js:811', 'reconciler.js:93-98', 'db.js:2102-2114'],
     noun: 'entry intent',
     sql: `SELECT id, account_id, symbol, symbol_id, side, order_type, volume, producer_id, basis, risk_event_id, created_at
             FROM entry_intents WHERE created_at >= ? OR created_at IS NULL LIMIT ?`,
@@ -382,7 +399,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'PRE-05', key: 'approval_dropped', version: 1, stage: 'pre_order', severity: 'defect', fix: 'reporting',
-    cite: ['opportunity-disposition.js:44', 'log-inspector.js:326-350'],
+    cite: ['opportunity-disposition.js:44', 'log-inspector.js:327-351'],
     noun: 'approval',
     sql: APPROVALS_SQL, params: w => [w.lowSpace, w.lowSpace],
     when: r => tsMs(r.created_at), subject: r => `risk_event:${r.id}`, account: acctCol,
@@ -390,12 +407,16 @@ export const RULES = Object.freeze([
   },
   // ======================================================== (b) ORDER
   {
-    id: 'ORD-01', key: 'bot_trade_unreasoned', version: 1, stage: 'order', severity: 'defect', fix: 'writer',
-    cite: ['close-completeness.js:69-100', 'position-history.js:292', 'trade-labels.js:360-363', 'actions.js:5935-5940'],
+    // v2 (L1 fix round, N6): the plan is written at the fill, so it is owed
+    // only by a filled row (open or closed) — not by a write-ahead
+    // 'submitting' / 'unconfirmed' row, whose staleness is STK-03's — and
+    // not by an open row inside WRITE_GRACE_MS of its opening.
+    id: 'ORD-01', key: 'bot_trade_unreasoned', version: 2, stage: 'order', severity: 'defect', fix: 'writer',
+    cite: ['close-completeness.js:69-100', 'position-history.js:292', 'trade-labels.js:360-363', 'actions.js:5957-5962'],
     noun: 'bot trade',
     sql: TRADES_OPENED_SQL, params: opened,
     when: (r, ctx) => fillOf(r, ctx).ms, subject: byId, account: acctCol, inWindow: tradeInWindow,
-    judge(r, ctx) {
+    judge(r, ctx, w) {
       if (!botTrade(r)) return OUT
       const missing = []
       if (blank(r.account_id)) missing.push('account_id')
@@ -406,7 +427,9 @@ export const RULES = Object.freeze([
       if (blank(plan?.strategy) && blank(r.strategy) && blank(r.label_strategy)) missing.push('strategy')
       if (!CLEAN_BOT_ORIGINS.includes(r.origin)) missing.push('origin')
       if (r.risk_event_id == null) missing.push('risk_event_id')
-      if (!plan) missing.push('trade_plan')
+      const openedMs = tsMs(r.opened_at)
+      const planOwed = r.status === 'closed' || (r.status === 'open' && !(openedMs != null && w.nowMs - openedMs < WRITE_GRACE_MS))
+      if (!plan && planOwed) missing.push('trade_plan')
       if (!missing.length) return strategyLabelOnly ? { violation: false, class: 'strategy_label_only' } : null
       return { missing, detail: `#${r.id} ${r.symbol} ${r.status} origin=${r.origin ?? 'NULL'}`, openedAtSource: fillOf(r, ctx).source }
     },
@@ -674,7 +697,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'CLS-06', key: 'deal_detail_lost', version: 1, stage: 'close', severity: 'defect', fix: 'writer',
-    cite: ['index.js:127-129', 'broker-history-import.js:159-170'],
+    cite: ['index.js:128-130', 'broker-history-import.js:159-170'],
     noun: 'broker closing deal',
     sql: DEALS_SQL, params: opened, when: r => tsMs(r.closed_at),
     subject: r => `deal:${r.deal_id}`, account: acctCol,
@@ -687,7 +710,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'CLS-07', key: 'close_time_disagrees', version: 1, stage: 'close', severity: 'defect', fix: 'reporting',
-    cite: ['db.js:2304', 'close-completeness.js:136'],
+    cite: ['db.js:2360', 'close-completeness.js:136'],
     noun: 'close',
     sql: CLOSES_SQL, params: closedParams, when: closeMsOf, subject: byId, account: acctCol,
     judge(r) {
@@ -735,7 +758,7 @@ export const RULES = Object.freeze([
   // ======================================================== (d) STUCK
   {
     id: 'STK-01', key: 'resting_record_orphaned', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['closed-market-limits.js:84-88', 'loop.js:114', 'loop.js:4600', 'entry-mode.js:82-86', 'entry-drain.js:102', 'closed-market-limits.js:276-278'],
+    cite: ['closed-market-limits.js:85-88', 'loop.js:114', 'loop.js:4600', 'entry-mode.js:82-86', 'entry-drain.js:102', 'closed-market-limits.js:276-278'],
     noun: 'working resting-order row',
     sql: `SELECT id, account_id, symbol, dir, order_id, note, placed_at, expires_at, status FROM pending_orders WHERE status = 'working' LIMIT ?`,
     params: () => [], when: r => tsMs(r.placed_at), subject: r => `pending:${r.id}`, account: acctCol,
@@ -785,12 +808,16 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'STK-04', key: 'open_trade_unmonitored', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
+    // v2 (L1 fix round, N6): a row opened inside WRITE_GRACE_MS is still
+    // being written (its monitored row follows the fill) — not stuck yet.
+    id: 'STK-04', key: 'open_trade_unmonitored', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
     cite: ['reconciler.js:619-630'],
     noun: 'open trade row',
     sql: `SELECT id, account_id, symbol, ctrader_position_id, origin, opened_at FROM trades WHERE status = 'open' LIMIT ?`,
     params: () => [], when: r => tsMs(r.opened_at), subject: byId, account: acctCol,
-    judge(r, ctx) {
+    judge(r, ctx, w) {
+      const opened = tsMs(r.opened_at)
+      if (opened != null && w.nowMs - opened < WRITE_GRACE_MS) return null
       const missing = []
       if (r.ctrader_position_id == null) missing.push('ctrader_position_id')
       if (!ctx.activeTradeIds.has(r.id) && !(r.ctrader_position_id != null && ctx.activeIdentities.has(idKey(acctOf(r.account_id), r.ctrader_position_id)))) missing.push('active_monitored_row')
@@ -834,8 +861,11 @@ export const RULES = Object.freeze([
     judge: r => ({ missing: [r.kind === 'gave_up' ? 'record' : 'verdict'], class: r.kind, detail: `${tail(r.account_id)} ${r.symbol} pos ${r.position_id}: ${cut(r.note ?? '', 80)}` }),
   },
   {
-    id: 'STK-07', key: 'entry_transition_stuck', version: 1, stage: 'stuck', severity: 'defect', fix: 'writer+resolver', current: true,
-    cite: ['entry-drain.js:118-140', 'entry-drain.js:130'],
+    // v2 (L1 fix round, N7): entry-drain.js:132-140 also logs a pass whose
+    // from equals its to; such a row is not an entry into the state and would
+    // move `since` later, understating how long the transition has been stuck.
+    id: 'STK-07', key: 'entry_transition_stuck', version: 2, stage: 'stuck', severity: 'defect', fix: 'writer+resolver', current: true,
+    cite: ['entry-drain.js:119-140', 'entry-drain.js:130'],
     noun: 'account engine record',
     sql: `SELECT key, value FROM agent_state WHERE key >= 'acct:' AND key < 'acct;' AND key LIKE '%:engine_status_json' LIMIT ?`,
     params: () => [], when: () => null,
@@ -852,7 +882,11 @@ export const RULES = Object.freeze([
       if (!['WARMING', 'QUIESCING', 'RECONCILING'].includes(state)) return null
       // updatedAt is rewritten every pass (entry-drain.js:130): the entry time
       // is a LOWER BOUND from the newest drain row that recorded the transition.
-      const entered = ctx.drainLog.filter(d => acctOf(d.account_id) === acct && parseJson(d.body)?.to === state).map(d => tsMs(d.at)).filter(x => x != null)
+      const entered = ctx.drainLog.filter(d => {
+        if (acctOf(d.account_id) !== acct) return false
+        const b = parseJson(d.body)
+        return b?.to === state && b?.from !== b?.to
+      }).map(d => tsMs(d.at)).filter(x => x != null)
       const since = entered.length ? Math.max(...entered) : ctx.actionLogFloorMs
       if (since == null || w.nowMs - since <= 30 * MIN) return null
       return { missing: ['settle'], class: state, since: iso(since), sinceIsLowerBound: !entered.length, detail: `${tail(acct)} ${state} since ${entered.length ? '' : 'at least '}${iso(since).slice(0, 16)}` }
@@ -860,7 +894,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'STK-08', key: 'outbox_backlog', version: 1, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['db.js:1815', 'independent-protection.js:117', 'watchdog_state.cpp:61-65'],
+    cite: ['db.js:1871', 'independent-protection.js:117', 'watchdog_state.cpp:61-65'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,
@@ -889,7 +923,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'STK-09', key: 'targetless_repeating', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver+owner', current: true,
-    cite: ['naked-position-guard.js:400-425'],
+    cite: ['naked-position-guard.js:401-425'],
     noun: 'targetless position (last 5,000 action_log ids)',
     sql: `SELECT id, at, body FROM action_log
            WHERE id > (SELECT COALESCE(MAX(id), 0) FROM action_log) - ${ACTION_LOG_WINDOW_IDS} AND method = 'POSITION_NO_TARGET' ORDER BY id LIMIT ?`,
@@ -929,18 +963,47 @@ export const RULES = Object.freeze([
     },
   },
   {
-    // VERIFY correction 11: the heartbeat's own ladder names `error` (and
-    // `stalled`); there is no `failing`. A controller at the alert streak
-    // (heartbeat.js FAIL_ALERT_AT = 3) is stuck on something only a fix or
-    // an operator clears — pnl_reconcile at 1,701 consecutive failures.
-    id: 'STK-11', key: 'controller_failing', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['heartbeat.js:170', 'heartbeat.js:456-461', 'heartbeat.js:525-529'],
-    noun: 'controller',
-    sql: `SELECT name, last_run_at, last_ok_at, last_error, consecutive_failures FROM controller_heartbeats LIMIT ?`,
-    params: () => [], when: r => tsMs(r.last_ok_at), subject: r => `controller:${r.name}`, account: () => null,
+    // VERIFY corrections 11 and 12. v2 (L1 fix round, B3): judged by the
+    // heartbeat's OWN view (heartbeatView over the CONTROLLERS registry), so
+    // this rule and /state/heartbeats cannot disagree about a controller —
+    // two readings of one subsystem is CLAUDE.md failure mode #3's correction.
+    //   stalled — last run older than expected × factor (heartbeat.js:530):
+    //             pnl_reconcile last ran 09-20 with 0 failures is stuck;
+    //   error   — consecutive failures ≥ FAIL_ALERT_AT = 3 (heartbeat.js:183):
+    //             pnl_reconcile at 1,701 consecutive failures.
+    // Unregistered names never reach the view (it iterates the registry), so a
+    // row left behind by a removed controller cannot stay stuck for ever;
+    // retired and dormant controllers are not in the population. record_stale
+    // (the runner beats, its product is past its limit) and never_ran (no beat
+    // on record) are NOT judged stuck: they are named as Not Verifiable here.
+    id: 'STK-11', key: 'controller_failing', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
+    cite: ['heartbeat.js:183', 'heartbeat.js:530-534', 'heartbeat.js:318-323', 'heartbeat.js:508-512', 'heartbeat.js:524-527'],
+    noun: 'registered controller',
+    // The statement proves the table is readable (a dropped table is an
+    // error, never 0); the rows are the heartbeat's own view of it.
+    sql: `SELECT name FROM controller_heartbeats LIMIT ?`,
+    params: () => [], populationLimit: 1,
+    rows: (_dbRows, _ctx, w, db) => heartbeatView(db, { now: new Date(w.nowMs) }),
+    when: () => null, subject: r => `controller:${r.name}`, account: () => null,
     judge(r) {
-      if (RETIRED_CONTROLLERS.includes(r.name) || !(Number(r.consecutive_failures) >= 3)) return null
-      return { missing: ['ok_run'], class: 'error', since: r.last_ok_at ?? null, detail: `${r.name} ×${r.consecutive_failures} since ok ${String(r.last_ok_at ?? 'never').slice(0, 16)}: ${cut(r.last_error ?? '', 80)}` }
+      if (r.retired || RETIRED_CONTROLLERS.includes(r.name) || r.dormant) return OUT
+      const def = CONTROLLERS[r.name] || {}
+      if (r.verdict === 'stalled') {
+        const limitMin = Number.isFinite(r.expected_sec) && Number.isFinite(def.factor) ? Math.round(r.expected_sec * def.factor / 60) : '?'
+        return { missing: ['beat'], class: 'stalled', since: r.last_run_at ?? null,
+          detail: `${r.name} stalled: last ran ${String(r.last_run_at ?? 'never').slice(0, 16)}, ${Number.isFinite(r.age_sec) ? Math.round(r.age_sec / 60) : '?'} min against a ${limitMin} min limit; ${r.consecutive_failures ?? 0} consecutive failure(s)` }
+      }
+      if (r.verdict === 'error') {
+        return { missing: ['ok_run'], class: 'error', since: r.last_ok_at ?? r.last_run_at ?? null,
+          detail: `${r.name} ×${r.consecutive_failures} since ok ${String(r.last_ok_at ?? 'never').slice(0, 16)}: ${cut(r.last_error ?? '', 80)}` }
+      }
+      if (r.verdict === 'record_stale' || r.verdict === 'never_ran') return { violation: false, class: r.verdict, info: r.name }
+      return { violation: false, class: 'running' }
+    },
+    note(res) {
+      const parts = ['record_stale', 'never_ran'].filter(c => res.info?.[c]?.length)
+        .map(c => `${c} ${res.classes[c]}: ${res.info[c].join(', ')}${res.classes[c] > res.info[c].length ? ', …' : ''}`)
+      return parts.length ? `Not Verifiable as stuck — ${parts.join('; ')} (a stale record or a controller with no beat is not judged here; see /state/heartbeats)` : null
     },
   },
 ])
@@ -949,12 +1012,21 @@ export const RULES = Object.freeze([
  * The helpers the judges share. A change to any of them changes what several
  * rules mean at once, so they carry their own version, pinned beside the
  * rules' (order-lifecycle.test.js) and named in RULESET_VERSION.
+ *
+ * v2 (L1 fix round, N4): the machinery every rule runs through is pinned
+ * too — the context statements (the approvals window behind PRE-03, the
+ * risk events behind ORD-02 and CLS-04), loadContext, runRule, summarise,
+ * recordKeyOf, the registry check and the limits. Editing any of them
+ * changes what the report says with no rule's own source changing, so it
+ * must bump HELPERS_VERSION.
  */
-export const HELPERS_VERSION = 1
+export const HELPERS_VERSION = 2
 export const JUDGE_HELPERS = Object.freeze({
   tsMs, blank, num, acctOf, idKey, upper, dirOf, ours, intentTag, parseJson, directionReasonOf, sideProblems, riskScaleWrong,
   botTrade, proposalOf, fillOf, closeMsOf, tagEvidence, fillForPending, closedOlder, tradeInWindow,
-  constants: `${ABSURD_RISK_FRACTION}|${GENERIC_CLOSE_RE}|${[...LIMIT_PRODUCERS]}|${TERMINAL_INTENT}|${CLEAN_BOT_ORIGINS}|${ACTION_LOG_WINDOW_IDS}`,
+  loadContext, runRule, summarise, recordKeyOf, accountRegistered,
+  constants: `${ABSURD_RISK_FRACTION}|${GENERIC_CLOSE_RE}|${[...LIMIT_PRODUCERS]}|${TERMINAL_INTENT}|${CLEAN_BOT_ORIGINS}|${ACTION_LOG_WINDOW_IDS}` +
+    `|${DEFAULT_POPULATION_LIMIT}|${REFUSAL_POPULATION_LIMIT}|${CONTEXT_LIMIT}|${WRITE_GRACE_MS}|${INFO_NAMES_MAX}|${JSON.stringify(CONTEXT_SQL)}`,
 })
 export const RULESET_VERSION = [...RULES.map(r => `${r.id}@${r.version}`), `helpers@${HELPERS_VERSION}`].join(',')
 
@@ -981,6 +1053,11 @@ function windowFor(nowMs, { sinceIso = null, days = null } = {}, cfg) {
   }
   const lowMs = sinceMs - DAY
   return { nowMs, sinceMs, lowMs, lowSpace: spaceTs(lowMs), acceptanceMs: Date.parse(cfg.acceptanceStart), windowDays: Math.round((nowMs - sinceMs) / DAY * 100) / 100 }
+}
+
+/** true: in the account registry; false: not in it; null: the registry could not be read. */
+function accountRegistered(db, accountId) {
+  try { return db.prepare('SELECT 1 AS ok FROM accounts WHERE account_id = ? LIMIT 1').get(String(accountId)) != null } catch { return null }
 }
 
 function ruleByRef(ref) {
@@ -1029,11 +1106,25 @@ export function normaliseLifecycleOptions(q = {}, nowMs = Date.now()) {
 /** The 10-minute snapshot reads exactly what the Reasons page's ?account=all reads — one shared worker job. */
 export const SNAPSHOT_OPTIONS = Object.freeze(normaliseLifecycleOptions({ account: 'all' }))
 
+/**
+ * The record a subject names, for a stage's distinct count (VERIFY
+ * correction 8, L1 fix round N1): a trade that carries a broker position IS
+ * that position, so ORD-01 naming `trade:17` and ORD-06 naming
+ * `position:<acct>:<pid>` for the same fill are one record, not two.
+ */
+function recordKeyOf(subject, ctx) {
+  const m = /^trade:(\d+)$/.exec(String(subject))
+  if (!m) return String(subject)
+  const t = ctx.tradeById.get(Number(m[1]))
+  return t?.ctrader_position_id != null ? `position:${acctOf(t.account_id) ?? ''}:${t.ctrader_position_id}` : String(subject)
+}
+
 function runRule(db, rule, ctx, win, scope) {
   const res = {
     id: rule.id, key: rule.key, version: rule.version, stage: rule.stage, severity: rule.severity, fix: rule.fix, cite: rule.cite,
+    current: rule.current === true,
     measurable: true, reason: null, population: 0, populationNew: 0, violations: 0, newViolations: 0, legacyViolations: 0,
-    undated: 0, classes: {}, byAccount: {}, unattributed: { population: 0, violations: 0, newViolations: 0 },
+    undated: 0, classes: {}, info: {}, byAccount: {}, unattributed: { population: 0, violations: 0, newViolations: 0 },
     newestAt: null, truncated: ctx.truncated.length > 0, error: null,
   }
   const entries = []
@@ -1041,13 +1132,15 @@ function runRule(db, rule, ctx, win, scope) {
   const limit = Math.max(1, Math.min(win.populationLimit ?? Infinity, rule.populationLimit ?? DEFAULT_POPULATION_LIMIT))
   try {
     rows = db.prepare(rule.sql).all(...rule.params(win), limit)
+    if (rows.length >= limit && !(rule.populationLimit === 1)) res.truncated = true
+    // A rule's own row shaping (STK-08, STK-09, STK-11) failing is the rule
+    // being unreadable — never the whole report failing, never a 0.
+    if (rule.rows) rows = rule.rows(rows, ctx, win, db)
   } catch (err) {
     res.measurable = false; res.error = String(err?.message || err); res.reason = `unreadable: ${cut(res.error, 120)}`
     return { res, entries }
   }
-  if (rows.length >= limit && !(rule.populationLimit === 1)) res.truncated = true
-  if (rule.rows) rows = rule.rows(rows, ctx, win)
-  let newest = -Infinity
+  let newest = -Infinity, newestJudged = -Infinity
   for (const row of rows) {
     const t = rule.when(row, ctx, win)
     const current = rule.current === true
@@ -1067,9 +1160,19 @@ function runRule(db, rule, ctx, win, scope) {
     // Scoped to one account, an unattributed row is counted beside the
     // answer, never credited to the account (VERIFY correction 10).
     const counts = scope.all || !unattributed
-    if (counts) { res.population++; if (isNew) res.populationNew++ }
+    if (counts) {
+      res.population++; if (isNew) res.populationNew++
+      // The newest record JUDGED at all, defective or not: what lets a
+      // falsifier say "a record was made since and it was stored right".
+      if (t != null && t > newestJudged) newestJudged = t
+    }
     if (verdict == null) continue
-    if (verdict.violation === false) { if (counts) res.classes[verdict.class] = (res.classes[verdict.class] || 0) + 1; continue }
+    if (verdict.violation === false) {
+      if (!counts) continue
+      res.classes[verdict.class] = (res.classes[verdict.class] || 0) + 1
+      if (verdict.info != null) { const l = (res.info[verdict.class] ||= []); if (l.length < INFO_NAMES_MAX) l.push(String(verdict.info)) }
+      continue
+    }
     bucket.violations++; if (isNew) bucket.newViolations++
     if (!counts) continue
     res.violations++
@@ -1077,18 +1180,21 @@ function runRule(db, rule, ctx, win, scope) {
     if (verdict.class) res.classes[verdict.class] = (res.classes[verdict.class] || 0) + 1
     const at = t ?? tsMs(verdict.since)
     if (at != null && at > newest) newest = at
-    const { detail, class: cls, violation: _v, ...extra } = verdict
-    entries.push({ subject: rule.subject(row, ctx), account: acct, at: iso(at), new: isNew, ...(cls ? { class: cls } : {}), ...extra, detail: cut(detail) })
+    const { detail, class: cls, violation: _v, info: _i, ...extra } = verdict
+    const subject = rule.subject(row, ctx)
+    entries.push({ subject, record: recordKeyOf(subject, ctx), account: acct, at: iso(at), new: isNew, ...(cls ? { class: cls } : {}), ...extra, detail: cut(detail) })
   }
   res.newestAt = Number.isFinite(newest) ? iso(newest) : null
+  res.newestJudgedAt = Number.isFinite(newestJudged) ? iso(newestJudged) : null
   if (res.undated) res.reason = `${res.undated} row(s) carry no usable time and are not placed in the window`
   if (!rule.current && res.population === 0 && !res.error) {
     res.measurable = false
     res.reason = `no ${rule.noun} in the window since ${iso(win.sinceMs).slice(0, 16)}Z${res.undated ? ` (${res.undated} undated)` : ''}`
   }
   if (rule.id === 'PRE-02' && res.population > 0 && !res.classes.scored && (res.classes.no_bars || 0) > 0) {
-    res.note = `scored 0 while no_bars ${res.classes.no_bars}: the scorer is not scoring (goal-table.js:407-421 reports this as "waiting")`
+    res.note = `scored 0 while no_bars ${res.classes.no_bars}: the scorer is not scoring (goal-table.js:415-429 reports this as "waiting")`
   }
+  if (rule.note) { const n = rule.note(res); if (n) res.note = n }
   return { res, entries }
 }
 
@@ -1109,20 +1215,29 @@ function summarise(results, win, cfg) {
     for (const { res, entries } of rs) {
       for (const e of entries) {
         const acct = e.account ?? 'unattributed'
-        if (res.severity === 'notice') { noticeS.add(e.subject); bump(acct, stage, 'notices', e.subject); continue }
-        if (e.new) { newS.add(e.subject); bump(acct, stage, 'new', e.subject) } else { legS.add(e.subject); bump(acct, stage, 'legacy', e.subject) }
+        // Distinct RECORDS (N1): a trade with a broker position counts as that position.
+        const rec = e.record ?? e.subject
+        if (res.severity === 'notice') { noticeS.add(rec); bump(acct, stage, 'notices', rec); continue }
+        if (e.new) { newS.add(rec); bump(acct, stage, 'new', rec) } else { legS.add(rec); bump(acct, stage, 'legacy', rec) }
       }
     }
     for (const s of newS) legS.delete(s)
     const measurable = defects.some(r => r.res.measurable)
     const populationNew = defects.reduce((m, r) => Math.max(m, r.res.populationNew), 0)
-    const unreadable = defects.filter(r => r.res.error).map(r => r.res.id)
+    // B2: a stage whose count leaves a rule out says which, every time — the
+    // goal row and the daily line read these, never a bare 0.
+    const unreadable = defects.filter(r => r.res.error).map(r => ({ id: r.res.id, reason: cut(r.res.error, 100) }))
+    const truncated = defects.filter(r => r.res.truncated).map(r => r.res.id)
+    const partial = [
+      unreadable.length ? `unreadable: ${unreadable.map(u => `${u.id} (${u.reason})`).join(', ')}` : null,
+      truncated.length ? `truncated at the population bound (counts are a lower bound): ${truncated.join(', ')}` : null,
+    ].filter(Boolean).join('; ')
     const note = !measurable
       ? `not measurable: ${defects.map(r => `${r.res.id} ${r.res.reason ?? '?'}`).slice(0, 3).join('; ')}`
       : stage !== 'stuck' && populationNew === 0
-        ? `nothing new to judge since ${cfg.acceptanceStart}: a fact about volume, not a pass`
-        : `${newS.size} ${stage === 'stuck' ? 'stuck' : 'new defective'} record(s)${unreadable.length ? `; unreadable: ${unreadable.join(', ')}` : ''}`
-    summary[stage] = { new: newS.size, legacy: stage === 'stuck' ? 0 : legS.size, notices: noticeS.size, measurable, populationNew, note }
+        ? `nothing new to judge since ${cfg.acceptanceStart}: a fact about volume, not a pass${partial ? `; ${partial}` : ''}`
+        : `${newS.size} ${stage === 'stuck' ? 'stuck' : 'new defective'} record(s)${partial ? `; ${partial}` : ''}`
+    summary[stage] = { new: newS.size, legacy: stage === 'stuck' ? 0 : legS.size, notices: noticeS.size, measurable, populationNew, unreadable, truncated, note }
   }
   const accounts = [...perAccount.values()]
     .map(a => ({ account: a.account, stage: a.stage, new: a.new.size, legacy: a.stage === 'stuck' ? 0 : [...a.legacy].filter(s => !a.new.has(s)).length, notices: a.notices.size }))
@@ -1167,6 +1282,20 @@ export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, d
   }
   results.splice(RULES.findIndex(r => r.id === 'STK-07'), 0, runRule(db, RULES.find(r => r.id === 'STK-07'), ctx, win, scope))
 
+  // N8 (spec §6 item 5): an explicit account that the registry does not know
+  // and no record carries is not "nothing stuck" — every rule, the stuck ones
+  // included, is not measurable for it. A registered account with nothing to
+  // judge keeps its real 0; an unreadable registry is "could not tell", not
+  // "unknown", so only the population decides then.
+  const registry = scope.explicit && !scope.all ? accountRegistered(db, scope.accountId) : null
+  scope.known = registry
+  if (scope.explicit && !scope.all && registry !== true && results.every(({ res }) => res.population === 0)) {
+    const why = registry === false
+      ? `account ${cut(scope.accountId, 40)} is not in the account registry and no record carries it — nothing can be judged for it`
+      : `no record carries account ${cut(scope.accountId, 40)} and the account registry could not be read — nothing can be judged for it`
+    for (const { res } of results) if (!res.error) { res.measurable = false; res.reason = why }
+  }
+
   const { summary, accounts } = summarise(results, win, cfg)
   const coverage = (() => {
     const total = results.reduce((s, { res }) => s + res.population, 0)
@@ -1186,15 +1315,17 @@ export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, d
     measurable: res.measurable, population: res.population, populationNew: res.populationNew,
     violations: res.violations, newViolations: res.newViolations, legacyViolations: res.legacyViolations,
     unattributed: res.unattributed.violations, newestAt: res.newestAt, truncated: res.truncated,
-    reason: res.reason, cite: res.cite[0],
+    reason: res.reason, ...(res.note ? { note: res.note } : {}), cite: res.cite[0],
   }))
   const notVerifiable = [...NOT_VERIFIABLE]
   if (ctx.truncated.length) notVerifiable.push(`context read reached its bound (${ctx.truncated.join(', ')}): every rule is marked truncated`)
+  const controllers = results.find(r => r.res.id === 'STK-11')?.res
+  if (controllers?.note) notVerifiable.push(`STK-11 ${controllers.note}`)
   return {
     schemaVersion: SCHEMA_VERSION, rulesetVersion: RULESET_VERSION, generatedAt: iso(now),
     acceptanceStart: cfg.acceptanceStart, acceptanceStartStatus: cfg.acceptanceStartStatus,
     windowDays: win.windowDays, window: { since: iso(win.sinceMs), until: iso(now) },
-    scope: scopeReport({ accountId: scope.accountId, all: scope.all, explicit: scope.explicit }, coverage),
+    scope: { ...scopeReport({ accountId: scope.accountId, all: scope.all, explicit: scope.explicit }, coverage), ...(scope.explicit && !scope.all ? { registered: registry } : {}) },
     summary, rules: flat, accounts, stages, notVerifiable,
     ...(only ? { rule: only.id } : {}),
   }
@@ -1213,10 +1344,10 @@ export function compactSnapshot(report) {
     acceptanceStart: report.acceptanceStart, windowDays: report.windowDays, window: report.window,
     summary: report.summary, accounts: report.accounts,
     rules: STAGES.flatMap(s => report.stages[s] || []).map(r => ({
-      id: r.id, key: r.key, version: r.version, stage: r.stage, severity: r.severity, fix: r.fix,
+      id: r.id, key: r.key, version: r.version, stage: r.stage, severity: r.severity, fix: r.fix, current: r.current === true,
       measurable: r.measurable, reason: r.reason, population: r.population, populationNew: r.populationNew,
       violations: r.violations, newViolations: r.newViolations, legacyViolations: r.legacyViolations,
-      unattributed: r.unattributed?.violations ?? 0, newestAt: r.newestAt, truncated: r.truncated, classes: r.classes,
+      unattributed: r.unattributed?.violations ?? 0, newestAt: r.newestAt, newestJudgedAt: r.newestJudgedAt ?? null, truncated: r.truncated, classes: r.classes,
       byAccount: Object.fromEntries(Object.entries(r.byAccount || {}).map(([a, b]) => [a, [b.violations, b.newViolations]])),
       sample: (r.sample || []).slice(0, n).map(e => ({ subject: e.subject, account: e.account, at: e.at, new: e.new, detail: cut(e.detail, 120) })),
     })),
@@ -1250,57 +1381,130 @@ export function lifecycleGoals(snapshot, targets, nowMs) {
     const max = stage === 'stuck' ? Number(targets.lifecycleStuckMax ?? 0) : Number(targets.lifecycleNewDefectsMax ?? 0)
     const top = (snapshot?.rules || []).filter(r => r.stage === stage && r.severity === 'defect' && r.newViolations > 0)
       .sort((a, b) => b.newViolations - a.newViolations).slice(0, 3).map(r => `${r.id} ${r.key} ${r.newViolations}`)
-    const measurable = !stale && !!s && s.measurable !== false && (stage === 'stuck' || s.populationNew > 0)
+    const judged = !stale && !!s && s.measurable !== false && (stage === 'stuck' || s.populationNew > 0)
+    // B2 (principle 6): a stage whose count leaves out an unreadable rule, or
+    // whose population hit its bound, holds a LOWER BOUND. It can prove
+    // off_track; it can never prove on_track — that is not_measurable, named.
+    const partialNote = partialOf(s)
+    const verdict = !judged ? 'not_measurable' : s.new > max ? 'off_track' : partialNote ? 'not_measurable' : 'on_track'
+    const counted = `${s?.new} ${stage === 'stuck' ? 'stuck' : 'new defective'} record(s)${partialNote ? ' over the readable rules' : ''}`
     const note = !snapshot ? `no snapshot at ${SNAPSHOT_KEY} — the order_lifecycle controller has not produced one`
       : stale ? `snapshot ${ageMin} min old (limit ${maxAgeMin} min) — the controller may be failing; see /state/heartbeats`
         : !s ? `stage ${stage} missing from the snapshot`
           : s.measurable === false ? s.note
-            : stage !== 'stuck' && !(s.populationNew > 0) ? `nothing new to judge since ${snapshot.acceptanceStart}: a fact about volume, not a pass; legacy ${s.legacy}`
-              : `${s.new} ${stage === 'stuck' ? 'stuck' : 'new defective'} record(s)${top.length ? ` — ${top.join(' · ')}` : ''}${stage === 'stuck' ? '' : `; legacy ${s.legacy}`}${s.notices ? `; notices ${s.notices}` : ''}`
+            : stage !== 'stuck' && !(s.populationNew > 0) ? `nothing new to judge since ${snapshot.acceptanceStart}: a fact about volume, not a pass; legacy ${s.legacy}${partialNote ? `; ${partialNote}` : ''}`
+              : `${verdict === 'not_measurable' ? `not a pass — ${counted}` : verdict === 'off_track' && partialNote ? `at least ${counted}` : counted}` +
+                `${top.length ? ` — ${top.join(' · ')}` : ''}${stage === 'stuck' ? '' : `; legacy ${s.legacy}`}${s.notices ? `; notices ${s.notices}` : ''}${partialNote ? `; ${partialNote}` : ''}`
     return {
       id: `lifecycle_${stage}`, name: STAGE_NAMES[stage], subsystem: 'order lifecycle',
-      metric: stage === 'stuck' ? 'records stuck now with no terminal state (distinct records)' : `records made since ${snapshot?.acceptanceStart ?? 'the acceptance start'} that failed to store or are incomplete (distinct records)`,
+      metric: stage === 'stuck'
+        ? 'records stuck now with no terminal state (distinct records within the stage; a trade with a broker position counts as that position)'
+        : `records made since ${snapshot?.acceptanceStart ?? 'the acceptance start'} that failed to store or are incomplete (distinct records within the stage; a trade with a broker position counts as that position)`,
       target: `≤ ${max}`, horizon: stage === 'stuck' ? 'now' : `since ${snapshot?.acceptanceStart ?? '?'}`,
-      current: measurable ? s.new : null,
-      verdict: !measurable ? 'not_measurable' : s.new <= max ? 'on_track' : 'off_track',
+      current: verdict === 'not_measurable' ? null : s.new,
+      verdict,
       note, source: `/state/order-lifecycle?account=all (snapshot ${Number.isFinite(at) ? new Date(at).toISOString().slice(11, 16) + 'Z' : 'none'})`,
     }
   })
+}
+
+/** The unreadable and truncated rules of a snapshot stage, as one clause; '' when the stage's count is whole. */
+function partialOf(s) {
+  const unreadable = Array.isArray(s?.unreadable) ? s.unreadable : []
+  const truncated = Array.isArray(s?.truncated) ? s.truncated : []
+  return [
+    unreadable.length ? `unreadable: ${unreadable.map(u => (u && typeof u === 'object' ? `${u.id} (${u.reason ?? '?'})` : String(u))).join(', ')}` : null,
+    truncated.length ? `truncated at the population bound: ${truncated.join(', ')} (counts are a lower bound)` : null,
+  ].filter(Boolean).join('; ')
 }
 
 // ---------------------------------------------------------------- inspector
 /**
  * log-inspector INSPECTIONS entry: one proposed code_change finding per rule
  * with NEW defect violations and a fix that is not reporting-only. Reads the
- * snapshot only. The finding is never auto-applied (log-inspector.js:472-475).
+ * snapshot only. The finding is never auto-applied (log-inspector.js:499-500).
  */
 export function inspectLifecycleRegression(snapshot, nowMs) {
   if (!snapshot || !Array.isArray(snapshot.rules)) return []
-  return snapshot.rules.filter(r => r.severity === 'defect' && r.fix !== 'reporting' && r.newViolations > 0).map(r => ({
-    source: 'order_lifecycle',
-    subject_key: `order_lifecycle:${r.id}@v${r.version}`,
-    speech_act: 'declaration',
-    said: `${r.id} ${r.key}: ${r.newViolations} new violation(s) since ${snapshot.acceptanceStart} (newest ${r.newestAt ?? '?'})`,
-    doing: 'declaring that a lifecycle record failed to store, stored incomplete, or is stuck — the owner order of 25-09-2026',
-    finding: `${r.id} (${r.key}) keeps producing defective records; the ${r.fix} named in the rule is the fix — reporting will not clear it`,
-    principle_kind: 'code_change',
-    principle_params: { ruleId: r.id, version: r.version, newViolations: r.newViolations, fix: r.fix },
-    falsifier: {
-      prediction: `a new ${r.id} violation appears within 24 h — confirming the defect is live; none would mean it was historical`,
-      metric: { kind: 'lifecycle_rule_recurs', ruleId: r.id, sinceMs: nowMs },
-      deadlineMs: nowMs + 86_400_000,
-    },
-  }))
+  const deadlineMs = nowMs + 86_400_000
+  return snapshot.rules.filter(r => r.severity === 'defect' && r.fix !== 'reporting' && r.newViolations > 0).map(r => {
+    // B1: a stuck rule's violations are CURRENT STATE, dated by when the item
+    // got stuck (placed_at, last_ok_at, queued_at) — never after the finding.
+    // "Recurs after the finding" can only falsify it, every day it is still
+    // stuck. Its question is whether it is STILL stuck at the deadline.
+    const current = r.current ?? RULES.find(x => x.id === r.id)?.current === true
+    const falsifier = current
+      ? {
+          prediction: `${r.id} still shows violations in a snapshot taken within ${SNAPSHOT_FRESH_MS / 60_000} min of the 24 h deadline — confirming the stuck state is live; 0 would mean it was resolved; no such snapshot means nothing was measured (expired)`,
+          metric: { kind: 'lifecycle_rule_persists', ruleId: r.id, version: r.version, sinceMs: deadlineMs - SNAPSHOT_FRESH_MS },
+          deadlineMs,
+        }
+      : {
+          prediction: `a new ${r.id} violation appears within 24 h — confirming the defect is live; none, over a snapshot that covers the 24 h and judged a record made in them, would mean it was historical`,
+          metric: { kind: 'lifecycle_rule_recurs', ruleId: r.id, version: r.version, sinceMs: nowMs, coverUntilMs: deadlineMs - SNAPSHOT_FRESH_MS },
+          deadlineMs,
+        }
+    return {
+      source: 'order_lifecycle',
+      subject_key: `order_lifecycle:${r.id}@v${r.version}`,
+      speech_act: 'declaration',
+      said: `${r.id} ${r.key}: ${r.newViolations} ${current ? 'stuck' : 'new'} violation(s) since ${current ? 'now' : snapshot.acceptanceStart} (newest ${r.newestAt ?? '?'})`,
+      doing: 'declaring that a lifecycle record failed to store, stored incomplete, or is stuck — the owner order of 25-09-2026',
+      finding: `${r.id} (${r.key}) ${current ? 'holds records stuck with no terminal state' : 'keeps producing defective records'}; the ${r.fix} named in the rule is the fix — reporting will not clear it`,
+      principle_kind: 'code_change',
+      principle_params: { ruleId: r.id, version: r.version, newViolations: r.newViolations, fix: r.fix, current },
+      falsifier,
+    }
+  })
 }
 
-/** evalFalsifierMetric's case: true = recurred after sinceMs, false = did not, null = no snapshot / rule. */
-export function lifecycleRuleRecurs(snapshot, { ruleId, sinceMs }) {
+/** The snapshot's rule for a falsifier metric, or null when the evidence cannot answer (no snapshot, no rule, another version). */
+function falsifierRule(snapshot, { ruleId, version }) {
   if (!snapshot || !Array.isArray(snapshot.rules)) return null
   const r = snapshot.rules.find(x => x.id === ruleId)
   if (!r) return null
-  const t = Date.parse(r.newestAt ?? '')
-  if (!Number.isFinite(t)) return r.measurable === false ? null : false
-  return t > Number(sinceMs)
+  // A finding is about rule@version: a snapshot of a different meaning cannot confirm or falsify it.
+  if (version != null && Number(r.version) !== Number(version)) return null
+  return r
+}
+
+/**
+ * evalFalsifierMetric 'lifecycle_rule_recurs' (non-current rules): true = a
+ * violation newer than sinceMs; false = none, over a snapshot taken at or
+ * after coverUntilMs that judged a record made after sinceMs; null = the
+ * evidence cannot say (no snapshot, a snapshot not after sinceMs — the ticker
+ * died —, one that does not cover the window, an unreadable rule, or no
+ * record made since to judge). Never decided on absent evidence
+ * (log-inspector.js:538).
+ */
+export function lifecycleRuleRecurs(snapshot, { ruleId, sinceMs, version = null, coverUntilMs = null }) {
+  const r = falsifierRule(snapshot, { ruleId, version })
+  if (!r) return null
+  const at = Date.parse(snapshot.at ?? '')
+  const since = Number(sinceMs)
+  if (!Number.isFinite(at) || !(at > since)) return null
+  const newest = Date.parse(r.newestAt ?? '')
+  if (Number.isFinite(newest) && newest > since) return true
+  if (r.measurable === false || r.error) return null
+  if (at < Number(coverUntilMs ?? since)) return null
+  const judged = Date.parse(r.newestJudgedAt ?? '')
+  return Number.isFinite(judged) && judged > since ? false : null
+}
+
+/**
+ * evalFalsifierMetric 'lifecycle_rule_persists' (current / stuck rules):
+ * true = a snapshot taken after sinceMs still shows violations; false = it
+ * shows 0 over a whole population; null = no snapshot after sinceMs (the
+ * ticker is dead), an unreadable rule, or 0 over a truncated population.
+ */
+export function lifecycleRulePersists(snapshot, { ruleId, sinceMs, version = null }) {
+  const r = falsifierRule(snapshot, { ruleId, version })
+  if (!r) return null
+  const at = Date.parse(snapshot.at ?? '')
+  if (!Number.isFinite(at) || !(at > Number(sinceMs))) return null
+  if (r.measurable === false || r.error) return null
+  if (Number(r.violations) > 0) return true
+  return r.truncated ? null : false
 }
 
 // ---------------------------------------------------------------- daily report
@@ -1308,11 +1512,15 @@ export function lifecycleReportLines(snapshot) {
   if (!snapshot) return [`Lifecycle: no snapshot (${SNAPSHOT_KEY}) — the order_lifecycle controller has not produced one`]
   const s = snapshot.summary
   const hhmm = String(snapshot.at).slice(11, 16)
-  const lines = [`Lifecycle since ${String(snapshot.acceptanceStart).slice(0, 16).replace('T', ' ')}Z (snapshot ${hhmm}Z): pre-order ${s.pre_order.new} new / ${s.pre_order.legacy} legacy; order ${s.order.new}; close ${s.close.new}; stuck ${s.stuck.new}`]
+  // A stage whose count leaves a rule out carries a mark on the headline (B2):
+  // "pre-order 0* new" is not "pre-order 0 new", and the line below names why.
+  const mark = stage => (partialOf(s[stage]) ? '*' : '')
+  const lines = [`Lifecycle since ${String(snapshot.acceptanceStart).slice(0, 16).replace('T', ' ')}Z (snapshot ${hhmm}Z): pre-order ${s.pre_order.new}${mark('pre_order')} new / ${s.pre_order.legacy} legacy; order ${s.order.new}${mark('order')}; close ${s.close.new}${mark('close')}; stuck ${s.stuck.new}${mark('stuck')}`]
   const top = (snapshot.rules || []).filter(r => r.severity === 'defect' && r.newViolations > 0).sort((a, b) => b.newViolations - a.newViolations).slice(0, 3)
   for (const r of top) lines.push(`  ${r.id} ${r.key}: ${r.newViolations} new`)
   for (const stage of STAGES) {
     if (s[stage]?.measurable === false || (stage !== 'stuck' && !(s[stage]?.populationNew > 0))) lines.push(`  ${stage} not measurable: ${s[stage]?.note ?? 'missing'}`)
+    else if (partialOf(s[stage])) lines.push(`  ${stage}* partial — ${partialOf(s[stage])}`)
   }
   return lines
 }

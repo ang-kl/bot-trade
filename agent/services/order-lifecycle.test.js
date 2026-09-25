@@ -16,16 +16,17 @@
 //   6. bounded: no SCAN of the four large tables; a limit hit says truncated;
 //   7. a rule's meaning cannot change without a version bump (the pin);
 //   8. goal rows, inspector, daily report and the ticker read one snapshot.
-import test from 'node:test'
+import test, { mock } from 'node:test'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { initDB, getState, setState } from '../db.js'
 import {
   RULES, RULESET_VERSION, HELPERS_VERSION, JUDGE_HELPERS, CONTEXT_SQL, STAGES, SNAPSHOT_KEY, SNAPSHOT_OPTIONS, SNAPSHOT_MAX_BYTES,
   buildOrderLifecycle, compactSnapshot, lifecycleGoals, normaliseLifecycleOptions, readSnapshot,
-  inspectLifecycleRegression, lifecycleRuleRecurs, lifecycleReportLines, loadLifecycleConfig, GENERIC_CLOSE_RE,
+  inspectLifecycleRegression, lifecycleRuleRecurs, lifecycleRulePersists, lifecycleReportLines, loadLifecycleConfig, GENERIC_CLOSE_RE,
 } from './order-lifecycle.js'
-import { runOrderLifecyclePass } from './order-lifecycle-ticker.js'
+import { runOrderLifecyclePass, startOrderLifecycle } from './order-lifecycle-ticker.js'
 import { goalTable, DEFAULT_GOAL_TARGETS } from './goal-table.js'
 import { runLogInspector, evalFalsifierMetric, INSPECTIONS } from './log-inspector.js'
 import { buildDailyReport, DAILY_REPORT_MAX_CHARS } from './daily-report.js'
@@ -364,11 +365,21 @@ const FIXTURES = {
     green: db => { ins(db, 'broker_orders', { order_id: '8', symbol: 'Cocoa', is_bot: 0, status: 'working', account_id: A, first_seen: '2026-09-26 10:00:00' }) },
   },
   'STK-11': {
+    // Both halves of the heartbeat's own ladder (heartbeat.js:530-534):
+    // `error` (pnl_reconcile ×1,701, running) and `stalled` (minute_review,
+    // 0 failures, last ran an hour ago against 60 s × 4).
     red(db) {
-      ins(db, 'controller_heartbeats', { name: 'pnl_reconcile', last_run_at: NEW, last_ok_at: '2026-09-21T15:11:26.759Z', last_error: 'position_ledger_ambiguous', consecutive_failures: 1701, runs: 9000 })
-      return { ids: ['controller:pnl_reconcile'], present: () => assert.equal(db.prepare(`SELECT consecutive_failures FROM controller_heartbeats`).get().consecutive_failures, 1701) }
+      ins(db, 'controller_heartbeats', { name: 'pnl_reconcile', last_run_at: iso(NOW - 60_000), last_ok_at: '2026-09-21T15:11:26.759Z', last_error: 'position_ledger_ambiguous', consecutive_failures: 1701, runs: 9000 })
+      ins(db, 'controller_heartbeats', { name: 'minute_review', last_run_at: iso(NOW - 3_600_000), last_ok_at: iso(NOW - 3_600_000), consecutive_failures: 0, runs: 500 })
+      return {
+        ids: ['controller:pnl_reconcile', 'controller:minute_review'],
+        present: () => {
+          assert.equal(db.prepare(`SELECT consecutive_failures FROM controller_heartbeats WHERE name = 'pnl_reconcile'`).get().consecutive_failures, 1701)
+          assert.equal(heartbeatView(db, { now: new Date(NOW) }).find(v => v.name === 'minute_review').verdict, 'stalled', 'the heartbeat itself says stalled')
+        },
+      }
     },
-    green: db => { ins(db, 'controller_heartbeats', { name: 'pnl_reconcile', last_run_at: NEW, last_ok_at: NEW, consecutive_failures: 0, runs: 9000 }) },
+    green: db => { ins(db, 'controller_heartbeats', { name: 'pnl_reconcile', last_run_at: iso(NOW - 60_000), last_ok_at: iso(NOW - 60_000), consecutive_failures: 0, runs: 9000 }) },
   },
 }
 
@@ -699,19 +710,19 @@ test('bounded: samples page at 25 (200 with one rule), counts never shrink', () 
 const src = v => (typeof v === 'function' ? v.toString() : JSON.stringify(v))
 const ruleHash = r => createHash('sha256').update(Object.keys(r).filter(k => !['id', 'version', 'cite', 'noun'].includes(k)).sort().map(k => `${k}=${src(r[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
 const helpersHash = () => createHash('sha256').update(Object.keys(JUDGE_HELPERS).sort().map(k => `${k}=${src(JUDGE_HELPERS[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
-const PINNED_HELPERS = { [`helpers@1`]: 'c6bd325eb70607e2' }
+const PINNED_HELPERS = { [`helpers@2`]: '0a3dba7780ffbc63' }
 const PINNED = {
   'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@1': '1d3934917924fe6a', 'PRE-03@1': 'bf01d978a6b93535', 'PRE-04@1': 'fa04e500d8a0ca47',
   'PRE-05@1': 'c7aeb7460046a6fc',
-  'ORD-01@1': 'dc44a46fa075080a', 'ORD-02@1': '520f853e457966a7', 'ORD-03@1': 'c3efa49b62d76c7e', 'ORD-04@1': '0576f08d9e583115',
+  'ORD-01@2': '6455e3a08b70c56b', 'ORD-02@1': '520f853e457966a7', 'ORD-03@1': 'c3efa49b62d76c7e', 'ORD-04@1': '0576f08d9e583115',
   'ORD-05@1': 'ff61f53fcc0a5c36', 'ORD-06@1': '75ca883642df5b6e', 'ORD-07@1': '48d7a24785139f8d', 'ORD-08@1': '70ab525d959eef60',
   'ORD-09@1': '76e16b5ec574fd5f', 'ORD-10@1': '6aac17826225e763',
   'CLS-01@1': 'd1c6f94d5d127f9b', 'CLS-02@1': '1f3a45c656e2f94b', 'CLS-03@1': '40b74e5ba9111a98', 'CLS-04@1': '4313b95a7b55beb1',
   'CLS-05@1': '2cca97ff9080477d', 'CLS-06@1': 'a4bb8873fe57a5f1', 'CLS-07@1': '77e677b6b8b4b901', 'CLS-08@1': '540f253a1c1c8eab',
   'CLS-09@1': '9985d3c5b7b5b9cf',
-  'STK-01@1': 'b7c8a96e077092aa', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@1': '9e6eef34c7fcf44e', 'STK-04@1': '211b880d01176305',
-  'STK-05@1': 'fd6653d6850b9006', 'STK-06@1': '221e983558ccd9be', 'STK-07@1': 'bf4c98bdacf7c497', 'STK-08@1': '3fecf4ac1c0a0ce3',
-  'STK-09@1': '9006966342612525', 'STK-10@1': '60a7854f87507cb9', 'STK-11@1': '69ba5ed74964ef8a',
+  'STK-01@1': 'b7c8a96e077092aa', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@1': '9e6eef34c7fcf44e', 'STK-04@2': '30b119a04d39ebc5',
+  'STK-05@1': 'fd6653d6850b9006', 'STK-06@1': '221e983558ccd9be', 'STK-07@2': 'c45c7a3d5678fc13', 'STK-08@1': '3fecf4ac1c0a0ce3',
+  'STK-09@1': '9006966342612525', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6',
 }
 test('ruleset pin: every rule\'s sql + judge is pinned to its version', () => {
   const now = Object.fromEntries(RULES.map(r => [`${r.id}@${r.version}`, ruleHash(r)]))
@@ -786,12 +797,71 @@ test('inspector: one proposed code_change per rule@version, idempotent; reportin
   assert.equal(rows[0].status, 'proposed', 'never auto-applied')
   const fal = JSON.parse(rows[0].falsifier)
   assert.equal(fal.metric.kind, 'lifecycle_rule_recurs')
-  // true: a violation newer than sinceMs; false: none newer; null: no snapshot.
+  assert.equal(fal.metric.version, 1)
+  assert.equal(fal.metric.coverUntilMs, fal.deadlineMs - 30 * 60_000, 'a "none" must cover the 24 h, not the first ten minutes of them')
+  // true: a violation newer than sinceMs, in a snapshot taken after it.
   assert.equal(evalFalsifierMetric(db, { kind: 'lifecycle_rule_recurs', ruleId: 'PRE-01', sinceMs: Date.parse(snap.rules[0].newestAt) - 1 }), true)
-  assert.equal(evalFalsifierMetric(db, { kind: 'lifecycle_rule_recurs', ruleId: 'PRE-01', sinceMs: NOW + 1 }), false)
+  // null: the snapshot is not after sinceMs — a dead ticker is no evidence (B1).
+  assert.equal(evalFalsifierMetric(db, { kind: 'lifecycle_rule_recurs', ruleId: 'PRE-01', sinceMs: NOW + 1 }), null)
   assert.equal(evalFalsifierMetric(initDB(':memory:'), { kind: 'lifecycle_rule_recurs', ruleId: 'PRE-01', sinceMs: 0 }), null)
   assert.equal(lifecycleRuleRecurs(snap, { ruleId: 'NOPE', sinceMs: 0 }), null)
+  assert.equal(lifecycleRuleRecurs(snap, { ruleId: 'PRE-01', version: 9, sinceMs: 0 }), null, 'another version of the rule cannot answer for this one')
   assert.deepEqual(inspectLifecycleRegression(null, NOW), [])
+})
+
+test('recurs (non-current rules): false only when a covering snapshot judged a record made since and it was clean', () => {
+  const db = initDB(':memory:')
+  risk(db, { proposal_json: '{}', created_at: NEW }) // 09:00, defective
+  const since = Date.parse('2026-09-26T10:00:00Z')
+  const noneMade = compactSnapshot(build(db))
+  assert.equal(lifecycleRuleRecurs(noneMade, { ruleId: 'PRE-01', sinceMs: since, coverUntilMs: since }), null, 'nothing was made after the finding: no evidence either way')
+  risk(db, { created_at: '2026-09-26T11:00:00.000Z' }) // 11:00, stored right
+  const clean = compactSnapshot(build(db))
+  assert.equal(clean.rules.find(r => r.id === 'PRE-01').newestJudgedAt, '2026-09-26T11:00:00.000Z')
+  assert.equal(lifecycleRuleRecurs(clean, { ruleId: 'PRE-01', sinceMs: since, coverUntilMs: since }), false)
+  assert.equal(lifecycleRuleRecurs(clean, { ruleId: 'PRE-01', sinceMs: since, coverUntilMs: NOW + 1 }), null, 'a snapshot short of the coverage cannot say none')
+  risk(db, { proposal_json: '{}', created_at: '2026-09-26T11:30:00.000Z' })
+  assert.equal(lifecycleRuleRecurs(compactSnapshot(build(db)), { ruleId: 'PRE-01', sinceMs: since, coverUntilMs: NOW + 1 }), true, 'a recurrence confirms even before the coverage is complete')
+})
+
+test('B1: a stuck rule\'s finding asks whether it is STILL stuck at the deadline — confirmed, falsified (resolved), expired (ticker dead)', () => {
+  const LATER = NOW + 86_400_000 + 5 * 60_000
+  const finding = db => db.prepare(`SELECT status, falsifier, resolution FROM inspection_findings WHERE subject_key LIKE 'order_lifecycle:STK-01@v%'`).get()
+  const setup = () => {
+    const db = initDB(':memory:')
+    const { present } = FIXTURES['STK-01'].red(db)
+    present()
+    withSnapshot(db, build(db))
+    runLogInspector(db, { now: NOW })
+    const f = finding(db)
+    assert.equal(f.status, 'proposed')
+    const fal = JSON.parse(f.falsifier)
+    assert.equal(fal.metric.kind, 'lifecycle_rule_persists', 'a stuck rule is never asked whether it recurred')
+    assert.equal(fal.metric.sinceMs, fal.deadlineMs - 30 * 60_000)
+    return db
+  }
+  // Still stuck at the deadline, measured by a fresh snapshot → confirmed.
+  const stuck = setup()
+  withSnapshot(stuck, build(stuck, { nowMs: LATER - 60_000 }), LATER - 60_000)
+  assert.equal(readSnapshot(getState, stuck).rules.find(r => r.id === 'STK-01').violations, 1)
+  runLogInspector(stuck, { now: LATER })
+  assert.equal(finding(stuck).status, 'confirmed', finding(stuck).resolution)
+  // Resolved: the row went terminal, a fresh snapshot shows 0 → falsified.
+  const resolved = setup()
+  resolved.prepare(`UPDATE pending_orders SET status = 'expired' WHERE id = 671`).run()
+  withSnapshot(resolved, build(resolved, { nowMs: LATER - 60_000 }), LATER - 60_000)
+  runLogInspector(resolved, { now: LATER })
+  assert.equal(finding(resolved).status, 'falsified')
+  // Ticker dead: the only snapshot is the one the finding came from → expired, never falsified.
+  const dead = setup()
+  runLogInspector(dead, { now: LATER })
+  assert.equal(finding(dead).status, 'expired')
+  // The metric itself: an unreadable rule and a truncated zero are no evidence either.
+  const snap = readSnapshot(getState, stuck)
+  const m = { ruleId: 'STK-01', version: 1, sinceMs: NOW }
+  assert.equal(lifecycleRulePersists(snap, m), true)
+  assert.equal(lifecycleRulePersists({ ...snap, rules: snap.rules.map(r => (r.id === 'STK-01' ? { ...r, violations: 0, truncated: true } : r)) }, m), null)
+  assert.equal(lifecycleRulePersists({ ...snap, rules: snap.rules.map(r => (r.id === 'STK-01' ? { ...r, measurable: false } : r)) }, m), null)
 })
 
 test('daily report: the lifecycle section sits right after the goals and fits the Telegram bound', async () => {
@@ -828,4 +898,305 @@ test('ticker: ok writes one snapshot row and beats ok; a failed build beats ok: 
   assert.equal(hb.consecutive_failures, 1)
   assert.match(hb.last_error, /order_lifecycle_worker_capacity/)
   assert.equal(readSnapshot(getState, db).at, snap.at, 'the last good snapshot stands and ages on its own')
+})
+
+// ---------------------------------------------------------------------------
+// 9. The L1 fix round (checker B1-B3, N1-N8). Each test names what it guards.
+// ---------------------------------------------------------------------------
+test('B2: a stage with an unreadable rule is never on_track 0 — summary, goal row and daily line all name the rule', () => {
+  const db = initDB(':memory:')
+  risk(db) // a clean approval made after the start: the pre-order stage has something new to judge, and it is clean
+  db.exec('ALTER TABLE refusal_scores RENAME COLUMN outcome TO outcome_renamed') // only PRE-02 reads it
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('refusal_scores') WHERE name = 'outcome'`).get().n, 0)
+  const report = build(db)
+  assert.match(ruleOf(report, 'PRE-02').reason, /^unreadable: .*outcome/)
+  assert.equal(ruleOf(report, 'PRE-01').measurable, true, 'the other rules still read')
+  assert.deepEqual(report.summary.pre_order.unreadable.map(u => u.id), ['PRE-02'])
+  assert.equal(report.summary.pre_order.new, 0)
+  assert.match(report.summary.pre_order.note, /unreadable: PRE-02 \(no such column: outcome\)/)
+  withSnapshot(db, report)
+  const row = () => lifecycleGoals(readSnapshot(getState, db), DEFAULT_GOAL_TARGETS, NOW).find(r => r.id === 'lifecycle_pre_order')
+  assert.equal(row().verdict, 'not_measurable', 'a 0 over the readable rules is not the stage\'s 0 (principle 6)')
+  assert.equal(row().current, null)
+  assert.match(row().note, /not a pass — 0 new defective record\(s\) over the readable rules.*unreadable: PRE-02 \(no such column: outcome\)/)
+  const lines = lifecycleReportLines(readSnapshot(getState, db))
+  assert.match(lines[0], /pre-order 0\* new/)
+  assert.ok(lines.some(l => /^ {2}pre_order\* partial — unreadable: PRE-02 \(no such column: outcome\)/.test(l)), lines.join('\n'))
+  // A new defect beside it: off_track is provable from a lower bound, and said as one.
+  risk(db, { proposal_json: '{}' })
+  withSnapshot(db, build(db))
+  assert.equal(row().verdict, 'off_track')
+  assert.equal(row().current, 1)
+  assert.match(row().note, /^at least 1 new defective record\(s\) over the readable rules/)
+  // The stuck stage the same way: a dropped telegram_outbox is STK-08 unreadable, not "nothing stuck".
+  const s = initDB(':memory:')
+  s.exec('DROP TABLE telegram_outbox')
+  withSnapshot(s, build(s))
+  const stuck = lifecycleGoals(readSnapshot(getState, s), DEFAULT_GOAL_TARGETS, NOW).find(r => r.id === 'lifecycle_stuck')
+  assert.equal(stuck.verdict, 'not_measurable')
+  assert.match(stuck.note, /unreadable: STK-08 \(no such table: telegram_outbox\)/)
+})
+
+test('B2: a population at its bound is a lower bound — flagged, and never on_track', () => {
+  const db = initDB(':memory:')
+  for (let i = 0; i < 4; i++) risk(db) // four clean approvals
+  const report = build(db, { populationLimit: 3 })
+  assert.ok(report.summary.pre_order.truncated.includes('PRE-01'))
+  assert.equal(report.summary.pre_order.new, 0)
+  withSnapshot(db, report)
+  const g = lifecycleGoals(readSnapshot(getState, db), DEFAULT_GOAL_TARGETS, NOW).find(r => r.id === 'lifecycle_pre_order')
+  assert.equal(g.verdict, 'not_measurable')
+  assert.match(g.note, /truncated at the population bound: .*PRE-01/)
+  assert.ok(lifecycleReportLines(readSnapshot(getState, db)).some(l => /pre_order\* partial — truncated/.test(l)))
+})
+
+test('B3: STK-11 is the heartbeat\'s own view — stalled and error flagged; retired, unregistered and dormant skipped; record_stale and never_ran named, not judged', () => {
+  const db = initDB(':memory:')
+  const hb = (name, o) => ins(db, 'controller_heartbeats', { name, runs: 10, consecutive_failures: 0, ...o })
+  hb('pnl_reconcile', { last_run_at: iso(NOW - 60_000), last_ok_at: '2026-09-21T15:11:26.759Z', consecutive_failures: 1701, last_error: 'position_ledger_ambiguous' })
+  hb('minute_review', { last_run_at: iso(NOW - 3_600_000), last_ok_at: iso(NOW - 3_600_000) }) // 0 failures, stalled
+  hb('pending_orders', { last_run_at: '2026-09-18T00:00:00.000Z', consecutive_failures: 50 }) // retired
+  hb('controller_removed_long_ago', { last_run_at: '2026-08-01T00:00:00.000Z', consecutive_failures: 99 }) // unregistered
+  hb('daily_report', { last_run_at: iso(NOW - 60_000), last_ok_at: iso(NOW - 60_000) }) // beats, but no daily_report_last_json: record_stale
+  setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ dormant: true, at: iso(NOW - 60_000) })) // dormant side, no row
+  const view = Object.fromEntries(heartbeatView(db, { now: new Date(NOW) }).map(v => [v.name, v]))
+  assert.equal(view.minute_review.verdict, 'stalled')
+  assert.equal(view.pnl_reconcile.verdict, 'error')
+  assert.equal(view.daily_report.verdict, 'record_stale')
+  assert.equal(view.cpp_exec_demo.dormant, true)
+  assert.equal(view.controller_removed_long_ago, undefined)
+  const r = one(db, 'STK-11')
+  assert.deepEqual(r.sample.map(e => [e.subject, e.class]).sort(), [['controller:minute_review', 'stalled'], ['controller:pnl_reconcile', 'error']])
+  assert.equal(r.violations, 2, 'the frozen count of an unregistered row and a retired controller are not stuck')
+  assert.equal(r.classes.record_stale, 1)
+  assert.match(r.sample.find(e => e.subject === 'controller:minute_review').detail, /last ran 2026-09-26T11:00, 60 min against a 4 min limit/)
+  const report = build(db)
+  const note = report.rules.find(x => x.id === 'STK-11').note
+  assert.match(note, /record_stale 1: daily_report/)
+  assert.match(note, /never_ran \d+: /)
+  assert.ok(!/cpp_exec_demo/.test(note), 'a dormant side is not "never ran"')
+  assert.ok(report.notVerifiable.some(l => /^STK-11 Not Verifiable as stuck — record_stale 1: daily_report/.test(l)))
+})
+
+test('N1: a stage counts distinct records — ORD-01 on a trade and ORD-06 on its broker position are one record', () => {
+  const db = initDB(':memory:')
+  trade(db, { ctrader_position_id: '424242', status: 'closed', opened_at: OLD, closed_at: OLD }) // the older twin: legacy
+  const id = trade(db, { ctrader_position_id: '424242', risk_event_id: null }) // new, unreasoned
+  const r = build(db)
+  assert.ok(subjects(ruleOf(r, 'ORD-01')).includes(`trade:${id}`))
+  assert.ok(subjects(ruleOf(r, 'ORD-06')).includes(`position:${A}:424242`))
+  assert.equal(ruleOf(r, 'ORD-06').sample[0].new, true)
+  assert.equal(ruleOf(r, 'ORD-01').sample.find(e => e.subject === `trade:${id}`).record, `position:${A}:424242`)
+  assert.equal(r.summary.order.new, 1, 'one broker position, not a trade and a position')
+  assert.deepEqual(r.accounts.filter(a => a.stage === 'order').map(a => [a.account, a.new]), [[A, 1]])
+  // A trade with no broker position stays itself.
+  const d2 = initDB(':memory:')
+  const sub = trade(d2, { status: 'submitting', ctrader_position_id: null, risk_event_id: null })
+  assert.equal(ruleOf(build(d2), 'ORD-01').sample.find(e => e.subject === `trade:${sub}`).record, `trade:${sub}`)
+})
+
+test('N2: STK-07 cannot_settle — STOPPED requested while an orphaned resting row stays working', () => {
+  const db = initDB(':memory:')
+  FIXTURES['STK-01'].red(db) // #671 on account A
+  setState(db, `acct:${A}:engine_status_json`, JSON.stringify({ accountId: A, transitionState: 'QUIESCING', requestedEntryMode: 'STOPPED', updatedAt: iso(NOW) }))
+  const r = one(db, 'STK-07')
+  assert.deepEqual(r.sample.map(e => [e.subject, e.class]), [[`engine:${A}`, 'cannot_settle']])
+  assert.match(r.sample[0].detail, /1 orphaned working resting row/)
+  // Without the orphan the same request is judged on its transition instead.
+  const clean = initDB(':memory:')
+  setState(clean, `acct:${A}:engine_status_json`, JSON.stringify({ accountId: A, transitionState: 'STABLE', requestedEntryMode: 'STOPPED' }))
+  assert.equal(one(clean, 'STK-07').violations, 0)
+})
+
+test('N7: STK-07 dates the transition from the row that ENTERED it — a later from = to pass does not move `since`', () => {
+  const db = initDB(':memory:')
+  setState(db, `acct:${A}:engine_status_json`, JSON.stringify({ accountId: A, transitionState: 'RECONCILING', requestedEntryMode: 'TIME_BASED', updatedAt: iso(NOW) }))
+  const drain = (at, from, to) => ins(db, 'action_log', { method: 'LOOP', path: '/entry-mode/drain', account_id: A, at, body: JSON.stringify({ accountId: A, from, to, cancelled: ['1'] }) })
+  drain('2026-09-26 10:00:00', 'STABLE', 'RECONCILING') // entered two hours ago
+  drain('2026-09-26 11:50:00', 'RECONCILING', 'RECONCILING') // a cancel logged while still in it (entry-drain.js:132-140)
+  const r = one(db, 'STK-07')
+  assert.equal(r.violations, 1, 'two hours in RECONCILING, not ten minutes')
+  assert.equal(r.sample[0].since, '2026-09-26T10:00:00.000Z')
+  assert.equal(r.sample[0].sinceIsLowerBound, false)
+})
+
+test('N2: STK-08 watchdog outbox — the spec\'s known answer, 512/512 and 1,136,836 dropped, is one stuck mechanism', () => {
+  const db = initDB(':memory:')
+  const outbox = Object.fromEntries(Array.from({ length: 512 }, (_, i) => [`k${i}`, { attempts: 0, createdAtMs: NOW - 2 * 3_600_000 }]))
+  setState(db, 'independent_watchdog_json', JSON.stringify({ status: { outbox, dropped: 1_136_836 }, readAt: iso(NOW - 60_000), error: null }))
+  const r = one(db, 'STK-08')
+  assert.deepEqual(r.sample.map(e => [e.subject, e.class]), [['outbox:watchdog', 'watchdog']])
+  assert.equal(r.sample[0].detail, 'watchdog outbox 512/512, 512 never attempted and over 1 h old, dropped 1136836')
+  assert.equal(r.violations, 1, 'one mechanism, not 512 items (VERIFY correction 6)')
+  const ok = initDB(':memory:')
+  setState(ok, 'independent_watchdog_json', JSON.stringify({ status: { outbox: { a: { attempts: 1, createdAtMs: NOW } }, dropped: 0 }, readAt: iso(NOW) }))
+  assert.equal(one(ok, 'STK-08').violations, 0)
+})
+
+test('N2: STK-06 unverified_at_cap — the spec\'s known answer, 11 records unverified at the re-verify cap', () => {
+  const db = initDB(':memory:')
+  for (let i = 0; i < 11; i++) {
+    const pid = String(880000 + i)
+    ph(db, { ctrader_position_id: pid, verification_state: 'unverified', rebuilt_at: null })
+    ins(db, 'position_capture_queue', { account_id: A, position_id: pid, symbol: 'EURUSD', due_at_ms: 1, state: 'captured', reverify_attempts: 3, settled_at: NEW })
+  }
+  // One still under the cap and one verified: neither is stuck.
+  ph(db, { ctrader_position_id: '889998', verification_state: 'unverified' })
+  ins(db, 'position_capture_queue', { account_id: A, position_id: '889998', symbol: 'EURUSD', due_at_ms: 1, state: 'captured', reverify_attempts: 2, settled_at: NEW })
+  ph(db, { ctrader_position_id: '889999', verification_state: 'verified' })
+  ins(db, 'position_capture_queue', { account_id: A, position_id: '889999', symbol: 'EURUSD', due_at_ms: 1, state: 'captured', reverify_attempts: 3, settled_at: NEW })
+  const r = one(db, 'STK-06')
+  assert.equal(r.violations, 11)
+  assert.deepEqual(r.classes, { unverified_at_cap: 11 })
+  assert.ok(subjects(r).includes(`position:${A}:880000`) && !subjects(r).includes(`position:${A}:889998`))
+})
+
+test('N2: STK-01 no_broker_order — a working row over an hour old, not expired, with no broker order and no fill', () => {
+  const db = initDB(':memory:')
+  const id = ins(db, 'pending_orders', { symbol: 'EURUSD', order_id: '999001', dir: 1, level: 1.1, sl: 1.09, volume: 1, status: 'working', note: 'pending-closed', account_id: A, placed_at: iso(NOW - 2 * 3_600_000), expires_at: iso(NOW + 86_400_000) })
+  const young = ins(db, 'pending_orders', { symbol: 'EURUSD', order_id: '999002', dir: 1, level: 1.1, sl: 1.09, volume: 1, status: 'working', note: 'pending-closed', account_id: A, placed_at: iso(NOW - 10 * 60_000), expires_at: iso(NOW + 86_400_000) })
+  const r = one(db, 'STK-01')
+  assert.deepEqual(r.sample.map(e => [e.subject, e.class]), [[`pending:${id}`, 'no_broker_order']])
+  assert.ok(!subjects(r).includes(`pending:${young}`), 'inside the hour the broker order may not be read yet')
+  assert.equal(r.sample[0].resolverExists, true, 'pending-closed has a resolver')
+})
+
+test('N2: ORD-04 — a resting fill at placement is a notice, and a FILLED intent has 30 minutes to show its position', () => {
+  const db = initDB(':memory:')
+  // Resting LIMIT resolved FILLED by the placement response within 5 s, with the position there: a notice, not a defect.
+  const tid = goodTrade(db)
+  const pid = db.prepare('SELECT ctrader_position_id FROM trades WHERE id = ?').get(tid).ctrader_position_id
+  intent(db, { order_type: 'LIMIT', producer_id: 'closed_market_limits', broker_position_id: pid, resolution_source: 'response', created_at: '2026-09-26T09:00:00.000Z', resolved_at: '2026-09-26T09:00:02.000Z' })
+  // FILLED 10 minutes ago with no position yet: inside the grace.
+  const fresh = intent(db, { broker_position_id: '777001', resolved_at: iso(NOW - 10 * 60_000), created_at: iso(NOW - 10 * 60_000) })
+  // FILLED 40 minutes ago with no position: the defect.
+  const late = intent(db, { broker_position_id: '777002', resolved_at: iso(NOW - 40 * 60_000), created_at: iso(NOW - 40 * 60_000) })
+  const r = one(db, 'ORD-04')
+  assert.equal(r.classes.resting_filled_at_placement, 1)
+  assert.deepEqual(subjects(r), [`intent:${late}`])
+  assert.ok(!subjects(r).includes(`intent:${fresh}`), 'the 30-minute grace')
+})
+
+test('N2: CLS-05 exempt_zero and blocked_by_money — counted as classes, never as missing postmortems', () => {
+  const db = initDB(':memory:')
+  const zero = goodClose(db, { net_pnl: 0 })
+  db.prepare('DELETE FROM trade_postmortems WHERE trade_id = ?').run(zero)
+  const blocked = goodClose(db)
+  db.prepare('UPDATE trades SET net_pnl = NULL, exit_price = NULL WHERE id = ?').run(blocked)
+  db.prepare('DELETE FROM trade_postmortems WHERE trade_id = ?').run(blocked)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM trade_postmortems').get().n, 0)
+  const r = one(db, 'CLS-05')
+  assert.equal(r.violations, 0)
+  assert.deepEqual(r.classes, { exempt_zero: 1, blocked_by_money: 1 })
+})
+
+test('N2: CLS-02 settled_unrecoverable — written off with nothing else missing is a class; written off AND incomplete says none is recoverable', () => {
+  const db = initDB(':memory:')
+  const settled = goodClose(db)
+  db.prepare('UPDATE trades SET net_pnl = NULL, pnl_unresolvable = 1 WHERE id = ?').run(settled)
+  const worse = goodClose(db)
+  db.prepare('UPDATE trades SET net_pnl = NULL, pnl_unresolvable = 1, commission = NULL WHERE id = ?').run(worse)
+  const r = one(db, 'CLS-02')
+  assert.equal(r.classes.settled_unrecoverable, 2)
+  assert.deepEqual(subjects(r), [`trade:${worse}`])
+  assert.deepEqual(r.sample[0].recoverable, { commission: 'none' })
+})
+
+test('N2: CLS-08 — an incomplete record IS a record (CLS-04 judges it); a pending capture is a class; a gave_up queue row is named', () => {
+  const db = initDB(':memory:')
+  const pidOf = id => db.prepare('SELECT ctrader_position_id FROM trades WHERE id = ?').get(id).ctrader_position_id
+  const inc = goodClose(db)
+  db.prepare('DELETE FROM position_history WHERE trade_id = ?').run(inc)
+  ins(db, 'position_history_incomplete', { account_id: A, ctrader_position_id: pidOf(inc), symbol: 'EURUSD', closed_at_ms: Date.parse(OLDER), missing_json: '["commission"]', partial_json: '{}', built_at: NEW })
+  const pending = goodClose(db)
+  db.prepare('DELETE FROM position_history WHERE trade_id = ?').run(pending)
+  ins(db, 'position_capture_queue', { account_id: A, position_id: pidOf(pending), symbol: 'EURUSD', due_at_ms: 1, state: 'pending' })
+  const gave = goodClose(db)
+  db.prepare('DELETE FROM position_history WHERE trade_id = ?').run(gave)
+  ins(db, 'position_capture_queue', { account_id: A, position_id: pidOf(gave), symbol: 'EURUSD', due_at_ms: 1, state: 'gave_up', last_error: 'x' })
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM position_history').get().n, 0)
+  const r = one(db, 'CLS-08')
+  assert.deepEqual(r.sample.map(e => [e.subject, e.class]), [[`trade:${gave}`, 'queue_gave_up']])
+  assert.ok(!subjects(r).includes(`trade:${inc}`), 'the incomplete record exists: not absent')
+  assert.equal(r.classes.capture_pending, 1)
+})
+
+test('N6: a trade still being written is not defective or stuck — ORD-01 owes no plan on a write-ahead row or inside 10 minutes; STK-04 waits 10 minutes', () => {
+  const db = initDB(':memory:')
+  const re = () => risk(db)
+  const submitting = trade(db, { status: 'submitting', ctrader_position_id: null, risk_event_id: re(), label_raw: label('isub000001'), opened_at: iso(NOW - 60_000) })
+  const fresh = trade(db, { risk_event_id: re(), label_raw: label('ifresh00001'), opened_at: iso(NOW - 5 * 60_000) })
+  const settled = trade(db, { risk_event_id: re(), label_raw: label('iold0000001'), opened_at: iso(NOW - 20 * 60_000) })
+  const o = one(db, 'ORD-01')
+  assert.deepEqual(subjects(o), [`trade:${settled}`], 'only the trade past the grace owes its plan')
+  assert.deepEqual(o.sample[0].missing, ['trade_plan'])
+  assert.ok(!subjects(o).includes(`trade:${submitting}`) && !subjects(o).includes(`trade:${fresh}`))
+  const s = one(db, 'STK-04')
+  assert.ok(subjects(s).includes(`trade:${settled}`), 'twenty minutes open with no monitored row is stuck')
+  assert.ok(!subjects(s).includes(`trade:${fresh}`), 'five minutes is still the fill being written')
+})
+
+test('N8: an explicit account nothing knows is not "nothing stuck" — every rule not measurable; a registered account keeps its real 0', () => {
+  const db = initDB(':memory:')
+  risk(db, { proposal_json: '{}' }) // account A has data
+  const typo = build(db, { account: '4613005' })
+  assert.equal(typo.scope.registered, false)
+  for (const r of typo.rules) assert.equal(r.measurable, false, `${r.id} measured an account nothing knows`)
+  assert.match(ruleOf(typo, 'STK-01').reason, /not in the account registry and no record carries it/)
+  assert.equal(typo.summary.stuck.measurable, false)
+  // Registered, with nothing to judge: the stuck 0 is a real 0.
+  ins(db, 'accounts', { account_id: '47790949', enabled: 1 })
+  const quiet = build(db, { account: '47790949' })
+  assert.equal(quiet.scope.registered, true)
+  assert.equal(quiet.summary.stuck.measurable, true)
+  assert.equal(ruleOf(quiet, 'STK-01').measurable, true)
+  // Carried by records though not registered (a deregistered account): judged as before.
+  const carried = build(db, { account: A })
+  assert.equal(carried.scope.registered, false)
+  assert.equal(ruleOf(carried, 'PRE-01').violations, 1)
+  assert.equal(carried.summary.stuck.measurable, true)
+})
+
+test('N4: the shared machinery is inside the helpers pin — context statements, loadContext, runRule, summarise, the limits', () => {
+  for (const k of ['loadContext', 'runRule', 'summarise', 'recordKeyOf', 'accountRegistered']) assert.equal(typeof JUDGE_HELPERS[k], 'function', k)
+  assert.ok(JUDGE_HELPERS.constants.includes(CONTEXT_SQL.approvals.replace(/\n/g, '\\n')), 'the approvals window behind PRE-03')
+  assert.ok(JUDGE_HELPERS.constants.includes(CONTEXT_SQL.riskForTrades.replace(/\n/g, '\\n')), 'the risk events behind ORD-02 and CLS-04')
+  assert.ok(JUDGE_HELPERS.constants.includes('|50000|'), 'DEFAULT_POPULATION_LIMIT')
+})
+
+test('N3: startOrderLifecycle — first pass at firstMs, then every tickMs; a pass still running is skipped, not doubled; stop clears both timers', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  try {
+    let reads = 0
+    let release = null
+    const read = () => { reads++; return new Promise(resolve => { release = () => resolve(null) }) }
+    const beats = []
+    const heartbeat = { beat: (_db, name, o) => beats.push([name, o.ok]) }
+    const stop = startOrderLifecycle({}, { tickMs: 600_000, firstMs: 60_000, read, heartbeat })
+    mock.timers.tick(59_999)
+    assert.equal(reads, 0, 'nothing before firstMs')
+    mock.timers.tick(1)
+    assert.equal(reads, 1, 'the first pass at firstMs')
+    mock.timers.tick(600_000)
+    mock.timers.tick(600_000)
+    assert.equal(reads, 1, 're-entrancy guard: a pass still running is not started again')
+    release()
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    assert.deepEqual(beats, [['order_lifecycle', false]], 'the pass ended (a null report is a failed build) and beat once')
+    mock.timers.tick(600_000)
+    assert.equal(reads, 2, 'the next tick runs once the previous pass has finished')
+    release()
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+    stop()
+    mock.timers.tick(10 * 600_000)
+    assert.equal(reads, 2, 'stopped: no timer left')
+  } finally { mock.timers.reset() }
+})
+
+test('N3: the loop starts the ticker (failure mode #4: a call site the module cannot see)', () => {
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  const start = src.indexOf('export function startLoop(db)')
+  assert.ok(start > 0)
+  const body = src.slice(start, start + 40_000)
+  assert.match(body, /import\('\.\/services\/order-lifecycle-ticker\.js'\)\s*\.then\(m => m\.startOrderLifecycle\(db\)\)/)
 })
