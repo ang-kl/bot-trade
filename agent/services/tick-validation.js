@@ -52,7 +52,8 @@ import { engineStatusFor, writeEngineStatus, basesFor } from './entry-mode.js'
 import { VALIDATION_STAGES } from '../lib/entry-contracts.js'
 import { profileHashFull, normalizeParams, PROFILE_ID } from '../lib/tick-strategy.js'
 import { shadowPortfolio, sideCostSchedule } from './tick-shadow.js'
-import { loadRepoSchedule, normalizeSchedule, rowChargedUnder, scheduleHash } from '../lib/tick-cost-schedule.js'
+import { loadRepoSchedule, normalizeSchedule, rowChargedUnder, scheduleHash, TICK_SHADOW_SIM_FILE } from '../lib/tick-cost-schedule.js'
+import { liveFiltersKey } from '../lib/tick-replay-sim.js'
 import { TICK_PRODUCER } from './entry-ledger.js'
 import { realisedRR } from './trade-consistency.js'
 
@@ -112,6 +113,11 @@ export function tradedTickEvidence(db, accountId) {
   }
 }
 
+/** PR-Q3: the live-filter block the shadow's sim carries (agent/config/tick-shadow-sim.json), or null. */
+export function shadowLiveFilters(file = TICK_SHADOW_SIM_FILE) {
+  try { return JSON.parse(readFileSync(file, 'utf8'))?.liveFilters ?? null } catch { return null }
+}
+
 /**
  * PR-H: the replay stage's four checks over one trial (P4 ledger shape:
  * summary + blocks), against the owner's replay thresholds. `trades`,
@@ -123,8 +129,19 @@ export function tradedTickEvidence(db, accountId) {
  * a zero-trade block with a pasted figure passed; a block with no finite
  * trade count is refused too). Pure: reads nothing, writes nothing, so the
  * research route can report a verdict without moving the stage.
+ *
+ * PR-Q3 (V3 P6/P7, 25-09-2026): a trial that carries `sim.liveFilters` gets a
+ * fifth check, `liveFilters`, and ONLY such a trial — every other trial's
+ * checks are exactly as before. It passes only when the shadow's sim
+ * (agent/config/tick-shadow-sim.json, `shadowFilters` in a test) carries an
+ * equal block. The shadow runs no filters today, so a filtered trial cannot
+ * pass: its summary judges a population (the filter removes trades, and the
+ * 'book' model takes others) that SHADOW_PASSED would never judge. Whether
+ * judged trials carry the filters is the owner's D4/D5, and the binding of
+ * the whole sim to the shadow's is PR-Q2; this keeps the tooling from
+ * opening a pass path before either.
  */
-export function replayChecks(trial, replay, { schedule = null } = {}) {
+export function replayChecks(trial, replay, { schedule = null, shadowFilters = undefined } = {}) {
   const s = trial?.summary || {}
   // PR-L (checker, on §16.7): a trial replayed at ZERO cost cannot pass. The
   // replayer records what it charged on the trial's own sim — the class it
@@ -165,6 +182,14 @@ export function replayChecks(trial, replay, { schedule = null } = {}) {
       ok: sim.costSource === 'class' && charged === true && matches.ok === true,
       note: 'a trial replayed at zero cost, at a schedule that is not this repo\'s, or charged the fallback because its symbol id was never classified, cannot pass the replay rung',
     },
+  }
+  if (sim.liveFilters != null) {
+    const shadow = shadowFilters === undefined ? shadowLiveFilters() : shadowFilters
+    checks.liveFilters = {
+      observed: sim.liveFilters, shadow: shadow ?? null,
+      ok: shadow != null && liveFiltersKey(sim.liveFilters) === liveFiltersKey(shadow),
+      note: 'a trial replayed with the live filters judged a population the shadow does not run (agent/config/tick-shadow-sim.json carries no equal liveFilters block), so SHADOW_PASSED could never confirm it: it cannot pass the replay rung (owner decisions D4/D5; the sim binding is PR-Q2)',
+    }
   }
   const failed = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k)
   return { ok: failed.length === 0, failed, checks }

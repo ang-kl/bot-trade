@@ -13,7 +13,7 @@ import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
-import { recordTradePlan } from './services/trade-plans.js'
+import { recordTradePlan, recordPlanWriteFailure } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates } from './services/risk.js'
 import { journalMarginPoolState } from './services/margin-pool-journal.js'
@@ -22,12 +22,12 @@ import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
 import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } from './lib/sessions.js'
-import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
+import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from './lib/trade-labels.js'
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
 import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
-import { getCtraderCreds, getSymbolMap, attachEntryFence } from './lib/ctrader-creds.js'
+import { getCtraderCreds, getSymbolMap, attachEntryFence, bindEntryIntent } from './lib/ctrader-creds.js'
 import { managePendingOrders } from './services/pending-orders.js'
 import { isProducerRetired } from './lib/entry-producers.js'
 import { admitEntry } from './services/entry-mode.js'
@@ -906,9 +906,23 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     } catch { /* provenance never blocks a submission */ }
 
     const submitT0 = Date.now()
+    // V3 L2a (W5/W6): the entry intent exec-engine reserves for this order
+    // carries the approval (entry_intents.risk_event_id), and its id lands on
+    // the write-ahead row the moment it is reserved — before the send — so
+    // the row names its intent whatever happens next. `intentId` above is
+    // the TRADES row id (the write-ahead intent row); `entryIntentId` is the
+    // ledger's entry_intents id, the one the broker's label is tagged with.
+    let entryIntentId = null
+    const placeCreds = bindEntryIntent(attachEntryFence(db, { host, clientId, clientSecret, accessToken, accountId, execGuard }, { producerId }), {
+      riskEventId,
+      onReserved: (id) => {
+        entryIntentId = id
+        db.prepare(`UPDATE trades SET intent_id = ? WHERE id = ?`).run(id, intentId)
+      },
+    })
     let exec
     try {
-      exec = await execPlaceOrder(attachEntryFence(db, { host, clientId, clientSecret, accessToken, accountId, execGuard }, { producerId }), orderPayload)
+      exec = await execPlaceOrder(placeCreds, orderPayload)
     } catch (err) {
       // Mark the intent by OUTCOME rather than deleting it. A provably-unsent
       // order is dead and must not block the next attempt; an ambiguous one
@@ -1031,7 +1045,12 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // second row here would leave the 'submitting' one stranded and put two
     // ledger entries behind one broker position — the accounting version of
     // the bug this change exists to fix.
-    const parsedLabel = parseLabel(structuredLabel)
+    // The label AS THE BROKER HOLDS IT: exec-engine tagged the order's label
+    // with the intent (tagLabelWithIntent, which keeps the untagged label when
+    // the tag would not fit), so the row stores that same string rather than
+    // the untagged original (ORD-05). parseLabel reads the first seven fields,
+    // so every parsed column is unchanged.
+    const parsedLabel = parseLabel(entryIntentId ? tagLabelWithIntent(structuredLabel, entryIntentId) : structuredLabel)
     const persistTrade = db.transaction(() => {
       db.prepare(`
         UPDATE trades SET
@@ -1089,7 +1108,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
           accountId, symbol, side, strategy: synth.strategy || null, timeframe: synth.timeframe ?? null,
           entry: synth.entry, sl: synth.sl, tp: synth.tp1, timeCapAt: timeCap, source: synth.source || 'auto_signal',
         })
-      } catch (err) { log(`Trade plan not recorded for trade ${tradeId} (non-fatal): ${err.message}`) }
+      } catch (err) {
+        // W7: recorded, not only logged — the trade stays; the missing plan says why.
+        recordPlanWriteFailure(db, { tradeId, accountId, symbol, source: synth.source || 'auto_signal', stage: 'dispatch', error: err })
+      }
 
       return tradeId
     })

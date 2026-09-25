@@ -772,6 +772,63 @@ const TABLES = `
     per_symbol TEXT,
     UNIQUE(side, at_ms)
   );
+  -- V3 R1 (P8b): the tick segment manifest — every sealed segment a sidecar
+  -- has listed (GET /tick-segments), by name and bytes, and what became of
+  -- it. The heartbeat lists on every probe; a name that stops being listed
+  -- is classed retired (oldest-first at the spool cap), lost_restart (gone
+  -- at a gateway restart with no retire to explain it) or unexplained (gone
+  -- within one boot with no retire to explain it). Evidence for the P8
+  -- recovery drill (T1) and retention (T2); kept, never pruned. One row per
+  -- segment ever sealed: about 3 a day per side at today's rate.
+  CREATE TABLE IF NOT EXISTS tick_segment_manifest (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    side          TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    start_ms      INTEGER,              -- from the name: the segment's first record
+    bytes         INTEGER NOT NULL,     -- as last listed
+    first_bytes   INTEGER NOT NULL,     -- as first listed; a sealed segment never changes size
+    sealed_at_ms  INTEGER,              -- the sidecar's mtime, second resolution
+    first_seen_ms INTEGER NOT NULL,
+    first_boot_id TEXT,
+    last_seen_ms  INTEGER NOT NULL,     -- the last listing that included it
+    last_boot_id  TEXT,
+    gone_at_ms    INTEGER,              -- the first listing without it
+    gone_boot_id  TEXT,
+    gone_reason   TEXT,                 -- retired | lost_restart | unexplained
+    gone_detail   TEXT,
+    reappeared_at_ms INTEGER,           -- listed again after it was classed gone
+    reappeared_from  TEXT,
+    UNIQUE(side, name)
+  );
+  CREATE INDEX IF NOT EXISTS idx_tick_segment_manifest_gone ON tick_segment_manifest(side, gone_at_ms);
+  -- V3 R1: each gateway restart the manifest observed (a new bootId at a
+  -- listing), with what the previous boot had sealed and what survived.
+  CREATE TABLE IF NOT EXISTS tick_segment_boots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    side            TEXT NOT NULL,
+    at_ms           INTEGER NOT NULL,   -- the listing that first showed the new boot
+    prev_boot_id    TEXT NOT NULL,
+    boot_id         TEXT NOT NULL,
+    prev_listing_ms INTEGER,            -- the last listing under the previous boot
+    listed_before   INTEGER NOT NULL,   -- sealed segments known present under the previous boot
+    bytes_before    INTEGER NOT NULL,
+    survived        INTEGER NOT NULL,
+    retired         INTEGER NOT NULL,
+    lost            INTEGER NOT NULL,
+    lost_bytes      INTEGER NOT NULL,
+    bytes_changed   INTEGER NOT NULL,
+    -- segments this restart classed retired or lost that were LISTED AGAIN
+    -- later: moved out of retired / lost (and lost_bytes) so the row agrees
+    -- with the manifest, and counted here so the as-observed total stays
+    -- visible (retired + lost + reappeared = what the restart's listing missed).
+    reappeared       INTEGER NOT NULL DEFAULT 0,
+    reappeared_bytes INTEGER NOT NULL DEFAULT 0,
+    -- open segments the NEW boot quarantined as .torn at its start
+    -- (/tick-status segments.tornAtStart): records in no sealed segment,
+    -- outside both durability policies; NULL when the boot did not report it.
+    torn_at_start    INTEGER,
+    UNIQUE(side, boot_id)
+  );
   -- P6a: the shadow portfolio's closed trades, pulled from the sidecar's
   -- ledger (POST /tick-shadow) per side. Prices in the feed's wire units,
   -- results in R; the keeper sizes each account's projection from its own
@@ -2170,6 +2227,24 @@ export function initDB(dbPath) {
     if (cols.size && !cols.has('tp_units')) db.exec('ALTER TABLE entry_intents ADD COLUMN tp_units TEXT');
     if (cols.size && !cols.has('evidence_attempts')) db.exec('ALTER TABLE entry_intents ADD COLUMN evidence_attempts INTEGER NOT NULL DEFAULT 0');
     if (cols.size && !cols.has('evidence_checked_at')) db.exec('ALTER TABLE entry_intents ADD COLUMN evidence_checked_at TEXT');
+  }
+
+  // V3 L2a (25-09-2026, LIFECYCLE-SPEC §7 W5/W6): the entry intent a trade
+  // row and a resting-order row came from, written by the writer that has it
+  // in hand — the dispatch's write-ahead row the moment the intent is
+  // reserved (loop.js), a resting row at its placement (closed-market-limits,
+  // pending-orders), an adopted fill from the tag on its label (reconciler).
+  // Before this the only link was the `|i<id>` tag exec-engine puts on the
+  // BROKER's copy of the label, which the trade row never stored (ORD-05),
+  // and a resting row had no link at all, so its fill was found by "the first
+  // trade on this symbol since placement" (W9). Additive: every existing row
+  // keeps NULL, which reads as "not recorded", never rewritten.
+  {
+    const tc = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
+    if (tc.size && !tc.has('intent_id')) db.exec('ALTER TABLE trades ADD COLUMN intent_id TEXT');
+    const pc = new Set(db.prepare('PRAGMA table_info(pending_orders)').all().map(c => c.name));
+    if (pc.size && !pc.has('intent_id')) db.exec('ALTER TABLE pending_orders ADD COLUMN intent_id TEXT');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_trades_intent ON trades(intent_id) WHERE intent_id IS NOT NULL');
   }
 
   // X1: the correction log — one row per step of a record correction, with
