@@ -50,6 +50,20 @@ export const DEFAULT_UNRESOLVABLE_HORIZON_DAYS = 7
 export const UNRESOLVED_NO_EVIDENCE = 'unresolved: no broker evidence'
 
 /**
+ * The two terminal labels for a record that DOES have broker evidence the
+ * repair cannot settle from (V3 I1 checker N2/N3). "No broker evidence" would
+ * be false for either, so each says what the broker evidence is:
+ *   - a closing deal for the position is on file, but the row cannot take
+ *     its money (another row claims the position, or the broker's history of
+ *     it cannot be settled);
+ *   - the broker's own history shows the position still open, so the row's
+ *     local "closed" is what disagrees, not the broker.
+ * Same exclusion as the owner's wording: net_pnl stays NULL, still shown.
+ */
+export const BROKER_DEAL_NOT_SETTLEABLE = 'broker deal on file, not settleable'
+export const BROKER_POSITION_STILL_OPEN = 'broker shows position still open, not settleable'
+
+/**
  * The DURABLE half of the "we tried and gave up" evidence.
  *
  * `exhaustedAccounts()` reads pnl-backfill's in-memory backoff ladder, which is

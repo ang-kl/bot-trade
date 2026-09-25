@@ -104,14 +104,23 @@ test('the production shape (#372/#774 AVY.US, #373/#775 GEV.US) no longer stalls
   assert.equal(states.at(-1), 'no_old_gap')
   assert.equal(reads.filter(p => p === '299683664').length, 6, 'GEV read exactly the bounded number of times')
   // The written-off originals kept their write-off, with the reason corrected
-  // to the evidence (R4) and the old reason preserved.
+  // to the evidence (R4) and the old reason preserved — on the row AND in an
+  // audit row (checker N1: the rewrite is a write, and is logged).
   for (const id of [372, 373]) {
     const r = trade(db, id)
     assert.equal(r.pnl_unresolvable, 1)
-    assert.match(r.pnl_unresolvable_reason, /^unresolved: no broker evidence: re-read /)
-    assert.match(r.pnl_unresolvable_reason, /duplicate-row decision is left to an operator/)
+    assert.match(r.pnl_unresolvable_reason, / re-read .*duplicate-row decision is left to an operator/)
     assert.ok(r.pnl_unresolvable_reason.includes('older than the 7-day deal-history horizon'), 'the original reason is kept, not erased')
+    const audits = db.prepare(`SELECT body FROM action_log WHERE method = 'PNL_WRITE_OFF_REREAD' AND path = '/old-position-pnl'`).all()
+      .map(a => JSON.parse(a.body)).filter(b => b.tradeId === id)
+    assert.equal(audits.length, 1, `#${id}: one re-read, one audit row`)
+    assert.equal(audits[0].oldReason, LEGACY)
+    assert.equal(audits[0].changed, 1)
   }
+  // The label follows the evidence (checker N2): AVY's close IS on file
+  // (deal 336389481), so #372 is not "no broker evidence"; GEV has none.
+  assert.match(trade(db, 372).pnl_unresolvable_reason, /^broker deal on file, not settleable: re-read /)
+  assert.match(trade(db, 373).pnl_unresolvable_reason, /^unresolved: no broker evidence: re-read /)
   assert.match(trade(db, 372).pnl_unresolvable_reason, /already booked on #774/)
   // The local deal is named as evidence. Its old link to #774 is gone: the
   // settling read re-persisted the deal, and persistDeals (unchanged) refuses
@@ -159,7 +168,10 @@ test('two live rows on one position: each refusal is an attempt, both end termin
     assert.equal(r.net_pnl, null, 'no guess: neither row is given the position\'s money')
     assert.equal(r.pnl_unresolvable, 1)
     assert.equal(r.pnl_attempts, OLD_POSITION_MAX_ATTEMPTS)
-    assert.match(r.pnl_unresolvable_reason, /^unresolved: no broker evidence: ledger identity ambiguous for position 517869182/)
+    // A closing deal for the position is on file: broker evidence exists, it
+    // just cannot be given to either row (checker N2).
+    assert.match(r.pnl_unresolvable_reason, /^broker deal on file, not settleable: ledger identity ambiguous for position 517869182/)
+    assert.doesNotMatch(r.pnl_unresolvable_reason, /no broker evidence/)
     assert.match(r.pnl_unresolvable_reason, /other claimant\(s\) #(372|774):closed/)
     assert.match(r.pnl_unresolvable_reason, /local closing deal\(s\): 336389481 net 1\.23/)
   }
@@ -253,18 +265,91 @@ test('a broker history that arrives and cannot be settled is an attempt; a read 
   const r = trade(db, 774)
   assert.equal(r.pnl_attempts, OLD_POSITION_MAX_ATTEMPTS)
   assert.equal(r.net_pnl, null); assert.equal(r.pnl_unresolvable, 1)
-  assert.match(r.pnl_unresolvable_reason, /^unresolved: no broker evidence: the broker's position history .* was refused: position closing money or volume unsupported/)
+  // Deal 336389481 is on file for this position, so the label names it
+  // rather than claiming there is no broker evidence (checker N2).
+  assert.match(r.pnl_unresolvable_reason, /^broker deal on file, not settleable: the broker's position history .* was refused: position closing money or volume unsupported .*; local closing deal\(s\): 336389481 net 1\.23 linked #774;/)
 })
 
-test('the heartbeat is decided by the pass: ok while the pass completes, error only when it fails', () => {
+test('N2: with no closing deal on file, the same refusal is "unresolved: no broker evidence"', async t => {
+  const db = productionShape(t)
+  db.prepare("UPDATE trades SET ctrader_position_id = '9517869182' WHERE id = 372").run()
+  db.prepare("UPDATE trades SET status = 'rejected' WHERE id IN (373, 775)").run()
+  db.prepare(`DELETE FROM broker_deals WHERE deal_id = '336389481'`).run()
+  const unsupported = () => {
+    const h = brokerHistory('517869182'); h.deal[1].closePositionDetail.pnlConversionFee = 5; return h
+  }
+  for (let n = 0; n < OLD_POSITION_MAX_ATTEMPTS; n++) {
+    await recoverOldPositionPnl(db, creds, { now: NOW + n * 16 * MIN, isCurrent: () => true, getPositionDeals: async () => unsupported() })
+  }
+  const r = trade(db, 774)
+  assert.equal(r.pnl_unresolvable, 1)
+  assert.match(r.pnl_unresolvable_reason, /^unresolved: no broker evidence: the broker's position history .* was refused: position closing money or volume unsupported \(read [^)]+\); 6 attempt/)
+})
+
+test('N3: a broker history that shows the position still open is worded as such, never as "no broker evidence"', async t => {
+  const { verifiedPositionHistory, POSITION_HISTORY_REFUSED } = await import('../lib/position-deal-history.js')
+  const openOnly = () => ({ ...brokerHistory('517869182'), deal: [brokerHistory('517869182').deal[0]] })
+  assert.throws(() => verifiedPositionHistory(openOnly(), { accountId: ACCT, positionId: '517869182', now: NOW }),
+    e => e.code === POSITION_HISTORY_REFUSED && e.openAtBroker === true && e.message === 'broker shows position still open: opened volume 10, closed volume 0')
+  // A history spanning two symbols is still a lifecycle that does not balance,
+  // not a position the broker holds open.
+  const mixed = brokerHistory('517869182'); mixed.deal[1].symbolId = 11
+  assert.throws(() => verifiedPositionHistory(mixed, { accountId: ACCT, positionId: '517869182', now: NOW }),
+    e => e.code === POSITION_HISTORY_REFUSED && e.openAtBroker !== true && e.message === 'position lifecycle incomplete')
+
+  const db = productionShape(t)
+  db.prepare("UPDATE trades SET ctrader_position_id = '9517869182' WHERE id = 372").run()
+  db.prepare("UPDATE trades SET status = 'rejected' WHERE id IN (373, 775)").run()
+  const states = []
+  for (let n = 0; n < OLD_POSITION_MAX_ATTEMPTS; n++) {
+    const out = await recoverOldPositionPnl(db, creds, { now: NOW + n * 16 * MIN, isCurrent: () => true, getPositionDeals: async () => openOnly() })
+    states.push(out.state)
+    assert.equal(out.openAtBroker, true)
+  }
+  assert.deepEqual(new Set(states), new Set(['refused']))
+  const r = trade(db, 774)
+  assert.equal(r.pnl_attempts, OLD_POSITION_MAX_ATTEMPTS)
+  assert.equal(r.net_pnl, null); assert.equal(r.pnl_unresolvable, 1)
+  // Still-open outranks the deal on file: the row's own "closed" is what the
+  // broker contradicts.
+  assert.match(r.pnl_unresolvable_reason, /^broker shows position still open, not settleable: .*was refused: broker shows position still open: opened volume 10, closed volume 0/)
+  assert.doesNotMatch(r.pnl_unresolvable_reason, /no broker evidence/)
+})
+
+test('N1: a re-read keeps the old reason on the row when it fits, and whole in the audit when it does not', async t => {
+  const db = productionShape(t)
+  db.prepare("UPDATE trades SET status = 'rejected' WHERE id IN (372, 774, 775)").run()
+  const fits = `legacy ${'x'.repeat(690)} END`
+  db.prepare('UPDATE trades SET pnl_unresolvable_reason = ? WHERE id = 373').run(fits)
+  await recoverOldPositionPnl(db, creds, { now: NOW, isCurrent: () => true, getPositionDeals: async p => brokerHistory(p) })
+  const kept = trade(db, 373).pnl_unresolvable_reason
+  assert.ok(kept.length <= 900)
+  assert.ok(kept.endsWith(`as: ${fits}`), 'the evidence gave way; the old reason is whole on the row')
+  assert.match(kept, /^unresolved: no broker evidence: re-read .*…; written off /)
+
+  const db2 = productionShape(t)
+  db2.prepare("UPDATE trades SET status = 'rejected' WHERE id IN (372, 774, 775)").run()
+  const long = `legacy ${'y'.repeat(1190)} END`
+  db2.prepare('UPDATE trades SET pnl_unresolvable_reason = ? WHERE id = 373').run(long)
+  await recoverOldPositionPnl(db2, creds, { now: NOW, isCurrent: () => true, getPositionDeals: async p => brokerHistory(p) })
+  assert.ok(trade(db2, 373).pnl_unresolvable_reason.length <= 900)
+  const audit = JSON.parse(db2.prepare(`SELECT body FROM action_log WHERE method = 'PNL_WRITE_OFF_REREAD'`).get().body)
+  assert.equal(audit.oldReason, long, 'the row cannot hold it; the audit row does, and parses')
+  assert.equal(audit.tradeId, 373); assert.equal(audit.outcome, 'no_matching_close')
+})
+
+test('the heartbeat is decided by the pass: ok while every account it tried completes, not ok when any fails', () => {
   const st = { unresolved: 2, oldestClosedAt: '2026-09-21 14:57:15', maxAttempts: 0, neverTried: 2, neverTriedOverdue: 2 }
   const done = pnlReconcileHeartbeat(st, { attempted: 3, completed: 3, skipped: 4 })
   assert.equal(done.ok, true); assert.equal(done.error, null)
   assert.match(done.detail.notice, /^2 closed trade\(s\) .* not yet attempted .* not a controller failure/)
   assert.doesNotMatch(JSON.stringify(done), /have never been attempted/)
   assert.deepEqual(done.detail.pass, { attempted: 3, completed: 3, skipped: 4, failed: [] })
+  // CHANGED (checker B1): one account failing is no longer masked by another
+  // completing. One such pass is the heartbeat's `warn`, three its `error`.
   const partial = pnlReconcileHeartbeat({ ...st, neverTriedOverdue: 0 }, { attempted: 2, completed: 1, failures: [{ accountId: '1', error: 'timeout' }] })
-  assert.equal(partial.ok, true); assert.equal(partial.detail.notice, undefined)
+  assert.equal(partial.ok, false); assert.equal(partial.detail.notice, undefined)
+  assert.equal(partial.error, 'the P&L repair failed on 1 of 2 account(s) it tried: 1: timeout')
   assert.deepEqual(partial.detail.pass.failed, [{ accountId: '1', error: 'timeout' }])
   const nothingDue = pnlReconcileHeartbeat(st, { attempted: 0, completed: 0, skipped: 7 })
   assert.equal(nothingDue.ok, true)
@@ -278,15 +363,83 @@ test('the heartbeat is decided by the pass: ok while the pass completes, error o
   assert.equal(pnlReconcileHeartbeat(null, {}).ok, false)
 })
 
-test('loop wiring: pnl_reconcile beats the pass verdict, counting completed and failed accounts (source pin, comments stripped)', () => {
+test('B1: the other session failing on every account is not masked by the selected session completing', async t => {
+  const { backfillAccountPnl, backfillCrossSidePnl } = await import('./cross-side-pnl.js')
+  const { pnlPassSummary, pnlReconciliationState, resetBackfillPacing } = backfillModule
+  const db = initDB(':memory:')
+  resetBackfillPacing()
+  t.after(() => { db.close(); resetBackfillPacing() })
+  // Production's roster shape: the selected account is demo (46130058), the
+  // account holding #774/#775 (42993489) is on the other session.
+  for (const [id, live] of [['46130058', 0], ['47790949', 0], ['42993489', 1], ['42993490', 1]]) {
+    db.prepare('INSERT INTO accounts (account_id, is_live, enabled, mode) VALUES (?, ?, 1, ?)').run(id, live, 'active')
+  }
+  const noNetwork = async () => { throw new Error('no broker read expected') }
+  const own = await backfillAccountPnl(db, { ready: true, host: 'demo.ctraderapi.com', accountId: '46130058', clientId: 'i', clientSecret: 's', accessToken: 't' },
+    { getDeals: noNetwork, getPositionDeals: noNetwork, clock: () => NOW })
+  assert.ok(own.result, 'fixture: the selected session completes')
+  // The other session: every account's credentials refused (the checker's
+  // "credentials" case) — the real cross-side pass, not a hand-built list.
+  const cross = await backfillCrossSidePnl(db, { ready: true, accountId: '46130058', isLive: false }, [],
+    { getCreds: () => ({ ready: false }), getDeals: noNetwork, getPositionDeals: noNetwork, clock: () => NOW })
+  assert.deepEqual(cross.map(r => [r.accountId, r.error]), [['42993489', 'account credentials unavailable or mismatched'],
+    ['42993490', 'account credentials unavailable or mismatched']])
+
+  const st = pnlReconciliationState(db)
+  const verdict = pnlReconcileHeartbeat(st, pnlPassSummary([own]),
+    { crossSide: { state: 'reported', ...pnlPassSummary(cross, { at: '2026-09-25T14:00:00.000Z' }) } })
+  assert.equal(verdict.ok, false, 'the live account failing on every pass must not read ok')
+  assert.equal(verdict.error, 'the P&L repair failed on 2 of 3 account(s) it tried: 42993489: account credentials unavailable or mismatched; 42993490: account credentials unavailable or mismatched')
+  assert.deepEqual(verdict.detail.pass.crossSide, { state: 'reported', at: '2026-09-25T14:00:00.000Z', attempted: 2, completed: 0, skipped: 0 })
+  assert.deepEqual(verdict.detail.pass.failed.map(f => f.accountId), ['42993489', '42993490'])
+  // Without the other session's pass the same beat reads ok — which is the
+  // blind spot this closes.
+  assert.equal(pnlReconcileHeartbeat(st, pnlPassSummary([own])).ok, true)
+})
+
+test('B1: the cross-side summary is read once; a beat that finds it unread again reports the cross-side repair as not reporting', () => {
+  const { pnlPassSummary, pnlCrossSideAwaited } = backfillModule
+  const st = { unresolved: 0, neverTriedOverdue: 0 }
+  const own = pnlPassSummary([{ accountId: '46130058', result: {} }])
+  let cross = { state: 'pending' }
+  const beat = at => { const v = pnlReconcileHeartbeat(st, own, { crossSide: cross }); cross = pnlCrossSideAwaited(cross, at); return v }
+  const first = beat('T1')
+  assert.equal(first.ok, true, 'first beat of the process: the cross-side pass runs after it')
+  assert.deepEqual(first.detail.pass.crossSide, { state: 'pending' })
+  const second = beat('T2')
+  assert.equal(second.ok, false)
+  assert.equal(second.error, 'the P&L repair failed on 1 of 2 account(s) it tried: cross-side: the cross-side P&L repair has not reported since T1 (no report this process)')
+  cross = { state: 'reported', ...pnlPassSummary([{ accountId: '42993489', result: {} }, { accountId: '42993490', skipped: 'token_refused' }], { at: 'T2b' }) }
+  const third = beat('T3')
+  assert.equal(third.ok, true, 'a skip (token refused) is not a failure')
+  assert.deepEqual(third.detail.pass.skippedFor, [{ accountId: '42993490', reason: 'token_refused' }])
+  assert.equal(third.detail.pass.attempted, 2)
+  const fourth = beat('T4')
+  assert.equal(fourth.ok, false, 'an old ok is not carried forward')
+  assert.match(fourth.error, /cross-side P&L repair has not reported since T3 \(last report T2b\)$/)
+  assert.deepEqual(pnlPassSummary([{ accountId: '1' }]).failures, [{ accountId: '1', error: 'no result recorded' }], 'an entry that says nothing is not done')
+})
+
+test('loop wiring: pnl_reconcile beats the pass verdict over both sessions (source pin, comments stripped)', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
-  const start = src.indexOf('let completedAccts = 0')
-  const block = src.slice(start, src.indexOf("hb.beat(db, 'pnl_reconcile', verdict)") + 40)
-  assert.ok(start > 0 && block.length < 6000, 'the counters and the beat live in the same pass')
-  assert.match(block, /const bf = recovered\.result\s+completedAccts\+\+/)
-  assert.match(block, /catch \(e\) \{\s+failedAccts\.push\(\{ accountId: acct, error: e\.message \}\)/)
-  assert.match(block, /pnlReconcileHeartbeat\(st, \{\s+attempted: targets\.length - skipped, completed: completedAccts, skipped, failures: failedAccts,/)
+  const start = src.indexOf('const passResults = []')
+  const beatAt = src.indexOf("hb.beat(db, 'pnl_reconcile', verdict)")
+  const block = src.slice(start, beatAt + 40)
+  assert.ok(start > 0 && block.length < 6000, 'the per-account results and the beat live in the same pass')
+  assert.match(block, /const bf = recovered\.result\s+passResults\.push\(\{ accountId: acct, result: bf \}\)/)
+  assert.match(block, /if \(recovered\.skipped\) \{ skipped\+\+; passResults\.push\(\{ accountId: acct, skipped: recovered\.skipped \}\); continue \}/)
+  assert.match(block, /catch \(e\) \{\s+if \(!passResults\.some\(r => r\.accountId === acct\)\) passResults\.push\(\{ accountId: acct, error: e\.message \}\)/)
+  assert.match(block, /pnlReconcileHeartbeat\(st, pnlPassSummary\(passResults\), \{ crossSide: pnlCrossSidePass \}\)\s+pnlCrossSidePass = pnlCrossSideAwaited\(pnlCrossSidePass, /)
   assert.match(block, /hb\.beat\(db, 'pnl_reconcile', verdict\)/)
+  // The other session's pass runs after the beat in the same block and
+  // leaves its summary for the next beat, success or throw.
+  const crossAt = src.indexOf('backfillCrossSidePnl(db, getCtraderCreds(db), crossReconciled)')
+  assert.ok(crossAt > beatAt, 'the cross-side pass follows the beat')
+  const cross = src.slice(crossAt, src.indexOf('sweepCrossSideEquity', crossAt))
+  assert.match(cross, /^backfillCrossSidePnl\(db, getCtraderCreds\(db\), crossReconciled\)\s+pnlCrossSidePass = \{ state: 'reported', \.\.\.pnlPassSummary\(recovered, \{ at: /)
+  assert.match(cross, /catch \(err\) \{\s+log\([^\n]+\)\s+pnlCrossSidePass = \{ state: 'reported', at: [^\n]+,\s+failures: \[\{ accountId: 'cross-side', error: /)
+  assert.match(src, /^let pnlCrossSidePass = \{ state: 'pending' \}$/m)
+  assert.equal(src.match(/pnlCrossSidePass = /g).length, 4, 'declared once, set by the beat, the cross-side pass and its catch — nowhere else')
   assert.doesNotMatch(src, /have never been attempted/, 'the false text is gone from the beat')
 })
 

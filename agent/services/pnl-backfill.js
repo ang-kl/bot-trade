@@ -936,40 +936,118 @@ export function pnlUnreachedRows(db, { overdueMin = 15, limit = 20 } = {}) {
  * in error for four days — 1,776 consecutive failures, "have never been
  * attempted" — while the pass itself ran every time. A stuck RECORD is shown
  * where records are judged (order-lifecycle STK-05, the ledger's written-off
- * notice); this heartbeat now says whether the CONTROLLER did its job:
- *   ok    — the state was readable and the pass completed (at least one
- *           account it tried completed, or nothing was due);
- *   error — the state could not be read, or every account it tried failed.
+ * notice); this heartbeat now says whether the CONTROLLER did its job, on
+ * EVERY account it covers:
+ *   ok    — the state was readable and no account the pass tried failed
+ *           (skipped and paced accounts are not failures);
+ *   error — the state could not be read, or the repair failed on ANY account
+ *           it tried, on either session: the selected session's accounts
+ *           (`pass`) and the other session's, which loop.js repairs through
+ *           backfillCrossSidePnl after this beat and hands to the NEXT beat
+ *           (`opts.crossSide`, consume-once).
+ * CORRECTED (checker B1, 25-09-2026): the first version beat ok while any
+ * account completed, and read only the selected session's accounts — so with
+ * a demo account selected, the live account holding #774/#775 could fail on
+ * every pass and the beat stayed ok. Owner principle 1: the beat vouches for
+ * every account or says which one it cannot vouch for. One failed pass is the
+ * heartbeat's own `warn`; three in a row are its `error` (heartbeat.js).
  * Rows not yet attempted stay in the detail as a notice with their count, so
  * nothing is hidden; they are no longer reported as a controller failure.
  *
  * @param {{unresolved:number,neverTriedOverdue?:number}} st pnlReconciliationState
- * @param {{attempted?:number,completed?:number,skipped?:number,failures?:Array<{accountId:string,error:string}>}} pass
+ * @param {{attempted?:number,completed?:number,skipped?:number,failures?:Array<{accountId:string,error:string}>,skippedFor?:Array<{accountId:string,reason:string}>}} pass
+ *   the selected session's pass, normally pnlPassSummary(results)
+ * @param {{crossSide?: {state:'pending'}|{state:'awaited',since:string|null,lastReportedAt:string|null}|({state:'reported',at:string|null}&object)}} [opts]
+ *   the other session's last pass: 'pending' before its first run this
+ *   process, 'reported' with a pnlPassSummary, 'awaited' once a beat has read
+ *   it (pnlCrossSideAwaited) — still 'awaited' at the next beat means the
+ *   cross-side repair did not run in between, which is a failure.
  */
-export function pnlReconcileHeartbeat(st, pass = {}) {
-  const attempted = Math.max(0, Number(pass.attempted) || 0)
-  const completed = Math.max(0, Number(pass.completed) || 0)
-  const failures = (Array.isArray(pass.failures) ? pass.failures : [])
-    .map(f => ({ accountId: String(f?.accountId ?? ''), error: String(f?.error ?? 'unknown error').slice(0, 160) }))
+export function pnlReconcileHeartbeat(st, pass = {}, { crossSide = null } = {}) {
+  const own = normalisedPass(pass)
+  let cross = { attempted: 0, completed: 0, skipped: 0, failures: [], skippedFor: [] }, crossView = null
+  if (crossSide?.state === 'reported') {
+    cross = normalisedPass(crossSide)
+    crossView = { state: 'reported', at: crossSide.at ?? null, attempted: cross.attempted, completed: cross.completed, skipped: cross.skipped }
+  } else if (crossSide?.state === 'awaited') {
+    const last = crossSide.lastReportedAt ? `last report ${crossSide.lastReportedAt}` : 'no report this process'
+    cross.failures = [{ accountId: 'cross-side', error: `the cross-side P&L repair has not reported since ${crossSide.since ?? 'the previous beat'} (${last})` }]
+    crossView = { state: 'awaited', since: crossSide.since ?? null, lastReportedAt: crossSide.lastReportedAt ?? null }
+  } else if (crossSide) crossView = { state: String(crossSide.state ?? 'pending') }
+  const attempted = own.attempted + cross.attempted, completed = own.completed + cross.completed
+  const failures = [...own.failures, ...cross.failures], skippedFor = [...own.skippedFor, ...cross.skippedFor]
+  const tried = Math.max(attempted, failures.length + completed)
   const unreadable = !st || !(Number(st.unresolved) >= 0)
-  const passFailed = attempted > 0 && completed === 0
   const overdue = unreadable ? 0 : Number(st.neverTriedOverdue) || 0
   const notice = overdue > 0
     ? `${overdue} closed trade(s) with no realised P&L not yet attempted by the repair (15+ min after close); a record notice, not a controller failure`
     : null
+  const listed = failures.slice(0, 3).map(f => `${f.accountId}: ${f.error}`).join('; ') + (failures.length > 3 ? `; +${failures.length - 3} more` : '')
   return {
-    ok: !unreadable && !passFailed,
+    ok: !unreadable && failures.length === 0,
     error: unreadable
       ? 'pnl reconciliation state could not be read'
-      : passFailed
-        ? `the P&L repair pass failed on every account it tried (${failures.length || attempted}/${attempted}): ${failures.slice(0, 3).map(f => `${f.accountId}: ${f.error}`).join('; ') || 'no error recorded'}`
-        : null,
+      : failures.length === 0
+        ? null
+        : completed === 0
+          ? `the P&L repair pass failed on every account it tried (${failures.length}/${tried}): ${listed}`
+          : `the P&L repair failed on ${failures.length} of ${tried} account(s) it tried: ${listed}`,
     detail: {
       ...(st || {}),
-      pass: { attempted, completed, skipped: Math.max(0, Number(pass.skipped) || 0), failed: failures.slice(0, 5) },
+      pass: {
+        attempted, completed, skipped: own.skipped + cross.skipped,
+        failed: failures.slice(0, 7).map(f => ({ accountId: f.accountId, error: f.error.slice(0, 120) })),
+        ...(skippedFor.length ? { skippedFor: skippedFor.slice(0, 7) } : {}),
+        ...(crossView ? { crossSide: crossView } : {}),
+      },
       ...(notice ? { notice } : {}),
     },
   }
+}
+
+function normalisedPass(p) {
+  return {
+    attempted: Math.max(0, Number(p?.attempted) || 0),
+    completed: Math.max(0, Number(p?.completed) || 0),
+    skipped: Math.max(0, Number(p?.skipped) || 0),
+    failures: (Array.isArray(p?.failures) ? p.failures : [])
+      .map(f => ({ accountId: String(f?.accountId ?? ''), error: String(f?.error ?? 'unknown error').slice(0, 160) })),
+    skippedFor: (Array.isArray(p?.skippedFor) ? p.skippedFor : [])
+      .map(s => ({ accountId: String(s?.accountId ?? ''), reason: String(s?.reason ?? '').slice(0, 60) })),
+  }
+}
+
+/**
+ * One session's per-account P&L repair outcomes, counted the way the
+ * heartbeat reads them. Each entry is what backfillAccountPnl returns (or the
+ * loop's own pacing skip): `result` completed, `skipped` skipped, anything
+ * else a FAILURE with its account id — an entry that says neither is not
+ * counted as done. Non-pacing skips (token refused, a read still in flight)
+ * are listed by account so a skip that recurs every pass can be seen.
+ */
+export function pnlPassSummary(results, { at = null } = {}) {
+  let completed = 0, skipped = 0
+  const failures = [], skippedFor = []
+  for (const r of Array.isArray(results) ? results : []) {
+    const accountId = String(r?.accountId ?? '?')
+    if (r?.result) completed++
+    else if (r?.skipped) {
+      skipped++
+      if (r.skipped !== 'paced') skippedFor.push({ accountId, reason: String(r.skipped).slice(0, 60) })
+    } else failures.push({ accountId, error: String(r?.error ?? 'no result recorded').slice(0, 160) })
+  }
+  return { at, attempted: completed + failures.length, completed, skipped, failures, skippedFor }
+}
+
+/**
+ * What a beat leaves behind for the next one: the cross-side summary it just
+ * read, marked read. If the next beat still finds it 'awaited', the cross-side
+ * repair did not report in between, and pnlReconcileHeartbeat says so instead
+ * of carrying an old ok forward.
+ */
+export function pnlCrossSideAwaited(crossSide, at) {
+  const lastReportedAt = crossSide?.state === 'reported' ? (crossSide.at ?? null) : (crossSide?.lastReportedAt ?? null)
+  return { state: 'awaited', since: at ?? null, lastReportedAt }
 }
 
 export function pnlReconciliationState(db, { accountId = null, overdueMin = 15 } = {}) {

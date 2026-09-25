@@ -42,6 +42,13 @@ export function verifiedPositionHistory(response, { accountId, positionId, now }
     } else opened += Number(d.filledVolume)
     if (!Number.isSafeInteger(opened) || !Number.isSafeInteger(closed)) throw refused('position volume overflow')
   }
-  if (deals.length && (symbols.size !== 1 || opened === 0 || closed !== opened)) throw refused('position lifecycle incomplete')
+  if (deals.length && (symbols.size !== 1 || opened === 0)) throw refused('position lifecycle incomplete')
+  // More volume opened than closed: the broker still holds (part of) the
+  // position. That is broker evidence, not the absence of it, so it carries
+  // its own wording and flag; a caller must never file it as "no broker
+  // evidence" (V3 I1 checker N3).
+  if (deals.length && closed !== opened) {
+    throw Object.assign(refused(`broker shows position still open: opened volume ${opened}, closed volume ${closed}`), { openAtBroker: true })
+  }
   return { deals, complete: true, pages: 1 }
 }

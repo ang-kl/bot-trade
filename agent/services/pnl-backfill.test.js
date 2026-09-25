@@ -719,13 +719,15 @@ test('pnlUnreachedRows names only overdue, repairable, never-attempted identitie
 // days on two rows it reached every pass. The 02-09 point still stands — the
 // beat must be ABLE to fail — and is now shown by behaviour, not by a pin on
 // the old predicate (pnl-reconcile-stall.test.js has the full contract).
-test('the pnl_reconcile heartbeat can actually fail: a pass that fails everywhere, or unreadable state (behaviour)', () => {
+test('the pnl_reconcile heartbeat can actually fail: a pass that fails on any account, or unreadable state (behaviour)', () => {
   const st = { unresolved: 1, neverTriedOverdue: 1 }
   assert.equal(pnlReconcileHeartbeat(st, { attempted: 2, completed: 0, failures: [{ accountId: '1', error: 'x' }] }).ok, false)
+  // V3 I1 checker B1: one account failing is not masked by another completing.
+  assert.equal(pnlReconcileHeartbeat(st, { attempted: 2, completed: 1, failures: [{ accountId: '1', error: 'x' }] }).ok, false)
   assert.equal(pnlReconcileHeartbeat({ unresolved: -1 }, { attempted: 1, completed: 1 }).ok, false)
-  assert.equal(pnlReconcileHeartbeat(st, { attempted: 2, completed: 1 }).ok, true, 'a completed pass is not a failure because a record is unpriced')
+  assert.equal(pnlReconcileHeartbeat(st, { attempted: 2, completed: 2 }).ok, true, 'a completed pass is not a failure because a record is unpriced')
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
-  assert.match(src, /verdict\.detail\.unreachedRows = pnlUnreachedRows\(db\)/, 'unreached rows are still named in the detail')
+  assert.match(src, /verdict\.detail\.unreachedRows = pnlUnreachedRows\(db, \{ limit: 10 \}\)/, 'unreached rows are still named in the detail')
   assert.doesNotMatch(src, /ok: st\.unresolved >= 0,/, 'the old predicate — a count compared to zero — must be gone')
 })
 
@@ -807,6 +809,6 @@ test('the loop prints the breakdown, not the bare count', () => {
 // failure — and their identities are still logged whenever they exist.
 test('the loop logs exact overdue P&L identities whenever the reconciliation notice is raised', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\*[^]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
-  assert.match(src, /if \(verdict\.detail\.notice\) \{\s+verdict\.detail\.unreachedRows = pnlUnreachedRows\(db\)\s+log\(`P&L reconciliation not-yet-attempted rows:/)
+  assert.match(src, /if \(verdict\.detail\.notice\) \{\s+verdict\.detail\.unreachedRows = pnlUnreachedRows\(db, \{ limit: 10 \}\)\s+log\(`P&L reconciliation not-yet-attempted rows:/)
   assert.match(src, /JSON\.stringify\(verdict\.detail\.unreachedRows\)/)
 })

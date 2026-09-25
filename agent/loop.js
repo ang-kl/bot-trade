@@ -103,6 +103,10 @@ const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens excee
 let loopCount = 0
 // Seeded once per process: see the FIRST-CYCLE SEED block in runLoop.
 let crossSideEquitySeeded = false
+// The other session's P&L repair outcome, read by the next pnl_reconcile beat
+// (V3 I1 checker B1). 'pending' until its first run this process; 'reported'
+// with a pnlPassSummary after each run; 'awaited' once a beat has read it.
+let pnlCrossSidePass = { state: 'pending' }
 let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
@@ -3280,8 +3284,8 @@ async function runLoop(db) {
               let skipped = 0
               // What the PASS did, per account — the heartbeat below is decided
               // from this (V3 I1), not from how many records are still unpriced.
-              let completedAccts = 0
-              const failedAccts = []
+              // One entry per account: { result } | { skipped } | { error }.
+              const passResults = []
               // The exit-price MAGNITUDE flag (`exit_price_suspect`) is what
               // makes the backfill re-fetch and repair a row whose recorded
               // exit is off by a factor rather than a sign. Until 02-09-2026
@@ -3296,7 +3300,7 @@ async function runLoop(db) {
                 // last time — a permanently unfillable row (closing deal
                 // older than the deal-history window) would otherwise buy a
                 // broker fetch per account every cycle, forever.
-                if (!closeSeen && !dueForBackfill(acct)) { skipped++; continue }
+                if (!closeSeen && !dueForBackfill(acct)) { skipped++; passResults.push({ accountId: acct, skipped: 'paced' }); continue }
                 try {
                   if (sweepSuspects) {
                     const sw = sweepSuspects(db, { accountId: acct })
@@ -3305,17 +3309,17 @@ async function runLoop(db) {
                   const creds = { host, clientId, clientSecret, accessToken, accountId: acct }
                   const { backfillAccountPnl } = await import('./services/cross-side-pnl.js')
                   const recovered = await backfillAccountPnl(db, { ...creds, ready: true }, { closeSeen })
-                  if (recovered.skipped) { skipped++; continue }
+                  if (recovered.skipped) { skipped++; passResults.push({ accountId: acct, skipped: recovered.skipped }); continue }
                   if (recovered.error) throw new Error(recovered.error)
                   const bf = recovered.result
-                  completedAccts++
+                  passResults.push({ accountId: acct, result: bf })
                   if (bf.positionHistory) log(`P&L position history [${acct}]: ${JSON.stringify(bf.positionHistory)}`)
                   if (bf.backfilled > 0) {
                     filled += bf.backfilled
                     log(`P&L backfill [${acct}]: filled ${bf.backfilled} broker-closed trade(s) with realized P&L`)
                   }
                 } catch (e) {
-                  failedAccts.push({ accountId: acct, error: e.message })
+                  if (!passResults.some(r => r.accountId === acct)) passResults.push({ accountId: acct, error: e.message })
                   log(`P&L backfill [${acct}] failed (non-fatal): ${e.message}`)
                 }
               }
@@ -3342,15 +3346,26 @@ async function runLoop(db) {
               // been attempted". The beat now says whether the PASS worked
               // (pnlReconcileHeartbeat); rows not yet attempted stay in the
               // detail as a notice, and stuck records are judged by STK-05.
+              //
+              // BOTH SESSIONS (checker B1): `targets` is this session's side
+              // only. The other session's accounts (e.g. the live account
+              // holding #774/#775 while a demo account is selected) are
+              // repaired by backfillCrossSidePnl further down this block,
+              // AFTER this beat; that pass leaves its summary in
+              // pnlCrossSidePass and this beat folds in the latest one, then
+              // marks it read, so a cross-side repair that stops reporting is
+              // a failure here rather than a stale ok carried forward.
               try {
-                const { pnlReconciliationState, pnlUnreachedRows, pnlReconcileHeartbeat } = await import('./services/pnl-backfill.js')
+                const { pnlReconciliationState, pnlUnreachedRows, pnlReconcileHeartbeat, pnlPassSummary, pnlCrossSideAwaited } = await import('./services/pnl-backfill.js')
                 const st = pnlReconciliationState(db)
                 const hb = await import('./services/heartbeat.js')
-                const verdict = pnlReconcileHeartbeat(st, {
-                  attempted: targets.length - skipped, completed: completedAccts, skipped, failures: failedAccts,
-                })
+                const verdict = pnlReconcileHeartbeat(st, pnlPassSummary(passResults), { crossSide: pnlCrossSidePass })
+                pnlCrossSidePass = pnlCrossSideAwaited(pnlCrossSidePass, new Date().toISOString())
                 if (verdict.detail.notice) {
-                  verdict.detail.unreachedRows = pnlUnreachedRows(db)
+                  // Ten rows, not twenty: the detail is stored whole only up
+                  // to 4,000 bytes (heartbeat.beat), and it now carries the
+                  // per-account failures too.
+                  verdict.detail.unreachedRows = pnlUnreachedRows(db, { limit: 10 })
                   log(`P&L reconciliation not-yet-attempted rows: ${JSON.stringify(verdict.detail.unreachedRows)}`)
                 }
                 hb.beat(db, 'pnl_reconcile', verdict)
@@ -3805,15 +3820,23 @@ async function runLoop(db) {
           // Closing a local row must reach the P&L repair on the same host.
           // The earlier same-side pass cannot fetch the opposite account's
           // deals. Report these reads separately, preserving its own pacing.
+          // Its outcome feeds the NEXT pnl_reconcile beat (checker B1): every
+          // account counts, whichever session repairs it.
           try {
             const { backfillCrossSidePnl } = await import('./services/cross-side-pnl.js')
+            const { pnlPassSummary } = await import('./services/pnl-backfill.js')
             const recovered = await backfillCrossSidePnl(db, getCtraderCreds(db), crossReconciled)
+            pnlCrossSidePass = { state: 'reported', ...pnlPassSummary(recovered, { at: new Date().toISOString() }) }
             for (const r of recovered) {
               if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read; ${r.result.lifetimeSkipped || 0} positions outside verified lifetime window`)
               else log(`P&L backfill [${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
               if (r.result?.positionHistory) log(`P&L position history [${r.accountId}]: ${JSON.stringify(r.result.positionHistory)}`)
             }
-          } catch (err) { log(`Cross-side P&L recovery failed (non-fatal): ${err.message}`) }
+          } catch (err) {
+            log(`Cross-side P&L recovery failed (non-fatal): ${err.message}`)
+            pnlCrossSidePass = { state: 'reported', at: new Date().toISOString(), attempted: 1, completed: 0, skipped: 0,
+              failures: [{ accountId: 'cross-side', error: String(err?.message ?? err).slice(0, 160) }], skippedFor: [] }
+          }
 
           // ---- CROSS-SIDE EQUITY (READ ONLY) -----------------------------
           // An account whose balance is
