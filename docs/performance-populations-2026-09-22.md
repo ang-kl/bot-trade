@@ -8,8 +8,13 @@ cannot supply a period total or prove the absence of older trades.
 
 `GET /state/performance-populations` iterates every recorded closed trade.
 Canonical close timestamps and the existing shared DST-aware 17:00 New York
-anchors define half-open ledger windows. Approximate fixed UTC session buckets
-remain reporting buckets; they do not claim an exchange is open or closed.
+anchors define half-open ledger windows. Session buckets (V3 WEB-6, 25-09-2026)
+are each exchange's regular cash hours derived in its own IANA zone with DST
+(`agent/shared/report-sessions.js`: ASX, SGX, HKEX, TSE, LSE, NYSE; lunch
+breaks excluded, Monday–Friday local). They replaced fixed UTC minute ranges
+that were wrong after each DST change. Public holidays and early closes are not
+applied (WEB-6b); the payload says so in `sessionWindow.exceptions`. They are
+reporting buckets and gate nothing.
 Every close counts, including unpriced closes. Invalid/unknown dates, future
 dates and missing account identities are counted in portfolio coverage. Named
 accounts include only their stamped rows. Unstamped rows never migrate to the

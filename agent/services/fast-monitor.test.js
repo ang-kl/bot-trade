@@ -304,6 +304,19 @@ test('withBudget really does abandon a wait that overruns', async () => {
   assert.ok(Date.now() - t0 < 2000)
 })
 
+test('V3 M1: every band-step budget overrun is COUNTED per 10-minute window (the heartbeat keeps only the last error)', async () => {
+  const { budgetOverrunSummary } = await import('./runtime-record.js')
+  const before = budgetOverrunSummary().sinceBoot.m1_loss_guardian_probe?.n ?? 0
+  await withBudget('m1_loss_guardian_probe', 30, () => new Promise(() => {}))
+  await withBudget('m1_loss_guardian_probe', 30, () => new Promise(() => {}))
+  const ok = await withBudget('m1_loss_guardian_probe', 200, async () => 'done')
+  assert.equal(ok.value, 'done')
+  const s = budgetOverrunSummary()
+  assert.equal(s.sinceBoot.m1_loss_guardian_probe.n, before + 2, 'two overruns, and the pass that finished in budget is not one')
+  assert.equal(s.sinceBoot.m1_loss_guardian_probe.budgetMs, 30)
+  assert.ok(s.byName10m.m1_loss_guardian_probe >= 2)
+})
+
 // ---------------------------------------------------------------------------
 // Wave 5 (first-principles audit 19-09-2026 §K item 15): the tick's overrun
 // as a measured share, written by the tick path itself.
@@ -386,6 +399,48 @@ test('band steps surface returned operation errors as failures', async () => {
   await assert.rejects(runBandStep({}, 'failure', async () => ({ errors: ['broker rejected'] })), /broker rejected/)
 })
 
+
+test('V3 M1: the FIRST tick and the FIRST band after boot are stamped once each, with their outcome — a failed first band stays failed', async () => {
+  const { _resetRuntimeRecordForTests, runtimeRecordSnapshot } = await import('./runtime-record.js')
+  _resetRuntimeRecordForTests()
+  const db = initDB(':memory:')
+  let bands = 0
+  let ticks = 0
+  const stop = startFastMonitor(db, () => ({ ready: false }), {
+    tickMs: 5, bandMs: 5, heartbeat: { beat() {} },
+    runTick: async () => { ticks++; return { err: null, completed: true, checked: 3 } },
+    runBand: async () => { bands++; if (bands === 1) throw new Error('first band failed') },
+  })
+  await sleep(80)
+  stop()
+  assert.ok(ticks > 1 && bands > 1, `need later passes to prove write-once (ticks ${ticks}, bands ${bands})`)
+  const first = runtimeRecordSnapshot().first
+  assert.equal(first.fastTick.ok, true)
+  assert.equal(first.fastTick.completed, true)
+  assert.equal(first.fastTick.checked, 3)
+  assert.equal(typeof first.fastTick.ms, 'number')
+  assert.equal(first.band.ok, false, 'the later good bands did not overwrite the failed first one')
+  assert.match(first.band.error, /first band failed/)
+  assert.equal(first.band.overran, false)
+  assert.equal(typeof first.band.sinceBootMs, 'number')
+})
+
+test('V3 M1: the protection audit stamps its first pass (and first clean pass) inside the band, before its heartbeat', async () => {
+  // runProtectionBand runs every real acting layer before the audit, so the
+  // wiring is pinned in source (comments stripped); the stamp logic itself is
+  // behavioural in runtime-record.test.js.
+  const fs = await import('node:fs')
+  const url = await import('node:url')
+  const src = fs.readFileSync(url.fileURLToPath(new URL('./fast-monitor.js', import.meta.url)), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n')
+  const pa = src.indexOf('const pa = paRes.value')
+  const stamp = src.indexOf("stampFirst('protectionAudit', { ok: auditClean", pa)
+  const clean = src.indexOf("if (auditClean) stampFirst('cleanProtectionAudit'", pa)
+  const beat = src.indexOf("hbMod.beat(db, 'protection_audit', {", pa)
+  assert.ok(pa > 0 && stamp > pa && clean > stamp && beat > clean, `wiring moved: pa ${pa}, stamp ${stamp}, clean ${clean}, beat ${beat}`)
+  assert.ok(src.indexOf("stampFirst('protectionAudit', { ok: false, error: err.message })") > beat, 'a thrown audit is stamped as a failed first audit')
+  assert.ok(/raced\.timedOut\) \{[\s\S]{0,400}noteBudgetOverrun\(name, budgetMs,/.test(src), 'withBudget counts its overruns')
+})
 
 test('a failed sidecar probe cannot skip the protection watchdog', async () => {
   const { runProtectionBand } = await import('./fast-monitor.js')
