@@ -223,8 +223,11 @@ async function recordsGoal(db, targets, nowMs) {
   const { heartbeatView } = await import('./heartbeat.js')
   const view = heartbeatView(db, { now: new Date(nowMs) })
   // Only controllers that have RUN are judged on their record: a controller
-  // that never beat is the controllers_ok goal's finding, not this one's.
-  const withRecord = view.filter(v => v.work_product && v.verdict !== 'never_ran')
+  // that never beat is the controllers_ok goal's finding, not this one's. A
+  // dormant controller (heartbeat `dormantWhen`, V3 I2) is expected to leave
+  // its record unwritten, so its age is not staleness — the same exclusion
+  // controllers_ok already makes.
+  const withRecord = view.filter(v => v.work_product && v.verdict !== 'never_ran' && !v.dormant)
   const fresh = withRecord.filter(v => v.work_product.fresh)
   const stale = withRecord.filter(v => !v.work_product.fresh).map(v => `${v.name} (${v.work_product.summary})`)
   const current = pct(fresh.length, withRecord.length)
