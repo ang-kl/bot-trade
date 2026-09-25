@@ -997,8 +997,11 @@ export async function pullTickStatus(db, exec, side, nowMs = Date.now()) {
 // already stored inside <side>_tick_json by pullTickStatus.
 export const TICK_SHADOW_CURSOR_KEY = 'tick_shadow_cursor_json'
 // P6b: the tick permit feeder (services/tick-permits.js). Pushes only when
-// an account on this side is in TICK_MOMENTUM or the sidecar still lists
-// one (its /health tick.entry.accounts > 0) — an idle side costs nothing.
+// an account on this side admits tick (tickEntryAccountsFor: basesFor
+// includes 'tick' — TICK_MOMENTUM, or WP-A's TIME_BASED + ['bar','tick'] —
+// and STABLE), when a re-push is marked, or when there is a set to clear
+// (the last pass pushed some, or the sidecar still lists one: its /health
+// tick.entry.accounts > 0) — an idle side costs nothing.
 let lastTickEntryPush = new Map() // side.name → count pushed
 export async function feedTickPermits(db, exec, side, nowMs = Date.now()) {
   const { tickEntryAccountsFor, runTickPermitFeeder, takeTickRepush, peekTickRepush } = await import('./tick-permits.js')
@@ -1315,7 +1318,8 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
         try { await pullTickShadow(db, exec, side) } catch (err) { console.warn(`[heartbeat] tick shadow pull failed (${side.name}): ${err.message}`) }
       }
       // P6b: the tick permit feeder rides the same probe — standing permits
-      // for every TICK_MOMENTUM account on this side (none today), refreshed
+      // for every account on this side that admits tick (TICK_MOMENTUM, or
+      // WP-A's Time + tick; tickEntryAccountsFor decides), refreshed
       // well inside their 5-minute life; a push happens only when there is
       // an account to place for or a set to clear.
       try { await feedTickPermits(db, exec, side, nowMs) } catch (err) { console.warn(`[heartbeat] tick permit feeder failed (${side.name}): ${err.message}`) }

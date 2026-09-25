@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { engineState, engineReading, mixedSummary, mixedCounts, basesFor, blockerGroups, tickBlockedReason, tickSelectionNote, ackLine, requestedSelection, selectionBody, basesLabel, SELECTION_LABEL, STALE_AFTER_MS } from './engine-status-view.js'
+import { engineState, engineReading, mixedSummary, mixedCounts, basesFor, blockerGroups, tickBlockedReason, tickSelectionNote, ackLine, requestedSelection, requestedLabel, bulkSkips, selectionBody, basesLabel, SELECTION_LABEL, STALE_AFTER_MS } from './engine-status-view.js'
 
 const row = (o = {}) => ({ accountId: '…9908', requestedEntryMode: 'TIME_BASED', effectiveEntryMode: 'TIME_BASED', transitionState: 'STABLE', configRevision: 3, modeEpoch: 2, entryCounts: { resting: 0, unknown: 0 }, ...o })
 
@@ -122,5 +122,31 @@ describe('WP-A: basesFor mirror and mixed counts', () => {
     expect(c.tick).toBe(1); expect(c.active).toBe(2); expect(c.warming).toBe(1)
     expect(mixedSummary([dual, warming])).toBe('1 active · 1 warming · 1 admitting tick')
     expect(mixedCounts([row()]).tick).toBe(0)
+  })
+})
+
+describe('WP-A checker follow-ups (nits 2, 4, 5)', () => {
+  it('bulkSkips reads the requested SELECTION: "Time-based all" skips a time-only row and does NOT skip a Time + tick row (which is TIME_BASED too)', () => {
+    const timeOnly = row()
+    const dual = row({ admittedBases: ['bar', 'tick'], bases: ['bar', 'tick'] })
+    const warmingDual = row({ admittedBases: ['bar', 'tick'], effectiveEntryMode: 'STOPPED', transitionState: 'WARMING', bases: [] })
+    expect(bulkSkips(timeOnly, 'time')).toBe(true)
+    expect(bulkSkips(dual, 'time')).toBe(false)
+    expect(bulkSkips(warmingDual, 'time')).toBe(false)
+    expect(bulkSkips(dual, 'stopped')).toBe(false)
+    expect(bulkSkips(row({ requestedEntryMode: 'STOPPED', effectiveEntryMode: 'STOPPED' }), 'stopped')).toBe(true)
+    expect(bulkSkips(row({ requestedEntryMode: 'TICK_MOMENTUM', effectiveEntryMode: 'TICK_MOMENTUM' }), 'time')).toBe(false)
+  })
+  it('the effective label falls back to the local basesFor mirror when the payload carries admittedBases but no `bases`, before the mode label', () => {
+    expect(engineReading(row({ admittedBases: ['bar', 'tick'] })).label).toBe('Time + tick entries')
+    expect(engineReading(row({ admittedBases: ['tick'] })).label).toBe('Tick momentum entries')
+    expect(engineReading(row()).label).toBe('Time-based entries')
+    // the server's bases still win when sent
+    expect(engineReading(row({ admittedBases: ['bar', 'tick'], bases: ['bar'] })).label).toBe('Time-based entries')
+  })
+  it('requestedLabel names the requested selection, falling back to the mode label', () => {
+    expect(requestedLabel(row({ admittedBases: ['bar', 'tick'] }))).toBe('Time + tick')
+    expect(requestedLabel(row())).toBe('Time-based')
+    expect(requestedLabel(row({ requestedEntryMode: 'BOGUS' }))).toBe('BOGUS')
   })
 })

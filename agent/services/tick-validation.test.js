@@ -784,3 +784,33 @@ test('WP-A: resetting evidence on a Time + tick account is a named refusal (tick
   const ok = importTickValidation(db, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'profile changed' }, thresholds: TH })
   assert.equal(ok.ok, true, ok.reason); assert.equal(engineStatusFor(db, DEMO).validationStage, 'UNVALIDATED')
 })
+
+// Checker nit 1 (WP-A follow-up, 25-09-2026): the contract counts tick as
+// admitted whenever the effective mode is TICK_MOMENTUM, whatever the set.
+// A STABLE TICK_MOMENTUM account narrowed through the overlay to ['bar']
+// has basesFor = ['bar'], so the reset used to miss it and throw out of
+// writeEngineStatus (a 500). Refused by name on the mode now, nothing written.
+test('WP-A follow-up: a TICK_MOMENTUM account narrowed through the overlay to [bar] is still refused tick_admitted on reset (the contract reads the mode), not a 500', async () => {
+  const { writeEngineStatus, requestEntryMode, requestAdmittedBases, acknowledgeEntryEpochs, basesFor } = await import('./entry-mode.js')
+  const db = fresh()
+  const cur = engineStatusFor(db, DEMO)
+  writeEngineStatus(db, { ...cur, profileHash: profileHashFull(DEFAULT_PARAMS), profileId: 'tick_momentum_breakout@v1', validationStage: 'SHADOW_PASSED', configRevision: 1, updatedAt: new Date().toISOString() })
+  const tick = requestEntryMode(db, DEMO, 'TICK_MOMENTUM', { readiness: () => ({ ready: true, blockedReasons: [] }) })
+  assert.equal(tick.ok, true, tick.reason)
+  acknowledgeEntryEpochs(db, { [DEMO]: tick.status.modeEpoch })
+  const narrowed = requestAdmittedBases(db, DEMO, ['bar'], { expectedRevision: engineStatusFor(db, DEMO).configRevision })
+  assert.equal(narrowed.ok, true, narrowed.reason)
+  const before = engineStatusFor(db, DEMO)
+  assert.equal(before.effectiveEntryMode, 'TICK_MOMENTUM'); assert.equal(before.transitionState, 'STABLE')
+  assert.deepEqual(basesFor(before), ['bar'], 'the set alone no longer names tick — the case the bases-only check missed')
+  let r = null
+  assert.doesNotThrow(() => { r = importTickValidation(db, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'profile changed' }, thresholds: TH }) }, 'RED: writeEngineStatus threw on the contract (effective TICK_MOMENTUM below SHADOW_PASSED)')
+  assert.equal(r.ok, false); assert.match(r.reason, /^tick_admitted: the account admits bar \(requested TICK_MOMENTUM; effective TICK_MOMENTUM, and the contract counts TICK_MOMENTUM as admitting tick/)
+  const after = engineStatusFor(db, DEMO)
+  assert.equal(after.validationStage, 'SHADOW_PASSED'); assert.equal(after.configRevision, before.configRevision, 'nothing written')
+  // the way out is the entry-mode route: Time-based, acknowledged, then the reset applies
+  const time = requestEntryMode(db, DEMO, 'TIME_BASED', { expectedRevision: after.configRevision })
+  acknowledgeEntryEpochs(db, { [DEMO]: time.status.modeEpoch })
+  const ok = importTickValidation(db, { accountId: DEMO, stage: 'UNVALIDATED', evidence: { reason: 'profile changed' }, thresholds: TH })
+  assert.equal(ok.ok, true, ok.reason); assert.equal(engineStatusFor(db, DEMO).validationStage, 'UNVALIDATED')
+})

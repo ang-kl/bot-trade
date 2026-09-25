@@ -94,11 +94,17 @@ export function openPositionsFor(db, accountId) {
   return { symbols, total }
 }
 
-/** The enabled accounts on `side` whose EFFECTIVE mode is TICK_MOMENTUM (PR-B: every account on the same evidence bar; `side` is routing only). */
+/** The pause map (PAUSED_KEY): accounts whose tick entries are held, keyed by id. Unreadable reads as none paused. */
 export function pausedTickAccounts(db) {
   try { const m = JSON.parse(getState(db, PAUSED_KEY) || '{}'); return m && typeof m === 'object' ? m : {} } catch { return {} }
 }
 
+/**
+ * The enabled accounts on `side` that ADMIT tick now: basesFor() includes
+ * 'tick' — an effective TICK_MOMENTUM, or TIME_BASED + ['bar','tick'] (WP-A
+ * "time + tick") — and the record is STABLE (the gateway echoed the epoch).
+ * PR-B: every account on the same evidence bar; `side` is routing only.
+ */
 export function tickEntryAccountsFor(db, side = { isLive: null }, { excludePaused = false } = {}) {
   const paused = excludePaused ? pausedTickAccounts(db) : {}
   let rows = []
@@ -114,7 +120,7 @@ export function tickEntryAccountsFor(db, side = { isLive: null }, { excludePause
     // asks the same function; the two MUST move together (see the pause map
     // note below: they used to oscillate).
     if (!basesFor(st).includes('tick') || st.transitionState !== 'STABLE') continue
-    // PR-B (owner principle 1): mode, STABLE and the pause map are the whole
+    // PR-B (owner principle 1): the bases, STABLE and the pause map are the whole
     // test — the environment is not read here. `side` above is routing (which
     // sidecar), never a policy.
     if (paused[String(r.account_id)]) continue

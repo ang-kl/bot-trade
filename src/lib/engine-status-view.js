@@ -68,17 +68,31 @@ export function selectionBody(key, accountId, expectedRevision) {
   return { accountId, mode: sel.mode, ...(sel.admittedBases ? { admittedBases: [...sel.admittedBases] } : {}), expectedRevision }
 }
 
-/** The label of what is running now: from the effective bases when the server sent them, else the effective mode. */
+/**
+ * Whether a bulk action skips this row as "already requested" (WP-A checker
+ * nit 2): the requested SELECTION, read from the requested bases — never the
+ * mode string. A Time + tick row is TIME_BASED too, so a skip keyed on the
+ * mode would leave tick admitted under "Time-based all".
+ */
+export function bulkSkips(row, key) {
+  return requestedSelection(row) === key
+}
+
+/**
+ * The label of what is running now: from the effective bases the server
+ * sent, else from the local basesFor mirror over the effective mode and the
+ * stored set (checker nit 4: a payload with admittedBases but no `bases`
+ * must not read "Time-based" while the buttons treat it as Time + tick),
+ * else the effective mode.
+ */
 function effectiveLabel(row) {
-  if (Array.isArray(row.bases)) {
-    const k = selectionOfBases(row.bases)
-    if (k && k !== 'stopped') return SELECTION_LABEL[k]
-  }
+  const k = selectionOfBases(Array.isArray(row.bases) ? row.bases : basesFor(row))
+  if (k && k !== 'stopped') return SELECTION_LABEL[k]
   return MODE_LABEL[row.effectiveEntryMode] || row.effectiveEntryMode
 }
 
-/** The label of what was asked. */
-function requestedLabel(row) {
+/** The label of what was asked: the requested selection, else the requested mode. */
+export function requestedLabel(row) {
   const k = requestedSelection(row)
   return k ? SELECTION_LABEL[k] : (MODE_LABEL[row.requestedEntryMode] || row.requestedEntryMode)
 }

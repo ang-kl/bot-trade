@@ -22,15 +22,18 @@
 // authority; it is never a hidden automatic fallback, and the emergency
 // halt (exec guard) still binds it.
 //
-// WHAT THIS PHASE DOES NOT DO (and says so): the C++ VPO tier is fenced at
-// ARMING time (vpo-feeder.js refuses the /vpo-config push for a STOPPED
-// account) but not at FIRE time — that is the P2 permit; TICK_MOMENTUM is
-// refused outright until the strategy (P4) and its evidence (P6) exist. The
-// Node gateway acknowledges STOPPED and TIME_BASED at once because for Node
-// producers the fence IS this module, so requested and effective agree
-// immediately. P1c (entry-drain.js, 11-09-2026): a switch to STOPPED with
-// resting entry orders enters QUIESCING; the drain cancels them by stored id
-// and settles RECONCILING → STABLE on the broker's word.
+// WHAT THE FENCE ADMITS IS THE BASES, not the mode string (PR-3, WP-A
+// 25-09-2026): basesFor() below is the admitted set — `admittedBases` when
+// set, else the mode's own basis — so TIME_BASED + ['bar','tick'] ("time +
+// tick") admits tick producers exactly as TICK_MOMENTUM does, and every
+// writer gates ANY target that admits tick (the mode or the set) on the
+// injected readiness and the contract's evidence (a pinned profile and
+// SHADOW_PASSED) before anything is written. An active mode (TIME_BASED or
+// TICK_MOMENTUM, with or without a set) takes effect only when the gateway
+// echoes the new epoch (WARMING → STABLE, acknowledgeEntryEpochs); STOPPED
+// takes effect at once. P1c (entry-drain.js, 11-09-2026): a switch to
+// STOPPED with resting entry orders enters QUIESCING; the drain cancels them
+// by stored id and settles RECONCILING → STABLE on the broker's word.
 // ---------------------------------------------------------------------------
 
 import { readFileSync } from 'node:fs'
@@ -432,6 +435,15 @@ export function acknowledgeEntryEpochs(db, epochs, { now = new Date(), source = 
       } catch { /* audit best-effort */ }
     } catch (err) {
       console.warn(`[entry-mode] ack …${String(rawId).slice(-4)} skipped: ${err?.message || err}`)
+      // Checker nit 6 (WP-A follow-up, 25-09-2026): the skip is VISIBLE, not
+      // only a console line — the account stays WARMING, and without this
+      // row nothing on record says the echo DID arrive and was refused (the
+      // panel would keep saying "until the executor echoes epoch N"). One
+      // ACK_REFUSED row per refused echo, naming the contract's reason.
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+          .run('ACK_REFUSED', '/entry-mode/ack', JSON.stringify({ accountId: String(rawId), epoch: Number(rawEpoch), source, reason: String(err?.message || err).slice(0, 300) }), String(rawId))
+      } catch { /* audit best-effort */ }
     }
   }
   return changed
