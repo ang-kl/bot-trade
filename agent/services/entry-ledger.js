@@ -570,7 +570,11 @@ export function reconcileIntents(db, { accountId, positions = [], orders = [], n
         let evs = []
         try { evs = byOrder.all(normOrderId(it.broker_order_id), String(accountId)) } catch { evs = [] }
         const v = restingEventVerdict(evs)
-        if (v && v.state !== 'ACCEPTED') {
+        // An order this pass's snapshot still lists is working: an error
+        // event on it (a failed cancel or amend) is not its outcome. Only a
+        // fill is believed while the order rests (checker N2, 25-09).
+        const stillWorking = hit?.kind === 'order' || workingIds.has(normOrderId(it.broker_order_id))
+        if (v && v.state !== 'ACCEPTED' && (!stillWorking || v.state === 'FILLED')) {
           r = resolveIntent(db, it.id, { state: v.state, positionId: v.positionId, brokerOrderId: v.brokerOrderId ?? it.broker_order_id, errorCode: v.errorCode, source: 'event', now, from: ['ACCEPTED'] })
         }
       }

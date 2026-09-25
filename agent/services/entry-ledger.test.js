@@ -700,6 +700,20 @@ test('X1: reconcile settles ACCEPTED rows on the broker\'s evidence — a tagged
   assert.deepEqual(rec.resolved.map(r => [r.from, r.to]).sort(), [['ACCEPTED', 'EXPIRED'], ['ACCEPTED', 'FILLED'], ['ACCEPTED', 'FILLED'], ['ACCEPTED', 'RELEASED']])
 })
 
+test('X1 / checker N2: an order the snapshot still lists is working — an error event on it (a failed cancel) is not its outcome and the row stays ACCEPTED; a fill on a working order is still believed', () => {
+  const db = fresh()
+  const erred = restingAccepted(db, { symbolId: 51, symbol: 'G', orderId: 7101 })
+  const partly = restingAccepted(db, { symbolId: 52, symbol: 'H', orderId: 7102 })
+  const gone = restingAccepted(db, { symbolId: 53, symbol: 'I', orderId: 7103 })
+  execEvent(db, { seq: 1, type: null, orderId: 7101, payloadType: 2132 })
+  execEvent(db, { seq: 2, type: 'ORDER_PARTIAL_FILL', orderId: 7102, positionId: 8102 })
+  execEvent(db, { seq: 3, type: null, orderId: 7103, payloadType: 2132 })
+  reconcileIntents(db, { accountId: DEMO, orders: [{ orderId: 7101 }, { orderId: 7102 }] })
+  assert.equal(row(db, erred).state, 'ACCEPTED', 'a working order is not REJECTED by an error event')
+  assert.deepEqual([row(db, partly).state, row(db, partly).broker_position_id], ['FILLED', '8102'])
+  assert.equal(row(db, gone).state, 'REJECTED', 'an order the snapshot no longer lists still settles on its error event')
+})
+
 test('restingEventVerdict: any fill wins, then the newest terminal frame; an acceptance alone is ACCEPTED; nothing is null', () => {
   assert.equal(restingEventVerdict([]), null)
   assert.equal(restingEventVerdict([{ execution_type: 'ORDER_ACCEPTED', order_id: '1', position_id: '2' }]).state, 'ACCEPTED')
