@@ -529,7 +529,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       log(`${symbol}: lesson_tuner: alpha-decay cool-off — skipping ${synth.strategy || 'signal'}/${synth.timeframe || '?'} (last postmortem flagged decay for this exact edge)`)
       try {
         const { recordDecision } = await import('./services/decision-log.js')
-        recordDecision(db, { symbol, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'lesson_decay', decision: 'skip', reason: 'alpha_decay_cooloff' })
+        // V3 WEB-1: the order's own account. Without it the row took the
+        // SELECTED account, whichever account this order was for.
+        recordDecision(db, { accountId: String(accountId), symbol, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'lesson_decay', decision: 'skip', reason: 'alpha_decay_cooloff' })
       } catch { /* provenance never blocks */ }
       return null
     }
@@ -1317,6 +1319,9 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
       // nothing" rather than "the bot considered plenty and this gate said
       // no". Every other gate on this path already leaves a row; this one
       // now does too.
+      // V3 WEB-1: a ROSTER-WIDE stop — no account is named, so the row is
+      // stored with NULL and reported under every account as roster-wide,
+      // never charged to the selected one (decision-log.js ROSTER_STAGES).
       try {
         const { recordDecision } = await import('./services/decision-log.js')
         recordDecision(db, {
