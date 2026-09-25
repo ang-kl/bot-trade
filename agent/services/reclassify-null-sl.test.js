@@ -1,10 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
+import os from 'node:os'; import path from 'node:path'
 import { initDB } from '../db.js'
 import { reclassifyBrokerCloses } from './reconciler.js'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 
-const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(),'recl-')),'agent.db'))
+const tmpDb = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(),'recl-')),'agent.db'))
 const ins = (db, o) => {
   const c = ['symbol','side','status','entry_price','exit_price','sl_price','tp_price','close_reason','opened_at','closed_at']
   db.prepare(`INSERT INTO trades (${c.join(',')}) VALUES (${c.map(()=>'?').join(',')})`)

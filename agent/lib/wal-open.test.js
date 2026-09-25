@@ -5,6 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
@@ -103,7 +104,7 @@ test('isDiskError matches the IOERR family only', () => {
 })
 
 test('the storage line reports real file sizes and free space', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walopen-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'walopen-'))
   const p = path.join(dir, 'a.db')
   const db = new Database(p)
   db.pragma('journal_mode = WAL')

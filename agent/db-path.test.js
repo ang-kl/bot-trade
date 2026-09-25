@@ -12,6 +12,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from './test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -41,7 +42,7 @@ test('an unset or whitespace-only DB_PATH falls back to the local file', () => {
 })
 
 test('db.name is the authoritative path — it is what SQLite opened', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dbpath-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dbpath-'))
   const file = path.join(dir, 'agent.db')
   const db = initDB(file)
   assert.equal(db.name, file)
@@ -51,7 +52,7 @@ test('db.name is the authoritative path — it is what SQLite opened', () => {
 })
 
 test('statting the untrimmed path fails while the trimmed one succeeds', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dbpath2-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dbpath2-'))
   const file = path.join(dir, 'agent.db')
   initDB(file)
   assert.throws(() => fs.statSync(` ${file}`))

@@ -10,6 +10,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 import { pruneReports, REPORT_RETENTION_DEFAULTS } from './report-retention.js'
@@ -18,7 +19,7 @@ function seed(dir, names) {
   fs.mkdirSync(dir, { recursive: true })
   for (const n of names) fs.writeFileSync(path.join(dir, n), `<html>${n}</html>`)
 }
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'reports-'))
+const tmp = () => mkdtempSync(path.join(os.tmpdir(), 'reports-'))
 
 test('keeps the NEWEST N of each class and deletes the rest', () => {
   const dir = tmp()

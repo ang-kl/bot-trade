@@ -6,6 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 import { handleChartCommand } from './telegram-control.js'
@@ -24,7 +25,7 @@ function makeBars(n = 30) {
 // Records the pipeline order + every payload so assertions can inspect them.
 function makeDeps(overrides = {}) {
   const calls = []
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-chart-'))
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'tg-chart-'))
   const deps = {
     calls,
     tmp,

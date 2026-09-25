@@ -8,6 +8,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -21,7 +22,7 @@ import {
   pruneAtrHistory, HISTORY_DAYS, MIN_DAYS_FOR_VERDICT, ATR_PERIOD,
 } from './vol-gate.js'
 
-const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'volgate-')), 'agent.db'))
+const tmpDb = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'volgate-')), 'agent.db'))
 const DAY = 86_400_000
 const START = Date.parse('2025-01-01T00:00:00.000Z')
 

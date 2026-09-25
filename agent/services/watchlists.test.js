@@ -264,7 +264,8 @@ test('the per-account key is the acct: convention the rest of the codebase uses'
 // enabled account's own list, never removed.
 // ---------------------------------------------------------------------------
 import { seedWatchlistAdditionsFromConfig } from './watchlists.js'
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 

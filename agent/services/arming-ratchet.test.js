@@ -2,10 +2,10 @@
 // production state measured on 17-09-2026 — the one this module exists for.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 
 import { initDB, getState, setState } from '../db.js'
 import { setStage } from './stage-matrix.js'

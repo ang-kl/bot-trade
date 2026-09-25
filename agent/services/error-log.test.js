@@ -2,7 +2,7 @@
 // showed: errors_today going up while last_error stayed months old.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -10,7 +10,7 @@ import { initDB, getState, setState } from '../db.js'
 import { recordError, readRecentErrors, clearErrorLog, RING_MAX } from './error-log.js'
 
 function tmpDb() {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'errlog-')), 'agent.db')
+  const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'errlog-')), 'agent.db')
   return initDB(file)
 }
 

@@ -4,7 +4,7 @@
 // counted". Each test below is one of those.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -13,7 +13,7 @@ import { GATE_ORDER } from './cup-handle.js'
 import { cupHandleFunnel, funnelLine } from './cup-handle-funnel.js'
 import { readCupHandleFunnel } from './performance-populations.js'
 
-const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'chf-')), 'agent.db'))
+const tmpDb = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'chf-')), 'agent.db'))
 
 const nowMs = Date.parse('2026-08-05T07:00:00.000Z')
 const isoAgo = (h) => new Date(nowMs - h * 3600_000).toISOString()

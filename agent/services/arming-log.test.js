@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 

@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDB, setState } from '../db.js'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import {
   PROPOSABLE, clampProposal, parseAssessment, buildPrompt, buildContext,
   runReassessment, loadLastAssessment, markApplied,

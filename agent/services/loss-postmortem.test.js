@@ -316,12 +316,12 @@ test('sweep persists the flat lesson fields', async () => {
 // The sweep was correct; the SCREEN was silent, and silence read as "nothing
 // was learned from this".
 
-import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 import { pendingLessons } from './loss-postmortem.js'
 
-const pendDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pending-')), 'agent.db'))
+const pendDb = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'pending-')), 'agent.db'))
 const NOW = Date.parse('2026-07-29T00:00:00Z')
 const sqliteAt = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
 

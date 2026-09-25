@@ -6,13 +6,13 @@ import {
   resolveOpportunity, nextOpportunityKey, DEFAULT_GAP_MS,
 } from './opportunity-identity.js'
 import { initDB } from '../db.js'
-import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
 const T0 = Date.parse('2026-08-05T04:00:00.000Z')
 const P = { symbol: 'TXT.US', side: 'SELL', strategy: 'vwap_trend', accountId: '46130058' }
-const fresh = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'opp-')), 'a.db'))
+const fresh = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'opp-')), 'a.db'))
 
 test('the tuple is case- and whitespace-stable, so a quote casing change is not a new opportunity', () => {
   assert.equal(

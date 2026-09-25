@@ -5,6 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
@@ -17,7 +18,7 @@ import {
 const quiet = { warn() {}, log() {} }
 
 function tmpDb() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'reclaim-'))
   const p = path.join(dir, 'agent.db')
   const db = new Database(p)
   db.pragma('journal_mode = WAL')
@@ -30,7 +31,7 @@ function tmpDb() {
 }
 
 test('the WAL is never unlinked — that would discard committed transactions', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'reclaim-'))
   for (const n of ['agent.db', 'agent.db-wal', 'agent.db-shm', 'old.bak']) {
     fs.writeFileSync(path.join(dir, n), 'x')
   }
@@ -42,7 +43,7 @@ test('the WAL is never unlinked — that would discard committed transactions', 
 })
 
 test('stale sidecars and crash leftovers are reclaimable', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'reclaim-'))
   for (const n of ['agent.db', 'a.tmp', 'b.old', 'agent.db-journal', 'core.123', 'keep.json']) {
     fs.writeFileSync(path.join(dir, n), 'x')
   }
@@ -153,7 +154,7 @@ test('unreadable free space does not trigger a reclaim on a healthy box', () => 
 })
 
 test('the volume report lists the largest files first', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-'))
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'reclaim-'))
   fs.writeFileSync(path.join(dir, 'small'), Buffer.alloc(10))
   fs.writeFileSync(path.join(dir, 'big'), Buffer.alloc(5000))
   const rep = volumeReport(dir)

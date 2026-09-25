@@ -10,13 +10,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { mkdtempSync } from './test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import { initDB, insertCupHandleDiagnostic } from './db.js'
 
 function tmpDbPath() {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'botdb-')), 'agent.db')
+  return path.join(mkdtempSync(path.join(os.tmpdir(), 'botdb-')), 'agent.db')
 }
 
 test('fresh DB: rejected is a valid trades.status from the start', () => {

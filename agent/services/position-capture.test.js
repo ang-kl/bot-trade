@@ -6,7 +6,8 @@
 // verifier that is unreachable being read as "fine".
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDB } from '../db.js'

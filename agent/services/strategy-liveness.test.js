@@ -8,7 +8,7 @@
 // is the original bug.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -17,7 +17,7 @@ import { strategyLiveness, MIN_SCANS_FOR_VERDICT } from './strategy-liveness.js'
 
 const silent = (db, opts) => strategyLiveness(db, opts).strategies.filter(s => s.verdict === 'silent')
 
-const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'live-')), 'agent.db'))
+const tmpDb = () => initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'live-')), 'agent.db'))
 
 const nowMs = Date.parse('2026-07-28T12:00:00.000Z')
 const isoAgo = (hours) => new Date(nowMs - hours * 3600_000).toISOString()

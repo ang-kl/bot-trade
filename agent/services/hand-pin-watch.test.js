@@ -3,7 +3,8 @@
 // pinned to a strategy the watchdog had just scored exp -$108.48 / PF 0.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 

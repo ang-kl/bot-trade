@@ -241,6 +241,7 @@ test('stageMatrixView bundles columns, matrix, stats and window', () => {
 // ---------------------------------------------------------------------------
 import { unpinTradeStageEverywhere, armedTradeKeys, acctMatrixKey, acctEnabledKey } from './stage-matrix.js'
 import { readFileSync } from 'node:fs'
+import { mkdtempSync } from '../test-support/temp-dir.js'
 
 function withAccounts(db, ids) {
   for (const id of ids) db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')`).run(id, id)
@@ -305,7 +306,7 @@ test('wiring: POST /actions/strategies clears pins for every strategy it turns o
 // config/strategy-pins.json because the pinning route needs the lost token.
 // ---------------------------------------------------------------------------
 import { seedStrategyPinsFromConfig, isHandPinned, tradeStageGate as gateFor, disarmStrategyEverywhere } from './stage-matrix.js'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
