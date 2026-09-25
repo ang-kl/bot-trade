@@ -69,15 +69,55 @@ export function resolveLatency(latencyMs, percentile = 0.9) {
 function tradable(q) { return q.bid != null && q.ask != null && !q.snapshot && !q.crossed }
 
 /**
- * simulate(events, params, sim) → { trades, summary, blocks, rejected }.
+ * PR-Q1 (V3 P6/P7, 25-09-2026): v2 is the first version whose `summary`
+ * covers ONLY the blocks the trial is allowed to read. Every trial written
+ * before it (v1, or no version at all) computed `summary` over every trade —
+ * test block included — while `blocks` said the test block was withheld, so
+ * its test period could be read by subtraction (verified: four planted
+ * signals, three in the last third, gave summary.trades 4 / netR 12.24 with
+ * train 1 and validation 0). Those rows are CONSULTED, and the ledger says so
+ * by this version string, never by a guess.
+ */
+export const STATISTICS_VERSION = 'mtm-moving-block-v2'
+export const LEGACY_STATISTICS_VERSIONS = Object.freeze(['mtm-moving-block-v1'])
+/** A trial record keeps at most this many signals and trades for the parity report. */
+export const PARITY_RECORD_MAX = 500
+
+/**
+ * The event holding cap, normalised as the sidecar does it: cpp-exec's
+ * ShadowBook takes `sim.maxHoldEvents > 0 ? sim.maxHoldEvents : 4 × rangeEvents`
+ * (tick_shadow.cpp:84), and agent/config/tick-shadow-sim.json ships 0 to mean
+ * "the default". The replayer read `maxHoldEvents ?? 4N`, so 0 closed every
+ * trade after ONE event — copying the shadow's sim into a replay made every
+ * trade a one-event hold. 0, null, a negative or a non-number are all 4N here.
+ */
+export function normalizeMaxHoldEvents(value, rangeEvents) {
+  const n = Number(value)
+  return value != null && Number.isFinite(n) && n > 0 ? n : 4 * rangeEvents
+}
+
+/**
+ * simulate(events, params, sim) → { trades, summary, blocks, rejected, parity }.
  * `events` are oracle quotes { seq, recvMs, bid, ask, snapshot, crossed, changed }
  * in order for ONE symbol; `signalsOverride` lets a test plant signals.
+ *
+ * PR-Q1: with the test block withheld (`includeTest` not true and more than
+ * one block), `summary`, its `diagnostics` and the `parity` record cover ONLY
+ * the events before the test block, and only trades that ENTERED and EXITED
+ * there — a trade whose exit read a test-block price is test-period
+ * information. `summary.scope` says which. `trades` and `rejected` stay the
+ * whole in-memory run (the C++ shadow-book fixture is pinned against them);
+ * nothing persisted reads them for a withheld trial.
  */
 export function simulate(events, params = {}, sim = {}, { signalsOverride = null } = {}) {
   const p = normalizeParams(params)
   const s = { ...DEFAULT_SIM, ...sim }
-  s.statisticsVersion = 'mtm-moving-block-v1'
-  const maxHoldEvents = s.maxHoldEvents ?? 4 * p.rangeEvents
+  s.statisticsVersion = STATISTICS_VERSION
+  const maxHoldEvents = normalizeMaxHoldEvents(s.maxHoldEvents, p.rangeEvents)
+  // 0 and null are the same request (4N), so they are stored the same way and
+  // key the same trial id; the resolved cap is stated beside it.
+  s.maxHoldEvents = s.maxHoldEvents != null && Number(s.maxHoldEvents) > 0 ? maxHoldEvents : null
+  s.maxHoldEventsResolved = maxHoldEvents
   const latency = resolveLatency(s.latencyMs, s.latencyPercentile)
   s.latencyMs = latency.ms
   s.latencySource = latency.source
@@ -108,6 +148,17 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
   const trades = []
   const rejected = { cost: 0, noFill: 0 }
   let signals = 0
+  // PR-Q1: where the withheld test block starts, cut exactly as
+  // blockSummaries cuts it. Everything the trial REPORTS stops here unless the
+  // owner's confirmation run (includeTest) unseals it.
+  const nBlocks = Number(s.blocks)
+  const withheld = s.includeTest !== true && nBlocks > 1
+  const sealedAt = withheld ? (nBlocks - 1) * Math.floor(events.length / nBlocks) : events.length
+  const signalLog = []          // every signal (taken or not) with its event index, for the parity record
+  const settleEvents = p.expiryEvents + p.rearmCooldownEvents
+  let warmAt = null, settledAt = null  // { idx, ms } — the replay's own warm-up, for the parity window
+  let sealedCounters = null
+  const counters = (idx) => ({ events: idx, acceptedEvents: oracle.accepted, warmedEvaluations: oracle.warmedEvaluations, signals, oracleRejected: { ...oracle.rejected }, costRejected: rejected.cost, noFill: rejected.noFill })
   const mark = (position, q) => {
     const exit = position.side === 'BUY' ? q.bid - slipAt(q.bid) : q.ask + slipAt(q.ask)
     const gross = position.side === 'BUY' ? exit - position.entry : position.entry - exit
@@ -122,6 +173,7 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
   const planted = signalsOverride ? new Map(signalsOverride.map(sg => [sg.seq, sg])) : null
   for (let i = 0; i < events.length; i++) {
     const q = events[i]
+    if (i === sealedAt && sealedCounters == null) sealedCounters = counters(i)
     // 1. manage the open trade on this event (exits use THIS event's executable side)
     if (open && tradable(q)) {
       mark(open, q)
@@ -156,7 +208,9 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
     }
     // 3. the strategy sees the event AFTER the trade management (no lookahead on its own fill)
     const sig = planted ? (planted.get(q.seq) || null) : oracle.feed(q)
-    if (sig) signals++
+    if (!planted && warmAt == null && oracle.warmedEvaluations > 0) warmAt = { idx: i, ms: q.recvMs }
+    if (!planted && settledAt == null && oracle.warmedEvaluations > settleEvents) settledAt = { idx: i, ms: q.recvMs }
+    if (sig) { signals++; signalLog.push({ idx: i, seq: sig.seq, recvMs: sig.recvMs, side: sig.side }) }
     if (sig && !open && !pending) {
       // The screen prices the round trip at the signal's MID — one price for
       // both ends, so the same number reaches the sidecar's ShadowBook.
@@ -185,17 +239,54 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
     }
     open = null
   }
-  const summary = summarize(trades)
+  // PR-Q1, THE LEAK FIX. This was `summarize(trades)` over EVERY trade while
+  // the test block's row said `withheld` — and runTrials, the ledger and GET
+  // /state/tick-research all return this summary. Withheld, it now covers the
+  // trades that entered AND exited before the test block; with includeTest it
+  // is every trade, exactly as before, so the replay gate's inputs for the
+  // owner's confirmation run are unchanged.
+  const inScope = withheld ? trades.filter(t => t.exitIdx < sealedAt) : trades
+  const summary = summarize(inScope)
+  summary.scope = withheld ? 'train_validation' : 'all_blocks'
+  const scoped = withheld ? (sealedCounters || counters(events.length)) : counters(events.length)
   const diagnostics = {
-    outcome: trades.length ? 'trades_observed' : oracle.warmedEvaluations === 0 && !planted ? 'insufficient_warmup' : signals === 0 ? 'no_signals' : rejected.cost === signals ? 'cost_screened' : 'no_executable_fills',
-    events: events.length, warmupPriorEvents: Math.max(p.rangeEvents + 1, p.momentumEvents),
-    acceptedEvents: oracle.accepted, warmedEvaluations: oracle.warmedEvaluations, signals, oracleRejected: { ...oracle.rejected },
-    costRejected: rejected.cost, noFill: rejected.noFill,
-    note: 'Zero trades are insufficient evidence of profitability, not a measured losing strategy. Warm-up resets on stale or invalid quotes; purge may also leave no evaluable validation block.',
+    outcome: inScope.length ? 'trades_observed' : scoped.warmedEvaluations === 0 && !planted ? 'insufficient_warmup' : scoped.signals === 0 ? 'no_signals' : scoped.costRejected === scoped.signals ? 'cost_screened' : 'no_executable_fills',
+    scope: summary.scope,
+    events: scoped.events, warmupPriorEvents: Math.max(p.rangeEvents + 1, p.momentumEvents),
+    acceptedEvents: scoped.acceptedEvents, warmedEvaluations: scoped.warmedEvaluations, signals: scoped.signals, oracleRejected: scoped.oracleRejected,
+    costRejected: scoped.costRejected, noFill: scoped.noFill,
+    note: 'Zero trades are insufficient evidence of profitability, not a measured losing strategy. Warm-up resets on stale or invalid quotes; purge may also leave no evaluable validation block.'
+      + (withheld ? ' Withheld: every figure here stops at the test block, so nothing in this summary reads the test period.' : ''),
   }
   summary.diagnostics = diagnostics
+  // The time span the scope covers (gap markers carry recvMs 0 and are skipped).
+  let fromMs = null, toMs = null
+  for (let i = 0; i < sealedAt; i++) { const ms = events[i].recvMs; if (ms > 0) { if (fromMs == null) fromMs = ms; toMs = ms } }
+  summary.window = { fromMs, toMs, events: sealedAt }
   const blocks = blockSummaries(trades, events.length, s.blocks, purgeEvents, { includeTest: s.includeTest === true })
-  return { strategyId: STRATEGY_ID, strategyVersion: STRATEGY_VERSION, profileHash: profileHash(p), params: p, sim: s, trades, summary, blocks, rejected, events: events.length }
+  // PR-Q1: what the parity report compares with the sidecar's own record —
+  // the scoped signals and trades, and when this replay had warmed and
+  // settled (a replay that starts mid-stream is cold while the live strategy
+  // is not, so nothing before `settledFromMs` can be compared).
+  const within = (a) => a && a.idx < sealedAt ? a.ms : null
+  const scopedSignals = withheld ? signalLog.filter(x => x.idx < sealedAt) : signalLog
+  // A trade that entered in scope and was still open at the test block is in
+  // the record by its ENTRY only (the live book took it too); its exit and
+  // result are test-period information and are not written.
+  const straddling = withheld ? trades.filter(t => t.entryIdx < sealedAt && t.exitIdx >= sealedAt) : []
+  const recordTrades = [
+    ...inScope.map(t => ({ side: t.side, signalSeq: t.signalSeq, entrySeq: t.entrySeq, entryMs: t.entryMs, exitMs: t.entryMs + t.holdMs, reason: t.reason })),
+    ...straddling.map(t => ({ side: t.side, signalSeq: t.signalSeq, entrySeq: t.entrySeq, entryMs: t.entryMs, exitMs: null, reason: 'open_at_scope_end' })),
+  ]
+  const parity = {
+    scope: summary.scope, fromMs, toMs, warmFromMs: within(warmAt), settledFromMs: within(settledAt), settleEvents,
+    latencyMs: s.latencyMs,
+    signalsTotal: scopedSignals.length, tradesTotal: recordTrades.length,
+    truncated: scopedSignals.length > PARITY_RECORD_MAX || recordTrades.length > PARITY_RECORD_MAX,
+    signals: scopedSignals.slice(0, PARITY_RECORD_MAX).map(x => ({ seq: x.seq, recvMs: x.recvMs, side: x.side })),
+    trades: recordTrades.slice(0, PARITY_RECORD_MAX),
+  }
+  return { strategyId: STRATEGY_ID, strategyVersion: STRATEGY_VERSION, profileHash: profileHash(p), params: p, sim: s, trades, summary, blocks, rejected, parity, events: events.length }
 }
 
 /** A small deterministic PRNG (mulberry32) so the bootstrap is reproducible. */

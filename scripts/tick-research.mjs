@@ -20,20 +20,29 @@
 // paths cannot drift on what "a subset" means. It is the route's answer to a
 // spool over the keeper's record cap; here it is simply a smaller run.
 import { writeFileSync } from 'node:fs'
-import { listSegments, replayFiles, researchPlan, maxSegmentsFrom } from '../agent/services/tick-research-run.js'
+import { listSegments, replayFiles, researchPlan, maxSegmentsFrom, includeTestRefusal } from '../agent/services/tick-research-run.js'
 import { loadThresholds } from '../agent/services/tick-validation.js'
 import { loadRepoSchedule } from '../agent/lib/tick-cost-schedule.js'
 
 const args = process.argv.slice(2)
 const target = args.find(a => !a.startsWith('--'))
-if (!target) { console.error('usage: tick-research.mjs <segments dir> [--stage-a] [--params json] [--sim json] [--include-test] [--symbol id] [--max-segments n] [--out file]'); process.exit(2) }
+if (!target) { console.error('usage: tick-research.mjs <segments dir> [--stage-a] [--params json] [--sim json] [--include-test --profile <hash>] [--symbol id] [--max-segments n] [--out file]'); process.exit(2) }
 const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null }
 const stageA = args.includes('--stage-a')
 const paramsArg = opt('--params') ? JSON.parse(opt('--params')) : {}
 const simArg = opt('--sim') ? JSON.parse(opt('--sim')) : {}
 // Plan §7: the test block is WITHHELD on every research run; the owner's one
 // confirmation run passes --include-test (recorded on the trial's sim).
+// PR-Q1: with --include-test the script obeys the route's rule — exactly one
+// declared profile (--profile <16 or 64 hex> agreeing with --params), never
+// --stage-a. Its output imports through POST /actions/tick-trials, which
+// records the opening (client_import, unverified) and refuses a second one.
 if (args.includes('--include-test')) simArg.includeTest = true
+const profileArg = opt('--profile')
+{
+  const refused = includeTestRefusal({ stageA, params: paramsArg, sim: simArg, profileHash: profileArg ?? undefined })
+  if (refused) { console.error(`${refused.body.error}: ${refused.body.where}`); process.exit(2) }
+}
 const onlySymbol = opt('--symbol') ? Number(opt('--symbol')) : null
 const outFile = opt('--out')
 
@@ -74,6 +83,7 @@ if (bounded.value != null) console.error(`replaying ${files.length} of ${availab
 // produces for an unclassified symbol.
 const plan = researchPlan({
   stageA, params: paramsArg, sim: simArg,
+  ...(profileArg == null ? {} : { profileHash: profileArg }),
   ...(onlySymbol == null ? {} : { symbol: onlySymbol }),
   ...(bounded.value == null ? {} : { maxSegments: bounded.value }),
 }, { costSchedule: loadRepoSchedule() })

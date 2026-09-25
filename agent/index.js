@@ -655,6 +655,10 @@ function authMiddleware(req, res, next) {
   // secrets — classifyToken deliberately collapses both into 'full', so the
   // distinction has to be made here rather than read off the tier.
   const isDeviceSession = tier === 'full' && token !== AGENT_SECRET;
+  // PR-Q1: WHICH credential authenticated this request, stamped by the server
+  // and read by lib/request-actor.js — so a record can say who acted instead
+  // of hard-coding 'owner'. Never taken from anything the client sends.
+  req.authCredential = tier === 'full' ? (isDeviceSession ? 'device_session' : 'agent_secret') : (tier === 'read' ? 'read_secret' : null);
   if (isDeviceSession) {
     try {
       touchSession(db, token, {

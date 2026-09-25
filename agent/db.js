@@ -693,9 +693,36 @@ const TABLES = `
     manifest_json TEXT NOT NULL,
     summary_json  TEXT NOT NULL,
     blocks_json   TEXT NOT NULL,
-    note          TEXT
+    note          TEXT,
+    -- PR-Q1: who produced the row (keeper job / inline / client import,
+    -- verified or not, the caller, the replayer build) and the scoped
+    -- signals and trades the parity report compares with the sidecar's own
+    -- record. Neither is part of the content key. NULL on rows written
+    -- before PR-Q1, which is the truth about them.
+    origin_json   TEXT,
+    parity_json   TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_tick_trials_profile ON tick_trials(profile_hash);
+
+  -- PR-Q1 (V3 P6/P7): every opening of a replay TEST block, whichever door it
+  -- came through — a keeper job, an in-thread run, or an off-box import of a
+  -- trial replayed with includeTest. A dry run cannot open it (refused), and
+  -- a second opening of the same holdout is refused. holdout_key is
+  -- 'undeclared' (the profile's own test block) until PR-Q2 declares a
+  -- future-only holdout window.
+  CREATE TABLE IF NOT EXISTS tick_test_openings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    at           TEXT NOT NULL DEFAULT (datetime('now')),
+    profile_hash TEXT NOT NULL,           -- the 16-hex prefix the trial ledger prints
+    holdout_key  TEXT NOT NULL,
+    channel      TEXT NOT NULL,           -- keeper_job | keeper_inline | client_import
+    job_id       TEXT,
+    actor        TEXT,
+    status       TEXT NOT NULL,           -- opened | no_data | failed_unseen | refused_second_opening
+    trial_ids    TEXT,
+    detail       TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_tick_test_openings_profile ON tick_test_openings(profile_hash, holdout_key);
 
   CREATE TABLE IF NOT EXISTS tick_status_samples (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1607,6 +1634,15 @@ export function initDB(dbPath) {
     const shadowCols = new Set(db.prepare(`PRAGMA table_info(tick_shadow_trades)`).all().map(c => c.name));
     for (const [col, type] of [['cost_class', 'TEXT'], ['commission_wire', 'REAL'], ['commission_bps', 'REAL'], ['slippage_wire', 'REAL'], ['slippage_bps', 'REAL']]) {
       if (!shadowCols.has(col)) db.exec(`ALTER TABLE tick_shadow_trades ADD COLUMN ${col} ${type}`);
+    }
+  } catch { /* table absent on an old schema */ }
+
+  // PR-Q1: trial origin and the parity record on an existing ledger. The 636
+  // rows already there stay NULL — nobody recorded where they came from.
+  try {
+    const trialCols = new Set(db.prepare(`PRAGMA table_info(tick_trials)`).all().map(c => c.name));
+    for (const col of ['origin_json', 'parity_json']) {
+      if (!trialCols.has(col)) db.exec(`ALTER TABLE tick_trials ADD COLUMN ${col} TEXT`);
     }
   } catch { /* table absent on an old schema */ }
 

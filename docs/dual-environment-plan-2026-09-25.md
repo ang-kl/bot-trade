@@ -156,6 +156,16 @@ This answers "can filtering lift both?" before anything goes live.
 - Add a newest-data or date-window segment selection with an untouched final
   holdout (`tick-research-run.js:66, :385`).
 - Count `includeTest` openings per profile, as the multiple-testing record.
+  PR-Q1 (branch `claude/v3-q1-replay-honesty`, not yet merged) records every
+  opening in `tick_test_openings` (keeper job, in-thread run, client import;
+  a dry run and a stage-A grid are refused; a second opening of the same
+  holdout is refused), and GET `/state/tick-research` counts them per profile
+  over the whole ledger. The same PR fixes the withheld-summary leak
+  (`statisticsVersion` v2; every earlier trial reads as consulted), records
+  each trial's origin and segment digests, and adds GET
+  `/state/tick-replay-parity`. Whether the replay reproduces the shadow is
+  NOT YET COMPARED until that report reads ok or mismatch on a comparable
+  window. Carrying the openings into the REPLAY_PASSED evidence stays PR-Q2.
 - Pooled evaluation (D6).
 - Clear the pin on a reset to UNVALIDATED, so a second candidate can be pinned
   (`tick-validation.js:270`).

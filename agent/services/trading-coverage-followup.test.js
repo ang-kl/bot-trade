@@ -143,7 +143,10 @@ test('heartbeat records explicit disabled tick status even without a health tick
 test('replay marks intra-trade drawdown even when the only close is a winner', () => {
   const ev = [100,100,111,105,120].map((bid, i) => ({ seq:i+1,recvMs:1000+i*100,bid,ask:bid+2,changed:true,snapshot:false,crossed:false }))
   const sig = { ...ev[0], side:'BUY',stopDistance:10 }
-  const r = simulate(ev, {}, { latencyMs:0,targetR:10,minTargetToCost:0 }, { signalsOverride:[sig] })
+  // blocks: 1 — PR-Q1: a withheld run's summary stops at the test block, and
+  // five events cut in three put this trade's exit in it; the drawdown
+  // arithmetic is what this pins, over the one trade.
+  const r = simulate(ev, {}, { latencyMs:0,targetR:10,minTargetToCost:0,blocks:1 }, { signalsOverride:[sig] })
   assert.equal(r.summary.maxDrawdownR, 0, 'closed-only drawdown misses the retracement')
   assert.equal(r.summary.markToMarketDrawdownR, 0.6)
   assert.equal(r.summary.drawdownBasis, 'closed_trades_only')

@@ -2745,10 +2745,28 @@ export default function stateRouter(db) {
   })
   // P4: the trial ledger — every replay run with its profile hash, manifest,
   // costs and block results. Research only; nothing here approves trading.
+  // PR-Q1: `?profile=<16-hex>` filters to one profile and `?limit=all` reads
+  // every row (the GET showed 200 of 636, so the v1 grid point was not
+  // visible through it); `ledger` counts over the WHOLE table either way.
   router.get('/tick-research', async (req, res) => {
     try {
       const { tickTrialsView } = await import('../services/tick-research.js')
-      res.json(tickTrialsView(db, { limit: Math.min(200, Number(req.query.limit) || 50) }))
+      const all = String(req.query.limit || '') === 'all'
+      const out = tickTrialsView(db, { limit: all ? 'all' : Math.min(10_000, Number(req.query.limit) || 50), profile: req.query.profile ?? null })
+      res.status(out.error ? 400 : 200).json(out)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+  // PR-Q1: does the replay reproduce the shadow? A stored trial (?trialId=)
+  // or a profile's trials in a window (?profile=&side=&from=&to=) against the
+  // sidecar's own cpp_decisions signals and tick_shadow_trades — ok,
+  // mismatch or not_comparable with named reasons. Report only.
+  router.get('/tick-replay-parity', async (req, res) => {
+    try {
+      const { replayParityView } = await import('../services/tick-replay-parity.js')
+      const r = replayParityView(db, req.query || {})
+      res.status(r.status).json(r.body)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

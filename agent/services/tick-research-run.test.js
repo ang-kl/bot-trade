@@ -27,7 +27,7 @@ const mkdtempSync = (...args) => {
 after(() => { for (const dir of temporaryDirectories) rmSync(dir, { recursive: true, force: true }) })
 
 /** The planted fixture as one sealed segment for symbol `symbolId`. */
-export function fixtureSegment({ symbolId = 7, gapAfter = null } = {}) {
+export function fixtureSegment({ symbolId = 7, gapAfter = null, gapReason = 3 } = {}) {
   const parts = [encodeHeader({ environment: 'demo', generation: 1, startedMs: 1_757_548_800_000, feedId: 'fixture' })]
   for (const [i, ev] of buildFixture().entries()) {
     if (ev.changed === false) { parts.push(encodeRecord({ recvMs: ev.recvMs, seq: ev.seq, symbolId, flags: FLAGS.REPEAT, generation: 1 })); continue }
@@ -37,7 +37,7 @@ export function fixtureSegment({ symbolId = 7, gapAfter = null } = {}) {
     if (ev.snapshot) flags |= FLAGS.SNAPSHOT
     if (ev.crossed) flags |= FLAGS.CROSSED
     parts.push(encodeRecord({ recvMs: ev.recvMs, seq: ev.seq, symbolId, bid: ev.bid == null ? undefined : ev.bid, ask: ev.ask == null ? undefined : ev.ask, flags, kind: KIND.QUOTE, generation: 1 }))
-    if (gapAfter != null && i === gapAfter) parts.push(encodeRecord({ recvMs: ev.recvMs, seq: 0, symbolId: 0, bid: 1, ask: 3, kind: KIND.GAP, generation: 1 }))
+    if (gapAfter != null && i === gapAfter) parts.push(encodeRecord({ recvMs: ev.recvMs, seq: 0, symbolId: 0, bid: 1, ask: gapReason, kind: KIND.GAP, generation: 1 }))
   }
   return Buffer.concat(parts)
 }
@@ -53,12 +53,18 @@ test('a synthetic segment decodes to the same trades the oracle fixture yields, 
   const loaded = loadSegments(files)
   assert.deepEqual(loaded.manifestBase.symbols, [7]); assert.equal(loaded.manifestBase.torn, 0); assert.equal(loaded.manifestBase.decoderVersion, 1)
   assert.ok(loaded.manifestBase.events > 200, `events ${loaded.manifestBase.events}`)
-  const direct = simulate(buildFixture(), PARAMS, SIM)
-  const [t] = runTrials(loaded, { params: PARAMS, sim: SIM })
+  // PR-Q1: the segment path and the in-memory fixture are compared over ALL
+  // blocks (includeTest) — both of the fixture's trades exit inside the test
+  // block, so a withheld summary is 0 on both paths and would compare nothing.
+  const direct = simulate(buildFixture(), PARAMS, { ...SIM, includeTest: true })
+  const [t] = runTrials(loaded, { params: PARAMS, sim: { ...SIM, includeTest: true } })
   assert.equal(t.summary.trades, direct.summary.trades, 'the segment path replays the same trades as the in-memory fixture')
   assert.equal(t.summary.trades, 2)
-  assert.equal(t.profileHash, direct.profileHash); assert.equal(t.manifest.symbolId, 7); assert.match(t.trialId, /^[0-9a-f]{20}$/)
-  assert.equal(t.blocks.find(b => b.name === 'test').withheld, true, 'plan §7: a research run withholds the test block')
+  assert.deepEqual(t.parity.trades.map(x => x.entrySeq), direct.trades.map(x => x.entrySeq), 'the parity record carries the same trades')
+  const [w] = runTrials(loaded, { params: PARAMS, sim: SIM })
+  assert.equal(t.profileHash, direct.profileHash); assert.equal(w.manifest.symbolId, 7); assert.match(w.trialId, /^[0-9a-f]{20}$/)
+  assert.equal(w.blocks.find(b => b.name === 'test').withheld, true, 'plan §7: a research run withholds the test block')
+  assert.equal(w.summary.scope, 'train_validation'); assert.equal(w.summary.trades, 0, 'PR-Q1: withheld, neither trade (both exit in the test block) is in the summary')
   assert.equal(stageAGrid().length, 12)
   assert.deepEqual(stageAGrid()[0], { rangeEvents: 128, momentumEvents: 32, minEfficiency: 0.25 })
   // the script uses this module, not a copy of it
@@ -122,7 +128,9 @@ test('over a segment directory the action replays the stage-A grid, imports each
   assert.equal(again.body.inserted, 0); assert.equal(count(), 12)
   // an explicit single profile over one symbol filter
   const one = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, symbol: 7 }, { segmentsDir: dir })
-  assert.equal(one.body.trials.length, 1); assert.equal(one.body.trials[0].summary.trades, 2); assert.equal(count(), 13)
+  // PR-Q1: withheld, the summary stops at the test block — both fixture
+  // trades exit inside it, so this reads 0 (it read 2: the leak).
+  assert.equal(one.body.trials.length, 1); assert.equal(one.body.trials[0].summary.trades, 0); assert.equal(one.body.trials[0].summary.scope, 'train_validation'); assert.equal(count(), 13)
   const none = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, symbol: 8 }, { segmentsDir: dir })
   assert.equal(none.status, 409, 'a symbol filter that matches nothing is no segments, not an empty trial')
   // no engine record was touched: the stage moves only through the validation importer

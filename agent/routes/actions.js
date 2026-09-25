@@ -1309,9 +1309,14 @@ export default function actionsRouter(db, deps = {}) {
   router.post('/entry-mode-policy', async (req, res) => {
     try {
       const { requestEntryModePolicy } = await import('../services/entry-mode.js')
+      const { actorFromRequest } = await import('../lib/request-actor.js')
       const { accountId, policy, expectedRevision = null } = req.body || {}
       if (!accountId || !policy) return res.status(400).json({ error: 'accountId and policy are required' })
-      const r = requestEntryModePolicy(db, String(accountId), String(policy), { expectedRevision, actor: 'owner' })
+      // PR-Q1: the policy switch is attributed to the CALLER (the credential
+      // the server authenticated, plus any declared name), not to 'owner'.
+      const who = actorFromRequest(req)
+      if (!who.ok) return res.status(who.status).json(who.body)
+      const r = requestEntryModePolicy(db, String(accountId), String(policy), { expectedRevision, actor: who.actor })
       if (!r.ok) return res.status(r.reason === 'revision_conflict' ? 409 : 400).json(r)
       console.log(`[actions] entry-mode-policy → …${String(accountId).slice(-4)} ${r.status.entryModePolicy} (revision ${r.status.configRevision})`)
       res.json({ ok: true, changed: r.changed, status: { ...r.status, accountId: `…${String(accountId).slice(-4)}` } })
@@ -1329,9 +1334,15 @@ export default function actionsRouter(db, deps = {}) {
   router.post('/tick-validation', async (req, res) => {
     try {
       const { importTickValidation } = await import('../services/tick-validation.js')
+      const { actorFromRequest } = await import('../lib/request-actor.js')
       const { accountId, stage, evidence = {} } = req.body || {}
       if (!accountId || !stage) return res.status(400).json({ error: 'accountId and stage are required' })
-      const r = importTickValidation(db, { accountId: String(accountId), stage: String(stage).toUpperCase(), evidence: evidence && typeof evidence === 'object' ? evidence : {}, actor: 'owner' })
+      // PR-Q1 (review 25-09-2026): this was actor 'owner' for EVERY caller, so
+      // an import made on the owner's word by someone else read as the
+      // owner's own. The record now names the caller.
+      const who = actorFromRequest(req)
+      if (!who.ok) return res.status(who.status).json(who.body)
+      const r = importTickValidation(db, { accountId: String(accountId), stage: String(stage).toUpperCase(), evidence: evidence && typeof evidence === 'object' ? evidence : {}, actor: who.actor })
       if (!r.ok) {
         console.log(`[actions] tick-validation …${String(accountId).slice(-4)} ${String(stage).toUpperCase()} REFUSED: ${r.reason}`)
         return res.status(400).json(r)
@@ -1346,15 +1357,22 @@ export default function actionsRouter(db, deps = {}) {
 
   // P4: import trial ledger entries produced by scripts/tick-research.mjs
   // ({trials:[...]} or one trial). Content-keyed: re-importing is a no-op.
+  // PR-Q1: each row is stored as origin `client_import` (UNVERIFIED — the
+  // keeper did not replay it) with the caller; a trial replayed with
+  // includeTest records its test-block opening, and a second opening of the
+  // same holdout is recorded AND refused.
   router.post('/tick-trials', async (req, res) => {
     try {
-      const { importTickTrial } = await import('../services/tick-research.js')
+      const { importClientTrials } = await import('../services/tick-research.js')
+      const { actorFromRequest } = await import('../lib/request-actor.js')
       const body = req.body || {}
       const list = Array.isArray(body.trials) ? body.trials : [body]
       if (list.length > 200) return res.status(400).json({ error: 'at most 200 trials per import' })
-      const out = list.map(t => importTickTrial(db, t, { note: body.note ?? t.note ?? null }))
-      console.log(`[actions] tick-trials: ${out.filter(o => o.inserted).length} inserted, ${out.filter(o => o.ok && !o.inserted).length} already present, ${out.filter(o => !o.ok).length} refused`)
-      res.json({ ok: true, results: out })
+      const who = actorFromRequest(req)
+      if (!who.ok) return res.status(who.status).json(who.body)
+      const out = importClientTrials(db, list, { note: body.note ?? null, actor: who.actor })
+      console.log(`[actions] tick-trials (client_import, ${who.actor}): ${out.filter(o => o.inserted).length} inserted, ${out.filter(o => o.ok && !o.inserted).length} already present, ${out.filter(o => !o.ok).length} refused`)
+      res.json({ ok: true, origin: 'client_import', verified: false, actor: who.actor, results: out })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -1376,7 +1394,11 @@ export default function actionsRouter(db, deps = {}) {
       // awaited before the job starts — the CPU-bound replay still runs in
       // the worker thread); the 409 stays honest when no sidecar has any.
       const { startTickResearchJobWithSync } = await import('../services/tick-research-run.js')
-      const r = await startTickResearchJobWithSync(db, req.body && typeof req.body === 'object' ? req.body : {})
+      const { actorFromRequest } = await import('../lib/request-actor.js')
+      // PR-Q1: the job, its trials' origin and any test-block opening name the caller.
+      const who = actorFromRequest(req)
+      if (!who.ok) return res.status(who.status).json(who.body)
+      const r = await startTickResearchJobWithSync(db, req.body && typeof req.body === 'object' ? req.body : {}, { actor: who.actor })
       if (r.status === 202) {
         if (r.body.sync) console.log(`[actions] tick-research: pulled ${r.body.sync.pulled} segment(s) (${r.body.sync.bytes} bytes, ${r.body.sync.skipped} already cached) into ${r.body.sync.destDir}`)
         console.log(`[actions] tick-research: job ${r.body.jobId} started over ${r.body.segments} segment(s) / ${r.body.records} record(s) at ${r.body.segmentsDir}${r.body.dryRun ? ' (dry run)' : ''}`)
