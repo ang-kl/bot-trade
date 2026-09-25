@@ -53,10 +53,16 @@ export function watchdogCalendarDemand(db, now) {
   // them — SYMBOL-MAJOR, so the identity cap truncates across every account
   // instead of starving the last one. A name missing from an account's own
   // map is missing coverage (complete false), never an empty demand.
-  for (const receipt of tickEntryReceipts(db, now)) {
+  // At the cap the rest of the tick demand is left unread, not walked: this
+  // runs on the main thread every refresh, and up to 64 accounts × 512 names
+  // per side would each still be resolved only to be refused. Unread pairs
+  // are counted as missing coverage (complete false), the conservative
+  // reading; the identities already demanded are unchanged.
+  tickDemand: for (const receipt of tickEntryReceipts(db, now)) {
     const ids = receipt.accounts.map(a => String(a?.accountId))
     for (const name of receipt.symbols) {
       for (const accountId of ids) {
+        if (wanted.size >= MAX_IDENTITIES) { complete = false; break tickDemand }
         if (!maps.has(accountId)) maps.set(accountId, getAccountSymbolMap(db, accountId)?.map)
         add({ accountId, host: hostOf(accountId), symbolId: maps.get(accountId)?.[String(name).toUpperCase()] })
       }

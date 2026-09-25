@@ -198,3 +198,51 @@ test('the identity cap truncates the tick demand symbol-major, so every tick acc
   for (const id of accounts) assert.ok(demand.identities.filter(i => i.accountId === id).length >= 170, `account ${id} keeps coverage (RED if the loop is account-major: the third account gets none)`)
   assert.equal(demand.identities.find(i => i.accountId === '33').host, 'live.ctraderapi.com', 'the account\'s own host')
 })
+
+// Checker nit 1 (C4 fix round): the tick demand runs on the main thread, so at
+// the identity cap it stops instead of resolving every remaining pair only to
+// refuse it. Observed through the state reads the demand makes: each tick
+// account's symbol map is one agent_state read.
+function countingStateReads(db) {
+  const keys = []
+  const spy = new Proxy(db, { get(target, prop) {
+    if (prop === 'prepare') return sql => {
+      const statement = target.prepare(sql)
+      if (!/FROM agent_state WHERE key = \?/.test(sql)) return statement
+      return { get: key => { keys.push(key); return statement.get(key) } }
+    }
+    const value = target[prop]
+    return typeof value === 'function' ? value.bind(target) : value
+  } })
+  return { spy, keys }
+}
+
+test('with the identity cap already full, the tick demand stops and reads no tick account map', t => {
+  const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
+  // The sidecar's own feed fills the 512 cap before the tick block runs.
+  setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ at: new Date(now).toISOString(), ok: true, tick: { feedAccountId: 11, subscribed: Array.from({ length: 512 }, (_, i) => 100 + i) } }))
+  const accounts = Array.from({ length: 40 }, (_, i) => String(500 + i))
+  for (const id of accounts) {
+    db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,0)').run(id)
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 1, GBPUSD: 2 } }))
+  }
+  tickReceipt(db, accounts, ['EURUSD', 'GBPUSD'])
+  const { spy, keys } = countingStateReads(db)
+  const demand = watchdogCalendarDemand(spy, now)
+  assert.equal(demand.identities.length, 512)
+  assert.equal(demand.complete, false, 'unread tick pairs are missing coverage')
+  assert.ok(keys.includes('tick_entry_work_json'), 'the receipt itself was read (the spy sees state reads)')
+  assert.deepEqual(keys.filter(k => k.startsWith('symbol_id_map:5')), [], 'RED if the loop keeps resolving pairs after the cap is full')
+})
+
+test('a tick demand that exactly fills the cap is complete', t => {
+  const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
+  const names = Array.from({ length: 256 }, (_, i) => `SYM${i}`)
+  for (const [n, id] of ['11', '22'].entries()) {
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: new Date(now).toISOString(), map: Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i])) }))
+  }
+  tickReceipt(db, ['11', '22'], names)
+  const demand = watchdogCalendarDemand(db, now)
+  assert.equal(demand.identities.length, 512)
+  assert.equal(demand.complete, true, 'RED if the cap check runs after the last pair instead of before the next one')
+})

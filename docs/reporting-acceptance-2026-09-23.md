@@ -40,6 +40,24 @@ the tick permit feeder's own receipt (`tick_entry_work_json`), and a bounded
 `entryDiagnostics` block (Node records, never broker-verified) rides the
 contract for cpp-verify to relay once CV-1 lands.
 
+Two limits of C4, recorded rather than carried silently:
+
+- A stalled tick permit feeder goes quiet instead of raising an alarm. Its
+  receipt stops being evidence after six minutes, the tick `entry_activity`
+  items leave the inventory, and cpp-verify retires any open no_orders
+  incident on them as `work_no_longer_in_complete_inventory`. Nothing raises a
+  feeder stall yet; a later item is to emit one per-side feeder work item
+  whose `nextDueMs` is `completedAt + 120000`, so cpp-verify's stall alarm can
+  fire. (The bar scan receipt has no such age limit, so its `scanner` items
+  stay in the inventory and can raise the stall alarm while their market is
+  open.)
+- Worker cost: on a synthetic database (7 accounts, 100k `decision_log` rows
+  over 3 days, 200k tick signal rows) the independent checker measured the
+  watchdog contract build at 1.5 s before C4 and 2.35 s after, inside the
+  reserved watchdog worker (15 s deadline, polled every 15 s):
+  `entryDiagnostics` about 460 ms, and each per-item blocker read about 30%
+  slower. Production volume was not measured.
+
 Account history requires two comparable observations at different times before
 reporting change or sampled drawdown. A single reading remains monetary evidence
 without becoming a zero return. Page change explicitly names its observation
