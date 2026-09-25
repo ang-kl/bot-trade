@@ -198,11 +198,39 @@ int main(int argc, char** argv) {
     const std::string feedHost = envOr("CTRADER_HOST", "unpinned");
     rc.feedId = feedHost;
     rc.environment = feedHost.find("demo") != std::string::npos ? 0 : 1;
+    // GW-CAP (owner, 25-09-2026): the spool cap and the reserve from the
+    // environment, the compiled values as defaults — nothing changes until a
+    // variable is set. A refused value keeps its default and is logged here
+    // and reported on /tick-status (limits.refusals), never swallowed.
+    const tick::SpoolLimitText limitText{envOr("TICK_SPOOL_CAP_BYTES", ""), envOr("TICK_SPOOL_RESERVE_MIN_BYTES", ""),
+                                         envOr("TICK_SPOOL_RESERVE_PCT", "")};
+    for (const std::string& line : tick::applySpoolLimits(rc, limitText)) logError("tick recorder: " + line);
     tickRecorder = std::make_unique<tick::TickRecorder>(rc);
     if (tickRecorder->start()) {
-      logInfo("tick recorder: spool " + tickSpoolPath + " (" + std::to_string(rc.segmentBytes >> 20) + " MiB segments, " +
-              std::to_string(rc.spoolCapBytes >> 30) + " GiB cap, reserve >= " + std::to_string(rc.reserveMinBytes >> 30) +
-              " GiB or " + std::to_string(rc.reservePct) + "% of the mount) — OFF until the keeper switches recording on");
+      logInfo("tick recorder: spool " + tickSpoolPath + " (" + tick::describeBytes(rc.segmentBytes) + " segments, cap " +
+              tick::describeBytes(rc.spoolCapBytes) + " [" + rc.spoolCapSource + "], reserve >= " +
+              tick::describeBytes(rc.reserveMinBytes) + " [" + rc.reserveMinSource + "] or " + std::to_string(rc.reservePct) +
+              "% [" + rc.reservePctSource + "] of the mount) — OFF until the keeper switches recording on");
+      // Whether the cap can bind on THIS mount: a cap the reserve or the
+      // warn/stop bands reach first never retires anything — the recorder
+      // pauses with gaps instead. Judged once at boot from the mount as it
+      // is now; /tick-status limits.fitsMount re-judges on every probe.
+      uint64_t availBytes = 0, totalBytes = 0;
+      if (tick::statvfsProbe(tickSpoolPath, availBytes, totalBytes)) {
+        const tick::RecorderStats rs = tickRecorder->stats();
+        const auto problems = tick::spoolFitProblems(rc, totalBytes, availBytes, rs.sealedBytes + rs.openBytes);
+        for (const std::string& p : problems) logError("tick recorder: " + p);
+        if (problems.empty())
+          logInfo("tick recorder: the cap fits the mount (" + tick::describeBytes(totalBytes) + ", " +
+                  tick::describeBytes(availBytes) + " free, reserve " +
+                  tick::describeBytes(tick::effectiveReserveBytes(rc, totalBytes)) + ")");
+      } else {
+        logError("tick recorder: cannot measure the mount at " + tickSpoolPath + " — whether the cap fits is unknown");
+      }
+      if (tick::capExceedsListing(rc))
+        logError("tick recorder: the cap " + tick::describeBytes(rc.spoolCapBytes) + " holds more than " +
+                 std::to_string(tick::kMaxListEntries) + " sealed segments; GET /tick-segments lists the oldest " +
+                 std::to_string(tick::kMaxListEntries) + " only, so the keeper cannot read the newest until older ones retire");
     } else {
       logError("tick recorder: NOT started — " + tickRecorder->stats().reason + " (recording stays off)");
     }
@@ -687,6 +715,10 @@ int main(int argc, char** argv) {
         tj.set("openBytes", static_cast<double>(ts.openBytes));
         tj.set("diskAvailBytes", static_cast<double>(ts.diskAvailBytes));
         tj.set("usagePct", static_cast<double>(ts.usagePct));
+        // GW-CAP: the cap and reserve in force and where each came from.
+        // Counts only on this open route; the refusal lines (which quote what
+        // the operator typed) are on /tick-status, behind the secret.
+        if (auto lj = jsn::parse(tickRecorder->limitsJson(ts, false))) tj.set("limits", *lj);
         tj.set("symbols", static_cast<double>(ts.perSymbol.size()));
         tj.set("shadow", tickShadow.load());
         tj.set("signals", static_cast<double>(tickSignals.load()));

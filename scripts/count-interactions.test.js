@@ -26,7 +26,7 @@
 // calling internals: the failures above all lived in argument handling and
 // output, which importing a function would step straight past.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -36,9 +36,21 @@ import { MODE_FLAGS } from './count-interactions.js'
 
 const SCRIPT = fileURLToPath(new URL('./count-interactions.js', import.meta.url))
 
+// V3 M2b (A1 check nit 2): every transcript directory is removed after the
+// file's tests. Measured before: 11 ci-test-* directories left in TMPDIR by
+// every `npx vitest run` (a gate step). An afterAll here, not the node:test
+// helper's process 'exit' hook: whether 'exit' fires in vitest's worker pool
+// is not established, and a cleanup that may not run is not a cleanup.
+const transcriptDirs = new Set()
+afterAll(() => {
+  for (const dir of transcriptDirs) fs.rmSync(dir, { recursive: true, force: true })
+  transcriptDirs.clear()
+})
+
 /** Write a synthetic transcript and return its path. */
 function transcript(name, lines) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-test-'))
+  transcriptDirs.add(dir)
   const file = path.join(dir, name)
   fs.writeFileSync(file, lines.map(o => JSON.stringify(o)).join('\n') + '\n')
   return file

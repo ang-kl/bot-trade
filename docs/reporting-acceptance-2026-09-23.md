@@ -13,6 +13,58 @@ after a known entry stop are not evaluated. Approval does not prove submission
 or fill. Repeated refusal counters cover a row's lifetime, not exact attempts in
 the selected window; duplicate observations across logs are not unique signals.
 
+V3 C4 (25-09-2026, SEQUENCE PR-4) adds the tick side to the same report, and
+moves it off the protection event loop into the isolated report worker
+(`readBlockerReport`; a full report pool answers 503 with a retry hint, a
+failed worker read 500, a malformed or unregistered request 400):
+
+- `tick_refusal` is its own kind: the sidecar's ring rows `fire_refused`
+  (the stopping check in `code`, `fire_stale` included), `fire_reject` and
+  `fire_abandoned` from `cpp_decisions`. Each row is marked at the permit, the
+  sidecar's own checks and the broker, never at the bar risk gate; rows are
+  dated when Node pulled them (the sidecar's clock is in the detail), and a
+  ring record overwritten between pulls is not counted.
+- `byStage` ranks up to five entry stops per account (upstream, risk,
+  after-approval and tick refusals), with the newest record's reason.
+- `tick` says whether tick entries were evaluated at all, per registry
+  account: `evaluated` only when a permit-feed pass pushed to the sidecar in
+  the last six minutes with the account listed, `admitted_not_pushed`, or
+  `not_evaluated` with the reason (on 25-09 every account is bar-only, so
+  every account reads `not_evaluated — basis_not_admitted`). Zero tick
+  refusals on such an account is not a pass.
+
+The same records feed the watchdog contract: each `entry_activity` item now
+carries `blocker` as a string (the no_orders notice printed an empty blocker
+from the object before), tick-only and dual accounts get `entry_activity` from
+the tick permit feeder's own receipt (`tick_entry_work_json`), and a bounded
+`entryDiagnostics` block (Node records, never broker-verified) rides the
+contract. Since V3 CV-1 cpp-verify relays it on `/watchdog-status` labelled
+`node_records_relayed` / `brokerVerified: false`, keeps it in memory only (its
+fsynced watchdog state stores the contract without it), and the Controllers
+panel shows it as "Entry refusals — Node records relayed by cpp-verify (not
+broker-verified)", with each account's open-position count from cpp-verify's
+own broker read beside it. The no_orders notice prints the `blocker` line
+(`watchNotificationText`), pinned from both sides by
+`cpp-verify/src/tests/fixtures/node-entry-activity.json`.
+
+Two limits of C4, recorded rather than carried silently:
+
+- A stalled tick permit feeder goes quiet instead of raising an alarm. Its
+  receipt stops being evidence after six minutes, the tick `entry_activity`
+  items leave the inventory, and cpp-verify retires any open no_orders
+  incident on them as `work_no_longer_in_complete_inventory`. Nothing raises a
+  feeder stall yet; a later item is to emit one per-side feeder work item
+  whose `nextDueMs` is `completedAt + 120000`, so cpp-verify's stall alarm can
+  fire. (The bar scan receipt has no such age limit, so its `scanner` items
+  stay in the inventory and can raise the stall alarm while their market is
+  open.)
+- Worker cost: on a synthetic database (7 accounts, 100k `decision_log` rows
+  over 3 days, 200k tick signal rows) the independent checker measured the
+  watchdog contract build at 1.5 s before C4 and 2.35 s after, inside the
+  reserved watchdog worker (15 s deadline, polled every 15 s):
+  `entryDiagnostics` about 460 ms, and each per-item blocker read about 30%
+  slower. Production volume was not measured.
+
 Account history requires two comparable observations at different times before
 reporting change or sampled drawdown. A single reading remains monetary evidence
 without becoming a zero return. Page change explicitly names its observation

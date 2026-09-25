@@ -56,4 +56,10 @@ test('failed watchdog worker reports unavailable rather than a healthy empty con
   assert.equal(body.workComplete, false)
   assert.equal(body.work, undefined)
   assert.equal(body.observedAtMs, undefined)
+  // V3 M2b: the typed 503 fields beside the unchanged ones, and the builder's
+  // own error — this failure is a missing table, not a temporary outage.
+  assert.equal(body.reason, 'performance_report_worker_error')
+  assert.equal(body.detail, 'no such table: accounts')
+  assert.equal(body.retryAfter, 30)
+  assert.equal(response.headers.get('retry-after'), '30')
 })

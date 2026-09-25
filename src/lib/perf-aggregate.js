@@ -18,8 +18,12 @@
 //   SL nett today    Σ glᵢ   (realised losers today)   (per currency)
 //   30d net          Σ n30ᵢ                            (per currency)
 //   30d pace/day     (Σ n30ᵢ) / 30                     (per currency)
-//   daily stop       Σ capᵢ                            (per currency)
+//   daily stop       Σ capᵢ                            (per cap currency)
 //   loss-cap used %  100 × (Σ max(0, −dayᵢ)) / (Σ capᵢ)
+//                    — or, for cards carrying the engine reading (WEB-2),
+//                    100 × (Σ capLossᵢ) / (Σ capᵢ), capLossᵢ being the
+//                    server's measured realised + floating loss; null unless
+//                    every account in the group has it
 //
 // The last line is the one the instruction is about. The WRONG answer is
 // mean(usedᵢ) or Σ usedᵢ: two accounts each "50% used" do NOT make the
@@ -85,7 +89,11 @@ export function aggregateAccounts(cards) {
   }
 
   const groups = [...byCcy.entries()].map(([ccy, list]) => {
-    const cap = sum(list, r => r.cap)
+    // Daily stops in different currencies are not added (WEB-2): the engine
+    // states each cap in its own unit, and Σ across units is not a number.
+    const capCcys = new Set(list.map(r => r.capCcy ?? null))
+    const capCcy = capCcys.size === 1 ? [...capCcys][0] : null
+    const cap = capCcys.size > 1 ? null : sum(list, r => r.cap)
     // The realised LOSS today, in money, is what consumes the daily stop.
     // Rebuilt from dayᵢ so the ratio has the same numerator the per-account
     // cards use, rather than trusting their rounded percentages.
@@ -94,6 +102,20 @@ export function aggregateAccounts(cards) {
       return s + (d != null && d < 0 ? -d : 0)
     }, 0)
     const n30 = sum(list, r => r.n30)
+    // WEB-2: cards built from the engine's reading carry `capLoss` — the
+    // server's measured realised + floating loss against the stop, in the
+    // stop's unit, or null when a part is unread or the units differ. When
+    // every card carries the field, the ratio is Σ capLoss / Σ cap and it is
+    // shown only if every account has both readings: one unread account would
+    // otherwise make the group look safer than it is. Cards without the field
+    // (older callers) keep the realised-only ratio below, unchanged.
+    const capLossMode = list.length > 0 && list.every(r => Object.prototype.hasOwnProperty.call(r, 'capLoss'))
+    const capLossComplete = capLossMode && list.every(r => n(r.capLoss) != null && n(r.cap) != null)
+    const capLoss = capLossComplete ? sum(list, r => r.capLoss) : null
+    const usedPct = capLossMode
+      ? (capLossComplete && cap && cap > 0 ? Math.round(capLoss / cap * 100) : null)
+      // Σloss / Σcap — never the mean of the per-account percentages.
+      : list.every(r => r.moneyVerified !== false) && cap && cap > 0 ? Math.min(100, Math.round(lossToday / cap * 100)) : null
     return {
       ccy,
       accountCount: list.length,
@@ -105,9 +127,13 @@ export function aggregateAccounts(cards) {
       n30,
       pace30d: n30 == null ? null : n30 / 30,
       cap,
+      capCcy,
       lossToday,
-      // Σloss / Σcap — never the mean of the per-account percentages.
-      usedPct: list.every(r => r.moneyVerified !== false) && cap && cap > 0 ? Math.min(100, Math.round(lossToday / cap * 100)) : null,
+      capLoss,
+      usedPct,
+      // Why a group has no percentage, in the cards' own words.
+      usedState: usedPct != null ? 'measured'
+        : capLossMode && list.some(r => r.usedState === 'not_comparable') ? 'not_comparable' : 'not_read',
       hasToday: list.some(r => r.hasToday),
     }
   }).sort((a, b) => (n(b.bal) ?? -Infinity) - (n(a.bal) ?? -Infinity))

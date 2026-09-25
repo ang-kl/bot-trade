@@ -37,15 +37,19 @@ import { readRecentErrors } from '../services/error-log.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { accountMoney } from '../services/account-money.js'
 import { accountOverview } from '../services/account-overview.js'
+import { dailyStopReading } from '../services/daily-stop-reading.js'
 import { accountHistory } from '../services/account-history.js'
-import { blockerReport } from '../services/blocker-report.js'
+import { validateBlockerRequest } from '../services/blocker-report.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, isReportUnavailable } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
+// V3 C4: the blocker report's request refusals, recognised by message when
+// they come back from the report worker (the worker loses the RangeError type).
+const BLOCKER_REQUEST_ERRORS = new Set(['account not registered', 'explicit account or all required', 'invalid reporting window or page'])
 
 /**
  * P1/P4 "report failures stay honest": a report worker that missed its
@@ -54,14 +58,39 @@ import { reportLedger } from '../shared/performance-populations.js'
  * empty result that reads as "nothing there" (owner principle 6). Anything
  * that is NOT a report-worker failure is left to the caller's own 500.
  *
+ * V3 M2b: a worker failure with no named code carries the driver's own words
+ * as `detail`, and is logged (at most once a minute per route and message),
+ * so a builder bug that fails every time is visible rather than dressed as a
+ * temporary outage. A report that exceeded a FIXED bound is not retryable:
+ * no Retry-After, `retryAfter: null`, `retryable: false`, and the sentence
+ * does not tell the reader to retry. `extra` carries a route's own failure
+ * fields (the watchdog's `workComplete: false`).
+ *
  * @returns {boolean} true when the response was sent
  */
-export function sendReportUnavailable(res, error, { message, code }) {
+export function sendReportUnavailable(res, error, { message, code, extra = null }) {
   if (!isReportUnavailable(error)) return false
   res.set('Cache-Control', 'no-store')
-  res.set('Retry-After', String(error.retryAfterSec))
-  res.status(503).json({ status: 'unavailable', error: message, code, reason: error.reason, retryAfter: error.retryAfterSec })
+  if (error.retryAfterSec != null) res.set('Retry-After', String(error.retryAfterSec))
+  const body = { ...extra, status: 'unavailable', error: error.retryable ? message : fixedBoundSentence(message),
+    code, reason: error.reason, retryAfter: error.retryAfterSec, retryable: error.retryable }
+  if (error.detail) {
+    body.detail = error.detail
+    logWorkerError(code, error.detail)
+  }
+  res.status(503).json(body)
   return true
+}
+const fixedBoundSentence = message =>
+  String(message).replace(/\b(is|are) temporarily unavailable\. Please retry\.$/, '$1 unavailable: the report exceeds a fixed size bound, so a retry will not help.')
+const WORKER_ERROR_LOG_EVERY_MS = 60_000
+const workerErrorLogged = new Map() // `${code}\u0000${detail}` → last logged ms
+function logWorkerError(code, detail, now = Date.now()) {
+  const key = `${code}\u0000${detail}`
+  if (now - (workerErrorLogged.get(key) ?? -Infinity) < WORKER_ERROR_LOG_EVERY_MS) return
+  if (workerErrorLogged.size >= 200) workerErrorLogged.clear() // bounded: a flood of distinct messages cannot grow it
+  workerErrorLogged.set(key, now)
+  console.warn(`[state] ${code}: report worker error — ${detail}`)
 }
 
 /**
@@ -107,23 +136,42 @@ export default function stateRouter(db) {
       res.status(503).json({ error: 'Momentum target status is temporarily unavailable.', code: 'momentum_target_status_unavailable' })
     }
   })
-  router.get('/blocker-report', (req, res) => {
+  // V3 C4 (WP-C PR-C1): the report runs in the isolated report worker, not on
+  // the event loop the protection sweeps share. The request is validated here
+  // first (no SQL); "account not registered" is a SQL read, so it comes back
+  // from the worker by message — a worker error loses its RangeError type.
+  router.get('/blocker-report', async (req, res) => {
     res.set('Cache-Control', 'no-store')
+    let request
     try {
-      res.json(blockerReport(db, { accountId: req.query.account,
+      request = validateBlockerRequest({ accountId: req.query.account,
         from: Number(req.query.from), to: Number(req.query.to),
         limit: req.query.limit == null ? 50 : Number(req.query.limit),
-        offset: req.query.offset == null ? 0 : Number(req.query.offset) }))
+        offset: req.query.offset == null ? 0 : Number(req.query.offset) })
     } catch (error) {
-      res.status(error instanceof RangeError ? 400 : 500).json({ error: error.message })
+      return res.status(400).json({ error: error.message })
+    }
+    try {
+      res.json(await readBlockerReport(db, request))
+    } catch (error) {
+      const message = String(error?.message || error)
+      if (BLOCKER_REQUEST_ERRORS.has(message)) return res.status(400).json({ error: message })
+      // V3 M2b: every report-worker failure (a locked database included) is
+      // the same explicit 503 as the other reports, its driver words in
+      // `detail`; only a failure that is not the worker's stays a 500.
+      if (sendReportUnavailable(res, error, { message: 'The blocker report is temporarily unavailable. Please retry.', code: 'blocker_report_unavailable' })) return
+      res.status(500).json({ error: 'The blocker report failed.', code: 'blocker_report_failed', reason: error?.reason ?? null })
     }
   })
   router.get('/watchdog', async (_req, res) => {
     res.set('Cache-Control', 'no-store')
     try {
       res.json(await readNodeWatchdogContract(db))
-    } catch {
+    } catch (error) {
       // Failure is unavailable evidence, never a new healthy/empty receipt.
+      // cpp-verify reads only a 2xx body; `error` and `workComplete: false`
+      // keep their pre-M2b values.
+      if (sendReportUnavailable(res, error, { message: 'watchdog_contract_unavailable', code: 'watchdog_contract_unavailable', extra: { workComplete: false } })) return
       res.status(503).json({ error: 'watchdog_contract_unavailable', workComplete: false })
     }
   })
@@ -254,7 +302,15 @@ export default function stateRouter(db) {
   router.get('/account-overview', (_req, res) => {
     try {
       const report = accountOverview(db)
-      for (const a of report.accounts) a.dailyLossPct = loadRiskConfig(db, a.accountId)?.dailyLossPct ?? null
+      for (const a of report.accounts) {
+        a.dailyLossPct = loadRiskConfig(db, a.accountId)?.dailyLossPct ?? null
+        // WEB-2: the daily stop the risk engine ENFORCES on this account (its
+        // own dailyLossVerdict — floor, tiers and flat cap included), in the
+        // unit the config states it in, and loss-cap used from the engine's
+        // realised figure plus this row's floating P&L. The cards render this,
+        // never balance × dailyLossPct. See services/daily-stop-reading.js.
+        a.dailyStop = dailyStopReading(db, a.accountId, { nowMs: report.asOfMs, moneyCurrency: a.currency, openPnl: a.openPnl })
+      }
       res.set('Cache-Control', 'no-store').json(report)
     }
     catch { res.status(503).json({ error: 'account readings unavailable' }) }
@@ -1076,7 +1132,8 @@ export default function stateRouter(db) {
     const scope = requestedAccount(db, req)
     try {
       res.json(await readPostmortemReport(db, { scope, limit }))
-    } catch {
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'Trade lessons are temporarily unavailable. Please retry.', code: 'postmortem_report_unavailable' })) return
       res.status(503).json({ error: 'Trade lessons are temporarily unavailable. Please retry.', code: 'postmortem_report_unavailable' })
     }
   })
@@ -2124,7 +2181,8 @@ export default function stateRouter(db) {
     res.set('Cache-Control', 'no-store')
     try {
       res.json(await readAccountEngineering(db))
-    } catch {
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'Account status is temporarily unavailable. Please retry.', code: 'account_engineering_unavailable' })) return
       res.status(503).json({ error: 'Account status is temporarily unavailable. Please retry.', code: 'account_engineering_unavailable' })
     }
   })
@@ -2249,7 +2307,12 @@ export default function stateRouter(db) {
       catch { return res.status(400).json({ error: 'valid reporting timezone required' }) }
     }
     try { res.json(await readPerformancePopulations(db, timeZone ? { timeZone } : undefined)) }
-    catch (err) { res.status(503).json({ status: 'unavailable', reason: err.message }) }
+    catch (err) {
+      // V3 M2b: the typed 503 (reason code, retry hint, driver words in
+      // `detail`) instead of the raw err.message as the reason.
+      if (sendReportUnavailable(res, err, { message: 'Performance populations are temporarily unavailable. Please retry.', code: 'performance_populations_unavailable' })) return
+      res.status(500).json({ error: err.message })
+    }
   })
   router.get('/perf-ledger', async (req, res) => {
     try {
@@ -2699,7 +2762,17 @@ export default function stateRouter(db) {
     try {
       const { positionHistoryView } = await import('../services/position-history.js')
       const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100))
-      res.json(positionHistoryView(db, { limit, accountId: req.query.account ?? null }))
+      // THE ?account=all FALSE ZERO (LIFECYCLE-SPEC §7, measured 25-09-2026):
+      // the raw query value was passed through, so ?account=all filtered on
+      // account_id = 'all' and answered 0 complete / 0 incomplete while the
+      // same read without it answered 53 / 1,255. Scope now comes from
+      // requestedAccount like every other scoped read: an explicit account
+      // filters, `all` (any case) does not. With no ?account the route keeps
+      // the default it has always had — every account — rather than
+      // narrowing silently to the selected one; the reply says which.
+      const scope = requestedAccount(db, req)
+      const accountId = scope.explicit && !scope.all ? scope.accountId : null
+      res.json({ ...positionHistoryView(db, { limit, accountId }), scope: { accountId, all: accountId == null } })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2723,7 +2796,8 @@ export default function stateRouter(db) {
       res.json(await readOrderLifecycle(db, options))
     } catch (err) {
       res.set('Cache-Control', 'no-store')
-      if (isReportUnavailable(err)) res.set('Retry-After', String(err.retryAfterSec))
+      // A fixed bound (order_lifecycle_response_bound) has no retry hint.
+      if (isReportUnavailable(err) && err.retryAfterSec != null) res.set('Retry-After', String(err.retryAfterSec))
       let lastSnapshotAt = null
       try { lastSnapshotAt = JSON.parse(getState(db, ORDER_LIFECYCLE_SNAPSHOT_KEY) || 'null')?.at ?? null } catch { lastSnapshotAt = null }
       res.status(503).json({ error: 'order_lifecycle_unavailable', code: err?.reason ?? 'order_lifecycle_worker_error', lastSnapshotAt })
@@ -2732,11 +2806,14 @@ export default function stateRouter(db) {
   // The capture queue behind the record: what is waiting, what was captured,
   // and — the part worth reading — what this system GAVE UP on, named with
   // the reason. Those rows are closed trades it could not describe.
+  // V3 V1: plus `accounts` — per account, its closes, captures and verdicts
+  // and a status (silent / stalled / verify_failing / ok / no_closes) judged
+  // at read time — so one silent account can no longer hide in the totals.
   router.get('/position-capture', async (_req, res) => {
     try {
-      const { captureQueueView } = await import('../services/position-capture.js')
+      const { positionCaptureView } = await import('../services/position-capture-accounts.js')
       const { verifierStatus } = await import('../lib/verify-client.js')
-      res.json({ ...captureQueueView(db), verifier: verifierStatus() })
+      res.json({ ...positionCaptureView(db), verifier: verifierStatus() })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2852,7 +2929,8 @@ export default function stateRouter(db) {
       for (const name of ['cpp_exec', 'cpp_exec_demo']) {
         let rec = null
         try { rec = JSON.parse(getState(db, `${name}_tick_json`) || 'null') } catch { rec = null }
-        if (rec) sides.push({ side: name, at: rec.at, status: rec.status, rate24h: tickRate24h(db, name) })
+        // GW-CAP: the retention projection against the cap the side reports.
+        if (rec) sides.push({ side: name, at: rec.at, status: rec.status, rate24h: tickRate24h(db, name, Date.now(), rec.status?.segments?.spoolCapBytes ?? null) })
       }
       let rows = []
       try { rows = db.prepare('SELECT account_id, is_live, enabled FROM accounts ORDER BY is_live, account_id').all() } catch { rows = [] }
@@ -3314,6 +3392,46 @@ export default function stateRouter(db) {
         table: 'trades', scope, extraWhere: "status IN ('closed','rejected')",
       })),
     })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/data-feed?account=<id|all>&limit=N — the Data-feed card's
+  // measured figures (8,989-A row 11, WEB-9): entry latency with its
+  // coverage, stored commission/swap per verified deposit currency over the
+  // latest N closes, the fast monitor's quote freshness with the record's
+  // age, and the current broker-day open (the same FX-day anchor the risk
+  // gate uses) so a daily bar from an earlier day can be labelled as such.
+  // WEB-9b: `barReceipts` (when the agent last received each timeframe's
+  // bars, per source, and whether the newest bar was still forming) and
+  // `feedLatency` (broker spot timestamp → agent receipt over the last 10
+  // minutes, per broker host) from lib/feed-receipts.js. Market data is not
+  // an account's: both are the agent's whole feed under every scope, with
+  // the account each receipt came through named on it.
+  // Read-only. See services/data-feed-report.js.
+  // -----------------------------------------------------------------------
+  router.get('/data-feed', async (req, res) => {
+    try {
+      const { executionCosts, quoteFreshness, NOT_MEASURED, EXECUTION_WINDOW_DEFAULT } = await import('../services/data-feed-report.js')
+      const { feedReceiptsSnapshot } = await import('../lib/feed-receipts.js')
+      const { fxDayOpenMs } = await import('../services/risk.js')
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
+      const nowMs = Date.now()
+      const receipts = feedReceiptsSnapshot(nowMs)
+      res.json({
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        asOfMs: nowMs,
+        brokerDayOpenMs: fxDayOpenMs(nowMs),
+        execution: executionCosts(db, { where: acct.where, params: acct.params, limit: req.query?.limit ?? EXECUTION_WINDOW_DEFAULT }),
+        quotes: quoteFreshness(db, nowMs),
+        barReceipts: receipts.bars,
+        feedLatency: receipts.feedLatency,
+        notMeasured: NOT_MEASURED,
+      })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
   })
 
   // -----------------------------------------------------------------------

@@ -172,7 +172,10 @@ test('wiring pins (comments stripped): the fence is called at every Node produce
   assert.match(src('../lib/ctrader-creds.js'), /entryAdmission: \(\) => admitEntry\(db, \{ accountId: id, producerId, basis \}\)/)
   // P2a: every hand-built creds object goes through the one helper that
   // attaches the fence AND the ledger; a bare object can no longer place.
-  assert.match(src('../loop.js'), /execPlaceOrder\(attachEntryFence\(db, \{ host, clientId, clientSecret, accessToken, accountId, execGuard \}, \{ producerId \}\)/, 'autoTrade\'s hand-built creds carry the fence and the ledger')
+  // V3 L2a (W5/W6): the fenced creds are wrapped by bindEntryIntent (the
+  // approval onto the intent, the intent onto the write-ahead row) and it is
+  // THAT object — fence and ledger intact — that reaches placeOrder.
+  assert.match(src('../loop.js'), /const placeCreds = bindEntryIntent\(attachEntryFence\(db, \{ host, clientId, clientSecret, accessToken, accountId, execGuard \}, \{ producerId \}\), \{[\s\S]{0,300}?\n {4}\}\)\n {4}let exec\n {4}try \{\n {6}exec = await execPlaceOrder\(placeCreds, orderPayload\)/, 'autoTrade\'s hand-built creds carry the fence and the ledger')
   // 20-09-2026: both closed-market call sites carry the CALLING producer's
   // id, not the hardcoded 'closed_market_limits'. That producer is retired
   // with the scan; the momentum account and the manual_assisted routes rest

@@ -4,11 +4,15 @@ import { readMarketCalendar } from './market-calendar.js'
 import { projectCalendar, calendarIntervals } from '../lib/calendar-intervals.js'
 import { loadNotifyConfig } from './telegram-digest.js'
 import { DEFAULT_SENT_TIMEOUT_MS } from './entry-ledger.js'
-import { scannerWork, watchdogCalendars } from './scanner-work.js'
+import { scannerWork, watchdogCalendars, scannerCollectorWork } from './scanner-work.js'
+import { entryDiagnostics } from './blocker-report.js'
 
 const read = (db, key) => { try { return JSON.parse(getState(db, key) || 'null') } catch { return null } }
 const time = value => { const n = Date.parse(value); return Number.isFinite(n) ? n : null }
 const DAY = 86400_000
+// cpp-verify rejects a Node contract over 256 KiB (watchdog_state.cpp) and an
+// oversize contract empties `work` here, which blinds the watchdog.
+export const CONTRACT_MAX_BYTES = 256 * 1024
 let quietCache = null
 function notificationPolicy(db, now) {
   const cfg = loadNotifyConfig(db), raw = getState(db, 'telegram_notify_json')
@@ -36,7 +40,7 @@ function notificationPolicy(db, now) {
 }
 
 /** Completed-work evidence only. No broker request, mutation or entry gate. */
-export function nodeWatchdogContract(db, { now = Date.now() } = {}) {
+export function nodeWatchdogContract(db, { now = Date.now(), env = process.env, startedAtMs } = {}) {
   const accounts = new Map(db.prepare('SELECT account_id,is_live FROM accounts').all().map(a => [String(a.account_id), a]))
   const receipts = read(db, 'fast_monitor_position_work_json')
   const byPosition = new Map((Array.isArray(receipts?.positions) ? receipts.positions : []).map(r => [`${r.accountId}:${r.positionId}`, r]))
@@ -67,10 +71,19 @@ export function nodeWatchdogContract(db, { now = Date.now() } = {}) {
     symbolId: row.symbol_id == null ? null : String(row.symbol_id), state: row.state,
     deadlineMs: time(row.updated_at) == null ? null : time(row.updated_at) + (row.state === 'UNKNOWN' ? 0 : DEFAULT_SENT_TIMEOUT_MS),
     reason: 'terminal_acknowledgement', blocker: row.error_code || null })
+  // Before the scanner items, so their 2048 lookup bound cannot crowd it out.
+  work.push(...scannerCollectorWork(db, now, startedAtMs == null ? { env } : { env, startedAtMs }))
   work.push(...scannerWork(db, accounts, now))
+  // V3 C4 (WP-C PR-C1): Node's own per-account entry records for cpp-verify
+  // to relay (never broker-verified). It must never fail or empty the
+  // contract: a throw becomes an explicit unavailable block, and at the size
+  // bound it is the FIRST thing dropped, before `work`.
+  let diagnostics
+  try { diagnostics = entryDiagnostics(db, { now }) } catch { diagnostics = { schemaVersion: 1, source: 'node_records', observedAtMs: now, complete: false, reason: 'entry_diagnostics_unavailable', accounts: [] } }
   const out = { schemaVersion: 1, service: 'node', observedAtMs: now, ...watchdogCalendars(db, now), workComplete: positions.length <= 2048 && intents.length <= 2048 && work.length <= 2048 && !work.some(w => w.inventoryComplete === false),
-    work: work.slice(0, 2048), notificationPolicy: notificationPolicy(db, now),
+    work: work.slice(0, 2048), notificationPolicy: notificationPolicy(db, now), entryDiagnostics: diagnostics,
     limitations: ['Scanner work is published by its actual owner; a Node timer is not a scanner receipt.', 'No closed-market management deadline has been invented.'] }
-  if (Buffer.byteLength(JSON.stringify(out)) > 256 * 1024) { out.workComplete = false; out.work = []; out.calendars = []; out.calendarsComplete = false; out.reason = 'work_contract_size_bound' }
+  if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) out.entryDiagnostics = { schemaVersion: 1, source: 'node_records', observedAtMs: now, complete: false, reason: 'contract_size_bound', accounts: [] }
+  if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) { out.workComplete = false; out.work = []; out.calendars = []; out.calendarsComplete = false; out.reason = 'work_contract_size_bound' }
   return out
 }

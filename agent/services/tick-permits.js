@@ -41,6 +41,7 @@ import { tickSymbolNames, resolveTickSymbolIds } from './exec-guard-sync.js'
 import { scanRates, loadRiskConfig, accountMarginPool } from './risk.js'
 import { accountPregateVerdict } from './account-pregate.js'
 import { permittedSides, trendReadingFor } from './direction-policy.js'
+import { inflightLiveSql } from '../lib/stuck-resolutions.js'
 
 export const TICK_ENTRY_FILE = new URL('../config/tick-entry.json', import.meta.url)
 export const DEFAULT_OVERSHOOT_FRACTION = 0.25
@@ -80,12 +81,16 @@ export function loadTickEntryConfig(file = TICK_ENTRY_FILE) {
 export function openPositionsFor(db, accountId) {
   const symbols = new Map()
   const bump = (sym) => { const k = String(sym || '').toUpperCase(); if (k) symbols.set(k, (symbols.get(k) || 0) + 1) }
-  try { for (const r of db.prepare(`SELECT symbol FROM trades WHERE account_id = ? AND status IN ('open', 'submitting', 'unconfirmed')`).all(String(accountId))) bump(r.symbol) } catch { /* table absent */ }
+  // V3 I3: an in-flight row the stuck resolver ended (settled onto the row
+  // that carries its fill, or written off with no broker evidence) is not a
+  // position — it stops taking a slot here, as in the symbol cap.
+  const live = inflightLiveSql(db)
+  try { for (const r of db.prepare(`SELECT symbol FROM trades WHERE account_id = ? AND status IN ('open', 'submitting', 'unconfirmed')${live}`).all(String(accountId))) bump(r.symbol) } catch { /* table absent */ }
   try {
     for (const r of db.prepare(`SELECT symbol, ctrader_position_id FROM monitored_positions WHERE account_id = ? AND status = 'active'`).all(String(accountId))) {
       // a monitored row for a position the trades table already counts is the same position
       let dup = false
-      try { dup = r.ctrader_position_id != null && !!db.prepare(`SELECT 1 FROM trades WHERE account_id = ? AND ctrader_position_id = ? AND status IN ('open', 'submitting', 'unconfirmed')`).get(String(accountId), String(r.ctrader_position_id)) } catch { dup = false }
+      try { dup = r.ctrader_position_id != null && !!db.prepare(`SELECT 1 FROM trades WHERE account_id = ? AND ctrader_position_id = ? AND status IN ('open', 'submitting', 'unconfirmed')${live}`).get(String(accountId), String(r.ctrader_position_id)) } catch { dup = false }
       if (!dup) bump(r.symbol)
     }
   } catch { /* table absent */ }
@@ -237,7 +242,10 @@ export async function runTickPermitFeeder(db, side, {
   now = Date.now(),
   log = (...a) => console.warn('[tick-permits]', ...a),
 } = {}) {
-  const out = { side: side?.name || 'exec', accounts: [], permits: 0, refused: [], released: 0, pushed: false, paused: [], budget: {} }
+  // V3 C4: `work` and `carried` feed the tick work receipt
+  // (tick-entry-work.js). `work` names each account by its FULL id with its
+  // outcome; everything else here stays masked (…1234) for the logs.
+  const out = { side: side?.name || 'exec', accounts: [], permits: 0, refused: [], released: 0, pushed: false, paused: [], budget: {}, work: [], carried: [] }
   const accounts = tickEntryAccountsFor(db, side)
   // Accounts no longer in the mode: their standing permits go now, not at expiry.
   try {
@@ -263,9 +271,11 @@ export async function runTickPermitFeeder(db, side, {
       try { const r = await resolve(db, creds, name); const id = Number(r?.id ?? r?.symbolId ?? r); if (Number.isFinite(id) && id > 0 && ids.includes(id)) symbolById.set(id, name) } catch { /* unresolvable: not carried */ }
     }
   }
+  out.carried = [...symbolById.values()]
   const rates = (() => { try { return scanRates(db) } catch { return null } })()
   const tickPermits = []
   for (const accountId of accounts) {
+    const refusedFrom = out.refused.length, before = tickPermits.length
     const rd = readinessFor(db, accountId)
     const failing = (rd?.readiness || []).filter(c => PAUSE_CHECKS.includes(c.check) && !c.ok).map(c => c.check)
     if (failing.length) {
@@ -273,6 +283,7 @@ export async function runTickPermitFeeder(db, side, {
       out.paused.push({ accountId: `…${accountId.slice(-4)}`, reason })
       out.released += releaseStandingReservations(db, accountId, TICK_PRODUCER, reason, { now }).released
       if (pausedLogged.get(accountId) !== reason) { pausedLogged.set(accountId, reason); log(`…${accountId.slice(-4)}: new tick entries PAUSED — ${reason} (exits keep running; TM-40)`) }
+      out.work.push({ accountId, permits: 0, paused: reason, firstRefusal: null, refused: [], budget: null })
       continue
     }
     if (pausedLogged.has(accountId)) { pausedLogged.delete(accountId); log(`…${accountId.slice(-4)}: tick entries resume — readiness checks clear`) }
@@ -295,6 +306,7 @@ export async function runTickPermitFeeder(db, side, {
       out.paused.push({ accountId: `…${accountId.slice(-4)}`, reason, detail: !pregate?.ok ? String(pregate?.reason || '') : `headroom $${Number(poolStatus?.status?.headroom ?? 0).toFixed(2)}` })
       out.released += releaseStandingReservations(db, accountId, TICK_PRODUCER, reason, { now }).released
       if (pausedLogged.get(accountId) !== reason) { pausedLogged.set(accountId, reason); log(`…${accountId.slice(-4)}: new tick entries PAUSED — ${reason} (the bar side's account guard; exits keep running)`) }
+      out.work.push({ accountId, permits: 0, paused: reason, firstRefusal: null, refused: [], budget: null })
       continue
     }
     const risk = accountRiskPerTrade(db, accountId)
@@ -337,6 +349,8 @@ export async function runTickPermitFeeder(db, side, {
       tickPermits.push({ accountId: Number(accountId), symbolId: Number(p.permit.symbolId), side: p.side, permit: { ...p.permit, ...fields } })
     }
     out.accounts.push(`…${accountId.slice(-4)}`)
+    const mine = out.refused.slice(refusedFrom).map(x => { const own = { ...x }; delete own.accountId; return own })
+    out.work.push({ accountId, permits: tickPermits.length - before, paused: null, firstRefusal: mine[0]?.reason ?? null, refused: mine, budget: out.budget[`…${accountId.slice(-4)}`] ?? null })
   }
   out.permits = tickPermits.length
   const placing = accounts.filter(id => !out.paused.some(p => p.accountId === `…${id.slice(-4)}`))
