@@ -272,10 +272,25 @@ test('the close path and the drain are WIRED into the loop', () => {
   // would sit empty forever and read as "no closes".
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
-  assert.match(loop, /for \(const c of result\.closedDetected \|\| \[\]\) \{[\s\S]{0,200}enqueueCapture\(db, \{/,
-    'every detected close must be enqueued')
-  assert.match(loop, /drainCaptureQueue\(db, \{/, 'and the queue must be drained')
-  assert.match(loop, /verifyClient\(\)/, 'with the verifier consulted when one is configured')
+  // V3 V1 (25-09-2026): the enqueue used to be one loop over the SELECTED
+  // account's result, and the drain sat beside it with only that account's
+  // credentials. Now every reconcile path queues its own detected closes,
+  // and one all-account pass drains every account with its own credentials.
+  assert.match(loop, /enqueueReconcileCloses\(db, result, \{ accountId, source: 'reconcile' \}\)/,
+    'the selected account\'s detected closes must be enqueued')
+  assert.match(loop, /enqueueReconcileCloses\(db, r2, \{ accountId: acc\.account_id, source: 'reconcile' \}\)/,
+    'every other same-side account\'s detected closes must be enqueued')
+  assert.match(loop, /if \(r\.result\) enqueueReconcileCloses\(db, r\.result, \{ accountId: r\.accountId, source: 'cross_side' \}\)/,
+    'and the opposite side\'s')
+  assert.match(loop, /await runAllAccountCapture\(db, \{ log \}\)/, 'and the queue must be drained, for every account')
+  assert.doesNotMatch(loop, /drainCaptureQueue\(db, \{/, 'no second, selected-account-only drain may survive beside the pass')
+  const mod = strip(readFileSync(new URL('./position-capture-accounts.js', import.meta.url), 'utf8'))
+  assert.match(mod, /out\.drain = await drainCaptureQueue\(db, \{\s*accountId: acct,/, 'the pass drains ONE account\'s rows at a time')
+  assert.match(mod, /verifyClient\(\{ env \}\)/, 'with the verifier consulted when one is configured')
+  // W11: the close seam every close writer shares.
+  const dbSrc = strip(readFileSync(new URL('../db.js', import.meta.url), 'utf8'))
+  assert.match(dbSrc, /if \(info\.changes > 0\) queueCaptureForClosedTrade\(db, tradeId, \{ now: closedAtMs \}\)/,
+    'closeTradeRow queues the capture of every row it closes')
 })
 
 

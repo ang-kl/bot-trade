@@ -13,6 +13,7 @@ import express from 'express'
 import { initDB, setState } from '../db.js'
 import stateRouter from './state.js'
 import { fxDayOpenMs } from '../services/risk.js'
+import { noteBarReceipt, _resetFeedReceiptsForTests } from '../lib/feed-receipts.js'
 
 async function server(t) {
   const db = initDB(':memory:')
@@ -53,7 +54,10 @@ test('data-feed serves latency with coverage, per-currency fees, quote freshness
   assert.ok(r.quotes.ageMs >= 3_000 && r.quotes.ageMs < 60_000)
   assert.equal(r.brokerDayOpenMs, fxDayOpenMs(r.asOfMs), 'the gate\'s own FX-day anchor')
   assert.ok(r.asOfMs >= before)
-  assert.ok(r.notMeasured.some(n => n.key === 'feed_latency'))
+  // WEB-9b: feed latency and per-timeframe receipts are recorded now; what
+  // stays unmeasured is named (the gateways' tick feed has no broker stamp).
+  assert.ok(r.notMeasured.some(n => n.key === 'gateway_feed_latency'))
+  assert.ok(!r.notMeasured.some(n => n.key === 'feed_latency' || n.key === 'timeframe_receipts'))
 
   const all = await get('/data-feed?account=all')
   assert.equal(all.accountId, 'all')
@@ -67,4 +71,26 @@ test('risk-full carries no second daily-loss reader for the card: the daily stop
   setState(db, 'acct:46:account_balance_usd', '30004.36')
   const r = await get('/risk-full?account=46')
   assert.equal(Object.hasOwn(r, 'dailyCapEnforced'), false, 'the retired WEB-9 reader is not served')
+})
+
+test('WEB-9b: data-feed serves the per-timeframe bar receipts under every scope, and says when none arrived', async t => {
+  _resetFeedReceiptsForTests()
+  const { get } = await server(t)
+  // A different URL from the reads below: the /state response cache holds
+  // each URL for up to 10 s (production's refresh is 60 s).
+  const empty = await get('/data-feed?account=all&limit=5')
+  assert.deepEqual(empty.barReceipts.timeframes, [], 'no receipt is invented before a bar arrives')
+  assert.equal(empty.feedLatency.status, 'not_measured_recently')
+
+  const now = Date.now()
+  noteBarReceipt({ timeframe: '4h', periodMs: 14_400_000, bars: [{ t: now - 60_000 }], receivedAtMs: now, accountId: '46130058', source: 'strategy_scan' })
+  for (const scope of ['all', '46130058', '11']) {
+    const r = await get(`/data-feed?account=${scope}`)
+    const [row] = r.barReceipts.timeframes
+    assert.equal(row.timeframe, '4h')
+    assert.equal(row.lastReceivedAtMs, now)
+    assert.equal(row.newestBarForming, true)
+    assert.equal(row.accountId, '46130058', 'the account the bars came through is named on the receipt')
+    assert.ok(row.ageMs >= 0 && row.ageMs < 60_000)
+  }
 })

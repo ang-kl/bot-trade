@@ -10,30 +10,15 @@ import { REPORT_SESSIONS, SESSION_SOURCE, SESSION_EXCEPTIONS, sessionIntervals, 
 import { cupHandleFunnel } from './cup-handle-funnel.js'
 import { calendarDate, calendarDay, calendarLedgerWindows } from '../shared/performance-calendar.js'
 import { storageReport } from './storage-report.js'
+import { ledgerBalanceEdges } from './balance-edges.js'
+import { depositCurrencies } from './deposit-currencies.js'
+// The deposit-currency reader lives in deposit-currencies.js (V3 WEB-3m: one
+// reader for the pools and the balance columns). Re-exported so existing
+// importers of this module keep working.
+export { depositCurrencies }
 
 const DAY = 86400_000
 const NUMBER = v => v == null || String(v).trim() === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null
-/** Each registered account's broker deposit currency, from the asset-list
- * evidence account-money.js records (recordDepositCurrency), and only when
- * that evidence is for this account on its own host. A cTrader account's
- * deposit asset is fixed, so this names the unit of every P&L it recorded.
- * Missing or mismatched evidence is null with its reason — never a default. */
-export function depositCurrencies(db) {
-  const evidence = db.prepare('SELECT value FROM agent_state WHERE key = ?')
-  const out = {}
-  for (const row of db.prepare('SELECT account_id, is_live FROM accounts ORDER BY account_id').all()) {
-    const id = String(row.account_id ?? '').trim()
-    if (!/^[1-9]\d*$/.test(id)) continue
-    let ev = null
-    try { ev = JSON.parse(evidence.get(`acct:${id}:deposit_currency_evidence_json`)?.value || 'null') } catch { ev = null }
-    const host = row.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-    const ok = ev?.accountId === id && ev.host === host && /^[A-Z]{3}$/.test(ev.currency || '') && Number.isFinite(ev.receivedAt)
-    out[id] = ok
-      ? { currency: ev.currency, source: ev.source || 'broker_asset_list', observedAt: new Date(ev.receivedAt).toISOString() }
-      : { currency: null, reason: ev ? 'deposit_currency_evidence_mismatch' : 'deposit_currency_not_recorded' }
-  }
-  return out
-}
 function fold(st, row) {
   st.n++
   if (row.pnl != null) {
@@ -129,11 +114,22 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
     }
     return g
   }) }))
+  // The unit of each account's recorded money, read ONCE: the pools
+  // (reportCurrencyStats) and the carry below both key on this same map.
+  const currencyByAccount = depositCurrencies(db)
+  // V3 WEB-3: carry in / carry out are the broker balances OBSERVED at each
+  // ledger window's edges (account_history), per registered account, counted
+  // only in the account's recorded deposit currency (V3 WEB-3m). A failed read
+  // leaves every carry explicitly unavailable; the populations still stand.
+  let balanceEdges
+  try { balanceEdges = ledgerBalanceEdges(db, ledgerDefs, { currencyByAccount }) }
+  catch { balanceEdges = { status: 'unavailable', reason: 'balance_history_read_failed' } }
   return { schemaVersion: 1, status: 'complete', generatedAt: new Date(now).toISOString(), asOfMs: now, timeZone,
+    balanceEdges,
     population: 'all_recorded_closes', currency: null, moneyPolicy: 'recorded_units_within_one_stamped_account_only',
-    // The unit of each account's recorded money. Readers may pool accounts
-    // only within one of these (reportCurrencyStats), never across two.
-    currencyByAccount: depositCurrencies(db), currencyPolicy: 'pool_within_one_recorded_deposit_currency_never_across',
+    // Readers may pool accounts only within one of these (reportCurrencyStats,
+    // and the carry through reportLedger), never across two.
+    currencyByAccount, currencyPolicy: 'pool_within_one_recorded_deposit_currency_never_across',
     markets: MARKETS, coverage, windows, daily: [...daily.values()], bestByAccount: Object.fromEntries(best),
     lastCloseByAccount: Object.fromEntries([...last].map(([a, t]) => [a, new Date(t).toISOString()])),
     openByAccount: db.prepare('SELECT account_id,count(*) AS n FROM monitored_positions WHERE status=\'active\' GROUP BY account_id').all(),

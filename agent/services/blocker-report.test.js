@@ -5,6 +5,8 @@ import { blockerReport, tickEntryEvaluation, validateBlockerRequest, entryDiagno
 import { engineStatusFor, writeEngineStatus } from './entry-mode.js'
 import { recordTickEntryWork } from './tick-entry-work.js'
 import { profileHashFull, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
+import { recordDecision } from './decision-log.js'
+import { entryActivityBlocker } from './scanner-work.js'
 
 const now = Date.parse('2026-09-22T12:00:00Z'), from = now - 3600_000
 function fixture(t) {
@@ -105,7 +107,13 @@ test('known upstream fences and submission-boundary caps preserve the actual gat
   for (const stage of ['regime_block', 'evidence_gate', 'producer_retired']) stop(stage)
   stop('symbol_position_cap', '11', 'veto')
   risk('11', 'symbol cap rejected', 0, '{"post_approval":true}')
-  const r = read()
+  // V3 WEB-1: regime_block has only the roster-level writer, so a row stored
+  // against '11' is the old selected-account fallback — roster-wide, not
+  // account 11's. The boundary checks run on the all-accounts population.
+  const own = read()
+  assert.equal(own.summary.upstream_stop.records, 2, 'regime_block is not charged to account 11')
+  assert.equal(own.rosterWide.summary.upstream_stop.records, 1)
+  const r = read({ accountId: 'all' })
   assert.equal(r.summary.upstream_stop.records, 3)
   assert.equal(r.summary.post_approval_failure.records, 2)
   assert.equal(r.summary.other_stop.records, 0)
@@ -275,4 +283,96 @@ test('entry diagnostics: one bounded block per registry account, Node records on
   assert.deepEqual(a.dominantRefusal && [a.dominantRefusal.stage, a.dominantRefusal.records], ['stage_matrix', 1])
   assert.equal(a.entryStopsInWindow, 1)
   assert.equal(d.accounts[1].dominantRefusal, null)
+})
+
+// ---------------------------------------------------------------------------
+// V3 WEB-1 (8,989-A row 2): upstream stops recorded against the right account.
+// Production 25-09, 24 h: all 9,970 upstream stops on the SELECTED account
+// 46130058 and 0 on every other one, because recordDecision stamped every
+// unnamed account with getState('ctrader_account_id'). The rows below are
+// written through the real writer with an account selected, then dated into
+// the fixture window.
+// ---------------------------------------------------------------------------
+function attributionFixture(t) {
+  const f = fixture(t)
+  setState(f.db, 'ctrader_account_id', '11')
+  const put = row => {
+    recordDecision(f.db, { decision: 'skip', reason: 'recorded reason', ...row })
+    f.db.prepare("UPDATE decision_log SET created_at = '2026-09-22 11:30:00' WHERE id = last_insert_rowid()").run()
+  }
+  // roster-level writers name no account (loop.js)
+  put({ symbol: 'EURUSD', stage: 'armed_scope_prefilter' })
+  put({ symbol: 'GBPUSD', stage: 'stage_matrix', strategy: 'vwap_trend' })
+  put({ symbol: 'USDJPY', stage: 'horizon' })
+  // the per-account stage gate names its account
+  put({ accountId: '22', symbol: 'EURUSD', stage: 'stage_matrix', strategy: 'vwap_trend' })
+  // a management row with no account: unattributed, not roster-wide
+  put({ symbol: 'XAUUSD', stage: 'fast_monitor' })
+  // history: the pre-fix fallback stored a roster stop against the selected account
+  f.stop('armed_scope_prefilter', '11')
+  return f
+}
+
+test('V3 WEB-1: roster-wide stops appear under EVERY account, labelled, and are charged to none — not to the selected account', t => {
+  const { db, read } = attributionFixture(t)
+  const stored = db.prepare('SELECT account_id FROM decision_log ORDER BY id').all()
+  assert.deepEqual(stored.map(r => r.account_id), [null, null, null, '22', null, '11'], 'RED if the writer stamps the selected account 11 again')
+  for (const id of ['11', '22']) {
+    const r = read({ accountId: id })
+    assert.equal(r.rosterWide.records, 4, `the same roster-wide stops under account ${id}`)
+    assert.equal(r.rosterWide.entryStops, 4)
+    assert.equal(r.rosterWide.includedInTotals, false)
+    assert.equal(r.rosterWide.recordedAgainstAnAccount, 1, 'the pre-fix row stamped 11 is roster-wide and SAID to have been stored against an account')
+    assert.deepEqual(r.rosterWide.byStage.map(s => [s.stage, s.records]), [['armed_scope_prefilter', 2], ['horizon', 1], ['stage_matrix', 1]])
+    assert.equal(r.unattributedRecordsInWindow, 1, 'only the fast_monitor row is unattributed; a roster stop is attributed to the roster')
+  }
+  const selected = read({ accountId: '11' })
+  assert.equal(selected.summary.upstream_stop.records, 0, 'RED if the roster stops (or the relabelled history) are charged to the selected account')
+  assert.equal(selected.records.length, 0)
+  const other = read({ accountId: '22' })
+  assert.equal(other.summary.upstream_stop.records, 1, 'account 22 keeps its own per-account stage gate stop')
+  assert.equal(other.records[0].attribution, 'account'); assert.equal(other.records[0].unsplitHistory, false)
+  const all = read({ accountId: 'all' })
+  assert.equal(all.summary.upstream_stop.records, 5, 'the all-accounts totals count every retained record once')
+  assert.equal(all.rosterWide.includedInTotals, true)
+  assert.equal(all.perAccount.some(p => p.accountId === '11'), false, 'no count is charged to 11')
+  assert.deepEqual(all.perAccount.filter(p => p.scope === 'roster').map(p => [p.accountId, p.kind, p.records]), [[null, 'upstream_stop', 4]])
+  assert.deepEqual(all.byStage.filter(s => s.scope === 'roster').map(s => [s.accountId, s.stage, s.records]),
+    [[null, 'armed_scope_prefilter', 2], [null, 'horizon', 1], [null, 'stage_matrix', 1]])
+  const history = all.records.find(r => r.attribution === 'roster' && r.storedAccountId === '11')
+  assert.equal(history.accountId, null); assert.equal(history.stage, 'armed_scope_prefilter')
+  assert.equal(db.prepare('SELECT account_id FROM decision_log WHERE id = ?').get(history.id).account_id, '11', 'the read relabels; it never rewrites or deletes the stored row')
+})
+
+test('V3 WEB-1: pre-fix stage_matrix and lesson_decay rows cannot be split — counted as recorded, and said so; marked rows are not flagged', t => {
+  const { db, stop, read } = fixture(t)
+  stop('stage_matrix', '11'); stop('lesson_decay', '11')
+  recordDecision(db, { accountId: '11', symbol: 'EURUSD', stage: 'stage_matrix', decision: 'skip', reason: 'off on 11' })
+  db.prepare("UPDATE decision_log SET created_at = '2026-09-22 11:40:00' WHERE id = last_insert_rowid()").run()
+  const r = read()
+  assert.equal(r.summary.upstream_stop.records, 3, 'nothing is silently moved out of the account')
+  assert.equal(r.unsplitRecordsInWindow, 2, 'RED if the attribution mark is ignored (3) or unmarked history is not flagged (0)')
+  assert.match(r.unsplitNote, /cannot be split/)
+  assert.deepEqual(r.records.map(x => [x.stage, x.unsplitHistory]).sort(), [['lesson_decay', true], ['stage_matrix', false], ['stage_matrix', true]])
+  assert.deepEqual(r.byStage.map(s => [s.stage, s.records, s.unsplitRecords]), [['stage_matrix', 2, 1], ['lesson_decay', 1, 1]])
+  assert.equal(r.rosterWide.records, 0, 'a stage_matrix row WITH an account is never roster-wide')
+})
+
+test('V3 WEB-1: entry diagnostics carry the roster-wide stops once, beside the accounts, never inside an account\'s count', t => {
+  const { db } = attributionFixture(t)
+  const d = entryDiagnostics(db, { now })
+  assert.equal(d.complete, true)
+  assert.deepEqual(d.accounts.map(a => [a.accountId, a.entryStopsInWindow]), [['11', 0], ['22', 1]], 'RED if the roster stops land on the selected account 11')
+  assert.equal(d.rosterWide.entryStopsInWindow, 4)
+  assert.equal(d.rosterWide.dominantStop.stage, 'armed_scope_prefilter'); assert.equal(d.rosterWide.dominantStop.records, 2)
+})
+
+test('V3 WEB-1: the no_orders blocker line names the roster-wide stop when the account has none of its own; unchanged without roster stops', t => {
+  const { db, read } = attributionFixture(t)
+  assert.equal(entryActivityBlocker(read({ accountId: '11' })),
+    'no_recorded_entry_stop_since_session_open; roster-wide (every account): armed_scope_prefilter ×2 of 4')
+  assert.equal(entryActivityBlocker(read({ accountId: '22' })),
+    'stage_matrix ×1 of 1 entry stops since session open; latest stage_matrix: recorded reason; roster-wide (every account): armed_scope_prefilter ×2 of 4')
+  db.prepare("DELETE FROM decision_log WHERE stage IN ('armed_scope_prefilter', 'horizon') OR (stage = 'stage_matrix' AND account_id IS NULL)").run()
+  assert.equal(entryActivityBlocker(read({ accountId: '11' })), 'no_recorded_entry_stop_since_session_open')
 })

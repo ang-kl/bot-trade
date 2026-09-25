@@ -33,6 +33,7 @@ import { loadManagedExit, MANAGED_EXIT_DEFAULTS } from '../services/managed-exit
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
+import { competingExitRefusal, MANUAL_REFUSED_EXIT_STATES } from '../services/momentum-exit-coordination.js'
 import { clearErrorLog } from '../services/error-log.js'
 import { desiredGuardFor } from '../services/exec-guard-sync.js'
 
@@ -231,6 +232,10 @@ export default function actionsRouter(db, deps = {}) {
   // refresh token was dropped here and nothing could have caught it. An
   // injectable account lister makes the write testable without a broker.
   const listAccountsImpl = deps.listCtraderAccounts ?? null
+  // WEB-9b: the same seam for GET /stream-prices' broker spot stream, so the
+  // timestamped frames and the feed-latency record can be exercised without
+  // a broker socket.
+  const streamSpotsImpl = deps.streamSpots ?? null
 
   // Every successful write makes the /state/* read cache stale. Without this
   // the UI saves, re-reads, and paints the PRE-SAVE answer back over the new
@@ -565,12 +570,13 @@ export default function actionsRouter(db, deps = {}) {
       const { wsGetDeals } = await import('../lib/ctrader-ws.js')
       const toMs = (v) => Date.parse(String(v).includes('T') ? v : String(v).replace(' ', 'T') + 'Z')
       const from = Math.min(...rows.map(r => toMs(r.opened_at))) - 3_600_000
-      const WEEK = 7 * 24 * 3_600_000
-      const deals = []
-      for (let t0 = from; t0 < Date.now(); t0 += WEEK) {
-        const chunk = await wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, Math.min(t0 + WEEK, Date.now()))
-        deals.push(...(chunk.deal || []))
-      }
+      // PAGED, AND ITS COMPLETENESS DECIDES WHAT MAY BE REJECTED (V3 B1). The
+      // old week walk never read `hasMore`: a truncated page could miss an
+      // in-flight row's fill and reject a live position. The judgement below
+      // rejects nothing unless this walk finished.
+      const { pageDeals } = await import('../lib/deal-paging.js')
+      const pull = await pageDeals((t0, t1) => wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1), from, Date.now())
+      const deals = pull.deals
 
       const map = await ensureSymbolMap(db, creds)
       // The judgement lives in broker-history-import.js so it can be tested
@@ -579,8 +585,8 @@ export default function actionsRouter(db, deps = {}) {
       // re-stamps R. (trades schema calls it close_reason — exit_reason once
       // crashed the whole reconcile, leaving fills stuck UNCONFIRMED.)
       const { judgeTradesAgainstDeals } = await import('../services/broker-history-import.js')
-      const out = judgeTradesAgainstDeals(db, { rows, deals, symbolMap: map })
-      res.json({ checked: rows.length, ...out, dealsSeen: deals.length, ranAt: new Date().toISOString() })
+      const out = judgeTradesAgainstDeals(db, { rows, deals, symbolMap: map, complete: pull.complete })
+      res.json({ checked: rows.length, ...out, dealsSeen: deals.length, dealWalk: { complete: pull.complete, reason: pull.reason, pages: pull.pages }, ranAt: new Date().toISOString() })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
@@ -1959,10 +1965,9 @@ export default function actionsRouter(db, deps = {}) {
   // (every closing deal, bot-placed or manual), with realised NET P&L
   // (gross + swap + commission) exactly as cTrader's History tab shows it.
   // Body: { days? } (default 7, max 190 — covers 7d/30d/3mo/6mo, owner:
-  // "should also include 30 days and 3+6 months"). Side effect: backfills
-  // net_pnl/gross_pnl/exit_price onto local trades rows matched by
-  // positionId, so performance stats and the Tune timeframe table use
-  // broker-true numbers.
+  // "should also include 30 days and 3+6 months"). No side effect on the
+  // ledger since V3 B1: it displays the broker's deals and never writes
+  // trades money (pnl-backfill.js records it from whole lifecycles).
   // -----------------------------------------------------------------------
   // COALESCE + short TTL — same reason as /broker-positions above: this route
   // opens several fresh WS connections per call (wsGetDeals per 7-day chunk,
@@ -1983,13 +1988,12 @@ export default function actionsRouter(db, deps = {}) {
       const { host, clientId, clientSecret, accessToken, accountId } = creds
       const { wsGetDeals, wsSymbolsByIds, wsGetSymbolsList, wsGetTrader, wsGetAssets } = deps.brokerHistoryTransport ?? await import('../lib/ctrader-ws.js')
 
-      const WEEK = 7 * 24 * 3_600_000
-      const from = Date.now() - days * 24 * 3_600_000
-      const deals = []
-      for (let t0 = from; t0 < Date.now(); t0 += WEEK) {
-        const chunk = await wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, Math.min(t0 + WEEK, Date.now()))
-        deals.push(...(chunk.deal || []))
-      }
+      // Paged (hasMore followed), and the payload says whether the walk
+      // finished: a history cut short must not look whole (principle 6).
+      const { pageDeals } = await import('../lib/deal-paging.js')
+      const pull = await pageDeals((t0, t1) => wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1),
+        Date.now() - days * 24 * 3_600_000, Date.now())
+      const deals = pull.deals
 
       // Only deals that CLOSE (part of) a position carry realised P&L.
       const closing = deals.filter(d => d.closePositionDetail)
@@ -2089,26 +2093,15 @@ export default function actionsRouter(db, deps = {}) {
         }
       }).sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
 
-      // Backfill broker-true realised P&L onto local trades rows. Partial
-      // closes aggregate per position. Only rows the reconciler has already
-      // marked closed are touched — a partially-closed position stays open.
-      const byPosition = new Map()
-      for (const r of rows) {
-        if (!r.positionId) continue
-        const agg = byPosition.get(r.positionId) || { net: 0, gross: 0, last: r }
-        agg.net += r.netPnl || 0
-        agg.gross += r.grossProfit || 0
-        if ((r.closedAt || 0) >= (agg.last.closedAt || 0)) agg.last = r
-        byPosition.set(r.positionId, agg)
-      }
-      // NULL-only, account-scoped, re-stamped — see applyBrokerHistoryMoney.
-      // This route used to overwrite every closed row's money on every Desk
-      // load with no audit stamp (codebase audit 02-09-2026).
-      const { applyBrokerHistoryMoney } = await import('../services/broker-history-import.js')
-      const { backfilled } = applyBrokerHistoryMoney(db, byPosition, { accountId })
-
+      // DISPLAY ONLY (V3 B1, PR-1(f)). This route used to write the rows'
+      // realised money on every Desk load: every unpriced closed row of a
+      // position got the window's sum, rows with no account were claimed,
+      // there was no lifetime check, and rows still flagged pnl_unresolvable
+      // were filled. A partial window is not a lifecycle. Money is written by
+      // pnl-backfill.js alone, from one whole, unique broker lifecycle.
       const realized = Math.round(rows.reduce((s, r) => s + (r.netPnl || 0), 0) * 100) / 100
-      const payload = { ok: true, accountId: String(accountId), days, rows, realized, backfilled, fetchedAt: new Date().toISOString() }
+      const payload = { ok: true, accountId: String(accountId), days, rows, realized, complete: pull.complete,
+        ...(pull.complete ? {} : { incompleteReason: pull.reason }), fetchedAt: new Date().toISOString() }
       // Cache the latest history so the Desk can paint instantly next visit
       // (GET /state/broker-cache) while the live fetch refreshes behind.
       try { setState(db, `acct:${accountId}:broker_history_cache_json`, JSON.stringify(payload)) } catch { /* cache is best-effort */ }
@@ -2439,6 +2432,11 @@ export default function actionsRouter(db, deps = {}) {
       // names the account (credsForPosition, as double/reverse already do)
       // and the reply says which source chose it.
       const creds = req.body?.account ? { ...credsForAccountId(db, req.body.account), accountSource: 'body' } : credsForPosition(db, positionId)
+      // T2: a momentum partial or rank close in flight or unresolved on this
+      // position is not doubled by a manual close or partial. Refused before
+      // any broker call; /actions/close-all remains the owner's flatten.
+      const competing = competingExitRefusal(db, { accountId: creds.accountId, positionId, states: MANUAL_REFUSED_EXIT_STATES })
+      if (competing) return res.status(409).json({ error: competing })
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const pos = await findLivePosition(creds, positionId)
       if (!pos) return res.status(404).json({ error: `position ${positionId} not found at the broker (already closed?)` })
@@ -2553,6 +2551,7 @@ export default function actionsRouter(db, deps = {}) {
       const exec = await execPlaceOrder(creds, {
         ctidTraderAccountId: parseInt(creds.accountId),
         symbolId: parseInt(td.symbolId),
+        ...(pos.symbolName ? { symbolName: pos.symbolName } : {}), // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: td.tradeSide === 2 || td.tradeSide === 'SELL' ? 'SELL' : 'BUY',
         volume: td.volume,
@@ -2596,6 +2595,8 @@ export default function actionsRouter(db, deps = {}) {
     try {
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
       const creds = credsForPosition(db, positionId, { producerId: 'route_position_reverse' })
+      const competing = competingExitRefusal(db, { accountId: creds.accountId, positionId, states: MANUAL_REFUSED_EXIT_STATES })
+      if (competing) return res.status(409).json({ error: competing })
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
 
       const guards = loadManualGuards(db)
@@ -2640,6 +2641,7 @@ export default function actionsRouter(db, deps = {}) {
       const exec = await execPlaceOrder(legTwo.creds, {
         ctidTraderAccountId: parseInt(legTwo.creds.accountId),
         symbolId: parseInt(td.symbolId),
+        ...(pos.symbolName ? { symbolName: pos.symbolName } : {}), // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: wasSell ? 'BUY' : 'SELL',
         volume: td.volume,
@@ -3343,6 +3345,13 @@ export default function actionsRouter(db, deps = {}) {
   // Server-sent events: one cTrader spot subscription per client, ticks
   // forwarded as `data: {"symbol","bid","ask","t"}` frames. Closes with the
   // client. Capped at 10 symbols per stream.
+  //
+  // WEB-9b: the subscription asks for the broker's spot timestamp. Each frame
+  // carries `receivedAtMs` (the AGENT's clock at receipt) and `brokerAtMs`
+  // (the broker's event time, null when the broker sent none), and every
+  // event is noted in lib/feed-receipts.js, where receipt minus broker time
+  // is the market-feed latency GET /state/data-feed serves. The first event
+  // per symbol is the subscription's snapshot and is not a latency sample.
   // -----------------------------------------------------------------------
   router.get('/stream-prices', async (req, res) => {
     try {
@@ -3371,8 +3380,10 @@ export default function actionsRouter(db, deps = {}) {
       })
       res.write(`event: hello\ndata: ${JSON.stringify({ symbols: names.filter(n => map[n]) })}\n\n`)
 
-      const { wsStreamSpots } = await import('../lib/ctrader-ws.js')
+      const wsStreamSpots = streamSpotsImpl ?? (await import('../lib/ctrader-ws.js')).wsStreamSpots
+      const { noteSpotStamp } = await import('../lib/feed-receipts.js')
       const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const snapshotSeen = new Set()
       let stream = null
       let hb = null
       let gone = false
@@ -3390,13 +3401,19 @@ export default function actionsRouter(db, deps = {}) {
       try {
         stream = await wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, ids,
           (tick) => {
+            const receivedAtMs = Date.now()
+            const brokerAtMs = Number.isSafeInteger(tick.brokerAtMs) && tick.brokerAtMs > 0 ? tick.brokerAtMs : null
+            const snapshot = !snapshotSeen.has(tick.symbolId)
+            if (snapshot) snapshotSeen.add(tick.symbolId)
+            noteSpotStamp({ brokerAtMs, receivedAtMs, host, accountId, symbolId: tick.symbolId, snapshot })
             res.write(`data: ${JSON.stringify({ symbol: idToName[tick.symbolId], symbolId: tick.symbolId,
-              accountId: String(accountId), host, bid: tick.bid, ask: tick.ask, t: tick.t, receivedAtMs: Date.now() })}\n\n`)
+              accountId: String(accountId), host, bid: tick.bid, ask: tick.ask, t: tick.t, receivedAtMs, brokerAtMs })}\n\n`)
           },
           (reason) => {
             res.write(`event: end\ndata: ${JSON.stringify({ reason })}\n\n`)
             shutdown()
-          })
+          },
+          { timestamped: true })
       } catch (err) {
         res.write(`event: end\ndata: ${JSON.stringify({ reason: err.message })}\n\n`)
         return shutdown()
@@ -5905,6 +5922,7 @@ export default function actionsRouter(db, deps = {}) {
       const orderPayload = {
         ctidTraderAccountId: parseInt(accountId),
         symbolId: parseInt(symbolId),
+        symbolName: analysis.symbol, // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: side,
         volume,
@@ -6094,6 +6112,7 @@ export default function actionsRouter(db, deps = {}) {
       const orderPayload = {
         ctidTraderAccountId: parseInt(creds.accountId),
         symbolId: parseInt(symbolId),
+        symbolName: symbol, // X1 / W2: ledger-only, stripped before the wire
         orderType: 'MARKET',
         tradeSide: side,
         volume: sized.volume,
