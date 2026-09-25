@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
 import {
-  resolveSymbolId, getAccountSymbolMap, accountSymbolMapKey, ACCOUNT_SYMBOL_MAP_TTL_MS,
+  resolveSymbolId, getAccountSymbolMap, accountSymbolMapKey, ACCOUNT_SYMBOL_MAP_TTL_MS, fetchAccountSymbolMap,
 } from './ctrader-creds.js'
 
 const creds = (accountId, extra = {}) => ({ host: 'demo', clientId: 'c', clientSecret: 's', accessToken: 't', accountId, ready: true, ...extra })
@@ -80,4 +80,33 @@ test('no symbol, no account: honest nulls', async () => {
   assert.equal((await resolveSymbolId(db, creds('1'), '')).source, 'none')
   setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
   assert.deepEqual(await resolveSymbolId(db, {}, 'US30'), { id: 7, source: 'global' }, 'no account at all → the shared map (legacy single-account callers)')
+})
+
+// V3 K2 — the one writer of symbol_id_map:<accountId>.
+test("the one writer reads the account's own list, stamps it as that account's, and dates it by deps.now", async () => {
+  const db = initDB(':memory:')
+  const seen = []
+  const own = { wsGetSymbolsList: async (...a) => { seen.push(a); return { ctidTraderAccountId: 200, symbol: [{ symbolName: 'lly.us', symbolId: 9001 }] } } }
+  const m = await fetchAccountSymbolMap(db, creds('200'), { ...own, now: Date.parse('2026-09-25T15:00:00Z') })
+  assert.deepEqual(m, { 'LLY.US': 9001 })
+  assert.deepEqual(seen[0].slice(4), ['200', undefined, { perAccount: true }], 'RED if the read may be served from the host-shared cache')
+  assert.deepEqual(JSON.parse(getState(db, accountSymbolMapKey('200'))), { builtAt: '2026-09-25T15:00:00.000Z', accountId: '200', map: { 'LLY.US': 9001 } })
+  assert.deepEqual(getAccountSymbolMap(db, '200'), { map: { 'LLY.US': 9001 }, builtAt: '2026-09-25T15:00:00.000Z' }, 'readers see the same { map, builtAt }')
+})
+
+test("a symbol list that names another account is refused: nothing is written, and an order gets a refusal, never that account's id", async () => {
+  const db = initDB(':memory:')
+  setState(db, 'ctrader_account_id', '100')
+  const foreign = { wsGetSymbolsList: async () => ({ ctidTraderAccountId: 100, symbol: [{ symbolName: 'LLY.US', symbolId: 5 }] }) }
+  await assert.rejects(fetchAccountSymbolMap(db, creds('200'), foreign), /account_identity_mismatch: the symbol list for …200 names …100/)
+  assert.equal(getState(db, accountSymbolMapKey('200')), null, "RED if another account's list is stored under this key")
+  const r = await resolveSymbolId(db, creds('200'), 'LLY.US', foreign)
+  assert.equal(r.id, null)
+  assert.equal(r.source, 'unverified')
+  assert.match(r.reason, /account_identity_mismatch/)
+  // A stored (stale) map of its own is kept and still serves, as before.
+  const old = new Date(Date.now() - ACCOUNT_SYMBOL_MAP_TTL_MS - 1000).toISOString()
+  setState(db, accountSymbolMapKey('200'), JSON.stringify({ builtAt: old, map: { 'LLY.US': 9001 } }))
+  assert.deepEqual(await resolveSymbolId(db, creds('200'), 'LLY.US', foreign), { id: 9001, source: 'account-stale' })
+  assert.equal(getAccountSymbolMap(db, '200').builtAt, old)
 })

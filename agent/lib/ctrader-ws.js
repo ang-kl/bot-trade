@@ -802,16 +802,37 @@ export function wsGetAccountsByToken(host, clientId, clientSecret, accessToken, 
  * Accounts page snapshots several accounts (owner: "loading accounts is
  * very very slow"). Cache the in-flight/resolved promise per host for a
  * while; a failure is never cached so a bad fetch retries next call.
+ *
+ * V3 K2: that cache is keyed by HOST, so within 6 h a read "for" account B
+ * returns whichever account on the same host was read first — its
+ * ctidTraderAccountId, its list. The other callers name ids on a snapshot
+ * with it, and are right only while every account on a host shares one
+ * catalogue — which is not verified anywhere. The one writer of an account's
+ * OWN map (ctrader-creds.js fetchAccountSymbolMap) must not store another
+ * account's list under this account's key on that assumption. So
+ * `{ perAccount: true }` reads THIS account's list now, never served from and
+ * never stored into the host-shared cache (the per-account map in the DB,
+ * with its 24 h TTL, is that read's cache). Every other caller is unchanged.
+ *
+ * A per-account read's failure also names its account (tagAccount, inside the
+ * retried fn as wsGetTrader does), so B7's skip predicate can tell a refused
+ * account from a rotated token. The host-shared path stays untagged: its
+ * promise is served to callers asking for other accounts on the host.
  */
 const symbolsListCache = new Map() // host -> { at, promise }
 const SYMBOLS_LIST_TTL_MS = 6 * 60 * 60 * 1000
-export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000) {
+export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000, { perAccount = false } = {}) {
+  const read = () => withRetry(() => {
+    const run = wsRun(host, [
+      ...authSteps(clientId, clientSecret, accessToken, accountId),
+      { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
+    ], timeoutMs)
+    return perAccount ? run.catch((err) => { throw tagAccount(err, accountId) }) : run
+  }, 2, 'wsGetSymbolsList')
+  if (perAccount) return read()
   const cached = symbolsListCache.get(host)
   if (cached && Date.now() - cached.at < SYMBOLS_LIST_TTL_MS) return cached.promise
-  const promise = withRetry(() => wsRun(host, [
-    ...authSteps(clientId, clientSecret, accessToken, accountId),
-    { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
-  ], timeoutMs), 2, 'wsGetSymbolsList')
+  const promise = read()
   symbolsListCache.set(host, { at: Date.now(), promise })
   promise.catch(() => { if (symbolsListCache.get(host)?.promise === promise) symbolsListCache.delete(host) })
   return promise
