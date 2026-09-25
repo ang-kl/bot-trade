@@ -24,7 +24,7 @@ export function ReasonsBlock({ def, result, at }) {
       <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">{def.why}</p>
       {st.status === 'error'
         ? <p className="text-(length:--fs-body) font-semibold text-[var(--color-down)]" data-not-read>{st.message}</p>
-        : <BodyView body={st.body} />}
+        : <BodyView body={st.body} maxRows={def.maxRows} keyedTables={def.keyedTables} />}
     </Card>
   )
 }
@@ -43,8 +43,8 @@ function KV({ pairs }) {
   )
 }
 
-function BodyView({ body }) {
-  const s = shapeBody(body)
+function BodyView({ body, maxRows, keyedTables }) {
+  const s = shapeBody(body, { ...(maxRows ? { maxRows } : {}), ...(keyedTables ? { keyedTables } : {}) })
   const empty = !s.scalars.length && !s.objects.length && !s.tables.length && !s.lists.length
   if (empty) return <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">the endpoint returned no fields</p>
   return (
@@ -106,7 +106,7 @@ export default function Reasons() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-baseline gap-2">
         <h1 className="text-(length:--fs-title) font-extrabold tracking-tight">Reasons</h1>
-        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">twelve attribution reads, each shown with the agent's own fields — nothing computed here</span>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">thirteen attribution reads, each shown with the agent's own fields — nothing computed here</span>
         <Button size="sm" variant="subtle" className="ml-auto" disabled={busy} onClick={load}>{busy ? 'reading…' : 'Re-read'}</Button>
       </div>
       {REASON_ENDPOINTS.map(d => <ReasonsBlock key={d.key} def={d} result={results[d.key]} at={at} />)}

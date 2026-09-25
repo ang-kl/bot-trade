@@ -1,0 +1,6 @@
+{
+  "_note": "V3 L1, owner order 25-09-2026 16:50 SGT: flag pre-order, order and close records that fail to store or are incomplete, and anything stuck. acceptanceStart splits NEW defects (on or after it: what the goal rows count) from LEGACY ones (inside the window, before it). The default is the time of the owner's order and is PROPOSED until the owner confirms it (LIFECYCLE-SPEC section 7, owner decision 1). windowDays is the default report window of GET /state/order-lifecycle and of the 10-minute snapshot.",
+  "acceptanceStart": "2026-09-25T08:50:00Z",
+  "acceptanceStartStatus": "proposed",
+  "windowDays": 30
+}

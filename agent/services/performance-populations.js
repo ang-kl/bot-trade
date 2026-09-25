@@ -118,6 +118,7 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
 const RETRY_AFTER_SEC = {
   performance_report_worker_capacity: 5,
   watchdog_report_worker_capacity: 5,
+  order_lifecycle_worker_capacity: 5,
   performance_report_worker_exit: 15,
   performance_report_deadline: 30,
 }
@@ -138,6 +139,7 @@ const unavailable = error => { throw isReportUnavailable(error) ? error : new Re
 const flights = new WeakMap()
 const watchdogFlights = new WeakMap()
 const diagnosticFlights = new WeakMap()
+const lifecycleFlights = new WeakMap()
 // kind → its own bounded pool. The watchdog is polled independently and must
 // not compete with slow dashboard reports; the storage walk (dbstat over every
 // page, measured 20.99 s in production) must not take a slot the loop's
@@ -147,6 +149,14 @@ const diagnosticFlights = new WeakMap()
 const RESERVED_POOLS = {
   'node-watchdog': { pool: watchdogFlights, capacity: 1, error: 'watchdog_report_worker_capacity' },
   storage: { pool: diagnosticFlights, capacity: 1, error: 'storage_report_worker_capacity' },
+  // V3 L1: the order-lifecycle flags. Their own reserved pool so the two
+  // dashboard slots cannot starve them (nor they them); identical requests —
+  // the 10-minute snapshot and the Reasons page's ?account=all — share one
+  // job. Two slots, not one: a slot is held until its worker EXITS, which can
+  // trail its answer, so with one slot a per-account read right after the
+  // all-accounts read was refused with a capacity 503 (measured in the full
+  // parallel gate). A third concurrent distinct read is still an explicit 503.
+  'order-lifecycle': { pool: lifecycleFlights, capacity: 2, error: 'order_lifecycle_worker_capacity' },
 }
 const SHARED_POOL = { pool: flights, capacity: 2, error: 'performance_report_worker_capacity' }
 /** Disk-backed reads stay off the protection event loop: at most two report
@@ -214,6 +224,8 @@ export function readPostmortemReport(db, options) { return isolatedReport(db, 'p
 /** GET /state/storage: the dbstat page walk and per-table COUNT(*) run on a
  * read-only worker connection, never on the event loop that runs protection. */
 export function readStorageReport(db) { return isolatedReport(db, 'storage') }
+/** GET /state/order-lifecycle and the order_lifecycle controller (V3 L1). */
+export function readOrderLifecycle(db, options) { return isolatedReport(db, 'order-lifecycle', options) }
 export function buildDecisionsDaily(db, { days = 90, accountId = null, timeZone = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
@@ -275,6 +287,15 @@ async function buildReport(db, kind, options) {
   if (kind === 'storage') {
     const { storageReport } = await import('./storage-report.js')
     return storageReport(db)
+  }
+  if (kind === 'order-lifecycle') {
+    const { buildOrderLifecycle, RESPONSE_MAX_BYTES } = await import('./order-lifecycle.js')
+    // One consistent snapshot across every rule's read, as node-watchdog does.
+    const report = db.transaction(() => buildOrderLifecycle(db, options))()
+    // The main thread structured-clones and serialises this: bounded here,
+    // before postMessage, far below the generic 8 MB bound.
+    if (Buffer.byteLength(JSON.stringify(report)) > RESPONSE_MAX_BYTES) throw new Error('order_lifecycle_response_bound')
+    return report
   }
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })

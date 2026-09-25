@@ -8,6 +8,9 @@
 // WHAT IT SAYS, in the order the owner reads it (which is also the order
 // sections are KEPT when the text must be cut to Telegram's limit):
 //   1. the goal table's summary and every off_track row (id + current);
+//   1b. the order-lifecycle flags (V3 L1): new / legacy per stage since the
+//       acceptance start, the three largest new rules, and any stage that is
+//       not measurable with its reason — read from the one snapshot row;
 //   2. the momentum book: week-to-date per account and the checkpoint row;
 //   3. the equity curve's last two nights per account, with the change;
 //   4. family edge per family over 90 d (PF, tail share, max DD, closes);
@@ -59,6 +62,12 @@ async function goalsSection(db, now) {
   const lines = [`Goals: ${s.on_track} on track, ${s.off_track} off track, ${s.not_measurable} not measurable (of ${t.goals.length})`]
   for (const g of t.goals.filter(g => g.verdict === 'off_track')) lines.push(`  off track: ${g.id} — ${g.current ?? 'n/a'} (target ${g.target ?? 'n/a'})`)
   return { lines, table: t }
+}
+
+// V3 L1: from order_lifecycle_last_json only — no rule runs here.
+async function lifecycleSection(db) {
+  const { lifecycleReportLines, readSnapshot } = await import('./order-lifecycle.js')
+  return lifecycleReportLines(readSnapshot(getState, db))
 }
 
 async function momentumSection(db, table) {
@@ -186,6 +195,7 @@ export async function buildDailyReport(db, { now = Date.now() } = {}) {
   let table = null
   sections.push({ id: 'header', lines: [`Daily report — ${at.slice(0, 16).replace('T', ' ')} UTC`] })
   sections.push({ id: 'goals', lines: await attempt('Goals', async () => { const g = await goalsSection(db, now); table = g.table; return g.lines }) })
+  sections.push({ id: 'lifecycle', lines: await attempt('Lifecycle', () => lifecycleSection(db)) })
   sections.push({ id: 'momentum', lines: await attempt('Momentum', () => momentumSection(db, table)) })
   sections.push({ id: 'equity', lines: await attempt('Equity', () => equitySection(db, now)) })
   sections.push({ id: 'family', lines: await attempt('Family edge', () => familySection(db, now)) })

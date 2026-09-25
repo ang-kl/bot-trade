@@ -172,6 +172,12 @@ export const CONTROLLERS = {
   // Wave 5 (§K item 16): the daily Telegram report, once every 24 h on the
   // loop's persisted cursor; its record is the last text as posted.
   daily_report:        { label: 'Daily report (Telegram)',    expectedSec: 24 * 3600, factor: 2, effect: { key: 'daily_report_last_json', kind: 'json', maxAgeSec: 30 * 3600 } },
+  // V3 L1 (owner order 25-09-2026): the order-lifecycle flags, built on the
+  // read-only worker every 10 minutes on their own ticker
+  // (order-lifecycle-ticker.js). The record is the compact snapshot the goal
+  // rows, the inspector and the daily report read; a stale one also shows in
+  // records_fresh.
+  order_lifecycle:     { label: 'Order lifecycle flags',      expectedSec: 600, factor: 3, effect: { key: 'order_lifecycle_last_json', kind: 'json', maxAgeSec: 1800 } },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

@@ -53,7 +53,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import { readSegment, toQuoteEvents, FORMAT_VERSION, HEADER_BYTES, RECORD_BYTES } from '../lib/tick-segment.js'
 import { simulate } from '../lib/tick-replay-sim.js'
 import { normalizeParams, profileHashFull } from '../lib/tick-strategy.js'
-import { trialIdFor, importTickTrial, testOpeningsFor, recordTestOpening, settleTestOpening, HOLDOUT_UNDECLARED } from './tick-research.js'
+import { trialIdFor, importTickTrial, testOpeningsFor, recordTestOpening, settleTestOpening, HOLDOUT_UNDECLARED, RESEARCH_BLOCKS } from './tick-research.js'
 import { loadThresholds, replayChecks } from './tick-validation.js'
 import { loadRepoSchedule, TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
 import { getState } from '../db.js'
@@ -405,6 +405,25 @@ export function includeTestRefusal(body = {}) {
   return null
 }
 
+export const BLOCKS_WHERE = `the keeper cuts every research replay in ${RESEARCH_BLOCKS} chronological blocks (train / validation / test): the withheld summary stops at the test block only at that cut, and the opening ledger recognises a test-block read only at that cut. Omit sim.blocks, or send ${RESEARCH_BLOCKS}`
+
+/**
+ * Q1 FOLLOW-UP (checker B3): `sim.blocks` is not the caller's to set. The
+ * replayer withholds the test block only when blocks > 1, and cuts it at
+ * (n-1)/n: with `blocks: 1` nothing was withheld, the summary covered every
+ * event and the trial was stored as a v2 withheld trial with no opening on
+ * the ledger (the checker's probe: a summary identical to the includeTest
+ * run's, 2 trades, netR 0.3153); with `blocks: 4` the cut fell inside the
+ * default test third. So
+ * every research door — the in-thread action, the job, the sync door and the
+ * script — refuses any value but RESEARCH_BLOCKS, before anything is read.
+ */
+export function blocksRefusal(body = {}) {
+  const sim = plain((body || {}).sim)
+  if (!('blocks' in sim) || sim.blocks === RESEARCH_BLOCKS) return null
+  return { status: 400, body: { ok: false, error: 'blocks_fixed', blocks: sim.blocks ?? null, where: BLOCKS_WHERE } }
+}
+
 /**
  * PR-Q1: the refusal that needs the ledger — a second opening of the same
  * holdout. Until PR-Q2 declares a future-only holdout window, the holdout is
@@ -415,7 +434,7 @@ export function openingRefusal(db, plan) {
   if (!plan?.includeTest) return null
   const prior = testOpeningsFor(db, plan.declaredProfile, HOLDOUT_UNDECLARED)
   if (!prior.consulted) return null
-  return { status: 409, body: { ok: false, error: 'second_opening', profileHash: plan.declaredProfile, holdout: HOLDOUT_UNDECLARED, openings: prior.openings, legacyConsultedTrials: prior.legacyConsultedTrials, where: `the test block of profile ${plan.declaredProfile} has already been consulted (${prior.openings.length} recorded opening(s), ${prior.legacyConsultedTrials} pre-v2 trial(s) whose summary covered the test block); a second opening of the same holdout is refused — a fresh, future-only holdout is PR-Q2's declared window` } }
+  return { status: 409, body: { ok: false, error: 'second_opening', profileHash: plan.declaredProfile, holdout: HOLDOUT_UNDECLARED, openings: prior.openings, consultedTrials: prior.consultedTrials, legacyConsultedTrials: prior.legacyConsultedTrials, where: `the test block of profile ${plan.declaredProfile} has already been consulted (${prior.openings.length} recorded opening(s), ${prior.consultedTrials} stored trial(s) whose summary covered the test block, ${prior.legacyConsultedTrials} of them pre-v2); a second opening of the same holdout is refused — a fresh, future-only holdout is PR-Q2's declared window` } }
 }
 
 /**
@@ -529,7 +548,7 @@ function admit(segmentsDir, { maxRecords = MAX_RECORDS, maxSegments = null } = {
 export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, segmentsAvailable = null, actor = null } = {}) {
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
-  const itRefused = includeTestRefusal(body)
+  const itRefused = includeTestRefusal(body) || blocksRefusal(body)
   if (itRefused) return itRefused
   const a = withAvailable(admit(segmentsDir, { maxRecords, maxSegments: bounded.value }), segmentsAvailable)
   if (a.refuse) return a.refuse
@@ -599,13 +618,13 @@ function settle(j, patch) {
  * in-thread action returns) is on GET /state/tick-research-job?id=… once
  * `state` is `done`; the trials are in tick_trials by then.
  */
-export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null } = {}) {
+export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null, workerCtor = null } = {}) {
   if (jobs.current) {
     return { status: 409, body: { ok: false, error: 'research_running', jobId: jobs.current.jobId, startedAt: jobs.current.startedAt, where: 'one research job runs at a time; poll GET /state/tick-research-job?id=<jobId> and post again when it is done' } }
   }
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
-  const itRefused = includeTestRefusal(body)
+  const itRefused = includeTestRefusal(body) || blocksRefusal(body)
   if (itRefused) return itRefused
   const a = withAvailable(admit(segmentsDir, { maxRecords, maxSegments: bounded.value }), segmentsAvailable)
   if (a.refuse) return a.refuse
@@ -621,28 +640,36 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   // transient response. It rides the job record too.
   const failedNote = segmentsFailed.length ? { segmentsFailed, segmentsFailedNote: `${segmentsFailed.length} listed segment(s) could not be pulled and are NOT in this replay; the replayed set is the oldest that did arrive` } : {}
   const j = { jobId: randomUUID().slice(0, 12), state: 'running', startedAt: now.toISOString(), finishedAt: null, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, ...failedNote, plan: { stageA: plan.stageA, dryRun: plan.dryRun, params: plan.params, sim: plan.sim, onlySymbol: plan.onlySymbol, maxSegments: plan.maxSegments, noteTruncated: plan.noteTruncated }, result: null, error: null, worker: null, db, importTrial }
-  let worker
-  try {
-    worker = new Worker(workerFile, { workerData: { files: a.files, plan, replay: th.replay } })
-  } catch (err) {
-    return { status: 500, body: { ok: false, error: 'worker_start_failed', detail: err.message } }
-  }
-  j.worker = worker
-  jobs.current = j
   // PR-Q1: the job's opening is on the ledger from the moment the worker can
   // read the test block, with the job id and the caller; the job record says
   // so too. A worker that dies before reporting showed its result to no one
   // and is settled `failed_unseen` (not counted as a consultation); one that
   // reported is `opened` with its trial ids, whatever the import then does.
+  //
+  // Q1 FOLLOW-UP (checker N3): written BEFORE the worker starts. It was
+  // written after `new Worker` and after the single-job slot was taken, so a
+  // throwing write left a worker reading the test block with no ledger row and
+  // a slot that never cleared (every later POST 409 until a restart). Now a
+  // failed write refuses the request with nothing started, and a worker that
+  // cannot start settles the row `failed_unseen` (it read nothing).
   const origin = keeperOrigin('keeper_job', j.jobId, actor)
   let opening = null
   if (plan.includeTest) {
     opening = recordTestOpening(db, { profileHash: plan.declaredProfile, channel: 'keeper_job', jobId: j.jobId, actor, detail: { files: a.files.map(f => basename(f)), onlySymbol: plan.onlySymbol } })
     j.opening = { id: opening.id, profileHash: plan.declaredProfile, holdout: HOLDOUT_UNDECLARED }
   }
+  const settleOpening = (patch) => { if (opening) { try { settleTestOpening(db, opening.id, patch) } catch { /* the row stays 'opened' — the conservative reading */ } } }
+  let worker
+  try {
+    worker = new (workerCtor || Worker)(workerFile, { workerData: { files: a.files, plan, replay: th.replay } })
+  } catch (err) {
+    settleOpening({ status: 'failed_unseen' })
+    return { status: 500, body: { ok: false, error: 'worker_start_failed', detail: err.message } }
+  }
+  j.worker = worker
+  jobs.current = j
   j.plan.includeTest = plan.includeTest
   j.origin = origin
-  const settleOpening = (patch) => { if (opening) { try { settleTestOpening(db, opening.id, patch) } catch { /* the row stays 'opened' — the conservative reading */ } } }
   let settled = false
   worker.on('message', (msg) => {
     if (settled) return
@@ -688,7 +715,7 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
   if (bounded.refuse) return bounded.refuse
   // PR-Q1: an includeTest request that will be refused is refused before a
   // byte is listed or pulled — the same two rules the job itself applies.
-  const itRefused = includeTestRefusal(body)
+  const itRefused = includeTestRefusal(body) || blocksRefusal(body)
   if (itRefused) return itRefused
   const second = openingRefusal(db, researchPlan(body))
   if (second) return second

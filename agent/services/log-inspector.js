@@ -28,6 +28,7 @@
 
 import { getState, setState } from '../db.js'
 import { guardName } from './decision-audit.js'
+import { readSnapshot, inspectLifecycleRegression, lifecycleRuleRecurs, lifecycleRulePersists } from './order-lifecycle.js'
 
 export const INSPECTOR_DEFAULTS = {
   on: true,
@@ -349,12 +350,23 @@ function inspectSilentGap(db, cfg, nowMs) {
   }]
 }
 
+// V3 L1: a lifecycle rule producing NEW defective records (after the
+// acceptance start), or holding records stuck now, whose fix is a writer or
+// resolver change — one proposed code_change finding per rule@version, read
+// from the order_lifecycle snapshot only (no rule runs here). A stuck rule's
+// falsifier asks whether it is still stuck at the deadline
+// (lifecycle_rule_persists), not whether it recurred.
+function inspectLifecycleRegressionRun(db, _cfg, nowMs) {
+  return inspectLifecycleRegression(readSnapshot(getState, db), nowMs)
+}
+
 export const INSPECTIONS = [
   { key: 'assertion_vs_effect', run: inspectAssertionVsEffect },
   { key: 'broken_commissive', run: inspectBrokenCommissive },
   { key: 'refusal_at_scale', run: inspectRefusalAtScale },
   { key: 'unheeded_directive', run: inspectUnheededDirective },
   { key: 'silent_gap', run: inspectSilentGap },
+  { key: 'lifecycle_regression', run: inspectLifecycleRegressionRun },
 ]
 
 // ---------------------------------------------------------------------------
@@ -416,6 +428,18 @@ export function evalFalsifierMetric(db, metric) {
         const r = db.prepare(`SELECT COUNT(*) AS n FROM risk_events WHERE disposition = 'dropped' AND disposition_at >= ?`).get(sinceIso)
         return (r?.n || 0) > 0 // more drops → recurring-defect reading confirmed
       }
+      case 'lifecycle_rule_recurs':
+        // A newer violation of the rule after the finding → the live-defect
+        // reading is CONFIRMED; none over a snapshot that covers the window
+        // and judged a record made in it → falsified; anything less (no
+        // snapshot, a snapshot not after the finding, an unreadable rule) →
+        // expired, never decided on absent evidence.
+        return lifecycleRuleRecurs(readSnapshot(getState, db), metric)
+      case 'lifecycle_rule_persists':
+        // A STUCK rule (current state): still violating in a snapshot taken
+        // near the deadline → CONFIRMED; 0 → falsified (resolved); no such
+        // snapshot (the ticker is dead) → expired.
+        return lifecycleRulePersists(readSnapshot(getState, db), metric)
       default:
         return null
     }

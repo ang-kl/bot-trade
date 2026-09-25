@@ -14,15 +14,20 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 
+import express from 'express'
+
 import { initDB } from '../db.js'
+import actionsRouter from '../routes/actions.js'
 import { encodeHeader, encodeRecord, FLAGS, KIND } from '../lib/tick-segment.js'
 import { profileHash, normalizeParams, profileHashFull } from '../lib/tick-strategy.js'
+import { STATISTICS_VERSION } from '../lib/tick-replay-sim.js'
 import { fixtureSegment } from './tick-research-run.test.js'
 import {
   tickResearchAction, startTickResearchJob, startTickResearchJobWithSync, tickResearchJob, _resetTickResearchJobs,
   listSegments, loadSegments, runTrials, researchPlan, includeTestRefusal, replayerCommit, RECORDER_ONLY_GAPS,
+  blocksRefusal, tickResearchJobsView, SEGMENTS_ENV,
 } from './tick-research-run.js'
-import { testOpeningsFor, importTickTrial, importClientTrials, tickTrialsView } from './tick-research.js'
+import { testOpeningsFor, importTickTrial, importClientTrials, tickTrialsView, summaryScopeOf } from './tick-research.js'
 
 const temporaryDirectories = new Set()
 const mkdtempSync = (...args) => { const dir = makeTempDir(...args); temporaryDirectories.add(dir); return dir }
@@ -220,12 +225,161 @@ test('client imports (POST /actions/tick-trials): stored as client_import, UNVER
   assert.ok(first.every(f => f.ok)); assert.equal(first[0].opening, 'recorded'); assert.equal(first[1].opening, 'same_import')
   const rows = () => db.prepare('SELECT channel, status, actor FROM tick_test_openings ORDER BY id').all()
   assert.deepEqual(rows(), [{ channel: 'client_import', status: 'opened', actor: 'x via agent_secret' }])
-  const second = importClientTrials(db, [opened[0], opened[0]], { actor: 'y via agent_secret' })
+  // Q1 follow-up (checker N9): the SAME trial imported again is a retry of an
+  // import that already landed, not a second opening — nothing more written
+  const retry = importClientTrials(db, [opened[0]], { actor: 'y via agent_secret' })
+  assert.equal(retry[0].ok, true); assert.equal(retry[0].inserted, false); assert.equal(retry[0].opening, 'already_stored')
+  assert.deepEqual(rows().map(r => r.status), ['opened'], 'RED if a retried import is refused and writes a refused_second_opening row')
+  // a DIFFERENT trial of the same profile (another data set) is a second opening
+  const other = { ...opened[0], manifest: { ...opened[0].manifest, files: ['seg-other.tks'] }, trialId: undefined }
+  const second = importClientTrials(db, [other, other], { actor: 'y via agent_secret' })
   assert.equal(second[0].ok, false); assert.equal(second[0].reason, 'second_opening'); assert.equal(second[1].reason, 'second_opening')
   assert.deepEqual(rows().map(r => r.status), ['opened', 'refused_second_opening'], 'recorded once, refused')
+  // Q1 follow-up (checker N11): an opening is recorded against the profile the
+  // params produce; a trial naming another profile is refused, not stored
+  const named = { ...opened[0], profileHash: 'aaaaaaaaaaaaaaaa', trialId: undefined }
+  const mis = importClientTrials(db, [named], { actor: 'z via agent_secret' })
+  assert.equal(mis[0].ok, false); assert.equal(mis[0].reason, 'profile_mismatch'); assert.equal(mis[0].paramsProfile, DECLARED)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM tick_trials WHERE profile_hash = 'aaaaaaaaaaaaaaaa'`).get().n, 0)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM tick_test_openings WHERE profile_hash = 'aaaaaaaaaaaaaaaa'`).get().n, 0, 'RED if the opening is recorded against the named profile')
   // the view says where every row came from and counts the openings over the whole ledger
   const v = tickTrialsView(db, { profile: DECLARED, limit: 'all' })
   assert.ok(v.trials.every(t => t.origin.kind === 'client_import' && t.origin.verified === false && t.parityRecorded === true))
   const led = v.ledger.profiles.find(p => p.profileHash === DECLARED)
   assert.equal(led.openings, 1); assert.equal(led.refusedOpenings, 1); assert.equal(led.includeTestTrials, 2); assert.equal(led.consulted, true)
+})
+
+// ---- Q1 follow-up: the checker's blockers and nits ----------------------------
+const count = (db, t, where = '') => db.prepare(`SELECT COUNT(*) AS n FROM ${t} ${where}`).get().n
+
+test('Q1 follow-up (checker B2): a pre-v2 row replayed WITH includeTest is consulted at the gate exactly as the view says — the second opening is refused', () => {
+  const db = initDB(':memory:')
+  // v1, includeTest: scope all_blocks, not all_blocks_legacy_leak — the gate
+  // counted only the latter, so the view said testConsulted while the gate let
+  // a second opening through
+  importTickTrial(db, { strategyId: 'tick_momentum_breakout', strategyVersion: 'v1', profileHash: DECLARED, params: normalizeParams(PARAMS), sim: { latencyMs: 250, includeTest: true, statisticsVersion: 'mtm-moving-block-v1' }, manifest: { files: ['legacy-open'] }, summary: { trades: 4 }, blocks: [{ name: 'test', trades: 3, netR: 1 }] })
+  const view = tickTrialsView(db, { profile: DECLARED })
+  assert.equal(view.trials[0].summaryScope, 'all_blocks'); assert.equal(view.trials[0].testConsulted, true)
+  const gate = testOpeningsFor(db, DECLARED)
+  assert.equal(gate.consulted, true, 'RED if the gate counts only all_blocks_legacy_leak rows')
+  assert.equal(gate.consultedTrials, 1); assert.equal(gate.legacyConsultedTrials, 0)
+  const led = view.ledger.profiles.find(p => p.profileHash === DECLARED)
+  assert.equal(led.consulted, true); assert.equal(led.consultedTrials, 1)
+  const r = tickResearchAction(db, { includeTest: true, params: PARAMS, sim: SIM, profileHash: DECLARED }, { segmentsDir: segDir() })
+  assert.equal(r.status, 409); assert.equal(r.body.error, 'second_opening'); assert.equal(r.body.consultedTrials, 1)
+  assert.equal(count(db, 'tick_test_openings'), 0, 'refused before anything is opened')
+})
+
+test('Q1 follow-up (checker B3): sim.blocks other than 3 is refused at every research door before anything is read; a stored v2 trial whose summary covers every block — or that was cut in 4 — is consulted; an unknown statistics version is consulted, not called a leak', async () => {
+  _resetTickResearchJobs()
+  const db = initDB(':memory:')
+  const dir = segDir()
+  for (const blocks of [1, 2, 4, '3', null]) {
+    const body = { params: PARAMS, sim: { ...SIM, blocks }, stageA: false }
+    const inline = tickResearchAction(db, body, { segmentsDir: dir })
+    assert.equal(inline.status, 400, `blocks ${JSON.stringify(blocks)}`); assert.equal(inline.body.error, 'blocks_fixed')
+    assert.equal(startTickResearchJob(db, body, { segmentsDir: dir }).body.error, 'blocks_fixed')
+    assert.equal(blocksRefusal(body)?.body.error, 'blocks_fixed', 'the script shares the rule')
+  }
+  let listed = 0
+  const door = await startTickResearchJobWithSync(db, { params: PARAMS, sim: { ...SIM, blocks: 1 } }, {
+    segmentsDir: mkdtempSync(join(tmpdir(), 'tick-q1-none-')), cacheDir: mkdtempSync(join(tmpdir(), 'tick-q1-cache-')),
+    listAll: async () => { listed++; return { segments: 0, names: [], records: 0, sides: [] } }, sync: async () => ({ pulled: 0, sides: [] }),
+  })
+  assert.equal(door.status, 400); assert.equal(door.body.error, 'blocks_fixed'); assert.equal(listed, 0, 'refused before listing')
+  assert.equal(count(db, 'tick_trials'), 0); assert.equal(count(db, 'tick_test_openings'), 0)
+  assert.equal(tickResearchJobsView().running, null, 'no job started')
+  assert.equal(blocksRefusal({ sim: { blocks: 3 } }), null); assert.equal(blocksRefusal({ sim: {} }), null)
+  assert.equal(tickResearchAction(db, { params: PARAMS, sim: { ...SIM, blocks: 3 }, stageA: false }, { segmentsDir: dir }).status, 200, 'the default cut stated explicitly is fine')
+  // the script refuses the same way
+  const script = new URL('../../scripts/tick-research.mjs', import.meta.url).pathname
+  let scriptCode = 0, scriptErr = ''
+  try { execFileSync(process.execPath, [script, dir, '--params', JSON.stringify(PARAMS), '--sim', JSON.stringify({ ...SIM, blocks: 1 })], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) } catch (err) { scriptCode = err.status; scriptErr = String(err.stderr) }
+  assert.equal(scriptCode, 2); assert.match(scriptErr, /blocks_fixed/)
+  // what those doors used to store: v2 rows whose summary read the test block
+  const loaded = loadSegments(listSegments(dir))
+  const [one] = runTrials(loaded, { params: PARAMS, sim: { ...SIM, blocks: 1 } })
+  const [four] = runTrials(loaded, { params: PARAMS, sim: { ...SIM, blocks: 4 } })
+  const [three] = runTrials(loaded, { params: PARAMS, sim: SIM })
+  assert.equal(one.sim.statisticsVersion, STATISTICS_VERSION); assert.equal(one.summary.scope, 'all_blocks')
+  assert.equal(summaryScopeOf(one.sim, one.summary), 'all_blocks', 'RED if the scope is read from sim alone (v2 ⇒ train_validation)')
+  assert.equal(four.summary.scope, 'train_validation'); assert.equal(summaryScopeOf(four.sim, four.summary), 'nonstandard_blocks')
+  assert.equal(summaryScopeOf(three.sim, three.summary), 'train_validation', 'the default withheld run is still unconsulted')
+  // (N8) a future version is not a v1 leak, and not trusted as withheld either
+  assert.equal(summaryScopeOf({ statisticsVersion: 'mtm-moving-block-v3' }, { scope: 'train_validation' }), 'unknown_statistics_version')
+  assert.equal(summaryScopeOf({ statisticsVersion: 'mtm-moving-block-v1' }), 'all_blocks_legacy_leak'); assert.equal(summaryScopeOf({}), 'all_blocks_legacy_leak')
+  for (const [trial, label] of [[one, 'blocks 1'], [four, 'blocks 4']]) {
+    const d = initDB(':memory:')
+    importTickTrial(d, trial)
+    assert.equal(testOpeningsFor(d, DECLARED).consulted, true, `${label}: the gate counts it`)
+    assert.equal(tickTrialsView(d, { profile: DECLARED }).trials[0].testConsulted, true, `${label}: the view says so`)
+    const again = tickResearchAction(d, { includeTest: true, params: PARAMS, sim: SIM, profileHash: DECLARED }, { segmentsDir: dir })
+    assert.equal(again.status, 409, `${label}: a later opening is a second opening`)
+  }
+  const clean = initDB(':memory:')
+  importTickTrial(clean, three)
+  assert.equal(testOpeningsFor(clean, DECLARED).consulted, false)
+  // the client-import door records the opening such a trial made off-box
+  const imp = initDB(':memory:')
+  const [res] = importClientTrials(imp, [one], { actor: 'x via agent_secret' })
+  assert.equal(res.ok, true); assert.equal(res.opening, 'recorded')
+  assert.deepEqual(imp.prepare('SELECT channel, status FROM tick_test_openings').all(), [{ channel: 'client_import', status: 'opened' }])
+})
+
+test('Q1 follow-up (checker N3): the job\'s opening is written BEFORE its worker starts — a write that throws starts nothing and leaves the slot free; a worker that cannot start settles its opening failed_unseen', () => {
+  _resetTickResearchJobs()
+  const dir = segDir()
+  const body = { includeTest: true, params: PARAMS, sim: SIM, profileHash: DECLARED }
+  let started = 0
+  class Idle { constructor() { started++ } on() {} terminate() {} }
+  const db = initDB(':memory:')
+  db.exec('DROP TABLE tick_test_openings')
+  assert.throws(() => startTickResearchJob(db, body, { segmentsDir: dir, workerCtor: Idle }), /tick_test_openings/)
+  assert.equal(started, 0, 'RED if the worker starts before the opening is on the ledger')
+  assert.equal(tickResearchJobsView().running, null, 'RED if the single-job slot is left taken (every later POST 409 until a restart)')
+  class Broken { constructor() { throw new Error('no thread') } }
+  const db2 = initDB(':memory:')
+  const failed = startTickResearchJob(db2, body, { segmentsDir: dir, workerCtor: Broken })
+  assert.equal(failed.status, 500); assert.equal(failed.body.error, 'worker_start_failed')
+  assert.deepEqual(db2.prepare('SELECT status FROM tick_test_openings').all(), [{ status: 'failed_unseen' }], 'recorded, and settled as read by no one')
+  assert.equal(testOpeningsFor(db2, DECLARED).consulted, false, 'failed_unseen consumes nothing')
+  assert.equal(tickResearchJobsView().running, null)
+  _resetTickResearchJobs()
+})
+
+test('Q1 follow-up (checker N2): a withheld trial carries the SCOPED rejected counters — a signal cost-screened inside the test block is not in them', () => {
+  const loaded = loadSegments(listSegments(segDir()))
+  const screen = { ...SIM, minTargetToCost: 1e9 } // every signal is cost-screened
+  const [open] = runTrials(loaded, { params: PARAMS, sim: { ...screen, includeTest: true } })
+  const [w] = runTrials(loaded, { params: PARAMS, sim: screen })
+  assert.equal(open.rejected.cost, 2, 'the whole run screens both of the fixture\'s signals')
+  assert.equal(w.rejected.cost, 1, 'RED if the withheld trial carries the whole run\'s counters: the second signal is in the test block')
+  assert.deepEqual(w.rejected, { cost: w.summary.diagnostics.costRejected, noFill: w.summary.diagnostics.noFill })
+})
+
+test('Q1 follow-up (checker N1): POST /actions/tick-research carries the CALLER into the job — its origin, its opening and its trials — through the real route', async () => {
+  _resetTickResearchJobs()
+  const db = initDB(':memory:')
+  const dir = segDir()
+  const prev = process.env[SEGMENTS_ENV]
+  process.env[SEGMENTS_ENV] = dir
+  const app = express()
+  app.use(express.json())
+  app.use((req, _res, next) => { req.authCredential = 'agent_secret'; next() }) // what index.js's authMiddleware stamps
+  app.use('/actions', actionsRouter(db))
+  const s = await new Promise(resolve => { const srv = app.listen(0, () => resolve(srv)) })
+  try {
+    const r = await fetch(`http://127.0.0.1:${s.address().port}/actions/tick-research`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-actor': 'claude' }, body: JSON.stringify({ includeTest: true, params: PARAMS, sim: SIM, profileHash: DECLARED }) })
+    const b = await r.json()
+    assert.equal(r.status, 202, JSON.stringify(b).slice(0, 300))
+    assert.equal(b.origin.actor, 'claude via agent_secret', 'RED if the route does not hand the caller to the job')
+    assert.equal(db.prepare('SELECT actor FROM tick_test_openings').get().actor, 'claude via agent_secret')
+    const done = await waitDone(b.jobId)
+    assert.equal(done.state, 'done', JSON.stringify(done).slice(0, 300))
+    assert.equal(JSON.parse(db.prepare('SELECT origin_json FROM tick_trials').get().origin_json).actor, 'claude via agent_secret')
+  } finally {
+    s.close()
+    if (prev === undefined) delete process.env[SEGMENTS_ENV]; else process.env[SEGMENTS_ENV] = prev
+    _resetTickResearchJobs()
+  }
 })

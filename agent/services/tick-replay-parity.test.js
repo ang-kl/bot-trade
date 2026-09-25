@@ -16,7 +16,7 @@ import { profileHash, normalizeParams } from '../lib/tick-strategy.js'
 import { fixtureSegment } from './tick-research-run.test.js'
 import { tickResearchAction } from './tick-research-run.js'
 import { importTickTrial } from './tick-research.js'
-import { compareParity, parityWindow, sidecarLossy, simComparison, replayParityView, trialParity } from './tick-replay-parity.js'
+import { compareParity, parityWindow, sidecarLossy, simComparison, replayParityView, trialParity, sidecarRecord, BOOTS_SQL, SIGNALS_SQL, SHADOW_TRADES_SQL, PROFILE_TRIALS_MAX, RING_SLACK_MS } from './tick-replay-parity.js'
 import stateRouter from '../routes/state.js'
 
 const temporaryDirectories = new Set()
@@ -216,4 +216,49 @@ test('GET /state/tick-replay-parity answers over a real router (report only), an
     assert.equal(all.limit, 'all'); assert.equal(all.trials.length, 1); assert.equal(all.trials[0].profileHash, hash)
     assert.equal((await fetch(url('/state/tick-research?profile=xyz'))).status, 400)
   } finally { s.close() }
+})
+
+// ---- Q1 follow-up: the checker's B1 and N7 ------------------------------------
+test('Q1 follow-up (checker B1): the ring reads are INDEXED — SQLite plans them on (side, ts_ms) and (side, component, kind, symbol_id, ts_ms), not the UNIQUE autoindex on side alone', () => {
+  const db = initDB(':memory:')
+  const plan = (sql, params) => db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params).map(r => r.detail).join(' | ')
+  const boots = plan(BOOTS_SQL, ['cpp_exec_demo', 0, 1])
+  assert.match(boots, /idx_cpp_decisions_side_ts/, `RED without the (side, ts_ms) index — the per-boot health scanned every row the side kept: ${boots}`)
+  const signals = plan(SIGNALS_SQL, ['cpp_exec_demo', 7, 0, 1])
+  assert.match(signals, /idx_cpp_decisions_tick_signal/, `RED without the signal index: ${signals}`)
+  const trades = plan(SHADOW_TRADES_SQL, ['cpp_exec_demo', 7, 'x', 1, 0, 0])
+  assert.match(trades, /idx_tick_shadow_side_profile/, `the shadow read stays on its own index: ${trades}`)
+})
+
+test('Q1 follow-up (checker B1): the profile form compares at most PROFILE_TRIALS_MAX trials per request, newest first, and says how many trials with a record it did NOT compare', () => {
+  const { db, row, hash } = replayedTrial()
+  const rec = JSON.parse(row.parity_json)
+  const base = { strategyId: row.strategy_id, strategyVersion: row.version, profileHash: hash, params: JSON.parse(row.params_json), sim: JSON.parse(row.sim_json), manifest: JSON.parse(row.manifest_json), summary: JSON.parse(row.summary_json), blocks: JSON.parse(row.blocks_json), parity: rec }
+  const extra = PROFILE_TRIALS_MAX + 4
+  for (let i = 0; i < extra; i++) assert.equal(importTickTrial(db, { ...base, trialId: `copy-${String(i).padStart(3, '0')}` }).ok, true)
+  const r = replayParityView(db, { profile: hash, side: 'cpp_exec_demo', limit: 200 })
+  assert.equal(r.status, 200)
+  assert.equal(PROFILE_TRIALS_MAX, 20)
+  assert.equal(r.body.trialsCompared, PROFILE_TRIALS_MAX, 'RED if a request can still ask for 200 trials on the event loop')
+  assert.equal(r.body.limit, PROFILE_TRIALS_MAX)
+  assert.equal(r.body.trialsNotCompared, extra + 1 - PROFILE_TRIALS_MAX, 'the reply says how many it left out')
+  assert.match(r.body.notComparedNote, /trialId=/)
+  assert.equal(r.body.results[0].trialId, `copy-${String(extra - 1).padStart(3, '0')}`, 'newest first')
+  const fewer = replayParityView(db, { profile: hash, side: 'cpp_exec_demo', limit: 3 })
+  assert.equal(fewer.body.trialsCompared, 3); assert.equal(fewer.body.trialsNotCompared, extra + 1 - 3)
+  assert.match(r.body.unobservedLosses, /worker-queue drops/, 'N6: the report names the loss it cannot see')
+})
+
+test('Q1 follow-up (checker N7): a shadow trade open ACROSS the whole window is read — the busy check pushes the window past it (not_comparable), where it used to be missed and the replay\'s trades scored a false mismatch', () => {
+  const { db, row, hash, rec } = replayedTrial()
+  assert.ok(rec.trades.length >= 1)
+  // the sidecar rang the same signals but its book was busy the whole time
+  const { side } = plantSidecar(db, { ...rec, trades: [] }, hash)
+  const entry = rec.fromMs - 2 * RING_SLACK_MS, exit = rec.toMs + 2 * RING_SLACK_MS
+  db.prepare(`INSERT INTO tick_shadow_trades (side, boot_id, seq, symbol_id, profile_hash, trade_side, entry_ms, exit_ms, reason, cost_class, commission_wire, commission_bps, slippage_wire, slippage_bps) VALUES (?, 'boot-1', 999, 7, ?, 'BUY', ?, ?, 'hold_clock', NULL, 0, 0, 0, 0)`).run(side, hash, entry, exit)
+  const read = sidecarRecord(db, { side, profile: hash, symbolId: 7, fromMs: rec.fromMs, toMs: rec.toMs })
+  assert.deepEqual(read.trades.map(t => [t.entryMs, t.exitMs]), [[entry, exit]], 'RED if the read keeps only trades that entered or exited inside the window')
+  const r = trialParity(db, row)
+  assert.notEqual(r.parity, 'mismatch', JSON.stringify(r).slice(0, 400))
+  assert.equal(r.parity, 'not_comparable'); assert.deepEqual(r.reasons, ['no_overlap'])
 })

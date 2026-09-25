@@ -102,11 +102,45 @@ describe('shapeBody / blockState', () => {
   })
 })
 
-describe('the twelve endpoints', () => {
-  it('are the twelve the plan names, and each is served by agent/routes/state.js', () => {
-    expect(REASON_ENDPOINTS.map(d => d.key)).toEqual(['entry-intents', 'trade-plans', 'unknown-pnl', 'unresolvable-plan', 'trade-consistency', 'attribution', 'refusal-cost', 'exit-counterfactual', 'exit-price-suspects', 'open-duplicates', 'go-live-readiness', 'phase-audit'])
+describe('the thirteen endpoints', () => {
+  it('are the twelve the plan names plus V3 L1 order-lifecycle, and each is served by agent/routes/state.js', () => {
+    expect(REASON_ENDPOINTS.map(d => d.key)).toEqual(['entry-intents', 'trade-plans', 'unknown-pnl', 'unresolvable-plan', 'trade-consistency', 'attribution', 'refusal-cost', 'exit-counterfactual', 'exit-price-suspects', 'open-duplicates', 'go-live-readiness', 'phase-audit', 'order-lifecycle'])
     const routes = readFileSync(new URL('../../agent/routes/state.js', import.meta.url), 'utf8').replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1')
-    for (const d of REASON_ENDPOINTS) expect(routes, d.path).toContain(`router.get('${d.path.replace('/state', '')}'`)
+    // The query string is the read's scope (?account=all), not part of the route.
+    for (const d of REASON_ENDPOINTS) expect(routes, d.path).toContain(`router.get('${d.path.replace('/state', '').split('?')[0]}'`)
+  })
+  it('order-lifecycle: rules[] and accounts[] render as tables, scope reads all, and a 503 is an error, not zeros', () => {
+    const body = { schemaVersion: 1, scope: { account: 'all', explicit: true }, summary: { stuck: { new: 2 } },
+      rules: [{ id: 'STK-01', key: 'resting_record_orphaned', violations: 6, newViolations: 6 }], accounts: [{ account: '46130058', stage: 'stuck', new: 2 }] }
+    expect(reasonScope(def('order-lifecycle'), { ok: true, body })).toBe('all')
+    const html = renderToStaticMarkup(<ReasonsBlock def={def('order-lifecycle')} result={{ ok: true, body }} />)
+    for (const c of ['id', 'key', 'violations', 'newViolations', 'account', 'stage']) expect(html).toMatch(new RegExp(`<th[^>]*>${c}</th>`))
+    expect(html).toContain('resting_record_orphaned')
+    const failed = renderToStaticMarkup(<ReasonsBlock def={def('order-lifecycle')} result={{ ok: false, error: 'HTTP 503 order_lifecycle_unavailable' }} />)
+    expect(failed).toMatch(/data-status="error"/)
+    expect(failed).toContain('not read — HTTP 503 order_lifecycle_unavailable')
+    expect(failed).not.toMatch(/<table/)
+  })
+  it('order-lifecycle: all 35 rules reach the page (the default 25-row cut hid STK-02..STK-11) and the stage summary is a table', () => {
+    const ids = [...Array.from({ length: 5 }, (_, i) => `PRE-0${i + 1}`), ...Array.from({ length: 10 }, (_, i) => `ORD-${String(i + 1).padStart(2, '0')}`),
+      ...Array.from({ length: 9 }, (_, i) => `CLS-0${i + 1}`), ...Array.from({ length: 11 }, (_, i) => `STK-${String(i + 1).padStart(2, '0')}`)]
+    expect(ids).toHaveLength(35)
+    const body = { scope: { account: 'all', explicit: true },
+      summary: { pre_order: { new: 0, legacy: 3, measurable: true, note: 'not a pass — 0 new defective record(s) over the readable rules' }, stuck: { new: 2, legacy: 0, measurable: true, note: '2 stuck record(s)' } },
+      rules: ids.map(id => ({ id, violations: id === 'STK-11' ? 1 : 0 })),
+      accounts: Array.from({ length: 32 }, (_, i) => ({ account: String(46130000 + i), stage: 'stuck', new: 1 })) }
+    const html = renderToStaticMarkup(<ReasonsBlock def={def('order-lifecycle')} result={{ ok: true, body }} />)
+    expect(html).toContain('STK-11')
+    expect(html).toMatch(/rules <span[^>]*>— 35 rows<\/span>/)
+    expect(html).toMatch(/accounts <span[^>]*>— 32 rows<\/span>/)
+    expect(html).not.toMatch(/first 25 of/)
+    // The summary: one row per stage with its own fields, not "2 fields".
+    expect(html).toMatch(/summary <span[^>]*>— 2 rows<\/span>/)
+    expect(html).toMatch(/<th[^>]*>key<\/th>/)
+    expect(html).toContain('not a pass — 0 new defective record(s) over the readable rules')
+    expect(html).not.toMatch(/2 fields/)
+    // Another block keeps the default cut: the option is per endpoint.
+    expect(shapeBody({ rows: ids.map(id => ({ id })) }).tables[0].rows).toHaveLength(25)
   })
   it('the page is routed and in the navigation', () => {
     const app = readFileSync(new URL('../App.jsx', import.meta.url), 'utf8')

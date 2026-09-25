@@ -88,10 +88,30 @@ test('AUDIT 11-09-2026 (plan §7): the purge drops trades entered within the win
   const b = blockSummaries(trades, 30, 3, 3)
   assert.deepEqual(b.map(x => [x.name, x.trades, x.purged]), [['train', 1, 2], ['validation', 1, 2], ['test', 1, 1]])
   const withheld = blockSummaries(trades, 30, 3, 3, { includeTest: false })
-  assert.equal(withheld[2].withheld, true); assert.equal(withheld[2].trades, null); assert.equal(withheld[2].purged, 1, 'the purge count is still honest')
+  // Q1 follow-up (checker B4): the purge count of a WITHHELD block counts the
+  // trades that entered in its first purgeEvents — test-period information.
+  assert.equal(withheld[2].withheld, true); assert.equal(withheld[2].trades, null); assert.equal(withheld[2].purged, null, 'RED if the withheld row still counts its own trades')
   assert.equal(withheld[0].trades, 1)
   // a single block has no boundaries and nothing to purge
   assert.deepEqual(blockSummaries(trades, 30, 1, 3).map(x => [x.name, x.trades, x.purged]), [['block1', 8, 0]])
+})
+
+test('Q1 follow-up (checker B4): withheld, the train and validation rows read no test-block price — a trade that exits inside the test block is out of them whatever purgeEvents the caller set; the confirmation run still counts it', () => {
+  // The fixture's long enters at event 119 (train) and stops out at 260; the
+  // test block starts at 2 × floor(389 / 3) = 258. With the purge off, the
+  // train row used to carry that trade's netR (-1.1375) — a test-block exit —
+  // while summary.trades read 0.
+  const events = buildFixture()
+  const params = { rangeEvents: 64, momentumEvents: 16, maxSpread: 200 }
+  const open = simulate(events, params, { latencyMs: 60, minTargetToCost: 1, purgeEvents: 0, includeTest: true })
+  const straddler = open.trades.find(t => t.entryIdx < 258 && t.exitIdx >= 258)
+  assert.ok(straddler && straddler.entryIdx < 129, `the fixture's long enters in train and exits in the test block (${JSON.stringify(open.trades.map(t => [t.entryIdx, t.exitIdx]))})`)
+  assert.equal(open.blocks[0].trades, 1, 'the confirmation run reads every block, so train counts it')
+  const w = simulate(events, params, { latencyMs: 60, minTargetToCost: 1, purgeEvents: 0 })
+  assert.equal(w.summary.trades, 0)
+  assert.equal(w.blocks[0].trades, 0, 'RED if the train row is built from every trade: it read a test-block exit')
+  assert.equal(w.blocks[0].netR, 0)
+  assert.equal(w.blocks[2].withheld, true); assert.equal(w.blocks[2].purged, null)
 })
 
 test('AUDIT 11-09-2026 (plan §7): latency may be MEASURED samples — the fill waits their pessimistic quantile, never their mean, and the trial says which', () => {
