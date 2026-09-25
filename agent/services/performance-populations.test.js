@@ -93,6 +93,35 @@ test('money pools within one recorded currency, never across currencies, and a p
   assert.equal(partial.pnl, 15); assert.equal(partial.n, 3); assert.equal(partial.pricedN, 2)
   assert.equal(partial.moneyState, 'partial_recorded_currency_units')
 })
+// V3 WEB-5 (8,989-A row 7): the ledger's all-accounts windows carry one line
+// per recorded deposit currency, and the closes in no currency apart.
+test('the all-accounts ledger splits money per currency, never sums across, and names the closes in no currency', t => {
+  const { db, add } = setup(t)
+  registerCurrencies(db)
+  add({ account: '11', pnl: 20 }); add({ account: '22', pnl: -5 }); add({ account: '33', pnl: 7 })
+  add({ account: '44', pnl: 100 }); add({ account: null, pnl: 1000 }); add({ account: '33', symbol: 'BTCUSD', pnl: null })
+  const r = buildPerformancePopulations(db, { now: NOW })
+  const w = reportLedger(r, 'all').windows.find(x => x.key === '30d')
+  // The window's own figure is still not pooled across accounts.
+  assert.equal(w.net, null); assert.equal(w.moneyState, 'unverified_cross_account_units'); assert.equal(w.trades, 6)
+  assert.deepEqual(w.byCurrency.map(c => [c.currency, c.net, c.trades, c.pricedTrades, c.moneyState]),
+    [['SGD', 7, 2, 1, 'partial_recorded_currency_units'], ['USD', 15, 2, 2, 'recorded_currency_units']])
+  assert.deepEqual([w.unpooled.trades, w.unpooled.pricedTrades], [2, 2])
+  assert.deepEqual([...w.unpooled.accountIds].sort(), ['44', null].sort())
+  // Pools + unpooled reconcile to the window, and no line is a cross-currency sum.
+  assert.equal(w.byCurrency.reduce((n, c) => n + c.trades, w.unpooled.trades), w.trades)
+  for (const crossSum of [22, 122, 1122, 1015, 1007]) assert.ok(!w.byCurrency.some(c => c.net === crossSum), `no cross-currency sum ${crossSum}`)
+  // Markets split the same way.
+  assert.deepEqual(w.markets.fx.byCurrency.map(c => [c.currency, c.net, c.trades]), [['SGD', 7, 1], ['USD', 15, 2]])
+  assert.deepEqual(w.markets.crypto.byCurrency.map(c => [c.currency, c.net, c.trades, c.moneyState]), [['SGD', null, 1, 'unavailable']])
+  assert.equal(w.markets.crypto.unpooled.trades, 0)
+  // One account needs no split: its figure is already one currency's.
+  const one = reportLedger(r, '11').windows.find(x => x.key === '30d')
+  assert.equal(one.net, 20); assert.equal(one.byCurrency, undefined); assert.equal(one.unpooled, undefined)
+  // A report with no currency evidence (an older agent) splits nothing.
+  const bare = reportLedger({ ...r, currencyByAccount: undefined }, 'all').windows.find(x => x.key === '30d')
+  assert.deepEqual(bare.byCurrency, []); assert.equal(bare.unpooled.trades, 6)
+})
 test('a pool whose groups span two currencies adds nothing, whatever the caller filtered', () => {
   const g = (accountId, net) => ({ accountId, stats: { ...emptyPopulation(), n: 1, pricedN: 1, net, gw: Math.max(0, net), gl: Math.max(0, -net) } })
   const currencyOf = id => ({ 11: 'USD', 22: 'USD', 33: 'SGD' })[id] ?? null

@@ -72,6 +72,22 @@ export function reportCurrencyStats(report, key, currency, predicate = () => tru
     available: ccy != null && report?.status === 'complete' && report.windows.some(w => w.key === key),
   })
 }
+/** Every distinct recorded deposit currency in the report, sorted. */
+export function reportCurrencies(report) {
+  return [...new Set(Object.keys(report?.currencyByAccount || {}).map(id => reportCurrency(report, id)).filter(Boolean))].sort()
+}
+/** The closes of a window that belong to no currency: an account with no
+ * recorded deposit currency, or no account stamp at all. They are counted,
+ * named and never added to any currency's money. */
+export function reportUnpooled(report, key, predicate = () => true) {
+  const out = { trades: 0, pricedTrades: 0, accountIds: [] }
+  for (const g of reportGroups(report, key, 'all', g => reportCurrency(report, g.accountId) == null && predicate(g))) {
+    if (!g.stats.n) continue
+    out.trades += g.stats.n; out.pricedTrades += g.stats.pricedN
+    if (!out.accountIds.includes(g.accountId ?? null)) out.accountIds.push(g.accountId ?? null)
+  }
+  return out
+}
 export function reportGroups(report, key, accountId = 'all', predicate = () => true) {
   return (report?.windows?.find(w => w.key === key)?.groups || [])
     .filter(g => (accountId === 'all' || g.accountId === String(accountId)) && predicate(g))
@@ -82,6 +98,7 @@ export function reportStats(report, key, accountId = 'all', predicate = () => tr
   })
 }
 export function reportLedger(report, accountId = 'all') {
+  const currencies = accountId === 'all' ? reportCurrencies(report) : []
   const windows = (report?.windows || []).filter(w => w.ledger).map(w => {
     const st = reportStats(report, w.key, accountId)
     const shape = s => ({ net: s.pnl, trades: s.n, pricedTrades: s.pricedN, unpricedTrades: s.unpricedN,
@@ -91,10 +108,17 @@ export function reportLedger(report, accountId = 'all') {
       payoffRatio: s.payoff, requiredWinPctRealised: s.requiredWinPctRealised,
       edgeRealised: s.wr != null && s.requiredWinPctRealised != null ? s.wr - s.requiredWinPctRealised : null,
       pnlPriceMismatch: s.mismatch, moneyState: s.moneyState })
+    // All accounts (V3 WEB-5, owner default 25-09): money per recorded deposit
+    // currency, each its own line, never summed across currencies; the closes
+    // in no currency are counted apart. One account needs no split.
+    const split = (predicate = () => true) => accountId !== 'all' ? {} : {
+      byCurrency: currencies.map(c => ({ currency: c, ...shape(reportCurrencyStats(report, w.key, c, predicate)) })).filter(c => c.trades > 0),
+      unpooled: reportUnpooled(report, w.key, predicate),
+    }
     return { key: w.key, label: w.label, from: new Date(w.from).toISOString(), to: new Date(w.to).toISOString(),
-      ...shape(st), carryIn: null, carryOut: null, balanceHistoryState: 'requires_cashflow_reconciled_history',
+      ...shape(st), ...split(), carryIn: null, carryOut: null, balanceHistoryState: 'requires_cashflow_reconciled_history',
       lastTradeAt: report.lastCloseByAccount[accountId] || null,
-      markets: Object.fromEntries(report.markets.map(m => [m, shape(reportStats(report, w.key, accountId, g => g.market === m))])),
+      markets: Object.fromEntries(report.markets.map(m => [m, { ...shape(reportStats(report, w.key, accountId, g => g.market === m)), ...split(g => g.market === m) }])),
       external: { n: st.externalN, net: st.externalNet, unattributed: st.unattributedN, byOrigin: {} } }
   })
   return { generatedAt: report?.generatedAt ?? null, accountId, balance: null,

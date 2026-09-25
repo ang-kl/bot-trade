@@ -1,4 +1,5 @@
 import { openingEvidence } from './hourly-openings.js'
+import { validActivitySplit } from './currency-money.js'
 const count = n => Number.isSafeInteger(n) && n >= 0
 export function activityEvidence(report, options) {
   const r = openingEvidence(report, options)
@@ -10,5 +11,8 @@ export function activityEvidence(report, options) {
   if (r.net != null && !Number.isFinite(r.net)) return null
   if (r.moneyByAccount.some(a => ![a.closedN, a.pricedN].every(count) || a.pricedN > a.closedN
     || (a.recordedNet != null && !Number.isFinite(a.recordedNet)))) return null
+  // Per-currency money (V3 WEB-5): absent on an older server; when present it
+  // must reconcile to the closes it splits, or the evidence is not shown.
+  if (!validActivitySplit(r, r.closedN) || r.rows.some(h => !validActivitySplit(h, h.closedN))) return null
   return r
 }

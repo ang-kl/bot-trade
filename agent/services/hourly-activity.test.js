@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
 import { hourlyActivity } from './hourly-activity.js'
 import { activityEvidence } from '../../src/lib/hourly-activity.js'
+import { recordDepositCurrency } from './account-money.js'
 const to = Date.parse('2026-09-22T09:00:00Z'), from = to - 86400_000
 const scope = { all: false, accountId: '11', explicit: true }
 function fixture(t) {
@@ -37,4 +38,79 @@ test('close boundaries are half-open, missing dates remain unknown, empty is ver
   assert.deepEqual([r.rows[0].closedN, r.rows[1].closedN, r.rows[23].closedN], [1, 1, 1])
   assert.equal(activityEvidence({ ...r, closedN: 0 }, { accountId: '11', to, nowMs: to }), null)
   assert.equal(activityEvidence(r, { accountId: '22', to, nowMs: to }), null)
+})
+
+// V3 WEB-5 (8,989-A rows 5 and 7; owner default 25-09-2026): recorded money is
+// pooled per broker deposit currency and never summed across currencies. The
+// currency evidence is written by the production writer, so a drift in its
+// state key empties the pools here instead of passing silently.
+function registerCurrencies(db) {
+  const acct = db.prepare('INSERT INTO accounts (account_id, is_live) VALUES (?, ?)')
+  for (const [id, live] of [['11', 0], ['22', 0], ['33', 1], ['44', 0]]) acct.run(id, live)
+  const demo = 'demo.ctraderapi.com', live = 'live.ctraderapi.com'
+  assert.equal(recordDepositCurrency(db, { accountId: '11', host: demo, depositAssetId: 1, currency: 'USD', receivedAt: to - 5000 }), true)
+  assert.equal(recordDepositCurrency(db, { accountId: '22', host: demo, depositAssetId: 1, currency: 'USD', receivedAt: to - 5000 }), true)
+  assert.equal(recordDepositCurrency(db, { accountId: '33', host: live, depositAssetId: 7, currency: 'SGD', receivedAt: to - 5000 }), true)
+  // Evidence recorded for the other host is not this account's currency.
+  assert.equal(recordDepositCurrency(db, { accountId: '44', host: live, depositAssetId: 1, currency: 'USD', receivedAt: to - 5000 }), true)
+}
+test('all accounts: money pools within one deposit currency, never across; unrecorded and unattributed closes are in no pool', t => {
+  const { db, add, read } = fixture(t)
+  registerCurrencies(db)
+  const hour = to - 1
+  add('11', hour, 20); add('22', hour, -5); add('33', hour, 7); add('44', hour, 100); add(null, hour, 1000)
+  const r = read({ all: true })
+  assert.equal(r.net, null, 'no single figure across accounts')
+  assert.deepEqual(r.moneyByCurrency.map(c => [c.currency, c.recordedNet, c.closedN, c.pricedN, c.moneyState]),
+    [['SGD', 7, 1, 1, 'recorded_currency_units'], ['USD', 15, 2, 2, 'recorded_currency_units']])
+  assert.deepEqual(r.moneyByCurrency.find(c => c.currency === 'USD').accountIds.sort(), ['11', '22'])
+  assert.equal(r.unpooled.closedN, 2)
+  assert.deepEqual([...r.unpooled.accountIds].sort(), ['44', null].sort())
+  // Every account carries its own recorded unit; none is defaulted.
+  const ccy = Object.fromEntries(r.moneyByAccount.map(a => [a.accountId ?? 'legacy', a.currency]))
+  assert.deepEqual(ccy, { 11: 'USD', 22: 'USD', 33: 'SGD', 44: null, legacy: null })
+  // The hour carries the same split, and nothing adds SGD to USD.
+  const row = r.rows[23]
+  assert.deepEqual(row.moneyByCurrency.map(c => [c.currency, c.recordedNet]), [['SGD', 7], ['USD', 15]])
+  assert.equal(row.unpooled.closedN, 2)
+  const sums = [r, row].flatMap(x => x.moneyByCurrency.map(c => c.recordedNet))
+  for (const crossSum of [22, 122, 1122, 1022]) assert.ok(!sums.includes(crossSum), `no cross-currency sum ${crossSum}`)
+  assert.equal(r.currencyPolicy, 'pool_within_one_recorded_deposit_currency_never_across')
+  assert.ok(activityEvidence(r, { accountId: 'all', to, nowMs: to }))
+})
+test('a currency with only unpriced closes has no figure, a partial pool says so, one account is still one pool', t => {
+  const { db, add, read } = fixture(t)
+  registerCurrencies(db)
+  add('11', to - 1, 2); add('11', to - 1, null); add('33', from + 1, null)
+  const r = read({ all: true })
+  const usd = r.moneyByCurrency.find(c => c.currency === 'USD'), sgd = r.moneyByCurrency.find(c => c.currency === 'SGD')
+  assert.deepEqual([usd.recordedNet, usd.pricedN, usd.closedN, usd.moneyState], [2, 1, 2, 'partial_recorded_currency_units'])
+  assert.deepEqual([sgd.recordedNet, sgd.pricedN, sgd.closedN, sgd.moneyState], [null, 0, 1, 'unavailable'])
+  assert.deepEqual(r.rows[0].moneyByCurrency.map(c => [c.currency, c.recordedNet]), [['SGD', null]])
+  assert.deepEqual(r.rows[1].moneyByCurrency, [])
+  // A single account scope keeps its own figure and its currency.
+  const one = read()
+  assert.deepEqual(one.moneyByCurrency.map(c => [c.currency, c.recordedNet, c.closedN]), [['USD', 2, 2]])
+  assert.equal(one.moneyByAccount[0].currency, 'USD')
+})
+test('the browser shows a per-currency split only when it reconciles to the closes it splits', t => {
+  const { db, add, read } = fixture(t)
+  registerCurrencies(db)
+  add('11', to - 1, 20); add('33', to - 1, 7); add('44', to - 1, 1)
+  const r = read({ all: true })
+  const opts = { accountId: 'all', to, nowMs: to }
+  assert.ok(activityEvidence(r, opts))
+  const clone = () => structuredClone(r)
+  // An older server without the split is still evidence (no lines, nothing invented).
+  const old = clone(); delete old.moneyByCurrency; delete old.unpooled
+  for (const h of old.rows) { delete h.moneyByCurrency; delete h.unpooled }
+  assert.ok(activityEvidence(old, opts))
+  const lost = clone(); lost.moneyByCurrency[0].closedN += 1
+  assert.equal(activityEvidence(lost, opts), null, 'a pool that does not reconcile is not shown')
+  const hourLost = clone(); hourLost.rows[23].unpooled.closedN = 0
+  assert.equal(activityEvidence(hourLost, opts), null, 'an hour whose split does not reconcile is not shown')
+  const dup = clone(); dup.moneyByCurrency[1].currency = dup.moneyByCurrency[0].currency
+  assert.equal(activityEvidence(dup, opts), null, 'one currency twice is not a split')
+  const zero = clone(); zero.moneyByCurrency[0].pricedN = 0
+  assert.equal(activityEvidence(zero, opts), null, 'a figure with no priced close is invented')
 })
