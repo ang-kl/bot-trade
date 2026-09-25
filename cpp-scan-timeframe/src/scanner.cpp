@@ -36,7 +36,8 @@ std::string nativeProfileHash(const std::string& strategy, const jsn::Value& set
   if (strategy == "fib_618_fade") return fibProfileHash();
   return tfscan::supports(strategy) ? hash(strategy + ";closed;reference_defaults;schema1") : "";
 }
-TimeframeScanner::TimeframeScanner(std::function<long long()> clock) : clock_(std::move(clock)), worker_([this](std::stop_token s) { run(s); }) {}
+TimeframeScanner::TimeframeScanner(std::function<long long()> clock, long long staleAfterMs)
+  : clock_(std::move(clock)), staleAfterMs_(staleAfterMs), worker_([this](std::stop_token s) { run(s); }) {}
 TimeframeScanner::~TimeframeScanner() { flush(); worker_.request_stop(); ready_.notify_all(); worker_.join(); }
 jsn::Value TimeframeScanner::submit(const jsn::Value& body) {
   Job job; job.identity = identity(body);
@@ -77,18 +78,41 @@ jsn::Value TimeframeScanner::submit(const jsn::Value& body) {
     job.bars.push_back(bar);
   }
   job.closeAt = previous + duration;
-  job.key = job.identity.key + ":" + job.options.timeframe;
+  // The cell survives producer restarts: a new epoch re-sending a checkpointed
+  // bar is a duplicate, and its next bar lands in the same cell.
+  job.key = job.identity.stream + ":" + job.options.timeframe;
   job.calendar = body.get("calendar");
   {
     std::lock_guard lock(mutex_);
-    const auto checkpoint = checkpoints_.find(job.key);
-    if (checkpoint != checkpoints_.end() && checkpoint->second >= job.closeAt) return jsn::Value(jsn::Object{{"duplicate", true}, {"orderAuthority", false}});
-    if (jobs_.size() >= 32 || (checkpoints_.size() >= 512 && checkpoint == checkpoints_.end())) throw std::runtime_error("bounded_capacity_unavailable");
-    checkpoints_[job.key] = job.closeAt;
+    const auto now = clock_();
+    auto cell = cells_.find(job.key);
+    if (cell != cells_.end()) {
+      cell->second.offeredAt = now; // a duplicate offer still shows the cell is live
+      if (cell->second.closeAt >= job.closeAt) return jsn::Value(jsn::Object{{"duplicate", true}, {"orderAuthority", false}});
+    }
+    if (jobs_.size() >= kQueueCapacity) throw std::runtime_error("bounded_capacity_unavailable");
+    if (cell == cells_.end() && cells_.size() >= kCellCapacity) {
+      // Evict the least recently offered stale cell. A cell with a job queued
+      // or running is never stale; with none stale the new cell is refused
+      // (HTTP 429), as a full table always was.
+      auto victim = cells_.end();
+      for (auto it = cells_.begin(); it != cells_.end(); ++it)
+        if (it->second.pending == 0 && now - it->second.offeredAt >= staleAfterMs_
+            && (victim == cells_.end() || it->second.offeredAt < victim->second.offeredAt)) victim = it;
+      if (victim == cells_.end()) throw std::runtime_error("bounded_capacity_unavailable");
+      work_.erase(victim->first); cells_.erase(victim); ++evicted_;
+    }
+    auto& c = cells_[job.key];
+    c.closeAt = job.closeAt; c.offeredAt = now;
     auto row = work_[job.key].asObject();
-    row["id"] = hash(job.key); row["role"] = "scanner"; row["state"] = "queued"; row["nextDueMs"] = job.received;
+    // A cell with a job already waiting stays due from that older job.
+    const bool waiting = c.pending > 0 && row.count("nextDueMs") && row["nextDueMs"].isNumber();
+    ++c.pending;
+    row["id"] = hash(job.key); row["role"] = "scanner"; row["state"] = "queued"; row["pending"] = static_cast<long long>(c.pending);
+    if (!waiting) row["nextDueMs"] = job.received;
     row["accountId"] = job.identity.feed.get("accountId"); row["host"] = job.identity.feed.get("host"); row["symbolId"] = job.identity.feed.get("symbolId");
     row["calendar"] = job.calendar; row["timeframe"] = job.options.timeframe; row["strategy"] = job.strategy;
+    row["feedEpoch"] = job.identity.epoch;
     work_[job.key] = jsn::Value(std::move(row)); jobs_.push_back(std::move(job));
   }
   ready_.notify_one(); return jsn::Value(jsn::Object{{"queued", true}, {"orderAuthority", false}});
@@ -121,16 +145,23 @@ void TimeframeScanner::run(std::stop_token stop) {
     }
     output_.push(std::move(result));
     {
-      std::lock_guard lock(mutex_); auto row = work_.at(job.key).asObject();
-      row["state"] = "waiting_for_bar"; row["lastCompletedAtMs"] = completed; row["lastBarCloseAtMs"] = job.closeAt;
-      // No new polling frequency: the next closed bar is the next scheduled
-      // input for this unchanged strategy, subject to its verified calendar.
-      row["nextDueMs"] = job.closeAt + static_cast<long long>(job.options.tfMinutes * 60000);
-      for (const auto& pending : jobs_) if (pending.key == job.key) {
-        row["state"] = "queued"; row["nextDueMs"] = pending.received; break;
+      std::lock_guard lock(mutex_);
+      auto& cell = cells_.at(job.key); // pending > 0 keeps it from eviction
+      cell.completedAt = completed; --cell.pending;
+      // No per-bar deadline. The next bar is Node's input, offered on its own
+      // rotation (about 12 minutes) from a one-bar cache, so closeAt + bar
+      // routinely passed cpp-verify's 120 s grace with nothing wrong here. An
+      // idle cell has no work due, so it leaves the work list; a cell with
+      // another job waiting stays queued, due from the oldest waiting job.
+      if (cell.pending == 0) work_.erase(job.key);
+      else {
+        auto row = work_.at(job.key).asObject();
+        row["pending"] = static_cast<long long>(cell.pending); row["lastCompletedAtMs"] = completed; row["lastBarCloseAtMs"] = job.closeAt;
+        row["outcome"] = expired ? "expired" : !signal.isNull() ? "candidate" : "no_signal";
+        for (const auto& pending : jobs_) if (pending.key == job.key) { row["state"] = "queued"; row["nextDueMs"] = pending.received; break; }
+        work_[job.key] = jsn::Value(std::move(row));
       }
-      row["outcome"] = expired ? "expired" : !signal.isNull() ? "candidate" : "no_signal";
-      work_[job.key] = jsn::Value(std::move(row)); --active_;
+      --active_;
     }
     drained_.notify_all();
   }
@@ -138,7 +169,21 @@ void TimeframeScanner::run(std::stop_token stop) {
 void TimeframeScanner::flush() { std::unique_lock lock(mutex_); drained_.wait(lock, [&] { return jobs_.empty() && active_ == 0; }); }
 jsn::Value TimeframeScanner::status() {
   std::lock_guard lock(mutex_); jsn::Array work; for (const auto& [id, row] : work_) work.push_back(row);
-  return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-timeframe"}, {"observedAtMs", clock_()}, {"workComplete", true}, {"work", work},
+  const auto now = clock_();
+  long long idle = 0, stale = 0, lastOffered = 0, lastCompleted = 0;
+  for (const auto& [key, c] : cells_) {
+    if (c.pending == 0) { ++idle; if (now - c.offeredAt >= staleAfterMs_) ++stale; }
+    lastOffered = std::max(lastOffered, c.offeredAt); lastCompleted = std::max(lastCompleted, c.completedAt);
+  }
+  // Every cell is counted; only a cell with a job queued or running is work.
+  // A row per cell (about 1.3 KB with its calendar) would put 690 cells far
+  // past cpp-verify's 256 KiB contract bound, which reads as an unreachable
+  // service.
+  jsn::Value cells(jsn::Object{{"count", static_cast<long long>(cells_.size())}, {"capacity", static_cast<long long>(kCellCapacity)},
+    {"idle", idle}, {"stale", stale}, {"staleAfterMs", staleAfterMs_}, {"evicted", evicted_},
+    {"lastOfferedAtMs", lastOffered ? jsn::Value(lastOffered) : jsn::Value()}, {"lastCompletedAtMs", lastCompleted ? jsn::Value(lastCompleted) : jsn::Value()},
+    {"note", "A cell is one registered (feed, config, profile, timeframe) across producer epochs. Idle cells have no work due; they are counted here, not listed as work. A stale idle cell is evicted only to admit a new cell."}});
+  return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-timeframe"}, {"observedAtMs", now}, {"workComplete", true}, {"work", work}, {"cells", cells},
     {"mode", "mirror"}, {"orderAuthority", false}, {"nativeCoverage", "closed bars: all 12 per-symbol default strategies; EMA pending/stack/stop/time-cap and RSI minRr option parity; fib_618_fade FX baseline only; other non-default semantics remain with reference owner"}});
 }
 }

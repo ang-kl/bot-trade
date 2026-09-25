@@ -94,7 +94,8 @@ export const TRENDBAR_PERIODS = Object.freeze({
 // concurrent ephemeral sockets all spend from the same allowance. Normal
 // requests (auth, reconcile, spot, trader) are untouched.
 // ---------------------------------------------------------------------------
-const HISTORICAL_PAYLOADS = new Set([PT.GET_TRENDBARS_REQ, PT.DEAL_LIST_REQ, PT.DEAL_LIST_BY_POSITION_ID_REQ])
+// X1: ORDER_DETAILS_REQ is an order-HISTORY read, paced like the deal reads.
+const HISTORICAL_PAYLOADS = new Set([PT.GET_TRENDBARS_REQ, PT.DEAL_LIST_REQ, PT.DEAL_LIST_BY_POSITION_ID_REQ, PT.ORDER_DETAILS_REQ])
 // 4/s against a documented 5/s: headroom for clock skew and for the broker
 // counting arrival rather than send time. Override for probes/tests.
 const HIST_RATE_PER_SEC = Math.max(1, Number(process.env.CTRADER_HIST_RATE_PER_SEC) || 4)
@@ -563,6 +564,11 @@ export async function wsClosePosition(host, clientId, clientSecret, accessToken,
       executionType: exec.executionType,
       deal: exec.deal || {},
       position: exec.position || {},
+      // The first execution event of a market close can be ORDER_ACCEPTED:
+      // an order and no deal. Its order id is how the close's deal is found
+      // in history afterwards (V3 T2), so this path keeps it as the gateway's
+      // answer does.
+      ...(exec.order ? { order: exec.order } : {}),
     }
   } catch (err) {
     const msg = err.message || ''
@@ -656,6 +662,27 @@ export function wsGetPositionDeals(host, clientId, clientSecret, accessToken, ac
       ctidTraderAccountId: Number(accountId), positionId: Number(positionId), fromTimestamp: 0,
       toTimestamp: Math.floor(toTimestamp),
     } }, expect: PT.DEAL_LIST_BY_POSITION_ID_RES },
+  ], timeoutMs)
+}
+
+/**
+ * X1 (25-09-2026): one order's details — ProtoOAOrderDetailsReq (2181) →
+ * ProtoOAOrderDetailsRes (2182) `{ ctidTraderAccountId, order, deal: [...] }`,
+ * where `order.orderStatus` is ACCEPTED 1 / FILLED 2 / REJECTED 3 /
+ * EXPIRED 4 / CANCELLED 5 and `deal` lists every deal filling it. Read-only.
+ * Used by the entry ledger to settle a resting-order intent whose order left
+ * the reconcile snapshot. No retry: the caller counts a failed read and
+ * tries again on a later pass.
+ */
+export function wsGetOrderDetails(host, clientId, clientSecret, accessToken, accountId, orderId, timeoutMs = 10_000) {
+  if (![accountId, orderId].every(v => /^[1-9]\d*$/.test(String(v)) && Number.isSafeInteger(Number(v)))) {
+    throw new Error('order details identity invalid')
+  }
+  return wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.ORDER_DETAILS_REQ, payload: {
+      ctidTraderAccountId: Number(accountId), orderId: Number(orderId),
+    } }, expect: PT.ORDER_DETAILS_RES },
   ], timeoutMs)
 }
 

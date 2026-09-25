@@ -4,7 +4,7 @@ import { readMarketCalendar } from './market-calendar.js'
 import { projectCalendar, calendarIntervals } from '../lib/calendar-intervals.js'
 import { loadNotifyConfig } from './telegram-digest.js'
 import { DEFAULT_SENT_TIMEOUT_MS } from './entry-ledger.js'
-import { scannerWork, watchdogCalendars } from './scanner-work.js'
+import { scannerWork, watchdogCalendars, scannerCollectorWork } from './scanner-work.js'
 import { entryDiagnostics } from './blocker-report.js'
 
 const read = (db, key) => { try { return JSON.parse(getState(db, key) || 'null') } catch { return null } }
@@ -40,7 +40,7 @@ function notificationPolicy(db, now) {
 }
 
 /** Completed-work evidence only. No broker request, mutation or entry gate. */
-export function nodeWatchdogContract(db, { now = Date.now() } = {}) {
+export function nodeWatchdogContract(db, { now = Date.now(), env = process.env, startedAtMs } = {}) {
   const accounts = new Map(db.prepare('SELECT account_id,is_live FROM accounts').all().map(a => [String(a.account_id), a]))
   const receipts = read(db, 'fast_monitor_position_work_json')
   const byPosition = new Map((Array.isArray(receipts?.positions) ? receipts.positions : []).map(r => [`${r.accountId}:${r.positionId}`, r]))
@@ -71,6 +71,8 @@ export function nodeWatchdogContract(db, { now = Date.now() } = {}) {
     symbolId: row.symbol_id == null ? null : String(row.symbol_id), state: row.state,
     deadlineMs: time(row.updated_at) == null ? null : time(row.updated_at) + (row.state === 'UNKNOWN' ? 0 : DEFAULT_SENT_TIMEOUT_MS),
     reason: 'terminal_acknowledgement', blocker: row.error_code || null })
+  // Before the scanner items, so their 2048 lookup bound cannot crowd it out.
+  work.push(...scannerCollectorWork(db, now, startedAtMs == null ? { env } : { env, startedAtMs }))
   work.push(...scannerWork(db, accounts, now))
   // V3 C4 (WP-C PR-C1): Node's own per-account entry records for cpp-verify
   // to relay (never broker-verified). It must never fail or empty the
