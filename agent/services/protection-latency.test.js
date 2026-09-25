@@ -126,6 +126,9 @@ test('summary: p50/p95/p99/max and n; p95/p99 flagged unverifiable below their s
   assert.equal(s.all.roundTripMs.p50, 100)
   assert.equal(s.all.roundTripMs.max, 190)
   assert.equal(s.all.roundTripMs.p95Verifiable, false)
+  // Below its minimum a percentile is not served as a number (merge-check nit, 26-09).
+  assert.equal(s.all.roundTripMs.p95, null)
+  assert.equal(s.all.roundTripMs.p99, null)
   assert.ok(s.notVerifiable.some(x => /cpp_trail_engine/.test(x.what)))
   assert.ok(s.notVerifiable.some(x => /p95\/p99/.test(x.what) && /19 broker-answered/.test(x.why)))
   recordAmend({ ...META, sentAtMs: 99, ackAtMs: 99, ms: 5000, outcome: 'ok' })
@@ -133,6 +136,8 @@ test('summary: p50/p95/p99/max and n; p95/p99 flagged unverifiable below their s
   assert.equal(s.all.roundTripMs.n, MIN_N_P95)
   assert.equal(s.all.roundTripMs.p95Verifiable, true)
   assert.equal(s.all.roundTripMs.p99Verifiable, false)
+  assert.equal(typeof s.all.roundTripMs.p95, 'number', 'at its minimum p95 is served')
+  assert.equal(s.all.roundTripMs.p99, null, 'p99 still below its minimum')
   assert.equal(s.all.roundTripMs.max, 5000)
   assert.ok(s.notVerifiable.some(x => /cpp_trail_engine/.test(x.what)), 'still named with a full sample')
   assert.equal(s.recent.length, 10)

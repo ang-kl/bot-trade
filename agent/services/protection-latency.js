@@ -280,19 +280,30 @@ export function latenessEligibility(prior) {
 // Reading
 // ---------------------------------------------------------------------------
 
+// A percentile from fewer samples than its minimum is not served as a number
+// (M5 merge-check nit, 26-09): p95 below MIN_N_P95 and p99 below MIN_N_P99
+// read null, and the flags say why. A reader of p95 alone can no longer take
+// a figure built from three amends for a measured tail.
+export function gatedSummary(values) {
+  const s = summarize(values)
+  const p95Verifiable = s.n >= MIN_N_P95
+  const p99Verifiable = s.n >= MIN_N_P99
+  return { ...s, p95: p95Verifiable ? s.p95 : null, p99: p99Verifiable ? s.p99 : null, p95Verifiable, p99Verifiable }
+}
+
 function groupSummary(list) {
   const outcomes = Object.fromEntries(OUTCOMES.map(o => [o, 0]))
   for (const e of list) outcomes[e.outcome] = (outcomes[e.outcome] || 0) + 1
   const answered = list.filter(e => e.outcome === 'ok')
   // (summarize maps through Number, where null reads 0: filter first.)
-  const rt = summarize(answered.map(e => e.ms).filter(Number.isFinite))
+  const rt = gatedSummary(answered.map(e => e.ms).filter(Number.isFinite))
   const attemptMs = list.map(e => e.ms).filter(Number.isFinite)
   return {
     attempts: list.length,
     outcomes,
     // Broker-answered amends only: a refusal, a timeout or a throw before the
     // wire is not a confirmation, so it is counted above, not averaged here.
-    roundTripMs: { ...rt, p95Verifiable: rt.n >= MIN_N_P95, p99Verifiable: rt.n >= MIN_N_P99 },
+    roundTripMs: rt,
     attemptMaxMs: attemptMs.length ? Math.max(...attemptMs) : null,
   }
 }
@@ -311,7 +322,7 @@ export function amendLatencySummary(nowMs = Date.now()) {
         confirmed: confirmed.length,
         mismatch: sub.filter(e => e.confirm === 'readback_mismatch').length,
         failed: sub.filter(e => e.confirm === 'readback_failed').length,
-        confirmMs: summarize(confirmed.map(e => e.confirmMs)),
+        confirmMs: gatedSummary(confirmed.map(e => e.confirmMs)),
       }
     }
   }
@@ -339,17 +350,17 @@ export function amendLatencySummary(nowMs = Date.now()) {
     composite: {
       definition: 'fast monitor only: due (receipt nextDueAt) → evaluated → sent → broker answer',
       n: withComposite.length,
-      compositeMs: summarize(withComposite.map(e => e.compositeMs)),
-      latenessMs: summarize(withComposite.map(e => e.latenessMs)),
-      preSendMs: summarize(withComposite.map(e => e.preSendMs)),
-      roundTripMs: summarize(withComposite.map(e => e.ms)),
+      compositeMs: gatedSummary(withComposite.map(e => e.compositeMs)),
+      latenessMs: gatedSummary(withComposite.map(e => e.latenessMs)),
+      preSendMs: gatedSummary(withComposite.map(e => e.preSendMs)),
+      roundTripMs: gatedSummary(withComposite.map(e => e.ms)),
     },
     dueLateness: {
       source: 'every fast-monitor evaluation: due (receipt nextDueAt) → evaluated',
       capacity: LATENESS_RING_SIZE,
       from: lateness[0] ? new Date(lateness[0][0]).toISOString() : null,
-      all: summarize(lateness.map(([, v]) => v)),
-      last10m: summarize(lateWindow.map(([, v]) => v)),
+      all: gatedSummary(lateness.map(([, v]) => v)),
+      last10m: gatedSummary(lateWindow.map(([, v]) => v)),
       // Gaps that were not monitor lateness, counted since this process began.
       excluded: { ...latenessExcluded },
     },
