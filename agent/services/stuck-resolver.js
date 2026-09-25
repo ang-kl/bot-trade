@@ -30,11 +30,18 @@
 //       the table's own "gone at broker" meaning (pending-orders.js:353);
 //   R6  a capture that gave up is re-queued ONCE when every field it lacked
 //       now exists upstream; a second give-up is written off;
-//   R7  a targetless open position whose trade row has no target gets the
-//       target the bot recorded for it (the approval's tp1, the resting
-//       order's tp, the plan's planned_tp — side- and scale-checked) written
-//       to trades.tp_price, where target-restore (its own switch and checks)
-//       reads it. Nothing recorded → written off.
+//   R7  a targetless open position whose trade row has no target: the target
+//       the bot recorded for it elsewhere (the approval's tp1, the resting
+//       order's tp, the plan's planned_tp — side- and scale-checked) is FOUND
+//       and named, but written to trades.tp_price ONLY when agent_state
+//       `stuck_resolver_target_write` = 'true' (default OFF). That column is
+//       what target-restore reads (naked-position-guard.js entry_tp →
+//       target-restore.js recorded target → amendPosition), so the write
+//       would make the bot amend a live position within one protection sweep
+//       — an owner decision (P7), never this resolver's. Switched off, the
+//       found target is carried in the pass result and STK-09 stays a defect
+//       whose detail names the value and its source. Nothing recorded →
+//       written off.
 // Everything else past its age bound is written off: the record keeps what it
 // said, and its resolution row carries the verdict, reason and evidence.
 //
@@ -42,8 +49,10 @@
 // ticker's own unref'd timer (order-lifecycle-ticker.js), before the snapshot
 // is built, never on the trading loop. Every population read has a LIMIT, at
 // most MAX_WRITES_PER_KIND records are ended per kind per pass, each in its
-// own transaction, and a subject already resolved is never judged again
-// (stuck_resolutions.subject is the primary key; ON CONFLICT DO NOTHING).
+// own (inner) transaction with one commit per kind, the per-candidate lookups
+// are read once per pass, and a subject already resolved is never judged
+// again (stuck_resolutions.subject is the primary key; ON CONFLICT DO
+// NOTHING) — nor read again where the query can exclude it.
 // ---------------------------------------------------------------------------
 
 import { labelIntentId } from '../lib/trade-labels.js'
@@ -56,8 +65,17 @@ import { directionReasonFor } from './position-history.js'
 export const RESOLVER_VERSION = 1
 /** A record with no broker evidence is written off only this long after it began: the reconciler adopts and the deal import lands well inside it. */
 export const WRITE_OFF_AGE_MS = 24 * 3_600_000
-/** At most this many records of one kind are ended per pass. */
-export const MAX_WRITES_PER_KIND = 25
+/**
+ * At most this many records of one kind are ended per pass. 8, not 25 (I3
+ * checker NIT 6): ending a record costs ~1-2 ms of main thread (its evidence
+ * re-read, the write, the P&L audit stamp), and 25 per kind put the first
+ * pass after deploy at 213 ms (checker) / 410-434 ms (fix-round bench, the
+ * same synthetic §3 sizes, a loaded container) against the spec's 50 ms.
+ * With 8 and the per-pass lookups the same bench reads 55-78 ms per pass
+ * while the backlog drains (six 10-minute passes: STK-03 43, STK-06 49,
+ * STK-01 7), then 14-24 ms.
+ */
+export const MAX_WRITES_PER_KIND = 8
 /** Every population read is bounded. */
 export const READ_LIMIT = 500
 /** A broker fill counts as this submission's when its open time is within [-60 s, +5 min] of the submission (a market order fills in seconds). */
@@ -69,6 +87,10 @@ export const ADOPT_AFTER_MS = 15 * 60_000
 export const ABSURD_DISTANCE_FRACTION = 0.5
 export const ENABLED_KEY = 'stuck_resolver_enabled'
 export const LAST_KEY = 'stuck_resolver_last_json'
+/** R7's record write feeds target-restore, which amends the live position: OFF unless this reads exactly 'true' (owner decision). */
+export const TARGET_WRITE_KEY = 'stuck_resolver_target_write'
+/** At most this many found-but-unwritten targets are named in one pass result. */
+const FOUND_NAMES_MAX = 20
 /** The protection audit logs one POSITION_NO_TARGET row per position per this (naked-position-guard.js LOG_MUTE_MS). */
 const LOG_MUTE_MS = Math.max(60_000, Number(process.env.PROTECTION_LOG_MUTE_MS) || 3_600_000)
 const ACTION_LOG_WINDOW_IDS = 5_000
@@ -130,26 +152,84 @@ export function inflightStuck(row, nowMs) {
   return (row.status === 'submitting' && at < nowMs - 10 * MIN) || (row.status === 'unconfirmed' && at < nowMs - HOUR)
 }
 
+/**
+ * CAST(v AS INTEGER) for a stored TEXT id, as SQLite reads it: the longest
+ * leading integer after any spaces ('240100001.0' → '240100001'), else '0'.
+ */
+export function castIntKey(v) {
+  if (v == null) return null
+  const m = /^\s*([+-]?\d+)/.exec(String(v))
+  if (!m) return '0'
+  try { return BigInt(m[1]).toString() } catch { return '0' }
+}
+
+/**
+ * The reads inflightCandidates made PER STUCK ROW and PER CANDIDATE, read
+ * ONCE per pass (I3 checker NIT 6). Each was a scan — `UPPER(symbol) = ?` and
+ * `CAST(... AS INTEGER) = CAST(? AS INTEGER)` defeat every index — of trades
+ * or broker_deals, repeated for every stuck row, every twin and every deal
+ * position: most of the first pass's main-thread time. Same comparisons, same
+ * answers: grouped by the stored account_id and SQL's own UPPER(symbol), or
+ * by the stored account_id and castIntKey of the id — exactly the pairs the
+ * SQL compared — with the time bounds applied as the same TEXT comparisons
+ * (every column read here is declared TEXT). Two narrow reads, one of each
+ * table, before any write of the pass — as the per-row queries were.
+ * Measured on a synthetic database at the spec's §3 sizes (43 stuck rows):
+ * the candidate phase 40-63 ms per-row, 21-34 ms preloaded.
+ */
+export function inflightLookups(db) {
+  const inText = (v, lo, hi) => v != null && String(v) >= lo && String(v) <= hi
+  const adoption = new Set(ADOPTION_ORIGINS)
+  // One read of trades: the twins (R5) and the position carriers.
+  const twinsBy = new Map()
+  const carriers = new Map()
+  for (const t of db.prepare(`SELECT id, account_id, UPPER(symbol) AS usym, side, status, origin, ctrader_position_id, opened_at FROM trades
+                               WHERE ctrader_position_id IS NOT NULL ORDER BY id`).all()) {
+    const pk = `${t.account_id}|${castIntKey(t.ctrader_position_id)}`
+    const l = carriers.get(pk) || []
+    l.push(t.id); carriers.set(pk, l)
+    if ((t.status !== 'open' && t.status !== 'closed') || (t.origin != null && !adoption.has(t.origin))) continue
+    const sk = `${t.account_id}|${t.usym}`
+    const w = twinsBy.get(sk) || []
+    w.push(t); twinsBy.set(sk, w)
+  }
+  // One read of broker_deals: the deals (R2) and each position's first opening.
+  const dealsBy = new Map()
+  const dealOpen = new Map()
+  for (const d of db.prepare(`SELECT deal_id, account_id, UPPER(symbol) AS usym, position_id, side, opened_at, closed_at FROM broker_deals ORDER BY rowid`).all()) {
+    const sk = `${d.account_id}|${d.usym}`
+    const l = dealsBy.get(sk) || []
+    l.push(d); dealsBy.set(sk, l)
+    if (d.position_id == null || d.opened_at == null) continue
+    const pk = `${d.account_id}|${castIntKey(d.position_id)}`
+    const cur = dealOpen.get(pk)
+    if (cur == null || String(d.opened_at) < cur) dealOpen.set(pk, String(d.opened_at))
+  }
+  return {
+    /** trades WHERE account_id = acct AND UPPER(symbol) = sym AND status IN ('open','closed') AND ctrader_position_id IS NOT NULL AND id <> exceptId AND (origin IS NULL OR an adoption origin) AND opened_at BETWEEN lo AND hi, LIMIT 50 */
+    twins: (acct, sym, exceptId, lo, hi) => (twinsBy.get(`${acct}|${sym}`) || []).filter(t => t.id !== exceptId && inText(t.opened_at, lo, hi)).slice(0, 50),
+    /** broker_deals WHERE account_id = acct AND UPPER(symbol) = sym AND ((opened_at BETWEEN lo AND hi) OR (opened_at IS NULL AND closed_at BETWEEN lo AND hi)), LIMIT 200, table order */
+    deals: (acct, sym, lo, hi) => (dealsBy.get(`${acct}|${sym}`) || []).filter(d => inText(d.opened_at, lo, hi) || (d.opened_at == null && inText(d.closed_at, lo, hi))).slice(0, 200),
+    /** SELECT MIN(opened_at) FROM broker_deals WHERE account_id = acct AND CAST(position_id AS INTEGER) = CAST(pid AS INTEGER) */
+    dealOpenAt: (acct, pid) => (pid == null ? null : dealOpen.get(`${acct}|${castIntKey(pid)}`) ?? null),
+    /** EXISTS a trades row other than `exceptId` with account_id = acct AND CAST(ctrader_position_id AS INTEGER) = CAST(pid AS INTEGER) */
+    carriedByOther: (acct, pid, exceptId) => (pid == null ? false : (carriers.get(`${acct}|${castIntKey(pid)}`) || []).some(id => id !== exceptId)),
+  }
+}
+
 /** Broker fills that could be this submission's: adopted rows (R5) and closing deals no ledger row carries (R2). */
-function inflightCandidates(db, row) {
+function inflightCandidates(db, row, look = inflightLookups(db)) {
   const acct = acctOf(row.account_id)
   const opened = tsMs(row.opened_at)
   const dir = dirOf(row.side)
   const sym = upper(row.symbol)
   if (acct == null || opened == null || dir == null || !sym) return { strong: [], weak: [], unscoped: true }
   const lo = spaceTs(opened - DAY), hi = spaceTs(opened + 2 * DAY)
-  const dealOpen = db.prepare(`SELECT MIN(opened_at) AS o FROM broker_deals WHERE account_id = ? AND CAST(position_id AS INTEGER) = CAST(? AS INTEGER)`)
   const strong = [], weak = []
   // R5: a row the reconciler adopted for the same fill.
-  const twins = db.prepare(`
-    SELECT id, side, status, origin, ctrader_position_id, opened_at FROM trades
-     WHERE account_id = ? AND UPPER(symbol) = ? AND status IN ('open', 'closed') AND ctrader_position_id IS NOT NULL AND id <> ?
-       AND (origin IS NULL OR origin IN (${ADOPTION_ORIGINS.map(() => '?').join(', ')}))
-       AND opened_at >= ? AND opened_at <= ?
-     LIMIT 50`).all(acct, sym, row.id, ...ADOPTION_ORIGINS, lo, hi)
-  for (const t of twins) {
+  for (const t of look.twins(acct, sym, row.id, lo, hi)) {
     if (dirOf(t.side) !== dir) continue
-    const d = tsMs(dealOpen.get(acct, t.ctrader_position_id)?.o)
+    const d = tsMs(look.dealOpenAt(acct, t.ctrader_position_id))
     const fill = d ?? tsMs(t.opened_at)
     if (fill == null) continue
     const after = d != null ? FILL_AFTER_MS : ADOPT_AFTER_MS
@@ -158,22 +238,16 @@ function inflightCandidates(db, row) {
       fillAt: iso(fill), fillSource: d != null ? 'broker_deals.opened_at' : 'trades.opened_at (adoption stamp)', deltaSec: Math.round((fill - opened) / 1000) })
   }
   // R2: a closing deal on the same account, symbol and side that no ledger row carries.
-  const deals = db.prepare(`
-    SELECT deal_id, position_id, side, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl FROM broker_deals
-     WHERE account_id = ? AND UPPER(symbol) = ?
-       AND ((opened_at >= ? AND opened_at <= ?) OR (opened_at IS NULL AND closed_at >= ? AND closed_at <= ?))
-     LIMIT 200`).all(acct, sym, lo, hi, lo, hi)
   const byPos = new Map()
-  for (const d of deals) {
+  for (const d of look.deals(acct, sym, lo, hi)) {
     const k = String(d.position_id).replace(/\.0+$/, '')
     const l = byPos.get(k) || []
     l.push(d); byPos.set(k, l)
   }
-  const carried = db.prepare(`SELECT id FROM trades WHERE account_id = ? AND CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND id <> ? LIMIT 1`)
   const own = row.ctrader_position_id == null ? null : String(row.ctrader_position_id).replace(/\.0+$/, '')
   for (const [pid, list] of byPos) {
     if (dirOf(list[0].side) !== dir) continue
-    if (carried.get(acct, pid, row.id)) continue
+    if (look.carriedByOther(acct, pid, row.id)) continue
     const openMs = Math.min(...list.map(d => tsMs(d.opened_at) ?? Infinity))
     const closeMs = Math.min(...list.map(d => tsMs(d.closed_at) ?? Infinity))
     const cand = { via: 'broker_deal', positionId: pid, dealIds: list.map(d => String(d.deal_id)), openedAt: iso(Number.isFinite(openMs) ? openMs : null), closedAt: iso(Number.isFinite(closeMs) ? closeMs : null) }
@@ -229,15 +303,16 @@ function settleFromDeals(db, row, cand) {
 export function resolveInflightTrades(db, { nowMs = Date.now(), maxWrites = MAX_WRITES_PER_KIND } = {}) {
   const out = { examined: 0, settledDuplicate: 0, settledFromDeal: 0, writtenOff: 0, waiting: 0, errors: [] }
   const rows = db.prepare(`
-    SELECT id, account_id, symbol, side, status, opened_at, ctrader_position_id FROM trades
+    SELECT id, account_id, symbol, side, status, opened_at, ctrader_position_id, origin, strategy, label_strategy, risk_event_id, label_raw FROM trades
      WHERE status IN ('submitting', 'unconfirmed')
        AND NOT EXISTS (SELECT 1 FROM stuck_resolutions sr WHERE sr.subject = 'trade:' || trades.id)
      ORDER BY id LIMIT ?`).all(READ_LIMIT)
   const judged = []
+  let look = null
   for (const row of rows) {
     if (!inflightStuck(row, nowMs)) continue
     out.examined++
-    judged.push({ row, ...inflightCandidates(db, row) })
+    judged.push({ row, ...inflightCandidates(db, row, look ??= inflightLookups(db)) })
   }
   // One broker fill can settle at most ONE in-flight row: two stuck rows
   // reaching for the same fill are ambiguous, never both settled on it.
@@ -255,10 +330,16 @@ export function resolveInflightTrades(db, { nowMs = Date.now(), maxWrites = MAX_
       const only = strong.length === 1 && weak.length === 0 ? strong[0] : null
       const contested = only != null && (claims.get(posKey(row.account_id, only.positionId)) || 0) > 1
       if (only && !contested && only.via === 'adopted_row') {
+        // The submission's attribution is KEPT here, not carried onto the
+        // adopted row (I3 checker NIT 7): writing strategy / risk_event_id
+        // onto an OPEN adopted row can change how it is managed (the
+        // strategy-scoped exits, the earned floor read them), so the carry is
+        // the owner's call. The resolution names what the carry would write.
+        const attribution = { origin: row.origin ?? null, strategy: row.strategy ?? null, labelStrategy: row.label_strategy ?? null, riskEventId: row.risk_event_id ?? null, labelRaw: row.label_raw ?? null }
         db.transaction(() => insertResolution(db, {
           ...base, positionId: only.positionId, outcome: 'settled', verdict: `duplicate of trade #${only.tradeId}`,
-          reason: `the fill is recorded on trade #${only.tradeId} (position ${only.positionId}, ${only.origin ?? 'origin NULL'}), which the reconciler adopted ${only.deltaSec} s after this submission; this row never promoted and is ended as its duplicate`,
-          evidence: { match, fill: only, rule: 'R5' },
+          reason: `the fill is recorded on trade #${only.tradeId} (position ${only.positionId}, ${only.origin ?? 'origin NULL'}), which the reconciler adopted ${only.deltaSec} s after this submission; this row never promoted and is ended as its duplicate. Its attribution (${attribution.strategy ?? attribution.labelStrategy ?? 'no strategy'}, risk event ${attribution.riskEventId ?? 'none'}) is kept in this resolution, not carried onto #${only.tradeId} (owner decision)`,
+          evidence: { match, fill: only, attribution, rule: 'R5' },
         }, nowMs))()
         out.settledDuplicate++; writes++
         continue
@@ -315,8 +396,13 @@ export function tagCarriers(db) {
   return map
 }
 
-/** The trade or position carrying the intent that placed this resting order (the tag the broker echoes on a fill's label). */
-export function restingFillEvidence(db, row, carriersByTag = tagCarriers(db)) {
+/**
+ * The trade or position carrying the intent that placed this resting order
+ * (the tag the broker echoes on a fill's label). `carriers` is the tag map or
+ * a function returning it: the map (a read of every labelled trade and
+ * position) is only built once an intent was found to look up.
+ */
+export function restingFillEvidence(db, row, carriers = null) {
   const acct = acctOf(row.account_id)
   let intents = []
   let via = 'broker_order_id'
@@ -333,6 +419,8 @@ export function restingFillEvidence(db, row, carriersByTag = tagCarriers(db)) {
       via = 'placement_time'
     }
   }
+  if (!intents.length) return null
+  const carriersByTag = typeof carriers === 'function' ? carriers() : (carriers ?? tagCarriers(db))
   for (const i of intents) {
     const c = (carriersByTag.get(i.id) || []).find(x => (acct == null || x.account == null || x.account === acct)
       && (!x.symbol || !row.symbol || upper(x.symbol) === upper(row.symbol)))
@@ -341,14 +429,14 @@ export function restingFillEvidence(db, row, carriersByTag = tagCarriers(db)) {
   return null
 }
 
-export function resolveRestingOrders(db, { nowMs = Date.now(), maxWrites = MAX_WRITES_PER_KIND } = {}) {
+export function resolveRestingOrders(db, { nowMs = Date.now(), maxWrites = MAX_WRITES_PER_KIND, readLimit = READ_LIMIT } = {}) {
   const out = { examined: 0, filled: 0, expired: 0, rejudged: 0, writtenOff: 0, stillWorkingAtBroker: 0, waiting: 0, errors: [] }
   const note = (db2, id, text, status, from) => db2.prepare(
     `UPDATE pending_orders SET status = ?, note = TRIM(COALESCE(note, '') || ' · ' || ?) WHERE id = ? AND status = ?`,
   ).run(status, text, id, from).changes
   let writes = 0
   let carriers = null
-  const fillOf = row => restingFillEvidence(db, row, carriers ??= tagCarriers(db))
+  const fillOf = row => restingFillEvidence(db, row, () => (carriers ??= tagCarriers(db)))
   // ---- working rows the retired pending-fib manager left (R1). A
   // 'pending-closed' row has its own resolver (closed-market-limits.js:84);
   // two resolvers on one row would race.
@@ -356,7 +444,7 @@ export function resolveRestingOrders(db, { nowMs = Date.now(), maxWrites = MAX_W
     SELECT id, account_id, symbol, dir, order_id, note, placed_at, expires_at, status FROM pending_orders
      WHERE status = 'working' AND COALESCE(note, '') <> 'pending-closed'
        AND NOT EXISTS (SELECT 1 FROM stuck_resolutions sr WHERE sr.subject = 'pending:' || pending_orders.id)
-     ORDER BY id LIMIT ?`).all(READ_LIMIT)
+     ORDER BY id LIMIT ?`).all(readLimit)
   for (const row of rows) {
     if (writes >= maxWrites) break
     const subject = subjectFor.pending(row.id)
@@ -402,12 +490,17 @@ export function resolveRestingOrders(db, { nowMs = Date.now(), maxWrites = MAX_W
   }
   // ---- terminal rows stored against their fill (ORD-10; R1 "re-judge the
   // wrong 'expired' rows with the same evidence"). Only the broker order id
-  // ties a row to its intent here — a strong link or nothing.
+  // ties a row to its intent here — a strong link or nothing — so only a row
+  // whose order id an intent carries can ever be re-judged: the query reads
+  // those alone (I3 checker NIT 5: every other terminal row was re-read, and
+  // the tag map rebuilt for it, on every pass), newest first so a full page
+  // never hides the rows that just ended.
   const terminal = db.prepare(`
     SELECT id, account_id, symbol, dir, order_id, note, placed_at, status FROM pending_orders
      WHERE status IN ('expired', 'cancelled') AND order_id IS NOT NULL AND placed_at >= ?
+       AND order_id IN (SELECT broker_order_id FROM entry_intents WHERE broker_order_id IS NOT NULL)
        AND NOT EXISTS (SELECT 1 FROM stuck_resolutions sr WHERE sr.subject = 'pending:' || pending_orders.id)
-     ORDER BY id LIMIT ?`).all(spaceTs(nowMs - 31 * DAY), READ_LIMIT)
+     ORDER BY id DESC LIMIT ?`).all(spaceTs(nowMs - 31 * DAY), readLimit)
   for (const row of terminal) {
     if (writes >= maxWrites) break
     try {
@@ -471,10 +564,17 @@ function upstreamFields(db, acct, pid, fields) {
   return { have, absent, uncheckable, trades: trades.map(t => t.id) }
 }
 
-export function resolveCaptures(db, { nowMs = Date.now(), maxWrites = MAX_WRITES_PER_KIND } = {}) {
+export function resolveCaptures(db, { nowMs = Date.now(), maxWrites = MAX_WRITES_PER_KIND, readLimit = READ_LIMIT } = {}) {
   const out = { examined: 0, requeued: 0, writtenOff: 0, errors: [] }
-  const rows = db.prepare(`SELECT account_id, position_id, symbol, last_error, attempts, settled_at FROM position_capture_queue
-                            WHERE state = 'gave_up' ORDER BY settled_at LIMIT ?`).all(READ_LIMIT)
+  // A written-off capture stays gave_up for good: excluded IN THE QUERY, or
+  // once READ_LIMIT of them exist a new give-up is never reached (I3 checker
+  // NIT 4). The subject is subjectFor.capture(acctOf(account_id), position_id).
+  const rows = db.prepare(`SELECT account_id, position_id, symbol, last_error, attempts, settled_at FROM position_capture_queue q
+                            WHERE state = 'gave_up'
+                              AND NOT EXISTS (SELECT 1 FROM stuck_resolutions sr
+                                               WHERE sr.subject = 'capture:' || COALESCE(TRIM(q.account_id), '') || ':' || q.position_id
+                                                 AND sr.outcome = 'unresolved')
+                            ORDER BY settled_at LIMIT ?`).all(readLimit)
   let writes = 0
   for (const row of rows) {
     if (writes >= maxWrites) break
@@ -575,8 +675,15 @@ export function recordedTargetEvidence(db, trade) {
   return { hit, tried }
 }
 
+/** True only when the owner switched the R7 record write on (agent_state `stuck_resolver_target_write` = 'true'). Unreadable → off. */
+export function targetWriteEnabled(db) {
+  try { return db.prepare(`SELECT value FROM agent_state WHERE key = ?`).get(TARGET_WRITE_KEY)?.value === 'true' } catch { return false }
+}
+
 export function resolveTargetless(db, { nowMs = Date.now(), maxWrites = MAX_WRITES_PER_KIND } = {}) {
-  const out = { examined: 0, targetRecorded: 0, writtenOff: 0, recordedAlready: 0, errors: [] }
+  const out = { examined: 0, targetRecorded: 0, targetFound: 0, found: [], writtenOff: 0, recordedAlready: 0, errors: [] }
+  const writeOn = targetWriteEnabled(db)
+  out.targetWrite = writeOn ? 'on' : `off (agent_state ${TARGET_WRITE_KEY} is not 'true')`
   let writes = 0
   for (const g of targetlessPositions(db, nowMs)) {
     if (writes >= maxWrites) break
@@ -596,11 +703,20 @@ export function resolveTargetless(db, { nowMs = Date.now(), maxWrites = MAX_WRIT
       const base = { subject, kind: 'targetless', ruleId: 'STK-09', accountId: acct, tradeId: trade.id, positionId: g.positionId, priorState: 'tp_price NULL' }
       const { hit, tried } = recordedTargetEvidence(db, trade)
       const seen = { rows: g.n, since: iso(g.first), newest: iso(g.last) }
+      if (hit && !writeOn) {
+        // FOUND, NOT WRITTEN. trades.tp_price is target-restore's input: the
+        // write would amend the live position (BLOCKER 1, I3 checker). No
+        // resolution row either — the position stays stuck under STK-09,
+        // whose detail names this value and its source from the pass result.
+        out.targetFound++
+        if (out.found.length < FOUND_NAMES_MAX) out.found.push({ accountId: acct, positionId: g.positionId, tradeId: trade.id, tp: hit.tp, source: hit.source })
+        continue
+      }
       if (hit) {
         db.transaction(() => {
           if (db.prepare(`UPDATE trades SET tp_price = ? WHERE id = ? AND tp_price IS NULL`).run(hit.tp, trade.id).changes !== 1) return
           insertResolution(db, { ...base, outcome: 'settled', verdict: 'target recorded',
-            reason: `trade #${trade.id} had no target on record; the bot recorded ${hit.tp} for it in ${hit.source} — written to trades.tp_price, where target-restore reads the recorded target (its own switch and checks apply; nothing is sent from here)`,
+            reason: `trade #${trade.id} had no target on record; the bot recorded ${hit.tp} for it in ${hit.source} — written to trades.tp_price because agent_state ${TARGET_WRITE_KEY} = 'true' (owner); target-restore reads that column and may amend the live position under its own switch and checks (nothing is sent from here)`,
             evidence: { seen, tried, rule: 'R7' } }, nowMs)
           out.targetRecorded++; writes++
         })()
@@ -627,7 +743,11 @@ export function runStuckResolver(db, { nowMs = Date.now(), maxWrites = MAX_WRITE
   const res = { at: iso(nowMs), version: RESOLVER_VERSION, ok: true }
   const kinds = { trades: resolveInflightTrades, resting: resolveRestingOrders, captures: resolveCaptures, targetless: resolveTargetless }
   for (const [k, fn] of Object.entries(kinds)) {
-    try { res[k] = fn(db, { nowMs, maxWrites }) } catch (err) { res[k] = { error: String(err?.message || err).slice(0, 200) }; res.ok = false }
+    // ONE COMMIT PER KIND (I3 checker NIT 6: a commit per record added to the
+    // first pass's main-thread time). Each record still runs in its own
+    // inner transaction — a savepoint here — so one record's failure rolls
+    // back that record alone and the rest of the kind still commits.
+    try { res[k] = db.transaction(() => fn(db, { nowMs, maxWrites }))() } catch (err) { res[k] = { error: String(err?.message || err).slice(0, 200) }; res.ok = false }
     if (res[k]?.errors?.length) res.ok = false
   }
   return res
