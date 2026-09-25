@@ -750,7 +750,7 @@ const PINNED = {
   'CLS-05@1': '2cca97ff9080477d', 'CLS-06@1': 'a4bb8873fe57a5f1', 'CLS-07@1': '77e677b6b8b4b901', 'CLS-08@1': '540f253a1c1c8eab',
   'CLS-09@1': '9985d3c5b7b5b9cf',
   'STK-01@2': '969001ee6208e6c7', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@2': '92e5e73e8c8494e9', 'STK-04@2': '30b119a04d39ebc5',
-  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@2': 'c45c7a3d5678fc13', 'STK-08@1': '3fecf4ac1c0a0ce3',
+  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@1': '3fecf4ac1c0a0ce3',
   'STK-09@2': '29a95b3d182e245c', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6', 'STK-12@1': '20bc6106e975e370',
 }
 test('ruleset pin: every rule\'s sql + judge is pinned to its version', () => {
@@ -1047,6 +1047,25 @@ test('N7: STK-07 dates the transition from the row that ENTERED it — a later f
   assert.equal(r.violations, 1, 'two hours in RECONCILING, not ten minutes')
   assert.equal(r.sample[0].since, '2026-09-26T10:00:00.000Z')
   assert.equal(r.sample[0].sinceIsLowerBound, false)
+})
+
+test('L2a W14: STK-07 v3 dates the transition from the record\'s own transitionSince, not the drain-row bound', () => {
+  // The record says RECONCILING since 11:45 (15 minutes before NOW) while the
+  // only drain row says it entered at 10:00: the record's stamp wins, so
+  // there is nothing stuck yet. RED if the judge ignores transitionSince.
+  const fresh = initDB(':memory:')
+  setState(fresh, `acct:${A}:engine_status_json`, JSON.stringify({ accountId: A, transitionState: 'RECONCILING', requestedEntryMode: 'TIME_BASED', updatedAt: iso(NOW), transitionSince: '2026-09-26T11:45:00.000Z' }))
+  ins(fresh, 'action_log', { method: 'LOOP', path: '/entry-mode/drain', account_id: A, at: '2026-09-26 10:00:00', body: JSON.stringify({ accountId: A, from: 'STABLE', to: 'RECONCILING' }) })
+  assert.equal(one(fresh, 'STK-07').violations, 0, 'fifteen minutes by the record, not two hours by the drain row')
+  // Stamped two hours ago with NO drain row at all: exact, not "at least".
+  const old = initDB(':memory:')
+  setState(old, `acct:${A}:engine_status_json`, JSON.stringify({ accountId: A, transitionState: 'WARMING', requestedEntryMode: 'TIME_BASED', updatedAt: iso(NOW), transitionSince: '2026-09-26T10:00:00.000Z' }))
+  const r = one(old, 'STK-07')
+  assert.equal(r.violations, 1)
+  assert.equal(r.sample[0].since, '2026-09-26T10:00:00.000Z')
+  assert.equal(r.sample[0].sinceSource, 'record')
+  assert.equal(r.sample[0].sinceIsLowerBound, false)
+  assert.doesNotMatch(r.sample[0].detail, /at least/)
 })
 
 test('N2: STK-08 watchdog outbox — the spec\'s known answer, 512/512 and 1,136,836 dropped, is one stuck mechanism', () => {
