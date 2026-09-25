@@ -16,6 +16,7 @@ import { useState } from 'react'
 import SectionTools from './common/SectionTools.jsx'
 import { sideLabelUpper } from '../lib/side.js'
 import { accountNumbers } from "../lib/scope-label.js"
+import { dailyStopWords } from '../lib/daily-stop-display.js'
 
 const ACC = 'var(--color-accent)', UP = 'var(--color-up)', DN = 'var(--color-down)'
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
@@ -323,7 +324,7 @@ export function BalanceInOut({ inModal = false }) {
  * multi-account desk the card has to name the account rather than let the
  * reader assume it follows the page's filter.
  */
-export function DataFeed({ balance, freeMargin, equity, floating = null, currency = null, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, scopeNote = null, marketReadings = null, quotes = [], quoteSource = null, inModal = false }) {
+export function DataFeed({ balance, freeMargin, equity, floating = null, currency = null, openCount, dailyStop = null, equityStopArmed, slSet, tpSet, scopeNote = null, marketReadings = null, quotes = [], quoteSource = null, inModal = false }) {
   const box = { border: `1px solid ${EDG}`, borderRadius: 10, padding: '7px 10px', display: 'flex', flexDirection: 'column', gap: 3 }
   const chip = { fontSize: 'var(--fs-body)', fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: ACS, border: `1px solid ${GBD}` }
   const money = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
@@ -334,8 +335,8 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
         <span style={{ fontSize: 'var(--fs-body)', color: SB }}>what the bot ingests before any strategy fires, regardless of asset class</span>
         {!inModal && (
           <SectionTools id="data-feed" title="Data Feed — Core Universal Essentials table"
-            data={[{ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, scope: scopeNote }]}
-            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} floating={floating} currency={currency} openCount={openCount} dailyLossPct={dailyLossPct} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} scopeNote={scopeNote} marketReadings={marketReadings} quotes={quotes} quoteSource={quoteSource} inModal />} />
+            data={[{ balance, freeMargin, equity, openCount, dailyStop: dailyStop?.cap ?? null, dailyStopCcy: dailyStop?.capCcy ?? null, dailyStopState: dailyStop?.capState ?? null, equityStopArmed, slSet, tpSet, scope: scopeNote }]}
+            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} floating={floating} currency={currency} openCount={openCount} dailyStop={dailyStop} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} scopeNote={scopeNote} marketReadings={marketReadings} quotes={quotes} quoteSource={quoteSource} inModal />} />
         )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 8 }}>
@@ -373,7 +374,7 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Risk controls</span>
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Stop-loss limits, take-profit triggers, max drawdown caps</span>
           <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>Recorded SL set {slSet ?? '—'}/{openCount ?? '—'} open · TP set {tpSet ?? '—'}/{openCount ?? '—'}</span>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>daily loss limit {dailyLossPct != null ? `${(dailyLossPct * 100).toFixed(0)}%/day` : '—'} · equity stop <span style={{ fontWeight: 800, color: ACC }}>{equityStopArmed == null ? 'unverified' : equityStopArmed ? 'armed' : 'off'}</span></span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}><span title={dailyStop?.title || undefined}>daily stop {dailyStop ? `${dailyStopWords(dailyStop, money).stop}${dailyStopWords(dailyStop, money).day}` : 'per account — see the account cards'}</span> · equity stop <span style={{ fontWeight: 800, color: ACC }}>{equityStopArmed == null ? 'unverified' : equityStopArmed ? 'armed' : 'off'}</span></span>
         </div>
       </div>
     </div>

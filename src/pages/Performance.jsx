@@ -18,6 +18,7 @@ import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import CurrentAccountReadings from '../components/CurrentAccountReadings.jsx'
 import { useAccountOverview } from '../lib/use-account-overview.js'
+import { dailyStopView, dailyStopWords, cardStopFields } from '../lib/daily-stop-display.js'
 import { currentAccountTotals } from '../lib/current-account-totals.js'
 import { calendarDay } from '../../agent/shared/performance-calendar.js'
 import { useLiveTicks } from '../lib/useLiveTicks.js'
@@ -898,10 +899,23 @@ function AcctCardsGrid({ acctCards }) {
                   <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett today</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(a.gl == null ? null : -a.gl) : '—'}</span></span>
                   <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Forecast · 30D pace</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
                 </div>
-                <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop</span>
+                <DailyStopLine a={a} />
               </div>
             ))}
     </div>
+  )
+}
+
+// WEB-2: one line, three places (desktop grid, its ⤢ modal, the phone card).
+// The stop is the engine's enforced cap in its own currency; loss-cap used is
+// the server's measured realised + floating loss ÷ that cap, or a word saying
+// why it is not shown. The tooltip carries the composition.
+function DailyStopLine({ a }) {
+  const w = dailyStopWords(a, money)
+  return (
+    <span style={{ fontSize: 'var(--fs-body)', color: P_MU }} title={a.stopTitle || undefined}>
+      daily stop <span style={{ fontWeight: W_CELL }}>{w.stop}</span>{w.day} · loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{w.used}</span>
+    </span>
   )
 }
 
@@ -1123,7 +1137,7 @@ export default function Performance() {
   const [postmortems, setPostmortems] = useState([])
   const [positions, setPositions] = useState([])
   const ledgers = useMemo(() => Object.fromEntries((overview?.accounts || []).map(a => [a.accountId,
-    { ...reportLedger(populationReport, a.accountId), dailyLossPct: a.dailyLossPct }])), [overview, populationReport])
+    reportLedger(populationReport, a.accountId)])), [overview, populationReport])
   const [riskFull, setRiskFull] = useState(null)
   const [screen, setScreen] = useState('now') // mobile pill nav
   const [error, setError] = useState('')
@@ -1383,9 +1397,9 @@ export default function Performance() {
   }, [populationReport, acct])
 
   // Per-account cards for the accounts detail row (prototype ACC block).
-  // Real sources only: registry row + that account's ledger balance/30D +
-  // today's strictly-stamped trades + risk config dailyLossPct; equity and
-  // floating exist only for the broker-selected account (risk-full margin).
+  // Real sources only: registry row + that account's ledger 30D + today's
+  // strictly-stamped trades + its account-overview row (balance, equity,
+  // floating, and the engine's daily stop — WEB-2).
   const acctCards = useMemo(() => {
     // PORTFOLIO population, not the scoped set: this grid has one card PER ACCOUNT,
     // so reading it from the filtered rows made every other account's day P&L,
@@ -1418,15 +1432,13 @@ export default function Performance() {
     })
     return inPlay.map(a => {
       const led = ledgers[a.account_id]
-      // The account's OWN balance and OWN daily-loss fraction, both from its
-      // ledger (11-09-2026): `balance` is null when the account's key was
-      // never stamped (the card says "not read"), and `dailyLossPct` is the
-      // limit this account trades under. The global risk-full figure used
+      // The account's OWN balance and OWN daily stop, both from its own
+      // overview row (11-09-2026): `balance` is null when the broker has not
+      // answered (the card says "not read"). The global risk-full figure used
       // to stand in for every card, which put the selected demo account's
       // −1,375 daily stop under two unfunded live logins.
       const current = overview?.accounts.find(r => r.accountId === String(a.account_id))
       const bal = current?.balance ?? null
-      const dailyLossPct = led?.dailyLossPct ?? null
       const dayStats = reportStats(populationReport, 'day', String(a.account_id))
       const day = dayStats.pnl, gw = dayStats.gw, gl = dayStats.gl
       const w30 = led?.windows?.find(w => w.key === '30d')
@@ -1434,8 +1446,12 @@ export default function Performance() {
       // E·3: the 30-day money this account made or lost on closes the bot
       // did not decide (adopted, manual in the broker app, another system).
       const ext30 = w30?.external && w30.external.n > 0 ? { n: w30.external.n, net: w30.external.net, byOrigin: w30.external.byOrigin || {} } : null
-      const cap = bal != null && dailyLossPct != null ? bal * dailyLossPct : null
-      const used = null // historical P&L units are not verified against the sizing input
+      // WEB-2: the daily stop the RISK ENGINE enforces on this account and
+      // loss-cap used, both from the server's reading of the engine's own
+      // dailyLossVerdict (account-overview `dailyStop`). Never balance ×
+      // dailyLossPct: that formula skips the USD 200 floor and the 3%/4%
+      // balance tiers, and read −900 on an account the engine caps at 1,191.
+      const stop = cardStopFields(current, { P_MU, P_DN, P_WRN, P_ACC })
       const equity = current?.equity ?? null
       const live = current?.openPnl ?? null
       // A card shown DESPITE being disabled is labelled, so "why is this here"
@@ -1453,10 +1469,11 @@ export default function Performance() {
         ccy: current?.currency || 'currency unavailable',
         currentMoneyVerified: !!current?.currency,
         readingAt: current?.snapshotAt,
-        bal, day, gw, gl, n30, ext30, cap, used, equity, live,
+        bal, day, gw, gl, n30, ext30, equity, live,
+        // cap, used, capState, capCcy, usedState, capLoss, stopTitle, usedCol
+        ...stop,
         hasToday: dayStats.n != null,
         moneyVerified: false,
-        usedCol: used == null ? P_MU : used > 66 ? P_DN : used > 33 ? P_WRN : P_ACC,
       }
     })
   }, [accounts, ledgers, populationReport, overview])
@@ -1472,6 +1489,12 @@ export default function Performance() {
   // balance does exist, in that account's own ledger. Same convention acctCards
   // already uses for per-card equity.
   const feed = useMemo(() => currentAccountTotals(overview, acct), [overview, acct])
+  // The Risk-controls line names the stop IN FORCE for the scoped account (the
+  // engine's reading), not `dailyLossPct` alone: on 46130058 "3%/day" named a
+  // limit that was not the one binding (8,989-A row 11, folded into WEB-2).
+  // The portfolio scope has no single daily stop — each account has its own.
+  const feedDailyStop = useMemo(() => (acct === 'all' ? null
+    : dailyStopView(overview?.accounts?.find(r => r.accountId === acct)?.dailyStop)), [overview, acct])
 
   // Open positions split by MARKET STATE (owner 2026-07-24: open trades sat
   // stuck through a Friday close the UI never surfaced). /state/positions
@@ -1890,9 +1913,9 @@ export default function Performance() {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <div style={{ height: 4, borderRadius: 999, background: P_EDG }}>
-                    <div style={{ height: 4, borderRadius: 999, width: `${Math.max(a.used ?? 0, a.used != null ? 1 : 0)}%`, background: a.usedCol }} />
+                    <div style={{ height: 4, borderRadius: 999, width: `${Math.min(100, Math.max(a.used ?? 0, a.used != null ? 1 : 0))}%`, background: a.usedCol }} />
                   </div>
-                  <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} · configured daily stop; usage requires verified comparable money</span>
+                  <DailyStopLine a={a} />
                 </div>
               </div>
             ))}
@@ -2096,7 +2119,7 @@ export default function Performance() {
               currency={feed.currency}
               floating={feed.openPnl}
               openCount={positionsAvailable ? positions.length : null}
-              dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
+              dailyStop={feedDailyStop}
               equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
               slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
               tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
@@ -2121,14 +2144,15 @@ export default function Performance() {
 
         {/* Accounts detail row — exact prototype cards: day P&L, balance +
             equity + live floating, TP/SL nett today, 30D forecast pace, and
-            the loss-cap line (real dailyLossPct config × stamped balance). */}
+            the loss-cap line (the risk engine's enforced daily stop and the
+            measured realised + floating loss against it — WEB-2). */}
         {acctCards.length > 0 && (
           <div id="sec-accounts">
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Accounts — capital safety</span>
             <SectionTools id="accounts" title="Accounts — Capital Safety table"
-              data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday && a.gl != null ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, dailyStop: a.cap }))}
-              toText={() => ['Accounts — capital safety', ...acctCards.map(a => `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · loss-cap used ${a.used != null ? `${a.used}%` : '—'} of −${a.cap != null ? money(a.cap, 0) : '—'}`)].join('\n')}
+              data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday && a.gl != null ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, lossCapUsedState: a.usedState, dailyStop: a.cap, dailyStopCcy: a.capCcy, dailyStopState: a.capState }))}
+              toText={() => ['Accounts — capital safety', ...acctCards.map(a => { const w = dailyStopWords(a, money); return `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · daily stop ${w.stop}${w.day} · loss-cap used ${w.used}` })].join('\n')}
               render={() => <AcctCardsGrid acctCards={acctCards} />} />
           </div>
           {/* SCOPE-AWARE cards (owner 2026-07-30): the read-only grid became a
@@ -2475,7 +2499,7 @@ export default function Performance() {
             currency={feed.currency}
             floating={feed.openPnl}
             openCount={positionsAvailable ? positions.length : null}
-            dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
+            dailyStop={feedDailyStop}
             equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
             slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
             tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
