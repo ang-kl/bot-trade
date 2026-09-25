@@ -82,3 +82,25 @@ acceptance. The shared websocket close response now retains its broker account
 envelope; optional timestamped subscriptions add no behavior to existing callers.
 No production caller invokes the new manager and no account is activated.
 The foundations alone do not satisfy P0/P3 or V3 acceptance.
+
+## T1 (25 September): planner refusals and the timed quote
+
+Three changes from the P0 reviewer's findings:
+- **Q below the gate's floor is refused.** Q under `HARD_MIN_RR` (3.0,
+  `risk.js`) now gives `required_rr_below_hard_minimum`. Before, the planner
+  clamped Q only to 1. The planner keeps its own copy of the constant, so it
+  does not import `risk.js` (that would be an import cycle), and a test pins
+  the copy equal to `HARD_MIN_RR`.
+- **Digits above 5 are refused.** They give
+  `relative_bracket_precision_unsupported`, because `relativePoints` clamps a
+  relative SL/TP to 5 decimals. A finer target could not be sent as the
+  relative bracket that was planned.
+- **The timed quote waits for a fresh event.** It skips stale events and keeps
+  listening until its deadline, instead of returning the first timestamped
+  event. It uses the evidence decoder's own freshness rule, on the adapter's
+  clock and its 5-second bound. Before, a quiet symbol's opening quote (often
+  the last close) was refused as `fresh_quote_required` on every pass, even
+  when a fresh event arrived within the time budget. One side effect: an event
+  stamped in the future is also skipped. With a broker clock ahead of local
+  time, a pass now waits for its deadline rather than being refused at once.
+  The outcome is the same refusal.

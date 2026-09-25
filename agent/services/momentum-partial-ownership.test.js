@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { readPartialOwnership } from './momentum-partial-ownership.js'
+import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 
 function fixture(t) {
   const db = initDB(':memory:')
@@ -15,14 +15,50 @@ function fixture(t) {
   return db
 }
 
+// T1 (V3 P0-1a): the reader now takes the plan's price digits, because the
+// three rows' entries are written by different arithmetic and are compared in
+// ticks. Every call below passes digits 2 deliberately; with no digits no
+// price can be compared, so nothing is owned.
 test('partial ownership joins account, position and trade with the sole paused book owner', t => {
   const db = fixture(t)
-  assert.deepEqual(readPartialOwnership(db, 'A', 7, '123'), {
+  assert.deepEqual(readPartialOwnership(db, 'A', 7, '123', 2), {
     accountId: 'A', tradeId: 7, positionId: '123', entry: 100, initialRisk: 10,
     side: 'BUY', status: 'open', owner: 'momentum_book', guardActive: false,
   })
-  assert.equal(readPartialOwnership(db, 'B', 7, '123'), null)
-  assert.equal(readPartialOwnership(db, 'A', 7, '124'), null)
+  assert.equal(readPartialOwnership(db, 'B', 7, '123', 2), null)
+  assert.equal(readPartialOwnership(db, 'A', 7, '124', 2), null)
+  for (const digits of [undefined, null, 6, 2.5]) assert.equal(readPartialOwnership(db, 'A', 7, '123', digits), null, String(digits))
+})
+
+test('fill-anchored rows a few ulps apart are one owner in ticks; a tick apart is not', t => {
+  for (const [trade, book, monitor, owned] of [
+    // The neighbouring doubles of 265.91 on either side.
+    [265.91, 265.9100000000001, 265.90999999999997, true],
+    [265.91, 265.92, 265.91, false],
+    [265.91, 265.91, 265.9, false],
+  ]) {
+    const db = fixture(t)
+    db.prepare('UPDATE trades SET entry_price=?').run(trade)
+    db.prepare('UPDATE momentum_book SET entry_price=?').run(book)
+    db.prepare('UPDATE monitored_positions SET entry_price=?').run(monitor)
+    if (owned) assert.ok(book !== trade && monitor !== trade, 'the fixture must differ as floats to test anything')
+    assert.equal(readPartialOwnership(db, 'A', 7, '123', 2) != null, owned, `${trade}/${book}/${monitor}`)
+  }
+})
+
+test('the shared ownership rule compares entry and initial risk in the plan\'s ticks', () => {
+  const plan = { side: 'BUY', entry: 265.91, initialRisk: 18.099999999999994, digits: 2 }
+  const owner = { accountId: 'A', tradeId: 7, positionId: '123', status: 'open', owner: 'momentum_book',
+    guardActive: false, side: 'BUY', entry: 265.91, initialRisk: 18.100000000000023 }
+  const scope = { accountId: 'A', tradeId: 7, positionId: '123', plan }
+  assert.notEqual(owner.initialRisk, plan.initialRisk)
+  assert.equal(ownershipMatchesPlan(owner, scope), true)
+  for (const patch of [{ initialRisk: 18.11 }, { entry: 265.92 }, { side: 'SELL' }, { guardActive: true },
+    { owner: 'fast_monitor' }, { status: 'closed' }, { accountId: 'B' }, { tradeId: 8 }, { positionId: '124' }]) {
+    assert.equal(ownershipMatchesPlan({ ...owner, ...patch }, scope), false, JSON.stringify(patch))
+  }
+  assert.equal(ownershipMatchesPlan(null, scope), false)
+  assert.equal(ownershipMatchesPlan(owner, { ...scope, plan: { ...plan, digits: undefined } }), false)
 })
 
 test('adoption, foreign or ambiguous rows and competing management never acquire ownership', t => {
@@ -41,6 +77,6 @@ test('adoption, foreign or ambiguous rows and competing management never acquire
   ]) {
     const db = fixture(t)
     db.exec(sql)
-    assert.equal(readPartialOwnership(db, 'A', 7, '123'), null, sql)
+    assert.equal(readPartialOwnership(db, 'A', 7, '123', 2), null, sql)
   }
 })

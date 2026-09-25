@@ -213,3 +213,55 @@ test('the original late broker receipt is retained after timeout without a secon
   assert.equal((await runPartialPlan(f.db, f.creds, 7, f.deps)).state, 'CONFIRMED')
   assert.equal(f.calls(), 1)
 })
+
+// T1 (V3 P0-1a): a stored plan whose stop carries float residue (an unsnapped
+// fill shift, 247.81000000000003) against the broker's grid stop 247.81. The
+// manager compared these as floats, so the BUY's broker stop read as one ulp
+// WIDER than the plan and the partial stayed ARMED on broker_position_mismatch.
+test('broker prices match the stored plan in ticks, and a tick wider still refuses', async t => {
+  for (const [side, stop, brokerStop, wider, entry] of [
+    ['BUY', 247.81000000000003, 247.81, 247.80, 265.91],
+    ['SELL', 283.93000000000006, 283.93, 283.94, 265.83]]) {
+    const residue = planMomentumTargets({ side, entry, originalStop: stop, requiredRr: 3,
+      costReservePrice: 0.4, digits: 2, volume: 10000, minVolume: 100, stepVolume: 100 })
+    assert.equal(residue.mode, 'partial_runner')
+    assert.notEqual(residue.originalStop, brokerStop, 'the fixture must carry float residue to test anything')
+    for (const [held, expected] of [[brokerStop, 'CONFIRMED'], [wider, 'ARMED']]) {
+      const db = new Database(':memory:'); t.after(() => db.close())
+      registerPartialPlan(db, { accountId: '11', tradeId: 7, positionId: '123', plan: residue, evidenceId: 'fixture:7',
+        identity: { host: 'demo.ctraderapi.com', accountId: '11', symbolId: '22' } })
+      let volume = 10000, calls = 0
+      const trigger = residue.trigger
+      const deps = { now: () => at, maxAgeMs: 5000,
+        // The monitor's initial risk as the producer's fill anchoring writes it.
+        readOwnership: () => ({ ...owner(), side, entry, initialRisk: 18.100000000000023 }),
+        readPosition: async () => ({ accountId: '11', positionId: '123', side, entry, volume,
+          stopLoss: held, takeProfit: residue.brokerTarget, observedAtMs: at }),
+        quote: async () => ({ accountId: '11', positionId: '123', bid: trigger, ask: trigger, observedAtMs: at }),
+        close: async (_creds, order) => {
+          calls++; volume -= order.volume
+          return { accountId: '11', positionId: '123', dealId: '999', closedVolume: order.volume, price: trigger, executedAtMs: at }
+        },
+      }
+      const result = await runPartialPlan(db, { accountId: '11', host: 'demo.ctraderapi.com' }, 7, deps)
+      assert.equal(result.state, expected, `${side} broker stop ${held}`)
+      assert.equal(calls, expected === 'CONFIRMED' ? 1 : 0, `${side} broker stop ${held}`)
+      if (expected === 'ARMED') assert.equal(result.reason, 'broker_position_mismatch')
+    }
+  }
+})
+
+// On this coarse grid Q 3 and Q 2.9 round to the same trigger (1004) and split,
+// so { ...q3, requiredRr: 2.9 } is exactly the plan the old clamp computed for
+// Q 2.9 and self-verified. Only the HARD_MIN_RR refusal can reject it.
+test('a self-consistent plan whose Q sits below the gate\'s HARD_MIN_RR cannot be registered', t => {
+  const base = { side: 'BUY', entry: 1000, originalStop: 999, costReservePrice: 0.5, digits: 0,
+    volume: 10000, minVolume: 100, stepVolume: 100 }
+  const q3 = planMomentumTargets({ ...base, requiredRr: 3 })
+  assert.equal(q3.mode, 'partial_runner'); assert.equal(q3.trigger, 1004)
+  const identity = { host: 'demo.ctraderapi.com', accountId: '11', symbolId: '22' }
+  const db = new Database(':memory:'); t.after(() => db.close())
+  assert.throws(() => registerPartialPlan(db, { accountId: '11', tradeId: 7, positionId: '123',
+    plan: { ...q3, requiredRr: 2.9 }, evidenceId: 'fixture:7', identity }), /valid immutable partial plan/)
+  assert.equal(registerPartialPlan(db, { accountId: '11', tradeId: 7, positionId: '123', plan: q3, evidenceId: 'fixture:7', identity }).state, 'ARMED')
+})

@@ -50,3 +50,29 @@ coordination remain the next portions of the approved contract. This slice does
 not call the new planner/manager from a production producer or turn on trading.
 It is not P0/P3 or V3 acceptance. Full repository/CI checks and deployment
 readback are required for this slice before merging.
+
+## T1 correction: bind arithmetic in ticks and integers (25 September)
+
+The P0 reviewer found that the slice above did not yet anchor confirmed
+slippage. Its tests used only integer geometry, so they could not show this.
+- The fill-shifted stop was compared unrounded, so a BUY 265.87/247.77 filled
+  at 265.91 compared the broker's 247.81 with 247.81000000000003 and refused.
+  That refused 5,057 of the reviewer's 30,000 simulated fills and 252 of the
+  2,000 randomized cases in `momentum-plan-arithmetic.test.js`.
+- The recorded lots were checked against the broker volume with a 1e-8
+  tolerance. At FX lotSize 1e7 that refused 32 of the 1,000 sizes from 0.01
+  to 10 lots, the first at 8.04 lots.
+
+What changed:
+- The bind moves the stop by the fill's slippage in whole ticks. A fill off
+  the grid rounds the stop outward.
+- The bind compares broker prices with the plan in ticks. The book handover,
+  the partial manager and the rank exit compare in ticks too, through one
+  ownership rule.
+- The record compares volume as an integer. Float residue passes; a
+  fractional broker unit still refuses.
+
+The trade row's own entry, stop and target stay exact identity checks at
+record time, because the producer writes them from the plan itself.
+Production effect: none. No plan is recorded (`recordedPlans` 0) and no
+producer calls this path.
