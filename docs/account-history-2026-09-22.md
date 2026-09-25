@@ -30,7 +30,8 @@ and [deposit/withdrawal message](https://help.ctrader.com/open-api/model-message
 `GET /state/account-history` requires an explicit registered account and a
 bounded window. It supports pagination and never combines account currencies.
 External-flow-adjusted equity change is available only with comparable
-observations, complete cashflow coverage and a complete result page. It is not
+observations and complete cashflow coverage across the whole window (see the
+B3 correction below; it no longer depends on the page). It is not
 closed-trade P&L or a time-weighted return. Sampled drawdown is explicitly
 unadjusted and includes cashflows; gaps remain gaps, and snapshots cannot
 establish exact intraminute drawdown.
@@ -52,3 +53,41 @@ fencing, native-currency nightly integration and UI labels. Repository gate
 results and publication state are recorded in the PR and progress record.
 Authenticated browser interaction and actual broker cashflow responses remain
 runtime acceptance checks.
+
+## V3 B3 (P5d-1) correction, 25 September 2026: full-window aggregation
+
+The summary used to be computed over the returned page (2,000 rows by default,
+5,000 at most) and was withheld whenever `hasMore` was true. At 09:19 UTC on
+25 September 46130058's 24-hour window returned 2,000 points with `hasMore`,
+so it reported `cashflow_coverage_gap` and no reconciled span: that was this
+defect, not a transient hole. At one observation per source per minute a
+7-day window holds at least 10,080 points and could never complete.
+
+The route now keeps the page only for the raw observation table. Equity change,
+cashflow coverage, the external-flow-adjusted change, the dated reconciled
+portion and sampled drawdown are computed over every retained observation in
+`[from, to)`, whatever `limit` or `before` is, and `summaryScope` is
+`full_window` with `summaryObservations` counting them. The window is also
+aggregated into at most 400 UTC-aligned buckets (`bucketMs`: 5 minutes for
+24 hours, 30 minutes for 7 days, 2 hours for 30 days), each with its
+observation count, the first, last, lowest and highest comparable equity, and
+its cashflows. Bucket cashflows cover the bucket clipped to the comparable
+equity span, so they partition exactly the span the whole-window coverage
+reads. A bucket with no observation is a gap; a bucket without cashflow
+coverage has null sums; a bucket holding two currencies or hosts has no
+equity range. A real coverage hole is still `cashflow_coverage_gap`.
+
+The summary reads the new covering index `idx_account_history_summary`
+(currency, equity and error extracted from the observation JSON, guarded by
+`json_valid`), not the observation rows. Local synthetic timings, 2 KB
+observations at two per minute: a 30-day window (86,400 rows) about 220 ms,
+7 days about 50 ms; building the index over 86,400 retained rows on the first
+boot about 0.85 s, once. These are not production budgets. The Performance
+panel requests 240 raw observations per page instead of 2,000.
+
+A full 7- or 30-day span still needs calendar time. The first retained
+observation is about 22 September 17:26 UTC and older coverage is not
+backfilled, so until about 29 September 17:30 UTC a 7-day request's
+`observationSpan` starts at that first observation, not seven days back; read
+the span, not the window label. A span that includes a cashflow coverage hole
+stays unadjusted.
