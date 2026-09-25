@@ -20,6 +20,7 @@ import { inflightSummary } from './lib/inflight.js';
 import { publicPipelineView } from './services/decision-audit.js';
 import { readRecentErrors } from './services/error-log.js';
 import ctraderOauthRouter from './routes/ctrader-oauth.js';
+import { jsonExceptScannerRegistration, scannerRegistrationJson, SCANNER_PROFILES_PATH } from './routes/scanner-registration-body.js';
 import { startLagMonitor } from './services/event-loop-lag.js';
 import { recordRequest } from './services/route-timing.js';
 
@@ -560,7 +561,10 @@ try {
 
 const app = express();
 
-app.use(express.json());
+// Every body is parsed here with the 100 KB default EXCEPT the scanner profile
+// registration, whose 512 KiB parser is mounted after authMiddleware below:
+// an unauthenticated client must not be able to make Node parse half a MiB.
+app.use(jsonExceptScannerRegistration());
 app.use(
   cors({
     origin: FRONTEND_URL || '*',
@@ -744,6 +748,10 @@ if (HAS_DIST) {
 mountSpaFallback();
 
 app.use(authMiddleware);
+// Authenticated from here on. The registration draft (796 profiles, 276,080
+// bytes) is refused by the 100 KB default, so this one path gets its own
+// bound; every other path was already parsed above.
+app.use(SCANNER_PROFILES_PATH, scannerRegistrationJson());
 
 // ---------------------------------------------------------------------------
 // Telegram device login — the bot texts a 6-digit code to the OWNER's chat;

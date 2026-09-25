@@ -5,7 +5,7 @@
 import { createLLMClient } from './lib/llm-provider.js'
 import { disarmReason } from './lib/env-disarm.js'
 import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
-import { scannerObserver } from './services/scanner-feed.js'
+import { scannerObserver, startScannerBridge } from './services/scanner-feed.js'
 import { recordScannerWork } from './services/scanner-work.js'
 import { enabledStrategies } from './services/strategies.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows } from './services/stage-matrix.js'
@@ -6233,5 +6233,11 @@ export function startLoop(db) {
   import('./services/vpo-feeder.js')
     .then(m => m.startVpoFeeder(db))
     .catch(err => log('vpo-feeder failed to start:', err.message))
+  // Scanner observation bridge (timeframe publishing + tick/candidate
+  // collector): ensured at boot and every 60 s on its own timer, so it runs
+  // whether or not runLoop reaches the bar scan (the breaker and skip paths
+  // return early), and a crashed worker is rebuilt. Inert until
+  // SCANNER_BRIDGE_ENABLED=1 and registered profiles exist; no order authority.
+  try { startScannerBridge(db) } catch (err) { log('scanner bridge failed to start:', err.message) }
   return { getLoopCount: () => loopCount }
 }

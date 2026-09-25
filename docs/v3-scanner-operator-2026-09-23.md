@@ -48,3 +48,45 @@ expiry independently from the registered TTL and native completion timestamp,
 advances oracle state, and compares the dispatch-eligible reference. Incorrect
 expiry labels remain mismatches. A regression test exercises both directions.
 The integrated full gate covers this correction and the real account-map fix.
+
+## 2026-09-25 update (PR-3: bridge and collector)
+
+Superseding the lines above where they differ; still Node only, still inert
+until SCANNER_BRIDGE_ENABLED=1 and registered profiles exist, still no order
+authority (`scannerMirrorAdmission` refuses everything; PR-7 owns admission).
+
+- **Start and recovery.** `startScannerBridge` runs from `startLoop` at boot
+  and ensures the bridge every 60 s on its own timer, so collection no longer
+  waits for runLoop to reach the bar scan. A worker `error`/`exit` or a
+  construction throw is terminated and rebuilt (at most once per 30 s);
+  `bridge.restarts` and `bridge.failure` show it. A failed `send()` of one job
+  is counted (`sendFailures`, `lastSendError`) and does not rebuild.
+- **Registration bounds.** 1024 profiles and 512 KiB (the 796-profile draft is
+  276,080 bytes). The global JSON parser skips `/actions/scanner-profiles`;
+  its 512 KiB parser is mounted after `authMiddleware`, so an unauthenticated
+  body is never parsed. Every other path keeps the 100 KB default.
+- **Comparison load.** One memo per tick comparison page (the registry and
+  each account map are read once, not per row). Oracle streams are keyed
+  without the feed epoch; a new epoch replaces its stream and rewarms.
+- **Retention.** 100,000 rows per source, not shared, trimmed by
+  `retainComparisons` on the collector's 60 s cadence (no per-row count on
+  insert). The trim finds its edge with a read and deletes in chunks of 2,000;
+  the 7-day age deletes are chunked the same way (100,000 stale rows: 51
+  statements, at most 23 ms each, where one statement held the write lock
+  558 ms). Every statement walks an index.
+- **Status cost.** `comparisonStatus` runs on the main thread for every
+  `/state/scanner-mirrors` and heartbeat read. Measured locally at 200,000
+  rows (100,000 tick, 100,000 timeframe refusals, 2,100 of them in the last
+  hour): about 44 ms, of which 40 ms is the index-only populations read and
+  1.7 ms the refusal breakdown. The unbounded breakdown it replaced took
+  108 ms on the same table (the #1088 checker measured 270 ms).
+- **Refusals.** Timeframe inputs refused by the feed are recorded as
+  `input_refused` with `error` and `reason` (`bars_empty`, `last_bar_partial`,
+  `ohlc_invalid`, `reference_identity_conflict`, ...). The breakdown by
+  error and reason, `comparison.inputRefusedLastHour`, covers only the last
+  hour (`inputRefusedWindowMs`), a range on the `(source, state,
+  observed_ms)` index; the retained total stays in `comparison.populations`.
+- **Collector status.** `/state/scanner-mirrors` returns `collector` (the
+  worker's round record: `readAtMs`, `durationMs`, `tickPages`,
+  `tickRecords`, `tickBacklog`, `error`, `lastError`, `delayMs`). The worker
+  writes it at most once a second.
