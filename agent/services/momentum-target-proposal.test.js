@@ -36,6 +36,33 @@ test('foreign, stale or invented quote/meta/conversion cannot construct a usable
   }
 })
 
+// T1b (H1): an off-grid planned stop or entry cannot bind to the bracket the
+// broker holds (relativePoints sends the stop distance in whole ticks), so
+// the proposal refuses it before anything is sent. Float residue is on the
+// grid; the planner's own refusals keep their reasons.
+test('an entry or stop off the price grid is refused before any record; float residue is not', () => {
+  for (const [patch, label] of [[{ originalStop: 90.005 }, 'BUY stop half a tick off'],
+    [{ originalStop: 89.9937 }, 'BUY ATR stop'],
+    [{ entry: 100.005, quote: { ...input.quote, ask: 100.005 } }, 'entry off the grid'],
+    [{ side: 'SELL', entry: 99.9, originalStop: 110.0071 }, 'SELL ATR stop']]) {
+    const r = prepareMomentumTargetProposal({ ...input, ...patch }, schedule)
+    assert.equal(r.ok, false, label); assert.equal(r.reason, 'price_off_grid', label)
+    assert.equal(r.executionAuthorized, false, label); assert.equal(r.plan, undefined, label)
+  }
+  // Grid prices carrying float residue plan, and plan the same as the clean ones.
+  const clean = prepareMomentumTargetProposal({ ...input, originalStop: 89.99 }, schedule)
+  const residue = prepareMomentumTargetProposal({ ...input, originalStop: 89.95 + 0.04 }, schedule)
+  assert.equal(clean.ok, true, clean.reason); assert.equal(residue.ok, true, residue.reason)
+  assert.notEqual(residue.plan.originalStop, 89.99, 'the fixture must carry float residue to test anything')
+  assert.equal(residue.plan.trigger, clean.plan.trigger); assert.equal(residue.plan.brokerTarget, clean.plan.brokerTarget)
+  const sell = prepareMomentumTargetProposal({ ...input, side: 'SELL', entry: 99.9, originalStop: 110.01 }, schedule)
+  assert.equal(sell.ok, true, sell.reason)
+  // An unexpressible precision keeps the planner's reason, not price_off_grid.
+  const six = prepareMomentumTargetProposal({ ...input, originalStop: 89.9937,
+    symbolMeta: { ...input.symbolMeta, digits: 6 } }, schedule)
+  assert.equal(six.reason, 'relative_bracket_precision_unsupported')
+})
+
 test('demo and live use identical arithmetic and minimum-lot fallback but different provenance', () => {
   const demo = prepareMomentumTargetProposal(input, schedule)
   const liveId = { ...identity, host: 'live.ctraderapi.com' }

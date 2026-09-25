@@ -2,7 +2,8 @@
 // (owner: "it will be before desk"). One closed-trade ledger sliced three
 // ways — time windows × market categories × accounts — from complete recorded
 // populations. Calendar periods use the displayed timezone; rolling periods
-// end at the report timestamp. Carry balances require reconciled cashflows.
+// end at the report timestamp. Carry balances are the broker balances
+// observed at each window edge (V3 WEB-3); an edge with none says why.
 // Collect-forward everywhere: history the agent never captured shows an
 // honest "—", never a fabricated number.
 //
@@ -18,8 +19,10 @@ import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import CurrentAccountReadings from '../components/CurrentAccountReadings.jsx'
 import { useAccountOverview } from '../lib/use-account-overview.js'
-import { dailyStopView, dailyStopWords, cardStopFields } from '../lib/daily-stop-display.js'
-import { currentAccountTotals } from '../lib/current-account-totals.js'
+import { feedDailyStopView, dailyStopWords, cardStopFields } from '../lib/daily-stop-display.js'
+import { currentAccountTotals, liveFloatingByCurrency } from '../lib/current-account-totals.js'
+import { balanceLines, floatingText, carryText } from '../lib/balance-cells.js'
+import { utcStamp } from '../../agent/shared/balance-carry.js'
 import { calendarDay } from '../../agent/shared/performance-calendar.js'
 import { useLiveTicks } from '../lib/useLiveTicks.js'
 import { displayQuote } from '../lib/display-quote.js'
@@ -29,7 +32,7 @@ import MomentumTargets from '../components/MomentumTargets.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { rollingHourWindows, rollingWindow, displayOrder } from '../lib/hourly-order.js'
 import { openingCountLabel } from '../lib/hourly-openings.js'
-import { activityEvidence } from '../lib/hourly-activity.js'
+import { activityEvidence, hourRowEvidence } from '../lib/hourly-activity.js'
 import { hourLabel, dateFlags } from '../lib/hour-label.js'
 import { useTableClock } from '../lib/table-clock.js'
 import { isLong, sideLabelUpper } from '../lib/side.js'
@@ -57,7 +60,9 @@ import { reportStats, reportGroups, reportLedger, sessionBuckets } from '../../a
 import { SESSION_SOURCE } from '../../agent/shared/report-sessions.js'
 import { performanceGradients, gradientData, gradientFoot, OVERLAP_LABEL, OVERLAP_TITLE } from '../lib/performance-gradients.js'
 import { ledgerMoneyNote } from '../lib/partial-money.js'
+import { currencyLines, currencyLinesText, rollingSplits } from '../lib/currency-money.js'
 import { scopedPerformanceRows } from '../lib/performance-evidence.js'
+import { dataFeedCardScope, quoteReceiptNote } from '../lib/data-feed.js'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -163,17 +168,36 @@ function SessionClock() {
   )
 }
 
+// V3 WEB-5 (8,989-A rows 5 and 7): in the all-accounts scope a figure whose
+// closes span accounts is one line per broker deposit currency, pooled only
+// within that currency and never summed across two (owner default 25-09).
+// Closes in no recorded currency are counted under the lines, in no line.
+function CurrencyNetLines({ split, bold = false }) {
+  return (
+    <>
+      {split.lines.map(l => (
+        <div key={l.key} className={pnlTone(l.net)} title={l.note?.title}>
+          <span className={bold ? 'font-bold' : undefined}>{l.currency} {signed(l.net)}</span>
+          {l.note && <div className={`text-(length:--fs-body) ${SUB}`}>{l.note.text}</div>}
+        </div>
+      ))}
+      {split.unpooled && <div className={`text-(length:--fs-body) ${SUB}`} title={split.unpooled.title}>{split.unpooled.text}</div>}
+    </>
+  )
+}
+
 // One market sub-cell in the ledger grid: net on top, win%·PF subline —
 // or a quiet "—" when the window has no trades in that market.
 function MarketCell({ st }) {
   if (!st || !st.trades) return <td className={`py-1 px-2 text-right text-(length:--fs-body) ${SUB}`}>—</td>
-  const note = ledgerMoneyNote(st)
+  const split = currencyLines(st)
+  const note = split ? null : ledgerMoneyNote(st)
   return (
     <td className="py-1 px-2 text-right tabular-nums" title={note?.title}>
       {/* No explicit size on the net line: it inherits the ledger's 9.5px cell
           size; the subline below keeps its own tiny 9px (owner: "except those
           tiny information like '5t · 40% · PF 0.76'"). */}
-      <div className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</div>
+      {split ? <CurrencyNetLines split={split} bold /> : <div className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</div>}
       <div className={`text-(length:--fs-body) ${SUB}`}>{st.trades}t · {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : st.pfInfinite ? '∞' : '—'}</div>
       {note && <div className={`text-(length:--fs-body) ${SUB}`}>{note.text}</div>}
     </td>
@@ -229,12 +253,12 @@ function WindowDetail({ w }) {
         </div>
       </div>
       {MARKET_COLS.filter(m => w.markets?.[m.key]?.trades > 0).map(m => {
-        const st = w.markets[m.key], note = ledgerMoneyNote(st)
+        const st = w.markets[m.key], split = currencyLines(st), note = split ? null : ledgerMoneyNote(st)
         return (
           <div key={m.key}>
             <div className={`text-(length:--fs-body) uppercase font-bold ${SUB}`}>{m.label}</div>
             <div className="tabular-nums" title={note?.title}>
-              <span className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</span>{note && <span className={SUB}> ({note.text})</span>} · {st.trades}t · win {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : st.pfInfinite ? '∞' : '—'} · <span className={UP}>{st.tp} TP</span>/<span className={DOWN}>{st.sl} SL</span>
+              {split ? <span className="font-bold">{currencyLinesText(split, signed)}</span> : <span className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</span>}{note && <span className={SUB}> ({note.text})</span>} · {st.trades}t · win {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : st.pfInfinite ? '∞' : '—'} · <span className={UP}>{st.tp} TP</span>/<span className={DOWN}>{st.sl} SL</span>
             </div>
           </div>
         )
@@ -737,7 +761,54 @@ function Weekend24Body({ rows }) {
 // in effect; the table still fits a Telegram Mini App width by scrolling, as
 // it did before.
 const TODAY_HOURLY_COLS = '88px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px'
-function TodayHourlyBody({ rows, floatingNow = null }) {
+// The rolling card's headline when closes span accounts (V3 WEB-5, 8,989-A
+// row 5): each currency's pooled figure side by side, never one sum.
+export function HeadlineCurrencyLines({ split }) {
+  return split.lines.map((l, i) => (
+    <span key={l.key} title={l.note?.title ?? `Recorded P&L of the ${l.trades} closes in ${l.currency} accounts, pooled only within ${l.currency}.`} style={{ color: l.net == null ? P_MU : l.net >= 0 ? P_UP : P_DN }}>
+      {i > 0 && <span style={{ color: P_MU }}> · </span>}{l.currency} {signed(l.net)}{l.note && <span style={{ color: P_MU, fontWeight: 400 }}> ({l.note.text})</span>}
+    </span>
+  ))
+}
+// Recorded P&L of an hour's closes from several accounts: one line per broker
+// deposit currency, pooled only within it, each coloured by its own sign;
+// closes in no recorded currency are counted, in no line.
+function HourCurrencyLines({ split }) {
+  return (
+    <>
+      {split.lines.map(l => (
+        <span key={l.key} title={l.note?.title} style={{ display: 'block', color: l.net == null ? P_MU : l.net > 0 ? P_UP : l.net < 0 ? P_DN : P_MU }}>
+          {l.currency} {signed(l.net)}{l.note && <span style={{ color: P_MU }}> ({l.note.text})</span>}
+        </span>
+      ))}
+      {split.unpooled && <span title={split.unpooled.title} style={{ display: 'block', color: P_MU }}>{split.unpooled.text}</span>}
+    </>
+  )
+}
+// One cell of observed broker balance lines (V3 WEB-3): an amount per
+// currency with its read time in the tooltip, or the reason there is none.
+function BalanceCell({ set }) {
+  const lines = balanceLines(set, { money })
+  return (
+    <span style={{ fontSize: 'var(--fs-body)', color: P_MU, display: 'flex', flexDirection: 'column', lineHeight: 1.15 }}>
+      {lines.map(l => <span key={l.key} title={l.title} style={l.missing ? { fontStyle: 'italic' } : undefined}>{l.text}</span>)}
+    </span>
+  )
+}
+// Live-hour floating for the all-accounts view: per recorded deposit currency
+// (the report's currencyByAccount, the gradients' pools' own reader) from the
+// current broker readings, never summed across currencies (8,989-A WEB-5).
+function liveFloatingText(groups) {
+  if (!groups) return null
+  const shown = groups.groups.filter(g => g.openPnl != null)
+  if (!shown.length) return null
+  const missing = groups.groups.filter(g => g.openPnl == null)
+  // A currency without a complete reading is marked on screen ("USD 1/2
+  // read"), as floatingText marks the stored hours (V3 WEB-3m, checker N4).
+  return { text: `(${shown.map(g => `${g.currency} ${signed(g.openPnl)}`).join(' · ')} float)${missing.map(g => ` · ${g.currency} ${g.withOpenPnl}/${g.accounts} read`).join('')}`,
+    title: `Floating (unrealised) P&L on the positions open right now, per recorded deposit currency, from the current broker readings. Not part of this hour's realised figure and not in the balance columns.${missing.length ? ` No complete reading for ${missing.map(g => `${g.currency} (${g.withOpenPnl}/${g.accounts} accounts; not read: ${(g.missingOpenPnl || []).join(', ')})`).join(', ')}.` : ''}${groups.unknownCurrencyAccounts ? ` ${groups.unknownCurrencyAccounts} account(s) have no recorded deposit currency and are in no subtotal${groups.unknownAccounts?.length ? `: ${groups.unknownAccounts.join(', ')}` : ''}.` : ''}` }
+}
+export function TodayHourlyBody({ rows, floatingNow = null, floatingNowGroups = null }) {
   const [animRef] = useAutoAnimate({ duration: 160 })
   return (
     <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
@@ -763,21 +834,30 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
               </span>
               <span style={{ display: 'block', fontSize: 'var(--fs-body)', color: P_MU, fontWeight: 400 }}>{L.utc}</span>
             </span>
-            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{r.openBal != null ? money(r.openBal) : '—'}</span>
-            {/* Realized P&L from closes in this hour. On the LIVE hour the
-                floating figure rides alongside in brackets — it is unrealized
-                and belongs to no single hour, so it is never summed into
-                `net` and never touches the balance columns. */}
+            <BalanceCell set={r.balance?.open} />
+            {/* Realized P&L from closes in this hour. The floating figure
+                rides alongside in brackets — it is unrealized, so it is never
+                summed into `net` and never touches the balance columns. On
+                the LIVE hour it is the current reading; on the other hours it
+                is the last broker reading stored in that hour, shown only
+                where one exists (V3 WEB-3). */}
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>
-              {r.net != null ? signed(r.net) : '—'}
+              {/* V3 WEB-5: closes from several accounts are one line per
+                  deposit currency, never one summed figure. */}
+              {r.split ? <HourCurrencyLines split={r.split} /> : r.net != null ? signed(r.net) : '—'}
               {r.isLive && floatingNow != null && (
                 <span title="Floating (unrealized) P&L on the positions open right now. Not part of this hour's realized figure and not in the balance columns — balance is realized-only; equity is balance + floating."
                   style={{ fontSize: 'var(--fs-body)', marginLeft: 3, color: floatingNow > 0 ? P_UP : floatingNow < 0 ? P_DN : P_MU }}>
                   ({signed(floatingNow)} float)
                 </span>
               )}
+              {(() => {
+                const f = !r.isLive ? floatingText(r.balance?.floating, { signed })
+                  : floatingNow == null ? liveFloatingText(floatingNowGroups) ?? floatingText(r.balance?.floating, { signed }) : null
+                return f && <span title={f.title} style={{ fontSize: 'var(--fs-body)', marginLeft: 3, color: P_MU, display: 'block' }}>{f.text}</span>
+              })()}
             </span>
-            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{r.closeBal != null ? money(r.closeBal) : '—'}</span>
+            <BalanceCell set={r.balance?.close} />
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)}</span>
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL }}>{openingCountLabel(r.closedN, r.unknownCloseTimeN, r.incompleteOpeningWindow)}</span>
           </div>
@@ -945,7 +1025,7 @@ function DailyStopLine({ a }) {
 // Copy-as-text for the ledger (owner spec: paste-friendly aligned lines).
 function ledgerToText(windows) {
   const lines = (windows || []).map(w =>
-    `${w.label} · carry ${money(w.carryIn)} → ${money(w.carryOut)} · net ${w.trades ? signed(w.net) : '—'}${ledgerMoneyNote(w) ? ` (${ledgerMoneyNote(w).text})` : ''} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0}${w.manual > 0 ? ` · ${w.manual} manual` : ''} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}${!w.trades && w.lastTradeAt ? ` · last fill ${w.lastTradeAt}` : ''}`)
+    `${w.label} · carry ${carryText(w, 'in', { money })} → ${carryText(w, 'out', { money })} · net ${!w.trades ? '—' : currencyLines(w) ? currencyLinesText(currencyLines(w), signed) : `${signed(w.net)}${ledgerMoneyNote(w) ? ` (${ledgerMoneyNote(w).text})` : ''}`} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0}${w.manual > 0 ? ` · ${w.manual} manual` : ''} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}${!w.trades && w.lastTradeAt ? ` · last fill ${w.lastTradeAt}` : ''}`)
   return ['Timeframe ledger', ...lines].join('\n')
 }
 
@@ -986,10 +1066,18 @@ function LedgerBody({ variant, windows, ledger, error, nowMs, timeZone }) {
         </div>
       )}
       <p className={`mt-1.5 text-(length:--fs-body) ${SUB}`}>
-        Rolling windows (1H…12M) end at the report time. Calendar periods use midnight in {timeZone}; weeks start Monday. Carry balances require cashflow-reconciled history and remain unavailable here. Unknown symbols are included under Other. A net marked “partial · n of m priced” sums only the closes with a recorded P&amp;L: it is not a bound in either direction. “Not pooled” means the closes span accounts whose money is not added together here.
+        Rolling windows (1H…12M) end at the report time. Calendar periods use midnight in {timeZone}; weeks start Monday. Carry in / carry out are the broker balances observed at or up to {Math.round((ledger?.windows?.find(w => w.carry?.maxAgeMs)?.carry.maxAgeMs ?? 900000) / 60000)} min before each window edge, per recorded deposit currency (the same currency evidence the gradients pool by) and never summed across currencies; a currency total is shown only when every account of that currency was read, and an edge before the stored balance history, or with no read near it, says so and is not zero. Carry is not reconciled to Net: deposits, withdrawals and closes the bot did not record also move a balance. Unknown symbols are included under Other. A net marked “partial · n of m priced” sums only the closes with a recorded P&amp;L: it is not a bound in either direction. In All accounts a net is one line per broker deposit currency (the same recorded currency the carry and the gradients use), named even when every close is one account’s, added only within that currency and never across currencies; “n in no currency” counts closes from an account with no recorded currency, which are in no line. “Not pooled” means no currency is recorded for them at all.
       </p>
     </>
   )
+}
+
+// A ledger carry cell: observed broker balance per currency at the edge, or
+// the reason it is missing ("not stored before …"), never a zero (V3 WEB-3).
+function CarryCell({ set }) {
+  return balanceLines(set, { money }).map(l => (
+    <div key={l.key} title={l.title} className={l.missing ? 'italic' : undefined}>{l.text}</div>
+  ))
 }
 
 // One desktop ledger row, expandable into the market breakdown.
@@ -1000,7 +1088,8 @@ export function LedgerRow({ w, forceOpen = null, nowMs, timeZone }) {
   const open = forceOpen ?? openState
   const empty = !w.trades
   const last = empty ? agoLabel(w.lastTradeAt, nowMs) : null
-  const note = empty ? null : ledgerMoneyNote(w)
+  const split = empty ? null : currencyLines(w)
+  const note = empty || split ? null : ledgerMoneyNote(w)
   return (
     <>
       {/* A tr can't be a <button>, so it carries the disclosure semantics
@@ -1016,12 +1105,12 @@ export function LedgerRow({ w, forceOpen = null, nowMs, timeZone }) {
           <span className="text-(length:--fs-body) font-extrabold">{w.label}</span>
           <div className={`ml-3 text-(length:--fs-body) ${SUB}`}>{dRange(w.from, w.to, timeZone)}</div>
         </td>
-        <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${SUB}`}>{money(w.carryIn)}</td>
-        <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${pnlTone(empty ? null : w.net)}`} title={note?.title}>
-          {empty ? <span title={w.lastTradeAt ? `last fill ${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC` : undefined}>{last ? `last ${last}` : '—'}</span> : signed(w.net)}
+        <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${SUB}`}><CarryCell set={w.carry?.in} /></td>
+        <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${split ? '' : pnlTone(empty ? null : w.net)}`} title={note?.title}>
+          {empty ? <span title={w.lastTradeAt ? `last fill ${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC` : undefined}>{last ? `last ${last}` : '—'}</span> : split ? <CurrencyNetLines split={split} /> : signed(w.net)}
           {note && <div className={`text-(length:--fs-body) ${SUB}`}>{note.text}</div>}
         </td>
-        <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${SUB}`}>{money(w.carryOut)}</td>
+        <td className={`py-1.5 px-2 text-right tabular-nums text-(length:--fs-body) ${SUB}`}><CarryCell set={w.carry?.out} /></td>
         <td className="py-1.5 px-2 text-right tabular-nums text-(length:--fs-body)">
           {empty ? <span className={SUB}>—</span> : (
             <>
@@ -1044,7 +1133,7 @@ export function LedgerRow({ w, forceOpen = null, nowMs, timeZone }) {
         <tr className="border-b border-[var(--color-border)] bg-[var(--color-accent-soft)]/40">
           <td colSpan={6 + MARKET_COLS.length} className="py-2 px-3">
             {empty
-              ? <p className={`text-(length:--fs-body) ${SUB}`}>No closed trades in this window{w.carryIn == null ? ' — balances require cashflow-reconciled history' : ''}{last ? ` · last fill ${last} (${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC)` : ''}.</p>
+              ? <p className={`text-(length:--fs-body) ${SUB}`}>No closed trades in this window{last ? ` · last fill ${last} (${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC)` : ''}.</p>
               : <WindowDetail w={w} />}
           </td>
         </tr>
@@ -1059,7 +1148,8 @@ export function LedgerRow({ w, forceOpen = null, nowMs, timeZone }) {
 export function MobileWindowCard({ w, timeZone }) {
   const [open, setOpen] = useState(false)
   const empty = !w.trades
-  const note = empty ? null : ledgerMoneyNote(w)
+  const split = empty ? null : currencyLines(w)
+  const note = empty || split ? null : ledgerMoneyNote(w)
   return (
     <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, overflow: 'hidden', opacity: empty ? 0.65 : 1 }}>
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
@@ -1069,13 +1159,18 @@ export function MobileWindowCard({ w, timeZone }) {
           <span style={{ fontSize: 'var(--fs-body)', color: P_ACC }}>{dRange(w.from, w.to, timeZone)}</span>
         </span>
         <span style={{ display: 'flex', flexDirection: 'column' }}>
-          <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>{money(w.carryIn)} → <span style={{ fontWeight: W_CELL, color: P_TX }}>{money(w.carryOut)}</span></span>
+          <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>{carryText(w, 'in', { money })} → <span style={{ fontWeight: W_CELL, color: P_TX }}>{carryText(w, 'out', { money })}</span></span>
           <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{empty ? 'no closed trades' : `${w.trades} · ${w.winPct != null ? `${nf(0).format(w.winPct)}%` : '—'} · PF ${w.pf != null ? nf(2).format(w.pf) : '—'} · TP/SL ${w.tp + w.part}/${w.sl} · edge `}<span style={{ fontWeight: W_CELL, color: w.edge == null ? P_MU : w.edge >= 0 ? P_UP : P_DN }}>{empty ? '' : (w.edge != null ? `${signed(w.edge, 1)}%` : '—')}</span></span>
         </span>
         {/* A null net (no priced close, or accounts not pooled) is a dash in
             the muted colour — `null >= 0` once painted it as a gain. */}
         <span title={note?.title} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'right', color: empty || w.net == null ? P_MU : w.net >= 0 ? P_UP : P_DN }}>
-          <span>{empty ? '—' : signed(w.net)}</span>
+          {split ? split.lines.map(l => (
+            <span key={l.key} title={l.note?.title} style={{ color: l.net == null ? P_MU : l.net >= 0 ? P_UP : P_DN }}>
+              {l.currency} {signed(l.net)}{l.note && <span style={{ display: 'block', color: P_MU }}>{l.note.text}</span>}
+            </span>
+          )) : <span>{empty ? '—' : signed(w.net)}</span>}
+          {split?.unpooled && <span title={split.unpooled.title} style={{ color: P_MU }}>{split.unpooled.text}</span>}
           {note && <span style={{ color: P_MU }}>{note.text}</span>}
         </span>
       </button>
@@ -1087,11 +1182,15 @@ export function MobileWindowCard({ w, timeZone }) {
               <>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 4 }}>
                   {MARKET_COLS.map(m => {
-                    const st = w.markets?.[m.key], mNote = st?.trades ? ledgerMoneyNote(st) : null
+                    const st = w.markets?.[m.key], mSplit = st?.trades ? currencyLines(st) : null
+                    const mNote = st?.trades && !mSplit ? ledgerMoneyNote(st) : null
                     return (
                       <span key={m.key} title={mNote?.title} style={{ display: 'flex', flexDirection: 'column', border: `1px solid ${P_EDG}`, borderRadius: 8, padding: '4px 7px' }}>
                         <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>{m.label}</span>
-                        <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: st?.trades && st.net != null ? (st.net >= 0 ? P_UP : P_DN) : P_MU }}>{st?.trades ? signed(st.net) : '—'}</span>
+                        {mSplit ? mSplit.lines.map(l => (
+                          <span key={l.key} title={l.note?.title} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: l.net == null ? P_MU : l.net >= 0 ? P_UP : P_DN }}>{l.currency} {signed(l.net)}{l.note ? ` (${l.note.text})` : ''}</span>
+                        )) : <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: st?.trades && st.net != null ? (st.net >= 0 ? P_UP : P_DN) : P_MU }}>{st?.trades ? signed(st.net) : '—'}</span>}
+                        {mSplit?.unpooled && <span title={mSplit.unpooled.title} style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{mSplit.unpooled.text}</span>}
                         <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{st?.trades ? `PF ${st.pf != null ? nf(1).format(st.pf) : '—'} · ${st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'}` : ''}</span>
                         {mNote && <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{mNote.text}</span>}
                       </span>
@@ -1171,6 +1270,10 @@ export default function Performance() {
   const ledgers = useMemo(() => Object.fromEntries((overview?.accounts || []).map(a => [a.accountId,
     reportLedger(populationReport, a.accountId)])), [overview, populationReport])
   const [riskFull, setRiskFull] = useState(null)
+  // GET /state/data-feed (WEB-9): measured latency with coverage, stored
+  // fees/swap per deposit currency, quote freshness and the broker-day open
+  // for the Data-feed card. Null = not loaded, and the card says so.
+  const [feedReport, setFeedReport] = useState(null)
   const [screen, setScreen] = useState('now') // mobile pill nav
   const [error, setError] = useState('')
   // "Now" for the derived windows below — stamped at each data load so the
@@ -1182,12 +1285,17 @@ export default function Performance() {
   const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
   const journalAvailable = agentConfigured() && !error && tradeScope === acct
   const positionsAvailable = agentConfigured() && !error && posScope.accountId === acct
+  // The Data-feed card's account-dependent props, checked against `acct` at
+  // RENDER: an account switch keeps the previous account's feedReport and
+  // riskFull in state until the new load finishes, so a check made only when
+  // they were stored would paint the old account's figures under the new one.
+  const feedCardScope = dataFeedCardScope({ acct, feedReport, riskFull, error })
 
   const load = useCallback(async () => {
     if (pageAsleep()) return
     const generation = ++loadGeneration.current
     if (!agentConfigured()) {
-      setPopulationReport(null); setAnalytics(null); setRiskFull(null)
+      setPopulationReport(null); setAnalytics(null); setRiskFull(null); setFeedReport(null)
       setError('Agent not connected — set it up on Connect.'); return
     }
     try {
@@ -1221,21 +1329,25 @@ export default function Performance() {
       setPositions(positionRows || [])
       setPosScope({ accountId: positionRows ? acct : null, legacyRows: p?.legacyRows ?? 0 })
       // History reads share a queue with the chart; current money is independent.
-      const [pm, dd, rf] = await Promise.all([
+      const [pm, dd, rf, df] = await Promise.all([
         readPerformanceReport(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
         readPerformanceReport(`/state/decisions-daily?days=${DECISION_FEED_DAYS}&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`).catch(() => null),
         acct === 'all' ? null : agentGet(`/state/risk-full?account=${encodeURIComponent(acct)}`).catch(() => null),
+        agentGet(`/state/data-feed${q}`).catch(() => null),
       ])
       if (generation !== loadGeneration.current) return
       setPostmortems(pm?.rows || pm?.postmortems || [])
       setDecisionsDaily(dd?.rows ?? null)
       setRiskFull(rf)
+      // Only a report for THIS scope is shown; an older agent without the
+      // route (or an error body) leaves the card saying "did not load".
+      setFeedReport(df && !df.error && String(df.accountId) === String(acct) ? df : null)
 
       setLoadedAt(populations?.asOfMs ?? Date.now())
       setError('')
     } catch (e) {
       if (generation === loadGeneration.current) {
-        setPopulationReport(null); setAnalytics(null); setRiskFull(null)
+        setPopulationReport(null); setAnalytics(null); setRiskFull(null); setFeedReport(null)
         setError(e.message)
       }
     }
@@ -1265,6 +1377,8 @@ export default function Performance() {
     if (pm2) setPostmortems(pm2.rows || pm2.postmortems || [])
     const rf2 = acct === 'all' ? null : swrPeek(`/state/risk-full?account=${encodeURIComponent(acct)}`)
     if (rf2) setRiskFull(rf2)
+    const df2 = swrPeek(`/state/data-feed${q}`)
+    if (df2 && !df2.error && String(df2.accountId) === String(acct)) setFeedReport(df2)
     if (tradeRows) setTradeScope(acct)
     const populations = swrPeek(populationUrl)
     if (populations?.status === 'complete') {
@@ -1366,28 +1480,29 @@ export default function Performance() {
     net: openings?.net ?? null, n: openings?.closedN ?? null,
     pricedN: openings?.pricedN ?? null,
     wr: openings?.pricedN ? Math.round(openings.wins / openings.pricedN * 100) : null,
+    // All accounts: one line per deposit currency, never one sum (V3 WEB-5).
+    split: rollingSplits(openings).today,
   }), [openings])
 
   // Owner (2026-07-24 evening): "the today card cannot be empty... it
   // should show across a 24 hours (1hr timeframe) the Open balance, P/L,
   // Close balance, trades, close trades" — a zero-trade day still has 24
-  // hourly slots since the FX day open; each carries the account's balance
-  // forward/backward from the current stamped balance the same way the
-  // Timeframe ledger's carry-in/carry-out does, so an hour with no closes
-  // still shows a real (flat) balance line instead of nothing at all.
+  // hourly slots; each shows the broker balance OBSERVED at its two edges
+  // (V3 WEB-3, the same rule as the Timeframe ledger's carry in / carry out),
+  // so an hour with no closes still shows a real, dated balance line. Nothing
+  // is carried forward or backward from a current balance any more.
   const todayHourly = useMemo(() => {
     const slots = rollingHourWindows(hourNow, 24)
-    const withBal = slots.map(s => {
-      const row = openings?.rows.find(r => r.from === s.from && r.to === s.to)
-      return { ...s, net: row?.net ?? null, closedN: row?.closedN ?? null,
-        openBal: null, closeBal: null,
-        openedN: row?.openedN ?? null, unknownOpeningTimeN: openings?.unknownTimeN ?? 0,
-        unknownCloseTimeN: openings?.unknownCloseTimeN ?? 0,
-        incompleteOpeningWindow: Boolean(row && row.to > openings.observedThrough) }
-    })
-    // Newest first for reading. The reversal happens AFTER the carry above,
-    // which must run oldest-to-newest; see hourly-order.js for why touching the
-    // order before it would invert every balance on the page.
+    // Observed broker balances at the hour's edges and the hour's last
+    // floating reading come from the server (V3 WEB-3); never carried or
+    // reconstructed here. See hourRowEvidence. Each hour's recorded P&L in
+    // the all-accounts view is one line per recorded deposit currency, from
+    // the server's pools (V3 WEB-5), aligned with `slots`.
+    const hourSplits = rollingSplits(openings, slots).hours
+    const withBal = slots.map((s, i) => ({ ...s, ...hourRowEvidence(openings, s), split: hourSplits[i] }))
+    // Newest first for reading. Each row's balances are the server's observed
+    // edges for that row's own window (matched by from/to above), so the order
+    // is display-only: no client-side carry depends on it any more.
     //
     // `hourNow`, not `loadedAt`: the labels, the buckets and the NOW marker all
     // follow the WALL CLOCK, so they move on the tick instead of waiting for
@@ -1521,8 +1636,12 @@ export default function Performance() {
   // engine's reading), not `dailyLossPct` alone: on 46130058 "3%/day" named a
   // limit that was not the one binding (8,989-A row 11, folded into WEB-2).
   // The portfolio scope has no single daily stop — each account has its own.
-  const feedDailyStop = useMemo(() => (acct === 'all' ? null
-    : dailyStopView(overview?.accounts?.find(r => r.accountId === acct)?.dailyStop)), [overview, acct])
+  // One reading for the card and the account cards: feedDailyStopView takes
+  // the scoped account's own overview row through the dailyStopView that
+  // cardStopFields uses. WEB-9 had built a second daily-loss reader on
+  // /state/risk-full; it was retired when WEB-2 merged, so the page shows one
+  // daily-stop figure from one source (owner principle 6).
+  const feedDailyStop = useMemo(() => feedDailyStopView(overview, acct), [overview, acct])
 
   // Open positions split by MARKET STATE (owner 2026-07-24: open trades sat
   // stuck through a Friday close the UI never surfaced). /state/positions
@@ -1594,6 +1713,12 @@ export default function Performance() {
   // main bundle, so the throw took out the whole app: every page rendered
   // blank. Shipped in #482 and live until 2026-07-29.
   const liveFloating = feed.openPnl
+  // All accounts in more than one currency: a floating subtotal per currency
+  // instead of none (V3 WEB-3, 8,989-A row 5), keyed on the SAME recorded
+  // deposit currency the gradients pool by (reportCurrency, V3 WEB-3m). The
+  // helper reads the currency itself from the report; this call names none.
+  const liveFloatingGroups = useMemo(() => liveFloatingByCurrency(overview, populationReport, acct, feed.openPnl),
+    [overview, populationReport, acct, feed.openPnl])
 
 
   // Stat tiles migrated verbatim from Desk's old Performance section —
@@ -1723,7 +1848,7 @@ export default function Performance() {
       const tick = cryptoTicks[sym]
       const { price, delta } = displayQuote(tick?.accountId === quoteAccount ? tick : null, quoteNow)
       return { sym, price, delta, spread: price == null ? null : tick.ask - tick.bid,
-        quoteNote: tick?.receivedAtMs ? `Broker receipt ${new Date(tick.receivedAtMs).toLocaleTimeString()}` : 'No quote received',
+        quoteNote: quoteReceiptNote(tick),
         pnl: signed(a.pnl), col: a.pnl == null ? P_MU : a.pnl >= 0 ? P_UP : P_DN,
         meta: `${a.n ?? 'unavailable'} closes · ${a.pricedN ?? '—'} priced · ${a.wr == null ? '—' : a.wr.toFixed(1)}% win` }
     }),
@@ -1955,9 +2080,9 @@ export default function Performance() {
                     Both read the same `today`, which is now on rollingWin. */}
                 <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</span>
                 <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>latest 24 one-hour windows · newest first</span>
-                <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.net != null ? signed(today.net) : '—'}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.split ? <HeadlineCurrencyLines split={today.split} /> : today.net != null ? signed(today.net) : '—'}</span>
               </div>
-              <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.pricedN} with P&L · ${today.wr ?? 'unknown'}% wins among priced closes` : (today.n == null ? 'Close evidence unavailable' : '0 recorded closes in the last 24 hours')}</span>
+              <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.pricedN} with P&L · ${today.wr ?? 'unknown'}% wins among priced closes${today.split?.unpooled ? ` · ${today.split.unpooled.text}` : ''}` : (today.n == null ? 'Close evidence unavailable' : '0 recorded closes in the last 24 hours')}</span>
             </div>
             {[{ key: 'float', title: 'Open positions — floating', rows: openSplit.floating, tot: openSplit.floatTot, border: P_GBD, titleCol: P_MU },
               { key: 'closed', title: 'Open trade but market closed', rows: openSplit.closed, tot: openSplit.closedTot, border: 'var(--color-warning-border)', titleCol: P_WRN }]
@@ -2152,8 +2277,9 @@ export default function Performance() {
               currency={feed.currency}
               floating={feed.openPnl}
               openCount={positionsAvailable ? positions.length : null}
+              {...feedCardScope}
+              nowMs={quoteNow}
               dailyStop={feedDailyStop}
-              equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
               slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
               tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
             />
@@ -2229,32 +2355,38 @@ export default function Performance() {
                   the period is simply the last 24 hours, ending now. */}
               <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>latest 24 one-hour windows · newest first</span>
               <SectionTools id="today" title="Rolling 24 Hours table" data={{ hourly: todayHourly, closedTrades: todayTrades }}
-                toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.net != null ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr ?? 'unknown'}% wins among ${today.pricedN} priced closes` : ''}`,
+                toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.split ? currencyLinesText(today.split, signed) : today.net != null ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr ?? 'unknown'}% wins among ${today.pricedN} priced closes` : ''}`,
                   // The copied text carries the same label the row shows — the
                   // END of the window, in SGT over UTC — not the window start.
-                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.net != null ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)} opened / ${openingCountLabel(r.closedN, r.unknownCloseTimeN, r.incompleteOpeningWindow)} closed`),
+                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${balanceLines(r.balance?.open, { money }).map(l => l.text).join(' / ')} · P/L ${r.split ? currencyLinesText(r.split, signed) : r.net != null ? signed(r.net) : '—'}${floatingText(r.balance?.floating, { signed }) ? ` ${floatingText(r.balance?.floating, { signed }).text}` : ''} · close ${balanceLines(r.balance?.close, { money }).map(l => l.text).join(' / ')} · ${openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)} opened / ${openingCountLabel(r.closedN, r.unknownCloseTimeN, r.incompleteOpeningWindow)} closed`),
                   '', `Journal sample (${journalAvailable ? todayTrades.length : 'unavailable'})`,
                   ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')}
-                render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} available={journalAvailable} /></>} />
+                render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} floatingNowGroups={liveFloatingGroups} /><TodayTradesBody rows={todayTrades} available={journalAvailable} /></>} />
             </span>
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
-              {today.net != null ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
+              {today.split ? <HeadlineCurrencyLines split={today.split} />
+                : today.net != null ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
             </span>
-            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.pricedN} with P&L · ${today.wr ?? 'unknown'}% wins among priced closes` : (today.n == null ? 'Close evidence unavailable' : '0 recorded closes in the last 24 hours')}</span>
+            <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.pricedN} with P&L · ${today.wr ?? 'unknown'}% wins among priced closes${today.split?.unpooled ? ` · ${today.split.unpooled.text}` : ''}` : (today.n == null ? 'Close evidence unavailable' : '0 recorded closes in the last 24 hours')}</span>
             {/* Owner (2026-07-25): "Today table must be longer in length" —
                 8 rows per page (3 pages over a full day) instead of 4. */}
             <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}
               initialIndex={0}>
-              {(pageRows) => <TodayHourlyBody rows={pageRows} floatingNow={liveFloating} />}</PagedRows>
+              {(pageRows) => <TodayHourlyBody rows={pageRows} floatingNow={liveFloating} floatingNowGroups={liveFloatingGroups} />}</PagedRows>
             <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>
               {openings
                 ? `Openings: all confirmed ledger rows, including still-open trades; queried ${new Date(openings.generatedAt).toUTCString()}. ${openings.legacyN} unattributed; ${openings.adoptedN} adopted (may use reconciliation time); totals include undated rows.${openings.unknownTimeN ? ` ${openings.unknownTimeN} rows have unknown opening times; ≥ marks a lower bound.` : ''}${openings.observedThrough < openings.to ? ' Browser time is ahead of the server; the newest opening window is incomplete (≥ is a lower bound, unknown is not zero).' : ''}`
                 : 'Opening counts unavailable or stale — a dash is not zero.'}
-              {' '}Close counts cover the full ledger, including closes awaiting P&L. Currency was not recorded on historical trades; amounts from different accounts are not combined. Balance columns await currency and cashflow reconciliation. Broker completeness remains unverified.
+              {' '}Close counts cover the full ledger, including closes awaiting P&L. Trades carry no currency of their own; each account's recorded broker deposit currency names its unit, and amounts are added only within one currency, never across currencies. A close in an account with no recorded currency is counted but in no currency line. Open and close balances are the broker balances observed at or up to {Math.round((openings?.balanceHistory?.maxAgeMs ?? 900000) / 60000)} min before each hour edge, per recorded deposit currency (the gradients&apos; currency evidence) and never summed across currencies{openings?.balanceHistory?.accounts?.some(a => a.historyStartsAt != null) ? ` (stored from ${utcStamp(Math.min(...openings.balanceHistory.accounts.filter(a => a.historyStartsAt != null).map(a => a.historyStartsAt)))})` : ''}; an edge without a read says so and is not zero, and a currency total is shown only when every account of that currency was read. The bracketed float on an earlier hour is the last broker floating reading stored in that hour, shown only where one exists. Broker completeness remains unverified.
             </span>
-            {openings && <details><summary>Recorded P&L by account · currency not recorded</summary>
+            {openings && <details><summary>Recorded P&L by currency and account</summary>
+              {/* V3 WEB-5: per-currency subtotals first (each pooled only
+                  within its own currency), then every account in its unit. */}
+              {Array.isArray(openings.moneyByCurrency) && <ul>{openings.moneyByCurrency.map(c => <li key={c.currency}>
+                {c.currency} subtotal: {c.recordedNet != null ? signed(c.recordedNet) : 'no recorded P&L'} · {c.pricedN}/{c.closedN} closes priced{c.pricedN < c.closedN ? ' · PARTIAL P&L' : ''} · {c.accountIds.length} account{c.accountIds.length === 1 ? '' : 's'}
+              </li>)}{openings.unpooled?.closedN > 0 && <li key="unpooled">No recorded currency: {openings.unpooled.closedN} close{openings.unpooled.closedN === 1 ? '' : 's'} ({openings.unpooled.accountIds.map(id => id ?? 'unattributed').join(', ')}), in no subtotal</li>}</ul>}
               <ul>{openings.moneyByAccount.map(a => <li key={a.accountId ?? 'legacy'}>
-                {a.accountId ?? 'Unattributed legacy'}: {signed(a.recordedNet)} recorded units · {a.pricedN}/{a.closedN} closes priced{a.pricedN < a.closedN ? ' · PARTIAL P&L' : ''}
+                {a.accountId ?? 'Unattributed legacy'}: {signed(a.recordedNet)} {a.currency ?? 'recorded units (currency not recorded)'} · {a.pricedN}/{a.closedN} closes priced{a.pricedN < a.closedN ? ' · PARTIAL P&L' : ''}
               </li>)}</ul>
               <p>{openings.unknownCloseTimeN} closed rows have unknown closing dates; window counts are lower bounds when this is nonzero. Small samples support factual activity, not a reliable performance conclusion.</p>
             </details>}
@@ -2536,8 +2668,9 @@ export default function Performance() {
             currency={feed.currency}
             floating={feed.openPnl}
             openCount={positionsAvailable ? positions.length : null}
+            {...feedCardScope}
+            nowMs={quoteNow}
             dailyStop={feedDailyStop}
-            equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
             slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
             tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
           />

@@ -1,9 +1,10 @@
 import { isOurs, parseLabel, labelIntentId, ownedByIntent } from '../lib/trade-labels.js'
-import { recordTradePlan } from './trade-plans.js'
+import { recordTradePlan, planProblems, PLAN_ABSURD_RISK_FRACTION } from './trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
 import { getState, setState as setAgentState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
 import { lotsFromUnits } from '../lib/lot-size-registry.js'
+import { recordPositionEvent } from './position-events.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -102,9 +103,35 @@ export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbo
     db.prepare(`UPDATE monitored_positions SET strategy = COALESCE(strategy, ?) WHERE trade_id = ?`).run(strategy, tradeId)
     const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(tradeId)
     if (!hasPlan) {
+      // X1 / W3 (25-09-2026): the intent's sl/tp are in the units the order
+      // carried them (entry_intents.sl_units / tp_units). A relative leg is
+      // wire points — never a price: it becomes one from the fill (`entry`,
+      // the broker's open price the relative bracket was applied to). Before
+      // this, `it.sl` went in as a price: #1686 JPM.US planned_sl 1,732,000.
+      // A pre-X1 row recorded no units: its value is read as a price only
+      // when it IS price-shaped for this entry (right side, within
+      // planProblems' scale). Wire points cannot pass that test — a stop
+      // 0.1–5 % away is 100–5,000× the price in points — so they fall back to
+      // the broker's own stop / target on the position.
+      const dir = sideWord === 'BUY' ? 1 : -1
+      const e = Number(entry)
+      const haveEntry = entry != null && Number.isFinite(e) && e > 0
+      const legPrice = (value, units, sign, leg) => {
+        const v = Number(value)
+        if (value == null || !Number.isFinite(v)) return null
+        if (units === 'price') return v
+        if (units === 'relative_points') return haveEntry ? e + sign * dir * v / 100_000 : null
+        // planProblems judges the stop's scale only; the target's is judged here.
+        if (units == null && haveEntry && planProblems({ side: sideWord, entry: e, [leg]: v }).length === 0
+          && Math.abs(v - e) / e <= PLAN_ABSURD_RISK_FRACTION) return v
+        return null
+      }
       recordTradePlan(db, tradeId, {
         accountId: acct, symbol: symbolName, side: sideWord, strategy, timeframe: parsed?.timeframe || null,
-        entry: entry ?? null, sl: it.sl ?? sl ?? null, tp: it.tp ?? tp ?? null, source: 'reconciler_adopted_intent',
+        entry: entry ?? null,
+        sl: legPrice(it.sl, it.sl_units, -1, 'sl') ?? sl ?? null,
+        tp: legPrice(it.tp, it.tp_units, +1, 'tp') ?? tp ?? null,
+        source: 'reconciler_adopted_intent',
       })
     }
     return { intentId: tag, origin, strategy, riskEventId }
@@ -312,6 +339,25 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       }
       if (row.broker_volume_units != null && bVol != null && differs(bVol, row.broker_volume_units)) {
         manualChanges.push({ kind: 'volume', symbol: row.symbol, positionId: posId, from: row.broker_volume_units, to: bVol })
+        // A VOLUME THAT FELL IS A PARTIAL CLOSE (V3 B1 checker blocker).
+        // loop.js PARTIAL_EXIT nulls this baseline first, so a fall seen here
+        // was made by hand in cTrader or by a partial writer that does not
+        // reset the baseline (the keeper, the trade guard, the momentum
+        // partial manager — each also leaves its own evidence). Recorded as
+        // indexed evidence for the full close (lib/deal-money.js
+        // openedVolumeOnRecord): without it a manual partial left the later
+        // FULL_EXIT with held = closed volume, writing ONE deal's money for the
+        // whole position (#714's defect, by the manual route). Recorded HERE,
+        // on every account's pass — loop.js's TAMPER alert is reached by the
+        // primary pass only. A distinct kind: it moves no management state
+        // (position-events.js) and names what was observed, not who did it.
+        if (Number(bVol) < Number(row.broker_volume_units)) {
+          recordPositionEvent(db, {
+            accountId: acct, positionId: posId, tradeId: row.trade_id ?? null, symbol: row.symbol,
+            kind: 'volume_reduced', fromValue: row.broker_volume_units, toValue: bVol, source: 'reconciler',
+            reason: 'broker volume fell between reconcile passes (tamper watch): a partial close, writer not identified',
+          })
+        }
       }
       if (!updates.side) { // side flip already adopts SL/TP wholesale
         if (row.broker_sl != null && differs(bSl, row.broker_sl) && differs(bSl, row.current_sl)) {
@@ -1021,17 +1067,17 @@ export function reclassifyBrokerCloses(db) {
   // is on record (02-09-2026) — the reclassifier judges against the level
   // that could have filled, not the one that was asked for.
   const rows = db.prepare(
-    `SELECT id, side, exit_price, COALESCE(broker_sl_initial, sl_price) AS sl_price, tp_price FROM trades
-     WHERE status = 'closed' AND exit_price IS NOT NULL
+    `SELECT t.id, t.side, t.entry_price, t.exit_price, COALESCE(t.broker_sl_initial, t.sl_price) AS sl_price, t.tp_price, t.close_reason, mp.current_sl AS moved_current_sl, mp.broker_sl AS moved_broker_sl FROM trades t LEFT JOIN (SELECT trade_id, MAX(id) AS mid FROM monitored_positions WHERE trade_id IS NOT NULL GROUP BY trade_id) lm ON lm.trade_id = t.id LEFT JOIN monitored_positions mp ON mp.id = lm.mid
+     WHERE t.status = 'closed' AND t.exit_price IS NOT NULL
        AND (
-         close_reason LIKE 'closed at the broker%'
+         t.close_reason LIKE 'closed at the broker%'
          -- BACKFILL (2026-07-29). Rows already carrying the FALSE
          -- stopped-beyond-the-SL stamp, written before the null-SL bug above
          -- was fixed. Normally this function never overwrites a reason it did
          -- not write, but leaving these would leave the ledger asserting a
          -- stop existed on positions that ran naked. Narrowly scoped: only
          -- that exact stamp, and only where there is provably no stop.
-         OR (sl_price IS NULL AND close_reason LIKE 'stopped beyond the SL%')
+         OR (t.sl_price IS NULL AND t.close_reason LIKE 'stopped beyond the SL%')
        )`
   ).all()
   const upd = db.prepare('UPDATE trades SET close_reason = ? WHERE id = ?')
@@ -1062,7 +1108,7 @@ export function reclassifyBrokerCloses(db) {
       reason = 'take profit hit — broker-side TP fill (reclassified from the broker exit price)'
     } else if (near(t.sl_price)) {
       reason = 'stop loss hit — broker-side SL fill (reclassified from the broker exit price)'
-    } else if (t.sl_price == null) {
+    } else if (t.sl_price == null && positivePrice(t.moved_broker_sl) == null && !movedStops(t).some(p => near(p))) {
       // NO STOP ON RECORD. This branch exists because the one below asserted
       // the opposite (owner report 2026-07-29, an ETHUSD short).
       //
@@ -1076,17 +1122,104 @@ export function reclassifyBrokerCloses(db) {
       // The same trap is already documented at loss-postmortem.js:192 — "a
       // missing TP must read as 'no goal', not 'goal 0'". It was guarded
       // there and missed here.
+      //
+      // V3 L2b W12: a stop the BROKER showed later (broker_sl), or an exit at
+      // a moved stop, is evidence of protection and leaves this branch; the
+      // managers' own level alone (current_sl, which can run ahead of the
+      // broker) is not, so it does not turn a naked position into a stopped one.
       reason = 'closed at the broker with NO STOP LOSS on record — this position was unprotected; cause of exit unknown (reclassified from the broker exit price)'
     } else {
-      const sl = Number(t.sl_price)
+      // V3 L2b W12 (CLS-03): the stop that could fill is the one the broker
+      // held LAST, not only the one it held first. A trailed or moved stop
+      // lives on the monitored row (current_sl, the managers' level; broker_sl,
+      // the last broker snapshot) — judging only broker_sl_initial left every
+      // trail fill "closed at the broker" (379 of 1,315 closes unattributed).
       const long = String(t.side || '').toUpperCase() === 'BUY'
-      if (Number.isFinite(sl) && sl > 0 && (long ? exit < sl : exit > sl)) {
+      const moved = movedStops(t)
+      const hitMoved = moved.find(p => near(p))
+      // "Beyond" is judged against the LOOSEST stop the broker could have held
+      // at the close (fix round, checker blocker 2): the managers' level can
+      // run ahead of the broker (a NORMAL transient, see the convergence note
+      // in reconcilePositions), so an exit past current_sl but short of the stop
+      // the broker actually held was never a stop breach.
+      const sl = loosestHeldStop(t, long)
+      if (hitMoved != null) {
+        reason = movedStopReason(t, hitMoved, long)
+      } else if (sl != null && (long ? exit < sl : exit > sl)) {
         reason = 'stopped beyond the SL — gap/slippage through the stop or a margin-level liquidation (reclassified from the broker exit price)'
       }
     }
-    if (reason) { upd.run(reason, t.id); n++ }
+    // Only a CHANGED reason is written (fix round, checker nit 2): rows the
+    // query re-selects every pass — the NO STOP stamp starts "closed at the
+    // broker", and a stop-less row stamped "stopped beyond the SL" matches the
+    // backfill clause — were rewritten and counted on every reconcile.
+    if (reason && reason !== t.close_reason) { upd.run(reason, t.id); n++ }
   }
   return n
+}
+
+/**
+ * V3 L2b W12 — the stops a position held AFTER entry, newest-first: the
+ * managers' level (`current_sl`), then the broker's last-seen level
+ * (`broker_sl`), each only when it is a real price different from the stop
+ * at entry. Empty when the stop never moved or the row has no monitor.
+ */
+export function movedStops(t) {
+  const initial = Number(t?.sl_price)
+  const out = []
+  for (const v of [t?.moved_current_sl, t?.moved_broker_sl]) {
+    if (v == null || v === '') continue
+    const p = Number(v)
+    if (!(Number.isFinite(p) && p > 0)) continue
+    if (Number.isFinite(initial) && initial > 0 && Math.abs(p - initial) <= Math.abs(initial) * 1e-9) continue
+    if (!out.includes(p)) out.push(p)
+  }
+  return out
+}
+
+const positivePrice = (v) => {
+  if (v == null || v === '') return null
+  const p = Number(v)
+  return Number.isFinite(p) && p > 0 ? p : null
+}
+
+/**
+ * V3 L2b W12 (fix round) — the loosest stop the broker could have been
+ * holding when the position closed, or null when it may have held none.
+ *
+ * Candidates: the moved stops (current_sl — the managers' level, which can be
+ * ahead of the broker — and broker_sl, the broker's last snapshot), plus the
+ * stop at entry UNLESS the broker's snapshot shows it had already moved off
+ * it. With no snapshot (or a snapshot still at the entry stop) and no entry
+ * stop on record, the broker may have held no stop at all: null, so no exit
+ * is ever called "beyond the SL" on a stop nobody saw the broker hold.
+ * Loosest = lowest for a long, highest for a short.
+ */
+export function loosestHeldStop(t, long) {
+  const initial = positivePrice(t?.sl_price)
+  const snap = positivePrice(t?.moved_broker_sl)
+  const held = movedStops(t)
+  const brokerLeftEntryStop = snap != null && !(initial != null && Math.abs(snap - initial) <= Math.abs(initial) * 1e-9)
+  if (!brokerLeftEntryStop) {
+    if (initial == null) return null
+    held.push(initial)
+  }
+  if (!held.length) return null
+  return long ? Math.min(...held) : Math.max(...held)
+}
+
+/**
+ * The stamp for an exit AT a moved stop. A stop moved to entry or beyond it
+ * is a profit lock ("locked" — exitKind reads it as a trail exit); one still
+ * on the losing side of entry is a tightened stop (exitKind: stop). Both start
+ * "stop loss hit", as the stop-at-entry stamp does.
+ */
+export function movedStopReason(t, stop, long) {
+  const entry = Number(t?.entry_price)
+  const locked = Number.isFinite(entry) && entry > 0 && (long ? stop >= entry : stop <= entry)
+  return locked
+    ? 'stop loss hit — broker-side fill at a stop moved after entry and locked at or beyond entry (reclassified from the broker exit price)'
+    : 'stop loss hit — broker-side fill at a stop moved after entry (reclassified from the broker exit price)'
 }
 
 /**

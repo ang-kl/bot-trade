@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { marketIdentityKey } from '../lib/market-identity.js'
-import { planMomentumTargets, shiftStopToFill, stopHeld, sameTicks } from './momentum-target-policy.js'
+import { planMomentumTargets, shiftStopToFill, stopHeld, sameTicks, offPriceGrid } from './momentum-target-policy.js'
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { registerPartialPlan } from './momentum-partial-manager.js'
 import { readMomentumPartialPass, partialPassFreshness, partialPassForAccount } from './momentum-partial-runtime.js'
@@ -93,7 +93,15 @@ export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, max
   const stop = shiftStopToFill(p, position.entry)
   const plan = stop == null ? null : planMomentumTargets({ ...p, entry: position.entry, originalStop: stop })
   if (!plan?.ok || !stopHeld(p.side, position.stopLoss, plan.originalStop, p.digits)
-    || !sameTicks(position.takeProfit, plan.brokerTarget, p.digits)) throw Error('entry fill bracket mismatch')
+    || !sameTicks(position.takeProfit, plan.brokerTarget, p.digits)) {
+    // A fill off the grid (a multi-deal average, 265.9133) is not supported
+    // (T1b N1): the outward-rounded stop moves the plan's risk by a fraction
+    // of a tick, so its recomputed target misses the broker's, and how cTrader
+    // anchors such a fill's relative target is unverified (carried to T2/T4).
+    // The refusal names it, so it is not read as a wrong broker bracket.
+    if (offPriceGrid(position.entry, p.digits)) throw Error('entry fill off the price grid (multi-deal average): bracket not bound')
+    throw Error('entry fill bracket mismatch')
+  }
   if (intent.state === 'BOUND') {
     if (intent.position_id !== position.positionId || !same(intent.plan, plan)) throw Error('entry fill already bound differently')
     return intent

@@ -30,6 +30,15 @@
 import { stampRealisedAudit } from './trade-consistency.js'
 import { pageDeals } from '../lib/deal-paging.js'
 import { brokerDealLinkIdentities } from './broker-deal-link-identity.js'
+import { normPosId } from '../lib/pos-id.js'
+import { FALSE_CLOSE_TOLERANCE_MS } from '../lib/position-deal-history.js'
+
+// Ledger timestamps come in both 'YYYY-MM-DD HH:MM:SS' (UTC) and ISO forms.
+const ledgerMs = v => {
+  if (v == null || v === '') return NaN
+  const raw = String(v).replace(' ', 'T')
+  return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`)
+}
 
 const SIDE_NAME = { 1: 'BUY', 2: 'SELL' }
 
@@ -129,23 +138,55 @@ export function persistDeals(db, rows) {
     // context. Never let a row from another account win a Map overwrite, and
     // never choose arbitrarily when the local ledger itself contains duplicate
     // account+position rows. Production 24-09-2026 exposed exactly that shape.
-    for (let i = 0; i < pids.length; i += 500) {
-      const slice = pids.slice(i, i + 500)
-      const placeholders = slice.map(() => '?').join(',')
+    //
+    // V3 B1: identity rows are the ones that can hold a position. A rejected
+    // or cancelled row does not — production 25-09 had 42 of the 44 unmatched
+    // positions on …0058 as closed + rejected pairs whose deals agree with the
+    // ledger, left unlinked so the price reconciler skipped them. And both
+    // text forms of an id are matched ('234698574' and the float-formatted
+    // '234698574.0' some old rows still carry) as plain values, not with a
+    // CAST, so idx_trades_position_id keeps serving the lookup.
+    for (let i = 0; i < pids.length; i += 250) {
+      const slice = pids.slice(i, i + 250)
+      const forms = slice.flatMap(pid => [pid, `${pid}.0`])
+      const placeholders = forms.map(() => '?').join(',')
       const grouped = new Map()
       for (const t of db.prepare(
-        `SELECT id, account_id, ctrader_position_id FROM trades WHERE ctrader_position_id IN (${placeholders})`,
-      ).all(...slice)) {
-        const key = `${t.account_id ?? ''}:${String(t.ctrader_position_id)}`
+        `SELECT id, account_id, ctrader_position_id, status, closed_at FROM trades WHERE ctrader_position_id IN (${placeholders})
+          AND status NOT IN ('rejected','cancelled')`,
+      ).all(...forms)) {
+        const key = `${t.account_id ?? ''}:${normPosId(t.ctrader_position_id)}`
         const list = grouped.get(key) || []
-        list.push(t.id); grouped.set(key, list)
+        list.push(t); grouped.set(key, list)
       }
-      for (const [key, ids] of grouped) if (ids.length === 1) localByIdentity.set(key, ids[0])
+      for (const [key, list] of grouped) if (list.length === 1) localByIdentity.set(key, list[0])
     }
   }
-  const localIdFor = (r) => {
+  const identityKey = (r) => {
     const identity = identities.get(r)
-    return identity ? localByIdentity.get(`${identity.accountId}:${identity.positionId}`) ?? null : null
+    return identity ? `${identity.accountId}:${normPosId(identity.positionId)}` : null
+  }
+  // A ROW THAT CLOSED WHILE THE BROKER STILL HELD THE POSITION IS NOT ITS
+  // RECORD (B1 checker N5). The one identity row may be a false close whose
+  // true twin is rejected: production …0058 NATGAS #309 carries money and
+  // closed before BOTH broker deals, while #310, the row that held the
+  // position, is rejected. Linked, the price reconciler would rewrite #309's
+  // entry, exit, close time and volume to the deals' — a false close made to
+  // look real. So when the position's latest closing deal in this batch
+  // executed more than the tolerance after the row's recorded close, the row
+  // gets no receipt (as before B1, when the rejected twin blocked the link).
+  const lastCloseMs = new Map()
+  for (const r of rows) {
+    const key = identityKey(r), ms = ledgerMs(r.closed_at)
+    if (key != null && Number.isFinite(ms)) lastCloseMs.set(key, Math.max(lastCloseMs.get(key) ?? -Infinity, ms))
+  }
+  const localIdFor = (r) => {
+    const key = identityKey(r)
+    const t = key == null ? null : localByIdentity.get(key)
+    if (!t) return null
+    const rowClosedMs = t.status === 'closed' ? ledgerMs(t.closed_at) : NaN
+    if (Number.isFinite(rowClosedMs) && lastCloseMs.get(key) > rowClosedMs + FALSE_CLOSE_TOLERANCE_MS) return null
+    return t.id
   }
 
   const up = db.prepare(`
@@ -157,12 +198,26 @@ export function persistDeals(db, rows) {
       @opened_at, @closed_at, @gross_pnl, @swap, @commission, @net_pnl, @matched_trade_id
     )
     ON CONFLICT(deal_id) DO UPDATE SET
-      symbol = excluded.symbol, side = excluded.side, lots = excluded.lots,
-      entry_price = excluded.entry_price, close_price = excluded.close_price,
+      -- V3 B1 (PR-1(g), LIFECYCLE-SPEC W10 / CLS-06): a re-read that LACKS a
+      -- field keeps the stored one. The loop's receipts carry no lot size and
+      -- the boot statement seed no gross/swap split; each used to erase what
+      -- the other had stored (683 deals lost their split on 25-09). A named
+      -- symbol is kept over the '#<symbolId>' fallback. A value the re-read
+      -- DOES carry still refreshes the row: the broker is the source.
+      symbol = CASE WHEN excluded.symbol IS NULL
+                      OR (excluded.symbol LIKE '#%' AND broker_deals.symbol IS NOT NULL AND broker_deals.symbol NOT LIKE '#%')
+                    THEN broker_deals.symbol ELSE excluded.symbol END,
+      side = COALESCE(excluded.side, broker_deals.side),
+      lots = COALESCE(excluded.lots, broker_deals.lots),
+      entry_price = COALESCE(excluded.entry_price, broker_deals.entry_price),
+      close_price = COALESCE(excluded.close_price, broker_deals.close_price),
       -- Never overwrite a known open time with a NULL from a narrower window.
       opened_at = COALESCE(excluded.opened_at, broker_deals.opened_at),
-      closed_at = excluded.closed_at, gross_pnl = excluded.gross_pnl,
-      swap = excluded.swap, commission = excluded.commission, net_pnl = excluded.net_pnl,
+      closed_at = COALESCE(excluded.closed_at, broker_deals.closed_at),
+      gross_pnl = COALESCE(excluded.gross_pnl, broker_deals.gross_pnl),
+      swap = COALESCE(excluded.swap, broker_deals.swap),
+      commission = COALESCE(excluded.commission, broker_deals.commission),
+      net_pnl = COALESCE(excluded.net_pnl, broker_deals.net_pnl),
       -- Null is a failed identity proof, not a missing update. Keeping an old
       -- link would contradict the unmatched receipt and allow the downstream
       -- price reconciler to keep using an arbitrary local trade.
@@ -171,8 +226,14 @@ export function persistDeals(db, rows) {
   `)
   const before = db.prepare('SELECT COUNT(*) AS c FROM broker_deals').get().c
   const write = db.transaction(() => {
+    // V3 L2b W10: a NULL in this read keeps what is stored (keepKnownDealFields,
+    // end of file). Read inside the transaction and carried forward, so a deal
+    // that appears twice in one batch keeps what its first copy wrote.
+    const stored = storedDealFields(db, rows)
     for (const r of rows) {
-      up.run({ ...r, matched_trade_id: localIdFor(r) })
+      const merged = keepKnownDealFields(r, stored.get(String(r.deal_id)))
+      up.run({ ...merged, matched_trade_id: localIdFor(r) })
+      stored.set(String(r.deal_id), merged)
     }
   })
   write()
@@ -234,57 +295,12 @@ export function persistDeals(db, rows) {
 /** Usable price: a real, positive number. Zero and NULL are "no answer". */
 const usablePrice = (v) => Number.isFinite(v) && v > 0
 
-/**
- * The money write behind POST /actions/broker-history, pulled out of the
- * route so it can be exercised without a broker (codebase audit 02-09-2026).
- *
- * Until now the route OVERWROTE net_pnl/gross_pnl on every closed row of the
- * position, with no account scope and no re-stamp — the Desk fires it on
- * every load, so it was the busiest money writer in the system and the only
- * one outside the shared audit stamp. Three corrections, each the rule the
- * loop's pnl-backfill already follows:
- *   - fill ONLY a NULL net_pnl (a value the bot stamped is already broker-
- *     true, and an aggregate over partials could double-count);
- *   - scope to the account whose deals these are (or rows with no account,
- *     which this write then claims — same attribute-on-match as the loop);
- *   - re-stamp realised R and the consistency verdict on every row touched.
- *
- * `byPosition`: Map<positionId, {net, gross, last:{closePrice, closedAt}}>.
- */
-export function applyBrokerHistoryMoney(db, byPosition, { accountId = null } = {}) {
-  const acct = accountId != null ? String(accountId) : null
-  const upd = db.prepare(
-    `UPDATE trades
-        SET net_pnl = ?, gross_pnl = COALESCE(gross_pnl, ?),
-            exit_price = COALESCE(exit_price, ?),
-            closed_at = COALESCE(closed_at, ?),
-            account_id = COALESCE(account_id, ?)
-      WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
-        AND status = 'closed' AND net_pnl IS NULL
-        AND (? IS NULL OR account_id = ? OR account_id IS NULL)`,
-  )
-  const ids = db.prepare(
-    `SELECT id FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'`,
-  )
-  let backfilled = 0
-  let restamped = 0
-  const tx = db.transaction(() => {
-    for (const [positionId, agg] of byPosition) {
-      const r = upd.run(
-        Math.round((agg.net || 0) * 100) / 100,
-        Math.round((agg.gross || 0) * 100) / 100,
-        usablePrice(agg.last?.closePrice) ? agg.last.closePrice : null,
-        agg.last?.closedAt ? new Date(agg.last.closedAt).toISOString() : null,
-        acct,
-        positionId, acct, acct,
-      )
-      backfilled += r.changes
-      if (r.changes) for (const { id } of ids.all(positionId)) { if (stampRealisedAudit(db, id)) restamped++ }
-    }
-  })
-  tx()
-  return { backfilled, restamped }
-}
+// POST /actions/broker-history no longer writes money (V3 B1, PR-1(f)). Its
+// writer, applyBrokerHistoryMoney, filled every unpriced closed row of a
+// position from an unpaged week walk, claimed rows with no account, had no
+// lifetime check and filled rows still flagged pnl_unresolvable. Realised
+// money now comes only from pnl-backfill.js, which needs one whole, unique
+// broker lifecycle. The Desk route is display-only.
 
 /**
  * The judgement behind POST /actions/reconcile-trades, pulled out of the
@@ -294,12 +310,13 @@ export function applyBrokerHistoryMoney(db, byPosition, { accountId = null } = {
  *     row the SELECTED account's deals could not vouch for, which is how an
  *     open trade on another account could be marked rejected;
  *   - only an IN-FLIGHT row ('submitting'/'unconfirmed') with no deal is
- *     rejected. An 'open' row with no deal in the window is REPORTED as
+ *     rejected, and only when `complete` is true — the deal walk finished
+ *     (V3 B1; a partial walk proves nothing about a missing fill). An 'open' row with no deal in the window is REPORTED as
  *     unmatched, never rewritten: a missing deal is a gap in the fetch, not
  *     proof there is no position;
  *   - an entry price filled from the deal re-stamps R and the verdict.
  */
-export function judgeTradesAgainstDeals(db, { rows, deals, symbolMap = {} }) {
+export function judgeTradesAgainstDeals(db, { rows, deals, symbolMap = {}, complete = false }) {
   const toMs = (v) => Date.parse(String(v).includes('T') ? v : String(v).replace(' ', 'T') + 'Z')
   const upEntry = db.prepare('UPDATE trades SET entry_price = ? WHERE id = ?')
   const upStatus = db.prepare(
@@ -307,7 +324,7 @@ export function judgeTradesAgainstDeals(db, { rows, deals, symbolMap = {} }) {
       WHERE id = ? AND status IN ('submitting', 'unconfirmed')`,
   )
   const details = []
-  let confirmed = 0, repaired = 0, rejected = 0, unmatchedOpen = 0
+  let confirmed = 0, repaired = 0, rejected = 0, unmatchedOpen = 0, unmatchedInFlight = 0
   for (const r of rows) {
     const symbolId = symbolMap[String(r.symbol).toUpperCase()]
     const t = toMs(r.opened_at)
@@ -319,6 +336,12 @@ export function judgeTradesAgainstDeals(db, { rows, deals, symbolMap = {} }) {
       const wasNull = r.entry_price == null
       if (wasNull && px != null) { upEntry.run(px, r.id); stampRealisedAudit(db, r.id); repaired++ } else confirmed++
       details.push({ id: r.id, symbol: r.symbol, result: wasNull ? 'repaired' : 'confirmed', dealId: match.dealId ?? null, positionId: match.positionId ?? null, executionPrice: px })
+    } else if ((r.status === 'submitting' || r.status === 'unconfirmed') && complete !== true) {
+      // V3 B1 (PR-1(f)): "no deal" is evidence only from a walk that FINISHED.
+      // A truncated or unpaged deal list can miss the fill, and a rejection
+      // made from it would erase a live position from the ledger.
+      unmatchedInFlight++
+      details.push({ id: r.id, symbol: r.symbol, result: 'unmatched_in_flight', note: 'no deal in an INCOMPLETE deal walk — not rejected; re-run when the broker history can be read in full' })
     } else if (r.status === 'submitting' || r.status === 'unconfirmed') {
       const c = upStatus.run(r.id)
       if (c.changes) { rejected++; details.push({ id: r.id, symbol: r.symbol, result: 'rejected', note: 'no matching deal at the broker' }) }
@@ -327,7 +350,7 @@ export function judgeTradesAgainstDeals(db, { rows, deals, symbolMap = {} }) {
       details.push({ id: r.id, symbol: r.symbol, result: 'unmatched_open', note: 'open row with no deal in the fetched window — left as is; check the broker before writing it off' })
     }
   }
-  return { confirmed, repaired, rejected, unmatchedOpen, details }
+  return { confirmed, repaired, rejected, unmatchedOpen, unmatchedInFlight, complete: complete === true, details }
 }
 
 /**
@@ -542,4 +565,48 @@ export async function importBrokerHistory(db, { days = 30, nowMs = Date.now(), d
   const truncation = pull.complete ? '' : ` — PULL INCOMPLETE (${pull.reason}), this is PART of the window`
   log(`${span}d: ${deals.length} deals → ${result.seen} closes · ${result.inserted} new · ${result.unmatched} with no local trade row · ${priceFix.corrected} fill prices corrected${truncation}`)
   return { days: span, from: iso(from), to: iso(nowMs), deals: deals.length, complete: pull.complete, pages: pull.pages, ...(pull.complete ? {} : { truncatedReason: pull.reason }), ...result, priceFix }
+}
+
+// ---------------------------------------------------------------------------
+// V3 L2b W10 — A LATER READ NEVER ERASES WHAT AN EARLIER ONE KNEW.
+//
+// The upsert in persistDeals replaced every field with whatever the newest
+// read carried. Two writers carry different halves of a deal: the boot seed
+// (statement-import.js) has lots and commission but no gross or swap; the API
+// writers (pnl-backfill, position-capture) had gross and swap but no lots.
+// Each boot's seed therefore blanked the gross and swap the API had stored —
+// CLS-06: 683 deals re-imported at one boot with gross, swap or lots NULL
+// beside a set net_pnl — and each API read blanked the statement's lots.
+//
+// The rule is COALESCE(new, stored), per field: a value the new read carries
+// wins, a NULL keeps what is stored. A '#<symbolId>' placeholder (a read with
+// no symbol metadata) never replaces a real name. It is applied to the row
+// before the upsert so one function states the whole rule; the identity link
+// (matched_trade_id) keeps its own rule in persistDeals — a NULL there is a
+// failed proof, not a missing value. Kept at the end of the file so the line
+// cites into persistDeals (order-lifecycle.js) still point where they did.
+// ---------------------------------------------------------------------------
+const KEEP_KNOWN_DEAL_FIELDS = Object.freeze(['side', 'lots', 'entry_price', 'close_price', 'opened_at', 'closed_at', 'gross_pnl', 'swap', 'commission', 'net_pnl'])
+
+const placeholderSymbol = (s) => s == null || String(s).trim() === '' || /^#/.test(String(s))
+
+/** The row to write: the new read, with every NULL filled from what is stored. */
+export function keepKnownDealFields(row, stored) {
+  if (!stored) return row
+  const out = { ...row }
+  for (const k of KEEP_KNOWN_DEAL_FIELDS) if (out[k] == null && stored[k] != null) out[k] = stored[k]
+  if (placeholderSymbol(out.symbol) && !placeholderSymbol(stored.symbol)) out.symbol = stored.symbol
+  return out
+}
+
+function storedDealFields(db, rows) {
+  const out = new Map()
+  const ids = [...new Set(rows.map(r => (r?.deal_id == null ? null : String(r.deal_id))).filter(Boolean))]
+  for (let i = 0; i < ids.length; i += 500) {
+    const slice = ids.slice(i, i + 500)
+    for (const s of db.prepare(
+      `SELECT deal_id, symbol, ${KEEP_KNOWN_DEAL_FIELDS.join(', ')} FROM broker_deals WHERE deal_id IN (${slice.map(() => '?').join(',')})`,
+    ).all(...slice)) out.set(String(s.deal_id), s)
+  }
+  return out
 }

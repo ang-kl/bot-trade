@@ -1,5 +1,6 @@
 import { accountMoney } from './account-money.js'
 import { readAccountSnapshot, RISK_DISPLAY_SNAPSHOT_MAX_AGE_MS } from './account-snapshot.js'
+import { brokerReadingsStatus } from './broker-readings.js'
 
 const number = n => typeof n === 'number' && Number.isFinite(n) ? n : null
 const stamp = s => typeof s === 'string' && /(?:Z|[+-]\d{2}:\d{2})$/i.test(s) ? Date.parse(s) : NaN
@@ -43,5 +44,9 @@ export function accountOverview(db, { nowMs = Date.now() } = {}) {
         netPnl: complete ? number(p.netPnl) : null, pnlSource: complete ? 'broker' : null })),
     }
   })
-  return { asOfMs: nowMs, accounts, source: 'account_owned_broker_cache', moneyScope: 'native_currency' }
+  // V3 WEB-4: who refreshes the cache is the server's minute read, so the page
+  // is told how that read is doing — its last completed round and what it
+  // could not read — rather than inferring freshness from its own requests.
+  return { asOfMs: nowMs, accounts, source: 'account_owned_broker_cache', moneyScope: 'native_currency',
+    serverReadings: brokerReadingsStatus(db, { nowMs }) }
 }

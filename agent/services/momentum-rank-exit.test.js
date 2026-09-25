@@ -201,6 +201,24 @@ test('rank exit owns the real lifecycle rows in the plan\'s ticks and still refu
   }
 })
 
+// T1b (N2): the preflight's entry check compares in ticks, but the broker
+// row's price was the plan's own 100, so switching it back to a float !==
+// stayed green. 100.00000000000003 is 100 three ulps up: the same tick.
+test('rank preflight compares the broker entry in ticks: residue passes, a tick off refuses', async t => {
+  for (const [price, sends] of [[100.00000000000003, true], [100.01, false]]) {
+    const f = fixture(t), read = f.deps.rankReconcile
+    f.deps.rankReconcile = async (...args) => {
+      const raw = await read(...args)
+      return { ...raw, position: raw.position.map(r => ({ ...r, price })) }
+    }
+    if (sends) {
+      assert.notEqual(price, plan.entry, 'the fixture must carry float residue to test anything')
+      assert.equal((await runMomentumRankExit(f.db, f.creds, f.row, f.deps)).state, 'CONFIRMED')
+    } else await assert.rejects(runMomentumRankExit(f.db, f.creds, f.row, f.deps), /preflight mismatch/)
+    assert.equal(f.calls(), sends ? 1 : 0, String(price))
+  }
+})
+
 test('rank preflight compares the broker target in ticks: residue passes, a tick off refuses', async t => {
   for (const [takeProfit, sends] of [[140.40000000000003, true], [140.41, false]]) {
     const f = fixture(t), read = f.deps.rankReconcile

@@ -11,12 +11,16 @@ import { reportStats } from '../../agent/shared/performance-populations.js'
 //  - live per-position P&L isn't streamed here → '—', card tint at base;
 //  - balance in/out has NO data source yet (deposits/withdrawals aren't
 //    tracked in the DB) → exact panel with an honest empty state;
-//  - data feed panel: real values where the APIs provide them, '—' else.
+//  - data feed panel: measured values from the agent (latency with its
+//    coverage, stored fees/swap per currency, quote freshness, the daily
+//    stop the engine enforces — the account cards' own reading); anything
+//    nobody measures is named as not measured.
 import { useState } from 'react'
 import SectionTools from './common/SectionTools.jsx'
 import { sideLabelUpper } from '../lib/side.js'
 import { accountNumbers } from "../lib/scope-label.js"
-import { dailyStopWords } from '../lib/daily-stop-display.js'
+import { dailyBarAge, dailyBarNote, dailyBarsSummary, latencyLine, costLines, quoteFreshnessLine, timeframeChips, barReceiptsNote, feedLatencyLine } from '../lib/data-feed.js'
+import { dailyStopWords, dailyStopDetail } from '../lib/daily-stop-display.js'
 
 const ACC = 'var(--color-accent)', UP = 'var(--color-up)', DN = 'var(--color-down)'
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
@@ -317,17 +321,47 @@ export function BalanceInOut({ inModal = false }) {
   )
 }
 
-/** Real values where the APIs provide them; '—' where not collected. */
 /**
+ * Measured values where the agent records them; anything nobody measures is
+ * SAID to be unmeasured (8,989-A row 11, WEB-9) rather than drawn as a dash.
+ *
  * `scopeNote` says WHOSE cash/margin/equity these are. The three figures come
  * from the broker session, which exists for one account at a time, so on a
  * multi-account desk the card has to name the account rather than let the
  * reader assume it follows the page's filter.
+ *
+ * `feedReport` is GET /state/data-feed (latency + coverage, stored fees and
+ * swap per deposit currency, the fast monitor's quote freshness, the broker
+ * day's open; WEB-9b: the per-timeframe bar receipts behind the OHLCV chips
+ * and the broker-timestamped market-feed latency).
+ *
+ * `dailyStop` is dailyStopView() of the scoped account's account-overview
+ * `dailyStop` — the engine's own dailyLossVerdict, the SAME reading the
+ * account cards print. The card's daily-stop phrase is dailyStopWords(), the
+ * cards' own function, and the rest of the line (why it binds, what is left
+ * today, the engine's block, the units note) is dailyStopDetail() over that
+ * same view. There is no second daily-loss figure on this card, so it and
+ * the account cards cannot disagree (owner principle 6). `allAccounts`: the
+ * portfolio has no single daily stop — each account has its own.
  */
-export function DataFeed({ balance, freeMargin, equity, floating = null, currency = null, openCount, dailyStop = null, equityStopArmed, slSet, tpSet, scopeNote = null, marketReadings = null, quotes = [], quoteSource = null, inModal = false }) {
+export function DataFeed({ balance, freeMargin, equity, floating = null, currency = null, openCount, dailyStop = null, allAccounts = false, equityStopArmed, equityStopPct = null, slSet, tpSet, scopeNote = null, marketReadings = null, quotes = [], quoteSource = null, feedReport = null, nowMs = null, inModal = false }) {
   const box = { border: `1px solid ${EDG}`, borderRadius: 10, padding: '7px 10px', display: 'flex', flexDirection: 'column', gap: 3 }
   const chip = { fontSize: 'var(--fs-body)', fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: ACS, border: `1px solid ${GBD}` }
   const money = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
+  const line = { fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }
+  const dayOpenMs = feedReport?.brokerDayOpenMs ?? null
+  const clockMs = nowMs ?? feedReport?.asOfMs ?? null
+  const execution = feedReport?.execution ?? null
+  // One reading, one phrase: the account cards' dailyStopWords over the same
+  // view. A single-account scope with no view says "not read", never a
+  // portfolio phrase and never a dash that passes for "no stop".
+  const stopWords = !allAccounts && dailyStop ? dailyStopWords(dailyStop, money) : null
+  const stopDetail = stopWords ? dailyStopDetail(dailyStop, money) : { text: '', note: null }
+  const stopPhrase = allAccounts ? 'per account — see the account cards' : stopWords ? `${stopWords.stop}${stopWords.day}` : 'not read'
+  const notMeasured = (feedReport?.notMeasured || []).map(n => n.label)
+  // WEB-9b: the chips are receipts, not labels — undefined when the report
+  // did not load, so they name the timeframe and claim nothing.
+  const tfChips = timeframeChips(feedReport ? feedReport.barReceipts : undefined, clockMs)
   return (
     <div style={{ ...panel, gap: 4 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
@@ -335,8 +369,9 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
         <span style={{ fontSize: 'var(--fs-body)', color: SB }}>what the bot ingests before any strategy fires, regardless of asset class</span>
         {!inModal && (
           <SectionTools id="data-feed" title="Data Feed — Core Universal Essentials table"
-            data={[{ balance, freeMargin, equity, openCount, dailyStop: dailyStop?.cap ?? null, dailyStopCcy: dailyStop?.capCcy ?? null, dailyStopState: dailyStop?.capState ?? null, equityStopArmed, slSet, tpSet, scope: scopeNote }]}
-            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} floating={floating} currency={currency} openCount={openCount} dailyStop={dailyStop} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} scopeNote={scopeNote} marketReadings={marketReadings} quotes={quotes} quoteSource={quoteSource} inModal />} />
+            data={[{ balance, freeMargin, equity, openCount, dailyStop: stopWords ? dailyStop.cap : null, dailyStopCcy: stopWords ? dailyStop.capCcy : null, dailyStopState: allAccounts ? 'per_account' : dailyStop?.capState ?? 'not_read', dailyStopBinding: stopWords ? dailyStop.binding ?? null : null, equityStopArmed, slSet, tpSet, scope: scopeNote,
+              entryLatencyP50Ms: execution?.latency?.p50Ms ?? null, entryLatencyP90Ms: execution?.latency?.p90Ms ?? null, entryLatencyMeasured: execution?.latency?.measured ?? null, closesInWindow: execution?.window?.closes ?? null }]}
+            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} floating={floating} currency={currency} openCount={openCount} dailyStop={dailyStop} allAccounts={allAccounts} equityStopArmed={equityStopArmed} equityStopPct={equityStopPct} slSet={slSet} tpSet={tpSet} scopeNote={scopeNote} marketReadings={marketReadings} quotes={quotes} quoteSource={quoteSource} feedReport={feedReport} nowMs={nowMs} inModal />} />
         )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 8 }}>
@@ -344,15 +379,15 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>OHLCV data</span>
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Open · High · Low · Close · Volume across multiple timeframes</span>
           <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-            {['1m', '15m', '1h', '4h', '1D'].map(tf => <span key={tf} style={chip}>{tf}</span>)}
+            {tfChips.map(c => <span key={c.key} style={{ ...chip, ...(c.received ? {} : { color: MU, background: 'transparent' }) }} title={c.title}>{c.text}</span>)}
           </div>
-          <details style={{ fontSize: 'var(--fs-body)', color: MU }}><summary>{marketReadings ? `${marketReadings.filter(p => p.day).length} retained daily bars for scoped open positions` : 'Feed freshness unavailable'}</summary>
+          <details style={{ fontSize: 'var(--fs-body)', color: MU }}><summary>{dailyBarsSummary(marketReadings, dayOpenMs, clockMs)}</summary>
             {(marketReadings || []).filter(p => p.day).map(p => <p key={`${p.account_id}:${p.id}`}>
-              {p.account_id} · {p.symbol} · bar starts {p.day.t ? new Date(p.day.t).toLocaleString() : 'time unavailable'}<br />
+              {p.account_id} · {p.symbol} · bar starts {p.day.t ? new Date(p.day.t).toLocaleString() : 'time unavailable'} · {dailyBarNote(dailyBarAge(p.day.t, dayOpenMs, clockMs))}<br />
               O {p.day.o ?? '—'} · H {p.day.h ?? '—'} · L {p.day.l ?? '—'} · C {p.day.c ?? '—'} · V {p.day.v ?? '—'}
             </p>)}
           </details>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Retained bars describe their stated period. Other timeframe receipts and market-feed latency are not supplied by this report.</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>{barReceiptsNote(feedReport)} Retained bars describe their stated period.</span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Account &amp; portfolio state</span>
@@ -367,14 +402,20 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Bid-ask spreads, fees, latency, slippage thresholds</span>
           <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Current crypto spreads · price-feed account {quoteSource || 'not selected'}</span>
           {quotes.map(q => <span key={q.sym} style={{ fontSize: 'var(--fs-body)', color: MU }} title={q.quoteNote}>{q.sym} · spread {q.spread == null ? 'unavailable' : Number(q.spread.toPrecision(6))} · {q.quoteNote}</span>)}
-          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Fees and slippage are recorded per trade in forensics; they are not a live market quote.</span>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>latency <span style={{ fontWeight: 800, color: ACC }}>—</span> · captured at entry per trade</span>
+          <span style={line}>{quoteFreshnessLine(feedReport ? feedReport.quotes : null)}</span>
+          <span style={line}>{feedLatencyLine(feedReport ? feedReport.feedLatency ?? null : undefined)}</span>
+          <span style={line}>{latencyLine(execution?.latency ?? null)}</span>
+          {costLines(execution).map(c => <span key={c} style={line}>{c}</span>)}
+          {execution?.window?.closes ? <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Latest {execution.window.closes} closes, as stored from broker deal history (a charged fee is negative). Slippage is recorded per trade in forensics.</span> : null}
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>{notMeasured.length ? `Not measured: ${notMeasured.join('; ')}. ` : ''}Open positions&apos; accrued fees and swap are not shown here.</span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Risk controls</span>
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Stop-loss limits, take-profit triggers, max drawdown caps</span>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}>Recorded SL set {slSet ?? '—'}/{openCount ?? '—'} open · TP set {tpSet ?? '—'}/{openCount ?? '—'}</span>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU, fontVariantNumeric: 'tabular-nums' }}><span title={dailyStop?.title || undefined}>daily stop {dailyStop ? `${dailyStopWords(dailyStop, money).stop}${dailyStopWords(dailyStop, money).day}` : 'per account — see the account cards'}</span> · equity stop <span style={{ fontWeight: 800, color: ACC }}>{equityStopArmed == null ? 'unverified' : equityStopArmed ? 'armed' : 'off'}</span></span>
+          <span style={line}>Recorded SL set {slSet ?? '—'}/{openCount ?? '—'} open · TP set {tpSet ?? '—'}/{openCount ?? '—'}</span>
+          <span style={line}><span title={stopWords ? dailyStop.title || undefined : undefined}>daily stop {stopPhrase}</span>{stopDetail.text}</span>
+          {stopDetail.note && <span style={{ fontSize: 'var(--fs-body)', color: WRN }}>{stopDetail.note}</span>}
+          <span style={line}>equity stop <span style={{ fontWeight: 800, color: ACC }}>{equityStopArmed == null ? 'unverified' : equityStopArmed ? `configured${equityStopPct != null ? ` ${+(equityStopPct * 100).toFixed(2)}%` : ''}` : 'off'}</span>{equityStopArmed ? ' · armed state not measured' : ''}</span>
         </div>
       </div>
     </div>

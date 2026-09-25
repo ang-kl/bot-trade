@@ -1082,6 +1082,34 @@ test('the loop logs a reconciler block error when the field is present', async (
   assert.match(slice, /result\.dupPnlError/)
 })
 
+test('X1 / W3: the adopted plan reads the intent\'s stop and target in their recorded units — relative wire points become prices from the fill, prices stay prices, and unrecorded wire points never reach the plan (the #1686 JPM.US shape)', async () => {
+  const { tagLabelWithIntent } = await import('../lib/trade-labels.js')
+  const db = mkDb()
+  const ACCT = '46130058'
+  const created = '2026-09-25T08:00:00.000Z'
+  const intent = (id, n, sl, tp, slUnits, tpUnits, side = 'BUY') => db.prepare(`INSERT INTO entry_intents (id, account_id, environment, symbol, symbol_id, side, order_type, volume, sl, tp, sl_units, tp_units, producer_id, basis, mode_epoch, permit_id, permit_expires_at, state, created_at, updated_at)
+      VALUES (?, ?, 'demo', ?, 1, ?, 'MARKET', 1000, ?, ?, ?, ?, 'scan_dispatch', 'bar', 0, ?, ?, 'UNKNOWN', ?, ?)`).run(id, ACCT, `SYM${n}`, side, sl, tp, slUnits, tpUnits, `p${id.slice(1)}`, created, created, created)
+  intent('ixrelative0001', 1, 50000, 100000, 'relative_points', 'relative_points')
+  intent('ixrelshort0002', 2, 50000, 100000, 'relative_points', 'relative_points', 'SELL')
+  intent('ixpriceunit003', 3, 99, 104, 'price', 'price')
+  intent('ixlegacypts004', 4, 1_732_000, 3_000_000, null, null) // pre-X1: no units, wire points
+  const plan = (pid) => db.prepare(`SELECT planned_entry, planned_sl, planned_tp FROM trade_plans WHERE trade_id = (SELECT id FROM trades WHERE ctrader_position_id = ?)`).get(String(pid))
+  const pos = (pid, n, id, extra = {}) => makeBrokerPosition({ positionId: pid, symbolName: `SYM${n}`, openPrice: 310.5, label: tagLabelWithIntent('ap|v1|FIB|H|LN|4h|RG', id), ...extra })
+  reconcilePositions(db, [
+    pos(901, 1, 'ixrelative0001'),
+    pos(902, 2, 'ixrelshort0002', { tradeSide: 'SELL' }),
+    pos(903, 3, 'ixpriceunit003', { openPrice: 100 }),
+    pos(904, 4, 'ixlegacypts004', { stopLoss: 305.5, takeProfit: 320.5 }),
+  ], [], mkSetState(db), { accountId: ACCT })
+  const p1 = plan(901)
+  assert.ok(Math.abs(p1.planned_sl - 310) < 1e-9, `long: 310.5 − 50000/100000 = 310, got ${p1.planned_sl}`)
+  assert.ok(Math.abs(p1.planned_tp - 311.5) < 1e-9, `long: 310.5 + 1.0 = 311.5, got ${p1.planned_tp}`)
+  const p2 = plan(902)
+  assert.ok(Math.abs(p2.planned_sl - 311) < 1e-9 && Math.abs(p2.planned_tp - 309.5) < 1e-9, 'short: the stop above, the target below')
+  assert.deepEqual(plan(903), { planned_entry: 100, planned_sl: 99, planned_tp: 104 })
+  assert.deepEqual(plan(904), { planned_entry: 310.5, planned_sl: 305.5, planned_tp: 320.5 }, 'unrecorded wire points fall back to the broker\'s own stop and target')
+})
+
 test('PR-E M4: an adopted position whose label carries an intent tag is stamped as the bot trade it is — origin, strategy, the approval id and a plan from the intent', async () => {
   const { tagLabelWithIntent } = await import('../lib/trade-labels.js')
   const db = mkDb()

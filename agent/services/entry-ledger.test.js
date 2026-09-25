@@ -33,6 +33,7 @@ import {
   resolveUnknownFromDeals, settleUnknownsFromDealHistory, UNKNOWN_MAX_AGE_MS, DEFAULT_SENT_TIMEOUT_MS, DEAL_PULL_MAX_PAGES,
 } from './entry-ledger.js'
 import { tagLabelWithIntent, labelIntentId, encodeLabel, parseLabel, MAX_LABEL_LEN } from '../lib/trade-labels.js'
+import { settleAcceptedFromOrderDetails, restingEventVerdict, ACCEPTED_MAX_READS, ACCEPTED_RECHECK_MS } from './entry-ledger.js'
 
 const DEMO = '46130058', LIVE = '42993489'
 function fresh() {
@@ -586,4 +587,217 @@ test('PR-3: both bases\' permits at the same epoch redeem; both at a stale epoch
   const fn = cpp.slice(cpp.indexOf('PermitVerdict validatePermit('))
   assert.ok(fn.includes('permit_epoch_stale') && fn.includes('permit_mismatch'), 'the boundary checks epoch and identity')
   assert.ok(!/basis/.test(fn), 'validatePermit is basis-agnostic: a bar permit and a tick permit are checked by the same rule')
+})
+
+// ---------------------------------------------------------------------------
+// V3 X1 (25-09-2026, owner-approved): resting-order intents. ACCEPTED is
+// "placed", not an outcome; the broker's evidence moves it on to FILLED,
+// RELEASED (cancelled), EXPIRED or REJECTED. W3: stop / target units.
+// ---------------------------------------------------------------------------
+function restingAccepted(db, { symbolId = 11, symbol = 'CADJPY', orderId = 360473873, now = Date.now(), orderType = 'LIMIT' } = {}) {
+  const r = reserveEntry(db, { ...base, symbolId, symbol, orderType, now })
+  assert.equal(r.ok, true, r.reason)
+  redeemPermit(db, r.permit.id, { now }); markSent(db, r.intentId, { now })
+  assert.equal(resolveIntent(db, r.intentId, { state: 'ACCEPTED', brokerOrderId: orderId, source: 'response', now }).ok, true)
+  return r.intentId
+}
+const execEvent = (db, { seq, type, orderId, positionId = null, account = DEMO, clientMsgId = null, label = null, payloadType = 2126 }) =>
+  db.prepare(`INSERT INTO cpp_events (side, boot_id, seq, ts_ms, client_msg_id, payload_type, execution_type, order_id, position_id, account_id, symbol_id, error_code, label, solicited)
+    VALUES ('cpp_exec_demo', 'b1', ?, 1, ?, ?, ?, ?, ?, ?, 11, NULL, ?, 0)`).run(seq, clientMsgId, payloadType, type, orderId != null ? String(orderId) : null, positionId != null ? String(positionId) : null, account, label)
+
+test('X1 / W3: the reserve stores the stop and target units; an unknown unit or a missing value stores NULL, never a guess', () => {
+  const db = fresh()
+  const a = reserveEntry(db, { ...base, sl: 50000, tp: 100000, slUnits: 'relative_points', tpUnits: 'relative_points' })
+  assert.deepEqual([row(db, a.intentId).sl_units, row(db, a.intentId).tp_units], ['relative_points', 'relative_points'])
+  const b = reserveEntry(db, { ...base, symbolId: 2, symbol: 'GBPUSD', sl: 1.095, tp: 1.11, slUnits: 'price', tpUnits: 'price' })
+  assert.deepEqual([row(db, b.intentId).sl_units, row(db, b.intentId).tp_units], ['price', 'price'])
+  const c = reserveEntry(db, { ...base, symbolId: 3, symbol: 'USDJPY', sl: 5, tp: null, slUnits: 'pips', tpUnits: 'price' })
+  assert.deepEqual([row(db, c.intentId).sl_units, row(db, c.intentId).tp_units], [null, null], 'an unknown unit and an absent target record nothing')
+  const d = reserveEntry(db, { ...base, symbolId: 4, symbol: 'AUDUSD' })
+  assert.deepEqual([row(db, d.intentId).sl_units, row(db, d.intentId).tp_units], [null, null], 'a caller that did not say is unrecorded')
+  assert.equal(row(db, d.intentId).evidence_attempts, 0)
+})
+
+test('X1: ACCEPTED moves on only to FILLED / EXPIRED / RELEASED / REJECTED, only with `from: [ACCEPTED]`, and only on broker evidence — never the response, an operator, a timeout or the ring', () => {
+  const db = fresh()
+  const id = restingAccepted(db)
+  assert.equal(resolveIntent(db, id, { state: 'FILLED', positionId: 1, source: 'reconcile' }).ok, false, 'without `from`, ACCEPTED is immutable as before')
+  for (const source of ['response', 'operator', 'timeout', 'ring', 'epoch', undefined]) {
+    assert.deepEqual(resolveIntent(db, id, { state: 'EXPIRED', source, from: ['ACCEPTED'] }), { ok: false, reason: 'bad_from' }, String(source))
+  }
+  for (const state of ['UNKNOWN', 'SENT', 'ACCEPTED', 'RESERVED']) {
+    assert.equal(resolveIntent(db, id, { state, source: 'order_details', from: ['ACCEPTED'] }).ok, false, state)
+  }
+  assert.equal(row(db, id).state, 'ACCEPTED')
+  assert.equal(resolveIntent(db, id, { state: 'EXPIRED', errorCode: 'order_expired: x', source: 'order_details', from: ['ACCEPTED'] }).ok, true)
+  const it = row(db, id)
+  assert.equal(it.state, 'EXPIRED'); assert.equal(it.resolution_source, 'order_details'); assert.equal(it.broker_order_id, '360473873'); assert.equal(it.error_code, 'order_expired: x')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE path = '/entry-intents/accepted-settled'`).get().n, 1, 'each settle is audited')
+  assert.equal(resolveIntent(db, id, { state: 'FILLED', source: 'order_details', from: ['ACCEPTED'] }).ok, false, 'a settled row is terminal')
+  // a resting order never blocked its key, and still does not
+  const again = reserveEntry(db, { ...base, symbolId: 11, symbol: 'CADJPY', orderType: 'LIMIT' })
+  assert.equal(again.ok, true)
+})
+
+test('X1: a resting intent is not FILLED by an acceptance frame — the ring\'s order_result with the pre-created position, or an ORDER_ACCEPTED event, settle ACCEPTED; a fill event FILLS; a cancel releases, an expiry expires', () => {
+  const db = fresh()
+  const mk = (symbolId, orderType = 'LIMIT') => { const r = reserveEntry(db, { ...base, symbolId, symbol: `S${symbolId}`, orderType }); redeemPermit(db, r.permit.id); markSent(db, r.intentId); return r.intentId }
+  const ringLimit = mk(21), ringStop = mk(22, 'STOP'), ringMarket = mk(23, 'MARKET')
+  const ins = db.prepare(`INSERT INTO cpp_decisions (side, boot_id, seq, ts_ms, component, kind, account_id, symbol_id, code, detail) VALUES ('cpp_exec_demo', 'b1', ?, 1, 'engine', 'order_result', ?, ?, '', ?)`)
+  ins.run(1, DEMO, 21, `intent=${ringLimit} order=43 pos=44`)
+  ins.run(2, DEMO, 22, `intent=${ringStop} order=45 pos=46`)
+  ins.run(3, DEMO, 23, `intent=${ringMarket} order=47 pos=48`)
+  reconcileIntents(db, { accountId: DEMO })
+  assert.deepEqual([row(db, ringLimit).state, row(db, ringLimit).broker_order_id, row(db, ringLimit).broker_position_id], ['ACCEPTED', '43', null])
+  assert.deepEqual([row(db, ringStop).state, row(db, ringStop).broker_order_id, row(db, ringStop).broker_position_id], ['ACCEPTED', '45', null])
+  assert.deepEqual([row(db, ringMarket).state, row(db, ringMarket).broker_position_id], ['FILLED', '48'], 'a market intent: exactly as before')
+  // the event journal, matched by clientMsgId after a TIMEOUT
+  const evs = { acc: mk(31), fill: mk(32), cancel: mk(33), expire: mk(34), partial: mk(35) }
+  let seq = 10
+  for (const [k, id] of Object.entries(evs)) resolveIntent(db, id, { state: 'UNKNOWN', errorCode: 'TIMEOUT', clientMsgId: `cx-${k}`, source: 'response' })
+  execEvent(db, { seq: seq++, type: 'ORDER_ACCEPTED', orderId: 501, positionId: 601, clientMsgId: 'cx-acc' })
+  execEvent(db, { seq: seq++, type: 'ORDER_ACCEPTED', orderId: 502, positionId: 602, clientMsgId: 'cx-fill' })
+  execEvent(db, { seq: seq++, type: 'ORDER_FILLED', orderId: 502, positionId: 602, clientMsgId: 'cx-fill' })
+  execEvent(db, { seq: seq++, type: 'ORDER_CANCELLED', orderId: 503, positionId: 603, clientMsgId: 'cx-cancel' })
+  execEvent(db, { seq: seq++, type: 'ORDER_EXPIRED', orderId: 504, clientMsgId: 'cx-expire' })
+  execEvent(db, { seq: seq++, type: 'ORDER_PARTIAL_FILL', orderId: 505, positionId: 605, clientMsgId: 'cx-partial' })
+  execEvent(db, { seq: seq++, type: 'ORDER_CANCELLED', orderId: 505, positionId: 605, clientMsgId: 'cx-partial' })
+  reconcileIntents(db, { accountId: DEMO })
+  assert.deepEqual([row(db, evs.acc).state, row(db, evs.acc).broker_position_id, row(db, evs.acc).broker_order_id], ['ACCEPTED', null, '501'], 'acceptance with a position id is not a fill')
+  assert.deepEqual([row(db, evs.fill).state, row(db, evs.fill).broker_position_id], ['FILLED', '602'])
+  assert.deepEqual([row(db, evs.cancel).state, row(db, evs.cancel).broker_position_id], ['RELEASED', null], 'a cancelled resting order is RELEASED, not REJECTED')
+  assert.match(row(db, evs.cancel).error_code, /^order_cancelled/)
+  assert.equal(row(db, evs.expire).state, 'EXPIRED')
+  assert.deepEqual([row(db, evs.partial).state, row(db, evs.partial).broker_position_id], ['FILLED', '605'], 'a partial fill before the cancel opened a position')
+})
+
+test('X1: reconcile settles ACCEPTED rows on the broker\'s evidence — a tagged position FILLS, an event for the order id cancels / expires / fills; an order still working stays ACCEPTED; another account\'s event is ignored', () => {
+  const db = fresh()
+  const byPos = restingAccepted(db, { symbolId: 41, symbol: 'A', orderId: 7001 })
+  const cancelled = restingAccepted(db, { symbolId: 42, symbol: 'B', orderId: 7002 })
+  const expired = restingAccepted(db, { symbolId: 43, symbol: 'C', orderId: 7003 })
+  const partial = restingAccepted(db, { symbolId: 44, symbol: 'D', orderId: 7004 })
+  const working = restingAccepted(db, { symbolId: 45, symbol: 'E', orderId: 7005 })
+  const foreign = restingAccepted(db, { symbolId: 46, symbol: 'F', orderId: 7006 })
+  execEvent(db, { seq: 1, type: 'ORDER_CANCELLED', orderId: 7002 })
+  execEvent(db, { seq: 2, type: 'ORDER_EXPIRED', orderId: 7003 })
+  execEvent(db, { seq: 3, type: 'ORDER_PARTIAL_FILL', orderId: 7004, positionId: 8004 })
+  execEvent(db, { seq: 4, type: 'ORDER_CANCELLED', orderId: 7004 })
+  execEvent(db, { seq: 5, type: 'ORDER_CANCELLED', orderId: 7006, account: LIVE })
+  const rec = reconcileIntents(db, {
+    accountId: DEMO,
+    positions: [{ positionId: 8001, tradeData: { label: tagLabelWithIntent('AU|v1|FIB|M|LN|4h|RG', byPos) } }],
+    orders: [{ orderId: 7005, tradeData: { label: 'AU|v1|FIB|M|LN|4h|RG' } }],
+  })
+  assert.deepEqual([row(db, byPos).state, row(db, byPos).broker_position_id, row(db, byPos).resolution_source], ['FILLED', '8001', 'reconcile'])
+  assert.deepEqual([row(db, cancelled).state, row(db, cancelled).resolution_source], ['RELEASED', 'event']); assert.match(row(db, cancelled).error_code, /^order_cancelled/)
+  assert.equal(row(db, expired).state, 'EXPIRED')
+  assert.deepEqual([row(db, partial).state, row(db, partial).broker_position_id], ['FILLED', '8004'])
+  assert.equal(row(db, working).state, 'ACCEPTED')
+  assert.equal(row(db, foreign).state, 'ACCEPTED', 'an event on another account for the same order id is not this order')
+  assert.equal(rec.acceptedChecked, 6); assert.equal(rec.resting, 1)
+  assert.equal(rec.checked, 0); assert.equal(rec.stillOpen, 0, 'ACCEPTED rows never count as open intents')
+  assert.deepEqual(rec.resolved.map(r => [r.from, r.to]).sort(), [['ACCEPTED', 'EXPIRED'], ['ACCEPTED', 'FILLED'], ['ACCEPTED', 'FILLED'], ['ACCEPTED', 'RELEASED']])
+})
+
+test('X1 / checker N2: an order the snapshot still lists is working — an error event on it (a failed cancel) is not its outcome and the row stays ACCEPTED; a fill on a working order is still believed', () => {
+  const db = fresh()
+  const erred = restingAccepted(db, { symbolId: 51, symbol: 'G', orderId: 7101 })
+  const partly = restingAccepted(db, { symbolId: 52, symbol: 'H', orderId: 7102 })
+  const gone = restingAccepted(db, { symbolId: 53, symbol: 'I', orderId: 7103 })
+  execEvent(db, { seq: 1, type: null, orderId: 7101, payloadType: 2132 })
+  execEvent(db, { seq: 2, type: 'ORDER_PARTIAL_FILL', orderId: 7102, positionId: 8102 })
+  execEvent(db, { seq: 3, type: null, orderId: 7103, payloadType: 2132 })
+  reconcileIntents(db, { accountId: DEMO, orders: [{ orderId: 7101 }, { orderId: 7102 }] })
+  assert.equal(row(db, erred).state, 'ACCEPTED', 'a working order is not REJECTED by an error event')
+  assert.deepEqual([row(db, partly).state, row(db, partly).broker_position_id], ['FILLED', '8102'])
+  assert.equal(row(db, gone).state, 'REJECTED', 'an order the snapshot no longer lists still settles on its error event')
+})
+
+test('restingEventVerdict: any fill wins, then the newest terminal frame; an acceptance alone is ACCEPTED; nothing is null', () => {
+  assert.equal(restingEventVerdict([]), null)
+  assert.equal(restingEventVerdict([{ execution_type: 'ORDER_ACCEPTED', order_id: '1', position_id: '2' }]).state, 'ACCEPTED')
+  assert.equal(restingEventVerdict([{ execution_type: 'ORDER_ACCEPTED', order_id: '1', position_id: '2' }]).positionId, null)
+  assert.equal(restingEventVerdict([{ execution_type: '5', order_id: '1' }]).state, 'RELEASED', 'numeric ORDER_CANCELLED')
+  assert.equal(restingEventVerdict([{ execution_type: '6', order_id: '1' }]).state, 'EXPIRED', 'numeric ORDER_EXPIRED')
+  assert.equal(restingEventVerdict([{ execution_type: 'ORDER_CANCELLED' }, { execution_type: '11', position_id: '9' }]).positionId, '9')
+  assert.equal(restingEventVerdict([{ payload_type: 2132, error_code: 'NOT_ENOUGH_MONEY', order_id: '1' }]).state, 'REJECTED')
+})
+
+test('X1: settleAcceptedFromOrderDetails reads only orders the SAME snapshot no longer lists, settles them on the broker\'s answer, notes failures, and after ACCEPTED_MAX_READS leaves "unresolved: no broker evidence" — the row stays ACCEPTED', async () => {
+  const db = fresh()
+  const t0 = Date.parse('2026-09-26T00:00:00Z')
+  const cancelled = restingAccepted(db, { symbolId: 51, symbol: 'A', orderId: 9001, now: t0 })
+  const expired = restingAccepted(db, { symbolId: 52, symbol: 'B', orderId: 9002, now: t0 })
+  const filled = restingAccepted(db, { symbolId: 53, symbol: 'C', orderId: 9003, now: t0 })
+  const stillWorking = restingAccepted(db, { symbolId: 54, symbol: 'D', orderId: 9004, now: t0 })
+  const unreadable = restingAccepted(db, { symbolId: 55, symbol: 'E', orderId: 9005, now: t0 })
+  const reads = []
+  const answers = {
+    9001: { order: { orderId: 9001, orderStatus: 'ORDER_STATUS_CANCELLED' }, deal: [] },
+    9002: { order: { orderId: 9002, orderStatus: 4 } },
+    9003: { order: { orderId: 9003, orderStatus: 'ORDER_STATUS_FILLED', executedVolume: 1000 }, deal: [{ dealId: 1, positionId: 99003, dealStatus: 'FILLED' }] },
+  }
+  const getOrderDetails = async (oid) => { reads.push(oid); if (answers[oid]) return answers[oid]; throw new Error('cTrader error: ORDER_NOT_FOUND — x') }
+  // no snapshot → nothing read: absence from a snapshot nobody took is not absence
+  const none = await settleAcceptedFromOrderDetails(db, { accountId: DEMO, workingOrderIds: null, getOrderDetails, now: t0 })
+  assert.equal(none.skipped, 'no_snapshot'); assert.equal(reads.length, 0)
+  const r1 = await settleAcceptedFromOrderDetails(db, { accountId: DEMO, workingOrderIds: [9004, '9999'], getOrderDetails, now: t0 + 1000 })
+  assert.deepEqual(reads.sort(), ['9001', '9002', '9003', '9005'], 'the working order is never read')
+  assert.equal(r1.stillResting, 1)
+  assert.deepEqual([row(db, cancelled).state, row(db, cancelled).resolution_source], ['RELEASED', 'order_details']); assert.match(row(db, cancelled).error_code, /^order_cancelled/)
+  assert.equal(row(db, expired).state, 'EXPIRED')
+  assert.deepEqual([row(db, filled).state, row(db, filled).broker_position_id], ['FILLED', '99003'])
+  assert.equal(row(db, stillWorking).state, 'ACCEPTED')
+  assert.equal(row(db, unreadable).state, 'ACCEPTED'); assert.equal(row(db, unreadable).evidence_attempts, 1)
+  assert.match(row(db, unreadable).error_code, /^awaiting broker evidence — order details read failed: cTrader error: ORDER_NOT_FOUND/)
+  // not re-read before the recheck spacing
+  reads.length = 0
+  await settleAcceptedFromOrderDetails(db, { accountId: DEMO, workingOrderIds: [9004], getOrderDetails, now: t0 + 2000 })
+  assert.equal(reads.length, 0)
+  // spaced reads until the cap: then "unresolved", and no further reads
+  let t = t0 + 1000
+  for (let i = 2; i <= ACCEPTED_MAX_READS; i++) {
+    t += ACCEPTED_RECHECK_MS + 1
+    await settleAcceptedFromOrderDetails(db, { accountId: DEMO, workingOrderIds: [9004], getOrderDetails, now: t })
+  }
+  const it = row(db, unreadable)
+  assert.equal(it.state, 'ACCEPTED', 'the outcome is not invented'); assert.equal(it.evidence_attempts, ACCEPTED_MAX_READS)
+  assert.match(it.error_code, new RegExp(`^unresolved: no broker evidence — order details read failed.*; ${ACCEPTED_MAX_READS} read\\(s\\), last `))
+  reads.length = 0
+  await settleAcceptedFromOrderDetails(db, { accountId: DEMO, workingOrderIds: [9004], getOrderDetails, now: t + 10 * ACCEPTED_RECHECK_MS })
+  assert.equal(reads.length, 0, 'past the cap the broker is not asked again')
+})
+
+test('X1: settleAcceptedFromOrderDetails reads at most maxReads orders a pass; a still-working answer is noted, not settled', async () => {
+  const db = fresh()
+  const t0 = Date.parse('2026-09-26T00:00:00Z')
+  const ids = []
+  for (let i = 0; i < 7; i++) ids.push(restingAccepted(db, { symbolId: 60 + i, symbol: `S${i}`, orderId: 9100 + i, now: t0 + i }))
+  const reads = []
+  const r = await settleAcceptedFromOrderDetails(db, { accountId: DEMO, workingOrderIds: [], getOrderDetails: async (oid) => { reads.push(oid); return { order: { orderId: Number(oid), orderStatus: 1 } } }, now: t0 + 1000, maxReads: 5 })
+  assert.equal(reads.length, 5); assert.equal(r.read, 5); assert.equal(r.settled.length, 0); assert.equal(r.noted, 5)
+  assert.ok(ids.every(id => row(db, id).state === 'ACCEPTED'))
+  assert.match(row(db, ids[0]).error_code, /order details answered 1: no fill, cancel or expiry yet/)
+})
+
+test('X1 wiring: the primary reconcile pass runs the one-time correction and the resting-order settle after the deal-history settle, with the pass\'s credentials and snapshot; the other-accounts sweep settles each account with ITS id and snapshot (comment-stripped pins — CLAUDE.md failure mode #4)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const src = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  const settle = src.indexOf('await settleUnknownsFromDealHistory(db, {')
+  assert.ok(settle > 0)
+  const x1 = src.indexOf('const x1 = applyX1Correction(db)', settle)
+  assert.ok(x1 > settle && x1 - settle < 2500, 'the correction runs in the primary pass, after the deal-history settle')
+  const ad = src.indexOf('await settleAcceptedFromOrderDetails(db, {', x1)
+  assert.ok(ad > x1 && ad - x1 < 1500, 'then the resting-order settle')
+  const args = src.slice(ad, src.indexOf('})', ad))
+  assert.ok(args.includes('accountId, workingOrderIds: (reconcileData.order || [])'), 'the SAME pass\'s snapshot')
+  assert.ok(args.includes('wsGetOrderDetails(host, clientId, clientSecret, accessToken, accountId, orderId)'), 'this pass\'s creds and account')
+  const sweep = src.indexOf('const r2 = reconcilePositions(db, pos2, ord2,')
+  const settle2 = src.indexOf('await settleUnknownsFromDealHistory(db, {', sweep)
+  const ad2 = src.indexOf('await settleAcceptedFromOrderDetails(db, {', settle2)
+  assert.ok(sweep > 0 && settle2 > sweep && ad2 > settle2 && ad2 - settle2 < 1500, 'each other account too')
+  const args2 = src.slice(ad2, src.indexOf('})', ad2))
+  assert.ok(args2.includes('accountId: acc.account_id, workingOrderIds: (rd.order || [])') && args2.includes('wsGetOrderDetails(host, clientId, clientSecret, accessToken, acc.account_id, orderId)'))
 })
