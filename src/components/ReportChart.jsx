@@ -1,4 +1,4 @@
-import { performanceCurve, defaultChartAccount, DECISION_FEED_DAYS } from '../lib/performance-curve.js'
+import { performanceCurve, defaultChartAccount, defaultChartReason, DECISION_FEED_DAYS } from '../lib/performance-curve.js'
 // ReportChart — rebuilt 2026-07-25 after the owner asked whether the old
 // control set made sense to a reader. My answer was no, and this is the
 // consequence.
@@ -77,9 +77,12 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
   const [selected, setSelected] = useState(null), [decisions, setDecisions] = useState(null)
   // WEB-10: unpicked, the All view opens on an account whose curve it can
   // draw — not simply the first registered one, which may hold unpriced closes.
-  const fallbackAccount = useMemo(() => defaultChartAccount(populationReport, accounts), [populationReport, accounts])
+  // The reason is shown only when the choice was measured: with no complete
+  // report, or no drawable account, it is the first account and says nothing.
+  const fallback = useMemo(() => defaultChartAccount(populationReport, accounts), [populationReport, accounts])
   const picked = accounts.some(a => String(a.account_id) === selected)
-  const chartAccount = accountId !== 'all' ? accountId : picked ? selected : fallbackAccount
+  const chartAccount = accountId !== 'all' ? accountId : picked ? selected : fallback.accountId
+  const openedReason = picked ? null : defaultChartReason(fallback.rank)
   const zone = populationReport?.timeZone || 'UTC'
   useEffect(() => {
     if (accountId !== 'all' || chartAccount === 'all') return
@@ -186,12 +189,12 @@ export default function ReportChart({ populationReport, accountId = 'all', daily
       {accountId === 'all' && accounts.length > 0 && <label className="block my-2">Chart account <select value={chartAccount} onChange={e => setSelected(e.target.value)}>
         {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.is_live ? 'Live' : 'Demo'} · {a.account_id}</option>)}
       </select> · All {accounts.length} accounts are available individually; their historical units are not pooled.
-        {!picked && ' Opened on the first account whose curve can be drawn.'}</label>}
+        {openedReason && ` ${openedReason}`}</label>}
 
       {hasData && (
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-1 text-(length:--fs-body)">
           <span className="text-[var(--color-text-sub)]">{curve.moneyState === 'gapped' ? 'largest drawdown within unbroken stretches' : 'daily realised-P&L drawdown in range'} <span className="tabular-nums" style={{ color: 'var(--color-down)' }}>{curve.moneyAvailable ? fmtN(totals.maxDd) : '—'}</span></span>
-          {curve.unpricedN > 0 && <span style={{ color: 'var(--color-warning-text)' }}>{curve.unpricedN} {curve.unpricedN === 1 ? 'close has' : 'closes have'} no recorded price ({curve.unpricedDays} {curve.unpricedDays === 1 ? 'day' : 'days'}, marked “no price”) — never drawn as zero</span>}
+          {curve.unpricedN > 0 && <span style={{ color: 'var(--color-warning-text)' }}>{curve.unpricedN} {curve.unpricedN === 1 ? 'close has' : 'closes have'} no recorded price ({curve.unpricedDays} {curve.unpricedDays === 1 ? 'day' : 'days'}, marked “no price”) — {curve.moneyState === 'gapped' ? 'not in the line; the line breaks there and later levels count priced closes only' : 'not drawn as zero; no money line is drawn'}</span>}
           <span className="text-[var(--color-text-sub)]">{curve.decisionState === 'unavailable' ? 'Daily decisions unavailable' : `${totals.decisions} risk-engine decisions · ${totals.vetoPct == null ? '—' : totals.vetoPct + '% vetoed'} · upstream stops not counted`}</span>
         </div>
       )}

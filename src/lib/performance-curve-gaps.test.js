@@ -2,7 +2,7 @@
 // price is drawn as a labelled gap, never as zero; the All view's chart opens
 // on an account it can draw; decision bars say they count risk events only.
 import { expect, it } from 'vitest'
-import { performanceCurve, defaultChartAccount, curveMoney, DECISION_FEED_DAYS } from './performance-curve.js'
+import { performanceCurve, defaultChartAccount, defaultChartReason, curveMoney, DECISION_FEED_DAYS } from './performance-curve.js'
 import { emptyPopulation, populationStats } from '../../agent/shared/performance-populations.js'
 
 // One daily group: `priced` closes summing to `net`, plus `unpriced` closes.
@@ -81,17 +81,27 @@ it('the All view opens on the first account whose curve can be drawn, judged ove
     g('000', '2026-09-18', null, 0, 2), // nothing priced
   ])
   const acct = id => ({ account_id: id })
-  expect(defaultChartAccount(r, ['489', '148', '342', '908'].map(acct))).toBe('342')
+  expect(defaultChartAccount(r, ['489', '148', '342', '908'].map(acct))).toEqual({ accountId: '342', rank: 0 })
   // No complete account: a gapped one beats a known-zero one…
-  expect(defaultChartAccount(r, ['148', '489'].map(acct))).toBe('489')
+  expect(defaultChartAccount(r, ['148', '489'].map(acct))).toEqual({ accountId: '489', rank: 1 })
   // …and a known-zero line beats one with nothing priced.
-  expect(defaultChartAccount(r, ['000', '148'].map(acct))).toBe('148')
-  expect(defaultChartAccount(r, ['000'].map(acct))).toBe('000')
-  // Before the report arrives nothing can be judged: the first account.
-  expect(defaultChartAccount(null, ['489', '342'].map(acct))).toBe('489')
-  expect(defaultChartAccount(r, [])).toBe('all')
+  expect(defaultChartAccount(r, ['000', '148'].map(acct))).toEqual({ accountId: '148', rank: 2 })
+  // Nothing drawable: the first account, on no measured reason.
+  expect(defaultChartAccount(r, ['000'].map(acct))).toEqual({ accountId: '000', rank: 3 })
+  // Before the report arrives (or when it failed) nothing is judged.
+  expect(defaultChartAccount(null, ['489', '342'].map(acct))).toEqual({ accountId: '489', rank: null })
+  expect(defaultChartAccount({ ...r, status: 'partial' }, ['489', '342'].map(acct))).toEqual({ accountId: '489', rank: null })
+  expect(defaultChartAccount(r, [])).toEqual({ accountId: 'all', rank: null })
   // Numeric ids from /state/accounts compare as strings.
-  expect(defaultChartAccount(r, [{ account_id: 489 }, { account_id: 342 }])).toBe('342')
+  expect(defaultChartAccount(r, [{ account_id: 489 }, { account_id: 342 }])).toEqual({ accountId: '342', rank: 0 })
+})
+
+it('the opened-on sentence exists only for a measured choice', () => {
+  expect(defaultChartReason(0)).toBe('Opened on the first account whose recorded closes all have a price.')
+  expect(defaultChartReason(1)).toMatch(/^Opened on the first account with priced closes: every account with closes has some without a price/)
+  expect(defaultChartReason(2)).toBe('Opened on the first account with no recorded closes: no account has a priced close.')
+  expect(defaultChartReason(3)).toBeNull()
+  expect(defaultChartReason(null)).toBeNull()
 })
 
 it('curveMoney reads the population the same way the ledger does', () => {

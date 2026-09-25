@@ -87,14 +87,21 @@ export function performanceCurve(report, accountId, dailyDecisions, rangeDays, {
 }
 
 /** The account the All view's chart opens on when the viewer has not picked
- * one (WEB-10): the first account, in the given order, whose money line is
- * exact in every range (all its closes priced, judged over the whole report,
- * so no range can be worse); then one that draws with labelled gaps; then a
- * known-zero account with no closes; otherwise the first account. Reads only
- * evidence, never the account's kind. */
+ * one (WEB-10), and the evidence rank it was chosen on, so the page can say
+ * why only when a reason was measured:
+ *  - rank 0: the first account, in the given order, whose money line is exact
+ *            in every range (all its closes priced, judged over the whole
+ *            report, so no range can be worse);
+ *  - rank 1: no such account; the first whose line draws with labelled gaps;
+ *  - rank 2: no account has a priced close; the first known-zero account (no
+ *            recorded closes);
+ *  - rank 3: every account's line is withheld; the first account;
+ *  - rank null: nothing was judged (no complete report, or no accounts); the
+ *            first account.
+ * Reads only evidence, never the account's kind. */
 export function defaultChartAccount(report, accounts = []) {
   const ids = accounts.map(a => String(a.account_id))
-  if (report?.status !== 'complete') return ids[0] ?? 'all'
+  if (report?.status !== 'complete' || !ids.length) return { accountId: ids[0] ?? 'all', rank: null }
   let best = null, bestRank = 3
   for (const id of ids) {
     const groups = (report.daily || []).filter(g => g.accountId === id)
@@ -103,5 +110,14 @@ export function defaultChartAccount(report, accounts = []) {
     const rank = moneyState === 'complete' ? (total.n > 0 ? 0 : 2) : moneyState === 'gapped' ? 1 : 3
     if (rank < bestRank) { best = id; bestRank = rank }
   }
-  return best ?? ids[0] ?? 'all'
+  return { accountId: best ?? ids[0], rank: bestRank }
+}
+
+/** What the All view may say about the account it opened on, or null when the
+ * choice was not measured (WEB-10: no sentence without the evidence for it). */
+export function defaultChartReason(rank) {
+  if (rank === 0) return 'Opened on the first account whose recorded closes all have a price.'
+  if (rank === 1) return 'Opened on the first account with priced closes: every account with closes has some without a price, so its unpriced closes show as labelled gaps.'
+  if (rank === 2) return 'Opened on the first account with no recorded closes: no account has a priced close.'
+  return null
 }

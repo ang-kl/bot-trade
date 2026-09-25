@@ -20,7 +20,8 @@ test('an unpriced close is a labelled break in the line, never bridged as zero',
   expect(d.match(/M/g)).toHaveLength(2)
   expect(html).toContain('data-gap-day="2026-09-21"')
   expect(html).toContain('>no price<')
-  expect(html).toContain('1 close has no recorded price (1 day, marked “no price”) — never drawn as zero')
+  expect(html).toContain('1 close has no recorded price (1 day, marked “no price”) — not in the line; the line breaks there and later levels count priced closes only')
+  expect(html).not.toContain('never drawn as zero')
   expect(html).toContain('the line breaks at each such day')
   expect(html).toContain('largest drawdown within unbroken stretches')
   expect(html).not.toContain('The money curve is unavailable')
@@ -41,7 +42,7 @@ test('the All view opens on an account it can draw, not on the first registered 
     populationReport={report([g('42993489', '2026-09-21', null, 0, 1), g('43097342', '2026-09-20', 12)])} />)
   expect(html).toMatch(/<option value="43097342" selected="">/)
   expect(html).not.toMatch(/<option value="42993489" selected="">/)
-  expect(html).toContain('Opened on the first account whose curve can be drawn.')
+  expect(html).toContain('Opened on the first account whose recorded closes all have a price.')
   expect(html).not.toContain('The money curve is unavailable')
 })
 
@@ -55,4 +56,33 @@ test('the decision bars say they count risk-engine decisions only, and old days 
   // The chart opens on 30D, wholly inside the 90-day decision feed, so no day
   // is claimed as unretained (the unit test covers the All range).
   expect(html).not.toContain('Decisions are retained')
+})
+
+// Checker blocker (WEB-10 fix round): the opened-on sentence is a claim about
+// evidence, so it is absent whenever that evidence was not measured.
+const OPENED = /Opened on the first account/
+const three = [{ account_id: '42993489', is_live: 0 }, { account_id: '43002148', is_live: 0 }]
+
+test('with no complete population report the All view says nothing about why it opened on an account', () => {
+  const html = renderToStaticMarkup(<ReportChart accountId="all" accounts={three} populationReport={null} />)
+  expect(html).toMatch(/<option value="42993489" selected="">/)
+  expect(html).not.toMatch(OPENED)
+})
+
+test('when no account can be drawn the All view says nothing about why it opened on an account', () => {
+  const html = renderToStaticMarkup(<ReportChart accountId="all" accounts={three}
+    populationReport={report([g('42993489', '2026-09-21', null, 0, 1), g('43002148', '2026-09-22', null, 0, 2)])} />)
+  expect(html).toMatch(/<option value="42993489" selected="">/)
+  expect(html).toContain('The money curve is unavailable')
+  expect(html).not.toMatch(OPENED)
+  // Withheld, the headline does not claim a line that breaks.
+  expect(html).toContain('— not drawn as zero; no money line is drawn')
+  expect(html).not.toContain('the line breaks there')
+})
+
+test('with no priced close anywhere the All view says it opened on an account with no closes', () => {
+  const html = renderToStaticMarkup(<ReportChart accountId="all" accounts={three}
+    populationReport={report([g('42993489', '2026-09-21', null, 0, 1)])} />)
+  expect(html).toMatch(/<option value="43002148" selected="">/)
+  expect(html).toContain('Opened on the first account with no recorded closes: no account has a priced close.')
 })

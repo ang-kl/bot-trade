@@ -36,6 +36,7 @@ import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
 import ReportChart from '../components/ReportChart.jsx'
+import { DECISION_FEED_DAYS } from '../lib/performance-curve.js'
 import SessionReview from '../components/SessionReview.jsx'
 import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
 import PerfAccountScope from '../components/PerfAccountScope.jsx'
@@ -1177,7 +1178,7 @@ export default function Performance() {
       // History reads share a queue with the chart; current money is independent.
       const [pm, dd, rf] = await Promise.all([
         readPerformanceReport(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
-        readPerformanceReport(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`).catch(() => null),
+        readPerformanceReport(`/state/decisions-daily?days=${DECISION_FEED_DAYS}&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`).catch(() => null),
         acct === 'all' ? null : agentGet(`/state/risk-full?account=${encodeURIComponent(acct)}`).catch(() => null),
       ])
       if (generation !== loadGeneration.current) return
@@ -1210,7 +1211,7 @@ export default function Performance() {
     const t2 = swrPeek(`/state/trades${q}`)
     const tradeRows = scopedPerformanceRows(t2, acct, 'trades')
     if (tradeRows) setAllTrades(tradeRows)
-    const dd2 = swrPeek(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`)
+    const dd2 = swrPeek(`/state/decisions-daily?days=${DECISION_FEED_DAYS}&account=${encodeURIComponent(acct)}&timeZone=${encodeURIComponent(timeZone)}`)
     if (dd2) setDecisionsDaily(dd2.rows || [])
     const p2 = swrPeek(`/state/positions${q}`)
     const positionRows = scopedPerformanceRows(p2, acct, 'positions')
