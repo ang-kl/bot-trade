@@ -146,7 +146,7 @@ const utcSec = (msv) => {
 const SOURCE_LABEL = {
   strategy_scan: 'strategy scan', pending_scan: 'pending-order scan', regime: 'regime read',
   fast_monitor_volume: 'fast-monitor volume read', daily_bar: "open positions' daily bar",
-  last_close: 'last-close read', other: 'other reader (chart, backtest, tools)',
+  last_close: 'last-close read', other: 'other reader (unnamed caller)',
 }
 const sourceLabel = (s) => SOURCE_LABEL[s] || s || 'unnamed reader'
 
@@ -188,7 +188,12 @@ export function timeframeChips(barReceipts, nowMs) {
     }
     // The card's clock when it has one; otherwise the age the agent computed
     // (never `Number(null)`, which is 0 and would print a receipt as "now").
-    const age = typeof nowMs === 'number' && Number.isFinite(nowMs) ? Math.max(0, nowMs - r.lastReceivedAtMs) : r.ageMs
+    // The agent's own age (agent clock, at the report) is a floor: a browser
+    // clock running behind the agent's must not shrink a receipt to "0 s".
+    const agentAge = typeof r.ageMs === 'number' && Number.isFinite(r.ageMs) ? r.ageMs : null
+    const age = typeof nowMs === 'number' && Number.isFinite(nowMs)
+      ? Math.max(agentAge ?? 0, nowMs - r.lastReceivedAtMs, 0)
+      : agentAge
     const lines = (r.sources || []).map(s => {
       const forming = s.newestBarForming === true ? 'still forming at receipt' : s.newestBarForming === false ? 'already closed at receipt' : 'forming state not decidable'
       const prev = s.fromPreviousProcess ? ' · received before the last restart' : ''
@@ -219,18 +224,30 @@ export function feedLatencyLine(feedLatency) {
   if (feedLatency === undefined) return 'market-feed latency unavailable — the data-feed report did not load'
   if (!feedLatency) return 'market-feed latency not reported by this agent'
   const win = `${Math.round((feedLatency.windowMs || 600_000) / 60_000)} min`
-  const measured = (feedLatency.byHost || []).filter(h => h.events > 0)
-  if (!measured.length) {
+  const rangeS = Math.round((feedLatency.rangeMs || 60_000) / 1000)
+  const hosts = feedLatency.byHost || []
+  const n = (v) => Number(v) || 0
+  // A host whose ring dropped events inside the window: its figures cover
+  // only the span it kept, and the line says so instead of "last 10 min".
+  const span = (h) => (h.truncated && typeof h.coversMs === 'number'
+    ? ` in the last ${formatAge(h.coversMs)} only (older events in the ${win} window were not kept)`
+    : '')
+  // A stream that WAS open but gave no usable sample says what it gave —
+  // "no stream was open" would hide a clock offset beyond the range.
+  const openNoSamples = (h) => `${h.host} stream open, 0 latency samples: ${n(h.snapshotsSkipped)} snapshot${n(h.snapshotsSkipped) === 1 ? '' : 's'}, ${n(h.unstamped)} without a broker stamp, ${n(h.outOfRange)} beyond ±${rangeS} s${span(h)}`
+  if (!hosts.some(h => h.events > 0)) {
     const lm = feedLatency.lastMeasured
     const last = lm?.byHost?.length
       ? ` · last measured ${utc(lm.atMs)}${lm.fromPreviousProcess ? ' (before the last restart)' : ''}: ${lm.byHost.map(h => `${h.host} p50 ${ms(h.p50Ms)} over ${h.events} events`).join('; ')}`
       : ''
-    return `market-feed latency not measured in the last ${win} — no timestamped price stream was open${last}`
+    const why = hosts.length ? hosts.map(openNoSamples).join('; ') : 'no timestamped price stream was open'
+    return `market-feed latency not measured in the last ${win} — ${why}${last}`
   }
-  const parts = measured.map(h => {
-    const extra = [h.outOfRange ? `${h.outOfRange} beyond ±${Math.round((feedLatency.rangeMs || 60_000) / 1000)} s not counted` : '',
+  const parts = hosts.map(h => {
+    if (!(h.events > 0)) return openNoSamples(h)
+    const extra = [h.outOfRange ? `${h.outOfRange} beyond ±${rangeS} s not counted` : '',
       h.unstamped ? `${h.unstamped} without a broker stamp` : ''].filter(Boolean).join(', ')
-    return `${h.host} p50 ${ms(h.p50Ms)} · p90 ${ms(h.p90Ms)} · max ${ms(h.maxMs)} over ${h.events} events${extra ? ` (${extra})` : ''}`
+    return `${h.host} p50 ${ms(h.p50Ms)} · p90 ${ms(h.p90Ms)} · max ${ms(h.maxMs)} over ${h.events} events${span(h)}${extra ? ` (${extra})` : ''}`
   })
   return `market-feed latency, broker spot timestamp → agent receipt, last ${win}: ${parts.join('; ')} · includes any broker/agent clock offset`
 }

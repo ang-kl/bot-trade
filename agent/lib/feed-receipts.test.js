@@ -6,7 +6,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   noteBarReceipt, noteSpotStamp, feedReceiptsSnapshot, feedReceiptsForStore, hydrateFeedReceipts,
-  _resetFeedReceiptsForTests, FEED_LATENCY_WINDOW_MS, FEED_LATENCY_RANGE_MS,
+  _resetFeedReceiptsForTests, FEED_LATENCY_WINDOW_MS, FEED_LATENCY_RANGE_MS, MAX_SPOT_EVENTS,
 } from './feed-receipts.js'
 
 const T0 = Date.parse('2026-09-25T12:00:30Z')
@@ -133,4 +133,51 @@ test('a stored snapshot seeds a new process, marked as received before the resta
   assert.equal(hydrateFeedReceipts({ v: 2 }), 0)
   assert.equal(hydrateFeedReceipts(null), 0)
   assert.equal(hydrateFeedReceipts({ v: 1, timeframes: [{ timeframe: '1h', sources: [{ source: 'x', receivedAtMs: 'bad' }] }] }), 0)
+})
+
+test('an open stream with no usable sample is served with its counts, not dropped', () => {
+  // WEB-9b checker: 1 snapshot + 30 events all 90 s off (a clock offset beyond
+  // the range) must reach the card as an open host with 0 samples.
+  _resetFeedReceiptsForTests(T0)
+  const host = 'live.ctraderapi.com'
+  noteSpotStamp({ brokerAtMs: T0 - 3 * H, receivedAtMs: T0, host, symbolId: 1, snapshot: true })
+  for (let i = 1; i <= 30; i++) {
+    assert.equal(noteSpotStamp({ brokerAtMs: T0 + i * 1000 - 90_000, receivedAtMs: T0 + i * 1000, host, symbolId: 1 }), 'out_of_range')
+  }
+  const fl = feedReceiptsSnapshot(T0 + 31_000).feedLatency
+  assert.equal(fl.status, 'not_measured_recently')
+  assert.equal(fl.byHost.length, 1)
+  assert.deepEqual([fl.byHost[0].events, fl.byHost[0].snapshotsSkipped, fl.byHost[0].outOfRange], [0, 1, 30])
+})
+
+test('each host keeps its own ring; a ring that dropped events inside the window says what span it covers', () => {
+  _resetFeedReceiptsForTests(T0)
+  const quiet = 'live.ctraderapi.com'
+  const busy = 'demo.ctraderapi.com'
+  // The quiet host's one sample comes first; the busy host then sends
+  // 12,000 events over 10 minutes (20/s), three times its ring.
+  noteSpotStamp({ brokerAtMs: T0 - 25, receivedAtMs: T0, host: quiet, symbolId: 9 })
+  const N = 12_000
+  const step = 50 // ms → 12,000 events over 600 s
+  for (let i = 1; i <= N; i++) noteSpotStamp({ brokerAtMs: T0 + i * step - 40, receivedAtMs: T0 + i * step, host: busy, symbolId: 1 })
+  const now = T0 + N * step
+  const fl = feedReceiptsSnapshot(now).feedLatency
+  const q = fl.byHost.find(h => h.host === quiet)
+  const b = fl.byHost.find(h => h.host === busy)
+  assert.ok(q, "the busy host never pushes another host's events out")
+  assert.equal(q.events, 1)
+  assert.equal(q.truncated, false)
+  assert.equal(q.coversMs, FEED_LATENCY_WINDOW_MS)
+  assert.equal(b.events, MAX_SPOT_EVENTS)
+  assert.equal(b.truncated, true, 'events inside the window were dropped')
+  // The oldest kept event is the (N - 4000 + 1)th: the figures cover 3,999 steps.
+  assert.equal(b.oldestAtMs, T0 + (N - MAX_SPOT_EVENTS + 1) * step)
+  assert.equal(b.coversMs, (MAX_SPOT_EVENTS - 1) * step)
+  assert.ok(b.coversMs < FEED_LATENCY_WINDOW_MS / 2, 'about 200 s, not the 10 min window')
+  assert.equal(fl.truncated, true)
+  assert.equal(fl.maxEventsPerHost, MAX_SPOT_EVENTS)
+  // A ring that dropped only events OLDER than the window covers the window.
+  const later = feedReceiptsSnapshot(now + FEED_LATENCY_WINDOW_MS - 1000).feedLatency.byHost.find(h => h.host === busy)
+  assert.equal(later.truncated, false)
+  assert.equal(later.coversMs, FEED_LATENCY_WINDOW_MS)
 })

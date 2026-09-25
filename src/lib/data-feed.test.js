@@ -168,7 +168,7 @@ describe('timeframeChips (WEB-9b)', () => {
   it('the title names every reader, the newest bar and whether it was still forming', () => {
     const h1 = timeframeChips(RECEIPTS, NOW).find(c => c.key === '1h')
     expect(h1.title).toContain('strategy scan: received 2026-09-25 11:59 UTC via account 46130058 · newest bar opened 2026-09-25 11:00 UTC, still forming at receipt · 150 bars')
-    expect(h1.title).toContain('other reader (chart, backtest, tools): received 2026-09-25 11:45 UTC')
+    expect(h1.title).toContain('other reader (unnamed caller): received 2026-09-25 11:45 UTC')
     const d1 = timeframeChips(RECEIPTS, NOW).find(c => c.key === '1d')
     expect(d1.title).toContain("open positions' daily bar: received 2026-09-25 10:00 UTC via account 46130058 · newest bar opened 2026-09-23 21:00 UTC, already closed at receipt · 2 bars · received before the last restart")
   })
@@ -201,6 +201,13 @@ describe('timeframeChips (WEB-9b)', () => {
     const noSince = timeframeChips({ sinceMs: null, timeframes: [] }, NOW)
     expect(noSince[0].title).toBe('no 1m bar received since the agent started, time unavailable')
   })
+  it("a browser clock behind the agent's never shrinks a receipt below the age the agent computed", () => {
+    // The agent said 42 s old at the report; a browser 5 min behind would compute a negative age.
+    const rows = { ...RECEIPTS, timeframes: [{ ...RECEIPTS.timeframes[1], ageMs: 42_000 }] }
+    expect(timeframeChips(rows, NOW - 300_000).find(c => c.key === '1h').text).toBe('1h · 42 s')
+    // A browser clock ahead of the report still ages the chip (the report is up to a refresh old).
+    expect(timeframeChips(rows, NOW + 60_000).find(c => c.key === '1h').text).toBe('1h · 2 min')
+  })
 })
 
 describe('feedLatencyLine (WEB-9b)', () => {
@@ -212,7 +219,25 @@ describe('feedLatencyLine (WEB-9b)', () => {
     ],
   }
   it('prints per host, with what was not counted and the clock-offset caveat', () => {
-    expect(feedLatencyLine(FL)).toBe('market-feed latency, broker spot timestamp → agent receipt, last 10 min: demo.ctraderapi.com p50 38 ms · p90 120 ms · max 910 ms over 212 events (2 beyond ±60 s not counted) · includes any broker/agent clock offset')
+    // The live host was open but gave only its snapshots: named, not dropped.
+    expect(feedLatencyLine(FL)).toBe('market-feed latency, broker spot timestamp → agent receipt, last 10 min: demo.ctraderapi.com p50 38 ms · p90 120 ms · max 910 ms over 212 events (2 beyond ±60 s not counted); live.ctraderapi.com stream open, 0 latency samples: 4 snapshots, 0 without a broker stamp, 0 beyond ±60 s · includes any broker/agent clock offset')
+  })
+  it('a stream that was open but gave no usable sample says what it gave, never "no stream was open"', () => {
+    // 1 snapshot + 30 events all 90 s off the broker stamp (a clock offset beyond the range).
+    const allOff = { status: 'not_measured_recently', windowMs: 600_000, rangeMs: 60_000,
+      byHost: [{ host: 'live.ctraderapi.com', events: 0, p50Ms: null, p90Ms: null, maxMs: null, minMs: null, snapshotsSkipped: 1, unstamped: 0, outOfRange: 30 }] }
+    const line = feedLatencyLine(allOff)
+    expect(line).toBe('market-feed latency not measured in the last 10 min — live.ctraderapi.com stream open, 0 latency samples: 1 snapshot, 0 without a broker stamp, 30 beyond ±60 s')
+    expect(line).not.toContain('no timestamped price stream was open')
+    const unstamped = { ...allOff, byHost: [{ ...allOff.byHost[0], snapshotsSkipped: 2, unstamped: 7, outOfRange: 0 }] }
+    expect(feedLatencyLine(unstamped)).toContain('live.ctraderapi.com stream open, 0 latency samples: 2 snapshots, 7 without a broker stamp, 0 beyond ±60 s')
+  })
+  it('a host whose ring dropped events inside the window prints the span it really covers', () => {
+    const busy = { status: 'measured', windowMs: 600_000, rangeMs: 60_000,
+      byHost: [{ host: 'demo.ctraderapi.com', events: 4000, p50Ms: 40, p90Ms: 90, maxMs: 300, outOfRange: 0, unstamped: 0, truncated: true, coversMs: 200_000 }] }
+    expect(feedLatencyLine(busy)).toBe('market-feed latency, broker spot timestamp → agent receipt, last 10 min: demo.ctraderapi.com p50 40 ms · p90 90 ms · max 300 ms over 4000 events in the last 3 min only (older events in the 10 min window were not kept) · includes any broker/agent clock offset')
+    // Not truncated: no span clause, the window stands.
+    expect(feedLatencyLine({ ...busy, byHost: [{ ...busy.byHost[0], truncated: false, coversMs: 600_000 }] })).not.toContain('only (older events')
   })
   it('says not measured — and when it last was — instead of a dash or a zero', () => {
     const idle = { status: 'not_measured_recently', windowMs: 600_000, byHost: [], lastMeasured: { atMs: NOW - 3_600_000, byHost: [{ host: 'demo.ctraderapi.com', events: 90, p50Ms: 41 }] } }

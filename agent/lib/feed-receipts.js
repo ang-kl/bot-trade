@@ -23,10 +23,14 @@
 //      more than FEED_LATENCY_RANGE_MS from its receipt (either way) is counted
 //      as out of range, not folded into a percentile. The figure INCLUDES any
 //      clock offset between the broker and the agent; that is said wherever it
-//      is served.
+//      is served. Each host keeps its OWN ring of the newest MAX_SPOT_EVENTS
+//      events, so a busy host can never push another host's events out; when
+//      a host's ring dropped events inside the window, that host is served as
+//      `truncated` with the span its figures really cover (`coversMs`), never
+//      as the full window.
 //
 // RULES: in-process and bounded (timeframes, sources per timeframe, hosts and
-// the spot ring are all capped); recording never throws into the caller and
+// each host's spot ring are all capped); recording never throws into the caller and
 // never changes a caller's result; nothing here reads or writes the database
 // (services/feed-receipts-record.js persists the snapshot).
 // ---------------------------------------------------------------------------
@@ -35,7 +39,8 @@
 export const FEED_LATENCY_WINDOW_MS = 10 * 60_000
 /** A spot whose broker stamp is further than this from its receipt is out of range. */
 export const FEED_LATENCY_RANGE_MS = 60_000
-const MAX_SPOT_EVENTS = 4000
+/** Spot events kept per broker host (a ring: the oldest is dropped first). */
+export const MAX_SPOT_EVENTS = 4000
 const MAX_TIMEFRAMES = 32
 const MAX_SOURCES = 8
 const MAX_HOSTS = 8
@@ -51,7 +56,9 @@ const idText = (v) => (v == null || v === '' ? null : String(v).slice(0, 64))
 let state = fresh(Date.now())
 
 function fresh(nowMs) {
-  return { sinceMs: nowMs, timeframes: new Map(), spots: [], hosts: new Set(), lastMeasured: null, changedAtMs: 0 }
+  // spots: host → { events: [...oldest first], droppedThroughMs } — one ring
+  // per host, so the hosts cap (MAX_HOSTS) also caps the rings.
+  return { sinceMs: nowMs, timeframes: new Map(), spots: new Map(), lastMeasured: null, changedAtMs: 0 }
 }
 
 /** Test seam: forget everything, as a new process would. */
@@ -130,9 +137,11 @@ export function noteSpotStamp({ brokerAtMs, receivedAtMs = Date.now(), host = nu
   try {
     if (!safeMs(receivedAtMs)) return null
     const h = idText(host) ?? 'unknown host'
-    if (!state.hosts.has(h)) {
-      if (state.hosts.size >= MAX_HOSTS) return null
-      state.hosts.add(h)
+    let ring = state.spots.get(h)
+    if (!ring) {
+      if (state.spots.size >= MAX_HOSTS) return null
+      ring = { events: [], droppedThroughMs: 0 }
+      state.spots.set(h, ring)
     }
     let kind
     let latencyMs = null
@@ -143,8 +152,13 @@ export function noteSpotStamp({ brokerAtMs, receivedAtMs = Date.now(), host = nu
       kind = Math.abs(latencyMs) > FEED_LATENCY_RANGE_MS ? 'out_of_range' : 'measured'
       if (kind !== 'measured') latencyMs = null
     }
-    state.spots.push({ atMs: receivedAtMs, kind, latencyMs, host: h, accountId: idText(accountId), symbolId: idText(symbolId) })
-    if (state.spots.length > MAX_SPOT_EVENTS) state.spots.splice(0, state.spots.length - MAX_SPOT_EVENTS)
+    ring.events.push({ atMs: receivedAtMs, kind, latencyMs, host: h, accountId: idText(accountId), symbolId: idText(symbolId) })
+    // Drop this host's oldest, remembering how far the dropping reached, so a
+    // window the ring no longer covers is served as truncated.
+    while (ring.events.length > MAX_SPOT_EVENTS) {
+      const gone = ring.events.shift()
+      if (gone.atMs > ring.droppedThroughMs) ring.droppedThroughMs = gone.atMs
+    }
     state.changedAtMs = Math.max(state.changedAtMs + 1, receivedAtMs)
     return kind
   } catch {
@@ -159,36 +173,57 @@ function nearestRank(sortedAsc, p) {
   return sortedAsc[Math.min(sortedAsc.length, Math.max(1, rank)) - 1]
 }
 
-function latencyByHost(events) {
+/**
+ * Per-host figures over [fromMs, nowMs]. A host whose ring dropped an event
+ * at or after `fromMs` is `truncated`: its figures cover only
+ * `nowMs - oldestAtMs`, served as `coversMs`, not the whole window.
+ */
+function latencyByHost(fromMs, nowMs) {
   const by = new Map()
-  for (const e of events) {
-    let b = by.get(e.host)
-    if (!b) { b = { host: e.host, lat: [], snapshots: 0, unstamped: 0, outOfRange: 0, accounts: new Set(), symbols: new Set(), newestAtMs: 0 }; by.set(e.host, b) }
-    if (e.kind === 'measured') b.lat.push(e.latencyMs)
-    else if (e.kind === 'snapshot') b.snapshots++
-    else if (e.kind === 'unstamped') b.unstamped++
-    else if (e.kind === 'out_of_range') b.outOfRange++
-    if (e.accountId) b.accounts.add(e.accountId)
-    if (e.symbolId) b.symbols.add(e.symbolId)
-    if (e.atMs > b.newestAtMs) b.newestAtMs = e.atMs
-  }
-  return [...by.values()].sort((a, b) => a.host.localeCompare(b.host)).map(b => {
-    const lat = b.lat.sort((x, y) => x - y)
-    return {
-      host: b.host,
-      events: lat.length,
-      p50Ms: nearestRank(lat, 50),
-      p90Ms: nearestRank(lat, 90),
-      maxMs: lat.length ? lat[lat.length - 1] : null,
-      minMs: lat.length ? lat[0] : null,
-      snapshotsSkipped: b.snapshots,
-      unstamped: b.unstamped,
-      outOfRange: b.outOfRange,
-      accounts: [...b.accounts].sort(),
-      symbols: b.symbols.size,
-      newestAtMs: b.newestAtMs || null,
+  for (const [host, ring] of state.spots) {
+    const truncated = ring.droppedThroughMs >= fromMs
+    for (const e of ring.events) {
+      if (e.atMs < fromMs || e.atMs > nowMs) continue
+      let b = by.get(host)
+      if (!b) { b = { host, lat: [], snapshots: 0, unstamped: 0, outOfRange: 0, accounts: new Set(), symbols: new Set(), newestAtMs: 0, oldestAtMs: 0, truncated }; by.set(host, b) }
+      noteInto(b, e)
     }
-  })
+  }
+  return [...by.values()].sort((a, b) => a.host.localeCompare(b.host)).map(b => hostFigures(b, nowMs))
+}
+
+function noteInto(b, e) {
+  if (e.kind === 'measured') b.lat.push(e.latencyMs)
+  else if (e.kind === 'snapshot') b.snapshots++
+  else if (e.kind === 'unstamped') b.unstamped++
+  else if (e.kind === 'out_of_range') b.outOfRange++
+  if (e.accountId) b.accounts.add(e.accountId)
+  if (e.symbolId) b.symbols.add(e.symbolId)
+  if (e.atMs > b.newestAtMs) b.newestAtMs = e.atMs
+  if (!b.oldestAtMs || e.atMs < b.oldestAtMs) b.oldestAtMs = e.atMs
+}
+
+function hostFigures(b, nowMs) {
+  const lat = b.lat.sort((x, y) => x - y)
+  return {
+    host: b.host,
+    events: lat.length,
+    p50Ms: nearestRank(lat, 50),
+    p90Ms: nearestRank(lat, 90),
+    maxMs: lat.length ? lat[lat.length - 1] : null,
+    minMs: lat.length ? lat[0] : null,
+    snapshotsSkipped: b.snapshots,
+    unstamped: b.unstamped,
+    outOfRange: b.outOfRange,
+    accounts: [...b.accounts].sort(),
+    symbols: b.symbols.size,
+    newestAtMs: b.newestAtMs || null,
+    oldestAtMs: b.oldestAtMs || null,
+    truncated: b.truncated,
+    // The span these figures really cover: the whole window, or — when the
+    // ring dropped events inside it — back to the oldest event it kept.
+    coversMs: b.truncated ? Math.max(0, nowMs - b.oldestAtMs) : FEED_LATENCY_WINDOW_MS,
+  }
 }
 
 function timeframeRow(row, nowMs) {
@@ -220,9 +255,7 @@ function timeframeRow(row, nowMs) {
  * @param {number} [nowMs]
  */
 export function feedReceiptsSnapshot(nowMs = Date.now()) {
-  const from = nowMs - FEED_LATENCY_WINDOW_MS
-  const recent = state.spots.filter(s => s.atMs >= from && s.atMs <= nowMs)
-  const byHost = latencyByHost(recent)
+  const byHost = latencyByHost(nowMs - FEED_LATENCY_WINDOW_MS, nowMs)
   if (byHost.some(h => h.events > 0)) {
     state.lastMeasured = { atMs: Math.max(...byHost.map(h => h.newestAtMs || 0)), windowMs: FEED_LATENCY_WINDOW_MS, byHost: byHost.filter(h => h.events > 0) }
   }
@@ -239,6 +272,8 @@ export function feedReceiptsSnapshot(nowMs = Date.now()) {
       status: byHost.some(h => h.events > 0) ? 'measured' : 'not_measured_recently',
       windowMs: FEED_LATENCY_WINDOW_MS,
       rangeMs: FEED_LATENCY_RANGE_MS,
+      maxEventsPerHost: MAX_SPOT_EVENTS,
+      truncated: byHost.some(h => h.truncated),
       sinceMs: state.sinceMs,
       byHost,
       lastMeasured: state.lastMeasured,
