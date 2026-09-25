@@ -169,7 +169,7 @@ export function buildPositionRecord(db, { accountId, positionId }) {
       return db.prepare(`
         SELECT * FROM trades
          WHERE ctrader_position_id = ? AND (account_id = ? OR ? IS NULL)
-         ORDER BY id DESC LIMIT 1
+         ORDER BY (status = 'closed') DESC, id DESC LIMIT 1 -- V3 L2b W17: the CLOSED row, not a newer duplicate
       `).get(pid, acct, acct)
     } catch { return null }
   })()
