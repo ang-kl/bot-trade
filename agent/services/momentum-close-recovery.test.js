@@ -24,6 +24,8 @@ import { makeMomentumPartialBroker } from './momentum-partial-broker.js'
 import { runMomentumRankExit } from './momentum-rank-exit.js'
 import { planMomentumTargets } from './momentum-target-policy.js'
 import { partialDealHistoryEvidence, TRANSPORT_HORIZON_MS, MAX_CLOCK_SKEW_MS } from './momentum-broker-evidence.js'
+import { initDB, setState } from '../db.js'
+import { runLossCap } from './loss-cap.js'
 
 const ACCOUNT = '4001', SYMBOL = 22
 const HOSTS = ['demo.ctraderapi.com', 'live.ctraderapi.com']
@@ -458,6 +460,150 @@ test('rank exit: a timed-out close whose fill carries no known order id is not a
   await assert.rejects(runMomentumRankExit(s.db(), s.current, s.book, s.rankDeps()), /unconfirmed/)
   await assert.rejects(runMomentumRankExit(s.db(), s.current, s.book, s.rankDeps()), /closed externally/)
   assert.equal(s.row().state, 'RANK_CLOSED_EXTERNALLY')
+  // No order id: this rank close may be what closed it, and the record says
+  // the attribution is unproven rather than that another close did it.
+  assert.equal(s.db().prepare('SELECT reason FROM momentum_rank_exits').get().reason, 'position closed; attribution to this rank close unproven')
   await assert.rejects(runMomentumRankExit(s.db(), s.current, s.book, s.rankDeps()), /closed externally/)
+  assert.equal(s.closes(), 1)
+})
+
+// ---------------------------------------------------------------------------
+// T2 fix round (the independent checker's B1 and N2-N5).
+// ---------------------------------------------------------------------------
+
+// ProtoJSON omits an empty repeated field: the broker's answer for an account
+// with no open position can carry no `position` at all. The fake always sends
+// the list; these wrappers send what the broker may.
+const protoJson = raw => {
+  const out = { ...raw }
+  if (Array.isArray(out.position) && out.position.length === 0) delete out.position
+  return out
+}
+// Deal history that has not yet caught up: the named deals are not listed.
+const lagging = (read, hidden) => async (...args) => {
+  const raw = await read(...args)
+  return { ...raw, deal: raw.deal.filter(d => !hidden.includes(String(d.dealId))) }
+}
+
+test('B1 (the checker\'s scene): an accepted close whose deal history cannot be read stays SENDING, and holds the loss cap off only inside the transport horizon', async t => {
+  const dbPath = join(tempDir('t2-losscap-'), 'agent.db')
+  const init = initDB(dbPath)
+  setState(init, 'account_balance_usd', '10000')
+  setState(init, `acct:${ACCOUNT}:account_balance_usd`, '10000')
+  init.close()
+  const s = await scene(t, { dbPath })
+  s.trigger()
+  s.broker.closeAnswer({ reply: 'accepted' })
+  s.failDeals = true
+  const first = await s.run()
+  assert.equal(first.state, 'SENDING'); assert.equal(first.reason, 'deal_history_unavailable')
+  assert.equal(s.broker.positions(ACCOUNT)[0].volume, plan.runnerVolume, 'the partial filled at the broker')
+  const capPass = () => runLossCap(s.db(), s.current, { now: s.broker.nowMs,
+    exec: { reconcile: async () => s.broker.reconcile(ACCOUNT), closePosition },
+    ws: { wsGetUnrealizedPnl: async () => ({ [s.positionId]: { net: -900 } }) }, notify: async () => {} })
+  const inside = await capPass()
+  assert.equal(inside.closes, 0)
+  assert.match(inside.errors.join(' | '), /loss cap deferred: momentum partial plan SENDING on position/)
+  assert.equal(s.closes(), 1, 'no competing close while the request may be in flight')
+  // Fifty minutes of passes: the row never resolves while history is unreadable.
+  for (let i = 0; i < 6; i++) {
+    s.broker.tick(500_000)
+    assert.equal((await s.run()).state, 'SENDING')
+  }
+  const past = await capPass()
+  assert.equal(past.closes, 1, JSON.stringify(past.errors))
+  assert.equal(s.closes(), 2)
+  assert.deepEqual(s.broker.positions(ACCOUNT), [], 'the loss cap closed the broker\'s current (runner) volume')
+  assert.equal(s.broker.lastCall('close').body.volume, plan.runnerVolume)
+  // History returns. The partial's own deal is its receipt; the runner's close
+  // is the loss cap's deal, and the partial's own deal is not named as it.
+  s.failDeals = false
+  const out = await s.run()
+  assert.equal(out.state, 'CLOSED_EXTERNALLY', JSON.stringify(out)); assert.equal(out.reason, 'position_closed_after_partial')
+  const row = s.row()
+  assert.match(row.receipt.dealId, /^[1-9]\d*$/)
+  assert.equal(row.evidence.closingDealIds.length, 1)
+  assert.ok(!row.evidence.closingDealIds.includes(row.receipt.dealId), JSON.stringify(row.evidence))
+  assert.equal(s.closes(), 2)
+})
+
+test('N5: a RECEIVED partial whose runner closed before history lists that close waits; it never names its own partial deal as the runner\'s close', async t => {
+  const s = await scene(t)
+  s.trigger()
+  const reconcile = s.transports.reconcile
+  let reads = 0
+  s.transports.reconcile = async (...args) => { if (++reads === 2) throw Error('readback unavailable'); return reconcile(...args) }
+  assert.equal((await s.run()).state, 'RECEIVED')
+  const own = s.row().receipt.dealId
+  const runnerStop = s.broker.externalClose(ACCOUNT, s.positionId)
+  const deals = s.transports.deals
+  s.transports.deals = lagging(deals, [String(runnerStop.dealId)])
+  const waiting = await s.run()
+  assert.equal(waiting.state, 'RECEIVED'); assert.equal(waiting.reason, 'absence_without_closing_deal')
+  assert.equal(s.row().evidence, null, 'no terminal evidence written')
+  s.transports.deals = deals
+  const out = await s.run()
+  assert.equal(out.state, 'CLOSED_EXTERNALLY')
+  assert.deepEqual(s.row().evidence.closingDealIds, [String(runnerStop.dealId)])
+  assert.equal(s.row().receipt.dealId, own, 'the receipt is kept')
+  assert.equal(s.closes(), 1)
+})
+
+test('N3: before any attempt, a changed volume with no closing deal yet listed says so (not "absence")', async t => {
+  const v = await scene(t)
+  const partial = v.broker.externalClose(ACCOUNT, v.positionId, 4000)
+  const deals = v.transports.deals
+  v.transports.deals = lagging(deals, [String(partial.dealId)])
+  const out = await v.run()
+  assert.equal(out.state, 'ARMED'); assert.equal(out.reason, 'volume_changed_without_closing_deal')
+  const a = await scene(t)
+  const stop = a.broker.externalClose(ACCOUNT, a.positionId)
+  a.transports.deals = lagging(a.transports.deals, [String(stop.dealId)])
+  const gone = await a.run()
+  assert.equal(gone.state, 'ARMED'); assert.equal(gone.reason, 'absence_without_closing_deal')
+  v.transports.deals = deals
+  assert.equal((await v.run()).state, 'VOLUME_CHANGED')
+  assert.equal(v.closes() + a.closes(), 0)
+})
+
+test('N4: the account\'s own reconcile answer with the empty list omitted proves absence, for the partial and for the rank readback', async t => {
+  const s = await scene(t)
+  const reconcile = s.transports.reconcile
+  s.transports.reconcile = async (...args) => protoJson(await reconcile(...args))
+  const stop = s.broker.externalClose(ACCOUNT, s.positionId)
+  const out = await s.run()
+  assert.equal(out.state, 'CLOSED_EXTERNALLY', JSON.stringify(out)); assert.equal(out.reason, 'position_closed_before_partial')
+  assert.deepEqual(s.row().evidence.closingDealIds, [String(stop.dealId)])
+  assert.equal(s.closes(), 0)
+
+  const r = await scene(t)
+  const deps = r.rankDeps()
+  const rankReconcile = deps.rankReconcile
+  deps.rankReconcile = async (...args) => protoJson(await rankReconcile(...args))
+  assert.deepEqual(await runMomentumRankExit(r.db(), r.current, r.book, deps), { handled: true, state: 'CONFIRMED' })
+  assert.equal(r.closes(), 1)
+  assert.equal(r.row().state, 'RANK_CONFIRMED')
+  // Another account's answer, or an error answer, still proves nothing.
+  const { partialPositionPresence } = await import('./momentum-broker-evidence.js')
+  const ctx = { identity: r.identity, positionId: r.positionId, nowMs: r.broker.nowMs }
+  assert.equal(partialPositionPresence({ ctidTraderAccountId: 4002 }, ctx), null)
+  assert.equal(partialPositionPresence({ ctidTraderAccountId: Number(ACCOUNT), errorCode: 'CH_ACCESS_TOKEN_INVALID' }, ctx), null)
+  assert.equal(partialPositionPresence({ ctidTraderAccountId: Number(ACCOUNT), position: {} }, ctx), null)
+})
+
+test('N2: an accepted rank close whose order never filled, with the position closed by another order, is recorded as closed without this rank close\'s order', async t => {
+  const s = await scene(t)
+  s.broker.closeAnswer({ reply: 'accepted', fill: 'never' })
+  await assert.rejects(runMomentumRankExit(s.db(), s.current, s.book, s.rankDeps()), /awaiting transport horizon/)
+  const claim = s.db().prepare('SELECT * FROM momentum_rank_exits').get()
+  assert.match(claim.order_id, /^[1-9]\d*$/)
+  const stop = s.broker.externalClose(ACCOUNT, s.positionId)
+  s.broker.tick(TRANSPORT_HORIZON_MS + 1_000)
+  await assert.rejects(runMomentumRankExit(s.db(), s.current, s.book, s.rankDeps()), /closed externally/)
+  const after = s.db().prepare('SELECT * FROM momentum_rank_exits').get()
+  assert.equal(after.state, 'CLOSED_EXTERNALLY')
+  assert.equal(after.reason, 'position closed without this rank close\'s order')
+  assert.deepEqual(JSON.parse(after.evidence_json).closingDealIds, [String(stop.dealId)])
+  assert.equal(s.row().state, 'RANK_CLOSED_EXTERNALLY')
   assert.equal(s.closes(), 1)
 })

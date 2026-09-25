@@ -15,7 +15,8 @@ const parse = value => { try { return JSON.parse(value) } catch { return null } 
 // and its evidence.
 const RANK_COLUMNS = [['order_id', 'TEXT'], ['attempts', 'INTEGER NOT NULL DEFAULT 0'],
   ['last_outcome', 'TEXT'], ['evidence_json', 'TEXT'], ['resolved_at', 'INTEGER']]
-function schema(db) {
+/** The rank claim table, and its T2 columns on a table created before T2. */
+export function rankExitSchema(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS momentum_rank_exits (
     account_id TEXT NOT NULL, trade_id INTEGER NOT NULL, position_id TEXT NOT NULL,
     token TEXT NOT NULL, prior_state TEXT NOT NULL, state TEXT NOT NULL,
@@ -77,7 +78,7 @@ export async function runMomentumRankExit(db, supplied, book, deps = {}) {
       return partialDealHistoryEvidence(raw, { identity: stored.identity, positionId, nowMs: now() })
     } catch { return null }
   }
-  schema(db)
+  rankExitSchema(db)
   const readClaim = () => db.prepare('SELECT * FROM momentum_rank_exits WHERE account_id=? AND trade_id=?').get(accountId, tradeId)
   const updateBoth = (claim, from, to, patch = {}) => db.transaction(() => {
     const changed = db.prepare(`UPDATE momentum_rank_exits SET state=?,attempted_at=COALESCE(?,attempted_at),receipt_json=COALESCE(?,receipt_json),reason=?,
@@ -106,8 +107,11 @@ export async function runMomentumRankExit(db, supplied, book, deps = {}) {
   const finish = async claim => {
     if (!claim || !validReceipt(parse(claim.receipt_json), claim)) throw Error('rank exit stored receipt invalid')
     const raw = await bounded(reconcile)
-    if (String(raw?.ctidTraderAccountId) !== accountId || !Array.isArray(raw.position)
-      || raw.position.some(r => String(r.positionId) === positionId)) throw Error('rank exit absence not confirmed')
+    // One absence rule with every other read here: this account's own
+    // answer, no row for the id. ProtoJSON omits an empty list, so the
+    // account's last position closing is read as absent, not unconfirmed.
+    const read = partialPositionPresence(raw, { identity: stored.identity, positionId, nowMs: now() })
+    if (read?.absent !== true) throw Error('rank exit absence not confirmed')
     if (!updateBoth(claim, 'RECEIVED', 'CONFIRMED', { resolvedAt: now(), outcome: 'confirmed' })) throw Error('rank exit claim changed during readback')
     return { handled: true, state: 'CONFIRMED' }
   }
@@ -148,7 +152,12 @@ export async function runMomentumRankExit(db, supplied, book, deps = {}) {
       // own deal is waited for until the window has passed.
       if (claim.order_id && !pastHorizon) throw unresolved('awaiting the accepted order\'s deal')
       if (!history.closing.length) throw unresolved('absence without a closing deal')
-      updateBoth(claim, claim.state, 'CLOSED_EXTERNALLY', { reason: 'position closed; not attributable to this rank close', outcome: 'closed_externally', evidence, resolvedAt: checkedAt })
+      // With the claim's order id and no deal of it, another close closed the
+      // position. With no order id (a timed-out send) this rank close may be
+      // what closed it: the attribution is unproven, and says so.
+      updateBoth(claim, claim.state, 'CLOSED_EXTERNALLY', { reason: claim.order_id
+        ? 'position closed without this rank close\'s order' : 'position closed; attribution to this rank close unproven',
+      outcome: 'closed_externally', evidence, resolvedAt: checkedAt })
       throw closedExternally()
     }
     if (read.side !== p.side || !sameTicks(read.entry, p.entry, p.digits)) throw unresolved('position unverified')

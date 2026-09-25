@@ -2,8 +2,9 @@
 //
 // T2 (V3 P0-1b): the other closers read the momentum partial plan before
 // they close. The loss cap and the profit ratchet's flatten defer while a
-// partial or rank close is in flight; the manual close, partial and reverse
-// routes also refuse while the partial's outcome is ambiguous. With no plan
+// partial or rank close claimed within the transport horizon may still be in
+// flight, and never longer; the manual close, partial and reverse routes also
+// refuse while the partial's outcome is ambiguous. With no plan
 // (recordedPlans 0) every closer is unchanged — each test's control case.
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,7 +15,9 @@ import { registerPartialPlan } from './momentum-partial-manager.js'
 import { planMomentumTargets } from './momentum-target-policy.js'
 import { runLossCap } from './loss-cap.js'
 import { runProfitRatchet } from './profit-ratchet.js'
-import { competingExitRefusal, IN_FLIGHT_EXIT_STATES, MANUAL_REFUSED_EXIT_STATES } from './momentum-exit-coordination.js'
+import { competingExitRefusal, protectiveExitDeferral, IN_FLIGHT_EXIT_STATES, MANUAL_REFUSED_EXIT_STATES } from './momentum-exit-coordination.js'
+import { rankExitSchema } from './momentum-rank-exit.js'
+import { TRANSPORT_HORIZON_MS } from './momentum-broker-evidence.js'
 import { ctraderEnvReport } from '../lib/ctrader-env.js'
 
 const ACCT = '42'
@@ -22,10 +25,23 @@ const plan = planMomentumTargets({ side: 'BUY', entry: 100, originalStop: 90, re
   costReservePrice: 0.4, digits: 2, volume: 10000, minVolume: 100, stepVolume: 100 })
 const CREDS = { ready: true, host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: ACCT }
 
-function withPlan(db, state, positionId = '11') {
+// The virtual clock of the protective tests. A plan in flight was claimed
+// `age` ms before it: on the plan row for a partial, on the rank claim for a
+// RANK_ state (the plan row then keeps a stale partial time, so a test that
+// read the wrong row would see the wrong age).
+const NOW = 1_000_000_000
+function withPlan(db, state, positionId = '11', { age = 1_000 } = {}) {
   registerPartialPlan(db, { accountId: ACCT, tradeId: 7, positionId, plan, evidenceId: 'fixture:7',
     identity: { host: 'demo.ctraderapi.com', accountId: ACCT, symbolId: '7' } })
-  if (state) db.prepare('UPDATE momentum_partial_plans SET state=?').run(state)
+  if (!state) return
+  const attemptedAt = age == null ? null : NOW - age
+  const rank = state.startsWith('RANK_')
+  db.prepare('UPDATE momentum_partial_plans SET state=?, attempted_at=?').run(state, rank ? NOW - 10 * TRANSPORT_HORIZON_MS : attemptedAt)
+  if (rank) {
+    rankExitSchema(db)
+    db.prepare(`INSERT INTO momentum_rank_exits(account_id,trade_id,position_id,token,prior_state,state,created_at,attempted_at,volume)
+      VALUES (?,7,?,'tok','ARMED',?,?,?,10000)`).run(ACCT, positionId, state.slice(5), NOW - 20 * TRANSPORT_HORIZON_MS, attemptedAt)
+  }
 }
 
 test('the refusal rule: which states each kind of closer waits on', () => {
@@ -45,6 +61,27 @@ test('the refusal rule: which states each kind of closer waits on', () => {
   assert.equal(competingExitRefusal(db, { accountId: ACCT, positionId: '12', states: IN_FLIGHT_EXIT_STATES }), null, 'another position')
 })
 
+test('B1: the protective deferral lasts at most the transport horizon from the claim, whatever the row state says', () => {
+  const defer = (db, nowMs = NOW) => protectiveExitDeferral(db, { accountId: ACCT, positionId: '11', nowMs })
+  for (const state of IN_FLIGHT_EXIT_STATES) {
+    for (const [age, expected] of [[0, true], [1_000, true], [TRANSPORT_HORIZON_MS, true], [TRANSPORT_HORIZON_MS + 1, false],
+      [60 * 60_000, false], [-1_000, true], [-TRANSPORT_HORIZON_MS - 1, false], [null, false]]) {
+      const db = initDB(':memory:'); withPlan(db, state, '11', { age })
+      assert.equal(!!defer(db), expected, `${state} claimed ${age} ms ago`)
+      // The manual routes' rule is on the state alone: an old SENDING row
+      // still refuses a manual close or partial.
+      assert.ok(competingExitRefusal(db, { accountId: ACCT, positionId: '11', states: MANUAL_REFUSED_EXIT_STATES }), `manual ${state} ${age}`)
+    }
+  }
+  const db = initDB(':memory:'); withPlan(db, 'AMBIGUOUS', '11', { age: 0 })
+  assert.equal(defer(db), null, 'an ended request defers nothing')
+  const noTable = initDB(':memory:'); withPlan(noTable, 'ARMED')
+  noTable.prepare("UPDATE momentum_partial_plans SET state='RANK_SENDING', attempted_at=?").run(NOW)
+  assert.equal(defer(noTable), null, 'RANK_SENDING with no rank claim to date it defers nothing (the plan row\'s own time is not the rank request\'s)')
+  const text = defer((() => { const d = initDB(':memory:'); withPlan(d, 'SENDING', '11', { age: 2_000 }); return d })())
+  assert.match(text, /momentum partial plan SENDING on position 11 \(trade 7\).*claimed 2000 ms ago; deferred at most 50000 ms/)
+})
+
 function lossCapDB() {
   const db = initDB(':memory:')
   setState(db, 'account_balance_usd', '10000')
@@ -54,7 +91,7 @@ function lossCapDB() {
 }
 function lossCapDeps() {
   const closed = [], notes = []
-  return { closed, notes,
+  return { closed, notes, now: NOW,
     exec: { reconcile: async () => ({ position: [{ positionId: 11, tradeData: { symbolId: 7, tradeSide: 'BUY', volume: 10000 } }] }),
       closePosition: async (_c, args) => { closed.push(args) } },
     ws: { wsGetUnrealizedPnl: async () => ({ 11: { net: -900 } }) },
@@ -78,6 +115,24 @@ test('loss cap: a breach during an in-flight partial close is deferred this pass
   }
 })
 
+test('B1: a SENDING or RANK_SENDING row older than the transport horizon does not hold the loss cap off; the same row inside it does', async () => {
+  for (const state of IN_FLIGHT_EXIT_STATES) {
+    const db = lossCapDB(); withPlan(db, state, '11', { age: TRANSPORT_HORIZON_MS + 1 })
+    const d = lossCapDeps()
+    const r = await runLossCap(db, CREDS, d)
+    assert.equal(r.closes, 1, `${state} stuck past the horizon: ${JSON.stringify(r.errors)}`)
+    assert.deepEqual(d.closed, [{ positionId: 11, volume: 10000 }])
+    assert.ok(!r.errors.some(e => /deferred/.test(e)), JSON.stringify(r.errors))
+    // The row is left as it was: the loss cap does not rewrite the plan.
+    assert.equal(db.prepare('SELECT state FROM momentum_partial_plans').get().state, state)
+
+    const fresh = lossCapDB(); withPlan(fresh, state, '11', { age: TRANSPORT_HORIZON_MS })
+    const f = lossCapDeps()
+    assert.equal((await runLossCap(fresh, CREDS, f)).closes, 0, `${state} at the horizon edge still defers`)
+    assert.equal(f.closed.length, 0)
+  }
+})
+
 function ratchetDB(state) {
   const db = initDB(':memory:')
   setState(db, 'account_balance_usd', '48000')
@@ -93,7 +148,7 @@ function ratchetDB(state) {
 }
 function ratchetDeps(floating) {
   const closed = []
-  return { closed, now: 1_000_000_000, ws: { wsGetUnrealizedPnl: async () => ({ 11: { net: floating } }) },
+  return { closed, now: NOW, ws: { wsGetUnrealizedPnl: async () => ({ 11: { net: floating } }) },
     exec: { reconcile: async () => ({ position: [{ positionId: 11, tradeData: { volume: 10000 } }] }),
       closePosition: async (_c, args) => { closed.push(args) } },
     notify: async () => {} }
@@ -116,6 +171,15 @@ test('profit ratchet: the floor flatten skips a position whose partial close is 
   }
   const { closed } = await flatten(ratchetDB('AMBIGUOUS'))
   assert.equal(closed.length, 1, 'an ended request does not block the flatten')
+})
+
+test('B1: the floor flatten is not held off by a SENDING or RANK_SENDING row older than the transport horizon', async () => {
+  for (const state of IN_FLIGHT_EXIT_STATES) {
+    const db = ratchetDB(null); withPlan(db, state, '11', { age: TRANSPORT_HORIZON_MS + 1 })
+    const { closed, out } = await flatten(db)
+    assert.equal(closed.length, 1, `${state}: ${JSON.stringify(out.errors)}`)
+    assert.ok(!out.errors.some(e => /flatten skipped/.test(e)), JSON.stringify(out.errors))
+  }
 })
 
 async function app(t, db) {

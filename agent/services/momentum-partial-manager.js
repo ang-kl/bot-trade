@@ -188,8 +188,13 @@ export async function runPartialPlan(db, creds, tradeId, deps) {
     if (gone || changed) {
       const history = await readDeals()
       if (!history) return { state: 'RECEIVED', reason: 'deal_history_unavailable' }
-      if (gone && !history.closing.length) return { state: 'RECEIVED', reason: 'absence_without_closing_deal' }
-      return external('RECEIVED', gone ? 'CLOSED_EXTERNALLY' : 'VOLUME_CHANGED', after, history, history.closing,
+      // The partial's own deal is always in the history and closed only the
+      // partial volume: what closed or changed the rest is another deal. Until
+      // history names one, the row waits rather than naming its own deal.
+      const ownDealId = current()?.receipt?.dealId ?? null
+      const others = history.closing.filter(d => !ownDealId || d.dealId !== ownDealId)
+      if (!others.length) return { state: 'RECEIVED', reason: gone ? 'absence_without_closing_deal' : 'volume_changed_without_closing_deal' }
+      return external('RECEIVED', gone ? 'CLOSED_EXTERNALLY' : 'VOLUME_CHANGED', after, history, others,
         gone ? 'position_closed_after_partial' : 'volume_changed_after_partial')
     }
     return { state: 'RECEIVED', reason: 'residual_not_confirmed' }
@@ -263,7 +268,8 @@ export async function runPartialPlan(db, creds, tradeId, deps) {
       return external('ARMED', absent(before) ? 'CLOSED_EXTERNALLY' : 'VOLUME_CHANGED', before, history, history.closing,
         absent(before) ? 'position_closed_before_partial' : 'volume_changed_before_partial')
     }
-    return { state: 'ARMED', reason: armedOwned ? (history ? 'absence_without_closing_deal' : 'deal_history_unavailable') : 'lifecycle_ownership_unverified' }
+    const unproven = absent(before) ? 'absence_without_closing_deal' : 'volume_changed_without_closing_deal'
+    return { state: 'ARMED', reason: armedOwned ? (history ? unproven : 'deal_history_unavailable') : 'lifecycle_ownership_unverified' }
   }
   if (!armedOwned) return { state: 'ARMED', reason: 'lifecycle_ownership_unverified' }
   try {

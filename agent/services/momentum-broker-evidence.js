@@ -52,12 +52,18 @@ export function partialPositionEvidence(raw, context) {
 /** T2. The same bounded RECONCILE read, answering only "is this position
  * there, and with what volume". Absence is proven by the account's own
  * complete position list with no row for the id; a present row need not
- * carry protection. Anything ambiguous (another account, two rows, another
- * instrument, a closed status) proves nothing and returns null. */
+ * carry protection. ProtoJSON omits an empty repeated field, so the
+ * account's own answer with no `position` field and no error is its empty
+ * list (the rule cross-side-reconcile.js already applies): otherwise the
+ * account's last position closing could never be proven absent. Anything
+ * ambiguous (another account, an error, a list that is not a list, two rows,
+ * another instrument, a closed status) proves nothing and returns null. */
 export function partialPositionPresence(raw, context) {
   const identity = scope(raw, context)
-  if (!identity || !integer(context.nowMs) || !Array.isArray(raw.position)) return null
-  const rows = raw.position.filter(p => id(p?.positionId) === context.positionId)
+  if (!identity || !integer(context.nowMs) || raw.error || raw.errorCode) return null
+  const list = raw.position == null ? [] : raw.position
+  if (!Array.isArray(list)) return null
+  const rows = list.filter(p => id(p?.positionId) === context.positionId)
   const base = { ...identity, positionId: context.positionId, observedAtMs: context.nowMs, source: 'broker_reconcile' }
   if (rows.length === 0) return { ...base, absent: true }
   if (rows.length !== 1) return null

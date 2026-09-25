@@ -73,6 +73,13 @@ blocked the rank exit (V3-SEQUENCE risk 2). T2 reads the position's own deal
 history (`DEAL_LIST_BY_POSITION_ID_REQ`, `wsGetPositionDeals`) instead of
 guessing.
 
+The JS WebSocket fallback (`wsClosePosition`, used after a gateway
+`NOT_CONNECTED` when `EXEC_FALLBACK` is on) returns the same first execution
+event, and keeps its `order` so an `ORDER_ACCEPTED` answer on that path also
+yields the order id. Before the T2 fix round it dropped the `order`, so the
+bot's own accepted close ended `VOLUME_CHANGED` / `CLOSED_EXTERNALLY` with the
+attribution unproven.
+
 | Answer to the close | What it proves | Partial manager | Rank exit |
 |---|---|---|---|
 | `ORDER_FILLED` with the deal | The fill | `RECEIVED`, then `CONFIRMED` once the runner volume is read | `RANK_RECEIVED`, then `RANK_CONFIRMED` on an absence read |
@@ -125,6 +132,27 @@ declared `NOT_EXECUTED`.
 Reasons name what was and was not proven, for example
 `volume_changed_attribution_unproven` when a timed-out attempt had no order
 id: the volume changed, but the deal cannot be attributed to the attempt.
+The rank exit's `CLOSED_EXTERNALLY` says the same two things apart:
+"position closed without this rank close's order" (its order id is known and
+no deal of it exists) and "position closed; attribution to this rank close
+unproven" (no order id: the rank close may itself be what closed it).
+
+After a proven partial (`RECEIVED`), the partial's own deal is always in the
+history. What closed or changed the runner is another deal, so the partial's
+deal is excluded before the record is written, and the row waits
+(`absence_without_closing_deal`, `volume_changed_without_closing_deal`) until
+history names that other deal. It never records its own partial as the
+runner's close.
+
+Absence is the account's own reconcile answer with no row for the position.
+ProtoJSON omits an empty repeated field, so that answer with no `position`
+field and no error is an empty list (the rule `cross-side-reconcile.js`
+already applies); the rank exit's readback uses the same rule. Without it, an
+account's last position closing could never be proven absent. Whether the
+live broker omits the empty list is Not Verifiable from here (the fake always
+sends `[]`); the rule is right either way, because a list with a row in it is
+always serialized. Another account's answer, an error answer, or a `position`
+that is not a list still proves nothing.
 
 Recovery, readback and these terminal states only read the broker. They run
 even after the reconciler has closed the lifecycle rows. Ownership still
@@ -156,9 +184,19 @@ position.
 
 | Closer | Refuses while | Why |
 |---|---|---|
-| Loss cap (`loss-cap.js`) | `SENDING`, `RANK_SENDING` | A request is in flight for seconds. The pass is deferred without stamping the once-per-breach key, so the next pass closes. Once the request has ended, even ambiguously, a full close of the broker's current volume is correct. |
-| Profit ratchet flatten (`profit-ratchet.js`) | `SENDING`, `RANK_SENDING` | Same. The skipped position is reported in the notice's failures. |
-| `POST /actions/position-close` (close and partial), `POST /actions/position-reverse` | `SENDING`, `AMBIGUOUS`, `RANK_SENDING` | A manual partial while the partial's outcome is unknown could close the same volume twice. Refused (409) before any broker call. |
+| Loss cap (`loss-cap.js`) | `SENDING` or `RANK_SENDING` claimed no more than the transport horizon (50 s) ago | A request may still be executing. The pass is deferred without stamping the once-per-breach key, so the next pass closes. After the horizon no request can still be in flight, so a full close of the broker's current volume is correct whatever the earlier request did. |
+| Profit ratchet flatten (`profit-ratchet.js`) | Same | Same. The skipped position is reported in the notice's failures. |
+| `POST /actions/position-close` (close and partial), `POST /actions/position-reverse` | `SENDING`, `AMBIGUOUS`, `RANK_SENDING`, with no time limit | A manual partial while the partial's outcome is unknown could close the same volume twice. Refused (409) before any broker call. |
+
+The protective deferral is bounded by the request's age, not by the row's
+state (`protectiveExitDeferral`). `SENDING` and `RANK_SENDING` last until deal
+history resolves them, which can be never: history unreadable, or an order
+filled in several deals (`order_deals_inexact`). Bounded by state alone, a
+stuck row would have held the loss cap off that position indefinitely (the T2
+checker reproduced 50 minutes). The age is `now − attempted_at`, from the plan
+row for `SENDING` and from the rank claim (`momentum_rank_exits.attempted_at`)
+for `RANK_SENDING`. An attempt time that cannot be read, or that the clock
+places more than the horizon away in either direction, defers nothing.
 
 `POST /actions/close-all` is not guarded. It stays the owner's emergency
 flatten. A full close racing a partial cannot double-close: the second request
@@ -199,6 +237,12 @@ rejection. T2's classifier and tests use it verbatim.
   inexact, and `exactly one` is not met. The row stays unresolved with
   `order_deals_inexact` for owner review. It is not called `VOLUME_CHANGED`,
   because the order was the attempt's own.
+- The other automatic closers do not read the plan: the profit keeper
+  (`profit-keeper.js`), the loss guardian (`loss-guardian.js`), the trade
+  guard (`trade-guard.js`) and the weekend bank (`weekend-bank.js`). T2's
+  spec named the loss cap, the ratchet and the manual routes. The other four
+  are a follow-up; with `recordedPlans` 0 none of them can meet a plan today,
+  and before T4 produces plans each needs the same horizon-bounded deferral.
 - A timed-out attempt never learns its order id. The gateway journals the
   late frame by `clientMsgId`, which Node does not read here. Such an attempt
   resolves to `NOT_EXECUTED`, `CLOSED_EXTERNALLY` or `VOLUME_CHANGED`, with

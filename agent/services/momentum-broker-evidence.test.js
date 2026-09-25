@@ -87,8 +87,15 @@ test('presence: an account-scoped list without the id proves absence; anything a
   assert.equal(absent.absent, true); assert.equal(absent.positionId, '33'); assert.equal(absent.observedAtMs, now)
   const unprotected = partialPositionPresence({ ctidTraderAccountId: '11', position: [{ ...position, takeProfit: 0, tradeData: { ...position.tradeData, volume: 7400 } }] }, context)
   assert.equal(unprotected.absent, false); assert.equal(unprotected.volume, 7400); assert.equal(unprotected.takeProfit, null)
-  for (const raw of [{ position: [] }, { ctidTraderAccountId: '12', position: [] }, { ctidTraderAccountId: '11' },
-    { ctidTraderAccountId: '11', position: [position, position] }]) {
+  // ProtoJSON omits an empty repeated field: the account's own answer with no
+  // list and no error is its empty list, and proves absence (checker N4).
+  for (const raw of [{ ctidTraderAccountId: '11' }, { ctidTraderAccountId: 11, position: null }]) {
+    const omitted = partialPositionPresence(raw, context)
+    assert.equal(omitted?.absent, true, JSON.stringify(raw)); assert.equal(omitted.positionId, '33')
+  }
+  for (const raw of [{ position: [] }, { ctidTraderAccountId: '12', position: [] }, { ctidTraderAccountId: '12' },
+    { ctidTraderAccountId: '11', errorCode: 'CH_ACCESS_TOKEN_INVALID' }, { ctidTraderAccountId: '11', error: 'timeout' },
+    { ctidTraderAccountId: '11', position: {} }, { ctidTraderAccountId: '11', position: [position, position] }]) {
     assert.equal(partialPositionPresence(raw, context), null, JSON.stringify(raw))
   }
 })
