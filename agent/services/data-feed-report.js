@@ -76,6 +76,13 @@ export function verifiedDepositCurrency(db, accountId) {
 export function executionCosts(db, { where = '', params = [], limit = EXECUTION_WINDOW_DEFAULT } = {}) {
   const n = Number.isFinite(Number(limit)) && Number(limit) > 0
     ? Math.min(EXECUTION_WINDOW_MAX, Math.floor(Number(limit))) : EXECUTION_WINDOW_DEFAULT
+  // COST NOTE (WEB-9 check, synthetic timings): this walks
+  // idx_trades_status_closed newest-first and filters the account scope row
+  // by row, with no temp sort. For a busy scope it stops after `n` rows
+  // (1–6 ms at 200k closes); for an account with FEW closes it walks the
+  // whole closed set before LIMIT is met (~20 ms at 50k, ~78 ms at 200k),
+  // on the main thread. Fine at today's size; if the trades table grows
+  // toward that, give this read an (account_id, status, closed_at) index.
   const rows = db.prepare(
     `SELECT id, account_id, entry_latency_ms, commission, swap, closed_at
        FROM trades

@@ -16,6 +16,9 @@ const money = (v) => (v == null || !Number.isFinite(Number(v)) ? '—'
   : Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
 const ms = (v) => `${Math.round(Number(v)).toLocaleString('en-US')} ms`
 
+/** How far before the broker-day anchor a bar may start and still be today's (see dailyBarAge). */
+export const BAR_BOUNDARY_TOLERANCE_MS = 2 * HOUR_MS
+
 /**
  * Where a retained daily bar sits against the CURRENT broker day.
  *
@@ -23,7 +26,20 @@ const ms = (v) => `${Math.round(Number(v)).toLocaleString('en-US')} ms`
  * own), passed in rather than derived here: a browser reimplementation of a
  * DST-aware anchor drifts twice a year.
  *
- * @returns {{status:'current'|'earlier'|'unverified', ageHours:number|null, days:number|null}}
+ * BOUNDARY TOLERANCE. The row-11 evidence (D1 bars at 21:00Z against a
+ * 21:00Z open) only shows the broker's bar boundary agreeing with the anchor
+ * during US daylight time. If the broker's D1 bars stay at 21:00Z after US
+ * DST ends (the anchor moves to 22:00Z), an exact `t >= open` would call
+ * every forming bar "previous broker day". A daily bar can only start on a
+ * day boundary, so a bar starting within BAR_BOUNDARY_TOLERANCE_MS before the
+ * anchor is not a previous day's bar (that starts ~24 h before). Nor is it
+ * proven current: for the hour between the two boundaries the broker's day
+ * and the gate's day disagree. It is reported as UNVERIFIED with the offset
+ * named (`anchorOffsetHours`) — never "previous broker day", never a
+ * confident "current". Re-read one `day.t` after US DST ends (01-11) to
+ * settle which boundary the broker uses.
+ *
+ * @returns {{status:'current'|'earlier'|'unverified', ageHours:number|null, days:number|null, anchorOffsetHours?:number}}
  */
 export function dailyBarAge(barStartMs, brokerDayOpenMs, nowMs) {
   const t = Number(barStartMs)
@@ -33,13 +49,21 @@ export function dailyBarAge(barStartMs, brokerDayOpenMs, nowMs) {
   const ageHours = Number.isFinite(now) ? Math.max(0, Math.round((now - t) / HOUR_MS)) : null
   if (!Number.isFinite(open) || open <= 0) return { status: 'unverified', ageHours, days: null }
   if (t >= open) return { status: 'current', ageHours, days: 0 }
+  if (open - t <= BAR_BOUNDARY_TOLERANCE_MS) {
+    return { status: 'unverified', ageHours, days: null, anchorOffsetHours: +((open - t) / HOUR_MS).toFixed(2) }
+  }
   // Whole broker days between the bar's start and today's open (≥ 1).
   return { status: 'earlier', ageHours, days: Math.max(1, Math.round((open - t) / DAY_MS)) }
 }
 
 /** One label for a bar's age against the current broker day. */
 export function dailyBarNote(age) {
-  if (!age || age.status === 'unverified') return 'broker day unverified'
+  if (!age) return 'broker day unverified'
+  if (age.status === 'unverified') {
+    return age.anchorOffsetHours
+      ? `broker day unverified — bar boundary ${age.anchorOffsetHours} h before the gate's 17:00 New York day open`
+      : 'broker day unverified'
+  }
   if (age.status === 'current') return 'current broker day'
   return `${age.days === 1 ? 'previous broker day' : `${age.days} broker days back`}${age.ageHours != null ? `, started ${age.ageHours} h ago` : ''} — not today's forming bar`
 }
@@ -96,6 +120,21 @@ export function quoteFreshnessLine(quotes) {
   return `quotes, last 10 min (${w.passes} priced passes): sidecar ${w.fromSidecar ?? '—'} · broker ${w.fromBroker ?? '—'} (stale ${w.stale ?? '—'}) · ${age}`
 }
 
+// Which guard in `dailyLossVerdict` (agent/services/risk.js) raised the
+// block. Only `daily_loss_limit_hit` is the daily cap itself; the other two
+// block through the same verdict but are different facts, and printing them
+// on the cap line as a bare "entries blocked now" would read as the cap.
+const BLOCK_WORDS = {
+  daily_loss_limit_hit: 'entries blocked now: the daily loss limit is hit',
+  campaign_stop: 'entries blocked now by the campaign stop (not the daily cap)',
+  unknown_daily_pnl: "entries blocked now: today's P&L is unresolved (not the daily cap)",
+}
+const blockedSuffix = (enforced) => {
+  if (!enforced?.blocked) return ''
+  const g = enforced.guard
+  return ` · ${BLOCK_WORDS[g] || (g ? `entries blocked now by ${g}` : 'entries blocked now (guard not reported)')}`
+}
+
 const BINDING_WORDS = {
   pct: 'the % of balance binds',
   usd: 'the flat USD cap binds',
@@ -121,10 +160,41 @@ export function dailyCapLine(enforced, { allAccounts = false, depositCurrency = 
   const pctPart = enforced.binding === 'pct' && enforced.pct != null ? ` (${+(enforced.pct * 100).toFixed(2)}% of ${money(enforced.gateBalanceUsd)})` : ''
   const why = BINDING_WORDS[enforced.binding] || 'binding rule unreported'
   const left = enforced.remainingUsd != null ? ` · ${money(enforced.remainingUsd)} left today` : ''
-  const text = `daily loss limit ${money(enforced.capUsd)} USD/day enforced — ${why}${pctPart}${left}${enforced.blocked ? ' · entries blocked now' : ''}`
+  const text = `daily loss limit ${money(enforced.capUsd)} USD/day enforced — ${why}${pctPart}${left}${blockedSuffix(enforced)}`
   const ccy = typeof depositCurrency === 'string' ? depositCurrency.toUpperCase() : null
   const note = ccy && ccy !== 'USD'
     ? `This account deposits in ${ccy}; the gate's figure is USD-named and is not converted.`
     : null
   return { text, note }
+}
+
+/**
+ * The DataFeed card's account-dependent props, each shown ONLY when its
+ * response belongs to the account on screen.
+ *
+ * Switching account changes `acct` without remounting the page (see
+ * use-lens-account.js), and the previous account's `feedReport` / `riskFull`
+ * stay in state until the new load finishes both of its waits — the second
+ * queues behind the performance-report reads. Checking scope only where the
+ * response is STORED therefore let the old account's latency, fees, swap,
+ * deposit currency and equity stop paint under the new account's heading.
+ * This is the check at RENDER, so a mismatch reads as "did not load" /
+ * "unverified" instead of another account's numbers.
+ *
+ * @param {{acct: string, feedReport?: object|null, riskFull?: object|null, error?: string}} s
+ */
+export function dataFeedCardScope({ acct, feedReport = null, riskFull = null, error = '' } = {}) {
+  const scope = acct == null ? null : String(acct)
+  const mine = (id) => scope != null && id != null && String(id) === scope
+  // risk-full answers for the account it was asked about (`risk.scopedTo`).
+  const rf = riskFull && mine(riskFull.risk?.scopedTo) ? riskFull : null
+  const effective = rf?.risk?.effective ?? null
+  return {
+    feedReport: feedReport && !feedReport.error && mine(feedReport.accountId) ? feedReport : null,
+    dailyCap: mine(riskFull?.dailyCapEnforced?.accountId) ? riskFull.dailyCapEnforced : null,
+    allAccounts: scope === 'all',
+    depositCurrency: rf?.account?.depositCurrency ?? null,
+    equityStopPct: effective?.equityStopPct ?? null,
+    equityStopArmed: !error && effective ? effective.equityStopPct != null : null,
+  }
 }

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { readFileSync } from 'node:fs'
 import { DataFeed } from './PerfMacroSections.jsx'
+import { dataFeedCardScope } from '../lib/data-feed.js'
 
 // WEB-9 (8,989-A row 11): the card prints measured figures with their
 // coverage and names what is not measured — no hard-coded latency dash, no
@@ -50,6 +52,41 @@ describe('Data-feed card', () => {
   it('the all-accounts view names the per-account cap instead of a dash', () => {
     const html = renderToStaticMarkup(<DataFeed allAccounts feedReport={report} />)
     expect(html).toContain('daily loss limit per account — select one account')
+  })
+  it("after an account switch the card shows none of the previous account's figures (render-time scope)", () => {
+    // What Performance.jsx holds between the switch and the new load: `acct`
+    // is the new account, `feedReport` / `riskFull` are still the old one's.
+    const riskFullOld = {
+      risk: { scopedTo: '46130058', effective: { equityStopPct: 0.15 } },
+      account: { accountId: '46130058', depositCurrency: 'SGD' },
+      dailyCapEnforced: enforced,
+    }
+    const same = renderToStaticMarkup(<DataFeed {...dataFeedCardScope({ acct: '46130058', feedReport: report, riskFull: riskFullOld })} />)
+    expect(same).toContain('p50 312 ms')
+    expect(same).toContain('commission -812.40')
+    expect(same).toContain('daily loss limit 1,200.17 USD/day enforced')
+    expect(same).toContain('deposits in SGD')
+    expect(same).toContain('configured 15%')
+
+    const switched = renderToStaticMarkup(<DataFeed {...dataFeedCardScope({ acct: '99990001', feedReport: report, riskFull: riskFullOld })} />)
+    for (const old of ['p50 312 ms', 'commission -812.40', 'sidecar 4', '1,200.17', 'deposits in SGD', 'configured 15%']) {
+      expect(switched).not.toContain(old)
+    }
+    expect(switched).toContain('entry latency unavailable — the data-feed report did not load')
+    expect(switched).toContain('daily loss limit unavailable')
+    expect(switched).toMatch(/equity stop <span[^>]*>unverified</)
+  })
+  it('both DataFeed sites on the Performance page take their account props from the render-time scope', () => {
+    const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1')
+    const page = strip(readFileSync(new URL('../pages/Performance.jsx', import.meta.url), 'utf8'))
+    const sites = page.split('<DataFeed').slice(1).map(s => s.slice(0, s.indexOf('/>')))
+    expect(sites).toHaveLength(2)
+    for (const site of sites) {
+      expect(site).toContain('{...feedCardScope}')
+      // No site re-passes an unguarded account prop after (or instead of) the spread.
+      expect(site).not.toMatch(/\b(feedReport|dailyCap|depositCurrency|equityStopPct|equityStopArmed|allAccounts)=/)
+    }
+    expect(page).toMatch(/const feedCardScope = dataFeedCardScope\(\{ acct, feedReport, riskFull, error \}\)/)
   })
   it('a configured equity stop is not presented as a verified armed state', () => {
     const html = renderToStaticMarkup(<DataFeed equityStopArmed equityStopPct={0.15} />)

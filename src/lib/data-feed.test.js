@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { dailyBarAge, dailyBarNote, dailyBarsSummary, latencyLine, costLines, quoteFreshnessLine, dailyCapLine } from './data-feed.js'
+import { dailyBarAge, dailyBarNote, dailyBarsSummary, latencyLine, costLines, quoteFreshnessLine, dailyCapLine, dataFeedCardScope } from './data-feed.js'
 
 const OPEN = Date.parse('2026-09-24T21:00:00Z') // current broker day open
 const NOW = Date.parse('2026-09-25T12:00:00Z')
@@ -15,6 +15,24 @@ describe('dailyBarAge', () => {
     const a = dailyBarAge(OPEN, OPEN, NOW)
     expect(a.status).toBe('current')
     expect(dailyBarNote(a)).toBe('current broker day')
+  })
+  it('a bar starting up to 2 h before the anchor is unverified with the offset named, never "previous broker day"', () => {
+    // After US DST ends (01-11) the anchor moves to 22:00Z; if the broker's
+    // D1 bars stay at 21:00Z, the forming bar starts 1 h before the anchor.
+    const winterOpen = Date.parse('2026-11-02T22:00:00Z')
+    const winterNow = Date.parse('2026-11-03T12:00:00Z')
+    const a = dailyBarAge(Date.parse('2026-11-02T21:00:00Z'), winterOpen, winterNow)
+    expect(a).toEqual({ status: 'unverified', ageHours: 15, days: null, anchorOffsetHours: 1 })
+    expect(dailyBarNote(a)).toBe("broker day unverified — bar boundary 1 h before the gate's 17:00 New York day open")
+    expect(dailyBarNote(a)).not.toMatch(/previous broker day/)
+    expect(dailyBarAge(winterOpen - 2 * 3_600_000, winterOpen, winterNow).status).toBe('unverified')
+    // Past the band it is an earlier day again — the previous 21:00Z bar
+    // starts 25 h before the anchor.
+    const prev = dailyBarAge(Date.parse('2026-11-01T21:00:00Z'), winterOpen, winterNow)
+    expect(prev).toMatchObject({ status: 'earlier', days: 1 })
+    expect(dailyBarAge(winterOpen - 3 * 3_600_000, winterOpen, winterNow).status).toBe('earlier')
+    expect(dailyBarsSummary([{ day: { t: Date.parse('2026-11-02T21:00:00Z') } }], winterOpen, winterNow))
+      .toBe('1 retained daily bar for scoped open positions · 1 with the day unverified')
   })
   it('does not guess a day when the anchor or the bar time is missing', () => {
     expect(dailyBarAge(OPEN, null, NOW).status).toBe('unverified')
@@ -87,8 +105,20 @@ describe('dailyCapLine', () => {
     expect(dailyCapLine({ ...pct, capUsd: 150, binding: 'usd', remainingUsd: 14.64 }).text).toContain('150.00 USD/day enforced — the flat USD cap binds · 14.64 left today')
   })
   it('says when entries are blocked, and when nothing caps the day', () => {
-    expect(dailyCapLine({ ...pct, blocked: true, remainingUsd: 0 }).text).toContain('entries blocked now')
+    expect(dailyCapLine({ ...pct, blocked: true, guard: 'daily_loss_limit_hit', remainingUsd: 0 }).text)
+      .toContain('entries blocked now: the daily loss limit is hit')
     expect(dailyCapLine({ status: 'computed', uncapped: true, capUsd: null }).text).toMatch(/none in force/)
+  })
+  it('names the guard that blocks, so a campaign stop or unresolved P&L does not read as the daily cap', () => {
+    const campaign = dailyCapLine({ ...pct, blocked: true, guard: 'campaign_stop' }).text
+    expect(campaign).toContain('entries blocked now by the campaign stop (not the daily cap)')
+    expect(campaign).not.toContain('daily loss limit is hit')
+    const unknown = dailyCapLine({ ...pct, blocked: true, guard: 'unknown_daily_pnl' }).text
+    expect(unknown).toContain("entries blocked now: today's P&L is unresolved (not the daily cap)")
+    expect(unknown).not.toContain('daily loss limit is hit')
+    expect(dailyCapLine({ ...pct, blocked: true, guard: 'some_new_guard' }).text).toContain('entries blocked now by some_new_guard')
+    expect(dailyCapLine({ ...pct, blocked: true, guard: null }).text).toContain('entries blocked now (guard not reported)')
+    expect(dailyCapLine(pct).text).not.toContain('blocked')
   })
   it('flags a non-USD deposit currency instead of converting silently', () => {
     expect(dailyCapLine(pct, { depositCurrency: 'SGD' }).note).toBe("This account deposits in SGD; the gate's figure is USD-named and is not converted.")
@@ -99,5 +129,51 @@ describe('dailyCapLine', () => {
     const missing = dailyCapLine(null)
     expect(missing.text).toBe('daily loss limit unavailable')
     expect(dailyCapLine({ status: 'unavailable', reason: 'no account named or selected' }).note).toMatch(/no account named/)
+  })
+})
+
+describe('dataFeedCardScope', () => {
+  // The state an account switch leaves behind: acct already moved to B,
+  // feedReport and riskFull still A's until the new load finishes.
+  const feedA = { accountId: 'A', execution: { latency: { measured: 1, of: 1, p50Ms: 5, p90Ms: 5 } } }
+  const riskA = {
+    risk: { scopedTo: 'A', effective: { equityStopPct: 0.15 } },
+    account: { accountId: 'A', depositCurrency: 'SGD' },
+    dailyCapEnforced: { status: 'computed', accountId: 'A', capUsd: 100 },
+  }
+  it('passes every figure through when the responses belong to the account on screen', () => {
+    expect(dataFeedCardScope({ acct: 'A', feedReport: feedA, riskFull: riskA })).toEqual({
+      feedReport: feedA,
+      dailyCap: riskA.dailyCapEnforced,
+      allAccounts: false,
+      depositCurrency: 'SGD',
+      equityStopPct: 0.15,
+      equityStopArmed: true,
+    })
+  })
+  it("never hands the previous account's figures to the new account", () => {
+    expect(dataFeedCardScope({ acct: 'B', feedReport: feedA, riskFull: riskA })).toEqual({
+      feedReport: null,
+      dailyCap: null,
+      allAccounts: false,
+      depositCurrency: null,
+      equityStopPct: null,
+      equityStopArmed: null,
+    })
+  })
+  it('the all-accounts view carries no single-account figure', () => {
+    const s = dataFeedCardScope({ acct: 'all', feedReport: feedA, riskFull: riskA })
+    expect(s.allAccounts).toBe(true)
+    expect(s.feedReport).toBeNull()
+    expect(s.equityStopArmed).toBeNull()
+    const own = { ...feedA, accountId: 'all' }
+    expect(dataFeedCardScope({ acct: 'all', feedReport: own, riskFull: null }).feedReport).toBe(own)
+  })
+  it('an error body, a page error or a numeric id are handled without guessing', () => {
+    expect(dataFeedCardScope({ acct: 'A', feedReport: { ...feedA, error: 'timeout' } }).feedReport).toBeNull()
+    expect(dataFeedCardScope({ acct: 'A', riskFull: riskA, error: 'agent down' }).equityStopArmed).toBeNull()
+    // accounts.account_id is TEXT; a numeric id in a body still matches its string.
+    expect(dataFeedCardScope({ acct: '46130058', feedReport: { ...feedA, accountId: 46130058 } }).feedReport).not.toBeNull()
+    expect(dataFeedCardScope({ acct: 'A', riskFull: { ...riskA, risk: { ...riskA.risk, effective: { equityStopPct: null } } } }).equityStopArmed).toBe(false)
   })
 })

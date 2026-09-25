@@ -53,6 +53,7 @@ import { accountNumbers } from "../lib/scope-label.js"
 import { reportStats, reportGroups, reportLedger } from '../../agent/shared/performance-populations.js'
 import { performanceGradients } from '../lib/performance-gradients.js'
 import { scopedPerformanceRows } from '../lib/performance-evidence.js'
+import { dataFeedCardScope } from '../lib/data-feed.js'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -1140,6 +1141,11 @@ export default function Performance() {
   const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
   const journalAvailable = agentConfigured() && !error && tradeScope === acct
   const positionsAvailable = agentConfigured() && !error && posScope.accountId === acct
+  // The Data-feed card's account-dependent props, checked against `acct` at
+  // RENDER: an account switch keeps the previous account's feedReport and
+  // riskFull in state until the new load finishes, so a check made only when
+  // they were stored would paint the old account's figures under the new one.
+  const feedCardScope = dataFeedCardScope({ acct, feedReport, riskFull, error })
 
   const load = useCallback(async () => {
     if (pageAsleep()) return
@@ -2106,13 +2112,8 @@ export default function Performance() {
               currency={feed.currency}
               floating={feed.openPnl}
               openCount={positionsAvailable ? positions.length : null}
-              dailyCap={String(riskFull?.dailyCapEnforced?.accountId) === String(acct) ? riskFull.dailyCapEnforced : null}
-              allAccounts={acct === 'all'}
-              depositCurrency={riskFull?.account?.depositCurrency ?? null}
-              equityStopPct={riskFull?.risk?.effective?.equityStopPct ?? null}
-              feedReport={feedReport}
+              {...feedCardScope}
               nowMs={quoteNow}
-              equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
               slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
               tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
             />
@@ -2490,13 +2491,8 @@ export default function Performance() {
             currency={feed.currency}
             floating={feed.openPnl}
             openCount={positionsAvailable ? positions.length : null}
-            dailyCap={String(riskFull?.dailyCapEnforced?.accountId) === String(acct) ? riskFull.dailyCapEnforced : null}
-            allAccounts={acct === 'all'}
-            depositCurrency={riskFull?.account?.depositCurrency ?? null}
-            equityStopPct={riskFull?.risk?.effective?.equityStopPct ?? null}
-            feedReport={feedReport}
+            {...feedCardScope}
             nowMs={quoteNow}
-            equityStopArmed={!error && riskFull?.risk?.effective ? riskFull.risk.effective.equityStopPct != null : null}
             slSet={positionsAvailable ? positions.filter(p2 => p2.current_sl > 0).length : null}
             tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
           />
