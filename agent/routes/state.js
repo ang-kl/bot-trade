@@ -1925,6 +1925,28 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/deal-balances — V3 WEB-8 (8,989-A row 7). Per account: the
+  // broker balances stored on deals and cashflows, what is missing and why
+  // (labels), how many consecutive events reconcile, and with ?at=<ms|ISO>[,…]
+  // (at most 24) the balance PROVEN at each edge or the labelled reason there
+  // is none. ?account=all|<id>. Read-only; bounded by the account's stored
+  // deals and cashflows.
+  router.get('/deal-balances', async (req, res) => {
+    try {
+      const raw = String(req.query.at ?? '').trim()
+      const parts = raw ? raw.split(',').map(s => s.trim()) : []
+      if (parts.length > 24) return res.status(400).json({ error: 'at most 24 edges' })
+      const edges = parts.map(s => (/^\d+$/.test(s) ? Number(s) : Date.parse(s)))
+      if (edges.some(e => !Number.isSafeInteger(e))) return res.status(400).json({ error: 'each edge is epoch milliseconds or an ISO time' })
+      const scope = requestedAccount(db, req)
+      const [{ dealBalanceReport }, { depositCurrencies }] = await Promise.all([
+        import('../services/deal-balances.js'), import('../services/performance-populations.js')])
+      res.json(dealBalanceReport(db, { accountId: scope.all ? null : scope.accountId, edges, currencyByAccount: depositCurrencies(db) }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/metrics — latest performance snapshot
   // -----------------------------------------------------------------------

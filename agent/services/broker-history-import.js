@@ -30,6 +30,7 @@
 import { stampRealisedAudit } from './trade-consistency.js'
 import { pageDeals } from '../lib/deal-paging.js'
 import { brokerDealLinkIdentities } from './broker-deal-link-identity.js'
+import { brokerAmount, brokerVersion } from './deal-balances.js'
 
 const SIDE_NAME = { 1: 'BUY', 2: 'SELL' }
 
@@ -99,6 +100,11 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
     const closeSide = SIDE_NAME[d.tradeSide] || String(d.tradeSide ?? '')
     const side = closeSide === 'BUY' ? 'SELL' : closeSide === 'SELL' ? 'BUY' : (closeSide || null)
     const pid = d.positionId != null ? String(d.positionId) : null
+    // V3 WEB-8: the account balance the broker reports right after this
+    // close, in its own integer units. Decoded only with the deal's stated
+    // moneyDigits (no default scale); absent or unusable → NULL, and
+    // balance_source 'broker_api' records that this read carried none.
+    const balance = brokerAmount(cpd.balance, cpd.moneyDigits)
     rows.push({
       deal_id: String(d.dealId),
       position_id: pid,
@@ -114,13 +120,24 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
       swap: r2(swap),
       commission: r2(commission),
       net_pnl: r2((gross || 0) + (swap || 0) + (commission || 0)),
+      balance,
+      balance_version: balance == null ? null : brokerVersion(cpd.balanceVersion),
+      balance_currency: null,             // the deal's money is in the account's deposit currency
+      balance_source: 'broker_api',
     })
   }
   return rows
 }
 
+// V3 WEB-8: a row from a caller that does not read balances (tests, older
+// shapes) carries none of these fields. It is written with all four NULL, so
+// it neither sets nor clears a stored balance (the balance rule in persistDeals).
+const withBalanceFields = (r) => ({ ...r, balance: r.balance ?? null, balance_version: r.balance_version ?? null,
+  balance_currency: r.balance_currency ?? null, balance_source: r.balance_source ?? null })
+
 /** Upsert shaped rows, linking only an unambiguous account+position identity. */
 export function persistDeals(db, rows) {
+  rows = rows.map(withBalanceFields)
   const identities = brokerDealLinkIdentities(db, rows)
   const localByIdentity = new Map()
   const pids = [...new Set([...identities.values()].map(identity => identity.positionId))]
@@ -148,13 +165,25 @@ export function persistDeals(db, rows) {
     return identity ? localByIdentity.get(`${identity.accountId}:${identity.positionId}`) ?? null : null
   }
 
+  // V3 WEB-8 — THE BALANCE RULE. The stored balance and its version, currency
+  // and source move together, and a read never erases a balance another read
+  // knew: a NULL keeps what is stored, and a statement's balance never replaces
+  // one the API read (the API's closePositionDetail is the primary record).
+  // When neither read carries a balance, balance_source keeps the strongest
+  // "this was read and had none" (broker_api over statement); a caller that
+  // does not read balances (NULL source) changes nothing. SQLite evaluates
+  // every SET expression against the row as it was, so the four agree.
+  const keepStoredBalance = `(broker_deals.balance IS NOT NULL AND (excluded.balance IS NULL
+      OR (broker_deals.balance_source = 'broker_api' AND excluded.balance_source IS NOT 'broker_api')))`
   const up = db.prepare(`
     INSERT INTO broker_deals (
       deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price,
-      opened_at, closed_at, gross_pnl, swap, commission, net_pnl, matched_trade_id
+      opened_at, closed_at, gross_pnl, swap, commission, net_pnl, matched_trade_id,
+      balance, balance_version, balance_currency, balance_source
     ) VALUES (
       @deal_id, @position_id, @account_id, @symbol, @side, @lots, @entry_price, @close_price,
-      @opened_at, @closed_at, @gross_pnl, @swap, @commission, @net_pnl, @matched_trade_id
+      @opened_at, @closed_at, @gross_pnl, @swap, @commission, @net_pnl, @matched_trade_id,
+      @balance, @balance_version, @balance_currency, @balance_source
     )
     ON CONFLICT(deal_id) DO UPDATE SET
       symbol = excluded.symbol, side = excluded.side, lots = excluded.lots,
@@ -167,7 +196,16 @@ export function persistDeals(db, rows) {
       -- link would contradict the unmatched receipt and allow the downstream
       -- price reconciler to keep using an arbitrary local trade.
       matched_trade_id = excluded.matched_trade_id,
-      imported_at = datetime('now')
+      imported_at = datetime('now'),
+      balance = CASE WHEN ${keepStoredBalance} THEN broker_deals.balance ELSE excluded.balance END,
+      balance_version = CASE WHEN ${keepStoredBalance} THEN broker_deals.balance_version
+        WHEN excluded.balance IS NULL THEN broker_deals.balance_version ELSE excluded.balance_version END,
+      balance_currency = CASE WHEN ${keepStoredBalance} THEN broker_deals.balance_currency
+        WHEN excluded.balance IS NULL THEN broker_deals.balance_currency ELSE excluded.balance_currency END,
+      balance_source = CASE WHEN ${keepStoredBalance} THEN broker_deals.balance_source
+        WHEN excluded.balance IS NOT NULL THEN excluded.balance_source
+        WHEN 'broker_api' IN (broker_deals.balance_source, excluded.balance_source) THEN 'broker_api'
+        ELSE COALESCE(excluded.balance_source, broker_deals.balance_source) END
   `)
   const before = db.prepare('SELECT COUNT(*) AS c FROM broker_deals').get().c
   const write = db.transaction(() => {
