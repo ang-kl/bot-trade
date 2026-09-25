@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { DEFAULT_PARAMS, profileHash } from '../lib/tick-strategy.js'
-import { TickComparisonReader, matchingProfile, comparisonMemo, comparisonRecord, retainComparisons, comparisonStatus } from './scanner-comparison.js'
+import { TickComparisonReader, matchingProfile, comparisonMemo, comparisonRecord, retainComparisons, comparisonStatus, REFUSAL_WINDOW_MS } from './scanner-comparison.js'
 
 const HASH = profileHash(DEFAULT_PARAMS)
 const tickFeed = (symbolId, accountId = '11', host = 'demo.ctraderapi.com') => ({ provider: 'ctrader', host, accountId, symbolId: String(symbolId) })
@@ -45,10 +45,16 @@ const page = (rows, instanceId = 'a'.repeat(64)) => ({ instanceId, orderAuthorit
 
 test('one comparison page reads the profile registry once and matches exactly as the per-row path does', t => {
   const registered = [tickFeed(1000), tickFeed(1001), tickFeed(2000, '22', 'live.ctraderapi.com')]
-  const db = database(t, { profiles: [...registered.map(f => tickProfile(f)), tickProfile(tickFeed(1002), { source: 'cpp-scan-timeframe', timeframe: '1h' }),
-    tickProfile(tickFeed(1003), { configVersion: 'v2' })] })
+  // Profiles the identity gate must refuse although they are in the registry
+  // (the registry validates at registration; the gate re-checks at use): a
+  // symbol outside account 11's map, an account with no accounts row, and the
+  // demo account's feed carrying the live host. Without these every gate
+  // failure also had no profile, so deleting the gate could not turn red.
+  const gated = [tickFeed(1004), tickFeed(1000, '33'), tickFeed(1000, '11', 'live.ctraderapi.com')]
+  const db = database(t, { profiles: [...registered.map(f => tickProfile(f)), ...gated.map(f => tickProfile(f)),
+    tickProfile(tickFeed(1002), { source: 'cpp-scan-timeframe', timeframe: '1h' }), tickProfile(tickFeed(1003), { configVersion: 'v2' })] })
   const variants = [
-    ...registered, tickFeed(1002), tickFeed(1003), tickFeed(9999), tickFeed(1000, '11', 'live.ctraderapi.com'), tickFeed(1000, '33'),
+    ...registered, ...gated, tickFeed(1002), tickFeed(1003), tickFeed(9999),
     { symbolId: '1001', host: 'demo.ctraderapi.com', accountId: '11', provider: 'ctrader' }, // same identity, other key order
   ]
   const rows = Array.from({ length: 64 }, (_, i) => {
@@ -56,6 +62,10 @@ test('one comparison page reads the profile registry once and matches exactly as
     return row(i + 1, feed, i % 7 === 3 ? { configVersion: 'v2' } : i % 11 === 5 ? { profileHash: 'other' } : i % 13 === 7 ? { timeframe: '1h' } : {})
   })
   const memo = comparisonMemo()
+  for (const feed of gated) {
+    assert.equal(matchingProfile(db, 'cpp-scan-tick', row(1, feed), memo), null, `memo path admitted ${JSON.stringify(feed)}`)
+    assert.equal(matchingProfile(db, 'cpp-scan-tick', row(1, feed)), null, `per-row path admitted ${JSON.stringify(feed)}`)
+  }
   for (const r of rows) assert.deepEqual(matchingProfile(db, 'cpp-scan-tick', r, memo), matchingProfile(db, 'cpp-scan-tick', r), JSON.stringify(r.feed))
   assert.ok(rows.some(r => matchingProfile(db, 'cpp-scan-tick', r)) && rows.some(r => !matchingProfile(db, 'cpp-scan-tick', r)), 'a mixed page')
 
@@ -131,10 +141,56 @@ test('no statement on the page path counts or deletes; retention runs a fixed nu
     const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(sql.match(/\?/g) || []).map(() => 0)).map(r => r.detail).join(' | ')
     assert.doesNotMatch(plan, /TEMP B-TREE FOR ORDER BY|SCAN scanner_comparisons(?! USING)/, `${sql}\n${plan}`)
     // Only the refusal breakdown groups in a temporary tree, and only over the
-    // index-bounded input_refused rows of one source.
-    if (/TEMP B-TREE/.test(plan)) assert.match(plan, /SEARCH scanner_comparisons USING INDEX scanner_comparison_source_state \(source=\? AND state=\?\)/, plan)
+    // last hour of input_refused rows of one source: a range on the index.
+    if (/TEMP B-TREE/.test(plan)) assert.match(plan, /SEARCH scanner_comparisons USING INDEX scanner_comparison_source_state \(source=\? AND state=\? AND observed_ms>\?\)/, plan)
   }
   const status = observed(db); comparisonStatus(status.db)
   const groupBy = status.log.statements.find(s => /GROUP BY source,state/.test(s.sql)).sql
   assert.match(db.prepare(`EXPLAIN QUERY PLAN ${groupBy}`).all().map(r => r.detail).join(' '), /COVERING INDEX scanner_comparison_source_state/)
+})
+
+test('the refusal breakdown opens only the last hour of refusals, however many are retained', t => {
+  const db = database(t), now = 1_800_000_000_000
+  const refusal = (id, at, reason) => comparisonRecord(db, id, 'cpp-scan-timeframe', 'input_refused', { error: 'bar_input_invalid', reason }, at)
+  db.transaction(() => {
+    // Six days of retained refusals, all older than the hour.
+    for (let i = 0; i < 20_000; i++) refusal(`old${i}`, now - REFUSAL_WINDOW_MS - 1 - i * 25_000, 'last_bar_partial')
+    for (let i = 0; i < 30; i++) refusal(`partial${i}`, now - i * 60_000, 'last_bar_partial')
+    for (let i = 0; i < 10; i++) refusal(`empty${i}`, now - i * 60_000, 'bars_empty')
+    refusal('edge', now - REFUSAL_WINDOW_MS, 'ohlc_invalid') // the window is inclusive at its start
+  })()
+  // Count every row the breakdown opens: json_extract on detail is the per-row cost.
+  let opened = 0
+  db.function('json_extract', { deterministic: true }, (doc, path) => { opened++; return JSON.parse(doc)[path.replace(/^\$\./, '')] ?? null })
+  const status = comparisonStatus(db, { now })
+  assert.equal(status.inputRefusedWindowMs, REFUSAL_WINDOW_MS)
+  assert.deepEqual(status.inputRefusedLastHour.map(r => [r.error, r.reason, r.records]).sort(), [
+    ['bar_input_invalid', 'bars_empty', 10], ['bar_input_invalid', 'last_bar_partial', 30], ['bar_input_invalid', 'ohlc_invalid', 1]])
+  assert.ok(opened > 0 && opened <= 2 * 41, `the breakdown opened ${opened / 2} rows for 41 in the hour (20,041 retained)`)
+  // The retained total is still reported, from the covering index alone.
+  assert.equal(status.populations.find(p => p.state === 'input_refused').records, 20_041)
+  const { db: view, log } = observed(db); comparisonStatus(view, { now })
+  const breakdown = log.statements.find(s => /json_extract/.test(s.sql)).sql
+  assert.match(db.prepare(`EXPLAIN QUERY PLAN ${breakdown}`).all(0).map(r => r.detail).join(' | '),
+    /SEARCH scanner_comparisons USING INDEX scanner_comparison_source_state \(source=\? AND state=\? AND observed_ms>\?\)/)
+})
+
+test('the 7-day age deletes run in bounded chunks, one statement per chunk', t => {
+  const db = database(t), now = 1_800_000_000_000, stale = now - 8 * 86_400_000
+  db.transaction(() => {
+    for (let i = 0; i < 5000; i++) comparisonRecord(db, `stale${i}`, 'cpp-scan-tick', 'matched', {}, stale - i)
+    for (let i = 0; i < 10; i++) comparisonRecord(db, `fresh${i}`, 'cpp-scan-tick', 'matched', {}, now - i)
+    const reference = db.prepare('INSERT INTO scanner_references (id,payload,observed_ms) VALUES (?,?,?)')
+    for (let i = 0; i < 3000; i++) reference.run(`stale${i}`, '{}', stale - i)
+    for (let i = 0; i < 5; i++) reference.run(`fresh${i}`, '{}', now - i)
+  })()
+  const { db: view, log } = observed(db)
+  retainComparisons(view, now, { chunk: 1000 })
+  const deletes = log.statements.filter(s => /^DELETE/.test(s.sql))
+  assert.ok(deletes.every(s => s.changes <= 1000), JSON.stringify(deletes.map(s => [s.sql.slice(0, 40), s.changes])))
+  const aged = table => deletes.filter(s => s.sql.startsWith(`DELETE FROM ${table} `) && /observed_ms\s*<\s*\?/.test(s.sql)).map(s => s.changes)
+  assert.deepEqual(aged('scanner_comparisons'), [1000, 1000, 1000, 1000, 1000, 0])
+  assert.deepEqual(aged('scanner_references'), [1000, 1000, 1000, 0])
+  assert.equal(db.prepare('SELECT count(*) n FROM scanner_comparisons').get().n, 10)
+  assert.equal(db.prepare('SELECT count(*) n FROM scanner_references').get().n, 5)
 })

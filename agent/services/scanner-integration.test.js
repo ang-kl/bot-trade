@@ -251,7 +251,7 @@ test('refused inputs are recorded with their reason instead of vanishing in the 
   // A closed bar re-sent with a different reference result is a conflict, now recorded.
   await assert.rejects(() => publishTimeframeEvaluation(db, job, options), /offline/)
   await assert.rejects(() => publishTimeframeEvaluation(db, { ...job, reference: { ...job.reference, tp1: 1 } }, options), /reference_identity_conflict/)
-  assert.deepEqual(comparisonStatus(db).inputRefused.map(r => [r.error, r.reason, r.records]).sort(), [
+  assert.deepEqual(comparisonStatus(db).inputRefusedLastHour.map(r => [r.error, r.reason, r.records]).sort(), [
     ['bar_input_invalid', 'bars_empty', 1], ['bar_input_invalid', 'last_bar_partial', 1], ['bar_input_invalid', 'ohlc_invalid', 1],
     ['reference_identity_conflict', 'reference_identity_conflict', 1]])
   assert.equal(db.prepare('SELECT count(*) n FROM entry_intents').get().n, 0)

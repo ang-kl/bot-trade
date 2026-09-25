@@ -52,9 +52,14 @@ export function comparisonRecord(db, id, source, state, detail, now = Date.now()
 // Every statement walks an index; none sorts the table.
 export function retainComparisons(db, now = Date.now(), { cap = CAP, chunk = 2000 } = {}) {
   schema(db)
-  db.prepare('DELETE FROM scanner_references WHERE observed_ms < ?').run(now - RETAIN)
+  // The 7-day age deletes are chunked too: after the bridge has been off for
+  // more than 7 days a single statement held the write lock 558 ms at 100,000
+  // stale rows and 1,074 ms at 200,000 (the #1088 checker's measurement).
+  const aged = table => db.prepare(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE observed_ms<? LIMIT ?)`)
+  const agedReferences = aged('scanner_references'), agedComparisons = aged('scanner_comparisons')
+  while (agedReferences.run(now - RETAIN, chunk).changes === chunk) { /* next bounded chunk */ }
   db.prepare('DELETE FROM scanner_references WHERE rowid IN (SELECT rowid FROM scanner_references ORDER BY observed_ms DESC,rowid DESC LIMIT -1 OFFSET ?)').run(cap)
-  db.prepare('DELETE FROM scanner_comparisons WHERE observed_ms < ?').run(now - RETAIN)
+  while (agedComparisons.run(now - RETAIN, chunk).changes === chunk) { /* next bounded chunk */ }
   const first = db.prepare('SELECT MIN(source) source FROM scanner_comparisons')
   const next = db.prepare('SELECT MIN(source) source FROM scanner_comparisons WHERE source > ?')
   const edge = db.prepare('SELECT observed_ms at, rowid id FROM scanner_comparisons WHERE source=? ORDER BY observed_ms DESC,rowid DESC LIMIT 1 OFFSET ?')
@@ -111,15 +116,21 @@ export function compareTimeframeResult(db, row, now = Date.now()) {
     sourceSequence: input.sourceSequence ?? input.barCloseAtMs, differences, orderAuthority: false }, now)
   return state
 }
-export function comparisonStatus(db) {
+export const REFUSAL_WINDOW_MS = 3_600_000
+export function comparisonStatus(db, { now = Date.now() } = {}) {
   if (!exists(db)) return { status: 'unavailable', reason: 'no_comparison_observation', orderAuthority: false }
-  // Both reads use the (source, state, observed_ms) index, which covers the
-  // populations read (about 40-55 ms at 200,000 rows, measured locally): this
-  // runs on the main thread for every /state/scanner-mirrors and heartbeat read.
+  // This runs on the main thread for every /state/scanner-mirrors and
+  // heartbeat read. The populations read is index-only on the covering
+  // (source, state, observed_ms) index. The refusal breakdown has to open each
+  // row it counts (json_extract on detail), so it reads only the last hour:
+  // a range on the same index. Unbounded it opened every retained refusal
+  // (270 ms at 100,000, measured by the #1088 checker); the hour holds about
+  // 2,100 when all 690 timeframe cells refuse every bar (1.7 ms, measured).
   return { status: 'observed', orderAuthority: false, retentionDays: 7, capacity: CAP, capacityPer: 'source',
     populations: db.prepare('SELECT source,state,count(*) records,MAX(observed_ms) lastObservedAtMs FROM scanner_comparisons GROUP BY source,state').all(),
-    inputRefused: db.prepare(`SELECT json_extract(detail,'$.error') error,json_extract(detail,'$.reason') reason,count(*) records
-      FROM scanner_comparisons WHERE source='cpp-scan-timeframe' AND state='input_refused' GROUP BY 1,2`).all(),
+    inputRefusedWindowMs: REFUSAL_WINDOW_MS,
+    inputRefusedLastHour: db.prepare(`SELECT json_extract(detail,'$.error') error,json_extract(detail,'$.reason') reason,count(*) records
+      FROM scanner_comparisons WHERE source='cpp-scan-timeframe' AND state='input_refused' AND observed_ms>=? GROUP BY 1,2`).all(now - REFUSAL_WINDOW_MS),
     note: 'Retained comparisons are observations, not independent research samples. Gaps, missing references and unsupported profiles prevent a complete parity claim.' }
 }
 export function comparisonProfiles(db) {

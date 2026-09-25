@@ -190,19 +190,21 @@ export function scannerObserver(db, creds, env = process.env, deps = {}) {
   const { bridge } = ensured, host = creds.host, accountId = String(creds.accountId)
   // One index per call: each evaluation looks up its own cell rather than
   // filtering every profile (about 1,560 evaluations a cycle, up to 1024
-  // profiles). The exact field checks still run on the few it finds.
+  // profiles). The key is the exact (symbolId, timeframe, strategy) triple as
+  // JSON (the registry admits only string values for these), so no delimiter
+  // inside a value can make two cells collide and a hit needs no re-check.
   const cells = new Map()
+  const cell = (symbolId, timeframe, strategy) => JSON.stringify([symbolId, timeframe, strategy])
   for (const p of ensured.profiles) {
     if (p?.source !== 'cpp-scan-timeframe' || p.feed?.host !== host || p.feed?.accountId !== accountId) continue
-    const key = `${p.feed.symbolId}|${p.timeframe}|${p.strategy}`
+    const key = cell(p.feed.symbolId, p.timeframe, p.strategy)
     if (cells.has(key)) cells.get(key).push(p); else cells.set(key, [p])
   }
   return input => {
     const feed = { provider: 'ctrader', host, accountId, symbolId: String(input.symbolId) }
     // Old cache entries or a cache from a different account cannot be relabelled.
     if (input.cacheIdentity?.host !== feed.host || String(input.cacheIdentity?.accountId) !== feed.accountId) return false
-    for (const profile of cells.get(`${feed.symbolId}|${input.timeframe}|${input.strategy}`) || []) {
-      if (profile.feed.symbolId !== feed.symbolId || profile.timeframe !== input.timeframe || profile.strategy !== input.strategy) continue
+    for (const profile of cells.get(cell(feed.symbolId, input.timeframe, input.strategy)) || []) {
       bridge.offer({ ...input, feed, feedEpoch: epoch, configVersion: profile.configVersion, profileHash: profile.profileHash })
     }
   }

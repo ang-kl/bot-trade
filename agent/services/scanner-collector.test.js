@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState } from '../db.js'
 import { createScannerCollector, startScannerCollector } from './scanner-collector.js'
-import { scannerMirrorStatus } from './scanner-candidates.js'
+import { scannerMirrorStatus, recordScannerMirrorPage } from './scanner-candidates.js'
 const env = { SCANNER_TICK_URL: 'http://fixture', SCANNER_TICK_SECRET: 'fixture' }
 function fixture(t) { const db = initDB(':memory:'); t.after(() => db.close()); return db }
 const page = (after, latest = 12, instanceId = 'a'.repeat(64)) => ({ instanceId, orderAuthority: false, oldestCursor: 1, latestCursor: latest, gap: false, candidates: after < latest ? [{ cursor: after + 1 }] : [] })
@@ -50,6 +50,13 @@ test('the collector round is readable from the status route; its record is writt
   assert.equal(collector.readAtMs, recovered.readAtMs); assert.equal(collector.error, undefined)
   // The skipped round's error is not lost: it rides the next record.
   assert.deepEqual(collector.lastError, { error: 'comparison_read_or_contract_failed', atMs: failed.readAtMs })
+  // After activation the mirror tables exist and the observed shape is the
+  // one served; it carries the same record.
+  recordScannerMirrorPage(db, 'cpp-scan-tick', { instanceId: 'a'.repeat(64), orderAuthority: false, oldestCursor: 1, latestCursor: 0, candidates: [] }, { now: clock })
+  const observed = scannerMirrorStatus(db, { now: clock })
+  assert.equal(observed.mode, 'mirror'); assert.equal(observed.status, undefined)
+  assert.equal(observed.collector?.readAtMs, recovered.readAtMs)
+  assert.deepEqual(observed.collector.lastError, { error: 'comparison_read_or_contract_failed', atMs: failed.readAtMs })
 })
 test('continuous timer uses completion delay, stops cleanly and is wired into the worker', async t => {
   const db = fixture(t), scheduled = []; let cleared

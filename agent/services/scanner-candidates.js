@@ -154,12 +154,12 @@ export function recordScannerMirrorPage(db, source, page, { policies = [], now =
 export function scannerMirrorStatus(db, { now = Date.now() } = {}) {
   const collector = read(db, 'scanner_bridge_poll_json')
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scanner_mirror_cursors'").get())
-    return { observedAtMs: now, status: 'unavailable', sources: [], orderAuthority: false, reason: 'no_scanner_observation', comparison: comparisonStatus(db), bridge: scannerBridgeStatus(db), collector }
+    return { observedAtMs: now, status: 'unavailable', sources: [], orderAuthority: false, reason: 'no_scanner_observation', comparison: comparisonStatus(db, { now }), bridge: scannerBridgeStatus(db), collector }
   return { observedAtMs: now, orderAuthority: false, mode: 'mirror', retentionDays: 7, capacity: MAX_ROWS,
     sources: db.prepare('SELECT * FROM scanner_mirror_cursors ORDER BY source').all(),
     outcomes: db.prepare('SELECT source,outcome,reason,count(*) AS count FROM scanner_mirror_outcomes GROUP BY source,outcome,reason').all(),
     candidates: db.prepare('SELECT source,account_id,host,strategy,count(*) AS count FROM scanner_mirror_candidates GROUP BY source,account_id,host,strategy').all(),
-    comparison: comparisonStatus(db), bridge: scannerBridgeStatus(db), collector }
+    comparison: comparisonStatus(db, { now }), bridge: scannerBridgeStatus(db), collector }
 }
 
 async function scannerPage(url, secret, after, fetchImpl) {

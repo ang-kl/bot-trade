@@ -71,13 +71,21 @@ authority (`scannerMirrorAdmission` refuses everything; PR-7 owns admission).
 - **Retention.** 100,000 rows per source, not shared, trimmed by
   `retainComparisons` on the collector's 60 s cadence (no per-row count on
   insert). The trim finds its edge with a read and deletes in chunks of 2,000;
-  every statement walks an index. `comparisonStatus` reads the covering
-  `(source, state, observed_ms)` index (measured locally: about 40-55 ms at
-  200,000 rows).
+  the 7-day age deletes are chunked the same way (100,000 stale rows: 51
+  statements, at most 23 ms each, where one statement held the write lock
+  558 ms). Every statement walks an index.
+- **Status cost.** `comparisonStatus` runs on the main thread for every
+  `/state/scanner-mirrors` and heartbeat read. Measured locally at 200,000
+  rows (100,000 tick, 100,000 timeframe refusals, 2,100 of them in the last
+  hour): about 44 ms, of which 40 ms is the index-only populations read and
+  1.7 ms the refusal breakdown. The unbounded breakdown it replaced took
+  108 ms on the same table (the #1088 checker measured 270 ms).
 - **Refusals.** Timeframe inputs refused by the feed are recorded as
   `input_refused` with `error` and `reason` (`bars_empty`, `last_bar_partial`,
-  `ohlc_invalid`, `reference_identity_conflict`, ...), broken down in
-  `comparison.inputRefused`.
+  `ohlc_invalid`, `reference_identity_conflict`, ...). The breakdown by
+  error and reason, `comparison.inputRefusedLastHour`, covers only the last
+  hour (`inputRefusedWindowMs`), a range on the `(source, state,
+  observed_ms)` index; the retained total stays in `comparison.populations`.
 - **Collector status.** `/state/scanner-mirrors` returns `collector` (the
   worker's round record: `readAtMs`, `durationMs`, `tickPages`,
   `tickRecords`, `tickBacklog`, `error`, `lastError`, `delayMs`). The worker
