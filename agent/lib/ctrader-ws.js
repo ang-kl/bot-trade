@@ -564,6 +564,11 @@ export async function wsClosePosition(host, clientId, clientSecret, accessToken,
       executionType: exec.executionType,
       deal: exec.deal || {},
       position: exec.position || {},
+      // The first execution event of a market close can be ORDER_ACCEPTED:
+      // an order and no deal. Its order id is how the close's deal is found
+      // in history afterwards (V3 T2), so this path keeps it as the gateway's
+      // answer does.
+      ...(exec.order ? { order: exec.order } : {}),
     }
   } catch (err) {
     const msg = err.message || ''
