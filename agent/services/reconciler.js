@@ -1021,7 +1021,7 @@ export function reclassifyBrokerCloses(db) {
   // is on record (02-09-2026) — the reclassifier judges against the level
   // that could have filled, not the one that was asked for.
   const rows = db.prepare(
-    `SELECT t.id, t.side, t.entry_price, t.exit_price, COALESCE(t.broker_sl_initial, t.sl_price) AS sl_price, t.tp_price, mp.current_sl AS moved_current_sl, mp.broker_sl AS moved_broker_sl FROM trades t LEFT JOIN (SELECT trade_id, MAX(id) AS mid FROM monitored_positions WHERE trade_id IS NOT NULL GROUP BY trade_id) lm ON lm.trade_id = t.id LEFT JOIN monitored_positions mp ON mp.id = lm.mid
+    `SELECT t.id, t.side, t.entry_price, t.exit_price, COALESCE(t.broker_sl_initial, t.sl_price) AS sl_price, t.tp_price, t.close_reason, mp.current_sl AS moved_current_sl, mp.broker_sl AS moved_broker_sl FROM trades t LEFT JOIN (SELECT trade_id, MAX(id) AS mid FROM monitored_positions WHERE trade_id IS NOT NULL GROUP BY trade_id) lm ON lm.trade_id = t.id LEFT JOIN monitored_positions mp ON mp.id = lm.mid
      WHERE t.status = 'closed' AND t.exit_price IS NOT NULL
        AND (
          t.close_reason LIKE 'closed at the broker%'
@@ -1062,7 +1062,7 @@ export function reclassifyBrokerCloses(db) {
       reason = 'take profit hit — broker-side TP fill (reclassified from the broker exit price)'
     } else if (near(t.sl_price)) {
       reason = 'stop loss hit — broker-side SL fill (reclassified from the broker exit price)'
-    } else if (t.sl_price == null && movedStops(t).length === 0) {
+    } else if (t.sl_price == null && positivePrice(t.moved_broker_sl) == null && !movedStops(t).some(p => near(p))) {
       // NO STOP ON RECORD. This branch exists because the one below asserted
       // the opposite (owner report 2026-07-29, an ETHUSD short).
       //
@@ -1076,6 +1076,11 @@ export function reclassifyBrokerCloses(db) {
       // The same trap is already documented at loss-postmortem.js:192 — "a
       // missing TP must read as 'no goal', not 'goal 0'". It was guarded
       // there and missed here.
+      //
+      // V3 L2b W12: a stop the BROKER showed later (broker_sl), or an exit at
+      // a moved stop, is evidence of protection and leaves this branch; the
+      // managers' own level alone (current_sl, which can run ahead of the
+      // broker) is not, so it does not turn a naked position into a stopped one.
       reason = 'closed at the broker with NO STOP LOSS on record — this position was unprotected; cause of exit unknown (reclassified from the broker exit price)'
     } else {
       // V3 L2b W12 (CLS-03): the stop that could fill is the one the broker
@@ -1086,14 +1091,23 @@ export function reclassifyBrokerCloses(db) {
       const long = String(t.side || '').toUpperCase() === 'BUY'
       const moved = movedStops(t)
       const hitMoved = moved.find(p => near(p))
-      const sl = moved.length ? moved[0] : Number(t.sl_price)
+      // "Beyond" is judged against the LOOSEST stop the broker could have held
+      // at the close (fix round, checker blocker 2): the managers' level can
+      // run ahead of the broker (a NORMAL transient, see the convergence note
+      // in reconcilePositions), so an exit past current_sl but short of the stop
+      // the broker actually held was never a stop breach.
+      const sl = loosestHeldStop(t, long)
       if (hitMoved != null) {
         reason = movedStopReason(t, hitMoved, long)
-      } else if (Number.isFinite(sl) && sl > 0 && (long ? exit < sl : exit > sl)) {
+      } else if (sl != null && (long ? exit < sl : exit > sl)) {
         reason = 'stopped beyond the SL — gap/slippage through the stop or a margin-level liquidation (reclassified from the broker exit price)'
       }
     }
-    if (reason) { upd.run(reason, t.id); n++ }
+    // Only a CHANGED reason is written (fix round, checker nit 2): rows the
+    // query re-selects every pass — the NO STOP stamp starts "closed at the
+    // broker", and a stop-less row stamped "stopped beyond the SL" matches the
+    // backfill clause — were rewritten and counted on every reconcile.
+    if (reason && reason !== t.close_reason) { upd.run(reason, t.id); n++ }
   }
   return n
 }
@@ -1115,6 +1129,37 @@ export function movedStops(t) {
     if (!out.includes(p)) out.push(p)
   }
   return out
+}
+
+const positivePrice = (v) => {
+  if (v == null || v === '') return null
+  const p = Number(v)
+  return Number.isFinite(p) && p > 0 ? p : null
+}
+
+/**
+ * V3 L2b W12 (fix round) — the loosest stop the broker could have been
+ * holding when the position closed, or null when it may have held none.
+ *
+ * Candidates: the moved stops (current_sl — the managers' level, which can be
+ * ahead of the broker — and broker_sl, the broker's last snapshot), plus the
+ * stop at entry UNLESS the broker's snapshot shows it had already moved off
+ * it. With no snapshot (or a snapshot still at the entry stop) and no entry
+ * stop on record, the broker may have held no stop at all: null, so no exit
+ * is ever called "beyond the SL" on a stop nobody saw the broker hold.
+ * Loosest = lowest for a long, highest for a short.
+ */
+export function loosestHeldStop(t, long) {
+  const initial = positivePrice(t?.sl_price)
+  const snap = positivePrice(t?.moved_broker_sl)
+  const held = movedStops(t)
+  const brokerLeftEntryStop = snap != null && !(initial != null && Math.abs(snap - initial) <= Math.abs(initial) * 1e-9)
+  if (!brokerLeftEntryStop) {
+    if (initial == null) return null
+    held.push(initial)
+  }
+  if (!held.length) return null
+  return long ? Math.min(...held) : Math.max(...held)
 }
 
 /**

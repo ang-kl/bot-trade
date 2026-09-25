@@ -344,14 +344,14 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'PRE-02', key: 'refusal_unscored', version: 1, stage: 'pre_order', severity: 'defect', fix: 'writer',
-    cite: ['refusal-ledger.js:163', 'refusal-ledger.js:204-211', 'refusal-ledger.js:228', 'goal-table.js:415-429'],
-    noun: 'scored refusal row (by scored_at, refusal-ledger.js:228 — not refusals made in the window)',
+    id: 'PRE-02', key: 'refusal_unscored', version: 2, stage: 'pre_order', severity: 'defect', fix: 'writer',
+    cite: ['refusal-ledger.js:163', 'refusal-ledger.js:216-229', 'refusal-ledger.js:245', 'goal-table.js:415-429'],
+    noun: 'scored refusal row (by scored_at, refusal-ledger.js:245 — not refusals made in the window)',
     populationLimit: REFUSAL_POPULATION_LIMIT,
     sql: `SELECT opportunity_key, account_id, symbol, outcome, scored_at FROM refusal_scores WHERE scored_at >= ? LIMIT ?`,
     params: opened, when: r => tsMs(r.scored_at), subject: r => `refusal:${r.opportunity_key}`, account: acctCol,
     judge(r) {
-      if (r.outcome === 'no_bars') return { class: 'no_bars', detail: `${r.symbol}: scorer found no bars — object bars filtered as arrays (refusal-ledger.js:204)` }
+      if (r.outcome === 'no_bars') return { class: 'no_bars', detail: `${r.symbol}: scorer found no bars in the refusal's window (refusal-ledger.js:228)` }
       if (r.outcome === 'unscorable') return { class: 'unscorable', detail: `${r.symbol}: proposal carries no entry, stop or target (refusal-ledger.js:163)` }
       return ['target', 'stop', 'stop_moved', 'time_cap'].includes(r.outcome) ? { violation: false, class: 'scored' } : { violation: false, class: r.outcome ?? 'no_outcome' }
     },
