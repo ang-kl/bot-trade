@@ -79,6 +79,21 @@ The cheap overview still paints first and polls independently; sleeping tabs
 start no broker refresh. Desk selects its own account from the shared response
 before painting scoped controls. No new background broker scheduler is added.
 
+Superseded by V3 WEB-4 (owner default 25-09 21:30 SGT, 8,989-A rows 1 and 5):
+the page is no longer the poller. With no page open, all seven readings went
+`snapshot_stale` (measured 16:29 UTC 25-09; last snapshot 13:30 UTC), so the
+equity history accrued only while someone was looking. The server now asks
+for the same read-only `broker-positions` build for all accounts once a minute
+(`agent/services/broker-readings.js`, started by `startLoop`), sharing the
+route's coalescing cache; the first round waits for the first protection band
+(M1) or three minutes after boot. Its record `broker_readings_last_json` and
+heartbeat `broker_readings` name every account a round could not read, and
+the overview carries it as `serverReadings`. Performance and Desk read only
+`/state/account-overview`; Desk's single-account view still requests the full
+snapshot for its own positions table. Cost: one full snapshot a minute
+whether or not a page is open, including two trendbar requests per open
+position symbol per account on the shared historical bucket.
+
 Validation update (23:16 UTC): before incorporating the owner's #1081 merge,
 5,535 backend checks passed (four skipped), 955 frontend checks passed, and
 desktop/mobile sleep/wake checks also covered the broker-source refresh.

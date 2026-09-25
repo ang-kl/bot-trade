@@ -35,6 +35,7 @@ import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
 import { clearErrorLog } from '../services/error-log.js'
 import { desiredGuardFor } from '../services/exec-guard-sync.js'
+import { registerBrokerReadingsReader } from '../services/broker-readings.js'
 
 /** PR-E: the strategy a manual order carries when the trader names none. */
 export const MANUAL_ORDER_STRATEGY = 'manual_order'
@@ -4205,11 +4206,12 @@ export default function actionsRouter(db, deps = {}) {
   // box (the owner's "everything is stale"). One in-flight snapshot is shared
   // by every caller, and its result is reused for a short window.
   const readPositions = brokerReadCache()
-  router.post('/broker-positions', async (req, res) => {
-    try {
-      const selectedId = getState(db, 'ctrader_account_id')
-      const requestedId = brokerReadAccount(req.body, selectedId, { allowAll: true })
-      const result = await readPositions(requestedId ?? 'all', async () => {
+  // V3 WEB-4: ONE builder, two callers. The route below serves the pages;
+  // services/broker-readings.js asks for the same all-accounts read once a
+  // minute, so readings and history accrue whether or not a page is open.
+  // Both go through `readPositions`, so a page read and the server read in
+  // flight at once are one broker round.
+  const readBrokerPositions = (requestedId, selectedId) => readPositions(requestedId ?? 'all', async () => {
       const { ctraderEnv } = await import('../lib/ctrader-env.js')
       const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
       if (!accessToken) throw Object.assign(new Error('No access token stored — connect cTrader first'), { httpStatus: 400 })
@@ -4592,7 +4594,13 @@ export default function actionsRouter(db, deps = {}) {
         }
       } catch { /* cache is best-effort */ }
       return { ok: true, accounts: results, fetchedAt }
-      })
+  })
+  registerBrokerReadingsReader(db, () => readBrokerPositions(null, getState(db, 'ctrader_account_id')))
+  router.post('/broker-positions', async (req, res) => {
+    try {
+      const selectedId = getState(db, 'ctrader_account_id')
+      const requestedId = brokerReadAccount(req.body, selectedId, { allowAll: true })
+      const result = await readBrokerPositions(requestedId, selectedId)
       res.json(result)
     } catch (err) {
       console.error('[actions/broker-positions] error:', err.message)

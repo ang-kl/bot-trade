@@ -6293,6 +6293,12 @@ export function startLoop(db) {
   import('./services/cashflow-collector.js')
     .then(m => m.startCashflowCollector(db))
     .catch(err => log('cashflow collector failed to start:', err.message))
+  // V3 WEB-4: account readings (balance, floating, equity, free margin) and
+  // the equity history they feed, read by the server once a minute on its own
+  // ticker — no longer only while a browser page asks. Read-only broker reads.
+  import('./services/broker-readings.js')
+    .then(m => m.startBrokerReadings(db))
+    .catch(err => log('broker readings failed to start:', err.message))
   // Per-minute review (§70.4) — §41's level 5, on its own ticker so it keeps
   // reviewing precisely when the loop or the fast monitor is the thing that
   // broke. Reads only: it reports when a lower-authority writer moved a stop
