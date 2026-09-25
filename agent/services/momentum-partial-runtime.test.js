@@ -23,8 +23,8 @@ import { runMomentumBook, MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_STATE_KEY, TSM
 import { MOMENTUM_ACCOUNT_KEY } from './momentum-account.js'
 import { MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
 import { setStage } from './stage-matrix.js'
-import { runMomentumPartialPass, readMomentumPartialPass, prefilterVerdict, BOOK_STATE_KEY,
-  MOMENTUM_PARTIAL_PASS_KEY, PARTIAL_PASS_DEFAULTS } from './momentum-partial-runtime.js'
+import { runMomentumPartialPass, readMomentumPartialPass, prefilterVerdict, recordPartialScaleOuts, partialPassForAccount, partialPassFreshness,
+  BOOK_STATE_KEY, MOMENTUM_PARTIAL_PASS_KEY, PARTIAL_PASS_DEFAULTS } from './momentum-partial-runtime.js'
 
 const AT = 1790264000000
 const BUY = planMomentumTargets({ side: 'BUY', entry: 100, originalStop: 90, requiredRr: 3,
@@ -87,9 +87,11 @@ function scene(t, { accounts = ['11'], host = 'demo.ctraderapi.com', plan = BUY,
     }
   }
   s.pass = (extra = {}) => runMomentumPartialPass(db, { credsFor: s.credsFor, now: s.now, log: () => {}, deps: { adapterFor: s.adapterFor, ...extra } })
-  s.mark = (accountId, c, at = s.clock) => {
+  // A mark as the book writes it (momentum-book.js): `at` the pass clock,
+  // `bt` the bar's own epoch. `bt: null` writes a mark without a bar stamp.
+  s.mark = (accountId, c, bt = s.clock, at = s.clock) => {
     const st = JSON.parse(getState(db, BOOK_STATE_KEY) || '{"marks":{}}')
-    st.marks[markKey(accountId, `SYM${accounts.indexOf(accountId)}`)] = { c, at }
+    st.marks[markKey(accountId, `SYM${accounts.indexOf(accountId)}`)] = bt === null ? { c, at } : { c, at, bt }
     setState(db, BOOK_STATE_KEY, JSON.stringify(st))
   }
   s.row = (accountId = accounts[0]) => readPartialPlan(db, accountId, s.broker[accountId].tradeId)
@@ -172,13 +174,40 @@ test('a stale mark, a missing mark or a closed ledger row forces an authoritativ
   assert.equal(future.ops('read'), 1, 'a mark stamped in the future is not fresh')
 })
 
+// T3 checker BLOCKER 1: the book writes `at: now` every pass, but its close
+// comes from the scan's cached daily bars (up to 24 h old). A far close with a
+// fresh write time and a 20-hour-old bar is a 20-hour-old price.
+test('the mark\'s age is the price\'s (bar stamp), not the book\'s write time: a day-old close written just now forces the read', async t => {
+  const old = scene(t)
+  old.mark('11', 110, AT - 20 * 3_600_000, AT)          // far (20.4 short), written now, bar 20 h old
+  old.broker['11'].bid = 130.5; old.broker['11'].ask = 130.6   // the real price has passed the trigger
+  const out = await old.pass()
+  assert.equal(out.accounts['11'].prefiltered, 0, 'an old price is never a reason to skip')
+  assert.equal(old.row().state, 'CONFIRMED', 'the authoritative read runs and the partial closes')
+  assert.equal(old.ops('close'), 1)
+  const unstamped = scene(t)
+  unstamped.mark('11', 110, null, AT)                   // no bar stamp: its price's age is unknown
+  await unstamped.pass()
+  assert.equal(unstamped.ops('read'), 1, 'a mark without a bar stamp cannot prove its age')
+  const fresh = scene(t)
+  fresh.mark('11', 110, AT - 60_000, AT)                // the same far close, bar a minute old
+  await fresh.pass()
+  assert.equal(fresh.ops('read'), 0, 'control: a fresh bar far from the trigger still skips')
+})
+
 test('prefilterVerdict names why it did or did not skip', () => {
   const v = mark => prefilterVerdict({ plan: BUY, ledgerOpen: true, mark, nowMs: AT })
-  assert.deepEqual(v({ c: 127.8, at: AT }), { skip: true, reason: 'mark_far_from_trigger', mark: 127.8, markAt: AT })
-  assert.equal(v({ c: 127.95, at: AT }).reason, 'mark_near_or_beyond_trigger')
-  assert.equal(v({ c: 0, at: AT }).reason, 'no_mark')
-  assert.equal(v({ c: 120, at: AT - 16 * 60_000 }).reason, 'mark_stale')
-  assert.equal(prefilterVerdict({ plan: BUY, ledgerOpen: false, mark: { c: 120, at: AT }, nowMs: AT }).reason, 'lifecycle_not_open_in_ledger')
+  assert.deepEqual(v({ c: 127.8, at: AT, bt: AT - 60_000 }), { skip: true, reason: 'mark_far_from_trigger', mark: 127.8, markAt: AT - 60_000 })
+  assert.equal(v({ c: 127.95, at: AT, bt: AT }).reason, 'mark_near_or_beyond_trigger')
+  assert.equal(v({ c: 0, at: AT, bt: AT }).reason, 'no_mark')
+  assert.equal(v({ c: 120, at: AT - 16 * 60_000, bt: AT - 16 * 60_000 }).reason, 'mark_stale')
+  // The checker's case: written now, bar 20 h old.
+  const day = v({ c: 110, at: AT, bt: AT - 20 * 3_600_000 })
+  assert.equal(day.skip, false); assert.equal(day.reason, 'mark_stale'); assert.equal(day.markAgeMs, 72_000_000)
+  assert.equal(v({ c: 110, at: AT }).reason, 'mark_price_age_unknown', 'no bar stamp: the write time is not the price\'s age')
+  assert.equal(v({ c: 110, at: AT, bt: 29 }).reason, 'mark_price_age_unknown', 'a bar index is not an epoch')
+  assert.equal(v({ c: 110, at: AT, bt: AT + 60_000 }).reason, 'mark_stale', 'a bar stamped ahead of this clock is not fresh')
+  assert.equal(prefilterVerdict({ plan: BUY, ledgerOpen: false, mark: { c: 120, at: AT, bt: AT }, nowMs: AT }).reason, 'lifecycle_not_open_in_ledger')
 })
 
 test('at most one authoritative check per plan per 60 s', async t => {
@@ -204,7 +233,30 @@ test('accounts are isolated: own plans, own credentials; one account without cre
     assert.equal(s.calls.filter(c => c[1] === '11').length, 0, `${host}: nothing sent for the account without credentials`)
     assert.equal(s.calls.filter(c => c[1] === '22').length, 2, `${host}: the other account read and quoted`)
     assert.equal(s.row('11').state, 'ARMED'); assert.equal(s.row('22').state, 'ARMED')
+    // BLOCKER 2: the record the pass just wrote is fresh, but it could not
+    // act on …11 — so a trigger there is not available; …22's still is.
+    const record = readMomentumPartialPass(s.db())
+    const on11 = partialPassForAccount(s.db(), record, '11', AT), on22 = partialPassForAccount(s.db(), record, '22', AT)
+    assert.equal(on11.fresh, true); assert.equal(on11.available, false); assert.equal(on11.accountError, 'no_credentials')
+    assert.match(on11.why, /could not act on this account — no_credentials/)
+    assert.equal(on22.available, true); assert.equal(on22.why, null)
   }
+})
+
+test('NIT 4: an unreadable loop interval falls back to five minutes instead of throwing into the cockpit', () => {
+  const unreadable = { prepare: () => { throw Error('SQLITE_BUSY: database is locked') } }
+  const f = partialPassFreshness(unreadable, { at: new Date(AT - 60_000).toISOString() }, AT)
+  assert.equal(f.maxAgeMs, 15 * 60_000); assert.equal(f.fresh, true)
+})
+
+test('a pass that could not read its plans is available on no account', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const record = { at: new Date(AT).toISOString(), ok: false, errors: ['plan_read: SQLITE_CORRUPT'], accounts: {} }
+  const p = partialPassForAccount(db, record, '11', AT)
+  assert.equal(p.fresh, true); assert.equal(p.available, false)
+  assert.match(p.why, /could not read its plans — plan_read: SQLITE_CORRUPT/)
+  assert.equal(partialPassForAccount(db, { ...record, ok: false, errors: ['scale_out_record: busy'] }, '11', AT).available, true,
+    'a failure that does not stop the triggers being watched leaves them available')
 })
 
 test('the per-account time budget defers the remaining plans, visibly', async t => {
@@ -244,6 +296,15 @@ test('one scale_out per proven partial: written with the deal, never again acros
   s.clock += 120_000
   await s.pass()
   assert.equal(events().length, 0, 'a pruned event is not re-recorded as a new scale-out')
+  // NIT 1: a journaled plan is filtered in SQL, not read and parsed each loop.
+  let planReads = 0
+  const real = s.db()
+  const spy = new Proxy(real, { get(target, prop) {
+    if (prop === 'prepare') return sql => { if (/^SELECT \* FROM momentum_partial_plans WHERE account_id=\?/.test(sql)) planReads++; return target.prepare(sql) }
+    const v = target[prop]; return typeof v === 'function' ? v.bind(target) : v
+  } })
+  assert.deepEqual(recordPartialScaleOuts(spy), { written: [], pending: [] })
+  assert.equal(planReads, 0, 'the journaled plan is not read')
 })
 
 test('AWAITING_BIND plus a rank exit (the book\'s legacy close) becomes BIND_ABANDONED, with no plan and no broker call', async t => {

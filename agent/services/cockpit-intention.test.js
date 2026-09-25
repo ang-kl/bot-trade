@@ -268,6 +268,23 @@ test('V3 T3: a momentum partial plan shows its trigger as a scale_out — armed 
   assert.match(stale.unavailable, /stale/)
   assert.equal(stale.triggerPrice, 130.4, 'the trigger is still shown')
 
+  // T3 checker BLOCKER 2: the pass is fresh but its last run could not act
+  // on this position's account — the trigger is shown, UNAVAILABLE, not armed.
+  setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify({ at: new Date(NOW - 60_000).toISOString(), ok: false,
+    accounts: { 11: { plans: 1, checked: 0, error: 'no_credentials' } } }))
+  const out = build()
+  const [noCreds] = partialOf(out)
+  assert.equal(noCreds.armed, false, 'a trigger the pass cannot act on is not armed')
+  assert.match(noCreds.trigger, /reaches 130\.4.* — UNAVAILABLE: the last partial manager pass .* could not act on this account — no_credentials$/)
+  assert.match(noCreds.unavailable, /no_credentials/)
+  assert.equal(noCreds.triggerPrice, 130.4, 'the trigger is still shown')
+  assert.deepEqual(out.evidenceIndex['state:momentum_partial_pass_json'].value, { fresh: true, available: false, accountError: 'no_credentials' })
+  // Another account's failure does not take this one's trigger down.
+  setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify({ at: new Date(NOW - 60_000).toISOString(), ok: false,
+    accounts: { 11: { plans: 1, checked: 1, error: null }, 22: { plans: 1, error: 'no_credentials' } } }))
+  const [other] = partialOf(build())
+  assert.equal(other.armed, true); assert.equal(other.unavailable, null)
+
   setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify({ at: new Date(NOW - 60_000).toISOString(), ok: true }))
   db.prepare("UPDATE momentum_partial_plans SET state='AMBIGUOUS', reason='closing_deal_unconfirmed'").run()
   const [inFlight] = partialOf(build())

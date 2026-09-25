@@ -3,7 +3,7 @@ import { marketIdentityKey } from '../lib/market-identity.js'
 import { planMomentumTargets, shiftStopToFill, stopHeld, sameTicks } from './momentum-target-policy.js'
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { registerPartialPlan } from './momentum-partial-manager.js'
-import { readMomentumPartialPass, partialPassFreshness } from './momentum-partial-runtime.js'
+import { readMomentumPartialPass, partialPassFreshness, partialPassForAccount } from './momentum-partial-runtime.js'
 
 const json = value => { try { return JSON.parse(value) } catch { return null } }
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -164,13 +164,31 @@ export function momentumTargetStatus(db, { accountId, all = false, limit = 50, n
   const record = readMomentumPartialPass(db)
   const freshness = partialPassFreshness(db, record, nowMs)
   const scoped = all ? null : (record?.accounts?.[accountId] ?? null)
+  // Whether the pass can act on an account, not only whether it ran: a fresh
+  // pass whose record says it skipped an account (no credentials, the
+  // account's pass failed) is not watching that account's triggers (T3
+  // checker BLOCKER 2). Scoped reads carry this account's; `all` reads the
+  // pass-level state here and each row its own account's.
+  const byAccount = new Map()
+  const forAccount = id => {
+    if (!byAccount.has(id)) byAccount.set(id, partialPassForAccount(db, record, id, nowMs))
+    return byAccount.get(id)
+  }
+  const scopedPass = all ? null : forAccount(accountId)
+  const globalPass = forAccount(null)
+  const passNow = scopedPass ?? globalPass
   const pass = { at: freshness.at, fresh: freshness.fresh, ageMs: freshness.ageMs, maxAgeMs: freshness.maxAgeMs,
-    ok: record ? record.ok === true : null, unavailable: freshness.why,
+    ok: record ? record.ok === true : null,
+    available: passNow.available, unavailable: passNow.why,
     activePlans: all ? record?.activePlans ?? null : scoped?.plans ?? (record ? 0 : null),
-    ...(all ? { accounts: record?.accounts ?? null, errors: record?.errors ?? [] } : { account: scoped }) }
+    ...(all ? { accounts: record?.accounts ?? null, errors: record?.errors ?? [] } : { account: scoped, accountError: scopedPass.accountError }) }
+  const accountGaps = all
+    ? (globalPass.why ? [] : Object.entries(record?.accounts ?? {}).filter(([, a]) => a?.error).map(([id, a]) => `account ${id}: the partial manager could not act on it — ${a.error}`))
+    : []
   const integrationGaps = [
     ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([, w]) => !w.wired).map(([k, w]) => `${k}: ${w.note}`),
-    ...(freshness.fresh ? [] : [freshness.why]),
+    ...(passNow.why ? [passNow.why] : []),
+    ...accountGaps,
   ]
   const base = { accountId: all ? 'all' : accountId, executionAuthorized: false,
     runtimeIntegration: integrationGaps.length ? 'INCOMPLETE' : 'COMPLETE', integrationGaps,
@@ -213,6 +231,8 @@ export function momentumTargetStatus(db, { accountId, all = false, limit = 50, n
       target: p ? { side: p.side ?? null, entry: p.entry ?? null, trigger: p.trigger ?? null, runnerTarget: p.brokerTarget ?? null,
         closeVolume: p.closeVolume ?? null, volume: p.volume ?? null, closePercentage: p.closePercentage ?? null, digits: p.digits ?? null } : null,
       partialState: r.partial_state ?? null, partialReason: r.partial_reason ?? null,
+      // Whether the pass can act on THIS row's account (null: it can).
+      passUnavailable: forAccount(r.account_id).why,
       partial: r.partial_state == null ? null : {
         state: r.partial_state, reason: r.partial_reason ?? null,
         attemptedAtMs: r.partial_attempted_at ?? null, orderId: r.partial_order_id ?? null,

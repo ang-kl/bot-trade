@@ -24,12 +24,28 @@
 //      budget and its own failures; accounts run concurrently, plans within
 //      an account one at a time.
 //   3. An ARMED plan is first checked against a local price WITH A RECORDED
-//      AGE: the momentum book's marks { c, at } (momentum_book_state_json).
-//      Only a fresh mark more than prefilterR × initial risk short of the
-//      trigger skips the authoritative read. A missing, stale or near mark
-//      falls through to the broker. lastScanPrice is not used: it carries no
-//      timestamp, so a days-old scan row far from the trigger would have
-//      suppressed the authoritative read for ever.
+//      AGE: the momentum book's marks { c, at, bt } (momentum_book_state_json).
+//      Only a mark whose PRICE is fresh and more than prefilterR × initial
+//      risk short of the trigger skips the authoritative read. A missing,
+//      stale, unstamped or near mark falls through to the broker.
+//      lastScanPrice is not used: it carries no timestamp, so a days-old scan
+//      row far from the trigger would have suppressed the authoritative read
+//      for ever.
+//
+//      THE AGE IS THE PRICE'S, NOT THE WRITE'S (T3 checker BLOCKER 1). The
+//      book writes `at: now` on every pass, but its close comes from the
+//      scan's cached daily bars, which fib-strategy reuses for up to 24 hours:
+//      `at` could be seconds old while `c` was a day old, and a stale close
+//      far short of the trigger would have skipped the broker read while the
+//      real price had passed it. Age is therefore read with the book's own
+//      markAgeMs on the BAR stamp `bt` (the trendbar's open time). A bar's
+//      close is observed at or after its open, so `now - bt` is an upper
+//      bound on the price's age: it can only over-state it (an extra read),
+//      never under-state it. A mark without a usable `bt` cannot prove its
+//      price's age and falls through. With the default daily book this means
+//      the pre-filter skips only in the first minutes after a daily bar opens;
+//      every other pass reads the broker, bounded by the 60 s rate limit and
+//      the 15 s account budget.
 //   4. At most one authoritative check per plan per minCheckIntervalMs.
 //   5. A plan holding a proven partial receipt gets exactly one `scale_out`
 //      position event (dealId, volume, price), marked on the plan row in the
@@ -44,7 +60,7 @@
 // wrongly (an extra read), never skip wrongly.
 // ---------------------------------------------------------------------------
 import { getState, setState } from '../db.js'
-import { markKey } from './book-open-drawdown.js'
+import { markKey, markAgeMs } from './book-open-drawdown.js'
 import { readPartialPlan, runPartialPlan, addMissingColumns } from './momentum-partial-manager.js'
 import { recordPositionEvent } from './position-events.js'
 
@@ -58,8 +74,8 @@ export const BOOK_STATE_KEY = 'momentum_book_state_json'
 export const PARTIAL_PASS_DEFAULTS = Object.freeze({
   // One authoritative (broker) check per plan per minute at most.
   minCheckIntervalMs: 60_000,
-  // A book mark older than this is not a price. The book re-marks every loop
-  // (5 minutes); three loops of silence and the pass stops trusting it.
+  // A mark whose PRICE (its bar stamp `bt`) is older than this is not a
+  // price. Judged on the bar, never on the book's write time `at`.
   markMaxAgeMs: 15 * 60_000,
   // A fresh mark within this many R of the trigger (or beyond it) forces the
   // authoritative read.
@@ -88,8 +104,12 @@ export function readMomentumPartialPass(db) {
   try { return parse(getState(db, MOMENTUM_PARTIAL_PASS_KEY)) } catch { return null }
 }
 
+// A read failure falls back to the default five minutes (T3 checker NIT 4):
+// buildIntention reads this for every position with a plan, and a throw here
+// would turn the whole cockpit intention UNKNOWN.
 function loopIntervalMs(db) {
-  const n = Number(getState(db, 'loop_interval_min'))
+  let n = NaN
+  try { n = Number(getState(db, 'loop_interval_min')) } catch { /* default below */ }
   return (Number.isFinite(n) && n >= 1 && n <= 60 ? n : 5) * 60_000
 }
 
@@ -106,19 +126,50 @@ export function partialPassFreshness(db, record, nowMs = Date.now()) {
 }
 
 /**
+ * Whether the pass can act on one account's plans, judged at read time: the
+ * pass is fresh, it could read its plans, and its record for this account
+ * names no failure (no credentials, unreadable credentials, the account's
+ * pass threw). A fresh pass that skipped the account is not watching its
+ * triggers, so the website must not show them armed (T3 checker BLOCKER 2,
+ * owner principle 6). An account with no entry in the record held no active
+ * plan at the last pass; the next pass takes it up.
+ *
+ * `fresh` stays the pass's own freshness; `available` is what a trigger on
+ * this account may be shown as armed on; `why` names the first reason it is
+ * not.
+ */
+export function partialPassForAccount(db, record, accountId, nowMs = Date.now()) {
+  const f = partialPassFreshness(db, record, nowMs)
+  const planRead = Array.isArray(record?.errors) ? record.errors.find(e => typeof e === 'string' && e.startsWith('plan_read:')) ?? null : null
+  const entry = accountId == null ? null : record?.accounts?.[String(accountId)] ?? null
+  const accountError = entry?.error ? String(entry.error) : null
+  const why = f.why
+    ?? (planRead ? `the last partial manager pass (${f.at}) could not read its plans — ${planRead}` : null)
+    ?? (accountError ? `the last partial manager pass (${f.at}) could not act on this account — ${accountError}` : null)
+  return { ...f, available: why == null, accountError, why }
+}
+
+/**
  * The pre-filter for one ARMED plan. `skip` only when the ledger still shows
- * the lifecycle open AND a fresh mark is more than `prefilterR` R short of
- * the trigger. Every other case falls through to the broker.
+ * the lifecycle open AND the mark's PRICE, aged on its bar stamp, is fresh
+ * AND more than `prefilterR` R short of the trigger. Every other case falls
+ * through to the broker.
  */
 export function prefilterVerdict({ plan, ledgerOpen, mark, nowMs, config = PARTIAL_PASS_DEFAULTS }) {
   if (!ledgerOpen) return { skip: false, reason: 'lifecycle_not_open_in_ledger' }
-  const c = Number(mark?.c), at = Number(mark?.at)
-  if (!(c > 0) || !Number.isFinite(at)) return { skip: false, reason: 'no_mark' }
-  if (at > nowMs || nowMs - at > config.markMaxAgeMs) return { skip: false, reason: 'mark_stale' }
+  const c = Number(mark?.c)
+  if (!(c > 0)) return { skip: false, reason: 'no_mark' }
+  // The price's age, from the bar's own stamp (book-open-drawdown's rule).
+  // Basis 'fetch' is the book's write time and 'none' is no stamp at all:
+  // neither proves how old the close is.
+  const age = markAgeMs(mark, nowMs)
+  if (age.basis !== 'bar') return { skip: false, reason: 'mark_price_age_unknown' }
+  const bt = Number(mark.bt)
+  if (bt > nowMs || !(age.ms <= config.markMaxAgeMs)) return { skip: false, reason: 'mark_stale', markAgeMs: age.ms }
   const dir = plan?.side === 'BUY' ? 1 : plan?.side === 'SELL' ? -1 : 0
   if (!dir || !(plan.initialRisk > 0) || !(plan.trigger > 0)) return { skip: false, reason: 'plan_unreadable' }
   const gap = dir * (plan.trigger - c)
-  if (gap > config.prefilterR * plan.initialRisk) return { skip: true, reason: 'mark_far_from_trigger', mark: c, markAt: at }
+  if (gap > config.prefilterR * plan.initialRisk) return { skip: true, reason: 'mark_far_from_trigger', mark: c, markAt: bt }
   return { skip: false, reason: 'mark_near_or_beyond_trigger' }
 }
 
@@ -193,7 +244,11 @@ function provenReceipt(row) {
 export function recordPartialScaleOuts(db) {
   const written = [], pending = []
   if (!hasTable(db, 'momentum_partial_plans')) return { written, pending }
-  const withReceipt = db.prepare('SELECT account_id, trade_id FROM momentum_partial_plans WHERE receipt_json IS NOT NULL').all()
+  // Plans already journaled are filtered in SQL once the marker column
+  // exists (T3 checker NIT 1): without it every plan that ever held a receipt
+  // was read and parsed on every loop only to be skipped.
+  const marked = db.prepare('PRAGMA table_info(momentum_partial_plans)').all().some(c => c.name === 'scale_out_event_id')
+  const withReceipt = db.prepare(`SELECT account_id, trade_id FROM momentum_partial_plans WHERE receipt_json IS NOT NULL${marked ? ' AND scale_out_event_id IS NULL' : ''}`).all()
   if (!withReceipt.length) return { written, pending }
   addMissingColumns(db, 'momentum_partial_plans', PLAN_EVENT_COLUMNS)
   for (const w of withReceipt) {
@@ -341,14 +396,15 @@ export async function runMomentumPartialPass(db, { credsFor = () => null, now: c
 
 /**
  * What the website says about a position's partial plan (cockpit intention):
- * the plan, its state, and whether the pass that acts on it is running.
- * null when the position has no plan. Read-only.
+ * the plan, its state, and whether the pass that acts on it is running AND
+ * able to act on this position's account (`pass.available`). null when the
+ * position has no plan. Read-only.
  */
 export function momentumPartialForPosition(db, accountId, tradeId, nowMs = Date.now()) {
   if (accountId == null || tradeId == null || !hasTable(db, 'momentum_partial_plans')) return null
   let row = null
   try { row = readPartialPlan(db, String(accountId), Number(tradeId)) } catch { return null }
   if (!row?.plan) return null
-  const pass = partialPassFreshness(db, readMomentumPartialPass(db), nowMs)
+  const pass = partialPassForAccount(db, readMomentumPartialPass(db), String(accountId), nowMs)
   return { plan: row.plan, state: row.state, reason: row.reason ?? null, positionId: row.position_id, pass }
 }

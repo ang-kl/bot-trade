@@ -25,8 +25,26 @@ test('V3 T3: a stale pass keeps the trigger visible and labels it unavailable, n
   const html = renderToStaticMarkup(<MomentumTargetsReading status={status({ at: '2026-09-25T12:00:00Z', fresh: false,
     unavailable: 'the partial manager pass is stale: last pass 2026-09-25T12:00:00Z, 60 min ago (limit 15 min)' })} />)
   expect(html).toContain('Partial manager: unavailable — the partial manager pass is stale')
-  expect(html).toContain('when the bid reaches 130.4 — unavailable: the partial manager is not running')
+  expect(html).toContain('when the bid reaches 130.4 — unavailable: the partial manager pass is stale: last pass 2026-09-25T12:00:00Z')
   expect(renderToStaticMarkup(<MomentumTargetsReading status={status(null)} />)).toContain('Partial manager: unavailable — its pass has never run on this agent.')
+})
+
+// T3 checker BLOCKER 2: the pass runs, but its last run could not act on this
+// account. The card must not say "running" and the trigger must not read armed.
+test('V3 T3: a running pass that cannot act on this account shows the trigger unavailable with the reason', () => {
+  const why = 'the last partial manager pass (2026-09-25T13:00:00Z) could not act on this account — no_credentials'
+  const st = status({ at: '2026-09-25T13:00:00Z', fresh: true, ok: false, available: false, unavailable: why, accountError: 'no_credentials' })
+  st.rows[0].passUnavailable = why
+  const html = renderToStaticMarkup(<MomentumTargetsReading status={st} />)
+  expect(html).toContain(`Partial manager: unavailable — ${why}.`)
+  expect(html).not.toContain('Partial manager: running')
+  expect(html).toContain(`when the bid reaches 130.4 — unavailable: ${why}`)
+  // A row on an account the pass can act on is unaffected, even beside one it cannot.
+  const ok = status({ at: '2026-09-25T13:00:00Z', fresh: true, ok: false, available: true, unavailable: null })
+  ok.rows[0].passUnavailable = null
+  const okHtml = renderToStaticMarkup(<MomentumTargetsReading status={ok} />)
+  expect(okHtml).toContain('Partial manager: running — last pass 2026-09-25T13:00:00Z (the last pass reported a failure).')
+  expect(okHtml).not.toContain('unavailable')
 })
 
 test('V3 T3: no status, and no plans, are said plainly', () => {

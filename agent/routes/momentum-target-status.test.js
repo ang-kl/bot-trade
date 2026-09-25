@@ -111,6 +111,41 @@ test('rows carry the partial target and the partial attempt, scoped to their own
   assert.deepEqual(all.body.partialPlans, { ARMED: 1, SENDING: 1 })
 })
 
+// T3 checker BLOCKER 2: a fresh pass whose record says it could not act on an
+// account (here: no credentials) must not let that account's triggers read as
+// armed. Driven by the real pass, not a hand-written record.
+test('a fresh pass that could not act on an account reports its triggers unavailable there, per row, and names the gap', async t => {
+  const { db, get } = await fixture(t)
+  db.exec(`CREATE TABLE momentum_target_intents(account_id TEXT, trade_id INTEGER, risk_event_id INTEGER,
+    proposal_json TEXT, created_at_ms INTEGER, state TEXT, position_id TEXT, plan_json TEXT, fill_json TEXT)`)
+  const add = db.prepare('INSERT INTO momentum_target_intents VALUES(?,?,1,?,1790264000000,?,?,?,NULL)')
+  for (const [a, tr, pid] of [['11', 7, '33'], ['22', 8, '34']]) {
+    add.run(a, tr, '{}', 'ENROLLED', pid, JSON.stringify(plan))
+    registerPartialPlan(db, { accountId: a, tradeId: tr, positionId: pid, plan, evidenceId: `f:${tr}`, identity: { host: 'demo.ctraderapi.com', accountId: a, symbolId: '22' } })
+  }
+  let adapters = 0
+  const out = await runMomentumPartialPass(db, {
+    credsFor: id => id === '11' ? null : { accountId: id, host: 'demo.ctraderapi.com', ready: true },
+    now: () => Date.now() - 60_000, deps: { adapterFor: () => { adapters++; throw Error('no broker in this test') } } })
+  assert.equal(out.accounts['11'].error, 'no_credentials'); assert.equal(out.accounts['22'].error, null)
+  assert.equal(adapters, 1, 'only …22 reached the broker step')
+  const one = await get('?account=11')
+  assert.equal(one.body.pass.fresh, true, 'the pass itself is running')
+  assert.equal(one.body.pass.available, false)
+  assert.equal(one.body.pass.accountError, 'no_credentials')
+  assert.match(one.body.pass.unavailable, /could not act on this account — no_credentials/)
+  assert.match(one.body.rows[0].passUnavailable, /no_credentials/)
+  assert.ok(one.body.integrationGaps.some(g => /no_credentials/.test(g)), JSON.stringify(one.body.integrationGaps))
+  const two = await get('?account=22')
+  assert.equal(two.body.pass.available, true); assert.equal(two.body.pass.unavailable, null)
+  assert.equal(two.body.rows[0].passUnavailable, null)
+  const all = await get('?account=all')
+  assert.equal(all.body.pass.available, true)
+  const byAccount = Object.fromEntries(all.body.rows.map(r => [r.accountId, r.passUnavailable]))
+  assert.match(byAccount['11'], /no_credentials/); assert.equal(byAccount['22'], null)
+  assert.ok(all.body.integrationGaps.some(g => /^account 11: .*no_credentials/.test(g)), JSON.stringify(all.body.integrationGaps))
+})
+
 // A producer that records target intents is the only thing that can make the
 // wiring "wired". Pinned to the code: while no production file calls
 // recordMomentumEntry, both producers must say "not wired"; the first call

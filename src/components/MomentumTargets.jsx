@@ -2,29 +2,44 @@
 // them. Reads GET /state/momentum-targets. The position's broker TP is the
 // RUNNER's target; the partial trigger below it is the first exit, and it is
 // closed by the agent's partial manager, not by the broker. So the panel
-// shows the trigger, and when the manager's pass is not running it says the
-// trigger is unavailable rather than armed (owner principle 6: no result the
-// code does not honour).
+// shows the trigger, and when the manager's pass is not running, or its last
+// run could not act on the row's account (no credentials, the account's pass
+// failed), it says the trigger is unavailable rather than armed (owner
+// principle 6: no result the code does not honour).
 import { useEffect, useState } from 'react'
 import { agentConfigured, agentGet, pageAsleep } from '../lib/agent-api.js'
 import Card from './common/Card.jsx'
 
 const fmtAt = ms => { const d = new Date(ms); return Number.isFinite(d.getTime()) ? d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'time not recorded' }
 
-/** The manager's pass, in one sentence: running, stale, or never run. */
+const ACTIVE = ['ARMED', 'SENDING', 'AMBIGUOUS', 'RECEIVED']
+
+/** Whether the pass can act on this reading's account. An agent that does
+ * not report `available` is judged on freshness alone. */
+const passAvailable = pass => (pass?.available ?? pass?.fresh) === true
+
+/** The manager's pass, in one sentence: running, stale, never run, or
+ * running but unable to act on this account. */
 function passSentence(pass) {
   if (!pass?.at) return 'Partial manager: unavailable — its pass has never run on this agent.'
-  if (!pass.fresh) return `Partial manager: unavailable — ${pass.unavailable || `last pass ${pass.at}`}.`
+  if (!passAvailable(pass)) return `Partial manager: unavailable — ${pass.unavailable || `last pass ${pass.at}`}.`
   return `Partial manager: running — last pass ${pass.at}${pass.ok === false ? ' (the last pass reported a failure)' : ''}.`
 }
 
-function targetCell(row, passFresh) {
+/** Why the pass cannot act on this row, or null. The row's own account
+ * state when the agent reports it, else the pass-level state. */
+function rowUnavailable(row, pass) {
+  if (row.passUnavailable !== undefined) return row.passUnavailable
+  return passAvailable(pass) ? null : (pass?.unavailable || 'the partial manager is not running')
+}
+
+function targetCell(row, pass) {
   const t = row.target
   if (!t || t.trigger == null) return 'Plan not readable'
   const side = t.side === 'SELL' ? 'ask' : 'bid'
   const text = `Close ${t.closeVolume ?? '?'} of ${t.volume ?? '?'} units (${t.closePercentage != null ? Math.round(t.closePercentage) : '?'}%) when the ${side} reaches ${t.trigger}`
-  const live = row.partial?.state === 'ARMED'
-  return live && !passFresh ? `${text} — unavailable: the partial manager is not running` : text
+  const why = ACTIVE.includes(row.partial?.state) ? rowUnavailable(row, pass) : null
+  return why ? `${text} — unavailable: ${why}` : text
 }
 
 function stateCell(row) {
@@ -34,7 +49,6 @@ function stateCell(row) {
 
 export function MomentumTargetsReading({ status, error }) {
   if (!status) return <p role="status">Momentum partial targets unavailable{error ? `: ${error}` : '.'}</p>
-  const passFresh = status.pass?.fresh === true
   const wiring = Object.entries(status.wiring || {})
   return <>
     <p>{passSentence(status.pass)}</p>
@@ -47,7 +61,7 @@ export function MomentumTargetsReading({ status, error }) {
         <tbody>{status.rows.map(row => <tr key={`${row.accountId}:${row.tradeId}`} className="border-t border-[var(--color-border)]">
           <td className="pr-3 py-2">{row.accountId} / {row.tradeId}</td>
           <td className="pr-3">{row.symbol || 'not recorded'} {row.target?.side || ''}</td>
-          <td className="pr-3 max-w-md whitespace-normal">{targetCell(row, passFresh)}</td>
+          <td className="pr-3 max-w-md whitespace-normal">{targetCell(row, status.pass)}</td>
           <td className="pr-3">{row.target?.runnerTarget ?? 'not recorded'}</td>
           <td className="pr-3 max-w-md whitespace-normal">{stateCell(row)}</td>
           <td>{row.partial?.lastCheckAtMs ? fmtAt(row.partial.lastCheckAtMs) : 'no check recorded'}</td>
