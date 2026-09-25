@@ -73,6 +73,8 @@ export const SNAPSHOT_FRESH_MS = 30 * 60_000
 export const WRITE_GRACE_MS = 10 * 60_000
 /** At most this many subjects are named per information class (STK-11's record_stale / never_ran). */
 const INFO_NAMES_MAX = 20
+/** The protection audit logs one row per position per kind per this (naked-position-guard.js:320): STK-09's "still reported" bound. */
+const PROTECTION_LOG_MUTE_MS = Math.max(60_000, Number(process.env.PROTECTION_LOG_MUTE_MS) || 3_600_000)
 
 const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000
 const OUT = Symbol('not-in-population')
@@ -115,6 +117,18 @@ const ours = label => { try { return isOurs(label || '') } catch { return false 
 const intentTag = label => { try { return labelIntentId(label) } catch { return null } }
 const parseJson = s => { try { return typeof s === 'string' ? JSON.parse(s) : null } catch { return undefined } }
 const directionReasonOf = p => (p && typeof p === 'object' ? (p.direction_reason ?? p.directionReason) : null)
+
+/**
+ * V3 I3: a stuck record the resolver ENDED is not stuck. Written off
+ * ('unresolved') it is a notice under STK-12; settled from broker evidence it
+ * is terminal. Either way it is still judged (population) and shown in the
+ * rule's classes, never dropped. null when the resolver has not ended it.
+ */
+function endedBy(ctx, subject) {
+  const r = ctx.resolutionBySubject?.get(subject)
+  if (!r) return null
+  return { violation: false, class: r.outcome === 'unresolved' ? 'written_off' : 'settled' }
+}
 
 /** Stop (and target) on the wrong side of the entry for the direction. */
 function sideProblems(dir, entry, stop, target) {
@@ -175,11 +189,19 @@ export const CONTEXT_SQL = Object.freeze({
               SELECT id, account_id, symbol, side, created_at FROM risk_events
                WHERE disposition IS NULL AND created_at >= ? AND approved = 1
               LIMIT ?`,
-  state: `SELECT key, value FROM agent_state WHERE key IN ('independent_watchdog_json', 'ctrader_account_id') LIMIT ?`,
+  // V3 I3 fix round: + the stuck resolver's switch and last pass (STK-01,
+  // STK-09's found-but-unwritten targets) and the protection audit's
+  // per-account record (STK-09's positive evidence, naked-position-guard.js
+  // auditKeyFor: 'acct:<id>:protection_audit_last_json').
+  state: `SELECT key, value FROM agent_state
+           WHERE key IN ('independent_watchdog_json', 'ctrader_account_id', 'stuck_resolver_enabled', 'stuck_resolver_last_json')
+              OR (key LIKE 'acct:%' AND key LIKE '%:protection_audit_last_json') LIMIT ?`,
   drainLog: `SELECT id, at, account_id, body FROM action_log
               WHERE id > (SELECT COALESCE(MAX(id), 0) FROM action_log) - ${ACTION_LOG_WINDOW_IDS}
                 AND method = 'LOOP' AND path = '/entry-mode/drain' ORDER BY id LIMIT ?`,
   actionLogFloor: `SELECT at FROM action_log WHERE id > (SELECT COALESCE(MAX(id), 0) FROM action_log) - ${ACTION_LOG_WINDOW_IDS} ORDER BY id LIMIT ?`,
+  // V3 I3: how the stuck resolver ended a record (lib/stuck-resolutions.js).
+  resolutions: `SELECT subject, kind, rule_id, outcome, verdict FROM stuck_resolutions LIMIT ?`,
 })
 
 function loadContext(db, win) {
@@ -242,8 +264,24 @@ function loadContext(db, win) {
   const state = Object.fromEntries(read('state').map(r => [r.key, r.value]))
   ctx.selectedAccount = acctOf(state.ctrader_account_id)
   ctx.watchdog = parseJson(state.independent_watchdog_json ?? null) ?? null
+  ctx.stuckResolverOn = state.stuck_resolver_enabled !== 'false'
+  // The targets the resolver FOUND but did not write (R7 switched off): keyed
+  // `<account>:<position>`, named in STK-09's detail.
+  const resolverLast = parseJson(state.stuck_resolver_last_json ?? null) ?? null
+  ctx.targetFound = new Map((Array.isArray(resolverLast?.targetless?.found) ? resolverLast.targetless.found : [])
+    .map(f => [`${acctOf(f.accountId) ?? ''}:${f.positionId}`, { ...f, passAt: resolverLast.at ?? null }]))
+  // The protection audit's last SUCCESSFUL read of each account (`at` is kept
+  // through failures — recordAuditUnavailable) and the targetless positions it
+  // saw then.
+  ctx.auditByAccount = new Map()
+  for (const [k, v] of Object.entries(state)) {
+    const m = /^acct:(.+):protection_audit_last_json$/.exec(k)
+    const rec = m ? parseJson(v) : null
+    if (rec && typeof rec === 'object') ctx.auditByAccount.set(acctOf(m[1]), rec)
+  }
   ctx.drainLog = read('drainLog')
   ctx.actionLogFloorMs = tsMs(read('actionLogFloor', [], 1)[0]?.at)
+  ctx.resolutionBySubject = new Map(read('resolutions').map(r => [r.subject, r]))
   return ctx
 }
 
@@ -757,8 +795,11 @@ export const RULES = Object.freeze([
   },
   // ======================================================== (d) STUCK
   {
-    id: 'STK-01', key: 'resting_record_orphaned', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['closed-market-limits.js:85-88', 'loop.js:114', 'loop.js:4600', 'entry-mode.js:82-86', 'entry-drain.js:102', 'closed-market-limits.js:276-278'],
+    // v2 (V3 I3): every working row now has a resolver — 'pending-closed'
+    // rows closed-market-limits.js:84, every other note the stuck resolver
+    // (R1, stuck-resolver.js). The row keeps naming which, never "none".
+    id: 'STK-01', key: 'resting_record_orphaned', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
+    cite: ['closed-market-limits.js:85-88', 'stuck-resolver.js:344', 'entry-mode.js:82-86', 'entry-drain.js:102', 'closed-market-limits.js:276-278'],
     noun: 'working resting-order row',
     sql: `SELECT id, account_id, symbol, dir, order_id, note, placed_at, expires_at, status FROM pending_orders WHERE status = 'working' LIMIT ?`,
     params: () => [], when: r => tsMs(r.placed_at), subject: r => `pending:${r.id}`, account: acctCol,
@@ -774,10 +815,15 @@ export const RULES = Object.freeze([
           : order?.status === 'gone' ? 'order_gone'
             : !order && placed != null && placed < w.nowMs - HOUR ? 'no_broker_order' : null
       if (!kind) return null
+      // I3 fix round (checker NIT 8): the stuck resolver is a resolver only
+      // while it is switched on — agent_state stuck_resolver_enabled = 'false'
+      // is said here, never reported as a resolver that exists.
+      const resolver = r.note === 'pending-closed' ? 'closed-market-limits reconcile'
+        : ctx.stuckResolverOn ? 'stuck resolver R1' : "none — stuck resolver R1 switched off (agent_state stuck_resolver_enabled = 'false')"
       return {
-        missing: ['terminal_status'], class: kind, resolverExists: r.note === 'pending-closed',
+        missing: ['terminal_status'], class: kind, resolverExists: r.note === 'pending-closed' || ctx.stuckResolverOn, resolver,
         corrupts: ['countResting (entry-mode.js:82-86)', 'the drain (entry-drain.js:102)', 'the cap of 20 (closed-market-limits.js:276-278)'],
-        detail: `#${r.id} ${tail(r.account_id)} ${r.symbol} ${r.note ?? ''} expires ${iso(expires)?.slice(0, 16) ?? 'NULL'}${filled ? `; ${filled.fill} carries ${filled.intent}` : ''}; resolver ${r.note === 'pending-closed' ? 'exists' : 'none (pending-fib retired, loop.js:114)'}`,
+        detail: `#${r.id} ${tail(r.account_id)} ${r.symbol} ${r.note ?? ''} expires ${iso(expires)?.slice(0, 16) ?? 'NULL'}${filled ? `; ${filled.fill} carries ${filled.intent}` : ''}; resolver: ${resolver}${kind === 'expired_working' && order?.status === 'working' ? ' (the order is still working at the broker: nothing to settle, never cancelled by a resolver)' : ''}`,
       }
     },
   },
@@ -796,15 +842,22 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'STK-03', key: 'trade_inflight_unresolved', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['loop.js:867', 'loop.js:911', 'actions.js:548-582', 'broker-history-import.js:302'],
+    // v2 (V3 I3): the stuck resolver ends these rows (R2 from a broker deal,
+    // R5 as the duplicate of an adopted row, or written off after 24 h with
+    // no broker evidence). A row it ended keeps its status — the trades CHECK
+    // has no honest terminal value for "no evidence" — and is judged here as
+    // written_off / settled, never as stuck.
+    id: 'STK-03', key: 'trade_inflight_unresolved', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
+    cite: ['loop.js:867', 'loop.js:911', 'stuck-resolver.js:229', 'actions.js:548-582'],
     noun: 'in-flight trade row',
     sql: `SELECT id, account_id, symbol, side, status, opened_at FROM trades WHERE status IN ('submitting', 'unconfirmed') LIMIT ?`,
     params: () => [], when: r => tsMs(r.opened_at), subject: byId, account: acctCol,
-    judge(r, _ctx, w) {
+    judge(r, ctx, w) {
+      const ended = endedBy(ctx, `trade:${r.id}`)
+      if (ended) return ended
       const at = tsMs(r.opened_at) ?? -Infinity
       const over = (r.status === 'submitting' && at < w.nowMs - 10 * MIN) || (r.status === 'unconfirmed' && at < w.nowMs - HOUR)
-      return over ? { missing: ['resolution'], class: r.status, detail: `#${r.id} ${tail(r.account_id)} ${r.symbol} ${r.status} since ${String(r.opened_at ?? '').slice(0, 16)}; resolver: manual POST /actions/reconcile-trades only` } : null
+      return over ? { missing: ['resolution'], class: r.status, detail: `#${r.id} ${tail(r.account_id)} ${r.symbol} ${r.status} since ${String(r.opened_at ?? '').slice(0, 16)}; resolver: the stuck resolver settles it from broker evidence, or writes it off 24 h after submission` } : null
     },
   },
   {
@@ -845,8 +898,11 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'STK-06', key: 'capture_terminal', version: 1, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['position-capture.js:73', 'position-capture.js:143', 'position-capture.js:181-222'],
+    // v2 (V3 I3): a gave_up capture the stuck resolver wrote off (R6: the
+    // field it lacked exists nowhere upstream, or it gave up again after one
+    // re-queue) is a notice under STK-12, judged here as written_off.
+    id: 'STK-06', key: 'capture_terminal', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
+    cite: ['position-capture.js:73', 'position-capture.js:143', 'position-capture.js:181-222', 'stuck-resolver.js:474'],
     noun: 'capture row',
     sql: `SELECT 'gave_up' AS kind, account_id, position_id, symbol, last_error AS note, settled_at AS at FROM position_capture_queue WHERE state = 'gave_up'
           UNION ALL
@@ -858,7 +914,11 @@ export const RULES = Object.freeze([
              AND (position_history.rebuilt_at IS NULL OR position_history.rebuilt_at <= COALESCE(position_capture_queue.settled_at, ''))
           LIMIT ?`,
     params: () => [], when: r => tsMs(r.at), subject: r => `position:${acctOf(r.account_id) ?? ''}:${r.position_id}`, account: acctCol,
-    judge: r => ({ missing: [r.kind === 'gave_up' ? 'record' : 'verdict'], class: r.kind, detail: `${tail(r.account_id)} ${r.symbol} pos ${r.position_id}: ${cut(r.note ?? '', 80)}` }),
+    judge(r, ctx) {
+      const ended = r.kind === 'gave_up' ? endedBy(ctx, `capture:${acctOf(r.account_id) ?? ''}:${r.position_id}`) : null
+      if (ended && ended.class === 'written_off') return ended
+      return { missing: [r.kind === 'gave_up' ? 'record' : 'verdict'], class: r.kind, detail: `${tail(r.account_id)} ${r.symbol} pos ${r.position_id}: ${cut(r.note ?? '', 80)}` }
+    },
   },
   {
     // v2 (L1 fix round, N7): entry-drain.js:132-140 also logs a pass whose
@@ -922,8 +982,20 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'STK-09', key: 'targetless_repeating', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver+owner', current: true,
-    cite: ['naked-position-guard.js:401-425'],
+    // v2 (V3 I3): (a) a position the stuck resolver wrote off (R7: no target
+    // recorded anywhere) is a notice under STK-12, judged here as
+    // written_off; (b) CURRENT state — the protection audit logs one row per
+    // position per PROTECTION_LOG_MUTE_MS (naked-position-guard.js:320), so a
+    // position whose newest row is older than two of those (+10 min) has
+    // stopped being reported targetless — clean only when the audit's own
+    // per-account record proves it read the account late enough and did not
+    // list the position, otherwise 'not_reported_now' (not a violation, named
+    // in the rule's info: an account whose read keeps failing goes quiet
+    // without the position gaining a target); (c) a target the resolver found
+    // on record but did not write (R7's write is the owner's switch) is named
+    // on the finding as class recorded_target_found.
+    id: 'STK-09', key: 'targetless_repeating', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver+owner', current: true,
+    cite: ['naked-position-guard.js:401-425', 'naked-position-guard.js:320', 'stuck-resolver.js:578'],
     noun: 'targetless position (last 5,000 action_log ids)',
     sql: `SELECT id, at, body FROM action_log
            WHERE id > (SELECT COALESCE(MAX(id), 0) FROM action_log) - ${ACTION_LOG_WINDOW_IDS} AND method = 'POSITION_NO_TARGET' ORDER BY id LIMIT ?`,
@@ -943,12 +1015,46 @@ export const RULES = Object.freeze([
       return [...by.values()]
     },
     when: r => (Number.isFinite(r.first) ? r.first : null), subject: r => `position:${r.account_id ?? ''}:${r.positionId}`, account: r => r.account_id,
-    judge(r, ctx) {
+    judge(r, ctx, w) {
       const open = ctx.trades.find(t => t.status === 'open' && String(t.ctrader_position_id) === r.positionId && (r.account_id == null || acctOf(t.account_id) === r.account_id))
       if (!open) return OUT
       r.account_id = r.account_id ?? acctOf(open.account_id)
       if (!(r.last - r.first > 2 * HOUR)) return null
-      return { missing: ['target'], since: iso(r.first), detail: `pos ${r.positionId} ${open.symbol} (#${open.id}): ${r.n} POSITION_NO_TARGET rows over ${Math.round((r.last - r.first) / HOUR)} h` }
+      const key = `${r.account_id ?? ''}:${r.positionId}`
+      let stillListed = false
+      if (r.last < w.nowMs - (2 * PROTECTION_LOG_MUTE_MS + 10 * MIN)) {
+        // NO LONGER REPORTED is not "has a target" (I3 checker NIT 3): the
+        // audit logs only after a successful account read, so an account
+        // whose read keeps failing goes quiet with the position still
+        // targetless. Clean only on POSITIVE evidence — the audit's last
+        // successful read of the account (`at`, kept through failures) came
+        // at least one mute window after the last row, when it would have
+        // logged again, and it did not list the position targetless.
+        const audit = ctx.auditByAccount?.get(r.account_id) ?? null
+        const auditAt = tsMs(audit?.at)
+        const late = auditAt != null && auditAt >= r.last + PROTECTION_LOG_MUTE_MS
+        stillListed = Array.isArray(audit?.missingTargets) && audit.missingTargets.some(m => String(m?.positionId) === r.positionId)
+        if (late && !stillListed) return null
+        if (!late) {
+          return { violation: false, class: 'not_reported_now',
+            info: `pos ${r.positionId} ${open.symbol}: last reported targetless ${iso(r.last)}; ${auditAt == null ? 'no successful audit of the account on record' : `the account's last successful audit (${iso(auditAt)}) predates the next report`} — not verifiable as fixed` }
+        }
+        // late && stillListed: the audit's own list says it is still targetless.
+      }
+      const ended = endedBy(ctx, `target:${key}`)
+      if (ended && ended.class === 'written_off') return ended
+      // BLOCKER 1 (I3 checker): a target the resolver FOUND but did not write
+      // (agent_state stuck_resolver_target_write not 'true') is named — the
+      // position stays stuck until the owner decides.
+      const found = ctx.targetFound?.get(key) ?? null
+      return {
+        missing: ['target'], since: iso(r.first), ...(found ? { class: 'recorded_target_found', recordedTarget: { tp: found.tp, source: found.source, foundAt: found.passAt, written: false } } : {}),
+        detail: `pos ${r.positionId} ${open.symbol} (#${open.id}): ${r.n} POSITION_NO_TARGET rows over ${Math.round((r.last - r.first) / HOUR)} h${stillListed ? ', still in the audit\'s list' : ''}${found ? `; recorded target ${found.tp} found (${found.source}), not written — owner decision` : ''}`,
+      }
+    },
+    note(res) {
+      const names = res.info?.not_reported_now
+      return names?.length ? `Not Verifiable as fixed — not_reported_now ${res.classes.not_reported_now}: ${names.join('; ')}${res.classes.not_reported_now > names.length ? '; …' : ''}` : null
     },
   },
   {
@@ -967,9 +1073,9 @@ export const RULES = Object.freeze([
     // heartbeat's OWN view (heartbeatView over the CONTROLLERS registry), so
     // this rule and /state/heartbeats cannot disagree about a controller —
     // two readings of one subsystem is CLAUDE.md failure mode #3's correction.
-    //   stalled — last run older than expected × factor (heartbeat.js:530):
+    //   stalled — last run older than expected × factor (heartbeat.js:611):
     //             pnl_reconcile last ran 09-20 with 0 failures is stuck;
-    //   error   — consecutive failures ≥ FAIL_ALERT_AT = 3 (heartbeat.js:183):
+    //   error   — consecutive failures ≥ FAIL_ALERT_AT = 3 (heartbeat.js:201):
     //             pnl_reconcile at 1,701 consecutive failures.
     // Unregistered names never reach the view (it iterates the registry), so a
     // row left behind by a removed controller cannot stay stuck for ever;
@@ -977,7 +1083,7 @@ export const RULES = Object.freeze([
     // (the runner beats, its product is past its limit) and never_ran (no beat
     // on record) are NOT judged stuck: they are named as Not Verifiable here.
     id: 'STK-11', key: 'controller_failing', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['heartbeat.js:183', 'heartbeat.js:530-534', 'heartbeat.js:318-323', 'heartbeat.js:508-512', 'heartbeat.js:524-527'],
+    cite: ['heartbeat.js:201', 'heartbeat.js:611-615', 'heartbeat.js:393-399', 'heartbeat.js:584-588', 'heartbeat.js:604-608'],
     noun: 'registered controller',
     // The statement proves the table is readable (a dropped table is an
     // error, never 0); the rows are the heartbeat's own view of it.
@@ -1006,6 +1112,20 @@ export const RULES = Object.freeze([
       return parts.length ? `Not Verifiable as stuck — ${parts.join('; ')} (a stale record or a controller with no beat is not judged here; see /state/heartbeats)` : null
     },
   },
+  {
+    // V3 I3 — THE WRITE-OFF IS A NOTICE, NOT A DISAPPEARANCE (owner
+    // 25-09-2026 21:30 SGT): every record the stuck resolver ended with no
+    // broker evidence to settle it on is named here, with its verdict and
+    // reason, for as long as it exists. It is not counted as stuck (severity
+    // notice: summary.notices, never summary.new) and not money (the resolver
+    // writes no P&L onto a written-off record).
+    id: 'STK-12', key: 'stuck_written_off', version: 1, stage: 'stuck', severity: 'notice', fix: 'reporting', current: true,
+    cite: ['stuck-resolver.js:626', 'stuck-resolutions.js:60'],
+    noun: 'written-off stuck record',
+    sql: `SELECT subject, kind, rule_id, account_id, trade_id, verdict, reason, prior_state, resolved_at FROM stuck_resolutions WHERE outcome = 'unresolved' LIMIT ?`,
+    params: () => [], when: r => tsMs(r.resolved_at), subject: r => r.subject, account: acctCol,
+    judge: r => ({ class: r.kind, rule: r.rule_id, verdict: r.verdict, since: r.resolved_at, detail: `${r.subject} (${r.rule_id}, was ${r.prior_state ?? '?'}): ${r.verdict} — ${cut(r.reason, 110)}` }),
+  },
 ])
 
 /**
@@ -1019,14 +1139,22 @@ export const RULES = Object.freeze([
  * recordKeyOf, the registry check and the limits. Editing any of them
  * changes what the report says with no rule's own source changing, so it
  * must bump HELPERS_VERSION.
+ *
+ * v3 (V3 I3): the context reads the stuck resolver's record
+ * (CONTEXT_SQL.resolutions) and endedBy() turns a resolved subject into a
+ * written_off / settled class for STK-03, STK-06 and STK-09; it also reads
+ * the stuck resolver's switch and last pass (STK-01 resolverExists, STK-09's
+ * found-but-unwritten targets) and the protection audit's per-account
+ * records (STK-09's positive evidence). v3 never shipped before this fix
+ * round, so the fix round keeps the number.
  */
-export const HELPERS_VERSION = 2
+export const HELPERS_VERSION = 3
 export const JUDGE_HELPERS = Object.freeze({
   tsMs, blank, num, acctOf, idKey, upper, dirOf, ours, intentTag, parseJson, directionReasonOf, sideProblems, riskScaleWrong,
-  botTrade, proposalOf, fillOf, closeMsOf, tagEvidence, fillForPending, closedOlder, tradeInWindow,
+  botTrade, proposalOf, fillOf, closeMsOf, tagEvidence, fillForPending, closedOlder, tradeInWindow, endedBy,
   loadContext, runRule, summarise, recordKeyOf, accountRegistered,
   constants: `${ABSURD_RISK_FRACTION}|${GENERIC_CLOSE_RE}|${[...LIMIT_PRODUCERS]}|${TERMINAL_INTENT}|${CLEAN_BOT_ORIGINS}|${ACTION_LOG_WINDOW_IDS}` +
-    `|${DEFAULT_POPULATION_LIMIT}|${REFUSAL_POPULATION_LIMIT}|${CONTEXT_LIMIT}|${WRITE_GRACE_MS}|${INFO_NAMES_MAX}|${JSON.stringify(CONTEXT_SQL)}`,
+    `|${DEFAULT_POPULATION_LIMIT}|${REFUSAL_POPULATION_LIMIT}|${CONTEXT_LIMIT}|${WRITE_GRACE_MS}|${INFO_NAMES_MAX}|${PROTECTION_LOG_MUTE_MS}|${JSON.stringify(CONTEXT_SQL)}`,
 })
 export const RULESET_VERSION = [...RULES.map(r => `${r.id}@${r.version}`), `helpers@${HELPERS_VERSION}`].join(',')
 
@@ -1321,6 +1449,8 @@ export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, d
   if (ctx.truncated.length) notVerifiable.push(`context read reached its bound (${ctx.truncated.join(', ')}): every rule is marked truncated`)
   const controllers = results.find(r => r.res.id === 'STK-11')?.res
   if (controllers?.note) notVerifiable.push(`STK-11 ${controllers.note}`)
+  const targetless = results.find(r => r.res.id === 'STK-09')?.res
+  if (targetless?.note) notVerifiable.push(`STK-09 ${targetless.note}`)
   return {
     schemaVersion: SCHEMA_VERSION, rulesetVersion: RULESET_VERSION, generatedAt: iso(now),
     acceptanceStart: cfg.acceptanceStart, acceptanceStartStatus: cfg.acceptanceStartStatus,
