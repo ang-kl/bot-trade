@@ -178,6 +178,16 @@ export const CONTROLLERS = {
   // rows, the inspector and the daily report read; a stale one also shows in
   // records_fresh.
   order_lifecycle:     { label: 'Order lifecycle flags',      expectedSec: 600, factor: 3, effect: { key: 'order_lifecycle_last_json', kind: 'json', maxAgeSec: 1800 } },
+  // V3 V1 (owner order 25-09-2026): the all-account position capture pass —
+  // sweep, verify backlog and drain, per account with its own credentials —
+  // at the end of loop.js's every-3rd-cycle reconcile block. It beats FAILED
+  // when any account is silent (a close with no capture record past the
+  // grace), stalled (rows due and no successful drain of that account) or
+  // refused by the verifier on its last asks, naming the accounts; the
+  // per-account counts ride in the beat's detail. Before this there was no
+  // row at all, and the capture queue read "0 pending" while six of seven
+  // accounts had never queued a close.
+  position_capture:    { label: 'Position capture (every account)', tiedToLoop: true, loopMultiplier: 3, factor: 4, effect: { key: 'position_capture_last_json' } },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

@@ -30,7 +30,7 @@
 
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { capturePosition, recordVerdict } from './position-history.js'
+import { capturePosition, recordVerdict, accountSymbolMap } from './position-history.js'
 import { pageDeals } from '../lib/deal-paging.js'
 import { VERDICT_CONTRACT_VERSION } from '../lib/verify-contract.js'
 import { unitsPerLot, rememberVolumeMeta } from '../lib/lot-size-registry.js'
@@ -335,12 +335,12 @@ export function backlogReport (acct, o) {
 export function resetBacklogReports () { lastBacklogSig.clear() }
 
 /** Rows whose time has come. */
-export function dueCaptures(db, { now = Date.now(), limit = 50 } = {}) {
+export function dueCaptures(db, { now = Date.now(), limit = 50, accountId = null } = {}) {
   return db.prepare(`
     SELECT * FROM position_capture_queue
-     WHERE state = 'pending' AND due_at_ms <= ?
+     WHERE state = 'pending' AND due_at_ms <= ? AND (? IS NULL OR account_id = ?) -- V3 V1: one account per drain
      ORDER BY due_at_ms ASC LIMIT ?
-  `).all(now, limit)
+  `).all(now, accountId == null ? null : String(accountId), accountId == null ? null : String(accountId), limit)
 }
 
 /**
@@ -371,7 +371,7 @@ export async function refreshDealsFor(db, { accountId, positionId, getDeals, now
   const { shapeDeals, persistDeals } = await import('./broker-history-import.js')
   let symMeta = {}
   try {
-    const idMap = JSON.parse(db.prepare(`SELECT value FROM agent_state WHERE key = 'symbol_id_map'`).get()?.value || '{}') || {}
+    const idMap = accountSymbolMap(db, accountId) // V3 V1: THIS account's names — ids are per environment
     for (const [name, id] of Object.entries(idMap)) symMeta[id] = { symbolName: name }
   } catch { symMeta = {} }
   const persisted = persistDeals(db, shapeDeals(pull.deals, symMeta, accountId))
@@ -387,13 +387,22 @@ export async function refreshDealsFor(db, { accountId, positionId, getDeals, now
  * which is the honest outcome rather than a fabricated one. Without a
  * verifier the record simply stays `unverified`, which is exactly what it is.
  */
-export async function drainCaptureQueue(db, { getDeals = null, verify = null, lotSizeFor = null, now = Date.now(), limit = 50, env = process.env } = {}) {
-  const rows = dueCaptures(db, { now, limit })
-  const out = { due: rows.length, captured: 0, incomplete: 0, gaveUp: 0, archived: 0, verified: 0, errors: [] }
+export async function drainCaptureQueue(db, { getDeals = null, verify = null, lotSizeFor = null, now = Date.now(), limit = 50, env = process.env, accountId = null, stopOnDealError = false, deadline = null, clock = Date.now } = {}) {
+  // V3 V1: `accountId` drains ONE account's rows — the deal reader and the
+  // verifier credentials a caller hands over belong to one account, and an
+  // unscoped read would pull account B's positions through account A's deal
+  // history. Without it, the drain is exactly as before (tests and tools).
+  const rows = dueCaptures(db, { now, limit, accountId })
+  const out = { due: rows.length, captured: 0, incomplete: 0, gaveUp: 0, archived: 0, verified: 0, answered: 0, skipped: 0, errors: [], stopped: null }
 
   for (const row of rows) {
+    // V3 V1: a pass has a time budget across every account. A row not
+    // started is not attempted — its count is untouched and it is simply
+    // first in line next pass.
+    if (deadline != null && clock() > deadline) { out.stopped = 'pass_budget'; break }
     const attempts = (row.attempts || 0) + 1
     let dealNote = null
+    let dealThrew = false
     try {
       if (getDeals) {
         const r = await refreshDealsFor(db, { accountId: row.account_id, positionId: row.position_id, getDeals, now })
@@ -401,6 +410,7 @@ export async function drainCaptureQueue(db, { getDeals = null, verify = null, lo
       }
     } catch (e) {
       dealNote = `deals threw: ${e.message}`
+      dealThrew = true
     }
 
     const res = capturePosition(db, { accountId: row.account_id, positionId: row.position_id })
@@ -424,7 +434,12 @@ export async function drainCaptureQueue(db, { getDeals = null, verify = null, lo
           // no way to tell a verifier that is down from one that disagrees.
           // Failure mode #3 inside the verification path itself.
           if (v && !v.state && v.skipped) out.errors.push(`verify ${row.position_id}: skipped ${v.skipped}`)
+          // V3 V1: an ask the verifier did not answer is COUNTED, so a
+          // verifier that keeps refusing one account shows as that account's
+          // failure rather than as a quiet `0 verified`.
+          if (!v || !v.state) out.skipped++
           if (v && v.state) {
+            out.answered++
             recordVerdict(db, {
               accountId: row.account_id, positionId: row.position_id,
               state: v.state, disputes: v.disputes || [], host: v.host || null,
@@ -439,6 +454,7 @@ export async function drainCaptureQueue(db, { getDeals = null, verify = null, lo
             }
           }
         } catch (e) {
+          out.skipped++
           out.errors.push(`verify ${row.position_id}: ${e.message}`)
         }
       }
@@ -476,6 +492,11 @@ export async function drainCaptureQueue(db, { getDeals = null, verify = null, lo
          WHERE account_id = ? AND position_id = ?
       `).run(attempts, why.slice(0, 500), now + RETRY_BASE_MS * Math.pow(2, attempts - 1), row.account_id, row.position_id)
     }
+    // V3 V1: an account whose deal read THREW (transport, auth) stops here
+    // for this pass instead of spending one attempt on every due row — six
+    // failed reads would otherwise mark six good captures gave_up in one
+    // pass for a connection fault, not a gap in the record.
+    if (stopOnDealError && dealThrew) { out.stopped = 'deal_read_failed'; break }
   }
   return out
 }

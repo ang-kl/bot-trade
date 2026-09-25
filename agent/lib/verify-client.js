@@ -72,18 +72,37 @@ export function verifyClient({ env = process.env, fetchImpl = globalThis.fetch }
   // Per PROCESS, not persisted: the verifier holds its sessions in memory and
   // a restart drops them, so a cached "yes" that outlived the service would
   // be worse than no cache. A 409 clears the entry and reconnects once.
-  const connected = new Set()
+  //
+  // PER HOST, THE ACCOUNTS IT AUTHORIZED (V3 V1, 25-09-2026). cpp-verify's
+  // POST /connect REPLACES the host's session with one authorized on exactly
+  // the accounts named (main.cpp `g_sessions[host] = slot; g_accounts[host] =
+  // ok`), and /verify answers 403 for any other account (its I17 check). This
+  // client used to remember only "host connected" after authorizing ONE
+  // account, so the first record of a second account on the same host went
+  // to a guaranteed 403 — which the capture path reported as a skip, burned a
+  // re-verify attempt on, and moved on from. Harmless while only the selected
+  // account was ever captured; fatal the moment every account is. So each
+  // connect names the UNION: the accounts already authorized on the host,
+  // the host roster the caller passes, and the record's own account.
+  const authorized = new Map() // host -> Set<accountId string>
+  const idOk = (v) => /^[1-9]\d*$/.test(String(v ?? ''))
 
-  async function connect(brokerHost, creds, timeoutMs) {
-    const { clientId, clientSecret, accessToken, accountId } = creds || {}
+  async function connect(brokerHost, creds, timeoutMs, recordAccount = null) {
+    const { clientId, clientSecret, accessToken, accountId, accountIds } = creds || {}
     if (!clientId || !clientSecret || !accessToken || !accountId) return { ok: false, reason: 'no_credentials' }
+    const want = [...new Set([
+      String(recordAccount ?? accountId),
+      String(accountId),
+      ...(authorized.get(brokerHost) || []),
+      ...(Array.isArray(accountIds) ? accountIds.map(String) : []),
+    ])].filter(idOk)
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), timeoutMs)
     try {
       const res = await fetchImpl(`${base}/connect`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` },
-        body: JSON.stringify({ host: brokerHost, clientId, clientSecret, accessToken, accountIds: [Number(accountId)] }),
+        body: JSON.stringify({ host: brokerHost, clientId, clientSecret, accessToken, accountIds: want.map(Number) }),
         signal: ctl.signal,
       })
       if (!res.ok) return { ok: false, reason: `connect_http_${res.status}` }
@@ -92,7 +111,18 @@ export function verifyClient({ env = process.env, fetchImpl = globalThis.fetch }
       // with zero authorized is a FAILURE to connect, not a session: treating
       // it as one would send every later /verify into a guaranteed 403.
       if (!body || !(Number(body.authorized) > 0)) return { ok: false, reason: 'connect_no_accounts' }
-      connected.add(brokerHost)
+      // Which ones: cpp-verify names each account with its own flag. A reply
+      // without the list (an older binary) that authorized as many as were
+      // asked authorized them all; a partial one without names is taken at
+      // its word for the account this call is about, and a 403 on any other
+      // later is retried once through a fresh connect, then reported.
+      let ok
+      if (Array.isArray(body.accounts)) {
+        ok = body.accounts.filter(a => a && a.authorized === true && idOk(a.accountId)).map(a => String(a.accountId))
+      } else {
+        ok = Number(body.authorized) >= want.length ? want : [want[0]]
+      }
+      authorized.set(brokerHost, new Set(ok))
       return { ok: true, authorized: Number(body.authorized) }
     } catch (e) {
       return { ok: false, reason: e.name === 'AbortError' ? 'connect_timeout' : `connect_${e.message}` }
@@ -104,10 +134,14 @@ export function verifyClient({ env = process.env, fetchImpl = globalThis.fetch }
   return async function verify(record, { host = null, timeoutMs = DEFAULT_TIMEOUT_MS, ...creds } = {}) {
     const brokerHost = host || String(env.CTRADER_HOST || '').trim()
     if (!brokerHost) return { state: null, skipped: 'no_host' }
+    // The account the verifier is asked about is the RECORD's account — the
+    // one verifyRequestFor names — so that is the one the session must hold.
+    const recordAccount = record?.account_id != null ? String(record.account_id) : (creds.accountId != null ? String(creds.accountId) : null)
 
-    if (!connected.has(brokerHost)) {
-      const c = await connect(brokerHost, creds, timeoutMs)
+    if (!authorized.get(brokerHost)?.has(recordAccount)) {
+      const c = await connect(brokerHost, creds, timeoutMs, recordAccount)
       if (!c.ok) return { state: null, skipped: c.reason }
+      if (!authorized.get(brokerHost)?.has(recordAccount)) return { state: null, skipped: 'connect_account_refused' }
     }
 
     const ctl = new AbortController()
@@ -122,10 +156,13 @@ export function verifyClient({ env = process.env, fetchImpl = globalThis.fetch }
       // A 409 means the session went away under us — cpp-verify restarted, or
       // it was never there. Reconnect and try ONCE. Not a loop: a second 409
       // is a real condition and must be reported, not retried into silence.
-      if (res.status === 409) {
-        connected.delete(brokerHost)
-        const c = await connect(brokerHost, creds, timeoutMs)
-        if (!c.ok) return { state: null, skipped: c.reason }
+      // A 403 is the same shape one level down (V3 V1): the host's session
+      // was replaced by one that does not hold this account. The reconnect
+      // names the union, so it cannot drop the accounts already held.
+      if (res.status === 409 || res.status === 403) {
+        const c = await connect(brokerHost, creds, timeoutMs, recordAccount)
+        if (!c.ok) { authorized.delete(brokerHost); return { state: null, skipped: c.reason } }
+        if (!authorized.get(brokerHost)?.has(recordAccount)) return { state: null, skipped: 'connect_account_refused' }
         res = await fetchImpl(`${base}/verify`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` },
