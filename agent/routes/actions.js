@@ -231,6 +231,10 @@ export default function actionsRouter(db, deps = {}) {
   // refresh token was dropped here and nothing could have caught it. An
   // injectable account lister makes the write testable without a broker.
   const listAccountsImpl = deps.listCtraderAccounts ?? null
+  // WEB-9b: the same seam for GET /stream-prices' broker spot stream, so the
+  // timestamped frames and the feed-latency record can be exercised without
+  // a broker socket.
+  const streamSpotsImpl = deps.streamSpots ?? null
 
   // Every successful write makes the /state/* read cache stale. Without this
   // the UI saves, re-reads, and paints the PRE-SAVE answer back over the new
@@ -3329,6 +3333,13 @@ export default function actionsRouter(db, deps = {}) {
   // Server-sent events: one cTrader spot subscription per client, ticks
   // forwarded as `data: {"symbol","bid","ask","t"}` frames. Closes with the
   // client. Capped at 10 symbols per stream.
+  //
+  // WEB-9b: the subscription asks for the broker's spot timestamp. Each frame
+  // carries `receivedAtMs` (the AGENT's clock at receipt) and `brokerAtMs`
+  // (the broker's event time, null when the broker sent none), and every
+  // event is noted in lib/feed-receipts.js, where receipt minus broker time
+  // is the market-feed latency GET /state/data-feed serves. The first event
+  // per symbol is the subscription's snapshot and is not a latency sample.
   // -----------------------------------------------------------------------
   router.get('/stream-prices', async (req, res) => {
     try {
@@ -3357,8 +3368,10 @@ export default function actionsRouter(db, deps = {}) {
       })
       res.write(`event: hello\ndata: ${JSON.stringify({ symbols: names.filter(n => map[n]) })}\n\n`)
 
-      const { wsStreamSpots } = await import('../lib/ctrader-ws.js')
+      const wsStreamSpots = streamSpotsImpl ?? (await import('../lib/ctrader-ws.js')).wsStreamSpots
+      const { noteSpotStamp } = await import('../lib/feed-receipts.js')
       const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const snapshotSeen = new Set()
       let stream = null
       let hb = null
       let gone = false
@@ -3376,13 +3389,19 @@ export default function actionsRouter(db, deps = {}) {
       try {
         stream = await wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, ids,
           (tick) => {
+            const receivedAtMs = Date.now()
+            const brokerAtMs = Number.isSafeInteger(tick.brokerAtMs) && tick.brokerAtMs > 0 ? tick.brokerAtMs : null
+            const snapshot = !snapshotSeen.has(tick.symbolId)
+            if (snapshot) snapshotSeen.add(tick.symbolId)
+            noteSpotStamp({ brokerAtMs, receivedAtMs, host, accountId, symbolId: tick.symbolId, snapshot })
             res.write(`data: ${JSON.stringify({ symbol: idToName[tick.symbolId], symbolId: tick.symbolId,
-              accountId: String(accountId), host, bid: tick.bid, ask: tick.ask, t: tick.t, receivedAtMs: Date.now() })}\n\n`)
+              accountId: String(accountId), host, bid: tick.bid, ask: tick.ask, t: tick.t, receivedAtMs, brokerAtMs })}\n\n`)
           },
           (reason) => {
             res.write(`event: end\ndata: ${JSON.stringify({ reason })}\n\n`)
             shutdown()
-          })
+          },
+          { timestamped: true })
       } catch (err) {
         res.write(`event: end\ndata: ${JSON.stringify({ reason: err.message })}\n\n`)
         return shutdown()

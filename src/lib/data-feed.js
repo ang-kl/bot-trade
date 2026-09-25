@@ -122,6 +122,132 @@ export function quoteFreshnessLine(quotes) {
   return `quotes, last 10 min (${w.passes} priced passes): sidecar ${w.fromSidecar ?? '—'} · broker ${w.fromBroker ?? '—'} (stale ${w.stale ?? '—'}) · ${age}`
 }
 
+// ---------------------------------------------------------------------------
+// WEB-9b (8,989-A row 11, second half): per-timeframe bar receipts and the
+// broker-timestamped feed latency, from GET /state/data-feed `barReceipts` /
+// `feedLatency` (agent/lib/feed-receipts.js). Times are printed in UTC so
+// the text is the same on every screen and in every test.
+// ---------------------------------------------------------------------------
+
+/** The timeframes the card always names, whether or not a bar arrived. */
+export const CARD_TIMEFRAMES = Object.freeze(['1m', '15m', '1h', '4h', '1d'])
+
+const TF_LABEL = (tf) => (tf === '1d' ? '1D' : tf === '1w' ? '1W' : tf === '1mo' ? '1M' : tf)
+// A missing time is "time unavailable", never 1970 (new Date(Number(null))).
+const when = (msv) => (typeof msv === 'number' && Number.isFinite(msv) && msv > 0 ? new Date(msv) : null)
+const utc = (msv) => {
+  const d = when(msv)
+  return d ? `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC` : 'time unavailable'
+}
+const utcSec = (msv) => {
+  const d = when(msv)
+  return d ? `${d.toISOString().slice(11, 19)} UTC` : 'time unavailable'
+}
+const SOURCE_LABEL = {
+  strategy_scan: 'strategy scan', pending_scan: 'pending-order scan', regime: 'regime read',
+  fast_monitor_volume: 'fast-monitor volume read', daily_bar: "open positions' daily bar",
+  last_close: 'last-close read', other: 'other reader (chart, backtest, tools)',
+}
+const sourceLabel = (s) => SOURCE_LABEL[s] || s || 'unnamed reader'
+
+/** A duration as the card prints it: "42 s", "3 min", "2.5 h", "4 d". */
+export function formatAge(msv) {
+  // Number(null) is 0: a missing age must never print as "0 s".
+  const v = msv == null || msv === '' ? NaN : Number(msv)
+  if (!Number.isFinite(v) || v < 0) return 'age unknown'
+  if (v < 60_000) return `${Math.round(v / 1000)} s`
+  if (v < 3_600_000) return `${Math.round(v / 60_000)} min`
+  if (v < 86_400_000) return `${+(v / 3_600_000).toFixed(1)} h`
+  return `${Math.round(v / 86_400_000)} d`
+}
+
+/**
+ * One chip per timeframe: the named five plus any other timeframe the agent
+ * received, shortest first. A chip carries the age of the LAST receipt from
+ * any reader; its title lists every reader's own receipt, the newest bar's
+ * open time and whether that bar was still forming when it arrived.
+ *
+ * `barReceipts` undefined/null: the report did not load or this agent does
+ * not report receipts — the chips name the timeframe and say nothing else.
+ *
+ * @returns {Array<{key:string, label:string, received:boolean, text:string, title:string}>}
+ */
+export function timeframeChips(barReceipts, nowMs) {
+  const rows = Array.isArray(barReceipts?.timeframes) ? barReceipts.timeframes : null
+  const byTf = new Map((rows || []).map(r => [r.timeframe, r]))
+  const keys = [...new Set([...CARD_TIMEFRAMES, ...byTf.keys()])]
+  const dur = (tf) => byTf.get(tf)?.periodMs ?? ({ '1m': 6e4, '15m': 9e5, '1h': 36e5, '4h': 144e5, '1d': 864e5 }[tf] ?? Infinity)
+  keys.sort((a, b) => dur(a) - dur(b) || a.localeCompare(b))
+  return keys.map(tf => {
+    const label = TF_LABEL(tf)
+    const r = byTf.get(tf)
+    if (!rows) return { key: tf, label, received: false, text: label, title: 'receipt time unavailable' }
+    if (!r || r.lastReceivedAtMs == null) {
+      const empty = r?.emptyResponses ? ` · ${r.emptyResponses} empty answer${r.emptyResponses === 1 ? '' : 's'} (no bars), last ${utc(r.lastEmptyAtMs)}` : ''
+      return { key: tf, label, received: false, text: `${label} · none`, title: `no ${label} bar received since the agent started, ${utc(barReceipts.sinceMs)}${empty}` }
+    }
+    // The card's clock when it has one; otherwise the age the agent computed
+    // (never `Number(null)`, which is 0 and would print a receipt as "now").
+    const age = typeof nowMs === 'number' && Number.isFinite(nowMs) ? Math.max(0, nowMs - r.lastReceivedAtMs) : r.ageMs
+    const lines = (r.sources || []).map(s => {
+      const forming = s.newestBarForming === true ? 'still forming at receipt' : s.newestBarForming === false ? 'already closed at receipt' : 'forming state not decidable'
+      const prev = s.fromPreviousProcess ? ' · received before the last restart' : ''
+      return `${sourceLabel(s.source)}: received ${utc(s.receivedAtMs)} via account ${s.accountId ?? 'unknown'} · newest bar opened ${utc(s.newestBarOpenMs)}, ${forming} · ${s.bars ?? '?'} bars${prev}`
+    })
+    return {
+      key: tf, label, received: true,
+      text: `${label} · ${formatAge(age)}${r.fromPreviousProcess ? ' (before restart)' : ''}`,
+      title: [`${label} bars, agent receipt time (agent clock)`, ...lines].join('\n'),
+    }
+  })
+}
+
+/** The sentence under the chips: what a chip's time is, and since when. */
+export function barReceiptsNote(feedReport) {
+  if (!feedReport) return 'bar receipt times unavailable — the data-feed report did not load'
+  const br = feedReport.barReceipts
+  if (!br || !Array.isArray(br.timeframes)) return 'bar receipt times not reported by this agent'
+  const got = br.timeframes.filter(r => r.lastReceivedAtMs != null).length
+  return `Each chip is how long ago the agent last received that timeframe's bars from the broker (agent clock; hover for the reader, the newest bar and whether it was still forming). ${got} timeframe${got === 1 ? '' : 's'} received · recording since ${utc(br.sinceMs)}.`
+}
+
+/**
+ * Market-feed latency: broker spot timestamp → agent receipt, per broker host.
+ * Includes any clock offset between the broker and the agent, and says so.
+ */
+export function feedLatencyLine(feedLatency) {
+  if (feedLatency === undefined) return 'market-feed latency unavailable — the data-feed report did not load'
+  if (!feedLatency) return 'market-feed latency not reported by this agent'
+  const win = `${Math.round((feedLatency.windowMs || 600_000) / 60_000)} min`
+  const measured = (feedLatency.byHost || []).filter(h => h.events > 0)
+  if (!measured.length) {
+    const lm = feedLatency.lastMeasured
+    const last = lm?.byHost?.length
+      ? ` · last measured ${utc(lm.atMs)}${lm.fromPreviousProcess ? ' (before the last restart)' : ''}: ${lm.byHost.map(h => `${h.host} p50 ${ms(h.p50Ms)} over ${h.events} events`).join('; ')}`
+      : ''
+    return `market-feed latency not measured in the last ${win} — no timestamped price stream was open${last}`
+  }
+  const parts = measured.map(h => {
+    const extra = [h.outOfRange ? `${h.outOfRange} beyond ±${Math.round((feedLatency.rangeMs || 60_000) / 1000)} s not counted` : '',
+      h.unstamped ? `${h.unstamped} without a broker stamp` : ''].filter(Boolean).join(', ')
+    return `${h.host} p50 ${ms(h.p50Ms)} · p90 ${ms(h.p90Ms)} · max ${ms(h.maxMs)} over ${h.events} events${extra ? ` (${extra})` : ''}`
+  })
+  return `market-feed latency, broker spot timestamp → agent receipt, last ${win}: ${parts.join('; ')} · includes any broker/agent clock offset`
+}
+
+/**
+ * A quote's receipt note: the AGENT's receipt time (it was labelled "broker
+ * receipt", which it never was) and the broker's own event time when the
+ * stream carried one.
+ */
+export function quoteReceiptNote(tick) {
+  if (!tick?.receivedAtMs) return 'No quote received'
+  const broker = Number.isSafeInteger(tick.brokerAtMs) && tick.brokerAtMs > 0
+    ? `broker time ${utcSec(tick.brokerAtMs)}`
+    : 'broker time not stamped'
+  return `Agent receipt ${utcSec(tick.receivedAtMs)} · ${broker}`
+}
+
 /**
  * The DataFeed card's account-dependent props, each shown ONLY when its
  * response belongs to the account on screen.
