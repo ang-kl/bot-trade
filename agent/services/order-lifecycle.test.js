@@ -726,7 +726,7 @@ test('bounded: samples page at 25 (200 with one rule), counts never shrink', () 
 const src = v => (typeof v === 'function' ? v.toString() : JSON.stringify(v))
 const ruleHash = r => createHash('sha256').update(Object.keys(r).filter(k => !['id', 'version', 'cite', 'noun'].includes(k)).sort().map(k => `${k}=${src(r[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
 const helpersHash = () => createHash('sha256').update(Object.keys(JUDGE_HELPERS).sort().map(k => `${k}=${src(JUDGE_HELPERS[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
-const PINNED_HELPERS = { [`helpers@3`]: '8440885e9e816b18' }
+const PINNED_HELPERS = { [`helpers@3`]: '99e6e8786e41d413' }
 const PINNED = {
   'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@1': '1d3934917924fe6a', 'PRE-03@1': 'bf01d978a6b93535', 'PRE-04@1': 'fa04e500d8a0ca47',
   'PRE-05@1': 'c7aeb7460046a6fc',
@@ -736,9 +736,9 @@ const PINNED = {
   'CLS-01@1': 'd1c6f94d5d127f9b', 'CLS-02@1': '1f3a45c656e2f94b', 'CLS-03@1': '40b74e5ba9111a98', 'CLS-04@1': '4313b95a7b55beb1',
   'CLS-05@1': '2cca97ff9080477d', 'CLS-06@1': 'a4bb8873fe57a5f1', 'CLS-07@1': '77e677b6b8b4b901', 'CLS-08@1': '540f253a1c1c8eab',
   'CLS-09@1': '9985d3c5b7b5b9cf',
-  'STK-01@2': '0dac7358bd26bc1a', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@2': '92e5e73e8c8494e9', 'STK-04@2': '30b119a04d39ebc5',
+  'STK-01@2': '969001ee6208e6c7', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@2': '92e5e73e8c8494e9', 'STK-04@2': '30b119a04d39ebc5',
   'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@2': 'c45c7a3d5678fc13', 'STK-08@1': '3fecf4ac1c0a0ce3',
-  'STK-09@2': '44fe5e7013044b04', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6', 'STK-12@1': '20bc6106e975e370',
+  'STK-09@2': '29a95b3d182e245c', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6', 'STK-12@1': '20bc6106e975e370',
 }
 test('ruleset pin: every rule\'s sql + judge is pinned to its version', () => {
   const now = Object.fromEntries(RULES.map(r => [`${r.id}@${r.version}`, ruleHash(r)]))

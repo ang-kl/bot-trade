@@ -23,6 +23,10 @@
 // controller on /state/heartbeats and in STK-11, never a silent one. Its last
 // result is kept at agent_state `stuck_resolver_last_json`; agent_state
 // `stuck_resolver_enabled` = 'false' switches it off (said in the beat).
+// R7's record write — a found target into trades.tp_price, which
+// target-restore turns into a broker amend — is OFF unless agent_state
+// `stuck_resolver_target_write` = 'true' (an owner decision); switched off,
+// the found targets ride in the last result and STK-09 names them.
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'

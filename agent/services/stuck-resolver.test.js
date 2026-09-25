@@ -25,14 +25,14 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState, setState } from '../db.js'
 import {
-  runStuckResolver, resolveInflightTrades, resolveRestingOrders, resolveCaptures, resolveTargetless,
-  missingFieldsOf, WRITE_OFF_AGE_MS, LAST_KEY, ENABLED_KEY,
+  runStuckResolver, resolveInflightTrades, resolveRestingOrders, resolveCaptures, resolveTargetless, recordedTargetEvidence,
+  missingFieldsOf, castIntKey, WRITE_OFF_AGE_MS, LAST_KEY, ENABLED_KEY, TARGET_WRITE_KEY, MAX_WRITES_PER_KIND,
 } from './stuck-resolver.js'
 import { inflightLiveSql, UNRESOLVED_NO_EVIDENCE, UNRESOLVED_AMBIGUOUS, UNRESOLVED_NO_RECORD, UNRESOLVED_NO_TARGET } from '../lib/stuck-resolutions.js'
 import { buildOrderLifecycle } from './order-lifecycle.js'
 import { countForSymbol } from './symbol-position-cap.js'
 import { openPositionsFor } from './tick-permits.js'
-import { runOrderLifecyclePass } from './order-lifecycle-ticker.js'
+import { runOrderLifecyclePass, runResolverStep } from './order-lifecycle-ticker.js'
 
 const NOW = Date.parse('2026-09-25T14:00:00Z')
 const D58 = '46130058', D42 = '43097342', D08 = '46979908', D49 = '47790949'
@@ -116,6 +116,7 @@ test('R2: a row already naming its position settles on that position\'s own deal
 
 test('R5: an in-flight row whose fill the reconciler adopted is ended as that row\'s duplicate — kept, not deleted, not re-statused (#1439 BTCUSD)', () => {
   const db = inflightFixture()
+  db.prepare(`UPDATE trades SET strategy = 'donchian_breakout', risk_event_id = 4242, label_raw = ? WHERE id = 1439`).run(label('ib7c1439aaaaa'))
   const before = counts(db)
   resolveInflightTrades(db, { nowMs: NOW })
   const r = res(db, 'trade:1439')
@@ -124,6 +125,14 @@ test('R5: an in-flight row whose fill the reconciler adopted is ended as that ro
   assert.equal(r.position_id, '240100001')
   assert.equal(row(db, 'trades', 1439).status, 'unconfirmed', 'the row keeps what it said; the resolution ends it')
   assert.equal(row(db, 'trades', 1500).status, 'open', 'the adopted row is untouched')
+  // NIT 7: the submission's attribution is kept in the resolution, NOT
+  // carried onto the open adopted row (that write can change how it is
+  // managed — an owner decision).
+  const ev = JSON.parse(r.evidence_json)
+  assert.deepEqual(ev.attribution, { origin: 'bot_market_dispatch', strategy: 'donchian_breakout', labelStrategy: null, riskEventId: 4242, labelRaw: label('ib7c1439aaaaa') })
+  assert.match(r.reason, /attribution \(donchian_breakout, risk event 4242\) is kept in this resolution, not carried onto #1500/)
+  assert.equal(row(db, 'trades', 1500).strategy, null)
+  assert.equal(row(db, 'trades', 1500).risk_event_id, null)
   assert.deepEqual(counts(db), before, 'nothing deleted')
   const stk = lifecycle(db, 'STK-03')
   assert.ok(!stk.sample.some(e => e.subject === 'trade:1439'))
@@ -266,6 +275,49 @@ test('R1: the orphaned resting rows settle from the broker — filled where a tr
   assert.deepEqual(lifecycle(db, 'STK-12').sample.map(e => e.subject).sort(), ['pending:662', 'pending:664'])
 })
 
+test('R1 age bound: a working row placed 2 h ago with no broker record yet is NOT written off — a lagging order sync is not a dead order (checker NIT 2)', () => {
+  const db = initDB(':memory:')
+  ins(db, 'pending_orders', { id: 900, symbol: 'EURUSD', order_id: '361000900', dir: 1, level: 1.1, sl: 1.09, tp: 1.12, volume: 1, status: 'working', note: 'pending-fib', account_id: D08,
+    placed_at: new Date(NOW - 2 * 3_600_000).toISOString().slice(0, 19).replace('T', ' '), expires_at: null })
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM broker_orders`).get().n, 0, 'precondition: no broker_orders row')
+  assert.equal(lifecycle(db, 'STK-01').violations, 1, 'precondition: STK-01 counts it (no broker order past 1 h)')
+  const out = resolveRestingOrders(db, { nowMs: NOW })
+  assert.equal(out.waiting, 1)
+  assert.equal(out.writtenOff, 0)
+  assert.equal(row(db, 'pending_orders', 900).status, 'working')
+  assert.equal(res(db, 'pending:900'), undefined)
+  // Past its bound it is written off.
+  resolveRestingOrders(db, { nowMs: NOW - 2 * 3_600_000 + WRITE_OFF_AGE_MS + 60_000 })
+  assert.equal(row(db, 'pending_orders', 900).status, 'unresolved')
+})
+
+test('R1 terminal rows: only a row whose order an intent carries is read, newest first — a page of intent-less rows never hides it (checker NIT 5)', () => {
+  const db = initDB(':memory:')
+  const pend = (id, order) => ins(db, 'pending_orders', { id, symbol: 'NATGAS', order_id: order, dir: 1, level: 3, sl: 2.9, volume: 1, status: 'expired', note: 'pending-closed: gone at broker, no fill adopted', account_id: D42, placed_at: '2026-09-15 21:39:01' })
+  pend(800, '800'); pend(801, '801') // no intent carries these: can never be re-judged
+  pend(799, '799')
+  ins(db, 'entry_intents', { id: 'i1ea06ki4vdgt', account_id: D42, environment: 'demo', symbol: 'NATGAS', side: 'BUY', order_type: 'LIMIT', volume: 1, producer_id: 'pending_fib_orders', basis: 'bar', mode_epoch: 1, permit_id: 'p-799', permit_expires_at: '2026-09-16T00:00:00Z', state: 'FILLED', broker_order_id: '799', created_at: '2026-09-15T21:39:01Z', updated_at: '2026-09-15T21:39:01Z' })
+  trade(db, { id: 1661, account_id: D42, symbol: 'NATGAS', label_raw: label('i1ea06ki4vdgt'), opened_at: '2026-09-16 01:00:00', status: 'closed', net_pnl: 2, closed_at: '2026-09-16 05:00:00', origin: 'reconciler_adopted', ctrader_position_id: '242000003' })
+  const out = resolveRestingOrders(db, { nowMs: NOW, readLimit: 1 })
+  assert.equal(out.rejudged, 1)
+  assert.equal(row(db, 'pending_orders', 799).status, 'filled')
+  assert.equal(row(db, 'pending_orders', 800).status, 'expired')
+  assert.equal(row(db, 'pending_orders', 801).status, 'expired')
+})
+
+test('STK-01: switched off, the stuck resolver is not reported as a resolver that exists (checker NIT 8)', () => {
+  const db = restingFixture()
+  assert.ok(lifecycle(db, 'STK-01').sample.filter(e => e.subject !== 'pending:640').every(e => e.resolverExists === true && e.resolver === 'stuck resolver R1'))
+  setState(db, ENABLED_KEY, 'false')
+  const off = lifecycle(db, 'STK-01').sample
+  for (const e of off.filter(x => x.subject !== 'pending:640')) {
+    assert.equal(e.resolverExists, false, e.subject)
+    assert.match(e.resolver, /switched off \(agent_state stuck_resolver_enabled = 'false'\)/)
+  }
+  const closed = off.find(x => x.subject === 'pending:640')
+  assert.equal(closed.resolverExists, true, 'a pending-closed row keeps its own resolver')
+})
+
 // ---------------------------------------------------------------- R6
 function captureFixture() {
   const db = initDB(':memory:')
@@ -318,6 +370,19 @@ test('R6: a gave_up capture is re-queued ONCE when its missing field now exists;
   assert.equal(lifecycle(db, 'STK-06').violations, 0)
 })
 
+test('R6 never starves: written-off captures stay gave_up for good, yet a new give-up behind a full page of them is still reached (checker NIT 4)', () => {
+  const db = captureFixture()
+  // Two write-offs first (COIN.US, GD.US: nothing upstream) …
+  resolveCaptures(db, { nowMs: NOW })
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM stuck_resolutions WHERE kind = 'capture' AND outcome = 'unresolved'`).get().n, 2)
+  // … then a NEW give-up, settled later than both, behind a page of 2.
+  trade(db, { id: 1653, symbol: 'AAPL.US', status: 'closed', account_id: D58, ctrader_position_id: '239000001', opened_at: '2026-09-23 10:00:00', closed_at: '2026-09-23 14:00:00', net_pnl: 1 })
+  ins(db, 'position_capture_queue', { account_id: D58, position_id: '239000001', symbol: 'AAPL.US', due_at_ms: 1, attempts: 6, state: 'gave_up', last_error: 'missing: planned_entry', settled_at: '2026-09-24T17:05:26.254Z' })
+  const out = resolveCaptures(db, { nowMs: NOW, readLimit: 2 })
+  assert.equal(out.examined, 1, 'the written-off rows are excluded by the query, not skipped after it')
+  assert.ok(res(db, `capture:${D58}:239000001`), 'the new give-up is judged')
+})
+
 // ---------------------------------------------------------------- R7
 function targetlessFixture() {
   const db = initDB(':memory:')
@@ -335,28 +400,100 @@ function targetlessFixture() {
   return db
 }
 
-test('R7: a targetless position gets the target the bot recorded (price units, right side); none recorded → written off; wire units are refused', () => {
+test('R7 default OFF (checker BLOCKER 1): a found target is NOT written to trades.tp_price — target-restore would amend the live position; STK-09 stays a defect naming the value and its source', () => {
   const db = targetlessFixture()
   const stk = lifecycle(db, 'STK-09')
   assert.equal(stk.violations, 2, 'precondition: both production positions counted stuck')
+  assert.equal(getState(db, TARGET_WRITE_KEY), null, 'precondition: the switch is absent')
+  // The ticker's own step: the pass result is what STK-09 reads the finding from.
+  const pass = runResolverStep(db, (d, o) => runStuckResolver(d, { ...o, nowMs: NOW }), NOW)
+  assert.equal(pass.ok, true, JSON.stringify(pass))
+  assert.equal(row(db, 'trades', 1687).tp_price, null, 'nothing written while the switch is absent')
+  assert.equal(res(db, `target:${D08}:242004561`), undefined, 'no resolution: the position is not ended')
+  assert.equal(pass.targetless.targetFound, 1)
+  assert.deepEqual(pass.targetless.found, [{ accountId: D08, positionId: '242004561', tradeId: 1687, tp: 4650, source: 'pending_orders #717 tp (order 361000717, intent i1qgcr4790aot)' }])
+  assert.match(pass.targetless.targetWrite, /^off/)
+  const xrp = res(db, `target:${D49}:242243017`)
+  assert.equal(xrp.outcome, 'unresolved', 'nothing recorded anywhere: written off either way')
+  assert.equal(xrp.verdict, UNRESOLVED_NO_TARGET)
+  assert.ok(JSON.parse(xrp.evidence_json).tried.some(t => /not in price units/.test(t.why ?? '')))
+  const after = lifecycle(db, 'STK-09')
+  assert.equal(after.violations, 1)
+  const eth = after.sample.find(e => e.subject === `position:${D08}:242004561`)
+  assert.equal(eth.class, 'recorded_target_found')
+  assert.deepEqual(eth.recordedTarget, { tp: 4650, source: 'pending_orders #717 tp (order 361000717, intent i1qgcr4790aot)', foundAt: new Date(NOW).toISOString(), written: false })
+  assert.match(eth.detail, /recorded target 4650 found \(pending_orders #717/)
+  assert.equal(after.classes.written_off, 1)
+  // Anything but exactly 'true' is off.
+  setState(db, TARGET_WRITE_KEY, 'yes')
   resolveTargetless(db, { nowMs: NOW })
+  assert.equal(row(db, 'trades', 1687).tp_price, null)
+})
+
+test('R7 switched ON by the owner: the found target is written to trades.tp_price and the position settled', () => {
+  const db = targetlessFixture()
+  setState(db, TARGET_WRITE_KEY, 'true')
+  const out = resolveTargetless(db, { nowMs: NOW })
+  assert.equal(out.targetRecorded, 1)
   assert.equal(row(db, 'trades', 1687).tp_price, 4650, "pending #717's tp, not the intent's wire-unit 701900000")
   const eth = res(db, `target:${D08}:242004561`)
   assert.equal(eth.outcome, 'settled')
   assert.match(eth.reason, /pending_orders #717 tp \(order 361000717, intent i1qgcr4790aot\)/)
+  assert.match(eth.reason, /stuck_resolver_target_write = 'true' \(owner\)/)
   assert.equal(row(db, 'trades', 1704).tp_price, null, 'a plan target 702000000 on a 2.9 entry is not a price: refused')
-  const xrp = res(db, `target:${D49}:242243017`)
-  assert.equal(xrp.outcome, 'unresolved')
-  assert.equal(xrp.verdict, UNRESOLVED_NO_TARGET)
-  assert.ok(JSON.parse(xrp.evidence_json).tried.some(t => /not in price units/.test(t.why ?? '')))
   const after = lifecycle(db, 'STK-09')
   assert.deepEqual(after.sample.map(e => e.subject), [`position:${D08}:242004561`], 'the recorded target is not yet on the position: still stuck until the audit stops reporting it')
-  assert.equal(after.classes.written_off, 1)
 })
 
-test('STK-09 v2: a position the audit stopped reporting targetless is not stuck now', () => {
-  const db = targetlessFixture()
-  assert.equal(buildOrderLifecycle(db, { nowMs: NOW + 3 * 3_600_000, account: 'all', rule: 'STK-09' }).stages.stuck[0].violations, 0)
+test('R7 wrong side: a recorded target on the wrong side of the entry is refused, never written (checker NIT 1)', () => {
+  const db = initDB(':memory:')
+  const log = (pid, acct, at) => ins(db, 'action_log', { method: 'POSITION_NO_TARGET', path: '/protection-audit', at, body: JSON.stringify({ positionId: pid, accountId: acct, symbol: 'ETHUSD' }) })
+  // BUY at 4400 whose only recorded target is 4300 (below), SELL at 4400 whose only one is 4500 (above).
+  trade(db, { id: 1801, symbol: 'ETHUSD', side: 'BUY', status: 'open', account_id: D08, ctrader_position_id: '243000001', entry_price: 4400, opened_at: '2026-09-23 09:30:00' })
+  ins(db, 'trade_plans', { trade_id: 1801, account_id: D08, symbol: 'ETHUSD', side: 'BUY', strategy: 'fib', planned_entry: 4400, planned_sl: 4300, planned_tp: 4300, risk_dist: 100 })
+  trade(db, { id: 1802, symbol: 'ETHUSD', side: 'SELL', status: 'open', account_id: D08, ctrader_position_id: '243000002', entry_price: 4400, opened_at: '2026-09-23 09:30:00' })
+  ins(db, 'trade_plans', { trade_id: 1802, account_id: D08, symbol: 'ETHUSD', side: 'SELL', strategy: 'fib', planned_entry: 4400, planned_sl: 4500, planned_tp: 4500, risk_dist: 100 })
+  for (const pid of ['243000001', '243000002']) for (let h = 0; h <= 4; h++) log(pid, D08, new Date(NOW - (4 - h) * 3_600_000 - 5 * 60_000).toISOString().slice(0, 19).replace('T', ' '))
+  const buy = recordedTargetEvidence(db, row(db, 'trades', 1801))
+  assert.equal(buy.hit, null)
+  assert.ok(buy.tried.some(t => t.tp === 4300 && /wrong side of the 4400 entry/.test(t.why ?? '')), JSON.stringify(buy.tried))
+  setState(db, TARGET_WRITE_KEY, 'true') // even with the write switched on
+  resolveTargetless(db, { nowMs: NOW })
+  for (const [id, pid] of [[1801, '243000001'], [1802, '243000002']]) {
+    assert.equal(row(db, 'trades', id).tp_price, null, `#${id}: never written`)
+    const r = res(db, `target:${D08}:${pid}`)
+    assert.equal(r.outcome, 'unresolved')
+    assert.equal(r.verdict, UNRESOLVED_NO_TARGET)
+    assert.ok(JSON.parse(r.evidence_json).tried.some(t => /wrong side/.test(t.why ?? '')))
+  }
+})
+
+test('STK-09 v2 (checker NIT 3): a position the audit stopped reporting is clean ONLY on positive evidence — otherwise not_reported_now, named, never silently clean', () => {
+  const later = NOW + 3 * 3_600_000
+  const stk09 = db => buildOrderLifecycle(db, { nowMs: later, account: 'all', rule: 'STK-09' }).stages.stuck[0]
+  // No audit record of the account: not verifiable as fixed.
+  const quiet = targetlessFixture()
+  const q = stk09(quiet)
+  assert.equal(q.violations, 0)
+  assert.equal(q.classes.not_reported_now, 2)
+  assert.ok(q.info.not_reported_now.some(s => /pos 242004561 .*no successful audit of the account on record/.test(s)), JSON.stringify(q.info))
+  // A successful audit of …9908 one mute window after the last row, not listing the position: clean.
+  const fixed = targetlessFixture()
+  setState(fixed, `acct:${D08}:protection_audit_last_json`, JSON.stringify({ at: new Date(NOW + 2 * 3_600_000).toISOString(), ok: true, accountId: D08, targetless: 0, missingTargets: [] }))
+  const f = stk09(fixed)
+  assert.equal(f.violations, 0)
+  assert.equal(f.classes.not_reported_now, 1, 'only …0949, which has no such record, stays not verifiable')
+  assert.ok(!f.info.not_reported_now.some(s => /242004561/.test(s)))
+  // An audit that is too early proves nothing.
+  const early = targetlessFixture()
+  setState(early, `acct:${D08}:protection_audit_last_json`, JSON.stringify({ at: new Date(NOW + 30 * 60_000).toISOString(), ok: true, accountId: D08, missingTargets: [] }))
+  assert.equal(stk09(early).classes.not_reported_now, 2)
+  // A late audit that still LISTS it targetless: stuck.
+  const listed = targetlessFixture()
+  setState(listed, `acct:${D08}:protection_audit_last_json`, JSON.stringify({ at: new Date(NOW + 2 * 3_600_000).toISOString(), ok: true, accountId: D08, missingTargets: [{ positionId: '242004561', symbol: 'ETHUSD' }] }))
+  const l = stk09(listed)
+  assert.equal(l.violations, 1)
+  assert.match(l.sample[0].detail, /still in the audit's list/)
 })
 
 // ---------------------------------------------------------------- the pass
@@ -373,6 +510,37 @@ test('idempotent and bounded: a second pass changes nothing; maxWrites caps each
   const out = resolveInflightTrades(capped, { nowMs: NOW, maxWrites: 1 })
   assert.equal(out.settledFromDeal + out.settledDuplicate + out.writtenOff, 1)
   assert.equal(capped.prepare('SELECT COUNT(*) AS n FROM stuck_resolutions').get().n, 1)
+})
+
+test('one commit per kind, one savepoint per record: a record that fails rolls back alone; the rest of its kind is kept (checker NIT 6)', () => {
+  const db = inflightFixture()
+  db.exec(`CREATE TRIGGER boom BEFORE INSERT ON stuck_resolutions WHEN NEW.subject = 'trade:1466' BEGIN SELECT RAISE(ABORT, 'boom 1466'); END`)
+  const out = runStuckResolver(db, { nowMs: NOW })
+  assert.equal(out.ok, false)
+  assert.ok(out.trades.errors.some(e => /^trade:1466: boom 1466/.test(e)), JSON.stringify(out.trades.errors))
+  assert.equal(res(db, 'trade:1466'), undefined, 'the failed record is not ended')
+  assert.equal(res(db, 'trade:1398').outcome, 'settled', 'its neighbour in the same kind still committed')
+  assert.equal(row(db, 'trades', 1398).status, 'closed')
+  assert.equal(res(db, 'trade:1439').outcome, 'settled')
+  assert.equal(MAX_WRITES_PER_KIND, 8)
+})
+
+test('castIntKey reads an id as SQLite CAST(... AS INTEGER) does — the per-pass lookups compare what the SQL compared', () => {
+  assert.equal(castIntKey('240100001'), '240100001')
+  assert.equal(castIntKey('240100001.0'), '240100001')
+  assert.equal(castIntKey(' 42'), '42')
+  assert.equal(castIntKey(240100001), '240100001')
+  assert.equal(castIntKey('abc'), '0')
+  assert.equal(castIntKey(null), null)
+  const db = initDB(':memory:')
+  for (const v of ['240100001.0', ' 42', 'abc', '7x']) assert.equal(castIntKey(v), String(db.prepare('SELECT CAST(? AS INTEGER) AS n').get(v).n), v)
+  // A twin stored with a trailing .0 still finds its deal's opening time.
+  trade(db, { id: 1439, symbol: 'BTCUSD', status: 'unconfirmed', account_id: D58, opened_at: '2026-09-03 08:54:36' })
+  trade(db, { id: 1500, symbol: 'BTCUSD', status: 'open', account_id: D58, opened_at: '2026-09-03 09:30:00', origin: 'reconciler_adopted', ctrader_position_id: '240100001.0' })
+  deal(db, { deal_id: '1', position_id: '240100001', account_id: D58, symbol: 'BTCUSD', entry_price: 1, close_price: 1, opened_at: '2026-09-03T08:55:00.000Z', closed_at: null })
+  resolveInflightTrades(db, { nowMs: NOW })
+  const ev = JSON.parse(res(db, 'trade:1439').evidence_json)
+  assert.equal(ev.fill.fillSource, 'broker_deals.opened_at', 'the deal time, not the 35-minute-late adoption stamp (which would miss the window)')
 })
 
 test('never the broker: the resolver imports no order, amend or broker-read path', () => {
