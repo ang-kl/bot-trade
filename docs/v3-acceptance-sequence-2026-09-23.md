@@ -78,6 +78,11 @@ binary source/hash, compiler, workload and measurement details.
 | Retained feed bound | 512 | 512 |
 | Lossless trial | **FAILED** | Passed for this workload |
 
+The table is the 23-09 run. Since V3 CV-1 (25-09) both scanners key streams
+without the feed epoch, the timeframe bound is 1024 cells (its `/watchdog`
+lists only due work and counts cells in `cells`), and the runner fills each
+service to its own bound (512 streams, 1024 cells) before checking the refusal.
+
 The tick run reported 2,005 ingress backpressure responses, retried within a
 fixed budget. Every input is reconciled as accepted or explicitly dropped, and
 processed input equals accepted input after drain. The undrained comparison ring

@@ -109,13 +109,13 @@ export function directionReasonFor(db, riskEventId) {
 
 /**
  * The broker's numeric symbol id for a symbol name, from the map the loop
- * already keeps. `trades` has no symbol_id column — reading one off it would
- * quietly yield null forever — so it is resolved here, and stays null when
- * the map has no entry rather than being guessed.
+ * already keeps (`trades` has no symbol_id column), null when unmapped, never
+ * guessed. With `accountId` (V3 V1) THAT account's list decides: see below.
  */
-export function symbolIdFor(db, symbol) {
+export function symbolIdFor(db, symbol, accountId = null) {
   const name = str(symbol)
   if (name == null) return null
+  if (str(accountId) != null) return accountSymbolIdFor(db, name, str(accountId))
   try {
     const raw = db.prepare(`SELECT value FROM agent_state WHERE key = 'symbol_id_map'`).get()?.value
     const map = JSON.parse(raw || '{}') || {}
@@ -284,7 +284,7 @@ export function buildPositionRecord(db, { accountId, positionId }) {
     account_id: acct ?? str(trade?.account_id),
     ctrader_position_id: pid,
     symbol: str(trade?.symbol) ?? str(deal?.symbol),
-    symbol_id: symbolIdFor(db, str(trade?.symbol) ?? str(deal?.symbol)),
+    symbol_id: symbolIdFor(db, str(trade?.symbol) ?? str(deal?.symbol), acct ?? str(trade?.account_id)),
     trade_id: trade?.id ?? null,
 
     direction,
@@ -644,4 +644,49 @@ export function positionHistoryView(db, { limit = 100, accountId = null, cutoffM
     sinceCutoff,
     recent,
   }
+}
+
+// ---------------------------------------------------------------------------
+// V3 V1 (25-09-2026) — WHOSE SYMBOL IDS. cTrader symbol ids are per
+// environment (ctrader-creds.js, 03-09-2026: the global map's ids named other
+// instruments on ACCT-LIVE-1). Captures now run for every account, and
+// cpp-verify compares `symbol_id` against the broker, so a record carrying
+// another account's id would be disputed for a mistake that is ours. The
+// account's own list (`symbol_id_map:<id>`, keyed upper-case) comes first;
+// the global `symbol_id_map` belongs to the account it was built from, so it
+// answers only for that account — or when no primary is recorded (the
+// fixture case) — the rule resolveSymbolId applies to order dispatch. Any
+// other account gets nothing: an unknown id is absent, never borrowed.
+// ---------------------------------------------------------------------------
+const stateValue = (db, key) => {
+  try { return db.prepare('SELECT value FROM agent_state WHERE key = ?').get(key)?.value ?? null } catch { return null }
+}
+
+function ownSymbolMap(db, acct) {
+  if (acct == null) return null
+  try {
+    const own = JSON.parse(stateValue(db, `symbol_id_map:${acct}`) || 'null')
+    return own && own.map && typeof own.map === 'object' ? own.map : null
+  } catch { return null }  // unreadable own list — the ownership rule decides
+}
+
+/** The symbol-name → broker-id map that belongs to THIS account ({} when none can be trusted). */
+export function accountSymbolMap(db, accountId = null) {
+  const acct = str(accountId)
+  const own = ownSymbolMap(db, acct)
+  if (own) return own
+  const primary = str(stateValue(db, 'ctrader_account_id'))
+  if (acct == null || primary == null || primary === acct) {
+    try { return JSON.parse(stateValue(db, 'symbol_id_map') || '{}') || {} } catch { return {} }
+  }
+  return {}
+}
+
+function accountSymbolIdFor(db, name, acct) {
+  // The account's own list is keyed upper-case (fetchAccountSymbolMap).
+  const own = ownSymbolMap(db, acct)
+  if (own) return num(own[name] ?? own[name.toUpperCase()])
+  // Otherwise the global map when it is this account's, read by exact name
+  // exactly as symbolIdFor always has; any other account gets null.
+  return num(accountSymbolMap(db, acct)[name])
 }

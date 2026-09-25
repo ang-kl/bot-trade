@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { LedgerRow, MobileWindowCard, TodayHourlyBody, HeadlineCurrencyLines } from '../pages/Performance.jsx'
-import { reportLedger, emptyPopulation } from '../../agent/shared/performance-populations.js'
-import { activityCurrencyLines } from '../lib/currency-money.js'
+import { reportLedger, emptyPopulation, poolByCurrency, reportCurrency } from '../../agent/shared/performance-populations.js'
+import { currencyGroups } from '../../agent/shared/balance-carry.js'
+import { activityCurrencyLines, currencyLines, currencyLinesText, rollingSplits } from '../lib/currency-money.js'
+import { activityEvidence, hourRowEvidence } from '../lib/hourly-activity.js'
 
 // V3 WEB-5 (8,989-A rows 5 and 7): what the all-accounts views render. The
 // 25-09 production shapes: Last month ...058 USD -18,392.97 (449 of 461
@@ -116,6 +118,92 @@ describe('the rolling 24-hour card is wired to the per-currency helper', () => {
     expect(hours).not.toBeNull()
     expect(hourly).toMatch(/slots\.map\(\(s,\s*i\)\s*=>/)
     expect(hourly).toMatch(new RegExp(`\\bsplit:\\s*${hours[1]}\\[i\\]`))
+    // V3 WEB-5m: the same row also takes WEB-3's observed balances from the
+    // server (hourRowEvidence); the merge keeps both on every hour.
+    expect(hourly).toMatch(/slots\.map\(\(s,\s*i\)\s*=>\s*\(\{\s*\.\.\.s,\s*\.\.\.hourRowEvidence\(openings,\s*s\),\s*split:/)
     expect(page.match(/today\.split \? <HeadlineCurrencyLines split=\{today\.split\} \/>/g)?.length).toBe(2)
+  })
+})
+
+// V3 WEB-5m (the WEB-3 / WEB-5 / WEB-7 merge). The All view with two recorded
+// currencies, built through the shared code the server runs (reportLedger with
+// its carry, poolByCurrency, currencyGroups) and the browser's own evidence
+// check: every place WEB-5 draws recorded money shows one figure per currency
+// and no combined total, next to WEB-3's per-currency balances.
+// USD: 11 +20 (FX) and 22 -5 (stock) = +15; SGD: 33 +7 (FX). A combined net
+// would read 22.00, a combined FX cell 27.00, combined carries 1,550 / 1,572,
+// a combined floating -3.50.
+describe('the All view with two currencies: two per-currency figures and no combined total wherever WEB-5 draws money', () => {
+  const HOUR = 3600_000, T = Date.UTC(2026, 8, 25, 14)
+  const recorded = { 11: { currency: 'USD' }, 22: { currency: 'USD' }, 33: { currency: 'SGD' } }
+  const currencyOf = id => reportCurrency({ currencyByAccount: recorded }, id)
+  const obs = (value, currency) => ({ status: 'observed', value, currency, at: T - 60_000, source: 'broker_trader' })
+  const plain = html => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+  const combined = ['22.00', '27.00', '1,550', '1,572', '-3.50']
+  const noCombined = html => { for (const x of combined) expect(html, `combined total ${x}`).not.toContain(x) }
+  const signedText = v => `${v > 0 ? '+' : ''}${v.toFixed(2)}`
+
+  const w = reportLedger({ status: 'complete', lastCloseByAccount: {}, markets: ['fx', 'stock'], currencyByAccount: recorded,
+    balanceEdges: { status: 'complete', maxAgeMs: 900_000,
+      accounts: ['11', '22', '33'].map(accountId => ({ accountId, historyStartsAt: T - 30 * HOUR })),
+      windows: { '1h': { 11: { in: obs(1000, 'USD'), out: obs(1020, 'USD') }, 22: { in: obs(500, 'USD'), out: obs(495, 'USD') },
+        33: { in: obs(50, 'SGD'), out: obs(57, 'SGD') } } } },
+    windows: [{ key: '1h', label: '1H', from: T - HOUR, to: T, ledger: true, groups: [g('11', 20), g('22', -5, { market: 'stock' }), g('33', 7)] }] }, 'all').windows[0]
+
+  it('timeframe ledger: the desktop row (net, market cells, expanded detail), the phone card and the copied text', () => {
+    expect(w.net).toBeNull(); expect(w.carryIn).toBeNull(); expect(w.carryOut).toBeNull()
+    const row = plain(renderToStaticMarkup(<table><tbody><LedgerRow w={w} forceOpen nowMs={T} timeZone="UTC" /></tbody></table>))
+    const card = plain(renderToStaticMarkup(<MobileWindowCard w={w} timeZone="UTC" />))
+    for (const html of [row, card]) {
+      expect(html).toContain('SGD +7.00'); expect(html).toContain('USD +15.00')
+      // WEB-3's carry beside it, per currency too.
+      expect(html).toContain('SGD 50.00'); expect(html).toContain('USD 1,500.00')
+      expect(html).toContain('SGD 57.00'); expect(html).toContain('USD 1,515.00')
+      noCombined(html)
+    }
+    // The FX market cell and the expanded FX line: SGD and USD apart.
+    expect(row).toContain('USD +20.00')
+    expect(row).toContain('SGD +7.00 · USD +20.00')
+    // The stock cell is one account's, named in its currency (checker nit 1).
+    expect(row).toContain('USD -5.00')
+    // The copied ledger line is this same text (ledgerToText calls it).
+    expect(currencyLinesText(currencyLines(w), signedText)).toBe('SGD +7.00 · USD +15.00')
+  })
+
+  it('rolling 24 hours: the hour row, the headline and the copied text, from a validated all-accounts response', () => {
+    const from = T - 24 * HOUR
+    const amounts = [['11', 20], ['22', -5], ['33', 7]].map(([accountId, recordedNet]) => ({ accountId, currency: currencyOf(accountId), recordedNet, closedN: 1, pricedN: 1 }))
+    const balance = {
+      open: currencyGroups(['11', '22', '33'].map((id, i) => ({ accountId: id, currency: currencyOf(id), storedFrom: from, evidence: obs([1000, 500, 50][i], currencyOf(id)) }))),
+      close: currencyGroups(['11', '22', '33'].map((id, i) => ({ accountId: id, currency: currencyOf(id), storedFrom: from, evidence: obs([1020, 495, 57][i], currencyOf(id)) }))),
+      floating: currencyGroups(['11', '22', '33'].map((id, i) => ({ accountId: id, currency: currencyOf(id), storedFrom: from, evidence: obs([-3, -2, 1.5][i], currencyOf(id)) }))),
+    }
+    const rows = Array.from({ length: 24 }, (_, i) => {
+      const mine = i === 23 ? amounts : []
+      return { from: from + i * HOUR, to: from + (i + 1) * HOUR, openedN: 0, legacyN: 0, adoptedN: 0,
+        closedN: mine.length, pricedN: mine.length, wins: mine.filter(a => a.recordedNet > 0).length, net: mine.length ? null : 0,
+        moneyByAccount: mine, ...poolByCurrency(mine, currencyOf), balance: i === 23 ? balance : null }
+    })
+    const response = { source: 'local_trade_ledger', accountId: 'all', from, to: T, generatedAt: new Date(T).toISOString(), observedThrough: T,
+      openedN: 0, legacyN: 0, adoptedN: 0, unknownTimeN: 0, unknownTimeLegacyN: 0, unknownTimeAdoptedN: 0,
+      activityVersion: 1, rows, closedN: 3, pricedN: 3, wins: 2, unknownCloseTimeN: 0, moneyByAccount: amounts, net: null,
+      ...poolByCurrency(amounts, currencyOf) }
+    const openings = activityEvidence(response, { accountId: 'all', to: T, nowMs: T })
+    expect(openings).not.toBeNull()
+    // The page's own mapping: WEB-3's evidence and WEB-5's split on one row.
+    const slot = { from: T - HOUR, to: T }
+    const { today, hours } = rollingSplits(openings, [slot])
+    const row = { ...slot, at: T, isLive: false, showDate: false, ...hourRowEvidence(openings, slot), split: hours[0] }
+    const body = plain(renderToStaticMarkup(<TodayHourlyBody rows={[row]} />))
+    expect(body).toContain('SGD +7.00'); expect(body).toContain('USD +15.00')
+    expect(body).toContain('SGD 50.00'); expect(body).toContain('USD 1,500.00')
+    expect(body).toContain('SGD 57.00'); expect(body).toContain('USD 1,515.00')
+    expect(body).toContain('(SGD +1.50 · USD -5.00 float)')
+    noCombined(body)
+    const head = plain(renderToStaticMarkup(<span><HeadlineCurrencyLines split={today} /></span>))
+    expect(head).toContain('SGD +7.00'); expect(head).toContain('USD +15.00')
+    noCombined(head)
+    expect(currencyLinesText(today, signedText)).toBe('SGD +7.00 · USD +15.00')
+    expect(currencyLinesText(hours[0], signedText)).toBe('SGD +7.00 · USD +15.00')
   })
 })

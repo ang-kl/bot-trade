@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
 import { hourlyActivity } from './hourly-activity.js'
+import { emptyPopulation, poolByCurrency, splitByCurrency } from '../shared/performance-populations.js'
 import { activityEvidence } from '../../src/lib/hourly-activity.js'
 import { rollingSplits } from '../../src/lib/currency-money.js'
 import { rollingHourWindows } from '../../src/lib/hourly-order.js'
@@ -152,4 +153,55 @@ test('the rolling card reads one line per currency for the day and for each hour
   assert.equal(one.net, 25); assert.equal(mine.today, null); assert.equal(mine.hours[5], null)
   // No evidence, no lines — never an invented zero.
   assert.deepEqual(rollingSplits(null, slots), { today: null, hours: slots.map(() => null) })
+})
+
+// V3 WEB-5m (the WEB-3 / WEB-7 merge): the hourly money pools are the ONE
+// pooling rule (splitByCurrency: populationStats per recorded currency) keyed
+// on the ONE currency source (reportCurrency over depositCurrencies), reshaped
+// for the hourly contract. These pin what the reshaping must keep from WEB-5.
+test('the hourly pools reshape the shared rule: a non-finite account poisons its pool, a partial pool is marked, no currency is no pool', () => {
+  const recorded = { 11: 'USD', 22: 'USD', 33: 'SGD', 44: null }
+  const currencyOf = id => recorded[id] ?? null
+  const amount = (accountId, recordedNet, closedN = 1, pricedN = closedN) => ({ accountId, recordedNet, closedN, pricedN })
+  // 11's priced sum is not finite (recordedNet null with a priced close): the
+  // USD pool has no figure — never 22's -5 standing in as the USD total.
+  const poisoned = poolByCurrency([amount('11', null), amount('22', -5), amount('33', 7)], currencyOf)
+  assert.deepEqual(poisoned.moneyByCurrency.map(c => [c.currency, c.recordedNet, c.closedN, c.pricedN, c.moneyState, [...c.accountIds].sort()]),
+    [['SGD', 7, 1, 1, 'recorded_currency_units', ['33']], ['USD', null, 2, 2, 'unavailable', ['11', '22']]])
+  // An account with no priced close adds nothing and poisons nothing.
+  const partial = poolByCurrency([amount('11', null, 2, 0), amount('22', -5, 3, 2), amount('44', 100), amount(null, 1000)], currencyOf)
+  assert.deepEqual(partial.moneyByCurrency.map(c => [c.currency, c.recordedNet, c.closedN, c.pricedN, c.moneyState]),
+    [['USD', -5, 5, 2, 'partial_recorded_currency_units']])
+  assert.deepEqual([partial.unpooled.closedN, partial.unpooled.pricedN, [...partial.unpooled.accountIds].sort()], [2, 2, ['44', null].sort()])
+  // Without a currency source nothing is pooled; every close is counted apart.
+  const bare = poolByCurrency([amount('11', 20), amount('33', 7)], () => null)
+  assert.deepEqual(bare.moneyByCurrency, []); assert.equal(bare.unpooled.closedN, 2)
+  // A pool is the rule's own figure: the same groups through splitByCurrency.
+  const amounts = [amount('11', 20), amount('22', -5), amount('33', 7)]
+  const groups = amounts.map(a => ({ accountId: a.accountId, stats: { ...emptyPopulation(), n: a.closedN, pricedN: a.pricedN, net: a.recordedNet } }))
+  assert.deepEqual(poolByCurrency(amounts, currencyOf).moneyByCurrency.map(c => [c.currency, c.recordedNet, c.moneyState]),
+    splitByCurrency(groups, currencyOf).byCurrency.map(c => [c.currency, c.stats.pnl, c.stats.moneyState]))
+})
+test('a failed currency read leaves the activity counts standing: every close counted, none pooled, balances unavailable (V3 WEB-3 rule kept)', t => {
+  const { db, add } = fixture(t)
+  registerCurrencies(db)
+  add('11', to - 1, 20); add('33', to - 1, 7)
+  // The deposit-currency evidence read throws; nothing else in the route
+  // prepares that statement.
+  const failing = new Proxy(db, { get(target, key) {
+    if (key === 'prepare') return sql => { if (sql === 'SELECT value FROM agent_state WHERE key = ?') throw new Error('evidence read failed'); return target.prepare(sql) }
+    const v = target[key]; return typeof v === 'function' ? v.bind(target) : v
+  } })
+  const r = hourlyActivity(failing, { all: true }, { to, nowMs: to })
+  assert.equal(r.closedN, 2); assert.equal(r.pricedN, 2)
+  assert.deepEqual(r.moneyByCurrency, [], 'no currency read, no pool')
+  assert.equal(r.unpooled.closedN, 2)
+  assert.deepEqual(r.moneyByAccount.map(a => a.currency), [null, null])
+  assert.equal(r.balanceReconstruction, 'unavailable')
+  assert.equal(r.balanceHistory.status, 'unavailable')
+  assert.equal(r.rows[23].openBal, null)
+  // The browser still accepts it: the split reconciles to the closes.
+  assert.ok(activityEvidence(r, { accountId: 'all', to, nowMs: to }))
+  // The same database read normally pools both currencies.
+  assert.deepEqual(hourlyActivity(db, { all: true }, { to, nowMs: to }).moneyByCurrency.map(c => [c.currency, c.recordedNet]), [['SGD', 7], ['USD', 20]])
 })

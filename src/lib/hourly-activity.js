@@ -16,3 +16,17 @@ export function activityEvidence(report, options) {
   if (!validActivitySplit(r, r.closedN) || r.rows.some(h => !validActivitySplit(h, h.closedN))) return null
   return r
 }
+
+/** One displayed hour of the rolling 24-hour table from validated activity
+ * evidence (null when unavailable). V3 WEB-3 adds the server's observed broker
+ * balances at the hour's edges and the hour's last floating reading; a value
+ * the server did not observe stays null, never zero. */
+export function hourRowEvidence(openings, slot) {
+  const row = openings?.rows.find(r => r.from === slot.from && r.to === slot.to)
+  const finiteOrNull = v => typeof v === 'number' && Number.isFinite(v) ? v : null
+  return { net: row?.net ?? null, closedN: row?.closedN ?? null,
+    openBal: finiteOrNull(row?.openBal), closeBal: finiteOrNull(row?.closeBal), balance: row?.balance ?? null,
+    openedN: row?.openedN ?? null, unknownOpeningTimeN: openings?.unknownTimeN ?? 0,
+    unknownCloseTimeN: openings?.unknownCloseTimeN ?? 0,
+    incompleteOpeningWindow: Boolean(row && row.to > openings.observedThrough) }
+}
