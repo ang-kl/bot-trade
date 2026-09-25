@@ -110,21 +110,57 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
     sessionWindow: { from: sessionFrom, to: sessionTo, weekend, source: 'fixed_UTC_reporting_buckets_not_market_status' } }
 }
 
+// A report that could not be produced is UNAVAILABLE, never empty (owner
+// principle 6). Every rejection from isolatedReport carries this type so a
+// route can answer an explicit 503 with the reason and a retry hint, and can
+// still tell a report failure apart from its own post-processing bug (a 500).
+// The message is kept byte-for-byte: heartbeats and logs record err.message.
+const RETRY_AFTER_SEC = {
+  performance_report_worker_capacity: 5,
+  watchdog_report_worker_capacity: 5,
+  performance_report_worker_exit: 15,
+  performance_report_deadline: 30,
+}
+export class ReportUnavailableError extends Error {
+  constructor(cause) {
+    const message = cause instanceof Error ? cause.message : String(cause)
+    super(message, { cause })
+    this.name = 'ReportUnavailableError'
+    // Named failure codes pass through; a raw driver message (a SQLite error,
+    // a worker crash) is reported as one generic code, not echoed as a reason.
+    this.reason = /^[a-z][a-z0-9_]{2,63}$/.test(message) ? message : 'performance_report_worker_error'
+    this.retryAfterSec = RETRY_AFTER_SEC[this.reason] ?? 30
+  }
+}
+export const isReportUnavailable = error => error instanceof ReportUnavailableError
+const unavailable = error => { throw isReportUnavailable(error) ? error : new ReportUnavailableError(error) }
+
 const flights = new WeakMap()
 const watchdogFlights = new WeakMap()
+const diagnosticFlights = new WeakMap()
+// kind → its own bounded pool. The watchdog is polled independently and must
+// not compete with slow dashboard reports; the storage walk (dbstat over every
+// page, measured 20.99 s in production) must not take a slot the loop's
+// decision audit needs. Each reserved slot is held until the worker exits.
+// The storage report takes no options, so a second read coalesces onto the
+// running walk before the capacity check; the capacity is only a backstop.
+const RESERVED_POOLS = {
+  'node-watchdog': { pool: watchdogFlights, capacity: 1, error: 'watchdog_report_worker_capacity' },
+  storage: { pool: diagnosticFlights, capacity: 1, error: 'storage_report_worker_capacity' },
+}
+const SHARED_POOL = { pool: flights, capacity: 2, error: 'performance_report_worker_capacity' }
 /** Disk-backed reads stay off the protection event loop: at most two report
- * workers and one reserved watchdog worker per database, bounded until exit. */
+ * workers, one reserved watchdog worker and one reserved diagnostics worker
+ * per database, bounded until exit. Every failure rejects as
+ * ReportUnavailableError. */
 function isolatedReport(db, kind, options = {}) {
   const run = () => buildReport(db, kind, options)
-  if (db.memory || db.name === ':memory:') return Promise.resolve(run())
-  // The independently polled watchdog must not compete with slow dashboard
-  // reports for both slots. Reserve one bounded flight; retain it until exit
-  // even on timeout, just like the existing two report slots.
-  const watchdog = kind === 'node-watchdog', pool = watchdog ? watchdogFlights : flights
+  if (db.memory || db.name === ':memory:') return run().catch(unavailable)
+  const { pool, capacity, error: capacityError } = RESERVED_POOLS[kind] || SHARED_POOL
   if (!pool.has(db)) pool.set(db, new Map())
   const active = pool.get(db), key = JSON.stringify([kind, options])
   if (active.has(key)) return active.get(key)
-  if (active.size >= (watchdog ? 1 : 2)) return Promise.reject(new Error(watchdog ? 'watchdog_report_worker_capacity' : 'performance_report_worker_capacity'))
+  if (active.size >= capacity) return Promise.reject(new ReportUnavailableError(new Error(capacityError)))
   const job = new Promise((resolve, reject) => {
     let worker
     try {
@@ -144,7 +180,8 @@ function isolatedReport(db, kind, options = {}) {
     // ~47s/~24s. Isolation protects the event loop; these two preserve their
     // exact historical output instead of converting a slow-but-valid report
     // into a 15s error while follow-up query optimisation is measured.
-    const deadlineMs = (kind === 'latest-prices' || kind === 'decision-audit') ? 60000 : kind === 'decisions-daily' ? 30000 : 15000
+    // The storage walk keeps its measured ~21 s inside the same 60 s bound.
+    const deadlineMs = (kind === 'latest-prices' || kind === 'decision-audit' || kind === 'storage') ? 60000 : kind === 'decisions-daily' ? 30000 : 15000
     const timer = setTimeout(() => finish(new Error('performance_report_deadline')), deadlineMs)
     worker.once('message', msg => finish(msg.ok ? null : new Error(msg.error), msg.report))
     worker.once('error', error => finish(error))
@@ -155,7 +192,7 @@ function isolatedReport(db, kind, options = {}) {
       active.delete(key)
       if (!settled) finish(new Error('performance_report_worker_exit'))
     })
-  })
+  }).catch(unavailable)
   active.set(key, job)
   return job
 }
@@ -169,6 +206,9 @@ export function readDecisionAudit(db, options) { return isolatedReport(db, 'deci
 export function readNodeWatchdogContract(db, options) { return isolatedReport(db, 'node-watchdog', options) }
 export function readAccountEngineering(db) { return isolatedReport(db, 'account-engineering') }
 export function readPostmortemReport(db, options) { return isolatedReport(db, 'postmortems', options) }
+/** GET /state/storage: the dbstat page walk and per-table COUNT(*) run on a
+ * read-only worker connection, never on the event loop that runs protection. */
+export function readStorageReport(db) { return isolatedReport(db, 'storage') }
 export function buildDecisionsDaily(db, { days = 90, accountId = null, timeZone = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
@@ -221,6 +261,10 @@ async function buildReport(db, kind, options) {
     // All account/work/calendar reads describe one database snapshot. The
     // builder retains its original receipt times; completion is not freshness.
     return db.transaction(() => nodeWatchdogContract(db, options))()
+  }
+  if (kind === 'storage') {
+    const { storageReport } = await import('./storage-report.js')
+    return storageReport(db)
   }
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })

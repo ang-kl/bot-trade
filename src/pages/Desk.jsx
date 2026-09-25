@@ -5,6 +5,8 @@ import CurrentAccountReadings from '../components/CurrentAccountReadings.jsx'
 import { createBrokerViewGuard } from '../lib/broker-view.js'
 import ControllerRuntime from '../components/ControllerRuntime.jsx'
 import ControllerGroups from '../components/ControllerGroups.jsx'
+import LatestPricesNote from '../components/LatestPricesNote.jsx'
+import { loadLatestPrices } from '../lib/latest-prices.js'
 // Desk — THE one-screen workspace: a live chart wall on top (up to 30
 // charts: 3 columns × 10 rows — open positions first, then whatever the
 // scan currently finds active; the full watchlist only fills the wall when
@@ -160,6 +162,9 @@ export default function Desk() {
   const [scans, setScans] = useState([])
   // Newest close per symbol across ALL cycles — the currency-conversion base.
   const [latestPrices, setLatestPrices] = useState({})
+  // Whether that base read succeeded: an unavailable read is said, not shown
+  // as an empty map (P1/P4 M2).
+  const [pricesRead, setPricesRead] = useState(null)
   const [positions, setPositions] = useState([])   // bot-tracked rows (chart lines)
   const [positionsReadOk, setPositionsReadOk] = useState(false)
   const [positionsReadError, setPositionsReadError] = useState('')
@@ -334,11 +339,12 @@ export default function Desk() {
         agentGet('/state/market-pulse').catch(() => null),
         agentGet('/state/duplicate-trades').catch(() => null),
         agentGet('/state/weekend-loss-flags').catch(() => null),
-        agentGet('/state/prices').catch(() => null),
+        loadLatestPrices(agentGet),
       ])
       if (!view.current()) return
       setHealth(h)
-      setLatestPrices(px?.prices || {})
+      setLatestPrices(px.prices)
+      setPricesRead(px)
       // lastResults.scans is the CURRENT scan cycle's snapshot — recentScans
       // is the last 50 DB rows across cycles, which can carry a stale
       // non-skip row past a later skip for the same symbol, and duplicate
@@ -698,6 +704,7 @@ export default function Desk() {
           <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
         )}
         {brokerErr && <p className="text-(length:--fs-body) text-[var(--color-warning-text)]">{brokerErr}</p>}
+        <LatestPricesNote read={pricesRead} />
         {!positionsReadOk && <p role="status" className="text-(length:--fs-body) text-[var(--color-warning-text)]">{positionsReadError || 'Monitor records not yet verified for this account. Broker positions below remain visible.'}</p>}
         {dbOnlyPositions.length > 0 && (
           <p className="text-(length:--fs-body) text-[var(--color-warning-text)] mb-1">
