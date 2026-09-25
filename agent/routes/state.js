@@ -3343,6 +3343,36 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/data-feed?account=<id|all>&limit=N — the Data-feed card's
+  // measured figures (8,989-A row 11, WEB-9): entry latency with its
+  // coverage, stored commission/swap per verified deposit currency over the
+  // latest N closes, the fast monitor's quote freshness with the record's
+  // age, and the current broker-day open (the same FX-day anchor the risk
+  // gate uses) so a daily bar from an earlier day can be labelled as such.
+  // Read-only. See services/data-feed-report.js.
+  // -----------------------------------------------------------------------
+  router.get('/data-feed', async (req, res) => {
+    try {
+      const { executionCosts, quoteFreshness, NOT_MEASURED, EXECUTION_WINDOW_DEFAULT } = await import('../services/data-feed-report.js')
+      const { fxDayOpenMs } = await import('../services/risk.js')
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
+      const nowMs = Date.now()
+      res.json({
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        asOfMs: nowMs,
+        brokerDayOpenMs: fxDayOpenMs(nowMs),
+        execution: executionCosts(db, { where: acct.where, params: acct.params, limit: req.query?.limit ?? EXECUTION_WINDOW_DEFAULT }),
+        quotes: quoteFreshness(db, nowMs),
+        notMeasured: NOT_MEASURED,
+      })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/strategy-asset?days=7 — where the money actually went.
   //
   // Owner 09-08-2026, auditing the week. `/state/perf-ledger`'s per-market cut
