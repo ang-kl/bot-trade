@@ -126,6 +126,9 @@ export function sidecarLossy(health) {
   return { reasons, seqGaps: gaps, boots: boots.map(b => b.bootId) }
 }
 
+/** Sorted-key copy, so two blocks compare by value whatever their key order. */
+const canonical = (v) => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v
+
 /**
  * The replay's fill rules against the shadow's: the non-cost fields against
  * agent/config/tick-shadow-sim.json (the file the keeper pushes), the cost
@@ -144,6 +147,13 @@ export function simComparison(trialSim, params, shadowSim, sidecarTrades = [], s
   cmp('minTargetToCost', s.minTargetToCost, sh.minTargetToCost)
   cmp('maxHoldMs', s.maxHoldMs, sh.maxHoldMs)
   cmp('maxHoldEvents', normalizeMaxHoldEvents(s.maxHoldEventsResolved ?? s.maxHoldEvents, N), normalizeMaxHoldEvents(sh.maxHoldEvents, N))
+  // PR-Q3: a trial replayed with the live filters (sim.liveFilters) drops the
+  // signals the filters refuse; a shadow that runs none takes them. That is a
+  // different population, not a replayer defect — named here so the trades
+  // read not_comparable rather than a mismatch. Neither side carrying a block
+  // is the comparison as before.
+  const lfCanon = (v) => v == null ? null : JSON.stringify(canonical(v))
+  if (lfCanon(s.liveFilters) !== lfCanon(sh.liveFilters)) diffs.push({ field: 'liveFilters', replay: s.liveFilters ?? null, shadow: sh.liveFilters ?? null })
   const replayTerms = Object.fromEntries(COST_TERMS.map(k => [k, Number(s[k]) || 0]))
   if (sidecarTrades.length) {
     for (const t of sidecarTrades) {

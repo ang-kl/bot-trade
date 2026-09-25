@@ -97,9 +97,116 @@ export function normalizeMaxHoldEvents(value, rangeEvents) {
 }
 
 /**
+ * PR-Q3 (V3 P6/P7, 25-09-2026): the live filters as a STAMPED sim block.
+ *
+ * The live tick path refuses entries the shadow book (and, before this, the
+ * replayer) takes:
+ *   counterTrend — the permit feeder withholds the against-trend side
+ *                  (tick-permits.js: permittedSides(trendReadingFor(...)));
+ *                  the firer then refuses `no_permit`.
+ *   priceBound   — tick_firer.cpp:138-142: refuse when the fill is more than
+ *                  floor(overshootFraction × stopDistance) from the signal's
+ *                  own quote (ask for a BUY, bid for a SELL), and whenever
+ *                  that quote is not positive (order_guard.cpp priceWithinBound).
+ *   stopFloor    — tick_firer.cpp:148-152: refuse when stopDistance <
+ *                  llround(minStopFraction × entry), only when the fraction > 0.
+ *   signalTtl    — the pending-signal expiry the dual-environment plan (P3)
+ *                  names as a live filter: the firer refuses a fire older than
+ *                  maxFireDelayMs at the send (tick_firer.cpp:202-208). A
+ *                  replay has no fire queue, so the replay's reading is the
+ *                  wait the fill itself imposed: a pending signal whose first
+ *                  executable quote arrives more than signalTtlMs after the
+ *                  moment it was due (signal time + latency) expires unfilled.
+ *
+ * MODEL (live-filters-v1): a vetoed signal opens NO trade and leaves the book
+ * FREE for the next signal — the book refuses, as the dual plan's P3 puts the
+ * filters into ShadowBook itself (PR-Q4 must mirror this, and
+ * test_tick_shadow.cpp is where the two are pinned). Order of judgement, each
+ * signal counted once under the FIRST filter that refuses it: the cost screen
+ * and the counter-trend veto at the signal; then, at the fill, signal TTL,
+ * price bound, stop floor (the firer's own order: permit, bound, floor).
+ *
+ * The block's VALUES are never set here: the research doors resolve them from
+ * the permits' own config (loadTickEntryConfig) and the regime gate, and the
+ * whole block rides `sim` — so it is part of the trial id and the sim hash.
+ * With the block absent (or every filter off) nothing here changes: the
+ * output is byte-identical to the build before it.
+ */
+export const LIVE_FILTERS_VERSION = 'live-filters-v1'
+/** The four filters, in the order a signal is judged. */
+export const LIVE_FILTER_NAMES = Object.freeze(['counterTrend', 'signalTtl', 'priceBound', 'stopFloor'])
+const LIVE_FILTER_KEYS = new Set(['version', 'minStopFraction', 'overshootFraction', 'signalTtlMs', 'counterTrend', 'configSource'])
+
+/**
+ * The stamped block, or null when no filter is on. Throws on a key it does
+ * not know or a value that is not a finite number >= 0: a misspelt filter
+ * read as "off" would be a guard that never fires, stamped as if it had.
+ */
+export function normalizeLiveFilters(lf) {
+  if (lf == null || lf === false) return null
+  if (typeof lf !== 'object' || Array.isArray(lf)) throw new TypeError('sim.liveFilters must be an object, null or absent')
+  for (const k of Object.keys(lf)) if (!LIVE_FILTER_KEYS.has(k)) throw new TypeError(`sim.liveFilters.${k} is not a live filter field (${[...LIVE_FILTER_KEYS].join(', ')})`)
+  const num = (k) => {
+    const v = lf[k]
+    if (v == null) return null
+    const n = typeof v === 'number' ? v : NaN
+    if (!Number.isFinite(n) || n < 0) throw new TypeError(`sim.liveFilters.${k} must be a finite number >= 0 or null (got ${JSON.stringify(v)})`)
+    return n
+  }
+  const minStopFraction = num('minStopFraction')
+  const overshootFraction = num('overshootFraction')
+  const signalTtlMs = num('signalTtlMs')
+  const ct = lf.counterTrend
+  let counterTrend = null
+  if (ct === true || (ct && typeof ct === 'object' && !Array.isArray(ct))) {
+    const age = ct === true ? null : ct.maxRegimeAgeMin
+    counterTrend = {
+      asOf: 'signal_time',
+      gateOn: ct === true || ct.gateOn == null ? null : ct.gateOn === true,
+      maxRegimeAgeMin: age == null || !Number.isFinite(Number(age)) ? null : Number(age),
+    }
+  } else if (ct != null && ct !== false) {
+    throw new TypeError('sim.liveFilters.counterTrend must be true, an object stamping the regime gate, or absent')
+  }
+  if (minStopFraction == null && overshootFraction == null && signalTtlMs == null && counterTrend == null) return null
+  return {
+    version: LIVE_FILTERS_VERSION,
+    minStopFraction, overshootFraction, signalTtlMs, counterTrend,
+    configSource: lf.configSource == null ? null : String(lf.configSource),
+  }
+}
+
+/**
+ * The fill-time refusal a live filter makes, or null. Pure; `entry` is the
+ * fill price with slippage (what the firer sees as the book's entry).
+ */
+export function fillVeto(lf, signal, entry) {
+  if (!lf) return null
+  if (lf.overshootFraction != null) {
+    const ref = signal.side === 'BUY' ? Number(signal.ask) : Number(signal.bid)
+    const maxDev = Math.floor(lf.overshootFraction * signal.stopDistance)
+    if (!(ref > 0) || maxDev < 0 || Math.abs(entry - ref) > maxDev) return 'priceBound'
+  }
+  if (lf.minStopFraction != null && lf.minStopFraction > 0) {
+    // llround of a positive value is Math.round (half away from zero agrees
+    // for x > 0); tick-shadow-counterfactual.js stopFloorWire is the same.
+    const floorDist = Math.round(lf.minStopFraction * entry)
+    if (signal.stopDistance < floorDist) return 'stopFloor'
+  }
+  return null
+}
+
+/**
  * simulate(events, params, sim) → { trades, summary, blocks, rejected, parity }.
  * `events` are oracle quotes { seq, recvMs, bid, ask, snapshot, crossed, changed }
  * in order for ONE symbol; `signalsOverride` lets a test plant signals.
+ *
+ * PR-Q3: with `sim.liveFilters` on, `trendSidesAt(recvMs)` answers the order
+ * sides the regime reading AS OF that moment permits (the caller's
+ * permittedSides over trendReadingAt), or null when there is no reading —
+ * no reading grants both sides, as the live feeder does. Required when the
+ * counter-trend filter is on: a filter that cannot be judged is refused, not
+ * stamped as applied.
  *
  * PR-Q1: with the test block withheld (`includeTest` not true and more than
  * one block), `summary`, its `diagnostics` and the `parity` record cover ONLY
@@ -110,10 +217,16 @@ export function normalizeMaxHoldEvents(value, rangeEvents) {
  * whole in-memory run (the C++ shadow-book fixture is pinned against them);
  * nothing persisted reads them for a withheld trial.
  */
-export function simulate(events, params = {}, sim = {}, { signalsOverride = null } = {}) {
+export function simulate(events, params = {}, sim = {}, { signalsOverride = null, trendSidesAt = null } = {}) {
   const p = normalizeParams(params)
   const s = { ...DEFAULT_SIM, ...sim }
   s.statisticsVersion = STATISTICS_VERSION
+  // PR-Q3: absent, null or every filter off is the SAME stored sim as before
+  // the block existed — no key at all — so it keys the same trial id.
+  const lf = normalizeLiveFilters(s.liveFilters)
+  if (lf) s.liveFilters = lf
+  else delete s.liveFilters
+  if (lf?.counterTrend && typeof trendSidesAt !== 'function') throw new TypeError('sim.liveFilters.counterTrend is on but no trendSidesAt reader was given: the veto could not be judged')
   const maxHoldEvents = normalizeMaxHoldEvents(s.maxHoldEvents, p.rangeEvents)
   // 0 and null are the same request (4N), so they are stored the same way and
   // key the same trial id; the resolved cap is stated beside it.
@@ -159,7 +272,17 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
   const settleEvents = p.expiryEvents + p.rearmCooldownEvents
   let warmAt = null, settledAt = null  // { idx, ms } — the replay's own warm-up, for the parity window
   let sealedCounters = null
-  const counters = (idx) => ({ events: idx, acceptedEvents: oracle.accepted, warmedEvaluations: oracle.warmedEvaluations, signals, oracleRejected: { ...oracle.rejected }, costRejected: rejected.cost, noFill: rejected.noFill })
+  // PR-Q3: per-filter veto counts (principle 7: vetoes are part of what is
+  // minimised, so each is counted, never folded into noFill), the signals the
+  // counter-trend filter judged with no reading, and every fill — so that
+  // signals = filled + costRejected + noFill + vetoed + pending holds at any
+  // cut, and a reader can check that the counts add up.
+  const vetoed = { counterTrend: 0, signalTtl: 0, priceBound: 0, stopFloor: 0 }
+  const vetoLog = []
+  let counterTrendNoReading = 0, filled = 0
+  let pending = null     // a signal waiting for its fill
+  const veto = (name, sig, idx) => { vetoed[name]++; vetoLog.push({ idx, seq: sig.seq, recvMs: sig.recvMs, side: sig.side, filter: name }) }
+  const counters = (idx) => ({ events: idx, acceptedEvents: oracle.accepted, warmedEvaluations: oracle.warmedEvaluations, signals, oracleRejected: { ...oracle.rejected }, costRejected: rejected.cost, noFill: rejected.noFill, vetoes: { ...vetoed }, counterTrendNoReading, filled, pending: pending ? 1 : 0 })
   const mark = (position, q) => {
     const exit = position.side === 'BUY' ? q.bid - slipAt(q.bid) : q.ask + slipAt(q.ask)
     const gross = position.side === 'BUY' ? exit - position.entry : position.entry - exit
@@ -170,7 +293,6 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
   }
   const marks = position => ({ markMinR: position.markMinR, markMaxR: position.markMaxR, markDrawdownR: position.markDrawdownR, entryMs: position.entryMs })
   let open = null        // { side, signal, entry, stop, target, entryIdx, entryMs, tradableSeen }
-  let pending = null     // a signal waiting for its fill
   const planted = signalsOverride ? new Map(signalsOverride.map(sg => [sg.seq, sg])) : null
   for (let i = 0; i < events.length; i++) {
     const q = events[i]
@@ -198,13 +320,27 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
         open = null
       }
     }
+    // 2a. PR-Q3 signal TTL: a pending signal whose fill is overdue by more
+    // than the TTL expires unfilled (a gap marker's recvMs 0 is not a time).
+    if (pending && lf?.signalTtlMs != null && q.recvMs > 0 && q.recvMs - (pending.recvMs + s.latencyMs) > lf.signalTtlMs) {
+      veto('signalTtl', pending, i)
+      pending = null
+    }
     // 2. fill a pending signal at the first tradable event past the latency
     if (pending && !open && tradable(q) && q.recvMs >= pending.recvMs + s.latencyMs) {
       const entry = pending.side === 'BUY' ? q.ask + slipAt(q.ask) : q.bid - slipAt(q.bid)
-      const stop = pending.side === 'BUY' ? entry - pending.stopDistance : entry + pending.stopDistance
-      const target = pending.side === 'BUY' ? entry + s.targetR * pending.stopDistance : entry - s.targetR * pending.stopDistance
-      open = { side: pending.side, signal: pending, entry, stop, target, entryIdx: i, entrySeq: q.seq, entryMs: q.recvMs, tradableSeen: 0, markMinR: 0, markMaxR: 0, markDrawdownR: 0 }
-      mark(open, q)
+      // PR-Q3: the firer's price bound and stop floor, judged on THIS fill;
+      // a refusal opens nothing and frees the book (live-filters-v1).
+      const refused = lf ? fillVeto(lf, pending, entry) : null
+      if (refused) {
+        veto(refused, pending, i)
+      } else {
+        const stop = pending.side === 'BUY' ? entry - pending.stopDistance : entry + pending.stopDistance
+        const target = pending.side === 'BUY' ? entry + s.targetR * pending.stopDistance : entry - s.targetR * pending.stopDistance
+        open = { side: pending.side, signal: pending, entry, stop, target, entryIdx: i, entrySeq: q.seq, entryMs: q.recvMs, tradableSeen: 0, markMinR: 0, markMaxR: 0, markDrawdownR: 0 }
+        mark(open, q)
+        filled++
+      }
       pending = null
     }
     // 3. the strategy sees the event AFTER the trade management (no lookahead on its own fill)
@@ -219,12 +355,19 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
       const cost = (sig.ask - sig.bid) + 2 * commAt(mid) + 2 * slipAt(mid)
       const target = s.targetR * sig.stopDistance
       if (cost > 0 && target / cost < s.minTargetToCost) { rejected.cost++; continue }
+      // PR-Q3: the counter-trend veto on the reading AS OF the signal. No
+      // reading grants both sides (the live feeder's fail-open) and is counted.
+      if (lf?.counterTrend) {
+        const sides = trendSidesAt(sig.recvMs)
+        if (sides == null) counterTrendNoReading++
+        else if (!sides.includes(sig.side)) { veto('counterTrend', sig, i); continue }
+      }
       pending = sig
     } else if (sig) {
       rejected.noFill++ // a signal while a trade is open or pending is not taken
     }
   }
-  if (pending) rejected.noFill++
+  if (pending) { rejected.noFill++; pending = null }
   // A trade still open at the end of the data is marked to the last
   // executable side and reported as such — an unclosed trade must not
   // vanish from the ledger.
@@ -250,14 +393,26 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
   const summary = summarize(inScope)
   summary.scope = withheld ? 'train_validation' : 'all_blocks'
   const scoped = withheld ? (sealedCounters || counters(events.length)) : counters(events.length)
+  const vetoTotal = LIVE_FILTER_NAMES.reduce((a, k) => a + scoped.vetoes[k], 0)
   const diagnostics = {
-    outcome: inScope.length ? 'trades_observed' : scoped.warmedEvaluations === 0 && !planted ? 'insufficient_warmup' : scoped.signals === 0 ? 'no_signals' : scoped.costRejected === scoped.signals ? 'cost_screened' : 'no_executable_fills',
+    outcome: inScope.length ? 'trades_observed' : scoped.warmedEvaluations === 0 && !planted ? 'insufficient_warmup' : scoped.signals === 0 ? 'no_signals' : scoped.costRejected === scoped.signals ? 'cost_screened'
+      : lf && vetoTotal > 0 && scoped.costRejected + vetoTotal === scoped.signals ? 'live_filtered' : 'no_executable_fills',
     scope: summary.scope,
     events: scoped.events, warmupPriorEvents: Math.max(p.rangeEvents + 1, p.momentumEvents),
     acceptedEvents: scoped.acceptedEvents, warmedEvaluations: scoped.warmedEvaluations, signals: scoped.signals, oracleRejected: scoped.oracleRejected,
     costRejected: scoped.costRejected, noFill: scoped.noFill,
     note: 'Zero trades are insufficient evidence of profitability, not a measured losing strategy. Warm-up resets on stale or invalid quotes; purge may also leave no evaluable validation block.'
       + (withheld ? ' Withheld: every figure here stops at the test block, so nothing in this summary reads the test period.' : ''),
+  }
+  if (lf) {
+    // PR-Q3: each filter's vetoes, and the accounting they must satisfy —
+    // every signal is filled, cost-screened, not taken (book busy, or still
+    // pending at the end of the data), vetoed, or pending at the scope's cut.
+    diagnostics.vetoes = { ...scoped.vetoes, total: vetoTotal }
+    if (lf.counterTrend) diagnostics.counterTrendNoReading = scoped.counterTrendNoReading
+    diagnostics.filled = scoped.filled
+    diagnostics.pendingAtScopeEnd = scoped.pending
+    diagnostics.countsAddUp = scoped.signals === scoped.filled + scoped.costRejected + scoped.noFill + vetoTotal + scoped.pending
   }
   summary.diagnostics = diagnostics
   // The time span the scope covers (gap markers carry recvMs 0 and are skipped).
@@ -294,6 +449,18 @@ export function simulate(events, params = {}, sim = {}, { signalsOverride = null
     truncated: scopedSignals.length > PARITY_RECORD_MAX || recordTrades.length > PARITY_RECORD_MAX,
     signals: scopedSignals.slice(0, PARITY_RECORD_MAX).map(x => ({ seq: x.seq, recvMs: x.recvMs, side: x.side })),
     trades: recordTrades.slice(0, PARITY_RECORD_MAX),
+  }
+  if (lf) {
+    // PR-Q3: which signal each filter refused, scoped like the signals (a
+    // veto made at a test-block event is test-period information), so the
+    // parity report can meet the sidecar's fire_refused records one for one.
+    const scopedVetoes = withheld ? vetoLog.filter(v => v.idx < sealedAt) : vetoLog
+    parity.vetoesTotal = scopedVetoes.length
+    parity.vetoes = scopedVetoes.slice(0, PARITY_RECORD_MAX).map(v => ({ seq: v.seq, recvMs: v.recvMs, side: v.side, filter: v.filter }))
+    if (scopedVetoes.length > PARITY_RECORD_MAX) parity.truncated = true
+    // The whole in-memory run's counts, beside `rejected`'s (withheld, the
+    // persisted trial carries the scoped ones from the diagnostics instead).
+    rejected.vetoed = { ...vetoed }
   }
   return { strategyId: STRATEGY_ID, strategyVersion: STRATEGY_VERSION, profileHash: profileHash(p), params: p, sim: s, trades, summary, blocks, rejected, parity, events: events.length }
 }
