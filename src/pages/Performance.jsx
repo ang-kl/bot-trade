@@ -20,7 +20,7 @@ import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import CurrentAccountReadings from '../components/CurrentAccountReadings.jsx'
 import { useAccountOverview } from '../lib/use-account-overview.js'
 import { feedDailyStopView, dailyStopWords, cardStopFields } from '../lib/daily-stop-display.js'
-import { currentAccountTotals, currentTotalsByCurrency } from '../lib/current-account-totals.js'
+import { currentAccountTotals, liveFloatingByCurrency } from '../lib/current-account-totals.js'
 import { balanceLines, floatingText, carryText } from '../lib/balance-cells.js'
 import { utcStamp } from '../../agent/shared/balance-carry.js'
 import { calendarDay } from '../../agent/shared/performance-calendar.js'
@@ -55,7 +55,7 @@ import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 import { fleetFrom } from '../cockpit/cockpit-fleet.js'
 import Collapse from '../components/common/Collapse.jsx'
 import { accountNumbers } from "../lib/scope-label.js"
-import { reportStats, reportGroups, reportLedger, reportCurrency, sessionBuckets } from '../../agent/shared/performance-populations.js'
+import { reportStats, reportGroups, reportLedger, sessionBuckets } from '../../agent/shared/performance-populations.js'
 import { SESSION_SOURCE } from '../../agent/shared/report-sessions.js'
 import { performanceGradients, gradientData, gradientFoot, OVERLAP_LABEL, OVERLAP_TITLE } from '../lib/performance-gradients.js'
 import { ledgerMoneyNote } from '../lib/partial-money.js'
@@ -758,7 +758,9 @@ function liveFloatingText(groups) {
   const shown = groups.groups.filter(g => g.openPnl != null)
   if (!shown.length) return null
   const missing = groups.groups.filter(g => g.openPnl == null)
-  return { text: `(${shown.map(g => `${g.currency} ${signed(g.openPnl)}`).join(' · ')} float)`,
+  // A currency without a complete reading is marked on screen ("USD 1/2
+  // read"), as floatingText marks the stored hours (V3 WEB-3m, checker N4).
+  return { text: `(${shown.map(g => `${g.currency} ${signed(g.openPnl)}`).join(' · ')} float)${missing.map(g => ` · ${g.currency} ${g.withOpenPnl}/${g.accounts} read`).join('')}`,
     title: `Floating (unrealised) P&L on the positions open right now, per recorded deposit currency, from the current broker readings. Not part of this hour's realised figure and not in the balance columns.${missing.length ? ` No complete reading for ${missing.map(g => `${g.currency} (${g.withOpenPnl}/${g.accounts} accounts; not read: ${(g.missingOpenPnl || []).join(', ')})`).join(', ')}.` : ''}${groups.unknownCurrencyAccounts ? ` ${groups.unknownCurrencyAccounts} account(s) have no recorded deposit currency and are in no subtotal${groups.unknownAccounts?.length ? `: ${groups.unknownAccounts.join(', ')}` : ''}.` : ''}` }
 }
 export function TodayHourlyBody({ rows, floatingNow = null, floatingNowGroups = null }) {
@@ -1650,9 +1652,10 @@ export default function Performance() {
   const liveFloating = feed.openPnl
   // All accounts in more than one currency: a floating subtotal per currency
   // instead of none (V3 WEB-3, 8,989-A row 5), keyed on the SAME recorded
-  // deposit currency the gradients pool by (reportCurrency, V3 WEB-3m).
-  const liveFloatingGroups = useMemo(() => acct === 'all' && feed.openPnl == null
-    ? currentTotalsByCurrency(overview, 'all', id => reportCurrency(populationReport, id)) : null, [overview, acct, feed.openPnl, populationReport])
+  // deposit currency the gradients pool by (reportCurrency, V3 WEB-3m). The
+  // helper reads the currency itself from the report; this call names none.
+  const liveFloatingGroups = useMemo(() => liveFloatingByCurrency(overview, populationReport, acct, feed.openPnl),
+    [overview, populationReport, acct, feed.openPnl])
 
 
   // Stat tiles migrated verbatim from Desk's old Performance section —

@@ -62,7 +62,10 @@ describe('floating per hour', () => {
     expect(floatingText(currencyGroups([seen('11', 'USD', -164.9), seen('33', 'SGD', 1.7)])).text).toBe('(SGD +1.70 · USD -164.90 float)')
     expect(floatingText(currencyGroups([gap('11', 'USD', 'no_floating_reading')]))).toBeNull()
     const partial = floatingText(currencyGroups([seen('33', 'SGD', 1.7), seen('11', 'USD', -1), gap('22', 'USD', 'no_floating_reading')]))
-    expect(partial.text).toBe('(SGD +1.70 float)')
+    // The incomplete USD is marked on screen, not only in the tooltip (V3
+    // WEB-3m, checker N4); no USD figure is made from the one account read.
+    expect(partial.text).toBe('(SGD +1.70 float) · USD 1/2 read')
+    expect(partial.text).not.toContain('-1.00')
     expect(partial.title).toContain('USD no floating read (1/2 accounts read) Not read: account 22.')
   })
 })

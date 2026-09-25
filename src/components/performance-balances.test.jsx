@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { TodayHourlyBody, LedgerRow, MobileWindowCard } from '../pages/Performance.jsx'
 import { hourRowEvidence } from '../lib/hourly-activity.js'
 import { currencyGroups, ledgerCarry } from '../../agent/shared/balance-carry.js'
-import { currentTotalsByCurrency } from '../lib/current-account-totals.js'
+import { currentTotalsByCurrency, liveFloatingByCurrency } from '../lib/current-account-totals.js'
 
 const START = Date.UTC(2026, 8, 22, 17, 26), NOW = Date.UTC(2026, 8, 25, 14, 0), H = 3600_000
 const seen = (currency, value, at = NOW - H) => ({ accountId: currency === 'SGD' ? '33' : '11', currency, storedFrom: START,
@@ -43,6 +43,15 @@ describe('rolling 24 hours: balance and floating per hour', () => {
     expect(html).toContain('SGD 50.00'); expect(html).toContain('USD 300.00')
     expect(html).toContain('(SGD +1.70 · USD -164.90 float)')
     expect(html).not.toContain('350.00')
+  })
+  it('all accounts, live hour: a currency without a complete reading is marked on screen, and no figure is made for it', () => {
+    const live = { ...past, isLive: true, balance: { open: currencyGroups([seen('USD', 300)]), close: currencyGroups([seen('USD', 301)]), floating: currencyGroups([]) } }
+    // 22 has no current reading; 11 alone must not stand in for the USD subtotal.
+    const groups = liveFloatingByCurrency({ accounts: [{ accountId: '11', currency: 'USD', openPnl: -164.9 }, { accountId: '22', currency: 'USD', openPnl: null },
+      { accountId: '33', currency: 'SGD', openPnl: 1.7 }] }, { currencyByAccount: { 11: { currency: 'USD' }, 22: { currency: 'USD' }, 33: { currency: 'SGD' } } }, 'all', null)
+    const html = text(renderToStaticMarkup(<TodayHourlyBody rows={[live]} floatingNow={null} floatingNowGroups={groups} />))
+    expect(html).toContain('(SGD +1.70 float) · USD 1/2 read')
+    expect(html).not.toContain('164.90')
   })
   it('the page takes the server\'s balance evidence onto each hour (wiring)', () => {
     const openings = { observedThrough: NOW, unknownTimeN: 0, unknownCloseTimeN: 0,

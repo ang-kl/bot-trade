@@ -9,6 +9,7 @@ import { balanceReader, BALANCE_EDGE_MAX_AGE_MS } from './balance-edges.js'
 import { hourlyActivity } from './hourly-activity.js'
 import { buildPerformancePopulations } from './performance-populations.js'
 import { reportLedger } from '../shared/performance-populations.js'
+import { missingBalanceLabel } from '../shared/balance-carry.js'
 
 const MIN = 60_000, H = 3600_000
 // Relative to the real clock: recordAccountHistory prunes by Date.now().
@@ -95,7 +96,7 @@ test('valued rows that fail the read check never hide a usable balance behind th
   for (let i = 0; i < 10; i++) bad(T - 20 * MIN + i * MIN)
   const r = balanceReader(db)
   // The currency is the RECORDED deposit currency (V3 WEB-3m), not read off a stored balance.
-  assert.deepEqual(r.account('11'), { accountId: '11', host: DEMO, registered: true, currency: 'USD', currencyReason: null, historyStartsAt: T - 30 * MIN })
+  assert.deepEqual(r.account('11'), { accountId: '11', host: DEMO, registered: true, currency: 'USD', currencyReason: null, historyStartsAt: T - 30 * MIN, balanceReason: null })
   assert.equal(r.at('11', T - 20 * MIN).value, 4321)
 })
 
@@ -240,6 +241,57 @@ test('two currencies on All: every hourly and ledger row keeps SGD and USD apart
   const later = hourlyActivity(db, { all: true, explicit: true }, { to: edge, nowMs: edge }).rows[23].balance.close
   assert.deepEqual(later.groups.map(g => [g.currency, g.value, g.reason]), [['SGD', 50, null], ['USD', null, 'observation_currency_mismatch']])
   assert.deepEqual(later.groups.find(g => g.currency === 'USD').missingAccounts, ['22'])
+})
+
+// V3 WEB-3m fix round (checker B1). An account recorded in one currency whose
+// every stored read is stamped in another stored thousands of balances: "not
+// stored" would be false. Every WEB-3 reader gives the same reason for it.
+test('an account whose every stored read carries another currency reads "read not in <recorded>", never "not stored", on every WEB-3 surface', t => {
+  const { db, trader, equity } = fixture(t, [['11', 0], ['33', 1]])
+  // 33 is recorded SGD (RECORDED above); every read of it is stamped USD.
+  for (let at = T - 26 * H; at <= T; at += 3 * MIN) { trader('11', at, 100); trader('33', at, 50) }
+  for (let at = T - 24 * H + 30 * MIN; at < T; at += H) equity('33', at, 50, 1.5)
+  const r = balanceReader(db)
+  assert.equal(r.account('33').historyStartsAt, null, 'no balance in its recorded currency: no history in its unit')
+  assert.equal(r.account('33').balanceReason, 'observation_currency_mismatch')
+  assert.deepEqual(r.at('33', T), { status: 'not_stored', reason: 'observation_currency_mismatch' })
+  // One account: the balance cell and the floating column give the SAME reason.
+  const one = hourlyActivity(db, { all: false, accountId: '33', explicit: true }, { to: T, nowMs: T })
+  const close = one.rows[23].balance.close
+  assert.deepEqual(close.groups.map(g => [g.currency, g.value, g.reason]), [['SGD', null, 'observation_currency_mismatch']])
+  assert.equal(missingBalanceLabel(close.groups[0]), 'read not in SGD')
+  assert.equal(one.rows[22].balance.floating.groups[0].reason, 'observation_currency_mismatch')
+  assert.equal(one.balanceHistory.accounts[0].historyStartsAt, null)
+  // All accounts: USD pooled from 11 alone, SGD held open with the same reason.
+  const all = hourlyActivity(db, { all: true, explicit: true }, { to: T, nowMs: T }).rows[23].balance.close
+  assert.deepEqual(all.groups.map(g => [g.currency, g.value, g.reason]), [['SGD', null, 'observation_currency_mismatch'], ['USD', 100, null]])
+  assert.equal(all.total, null)
+  // The ledger carry reads the same reason.
+  const report = buildPerformancePopulations(db, { now: T })
+  const w = reportLedger(report, '33').windows.find(x => x.key === '1h')
+  assert.deepEqual(w.carry.out.groups.map(g => [g.currency, g.value, g.reason]), [['SGD', null, 'observation_currency_mismatch']])
+  assert.equal(w.carryOut, null)
+})
+
+test('rows in another currency that are not a usable balance do not make an account "read not in" its currency', t => {
+  const { db, trader } = fixture(t, [['11', 0], ['33', 1]])
+  // 33 (recorded SGD) has only USD-stamped rows that cannot be a balance:
+  // an errored read and a read with no known read time.
+  trader('33', T - 10 * MIN, 50, 'USD', { error: 'broker 502' })
+  trader('33', T - 5 * MIN, 50, 'USD', { balanceReceivedAt: 'not-a-time' })
+  const r = balanceReader(db)
+  assert.equal(r.account('33').balanceReason, 'no_balance_stored')
+  assert.deepEqual(r.at('33', T), { status: 'not_stored', reason: 'no_balance_stored' })
+  // A usable USD-stamped read after them turns it into a currency mismatch.
+  trader('33', T - 1 * MIN, 50, 'USD')
+  assert.equal(balanceReader(db).at('33', T).reason, 'observation_currency_mismatch')
+  // And a first read in its recorded currency starts its history there.
+  trader('33', T + 1 * MIN, 70, 'SGD')
+  const later = balanceReader(db)
+  assert.equal(later.account('33').historyStartsAt, T + 1 * MIN)
+  assert.equal(later.account('33').balanceReason, null)
+  assert.equal(later.at('33', T + 2 * MIN).value, 70)
+  assert.equal(later.at('33', T).reason, 'before_balance_history')
 })
 
 test('the carry\'s currency is the report\'s currencyByAccount: without it nothing is pooled (the wiring)', t => {

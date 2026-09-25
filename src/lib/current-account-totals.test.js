@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { currentAccountTotals, currentTotalsByCurrency } from './current-account-totals.js'
+import { currentAccountTotals, currentTotalsByCurrency, liveFloatingByCurrency } from './current-account-totals.js'
 describe('current totals preserve complete currency scope', () => {
   const a = { accountId: '11', currency: 'USD', balance: 100, equity: 105, openPnl: 5, freeMargin: 104 }
   const b = { ...a, accountId: '22', balance: 0, equity: 0, openPnl: 0, freeMargin: 0 }
@@ -37,5 +37,36 @@ describe('current floating per currency for the all-accounts view (V3 WEB-3)', (
     const r = currentTotalsByCurrency({ accounts: [usd] })
     expect(r.groups).toEqual([])
     expect(r.unknownAccounts).toEqual(['11'])
+  })
+})
+// V3 WEB-3m fix round (checker B2): what the page calls for the live floating
+// subtotal. The currency is read from the populations report inside the
+// helper, so a call site that grouped by the overview row's own currency
+// cannot come back without this going red.
+describe('live floating subtotal on All: the populations report decides the currency', () => {
+  // 22's current broker reading says USD, but its RECORDED deposit currency is
+  // SGD. Grouped by the overview rows it would be USD -5 + 2 = -3 and SGD 1.7.
+  const overview = { accounts: [
+    { accountId: '11', currency: 'USD', openPnl: -5 },
+    { accountId: '22', currency: 'USD', openPnl: 2 },
+    { accountId: '33', currency: 'SGD', openPnl: 1.7 },
+  ] }
+  const report = { currencyByAccount: { 11: { currency: 'USD' }, 22: { currency: 'SGD' }, 33: { currency: 'SGD' } } }
+  it('groups by currencyByAccount, never by the reading; the disagreeing account holds its recorded currency open', () => {
+    const r = liveFloatingByCurrency(overview, report, 'all', null)
+    expect(r.groups.map(g => [g.currency, g.openPnl, g.accounts])).toEqual([['SGD', null, 2], ['USD', -5, 1]])
+    expect(r.groups[0].missingOpenPnl).toEqual(['22'])
+    expect(r.unknownCurrencyAccounts).toBe(0)
+  })
+  it('an account the report records no currency for is in no subtotal, whatever its reading says', () => {
+    const r = liveFloatingByCurrency(overview, { currencyByAccount: { 11: { currency: 'USD' }, 33: { currency: 'SGD' } } }, 'all', null)
+    expect(r.groups.map(g => [g.currency, g.openPnl])).toEqual([['SGD', 1.7], ['USD', -5]])
+    expect(r.unknownAccounts).toEqual(['22'])
+    // No report yet: nothing is subtotalled (never a guess from the readings).
+    expect(liveFloatingByCurrency(overview, null, 'all', null).groups).toEqual([])
+  })
+  it('only on All and only where no single figure exists', () => {
+    expect(liveFloatingByCurrency(overview, report, '11', null)).toBeNull()
+    expect(liveFloatingByCurrency(overview, report, 'all', 4.2)).toBeNull()
   })
 })

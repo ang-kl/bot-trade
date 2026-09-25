@@ -59,13 +59,31 @@ export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currency
   // read "not stored" if that many valued rows in a row failed the JS check.
   // The latest-balance query that used to NAME the account's currency is gone
   // (V3 WEB-3m): the currency comes from the recorded deposit evidence only.
-  const firstSql = db.prepare(`SELECT ${BALANCE_FIELDS} FROM account_history WHERE account_id = ? AND host = ?
+  // It starts where the recorded currency first appears (recordedFromSql), so
+  // it never walks the history before it.
+  const firstSql = db.prepare(`SELECT ${BALANCE_FIELDS} FROM account_history WHERE account_id = ? AND host = ? AND received_ms >= ?
     AND source <> 'broker_reconcile' AND ${field('balance')} IS NOT NULL AND ${field('currency')} = ? AND ${field('error')} IS NULL
+    AND ${field('balanceReceivedAt')} IS NOT NULL ORDER BY received_ms, id`)
+  const [currencyExpr, equityExpr, errorExpr] = ACCOUNT_HISTORY_SUMMARY_EXPRS
+  // Where the account's rows stamped in (or in other than) a currency begin.
+  // The currency is one of the covering summary index's expressions, so this
+  // reads index entries only — no row's JSON — and stops at the first match.
+  // Without it, an account none of whose rows carry its recorded currency made
+  // firstSql parse every stored row of its history on the main thread (the
+  // hourly route runs synchronously) before answering "nothing" (V3 WEB-3m B1).
+  const currencyFrom = op => db.prepare(`SELECT received_ms AS receivedMs FROM account_history INDEXED BY idx_account_history_summary
+    WHERE account_id = ? AND host = ? AND ${currencyExpr} ${op} ? ORDER BY received_ms, id LIMIT 1`)
+  const recordedFromSql = currencyFrom('='), otherFromSql = currencyFrom('<>')
+  // A usable balance stamped in a currency other than the recorded one. When
+  // the account has no balance in its recorded currency, this decides whether
+  // it stored none at all or stored reads that are not in its unit — the gap
+  // must say which, as the floating reader already does.
+  const otherSql = db.prepare(`SELECT ${BALANCE_FIELDS} FROM account_history WHERE account_id = ? AND host = ? AND received_ms >= ?
+    AND source <> 'broker_reconcile' AND ${field('balance')} IS NOT NULL AND ${field('currency')} <> ? AND ${field('error')} IS NULL
     AND ${field('balanceReceivedAt')} IS NOT NULL ORDER BY received_ms, id`)
   // Floating rows are exactly the rows with an equity value (balance + broker
   // P&L), which the covering summary index already carries; only those are
   // read from the table.
-  const [currencyExpr, equityExpr, errorExpr] = ACCOUNT_HISTORY_SUMMARY_EXPRS
   const floatSql = db.prepare(`SELECT id, source, received_ms AS receivedMs, host, ${currencyExpr} AS currency, ${errorExpr} AS error,
     ${field('openPnl')} AS openPnl, ${field('pnlReceivedAt')} AS pnlReceivedAt
     FROM account_history INDEXED BY idx_account_history_summary
@@ -75,24 +93,39 @@ export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currency
   const meta = new Map(), edges = new Map()
 
   /** The account's routing host, recorded deposit currency and first stored
-   * balance in that currency. */
+   * balance in that currency; without one, why not (balanceReason). */
   function account(accountId) {
     const id = String(accountId)
     if (meta.has(id)) return meta.get(id)
     const host = accounts.get(id) ?? null
     const currency = reportCurrency(currencies, id)
     const currencyReason = currency ? null : currencies.currencyByAccount?.[id]?.reason || 'deposit_currency_not_recorded'
-    let historyStartsAt = null
+    let historyStartsAt = null, balanceReason = null
     if (host && currency) {
+      const from = recordedFromSql.get(id, host, currency)
       let first = null
-      for (const r of firstSql.iterate(id, host, currency)) {
-        if (!balanceOk(r) || r.currency !== currency) continue
-        if (first == null) first = r
-        else if (r.receivedMs > first.receivedMs + WRITE_SKEW_MS) break
-        historyStartsAt = historyStartsAt == null ? r.balanceAt : Math.min(historyStartsAt, r.balanceAt)
+      if (from) {
+        for (const r of firstSql.iterate(id, host, from.receivedMs, currency)) {
+          if (!balanceOk(r) || r.currency !== currency) continue
+          if (first == null) first = r
+          else if (r.receivedMs > first.receivedMs + WRITE_SKEW_MS) break
+          historyStartsAt = historyStartsAt == null ? r.balanceAt : Math.min(historyStartsAt, r.balanceAt)
+        }
+      }
+      if (historyStartsAt == null) {
+        // Stored balance reads that all carry another currency's stamp are not
+        // "no balance stored": they are reads not in this account's unit.
+        const other = otherFromSql.get(id, host, currency)
+        let mismatch = false
+        if (other) {
+          for (const r of otherSql.iterate(id, host, other.receivedMs, currency)) {
+            if (balanceOk(r) && r.currency !== currency) { mismatch = true; break }
+          }
+        }
+        balanceReason = mismatch ? 'observation_currency_mismatch' : 'no_balance_stored'
       }
     }
-    const out = { accountId: id, host, registered: host != null, currency, currencyReason, historyStartsAt }
+    const out = { accountId: id, host, registered: host != null, currency, currencyReason, historyStartsAt, balanceReason }
     meta.set(id, out)
     return out
   }
@@ -105,7 +138,7 @@ export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currency
     if (!Number.isSafeInteger(atMs)) out = { status: 'not_stored', reason: 'invalid_edge' }
     else if (!a.registered) out = { status: 'not_stored', reason: 'account_not_registered' }
     else if (!a.currency) out = { status: 'not_stored', reason: a.currencyReason }
-    else if (a.historyStartsAt == null) out = { status: 'not_stored', reason: 'no_balance_stored' }
+    else if (a.historyStartsAt == null) out = { status: 'not_stored', reason: a.balanceReason }
     else if (atMs < a.historyStartsAt) out = { status: 'not_stored', reason: 'before_balance_history', storedFrom: a.historyStartsAt }
     else {
       let best = null, otherCurrency = false

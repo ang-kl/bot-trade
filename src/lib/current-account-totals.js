@@ -1,3 +1,5 @@
+import { reportCurrency } from '../../agent/shared/performance-populations.js'
+
 // Current native money can be grouped only when every requested account has
 // that currency and a value. Historical close units use a separate contract.
 export function currentAccountTotals(report, accountId = 'all') {
@@ -43,4 +45,17 @@ export function currentTotalsByCurrency(report, accountId = 'all', currencyOf = 
       missingOpenPnl: list.filter(a => !counted(a, currency, 'openPnl')).map(a => String(a.accountId)).sort() })),
     unknownCurrencyAccounts: unknownAccounts.length, unknownAccounts: unknownAccounts.sort(),
   }
+}
+
+/** The live hour's floating subtotal per currency on the all-accounts view
+ * (V3 WEB-3, 8,989-A row 5): only where no single figure exists
+ * (`feedOpenPnl`, the page's currentAccountTotals reading, is null), grouped
+ * by each account's RECORDED deposit currency — the populations report's
+ * currencyByAccount, read HERE through reportCurrency, the reader WEB-7's
+ * pools use (V3 WEB-3m). The page passes the report; it never names a
+ * currency itself, so no second currency reader can creep in at the call
+ * site. Null on a single account or when a single figure exists. */
+export function liveFloatingByCurrency(overview, populationReport, acct, feedOpenPnl) {
+  if (acct !== 'all' || feedOpenPnl != null) return null
+  return currentTotalsByCurrency(overview, 'all', id => reportCurrency(populationReport, id))
 }

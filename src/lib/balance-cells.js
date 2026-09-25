@@ -54,10 +54,15 @@ export function floatingText(set, { signed = plus } = {}) {
   if (!shown.length) return null
   const lone = set.groups.length === 1 && !set.unknownCurrencyAccounts
   const text = shown.map(g => `${lone ? '' : `${g.currency} `}${signed(g.value)}`).join(' · ')
-  const missing = set.groups.filter(g => g.value == null).map(g => `${g.currency} ${missingBalanceLabel(g)}${notRead(g.missingAccounts)}`)
+  const open = set.groups.filter(g => g.value == null)
+  const missing = open.map(g => `${g.currency} ${missingBalanceLabel(g)}${notRead(g.missingAccounts)}`)
+  // A currency with no complete reading is marked ON SCREEN as "USD 1/2 read",
+  // not only in the tooltip (V3 WEB-3m, checker N4): no sum is made for it,
+  // and the gap is visible where the other currencies' figures are.
+  const marks = open.map(g => ` · ${g.currency} ${g.observedAccounts ?? 0}/${g.accounts} read`).join('')
   const title = [...shown.map(g => readTitle(g, 'floating P&L')), ...missing, set.unknownCurrencyAccounts ? `${set.unknownCurrencyAccounts} account(s) ${unknownCurrencyLabel(set.unknownReason)}, in no currency.${notRead(set.unknownAccounts)}` : null]
     .filter(Boolean).join(' · ')
-  return { text: `(${text} float)`, title: `Last broker floating (unrealised) P&L reading in this hour; not in the realised figure or the balance columns. ${title}` }
+  return { text: `(${text} float)${marks}`, title: `Last broker floating (unrealised) P&L reading in this hour; not in the realised figure or the balance columns. ${title}` }
 }
 
 /** Ledger carry text for copy/paste and the phone card (one line). */
