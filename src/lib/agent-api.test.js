@@ -27,6 +27,43 @@ test('getAgentConn: no env vars set at all → empty secret, never throws', () =
   expect(getAgentConn().secret).toBe('')
 })
 
+// V3 M2b (M2 check nit 3): agentGet threw only the reply's `error` text, so a
+// report 503's reason, detail and retry hint never reached the page — the
+// Latest-prices note read "Latest prices unavailable (Latest prices are
+// temporarily unavailable. Please retry.)". The reply now rides on the error.
+test('agentGet: a failed read throws the same message with the reply attached, and the price note names the reason from it', async () => {
+  vi.stubEnv('VITE_AGENT_SECRET_READ', 'read-only-value')
+  const reply = { status: 'unavailable', error: 'Latest prices are temporarily unavailable. Please retry.', code: 'latest_prices_unavailable',
+    reason: 'performance_report_deadline', retryAfter: 30, retryable: true }
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(reply), { status: 503, headers: { 'content-type': 'application/json' } })))
+  try {
+    const { agentGet } = await import('./agent-api.js')
+    const error = await agentGet('/state/prices').then(() => null, e => e)
+    expect(error.message).toBe(reply.error)
+    expect(error.status).toBe(503)
+    expect(error.body).toEqual(reply)
+    const { loadLatestPrices, latestPricesNote } = await import('./latest-prices.js')
+    const note = latestPricesNote(await loadLatestPrices(agentGet))
+    expect(note).toContain('(the price read ran past its time limit — performance_report_deadline, HTTP 503, retry after 30 s)')
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+test('agentGet: a non-JSON failure keeps its status line and carries no body', async () => {
+  vi.stubEnv('VITE_AGENT_SECRET_READ', 'read-only-value')
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('Bad Gateway', { status: 502, headers: { 'content-type': 'text/plain' } })))
+  try {
+    const { agentGet } = await import('./agent-api.js')
+    const error = await agentGet('/state/prices').then(() => null, e => e)
+    expect(error.message).toBe('GET /state/prices 502')
+    expect(error.status).toBe(502)
+    expect(error.body).toBeNull()
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
 // CHARACTERISATION TEST, not a regression guard (relabelled on the WP-A
 // checker's nit 7, 25-09-2026). It pins client behaviour that predates WP-A:
 // agentPost already threw `j.error` from a refusal, so against this stubbed

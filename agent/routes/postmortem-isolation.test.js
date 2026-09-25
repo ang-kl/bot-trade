@@ -50,7 +50,10 @@ test('postmortem worker failure is unavailable evidence, not empty successful le
   const res = await fetch(url + '?account=11')
   assert.equal(res.status, 503)
   assert.equal(res.headers.get('cache-control'), 'no-store')
-  assert.deepEqual(await res.json(), { error: 'Trade lessons are temporarily unavailable. Please retry.', code: 'postmortem_report_unavailable' })
+  // V3 M2b: the typed 503 — reason, retry hint and the worker's own words.
+  assert.equal(res.headers.get('retry-after'), '30')
+  assert.deepEqual(await res.json(), { status: 'unavailable', error: 'Trade lessons are temporarily unavailable. Please retry.', code: 'postmortem_report_unavailable',
+    reason: 'performance_report_worker_error', retryAfter: 30, retryable: true, detail: 'unable to open database file' })
 })
 
 test('a locked history database leaves main-thread timers running while the report waits', async t => {

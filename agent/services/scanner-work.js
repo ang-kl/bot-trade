@@ -78,9 +78,15 @@ const clip = (value, n) => { const t = String(value); return t.length > n ? `${t
 export function entryActivityBlocker(blockers, tickPass = null) {
   const dominant = blockers?.byStage?.[0], latest = blockers?.latestEntryStop
   const stops = ENTRY_STOP_KINDS.reduce((n, k) => n + (blockers?.summary?.[k]?.records || 0), 0)
-  const base = !blockers ? 'blocker_report_unavailable' : dominant
+  // V3 WEB-1: an account report no longer carries the roster-wide stops (they
+  // were charged to the selected account); they are named after the
+  // account's own, so "no stop on this account" never hides a roster stop.
+  const roster = blockers?.rosterWide, rosterTop = roster?.byStage?.find(s => ENTRY_STOP_KINDS.includes(s.kind))
+  const rosterLine = rosterTop && !roster.includedInTotals
+    ? `; roster-wide (every account): ${rosterTop.stage} ×${rosterTop.records} of ${roster.entryStops}` : ''
+  const base = (!blockers ? 'blocker_report_unavailable' : dominant
     ? `${dominant.stage} ×${dominant.records} of ${stops} entry stops since session open; latest ${latest?.stage ?? dominant.stage}: ${latest?.reason ?? 'reason unrecorded'}`
-    : 'no_recorded_entry_stop_since_session_open'
+    : 'no_recorded_entry_stop_since_session_open') + rosterLine
   if (!tickPass) return clip(base, 240)
   const tick = tickPass.paused ? `tick permits paused: ${tickPass.paused}`
     : tickPass.firstRefusal ? `tick permits ${tickPass.permits}, first refusal: ${tickPass.firstRefusal}`

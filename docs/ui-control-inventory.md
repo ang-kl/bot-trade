@@ -60,7 +60,7 @@ going red (CLAUDE.md failure mode #3).
 | twelve attribution endpoints | served, read by no page | `src/pages/Reasons.jsx` (`/reasons`, in the Trading nav group and the phone More sheet): each endpoint rendered with its own fields, per-block "not read — <reason>" on error/401, no client-computed numbers |
 
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `f1d9223` · 120 action call sites · 97 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `87620f3` · 120 action call sites · 99 state routes read.
 
 Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -109,7 +109,7 @@ Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 41 | `src/pages/Connect.jsx:101` | cTrader connected — now tap the account the bot should trade | `/actions/ctrader-token` | `ctrader_access_token` ✓, `ctrader_refresh_token` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 42 | `src/pages/Connect.jsx:151` | loadAccounts | `/actions/ctrader-token` | `ctrader_access_token` ✓, `ctrader_refresh_token` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 43 | `src/pages/Connect.jsx:165` | selectAccount | `/actions/ctrader-select-account` | `ctrader_account_id` ✓, `ctrader_is_live` ✓, `ctrader_account_roles_json` ✓, `ctrader_trader_login` ✓, `symbol_id_map` ✓, `account_balance_usd` ✓, `account_leverage` ✓, via sweepMonitoredPositionsForAccounts(db, …), setState(db, …), recordAccountMoney(db, …), setAccountState(db, …), executes | `/state/health`, `/state/accounts`, `/state/watchlists`, `/state/config`, `/state/risk-config`, `/state/broker-cache`, `/state/risk-full`, `/state/symbol-map` | WIRED |
-| 44 | `src/pages/Desk.jsx:310` | (inline) | `/actions/broker-history` | dynamic key(s) — per-account/overlay write, via applyBrokerHistoryMoney(db, …), setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 44 | `src/pages/Desk.jsx:310` | (inline) | `/actions/broker-history` | dynamic key(s) — per-account/overlay write, via setState(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
 | 45 | `src/pages/Desk.jsx:833` | (inline) | `/actions/postmortem-sweep` | via runLossPostmortems(db, …), refreshLessonTuning(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
 | 46 | `src/pages/Desk.jsx:1224` | (inline) | `/actions/llm-budget` | `llm_daily_cost_alert_usd` ✓, `llm_spend_alerted_day` ✓, via setState(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 47 | `src/pages/Desk.jsx:1270` | (inline) | `/actions/backfill-label-strategy` | via backfillLabelStrategy(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
@@ -219,6 +219,7 @@ Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | `/state/config-proposals` | yes |
 | `/state/correlation` | yes |
 | `/state/cup-handle-funnel` | yes |
+| `/state/data-feed` | yes |
 | `/state/decision-feed` | yes |
 | `/state/decisions-daily` | yes |
 | `/state/divergence` | yes |
@@ -245,6 +246,7 @@ Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | `/state/market-hours` | yes |
 | `/state/market-pulse` | yes |
 | `/state/open-duplicates` | yes |
+| `/state/order-lifecycle` | yes |
 | `/state/orders` | yes |
 | `/state/performance-populations` | yes |
 | `/state/phase-audit` | yes |

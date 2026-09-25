@@ -968,7 +968,7 @@ export default function Trade() {
                 setBusy('reconcile')
                 try {
                   const r = await agentPost('/actions/reconcile-trades', {})
-                  setReconcileNote(`Checked ${r.checked} against ${r.dealsSeen} broker deals — ${r.confirmed} confirmed, ${r.repaired} repaired, ${r.rejected} rejected.`)
+                  setReconcileNote(`Checked ${r.checked} against ${r.dealsSeen ?? 0} broker deals — ${r.confirmed} confirmed, ${r.repaired} repaired, ${r.rejected} rejected${r.unmatchedInFlight ? `, ${r.unmatchedInFlight} in flight left unjudged` : ''}.${r.dealWalk?.complete === false ? ` Deal walk INCOMPLETE (${r.dealWalk.reason || 'cut short'}) — nothing was rejected on it; re-run when the broker history reads in full.` : ''}`)
                   await load()
                 } catch (e) { setReconcileNote(`Reconcile failed: ${e.message}`) } finally { setBusy('') }
               }}
