@@ -11,7 +11,7 @@ export function makeMomentumPartialBroker(db, { identity, tradeId }, transports 
   const row = bound && readPartialPlan(db, bound.accountId, tradeId)
   if (!row || marketIdentityKey(row.identity) !== marketIdentityKey(bound)) throw Error('partial broker identity mismatch')
   const plan = row.plan, positionId = row.position_id
-  const now = transports.now || Date.now
+  const now = transports.now || Date.now, maxAgeMs = 5000
   const current = supplied => {
     const actual = transports.readCredentials ? transports.readCredentials(bound.accountId) : credsForRegisteredAccount(db, bound.accountId)
     if (!actual?.ready || actual.host !== bound.host || String(actual.accountId) !== bound.accountId
@@ -20,9 +20,9 @@ export function makeMomentumPartialBroker(db, { identity, tradeId }, transports 
     return actual
   }
   const context = () => ({ identity: bound, positionId, side: plan.side, entry: plan.entry,
-    closeVolume: plan.closeVolume, nowMs: now(), maxAgeMs: 5000 })
+    closeVolume: plan.closeVolume, nowMs: now(), maxAgeMs })
   return {
-    now, maxAgeMs: 5000, timeoutMs: 5000,
+    now, maxAgeMs, timeoutMs: 5000,
     async readPosition(supplied, requested) {
       if (requested !== positionId) throw Error('partial broker identity mismatch')
       const c = current(supplied)
@@ -33,7 +33,10 @@ export function makeMomentumPartialBroker(db, { identity, tradeId }, transports 
     async quote(supplied, requested) {
       if (requested !== positionId) throw Error('partial broker identity mismatch')
       const c = current(supplied)
-      const raw = await (transports.quote || readMomentumTimedQuote)(c, bound.symbolId)
+      // The listener skips stale events by the decoder's clock and bound, so
+      // the event it returns is one the decoder below can accept.
+      const raw = await (transports.quote || readMomentumTimedQuote)(c, bound.symbolId,
+        { now, maxAgeMs, stream: transports.stream })
       return partialQuoteEvidence(raw, context())
     },
     async close(supplied, order, { attemptedAtMs } = {}) {

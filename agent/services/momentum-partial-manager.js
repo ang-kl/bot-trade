@@ -1,6 +1,6 @@
 import { marketIdentity, marketIdentityKey } from '../lib/market-identity.js'
-import { planMomentumTargets } from './momentum-target-policy.js'
-import { readPartialOwnership } from './momentum-partial-ownership.js'
+import { planMomentumTargets, sameTicks, stopHeld } from './momentum-target-policy.js'
+import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 
 function validPlan(plan) {
   if (!plan || typeof plan !== 'object') return false
@@ -63,10 +63,8 @@ export async function runPartialPlan(db, creds, tradeId, deps) {
   const owned = () => {
     try {
       const o = deps.readOwnership ? deps.readOwnership(accountId, tradeId, row.position_id)
-        : readPartialOwnership(db, accountId, tradeId, row.position_id)
-      return o?.accountId === accountId && o.tradeId === tradeId && o.positionId === row.position_id
-        && o.status === 'open' && o.owner === 'momentum_book' && o.guardActive === false
-        && o.entry === row.plan.entry && o.initialRisk === row.plan.initialRisk && o.side === row.plan.side
+        : readPartialOwnership(db, accountId, tradeId, row.position_id, row.plan.digits)
+      return ownershipMatchesPlan(o, { accountId, tradeId, positionId: row.position_id, plan: row.plan })
     } catch { return false }
   }
   if (!owned()) return { state: row.state, reason: 'lifecycle_ownership_unverified' }
@@ -86,11 +84,12 @@ export async function runPartialPlan(db, creds, tradeId, deps) {
     const checkedAt = deps.now()
     return Number.isFinite(checkedAt) && Number.isFinite(stamp) && stamp <= checkedAt && checkedAt - stamp <= age
   }
+  // Broker prices against the stored plan in ticks at its digits: a float a
+  // few ulps beside a grid price is the same price, a tick away is not.
   const matches = bp => bp?.accountId === accountId && String(bp.positionId) === row.position_id
-    && bp.side === p.side && bp.entry === p.entry && fresh(bp.observedAtMs)
-    && Number.isFinite(bp.stopLoss) && bp.stopLoss > 0
-    && (p.side === 'BUY' ? bp.stopLoss >= p.originalStop : bp.stopLoss <= p.originalStop)
-    && bp.takeProfit === p.brokerTarget
+    && bp.side === p.side && sameTicks(bp.entry, p.entry, p.digits) && fresh(bp.observedAtMs)
+    && stopHeld(p.side, bp.stopLoss, p.originalStop, p.digits)
+    && sameTicks(bp.takeProfit, p.brokerTarget, p.digits)
   let attemptedAtMs = row.attempted_at
   const validReceipt = receipt => receipt?.accountId === accountId && String(receipt.positionId) === row.position_id
     && typeof receipt.dealId === 'string' && /^[1-9]\d*$/.test(receipt.dealId)

@@ -172,3 +172,40 @@ test('filled receipt without an absence read stays recoverable and does not repe
   assert.equal((await runMomentumRankExit(f.db, f.creds, f.row, f.deps)).state, 'CONFIRMED')
   assert.equal(f.calls(), 1)
 })
+
+// T1 (V3 P0-1a): the rank exit reads the real trade, book and monitor rows
+// (no injected owner) with the plan's digits. The rows carry the neighbouring
+// doubles different producers write; in ticks they are one owner. An owed
+// exit refused on float residue would never be retried (principle 3).
+test('rank exit owns the real lifecycle rows in the plan\'s ticks and still refuses a tick away', async t => {
+  for (const [bookEntry, owned] of [[99.99999999999999, true], [100.01, false]]) {
+    const f = fixture(t, 'ARMED', true)
+    delete f.deps.readOwnership
+    f.db.prepare(`INSERT INTO trades(id,symbol,side,entry_price,sl_price,status,ctrader_position_id,account_id,label_strategy,origin,risk_event_id)
+      VALUES(7,'ETHUSD','BUY',100.00000000000001,90,'open','33','11','tsmom_long','bot_market_dispatch',1)`).run()
+    f.db.prepare(`INSERT INTO monitored_positions(symbol,trade_id,side,entry_price,initial_risk,paused,account_id,strategy)
+      VALUES('ETHUSD',7,'long',100,10.000000000000002,1,'11','tsmom_long')`).run()
+    f.db.prepare(`INSERT INTO momentum_book(trade_id,account_id,symbol,position_id,side,entry_price,stop,entered_at)
+      VALUES(7,'11','ETHUSD','33','long',?,95,'2026-09-24T15:00:00Z')`).run(bookEntry)
+    if (owned) {
+      assert.deepEqual(await runMomentumRankExit(f.db, f.creds, f.row, f.deps), { handled: true, state: 'CONFIRMED' })
+      assert.equal(f.calls(), 1)
+    } else {
+      await assert.rejects(runMomentumRankExit(f.db, f.creds, f.row, f.deps), /ownership/)
+      assert.equal(f.calls(), 0); assert.equal(readPartialPlan(f.db, '11', 7).state, 'ARMED')
+    }
+  }
+})
+
+test('rank preflight compares the broker target in ticks: residue passes, a tick off refuses', async t => {
+  for (const [takeProfit, sends] of [[140.40000000000003, true], [140.41, false]]) {
+    const f = fixture(t), read = f.deps.rankReconcile
+    f.deps.rankReconcile = async (...args) => {
+      const raw = await read(...args)
+      return { ...raw, position: raw.position.map(r => ({ ...r, takeProfit })) }
+    }
+    if (sends) assert.equal((await runMomentumRankExit(f.db, f.creds, f.row, f.deps)).state, 'CONFIRMED')
+    else await assert.rejects(runMomentumRankExit(f.db, f.creds, f.row, f.deps), /preflight mismatch/)
+    assert.equal(f.calls(), sends ? 1 : 0, String(takeProfit))
+  }
+})

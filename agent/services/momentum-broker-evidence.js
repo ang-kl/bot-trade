@@ -4,8 +4,11 @@ const positive = x => typeof x === 'number' && Number.isFinite(x) && x > 0
 const integer = x => Number.isSafeInteger(x) && x > 0
 const id = x => (typeof x === 'string' && /^[1-9]\d*$/.test(x)) || integer(x) ? String(x) : null
 const side = x => x === 1 || x === 'BUY' ? 'BUY' : x === 2 || x === 'SELL' ? 'SELL' : null
-const within = (stamp, { nowMs, maxAgeMs }) => integer(stamp) && integer(nowMs)
+// One freshness rule for a broker timestamp, shared with the timed quote so
+// the listener waits for exactly the event this decoder will accept.
+export const freshBrokerStamp = (stamp, { nowMs, maxAgeMs }) => integer(stamp) && integer(nowMs)
   && positive(maxAgeMs) && stamp <= nowMs && nowMs - stamp <= maxAgeMs
+const within = freshBrokerStamp
 function scope(raw, context) {
   const identity = marketIdentity(context?.identity)
   return identity && id(context.positionId) && id(raw?.ctidTraderAccountId) === identity.accountId ? identity : null

@@ -1,12 +1,21 @@
 import { createHash } from 'node:crypto'
 import { marketIdentityKey } from '../lib/market-identity.js'
-import { planMomentumTargets } from './momentum-target-policy.js'
-import { readPartialOwnership } from './momentum-partial-ownership.js'
+import { planMomentumTargets, shiftStopToFill, stopHeld, sameTicks } from './momentum-target-policy.js'
+import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { registerPartialPlan } from './momentum-partial-manager.js'
 
 const json = value => { try { return JSON.parse(value) } catch { return null } }
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+// Lots name an integer broker volume. (v / lotSize) * lotSize can miss v by a
+// few ulps — 1.49e-8 at FX lotSize 1e7 and 8.04 lots, past the old 1e-8
+// tolerance — so the comparison is on the integer, and only float residue
+// (a relative 1e-12, never a fractional unit) is accepted as that integer.
+function brokerVolume(lots, lotSize) {
+  if (!Number.isFinite(lots) || !Number.isSafeInteger(lotSize) || lotSize <= 0) return null
+  const units = lots * lotSize, volume = Math.round(units)
+  return Number.isSafeInteger(volume) && Math.abs(units - volume) <= volume * 1e-12 ? volume : null
+}
 function verified(proposal) {
   const p = proposal?.plan, calculated = planMomentumTargets(p)
   return proposal?.ok === true && proposal.executionAuthorized === false && calculated.ok && same(p, calculated)
@@ -45,7 +54,7 @@ export function recordMomentumEntry(db, { accountId, tradeId, proposal, nowMs })
     || !(t.risk_event_id > 0) || t.symbol !== proposal.evidence.symbol || t.side !== proposal.plan.side
     || t.entry_price !== proposal.plan.entry || t.sl_price !== proposal.plan.originalStop
     || t.tp_price !== proposal.plan.brokerTarget
-    || !Number.isFinite(t.volume) || Math.abs(t.volume * proposal.evidence.symbolMeta.lotSize - proposal.plan.volume) > 1e-8) throw Error('entry trade identity or bracket mismatch')
+    || brokerVolume(t.volume, proposal.evidence.symbolMeta.lotSize) !== proposal.plan.volume) throw Error('entry trade identity or bracket mismatch')
   schema(db)
   const previous = readMomentumEntry(db, accountId, tradeId)
   if (previous) {
@@ -74,11 +83,16 @@ export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, max
     || position.observedAtMs > nowMs || nowMs - position.observedAtMs > maxAgeMs
     || position.side !== p.side || position.volume !== p.volume
     || !Number.isFinite(position.entry) || position.entry <= 0) throw Error('entry fill evidence mismatch')
-  const shift = position.entry - p.entry
-  const plan = planMomentumTargets({ ...p, entry: position.entry, originalStop: p.originalStop + shift })
-  if (!plan.ok || !Number.isFinite(position.stopLoss) || position.stopLoss <= 0
-    || (p.side === 'BUY' ? position.stopLoss < plan.originalStop : position.stopLoss > plan.originalStop)
-    || position.takeProfit !== plan.brokerTarget) throw Error('entry fill bracket mismatch')
+  // The stop moves with the fill in whole ticks, as the broker moves a
+  // relative stop. The unrounded p.originalStop + shift (247.81000000000003
+  // against the broker's 247.81) refused 5,057 of the P0 reviewer's 30,000
+  // simulated slipped fills, and 252 of the 2,000 in
+  // momentum-plan-arithmetic.test.js. Broker prices are then compared in
+  // ticks at the plan's digits, never as floats.
+  const stop = shiftStopToFill(p, position.entry)
+  const plan = stop == null ? null : planMomentumTargets({ ...p, entry: position.entry, originalStop: stop })
+  if (!plan?.ok || !stopHeld(p.side, position.stopLoss, plan.originalStop, p.digits)
+    || !sameTicks(position.takeProfit, plan.brokerTarget, p.digits)) throw Error('entry fill bracket mismatch')
   if (intent.state === 'BOUND') {
     if (intent.position_id !== position.positionId || !same(intent.plan, plan)) throw Error('entry fill already bound differently')
     return intent
@@ -103,9 +117,11 @@ export function enrollMomentumBook(db, { accountId, tradeId, positionId }) {
     || !intent.plan?.ok || !same(intent.plan, planMomentumTargets(intent.plan))) throw Error('entry enrollment requires a bound plan')
   const trade = db.prepare('SELECT risk_event_id FROM trades WHERE id=? AND account_id=?').get(tradeId, accountId)
   if (trade?.risk_event_id !== intent.risk_event_id) throw Error('entry enrollment lifecycle mismatch')
-  const owner = readPartialOwnership(db, accountId, tradeId, positionId)
-  if (!owner || owner.entry !== intent.plan.entry || owner.side !== intent.plan.side
-    || owner.initialRisk !== intent.plan.initialRisk) throw Error('entry enrollment ownership mismatch')
+  // The producer's rows are fill-anchored by its own float arithmetic
+  // (loop.js anchorBracketToFill), so entry and initial risk match the bound
+  // plan in ticks, not bit for bit.
+  const owner = readPartialOwnership(db, accountId, tradeId, positionId, intent.plan.digits)
+  if (!ownershipMatchesPlan(owner, { accountId, tradeId, positionId, plan: intent.plan })) throw Error('entry enrollment ownership mismatch')
   if (intent.plan.mode === 'partial_runner') {
     registerPartialPlan(db, { accountId, tradeId, positionId, plan: intent.plan,
       identity: intent.proposal.identity,

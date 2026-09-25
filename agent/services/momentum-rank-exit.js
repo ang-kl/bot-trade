@@ -3,8 +3,8 @@ import { credsForRegisteredAccount } from '../lib/ctrader-creds.js'
 import { wsReconcile } from '../lib/ctrader-ws.js'
 import { marketIdentityKey } from '../lib/market-identity.js'
 import { readPartialPlan } from './momentum-partial-manager.js'
-import { readPartialOwnership } from './momentum-partial-ownership.js'
-import { planMomentumTargets } from './momentum-target-policy.js'
+import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
+import { planMomentumTargets, sameTicks } from './momentum-target-policy.js'
 import { partialPositionEvidence, partialClosingEvidence } from './momentum-broker-evidence.js'
 
 const parse = value => { try { return JSON.parse(value) } catch { return null } }
@@ -44,10 +44,8 @@ export async function runMomentumRankExit(db, supplied, book, deps = {}) {
     return current
   }
   const owned = () => {
-    const o = deps.readOwnership ? deps.readOwnership(accountId, tradeId, positionId) : readPartialOwnership(db, accountId, tradeId, positionId)
-    return o?.accountId === accountId && o.tradeId === tradeId && o.positionId === positionId
-      && o.side === p.side && o.entry === p.entry && o.initialRisk === p.initialRisk
-      && o.owner === 'momentum_book' && o.status === 'open' && o.guardActive === false
+    const o = deps.readOwnership ? deps.readOwnership(accountId, tradeId, positionId) : readPartialOwnership(db, accountId, tradeId, positionId, p.digits)
+    return ownershipMatchesPlan(o, { accountId, tradeId, positionId, plan: p })
   }
   const reconcile = () => {
     const c = credentials()
@@ -116,8 +114,8 @@ export async function runMomentumRankExit(db, supplied, book, deps = {}) {
   try {
     const raw = await bounded(reconcile), checkedAt = now()
     const position = partialPositionEvidence(raw, { identity: stored.identity, positionId, nowMs: checkedAt })
-    if (!position || position.entry !== p.entry || position.side !== p.side || position.volume !== claim.volume
-      || position.takeProfit !== p.brokerTarget || !owned() || typeof deps.close !== 'function') throw Error('rank exit preflight mismatch')
+    if (!position || !sameTicks(position.entry, p.entry, p.digits) || position.side !== p.side || position.volume !== claim.volume
+      || !sameTicks(position.takeProfit, p.brokerTarget, p.digits) || !owned() || typeof deps.close !== 'function') throw Error('rank exit preflight mismatch')
     c = credentials()
     claim.attempted_at = now()
     if (!updateBoth(claim, 'RESERVED', 'SENDING', { attemptedAt: claim.attempted_at })) throw Error('rank exit preflight reservation superseded')
