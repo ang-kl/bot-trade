@@ -616,6 +616,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     const orderPayload = {
       ctidTraderAccountId: parseInt(creds.accountId),
       symbolId: parseInt(symbolId),
+      symbolName: symbol, // X1 / W2: ledger-only, stripped before the wire
       orderType: 'LIMIT',
       tradeSide: side,
       volume: sized.volume,

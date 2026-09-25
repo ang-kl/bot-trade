@@ -14,7 +14,8 @@ import { initDB, getState, setState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
 import { attachEntryFence, bindEntryIntent } from '../lib/ctrader-creds.js'
 import { placeOrder, _resetOrderLocks } from '../lib/exec-engine.js'
-import { reserveEntry } from './entry-ledger.js'
+import { reserveEntry, reconcileIntents } from './entry-ledger.js'
+import { fillEvidence } from './intent-corrections.js'
 import { placeClosedMarketLimit, reconcileStaleClosedMarketLimits, findLimitFill } from './closed-market-limits.js'
 import { stampAdoptedFromIntent, INTENT_APPROVAL_WINDOW_SQL } from './reconciler.js'
 import { persistFilledTrade } from './pending-orders.js'
@@ -40,7 +41,10 @@ function refusePlans(db) {
   db.exec(`CREATE TRIGGER l2a_refuse_plan BEFORE INSERT ON trade_plans BEGIN SELECT RAISE(ABORT, 'plan write refused (test)'); END`)
 }
 const planFailures = (db) => db.prepare(`SELECT body, account_id FROM action_log WHERE path = ?`).all(PLAN_WRITE_FAILED_PATH).map(r => ({ ...JSON.parse(r.body), account_id: r.account_id }))
-function insertIntent(db, { id, accountId = DEMO, symbol = 'DOW.US', side = 'SELL', orderType = 'LIMIT', state = 'FILLED', brokerOrderId = null, brokerPositionId = null }) {
+// X1 (merged before this file): a resting order's intent is ACCEPTED ("placed,
+// not filled") until broker evidence moves it — so that is the default a
+// resting fixture carries; a MARKET fixture is FILLED, as its answer settles it.
+function insertIntent(db, { id, accountId = DEMO, symbol = 'DOW.US', side = 'SELL', orderType = 'LIMIT', state = String(orderType).toUpperCase() === 'MARKET' ? 'FILLED' : 'ACCEPTED', brokerOrderId = null, brokerPositionId = null }) {
   db.prepare(`INSERT INTO entry_intents (id, account_id, environment, symbol, side, order_type, producer_id, basis, mode_epoch, permit_id, permit_expires_at, state, broker_order_id, broker_position_id)
               VALUES (?, ?, 'demo', ?, ?, ?, 'daily_momentum_account', 'bar', 0, ?, '2026-01-01T00:00:00Z', ?, ?, ?)`)
     .run(id, accountId, symbol, side, orderType, 'p' + id.slice(1), state, brokerOrderId, brokerPositionId)
@@ -232,6 +236,102 @@ test('W9: an origin a more direct writer recorded is never rewritten by the link
   const tid = Number(db.prepare(`INSERT INTO trades (symbol, side, status, account_id, origin, origin_source, label_raw) VALUES ('DOW.US', 'SELL', 'open', ?, 'manual_broker', 'write', ?)`).run(DEMO, tagged('imanualbk008')).lastInsertRowid)
   assert.equal(reconcileStaleClosedMarketLimits(db, { nowMs: NOW }).filled, 1)
   assert.deepEqual(db.prepare(`SELECT origin, origin_source FROM trades WHERE id = ?`).get(tid), { origin: 'manual_broker', origin_source: 'write' })
+})
+
+// ============================================================ L2a × X1 (merge)
+// X1 merged while L2a was open: a resting order's placement answer
+// (ORDER_ACCEPTED, carrying the broker's PRE-CREATED position id) leaves the
+// intent ACCEPTED with its order id and no position id, and only the ledger's
+// broker-evidence resolvers move it on. L2a's writers own the ROWS (the
+// resting row's status, the trade's lineage). These tests hold the seam: one
+// writer per record, the same evidence read the same way on both.
+const ACCEPTED_ANSWER = '{"executionType":"ORDER_ACCEPTED","position":{"positionId":241267454},"order":{"orderId":360473873}}'
+async function placeRestingThroughEngine(db) {
+  setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
+  let sent = null
+  onOrder = (body) => { sent = body; return { status: 200, body: ACCEPTED_ANSWER } }
+  const risk = { loadRiskConfig: () => ({}), evaluateTrade: () => ({ approved: true, adjusted_volume: 0.1 }), persistRiskEvent: () => 777 }
+  const sizing = { getVolumeMeta: async () => ({ digits: 2, lotSize: 100, minVolume: 1 }), lotsToVolume: (l) => ({ volume: Math.round(l * 100), belowMin: false }), relativePoints: (d, dg) => Math.round(d * 10 ** dg) }
+  const creds = attachEntryFence(db, { ...BASE_CREDS }, { producerId: 'daily_momentum_account' })
+  // No `exec` injected: the REAL exec-engine.placeOrder runs its ledger
+  // protocol and settles the intent from the stub sidecar's answer.
+  const r = await placeClosedMarketLimit(db, creds, 'US30', { consensus_bias: 'long', entry: 100, sl: 98, tp1: 104, strategy: 'tsmom_long', timeframe: '1d', direction_reason: 'tsmom:long_top_band' },
+    { producerId: 'daily_momentum_account', risk, sizing, now: Date.parse('2026-09-25T12:00:00Z') })
+  assert.equal(r.placed, true, JSON.stringify(r))
+  const row = db.prepare(`SELECT * FROM pending_orders WHERE symbol = 'US30'`).get()
+  const intent = db.prepare(`SELECT * FROM entry_intents WHERE id = ?`).get(row.intent_id)
+  return { row, intent, sent }
+}
+const counts = (db) => ['pending_orders', 'entry_intents', 'trades'].map(t => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n)
+
+test('L2a × X1: a resting limit answered ORDER_ACCEPTED through the real engine is ACCEPTED on its intent (approval and row link recorded, no position); the sweep that finds no fill expires the ROW and never touches the intent', async () => {
+  const db = freshDb()
+  const { row, intent, sent } = await placeRestingThroughEngine(db)
+  assert.equal(row.order_id, '360473873')
+  assert.ok(intent, 'the resting row names the intent the engine reserved (L2a W5)')
+  assert.deepEqual(
+    { state: intent.state, order: String(intent.broker_order_id), position: intent.broker_position_id, risk: intent.risk_event_id, type: intent.order_type, symbol: intent.symbol },
+    { state: 'ACCEPTED', order: '360473873', position: null, risk: 777, type: 'LIMIT', symbol: 'US30' },
+    'X1: placed, not filled — the pre-created position id is not recorded as a fill; L2a: the approval rides on the intent',
+  )
+  assert.equal(labelIntentId(sent.label), intent.id, 'the broker label carries the id the row names')
+  assert.equal('symbolName' in sent, false, 'X1 W2: the symbol is ledger-only')
+  // The order leaves the book with no fill on record.
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status, account_id) VALUES ('360473873', 'US30', 'gone', ?)`).run(DEMO)
+  const before = counts(db)
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-09-26T12:00:00Z') })
+  assert.deepEqual({ filled: r.filled, expired: r.expired }, { filled: 0, expired: 1 })
+  assert.equal(db.prepare(`SELECT status FROM pending_orders WHERE id = ?`).get(row.id).status, 'expired')
+  const after = db.prepare(`SELECT state, broker_position_id, resolution_source, updated_at FROM entry_intents WHERE id = ?`).get(intent.id)
+  assert.deepEqual(after, { state: 'ACCEPTED', broker_position_id: null, resolution_source: intent.resolution_source, updated_at: intent.updated_at },
+    'the ROW\'s writer never writes the INTENT: its outcome is the ledger\'s, from broker evidence (order details), never inferred here')
+  assert.deepEqual(counts(db), before, 'nothing deleted, nothing added')
+})
+
+test('L2a × X1: when the fill arrives, the sweep settles the ROW from the tagged trade and leaves the intent ACCEPTED; the ledger\'s reconcile then moves the intent FILLED on the tagged position — one writer per record, no FILLED without the fill', async () => {
+  const db = freshDb()
+  const { row, intent } = await placeRestingThroughEngine(db)
+  const label = tagged(intent.id)
+  // The fill: the broker's pre-created position id becomes the position; the
+  // reconciler adopted it with the broker's label (the intent tag on it).
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status, account_id) VALUES ('360473873', 'US30', 'gone', ?)`).run(DEMO)
+  const tid = Number(db.prepare(`INSERT INTO trades (symbol, side, status, account_id, origin, origin_source, label_raw, ctrader_position_id, opened_at) VALUES ('US30', 'BUY', 'open', ?, 'reconciler_adopted', 'write', ?, '241267454', '2026-09-26T09:00:00Z')`).run(DEMO, label).lastInsertRowid)
+  const before = counts(db)
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-09-26T12:00:00Z') })
+  assert.equal(r.filled, 1)
+  const p = db.prepare(`SELECT status, note FROM pending_orders WHERE id = ?`).get(row.id)
+  assert.equal(p.status, 'filled'); assert.match(p.note, new RegExp(`trade #${tid} \\(intent ${intent.id} via pending_orders\\.intent_id\\)`))
+  assert.equal(db.prepare(`SELECT state FROM entry_intents WHERE id = ?`).get(intent.id).state, 'ACCEPTED',
+    'RED if the row\'s writer settles the intent: that transition is the ledger\'s alone')
+  const rec = reconcileIntents(db, { accountId: DEMO, positions: [{ positionId: 241267454, tradeData: { label } }], orders: [], now: Date.parse('2026-09-26T12:01:00Z') })
+  assert.deepEqual(rec.resolved, [{ intentId: intent.id, from: 'ACCEPTED', to: 'FILLED' }])
+  const filled = db.prepare(`SELECT state, broker_position_id, resolution_source FROM entry_intents WHERE id = ?`).get(intent.id)
+  assert.deepEqual({ ...filled, broker_position_id: String(filled.broker_position_id) }, { state: 'FILLED', broker_position_id: '241267454', resolution_source: 'reconcile' })
+  assert.deepEqual(counts(db), before, 'nothing deleted, nothing added')
+})
+
+test('L2a × X1: the resting row and its intent read the SAME fill evidence the same way — findLimitFill agrees with X1\'s fillEvidence case by case', () => {
+  const db = freshDb()
+  const cases = [
+    // [name, trade row (or null), intent position id, expected]
+    ['tag on a same-account trade', { account_id: DEMO, label_raw: tagged('iagreetag001') }, null, true],
+    ['tag on an UNATTRIBUTED trade (account NULL)', { account_id: null, label_raw: tagged('iagreenul002') }, null, true],
+    ['the position id stored in its float form', { account_id: DEMO, label_raw: 'PRE|v1|MR|H|NY|1d|TR', ctrader_position_id: '5553.0' }, '5553', true],
+    ['tag on ANOTHER account\'s trade', { account_id: '43097342', label_raw: tagged('iagreeoth004') }, null, false],
+    ['no trade at all', null, null, false],
+  ]
+  cases.forEach(([name, trade, pos, want], i) => {
+    const n = i + 1
+    const id = ['iagreetag001', 'iagreenul002', 'iagreepos003', 'iagreeoth004', 'iagreenon005'][i]
+    const order = String(9100 + n)
+    insertIntent(db, { id, symbol: 'DOW.US', side: 'SELL', orderType: 'LIMIT', state: pos ? 'FILLED' : 'ACCEPTED', brokerOrderId: order, brokerPositionId: pos })
+    if (trade) db.prepare(`INSERT INTO trades (symbol, side, status, account_id, origin, label_raw, ctrader_position_id) VALUES ('DOW.US', 'SELL', 'open', ?, 'reconciler_adopted', ?, ?)`).run(trade.account_id, trade.label_raw, trade.ctrader_position_id ?? null)
+    const rowLink = !!findLimitFill(db, { symbol: 'DOW.US', order_id: order, dir: -1, account_id: DEMO }).trade
+    const intentRow = db.prepare(`SELECT * FROM entry_intents WHERE id = ?`).get(id)
+    const intentLink = fillEvidence(db, intentRow).found.length > 0
+    assert.equal(rowLink, want, `row, ${name}`)
+    assert.equal(intentLink, want, `intent, ${name}`)
+  })
 })
 
 // ========================================================================= W7

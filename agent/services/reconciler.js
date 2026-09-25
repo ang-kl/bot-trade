@@ -1,5 +1,5 @@
 import { isOurs, parseLabel, labelIntentId, ownedByIntent } from '../lib/trade-labels.js'
-import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
+import { recordTradePlan, recordPlanWriteFailure, planProblems, PLAN_ABSURD_RISK_FRACTION } from './trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
 import { getState, setState as setAgentState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
@@ -116,11 +116,37 @@ export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbo
     db.prepare(`UPDATE monitored_positions SET strategy = COALESCE(strategy, ?) WHERE trade_id = ?`).run(strategy, tradeId)
     const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(tradeId)
     if (!hasPlan) {
+      // X1 / W3 (25-09-2026): the intent's sl/tp are in the units the order
+      // carried them (entry_intents.sl_units / tp_units). A relative leg is
+      // wire points — never a price: it becomes one from the fill (`entry`,
+      // the broker's open price the relative bracket was applied to). Before
+      // this, `it.sl` went in as a price: #1686 JPM.US planned_sl 1,732,000.
+      // A pre-X1 row recorded no units: its value is read as a price only
+      // when it IS price-shaped for this entry (right side, within
+      // planProblems' scale). Wire points cannot pass that test — a stop
+      // 0.1–5 % away is 100–5,000× the price in points — so they fall back to
+      // the broker's own stop / target on the position.
+      const dir = sideWord === 'BUY' ? 1 : -1
+      const e = Number(entry)
+      const haveEntry = entry != null && Number.isFinite(e) && e > 0
+      const legPrice = (value, units, sign, leg) => {
+        const v = Number(value)
+        if (value == null || !Number.isFinite(v)) return null
+        if (units === 'price') return v
+        if (units === 'relative_points') return haveEntry ? e + sign * dir * v / 100_000 : null
+        // planProblems judges the stop's scale only; the target's is judged here.
+        if (units == null && haveEntry && planProblems({ side: sideWord, entry: e, [leg]: v }).length === 0
+          && Math.abs(v - e) / e <= PLAN_ABSURD_RISK_FRACTION) return v
+        return null
+      }
       // W7: a plan that fails to write is recorded; the stamp above stays.
       try {
         recordTradePlan(db, tradeId, {
           accountId: acct, symbol: symbolName, side: sideWord, strategy, timeframe: parsed?.timeframe || null,
-          entry: entry ?? null, sl: it.sl ?? sl ?? null, tp: it.tp ?? tp ?? null, source: 'reconciler_adopted_intent',
+          entry: entry ?? null,
+          sl: legPrice(it.sl, it.sl_units, -1, 'sl') ?? sl ?? null,
+          tp: legPrice(it.tp, it.tp_units, +1, 'tp') ?? tp ?? null,
+          source: 'reconciler_adopted_intent',
         })
       } catch (err) {
         recordPlanWriteFailure(db, { tradeId, accountId: acct, symbol: symbolName, source: 'reconciler_adopted_intent', stage: 'adopt_stamp', error: err })

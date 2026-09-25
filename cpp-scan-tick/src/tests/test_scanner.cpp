@@ -6,16 +6,18 @@
 #include <iostream>
 using jsn::Value; using jsn::Object; using jsn::Array;
 Value read(const char* path) { std::ifstream f(path); assert(f); std::stringstream s; s << f.rdbuf(); return *jsn::parse(s.str()); }
-Value batch(const Value& fixture, const Value& expected, const std::string& account, const std::string& host = "demo.ctraderapi.com") {
+Value batch(const Value& fixture, const Value& expected, const std::string& account, const std::string& host = "demo.ctraderapi.com",
+            const std::string& epoch = "gateway-epoch-1", const std::string& symbol = "7", size_t count = 0) {
   Array rows;
   for (const auto& e : fixture.get("events").asArray()) {
+    if (count && rows.size() >= count) break;
     int flags = (e.get("bid").isNumber() ? 1 : 0) | (e.get("ask").isNumber() ? 2 : 0)
       | (e.get("snapshot").asBool() ? 16 : 0) | (e.get("crossed").asBool() ? 32 : 0) | (e.get("changed").asBool() ? 0 : 64);
     rows.push_back(Value(Object{{"sequence", e.get("seq")}, {"sourceSequence", e.get("seq")},
       {"receivedAtMs", e.get("recvMs")}, {"sourceTimestampMs", Value()}, {"flags", flags}, {"bid", e.get("bid")}, {"ask", e.get("ask")}}));
   }
   return Value(Object{{"schemaVersion", 1}, {"purpose", "mirror"}, {"feed", Object{{"provider", "ctrader"},
-    {"host", host}, {"accountId", account}, {"symbolId", "7"}}}, {"feedEpoch", "gateway-epoch-1"},
+    {"host", host}, {"accountId", account}, {"symbolId", symbol}}}, {"feedEpoch", epoch},
     {"configVersion", "fixture-v1"}, {"profileHash", expected.get("profileHash")}, {"profile", fixture.get("params")},
     {"candidateTtlMs", 3600000}, {"records", rows}});
 }
@@ -105,6 +107,93 @@ int main() {
     for (int i = 0; i < 4100; ++i) ring.push(Value(Object{{"candidateId", i}}));
     const auto data = ring.read(0); assert(data.get("gap").asBool()); assert(data.get("overwritten").asNumber() == 4);
     assert(data.get("candidates").asArray().size() == 256); assert(ring.read(5000).get("gap").asBool());
+  }
+  // A gateway restart mints a new feed epoch. Keyed with the epoch, every
+  // restart added 53 streams until 'stream_capacity' refused all input.
+  const auto submitRetrying = [](scan::TickScanner& s, const Value& body) {
+    for (int attempt = 0;; ++attempt) {
+      try { return s.submit(body); }
+      catch (const std::runtime_error&) { assert(attempt < 20000); std::this_thread::sleep_for(std::chrono::microseconds(100)); }
+    }
+  };
+  const auto row = [](const Value& status, const std::string& symbol) {
+    for (const auto& w : status.get("work").asArray()) if (w.get("symbolId").asString() == symbol) return w;
+    return Value();
+  };
+  {
+    // A restart must not reduce admissions: 512 streams under epoch A, then
+    // the same 512 from a restarted gateway (epoch B) are all accepted.
+    scan::TickScanner scanner(2, 4096, [=] { return now; });
+    for (const auto* epoch : {"epoch-a", "epoch-b"}) {
+      for (int symbol = 1; symbol <= 512; ++symbol) {
+        const auto r = submitRetrying(scanner, batch(fixture, expected, "11", "demo.ctraderapi.com", epoch, std::to_string(symbol), 20));
+        assert(r.get("accepted").asNumber() == 20);
+      }
+      scanner.flush();
+    }
+    const auto status = scanner.status();
+    assert(status.get("work").asArray().size() == 512); // one row per stream, not per epoch
+    assert(status.get("streams").get("draining").asNumber() == 0);
+    assert(status.get("streams").get("epochTurnovers").asNumber() == 512);
+    for (const auto& w : status.get("work").asArray()) {
+      assert(w.get("feedEpoch").asString() == "epoch-b" && w.get("epochTurnovers").asNumber() == 1);
+      assert(w.get("resets").asNumber() >= 1); // the new slot rewarmed from a gap
+    }
+    // cpp-verify refuses a contract over 256 KiB: a full stream table fits.
+    assert(jsn::dump(status).size() <= 256 * 1024);
+  }
+  {
+    // The first record under the new epoch is a snapshot (rewarm), and the
+    // superseded epoch cannot take the stream back.
+    scan::TickScanner scanner(1, 4096, [=] { return now; });
+    scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "epoch-a", "7", 30)); scanner.flush();
+    const auto before = scanner.comparisons(0).get("latestCursor").asNumber();
+    scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "epoch-b", "7", 30)); scanner.flush();
+    const auto after = scanner.comparisons(static_cast<long long>(before)).get("candidates").asArray();
+    assert(after.size() == 30 && after.front().get("feedEpoch").asString() == "epoch-b");
+    assert(after.front().get("quote").get("snapshot").asBool());
+    bool refused = false;
+    try { scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "epoch-a", "7", 30)); }
+    catch (const std::invalid_argument& e) { refused = std::string(e.what()) == "superseded_feed_epoch"; }
+    assert(refused);
+    const auto status = scanner.status();
+    assert(status.get("streams").get("supersededEpochRefusals").asNumber() == 1);
+    assert(status.get("work").asArray().size() == 1 && row(status, "7").get("feedEpoch").asString() == "epoch-b");
+  }
+  {
+    // Turnover under load: a new epoch arrives while the old epoch's events
+    // are still in the worker rings. Each old event must still reach its own
+    // slot (a replaced-in-place slot threw out_of_range on a worker thread),
+    // and every superseded slot is erased once drained. Run under TSan too.
+    scan::TickScanner scanner(2, 64, [=] { return now; });
+    for (int turn = 0; turn < 40; ++turn)
+      for (const auto* symbol : {"7", "8", "9"})
+        submitRetrying(scanner, batch(fixture, expected, "11", "demo.ctraderapi.com", "e" + std::to_string(turn), symbol, 25));
+    scanner.flush();
+    const auto status = scanner.status();
+    assert(status.get("work").asArray().size() == 3 && status.get("streams").get("draining").asNumber() == 0);
+    assert(status.get("streams").get("epochTurnovers").asNumber() == 39 * 3);
+    assert(status.get("processed").asNumber() == 40 * 3 * 25 && status.get("dropped").asNumber() == 0);
+    for (const auto* symbol : {"7", "8", "9"}) assert(row(status, symbol).get("feedEpoch").asString() == "e39");
+  }
+  {
+    // A full table admits a new stream only by evicting a stale one: the
+    // least recently fed stream with nothing in flight, stale after an hour.
+    long long clock = now; scan::TickScanner scanner(1, 4096, [&] { return clock; }, 3600000);
+    for (int symbol = 1; symbol <= 512; ++symbol) { scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "e1", std::to_string(symbol), 5)); scanner.flush(); }
+    const auto refusedNew = [&] {
+      try { scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "e1", "513", 5)); scanner.flush(); return false; }
+      catch (const std::runtime_error&) { return true; }
+    };
+    assert(refusedNew());
+    clock += 3600000 - 1; // streams 2..512 are fed again (duplicates still count); stream 1 is not
+    for (int symbol = 2; symbol <= 512; ++symbol) scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "e1", std::to_string(symbol), 5));
+    assert(refusedNew());
+    clock += 1;
+    assert(!refusedNew());
+    const auto status = scanner.status();
+    assert(status.get("streams").get("evicted").asNumber() == 1 && status.get("work").asArray().size() == 512);
+    assert(row(status, "1").isNull() && !row(status, "513").isNull());
   }
   std::cout << "scanner frozen oracle, account/feed isolation, retries, gaps, expiry and bounded output passed\n";
 }

@@ -78,9 +78,23 @@ export function buildLimitPayload({ accountId, symbolId, side, volume, entry, sl
  *   2. the trade that intent produced: a row naming it (trades.intent_id, or
  *      the tag on its label_raw — an adopted fill stores the broker label), or
  *      the row holding the position the intent was resolved with.
- * Every candidate must also be on the row's account, the same symbol
+ * Every candidate must also be on the row's account — or unattributed
+ * (account_id NULL), as X1's fill evidence reads it — the same symbol
  * (case-insensitive) and not on the opposite side (an unrecorded side does
  * not contradict the evidence). Pure DB; never throws.
+ *
+ * ONE RULE PER RECORD (V3 L2a × X1 merge, 26-09-2026). This decides the
+ * resting ROW (pending_orders.status) and nothing else. The INTENT's state is
+ * the ledger's alone: exec-engine's settleIntent (lib/order-answer.js
+ * entryAnswerVerdict) leaves a resting order ACCEPTED with its order id and
+ * NO position id, and entry-ledger.js (reconcileIntents,
+ * settleAcceptedFromOrderDetails) moves it on only from broker evidence — so
+ * the position path in (2) can only read a position id the ledger recorded
+ * on a fill (or, on a pre-X1 row not yet corrected, a pre-created id that
+ * only a real fill ever puts on a trade row). The position id is matched in
+ * both of its stored forms ('123' and '123.0'), as X1's fillEvidence
+ * (intent-corrections.js) matches it, so the row and the intent read the
+ * same evidence the same way.
  *
  * @returns {{ trade: object|null, intentId: string|null, via: string|null }}
  */
@@ -115,22 +129,24 @@ export function findLimitFill(db, row) {
   if (!intent?.id) return { trade: null, intentId: null, via: null }
   const intentId = String(intent.id)
   const acct = acctRow ?? (intent.account_id != null ? String(intent.account_id) : null)
-  const posId = intent.broker_position_id != null ? String(intent.broker_position_id) : null
+  const posId = intent.broker_position_id != null && String(intent.broker_position_id) !== ''
+    ? String(intent.broker_position_id).replace(/\.0+$/, '') : null
+  const posForms = posId != null ? [posId, `${posId}.0`] : [null, null]
   let candidates = []
   try {
     candidates = db.prepare(`SELECT id, account_id, symbol, side, label_raw, intent_id, ctrader_position_id, status
                                FROM trades
-                              WHERE intent_id = ? OR label_raw LIKE ? OR (? IS NOT NULL AND ctrader_position_id = ?)
+                              WHERE intent_id = ? OR label_raw LIKE ? OR (? IS NOT NULL AND CAST(ctrader_position_id AS TEXT) IN (?, ?))
                               ORDER BY id LIMIT 20`)
-      .all(intentId, `%|${intentId}`, posId, posId)
+      .all(intentId, `%|${intentId}`, posId, ...posForms)
   } catch { candidates = [] }
   const trade = candidates.find(t =>
-    (acct == null || String(t.account_id ?? '') === acct)
+    (acct == null || t.account_id == null || String(t.account_id) === acct)
     && up(t.symbol) === up(row.symbol)
     && (wantSide == null || !up(t.side) || sideOf(t.side) === wantSide)
     && ['open', 'closed'].includes(String(t.status || ''))
     && (t.intent_id === intentId || labelIntentId(t.label_raw || '') === intentId
-      || (posId != null && String(t.ctrader_position_id) === posId)),
+      || (posId != null && String(t.ctrader_position_id).replace(/\.0+$/, '') === posId)),
   ) || null
   return { trade, intentId, via }
 }
@@ -448,12 +464,15 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     timeframe: synth.timeframe || null,
     regime: null,
   })
-  const payload = buildLimitPayload({
-    accountId: creds.accountId, symbolId, side, volume: sized.volume,
-    entry: synth.entry, sl: synth.sl, tp: synth.tp1, digits, expiresAtMs, label,
-    relativePoints: sizing.relativePoints ?? ((d, dg) => Math.round(d * Math.pow(10, dg))),
-    riskCfg,
-  })
+  const payload = {
+    ...buildLimitPayload({
+      accountId: creds.accountId, symbolId, side, volume: sized.volume,
+      entry: synth.entry, sl: synth.sl, tp: synth.tp1, digits, expiresAtMs, label,
+      relativePoints: sizing.relativePoints ?? ((d, dg) => Math.round(d * Math.pow(10, dg))),
+      riskCfg,
+    }),
+    symbolName: symbol, // X1 / W2: ledger-only, stripped before the wire
+  }
 
   // P1b: the fence, by name — under the CALLING producer's id (see the note
   // on `producerId` above), so a retired caller is refused and a kept one
