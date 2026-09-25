@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { DEFAULT_PARAMS, profileHash } from '../lib/tick-strategy.js'
-import { TickComparisonReader, matchingProfile, comparisonMemo, comparisonRecord, retainComparisons, comparisonStatus, REFUSAL_WINDOW_MS } from './scanner-comparison.js'
+import { TickComparisonReader, matchingProfile, comparisonMemo, comparisonRecord, retainComparisons, comparisonStatus, REFUSAL_WINDOW_MS, REFUSAL_ROW_LIMIT } from './scanner-comparison.js'
 
 const HASH = profileHash(DEFAULT_PARAMS)
 const tickFeed = (symbolId, accountId = '11', host = 'demo.ctraderapi.com') => ({ provider: 'ctrader', host, accountId, symbolId: String(symbolId) })
@@ -171,7 +171,7 @@ test('the refusal breakdown opens only the last hour of refusals, however many a
   assert.equal(status.populations.find(p => p.state === 'input_refused').records, 20_041)
   const { db: view, log } = observed(db); comparisonStatus(view, { now })
   const breakdown = log.statements.find(s => /json_extract/.test(s.sql)).sql
-  assert.match(db.prepare(`EXPLAIN QUERY PLAN ${breakdown}`).all(0).map(r => r.detail).join(' | '),
+  assert.match(db.prepare(`EXPLAIN QUERY PLAN ${breakdown}`).all(0, 1).map(r => r.detail).join(' | '),
     /SEARCH scanner_comparisons USING INDEX scanner_comparison_source_state \(source=\? AND state=\? AND observed_ms>\?\)/)
 })
 
@@ -193,4 +193,21 @@ test('the 7-day age deletes run in bounded chunks, one statement per chunk', t =
   assert.deepEqual(aged('scanner_references'), [1000, 1000, 1000, 0])
   assert.equal(db.prepare('SELECT count(*) n FROM scanner_comparisons').get().n, 10)
   assert.equal(db.prepare('SELECT count(*) n FROM scanner_references').get().n, 5)
+})
+
+test('the refusal window and row limit are pinned (re-checker N-a, N-b): a wider window or no limit reads every retained refusal', () => {
+  assert.equal(REFUSAL_WINDOW_MS, 3_600_000, 'RED if the window is widened: the breakdown opens every retained refusal again')
+  assert.equal(REFUSAL_ROW_LIMIT, 5000)
+})
+
+test('the refusal breakdown reads at most REFUSAL_ROW_LIMIT rows and says when it is truncated', (t) => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const now = 1_800_000_000_000
+  comparisonRecord(db, 'seed', 'cpp-scan-timeframe', 'input_refused', { error: 'seed', reason: 'seed' }, now - 10)
+  const ins = db.prepare(`INSERT INTO scanner_comparisons (id, source, state, observed_ms, detail) VALUES (?, 'cpp-scan-timeframe', 'input_refused', ?, ?)`)
+  db.transaction(() => { for (let i = 0; i < REFUSAL_ROW_LIMIT + 50; i++) ins.run(`r${i}`, now - 1000 - i, JSON.stringify({ error: 'bar_invalid', reason: 'last_bar_partial' })) })()
+  const s = comparisonStatus(db, { now })
+  const read = s.inputRefusedLastHour.reduce((n, r) => n + r.records, 0)
+  assert.equal(s.inputRefusedTruncated, true, 'RED without the row limit: the whole hour is opened')
+  assert.equal(read, REFUSAL_ROW_LIMIT)
 })

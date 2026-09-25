@@ -200,6 +200,54 @@ test('historical steps still pass through the rate limiter, and credit back the 
   _resetPool()
 })
 
+// V3 M1 (P1/P4-1): the fast monitor's relVol fetch must be able to say how
+// much of its time was the shared 4/s bucket. The step reports its own wait.
+test('a historical step reports its token-bucket wait to its own onTokenWait; a throwing callback cannot break the request', async () => {
+  _resetPool()
+  const waits = []
+  const d = {
+    ...deps((msg, ws) => {
+      if (msg.payloadType === PT.GET_TRENDBARS_REQ) ws.reply(PT.GET_TRENDBARS_RES, { trendbar: [] }, msg.clientMsgId)
+    }),
+    takeHistoricalToken: async () => 250,
+    isHistorical: (t) => t === PT.GET_TRENDBARS_REQ,
+  }
+  const TB = { send: { payloadType: PT.GET_TRENDBARS_REQ, payload: {} }, expect: PT.GET_TRENDBARS_RES }
+  await run([{ ...TB, onTokenWait: (ms) => waits.push(ms) }], d)
+  assert.deepEqual(waits, [250])
+  await run([TB], d) // no callback: untouched
+  const out = await run([{ ...TB, onTokenWait: () => { throw new Error('observer broke') } }], d)
+  assert.ok(out, 'the request still completed')
+  _resetPool()
+})
+
+test('WIRING: wsGetTrendbarsBatch hands opts.onTokenWait to its trendbar step, and the pooled path calls it once per request', async () => {
+  _resetPool()
+  const prev = process.env.CTRADER_WS_POOL
+  process.env.CTRADER_WS_POOL = '1'
+  const { _setConnectForTests } = await import('./ctrader-session.js')
+  _setConnectForTests(() => {
+    const w = new FakeWs()
+    w.onSend = autoAuth((msg, ws) => {
+      if (msg.payloadType === PT.GET_TRENDBARS_REQ) ws.reply(PT.GET_TRENDBARS_RES, { trendbar: [] }, msg.clientMsgId)
+    })
+    return w
+  })
+  try {
+    const { wsGetTrendbarsBatch } = await import('./ctrader-ws.js')
+    const waits = []
+    const bars = await wsGetTrendbarsBatch('demo.example.com', 'cid', 'sec', 'tok', '999', 1, ['1m'], 21, 1_000, 0, { onTokenWait: (ms) => waits.push(ms) })
+    assert.ok(Array.isArray(bars['1m']))
+    assert.equal(waits.length, 1, `the token wait must be reported exactly once, saw ${JSON.stringify(waits)}`)
+    assert.ok(Number.isFinite(waits[0]) && waits[0] >= 0)
+  } finally {
+    _setConnectForTests(null)
+    if (prev === undefined) delete process.env.CTRADER_WS_POOL
+    else process.env.CTRADER_WS_POOL = prev
+    _resetPool()
+  }
+})
+
 // ---------------------------------------------------------------------------
 // WIRING. The module above can be perfect and still never be reached: wsRun
 // decides whether to use it, and that decision has its own failure modes —

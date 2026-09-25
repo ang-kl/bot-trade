@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
 import { runProtectionAuditBothSides } from './naked-position-guard.js'
+import { budgetOverrunSummary } from './runtime-record.js'
 
 test('protection reaches both broker sides even if one side cannot answer', async () => {
   const db = initDB(':memory:')
@@ -37,6 +38,7 @@ test('a hung broker side is reported without withholding the other side result',
   let release
   const blocked = new Promise(resolve => { release = resolve })
   const seen = []
+  const overrunsBefore = budgetOverrunSummary().sinceBoot.protection_audit_account?.n ?? 0
   try {
     const out = await runProtectionAuditBothSides(db, { ready: true, accountId: 'demo', isLive: false }, {
       accountBudgetMs: 20,
@@ -51,6 +53,11 @@ test('a hung broker side is reported without withholding the other side result',
     assert.equal(out.accounts, 1)
     assert.equal(out.blind, true, 'an entirely unreachable required side still fails coverage')
     assert.match(out.errors[0], /live.*budget/)
+    // V3 M1: the per-account budget overrun is COUNTED (heartbeats keep only
+    // the last error string), and only the hung account overran.
+    const after = budgetOverrunSummary().sinceBoot.protection_audit_account
+    assert.equal(after?.n, overrunsBefore + 1, JSON.stringify(after))
+    assert.equal(after.budgetMs, 20)
   } finally {
     release({ position: [] })
     await new Promise(resolve => setImmediate(resolve))

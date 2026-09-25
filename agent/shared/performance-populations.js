@@ -1,23 +1,24 @@
 // Report-only arithmetic shared by server and UI. No admission/risk consumer.
 // Money on historical trades has no verified conversion provenance. It may be
-// added within one stamped account, never across accounts or onto an identity.
-export const REPORT_SESSIONS = [
-  { key: 'SYD (ASX)', fromMin: 0, toMin: 360 },
-  { key: 'SG', fromMin: 60, toMin: 540 },
-  { key: 'HK', fromMin: 90, toMin: 480 },
-  { key: 'JPN', fromMin: 0, toMin: 360 },
-  { key: 'EUR', fromMin: 420, toMin: 930 },
-  { key: 'NY', fromMin: 810, toMin: 1200 },
-]
+// added within one stamped account, never onto an identity, and across
+// accounts only when every contributing account's broker deposit currency is
+// recorded and identical (owner default, 25-09-2026: money per currency, never
+// summed across currencies). Nothing is ever converted.
+import { REPORT_SESSIONS, sessionHint } from './report-sessions.js'
+// The session table lives in report-sessions.js (V3 WEB-6: exchange cash hours
+// in each exchange's IANA zone). Re-exported so this stays the one import for
+// report arithmetic.
+export { REPORT_SESSIONS }
+const CCY = /^[A-Z]{3}$/
 export function emptyPopulation() {
   return { n: 0, pricedN: 0, wins: 0, net: 0, gw: 0, gl: 0, tp: 0, part: 0, sl: 0, manual: 0,
     rrSum: 0, rrN: 0, realSum: 0, realN: 0, mismatch: 0, externalN: 0, externalNet: 0, unattributedN: 0,
     high: null, low: null }
 }
 const SUM_FIELDS = Object.keys(emptyPopulation()).filter(k => !['high', 'low'].includes(k))
-export function populationStats(groups, { available = true, accountId = 'all' } = {}) {
+export function populationStats(groups, { available = true, accountId = 'all', currency = null, currencyOf = null } = {}) {
   if (!available) return { n: null, pricedN: null, unpricedN: null, pnl: null, wr: null, pf: null,
-    tp: null, part: null, sl: null, edge: null, state: 'unavailable', moneyState: 'unavailable' }
+    tp: null, part: null, sl: null, edge: null, state: 'unavailable', moneyState: 'unavailable', currency: null }
   const st = emptyPopulation(), ids = new Set()
   for (const g of groups) {
     if (g.stats.n) ids.add(g.accountId)
@@ -25,7 +26,12 @@ export function populationStats(groups, { available = true, accountId = 'all' } 
     if (g.stats.high != null) st.high = st.high == null ? g.stats.high : Math.max(st.high, g.stats.high)
     if (g.stats.low != null) st.low = st.low == null ? g.stats.low : Math.min(st.low, g.stats.low)
   }
-  const comparable = !ids.has(null) && ids.size <= 1 && (ids.size === 1 || accountId !== 'all')
+  // Pooled across accounts only under one named currency that every
+  // contributing account is recorded in; the caller's filter is re-checked
+  // here, so a wrong predicate cannot add two currencies together.
+  const pooled = CCY.test(currency || '') && typeof currencyOf === 'function' && !ids.has(null)
+    && [...ids].every(id => currencyOf(id) === currency)
+  const comparable = pooled || (!ids.has(null) && ids.size <= 1 && (ids.size === 1 || accountId !== 'all'))
   const hasMoney = comparable && (st.pricedN > 0 || st.n === 0)
   const rr = st.rrN ? st.rrSum / st.rrN : null
   const wr = st.pricedN ? st.wins / st.pricedN * 100 : null
@@ -44,8 +50,27 @@ export function populationStats(groups, { available = true, accountId = 'all' } 
     payoff, requiredWinPctRealised: payoff == null ? null : 100 / (1 + payoff),
     state: st.n === 0 ? 'verified_zero' : 'observed',
     moneyState: !comparable ? 'unverified_cross_account_units' : !hasMoney ? 'unavailable'
-      : st.pricedN < st.n ? 'partial_recorded_account_units' : 'recorded_account_units',
+      : pooled ? (st.pricedN < st.n ? 'partial_recorded_currency_units' : 'recorded_currency_units')
+        : st.pricedN < st.n ? 'partial_recorded_account_units' : 'recorded_account_units',
+    currency: pooled ? currency : null,
   }
+}
+/** The recorded broker deposit currency of one account in this report, or
+ * null when the report carries none for it (never a default, never a guess). */
+export function reportCurrency(report, accountId) {
+  const c = accountId == null ? null : report?.currencyByAccount?.[String(accountId)]?.currency
+  return typeof c === 'string' && CCY.test(c) ? c : null
+}
+/** Money pooled across every account recorded in `currency`, and only those.
+ * Unattributed closes and accounts without a recorded currency are excluded:
+ * they belong to no currency. */
+export function reportCurrencyStats(report, key, currency, predicate = () => true) {
+  const ccy = CCY.test(currency || '') ? currency : null
+  const currencyOf = id => reportCurrency(report, id)
+  return populationStats(reportGroups(report, key, 'all', g => ccy != null && currencyOf(g.accountId) === ccy && predicate(g)), {
+    accountId: 'all', currency: ccy, currencyOf,
+    available: ccy != null && report?.status === 'complete' && report.windows.some(w => w.key === key),
+  })
 }
 export function reportGroups(report, key, accountId = 'all', predicate = () => true) {
   return (report?.windows?.find(w => w.key === key)?.groups || [])
@@ -74,4 +99,27 @@ export function reportLedger(report, accountId = 'all') {
   })
   return { generatedAt: report?.generatedAt ?? null, accountId, balance: null,
     balanceSource: 'use_identified_account_snapshot', windows, population: 'all_recorded_closes', currency: null }
+}
+/** The "Today by market session" rows, read from the report alone (V3 WEB-6).
+ * Each exchange row carries the report's own UTC intervals and its open-now
+ * reading. A report without them (an older server during a deploy) yields
+ * rows with no intervals and `open: null` — never an invented reading. */
+export function sessionBuckets(report, accountId = 'all') {
+  const stat = key => {
+    const a = reportStats(report, `session:${key}`, accountId)
+    return { n: a.n, pricedN: a.pricedN, pos: a.gw, neg: a.gl == null ? null : -a.gl,
+      high: a.high, low: a.low, avg: a.avg, sum: a.pnl, median: a.median }
+  }
+  const windowOf = key => report?.windows?.find(w => w.key === `session:${key}`)?.session
+  const buckets = REPORT_SESSIONS.map(s => {
+    const w = windowOf(s.key), intervals = Array.isArray(w?.intervals) ? w.intervals : null
+    return { key: s.key, exchange: s.exchange, intervals, hint: sessionHint(s, intervals),
+      open: typeof w?.openNow === 'boolean' ? w.openNow : null, ...stat(s.key) }
+  })
+  // Two rows with the same UTC intervals show the same figures by
+  // construction; the card marks the pair instead of leaving it to look a bug.
+  const sig = b => b.intervals?.length ? b.intervals.map(i => `${i.from}-${i.to}`).join(',') : null
+  for (const b of buckets) b.twin = sig(b) ? buckets.find(o => o !== b && sig(o) === sig(b))?.key ?? null : null
+  const sw = report?.sessionWindow
+  return { source: sw?.source ?? null, exceptions: sw?.exceptions ?? null, buckets, off: stat('OFF'), total: stat('ALL') }
 }

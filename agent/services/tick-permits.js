@@ -237,7 +237,10 @@ export async function runTickPermitFeeder(db, side, {
   now = Date.now(),
   log = (...a) => console.warn('[tick-permits]', ...a),
 } = {}) {
-  const out = { side: side?.name || 'exec', accounts: [], permits: 0, refused: [], released: 0, pushed: false, paused: [], budget: {} }
+  // V3 C4: `work` and `carried` feed the tick work receipt
+  // (tick-entry-work.js). `work` names each account by its FULL id with its
+  // outcome; everything else here stays masked (…1234) for the logs.
+  const out = { side: side?.name || 'exec', accounts: [], permits: 0, refused: [], released: 0, pushed: false, paused: [], budget: {}, work: [], carried: [] }
   const accounts = tickEntryAccountsFor(db, side)
   // Accounts no longer in the mode: their standing permits go now, not at expiry.
   try {
@@ -263,9 +266,11 @@ export async function runTickPermitFeeder(db, side, {
       try { const r = await resolve(db, creds, name); const id = Number(r?.id ?? r?.symbolId ?? r); if (Number.isFinite(id) && id > 0 && ids.includes(id)) symbolById.set(id, name) } catch { /* unresolvable: not carried */ }
     }
   }
+  out.carried = [...symbolById.values()]
   const rates = (() => { try { return scanRates(db) } catch { return null } })()
   const tickPermits = []
   for (const accountId of accounts) {
+    const refusedFrom = out.refused.length, before = tickPermits.length
     const rd = readinessFor(db, accountId)
     const failing = (rd?.readiness || []).filter(c => PAUSE_CHECKS.includes(c.check) && !c.ok).map(c => c.check)
     if (failing.length) {
@@ -273,6 +278,7 @@ export async function runTickPermitFeeder(db, side, {
       out.paused.push({ accountId: `…${accountId.slice(-4)}`, reason })
       out.released += releaseStandingReservations(db, accountId, TICK_PRODUCER, reason, { now }).released
       if (pausedLogged.get(accountId) !== reason) { pausedLogged.set(accountId, reason); log(`…${accountId.slice(-4)}: new tick entries PAUSED — ${reason} (exits keep running; TM-40)`) }
+      out.work.push({ accountId, permits: 0, paused: reason, firstRefusal: null, refused: [], budget: null })
       continue
     }
     if (pausedLogged.has(accountId)) { pausedLogged.delete(accountId); log(`…${accountId.slice(-4)}: tick entries resume — readiness checks clear`) }
@@ -295,6 +301,7 @@ export async function runTickPermitFeeder(db, side, {
       out.paused.push({ accountId: `…${accountId.slice(-4)}`, reason, detail: !pregate?.ok ? String(pregate?.reason || '') : `headroom $${Number(poolStatus?.status?.headroom ?? 0).toFixed(2)}` })
       out.released += releaseStandingReservations(db, accountId, TICK_PRODUCER, reason, { now }).released
       if (pausedLogged.get(accountId) !== reason) { pausedLogged.set(accountId, reason); log(`…${accountId.slice(-4)}: new tick entries PAUSED — ${reason} (the bar side's account guard; exits keep running)`) }
+      out.work.push({ accountId, permits: 0, paused: reason, firstRefusal: null, refused: [], budget: null })
       continue
     }
     const risk = accountRiskPerTrade(db, accountId)
@@ -337,6 +344,8 @@ export async function runTickPermitFeeder(db, side, {
       tickPermits.push({ accountId: Number(accountId), symbolId: Number(p.permit.symbolId), side: p.side, permit: { ...p.permit, ...fields } })
     }
     out.accounts.push(`…${accountId.slice(-4)}`)
+    const mine = out.refused.slice(refusedFrom).map(x => { const own = { ...x }; delete own.accountId; return own })
+    out.work.push({ accountId, permits: tickPermits.length - before, paused: null, firstRefusal: mine[0]?.reason ?? null, refused: mine, budget: out.budget[`…${accountId.slice(-4)}`] ?? null })
   }
   out.permits = tickPermits.length
   const placing = accounts.filter(id => !out.paused.some(p => p.accountId === `…${id.slice(-4)}`))
