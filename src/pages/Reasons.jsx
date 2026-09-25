@@ -24,7 +24,7 @@ export function ReasonsBlock({ def, result, at }) {
       <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">{def.why}</p>
       {st.status === 'error'
         ? <p className="text-(length:--fs-body) font-semibold text-[var(--color-down)]" data-not-read>{st.message}</p>
-        : <BodyView body={st.body} />}
+        : <BodyView body={st.body} maxRows={def.maxRows} keyedTables={def.keyedTables} />}
     </Card>
   )
 }
@@ -43,8 +43,8 @@ function KV({ pairs }) {
   )
 }
 
-function BodyView({ body }) {
-  const s = shapeBody(body)
+function BodyView({ body, maxRows, keyedTables }) {
+  const s = shapeBody(body, { ...(maxRows ? { maxRows } : {}), ...(keyedTables ? { keyedTables } : {}) })
   const empty = !s.scalars.length && !s.objects.length && !s.tables.length && !s.lists.length
   if (empty) return <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">the endpoint returned no fields</p>
   return (

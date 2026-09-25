@@ -121,6 +121,27 @@ describe('the thirteen endpoints', () => {
     expect(failed).toContain('not read — HTTP 503 order_lifecycle_unavailable')
     expect(failed).not.toMatch(/<table/)
   })
+  it('order-lifecycle: all 35 rules reach the page (the default 25-row cut hid STK-02..STK-11) and the stage summary is a table', () => {
+    const ids = [...Array.from({ length: 5 }, (_, i) => `PRE-0${i + 1}`), ...Array.from({ length: 10 }, (_, i) => `ORD-${String(i + 1).padStart(2, '0')}`),
+      ...Array.from({ length: 9 }, (_, i) => `CLS-0${i + 1}`), ...Array.from({ length: 11 }, (_, i) => `STK-${String(i + 1).padStart(2, '0')}`)]
+    expect(ids).toHaveLength(35)
+    const body = { scope: { account: 'all', explicit: true },
+      summary: { pre_order: { new: 0, legacy: 3, measurable: true, note: 'not a pass — 0 new defective record(s) over the readable rules' }, stuck: { new: 2, legacy: 0, measurable: true, note: '2 stuck record(s)' } },
+      rules: ids.map(id => ({ id, violations: id === 'STK-11' ? 1 : 0 })),
+      accounts: Array.from({ length: 32 }, (_, i) => ({ account: String(46130000 + i), stage: 'stuck', new: 1 })) }
+    const html = renderToStaticMarkup(<ReasonsBlock def={def('order-lifecycle')} result={{ ok: true, body }} />)
+    expect(html).toContain('STK-11')
+    expect(html).toMatch(/rules <span[^>]*>— 35 rows<\/span>/)
+    expect(html).toMatch(/accounts <span[^>]*>— 32 rows<\/span>/)
+    expect(html).not.toMatch(/first 25 of/)
+    // The summary: one row per stage with its own fields, not "2 fields".
+    expect(html).toMatch(/summary <span[^>]*>— 2 rows<\/span>/)
+    expect(html).toMatch(/<th[^>]*>key<\/th>/)
+    expect(html).toContain('not a pass — 0 new defective record(s) over the readable rules')
+    expect(html).not.toMatch(/2 fields/)
+    // Another block keeps the default cut: the option is per endpoint.
+    expect(shapeBody({ rows: ids.map(id => ({ id })) }).tables[0].rows).toHaveLength(25)
+  })
   it('the page is routed and in the navigation', () => {
     const app = readFileSync(new URL('../App.jsx', import.meta.url), 'utf8')
     expect(app).toMatch(/<Route path="\/reasons" element=\{<Reasons \/>\} \/>/)
