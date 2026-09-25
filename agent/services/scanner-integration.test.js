@@ -211,9 +211,20 @@ test('actual scan receipt and complete account records supply no-order context; 
   // on the Node item with the same JSON type, and the frozen blocker is the
   // text Node produces here — so a rename or re-type on either side is red.
   const shared = fixture('cpp-verify/src/tests/fixtures/node-entry-activity.json')
+  // V3 K1 — each calendar is carried once: an item whose identity is in the
+  // contract's `calendars` export drops its own copy (calendarIn 'calendars'),
+  // and cpp-verify gives it that entry's calendar by exact accountId, host and
+  // symbolId before market() reads it (watchdog_state.cpp evaluate(), the
+  // `calendars` lookup). So the item is checked as the verifier sees it.
+  assert.equal(activity.calendarIn, 'calendars', 'this identity is exported, so the item shares its calendar')
+  assert.equal(Object.hasOwn(activity, 'calendar'), false, 'a shared calendar is not repeated on the item')
+  const exported = reading.calendars.find(c => c.identity?.accountId === activity.accountId && c.identity?.host === activity.host && c.identity?.symbolId === activity.symbolId)
+  const seen = exported ? { ...activity, calendar: exported.calendar } : activity
+  assert.ok(seen.calendar && typeof seen.calendar === 'object', 'the verifier resolves a calendar object for the item')
+  assert.deepEqual(Object.keys(seen.calendar).sort(), Object.keys(shared.calendar).sort(), 'the resolved calendar carries exactly the fields the fixture carries')
   for (const [key, value] of Object.entries(shared)) {
-    assert.ok(Object.hasOwn(activity, key), `Node's entry_activity item lacks '${key}', which cpp-verify reads`)
-    assert.equal(value === null ? 'null' : typeof activity[key], value === null ? 'null' : typeof value, `'${key}' changed JSON type`)
+    assert.ok(Object.hasOwn(seen, key), `Node's entry_activity item lacks '${key}', which cpp-verify reads`)
+    assert.equal(value === null ? 'null' : typeof seen[key], value === null ? 'null' : typeof value, `'${key}' changed JSON type`)
   }
   assert.equal(activity.blocker, shared.blocker)
   assert.equal(reading.calendars[0].calendar.observedAtMs, now - 1000)

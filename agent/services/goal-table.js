@@ -9,7 +9,9 @@
 // result, not a gap: a subsystem with fewer closes than its floor reports
 // "not measurable" with the shortfall named, exactly as exit-counterfactual
 // and earned-floor already do, rather than a number that would read as
-// authoritative as one that had earned it.
+// authoritative as one that had earned it. V3 M3 adds a fourth, `proposed`,
+// for rows judged against limits the owner has not confirmed (the P1/P4
+// rows): the reading is shown, not counted on or off track.
 //
 // Nothing here computes a new metric. Each goal reads an existing one
 // (heartbeatView, decision_audit_last_json, exitCounterfactual,
@@ -28,6 +30,7 @@
 
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
+import { p1p4TargetDefaults, p1p4LimitsFromTargets, routeClass, p99Below, p99Unknown } from './p1p4-grade.js'
 
 export const GOAL_TABLE_KEY = 'goal_table_json'
 /** The momentum checkpoint's frozen verdict (Wave 3): written once on the date. */
@@ -121,6 +124,14 @@ export const DEFAULT_GOAL_TARGETS = Object.freeze({
   lifecycleNewDefectsMax: 0,
   lifecycleStuckMax: 0,
   lifecycleSnapshotMaxAgeMin: 30,
+  // V3 M3 (P1/P4-3): the startup, lag, protection-freshness and loop-latency
+  // limits — PROPOSED, not agreed (closure:205, H-P1-1). They live in
+  // p1p4-grade.js so the acceptance harness and these rows read one set.
+  // A null is a limit the owner has to set (no proposal exists). The four
+  // P1/P4 rows read 'proposed' until the owner stamps p1p4LimitsConfirmedAt
+  // with a date through POST /actions/goal-table; until then they are not
+  // counted as off track (owner principle 6: a proposal is not a result).
+  ...p1p4TargetDefaults(),
 })
 
 export function goalTargets(raw) {
@@ -128,6 +139,14 @@ export function goalTargets(raw) {
   if (raw && typeof raw === 'object') {
     for (const [k, v] of Object.entries(raw)) {
       if (k in DEFAULT_GOAL_TARGETS) {
+        if (DEFAULT_GOAL_TARGETS[k] === null) {
+          // V3 M3: a limit with no proposed value stays unset until a real
+          // number arrives. Number(null) is 0 and Number(true) is 1, so
+          // without this branch a stored null (every POST stores the full
+          // merged targets) would become a zero limit on the next read.
+          if (v !== null && v !== '' && typeof v !== 'boolean' && Number.isFinite(Number(v))) out[k] = Number(v)
+          continue
+        }
         if (typeof DEFAULT_GOAL_TARGETS[k] === 'string') {
           // A date-valued target (momentumTrialSince): a string that parses
           // as a date replaces the default; anything else is junk and the
@@ -600,6 +619,202 @@ async function momentumCheckpointGoal(db, targets, now) {
   })
 }
 
+// ---------------------------------------------------------------------------
+// V3 M3 (P1/P4-3): four rows on the startup and load limits. They read the
+// boot record V3 M1 persists (boot_record_json: the startup window's stamps,
+// the lag tap and the main-loop ring) and each account's raw protection
+// timestamps — never a heartbeat verdict, which the boot grace suppresses for
+// the first 300 s (heartbeat.js BOOT_GRACE_SEC).
+//
+// THE VERDICT IS 'proposed' until the owner confirms the limits (closure:205):
+// the row still shows the reading and what it WOULD read (`proposedVerdict`),
+// but it is not counted as off track — a proposal presented as a result is
+// what owner principle 6 forbids. With p1p4LimitsConfirmedAt set, the same
+// rows read on_track / off_track. No data is not_measurable, confirmed or not.
+// ---------------------------------------------------------------------------
+
+export const BOOT_RECORD_KEY = 'boot_record_json'
+/** The boot record is persisted every 30 s in the startup window, every 5 min after; older than this, it is not current. */
+export const BOOT_RECORD_MAX_AGE_MIN = 10
+
+function readBootRecord(db) {
+  try { return JSON.parse(getState(db, BOOT_RECORD_KEY) || 'null') } catch { return null }
+}
+
+function p1p4Verdict(targets, measurable, ok) {
+  const { confirmed } = p1p4LimitsFromTargets(targets)
+  const limits = confirmed ? 'confirmed' : 'proposed'
+  if (!measurable) return { verdict: 'not_measurable', limits }
+  const would = ok ? 'on_track' : 'off_track'
+  return confirmed ? { verdict: would, limits } : { verdict: 'proposed', proposedVerdict: would, limits }
+}
+
+const PROPOSED_SUFFIX = ' · limits PROPOSED, not confirmed by the owner (H-P1-1): reported, not counted as off track'
+// The acceptance harness grades a window in which no /health sample saw a
+// visible browser tab Not Verifiable (p1p4-grade.js `unrepresentative`: its
+// Passed become Not Verifiable). These rows do not judge that — /health's
+// visible-tab count is live, not recorded per window — so a quiet window can
+// read on track here while the harness grades the same window Not
+// Verifiable. Said on every measured row (checker, 25-09) rather than left
+// for the reader to discover once the limits are confirmed.
+const LOAD_SCOPE = ' · load representativeness (whether a Desk or Performance tab was visible) is not judged here — the acceptance harness grades it'
+const secs = (ms) => (ms == null ? '?' : `${Math.round(ms / 100) / 10} s`)
+
+/** The record's age in minutes at `nowMs`, from its own persistedAt; null when undated. */
+function recordAgeMin(rec, nowMs) {
+  const at = Date.parse(rec?.persistedAt || '')
+  return Number.isFinite(at) ? (nowMs - at) / 60_000 : null
+}
+
+/** The last recorded boot's startup window: listening, worst stall, critical 5xx, first band and audit, first-evaluation failures. */
+function startupWindowGoal(db, targets, nowMs) {
+  const rec = readBootRecord(db)
+  const { limits } = p1p4LimitsFromTargets(targets)
+  const base = {
+    name: 'Startup window meets the P1/P4 limits', subsystem: 'boot record',
+    metric: `last boot, BOOT → +${limits.startupWindowMin} min: listening, worst event-loop stall, 5xx on critical routes, first protection band and first clean all-account audit`,
+    target: `listening ≤ ${limits.listeningMaxSec} s · stall < ${limits.lagMaxMs} ms · critical 5xx ≤ ${limits.critical5xxMax} · first band without overrun · clean audit ≤ ${limits.recoverySec} s`,
+    horizon: 'each boot', source: '/health bootRecord (boot_record_json)',
+  }
+  const bootAtMs = Date.parse(rec?.bootAt || '')
+  if (!rec || !Number.isFinite(bootAtMs)) {
+    return goal('startup_window', { ...base, current: null, ...p1p4Verdict(targets, false, false), note: 'no boot record (boot_record_json absent — the V3 M1 build is not running yet)' })
+  }
+  const asOfMs = Date.parse(rec.persistedAt || '') || nowMs
+  const sinceBoot = asOfMs - bootAtMs
+  const windowDone = rec.startupHttp?.complete === true || sinceBoot >= limits.startupWindowMin * 60_000
+  const recoveryDone = sinceBoot >= limits.recoverySec * 1000
+  const fails = []
+  const listening = rec.listening?.sinceBootMs
+  if (listening != null && listening > limits.listeningMaxSec * 1000) fails.push(`listening ${secs(listening)}`)
+  const stall = rec.startupLag?.ms
+  if (stall != null && stall >= limits.lagMaxMs) fails.push(`stall ${Math.round(stall)} ms (${rec.startupLag.loopPhase ?? '?'})`)
+  let crit5 = 0
+  let rep5 = 0
+  for (const r of rec.startupHttp?.routes || []) {
+    if (routeClass(r.route) === 'critical') crit5 += Number(r['5xx']) || 0
+    else rep5 += Number(r['5xx']) || 0
+  }
+  if (crit5 > limits.critical5xxMax) fails.push(`${crit5} critical-route 5xx`)
+  const band = rec.first?.band
+  if (band && (band.ok !== true || band.overran === true)) fails.push('first band overran or failed')
+  if (!band && recoveryDone) fails.push(`no band by +${limits.recoverySec} s`)
+  const clean = rec.first?.cleanProtectionAudit
+  if (clean && clean.sinceBootMs > limits.recoverySec * 1000) fails.push(`first clean audit at ${secs(clean.sinceBootMs)}`)
+  if (!clean && recoveryDone) fails.push(`no clean all-account audit by +${limits.recoverySec} s`)
+  const firstFailed = ['loop', 'slowMonitor', 'equityStop', 'adaptiveBreaker', 'performanceBreaker'].filter(k => rec.first?.[k]?.ok === false)
+  if (firstFailed.length) fails.push(`first evaluation failed: ${firstFailed.join(', ')}`)
+  // A failure already observed cannot be undone by the rest of the window.
+  const measurable = fails.length > 0 || windowDone
+  const current = [
+    `listening ${secs(listening)}`, `worst stall ${stall == null ? '?' : `${Math.round(stall)} ms`}`,
+    `critical 5xx ${crit5}`, `report 5xx ${rep5}`,
+    `band ${band ? (band.ok === true ? 'ok' : 'failed') : 'none yet'}`,
+    `clean audit ${clean ? `+${secs(clean.sinceBootMs)}` : 'none yet'}`,
+    `first loop ${rec.first?.loop ? secs(rec.first.loop.ms) : 'not ended'}`,
+  ].join(' · ')
+  const v = p1p4Verdict(targets, measurable, fails.length === 0)
+  const note = !measurable
+    ? `boot ${rec.bootAt} (${rec.commit ?? 'commit ?'}): the startup window is still open — ${Math.max(0, Math.round((limits.startupWindowMin * 60_000 - sinceBoot) / 60_000))} min left`
+    : `boot ${rec.bootAt} (${rec.commit ?? 'commit ?'}): ${fails.length ? fails.join('; ') : 'every component within the limits'}${rep5 ? `; ${rep5} report-route 5xx listed, tolerance is the owner's (H-P1-2)` : ''}${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`
+  return goal('startup_window', { ...base, current, ...v, note, bootAt: rec.bootAt })
+}
+
+/** The event-loop lag over the last 10 minutes, from the 100 ms probe's tap (the persisted copy). */
+function eventLoopLagGoal(db, targets, nowMs) {
+  const rec = readBootRecord(db)
+  const { limits } = p1p4LimitsFromTargets(targets)
+  const w = rec?.latencyWindows?.eventLoopLag?.last10m
+  const age = recordAgeMin(rec, nowMs)
+  const stale = age == null || age > BOOT_RECORD_MAX_AGE_MIN
+  const read = !!w && !stale && Number(w.n) > 0 && w.maxMs != null
+  // p99 against the strict proposal "p99 < limit" (H-P1-1) through the
+  // histogram bound (p1p4-grade.js p99Below): a bound that reaches the limit
+  // cannot show it, so the row is not measurable then — unless the max has
+  // already failed, which decides the row on its own.
+  const maxOk = read && w.maxMs < limits.lagMaxMs
+  const p99 = read ? p99Below(w.p99LeMs, limits.lagP99MaxMs) : null
+  const p99Open = read && maxOk && p99 === 'unknown'
+  const measurable = read && !p99Open
+  const ok = measurable && maxOk && p99 !== 'fail'
+  const v = p1p4Verdict(targets, measurable, ok)
+  return goal('event_loop_lag', {
+    name: 'Event loop answers in time', subsystem: 'process',
+    metric: 'event-loop lag over the last 10 min (100 ms probe): max, and p99 as a histogram upper bound',
+    target: `max < ${limits.lagMaxMs} ms · p99 < ${limits.lagP99MaxMs} ms`, horizon: '10 min',
+    current: read ? `max ${w.maxMs} ms · p99 ≤ ${w.p99LeMs} ms` : null,
+    ...v,
+    note: !rec ? 'no boot record (the V3 M1 build is not running yet)'
+      : stale ? `the persisted record is ${age == null ? 'undated' : `${Math.round(age)} min old`} — older than ${BOOT_RECORD_MAX_AGE_MIN} min`
+        : !read ? 'no probe in the window'
+          : p99Open ? `${p99Unknown(w.p99LeMs, limits.lagP99MaxMs)}; max ${w.maxMs} ms is within its limit`
+            : `${w.n} probes; worst ${w.worst?.ms ?? w.maxMs} ms at ${w.worst?.at ?? '?'} (${w.worst?.loopPhase ?? '?'})${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
+    source: '/health latencyWindows.eventLoopLag.last10m',
+  })
+}
+
+/**
+ * Every ENABLED account's Node audit and independent reading, aged from their
+ * raw timestamps (the same readers /state/heartbeats runtime.accounts uses).
+ */
+async function protectionFreshnessGoal(db, targets, nowMs) {
+  const { lastProtectionAudit } = await import('./naked-position-guard.js')
+  const { independentProtectionView } = await import('./independent-protection.js')
+  const { limits } = p1p4LimitsFromTargets(targets)
+  const ids = enabledAccountIds(db)
+  const late = []
+  let auditOk = 0
+  let indOk = 0
+  for (const id of ids) {
+    const a = lastProtectionAudit(db, { accountId: id, nowMs, expectedSec: 60, staleFactor: 3 })
+    const auditAt = Date.parse(a?.at || '')
+    const auditAge = Number.isFinite(auditAt) ? Math.round((nowMs - auditAt) / 1000) : null
+    if (auditAge != null && auditAge <= limits.auditAgeMaxSec) auditOk++
+    else late.push(`…${id.slice(-4)} audit ${auditAge == null ? 'never' : `${auditAge} s`}`)
+    const ind = independentProtectionView(db, id, nowMs)
+    const indAt = Number(ind?.checkedAtMs)
+    const indAge = indAt > 0 ? Math.round((nowMs - indAt) / 1000) : null
+    if (indAge != null && indAge <= limits.independentAgeMaxSec) indOk++
+    else late.push(`…${id.slice(-4)} independent ${indAge == null ? 'none' : `${indAge} s`}`)
+  }
+  const measurable = ids.length > 0
+  const v = p1p4Verdict(targets, measurable, measurable && late.length === 0)
+  return goal('protection_freshness', {
+    name: 'Protection readings are fresh', subsystem: 'protection',
+    metric: 'enabled accounts whose Node protection audit and independent broker reading are within their age limits',
+    target: `audit ≤ ${limits.auditAgeMaxSec} s · independent ≤ ${limits.independentAgeMaxSec} s, every enabled account`, horizon: 'now',
+    current: measurable ? `${auditOk}/${ids.length} audit · ${indOk}/${ids.length} independent` : null,
+    ...v,
+    note: !measurable ? 'no enabled account' : `${late.length ? late.join(', ') : 'every reading within its limit'}${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
+    source: '/state/heartbeats runtime.accounts (protection.at, independentProtection.checkedAtMs)',
+  })
+}
+
+/** The main loop's duration p95 over the last 360 cycles; the first loop is named beside it. */
+function loopLatencyGoal(db, targets, nowMs) {
+  const rec = readBootRecord(db)
+  const { limits } = p1p4LimitsFromTargets(targets)
+  const m = rec?.latencyWindows?.mainLoop
+  const age = recordAgeMin(rec, nowMs)
+  const stale = age == null || age > BOOT_RECORD_MAX_AGE_MIN
+  const measurable = !!m && !stale && Number(m.n) >= 10 && m.p95 != null
+  const v = p1p4Verdict(targets, measurable, measurable && m.p95 <= limits.mainLoopP95MaxSec * 1000)
+  const first = rec?.first?.loop
+  const firstNote = first ? `; first loop ${secs(first.ms)}${limits.firstLoopMaxSec == null ? ' (no bar set — the owner sets it)' : ` against ${limits.firstLoopMaxSec} s`}` : ''
+  return goal('loop_latency', {
+    name: 'Main loop completes in time', subsystem: 'main loop',
+    metric: 'main-loop duration p95 over the last 360 cycles (the first loop reported apart)',
+    target: `p95 ≤ ${limits.mainLoopP95MaxSec} s`, horizon: 'last 360 loops',
+    current: measurable ? `p95 ${secs(m.p95)} over ${m.n} loops (max ${secs(m.max)})` : null,
+    ...v,
+    note: !rec ? 'no boot record (the V3 M1 build is not running yet)'
+      : stale ? `the persisted record is ${age == null ? 'undated' : `${Math.round(age)} min old`} — older than ${BOOT_RECORD_MAX_AGE_MIN} min`
+        : !measurable ? `${m?.n ?? 0} loop(s) recorded — under the 10-loop floor${firstNote}`
+          : `p50 ${secs(m.p50)}, p99 ${secs(m.p99)}${firstNote}${LOAD_SCOPE}${v.verdict === 'proposed' ? PROPOSED_SUFFIX : ''}`,
+    source: '/health latencyWindows.mainLoop',
+  })
+}
+
 /** V3 L1: pre-order / order / close / stuck, from order_lifecycle_last_json (order-lifecycle.js lifecycleGoals). */
 export async function lifecycleGoalRows(db, targets, now, { read = null } = {}) {
   const { lifecycleGoals, readSnapshot } = await import('./order-lifecycle.js')
@@ -632,6 +847,11 @@ export async function goalTable(db, { now = Date.now(), lifecycleRead = null } =
     ['fundable_universe', () => fundableGoal(db, t, now)],
     ['account_horizon', () => horizonGoal(db, t)],
     ['momentum_checkpoint', () => momentumCheckpointGoal(db, t, now)],
+    // V3 M3 (P1/P4-3): 'proposed' until the owner confirms the limits.
+    ['startup_window', () => startupWindowGoal(db, t, now)],
+    ['event_loop_lag', () => eventLoopLagGoal(db, t, now)],
+    ['protection_freshness', () => protectionFreshnessGoal(db, t, now)],
+    ['loop_latency', () => loopLatencyGoal(db, t, now)],
   ]
   const goals = []
   // Family rows come as a group (one per family) so a failed reader shows
@@ -649,7 +869,9 @@ export async function goalTable(db, { now = Date.now(), lifecycleRead = null } =
   try { goals.push(...await lifecycleGoalRows(db, t, now, { read: lifecycleRead })) } catch (err) {
     for (const stage of ['pre_order', 'order', 'close', 'stuck']) goals.push(goal(`lifecycle_${stage}`, { name: `lifecycle_${stage}`, subsystem: 'goal table', metric: 'unreadable', target: null, horizon: null, current: null, verdict: 'not_measurable', note: `reader failed: ${err?.message || err}`, source: null }))
   }
-  const summary = { on_track: 0, off_track: 0, not_measurable: 0 }
+  // `proposed` (V3 M3) is counted on its own: a reading against limits the
+  // owner has not confirmed is neither on nor off track.
+  const summary = { on_track: 0, off_track: 0, not_measurable: 0, proposed: 0 }
   for (const g of goals) summary[g.verdict] = (summary[g.verdict] || 0) + 1
-  return { at: new Date(now).toISOString(), targets: t, goals, summary, note: 'Three verdicts. not_measurable is a result, not a gap: the metric exists and has not earned a number yet — the note says how far it is from doing so.' }
+  return { at: new Date(now).toISOString(), targets: t, goals, summary, note: 'Three verdicts, and a fourth for unconfirmed limits. not_measurable is a result, not a gap: the metric exists and has not earned a number yet — the note says how far it is from doing so. proposed: the row reads against limits the owner has not confirmed (H-P1-1); proposedVerdict says what it would read, and it is not counted as off track until the owner confirms.' }
 }

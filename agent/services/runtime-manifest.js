@@ -79,10 +79,43 @@ export function mountFacts(path) {
 }
 
 /**
+ * The tick recorder as the sidecar's own /health reports it (main.cpp, the
+ * `tick` object): null there means the sidecar has no TICK_SPOOL_PATH and
+ * builds no recorder; an absent key means an older build that does not say.
+ * V3 R1: sidecarFacts used to drop this object, so the manifest could only
+ * print Node's own TICK_SPOOL_PATH — which Node never uses.
+ */
+export function recorderFacts(tick) {
+  if (tick === null) return { enabled: false }
+  if (!tick || typeof tick !== 'object') return null
+  const n = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
+  // GW-CAP (#1111): the cap in force and where it came from (default / env /
+  // refused), and whether it fits the mount — null when the build predates it
+  // or the mount is unmeasured, never a guessed 2 GiB.
+  const lim = tick.limits && typeof tick.limits === 'object' ? tick.limits : null
+  return {
+    spoolCapBytes: n(lim?.spoolCapBytes),
+    spoolCapSource: lim?.spoolCapSource != null ? String(lim.spoolCapSource) : null,
+    fitsMount: typeof lim?.fitsMount === 'boolean' ? lim.fitsMount : null,
+    enabled: tick.enabled !== false,
+    recording: typeof tick.recording === 'boolean' ? tick.recording : null,
+    state: tick.state != null ? String(tick.state) : null,
+    segmentsSealed: n(tick.segmentsSealed),
+    sealedBytes: n(tick.sealedBytes),
+    openBytes: n(tick.openBytes),
+    diskAvailBytes: n(tick.diskAvailBytes),
+    usagePct: n(tick.usagePct),
+    symbols: n(tick.symbols),
+  }
+}
+
+/**
  * Sidecar facts from its /health, via an injected fetcher so the test never
  * touches the network. The sidecar's /health reports bootId, startedAtMs,
- * connected, accountCount, guard and counters — it does NOT report a commit,
- * and the manifest says so rather than inferring one.
+ * connected, accountCount, guard, counters and the tick recorder's summary.
+ * It does not report a commit today (GW-1 adds it): a `commit` string is read
+ * when present and otherwise the manifest says it is not reported rather than
+ * inferring one.
  */
 export async function sidecarFacts(base, { fetcher = fetch, secret = process.env.EXEC_SECRET || '', timeoutMs = 3000 } = {}) {
   if (!base) return { reachable: false, reason: 'no base url configured' }
@@ -102,7 +135,9 @@ export async function sidecarFacts(base, { fetcher = fetch, secret = process.env
       halt: h.guard?.halt ?? h.halt ?? null,
       telemetryWritten: h.telemetryWritten ?? null,
       telemetryDropped: h.telemetryDropped ?? null,
-      commit: null, // not reported by the sidecar (plan B18 / TM-37)
+      // Not reported by today's sidecar (plan B18 / TM-37); read if a build reports it.
+      commit: typeof h.commit === 'string' && h.commit.trim() ? h.commit.trim() : null,
+      ...('tick' in h ? { recorder: recorderFacts(h.tick) } : {}),
     }
   } catch (err) {
     return { reachable: false, reason: err?.name === 'TimeoutError' ? 'timeout' : String(err?.message || err) }
@@ -127,7 +162,11 @@ export async function runtimeManifest(db, {
   items.push(item('node.execSecret', env.EXEC_SECRET ? 'set' : 'unset', 'env EXEC_SECRET', true, 'value never reported'))
   items.push(item('node.execFallback', env.EXEC_FALLBACK === '0' ? 'off' : 'on', 'env EXEC_FALLBACK', true))
   for (const k of TICK_ENV) {
-    items.push(item(`tick.env.${k}`, env[k] ? 'set' : 'unset', `env ${k}`, true, env[k] ? null : 'tick engine not configured (expected until P3)'))
+    // V3 R1: these configure the SIDECARS, not Node. "unset" here is Node's
+    // own environment only and says nothing about whether a sidecar records
+    // (it read "tick engine not configured" while both sidecars recorded);
+    // sidecar.<side>.recorder below is what each sidecar reports.
+    items.push(item(`tick.env.${k}`, env[k] ? 'set' : 'unset', `env ${k} (Node's own environment)`, true, env[k] ? null : 'unset in Node\'s environment only; it configures a sidecar, not Node — see sidecar.<side>.recorder for what each sidecar records'))
   }
   // --- database ---
   const sq = sqliteRuntime(db)
@@ -162,8 +201,14 @@ export async function runtimeManifest(db, {
   for (const [name, base] of [['demo', env.EXEC_URL_DEMO], ['live', env.EXEC_URL_LIVE]]) {
     const f = await sidecarFacts(base, { fetcher, secret: env.EXEC_SECRET || '' })
     items.push(item(`sidecar.${name}.reachable`, f.reachable, `${name} /health`, true, f.reachable ? null : f.reason))
-    items.push(item(`sidecar.${name}.commit`, null, `${name} /health`, false, 'the sidecar does not report its commit (TM-37)'))
+    items.push(f.commit
+      ? item(`sidecar.${name}.commit`, f.commit, `${name} /health`, true)
+      : item(`sidecar.${name}.commit`, null, `${name} /health`, false, 'the sidecar does not report its commit (TM-37)'))
     if (f.reachable) {
+      // V3 R1: the recorder the sidecar itself reports, never Node's env.
+      if (f.recorder === undefined) items.push(item(`sidecar.${name}.recorder`, null, `${name} /health.tick`, false, 'this sidecar build does not report its tick recorder'))
+      else if (f.recorder === null) items.push(item(`sidecar.${name}.recorder`, null, `${name} /health.tick`, false, 'the tick field is not an object'))
+      else items.push(item(`sidecar.${name}.recorder`, f.recorder, `${name} /health.tick`, true, f.recorder.enabled ? null : 'no TICK_SPOOL_PATH on this sidecar: it records nothing'))
       items.push(item(`sidecar.${name}.bootId`, f.bootId, `${name} /health`, f.bootId != null))
       items.push(item(`sidecar.${name}.startedAtMs`, f.startedAtMs, `${name} /health`, f.startedAtMs != null))
       items.push(item(`sidecar.${name}.connected`, f.connected, `${name} /health`, f.connected != null))

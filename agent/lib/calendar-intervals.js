@@ -69,6 +69,26 @@ export function calendarIntervals(calendar, from, to) {
   return result
 }
 
+/**
+ * V3 K1: the projection as the watchdog contract carries it — exactly the
+ * fields cpp-verify's market() reads (watchdog_state.cpp:19-42: identity,
+ * source, version, observedAtMs, expiresAtMs, fromMs, toMs, intervals), with
+ * the window starting one UTC day before today instead of eight. The verifier
+ * only asks "is `now` inside an interval" for as long as the observation is
+ * fresh (24 h), and toMs is unchanged (today + 2 days), so a retained
+ * contract answers the same through a Node outage. sessionOpenedAtMs,
+ * sessionId and nextOpeningMs stay on the work items that need them; the
+ * verifier reads them there, never from a calendar. Returns null for null.
+ */
+export function contractCalendar(projection, now = Date.now()) {
+  if (!projection) return null
+  const from = Math.max(projection.fromMs, Math.floor(now / DAY) * DAY - DAY)
+  const intervals = []
+  for (const iv of projection.intervals) if (iv.toMs > from) intervals.push({ fromMs: Math.max(iv.fromMs, from), toMs: iv.toMs })
+  return { identity: projection.identity, source: projection.source, version: projection.version,
+    observedAtMs: projection.observedAtMs, expiresAtMs: projection.expiresAtMs, fromMs: from, toMs: projection.toMs, intervals }
+}
+
 export function projectCalendar(evidence, now = Date.now()) {
   if (!evidence?.calendar || evidence.marketStatus === 'MARKET_STATUS_UNKNOWN') return null
   const from = Math.floor(now / DAY) * DAY - 8 * DAY, to = Math.floor(now / DAY) * DAY + 2 * DAY

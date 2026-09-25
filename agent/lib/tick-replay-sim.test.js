@@ -206,3 +206,238 @@ test('PR-Q1: maxHoldEvents 0 is 4N inside simulate — the replayer given the C+
   }
   assert.equal(normalizeMaxHoldEvents(0, 64), 256); assert.equal(normalizeMaxHoldEvents(null, 64), 256); assert.equal(normalizeMaxHoldEvents(-3, 64), 256); assert.equal(normalizeMaxHoldEvents(40, 64), 40)
 })
+
+// ---------------------------------------------------------------------------
+// PR-Q3 (V3 P6/P7, 25-09-2026): the live filters as a stamped sim block.
+// ---------------------------------------------------------------------------
+import { createHash } from 'node:crypto'
+import { normalizeLiveFilters, fillVeto, liveFiltersKey, LIVE_FILTERS_VERSION, GATEWAY_LIVE_FILTERS } from './tick-replay-sim.js'
+
+/** Flat wire-unit quotes (1.00000 / 1.00002), `n` events 100 ms apart, with per-index overrides [bid, ask, dt]. */
+function wireSeries(n, overrides = {}) {
+  const spec = []
+  for (let i = 0; i < n; i++) spec.push(overrides[i] || [100_000, 100_002])
+  return series(spec)
+}
+const plant = (ev, i, side, stopDistance, q = ev[i]) => ({ seq: ev[i].seq, recvMs: ev[i].recvMs, side, stopDistance, bid: q.bid, ask: q.ask })
+const Q3_SIM = { latencyMs: 0, minTargetToCost: 1, blocks: 1 }
+const vetoedSeqs = (r) => r.parity.vetoes.map(v => [v.seq, v.filter])
+/** A trade's book identity: what the shadow would record for it. */
+const bookOf = (t) => [t.side, t.signalSeq, t.entrySeq, t.exitSeq, t.entry, t.exit, t.reason, t.netR]
+
+test('PR-Q3 stop floor: vetoes exactly the signal whose stop is under llround(minStopFraction × entry) — 149 < 150 refused, 150 kept — and the two models differ on what the refusal does to the book', () => {
+  const ev = wireSeries(12)
+  // entry = ask 100002, floor = round(0.0015 × 100002) = 150
+  const signals = [plant(ev, 1, 'BUY', 149), plant(ev, 3, 'BUY', 150)]
+  // 'book' (a ShadowBook applying the filter): the refused signal opens nothing and FREES the book.
+  const r = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { model: 'book', minStopFraction: 0.0015 } }, { signalsOverride: signals })
+  assert.deepEqual(vetoedSeqs(r), [[ev[1].seq, 'stopFloor']])
+  assert.deepEqual(r.trades.map(t => t.signalSeq), [ev[3].seq], 'the 150 stop fills')
+  assert.deepEqual(r.summary.diagnostics.vetoes, { counterTrend: 0, signalTtl: 0, priceBound: 0, stopFloor: 1, total: 1 })
+  // Unfiltered, the 149 stop fills and holds the book, so the second signal is not taken.
+  const off = simulate(ev, PARAMS, Q3_SIM, { signalsOverride: signals })
+  assert.deepEqual(off.trades.map(t => t.signalSeq), [ev[1].seq]); assert.equal(off.rejected.noFill, 1)
+  // 'firer' (the default — the gateway today): the shadow book fills the 149 and HOLDS it, the
+  // firer refuses the live order, so the 150 is not taken and nothing trades.
+  const f = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { minStopFraction: 0.0015 } }, { signalsOverride: signals })
+  assert.equal(f.sim.liveFilters.model, 'firer')
+  assert.deepEqual(vetoedSeqs(f), [[ev[1].seq, 'stopFloor']])
+  assert.deepEqual(f.trades, [], 'RED if a refused fill is reported as a trade')
+  assert.equal(f.rejected.noFill, 1, 'the held refusal blocks the 150, as the shadow would')
+  assert.deepEqual(f.vetoedTrades.map(bookOf), off.trades.map(bookOf), 'the book held exactly the unfiltered trade')
+  assert.equal(f.summary.diagnostics.outcome, 'live_filtered')
+  assert.equal(f.summary.diagnostics.vetoedTrades.byFilter.stopFloor.trades, 1)
+})
+
+test('PR-Q3 price bound: vetoes the fill more than floor(overshootFraction × stop) from the signal\'s own quote — ask for a BUY, bid for a SELL; exactly the bound is kept', () => {
+  // stop 200 × 0.25 = 50. BUY at idx1 (ask 100002) fills at idx2 ask 100053: 51 away → refused.
+  // BUY at idx4 fills at idx5 ask 100052: 50 away → kept. It runs to the target (idx7 bid jumps).
+  // SELL at idx9 (bid 100000) fills at idx10 bid 99949: 51 away → refused.
+  const ev = wireSeries(14, { 2: [100_051, 100_053], 5: [100_050, 100_052], 7: [100_700, 100_702], 10: [99_949, 99_951] })
+  const signals = [plant(ev, 1, 'BUY', 200), plant(ev, 4, 'BUY', 200), plant(ev, 9, 'SELL', 200)]
+  const r = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { model: 'book', overshootFraction: 0.25 } }, { signalsOverride: signals })
+  assert.deepEqual(vetoedSeqs(r), [[ev[1].seq, 'priceBound'], [ev[9].seq, 'priceBound']])
+  assert.deepEqual(r.trades.map(t => [t.signalSeq, t.entry, t.reason]), [[ev[4].seq, 100_052, 'target']])
+  assert.equal(r.summary.diagnostics.vetoes.priceBound, 2); assert.equal(r.summary.diagnostics.vetoes.total, 2)
+})
+
+test('PR-Q3 signal TTL: a pending signal whose first executable quote is more than signalTtlMs past its due time (signal + latency) is refused; exactly the TTL is kept', () => {
+  // latency 250, TTL 5000: idx2 arrives 5,251 ms after the idx1 signal (waited 5,001) → expired;
+  // idx4 arrives 5,250 ms after the idx3 signal (waited 5,000) → filled.
+  const ev = series([[100_000, 100_002], [100_000, 100_002], [100_000, 100_002, 5_251], [100_000, 100_002], [100_000, 100_002, 5_250], [100_000, 100_002], [100_000, 100_002]])
+  const signals = [plant(ev, 1, 'BUY', 200), plant(ev, 3, 'BUY', 200)]
+  const r = simulate(ev, PARAMS, { ...Q3_SIM, latencyMs: 250, liveFilters: { model: 'book', signalTtlMs: 5000 } }, { signalsOverride: signals })
+  assert.deepEqual(vetoedSeqs(r), [[ev[1].seq, 'signalTtl']])
+  assert.deepEqual(r.trades.map(t => [t.signalSeq, t.entrySeq]), [[ev[3].seq, ev[4].seq]])
+  // A gap marker (recvMs 0) is not a time: it expires nothing.
+  const gap = [...ev.slice(0, 2), { seq: 0, recvMs: 0, bid: 1, ask: 0, crossed: true, snapshot: false, changed: true }, ...ev.slice(2)]
+  const g = simulate(gap, PARAMS, { ...Q3_SIM, latencyMs: 250, liveFilters: { model: 'book', signalTtlMs: 5000 } }, { signalsOverride: signals })
+  assert.deepEqual(vetoedSeqs(g), [[ev[1].seq, 'signalTtl']], 'still expired at the late quote, not at the marker')
+  // 'firer': the book fills the late quote (the shadow has no expiry) and the firer refuses it.
+  const f = simulate(ev, PARAMS, { ...Q3_SIM, latencyMs: 250, liveFilters: { signalTtlMs: 5000 } }, { signalsOverride: signals })
+  assert.deepEqual(vetoedSeqs(f), [[ev[1].seq, 'signalTtl']])
+  assert.deepEqual(f.vetoedTrades.map(t => [t.signalSeq, t.entrySeq, t.vetoedBy]), [[ev[1].seq, ev[2].seq, 'signalTtl']])
+})
+
+test('PR-Q3 counter-trend: under an up reading the SELL is vetoed at the signal and the BUY fills; no reading grants both sides and is counted; a missing reader is refused, never stamped as applied', () => {
+  const ev = wireSeries(14, { 5: [100_700, 100_702] })
+  // idx1 SELL (reading up → refused), idx3 BUY (up → taken, target at idx5), idx8 SELL (no reading → taken)
+  const signals = [plant(ev, 1, 'SELL', 200), plant(ev, 3, 'BUY', 200), plant(ev, 8, 'SELL', 200)]
+  const upUntil = ev[6].recvMs
+  const asked = []
+  const sidesAt = (ms) => { asked.push(ms); return ms < upUntil ? ['BUY'] : null }
+  const r = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { model: 'book', counterTrend: true } }, { signalsOverride: signals, trendSidesAt: sidesAt })
+  assert.deepEqual(vetoedSeqs(r), [[ev[1].seq, 'counterTrend']])
+  assert.deepEqual(r.trades.map(t => t.signalSeq), [ev[3].seq, ev[8].seq])
+  assert.equal(r.summary.diagnostics.counterTrendNoReading, 1)
+  assert.deepEqual(asked, [ev[1].recvMs, ev[3].recvMs, ev[8].recvMs], 'the reading is asked AS OF each signal\'s own time')
+  assert.throws(() => simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { counterTrend: true } }, { signalsOverride: signals }), /no trendSidesAt reader/)
+})
+
+/**
+ * Six planted signals, each closed quickly so every refusal gets its own fill
+ * under either model. latency 0, TTL 5000, bound floor(0.25 × 200) = 50,
+ * floor round(0.0015 × entry) ≈ 150–152, the reading always 'up' (BUY only).
+ */
+function allFourFixture() {
+  const ev = series([
+    [100_000, 100_002], [100_000, 100_002],            // 1: SELL under an up reading → counterTrend
+    [100_000, 100_002], [100_300, 100_302],            // 2: (firer) the SELL fills; 3: its stop; 3: BUY signal
+    [100_000, 100_002, 5_001], [100_700, 100_702],     // 4: the BUY's quote 5,001 ms late → signalTtl; 5: target; 5: BUY signal
+    [100_760, 100_762], [100_500, 100_502],            // 6: filled 60 from the 100,702 ask → priceBound; 7: stop; 7: BUY, stop 149
+    [100_500, 100_502], [101_000, 101_002],            // 8: floor round(0.0015 × 100,502) = 151 > 149 → stopFloor; 9: target; 9: control BUY
+    [101_000, 101_002], [101_700, 101_702],            // 10: the control fills; 10: BUY while it is open → noFill; 11: target
+  ])
+  const signals = [plant(ev, 1, 'SELL', 200), plant(ev, 3, 'BUY', 200), plant(ev, 5, 'BUY', 200), plant(ev, 7, 'BUY', 149), plant(ev, 9, 'BUY', 200), plant(ev, 10, 'BUY', 200)]
+  return { ev, signals, lf: { minStopFraction: 0.0015, overshootFraction: 0.25, signalTtlMs: 5000, counterTrend: true } }
+}
+
+test('PR-Q3: all four on, both models — each vetoes exactly its planted signal, and signals = filled + cost + noFill + vetoed (+ pending)', () => {
+  const { ev, signals, lf } = allFourFixture()
+  for (const model of ['book', 'firer']) {
+    const r = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { ...lf, model } }, { signalsOverride: signals, trendSidesAt: () => ['BUY'] })
+    assert.deepEqual(vetoedSeqs(r), [[ev[1].seq, 'counterTrend'], [ev[3].seq, 'signalTtl'], [ev[5].seq, 'priceBound'], [ev[7].seq, 'stopFloor']], model)
+    assert.deepEqual(r.trades.map(t => t.signalSeq), [ev[9].seq], `${model}: only the control is a trade`)
+    const d = r.summary.diagnostics
+    assert.deepEqual(d.vetoes, { counterTrend: 1, signalTtl: 1, priceBound: 1, stopFloor: 1, total: 4 })
+    assert.equal(d.signals, 6); assert.equal(d.filled, 1); assert.equal(d.noFill, 1); assert.equal(d.costRejected, 0); assert.equal(d.pendingAtScopeEnd, 0)
+    assert.equal(d.countsAddUp, true)
+    assert.equal(d.signals, r.trades.length + r.rejected.cost + r.rejected.noFill + d.vetoes.total, 'every signal is accounted for exactly once')
+    assert.deepEqual(r.rejected.vetoed, { counterTrend: 1, signalTtl: 1, priceBound: 1, stopFloor: 1 })
+    assert.deepEqual(r.sim.liveFilters, { version: LIVE_FILTERS_VERSION, model, minStopFraction: 0.0015, overshootFraction: 0.25, signalTtlMs: 5000, counterTrend: { asOf: 'signal_time', gateOn: null, maxRegimeAgeMin: null }, configSource: null })
+    assert.equal(d.model, model)
+  }
+  // Every signal vetoed, nothing else: the outcome names the filters, not "no executable fills".
+  const allOut = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: lf }, { signalsOverride: signals.slice(0, 4), trendSidesAt: () => ['BUY'] })
+  assert.equal(allOut.summary.diagnostics.outcome, 'live_filtered')
+})
+
+test('PR-Q3 firer model: the BOOK is the unfiltered replay\'s, trade for trade — the refused trades are held to their shadow exit, reported apart with what each veto cost, and never counted as trades', () => {
+  const { ev, signals, lf } = allFourFixture()
+  const off = simulate(ev, PARAMS, Q3_SIM, { signalsOverride: signals })
+  const f = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: lf }, { signalsOverride: signals, trendSidesAt: () => ['BUY'] })
+  assert.equal(off.trades.length, 5)
+  const book = [...f.trades, ...f.vetoedTrades].sort((a, b) => a.entryIdx - b.entryIdx)
+  assert.deepEqual(book.map(bookOf), off.trades.map(bookOf), 'RED if a firer refusal changes what the book takes')
+  assert.deepEqual(f.vetoedTrades.map(t => [t.signalSeq, t.vetoedBy, t.netR]), [[ev[1].seq, 'counterTrend', -1.51], [ev[3].seq, 'signalTtl', 3.49], [ev[5].seq, 'priceBound', -1.31], [ev[7].seq, 'stopFloor', 3.3423]])
+  // The summary and the blocks judge the firer's trades only.
+  assert.equal(f.summary.trades, 1); assert.equal(f.summary.netR, 3.49); assert.equal(f.blocks[0].trades, 1)
+  const v = f.summary.diagnostics.vetoedTrades
+  assert.equal(v.trades, 4); assert.equal(v.wins, 2); assert.equal(v.netR, 4.0123); assert.equal(v.profitFactor, +((3.49 + 3.3423) / (1.51 + 1.31)).toFixed(4))
+  assert.deepEqual(v.byFilter.priceBound, { trades: 1, wins: 0, netR: -1.31, profitFactor: 0 })
+  assert.deepEqual(v.byFilter.stopFloor, { trades: 1, wins: 1, netR: 3.3423, profitFactor: null })
+  // The parity record is the book's: all five, the refused ones flagged — what the shadow recorded.
+  assert.deepEqual(f.parity.trades.map(t => [t.signalSeq, t.vetoedBy ?? null]), [[ev[1].seq, 'counterTrend'], [ev[3].seq, 'signalTtl'], [ev[5].seq, 'priceBound'], [ev[7].seq, 'stopFloor'], [ev[9].seq, null]])
+  assert.deepEqual(f.parity.trades.map(t => Object.fromEntries(Object.entries(t).filter(([k]) => k !== 'vetoedBy'))), off.parity.trades)
+  // 'book' takes a different population on another fixture (see the stop-floor test); keyed apart.
+  assert.equal(liveFiltersKey(f.sim.liveFilters, { book: true }), null, 'a firer block leaves the book as it was')
+  assert.notEqual(liveFiltersKey({ ...f.sim.liveFilters, model: 'book' }, { book: true }), null)
+})
+
+test('PR-Q3: withheld, a veto made inside the test block is test-period information — out of the diagnostics and the parity record; the confirmation run counts it', () => {
+  // 30 events, 3 blocks: the test block starts at 20. Stop-floor vetoes at idx 5 (train) and idx 25 (test).
+  const ev = wireSeries(30)
+  const signals = [plant(ev, 5, 'BUY', 100), plant(ev, 25, 'BUY', 100)]
+  const sim = { latencyMs: 0, minTargetToCost: 1, purgeEvents: 0, liveFilters: { model: 'book', minStopFraction: 0.0015 } }
+  const w = simulate(ev, PARAMS, sim, { signalsOverride: signals })
+  assert.equal(w.summary.scope, 'train_validation')
+  assert.equal(w.summary.diagnostics.vetoes.stopFloor, 1, 'RED if the test block\'s veto is counted in a withheld summary')
+  assert.deepEqual(w.parity.vetoes.map(v => v.seq), [ev[5].seq]); assert.equal(w.parity.vetoesTotal, 1)
+  const all = simulate(ev, PARAMS, { ...sim, includeTest: true }, { signalsOverride: signals })
+  assert.equal(all.summary.diagnostics.vetoes.stopFloor, 2); assert.equal(all.parity.vetoesTotal, 2)
+  // 'firer': the idx5 refusal is held on a flat series past the seal. Its veto is in scope (the
+  // fill was), its RESULT is test-period information: out of vetoedTrades, in the record by entry only.
+  const fsim = { ...sim, liveFilters: { minStopFraction: 0.0015 } }
+  const fw = simulate(ev, PARAMS, fsim, { signalsOverride: signals })
+  assert.equal(fw.summary.diagnostics.vetoes.stopFloor, 1); assert.equal(fw.summary.diagnostics.vetoedTrades.trades, 0, 'RED if a held trade\'s test-block exit is read')
+  assert.deepEqual(fw.parity.trades, [{ side: 'BUY', signalSeq: ev[5].seq, entrySeq: ev[6].seq, entryMs: ev[6].recvMs, exitMs: null, reason: 'open_at_scope_end', vetoedBy: 'stopFloor' }])
+  const fa = simulate(ev, PARAMS, { ...fsim, includeTest: true }, { signalsOverride: signals })
+  assert.equal(fa.summary.diagnostics.vetoedTrades.trades, 1); assert.equal(fa.rejected.noFill, 1, 'the idx25 signal meets the held book')
+})
+
+test('PR-Q3 regression: with the filters off (absent, null, false, {}, every filter off) the output is byte-identical to the replayer before the block — pinned by digest', () => {
+  const P = { rangeEvents: 64, momentumEvents: 16, minEfficiency: 0.4, spreadBufferMult: 0.5, confirmations: 2, stopVolMult: 2, minStopPrice: 1, priceIncrement: 1, maxSpread: 200, maxQuoteAgeMs: 60_000 }
+  // Digests of JSON.stringify(simulate(...)) from the replayer before PR-Q3
+  // (origin/main cdb6711, byte-identical to 2e80f39's), measured against a
+  // copy of that file. A deliberate change to the replayer's output updates
+  // these; a filter leaking into an unfiltered run turns them red.
+  const pinned = [
+    [{ latencyMs: 60, minTargetToCost: 1 }, '85dd1759b233b36e'],
+    [{ latencyMs: 60, minTargetToCost: 1, includeTest: true }, 'dce42f5ccfd8947c'],
+  ]
+  for (const [sim, digest] of pinned) {
+    for (const off of [undefined, null, false, {}, { model: 'book' }, { counterTrend: false, minStopFraction: null, overshootFraction: null, signalTtlMs: null }]) {
+      const s = off === undefined ? sim : { ...sim, liveFilters: off }
+      const r = simulate(buildFixture(), P, s)
+      assert.equal(createHash('sha256').update(JSON.stringify(r)).digest('hex').slice(0, 16), digest, `off as ${JSON.stringify(off)}`)
+      assert.equal('liveFilters' in r.sim, false, 'no key at all, so the trial id and sim hash are unchanged')
+      assert.equal('vetoed' in r.rejected, false); assert.equal('vetoes' in r.summary.diagnostics, false); assert.equal('vetoes' in r.parity, false); assert.equal('vetoedTrades' in r, false)
+    }
+  }
+})
+
+test('PR-Q3: a misspelt filter, an unknown model or a bad value throws — it is never read as "off" and stamped as if applied', () => {
+  assert.equal(normalizeLiveFilters(null), null); assert.equal(normalizeLiveFilters({}), null)
+  assert.throws(() => normalizeLiveFilters({ minStopFrac: 0.0015 }), /not a live filter field/)
+  assert.throws(() => normalizeLiveFilters({ minStopFraction: '0.0015' }), /finite number/)
+  assert.throws(() => normalizeLiveFilters({ overshootFraction: -1 }), /finite number/)
+  assert.throws(() => normalizeLiveFilters({ counterTrend: 'yes' }), /counterTrend/)
+  assert.throws(() => normalizeLiveFilters({ minStopFraction: 0.0015, model: 'freed' }), /model must be one of firer, book/)
+  assert.throws(() => normalizeLiveFilters(true), /object/)
+  assert.equal(normalizeLiveFilters({ minStopFraction: 0.0015 }).model, 'firer', 'the default is the gateway as it runs today')
+  // fillVeto: a non-positive signal quote is refused (order_guard.cpp priceWithinBound), the floor applies only above 0
+  assert.equal(fillVeto({ overshootFraction: 0.25, minStopFraction: null }, { side: 'BUY', ask: 0, bid: 0, stopDistance: 200 }, 100), 'priceBound')
+  assert.equal(fillVeto({ overshootFraction: null, minStopFraction: 0 }, { side: 'BUY', ask: 1, bid: 1, stopDistance: 1 }, 100_000), null)
+  assert.equal(fillVeto({ overshootFraction: 0.25, minStopFraction: null }, { side: 'SELL', ask: 100_002, bid: 100_000, stopDistance: 203 }, 100_050), null, 'SELL judged on the bid: 50 = floor(0.25 × 203)')
+  // the TTL is judged first, on how late the fill came past its due time
+  const sig = { side: 'BUY', ask: 100_002, bid: 100_000, stopDistance: 10 }
+  assert.equal(fillVeto({ signalTtlMs: 5000, overshootFraction: 0.25, minStopFraction: 0.0015 }, sig, 100_900, 5001), 'signalTtl')
+  assert.equal(fillVeto({ signalTtlMs: 5000, overshootFraction: 0.25, minStopFraction: 0.0015 }, sig, 100_900, 5000), 'priceBound')
+})
+
+test('PR-Q3 fix round (checker N2): a counter-trend stamp that is not a number, or a gate flag that is not a boolean, throws — never read as "no age bound"', () => {
+  for (const age of ['abc', '240', NaN, Infinity, -Infinity, {}, true]) {
+    assert.throws(() => normalizeLiveFilters({ counterTrend: { gateOn: true, maxRegimeAgeMin: age } }), /maxRegimeAgeMin must be a finite number or null/, `RED if ${String(age)} is read as no bound`)
+  }
+  for (const gateOn of ['yes', 1, 0, 'false']) {
+    assert.throws(() => normalizeLiveFilters({ counterTrend: { gateOn, maxRegimeAgeMin: 240 } }), /gateOn must be true, false or null/, JSON.stringify(gateOn))
+  }
+  // What the doors stamp — a number or null, a boolean or null — is kept exactly.
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: { gateOn: true, maxRegimeAgeMin: 240 } }).counterTrend, { asOf: 'signal_time', gateOn: true, maxRegimeAgeMin: 240 })
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: { gateOn: false, maxRegimeAgeMin: 0 } }).counterTrend, { asOf: 'signal_time', gateOn: false, maxRegimeAgeMin: 0 })
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: { gateOn: null, maxRegimeAgeMin: null } }).counterTrend, { asOf: 'signal_time', gateOn: null, maxRegimeAgeMin: null })
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: {} }).counterTrend, { asOf: 'signal_time', gateOn: null, maxRegimeAgeMin: null })
+  assert.deepEqual(normalizeLiveFilters({ counterTrend: true }).counterTrend, { asOf: 'signal_time', gateOn: null, maxRegimeAgeMin: null })
+})
+
+test('PR-Q3 fix round (checker N1): a block that runs the signal TTL says the gateway does not — its vetoes are trades the gateway would place; a block without it says nothing', () => {
+  const { ev, signals, lf } = allFourFixture()
+  for (const model of ['firer', 'book']) {
+    const r = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { ...lf, model } }, { signalsOverride: signals, trendSidesAt: () => ['BUY'] })
+    assert.match(r.summary.diagnostics.plannedNotLive?.signalTtl ?? '', /^planned_not_live: /, model)
+    const { signalTtlMs: _ttl, ...gateway } = lf
+    const g = simulate(ev, PARAMS, { ...Q3_SIM, liveFilters: { ...gateway, model } }, { signalsOverride: signals, trendSidesAt: () => ['BUY'] })
+    assert.equal('plannedNotLive' in g.summary.diagnostics, false, `${model}: the three the gateway runs are live`)
+  }
+  assert.deepEqual([...GATEWAY_LIVE_FILTERS], ['counterTrend', 'priceBound', 'stopFloor'])
+})

@@ -3,6 +3,7 @@ import { marketIdentityKey } from '../lib/market-identity.js'
 import { planMomentumTargets, shiftStopToFill, stopHeld, sameTicks, offPriceGrid } from './momentum-target-policy.js'
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { registerPartialPlan } from './momentum-partial-manager.js'
+import { readMomentumPartialPass, partialPassFreshness, partialPassForAccount } from './momentum-partial-runtime.js'
 
 const json = value => { try { return JSON.parse(value) } catch { return null } }
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -141,29 +142,111 @@ export function enrollMomentumBook(db, { accountId, tradeId, positionId }) {
   return intent.plan.mode
 }
 
+/**
+ * Which entry producers record a target intent before they submit (V3 T3).
+ * Neither does yet: T4 (P0-3 market, P0-4 resting limits) wires them, and
+ * flips these in the same change. momentum-target-status.test.js pins this
+ * to the code: it goes red as soon as any production file calls
+ * recordMomentumEntry (T4 updates these entries and the pin together), and
+ * while none does, if either says "wired". A status that called the runtime complete
+ * because the manager's pass runs would be a website result the code does not
+ * honour (owner principle 6): a running pass with no producer feeding it
+ * manages nothing.
+ */
+export const MOMENTUM_TARGET_PRODUCERS = Object.freeze({
+  market: Object.freeze({ wired: false, producer: 'momentum book market entries',
+    note: 'No market entry records a target intent before submission; T4 (P0-3) wires it.' }),
+  limit: Object.freeze({ wired: false, producer: 'momentum resting limits',
+    note: 'No resting limit records a target intent; T4 (P0-4) wires it.' }),
+})
+
 // Small, bounded diagnostic over the write-ahead ledger. Reading it never
-// creates tables, registers plans or grants execution permission.
-export function momentumTargetStatus(db, { accountId, all = false, limit = 50 } = {}) {
+// creates tables, alters them, registers plans or grants execution permission.
+export function momentumTargetStatus(db, { accountId, all = false, limit = 50, nowMs = Date.now() } = {}) {
   if (!all && (typeof accountId !== 'string' || !/^[1-9]\d*$/.test(accountId))) throw new RangeError('Select an account or request all accounts.')
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError('Limit must be between 1 and 100.')
   const has = name => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
-  const base = { accountId: all ? 'all' : accountId, executionAuthorized: false, runtimeIntegration: 'INCOMPLETE' }
-  if (!has('momentum_target_intents')) return { ...base, recordedPlans: 0, rows: [], truncated: false }
+  const cols = name => new Set(db.prepare(`PRAGMA table_info(${name})`).all().map(c => c.name))
+  // V3 T3: whether the partial manager's pass runs, read at request time from
+  // its own record; and which producers feed it. COMPLETE needs both.
+  const record = readMomentumPartialPass(db)
+  const freshness = partialPassFreshness(db, record, nowMs)
+  const scoped = all ? null : (record?.accounts?.[accountId] ?? null)
+  // Whether the pass can act on an account, not only whether it ran: a fresh
+  // pass whose record says it skipped an account (no credentials, the
+  // account's pass failed) is not watching that account's triggers (T3
+  // checker BLOCKER 2). Scoped reads carry this account's; `all` reads the
+  // pass-level state here and each row its own account's.
+  const byAccount = new Map()
+  const forAccount = id => {
+    if (!byAccount.has(id)) byAccount.set(id, partialPassForAccount(db, record, id, nowMs))
+    return byAccount.get(id)
+  }
+  const scopedPass = all ? null : forAccount(accountId)
+  const globalPass = forAccount(null)
+  const passNow = scopedPass ?? globalPass
+  const pass = { at: freshness.at, fresh: freshness.fresh, ageMs: freshness.ageMs, maxAgeMs: freshness.maxAgeMs,
+    ok: record ? record.ok === true : null,
+    available: passNow.available, unavailable: passNow.why,
+    activePlans: all ? record?.activePlans ?? null : scoped?.plans ?? (record ? 0 : null),
+    ...(all ? { accounts: record?.accounts ?? null, errors: record?.errors ?? [] } : { account: scoped, accountError: scopedPass.accountError }) }
+  const accountGaps = all
+    ? (globalPass.why ? [] : Object.entries(record?.accounts ?? {}).filter(([, a]) => a?.error).map(([id, a]) => `account ${id}: the partial manager could not act on it — ${a.error}`))
+    : []
+  const integrationGaps = [
+    ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([, w]) => !w.wired).map(([k, w]) => `${k}: ${w.note}`),
+    ...(passNow.why ? [passNow.why] : []),
+    ...accountGaps,
+  ]
+  const base = { accountId: all ? 'all' : accountId, executionAuthorized: false,
+    runtimeIntegration: integrationGaps.length ? 'INCOMPLETE' : 'COMPLETE', integrationGaps,
+    passHeartbeatAt: freshness.at, pass,
+    wiring: Object.fromEntries(Object.entries(MOMENTUM_TARGET_PRODUCERS).map(([k, w]) => [k, { wired: w.wired, status: w.wired ? 'wired' : 'not wired', producer: w.producer, note: w.note }])) }
+  const partial = has('momentum_partial_plans')
+  const pcols = partial ? cols('momentum_partial_plans') : new Set()
+  const pWhere = all ? '' : 'WHERE account_id=?', pParams = all ? [] : [accountId]
+  const partialPlans = partial
+    ? Object.fromEntries(db.prepare(`SELECT state, count(*) n FROM momentum_partial_plans ${pWhere} GROUP BY state`).all(...pParams).map(r => [r.state, r.n]))
+    : {}
+  if (!has('momentum_target_intents')) return { ...base, recordedPlans: 0, partialPlans, rows: [], truncated: false }
+  const icols = cols('momentum_target_intents')
   const where = all ? '' : 'WHERE i.account_id=?', params = all ? [] : [accountId]
   const recordedPlans = db.prepare(`SELECT count(*) n FROM momentum_target_intents i ${where}`).get(...params).n
-  const partial = has('momentum_partial_plans')
-  const rows = db.prepare(`SELECT i.*,t.status trade_status${partial ? ',p.state partial_state,p.reason partial_reason' : ''}
+  // Columns later builds added are read only when the stored table has them;
+  // a status read never alters a table to make its own query work.
+  const pick = (have, alias, list) => list.filter(([c]) => have.has(c)).map(([c, as]) => `,${alias}.${c} ${as}`).join('')
+  const rows = db.prepare(`SELECT i.*,t.status trade_status,t.symbol trade_symbol${partial ? `,p.state partial_state,p.reason partial_reason${pick(pcols, 'p',
+    [['attempted_at', 'partial_attempted_at'], ['order_id', 'partial_order_id'], ['receipt_json', 'partial_receipt_json'],
+      ['resolved_at', 'partial_resolved_at'], ['scale_out_event_id', 'partial_scale_out_event_id']])}` : ''}
     FROM momentum_target_intents i LEFT JOIN trades t ON t.id=i.trade_id AND t.account_id=i.account_id
     ${partial ? 'LEFT JOIN momentum_partial_plans p ON p.account_id=i.account_id AND p.trade_id=i.trade_id' : ''}
     ${where} ORDER BY i.created_at_ms DESC,i.trade_id DESC LIMIT ?`).all(...params, limit)
-  return { ...base, recordedPlans, truncated: recordedPlans > rows.length, rows: rows.map(r => {
+  return { ...base, recordedPlans, partialPlans, truncated: recordedPlans > rows.length, rows: rows.map(r => {
     const proposal = json(r.proposal_json), plan = json(r.plan_json)
     let evidenceValid = false
     try { evidenceValid = !!verified(proposal) } catch { /* retain the damaged row as visible, invalid evidence */ }
+    const p = plan ?? proposal?.plan ?? null
+    const receipt = json(r.partial_receipt_json)
     return { accountId: r.account_id, tradeId: r.trade_id, positionId: r.position_id,
       state: r.state, tradeStatus: r.trade_status, createdAtMs: r.created_at_ms,
       evidenceValid, evidenceId: evidenceValid ? proposal.evidenceId : null,
       mode: plan?.mode ?? proposal?.plan?.mode ?? null,
-      partialState: r.partial_state ?? null, partialReason: r.partial_reason ?? null }
+      // The intent's own terminal reason (BIND_ABANDONED), when recorded.
+      reason: icols.has('reason') ? r.reason ?? null : null,
+      resolvedAtMs: icols.has('resolved_at') ? r.resolved_at ?? null : null,
+      symbol: r.trade_symbol ?? proposal?.evidence?.symbol ?? null,
+      // What the website shows as the partial target, not only the runner TP.
+      target: p ? { side: p.side ?? null, entry: p.entry ?? null, trigger: p.trigger ?? null, runnerTarget: p.brokerTarget ?? null,
+        closeVolume: p.closeVolume ?? null, volume: p.volume ?? null, closePercentage: p.closePercentage ?? null, digits: p.digits ?? null } : null,
+      partialState: r.partial_state ?? null, partialReason: r.partial_reason ?? null,
+      // Whether the pass can act on THIS row's account (null: it can).
+      passUnavailable: forAccount(r.account_id).why,
+      partial: r.partial_state == null ? null : {
+        state: r.partial_state, reason: r.partial_reason ?? null,
+        attemptedAtMs: r.partial_attempted_at ?? null, orderId: r.partial_order_id ?? null,
+        receiptDealId: receipt?.dealId ?? null, resolvedAtMs: r.partial_resolved_at ?? null,
+        scaleOutEventId: r.partial_scale_out_event_id ?? null,
+        lastCheckAtMs: record?.lastCheckAt?.[`${r.account_id}|${r.trade_id}`] ?? null,
+      } }
   }) }
 }

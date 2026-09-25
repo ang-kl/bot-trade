@@ -25,7 +25,7 @@
 // that arrives corrupt must not become a trial.
 // ---------------------------------------------------------------------------
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, readdirSync, existsSync, openSync, writeSync, closeSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
@@ -63,6 +63,23 @@ export function segmentCacheDir(env = process.env) {
   const research = String(env.TICK_SEGMENTS_DIR || '').trim()
   if (research) return research
   return join(tmpdir(), 'tick-segments')
+}
+
+/**
+ * V3 R1: whether this keeper's segment cache outlives a Node redeploy, so a
+ * reader of GET /state/tick-segments never takes `cached` for a second kept
+ * copy. The default (<os.tmpdir()>/tick-segments) goes with the container:
+ * the gateway spool is then the only kept copy of a sealed segment, and what
+ * the spool retires or loses at a restart is gone. A directory an operator
+ * set may sit on a volume; Node cannot see its mounts, so it says unknown.
+ */
+export function cacheDurability(cacheDir, tmp = tmpdir()) {
+  const dir = resolve(String(cacheDir || '.'))
+  const t = resolve(tmp)
+  if (dir === t || dir.startsWith(t + sep)) {
+    return { kept: false, reason: `under os.tmpdir() (${t}): not kept across a Node redeploy, so the gateway spool is the only kept copy of a sealed segment` }
+  }
+  return { kept: null, reason: `set by ${CACHE_DIR_ENV} or TICK_SEGMENTS_DIR; whether that directory is on a volume is not reported to Node` }
 }
 
 /** The sidecar sides to ask, deduped — one entry when both hosts resolve to one base. */
@@ -394,13 +411,29 @@ export function syncInWorker(destDir, { sides = segmentSides(), secret = process
   })
 }
 
-/** The read-only view behind GET /state/tick-segments. */
-export async function tickSegmentsView({ sides = segmentSides(), fetch: fetchImpl, secret, timeoutMs, cacheDir = segmentCacheDir() } = {}) {
+/**
+ * The read-only view behind GET /state/tick-segments. V3 R1: each side also
+ * carries `list` — every sealed segment the sidecar lists right now, by name
+ * and bytes, so a before/after pair of GET bodies grades the recovery drill
+ * (T1) segment by segment — and, given `db`, `manifest`: what the heartbeat's
+ * segment manifest has recorded for that side (services/tick-segment-manifest.js),
+ * including the segments that are gone and why, and the persistence and
+ * retention verdicts.
+ */
+export async function tickSegmentsView({ sides = segmentSides(), fetch: fetchImpl, secret, timeoutMs, cacheDir = segmentCacheDir(), db = null, nowMs = Date.now() } = {}) {
+  let manifest = null
+  if (db) {
+    try {
+      const { segmentManifestView } = await import('./tick-segment-manifest.js')
+      manifest = segmentManifestView(db, { sides: [...new Set(['cpp_exec', 'cpp_exec_demo', ...sides.map(s => s.name)])], nowMs })
+    } catch (err) { manifest = { error: err?.message || String(err) } }
+  }
   const cache = cachedSegments(cacheDir)
   const out = {
     at: new Date().toISOString(),
     cacheDir,
     cacheExists: existsSync(cacheDir),
+    cacheDurability: cacheDurability(cacheDir),
     cache: [...cache.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([name, bytes]) => ({ name, bytes })),
     cacheBytes: [...cache.values()].reduce((a, b) => a + b, 0),
     sides: [],
@@ -423,9 +456,22 @@ export async function tickSegmentsView({ sides = segmentSides(), fetch: fetchImp
       truncated: r.truncated,
       newest: r.segments.length ? r.segments[r.segments.length - 1].name : null,
       cached: r.segments.filter(s => cache.get(s.name) === s.bytes).length,
+      list: r.segments.map(s => ({ name: s.name, bytes: s.bytes, sealedAtMs: s.sealedAtMs || null })), // 0 = the sidecar sent no mtime
+      ...(manifest?.sides?.[side.name] ? { manifest: manifest.sides[side.name] } : {}),
       ...(r.error ? { error: r.error } : {}),
       ...(r.reason ? { reason: r.reason } : {}),
     })
+  }
+  if (manifest) {
+    out.manifestNote = manifest.note ?? null
+    if (manifest.error) out.manifestError = manifest.error
+    if (manifest.policyErrors?.length) out.durabilityPolicyErrors = manifest.policyErrors
+    // A side the manifest has recorded that this deployment no longer asks
+    // (one sidecar serving both hosts) is still shown, never dropped.
+    const asked = new Set(out.sides.map(s => s.side))
+    for (const [name, m] of Object.entries(manifest.sides || {})) {
+      if (!asked.has(name) && (m.listed > 0 || m.goneTotal > 0 || m.lastListing)) out.sides.push({ side: name, reachable: null, note: 'recorded by the manifest; not asked on this view', manifest: m })
+    }
   }
   return out
 }
