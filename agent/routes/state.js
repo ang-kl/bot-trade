@@ -2604,6 +2604,21 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/strategy-qualification — V3 Q4b (PR-B1), REPORT ONLY: per
+  // strategy × enabled account and pooled with copies counted once, PF in R
+  // (r-net-v1) beside the gate's money PF (usd-net-v0), win rate with its
+  // Wilson interval, and whether the evidence bar can be reached inside its
+  // rolling window at the last 30 days' rate. The read also seals closed
+  // calendar months into the append-only qualification_windows record (D3).
+  router.get('/strategy-qualification', async (_req, res) => {
+    try {
+      const { strategyQualificationReport } = await import('../services/strategy-qualification.js')
+      res.json(strategyQualificationReport(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // P0 of the tick-momentum programme (docs/tick-momentum/plan.md §17, B18):
   // what this deployment actually is, unknowns labelled — and the inventory
   // of every path that can open new risk (§13, B11).

@@ -25,6 +25,7 @@ import { getState } from '../db.js'
 import { isHandPinned } from './stage-matrix.js'
 import { STRATEGY_REGISTRY } from './strategies.js'
 import { isMomentumAccount, TSMOM_STRATEGY } from './momentum-account.js'
+import { netRof, summarizeR, summarizeUsd, PF_METRICS } from './pf-metrics.js'
 
 export const EVIDENCE_GATE_KEY = 'evidence_gate_json'
 export const EVIDENCE_GATE_DEFAULTS = Object.freeze({ on: true, minCloses: 30, minPf: 1.5, windowDays: 90 })
@@ -47,33 +48,68 @@ export function loadEvidenceGate(db) {
 }
 
 /**
+ * The gate's population, read once: clean bot closes with known P&L, the
+ * account's rows plus unscoped legacy rows. `strategy` null reads every
+ * labelled strategy and `accountId` null every account (the gate's own
+ * `? IS NULL` reading) — the qualification report reads the window once and
+ * groups in JS, then reconciles each cell against evidenceRecord.
+ *
+ * Window: closed_at >= datetime(<now>, -windowDays days) — SQLite's clock
+ * unless `now` (ms) is given, so the gate's call keeps the filter it always
+ * ran (SQLite's datetime('now', '-N days')) — or, with `fromMs`, the closed
+ * window [fromMs, toMs) on the same closed_at stamp.
+ */
+export function evidenceRows(db, { strategy = null, accountId = null, windowDays = 90, now = null, fromMs = null, toMs = null } = {}) {
+  const stamp = (ms) => new Date(Number(ms)).toISOString().replace('T', ' ').slice(0, 19)
+  const where = ["status = 'closed'", 'net_pnl IS NOT NULL', "origin LIKE 'bot_%'"]
+  const params = []
+  if (strategy != null) { where.push('label_strategy = ?'); params.push(String(strategy)) } else where.push('label_strategy IS NOT NULL')
+  if (fromMs != null) {
+    where.push('closed_at >= ?'); params.push(stamp(fromMs))
+    if (toMs != null) { where.push('closed_at < ?'); params.push(stamp(toMs)) }
+  } else {
+    where.push('closed_at >= datetime(?, ?)')
+    params.push(now == null ? 'now' : stamp(now), `-${Math.max(1, Math.round(windowDays))} days`)
+  }
+  if (accountId != null) { where.push('(account_id = ? OR account_id IS NULL)'); params.push(String(accountId)) }
+  try {
+    return db.prepare(`
+      SELECT id, account_id, label_strategy, symbol, side, entry_price, exit_price, sl_price, broker_sl_initial,
+             gross_pnl, net_pnl, realised_rr, pnl_price_mismatch, exit_price_suspect, opened_at, closed_at, closed_at_ms
+        FROM trades WHERE ${where.join(' AND ')} ORDER BY id`).all(...params)
+  } catch { return [] }
+}
+
+/**
+ * The record over a set of evidence rows. `profitFactor` is usd-net-v0 and
+ * is what the gate and the verdicts JUDGE; `profitFactorR` is r-net-v1 (D1),
+ * reported beside it over the R-scored closes with the unscored ones counted
+ * (`rUnscorable`), and read by nothing that gates (Q4b / PR-B1).
+ */
+export function summarizeEvidence(rows) {
+  const known = (rows || []).filter(r => Number.isFinite(Number(r.net_pnl)))
+  const usd = summarizeUsd(known.map(r => r.net_pnl))
+  const r = summarizeR(known.map(netRof))
+  return {
+    closes: usd.closes,
+    wins: usd.wins,
+    winRate: usd.winRate,
+    profitFactor: usd.profitFactor,
+    net: usd.net,
+    profitFactorR: r.profitFactor,
+    rScored: r.scored,
+    rUnscorable: r.unscorable,
+    metrics: PF_METRICS,
+  }
+}
+
+/**
  * One strategy's live record on one account: clean bot closes with known
  * P&L over the window, the account's rows plus unscoped legacy rows.
  * profitFactor null = no losses yet (never a number that reads as earned).
  */
-export function evidenceRecord(db, { strategy, accountId = null, windowDays = 90 } = {}) {
-  let rows = []
-  try {
-    rows = db.prepare(`
-      SELECT net_pnl FROM trades
-       WHERE status = 'closed' AND net_pnl IS NOT NULL
-         AND label_strategy = ?
-         AND origin LIKE 'bot_%'
-         AND closed_at >= datetime('now', ?)
-         AND (? IS NULL OR account_id = ? OR account_id IS NULL)
-    `).all(String(strategy), `-${Math.max(1, Math.round(windowDays))} days`, accountId, accountId == null ? null : String(accountId))
-  } catch { rows = [] }
-  const pnl = rows.map(r => Number(r.net_pnl)).filter(Number.isFinite)
-  const wins = pnl.filter(x => x > 0)
-  const gw = wins.reduce((a, b) => a + b, 0)
-  const gl = Math.abs(pnl.filter(x => x < 0).reduce((a, b) => a + b, 0))
-  return {
-    closes: pnl.length,
-    wins: wins.length,
-    winRate: pnl.length ? Math.round((wins.length / pnl.length) * 1000) / 10 : null,
-    profitFactor: gl > 0 ? Math.round((gw / gl) * 100) / 100 : (pnl.length ? null : 0),
-    net: Math.round(pnl.reduce((a, b) => a + b, 0) * 100) / 100,
-  }
+export function evidenceRecord(db, { strategy, accountId = null, windowDays = 90, now = null } = {}) {
+  return summarizeEvidence(evidenceRows(db, { strategy: String(strategy), accountId, windowDays, now }))
 }
 
 /**
