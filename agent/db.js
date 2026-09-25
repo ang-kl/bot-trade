@@ -769,6 +769,53 @@ const TABLES = `
     per_symbol TEXT,
     UNIQUE(side, at_ms)
   );
+  -- V3 R1 (P8b): the tick segment manifest — every sealed segment a sidecar
+  -- has listed (GET /tick-segments), by name and bytes, and what became of
+  -- it. The heartbeat lists on every probe; a name that stops being listed
+  -- is classed retired (oldest-first at the spool cap), lost_restart (gone
+  -- at a gateway restart with no retire to explain it) or unexplained (gone
+  -- within one boot with no retire to explain it). Evidence for the P8
+  -- recovery drill (T1) and retention (T2); kept, never pruned. One row per
+  -- segment ever sealed: about 3 a day per side at today's rate.
+  CREATE TABLE IF NOT EXISTS tick_segment_manifest (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    side          TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    start_ms      INTEGER,              -- from the name: the segment's first record
+    bytes         INTEGER NOT NULL,     -- as last listed
+    first_bytes   INTEGER NOT NULL,     -- as first listed; a sealed segment never changes size
+    sealed_at_ms  INTEGER,              -- the sidecar's mtime, second resolution
+    first_seen_ms INTEGER NOT NULL,
+    first_boot_id TEXT,
+    last_seen_ms  INTEGER NOT NULL,     -- the last listing that included it
+    last_boot_id  TEXT,
+    gone_at_ms    INTEGER,              -- the first listing without it
+    gone_boot_id  TEXT,
+    gone_reason   TEXT,                 -- retired | lost_restart | unexplained
+    gone_detail   TEXT,
+    reappeared_at_ms INTEGER,           -- listed again after it was classed gone
+    reappeared_from  TEXT,
+    UNIQUE(side, name)
+  );
+  CREATE INDEX IF NOT EXISTS idx_tick_segment_manifest_gone ON tick_segment_manifest(side, gone_at_ms);
+  -- V3 R1: each gateway restart the manifest observed (a new bootId at a
+  -- listing), with what the previous boot had sealed and what survived.
+  CREATE TABLE IF NOT EXISTS tick_segment_boots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    side            TEXT NOT NULL,
+    at_ms           INTEGER NOT NULL,   -- the listing that first showed the new boot
+    prev_boot_id    TEXT NOT NULL,
+    boot_id         TEXT NOT NULL,
+    prev_listing_ms INTEGER,            -- the last listing under the previous boot
+    listed_before   INTEGER NOT NULL,   -- sealed segments known present under the previous boot
+    bytes_before    INTEGER NOT NULL,
+    survived        INTEGER NOT NULL,
+    retired         INTEGER NOT NULL,
+    lost            INTEGER NOT NULL,
+    lost_bytes      INTEGER NOT NULL,
+    bytes_changed   INTEGER NOT NULL,
+    UNIQUE(side, boot_id)
+  );
   -- P6a: the shadow portfolio's closed trades, pulled from the sidecar's
   -- ledger (POST /tick-shadow) per side. Prices in the feed's wire units,
   -- results in R; the keeper sizes each account's projection from its own

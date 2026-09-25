@@ -387,8 +387,23 @@ export function syncInWorker(destDir, { sides = segmentSides(), secret = process
   })
 }
 
-/** The read-only view behind GET /state/tick-segments. */
-export async function tickSegmentsView({ sides = segmentSides(), fetch: fetchImpl, secret, timeoutMs, cacheDir = segmentCacheDir() } = {}) {
+/**
+ * The read-only view behind GET /state/tick-segments. V3 R1: each side also
+ * carries `list` — every sealed segment the sidecar lists right now, by name
+ * and bytes, so a before/after pair of GET bodies grades the recovery drill
+ * (T1) segment by segment — and, given `db`, `manifest`: what the heartbeat's
+ * segment manifest has recorded for that side (services/tick-segment-manifest.js),
+ * including the segments that are gone and why, and the persistence and
+ * retention verdicts.
+ */
+export async function tickSegmentsView({ sides = segmentSides(), fetch: fetchImpl, secret, timeoutMs, cacheDir = segmentCacheDir(), db = null, nowMs = Date.now() } = {}) {
+  let manifest = null
+  if (db) {
+    try {
+      const { segmentManifestView } = await import('./tick-segment-manifest.js')
+      manifest = segmentManifestView(db, { sides: [...new Set(['cpp_exec', 'cpp_exec_demo', ...sides.map(s => s.name)])], nowMs })
+    } catch (err) { manifest = { error: err?.message || String(err) } }
+  }
   const cache = cachedSegments(cacheDir)
   const out = {
     at: new Date().toISOString(),
@@ -416,9 +431,22 @@ export async function tickSegmentsView({ sides = segmentSides(), fetch: fetchImp
       truncated: r.truncated,
       newest: r.segments.length ? r.segments[r.segments.length - 1].name : null,
       cached: r.segments.filter(s => cache.get(s.name) === s.bytes).length,
+      list: r.segments.map(s => ({ name: s.name, bytes: s.bytes, sealedAtMs: s.sealedAtMs })),
+      ...(manifest?.sides?.[side.name] ? { manifest: manifest.sides[side.name] } : {}),
       ...(r.error ? { error: r.error } : {}),
       ...(r.reason ? { reason: r.reason } : {}),
     })
+  }
+  if (manifest) {
+    out.manifestNote = manifest.note ?? null
+    if (manifest.error) out.manifestError = manifest.error
+    if (manifest.policyErrors?.length) out.durabilityPolicyErrors = manifest.policyErrors
+    // A side the manifest has recorded that this deployment no longer asks
+    // (one sidecar serving both hosts) is still shown, never dropped.
+    const asked = new Set(out.sides.map(s => s.side))
+    for (const [name, m] of Object.entries(manifest.sides || {})) {
+      if (!asked.has(name) && (m.listed > 0 || m.goneTotal > 0 || m.lastListing)) out.sides.push({ side: name, reachable: null, note: 'recorded by the manifest; not asked on this view', manifest: m })
+    }
   }
   return out
 }

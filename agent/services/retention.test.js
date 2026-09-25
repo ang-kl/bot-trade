@@ -260,3 +260,32 @@ test('null horizons disable each sweep independently', () => {
   const r = pruneOperationalTables(db)
   assert.deepEqual(r, { cupHandle: 0, analyses: 0, actionLog: 0 })
 })
+
+test('V3 R1: tick_status_samples keeps every row by default, and prunes only past a horizon the owner sets; the segment manifest is never touched', async () => {
+  const insert = (db, atMs) => db.prepare("INSERT INTO tick_status_samples (side, at_ms, state) VALUES ('cpp_exec_demo', ?, 'RECORDING')").run(atMs)
+  const seed = (db) => {
+    insert(db, Date.now() - 400 * 86_400_000)
+    insert(db, Date.now() - 5 * 86_400_000)
+    db.prepare("INSERT INTO tick_segment_manifest (side, name, bytes, first_bytes, first_seen_ms, last_seen_ms, gone_at_ms, gone_reason) VALUES ('cpp_exec_demo', 'seg-1700000000000-000001.tks', 1, 1, 1, 1, 2, 'retired')").run()
+  }
+  const n = (db, t) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n
+  // Default: null — nothing deleted, and the reply keys are what they were.
+  const db = freshDB()
+  seed(db)
+  assert.equal(DEFAULT_RETENTION.tickStatusSamplesDays, null)
+  assert.deepEqual(pruneOperationalTables(db), { cupHandle: 0, analyses: 0, actionLog: 0 })
+  assert.equal(n(db, 'tick_status_samples'), 2)
+  // The owner's horizon (POST /actions/storage-purge { retention: { tickStatusSamplesDays: 30 } }).
+  setState(db, 'retention_json', JSON.stringify({ tickStatusSamplesDays: 30 }))
+  assert.equal(pruneOperationalTables(db).tickStatusSamples, 1)
+  assert.equal(n(db, 'tick_status_samples'), 1)
+  assert.equal(n(db, 'tick_segment_manifest'), 1, 'evidence has no horizon')
+  // The scheduled (cooperative) sweep applies the same rule.
+  const db2 = freshDB()
+  seed(db2)
+  setState(db2, 'retention_json', JSON.stringify({ tickStatusSamplesDays: 30 }))
+  const out = await pruneOperationalTablesCooperatively(db2)
+  assert.equal(out.tickStatusSamples, 1)
+  assert.equal(n(db2, 'tick_status_samples'), 1)
+  assert.equal(n(db2, 'tick_segment_manifest'), 1)
+})

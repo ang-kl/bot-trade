@@ -626,3 +626,37 @@ test('PR-EX: the segment bound is shared ACROSS sides, like the byte budget — 
     assert.equal(u.pulled, 4); assert.deepEqual(readdirSync(all).sort(), [NAME_A, NAME_B, NAME_C, NAME_D].sort())
   } finally { one.close(); two.close() }
 })
+
+test('V3 R1: GET /state/tick-segments names every listed segment with its bytes, and carries the heartbeat\'s manifest for the side', async () => {
+  const db = initDB(':memory:')
+  const a = makeSegment(10), b = makeSegment(20)
+  const s = await fakeSidecar({ files: new Map([[NAME_A, a], [NAME_B, b]]) })
+  // A cache directory that does not exist: the view only reads, so nothing is created.
+  const absent = join(tmpdir(), `r1-no-cache-${process.pid}-${Date.now()}`)
+  try {
+    const { reconcileSegmentManifest } = await import('./tick-segment-manifest.js')
+    const side = { name: 'cpp_exec_demo', base: s.base }
+    const log = console.log
+    console.log = () => {}
+    try {
+      await reconcileSegmentManifest(db, side, { status: { enabled: true, segments: { retired: 0, sealed: 2, spoolCapBytes: 2 * 1024 ** 3, segmentBytes: 64 * 1024 * 1024 } }, bootId: 'boot-a', nowMs: Date.parse('2026-09-26T00:00:00Z'), list: () => listSidecarSegments(dep(s)) })
+    } finally { console.log = log }
+    const before = s.calls.chunk
+    const view = await tickSegmentsView({ sides: [side], secret: SECRET, cacheDir: absent, db, nowMs: Date.parse('2026-09-26T00:01:00Z') })
+    assert.equal(existsSync(absent), false, 'the view creates nothing')
+    const v = view.sides.find(x => x.side === 'cpp_exec_demo')
+    assert.deepEqual(v.list.map(x => [x.name, x.bytes]), [[NAME_A, a.length], [NAME_B, b.length]], 'RED if the view goes back to counts only')
+    assert.deepEqual(v.manifest.segments.map(x => [x.name, x.bytes]), [[NAME_A, a.length], [NAME_B, b.length]])
+    assert.equal(v.manifest.listed, 2)
+    assert.ok(['VERIFIED', 'FAILED', 'NOT_VERIFIABLE'].includes(v.manifest.persistence.verdict))
+    assert.equal(v.manifest.retention.verdict, 'NOT_VERIFIABLE')
+    // the live side is not asked in this view, but the manifest still reports it
+    const live = view.sides.find(x => x.side === 'cpp_exec')
+    assert.equal(live, undefined, 'a side the manifest has never recorded is not invented')
+    assert.equal(s.calls.chunk, before, 'the view pulls nothing')
+    // without a database the view is what it was
+    const plain = await tickSegmentsView({ sides: [side], secret: SECRET, cacheDir: absent })
+    assert.equal(plain.sides[0].manifest, undefined)
+    assert.equal(plain.sides[0].segments, 2)
+  } finally { s.close() }
+})

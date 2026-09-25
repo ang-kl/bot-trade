@@ -94,3 +94,33 @@ test('the manifest says whether the running SQLite carries the WAL-reset fix, an
   assert.deepEqual([byKey['sqlite.walResetFixed'].value, byKey['sqlite.walResetFixed'].verified], [null, false])
   assert.ok(m.unknown.includes('sqlite.walResetFixed') && m.unknown.includes('sqlite.lockingMode'))
 })
+
+test('V3 R1: each sidecar\'s own recorder is in the manifest, and Node\'s unset TICK_SPOOL_PATH no longer reads as "tick engine not configured"', async () => {
+  const db = initDB(':memory:')
+  // Production's shape at 25-09-2026 16:48 UTC: both sidecars RECORDING while
+  // Node's own environment has no TICK_SPOOL_PATH (it never needs one).
+  const health = {
+    'http://demo:8091': { bootId: 'bd', connected: true, tick: { enabled: true, recording: true, state: 'RECORDING', events: 8_710_918, segmentsSealed: 5, sealedBytes: 671_088_720, openBytes: 12_892_744, diskAvailBytes: 47_338_317_872, usagePct: 3, symbols: 53 } },
+    'http://live:8091': { bootId: 'bl', connected: true, tick: null, commit: 'abc1234' },
+  }
+  const fetcher = async (url) => { const h = health[url.replace(/\/health$/, '')]; return h ? { ok: true, status: 200, json: async () => h } : { ok: false, status: 404 } }
+  const env = { EXEC_URL_DEMO: 'http://demo:8091', EXEC_URL_LIVE: 'http://live:8091', EXEC_SECRET: 's' }
+  const m = await runtimeManifest(db, { env, cgroupRoot: '/nonexistent-cgroup', fetcher })
+  const byKey = Object.fromEntries(m.items.map(i => [i.key, i]))
+  assert.equal(byKey['sidecar.demo.recorder'].verified, true)
+  assert.deepEqual(
+    [byKey['sidecar.demo.recorder'].value.state, byKey['sidecar.demo.recorder'].value.recording, byKey['sidecar.demo.recorder'].value.segmentsSealed, byKey['sidecar.demo.recorder'].value.sealedBytes],
+    ['RECORDING', true, 5, 671_088_720], 'RED if sidecarFacts drops /health.tick again')
+  assert.deepEqual(byKey['sidecar.live.recorder'].value, { enabled: false })
+  assert.match(byKey['sidecar.live.recorder'].note, /no TICK_SPOOL_PATH on this sidecar/)
+  // the commit is read when a build reports it, and stays "not reported" otherwise
+  assert.deepEqual([byKey['sidecar.live.commit'].value, byKey['sidecar.live.commit'].verified], ['abc1234', true])
+  assert.deepEqual([byKey['sidecar.demo.commit'].value, byKey['sidecar.demo.commit'].verified], [null, false])
+  // Node's env: still reported, no longer presented as the engine's state
+  assert.equal(byKey['tick.env.TICK_SPOOL_PATH'].value, 'unset')
+  assert.doesNotMatch(byKey['tick.env.TICK_SPOOL_PATH'].note, /tick engine not configured/)
+  assert.match(byKey['tick.env.TICK_SPOOL_PATH'].note, /Node's environment only/)
+  // an older build with no tick field at all is "not reported", not "disabled"
+  const older = await sidecarFacts('http://x', { fetcher: async () => ({ ok: true, status: 200, json: async () => ({ bootId: 'b' }) }) })
+  assert.equal('recorder' in older, false)
+})

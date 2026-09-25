@@ -1,0 +1,28 @@
+{
+  "_note": "V3 R1 (P8b): the durability policy of each gateway's tick spool, per sidecar side (heartbeat side names: cpp_exec = the live gateway cpp-acct, cpp_exec_demo = the demo gateway cpp-exec). It is an owner input, read by services/tick-segment-manifest.js to judge a restart: DURABLE means a restart must not lose a sealed segment, so any segment gone at a restart reads persistence FAILED; EPHEMERAL_LOSS_RECORDED means the spool is not kept across a restart and each loss is recorded instead (T1 grades that as a pass). An entry applies from its `from` (ISO UTC); an entry whose `from` is null is declared but not yet in force. A side with no entry in force reads persistence NOT_VERIFIABLE. This file changes a verdict, never a trade, a limit or a gateway.",
+  "sides": {
+    "cpp_exec_demo": [
+      {
+        "policy": "DURABLE",
+        "from": "2026-09-25T14:03:00Z",
+        "gateway": "cpp-exec (demo)",
+        "basis": "Railway check 25-09-2026: the demo spool /data/tick is on a 50 GB Railway volume, and its sealed segments were listed again after the 23-09 restart. The owner's 22:03 SGT approval sizes this spool at 20 GiB on that volume (GW-CAP)."
+      }
+    ],
+    "cpp_exec": [
+      {
+        "policy": "EPHEMERAL_LOSS_RECORDED",
+        "from": "2026-09-25T13:51:00Z",
+        "gateway": "cpp-acct (live)",
+        "basis": "Owner, 25-09-2026 21:51 SGT: the live spool has no volume until the X1 window, and its current history is lost at the next restart either way."
+      },
+      {
+        "policy": "DURABLE",
+        "from": null,
+        "gateway": "cpp-acct (live)",
+        "basis": "Owner, 25-09-2026 21:51 SGT: attach a 10 GB Railway volume at /data on cpp-acct in the X1 window, so live tick history survives redeploys.",
+        "pending": "Set `from` to the start of the first cpp-acct boot on that volume once it is read back. Until then the EPHEMERAL_LOSS_RECORDED entry above stays in force."
+      }
+    ]
+  }
+}

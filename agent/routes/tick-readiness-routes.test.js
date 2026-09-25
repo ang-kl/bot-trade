@@ -258,3 +258,37 @@ test('PR-I checker B-1: GET /health stays under 100 ms WHILE a multi-megabyte se
     if (savedCache != null) process.env.TICK_SEGMENTS_CACHE_DIR = savedCache; else delete process.env.TICK_SEGMENTS_CACHE_DIR
   }
 })
+
+test('V3 R1: GET /state/tick-segments carries the segment manifest — names, bytes, what is gone and why — judged under the checked-in durability policy', async () => {
+  const s = await server()
+  try {
+    const { reconcileSegmentManifest } = await import('../services/tick-segment-manifest.js')
+    const SEG = 67_108_872
+    const nm = (i) => `seg-${1_790_000_000_000 + i * 3_600_000}-${String(i).padStart(6, '0')}.tks`
+    const list = (ids) => async () => ({ ok: true, enabled: true, segments: ids.map(i => ({ name: nm(i), bytes: SEG, sealedAtMs: 1_790_000_000_000 + i * 3_600_000 })), openBytes: 0, truncated: false })
+    const status = { enabled: true, segments: { retired: 0, sealed: 3, spoolCapBytes: 2 * 1024 ** 3, segmentBytes: 64 * 1024 * 1024 } }
+    const t = Date.now()
+    const side = { name: 'cpp_exec_demo', base: 'http://demo.invalid' }
+    const log = console.log
+    console.log = () => {}
+    try {
+      await reconcileSegmentManifest(s.db, side, { status, bootId: 'boot-a', nowMs: t - 4 * 60_000, list: list([1, 2, 3]) })
+      await reconcileSegmentManifest(s.db, side, { status: { ...status, segments: { ...status.segments, sealed: 0 } }, bootId: 'boot-b', nowMs: t - 2 * 60_000, list: list([2, 3]) })
+    } finally { console.log = log }
+    const v = await fetch(s.url('/state/tick-segments')).then(r => r.json())
+    const demo = v.sides.find(x => x.side === 'cpp_exec_demo')
+    assert.ok(demo, 'a side the manifest recorded is shown even when this deployment does not ask it')
+    assert.deepEqual(demo.manifest.segments.map(x => [x.name, x.bytes]), [[nm(2), SEG], [nm(3), SEG]])
+    assert.deepEqual(demo.manifest.gone.map(x => [x.name, x.reason]), [[nm(1), 'lost_restart']])
+    assert.equal(demo.manifest.restarts.length, 1)
+    // The checked-in policy declares the demo spool DURABLE: a sealed segment
+    // lost at a restart is a failure there, not a footnote.
+    assert.equal(demo.manifest.persistence.policy, 'DURABLE')
+    assert.equal(demo.manifest.persistence.verdict, 'FAILED')
+    // The asked side (no sidecar listens in the test) still carries its list and manifest.
+    const asked = v.sides.find(x => x.side === 'cpp_exec')
+    assert.deepEqual(asked.list, [])
+    assert.equal(asked.manifest.persistence.policy, 'EPHEMERAL_LOSS_RECORDED')
+    assert.equal(asked.manifest.persistence.verdict, 'NOT_VERIFIABLE')
+  } finally { s.close() }
+})
