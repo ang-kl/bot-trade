@@ -147,6 +147,10 @@ export const CONTROLLERS = {
   // observing one) and §43 asks for exactly that: its own path, its own light.
   minute_review: { label: 'Per-minute review', expectedSec: 60, factor: 4 },
   cashflow_collection: { label: 'Account cashflow collection', expectedSec: 30, factor: 4 },
+  // V3 WEB-4: the server's own account readings, once a minute on their own
+  // ticker (broker-readings.js). The record's `at` is the last round that
+  // recorded an account; a failed round never renews it.
+  broker_readings: { label: 'Account readings (server, 60s)', expectedSec: 60, factor: 4, effect: { key: 'broker_readings_last_json', kind: 'json', maxAgeSec: 300 } },
   // §70.9. The P&L repair had NO heartbeat, so a backfill that stopped was
   // invisible until the daily-loss veto fired hours later on a total it could
   // no longer trust — the "silence is not health" shape this repo has now hit
