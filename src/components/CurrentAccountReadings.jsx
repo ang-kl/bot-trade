@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import AccountHistory from './AccountHistory.jsx'
+import { serverReadingsNotice } from '../lib/server-readings.js'
 
 const amount = n => n == null ? '—' : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 export default function CurrentAccountReadings({ report, accountId = 'all', history = false }) {
   const [expanded, setExpanded] = useState(null)
   const rows = (report?.accounts || []).filter(a => accountId === 'all' || a.accountId === String(accountId))
   if (!rows.length) return <p role="status">Current account readings unavailable.</p>
+  const notice = serverReadingsNotice(report?.serverReadings)
   return <div className="text-(length:--fs-body)">
-    <p>Readings refresh every 10 seconds while active; a shared broker snapshot is requested once per minute. Receipt times below show the age of the source.</p>
-    {report?.refreshError && <p role="status">Broker refresh failed: {report.refreshError}. Receipt times remain unchanged until a new reading arrives.</p>}
+    <p>The server reads every account from the broker once a minute, whether or not this page is open; this page re-reads those readings every 10 seconds. Receipt times below show the age of the source.</p>
+    {notice && <p role="status">{notice}</p>}
     <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-(length:--fs-body)">
       <thead><tr>{['Account', 'Currency', 'Balance', 'Floating now', 'Equity', 'Free margin', 'Broker receipt', ...(history ? ['History'] : [])].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
       <tbody>{rows.map(a => <tr key={a.accountId} className="border-t border-[var(--color-border)]">
