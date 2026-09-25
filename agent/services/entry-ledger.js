@@ -215,6 +215,12 @@ export function reserveEntry(db, {
   accountId, producerId, basis = null, symbol = null, symbolId = null, side, orderType = 'MARKET',
   volume = null, sl = null, tp = null, signalRef = null, ttlMs = DEFAULT_PERMIT_TTL_MS, now = Date.now(),
   gatewayInstance = null,
+  // V3 L2a W5 (25-09-2026): the approval this entry carries out. Until now
+  // only the tick fire ledger stamped entry_intents.risk_event_id (after the
+  // fact); a bar producer's intent carried none, and the reconciler had to
+  // re-find the approval by a ±5-minute window on symbol and side. The
+  // producer holds the id at the moment it reserves, so it is written here.
+  riskEventId = null,
   // THE FENCE IS INJECTABLE (20-09-2026). The VPO producer is retired in
   // lib/entry-producers.js, so its standing-permit logic is unreachable from
   // a test through the real fence. The tests used to lift the retirement mark
@@ -243,14 +249,15 @@ export function reserveEntry(db, {
     const intentId = newIntentId()
     const permitId = 'p' + newIntentId().slice(1)
     const expiresAt = iso(now + ttlMs)
+    const riskId = riskEventId != null && Number.isFinite(Number(riskEventId)) ? Number(riskEventId) : null
     db.prepare(`INSERT INTO entry_intents
       (id, account_id, environment, symbol, symbol_id, side, order_type, volume, sl, tp, producer_id, basis, signal_ref,
-       mode_epoch, config_revision, permit_id, permit_expires_at, state, gateway_instance, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?)`)
+       mode_epoch, config_revision, permit_id, permit_expires_at, state, gateway_instance, created_at, updated_at, risk_event_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?, ?)`)
       .run(intentId, id, st.environment, symbol ?? null, symbolId != null ? Number(symbolId) : null, sideU, orderType ?? null,
         volume != null ? Number(volume) : null, sl != null ? Number(sl) : null, tp != null ? Number(tp) : null,
         String(producerId), String(basis ?? producerBasis(producerId) ?? 'unknown'), signalRef != null ? String(signalRef) : null,
-        st.modeEpoch, st.configRevision, permitId, expiresAt, gatewayInstance, iso(now), iso(now))
+        st.modeEpoch, st.configRevision, permitId, expiresAt, gatewayInstance, iso(now), iso(now), riskId)
     return {
       ok: true, intentId,
       permit: {

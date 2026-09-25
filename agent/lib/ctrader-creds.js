@@ -115,6 +115,38 @@ export function attachEntryFence(db, creds, { producerId, basis = null }) {
 }
 
 /**
+ * V3 L2a (W5/W6, 25-09-2026): bind ONE order's context to the intent the
+ * send reserves. exec-engine.placeOrder reserves the intent itself (through
+ * `creds.entryLedger.reserve`), so the producer never sees its id and the
+ * row it writes cannot name it. This wraps `reserve` for one order only:
+ *   - `riskEventId` is written onto the intent row (entry_intents.risk_event_id),
+ *     the approval the producer holds in hand;
+ *   - `onReserved(intentId)` runs once the reservation succeeded, BEFORE
+ *     anything is sent, so the caller can stamp the id on its own row.
+ * A throwing `onReserved` never blocks the order: the link is a record, the
+ * order is money. Creds with no ledger (no producerId, a test double) are
+ * returned unchanged — exactly the order path they had.
+ */
+export function bindEntryIntent(creds, { riskEventId = null, onReserved = null } = {}) {
+  const L = creds?.entryLedger
+  if (!L || typeof L.reserve !== 'function') return creds
+  const rid = riskEventId != null && Number.isFinite(Number(riskEventId)) ? Number(riskEventId) : null
+  return {
+    ...creds,
+    entryLedger: {
+      ...L,
+      reserve: (o = {}) => {
+        const r = L.reserve(rid != null ? { ...o, riskEventId: rid } : o)
+        if (r?.ok && r.intentId && typeof onReserved === 'function') {
+          try { onReserved(r.intentId, r) } catch { /* the link never blocks the send */ }
+        }
+        return r
+      },
+    },
+  }
+}
+
+/**
  * Parse the stored symbol→symbolId map. Returns {} on missing or corrupt
  * state instead of throwing (a bad write must not take down every consumer).
  *

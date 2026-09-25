@@ -864,8 +864,12 @@ export const RULES = Object.freeze([
     // v2 (L1 fix round, N7): entry-drain.js:132-140 also logs a pass whose
     // from equals its to; such a row is not an entry into the state and would
     // move `since` later, understating how long the transition has been stuck.
-    id: 'STK-07', key: 'entry_transition_stuck', version: 2, stage: 'stuck', severity: 'defect', fix: 'writer+resolver', current: true,
-    cite: ['entry-drain.js:119-140', 'entry-drain.js:130'],
+    // v3 (L2a W14): the record's own `transitionSince`, stamped by
+    // writeEngineStatus when the state was entered, is the entry time when
+    // present; the drain-row lower bound below is the fallback for a record
+    // written before the field existed.
+    id: 'STK-07', key: 'entry_transition_stuck', version: 3, stage: 'stuck', severity: 'defect', fix: 'writer+resolver', current: true,
+    cite: ['entry-drain.js:119-140', 'entry-drain.js:130', 'entry-mode.js:133-155'],
     noun: 'account engine record',
     sql: `SELECT key, value FROM agent_state WHERE key >= 'acct:' AND key < 'acct;' AND key LIKE '%:engine_status_json' LIMIT ?`,
     params: () => [], when: () => null,
@@ -880,16 +884,19 @@ export const RULES = Object.freeze([
         return { missing: ['settle'], class: 'cannot_settle', detail: `${tail(acct)} STOPPED requested with ${orphans} orphaned working resting row(s): it cannot settle (entry-drain.js:120-123)` }
       }
       if (!['WARMING', 'QUIESCING', 'RECONCILING'].includes(state)) return null
-      // updatedAt is rewritten every pass (entry-drain.js:130): the entry time
-      // is a LOWER BOUND from the newest drain row that recorded the transition.
-      const entered = ctx.drainLog.filter(d => {
+      // updatedAt is rewritten every pass (entry-drain.js:130): without the
+      // record's own stamp the entry time is a LOWER BOUND from the newest
+      // drain row that recorded the transition.
+      const stamped = tsMs(s.transitionSince)
+      const entered = stamped != null ? [] : ctx.drainLog.filter(d => {
         if (acctOf(d.account_id) !== acct) return false
         const b = parseJson(d.body)
         return b?.to === state && b?.from !== b?.to
       }).map(d => tsMs(d.at)).filter(x => x != null)
-      const since = entered.length ? Math.max(...entered) : ctx.actionLogFloorMs
+      const since = stamped ?? (entered.length ? Math.max(...entered) : ctx.actionLogFloorMs)
       if (since == null || w.nowMs - since <= 30 * MIN) return null
-      return { missing: ['settle'], class: state, since: iso(since), sinceIsLowerBound: !entered.length, detail: `${tail(acct)} ${state} since ${entered.length ? '' : 'at least '}${iso(since).slice(0, 16)}` }
+      const sinceSource = stamped != null ? 'record' : entered.length ? 'drain_log' : 'action_log_floor'
+      return { missing: ['settle'], class: state, since: iso(since), sinceSource, sinceIsLowerBound: sinceSource === 'action_log_floor', detail: `${tail(acct)} ${state} since ${sinceSource === 'action_log_floor' ? 'at least ' : ''}${iso(since).slice(0, 16)}` }
     },
   },
   {

@@ -15,6 +15,9 @@ import {
 
 
 const CREDS = { host: 'demo', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '42' }
+// V3 L2a W9: an adopted fill stores the broker's label, which exec-engine
+// tagged with the intent that placed the order (the 8th field).
+const tagged = (intentId) => `PRE|v1|MR|H|NY|1d|TR|${intentId}`
 const SYNTH = { consensus_bias: 'long', entry: 100, sl: 98, tp1: 104, tp2: 106, strategy: 'rsi2_reversion', timeframe: '8h', overall_conviction: 8 }
 
 function fakes({ approved = true } = {}) {
@@ -131,18 +134,20 @@ test('reconcileStaleClosedMarketLimits: still working in broker_orders leaves it
   assert.equal(row.status, 'working')
 })
 
-test('reconcileStaleClosedMarketLimits: gone from broker_orders, a trade opened since it was placed becomes filled', () => {
+test('reconcileStaleClosedMarketLimits: gone from broker_orders, the trade its intent produced becomes filled', () => {
   const db = initDB(':memory:')
+  // V3 L2a W9: the link is the intent recorded at placement, not "a trade
+  // on this symbol opened since" (that heuristic is pinned gone below).
   db.prepare(`
-    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note)
-    VALUES ('AMZN.US', '1d', '502', -1, 250, 253, 240, 1, '2026-07-21T00:00:00Z', '2026-07-28T00:00:00Z', 'working', 'pending-closed')
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, intent_id)
+    VALUES ('AMZN.US', '1d', '502', -1, 250, 253, 240, 1, '2026-07-21T00:00:00Z', '2026-07-28T00:00:00Z', 'working', 'pending-closed', 'iamzn0000502')
   `).run()
   // The broker HAS a record and it says the order left the book. This test
   // used to insert no broker_orders row at all and call that "gone" — which
   // is precisely the misreading that retired thirteen live DOW.US limits on
   // 04-08-2026. Left the book and never heard of are different facts now.
   db.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('502', 'AMZN.US', 'gone')`).run()
-  db.prepare(`INSERT INTO trades (symbol, opened_at) VALUES ('AMZN.US', '2026-07-21T12:00:00Z')`).run()
+  db.prepare(`INSERT INTO trades (symbol, side, opened_at, label_raw) VALUES ('AMZN.US', 'SELL', '2026-07-21T12:00:00Z', ?)`).run(tagged('iamzn0000502'))
   const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-07-22T00:00:00Z') })
   assert.deepEqual(r, { stillWorking: 0, filled: 1, expired: 0, unknown: 0 })
   const row = db.prepare(`SELECT status, note FROM pending_orders WHERE order_id = '502'`).get()
@@ -157,11 +162,12 @@ test('reconcileStaleClosedMarketLimits: gone from broker_orders, a trade opened 
   assert.equal(plan.planned_r, 3.333); assert.equal(plan.timeframe, '1d')
   // a plan a more direct writer put there first is not overwritten
   const db2 = initDB(':memory:')
-  db2.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note) VALUES ('AMZN.US', '1d', '502', -1, 250, 253, 240, 1, '2026-07-21T00:00:00Z', '2026-07-28T00:00:00Z', 'working', 'pending-closed')`).run()
+  db2.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, intent_id) VALUES ('AMZN.US', '1d', '502', -1, 250, 253, 240, 1, '2026-07-21T00:00:00Z', '2026-07-28T00:00:00Z', 'working', 'pending-closed', 'iamzn0000502')`).run()
   db2.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('502', 'AMZN.US', 'gone')`).run()
-  const tid = db2.prepare(`INSERT INTO trades (symbol, opened_at) VALUES ('AMZN.US', '2026-07-21T12:00:00Z')`).run().lastInsertRowid
+  const tid = db2.prepare(`INSERT INTO trades (symbol, side, opened_at, label_raw) VALUES ('AMZN.US', 'SELL', '2026-07-21T12:00:00Z', ?)`).run(tagged('iamzn0000502')).lastInsertRowid
   db2.prepare(`INSERT INTO trade_plans (trade_id, symbol, side, planned_entry, source, created_at) VALUES (?, 'AMZN.US', 'SELL', 251, 'manual_broker', '2026-07-21T12:00:00Z')`).run(tid)
-  reconcileStaleClosedMarketLimits(db2, { nowMs: Date.parse('2026-07-22T00:00:00Z') })
+  const r2 = reconcileStaleClosedMarketLimits(db2, { nowMs: Date.parse('2026-07-22T00:00:00Z') })
+  assert.equal(r2.filled, 1, 'the link ran, so the plan below was really judged')
   assert.equal(db2.prepare(`SELECT source, planned_entry FROM trade_plans WHERE trade_id = ?`).get(tid).source, 'manual_broker')
 })
 
@@ -317,13 +323,13 @@ test('level moved → cancels the stale order and places a fresh one', async () 
 test('an adopted fill INHERITS the approval id from the order that produced it', () => {
   const db = initDB(':memory:')
   db.prepare(`
-    INSERT INTO pending_orders (symbol, order_id, dir, level, placed_at, expires_at, status, note, account_id, risk_event_id)
-    VALUES ('DOW.US', '901', -1, 29.84, '2026-08-04T10:00:00Z', '2026-08-07T00:00:00Z', 'working', 'pending-closed', '46130058', 97150)
+    INSERT INTO pending_orders (symbol, order_id, dir, level, placed_at, expires_at, status, note, account_id, risk_event_id, intent_id)
+    VALUES ('DOW.US', '901', -1, 29.84, '2026-08-04T10:00:00Z', '2026-08-07T00:00:00Z', 'working', 'pending-closed', '46130058', 97150, 'idow00000901')
   `).run()
   db.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('901', 'DOW.US', 'gone')`).run()
   const tradeId = db.prepare(
-    `INSERT INTO trades (symbol, opened_at, account_id) VALUES ('DOW.US', '2026-08-04T11:00:00Z', '46130058')`
-  ).run().lastInsertRowid
+    `INSERT INTO trades (symbol, side, opened_at, account_id, label_raw) VALUES ('DOW.US', 'SELL', '2026-08-04T11:00:00Z', '46130058', ?)`
+  ).run(tagged('idow00000901')).lastInsertRowid
 
   const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-08-04T12:00:00Z') })
   assert.equal(r.filled, 1)
@@ -335,28 +341,29 @@ test('an approval id already on the trade is NEVER overwritten', () => {
   // A more direct writer knows better than this heuristic link.
   const db = initDB(':memory:')
   db.prepare(`
-    INSERT INTO pending_orders (symbol, order_id, dir, level, placed_at, expires_at, status, note, account_id, risk_event_id)
-    VALUES ('DOW.US', '902', -1, 29.84, '2026-08-04T10:00:00Z', '2026-08-07T00:00:00Z', 'working', 'pending-closed', '46130058', 97150)
+    INSERT INTO pending_orders (symbol, order_id, dir, level, placed_at, expires_at, status, note, account_id, risk_event_id, intent_id)
+    VALUES ('DOW.US', '902', -1, 29.84, '2026-08-04T10:00:00Z', '2026-08-07T00:00:00Z', 'working', 'pending-closed', '46130058', 97150, 'idow00000902')
   `).run()
   db.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('902', 'DOW.US', 'gone')`).run()
   const tradeId = db.prepare(
-    `INSERT INTO trades (symbol, opened_at, account_id, risk_event_id) VALUES ('DOW.US', '2026-08-04T11:00:00Z', '46130058', 55555)`
-  ).run().lastInsertRowid
+    `INSERT INTO trades (symbol, side, opened_at, account_id, risk_event_id, label_raw) VALUES ('DOW.US', 'SELL', '2026-08-04T11:00:00Z', '46130058', 55555, ?)`
+  ).run(tagged('idow00000902')).lastInsertRowid
 
-  reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-08-04T12:00:00Z') })
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-08-04T12:00:00Z') })
+  assert.equal(r.filled, 1, 'the link ran — the COALESCE below is what kept the id')
   assert.equal(db.prepare(`SELECT risk_event_id FROM trades WHERE id = ?`).get(tradeId).risk_event_id, 55555)
 })
 
 test('a pending row with no approval id leaves the trade alone', () => {
   const db = initDB(':memory:')
   db.prepare(`
-    INSERT INTO pending_orders (symbol, order_id, dir, level, placed_at, expires_at, status, note, account_id)
-    VALUES ('DOW.US', '903', -1, 29.84, '2026-08-04T10:00:00Z', '2026-08-07T00:00:00Z', 'working', 'pending-closed', '46130058')
+    INSERT INTO pending_orders (symbol, order_id, dir, level, placed_at, expires_at, status, note, account_id, intent_id)
+    VALUES ('DOW.US', '903', -1, 29.84, '2026-08-04T10:00:00Z', '2026-08-07T00:00:00Z', 'working', 'pending-closed', '46130058', 'idow00000903')
   `).run()
   db.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('903', 'DOW.US', 'gone')`).run()
   const tradeId = db.prepare(
-    `INSERT INTO trades (symbol, opened_at, account_id) VALUES ('DOW.US', '2026-08-04T11:00:00Z', '46130058')`
-  ).run().lastInsertRowid
+    `INSERT INTO trades (symbol, side, opened_at, account_id, label_raw) VALUES ('DOW.US', 'SELL', '2026-08-04T11:00:00Z', '46130058', ?)`
+  ).run(tagged('idow00000903')).lastInsertRowid
   const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-08-04T12:00:00Z') })
   assert.equal(r.filled, 1)
   assert.equal(db.prepare(`SELECT risk_event_id FROM trades WHERE id = ?`).get(tradeId).risk_event_id, null)

@@ -2127,6 +2127,24 @@ export function initDB(dbPath) {
     }
   }
 
+  // V3 L2a (25-09-2026, LIFECYCLE-SPEC §7 W5/W6): the entry intent a trade
+  // row and a resting-order row came from, written by the writer that has it
+  // in hand — the dispatch's write-ahead row the moment the intent is
+  // reserved (loop.js), a resting row at its placement (closed-market-limits,
+  // pending-orders), an adopted fill from the tag on its label (reconciler).
+  // Before this the only link was the `|i<id>` tag exec-engine puts on the
+  // BROKER's copy of the label, which the trade row never stored (ORD-05),
+  // and a resting row had no link at all, so its fill was found by "the first
+  // trade on this symbol since placement" (W9). Additive: every existing row
+  // keeps NULL, which reads as "not recorded", never rewritten.
+  {
+    const tc = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
+    if (tc.size && !tc.has('intent_id')) db.exec('ALTER TABLE trades ADD COLUMN intent_id TEXT');
+    const pc = new Set(db.prepare('PRAGMA table_info(pending_orders)').all().map(c => c.name));
+    if (pc.size && !pc.has('intent_id')) db.exec('ALTER TABLE pending_orders ADD COLUMN intent_id TEXT');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_trades_intent ON trades(intent_id) WHERE intent_id IS NOT NULL');
+  }
+
   // PR-AU: give back the attempts spent against a verifier that could not
   // answer. Measured 18-09-2026 04:08 UTC — "0 armed of 18 unverified, 0
   // eligible, 18 at the re-verify cap" — because all three attempts were

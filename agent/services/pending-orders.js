@@ -16,10 +16,10 @@ import { admitEntry } from './entry-mode.js'
 import { recordDecision } from './decision-log.js'
 import { readTradableUnion } from './watchlists.js'
 import { tradePrice } from './alert-format.js'
-import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
+import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, labelIntentId } from '../lib/trade-labels.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { normPosId } from '../lib/pos-id.js'
-import { recordTradePlan } from './trade-plans.js'
+import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -183,6 +183,9 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
   // attribution.js), else the literal.
   const labelStrategy = parsedLabel.strategy && parsedLabel.strategy !== 'other' ? parsedLabel.strategy : null
   const strategy = row.strategy || labelStrategy || 'fib_618_fade'
+  // V3 L2a (W6): the intent this fill carries out — the resting row's own
+  // (written at placement), else the tag on the broker position's label.
+  const intentId = row.intent_id || labelIntentId(parsedLabel.raw || '') || null
 
   const persistTrade = db.transaction(() => {
     const tradeInsert = db.prepare(`
@@ -191,12 +194,12 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
         status, ctrader_position_id, analysis_id, strategy, conviction,
         label_raw, source, label_version, label_strategy, label_conviction,
         label_session, label_timeframe, label_regime, account_id, risk_event_id,
-        origin, origin_source
+        origin, origin_source, intent_id
       ) VALUES (
         ?, ?, ?, ?, ?, ?, datetime('now'),
         'open', ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        'bot_pending_fill', 'write'
+        'bot_pending_fill', 'write', ?
       )
     `).run(
       row.symbol, side, executionPrice, row.sl ?? null, row.tp ?? null, row.volume ?? null,
@@ -215,6 +218,7 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
       // risk_event_id NULL — while their pending rows carried ids 97150-97729.
       // The lineage existed; it just did not survive the last hop.
       row.risk_event_id ?? null,
+      intentId,
     )
     const tradeId = tradeInsert.lastInsertRowid
 
@@ -243,7 +247,10 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
         accountId: acct, symbol: row.symbol, side, strategy, timeframe: row.timeframe || null,
         entry: row.level ?? executionPrice, sl: row.sl ?? null, tp: row.tp ?? null, timeCapAt, source: 'bot_pending_fill',
       })
-    } catch (err) { log(`Trade plan not recorded for trade ${tradeId} (non-fatal): ${err.message}`) }
+    } catch (err) {
+      // W7: recorded, not only logged.
+      recordPlanWriteFailure(db, { tradeId, accountId: acct, symbol: row.symbol, source: 'bot_pending_fill', stage: 'pending_fill', error: err })
+    }
 
     return tradeId
   })
@@ -632,15 +639,20 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     // P1b: the fence, by name.
     const admission = admit(db, { accountId: creds.accountId, producerId: 'pending_fib_orders', basis: 'bar' })
     if (!admission.ok) { summary.skipped.push(`${symbol}: entry_mode ${admission.reason}`); continue }
+    // V3 L2a (W5): the intent exec-engine reserves for this order carries the
+    // approval; its id rides onto the resting row (pending_orders.intent_id).
+    let placedIntentId = null
+    const { bindEntryIntent } = await import('../lib/ctrader-creds.js')
+    const placeCreds = bindEntryIntent(creds, { riskEventId, onReserved: (id) => { placedIntentId = id } })
     try {
-      const execEvent = await exec.placeOrder(creds, orderPayload)
+      const execEvent = await exec.placeOrder(placeCreds, orderPayload)
       const orderId = execEvent?.order?.orderId ?? execEvent?.orderId ?? null
       // account_id, same reason as closed-market-limits.js: an unattributed
       // resting order cannot be scoped by anything downstream, and the reads
       // that must scope it silently widen to every account instead.
       db.prepare(`
-        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id, time_cap_minutes, strategy)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?, ?)
+        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id, time_cap_minutes, strategy, intent_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?, ?, ?)
       `).run(
         symbol,
         timeframe || null,
@@ -658,6 +670,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         // PR-E: the row carries its strategy so the fill reads it back
         // (persistFilledTrade) instead of assuming the literal.
         signal.strategy || proposal.strategy || 'fib_618_fade',
+        placedIntentId,
       )
       try {
         const { recordSubmitted } = await import('./opportunity-disposition.js')

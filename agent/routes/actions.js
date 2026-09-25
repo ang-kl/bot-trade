@@ -7,15 +7,15 @@ import { brokerReadAccount, brokerReadCache } from '../lib/broker-read-scope.js'
 import { Router } from 'express'
 import { getState, setState, sweepMonitoredPositionsForAccounts, accountsWithOpenPositions } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
-import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-creds.js'
+import { getCtraderCreds, getSymbolMap, ensureSymbolMap, bindEntryIntent } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
-import { recordTradePlan } from '../services/trade-plans.js'
+import { recordTradePlan, recordPlanWriteFailure } from '../services/trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent, mergeRiskConfig, migrateLegacyRiskKeys } from '../services/risk.js'
 import { noteRiskConfigChanges } from '../services/risk-config-history.js'
-import { wsGetTrendbarsBatch, wsGetSpotOnce } from '../lib/ctrader-ws.js'
+import { wsGetTrendbarsBatch, wsGetSpotOnce, isAmbiguousSubmitError } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
-import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
+import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
 import { describeBracketGap } from '../lib/bracket-advice.js'
@@ -35,6 +35,7 @@ import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
 import { clearErrorLog } from '../services/error-log.js'
 import { desiredGuardFor } from '../services/exec-guard-sync.js'
+import { isAmbiguousOrderOutcome } from '../lib/exec-fallback.js'
 
 /** PR-E: the strategy a manual order carries when the trader names none. */
 export const MANUAL_ORDER_STRATEGY = 'manual_order'
@@ -67,6 +68,20 @@ export function manualDirectionReason(raw, side) {
   const v = String(raw ?? '').trim().replace(/\s+/g, ' ')
   if (v) return `manual:${v.slice(0, 120)}`
   return String(side).toUpperCase() === 'SELL' ? 'manual:operator_chose_short' : 'manual:operator_chose_long'
+}
+
+/**
+ * V3 L2a W1 (25-09-2026): the direction reason of an owner-fired VALIDATION
+ * FILL. Its synth is built in the route with no strategy reading behind the
+ * side, and it carried no `direction_reason` — so its approval failed PRE-01
+ * and its position the close gate. The cause of the side is a fact and is
+ * stated as one: the side the operator sent, or — when none was sent — the
+ * route's own default, named as a default rather than dressed as a choice.
+ */
+export function validationFillDirectionReason(rawSide) {
+  if (rawSide === 'short') return 'manual:operator_chose_short'
+  if (rawSide === 'long') return 'manual:operator_chose_long'
+  return 'validation_fill:route_default_long'
 }
 
 /**
@@ -116,6 +131,87 @@ export function recordManualOrderTrade(db, {
     })
   } catch (err) { console.warn(`[actions] trade plan not recorded for manual order trade ${tradeId}: ${err.message}`) }
   return tradeId
+}
+
+// ---------------------------------------------------------------------------
+// V3 L2a W8 (25-09-2026, LIFECYCLE-SPEC §7): POST /actions/execute-trade's
+// ledger writes. The route wrote its trades row only AFTER the broker
+// answered, and wrote it without `account_id`, `strategy` or
+// `risk_event_id` — so a timeout between send and write left a live position
+// with no ledger row (the hole loop.js's write-ahead row closed on 03-08),
+// and the row it did write could not be scoped to its account, attributed to
+// its strategy or walked back to the approval (ORD-01). These three helpers
+// are the loop.js shape for this route: a write-ahead 'submitting' row before
+// the send, promoted to 'open' on the fill, or marked by OUTCOME on a failure
+// — 'rejected' when nothing was provably sent, 'unconfirmed' when a position
+// may exist — never deleted. Exported so the writes are exercised without a
+// broker; manual-order-plan.test.js pins the route's call sites.
+// ---------------------------------------------------------------------------
+const finiteOrNull = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
+
+/** The write-ahead row: account, strategy and approval id from the first write. Returns the trades row id. */
+export function writeAheadAnalysisTrade(db, { symbol, side, entry = null, sl = null, tp = null, volLots = null, accountId = null, strategy = null, riskEventId = null } = {}) {
+  const r = db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status,
+      strategy, account_id, source, risk_event_id, origin, origin_source, proposal_entry_price)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'manual', ?, 'manual_broker', 'write', ?)
+  `).run(symbol, side, finiteOrNull(entry), finiteOrNull(sl), finiteOrNull(tp), finiteOrNull(volLots),
+    strategy || null, accountId != null ? String(accountId) : null, finiteOrNull(riskEventId), finiteOrNull(entry))
+  return Number(r.lastInsertRowid)
+}
+
+/** Refusal codes exec-engine.placeOrder throws BEFORE any transport: provably nothing sent. */
+const UNSENT_CODES = Object.freeze(['ENTRY_MODE_REFUSED', 'ENTRY_LEDGER_REFUSED', 'ENTRY_PERMIT_REFUSED', 'DUPLICATE_ORDER_DISPATCH_BLOCKED'])
+
+/**
+ * The write-ahead row after a failed send, marked by OUTCOME (loop.js's rule):
+ * a guard refusal or a pre-send refusal is 'rejected'; anything that may have
+ * reached the broker is 'unconfirmed', which the duplicate guard reads.
+ */
+export function failAnalysisTrade(db, tradeId, err) {
+  const msg = String(err?.message || err || '')
+  const unsent = /^guard_/.test(msg) || UNSENT_CODES.includes(err?.code)
+    || !(isAmbiguousSubmitError(err) || isAmbiguousOrderOutcome(err))
+  const status = unsent ? 'rejected' : 'unconfirmed'
+  db.prepare(`UPDATE trades SET status = ? WHERE id = ? AND status = 'submitting'`).run(status, Number(tradeId))
+  return status
+}
+
+/**
+ * The fill: the write-ahead row promoted to 'open' (never a second row), its
+ * monitored row, and the plan — the analysis's own levels. A plan that fails
+ * to write is recorded (W7), never only logged.
+ */
+export function settleAnalysisTrade(db, tradeId, {
+  symbol, side, entryP, entry = null, sl, tp = null, volLots, positionId = null, label, accountId = null,
+  strategy = null, timeframe = null, thesis = '', initialRisk = null, invalidationTrigger = null, timeCap = null,
+} = {}) {
+  const acct = accountId != null ? String(accountId) : null
+  const parsed = parseLabel(label)
+  const id = Number(tradeId)
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE trades SET entry_price = ?, sl_price = ?, tp_price = ?, volume = ?, opened_at = datetime('now'), status = 'open',
+        ctrader_position_id = ?, label_raw = ?, label_strategy = ?, label_conviction = ?, label_session = ?,
+        account_id = COALESCE(account_id, ?), strategy = COALESCE(strategy, ?)
+      WHERE id = ?
+    `).run(entryP, sl, tp, volLots, positionId, label, parsed?.strategy, parsed?.conviction, parsed?.session, acct, strategy || null, id)
+    db.prepare(`
+      INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
+        thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, account_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active')
+    `).run(symbol, id, side, entryP, sl, tp, thesis || '', initialRisk, invalidationTrigger, timeCap, strategy || null, label, acct)
+    // §7,437·B·4: a manual entry carries a plan too — the analysis's own levels.
+    try {
+      recordTradePlan(db, tradeId, {
+        accountId: acct, symbol, side, strategy: strategy || null, timeframe: timeframe || null,
+        entry, sl, tp, timeCapAt: timeCap, source: 'manual_broker',
+      })
+    } catch (err) {
+      recordPlanWriteFailure(db, { tradeId: id, accountId: acct, symbol, source: 'manual_broker', stage: 'execute_trade', error: err })
+    }
+  })()
+  return id
 }
 
 // Credentials for ONE account by id (03-09-2026): the accounts registry says
@@ -3052,6 +3148,8 @@ export default function actionsRouter(db, deps = {}) {
       // minSLDistancePct floor (0.15%); TP 0.8% clears minRR 1.5 at RR 1.6.
       const synth = {
         consensus_bias: bias,
+        // W1: the side's cause, stated (validationFillDirectionReason).
+        direction_reason: validationFillDirectionReason(req.body?.side),
         entry: mid,
         sl: mid * (1 - dir * 0.005),
         tp1: mid * (1 + dir * 0.008),
@@ -5853,7 +5951,9 @@ export default function actionsRouter(db, deps = {}) {
       // naming it here is what makes the gate and the order agree rather
       // than agreeing by coincidence.
       const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db, accountId))
-      persistRiskEvent(db, proposal, riskResult)
+      // §70.9 lineage (W8): the approval's row id rides onto the trade row
+      // and the entry intent this order produces.
+      const riskEventId = persistRiskEvent(db, proposal, riskResult)
 
       if (!riskResult.approved) {
         return res.json({ ok: false, vetoed: true, reason: riskResult.veto_reason, checks: riskResult.checks })
@@ -5920,12 +6020,28 @@ export default function actionsRouter(db, deps = {}) {
         persistRiskEvent(db, proposal, { approved: false, veto_reason: gv1.reason })
         return res.json({ ok: false, vetoed: true, reason: gv1.reason })
       }
+      // W8: THE WRITE-AHEAD ROW, before the broker is called — account,
+      // strategy and approval id from the first write, so a timeout or a
+      // crash between the send and the fill still leaves a row the duplicate
+      // guard reads and the reconciler resolves. The entry intent the send
+      // reserves carries the approval, and its id lands on this row the
+      // moment it is reserved (bindEntryIntent), before anything is sent.
+      const tradeId = writeAheadAnalysisTrade(db, {
+        symbol: analysis.symbol, side, entry, sl, tp: tp1, volLots, accountId, strategy: analysis.strategy || null, riskEventId,
+      })
+      let entryIntentId = null
       let exec
       try {
         exec = await execPlaceOrder(
-          { ...getCtraderCreds(db, undefined, { producerId: 'route_execute_trade' }), host, clientId, clientSecret, accessToken, accountId },
+          bindEntryIntent(
+            { ...getCtraderCreds(db, undefined, { producerId: 'route_execute_trade' }), host, clientId, clientSecret, accessToken, accountId },
+            { riskEventId, onReserved: (id) => { entryIntentId = id; db.prepare('UPDATE trades SET intent_id = ? WHERE id = ?').run(id, tradeId) } },
+          ),
           orderPayload)
       } catch (err) {
+        // Marked by outcome, never deleted: 'rejected' when nothing was
+        // provably sent, 'unconfirmed' when a position may exist.
+        try { failAnalysisTrade(db, tradeId, err) } catch { /* the answer below is the report */ }
         // A guard_* refusal is a veto, not a server fault: record it against the
         // proposal and answer in the same shape as every other veto here.
         if (!/^guard_/.test(err.message)) throw err
@@ -5951,38 +6067,20 @@ export default function actionsRouter(db, deps = {}) {
         timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
       }
 
-      const parsedLabel = parseLabel(structuredLabel)
-      db.transaction(() => {
-        const tradeInsert = db.prepare(`
-          INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
-            ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status,
-            origin, origin_source)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open',
-                  'manual_broker', 'write')
-        `).run(analysis.symbol, side, entryP, sl, tp1, volLots, positionId, structuredLabel,
-          parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session)
-        const tradeId = tradeInsert.lastInsertRowid
+      // W8: the write-ahead row promoted to 'open' — never a second row. The
+      // label stored is the one the broker holds (exec-engine tagged it with
+      // the intent; tagLabelWithIntent keeps the untagged label when the tag
+      // would not fit).
+      settleAnalysisTrade(db, tradeId, {
+        symbol: analysis.symbol, side, entryP, entry, sl, tp: tp1, volLots, positionId,
+        label: entryIntentId ? tagLabelWithIntent(structuredLabel, entryIntentId) : structuredLabel,
+        accountId, strategy: analysis.strategy || null, timeframe: analysis.timeframe || null,
+        thesis: analysis.consensus_summary || '', initialRisk,
+        invalidationTrigger: synth.invalidation_trigger || analysis.invalidation_trigger || null, timeCap,
+      })
 
-        db.prepare(`
-          INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
-            thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, account_id, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active')
-        `).run(analysis.symbol, tradeId, side, entryP, sl, tp1,
-          analysis.consensus_summary || '', initialRisk,
-          synth.invalidation_trigger || analysis.invalidation_trigger || null,
-          timeCap, analysis.strategy, structuredLabel,
-          accountId != null ? String(accountId) : null)
-        // §7,437·B·4: a manual entry carries a plan too — the analysis's own levels.
-        try {
-          recordTradePlan(db, tradeId, {
-            accountId, symbol: analysis.symbol, side, strategy: analysis.strategy || null, timeframe: analysis.timeframe || null,
-            entry, sl, tp: tp1, timeCapAt: timeCap, source: 'manual_broker',
-          })
-        } catch (err) { console.warn(`[actions] trade plan not recorded for trade ${tradeId}: ${err.message}`) }
-      })()
-
-      console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${volLots} @ ${executionPrice || 'mkt'}`)
-      res.json({ ok: true, side, symbol: analysis.symbol, volume: volLots, executionPrice, positionId })
+      console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${volLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} riskEvent=${riskEventId ?? 'none'}`)
+      res.json({ ok: true, side, symbol: analysis.symbol, volume: volLots, executionPrice, positionId, tradeId, riskEventId })
     } catch (err) {
       console.error('[actions/execute-trade] error:', err.message)
       res.status(500).json({ error: err.message })

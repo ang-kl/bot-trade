@@ -1,5 +1,5 @@
 import { isOurs, parseLabel, labelIntentId, ownedByIntent } from '../lib/trade-labels.js'
-import { recordTradePlan } from './trade-plans.js'
+import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
 import { getState, setState as setAgentState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
@@ -70,6 +70,18 @@ function intentMeta(db, intentId) {
 // Any other state is a normal resolution and writes nothing.
 const BREACH_STATES = new Set(['REJECTED', 'RELEASED', 'EXPIRED'])
 
+/**
+ * The approval an adopted intent carried out, when the intent does not name
+ * it: the newest approved risk event on the account, symbol and side in the
+ * five minutes before the intent was reserved. V3 L2a W5: symbol and side
+ * compared CASE-INSENSITIVELY (the approval stores the proposal's spelling,
+ * the adoption the broker's symbolName). Bounded by the account and the
+ * window, so the planner reads an index, never a scan of the 560 MB table —
+ * exported so the test can EXPLAIN the statement that actually runs.
+ */
+export const INTENT_APPROVAL_WINDOW_SQL = `SELECT id FROM risk_events WHERE account_id = ? AND UPPER(symbol) = UPPER(?) AND UPPER(side) = UPPER(?) AND approved = 1
+        AND created_at <= ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 1`
+
 /** M4: see the call site in reconcilePositions. Returns what was stamped, or null. */
 export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbolName, side, entry, sl, tp }) {
   try {
@@ -92,23 +104,39 @@ export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbo
     // without one takes the same window as before.
     let riskEventId = it.risk_event_id ?? null
     if (riskEventId == null && Number.isFinite(createdMs)) {
-      const ev = db.prepare(`SELECT id FROM risk_events WHERE account_id = ? AND symbol = ? AND side = ? AND approved = 1
-        AND created_at <= ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 1`)
+      // V3 L2a W5: matched case-insensitively (INTENT_APPROVAL_WINDOW_SQL).
+      const ev = db.prepare(INTENT_APPROVAL_WINDOW_SQL)
         .get(String(acct), symbolName, sideWord, new Date(createdMs).toISOString(), new Date(createdMs - 5 * 60_000).toISOString())
       riskEventId = ev?.id ?? null
     }
-    db.prepare(`UPDATE trades SET origin = ?, origin_source = 'write', strategy = COALESCE(strategy, ?), risk_event_id = COALESCE(risk_event_id, ?) WHERE id = ?`)
-      .run(origin, strategy, riskEventId, tradeId)
+    // V3 L2a W6: the trade row names its intent (trades.intent_id), not only
+    // through the tag on the label it happens to carry.
+    db.prepare(`UPDATE trades SET origin = ?, origin_source = 'write', strategy = COALESCE(strategy, ?), risk_event_id = COALESCE(risk_event_id, ?), intent_id = COALESCE(intent_id, ?) WHERE id = ?`)
+      .run(origin, strategy, riskEventId, tag, tradeId)
     db.prepare(`UPDATE monitored_positions SET strategy = COALESCE(strategy, ?) WHERE trade_id = ?`).run(strategy, tradeId)
     const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(tradeId)
     if (!hasPlan) {
-      recordTradePlan(db, tradeId, {
-        accountId: acct, symbol: symbolName, side: sideWord, strategy, timeframe: parsed?.timeframe || null,
-        entry: entry ?? null, sl: it.sl ?? sl ?? null, tp: it.tp ?? tp ?? null, source: 'reconciler_adopted_intent',
-      })
+      // W7: a plan that fails to write is recorded; the stamp above stays.
+      try {
+        recordTradePlan(db, tradeId, {
+          accountId: acct, symbol: symbolName, side: sideWord, strategy, timeframe: parsed?.timeframe || null,
+          entry: entry ?? null, sl: it.sl ?? sl ?? null, tp: it.tp ?? tp ?? null, source: 'reconciler_adopted_intent',
+        })
+      } catch (err) {
+        recordPlanWriteFailure(db, { tradeId, accountId: acct, symbol: symbolName, source: 'reconciler_adopted_intent', stage: 'adopt_stamp', error: err })
+      }
     }
     return { intentId: tag, origin, strategy, riskEventId }
-  } catch {
+  } catch (err) {
+    // W7: the stamp failing is recorded, never swallowed — the row stays
+    // reconciler_adopted, and this says why it was not stamped as the bot's.
+    try {
+      db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)').run(
+        'LEDGER', '/reconciler/intent-stamp-failed',
+        JSON.stringify({ tradeId: tradeId ?? null, symbol: symbolName ?? null, error: String(err?.message ?? err).slice(0, 500) }),
+        acct != null ? String(acct) : null,
+      )
+    } catch { /* audit best-effort */ }
     return null
   }
 }

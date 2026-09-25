@@ -73,6 +73,34 @@ export function recordTradePlan(db, tradeId, {
   return { tradeId: Number(tradeId), plannedR, riskDist: risk, plannedHoldMin: holdMin, exitRule: rule }
 }
 
+/** action_log path of a plan that failed to write (W7). */
+export const PLAN_WRITE_FAILED_PATH = '/trade-plans/write-failed'
+
+/**
+ * V3 L2a W7 (25-09-2026): a plan that failed to write is RECORDED, not
+ * swallowed. Three writers wrapped recordTradePlan in `catch {}` or a log
+ * line (closed-market-limits' fill sweep, the reconciler's intent stamp,
+ * loop.js's dispatch), so a trade with no plan was indistinguishable from
+ * one nobody tried to plan — ORD-01 names the missing plan, this row names
+ * why. One action_log row (method LEDGER, the account on its column) plus
+ * a console line; never throws, because the plan is a record and the
+ * caller's own write is money.
+ *
+ * @returns {boolean} whether the failure row was written
+ */
+export function recordPlanWriteFailure(db, { tradeId = null, accountId = null, symbol = null, source = null, stage = null, error = null } = {}) {
+  const message = String(error?.message ?? error ?? 'unknown error').slice(0, 500)
+  console.error(`[trade-plans] plan NOT recorded for trade ${tradeId ?? '?'} (${source ?? stage ?? '?'}): ${message}`)
+  try {
+    db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)').run(
+      'LEDGER', PLAN_WRITE_FAILED_PATH,
+      JSON.stringify({ tradeId: tradeId != null ? Number(tradeId) : null, symbol: symbol ?? null, source: source ?? null, stage: stage ?? null, error: message }),
+      accountId != null ? String(accountId) : null,
+    )
+    return true
+  } catch { return false }
+}
+
 /** The exit a close reason belongs to, for matching against the plan's rule. */
 export function exitKind(closeReason) {
   const r = String(closeReason || '').toLowerCase()
