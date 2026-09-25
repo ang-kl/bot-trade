@@ -1,0 +1,259 @@
+// ---------------------------------------------------------------------------
+// agent/services/ledger-reconciliation.js — the ledger against the broker,
+// per account, in that account's own currency (V3 B2, P5b-2).
+//
+// GET /state/ledger-reconciliation?account=<id|all> builds this on the report
+// worker (performance-populations.js kind 'ledger-reconciliation'): it reads
+// trades, broker_deals and position_lifecycle_evidence and writes nothing.
+//
+// MONEY IS NEVER SUMMED ACROSS CURRENCIES (owner default 25-09-2026). Every
+// money figure is one account's, in that account's deposit currency; the
+// `byCurrency` block pools only accounts whose currency is PROVEN and equal
+// (performance-populations.depositCurrencies); an account whose currency is
+// not recorded is listed, never pooled. Counts may be added; money may not.
+//
+// EVERY POSITION GETS ONE CLASS, and the class says what it rests on:
+//   basis 'broker_lifecycle'  — the broker's complete position history was
+//                               read (a verdict row): agrees, filled,
+//                               fragment_resolved, money_disagrees,
+//                               money_bearing_fragment, unpriced,
+//                               ledger_row_open, open_at_broker,
+//                               empty_at_broker, never_filled,
+//                               opening_not_retained, permanently_unsupported;
+//   basis 'retained_receipts' — only the deals retained in broker_deals, whose
+//                               completeness is NOT proven:
+//                               agrees_on_receipts, differs_on_receipts,
+//                               unpriced_with_receipts;
+//   basis 'none'              — no receipt yet: ledger_only_before_receipts
+//                               (closed before the loop kept receipts) or
+//                               ledger_only_awaiting_receipt (the sweep's);
+//   broker side               — broker_only (deals, no ledger row on the
+//                               account) and broker_deals_on_rejected_row.
+// Rows with no account are their own section: each position's probe on
+// every enabled account, and the one account that holds it — or none.
+// ---------------------------------------------------------------------------
+
+import { normPosId } from '../lib/pos-id.js'
+import { depositCurrencies } from './performance-populations.js'
+import { findDuplicateTrades } from './trade-integrity.js'
+import { VERDICTS } from './position-lifecycle-evidence.js'
+
+/** Before this, deal receipts were written only by the manual import. */
+export const RECEIPTS_SINCE = '2026-07-28T00:00:00Z'
+const LIST_MAX = 50
+const TOL = 0.011
+const r2 = v => v == null ? null : Math.round(v * 100) / 100
+const ms = v => {
+  if (v == null || v === '') return NaN
+  const raw = String(v).replace(' ', 'T')
+  return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`)
+}
+
+export const CLASS_BASIS = Object.freeze({
+  ...Object.fromEntries(Object.keys(VERDICTS).filter(v => v !== 'unreadable' && v !== 'no_ledger_row').map(v => [v, 'broker_lifecycle'])),
+  agrees_on_receipts: 'retained_receipts',
+  differs_on_receipts: 'retained_receipts',
+  unpriced_with_receipts: 'retained_receipts',
+  ledger_only_before_receipts: 'none',
+  ledger_only_awaiting_receipt: 'none',
+  broker_only: 'broker_receipts',
+  broker_deals_on_rejected_row: 'broker_receipts',
+})
+/** Classes that need nobody's attention: listed as counts only. */
+const QUIET = new Set(['agrees', 'filled', 'fragment_resolved', 'agrees_on_receipts'])
+
+function emptyClass() { return { positions: 0, rows: 0, writtenOff: 0, ledgerNet: 0, brokerNet: 0, delta: 0, pricedBoth: 0 } }
+
+/**
+ * @param {import('better-sqlite3').Database} db
+ * @param {{ accountId?: string|null }} [options] a registered account id, or
+ *   'all' / null for every registered account.
+ */
+export function buildLedgerReconciliation(db, { accountId = null } = {}) {
+  const currencies = depositCurrencies(db)
+  const registered = db.prepare('SELECT account_id, is_live, enabled FROM accounts ORDER BY account_id').all()
+    .filter(a => /^[1-9]\d*$/.test(String(a.account_id)))
+  const wanted = accountId == null || accountId === 'all' ? registered : registered.filter(a => String(a.account_id) === String(accountId))
+  if (!wanted.length) throw new RangeError('account not registered')
+  const noAccountPids = new Set(db.prepare(`SELECT ctrader_position_id AS pid FROM trades WHERE account_id IS NULL AND ctrader_position_id IS NOT NULL`)
+    .all().map(r => normPosId(r.pid)).filter(Boolean))
+  let dupes = null
+  try { dupes = findDuplicateTrades(db, { scope: null }) } catch { dupes = null }
+
+  const accounts = wanted.map(a => accountSection(db, String(a.account_id), {
+    isLive: Number(a.is_live) === 1, enabled: Number(a.enabled) === 1, currency: currencies[String(a.account_id)] ?? { currency: null },
+    noAccountPids, dupes,
+  }))
+
+  // Pool per PROVEN currency only.
+  const byCurrency = {}
+  const unpooled = []
+  for (const s of accounts) {
+    if (!s.currency) { unpooled.push(s.accountId); continue }
+    const c = byCurrency[s.currency] ??= { accountIds: [], classes: {} }
+    c.accountIds.push(s.accountId)
+    for (const [cls, v] of Object.entries(s.classes)) {
+      const t = c.classes[cls] ??= { positions: 0, rows: 0, ledgerNet: 0, brokerNet: 0, delta: 0 }
+      t.positions += v.positions; t.rows += v.rows
+      t.ledgerNet = r2(t.ledgerNet + v.ledgerNet); t.brokerNet = r2(t.brokerNet + v.brokerNet); t.delta = r2(t.delta + v.delta)
+    }
+  }
+  const counts = {}
+  for (const s of accounts) for (const [cls, v] of Object.entries(s.classes)) counts[cls] = (counts[cls] || 0) + v.positions
+
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    scope: accountId == null || accountId === 'all' ? 'all' : String(accountId),
+    moneyPolicy: 'per account in its deposit currency; pooled only within one proven currency; never summed across currencies',
+    receiptsSince: RECEIPTS_SINCE,
+    classBasis: CLASS_BASIS,
+    verdictMeaning: Object.fromEntries(Object.entries(VERDICTS).map(([k, v]) => [k, v.meaning])),
+    // Position counts per class over the accounts in scope. Counts only.
+    positionCounts: counts,
+    accounts,
+    byCurrency,
+    unpooledAccounts: unpooled,
+    noAccount: noAccountSection(db, registered),
+  }
+}
+
+function accountSection(db, accountId, { isLive, enabled, currency, noAccountPids, dupes }) {
+  // Ledger positions: closed rows (any status but rejected/cancelled count as
+  // holders; rejected twins are kept for the broker-side classes).
+  const ledger = new Map()
+  for (const r of db.prepare(`SELECT id, status, net_pnl, closed_at, ctrader_position_id AS pid, COALESCE(pnl_unresolvable, 0) AS written_off
+      FROM trades WHERE account_id = ? AND ctrader_position_id IS NOT NULL`).all(accountId)) {
+    const pid = normPosId(r.pid)
+    if (!/^[1-9]\d*$/.test(pid || '')) continue
+    const p = ledger.get(pid) ?? { pid, rows: [], holders: [] }
+    p.rows.push(r)
+    if (!['rejected', 'cancelled'].includes(r.status)) p.holders.push(r)
+    ledger.set(pid, p)
+  }
+  const receipts = new Map()
+  for (const d of db.prepare(`SELECT position_id AS pid, COUNT(*) AS n, ROUND(SUM(net_pnl), 2) AS net, SUM(net_pnl IS NULL) AS unpriced
+      FROM broker_deals WHERE account_id = ? AND position_id IS NOT NULL GROUP BY position_id`).all(accountId)) {
+    const pid = normPosId(d.pid)
+    if (pid) receipts.set(pid, { n: Number(d.n), net: Number(d.unpriced) > 0 ? null : r2(Number(d.net)) })
+  }
+  const evidence = new Map()
+  for (const e of db.prepare(`SELECT position_id AS pid, verdict, reason, broker_net, ledger_net, read_at, source FROM position_lifecycle_evidence
+      WHERE account_id = ?`).all(accountId)) evidence.set(normPosId(e.pid), e)
+
+  const classes = {}, lists = {}
+  const add = (cls, entry, { rows = 0, writtenOff = 0, ledgerNet = null, brokerNet = null } = {}) => {
+    const c = classes[cls] ??= emptyClass()
+    c.positions++; c.rows += rows; c.writtenOff += writtenOff
+    if (ledgerNet != null) c.ledgerNet = r2(c.ledgerNet + ledgerNet)
+    if (brokerNet != null) c.brokerNet = r2(c.brokerNet + brokerNet)
+    if (ledgerNet != null && brokerNet != null) { c.delta = r2(c.delta + ledgerNet - brokerNet); c.pricedBoth++ }
+    if (!QUIET.has(cls)) {
+      const list = lists[cls] ??= []
+      if (list.length < LIST_MAX) list.push(entry)
+    }
+  }
+  const receiptsMs = ms(RECEIPTS_SINCE)
+  for (const p of ledger.values()) {
+    const closed = p.holders.filter(r => r.status === 'closed')
+    if (!closed.length || closed.length !== p.holders.length) {
+      // Still open locally (or no holder at all): not reconcilable yet, unless
+      // the broker already has deals on a rejected-only position.
+      if (!p.holders.length && receipts.has(p.pid)) {
+        const rc = receipts.get(p.pid)
+        add('broker_deals_on_rejected_row', { positionId: p.pid, tradeIds: p.rows.map(r => r.id), brokerNet: rc.net, receipts: rc.n },
+          { rows: p.rows.length, brokerNet: rc.net })
+      }
+      continue
+    }
+    const priced = closed.filter(r => r.net_pnl != null)
+    const ledgerNet = priced.length ? r2(priced.reduce((s, r) => s + Number(r.net_pnl), 0)) : null
+    const writtenOff = closed.filter(r => Number(r.written_off) === 1).length
+    const ev = evidence.get(p.pid)
+    const rc = receipts.get(p.pid)
+    let cls, brokerNet = null, why = null, readAt = null
+    if (ev && ev.verdict !== 'unreadable') {
+      cls = ev.verdict; brokerNet = ev.broker_net != null ? Number(ev.broker_net) : null; why = ev.reason; readAt = ev.read_at
+    } else if (rc) {
+      brokerNet = rc.net
+      cls = ledgerNet == null ? 'unpriced_with_receipts' : brokerNet != null && Math.abs(ledgerNet - brokerNet) <= TOL ? 'agrees_on_receipts' : 'differs_on_receipts'
+    } else {
+      const lastClose = Math.max(...closed.map(r => ms(r.closed_at)).filter(Number.isFinite))
+      cls = Number.isFinite(lastClose) && lastClose < receiptsMs ? 'ledger_only_before_receipts' : 'ledger_only_awaiting_receipt'
+    }
+    const entry = { positionId: p.pid, tradeIds: closed.map(r => r.id), ledgerNet, brokerNet,
+      delta: ledgerNet != null && brokerNet != null ? r2(ledgerNet - brokerNet) : null, writtenOff,
+      ...(why ? { reason: String(why).slice(0, 300), readAt } : {}),
+      ...(ev && ev.verdict !== 'unreadable' && ev.ledger_net != null && ledgerNet != null && Math.abs(Number(ev.ledger_net) - ledgerNet) > TOL
+        ? { ledgerChangedSinceRead: true } : {}) }
+    add(cls, entry, { rows: closed.length, writtenOff, ledgerNet, brokerNet })
+  }
+  // The broker's side: receipts no ledger row on this account holds.
+  for (const [pid, rc] of receipts) {
+    if (ledger.has(pid) || noAccountPids.has(pid)) continue
+    add('broker_only', { positionId: pid, brokerNet: rc.net, receipts: rc.n }, { brokerNet: rc.net })
+  }
+  // Duplicate candidates on this account, re-classed by broker evidence.
+  let duplicates = null
+  if (dupes) {
+    const mine = dupes.groups.filter(g => String(g.accountId) === accountId)
+    const money = dupes.extraByAccount.find(b => String(b.accountId) === accountId)
+    duplicates = {
+      groups: mine.length,
+      byClassification: mine.reduce((o, g) => ({ ...o, [g.classification]: (o[g.classification] || 0) + 1 }), {}),
+      extraRows: money?.rows ?? 0,
+      extraNet: money?.pnl ?? 0,
+      brokerDistinctRows: mine.filter(g => g.classification === 'broker_distinct').reduce((s, g) => s + g.count, 0),
+    }
+  }
+  return {
+    accountId, isLive, enabled,
+    currency: currency?.currency ?? null,
+    ...(currency?.currency ? { currencySource: currency.source ?? null } : { currencyReason: currency?.reason ?? 'deposit_currency_not_recorded' }),
+    classes,
+    positions: lists,
+    duplicates,
+  }
+}
+
+/**
+ * Rows with no account: each position probed on every enabled account (demo
+ * and live hosts). Money is listed per row and never totalled — the row has
+ * no account, so it has no currency.
+ */
+function noAccountSection(db, registered) {
+  const enabled = registered.filter(a => Number(a.enabled) === 1).map(a => String(a.account_id))
+  const rows = db.prepare(`SELECT id, status, symbol, side, net_pnl, opened_at, closed_at, ctrader_position_id AS pid FROM trades
+    WHERE account_id IS NULL AND status NOT IN ('rejected','cancelled') ORDER BY id LIMIT 200`).all()
+  const probe = db.prepare('SELECT account_id, verdict, reason, host, broker_net, symbol_id, opening_side, read_at FROM position_lifecycle_evidence WHERE position_id = ?')
+  const out = rows.map(r => {
+    const pid = normPosId(r.pid)
+    const probes = /^[1-9]\d*$/.test(pid || '') ? probe.all(pid) : []
+    const byAccount = Object.fromEntries(probes.map(p => [String(p.account_id), p]))
+    const status = enabled.map(a => {
+      const p = byAccount[a]
+      const state = !p || p.verdict === 'unreadable' || p.verdict === 'permanently_unsupported' ? 'unknown'
+        : p.verdict === 'empty_at_broker' ? 'empty' : 'holds'
+      return { accountId: a, state, verdict: p?.verdict ?? 'not_probed', host: p?.host ?? null, readAt: p?.read_at ?? null }
+    })
+    const holds = status.filter(s => s.state === 'holds'), unknown = status.filter(s => s.state === 'unknown')
+    let verdict
+    if (!pid) verdict = 'no_position_id'
+    else if (!enabled.length) verdict = 'no_enabled_account'
+    else if (holds.length > 1) verdict = 'held_by_several_accounts'
+    else if (unknown.length) verdict = 'probing'
+    else if (holds.length === 1) verdict = 'held_by_one_account'
+    else verdict = 'no_enabled_account_holds_it'
+    const holder = holds.length === 1 && verdict === 'held_by_one_account' ? byAccount[holds[0].accountId] : null
+    return {
+      tradeId: r.id, positionId: pid, status: r.status, symbol: r.symbol, side: r.side, netPnl: r.net_pnl, closedAt: r.closed_at,
+      verdict,
+      // Attribution is NOT written (the owner's decision): the report names
+      // the one account that holds the lifecycle, with what the broker shows.
+      ...(holder ? { heldBy: { accountId: holds[0].accountId, verdict: holder.verdict, brokerNet: holder.broker_net, symbolId: holder.symbol_id,
+        openingSide: holder.opening_side, sideMatches: holder.opening_side == null ? null : holder.opening_side === r.side } } : {}),
+      probes: status,
+    }
+  })
+  return { enabledAccounts: enabled, rows: out, currency: null, moneyPolicy: 'per row only: a row with no account has no currency' }
+}

@@ -2057,6 +2057,45 @@ export function initDB(dbPath) {
   CREATE INDEX IF NOT EXISTS idx_pos_capture_due ON position_capture_queue(state, due_at_ms);
   `);
 
+  // V3 B2 (P5b-2): what the broker's complete position history said about one
+  // position on one account — the VERDICT, its reason and the lifecycle money
+  // in that account's native units. One row per account + position, written
+  // by services/position-lifecycle-evidence.js after every position-history
+  // read (the old-position reader's and the evidence sweep's). Additive: no
+  // existing table is rewritten. A read that failed keeps the last verdict and
+  // only stamps last_error; nothing here is ever deleted.
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS position_lifecycle_evidence (
+    account_id        TEXT NOT NULL,
+    position_id       TEXT NOT NULL,
+    host              TEXT,
+    verdict           TEXT NOT NULL,
+    final             INTEGER NOT NULL DEFAULT 0,
+    reason            TEXT,
+    source            TEXT,
+    deals             INTEGER,
+    executed          INTEGER,
+    symbol_id         TEXT,
+    opening_side      TEXT,
+    opened_ms         INTEGER,
+    final_close_ms    INTEGER,
+    broker_net        REAL,
+    broker_gross      REAL,
+    broker_swap       REAL,
+    broker_commission REAL,
+    conversion_fee    REAL,
+    ledger_net        REAL,
+    ledger_rows       TEXT,
+    trade_ids         TEXT,
+    read_at           TEXT NOT NULL,
+    reads             INTEGER NOT NULL DEFAULT 1,
+    last_error        TEXT,
+    last_error_at     TEXT,
+    PRIMARY KEY (account_id, position_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_lifecycle_evidence_position ON position_lifecycle_evidence(position_id);
+  `);
+
   timedPhase('history_schema');
 
   // PR-AP: how many times this row was RE-ARMED to chase a verdict, as

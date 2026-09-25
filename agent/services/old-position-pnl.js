@@ -2,7 +2,7 @@ import { getState, setState } from '../db.js'
 import { normPosId } from '../lib/pos-id.js'
 import { POSITION_HISTORY_REFUSED } from '../lib/position-deal-history.js'
 import { backfillClosedPnl, noteTradeAttempts, LIVE_GAP_MAX_ATTEMPTS, POSITION_LEDGER_IDENTITY } from './pnl-backfill.js'
-import { markUnresolvable, UNRESOLVED_NO_EVIDENCE, BROKER_DEAL_NOT_SETTLEABLE, BROKER_POSITION_STILL_OPEN } from './mark-unresolvable.js'
+import { markUnresolvable, UNRESOLVED_NO_EVIDENCE, BROKER_DEAL_NOT_SETTLEABLE, BROKER_POSITION_STILL_OPEN, BROKER_NEVER_FILLED } from './mark-unresolvable.js'
 
 // One old, attributed position per account pass. The durable pacing cursor
 // also records failures, but a failed read is not an exhausted trade attempt.
@@ -36,7 +36,14 @@ const REREAD_KEEP = 2000
 // judged before the lifecycle rules (whole unique lifecycle, rejected twins
 // not counted, the false-close rule) get ONE read under them — #372/#774 AVY
 // and #373/#775 GEV on …3489 were all remembered before those rules existed.
-export const LIFECYCLE_RULES = 2
+//
+// Rule 3 (V3 B2): the broker lifecycle verdicts. Every read now leaves a
+// verdict row (position-lifecycle-evidence.js, recorded by the account pass
+// from this reader's own response), and a history made only of rejected deals
+// is labelled "never filled" instead of "no broker evidence". Rows remembered
+// under rule 2 get ONE read under rule 3, so each written-off row carries a
+// verdict — about 20 reads, once, at the existing pacing.
+export const LIFECYCLE_RULES = 3
 
 export async function recoverOldPositionPnl(db, creds, { now, isCurrent, getPositionDeals, handoff = [] }) {
   const accountId = String(creds.accountId), key = `position_pnl_recovery:${accountId}`
@@ -86,7 +93,8 @@ export async function recoverOldPositionPnl(db, creds, { now, isCurrent, getPosi
     strictAccount: true, now, isCurrent, getPositionDeals })
   const settled = result => ({ positionId, tradeId, state: result.backfilled ? 'recovered' : 'no_matching_close', result })
   const refusedOrFailed = (error, extra = {}) => [POSITION_LEDGER_IDENTITY, POSITION_HISTORY_REFUSED].includes(error?.code)
-    ? { positionId, tradeId, state: 'refused', reason: error.message, ...(error.openAtBroker === true ? { openAtBroker: true } : {}), ...extra }
+    ? { positionId, tradeId, state: 'refused', reason: error.message, ...(error.openAtBroker === true ? { openAtBroker: true } : {}),
+        ...(error.neverFilled === true ? { neverFilled: true } : {}), ...extra }
     : { positionId, tradeId, state: 'failed', reason: error?.message || String(error), ...extra }
   let out
   try {
@@ -183,7 +191,11 @@ function evidenceOf(db, out, { accountId, positionId, at }) {
       AND CAST(position_id AS INTEGER) = CAST(? AS INTEGER) AND net_pnl IS NOT NULL ORDER BY deal_id LIMIT 5`).all(accountId, positionId)
   } catch { /* evidence only */ }
   const deals = local.length ? local.map(d => `${d.deal_id} net ${d.net_pnl}${d.matched_trade_id != null ? ` linked #${d.matched_trade_id}` : ''}`).join(', ') : 'none'
-  const label = out.openAtBroker ? BROKER_POSITION_STILL_OPEN : local.length ? BROKER_DEAL_NOT_SETTLEABLE : UNRESOLVED_NO_EVIDENCE
+  // A history of rejected deals only is broker evidence of its own (V3 B2):
+  // the order never filled. It outranks a local closing deal on file, whose
+  // link the complete history just contradicted.
+  const label = out.neverFilled ? BROKER_NEVER_FILLED : out.openAtBroker ? BROKER_POSITION_STILL_OPEN
+    : local.length ? BROKER_DEAL_NOT_SETTLEABLE : UNRESOLVED_NO_EVIDENCE
   if (!out.ambiguity) {
     return { label, text: `the broker's position history for position ${positionId} on account ${accountId} was refused: ${out.reason} (read ${at})${local.length ? `; local closing deal(s): ${deals}` : ''}` }
   }

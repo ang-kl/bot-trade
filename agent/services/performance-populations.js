@@ -148,6 +148,7 @@ const RETRY_AFTER_SEC = {
   performance_report_worker_capacity: 5,
   watchdog_report_worker_capacity: 5,
   order_lifecycle_worker_capacity: 5,
+  ledger_reconciliation_worker_capacity: 5,
   performance_report_worker_exit: 15,
   performance_report_deadline: 30,
 }
@@ -169,6 +170,7 @@ const flights = new WeakMap()
 const watchdogFlights = new WeakMap()
 const diagnosticFlights = new WeakMap()
 const lifecycleFlights = new WeakMap()
+const reconciliationFlights = new WeakMap()
 // kind → its own bounded pool. The watchdog is polled independently and must
 // not compete with slow dashboard reports; the storage walk (dbstat over every
 // page, measured 20.99 s in production) must not take a slot the loop's
@@ -186,6 +188,9 @@ const RESERVED_POOLS = {
   // all-accounts read was refused with a capacity 503 (measured in the full
   // parallel gate). A third concurrent distinct read is still an explicit 503.
   'order-lifecycle': { pool: lifecycleFlights, capacity: 2, error: 'order_lifecycle_worker_capacity' },
+  // V3 B2: the ledger-versus-broker reconciliation. Its own slot, so an owner
+  // reading it cannot take a dashboard's; identical requests share one job.
+  'ledger-reconciliation': { pool: reconciliationFlights, capacity: 1, error: 'ledger_reconciliation_worker_capacity' },
 }
 const SHARED_POOL = { pool: flights, capacity: 2, error: 'performance_report_worker_capacity' }
 /** Disk-backed reads stay off the protection event loop: at most two report
@@ -255,6 +260,8 @@ export function readPostmortemReport(db, options) { return isolatedReport(db, 'p
 export function readStorageReport(db) { return isolatedReport(db, 'storage') }
 /** GET /state/order-lifecycle and the order_lifecycle controller (V3 L1). */
 export function readOrderLifecycle(db, options) { return isolatedReport(db, 'order-lifecycle', options) }
+/** GET /state/ledger-reconciliation (V3 B2): per account, native currency, off the event loop. */
+export function readLedgerReconciliation(db, options) { return isolatedReport(db, 'ledger-reconciliation', options) }
 export function buildDecisionsDaily(db, { days = 90, accountId = null, timeZone = null } = {}) {
   const safeDays = Math.min(365, Math.max(1, Number(days) || 90))
   const clauses = ["created_at >= datetime('now', ?)"]
@@ -325,6 +332,11 @@ async function buildReport(db, kind, options) {
     // before postMessage, far below the generic 8 MB bound.
     if (Buffer.byteLength(JSON.stringify(report)) > RESPONSE_MAX_BYTES) throw new Error('order_lifecycle_response_bound')
     return report
+  }
+  if (kind === 'ledger-reconciliation') {
+    const { buildLedgerReconciliation } = await import('./ledger-reconciliation.js')
+    // One snapshot across trades, receipts and verdicts.
+    return db.transaction(() => buildLedgerReconciliation(db, options))()
   }
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })

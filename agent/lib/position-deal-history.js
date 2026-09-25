@@ -20,6 +20,28 @@ const refused = message => Object.assign(new Error(message), { code: POSITION_HI
 const EXECUTED_DEAL_STATUS = new Set([2, 3, 'FILLED', 'PARTIALLY_FILLED'])
 export const executedDeal = d => EXECUTED_DEAL_STATUS.has(typeof d?.dealStatus === 'string' ? d.dealStatus.toUpperCase() : d?.dealStatus)
 
+// V3 B2 (P5b-2): the four ProtoOADealStatus values of a deal that did NOT
+// execute. A position history made only of these is broker evidence that the
+// order never filled — not an unreadable history, and not the absence of
+// evidence.
+const NOT_EXECUTED_DEAL_STATUS = new Map([[4, 'REJECTED'], [5, 'INTERNALLY_REJECTED'], [6, 'ERROR'], [7, 'MISSED']])
+const NOT_EXECUTED_NAMES = new Set(NOT_EXECUTED_DEAL_STATUS.values())
+/** 'FILLED' | 'PARTIALLY_FILLED' | 'REJECTED' | … for a known status, else null. */
+export function dealStatusName(d) {
+  const s = typeof d?.dealStatus === 'string' ? d.dealStatus.toUpperCase() : d?.dealStatus
+  if (s === 2 || s === 'FILLED') return 'FILLED'
+  if (s === 3 || s === 'PARTIALLY_FILLED') return 'PARTIALLY_FILLED'
+  if (NOT_EXECUTED_DEAL_STATUS.has(s)) return NOT_EXECUTED_DEAL_STATUS.get(s)
+  return NOT_EXECUTED_NAMES.has(s) ? s : null
+}
+export const notExecutedDeal = d => NOT_EXECUTED_NAMES.has(dealStatusName(d))
+/** "REJECTED×2, MISSED×1" — the statuses of a list of deals, for evidence text. */
+export function dealStatusSummary(deals) {
+  const n = new Map()
+  for (const d of deals) { const k = dealStatusName(d) ?? `unknown(${String(d?.dealStatus)})`; n.set(k, (n.get(k) || 0) + 1) }
+  return [...n].map(([k, c]) => `${k}×${c}`).join(', ')
+}
+
 /** Two ledger/broker times closer than this are the same moment (clock skew, the reconciler's pass). */
 export const FALSE_CLOSE_TOLERANCE_MS = 120_000
 
@@ -79,6 +101,15 @@ export function verifiedPositionHistory(response, { accountId, positionId, now }
   }
   const deals = response.deal ?? [], ids = new Set(), symbols = new Set()
   if (deals.length > 500) throw refused('position history exceeds bounded response')
+  // NEVER FILLED (V3 B2). Every deal the broker holds for the position was
+  // rejected, internally rejected, errored or missed: the order never filled.
+  // This used to fall into 'position deal evidence invalid' below, the wording
+  // for a malformed deal, and a bounded write-off then labelled broker
+  // evidence as "no broker evidence". Still a refusal (nothing to settle, an
+  // attempt at the row); now it says what the broker shows.
+  if (deals.length && deals.every(notExecutedDeal)) {
+    throw Object.assign(refused(`broker shows no executed deal for position ${positionId} (never filled): ${dealStatusSummary(deals)}`), { neverFilled: true })
+  }
   let opened = 0, closed = 0
   const ordered = [...deals].sort((a, b) => Number(a.executionTimestamp) - Number(b.executionTimestamp)
     || Number(a.dealId) - Number(b.dealId))

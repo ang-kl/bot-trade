@@ -44,7 +44,7 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, isReportUnavailable } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -1589,6 +1589,29 @@ export default function stateRouter(db) {
         })),
       })
     } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/ledger-reconciliation?account=<id|all> — V3 B2 (P5b-2). The
+  // ledger against the broker per account, in that account's deposit
+  // currency, every position in one class with the evidence it rests on
+  // (services/ledger-reconciliation.js). Built on the report worker; money is
+  // never summed across currencies. A worker that fails or is busy is an
+  // explicit 503 (owner principle 6), never an empty report.
+  // -----------------------------------------------------------------------
+  router.get('/ledger-reconciliation', async (req, res) => {
+    const raw = req.query.account == null || req.query.account === '' ? 'all' : String(req.query.account)
+    if (raw !== 'all' && !/^[1-9]\d{0,19}$/.test(raw)) return res.status(400).json({ error: 'account must be a registered account id or all' })
+    res.set('Cache-Control', 'no-store')
+    try {
+      res.json(await readLedgerReconciliation(db, { accountId: raw }))
+    } catch (err) {
+      // The worker loses the RangeError type; the refusal is recognised by
+      // its message before the generic unavailable answer (as blocker-report).
+      if (err?.message === 'account not registered') return res.status(400).json({ error: 'account not registered' })
+      if (sendReportUnavailable(res, err, { message: 'ledger reconciliation unavailable', code: 'ledger_reconciliation_unavailable' })) return
       res.status(500).json({ error: err.message })
     }
   })

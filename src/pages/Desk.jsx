@@ -794,21 +794,30 @@ export default function Desk() {
           the same timestamp in the lessons panel (same symbol/side/entry/
           exit/net_pnl to the cent, essentially impossible for independent
           real fills). Read-only warning; nothing is deleted automatically. */}
-      {(dupeTrades?.groups?.length ?? 0) > 0 && (
-        <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
-          <p className="font-semibold text-[var(--color-warning-text)]">
-            ⚠ {dupeTrades.totalExtraRows} likely-duplicate closed trade record(s) found — inflating P&amp;L/win-rate stats by ~{dupeTrades.totalExtraPnl >= 0 ? '+' : '−'}${Math.abs(dupeTrades.totalExtraPnl).toFixed(2)}
-          </p>
-          <ul className="mt-1 space-y-0.5">
-            {dupeTrades.groups.slice(0, 5).map((g, i) => (
-              <li key={i} className="text-[var(--color-text-sub)]">
-                {g.symbol} {g.side} entry {g.entry_price} → exit {g.exit_price} · net {g.net_pnl} · ×{g.count}{g.samePositionId ? ' (same broker position id — confirmed duplicate)' : ''}
-              </li>
-            ))}
-          </ul>
-          {dupeTrades.groups.length > 5 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{dupeTrades.groups.length - 5} more group(s).</p>}
-        </Card>
-      )}
+      {/* V3 B2: only groups the broker's receipts do not show as distinct
+          positions count, each extra row at its own money, and the money is
+          given per currency — never one "$" figure summed across SGD and USD
+          accounts (owner default 25-09). */}
+      {(dupeTrades?.totalExtraRows ?? 0) > 0 && (() => {
+        const counted = dupeTrades.groups.filter(g => g.classification !== 'broker_distinct')
+        const money = (dupeTrades.extraByCurrency ?? []).map(c => `${c.pnl >= 0 ? '+' : '−'}${Math.abs(c.pnl).toFixed(2)} ${c.currency ?? `(account ${c.accountIds.map(a => a ?? 'none').join(', ')}, currency not recorded)`}`).join(' · ')
+        return (
+          <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
+            <p className="font-semibold text-[var(--color-warning-text)]">
+              ⚠ {dupeTrades.totalExtraRows} likely-duplicate closed trade record(s) found — inflating P&amp;L/win-rate stats by {money || 'an amount not reported'}
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {counted.slice(0, 5).map((g, i) => (
+                <li key={i} className="text-[var(--color-text-sub)]">
+                  {g.symbol} {g.side} entry {g.entry_price} → exit {g.exit_price} · net {g.net_pnl} · ×{g.count}{g.classification === 'same_position' ? ' (same broker position id — confirmed duplicate)' : ' (not verified against broker deals)'}
+                </li>
+              ))}
+            </ul>
+            {counted.length > 5 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{counted.length - 5} more group(s).</p>}
+            {(dupeTrades.brokerDistinctRows ?? 0) > 0 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">{dupeTrades.brokerDistinctRows} identical-looking row(s) are distinct broker positions, each with its own closing deal — not counted.</p>}
+          </Card>
+        )
+      })()}
 
       {/* Post-loss playback — the bot's homework after every losing trade:
           what did the market DO next, and what does that teach per strategy. */}
