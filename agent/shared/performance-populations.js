@@ -80,8 +80,13 @@ export function reportCurrencies(report) {
  * recorded deposit currency, or no account stamp at all. They are counted,
  * named and never added to any currency's money. */
 export function reportUnpooled(report, key, predicate = () => true) {
+  return unpooledOf(reportGroups(report, key, 'all', g => reportCurrency(report, g.accountId) == null && predicate(g)))
+}
+/** Counts and names the closes of groups that are already known to sit in no
+ * currency (reportUnpooled's arithmetic, shared with reportLedger's split). */
+function unpooledOf(groups) {
   const out = { trades: 0, pricedTrades: 0, accountIds: [] }
-  for (const g of reportGroups(report, key, 'all', g => reportCurrency(report, g.accountId) == null && predicate(g))) {
+  for (const g of groups) {
     if (!g.stats.n) continue
     out.trades += g.stats.n; out.pricedTrades += g.stats.pricedN
     if (!out.accountIds.includes(g.accountId ?? null)) out.accountIds.push(g.accountId ?? null)
@@ -99,6 +104,15 @@ export function reportStats(report, key, accountId = 'all', predicate = () => tr
 }
 export function reportLedger(report, accountId = 'all') {
   const currencies = accountId === 'all' ? reportCurrencies(report) : []
+  // Each account's recorded currency is read once per report, not once per
+  // group for every currency, window and market (the WEB-5 checker measured
+  // the unpartitioned split at 4.5x the ledger's cost on production).
+  const known = new Map()
+  const currencyOf = id => {
+    const k = id == null ? null : String(id)
+    if (!known.has(k)) known.set(k, reportCurrency(report, id))
+    return known.get(k)
+  }
   const windows = (report?.windows || []).filter(w => w.ledger).map(w => {
     const st = reportStats(report, w.key, accountId)
     const shape = s => ({ net: s.pnl, trades: s.n, pricedTrades: s.pricedN, unpricedTrades: s.unpricedN,
@@ -111,9 +125,27 @@ export function reportLedger(report, accountId = 'all') {
     // All accounts (V3 WEB-5, owner default 25-09): money per recorded deposit
     // currency, each its own line, never summed across currencies; the closes
     // in no currency are counted apart. One account needs no split.
-    const split = (predicate = () => true) => accountId !== 'all' ? {} : {
-      byCurrency: currencies.map(c => ({ currency: c, ...shape(reportCurrencyStats(report, w.key, c, predicate)) })).filter(c => c.trades > 0),
-      unpooled: reportUnpooled(report, w.key, predicate),
+    //
+    // The window's groups are partitioned by currency ONCE; each figure then
+    // filters only its own partition. The result is the same as
+    // reportCurrencyStats / reportUnpooled per currency (same groups, same
+    // order, so the same sums): populationStats still re-checks that every
+    // account in a pool is recorded in that pool's currency.
+    let split = () => ({})
+    if (accountId === 'all') {
+      const parts = new Map(currencies.map(c => [c, []])), none = []
+      for (const g of reportGroups(report, w.key)) {
+        const c = currencyOf(g.accountId)
+        if (c == null) none.push(g)
+        else if (parts.has(c)) parts.get(c).push(g)
+      }
+      const available = report.status === 'complete'
+      split = (predicate = () => true) => ({
+        byCurrency: currencies.map(c => ({ currency: c,
+          ...shape(populationStats(parts.get(c).filter(predicate), { accountId: 'all', currency: c, currencyOf, available })) }))
+          .filter(c => c.trades > 0),
+        unpooled: unpooledOf(none.filter(predicate)),
+      })
     }
     return { key: w.key, label: w.label, from: new Date(w.from).toISOString(), to: new Date(w.to).toISOString(),
       ...shape(st), ...split(), carryIn: null, carryOut: null, balanceHistoryState: 'requires_cashflow_reconciled_history',

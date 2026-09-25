@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
 import { hourlyActivity } from './hourly-activity.js'
 import { activityEvidence } from '../../src/lib/hourly-activity.js'
+import { rollingSplits } from '../../src/lib/currency-money.js'
+import { rollingHourWindows } from '../../src/lib/hourly-order.js'
 import { recordDepositCurrency } from './account-money.js'
 const to = Date.parse('2026-09-22T09:00:00Z'), from = to - 86400_000
 const scope = { all: false, accountId: '11', explicit: true }
@@ -113,4 +115,41 @@ test('the browser shows a per-currency split only when it reconciles to the clos
   assert.equal(activityEvidence(dup, opts), null, 'one currency twice is not a split')
   const zero = clone(); zero.moneyByCurrency[0].pricedN = 0
   assert.equal(activityEvidence(zero, opts), null, 'a figure with no priced close is invented')
+})
+// WEB-5 fix round (checker blocker 1): the rolling 24-hour card's money lines
+// come from ONE helper that both of the page's memos call. Exercised here from
+// a real all-accounts response through the browser's own evidence check and
+// the page's own hour slots, not from hand-built rows.
+test('the rolling card reads one line per currency for the day and for each hour from an all-accounts response', t => {
+  const { db, add, read } = fixture(t)
+  registerCurrencies(db)
+  const last = to - 1, first = from + 1, mid = from + 5 * 3600_000 + 1
+  add('11', last, 20); add('22', last, -5); add('33', last, 7); add('44', last, 100)
+  add('33', first, 2.5)
+  add('11', mid, 4); add('11', mid, 1)
+  const opts = { accountId: 'all', to, nowMs: to }
+  const evidence = activityEvidence(read({ all: true }), opts)
+  assert.ok(evidence)
+  const slots = rollingHourWindows(to, 24)
+  const { today, hours } = rollingSplits(evidence, slots)
+  const view = s => s && [s.lines.map(l => [l.currency, l.net, l.trades]), s.unpooled?.trades ?? 0]
+  // The day: each currency pooled within itself, the no-currency close counted in no line.
+  assert.deepEqual(view(today), [[['SGD', 9.5, 2], ['USD', 20, 4]], 1])
+  assert.equal(hours.length, 24)
+  // The newest hour spans three accounts and two currencies: never one sum.
+  assert.deepEqual(view(hours[23]), [[['SGD', 7, 1], ['USD', 15, 2]], 1])
+  // An hour whose closes are all one account's still names its currency in the
+  // all-accounts view (checker nit 1), and an empty hour has nothing to split.
+  assert.deepEqual(view(hours[0]), [[['SGD', 2.5, 1]], 0])
+  assert.deepEqual(view(hours[5]), [[['USD', 5, 2]], 0])
+  assert.equal(hours.filter(Boolean).length, 3)
+  for (const s of [today, ...hours].filter(Boolean)) {
+    for (const crossSum of [16.5, 22, 29.5, 122, 129.5]) assert.ok(!s.lines.some(l => l.net === crossSum), `no cross-currency sum ${crossSum}`)
+  }
+  // One account's own scope keeps a whole figure bare, as before WEB-5.
+  const one = activityEvidence(read(), { accountId: '11', to, nowMs: to })
+  const mine = rollingSplits(one, slots)
+  assert.equal(one.net, 25); assert.equal(mine.today, null); assert.equal(mine.hours[5], null)
+  // No evidence, no lines — never an invented zero.
+  assert.deepEqual(rollingSplits(null, slots), { today: null, hours: slots.map(() => null) })
 })

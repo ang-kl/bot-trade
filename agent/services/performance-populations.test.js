@@ -7,7 +7,7 @@ import { initDB } from '../db.js'
 import { buildPerformancePopulations, readPerformancePopulations, buildDecisionsDaily, buildLatestPrices, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readDecisionAudit } from './performance-populations.js'
 import { stageMatrixStats } from './stage-matrix.js'
 import { getState } from '../db.js'
-import { reportStats, reportLedger, reportCurrency, reportCurrencyStats, populationStats, emptyPopulation, sessionBuckets } from '../shared/performance-populations.js'
+import { reportStats, reportLedger, reportCurrency, reportCurrencyStats, reportUnpooled, populationStats, emptyPopulation, sessionBuckets } from '../shared/performance-populations.js'
 import { recordDepositCurrency } from './account-money.js'
 import { accountAnalytics } from './account-analytics.js'
 import { auditDecisions } from './decision-audit.js'
@@ -121,6 +121,46 @@ test('the all-accounts ledger splits money per currency, never sums across, and 
   // A report with no currency evidence (an older agent) splits nothing.
   const bare = reportLedger({ ...r, currencyByAccount: undefined }, 'all').windows.find(x => x.key === '30d')
   assert.deepEqual(bare.byCurrency, []); assert.equal(bare.unpooled.trades, 6)
+})
+// WEB-5 fix round (checker nit 2): reportLedger partitions each window's
+// groups by currency once instead of re-filtering every group per currency,
+// per market. The partitioned split must equal the per-currency reference
+// (reportCurrencyStats, reportUnpooled) figure for figure, in every window and
+// market — including closes with no account, an account with no recorded or a
+// malformed currency, empty groups, and currencies interleaved in the list.
+test('the partitioned ledger split equals the per-currency reference in every window and market', () => {
+  const g = (accountId, market, net, { n = 1, pricedN = 1 } = {}) => ({ accountId, market, sym: 'X', strat: 's',
+    stats: { ...emptyPopulation(), n, pricedN, wins: net > 0 ? pricedN : 0, net, gw: Math.max(0, net), gl: Math.max(0, -net), tp: net > 0 ? 1 : 0, sl: net < 0 ? 1 : 0 } })
+  const groups = [g('11', 'fx', 20.1), g('33', 'fx', 7.3), g('22', 'stock', -5.7), g(null, 'fx', 1000), g('44', 'fx', 100),
+    g('55', 'metal', 3), g('11', 'metal', 0.3, { n: 3, pricedN: 2 }), g('33', 'stock', 0, { n: 2, pricedN: 0 }),
+    g('22', 'fx', 0, { n: 0, pricedN: 0 }), g('66', 'fx', -1.1), g('33', 'metal', -2.2)]
+  const r = { status: 'complete', lastCloseByAccount: {}, markets: ['fx', 'stock', 'metal', 'crypto'],
+    currencyByAccount: { 11: { currency: 'USD' }, 22: { currency: 'USD' }, 33: { currency: 'SGD' }, 44: { currency: null }, 55: { currency: 'usd' }, 66: { currency: 'EUR' } },
+    windows: [{ key: 'a', label: 'A', from: 0, to: 1, ledger: true, groups },
+      { key: 'b', label: 'B', from: 0, to: 1, ledger: true, groups: groups.slice(3) },
+      { key: 'c', label: 'C', from: 0, to: 1, ledger: true, groups: [] }] }
+  const pick = s => [s.currency, s.net, s.trades, s.pricedTrades, s.winPct, s.pf, s.pfInfinite, s.tp, s.sl, s.payoffRatio, s.moneyState]
+  const ref = (key, predicate) => ({
+    byCurrency: ['EUR', 'SGD', 'USD'].map(c => ({ c, s: reportCurrencyStats(r, key, c, predicate) })).filter(x => x.s.n > 0)
+      .map(({ c, s }) => [c, s.pnl, s.n, s.pricedN, s.wr, s.pf, s.pfInfinite, s.tp, s.sl, s.payoff, s.moneyState]),
+    unpooled: reportUnpooled(r, key, predicate),
+  })
+  const ledger = reportLedger(r, 'all')
+  assert.deepEqual(ledger.windows.map(w => w.key), ['a', 'b', 'c'])
+  let compared = 0
+  for (const w of ledger.windows) {
+    for (const [cell, predicate] of [[w, () => true], ...r.markets.map(m => [w.markets[m], x => x.market === m])]) {
+      const want = ref(w.key, predicate)
+      assert.deepEqual(cell.byCurrency.map(pick), want.byCurrency, `${w.key} byCurrency`)
+      assert.deepEqual(cell.unpooled, want.unpooled, `${w.key} unpooled`)
+      compared += cell.byCurrency.length
+    }
+  }
+  // The comparison reached real pools, not only empty ones.
+  assert.ok(compared >= 10, `compared ${compared} pools`)
+  const a = ledger.windows[0]
+  assert.deepEqual(a.byCurrency.map(c => [c.currency, c.trades]), [['EUR', 1], ['SGD', 4], ['USD', 5]])
+  assert.deepEqual([a.unpooled.trades, [...a.unpooled.accountIds].sort()], [3, ['44', '55', null].sort()])
 })
 test('a pool whose groups span two currencies adds nothing, whatever the caller filtered', () => {
   const g = (accountId, net) => ({ accountId, stats: { ...emptyPopulation(), n: 1, pricedN: 1, net, gw: Math.max(0, net), gl: Math.max(0, -net) } })

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { LedgerRow, MobileWindowCard, TodayHourlyBody, HeadlineCurrencyLines } from '../pages/Performance.jsx'
 import { reportLedger, emptyPopulation } from '../../agent/shared/performance-populations.js'
@@ -74,5 +75,47 @@ describe('per-currency money in the all-accounts views', () => {
     const bare = renderToStaticMarkup(<TodayHourlyBody rows={[{ ...rows[0], split: null }]} />)
     expect(bare).not.toContain('SGD')
     expect(bare).toContain('—')
+  })
+  it('an all-accounts window whose closes are one account\'s names its currency, like its neighbours (checker nit 1)', () => {
+    // Production 25-09: 4H and 12H read a bare "−135.36" while Yesterday read "SGD −5.41 · USD −1.57".
+    const w = reportLedger(report([g('46130058', -135.36)]), 'all').windows[0]
+    expect(w.net).toBe(-135.36)
+    const row = renderToStaticMarkup(<table><tbody><LedgerRow w={w} nowMs={0} timeZone="UTC" /></tbody></table>)
+    const card = renderToStaticMarkup(<MobileWindowCard w={w} timeZone="UTC" />)
+    for (const html of [row, card]) {
+      expect(html).toContain('USD -135.36')
+      expect(html).not.toContain('in no currency')
+    }
+    // One account's own view is unchanged: its single figure, no code.
+    const one = reportLedger(report([g('46130058', -135.36)]), '46130058').windows[0]
+    expect(renderToStaticMarkup(<table><tbody><LedgerRow w={one} nowMs={0} timeZone="UTC" /></tbody></table>)).not.toContain('USD')
+  })
+})
+
+// WEB-5 fix round (checker blocker 1): the page's two rolling memos take their
+// split from rollingSplits. That mapping is exercised with a real all-accounts
+// response in agent/services/hourly-activity.test.js and in
+// src/lib/currency-money.test.js. What neither can see is the page handing
+// the result on: the memos read hourly-activity only through an effect, and
+// this suite renders with no DOM, so there is no injection point. Reading the
+// source is the last resort for that wiring alone (CLAUDE.md failure modes #2
+// and #4), with comments stripped so an explanatory comment cannot satisfy it.
+describe('the rolling 24-hour card is wired to the per-currency helper', () => {
+  const stripComments = src => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1')
+  const page = stripComments(readFileSync(new URL('../pages/Performance.jsx', import.meta.url), 'utf8'))
+  const block = start => {
+    const i = page.indexOf(start)
+    expect(i).toBeGreaterThan(-1)
+    const j = page.indexOf('\n  const ', i + start.length)
+    return page.slice(i, j < 0 ? undefined : j)
+  }
+  it('the headline memo and every hour row carry the helper\'s split, and both headlines render it first', () => {
+    expect(block('const today = useMemo(')).toMatch(/\bsplit:\s*rollingSplits\(openings\)\.today\b/)
+    const hourly = block('const todayHourly = useMemo(')
+    const hours = hourly.match(/const (\w+) = rollingSplits\(openings,\s*slots\)\.hours\b/)
+    expect(hours).not.toBeNull()
+    expect(hourly).toMatch(/slots\.map\(\(s,\s*i\)\s*=>/)
+    expect(hourly).toMatch(new RegExp(`\\bsplit:\\s*${hours[1]}\\[i\\]`))
+    expect(page.match(/today\.split \? <HeadlineCurrencyLines split=\{today\.split\} \/>/g)?.length).toBe(2)
   })
 })

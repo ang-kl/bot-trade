@@ -56,7 +56,7 @@ import { reportStats, reportGroups, reportLedger, sessionBuckets } from '../../a
 import { SESSION_SOURCE } from '../../agent/shared/report-sessions.js'
 import { performanceGradients, gradientData, gradientFoot, OVERLAP_LABEL, OVERLAP_TITLE } from '../lib/performance-gradients.js'
 import { ledgerMoneyNote } from '../lib/partial-money.js'
-import { currencyLines, activityCurrencyLines, currencyLinesText } from '../lib/currency-money.js'
+import { currencyLines, currencyLinesText, rollingSplits } from '../lib/currency-money.js'
 import { scopedPerformanceRows } from '../lib/performance-evidence.js'
 
 const REFRESH_MS = 60_000
@@ -1031,7 +1031,7 @@ function LedgerBody({ variant, windows, ledger, error, nowMs, timeZone }) {
         </div>
       )}
       <p className={`mt-1.5 text-(length:--fs-body) ${SUB}`}>
-        Rolling windows (1H…12M) end at the report time. Calendar periods use midnight in {timeZone}; weeks start Monday. Carry balances require cashflow-reconciled history and remain unavailable here. Unknown symbols are included under Other. A net marked “partial · n of m priced” sums only the closes with a recorded P&amp;L: it is not a bound in either direction. In All accounts a net whose closes span accounts is one line per broker deposit currency, added only within that currency and never across currencies; “n in no currency” counts closes from an account with no recorded currency, which are in no line. “Not pooled” means no currency is recorded for them at all.
+        Rolling windows (1H…12M) end at the report time. Calendar periods use midnight in {timeZone}; weeks start Monday. Carry balances require cashflow-reconciled history and remain unavailable here. Unknown symbols are included under Other. A net marked “partial · n of m priced” sums only the closes with a recorded P&amp;L: it is not a bound in either direction. In All accounts a net is one line per broker deposit currency, named even when every close is one account’s, added only within that currency and never across currencies; “n in no currency” counts closes from an account with no recorded currency, which are in no line. “Not pooled” means no currency is recorded for them at all.
       </p>
     </>
   )
@@ -1422,8 +1422,8 @@ export default function Performance() {
     net: openings?.net ?? null, n: openings?.closedN ?? null,
     pricedN: openings?.pricedN ?? null,
     wr: openings?.pricedN ? Math.round(openings.wins / openings.pricedN * 100) : null,
-    // All accounts: per deposit currency when no single figure exists (V3 WEB-5).
-    split: activityCurrencyLines(openings, { closedN: openings?.closedN, net: openings?.net }),
+    // All accounts: one line per deposit currency, never one sum (V3 WEB-5).
+    split: rollingSplits(openings).today,
   }), [openings])
 
   // Owner (2026-07-24 evening): "the today card cannot be empty... it
@@ -1435,10 +1435,12 @@ export default function Performance() {
   // still shows a real (flat) balance line instead of nothing at all.
   const todayHourly = useMemo(() => {
     const slots = rollingHourWindows(hourNow, 24)
-    const withBal = slots.map(s => {
+    // V3 WEB-5: each hour's per-currency lines, aligned with `slots`.
+    const hourSplits = rollingSplits(openings, slots).hours
+    const withBal = slots.map((s, i) => {
       const row = openings?.rows.find(r => r.from === s.from && r.to === s.to)
       return { ...s, net: row?.net ?? null, closedN: row?.closedN ?? null,
-        split: row ? activityCurrencyLines(row, { closedN: row.closedN, net: row.net }) : null,
+        split: hourSplits[i],
         openBal: null, closeBal: null,
         openedN: row?.openedN ?? null, unknownOpeningTimeN: openings?.unknownTimeN ?? 0,
         unknownCloseTimeN: openings?.unknownCloseTimeN ?? 0,
@@ -2013,7 +2015,7 @@ export default function Performance() {
                     Both read the same `today`, which is now on rollingWin. */}
                 <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</span>
                 <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>latest 24 one-hour windows · newest first</span>
-                <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.net != null ? signed(today.net) : today.split ? <HeadlineCurrencyLines split={today.split} /> : '—'}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.split ? <HeadlineCurrencyLines split={today.split} /> : today.net != null ? signed(today.net) : '—'}</span>
               </div>
               <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.pricedN} with P&L · ${today.wr ?? 'unknown'}% wins among priced closes${today.split?.unpooled ? ` · ${today.split.unpooled.text}` : ''}` : (today.n == null ? 'Close evidence unavailable' : '0 recorded closes in the last 24 hours')}</span>
             </div>
@@ -2296,8 +2298,8 @@ export default function Performance() {
                 render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} available={journalAvailable} /></>} />
             </span>
             <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
-              {today.net != null ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} />
-                : today.split ? <HeadlineCurrencyLines split={today.split} /> : '—'}
+              {today.split ? <HeadlineCurrencyLines split={today.split} />
+                : today.net != null ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
             </span>
             <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.pricedN} with P&L · ${today.wr ?? 'unknown'}% wins among priced closes${today.split?.unpooled ? ` · ${today.split.unpooled.text}` : ''}` : (today.n == null ? 'Close evidence unavailable' : '0 recorded closes in the last 24 hours')}</span>
             {/* Owner (2026-07-25): "Today table must be longer in length" —
