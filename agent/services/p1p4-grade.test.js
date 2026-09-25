@@ -21,7 +21,7 @@ import { tempDir } from '../test-support/temp-dir.js'
 import {
   PASSED, FAILED, NOT_VERIFIABLE, P1P4_PROPOSED_LIMITS, p1p4LimitsFromTargets, p1p4TargetDefaults,
   compactHealth, compactHeartbeats, classifyResponse, routeClass, splitBoots, gradeStartup, gradeRecovery, gradeSteady,
-  gradeRun, formatGrade, combineVerdicts, toMs, compactEntryEngines,
+  gradeRun, formatGrade, combineVerdicts, toMs, compactEntryEngines, endedBefore,
 } from './p1p4-grade.js'
 import { runHarness, makeReader, collectEvidence, readSamples, scrub, CADENCE, DEFAULT_MAX_JOURNALS } from '../../scripts/v3-p1p4-acceptance.mjs'
 
@@ -166,6 +166,46 @@ test('startup: absent data is Not Verifiable, never Passed; a failure already se
   const late = byId(gradeStartup(bootOf([health(BOOT + 6 * MIN, { first: {} })]), L).criteria)
   assert.equal(late['startup.first_band'].verdict, FAILED)
   assert.equal(late['startup.first_clean_audit'].verdict, FAILED)
+})
+
+// 25-09 22:08–22:10Z: three Node boots in 14 minutes (ec4bc3c, 74bb211,
+// 169d337) — the first cut at +757 s, the second at +86 s. A boot the next
+// merge replaced never finishes its window; "still open" would be false.
+test('a boot the next restart replaced is a partial reading for good: named as ended, never "still open", never a pass', () => {
+  const B2 = BOOT + 757_000
+  const cut = [health(BOOT + 5 * MIN), health(BOOT + 12 * MIN), health(B2 + 20_000, { bootAt: B2, bootId: 'boot-2', commit: 'bbbbbbb' })]
+  const boots = splitBoots(cut)
+  assert.equal(boots.length, 2)
+  assert.equal(boots[0].toMs, B2, 'the first boot ends where the next begins')
+  const c = byId(gradeStartup(boots[0], L).criteria)
+  for (const id of ['startup.lag_max', 'startup.critical_5xx']) {
+    assert.equal(c[id].verdict, NOT_VERIFIABLE, `${id}: a partial window never passes`)
+    assert.match(c[id].reason, /^the boot ended at \+757 s \(the next restart\), before BOOT \+ 900 s/, id)
+    assert.doesNotMatch(c[id].reason, /still open/, id)
+  }
+  // Control: the same partial reading on a boot that is still running says so.
+  const live = byId(gradeStartup(bootOf([health(BOOT + 5 * MIN)]), L).criteria)
+  assert.match(live['startup.lag_max'].reason, /still open/)
+  assert.match(live['startup.critical_5xx'].reason, /still open/)
+
+  // Replaced before the 300 s recovery deadline: no band yet is neither
+  // Failed nor "not yet", and recovery names the restart that ended it.
+  const B3 = BOOT + 86_000
+  const short = [health(BOOT - 60_000, { bootAt: BOOT - 3_600_000, bootId: 'b0' }), hb(BOOT - 50_000), health(BOOT + 30_000, { first: {} }), health(B3 + 20_000, { bootAt: B3, bootId: 'boot-3' })]
+  const s = splitBoots(short)
+  const first = s.find(b => b.bootAtMs === BOOT)
+  assert.equal(first.toMs, B3)
+  const st = byId(gradeStartup(first, L).criteria)
+  assert.equal(st['startup.first_band'].verdict, NOT_VERIFIABLE)
+  assert.match(st['startup.first_band'].reason, /^the boot ended at \+86 s \(the next restart\), before BOOT \+ 300 s/)
+  const rc = byId(gradeRecovery(first, L, { samples: short }).criteria)
+  assert.equal(rc['recovery.independent_retained'].verdict, NOT_VERIFIABLE)
+  assert.match(rc['recovery.independent_retained'].reason, /^the boot ended at \+86 s/)
+
+  // The boundary: a boot that lasted exactly the window is not "ended before" it.
+  assert.equal(endedBefore({ bootAtMs: BOOT, toMs: BOOT + 900_000 }, 900_000), null)
+  assert.match(endedBefore({ bootAtMs: BOOT, toMs: BOOT + 899_999 }, 900_000), /ended at \+900 s/)
+  assert.equal(endedBefore({ bootAtMs: BOOT, toMs: Infinity }, 900_000), null, 'a live boot has not ended')
 })
 
 test('a window with no visible tab cannot pass; its failures still stand', () => {

@@ -430,6 +430,18 @@ function representativeOf(healthSamples) {
 // Startup window (BOOT → BOOT + 15 min), from the boot record: raw sinceBootMs.
 // ---------------------------------------------------------------------------
 
+/**
+ * When the next restart came before `ms` after this boot's BOOT, the reason a
+ * reading of this boot stays partial for good; null while the boot is live or
+ * lasted past `ms`. A boot that ended early is not "still open" — the next
+ * merge replaced it (25-09 22:08–22:10Z: three Node boots in 14 minutes) —
+ * and its partial reading is never a pass. Pure.
+ */
+export function endedBefore(boot, ms) {
+  if (boot?.bootAtMs == null || !Number.isFinite(boot.toMs) || boot.toMs >= boot.bootAtMs + ms) return null
+  return `the boot ended at +${Math.round((boot.toMs - boot.bootAtMs) / 1000)} s (the next restart), before BOOT + ${Math.round(ms / 1000)} s — a partial reading, never a pass`
+}
+
 /** Grade one boot's startup window. `ownRequests` are the harness's own request records. */
 export function gradeStartup(boot, limits, { ownRequests = [] } = {}) {
   const windowMs = limits.startupWindowMin * 60_000
@@ -443,6 +455,9 @@ export function gradeStartup(boot, limits, { ownRequests = [] } = {}) {
   const recoveryDone = latestSince != null && latestSince >= recoveryMs
   const out = []
   const noRecord = 'no boot record on /health (V3 M1 not deployed, or /health read without the read token)'
+  const partialReading = endedBefore(boot, windowMs) ?? 'the startup window is still open (partial reading)'
+  const partialCounts = endedBefore(boot, windowMs) ?? 'the startup window is still open (partial counts)'
+  const notYet = endedBefore(boot, recoveryMs) ?? 'not yet'
 
   // Listening.
   if (!rec) out.push(crit('startup.listening', NOT_VERIFIABLE, { limit: limits.listeningMaxSec * 1000, reason: noRecord }))
@@ -454,7 +469,7 @@ export function gradeStartup(boot, limits, { ownRequests = [] } = {}) {
   else {
     const worst = num(rec.startupLag?.ms)
     if (worst != null && worst >= limits.lagMaxMs) out.push(crit('startup.lag_max', FAILED, { value: worst, limit: limits.lagMaxMs, at: rec.startupLag.at, detail: { loopPhase: rec.startupLag.loopPhase, harnessOverlap: harnessOverlap([rec.startupLag.at], ownRequests) } }))
-    else if (!windowDone) out.push(crit('startup.lag_max', NOT_VERIFIABLE, { value: worst, limit: limits.lagMaxMs, reason: 'the startup window is still open (partial reading)' }))
+    else if (!windowDone) out.push(crit('startup.lag_max', NOT_VERIFIABLE, { value: worst, limit: limits.lagMaxMs, reason: partialReading }))
     else if (worst == null) out.push(crit('startup.lag_max', NOT_VERIFIABLE, { limit: limits.lagMaxMs, reason: 'no probe recorded in the startup window' }))
     else out.push(crit('startup.lag_max', PASSED, { value: worst, limit: limits.lagMaxMs }))
   }
@@ -493,11 +508,11 @@ export function gradeStartup(boot, limits, { ownRequests = [] } = {}) {
     } else {
       out.push(crit('startup.critical_5xx', critN > limits.critical5xxMax ? FAILED : complete ? PASSED : NOT_VERIFIABLE, {
         value: critN, limit: limits.critical5xxMax, detail: Object.fromEntries(critical),
-        reason: critN > limits.critical5xxMax ? null : complete ? null : 'the startup window is still open (partial counts)',
+        reason: critN > limits.critical5xxMax ? null : complete ? null : partialCounts,
       }))
       out.push(crit('startup.report_5xx', limits.report5xxMax == null ? NOT_VERIFIABLE : repN > limits.report5xxMax ? FAILED : complete ? PASSED : NOT_VERIFIABLE, {
         value: repN, limit: limits.report5xxMax, detail: Object.fromEntries(report),
-        reason: limits.report5xxMax == null ? 'counted and listed; whether any are tolerated is the owner\'s decision (H-P1-2)' : complete ? null : 'the startup window is still open (partial counts)',
+        reason: limits.report5xxMax == null ? 'counted and listed; whether any are tolerated is the owner\'s decision (H-P1-2)' : complete ? null : partialCounts,
       }))
     }
   }
@@ -506,13 +521,13 @@ export function gradeStartup(boot, limits, { ownRequests = [] } = {}) {
   const band = rec?.first?.band
   if (!rec) out.push(crit('startup.first_band', NOT_VERIFIABLE, { reason: noRecord }))
   else if (band) out.push(crit('startup.first_band', band.ok === true && band.overran !== true ? PASSED : FAILED, { value: band.ms, limit: limits.bandMaxMs, at: band.at, detail: { overran: band.overran ?? null, error: band.error ?? null } }))
-  else out.push(crit('startup.first_band', recoveryDone ? FAILED : NOT_VERIFIABLE, { reason: recoveryDone ? `no band completed by BOOT + ${limits.recoverySec} s` : 'not yet' }))
+  else out.push(crit('startup.first_band', recoveryDone ? FAILED : NOT_VERIFIABLE, { reason: recoveryDone ? `no band completed by BOOT + ${limits.recoverySec} s` : notYet }))
 
   // First clean all-account Node audit within the recovery window.
   const clean = rec?.first?.cleanProtectionAudit
   if (!rec) out.push(crit('startup.first_clean_audit', NOT_VERIFIABLE, { limit: recoveryMs, reason: noRecord }))
   else if (clean && clean.sinceBootMs != null) out.push(crit('startup.first_clean_audit', clean.sinceBootMs <= recoveryMs ? PASSED : FAILED, { value: clean.sinceBootMs, limit: recoveryMs, at: clean.at, detail: { accounts: clean.accounts ?? null, unauditable: clean.unauditable ?? null } }))
-  else out.push(crit('startup.first_clean_audit', recoveryDone ? FAILED : NOT_VERIFIABLE, { limit: recoveryMs, reason: recoveryDone ? `no clean all-account audit by BOOT + ${limits.recoverySec} s` + (rec.first?.protectionAudit ? ` (first audit: ok ${rec.first.protectionAudit.ok}, errors ${rec.first.protectionAudit.errors ?? '?'})` : '') : 'not yet' }))
+  else out.push(crit('startup.first_clean_audit', recoveryDone ? FAILED : NOT_VERIFIABLE, { limit: recoveryMs, reason: recoveryDone ? `no clean all-account audit by BOOT + ${limits.recoverySec} s` + (rec.first?.protectionAudit ? ` (first audit: ok ${rec.first.protectionAudit.ok}, errors ${rec.first.protectionAudit.errors ?? '?'})` : '') : notYet }))
 
   // First loop: reported against the owner's bar; no bar, no verdict.
   const loop = rec?.first?.loop
@@ -617,7 +632,7 @@ export function gradeRecovery(boot, limits, { samples = [], evidence = null } = 
   const { deadline, preHb, postHb, preEe, postEe, preMf, postMf, between, preOk } = recoverySamples(boot, limits, samples)
   const lateBy = RECOVERY_LATE_MS
   const noPre = boot.restartObserved ? 'no heartbeats sample within 10 min before the restart' : 'the harness did not observe this restart (it started after BOOT), so there is no pre-release snapshot'
-  const noPost = `no heartbeats sample within ${lateBy / 1000} s after BOOT + ${limits.recoverySec} s`
+  const noPost = endedBefore(boot, limits.recoverySec * 1000) ?? `no heartbeats sample within ${lateBy / 1000} s after BOOT + ${limits.recoverySec} s`
 
   const noAccounts = 'the sample lists no account'
   // R1 — independent readings retained (never cleared), advancing, fresh.
