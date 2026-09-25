@@ -625,6 +625,18 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_cpp_decisions_at ON cpp_decisions(at);
   CREATE INDEX IF NOT EXISTS idx_cpp_decisions_kind ON cpp_decisions(component, kind);
+  -- Q1 follow-up (checker B1, 25-09-2026): GET /state/tick-replay-parity reads
+  -- the ring by side and time window (the per-boot seq health) and by side,
+  -- component, kind, symbol and time (the tick signals). With no index on
+  -- (side, ts_ms) SQLite used the UNIQUE autoindex on side alone and scanned
+  -- every row the side kept for 90 days. The checker measured 685 ms per trial
+  -- at 2M synthetic rows (39.5 s for a 60-trial profile report, on the event
+  -- loop) against 26 ms with these two; at 500k in-memory rows the health and
+  -- record reads took 145.6 ms per trial without them and 0.6 ms with them.
+  -- Building both on an existing table is a one-time boot cost (1.0 s at 500k
+  -- in-memory rows; the production row count is not measured here).
+  CREATE INDEX IF NOT EXISTS idx_cpp_decisions_side_ts ON cpp_decisions(side, ts_ms);
+  CREATE INDEX IF NOT EXISTS idx_cpp_decisions_tick_signal ON cpp_decisions(side, component, kind, symbol_id, ts_ms);
 
   -- P2a (docs/tick-momentum/plan.md §9, 11-09-2026): the durable entry-intent
   -- ledger — the consumption authority for one-use execution permits. One

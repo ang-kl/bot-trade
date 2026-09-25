@@ -49,6 +49,40 @@ export const SIDE_BY_ENVIRONMENT = Object.freeze({ demo: 'cpp_exec_demo', live: 
 export const RING_SLACK_MS = 60_000
 /** Each unmatched list in a report is capped here; the counts are never capped. */
 export const UNMATCHED_LIST_MAX = 20
+/**
+ * Q1 follow-up (checker B1): the profile form compares at most this many
+ * trials per request (newest first) — it runs on the event loop, three indexed
+ * reads per trial. It was 60 by default and 200 at most: the checker measured
+ * 39.5 s at 2M ring rows before the indexes and 1.5 s for 60 after them
+ * (agent/db.js idx_cpp_decisions_side_ts). The reply says how many trials
+ * with a record were NOT compared, and `?trialId=` reaches any one of them.
+ */
+export const PROFILE_TRIALS_MAX = 20
+/**
+ * The ring reads, exported so a test can ask SQLite for their plan against the
+ * real schema (idx_cpp_decisions_tick_signal / idx_cpp_decisions_side_ts).
+ */
+export const SIGNALS_SQL = `SELECT boot_id, ts_ms, code, detail FROM cpp_decisions WHERE side = ? AND component = 'tick' AND kind = 'signal' AND symbol_id = ? AND ts_ms BETWEEN ? AND ?`
+export const BOOTS_SQL = `SELECT boot_id AS bootId, MIN(seq) AS lo, MAX(seq) AS hi, COUNT(*) AS n FROM cpp_decisions WHERE side = ? AND ts_ms BETWEEN ? AND ? GROUP BY boot_id`
+/**
+ * Q1 follow-up (checker N7): every shadow trade whose holding interval
+ * OVERLAPS the read window — entered by its end and exited after its start. It
+ * read trades that entered or exited inside the window, so a trade open across
+ * the whole window was missed, the busy check could not push the window past
+ * it, and the replay's signals there scored a false mismatch. A row with no
+ * exit time (a malformed pull) is read as before: only when it entered inside
+ * the window.
+ */
+export const SHADOW_TRADES_SQL = `SELECT * FROM tick_shadow_trades WHERE side = ? AND symbol_id = ? AND profile_hash = ? AND reason <> 'lost_restart' AND entry_ms <= ? AND (exit_ms >= ? OR (exit_ms IS NULL AND entry_ms >= ?))`
+/**
+ * Q1 follow-up (checker N6, NOT closed here): the sidecar's per-symbol worker
+ * queue (cpp-exec tick_workers.cpp) drops events when it is full and marks the
+ * next one gapBefore — the LIVE strategy re-warms there while the segment still
+ * holds every quote. Those drops are counted only as process-lifetime totals on
+ * the sidecar's /tick-status (workers.dropped / gapsMarked); nothing records
+ * them per window, so this report cannot see one. Named on every report.
+ */
+const UNOBSERVED = 'sidecar worker-queue drops (tick_workers.cpp gapBefore: the live strategy re-warms, the segment keeps every quote) are not recorded per window, so a mismatch here cannot rule one out'
 const COST_TERMS = ['commissionWirePerSide', 'commissionBpsPerSide', 'slippageWirePerSide', 'slippageBpsPerSide']
 const NOT_YET = 'Whether the replay reproduces the shadow is NOT YET COMPARED until this report reads ok or mismatch on a comparable window.'
 
@@ -205,7 +239,7 @@ export function sidecarRecord(db, { side, profile, symbolId, fromMs, toMs }) {
   const lo = fromMs - RING_SLACK_MS, hi = toMs + RING_SLACK_MS
   let sigRows = []
   try {
-    sigRows = db.prepare(`SELECT boot_id, ts_ms, code, detail FROM cpp_decisions WHERE side = ? AND component = 'tick' AND kind = 'signal' AND symbol_id = ? AND ts_ms BETWEEN ? AND ?`).all(side, symbolId, lo, hi)
+    sigRows = db.prepare(SIGNALS_SQL).all(side, symbolId, lo, hi)
   } catch { sigRows = [] }
   const signals = []
   for (const r of sigRows) {
@@ -215,7 +249,7 @@ export function sidecarRecord(db, { side, profile, symbolId, fromMs, toMs }) {
   }
   let tradeRows = []
   try {
-    tradeRows = db.prepare(`SELECT * FROM tick_shadow_trades WHERE side = ? AND symbol_id = ? AND profile_hash = ? AND reason <> 'lost_restart' AND ((entry_ms BETWEEN ? AND ?) OR (exit_ms BETWEEN ? AND ?))`).all(side, symbolId, profile, lo, hi, lo, hi)
+    tradeRows = db.prepare(SHADOW_TRADES_SQL).all(side, symbolId, profile, hi, lo, lo)
   } catch { tradeRows = [] }
   const trades = tradeRows.map(r => ({ side: r.trade_side, entryMs: r.entry_ms, exitMs: r.exit_ms, reason: r.reason, bootId: r.boot_id, row: r }))
   return { signals, trades }
@@ -225,7 +259,7 @@ export function sidecarRecord(db, { side, profile, symbolId, fromMs, toMs }) {
 export function sidecarHealth(db, { side, fromMs, toMs }) {
   let boots = []
   try {
-    boots = db.prepare(`SELECT boot_id AS bootId, MIN(seq) AS lo, MAX(seq) AS hi, COUNT(*) AS n FROM cpp_decisions WHERE side = ? AND ts_ms BETWEEN ? AND ? GROUP BY boot_id`).all(side, fromMs, toMs)
+    boots = db.prepare(BOOTS_SQL).all(side, fromMs, toMs)
   } catch { boots = [] }
   let lostRestart = 0
   try { lostRestart = db.prepare(`SELECT COUNT(*) AS n FROM tick_shadow_trades WHERE side = ? AND reason = 'lost_restart' AND exit_ms BETWEEN ? AND ?`).get(side, fromMs, toMs).n } catch { lostRestart = 0 }
@@ -279,7 +313,7 @@ export function replayParityView(db, q = {}) {
   if (Number.isNaN(from) || Number.isNaN(to)) return { status: 400, body: { at, error: 'bad_window', from: q.from ?? null, to: q.to ?? null, where: 'from and to are epoch milliseconds or ISO times' } }
   const side = q.side == null || q.side === '' ? null : String(q.side)
   if (side && !Object.values(SIDE_BY_ENVIRONMENT).includes(side)) return { status: 400, body: { at, error: 'bad_side', side, where: `side is one of ${Object.values(SIDE_BY_ENVIRONMENT).join(', ')}` } }
-  const common = { gates: 'nothing — report only; a blocking parity check is the owner\'s D8', lossySources: 'decision ring 4,096 slots pulled ~2 min, lost at restart; ShadowLedger(4096) loses closed-but-unpulled trades at restart — windows with a boot change, a ring seq gap or a lost_restart row are not_comparable' }
+  const common = { gates: 'nothing — report only; a blocking parity check is the owner\'s D8', lossySources: 'decision ring 4,096 slots pulled ~2 min, lost at restart; ShadowLedger(4096) loses closed-but-unpulled trades at restart — windows with a boot change, a ring seq gap or a lost_restart row are not_comparable', unobservedLosses: UNOBSERVED }
   if (q.trialId) {
     const row = trialRow(db, q.trialId)
     if (!row) return { status: 404, body: { at, error: 'unknown_trial', trialId: String(q.trialId) } }
@@ -288,13 +322,15 @@ export function replayParityView(db, q = {}) {
   }
   const profile = String(q.profile || '').trim().toLowerCase().slice(0, 16)
   if (!/^[0-9a-f]{16}$/.test(profile)) return { status: 400, body: { at, error: 'bad_query', where: 'ask with ?trialId=<id>, or ?profile=<16-hex>&side=&from=&to=' } }
-  const limit = Math.min(200, Math.max(1, Math.floor(Number(q.limit) || 60)))
+  const limit = Math.min(PROFILE_TRIALS_MAX, Math.max(1, Math.floor(Number(q.limit) || PROFILE_TRIALS_MAX)))
   let rows = []
   try { rows = db.prepare('SELECT * FROM tick_trials WHERE profile_hash = ? AND parity_json IS NOT NULL ORDER BY id DESC LIMIT ?').all(profile, limit) } catch { rows = [] }
-  let legacy = 0
+  let legacy = 0, withRecord = rows.length
   try { legacy = db.prepare('SELECT COUNT(*) AS n FROM tick_trials WHERE profile_hash = ? AND parity_json IS NULL').get(profile).n } catch { legacy = 0 }
+  try { withRecord = db.prepare('SELECT COUNT(*) AS n FROM tick_trials WHERE profile_hash = ? AND parity_json IS NOT NULL').get(profile).n } catch { withRecord = rows.length }
   const shadowSim = loadShadowSim()
   const results = rows.map(r => trialParity(db, r, { side, fromMs: from, toMs: to, shadowSim }))
   const parity = verdictOf(results)
-  return { status: 200, body: { at, ...common, profile, side, from, to, parity, trialsCompared: results.length, trialsWithoutRecord: legacy, results, note: parity === 'not_comparable' ? NOT_YET : null } }
+  const notCompared = Math.max(0, withRecord - results.length)
+  return { status: 200, body: { at, ...common, profile, side, from, to, parity, limit, trialsCompared: results.length, trialsNotCompared: notCompared, trialsWithoutRecord: legacy, results, ...(notCompared ? { notComparedNote: `${notCompared} older trial(s) of this profile carry a record and were not compared: the profile form compares the newest ${limit} (at most ${PROFILE_TRIALS_MAX}) per request, on the event loop; ask for one with ?trialId=` } : {}), note: parity === 'not_comparable' ? NOT_YET : null } }
 }
