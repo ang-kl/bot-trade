@@ -1,11 +1,12 @@
 import { getState } from '../db.js'
 import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { readMarketCalendar } from './market-calendar.js'
-import { projectCalendar, calendarIntervals } from '../lib/calendar-intervals.js'
+import { projectCalendar, calendarIntervals, contractCalendar } from '../lib/calendar-intervals.js'
 import { loadNotifyConfig } from './telegram-digest.js'
 import { DEFAULT_SENT_TIMEOUT_MS } from './entry-ledger.js'
 import { scannerWork, watchdogCalendars, scannerCollectorWork } from './scanner-work.js'
 import { entryDiagnostics } from './blocker-report.js'
+import { marketIdentityKey } from '../lib/market-identity.js'
 
 const read = (db, key) => { try { return JSON.parse(getState(db, key) || 'null') } catch { return null } }
 const time = value => { const n = Date.parse(value); return Number.isFinite(n) ? n : null }
@@ -37,6 +38,30 @@ function notificationPolicy(db, now) {
   } catch { return { enabled: false, owner, observedAtMs: now, expiresAtMs: now, quietIntervals: [], reason: 'notification_timezone_unknown' } }
   return { enabled: valid && cfg.enabled, owner, observedAtMs: now, expiresAtMs: now + DAY,
     quietIntervals, urgentBypass: cfg.urgentBypass, source: 'telegram_notify_json' }
+}
+
+const exactKey = (accountId, host, symbolId) => [accountId, host, symbolId].every(v => typeof v === 'string' && v) ? `${accountId}|${host}|${symbolId}` : null
+/**
+ * V3 K1 — each calendar once. cpp-verify gives every work item of every
+ * service the `calendars` entry whose identity matches its accountId, host
+ * and symbolId as exact strings (watchdog_state.cpp:148-152), replacing
+ * whatever the item carried. So a Node work item whose identity is exported
+ * with a calendar need not repeat it: the item drops its copy and says where
+ * it is (`calendarIn`). An item whose identity is not exported (beyond the
+ * 96 KiB export bound) keeps its own, in the same contract shape. An item
+ * whose calendar is null keeps its null. Measured before this change on a
+ * realistic seven-account load: every position, scan and entry_activity item
+ * repeated a ~1 KB calendar the export already held, and the contract passed
+ * 256 KiB — which empties `work` and blinds the verifier.
+ */
+function shareCalendars(work, calendars, now) {
+  const exported = new Set()
+  for (const c of calendars) if (c.calendar) exported.add(exactKey(c.identity?.accountId, c.identity?.host, c.identity?.symbolId))
+  for (const w of work) {
+    if (w.calendar == null) continue
+    if (exported.has(exactKey(w.accountId, w.host, w.symbolId))) { delete w.calendar; w.calendarIn = 'calendars' }
+    else w.calendar = contractCalendar(w.calendar, now)
+  }
 }
 
 /** Completed-work evidence only. No broker request, mutation or entry gate. */
@@ -80,10 +105,15 @@ export function nodeWatchdogContract(db, { now = Date.now(), env = process.env, 
   // bound it is the FIRST thing dropped, before `work`.
   let diagnostics
   try { diagnostics = entryDiagnostics(db, { now }) } catch { diagnostics = { schemaVersion: 1, source: 'node_records', observedAtMs: now, complete: false, reason: 'entry_diagnostics_unavailable', accounts: [] } }
-  const out = { schemaVersion: 1, service: 'node', observedAtMs: now, ...watchdogCalendars(db, now), workComplete: positions.length <= 2048 && intents.length <= 2048 && work.length <= 2048 && !work.some(w => w.inventoryComplete === false),
+  const lead = new Set()
+  for (const w of work) if (w.calendar != null) { const key = marketIdentityKey({ accountId: w.accountId, host: w.host, symbolId: w.symbolId }); if (key) lead.add(key) }
+  const calendars = watchdogCalendars(db, now, { lead })
+  shareCalendars(work, calendars.calendars, now)
+  const out = { schemaVersion: 1, service: 'node', observedAtMs: now, ...calendars, workComplete: positions.length <= 2048 && intents.length <= 2048 && work.length <= 2048 && !work.some(w => w.inventoryComplete === false),
     work: work.slice(0, 2048), notificationPolicy: notificationPolicy(db, now), entryDiagnostics: diagnostics,
-    limitations: ['Scanner work is published by its actual owner; a Node timer is not a scanner receipt.', 'No closed-market management deadline has been invented.'] }
+    limitations: ['Scanner work is published by its actual owner; a Node timer is not a scanner receipt.', 'No closed-market management deadline has been invented.',
+      'A work item marked calendarIn "calendars" carries no calendar of its own: its calendar is the calendars entry with the same accountId, host and symbolId.'] }
   if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) out.entryDiagnostics = { schemaVersion: 1, source: 'node_records', observedAtMs: now, complete: false, reason: 'contract_size_bound', accounts: [] }
-  if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) { out.workComplete = false; out.work = []; out.calendars = []; out.calendarsComplete = false; out.reason = 'work_contract_size_bound' }
+  if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) { out.workComplete = false; out.work = []; out.calendars = []; out.calendarsComplete = false; out.exportComplete = false; out.reason = 'work_contract_size_bound' }
   return out
 }
