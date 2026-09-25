@@ -53,6 +53,19 @@ import WebSocket from 'ws'
 import { PT } from './ctrader-payload-types.js'
 import { beginCall, endCall, describeSteps } from './inflight.js'
 
+/**
+ * V3 M1 (measurement only): a step may carry `onTokenWait(ms)`, called with
+ * the time that step spent parked on the historical token bucket — so a
+ * caller (the fast monitor's relVol fetch) can say how much of its fetch was
+ * the shared 4/s allowance rather than the broker. Called from both request
+ * paths (this pool's runNow and ctrader-ws.js's wsRun). Never throws into the
+ * request path; a step without the callback is untouched.
+ */
+export function noteTokenWait(step, waited) {
+  if (typeof step?.onTokenWait !== 'function') return
+  try { step.onTokenWait(Number(waited) || 0) } catch { /* instrumentation is not a gate */ }
+}
+
 /** Feature flag. Read per call so a deploy can flip it without a restart. */
 export function poolEnabled() {
   return String(process.env.CTRADER_WS_POOL || '').trim() === '1'
@@ -356,6 +369,7 @@ class Session {
         const step = steps[i]
         if (isHistorical(step.send.payloadType)) {
           const waited = await takeHistoricalToken()
+          noteTokenWait(step, waited)
           if (done) return
           if (this.dead || this.ws?.readyState !== WebSocket.OPEN) {
             finish(reject, new Error('cTrader WS closed while queued'))
