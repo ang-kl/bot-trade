@@ -149,7 +149,7 @@ Keep raw ticks outside the operational SQLite database. Use three storage layers
 | Symbol universe | Initial hard maximum 128 feed-symbol keys per process, configurable only with a capacity check |
 | Tick/features working memory | Initial 128MiB total per C++ service, including rings and feature state |
 | Recorder queue | Initial 32MiB, independent of the execution/control channels |
-| Local tick spool | At most 2GiB **per actual recorder mount**, and smaller when free-space reserve requires it |
+| Local tick spool | At most 2GiB **per actual recorder mount**, and smaller when free-space reserve requires it. *GW-CAP (owner, 25-09-2026 22:03 SGT): the cap is `TICK_SPOOL_CAP_BYTES` on each gateway, 2GiB when unset; approved at 20GiB on cpp-exec's 50GB volume and 5GiB on cpp-acct's 10GB volume. See `cpp-exec/README.md`.* |
 | Segment | At most 64MiB; also seal after a short wall-clock interval for recovery/archive latency |
 | Archive uploads | Small bounded concurrency and retry backlog; no per-tick synchronous upload |
 | Replay cache | Separate explicit byte cap; never share unbounded cache with the live process |
@@ -169,6 +169,8 @@ Thus a busy stream can produce more than a 10GB volume in one day. A month of th
 For the operational DB mount, allocate no raw-tick allowance. Introduce byte caps for reports (initially 250MB total) and noncritical diagnostics (initially 150MB), with preservation/archival rules for important evidence. Account, open-position, pending-intent and recovery records are never deleted merely to accommodate tick collection. Existing report count limits are not a byte budget.
 
 For a verified recorder mount, the 2GiB spool includes open and sealed segments, compression output, temporary files, retry objects and quarantine. Require `availableBytes - reservedPendingWrites - nextWriteBytes >= requiredReserve`, where reserve is at least the greater of 2GiB and 20% of the mount, plus maintenance needs if a DB shares it. Coordinate write-byte reservations across writers sharing a mount; also handle external consumption and short writes honestly. Warn at 70% total usage or earlier reserve erosion; stop optional recording before 85% or before the byte reserve is breached, whichever happens first. Cap checks occur before bounded writes, not only on a periodic dashboard poll. Actual filesystem available bytes, including quotas and permissions, are authoritative.
+
+*GW-CAP (25-09-2026), as built:* the reserve's two terms are `TICK_SPOOL_RESERVE_MIN_BYTES` (default 2GiB) and `TICK_SPOOL_RESERVE_PCT` (default 20, at most 90); unset, they are exactly the rule above. Setting them BELOW these defaults is possible and is an operator decision the 85% stop still bounds. The sidecar reports each limit, its source (`default` / `env` / `refused`) and `fitsMount` — whether the cap plus one open segment (up to one queue's worth past 64MiB) keeps the reserve free and the mount under 70% and 85%; a cap that does not fit pauses recording with gaps instead of retiring segments, and the boot log names the largest cap that fits.
 
 If neither named volume can safely host a recorder, use a dedicated recorder service with its own provisioned volume or an explicitly bounded ephemeral spool whose loss is recorded. Do not mount a volume belonging to another service by assumption. Both environment executors need a defined recording destination and independent outage behavior. A third persistent service/volume is an infrastructure change to budget, not a hidden prerequisite that can be wished away.
 
