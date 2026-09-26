@@ -14,6 +14,7 @@ import {
   recordVerdict, positionHistoryView, directionReasonFor, managementFor,
   classifyRefusedRecord, refusedClassesPhrase, REFUSED_CLASSES, POSITION_TRADE_SQL,
 } from './position-history.js'
+import { EVIDENCE_RULES } from './position-lifecycle-evidence.js'
 
 const ACCT = '47790949'
 const PID = '240505687'
@@ -542,8 +543,13 @@ test('B4: a missing broker figure is labelled unrecoverable only by a write-off 
   const off = classifyRefusedRecord(db, { record: { trade_id: tr(true), account_id: ACCT, ctrader_position_id: '1' }, missing: ['net_pnl', 'gross_pnl'] })
   assert.equal(off.class, 'labelled_unrecoverable')
   assert.match(off.reason, /net_pnl: labelled_unrecoverable \(written off 2026-09-02 11:00:30: unresolved: no broker evidence: position deal evidence invalid\)/)
-  const ev = (pos, verdict, final) => db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, read_at) VALUES (?, ?, ?, ?, '2026-09-25T23:00:00Z')`).run(ACCT, pos, verdict, final)
+  const ev = (pos, verdict, final, rules = EVIDENCE_RULES) => db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, rules, read_at) VALUES (?, ?, ?, ?, ?, '2026-09-25T23:00:00Z')`).run(ACCT, pos, verdict, final, rules)
   ev('2', 'never_filled', 1); ev('3', 'unreadable', 0)
+  // B4 checker nit 4 (B2 N3): a final verdict under OLDER rules is due a re-read and labels nothing.
+  ev('5', 'never_filled', 1, EVIDENCE_RULES - 1)
+  const stale = classifyRefusedRecord(db, { record: { trade_id: tr(false), account_id: ACCT, ctrader_position_id: '5' }, missing: ['net_pnl'] })
+  assert.equal(stale.class, 'broker_evidence_pending')
+  assert.match(stale.reason, new RegExp(`broker verdict never_filled \\(final under rules ${EVIDENCE_RULES - 1}, re-read due\\)`))
   assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr(false), account_id: ACCT, ctrader_position_id: '2' }, missing: ['net_pnl'] }).class, 'labelled_unrecoverable')
   assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr(false), account_id: ACCT, ctrader_position_id: '2.0' }, missing: ['net_pnl'] }).class, 'labelled_unrecoverable', 'the ".0" spelling is the same position')
   assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr(false), account_id: ACCT, ctrader_position_id: '3' }, missing: ['net_pnl'] }).class, 'broker_evidence_pending')

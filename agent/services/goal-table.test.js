@@ -558,6 +558,11 @@ test('B4: close_completeness keeps its raw count (17, off track) and names every
   assert.match(g.note, /9 closed exactly flat carry no postmortem — exempt/)
   assert.match(g.note, /2 more unpriced close\(s\) carry no closed_at_ms and are outside this count, not recovered: #8 \(written off\), #353 \(written off\)/)
   assert.deepEqual(g.outsidePopulation.map(o => o.id), [8, 353]); assert.equal(g.outsideTotal, 2)
+  // B4 checker nit 3: each outside close is named with its write-off reason and time.
+  assert.deepEqual(g.outsidePopulation.map(o => [o.writtenOffReason, o.writtenOffAt]), [
+    ['unresolved: no broker evidence: re-read: position 231619053 refused', '2026-09-02 11:00:30'],
+    ['unresolved: no broker evidence: re-read: position 234186932 refused', '2026-09-02 11:00:30'],
+  ])
   assert.equal(g.semantics.id, 'H-P5b-3')
   assert.deepEqual(g.semantics.ifOwnerExcludes, { question: 'H-P5b-3', counted: false, current: 0, verdict: 'on_track' })
   assert.equal(t.summary.proposed, 0, 'no summary count moves: the would-read is not a verdict')
@@ -580,7 +585,8 @@ test('B4: trade_reasons keeps its raw count (254, off track); pre-contract plan 
   const { recordTradePlan } = await import('./trade-plans.js')
   const bot = db.prepare(`INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status, origin, strategy, risk_event_id, account_id)
                           VALUES ('EURUSD', 'BUY', 1.1, 1.095, 1.11, 1000, ?, 'open', 'bot_market_dispatch', 'donchian_breakout', ?, '46130058')`)
-  for (let i = 0; i < 140; i++) bot.run('2026-09-01 10:00:00', 5) // plan_missing, opened before #857
+  const preIds = []
+  for (let i = 0; i < 140; i++) preIds.push(Number(bot.run('2026-09-01 10:00:00', 5).lastInsertRowid)) // plan_missing, opened before #857
   for (let i = 0; i < 7; i++) bot.run('2026-09-20 10:00:00', 5) // plan_missing, opened after #857
   const noRisk = bot.run('2026-09-20 10:00:00', null).lastInsertRowid // risk_event_missing (it has a plan)
   recordTradePlan(db, noRisk, { accountId: '46130058', symbol: 'EURUSD', side: 'BUY', strategy: 'donchian_breakout', entry: 1.1, sl: 1.095, tp: 1.11, now: B4_NOW })
@@ -595,5 +601,19 @@ test('B4: trade_reasons keeps its raw count (254, off track); pre-contract plan 
   assert.match(g.note, /^254 violation\(s\) over 148 trade\(s\): plan_missing 147, adopted_ours_unreasoned 106, risk_event_missing 1 — 140 pre-contract \(plan_missing 140: opened before the plan writer, #857 2026-09-08T07:48:28Z\) · 114 post-contract \(adopted_ours_unreasoned 106, plan_missing 7, risk_event_missing 1\); every one counted until the owner answers H-P5b-3$/)
   assert.equal(g.items.length, 50); assert.equal(g.itemsTotal, 254)
   assert.ok(g.items.every(i => i.contract === 'post_contract'), 'the actionable ones first')
+  // B4 checker nit 2: with 114 post-contract rows no pre-contract row makes the
+  // 50 items — each is still named, by id.
+  assert.deepEqual(g.preContractIds, preIds, 'every pre-contract row named, none missing, none extra')
   assert.deepEqual(g.semantics.ifOwnerExcludes, { question: 'H-P5b-3', counted: false, current: 114, verdict: 'off_track' })
+})
+
+test('B4 fix: an unscored plan on a row opened before #857 is post-contract — the row HAS a plan, and the scorer has no date filter', async () => {
+  const db = initDB(':memory:')
+  const { recordTradePlan } = await import('./trade-plans.js')
+  const id = db.prepare(`INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status, closed_at, close_reason, origin, strategy, risk_event_id, account_id)
+                         VALUES ('EURUSD', 'BUY', 1.1, 1.095, 1.11, 1000, '2026-09-01 10:00:00', 'closed', '2026-09-02 10:00:00', 'tp', 'bot_market_dispatch', 'donchian_breakout', 5, '46130058')`).run().lastInsertRowid
+  recordTradePlan(db, id, { accountId: '46130058', symbol: 'EURUSD', side: 'BUY', strategy: 'donchian_breakout', entry: 1.1, sl: 1.095, tp: 1.11, now: B4_NOW })
+  const g = byId(await goalTable(db, { now: B4_NOW })).trade_reasons
+  assert.deepEqual(g.split.byContractKind, { pre_contract: {}, post_contract: { plan_unscored: 1 } })
+  assert.deepEqual(g.preContractIds, [])
 })

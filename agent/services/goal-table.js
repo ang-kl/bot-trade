@@ -504,6 +504,12 @@ async function reasonsGoal(db, targets, nowMs) {
   const order = ['post_contract', 'pre_contract']
   const items = [...r.violations].sort((a, b) => order.indexOf(a.contract) - order.indexOf(b.contract)).slice(0, GOAL_ITEMS_MAX)
     .map(v => ({ ...(v.tradeId != null ? { tradeId: v.tradeId } : { intentId: v.intentId }), kind: v.kind, contract: v.contract, detail: v.detail }))
+  // B4 checker nit 2: the pre-contract rows are named EACH, not only as a
+  // count — `items` is capped and lists the post-contract rows first, so with
+  // more than 50 of those no pre-contract row would ever appear by id. The
+  // list is uncapped because the set is bounded by date: a pre-contract row
+  // opened before #857, so no trade opened since can join it.
+  const preContractIds = [...new Set(r.violations.filter(v => v.contract === 'pre_contract' && v.tradeId != null).map(v => v.tradeId))].sort((a, b) => a - b)
   return goal('trade_reasons', {
     name: 'Every trade has a reason', subsystem: 'record',
     metric: `bot trades since ${TRADE_REASONS_CUTOFF_ISO} missing origin, strategy, plan, approval id, close reason or a scored plan, plus stale UNKNOWN sends`,
@@ -516,7 +522,7 @@ async function reasonsGoal(db, targets, nowMs) {
     // A PARTITION of `current`: raw = pre_contract + post_contract.
     split: { raw: r.counts.total, pre_contract: bc.pre_contract, post_contract: bc.post_contract, byContractKind: r.counts.byContractKind ?? null, contract: plan },
     semantics: { ...GOAL_SEMANTICS, ifOwnerExcludes: measurable ? ifOwnerExcludes(bc.post_contract, targets.tradeReasonsMax) : null },
-    items, itemsTotal: r.violations.length,
+    items, itemsTotal: r.violations.length, preContractIds,
     source: 'close-completeness findUnreasonedTrades',
   })
 }

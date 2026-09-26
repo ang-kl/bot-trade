@@ -5,7 +5,9 @@ import { initDB } from '../db.js'
 import {
   findIncompleteCloses, runCloseCompletenessSweep, findUnreasonedTrades, TRADE_REASONS_CUTOFF_ISO, UNREASONED_KINDS,
   classifyIncompleteClose, incompleteCloseLine, findUnpricedClosesWithoutCloseStamp, reasonContractClass, CLOSE_CLASSES,
+  buildIncompleteCloseAlert, CLOSE_ALERT_MAX_CHARS, LABELLED_LINE_SUFFIX,
 } from './close-completeness.js'
+import { EVIDENCE_RULES } from './position-lifecycle-evidence.js'
 import { recordTradePlan, scoreClosedPlans } from './trade-plans.js'
 import { closeTradeRow } from '../db.js'
 
@@ -159,9 +161,9 @@ function unpricedClose(db, { account = '46130058', pos, writtenOff = false, reas
                      VALUES ('GBPJPY', 'BUY', 190, '2026-07-19 21:00:00', 'closed', '2026-07-19 21:06:24', ?, ?, ?, ?, ?, ?, ?)`)
     .run(closedAtMs, net, account, pos, writtenOff ? 1 : 0, reason, at).lastInsertRowid
 }
-function verdict(db, { account = '46130058', pos, verdict: v, final }) {
-  db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, reason, read_at) VALUES (?, ?, ?, ?, ?, '2026-09-25T23:00:00.450Z')`)
-    .run(account, pos, v, final ? 1 : 0, `${v} on the complete history`)
+function verdict(db, { account = '46130058', pos, verdict: v, final, rules = EVIDENCE_RULES }) {
+  db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, rules, reason, read_at) VALUES (?, ?, ?, ?, ?, ?, '2026-09-25T23:00:00.450Z')`)
+    .run(account, pos, v, final ? 1 : 0, rules, `${v} on the complete history`)
 }
 
 test('B4: every incomplete close is named by class — written off and final-unpriceable are labelled unrecoverable with the reason, the rest pending — and none is dropped', () => {
@@ -185,7 +187,8 @@ test('B4: every incomplete close is named by class — written off and final-unp
   assert.match(byId[bare].reason, /no broker lifecycle verdict on record/)
   assert.equal(byId[pmOnly].class, 'postmortem_pending')
   assert.deepEqual(Object.keys(CLOSE_CLASSES).sort(), ['broker_evidence_pending', 'labelled_unrecoverable', 'postmortem_pending'])
-  assert.match(incompleteCloseLine(byId[off]), /still no P&L, no postmortem — unrecoverable: written off 2026-09-02 11:00:30/)
+  assert.ok(incompleteCloseLine(byId[off]).endsWith(`still no P&L, no postmortem${LABELLED_LINE_SUFFIX}`), incompleteCloseLine(byId[off]))
+  assert.doesNotMatch(incompleteCloseLine(byId[off]), /written off|unresolved/, 'the reason is served on the goal table, not the Telegram line')
   assert.doesNotMatch(incompleteCloseLine(byId[bare]), /unrecoverable/)
 })
 
@@ -207,13 +210,116 @@ test('B4: an unpriced close with no closed_at_ms is outside the goal population 
   assert.deepEqual(findUnpricedClosesWithoutCloseStamp(db).map(r => [r.id, r.writtenOff]), [[outside, true]])
 })
 
-test('B4: reasonContractClass — the plan kinds split at the exact #857 second; nothing else is excused by a date', () => {
-  for (const kind of ['plan_missing', 'plan_unscored']) {
-    assert.equal(reasonContractClass(kind, '2026-09-08 07:48:27'), 'pre_contract', kind)
-    assert.equal(reasonContractClass(kind, '2026-09-08T07:48:27.999Z'), 'pre_contract', `${kind} iso`)
-    assert.equal(reasonContractClass(kind, '2026-09-08 07:48:28'), 'post_contract', `${kind} at the boundary`)
-    assert.equal(reasonContractClass(kind, '2026-09-08T15:48:27+08:00'), 'pre_contract', `${kind} with a zone`)
-    assert.equal(reasonContractClass(kind, null), 'post_contract', 'an unknown open time is never excused')
+test('B4 fix: an outside close is named WITH its write-off reason and time; a row never written off carries null, not a made-up reason', () => {
+  const db = initDB(':memory:')
+  const off = unpricedClose(db, { pos: '231619053', writtenOff: true, reason: 'unresolved: no broker evidence: re-read refused', at: '2026-09-02 11:00:30', closedAtMs: null })
+  const bare = unpricedClose(db, { pos: '234186932', closedAtMs: null })
+  const byId = Object.fromEntries(findUnpricedClosesWithoutCloseStamp(db).map(r => [r.id, r]))
+  assert.equal(byId[off].writtenOffReason, 'unresolved: no broker evidence: re-read refused')
+  assert.equal(byId[off].writtenOffAt, '2026-09-02 11:00:30')
+  assert.equal(byId[bare].writtenOff, false)
+  assert.equal(byId[bare].writtenOffReason, null)
+  assert.equal(byId[bare].writtenOffAt, null)
+})
+
+test('B4 fix: a final verdict stored under OLDER evidence rules labels nothing — it is due a re-read, and the reason says so (B2 N3)', () => {
+  const db = initDB(':memory:')
+  const stale = unpricedClose(db, { pos: '234843601' }); verdict(db, { pos: '234843601', verdict: 'never_filled', final: true, rules: EVIDENCE_RULES - 1 })
+  const current = unpricedClose(db, { pos: '234843602' }); verdict(db, { pos: '234843602', verdict: 'never_filled', final: true })
+  const byId = Object.fromEntries(findIncompleteCloses(db, { now: NOW }).map(r => [r.id, r]))
+  assert.equal(byId[stale].class, 'broker_evidence_pending')
+  assert.equal(byId[stale].evidence.final, false)
+  assert.ok(byId[stale].reason.includes(`broker verdict never_filled (final under rules ${EVIDENCE_RULES - 1}, not the current ${EVIDENCE_RULES} — re-read due)`), byId[stale].reason)
+  assert.equal(byId[current].class, 'labelled_unrecoverable', 'the same verdict under the current rules still labels')
+})
+
+// ---------------------------------------------------------------------------
+// B4 fix round, checker blocker 1: the Telegram alert stays under the
+// 4,096-character limit. Production 26-09: 19 write-off reasons of 411–562
+// characters took the branch's alert to 4,188 characters; Telegram REJECTS
+// such a message and the sweep's catch swallowed it — an alert delivered on
+// main that would have stopped arriving with no error.
+// ---------------------------------------------------------------------------
+const LONG_REASON = `unresolved: no broker evidence: ${'position deal evidence invalid; re-read refused by the host; '.repeat(9)}`.slice(0, 560)
+
+function twentyLabelled(db) {
+  for (let i = 0; i < 20; i++) {
+    const pos = String(234843500 + i)
+    unpricedClose(db, { pos, writtenOff: true, reason: LONG_REASON, at: '2026-09-02 11:00:30' })
+    verdict(db, { pos, verdict: 'never_filled', final: true })
+  }
+}
+
+test('B4 fix: 20 labelled closes with 560-character reasons build an alert under the budget, every row listed, no reason text in it', () => {
+  const db = initDB(':memory:')
+  twentyLabelled(db)
+  const stuck = findIncompleteCloses(db, { now: NOW })
+  assert.equal(stuck.length, 20)
+  assert.equal(LONG_REASON.length, 560)
+  // The class reason slices the write-off text at 240 and adds the verdict:
+  // ~380 characters here, well past the 160 the branch's line carried.
+  assert.ok(stuck.every(r => r.class === 'labelled_unrecoverable' && r.reason.length > 300), 'the fixture carries the long reasons')
+  const text = buildIncompleteCloseAlert(stuck)
+  assert.ok(text.length <= CLOSE_ALERT_MAX_CHARS, `alert is ${text.length} characters`)
+  assert.equal(text.split('\n').length, 21, 'the header and all 20 rows')
+  assert.doesNotMatch(text, /position deal evidence invalid|never_filled/, 'no reason text — and no stray Markdown underscore from one')
+  assert.equal(text.split(LABELLED_LINE_SUFFIX).length - 1, 20)
+})
+
+test('B4 fix: the alert budget binds — listed rows plus "+N more." always equal the stuck count, and the text never passes maxChars', () => {
+  const row = (i, symbol = 'GBPJPY') => ({ id: i, symbol, side: 'BUY', ageHours: 72, missingPnl: true, missingPostmortem: true, class: 'broker_evidence_pending' })
+  const few = buildIncompleteCloseAlert(Array.from({ length: 25 }, (_, i) => row(i + 1)))
+  assert.equal(few.split('\n').length, 22, 'header + 20 rows + the tail')
+  assert.match(few, /\n\+5 more\.$/)
+  const wide = Array.from({ length: 20 }, (_, i) => row(i + 1, 'X'.repeat(400)))
+  const text = buildIncompleteCloseAlert(wide, { maxChars: 2000 })
+  assert.ok(text.length <= 2000, `${text.length}`)
+  const listed = text.split('\n').filter(l => l.startsWith('#')).length
+  const more = Number(text.match(/\+(\d+) more\.$/)?.[1])
+  assert.ok(listed > 0 && listed < 20, `${listed} listed`)
+  assert.equal(listed + more, 20)
+  assert.equal(buildIncompleteCloseAlert([]), null)
+  // Byte-for-byte main's message when nothing is labelled and the budget does not bind.
+  assert.equal(buildIncompleteCloseAlert([row(7)]), '⚠️ 1 closed trade(s) never finished processing:\n#7 GBPJPY BUY — closed 72h ago, still no P&L, no postmortem')
+})
+
+test('B4 fix: runCloseCompletenessSweep DELIVERS the 20-labelled alert through a Telegram that rejects anything over 4,096 characters', async () => {
+  const db = initDB(':memory:')
+  twentyLabelled(db)
+  const saved = { token: process.env.TELEGRAM_BOT_TOKEN, chat: process.env.TELEGRAM_OWNER_CHAT_ID, fetch: globalThis.fetch }
+  const sent = []
+  process.env.TELEGRAM_BOT_TOKEN = 'test-token'
+  process.env.TELEGRAM_OWNER_CHAT_ID = '1'
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const ok = String(body.text).length <= 4096
+    sent.push({ len: String(body.text).length, ok })
+    return { json: async () => (ok ? { ok: true, result: { message_id: 1 } } : { ok: false, description: 'Bad Request: message is too long' }) }
+  }
+  try {
+    const res = await runCloseCompletenessSweep(db, { now: NOW })
+    assert.equal(res.flagged, 20)
+  } finally {
+    globalThis.fetch = saved.fetch
+    if (saved.token === undefined) delete process.env.TELEGRAM_BOT_TOKEN; else process.env.TELEGRAM_BOT_TOKEN = saved.token
+    if (saved.chat === undefined) delete process.env.TELEGRAM_OWNER_CHAT_ID; else process.env.TELEGRAM_OWNER_CHAT_ID = saved.chat
+  }
+  assert.equal(sent.length, 1, 'one send reached Telegram')
+  assert.equal(sent[0].ok, true, `Telegram accepted it (${sent[0].len} characters, footer included)`)
+})
+
+test('B4: reasonContractClass — plan_missing splits at the exact #857 second; nothing else is excused by a date', () => {
+  const kind = 'plan_missing'
+  assert.equal(reasonContractClass(kind, '2026-09-08 07:48:27'), 'pre_contract', kind)
+  assert.equal(reasonContractClass(kind, '2026-09-08T07:48:27.999Z'), 'pre_contract', `${kind} iso`)
+  assert.equal(reasonContractClass(kind, '2026-09-08 07:48:28'), 'post_contract', `${kind} at the boundary`)
+  assert.equal(reasonContractClass(kind, '2026-09-08T15:48:27+08:00'), 'pre_contract', `${kind} with a zone`)
+  assert.equal(reasonContractClass(kind, null), 'post_contract', 'an unknown open time is never excused')
+  // B4 checker nit 1: an unscored plan EXISTS, and scoreClosedPlans scores
+  // every closed trade with one regardless of date — a live scorer gap, never
+  // excused by the open date.
+  for (const at of ['2026-08-20 00:00:00', '2026-09-08 07:48:27', '2026-09-20 00:00:00', null]) {
+    assert.equal(reasonContractClass('plan_unscored', at), 'post_contract', `plan_unscored opened ${at}`)
   }
   assert.equal(reasonContractClass('adopted_ours_unreasoned', '2026-08-20 00:00:00', ['plan']), 'pre_contract', 'adopted, and only the plan is missing')
   assert.equal(reasonContractClass('adopted_ours_unreasoned', '2026-08-20 00:00:00', ['strategy', 'plan', 'approval id']), 'post_contract')

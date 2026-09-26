@@ -27,6 +27,7 @@ import { isOurs } from '../lib/trade-labels.js'
 import { normPosId } from '../lib/pos-id.js'
 import { UNPRICEABLE_VERDICTS, planContractClass, utcMs } from '../lib/record-contracts.js'
 import { UNKNOWN_MAX_AGE_MS } from './entry-ledger.js'
+import { EVIDENCE_RULES } from './position-lifecycle-evidence.js'
 
 const HOUR_MS = 3_600_000
 
@@ -52,15 +53,19 @@ export const UNREASONED_KINDS = Object.freeze([
 /**
  * V3 B4 (P5b-3): the one violation that a DATE can explain. The plan writer
  * (plan-at-entry, #857) began after the trade_reasons cutoff, so a row
- * opened between the two could not carry a plan or a scored plan: its
- * plan_missing / plan_unscored — and an adopted row whose ONLY missing piece
- * is the plan — is `pre_contract`. Every other kind is `post_contract`: its
- * writer existed when the row was opened (the cutoff IS the origin column's
- * first write), so the gap is the codebase's. The class is shown BESIDE the
- * raw count, never subtracted from it, until the owner answers H-P5b-3.
+ * opened between the two could not carry a plan: its plan_missing — and an
+ * adopted row whose ONLY missing piece is the plan — is `pre_contract`.
+ * Every other kind is `post_contract`: its writer existed when the row was
+ * opened (the cutoff IS the origin column's first write), so the gap is the
+ * codebase's. That includes plan_unscored: the row HAS a plan, and
+ * scoreClosedPlans (trade-plans.js) scores every closed trade with an
+ * unscored plan with no date filter, so an unscored plan is a live scorer
+ * gap whatever the open date (principle 3; B4 checker nit 1). The class is
+ * shown BESIDE the raw count, never subtracted from it, until the owner
+ * answers H-P5b-3.
  */
 export function reasonContractClass(kind, openedAt, missing = null) {
-  const planOnly = kind === 'plan_missing' || kind === 'plan_unscored' ||
+  const planOnly = kind === 'plan_missing' ||
     (kind === 'adopted_ours_unreasoned' && Array.isArray(missing) && missing.length === 1 && missing[0] === 'plan')
   if (!planOnly) return 'post_contract'
   return planContractClass(utcMs(openedAt)) === 'pre_contract' ? 'pre_contract' : 'post_contract'
@@ -175,20 +180,29 @@ export const CLOSE_CLASSES = Object.freeze({
   postmortem_pending: 'P&L on record; the postmortem sweep has not classified it',
 })
 
-/** The latest broker lifecycle verdict for a position on an account (V3 B2), or null. */
+/**
+ * The latest broker lifecycle verdict for a position on an account (V3 B2),
+ * or null. `final` is B2's own rule (position-lifecycle-evidence.js, N3): a
+ * stored final verdict is final only under the CURRENT EVIDENCE_RULES — one
+ * judged under older rules is due a re-read and labels nothing (B4 checker
+ * nit 4); `staleRules` says so in the reason instead of hiding it.
+ */
 function lifecycleEvidence(db, accountId, positionId) {
   const pid = normPosId(positionId)
   if (accountId == null || pid == null) return null
   try {
-    const e = db.prepare(`SELECT verdict, final, reason, read_at FROM position_lifecycle_evidence WHERE account_id = ? AND position_id = ?`).get(String(accountId), pid)
-    return e ? { verdict: e.verdict, final: Number(e.final) === 1, reason: e.reason ?? null, readAt: e.read_at ?? null } : null
+    const e = db.prepare(`SELECT verdict, final, rules, reason, read_at FROM position_lifecycle_evidence WHERE account_id = ? AND position_id = ?`).get(String(accountId), pid)
+    if (!e) return null
+    const storedFinal = Number(e.final) === 1, current = Number(e.rules) === EVIDENCE_RULES
+    return { verdict: e.verdict, final: storedFinal && current, staleRules: storedFinal && !current ? Number(e.rules) : null, reason: e.reason ?? null, readAt: e.read_at ?? null }
   } catch { return null } // the evidence table is optional to this reader — its absence labels nothing
 }
 
 /** PURE: the class and the stated reason for one incomplete close. */
 export function classifyIncompleteClose({ missingPnl, writtenOff, writtenOffReason, writtenOffAt, evidence }) {
   const unpriceable = evidence && evidence.final && UNPRICEABLE_VERDICTS.includes(evidence.verdict)
-  const verdictPart = evidence ? `broker verdict ${evidence.verdict}${evidence.final ? ' (final)' : ''}${evidence.readAt ? ` read ${evidence.readAt}` : ''}${evidence.reason ? `: ${String(evidence.reason).slice(0, 160)}` : ''}` : null
+  const finality = !evidence ? '' : evidence.final ? ' (final)' : evidence.staleRules != null ? ` (final under rules ${evidence.staleRules}, not the current ${EVIDENCE_RULES} — re-read due)` : ''
+  const verdictPart = evidence ? `broker verdict ${evidence.verdict}${finality}${evidence.readAt ? ` read ${evidence.readAt}` : ''}${evidence.reason ? `: ${String(evidence.reason).slice(0, 160)}` : ''}` : null
   if (!missingPnl) return { class: 'postmortem_pending', reason: 'P&L on record; no postmortem yet' }
   if (writtenOff) {
     return {
@@ -248,22 +262,69 @@ export function findIncompleteCloses(db, { windowHours = 48, now = Date.now() } 
  * population because they carry no closed_at_ms (history from before that
  * column converged). They are not recovered and not counted as recovered:
  * the goal names them beside its count so the count reconciles with
- * /state/unknown-pnl. null when the read fails.
+ * /state/unknown-pnl. A written-off row carries its write-off reason and
+ * time (B4 checker nit 3); null on a row that was never written off. null
+ * when the read fails.
  */
 export function findUnpricedClosesWithoutCloseStamp(db) {
   try {
     return db.prepare(`
-      SELECT id, symbol, account_id, closed_at, COALESCE(pnl_unresolvable, 0) AS written_off
+      SELECT id, symbol, account_id, closed_at, COALESCE(pnl_unresolvable, 0) AS written_off, pnl_unresolvable_reason, pnl_unresolvable_at
         FROM trades WHERE status = 'closed' AND closed_at_ms IS NULL AND net_pnl IS NULL ORDER BY id
-    `).all().map(r => ({ id: r.id, symbol: r.symbol, accountId: r.account_id == null ? null : String(r.account_id), closedAt: r.closed_at ?? null, writtenOff: Number(r.written_off) === 1 }))
+    `).all().map(r => ({
+      id: r.id, symbol: r.symbol, accountId: r.account_id == null ? null : String(r.account_id), closedAt: r.closed_at ?? null,
+      writtenOff: Number(r.written_off) === 1, writtenOffReason: r.pnl_unresolvable_reason ?? null, writtenOffAt: r.pnl_unresolvable_at ?? null,
+    }))
   } catch { return null }
 }
 
-/** One line per incomplete close: what is missing and, for a labelled row, why it cannot come. */
+/** The labelled row's fixed tail on the Telegram line — its reason is on the goal table. */
+export const LABELLED_LINE_SUFFIX = ' — labelled unrecoverable (reason on /state/goal-table)'
+
+/**
+ * One line per incomplete close: what is missing and, for a labelled row,
+ * THAT it cannot come — not why. The reason is 400–560 characters in
+ * production (the write-off text plus the broker verdict); twenty of them
+ * took the Telegram alert past its 4,096-character limit, which Telegram
+ * REJECTS rather than truncates, and the sweep swallows the rejection — an
+ * alert that stops arriving with no error (B4 checker blocker 1, failure
+ * mode #3). The line points at where the reason is served instead.
+ */
 export function incompleteCloseLine(t) {
   const gap = [t.missingPnl && 'no P&L', t.missingPostmortem && 'no postmortem'].filter(Boolean).join(', ')
-  const why = t.class === 'labelled_unrecoverable' ? ` — unrecoverable: ${String(t.reason ?? '').slice(0, 160)}` : ''
+  const why = t.class === 'labelled_unrecoverable' ? LABELLED_LINE_SUFFIX : ''
   return `#${t.id} ${t.symbol} ${t.side} — closed ${t.ageHours}h ago, still ${gap}${why}`
+}
+
+/**
+ * The alert's character budget. Telegram rejects a message over 4,096
+ * characters (telegram-digest.js TG_TEXT_MAX) and sendMessageRaw appends the
+ * version footer AFTER this text, so the budget leaves the same margin the
+ * daily report does (DAILY_REPORT_MAX_CHARS).
+ */
+export const CLOSE_ALERT_MAX_CHARS = 3_800
+const MORE_TAIL_ROOM = 24 // '\n+N more.' for any N this table can hold
+
+/**
+ * PURE: the "never finished processing" alert. At most `maxLines` rows are
+ * listed and never past `maxChars`; every row not listed is counted in
+ * "+N more.", so listed + more = the whole stuck count. null when nothing is
+ * stuck.
+ */
+export function buildIncompleteCloseAlert(stuck, { maxChars = CLOSE_ALERT_MAX_CHARS, maxLines = 20 } = {}) {
+  if (!Array.isArray(stuck) || stuck.length === 0) return null
+  const head = `⚠️ ${stuck.length} closed trade(s) never finished processing:`
+  const lines = []
+  let len = head.length
+  for (const t of stuck.slice(0, maxLines)) {
+    const line = incompleteCloseLine(t)
+    if (len + 1 + line.length + MORE_TAIL_ROOM > maxChars) break
+    lines.push(line)
+    len += 1 + line.length
+  }
+  const rest = stuck.length - lines.length
+  const text = [head, ...lines, rest > 0 && `+${rest} more.`].filter(Boolean).join('\n')
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text
 }
 
 /**
@@ -279,11 +340,9 @@ export async function runCloseCompletenessSweep(db, opts = {}) {
   const stuck = findIncompleteCloses(db, opts)
   if (stuck.length === 0 || !process.env.TELEGRAM_BOT_TOKEN) return { flagged: stuck.length }
 
-  const lines = stuck.slice(0, 20).map(incompleteCloseLine)
-  const extra = stuck.length > 20 ? `\n+${stuck.length - 20} more.` : ''
   try {
     const { sendMessage } = await import('./telegram.js')
-    await sendMessage(`⚠️ ${stuck.length} closed trade(s) never finished processing:\n${lines.join('\n')}${extra}`)
+    await sendMessage(buildIncompleteCloseAlert(stuck))
   } catch { /* alert best-effort — the sweep itself already ran */ }
   return { flagged: stuck.length }
 }

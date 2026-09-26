@@ -42,6 +42,7 @@ import { isOurs } from '../lib/trade-labels.js'
 import {
   RECORD_CONTRACTS, PLAN_FIELDS, BROKER_FIELDS, UNPRICEABLE_VERDICTS, GOAL_SEMANTICS, planContractClass, directionReasonContractClass, utcMs,
 } from '../lib/record-contracts.js'
+import { EVIDENCE_RULES } from './position-lifecycle-evidence.js'
 
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null
@@ -429,9 +430,14 @@ export function classifyRefusedRecord(db, { record = {}, missing = [] } = {}) {
   const writtenOff = Number(trade?.written_off) === 1
   const needsBroker = missing.some(f => BROKER_FIELDS.includes(f))
   const ev = needsBroker && !writtenOff && record.account_id != null && record.ctrader_position_id != null
-    ? get('SELECT verdict, final, read_at FROM position_lifecycle_evidence WHERE account_id = ? AND position_id = ?', String(record.account_id), normPosId(record.ctrader_position_id))
+    ? get('SELECT verdict, final, rules, read_at FROM position_lifecycle_evidence WHERE account_id = ? AND position_id = ?', String(record.account_id), normPosId(record.ctrader_position_id))
     : null
-  const unpriceable = ev && Number(ev.final) === 1 && UNPRICEABLE_VERDICTS.includes(ev.verdict)
+  // B2's finality (N3): a stored final verdict is final only under the
+  // CURRENT rules; one judged under older rules is due a re-read and labels
+  // nothing (B4 checker nit 4).
+  const evFinal = ev != null && Number(ev.final) === 1 && Number(ev.rules) === EVIDENCE_RULES
+  const evStale = ev != null && Number(ev.final) === 1 && !evFinal
+  const unpriceable = evFinal && UNPRICEABLE_VERDICTS.includes(ev.verdict)
   const dr = RECORD_CONTRACTS.direction_reason, plan = RECORD_CONTRACTS.plan
   const entered = entryMs == null ? 'entry time unknown' : `entered ${isoOf(entryMs)} (${entrySource})`
 
@@ -441,7 +447,7 @@ export function classifyRefusedRecord(db, { record = {}, missing = [] } = {}) {
     if (BROKER_FIELDS.includes(f)) {
       if (writtenOff) put(f, 'labelled_unrecoverable', `written off${trade?.pnl_unresolvable_at ? ` ${trade.pnl_unresolvable_at}` : ''}: ${String(trade?.pnl_unresolvable_reason ?? '(no reason recorded)').slice(0, 120)}`)
       else if (unpriceable) put(f, 'labelled_unrecoverable', `broker verdict ${ev.verdict} (final, read ${ev.read_at ?? '?'})`)
-      else put(f, 'broker_evidence_pending', ev ? `broker verdict ${ev.verdict}${Number(ev.final) === 1 ? ' (final)' : ''}` : 'no broker figure yet')
+      else put(f, 'broker_evidence_pending', ev ? `broker verdict ${ev.verdict}${evFinal ? ' (final)' : evStale ? ` (final under rules ${ev.rules}, re-read due)` : ''}` : 'no broker figure yet')
       continue
     }
     if (BOT_SIDE_FIELDS.has(f) && external) { put(f, 'outside_bot', `origin ${origin ?? '?'}${origin === 'reconciler_adopted' ? ' without our label' : ''}`); continue }
