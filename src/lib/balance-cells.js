@@ -58,7 +58,7 @@ const dealUnread = ids => Array.isArray(ids) && ids.length
 // text (as floatingText marks "USD 1/2 read"), so it reaches the carry cell,
 // the phone card and copy-as-text, not only the tooltip and the footnote.
 // Words, not colour: the owner is red/green colourblind.
-const dealUnreadMark = g => Array.isArray(g.dealBalanceUnreadAccounts) && g.dealBalanceUnreadAccounts.length ? ' · deals unread' : ''
+const dealUnreadMark = g => Array.isArray(g.dealBalanceUnreadAccounts) && g.dealBalanceUnreadAccounts.length ? ' (deals unread)' : ''
 
 function validGroupSet(set) {
   return !!set && Array.isArray(set.groups) && set.groups.every(g => g && ccyOk(g.currency)

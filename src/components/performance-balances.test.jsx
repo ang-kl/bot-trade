@@ -128,8 +128,8 @@ describe('timeframe ledger: deal-proven carries and a failed deal read', () => {
     expect(row).toContain('Deal balances unread for account 11')
     // V3 WEB-8b: marked ON SCREEN in the carry cell and on the phone card,
     // not only in the tooltip (WEB-3m's N4 precedent). Words, not colour.
-    expect(text(row)).toContain('not stored before 22-09 17:26 UTC · deals unread')
-    expect(text(renderToStaticMarkup(<MobileWindowCard w={w} timeZone="UTC" />))).toContain('not stored before 22-09 17:26 UTC · deals unread → ')
+    expect(text(row)).toContain('not stored before 22-09 17:26 UTC (deals unread)')
+    expect(text(renderToStaticMarkup(<MobileWindowCard w={w} timeZone="UTC" />))).toContain('not stored before 22-09 17:26 UTC (deals unread) → ')
     const body = text(renderToStaticMarkup(<LedgerBody variant="card" windows={[w]} ledger={{ windows: [w] }} nowMs={NOW} timeZone="UTC" />))
     expect(body).toContain('Deal balances unread: the broker balances stored on deals and cashflows could not be read for this report (account 11)')
     // Deals read: no such sentence.
@@ -173,7 +173,7 @@ describe('timeframe ledger: the phone note and copy-as-text state a failed deal 
   it('copy-as-text carries the on-screen mark on the carry and the note as its last line; neither when the deals were read', () => {
     const out = ledgerToText([failed]).split('\n')
     expect(out[0]).toBe('Timeframe ledger')
-    expect(out[1]).toMatch(/^30D · carry not stored before 22-09 17:26 UTC · deals unread → 1,029\.00 · /)
+    expect(out[1]).toMatch(/^30D · carry not stored before 22-09 17:26 UTC \(deals unread\) → 1,029\.00 · /)
     expect(out).toHaveLength(3)
     expect(out[2]).toContain(`${NOTE} for this report (account 11)`)
     const clean = ledgerToText([read])

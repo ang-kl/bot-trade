@@ -134,7 +134,7 @@ describe('a failed read of the stored deal balances is stated, not hidden', () =
   it('the carry cell\'s title names the account whose deal balances were not read', () => {
     const [line] = balanceLines(win(failedEdges, '30d').carry.in)
     // V3 WEB-8b: the failed read is marked on screen too, not only in the title.
-    expect(line.text).toBe('not stored before 22-09 17:26 UTC · deals unread')
+    expect(line.text).toBe('not stored before 22-09 17:26 UTC (deals unread)')
     expect(line.title).toContain('Deal balances unread for account 11: the broker balances stored on deals and cashflows could not be read, so this edge was not checked against them.')
     // An edge the reads answered was not a fallback: nothing to say there.
     expect(balanceLines(win(failedEdges, '1h').carry.in)[0].title).not.toContain('Deal balances unread')
@@ -158,7 +158,7 @@ describe('a failed read of the stored deal balances is stated, not hidden', () =
   // copy-as-text all carry it. Words, not colour.
   it('the missing line\'s on-screen text says "deals unread"; a gap whose deals were read does not', () => {
     const failedIn = win(failedEdges, '30d')
-    expect(carryText(failedIn, 'in')).toBe('not stored before 22-09 17:26 UTC · deals unread')
+    expect(carryText(failedIn, 'in')).toBe('not stored before 22-09 17:26 UTC (deals unread)')
     // The observed side of the same window has nothing to mark.
     expect(carryText(failedIn, 'out')).toBe('1020.00')
     // The same gap with the deals read: the reads' own label and nothing more.
@@ -180,8 +180,8 @@ describe('a failed read of the stored deal balances is stated, not hidden', () =
     const ccy = id => ({ 11: 'USD', 22: 'USD', 33: 'SGD' })[id]
     const w = { key: '30d', ...ledgerCarry(edges, '30d', 'all', ccy) }
     const lines = balanceLines(w.carry.in)
-    expect(lines.map(l => l.text)).toEqual(['SGD not stored before 22-09 17:26 UTC', 'USD not stored before 22-09 17:26 UTC (1/2 accounts read) · deals unread'])
-    expect(carryText(w, 'in')).toBe('SGD not stored before 22-09 17:26 UTC · USD not stored before 22-09 17:26 UTC (1/2 accounts read) · deals unread')
+    expect(lines.map(l => l.text)).toEqual(['SGD not stored before 22-09 17:26 UTC', 'USD not stored before 22-09 17:26 UTC (1/2 accounts read) (deals unread)'])
+    expect(carryText(w, 'in')).toBe('SGD not stored before 22-09 17:26 UTC · USD not stored before 22-09 17:26 UTC (1/2 accounts read) (deals unread)')
     // No partial USD sum appears beside the mark.
     expect(carryText(w, 'in')).not.toContain('500')
   })
