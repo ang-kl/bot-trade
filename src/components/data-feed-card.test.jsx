@@ -52,7 +52,10 @@ describe('Data-feed card', () => {
   })
   it('shows the stop the engine enforces, why it binds and what is left today — from the one reading', () => {
     const html = renderToStaticMarkup(<DataFeed feedReport={report} dailyStop={dailyStopView(TIER)} />)
-    expect(html).toContain('daily stop −1,200 USD (FX day)</span> · % cap $1200.17 — the $300.00 flat cap is out of force while the balance tier rule is on · 1,200 USD left today')
+    // F3 (WEB-9 checker nit): "left today" is worded as the realised-only
+    // figure it is — never read as agreeing with the account card's
+    // "loss-cap used", which counts floating too.
+    expect(html).toContain('daily stop −1,200 USD (FX day)</span> · % cap $1200.17 — the $300.00 flat cap is out of force while the balance tier rule is on · 1,200 USD left today on realised P&amp;L (floating not counted)')
     expect(html).not.toContain('3%/day')
     expect(html).not.toContain('H-P2-4')
   })

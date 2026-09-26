@@ -134,10 +134,16 @@ describe('feedDailyStopView', () => {
 })
 
 describe('dailyStopDetail — the Data-feed line after the stop', () => {
-  const USD = { ...TIER, remainingUsd: 1079.67, unitsComparable: true, engineBlock: null }
-  it('the engine\'s reason and what is left today, in the cap\'s currency', () => {
+  // F3 (WEB-9 checker nit): remainingUsd is the REALISED-only remainder
+  // (cap 1200.17 − TIER.lossCapUsed.realisedLoss 70 = 1130.17) — distinct
+  // from TIER.lossCapUsed.consumed (120.5, realised + floating), so this
+  // fixture actually exercises "left today" disagreeing with "loss-cap
+  // used" instead of coincidentally matching it (the previous 1079.67
+  // fixture equalled cap − consumed, which hid exactly this distinction).
+  const USD = { ...TIER, remainingUsd: 1130.17, unitsComparable: true, engineBlock: null }
+  it('the engine\'s reason and what is left today, on realised P&L only, in the cap\'s currency', () => {
     expect(dailyStopDetail(dailyStopView(USD), money)).toEqual({
-      text: ` · ${TIER.explain} · 1,080 USD left today`, note: null,
+      text: ` · ${TIER.explain} · 1,130 USD left today on realised P&L (floating not counted)`, note: null,
     })
   })
   it('a non-USD account: no mixed-unit remainder, and the reading\'s own units note', () => {

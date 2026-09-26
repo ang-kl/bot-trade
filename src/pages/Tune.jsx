@@ -44,6 +44,10 @@ import AccountScopePills from '../components/common/AccountScopePills.jsx'
 import Segmented from '../components/common/Segmented.jsx'
 import Collapse from '../components/common/Collapse.jsx'
 import { accountNumbers } from "../lib/scope-label.js"
+// UI-6 (26-09 UI plan §2 RS-1, "Exit counterfactual ... Move to Tune" — exit
+// research belongs with the rest of Tune's research, not on Reasons).
+// Self-fetching, so Tune's own load() carries nothing new for it.
+import { ExitCounterfactualSection } from './Reasons.jsx'
 import { cellNote } from '../lib/stage-matrix-view.js'
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
@@ -2362,6 +2366,14 @@ export default function Tune() {
               <WorkedExample label="Worked example"
                 lines={keeperExample(keeper || {}, { balance: Number(risk?.derived?.balance) || null })} />
             </div>
+            </Card>
+
+            {/* UI-6 (26-09 UI plan §2 RS-1, "Exit counterfactual ... Move to
+                Tune"): what a different exit rule would have returned on
+                the same trades — exit research, alongside Pipeline's other
+                research/worked-example cards, not on Reasons. */}
+            <Card className="p-3" kind="reasons">
+              <ExitCounterfactualSection />
             </Card>
           </div>
         )}

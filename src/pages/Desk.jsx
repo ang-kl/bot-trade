@@ -46,6 +46,9 @@ import { useSort } from '../lib/use-sort.jsx'
 import { STRAT_SHORT, strategyLabel } from '../lib/strategy-labels.js'
 import Skeleton from '../components/common/Skeleton.jsx'
 import Collapse from '../components/common/Collapse.jsx'
+// UI-6 (26-09 UI plan §2 RS-1, "Phase audit ... Move to Desk"): self-fetching,
+// so Desk's own load() carries nothing new for it.
+import { PhaseAuditSection } from './Reasons.jsx'
 
 const REFRESH_MS = 20_000
 const ACTIVE_REFRESH_MS = 5_000 // faster poll while a position/order is live — owner: "run in every 1/2 second and not in 5 minutes" (½s risks broker rate limits for no real edge on a 5m+ strategy; 5s keeps the page feeling live)
@@ -1367,6 +1370,16 @@ export default function Desk() {
       {/* Performance moved to its own page (owner: "move the performance
           in the desk to a page by its own") — /performance now leads the
           nav with the full timeframe × market × account ledger. */}
+
+      {/* UI-6 (26-09 UI plan §2 RS-1, "Phase audit ... Move to Desk" — the
+          viewed account's phase switches against what the loop actually
+          did belong with the rest of this workspace's live state, not on
+          Reasons. Self-fetching (Reasons.jsx's PhaseAuditSection): Desk's
+          own load() needs no new endpoint, and the block keeps its own
+          401/500/scope state exactly as every other Reasons block does. */}
+      <Section id="phase-audit" title="Phase audit">
+        <PhaseAuditSection />
+      </Section>
     </div>
   )
 }
