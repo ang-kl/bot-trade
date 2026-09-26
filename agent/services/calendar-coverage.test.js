@@ -242,6 +242,92 @@ test('an identity beyond the export bound keeps its own calendar, in the verifie
   assert.equal(verifierMarket(resolveLikeVerifier(out, w), now), 'OPEN')
 })
 
+// ---- V3 K1c: which part of the export was cut ----
+test('K1c: every demanded calendar exported and the retained tail cut — calendarsComplete stays false, the cut is shown on retained, and a cpp-scan-tick row needs that part', t => {
+  const db = database(t, ['46130058'])
+  // Demand: ten subscribed ids on the demo gateway. Retained: 300 more of the
+  // same feed account's calendars (a universe refresh, or ids the gateway no
+  // longer feeds), enough to pass the 96 KiB bound.
+  const feedIds = Array.from({ length: 10 }, (_, i) => String(90_000 + i))
+  const retainedIds = Array.from({ length: 300 }, (_, i) => String(10_000 + i))
+  for (const [i, symbolId] of [...feedIds, ...retainedIds].entries()) {
+    recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId }, { symbolId: Number(symbolId), ...SHAPES[i % 9], holiday: ecHoliday(i) }, { nowMs: now - 1000 })
+  }
+  feedHealth(db, 'cpp_exec_demo', '46130058', feedIds)
+  const out = nodeWatchdogContract(db, { now })
+  assert.equal(out.demandComplete, true)
+  assert.deepEqual(out.calendarExport.demanded, { total: 10, exported: 10, withCalendar: 10, cut: 0 }, 'every demanded calendar is exported')
+  const r = out.calendarExport.retained
+  assert.equal(r.total, 300, 'RED if a demanded row is counted as retained, or a retained one is missed')
+  assert.ok(r.exported > 0 && r.cut > 0, `retained ${r.exported} exported, ${r.cut} cut`)
+  assert.equal(r.exported + r.cut, 300)
+  assert.equal(r.withCalendar, r.exported)
+  assert.deepEqual([r.totalIsLowerBound, r.malformed], [false, 0])
+  assert.equal(out.calendars.length, 10 + r.exported)
+  assert.deepEqual(out.calendars.slice(0, 10).map(c => c.identity.symbolId), feedIds, 'the demand leads the export')
+  assert.equal(out.exportComplete, false)
+  assert.equal(out.calendarsComplete, false, 'the verdict still counts the retained tail')
+  // Why it must: cpp-scan-tick's row for a stream carries no calendar of its
+  // own (the mirror batch has none), so cpp-verify reads only the export.
+  const tickRow = symbolId => ({ id: `tick:${symbolId}`, role: 'scanner', state: 'waiting_for_quote', pending: 0, accountId: '46130058', host: DEMO, symbolId, calendar: null })
+  const exportedRetained = out.calendars.slice(10).map(c => c.identity.symbolId)
+  const cutRetained = retainedIds.filter(id => !exportedRetained.includes(id))
+  assert.equal(cutRetained.length, r.cut)
+  assert.notEqual(verifierMarket(resolveLikeVerifier(out, tickRow(exportedRetained[0])), now), 'UNKNOWN', 'an exported retained calendar lands on the row')
+  assert.equal(verifierMarket(resolveLikeVerifier(out, tickRow(cutRetained[0])), now), 'UNKNOWN', 'a cut one leaves the row without market hours')
+  // The coverage read shows the same split, and says why the verdict counts it.
+  const report = buildCalendarCoverage(db, { now })
+  assert.deepEqual(report.export.demanded, out.calendarExport.demanded)
+  assert.deepEqual(report.export.retained, out.calendarExport.retained)
+  assert.equal(report.export.calendarsComplete, false)
+  assert.ok(report.limitations.some(l => /export\.demanded and export\.retained/.test(l) && /cpp-scan-tick/.test(l)))
+})
+
+test('K1c: a demanded identity cut by the bound is counted on demanded, and the verdict is false', t => {
+  const db = database(t, ['46130058'])
+  const feedIds = Array.from({ length: 260 }, (_, i) => String(90_000 + i))
+  for (const [i, symbolId] of feedIds.entries()) recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId }, { symbolId: Number(symbolId), ...SHAPES[i % 9], holiday: ecHoliday(i) }, { nowMs: now - 1000 })
+  feedHealth(db, 'cpp_exec_demo', '46130058', feedIds)
+  const out = watchdogCalendars(db, now)
+  assert.equal(out.demandComplete, true)
+  const d = out.calendarExport.demanded
+  assert.equal(d.total, 260)
+  assert.ok(d.cut > 0, 'RED if a cut demanded calendar is not counted')
+  assert.deepEqual([d.exported, d.withCalendar, d.exported + d.cut], [out.calendars.length, out.calendars.length, 260])
+  assert.deepEqual(out.calendarExport.retained, { total: 0, exported: 0, withCalendar: 0, cut: 0, totalIsLowerBound: false, malformed: 0 })
+  assert.equal(out.exportComplete, false)
+  assert.equal(out.calendarsComplete, false)
+})
+
+test('K1c: an incomplete demand keeps the verdict false with nothing cut; a missing calendar is exported, not withCalendar', t => {
+  const db = database(t, ['46130058', '43002148'])
+  setState(db, 'symbol_id_map:46130058', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7, GBPUSD: 8 } }))
+  recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId: '7' }, { symbolId: 7, ...SHAPES[0], holiday: [] }, { nowMs: now - 1000 })
+  position(db, '46130058', 'EURUSD')
+  position(db, '46130058', 'GBPUSD') // demanded, no calendar recorded
+  position(db, '43002148', 'EURUSD') // no symbol map: the demand is incomplete
+  const out = watchdogCalendars(db, now)
+  assert.equal(out.demandComplete, false)
+  assert.deepEqual(out.calendarExport.demanded, { total: 2, exported: 2, withCalendar: 1, cut: 0 })
+  assert.equal(out.calendarExport.retained.total, 0)
+  assert.equal(out.exportComplete, true)
+  assert.equal(out.calendarsComplete, false)
+})
+
+test('K1c: at the contract size bound the emptied export reads nothing exported on both parts', t => {
+  const db = database(t, ['46130058'])
+  setState(db, 'symbol_id_map:46130058', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
+  recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId: '7' }, { symbolId: 7, ...SHAPES[0], holiday: [] }, { nowMs: now - 1000 })
+  recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId: '9' }, { symbolId: 9, ...SHAPES[0], holiday: [] }, { nowMs: now - 1000 })
+  for (let i = 0; i < 1500; i++) position(db, '46130058', 'EURUSD')
+  const out = nodeWatchdogContract(db, { now })
+  assert.equal(out.reason, 'work_contract_size_bound')
+  assert.deepEqual(out.calendars, [])
+  assert.deepEqual(out.calendarExport.demanded, { total: 1, exported: 0, withCalendar: 0, cut: 1 }, 'RED if the emptied export still reports its calendars exported')
+  assert.deepEqual(out.calendarExport.retained, { total: 1, exported: 0, withCalendar: 0, cut: 1, totalIsLowerBound: false, malformed: 0 })
+  assert.deepEqual([out.calendarsComplete, out.exportComplete, out.workComplete], [false, false, false])
+})
+
 // ---- the coverage read ----
 function coverageFixture(t) {
   const db = database(t, ['46979908', '43002148'])

@@ -64,6 +64,11 @@ function shareCalendars(work, calendars, now) {
   }
 }
 
+// V3 K1c: when the size bound empties `calendars`, the export's two parts say
+// so too — every demanded and retained identity is then cut.
+const nothingExported = parts => parts && Object.fromEntries(Object.entries(parts)
+  .map(([name, p]) => [name, { ...p, exported: 0, withCalendar: 0, cut: p.total }]))
+
 /** Completed-work evidence only. No broker request, mutation or entry gate. */
 export function nodeWatchdogContract(db, { now = Date.now(), env = process.env, startedAtMs } = {}) {
   const accounts = new Map(db.prepare('SELECT account_id,is_live FROM accounts').all().map(a => [String(a.account_id), a]))
@@ -114,6 +119,6 @@ export function nodeWatchdogContract(db, { now = Date.now(), env = process.env, 
     limitations: ['Scanner work is published by its actual owner; a Node timer is not a scanner receipt.', 'No closed-market management deadline has been invented.',
       'A work item marked calendarIn "calendars" carries no calendar of its own: its calendar is the calendars entry with the same accountId, host and symbolId.'] }
   if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) out.entryDiagnostics = { schemaVersion: 1, source: 'node_records', observedAtMs: now, complete: false, reason: 'contract_size_bound', accounts: [] }
-  if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) { out.workComplete = false; out.work = []; out.calendars = []; out.calendarsComplete = false; out.exportComplete = false; out.reason = 'work_contract_size_bound' }
+  if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) { out.workComplete = false; out.work = []; out.calendars = []; out.calendarsComplete = false; out.exportComplete = false; out.calendarExport = nothingExported(out.calendarExport); out.reason = 'work_contract_size_bound' }
   return out
 }

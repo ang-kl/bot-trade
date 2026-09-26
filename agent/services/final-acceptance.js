@@ -793,6 +793,23 @@ function traceEntry(e, ctx) {
 }
 
 /**
+ * V3 K1c: which part of the watchdog's calendar export was cut, from the
+ * saved /state/watchdog body (`calendarExport`, scanner-work.js
+ * watchdogCalendars), for the gate.calendars reason. '' for a body without
+ * the split. Words only: the verdict is not read from here.
+ */
+function calendarExportSplit(wd) {
+  const part = (name, p, plus = '') => {
+    const total = num(p?.total), exported = num(p?.exported), cut = num(p?.cut)
+    return total == null || exported == null ? null : `${name} ${exported} of ${total}${plus} exported${cut ? ` (${cut} cut)` : ''}`
+  }
+  const retained = wd?.calendarExport?.retained
+  const parts = [part('demanded', wd?.calendarExport?.demanded), part('retained', retained, retained?.totalIsLowerBound === true ? '+' : '')].filter(Boolean)
+  if (wd?.demandComplete === false) parts.push('the demand itself is incomplete')
+  return parts.length ? `: ${parts.join(', ')}` : ''
+}
+
+/**
  * T4. `bodies` maps each route to the body saved at the END of the window
  * (E2E_SOURCES, plus the recorder routes); /state/protection-audit may be an
  * array of snapshots. `gate` maps E2E_GATE_SOURCES to bodies saved at the
@@ -833,7 +850,11 @@ export function e2eTrace(bodies = {}, { window = {}, gate = null, deadlineMs = n
     const wd = gate['/state/watchdog']
     if (wd) {
       const waived = arr(waive).includes('calendars')
-      gateChecks.push(check('gate.calendars', wd.calendarsComplete === true || waived ? PASS : NV, wd.calendarsComplete === true ? 'calendars complete' : waived ? 'calendars incomplete, waived by the owner' : 'watchdog calendarsComplete is false at the start (the owner may waive it)'))
+      // V3 K1c: the verdict stays the watchdog's calendarsComplete (a retained
+      // calendar can be one a cpp-scan-tick row needs); the reason names which
+      // part of the export was cut, so a waiver is decided on that evidence.
+      const split = calendarExportSplit(wd)
+      gateChecks.push(check('gate.calendars', wd.calendarsComplete === true || waived ? PASS : NV, wd.calendarsComplete === true ? 'calendars complete' : waived ? `calendars incomplete, waived by the owner${split}` : `watchdog calendarsComplete is false at the start${split} (the owner may waive it)`))
     }
     const hb = gate['/state/heartbeats']
     if (hb) {

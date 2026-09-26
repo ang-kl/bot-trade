@@ -657,6 +657,31 @@ test('T4: the entry gate is read at the start — missing, late or failing gate 
   assert.equal(e2eTrace(e2eBodies(), { ...OPTS, deadlineMs: null }).verdict, NV, 'no owner protection deadline: the protection link cannot pass')
 })
 
+test('T4 K1c: gate.calendars still reads calendarsComplete — every demanded calendar exported does not pass it; the reason names which part was cut', () => {
+  const gateCheck = r => r.checks.find(c => c.name === 'gate').checks.find(c => c.name === 'gate.calendars')
+  // Production 26-09 00:48 UTC: 136 of 136 demanded exported, the retained tail cut.
+  const cal = gateBodies()
+  Object.assign(cal['/state/watchdog'], { calendarsComplete: false, demandComplete: true, exportComplete: false,
+    calendarExport: { demanded: { total: 136, exported: 136, withCalendar: 136, cut: 0 }, retained: { total: 512, exported: 36, withCalendar: 36, cut: 476, totalIsLowerBound: true, malformed: 0 } } })
+  const r = e2eTrace(e2eBodies(), { ...OPTS, gate: cal })
+  assert.equal(r.verdict, NV, 'a cut retained calendar can be one a cpp-scan-tick row needs')
+  assert.equal(gateCheck(r).verdict, NV)
+  assert.equal(gateCheck(r).reason, 'watchdog calendarsComplete is false at the start: demanded 136 of 136 exported, retained 36 of 512+ exported (476 cut) (the owner may waive it)')
+  const waived = e2eTrace(e2eBodies(), { ...OPTS, gate: cal, waive: ['calendars'] })
+  assert.equal(gateCheck(waived).verdict, PASS)
+  assert.match(gateCheck(waived).reason, /^calendars incomplete, waived by the owner: demanded 136 of 136 exported/)
+  // A cut demanded calendar and an incomplete demand are named too.
+  const worse = gateBodies()
+  Object.assign(worse['/state/watchdog'], { calendarsComplete: false, demandComplete: false,
+    calendarExport: { demanded: { total: 300, exported: 170, withCalendar: 170, cut: 130 }, retained: { total: 0, exported: 0, withCalendar: 0, cut: 0, totalIsLowerBound: false, malformed: 0 } } })
+  assert.equal(gateCheck(e2eTrace(e2eBodies(), { ...OPTS, gate: worse })).reason, 'watchdog calendarsComplete is false at the start: demanded 170 of 300 exported (130 cut), retained 0 of 0 exported, the demand itself is incomplete (the owner may waive it)')
+  // calendarsComplete true passes whatever the split says; a body without the split keeps the old words.
+  const ok = gateBodies(); ok['/state/watchdog'].calendarExport = cal['/state/watchdog'].calendarExport
+  assert.equal(gateCheck(e2eTrace(e2eBodies(), { ...OPTS, gate: ok })).verdict, PASS)
+  const old = gateBodies(); old['/state/watchdog'].calendarsComplete = false
+  assert.equal(gateCheck(e2eTrace(e2eBodies(), { ...OPTS, gate: old })).reason, 'watchdog calendarsComplete is false at the start (the owner may waive it)')
+})
+
 test('T4 over the REAL GET /state/entry-intents body: recent[] carries the broker position id and created time the fill and admission links join on', () => {
   const db = initDB(':memory:')
   upsertAccount(db, { accountId: ACCT, isLive: false })

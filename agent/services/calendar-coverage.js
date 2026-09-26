@@ -45,6 +45,11 @@
 // refused token, backoff or the daily read cap) and the last attempt's outcome — so a map that never arrives is
 // shown with the reason, not only as "missing".
 //
+// V3 K1c: the export block splits what was cut — `demanded` (the demand) and
+// `retained` (the non-demanded cache rows behind it) — without changing
+// calendarsComplete, which still counts both: a cpp-scan-tick row carries no
+// calendar and can outlive the demand (scanner-work.js watchdogCalendars).
+//
 // Owner principle 1: the host comes from registeredCalendarAccounts (routing
 // only); no rule here differs by account environment.
 // ---------------------------------------------------------------------------
@@ -221,6 +226,9 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
       entries: calendars.length, withCalendar: exportedKeys.size, bytes: Buffer.byteLength(JSON.stringify(calendars)),
       maxBytes: CALENDAR_EXPORT_MAX_BYTES, calendarsComplete: contract.calendarsComplete === true, demandComplete: contract.demandComplete === true,
       exportComplete: contract.exportComplete === true,
+      // V3 K1c: which part of the export was cut — the demand, or the
+      // retained cache behind it (null when the contract carries no split).
+      demanded: contract.calendarExport?.demanded ?? null, retained: contract.calendarExport?.retained ?? null,
       feed: { demanded: feedKeys.length, exportedWithCalendar: feedKeys.filter(k => exportedKeys.has(k)).length },
       workItemsSharingAnExportedCalendar: (contract.work ?? []).filter(w => w.calendarIn === 'calendars').length,
       contractBytes: Buffer.byteLength(JSON.stringify(contract)), contractMaxBytes: CONTRACT_MAX_BYTES,
@@ -242,6 +250,7 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
     limitations: [
       'Advisory evidence only: entries still use the name-keyed symbol_hours gate; gateDisagreements measures that gate against the account calendar at this instant.',
       'demandedCoverage covers the demanded identities only; watchlist symbols outside the demand are listed as notDemanded, never counted as covered.',
+      'export.calendarsComplete stays false while any retained (non-demanded) calendar is cut, even with every demanded one exported (export.demanded.cut 0): cpp-verify gives a work item of ANY service the exported calendar with its identity, and a cpp-scan-tick row carries none of its own and can outlive the demand (a stream the gateway no longer feeds), so a cut retained calendar can be one the verifier needs. export.demanded and export.retained say which part was cut; retained.totalIsLowerBound means the cache holds more rows than the 512 read.',
       'A bound the broker did not send is reported as omitted, and a pair it sent out of range as invalid: production sends startSecond 0 and endSecond 0 on its full-day "Closed" holiday rows (measured 26-09). No replacement boundary is invented. Such a non-recurring row dated 3 or more UTC days before its observation lies behind every evaluation window, so it is skipped: kept in the stored payload, never evaluated and counted in expiredHolidays; the calendar is then judged on its other rows. A current or future 0/0 row still keeps its calendar UNKNOWN: what it means awaits the owner (K3). Residue until K3: a skipped day inside the eight-day lookback is read as ordinary schedule time, so for a session running 3 days or more (24/5 FX, 24/7 crypto) the reported session start can be earlier than a real closure on that day.',
       'A present map (symbolMap.status present) with symbolMapRefresh.ownList false is not proven to be the account\'s own symbol list (written before V3 K2); it is re-read once, and until then its ids are shown as stored. A missing or unreadable map also reads ownList false; symbolMap.status says which.',
       'symbolMapRefresh.blocked names why a due map is not read yet: account_disabled (a disabled account is never read; no read until it is enabled), token_refused (the broker token was refused for this account; no read until that clears), daily_cap or backoff (until notBefore).',
