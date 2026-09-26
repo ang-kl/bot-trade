@@ -192,8 +192,11 @@ export function applyNeverFilledRejections(db, { ids } = {}) {
 //     234867098 for #714, 234697676 for #471, 234697562 for #466)
 //   - account 47790949, read 11-08-2026 (position 233866238, matched to
 //     both #309 and #310)
-// Each position's deals sum exactly to the correction below; the deal ids
-// and per-deal figures are in the evidence strings themselves.
+// The account and read date are also in each entry's `evidence` string below
+// (item 3, checker fix round #2 — not only up here); the per-deal figures
+// are there too, but NOT the deal ids themselves (corrected from an earlier,
+// false claim in this comment that they were — they are not, only the
+// position id and the deals' money figures are).
 //
 // #309/#310 (checker N-c, reworded): #309's own broker lifecycle sums to
 // 351 (its −84.5 deal plus #310's 435.5 deal — both matched_trade_id 310 in
@@ -202,11 +205,11 @@ export function applyNeverFilledRejections(db, { ids } = {}) {
 // itself is NOT corrected here — it stays rejected as the duplicate.
 // ---------------------------------------------------------------------------
 export const NAMED_MONEY_CORRECTIONS = Object.freeze([
-  { id: 1253, table: 'trades', field: 'net_pnl', expectedOld: 864, value: 1368.5, evidence: 'H-P5b-1: local 864 against two broker deals (position 237140621) 504.5 + 864 = 1368.5' },
-  { id: 714, table: 'trades', field: 'net_pnl', expectedOld: 2.91, value: 202.71, evidence: 'H-P5b-1: local 2.91 against three broker deals (position 234867098) 100.27 + 99.53 + 2.91 = 202.71 (deal-money.js)' },
-  { id: 471, table: 'trades', field: 'net_pnl', expectedOld: 70, value: 37.5, evidence: 'H-P5b-1: local 70 against two broker deals (position 234697676) 70 + -32.5 = 37.5' },
-  { id: 466, table: 'trades', field: 'net_pnl', expectedOld: 115.8, value: 39.3, evidence: 'H-P5b-1: local 115.8 against three broker deals (position 234697562) 75 + 40.8 + -76.5 = 39.3' },
-  { id: 309, table: 'trades', field: 'net_pnl', expectedOld: 435.5, value: 351, evidence: 'H-P5b-1: local 435.5 against two broker deals (position 233866238, both matched to trade #310) -84.5 + 435.5 = 351. #309 is the corrected row; #310 on the same position stays rejected, not corrected' },
+  { id: 1253, table: 'trades', field: 'net_pnl', expectedOld: 864, value: 1368.5, evidence: 'H-P5b-1: local 864 against two broker deals (account 46130058, position 237140621, read 25-09-2026) 504.5 + 864 = 1368.5' },
+  { id: 714, table: 'trades', field: 'net_pnl', expectedOld: 2.91, value: 202.71, evidence: 'H-P5b-1: local 2.91 against three broker deals (account 46130058, position 234867098, read 25-09-2026) 100.27 + 99.53 + 2.91 = 202.71 (deal-money.js)' },
+  { id: 471, table: 'trades', field: 'net_pnl', expectedOld: 70, value: 37.5, evidence: 'H-P5b-1: local 70 against two broker deals (account 46130058, position 234697676, read 25-09-2026) 70 + -32.5 = 37.5' },
+  { id: 466, table: 'trades', field: 'net_pnl', expectedOld: 115.8, value: 39.3, evidence: 'H-P5b-1: local 115.8 against three broker deals (account 46130058, position 234697562, read 25-09-2026) 75 + 40.8 + -76.5 = 39.3' },
+  { id: 309, table: 'trades', field: 'net_pnl', expectedOld: 435.5, value: 351, evidence: 'H-P5b-1: local 435.5 against two broker deals (account 47790949, position 233866238, read 11-08-2026, both matched to trade #310) -84.5 + 435.5 = 351. #309 is the corrected row; #310 on the same position stays rejected, not corrected' },
 ])
 
 const FIELD_ALLOWLIST = Object.freeze(['net_pnl'])

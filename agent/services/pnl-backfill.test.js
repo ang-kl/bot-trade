@@ -957,3 +957,28 @@ test('B1: includeWrittenOff:true is the deliberate escape hatch old-position-pnl
   assert.equal(changed, 1)
   assert.equal(db.prepare('SELECT pnl_attempts FROM trades WHERE id = ?').get(id).pnl_attempts, 8, 'the named row-scoped attempt still counts, unlike the broad sweep')
 })
+
+// checker fix round #2, item 1 (CLAUDE.md #1, "a mutation check that cannot
+// fail proves nothing"): pnl-backfill.js:882's call-site argument
+// `includeWrittenOff: !windowPass` was never pinned — nothing asserted that
+// the WHOLE backfillClosedPnl pass, not just noteTradeAttempts in isolation,
+// actually reaches a window pass with that value. Flipping it to `true` or
+// `false` there left every existing test green.
+test('B1: a window pass (no positionId, nothing on the broker) leaves a written-off row\'s pnl_attempts unchanged and still charges an ordinary row', async () => {
+  const db = initDB(':memory:')
+  const writtenOffId = writtenOffRow(db, { pid: '910', attempts: 15718 })
+  const ordinaryId = db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, net_pnl, entry_price, sl_price, pnl_attempts)
+     VALUES ('EURUSD', 'BUY', 'closed', '911', NULL, 1.10, 1.05, 3)`
+  ).run().lastInsertRowid
+
+  // Empty deal history: the broker has nothing to say about either position,
+  // so this exercises noteTradeAttempts through the real window-pass call
+  // site (pnl-backfill.js:882), not a direct unit call.
+  await backfillClosedPnl(db, {}, { getDeals: dealsApi([]), now: NOW })
+
+  assert.equal(db.prepare('SELECT pnl_attempts FROM trades WHERE id = ?').get(writtenOffId).pnl_attempts, 15718,
+    'written off: the broad window sweep must not touch it (the runaway-counter fix)')
+  assert.equal(db.prepare('SELECT pnl_attempts FROM trades WHERE id = ?').get(ordinaryId).pnl_attempts, 4,
+    'ordinary: the broad window sweep still charges it, exactly as before B1')
+})

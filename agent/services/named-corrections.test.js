@@ -382,3 +382,13 @@ test('the built-in NAMED_MONEY_CORRECTIONS list is well-formed: every entry is a
   }
   assert.deepEqual(NAMED_MONEY_CORRECTIONS.map(e => e.id).sort((a, b) => a - b), [309, 466, 471, 714, 1253])
 })
+
+// Item 3 (checker fix round #2): each entry's OWN evidence string carries
+// the account and read date, not only the module comment above the list.
+test('every NAMED_MONEY_CORRECTIONS evidence string names its own account and broker-read date', () => {
+  const expected = { 1253: '46130058', 714: '46130058', 471: '46130058', 466: '46130058', 309: '47790949' }
+  for (const entry of NAMED_MONEY_CORRECTIONS) {
+    assert.match(entry.evidence, new RegExp(`account ${expected[entry.id]}\\b`), `#${entry.id} evidence must name its account`)
+    assert.match(entry.evidence, /read \d{2}-\d{2}-2026\b/, `#${entry.id} evidence must name its broker-read date`)
+  }
+})

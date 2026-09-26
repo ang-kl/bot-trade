@@ -278,6 +278,42 @@ export function credsForPosition(db, positionId, opts = {}) {
 }
 
 /**
+ * Coerce a POST /actions/named-corrections `ids` body field into row ids.
+ * N6 (checker nit round): the earlier `.map(Number).filter(Number.isFinite)`
+ * let through anything Number() can be talked into: `true` (Number(true)
+ * === 1), a nested array like `[5]` (Number([5]) === 5, via its own
+ * single-element toString), `"0x10"` (=== 16), `"1e3"` (=== 1000), and `1.5`
+ * (finite but not a row id).
+ *
+ * Item 2, second fix round: only an integer number or digit-only string was
+ * not tight enough — a row `id` is SQLite's AUTOINCREMENT primary key, which
+ * is always a positive, safe integer, never zero and never negative, so
+ * anything else names no real row:
+ *   - `-7`, `0`/`"0"` — rejected (`v > 0`).
+ *   - `Number.MAX_SAFE_INTEGER + 1` (9007199254740992) as a bare number, or
+ *     an over-long digit string (e.g. 20 nines) — rejected
+ *     (`Number.isSafeInteger`). One check covers both forms: IEEE754 doubles
+ *     represent every integer up to 2**53-1 exactly, so ANY value that far
+ *     or beyond — however it rounds — stays >= 2**53 and therefore unsafe;
+ *     there is no digit string whose Number() lands back inside the safe
+ *     range while losing precision, so no separate round-trip check is
+ *     needed (confirmed by mutation: removing one proved the other dead).
+ *   - `"007"` — ACCEPTED. `Number("007") === 7` already, with no special
+ *     casing needed; rejecting it would refuse correct input over a
+ *     cosmetic leading zero, not an actual precision or type risk.
+ *
+ * @param {unknown} ids — req.body?.ids
+ * @returns {number[]|undefined}
+ */
+export function coerceCorrectionIds(ids) {
+  if (!Array.isArray(ids)) return undefined
+  const positive = n => Number.isSafeInteger(n) && n > 0
+  const fromNumber = v => (typeof v === 'number' && Number.isInteger(v) && positive(v)) ? v : null
+  const fromDigitString = v => (typeof v === 'string' && /^\d+$/.test(v) && positive(Number(v))) ? Number(v) : null
+  return ids.map(v => fromNumber(v) ?? fromDigitString(v)).filter(v => v !== null)
+}
+
+/**
  * Resolve which symbols a backtest run covers.
  * Priority: explicit `symbols` list > legacy single `symbol` > every ENABLED
  * watchlist symbol (the instruments set on Tune — never a hardcoded default).
@@ -287,26 +323,6 @@ export function credsForPosition(db, positionId, opts = {}) {
  * @param {string|null} watchlistJson — raw autopilot_symbols_json state
  * @returns {string[]}
  */
-/**
- * Coerce a POST /actions/named-corrections `ids` body field into row ids.
- * N6 (checker nit round): the earlier `.map(Number).filter(Number.isFinite)`
- * let through anything Number() can be talked into: `true` (Number(true)
- * === 1), a nested array like `[5]` (Number([5]) === 5, via its own
- * single-element toString), `"0x10"` (=== 16), `"1e3"` (=== 1000), and `1.5`
- * (finite but not a row id). Only a genuine integer number or a digit-only
- * string names a row id here; everything else is dropped rather than
- * silently reinterpreted into a different id.
- *
- * @param {unknown} ids — req.body?.ids
- * @returns {number[]|undefined}
- */
-export function coerceCorrectionIds(ids) {
-  if (!Array.isArray(ids)) return undefined
-  return ids
-    .filter(v => (typeof v === 'number' && Number.isInteger(v)) || (typeof v === 'string' && /^\d+$/.test(v)))
-    .map(Number)
-}
-
 export function pickBacktestSymbols(body, watchlistJson) {
   let names = Array.isArray(body?.symbols) && body.symbols.length
     ? body.symbols

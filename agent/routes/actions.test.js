@@ -55,6 +55,35 @@ test('coerceCorrectionIds is undefined for a non-array (including undefined/null
   assert.equal(coerceCorrectionIds(5), undefined)
 })
 
-test('coerceCorrectionIds drops non-integer numbers and non-digit strings; an integer number stays whatever its sign', () => {
-  assert.deepEqual(coerceCorrectionIds([-5, 3.14, 'abc', '', ' 5', '5 ', '05']), [-5, 5])
+test('coerceCorrectionIds drops non-integer numbers and non-digit strings', () => {
+  assert.deepEqual(coerceCorrectionIds([3.14, 'abc', '', ' 5', '5 ']), [])
+})
+
+// Item 2, second fix round: a row id is SQLite's AUTOINCREMENT primary
+// key — positive, safe-integer, never zero, never negative — so the first
+// pass's plain "integer number or digit-only string" was too loose.
+test('coerceCorrectionIds drops negative and zero ids, as a number or a string', () => {
+  assert.deepEqual(coerceCorrectionIds([-7, 0, '0', -1.0, 5]), [5])
+})
+
+test('coerceCorrectionIds drops an unsafe integer number (MAX_SAFE_INTEGER + 1) and keeps MAX_SAFE_INTEGER itself', () => {
+  const MSI = Number.MAX_SAFE_INTEGER
+  assert.deepEqual(coerceCorrectionIds([MSI + 1, MSI, 5]), [MSI, 5])
+})
+
+test('coerceCorrectionIds drops an over-long digit string that Number() cannot represent exactly', () => {
+  // 17 digits, one past MAX_SAFE_INTEGER (9,007,199,254,740,991): Number()
+  // rounds this to 9007199254740992, a DIFFERENT value than the string named
+  // — a naive Number.isSafeInteger(Number(v)) check alone would pass this
+  // (the rounded result IS a safe integer), so the guard is the round-trip:
+  // String(n) must equal the original digit string.
+  assert.deepEqual(coerceCorrectionIds(['90071992547409929', '99999999999999999999', '5']), [5])
+})
+
+test('coerceCorrectionIds ACCEPTS a leading-zero digit string ("007") — it round-trips losslessly to 7', () => {
+  assert.deepEqual(coerceCorrectionIds(['007', '0007']), [7, 7])
+})
+
+test('coerceCorrectionIds still drops "00" — it round-trips to 0, caught by the same positive-only rule as "0"', () => {
+  assert.deepEqual(coerceCorrectionIds(['00']), [])
 })
