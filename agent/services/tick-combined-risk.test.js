@@ -25,7 +25,9 @@ import { readFileSync } from 'node:fs'
 import { initDB, setState, getState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
 import { engineStatusFor, requestEntryMode, acknowledgeEntryEpochs, writeEngineStatus } from './entry-mode.js'
-import { unsettledTickFires, reserveEntry, resolveIntent, expireStale, TICK_PRODUCER, TICK_FIRE_UNSETTLED_WINDOW_MS, TICK_RESTART_HOLD } from './entry-ledger.js'
+import { unsettledTickFires, unsettledTickFiresSql, reserveEntry, resolveIntent, expireStale, TICK_PRODUCER, TICK_FIRED_STATES, TICK_FIRE_UNSETTLED_WINDOW_MS, TICK_RESTART_HOLD } from './entry-ledger.js'
+import { resolveInflightTrades } from './stuck-resolver.js'
+import { reconcileCrossSideAccounts } from './cross-side-reconcile.js'
 import { profileHashFull, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
 import {
   runTickPermitFeeder, computeTickGrants, heldWithPending, PAUSE_CHECKS, REVALIDATE_CHECKS,
@@ -82,7 +84,7 @@ function bootSeenAndReconciled(db, sideName, bootId, accounts, atMs = Date.now()
   const m = JSON.parse(getState(db, TICK_BOOT_SEEN_KEY) || '{}')
   m[sideName] = { bootId, firstSeenAtMs: atMs - 60_000 }
   setState(db, TICK_BOOT_SEEN_KEY, JSON.stringify(m))
-  for (const id of accounts) setState(db, `acct:${id}:last_reconcile_at`, new Date(atMs - 30_000).toISOString())
+  for (const id of accounts) setState(db, `acct:${id}:last_reconcile_read_at`, new Date(atMs - 30_000).toISOString())
 }
 const standingId = (db, acct, side = 'BUY') => db.prepare(`SELECT id FROM entry_intents WHERE producer_id = ? AND account_id = ? AND symbol_id = 1 AND side = ? AND state = 'RESERVED'`).get(TICK_PRODUCER, acct, side)?.id
 // A position as the reconciler adopts one: a trades row carrying the broker
@@ -310,7 +312,7 @@ test('gap 6: after a gateway restart the account pauses until a reconcile of THA
   const spent = db.prepare(`SELECT id FROM entry_intents WHERE producer_id = ? AND side = 'BUY' AND state = 'RESERVED'`).get(TICK_PRODUCER).id
   assert.equal(resolveIntent(db, spent, { state: 'FILLED', positionId: '501', source: 'reconcile' }).ok, true)
   // a reconcile of the account after the new boot was seen lifts it (the scoped stamp)
-  setState(db, `acct:${A}:last_reconcile_at`, new Date(t0 + 120_000).toISOString())
+  setState(db, `acct:${A}:last_reconcile_read_at`, new Date(t0 + 120_000).toISOString())
   const r2 = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 180_000 })
   assert.deepEqual(r2.paused, [])
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RELEASED' AND error_code = 'tick_sidecar_restart'`).get(TICK_PRODUCER).n, 1)
@@ -349,7 +351,7 @@ test('gap 6 (checker blocker): the loop\'s expireStale inside the hold neither e
   } finally { console.error = orig }
   assert.ok(errs.some(e => /URGENT/.test(e)))
   // the account's own reconcile lifts it
-  setState(db, `acct:${A}:last_reconcile_at`, new Date(t0 + 12 * 60_000).toISOString())
+  setState(db, `acct:${A}:last_reconcile_read_at`, new Date(t0 + 12 * 60_000).toISOString())
   r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 13 * 60_000 })
   assert.deepEqual(r.paused, [])
   assert.ok(d.pushes.at(-1).tickPermits.length > 0)
@@ -361,7 +363,7 @@ test('gap 6: a boot never seen before counts as a change — the first pass afte
   const t0 = Date.now()
   const r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'B1', now: t0 })
   assert.match(r.paused[0].reason, /^tick_sidecar_restart:/)
-  setState(db, `acct:${A}:last_reconcile_at`, new Date(t0 + 1000).toISOString())
+  setState(db, `acct:${A}:last_reconcile_read_at`, new Date(t0 + 1000).toISOString())
   const r2 = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'B1', now: t0 + 2000 })
   assert.deepEqual(r2.paused, []); assert.equal(r2.permits, 2)
 })
@@ -461,4 +463,75 @@ test('fix round: the probe\'s feeder call with no boot pushes nothing and writes
   const r = await feedTickPermits(db, {}, demo, Date.now(), { bootId: null, requireBoot: true })
   assert.deepEqual(r, { skipped: 'no_boot' })
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ?`).get(TICK_PRODUCER).n, 0)
+})
+
+// ------------------------------------------------------- fix round 2 ------
+
+test('fix round 2: a written-off in-flight row is not a tick holder either — tickHolders reads the book cap\'s reader, which now skips ended rows', async () => {
+  const db = fresh([A, B])
+  const X = '41000005', Y = '41000006'
+  const six = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 19).replace('T', ' ')
+  for (const acct of [X, Y]) db.prepare(`INSERT INTO trades (account_id, status, symbol, side, opened_at) VALUES (?, 'submitting', 'EURUSD', 'BUY', ?)`).run(acct, six)
+  assert.deepEqual((await computeTickGrants(db, { readiness: readyAll })).grants['EURUSD|BUY'], { granted: [], holders: [X, Y], n: 0 }, 'unresolved: two holders fill the cap')
+  assert.equal(resolveInflightTrades(db, { nowMs: Date.now() }).writtenOff, 2)
+  assert.deepEqual((await computeTickGrants(db, { readiness: readyAll })).grants['EURUSD|BUY'], { granted: [A, B], holders: [], n: 2 })
+})
+
+test('N4: the per-account read of unsettledTickFires (every evaluateTrade and pre-gate call) is an index search on account, producer, state and the window', () => {
+  const db = initDB(':memory:')
+  const plan = db.prepare('EXPLAIN QUERY PLAN ' + unsettledTickFiresSql(true))
+    .all('1', TICK_PRODUCER, ...TICK_FIRED_STATES, new Date().toISOString()).map(r => r.detail).join(' | ')
+  assert.match(plan, /SEARCH ei USING INDEX idx_entry_intents_account_producer \(account_id=\? AND producer_id=\? AND state=\? AND updated_at>\?\)/, plan)
+})
+
+test('N5: the reconciler stamps the snapshot\'s READ time as the account\'s read key, separate from the write time; no read time, no read key', () => {
+  const db = initDB(':memory:')
+  setState(db, 'ctrader_account_id', A)
+  const readAt = Date.now() - 45_000
+  reconcilePositions(db, [], [], (k, v) => setState(db, k, v), { readAt })
+  assert.equal(getState(db, `acct:${A}:last_reconcile_read_at`), new Date(readAt).toISOString())
+  assert.ok(Date.parse(getState(db, `acct:${A}:last_reconcile_at`)) >= readAt + 40_000, 'the write stamp is the write time')
+  reconcilePositions(db, [], [], (k, v) => setState(db, `acct:${B}:${k}`, v), { accountId: B })
+  assert.equal(getState(db, `acct:${B}:last_reconcile_read_at`), null, 'an unknown read time is never stamped')
+})
+
+test('N5: a reconcile whose snapshot was REQUESTED before the new boot was first seen does not lift the hold, even though it was written after; one requested after does', async () => {
+  const db = fresh([A])
+  const d = opts()
+  const t0 = Date.now()
+  bootSeenAndReconciled(db, 'cpp_exec_demo', 'BA', [A], t0)
+  await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BA', now: t0 })
+  let r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 60_000 }) // BB first seen at t0 + 60 s
+  assert.match(r.paused[0].reason, /^tick_sidecar_restart:/)
+  // the loop's shape: positions requested at t0 + 50 s, the symbols list awaited, the reconcile WRITTEN at t0 + 70 s
+  setState(db, `acct:${A}:last_reconcile_at`, new Date(t0 + 70_000).toISOString())
+  setState(db, `acct:${A}:last_reconcile_read_at`, new Date(t0 + 50_000).toISOString())
+  r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 80_000 })
+  assert.match(r.paused[0]?.reason || '', /^tick_sidecar_restart:/, 'a pre-boot snapshot written late does not lift it')
+  setState(db, `acct:${A}:last_reconcile_read_at`, new Date(t0 + 90_000).toISOString())
+  r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 100_000 })
+  assert.deepEqual(r.paused, [], 'a snapshot requested after the boot was seen lifts it')
+})
+
+test('N5 wiring: cross-side-reconcile stamps the time it REQUESTED the snapshot (behaviour), and both loop reconcile paths pass the request time (comments stripped)', async () => {
+  const db = initDB(':memory:')
+  upsertAccount(db, { accountId: L, isLive: true }); db.prepare('UPDATE accounts SET enabled = 1').run()
+  let calledAt = null
+  const before = Date.now()
+  const out = await reconcileCrossSideAccounts(db, { ready: true, isLive: false }, {
+    getCreds: () => ({ ready: true, host: 'live.ctraderapi.com', clientId: 'c', clientSecret: 's', accessToken: 't' }),
+    readSnapshot: async (_h, _c, _s, _t, accountId) => { calledAt = Date.now(); await new Promise(res => setTimeout(res, 30)); return { ctidTraderAccountId: accountId, position: [], order: [] } },
+  })
+  assert.equal(out[0]?.error, undefined, JSON.stringify(out))
+  const stamped = Date.parse(getState(db, `acct:${L}:last_reconcile_read_at`))
+  assert.ok(stamped >= before && stamped <= calledAt, `read time ${stamped} must be the request time (≤ ${calledAt}), not the write time`)
+  assert.ok(Date.parse(getState(db, `acct:${L}:last_reconcile_at`)) >= calledAt + 25, 'the write stamp comes after the awaited read')
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  const i = loop.indexOf('const reconcileReadAt = Date.now()')
+  assert.ok(i > 0 && i < loop.indexOf('const reconcileData = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })'), 'the selected pass takes the time BEFORE the request')
+  assert.ok(loop.includes('reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v), { readAt: reconcileReadAt })'))
+  const j = loop.indexOf('const accReadAt = Date.now()')
+  assert.ok(j > 0 && j < loop.indexOf('const rd = await execReconcile({ host, clientId, clientSecret, accessToken, accountId: acc.account_id })'), 'the per-account pass too')
+  assert.ok(/\{ accountId: acc\.account_id, readAt: accReadAt \}/.test(loop))
 })

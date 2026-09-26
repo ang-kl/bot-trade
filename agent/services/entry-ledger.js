@@ -511,9 +511,9 @@ export const TICK_FIRED_STATES = Object.freeze(['RESERVED', 'RELEASED', 'DISPATC
  * Unsettled tick fires for one account (`accountId`), or for every account
  * when `accountId` is null. Rows: { id, accountId, symbol, symbolId, side, state }.
  */
-export function unsettledTickFires(db, accountId = null, { now = Date.now(), windowMs = TICK_FIRE_UNSETTLED_WINDOW_MS } = {}) {
-  const byAccount = accountId != null
-  return db.prepare(`SELECT ei.id, ei.account_id AS accountId, ei.symbol, ei.symbol_id AS symbolId, ei.side, ei.state
+/** The query unsettledTickFires runs (exported so its plan can be pinned; db.js idx_entry_intents_account_producer). */
+export function unsettledTickFiresSql(byAccount) {
+  return `SELECT ei.id, ei.account_id AS accountId, ei.symbol, ei.symbol_id AS symbolId, ei.side, ei.state
       FROM entry_intents ei
      WHERE ${byAccount ? 'ei.account_id = ? AND' : ''} ei.producer_id = ?
        AND ei.state IN (${TICK_FIRED_STATES.map(() => '?').join(',')})
@@ -532,7 +532,12 @@ export function unsettledTickFires(db, accountId = null, { now = Date.now(), win
             -- the position id — open or already closed — is the evidence.
             NOT EXISTS (SELECT 1 FROM trades t WHERE t.account_id = ei.account_id
                          AND CAST(t.ctrader_position_id AS TEXT) = ei.broker_position_id)))
-     ORDER BY ei.id`)
+     ORDER BY ei.id`
+}
+
+export function unsettledTickFires(db, accountId = null, { now = Date.now(), windowMs = TICK_FIRE_UNSETTLED_WINDOW_MS } = {}) {
+  const byAccount = accountId != null
+  return db.prepare(unsettledTickFiresSql(byAccount))
     .all(...(byAccount ? [String(accountId)] : []), TICK_PRODUCER, ...TICK_FIRED_STATES, iso(now - windowMs))
     .map(r => ({ ...r, accountId: String(r.accountId) }))
 }

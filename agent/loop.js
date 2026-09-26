@@ -3065,6 +3065,10 @@ async function runLoop(db) {
         if (clientId && clientSecret && accessToken && accountId) {
           phase('reconciling broker positions')
           const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+          // C9 fix round 2 (N5): the moment the snapshot was REQUESTED — the
+          // reconciler stamps it as the account's read time (the tick restart
+          // hold compares it with a sidecar boot's first sight).
+          const reconcileReadAt = Date.now()
           const reconcileData = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
 
           const allSymbolIds = [...new Set([
@@ -3091,7 +3095,7 @@ async function runLoop(db) {
             symbolName: symbolNameMap[o.tradeData?.symbolId] || null,
           }))
 
-          const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
+          const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v), { readAt: reconcileReadAt })
           setState(db, 'api_ctrader_last_ok', new Date().toISOString())
 
           // PROTECTION AUDIT (owner report 2026-07-29). Every other stop guard
@@ -3755,6 +3759,7 @@ async function runLoop(db) {
             } catch { /* roster probe failed — probe all, as before */ }
             for (const acc of others) {
               try {
+                const accReadAt = Date.now() // C9 N5: the request time, stamped as this account's read time
                 const rd = await execReconcile({ host, clientId, clientSecret, accessToken, accountId: acc.account_id })
                 // The primary pass only fetched the symbol-name list when IT
                 // had positions — fetch on demand if this account has rows
@@ -3771,7 +3776,7 @@ async function runLoop(db) {
                 const ord2 = (rd.order || []).map(o => ({ ...o, symbolName: symbolNameMap[o.tradeData?.symbolId] || null }))
                 const r2 = reconcilePositions(db, pos2, ord2,
                   (k, v) => setAccountState(db, acc.account_id, k, v),
-                  { accountId: acc.account_id })
+                  { accountId: acc.account_id, readAt: accReadAt })
                 log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)`)
 
                 // V3 V1: this account's detected closes are queued for capture

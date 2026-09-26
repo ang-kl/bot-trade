@@ -37,7 +37,6 @@ import { getState, setState } from '../db.js'
 import { engineStatusFor, basesFor } from './entry-mode.js'
 import { reserveStandingPermits, releaseStandingReservations, pendingExposure, unsettledTickFires, STANDING_PRODUCERS, TICK_PRODUCER, TICK_PERMIT_TTL_MS, TICK_RESTART_HOLD } from './entry-ledger.js'
 import { accountsHolding, DEFAULT_MAX_ACCOUNTS_PER_SYMBOL } from './book-symbol-cap.js'
-import { lastReconcileAt } from './account-engineering.js'
 import { accountRiskPerTrade } from './tick-shadow.js'
 import { tickSymbolNames, resolveTickSymbolIds } from './exec-guard-sync.js'
 import { scanRates, loadRiskConfig, accountMarginPool } from './risk.js'
@@ -387,6 +386,13 @@ export async function computeTickGrants(db, { now = Date.now(), readiness = null
  * the account's positions after the boot began. GW-1 (SEQUENCE PR-10) may
  * tighten T to the sidecar's own startedAtMs; this bound is the safe side.
  */
+/** When the account's last reconciled snapshot was REQUESTED (acct:<id>:last_reconcile_read_at, reconciler.js), in ms; NaN when never stamped. */
+export function reconcileReadAtMs(db, accountId) {
+  let raw = null
+  try { raw = getState(db, `acct:${accountId}:last_reconcile_read_at`) } catch { raw = null }
+  return raw ? Date.parse(raw) : NaN
+}
+
 export function bootFirstSeen(db, sideName, bootId, now = Date.now()) {
   let m = {}
   try { m = JSON.parse(getState(db, TICK_BOOT_SEEN_KEY) || '{}') || {} } catch { m = {} }
@@ -464,7 +470,6 @@ export async function runTickPermitFeeder(db, side, {
   const holdersOf = (sym, s) => { const k = `${sym}|${s}`; if (!holdersFor.has(k)) holdersFor.set(k, tickHolders(db, sym, s, fires)); return holdersFor.get(k) }
   // C9 (gap 6): Node's first sight of this boot — the quarantine's T.
   const seenAt = bootId ? bootFirstSeen(db, out.side, String(bootId), now) : null
-  const selectedId = (() => { try { return getState(db, 'ctrader_account_id') } catch { return null } })()
   const tickPermits = []
   const maxOpenBy = new Map()
   const pauseAccount = (accountId, reason, detail = null, { release = true, urgent = false } = {}) => {
@@ -502,8 +507,10 @@ export async function runTickPermitFeeder(db, side, {
     // they stay RESERVED — FILLED by their tag if the old boot spent them —
     // until the hold lifts and releases them.
     if (bootId) {
-      const rec = lastReconcileAt(db, accountId, selectedId).at
-      const recMs = rec ? Date.parse(rec) : NaN
+      // N5 (fix round 2): the READ time of the account's last snapshot
+      // (reconciler.js), never the time its reconcile was written — a
+      // snapshot requested before the boot was seen cannot lift the hold.
+      const recMs = reconcileReadAtMs(db, accountId)
       const oldWhere = `WHERE account_id = ? AND producer_id = ? AND state = 'RESERVED' AND (sidecar_boot_id IS NULL OR sidecar_boot_id <> ?)`
       if (!(recMs > seenAt)) {
         // No catch here on purpose: a mark that failed silently would let the

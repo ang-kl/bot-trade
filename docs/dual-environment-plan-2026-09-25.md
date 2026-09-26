@@ -202,8 +202,16 @@ defaults"; ask-first, merges on the owner's word). P6 ships in three parts:*
 - *C8 (SEQUENCE PR-8): the book-wide symbol cap had never counted positions —
   `accountsHolding` read a `direction` column that `monitored_positions` and
   `trades` do not have, so only working limits counted. It now reads `side`,
-  on a real-schema test. Live bar effect on merge: a third account on the same
-  symbol and direction is vetoed (cap 2, value unchanged).*
+  on a real-schema test. Live bar effect on merge: an account's bar entry on a
+  symbol and direction is vetoed while TWO OTHER accounts already hold that
+  symbol in that direction — through an active position, an in-flight order
+  the stuck resolver has not ended, or a working limit (cap 2 per the
+  proposing account's config, value unchanged). A written-off or R5-duplicate
+  in-flight row does not count (V3 I3 `inflightLiveSql`, fix round 2); an
+  unresolved one does, as possible exposure. Rows with no account count once,
+  together, as `(unassigned)`. The veto applies to every bar producer the gate
+  judges, cross_sectional_book's multi-account dispatch included (no exemption
+  built: an owner question).*
 - *C9 (SEQUENCE PR-9), Node half, dormant while no account admits tick:
   unsettled tick fires (every fired state) count in the feeder's budget, in
   the gate's step 3 and in the pre-filter (one helper); the push carries
@@ -213,8 +221,10 @@ defaults"; ask-first, merges on the owner's word). P6 ships in three parts:*
   pass may only narrow; readiness is re-read every pass (`REVALIDATE_CHECKS`);
   permits carry the pinned `profileHash` and the gateway `bootId`; a boot
   change (or a boot never seen) pauses each tick account on that side until a
-  reconcile of THAT account after Node first saw the boot — keyed on the boot,
-  not on rows — with the old boot's rows marked `tick_restart_hold` so the
+  reconcile of THAT account whose snapshot was REQUESTED after Node first saw
+  the boot (`acct:<id>:last_reconcile_read_at`, stamped by every reconcile
+  path) — keyed on the boot, not on rows — with the old boot's rows marked
+  `tick_restart_hold` so the
   loop's `expireStale` cannot turn them EXPIRED (bounded at 10 min, then
   `tick_sidecar_restart_unreconciled`); a probe with no boot pushes nothing;
   a failed grant computation grants nothing that cycle; and every reconcile path

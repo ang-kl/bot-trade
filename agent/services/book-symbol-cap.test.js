@@ -15,6 +15,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
+import { resolveInflightTrades } from './stuck-resolver.js'
 import {
   checkBookSymbolCap, accountsHolding, normalizeSide,
   DEFAULT_MAX_ACCOUNTS_PER_SYMBOL,
@@ -191,4 +192,47 @@ test('risk.js consults the book ceiling, and both ceilings must pass', () => {
   assert.match(src, /if\s*\(!book\.allow\)\s*return veto\(/, 'a refusal must veto, not merely be recorded')
   assert.match(src, /if\s*\(!cap\.allow\)\s*return veto\(/, 'the PER-ACCOUNT ceiling stays: this one does not replace it')
   assert.match(src, /maxAccountsPerSymbol/, 'the cap must be configurable, not a constant in the gate')
+})
+
+// --- C8 fix round 2: rows the stuck resolver ENDED stop holding -------------
+// V3 I3 keeps an ended in-flight row's status 'submitting' / 'unconfirmed' for
+// ever (the trades CHECK has no honest terminal value); `stuck_resolutions`
+// is what makes it terminal, and every exposure reader reads through
+// inflightLiveSql. These run the REAL resolver on the REAL schema.
+const sqlTs = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ')
+const stuckTrade = (d, acct, sym, side, status, openedMs, extra = {}) =>
+  d.prepare(`INSERT INTO trades (account_id, status, symbol, side, opened_at, origin, ctrader_position_id) VALUES (?,?,?,?,?,?,?)`)
+    .run(acct, status, sym, side, sqlTs(openedMs), extra.origin ?? null, extra.positionId ?? null).lastInsertRowid
+
+test('C8 fix round 2: two in-flight rows the resolver WROTE OFF (no broker evidence, six days old) stop holding — the FIRST real holder is admitted', () => {
+  const d = db()
+  const now = Date.now()
+  stuckTrade(d, 'A', 'NATGAS', 'BUY', 'unconfirmed', now - 6 * 86_400_000)
+  stuckTrade(d, 'B', 'NATGAS', 'BUY', 'submitting', now - 6 * 86_400_000)
+  // unresolved, an in-flight row IS possible exposure: the conservative reading stands
+  assert.equal(checkBookSymbolCap(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C', cap: 2 }).allow, false)
+  const r = resolveInflightTrades(d, { nowMs: now })
+  assert.equal(r.writtenOff, 2, JSON.stringify(r))
+  assert.equal(d.prepare(`SELECT COUNT(*) AS n FROM stuck_resolutions WHERE kind = 'trade_inflight' AND outcome = 'unresolved'`).get().n, 2)
+  assert.equal(d.prepare(`SELECT COUNT(*) AS n FROM trades WHERE status IN ('submitting', 'unconfirmed')`).get().n, 2, 'the rows keep their status (never deleted, never rewritten)')
+  assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }), [], 'RED without inflightLiveSql: [B, A]')
+  const c = checkBookSymbolCap(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C', cap: 2 })
+  assert.equal(c.allow, true, c.reason)
+})
+
+test('C8 fix round 2: an in-flight row the resolver settled as the DUPLICATE of an adopted row (R5) stops holding — the SECOND real holder is admitted', () => {
+  const d = db()
+  const now = Date.now()
+  const t0 = now - 2 * 86_400_000
+  // A's submission never promoted; the reconciler adopted the same fill 30 s later (since closed)
+  stuckTrade(d, 'A', 'NATGAS', 'BUY', 'submitting', t0)
+  const twin = stuckTrade(d, 'A', 'NATGAS', 'BUY', 'closed', t0 + 30_000, { origin: 'reconciler_adopted', positionId: '9001' })
+  pos(d, 'B', 'NATGAS', 'BUY') // B holds for real
+  assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }).sort(), ['A', 'B'], 'the unresolved duplicate still counts')
+  const r = resolveInflightTrades(d, { nowMs: now })
+  assert.equal(r.settledDuplicate, 1, JSON.stringify(r))
+  assert.match(d.prepare(`SELECT verdict FROM stuck_resolutions WHERE kind = 'trade_inflight'`).get().verdict, new RegExp(`duplicate of trade #${twin}`))
+  assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }), ['B'], 'RED without inflightLiveSql: [A, B]')
+  const c = checkBookSymbolCap(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C', cap: 2 })
+  assert.equal(c.allow, true, c.reason)
 })

@@ -907,6 +907,17 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // cross-side-reconcile.js), so the tick feeder's restart quarantine can
   // tell, per account, that positions were read after a sidecar restart.
   if (acct != null) { try { setAgentState(db, `acct:${acct}:last_reconcile_at`, reconciledAt) } catch { /* state unwritable */ } }
+  // C9 fix round 2 (N5): WHEN THE SNAPSHOT WAS READ, not when it was written.
+  // The loop requests the positions, then awaits the symbols list, then
+  // reconciles, so the write-time stamp above can land after a sidecar
+  // restart that the snapshot itself predates. The tick feeder's restart hold
+  // (tick-permits.js) needs "positions read after the new boot was first
+  // seen", so every caller passes `readAt` — the moment it ISSUED the request,
+  // a lower bound on the snapshot's time — and it is stamped here. A caller
+  // that does not know it stamps nothing: an unknown read time never lifts
+  // the hold.
+  const readAtMs = opts.readAt == null ? NaN : (typeof opts.readAt === 'number' ? opts.readAt : Date.parse(opts.readAt))
+  if (acct != null && Number.isFinite(readAtMs)) { try { setAgentState(db, `acct:${acct}:last_reconcile_read_at`, new Date(readAtMs).toISOString()) } catch { /* state unwritable */ } }
 
   // Durable ledger of the broker's resting entry orders. These fill regardless
   // of the bot's scan/autotrade switches (owner: "even if ... OFF, these

@@ -22,6 +22,8 @@ export async function reconcileCrossSideAccounts(db, baseCreds, deps = {}) {
       // A cached/empty sidecar response is insufficient evidence for closing
       // local rows. Ask the broker directly, on this account's own host, with
       // one bounded attempt. Failures leave every ledger row unchanged.
+      // C9 fix round 2 (N5): the request time is the snapshot's read time.
+      const readAt = Date.now()
       const snapshot = await read(creds.host, creds.clientId, creds.clientSecret,
         creds.accessToken, accountId, 5_000, 0)
       if (!snapshot || String(snapshot.ctidTraderAccountId) !== accountId || snapshot.error ||
@@ -57,7 +59,7 @@ export async function reconcileCrossSideAccounts(db, baseCreds, deps = {}) {
       const namedPositions = named(positions)
       const namedOrders = named(orders)
       const result = db.transaction(() => reconcilePositions(db, namedPositions, namedOrders,
-        (key, value) => setAccountState(db, accountId, key, value), { accountId }))()
+        (key, value) => setAccountState(db, accountId, key, value), { accountId, readAt }))()
       return { accountId, result }
     } catch (error) {
       return { accountId, error: error?.message || String(error) }

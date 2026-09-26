@@ -684,6 +684,14 @@ const TABLES = `
   -- close-completeness cadence; on the account prefix alone that read grows
   -- with the whole entry ledger. Partial: most intents never record one.
   CREATE INDEX IF NOT EXISTS idx_entry_intents_position ON entry_intents(broker_position_id, account_id) WHERE broker_position_id IS NOT NULL;
+  -- C9 fix round 2 (N4): unsettledTickFires runs on EVERY evaluateTrade and
+  -- pre-gate call (risk.js countedPositionsWithTickFires). On the (account_id,
+  -- state) prefix it read every one of the account's intents in the fired
+  -- states, bar ones included, and filtered producer and time from the table:
+  -- measured ~1.9 ms at 10k and ~38 ms at 100k intents per account. Account,
+  -- producer, state and the window's lower bound are all index terms here.
+  -- IF NOT EXISTS: idempotent on every boot, existing databases included.
+  CREATE INDEX IF NOT EXISTS idx_entry_intents_account_producer ON entry_intents(account_id, producer_id, state, updated_at);
 
   -- P2b-1: the sidecar's execution-event journal, pulled like cpp_decisions.
   -- A late answer to a request that gave up, or an unsolicited fill, lands
