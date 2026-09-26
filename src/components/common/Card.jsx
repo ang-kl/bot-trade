@@ -79,17 +79,27 @@ export default function Card({
   // that would relabel every unlabelled card as an intentional decision.
   scope = undefined,
   pageScope = undefined,
+  // UI-3 (26-09 plan §8 item 3, "refresh only while expanded"): a card whose
+  // content polls (the blockers card) needs to know its OWN collapsed state
+  // to gate that poll — Card.jsx hides the body with display:none rather
+  // than unmounting it, so a child's own effect keeps running while hidden
+  // unless told to stop. Called once on mount with the initial value and
+  // again on every toggle; omitted, this changes nothing about Card's own
+  // behaviour.
+  onCollapsedChange = undefined,
   ...rest
 }) {
   const ref = useRef(null)
   const [popup, setPopup] = useState(null)
   const cardId = rest.id || null
   const [collapsed, setCollapsedRaw] = useState(() => !readCardOpen(cardId, !defaultCollapsed, storage))
+  useEffect(() => { onCollapsedChange?.(collapsed) }, []) // eslint-disable-line react-hooks/exhaustive-deps -- mount-only: the initial read, not a resubscribe on every render
   // Every setCollapsed call also writes the choice back, under this Card's
   // own id — a no-op when there is no id (card-open.js's own guard).
   const setCollapsed = (updater) => setCollapsedRaw(prev => {
     const next = typeof updater === 'function' ? updater(prev) : updater
     writeCardOpen(cardId, !next, storage)
+    onCollapsedChange?.(next)
     return next
   })
   const [maximized, setMaximized] = useState(false)

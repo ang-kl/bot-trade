@@ -50,12 +50,31 @@ const AGENT = process.env.AUDIT_AGENT_URL || 'https://sg-trade.up.railway.app'
 // is scripts/fixtures/cockpit-snapshot.json and says so in its meta.
 import { readFileSync } from 'node:fs'
 const FIXTURE = JSON.parse(readFileSync(new URL('./fixtures/cockpit-snapshot.json', import.meta.url), 'utf8'))
+// UI-3 (26-09 plan §8 item 3): the blockers card's own 15-row viewport
+// (scroll, never squash) can only be measured against ROWS — a `/performance`
+// pass with no agent renders the card empty, same blind spot the bound-
+// position fixture above fixed for the cockpit. Answered in BOTH modes so a
+// layout-only run still exercises it, the same treatment `?trade=` already
+// gets.
+const BLOCKER_FIXTURE = JSON.parse(readFileSync(new URL('./fixtures/blocker-report.json', import.meta.url), 'utf8'))
 const FIXTURE_AGENT = 'http://fixture-agent.invalid'
 await ctx.route('**', (route) => {
   const u = route.request().url()
   if (u.includes('localhost:4173')) return route.continue()
   if (/\/state\/position\/[^/]+\/cockpit/.test(u)) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FIXTURE) })
   if (/\/actions\/position-guard-get$/.test(u)) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, positionId: '1', guard: { trailing: { on: true, distancePips: 12 } }, beMoved: false, monitored: true }) })
+  // Every account/window/zone answers the same fixture — the audit measures
+  // layout, not report identity, and BlockerReport's own identity check
+  // (r.accountId === accountId, etc.) only cares that ONE consistent shape
+  // comes back for whatever it asked.
+  if (/\/state\/blocker-report/.test(u)) {
+    let query = {}
+    try { query = Object.fromEntries(new URL(u).searchParams) } catch { /* malformed query: fall through to the fixture's own accountId/from/to */ }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      ...BLOCKER_FIXTURE, accountId: query.account ?? BLOCKER_FIXTURE.accountId,
+      from: query.from ? Number(query.from) : BLOCKER_FIXTURE.from, to: query.to ? Number(query.to) : BLOCKER_FIXTURE.to,
+    }) })
+  }
   if (LIVE) return route.continue()
   return route.abort()
 })
@@ -83,11 +102,16 @@ for (const r of ROUTES) {
     p.on('pageerror', e => errs.push(String(e.message).slice(0, 110)))
     await p.setViewportSize({ width: w, height: 900 })
     const bound = /[?&]trade=/.test(r)
-    if (LIVE || bound) {
-      // Point the app at a real agent the way a browser would (or, for a
-      // bound-position route in layout mode, at the fixture host so the
-      // cockpit host issues the snapshot fetch the fixture answers), then
-      // reload so the pages fetch on mount.
+    // UI-3: any route that can mount the blockers card (today just
+    // /performance) also gets the fixture host, so its OWN unrelated fetches
+    // (trades, positions, risk-full, …) keep their existing behaviour —
+    // still aborted, still answered by `.catch(() => null)` — while
+    // /state/blocker-report specifically gets real rows to measure.
+    const perfFixture = r.startsWith('/performance')
+    if (LIVE || bound || perfFixture) {
+      // Point the app at a real agent the way a browser would (or, in
+      // layout mode, at the fixture host so the routes above answer it),
+      // then reload so the pages fetch on mount.
       await p.goto('http://localhost:4173/').catch(() => {})
       await p.evaluate((u) => localStorage.setItem('agent_url', u), LIVE ? AGENT : FIXTURE_AGENT)
       // agentConfigured() needs BOTH the url and a secret; the fixture host
@@ -95,7 +119,7 @@ for (const r of ROUTES) {
       if (!LIVE) await p.evaluate(() => localStorage.setItem('agent_secret', 'fixture'))
     }
     await p.goto('http://localhost:4173' + r).catch(() => {})
-    await p.waitForTimeout(LIVE ? 8000 : bound ? 1800 : 700)
+    await p.waitForTimeout(LIVE ? 8000 : (bound || perfFixture) ? 1800 : 700)
     if (bound) {
       // Open the Manage sheet so the PositionManager is measured WITH a
       // position (its guard fields answered by the fixture). A missing
@@ -115,6 +139,22 @@ for (const r of ROUTES) {
       const guard2 = await p.$('[data-guard-read]')
       const st = guard2 ? await guard2.getAttribute('data-guard-read') : 'absent'
       if (st !== 'stored') errs.push(`guard fields not filled from the fixture guard (data-guard-read=${st})`)
+    }
+    if (perfFixture) {
+      // UI-3: the blockers card starts COLLAPSED (PERF-1's own default), and
+      // BlockerReport only fetches while expanded — so, like the bound-
+      // position Manage click above, the card must be opened before its
+      // DataTable can be measured at all. The open choice PERSISTS
+      // (lib/card-open.js) across the widths this loop runs through in the
+      // same browser context, so a later width finds it already expanded —
+      // that is success, not the "missing control" failure a truly absent
+      // button would be.
+      const collapseBtn = await p.$('#sec-blockers button[aria-label="Collapse this section"]')
+      if (!collapseBtn) {
+        const expand = await p.$('#sec-blockers button[aria-label="Expand this section"]')
+        if (!expand) errs.push('the blockers card rendered no expand control (#sec-blockers)')
+        else { await expand.click().catch(e => errs.push('blockers expand click failed: ' + e.message)); await p.waitForTimeout(600) }
+      }
     }
     const m = await p.evaluate(() => {
       const de = document.documentElement, vw = de.clientWidth
@@ -209,14 +249,37 @@ for (const r of ROUTES) {
         else if (br && br.height > 0 && r.bottom > br.top + 1) fab = 'OVERLAPS-TABBAR'
         else fab = 'ok'
       }
-      return { ov: de.scrollWidth - de.clientWidth, wide: [...new Set(wide)].slice(0, 3), small, total, minPx, dupes, fab }
+      // UI-3 (26-09 plan §8 item 3): common/DataTable.jsx's own contract —
+      // a table with more than a 15-row viewport SCROLLS (both ways) instead
+      // of its columns SQUASHING. Squash is what the plan measured before
+      // this fix (columns down to 34-124px at 390px); scroll is the fix.
+      // Reported for every `.data-table-viewport` painted on the page, not
+      // only the blockers one, since every table this shell serves shares
+      // the same contract.
+      const dt = []
+      for (const el of document.querySelectorAll('.data-table-viewport')) {
+        if (!isShown(el)) continue
+        const scrolls = el.scrollHeight > el.clientHeight + 1
+        // .dt-icon-col (the Disclosure/Details column) is DELIBERATELY an
+        // icon-width column, not a data column that squashed — excluded so
+        // it cannot read as the same failure the plan measured (a SYMBOL or
+        // REASON column crushed to 34-124px).
+        let minCell = Infinity
+        for (const cell of el.querySelectorAll('th:not(.dt-icon-col),td:not(.dt-icon-col)')) {
+          const cw = cell.getBoundingClientRect().width
+          if (cw > 0 && cw < minCell) minCell = cw
+        }
+        const squashed = Number.isFinite(minCell) && minCell < 30
+        dt.push({ id: el.getAttribute('data-dt-viewport') || '(unnamed)', rows: el.querySelectorAll('tbody tr').length, scrolls, minCell: Number.isFinite(minCell) ? Math.round(minCell) : null, squashed })
+      }
+      return { ov: de.scrollWidth - de.clientWidth, wide: [...new Set(wide)].slice(0, 3), small, total, minPx, dupes, fab, dt }
     // A SWALLOWED EXCEPTION USED TO READ AS HEALTH. The old sentinel was
     // ov:0, dupes:[], fab:'none' — every one of which is a PASSING value, so a
     // crashed evaluate printed a clean line and never incremented `failed`.
     // The only tell was `0/0` in a column nobody reads. `fab:'none'` is
     // legitimate for a route that mounts no FAB, which is precisely why it
     // must not double as the error value. The sentinel now fails.
-    }).catch(e => ({ ov: 0, wide: [], small: 0, total: 0, minPx: 0, dupes: [], fab: 'EVAL-FAILED', evalError: String(e?.message || e) }))
+    }).catch(e => ({ ov: 0, wide: [], small: 0, total: 0, minPx: 0, dupes: [], fab: 'EVAL-FAILED', dt: [], evalError: String(e?.message || e) }))
     // bodyLen is the blank-page canary: a crashed React tree still renders the
     // skip-link and nothing else, which is ~20 characters.
     const bodyLen = await p.evaluate(() => document.body.innerText.trim().length).catch(() => 0)
@@ -228,10 +291,17 @@ for (const r of ROUTES) {
     // off-host request, so a data-driven page renders near-empty BY DESIGN and
     // failing on it would make the layout pass permanently red.
     const fabBad = m.fab && m.fab !== 'ok' && m.fab !== 'none'
-    if (errs.length || dupes.length || fabBad || (LIVE && bodyLen < 200)) failed++
+    // UI-3: squashed columns are a failure at any row count; a table that
+    // OUGHT to scroll (more than the 15-row viewport) but does not is the
+    // other half of the same contract. A table with 15 or fewer rows
+    // legitimately shows no scrollbar — that is not a defect.
+    const dtBad = (m.dt || []).filter(t => t.squashed || (t.rows > 15 && !t.scrolls))
+    if (errs.length || dupes.length || fabBad || dtBad.length || (LIVE && bodyLen < 200)) failed++
     console.log(`${r} @${w} ov=${m.ov} touch<44=${m.small}/${m.total} minFont=${m.minPx} bodyLen=${bodyLen} fab=${m.fab}`
       + `${errs.length ? ' ERR: ' + errs[0] : ''}${dupes.length ? ' DUP: ' + dupes.join(',') : ''}`
       + `${m.wide.length ? ' WIDE: ' + m.wide.join(' | ') : ''}`
+      + `${m.dt?.length ? ' DT: ' + m.dt.map(t => `${t.id}(rows=${t.rows},scroll=${t.scrolls},minCell=${t.minCell})`).join(',') : ''}`
+      + `${dtBad.length ? ' DT-FAIL: ' + dtBad.map(t => t.id).join(',') : ''}`
       + `${m.evalError ? ' EVAL: ' + m.evalError : ''}`)
     await p.close()
   }
@@ -240,6 +310,6 @@ await b.close()
 // Duplicate renders and page errors fail in BOTH modes; the blank-page canary
 // only means something in live mode (layout mode renders empty by design).
 if (failed) {
-  console.error(`\nFAILED: ${failed} route/width combination(s) threw, duplicated a singleton, misplaced the FAB stack, or rendered blank.`)
+  console.error(`\nFAILED: ${failed} route/width combination(s) threw, duplicated a singleton, misplaced the FAB stack, squashed or failed to scroll a DataTable, or rendered blank.`)
   process.exit(1)
 }

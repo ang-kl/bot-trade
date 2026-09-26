@@ -1,0 +1,487 @@
+{
+  "meta": {
+    "schemaVersion": 1,
+    "dataMode": "fixture",
+    "note": "npm run audit:ui fixture \u2014 UI-3 (26-09 plan \u00a78 item 3): enough folded rows across two days to exercise the 15-row viewport's scroll (never squash) at 390px, plus one roster-only standing-line day. Values are a fixture, not a record."
+  },
+  "status": "complete",
+  "accountId": "all",
+  "timeZone": "Asia/Singapore",
+  "summary": {
+    "upstream_stop": {
+      "records": 24,
+      "recordedEvaluations": 24
+    },
+    "risk_refusal": {
+      "records": 0,
+      "recordedEvaluations": 0
+    },
+    "post_approval_failure": {
+      "records": 0,
+      "recordedEvaluations": 0
+    },
+    "tick_refusal": {
+      "records": 0,
+      "recordedEvaluations": 0
+    },
+    "approved": {
+      "records": 0,
+      "recordedEvaluations": 0
+    },
+    "placement_receipt": {
+      "records": 0,
+      "recordedEvaluations": 0
+    },
+    "other_stop": {
+      "records": 12,
+      "recordedEvaluations": 12
+    }
+  },
+  "totalRecords": 34,
+  "unattributedRecordsInWindow": 0,
+  "countBasis": "Complete retained records first created in the requested window (fixture).",
+  "scopeNote": "Every retained record is included (fixture).",
+  "unsplitRecordsInWindow": 0,
+  "unsplitNote": "Records written before the attribution fix cannot be split.",
+  "rosterWide": {
+    "records": 4,
+    "entryStops": 4,
+    "includedInTotals": true,
+    "note": "Roster-wide stops apply to every account and are charged to none.",
+    "byStage": [
+      {
+        "kind": "upstream_stop",
+        "stage": "armed_scope_prefilter",
+        "records": 4,
+        "recordedAgainstAnAccount": 0,
+        "lastAt": "2026-09-26T06:44:00Z",
+        "lastReason": "no armed timeframe"
+      }
+    ]
+  },
+  "records": [],
+  "offset": 0,
+  "limit": 50,
+  "hasMore": false,
+  "nextOffset": null,
+  "tick": {
+    "evaluationNote": "Zero sidecar refusals on an account not evaluated is not a pass (fixture).",
+    "accounts": []
+  },
+  "days": [
+    {
+      "key": "2026-09-26",
+      "label": "Sat 26 Sep 2026",
+      "ms": 1790200000000,
+      "totalRecords": 30,
+      "standing": [],
+      "folded": [
+        {
+          "count": 3,
+          "firstAt": "2026-09-26T06:05:00Z",
+          "lastAt": "2026-09-26T06:07:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:1",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "46130058",
+            "attribution": "account",
+            "symbol": "BTCUSD",
+            "at": "2026-09-26T06:07:00Z",
+            "firstBlocker": {
+              "reason": "fib_confluence OFF on this account",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 3,
+            "diagnostics": [
+              {
+                "stage": "upstream",
+                "status": "stopped"
+              },
+              {
+                "stage": "risk_gate",
+                "status": "not_evaluated"
+              },
+              {
+                "stage": "submission",
+                "status": "not_evaluated"
+              }
+            ],
+            "diagnosticNote": "Only recorded outcomes are shown (fixture)."
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:12:00Z",
+          "lastAt": "2026-09-26T06:12:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:2",
+            "kind": "risk_refusal",
+            "stage": "risk_gate",
+            "accountId": "46130058",
+            "attribution": "account",
+            "symbol": "ETHUSD",
+            "at": "2026-09-26T06:12:00Z",
+            "firstBlocker": {
+              "reason": "tp_required",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 2,
+          "firstAt": "2026-09-26T06:15:00Z",
+          "lastAt": "2026-09-26T06:16:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:3",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "47790949",
+            "attribution": "account",
+            "symbol": "GBPUSD",
+            "at": "2026-09-26T06:16:00Z",
+            "firstBlocker": {
+              "reason": "ema_pullback OFF on this account",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 2,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 12,
+          "firstAt": "2026-09-26T06:05:00Z",
+          "lastAt": "2026-09-26T06:45:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:4",
+            "kind": "other_stop",
+            "stage": "fast_monitor",
+            "accountId": "46130058",
+            "attribution": "account",
+            "symbol": "USDJPY",
+            "at": "2026-09-26T06:45:00Z",
+            "firstBlocker": null,
+            "recordedEvaluations": 12,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:20:00Z",
+          "lastAt": "2026-09-26T06:20:00Z",
+          "preFixLabel": "cannot be split (before #1115)",
+          "sample": {
+            "recordId": "decision_log:5",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "46130058",
+            "attribution": "account",
+            "symbol": "AUDUSD",
+            "at": "2026-09-26T06:20:00Z",
+            "firstBlocker": {
+              "reason": "off on 11",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:25:00Z",
+          "lastAt": "2026-09-26T06:25:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:6",
+            "kind": "upstream_stop",
+            "stage": "margin_pool",
+            "accountId": "46980058",
+            "attribution": "account",
+            "symbol": "USDCAD",
+            "at": "2026-09-26T06:25:00Z",
+            "firstBlocker": {
+              "reason": "free margin exhausted",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:26:00Z",
+          "lastAt": "2026-09-26T06:26:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:7",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "46130058",
+            "attribution": "account",
+            "symbol": "NZDUSD",
+            "at": "2026-09-26T06:26:00Z",
+            "firstBlocker": {
+              "reason": "donchian OFF on this account",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:27:00Z",
+          "lastAt": "2026-09-26T06:27:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:8",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "47790949",
+            "attribution": "account",
+            "symbol": "USDCHF",
+            "at": "2026-09-26T06:27:00Z",
+            "firstBlocker": {
+              "reason": "rsi2 OFF on this account",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:28:00Z",
+          "lastAt": "2026-09-26T06:28:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:10",
+            "kind": "risk_refusal",
+            "stage": "risk_gate",
+            "accountId": "46980058",
+            "attribution": "account",
+            "symbol": "XAUUSD",
+            "at": "2026-09-26T06:28:00Z",
+            "firstBlocker": {
+              "reason": "tp_required",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:29:00Z",
+          "lastAt": "2026-09-26T06:29:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:11",
+            "kind": "upstream_stop",
+            "stage": "margin_pool",
+            "accountId": "46130058",
+            "attribution": "account",
+            "symbol": "USDCNH",
+            "at": "2026-09-26T06:29:00Z",
+            "firstBlocker": {
+              "reason": "free margin exhausted",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:30:00Z",
+          "lastAt": "2026-09-26T06:30:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:12",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "47790949",
+            "attribution": "account",
+            "symbol": "EURJPY",
+            "at": "2026-09-26T06:30:00Z",
+            "firstBlocker": {
+              "reason": "vwap_trend OFF on this account",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:31:00Z",
+          "lastAt": "2026-09-26T06:31:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:13",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "46980058",
+            "attribution": "account",
+            "symbol": "GBPJPY",
+            "at": "2026-09-26T06:31:00Z",
+            "firstBlocker": {
+              "reason": "vp_value OFF on this account",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:32:00Z",
+          "lastAt": "2026-09-26T06:32:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:14",
+            "kind": "upstream_stop",
+            "stage": "margin_pool",
+            "accountId": "46130058",
+            "attribution": "account",
+            "symbol": "CADJPY",
+            "at": "2026-09-26T06:32:00Z",
+            "firstBlocker": {
+              "reason": "free margin exhausted",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:33:00Z",
+          "lastAt": "2026-09-26T06:33:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:15",
+            "kind": "risk_refusal",
+            "stage": "risk_gate",
+            "accountId": "47790949",
+            "attribution": "account",
+            "symbol": "AVGO.US",
+            "at": "2026-09-26T06:33:00Z",
+            "firstBlocker": {
+              "reason": "tp_required",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:34:00Z",
+          "lastAt": "2026-09-26T06:34:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:16",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "46980058",
+            "attribution": "account",
+            "symbol": "MSFT.US",
+            "at": "2026-09-26T06:34:00Z",
+            "firstBlocker": {
+              "reason": "fib_confluence OFF on this account",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        },
+        {
+          "count": 1,
+          "firstAt": "2026-09-26T06:35:00Z",
+          "lastAt": "2026-09-26T06:35:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:17",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "46130058",
+            "attribution": "account",
+            "symbol": "UNH.US",
+            "at": "2026-09-26T06:35:00Z",
+            "firstBlocker": {
+              "reason": "ema_pullback OFF on this account",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 1,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        }
+      ]
+    },
+    {
+      "key": "2026-09-25",
+      "label": "Fri 25 Sep 2026",
+      "ms": 1790110000000,
+      "totalRecords": 4,
+      "standing": [
+        {
+          "count": 4,
+          "firstAt": "2026-09-25T22:40:00Z",
+          "lastAt": "2026-09-25T22:47:00Z",
+          "sample": {
+            "kind": "upstream_stop",
+            "stage": "armed_scope_prefilter",
+            "reason": "no armed timeframe",
+            "firstBlocker": null
+          }
+        }
+      ],
+      "folded": [
+        {
+          "count": 4,
+          "firstAt": "2026-09-25T22:40:00Z",
+          "lastAt": "2026-09-25T22:47:00Z",
+          "preFixLabel": null,
+          "sample": {
+            "recordId": "decision_log:9",
+            "kind": "upstream_stop",
+            "stage": "stage_matrix",
+            "accountId": "46130058",
+            "attribution": "account",
+            "symbol": "EURUSD",
+            "at": "2026-09-25T22:47:00Z",
+            "firstBlocker": {
+              "reason": "off on 11",
+              "status": "recorded"
+            },
+            "recordedEvaluations": 4,
+            "diagnostics": [],
+            "diagnosticNote": "fixture"
+          }
+        }
+      ]
+    }
+  ]
+}

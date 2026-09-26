@@ -4,6 +4,7 @@ import { getState } from '../db.js'
 import { engineStatusFor, basesFor } from './entry-mode.js'
 import { tickReadinessFor } from './tick-readiness.js'
 import { tickEntryReceipts, TICK_RECEIPT_MAX_AGE_MS } from './tick-entry-work.js'
+import { isValidTimeZone, toMs as zoneToMs, dayKeyInZone, dayLabelInZone } from '../lib/date-zones.js'
 
 const DAY = 86400_000
 const parse = value => { try { return value?.length <= 16_000 ? JSON.parse(value) : null } catch { return null } }
@@ -106,12 +107,23 @@ export function blockerEvidence(row) {
  * The request checks, pure (no SQL), so the route can answer 400 on the main
  * thread before handing the read to the report worker. Whether the account
  * is REGISTERED is a SQL read and stays inside blockerReport (the worker).
+ *
+ * `timeZone` (UI-3) is OPTIONAL and, when omitted, changes nothing about the
+ * returned shape — scanner-work.js and watchdog-contract.js call this (via
+ * entryDiagnostics/blockerReport) without it and must keep getting exactly
+ * the same object back. Only the blocker-report ROUTE passes it, always
+ * explicitly, so day grouping is never silently on or off depending on which
+ * caller happened to omit a field.
  */
-export function validateBlockerRequest({ accountId, from, to = Date.now(), limit = 50, offset = 0, now = Date.now() } = {}) {
+export function validateBlockerRequest({ accountId, from, to = Date.now(), limit = 50, offset = 0, now = Date.now(), timeZone } = {}) {
   if (accountId !== 'all' && !/^[1-9]\d*$/.test(String(accountId))) throw new RangeError('explicit account or all required')
   if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from >= to || to - from > 90 * DAY
     || to > now + 60_000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 200
     || !Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) throw new RangeError('invalid reporting window or page')
+  if (timeZone !== undefined) {
+    if (!isValidTimeZone(timeZone)) throw new RangeError('invalid time zone')
+    return { accountId: String(accountId), from, to, limit, offset, timeZone }
+  }
   return { accountId: String(accountId), from, to, limit, offset }
 }
 
@@ -220,8 +232,99 @@ const windowParams = (accountId, from, to) => {
 }
 const julianToIso = jd => Number.isFinite(jd) ? new Date(Math.round((jd - 2440587.5) * DAY)).toISOString() : null
 
+// ---------------------------------------------------------------------------
+// V3 UI-3 (26-09 plan §8 item 3): day-grouped, folded view of the population
+// blockerReport() already scans in full for `groups`/`counts`/`byStage`.
+// Computed ONLY when a caller passes `timeZone` — today only the
+// /state/blocker-report route does, so scanner-work.js and watchdog-
+// contract.js (via entryDiagnostics) are byte-for-byte unaffected, keeping
+// the watchdog contract's size and cpp-verify's relayed counts unchanged.
+// ---------------------------------------------------------------------------
+const FOLD_SEP = '\u0000'
+// §3's fold key: (account/roster scope, symbol, timeframe, strategy, stage,
+// reason). unsplitHistory rides along so a pre-#1115 row never silently
+// merges with a post-fix row that otherwise looks identical (CLAUDE.md §6:
+// say which field is wrong before merging anything about it).
+function foldKeyOf(row) {
+  return [row.attribution, row.accountId, row.symbol, row.timeframe, row.strategy, row.stage, row.reason, row.unsplitHistory ? 1 : 0].join(FOLD_SEP)
+}
+
+/**
+ * Fold blockerEvidence()-shaped rows into day buckets in `timeZone`, newest
+ * day first. A row whose time cannot be parsed gets its own trailing bucket
+ * (key null) instead of silently joining a real day or vanishing — the same
+ * rule data-table-groups.js's client-side twin follows.
+ */
+export function foldBlockerRowsByDay(evidenceRows, timeZone) {
+  const byDay = new Map()
+  let unparseable = null
+  for (const row of evidenceRows) {
+    const ms = zoneToMs(row.at)
+    const dayKey = ms == null ? null : dayKeyInZone(ms, timeZone)
+    let day
+    if (dayKey == null) {
+      if (!unparseable) unparseable = { key: null, label: 'Unparseable time', ms: null, folded: new Map() }
+      day = unparseable
+    } else {
+      if (!byDay.has(dayKey)) byDay.set(dayKey, { key: dayKey, label: dayLabelInZone(ms, timeZone), ms, folded: new Map() })
+      day = byDay.get(dayKey)
+    }
+    const fk = foldKeyOf(row)
+    const existing = day.folded.get(fk)
+    if (existing) {
+      existing.count++
+      if (ms != null && (existing.lastMs == null || ms > existing.lastMs)) { existing.lastMs = ms; existing.sample = row }
+      if (ms != null && (existing.firstMs == null || ms < existing.firstMs)) existing.firstMs = ms
+    } else {
+      day.folded.set(fk, { count: 1, firstMs: ms, lastMs: ms, sample: row })
+    }
+  }
+  const days = [...byDay.values()].sort((a, b) => b.ms - a.ms)
+  if (unparseable) days.push(unparseable)
+  return days.map(d => ({
+    key: d.key, label: d.label, ms: d.ms,
+    count: [...d.folded.values()].reduce((n, f) => n + f.count, 0),
+    folded: [...d.folded.values()].sort((a, b) => b.count - a.count).map(f => ({
+      count: f.count,
+      firstAt: f.firstMs != null ? new Date(f.firstMs).toISOString() : null,
+      lastAt: f.lastMs != null ? new Date(f.lastMs).toISOString() : null,
+      sample: f.sample,
+    })),
+  }))
+}
+
+/**
+ * §3's per-row pre-fix badge: "'all-accounts check' if every account had the
+ * strategy OFF at that time, else 'cannot be split (before #1115)'". Reads
+ * only the arming ledger (arming-log.js); never throws — a strategy or a
+ * window the ledger cannot speak to reads as NOT verified, never as a guess.
+ */
+export function verifiedOffEverywhere(db, strategy, atIso) {
+  if (!strategy || !atIso) return false
+  try {
+    const accounts = db.prepare('SELECT account_id FROM accounts').all().map(r => String(r.account_id))
+    if (accounts.length === 0) return false
+    for (const acct of accounts) {
+      const last = db.prepare(`
+        SELECT to_value FROM arming_log
+        WHERE scope = ? AND kind = 'strategy' AND key = ? AND stage = 'trade' AND decision != 'held'
+          AND julianday(at) <= julianday(?)
+        ORDER BY id DESC LIMIT 1
+      `).get(acct, strategy, atIso)
+      if (!last || last.to_value !== 'false') return false
+    }
+    return true
+  } catch { return false }
+}
+
+/** null when the row is unaffected by the pre-#1115 attribution bug (it never needs a badge). */
+export function preFixLabel(db, sample) {
+  if (!sample?.unsplitHistory) return null
+  return verifiedOffEverywhere(db, sample.strategy, sample.at) ? 'all-accounts check' : 'cannot be split (before #1115)'
+}
+
 export function blockerReport(db, options = {}) {
-  const { accountId, from, to, limit, offset } = validateBlockerRequest(options)
+  const { accountId, from, to, limit, offset, timeZone } = validateBlockerRequest(options)
   const now = options.now ?? Date.now()
   if (accountId !== 'all' && !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(accountId)) throw new RangeError('account not registered')
   const all = accountId === 'all'
@@ -276,7 +379,34 @@ export function blockerReport(db, options = {}) {
     scopeNote: all
       ? 'Every retained record is included. Roster-wide stops are grouped as roster-wide (account NULL), never under an account; records with no account that are not roster-wide stay explicitly unattributed and are counted separately.'
       : 'Only records stored against this registered account are counted here. Roster-wide stops apply to every account and are reported beside these counts, not in them; unassigned records are excluded and counted separately.',
+    timeZone: timeZone ?? null,
+    days: timeZone ? dayGroupedView(db, records, params, timeZone) : null,
   }
+}
+
+/**
+ * V3 UI-3: `records` (this scope's population, already excluding roster-only
+ * stages for an account scope — the SAME predicate `groups`/`totalRecords`
+ * above use) folded by day, PLUS roster-wide standing lines for that day
+ * (kept OUTSIDE totalRecords, matching how `rosterWide` sits beside the
+ * top-level summary rather than inside it). A day with only standing lines
+ * still appears — never dropped for reading zero folded records.
+ */
+function dayGroupedView(db, records, params, timeZone) {
+  const allRows = db.prepare(`${records} SELECT * FROM records ORDER BY julianday(created_at) DESC, source, id DESC`).all(params)
+  const foldedDays = foldBlockerRowsByDay(allRows.map(blockerEvidence), timeZone)
+  const standingRows = db.prepare(`WITH records AS (${decisionArm(ROSTER_FILTER)}) SELECT * FROM records ORDER BY julianday(created_at) DESC, id DESC`).all(params)
+  const standingDays = foldBlockerRowsByDay(standingRows.map(blockerEvidence), timeZone)
+  const merged = new Map()
+  for (const d of foldedDays) merged.set(d.key, { key: d.key, label: d.label, ms: d.ms, totalRecords: d.count, folded: d.folded, standing: [] })
+  for (const d of standingDays) {
+    const existing = merged.get(d.key)
+    if (existing) existing.standing = d.folded
+    else merged.set(d.key, { key: d.key, label: d.label, ms: d.ms, totalRecords: 0, folded: [], standing: d.folded })
+  }
+  return [...merged.values()]
+    .map(d => ({ ...d, folded: d.folded.map(f => ({ ...f, preFixLabel: preFixLabel(db, f.sample) })) }))
+    .sort((a, b) => (a.ms == null ? 1 : b.ms == null ? -1 : b.ms - a.ms))
 }
 
 /**

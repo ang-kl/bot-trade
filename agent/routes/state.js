@@ -147,7 +147,13 @@ export default function stateRouter(db) {
       request = validateBlockerRequest({ accountId: req.query.account,
         from: Number(req.query.from), to: Number(req.query.to),
         limit: req.query.limit == null ? 50 : Number(req.query.limit),
-        offset: req.query.offset == null ? 0 : Number(req.query.offset) })
+        offset: req.query.offset == null ? 0 : Number(req.query.offset),
+        // V3 UI-3: day grouping is opt-in at the SERVICE layer (blocker-
+        // report.js), but standard at this ROUTE — the client always sends
+        // its own resolved zone, defaulting to the plan's own default
+        // (Asia/Singapore) when a caller omits it. An invalid zone is a 400
+        // here, thrown by validateBlockerRequest before any SQL runs.
+        timeZone: req.query.timeZone == null ? 'Asia/Singapore' : String(req.query.timeZone) })
     } catch (error) {
       return res.status(400).json({ error: error.message })
     }

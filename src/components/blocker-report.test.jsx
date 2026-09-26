@@ -51,6 +51,62 @@ test('placement receipts are labelled as placements and never as new risk approv
   expect(html).not.toContain('risk_gate: approved')
 })
 
+// ---------------------------------------------------------------------------
+// V3 UI-3 (26-09 plan §8 item 3): server-grouped days on the shared DataTable.
+// Every test above hands BlockerReading a report with no `.days`, and the
+// old flat table still renders for it (asserted above); these hand it a
+// server-shaped `days` array instead.
+// ---------------------------------------------------------------------------
+const summaryOf = (overrides = {}) => Object.fromEntries(['upstream_stop', 'risk_refusal', 'post_approval_failure', 'tick_refusal', 'approved', 'placement_receipt', 'other_stop'].map(k => [k, { records: overrides[k] ?? 0 }]))
+const dayReport = (days, overrides = {}) => ({
+  totalRecords: days.reduce((n, d) => n + d.totalRecords, 0), offset: 0, unattributedRecordsInWindow: 0,
+  summary: summaryOf(), records: [], timeZone: 'Asia/Singapore', days, ...overrides,
+})
+
+test('UI-3: a folded day group renders its label, its day count, and each folded row once (not once per repeat)', () => {
+  const days = [{ key: '2026-09-26', label: 'Sat 26 Sep 2026', ms: 1, totalRecords: 42, standing: [], folded: [
+    { count: 42, firstAt: '2026-09-26T06:05:00.000Z', lastAt: '2026-09-26T06:45:00.000Z', preFixLabel: null,
+      sample: { recordId: 'decision_log:1', kind: 'upstream_stop', stage: 'stage_matrix', accountId: '11', attribution: 'account',
+        symbol: 'BTCUSD', at: '2026-09-26T06:45:00.000Z', firstBlocker: { reason: 'off', status: 'recorded' }, recordedEvaluations: 1, diagnostics: [] } },
+  ] }]
+  const html = renderToStaticMarkup(<BlockerReading report={dayReport(days)} />)
+  expect(html).toContain('Sat 26 Sep 2026')
+  expect(html).toContain('42 records this day')
+  expect(html).toContain('×42')
+  expect((html.match(/BTCUSD/g) || []).length).toBe(1)
+})
+
+test('UI-3: a pre-fix badge shows for a flagged fold entry and never for a clean one', () => {
+  const foldedWithBadge = { count: 1, firstAt: 'x', lastAt: 'x', preFixLabel: 'cannot be split (before #1115)',
+    sample: { recordId: 'decision_log:1', kind: 'upstream_stop', stage: 'stage_matrix', accountId: '11', attribution: 'account',
+      symbol: 'EURUSD', at: '2026-09-20T02:00:00.000Z', firstBlocker: { reason: 'off', status: 'recorded' }, recordedEvaluations: 1, diagnostics: [] } }
+  const clean = { ...foldedWithBadge, preFixLabel: null, sample: { ...foldedWithBadge.sample, recordId: 'decision_log:2' } }
+  const days = [{ key: '2026-09-20', label: 'Sun 20 Sep 2026', ms: 1, totalRecords: 2, standing: [], folded: [foldedWithBadge, clean] }]
+  const html = renderToStaticMarkup(<BlockerReading report={dayReport(days)} />)
+  expect(html).toContain('cannot be split (before #1115)')
+})
+
+test('UI-3: a roster-only day (no folded rows) still renders its standing lines, never "No retained decision records"', () => {
+  const days = [{ key: '2026-09-26', label: 'Sat 26 Sep 2026', ms: 1, totalRecords: 0, folded: [],
+    standing: [{ count: 5, firstAt: 'x', lastAt: 'y', sample: { kind: 'upstream_stop', stage: 'armed_scope_prefilter', reason: 'no armed timeframe', firstBlocker: null } }] }]
+  const html = renderToStaticMarkup(<BlockerReading report={dayReport(days)} />)
+  expect(html).toContain('Sat 26 Sep 2026')
+  expect(html).toContain('Applies to every account')
+  expect(html).toContain('armed_scope_prefilter')
+  expect(html).not.toContain('No retained decision records in this window')
+})
+
+test('UI-3: a fast_monitor fold renders as a plain count with no expandable detail', () => {
+  const days = [{ key: '2026-09-26', label: 'Sat 26 Sep 2026', ms: 1, totalRecords: 1, standing: [], folded: [
+    { count: 12, firstAt: 'x', lastAt: 'y', preFixLabel: null,
+      sample: { recordId: 'decision_log:9', kind: 'other_stop', stage: 'fast_monitor', accountId: '11', attribution: 'account',
+        symbol: 'EURUSD', at: 'x', firstBlocker: null, recordedEvaluations: 1, diagnostics: [] } },
+  ] }]
+  const html = renderToStaticMarkup(<BlockerReading report={dayReport(days)} />)
+  expect(html).toContain('managed, ×12')
+  expect(html).not.toContain('Show details')
+})
+
 test('V3 C4: tick sidecar refusals are counted under their own label, and an account the sidecar never checked reads "not evaluated"', () => {
   const report = {
     totalRecords: 2, offset: 0, unattributedRecordsInWindow: 0,

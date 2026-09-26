@@ -1,12 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { initDB, setState } from '../db.js'
-import { blockerReport, tickEntryEvaluation, validateBlockerRequest, entryDiagnostics, TICK_EVIDENCE_CHECKS } from './blocker-report.js'
+import { blockerReport, tickEntryEvaluation, validateBlockerRequest, entryDiagnostics, TICK_EVIDENCE_CHECKS, verifiedOffEverywhere, preFixLabel } from './blocker-report.js'
 import { engineStatusFor, writeEngineStatus } from './entry-mode.js'
 import { recordTickEntryWork } from './tick-entry-work.js'
 import { profileHashFull, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
 import { recordDecision } from './decision-log.js'
 import { entryActivityBlocker } from './scanner-work.js'
+import { recordArmingChange } from './arming-log.js'
 
 const now = Date.parse('2026-09-22T12:00:00Z'), from = now - 3600_000
 function fixture(t) {
@@ -375,4 +378,138 @@ test('V3 WEB-1: the no_orders blocker line names the roster-wide stop when the a
     'stage_matrix ×1 of 1 entry stops since session open; latest stage_matrix: recorded reason; roster-wide (every account): armed_scope_prefilter ×2 of 4')
   db.prepare("DELETE FROM decision_log WHERE stage IN ('armed_scope_prefilter', 'horizon') OR (stage = 'stage_matrix' AND account_id IS NULL)").run()
   assert.equal(entryActivityBlocker(read({ accountId: '11' })), 'no_recorded_entry_stop_since_session_open')
+})
+
+// ---------------------------------------------------------------------------
+// V3 UI-3 (26-09 plan §8 item 3): day-grouped, folded blockers with server
+// grouping. `timeZone` is opt-in — every test above calls `read()` (the
+// fixture's helper) without it and gets the unchanged report; these tests
+// pass it explicitly.
+// ---------------------------------------------------------------------------
+
+test('UI-3: day totals equal totalRecords, in both an account scope and the all-accounts scope', t => {
+  const { risk, stop, read } = fixture(t)
+  stop('armed_scope_prefilter') // ROSTER_ONLY: roster-wide regardless of the stored account — excluded from an account scope's own totals
+  risk('11', 'a', 0); risk('11', 'a', 0); risk('11', 'b', 0)
+  risk('22', 'c', 0)
+  const own = read({ accountId: '11', timeZone: 'Asia/Singapore' })
+  const ownDayTotal = own.days.reduce((n, d) => n + d.totalRecords, 0)
+  assert.equal(ownDayTotal, own.totalRecords)
+  assert.equal(own.totalRecords, 3, 'the roster-wide stop is not this account\'s')
+  const all = read({ accountId: 'all', timeZone: 'Asia/Singapore' })
+  const allDayTotal = all.days.reduce((n, d) => n + d.totalRecords, 0)
+  assert.equal(allDayTotal, all.totalRecords)
+  assert.equal(all.totalRecords, 5)
+})
+
+test('UI-3: account and roster-wide rows never fold together even when every other field matches', t => {
+  const { db, read } = fixture(t)
+  // Same symbol/timeframe/strategy/stage/reason; one roster-wide (no
+  // account), one on account 11 — must stay two distinct folded entries.
+  db.prepare("INSERT INTO decision_log (account_id,symbol,stage,decision,reason,created_at) VALUES (NULL,'EURUSD','armed_scope_prefilter','skip','same text','2026-09-22 11:30:00')").run()
+  db.prepare("INSERT INTO decision_log (account_id,symbol,stage,decision,reason,created_at) VALUES ('11','EURUSD','stage_matrix','skip','same text','2026-09-22 11:31:00')").run()
+  const all = read({ accountId: 'all', timeZone: 'Asia/Singapore' })
+  const day = all.days.find(d => d.totalRecords > 0)
+  assert.ok(day, 'a day with folded records exists')
+  const scopes = day.folded.map(f => f.sample.attribution).sort()
+  assert.deepEqual(scopes, ['account', 'roster'], 'RED if the two rows folded into one bucket')
+})
+
+test('UI-3: an invalid time zone is refused with a RangeError, not silently treated as UTC or the default', t => {
+  const { read } = fixture(t)
+  assert.throws(() => validateBlockerRequest({ accountId: '11', from, to: now, now, timeZone: 'Not/AZone' }), RangeError)
+  assert.throws(() => read({ timeZone: 'Mars/Colony' }), RangeError)
+  // Omitting it entirely stays the old, ungrouped shape — no zone default is invented.
+  assert.deepEqual(validateBlockerRequest({ accountId: '11', from, to: now, now }), { accountId: '11', from, to: now, limit: 50, offset: 0 })
+})
+
+test('UI-3: a roster-only scope shows standing lines for a day with no folded records of its own', t => {
+  const { db, read } = fixture(t)
+  // Account 11 has NOTHING on this day; only a roster-wide stop fires.
+  db.prepare("INSERT INTO decision_log (account_id,symbol,stage,decision,reason,created_at) VALUES (NULL,'EURUSD','armed_scope_prefilter','skip','no armed timeframe','2026-09-22 11:30:00')").run()
+  const own = read({ accountId: '11', timeZone: 'Asia/Singapore' })
+  assert.equal(own.totalRecords, 0)
+  assert.equal(own.days.length, 1, 'the day is not silently dropped for reading zero folded records')
+  const [day] = own.days
+  assert.equal(day.totalRecords, 0)
+  assert.equal(day.folded.length, 0)
+  assert.equal(day.standing.length, 1)
+  assert.equal(day.standing[0].count, 1)
+  assert.equal(day.standing[0].sample.stage, 'armed_scope_prefilter')
+})
+
+test('UI-3: a pre-fix row (before any arming-log evidence) reads "cannot be split"; verified off-everywhere reads "all-accounts check"', t => {
+  const { db, stop, read } = fixture(t)
+  // The pre-#1115 shape: stage_matrix recorded WITH an account, but the
+  // attribution mark absent (unsplitHistory === true) — same raw-insert
+  // shape (no detail_json) as the existing "cannot be split" test above,
+  // which is what an unmarked, pre-#1115 row actually looked like.
+  stop('stage_matrix', '11')
+  db.prepare("UPDATE decision_log SET strategy = 'fib_confluence', created_at = '2026-09-20 02:00:00' WHERE id = last_insert_rowid()").run()
+  // No arming_log rows exist at all yet: the ledger cannot verify anything
+  // this far back ("the log starts on 17-09" — but even so, nothing was ever
+  // written for this strategy), so the badge must default to unverified.
+  // The fixture's own window ends at now-1h; widen it here to reach the
+  // pre-fix row's actual (much earlier) timestamp.
+  const wideFrom = Date.parse('2026-09-20T00:00:00Z')
+  let r = read({ accountId: '11', timeZone: 'Asia/Singapore', from: wideFrom })
+  let entry = r.days.flatMap(d => d.folded).find(f => f.sample.stage === 'stage_matrix')
+  assert.equal(entry.preFixLabel, 'cannot be split (before #1115)')
+  assert.equal(verifiedOffEverywhere(db, 'fib_confluence', '2026-09-20T02:00:00.000Z'), false)
+  // Now every registered account (11 and 22) is recorded OFF before that
+  // time: the ledger CAN verify it, and the badge upgrades.
+  for (const acct of ['11', '22']) {
+    recordArmingChange(db, { scope: acct, kind: 'strategy', key: 'fib_confluence', stage: 'trade', from: true, to: false, actor: 'owner_route', reason: 'retire the intraday paths' })
+    db.prepare("UPDATE arming_log SET at = '2026-09-20 01:00:00' WHERE id = last_insert_rowid()").run()
+  }
+  assert.equal(verifiedOffEverywhere(db, 'fib_confluence', '2026-09-20T02:00:00.000Z'), true)
+  r = read({ accountId: '11', timeZone: 'Asia/Singapore', from: wideFrom })
+  entry = r.days.flatMap(d => d.folded).find(f => f.sample.stage === 'stage_matrix')
+  assert.equal(entry.preFixLabel, 'all-accounts check')
+  // A row with a clean (post-fix) attribution never gets a badge at all.
+  assert.equal(preFixLabel(db, { unsplitHistory: false, strategy: 'fib_confluence', at: '2026-09-20 02:00:00' }), null)
+})
+
+// Mutation check (CLAUDE.md #1): confirm the fold key's discriminators are
+// present in the source, then run the REAL module (imported, not
+// reconstructed) with each one removed in turn on a temp copy, and confirm
+// rows that must stay apart instead fold together — proving the tests above
+// are pinned to this code, not coincidentally passing.
+test('mutation check: the fold key\'s scope/attribution and pre-fix discriminators are load-bearing', async t => {
+  const srcPath = fileURLToPath(new URL('./blocker-report.js', import.meta.url))
+  const src = readFileSync(srcPath, 'utf8')
+  const MARKERS = [
+    {
+      name: 'unsplitHistory discriminator', pattern: /row\.unsplitHistory \? 1 : 0/, replacement: '0',
+      seed: db => {
+        db.prepare("INSERT INTO decision_log (account_id,symbol,stage,strategy,decision,reason,created_at) VALUES ('11','EURUSD','stage_matrix','fib_confluence','skip','off on 11','2026-09-22 11:30:00')").run()
+        recordDecision(db, { accountId: '11', symbol: 'EURUSD', stage: 'stage_matrix', strategy: 'fib_confluence', decision: 'skip', reason: 'off on 11' })
+        db.prepare("UPDATE decision_log SET created_at = '2026-09-22 11:31:00' WHERE id = last_insert_rowid()").run()
+      },
+    },
+    {
+      name: 'reason discriminator', pattern: /row\.stage, row\.reason,/, replacement: 'row.stage,',
+      seed: db => {
+        db.prepare("INSERT INTO decision_log (account_id,symbol,stage,decision,reason,created_at) VALUES ('11','EURUSD','stage_matrix','skip','reason one','2026-09-22 11:30:00')").run()
+        db.prepare("INSERT INTO decision_log (account_id,symbol,stage,decision,reason,created_at) VALUES ('11','EURUSD','stage_matrix','skip','reason two','2026-09-22 11:31:00')").run()
+      },
+    },
+  ]
+  for (const { name, pattern, replacement, seed } of MARKERS) {
+    const before = (src.match(new RegExp(pattern, 'g')) || []).length
+    assert.equal(before, 1, `${name}: must be present exactly once before mutation`)
+    const mutatedSrc = src.replace(pattern, replacement)
+    const after = (mutatedSrc.match(new RegExp(pattern, 'g')) || []).length
+    assert.equal(after, 0, `${name}: the mutation must actually remove it`)
+    const mutantPath = srcPath.replace(/\.js$/, `.mutant-${name.replace(/\W+/g, '')}.test-tmp.js`)
+    writeFileSync(mutantPath, mutatedSrc)
+    t.after(() => { try { rmSync(mutantPath) } catch { /* already gone */ } })
+    const { blockerReport: mutantReport } = await import(`${mutantPath}?t=${Date.now()}`)
+    const db = initDB(':memory:'); t.after(() => db.close())
+    for (const id of ['11', '22']) db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,0)').run(id)
+    seed(db)
+    const r = mutantReport(db, { accountId: '11', from, to: now, now, timeZone: 'Asia/Singapore' })
+    const day = r.days.find(d => d.totalRecords > 0)
+    assert.equal(day.folded.length, 1, `RED if removing the ${name} still keeps the two rows apart — the mutation must actually merge them`)
+  }
 })
