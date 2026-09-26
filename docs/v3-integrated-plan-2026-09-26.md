@@ -245,6 +245,21 @@ This wave has up to seven merges, so up to seven more Node restarts. Crypto keep
 
 **Order:** 1.1 first; 1.2 before 1.3; 1.6 and 1.7 before T4; 1.6 before M7. A row with an unanswered part ships the rest and merges that part when answered.
 
+### Wave 1 actuals (merged 26-09-2026)
+
+| Row | PR | Item | Proof recorded |
+|---|---|---|---|
+| 1.1 | #1147 | W1.1 | NEW-1/SAFE-0a landed as planned |
+| 1.2 | #1148 | W1.2 | UI-1 + PERF-1: collapse control, section ids and reserved heights shipped; the CLS proof itself is **Failed** (see below) |
+| 1.3 | #1149 | W1.6 | UI-2 + UI-3 |
+| 1.4 | #1150 | W1.4 | UI-4 + UI-7 |
+| 1.5 | #1151 | W1.7 | UI-6 + PERF-2 + F3 |
+| — | #1152 | history follow-up | Correction to the BTCUSD history-depth read that fed the UI-6 acceptance work — not its own row above, folded in beside it |
+| 1.6 | #1153 | W1.3 | S-1 + S-3 |
+| 1.7 | #1154 | W1.5 | F1 + F4 + F5's N6 + PO-M3 |
+
+**Row 1.2's Reasons CLS proof: Failed.** Production traces after W1 (scripts/perf-trace, desktop profile) showed `/reasons` at CLS 0.74, against a 0.76→? target read before the wave — a real improvement over the pre-W1 baseline, but still one 0.70 shift at ~2.65s hitting three glass-panel `p-3` cards, not the passing figure the row's proof line implied. The phone profile read 0.55. W1.5 also moved every Reasons table onto the shared DataTable, which grew the page from 5,357 to 8,904 DOM elements — a second, unmeasured cost the row's own proof did not anticipate. **W1-FU** (this change) addresses both: Card ids + `loading`/`defaultCollapsed` wiring and the opt-in `lazy` mount (so the extra DOM only exists once a card is actually opened), plus folding Trade consistency into Ledger integrity per the owner's 26-09 18:05 SGT order.
+
 ### Wave 2 — Monday 28-09 01:00–13:00Z, then T4 on Tuesday
 
 | # | Items (origin) | Scope and proof | Gate |

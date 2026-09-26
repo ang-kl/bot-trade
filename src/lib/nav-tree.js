@@ -99,6 +99,25 @@ export const NAV_TREE = [
           { id: 'sec-example-cpp', label: 'Example — cpp', kind: 'C' },
         ],
       },
+      {
+        // W1-FU (26-09 UI plan §5): Reasons had no entry here at all, so the
+        // section FAB could not jump to any of its cards and Card.jsx's
+        // sectionKind lookup had nothing to find for the ids it now carries
+        // (reasons-view.js's reasonsGroupId) — every card fell back to no
+        // badge. One entry per REASONS_PAGE_LAYOUT group, in the page's own
+        // order; phase-audit and exit-counterfactual are not listed here —
+        // they render on Desk/Tune instead (their own sections there).
+        path: '/reasons', label: 'Reasons', icon: '🧾',
+        sections: [
+          { id: 'reasons-order-lifecycle', label: 'Order lifecycle', kind: 'T' },
+          { id: 'reasons-entry-intents', label: 'Entry intents', kind: 'T' },
+          { id: 'reasons-trade-plans', label: 'Trade plans', kind: 'T' },
+          { id: 'reasons-unknown-p-l', label: 'Unknown P/L', kind: 'T' },
+          { id: 'reasons-attribution', label: 'Trade origin', kind: 'T' },
+          { id: 'reasons-ledger-integrity', label: 'Ledger integrity', kind: 'T' },
+          { id: 'reasons-vetoes-count-and-cost', label: 'Vetoes: count and cost', kind: 'T' },
+        ],
+      },
     ],
   },
   {

@@ -96,3 +96,37 @@ describe('loading reserves height (PERF-1)', () => {
     expect(render({ id: 'sec-h', storage: fakeStorage(), loading: false })).not.toContain('min-height')
   })
 })
+
+describe('lazy mount (W1-FU: children of a collapsed card are not mounted at all, not just hidden)', () => {
+  it('default behaviour (lazy omitted/false) is unchanged: children mount even while collapsed', () => {
+    const html = render({ id: 'sec-i', storage: fakeStorage(), defaultCollapsed: true }, 'lazy-marker')
+    expect(html).toContain('style="display:none"')
+    expect(html).toContain('lazy-marker')
+  })
+
+  it('lazy + collapsed on first mount: children never render', () => {
+    const html = render({ id: 'sec-j', storage: fakeStorage(), defaultCollapsed: true, lazy: true }, 'lazy-marker')
+    expect(html).toContain('style="display:none"')
+    expect(html).not.toContain('lazy-marker')
+  })
+
+  it('lazy + open on first mount: children render, same as non-lazy', () => {
+    const html = render({ id: 'sec-k', storage: fakeStorage(), defaultCollapsed: false, lazy: true }, 'lazy-marker')
+    expect(html).not.toContain('style="display:none"')
+    expect(html).toContain('lazy-marker')
+  })
+
+  it('lazy + a persisted "open" choice mounts children on the very first render — no waiting for a toggle', () => {
+    const st = fakeStorage({ 'card_open_sec-l': '1' })
+    const html = render({ id: 'sec-l', storage: st, defaultCollapsed: true, lazy: true }, 'lazy-marker')
+    expect(html).not.toContain('style="display:none"')
+    expect(html).toContain('lazy-marker')
+  })
+
+  it('lazy + a persisted "collapsed" choice keeps children unmounted on the very first render', () => {
+    const st = fakeStorage({ 'card_open_sec-m': '0' })
+    const html = render({ id: 'sec-m', storage: st, defaultCollapsed: false, lazy: true }, 'lazy-marker')
+    expect(html).toContain('style="display:none"')
+    expect(html).not.toContain('lazy-marker')
+  })
+})

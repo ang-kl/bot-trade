@@ -280,7 +280,15 @@ function foldKeyOfRaw(row) {
 // beyond the cap still count in the day's `count` (via `totalCount`, tracked
 // independently of the fold map); they are only left out of the rendered
 // fold lines, and `omitted` says by how many.
-const FOLDED_LINES_PER_DAY_MAX = 300
+// W1-FU: measured against production traces showing a 72h all-accounts
+// window (~25,000 retained records, reason text that differs per record —
+// the exact shape the comment above already names) exceeding
+// BLOCKER_DAYS_MAX_BYTES at the old 300/day cap (a worst-case 3-day window at
+// cap ~1.06 MB of full, non-slim folded evidence). Tightened to 90/day so
+// that same window's grouped payload measures ~412 KB (80% of the 512 KB
+// bound, not just under it) — `omitted` still counts every row the tighter
+// cap leaves out, never a silent drop.
+export const FOLDED_LINES_PER_DAY_MAX = 90
 const STANDING_LINES_PER_DAY_MAX = 100
 
 /**
