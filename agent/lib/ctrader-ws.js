@@ -1163,27 +1163,54 @@ export function wsStreamSpots(host, clientId, clientSecret, accessToken, account
  * close. Resolves null on timeout instead of rejecting — callers use this
  * as a best-effort pre-trade check and must fail open.
  *
+ * `streamFn` (test-only): overrides `wsStreamSpots` so a fake stream can be
+ * injected — every production call omits it.
+ *
  * @returns {Promise<{bid: number, ask: number}|null>}
  */
-export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs = 6000) {
+export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs = 6000, streamFn = wsStreamSpots) {
   let stream = null
+  // M7 nit round (26-09-2026): predates M7, but M7's parallel batch opens
+  // several of these at once, multiplying it. wsStreamSpots is awaited
+  // asynchronously (`.then(s => { stream = s })`) while the promise it
+  // feeds can ALSO settle from the timer or the error callback. If the
+  // timer (or error callback) fires FIRST, the `finally` below used to run
+  // with `stream` still null — a no-op — closing nothing; the real stream
+  // then arrived afterwards, got assigned to `stream`, and nothing ever
+  // closed IT, leaking an authenticated socket. `settled` records that the
+  // promise is already done, so a late-arriving stream closes itself; a
+  // `closeStream` helper (rather than two separate `.close()` call sites)
+  // makes that self-close and the outer `finally` idempotent together —
+  // whichever of the two runs first is the one that actually closes it.
+  let settled = false
+  let streamClosed = false
+  const closeStream = () => {
+    if (streamClosed || !stream) return
+    streamClosed = true
+    try { stream.close() } catch { /* already closed */ }
+  }
   try {
     return await new Promise((resolve) => {
       const quote = { bid: null, ask: null }
-      const timer = setTimeout(() => resolve(null), timeoutMs)
-      wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, [symbolId], (tick) => {
+      const timer = setTimeout(() => { settled = true; resolve(null) }, timeoutMs)
+      streamFn(host, clientId, clientSecret, accessToken, accountId, [symbolId], (tick) => {
         if (tick.bid != null) quote.bid = tick.bid
         if (tick.ask != null) quote.ask = tick.ask
         if (quote.bid != null && quote.ask != null) {
           clearTimeout(timer)
+          settled = true
           resolve({ ...quote })
         }
-      }, () => { clearTimeout(timer); resolve(null) })
-        .then(s => { stream = s })
-        .catch(() => { clearTimeout(timer); resolve(null) })
+      }, () => { clearTimeout(timer); settled = true; resolve(null) })
+        .then(s => {
+          stream = s
+          if (settled) closeStream()
+        })
+        .catch(() => { clearTimeout(timer); settled = true; resolve(null) })
     })
   } finally {
-    try { stream?.close() } catch { /* already closed */ }
+    settled = true
+    closeStream()
   }
 }
 

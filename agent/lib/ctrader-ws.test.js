@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, PT } from './ctrader-ws.js'
+import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, wsGetSpotOnce, PT } from './ctrader-ws.js'
 
 // These tests exercise the input-validation paths that run *before* any
 // WebSocket handshake — so we can assert them without mocking `ws`. The
@@ -157,4 +157,57 @@ test('an account-true symbol-list read is never served from, nor stored into, th
   // untagged exactly as before.
   assert.deepEqual([settled[1].reason.accountId, settled[2].reason.accountId], ['2', '2'], 'RED if the per-account read\'s error is not tagged')
   assert.equal(settled[0].reason.accountId, undefined, 'the host-shared read is unchanged: untagged')
+})
+
+// ---------------------------------------------------------------------------
+// wsGetSpotOnce: late-stream socket leak (M7 nit round, 26-09-2026). Predates
+// M7, but M7's parallel batch opens several of these at once, multiplying
+// it. If the 6s timer fires before wsStreamSpots resolves, the `finally`
+// block closes a null `stream`; the stream that arrives LATER
+// (`.then(s => { stream = s })`) is then never closed and leaks an
+// authenticated socket. `streamFn` (test-only, 8th param) injects a fake
+// stream provider — every production call site omits it.
+// ---------------------------------------------------------------------------
+
+test('wsGetSpotOnce: a stream that resolves AFTER the timeout is closed immediately, not leaked', async () => {
+  let closed = 0
+  const fakeStream = { close: () => { closed++ } }
+  let resolveStream
+  // Never ticks, never errors — ONLY the timeout settles the outer promise,
+  // exactly the race this bug depends on.
+  const fakeStreamFn = () => new Promise((resolve) => { resolveStream = resolve })
+
+  const result = await wsGetSpotOnce('demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456, 10, fakeStreamFn)
+  assert.equal(result, null, 'the timeout resolved the outer promise with null, as before')
+  assert.equal(closed, 0, 'the stream has not arrived yet at this point — nothing to close yet')
+
+  // The stream arrives NOW, after wsGetSpotOnce has already returned.
+  resolveStream(fakeStream)
+  await new Promise((r) => setTimeout(r, 0)) // let the `.then()` microtask run
+  assert.equal(closed, 1, 'RED before the fix: the late-arriving stream was never closed — an authed socket leaked')
+})
+
+test('wsGetSpotOnce: the normal tick-first path is unchanged — one close, via the outer finally', async () => {
+  let closed = 0
+  const fakeStream = { close: () => { closed++ } }
+  const fakeStreamFn = (_host, _cid, _csec, _tok, _acct, _symbolIds, onTick) => {
+    // The stream resolves BEFORE any tick — the ordinary case (subscribe,
+    // then ticks arrive on it).
+    queueMicrotask(() => onTick({ bid: 1.1, ask: 1.1002 }))
+    return Promise.resolve(fakeStream)
+  }
+  const result = await wsGetSpotOnce('demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456, 10, fakeStreamFn)
+  assert.deepEqual(result, { bid: 1.1, ask: 1.1002 })
+  assert.equal(closed, 1, 'closed exactly once, via the outer finally')
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(closed, 1, 'still exactly once — no double-close from the settled-stream branch')
+})
+
+test('wsGetSpotOnce: a stream that errors out before ever resolving leaks nothing (there is no stream object to close)', async () => {
+  const fakeStreamFn = (_host, _cid, _csec, _tok, _acct, _symbolIds, _onTick, onClose) => {
+    queueMicrotask(() => onClose())
+    return new Promise(() => {}) // never resolves — the error path settles via onClose, not the stream promise
+  }
+  const result = await wsGetSpotOnce('demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456, 10, fakeStreamFn)
+  assert.equal(result, null)
 })
