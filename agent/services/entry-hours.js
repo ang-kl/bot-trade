@@ -19,15 +19,46 @@
 //             (resting limit or the legacy queue) runs, unchanged.
 //   UNKNOWN — NEVER read as open. No order and no resting limit; the refusal
 //             is one decision_log skip (stage market_hours_unknown) naming the
-//             calendar's reason. A missing or stale calendar is re-read from
-//             the broker (one symbol, one attempt, 2 s, no retry; at most 2
-//             reads per loop pass and every 5 min per identity) before the
-//             verdict, so a symbol the collector does not demand
-//             (watchdog-calendar-refresh.js) is not refused for that alone. A
-//             missing account map takes autoTrade's own resolveSymbolId path.
-//             The collector's attempt map is per refresher instance and is not
-//             shared: the two can overlap only when a calendar is past 24 h
-//             and the collector tried it within the same 5 min.
+//             calendar's reason.
+//
+// BROKER READS THAT CAN CURE AN UNKNOWN, AND THEIR BOUND. autoTrade is awaited
+// serially, so every second spent here is a second of the loop.
+//   - A missing or stale calendar: one read of that symbol
+//     (wsGetSymbolById). A symbol the collector does not demand
+//     (watchdog-calendar-refresh.js) is then not refused for that alone.
+//   - A missing account map: first the no-network answer resolveSymbolId
+//     itself falls back to — the global map, for the primary account
+//     (ctrader-creds.js:283-288). Only when that has no answer, one read of
+//     the account's own symbol list, through resolveSymbolId's own fetch
+//     (fetchAccountSymbolMap → wsGetSymbolsList). The K2 refresher
+//     (account-symbol-maps.js) is still what keeps the maps.
+//   The bound, all of it:
+//   - ONE attempt per read: maxRetries 0, so no retry and no backoff;
+//   - no reactive token refresh (recoverAuth false): an auth error is left to
+//     the loop's other broker calls, whose refresh is cooldown-limited;
+//     wsGetSymbolById's errors carry no account, so B7's skip could not tell a
+//     refused account from a rotated token, and the refresh itself is an
+//     OAuth request with no timeout of its own;
+//   - the gate waits for a read at most its timeout — 2 s for one symbol's
+//     calendar, 5 s for an account's symbol list — enforced HERE by a
+//     deadline, so the bound also holds in the pooled transport
+//     (CTRADER_WS_POOL=1, whose session auth has its own 20 s budget). A read
+//     still running after its deadline is not waited for: a late calendar is
+//     discarded; a late symbol list is stored by fetchAccountSymbolMap (the
+//     K2 writer, identity-checked), where a later pass finds it;
+//   - at most ENTRY_HOURS_REFRESHES_PER_PASS (2) reads per loop pass
+//     (`loop:<loopCount>`) and, separately, 2 per minute for callers outside
+//     the loop's cycle (`route:<minute>`: the manual-assisted routes), so
+//     neither can starve the other; past it, UNKNOWN stands for that pass;
+//   - at most one read per identity (calendar) or per ACCOUNT (symbol list)
+//     every 5 min, so a failing account costs one list read per 5 min, not
+//     one per symbol per pass;
+//   - no read at all, and no budget spent, for an account without usable
+//     credentials or one the broker token was refused for (B7).
+//   Worst case per loop pass: 2 × 5 s = 10 s (two accounts' symbol lists).
+//   The collector's own attempt map is per refresher instance and is not
+//   shared: the two can overlap only when a calendar is past 24 h and the
+//   collector tried it within the same 5 min.
 //
 // OD-8 (owner decision, open at build time): WHICH hours source gates
 // entries. Built with the plan's recommended answer, the account calendar for
@@ -43,8 +74,10 @@
 // Owner principle 1: the host is routing (which broker environment the
 // account lives on); no rule here differs by environment.
 // ---------------------------------------------------------------------------
-import { getAccountSymbolMap, credsForRegisteredAccount } from '../lib/ctrader-creds.js'
+import { getState } from '../db.js'
+import { getAccountSymbolMap, getSymbolMap, credsForRegisteredAccount } from '../lib/ctrader-creds.js'
 import { marketIdentity, marketIdentityKey } from '../lib/market-identity.js'
+import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { readMarketCalendar, recordMarketCalendar } from './market-calendar.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 import { registeredCalendarAccounts } from './watchdog-calendar-refresh.js'
@@ -56,24 +89,55 @@ export const ENTRY_HOURS_SOURCE = 'account_calendar'
 /** Calendar reasons a fresh broker read can cure; every other UNKNOWN is left as read. */
 export const ENTRY_HOURS_REFRESHABLE = Object.freeze(['calendar_missing', 'calendar_stale'])
 export const ENTRY_HOURS_REFRESH_COOLDOWN_MS = 5 * 60_000
-/** At most this many broker reads (calendar or symbol map) per loop pass; the rest stay UNKNOWN for that pass. */
+/** At most this many broker reads (calendar or symbol list) per pass; the rest stay UNKNOWN for that pass. */
 export const ENTRY_HOURS_REFRESHES_PER_PASS = 2
-/** One attempt, bounded by its timeout, no retry backoff: autoTrade is awaited serially. */
-export const ENTRY_HOURS_REFRESH_TIMEOUT_MS = 2000
+/** No retry, so no backoff: one attempt per read. */
 export const ENTRY_HOURS_REFRESH_RETRIES = 0
-const lastRefresh = new Map() // key → epoch ms of the last attempt
-let passBudget = { pass: null, used: 0 }
-/** Test hook: forget refresh attempts and the pass budget. */
-export function _resetEntryHoursRefresh() { lastRefresh.clear(); passBudget = { pass: null, used: 0 } }
-// Take one broker read from this pass's budget. Without a loop pass number
-// (a route call), the pass is the wall-clock minute.
+/**
+ * One symbol's full record (ProtoOASymbolByIdReq). The same bound the K1
+ * collector gives a batch of 25 of them (watchdog-calendar-refresh.js).
+ */
+export const ENTRY_HOURS_REFRESH_TIMEOUT_MS = 2000
+/**
+ * The account's whole light symbol list (ProtoOASymbolsListReq): about 1,900
+ * names (symbol-hours.js header) against one symbol, on top of the same
+ * connect and app/account auth, whose fixed cost was measured at about 1.8 s
+ * (ctrader-ws.js wsRunInner). 5 s leaves about 3 s for the list itself. The
+ * list read's own duration has not been measured in production: an estimate.
+ */
+export const ENTRY_HOURS_MAP_TIMEOUT_MS = 5000
+/**
+ * Producers autoTrade runs INSIDE the loop's cycle, so their reads share the
+ * loop pass's budget. Every other caller — the manual-assisted routes, a
+ * retired or unknown producer — draws on a per-minute budget of its own.
+ */
+export const ENTRY_HOURS_LOOP_PRODUCERS = Object.freeze(['scan_dispatch', 'daily_momentum_account', 'cross_sectional_book'])
+
+/** The budget key for one autoTrade call (loop.js). */
+export function entryHoursPassKey(producerId, loopCount, nowMs = Date.now()) {
+  return ENTRY_HOURS_LOOP_PRODUCERS.includes(producerId) ? `loop:${loopCount}` : `route:${Math.floor(nowMs / 60_000)}`
+}
+
+const lastRefresh = new Map() // cooldown key → epoch ms of the last attempt
+const budgets = new Map()     // pass key → reads taken
+let transport = null          // test seam: { wsGetSymbolById, wsGetSymbolsList }
+/** Test hook: forget refresh attempts and every pass budget. */
+export function _resetEntryHoursRefresh() { lastRefresh.clear(); budgets.clear() }
+/** Test seam: the broker reads autoTrade's gate makes, for tests that drive autoTrade itself. */
+export function _setEntryHoursTransportForTests(t) { transport = t || null }
+
+// Take one broker read from this pass's budget. Keys are kept per pass, so a
+// route call in the middle of a loop pass neither resets nor spends the
+// loop's budget; the oldest keys are dropped once 64 are held.
 function takeBudget(pass) {
-  if (passBudget.pass !== pass) passBudget = { pass, used: 0 }
-  if (passBudget.used >= ENTRY_HOURS_REFRESHES_PER_PASS) return false
-  passBudget.used++
+  const used = budgets.get(pass) ?? 0
+  if (used >= ENTRY_HOURS_REFRESHES_PER_PASS) return false
+  budgets.delete(pass)
+  budgets.set(pass, used + 1)
+  while (budgets.size > 64) budgets.delete(budgets.keys().next().value)
   return true
 }
-// Per-key cooldown: the same identity (or map) is read at most every 5 min.
+// Per-key cooldown: the same identity (or account list) is read at most every 5 min.
 function takeCooldown(key, nowMs) {
   const last = lastRefresh.get(key)
   if (last != null && nowMs - last < ENTRY_HOURS_REFRESH_COOLDOWN_MS) return false
@@ -81,13 +145,21 @@ function takeCooldown(key, nowMs) {
   if (lastRefresh.size > 4096) lastRefresh.delete(lastRefresh.keys().next().value)
   return true
 }
+// The gate stops waiting at `ms`, whatever the transport does. A rejection
+// that arrives after the deadline lands on the race's own handler, so it is
+// never an unhandled rejection (pinned by a test).
+function withDeadline(promise, ms, what) {
+  let timer
+  const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what}_deadline: no answer within ${ms} ms`)), ms) })
+  return Promise.race([Promise.resolve(promise), deadline]).finally(() => clearTimeout(timer))
+}
 
 /**
  * The entry's own calendar identity: the account's own symbol map (K2)
  * resolves SYMBOL on HOST (the registry's host for the account when omitted).
- * `symbolId`, when given, is an id the caller already resolved the way
- * autoTrade does (ctrader-creds.js resolveSymbolId) for an account whose own
- * map is missing. Returns { identity } or { reason }.
+ * `symbolId`, when given, is an id resolved the way autoTrade resolves it
+ * (ctrader-creds.js resolveSymbolId) for an account whose own map is missing.
+ * Returns { identity } or { reason }.
  */
 export function entryHoursIdentity(db, { symbol, accountId, host = null, symbolId = null }) {
   if (accountId == null || String(accountId) === '') return { reason: 'account_required' }
@@ -137,64 +209,83 @@ export function entryMarketGate(db, { symbol, accountId, host, symbolId = null, 
 }
 
 /**
- * The entry path's verdict: entryMarketGate, plus bounded broker reads when
- * they can cure the UNKNOWN:
- *   - account_symbol_map_missing: the id is resolved exactly as autoTrade
- *     resolves it next (ctrader-creds.js resolveSymbolId: fetch the account's
- *     own list, else the global map for the primary account), so the gate
- *     refuses no symbol autoTrade itself could place;
- *   - calendar_missing / calendar_stale: one read of THIS identity
- *     (wsGetSymbolById, one attempt, 2 s timeout, no retry), recorded by
- *     market-calendar.js recordMarketCalendar and read back the ordinary way.
- * Every read is taken from the pass budget (ENTRY_HOURS_REFRESHES_PER_PASS)
- * and a 5-min per-key cooldown; past either, the UNKNOWN stands for this
- * pass, named ('pass_cap' / 'cooldown'). A failed read leaves it standing,
- * with the failure named.
+ * The entry path's verdict: entryMarketGate, plus the bounded broker reads
+ * described in the header when they can cure the UNKNOWN. A read that is not
+ * made, or fails, leaves the UNKNOWN standing and names why in `refresh`:
+ * credentials_unavailable, token_refused, cooldown, pass_cap, failed: …,
+ * symbol_id: … (resolveSymbolId's own reason), symbol_not_returned,
+ * not_recorded: ….
  * deps: { nowMs, source, pass, credentials(accountId), fetchSymbols(creds, ids),
- *   wsGetSymbolById, resolveSymbolId(db, creds, symbol) }.
+ *   wsGetSymbolById, wsGetSymbolsList, resolveSymbolId(db, creds, symbol, deps),
+ *   mapTimeoutMs, calendarTimeoutMs }.
  */
 export async function resolveEntryMarketGate(db, input, deps = {}) {
   const nowMs = deps.nowMs ?? Date.now()
   const source = deps.source ?? ENTRY_HOURS_SOURCE
-  const pass = deps.pass ?? `minute:${Math.floor(nowMs / 60_000)}`
+  const pass = deps.pass ?? `route:${Math.floor(nowMs / 60_000)}`
   let gate = entryMarketGate(db, { ...input, nowMs, source })
   if (!gate.unknown) return gate
   const accountId = input.accountId == null ? null : String(input.accountId)
+  const symbol = String(input.symbol || '').toUpperCase()
+  // Usable credentials for THIS account on its own host, or null. Asked
+  // before any budget is spent, so an account that cannot be read cannot
+  // starve one that can.
   const credsFor = () => {
     const c = (deps.credentials ?? (id => credsForRegisteredAccount(db, id)))(accountId)
     const host = input.host ?? registeredCalendarAccounts(db).get(accountId)?.host ?? null
     return c?.ready && String(c.accountId) === accountId && host && c.host === host ? c : null
   }
+  const refused = () => tokenRefusedAccounts(db).has(accountId)
+
   let symbolId = null
   if (gate.calendarReason === 'account_symbol_map_missing') {
-    const key = `map:${accountId}:${String(input.symbol || '').toUpperCase()}`
-    if (!takeCooldown(key, nowMs)) return { ...gate, refresh: 'cooldown' }
-    if (!takeBudget(pass)) { lastRefresh.delete(key); return { ...gate, refresh: 'pass_cap' } }
-    const creds = credsFor()
-    if (!creds) return { ...gate, refresh: 'credentials_unavailable' }
-    try {
-      const resolve = deps.resolveSymbolId ?? (await import('../lib/ctrader-creds.js')).resolveSymbolId
-      const r = await resolve(db, creds, input.symbol)
-      if (r?.id == null) return { ...gate, refresh: `symbol_id: ${String(r?.reason || 'unresolved').slice(0, 160)}` }
-      symbolId = r.id
-    } catch (err) {
-      return { ...gate, refresh: `failed: ${String(err?.message || err).slice(0, 120)}` }
+    // The no-network answer first: resolveSymbolId's own fallback, the global
+    // map, which belongs to the primary account (ctrader-creds.js:283-288).
+    const primary = getState(db, 'ctrader_account_id')
+    const globalId = primary == null || String(primary) === accountId ? getSymbolMap(db)[symbol] : null
+    if (globalId != null) {
+      symbolId = globalId
+      gate = { ...entryMarketGate(db, { ...input, symbolId, nowMs, source }), refresh: 'symbol_id_global_map' }
+    } else {
+      const creds = credsFor()
+      if (!creds) return { ...gate, refresh: 'credentials_unavailable' }
+      if (refused()) return { ...gate, refresh: 'token_refused' }
+      const key = `map:${accountId}`
+      if (!takeCooldown(key, nowMs)) return { ...gate, refresh: 'cooldown' }
+      if (!takeBudget(pass)) { lastRefresh.delete(key); return { ...gate, refresh: 'pass_cap' } }
+      const ms = deps.mapTimeoutMs ?? ENTRY_HOURS_MAP_TIMEOUT_MS
+      const list = deps.wsGetSymbolsList ?? transport?.wsGetSymbolsList ?? (await import('../lib/ctrader-ws.js')).wsGetSymbolsList
+      // resolveSymbolId → fetchAccountSymbolMap calls this with its own
+      // arguments; the entry path's bound replaces the timeout and the retry
+      // settings and keeps the rest (perAccount: the account's OWN list).
+      const bounded = (host, clientId, clientSecret, accessToken, acct, _timeoutMs, opts = {}) =>
+        list(host, clientId, clientSecret, accessToken, acct, ms, { ...opts, maxRetries: ENTRY_HOURS_REFRESH_RETRIES, recoverAuth: false })
+      try {
+        const resolve = deps.resolveSymbolId ?? (await import('../lib/ctrader-creds.js')).resolveSymbolId
+        const r = await withDeadline(resolve(db, creds, input.symbol, { now: nowMs, wsGetSymbolsList: bounded }), ms, 'entry_hours_symbol_list')
+        if (r?.id == null) return { ...gate, refresh: `symbol_id: ${String(r?.reason || 'unresolved').slice(0, 160)}` }
+        symbolId = r.id
+      } catch (err) {
+        return { ...gate, refresh: `failed: ${String(err?.message || err).slice(0, 120)}` }
+      }
+      gate = { ...entryMarketGate(db, { ...input, symbolId, nowMs, source }), refresh: 'symbol_id_resolved' }
     }
-    gate = { ...entryMarketGate(db, { ...input, symbolId, nowMs, source }), refresh: 'symbol_id_resolved' }
     if (!gate.unknown) return gate
   }
   if (!gate.identity || !ENTRY_HOURS_REFRESHABLE.includes(gate.calendarReason)) return gate
+  const creds = credsFor()
+  if (!creds || creds.host !== gate.identity.host) return { ...gate, refresh: 'credentials_unavailable' }
+  if (refused()) return { ...gate, refresh: 'token_refused' }
   const key = marketIdentityKey(gate.identity)
   if (!takeCooldown(key, nowMs)) return { ...gate, refresh: 'cooldown' }
   if (!takeBudget(pass)) { lastRefresh.delete(key); return { ...gate, refresh: 'pass_cap' } }
+  const ms = deps.calendarTimeoutMs ?? ENTRY_HOURS_REFRESH_TIMEOUT_MS
   try {
-    const creds = credsFor()
-    if (!creds || creds.host !== gate.identity.host) return { ...gate, refresh: 'credentials_unavailable' }
     const fetchSymbols = deps.fetchSymbols ?? (async (c, ids) => {
-      const ws = deps.wsGetSymbolById ?? (await import('../lib/ctrader-ws.js')).wsGetSymbolById
-      return ws(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, ids, ENTRY_HOURS_REFRESH_TIMEOUT_MS, ENTRY_HOURS_REFRESH_RETRIES)
+      const ws = deps.wsGetSymbolById ?? transport?.wsGetSymbolById ?? (await import('../lib/ctrader-ws.js')).wsGetSymbolById
+      return ws(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, ids, ms, { maxRetries: ENTRY_HOURS_REFRESH_RETRIES, recoverAuth: false })
     })
-    const res = await fetchSymbols(creds, [Number(gate.identity.symbolId)])
+    const res = await withDeadline(fetchSymbols(creds, [Number(gate.identity.symbolId)]), ms, 'entry_hours_calendar')
     const sym = (res?.symbol || []).find(s => String(s?.symbolId) === gate.identity.symbolId)
     if (!sym) return { ...gate, refresh: 'symbol_not_returned' }
     const rec = recordMarketCalendar(db, gate.identity, sym, { nowMs })

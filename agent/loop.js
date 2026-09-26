@@ -103,6 +103,9 @@ const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops ent
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
 const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens exceed this
 let loopCount = 0
+/** TEST SEAM (V3 S-8): set the loop pass counter, so a test can pin that
+ * autoTrade's entry-hours budget follows the loop pass. Never called in production. */
+export function _setLoopCountForTests(n) { loopCount = n }
 // Seeded once per process: see the FIRST-CYCLE SEED block in runLoop.
 let crossSideEquitySeeded = false
 // The other session's P&L repair outcome, read by the next pnl_reconcile beat
@@ -390,9 +393,12 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // lives there). It replaced the name-keyed symbol_hours read, which ignored
   // holidays and fell back to the sessions.js heuristic. UNKNOWN never reads
   // open: no order and no resting limit, one decision_log skip per
-  // (account, symbol) until the calendar is known again.
-  const { resolveEntryMarketGate } = await import('./services/entry-hours.js')
-  const marketGate = await resolveEntryMarketGate(db, { symbol, accountId }, { pass: `loop:${loopCount}` })
+  // (account, symbol) until the calendar is known again. Its broker reads are
+  // bounded per pass: the loop's own producers share `loop:<loopCount>`, every
+  // other caller (the manual-assisted routes) a per-minute budget of its own
+  // (entry-hours.js entryHoursPassKey).
+  const { resolveEntryMarketGate, entryHoursPassKey } = await import('./services/entry-hours.js')
+  const marketGate = await resolveEntryMarketGate(db, { symbol, accountId }, { pass: entryHoursPassKey(producerId, loopCount) })
   const unknownKey = `mkt_hours_unknown_logged_${accountId}_${symbol}`
   if (marketGate.unknown) {
     if (getState(db, unknownKey) !== 'y') {

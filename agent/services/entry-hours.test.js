@@ -11,9 +11,16 @@ import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 import { recordMarketCalendar } from './market-calendar.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 import {
-  entryMarketGate, resolveEntryMarketGate, _resetEntryHoursRefresh,
+  entryMarketGate, resolveEntryMarketGate, _resetEntryHoursRefresh, _setEntryHoursTransportForTests, entryHoursPassKey,
   ENTRY_HOURS_SOURCE, ENTRY_HOURS_SOURCES, ENTRY_HOURS_REFRESH_COOLDOWN_MS, ENTRY_HOURS_REFRESH_TIMEOUT_MS, ENTRY_HOURS_REFRESHES_PER_PASS,
+  ENTRY_HOURS_MAP_TIMEOUT_MS,
 } from './entry-hours.js'
+
+// A gate that hangs must turn a test RED, never hang the suite: every bound
+// test races the gate against this.
+const HUNG = Symbol('hung')
+const SLACK_MS = 700
+const raceHung = (p, ms = 3000) => { let t; return Promise.race([p, new Promise(r => { t = setTimeout(() => r(HUNG), ms) })]).finally(() => clearTimeout(t)) }
 
 const D = 86400, H = 3600, W = 7 * D
 const HOST = 'demo.ctraderapi.com'
@@ -208,7 +215,9 @@ test('autoTrade: UNKNOWN refuses with ONE decision_log skip per (account, symbol
   setState(db, 'ctrader_access_token', 't')
   db.prepare("INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')").run(ACCT, ACCT)
   setState(db, 'closed_market_limits_json', JSON.stringify({ on: false }))
-  // No account symbol map → UNKNOWN (account_symbol_map_missing); no broker re-read is possible.
+  // No account symbol map → UNKNOWN (account_symbol_map_missing). No primary
+  // account is recorded, so resolveSymbolId cannot fetch (ctrader-creds.js:272)
+  // and the empty global map has no answer: no broker read happens.
   db.prepare('INSERT INTO symbol_hours (symbol, schedule_json, tz) VALUES (?, ?, ?)').run(SYM, '[]', 'UTC') // the old gate: open
   const { autoTrade } = await import('../loop.js')
   for (let i = 0; i < 2; i++) {
@@ -228,7 +237,7 @@ test('autoTrade: UNKNOWN refuses with ONE decision_log skip per (account, symbol
 
 // --- fix round: bounded broker reads on the serial entry path --------------
 
-test('B2: the entry re-read is ONE attempt with the 2 s timeout — wsGetSymbolById gets maxRetries 0', async t => {
+test('B2: the entry re-read is ONE attempt with the 2 s timeout and no reactive token refresh', async t => {
   const db = fixture(t, { holiday: null })
   const calls = []
   const g = await resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
@@ -238,8 +247,21 @@ test('B2: the entry re-read is ONE attempt with the 2 s timeout — wsGetSymbolB
   assert.equal(calls.length, 1)
   assert.equal(calls[0][6], ENTRY_HOURS_REFRESH_TIMEOUT_MS)
   assert.equal(calls[0][6], 2000)
-  assert.equal(calls[0][7], 0, 'RED if the entry path lets withRetry back off (2 retries ≈ 12 s)')
+  assert.deepEqual(calls[0][7], { maxRetries: 0, recoverAuth: false }, 'RED if the entry path lets withRetry back off (2 retries ≈ 12 s) or fire the OAuth refresh')
   assert.equal(g.unknown, true)
+})
+
+test('B2: a calendar read that never answers is not waited for past its timeout', async t => {
+  const db = fixture(t, { holiday: null })
+  const t0 = Date.now()
+  const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: WED_0930_1000, credentials: id => ({ ready: true, accountId: id, host: HOST }), calendarTimeoutMs: 300,
+    wsGetSymbolById: () => new Promise(() => {}),
+  }))
+  assert.notEqual(g, HUNG, 'RED if the gate waits on the transport instead of its own deadline')
+  assert.ok(Date.now() - t0 < 300 + SLACK_MS, `${Date.now() - t0} ms`)
+  assert.equal(g.unknown, true)
+  assert.match(g.refresh, /^failed: entry_hours_calendar_deadline/)
 })
 
 test('B2: withRetry with maxRetries 0 makes exactly one attempt and no backoff', async () => {
@@ -293,4 +315,144 @@ test('the entry path (K3 calendarHolidayWindow) and the session report (holidayW
   for (const row of [{ startSecond: 0, endSecond: 0 }, { startSecond: 0, endSecond: 86400 }, { startSecond: 13 * 3600, endSecond: 86400 }, { startSecond: 3600, endSecond: 7200 }]) {
     assert.deepEqual(holidayWindowSeconds(row), calendarHolidayWindow(row), JSON.stringify(row))
   }
+})
+
+// --- fix round 2: the missing-map read, bounded like the calendar read ------
+
+const CREDS = id => ({ ready: true, accountId: id, host: HOST, clientId: 'c', clientSecret: 's', accessToken: 't' })
+
+test('B-1: a missing map\'s list read that never answers is not waited for past its timeout', async t => {
+  const db = fixture(t, { map: null })
+  setState(db, 'ctrader_account_id', '9999') // another account is primary: the global map is not this account's
+  let args = null
+  const t0 = Date.now()
+  const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: WED_0930_1000, credentials: CREDS, mapTimeoutMs: 300,
+    wsGetSymbolsList: (...a) => { args = a; return new Promise(() => {}) },
+  }))
+  assert.notEqual(g, HUNG, 'RED if the gate waits on the list read (30 s timeout, 2 retries: 96 s measured per symbol)')
+  assert.ok(Date.now() - t0 < 300 + SLACK_MS, `${Date.now() - t0} ms`)
+  assert.ok(args, 'the list is read through resolveSymbolId → fetchAccountSymbolMap')
+  assert.equal(args[4], ACCT)
+  assert.equal(g.unknown, true)
+  assert.match(g.refresh, /^failed: entry_hours_symbol_list_deadline/)
+})
+
+test('B-1: the list read gets ENTRY_HOURS_MAP_TIMEOUT_MS, the account\'s own list, maxRetries 0 and no token refresh', async t => {
+  const db = fixture(t, { map: null })
+  setState(db, 'ctrader_account_id', '9999')
+  const calls = []
+  const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: WED_0930_1000, credentials: CREDS,
+    wsGetSymbolsList: async (...a) => { calls.push(a); throw new Error('cTrader WS timeout after 5000ms') },
+  }))
+  assert.equal(calls.length, 1, 'one attempt')
+  assert.equal(ENTRY_HOURS_MAP_TIMEOUT_MS, 5000)
+  assert.equal(calls[0][5], ENTRY_HOURS_MAP_TIMEOUT_MS)
+  assert.deepEqual(calls[0][6], { perAccount: true, maxRetries: 0, recoverAuth: false }, 'RED if the entry path keeps withRetry(…, 2) or the OAuth refresh')
+  assert.equal(g.unknown, true)
+  assert.match(g.refresh, /^symbol_id: symbol_map_unverified/)
+})
+
+test('B-1: a second symbol on the same failing account is not read again inside the 5-min cooldown', async t => {
+  const db = fixture(t, { map: null })
+  setState(db, 'ctrader_account_id', '9999')
+  let reads = 0
+  const deps = (pass, nowMs) => ({ nowMs, pass, credentials: CREDS, mapTimeoutMs: 200, wsGetSymbolsList: () => { reads++; return new Promise(() => {}) } })
+  const first = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, deps('loop:1', WED_0930_1000)))
+  assert.notEqual(first, HUNG)
+  assert.equal(reads, 1)
+  const second = await raceHung(resolveEntryMarketGate(db, { symbol: '0005.HK', accountId: ACCT, host: HOST }, deps('loop:2', WED_0930_1000 + 60_000)))
+  assert.equal(reads, 1, 'RED if the cooldown is kept per symbol: a failing account would cost one list read per symbol per pass')
+  assert.equal(second.refresh, 'cooldown')
+  await raceHung(resolveEntryMarketGate(db, { symbol: '0005.HK', accountId: ACCT, host: HOST }, deps('loop:3', WED_0930_1000 + ENTRY_HOURS_REFRESH_COOLDOWN_MS)))
+  assert.equal(reads, 2, 'read again once the cooldown has passed')
+})
+
+test('B-1: the primary account\'s loaded global map answers with no list read; another account\'s never does', async t => {
+  const db = fixture(t, { map: null })
+  setState(db, 'ctrader_account_id', ACCT)
+  setState(db, 'symbol_id_map', JSON.stringify({ [SYM]: SYM_ID }))
+  let reads = 0
+  const deps = { nowMs: WED_0930_1000, credentials: CREDS, wsGetSymbolsList: async () => { reads++; throw new Error('no network in this test') } }
+  const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, deps))
+  assert.equal(reads, 0, 'RED if the gate blocks on a list read while resolveSymbolId\'s no-network answer exists')
+  assert.equal(g.status, 'OPEN')
+  assert.equal(g.refresh, 'symbol_id_global_map')
+  // The same global map, but another account is primary: it is not this account's.
+  const other = fixture(t, { map: null })
+  setState(other, 'ctrader_account_id', '9999')
+  setState(other, 'symbol_id_map', JSON.stringify({ [SYM]: SYM_ID }))
+  const g2 = await raceHung(resolveEntryMarketGate(other, { symbol: SYM, accountId: ACCT, host: HOST }, deps))
+  assert.equal(reads, 1)
+  assert.equal(g2.unknown, true)
+})
+
+test('N-2: an account without usable credentials spends none of the pass budget (map and calendar branches)', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  _resetEntryHoursRefresh()
+  setState(db, 'ctrader_account_id', '9999')
+  // 5000: no map (the map branch). 5001: a map, no calendar (the calendar branch). Neither has credentials.
+  setState(db, accountSymbolMapKey('5001'), JSON.stringify({ builtAt: 'x', accountId: '5001', map: { A: 1 } }))
+  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: 'x', accountId: ACCT, map: { A: 11, B: 12 } }))
+  let reads = 0
+  const deps = { nowMs: WED_0930_1000, pass: 'loop:1', credentials: id => (id === ACCT ? CREDS(id) : null),
+    wsGetSymbolsList: async () => { reads++; throw new Error('x') }, fetchSymbols: async () => { reads++; return { symbol: [] } } }
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await resolveEntryMarketGate(db, { symbol: 'A', accountId: '5000', host: HOST }, deps)).refresh, 'credentials_unavailable')
+    assert.equal((await resolveEntryMarketGate(db, { symbol: 'A', accountId: '5001', host: HOST }, deps)).refresh, 'credentials_unavailable')
+  }
+  for (const s of ['A', 'B']) assert.equal((await resolveEntryMarketGate(db, { symbol: s, accountId: ACCT, host: HOST }, deps)).refresh, 'symbol_not_returned', 'RED if an unreadable account spent the budget')
+  assert.equal(reads, 2)
+})
+
+test('a token-refused account (B7) is never read and spends none of the pass budget', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  _resetEntryHoursRefresh()
+  setState(db, 'cpp_exec_demo_refused_accounts_json', JSON.stringify(['5002']))
+  setState(db, accountSymbolMapKey('5002'), JSON.stringify({ builtAt: 'x', accountId: '5002', map: { A: 1 } }))
+  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: 'x', accountId: ACCT, map: { A: 11, B: 12 } }))
+  let reads = 0
+  const deps = { nowMs: WED_0930_1000, pass: 'loop:1', credentials: CREDS, fetchSymbols: async () => { reads++; return { symbol: [] } } }
+  for (let i = 0; i < 3; i++) assert.equal((await resolveEntryMarketGate(db, { symbol: 'A', accountId: '5002', host: HOST }, deps)).refresh, 'token_refused')
+  for (const s of ['A', 'B']) assert.equal((await resolveEntryMarketGate(db, { symbol: s, accountId: ACCT, host: HOST }, deps)).refresh, 'symbol_not_returned')
+  assert.equal(reads, 2, 'RED if the refused account is read')
+})
+
+test('N-1/N-3: autoTrade\'s gate spends one budget per loop pass, a new loopCount resets it, and a route has its own', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  _resetEntryHoursRefresh()
+  const { autoTrade, _setLoopCountForTests } = await import('../loop.js')
+  let reads = 0
+  _setEntryHoursTransportForTests({ wsGetSymbolById: async () => { reads++; throw new Error('fake transport: no answer') } })
+  t.after(() => { _setEntryHoursTransportForTests(null); _setLoopCountForTests(0) })
+  setState(db, 'ctrader_access_token', 't')
+  db.prepare("INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')").run(ACCT, ACCT)
+  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: new Date().toISOString(), accountId: ACCT, map: { S1: 1, S2: 2, S3: 3, S4: 4 } }))
+  const enter = (symbol, producerId) => withCreds(() => autoTrade(db, symbol, SYNTH, {}, { accountId: ACCT, isLive: false, producerId }))
+  _setLoopCountForTests(7)
+  for (const s of ['S1', 'S2', 'S3']) assert.equal((await enter(s, 'cross_sectional_book')) ?? null, null)
+  assert.equal(reads, 2, 'three calls in one loop pass share its budget of 2')
+  await enter('S4', 'route_trade_now')
+  assert.equal(reads, 3, 'RED if a route shares the loop pass budget (N-3)')
+  _setLoopCountForTests(8)
+  await enter('S3', 'cross_sectional_book')
+  assert.equal(reads, 4, 'RED if a new loopCount does not reset the budget (N-1)')
+  assert.equal(entryHoursPassKey('daily_momentum_account', 8), 'loop:8')
+  assert.match(entryHoursPassKey('route_validation_fill', 8), /^route:\d+$/)
+})
+
+test('a read that fails AFTER its deadline raises no unhandled rejection', async t => {
+  const db = fixture(t, { holiday: null })
+  const seen = []
+  const onUnhandled = e => seen.push(e)
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => process.off('unhandledRejection', onUnhandled))
+  const g = await resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: WED_0930_1000, credentials: CREDS, calendarTimeoutMs: 50,
+    wsGetSymbolById: () => new Promise((_, reject) => setTimeout(() => reject(new Error('late transport failure')), 150)),
+  })
+  assert.match(g.refresh, /^failed: entry_hours_calendar_deadline/)
+  await new Promise(r => setTimeout(r, 300))
+  assert.deepEqual(seen, [], 'RED if a late transport failure escapes as an unhandled rejection (it would crash the agent)')
 })
