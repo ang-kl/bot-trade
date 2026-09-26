@@ -198,7 +198,7 @@ export function scannerWork(db, accounts, now) {
 export const CALENDAR_EXPORT_MAX_BYTES = 96 * 1024
 
 /**
- * The calendars Node exports to cpp-verify (watchdog_state.cpp:148-152 copies
+ * The calendars Node exports to cpp-verify (watchdog_state.cpp:162-166 copies
  * `calendars[i].calendar` onto every work item of every service whose
  * (accountId, host, symbolId) matches `calendars[i].identity`).
  *
@@ -214,6 +214,34 @@ export const CALENDAR_EXPORT_MAX_BYTES = 96 * 1024
  * completeness and `exportComplete` the export's own (calendarsComplete is
  * exactly both), reported apart so a truncated export and a missing account
  * map are not the same fact.
+ *
+ * V3 K1c: why the retained cache stays in the verdict, and what shows it.
+ * Measured 26-09: every demanded calendar exported (136 of 136, the 111 feed
+ * ones included) while calendarsComplete read false, because the 96 KiB
+ * bound cut the retained tail. Read against the services, that false is not
+ * a formality: a retained, non-demanded calendar CAN land on a work item.
+ * cpp-scan-tick's rows carry no calendar of their own (the gateway mirror
+ * batch has none, scanner_mirror.cpp:62-65; the row copies it,
+ * cpp-scan-tick scanner.cpp:129/207), and status() lists every registered
+ * stream, stale ones included (scanner.cpp:199-212; evicted only when the
+ * 512-stream table is full, scanner.cpp:64-72). The demand's feed tier holds
+ * only each gateway's CURRENT subscription under its CURRENT feed account, and
+ * skips a dormant or absent gateway without calling the demand incomplete
+ * (watchdog-calendar-refresh.js:90-99). A stream the gateway no longer feeds
+ * therefore keeps a row whose only calendar source is this export's retained
+ * part — and with it the verifier reads OPEN and raises the urgent stale-quote
+ * incident (watchdog_state.cpp:217), without it UNKNOWN and a warning
+ * (watchdog_state.cpp:200-201). cpp-exec's quote_flow rows (calendar null,
+ * watchdog_contract.cpp:24) are in the same position for a symbol added
+ * between two gateway health reads. Node's own items do not need it: each
+ * carries its own calendar unless its identity is exported with one
+ * (watchdog-contract.js shareCalendars). So the verdict is unchanged, and
+ * `calendarExport` says which part was cut: `demanded` (the demand, in the
+ * order above) and `retained` (the non-demanded cache rows read), each with
+ * total / exported / withCalendar / cut; `retained.totalIsLowerBound` when
+ * the cache holds more than 512 rows (retained.total counts the first 513
+ * read, less the demanded and malformed ones). Counted inside the one pass
+ * below, no second read of any calendar.
  */
 export function watchdogCalendars(db, now, { lead = null } = {}) {
   // Active work leads. A daily universe refresh can retain thousands of
@@ -228,6 +256,10 @@ export function watchdogCalendars(db, now, { lead = null } = {}) {
     return { key, id, rank: tierOf(key) === 'feed' ? 0 : lead?.has(key) ? 1 : 2, i }
   }).sort((a, b) => a.rank - b.rank || a.i - b.i)
   const identities = new Map(ranked.map(r => [r.key, r.id]))
+  // The demand is the first `demanded` entries of `identities` (a Map keeps
+  // insertion order); every key appended below is a retained one.
+  const demanded = identities.size, retainedKeys = new Set()
+  let malformed = 0
   const rows = db.prepare("SELECT value FROM agent_state WHERE key LIKE 'market_calendar:v1:%' ORDER BY key LIMIT 513").all()
   // exportComplete: the export itself (retained cache read, projection, the
   // byte bound) apart from the demand, so a cut export stays visible while a
@@ -236,15 +268,17 @@ export function watchdogCalendars(db, now, { lead = null } = {}) {
   for (const row of rows) {
     try {
       const identity = JSON.parse(row.value)?.latest?.identity, key = marketIdentityKey(identity)
-      if (!key) { exportComplete = false; continue }
-      if (!identities.has(key)) {
+      if (!key) { exportComplete = false; malformed++; continue }
+      if (!identities.has(key) && !retainedKeys.has(key)) {
+        retainedKeys.add(key)
         if (identities.size < 512) identities.set(key, identity)
         else exportComplete = false
       }
-    } catch { exportComplete = false /* malformed cache is not calendar evidence */ }
+    } catch { exportComplete = false; malformed++ /* malformed cache is not calendar evidence */ }
   }
   // The bound is on the serialised array: brackets and separators count.
   const calendars = []; let size = 2
+  const parts = { demanded: { exported: 0, withCalendar: 0 }, retained: { exported: 0, withCalendar: 0 } }
   for (const identity of identities.values()) {
     const evidence = readMarketCalendar(db, identity, { nowMs: now })
     let calendar = null, reason = evidence.reason
@@ -253,7 +287,12 @@ export function watchdogCalendars(db, now, { lead = null } = {}) {
     try { calendar = contractCalendar(projectCalendar(evidence, now), now) } catch { calendar = null; reason = 'calendar_projection_failed'; exportComplete = false }
     const entry = { identity, calendar, reason }; size += Buffer.byteLength(JSON.stringify(entry)) + (calendars.length ? 1 : 0)
     if (size > CALENDAR_EXPORT_MAX_BYTES) { exportComplete = false; break }
+    const part = calendars.length < demanded ? parts.demanded : parts.retained
     calendars.push(entry)
+    part.exported++; if (calendar) part.withCalendar++
   }
-  return { calendars, calendarsComplete: demand.complete && exportComplete, exportComplete, demandComplete: demand.complete }
+  const count = (total, { exported, withCalendar }) => ({ total, exported, withCalendar, cut: total - exported })
+  return { calendars, calendarsComplete: demand.complete && exportComplete, exportComplete, demandComplete: demand.complete,
+    calendarExport: { demanded: count(demanded, parts.demanded),
+      retained: { ...count(retainedKeys.size, parts.retained), totalIsLowerBound: rows.length > 512, malformed } } }
 }
