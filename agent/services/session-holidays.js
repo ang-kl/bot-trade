@@ -11,8 +11,13 @@
 // the name read from that account's own symbol map (V3 K2). The union of
 // their holiday rows is applied: if any listed stock's calendar is closed,
 // the exchange row is closed (OD-7's direction — closed when open, never the
-// reverse). An exchange with no such calendar reports `no_evidence` and keeps
-// regular hours; it is never presented as holiday-free.
+// reverse — ON THE PREMISE market-calendar.js states for V3 K3, checker nit
+// N3: the broker's real closure lies inside a 0/0 row's own local day. A real
+// closure that began before that local midnight or ran past the next one
+// reads open for the part outside the day, and nothing in the row can show
+// which, so the premise is assumed, not measured). An exchange with no such
+// calendar reports `no_evidence` and keeps regular hours; it is never
+// presented as holiday-free.
 //
 // Bounded: at most MAX_PER_ACCOUNT calendars per (exchange, account) and
 // MAX_ROWS distinct rows per exchange are read. Pure reads; no broker call.

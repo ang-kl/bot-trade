@@ -22,7 +22,14 @@
 // are not applied and are counted. The other four exchanges keep regular
 // hours only, and the payload says so per session (`holidays.status`), as
 // does the card. Worst case under OD-7: a holiday's closes land in OFF when
-// the exchange was in fact trading, never the reverse.
+// the exchange was in fact trading, never the reverse — ON ONE PREMISE, the
+// one market-calendar.js states for the entry path (V3 K3, checker nit N3):
+// the broker's real closure lies INSIDE a 0/0 row's own local day. A real
+// closure that began before that local midnight, or ran past the next one
+// (one the broker keeps in a zone other than the row's, say), stays in the
+// session for the part outside the day, so closes made then are counted in
+// the session although the exchange was shut. Nothing in a 0/0 row can show
+// which; the premise is the owner's reading (OD-7), assumed, not measured.
 //
 // The hours are exchange rules, not facts this repo or production can verify
 // (external knowledge, stated here so a reviewer can check them): ASX
