@@ -211,6 +211,44 @@ test('SWITCH OFF, closed market: the pre-T4 closed-market branch runs, no named 
   assert.ok(!s.vetoes().some(v => v.startsWith(MOMENTUM_CLOSED_MARKET_REFUSAL)))
 })
 
+test('SWITCH OFF, an HTF entry of the daily momentum account takes the pre-T4 resting-limit branch, no named refusal (N1)', async t => {
+  const s = await scene(t)
+  // Deterministic "not fresh": no backtest-parity window, so a 1d signal
+  // always reaches the resting-limit branch. With the resting-limit feature
+  // off, placeClosedMarketLimit answers 'off' before any broker call.
+  setState(s.db(), 'risk_config_json', JSON.stringify({ htfLimitDispatch: { minTf: '4h', freshnessMin: 0 } }))
+  setState(s.db(), 'closed_market_limits_json', JSON.stringify({ on: false }))
+  const lines = []
+  const orig = console.log
+  console.log = (...a) => { lines.push(a.join(' ')); orig(...a) }
+  try {
+    const synth = bookSynth({ marketOnly: false, source: 'momentum_account', timeframe: '1d' })
+    assert.equal(await s.run({ market: false }, synth, 'daily_momentum_account') ?? null, null)
+  } finally { console.log = orig }
+  assert.ok(lines.some(l => /HTF limit for ETHUSD 1d: off/.test(l)), 'the pre-T4 resting-limit branch was reached: ' + JSON.stringify(lines.filter(l => /HTF|MOMENTUM/.test(l))))
+  assert.ok(!s.vetoes().some(v => v.startsWith(MOMENTUM_RESTING_LIMIT_REFUSAL)), JSON.stringify(s.vetoes()))
+  assert.ok(!lines.some(l => /MOMENTUM REFUSED/.test(l)), 'no T4 refusal while off')
+  assert.deepEqual(s.reads, { symbolsList: 0, assets: 0, symbolsById: 0, quote: 0, reconcile: 0 })
+  assert.equal(s.sent.length, 0)
+})
+
+test('SWITCH ON, a refused intent rolls the submitting trade row back and no order is sent (N2)', async t => {
+  const s = await scene(t)
+  // The intent table as recordMomentumEntry creates it, refusing every insert.
+  s.db().exec(`CREATE TABLE momentum_target_intents (
+    account_id TEXT NOT NULL, trade_id INTEGER NOT NULL, risk_event_id INTEGER NOT NULL,
+    proposal_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'PREPARED', position_id TEXT, plan_json TEXT, fill_json TEXT,
+    PRIMARY KEY(account_id,trade_id));
+    CREATE TRIGGER t4_refuse_intent BEFORE INSERT ON momentum_target_intents BEGIN SELECT RAISE(ABORT, 'test refuses the intent'); END;`)
+  assert.equal(await s.run({ market: true }) ?? null, null)
+  assert.ok(s.vetoes().some(v => v === 'momentum_intent_refused: test refuses the intent'), JSON.stringify(s.vetoes()))
+  assert.equal(s.db().prepare('SELECT count(*) n FROM trades').get().n, 0, 'the submitting trade row rolled back with the intent')
+  assert.equal(s.intents().length, 0)
+  assert.equal(s.sent.length, 0, 'no order sent'); assert.equal(s.broker.positions(ACCT).length, 0)
+  assert.ok(s.reads.quote > 0, 'control: the plan path ran up to the intent')
+})
+
 test('SWITCH ON, closed market: refused by name, nothing rested, no evidence read (OD-1(b))', async t => {
   const s = await scene(t, { open: false })
   // The resting-limit feature ON: without the named refusal the entry would rest.
