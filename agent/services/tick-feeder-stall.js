@@ -31,7 +31,10 @@ import { getState, setState } from '../db.js'
 import { TICK_ENTRY_WORK_KEY, TICK_FEED_CADENCE_MS } from './tick-entry-work.js'
 
 // Two missed cadences: the check runs right after the feeder in the same
-// probe, so a working feeder reads ~0 s; one late probe is not a stall.
+// probe, so a working feeder reads ~0 s; one late probe is not a stall. The
+// comparison is `>=`: with probes exactly one cadence apart the second missed
+// pass reads exactly 240 s, and that is the stall (a `>` put the first
+// `stalled` on the third missed probe, ~360 s — W1.7 checker nit).
 export const STALL_AFTER_MS = 2 * TICK_FEED_CADENCE_MS
 export const TICK_FEEDER_CHECK_KEY = 'tick_feeder_check_json'
 
@@ -59,7 +62,7 @@ export function judgeTickFeed({ sides, receipts, nowMs }) {
     const row = { side: name, accounts: accounts.length, accountIds: accounts.slice(0, 16), lastPassAt: completedAt == null ? null : new Date(completedAt).toISOString(), ageSec: ageMs == null ? null : Math.round(ageMs / 1000) }
     if (!accounts.length) out.push({ ...row, state: 'idle', reason: 'no account on this side admits tick' })
     else if (completedAt == null) out.push({ ...row, state: 'stalled', reason: `no feeder pass on record while ${accounts.length} account(s) admit tick` })
-    else if (ageMs > STALL_AFTER_MS) out.push({ ...row, state: 'stalled', reason: `last feeder pass ${Math.round(ageMs / 1000)} s ago (one every ${TICK_FEED_CADENCE_MS / 1000} s expected) while ${accounts.length} account(s) admit tick` })
+    else if (ageMs >= STALL_AFTER_MS) out.push({ ...row, state: 'stalled', reason: `last feeder pass ${Math.round(ageMs / 1000)} s ago (one every ${TICK_FEED_CADENCE_MS / 1000} s expected) while ${accounts.length} account(s) admit tick` })
     else if (r.complete !== true) out.push({ ...row, state: 'incomplete', reason: `latest feeder pass incomplete: ${r.error || r.reason || (r.pushed ? 'not complete' : 'nothing pushed')}` })
     else out.push({ ...row, state: 'ok', reason: null })
   }
@@ -72,6 +75,14 @@ export function judgeTickFeed({ sides, receipts, nowMs }) {
     error: bad.length ? bad.map(x => `${x.side}: ${x.reason}`).join(' · ') : null,
     stallAfterSec: STALL_AFTER_MS / 1000, sides: out,
   }
+}
+
+/** The last verdict recordTickFeederCheck stored, or null. */
+export function readTickFeederCheck(db) {
+  try {
+    const v = JSON.parse(getState(db, TICK_FEEDER_CHECK_KEY) || 'null')
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null
+  } catch { return null }
 }
 
 export function recordTickFeederCheck(db, verdict) {

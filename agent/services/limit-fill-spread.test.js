@@ -93,6 +93,59 @@ test('PO-M3: only NEW PRE fills — an old PRE row and a non-PRE row are left un
   assert.equal(rowOf(db, market.tradeId).fill_spread_json, null)
 })
 
+// ---- cost: a record that cannot change does not scan cpp_events ----------
+// checker W1.7 blocker 1: cpp_events has no position_id index and is never
+// pruned; a PRE row stuck at not_read is called on every monitor pass.
+function countingDb(db) {
+  const seen = { cppEvents: 0 }
+  const prepare = db.prepare.bind(db)
+  db.prepare = (sql) => { if (/cpp_events/.test(sql)) seen.cppEvents++; return prepare(sql) }
+  return seen
+}
+
+test('PO-M3 cost: a not_read record with no quote returns before the cpp_events lookup, pass after pass', () => {
+  const db = initDB(':memory:')
+  const { tradeId, pos } = seedFill(db)
+  const seen = countingDb(db)
+  recordLimitFillSpread(db, pos, { quote: null, nowMs: NOW, reason: 'not priced: management off for this strategy' })
+  assert.equal(seen.cppEvents, 1, 'the first sight looks the fill up once')
+  for (let i = 1; i <= 50; i++) {
+    assert.deepEqual(recordLimitFillSpread(db, pos, { quote: null, nowMs: NOW + i * 3_000 }), { skipped: 'not_read_recorded' })
+  }
+  assert.equal(seen.cppEvents, 1, 'fifty management-off passes: no further cpp_events read')
+  assert.equal(recOf(db, tradeId).reason, 'not priced: management off for this strategy', 'the first reason stands')
+})
+
+test('PO-M3 cost: past the window the not_read record is final — no lookup, no write, even with a quote', () => {
+  const db = initDB(':memory:')
+  const { tradeId, pos } = seedFill(db, { openedMs: NOW - FIRST_SIGHT_MAX_MS - 60_000 })
+  const seen = countingDb(db)
+  recordLimitFillSpread(db, pos, { quote: { bid: 1.1, ask: 1.1002 }, source: 'sidecar', nowMs: NOW })
+  assert.equal(recOf(db, tradeId).state, 'not_read')
+  const before = rowOf(db, tradeId).fill_spread_json
+  for (let i = 1; i <= 20; i++) {
+    assert.deepEqual(recordLimitFillSpread(db, pos, { quote: { bid: 1.1, ask: 1.1002 }, source: 'sidecar', nowMs: NOW + i * 60_000 }), { skipped: 'not_read_final' })
+  }
+  // and still final a day and a half on, past the 24 h "new" rule
+  assert.deepEqual(recordLimitFillSpread(db, pos, { quote: { bid: 1.1, ask: 1.1002 }, nowMs: NOW + NEW_FILL_MAX_AGE_MS * 1.5 }), { skipped: 'not_read_final' })
+  assert.equal(seen.cppEvents, 1, 'only the first sight read cpp_events')
+  assert.equal(rowOf(db, tradeId).fill_spread_json, before, 'the record is untouched')
+})
+
+test('PO-M3 cost: inside the window an execution-event fill time is reused, not looked up again, and still measures', () => {
+  const db = initDB(':memory:')
+  const { tradeId, pos } = seedFill(db, { openedMs: NOW - 30_000 })
+  db.prepare(`INSERT INTO cpp_events (side, boot_id, seq, ts_ms, execution_type, order_id, position_id, account_id, symbol_id, solicited)
+      VALUES ('cpp_exec', 'b', 1, ?, 'ORDER_FILLED', '9', '500', '111', 1, 0)`).run(NOW - 60_000)
+  const seen = countingDb(db)
+  recordLimitFillSpread(db, pos, { quote: null, nowMs: NOW, reason: 'quote unavailable (market closed or feed gap)' })
+  assert.equal(seen.cppEvents, 1)
+  recordLimitFillSpread(db, pos, { quote: { bid: 1.1, ask: 1.1001 }, source: 'broker', nowMs: NOW + 5_000 })
+  assert.equal(seen.cppEvents, 1, 'the journalled fill time carried on the record is reused')
+  const rec = recOf(db, tradeId)
+  assert.deepEqual([rec.state, rec.fillBasis, rec.fillMs, rec.lagMs], ['measured', 'execution_event', NOW - 60_000, 65_000])
+})
+
 // ---- end to end through the fast monitor --------------------------------
 // ONE db for every runFastMonitor case: loop.js's prepareStatements binds to
 // the first db it sees (see fast-monitor-sidecar-quotes.test.js).

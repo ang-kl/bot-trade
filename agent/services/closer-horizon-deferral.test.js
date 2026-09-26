@@ -203,3 +203,55 @@ for (const [name, c] of Object.entries(CASES)) {
     assert.equal((await c.run(own)).closed.length, 0)
   })
 }
+
+// ---- the profit keeper's scale-out (checker W1.7 nit) ---------------------
+// The close cases above never reach the scale-out branch. A scale-out waits
+// for an in-flight momentum close like a close does, and one the symbol's
+// minimum volume would stop anyway is not listed as deferred: it was never
+// going to be sent.
+async function runScaleOut({ minVolume, plan: planState = null }) {
+  const db = initDB(':memory:')
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, scope: 'external', mode: 'adaptive',
+    atrTimeframe: '1h', atrPeriod: 14, armAtrMult: 1, armBalancePct: 0.1, trailAtrMult: 2.5, scaleOutFrac: 0.5,
+    structureTrailEnabled: false, armProfitUsd: 50, givebackPct: 40, takeProfitUsd: null }))
+  const tradeId = db.prepare(`INSERT INTO trades (symbol, side, ctrader_position_id, status) VALUES ('NATGAS', 'SELL', '9201', 'open')`).run().lastInsertRowid
+  db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, status, source, trade_id)
+    VALUES ('NATGAS', 'short', 2.8795, 2.918, 1.8, 'active', 'external', ?)`).run(tradeId)
+  if (planState) withPlan(db, { accountId: '1', positionId: 9201, state: planState, age: 1_000 })
+  const closed = []
+  const bars = Array.from({ length: 50 }, () => ({ h: 2.35, l: 2.30, c: 2.32 })) // constant true range 0.05
+  const out = await runProfitKeeper(db, { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }, {
+    now: NOW,
+    exec: {
+      reconcile: async () => ({ position: [{ positionId: 9201, price: 2.8795, stopLoss: 2.918, takeProfit: 1.8, tradeData: { symbolId: 77, volume: 10000, tradeSide: 2 } }] }),
+      closePosition: async (_c, args) => { closed.push(args) },
+      amendPosition: async () => ({}),
+    },
+    ws: { wsGetLastCloses: async () => ({ 77: 2.30 }), wsGetTrendbarsBatch: async () => ({ '1h': bars }) },
+    sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3, minVolume }) },
+    notify: () => {},
+  })
+  return { closed, out }
+}
+
+test('F1 profit keeper (scale-out): no plan — the scale-out is sent as before', async () => {
+  const { closed, out } = await runScaleOut({ minVolume: 100 })
+  assert.deepEqual(closed.map(c => c.volume), [5000], JSON.stringify(out))
+  assert.equal(out.scaleOuts, 1)
+  assert.deepEqual(out.deferred, [])
+})
+
+test('F1 profit keeper (scale-out): an in-flight momentum close defers the scale-out, and says so', async () => {
+  const { closed, out } = await runScaleOut({ minVolume: 100, plan: 'SENDING' })
+  assert.equal(closed.length, 0)
+  assert.equal(out.deferred.length, 1, JSON.stringify(out))
+  assert.match(out.deferred[0], /^NATGAS: scale-out deferred — momentum partial plan SENDING on position 9201/)
+})
+
+test('F1 profit keeper (scale-out): below the minimum volume it is not sent, and not listed as deferred either', async () => {
+  const control = await runScaleOut({ minVolume: 6000 })
+  assert.equal(control.closed.length, 0, 'control: 5000 < 6000 is never sent')
+  const { closed, out } = await runScaleOut({ minVolume: 6000, plan: 'SENDING' })
+  assert.equal(closed.length, 0)
+  assert.deepEqual(out.deferred, [], 'a scale-out that could never be sent is not a deferred close')
+})

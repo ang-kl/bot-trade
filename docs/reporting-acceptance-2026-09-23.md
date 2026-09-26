@@ -57,8 +57,9 @@ Two limits of C4, recorded rather than carried silently:
   and can raise the stall alarm while their market is open.)
   **Addressed by V3 F4 (26-09-2026), on the Node side:** every cpp_probe, after
   the sides are probed, `agent/services/tick-feeder-stall.js` sets each side's
-  tick-admitting accounts beside its latest receipt. No complete pass within
-  two cadences (240 s) while an account admits tick is `stalled`; a failed or
+  tick-admitting accounts beside its latest receipt. No complete pass for
+  two cadences (240 s or more, so the second missed 120 s probe) while an
+  account admits tick is `stalled`; a failed or
   empty push is `incomplete`. The verdict is the `tick_feeder` heartbeat
   (`GET /state/heartbeats`: warn on the first failed check, error from the
   third; the side and reason in `last_error`, the per-side table in `detail`;

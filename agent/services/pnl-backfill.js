@@ -481,10 +481,14 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // rule to strict calls only, because the non-strict path had no production
   // caller and its tests were closing-deal-only fixtures. A caller added later
   // would have written one window's closing deals as a position's money — the
-  // defect B1 exists to stop — so the rule holds on both paths now. Non-strict
-  // has no per-position reader to hand to: a deferred position stays NULL
-  // (reported in `deferred`, excluded from attempts) until a strict pass or
-  // the per-position reader settles it.
+  // defect B1 exists to stop — so the rule holds on both paths now. KNOWN GAP
+  // (W1.7 checker): non-strict has no per-position reader to hand to. A
+  // deferred position stays NULL, is reported in `deferred`, and is never
+  // charged an attempt — so on a non-strict-only caller it is never written
+  // off either; only a strict pass (whose per-position reader is
+  // old-position-pnl.js) can settle it. Inert today: the only production
+  // callers (cross-side-pnl.js, old-position-pnl.js) are strict. A future
+  // non-strict caller must bring a reader or an attempt budget.
   const windowPass = positionId == null
   const uncoveredPositions = new Set()
   if (windowPass) {

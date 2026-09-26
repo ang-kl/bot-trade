@@ -219,7 +219,7 @@ export const CONTROLLERS = {
   momentum_partial:    { label: 'Momentum partial-TP1 manager', tiedToLoop: true, factor: 3, effect: { key: 'momentum_partial_pass_json', kind: 'json' } },
   // V3 F4 (#1099 nit 2): the tick permit feeder's stall alarm. Beaten by
   // probeCppExec after every side was probed: ok only when every side with a
-  // tick-admitting account had a complete feeder pass within two cadences
+  // tick-admitting account had a complete feeder pass under two cadences old
   // (tick-feeder-stall.js); the stalled side and why in last_error, the
   // per-side table in the detail. Dormant while no account admits tick.
   // QUIET: the watchdog writes its stall / failing events to action_log and

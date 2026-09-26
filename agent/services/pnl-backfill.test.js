@@ -892,6 +892,8 @@ test('F5 N6: a deferred position is not charged a backfill attempt on the non-st
   await backfillClosedPnl(db, {}, { getDeals: closingOnlyApi([deal(4403, -5000)]), now: NOW })
   const attempts = pid => db.prepare(`SELECT COALESCE(pnl_attempts, 0) AS n FROM trades WHERE ctrader_position_id = ?`).get(pid).n
   assert.equal(db.prepare(`SELECT net_pnl FROM trades WHERE ctrader_position_id = '4403'`).get().net_pnl, null, 'deferred, not written')
-  assert.equal(attempts('4403'), 0, 'deferred: the per-position reader owns it, no attempt spent')
+  // Non-strict has no per-position reader: the row stays NULL and uncharged
+  // until a strict pass settles it (the known gap noted in pnl-backfill.js).
+  assert.equal(attempts('4403'), 0, 'deferred: no attempt spent; left NULL for a strict pass to settle')
   assert.equal(attempts('4404'), 1, 'control: a row the pass could not match is charged, as before')
 })

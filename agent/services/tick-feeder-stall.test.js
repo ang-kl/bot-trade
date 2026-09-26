@@ -25,7 +25,7 @@ const receipt = (db, completedAt, { pushed = true } = {}) => recordTickEntryWork
   result: { pushed, carried: ['EURUSD'], work: [{ accountId: '46130058', permits: 2 }] },
 })
 
-test('judgeTickFeed: idle with no tick account; ok on a complete pass inside two cadences; stalled without one; incomplete on a failed push', () => {
+test('judgeTickFeed: idle with no tick account; ok on a complete pass inside two cadences, stalled at two; stalled without one; incomplete on a failed push', () => {
   const now = T0.getTime()
   const good = { completedAt: now - 1_000, complete: true }
   assert.equal(judgeTickFeed({ sides: [{ name: 'a', accounts: [] }], receipts: {}, nowMs: now }).state, 'idle')
@@ -34,8 +34,10 @@ test('judgeTickFeed: idle with no tick account; ok on a complete pass inside two
   const none = judgeTickFeed({ sides: [{ name: 'a', accounts: ['1', '2'] }], receipts: {}, nowMs: now })
   assert.deepEqual([none.state, none.ok], ['stalled', false])
   assert.match(none.error, /^a: no feeder pass on record while 2 account\(s\) admit tick$/)
+  const under = judgeTickFeed({ sides: [{ name: 'a', accounts: ['1'] }], receipts: { a: { completedAt: now - STALL_AFTER_MS + 1, complete: true } }, nowMs: now })
+  assert.equal(under.state, 'ok', 'just inside two cadences is not yet a stall')
   const edge = judgeTickFeed({ sides: [{ name: 'a', accounts: ['1'] }], receipts: { a: { completedAt: now - STALL_AFTER_MS, complete: true } }, nowMs: now })
-  assert.equal(edge.state, 'ok', 'exactly two cadences is not yet a stall')
+  assert.equal(edge.state, 'stalled', 'exactly two cadences IS the stall: probes 120 s apart read 240 s on the second missed pass')
   const old = judgeTickFeed({ sides: [{ name: 'a', accounts: ['1'] }], receipts: { a: { completedAt: now - STALL_AFTER_MS - 1, complete: true } }, nowMs: now })
   assert.equal(old.state, 'stalled')
   assert.match(old.error, /last feeder pass 240 s ago \(one every 120 s expected\)/)
@@ -126,4 +128,29 @@ test('F4: the inspector raises one finding per stalled side; none while the feed
   await probe(healthy, T0, ['46130058'])
   runLogInspector(healthy, { now: at(30).getTime() })
   assert.equal(healthy.prepare(`SELECT COUNT(*) AS n FROM inspection_findings WHERE subject_key LIKE 'tick_feeder_stall:%'`).get().n, 0)
+})
+
+test('F4: probes exactly one cadence apart — a feeder that stops after a pass reads stalled on the second missed probe (240 s), not the third', async () => {
+  const db = initDB(':memory:')
+  receipt(db, T0.getTime())
+  await probe(db, T0, ['46130058'])
+  assert.equal(hb(db).consecutive_failures, 0, 'the pass itself: ok')
+  await probe(db, at(120), ['46130058'])
+  assert.equal(hb(db).consecutive_failures, 0, 'one missed pass is not a stall')
+  await probe(db, at(240), ['46130058'])
+  assert.equal(hb(db).consecutive_failures, 1, 'the second missed pass is')
+  assert.match(hb(db).last_error, /last feeder pass 240 s ago/)
+})
+
+test('F4: "no feeder pass on record" can be confirmed — a later check that still finds the side admitting tick, with no receipt, holds the stall', async () => {
+  const db = initDB(':memory:')
+  await probe(db, T0, ['46130058'])
+  runLogInspector(db, { now: at(30).getTime() })
+  const metric = JSON.parse(db.prepare(`SELECT falsifier FROM inspection_findings WHERE subject_key = 'tick_feeder_stall:cpp_exec'`).get().falsifier).metric
+  assert.equal(evalFalsifierMetric(db, metric), null, 'no check since the finding → unevaluable')
+  await probe(db, at(150), ['46130058'])
+  assert.equal(evalFalsifierMetric(db, metric), true, 'checked after the finding, still an account admitting tick, still no pass → confirmed')
+  // Control: the side stopped admitting tick → nothing left to feed → unevaluable, not confirmed.
+  await probe(db, at(270), [])
+  assert.equal(evalFalsifierMetric(db, metric), null)
 })

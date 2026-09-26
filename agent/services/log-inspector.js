@@ -29,7 +29,7 @@
 import { getState, setState } from '../db.js'
 import { guardName } from './decision-audit.js'
 import { readSnapshot, inspectLifecycleRegression, lifecycleRuleRecurs, lifecycleRulePersists } from './order-lifecycle.js'
-import { tickEntryReceiptsRaw } from './tick-feeder-stall.js'
+import { tickEntryReceiptsRaw, readTickFeederCheck } from './tick-feeder-stall.js'
 
 export const INSPECTOR_DEFAULTS = {
   on: true,
@@ -466,10 +466,19 @@ export function evalFalsifierMetric(db, metric) {
         return (r?.n || 0) > 0 // more drops → recurring-defect reading confirmed
       }
       case 'tick_feed_resumed': {
-        // The side's receipt as stored. Absent (the side stopped admitting
-        // tick and its receipt was cleared) → unevaluable, never confirmed.
+        // The side's receipt as stored.
         const r = tickEntryReceiptsRaw(db)?.[metric.side]
-        if (!r || !Number.isSafeInteger(r.completedAt)) return null
+        if (!r || !Number.isSafeInteger(r.completedAt)) {
+          // No receipt at all ("no feeder pass on record"). It cannot resume
+          // through a receipt it never wrote, so read the check instead: one
+          // made AFTER the finding that still found an account on this side
+          // admitting tick means the stall persisted → CONFIRMED. No check
+          // since, or the side no longer admits tick → unevaluable.
+          const chk = readTickFeederCheck(db)
+          const chkAt = Date.parse(chk?.at || '')
+          const row = Array.isArray(chk?.sides) ? chk.sides.find(s => s?.side === metric.side) : null
+          return Number.isFinite(chkAt) && chkAt > Number(metric.sinceMs) && Number(row?.accounts) > 0 ? true : null
+        }
         // A complete pass after the finding → the stall was transient → the
         // stuck-feeder reading is FALSIFIED (the state_advanced convention).
         return !(r.complete === true && r.completedAt > Number(metric.sinceMs))

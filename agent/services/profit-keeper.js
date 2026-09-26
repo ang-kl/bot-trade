@@ -659,7 +659,12 @@ async function profitKeeperPass(db, creds, deps = {}) {
       // flight on this position; the keeper's close or scale-out waits for
       // this pass only and is decided again on the next. Past the horizon the
       // deferral ends whatever the plan row says. No plan, no deferral.
-      const inFlight = (decision.action.close || decision.action.scaleOutFrac)
+      // A scale-out below the symbol's minimum volume is never sent, so it is
+      // not a deferred close either: work that out first, and list only a
+      // close that would otherwise have gone out.
+      const scaleVol = decision.action.scaleOutFrac ? Math.round(td.volume * decision.action.scaleOutFrac) : null
+      const scaleSendable = scaleVol != null && (meta.minVolume == null || scaleVol >= meta.minVolume)
+      const inFlight = (decision.action.close || scaleSendable)
         ? protectiveExitDeferral(db, { accountId: r.account_id ?? accountId, positionId: r.position_id, nowMs: deps.now ?? Date.now() })
         : null
       if (inFlight) summary.deferred.push(`${r.symbol}: ${decision.action.close ? 'close' : 'scale-out'} deferred — ${inFlight}`)
@@ -680,8 +685,8 @@ async function profitKeeperPass(db, creds, deps = {}) {
         continue
       }
       if (decision.action.scaleOutFrac && !inFlight) {
-        const vol = Math.round(td.volume * decision.action.scaleOutFrac)
-        if (meta.minVolume == null || vol >= meta.minVolume) {
+        const vol = scaleVol
+        if (scaleSendable) {
           try {
             await exec.closePosition(creds, { positionId: parseInt(r.position_id), volume: vol })
             updScaled.run(r.id)

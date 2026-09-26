@@ -29,11 +29,21 @@
 //
 // STORED on the trade row: `trades.fill_spread` (REAL, price units, only when
 // measured) and `trades.fill_spread_json` (the whole record above). Readers:
-// GET /state/trades returns both columns (SELECT *) on every closed row.
+// GET /state/trades returns both columns (SELECT *) on every closed row (see
+// VISIBILITY below for open rows).
 //
 // "NEW": a row whose opened_at is older than NEW_FILL_MAX_AGE_MS at first
 // sight predates this record and is left untouched — writing a days-late
 // quote onto an old fill would be a number that was never the fill's.
+//
+// COST. A row that already carries a not_read record returns before the
+// cpp_events lookup when no quote came in, when its fill time is unknown, or
+// when its window has closed (the record is then final), so a position that
+// can never be measured costs one primary-key read per pass, not a table scan.
+//
+// VISIBILITY. GET /state/trades returns closed and rejected rows only, so an
+// OPEN PRE fill's record is in the database but not on that read until the
+// position closes.
 // ---------------------------------------------------------------------------
 
 export const FIRST_SIGHT_MAX_MS = 15 * 60_000
@@ -79,14 +89,30 @@ export function recordLimitFillSpread(db, pos, { quote = null, source = null, no
     let prior = null
     try { prior = trade.fill_spread_json ? JSON.parse(trade.fill_spread_json) : null } catch { prior = null }
     if (prior?.state === 'measured') return { skipped: 'recorded' }
+    const bid = Number(quote?.bid), ask = Number(quote?.ask)
+    const valid = Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask >= bid
+    let ref = null
     if (!prior) {
       const opened = sqliteMs(trade.opened_at)
       if (!Number.isFinite(opened) || nowMs - opened > NEW_FILL_MAX_AGE_MS) return { skipped: 'not_new' }
+    } else {
+      // A not_read record exists. Return BEFORE the cpp_events lookup whenever
+      // it cannot change anything: cpp_events has no position_id index and is
+      // not pruned, and a stuck position is called on every monitor pass for
+      // the rest of its life (checker W1.7 blocker 1).
+      if (!valid) return { skipped: 'not_read_recorded' } // no quote: nothing could replace the record
+      const priorFill = Number(prior.fillMs)
+      if (!Number.isFinite(priorFill) || priorFill <= 0) return { skipped: 'not_read_final' } // no fill time: never measurable
+      // Past the window the record is final. Either basis closes it: the
+      // row's opened_at is the adoption time, never earlier than the fill.
+      if (nowMs - priorFill > FIRST_SIGHT_MAX_MS) return { skipped: 'not_read_final' }
+      // Inside the window an execution-event fill time is already the best
+      // reference; only a row_opened_at one is looked up again, and that only
+      // for the 15 minutes the window lasts.
+      if (prior.fillBasis === 'execution_event') ref = { fillMs: priorFill, fillBasis: 'execution_event' }
     }
-    const { fillMs, fillBasis } = fillReference(db, trade)
+    const { fillMs, fillBasis } = ref ?? fillReference(db, trade)
     const lagMs = Number.isFinite(fillMs) ? Math.round(nowMs - fillMs) : null
-    const bid = Number(quote?.bid), ask = Number(quote?.ask)
-    const valid = Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask >= bid
     let rec
     if (valid && lagMs != null && lagMs <= FIRST_SIGHT_MAX_MS) {
       const spread = ask - bid
