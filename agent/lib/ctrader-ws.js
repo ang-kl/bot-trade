@@ -872,7 +872,8 @@ const SYMBOLS_LIST_TTL_MS = 6 * 60 * 60 * 1000
 // `maxRetries` (default 2) and `recoverAuth` (default true) leave every
 // existing caller as it was. V3 S-8's entry path passes 0 and false with a
 // short timeout (entry-hours.js ENTRY_HOURS_MAP_TIMEOUT_MS). The pass-through
-// is covered by the entry-path test's injected mock only.
+// is pinned by ctrader-ws.test.js ("S-8: the entry options reach withRetry",
+// a FakeWs on the pooled socket seam: 1 connect and no refresh vs 3 and 1).
 export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000, { perAccount = false, maxRetries = 2, recoverAuth = true } = {}) {
   const read = () => withRetry(() => {
     const run = wsRun(host, [
@@ -901,7 +902,8 @@ export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, acco
 // existing caller as it was. V3 S-8's entry-path calendar read passes 0 and
 // false (entry-hours.js): one attempt bounded by its timeout, no backoff, no
 // reactive refresh, because the loop awaits each entry serially. The
-// pass-through is covered by the entry-path test's injected mock only.
+// pass-through is pinned by ctrader-ws.test.js ("S-8: the entry options reach
+// withRetry", a FakeWs on the pooled socket seam).
 export function wsGetSymbolById(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000, { maxRetries = 2, recoverAuth = true } = {}) {
   const ids = (Array.isArray(symbolIds) ? symbolIds : [symbolIds]).map(Number).filter(Number.isFinite)
   return withRetry(() => wsRun(host, [

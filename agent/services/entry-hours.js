@@ -26,8 +26,10 @@
 //   - A missing or stale calendar: one read of that symbol
 //     (wsGetSymbolById). A symbol the collector does not demand
 //     (watchdog-calendar-refresh.js) is then not refused for that alone.
-//   - A missing account map: the id is resolved by resolveSymbolId, the
-//     function autoTrade places with, so the id judged is the id placed. When
+//   - A missing account map, or one past its 24 h TTL or undated (round 4:
+//     resolveSymbolId re-reads those, so its stored ids are not what autoTrade
+//     places): the id is resolved by resolveSymbolId, the function autoTrade
+//     places with, so the id judged is the id placed. When
 //     it can, it reads the account's own symbol list (fetchAccountSymbolMap →
 //     wsGetSymbolsList); when it cannot read at all, its network-free answer
 //     is taken. After a failed read, its global-map fallback is NOT judged:
@@ -59,15 +61,15 @@
 //   Worst case per loop pass, FOR THIS GATE: 2 × 5 s = 10 s (two accounts'
 //   symbol lists). It does not bound autoTrade's own reads after the gate:
 //   resolveSymbolId at loop.js:647-651, and in the closed-market branch at
-//   closed-market-limits.js:372-373, still read an account's list with the
-//   defaults (30 s timeout, 3 attempts, 2 s + 4 s backoff) when that
-//   account's own map is older than its 24 h TTL. The gate never lets them
-//   meet a missing map they could read (it reads it first, or refuses the
-//   entry), and K2 keeps every map younger than 23 h, so they read only when
-//   K2 has been failing for that account for a day. Bounding them would
-//   change what succeeds (a list that arrives after 5 s lets the entry
-//   proceed today; bounded, it would be refused): a follow-up, not done
-//   here. A socket still connecting when a read times out is never closed
+//   closed-market-limits.js:372-373, read an account's list with the
+//   defaults (30 s timeout, 3 attempts, 2 s + 4 s backoff) whenever that
+//   account's own map is missing, past its 24 h TTL or undated. The gate reads
+//   such a map first (bounded) and refuses the entry if it cannot, so they
+//   read only in the pass after the gate's own read stored a list they then
+//   find fresh — i.e. not at all — or when the map ages past the TTL between
+//   the gate and them (milliseconds). Bounding them would change what
+//   succeeds (a list that arrives after 5 s lets the entry proceed today;
+//   bounded, it would be refused): a follow-up, not done here. A socket still connecting when a read times out is never closed
 //   (ctrader-ws.js wsRunInner cleanup, ctrader-session.js destroy): a
 //   pre-existing follow-up for every caller.
 //   The collector's own attempt map is per refresher instance and is not
@@ -88,7 +90,7 @@
 // Owner principle 1: the host is routing (which broker environment the
 // account lives on); no rule here differs by environment.
 // ---------------------------------------------------------------------------
-import { getAccountSymbolMap, credsForRegisteredAccount } from '../lib/ctrader-creds.js'
+import { getAccountSymbolMap, accountSymbolMapIsFresh, credsForRegisteredAccount } from '../lib/ctrader-creds.js'
 import { marketIdentity, marketIdentityKey } from '../lib/market-identity.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { readMarketCalendar, recordMarketCalendar } from './market-calendar.js'
@@ -174,7 +176,7 @@ function withDeadline(promise, ms, what) {
  * (ctrader-creds.js resolveSymbolId) for an account whose own map is missing.
  * Returns { identity } or { reason }.
  */
-export function entryHoursIdentity(db, { symbol, accountId, host = null, symbolId = null }) {
+export function entryHoursIdentity(db, { symbol, accountId, host = null, symbolId = null, nowMs = Date.now() }) {
   if (accountId == null || String(accountId) === '') return { reason: 'account_required' }
   // Routing only (owner principle 1): the account's broker host from the
   // registry, through the one helper calendar code shares for it.
@@ -184,9 +186,14 @@ export function entryHoursIdentity(db, { symbol, accountId, host = null, symbolI
   }
   let id = symbolId
   if (id == null) {
-    const map = getAccountSymbolMap(db, accountId)?.map
-    if (!map) return { reason: 'account_symbol_map_missing' }
-    id = map[String(symbol || '').toUpperCase()]
+    const own = getAccountSymbolMap(db, accountId)
+    if (!own?.map) return { reason: 'account_symbol_map_missing' }
+    // resolveSymbolId answers from the stored map only while it is fresh
+    // (ctrader-creds.js:277-278, the same predicate); past its TTL or undated
+    // it re-reads the list and places what the list says. Judging the stored
+    // id then would judge an id autoTrade may not place (round 4).
+    if (!accountSymbolMapIsFresh(own, nowMs)) return { reason: 'account_symbol_map_stale' }
+    id = own.map[String(symbol || '').toUpperCase()]
     if (id == null) return { reason: 'symbol_not_in_account_map' }
   }
   const identity = marketIdentity({ host, accountId: String(accountId), symbolId: id })
@@ -209,7 +216,7 @@ export function entryMarketGate(db, { symbol, accountId, host, symbolId = null, 
     return { ...legacy, open: legacy.open === true, unknown: false, status: legacy.open ? 'OPEN' : 'CLOSED', hoursSource: 'symbol_hours' }
   }
   if (source !== 'account_calendar') return unknownGate(symbol, 'entry_hours_source_invalid')
-  const { identity, reason } = entryHoursIdentity(db, { symbol, accountId, host, symbolId })
+  const { identity, reason } = entryHoursIdentity(db, { symbol, accountId, host, symbolId, nowMs })
   if (!identity) return unknownGate(symbol, reason)
   const cal = readMarketCalendar(db, identity, { nowMs })
   const base = { identity, observedAt: cal.observedAt, hoursSource: 'account_calendar' }
@@ -223,11 +230,24 @@ export function entryMarketGate(db, { symbol, accountId, host, symbolId = null, 
 
 /**
  * The entry path's verdict: entryMarketGate, plus the bounded broker reads
- * described in the header when they can cure the UNKNOWN. A read that is not
- * made, or fails, leaves the UNKNOWN standing and names why in `refresh`:
- * credentials_unavailable, token_refused, cooldown, pass_cap, failed: …,
- * symbol_id: … (resolveSymbolId's own reason), symbol_not_returned,
- * not_recorded: ….
+ * described in the header when they can cure the UNKNOWN. `refresh` says what
+ * happened (absent when no read was needed):
+ *   credentials_unavailable — no usable credentials for the account; no read.
+ *   token_refused           — B7 lists the account as refused; no read.
+ *   cooldown                — this identity / account list was read < 5 min ago.
+ *   pass_cap                — the pass (or route minute) budget is spent.
+ *   failed: …               — the read threw or passed its deadline.
+ *   symbol_id: …            — resolveSymbolId gave no id; its own reason.
+ *   symbol_id_fallback: …   — the list read failed and resolveSymbolId
+ *                             answered from a fallback (global map or stale
+ *                             stored map), which autoTrade's own unbounded
+ *                             read may not place: not judged.
+ *   symbol_id_resolved      — the id came from resolveSymbolId (a list read
+ *                             or its network-free answer) and was judged.
+ *   symbol_not_returned     — the calendar read did not return this symbol.
+ *   not_recorded: …         — the returned calendar was refused on record.
+ *   refreshed               — the calendar was read, recorded and judged.
+ * Every value but symbol_id_resolved and refreshed leaves the UNKNOWN standing.
  * deps: { nowMs, source, pass, credentials(accountId), fetchSymbols(creds, ids),
  *   wsGetSymbolById, wsGetSymbolsList, resolveSymbolId(db, creds, symbol, deps),
  *   mapTimeoutMs, calendarTimeoutMs }.
@@ -250,21 +270,23 @@ export async function resolveEntryMarketGate(db, input, deps = {}) {
   const refused = () => tokenRefusedAccounts(db).has(accountId)
 
   let symbolId = null
-  if (gate.calendarReason === 'account_symbol_map_missing') {
+  if (gate.calendarReason === 'account_symbol_map_missing' || gate.calendarReason === 'account_symbol_map_stale') {
     // THE ID JUDGED IS THE ID PLACED (fix round 3, N-1). autoTrade places the
     // id resolveSymbolId returns (loop.js:647-651), so the gate asks the same
     // function, with no shortcut ahead of it: an account's own list that
     // disagrees with the global map is the one autoTrade places on. It is
     // taken only when both calls are certain to agree:
     //   - resolveSymbolId read the account's own list (bounded below): the
-    //     list is stored, so autoTrade's call finds it fresh (:267-268);
-    //   - resolveSymbolId could not read at all (:272 canFetch false): its
-    //     answer is network-free, and autoTrade's call cannot read either.
-    // After a FAILED read it falls back to the global map (:283-288), but
-    // autoTrade's own read is not bounded (30 s, 3 attempts) and may succeed
-    // with another id, so the gate does not judge that fallback: UNKNOWN for
-    // this pass, named. The budget and the cooldown are spent only when the
-    // list is really read.
+    //     list is stored, so autoTrade's call finds it fresh (:277-278);
+    //   - resolveSymbolId could not read at all (:282 canFetch false): its
+    //     answer is network-free (a stale stored id at :290, else the global
+    //     map at :293-298), and autoTrade's call cannot read either.
+    // After a FAILED read it falls back — to the stale stored id when the
+    // account has a map (:290, round 4), else to the global map (:293-298) —
+    // but autoTrade's own read is not bounded (30 s, 3 attempts) and may
+    // succeed with another id, so the gate does not judge that fallback:
+    // UNKNOWN for this pass, named. The budget and the cooldown are spent
+    // only when the list is really read.
     const creds = credsFor()
     if (!creds) return { ...gate, refresh: 'credentials_unavailable' }
     if (refused()) return { ...gate, refresh: 'token_refused' }

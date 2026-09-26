@@ -38,16 +38,20 @@ const THU_0110_1000 = Date.parse('2026-10-01T02:00:00Z') // Thu 01-10 10:00 HKT:
 const OBSERVED = Date.parse('2026-09-30T00:00:00Z')
 const OBSERVED_THU = Date.parse('2026-10-01T00:00:00Z') // within 24 h of the holiday instant
 
-function fixture(t, { map = { [SYM]: SYM_ID }, holiday = [{ ...HOLIDAY_0110, startSecond: 0, endSecond: D }], observedMs = OBSERVED } = {}) {
+// The account's own map is dated with the calendar's observation by default:
+// each test queries within 24 h of it, so the map is as fresh as the calendar
+// (round 4: a map past resolveSymbolId's 24 h TTL is re-read, not judged).
+function fixture(t, { map = { [SYM]: SYM_ID }, holiday = [{ ...HOLIDAY_0110, startSecond: 0, endSecond: D }], observedMs = OBSERVED, mapBuiltAtMs = observedMs } = {}) {
   const db = initDB(':memory:'); t.after(() => db.close())
   _resetEntryHoursRefresh()
-  if (map) setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: '2026-09-30T00:00:00Z', accountId: ACCT, map }))
+  if (map) setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: new Date(mapBuiltAtMs).toISOString(), accountId: ACCT, map }))
   if (holiday) recordMarketCalendar(db, IDENTITY, hkSymbol(holiday), { nowMs: observedMs })
   // The name-keyed row the pre-S-8 gate read: same weekly hours, no holidays.
   db.prepare('INSERT INTO symbol_hours (symbol, schedule_json, tz) VALUES (?, ?, ?)')
     .run(SYM, JSON.stringify(HK_SCHEDULE.map(i => ({ start: i.startSecond, end: i.endSecond }))), 'Asia/Hong_Kong')
   return db
 }
+const FRESH = new Date(Date.parse('2026-09-30T01:00:00Z')).toISOString() // 1 h before WED_0930_1000
 const gate = (db, nowMs, extra = {}) => entryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST, nowMs, ...extra })
 
 test('OD-8 is one switch, built on the recommended answer: the account calendar gates entries', () => {
@@ -100,7 +104,8 @@ test('UNKNOWN never reads open: every way the account calendar cannot answer ref
     ['account_symbol_map_missing', fixture(t, { map: null }), {}],
     ['symbol_not_in_account_map', fixture(t, { map: { OTHER: 1 } }), {}],
     ['calendar_missing', fixture(t, { holiday: null }), {}],
-    ['calendar_stale', fixture(t, { observedMs: WED_0930_1000 - 25 * H * 1000 }), {}],
+    ['calendar_stale', fixture(t, { observedMs: WED_0930_1000 - 25 * H * 1000, mapBuiltAtMs: WED_0930_1000 }), {}],
+    ['account_symbol_map_stale', fixture(t, { mapBuiltAtMs: WED_0930_1000 - 25 * H * 1000 }), {}],
     ['holiday_bounds_omitted', fixture(t, { holiday: [{ ...HOLIDAY_0110 }] }), {}],
     ['entry_hours_source_invalid', fixture(t), { source: 'something_else' }],
     ['account_required', fixture(t), { accountId: null }],
@@ -277,7 +282,7 @@ test('B2: at most 2 broker reads per loop pass; the rest stay UNKNOWN (pass_cap)
   const db = initDB(':memory:'); t.after(() => db.close())
   _resetEntryHoursRefresh()
   const map = { A: 1, B: 2, C: 3 }
-  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: 'x', accountId: ACCT, map }))
+  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: FRESH, accountId: ACCT, map }))
   let reads = 0
   const deps = pass => ({ nowMs: WED_0930_1000, pass, credentials: id => ({ ready: true, accountId: id, host: HOST }),
     fetchSymbols: async () => { reads++; return { symbol: [] } } })
@@ -419,7 +424,7 @@ test('N-1: when resolveSymbolId cannot read at all, its network-free answer is j
   // global map (:283-288) — the same answer autoTrade's call gets.
   const db = fixture(t, { map: null })
   setState(db, 'symbol_id_map', JSON.stringify({ [SYM]: SYM_ID }))
-  setState(db, accountSymbolMapKey('5009'), JSON.stringify({ builtAt: 'x', accountId: '5009', map: { A: 1, B: 2 } }))
+  setState(db, accountSymbolMapKey('5009'), JSON.stringify({ builtAt: FRESH, accountId: '5009', map: { A: 1, B: 2 } }))
   let reads = 0
   const deps = { nowMs: WED_0930_1000, pass: 'loop:1', credentials: CREDS,
     wsGetSymbolsList: async () => { reads++; throw new Error('x') }, fetchSymbols: async () => { reads++; return { symbol: [] } } }
@@ -436,8 +441,8 @@ test('N-2: an account without usable credentials spends none of the pass budget 
   _resetEntryHoursRefresh()
   setState(db, 'ctrader_account_id', '9999')
   // 5000: no map (the map branch). 5001: a map, no calendar (the calendar branch). Neither has credentials.
-  setState(db, accountSymbolMapKey('5001'), JSON.stringify({ builtAt: 'x', accountId: '5001', map: { A: 1 } }))
-  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: 'x', accountId: ACCT, map: { A: 11, B: 12 } }))
+  setState(db, accountSymbolMapKey('5001'), JSON.stringify({ builtAt: FRESH, accountId: '5001', map: { A: 1 } }))
+  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: FRESH, accountId: ACCT, map: { A: 11, B: 12 } }))
   let reads = 0
   const deps = { nowMs: WED_0930_1000, pass: 'loop:1', credentials: id => (id === ACCT ? CREDS(id) : null),
     wsGetSymbolsList: async () => { reads++; throw new Error('x') }, fetchSymbols: async () => { reads++; return { symbol: [] } } }
@@ -455,8 +460,8 @@ test('a token-refused account (B7) is never read and spends none of the pass bud
   setState(db, 'ctrader_account_id', '9999') // resolveSymbolId could fetch: only the refusal stops the list read
   // 5003: no map (the map branch). 5002: a map, no calendar (the calendar branch). Both refused.
   setState(db, 'cpp_exec_demo_refused_accounts_json', JSON.stringify(['5002', '5003']))
-  setState(db, accountSymbolMapKey('5002'), JSON.stringify({ builtAt: 'x', accountId: '5002', map: { A: 1 } }))
-  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: 'x', accountId: ACCT, map: { A: 11, B: 12 } }))
+  setState(db, accountSymbolMapKey('5002'), JSON.stringify({ builtAt: FRESH, accountId: '5002', map: { A: 1 } }))
+  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: FRESH, accountId: ACCT, map: { A: 11, B: 12 } }))
   let reads = 0
   const deps = { nowMs: WED_0930_1000, pass: 'loop:1', credentials: CREDS,
     wsGetSymbolsList: async () => { reads++; throw new Error('x') }, fetchSymbols: async () => { reads++; return { symbol: [] } } }
@@ -504,4 +509,48 @@ test('a read that fails AFTER its deadline raises no unhandled rejection', async
   assert.match(g.refresh, /^failed: entry_hours_calendar_deadline/)
   await new Promise(r => setTimeout(r, 300))
   assert.deepEqual(seen, [], 'RED if a late transport failure escapes as an unhandled rejection (it would crash the agent)')
+})
+
+// Round 4: an own map past resolveSymbolId's 24 h TTL, or undated, is re-read
+// by autoTrade's call (ctrader-creds.js:277-278), which places what the list
+// says. If that re-read FAILS it places the stale stored id (:290 'account-
+// stale'), never the global one; if it succeeds, the list's id. So the gate
+// reads the list itself (bounded) and judges the list's id, and when its own
+// read fails it refuses: autoTrade's unbounded read could go either way.
+function staleOwnMap(t, builtAt) {
+  const db = disagreeingMaps(t) // global 101 (open), calendars for 101 (open) and 202 (holiday)
+  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ ...(builtAt === undefined ? {} : { builtAt }), accountId: ACCT, map: { [SYM]: 101 } }))
+  return db
+}
+const STALE = new Date(THU_0110_1000 - 25 * H * 1000).toISOString()
+
+test('round 4: a stale or undated own map is re-read like a missing one, and the gate judges the id autoTrade then places', async t => {
+  for (const [label, builtAt] of [['past its 24 h TTL', STALE], ['undated', undefined]]) {
+    const db = staleOwnMap(t, builtAt)
+    assert.equal(entryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST, nowMs: THU_0110_1000 }).calendarReason, 'account_symbol_map_stale', label)
+    let reads = 0
+    const list = ownList(202)
+    const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+      nowMs: THU_0110_1000, credentials: CREDS, wsGetSymbolsList: (...a) => { reads++; return list(...a) } }))
+    const { resolveSymbolId } = await import('../lib/ctrader-creds.js')
+    const placed = await resolveSymbolId(db, CREDS(ACCT), SYM, { now: THU_0110_1000, wsGetSymbolsList: async () => { throw new Error('no second read expected') } })
+    assert.equal(g.identity?.symbolId, '202', `${label}: RED if the gate judged the stored 101 while autoTrade re-reads and places 202`)
+    assert.equal(placed.id, 202, label)
+    assert.equal(reads, 1, label)
+    assert.equal(g.status, 'CLOSED', label)
+    assert.equal(g.calendarReason, 'broker_holiday', label)
+  }
+})
+
+test('round 4: when the stale map\'s re-read fails, autoTrade places the stale id or the list\'s — so the gate refuses', async t => {
+  const db = staleOwnMap(t, STALE)
+  const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: THU_0110_1000, credentials: CREDS, wsGetSymbolsList: async () => { throw new Error('cTrader WS timeout after 5000ms') } }))
+  const { resolveSymbolId } = await import('../lib/ctrader-creds.js')
+  const onFailedRead = await resolveSymbolId(db, CREDS(ACCT), SYM, { now: THU_0110_1000, wsGetSymbolsList: async () => { throw new Error('down') } })
+  assert.deepEqual([onFailedRead.id, onFailedRead.source], [101, 'account-stale'], 'derived: a failed re-read places the STALE stored id, not the global map')
+  const onGoodRead = await resolveSymbolId(db, CREDS(ACCT), SYM, { now: THU_0110_1000, wsGetSymbolsList: ownList(202) })
+  assert.equal(onGoodRead.id, 202, 'and a re-read that succeeds places the list\'s id')
+  assert.equal(g.unknown, true, 'RED if the gate judged the stale 101 (open) after its own read failed')
+  assert.match(g.refresh, /^symbol_id_fallback: .*account-stale/)
 })

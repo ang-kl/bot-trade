@@ -207,6 +207,16 @@ export const ACCOUNT_SYMBOL_MAP_TTL_MS = 24 * 3600_000
 
 export function accountSymbolMapKey(accountId) { return `symbol_id_map:${String(accountId)}` }
 
+/**
+ * Is a stored account map young enough that resolveSymbolId answers from it
+ * without re-reading the account's list? Past ACCOUNT_SYMBOL_MAP_TTL_MS, or
+ * with no parseable builtAt, it is re-read. One predicate, shared with the
+ * entry-hours gate (V3 S-8), so the gate judges the id this function places.
+ */
+export function accountSymbolMapIsFresh(own, now = Date.now()) {
+  return !!(own && own.builtAt && (now - Date.parse(own.builtAt)) < ACCOUNT_SYMBOL_MAP_TTL_MS)
+}
+
 /** The stored per-account map: { map, builtAt } or null when absent/corrupt. */
 export function getAccountSymbolMap(db, accountId) {
   if (accountId == null) return null
@@ -264,7 +274,7 @@ export async function resolveSymbolId(db, creds, symbol, deps = {}) {
   if (acct) {
     const own = getAccountSymbolMap(db, acct)
     const now = deps.now ?? Date.now()
-    const fresh = own && own.builtAt && (now - Date.parse(own.builtAt)) < ACCOUNT_SYMBOL_MAP_TTL_MS
+    const fresh = accountSymbolMapIsFresh(own, now)
     if (fresh) return own.map[key] != null ? { id: own.map[key], source: 'account' } : notListed('account')
     // A fetch needs a broker link: credentials on the creds AND a primary
     // account recorded (no primary = no linked broker = a test fixture; the
