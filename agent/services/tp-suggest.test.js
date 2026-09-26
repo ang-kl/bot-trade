@@ -657,3 +657,21 @@ test('THE DIRECTION REACHES THE HVN SEARCH: inferred, a locked long finds nothin
   const told = hvnTargetPrice({ entry: 100, sl: 110, bars, rrFloor: 1.5, long: true })
   assert.ok(told > 110, `explicit direction finds the shelf, got ${told}`)
 })
+
+test('V3 M5: the applier\'s amend is timed in the amend-latency ring, payload unchanged', async () => {
+  const { _resetAmendLatencyForTests, _amendLatencyStateForTests } = await import('./protection-latency.js')
+  _resetAmendLatencyForTests()
+  const seen = []
+  const apply = makeTargetApplier(null, CREDS, {
+    amendPosition: async (_c, args) => { seen.push(args); return { executionType: 'ORDER_REPLACED', position: {} } },
+    recordEvent: () => {},
+    readPosition: async () => ({ positionId: '555', stopLoss: 1723.26, takeProfit: null, tradeData: { tradeSide: 1 } }),
+  })
+  const r = await apply(finding({ brokerSl: 1723.26, accountId: '42993489' }), { tp: 1900, basis: 'HVN' })
+  assert.equal(r.ok, true)
+  assert.deepEqual(Object.keys(seen[0]).sort(), ['positionId', 'stopLoss', 'takeProfit'], 'nothing added to what reaches the broker')
+  const { amends } = _amendLatencyStateForTests()
+  assert.equal(amends.length, 1, 'one amend sent, one amend timed')
+  assert.deepEqual([amends[0].path, amends[0].source, amends[0].positionId, amends[0].account, amends[0].outcome],
+    ['tp_suggest', 'naked_position_guard', '555', '…3489', 'ok'])
+})

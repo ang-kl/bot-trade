@@ -24,6 +24,7 @@ import { jsonExceptScannerRegistration, scannerRegistrationJson, SCANNER_PROFILE
 import { startLagMonitor } from './services/event-loop-lag.js';
 import { routeTimingMiddleware } from './services/route-timing.js';
 import { noteDbStartup, noteListening, noteHttpStatus, startRuntimeRecord, runtimeRecordSnapshot, latencyWindows, readBootRecords } from './services/runtime-record.js';
+import { startAmendLatencyRecord, amendLatencySummary } from './services/protection-latency.js';
 import { startFeedReceiptsRecord } from './services/feed-receipts-record.js';
 
 // Load .env file if present (no dotenv dependency needed)
@@ -1046,6 +1047,13 @@ app.get('/health', (req, res) => {
     latencyWindows: (() => {
       try { return latencyWindows() } catch { return null }
     })(),
+    // V3 M5 (P1/P4-6): every Node amend path's round trip (p50/p95/p99/max,
+    // n, outcomes), the fast monitor's due → evaluated lateness and the two as
+    // one composite; the native trail engine's amends and any percentile
+    // without its sample are named Not Verifiable. Authenticated only.
+    amendLatency: (() => {
+      try { return amendLatencySummary() } catch { return null }
+    })(),
     // Broker pacing (incident 2026-07-28): historical requests (trendbars,
     // deals) are capped at 5/s by cTrader and we were sending 20-40/s. A
     // non-zero `queued` here means work is waiting on the limiter — the
@@ -1183,6 +1191,9 @@ async function start() {
     // first write, which also moves the previous boot's record aside.
     noteListening();
     startRuntimeRecord(db);
+    // V3 M5: seed the amend-latency rings from the stored copy (so natural
+    // amends accumulate across restarts), then persist at most every 30 s.
+    startAmendLatencyRecord(db);
     // V3 WEB-9b: the Data-feed card's per-timeframe bar receipts and last
     // feed-latency window, seeded from the previous process and kept.
     startFeedReceiptsRecord(db);

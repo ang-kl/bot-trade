@@ -25,6 +25,7 @@ import { getState } from '../db.js'
 import { atrFromBars } from './profit-keeper.js'
 import { loadRiskConfig, getAccountBalance, scanRates } from './risk.js'
 import { usdLossPerLot } from '../lib/contracts.js'
+import { measureAmend } from './protection-latency.js'
 
 const r5 = (v) => Math.round(v * 100000) / 100000
 
@@ -132,7 +133,9 @@ export async function restrategizeAfterTamper(db, creds, change, deps = {}) {
     }
 
     const amend = deps.amend ?? (await import('../lib/exec-engine.js')).amendPosition
-    await amend(creds, { positionId: mp.position_id, stopLoss: levels.sl, takeProfit: levels.tp })
+    // V3 M5: timed on the way through; the payload is untouched.
+    await measureAmend({ path: 'restrategize', source: 'restrategize', accountId, positionId: mp.position_id },
+      () => amend(creds, { positionId: mp.position_id, stopLoss: levels.sl, takeProfit: levels.tp }))
     db.prepare(
       `UPDATE monitored_positions SET current_sl = ?, current_tp = ?, initial_risk = ?,
          broker_sl = ?, broker_tp = ?,

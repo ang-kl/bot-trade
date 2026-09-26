@@ -45,6 +45,7 @@ import { makeBookHeldCheck } from './book-held.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
+import { measureAmend } from './protection-latency.js'
 
 // P10: last-seen broker SL per position, as reported by the C++ TrailEngine's
 // GET /trail-status (a full snapshot, not a delta stream). Diffed each pass
@@ -688,10 +689,11 @@ async function profitKeeperPass(db, creds, deps = {}) {
           // The broker's own target, re-sent: a stop-only amend deletes it.
           // bp is this pass's broker snapshot, so this is what the broker
           // holds right now, not what the book believes it holds.
-          await exec.amendPosition(creds, {
+          // V3 M5: timed on the way through; the payload is untouched.
+          await measureAmend({ path: 'profit_keeper', source: 'profit_keeper', accountId: r.account_id ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: decision.action.sl,
             takeProfit: Number(bp.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
-          })
+          }))
           updAct.run(decision.action.sl, 'profit_keeper_lock', r.id)
           summary.slMoves++
           notify(`🔒 Profit Keeper: ${r.symbol} SL ratcheted to ${decision.action.sl}${decision.action.lockUsd != null ? ` (locks ~$${decision.action.lockUsd})` : ''}${decision.action.spike ? ' — spike detected, trail tightened' : ''}${decision.action.structure ? ' — trailing the last swing' : ''}`)

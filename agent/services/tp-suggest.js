@@ -16,6 +16,7 @@ import { hvnTargetPrice } from '../lib/bracket-advice.js'
 import { minRrFor } from './strategies.js'
 import { normPosId } from '../lib/pos-id.js'
 import { protectionFailure } from './protection-repair-state.js'
+import { measureAmend } from './protection-latency.js'
 
 const HVN_TIMEFRAME = '15m' // same profile the manual-order advice uses
 const HVN_BAR_COUNT = 240   // ~2.5 days of 15m structure
@@ -343,13 +344,14 @@ export function makeTargetApplier(db, creds, {
 
       const amend = amendPosition
         ?? (await import('../lib/exec-engine.js')).amendPosition
-      const res = await amend(creds, {
+      // V3 M5: timed on the way through; the payload is untouched.
+      const res = await measureAmend({ path: 'tp_suggest', source: 'naked_position_guard', accountId: finding.accountId ?? creds?.accountId, positionId: finding.positionId }, () => amend(creds, {
         positionId: finding.positionId,
         // The stop the broker is holding RIGHT NOW, re-sent unchanged. Amend
         // replaces, so this leg is what keeps the stop alive, not decoration.
         stopLoss: sl,
         takeProfit: tp,
-      })
+      }))
       // A FAILURE THAT CARRIES NO `error` KEY IS STILL A FAILURE (review).
       // `wsAmendPosition` returns `{alreadyClosed, reason, rawError}` for
       // POSITION_NOT_FOUND — no `error` field at all — so testing `res.error`

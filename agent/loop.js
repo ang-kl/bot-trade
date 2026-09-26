@@ -43,6 +43,7 @@ import { recordPositionEvent } from './services/position-events.js'
 import { recordError } from './services/error-log.js'
 import { startLagMonitor, sampleLag, markLagPhase } from './services/event-loop-lag.js'
 import { noteLoopEnd, stampFirst } from './services/runtime-record.js'
+import { measureAmend } from './services/protection-latency.js'
 import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { armedTimeframes, armedScopeGate } from './lib/timeframes.js'
@@ -1946,7 +1947,10 @@ async function symbolDigitsFor(db, creds, symbol) {
   } catch { return null }
 }
 
-export async function executeBrokerAction(db, s, pos, eval_, source = 'position_manager') {
+// `timing` (V3 M5, optional): {dueAtMs, evaluatedAtMs} from an evaluator that
+// has a due time — the fast monitor — so an amend here is recorded with its
+// due → evaluated lateness beside the round trip. Measurement only.
+export async function executeBrokerAction(db, s, pos, eval_, source = 'position_manager', timing = null) {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
@@ -1971,6 +1975,10 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 
   const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
   const action = eval_.action
+  // V3 M5: what the amend-latency ring records about an amend from here — no
+  // credentials, no prices.
+  const amendMeta = (path) => ({ path, source, accountId, positionId: ctx.positionId,
+    dueAtMs: timing?.dueAtMs ?? null, evaluatedAtMs: timing?.evaluatedAtMs ?? null })
 
   try {
     if (action === 'MOVE_SL') {
@@ -2003,11 +2011,11 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // before — a possible rejection beats inventing a precision.
       const moveDigits = await symbolDigitsFor(db, { host, clientId, clientSecret, accessToken, accountId }, pos.symbol)
       const { stopLoss: sendSL, takeProfit: sendTp } = roundAmendPayload({ stopLoss: eval_.newSL, takeProfit: keepTp, digits: moveDigits })
-      const res = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
+      const res = await measureAmend(amendMeta('broker_action.move_sl'), () => execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         stopLoss: sendSL,
         ...(sendTp !== undefined ? { takeProfit: sendTp } : {}),
-      })
+      }))
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }
       // Record what was SENT, not the unrounded intent — the broker holds sendSL.
@@ -2174,7 +2182,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
             exitFraction: 1,
             newSL: null,
             reason: `${eval_.reason} | ${unfillable} → full exit`,
-          }, source)
+          }, source, timing)
         }
         return { skipped: true, reason: unfillable }
       }
@@ -2218,11 +2226,11 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         // `peak − mult × distance` — the 2026-08-26 INVALID_REQUEST shape.
         const partialDigits = await symbolDigitsFor(db, { host, clientId, clientSecret, accessToken, accountId }, pos.symbol)
         const runnerSend = roundAmendPayload({ stopLoss: eval_.newSL, takeProfit: runnerTp, digits: partialDigits })
-        const amendRes = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
+        const amendRes = await measureAmend(amendMeta('broker_action.runner_leg'), () => execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
           positionId: ctx.positionId,
           stopLoss: runnerSend.stopLoss,
           takeProfit: runnerSend.takeProfit,
-        })
+        }))
         setState(db, 'api_ctrader_last_ok', new Date().toISOString())
         if (!amendRes.alreadyClosed) {
           s.updatePositionSl.run(runnerSend.stopLoss, pos.id)

@@ -90,6 +90,8 @@ test('the sensitive fields are NOT in the unauthenticated branch', () => {
     // V3 M1: internal timing detail, authenticated only.
     'bootRecord',
     'latencyWindows',
+    // V3 M5: amend latency (account suffixes, position ids), authenticated only.
+    'amendLatency',
   ]) {
     assert.ok(!new RegExp(`\\b${field}\\b`).test(publicBlock),
       `${field} must not be in the public liveness body`)
@@ -118,6 +120,31 @@ test('V3 M1: the request timer is mounted BEFORE the auth middleware (a 401 is c
   const listen = CODE.indexOf("server.listen(port, '0.0.0.0'")
   assert.ok(listen > 0 && CODE.indexOf('noteListening()', listen) > listen && CODE.indexOf('startRuntimeRecord(db)', listen) > listen,
     'listening is stamped and the record starts persisting inside the listen callback')
+})
+
+test('V3 M5: amend latency is served in the authenticated body, and its record is seeded and persisted from the listen callback', () => {
+  const h = healthHandler()
+  const code = h.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n')
+  const full = code.indexOf('authenticated: true')
+  assert.ok(full > 0)
+  assert.match(code.slice(full), /amendLatency: \(\(\) => \{[\s\S]*?amendLatencySummary\(\)/)
+  const listen = CODE.indexOf("server.listen(port, '0.0.0.0'")
+  assert.ok(listen > 0 && CODE.indexOf('startAmendLatencyRecord(db)', listen) > listen,
+    'without the start call the ring is never seeded from the stored copy nor written — a record nobody persists')
+  assert.match(CODE, /import \{ startAmendLatencyRecord, amendLatencySummary \} from '\.\/services\/protection-latency\.js'/)
+})
+
+// The M5 / WEB-9b merge (25-09-2026) resolved a conflict on these exact lines:
+// both records start in the listen callback, and dropping either side leaves
+// a record that is never seeded from its stored copy nor written again.
+test('V3 M5 + WEB-9b: the listen callback starts BOTH persisted records — amend latency and the feed receipts', () => {
+  const listen = CODE.indexOf("server.listen(port, '0.0.0.0'")
+  const end = CODE.indexOf('[agent] listening on', listen)
+  assert.ok(listen > 0 && end > listen, "the listen callback's anchors are gone")
+  const cb = CODE.slice(listen, end)
+  assert.equal(cb.split('startAmendLatencyRecord(db)').length - 1, 1, 'the amend-latency record starts exactly once, before the listening line')
+  assert.equal(cb.split('startFeedReceiptsRecord(db)').length - 1, 1, 'the feed-receipts record starts exactly once, before the listening line')
+  assert.match(CODE, /import \{ startFeedReceiptsRecord \} from '\.\/services\/feed-receipts-record\.js'/)
 })
 
 test('the early return comes BEFORE the full payload, so new fields default to authenticated', () => {
