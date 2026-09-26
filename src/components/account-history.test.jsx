@@ -10,6 +10,19 @@ test('history and blockers name their own requested account even before evidence
   expect(renderToStaticMarkup(<AccountHistory accountId="all" />)).toContain('History scope: All accounts')
   expect(renderToStaticMarkup(<BlockerReport accountId="all" />)).toContain('Report scope: All registered accounts')
 })
+
+// UI-1/PERF-1 (26-09 UI plan §3): this card measured ~5,400px tall at 390px —
+// the longest card on the page — so it now starts collapsed (D8/D19 default)
+// and carries the `sec-blockers` id nav-tree.js needs to list it at all.
+// `toContain` on renderToStaticMarkup output still sees the collapsed body's
+// text (display:none hides it visually, not from the markup), so this does
+// not disturb the scope assertions above.
+test('the blockers card carries its nav-tree id and starts collapsed', () => {
+  const html = renderToStaticMarkup(<BlockerReport accountId="46979908" />)
+  expect(html).toContain('id="sec-blockers"')
+  expect(html).toMatch(/aria-label="Expand this section"/)
+  expect(html).toContain('display:none')
+})
 test('history shows zero observations separately from unavailable data and names cashflow limitations', () => {
   expect(renderToStaticMarkup(<AccountHistoryReading report={null} />)).toContain('unavailable')
   const html = renderToStaticMarkup(<AccountHistoryReading report={{ points: [], retentionDays: 90,

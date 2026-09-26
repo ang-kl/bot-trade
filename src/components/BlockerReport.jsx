@@ -101,7 +101,12 @@ export default function BlockerReport({ accountId }) {
   }, [accountId, hours, offset, windowEnd])
   const valid = reading?.accountId === accountId && reading?.hours === hours && reading?.offset === offset
   const report = valid ? reading.report : null
-  return <Card className="my-3 text-(length:--fs-body)" aria-label="Recorded entry blockers" scope={accountId}>
+  return <Card id="sec-blockers" className="my-3 text-(length:--fs-body)" aria-label="Recorded entry blockers" scope={accountId}
+    // PERF-1 (D8/D19 default): the plan measured this card at ~5,400px tall
+    // at 390px — by far the longest card on the page — so it starts
+    // collapsed until the operator opens it, the same as any other long
+    // card would once §8's bare sections get a standard (out of scope here).
+    defaultCollapsed loading={!report}>
     <h2 className="font-semibold">Recorded entry blockers</h2>
     <p className="font-semibold">Report scope: {accountId === 'all' ? 'All registered accounts' : `Account ${accountId}`}</p>
     {report && <p>Through {new Date(report.to).toLocaleString()}{windowEnd ? ' · browsing a fixed history window' : ' · updates every minute while active'}. Counts apply only to this account scope; roster-wide stops are listed separately.</p>}
