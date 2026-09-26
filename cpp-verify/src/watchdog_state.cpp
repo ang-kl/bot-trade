@@ -67,7 +67,9 @@ bool WatchState::restore(const jsn::Value& s) {
   muted_ = !(d.isObject() && d.get("muted").isBool() && !d.get("muted").asBool());
   mutedAtMs_ = number(d.get("mutedAtMs")); unmutedAtMs_ = number(d.get("unmutedAtMs"));
   soakStartedAtMs_ = number(d.get("soakStartedAtMs")); soakEndsAtMs_ = number(d.get("soakEndsAtMs"));
-  if (soakStartedAtMs_ == 0 || soakEndsAtMs_ < soakStartedAtMs_) { soakStartedAtMs_ = soakEndsAtMs_ = 0; muted_ = true; }
+  // A soak window that is not exactly this build's length from a real start
+  // is not trusted: reset to muted with no soak, and beginSoak() starts one.
+  if (soakStartedAtMs_ <= 0 || soakEndsAtMs_ != soakStartedAtMs_ + policy_.soakMs) { soakStartedAtMs_ = soakEndsAtMs_ = 0; muted_ = true; }
   const auto& w = d.get("wouldSend");
   wouldSendUrgent_ = number(w.get("urgent")); wouldSendWarning_ = number(w.get("warning"));
   wouldSendInfo_ = number(w.get("info")); wouldSendSinceMs_ = number(w.get("sinceMs"));
@@ -106,7 +108,7 @@ jsn::Value WatchState::deliveryStatus(long long now) const {
   const auto since = wouldSendSinceMs_ > 0 && wouldSendSinceMs_ <= now ? now - wouldSendSinceMs_ : 0;
   const auto perHour = [&](long long n) { return since >= 60000 ? jsn::Value(std::round(n * 3600000.0 / since * 100) / 100) : jsn::Value(); };
   return jsn::Value(jsn::Object{{"muted", muted_}, {"open", deliveryOpen(now)},
-    {"reason", deliveryOpen(now) ? "open" : soakActive ? "soak_active" : "muted_after_soak_explicit_unmute_required"},
+    {"reason", deliveryOpen(now) ? "open" : soakStartedAtMs_ == 0 ? "soak_not_started" : soakActive ? "soak_active" : "muted_after_soak_explicit_unmute_required"},
     {"mutedAtMs", mutedAtMs_ ? jsn::Value(mutedAtMs_) : jsn::Value()}, {"unmutedAtMs", unmutedAtMs_ ? jsn::Value(unmutedAtMs_) : jsn::Value()},
     {"soakMs", policy_.soakMs}, {"soakStartedAtMs", soakStartedAtMs_ ? jsn::Value(soakStartedAtMs_) : jsn::Value()},
     {"soakEndsAtMs", soakEndsAtMs_ ? jsn::Value(soakEndsAtMs_) : jsn::Value()}, {"soakActive", soakActive},

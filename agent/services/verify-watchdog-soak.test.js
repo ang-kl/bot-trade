@@ -10,8 +10,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState, setState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
-import { makeIndependentProtectionPoll, watchdogDeliveryDetail } from './independent-protection.js'
-import { CONTROLLERS, heartbeatView, checkHeartbeats } from './heartbeat.js'
+import { makeIndependentProtectionPoll, watchdogDeliveryDetail, verifyWatchdogBeat } from './independent-protection.js'
+import { CONTROLLERS, heartbeatView, checkHeartbeats, verifyWatchdogDormantReason } from './heartbeat.js'
 
 const T = 1_800_000_000_000
 const DELIVERY = { muted: true, open: false, reason: 'soak_active', soakActive: true, soakMs: 86_400_000,
@@ -66,9 +66,33 @@ test('CV-2: a verifier without the delivery gate is reported, never read as mute
   assert.match(row(db).last_error, /delivery gate unreported/)
   assert.equal(watchdogDeliveryDetail(reply), null)
   assert.equal(watchdogDeliveryDetail({ delivery: { muted: 'yes' } }), null)
-  reply = { schemaVersion: 1, delivery: DELIVERY }
+  reply = { schemaVersion: 1, enabled: true, error: '', delivery: DELIVERY }
   await poll()
   assert.equal(row(db).consecutive_failures, 0)
+})
+
+test('CV-2 fix round: a muted gate on a disabled or failing verifier fails the beat, with the detail kept', async t => {
+  let reply = { schemaVersion: 1, enabled: false, error: '', durable: false, delivery: DELIVERY }
+  const { db, poll } = fixture(t, () => ({ ok: true, json: async () => reply }))
+  await poll()
+  assert.equal(row(db).consecutive_failures, 1)
+  assert.match(row(db).last_error, /supervision disabled/)
+  assert.equal(JSON.parse(row(db).last_detail_json).muted, true)
+  reply = { schemaVersion: 1, enabled: true, error: 'watchdog_state_already_owned_or_lock_unavailable', durable: false, delivery: DELIVERY }
+  await poll()
+  assert.equal(row(db).consecutive_failures, 2)
+  assert.match(row(db).last_error, /already_owned/)
+  const detail = JSON.parse(row(db).last_detail_json)
+  assert.equal(detail.error, 'watchdog_state_already_owned_or_lock_unavailable')
+  assert.equal(detail.enabled, true); assert.equal(detail.durable, false)
+  assert.equal(verifyWatchdogBeat({ enabled: true, error: '', delivery: DELIVERY }).ok, true)
+})
+
+test('CV-2 fix round: verify_watchdog is dormant while the relay is unconfigured', () => {
+  assert.equal(CONTROLLERS.verify_watchdog.dormantWhen, verifyWatchdogDormantReason)
+  assert.match(verifyWatchdogDormantReason(null, { env: {} }), /VERIFY_URL, EXEC_SECRET unset/)
+  assert.match(verifyWatchdogDormantReason(null, { env: { VERIFY_URL: 'https://v.test' } }), /EXEC_SECRET unset/)
+  assert.equal(verifyWatchdogDormantReason(null, { env: { VERIFY_URL: 'https://v.test', EXEC_SECRET: 'x' } }), null)
 })
 
 test('CV-2: an unreachable watchdog status fails the beat, not the protection relay', async t => {

@@ -229,7 +229,15 @@ export const CONTROLLERS = {
   // protection relay (30 s) with the verifier's delivery gate as its detail:
   // muted, the 24 h soak's start/end and the would-send counters. QUIET like
   // tick_feeder — a watchdog-delivery beat must not itself page.
-  verify_watchdog:     { label: 'Independent watchdog (cpp-verify) delivery gate', expectedSec: 30, factor: 10, quiet: true },
+  // Dormant while VERIFY_URL / EXEC_SECRET are unset: no relay runs. (Kept
+  // here, not imported from independent-protection.js, which imports beat
+  // from this module.)
+  verify_watchdog:     { label: 'Independent watchdog (cpp-verify) delivery gate', expectedSec: 30, factor: 10, quiet: true, dormantWhen: verifyWatchdogDormantReason },
+}
+
+export function verifyWatchdogDormantReason(_db, { env = process.env } = {}) {
+  const missing = ['VERIFY_URL', 'EXEC_SECRET'].filter(k => !String(env[k] || '').trim())
+  return missing.length ? `independent checker not configured (${missing.join(', ')} unset) — nothing reads cpp-verify's watchdog` : null
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

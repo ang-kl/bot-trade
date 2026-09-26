@@ -131,7 +131,19 @@ and Node's `notificationPolicy`).
 - **The verifier-local mute** is `POST /watchdog/mute {"muted": true|false}`,
   behind the service bearer, and it answers with Node down. Muting always
   applies; unmuting is refused (409 `soak_active`) during the soak. Calling it
-  is an owner step, not part of any merge.
+  is an owner step, not part of any merge. The bearer is `EXEC_SECRET`, which
+  Node also holds (it is the secret Node's relay uses for `/protection-status`),
+  so anything with Node's environment can call it; that is accepted for a mute
+  and a post-soak unmute, and it is the reason the unmute is refused in the soak.
+- **Only the owner of the state writes.** A mute is applied and persisted only
+  once `start()` has taken the lock and restored (or created) the state. With
+  supervision off, the lock held by another process, or an unreadable state,
+  the route answers `watchdog_not_started` with `durable: false`, never writes
+  the file and never clears the start error.
+- **One in-flight message.** The message is chosen under the state lock and
+  sent outside it, so a mute that lands between the two can still let that one
+  already-chosen message go (at most one per probe cycle). Every later
+  selection sees the mute.
 - **Would-send counters.** Every outbox item created while delivery is closed
   is counted by severity (`urgent`, `warning`, `info`), before the 512-item
   bound, with `urgentPerHour` / `totalPerHour` since the first count: the rate
@@ -143,8 +155,18 @@ and Node's `notificationPolicy`).
   detail on `GET /state/heartbeats`, and `runtime.watchdog.status.delivery` on
   the same route. `effectivePolicyAllowsUrgent` is false while the gate is closed.
 - **Schema stays 1.** The gate persists under a `delivery` key that a pre-CV-2
-  `restore()` ignores, so a rollback still restores the file (unmuted state is
-  then lost with the gate itself: the pre-CV-2 build has no mute).
+  `restore()` ignores, so a rollback still restores the file. **A rollback to a
+  pre-CV-2 build re-enables sending under the old gates alone** (master switch,
+  incident owner, credentials, Node's policy): that build has no mute and no
+  soak, so the would-be backlog becomes deliverable if those gates are open.
+- A restored soak window must be exactly the build's soak length from a real
+  start; anything else restores muted with no soak (`reason: soak_not_started`
+  until `beginSoak`).
+- The `verify_watchdog` beat is ok only when the gate is reported AND
+  `enabled` is true AND `error` is empty; it carries `enabled`, `durable` and
+  `error` in its detail. It is dormant while `VERIFY_URL` / `EXEC_SECRET` are
+  unset. A busy `/watchdog-status` reply (no gate in it) counts as one beat
+  failure; with `factor: 10` on a 30 s cadence that does not stall the beat.
 
 Not in this change (the rest of V3-SEQUENCE item 26): severity floor,
 per-incident coalescing, confirm delay, the delivery budget and drill

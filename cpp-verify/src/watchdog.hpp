@@ -92,6 +92,11 @@ private:
   std::jthread worker_;
   std::string path_, error_;
   bool enabled_ = false, writable_ = false, master_ = false, owner_ = false;
+  // V3 CV-2 fix round: true only once start() owns the lock AND restored (or
+  // created) the state. setMuted() persists only then: before it, path_ may
+  // name a file this process does not own (lock held by another process) or
+  // one it could not read (corrupt), and a write would overwrite it.
+  bool started_ = false;
   int lockFd_ = -1;
 };
 }

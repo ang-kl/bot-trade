@@ -260,6 +260,15 @@ int main() {
     r.beginSoak(T + 100000); assert(r.status(T + 100000).get("delivery").get("soakEndsAtMs").asNumber() == T + 100000 + 86400000);
     auto bad = s.snapshot(); bad.set("delivery", Value(Object{{"muted", "no"}, {"soakStartedAtMs", T}, {"soakEndsAtMs", T + 1}}));
     verify::WatchState b; assert(b.restore(bad)); assert(!b.deliveryOpen(T + 2));
+    // An unmuted file whose soak window is not exactly soakMs from a real
+    // start restores muted with no soak (fix-round nit 3).
+    for (const auto& [start, end] : {std::pair{T, T + 1}, std::pair{0LL, 86400000LL}, std::pair{T, T + 2 * 86400000LL}}) {
+      auto w = s.snapshot(); w.set("delivery", Value(Object{{"muted", false}, {"soakStartedAtMs", start}, {"soakEndsAtMs", end}}));
+      verify::WatchState x; assert(x.restore(w)); assert(!x.deliveryOpen(T + 3 * 86400000LL));
+      assert(x.status(T).get("delivery").get("reason").asString() == "soak_not_started");
+    }
+    { auto w = s.snapshot(); w.set("delivery", Value(Object{{"muted", false}, {"soakStartedAtMs", T}, {"soakEndsAtMs", T + 86400000}}));
+      verify::WatchState x; assert(x.restore(w)); assert(x.deliveryOpen(T + 86400000)); } // the exact window is kept
     // Rollback: a CV-2 file still satisfies every check the pre-CV-2 restore()
     // makes (schema 1, the three objects, their bounds, 4 MiB); it ignores
     // the extra key.
