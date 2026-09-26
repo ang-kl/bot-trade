@@ -25,7 +25,7 @@ import { readFileSync } from 'node:fs'
 import { initDB, setState, getState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
 import { engineStatusFor, requestEntryMode, acknowledgeEntryEpochs, writeEngineStatus } from './entry-mode.js'
-import { unsettledTickFires, reserveEntry, resolveIntent, TICK_PRODUCER, TICK_FIRE_UNSETTLED_WINDOW_MS } from './entry-ledger.js'
+import { unsettledTickFires, reserveEntry, resolveIntent, expireStale, TICK_PRODUCER, TICK_FIRE_UNSETTLED_WINDOW_MS, TICK_RESTART_HOLD } from './entry-ledger.js'
 import { profileHashFull, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
 import {
   runTickPermitFeeder, computeTickGrants, heldWithPending, PAUSE_CHECKS, REVALIDATE_CHECKS,
@@ -75,6 +75,15 @@ const ring = (db, { kind = 'fire', code = 'BUY', detail, account = A, boot = 'B1
     .run(side, boot, seq ?? Math.floor(Math.random() * 1e9), kind, account, code, detail)
 // The full R of one $10,000 account on EURUSD under the default risk config.
 const fullROf = () => { const db = initDB(':memory:'); setState(db, 'acct:1:account_balance_usd', '10000'); return accountRiskPerTrade(db, '1').usdPerR }
+// A side whose boot Node already saw, with the accounts reconciled after it:
+// the steady state, so a test about something else is not held by the
+// restart quarantine (a boot never seen counts as a change).
+function bootSeenAndReconciled(db, sideName, bootId, accounts, atMs = Date.now()) {
+  const m = JSON.parse(getState(db, TICK_BOOT_SEEN_KEY) || '{}')
+  m[sideName] = { bootId, firstSeenAtMs: atMs - 60_000 }
+  setState(db, TICK_BOOT_SEEN_KEY, JSON.stringify(m))
+  for (const id of accounts) setState(db, `acct:${id}:last_reconcile_at`, new Date(atMs - 30_000).toISOString())
+}
 const standingId = (db, acct, side = 'BUY') => db.prepare(`SELECT id FROM entry_intents WHERE producer_id = ? AND account_id = ? AND symbol_id = 1 AND side = ? AND state = 'RESERVED'`).get(TICK_PRODUCER, acct, side)?.id
 // A position as the reconciler adopts one: a trades row carrying the broker
 // position id, and the monitored row linked to it (monitored_positions has no
@@ -169,6 +178,7 @@ test('gap 1d wiring: risk.js step 3 and account-pregate.js both count through co
 test('gap 1: the push carries tickSlots per placing account — the slots left under its own cap and the boot\'s firesSeen; a fired intent spends a slot and its symbol', async () => {
   const db = fresh([A])
   for (const s of ['A.US', 'B.US', 'C.US']) pos(db, A, s, 'BUY')
+  bootSeenAndReconciled(db, 'cpp_exec_demo', 'B1', [A])
   const d = opts()
   await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'B1' })
   assert.deepEqual(d.pushes.at(-1).tickSlots, [{ accountId: Number(A), slots: 2, firesSeen: 0, bootId: 'B1' }])
@@ -253,7 +263,8 @@ test('gap 4 wiring: the heartbeat computes ONE generation per cycle before the s
   const cycle = hb.indexOf('tickGrants = await (deps.computeTickGrants ?? tp.computeTickGrants)(db, { now: nowMs })')
   const loop = hb.indexOf('const out = await probeOneSidecar(db, exec, side, { ...deps, tickGrants })')
   assert.ok(cycle > 0 && loop > cycle, 'computed once, before the side loop, and passed into it')
-  assert.ok(hb.includes('await feedTickPermits(db, exec, side, nowMs, { bootId: r.bootId ?? null, grants: deps.tickGrants ?? null })'))
+  assert.ok(hb.includes('await feedTickPermits(db, exec, side, nowMs, { bootId: r.bootId ?? null, grants: deps.tickGrants ?? null, requireBoot: true })'))
+  assert.ok(hb.includes("tickGrants = { generation: null, failed: why, grants: {} }"), 'a failed computation grants nothing this cycle')
   assert.ok(hb.includes('runTickPermitFeeder(db, side, { creds, now: nowMs, bootId, grants })'))
 })
 
@@ -261,6 +272,7 @@ test('gap 4 wiring: the heartbeat computes ONE generation per cycle before the s
 
 test('gap 5: profile_matches_sidecar or recorder_status_fresh going false pauses the account and releases its rows; every permit carries the pinned profile hash and the boot', async () => {
   const db = fresh([A])
+  bootSeenAndReconciled(db, 'cpp_exec_demo', 'B1', [A])
   const d = opts()
   await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'B1' })
   const ps = d.pushes.at(-1).tickPermits
@@ -280,47 +292,78 @@ test('gap 5: profile_matches_sidecar or recorder_status_fresh going false pauses
 
 // ---------------------------------------------------------------- gap 6 ----
 
-test('gap 6: after a gateway restart the old boot\'s rows stay RESERVED and the account pauses until a reconcile of THAT account; then they go and fresh ids are pushed, bound to the new boot', async () => {
+test('gap 6: after a gateway restart the account pauses until a reconcile of THAT account — the old boot\'s rows held RESERVED, not re-pushed; then they go and fresh ids are pushed, bound to the new boot', async () => {
   const db = fresh([A])
   const d = opts()
   const t0 = Date.now()
+  bootSeenAndReconciled(db, 'cpp_exec_demo', 'BA', [A], t0)
   await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BA', now: t0 })
   const oldIds = d.pushes.at(-1).tickPermits.map(p => p.permit.id).sort()
   assert.equal(oldIds.length, 2)
   // the gateway restarts: boot BB
-  let r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 60_000 })
+  const r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 60_000 })
   assert.match(r.paused[0].reason, /^tick_sidecar_restart: waiting for a reconcile/)
   assert.deepEqual(d.pushes.at(-1).tickPermits, [], 'none of the old permits is re-pushed')
-  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED' AND sidecar_boot_id = 'BA'`).get(TICK_PRODUCER).n, 2, 'held RESERVED, not released')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED' AND sidecar_boot_id = 'BA' AND error_code = ?`).get(TICK_PRODUCER, TICK_RESTART_HOLD).n, 2, 'held RESERVED and marked')
   assert.equal(JSON.parse(getState(db, TICK_BOOT_SEEN_KEY)).cpp_exec_demo.bootId, 'BB')
-  // a fill from boot BA arrives by its label during the quarantine: FILLED by tag, not a fence breach
+  // a fill from boot BA arrives by its label during the hold: FILLED by tag, not a fence breach
   const spent = db.prepare(`SELECT id FROM entry_intents WHERE producer_id = ? AND side = 'BUY' AND state = 'RESERVED'`).get(TICK_PRODUCER).id
   assert.equal(resolveIntent(db, spent, { state: 'FILLED', positionId: '501', source: 'reconcile' }).ok, true)
   // a reconcile of the account after the new boot was seen lifts it (the scoped stamp)
   setState(db, `acct:${A}:last_reconcile_at`, new Date(t0 + 120_000).toISOString())
-  r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 180_000 })
-  assert.deepEqual(r.paused, [])
+  const r2 = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 180_000 })
+  assert.deepEqual(r2.paused, [])
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RELEASED' AND error_code = 'tick_sidecar_restart'`).get(TICK_PRODUCER).n, 1)
   const fresh2 = d.pushes.at(-1).tickPermits
   assert.ok(fresh2.length >= 1)
   for (const p of fresh2) { assert.ok(!oldIds.includes(p.permit.id), 'a new id, never the old boot\'s'); assert.equal(p.permit.bootId, 'BB') }
 })
 
-test('gap 6 (bounded): no reconcile within RESTART_RECONCILE_WAIT_MS turns the wait into the urgent refusal tick_sidecar_restart_unreconciled; the rows are still not released', async () => {
+test('gap 6 (checker blocker): the loop\'s expireStale inside the hold neither expires the held rows nor lifts the hold — the account stays paused until ITS reconcile, and at 10 min the wait turns into the urgent refusal', async () => {
   const db = fresh([A])
   const d = opts()
   const t0 = Date.now()
+  bootSeenAndReconciled(db, 'cpp_exec_demo', 'BA', [A], t0)
   await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BA', now: t0 })
-  await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 1000 })
+  let r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 60_000 })
+  assert.match(r.paused[0].reason, /^tick_sidecar_restart:/, '+1 min: paused')
+  // +6 min: the permits' TTL is past; the loop's global sweep runs
+  const swept = expireStale(db, { now: t0 + 6 * 60_000 })
+  assert.equal(swept.expired, 0, 'the held rows are skipped, not EXPIRED (a fence-breach state for a late fill)')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED'`).get(TICK_PRODUCER).n, 2)
+  // +7 min: still paused — the hold never asked whether rows exist
+  r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 7 * 60_000 })
+  assert.match(r.paused[0].reason, /^tick_sidecar_restart:/, '+7 min: still paused')
+  assert.deepEqual(d.pushes.at(-1).tickPermits, [])
+  // even with NO held rows left (an operator released them), the hold stands
+  db.prepare(`UPDATE entry_intents SET state = 'RELEASED' WHERE producer_id = ?`).run(TICK_PRODUCER)
+  r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 8 * 60_000 })
+  assert.match(r.paused[0]?.reason || '', /^tick_sidecar_restart:/, 'keyed on the boot change, not on the rows')
+  // past 10 min since BB was first seen: the urgent refusal
   const errs = []
   const orig = console.error
   console.error = (m) => errs.push(String(m))
   try {
-    const r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 1000 + RESTART_RECONCILE_WAIT_MS + 1 })
+    r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 60_000 + RESTART_RECONCILE_WAIT_MS + 1 })
     assert.match(r.paused[0].reason, /^tick_sidecar_restart_unreconciled:/)
   } finally { console.error = orig }
   assert.ok(errs.some(e => /URGENT/.test(e)))
-  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ? AND state = 'RESERVED' AND sidecar_boot_id = 'BA'`).get(TICK_PRODUCER).n, 2)
+  // the account's own reconcile lifts it
+  setState(db, `acct:${A}:last_reconcile_at`, new Date(t0 + 12 * 60_000).toISOString())
+  r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'BB', now: t0 + 13 * 60_000 })
+  assert.deepEqual(r.paused, [])
+  assert.ok(d.pushes.at(-1).tickPermits.length > 0)
+})
+
+test('gap 6: a boot never seen before counts as a change — the first pass after this ships waits for one reconcile of the account', async () => {
+  const db = fresh([A])
+  const d = opts()
+  const t0 = Date.now()
+  const r = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'B1', now: t0 })
+  assert.match(r.paused[0].reason, /^tick_sidecar_restart:/)
+  setState(db, `acct:${A}:last_reconcile_at`, new Date(t0 + 1000).toISOString())
+  const r2 = await runTickPermitFeeder(db, demo, { ...d.o, bootId: 'B1', now: t0 + 2000 })
+  assert.deepEqual(r2.paused, []); assert.equal(r2.permits, 2)
 })
 
 test('gap 6: with the boot known, a standing row is reused only on its own boot; bootId null keeps the pre-C9 reuse', async () => {
@@ -370,4 +413,52 @@ test('gap 6 (ledger): reserveStandingPermits with a boot reuses a standing row o
   assert.equal(db.prepare('SELECT sidecar_boot_id FROM entry_intents WHERE id = ?').get(b.permits[0].permit.intentId).sidecar_boot_id, 'BB')
   const legacy = reserveStandingPermits(db, { accountId: A, producerId: TICK_PRODUCER, basis: 'tick', entries, sizeRequired: false })
   assert.equal(legacy.reused, 1, 'no boot named: the pre-C9 reuse')
+})
+
+test('gap 1d (behaviour): evaluateTrade itself — the only count for /manual-order, /execute-trade, pending orders and closed-market limits, which have no pre-filter — vetoes at the cap when an unadopted tick fire fills it, and not without it', async () => {
+  const { evaluateTrade, DEFAULT_RISK_CONFIG } = await import('./risk.js')
+  const db = initDB(':memory:')
+  setState(db, 'account_balance_usd', '10000'); setState(db, 'account_leverage', '100')
+  setState(db, 'ctrader_account_id', 'SELECTED')
+  setState(db, 'acct:TRADING:account_balance_usd', '10000')
+  const cfg = { ...DEFAULT_RISK_CONFIG, maxOpenPositions: 2 }
+  pos(db, 'TRADING', 'AAA', 'BUY')
+  const proposal = { symbol: 'CCC', side: 'BUY', entry: 100, sl: 95, tp1: 115, requestedVolume: 0.1, strategy: 'vwap_trend', source: 'auto_signal', accountId: 'TRADING' }
+  const without = evaluateTrade(db, proposal, cfg)
+  assert.ok(!/max_positions/.test(without.veto_reason || ''), `1/2 is under the cap: ${without.veto_reason}`)
+  assert.equal(without.checks.open_positions, 1)
+  db.prepare(`INSERT INTO entry_intents (id, account_id, environment, symbol, symbol_id, side, order_type, producer_id, basis, mode_epoch, permit_id, permit_expires_at, state)
+    VALUES ('ifired0000001', 'TRADING', 'demo', 'BBB', 9, 'BUY', 'MARKET', ?, 'tick', 1, 'pfired0000001', ?, 'SENT')`).run(TICK_PRODUCER, new Date(Date.now() + 60_000).toISOString())
+  ring(db, { detail: 'vol=1 intent=ifired0000001', account: 'TRADING' })
+  const withFire = evaluateTrade(db, proposal, cfg)
+  assert.equal(withFire.approved, false)
+  assert.match(withFire.veto_reason, /max_positions=2\/2/)
+  assert.equal(withFire.checks.open_positions_tick_unsettled, 1)
+})
+
+test('fix round: a fire the firer abandoned at shutdown (fire_abandoned, nothing sent) stops counting at once, not after the 15-min window', async () => {
+  const db = fresh([A])
+  await runTickPermitFeeder(db, demo, opts().o)
+  const buy = standingId(db, A, 'BUY')
+  ring(db, { detail: `intent=${buy}` })
+  assert.equal(unsettledTickFires(db, A).length, 1)
+  ring(db, { kind: 'fire_abandoned', code: 'stopped', detail: `intent=${buy}` })
+  assert.equal(unsettledTickFires(db, A).length, 0)
+})
+
+test('fix round: a cycle whose generation failed grants NOTHING — each pass refuses rather than computing its own', async () => {
+  const db = fresh([A])
+  const d = opts()
+  const r = await runTickPermitFeeder(db, demo, { ...d.o, grants: { generation: null, failed: 'boom', grants: {} } })
+  assert.equal(r.permits, 0)
+  assert.ok(r.refused.every(x => /^book_symbol_cap: no grants this cycle — the generation was not computed \(boom\)/.test(x.reason)), JSON.stringify(r.refused))
+  assert.equal(getState(db, TICK_GRANTS_KEY), null, 'no generation was computed by the pass')
+})
+
+test('fix round: the probe\'s feeder call with no boot pushes nothing and writes no unbound row', async () => {
+  const { feedTickPermits } = await import('./heartbeat.js')
+  const db = fresh([A])
+  const r = await feedTickPermits(db, {}, demo, Date.now(), { bootId: null, requireBoot: true })
+  assert.deepEqual(r, { skipped: 'no_boot' })
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM entry_intents WHERE producer_id = ?`).get(TICK_PRODUCER).n, 0)
 })

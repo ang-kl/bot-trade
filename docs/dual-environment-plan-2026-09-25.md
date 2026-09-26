@@ -211,9 +211,13 @@ defaults"; ask-first, merges on the owner's word). P6 ships in three parts:*
   cap's accounts per symbol and side, least-recently-served first, at R / n,
   from ONE generation per heartbeat cycle (`tick_grants_json`) that a side's
   pass may only narrow; readiness is re-read every pass (`REVALIDATE_CHECKS`);
-  permits carry the pinned `profileHash` and the gateway `bootId`; a restart
-  holds the old boot's rows until a reconcile of the account (bounded at
-  10 min, then `tick_sidecar_restart_unreconciled`), and every reconcile path
+  permits carry the pinned `profileHash` and the gateway `bootId`; a boot
+  change (or a boot never seen) pauses each tick account on that side until a
+  reconcile of THAT account after Node first saw the boot — keyed on the boot,
+  not on rows — with the old boot's rows marked `tick_restart_hold` so the
+  loop's `expireStale` cannot turn them EXPIRED (bounded at 10 min, then
+  `tick_sidecar_restart_unreconciled`); a probe with no boot pushes nothing;
+  a failed grant computation grants nothing that cycle; and every reconcile path
   stamps the account's own `last_reconcile_at`. Also fixed: the tick budget's
   monitored-position read selected a column that table lacks and counted none.*
 - *Still open until GW-1 (SEQUENCE PR-10, restarts both gateways): the

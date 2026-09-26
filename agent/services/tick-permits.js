@@ -35,7 +35,7 @@ import { usdLossPerLot } from '../lib/contracts.js'
 import { unitsPerLot } from '../lib/lot-size-registry.js'
 import { getState, setState } from '../db.js'
 import { engineStatusFor, basesFor } from './entry-mode.js'
-import { reserveStandingPermits, releaseStandingReservations, pendingExposure, unsettledTickFires, STANDING_PRODUCERS, TICK_PRODUCER, TICK_PERMIT_TTL_MS } from './entry-ledger.js'
+import { reserveStandingPermits, releaseStandingReservations, pendingExposure, unsettledTickFires, STANDING_PRODUCERS, TICK_PRODUCER, TICK_PERMIT_TTL_MS, TICK_RESTART_HOLD } from './entry-ledger.js'
 import { accountsHolding, DEFAULT_MAX_ACCOUNTS_PER_SYMBOL } from './book-symbol-cap.js'
 import { lastReconcileAt } from './account-engineering.js'
 import { accountRiskPerTrade } from './tick-shadow.js'
@@ -378,7 +378,9 @@ export async function computeTickGrants(db, { now = Date.now(), readiness = null
 
 /**
  * When this keeper first saw `bootId` on `sideName`, on Node's clock; a boot
- * the store does not hold is recorded as seen now. ONE clock on purpose
+ * the store does not hold is recorded as seen now. A boot never seen before
+ * (the first pass after this ships included) counts as a change: every tick
+ * account on the side waits for one reconcile — the conservative reading. ONE clock on purpose
  * (review correction: the synthetic sidecar_restart row mixes the sidecar's
  * ts_ms with Node's, and is absent on a first-seen boot). The boot began
  * before Node first saw it, so a reconcile stamped after this moment read
@@ -488,23 +490,36 @@ export async function runTickPermitFeeder(db, side, {
     // runs BEFORE the readiness branch, which releases every standing row.
     // Bounded: after RESTART_RECONCILE_WAIT_MS without that reconcile the
     // pause turns into the urgent refusal `tick_sidecar_restart_unreconciled`.
+    //
+    // FIX ROUND (checker, 26-09-2026): the hold is keyed on the BOOT CHANGE
+    // and this account's own reconcile after it — never on whether old-boot
+    // RESERVED rows still exist. The first cut asked the rows, and the loop's
+    // global expireStale turned them EXPIRED after the 5-min TTL: the hold
+    // lifted with no reconcile, and the rows sat in EXPIRED, a fence-breach
+    // state for a late fill. So: every tick account on a side whose boot
+    // Node has not yet seen reconciled waits, whatever rows it holds; and its
+    // held rows are marked TICK_RESTART_HOLD, which expireStale skips, so
+    // they stay RESERVED — FILLED by their tag if the old boot spent them —
+    // until the hold lifts and releases them.
     if (bootId) {
-      let old = []
-      try { old = db.prepare(`SELECT id FROM entry_intents WHERE account_id = ? AND producer_id = ? AND state = 'RESERVED' AND (sidecar_boot_id IS NULL OR sidecar_boot_id <> ?)`).all(accountId, TICK_PRODUCER, String(bootId)) } catch { old = [] }
-      if (old.length) {
-        const rec = lastReconcileAt(db, accountId, selectedId).at
-        const recMs = rec ? Date.parse(rec) : NaN
-        if (!(recMs > seenAt)) {
-          const late = now - seenAt > RESTART_RECONCILE_WAIT_MS
-          const reason = late
-            ? `tick_sidecar_restart_unreconciled: no reconcile of this account in ${Math.round((now - seenAt) / 60_000)} min since boot ${bootId} was first seen`
-            : 'tick_sidecar_restart: waiting for a reconcile after the sidecar restart'
-          pauseAccount(accountId, reason, `${old.length} standing row(s) from another boot held RESERVED`, { release: false, urgent: late })
-          continue
-        }
-        const rel = db.prepare(`UPDATE entry_intents SET state = 'RELEASED', error_code = 'tick_sidecar_restart', resolution_source = 'epoch', resolved_at = ?, updated_at = ? WHERE id = ? AND state = 'RESERVED'`)
-        for (const r of old) out.released += rel.run(new Date(now).toISOString(), new Date(now).toISOString(), r.id).changes
+      const rec = lastReconcileAt(db, accountId, selectedId).at
+      const recMs = rec ? Date.parse(rec) : NaN
+      const oldWhere = `WHERE account_id = ? AND producer_id = ? AND state = 'RESERVED' AND (sidecar_boot_id IS NULL OR sidecar_boot_id <> ?)`
+      if (!(recMs > seenAt)) {
+        // No catch here on purpose: a mark that failed silently would let the
+        // loop's expireStale EXPIRE the rows — the defect this hold exists for
+        // (a first cut of this very query was wrong and a catch hid it).
+        const held = db.prepare(`UPDATE entry_intents SET error_code = ?, updated_at = ? ${oldWhere}`).run(TICK_RESTART_HOLD, new Date(now).toISOString(), accountId, TICK_PRODUCER, String(bootId)).changes
+        const late = now - seenAt > RESTART_RECONCILE_WAIT_MS
+        const reason = late
+          ? `tick_sidecar_restart_unreconciled: no reconcile of this account in ${Math.round((now - seenAt) / 60_000)} min since boot ${bootId} was first seen`
+          : 'tick_sidecar_restart: waiting for a reconcile after the sidecar restart'
+        pauseAccount(accountId, reason, `${held} standing row(s) from another boot held RESERVED`, { release: false, urgent: late })
+        continue
       }
+      const nowIso = new Date(now).toISOString()
+      out.released += db.prepare(`UPDATE entry_intents SET state = 'RELEASED', error_code = 'tick_sidecar_restart', resolution_source = 'epoch', resolved_at = ?, updated_at = ? ${oldWhere}`)
+        .run(nowIso, nowIso, accountId, TICK_PRODUCER, String(bootId)).changes
     }
     // TM-40 + C9 (gap 5): readiness re-read every pass (REVALIDATE_CHECKS);
     // PR-3: the bar side's account-level guards (balance scope, daily loss,
@@ -568,7 +583,8 @@ export async function runTickPermitFeeder(db, side, {
         const granted = (g?.granted || []).map(String)
         const appeared = [...holders].filter(h => !known.has(h) && !granted.includes(h))
         let why = null
-        if (!g) why = `book_symbol_cap: no grant for ${sym} ${sd} in generation ${gen?.generation ?? 'none'}`
+        if (!g && gen?.failed) why = `book_symbol_cap: no grants this cycle — the generation was not computed (${gen.failed})`
+        else if (!g) why = `book_symbol_cap: no grant for ${sym} ${sd} in generation ${gen?.generation ?? 'none'}`
         else if (!granted.includes(accountId)) why = `book_symbol_cap: ${g.holders.length} hold, ${g.n} granted in generation ${gen.generation}, cap ${bookCap}`
         else if (appeared.length) why = `book_symbol_cap: ${appeared.length} holder(s) appeared since generation ${gen.generation}; no new permit until the next one`
         if (why) {

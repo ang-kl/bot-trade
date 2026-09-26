@@ -89,6 +89,12 @@ export const VPO_PERMIT_TTL_MS = 5 * 60 * 1000 // the sidecar store's maxAgeMs; 
 export const TICK_PRODUCER = 'tick_momentum'
 export const TICK_PERMIT_TTL_MS = VPO_PERMIT_TTL_MS
 export const STANDING_PRODUCERS = Object.freeze([VPO_PRODUCER, TICK_PRODUCER])
+// C9 fix round: the error_code the tick feeder writes on a standing row it
+// HOLDS through a gateway restart (tick-permits.js). expireStale skips such a
+// row: it must stay RESERVED — FILLED by its tag if the old boot spent it —
+// until a reconcile of its account lifts the hold, never EXPIRED, which the
+// reconciler reads as a fence breach for a late fill.
+export const TICK_RESTART_HOLD = 'tick_restart_hold'
 
 function openConflict(db, { accountId, symbolId, symbol, side, producerId = null }) {
   const key = symbolId != null ? Number(symbolId) : String(symbol || '')
@@ -435,7 +441,7 @@ export function releaseOldEpoch(db, accountId, epoch, { now = Date.now() } = {})
  */
 export function expireStale(db, { now = Date.now(), sentTimeoutMs = DEFAULT_SENT_TIMEOUT_MS } = {}) {
   const expired = db.prepare(`UPDATE entry_intents SET state = 'EXPIRED', resolution_source = 'timeout', resolved_at = ?, updated_at = ?
-    WHERE state = 'RESERVED' AND permit_expires_at <= ?`).run(iso(now), iso(now), iso(now)).changes
+    WHERE state = 'RESERVED' AND permit_expires_at <= ? AND NOT (producer_id = ? AND COALESCE(error_code, '') = ?)`).run(iso(now), iso(now), iso(now), TICK_PRODUCER, TICK_RESTART_HOLD).changes
   const stale = db.prepare(`SELECT id FROM entry_intents WHERE state IN ('DISPATCHING', 'SENT') AND updated_at <= ?`).all(iso(now - sentTimeoutMs))
   let unknown = 0
   for (const { id } of stale) if (resolveIntent(db, id, { state: 'UNKNOWN', source: 'timeout', errorCode: 'no verdict within the send timeout', now }).ok) unknown++
@@ -487,7 +493,9 @@ export function pendingExposure(db, accountId, { includeAccepted = false } = {})
 // row can still be spent by a fire that raced the release, and ACCEPTED is
 // possible for a resting order. So a row counts in any of those states, while
 // the ring names it as fired and nothing names it refused (a fire_stale
-// refusal, or a send rejected with any code other than TIMEOUT — a timeout
+// refusal, a fire abandoned when the firer stopped — tick_firer.cpp
+// fire_abandoned, nothing sent — or a send rejected with any code other than
+// TIMEOUT — a timeout
 // may well have filled) and it has not yet been adopted (no active monitored
 // row and no trades row carries its broker position id). The window bounds a
 // fill that closed before it was ever adopted: it keeps counting, as an extra
@@ -514,6 +522,7 @@ export function unsettledTickFires(db, accountId = null, { now = Date.now(), win
                     AND d.detail LIKE '%intent=' || ei.id || '%')
        AND NOT EXISTS (SELECT 1 FROM cpp_decisions d WHERE d.component = 'tick'
                     AND ((d.kind = 'fire_refused' AND d.code = 'fire_stale')
+                      OR d.kind = 'fire_abandoned'
                       OR (d.kind = 'fire_reject' AND UPPER(COALESCE(d.code, '')) <> 'TIMEOUT'))
                     AND d.detail LIKE '%intent=' || ei.id || '%')
        AND (ei.broker_position_id IS NULL OR (

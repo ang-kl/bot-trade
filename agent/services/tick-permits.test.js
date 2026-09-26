@@ -233,7 +233,7 @@ test('wiring pins: the heartbeat probe feeds tick permits after the shadow pull,
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   const hb = strip(readFileSync(new URL('./heartbeat.js', import.meta.url), 'utf8'))
   // C9: the call now also carries the probe's boot and the cycle's grants.
-  assert.ok(hb.includes('await feedTickPermits(db, exec, side, nowMs, { bootId: r.bootId ?? null, grants: deps.tickGrants ?? null })'), 'the probe calls the feeder')
+  assert.ok(hb.includes('await feedTickPermits(db, exec, side, nowMs, { bootId: r.bootId ?? null, grants: deps.tickGrants ?? null, requireBoot: true })'), 'the probe calls the feeder')
   assert.ok(hb.includes('runTickPermitFeeder(db, side, { creds, now: nowMs, bootId, grants })'), 'the feeder runs with the side\'s own credentials')
   const route = strip(readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8'))
   assert.ok(route.includes("readiness: tickReadinessFor"), 'POST /actions/entry-mode passes the readiness check')
