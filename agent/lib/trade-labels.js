@@ -89,8 +89,9 @@ export const STRATEGIES = {
   // grows a strategy field, and what keeps describeLabel from reporting
   // 'strategy "TICKM" not recognised'. Today the sidecar leaves field 2 empty
   // and the strategy is recovered from the intent's producer instead
-  // (reconciler.js PRODUCER_STRATEGY) — so this entry is a hedge that costs
-  // one line, not the fix for the blank column.
+  // (PRODUCER_STRATEGY, services/adopted-reasons.js since V3 B4c, read by
+  // the reconciler's stamp and the adopted-reasons backfill) — so this entry
+  // is a hedge that costs one line, not the fix for the blank column.
   tick_momentum_breakout: 'TICKM',
   burnin:     'BURN',
   other:      'OTH',

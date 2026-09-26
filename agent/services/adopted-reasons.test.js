@@ -7,7 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { backfillAdoptedReasons, recoverTradeReason, adoptedReasonsLine, matchTradeIntent } from './adopted-reasons.js'
+import { backfillAdoptedReasons, recoverTradeReason, adoptedReasonsLine, matchTradeIntent, INTENT_BY_POSITION_SQL } from './adopted-reasons.js'
 import { findUnreasonedTrades } from './close-completeness.js'
 import { reconcilePositions } from './reconciler.js'
 import { evidenceRows } from './evidence-gate.js'
@@ -64,7 +64,9 @@ test('an untagged PRE fill gets the strategy its own label names — and nothing
   // Still counted — the strategy is back, the plan and the approval are not.
   const v = findUnreasonedTrades(db, { now: NOW }).violations.find(x => x.tradeId === t)
   assert.equal(v.kind, 'adopted_ours_unreasoned')
-  assert.match(v.detail, /and no plan, approval id — strategy from label — missing: plan: none was recorded at adoption, and none is invented after the fact; approval id: only an entry intent/)
+  assert.match(v.detail, /and no plan, approval id — strategy from label; no entry intent matched: no intent tag, and the entry ledger recorded no intent for this position — missing: plan: none was recorded at adoption, and none is invented after the fact; approval id: only an entry intent/)
+  // Checker nit 4: the boot line's per-row reason is this row's own, too.
+  assert.match(recoverTradeReason(db, t).why['approval id'], /\(no entry intent matched: no intent tag, and the entry ledger recorded no intent for this position\)$/)
 })
 
 test('a tagged fill adopted before the stamp shipped (the #1585 shape): the intent gives the origin and the link, the resting row that placed its order gives the approval; the plan stays missing and counted', async () => {
@@ -160,6 +162,9 @@ test('a re-adopted position (the #1310 shape) takes the approval its clean sibli
   await backfillAdoptedReasons(db)
   assert.deepEqual(row(db, t), { origin: 'reconciler_adopted', origin_source: 'write', strategy: 'burnin', intent_id: null, risk_event_id: ev })
   assert.deepEqual(evidence(db, t), { strategy: 'label', risk_event_id: 'sibling_trade' })
+  // Checker nit 2: where the sibling's OWN approval came from is recorded.
+  assert.match(db.prepare(`SELECT detail FROM trade_reason_evidence WHERE trade_id = ? AND field = 'risk_event_id'`).get(t).detail,
+    /holds position 238111184 on this account \(#\d+: written with the row \(bot_market_dispatch, no intent link\)\)$/)
   assert.deepEqual(evidenceRows(db, { windowDays: 3650, now: NOW }).map(r => r.id), before, 'the evidence gate reads the same rows')
 })
 
@@ -176,6 +181,122 @@ test('a stored approval an evidence record contradicts is KEPT, and the disagree
   assert.deepEqual({ stored: out.conflicts[0].stored, evidenced: out.conflicts[0].evidenced }, { stored, evidenced: named })
   assert.equal(evidence(db, t).risk_event_id_conflict, 'resting_row')
   assert.match(adoptedReasonsLine(out), /1 stored approval id\(s\) contradicted by evidence, kept and recorded/)
+  // The intent matched, but the row is NOT promoted: its own approval is
+  // contradicted, and a bot origin would carry that id out of the count.
+  assert.equal(row(db, t).origin, 'reconciler_adopted')
+  assert.equal(row(db, t).intent_id, 'i2m2fs9nty3dk', 'the link the intent proves is still recorded')
+  const v = findUnreasonedTrades(db, { now: NOW }).violations.find(x => x.tradeId === t)
+  assert.equal(v.kind, 'adopted_ours_unreasoned'); assert.equal(v.contract, 'post_contract')
+  // Checker nit 3: the note names the approval the evidence names, not only its key.
+  assert.match(v.detail, new RegExp(`an evidence record \\(resting_row\\) names approval #${named}, not the stored #${stored}`))
+})
+
+// ---------------------------------------------------------------------------
+// CHECKER BLOCKER 1 (B4c fix round): an approval id — and a plan — that the
+// pre-L2a closed-market sweep linked by "the first trade on this symbol since
+// placement" is NOT a reason. Filling the strategy must neither take the row
+// out of trade_reasons nor turn it pre_contract.
+// ---------------------------------------------------------------------------
+async function sweptRow(db, { plan = true, opened = '2026-09-11 14:17:11', pos = '241174047' } = {}) {
+  const ev = approval(db)
+  // what closed-market-limits.js wrote before #1114: the resting row retired
+  // with the bare note, its approval COALESCEd onto the trade, its levels as the plan
+  resting(db, { rev: ev })
+  db.prepare(`UPDATE pending_orders SET note = 'pending-closed: adopted as trade' WHERE risk_event_id = ?`).run(ev)
+  const t = adopted(db, { rev: ev, opened, pos })
+  if (plan) {
+    const { recordTradePlan } = await import('./trade-plans.js')
+    recordTradePlan(db, t, { accountId: ACCT, symbol: 'HD.US', side: 'SELL', strategy: 'donchian_breakout', timeframe: '1d', entry: 380, sl: 390, tp: 360, source: 'closed_market_limit_fill' })
+  }
+  return { t, ev }
+}
+const vOf = (db, id) => findUnreasonedTrades(db, { now: NOW }).violations.filter(x => x.tradeId === id)
+
+test('blocker 1, shape 1: a swept approval and a swept plan, only the strategy missing — the row stays counted, post-contract, after the strategy is filled', async () => {
+  const db = initDB(':memory:')
+  const { t, ev } = await sweptRow(db)
+  const before = vOf(db, t)
+  assert.deepEqual(before.map(v => [v.kind, v.contract]), [['adopted_ours_unreasoned', 'post_contract']])
+  const totalBefore = findUnreasonedTrades(db, { now: NOW }).counts.total
+  const out = await backfillAdoptedReasons(db)
+  assert.equal(row(db, t).strategy, 'donchian_breakout', 'the label still gives the strategy back')
+  assert.equal(row(db, t).risk_event_id, ev, 'the swept id is kept — never deleted')
+  const after = vOf(db, t)
+  assert.deepEqual(after.map(v => [v.kind, v.contract]), [['adopted_ours_unreasoned', 'post_contract']], 'still counted')
+  assert.equal(findUnreasonedTrades(db, { now: NOW }).counts.total, totalBefore, 'the raw count does not move')
+  assert.equal(after[0].detail.match(/and no (.*?) —/)[1], 'approval id (heuristic link), plan (heuristic link)')
+  assert.match(after[0].detail, /plan written by the same sweep \(source closed_market_limit_fill\)/)
+  assert.deepEqual(out.stillMissing, { 'approval id (heuristic link)': 1, 'plan (heuristic link)': 1 }, 'the boot line names them too')
+})
+
+test('blocker 1, shape 2: a swept approval, no plan, opened before #857 — stays post_contract, never pre_contract', async () => {
+  const db = initDB(':memory:')
+  const { t } = await sweptRow(db, { plan: false, opened: '2026-09-01 10:00:00' })
+  assert.deepEqual(vOf(db, t).map(v => v.contract), ['post_contract'])
+  await backfillAdoptedReasons(db)
+  const after = vOf(db, t)
+  assert.deepEqual(after.map(v => [v.kind, v.contract]), [['adopted_ours_unreasoned', 'post_contract']])
+  assert.equal(after[0].detail.match(/and no (.*?) —/)[1], 'plan, approval id (heuristic link)')
+})
+
+test('blocker 1: an intent that matches a swept row links it but does not promote it — the unconfirmed id stays in the count', async () => {
+  const db = initDB(':memory:')
+  const { t, ev } = await sweptRow(db, { plan: false })
+  intent(db) // no approval of its own; no resting row names it
+  db.prepare(`UPDATE pending_orders SET intent_id = NULL, order_id = 'other'`).run()
+  const out = await backfillAdoptedReasons(db)
+  assert.deepEqual(row(db, t), { origin: 'reconciler_adopted', origin_source: 'write', strategy: 'donchian_breakout', intent_id: 'i2m2fs9nty3dk', risk_event_id: ev })
+  assert.deepEqual(vOf(db, t).map(v => [v.kind, v.contract]), [['adopted_ours_unreasoned', 'post_contract']])
+  assert.equal(out.stillMissing['approval id (heuristic link)'], 1)
+})
+
+test('blocker 1: a swept id that an evidence record CONFIRMS is recorded as confirmed — then it, and the plan from the same resting row, are reasons', async () => {
+  const db = initDB(':memory:')
+  const { t, ev } = await sweptRow(db, { pos: '555' })
+  // a clean bot row on the same position whose OWN intent names that approval
+  intent(db, { id: 'iconfirmconfirm', pos: '555', rev: ev })
+  adopted(db, { pos: '555', origin: 'bot_pending_fill', rev: ev, strategy: 'donchian_breakout', label: 'PRE|v1|DON|HI|LDN|1d|-|iconfirmconfirm', intentId: 'iconfirmconfirm', opened: '2026-09-11 14:17:10' })
+  const first = await backfillAdoptedReasons(db)
+  assert.equal(first.confirmed, 1)
+  assert.match(adoptedReasonsLine(first), /1 stored approval id\(s\) confirmed by evidence and recorded/)
+  const e = db.prepare(`SELECT before_value, value, evidence FROM trade_reason_evidence WHERE trade_id = ? AND field = 'risk_event_id'`).get(t)
+  assert.deepEqual(e, { before_value: String(ev), value: String(ev), evidence: 'sibling_trade' })
+  assert.deepEqual(vOf(db, t), [], 'confirmed approval, confirmed link for its plan, strategy from the label')
+  const second = await backfillAdoptedReasons(db)
+  assert.equal(second.confirmed, 0, 'recorded once')
+})
+
+test('checker nit 2: a sibling whose approval came from the stamp\'s five-minute window, or from the pre-L2a sweep, is not evidence for another row', async () => {
+  // (a) the sibling names an intent, and the intent names no approval and no resting row does
+  const db = initDB(':memory:')
+  const ev = approval(db)
+  intent(db, { id: 'iwindowwindow1', pos: '777' })
+  adopted(db, { pos: '777', origin: 'bot_pending_fill', rev: ev, strategy: 'donchian_breakout', label: 'PRE|v1|DON|HI|LDN|1d|-|iwindowwindow1', intentId: 'iwindowwindow1' })
+  const t = adopted(db, { pos: '777', label: 'PRE|v1|DON|HI|LDN|1d|-', opened: '2026-09-11 15:00:00' })
+  await backfillAdoptedReasons(db)
+  assert.equal(row(db, t).risk_event_id, null, 'no approval through a window')
+  assert.match(recoverTradeReason(db, t).why['approval id'], /neither intent iwindowwindow1's own nor its resting row's/)
+  // the same sibling, once its intent names that approval, IS evidence
+  db.prepare(`UPDATE entry_intents SET risk_event_id = ? WHERE id = 'iwindowwindow1'`).run(ev)
+  await backfillAdoptedReasons(db)
+  assert.equal(row(db, t).risk_event_id, ev)
+  assert.match(db.prepare(`SELECT detail FROM trade_reason_evidence WHERE trade_id = ? AND field = 'risk_event_id'`).get(t).detail, /iwindowwindow1's own approval/)
+  // (b) a sibling with no intent link whose approval is a resting row the pre-L2a sweep retired
+  const db2 = initDB(':memory:')
+  const ev2 = approval(db2)
+  resting(db2, { rev: ev2 })
+  db2.prepare(`UPDATE pending_orders SET note = 'pending-closed: adopted as trade'`).run()
+  adopted(db2, { pos: '888', origin: 'bot_market_dispatch', rev: ev2, strategy: 'donchian_breakout' })
+  const t2 = adopted(db2, { pos: '888', opened: '2026-09-11 15:00:00' })
+  await backfillAdoptedReasons(db2)
+  assert.equal(row(db2, t2).risk_event_id, null)
+  assert.match(recoverTradeReason(db2, t2).why['approval id'], /carried by the pre-L2a closed-market sweep/)
+})
+
+test('checker nit 8: the position lookup reads its own index, not the account\'s whole ledger', () => {
+  const db = initDB(':memory:')
+  const plan = db.prepare(`EXPLAIN QUERY PLAN ${INTENT_BY_POSITION_SQL}`).all(ACCT, '1', '1.0').map(r => r.detail).join(' | ')
+  assert.match(plan, /USING INDEX idx_entry_intents_position/)
 })
 
 test('a clean bot row with no approval (the #1661 shape) gets the one its resting row recorded; its origin is never touched', async () => {
@@ -256,14 +377,26 @@ test('adoption: an untagged OURS label is recorded with the strategy its label n
   assert.deepEqual(db.prepare(`SELECT field, evidence, writer FROM trade_reason_evidence WHERE trade_id = ?`).all(t.id), [{ field: 'strategy', evidence: 'label', writer: 'adoption' }])
 })
 
-test('adoption: an untagged OURS label whose position the ledger recorded is the bot fill it is — origin, link and approval from the intent', () => {
+test('adoption: an untagged OURS label whose position the ledger recorded is the bot fill it is — origin, link, approval AND the intent\'s own plan, written at adoption the way the stamp writes it (checker nit 1)', async () => {
   const db = initDB(':memory:')
   const ev = approval(db)
   intent(db, { pos: '7002', rev: ev, orderType: 'LIMIT' })
-  reconcilePositions(db, [brokerPos({ positionId: 7002, label: 'PRE|v1|DON|HI|LDN|1d|-' })], [], setState(db), { accountId: ACCT })
+  db.prepare(`UPDATE entry_intents SET sl = 390.5, sl_units = 'price', tp = 361, tp_units = 'price' WHERE id = 'i2m2fs9nty3dk'`).run()
+  const r = reconcilePositions(db, [brokerPos({ positionId: 7002, label: 'PRE|v1|DON|HI|LDN|1d|-' })], [], setState(db), { accountId: ACCT })
   const t = db.prepare(`SELECT id, origin, origin_source, strategy, intent_id, risk_event_id FROM trades WHERE ctrader_position_id = '7002'`).get()
   assert.deepEqual({ ...t, id: undefined }, { id: undefined, origin: 'bot_pending_fill', origin_source: 'intent_link', strategy: 'donchian_breakout', intent_id: 'i2m2fs9nty3dk', risk_event_id: ev })
-  assert.deepEqual(kinds(db, t.id), ['plan_missing'], 'the plan is not invented at adoption either')
+  const p = db.prepare(`SELECT source, strategy, planned_entry, planned_sl, planned_tp FROM trade_plans WHERE trade_id = ?`).get(t.id)
+  assert.deepEqual(p, { source: 'reconciler_adopted_intent', strategy: 'donchian_breakout', planned_entry: 380.5, planned_sl: 390.5, planned_tp: 361 }, 'the intent\'s own stop and target, recorded before any outcome')
+  assert.equal(r.newExternal[0].planFromIntent, 'i2m2fs9nty3dk')
+  assert.deepEqual(kinds(db, t.id), [], 'a bot row with every reason on record')
+  // The backfill never writes one: the same shape found on a CLOSED row later stays plan_missing.
+  const db2 = initDB(':memory:')
+  intent(db2, { rev: approval(db2) })
+  const late = adopted(db2, { label: 'PRE|v1|DON|HI|LDN|1d|-' })
+  await backfillAdoptedReasons(db2)
+  assert.equal(row(db2, late).origin, 'bot_pending_fill')
+  assert.equal(plans(db2), 0, 'no plan in hindsight')
+  assert.deepEqual(kinds(db2, late), ['plan_missing'])
 })
 
 test('adoption: a foreign label is still imported observe-only with nothing recovered', () => {
@@ -274,13 +407,14 @@ test('adoption: a foreign label is still imported observe-only with nothing reco
   assert.equal(db.prepare(`SELECT strategy FROM trades WHERE ctrader_position_id = '7003'`).get().strategy, null)
 })
 
-test('findUnreasonedTrades names an approval the pre-L2a sweep linked as such — a heuristic, not evidence', () => {
+test('findUnreasonedTrades names an approval the pre-L2a sweep linked as such — a heuristic, not evidence — and counts it missing', () => {
   const db = initDB(':memory:')
   const ev = approval(db)
   const t = adopted(db, { rev: ev, strategy: 'donchian_breakout' })
   const v = findUnreasonedTrades(db, { now: NOW }).violations.find(x => x.tradeId === t)
-  assert.deepEqual(v.detail.match(/and no (.*?) —/)[1], 'plan')
+  assert.deepEqual(v.detail.match(/and no (.*?) —/)[1], 'plan, approval id (heuristic link)')
   assert.match(v.detail, new RegExp(`approval id #${ev} linked by the pre-L2a closed-market sweep \\(symbol \\+ time\\), not by evidence`))
+  assert.equal(v.contract, 'post_contract')
 })
 
 test('wiring: the boot runs the backfill BEFORE the position history build, and the close-completeness cadence runs it again (a repair nothing calls is a dead one)', async () => {

@@ -679,6 +679,11 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_entry_intents_open ON entry_intents(account_id, state);
   CREATE INDEX IF NOT EXISTS idx_entry_intents_key ON entry_intents(account_id, symbol_id, side, state);
+  -- V3 B4c (checker nit 8): adopted-reasons.js looks an intent up by the
+  -- broker position it recorded, for every adopted row on every pass of the
+  -- close-completeness cadence; on the account prefix alone that read grows
+  -- with the whole entry ledger. Partial: most intents never record one.
+  CREATE INDEX IF NOT EXISTS idx_entry_intents_position ON entry_intents(broker_position_id, account_id) WHERE broker_position_id IS NOT NULL;
 
   -- P2b-1: the sidecar's execution-event journal, pulled like cpp_decisions.
   -- A late answer to a request that gave up, or an unsolicited fill, lands

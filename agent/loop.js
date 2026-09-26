@@ -3572,7 +3572,7 @@ async function runLoop(db) {
             try {
               const { backfillAdoptedReasons, adoptedReasonsLine } = await import('./services/adopted-reasons.js')
               const ar = await backfillAdoptedReasons(db)
-              if (ar.rowsWritten > 0 || ar.errors.length > 0) log(adoptedReasonsLine(ar))
+              if (ar.rowsWritten > 0 || ar.confirmed > 0 || ar.errors.length > 0) log(adoptedReasonsLine(ar))
             } catch (err) {
               log(`Adopted reasons sweep failed (non-fatal): ${err.message}`)
             }

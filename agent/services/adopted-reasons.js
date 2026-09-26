@@ -47,15 +47,35 @@
 //                  the one approval every clean bot row for this same broker
 //                  position on this account carries — each checked against
 //                  the risk event itself (approved, same account, side and
-//                  symbol)
+//                  symbol), and a sibling's approval only where ITS source
+//                  is shown: its intent's own approval, the resting row that
+//                  placed its intent's order, a B4c evidence row, or written
+//                  with the row itself (no intent link) and not one the
+//                  pre-L2a sweep carried from a resting row
 //
-// WHAT THIS NEVER DOES: invent a plan (none is written here), invent or
-// guess an approval id (no time window, no "nearest" event), overwrite a
-// value already on the row, promote an origin on the label alone (label
-// evidence names a strategy, not a decision — lib/trade-origin.js), or
-// delete anything. An approval a deterministic record contradicts is not
-// replaced; the disagreement is recorded as its own evidence row. A row left
-// incomplete stays counted in trade_reasons, and says why.
+// WHAT THIS NEVER DOES: invent a plan (none is written here — at ADOPTION
+// the reconciler writes the matched intent's own plan, recorded before the
+// outcome, the same rule as its stamp; a closed row is never given one in
+// hindsight), invent or guess an approval id (no time window, no "nearest"
+// event), overwrite a value already on the row, promote an origin on the
+// label alone (label evidence names a strategy, not a decision —
+// lib/trade-origin.js), or delete anything. An approval a deterministic
+// record contradicts is not replaced; the disagreement is recorded as its
+// own evidence row. A row whose stored approval no record confirms (or one
+// contradicts) is NOT promoted out of reconciler_adopted even when its intent
+// matches: promotion would carry the unconfirmed id out of the adopted-row
+// count as a bot trade's approval. A row left incomplete stays counted in
+// trade_reasons, and says why.
+//
+// HEURISTIC LINKS (fix round, checker blocker 1). An approval id on a row
+// still `reconciler_adopted` with no evidence row here was written by the
+// pre-L2a closed-market sweep ("the first trade on this symbol since
+// placement"), and so, from 09-09, was a plan with source
+// closed_market_limit_fill. Filling the strategy must not turn those into
+// reasons: each counts as missing — `approval id (heuristic link)`,
+// `plan (heuristic link)` — until an evidence record confirms the stored
+// approval (a `risk_event_id` evidence row whose value is the stored one)
+// or the owner rules on such links. See heuristicLinks().
 //
 // Idempotent: every write is COALESCE / "only when still adopted", and a
 // second pass over the same rows finds nothing left to write.
@@ -88,12 +108,64 @@ export const REASON_EVIDENCE = Object.freeze({
   sibling_trade: 'the one approval every clean bot row for this same broker position on this account carries',
 })
 
+/**
+ * The two values on a still-adopted row that only a symbol+time link wrote
+ * (see the header). Named as missing, never as reasons.
+ */
+export const HEURISTIC_LINK = Object.freeze({
+  approval: 'approval id (heuristic link)',
+  plan: 'plan (heuristic link)',
+})
+
+/** The plan source the pre-L2a closed-market sweep wrote (closed-market-limits.js). */
+export const SWEEP_PLAN_SOURCE = 'closed_market_limit_fill'
+
+/**
+ * The pre-L2a sweep's own note on a resting row it retired by "the first
+ * trade on this symbol since placement" (closed-market-limits.js before
+ * #1114). L2a's evidence link writes `… adopted as trade #<id> (intent …)`,
+ * so the exact text names the heuristic and nothing else.
+ */
+export const PRE_L2A_SWEEP_NOTE = 'pending-closed: adopted as trade'
+
 /** What the fields left empty are waiting on — why they are NOT recovered. */
 export const UNRECOVERABLE = Object.freeze({
   plan: 'no plan was recorded when the fill was adopted, and none is invented after the fact',
   'approval id': 'no entry intent, resting order row or same-position bot row names the approval — and none is guessed from a time window',
   strategy: 'the label carries no strategy code this encoder knows, and no matched intent names one',
+  [HEURISTIC_LINK.approval]: 'the id on the row was linked by the pre-L2a closed-market sweep (symbol + time), and no evidence record confirms it',
+  [HEURISTIC_LINK.plan]: 'the plan was written by the pre-L2a closed-market sweep from the resting row it linked by symbol + time, and no evidence record confirms that link',
 })
+
+/**
+ * PURE (checker blocker 1): the values on this row that stand only on the
+ * pre-L2a symbol+time link. `approvalEvidence` is this module's
+ * `risk_event_id` evidence row ({ before, value }) or null.
+ *   · an approval id on a still-adopted row with no evidence row — the
+ *     sweep is the only writer that stamps one without moving the origin;
+ *   · a closed_market_limit_fill plan on a still-adopted row, unless an
+ *     evidence record CONFIRMED the stored approval (before = value): the
+ *     sweep wrote both from the same resting row, so a confirmed approval
+ *     confirms the row it came from.
+ * A row a deterministic record promoted to a bot origin is judged by the
+ * bot-row rules instead, so this returns nothing for it.
+ */
+export function heuristicLinks({ origin, riskEventId, planSource, approvalEvidence = null }) {
+  if (origin !== 'reconciler_adopted') return []
+  const out = []
+  if (riskEventId != null && !approvalEvidence) out.push(HEURISTIC_LINK.approval)
+  const confirmedStored = approvalEvidence != null && approvalEvidence.before != null && String(approvalEvidence.before) === String(approvalEvidence.value)
+  if (planSource === SWEEP_PLAN_SOURCE && !confirmedStored) out.push(HEURISTIC_LINK.plan)
+  return out
+}
+
+/** This module's `risk_event_id` evidence row for a trade, or null (table absent: null). */
+export function approvalEvidenceOf(db, tradeId) {
+  try {
+    const e = db.prepare(`SELECT before_value, value, evidence FROM trade_reason_evidence WHERE trade_id = ? AND field = 'risk_event_id'`).get(tradeId)
+    return e ? { before: e.before_value, value: e.value, evidence: e.evidence } : null
+  } catch { return null }
+}
 
 export function ensureReasonEvidenceTable(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS trade_reason_evidence (
@@ -121,6 +193,13 @@ const automatic = (producerId) => {
 }
 
 /**
+ * The ledger's own record of a broker position (checker nit 8): read through
+ * idx_entry_intents_position (db.js), not a scan of the account's intents —
+ * exported so the test EXPLAINs the statement that actually runs.
+ */
+export const INTENT_BY_POSITION_SQL = 'SELECT * FROM entry_intents WHERE account_id = ? AND broker_position_id IN (?, ?)'
+
+/**
  * The entry intent a trade row came from, or why none is accepted. Every
  * check is a fact on record; a failed check is a refusal with its reason,
  * never a weaker match.
@@ -141,7 +220,7 @@ export function matchTradeIntent(db, t) {
       if (!it) return { intent: null, why: `intent ${id} is not in the entry ledger` }
     } else {
       if (pid == null) return { intent: null, why: 'no intent tag and no broker position id' }
-      const rows = db.prepare('SELECT * FROM entry_intents WHERE account_id = ? AND broker_position_id IN (?, ?)').all(acct, pid, `${pid}.0`)
+      const rows = db.prepare(INTENT_BY_POSITION_SQL).all(acct, pid, `${pid}.0`)
       if (rows.length === 0) return { intent: null, why: 'no intent tag, and the entry ledger recorded no intent for this position' }
       if (rows.length > 1) return { intent: null, why: `${rows.length} intents recorded this position — ambiguous` }
       it = rows[0]
@@ -177,10 +256,47 @@ function approvalRow(db, id, t) {
 }
 
 /**
- * The approval a deterministic record names for this trade, strongest
- * first, or null. Never a time window, never "the nearest event".
+ * Where a clean bot row's OWN approval came from (checker nit 2) — or a
+ * refusal with its reason when it cannot be shown to be more than a time
+ * window or a symbol+time link. The reconciler's stamp takes the newest
+ * approval in the five minutes before the intent (INTENT_APPROVAL_WINDOW_SQL)
+ * when the intent names none, and the pre-L2a sweep COALESCEd a resting
+ * row's approval onto "the first trade on this symbol since placement";
+ * a sibling carrying either is not evidence for another row.
  */
-export function evidencedApproval(db, t, intent) {
+function siblingApprovalSource(db, s) {
+  const rev = Number(s.risk_event_id)
+  try {
+    const own = db.prepare(`SELECT evidence FROM trade_reason_evidence WHERE trade_id = ? AND field = 'risk_event_id'`).get(s.id)
+    if (own && own.evidence !== 'sibling_trade') return { ok: true, chain: `its approval from ${own.evidence} (trade_reason_evidence)` }
+  } catch { /* no evidence table yet: no B4c record for this sibling */ }
+  let link = blank(s.intent_id) ? null : String(s.intent_id)
+  if (!link) { try { link = labelIntentId(String(s.label_raw || '')) } catch { link = null } }
+  try {
+    if (link) {
+      const it = db.prepare('SELECT id, risk_event_id, broker_order_id FROM entry_intents WHERE id = ?').get(link)
+      if (it && it.risk_event_id != null && Number(it.risk_event_id) === rev) return { ok: true, chain: `intent ${link}'s own approval` }
+      if (it) {
+        const oid = it.broker_order_id != null ? String(it.broker_order_id) : null
+        const rest = db.prepare(`SELECT id FROM pending_orders WHERE account_id = ? AND risk_event_id = ? AND (intent_id = ? OR (? IS NOT NULL AND order_id = ?)) LIMIT 1`)
+          .get(String(s.account_id), rev, link, oid, oid)
+        if (rest) return { ok: true, chain: `pending order row #${rest.id}, which placed intent ${link}'s order` }
+      }
+      return { ok: false, why: `trade #${s.id}'s approval #${rev} is neither intent ${link}'s own nor its resting row's (the stamp's five-minute window, or another writer)` }
+    }
+    const swept = db.prepare(`SELECT id FROM pending_orders WHERE risk_event_id = ? AND note = ? LIMIT 1`).get(rev, PRE_L2A_SWEEP_NOTE)
+    if (swept) return { ok: false, why: `trade #${s.id}'s approval #${rev} is resting row #${swept.id}'s, carried by the pre-L2a closed-market sweep (symbol + time)` }
+    return { ok: true, chain: `written with the row (${s.origin}, no intent link)` }
+  } catch { return { ok: false, why: `trade #${s.id}'s approval source unreadable` } }
+}
+
+/**
+ * The approval a deterministic record names for this trade, strongest
+ * first, or null. Never a time window, never "the nearest event". When
+ * `refusals` is an array, a record that was read and refused says why there.
+ */
+export function evidencedApproval(db, t, intent, refusals = null) {
+  const refuse = (why) => { if (Array.isArray(refusals)) refusals.push(why) }
   if (intent) {
     const own = approvalRow(db, intent.risk_event_id, t)
     if (own) return { id: own.id, evidence: 'intent_approval', detail: `intent ${intent.id}` }
@@ -202,14 +318,22 @@ export function evidencedApproval(db, t, intent) {
   if (pid != null && t.account_id != null) {
     try {
       const clean = CLEAN_BOT_ORIGINS.map(() => '?').join(',')
-      const sib = db.prepare(`SELECT id, risk_event_id FROM trades
+      const sib = db.prepare(`SELECT id, risk_event_id, intent_id, label_raw, origin, account_id FROM trades
                                WHERE ctrader_position_id IN (?, ?) AND account_id = ? AND id <> ? AND origin IN (${clean})`)
         .all(pid, `${pid}.0`, String(t.account_id), t.id, ...CLEAN_BOT_ORIGINS)
       const ids = [...new Set(sib.map(s => s.risk_event_id))]
       if (sib.length > 0 && ids.length === 1 && ids[0] != null) {
-        const ev = approvalRow(db, ids[0], t)
-        if (ev) return { id: ev.id, evidence: 'sibling_trade', detail: `trade #${sib.map(s => s.id).join(', #')} holds position ${pid} on this account` }
-      }
+        // Every sibling agrees; at least one must show where ITS approval
+        // came from, and the chain is recorded (checker nit 2).
+        const src = sib.map(s => ({ s, ...siblingApprovalSource(db, s) }))
+        const shown = src.filter(x => x.ok)
+        if (shown.length === 0) refuse(`same-position bot row(s) carry approval #${ids[0]}, but none shows where it came from: ${src.map(x => x.why).join('; ')}`)
+        else {
+          const ev = approvalRow(db, ids[0], t)
+          if (ev) return { id: ev.id, evidence: 'sibling_trade', detail: `trade #${sib.map(s => s.id).join(', #')} holds position ${pid} on this account (${shown.map(x => `#${x.s.id}: ${x.chain}`).join('; ')})` }
+          refuse(`same-position bot row(s) carry approval #${ids[0]}, which is not approved for this account, side and symbol`)
+        }
+      } else if (ids.length > 1) refuse(`same-position bot rows carry ${ids.length} different approvals — ambiguous`)
     } catch { /* no sibling readable */ }
   }
   return null
@@ -225,10 +349,14 @@ const TRADE_COLUMNS = 'id, account_id, symbol, side, status, origin, origin_sour
  * returned untouched. Never throws: a failure is returned as `error` and
  * writes nothing (one transaction).
  *
- * @returns {{ tradeId, inScope, wrote: Record<string,{value,evidence,detail}>, conflicts: Array, stillMissing: string[], why: Record<string,string>, error?: string }}
+ * `intent` is the matched entry intent row (the reconciler writes its plan
+ * at adoption); `confirmed.risk_event_id` is set on the pass that first
+ * recorded a stored approval as confirmed by evidence.
+ *
+ * @returns {{ tradeId, inScope, wrote: Record<string,{value,evidence,detail}>, conflicts: Array, confirmed: Record<string,object>, stillMissing: string[], why: Record<string,string>, intent: object|null, error?: string }}
  */
 export function recoverTradeReason(db, tradeId, { writer = 'backfill', at = new Date().toISOString() } = {}) {
-  const out = { tradeId, inScope: false, wrote: {}, conflicts: [], stillMissing: [], why: {} }
+  const out = { tradeId, inScope: false, wrote: {}, conflicts: [], confirmed: {}, stillMissing: [], why: {}, intent: null }
   let t = null
   try { t = db.prepare(`SELECT ${TRADE_COLUMNS} FROM trades WHERE id = ?`).get(tradeId) } catch (err) { return { ...out, error: String(err?.message || err) } }
   if (!t || !['open', 'closed'].includes(String(t.status))) return out
@@ -251,17 +379,35 @@ export function recoverTradeReason(db, tradeId, { writer = 'backfill', at = new 
     else if (intent && PRODUCER_STRATEGY[String(intent.producer_id || '')]) plan.strategy = { value: PRODUCER_STRATEGY[String(intent.producer_id)], evidence: 'intent_producer', detail: `intent ${intent.id} (${intent.producer_id})` }
   }
   if (intent && blank(t.intent_id)) plan.intent_id = { value: String(intent.id), evidence: m.via, detail: `producer ${intent.producer_id}` }
-  if (intent && adopted) {
-    const origin = up(intent.order_type || 'MARKET') === 'MARKET' ? 'bot_market_dispatch' : 'bot_pending_fill'
-    plan.origin = { value: origin, evidence: m.via, detail: `intent ${intent.id} (${intent.producer_id}, ${intent.order_type || 'MARKET'})` }
-  }
-  const approval = evidencedApproval(db, t, intent)
+  const refusals = []
+  const approval = evidencedApproval(db, t, intent, refusals)
+  // A stored approval the evidence names too is CONFIRMED, and that is
+  // recorded (before = value): without it the stored id reads as the pre-L2a
+  // heuristic (heuristicLinks) even where a record agrees with it.
+  let confirm = null
   if (approval && t.risk_event_id == null) plan.risk_event_id = { value: approval.id, evidence: approval.evidence, detail: approval.detail }
   else if (approval && Number(t.risk_event_id) !== Number(approval.id)) {
     out.conflicts.push({ field: 'risk_event_id', stored: Number(t.risk_event_id), evidenced: approval.id, evidence: approval.evidence, detail: approval.detail })
+  } else if (approval) confirm = { value: approval.id, evidence: approval.evidence, detail: `stored approval #${t.risk_event_id} confirmed: ${approval.detail}` }
+  if (intent && adopted) {
+    // ORIGIN. The intent proves a bot fill — but a stored approval id on a
+    // still-adopted row is the pre-L2a symbol+time link (heuristicLinks), and
+    // promoting the row would present that id as a bot trade's approval, out
+    // of reach of the adopted-row count (checker blocker 1). So the origin
+    // moves only when the row carries no approval yet or a record confirmed
+    // the stored one; otherwise it stays adopted — counted, and named.
+    if (t.risk_event_id == null || confirm) {
+      const origin = up(intent.order_type || 'MARKET') === 'MARKET' ? 'bot_market_dispatch' : 'bot_pending_fill'
+      plan.origin = { value: origin, evidence: m.via, detail: `intent ${intent.id} (${intent.producer_id}, ${intent.order_type || 'MARKET'})` }
+    } else if (out.conflicts.length) {
+      out.why.origin = `left reconciler_adopted: stored approval #${out.conflicts[0].stored} is contradicted by ${out.conflicts[0].evidence} (#${out.conflicts[0].evidenced})`
+    } else {
+      out.why.origin = `left reconciler_adopted: stored approval #${t.risk_event_id} stands only on the pre-L2a symbol + time link, and no record confirms it`
+    }
   }
+  out.intent = intent || null
 
-  if (Object.keys(plan).length || out.conflicts.length) try {
+  if (Object.keys(plan).length || out.conflicts.length || confirm) try {
     ensureReasonEvidenceTable(db)
     const ev = db.prepare(`INSERT OR IGNORE INTO trade_reason_evidence (trade_id, field, before_value, value, evidence, detail, writer, at)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -288,18 +434,41 @@ export function recoverTradeReason(db, tradeId, { writer = 'backfill', at = new 
       for (const c of out.conflicts) {
         ev.run(t.id, `${c.field}_conflict`, String(c.stored), String(c.evidenced), c.evidence, `stored approval #${c.stored} kept; ${c.detail} names #${c.evidenced}`, writer, at)
       }
+      // INSERT OR IGNORE: counted only the pass that first records it.
+      if (confirm && ev.run(t.id, 'risk_event_id', String(t.risk_event_id), String(confirm.value), confirm.evidence, confirm.detail, writer, at).changes > 0) {
+        out.confirmed.risk_event_id = confirm
+      }
     })()
   } catch (err) {
-    return { ...out, wrote: {}, error: String(err?.message || err).slice(0, 200) }
+    return { ...out, wrote: {}, confirmed: {}, error: String(err?.message || err).slice(0, 200) }
   }
 
   // What stays missing, and why (the goal counts these rows by their kind).
+  // The approval's reason is this row's own: why no intent matched, why a
+  // same-position row was refused, what contradicts the stored id.
+  const approvalWhy = [
+    !intent ? `no entry intent matched: ${m.why}` : null,
+    ...refusals,
+    ...out.conflicts.map(c => `${c.evidence} names #${c.evidenced}, not the stored #${c.stored}`),
+  ].filter(Boolean)
+  const withWhy = (text) => (approvalWhy.length ? `${text} (${approvalWhy.join('; ')})` : text)
   const has = (f) => (out.wrote[f] != null) || (f === 'strategy' ? !blank(t.strategy) : t[f] != null)
   if (!has('strategy')) { out.stillMissing.push('strategy'); out.why.strategy = UNRECOVERABLE.strategy }
-  if (!has('risk_event_id')) { out.stillMissing.push('approval id'); out.why['approval id'] = intent ? UNRECOVERABLE['approval id'] : `${UNRECOVERABLE['approval id']} (${m.why})` }
-  let planned = false
-  try { planned = !!db.prepare('SELECT 1 FROM trade_plans WHERE trade_id = ?').get(t.id) } catch { planned = false }
+  if (!has('risk_event_id')) { out.stillMissing.push('approval id'); out.why['approval id'] = withWhy(UNRECOVERABLE['approval id']) }
+  let planned = false, planSource = null
+  try {
+    const p = db.prepare('SELECT source FROM trade_plans WHERE trade_id = ?').get(t.id)
+    planned = !!p; planSource = p?.source ?? null
+  } catch { planned = false }
   if (!planned) { out.stillMissing.push('plan'); out.why.plan = UNRECOVERABLE.plan }
+  // Checker blocker 1: a value only the pre-L2a symbol+time link wrote is
+  // named as missing, never counted as a reason (heuristicLinks).
+  const originNow = out.wrote.origin ? out.wrote.origin.value : t.origin
+  const riskNow = out.wrote.risk_event_id ? out.wrote.risk_event_id.value : t.risk_event_id
+  for (const f of heuristicLinks({ origin: originNow, riskEventId: riskNow, planSource, approvalEvidence: approvalEvidenceOf(db, t.id) })) {
+    out.stillMissing.push(f)
+    out.why[f] = f === HEURISTIC_LINK.approval ? withWhy(UNRECOVERABLE[f]) : UNRECOVERABLE[f]
+  }
   return out
 }
 
@@ -315,17 +484,22 @@ export async function backfillAdoptedReasons(db, { sinceIso = null, at = new Dat
     since = TRADE_REASONS_CUTOFF_ISO
   }
   const clean = CLEAN_BOT_ORIGINS.map(() => '?').join(',')
+  // An adopted row whose stored approval no record has confirmed stays a
+  // candidate (bounded: only the pre-L2a sweep wrote those), so evidence that
+  // arrives later can still confirm it (checker blocker 1).
+  ensureReasonEvidenceTable(db)
   const rows = db.prepare(`
     SELECT id FROM trades
      WHERE status IN ('open', 'closed')
        AND opened_at IS NOT NULL AND REPLACE(opened_at, 'T', ' ') >= ?
        AND ((origin = 'reconciler_adopted'
-             AND (strategy IS NULL OR TRIM(strategy) = '' OR risk_event_id IS NULL OR intent_id IS NULL))
+             AND (strategy IS NULL OR TRIM(strategy) = '' OR risk_event_id IS NULL OR intent_id IS NULL
+                  OR NOT EXISTS (SELECT 1 FROM trade_reason_evidence e WHERE e.trade_id = trades.id AND e.field = 'risk_event_id')))
          OR (origin IN (${clean}) AND risk_event_id IS NULL))
      ORDER BY id`).all(since, ...CLEAN_BOT_ORIGINS)
   const out = {
     since, considered: 0, rowsWritten: 0, fields: {}, byEvidence: {}, conflicts: [], errors: [],
-    stillMissing: {}, stillMissingRows: 0, stillMissingIds: [],
+    confirmed: 0, stillMissing: {}, stillMissingRows: 0, stillMissingIds: [],
   }
   for (const { id } of rows) {
     const r = recoverTradeReason(db, id, { writer, at })
@@ -340,6 +514,7 @@ export async function backfillAdoptedReasons(db, { sinceIso = null, at = new Dat
       out.byEvidence[k] = (out.byEvidence[k] || 0) + 1
     }
     for (const c of r.conflicts) out.conflicts.push({ tradeId: id, ...c })
+    if (r.confirmed?.risk_event_id) out.confirmed++
     if (r.stillMissing.length) {
       out.stillMissingRows++
       if (out.stillMissingIds.length < 200) out.stillMissingIds.push(id)
@@ -355,6 +530,7 @@ export function adoptedReasonsLine(out) {
   return `adopted reasons: ${out.considered} bot row(s) since ${String(out.since).slice(0, 10)} considered · ` +
     `${out.rowsWritten} written (${kv(out.byEvidence) || 'nothing new'})` +
     ` · still without: ${kv(out.stillMissing) || 'nothing'} on ${out.stillMissingRows} row(s) — counted in trade_reasons, never invented` +
+    (out.confirmed ? ` · ${out.confirmed} stored approval id(s) confirmed by evidence and recorded` : '') +
     (out.conflicts.length ? ` · ${out.conflicts.length} stored approval id(s) contradicted by evidence, kept and recorded` : '') +
     (out.errors.length ? ` · ${out.errors.length} row(s) failed: ${out.errors.slice(0, 3).map(e => `#${e.tradeId} ${e.error}`).join('; ')}` : '')
 }
