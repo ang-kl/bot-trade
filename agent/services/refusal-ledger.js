@@ -249,7 +249,14 @@ export async function scoreRefusedOpportunities(db, fetchBars, { nowMs = Date.no
  */
 export function refusalCostReport(db, { days = 7, now = Date.now() } = {}) {
   const since = new Date(now - days * 86_400_000).toISOString()
-  const rows = db.prepare(`SELECT * FROM refusal_scores WHERE datetime(scored_at) >= datetime(?) ORDER BY scored_at DESC`).all(since)
+  // UI-5 (RS-1: "Windowed on scoring time. The share moves as the scorer
+  // catches up ... Window on refusal time"). Windowing on `scored_at` made
+  // the last-N-days share drift purely with how far the background scorer
+  // had caught up — measured 41.9% at 02:49Z against 33.8% an hour and a
+  // half earlier on the SAME production data, nothing about the refusals
+  // themselves having changed. `first_at` is when the refusal actually
+  // happened; that is what "the last N days" must mean.
+  const rows = db.prepare(`SELECT * FROM refusal_scores WHERE first_at IS NOT NULL AND datetime(first_at) >= datetime(?) ORDER BY first_at DESC`).all(since)
   const byReason = {}
   const tally = (b, r) => {
     b.n++
