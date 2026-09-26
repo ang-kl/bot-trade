@@ -760,8 +760,16 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // position after any write above changed its money or its prices. One
   // helper shared with closeTradeRow and the loop's price-reconcile step, so
   // the three writers cannot disagree about what the columns mean.
+  //
+  // WRITTEN-OFF ROWS ARE EXCLUDED (UI-5 / RS-1, "Unknown P/L: stop re-
+  // stamping written-off rows"). A `pnl_unresolvable = 1` row is a TERMINAL
+  // verdict — mark-unresolvable.js's whole point is that nothing here will
+  // ever look at its money again — yet this query used to restamp it anyway
+  // whenever a SIBLING on the same position landed fresh money, silently
+  // touching a row the rest of the system has agreed to stop reading.
   const closedIds = db.prepare(
-    `SELECT id FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed' ${scopeSql}`
+    `SELECT id FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'
+       AND COALESCE(pnl_unresolvable, 0) = 0 ${scopeSql}`
   )
   const restampPosition = (positionId) => {
     try { for (const { id } of closedIds.all(positionId, ...scopeParams)) stampRealisedAudit(db, id) } catch { /* audit columns never fail a backfill */ }

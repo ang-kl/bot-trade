@@ -897,3 +897,48 @@ test('F5 N6: a deferred position is not charged a backfill attempt on the non-st
   assert.equal(attempts('4403'), 0, 'deferred: no attempt spent; left NULL for a strict pass to settle')
   assert.equal(attempts('4404'), 1, 'control: a row the pass could not match is charged, as before')
 })
+
+// ---------------------------------------------------------------------------
+// UI-5 (RS-1): "Unknown P/L: stop re-stamping written-off rows" — a
+// pnl_unresolvable=1 row on the same position as a fresh money landing must
+// not have its audit columns touched (docs/plan-ui-and-strategy-review-
+// 2026-09-26.md §2 RS-1; §5 Wave 2 row 2.6).
+// ---------------------------------------------------------------------------
+
+test('a written-off row is never re-stamped, even when its position gets fresh backfill money', async () => {
+  const db = initDB(':memory:')
+  // A single closed row, already written off (mark-unresolvable.js's
+  // terminal verdict) — restampPosition() must exclude it from ITS OWN
+  // position's re-stamp pass, same as it would exclude it as a sibling.
+  const writtenOffId = db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, net_pnl, entry_price, exit_price, sl_price, pnl_unresolvable, pnl_unresolvable_reason)
+     VALUES ('EURUSD', 'BUY', 'closed', '556', NULL, 1.10, 1.30, 1.05, 1, 'unresolved: no broker evidence')`
+  ).run().lastInsertRowid
+
+  const before = db.prepare('SELECT realised_rr, pnl_price_mismatch FROM trades WHERE id = ?').get(writtenOffId)
+  assert.equal(before.realised_rr, null, 'sanity: not stamped before the backfill')
+
+  const getDeals = dealsApi([deal(556, 5000, { commCents: -200 })]) // deal history the backfill's own
+  // net_pnl-IS-NULL guard does not check pnl_unresolvable, so money can still
+  // land here — a separate, pre-existing behaviour this test does not judge.
+  // What matters here is the audit columns that follow it.
+  await backfillClosedPnl(db, {}, { getDeals, now: NOW })
+
+  const after = db.prepare('SELECT realised_rr, pnl_price_mismatch, pnl_unresolvable_reason FROM trades WHERE id = ?').get(writtenOffId)
+  assert.equal(after.realised_rr, null, 'never re-stamped: the terminal verdict is left exactly as it was')
+  assert.equal(after.pnl_price_mismatch, null, 'never re-stamped')
+  assert.equal(after.pnl_unresolvable_reason, 'unresolved: no broker evidence', 'the write-off itself is untouched')
+})
+
+test('control: an ORDINARY (not written-off) row on the same shape of position IS re-stamped, so the exclusion is specific to pnl_unresolvable', async () => {
+  const db = initDB(':memory:')
+  const id = db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, net_pnl, entry_price, exit_price, sl_price)
+     VALUES ('EURUSD', 'BUY', 'closed', '557', NULL, 1.10, 1.30, 1.05)`
+  ).run().lastInsertRowid
+  const getDeals = dealsApi([deal(557, 5000, { commCents: -200 })])
+  await backfillClosedPnl(db, {}, { getDeals, now: NOW })
+  const after = db.prepare('SELECT net_pnl, realised_rr FROM trades WHERE id = ?').get(id)
+  assert.notEqual(after.net_pnl, null)
+  assert.notEqual(after.realised_rr, null, 'an ordinary row IS re-stamped once money lands')
+})
