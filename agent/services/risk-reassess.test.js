@@ -59,6 +59,26 @@ test('parseAssessment keeps good proposals, names the rejects, drops no-ops', ()
   assert.equal(out.warnings.length, 1)
 })
 
+// Checker nit N7 (26-09-2026): `key in PROPOSABLE` is true for every name on
+// Object.prototype. Reproduced before the fix: an answer keyed 'constructor',
+// 'toString' or '__proto__' was KEPT as a proposal (proposed NaN, rejected
+// empty) and clampProposal('constructor', 1) returned { value: NaN }. The exact
+// `why` is asserted: with only one of the two checks fixed the row is still
+// dropped, but as "not a usable number", which would hide the other.
+test('an answer keyed by an inherited Object name is dropped as not proposable, never kept (N7)', () => {
+  const inherited = ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']
+  const out = parseAssessment(JSON.stringify({
+    summary: 's',
+    proposals: [
+      ...inherited.map((key, i) => ({ key, value: i + 1, reason: 'x' })),
+      { key: 'maxOpenPositions', value: 3, reason: 'fewer concurrent bets' },
+    ],
+  }), CTX)
+  assert.deepEqual(out.proposals.map(p => [p.key, p.proposed]), [['maxOpenPositions', 3]])
+  assert.deepEqual(out.rejected, inherited.map(key => ({ key, why: 'not a proposable setting' })))
+  for (const key of inherited) assert.equal(clampProposal(key, 1), null, key)
+})
+
 test('parseAssessment tolerates a fenced code block', () => {
   const out = parseAssessment('```json\n{"summary":"ok","proposals":[]}\n```', CTX)
   assert.equal(out.summary, 'ok')

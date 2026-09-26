@@ -333,6 +333,9 @@ export default function actionsRouter(db, deps = {}) {
   // timestamped frames and the feed-latency record can be exercised without
   // a broker socket.
   const streamSpotsImpl = deps.streamSpots ?? null
+  // SAFE-0b: the clock the Re-Risk apply ages a proposal against, so the
+  // 7-day refusal can be exercised at its boundary over HTTP.
+  const nowMsImpl = deps.nowMs ?? Date.now
 
   // Every successful write makes the /state/* read cache stale. Without this
   // the UI saves, re-reads, and paints the PRE-SAVE answer back over the new
@@ -5716,7 +5719,7 @@ export default function actionsRouter(db, deps = {}) {
       if (keys.length === 0) return res.status(400).json({ error: 'keys[] is required' })
       const at = String(req.body?.at || '')
       if (!at) return res.status(400).json({ error: 'at (the assessment timestamp being applied) is required' })
-      const { loadLastAssessment, markApplied, PROPOSABLE } = await import('../services/risk-reassess.js')
+      const { loadLastAssessment, markApplied, PROPOSABLE, reassessApplyRefusal } = await import('../services/risk-reassess.js')
       const last = loadLastAssessment(db)
       if (!last) return res.status(400).json({ error: 'no reassessment has been run yet' })
       if (last.at !== at) {
@@ -5725,11 +5728,27 @@ export default function actionsRouter(db, deps = {}) {
           displayed: at, current: last.at,
         })
       }
+      // SAFE-0b (owner OD-14): refuse a proposal older than 7 days or made
+      // for another account than the one traded now, with a named code —
+      // before anything is written. See reassessApplyRefusal.
+      const refusal = reassessApplyRefusal(last, { nowMs: nowMsImpl(), accountId: getState(db, 'ctrader_account_id') || null })
+      if (refusal) {
+        try {
+          db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+            'RISK_REASSESS_APPLY_REFUSED', '/risk-reassess-apply', JSON.stringify({ code: refusal.code, at: last.at, accountId: last.accountId ?? null, keys }))
+        } catch { /* non-fatal */ }
+        // `refused` has the 200/400 shape, [{ key, why }] (checker nit N5,
+        // 26-09-2026): every key is refused for the one reason, its code.
+        return res.status(409).json({ ...refusal, refused: keys.map(key => ({ key, why: refusal.code })) })
+      }
       const byKey = new Map(last.proposals.map(p => [p.key, p]))
       const patch = {}
       const refused = []
       for (const k of keys) {
-        if (!(k in PROPOSABLE)) { refused.push({ key: k, why: 'not a proposable setting' }); continue }
+        // Own keys only (checker nit N7, 26-09-2026): `k in PROPOSABLE` is true
+        // for 'constructor', 'toString', '__proto__'…, so a stored proposal row
+        // under such a name was written into the GLOBAL risk_config_json.
+        if (!Object.hasOwn(PROPOSABLE, k)) { refused.push({ key: k, why: 'not a proposable setting' }); continue }
         const p = byKey.get(k)
         if (!p) { refused.push({ key: k, why: 'not part of the last assessment' }); continue }
         patch[k] = p.proposed

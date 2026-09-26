@@ -68,7 +68,10 @@ export const PROPOSABLE = {
  * @returns {{value: number, clamped: boolean}|null}
  */
 export function clampProposal(key, raw) {
-  const spec = PROPOSABLE[key]
+  // OWN keys only (checker nit N7, 26-09-2026): `PROPOSABLE[key]` alone
+  // answers for inherited names too — 'constructor' found Object, whose
+  // missing min/max made every value NaN and still "usable".
+  const spec = Object.hasOwn(PROPOSABLE, key) ? PROPOSABLE[key] : null
   if (!spec) return null
   // Number(null) is 0 and Number('') is 0 — both finite, so a missing value
   // would otherwise be accepted and then clamped up to the minimum, inventing
@@ -238,7 +241,11 @@ export function parseAssessment(text, ctx) {
   const rejected = []
   for (const p of Array.isArray(parsed.proposals) ? parsed.proposals : []) {
     const key = String(p?.key || '')
-    if (!(key in PROPOSABLE)) { rejected.push({ key, why: 'not a proposable setting' }); continue }
+    // Object.hasOwn, not `in` (checker nit N7, 26-09-2026): `key in PROPOSABLE`
+    // is true for every name on Object.prototype, so a model answering
+    // "constructor", "toString" or "__proto__" had its row kept as a proposal
+    // (proposed NaN, stored as null) and Apply wrote it into risk_config_json.
+    if (!Object.hasOwn(PROPOSABLE, key)) { rejected.push({ key, why: 'not a proposable setting' }); continue }
     const c = clampProposal(key, p?.value)
     if (!c) { rejected.push({ key, why: `not a usable number: ${JSON.stringify(p?.value)}` }); continue }
     const current = ctx.current[key] ?? null
@@ -312,6 +319,48 @@ export async function runReassessment(db, opts, deps = {}) {
   }
   setState(db, STATE_KEY, JSON.stringify(result))
   return result
+}
+
+// SAFE-0b (owner OD-14, 26-09-2026): the Apply guard. Apply writes the GLOBAL
+// risk_config_json, and before this guard it would replay any stored proposal
+// however old and whoever it was made for — measured 26-09: the stored run was
+// the 30-07 proposal for account 43097342 at $1,478.75, while the agent trades
+// 46979908. A proposal is a judgement of ONE account's balance and record at
+// ONE time; replaying it on another account, or weeks later, applies numbers
+// nobody derived for the account they now govern.
+//
+// Refused, each with its own code:
+//   assessment_time_invalid — the run's `at` does not parse, or lies in the
+//     future (a clock we cannot age is not a fresh one);
+//   assessment_too_old — the run is OLDER than 7 days (exactly 7 days old is
+//     still accepted: "older than", the owner's wording);
+//   assessment_account_unknown — the run names no account, so it cannot be
+//     shown to be this one;
+//   trading_account_unknown — the agent has no trading account to compare;
+//   assessment_other_account — made for a different account than the one the
+//     agent trades now (the same account a fresh Re-Risk would assess).
+// null means the apply may proceed. Pure: the caller supplies both clocks and
+// the account, so the boundary is testable to the millisecond.
+export const REASSESS_APPLY_MAX_AGE_MS = 7 * 86400_000
+export function reassessApplyRefusal(last, { nowMs, accountId, maxAgeMs = REASSESS_APPLY_MAX_AGE_MS } = {}) {
+  const atMs = Date.parse(String(last?.at ?? ''))
+  if (!Number.isFinite(atMs) || !Number.isFinite(nowMs) || atMs > nowMs) {
+    return { code: 'assessment_time_invalid', error: `this assessment's time (${last?.at ?? 'none'}) cannot be aged against now — run Re-Risk again` }
+  }
+  const ageMs = nowMs - atMs
+  if (ageMs > maxAgeMs) {
+    return { code: 'assessment_too_old', ageMs, maxAgeMs,
+      error: `this assessment is ${Math.floor(ageMs / 86400_000)} days old (made ${last.at}); proposals older than ${maxAgeMs / 86400_000} days are refused — run Re-Risk again` }
+  }
+  const made = last?.accountId == null || last.accountId === '' ? null : String(last.accountId)
+  if (made == null) return { code: 'assessment_account_unknown', error: 'this assessment names no account, so it cannot be shown to be for the traded account — run Re-Risk again' }
+  const trading = accountId == null || accountId === '' ? null : String(accountId)
+  if (trading == null) return { code: 'trading_account_unknown', error: 'the agent has no trading account selected, so the assessment\'s account cannot be checked' }
+  if (made !== trading) {
+    return { code: 'assessment_other_account', assessmentAccountId: made, tradingAccountId: trading,
+      error: `this assessment was made for account ${made}, not the traded account ${trading} — run Re-Risk for ${trading}` }
+  }
+  return null
 }
 
 /** Mark the stored assessment as applied, with the keys that actually went in. */

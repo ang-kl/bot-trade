@@ -417,14 +417,17 @@ test('the coverage read: a missing map is missing, reasons are split, disagreeme
   assert.equal(report.expiredHolidays.rows, 0, 'no row was skipped in this fixture')
 })
 
-// V3 K1b: production's full-day "Closed" rows (startSecond 0, endSecond 0,
-// isRecurring false; measured 26-09) that lie 3+ UTC days behind their
-// observation are skipped — and counted here, so a calendar that resolved past
-// them is visible as such (owner principle 6).
-test('K1b: expired 0/0 "Closed" rows are counted per account and in total; the calendar they no longer block is exported', t => {
+// V3 K1b: non-recurring holiday rows with unreadable bounds that lie 3+ UTC
+// days behind their observation are skipped — and counted here, so a calendar
+// that resolved past them is visible as such (owner principle 6).
+// REWRITTEN IN THE OPEN for V3 K3 (owner OD-7, 26-09): this test was written on
+// production's 0/0 "Closed" rows. K3 reads 0/0 as the whole local day, so those
+// rows are evaluated, never skipped (the K3 test below); the K1b rule is
+// exercised here on a sent-but-invalid pair (startSecond 5 > endSecond 4).
+test('K1b: expired unreadable rows are counted per account and in total; the calendar they no longer block is exported', t => {
   const db = database(t, ['47790949'])
   setState(db, 'symbol_id_map:47790949', JSON.stringify({ builtAt: new Date(now - 3600_000).toISOString(), map: { 'KO.US': 21, USDKRW: 10995 } }))
-  const closed = (holidayDate, name) => ({ holidayDate, isRecurring: false, scheduleTimeZone: 'Europe/Moscow', name, startSecond: 0, endSecond: 0 })
+  const closed = (holidayDate, name) => ({ holidayDate, isRecurring: false, scheduleTimeZone: 'Europe/Moscow', name, startSecond: 5, endSecond: 4 })
   // KO.US: US Labor Day and 01-07, both past → skipped; the calendar resolves.
   recordMarketCalendar(db, { host: LIVE, accountId: '47790949', symbolId: '21' }, { symbolId: 21, ...SHAPES[6],
     holiday: [closed(20703, '07.09.2026 Closed'), closed(20635, '01.07.2026 Closed')] }, { nowMs: now - 1000 })
@@ -436,15 +439,44 @@ test('K1b: expired 0/0 "Closed" rows are counted per account and in total; the c
   const report = buildCalendarCoverage(db, { now })
   const a = report.accounts.find(x => x.accountId === '47790949')
   assert.deepEqual(a.status, { OPEN: 1, CLOSED: 0, UNKNOWN: 1 })
-  assert.deepEqual(a.unknownReasons, { holiday_bounds_invalid: 1 }, 'the current 0/0 row still keeps USDKRW unknown: its meaning is K3')
+  assert.deepEqual(a.unknownReasons, { holiday_bounds_invalid: 1 }, 'the current unreadable row still keeps USDKRW unknown')
   assert.deepEqual(a.expiredHolidays, { rows: 3, identities: 2, identitiesKnown: 1 })
   const { basis, ...total } = report.expiredHolidays
   assert.deepEqual(total, { rows: 3, identities: 2, identitiesKnown: 1, afterUtcDays: 3 })
   assert.match(basis, /kept in the stored payload/)
   assert.equal(report.export.withCalendar, 1, 'the resolved KO.US calendar reaches the verifier export; USDKRW does not')
-  assert.deepEqual(a.holidays.map(h => [h.dateIso, h.name, h.bounds, h.startSecond, h.endSecond]), [['2026-09-24', '24.09.2026 Closed', 'holiday_bounds_invalid', 0, 0]],
+  assert.deepEqual(a.holidays.map(h => [h.dateIso, h.name, h.bounds, h.startSecond, h.endSecond]), [['2026-09-24', '24.09.2026 Closed', 'holiday_bounds_invalid', 5, 4]],
     'the current row is listed as sent; the skipped rows are outside the 14-day window')
-  assert.ok(report.limitations.some(l => /startSecond 0 and endSecond 0/.test(l) && /K3/.test(l)))
+  assert.ok(report.limitations.some(l => /3 or more UTC days/.test(l) && /K3/.test(l)))
+})
+
+// V3 K3 (owner OD-7, 26-09): a 0/0 row closes its whole local day. Nothing is
+// skipped, the calendars resolve, and the coverage read labels the row with
+// the meaning it was given.
+test('K3: 0/0 rows are evaluated as whole local days — never expired, never UNKNOWN — and listed as full_local_day', t => {
+  const db = database(t, ['47790949'])
+  setState(db, 'symbol_id_map:47790949', JSON.stringify({ builtAt: new Date(now - 3600_000).toISOString(), map: { 'KO.US': 21, USDKRW: 10995 } }))
+  const zz = (holidayDate, name) => ({ holidayDate, isRecurring: false, scheduleTimeZone: 'Europe/Moscow', name, startSecond: 0, endSecond: 0 })
+  // KO.US (24/7 shape): 07-09 past, and 25-09 — today in Moscow at 09:00 MSK — closed all local day.
+  recordMarketCalendar(db, { host: LIVE, accountId: '47790949', symbolId: '21' }, { symbolId: 21, ...SHAPES[6],
+    holiday: [zz(20703, '07.09.2026 Closed'), zz(20721, '25.09.2026 Closed')] }, { nowMs: now - 1000 })
+  // USDKRW (24/5 FX): 25-12-2025 past and 26-09 ahead; Friday 06:00Z is open.
+  recordMarketCalendar(db, { host: LIVE, accountId: '47790949', symbolId: '10995' }, { symbolId: 10995, ...SHAPES[0],
+    holiday: [zz(20447, '25.12.2025 - Closed'), zz(20722, '26.09.2026 Closed')] }, { nowMs: now - 1000 })
+  position(db, '47790949', 'KO.US', { paused: 1 })
+  position(db, '47790949', 'USDKRW')
+  const report = buildCalendarCoverage(db, { now })
+  const a = report.accounts.find(x => x.accountId === '47790949')
+  assert.deepEqual(a.status, { OPEN: 1, CLOSED: 1, UNKNOWN: 0 })
+  assert.deepEqual(a.unknownReasons, {})
+  assert.deepEqual(a.expiredHolidays, { rows: 0, identities: 0, identitiesKnown: 0 }, 'a 0/0 row is readable, so K1b skips none')
+  assert.equal(report.export.withCalendar, 2, 'both calendars reach the verifier export')
+  assert.deepEqual(a.holidays.map(h => [h.dateIso, h.bounds, h.startSecond, h.endSecond]).sort(),
+    [['2026-09-25', 'full_local_day', 0, 0], ['2026-09-26', 'full_local_day', 0, 0]], 'listed as sent, labelled with the K3 meaning')
+  assert.ok(report.limitations.some(l => /whole local day/.test(l) && /OD-7/.test(l)))
+  // Checker nit N3: the premise under that reading is stated, not only its conclusion.
+  assert.ok(report.limitations.some(l => /premise/.test(l) && /OD-7/.test(l) && /real closure lies inside that local day/.test(l)
+    && /reads open for the part outside/.test(l)), 'the report says when "closed when open" stops being the worst case')
 })
 
 // ---- the route ----

@@ -41,15 +41,41 @@ function validZone(zone) {
 //   holiday_bounds_invalid — both bounds sent, but out of range or start >= end.
 //     Production sends startSecond 0 AND endSecond 0 on its full-day "Closed"
 //     rows ("25.12.2025 - Closed", "07.09.2026 Closed"; measured 26-09 on all
-//     335 unresolved rows): that is this code, not an omitted bound.
-// Both keep the WHOLE calendar unknown, exactly as before: no boundary is
-// invented here. Rows stored under the old code are mapped on read (below).
+//     335 unresolved rows): that was this code until V3 K3, which reads the
+//     0/0 pair as the whole local day (owner OD-7) — see holidayWindow.
+// Omitted bounds, and any other invalid pair, still keep the WHOLE calendar
+// unknown, exactly as before: no boundary is invented for those. The 0/0 pair
+// is the one exception carved out by K3 above — it is read, not left unknown.
+// Rows stored under the old code are mapped on read (below).
 export const HOLIDAY_BOUNDS_OMITTED = 'holiday_bounds_omitted'
 export const HOLIDAY_BOUNDS_INVALID = 'holiday_bounds_invalid'
 const LEGACY_HOLIDAY_WINDOW_UNKNOWN = 'calendar_holiday_window_unknown'
 const present = value => value !== undefined && value !== null
+// V3 K3 (owner OD-7, answered yes 26-09-2026): a holiday row whose bounds are
+// startSecond 0 AND endSecond 0 — production's full-day "Closed" rows — means
+// CLOSED FOR THE WHOLE LOCAL DAY, in the row's own scheduleTimeZone: from
+// local 00:00 on holidayDate to local 00:00 the next day (a 23- or 25-hour
+// UTC span on a DST day). Read that way the worst case shows closed when the
+// market was open, never open when it was closed — ON ONE PREMISE, stated here
+// because nothing in a 0/0 row can check it (checker nit N3, 26-09): the
+// broker's real closure lies INSIDE the row's own local day. A real closure
+// that began before that local midnight, or ran past the next one (one the
+// broker keeps in a zone other than the row's, say), reads OPEN for the part
+// outside the day. The premise is the owner's reading (OD-7), assumed, not
+// measured. Only the exact pair 0/0 (two
+// numbers) gets this meaning: an omitted bound, a single bound, and every
+// other invalid pair keep the whole calendar unknown exactly as before — the
+// owner answered the 0/0 question, not those.
+export const HOLIDAY_FULL_LOCAL_DAY = 'holiday_full_local_day'
+const fullLocalDay = h => h.startSecond === 0 && h.endSecond === 0
+// The evaluated window of a readable row, in seconds of its local date.
+function holidayWindow(h) {
+  return fullLocalDay(h) ? { start: 0, end: DAY } : { start: h.startSecond, end: h.endSecond }
+}
+export { holidayWindow as calendarHolidayWindow }
 function holidayBoundsReason(h) {
   if (!present(h.startSecond) || !present(h.endSecond)) return HOLIDAY_BOUNDS_OMITTED
+  if (fullLocalDay(h)) return null
   if (!integer(h.startSecond, 0, DAY - 1) || !integer(h.endSecond, 1, DAY)
     || h.startSecond >= h.endSecond) return HOLIDAY_BOUNDS_INVALID
   return null
@@ -69,9 +95,10 @@ function holidayBoundsReason(h) {
 //   - D + 36 h <= (O - 1) days exactly when D <= O - 2.5, i.e. D <= O - 3.
 // So a row with D <= O - 3 lies wholly before every window; D = O - 2 can
 // still reach the first contract day and stays unknown, as does every current
-// or future row. This gives an unreadable bound NO meaning — what a current
-// 0/0 row means (a whole local day?) is the owner's K3 decision, not made
-// here. The row stays in the stored payload (the version hash is unchanged),
+// or future row. This gives an unreadable bound NO meaning. (V3 K3: a 0/0
+// row is no longer unreadable — it is a whole local day, see
+// holidayWindow — so it is evaluated, never expired; this rule now covers
+// omitted and other invalid bounds only.) The row stays in the stored payload (the version hash is unchanged),
 // is never evaluated (calendarAt skips it), and is listed as
 // holiday_expired_ignored, never silently dropped. A recurring row returns
 // every year, so it never expires.
@@ -111,10 +138,10 @@ function validateCalendar(raw, observedMs) {
     if (!h || !validZone(h.scheduleTimeZone) || !integer(h.holidayDate, 0, 2932896)
       || typeof h.isRecurring !== 'boolean') return 'calendar_holiday_invalid'
     // The API reference does not define the business meaning of omitted
-    // optional holiday boundaries, nor of the 0/0 pair production sends.
-    // Keep these unknown rather than invent a full-day closure or ignore the
-    // holiday — unless the row already lies behind every window (K1b, above).
-    // Explicit broker bounds work.
+    // optional holiday boundaries. Keep these unknown rather than invent a
+    // closure or ignore the holiday — unless the row already lies behind
+    // every window (K1b, above). Explicit broker bounds work, and so (V3 K3,
+    // owner OD-7) does the 0/0 pair: the whole local day.
     const bounds = holidayStatus(h, observedMs)
     if (bounds === HOLIDAY_BOUNDS_OMITTED) omitted = true
     else if (bounds === HOLIDAY_BOUNDS_INVALID) invalid = true
@@ -150,7 +177,7 @@ function holidayRows(calendar, which, observedMs) {
     if (which === 'unresolved' && (!reason || ignored)) continue
     if (which === 'expired' && !ignored) continue
     const date = integer(h.holidayDate, 0, 2932896) ? new Date(h.holidayDate * DAY * 1000).toISOString().slice(0, 10) : null
-    out.push({ reason, ...(ignored ? { ignored: HOLIDAY_EXPIRED_IGNORED } : {}), holidayId: h.holidayId ?? null, name: clipText(h.name), description: clipText(h.description),
+    out.push({ reason, ...(ignored ? { ignored: HOLIDAY_EXPIRED_IGNORED } : {}), ...(fullLocalDay(h) ? { interpreted: HOLIDAY_FULL_LOCAL_DAY } : {}), holidayId: h.holidayId ?? null, name: clipText(h.name), description: clipText(h.description),
       holidayDate: h.holidayDate ?? null, dateIso: date, isRecurring: h.isRecurring ?? null, scheduleTimeZone: clipText(h.scheduleTimeZone),
       ...('startSecond' in h ? { startSecond: h.startSecond } : {}), ...('endSecond' in h ? { endSecond: h.endSecond } : {}) })
   }
@@ -221,14 +248,16 @@ export function recordMarketCalendar(db, input, symbol, { nowMs = Date.now() } =
 
 /**
  * Pure evaluation, using each holiday's own zone and the symbol's IANA zone.
+ * V3 K3: a 0/0 row closes its whole local date (holidayWindow).
  * V3 K1b: a holiday row whose bounds cannot be read is never evaluated. A
  * validated calendar holds such a row only when it lies behind every window of
  * its observation (holiday_expired_ignored). Skipping it gives the row no
  * closure meaning, which is NOT the same as no effect: inside the projection's
  * eight-day lookback (calendar-intervals.js projectCalendar) that day is read
  * as ordinary schedule time, so for a session of 3 days or more the reported
- * sessionOpenedAtMs can be earlier than a real closure on that day (a K3
- * residue; checker nit 2, 26-09). Every row with explicit valid bounds is
+ * sessionOpenedAtMs can be earlier than a real closure on that day (checker
+ * nit 2, 26-09; since K3 this applies to omitted and other invalid bounds
+ * only — a skipped 0/0 day no longer exists, it is evaluated as closed). Every row with explicit valid bounds is
  * evaluated as before.
  */
 export function calendarAt(calendar, now) {
@@ -239,7 +268,8 @@ export function calendarAt(calendar, now) {
     const today = `${p.year}-${p.month}-${p.day}`
     if ((h.isRecurring ? today.slice(5) === date.slice(5) : today === date)) {
       const second = Number(p.hour) * 3600 + Number(p.minute) * 60 + Number(p.second)
-      if (second >= h.startSecond && second < h.endSecond) return { open: false, reason: 'broker_holiday' }
+      const w = holidayWindow(h)
+      if (second >= w.start && second < w.end) return { open: false, reason: 'broker_holiday' }
     }
   }
   const p = zonedParts(now, calendar.scheduleTimeZone)
