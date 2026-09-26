@@ -103,11 +103,16 @@ const BLOCK_WORDS = {
  * every word from the same view `dailyStopWords` reads, never a second
  * reading. `note` is the reading's own units note (a non-USD account).
  *
- * "Left today" is the engine's `remainingUsd` (cap − today's realised loss).
- * It is printed only when the account's money is in the cap's unit: on a
- * non-USD account the engine subtracts that account's own P&L from a
- * USD-configured cap (H-P2-4), and the result is not a USD figure — the same
- * reason the reading refuses a loss-cap percentage there.
+ * "Left today" is the engine's `remainingUsd` (cap − today's REALISED loss
+ * only — floating is not subtracted here, unlike the account card's
+ * "loss-cap used", which counts floating too; F3, WEB-9 checker nit: the two
+ * figures measure different things and must say so, or a card reading "left
+ * today: $1,130" beside another reading "used: 12%" looks like one
+ * disagreeing number instead of two different questions). It is printed only
+ * when the account's money is in the cap's unit: on a non-USD account the
+ * engine subtracts that account's own P&L from a USD-configured cap
+ * (H-P2-4), and the result is not a USD figure — the same reason the reading
+ * refuses a loss-cap percentage there.
  *
  * @param {ReturnType<typeof dailyStopView>|null|undefined} view
  * @param {(n:number, d?:number) => string} money  the page's formatter
@@ -119,7 +124,7 @@ export function dailyStopDetail(view, money) {
   if (v.capState === 'in_force' && v.cap != null) {
     if (v.explain) parts.push(v.explain)
     parts.push(v.unitsComparable === true
-      ? (v.remaining != null ? `${money(v.remaining, 0)}${v.capCcy ? ` ${v.capCcy}` : ''} left today` : 'left today not read')
+      ? (v.remaining != null ? `${money(v.remaining, 0)}${v.capCcy ? ` ${v.capCcy}` : ''} left today on realised P&L (floating not counted)` : 'left today not read')
       : v.unitsComparable === false ? 'left today not comparable' : 'left today not read')
   }
   if (v.block) {
