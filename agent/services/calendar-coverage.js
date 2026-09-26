@@ -25,8 +25,9 @@
 //     observation;
 //   - watchlist symbols that are NOT demanded, named as such (the demand is
 //     bounded to scan, feed and held symbols; a 260-symbol list is not);
-//   - how often the name-keyed symbol_hours gate — the one entries use today
-//     (loop.js market-hours check) — disagrees with the account's calendar at
+//   - how often the name-keyed symbol_hours gate — the one entries used until
+//     V3 S-8 moved them onto the account calendar (services/entry-hours.js)
+//     — disagrees with the account's calendar at
 //     this instant (revision-3:216; the evidence for owner question O3);
 //   - broker holidays in the next 14 days on its demanded identities, bounded
 //     or not, each with how its bounds were sent;
@@ -248,7 +249,7 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
     holidayWindow: { from: dates[0], to: dates.at(-1), basis: 'UTC calendar date of the broker holidayDate; recurring rows by month-day' },
     accounts: [...byAccount.values()],
     limitations: [
-      'Advisory evidence only: entries still use the name-keyed symbol_hours gate; gateDisagreements measures that gate against the account calendar at this instant.',
+      'Since V3 S-8 the entry path reads the account calendar itself (services/entry-hours.js: holidays applied, UNKNOWN never reads open). gateDisagreements measures the retired name-keyed symbol_hours gate against the account calendar at this instant: the entries whose hours reading changed with S-8.',
       'demandedCoverage covers the demanded identities only; watchlist symbols outside the demand are listed as notDemanded, never counted as covered.',
       'export.calendarsComplete stays false while any retained (non-demanded) calendar is cut, even with every demanded one exported (export.demanded.cut 0): cpp-verify gives a work item of ANY service the exported calendar with its identity, and a cpp-scan-tick row carries none of its own and can outlive the demand (a stream the gateway no longer feeds), so a cut retained calendar can be one the verifier needs. export.demanded and export.retained say which part was cut; retained.totalIsLowerBound means the cache holds more than 512 rows; retained.total counts the first 513 read (less the demanded and malformed ones), so it is a lower bound.',
       'A bound the broker did not send is reported as omitted, and a pair it sent out of range as invalid: production sends startSecond 0 and endSecond 0 on its full-day "Closed" holiday rows (measured 26-09). No replacement boundary is invented. Such a non-recurring row dated 3 or more UTC days before its observation lies behind every evaluation window, so it is skipped: kept in the stored payload, never evaluated and counted in expiredHolidays; the calendar is then judged on its other rows. A current or future 0/0 row still keeps its calendar UNKNOWN: what it means awaits the owner (K3). Residue until K3: a skipped day inside the eight-day lookback is read as ordinary schedule time, so for a session running 3 days or more (24/5 FX, 24/7 crypto) the reported session start can be earlier than a real closure on that day.',

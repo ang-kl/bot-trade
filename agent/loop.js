@@ -36,7 +36,7 @@ import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { reconcileCrossSideAccounts } from './services/cross-side-reconcile.js'
 import { checkRegimeGate, latestRegime } from './services/regime-gate.js'
-import { recordRegimeBlock, recordEvidenceShadow } from './services/gate-skips.js'
+import { recordRegimeBlock, recordEvidenceShadow, recordMarketHoursUnknown } from './services/gate-skips.js'
 import { accountPregate, proposalPregate, invalidateAccountPregate } from './services/account-pregate.js'
 import { markTickRepush } from './services/tick-permits.js'
 import { recordPositionEvent } from './services/position-events.js'
@@ -384,10 +384,25 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // reopens — see services/pending-signals.js and its runPendingSignals()
   // loop.js phase (owner: "do you separate which one you would trade based
   // on market open... which will trade later when NY opens?").
-  // Broker-truth schedule (symbol_hours table) when cached; the sessions.js
-  // heuristic is the fallback for symbols not yet refreshed.
-  const { isSymbolOpenCached } = await import('./services/symbol-hours.js')
-  const marketGate = isSymbolOpenCached(db, symbol)
+  // V3 S-8 (26-09-2026): the hours source is the ACCOUNT CALENDAR — this
+  // account's own broker calendar for the symbol, weekly schedule AND public
+  // holidays (services/entry-hours.js; the OD-8 switch ENTRY_HOURS_SOURCE
+  // lives there). It replaced the name-keyed symbol_hours read, which ignored
+  // holidays and fell back to the sessions.js heuristic. UNKNOWN never reads
+  // open: no order and no resting limit, one decision_log skip per
+  // (account, symbol) until the calendar is known again.
+  const { resolveEntryMarketGate } = await import('./services/entry-hours.js')
+  const marketGate = await resolveEntryMarketGate(db, { symbol, accountId })
+  const unknownKey = `mkt_hours_unknown_logged_${accountId}_${symbol}`
+  if (marketGate.unknown) {
+    if (getState(db, unknownKey) !== 'y') {
+      recordMarketHoursUnknown(db, { accountId, symbol, side, synth, requestedVolume: requestedVol, gate: marketGate, producerId, loopId: loopCount })
+      setState(db, unknownKey, 'y')
+    }
+    log(`Auto-trade refused — ${marketGate.reason}${marketGate.refresh ? ` (calendar re-read: ${marketGate.refresh})` : ''}`)
+    return null
+  }
+  setState(db, unknownKey, null) // hours known again — re-arm the one-shot
   if (!marketGate.open) {
     // Closed market: a MARKET order would be rejected. Owner decision
     // (Option A, on by default): place a RESTING LIMIT order at the setup's

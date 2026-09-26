@@ -1,8 +1,8 @@
 // Exchange cash sessions for the "Today by market session" report (V3 WEB-6).
 //
 // REPORTING ONLY. No admission, risk or order path reads this module: whether
-// an order may be sent is decided by sessions.js / symbol-hours.js and the
-// broker's own schedule. This table answers one question for a close that has
+// an order may be sent is decided by the account calendar (entry-hours.js, V3 S-8): the
+// broker's own schedule and holidays. This table answers one question for a close that has
 // already happened — was that exchange's regular cash market trading at the
 // close instant? — and answers it in the exchange's own IANA zone, so every
 // DST change moves the UTC window with it (ASX from Sun 4 Oct 2026, LSE from
@@ -12,9 +12,17 @@
 // ASX's AEDT window crosses UTC midnight, which a minute-of-day range cannot
 // express at all, and TSE was coded to its pre-November-2024 15:00 close.
 //
-// REGULAR HOURS ONLY. Public holidays and early closes are NOT applied yet
-// (WEB-6b): on an exchange holiday its row still counts closes made in its
-// usual hours. The report payload says so (`exceptions`), and so does the card.
+// HOLIDAYS AND EARLY CLOSES (V3 WEB-6b, 26-09-2026) are applied only where the
+// broker lists them: an exchange's closures come from the accounts' own broker
+// calendars (market-calendar.js) of the stocks listed on it, found by symbol
+// suffix (SESSION_HOLIDAY_EVIDENCE: HKEX ← .HK, NYSE ← .US — the only
+// exchanges whose stocks the universe holds). A full-day 0/0 row closes its
+// whole local day (owner OD-7), a row with explicit bounds closes that part
+// (an early close is such a row); rows with omitted or other invalid bounds
+// are not applied and are counted. The other four exchanges keep regular
+// hours only, and the payload says so per session (`holidays.status`), as
+// does the card. Worst case under OD-7: a holiday's closes land in OFF when
+// the exchange was in fact trading, never the reverse.
 //
 // The hours are exchange rules, not facts this repo or production can verify
 // (external knowledge, stated here so a reviewer can check them): ASX
@@ -28,6 +36,10 @@
 
 export const SESSION_SOURCE = 'exchange_cash_hours_iana_dst'
 export const SESSION_EXCEPTIONS = 'holidays_and_early_closes_not_applied'
+/** WEB-6b: the payload's `exceptions` when broker closures were applied to at least one exchange. */
+export const SESSION_EXCEPTIONS_APPLIED = 'broker_holidays_and_early_closes_applied_where_listed'
+/** WEB-6b: which exchanges' closures the broker calendars can evidence, by stock-symbol suffix. */
+export const SESSION_HOLIDAY_EVIDENCE = Object.freeze({ HKEX: '.HK', NYSE: '.US' })
 
 const freeze = s => Object.freeze({ ...s, hours: Object.freeze(s.hours.map(h => Object.freeze([...h]))) })
 export const REPORT_SESSIONS = Object.freeze([
@@ -99,10 +111,84 @@ export const sessionOpenAt = (session, t) => inIntervals(t, sessionIntervals(ses
 const utcHhmm = ms => new Date(ms).toISOString().slice(11, 16)
 /** The row's tooltip: the rule, the zone, and the UTC intervals it produced
  * for the window actually reported — so the reader can see the DST shift. */
-export function sessionHint(session, intervals = null) {
+export function sessionHint(session, intervals = null, holidays = null) {
   const rule = `${session.exchange} ${session.hours.map(([a, b]) => `${a}–${b}`).join(' and ')} ${session.tz} local time, Mon–Fri`
   const seen = intervals?.length
     ? ` · intervals overlapping today's window: ${intervals.map(i => `${i.date} ${utcHhmm(i.from)}–${utcHhmm(i.to)} UTC`).join(', ')}`
     : intervals ? ' · no cash session overlaps today\'s window' : ''
-  return `${rule}${session.note ? ` (${session.note})` : ''} · public holidays and early closes not applied (WEB-6b)${seen}`
+  // WEB-6b: what the REPORT says it applied; without a report, nothing is claimed.
+  let exceptions = 'public holidays and early closes not applied (WEB-6b)'
+  if (holidays?.status === 'applied') {
+    const cut = holidays.closures?.length
+      ? `; closed in today's window: ${holidays.closures.map(c => `${c.date}${c.name ? ` ${c.name}` : ''} ${c.fullDay ? 'all day' : `${utcHhmm(c.from)}–${utcHhmm(c.to)} UTC`}`).join(', ')}`
+      : '; none in today\'s window'
+    exceptions = `broker-listed holidays and early closes applied (${holidays.identities} ${session.exchange} calendar${holidays.identities === 1 ? '' : 's'}${cut})`
+  } else if (holidays?.status === 'no_evidence' || holidays?.status === 'not_listed') {
+    exceptions = `public holidays and early closes not applied: no broker calendar of a ${session.exchange} stock (WEB-6b)`
+  } else if (holidays?.status === 'unavailable') {
+    exceptions = 'public holidays and early closes not applied: the broker calendars could not be read (WEB-6b)'
+  }
+  return `${rule}${session.note ? ` (${session.note})` : ''} · ${exceptions}${seen}`
+}
+
+// --- V3 WEB-6b: broker-listed holidays and early closes ---------------------
+
+const isInt = (n, lo, hi) => typeof n === 'number' && Number.isInteger(n) && n >= lo && n <= hi
+const pad = n => String(n).padStart(2, '0')
+/** A holiday row's closed part of its local day, in seconds [start, end), or
+ * null when its bounds cannot be read. 0/0 is the whole local day (owner
+ * OD-7, as market-calendar.js reads it since V3 K3). */
+export function holidayWindowSeconds(row) {
+  const a = row?.startSecond, b = row?.endSecond
+  if (a === 0 && b === 0) return { start: 0, end: 86400 }
+  if (isInt(a, 0, 86399) && isInt(b, 1, 86400) && a < b) return { start: a, end: b }
+  return null
+}
+function wallSecondToUtc(date, second, timeZone) {
+  if (second >= 86400) {
+    const next = new Date(Date.parse(`${date}T00:00:00Z`) + DAY).toISOString().slice(0, 10)
+    return wallClockToUtc(next, '00:00', timeZone)
+  }
+  const m = Math.floor(second / 60)
+  return wallClockToUtc(date, `${pad(Math.floor(m / 60))}:${pad(m % 60)}`, timeZone) + (second % 60) * 1000
+}
+/**
+ * The UTC closures a list of broker holiday rows makes inside [from, to).
+ * Row: { dateIso: 'YYYY-MM-DD', startSecond, endSecond, scheduleTimeZone,
+ * isRecurring, name }. A recurring row closes the same month-day every year.
+ * Returns { closures: [{ date, from, to, name, fullDay }], unreadable }.
+ */
+export function closureIntervals(rows, from, to) {
+  const out = []
+  let unreadable = 0
+  if (!(Number.isFinite(from) && Number.isFinite(to) && to > from) || !Array.isArray(rows)) return { closures: out, unreadable }
+  const y0 = new Date(from).getUTCFullYear() - 1, y1 = new Date(to).getUTCFullYear() + 1
+  for (const row of rows) {
+    const w = holidayWindowSeconds(row)
+    if (!w || typeof row?.dateIso !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.dateIso) || typeof row.scheduleTimeZone !== 'string') { unreadable++; continue }
+    const dates = row.isRecurring === true
+      ? Array.from({ length: y1 - y0 + 1 }, (_, i) => `${y0 + i}${row.dateIso.slice(4)}`)
+      : [row.dateIso]
+    for (const date of dates) {
+      let a, b
+      try { a = wallSecondToUtc(date, w.start, row.scheduleTimeZone); b = wallSecondToUtc(date, w.end, row.scheduleTimeZone) } catch { unreadable++; break }
+      if (b > from && a < to) out.push({ date, from: a, to: b, name: row.name ?? null, fullDay: w.start === 0 && w.end === 86400 })
+    }
+  }
+  return { closures: out.sort((x, y) => x.from - y.from), unreadable }
+}
+/** Session intervals with every closure cut out; each piece keeps its date. */
+export function subtractIntervals(intervals, closures) {
+  if (!closures?.length) return intervals
+  let pieces = intervals.map(i => ({ ...i }))
+  for (const c of closures) {
+    const next = []
+    for (const p of pieces) {
+      if (c.to <= p.from || c.from >= p.to) { next.push(p); continue }
+      if (c.from > p.from) next.push({ ...p, to: c.from })
+      if (c.to < p.to) next.push({ ...p, from: c.to })
+    }
+    pieces = next
+  }
+  return pieces
 }

@@ -97,3 +97,30 @@ export function recordProducerRetired(db, { accountId, producerId, reason, basis
     },
   })
 }
+
+/**
+ * V3 S-8: the entry's own account calendar reads UNKNOWN, so no order and no
+ * resting limit went out (services/entry-hours.js — UNKNOWN never reads
+ * open). One decision_log SKIP carrying the proposal and the calendar's
+ * reason, never a risk_events veto: the risk gate was not asked. The caller
+ * dedupes to one row per (account, symbol) until the calendar is known again.
+ */
+export const MARKET_HOURS_UNKNOWN_STAGE = 'market_hours_unknown'
+
+export function recordMarketHoursUnknown(db, { accountId, symbol, side, synth = {}, requestedVolume = null, gate = {}, producerId = null, loopId = null }) {
+  recordDecision(db, {
+    accountId,
+    symbol, timeframe: synth.timeframe ?? null, strategy: synth.strategy ?? null,
+    stage: MARKET_HOURS_UNKNOWN_STAGE, decision: 'skip',
+    reason: `market_hours_unknown: ${gate.calendarReason ?? 'unknown'}`, loopId,
+    detail: {
+      hoursSource: gate.hoursSource ?? null, calendarReason: gate.calendarReason ?? null,
+      refresh: gate.refresh ?? null, observedAt: gate.observedAt ?? null, producerId,
+      proposal: {
+        symbol, side, entry: synth.entry ?? null, sl: synth.sl ?? null, tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
+        requestedVolume, strategy: synth.strategy || null, timeframe: synth.timeframe ?? null,
+        conviction: synth.overall_conviction ?? null, source: synth.source || 'auto_signal', accountId,
+      },
+    },
+  })
+}
