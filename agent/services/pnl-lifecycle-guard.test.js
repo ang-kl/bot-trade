@@ -15,7 +15,7 @@ import express from 'express'
 import { initDB, getState, setState } from '../db.js'
 import { backfillClosedPnl, resetBackfillPacing, falseCloseVerdict, FALSE_CLOSE_TOLERANCE_MS, POSITION_LEDGER_IDENTITY } from './pnl-backfill.js'
 import { backfillAccountPnl } from './cross-side-pnl.js'
-import { recoverOldPositionPnl } from './old-position-pnl.js'
+import { recoverOldPositionPnl, LIFECYCLE_RULES } from './old-position-pnl.js'
 import { lifecycleBalance, verifiedPositionHistory } from '../lib/position-deal-history.js'
 import { fullCloseMoney } from '../lib/deal-money.js'
 import { persistDeals, shapeDeals, judgeTradesAgainstDeals, reconcileTradePricesToBroker } from './broker-history-import.js'
@@ -295,9 +295,17 @@ test('a written-off row remembered under the old rules is read once more under t
   const read = async () => { reads++; return { ctidTraderAccountId: ACCT, hasMore: false } }
   const first = await recoverOldPositionPnl(db, creds, { now: NOW, isCurrent: () => true, getPositionDeals: read })
   assert.equal(first.state, 'no_matching_close'); assert.equal(reads, 1)
-  assert.equal(JSON.parse(getState(db, `position_pnl_reread:${ACCT}`))[id].rule, 2)
+  assert.equal(JSON.parse(getState(db, `position_pnl_reread:${ACCT}`))[id].rule, LIFECYCLE_RULES)
   const second = await recoverOldPositionPnl(db, creds, { now: NOW + 16 * MIN, isCurrent: () => true, getPositionDeals: read })
   assert.equal(second.state, 'no_old_gap'); assert.equal(reads, 1)
+  // V3 B2 (rule 3, the lifecycle verdicts): a row remembered under rule 2 is
+  // read once more, then not again.
+  assert.equal(LIFECYCLE_RULES, 3)
+  setState(db, `position_pnl_reread:${ACCT}`, JSON.stringify({ [id]: { at: iso(NOW), outcome: 'refused', rule: 2 } }))
+  const third = await recoverOldPositionPnl(db, creds, { now: NOW + 32 * MIN, isCurrent: () => true, getPositionDeals: read })
+  assert.equal(third.state, 'no_matching_close'); assert.equal(reads, 2)
+  const fourth = await recoverOldPositionPnl(db, creds, { now: NOW + 48 * MIN, isCurrent: () => true, getPositionDeals: read })
+  assert.equal(fourth.state, 'no_old_gap'); assert.equal(reads, 2)
 })
 
 // ---------------------------------------------------------------------------

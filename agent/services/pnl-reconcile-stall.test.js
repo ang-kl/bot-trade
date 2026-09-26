@@ -287,7 +287,12 @@ test('a broker history that arrives and cannot be settled is an attempt; a read 
   assert.match(r.pnl_unresolvable_reason, /^broker deal on file, not settleable: the broker's position history .* was refused: position closing money or volume unsupported .*; local closing deal\(s\): 336389481 net 1\.23 linked #774;/)
 })
 
-test('N2: with no closing deal on file, the same refusal is "unresolved: no broker evidence"', async t => {
+// V3 B2 checker N2 CHANGED THIS TEST'S EXPECTATION. It asserted "unresolved:
+// no broker evidence" for this row — but the refusal here is the broker's
+// complete history ARRIVING with a closing deal the reader cannot settle,
+// which is broker evidence; the label was false. The refusal and the attempt
+// count are unchanged; only the label now names what the broker returned.
+test('N2: with no closing deal on file, a refused complete history is "broker history read, not settleable", never "no broker evidence"', async t => {
   const db = productionShape(t)
   db.prepare("UPDATE trades SET ctrader_position_id = '9517869182' WHERE id = 372").run()
   db.prepare("UPDATE trades SET status = 'rejected' WHERE id IN (373, 775)").run()
@@ -303,7 +308,9 @@ test('N2: with no closing deal on file, the same refusal is "unresolved: no brok
   }
   const r = trade(db, 774)
   assert.equal(r.pnl_unresolvable, 1)
-  assert.match(r.pnl_unresolvable_reason, /^unresolved: no broker evidence: the broker's position history .* was refused: position closing money or volume unsupported \(read [^)]+\); 6 attempt/)
+  assert.match(r.pnl_unresolvable_reason, /^broker history read, not settleable: the broker's position history .* was refused: position closing money or volume unsupported \(read [^)]+\); 6 attempt/)
+  assert.doesNotMatch(r.pnl_unresolvable_reason, /no broker evidence/)
+  assert.equal(r.net_pnl, null, 'still excluded from money')
 })
 
 test('N3: a broker history that shows the position still open is worded as such, never as "no broker evidence"', async t => {

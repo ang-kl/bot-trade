@@ -145,6 +145,7 @@ const RETRY_AFTER_SEC = {
   performance_report_worker_capacity: 5,
   watchdog_report_worker_capacity: 5,
   order_lifecycle_worker_capacity: 5,
+  ledger_reconciliation_worker_capacity: 5,
   performance_report_worker_exit: 15,
   performance_report_deadline: 30,
 }
@@ -179,6 +180,7 @@ const unavailable = error => { throw isReportUnavailable(error) ? error : new Re
 const flights = new WeakMap()
 const watchdogFlights = new WeakMap()
 const lifecycleFlights = new WeakMap()
+const reconciliationFlights = new WeakMap()
 // kind → its own bounded pool. The watchdog is polled independently and must
 // not compete with slow dashboard reports. Each reserved slot is held until
 // the worker exits. The storage walk has its own single walk per database
@@ -193,6 +195,9 @@ const RESERVED_POOLS = {
   // all-accounts read was refused with a capacity 503 (measured in the full
   // parallel gate). A third concurrent distinct read is still an explicit 503.
   'order-lifecycle': { pool: lifecycleFlights, capacity: 2, error: 'order_lifecycle_worker_capacity' },
+  // V3 B2: the ledger-versus-broker reconciliation. Its own slot, so an owner
+  // reading it cannot take a dashboard's; identical requests share one job.
+  'ledger-reconciliation': { pool: reconciliationFlights, capacity: 1, error: 'ledger_reconciliation_worker_capacity' },
 }
 const SHARED_POOL = { pool: flights, capacity: 2, error: 'performance_report_worker_capacity' }
 // Production profiling measured the legacy prices/decision scans at up to
@@ -431,6 +436,8 @@ export function readStorageReport(db, { fresh = false } = {}) {
 }
 /** GET /state/order-lifecycle and the order_lifecycle controller (V3 L1). */
 export function readOrderLifecycle(db, options) { return isolatedReport(db, 'order-lifecycle', options) }
+/** GET /state/ledger-reconciliation (V3 B2): per account, native currency, off the event loop. */
+export function readLedgerReconciliation(db, options) { return isolatedReport(db, 'ledger-reconciliation', options) }
 /** GET /state/calendar-coverage (V3 K1): every demanded calendar is read, so
  * off the event loop. No `now` from the route: the in-flight dedupe keys on
  * the options. */
@@ -504,6 +511,11 @@ async function buildReport(db, kind, options, hooks = {}) {
     // before postMessage, far below the generic 8 MB bound.
     if (Buffer.byteLength(JSON.stringify(report)) > RESPONSE_MAX_BYTES) throw new Error('order_lifecycle_response_bound')
     return report
+  }
+  if (kind === 'ledger-reconciliation') {
+    const { buildLedgerReconciliation } = await import('./ledger-reconciliation.js')
+    // One snapshot across trades, receipts and verdicts.
+    return db.transaction(() => buildLedgerReconciliation(db, options))()
   }
   if (kind === 'calendar-coverage') {
     const { buildCalendarCoverage } = await import('./calendar-coverage.js')

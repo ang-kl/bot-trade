@@ -248,3 +248,128 @@ test('findSameSymbolClusters scopes the read', async () => {
   assert.equal(aaa.clusters.length, 1, 'scoped sees only the selected account')
   assert.equal(aaa.clusters[0].accountId, 'AAA')
 })
+
+// ---------------------------------------------------------------------------
+// V3 B2 (P5b-2): broker evidence decides what is a duplicate, each extra row
+// counts at its own money, and money is never summed across currencies.
+// ---------------------------------------------------------------------------
+function receipt(db, acct, posId, dealId, net) {
+  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, net_pnl, closed_at) VALUES (?,?,?,?,?,datetime('now'))`)
+    .run(String(dealId), String(posId), acct, 'X', net)
+}
+function currency(db, acct, ccy) {
+  db.prepare("INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(acct)
+  db.prepare('INSERT INTO agent_state (key, value) VALUES (?, ?)').run(`acct:${acct}:deposit_currency_evidence_json`,
+    JSON.stringify({ accountId: acct, host: 'demo.ctraderapi.com', currency: ccy, receivedAt: 1, source: 'broker_asset_list' }))
+}
+
+test('USDCNH #46/#47: one broker position recorded twice — the extra row counts at its own -59.73, not the first row\'s -196.35', () => {
+  const db = initDB(':memory:')
+  insertScoped(db, '46130058', { symbol: 'USDCNH', side: 'BUY', entry: 7.1, exit: 7.2, pnl: -196.35, posId: '232791374' })
+  insertScoped(db, '46130058', { symbol: 'USDCNH', side: 'BUY', entry: 7.15, exit: 7.2, pnl: -59.73, posId: '232791374' })
+  const r = findDuplicateTrades(db)
+  assert.equal(r.groups.length, 1)
+  assert.equal(r.groups[0].classification, 'same_position')
+  assert.deepEqual(r.groups[0].extraRows.map(x => x.net_pnl), [-59.73])
+  assert.equal(r.totalExtraRows, 1)
+  assert.equal(r.totalExtraPnl, -59.73)
+})
+
+test('17 identical-looking rows that are 17 broker positions, each with its own closing deal, are not counted as extra', () => {
+  const db = initDB(':memory:')
+  for (let i = 0; i < 17; i++) {
+    insertScoped(db, '47790949', { symbol: '0016.HK', side: 'BUY', entry: 100, exit: 99, pnl: -12.5, posId: String(500000 + i) })
+    receipt(db, '47790949', 500000 + i, 900000 + i, -12.5)
+  }
+  const r = findDuplicateTrades(db)
+  assert.equal(r.groups.length, 1)
+  assert.equal(r.groups[0].classification, 'broker_distinct')
+  assert.deepEqual([r.totalExtraRows, r.totalExtraPnl, r.brokerDistinctRows], [0, 0, 17])
+  // One position without its receipt: the group is unverified and counts again.
+  db.prepare('DELETE FROM broker_deals WHERE deal_id = ?').run('900016')
+  const u = findDuplicateTrades(db)
+  assert.equal(u.groups[0].classification, 'unverified')
+  assert.equal(u.totalExtraRows, 16)
+  // A receipt that does not match the row's money is not "its own deal".
+  receipt(db, '47790949', 500016, 900016, -99)
+  assert.equal(findDuplicateTrades(db).groups[0].classification, 'unverified')
+})
+
+test('extra money is per currency: an SGD and a USD account are never summed; two USD accounts pool', () => {
+  const db = initDB(':memory:')
+  currency(db, '46130058', 'USD'); currency(db, '46979908', 'USD'); currency(db, '43097342', 'SGD')
+  const dup = (acct, pnl, pos) => { for (let i = 0; i < 2; i++) insertScoped(db, acct, { symbol: 'EURUSD', side: 'BUY', entry: 1.1, exit: 1.2, pnl, posId: pos }) }
+  dup('46130058', -10, '1'); dup('43097342', -20, '2')
+  const mixed = findDuplicateTrades(db)
+  assert.equal(mixed.totalExtraRows, 2)
+  assert.equal(mixed.totalExtraPnl, null, 'no single figure across SGD and USD')
+  assert.deepEqual(mixed.extraByCurrency.map(c => [c.currency, c.pnl]).sort(), [['SGD', -20], ['USD', -10]])
+  assert.deepEqual(mixed.extraByAccount.map(b => [b.accountId, b.currency, b.pnl]).sort(), [['43097342', 'SGD', -20], ['46130058', 'USD', -10]])
+  db.prepare("DELETE FROM trades WHERE account_id = '43097342'").run()
+  dup('46979908', -5, '3')
+  const usd = findDuplicateTrades(db)
+  assert.equal(usd.totalExtraPnl, -15, 'two proven-USD accounts share one bucket')
+  assert.deepEqual(usd.extraByCurrency.map(c => [c.currency, c.accountIds.sort()]), [['USD', ['46130058', '46979908']]])
+})
+
+// ---------------------------------------------------------------------------
+// B2-m (merge onto main after V3 WEB-5): the extra money is pooled by THE one
+// pooling rule (poolByCurrency) over THE one currency reader (reportCurrency
+// over depositCurrencies()). An account with no recorded currency keeps its
+// own figure and joins no pool; a row with no account is totalled only within
+// its own broker position — never across positions, whose accounts (and so
+// currencies) are unknown.
+// ---------------------------------------------------------------------------
+test('B2-m: an account with no recorded currency is shown in its own units and pooled with nothing', () => {
+  const db = initDB(':memory:')
+  currency(db, '46130058', 'USD')
+  db.prepare("INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES ('47790949',0,1,'active')").run()
+  const dup = (acct, pnl, pos) => { for (let i = 0; i < 2; i++) insertScoped(db, acct, { symbol: 'EURUSD', side: 'BUY', entry: 1.1, exit: 1.2, pnl, posId: pos }) }
+  dup('46130058', -10, '1'); dup('47790949', -7, '2')
+  const r = findDuplicateTrades(db)
+  assert.equal(r.totalExtraRows, 2)
+  assert.equal(r.totalExtraPnl, null, 'USD and an unknown currency are never one figure')
+  assert.deepEqual(r.extraByCurrency.map(c => [c.currency, c.pnl, c.rows, c.accountIds, c.moneyState]),
+    [['USD', -10, 1, ['46130058'], 'recorded_currency_units']])
+  assert.deepEqual(r.extraByAccount.map(b => [b.accountId, b.currency, b.pnl]).sort(), [['46130058', 'USD', -10], ['47790949', null, -7]])
+  // Alone, the unknown-currency account is one account's units: a figure.
+  db.prepare("DELETE FROM trades WHERE account_id = '46130058'").run()
+  const one = findDuplicateTrades(db)
+  assert.deepEqual([one.totalExtraPnl, one.extraByCurrency.length], [-7, 0])
+})
+
+test('B2-m: rows with no account are totalled within one broker position, never across positions', () => {
+  const db = initDB(':memory:')
+  // Two unattributed groups on two broker positions: their accounts, and so
+  // their currencies, are unknown — two figures, no total.
+  for (let i = 0; i < 3; i++) insertTrade(db, { symbol: 'AUDUSD', side: 'SELL', entry: 0.65, exit: 0.66, pnl: -5, posId: '900' })
+  for (let i = 0; i < 2; i++) insertTrade(db, { symbol: 'USDJPY', side: 'BUY', entry: 150, exit: 149, pnl: -8, posId: '901' })
+  const r = findDuplicateTrades(db)
+  assert.equal(r.totalExtraRows, 3)
+  assert.equal(r.totalExtraPnl, null, 'two unattributed positions are not summed')
+  assert.deepEqual(r.extraUnattributed.map(u => [u.positionId, u.rows, u.pnl]).sort(), [['900', 2, -10], ['901', 1, -8]])
+  assert.deepEqual([r.extraByAccount, r.extraByCurrency], [[], []])
+})
+
+// B2-m checker N2: a currency read that FAILED is not a currency that is not
+// recorded. The accounts still fall into their own units (nothing is pooled
+// on a failed read), and the result says the read was unavailable.
+test('B2-m: a failed currency read says so (currencyRead unavailable), never "not recorded"; the window is echoed', () => {
+  const db = initDB(':memory:')
+  currency(db, '46130058', 'USD')
+  for (let i = 0; i < 2; i++) insertScoped(db, '46130058', { symbol: 'EURUSD', side: 'BUY', entry: 1.1, exit: 1.2, pnl: -10, posId: '1' })
+  const ok = findDuplicateTrades(db)
+  assert.deepEqual([ok.currencyRead, ok.windowDays, ok.extraByAccount[0].currency, ok.totalExtraPnl], ['read', 90, 'USD', -10])
+  // The same database, with the deposit-currency evidence read failing.
+  const failing = new Proxy(db, { get(target, key) {
+    if (key === 'prepare') return sql => { if (/agent_state/.test(sql)) throw new Error('evidence read failed'); return target.prepare(sql) }
+    const v = target[key]
+    return typeof v === 'function' ? v.bind(target) : v
+  } })
+  const r = findDuplicateTrades(failing, { windowDays: 30 })
+  assert.equal(r.currencyRead, 'unavailable')
+  assert.equal(r.windowDays, 30)
+  assert.deepEqual(r.extraByAccount.map(b => [b.accountId, b.currency, b.pnl]), [['46130058', null, -10]])
+  assert.deepEqual(r.extraByCurrency, [], 'nothing is pooled on a failed read')
+  assert.equal(r.totalExtraPnl, -10, 'one account alone is still one unit')
+})
