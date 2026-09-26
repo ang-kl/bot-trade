@@ -13,6 +13,7 @@ import {
   REQUIRED_FIELDS, buildPositionRecord, capturePosition, backfillPositionHistory, backfillPositionHistoryCooperatively,
   recordVerdict, positionHistoryView, directionReasonFor, managementFor,
   classifyRefusedRecord, refusedClassesPhrase, REFUSED_CLASSES, POSITION_TRADE_SQL,
+  classifyFlaggedClose, FLAGGED_REFUSED_SQL, FLAGGED_COMPLETE_SQL,
 } from './position-history.js'
 import { EVIDENCE_RULES } from './position-lifecycle-evidence.js'
 
@@ -633,4 +634,53 @@ test('B4: the boot line and the housekeeping line print skipped beside complete 
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
   assert.match(loop, /\$\{out\.complete\} complete · \$\{out\.incomplete\} incomplete · \$\{out\.skipped\} skipped \(no account identity\) of \$\{out\.seen\}/)
   assert.match(loop, /refusedClassesPhrase\(out\.byClass\)/)
+})
+
+// ---------------------------------------------------------------------------
+// V3 B4b: a close record the order-lifecycle close rules flag (CLS-04, CLS-03)
+// is classed by the SAME classifier — the stored refused record first, the
+// ledger row when there is none — and nothing about it is moved or recovered.
+// ---------------------------------------------------------------------------
+test('B4b: a flagged close is classed from its stored refused record — either text form, "record" dropped for the named fields, the classifier\'s own answer', () => {
+  const db = fresh()
+  const partial = { trade_id: null, opened_at_ms: Date.parse('2026-09-25T16:40:00Z'), account_id: ACCT, ctrader_position_id: '909.0' }
+  db.prepare(`INSERT INTO position_history_incomplete (account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json) VALUES (?, '909.0', 'MSFT.US', ?, ?, ?)`)
+    .run(ACCT, CLOSE_MS, JSON.stringify(['direction_reason', 'planned_entry', 'risk_dist']), JSON.stringify(partial))
+  const c = classifyFlaggedClose(db, { accountId: ACCT, positionId: '909', missing: ['record'] })
+  assert.deepEqual([c.symbol, c.positionId, c.stored], ['MSFT.US', '909', 'refused'], 'the ".0" spelling is the same position')
+  assert.deepEqual(c.missing, ['direction_reason', 'planned_entry', 'risk_dist'], 'the gave-up "record" goes when the stored record names the fields')
+  const direct = classifyRefusedRecord(db, { record: { ...partial, ctrader_position_id: '909.0' }, missing: c.missing })
+  assert.deepEqual({ class: c.class, fields: c.fields, reason: c.reason }, direct, 'the same classifier, the same answer')
+  assert.equal(c.class, 'live_gap')
+  // A flag's own field is added to what the stored record lacks.
+  const both = classifyFlaggedClose(db, { accountId: ACCT, positionId: '909.0', missing: ['close_cause'] })
+  assert.deepEqual(both.missing, ['direction_reason', 'planned_entry', 'risk_dist', 'close_cause'])
+  assert.match(both.reason, /close_cause: live_gap \(no dated contract for this field\)/)
+  // The two lookups stay on the primary keys — no SCAN of either table.
+  for (const [sql, args] of [[FLAGGED_REFUSED_SQL, [ACCT, '909', '909.0', '909']], [FLAGGED_COMPLETE_SQL, [ACCT, '909', '909.0']]]) {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args).map(r => r.detail).join(' | ')
+    assert.match(plan, /USING (PRIMARY KEY|(COVERING )?INDEX sqlite_autoindex_position_history(_incomplete)?_1)/, plan)
+    assert.doesNotMatch(plan, /^SCAN|\| SCAN/, plan)
+  }
+})
+
+test('B4b: with no refused record the ledger row is the record — a CLS-03 close is classed on its close cause, dated by its risk event, and where it is stored is said, never taken as recovered', () => {
+  const db = fresh()
+  const { tradeId, riskEventId } = seedComplete(db)
+  db.prepare(`UPDATE risk_events SET created_at = '2026-09-15 00:00:00' WHERE id = ?`).run(riskEventId)
+  // Stored complete in the clean table, and CLS-03 still flags its generic cause.
+  assert.equal(capturePosition(db, { accountId: ACCT, positionId: PID }).ok, true)
+  const c = classifyFlaggedClose(db, { accountId: ACCT, positionId: PID, tradeId: Number(tradeId), missing: ['close_cause'] })
+  assert.deepEqual([c.symbol, c.tradeId, c.stored, c.missing, c.class], ['EURUSD', Number(tradeId), 'complete', ['close_cause'], 'live_gap'])
+  // The same classifier on the ledger's record: dated by the risk event, origin from the trade.
+  const direct = classifyRefusedRecord(db, { record: { trade_id: Number(tradeId), risk_event_id: Number(riskEventId), opened_at_ms: OPEN_MS, origin: 'scan_dispatch', account_id: ACCT, ctrader_position_id: PID }, missing: ['close_cause'] })
+  assert.deepEqual({ class: c.class, fields: c.fields, reason: c.reason }, direct)
+  // A missing direction reason on the same row reads the risk event's date: between PR-D and PR-AL.
+  assert.equal(classifyFlaggedClose(db, { accountId: ACCT, positionId: PID, missing: ['direction_reason'] }).class, 'post_contract_pre_fix')
+  // Nothing known at all: the record itself is what is missing, a writer gap, never excused.
+  const bare = classifyFlaggedClose(db, { accountId: ACCT, positionId: '777', missing: ['record'] })
+  assert.deepEqual([bare.stored, bare.missing, bare.class, bare.symbol], ['none', ['record'], 'live_gap', null])
+  // Reading never writes: both tables are exactly as they were.
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM position_history').get().n, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM position_history_incomplete').get().n, 0)
 })

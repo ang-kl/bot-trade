@@ -617,3 +617,28 @@ test('B4 fix: an unscored plan on a row opened before #857 is post-contract — 
   assert.deepEqual(g.split.byContractKind, { pre_contract: {}, post_contract: { plan_unscored: 1 } })
   assert.deepEqual(g.preContractIds, [])
 })
+
+test('B4b: lifecycle_close names its refused records in B4\'s shape — an undated one is a live gap, never excused; the count, the verdict and the summary do not move', async () => {
+  const { buildOrderLifecycle, compactSnapshot, NAMED_RECORDS_MAX } = await import('./order-lifecycle.js')
+  const { GOAL_ITEMS_MAX } = await import('./goal-table.js')
+  const now = Date.parse('2026-09-26T12:00:00Z')
+  const db = initDB(':memory:')
+  // A refused record with no ledger row and no dated partial: nothing can date its entry.
+  db.prepare(`INSERT INTO position_history_incomplete (account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json) VALUES ('47790949', '243609813', 'Cocoa', ?, '["direction_reason"]', '{}')`)
+    .run(Date.parse('2026-09-26T09:00:00Z'))
+  const snap = compactSnapshot(buildOrderLifecycle(db, { nowMs: now, account: 'all' }))
+  const t = await goalTable(db, { now, lifecycleRead: () => snap })
+  const g = byId(t).lifecycle_close
+  assert.equal(g.current, 1); assert.equal(g.verdict, 'off_track')
+  assert.deepEqual(g.split, { raw: 1, live_gap: 1, post_contract_pre_fix: 0, outside_bot: 0, broker_evidence_pending: 0, labelled_unrecoverable: 0, pre_contract: 0, other_rules: 0, classes: g.split.classes })
+  assert.equal(g.itemsTotal, 1)
+  assert.deepEqual(g.items.map(i => [i.account, i.symbol, i.positionId, i.missing, i.class, i.stored]), [['47790949', 'Cocoa', '243609813', ['direction_reason'], 'live_gap', 'refused']])
+  assert.match(g.items[0].reason, /direction_reason: live_gap \(entry time unknown — not excused by a date\)/)
+  assert.match(g.note, /; named 1 \(CLS-04, CLS-03\): live_gap 1 — …0949 Cocoa pos 243609813 \[live_gap\]; items list 1 with what is missing, class and reason$/)
+  assert.equal(NAMED_RECORDS_MAX, GOAL_ITEMS_MAX)
+  // The same table read from a snapshot WITHOUT the names: the verdicts and the summary are identical — naming counts nothing.
+  const { named: _unused, ...unnamed } = snap
+  const plain = await goalTable(db, { now, lifecycleRead: () => unnamed })
+  assert.deepEqual(plain.summary, t.summary)
+  assert.deepEqual(plain.goals.map(x => [x.id, x.verdict, x.current]), t.goals.map(x => [x.id, x.verdict, x.current]))
+})
