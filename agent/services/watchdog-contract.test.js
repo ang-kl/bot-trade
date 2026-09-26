@@ -129,3 +129,35 @@ test('explicit incident handoff keeps observations and approval controls, with o
   assert.equal(approvals.length, 1)
   assert.match(approvals[0].opts.buttons[0][0].callback_data, /^prottp\|11\|555\|1885.5$/)
 })
+
+// ---------------------------------------------------------------------------
+// V3 UI-3 CONSTRAINT (26-09 plan, row 1.3): blocker-report.js's day grouping
+// must not change entryDiagnostics' output or the watchdog contract's size —
+// cpp-verify's relayed counts and the < 256 KiB bound both depend on it.
+// entryDiagnostics() never passes `timeZone`, so blockerReport() must never
+// compute (or leak) `days` into it, regardless of how much decision_log
+// history exists or whether some OTHER caller on the same db has asked for
+// grouping. This is the plan's own named test ("add a test that pins this").
+// ---------------------------------------------------------------------------
+test('UI-3 pin: entryDiagnostics/the watchdog contract are unaffected by blocker-report day grouping', async t => {
+  const { entryDiagnostics, blockerReport } = await import('./blocker-report.js')
+  const db = fixture(t)
+  // A week of ordinary upstream stops, spread across many calendar days, so
+  // a day-grouped view (if it leaked in) would actually have many days.
+  const put = db.prepare("INSERT INTO decision_log (account_id,stage,decision,reason,created_at) VALUES ('11','stage_matrix','skip','off',?)")
+  for (let d = 0; d < 7; d++) put.run(new Date(now - d * DAY - 60_000).toISOString())
+  const before = entryDiagnostics(db, { now })
+  const beforeBytes = Buffer.byteLength(JSON.stringify(nodeWatchdogContract(db, { now })))
+  assert.ok(beforeBytes < 256 * 1024, 'RED if the contract is already over the bound before this pin means anything')
+  // Some OTHER caller, on the SAME db, asks blockerReport for a grouped view
+  // (exactly what the /state/blocker-report route now does) — this must not
+  // change what entryDiagnostics or the contract report.
+  const grouped = blockerReport(db, { accountId: 'all', from: now - 7 * DAY, to: now + 1, now, timeZone: 'Asia/Singapore' })
+  assert.ok(Array.isArray(grouped.days) && grouped.days.length >= 5, 'the fixture must actually exercise grouping for this pin to mean anything')
+  const after = entryDiagnostics(db, { now })
+  const afterBytes = Buffer.byteLength(JSON.stringify(nodeWatchdogContract(db, { now })))
+  assert.deepEqual(after, before, 'RED if entryDiagnostics gained a `days` field or any other change from grouping elsewhere')
+  assert.equal('days' in before, false, 'entryDiagnostics never requests timeZone, so it must never carry a `days` field at all')
+  assert.equal(afterBytes, beforeBytes, 'RED if the watchdog contract\'s size changed because grouping ran on the same db')
+  assert.ok(afterBytes < 256 * 1024)
+})
