@@ -16,7 +16,9 @@ import { CONTROLLERS, heartbeatView, checkHeartbeats, verifyWatchdogDormantReaso
 const T = 1_800_000_000_000
 const DELIVERY = { muted: true, open: false, reason: 'soak_active', soakActive: true, soakMs: 86_400_000,
   soakStartedAtMs: T, soakEndsAtMs: T + 86_400_000, soakRemainingMs: 86_000_000, mutedAtMs: T, unmutedAtMs: null,
-  wouldSend: { urgent: 3, warning: 5, info: 1, total: 9, sinceMs: T, urgentPerHour: 27, totalPerHour: 81 }, outboxPending: 9 }
+  wouldSend: { urgent: 3, warning: 5, info: 1, total: 9, sinceMs: T, urgentPerHour: 27, totalPerHour: 81 },
+  refused: { urgent: 1, warning: 2, info: 0, total: 3 }, staleBacklog: { count: 4, oldestCreatedAtMs: T - 7_200_000, olderThanMs: 3_600_000 },
+  unmuteRefusal: 'soak_active', outboxPending: 9 }
 
 function fixture(t, watchdogReply) {
   const db = initDB(':memory:'); t.after(() => db.close())
@@ -50,6 +52,9 @@ test('CV-2: the muted soak reaches the verify_watchdog beat and the relayed stat
   assert.equal(detail.soakActive, true)
   assert.equal(detail.soakEndsAtMs, T + 86_400_000)
   assert.deepEqual(detail.wouldSend, DELIVERY.wouldSend)
+  assert.deepEqual(detail.refused, DELIVERY.refused)
+  assert.deepEqual(detail.staleBacklog, DELIVERY.staleBacklog)
+  assert.equal(detail.unmuteRefusal, 'soak_active')
   assert.equal(detail.stateBytes, 4096)
   const view = heartbeatView(db).find(v => v.name === 'verify_watchdog')
   assert.equal(view.detail.muted, true)
@@ -71,21 +76,55 @@ test('CV-2: a verifier without the delivery gate is reported, never read as mute
   assert.equal(row(db).consecutive_failures, 0)
 })
 
-test('CV-2 fix round: a muted gate on a disabled or failing verifier fails the beat, with the detail kept', async t => {
-  let reply = { schemaVersion: 1, enabled: false, error: '', durable: false, delivery: DELIVERY }
+test('CV-2 fix round: a muted gate on a failing verifier fails the beat, with the detail kept', async t => {
+  let reply = { schemaVersion: 1, enabled: true, error: 'watchdog_state_already_owned_or_lock_unavailable', durable: false, delivery: DELIVERY }
   const { db, poll } = fixture(t, () => ({ ok: true, json: async () => reply }))
   await poll()
   assert.equal(row(db).consecutive_failures, 1)
-  assert.match(row(db).last_error, /supervision disabled/)
-  assert.equal(JSON.parse(row(db).last_detail_json).muted, true)
-  reply = { schemaVersion: 1, enabled: true, error: 'watchdog_state_already_owned_or_lock_unavailable', durable: false, delivery: DELIVERY }
-  await poll()
-  assert.equal(row(db).consecutive_failures, 2)
   assert.match(row(db).last_error, /already_owned/)
   const detail = JSON.parse(row(db).last_detail_json)
   assert.equal(detail.error, 'watchdog_state_already_owned_or_lock_unavailable')
-  assert.equal(detail.enabled, true); assert.equal(detail.durable, false)
+  assert.equal(detail.enabled, true); assert.equal(detail.durable, false); assert.equal(detail.muted, true)
+  // Switched off WITH an error is a fault too, not the switch alone.
+  reply = { schemaVersion: 1, enabled: false, error: 'watchdog_status_busy' }
+  await poll()
+  assert.equal(row(db).consecutive_failures, 2)
   assert.equal(verifyWatchdogBeat({ enabled: true, error: '', delivery: DELIVERY }).ok, true)
+})
+
+// CV-2 fix round nit 7: WATCHDOG_ENABLED unset on cpp-verify is a switch, not
+// a fault — the row reads dormant with the reason, never error.
+test('CV-2 fix round: supervision switched off on cpp-verify reads dormant, not error', async t => {
+  const env = { VERIFY_URL: 'https://verifier.test', EXEC_SECRET: 'fixture' }
+  for (const key of Object.keys(env)) {
+    const old = process.env[key]; process.env[key] = env[key]
+    t.after(() => { if (old === undefined) delete process.env[key]; else process.env[key] = old })
+  }
+  let reply = { schemaVersion: 1, enabled: false, error: '', durable: false, delivery: { ...DELIVERY, reason: 'soak_not_started', soakActive: true, soakStartedAtMs: null, soakEndsAtMs: null } }
+  const { db, poll } = fixture(t, () => ({ ok: true, json: async () => reply }))
+  await poll()
+  assert.equal(row(db).consecutive_failures, 0)
+  assert.equal(JSON.parse(row(db).last_detail_json).supervision, 'off')
+  assert.match(verifyWatchdogDormantReason(db, { env }), /WATCHDOG_ENABLED unset on cpp-verify/)
+  const view = heartbeatView(db).find(v => v.name === 'verify_watchdog')
+  assert.equal(view.verdict, 'dormant')
+  assert.equal(view.dormant, true)
+  assert.match(view.dormant_reason, /supervision is switched off .* no soak is running/)
+  // A verifier before CV-2 with supervision off (no gate in the reply) reads the same.
+  reply = { schemaVersion: 1, enabled: false, error: '' }
+  await poll()
+  assert.equal(row(db).consecutive_failures, 0)
+  assert.equal(heartbeatView(db).find(v => v.name === 'verify_watchdog').verdict, 'dormant')
+  // Switched back on: no longer dormant, judged again.
+  reply = { schemaVersion: 1, enabled: true, error: '', delivery: DELIVERY }
+  await poll()
+  assert.equal(verifyWatchdogDormantReason(db, { env }), null)
+  assert.equal(heartbeatView(db).find(v => v.name === 'verify_watchdog').verdict, 'ok')
+  // An unreadable relay (the read failed) is not dormancy.
+  reply = null
+  await poll()
+  assert.equal(verifyWatchdogDormantReason(db, { env }), null)
+  assert.notEqual(heartbeatView(db).find(v => v.name === 'verify_watchdog').verdict, 'dormant')
 })
 
 test('CV-2 fix round: verify_watchdog is dormant while the relay is unconfigured', () => {

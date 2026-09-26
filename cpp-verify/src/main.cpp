@@ -151,14 +151,17 @@ int main() {
   });
   // V3 CV-2: the verifier-local mute, behind the same bearer as every route
   // but /health, and answered with Node down. {"muted": true} always applies;
-  // {"muted": false} is refused (409) until the 24 h soak has ended. It
+  // {"muted": false} is refused (409) until the 24 h soak has ended, and
+  // while the outbox holds a stale backlog (409 stale_backlog). A change that
+  // could not be persisted answers 503 state_not_durable, never 200. It
   // gates delivery only: incidents, the outbox and the would-send counters
   // keep running either way.
   server.route("POST", "/watchdog/mute", [&](const HttpRequest& req) {
     auto body = jsn::parse(req.body);
     if (!body || !body->isObject() || !body->get("muted").isBool()) return errRes(400, "body must be {\"muted\": true|false}");
     const auto result = watchdog.setMuted(body->get("muted").asBool());
-    return jsonRes(result.get("ok").asBool() ? 200 : 409, jsn::dump(result));
+    const int code = result.get("ok").asBool() ? 200 : result.get("error").asString() == "state_not_durable" ? 503 : 409;
+    return jsonRes(code, jsn::dump(result));
   });
   server.route("GET", "/protection-status", [&](const HttpRequest&) {
     return jsonRes(200, jsn::dump(protection.status()));

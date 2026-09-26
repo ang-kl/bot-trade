@@ -207,10 +207,18 @@ jsn::Value Watchdog::setMuted(bool muted) {
       {"startError", error_}, {"delivery", state_.deliveryStatus(now)}});
     return out;
   }
+  const auto before = state_.muteGate();
   const auto refusal = state_.setMuted(muted, now);
-  const bool durable = refusal.empty() ? persist() : writable_;
-  jsn::Value out(jsn::Object{{"ok", refusal.empty()}, {"durable", durable}, {"delivery", state_.deliveryStatus(now)}});
-  if (!refusal.empty()) out.set("error", refusal);
-  return out;
+  if (!refusal.empty()) return jsn::Value(jsn::Object{{"ok", false}, {"applied", false}, {"durable", writable_},
+    {"error", refusal}, {"delivery", state_.deliveryStatus(now)}});
+  if (persist()) return jsn::Value(jsn::Object{{"ok", true}, {"applied", true}, {"durable", true}, {"delivery", state_.deliveryStatus(now)}});
+  // Not durable (fix-round nit 8): the caller must not read this as done. A
+  // mute stays applied in this process — the safe direction; the run loop
+  // selects nothing, and it cannot send while writes fail anyway — but a
+  // restart would restore the file's older state. An unmute is undone: one
+  // that cannot be recorded does not open delivery.
+  if (!muted) state_.restoreMuteGate(before);
+  return jsn::Value(jsn::Object{{"ok", false}, {"applied", muted}, {"durable", false}, {"error", "state_not_durable"},
+    {"persistError", error_}, {"delivery", state_.deliveryStatus(now)}});
 }
 }

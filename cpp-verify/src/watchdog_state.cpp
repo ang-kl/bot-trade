@@ -73,6 +73,8 @@ bool WatchState::restore(const jsn::Value& s) {
   const auto& w = d.get("wouldSend");
   wouldSendUrgent_ = number(w.get("urgent")); wouldSendWarning_ = number(w.get("warning"));
   wouldSendInfo_ = number(w.get("info")); wouldSendSinceMs_ = number(w.get("sinceMs"));
+  const auto& f = d.get("refused");
+  refusedUrgent_ = number(f.get("urgent")); refusedWarning_ = number(f.get("warning")); refusedInfo_ = number(f.get("info"));
   return true;
 }
 jsn::Value WatchState::snapshot() const {
@@ -81,9 +83,14 @@ jsn::Value WatchState::snapshot() const {
     {"delivery", jsn::Object{{"muted", muted_}, {"mutedAtMs", mutedAtMs_}, {"unmutedAtMs", unmutedAtMs_},
       {"soakStartedAtMs", soakStartedAtMs_}, {"soakEndsAtMs", soakEndsAtMs_},
       {"wouldSend", jsn::Object{{"urgent", wouldSendUrgent_}, {"warning", wouldSendWarning_},
-        {"info", wouldSendInfo_}, {"sinceMs", wouldSendSinceMs_}}}}}}));
+        {"info", wouldSendInfo_}, {"sinceMs", wouldSendSinceMs_}}},
+      {"refused", jsn::Object{{"urgent", refusedUrgent_}, {"warning", refusedWarning_}, {"info", refusedInfo_}}}}}}));
 }
 void WatchState::beginSoak(long long now) {
+  // A start dated after this boot's clock (a clock that ran ahead, or an
+  // edited file) is not trusted: it is rejected and the soak begins now,
+  // muted, for its full length (fix-round nit 5).
+  if (soakStartedAtMs_ > now) soakStartedAtMs_ = soakEndsAtMs_ = 0;
   if (soakStartedAtMs_ > 0) return; // a restart never restarts the soak
   soakStartedAtMs_ = now; soakEndsAtMs_ = now + policy_.soakMs;
   muted_ = true; mutedAtMs_ = now;
@@ -99,14 +106,36 @@ jsn::Value WatchState::releasable(long long now) const {
 std::string WatchState::setMuted(bool muted, long long now) {
   if (muted) { if (!muted_) mutedAtMs_ = now; muted_ = true; return ""; }
   if (soakStartedAtMs_ == 0 || now < soakEndsAtMs_) return "soak_active";
+  // Fix-round nit 2. An unmute releases what the mute held, oldest urgent
+  // first, one per probe cycle: a fresh urgent incident would wait behind the
+  // stale backlog (the next releasable item 71 h old), or be refused at the
+  // bound when all 512 are urgent. Refused, not warned: staying muted is the
+  // state the soak already runs in (Node keeps its own alerts until a
+  // handoff), and a warning would leave that fresh alert queued behind the
+  // backlog. Nothing is disposed here — that is the owner's step.
+  if (muted_ && number(staleBacklog(now).get("count")) > 0) return "stale_backlog";
   if (muted_) unmutedAtMs_ = now;
   muted_ = false; return "";
+}
+jsn::Value WatchState::staleBacklog(long long now) const {
+  long long count = 0, oldest = 0;
+  for (const auto& [id, item] : outbox_) {
+    const auto created = number(item.get("createdAtMs"));
+    if (now - created <= policy_.repeatMs) continue;
+    ++count; if (!oldest || created < oldest) oldest = created;
+  }
+  return jsn::Value(jsn::Object{{"count", count}, {"oldestCreatedAtMs", oldest ? jsn::Value(oldest) : jsn::Value()},
+    {"olderThanMs", policy_.repeatMs}});
 }
 jsn::Value WatchState::deliveryStatus(long long now) const {
   const bool soakActive = soakStartedAtMs_ == 0 || now < soakEndsAtMs_;
   const auto total = wouldSendUrgent_ + wouldSendWarning_ + wouldSendInfo_;
   const auto since = wouldSendSinceMs_ > 0 && wouldSendSinceMs_ <= now ? now - wouldSendSinceMs_ : 0;
   const auto perHour = [&](long long n) { return since >= 60000 ? jsn::Value(std::round(n * 3600000.0 / since * 100) / 100) : jsn::Value(); };
+  const auto stale = staleBacklog(now);
+  // What an unmute requested now would answer (null: it would apply).
+  const jsn::Value unmuteRefusal = !muted_ ? jsn::Value() : soakActive ? jsn::Value("soak_active")
+    : number(stale.get("count")) > 0 ? jsn::Value("stale_backlog") : jsn::Value();
   return jsn::Value(jsn::Object{{"muted", muted_}, {"open", deliveryOpen(now)},
     {"reason", deliveryOpen(now) ? "open" : soakStartedAtMs_ == 0 ? "soak_not_started" : soakActive ? "soak_active" : "muted_after_soak_explicit_unmute_required"},
     {"mutedAtMs", mutedAtMs_ ? jsn::Value(mutedAtMs_) : jsn::Value()}, {"unmutedAtMs", unmutedAtMs_ ? jsn::Value(unmutedAtMs_) : jsn::Value()},
@@ -116,21 +145,26 @@ jsn::Value WatchState::deliveryStatus(long long now) const {
     {"wouldSend", jsn::Object{{"urgent", wouldSendUrgent_}, {"warning", wouldSendWarning_}, {"info", wouldSendInfo_},
       {"total", total}, {"sinceMs", wouldSendSinceMs_ ? jsn::Value(wouldSendSinceMs_) : jsn::Value()},
       {"urgentPerHour", perHour(wouldSendUrgent_)}, {"totalPerHour", perHour(total)}}},
+    {"refused", jsn::Object{{"urgent", refusedUrgent_}, {"warning", refusedWarning_}, {"info", refusedInfo_},
+      {"total", refusedUrgent_ + refusedWarning_ + refusedInfo_}}},
+    {"staleBacklog", stale}, {"unmuteRefusal", unmuteRefusal},
     {"outboxPending", static_cast<long long>(outbox_.size())}});
 }
-void WatchState::enqueue(const std::string& id, jsn::Value& rec, const std::string& transition, long long now) {
-  // Counted before the 512 bound, so the soak's would-send rate is what would
-  // have gone out, not what the outbox had room to keep.
-  if (!deliveryOpen(now)) {
-    const auto& severity = rec.get("severity").asString();
-    ++(severity == "urgent" ? wouldSendUrgent_ : severity == "warning" ? wouldSendWarning_ : wouldSendInfo_);
-    if (wouldSendSinceMs_ == 0) wouldSendSinceMs_ = now;
-  }
+void WatchState::wouldSend(jsn::Value& rec, long long now) {
+  // The incident's own would-send schedule, kept whether delivery is open or
+  // closed, so a re-mute continues it where the sends left off.
+  rec.set("wouldSendAtMs", now);
+  if (deliveryOpen(now)) return; // open: a real send, not a would-send
+  const auto& severity = rec.get("severity").asString();
+  ++(severity == "urgent" ? wouldSendUrgent_ : severity == "warning" ? wouldSendWarning_ : wouldSendInfo_);
+  if (wouldSendSinceMs_ == 0) wouldSendSinceMs_ = now;
+}
+bool WatchState::enqueue(const std::string& id, jsn::Value& rec, const std::string& transition, long long now) {
   if (outbox_.size() >= 512 && rec.get("severity").asString() == "urgent") {
     auto old = std::find_if(outbox_.begin(), outbox_.end(), [](const auto& kv) { return kv.second.get("severity").asString() != "urgent"; });
     if (old != outbox_.end()) { outbox_.erase(old); ++dropped_; }
   }
-  if (outbox_.size() >= 512) { ++dropped_; return; }
+  if (outbox_.size() >= 512) { ++dropped_; return false; }
   const auto serial = number(rec.get("serial")) + 1;
   rec.set("serial", serial);
   const auto deliveryId = id + ":" + std::to_string(serial);
@@ -138,6 +172,19 @@ void WatchState::enqueue(const std::string& id, jsn::Value& rec, const std::stri
     {"transition", transition}, {"severity", rec.get("severity")}, {"detail", copy(rec.get("detail"))},
     {"createdAtMs", now}, {"nextAtMs", now}, {"attempts", 0}, {"accepted", false}});
   rec.set("lastQueuedAtMs", now);
+  return true;
+}
+void WatchState::offer(const std::string& id, jsn::Value& rec, const std::string& transition, long long now) {
+  if (enqueue(id, rec, transition, now)) return;
+  // Refused by the bound. The retry is the next probe cycle's offer, never
+  // delayed: lastQueuedAtMs is untouched, so the incident is offered again
+  // every cycle until an item is stored. The refusal is counted once for the
+  // would-send it belongs to — not once per retry (V3-SEQUENCE item 26: "a
+  // refusal counter throttled without delaying the retry").
+  if (rec.get("refusedAtMs").isNumber() && number(rec.get("refusedAtMs")) >= number(rec.get("wouldSendAtMs"))) return;
+  rec.set("refusedAtMs", now);
+  const auto& severity = rec.get("severity").asString();
+  ++(severity == "urgent" ? refusedUrgent_ : severity == "warning" ? refusedWarning_ : refusedInfo_);
 }
 void WatchState::incident(const std::string& id, bool bad, const std::string& severity,
                           const jsn::Value& evidence, long long now, bool once) {
@@ -157,11 +204,17 @@ void WatchState::incident(const std::string& id, bool bad, const std::string& se
     if (!was) r.set("openedAtMs", now);
     bool pending = false;
     for (const auto& [key, item] : outbox_) if (item.get("incidentId").asString() == id) pending = true;
+    // V3 CV-2 fix round: the would-send schedule, apart from the outbox. An
+    // open verifier sends each transition, and a still_active repeat once
+    // repeatMs has passed since its last message; a once-notice once. An
+    // incident restored from an older file starts from its lastQueuedAtMs.
+    const auto last = number(r.get("wouldSendAtMs"), number(r.get("lastQueuedAtMs")));
+    if (once ? last == 0 : (!was || deteriorated || now - last >= policy_.repeatMs)) wouldSend(r, now);
     if (!was || (once && number(r.get("serial")) == 0) || deteriorated || (!once && !pending && now - number(r.get("lastQueuedAtMs")) >= policy_.repeatMs))
-      enqueue(id, r, !was ? "opened" : deteriorated ? "escalated" : "still_active", now);
+      offer(id, r, !was ? "opened" : deteriorated ? "escalated" : "still_active", now);
   } else if (was) {
     r.set("active", false); r.set("resolvedAtMs", now);
-    if (!once) enqueue(id, r, "recovered", now);
+    if (!once) { wouldSend(r, now); offer(id, r, "recovered", now); }
   }
 }
 void WatchState::probe(const std::string& service, bool reachable, const jsn::Value& contract, long long now) {

@@ -997,10 +997,15 @@ export const RULES = Object.freeze([
     //     flushDecision never flushes while off (:257), so 57,750 rows sat
     //     unsent from 2026-08-22 10:39 UTC;
     //   watchdog: cpp-verify delivers only with its delivery switch, incident
-    //     owner and credentials on (watchdog.cpp:142, :149), and the Node
+    //     owner and credentials on (watchdog.cpp:146, :157), and the Node
     //     policy it relays (masterEnabled) was off — all four read false —
     //     so its outbox held 512/512 never attempted and every new item was
-    //     dropped (watchdog_state.cpp:68-72): 1,526,163.
+    //     dropped (watchdog_state.cpp:163-167): 1,526,163.
+    // v3 (V3 CV-2 fix round nit 3): cpp-verify's own delivery MUTE is a fifth
+    // holding setting. Muted by default through the 24 h soak and until an
+    // explicit POST /watchdog/mute after it (watchdog_state.cpp:99-100,
+    // :106-120), it holds the outbox by design; only `delivery.muted` reading
+    // TRUE holds — absent (a verifier before CV-2, a busy reply) is unknown.
     // Such a channel is class 'held_by_setting' — NOT a violation, so not in
     // the stuck headline, and still named in this rule (classes, info, note),
     // the goal row and the daily line with the setting, the unsent count, the
@@ -1010,8 +1015,8 @@ export const RULES = Object.freeze([
     // never taken as off: the defect stays and says so. The digest state is
     // read by telegram-digest.js digestState — the reader GET
     // /state/telegram-digest serves — pinned here with the loader it uses.
-    id: 'STK-08', key: 'outbox_backlog', version: 2, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['db.js:1877-1886', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:117', 'watchdog.cpp:142', 'watchdog.cpp:182-185', 'watchdog_state.cpp:68-72'],
+    id: 'STK-08', key: 'outbox_backlog', version: 3, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
+    cite: ['db.js:1877-1886', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:159', 'watchdog.cpp:146', 'watchdog.cpp:190-195', 'watchdog_state.cpp:163-167', 'watchdog_state.cpp:99-100'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,
@@ -1068,11 +1073,21 @@ export const RULES = Object.freeze([
         ['masterEnabled', "Node's telegram_notify_json as cpp-verify last read it"],
       ]
       const off = settings.filter(([k]) => s[k] === false && (k !== 'masterEnabled' || r.nodePolicyOff === true))
+        .map(([k, what]) => `${k}=false (${what})`)
+      // v3: the verifier-local mute, which holds while it reads true.
+      const muted = s.delivery && typeof s.delivery === 'object' && s.delivery.muted === true
+      if (muted) {
+        const d = s.delivery
+        const soak = d.soakActive === true && Number.isFinite(Number(d.soakEndsAtMs)) && Number(d.soakEndsAtMs) > 0
+          ? `the 24 h soak, ending ${iso(Number(d.soakEndsAtMs)).slice(0, 16)}` : 'lifted only by an explicit POST /watchdog/mute'
+        off.push(`delivery.muted=true (the cpp-verify delivery mute: ${soak})`)
+      }
       const delivery = Object.fromEntries([...settings.map(([k]) => k), 'effectivePolicyAllowsUrgent'].map(k => [k, s[k] ?? null]))
+      delivery.muted = typeof s.delivery?.muted === 'boolean' ? s.delivery.muted : null
       if (off.length) {
         const created = items.map(i => Number(i?.createdAtMs)).filter(Number.isFinite)
         return { violation: false, class: 'held_by_setting',
-          info: `watchdog: ${base}; oldest queued ${created.length ? iso(Math.min(...created)).slice(0, 16) : '?'} — held by the setting(s) ${off.map(([k, what]) => `${k}=false (${what})`).join(', ')}: cpp-verify delivers nothing while any is off; status read ${r.readAt ?? '?'}` }
+          info: `watchdog: ${base}; oldest queued ${created.length ? iso(Math.min(...created)).slice(0, 16) : '?'} — held by the setting(s) ${off.join(', ')}: cpp-verify delivers nothing while any is off; status read ${r.readAt ?? '?'}` }
       }
       // ONE stuck mechanism, not 512 stuck items (VERIFY correction 6).
       return { missing: ['delivery'], class: 'watchdog', delivery, detail: base }

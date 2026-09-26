@@ -135,6 +135,35 @@ and Node's `notificationPolicy`).
   Node also holds (it is the secret Node's relay uses for `/protection-status`),
   so anything with Node's environment can call it; that is accepted for a mute
   and a post-soak unmute, and it is the reason the unmute is refused in the soak.
+- **An unmute is refused over a stale backlog** (409 `stale_backlog`): while
+  any held item is older than `repeatMs` (1 h). An unmute releases what the
+  mute held, oldest urgent first, one per probe cycle — so a fresh urgent
+  missing-SL incident would wait behind it (the next releasable item 71 h old
+  in the production-shaped test), or be refused at the bound when all 512 are
+  urgent. Refusing is the smaller safe change: the verifier stays in the state
+  the soak already runs in, whereas a warning would still let that fresh alert
+  queue behind the backlog, and releasing urgent items first would need the
+  eviction and ordering changes of the rest of item 26. **Nothing is disposed
+  of** by the refusal or by any code here: disposing of the backlog is the
+  owner's step (after a `/data` backup, through the `dispose(createdBefore)`
+  route still to come). `delivery.staleBacklog` {count, oldestCreatedAtMs,
+  olderThanMs} and `delivery.unmuteRefusal` (null when an unmute would apply)
+  say where it stands. An already open verifier is never refused by it.
+- **A change that is not durable is not "ok".** The reply carries `applied`
+  and `durable`; `ok` is true only when both hold. If the state cannot be
+  written, the route answers **503 `state_not_durable`**: a mute stays applied
+  in this process (the safe direction — and the run loop sends nothing while
+  writes fail), but a restart would restore the file's older state, so the
+  caller must retry it; an unmute is undone.
+- **Unmute before any handoff, and confirm it.** Once Node's
+  `watchdog_incident_owner` reads `cpp-verify`, Node stops its own pages for
+  what cpp-verify owns: gateway and fast-monitor liveness
+  (`heartbeat.js:558`), missing SL (`naked-position-guard.js:432`) and generic
+  missing TP (`:706`), by `watchdog-ownership.js:5-8`. A handoff while cpp-verify
+  is muted — or a mute after the handoff — leaves an urgent alert with no
+  sender at all. So the order is: soak ends, the backlog is disposed of, the
+  unmute is applied (`delivery.open: true` on `GET /watchdog-status`), and only
+  then the handoff; to mute again later, roll the handoff back first.
 - **Only the owner of the state writes.** A mute is applied and persisted only
   once `start()` has taken the lock and restored (or created) the state. With
   supervision off, the lock held by another process, or an unreadable state,
@@ -144,16 +173,41 @@ and Node's `notificationPolicy`).
   sent outside it, so a mute that lands between the two can still let that one
   already-chosen message go (at most one per probe cycle). Every later
   selection sees the mute.
-- **Would-send counters.** Every outbox item created while delivery is closed
-  is counted by severity (`urgent`, `warning`, `info`), before the 512-item
-  bound, with `urgentPerHour` / `totalPerHour` since the first count: the rate
-  the owner reads at the end of the soak (OD-10: urgent alerts only).
+- **Would-send counters: what an open verifier would have SENT** while
+  delivery is closed, by severity (`urgent`, `warning`, `info`), with
+  `urgentPerHour` / `totalPerHour` since the first count — the rate the owner
+  reads at the end of the soak (OD-10: urgent alerts only). One per opened,
+  escalated or recovered transition (a once-only notice once), and at most one
+  `still_active` repeat per incident per `repeatMs` while it stays active.
+  They run on each incident's own schedule (`wouldSendAtMs`), apart from the
+  outbox: an item the 512 bound refuses is never counted again when it is
+  offered again next cycle, and an item held pending by the mute does not hide
+  the hourly repeats an open verifier would have sent. The held backlog is not
+  counted again either: it was counted when it was created. Measured against
+  ground truth — an open verifier given the same inputs, releasing one item a
+  cycle, its backlog disposed of — in `test_watchdog.cpp`: (A) one persistent
+  urgent incident over a full bound, 239 cycles: 1, where the first CV-2 build
+  counted 239; (C) the 25-09 production shape (512 urgent held; 129 calendar
+  warnings and 18 never-queued no_orders notices, all active, none pending),
+  1 h: 147, where it counted each of them every cycle (35,760 in the review's
+  149-warning form); (F) one incident, an empty outbox, 3 h: 3, where it
+  counted 1.
+- **Refusal counter** (`delivery.refused`, by severity): refusals by the
+  512-item bound, THROTTLED — one per would-send refused, however many cycles
+  its retry is refused again. The retry itself is never delayed: the incident
+  is offered again every probe cycle until an item is stored. `dropped` is
+  unchanged: it counts every refused offer (so every cycle's retry), every
+  eviction and every incident over the 2,048 bound — a count of attempts, not
+  of messages (production: about 24,400 an hour on 25-09).
 - **Where to read it.** `GET /watchdog-status` → `delivery` and `stateBytes`
   (4 MiB cap); `GET /health` → `watchdog.deliveryMuted`, `deliveryOpen`,
   `soakActive`, `soakEndsAtMs`; Node's `verify_watchdog` heartbeat (quiet: its
   stall is recorded in action_log, never sent) carries the same block as its
   detail on `GET /state/heartbeats`, and `runtime.watchdog.status.delivery` on
   the same route. `effectivePolicyAllowsUrgent` is false while the gate is closed.
+  The lifecycle rule STK-08 (v3) reads `delivery.muted: true` as a holding
+  setting: a backlog held by the mute is `held_by_setting`, named with the soak's
+  end, never a stuck defect; an absent or non-boolean `muted` is unknown.
 - **Schema stays 1.** The gate persists under a `delivery` key that a pre-CV-2
   `restore()` ignores, so a rollback still restores the file. **A rollback to a
   pre-CV-2 build re-enables sending under the old gates alone** (master switch,
@@ -161,14 +215,22 @@ and Node's `notificationPolicy`).
   soak, so the would-be backlog becomes deliverable if those gates are open.
 - A restored soak window must be exactly the build's soak length from a real
   start; anything else restores muted with no soak (`reason: soak_not_started`
-  until `beginSoak`).
-- The `verify_watchdog` beat is ok only when the gate is reported AND
-  `enabled` is true AND `error` is empty; it carries `enabled`, `durable` and
-  `error` in its detail. It is dormant while `VERIFY_URL` / `EXEC_SECRET` are
-  unset. A busy `/watchdog-status` reply (no gate in it) counts as one beat
-  failure; with `factor: 10` on a 30 s cadence that does not stall the beat.
+  until `beginSoak`). A start dated after the boot's clock is rejected at
+  `beginSoak` and the soak begins at that boot, muted, for its full length.
+- The `verify_watchdog` beat is ok when the gate is reported AND `enabled` is
+  true AND `error` is empty; it carries `enabled`, `durable` and `error` in its
+  detail. It is dormant while `VERIFY_URL` / `EXEC_SECRET` are unset, and while
+  cpp-verify reports its supervision switched off (`enabled: false` with no
+  error, i.e. `WATCHDOG_ENABLED` unset there): a switch, not a fault, so the
+  row reads dormant with the reason instead of error. A busy `/watchdog-status`
+  reply (no gate in it) counts as one beat failure; with `factor: 10` on a 30 s
+  cadence that does not stall the beat.
 
 Not in this change (the rest of V3-SEQUENCE item 26): severity floor,
-per-incident coalescing, confirm delay, the delivery budget and drill
-allowlist, the drill-incident and `dispose(createdBefore)` routes, the receipt
-ring, delivery health, and the observer nonce / `lastSeenAtMs`.
+per-incident coalescing, confirm delay, oldest-first eviction, the delivery
+budget and drill allowlist, the drill-incident and `dispose(createdBefore)`
+routes, the receipt ring, delivery health, and the observer nonce /
+`lastSeenAtMs`. So in this build an unmute releases warning and info items as
+well as urgent ones, one per probe cycle, with no message cap: in the
+production shape, the 147 current warnings and notices would all go out in
+the 147 probe cycles (about 37 minutes) after an unmute.

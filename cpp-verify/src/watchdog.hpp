@@ -33,11 +33,21 @@ public:
   // end alone never unmutes. The run loop asks releasable(), never
   // nextDelivery(), so a muted verifier sends nothing whatever Node's policy,
   // the deployment switch or the credentials say.
+  // restore() has no clock. beginSoak(now), called at every boot right after
+  // it, is where a restored soak meets the clock: a start dated in the future
+  // is rejected and the soak begins now, muted (fix-round nit 5).
   void beginSoak(long long now);
   bool deliveryOpen(long long now) const;
   jsn::Value releasable(long long now) const;
-  // Returns "" when applied, else the refusal reason ("soak_active").
+  // Returns "" when applied, else the refusal reason: "soak_active", or
+  // "stale_backlog" while the outbox holds an item older than repeatMs (an
+  // unmute would release it, oldest urgent first, ahead of any fresh alert;
+  // disposing of it is the owner's step, never this call's).
   std::string setMuted(bool muted, long long now);
+  // The mute alone, for a caller that must undo an unmute it could not persist.
+  struct MuteGate { bool muted; long long mutedAtMs, unmutedAtMs; };
+  MuteGate muteGate() const { return {muted_, mutedAtMs_, unmutedAtMs_}; }
+  void restoreMuteGate(const MuteGate& g) { muted_ = g.muted; mutedAtMs_ = g.mutedAtMs; unmutedAtMs_ = g.unmutedAtMs; }
   jsn::Value deliveryStatus(long long now) const;
   void delivery(const std::string& id, bool accepted, const std::string& messageId,
                 long long retryAfterMs, long long now);
@@ -55,15 +65,34 @@ public:
 private:
   void incident(const std::string& id, bool bad, const std::string& severity,
                 const jsn::Value& detail, long long now, bool once = false);
-  void enqueue(const std::string& id, jsn::Value& record, const std::string& transition, long long now);
+  // false when the 512-item bound refused the item (it is not stored).
+  bool enqueue(const std::string& id, jsn::Value& record, const std::string& transition, long long now);
+  // enqueue(), and a refusal counted once per would-send (V3 CV-2 fix round).
+  void offer(const std::string& id, jsn::Value& record, const std::string& transition, long long now);
+  // One message an open verifier would send for this incident now.
+  void wouldSend(jsn::Value& record, long long now);
+  // Outbox items created more than repeatMs before `now`: {count, oldestCreatedAtMs}.
+  jsn::Value staleBacklog(long long now) const;
   WatchPolicy policy_;
   std::map<std::string, jsn::Value> services_, incidents_, outbox_;
+  // Every item not stored: each refused offer (a refused incident is offered
+  // again every probe cycle, and each offer counts), each eviction and each
+  // incident over the 2,048 bound. A count of attempts, not of messages.
   long long dropped_ = 0;
   bool muted_ = true;
   long long mutedAtMs_ = 0, unmutedAtMs_ = 0, soakStartedAtMs_ = 0, soakEndsAtMs_ = 0;
-  // Would-send counters: every outbox item created while delivery is closed,
-  // by severity — the soak's would-send rate (OD-10: urgent alerts only).
+  // Would-send counters (V3 CV-2 fix round): what an open verifier would have
+  // SENT while delivery is closed, by severity — one per opened, escalated or
+  // recovered transition and at most one still_active repeat per incident per
+  // repeatMs. Kept on each incident's own schedule (`wouldSendAtMs`), apart
+  // from the outbox: a refused item is never counted again, and an item held
+  // pending by the mute does not hide the repeats an open verifier would have
+  // sent. The soak's would-send rate (OD-10: urgent alerts only).
   long long wouldSendUrgent_ = 0, wouldSendWarning_ = 0, wouldSendInfo_ = 0, wouldSendSinceMs_ = 0;
+  // Refusals by the 512-item bound, THROTTLED: one per would-send refused,
+  // however many cycles its retry is refused again. The retry itself is not
+  // delayed (lastQueuedAtMs stays untouched until an item is stored).
+  long long refusedUrgent_ = 0, refusedWarning_ = 0, refusedInfo_ = 0;
   jsn::Value nodeEntryDiagnostics_;
   long long nodeEntryDiagnosticsAtMs_ = 0;
 };
@@ -81,7 +110,11 @@ public:
   void start();
   jsn::Value status();
   // Verifier-local mute (POST /watchdog/mute). Works with Node down. Returns
-  // {ok, error?, delivery}. Unmuting is refused during the soak.
+  // {ok, applied, durable, error?, delivery}. Unmuting is refused during the
+  // soak and while the outbox holds a stale backlog. ok is true only when the
+  // change is applied AND persisted: a mute that cannot be persisted stays
+  // applied in this process (nothing is selected for delivery) and answers
+  // ok:false "state_not_durable"; an unmute that cannot be persisted is undone.
   jsn::Value setMuted(bool muted);
 private:
   void run(std::stop_token stop);

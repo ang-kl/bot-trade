@@ -10,7 +10,7 @@
 //   - at realistic size (7 accounts, ~420 identities, known weekday
 //     calendars) the contract stays under cpp-verify's 256 KiB bound with
 //     `work` intact — and every work item's calendar, resolved the way
-//     cpp-verify resolves it (watchdog_state.cpp:162-166, ported below),
+//     cpp-verify resolves it (watchdog_state.cpp:276-280, ported below),
 //     answers OPEN/CLOSED/UNKNOWN exactly as the pre-K1 full projection did;
 //   - GET /state/calendar-coverage: not cached, built on the read-only worker
 //     (0 statements on the management connection), explicit 503 on failure,
@@ -44,7 +44,7 @@ const str = v => typeof v === 'string' ? v : ''
 const num = v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && Number.isInteger(v) && v <= 9007199254740991 ? v : 0
 const fresh = (at, t, age) => at > 0 && at <= t && t - at < age
 const positiveId = v => typeof v === 'string' && v.length > 0 && v.length <= 19 && v[0] !== '0' && /^\d+$/.test(v)
-/** watchdog_state.cpp:162-166 — the first `calendars` entry with the same
+/** watchdog_state.cpp:276-280 — the first `calendars` entry with the same
  * accountId/host/symbolId strings replaces the item's own calendar. */
 function resolveLikeVerifier(contract, w) {
   for (const c of contract.calendars) {

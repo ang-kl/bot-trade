@@ -744,6 +744,8 @@ const helpersHash = () => createHash('sha256').update(Object.keys(JUDGE_HELPERS)
 const PINNED_HELPERS = { [`helpers@4`]: '758feead1efec1bd' }
 // STK-08@2 (STK-08v2): held_by_setting, and the digest reader and notify
 // loader it judges by are pinned in its hash. No other rule's hash moved.
+// STK-08@3 (V3 CV-2 fix round nit 3): cpp-verify's delivery mute is a holding
+// setting too, and the finding's `delivery` carries it. No other rule's hash moved.
 const PINNED = {
   'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@2': '8310a4e233690cf5', 'PRE-03@1': 'bf01d978a6b93535', 'PRE-04@1': 'fa04e500d8a0ca47',
   'PRE-05@1': 'c7aeb7460046a6fc',
@@ -754,7 +756,7 @@ const PINNED = {
   'CLS-05@1': '2cca97ff9080477d', 'CLS-06@1': 'a4bb8873fe57a5f1', 'CLS-07@1': '77e677b6b8b4b901', 'CLS-08@1': '540f253a1c1c8eab',
   'CLS-09@1': '9985d3c5b7b5b9cf',
   'STK-01@2': '969001ee6208e6c7', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@2': '92e5e73e8c8494e9', 'STK-04@2': '30b119a04d39ebc5',
-  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@2': 'f79c388f91fac5d1',
+  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@3': '9fb94b66c9f48c48',
   'STK-09@2': '29a95b3d182e245c', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6', 'STK-12@1': '20bc6106e975e370',
 }
 test('ruleset pin: every rule\'s sql + judge is pinned to its version', () => {
@@ -1111,7 +1113,7 @@ test('STK-08 v2 telegram OFF by setting: held_by_setting, named with the setting
   assert.equal(getState(db, 'telegram_notify_json').includes('"enabled":false'), true)
   const report = build(db)
   const r = ruleOf(report, 'STK-08')
-  assert.equal(r.version, 2)
+  assert.equal(r.version, 3) // v3 (CV-2 fix round) added cpp-verify's mute; the Telegram half is v2's
   assert.equal(r.violations, 0, 'held by a setting is not a stuck violation')
   assert.equal(r.classes.held_by_setting, 1)
   assert.equal(r.info.held_by_setting.length, 1)
@@ -1235,11 +1237,50 @@ test('STK-08 v2 watchdog with delivery ON and still dropping: the defect, with t
   const e = r.sample.find(x => x.subject === 'outbox:watchdog')
   assert.equal(e.class, 'watchdog')
   assert.equal(e.detail, 'watchdog outbox 512/512, 512 never attempted and over 1 h old, dropped 1526163')
-  assert.deepEqual(e.delivery, WATCHDOG_ALL_ON)
+  assert.deepEqual(e.delivery, { ...WATCHDOG_ALL_ON, muted: null }) // a verifier before CV-2 reports no mute
   // Dropping alone (an outbox not full) is still the defect when delivery is on.
   const drop = initDB(':memory:')
   setState(drop, 'independent_watchdog_json', JSON.stringify({ status: { ...WATCHDOG_ALL_ON, outbox: { a: { attempts: 3, createdAtMs: NOW } }, dropped: 7 }, readAt: iso(NOW) }))
   assert.equal(one(drop, 'STK-08').violations, 1)
+})
+
+// STK-08 v3 (V3 CV-2 fix round nit 3): cpp-verify's delivery mute is a
+// holding setting of its own. Muted through the 24 h soak (and until an
+// explicit unmute after it), the backlog is held by design, never a stuck
+// defect; unmuted with the other settings on, the defect stays.
+const SOAK_ENDS = Date.parse('2026-09-28T13:00:00.000Z')
+const MUTED = { muted: true, open: false, reason: 'soak_active', soakActive: true, soakEndsAtMs: SOAK_ENDS }
+test('STK-08 v3 watchdog muted by cpp-verify (the CV-2 soak) with every other setting on: held_by_setting naming the mute', () => {
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: true, mode: 'live' }))
+  setState(db, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, effectivePolicyAllowsUrgent: false, delivery: MUTED }), readAt: iso(NOW) }))
+  const report = build(db)
+  const r = ruleOf(report, 'STK-08')
+  assert.equal(r.version, 3)
+  assert.equal(r.violations, 0, 'the mute holds the backlog: not stuck')
+  assert.equal(r.classes.held_by_setting, 1)
+  assert.match(r.info.held_by_setting[0], /held by the setting\(s\) delivery\.muted=true \(the cpp-verify delivery mute: the 24 h soak, ending 2026-09-28T13:00\): cpp-verify delivers nothing/)
+  assert.equal(report.summary.stuck.new, 0)
+  // After the soak, still muted: held, and named as waiting for the explicit unmute.
+  const after = initDB(':memory:')
+  setState(after, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, delivery: { ...MUTED, soakActive: false, reason: 'muted_after_soak_explicit_unmute_required' } }), readAt: iso(NOW) }))
+  assert.match(one(after, 'STK-08').info.held_by_setting[0], /delivery\.muted=true \(the cpp-verify delivery mute: lifted only by an explicit POST \/watchdog\/mute\)/)
+  // Muted AND a switch off: both named.
+  const both = initDB(':memory:')
+  setState(both, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, deliveryCredentialsConfigured: false, delivery: MUTED }), readAt: iso(NOW) }))
+  assert.match(one(both, 'STK-08').info.held_by_setting[0], /deliveryCredentialsConfigured=false \(WATCHDOG_TELEGRAM_TOKEN \/ WATCHDOG_TELEGRAM_CHAT_ID\), delivery\.muted=true/)
+})
+
+test('STK-08 v3 watchdog unmuted, or its mute unreadable: never held by the mute — the defect stays', () => {
+  for (const delivery of [{ muted: false, open: true }, { muted: 'yes' }, { muted: null }, null, 'muted']) {
+    const db = initDB(':memory:')
+    setState(db, 'telegram_notify_json', JSON.stringify({ enabled: true, mode: 'live' }))
+    setState(db, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, delivery }), readAt: iso(NOW) }))
+    const r = one(db, 'STK-08')
+    assert.equal(r.violations, 1, `delivery ${JSON.stringify(delivery)} must not hold`)
+    assert.equal(r.classes.held_by_setting, undefined)
+    assert.equal(r.sample.find(x => x.subject === 'outbox:watchdog').delivery.muted, delivery?.muted === false ? false : null)
+  }
 })
 
 test('STK-08 v2 the digest reader reads the outbox only through idx_tg_outbox_pending and bounds the reason breakdown', () => {

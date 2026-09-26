@@ -35,20 +35,29 @@ export function watchdogDeliveryDetail(status) {
   const d = status?.delivery
   if (!d || typeof d !== 'object' || typeof d.muted !== 'boolean') return null
   const pick = k => d[k] ?? null
+  const obj = k => (d[k] && typeof d[k] === 'object' ? d[k] : null)
+  // CV-2 fix round: `refused` (throttled bound refusals), `staleBacklog` and
+  // `unmuteRefusal` (what an unmute would answer now) ride the beat too.
   return { muted: d.muted, open: d.open === true, reason: pick('reason'), soakActive: pick('soakActive'),
     soakStartedAtMs: pick('soakStartedAtMs'), soakEndsAtMs: pick('soakEndsAtMs'), soakRemainingMs: pick('soakRemainingMs'),
-    wouldSend: d.wouldSend && typeof d.wouldSend === 'object' ? d.wouldSend : null,
+    wouldSend: obj('wouldSend'), refused: obj('refused'), staleBacklog: obj('staleBacklog'), unmuteRefusal: pick('unmuteRefusal'),
     outboxPending: pick('outboxPending'), stateBytes: status.stateBytes ?? null,
     enabled: status.enabled ?? null, durable: status.durable ?? null, error: status.error || null }
 }
 
 /**
- * The verify_watchdog beat for one /watchdog-status reply. ok only when the
- * gate is reported AND supervision is enabled with no error: a muted gate on
- * a verifier whose supervision is off or failing (lock held elsewhere, state
- * unreadable) is not a working soak.
+ * The verify_watchdog beat for one /watchdog-status reply. ok when the gate
+ * is reported AND supervision is enabled with no error: a muted gate on a
+ * verifier whose supervision is failing (lock held elsewhere, state
+ * unreadable) is not a working soak. Supervision switched OFF (WATCHDOG_ENABLED
+ * unset on cpp-verify: enabled false, no error) is a switch, not a fault
+ * (CV-2 fix round nit 7): the relay read succeeded, so the beat is ok and the
+ * registry's dormantWhen labels it dormant, with the reason, instead of error.
  */
 export function verifyWatchdogBeat(status) {
+  if (status?.enabled === false && !status.error) {
+    return { ok: true, detail: { ...(watchdogDeliveryDetail(status) || { enabled: false, durable: status.durable ?? null, error: null }), supervision: 'off' } }
+  }
   const detail = watchdogDeliveryDetail(status)
   if (!detail) return { ok: false, error: 'watchdog delivery gate unreported (verifier before CV-2, or busy)' }
   if (status.enabled !== true) return { ok: false, error: 'watchdog supervision disabled on cpp-verify', detail }

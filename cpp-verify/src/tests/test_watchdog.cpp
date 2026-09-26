@@ -20,6 +20,89 @@ Value work(const std::string& id = "one", const std::string& role = "management"
 Value contract(Array work = {}, long long at = T) { return Value(Object{{"schemaVersion", 1}, {"service", "node"}, {"observedAtMs", at}, {"workComplete", true}, {"work", work}}); }
 bool active(const verify::WatchState& s, const std::string& id) { return s.snapshot().get("incidents").get(id).get("active").asBool(); }
 void healthy(verify::WatchState& s, Array w, long long at) { s.probe("node", true, contract(std::move(w), at), at); s.evaluate(at); }
+
+// ---- V3 CV-2 fix round: the would-send counter against ground truth ----
+constexpr long long HOUR = 3600000, DAY = 86400000, CYCLE = 15000;
+// A deep copy: a jsn::Value copy SHARES its object, so set() on a copy would
+// edit the original snapshot too.
+Value clone(const Value& v) { return *jsn::parse(jsn::dump(v)); }
+// The owner's dispose step (a route still to come): the same state, outbox empty.
+Value disposed(const Value& snap) { auto s = clone(snap); s.set("outbox", Value(Object{})); return s; }
+// A delivery block whose soak ended a day before T, muted or not.
+Value afterSoak(const Value& snap, bool muted) {
+  auto s = clone(snap);
+  s.set("delivery", Value(Object{{"muted", muted}, {"soakStartedAtMs", T - 2 * DAY}, {"soakEndsAtMs", T - DAY}}));
+  return s;
+}
+bool pendingFor(const verify::WatchState& s, const std::string& id) {
+  const auto snap = s.snapshot(); // held: a range-for over a temporary's member dangles
+  for (const auto& [key, item] : snap.get("outbox").asObject()) if (item.get("incidentId").asString() == id) return true;
+  return false;
+}
+// Production's outbox of 25-09-2026: 512 urgent items of RESOLVED incidents,
+// none attempted, the oldest `oldest` (2026-09-23T09:51Z there), one a minute.
+Value backlog(long long oldest, Object incidents = {}) {
+  Object outbox;
+  for (int i = 0; i < 512; ++i) {
+    const auto incident = "cpp-exec:work:quote:" + std::to_string(10000 + i) + ":quote";
+    const auto id = incident + ":1";
+    const long long at = oldest + i * 60000LL;
+    outbox[id] = Value(Object{{"id", id}, {"incidentId", incident}, {"transition", "opened"}, {"severity", "urgent"},
+      {"detail", Object{{"service", "cpp-exec"}, {"reason", "fixture_backlog"}}}, {"createdAtMs", at}, {"nextAtMs", at},
+      {"attempts", 0}, {"accepted", false}});
+    incidents[incident] = Value(Object{{"active", false}, {"serial", 1}, {"severity", "urgent"}, {"openedAtMs", at},
+      {"lastQueuedAtMs", at}, {"resolvedAtMs", T - HOUR}});
+  }
+  return Value(Object{{"schemaVersion", 1}, {"services", Object{}}, {"incidents", incidents}, {"outbox", outbox}, {"dropped", 1284925}});
+}
+// One broker-verified account whose one position has no stop loss (urgent), or none.
+Value missingSl(long long now, bool missing) {
+  Array positions; if (missing) positions.push_back(Value(Object{{"positionId", "99"}, {"stopLoss", 0}, {"takeProfit", 2}}));
+  return Value(Object{{"accounts", Array{Value(Object{{"host", "demo.ctraderapi.com"}, {"accountId", "11"}, {"ok", true},
+    {"source", "broker_reconcile"}, {"checkedAtMs", now}, {"openCount", static_cast<long long>(positions.size())},
+    {"positions", positions}, {"missingSl", missing ? 1 : 0}, {"missingTp", 0}})}}});
+}
+// GROUND TRUTH: the same inputs, each probe cycle, to a muted verifier and to
+// an OPEN one that releases one item per cycle, accepted by Telegram. The
+// counter is right when the muted twin's wouldSend equals what the open twin
+// sent. The open twin starts with the held backlog disposed of: an always-open
+// verifier would have sent it when it was created (and counted it then).
+struct Twin {
+  verify::WatchState muted, open;
+  long long sent = 0, urgent = 0, warning = 0, info = 0;
+  template <class Drive> void cycle(long long now, Drive drive) {
+    drive(muted, now); drive(open, now);
+    const auto next = open.releasable(now);
+    if (next.isNull()) return;
+    ++sent; const auto& sev = next.get("severity").asString();
+    ++(sev == "urgent" ? urgent : sev == "warning" ? warning : info);
+    open.delivery(next.get("id").asString(), true, "1", 0, now);
+  }
+  Value would(long long now) const { return muted.status(now).get("delivery"); }
+  // The equality the blocker asks for, severity by severity. A mismatch names
+  // its scenario and both readings before the assert stops the run.
+  void matches(long long now, const char* scenario) const {
+    const auto w = would(now).get("wouldSend");
+    const bool equal = w.get("total").asNumber() == sent && w.get("urgent").asNumber() == urgent
+      && w.get("warning").asNumber() == warning && w.get("info").asNumber() == info;
+    if (!equal) std::cerr << scenario << ": wouldSend " << jsn::dump(w) << " but the open verifier sent " << sent
+      << " (urgent " << urgent << ", warning " << warning << ", info " << info << ")\n";
+    assert(equal);
+    assert(open.snapshot().get("outbox").asObject().empty()); // everything it would send, it has sent
+  }
+};
+// The Node contract behind production's 149 active non-pending incidents:
+// 129 work items on UNKNOWN calendars (warning) and 20 entry_activity
+// sessions with no order (the once-only no_orders notice, info).
+Value productionContract(long long now) {
+  Array items;
+  for (int i = 0; i < 129; ++i) items.push_back(Value(Object{{"id", "c" + std::to_string(i)}, {"role", "management"}, {"accountId", "11"},
+    {"symbolId", "7"}, {"host", "demo.ctraderapi.com"}, {"calendar", Value()}, {"lastCompletedAtMs", now}, {"nextDueMs", now + 60000}}));
+  for (int i = 0; i < 20; ++i) items.push_back(Value(Object{{"id", "a" + std::to_string(i)}, {"role", "entry_activity"}, {"accountId", "11"},
+    {"symbolId", "7"}, {"host", "demo.ctraderapi.com"}, {"calendar", calendar()}, {"lastCompletedAtMs", now}, {"nextDueMs", now + 60000},
+    {"activityComplete", true}, {"sessionOpenedAtMs", T - 30 * HOUR}, {"sessionId", "s" + std::to_string(i)}, {"ordersSinceOpen", 0}}));
+  return contract(items, now);
+}
 }
 int main() {
   {
@@ -240,14 +323,22 @@ int main() {
     const auto r = reboot.status(T + 86400000).get("delivery");
     assert(r.get("soakEndsAtMs").asNumber() == T + 86400000 && r.get("muted").asBool());
     assert(r.get("wouldSend").get("urgent").asNumber() == 1);
-    // After the soak, an explicit unmute opens delivery; a re-mute closes it at once.
-    assert(reboot.setMuted(false, T + 86400000).empty()); assert(reboot.deliveryOpen(T + 86400000));
-    assert(!reboot.releasable(T + 86400000).isNull());
-    reboot.probe("cpp-exec", false, {}, T + 86400000); reboot.evaluate(T + 86460000);
-    assert(active(reboot, "cpp-exec:unreachable"));
-    assert(reboot.status(T + 86460000).get("delivery").get("wouldSend").get("urgent").asNumber() == 1); // open: not a would-send
-    verify::WatchState open; assert(open.restore(reboot.snapshot())); assert(open.deliveryOpen(T + 86460000)); // unmute persists
-    assert(reboot.setMuted(true, T + 86460001).empty()); assert(reboot.releasable(T + 86460001).isNull());
+    // After the soak, the item the mute held for a day is a stale backlog: the
+    // unmute is refused (fix-round nit 2) and nothing is disposed of.
+    assert(reboot.setMuted(false, T + 86400000) == "stale_backlog"); assert(!reboot.deliveryOpen(T + 86400000));
+    assert(reboot.snapshot().get("outbox").asObject().size() == 1);
+    // Once the owner has disposed of it, an explicit unmute opens delivery; a re-mute closes it at once.
+    verify::WatchState clean; assert(clean.restore(disposed(reboot.snapshot()))); clean.beginSoak(T + 90000000);
+    assert(clean.setMuted(false, T + 86400000).empty()); assert(clean.deliveryOpen(T + 86400000));
+    clean.probe("cpp-exec", false, {}, T + 86400000); clean.evaluate(T + 86460000);
+    assert(active(clean, "cpp-exec:unreachable")); assert(!clean.releasable(T + 86460000).isNull());
+    assert(clean.status(T + 86460000).get("delivery").get("wouldSend").get("urgent").asNumber() == 1); // open: not a would-send
+    verify::WatchState open; assert(open.restore(clean.snapshot())); assert(open.deliveryOpen(T + 86460000)); // unmute persists
+    assert(clean.setMuted(true, T + 86460001).empty()); assert(clean.releasable(T + 86460001).isNull());
+    // Unmuting an already open verifier is not refused by what it has queued since.
+    verify::WatchState again; assert(again.restore(open.snapshot()));
+    assert(again.status(T + 90100000).get("delivery").get("staleBacklog").get("count").asNumber() > 0);
+    assert(again.setMuted(false, T + 90100000).empty() && again.deliveryOpen(T + 90100000));
   }
   {
     // A pre-CV-2 file (no delivery key) restores MUTED with no soak; the soak
@@ -275,6 +366,157 @@ int main() {
     const auto snap = s.snapshot();
     assert(snap.get("schemaVersion").asNumber() == 1 && snap.get("services").isObject()
       && snap.get("incidents").isObject() && snap.get("outbox").isObject() && jsn::dump(snap).size() < 4 * 1024 * 1024);
+  }
+  {
+    // CV-2 fix round, reproduction (A): ONE persistent urgent incident over the
+    // bound. All 512 held items are urgent, so every offer is refused and the
+    // incident is offered again each cycle. The pre-fix counter rose by one a
+    // cycle (239 over 239 cycles); an open verifier sends it once in the hour.
+    const auto snap = backlog(T - 71 * HOUR);
+    Twin t; assert(t.muted.restore(snap)); t.muted.beginSoak(T);
+    assert(t.open.restore(afterSoak(disposed(snap), false))); t.open.beginSoak(T);
+    const auto dropped = t.muted.snapshot().get("dropped").asNumber();
+    for (long long k = 0; k < 239; ++k) t.cycle(T + k * CYCLE, [](verify::WatchState& s, long long now) { s.protection(missingSl(now, true), now); });
+    const long long last = T + 238 * CYCLE;
+    assert(t.sent == 1 && t.urgent == 1); t.matches(last, "(A) one persistent urgent incident over the bound");
+    // Refused every cycle, counted once; `dropped` still counts every offer —
+    // 239 of them, one a cycle: the retry was never delayed.
+    const auto refused = t.would(last).get("refused");
+    assert(refused.get("urgent").asNumber() == 1 && refused.get("total").asNumber() == 1);
+    assert(t.muted.snapshot().get("dropped").asNumber() - dropped == 239);
+    // One slot frees (the owner disposes of one item): the very next cycle stores it, counted by neither counter.
+    const std::string key = "protection:demo.ctraderapi.com:11:missing";
+    assert(!pendingFor(t.muted, key));
+    t.muted.delivery(t.muted.snapshot().get("outbox").asObject().begin()->first, true, "disposed", 0, last + CYCLE);
+    t.muted.protection(missingSl(last + CYCLE, true), last + CYCLE);
+    assert(pendingFor(t.muted, key));
+    assert(t.would(last + CYCLE).get("wouldSend").get("total").asNumber() == 1 && t.would(last + CYCLE).get("refused").get("total").asNumber() == 1);
+  }
+  {
+    // Reproductions (C) and (F): production's restore of 25-09-2026 — the 512
+    // urgent backlog of resolved incidents, never attempted, the oldest 71 h
+    // old; 129 calendar warnings queued once long ago, 18 no_orders notices
+    // never queued and 2 queued; every one active and none pending. After an
+    // hour muted the pre-fix counter read 35,760 (149 x 240 cycles).
+    Object incidents;
+    for (int i = 0; i < 129; ++i) incidents["node:work:c" + std::to_string(i) + ":calendar"] = Value(Object{{"active", true},
+      {"serial", 1 + i % 3}, {"severity", "warning"}, {"openedAtMs", T - 60 * HOUR}, {"lastQueuedAtMs", T - 60 * HOUR}, {"lastObservedAtMs", T - CYCLE}});
+    for (int i = 0; i < 20; ++i) {
+      Value r(Object{{"active", true}, {"serial", i < 18 ? 0 : 1}, {"severity", "info"}, {"openedAtMs", T - 30 * HOUR}, {"lastObservedAtMs", T - CYCLE}});
+      if (i >= 18) r.set("lastQueuedAtMs", T - 30 * HOUR);
+      incidents["node:no_orders:11:s" + std::to_string(i)] = r;
+    }
+    const auto snap = backlog(T - 71 * HOUR, incidents);
+    const auto drive = [](verify::WatchState& s, long long now) { s.probe("node", true, productionContract(now), now); s.evaluate(now); };
+    Twin t; assert(t.muted.restore(snap)); t.muted.beginSoak(T);
+    assert(t.open.restore(afterSoak(disposed(snap), false))); t.open.beginSoak(T);
+    const auto dropped = t.muted.snapshot().get("dropped").asNumber();
+    for (long long k = 0; k < 240; ++k) t.cycle(T + k * CYCLE, drive);
+    const long long last = T + 239 * CYCLE;
+    // Ground truth: 129 warnings and the 18 never-queued notices, once each in
+    // the hour (the repeats fall due at T + 1 h, the window's next cycle).
+    assert(t.sent == 147 && t.warning == 129 && t.info == 18 && t.urgent == 0);
+    t.matches(last, "(C) the production-shaped restore, 1 h");
+    // Refused at the full bound every cycle (dropped: 147 x 240), counted once each.
+    assert(t.would(last).get("refused").get("total").asNumber() == 147);
+    assert(t.muted.snapshot().get("dropped").asNumber() - dropped == 147 * 240);
+    // (F) the same restore OPEN with the backlog KEPT: one a cycle, all 240
+    // messages are the stale backlog and none of the 147 current ones leaves
+    // — what an unmute over a stale backlog would do (fix-round nit 2).
+    // (The muted twin above already counted 147 with that backlog present.)
+    verify::WatchState kept; assert(kept.restore(afterSoak(snap, false))); kept.beginSoak(T);
+    long long keptSent = 0, keptStale = 0;
+    for (long long k = 0; k < 240; ++k) {
+      const long long now = T + k * CYCLE; drive(kept, now);
+      const auto next = kept.releasable(now); if (next.isNull()) continue;
+      ++keptSent; if (next.get("severity").asString() == "urgent" && next.get("createdAtMs").asNumber() < T) ++keptStale;
+      kept.delivery(next.get("id").asString(), true, "1", 0, now);
+    }
+    assert(keptSent == 240 && keptStale == 240);
+  }
+  {
+    // Reproduction (F), second half: one incident, an empty outbox, 3 h. The
+    // open verifier sends it three times (opened, still_active at +1 h and
+    // +2 h); the pre-fix counter read 1, because the muted item stays pending
+    // and hid the repeats.
+    Twin t; t.muted.beginSoak(T);
+    assert(t.open.restore(afterSoak(Value(Object{{"schemaVersion", 1}, {"services", Object{}}, {"incidents", Object{}}, {"outbox", Object{}}}), false)));
+    for (long long k = 0; k < 720; ++k) t.cycle(T + k * CYCLE, [](verify::WatchState& s, long long now) { s.protection(missingSl(now, true), now); });
+    const long long last = T + 719 * CYCLE;
+    assert(t.sent == 3 && t.urgent == 3); t.matches(last, "(F) one incident, an empty outbox, 3 h");
+    assert(t.would(last).get("refused").get("total").asNumber() == 0);
+    assert(t.muted.snapshot().get("outbox").asObject().size() == 1); // counted, not queued: the opened item is still pending
+    assert(t.would(last).get("wouldSend").get("urgentPerHour").asNumber() == 1.0);
+  }
+  {
+    // Transitions: each opened, escalated and recovered message counts once,
+    // as the open verifier sends it — a flap inside one repeat interval sends
+    // every transition, not one per repeatMs.
+    Twin t; t.muted.beginSoak(T);
+    assert(t.open.restore(afterSoak(Value(Object{{"schemaVersion", 1}, {"services", Object{}}, {"incidents", Object{}}, {"outbox", Object{}}}), false)));
+    for (long long k = 0; k < 240; ++k) t.cycle(T + k * CYCLE, [k](verify::WatchState& s, long long now) {
+      s.protection(missingSl(now, k < 10 || (k >= 20 && k < 30)), now); // opened, recovered, opened, recovered
+      auto g = work("g", k < 50 ? "collector" : "gateway"); g.set("calendar", Value()); g.set("lastCompletedAtMs", now);
+      g.set("nextDueMs", k < 100 ? T - 2 * 60000 : now + 60000); // a warning stall, escalated at k=50, recovered at k=100
+      healthy(s, {g}, now);
+    });
+    const long long last = T + 239 * CYCLE;
+    assert(t.sent == 7 && t.urgent == 6 && t.warning == 1); t.matches(last, "transitions: flaps, an escalation, recoveries");
+  }
+  {
+    // Fix-round nit 2: after the soak an unmute is refused while any held item
+    // is older than repeatMs, and the refusal disposes of nothing. A mute
+    // always applies.
+    const long long after = T + DAY;
+    const auto snap = backlog(after - 71 * HOUR);
+    verify::WatchState s; assert(s.restore(snap)); s.beginSoak(T);
+    assert(s.setMuted(false, after) == "stale_backlog");
+    assert(!s.deliveryOpen(after) && s.releasable(after).isNull());
+    assert(s.snapshot().get("outbox").asObject().size() == 512);
+    const auto d = s.status(after).get("delivery");
+    assert(d.get("unmuteRefusal").asString() == "stale_backlog" && d.get("reason").asString() == "muted_after_soak_explicit_unmute_required");
+    assert(d.get("staleBacklog").get("count").asNumber() == 512 && d.get("staleBacklog").get("olderThanMs").asNumber() == HOUR);
+    assert(d.get("staleBacklog").get("oldestCreatedAtMs").asNumber() == after - 71 * HOUR);
+    assert(s.setMuted(true, after).empty());
+    // What the refusal prevents. The same state OPEN: the next releasable item
+    // is the 71 h old one, and a fresh urgent missing-SL incident is refused
+    // at the bound (all 512 are urgent).
+    verify::WatchState open; assert(open.restore(afterSoak(snap, false))); open.beginSoak(after);
+    open.protection(missingSl(after, true), after);
+    assert(open.releasable(after).get("createdAtMs").asNumber() == after - 71 * HOUR);
+    assert(!pendingFor(open, "protection:demo.ctraderapi.com:11:missing"));
+    // Disposed of (the owner's step, after a /data backup): the unmute applies
+    // and the fresh incident is the next message.
+    verify::WatchState clean; assert(clean.restore(disposed(s.snapshot()))); clean.beginSoak(after);
+    assert(clean.status(after).get("delivery").get("unmuteRefusal").isNull());
+    assert(clean.setMuted(false, after).empty());
+    clean.protection(missingSl(after, true), after);
+    assert(clean.releasable(after).get("incidentId").asString() == "protection:demo.ctraderapi.com:11:missing");
+    // An item younger than repeatMs is not a stale backlog.
+    verify::WatchState young; assert(young.restore(disposed(s.snapshot()))); young.beginSoak(after);
+    young.protection(missingSl(after - HOUR, true), after - HOUR);
+    assert(young.setMuted(false, after) == "" && young.deliveryOpen(after));
+    verify::WatchState old; assert(old.restore(disposed(s.snapshot()))); old.beginSoak(after);
+    old.protection(missingSl(after - HOUR - 1, true), after - HOUR - 1);
+    assert(old.setMuted(false, after) == "stale_backlog");
+  }
+  {
+    // Fix-round nit 5: a restored soak dated after this boot's clock is
+    // rejected and clamped to begin now, muted, for its full length.
+    for (const long long ahead : {1LL, 5 * DAY}) {
+      auto w = Value(Object{{"schemaVersion", 1}, {"services", Object{}}, {"incidents", Object{}}, {"outbox", Object{}}});
+      w.set("delivery", Value(Object{{"muted", false}, {"soakStartedAtMs", T + ahead}, {"soakEndsAtMs", T + ahead + DAY}}));
+      verify::WatchState r; assert(r.restore(w)); r.beginSoak(T);
+      const auto d = r.status(T).get("delivery");
+      assert(d.get("muted").asBool() && d.get("soakStartedAtMs").asNumber() == T && d.get("soakEndsAtMs").asNumber() == T + DAY);
+      assert(d.get("reason").asString() == "soak_active" && d.get("soakRemainingMs").asNumber() == DAY);
+      assert(r.setMuted(false, T + DAY - 1) == "soak_active");
+    }
+    // A start AT the clock is kept, as is one before it.
+    auto w = Value(Object{{"schemaVersion", 1}, {"services", Object{}}, {"incidents", Object{}}, {"outbox", Object{}},
+      {"delivery", Object{{"muted", true}, {"soakStartedAtMs", T}, {"soakEndsAtMs", T + DAY}}}});
+    verify::WatchState r; assert(r.restore(w)); r.beginSoak(T);
+    assert(r.status(T).get("delivery").get("soakStartedAtMs").asNumber() == T);
   }
   std::cout << "watchdog failure, work, recovery and restart checks passed\n";
 }
