@@ -43,8 +43,10 @@ function validZone(zone) {
 //     rows ("25.12.2025 - Closed", "07.09.2026 Closed"; measured 26-09 on all
 //     335 unresolved rows): that was this code until V3 K3, which reads the
 //     0/0 pair as the whole local day (owner OD-7) — see holidayWindow.
-// Both keep the WHOLE calendar unknown, exactly as before: no boundary is
-// invented here. Rows stored under the old code are mapped on read (below).
+// Omitted bounds, and any other invalid pair, still keep the WHOLE calendar
+// unknown, exactly as before: no boundary is invented for those. The 0/0 pair
+// is the one exception carved out by K3 above — it is read, not left unknown.
+// Rows stored under the old code are mapped on read (below).
 export const HOLIDAY_BOUNDS_OMITTED = 'holiday_bounds_omitted'
 export const HOLIDAY_BOUNDS_INVALID = 'holiday_bounds_invalid'
 const LEGACY_HOLIDAY_WINDOW_UNKNOWN = 'calendar_holiday_window_unknown'

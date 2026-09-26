@@ -491,6 +491,17 @@ test('K3: a 0/0 row on a DST day closes the whole local day — 25 UTC hours on 
   assert.equal(readAt(db, '2026-10-25T22:00:00Z').marketStatus, 'OPEN')
 })
 
+test('K3: a 0/0 row on a DST day closes the whole local day — 23 UTC hours on the EU spring change', t => {
+  const db = fixture(t)
+  const observed = at('2026-03-28T12:00:00Z')
+  // 29-03-2026 in Bucharest: local 00:00 EET = 28-03 22:00Z; next local midnight 00:00 EEST = 29-03 21:00Z.
+  write(db, spec({ ...ALWAYS, holiday: [zeroZero(20541, { scheduleTimeZone: 'Europe/Bucharest' })] }), observed)
+  assert.equal(readAt(db, '2026-03-28T21:59:59Z').marketStatus, 'OPEN')
+  assert.equal(readAt(db, '2026-03-28T22:00:00Z').marketStatus, 'CLOSED')
+  assert.equal(readAt(db, '2026-03-29T20:59:59Z').marketStatus, 'CLOSED', 'the 23rd local hour is still the holiday')
+  assert.equal(readAt(db, '2026-03-29T21:00:00Z').marketStatus, 'OPEN')
+})
+
 test('K3: a recurring 0/0 row closes that local date every year', t => {
   const db = fixture(t)
   const observed = at('2026-12-24T12:00:00Z') // Thu 24-12; 25-12 is a Friday, the FX schedule open
