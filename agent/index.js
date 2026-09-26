@@ -449,10 +449,14 @@ try {
   // reporting only the successes would be the reporting defect this repo
   // keeps finding.
   try {
-    const { backfillPositionHistory } = await import('./services/position-history.js')
+    const { backfillPositionHistory, refusedClassesPhrase } = await import('./services/position-history.js')
     const ph = backfillPositionHistory(db, { sinceMs: Date.now() - 90 * 86400_000 })
     const worst = Object.entries(ph.missingCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 5)
-    console.log(`[boot] position history: ${ph.complete} complete · ${ph.incomplete} incomplete of ${ph.seen} closed position(s) in 90 days` +
+    // V3 B4: seen = complete + incomplete + skipped (no account identity), so
+    // the three add up to the total printed; the refused are named by class.
+    const refusedBy = refusedClassesPhrase(ph.byClass)
+    console.log(`[boot] position history: ${ph.complete} complete · ${ph.incomplete} incomplete · ${ph.skipped} skipped (no account identity) of ${ph.seen} closed position(s) in 90 days` +
+      (refusedBy ? ` — incomplete by class: ${refusedBy}` : '') +
       (worst.length ? ` — most often missing: ${worst.map(([f, n]) => `${f} (${n})`).join(', ')}` : ''))
 
     // WHERE THE CLEAN DATA ACTUALLY BEGINS, read off the rows. The claim

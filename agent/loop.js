@@ -5954,10 +5954,12 @@ async function runLoop(db) {
         {
           name: 'position-history',
           run: async () => {
-            const { backfillPositionHistoryCooperatively } = await import('./services/position-history.js')
+            const { backfillPositionHistoryCooperatively, refusedClassesPhrase } = await import('./services/position-history.js')
             const out = await backfillPositionHistoryCooperatively(db, { sinceMs: Date.now() - 30 * 86400_000 })
             const worst = Object.entries(out.missingCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
-            log(`[position-history] ${out.complete} complete · ${out.incomplete} incomplete of ${out.seen} closed position(s)` +
+            const refusedBy = refusedClassesPhrase(out.byClass)
+            log(`[position-history] ${out.complete} complete · ${out.incomplete} incomplete · ${out.skipped} skipped (no account identity) of ${out.seen} closed position(s)` +
+                (refusedBy ? ` — incomplete by class: ${refusedBy}` : '') +
                 (worst.length ? ` — most often missing: ${worst.map(([f, n]) => `${f} (${n})`).join(', ')}` : ''))
             return out
           },
