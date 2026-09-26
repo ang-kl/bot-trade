@@ -1299,3 +1299,17 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   **`№ 9,199`** plus any unstamped line made after this ledger. The count is
   by replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+
+- 2026-09-26 01:20 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): the script reads this container's transcript only and was
+  refused as a reading. The 08:00 SGT report was stamped `№ 9,440` and the
+  owner-request analysis (sidebar, Reasons, AI page) `№ 9,477` (08:20 SGT
+  26-09). The transcript captures 38 text replies after it, all unstamped
+  status lines: K1b #1138 merged and read back (every demanded calendar
+  resolved), WEB-8 #1139 and B4 #1140 checked, fixed, merged and read back,
+  the K1c lane and its fix round, and the owner's request 2 (Performance
+  cards, strategy review, historical data) with its plan workflow launched.
+  So the last reply before this ledger is **`№ 9,515`** and the next stamped
+  reply is **`№ 9,516`** plus any unstamped line made after this ledger. The
+  count is by replies, not by stamps. A later re-measure that reads below this
+  line is missing these, not correcting them.
