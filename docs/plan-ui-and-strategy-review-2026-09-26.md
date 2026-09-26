@@ -1,6 +1,6 @@
 # Plan — sidebar, Reasons, AI page, Performance cards, strategy review and historical data (owner requests 1 and 2)
 
-26-09-2026 · revised 03:15Z after two independent verifications (§12) · §13 performance traces added 03:25Z
+26-09-2026 · revised 03:15Z after two independent verifications (§12) · §13 performance traces added 03:25Z · §14 cTrader history and the 150-bar correction added 04:10Z
 
 **PLAN — awaiting owner approval; nothing below is built.** It starts after the V3 work in flight. Which V3 items must land first is not verified here.
 
@@ -36,7 +36,7 @@ Times are UTC ("Z") unless marked SGT. "…0058" is account 46130058. PF is prof
   - The 19-09 basis (fib 26 closes at PF 2.72) and today's all-origin figure (fib 100, money PF 0.95) both count adopted and origin-less rows.
 - **cpp-verify: wrong on the fact, right on the direction.**
   - It stores no prices; it independently checks closed deals.
-  - Lookback is not short of storage: the broker returns 449–1,000 bars. The defects are in caching and in two strategies' windows.
+  - Lookback is not short of storage, and **cTrader does not cap it at 150 bars**: the broker returns every bar we ask for (1,000 of 1,000 on a closed market; 449 of 450 on an open one, where the still-forming bar counts toward the total but never reaches us). 150, 450 and 1,000 are **our own settings**. The defects are in caching and in two strategies' windows. (See §14.)
   - Stored history belongs in Node.
 - **No separate cpp service now.** Measure (Phase 0), fix the cache (S-3), and build a store only past a number you set (D18).
 - **Performance traces (your mandate, §13).** Baseline measured through the Chrome DevTools MCP. The layout jumps on 9 of 10 page and profile runs (CLS 0.21–1.03; good is ≤ 0.1). Reasons takes 10.5 s to draw on a phone. The slowness is in the browser, not the server. Every website PR will carry a before-and-after trace (D20–D22).
@@ -333,7 +333,7 @@ Replace it with §3's table.
 **The result:** 21,173 of 47,552 blockers in 7 days (44.5%, 01:34:52Z); fib alone had 10,922 at 02:44:24Z.
 
 **Other costs:**
-- **Fetch depth.** Every scan fetch asks for the deepest Scan-ON `minBars` (`fib-strategy.js:589-593`). That is ema_pullback's 450 (449 returned, 02:48:24Z), instead of 150.
+- **Fetch depth.** Every scan fetch asks for the deepest Scan-ON `minBars` (`fib-strategy.js:589-593`). That is ema_pullback's 450 (449 closed bars returned, 02:48:24Z), instead of our 150 floor (`SIGNAL_BARS`, `fib-strategy.js:60`).
 - **Storage.** cup_handle, with Scan ON, still writes `cup_handle_diagnostics` (`loop.js:4196-4204`): 6.65 M rows and 716 MB, the largest table (02:41:42Z).
 
 **The free "shadow" does not work.**
@@ -364,7 +364,7 @@ Replace it with §3's table.
 ## §5 The strategy review
 
 **How to read the table.**
-- **Window:** each strategy gets the last max(150, `minBars`) closed bars, or fewer if fewer are cached (`fib-strategy.js:637-640`).
+- **Window:** each strategy gets the last max(150, `minBars`) closed bars. **150 is our floor** (`SIGNAL_BARS`, `fib-strategy.js:60`), **not a cTrader limit**. A strategy gets fewer if fewer are cached (`fib-strategy.js:637-640`).
 - **Calendar span:** 150 bars of 1h are about:
   - 6.25 days of crypto;
   - 8.75 calendar days of FX;
@@ -392,7 +392,7 @@ Replace it with §3's table.
 | fvg_retrace | trend | all | 150 | Yes | 7 (insuff.) | 5 · 0 · 0 | OFF ×7 | History (never backtested) |
 | cup_handle | breakout | all | 210 | **No on 1mo** (190 bars) | 1 real signal | 4, no R | OFF ×7 | Review on years of 1d |
 | inv_cup_handle | breakout | all | 210 | No on 1mo | 0 | 0 | OFF ×7 | As above |
-| ema_pullback | trend | all | 450 (EMA200) | **Intermittent** (449); never 1mo | 14 (7 with R), July | 0 | OFF ×7 | Measure overlap with vwap_trend first (D14) |
+| ema_pullback | trend | all | 450 (EMA200) | **Intermittent** (449 of our 450 on an open market); never 1mo | 14 (7 with R), July | 0 | OFF ×7 | Measure overlap with vwap_trend first (D14) |
 | fib_618_fade | mean rev. | all | 150 | Yes | 82 · 36.6% · 0.57 · 0.60 | 6 · 0.11 · 0.14 | OFF ×7 (yours, 27-07) | **Retire** (D14); an order still filled 24-09 |
 | tsmom_long | momentum | 1d | 60-day return; 70 bars | Usually | 38 · 34.2% · 0.68 · 0.54 | 12 · 2.28 · 7.72 | **ON on …0058** | Keep to 19-12 |
 | tick_momentum_breakout | tick | quotes | 256 events | n/a | Shadow 2,738 at PF 0.323; 1,387 at 0.233 (02:51:08Z) | — | Blocked ×7 | Keep blocked; tick plan owns it |
@@ -405,15 +405,15 @@ Replace it with §3's table.
    - 94 of them lack an origin, and 49 are on DOW.US, 0016.HK and 0066.HK.
 2. **rsi_meanrev, fvg_retrace, cup_handle and inv_cup_handle.**
    - They have too few trades, and the nightly backtest cannot judge them.
-   - It runs 1,000 bars of the armed timeframes only, 24 symbols per sweep, and skips timeframes with fewer than 300 closed bars (`strategy-autopilot.js:36`, `:335-363`).
-   - 1,000 bars of 5m are about 3.5 days of crypto or FX, or 12.8 stock sessions.
+   - It runs 1,000 bars of the armed timeframes only, 24 symbols per sweep, and skips timeframes with fewer than 300 closed bars (`:335-363`). The 1,000 is **our constant** `BARS` (`strategy-autopilot.js:36`), carried over from the 07-07 manual backtest. It is not a broker limit.
+   - 1,000 bars of 5m are about 3.5 days of crypto, 3.5 trading days of FX, or 12.8 stock sessions. cTrader returns the full count even when our from–to window holds fewer trading bars (PG.US, 1,000 × 1h from a 1,005-hour window, 03:53Z 26-09). Deeper history needs a larger count or requests for earlier ranges; our code does neither (§14).
 3. **vwap_trend, va_breakout and vp_value, after their logic fixes.**
 
 **Where lookback is cut short (verified in code)**
 1. **Shallow reads overwrite deep ones.** Regime reads cache 30–80 bars under the scan's key, and the scan accepts them (`fib-strategy.js:159-175`, `:582`). Deeper strategies then return nothing for up to one bar.
-2. **No depth margin** (`:589-593`): 450 asked, 449 returned.
+2. **No depth margin** (`:589-593`): 450 asked, 449 closed bars received on an open market. The forming bar counts toward the 450 and never reaches the strategies. Asking for `minBars` + 1 fixes it; this is not a broker cap.
 3. **Expiry by fetch time, not bar close** (`:134-139`, `:632`).
-4. **Monthly history ends at 190 bars** (BTCUSD, 01:32Z).
+4. **Monthly history ends at 190 bars** (BTCUSD, 01:32Z; 450 asked). That is the symbol's full history at this broker (back to about Nov 2010), not a limit on the request.
 5. **Session and anchor cuts.** va/vp lose part of the previous session on 5m and 15m. vwap anchors are epoch buckets (`vwap-trend.js:23-28`, `indicators.js:159`).
 
 ---
@@ -426,7 +426,7 @@ Replace it with §3's table.
 |---|---|---|
 | Node scan cache | Bars, in memory | One bar period; lost on restart |
 | `atr_history` / `regimes` | Daily ATR and close / ATR, ADX, label | 504 rows per symbol / 30 days |
-| Autopilot | Fetches 1,000 bars per armed timeframe each sweep; stores none | — |
+| Autopilot | Fetches 1,000 bars (our constant) per armed timeframe, in one request each sweep; stores none; never requests earlier ranges | — |
 | Tick spools | Ticks for 53 symbols: demo 339.06 h (10 sealed segments); live 0 sealed (02:51:10Z) | Capped by size |
 | cpp-acct `/data` | The live spool only: 3.8 MB on a 48.9 GB mount (01:59Z). Railway created 50 GB against an approved 10 GB | — |
 | cpp-scan-timeframe | Nothing (Node sends the bars) | — |
@@ -438,12 +438,12 @@ Replace it with §3's table.
 - **Its value is independence.** If it supplied the bars the strategies trade on, the auditor would produce its own inputs.
 
 **Your direction is right.** Stored history helps:
-- **research depth:** years, not 1,000 bars;
+- **research depth:** years. cTrader serves them through larger counts or requests for earlier ranges, at up to 5 history requests per second. The 1,000-bar single request is our limit, not the broker's;
 - **frozen windows:** a closed period stops changing;
 - **warm-up:** about 680 requests, or 170 s, per deploy (*inference*);
 - **the request budget:** the autopilot re-fetches 24 symbols × 5 stored timeframes = 120 windows per sweep. That would be 312 under the 13-timeframe code default (calculation).
 
-**But none of the five lookback defects needs a store.** Three are cache logic (S-3), one is the broker's own history, and one is strategy windows. "Retracement over several days" calls for a **multi-timeframe design** (a daily or 4h swing grid with a lower-timeframe trigger).
+**But none of the five lookback defects needs a store.** Three are cache logic (S-3), one is the broker's own history (BTCUSD monthly, 190 bars), and one is strategy windows. "Retracement over several days" calls for a **multi-timeframe design** (a daily or 4h swing grid with a lower-timeframe trigger).
 
 | Option | Cost | Verdict |
 |---|---|---|
@@ -670,7 +670,7 @@ Each merge restarts Node, which also serves the website, so UI PRs are batched.
 | 10 | Blocker times carry a zone | **Failed** | `BlockerReport.jsx:65` |
 | 11 | Top cards collapse / remember | **Passed / Failed** | `Card.jsx:45` / `:57` |
 | 12 | cpp-verify holds no prices | **Passed** | `verify_session.cpp:21-32`; grep empty |
-| 13 | Full lookback on every scanned timeframe | **Failed** | ema 449 of 450; 1mo 190 bars; va/vp; vwap |
+| 13 | Full lookback on every scanned timeframe | **Failed** | ema 449 of 450 (our fetch has no margin for the forming bar); 1mo 190 bars (BTCUSD's full history at the broker); va/vp; vwap |
 | 14 | No colour-only signal | **Passed** | Badges are words |
 | 15 | Your limits untouched by this plan | **Passed** | Changes are ASK-FIRST; existing state: …0949 above both caps |
 
@@ -855,3 +855,64 @@ Each merge restarts Node, which also serves the website, so UI PRs are batched.
 | D20 | Make the trace rule standing, in CLAUDE.md's merge gate for website PRs? | Yes / only for this plan's PRs | **Yes**, it is your mandate; the wording above |
 | D21 | Regression thresholds | As proposed; tighter; looser | As proposed, reviewed after 5 PRs of data |
 | D22 | The Trade page's broker snapshot every 5 s while positions are open | Keep; 5 s but only while the tab is visible; 15 s | Keep 5 s while visible (already paused when asleep, `Trade.jsx:568`); measure the broker cost with your key first |
+
+
+---
+
+## §14 cTrader history: what the API allows, and what our code asks for (added 26-09 after the owner's question)
+
+**The owner asked:** "Doesn't cTrader allow API to do backtest data by days and weeks?" and "you mentioned the limitation of ctrader is 150 bars".
+
+**Answer: yes, it does.** The 150-bar figure is not cTrader's. It is our own floor (`SIGNAL_BARS = 150`, `agent/services/fib-strategy.js:60`). Earlier wording in this plan made it read like a broker limit; that was wrong, and §5 and §6 are now corrected.
+
+This section was checked by a three-agent workflow: a documentation lane, a code-and-production lane, and an adversarial verifier that re-fetched every source. The documentation was read 03:41–03:56Z and production 03:56–03:58Z on 26-09.
+
+### What cTrader allows (verified)
+
+- **The request.** `ProtoOAGetTrendbarsReq` (payload 2137) takes a period, an optional `fromTimestamp` and `toTimestamp`, and a `count`: "Limit number of trend bars in response back from toTimestamp" (spotware/openapi-proto-messages `OpenApiMessages.proto:517-526`). The response carries a `hasMore` flag (:537).
+- **The periods** run M1 to MN1 and include **D1, W1 and MN1** (`OpenApiModelMessages.proto:536-551`).
+- **The rate limit.** "a maximum of 5 requests per second per connection for any historical data requests" (help.ctrader.com/open-api). Our code paces itself at 4 per second, process-wide (`agent/lib/ctrader-ws.js:102`).
+- **Range caps.** Per-period range caps were published until January 2024 (commit 36d5001) and have since been removed from the protocol text. Production already exceeds those old caps: 4h ≈ 2 years, 1d ≈ 4 years and 1w ≈ 8.6 years came back in one request each.
+- **A per-response cap** of 14,000 bars was stated by Spotware on their forum in 2020. It has not been tested here.
+- **Tick history** (`ProtoOAGetTickDataReq`, payload 2145) is limited to one week per request, with `hasMore` paging (help.ctrader.com/open-api/symbol-data).
+- **In production, one request returned** (03:53–03:57Z):
+  - 1,000 bars when asked for 1,000, on 5m, 30m, 1h, 4h and 1d;
+  - 449 weekly bars when asked for 450;
+  - BTCUSD's whole monthly history, which is 190 bars.
+
+### What our code does (verified)
+
+- **One request per timeframe, ending now** (`ctrader-ws.js:766-768`). It never asks for an earlier range, never reads `hasMore` (`:712`), and stores no bars.
+- **The depths are all ours:**
+  - 150 is the analysis floor;
+  - `minBars` sets deeper fetches (450 for ema_pullback);
+  - the autopilot's 1,000 (`strategy-autopilot.js:36`) is a July choice;
+  - 3,000 caps synthesised periods and the manual backtest (`ctrader-ws.js:756`, `actions.js:388`).
+- **So the backtest is shallow by our choice.** 1,000 bars of 5m is 3.5 days of crypto or FX, or about 13 stock sessions, and the walk-forward then cuts that into four slices.
+
+### What backtesting over weeks, months or years takes
+
+Three changes, all in Node, with no new service:
+1. Ask for more bars per request.
+2. Page backward: the next request ends just before the oldest bar received, repeated.
+3. Store closed bars, so each sweep fetches only new ones. This is H-1/H-2.
+
+**Cost** (a calculation, at 999–1,000 bars per request): a one-off backfill of 90 days of 5m, 1 year of 1h, 2 years of 4h and 5 years of 1d is about:
+- 42 requests per crypto symbol;
+- 32 per FX symbol;
+- 11 per US stock.
+
+For 24 crypto symbols that is about 1,000 requests: roughly 4–7 minutes at our pace, using only the spare share of the budget. The scan used 1.45 requests per second at 03:57Z. Backtest CPU grows with the bar count.
+
+**Effect on the plan.**
+- **S-3** adds `minBars` + 1 as the fetch margin.
+- **H-2's backfill** becomes a small, bounded job, not a new service. It is still ask-first on depth (D16).
+- **The D18 trigger** stays the gate for a permanent store.
+
+**Not verified:**
+- today's per-response cap;
+- whether an over-long request is rejected (`INCORRECT_BOUNDARIES`) or quietly truncated;
+- whether `hasMore` is set on trendbar responses;
+- each symbol's history depth at the broker.
+
+Each needs one measured request; they are measured before H-2 is built.
