@@ -64,8 +64,11 @@
 // own evidence row. A row whose stored approval no record confirms (or one
 // contradicts) is NOT promoted out of reconciler_adopted even when its intent
 // matches: promotion would carry the unconfirmed id out of the adopted-row
-// count as a bot trade's approval. A row left incomplete stays counted in
-// trade_reasons, and says why.
+// count as a bot trade's approval. Nor is a row with no stored approval whose
+// plan the pre-L2a sweep wrote (source closed_market_limit_fill; checker nit
+// N1): promotion would carry that symbol+time plan out of the count as a bot
+// trade's plan. A row left incomplete stays counted in trade_reasons, and
+// says why.
 //
 // HEURISTIC LINKS (fix round, checker blocker 1). An approval id on a row
 // still `reconciler_adopted` with no evidence row here was written by the
@@ -389,20 +392,45 @@ export function recoverTradeReason(db, tradeId, { writer = 'backfill', at = new 
   else if (approval && Number(t.risk_event_id) !== Number(approval.id)) {
     out.conflicts.push({ field: 'risk_event_id', stored: Number(t.risk_event_id), evidenced: approval.id, evidence: approval.evidence, detail: approval.detail })
   } else if (approval) confirm = { value: approval.id, evidence: approval.evidence, detail: `stored approval #${t.risk_event_id} confirmed: ${approval.detail}` }
+  // The row's plan, read BEFORE the origin guard (checker nit N1): nothing in
+  // this pass writes trade_plans, so the value is the same one the missing
+  // list below is judged on.
+  let planned = false, planSource = null
+  try {
+    const p = db.prepare('SELECT source FROM trade_plans WHERE trade_id = ?').get(t.id)
+    planned = !!p; planSource = p?.source ?? null
+  } catch { planned = false }
   if (intent && adopted) {
     // ORIGIN. The intent proves a bot fill — but a stored approval id on a
     // still-adopted row is the pre-L2a symbol+time link (heuristicLinks), and
     // promoting the row would present that id as a bot trade's approval, out
-    // of reach of the adopted-row count (checker blocker 1). So the origin
-    // moves only when the row carries no approval yet or a record confirmed
-    // the stored one; otherwise it stays adopted — counted, and named.
-    if (t.risk_event_id == null || confirm) {
+    // of reach of the adopted-row count (checker blocker 1). The same holds
+    // for a closed_market_limit_fill plan on a row with no stored approval:
+    // the pre-L2a sweep wrote it from the resting row it linked by symbol +
+    // time, and heuristicLinks judges a bot row by the bot-row rules, so a
+    // promotion would count that plan as a reason (checker nit N1). So the
+    // origin moves only when the row carries neither — no approval yet and no
+    // sweep plan — or a record confirmed the stored approval (which confirms
+    // the resting row the sweep's plan came from); otherwise it stays
+    // adopted — counted, and named. The link and the strategy are still
+    // written: each stands on its own evidence.
+    //   A stored approval THIS module wrote on an earlier pass (its evidence
+    // row has no before value) is named again by the same record on the next
+    // pass. That confirms the approval, not the sweep's resting row, so it
+    // does not confirm the plan (heuristicLinks' own rule: before = value);
+    // without this, the second pass would promote what the first refused.
+    const priorApproval = t.risk_event_id != null ? approvalEvidenceOf(db, t.id) : null
+    const ownApproval = priorApproval != null && priorApproval.before == null
+    const sweptPlanUnconfirmed = planSource === SWEEP_PLAN_SOURCE && !(confirm && !ownApproval)
+    if ((t.risk_event_id == null || confirm) && !sweptPlanUnconfirmed) {
       const origin = up(intent.order_type || 'MARKET') === 'MARKET' ? 'bot_market_dispatch' : 'bot_pending_fill'
       plan.origin = { value: origin, evidence: m.via, detail: `intent ${intent.id} (${intent.producer_id}, ${intent.order_type || 'MARKET'})` }
     } else if (out.conflicts.length) {
       out.why.origin = `left reconciler_adopted: stored approval #${out.conflicts[0].stored} is contradicted by ${out.conflicts[0].evidence} (#${out.conflicts[0].evidenced})`
-    } else {
+    } else if (t.risk_event_id != null && !confirm) {
       out.why.origin = `left reconciler_adopted: stored approval #${t.risk_event_id} stands only on the pre-L2a symbol + time link, and no record confirms it`
+    } else {
+      out.why.origin = `left reconciler_adopted: its plan (source ${SWEEP_PLAN_SOURCE}) was written by the pre-L2a closed-market sweep from a resting row linked by symbol + time, and no record confirms that link`
     }
   }
   out.intent = intent || null
@@ -455,11 +483,6 @@ export function recoverTradeReason(db, tradeId, { writer = 'backfill', at = new 
   const has = (f) => (out.wrote[f] != null) || (f === 'strategy' ? !blank(t.strategy) : t[f] != null)
   if (!has('strategy')) { out.stillMissing.push('strategy'); out.why.strategy = UNRECOVERABLE.strategy }
   if (!has('risk_event_id')) { out.stillMissing.push('approval id'); out.why['approval id'] = withWhy(UNRECOVERABLE['approval id']) }
-  let planned = false, planSource = null
-  try {
-    const p = db.prepare('SELECT source FROM trade_plans WHERE trade_id = ?').get(t.id)
-    planned = !!p; planSource = p?.source ?? null
-  } catch { planned = false }
   if (!planned) { out.stillMissing.push('plan'); out.why.plan = UNRECOVERABLE.plan }
   // Checker blocker 1: a value only the pre-L2a symbol+time link wrote is
   // named as missing, never counted as a reason (heuristicLinks).

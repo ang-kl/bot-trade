@@ -250,6 +250,46 @@ test('blocker 1: an intent that matches a swept row links it but does not promot
   assert.equal(out.stillMissing['approval id (heuristic link)'], 1)
 })
 
+test('checker nit N1: a swept plan on a row with NO stored approval does not let a matching intent promote it — the plan stays a heuristic link, counted post_contract', async () => {
+  const db = initDB(':memory:')
+  const ev = approval(db)
+  intent(db, { rev: ev }) // the ledger recorded this position, under its own approval
+  // What the pre-L2a sweep left when the resting row it linked carried no
+  // approval: no id on the trade, its levels as the plan.
+  const t = adopted(db, { label: 'PRE|v1|DON|HI|LDN|1d|-' })
+  const { recordTradePlan } = await import('./trade-plans.js')
+  recordTradePlan(db, t, { accountId: ACCT, symbol: 'HD.US', side: 'SELL', strategy: 'donchian_breakout', timeframe: '1d', entry: 380, sl: 390, tp: 360, source: 'closed_market_limit_fill' })
+  assert.equal(vOf(db, t)[0].detail.match(/and no (.*?) —/)[1], 'strategy, approval id, plan (heuristic link)', 'the probe, before the backfill')
+  const out = await backfillAdoptedReasons(db)
+  // The link, the strategy and the approval each stand on their own record
+  // and are written; the origin is not, so the plan is still judged as the
+  // sweep's link rather than as a bot trade's plan.
+  assert.deepEqual(row(db, t), { origin: 'reconciler_adopted', origin_source: 'write', strategy: 'donchian_breakout', intent_id: 'i2m2fs9nty3dk', risk_event_id: ev })
+  assert.deepEqual(evidence(db, t), { strategy: 'label', intent_id: 'intent_position', risk_event_id: 'intent_approval' })
+  assert.equal(db.prepare('SELECT source FROM trade_plans WHERE trade_id = ?').get(t).source, 'closed_market_limit_fill')
+  const after = vOf(db, t)
+  assert.deepEqual(after.map(v => [v.kind, v.contract]), [['adopted_ours_unreasoned', 'post_contract']], 'still counted, and not as plan_unscored on a bot row')
+  assert.equal(after[0].detail.match(/and no (.*?) —/)[1], 'plan (heuristic link)')
+  assert.deepEqual(out.stillMissing, { 'plan (heuristic link)': 1 })
+  // A second pass reads the approval the first one wrote as "stored", and the
+  // same intent names it again: that confirms the approval, not the sweep's
+  // resting row, so it promotes nothing either.
+  assert.match(recoverTradeReason(db, t).why.origin, /^left reconciler_adopted: its plan \(source closed_market_limit_fill\) was written by the pre-L2a closed-market sweep/)
+  assert.equal(row(db, t).origin, 'reconciler_adopted')
+  assert.deepEqual(vOf(db, t).map(v => [v.kind, v.contract]), [['adopted_ours_unreasoned', 'post_contract']])
+  // The backfill's own cadence reaches such a row again whenever its label
+  // names no strategy (it stays a candidate): the second sweep holds too.
+  const db2 = initDB(':memory:')
+  intent(db2, { rev: approval(db2) })
+  const t2 = adopted(db2, { label: 'AP|v1|-|HI|SGP|4h|-' })
+  recordTradePlan(db2, t2, { accountId: ACCT, symbol: 'HD.US', side: 'SELL', strategy: 'donchian_breakout', timeframe: '1d', entry: 380, sl: 390, tp: 360, source: 'closed_market_limit_fill' })
+  await backfillAdoptedReasons(db2)
+  const second = await backfillAdoptedReasons(db2)
+  assert.equal(second.considered, 1, 'still a candidate: the label names no strategy')
+  assert.equal(row(db2, t2).origin, 'reconciler_adopted')
+  assert.equal(vOf(db2, t2)[0].detail.match(/and no (.*?) —/)[1], 'strategy, plan (heuristic link)')
+})
+
 test('blocker 1: a swept id that an evidence record CONFIRMS is recorded as confirmed — then it, and the plan from the same resting row, are reasons', async () => {
   const db = initDB(':memory:')
   const { t, ev } = await sweptRow(db, { pos: '555' })
