@@ -59,6 +59,24 @@ test('empty complete history stamps only the searched position, never peers or u
   assert.equal(row(db, other).pnl_attempts, 0); assert.equal(row(db, orphan).pnl_attempts, 0)
 })
 
+// Checker fix round #2, item 1 (CLAUDE.md #1): the SAME empty-history read,
+// row-scoped (positionId given, so pnl-backfill.js's internal windowPass is
+// false), but on a WRITTEN-OFF target. pnl-backfill.js:882's own call site
+// passes includeWrittenOff: !windowPass, which is `true` here — the
+// deliberate, bounded, row-scoped read this file's own comment (:120-125)
+// says must still count, unlike the broad periodic sweep. Nothing pinned
+// this: flipping :882's argument to an unconditional `true` OR an
+// unconditional `false` left every test in this file green, because every
+// other written-off fixture here goes through old-position-pnl.js's OWN
+// noteTradeAttempts call (line 126, only reached on out.state === 'refused'),
+// never through pnl-backfill.js's internal one at a 'no_matching_close'
+// state, which is what an empty history (no error, no fill) actually is.
+test('a written-off target still gets its row-scoped attempt charged on an empty complete history (pnl-backfill.js:882, windowPass=false)', async t => {
+  const db = fixture(t), target = seed(db, '2', '700', { writtenOff: 1 })
+  await backfillClosedPnl(db, creds, args(async () => ({ ctidTraderAccountId: '2', hasMore: false })))
+  assert.equal(row(db, target).pnl_attempts, 1, 'row-scoped (includeWrittenOff: !windowPass === true) still counts, unlike the broad sweep')
+})
+
 test('omitted zero-valued swap and commission preserve complete broker P&L', async t => {
   const db = fixture(t), target = seed(db), response = history()
   for (const d of response.deal.filter(d => d.closePositionDetail)) {

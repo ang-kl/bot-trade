@@ -269,5 +269,23 @@ export function tradePlansReport(db, { days = 30, now = Date.now() } = {}) {
     exitMatchedPct: scored.length ? Math.round((scored.filter(r => r.exit_matched).length / scored.length) * 1000) / 10 : null,
   }
   const open = db.prepare(`SELECT COUNT(*) AS n FROM trade_plans p JOIN trades t ON t.id = p.trade_id WHERE t.status IN ('open','submitting')`).get().n
-  return { days, coverage, aggregate, openPlans: open, recent: scored.slice(0, 50), note: 'Plans are written at entry and scored at close; a close with no plan is a coverage gap, not a score.' }
+  // UI-5 (RS-1: "Trade plans: Misleading. 28 of 50 are in the wrong unit,
+  // all from the old adopter (15-24 Sep) -> Flag the bad rows; show
+  // coverage. The correction is D5"). `coverage` above already answers
+  // "show coverage" (botClosed/botPlanned/botScored — unchanged by this
+  // read). "Flag the bad rows" was missing: recordTradePlan() refuses a
+  // wrong-unit plan at WRITE time now (planProblems, X1/W3), but rows
+  // written before that check exists carry no flag at all — the reader
+  // shows them as sound. Run the SAME planProblems() check read-only, per
+  // row, on the 50 the owner actually looked at; nothing is corrected here
+  // (D5, ask-first, is the correction) — only named.
+  const recent = scored.slice(0, 50).map(r => ({ ...r, problems: planProblems({ side: r.side, entry: r.planned_entry, sl: r.planned_sl, tp: r.planned_tp }) }))
+  // N4 (checker nit round): named recentFlagged, not flagged — this counts
+  // problems only across the 50 rows sliced into `recent` above, not the
+  // full scored population, and `flagged` on its own reads as if it did.
+  const recentFlagged = recent.filter(r => r.problems.length).length
+  return {
+    days, coverage: { ...coverage, recentFlagged }, aggregate, openPlans: open, recent,
+    note: 'Plans are written at entry and scored at close; a close with no plan is a coverage gap, not a score. `problems` on a row is a read-only flag (planProblems) — it corrects nothing.',
+  }
 }
