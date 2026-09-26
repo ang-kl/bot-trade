@@ -287,6 +287,26 @@ export function credsForPosition(db, positionId, opts = {}) {
  * @param {string|null} watchlistJson — raw autopilot_symbols_json state
  * @returns {string[]}
  */
+/**
+ * Coerce a POST /actions/named-corrections `ids` body field into row ids.
+ * N6 (checker nit round): the earlier `.map(Number).filter(Number.isFinite)`
+ * let through anything Number() can be talked into: `true` (Number(true)
+ * === 1), a nested array like `[5]` (Number([5]) === 5, via its own
+ * single-element toString), `"0x10"` (=== 16), `"1e3"` (=== 1000), and `1.5`
+ * (finite but not a row id). Only a genuine integer number or a digit-only
+ * string names a row id here; everything else is dropped rather than
+ * silently reinterpreted into a different id.
+ *
+ * @param {unknown} ids — req.body?.ids
+ * @returns {number[]|undefined}
+ */
+export function coerceCorrectionIds(ids) {
+  if (!Array.isArray(ids)) return undefined
+  return ids
+    .filter(v => (typeof v === 'number' && Number.isInteger(v)) || (typeof v === 'string' && /^\d+$/.test(v)))
+    .map(Number)
+}
+
 export function pickBacktestSymbols(body, watchlistJson) {
   let names = Array.isArray(body?.symbols) && body.symbols.length
     ? body.symbols
@@ -4858,7 +4878,7 @@ export default function actionsRouter(db, deps = {}) {
       const apply = req.body?.apply === true
       const includeNeverFilled = req.body?.includeNeverFilled !== false
       const includeMoney = req.body?.includeMoney !== false
-      const neverFilledIds = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isFinite) : undefined
+      const neverFilledIds = coerceCorrectionIds(req.body?.ids)
       const { runNamedCorrections } = await import('../services/named-corrections.js')
       const out = runNamedCorrections(db, { apply, includeNeverFilled, includeMoney, neverFilledIds })
       console.log(`[actions] named-corrections ${out.mode}${out.dryRun ? ' (dry run — nothing written)' : ` — ${out.neverFilled.applied + out.money.applied} row(s) applied, ${out.neverFilled.skipped + out.money.skipped} skipped${out.neverFilled.refused ? ' (never-filled refused: no ids)' : ''}`}`)

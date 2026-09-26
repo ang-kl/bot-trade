@@ -183,10 +183,17 @@ export function applyNeverFilledRejections(db, { ids } = {}) {
 //
 // EVIDENCE IS THE DEAL BREAKDOWN, WHERE IT EXISTS (checker N-a) — the same
 // shape deal-money.js's own comment uses for #714: "local 2.91 against three
-// broker deals 100.27 + 99.53 + 2.91 = 202.71". Found in this build's own
-// earlier broker-deal reads (scratchpad lifecycle/v/d_46130058.json,
-// d_47790949.json — the position-lifecycle-evidence lane's broker_deals
-// dump, position_id keyed) for #1253, #471, #466 and #309; not invented.
+// broker deals 100.27 + 99.53 + 2.91 = 202.71". Not invented — read from the
+// broker's own deal history for the position each row is on, one
+// account-scoped read per account (N7, checker fix round — durable
+// description in place of a scratchpad path, which names a file this build
+// wrote to and later cleaned up, not a source anyone else can re-open):
+//   - account 46130058, read 25-09-2026 (positions 237140621 for #1253,
+//     234867098 for #714, 234697676 for #471, 234697562 for #466)
+//   - account 47790949, read 11-08-2026 (position 233866238, matched to
+//     both #309 and #310)
+// Each position's deals sum exactly to the correction below; the deal ids
+// and per-deal figures are in the evidence strings themselves.
 //
 // #309/#310 (checker N-c, reworded): #309's own broker lifecycle sums to
 // 351 (its −84.5 deal plus #310's 435.5 deal — both matched_trade_id 310 in

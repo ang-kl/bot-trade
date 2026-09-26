@@ -280,9 +280,12 @@ export function tradePlansReport(db, { days = 30, now = Date.now() } = {}) {
   // row, on the 50 the owner actually looked at; nothing is corrected here
   // (D5, ask-first, is the correction) — only named.
   const recent = scored.slice(0, 50).map(r => ({ ...r, problems: planProblems({ side: r.side, entry: r.planned_entry, sl: r.planned_sl, tp: r.planned_tp }) }))
-  const flagged = recent.filter(r => r.problems.length).length
+  // N4 (checker nit round): named recentFlagged, not flagged — this counts
+  // problems only across the 50 rows sliced into `recent` above, not the
+  // full scored population, and `flagged` on its own reads as if it did.
+  const recentFlagged = recent.filter(r => r.problems.length).length
   return {
-    days, coverage: { ...coverage, flagged }, aggregate, openPlans: open, recent,
+    days, coverage: { ...coverage, recentFlagged }, aggregate, openPlans: open, recent,
     note: 'Plans are written at entry and scored at close; a close with no plan is a coverage gap, not a score. `problems` on a row is a read-only flag (planProblems) — it corrects nothing.',
   }
 }

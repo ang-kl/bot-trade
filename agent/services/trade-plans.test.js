@@ -105,7 +105,7 @@ test('tradePlansReport: coverage counts bot closes apart from adopted ones, and 
 // out of scope here — this is read-only flagging.
 // ---------------------------------------------------------------------------
 
-test('tradePlansReport flags an old (pre-refusal) wrong-unit plan with planProblems, leaves a sound plan unflagged, and counts flagged in coverage', () => {
+test('tradePlansReport flags an old (pre-refusal) wrong-unit plan with planProblems, leaves a sound plan unflagged, and counts recentFlagged in coverage', () => {
   const db = initDB(':memory:')
   // A sound plan, via the normal write path.
   const soundId = openTrade(db, { symbol: 'EURUSD' })
@@ -130,7 +130,7 @@ test('tradePlansReport flags an old (pre-refusal) wrong-unit plan with planProbl
   assert.deepEqual(bad.problems, planProblems({ side: 'BUY', entry: 1.10, sl: 100.0, tp: 1.20 }), 'the same rule new plans are refused by, run read-only on the old row')
   assert.ok(bad.problems.includes('risk_scale'), 'a stop this far away can only be a unit error')
 
-  assert.equal(r.coverage.flagged, 1, 'coverage counts the flagged row without changing the existing coverage fields')
+  assert.equal(r.coverage.recentFlagged, 1, 'coverage counts the flagged row (of the 50 recent) without changing the existing coverage fields')
   assert.equal(r.coverage.botClosed, 2, 'coverage is otherwise unchanged')
 
   // Nothing was corrected — D5 is a separate, ask-first step.

@@ -3299,17 +3299,24 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/phase-audit', async (req, res) => {
     try {
-      const { recentPhaseAudit, phaseAuditSplit } = await import('../services/phase-audit.js')
+      const { phaseAuditSplit } = await import('../services/phase-audit.js')
       const { viewedAccountOf, describeScope } = await import('../services/viewed-account.js')
       const viewed = viewedAccountOf(db, req)
       const limit = req.query.limit ? Number(req.query.limit) : 100
       // UI-5 (RS-1: "split out switch flips" — see phase-audit.js's own
-      // doc). `audit` is kept exactly as before (every reader of it is
-      // unaffected); `switches` and `controllerEvents` are the split view,
-      // added beside it.
+      // doc). N5 (checker nit round): `audit` used to ship BESIDE
+      // `switches`/`controllerEvents`, so the same rows travelled the wire
+      // twice and Reasons.jsx's generic shapeBody() (src/lib/reasons-view.js
+      // — every array-of-objects top-level field becomes its own table)
+      // rendered them a third time over, as three tables instead of two.
+      // src/lib/reasons-view.js's `REASON_ENDPOINTS` phase-audit def has no
+      // `keyedTables`/special-case on `audit`, and the only reader of this
+      // route (Reasons.jsx's PhaseAuditSection, on Desk) renders whatever
+      // fields the body has generically — so `audit` is dropped rather than
+      // duplicated; `switches` + `controllerEvents` are the complete split,
+      // covering exactly what `audit` used to.
       res.json({
         scope: describeScope(viewed),
-        audit: recentPhaseAudit(db, { limit, accountId: viewed.accountId }),
         ...phaseAuditSplit(db, { limit, accountId: viewed.accountId }),
       })
     } catch (err) {
