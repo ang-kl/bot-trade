@@ -11,6 +11,7 @@ An accepted order without a confirmed fill cannot enroll a partial manager.
 Historical/adopted positions, another account, another lifecycle, altered plans
 or a minimum-volume whole-position plan never acquire a partial close intent.
 Book ownership and enrollment commit together, with complete rollback on error.
+(T4, 26-09: the entry is now two atomic steps, deliberately: see "T4" below.)
 
 Scope: new entry-contract service/tests, shared book-entry handover integration,
 market/resting-entry call sites and read-only status needed to expose incomplete
@@ -220,3 +221,71 @@ both show the trigger labelled unavailable with the reason, never armed.
 
 Production effect: none while `recordedPlans` is 0. The pass reads no
 credentials and makes no broker call; it writes its record and beats.
+
+## T4 (P0-3): the market producer, built OFF (26 September)
+
+Owner, 26-09 18:05 SGT: OD-3 accepted (swap = broker rate × median nights;
+deferred binding: yes). OD-1 (resume momentum entries) and OD-15 (resting
+orders count toward the caps) are NOT answered. So T4 is built so that it
+changes no live behaviour until they are.
+
+**The switch.** `agent/config/momentum-entries.json` ships `"market": false`.
+Only the literal `true` turns it on; a missing or malformed file is off
+(`momentum-entry-switch.js`). While it is off, `autoTrade` asks nothing new
+of the broker and takes exactly the pre-T4 path for every producer: a
+momentum proposal carries no target and the shared execution boundary
+refuses it (`guard_no_target`). A test drives that through the real
+`autoTrade` (`momentum-entry-t4.test.js`, "SWITCH OFF").
+
+**With the switch on** (only after the owner's OD-1), for the book's
+`cross_sectional_book` and the daily `daily_momentum_account` entries:
+
+- A closed market is refused by name, `momentum_closed_market_entry: …`,
+  once per closed spell, and nothing is rested for the next open (OD-1(b)).
+- An entry that would rest as an HTF limit is refused by name,
+  `momentum_resting_limit_held: …`: resting momentum limits carry no plan
+  (P0-4 is not built) and wait for OD-15. `wiring.limit` stays "not wired".
+- Before the risk gate, the account's own broker evidence is read (its symbol
+  list and assets for the quote currency and the USD conversion symbol, a
+  fresh symbol read for lot size, grid and swap, the conversion quote, and
+  the traded quote last). The entry is the live quote, the stop is the
+  approved distance exactly as `relativePoints` sends it, and the gate is
+  shown TP1 at the partial trigger (the stricter R:R) and TP2 at the runner
+  target. Q is `effectiveRrFloor(db, account, 'tsmom_long')`. A gate that
+  would stretch the target is refused by name, not obeyed.
+- After sizing, fresh evidence again (quote last) and the plan with the
+  integer broker volume. **Step one:** the `submitting` trade row (entry,
+  stop, broker target and integer-consistent volume from the plan) and
+  `recordMomentumEntry` share one transaction; if the intent cannot be
+  recorded there is no row and no order.
+- **Step two, deferred:** after the send the intent is marked
+  `AWAITING_BIND` with the broker's position and bound from a live position
+  read that proves the bracket. The ledger then carries the bound plan (the
+  stop and targets moved to the fill in whole ticks). A bind not proven at
+  once stays `AWAITING_BIND`: the book takes the position (its broker stop
+  and runner target are already on it; `enrollMomentumBook` answers
+  `awaiting_bind`) and the partial pass binds and enrols it later, in one
+  transaction. An exited position still becomes `BIND_ABANDONED` (T3).
+- Swap (OD-3): the broker's nightly rate for the side from the fresh symbol
+  read, per `swapCalculationType` (PIPS, POINTS, PERCENTAGE / 360; an absent
+  type is read as the proto default PIPS and recorded as assumed), times the
+  book's median holding nights over its closed rows, plus two nights for each
+  triple-swap day the holding can span (ceil(nights / 7)). A positive swap is
+  a credit and never lowers C. The basis rides the intent as `carry`.
+
+`/state/momentum-targets` now reads `wiring.market` "wired" with
+`enabled: false, switch: "off"`, `wiring.limit` "not wired", and keeps
+`runtimeIntegration: INCOMPLETE` with the switch named as a gap: a wired
+producer that is switched off feeds the partial manager nothing.
+
+The producers' synths still carry `tp1: null` (`buildEntrySynth` is
+unchanged): the plan is attached inside `autoTrade`, behind the switch, so
+the four `tp1: null` assertions in the book and account tests stay true and
+were not rewritten.
+
+Tested end to end through `autoTrade`'s test-only transport seam (honoured
+only under `node --test`, pinned) and the fake broker: entry → bind →
+`bookEntryWrite` → ARMED → trigger → one close → CONFIRMED, with the
+database closed and reopened between stages. Not covered: P0-4 (resting
+limits) and F8 (how cTrader anchors a multi-deal average fill's bracket; such
+a fill is refused at the bind by name and stays `AWAITING_BIND`).

@@ -205,6 +205,12 @@ export function bindAbandonEvidence(db, accountId, tradeId) {
   return null
 }
 
+/** Is any intent waiting for its deferred bind (V3 T4)? Ledger read only. */
+export function awaitingBinds(db) {
+  if (!hasTable(db, 'momentum_target_intents')) return false
+  try { return !!db.prepare("SELECT 1 FROM momentum_target_intents WHERE state='AWAITING_BIND' LIMIT 1").get() } catch { return false }
+}
+
 export function abandonExitedBinds(db, { nowMs }) {
   if (!hasTable(db, 'momentum_target_intents')) return []
   const waiting = db.prepare("SELECT account_id, trade_id FROM momentum_target_intents WHERE state='AWAITING_BIND'").all()
@@ -314,6 +320,17 @@ export async function runMomentumPartialPass(db, { credsFor = () => null, now: c
   const fail = (where, e) => { summary.ok = false; summary.errors.push(`${where}: ${short(e)}`) }
 
   try { summary.abandonedBinds = abandonExitedBinds(db, { nowMs: startMs }) } catch (e) { fail('bind_abandon', e) }
+
+  // V3 T4, the deferred half of binding: an AWAITING_BIND intent whose book
+  // row is open is read, bound and enrolled here. Only when one exists, so a
+  // pass with no such intent makes no broker call and imports nothing.
+  if (awaitingBinds(db)) {
+    try {
+      const bindAwaiting = deps.bindAwaiting || (await import('./momentum-entry-producer.js')).bindAwaitingMomentumEntries
+      summary.deferredBinds = await bindAwaiting(db, { credsFor, now })
+      for (const b of summary.deferredBinds) log(`momentum partial …${String(b.accountId).slice(-4)} trade ${b.tradeId}: deferred bind ${b.bound ? `bound (${b.mode})` : `waits (${b.reason})`}`)
+    } catch (e) { fail('deferred_bind', e) }
+  }
 
   let rows = []
   if (hasTable(db, 'momentum_partial_plans')) {

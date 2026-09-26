@@ -113,6 +113,29 @@ function targets({ entry, originalStop, risk, requiredRr, cost, digits, directio
     runnerTarget: (entryTicks + direction * (triggerTicks + outwardTicks(riskTicks))) / factor }
 }
 
+/** V3 T4: the two prices planMomentumTargets would plan, for a caller that
+ * has no volume yet. autoTrade asks the risk gate before it sizes, so the
+ * gate is shown the plan's trigger and runner target from this; the plan
+ * itself is still made by planMomentumTargets once the volume is known. Same
+ * checks and arithmetic, without the volume and therefore without a mode. */
+export function momentumTargetPrices(input = {}) {
+  const { side, entry, originalStop, requiredRr, costReservePrice: cost, digits } = input
+  const refuse = reason => ({ ok: false, policy: MOMENTUM_TARGET_POLICY, reason })
+  if (side !== 'BUY' && side !== 'SELL') return refuse('direction_required')
+  if (!positive(entry) || !positive(originalStop) || !positive(requiredRr)
+    || !finite(cost) || cost < 0) return refuse('risk_and_cost_evidence_required')
+  if (requiredRr < MOMENTUM_MIN_REQUIRED_RR) return refuse('required_rr_below_hard_minimum')
+  if (!Number.isInteger(digits) || digits < 0 || digits > 8) return refuse('price_precision_required')
+  if (!priceDigits(digits)) return refuse('relative_bracket_precision_unsupported')
+  const direction = side === 'BUY' ? 1 : -1
+  const risk = direction * (entry - originalStop)
+  if (!(risk > 0)) return refuse('original_stop_on_wrong_side')
+  const { trigger, runnerTarget } = targets({ entry, originalStop, risk, requiredRr, cost, digits, direction })
+  if (!positive(trigger) || !(direction * (trigger - entry) > cost)
+    || !positive(runnerTarget) || direction * (runnerTarget - trigger) <= 0) return refuse('target_price_invalid')
+  return { ok: true, policy: MOMENTUM_TARGET_POLICY, trigger, runnerTarget, initialRisk: risk }
+}
+
 /** Volumes are broker cents-of-units, never lots. Cost is an explicit reserve
  * per unit for the full two-exit lifecycle, not a prediction of realized fees.
  * The coverage identity assumes both fills at the modeled prices; gaps and

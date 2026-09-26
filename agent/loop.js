@@ -15,7 +15,8 @@ import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
 import { recordTradePlan, recordPlanWriteFailure } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
-import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates } from './services/risk.js'
+import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates, effectiveRrFloor } from './services/risk.js'
+import { momentumPlanApplies } from './services/momentum-entry-switch.js'
 import { journalMarginPoolState } from './services/margin-pool-journal.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
 import { sendScanAlert } from './services/telegram.js'
@@ -26,7 +27,7 @@ import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithI
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
-import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
+import { placeOrder as placeOrderLive, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
 import { getCtraderCreds, getSymbolMap, attachEntryFence, bindEntryIntent } from './lib/ctrader-creds.js'
 import { managePendingOrders } from './services/pending-orders.js'
 import { isProducerRetired } from './lib/entry-producers.js'
@@ -328,11 +329,27 @@ export function getAutopilotAccounts(db) {
   return [{ accountId: id, isLive: getState(db, 'ctrader_is_live') === 'true' }]
 }
 
+/**
+ * V3 T4: the TEST-ONLY transport seam of autoTrade. Honoured only inside
+ * node's test runner (NODE_TEST_CONTEXT, which `node --test` sets on every
+ * test process and nothing in production sets); anywhere else it is null and
+ * autoTrade uses the real broker transports. momentum-entry-t4.test.js pins
+ * that the seam is ignored outside the runner. It replaces transports only:
+ * every gate, the ledger and the contract run for real.
+ */
+export function autoTradeTestSeam(opts) {
+  if (!process.env.NODE_TEST_CONTEXT) return null
+  const t = opts?.testTransport
+  return t && typeof t === 'object' ? t : null
+}
+
 export async function autoTrade(db, symbol, synth, watchlistItem, accountOverride, opts = {}) {
   // P1b: which producer this dispatch is, for the entry fence. Callers name
   // themselves (book, momentum account, burn-in, the routes); the ordinary
   // scan path is the default.
   const producerId = opts.producerId || accountOverride?.producerId || 'scan_dispatch'
+  const seam = autoTradeTestSeam(opts)
+  const execPlaceOrder = seam?.execPlaceOrder || placeOrderLive
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
@@ -377,6 +394,29 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     }
   }
 
+  // V3 T4 (P0-3): a momentum entry carries the partial-TP1 plan — but ONLY
+  // while config/momentum-entries.json says "market": true, which it does not
+  // until the owner answers OD-1. Off, this is false for every producer and
+  // nothing below changes: a momentum proposal still carries no target and
+  // the shared execution boundary refuses it, exactly as before T4.
+  const momentumPlanOn = momentumPlanApplies(producerId, seam?.entrySwitch ? { load: () => seam.entrySwitch } : undefined)
+  // One refusal record for the T4 path's named refusals: the proposal as it
+  // stands, refused, in the risk ledger and the decision log.
+  const refuseMomentumEntry = async (reason, stage = 'momentum_entry') => {
+    try {
+      persistRiskEvent(db, {
+        symbol, side, entry: synth.entry ?? null, sl: synth.sl ?? null, tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
+        requestedVolume: requestedVol, strategy: synth.strategy || null, timeframe: synth.timeframe ?? null,
+        source: synth.source || 'auto_signal', accountId,
+      }, { approved: false, veto_reason: reason })
+    } catch { /* the log line below is the report */ }
+    try {
+      const { recordDecision } = await import('./services/decision-log.js')
+      recordDecision(db, { accountId: String(accountId), symbol, timeframe: synth.timeframe, strategy: synth.strategy, stage, decision: 'veto', reason })
+    } catch { /* provenance never blocks */ }
+    log(`MOMENTUM REFUSED ${symbol} ${side} (${producerId}): ${reason}`)
+  }
+
   // Market-hours gate: a MARKET order into a closed market is a guaranteed
   // broker rejection — stocks/indices trade the NY session only, FX/metals
   // close on weekends. The signal isn't lost: it's queued (pending_signals)
@@ -388,6 +428,18 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // heuristic is the fallback for symbols not yet refreshed.
   const { isSymbolOpenCached } = await import('./services/symbol-hours.js')
   const marketGate = isSymbolOpenCached(db, symbol)
+  if (!marketGate.open && momentumPlanOn) {
+    // V3 T4: the named refusal for a closed-market momentum entry (owner
+    // OD-1(b)). Nothing is rested for the next open. Recorded once per
+    // closed spell per account, producer and symbol; re-armed at the open.
+    const { closedMarketMomentumRefusal } = await import('./services/momentum-entry-producer.js')
+    const onceKey = `momentum_closed_refused_${producerId}_${accountId}_${symbol}`
+    const reason = closedMarketMomentumRefusal({ symbol, producerId, marketReason: marketGate.reason })
+    if (getState(db, onceKey) !== 'y') { await refuseMomentumEntry(reason, 'momentum_closed_market'); setState(db, onceKey, 'y') }
+    else log(`MOMENTUM REFUSED ${symbol} ${side} (${producerId}): ${reason}`)
+    return null
+  }
+  if (momentumPlanOn) setState(db, `momentum_closed_refused_${producerId}_${accountId}_${symbol}`, null)
   if (!marketGate.open) {
     // Closed market: a MARKET order would be rejected. Owner decision
     // (Option A, on by default): place a RESTING LIMIT order at the setup's
@@ -487,6 +539,13 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const lastBarCloseMs = sigMs > 0 ? (nextBarCloseMs(synth.timeframe) ?? 0) - sigMs : 0
     const fresh = freshMin > 0 && lastBarCloseMs > 0 && (Date.now() - lastBarCloseMs) <= freshMin * 60_000
     if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {
+      // V3 T4: a momentum entry that would rest carries no plan (P0-4 is not
+      // built) and waits for the owner's OD-15; refused by name, not rested.
+      if (momentumPlanOn) {
+        const { restingMomentumRefusal } = await import('./services/momentum-entry-producer.js')
+        await refuseMomentumEntry(restingMomentumRefusal({ symbol, producerId, timeframe: synth.timeframe }), 'momentum_resting_limit')
+        return null
+      }
       const expiresAtMs = nextBarCloseMs(synth.timeframe)
       const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
       const r = await placeClosedMarketLimit(
@@ -537,6 +596,35 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       return null
     }
   } catch { /* tuner is optional — never blocks a trade */ }
+
+  // V3 T4 (P0-3), step 3: the plan's prices, shown to the risk gate. The
+  // entry is the live quote, the stop is the approved distance exactly as
+  // relativePoints will send it, TP1 is the partial trigger (the stricter
+  // R:R of the two targets) and TP2 the runner target. Any evidence the
+  // plan cannot stand on refuses the entry by name, before the gate.
+  let momentumPre = null
+  if (momentumPlanOn) {
+    const { MOMENTUM_PLAN_REFUSAL, readEntryReference, readEntryEvidence, preGatePlan, loadMomentumCostSchedule } = await import('./services/momentum-entry-producer.js')
+    try {
+      const resolveForPlan = seam?.resolveSymbolId || (await import('./lib/ctrader-creds.js')).resolveSymbolId
+      const { relativePoints: planPoints } = await import('./lib/lot-sizing.js')
+      const planCreds = { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId: String(accountId) }
+      const rs = await resolveForPlan(db, { ...planCreds, ready: true }, symbol)
+      if (!rs.id) { await refuseMomentumEntry(`${MOMENTUM_PLAN_REFUSAL}: ${rs.reason || 'symbol_unknown'}`); return null }
+      const reference = await readEntryReference({ creds: planCreds, symbolId: rs.id, transports: seam?.momentum })
+      if (!reference.ok) { await refuseMomentumEntry(`${MOMENTUM_PLAN_REFUSAL}: ${reference.reason}`); return null }
+      const evidence = await readEntryEvidence({ creds: planCreds, symbolId: rs.id, reference, transports: seam?.momentum })
+      const requiredRr = effectiveRrFloor(db, accountId, synth.strategy || null)
+      const schedule = loadMomentumCostSchedule()
+      const pre = preGatePlan(db, { symbol, side, stopDistance: Math.abs(Number(synth.entry) - Number(synth.sl)), requiredRr, evidence, relativePoints: planPoints, schedule })
+      if (!pre.ok) { await refuseMomentumEntry(`${MOMENTUM_PLAN_REFUSAL}: ${pre.reason}`); return null }
+      synth = { ...synth, entry: pre.entry, sl: pre.stop, tp1: pre.trigger, tp2: pre.runnerTarget, partialTrigger: pre.trigger }
+      momentumPre = { planCreds, symbolId: String(rs.id), reference, requiredRr, schedule, relativePoints: planPoints }
+    } catch (err) {
+      await refuseMomentumEntry(`${MOMENTUM_PLAN_REFUSAL}: evidence_read_failed: ${err.message}`)
+      return null
+    }
+  }
 
   // PR-D (owner principle 8): the trend reading the regime table holds for
   // this symbol at the moment of evaluation, recorded beside the strategy's
@@ -594,7 +682,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     await alertVetoOnce(db, symbol, side, riskResult.veto_reason)
     return null
   }
-  const volLots = riskResult.adjusted_volume
+  let volLots = riskResult.adjusted_volume
   if (Math.abs(volLots - requestedVol) > 0.001) {
     log(`Risk sizing: ${symbol} ${requestedVol} → ${volLots} (${riskResult.sizing_note})`)
   }
@@ -602,6 +690,15 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // bracket than the signal proposed. Everything below — the order's
   // relative take profit, the trades row, the fill anchor, the plan — reads
   // synth.tp1, so the override lands there once, here, with the reason.
+  // V3 T4: the plan's targets are the policy's, fixed by its formula; a gate
+  // that would move them is not silently obeyed or ignored — refused by name.
+  if (momentumPre && riskResult.target_override?.tp1 != null) {
+    const { MOMENTUM_PLAN_REFUSAL } = await import('./services/momentum-entry-producer.js')
+    const reason = `${MOMENTUM_PLAN_REFUSAL}: gate_target_override (${riskResult.target_override.from}R → ${riskResult.target_override.rr}R)`
+    persistPostApprovalVeto(db, proposal, reason)
+    log(`RISK VETO ${symbol} ${side}: ${reason}`)
+    return null
+  }
   if (riskResult.target_override?.tp1 != null) {
     log(`Risk target: ${symbol} tp1 ${synth.tp1} → ${riskResult.target_override.tp1} (${riskResult.target_override.from}R → ${riskResult.target_override.rr}R, earned-floor stretch)`)
     synth = { ...synth, tp1: riskResult.target_override.tp1, tp1_price: riskResult.target_override.tp1 }
@@ -623,7 +720,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // 6.56. resolveSymbolId reads the account's own symbol list and refuses
   // with a reason when it cannot verify the id — a wrong instrument is worse
   // than no order.
-  const { resolveSymbolId } = await import('./lib/ctrader-creds.js')
+  const resolveSymbolId = seam?.resolveSymbolId || (await import('./lib/ctrader-creds.js')).resolveSymbolId
   const resolvedSymbol = await resolveSymbolId(db, {
     host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId, ready: true,
   }, symbol)
@@ -644,7 +741,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   const hostForMeta = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
   let sized
   let symbolDigits = 5 // price precision for relative SL/TP snapping below
-  const { getVolumeMeta, lotsToVolume, relativePoints } = await import('./lib/lot-sizing.js')
+  const { getVolumeMeta: volumeMetaLive, lotsToVolume, relativePoints } = await import('./lib/lot-sizing.js')
+  const getVolumeMeta = seam?.getVolumeMeta || volumeMetaLive
   try {
     const meta = await getVolumeMeta(hostForMeta, clientId, clientSecret, accessToken, accountId, symbolId)
     symbolDigits = meta.digits ?? 5
@@ -730,7 +828,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   const driftGateOn = slDistance && Number(riskCfg.maxEntryDriftFracOfSL) > 0
   if (slDistance && (riskCfg.maxSpreadFracOfSL > 0 || driftGateOn)) {
     try {
-      const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
+      const wsGetSpotOnce = seam?.wsGetSpotOnce || (await import('./lib/ctrader-ws.js')).wsGetSpotOnce
       const q = await wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId)
       if (q) {
         const spread = q.ask - q.bid
@@ -846,6 +944,34 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     }
   }
 
+  // V3 T4 (P0-3), step 4: the plan with the integer broker volume, on fresh
+  // evidence read with the quote last. The order, the trades row, the plan
+  // record and the intent all carry the plan's entry, stop and target.
+  let momentumFinal = null
+  if (momentumPre) {
+    const { MOMENTUM_PLAN_REFUSAL, readEntryEvidence, finalPlan } = await import('./services/momentum-entry-producer.js')
+    let fp
+    try {
+      if (momentumPre.symbolId !== String(symbolId)) throw Error('symbol_id_changed')
+      const evidence = await readEntryEvidence({ creds: momentumPre.planCreds, symbolId: momentumPre.symbolId, reference: momentumPre.reference, transports: seam?.momentum })
+      fp = finalPlan(db, { symbol, side, stopDistance: Math.abs(Number(synth.entry) - Number(synth.sl)), requiredRr: momentumPre.requiredRr,
+        volume, evidence, relativePoints: momentumPre.relativePoints, schedule: momentumPre.schedule, nowMs: Date.now() })
+    } catch (err) { fp = { ok: false, reason: `evidence_read_failed: ${err.message}` } }
+    if (!fp.ok) {
+      const reason = `${MOMENTUM_PLAN_REFUSAL}: ${fp.reason}`
+      persistPostApprovalVeto(db, proposal, reason)
+      log(`RISK VETO ${symbol} ${side}: ${reason}`)
+      return null
+    }
+    momentumFinal = fp
+    const partial = fp.plan.mode === 'partial_runner'
+    synth = { ...synth, entry: fp.plan.entry, sl: fp.plan.originalStop, tp1: fp.plan.brokerTarget,
+      tp2: partial ? fp.plan.brokerTarget : null, partialTrigger: partial ? fp.plan.trigger : null }
+    volLots = fp.lots
+    orderPayload.relativeStopLoss = fp.relativeStopLoss
+    orderPayload.relativeTakeProfit = fp.relativeTakeProfit
+  }
+
   log(`Auto-trade: ${side} ${symbol} vol=${volLots} on ${isLive ? 'LIVE' : 'DEMO'}`)
 
   try {
@@ -871,7 +997,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // computed later; and the analysis row that produced this order is
     // linked, so a scan bias can be scored against its outcome — 3,935
     // auto-trade predictions in 25 h had no outcome link before this.
-    const intentId = db.prepare(`
+    const insertIntent = () => db.prepare(`
       INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume,
                           opened_at, status, strategy, account_id, source, risk_event_id,
                           origin, origin_source, proposal_entry_price, analysis_id)
@@ -883,6 +1009,27 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       Number.isFinite(Number(synth.entry)) ? Number(synth.entry) : null,
       Number.isFinite(Number(synth.analysisId)) ? Number(synth.analysisId) : null,
     ).lastInsertRowid
+    let intentId
+    if (momentumFinal) {
+      // V3 T4: step one of the two atomic steps (deferred binding, OD-3).
+      // The write-ahead trade row and the immutable target intent are one
+      // transaction: if the intent cannot be recorded, no row and no order.
+      try {
+        const { recordMomentumEntry } = await import('./services/momentum-entry-contract.js')
+        intentId = db.transaction(() => {
+          const id = Number(insertIntent())
+          recordMomentumEntry(db, { accountId: String(accountId), tradeId: id, proposal: momentumFinal.proposal, nowMs: Date.now() })
+          return id
+        })()
+      } catch (err) {
+        const reason = `momentum_intent_refused: ${err.message}`
+        persistPostApprovalVeto(db, proposal, reason)
+        log(`RISK VETO ${symbol} ${side}: ${reason}`)
+        return null
+      }
+    } else {
+      intentId = insertIntent()
+    }
 
     // §70.8: stamp the moment the order LEAVES, so verdict -> submit is
     // measurable. entry_latency_ms below times submit -> execution event; the
@@ -944,6 +1091,23 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // which broke deal-history P&L matching and duplicate detection.
     const { normPosId } = await import('./lib/pos-id.js')
     const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
+    // V3 T4: step two, deferred. The intent names the broker's position and
+    // is bound from a live position read that proves the bracket; unproven
+    // now, it stays AWAITING_BIND and the partial pass binds it later.
+    let momentumBind = null
+    if (momentumFinal && positionId) {
+      try {
+        const { bindMomentumFill } = await import('./services/momentum-entry-producer.js')
+        momentumBind = await bindMomentumFill(db, { accountId: String(accountId), tradeId: Number(intentId), positionId: String(positionId),
+          creds: momentumPre.planCreds, symbolId: momentumPre.symbolId, transports: seam?.momentum, ...(seam?.bindSleep ? { sleep: seam.bindSleep } : {}) })
+        if (momentumBind.bound && executionPrice == null) executionPrice = momentumBind.intent.fill.entry
+        log(momentumBind.bound
+          ? `Momentum plan bound: ${symbol} posId=${positionId} ${momentumBind.intent.plan.mode} trigger ${momentumBind.intent.plan.trigger} target ${momentumBind.intent.plan.brokerTarget}`
+          : `Momentum plan AWAITING_BIND: ${symbol} posId=${positionId} (${momentumBind.reason}) — the partial pass binds it once the fill is proven`)
+      } catch (err) {
+        log(`Momentum plan not marked for ${symbol} posId=${positionId}: ${err.message}`)
+      }
+    }
     // THE FILL THE ANCHOR NEVER SAW (04-09-2026). The sidecar's order answer
     // is ORDER_ACCEPTED — a position id and no deal — so on the cpp path the
     // price above was null on every market fill and the fill anchoring below
@@ -959,7 +1123,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // the broker directly; one authenticated round trip per fill.
     if (executionPrice == null && positionId) {
       const { confirmFill } = await import('./lib/fill-anchor.js')
-      const { wsReconcile } = await import('./lib/ctrader-ws.js')
+      const wsReconcile = seam?.wsReconcile || (await import('./lib/ctrader-ws.js')).wsReconcile
       const confirmed = await confirmFill(() => wsReconcile(host, clientId, clientSecret, accessToken, accountId), positionId)
       if (confirmed != null) {
         executionPrice = confirmed
@@ -987,7 +1151,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // `slippage_price` still keys off `executionPrice` alone, so a row where
     // the fill was never confirmed remains identifiable: entry present,
     // slippage null.
-    const entryP = executionPrice ?? synth.entry ?? null
+    const boundPlan = momentumBind?.bound ? momentumBind.intent.plan : null
+    const entryP = boundPlan ? boundPlan.entry : (executionPrice ?? synth.entry ?? null)
     // Forensics (Performance Ledger collect-forward): signed adverse-positive
     // slippage vs the signal's intended entry, and market context at open —
     // relative 1m volume and which side of session VWAP the fill landed.
@@ -1013,8 +1178,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // confirmed fill the proposal's prices stand, as before.
     const { anchorBracketToFill } = await import('./lib/fill-anchor.js')
     const anchored = anchorBracketToFill({ side, proposalEntry: synth.entry, fill: executionPrice, sl: synth.sl, tp1: synth.tp1, tp2: synth.tp2 })
-    const slP = anchored.sl ?? null
-    const tpP = anchored.tp1 ?? null
+    // V3 T4: a bound plan is the bracket, moved to the fill in whole ticks
+    // (the broker's rule), not the float shift above.
+    const slP = boundPlan ? boundPlan.originalStop : (anchored.sl ?? null)
+    const tpP = boundPlan ? boundPlan.brokerTarget : (anchored.tp1 ?? null)
     const initialRisk = (entryP && slP) ? Math.abs(entryP - slP) : null
 
     let timeCap = null
@@ -1052,6 +1219,11 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // the untagged original (ORD-05). parseLabel reads the first seven fields,
     // so every parsed column is unchanged.
     const parsedLabel = parseLabel(entryIntentId ? tagLabelWithIntent(structuredLabel, entryIntentId) : structuredLabel)
+    // V3 T4: the momentum plan as planned, for the plan record's rule.
+    const mp = momentumFinal?.plan
+    const momentumPlanRule = !mp ? null : mp.mode === 'partial_runner'
+      ? `momentum partial-TP1: close ${mp.closeVolume} of ${mp.volume} at ${mp.trigger}; runner to ${mp.brokerTarget}`
+      : `momentum whole-position target ${mp.brokerTarget} (no valid partial at this volume)`
     const persistTrade = db.transaction(() => {
       db.prepare(`
         UPDATE trades SET
@@ -1107,6 +1279,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       try {
         recordTradePlan(db, tradeId, {
           accountId, symbol, side, strategy: synth.strategy || null, timeframe: synth.timeframe ?? null,
+          // V3 T4: the plan's partial trigger rides the plan record's rule
+          // (null for every other entry: the default rule, as before).
+          exitRule: momentumPlanRule,
           entry: synth.entry, sl: synth.sl, tp: synth.tp1, timeCapAt: timeCap, source: synth.source || 'auto_signal',
         })
       } catch (err) {
@@ -1119,6 +1294,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
 
     const tradeId = persistTrade()
     log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId} tradeId=${tradeId}${anchored.anchored ? ` bracket anchored to fill (shift ${anchored.shift >= 0 ? '+' : ''}${Number(anchored.shift).toFixed(symbolDigits)}, sl ${slP} tp ${tpP})` : ''}`)
+    // The test seam skips the collect-forward forensics (depth and 1m bars),
+    // which only read the broker and never decide anything.
+    if (seam?.skipForensics) return { executionPrice, positionId, side, volume: volLots }
 
     // (c) Collect-forward analytics, AFTER the position is fully recorded.
     // Every failure here leaves a NULL column and nothing else — the trade is

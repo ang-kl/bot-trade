@@ -4,6 +4,7 @@ import { planMomentumTargets, shiftStopToFill, stopHeld, sameTicks, offPriceGrid
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { registerPartialPlan } from './momentum-partial-manager.js'
 import { readMomentumPartialPass, partialPassFreshness, partialPassForAccount } from './momentum-partial-runtime.js'
+import { loadMomentumEntrySwitch } from './momentum-entry-switch.js'
 
 const json = value => { try { return JSON.parse(value) } catch { return null } }
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -106,12 +107,36 @@ export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, max
     if (intent.position_id !== position.positionId || !same(intent.plan, plan)) throw Error('entry fill already bound differently')
     return intent
   }
-  if (intent.state !== 'PREPARED') throw Error('entry fill state mismatch')
+  // V3 T4, deferred binding (owner H-P0-5 / OD-3 "yes"): an intent the
+  // submission marked AWAITING_BIND names its position already, and binds
+  // only that position.
+  if (intent.state === 'AWAITING_BIND' && intent.position_id !== position.positionId) throw Error('entry fill position mismatch')
+  if (intent.state !== 'PREPARED' && intent.state !== 'AWAITING_BIND') throw Error('entry fill state mismatch')
   const receipt = { ...intent.proposal.identity, positionId: position.positionId, side: position.side,
     entry: position.entry, volume: position.volume, stopLoss: position.stopLoss, takeProfit: position.takeProfit,
     observedAtMs: position.observedAtMs, source: position.source }
-  db.prepare("UPDATE momentum_target_intents SET state='BOUND',position_id=?,plan_json=?,fill_json=? WHERE account_id=? AND trade_id=? AND state='PREPARED'")
+  const changed = db.prepare("UPDATE momentum_target_intents SET state='BOUND',position_id=?,plan_json=?,fill_json=? WHERE account_id=? AND trade_id=? AND state IN ('PREPARED','AWAITING_BIND')")
     .run(position.positionId, JSON.stringify(plan), JSON.stringify(receipt), accountId, tradeId)
+  if (changed.changes !== 1) throw Error('entry fill state changed')
+  return readMomentumEntry(db, accountId, tradeId)
+}
+
+/** V3 T4, the first half of deferred binding. The order was sent and the
+ * broker named its position: the intent records that position and waits for
+ * a fill read that proves the bracket (bindMomentumEntry). It never binds by
+ * itself. An intent already awaiting this position is returned unchanged. */
+export function markMomentumAwaitingBind(db, { accountId, tradeId, positionId }) {
+  if (!/^[1-9]\d*$/.test(String(positionId ?? ''))) throw Error('entry position id required')
+  const intent = readMomentumEntry(db, accountId, tradeId)
+  if (!intent) throw Error('entry has no recorded intent')
+  if (intent.state === 'AWAITING_BIND' || intent.state === 'BOUND' || intent.state === 'ENROLLED') {
+    if (intent.position_id !== String(positionId)) throw Error('entry already names another position')
+    return intent
+  }
+  if (intent.state !== 'PREPARED') throw Error('entry state mismatch')
+  const changed = db.prepare("UPDATE momentum_target_intents SET state='AWAITING_BIND',position_id=? WHERE account_id=? AND trade_id=? AND state='PREPARED'")
+    .run(String(positionId), accountId, tradeId)
+  if (changed.changes !== 1) throw Error('entry state changed')
   return readMomentumEntry(db, accountId, tradeId)
 }
 
@@ -122,6 +147,13 @@ export function enrollMomentumBook(db, { accountId, tradeId, positionId }) {
   const intent = readMomentumEntry(db, accountId, tradeId)
   if (!intent) return null
   if (!db.inTransaction) throw Error('entry enrollment requires atomic book handover')
+  // V3 T4, deferred binding: the book takes the position now (its broker
+  // stop and runner target are already on it); the partial plan is
+  // registered when the deferred bind proves the fill (the partial pass).
+  if (intent.state === 'AWAITING_BIND') {
+    if (intent.position_id !== positionId) throw Error('entry enrollment position mismatch')
+    return 'awaiting_bind'
+  }
   if (intent.state !== 'BOUND' || intent.position_id !== positionId || !verified(intent.proposal)
     || !intent.plan?.ok || !same(intent.plan, planMomentumTargets(intent.plan))) throw Error('entry enrollment requires a bound plan')
   const trade = db.prepare('SELECT risk_event_id FROM trades WHERE id=? AND account_id=?').get(tradeId, accountId)
@@ -143,26 +175,32 @@ export function enrollMomentumBook(db, { accountId, tradeId, positionId }) {
 }
 
 /**
- * Which entry producers record a target intent before they submit (V3 T3).
- * Neither does yet: T4 (P0-3 market, P0-4 resting limits) wires them, and
- * flips these in the same change. momentum-target-status.test.js pins this
- * to the code: it goes red as soon as any production file calls
- * recordMomentumEntry (T4 updates these entries and the pin together), and
- * while none does, if either says "wired". A status that called the runtime complete
- * because the manager's pass runs would be a website result the code does not
- * honour (owner principle 6): a running pass with no producer feeding it
- * manages nothing.
+ * Which entry producers record a target intent before they submit.
+ * V3 T4 wires the MARKET producer: autoTrade (loop.js) records the intent in
+ * the transaction that writes the 'submitting' trade, for the book's and the
+ * daily momentum account's market entries. RESTING limits are not wired
+ * (P0-4): a momentum entry that would rest is refused by name instead
+ * (closed market: OD-1(b); open-market HTF limit: held until OD-15).
+ * momentum-target-status.test.js pins both to the code: `market` must be
+ * wired while a production file calls recordMomentumEntry from the market
+ * path, and `limit` must stay not wired while no resting path does.
+ *
+ * WIRED IS NOT ON. The market path runs only while
+ * config/momentum-entries.json says `"market": true` (OFF until the owner
+ * answers OD-1). The status reads that switch and keeps the runtime
+ * INCOMPLETE while it is off (owner principle 6: a wired producer that is
+ * switched off feeds the partial manager nothing).
  */
 export const MOMENTUM_TARGET_PRODUCERS = Object.freeze({
-  market: Object.freeze({ wired: false, producer: 'momentum book market entries',
-    note: 'No market entry records a target intent before submission; T4 (P0-3) wires it.' }),
+  market: Object.freeze({ wired: true, producer: 'momentum book market entries',
+    note: 'Market entries of the book and the daily momentum account record a target intent in the submitting-trade transaction (T4, P0-3).' }),
   limit: Object.freeze({ wired: false, producer: 'momentum resting limits',
-    note: 'No resting limit records a target intent; T4 (P0-4) wires it.' }),
+    note: 'No resting limit records a target intent (P0-4 not built): a closed-market momentum entry is refused by name (OD-1(b)) and an open-market HTF limit is held by name until OD-15.' }),
 })
 
 // Small, bounded diagnostic over the write-ahead ledger. Reading it never
 // creates tables, alters them, registers plans or grants execution permission.
-export function momentumTargetStatus(db, { accountId, all = false, limit = 50, nowMs = Date.now() } = {}) {
+export function momentumTargetStatus(db, { accountId, all = false, limit = 50, nowMs = Date.now(), loadSwitch = loadMomentumEntrySwitch } = {}) {
   if (!all && (typeof accountId !== 'string' || !/^[1-9]\d*$/.test(accountId))) throw new RangeError('Select an account or request all accounts.')
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError('Limit must be between 1 and 100.')
   const has = name => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
@@ -193,15 +231,21 @@ export function momentumTargetStatus(db, { accountId, all = false, limit = 50, n
   const accountGaps = all
     ? (globalPass.why ? [] : Object.entries(record?.accounts ?? {}).filter(([, a]) => a?.error).map(([id, a]) => `account ${id}: the partial manager could not act on it — ${a.error}`))
     : []
+  // T4: whether the wired market path is switched on (OFF until OD-1).
+  const entrySwitch = loadSwitch()
+  const enabledOf = k => k === 'market' ? entrySwitch.market === true : false
   const integrationGaps = [
     ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([, w]) => !w.wired).map(([k, w]) => `${k}: ${w.note}`),
+    ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([k, w]) => w.wired && !enabledOf(k))
+      .map(([k]) => `${k}: wired, switched off (config/momentum-entries.json ${k} is not true${entrySwitch.error ? `; ${entrySwitch.error}` : ''}) until the owner answers OD-1`),
     ...(passNow.why ? [passNow.why] : []),
     ...accountGaps,
   ]
   const base = { accountId: all ? 'all' : accountId, executionAuthorized: false,
     runtimeIntegration: integrationGaps.length ? 'INCOMPLETE' : 'COMPLETE', integrationGaps,
     passHeartbeatAt: freshness.at, pass,
-    wiring: Object.fromEntries(Object.entries(MOMENTUM_TARGET_PRODUCERS).map(([k, w]) => [k, { wired: w.wired, status: w.wired ? 'wired' : 'not wired', producer: w.producer, note: w.note }])) }
+    wiring: Object.fromEntries(Object.entries(MOMENTUM_TARGET_PRODUCERS).map(([k, w]) => [k, { wired: w.wired, status: w.wired ? 'wired' : 'not wired',
+      enabled: w.wired && enabledOf(k), switch: w.wired ? (enabledOf(k) ? 'on' : 'off') : null, producer: w.producer, note: w.note }])) }
   const partial = has('momentum_partial_plans')
   const pcols = partial ? cols('momentum_partial_plans') : new Set()
   const pWhere = all ? '' : 'WHERE account_id=?', pParams = all ? [] : [accountId]

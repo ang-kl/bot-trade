@@ -71,7 +71,7 @@ export const ALLOWLIST = Object.freeze({
   // ---- credentials / host choice (plan §3.1: ctrader-creds.js) -------------
   'agent/lib/ctrader-creds.js': { reason: 'host choice, registered-account credential routing and same-side roster (plan §3.1 routing); no policy distinction', max: { is_live: 3, isLive: 6 } },
   'agent/lib/exec-engine.js': { reason: 'sidecar roster per side (plan §3.1: exec-engine.js rosters); sidecarQuotes picks the side\'s base (19-09-2026)', max: { isLive: 7 } },
-  'agent/loop.js': { reason: 'host choices and same-side fan-outs (plan §3.1: loop.js), side named in logs', max: { is_live: 4, isLive: 33, live_str: 5, demo_str: 5 } },
+  'agent/loop.js': { reason: 'host choices and same-side fan-outs (plan §3.1: loop.js), side named in logs', max: { is_live: 4, isLive: 34, live_str: 5, demo_str: 5 } },
   'agent/routes/actions.js': { reason: 'account selection writes ctrader_is_live and picks the host; creds per account including explicitly scoped read-only quote streams (the validation-fill refusal is in RESIDUAL_GATES)', max: { is_live: 4, isLive: 28, live_str: 1, demo_str: 1 } },
   'agent/routes/state.js': { reason: 'health/roster views echo the side; risk display resolves the requested account snapshot/registry badge and calendar identity selects its registered broker host without a policy gate; the manual-order override resolves the account\'s creds', max: { is_live: 12, isLive: 6, live_str: 1, demo_str: 1 } },
   'agent/services/heartbeat.js': { reason: 'sidecar side routing (plan §3.1: heartbeat.js)', max: { is_live: 7, isLive: 28, live_str: 4, demo_str: 4 } },

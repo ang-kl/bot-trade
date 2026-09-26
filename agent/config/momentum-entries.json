@@ -1,0 +1,5 @@
+{
+  "_note": "V3 T4 (P0-3): whether momentum entries (the book's cross_sectional_book and the daily momentum_account) are sent WITH the partial-TP1 plan. OFF until the owner answers OD-1 (resume momentum entries). While market is false, autoTrade treats a momentum proposal exactly as before T4 (no target, refused at the shared execution boundary). Only the literal true turns it on; anything else is off. Resting momentum limits are not switchable here: closed-market ones are refused by name (OD-1(b)), open-market HTF ones are held by name until OD-15 is answered and P0-4 is built. Turning this on is an owner-ordered change to this file, merged like code.",
+  "market": false,
+  "declaredBy": "T4 build, 26-09-2026: off by default; OD-1 and OD-15 unanswered"
+}
