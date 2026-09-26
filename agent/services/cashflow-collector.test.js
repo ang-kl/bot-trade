@@ -49,6 +49,34 @@ test('the real producer records deposits and makes the report reconcile for mana
   assert.equal(calls.length, 1)
 })
 
+test('a read whose broker balance disagrees with the stored one is counted in the saved state and the log line, and the first balance stays', async t => {
+  const { account, collector, response, status, db } = fixture(t)
+  account('11')
+  // Event 9 already stored by an earlier read, with a balance of 999.00.
+  db.prepare(`INSERT INTO account_cashflows (account_id,host,event_id,at_ms,currency,delta,operation_type,kind,received_ms,balance,balance_source)
+    VALUES ('11',?,'9',?,'USD',500,0,'external',?,999,'broker_api')`).run(host, T - 90_000, T - 60_000)
+  const lines = []
+  const c = collector({ log: line => lines.push(line), read: async (...args) => response(args[4], [
+    { balanceHistoryId: '9', changeBalanceTimestamp: T - 90_000, delta: 50000, moneyDigits: 2, operationType: 0, balance: 62000 },
+  ]) })
+  const result = await c.poll()
+  assert.equal(result.balanceConflicts, 1)
+  assert.equal(status('11').status, 'success')
+  assert.equal(status('11').balanceConflicts, 1)
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], / events=1 balanceConflicts=1$/)
+  assert.equal(db.prepare("SELECT balance FROM account_cashflows WHERE event_id='9'").get().balance, 999)
+})
+
+test('a read with no balance disagreement saves and logs a zero, not an absent field', async t => {
+  const { account, collector, response, status } = fixture(t)
+  account('11')
+  const lines = []
+  await collector({ log: line => lines.push(line), read: async (...args) => response(args[4]) }).poll()
+  assert.equal(status('11').balanceConflicts, 0)
+  assert.match(lines[0], / events=0 balanceConflicts=0$/)
+})
+
 test('seven-day catchup is fair across accounts and resumes its persisted coverage after restart', async t => {
   const { account, point, collector, response, db } = fixture(t)
   for (const id of ['11', '22']) { account(id); point(id, T - 20 * 86400_000, 100) }

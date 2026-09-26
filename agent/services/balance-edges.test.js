@@ -9,7 +9,8 @@ import { balanceReader, BALANCE_EDGE_MAX_AGE_MS } from './balance-edges.js'
 import { hourlyActivity } from './hourly-activity.js'
 import { buildPerformancePopulations } from './performance-populations.js'
 import { reportLedger } from '../shared/performance-populations.js'
-import { missingBalanceLabel } from '../shared/balance-carry.js'
+import { missingBalanceLabel, utcStamp } from '../shared/balance-carry.js'
+import { shapeDeals, persistDeals } from './broker-history-import.js'
 
 const MIN = 60_000, H = 3600_000
 // Relative to the real clock: recordAccountHistory prunes by Date.now().
@@ -354,4 +355,181 @@ test('one currency source on All: money pools, balance columns, ledger net and c
     assert.ok(!moneyFigures.includes(x), `no cross-currency money sum ${x}`)
     assert.ok(!balanceFigures.includes(x), `no cross-currency balance sum ${x}`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// V3 WEB-8 (8,989-A row 7): the broker balance stored on deals feeds the
+// ledger carry through THIS reader (ledgerBalanceEdges), not a second one. An
+// edge the stored reads cannot answer reads the balance the broker reported
+// after the last deal before it, only when the next deal reconciles to the
+// cent; otherwise the edge keeps a labelled reason. Per recorded deposit
+// currency, never summed across currencies. The hourly card is unchanged.
+// ---------------------------------------------------------------------------
+const D = 24 * H
+const META = { 1: { symbolName: 'EURUSD', lotSize: 100_000 } }
+// Closing deals as ProtoOAGetDealListRes returns them, money in cents
+// (moneyDigits 2), written by the production writer (shapeDeals/persistDeals).
+function closes(db, accountId, deals) {
+  persistDeals(db, shapeDeals(deals.map(([dealId, at, gross, balance]) => ({ dealId, positionId: dealId, symbolId: 1,
+    volume: 100_000, tradeSide: 2, executionPrice: 1.2, executionTimestamp: at,
+    closePositionDetail: { entryPrice: 1.1, grossProfit: gross, swap: 0, commission: 0, moneyDigits: 2, ...(balance == null ? {} : { balance }) } })),
+  META, accountId))
+}
+const pick = (o, keys) => Object.fromEntries(keys.map(k => [k, o?.[k]]))
+
+test('WEB-8: a ledger edge before the stored reads carries the balance a stored deal reported, when the next deal proves it', t => {
+  const { db, trader } = fixture(t, [['11', 0]])
+  for (let at = T - 20 * H; at <= T; at += 3 * MIN) trader('11', at, 1500)
+  // 101 leaves 900.00; 102 adds 100.00 and leaves 1,000.00: nothing else moved it.
+  closes(db, '11', [[101, T - 40 * D, 5_000, 90_000], [102, T - 29 * D, 10_000, 100_000]])
+  const report = buildPerformancePopulations(db, { now: T })
+  assert.equal(report.balanceEdges.status, 'complete')
+  assert.equal(report.balanceEdges.dealBalances, 'read')
+  const one = Object.fromEntries(reportLedger(report, '11').windows.map(w => [w.key, w]))
+  assert.equal(one['30d'].carryIn, 900)
+  assert.equal(one['30d'].carryCurrency, 'USD')
+  assert.deepEqual(one['30d'].carry.in.groups[0].sources, ['broker_deal'])
+  assert.deepEqual(pick(report.balanceEdges.windows['30d']['11'].in, ['status', 'value', 'currency', 'source', 'proof', 'event', 'nextEvent']),
+    { status: 'observed', value: 900, currency: 'USD', source: 'broker_deal', proof: 'balance_arithmetic',
+      event: { kind: 'deal', id: '101' }, nextEvent: { kind: 'deal', id: '102' } })
+  // Where a stored read answers, the read is still the answer.
+  assert.equal(one['30d'].carryOut, 1500)
+  assert.equal(one['1h'].carryIn, 1500)
+  // Before the first stored deal: "not stored before" names where the deals
+  // begin (the earliest stored balance), not where the reads do.
+  assert.equal(one['3m'].carryIn, null)
+  const early = one['3m'].carry.in.groups[0]
+  assert.equal(early.reason, 'before_balance_history')
+  assert.equal(early.storedFrom, T - 40 * D + 999)
+  assert.equal(missingBalanceLabel(early), `not stored before ${utcStamp(T - 40 * D + 999)}`)
+  assert.deepEqual(report.balanceEdges.accounts, [{ accountId: '11', historyStartsAt: T - 40 * D + 999,
+    accountHistoryStartsAt: T - 20 * H, dealBalanceFrom: T - 40 * D + 999 }])
+})
+
+test('WEB-8: an older edge the stored deals cannot prove is labelled and null, never estimated', t => {
+  const { db, trader } = fixture(t, [['11', 0]])
+  for (let at = T - 20 * H; at <= T; at += 3 * MIN) trader('11', at, 1600)
+  // 203 takes 200.00 while 800.00 arrived with no stored cashflow: the
+  // 1,600.00 after it is not 1,000.00 − 200.00, so no edge between 202 and
+  // 203 is provable.
+  closes(db, '11', [[201, T - 40 * D, 0, 90_000], [202, T - 20 * D, 10_000, 100_000], [203, T - 5 * D, -20_000, 160_000]])
+  const report = buildPerformancePopulations(db, { now: T })
+  const one = Object.fromEntries(reportLedger(report, '11').windows.map(w => [w.key, w]))
+  assert.equal(one['30d'].carryIn, 900, 'the proven link still carries')
+  for (const key of ['1w', '2w']) {
+    assert.equal(one[key].carryIn, null, `${key}: no balance is invented across the break`)
+    const g = one[key].carry.in.groups[0]
+    assert.equal(g.reason, 'balance_chain_break')
+    assert.equal(missingBalanceLabel(g), 'not provable: unrecorded balance change')
+    const ev = report.balanceEdges.windows[key]['11'].in
+    assert.deepEqual(pick(ev, ['status', 'reason', 'unexplained']), { status: 'not_stored', reason: 'balance_chain_break', unexplained: 800 })
+    assert.equal(ev.accountHistory.reason, 'before_balance_history', 'the reads\' own gap rides along')
+  }
+  // After the last stored deal and before the reads: nothing proves it.
+  assert.equal(one['3d'].carryIn, null)
+  assert.equal(one['3d'].carry.in.groups[0].reason, 'after_last_stored_event')
+  assert.equal(missingBalanceLabel(one['3d'].carry.in.groups[0]), 'not provable: no later deal or cashflow stored')
+})
+
+test('WEB-8: deal-proven carries stay in each account\'s recorded currency on All, never summed across currencies', t => {
+  const { db, trader } = fixture(t, [['11', 0], ['33', 1]])
+  for (let at = T - 20 * H; at <= T; at += 3 * MIN) { trader('11', at, 1000); trader('33', at, 520, 'SGD') }
+  closes(db, '11', [[301, T - 40 * D, 0, 90_000], [302, T - 29 * D, 10_000, 100_000]])
+  closes(db, '33', [[311, T - 35 * D, 0, 50_000], [312, T - 25 * D, 2_000, 52_000]])
+  const report = buildPerformancePopulations(db, { now: T })
+  const all = reportLedger(report, 'all').windows.find(w => w.key === '30d')
+  assert.deepEqual(all.carry.in.groups.map(g => [g.currency, g.value, g.sources]), [['SGD', 500, ['broker_deal']], ['USD', 900, ['broker_deal']]])
+  assert.equal(all.carryIn, null, 'two currencies: no single total')
+  assert.equal(all.carryCurrency, null)
+  const sgd = reportLedger(report, '33').windows.find(w => w.key === '30d')
+  assert.equal(sgd.carryIn, 500); assert.equal(sgd.carryCurrency, 'SGD')
+  // The currency is the RECORDED deposit currency: with none recorded the
+  // deal-proven balance joins no group.
+  const bare = reportLedger({ ...report, currencyByAccount: {} }, 'all').windows.find(w => w.key === '30d')
+  assert.deepEqual(bare.carry.in.groups, [])
+  assert.equal(bare.carry.in.unknownCurrencyAccounts, 2)
+})
+
+test('WEB-8: the hourly card keeps the reads-only rule; the ledger alone reads the deals', t => {
+  const { db, trader } = fixture(t, [['11', 0]])
+  for (let at = T - 2 * H; at <= T; at += 3 * MIN) trader('11', at, 1000)
+  closes(db, '11', [[401, T - 30 * H, 0, 90_000], [402, T - 3 * H, 10_000, 100_000]])
+  const hourly = hourlyActivity(db, { all: false, accountId: '11', explicit: true }, { to: T, nowMs: T })
+  const h = hourly.rows.find(r => r.from === T - 12 * H)
+  assert.equal(h.openBal, null)
+  assert.equal(h.balance.open.groups[0].reason, 'before_balance_history')
+  assert.equal(h.balance.open.groups[0].storedFrom, T - 2 * H)
+  assert.deepEqual(balanceReader(db).at('11', T - 12 * H), { status: 'not_stored', reason: 'before_balance_history', storedFrom: T - 2 * H })
+  const report = buildPerformancePopulations(db, { now: T })
+  assert.equal(reportLedger(report, '11').windows.find(w => w.key === '12h').carryIn, 900)
+})
+
+test('WEB-8: a failed read of the deal balances leaves the stored reads\' carry as it was, and says so', t => {
+  const { db, trader } = fixture(t, [['11', 0]])
+  for (let at = T - 20 * H; at <= T; at += 3 * MIN) trader('11', at, 1500)
+  db.exec('ALTER TABLE broker_deals RENAME COLUMN balance_source TO balance_source_gone')
+  const report = buildPerformancePopulations(db, { now: T })
+  assert.equal(report.balanceEdges.status, 'complete')
+  assert.equal(report.balanceEdges.dealBalances, 'deal_balance_read_failed')
+  const one = Object.fromEntries(reportLedger(report, '11').windows.map(w => [w.key, w]))
+  assert.equal(one['1h'].carryIn, 1500)
+  assert.equal(one['30d'].carryIn, null)
+  assert.equal(one['30d'].carry.in.groups[0].reason, 'before_balance_history')
+  assert.deepEqual(report.balanceEdges.windows['30d']['11'].in.dealBalance, { status: 'unavailable', reason: 'deal_balance_read_failed' })
+  // V3 WEB-8-m: and the page is told. The ledger carry keeps the report's
+  // flag, and each group names the account whose deal balances were not read
+  // at that edge — the edge the reads answer names none.
+  assert.equal(one['30d'].carry.dealBalances, 'deal_balance_read_failed')
+  assert.deepEqual(one['30d'].carry.in.groups[0].dealBalanceUnreadAccounts, ['11'])
+  assert.deepEqual(one['1h'].carry.in.groups[0].dealBalanceUnreadAccounts, [])
+  const all = reportLedger(report, 'all').windows.find(w => w.key === '30d')
+  assert.deepEqual(all.carry.in.groups[0].dealBalanceUnreadAccounts, ['11'])
+})
+
+// V3 WEB-8-m (checker nit 1). DEAL_FALLBACK names three reasons; the third —
+// an edge INSIDE the reads' era with no read within the tolerance — had no
+// test, so dropping it left every test green. Two accounts, one edge (the
+// 12h window's carry in), reads every 3 minutes except within 30 minutes of
+// it: 11's deal pair reconciles to the cent, 22's breaks by 50.00.
+test('WEB-8-m: an edge inside the reads\' era with no read near it takes a proven deal balance, and a broken pair keeps "no read near edge"', t => {
+  const { db, trader } = fixture(t, [['11', 0], ['22', 0]])
+  const E = T - 12 * H
+  for (let at = T - 20 * H; at <= T; at += 3 * MIN) {
+    if (Math.abs(at - E) < 30 * MIN) continue
+    trader('11', at, at < E - H ? 850 : at < E + H ? 900 : 1000)
+    trader('22', at, at < E - H ? 850 : at < E + H ? 900 : 1050)
+  }
+  // 11: 501 leaves 900.00; 502 adds 100.00 and leaves 1,000.00 — proven.
+  closes(db, '11', [[501, E - H, 5_000, 90_000], [502, E + H, 10_000, 100_000]])
+  // 22: 512 adds 100.00 to 900.00 but reports 1,050.00 — 50.00 unexplained.
+  closes(db, '22', [[511, E - H, 5_000, 90_000], [512, E + H, 10_000, 105_000]])
+  // The fixture reaches the path under test: E is after the first stored
+  // read, and the reads alone leave it open for want of a read near it.
+  const readsOnly = balanceReader(db)
+  for (const id of ['11', '22']) {
+    assert.ok(readsOnly.account(id).historyStartsAt < E, `${id}: the edge is inside the reads' era`)
+    assert.deepEqual(readsOnly.at(id, E), { status: 'not_stored', reason: 'no_observation_near_edge', maxAgeMs: BALANCE_EDGE_MAX_AGE_MS })
+  }
+  const report = buildPerformancePopulations(db, { now: T })
+  assert.equal(report.balanceEdges.dealBalances, 'read')
+  const w11 = reportLedger(report, '11').windows.find(w => w.key === '12h')
+  assert.equal(Date.parse(w11.from), E, 'the 12h window\'s carry in is the edge in the gap')
+  // Proven: the carry is the deal's balance, and says it is one.
+  assert.equal(w11.carryIn, 900)
+  assert.deepEqual(w11.carry.in.groups[0].sources, ['broker_deal'])
+  assert.deepEqual(pick(report.balanceEdges.windows['12h']['11'].in, ['status', 'value', 'currency', 'source', 'proof', 'event', 'nextEvent']),
+    { status: 'observed', value: 900, currency: 'USD', source: 'broker_deal', proof: 'balance_arithmetic',
+      event: { kind: 'deal', id: '501' }, nextEvent: { kind: 'deal', id: '502' } })
+  // Broken: the reads' reason stands, with what the deals could not prove.
+  const ev22 = report.balanceEdges.windows['12h']['22'].in
+  assert.deepEqual(pick(ev22, ['status', 'reason', 'maxAgeMs']), { status: 'not_stored', reason: 'no_observation_near_edge', maxAgeMs: BALANCE_EDGE_MAX_AGE_MS })
+  assert.deepEqual(pick(ev22.dealBalance, ['status', 'reason', 'unexplained', 'from', 'to']),
+    { status: 'not_stored', reason: 'balance_chain_break', unexplained: 50, from: { kind: 'deal', id: '511' }, to: { kind: 'deal', id: '512' } })
+  const w22 = reportLedger(report, '22').windows.find(w => w.key === '12h')
+  assert.equal(w22.carryIn, null, 'no balance is invented across the break')
+  assert.equal(w22.carry.in.groups[0].reason, 'no_observation_near_edge')
+  assert.equal(missingBalanceLabel(w22.carry.in.groups[0]), 'no broker read near edge')
+  // The window's other edge (the report time) is a stored read for both.
+  assert.equal(w11.carryOut, 1000)
+  assert.equal(w22.carryOut, 1050)
 })

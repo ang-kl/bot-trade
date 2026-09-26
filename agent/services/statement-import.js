@@ -83,12 +83,21 @@ export function parseStatement(text) {
   const lines = String(text ?? '').split(/\r?\n/)
   const rows = []
   let inDeals = false
+  // V3 WEB-8: the export's "Balance <CCY>" column is the broker's account
+  // balance right after each deal, in the named currency. Found by its header,
+  // never by position; a file without it stores no balance.
+  let balanceCol = -1, balanceCurrency = null
   for (const line of lines) {
     const t = line.trim()
     if (t === 'Deals') { inDeals = true; continue }
     if (inDeals && /^(Positions|Orders|Summary|Balance)$/.test(t)) break
     if (!inDeals || !t) continue
-    if (t.startsWith('Deal ID,')) continue          // header
+    if (t.startsWith('Deal ID,')) {                 // header
+      const header = line.split(',').map((h) => h.trim())
+      balanceCol = header.findIndex((h) => /^Balance [A-Z]{3}$/.test(h))
+      balanceCurrency = balanceCol >= 0 ? header[balanceCol].slice(-3) : null
+      continue
+    }
     const c = line.split(',')
     // The section's footer is a totals row with no deal id — not a deal.
     if (!/^DID\d+$/.test((c[0] || '').trim())) continue
@@ -107,6 +116,10 @@ export function parseStatement(text) {
       swap: null,
       commission: num(c[10]),
       net_pnl: num(c[12]),                           // account currency, broker-authoritative
+      balance: balanceCol >= 0 ? num(c[balanceCol]) : null,
+      balance_version: null,                         // the export has no balanceVersion
+      balance_currency: balanceCol >= 0 && num(c[balanceCol]) != null ? balanceCurrency : null,
+      balance_source: 'statement',
     })
   }
   return rows

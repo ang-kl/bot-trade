@@ -19,14 +19,22 @@
 // re-checks every contributing account. An account with no recorded currency
 // belongs to no currency, so while one exists no all-accounts total is stated.
 const CCY = /^[A-Z]{3}$/
+// The WEB-8 reasons (an older ledger edge the stored deal and cashflow
+// balances could not prove) follow the WEB-3 ones; the WEB-3 order is unchanged.
 const REASON_ORDER = ['before_balance_history', 'no_balance_stored', 'no_observation_near_edge', 'observation_currency_mismatch',
-  'no_floating_reading', 'account_not_registered', 'deposit_currency_evidence_mismatch', 'deposit_currency_not_recorded']
+  'no_floating_reading', 'account_not_registered', 'deposit_currency_evidence_mismatch', 'deposit_currency_not_recorded',
+  'event_without_balance', 'balance_chain_break', 'balance_version_gap', 'event_without_money', 'edge_inside_event_time',
+  'after_last_stored_event']
 const firstReason = reasons => REASON_ORDER.find(r => reasons.has(r)) ?? [...reasons][0] ?? null
 
 /** entries: [{ accountId, currency, currencyReason?, storedFrom, evidence }],
  * `currency` being the account's RECORDED deposit currency (null when none),
  * evidence { status: 'observed', value, currency, at, source } or
- * { status: 'not_stored', reason }. */
+ * { status: 'not_stored', reason }. A ledger edge's not_stored evidence may
+ * carry `dealBalance: { status: 'unavailable' }` (V3 WEB-8-m): the stored deal
+ * and cashflow balances could not be read, so the edge was never checked
+ * against them. Such accounts are named per group (dealBalanceUnreadAccounts)
+ * so the page can say so in words instead of showing only the reads' reason. */
 export function currencyGroups(entries) {
   const groups = new Map()
   let unknownCurrencyAccounts = 0
@@ -45,7 +53,7 @@ export function currencyGroups(entries) {
       continue
     }
     if (!groups.has(currency)) groups.set(currency, { currency, accounts: 0, observed: 0, sum: 0, oldestAt: null, newestAt: null,
-      storedFrom: null, storedFromKnown: true, sources: new Set(), reasons: new Set(), missing: [] })
+      storedFrom: null, storedFromKnown: true, sources: new Set(), times: new Map(), reasons: new Set(), missing: [], dealUnread: [] })
     const g = groups.get(currency)
     g.accounts++
     if (Number.isSafeInteger(e.storedFrom)) g.storedFrom = g.storedFrom == null ? e.storedFrom : Math.max(g.storedFrom, e.storedFrom)
@@ -55,16 +63,28 @@ export function currencyGroups(entries) {
       if (Number.isSafeInteger(ev.at)) {
         g.oldestAt = g.oldestAt == null ? ev.at : Math.min(g.oldestAt, ev.at)
         g.newestAt = g.newestAt == null ? ev.at : Math.max(g.newestAt, ev.at)
+        // Per source too (V3 WEB-8-m): a read's time is a read at the edge,
+        // a deal's is the close the broker reported the balance after, so
+        // the page words each by what it is.
+        if (ev.source) {
+          const t = g.times.get(ev.source)
+          g.times.set(ev.source, t ? { oldestAt: Math.min(t.oldestAt, ev.at), newestAt: Math.max(t.newestAt, ev.at) } : { oldestAt: ev.at, newestAt: ev.at })
+        }
       }
       if (ev.source) g.sources.add(ev.source)
-    } else { g.reasons.add(read ? 'observation_currency_mismatch' : ev?.reason || 'not_stored'); if (id) g.missing.push(id) }
+    } else {
+      g.reasons.add(read ? 'observation_currency_mismatch' : ev?.reason || 'not_stored'); if (id) g.missing.push(id)
+      if (id && ev?.dealBalance?.status === 'unavailable') g.dealUnread.push(id)
+    }
   }
   const list = [...groups.values()].sort((a, b) => a.currency.localeCompare(b.currency)).map(g => {
     const complete = g.observed === g.accounts
     return { currency: g.currency, accounts: g.accounts, observedAccounts: g.observed,
       value: complete ? g.sum : null, oldestAt: complete ? g.oldestAt : null, newestAt: complete ? g.newestAt : null,
-      sources: [...g.sources].sort(), storedFrom: g.storedFromKnown ? g.storedFrom : null,
-      reason: complete ? null : firstReason(g.reasons), missingAccounts: [...g.missing].sort() }
+      sources: [...g.sources].sort(), sourceTimes: complete ? Object.fromEntries([...g.times].sort(([a], [b]) => a.localeCompare(b))) : {},
+      storedFrom: g.storedFromKnown ? g.storedFrom : null,
+      reason: complete ? null : firstReason(g.reasons), missingAccounts: [...g.missing].sort(),
+      dealBalanceUnreadAccounts: [...g.dealUnread].sort() }
   })
   const single = list.length === 1 && unknownCurrencyAccounts === 0 ? list[0] : null
   return { total: single ? single.value : null, currency: single ? single.currency : null,
@@ -87,8 +107,12 @@ export function ledgerCarry(balanceEdges, windowKey, accountId = 'all', currency
   const side = k => currencyGroups(accounts.map(a => ({ accountId: a.accountId, currency: recorded(a.accountId),
     storedFrom: a.historyStartsAt, evidence: edges[a.accountId]?.[k] ?? { status: 'not_stored', reason: 'no_balance_stored' } })))
   const inside = side('in'), outside = side('out')
+  // dealBalances: 'read', 'off' or 'deal_balance_read_failed' (V3 WEB-8-m) —
+  // carried so a failed read of the stored deal balances is stated on the
+  // page, not hidden behind the reads' own "not stored before" label.
   return { carryIn: inside.total, carryOut: outside.total, carryCurrency: inside.currency ?? outside.currency,
-    carry: { status: 'observed_broker_balance', maxAgeMs: balanceEdges.maxAgeMs ?? null, in: inside, out: outside } }
+    carry: { status: 'observed_broker_balance', maxAgeMs: balanceEdges.maxAgeMs ?? null,
+      dealBalances: balanceEdges.dealBalances ?? null, in: inside, out: outside } }
 }
 
 const pad = n => String(n).padStart(2, '0')
@@ -108,6 +132,14 @@ export function missingBalanceLabel(group) {
   if (group.reason === 'no_observation_near_edge') return `no broker read near edge${partial}`
   if (group.reason === 'observation_currency_mismatch') return `read not in ${group.currency || 'the recorded currency'}${partial}`
   if (group.reason === 'no_floating_reading') return `no floating read${partial}`
+  // V3 WEB-8: an older edge whose stored deal/cashflow balances do not prove
+  // a balance. Each names what cannot be recovered; none is ever estimated.
+  if (group.reason === 'event_without_balance') return `deal or cashflow stored without its balance${partial}`
+  if (group.reason === 'balance_chain_break') return `not provable: unrecorded balance change${partial}`
+  if (group.reason === 'balance_version_gap') return `not provable: balance version gap${partial}`
+  if (group.reason === 'event_without_money') return `not provable: deal stored without its money${partial}`
+  if (group.reason === 'edge_inside_event_time') return `not provable: a close in the edge's second${partial}`
+  if (group.reason === 'after_last_stored_event') return `not provable: no later deal or cashflow stored${partial}`
   return `not stored${partial}`
 }
 

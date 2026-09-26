@@ -2,6 +2,7 @@ import { ACCOUNT_HISTORY_SUMMARY_EXPRS } from '../db.js'
 import { currencyGroups } from '../shared/balance-carry.js'
 import { reportCurrency } from '../shared/performance-populations.js'
 import { depositCurrencies } from './deposit-currencies.js'
+import { dealBalanceReader } from './deal-balances.js'
 
 // CURRENCY (V3 WEB-3m). An account's currency here is its RECORDED broker
 // deposit currency — depositCurrencies(), the map the populations report ships
@@ -31,6 +32,18 @@ export const BALANCE_EDGE_MAX_AGE_MS = 15 * 60_000
 const WRITE_SKEW_MS = 60_000
 const HOSTS = { 0: 'demo.ctraderapi.com', 1: 'live.ctraderapi.com' }
 
+// V3 WEB-8 (8,989-A row 7). The ledger's older edges. account_history holds
+// broker reads only since 22-09 ~17:26 UTC, but the broker also reports the
+// balance after every closing deal and every cashflow, and broker_deals /
+// account_cashflows now keep it (deal-balances.js). With `dealBalances` on,
+// an edge this reader cannot answer from a stored read — before the reads
+// begin, with none near it, or for an account with none — is answered by that
+// stored balance, ONLY when the next stored event reconciles to it to the
+// cent; otherwise the edge stays a labelled gap. Same account, same host, same
+// recorded deposit currency (the one map below), so the carry still pools per
+// currency and never across. The hourly card keeps the reads-only rule.
+const DEAL_FALLBACK = new Set(['before_balance_history', 'no_balance_stored', 'no_observation_near_edge'])
+
 const field = name => `CASE WHEN json_valid(observation_json) THEN json_extract(observation_json, '$.${name}') END`
 const BALANCE_FIELDS = `id, source, received_ms AS receivedMs, ${field('balance')} AS balance, ${field('currency')} AS currency,
   ${field('error')} AS error, ${field('balanceReceivedAt')} AS balanceAt`
@@ -44,10 +57,26 @@ const floatOk = r => typeof r.openPnl === 'number' && Number.isFinite(r.openPnl)
 /** Reader over one database snapshot. Caches per account; bounded queries.
  * `currencyByAccount` is a depositCurrencies() map; the populations report
  * passes the one it ships, so its pools and its carry read the same evidence.
- * Absent, it is read here from the same reader. */
-export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currencyByAccount = null } = {}) {
+ * Absent, it is read here from the same reader. `dealReader` (with
+ * dealBalances on) is a dealBalanceReader the caller already built over that
+ * SAME map object: GET /state/deal-balances shares one between its report and
+ * this carry, so each account's deals and cashflows are scanned once per
+ * request, not once per reader. */
+export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currencyByAccount = null, dealBalances = false, dealReader = null } = {}) {
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs <= 0) throw new RangeError('invalid balance edge tolerance')
   const currencies = { currencyByAccount: currencyByAccount ?? depositCurrencies(db) }
+  // V3 WEB-8: the deal/cashflow balances, over the SAME currency map. A failed
+  // read of them never costs the edges the stored reads answer: they stay as
+  // before, and each gap says the deal evidence was unavailable.
+  let deals = null, dealsUnavailable = null
+  if (dealBalances && dealReader) {
+    // One currency map, never two: a reader over another map could pool a
+    // deal balance under a currency this carry does not use.
+    if (dealReader.currencyByAccount !== currencies.currencyByAccount) throw new TypeError('balanceReader: dealReader reads another currencyByAccount')
+    deals = dealReader
+  } else if (dealBalances) {
+    try { deals = dealBalanceReader(db, currencies) } catch { dealsUnavailable = 'deal_balance_read_failed' }
+  }
   // Reconcile rows (about 70 % of the table) never carry a balance; skipping
   // them by column keeps the JSON reads to the rows that can answer.
   const edgeSql = db.prepare(`SELECT ${BALANCE_FIELDS} FROM account_history
@@ -153,8 +182,42 @@ export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currency
         ? { status: 'observed', value: best.balance, currency: best.currency, at: best.balanceAt, source: best.source, ageMs: atMs - best.balanceAt }
         : { status: 'not_stored', reason: otherCurrency ? 'observation_currency_mismatch' : 'no_observation_near_edge', maxAgeMs }
     }
+    if (dealBalances && out.status === 'not_stored' && DEAL_FALLBACK.has(out.reason)) out = withDealEvidence(out, a.accountId, atMs)
     edges.set(key, out)
     return out
+  }
+
+  /** V3 WEB-8: an edge the stored reads left open, answered by the balance
+   * stored on the deal or cashflow before it when the next event proves it,
+   * or kept as a gap whose reason names what is missing. Never estimated. */
+  function withDealEvidence(primary, accountId, atMs) {
+    if (!deals) return { ...primary, dealBalance: { status: 'unavailable', reason: dealsUnavailable } }
+    let deal
+    try { deal = deals.at(accountId, atMs) } catch { return { ...primary, dealBalance: { status: 'unavailable', reason: 'deal_balance_read_failed' } } }
+    if (deal.status === 'observed') return deal
+    // No balance stored on any deal or cashflow: the reads' reason stands.
+    if (deal.reason === 'no_balance_evidence_stored') return primary
+    // Inside the reads' era the gap is theirs (no read near the edge); what
+    // the deals could not prove rides along.
+    if (primary.reason === 'no_observation_near_edge') return { ...primary, dealBalance: deal }
+    // Before every stored event: still "not stored before", from the earliest
+    // balance either source holds.
+    if (deal.reason === 'before_first_stored_event') {
+      const from = [primary.storedFrom, deal.storedFrom].filter(Number.isSafeInteger)
+      return { status: 'not_stored', reason: 'before_balance_history', ...(from.length ? { storedFrom: Math.min(...from) } : {}), dealBalance: deal }
+    }
+    // The edge predates every stored read (or the account has none), so the
+    // stored deals and cashflows are the only evidence: their reason is the gap.
+    return { ...deal, accountHistory: primary }
+  }
+
+  /** The earliest time any stored balance (read, deal or cashflow) exists. */
+  function storedFrom(accountId) {
+    const a = account(accountId)
+    let dealFrom = null
+    if (deals && a.registered && a.currency) { try { dealFrom = deals.storedFrom(a.accountId) } catch { dealFrom = null } }
+    const from = [a.historyStartsAt, dealFrom].filter(Number.isSafeInteger)
+    return { storedFrom: from.length ? Math.min(...from) : null, dealBalanceFrom: dealFrom }
   }
 
   /** The last broker floating P&L reading in each [from, to) span, counted
@@ -180,7 +243,8 @@ export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currency
     return out
   }
 
-  return { account, at, floatingBySpan, accountIds: () => [...accounts.keys()], maxAgeMs }
+  return { account, at, floatingBySpan, storedFrom, accountIds: () => [...accounts.keys()], maxAgeMs,
+    dealBalances: dealBalances ? (deals ? 'read' : dealsUnavailable) : 'off' }
 }
 
 /** The hourly card's balance columns: open/close balance and last floating per
@@ -213,16 +277,28 @@ export function hourlyBalances(db, scope, rows, observedThrough, options) {
 /** Ledger carries: observed balance at every ledger window's two edges, per
  * registered account. The shared reportLedger groups them for a scope, taking
  * each account's currency from the report's currencyByAccount (the map passed
- * in here), so the carry carries no second copy of it. */
+ * in here), so the carry carries no second copy of it.
+ *
+ * V3 WEB-8: an edge the stored reads cannot answer is answered from the
+ * broker balance stored on deals and cashflows when the next stored event
+ * proves it (dealBalances on, the one reader above). Each account's
+ * historyStartsAt is then the earliest stored balance of either kind, so a
+ * "not stored before" label names where the carry's evidence really begins;
+ * accountHistoryStartsAt and dealBalanceFrom keep the two apart. */
 export function ledgerBalanceEdges(db, windows, options) {
-  const reader = balanceReader(db, options)
+  const reader = balanceReader(db, { ...options, dealBalances: true })
   const ids = reader.accountIds()
   const byWindow = {}
   for (const w of windows) {
     byWindow[w.key] = Object.fromEntries(ids.map(id => [id, { in: reader.at(id, w.from), out: reader.at(id, w.to) }]))
   }
   return { status: 'complete', basis: 'observed_broker_balance_at_or_before_edge', currencyBasis: 'recorded_deposit_currency',
+    olderEdgeBasis: 'broker_post_event_balance_reconciled_to_next_event', dealBalances: reader.dealBalances,
     maxAgeMs: reader.maxAgeMs,
-    accounts: ids.map(id => ({ accountId: id, historyStartsAt: reader.account(id).historyStartsAt })),
+    accounts: ids.map(id => {
+      const from = reader.storedFrom(id)
+      return { accountId: id, historyStartsAt: from.storedFrom, accountHistoryStartsAt: reader.account(id).historyStartsAt,
+        dealBalanceFrom: from.dealBalanceFrom }
+    }),
     windows: byWindow }
 }

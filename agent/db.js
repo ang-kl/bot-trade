@@ -1484,6 +1484,27 @@ export function initDB(dbPath) {
     if (!equityHistoryCols.has(name)) db.exec(`ALTER TABLE equity_snapshots ADD COLUMN ${name} ${type}`);
   }
 
+  // V3 WEB-8 (8,989-A row 7): the broker's own account balance after each
+  // closing deal and each cashflow, so a ledger window older than
+  // account_history can carry a balance (services/deal-balances.js).
+  //   balance          closePositionDetail.balance / the statement's Balance
+  //                    column / depositWithdraw.balance, in the account's
+  //                    deposit currency; NULL when no read carried one
+  //   balance_version  the broker's balanceVersion (+1 per balance change)
+  //   balance_currency the currency a statement names for it (NULL from the
+  //                    API: a deal's money is in the deposit currency)
+  //   balance_source   the read the stored balance came from ('broker_api' or
+  //                    'statement'), or with no balance the read that looked
+  //                    and found none. NULL = stored before WEB-8, not re-read.
+  const dealBalanceCols = new Set(db.prepare('PRAGMA table_info(broker_deals)').all().map(c => c.name));
+  for (const [name, type] of [['balance','REAL'], ['balance_version','INTEGER'], ['balance_currency','TEXT'], ['balance_source','TEXT']]) {
+    if (!dealBalanceCols.has(name)) db.exec(`ALTER TABLE broker_deals ADD COLUMN ${name} ${type}`);
+  }
+  const cashflowBalanceCols = new Set(db.prepare('PRAGMA table_info(account_cashflows)').all().map(c => c.name));
+  for (const [name, type] of [['balance','REAL'], ['balance_version','INTEGER'], ['balance_source','TEXT']]) {
+    if (!cashflowBalanceCols.has(name)) db.exec(`ALTER TABLE account_cashflows ADD COLUMN ${name} ${type}`);
+  }
+
   // Repair float-formatted broker position ids (2026-08-02). Some open paths
   // stored ctrader_position_id as "234698574.0" while the broker/deal-history
   // side uses "234698574" — so the P&L backfill never matched (52 closed

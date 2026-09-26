@@ -4,7 +4,7 @@
 // is labelled, never drawn as zero.
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TodayHourlyBody, LedgerRow, MobileWindowCard } from '../pages/Performance.jsx'
+import { TodayHourlyBody, LedgerRow, MobileWindowCard, LedgerBody } from '../pages/Performance.jsx'
 import { hourRowEvidence } from '../lib/hourly-activity.js'
 import { currencyGroups, ledgerCarry } from '../../agent/shared/balance-carry.js'
 import { currentTotalsByCurrency, liveFloatingByCurrency } from '../lib/current-account-totals.js'
@@ -98,5 +98,37 @@ describe('timeframe ledger: carry in / carry out', () => {
       expect(html).toContain('partial · 2 of 4 priced')
       expect(html).toContain('1,018.00'); expect(html).toContain('1,029.00')
     }
+  })
+})
+
+// V3 WEB-8-m. The ledger as rendered: a deal-proven carry's tooltip names the
+// close it was reported after (checker nit 4), and a failed read of the
+// stored deal balances is stated in words in the cell's tooltip and the
+// ledger's footnote (checker nit 3) — words, not colour.
+describe('timeframe ledger: deal-proven carries and a failed deal read', () => {
+  const D = 24 * H
+  const recorded = id => ({ 11: 'USD' })[id]
+  const win = (edges, key) => ({ key, label: key.toUpperCase(), from: new Date(NOW - 30 * D).toISOString(), to: new Date(NOW).toISOString(),
+    trades: 0, net: 0, markets: {}, lastTradeAt: null, ...ledgerCarry(edges, key, '11', recorded) })
+  it('a deal-proven carry says it was reported after the deal, not read at the edge', () => {
+    const edges = { status: 'complete', maxAgeMs: 900000, dealBalances: 'read', accounts: [{ accountId: '11', historyStartsAt: START - 40 * D }],
+      windows: { '30d': { 11: { in: { status: 'observed', value: 900, currency: 'USD', at: START - 10 * D, source: 'broker_deal' }, out: seen('USD', 1029).evidence } } } }
+    const html = renderToStaticMarkup(<table><tbody><LedgerRow w={win(edges, '30d')} nowMs={NOW} timeZone="UTC" /></tbody></table>)
+    expect(text(html)).toContain('900.00')
+    expect(html).toContain('title="USD broker balance · reported after the deal at 12-09 17:26 UTC, held until the next stored event · broker_deal"')
+    expect(html).not.toContain('read 12-09 17:26 UTC')
+  })
+  it('a failed deal read is named in the carry cell\'s tooltip and the ledger footnote', () => {
+    const edges = { status: 'complete', maxAgeMs: 900000, dealBalances: 'deal_balance_read_failed', accounts: [{ accountId: '11', historyStartsAt: START }],
+      windows: { '30d': { 11: { in: { ...before('USD').evidence, dealBalance: { status: 'unavailable', reason: 'deal_balance_read_failed' } }, out: seen('USD', 1029).evidence } } } }
+    const w = win(edges, '30d')
+    const row = renderToStaticMarkup(<table><tbody><LedgerRow w={w} nowMs={NOW} timeZone="UTC" /></tbody></table>)
+    expect(text(row)).toContain('not stored before 22-09 17:26 UTC')
+    expect(row).toContain('Deal balances unread for account 11')
+    const body = text(renderToStaticMarkup(<LedgerBody variant="card" windows={[w]} ledger={{ windows: [w] }} nowMs={NOW} timeZone="UTC" />))
+    expect(body).toContain('Deal balances unread: the broker balances stored on deals and cashflows could not be read for this report (account 11)')
+    // Deals read: no such sentence.
+    const ok = win({ ...edges, dealBalances: 'read', windows: { '30d': { 11: { in: before('USD').evidence, out: seen('USD', 1029).evidence } } } }, '30d')
+    expect(text(renderToStaticMarkup(<LedgerBody variant="card" windows={[ok]} ledger={{ windows: [ok] }} nowMs={NOW} timeZone="UTC" />))).not.toContain('Deal balances unread')
   })
 })
