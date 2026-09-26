@@ -369,23 +369,66 @@ test('B-1: a second symbol on the same failing account is not read again inside 
   assert.equal(reads, 2, 'read again once the cooldown has passed')
 })
 
-test('B-1: the primary account\'s loaded global map answers with no list read; another account\'s never does', async t => {
-  const db = fixture(t, { map: null })
-  setState(db, 'ctrader_account_id', ACCT)
-  setState(db, 'symbol_id_map', JSON.stringify({ [SYM]: SYM_ID }))
+// Fix round 3, N-1: the id judged is the id autoTrade places (loop.js:647-651
+// resolveSymbolId). Global map 0700.HK → 101, whose calendar is open on 01-10;
+// the account's own list 0700.HK → 202, whose calendar is on holiday.
+function disagreeingMaps(t) {
+  const db = fixture(t, { map: null, holiday: null })
+  setState(db, 'ctrader_account_id', ACCT) // this account is primary: the global map is its legitimate fallback
+  setState(db, 'symbol_id_map', JSON.stringify({ [SYM]: 101 }))
+  const calendarFor = (symbolId, holiday) => recordMarketCalendar(db, { ...IDENTITY, symbolId: String(symbolId) }, { ...hkSymbol(holiday), symbolId }, { nowMs: OBSERVED_THU })
+  calendarFor(101, [])
+  calendarFor(202, [{ ...HOLIDAY_0110, startSecond: 0, endSecond: 0 }])
+  return db
+}
+const ownList = id => async (_h, _c, _s, _t, acct) => ({ ctidTraderAccountId: Number(acct), symbol: [{ symbolId: id, symbolName: SYM }] })
+
+test('N-1: the gate judges the id autoTrade places: the account\'s own list, not a disagreeing global map', async t => {
+  const db = disagreeingMaps(t)
   let reads = 0
-  const deps = { nowMs: WED_0930_1000, credentials: CREDS, wsGetSymbolsList: async () => { reads++; throw new Error('no network in this test') } }
-  const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, deps))
-  assert.equal(reads, 0, 'RED if the gate blocks on a list read while resolveSymbolId\'s no-network answer exists')
-  assert.equal(g.status, 'OPEN')
-  assert.equal(g.refresh, 'symbol_id_global_map')
-  // The same global map, but another account is primary: it is not this account's.
-  const other = fixture(t, { map: null })
-  setState(other, 'ctrader_account_id', '9999')
-  setState(other, 'symbol_id_map', JSON.stringify({ [SYM]: SYM_ID }))
-  const g2 = await raceHung(resolveEntryMarketGate(other, { symbol: SYM, accountId: ACCT, host: HOST }, deps))
+  const list = ownList(202)
+  const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: THU_0110_1000, credentials: CREDS, wsGetSymbolsList: (...a) => { reads++; return list(...a) } }))
+  const { resolveSymbolId } = await import('../lib/ctrader-creds.js')
+  // autoTrade's call (loop.js:647-651). The gate's read stored the account's
+  // list, so it is fresh and no read is made; a read here would fail (never
+  // the network) and fall back to the global 101.
+  const placed = await resolveSymbolId(db, CREDS(ACCT), SYM, { now: THU_0110_1000, wsGetSymbolsList: async () => { throw new Error('no second read expected') } })
+  assert.equal(g.identity?.symbolId, '202', 'RED if the gate judged the global map\'s 101 while autoTrade places 202')
+  assert.equal(placed.id, 202)
   assert.equal(reads, 1)
-  assert.equal(g2.unknown, true)
+  assert.equal(g.status, 'CLOSED')
+  assert.equal(g.calendarReason, 'broker_holiday')
+})
+
+test('N-1: after a FAILED list read the global-map fallback is not judged: autoTrade\'s own read could place another id', async t => {
+  const db = disagreeingMaps(t)
+  const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: THU_0110_1000, credentials: CREDS, wsGetSymbolsList: async () => { throw new Error('cTrader WS timeout after 5000ms') } }))
+  // autoTrade's own read is not bounded (30 s, 3 attempts); when it succeeds it places the account's own id.
+  const { resolveSymbolId } = await import('../lib/ctrader-creds.js')
+  const placed = await resolveSymbolId(db, CREDS(ACCT), SYM, { now: THU_0110_1000, wsGetSymbolsList: ownList(202) })
+  assert.equal(placed.id, 202)
+  assert.equal(g.unknown, true, 'RED if the gate judged 101 (open) from the fallback while autoTrade can place 202 (holiday)')
+  assert.equal(g.open, false)
+  assert.match(g.refresh, /^symbol_id_fallback: /)
+})
+
+test('N-1: when resolveSymbolId cannot read at all, its network-free answer is judged and no budget is spent', async t => {
+  // No primary account recorded: resolveSymbolId cannot fetch (ctrader-creds.js:272) and answers from the
+  // global map (:283-288) — the same answer autoTrade's call gets.
+  const db = fixture(t, { map: null })
+  setState(db, 'symbol_id_map', JSON.stringify({ [SYM]: SYM_ID }))
+  setState(db, accountSymbolMapKey('5009'), JSON.stringify({ builtAt: 'x', accountId: '5009', map: { A: 1, B: 2 } }))
+  let reads = 0
+  const deps = { nowMs: WED_0930_1000, pass: 'loop:1', credentials: CREDS,
+    wsGetSymbolsList: async () => { reads++; throw new Error('x') }, fetchSymbols: async () => { reads++; return { symbol: [] } } }
+  const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, deps))
+  assert.equal(g.status, 'OPEN')
+  assert.equal(g.refresh, 'symbol_id_resolved')
+  assert.equal(reads, 0)
+  for (const s of ['A', 'B']) assert.equal((await resolveEntryMarketGate(db, { symbol: s, accountId: '5009', host: HOST }, deps)).refresh, 'symbol_not_returned', 'RED if the network-free resolution spent the pass budget')
+  assert.equal(reads, 2)
 })
 
 test('N-2: an account without usable credentials spends none of the pass budget (map and calendar branches)', async t => {
@@ -406,17 +449,23 @@ test('N-2: an account without usable credentials spends none of the pass budget 
   assert.equal(reads, 2)
 })
 
-test('a token-refused account (B7) is never read and spends none of the pass budget', async t => {
+test('a token-refused account (B7) is never read and spends none of the pass budget (map and calendar branches)', async t => {
   const db = initDB(':memory:'); t.after(() => db.close())
   _resetEntryHoursRefresh()
-  setState(db, 'cpp_exec_demo_refused_accounts_json', JSON.stringify(['5002']))
+  setState(db, 'ctrader_account_id', '9999') // resolveSymbolId could fetch: only the refusal stops the list read
+  // 5003: no map (the map branch). 5002: a map, no calendar (the calendar branch). Both refused.
+  setState(db, 'cpp_exec_demo_refused_accounts_json', JSON.stringify(['5002', '5003']))
   setState(db, accountSymbolMapKey('5002'), JSON.stringify({ builtAt: 'x', accountId: '5002', map: { A: 1 } }))
   setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: 'x', accountId: ACCT, map: { A: 11, B: 12 } }))
   let reads = 0
-  const deps = { nowMs: WED_0930_1000, pass: 'loop:1', credentials: CREDS, fetchSymbols: async () => { reads++; return { symbol: [] } } }
-  for (let i = 0; i < 3; i++) assert.equal((await resolveEntryMarketGate(db, { symbol: 'A', accountId: '5002', host: HOST }, deps)).refresh, 'token_refused')
+  const deps = { nowMs: WED_0930_1000, pass: 'loop:1', credentials: CREDS,
+    wsGetSymbolsList: async () => { reads++; throw new Error('x') }, fetchSymbols: async () => { reads++; return { symbol: [] } } }
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await resolveEntryMarketGate(db, { symbol: 'A', accountId: '5003', host: HOST }, deps)).refresh, 'token_refused', 'RED if the map branch reads a refused account\'s list')
+    assert.equal((await resolveEntryMarketGate(db, { symbol: 'A', accountId: '5002', host: HOST }, deps)).refresh, 'token_refused', 'RED if the calendar branch reads a refused account')
+  }
   for (const s of ['A', 'B']) assert.equal((await resolveEntryMarketGate(db, { symbol: s, accountId: ACCT, host: HOST }, deps)).refresh, 'symbol_not_returned')
-  assert.equal(reads, 2, 'RED if the refused account is read')
+  assert.equal(reads, 2, 'RED if a refused account is read')
 })
 
 test('N-1/N-3: autoTrade\'s gate spends one budget per loop pass, a new loopCount resets it, and a route has its own', async t => {
