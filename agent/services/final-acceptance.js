@@ -796,7 +796,8 @@ function traceEntry(e, ctx) {
  * V3 K1c: which part of the watchdog's calendar export was cut, from the
  * saved /state/watchdog body (`calendarExport`, scanner-work.js
  * watchdogCalendars), for the gate.calendars reason. '' for a body without
- * the split. Words only: the verdict is not read from here.
+ * the split — demandComplete false included, so such a body keeps the old
+ * reason text exactly. Words only: the verdict is not read from here.
  */
 function calendarExportSplit(wd) {
   const part = (name, p, plus = '') => {
@@ -805,8 +806,9 @@ function calendarExportSplit(wd) {
   }
   const retained = wd?.calendarExport?.retained
   const parts = [part('demanded', wd?.calendarExport?.demanded), part('retained', retained, retained?.totalIsLowerBound === true ? '+' : '')].filter(Boolean)
+  if (!parts.length) return ''
   if (wd?.demandComplete === false) parts.push('the demand itself is incomplete')
-  return parts.length ? `: ${parts.join(', ')}` : ''
+  return `: ${parts.join(', ')}`
 }
 
 /**

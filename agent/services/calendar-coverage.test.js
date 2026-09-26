@@ -10,7 +10,7 @@
 //   - at realistic size (7 accounts, ~420 identities, known weekday
 //     calendars) the contract stays under cpp-verify's 256 KiB bound with
 //     `work` intact — and every work item's calendar, resolved the way
-//     cpp-verify resolves it (watchdog_state.cpp:148-152, ported below),
+//     cpp-verify resolves it (watchdog_state.cpp:162-166, ported below),
 //     answers OPEN/CLOSED/UNKNOWN exactly as the pre-K1 full projection did;
 //   - GET /state/calendar-coverage: not cached, built on the read-only worker
 //     (0 statements on the management connection), explicit 503 on failure,
@@ -44,7 +44,7 @@ const str = v => typeof v === 'string' ? v : ''
 const num = v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && Number.isInteger(v) && v <= 9007199254740991 ? v : 0
 const fresh = (at, t, age) => at > 0 && at <= t && t - at < age
 const positiveId = v => typeof v === 'string' && v.length > 0 && v.length <= 19 && v[0] !== '0' && /^\d+$/.test(v)
-/** watchdog_state.cpp:148-152 — the first `calendars` entry with the same
+/** watchdog_state.cpp:162-166 — the first `calendars` entry with the same
  * accountId/host/symbolId strings replaces the item's own calendar. */
 function resolveLikeVerifier(contract, w) {
   for (const c of contract.calendars) {
@@ -312,6 +312,32 @@ test('K1c: an incomplete demand keeps the verdict false with nothing cut; a miss
   assert.equal(out.calendarExport.retained.total, 0)
   assert.equal(out.exportComplete, true)
   assert.equal(out.calendarsComplete, false)
+})
+
+test('K1c: a cache of more than 512 rows with malformed ones — watchdogCalendars itself reports retained.totalIsLowerBound and counts the malformed rows', t => {
+  const db = database(t, ['46130058'])
+  // 514 well-formed cached calendars, none demanded (no position, no feed).
+  const ids = Array.from({ length: 514 }, (_, i) => String(10_000 + i))
+  for (const [i, symbolId] of ids.entries()) recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId }, { symbolId: Number(symbolId), ...SHAPES[i % 9], holiday: [] }, { nowMs: now - 1000 })
+  // Two malformed rows keyed ahead of every well-formed one ('!' sorts before
+  // '[', the marketIdentityKey prefix), so both are inside the 513 read:
+  // one unparseable, one parseable with no identity.
+  setState(db, 'market_calendar:v1:!unparseable', '{not json')
+  setState(db, 'market_calendar:v1:!no-identity', JSON.stringify({ latest: { calendar: null } }))
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_state WHERE key LIKE 'market_calendar:v1:%'").get().n, 516)
+  const out = watchdogCalendars(db, now)
+  assert.equal(out.calendarExport.demanded.total, 0, 'nothing is demanded: every well-formed row read is retained')
+  const r = out.calendarExport.retained
+  assert.equal(r.totalIsLowerBound, true, 'RED if 516 cached rows are not reported as more than the 513 read')
+  assert.equal(r.malformed, 2, 'RED if an unparseable row or a row with no identity is not counted malformed')
+  assert.equal(r.total, 511, 'the 513 rows read, less the two malformed')
+  assert.equal(r.exported + r.cut, r.total)
+  assert.ok(r.exported > 0 && r.cut > 0, `retained ${r.exported} exported, ${r.cut} cut`)
+  assert.equal(out.calendars.length, r.exported)
+  assert.deepEqual([out.exportComplete, out.calendarsComplete], [false, false])
+  // The same fields reach the contract Node serves and the coverage read.
+  assert.deepEqual(nodeWatchdogContract(db, { now }).calendarExport.retained, r)
+  assert.deepEqual(buildCalendarCoverage(db, { now }).export.retained, r)
 })
 
 test('K1c: at the contract size bound the emptied export reads nothing exported on both parts', t => {

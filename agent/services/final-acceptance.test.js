@@ -680,6 +680,12 @@ test('T4 K1c: gate.calendars still reads calendarsComplete — every demanded ca
   assert.equal(gateCheck(e2eTrace(e2eBodies(), { ...OPTS, gate: ok })).verdict, PASS)
   const old = gateBodies(); old['/state/watchdog'].calendarsComplete = false
   assert.equal(gateCheck(e2eTrace(e2eBodies(), { ...OPTS, gate: old })).reason, 'watchdog calendarsComplete is false at the start (the owner may waive it)')
+  // demandComplete false on a body WITHOUT the split: the demand phrase is
+  // named only alongside the split, so the old words stay exactly.
+  const oldIncomplete = gateBodies(); Object.assign(oldIncomplete['/state/watchdog'], { calendarsComplete: false, demandComplete: false })
+  assert.equal(gateCheck(e2eTrace(e2eBodies(), { ...OPTS, gate: oldIncomplete })).reason, 'watchdog calendarsComplete is false at the start (the owner may waive it)',
+    'RED if "the demand itself is incomplete" is added to a body that carries no split')
+  assert.equal(gateCheck(e2eTrace(e2eBodies(), { ...OPTS, gate: oldIncomplete, waive: ['calendars'] })).reason, 'calendars incomplete, waived by the owner')
 })
 
 test('T4 over the REAL GET /state/entry-intents body: recent[] carries the broker position id and created time the fill and admission links join on', () => {

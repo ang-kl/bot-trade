@@ -44,7 +44,7 @@ const exactKey = (accountId, host, symbolId) => [accountId, host, symbolId].ever
 /**
  * V3 K1 — each calendar once. cpp-verify gives every work item of every
  * service the `calendars` entry whose identity matches its accountId, host
- * and symbolId as exact strings (watchdog_state.cpp:148-152), replacing
+ * and symbolId as exact strings (watchdog_state.cpp:162-166), replacing
  * whatever the item carried. So a Node work item whose identity is exported
  * with a calendar need not repeat it: the item drops its copy and says where
  * it is (`calendarIn`). An item whose identity is not exported (beyond the

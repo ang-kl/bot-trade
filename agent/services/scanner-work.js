@@ -239,7 +239,8 @@ export const CALENDAR_EXPORT_MAX_BYTES = 96 * 1024
  * `calendarExport` says which part was cut: `demanded` (the demand, in the
  * order above) and `retained` (the non-demanded cache rows read), each with
  * total / exported / withCalendar / cut; `retained.totalIsLowerBound` when
- * the cache holds more rows than the 512 read. Counted inside the one pass
+ * the cache holds more than 512 rows (retained.total counts the first 513
+ * read, less the demanded and malformed ones). Counted inside the one pass
  * below, no second read of any calendar.
  */
 export function watchdogCalendars(db, now, { lead = null } = {}) {

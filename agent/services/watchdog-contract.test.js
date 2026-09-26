@@ -71,7 +71,7 @@ test('work receipts retain their own account and completion time; master OFF and
   assert.equal(out.work[0].lastCompletedAtMs, now - 1000)
   assert.equal(out.work[0].nextDueMs, now + 2000)
   // V3 K1: the position's calendar is carried once, in `calendars`; cpp-verify
-  // gives it to the item by exact accountId/host/symbolId (watchdog_state.cpp:148-152).
+  // gives it to the item by exact accountId/host/symbolId (watchdog_state.cpp:162-166).
   assert.equal(out.work[0].calendar, undefined)
   assert.equal(out.work[0].calendarIn, 'calendars')
   const own = out.calendars.find(c => c.identity.accountId === out.work[0].accountId && c.identity.host === out.work[0].host && c.identity.symbolId === out.work[0].symbolId)
