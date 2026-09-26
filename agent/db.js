@@ -494,6 +494,12 @@ const TABLES = `
   -- leads with reason_key, so a scored_at range was a full scan of a table
   -- measured at 35,395 rows / 13.6 MB on 25-09-2026).
   CREATE INDEX IF NOT EXISTS idx_refusal_scores_scored ON refusal_scores(scored_at, outcome, account_id);
+  -- UI-5 (RS-1): refusalCostReport now windows on first_at (the refusal
+  -- time), not scored_at (when the background scorer got to it) — see
+  -- refusal-ledger.js's own comment. Same shape as the scored_at index
+  -- above, for the same reason: a first_at range without this leads with
+  -- the table's own primary key ordering, not a covering scan.
+  CREATE INDEX IF NOT EXISTS idx_refusal_scores_first ON refusal_scores(first_at);
 
   -- Account Registry (multi-account migration plan, Phase 1 R1 / milestone
   -- M0). Single source of truth for which cTrader accounts exist and which

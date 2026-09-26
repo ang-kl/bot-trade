@@ -54,21 +54,28 @@ function show(key, v, proposable) {
   return String(v)
 }
 
-export default function RiskReassess({ onChanged, onApplied, initialLlmOff = null }) {
+export default function RiskReassess({ onChanged, onApplied, initialLlmOff = null, initialData = null, initialPicked = null }) {
   // Off is a stated position: with the AI layer disabled every button in this
   // card ends in a refusal, so the card says so once instead (llm-ui.js).
   // `initialLlmOff` exists for the tests: effects do not run under
   // react-dom/server, so without a seam the collapsed branch is the one
   // rendered path no test can reach — which is where the <Card title=> bug
   // lived (review on #755, CLAUDE.md #4).
+  // `initialData` and `initialPicked` are the same kind of seam (SAFE-0b fix
+  // round, 26-09-2026): Apply acts on a loaded assessment and ticked rows,
+  // which only the load effect and clicks produce, so without them the real
+  // Apply handler — and whether Cancel on its confirm stops the POST — is out
+  // of reach of any render (src/components/risk-reassess-apply.test.jsx). No
+  // app caller passes either; in a browser the mount effects clear the ticks
+  // and, with an agent configured, re-read the assessment.
   const [llmOff, setLlmOff] = useState(initialLlmOff)
-  const [data, setData] = useState(null)      // { last, providers, proposable }
+  const [data, setData] = useState(initialData)      // { last, providers, proposable }
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [ask, setAsk] = useState(null)        // null | { includeWatchlist }
   const [provider, setProvider] = useState('openai')
   const [model, setModel] = useState('')
-  const [picked, setPicked] = useState(() => new Set())
+  const [picked, setPicked] = useState(() => new Set(initialPicked || []))
   // Transient confirmation. Owner: "Apply 13 selected > if done, show 'done'
   // visual cue and reset the checkboxes." An action whose only feedback is the
   // numbers quietly changing somewhere else reads as "did that work?".

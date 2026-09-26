@@ -249,7 +249,40 @@ export async function scoreRefusedOpportunities(db, fetchBars, { nowMs = Date.no
  */
 export function refusalCostReport(db, { days = 7, now = Date.now() } = {}) {
   const since = new Date(now - days * 86_400_000).toISOString()
-  const rows = db.prepare(`SELECT * FROM refusal_scores WHERE datetime(scored_at) >= datetime(?) ORDER BY scored_at DESC`).all(since)
+  // UI-5 (RS-1: "Windowed on scoring time. The share moves as the scorer
+  // catches up ... Window on refusal time"). Windowing on `scored_at` made
+  // the last-N-days share drift purely with how far the background scorer
+  // had caught up — measured 41.9% at 02:49Z against 33.8% an hour and a
+  // half earlier on the SAME production data, nothing about the refusals
+  // themselves having changed. `first_at` is when the refusal actually
+  // happened; that is what "the last N days" must mean.
+  //
+  // idx_refusal_scores_first, kept (checker fix round, N3). Measured with
+  // EXPLAIN QUERY PLAN: this query and a hypothetical sargable rewrite
+  // (`first_at >= ?`, no datetime()) both report
+  // `SEARCH refusal_scores USING INDEX idx_refusal_scores_first (first_at>?)`,
+  // while dropping `first_at IS NOT NULL` entirely (keeping the datetime()
+  // wrap) drops to `SCAN ... USING INDEX`. So the index is earning its keep
+  // two ways that have nothing to do with the datetime() predicate being
+  // sargable: it satisfies `first_at IS NOT NULL` as an index search bound,
+  // and it hands SQLite `first_at` already in DESC order, avoiding a sort on
+  // the whole matched set. The datetime() comparison itself is NOT
+  // range-bound by the index — it runs as a residual filter over whatever
+  // the IS NOT NULL search already returned.
+  //
+  // The predicate is NOT rewritten to a bare `first_at >= ?` despite that:
+  // `first_at` here is `g.first_at = r.created_at` (refusal-ledger.js
+  // evidenceShadowRefusals, ~line 112), copied verbatim from
+  // `decision_log.created_at` — SQLite's own timestamp format
+  // (`YYYY-MM-DD HH:MM:SS`, space-separated, no zone). `since` above is
+  // `Date#toISOString()` (`YYYY-MM-DDTHH:MM:SS.sssZ`). Lexically, the space
+  // (0x20) that a `decision_log`-sourced first_at carries always sorts
+  // BEFORE the `T` (0x54) `since` carries at the same character position, so
+  // same-day rows would compare as always-older under a bare string
+  // comparison — a real, not hypothetical, correctness bug, not just an
+  // index-usage question. datetime() normalizes both sides before comparing
+  // and stays.
+  const rows = db.prepare(`SELECT * FROM refusal_scores WHERE first_at IS NOT NULL AND datetime(first_at) >= datetime(?) ORDER BY first_at DESC`).all(since)
   const byReason = {}
   const tally = (b, r) => {
     b.n++
@@ -282,10 +315,11 @@ export function refusalCostReport(db, { days = 7, now = Date.now() } = {}) {
 // say "the market printed nothing" when the market printed fine and our reader
 // could not see it. Those rows are corrected in place here, never deleted:
 // the outcome, R, exit time and bar count are replaced by a real replay, and
-// `note` says it was re-scored, when, and why. `scored_at` is KEPT, so every
-// window that counts rows by when they were scored (refusalCostReport, the
-// lifecycle's PRE-02) still counts the same rows — only their false outcome
-// changes, instead of 31k old refusals landing in "the last 7 days".
+// `note` says it was re-scored, when, and why. `scored_at` is KEPT (the
+// lifecycle's PRE-02 still reads it); `first_at` — the refusal itself, and
+// what refusalCostReport now windows on (checker N2, this comment was stale)
+// — is untouched too, so a re-score changes a row's OUTCOME, never which
+// window "the last 7 days" puts it in.
 //
 // BOUNDED, IN THE LOOP, NEVER AT BOOT. At most `maxFetches` broker bar reads
 // per call. Each read serves a whole group: one symbol and timeframe, anchored

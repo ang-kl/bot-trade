@@ -188,6 +188,35 @@ export function auditControllerEvent(db, { controller, event, detail = null }) {
   console.log(`[phase-audit] controller ${controller}: ${event}${detail ? ` — ${detail}` : ''}`)
 }
 
+const scopeFor = (accountId) => accountId != null && accountId !== ''
+  // Scoping INCLUDES the NULL rows deliberately, and here that is more than
+  // a convention: the master switches and the controller events are global
+  // by design, and an account's audit trail without them would omit the
+  // flips that actually affected it.
+  ? { sql: 'AND (account_id = ? OR account_id IS NULL)', params: [String(accountId)] }
+  : { sql: '', params: [] }
+
+const shapeAuditRow = (r) => {
+  let body = null
+  try { body = JSON.parse(r.body) } catch { body = r.body }
+  return { id: r.id, at: r.at, path: r.path, accountId: r.account_id ?? null, ...((body && typeof body === 'object') ? body : { raw: body }) }
+}
+
+/** PURE query shared by recentPhaseAudit and phaseAuditSplit: audit rows
+ * whose path matches ANY of `pathPatterns` (SQL LIKE patterns), newest first. */
+function auditRowsLike(db, pathPatterns, { limit, accountId }) {
+  try {
+    const scope = scopeFor(accountId)
+    const pathSql = pathPatterns.map(() => 'path LIKE ?').join(' OR ')
+    return db.prepare(
+      `SELECT id, at, method, path, body, account_id FROM action_log
+        WHERE method = 'AUDIT' AND (${pathSql})
+        ${scope.sql}
+        ORDER BY id DESC LIMIT ?`
+    ).all(...pathPatterns, ...scope.params, Math.min(500, Math.max(1, limit))).map(shapeAuditRow)
+  } catch { return [] }
+}
+
 /**
  * Recent phase / arming / controller audit rows, newest first, for /state
  * readers.
@@ -199,24 +228,27 @@ export function auditControllerEvent(db, { controller, event, detail = null }) {
  * which layer answered it to find out.
  */
 export function recentPhaseAudit(db, { limit = 100, accountId = null } = {}) {
-  try {
-    // Scoping INCLUDES the NULL rows deliberately, and here that is more than
-    // a convention: the master switches and the controller events are global
-    // by design, and an account's audit trail without them would omit the
-    // flips that actually affected it.
-    const scope = accountId != null && accountId !== ''
-      ? { sql: 'AND (account_id = ? OR account_id IS NULL)', params: [String(accountId)] }
-      : { sql: '', params: [] }
-    return db.prepare(
-      `SELECT id, at, method, path, body, account_id FROM action_log
-        WHERE method = 'AUDIT' AND (path LIKE '/phase/%' OR path LIKE '/controller/%'
-                                     OR path LIKE '/arm/%')
-        ${scope.sql}
-        ORDER BY id DESC LIMIT ?`
-    ).all(...scope.params, Math.min(500, Math.max(1, limit))).map(r => {
-      let body = null
-      try { body = JSON.parse(r.body) } catch { body = r.body }
-      return { id: r.id, at: r.at, path: r.path, accountId: r.account_id ?? null, ...((body && typeof body === 'object') ? body : { raw: body }) }
-    })
-  } catch { return [] }
+  return auditRowsLike(db, ['/phase/%', '/controller/%', '/arm/%'], { limit, accountId })
+}
+
+/**
+ * UI-5 (RS-1: "Phase audit: 100 of 100 rows are controller events -> Move
+ * to Desk; split out switch flips"). `recentPhaseAudit`'s one merged, newest-
+ * first list is DOMINATED by controller events (routine process health,
+ * dozens per minute on a busy loop) — the owner's own switch flips and
+ * per-account arming, the decisions this trail actually exists to answer for
+ * ("who stopped this account entering"), fall off the default page entirely.
+ *
+ * Splits the SAME underlying rows into two independently-limited lists:
+ * `switches` (`/phase/%` + `/arm/%` — a human or the code deciding something)
+ * and `controllerEvents` (`/controller/%` — process health), each newest
+ * first. Nothing here is a new source of truth; it is `recentPhaseAudit`'s
+ * own rows, reshaped so switch flips are visible regardless of how many
+ * controller events happened in between.
+ */
+export function phaseAuditSplit(db, { limit = 100, accountId = null } = {}) {
+  return {
+    switches: auditRowsLike(db, ['/phase/%', '/arm/%'], { limit, accountId }),
+    controllerEvents: auditRowsLike(db, ['/controller/%'], { limit, accountId }),
+  }
 }

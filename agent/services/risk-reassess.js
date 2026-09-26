@@ -68,7 +68,10 @@ export const PROPOSABLE = {
  * @returns {{value: number, clamped: boolean}|null}
  */
 export function clampProposal(key, raw) {
-  const spec = PROPOSABLE[key]
+  // OWN keys only (checker nit N7, 26-09-2026): `PROPOSABLE[key]` alone
+  // answers for inherited names too — 'constructor' found Object, whose
+  // missing min/max made every value NaN and still "usable".
+  const spec = Object.hasOwn(PROPOSABLE, key) ? PROPOSABLE[key] : null
   if (!spec) return null
   // Number(null) is 0 and Number('') is 0 — both finite, so a missing value
   // would otherwise be accepted and then clamped up to the minimum, inventing
@@ -238,7 +241,11 @@ export function parseAssessment(text, ctx) {
   const rejected = []
   for (const p of Array.isArray(parsed.proposals) ? parsed.proposals : []) {
     const key = String(p?.key || '')
-    if (!(key in PROPOSABLE)) { rejected.push({ key, why: 'not a proposable setting' }); continue }
+    // Object.hasOwn, not `in` (checker nit N7, 26-09-2026): `key in PROPOSABLE`
+    // is true for every name on Object.prototype, so a model answering
+    // "constructor", "toString" or "__proto__" had its row kept as a proposal
+    // (proposed NaN, stored as null) and Apply wrote it into risk_config_json.
+    if (!Object.hasOwn(PROPOSABLE, key)) { rejected.push({ key, why: 'not a proposable setting' }); continue }
     const c = clampProposal(key, p?.value)
     if (!c) { rejected.push({ key, why: `not a usable number: ${JSON.stringify(p?.value)}` }); continue }
     const current = ctx.current[key] ?? null

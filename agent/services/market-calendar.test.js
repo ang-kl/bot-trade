@@ -480,6 +480,9 @@ test('K3: only the exact 0/0 pair gets the meaning — omitted, single and other
   }
 })
 
+// These two DST tests read the STATUS (calendarAt) only. The projection the
+// verifier and scanners read is a separate code path (calendarIntervals); its
+// DST tests are below, after the recurring row (checker nit N2, 26-09).
 test('K3: a 0/0 row on a DST day closes the whole local day — 25 UTC hours on the EU autumn change', t => {
   const db = fixture(t)
   const observed = at('2026-10-24T12:00:00Z')
@@ -509,6 +512,53 @@ test('K3: a recurring 0/0 row closes that local date every year', t => {
   assert.equal(readAt(db, '2026-12-25T06:00:00Z').marketStatus, 'CLOSED')
   assert.equal(readAt(db, '2026-12-24T21:00:00Z').marketStatus, 'CLOSED', 'Moscow 25-12 00:00:00')
   assert.equal(readAt(db, '2026-12-24T20:59:59Z').marketStatus, 'OPEN', 'Moscow 24-12 23:59:59')
+})
+
+// ---- The projection (calendarIntervals via projectCalendar) — what the
+// verifier contract and the scanners read. The status tests above go through
+// calendarAt only; these pin the same meanings on the interval path, which
+// matches holiday dates and resolves local midnights on its own.
+//
+// ALWAYS keeps the calendar open all week in UTC, so the only gap in each
+// projection is the holiday itself and both of its ends are visible (with the
+// FX schedule the Moscow holiday's end, 25-12 21:00Z, would coincide with the
+// Friday 21:00Z close and hide).
+const projectedAt = (db, iso) => projectCalendar(read(db, at(iso)), at(iso))
+const span = (fromIso, toIso) => ({ fromMs: at(fromIso), toMs: at(toIso) })
+
+test('K3 projection: a recurring 0/0 row dated 2025 closes 25-12 in 2026 — 24-12 21:00Z to 25-12 21:00Z in Moscow (N1)', t => {
+  const db = fixture(t)
+  // holidayDate 20447 = 25-12-2025. Moscow is UTC+3 all year.
+  write(db, spec({ ...ALWAYS, holiday: [zeroZero(20447, { isRecurring: true, scheduleTimeZone: 'Europe/Moscow', name: '25.12 - Closed' })] }), at('2026-12-24T12:00:00Z'))
+  const p = projectedAt(db, '2026-12-24T12:00:00Z')
+  assert.deepEqual(p.intervals, [span('2026-12-16T00:00:00Z', '2026-12-24T21:00:00Z'), span('2026-12-25T21:00:00Z', '2026-12-26T00:00:00Z')],
+    'RED if the projection matches a recurring row on its full date (2025) instead of its month-day')
+  assert.equal(p.nextOpeningMs, at('2026-12-25T21:00:00Z'))
+  // The same row, not recurring, is a 2025 holiday only: 2026 has no gap.
+  const other = { ...ID, symbolId: '8' }
+  write(db, spec({ ...ALWAYS, symbolId: 8, holiday: [zeroZero(20447, { scheduleTimeZone: 'Europe/Moscow' })] }), at('2026-12-24T12:00:00Z'), other)
+  assert.deepEqual(projectCalendar(read(db, at('2026-12-24T12:00:00Z'), other), at('2026-12-24T12:00:00Z')).intervals,
+    [span('2026-12-16T00:00:00Z', '2026-12-26T00:00:00Z')])
+})
+
+test('K3 projection: a 0/0 row on the London autumn change is a 25-hour gap — 24-10 23:00Z (00:00 BST) to 26-10 00:00Z (00:00 GMT) (N2)', t => {
+  const db = fixture(t)
+  // holidayDate 20751 = 25-10-2026; London falls back 02:00 BST -> 01:00 GMT at 01:00Z.
+  write(db, spec({ ...ALWAYS, holiday: [zeroZero(20751, { scheduleTimeZone: 'Europe/London' })] }), at('2026-10-25T12:00:00Z'))
+  const p = projectedAt(db, '2026-10-25T12:00:00Z')
+  assert.deepEqual(p.intervals, [span('2026-10-17T00:00:00Z', '2026-10-24T23:00:00Z'), span('2026-10-26T00:00:00Z', '2026-10-27T00:00:00Z')])
+  assert.equal(p.intervals[1].fromMs - p.intervals[0].toMs, 25 * HOUR_MS, 'the whole local day, 25 UTC hours')
+  assert.equal(p.nextOpeningMs, at('2026-10-26T00:00:00Z'), 'reopens at the next LOCAL midnight, not 24 h after the first')
+})
+
+test('K3 projection: a 0/0 row on the New York spring change is a 23-hour gap — 08-03 05:00Z (00:00 EST) to 09-03 04:00Z (00:00 EDT) (N2)', t => {
+  const db = fixture(t)
+  // holidayDate 20520 = 08-03-2026; New York springs forward 02:00 EST -> 03:00 EDT at 07:00Z.
+  write(db, spec({ ...ALWAYS, holiday: [zeroZero(20520, { scheduleTimeZone: 'America/New_York' })] }), at('2026-03-08T12:00:00Z'))
+  const p = projectedAt(db, '2026-03-08T12:00:00Z')
+  assert.deepEqual(p.intervals, [span('2026-02-28T00:00:00Z', '2026-03-08T05:00:00Z'), span('2026-03-09T04:00:00Z', '2026-03-10T00:00:00Z')])
+  assert.equal(p.intervals[1].fromMs - p.intervals[0].toMs, 23 * HOUR_MS, 'the whole local day, 23 UTC hours')
+  assert.equal(p.nextOpeningMs, at('2026-03-09T04:00:00Z'))
 })
 
 test('K3: a record stored before K3 as holiday_bounds_invalid is re-judged from its own payload — no re-collection needed', t => {

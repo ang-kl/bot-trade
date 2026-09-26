@@ -9,7 +9,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, setState, closeTradeRow } from '../db.js'
-import { recordTradePlan, scoreClosedPlans, tradePlansReport, exitRuleFor, exitKind, ruleAdmits } from './trade-plans.js'
+import { recordTradePlan, scoreClosedPlans, tradePlansReport, exitRuleFor, exitKind, ruleAdmits, planProblems } from './trade-plans.js'
 
 const T0 = Date.parse('2026-09-08T06:00:00Z')
 
@@ -95,6 +95,47 @@ test('tradePlansReport: coverage counts bot closes apart from adopted ones, and 
   assert.equal(r.coverage.byOrigin.reconciler_adopted.closed, 1)
   assert.equal(r.aggregate.n, 1)
   assert.equal(r.aggregate.meanRealisedR, -1)
+})
+
+// ---------------------------------------------------------------------------
+// UI-5 (RS-1): "Trade plans: 28 of 50 are in the wrong unit, all from the
+// old adopter (15-24 Sep) -> Flag the bad rows; show coverage. The
+// correction is D5" (docs/plan-ui-and-strategy-review-2026-09-26.md §2 RS-1;
+// §5 Wave 2 row 2.6). D5 (the actual correction) is explicitly ask-first and
+// out of scope here — this is read-only flagging.
+// ---------------------------------------------------------------------------
+
+test('tradePlansReport flags an old (pre-refusal) wrong-unit plan with planProblems, leaves a sound plan unflagged, and counts recentFlagged in coverage', () => {
+  const db = initDB(':memory:')
+  // A sound plan, via the normal write path.
+  const soundId = openTrade(db, { symbol: 'EURUSD' })
+  recordTradePlan(db, soundId, { accountId: 'A1', symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: 1.095, tp: 1.11, now: T0 })
+  closeTradeRow(db, soundId, { exitPrice: 1.105, closeReason: 'x', netPnl: 50, closedAtMs: T0 })
+
+  // An "old adopter" row: a wrong-unit plan (wire points written as a price
+  // — sl at 100.0 against an entry of 1.10) inserted DIRECTLY, as if written
+  // before recordTradePlan's own refusal existed (X1/W3) — recordTradePlan
+  // itself would refuse this and is not used here on purpose.
+  const badId = openTrade(db, { symbol: 'GBPUSD' })
+  db.prepare(`INSERT INTO trade_plans (trade_id, account_id, symbol, side, planned_entry, planned_sl, planned_tp, created_at)
+    VALUES (?, 'A1', 'GBPUSD', 'BUY', 1.10, 100.0, 1.20, ?)`).run(badId, new Date(T0).toISOString())
+  closeTradeRow(db, badId, { exitPrice: 1.15, closeReason: 'x', netPnl: 500, closedAtMs: T0 })
+
+  scoreClosedPlans(db, { now: T0 })
+  const r = tradePlansReport(db, { days: 1, now: T0 + 1000 })
+
+  const sound = r.recent.find(x => x.trade_id === soundId)
+  const bad = r.recent.find(x => x.trade_id === badId)
+  assert.deepEqual(sound.problems, [], 'a sound plan carries no flags')
+  assert.deepEqual(bad.problems, planProblems({ side: 'BUY', entry: 1.10, sl: 100.0, tp: 1.20 }), 'the same rule new plans are refused by, run read-only on the old row')
+  assert.ok(bad.problems.includes('risk_scale'), 'a stop this far away can only be a unit error')
+
+  assert.equal(r.coverage.recentFlagged, 1, 'coverage counts the flagged row (of the 50 recent) without changing the existing coverage fields')
+  assert.equal(r.coverage.botClosed, 2, 'coverage is otherwise unchanged')
+
+  // Nothing was corrected — D5 is a separate, ask-first step.
+  const stored = db.prepare('SELECT planned_sl FROM trade_plans WHERE trade_id = ?').get(badId)
+  assert.equal(stored.planned_sl, 100.0, 'the flag does not rewrite the stored plan')
 })
 
 test('wiring pin: every bot entry path writes a plan (loop autoTrade, pending fill, manual route)', () => {
