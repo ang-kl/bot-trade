@@ -192,7 +192,7 @@
       <div>
         <b>Plan status, as the documents themselves record it:</b> <code>docs/v3-integrated-plan-2026-09-26.md</code>
         is headed <i>"DRAFT, not yet checked"</i> at its current committed revision (<code>5389a83</code>, PR&nbsp;#1143).
-        Wave&nbsp;1 build lanes (including this one) are running in parallel on the owner's go-ahead, per the session
+        Wave&nbsp;1 build lanes are running in parallel on the owner's go-ahead, per the session
         record — but the plan file's own header has not been updated to say the checks finished. That gap is exactly
         what owner principle&nbsp;5 asks to be kept audited, so it is flagged here rather than silently resolved
         either way.
@@ -226,14 +226,14 @@
           <div class="tl-head">
             <span class="tl-wave">Wave 1 — no answer needed</span>
             <span class="tl-when">Sat 26-09 → Sun 27-09 20:00Z</span>
-            <span class="tl-tag" style="background:var(--wave1)">In progress</span>
+            <span class="tl-tag" style="background:var(--wave1)">Per session record, 13:47 SGT</span>
           </div>
           <div class="tl-body">
-            7 merges / 7 Node restarts, built and merged without waiting for owner answers (S-2 is the one exception, held for a yes).
+            7 merges / 7 Node restarts, built and merged without waiting for owner answers.
             <ul>
               <li>1.1 — perf-trace harness · synthetic-presence tag (NEW-1) · manual-order confirm names the account (SAFE-0a)</li>
               <li>1.2 — UI-1: collapse control, remembered, section ids; CLS fix (PERF-1)</li>
-              <li>1.3 — UI-2 shared DataTable + UI-3 blocker-report card <em>(this branch)</em></li>
+              <li>1.3 — UI-2 shared DataTable + UI-3 blocker-report card</li>
               <li>1.4 — UI-4 readiness fix + UI-7 AI page reads "off"</li>
               <li>1.5 — UI-6 Reasons rework + F3's WEB-9 fixture</li>
               <li>1.6 — S-1 arming log + S-3 depth margin / phase-0 counters</li>
@@ -311,10 +311,10 @@
           <tbody>
             <tr><td class="id">1.1</td><td class="items">#1143 + this plan + PERF-0 + NEW-1 + SAFE-0a</td><td>Perf-trace harness (<code>scripts/perf-trace/</code>); presence tag leaves <code>visibleTabs</code> unchanged; manual-order confirm names the account.</td><td><span class="gate auto">Auto on green</span></td></tr>
             <tr><td class="id">1.2</td><td class="items">UI-1 + PERF-1</td><td>Collapse control visible, remembered, with section ids; heights reserved; font preload fixed. Proof: CLS median falls on Performance and Reasons.</td><td><span class="gate ask">Awaits OD-17</span></td></tr>
-            <tr><td class="id">1.3</td><td class="items">UI-2 + UI-3 <em>(this branch)</em></td><td>Shared DataTable + blocker-report card, server-grouped. Must keep cpp-verify's relayed counts and the watchdog contract &lt;256&nbsp;KiB.</td><td><span class="gate ask">OD-18 default</span></td></tr>
+            <tr><td class="id">1.3</td><td class="items">UI-2 + UI-3</td><td>Shared DataTable + blocker-report card, server-grouped. Must keep cpp-verify's relayed counts and the watchdog contract &lt;256&nbsp;KiB.</td><td><span class="gate ask">OD-18 default</span></td></tr>
             <tr><td class="id">1.4</td><td class="items">UI-4 + UI-7</td><td>Readiness-object bug fixed; build commit via Dockerfile ARG; AI page reads "off". Read-back: web and agent commits match.</td><td><span class="gate ask">OD-21 default</span></td></tr>
             <tr><td class="id">1.5</td><td class="items">UI-6 + PERF-2 + F3</td><td>Reasons order/tables; digit tree as text; WEB-9 wording + fixture.</td><td><span class="gate ask">After OD-19</span></td></tr>
-            <tr><td class="id">1.6</td><td class="items">S-1 + S-3</td><td>Arming rows appended, never updated; picker ranks by armed strategies; depth margin <code>minBars</code>+1; Phase&nbsp;0 counters.</td><td><span class="gate ask">…0058's 39 pins excluded</span></td></tr>
+            <tr><td class="id">1.6</td><td class="items">S-1 + S-3</td><td>Arming rows appended, never updated; picker ranks by armed strategies; depth margin <code>minBars</code>+1; Phase&nbsp;0 counters.</td><td><span class="gate ask">…0058's 39 pins excluded (ask-first)</span></td></tr>
             <tr><td class="id">1.7</td><td class="items">F1 + F4 + F5-N6 + PO-M3</td><td>Closer deferral (inert while plans are 0); tick-feeder stall alarm; lifecycle rule; spread recorded on every new PRE fill.</td><td><span class="gate auto">Auto on green</span></td></tr>
           </tbody>
         </table>
@@ -402,13 +402,13 @@
         <div class="d-blocks">Blocks: <b>The merge gate for every website PR</b></div>
       </div>
       <div class="decision">
-        <div class="d-head"><span class="d-id">OD-17</span><span class="d-q">Collapse standard and memory (this branch's UI-1)</span></div>
-        <div class="d-rec">Recommendation: <b>(a) collapse triangle, remembered on every page</b> — the default this branch builds to while awaiting confirmation of what the owner's phone shows.</div>
+        <div class="d-head"><span class="d-id">OD-17</span><span class="d-q">Collapse standard and memory (UI-1)</span></div>
+        <div class="d-rec">Recommendation: <b>(a) collapse triangle, remembered on every page</b> — the plan's default while awaiting confirmation of what the owner's phone shows.</div>
         <div class="d-blocks">Blocks: <b>UI-1's look</b></div>
       </div>
       <div class="decision">
         <div class="d-head"><span class="d-id">OD-18</span><span class="d-q">Blockers table: fold repeats, list all, or hide?</span></div>
-        <div class="d-rec">Recommendation: <b>fold, labelled per row until the pre-fix rows age out</b> (≈26-09 22:46Z) — the default this branch's UI-3 builds to.</div>
+        <div class="d-rec">Recommendation: <b>fold, labelled per row until the pre-fix rows age out</b> (≈26-09 22:46Z) — the plan's default for UI-3.</div>
         <div class="d-blocks">Blocks: <b>UI-3</b></div>
       </div>
       <div class="decision">
@@ -438,7 +438,7 @@
           <tr><td>Principle 1 — live and demo accounts held equal</td><td><span class="passed">Passed</span></td></tr>
           <tr><td>Principle 3 — carried blockages addressed, not carried</td><td><span class="failed">Failed today</span> — each is scheduled above</td></tr>
           <tr><td>Principle 7 — vetoes minimised</td><td><span class="failed">Failed today</span> — 91.1% of stops are self-inflicted; S-1, S-4, OD-29 address it</td></tr>
-          <tr><td>Principle 5 — plans match code</td><td><span class="failed">Failed today</span> — see the DRAFT-header note above</td></tr>
+          <tr><td>Principle 5 — plans match code</td><td><span class="failed">Failed today</span> — <code>dual-environment-plan:74</code> against the takeover; <code>V3-SEQUENCE:729</code> "weekdays" against <code>dailyDue</code> (plan §8, invariant 9)</td></tr>
           <tr><td>No colour-only signal in the UI</td><td><span class="passed">Passed</span></td></tr>
         </tbody>
       </table>
