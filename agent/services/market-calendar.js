@@ -223,9 +223,13 @@ export function recordMarketCalendar(db, input, symbol, { nowMs = Date.now() } =
  * Pure evaluation, using each holiday's own zone and the symbol's IANA zone.
  * V3 K1b: a holiday row whose bounds cannot be read is never evaluated. A
  * validated calendar holds such a row only when it lies behind every window of
- * its observation (holiday_expired_ignored); skipping it keeps the projection's
- * eight-day lookback (calendar-intervals.js projectCalendar) from reading a
- * meaning into it. Every row with explicit valid bounds is evaluated as before.
+ * its observation (holiday_expired_ignored). Skipping it gives the row no
+ * closure meaning, which is NOT the same as no effect: inside the projection's
+ * eight-day lookback (calendar-intervals.js projectCalendar) that day is read
+ * as ordinary schedule time, so for a session of 3 days or more the reported
+ * sessionOpenedAtMs can be earlier than a real closure on that day (a K3
+ * residue; checker nit 2, 26-09). Every row with explicit valid bounds is
+ * evaluated as before.
  */
 export function calendarAt(calendar, now) {
   for (const h of calendar.holiday) {
