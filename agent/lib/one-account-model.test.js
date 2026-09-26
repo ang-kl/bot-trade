@@ -95,6 +95,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/tick-shadow.js': { reason: 'the side\'s accounts for the shadow book (plan §3.1: tick-shadow.js)', max: { is_live: 1 } },
   'agent/services/entry-mode.js': { reason: 'environmentOf stamps the record\'s side (routing); LEGACY_STAGE_ALIASES reads the two retired stage names back as TRADED_PASSED', max: { is_live: 4, live_str: 1, demo_str: 2, LIVE_APPROVED: 1, DEMO_PASSED: 1 } },
   'agent/services/runtime-manifest.js': { reason: 'names the two sidecar URLs in the manifest', max: { live_str: 1, demo_str: 1 } },
+  'agent/services/final-acceptance.js': { reason: 'SIDES maps each recorder side to its sidecar service and runtime-manifest key (routing); no acceptance verdict reads the environment', max: { live_str: 2, demo_str: 2 } },
   'agent/services/momentum-account.js': { reason: 'passes the account\'s side to autoTrade for its creds', max: { isLive: 2 } },
   'agent/services/momentum-book.js': { reason: 'passes the account\'s side to autoTrade for its creds', max: { isLive: 2 } },
   // ---- registry plumbing: the column is written and echoed, never gated on ---
