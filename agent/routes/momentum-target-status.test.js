@@ -31,7 +31,13 @@ test('target status is read-only, explicit about absent plans, and requires an a
   assert.equal(out.body.passHeartbeatAt, null)
   assert.equal(out.body.pass.fresh, false)
   assert.match(out.body.pass.unavailable, /never run/)
-  assert.deepEqual(Object.fromEntries(Object.entries(out.body.wiring).map(([k, w]) => [k, w.status])), { market: 'not wired', limit: 'not wired' })
+  // V3 T4: the market producer is wired, and switched OFF by the repo's
+  // config (OD-1 unanswered): wired is not on, and the runtime stays
+  // INCOMPLETE with the switch named as the gap.
+  assert.deepEqual(Object.fromEntries(Object.entries(out.body.wiring).map(([k, w]) => [k, w.status])), { market: 'wired', limit: 'not wired' })
+  assert.deepEqual([out.body.wiring.market.enabled, out.body.wiring.market.switch], [false, 'off'])
+  assert.deepEqual([out.body.wiring.limit.enabled, out.body.wiring.limit.switch], [false, null])
+  assert.ok(out.body.integrationGaps.some(g => /^market: wired, switched off .*OD-1/.test(g)), JSON.stringify(out.body.integrationGaps))
   assert.equal(out.body.integrationGaps.length, 3)
   assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='momentum_target_intents'").get().n, 0)
 })
@@ -147,10 +153,13 @@ test('a fresh pass that could not act on an account reports its triggers unavail
 })
 
 // A producer that records target intents is the only thing that can make the
-// wiring "wired". Pinned to the code: while no production file calls
-// recordMomentumEntry, both producers must say "not wired"; the first call
-// T4 adds turns this red until MOMENTUM_TARGET_PRODUCERS is updated with it.
-test('producer wiring is pinned to the code: no production caller of recordMomentumEntry, so nothing is wired', () => {
+// wiring "wired". Pinned to the code (V3 T4): the market producer is wired
+// because exactly one production file, loop.js, calls recordMomentumEntry,
+// and it does so inside autoTrade's market path, in the transaction that
+// writes the submitting trade. No resting path calls it, so `limit` stays
+// "not wired"; a new caller turns this red until MOMENTUM_TARGET_PRODUCERS
+// and this pin are updated in the same change.
+test('producer wiring is pinned to the code: the market path records target intents, no resting path does', () => {
   const agentDir = fileURLToPath(new URL('..', import.meta.url))
   const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1')
   const files = []
@@ -166,7 +175,19 @@ test('producer wiring is pinned to the code: no production caller of recordMomen
   assert.ok(files.length > 100, `scanned ${files.length} files`)
   const callers = files.filter(f => !f.endsWith('momentum-entry-contract.js') && /\brecordMomentumEntry\s*\(/.test(strip(readFileSync(f, 'utf8'))))
     .map(f => relative(agentDir, f))
-  assert.deepEqual(callers, [], 'a producer now records target intents: update MOMENTUM_TARGET_PRODUCERS (and this pin) in the same change')
-  assert.equal(MOMENTUM_TARGET_PRODUCERS.market.wired, false)
+  assert.deepEqual(callers, ['loop.js'], 'a new producer records target intents: update MOMENTUM_TARGET_PRODUCERS (and this pin) in the same change')
+  const loop = strip(readFileSync(join(agentDir, 'loop.js'), 'utf8'))
+  const start = loop.indexOf('export async function autoTrade('), end = loop.indexOf('\nexport ', start + 1)
+  const body = loop.slice(start, end)
+  const call = body.indexOf('recordMomentumEntry(db, {')
+  assert.ok(start > 0 && call > 0, 'the call is inside autoTrade')
+  assert.equal(loop.split('recordMomentumEntry(').length - 1, 1, 'one call site')
+  // Inside the transaction that inserts the submitting trade, and before the send.
+  const tx = body.lastIndexOf('intentId = db.transaction(() => {', call)
+  assert.ok(tx > 0 && body.indexOf('insertIntent()', tx) < call, 'the INSERT and the intent share one transaction')
+  assert.ok(call < body.indexOf('execPlaceOrder('), 'the intent is recorded before the order is sent')
+  // On the market path only: after the closed-market and HTF-limit refusals.
+  assert.ok(body.indexOf('closedMarketMomentumRefusal(') < call && body.indexOf('restingMomentumRefusal(') < call)
+  assert.equal(MOMENTUM_TARGET_PRODUCERS.market.wired, true)
   assert.equal(MOMENTUM_TARGET_PRODUCERS.limit.wired, false)
 })
