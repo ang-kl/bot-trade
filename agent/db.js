@@ -426,6 +426,11 @@ const TABLES = `
     exited_at    TEXT,
     status       TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'exit_sent' | 'closed'
     note         TEXT,
+    -- The refused-exit retry's own record (Wave 2 row 2.1, N2): consecutive
+    -- broker refusals of this row's close, and the earliest time the daily
+    -- pass's exit_pending retry may send it again (NULL = every pass).
+    exit_refusals    INTEGER,
+    exit_retry_after TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_momentum_book_status ON momentum_book(status, account_id);
@@ -494,6 +499,12 @@ const TABLES = `
   -- leads with reason_key, so a scored_at range was a full scan of a table
   -- measured at 35,395 rows / 13.6 MB on 25-09-2026).
   CREATE INDEX IF NOT EXISTS idx_refusal_scores_scored ON refusal_scores(scored_at, outcome, account_id);
+  -- UI-5 (RS-1): refusalCostReport now windows on first_at (the refusal
+  -- time), not scored_at (when the background scorer got to it) — see
+  -- refusal-ledger.js's own comment. Same shape as the scored_at index
+  -- above, for the same reason: a first_at range without this leads with
+  -- the table's own primary key ordering, not a covering scan.
+  CREATE INDEX IF NOT EXISTS idx_refusal_scores_first ON refusal_scores(first_at);
 
   -- Account Registry (multi-account migration plan, Phase 1 R1 / milestone
   -- M0). Single source of truth for which cTrader accounts exist and which
@@ -1480,7 +1491,7 @@ export function initDB(dbPath) {
   // stop already tighter than 3 ATRs" -- the two conditions that `atr NULL`
   // collapsed into one.
   const mbColNames = new Set(db.prepare("PRAGMA table_info(momentum_book)").all().map(c => c.name));
-  for (const [col, type] of [['trail_checked_at', 'TEXT'], ['trail_note', 'TEXT']]) {
+  for (const [col, type] of [['trail_checked_at', 'TEXT'], ['trail_note', 'TEXT'], ['exit_refusals', 'INTEGER'], ['exit_retry_after', 'TEXT']]) {
     if (!mbColNames.has(col)) db.exec(`ALTER TABLE momentum_book ADD COLUMN ${col} ${type}`);
   }
 

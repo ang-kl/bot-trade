@@ -232,10 +232,15 @@ test('R4: a row written off under the old horizon claim is re-read once; settled
   const pass = n => recoverOldPositionPnl(db, creds, { now: NOW + n * 16 * MIN, isCurrent: () => true,
     getPositionDeals: async p => { reads++; return history(p) } })
   assert.equal((await pass(0)).state, 'recovered')
-  const r = db.prepare('SELECT net_pnl, pnl_unresolvable, pnl_unresolvable_reason FROM trades WHERE id = 9').get()
+  const r = db.prepare('SELECT net_pnl, pnl_unresolvable, pnl_unresolvable_reason, pnl_price_mismatch FROM trades WHERE id = 9').get()
   assert.equal(r.net_pnl, 1.23)
   assert.equal(r.pnl_unresolvable, 0, 'money landed: the write-off no longer describes the row')
   assert.match(r.pnl_unresolvable_reason, /^settled from the broker's complete position history .*had been written off .*deal-history horizon/)
+  // checker B1: a row that settles must still be RE-STAMPED (restampPosition
+  // runs while the row is still pnl_unresolvable=1, money-just-landed, and
+  // BEFORE classify() clears the flag) — 0, a real verdict, never NULL
+  // (nothing computed) just because the row used to be written off.
+  assert.equal(r.pnl_price_mismatch, 0, 'a settled row is stamped with a real verdict, not left NULL')
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM action_log WHERE method = 'PNL_WRITE_OFF_SETTLED'`).get().n, 1)
   assert.equal((await pass(1)).state, 'no_old_gap')
   assert.equal(reads, 1)

@@ -20,7 +20,7 @@ import Button from '../components/common/Button.jsx'
 import ScopeChip from '../components/common/ScopeChip.jsx'
 import DataTable from '../components/common/DataTable.jsx'
 import { agentGet, agentConfigured, pageAsleep } from '../lib/agent-api.js'
-import { REASON_ENDPOINTS, REASONS_PAGE_KEYS, REASONS_PAGE_LAYOUT, shapeBody, blockState, fmtCell, reasonScope } from '../lib/reasons-view.js'
+import { REASON_ENDPOINTS, REASONS_PAGE_KEYS, REASONS_PAGE_LAYOUT, shapeBody, blockState, fmtCell, reasonScope, reasonsGroupId } from '../lib/reasons-view.js'
 
 export function ReasonsBlockContent({ def, result, at }) {
   const st = blockState(result)
@@ -42,10 +42,18 @@ export function ReasonsBlockContent({ def, result, at }) {
   )
 }
 
-/** A single endpoint, in its own Card — unchanged shape for every existing caller. */
-export function ReasonsBlock({ def, result, at }) {
+/**
+ * A single endpoint, in its own Card — unchanged shape for every existing
+ * caller. W1-FU (26-09 plan §5): `id`/`loading`/`defaultCollapsed` are
+ * forwarded straight to Card (its own `loading` reserves height while the
+ * read is in flight, PERF-1; `id` also lets Card derive its T/F/C content-kind
+ * badge from lib/nav-tree.js instead of the old literal "reasons" string).
+ * Every prop is optional, so a caller (the tests) that passes none keeps the
+ * old behaviour.
+ */
+export function ReasonsBlock({ def, result, at, id, loading, defaultCollapsed }) {
   return (
-    <Card className="p-3" kind="reasons">
+    <Card className="p-3" id={id} loading={loading} defaultCollapsed={defaultCollapsed} lazy>
       <ReasonsBlockContent def={def} result={result} at={at} />
     </Card>
   )
@@ -54,13 +62,14 @@ export function ReasonsBlock({ def, result, at }) {
 /**
  * Several endpoints folded under ONE shared heading and ONE Card (RS-1:
  * "Absorb Unresolvable plan", "One 'Ledger integrity' card", the refusal-cost
- * card merged with the veto breakdown). Each endpoint keeps its own
- * data-reasons-block/data-status and its own per-block error/scope state —
- * folding is presentation only, never a merged read.
+ * card merged with the veto breakdown; W1-FU's "fold Trade consistency into
+ * Ledger integrity"). Each endpoint keeps its own data-reasons-block/
+ * data-status and its own per-block error/scope state — folding is
+ * presentation only, never a merged read.
  */
-export function ReasonsGroup({ heading, blocks }) {
+export function ReasonsGroup({ heading, blocks, id, loading, defaultCollapsed }) {
   return (
-    <Card className="p-3" kind="reasons" data-reasons-group={heading}>
+    <Card className="p-3" id={id} loading={loading} defaultCollapsed={defaultCollapsed} lazy data-reasons-group={heading}>
       <h2 className="text-(length:--fs-h) font-bold mb-1">{heading}</h2>
       <div className="space-y-3">
         {blocks.map(({ def, result, at }, i) => (
@@ -177,18 +186,29 @@ export default function Reasons() {
       </div>
       {/* UI-6 (RS-1: "New order: Order lifecycle, Entry intents, Trade
           plans, Unknown P/L, Trade origin, Ledger integrity, then 'Vetoes:
-          count and cost'"; Trade consistency keeps its earlier relative
-          position — see reasons-view.js's REASONS_PAGE_LAYOUT comment). */}
-      {REASONS_PAGE_LAYOUT.map(group => {
+          count and cost'"; Trade consistency folded into Ledger integrity,
+          W1-FU — see reasons-view.js's REASONS_PAGE_LAYOUT comment).
+          W1-FU (26-09 plan §5): every card past the first two on the page
+          opens COLLAPSED by default (`defaultCollapsed`, Card's own
+          card-open.js still remembers whatever the operator later chooses),
+          and each card's own `loading` is true only until ITS OWN
+          endpoint(s) have a result — never gated on every endpoint the page
+          fetches, so a slow read on one block does not hold every other
+          block at its loading-height floor (PERF-1). */}
+      {REASONS_PAGE_LAYOUT.map((group, i) => {
         const defs = group.keys.map(k => REASON_ENDPOINTS.find(d => d.key === k)).filter(Boolean)
         if (defs.length === 0) return null
+        const id = reasonsGroupId(group)
+        const loading = defs.some(d => !results[d.key])
+        const defaultCollapsed = i >= 2
         if (!group.heading && defs.length === 1) {
           const d = defs[0]
-          return <ReasonsBlock key={d.key} def={d} result={results[d.key]} at={at} />
+          return <ReasonsBlock key={d.key} def={d} result={results[d.key]} at={at} id={id} loading={loading} defaultCollapsed={defaultCollapsed} />
         }
         return (
           <ReasonsGroup key={group.heading || defs[0].key} heading={group.heading}
-            blocks={defs.map(d => ({ def: d, result: results[d.key], at }))} />
+            blocks={defs.map(d => ({ def: d, result: results[d.key], at }))}
+            id={id} loading={loading} defaultCollapsed={defaultCollapsed} />
         )
       })}
     </div>

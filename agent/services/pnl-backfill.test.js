@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { backfillClosedPnl, shouldRunPnlBackfill } from './pnl-backfill.js'
+import { backfillClosedPnl, shouldRunPnlBackfill, noteTradeAttempts } from './pnl-backfill.js'
 
 const NOW = 1_700_000_000_000
 // A closing deal as cTrader returns it: realised money on closePositionDetail,
@@ -896,4 +896,89 @@ test('F5 N6: a deferred position is not charged a backfill attempt on the non-st
   // until a strict pass settles it (the known gap noted in pnl-backfill.js).
   assert.equal(attempts('4403'), 0, 'deferred: no attempt spent; left NULL for a strict pass to settle')
   assert.equal(attempts('4404'), 1, 'control: a row the pass could not match is charged, as before')
+})
+
+// ---------------------------------------------------------------------------
+// checker fix round, B1: UI-5 / RS-1's "stop re-stamping written-off rows"
+// is noteTradeAttempts's pnl_attempts counter (see that function's own
+// comment), NOT restampPosition — restampPosition MUST still stamp a
+// written-off row, because old-position-pnl.js's settle path writes the
+// money and calls restampPosition BEFORE it clears pnl_unresolvable, and a
+// row excluded there would settle with no verdict at all (measured in
+// pnl-reconcile-stall.test.js's R4 fixture, row 9: pnl_price_mismatch 0 on
+// base, NULL when restampPosition wrongly excluded it).
+// ---------------------------------------------------------------------------
+
+test('a written-off row on a position that gets fresh backfill money IS re-stamped — restampPosition does not exclude pnl_unresolvable rows', async () => {
+  const db = initDB(':memory:')
+  const writtenOffId = db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, net_pnl, entry_price, exit_price, sl_price, pnl_unresolvable, pnl_unresolvable_reason)
+     VALUES ('EURUSD', 'BUY', 'closed', '556', NULL, 1.10, 1.30, 1.05, 1, 'unresolved: no broker evidence')`
+  ).run().lastInsertRowid
+
+  const before = db.prepare('SELECT realised_rr, pnl_price_mismatch FROM trades WHERE id = ?').get(writtenOffId)
+  assert.equal(before.realised_rr, null, 'sanity: not stamped before the backfill')
+
+  const getDeals = dealsApi([deal(556, 5000, { commCents: -200 })])
+  await backfillClosedPnl(db, {}, { getDeals, now: NOW })
+
+  const after = db.prepare('SELECT net_pnl, realised_rr, pnl_price_mismatch, pnl_unresolvable_reason FROM trades WHERE id = ?').get(writtenOffId)
+  assert.notEqual(after.net_pnl, null, 'money can still land here — a separate, pre-existing behaviour this test does not judge')
+  assert.notEqual(after.realised_rr, null, 'stamped with a real verdict, exactly like an ordinary row')
+  assert.equal(after.pnl_price_mismatch, 0, 'a real verdict, never NULL, just because the row used to be written off')
+  assert.equal(after.pnl_unresolvable_reason, 'unresolved: no broker evidence', 'the write-off flag/reason themselves are untouched by restampPosition — only classify() (old-position-pnl.js) clears them')
+})
+
+function writtenOffRow(db, { pid = '900', attempts = 15718 } = {}) {
+  return db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, net_pnl, entry_price, exit_price, sl_price, pnl_attempts, pnl_unresolvable, pnl_unresolvable_reason)
+     VALUES ('EURUSD', 'BUY', 'closed', ?, NULL, 1.10, NULL, 1.05, ?, 1, 'unresolved: no broker evidence')`
+  ).run(pid, attempts).lastInsertRowid
+}
+
+test('B1: noteTradeAttempts no longer increments a written-off row by default — the runaway pnl_attempts counter this actually fixes', () => {
+  const db = initDB(':memory:')
+  const id = writtenOffRow(db, { pid: '900', attempts: 15718 })
+  const ordinaryId = db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, net_pnl, entry_price, sl_price, pnl_attempts)
+     VALUES ('EURUSD', 'BUY', 'closed', '901', NULL, 1.10, 1.05, 3)`
+  ).run().lastInsertRowid
+
+  const changed = noteTradeAttempts(db, { at: '2026-09-27T00:00:00Z' })
+  assert.equal(changed, 1, 'only the ordinary row counted as an attempt')
+  assert.equal(db.prepare('SELECT pnl_attempts FROM trades WHERE id = ?').get(id).pnl_attempts, 15718, 'the written-off row is left exactly where it was')
+  assert.equal(db.prepare('SELECT pnl_attempts FROM trades WHERE id = ?').get(ordinaryId).pnl_attempts, 4)
+})
+
+test('B1: includeWrittenOff:true is the deliberate escape hatch old-position-pnl.js uses for its bounded, row-scoped re-read', () => {
+  const db = initDB(':memory:')
+  const id = writtenOffRow(db, { pid: '902', attempts: 7 })
+  const changed = noteTradeAttempts(db, { positionId: '902', tradeId: id, includeWrittenOff: true, at: '2026-09-27T00:00:00Z' })
+  assert.equal(changed, 1)
+  assert.equal(db.prepare('SELECT pnl_attempts FROM trades WHERE id = ?').get(id).pnl_attempts, 8, 'the named row-scoped attempt still counts, unlike the broad sweep')
+})
+
+// checker fix round #2, item 1 (CLAUDE.md #1, "a mutation check that cannot
+// fail proves nothing"): pnl-backfill.js:882's call-site argument
+// `includeWrittenOff: !windowPass` was never pinned — nothing asserted that
+// the WHOLE backfillClosedPnl pass, not just noteTradeAttempts in isolation,
+// actually reaches a window pass with that value. Flipping it to `true` or
+// `false` there left every existing test green.
+test('B1: a window pass (no positionId, nothing on the broker) leaves a written-off row\'s pnl_attempts unchanged and still charges an ordinary row', async () => {
+  const db = initDB(':memory:')
+  const writtenOffId = writtenOffRow(db, { pid: '910', attempts: 15718 })
+  const ordinaryId = db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, net_pnl, entry_price, sl_price, pnl_attempts)
+     VALUES ('EURUSD', 'BUY', 'closed', '911', NULL, 1.10, 1.05, 3)`
+  ).run().lastInsertRowid
+
+  // Empty deal history: the broker has nothing to say about either position,
+  // so this exercises noteTradeAttempts through the real window-pass call
+  // site (pnl-backfill.js:882), not a direct unit call.
+  await backfillClosedPnl(db, {}, { getDeals: dealsApi([]), now: NOW })
+
+  assert.equal(db.prepare('SELECT pnl_attempts FROM trades WHERE id = ?').get(writtenOffId).pnl_attempts, 15718,
+    'written off: the broad window sweep must not touch it (the runaway-counter fix)')
+  assert.equal(db.prepare('SELECT pnl_attempts FROM trades WHERE id = ?').get(ordinaryId).pnl_attempts, 4,
+    'ordinary: the broad window sweep still charges it, exactly as before B1')
 })

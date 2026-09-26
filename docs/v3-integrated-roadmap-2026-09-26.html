@@ -238,10 +238,10 @@ button.theme-btn{
 </footer>
 
 <script id="dataset" type="application/json">{
- "generatedAtUtc": "2026-09-26T05:55:36Z",
- "mainCommit": "5389a83d386c2b7a20d58ff4be3539be19e16cd6",
- "mainCommitNote": "origin/main head at generation (#1143, merged 2026-09-26T04:46:56Z); production 5389a83 at 05:16:42Z per plan §1.",
- "planStatus": "Checked integrated plan approved by the owner ~05:40Z 26-09 (#1143 merged the unchecked draft at 04:46:56Z; the checked plan rides W1.1). Wave 1 building since 05:44Z.",
+ "generatedAtUtc": "2026-09-26T13:25:00Z",
+ "mainCommit": "e751b1554df0e9e528e823a0c2e5d6769c0c3bee",
+ "mainCommitNote": "origin/main after W1-FU #1157 (12:21:02Z); production e751b15 read back 12:40Z: 0 errors, 26 positions.",
+ "planStatus": "Wave 1 merged 26-09 07:16–09:34Z (#1147–#1154, about 34 h ahead of its Sun 20:00Z end); W1-FU #1157 at 12:21Z. Wave 2 pre-built on draft branches (OD-41 yes), merging Mon 28-09 01:00–13:00Z. Wave 3 not started. Updated 26-09 21:30 SGT.",
  "legend": {
   "marker": {
    "planned": "V3 roadmap v2.2 (the frozen v1 plan, 25-09 20:37 SGT); its times are read-back times (merge + 15 min)",
@@ -260,16 +260,17 @@ button.theme-btn{
   },
   "status": {
    "merged": "on main",
-   "building": "Wave 1 lane building (started 05:44Z)",
+   "building": "building on a lane now",
    "queued": "in a wave, no owner answer needed",
    "gated": "waits on an owner decision (gatedBy)",
    "conditional": "runs only if its trigger fires",
    "superseded": "replaced by another item",
-   "absorbed": "folded into another item"
+   "absorbed": "folded into another item",
+   "prebuilt": "Wave 2: built on a draft branch and independently checked; merges only in its Monday window (and only on the owner's answer where still gated)"
   },
   "wave": {
    "done": "merged",
-   "W1": "Sat 26-09 → Sun 27-09 20:00Z",
+   "W1": "Sat 26-09 — merged 07:16–09:34Z (W1-FU 12:21Z)",
    "W2": "Mon 28-09 01:00–13:00Z, T4 Tue 29-09",
    "W3": "Mon 28-09 16:00Z → Wed 30-09",
    "W4": "only after evidence (no dates)",
@@ -361,12 +362,12 @@ button.theme-btn{
   },
   {
    "id": "w1",
-   "name": "Wave 1 (no-answer items + OD-0 UI items)",
+   "name": "Wave 1 (merged)",
    "startUtc": "2026-09-26T05:44:00Z",
-   "endUtc": "2026-09-27T20:00:00Z",
+   "endUtc": "2026-09-26T09:34:47Z",
    "kind": "build",
-   "marker": "inference",
-   "note": "Start is the actual build start (05:44Z, task); end per plan. About 7–9 h of merges, up to 7 more Node restarts; crypto trades through it.",
+   "marker": "fixed",
+   "note": "Actual: 05:44Z build start → 09:34:47Z last row merged (#1154); follow-up W1-FU #1157 at 12:21Z. 9 Node restarts, 0 errors after each read-back.",
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5, §7; task"
   },
   {
@@ -2153,10 +2154,10 @@ button.theme-btn{
    "origin": "synthesis",
    "group": "Measurement (P1/P4)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.1",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1147",
+   "mergedAtUtc": "2026-09-26T07:16:46Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2184,10 +2185,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "Safety",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.1",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1147",
+   "mergedAtUtc": "2026-09-26T07:16:46Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2215,10 +2216,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "UI (Performance cards)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.2",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1148",
+   "mergedAtUtc": "2026-09-26T07:34:27Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2240,7 +2241,7 @@ button.theme-btn{
    "restarts": "Node",
    "size": "S",
    "acceptance": "A visible, remembered collapse control with section ids; storage that throws; remount; mutation check",
-   "note": "Extends WEB-1 (#1115). OD-0 answered yes by the plan approval, so the OD-17 default (a: triangle, remembered on every page) applies.",
+   "note": "Extends WEB-1 (#1115). OD-0 answered yes by the plan approval, so the OD-17 default (a: triangle, remembered on every page) applies. Reasons CLS proof Failed after #1148 (0.74 desktop / 0.55 phone); W1-FU #1157 (12:21Z) applied the card standard to Reasons — re-trace result in plan §5 Wave 1 actuals.",
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 1 row 1.2; origin/main:docs/plan-ui-and-strategy-review-2026-09-26.md §8/§13; Wave 1 lanes list (task)",
    "laneTier": "T3 UI/docs",
    "branch": "claude/w1-ui1-perf"
@@ -2251,10 +2252,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "Performance traces",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.2",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1148",
+   "mergedAtUtc": "2026-09-26T07:34:27Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2273,7 +2274,7 @@ button.theme-btn{
    "restarts": "Node",
    "size": "S–M",
    "acceptance": "The median-of-3 CLS falls on Performance and Reasons, on both profiles",
-   "note": "After UI-1, before UI-3 (new plan §13).",
+   "note": "After UI-1, before UI-3 (new plan §13). Reasons CLS proof Failed after #1148 (0.74 desktop / 0.55 phone); W1-FU #1157 (12:21Z) applied the card standard to Reasons — re-trace result in plan §5 Wave 1 actuals.",
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 1 row 1.2; origin/main:docs/plan-ui-and-strategy-review-2026-09-26.md §8/§13; Wave 1 lanes list (task)",
    "laneTier": "T3 UI/docs",
    "branch": "claude/w1-ui1-perf"
@@ -2284,10 +2285,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "Performance traces",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.5",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1148",
+   "mergedAtUtc": "2026-09-26T07:34:27Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2317,10 +2318,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "UI (tables)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.3",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1153",
+   "mergedAtUtc": "2026-09-26T09:21:25Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2351,10 +2352,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "UI (Performance cards)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.3",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1153",
+   "mergedAtUtc": "2026-09-26T09:21:25Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2387,10 +2388,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "UI (sidebar)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.4",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1150",
+   "mergedAtUtc": "2026-09-26T08:12:08Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2424,10 +2425,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "UI (AI page)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.4",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1150",
+   "mergedAtUtc": "2026-09-26T08:12:08Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2457,10 +2458,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "UI (Reasons)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.5",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1154",
+   "mergedAtUtc": "2026-09-26T09:34:47Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2493,10 +2494,10 @@ button.theme-btn{
    "origin": "V3",
    "group": "REC/WEB",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.5",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1154",
+   "mergedAtUtc": "2026-09-26T09:34:47Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2526,10 +2527,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "Strategy (arming)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.6",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1149",
+   "mergedAtUtc": "2026-09-26T08:00:38Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2559,10 +2560,10 @@ button.theme-btn{
    "origin": "new plan",
    "group": "Strategy (bar path)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.6",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1149",
+   "mergedAtUtc": "2026-09-26T08:00:38Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2592,10 +2593,10 @@ button.theme-btn{
    "origin": "V3",
    "group": "P0/P3",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.7",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1151",
+   "mergedAtUtc": "2026-09-26T08:33:00Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2625,10 +2626,10 @@ button.theme-btn{
    "origin": "V3",
    "group": "P5c",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.7",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1151",
+   "mergedAtUtc": "2026-09-26T08:33:00Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2660,10 +2661,10 @@ button.theme-btn{
    "origin": "V3",
    "group": "P5b/P5d",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.7",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1151",
+   "mergedAtUtc": "2026-09-26T08:33:00Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2693,10 +2694,10 @@ button.theme-btn{
    "origin": "synthesis",
    "group": "Pre-orders (measure first)",
    "wave": "W1",
-   "status": "building",
+   "status": "merged",
    "planRow": "1.7",
-   "pr": null,
-   "mergedAtUtc": null,
+   "pr": "#1151",
+   "mergedAtUtc": "2026-09-26T08:33:00Z",
    "plannedDoneUtc": null,
    "forecast": {
     "text": "Sat 26-09 → Sun 27-09 20:00Z (about 7–9 h of merges, up to 7 more Node restarts)",
@@ -2726,9 +2727,9 @@ button.theme-btn{
    "origin": "new plan",
    "group": "P0/P3",
    "wave": "W2",
-   "status": "gated",
+   "status": "prebuilt",
    "planRow": "2.1",
-   "pr": null,
+   "pr": "#1158 (draft)",
    "mergedAtUtc": null,
    "plannedDoneUtc": null,
    "forecast": {
@@ -2738,9 +2739,7 @@ button.theme-btn{
     "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2, §7"
    },
    "dependsOn": [],
-   "gatedBy": [
-    "OD-2"
-   ],
+   "gatedBy": [],
    "tier": "T1 money/order path",
    "lane": null,
    "builder": null,
@@ -2748,8 +2747,9 @@ button.theme-btn{
    "restarts": "Node",
    "size": "S",
    "acceptance": "Exits run with Scan disabled, off everywhere, and in quiet hours with no crypto; read-back Mon 28-09 21:05Z, then Fri 02-10 21:05Z",
-   "note": "Owner-visible: changes when exits run for the 22 open book rows.",
-   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.1; origin/main:docs/plan-ui-and-strategy-review-2026-09-26.md §8"
+   "note": "Pre-built 5d1f4a4; independent check MERGE after two re-checks; CI green. Fixed on the way: a MARKET_CLOSED refusal could park an owed exit ~151 h (now 30 min, cap 2 h). Merges first on Mon 28-09.",
+   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.1; origin/main:docs/plan-ui-and-strategy-review-2026-09-26.md §8",
+   "branch": "claude/w2-s2-book"
   },
   {
    "id": "F2",
@@ -2757,9 +2757,9 @@ button.theme-btn{
    "origin": "V3",
    "group": "P0/P3",
    "wave": "W2",
-   "status": "gated",
+   "status": "prebuilt",
    "planRow": "2.1",
-   "pr": null,
+   "pr": "#1158 (draft)",
    "mergedAtUtc": null,
    "plannedDoneUtc": null,
    "forecast": {
@@ -2771,9 +2771,7 @@ button.theme-btn{
    "dependsOn": [
     "S-2"
    ],
-   "gatedBy": [
-    "OD-2"
-   ],
+   "gatedBy": [],
    "tier": "T1 money/order path",
    "lane": null,
    "builder": null,
@@ -2781,7 +2779,7 @@ button.theme-btn{
    "restarts": "Node",
    "size": null,
    "acceptance": "The daily exit checks hours (S-8's calendar) and marks exit_pending",
-   "note": "Ships with S-2; ask-first (changes when live exits are sent).",
+   "note": "Rides S-2 (#1158): a daily exit into a schedule-closed market waits as exit_pending.",
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.1; origin/main:docs/plan-ui-and-strategy-review-2026-09-26.md §8"
   },
   {
@@ -2790,7 +2788,7 @@ button.theme-btn{
    "origin": "V3",
    "group": "P5c",
    "wave": "W2",
-   "status": "gated",
+   "status": "prebuilt",
    "planRow": "2.2",
    "pr": null,
    "mergedAtUtc": null,
@@ -2803,7 +2801,7 @@ button.theme-btn{
    },
    "dependsOn": [],
    "gatedBy": [
-    "OD-6"
+    "owner: C8 live change"
    ],
    "tier": "T1 money/order path",
    "lane": null,
@@ -2812,8 +2810,9 @@ button.theme-btn{
    "restarts": "Node",
    "size": "S",
    "acceptance": "V3-SEQUENCE §1 item 29",
-   "note": "Unchanged by the new plan.",
-   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.2; scratchpad/roadmap/items-v2.2.json"
+   "note": "Built 9d66ba1; check: correct. It changes live trading on merge — the book cap of 2 starts binding on bar, book, limit and manual routes (it read a non-existent column since #939). Owner questions: accept; exempt cross_sectional_book; rotate slots; R/N sizing gives 2R/7 book exposure with 7 accounts.",
+   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.2; scratchpad/roadmap/items-v2.2.json",
+   "branch": "claude/w2-c8-c9"
   },
   {
    "id": "C9",
@@ -2821,7 +2820,7 @@ button.theme-btn{
    "origin": "V3",
    "group": "P5c",
    "wave": "W2",
-   "status": "gated",
+   "status": "building",
    "planRow": "2.2",
    "pr": null,
    "mergedAtUtc": null,
@@ -2835,9 +2834,7 @@ button.theme-btn{
    "dependsOn": [
     "C8"
    ],
-   "gatedBy": [
-    "OD-6"
-   ],
+   "gatedBy": [],
    "tier": "T1 money/order path",
    "lane": null,
    "builder": null,
@@ -2845,8 +2842,9 @@ button.theme-btn{
    "restarts": "Node",
    "size": "L",
    "acceptance": "V3-SEQUENCE §1 item 30",
-   "note": "Unchanged by the new plan.",
-   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.2; scratchpad/roadmap/items-v2.2.json"
+   "note": "Built f9e566e; check FIX FIRST: the restart quarantine lifts without a reconcile once expireStale runs (dormant — no account admits tick). Fix round running 26-09 21:10 SGT.",
+   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.2; scratchpad/roadmap/items-v2.2.json",
+   "branch": "claude/w2-c8-c9"
   },
   {
    "id": "CV-2",
@@ -2854,9 +2852,9 @@ button.theme-btn{
    "origin": "V3",
    "group": "P5a",
    "wave": "W2",
-   "status": "gated",
+   "status": "prebuilt",
    "planRow": "2.3",
-   "pr": null,
+   "pr": "#1155 (draft)",
    "mergedAtUtc": null,
    "plannedDoneUtc": "2026-09-28T03:56:00Z",
    "forecast": {
@@ -2866,9 +2864,7 @@ button.theme-btn{
     "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2, §7"
    },
    "dependsOn": [],
-   "gatedBy": [
-    "OD-10"
-   ],
+   "gatedBy": [],
    "tier": "T2 records/reporting",
    "lane": null,
    "builder": null,
@@ -2876,8 +2872,9 @@ button.theme-btn{
    "restarts": "cpp-verify, Node",
    "size": "XL",
    "acceptance": "Item 26; restarts cpp-verify and Node; the 24 h muted soak starts",
-   "note": "Auto on green (PR-6). Moves into Wave 1 if OD-10 is answered this weekend (inference).",
-   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.3; scratchpad/roadmap/items-v2.2.json"
+   "note": "Pre-built 88d3dd8; check MERGE; CI green. Restarts cpp-verify + Node; 24 h muted soak starts on merge.",
+   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.3; scratchpad/roadmap/items-v2.2.json",
+   "branch": "claude/w2-cv2"
   },
   {
    "id": "K3",
@@ -2885,9 +2882,9 @@ button.theme-btn{
    "origin": "V3",
    "group": "P2",
    "wave": "W2",
-   "status": "gated",
+   "status": "prebuilt",
    "planRow": "2.4",
-   "pr": null,
+   "pr": "#1156 (draft)",
    "mergedAtUtc": null,
    "plannedDoneUtc": "2026-09-28T08:11:00Z",
    "forecast": {
@@ -2899,9 +2896,7 @@ button.theme-btn{
    "dependsOn": [
     "K1"
    ],
-   "gatedBy": [
-    "OD-7"
-   ],
+   "gatedBy": [],
    "tier": "T2 records/reporting",
    "lane": null,
    "builder": null,
@@ -2909,8 +2904,9 @@ button.theme-btn{
    "restarts": "Node + scanners",
    "size": "M",
    "acceptance": "Item 34; merged by ~12:30Z so the collector read-back (20–30 min sweep) ends before the window",
-   "note": "Now ahead of M7, T4, GW-1, Q2, W3 and C5; S-8 needs it before 30-09 ~15:00Z.",
-   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.4; scratchpad/roadmap/items-v2.2.json"
+   "note": "Pre-built 44e1d41; check MERGE; CI green. Merge by ~12:30Z Mon.",
+   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.4; scratchpad/roadmap/items-v2.2.json",
+   "branch": "claude/w2-k3-safe0b"
   },
   {
    "id": "SAFE-0b",
@@ -2918,9 +2914,9 @@ button.theme-btn{
    "origin": "new plan",
    "group": "Safety",
    "wave": "W2",
-   "status": "gated",
+   "status": "prebuilt",
    "planRow": "2.4",
-   "pr": null,
+   "pr": "#1156 (draft)",
    "mergedAtUtc": null,
    "plannedDoneUtc": null,
    "forecast": {
@@ -2930,9 +2926,7 @@ button.theme-btn{
     "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2, §7"
    },
    "dependsOn": [],
-   "gatedBy": [
-    "OD-14"
-   ],
+   "gatedBy": [],
    "tier": "T1 money/order path",
    "lane": null,
    "builder": null,
@@ -2940,7 +2934,7 @@ button.theme-btn{
    "restarts": "Node",
    "size": "S",
    "acceptance": "A 58-day-old proposal for another account is refused",
-   "note": "ASK-FIRST (D6): guards a risk-limit writer.",
+   "note": "Rides K3 (#1156): a Re-Risk apply older than 7 days or for another account is refused.",
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.4; origin/main:docs/plan-ui-and-strategy-review-2026-09-26.md §8"
   },
   {
@@ -2949,9 +2943,9 @@ button.theme-btn{
    "origin": "V3",
    "group": "P1/P4",
    "wave": "W2",
-   "status": "gated",
+   "status": "prebuilt",
    "planRow": "2.5",
-   "pr": null,
+   "pr": "#1159 (draft)",
    "mergedAtUtc": null,
    "plannedDoneUtc": "2026-09-28T07:38:00Z",
    "forecast": {
@@ -2965,9 +2959,7 @@ button.theme-btn{
     "S-1",
     "M1"
    ],
-   "gatedBy": [
-    "OD-22"
-   ],
+   "gatedBy": [],
    "tier": "T2 records/reporting",
    "lane": null,
    "builder": null,
@@ -2975,8 +2967,9 @@ button.theme-btn{
    "restarts": "Node",
    "size": "M",
    "acceptance": "Item 33; prediction: skip share ≤ 10 % in a US-closed hour",
-   "note": "Fed by S-3's token-wait counter and D22; 1.6 before M7.",
-   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.5; scratchpad/roadmap/items-v2.2.json"
+   "note": "Pre-built a73efbb; check MERGE after a fix round (stale quote under backoff, cap starvation, cap 0) and a nit round (late-stream socket leak). Owner question: pace the up-to-8 parallel broker sockets? OD-22's staleness rule stays open.",
+   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.5; scratchpad/roadmap/items-v2.2.json",
+   "branch": "claude/w2-m7"
   },
   {
    "id": "B2b",
@@ -2984,7 +2977,7 @@ button.theme-btn{
    "origin": "V3",
    "group": "P5b/P5d",
    "wave": "W2",
-   "status": "gated",
+   "status": "building",
    "planRow": "2.6",
    "pr": null,
    "mergedAtUtc": null,
@@ -2998,9 +2991,7 @@ button.theme-btn{
    "dependsOn": [
     "B2"
    ],
-   "gatedBy": [
-    "OD-11"
-   ],
+   "gatedBy": [],
    "tier": "T2 records/reporting",
    "lane": null,
    "builder": null,
@@ -3008,8 +2999,9 @@ button.theme-btn{
    "restarts": "Node",
    "size": "M",
    "acceptance": "B2b first, then UI-5's re-stamp fix on the same path (pnl-backfill.js:1013-1017)",
-   "note": null,
-   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.6; scratchpad/roadmap/items-v2.2.json"
+   "note": "Named corrections pre-built (3367b0f): absolute values with expectedOld, #47 removed, apply only the dry run's ids — check MERGE. The rest of the row (re-stamp fix, gross-P&L consistency, refusal-time window, plan flags) is being built 26-09 21:10 SGT. The named apply is a production write: dry-run list to the owner first.",
+   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.6; scratchpad/roadmap/items-v2.2.json",
+   "branch": "claude/w2-b2b-ui5"
   },
   {
    "id": "UI-5",
@@ -3017,7 +3009,7 @@ button.theme-btn{
    "origin": "new plan",
    "group": "UI (Reasons)",
    "wave": "W2",
-   "status": "gated",
+   "status": "building",
    "planRow": "2.6",
    "pr": null,
    "mergedAtUtc": null,
@@ -3031,9 +3023,7 @@ button.theme-btn{
    "dependsOn": [
     "B2b"
    ],
-   "gatedBy": [
-    "OD-12"
-   ],
+   "gatedBy": [],
    "tier": "T2 records/reporting",
    "lane": null,
    "builder": null,
@@ -3041,8 +3031,9 @@ button.theme-btn{
    "restarts": "Node",
    "size": "M",
    "acceptance": "A mutation check on each fix",
-   "note": "ASK-FIRST for the 28 plans (D5).",
-   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.6; origin/main:docs/plan-ui-and-strategy-review-2026-09-26.md §8"
+   "note": "Not yet built; follows B2b on the same branch. At risk for Monday.",
+   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.6; origin/main:docs/plan-ui-and-strategy-review-2026-09-26.md §8",
+   "branch": "claude/w2-b2b-ui5"
   },
   {
    "id": "T4",
@@ -3050,7 +3041,7 @@ button.theme-btn{
    "origin": "V3",
    "group": "P0/P3",
    "wave": "W2",
-   "status": "gated",
+   "status": "prebuilt",
    "planRow": "2.7",
    "pr": null,
    "mergedAtUtc": null,
@@ -3078,7 +3069,6 @@ button.theme-btn{
    ],
    "gatedBy": [
     "OD-1",
-    "OD-3",
     "OD-15"
    ],
    "tier": "T1 money/order path",
@@ -3088,8 +3078,9 @@ button.theme-btn{
    "restarts": "Node",
    "size": "XL",
    "acceptance": "Item 32 plus a named refusal (test + mutation) for a closed-market momentum entry; read-back: /state/momentum-targets wiring reads \"wired\"",
-   "note": "Closed-market half stays off; open-market HTF limits wait for OD-15. Merges outside the P1/P4 window. First natural plan not datable (…0058 holds 6 against a cap of 5).",
-   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.7; scratchpad/roadmap/items-v2.2.json"
+   "note": "Pre-built 699aace behind momentum-entries.json market:false; check MERGE-WHEN-ANSWERED (nothing changes live while off). Draft only until OD-1 and OD-15; Tue 29-09 after S-2's read-back.",
+   "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §5 Wave 2 row 2.7; scratchpad/roadmap/items-v2.2.json",
+   "branch": "claude/w2-t4"
   },
   {
    "id": "F6",
@@ -3097,9 +3088,9 @@ button.theme-btn{
    "origin": "V3",
    "group": "P0/P3",
    "wave": "W2",
-   "status": "absorbed",
+   "status": "prebuilt",
    "planRow": "2.1",
-   "pr": null,
+   "pr": "#1158 (draft)",
    "mergedAtUtc": null,
    "plannedDoneUtc": null,
    "forecast": null,
@@ -3114,7 +3105,7 @@ button.theme-btn{
    "restarts": null,
    "size": null,
    "acceptance": null,
-   "note": "Absorbed by S-2 (S-2 adds the book's heartbeat). None among the 39 controllers (04:59Z).",
+   "note": "Rides S-2 (#1158): the momentum_book heartbeat.",
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §3"
   },
   {
@@ -4272,7 +4263,7 @@ button.theme-btn{
    },
    "askFirst": true,
    "askFirstSrc": "§3 F2 \"ask-first\"",
-   "status": "open",
+   "status": "answered (owner 26-09 18:05 SGT)",
    "note": null,
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
@@ -4288,7 +4279,7 @@ button.theme-btn{
    },
    "askFirst": false,
    "askFirstSrc": null,
-   "status": "open",
+   "status": "answered (owner 26-09 18:05 SGT)",
    "note": null,
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
@@ -4304,8 +4295,8 @@ button.theme-btn{
    },
    "askFirst": false,
    "askFirstSrc": null,
-   "status": "open",
-   "note": null,
+   "status": "answered (owner 26-09 18:05 SGT)",
+   "note": "Confirmed as proposed: window Mon 13:30–16:00Z plus ~20:00Z; the 10 % skip share joins; both tabs visible; goal table off.",
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
   {
@@ -4337,7 +4328,7 @@ button.theme-btn{
    },
    "askFirst": true,
    "askFirstSrc": "§5 3.1 \"your window\" (gateway restart)",
-   "status": "open",
+   "status": "answered (owner 26-09 18:05 SGT)",
    "note": null,
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
@@ -4354,7 +4345,7 @@ button.theme-btn{
    },
    "askFirst": true,
    "askFirstSrc": "new plan §8 S-8 ASK-FIRST (D7)",
-   "status": "open",
+   "status": "answered (owner 26-09 18:05 SGT)",
    "note": null,
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
@@ -4403,7 +4394,7 @@ button.theme-btn{
    },
    "askFirst": true,
    "askFirstSrc": "plan §6 OD-10 itself (\"dispose of the backlog after a /data backup\")",
-   "status": "open",
+   "status": "answered (owner 26-09 18:05 SGT)",
    "note": null,
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
@@ -4419,7 +4410,7 @@ button.theme-btn{
    },
    "askFirst": false,
    "askFirstSrc": null,
-   "status": "open",
+   "status": "answered (owner 26-09 18:05 SGT)",
    "note": null,
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
@@ -4435,7 +4426,7 @@ button.theme-btn{
    },
    "askFirst": true,
    "askFirstSrc": "new plan §8 UI-5 ASK-FIRST (D5)",
-   "status": "open",
+   "status": "answered (owner 26-09 18:05 SGT)",
    "note": null,
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
@@ -4467,7 +4458,7 @@ button.theme-btn{
    },
    "askFirst": true,
    "askFirstSrc": "new plan §8 SAFE-0b ASK-FIRST (D6)",
-   "status": "open",
+   "status": "answered (owner 26-09 18:05 SGT)",
    "note": null,
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
@@ -4595,7 +4586,7 @@ button.theme-btn{
    },
    "askFirst": false,
    "askFirstSrc": null,
-   "status": "open",
+   "status": "answered (owner 26-09 18:05 SGT)",
    "note": null,
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
@@ -4915,8 +4906,8 @@ button.theme-btn{
    },
    "askFirst": false,
    "askFirstSrc": null,
-   "status": "open",
-   "note": null,
+   "status": "answered (owner 26-09 18:05 SGT)",
+   "note": "Yes — Wave 2 pre-built on draft branches this weekend; nothing merges without the item's answer.",
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §6"
   },
   {
@@ -5264,6 +5255,142 @@ button.theme-btn{
    "deltaMin": 302,
    "preV1": false,
    "note": null
+  },
+  {
+   "id": "NEW-1",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T07:16:46Z",
+   "deltaMin": -2203,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "SAFE-0a",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T07:16:46Z",
+   "deltaMin": -2203,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "UI-1",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T07:34:27Z",
+   "deltaMin": -2186,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "PERF-1",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T07:34:27Z",
+   "deltaMin": -2186,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "PERF-2",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T07:34:27Z",
+   "deltaMin": -2186,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "UI-2",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T09:21:25Z",
+   "deltaMin": -2079,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "UI-3",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T09:21:25Z",
+   "deltaMin": -2079,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "UI-4",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T08:12:08Z",
+   "deltaMin": -2148,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "UI-7",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T08:12:08Z",
+   "deltaMin": -2148,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "UI-6",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T09:34:47Z",
+   "deltaMin": -2065,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "F3",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T09:34:47Z",
+   "deltaMin": -2065,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "S-1",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T08:00:38Z",
+   "deltaMin": -2159,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "S-3",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T08:00:38Z",
+   "deltaMin": -2159,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "F1",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T08:33:00Z",
+   "deltaMin": -2127,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "F4",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T08:33:00Z",
+   "deltaMin": -2127,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "F5-N6",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T08:33:00Z",
+   "deltaMin": -2127,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
+  },
+  {
+   "id": "PO-M3",
+   "plannedDoneUtc": "2026-09-27T20:00:00Z",
+   "actualDoneUtc": "2026-09-26T08:33:00Z",
+   "deltaMin": -2127,
+   "preV1": false,
+   "note": "Planned = the checked plan's Wave 1 end (Sun 27-09 20:00Z, revised; no v2.2 time exists for a new-plan item)"
   }
  ],
  "unmappedMerges": [
@@ -5290,6 +5417,18 @@ button.theme-btn{
    "mergedAtUtc": "2026-09-25T23:44:48Z",
    "subject": "Tick docs match GW-CAP and the cpp-acct volume; ledger write-back (#1131)",
    "note": "Docs write-back; no V3 id."
+  },
+  {
+   "pr": "#1157",
+   "mergedAtUtc": "2026-09-26T12:21:02Z",
+   "subject": "W1-FU: Reasons card standard, lazy collapsed cards, 72 h blocker day groups, trace warm-up (#1157)",
+   "note": "Wave 1 follow-up closing three read-back gaps (plan §5 Wave 1 actuals); not its own plan row."
+  },
+  {
+   "pr": "#1152",
+   "mergedAtUtc": "2026-09-26T08:54:21Z",
+   "subject": "A weekly answer cut by the bar count is no longer read as the end of the broker's history; BTCUSD monthly start corrected to July 2010 (#1152)",
+   "note": "Follow-up to #1149 (S-1/S-3); not its own plan row."
   }
  ],
  "notInSources": [
@@ -5310,22 +5449,22 @@ button.theme-btn{
   "Item tiers for Wave 2, Wave 3, Wave 4 and the conditional group: assigned by this roadmap (build.py), not stated in any source. Wave 1 tiers use the sourced lane tier (laneTier, from the Wave 1 lanes list) instead."
  ],
  "counts": {
-  "mergedSince25_09_V3": 57,
-  "mergedSince25_09_V3_withPR": 56,
-  "mergedSince25_09_newPlan": 1,
+  "mergedSince25_09_V3": 61,
+  "mergedSince25_09_V3_withPR": 60,
+  "mergedSince25_09_newPlan": 14,
   "W1": 17,
   "W2": 13,
   "W3": 11,
   "W4": 13,
   "conditionalNoWave": 3,
   "decisionsTotal": 45,
-  "decisionsOpen": 40,
-  "decisionsAnswered": 5,
-  "decisionsOpenAskFirst": 19,
+  "decisionsOpen": 29,
+  "decisionsAnswered": 16,
+  "decisionsOpenAskFirst": 13,
   "wave1Lanes": 7,
-  "plannedVsActualRows": 39,
+  "plannedVsActualRows": 56,
   "plannedVsActualLate": 18,
-  "plannedVsActualEarly": 13,
+  "plannedVsActualEarly": 30,
   "plannedVsActualOnPlan": 1,
   "planStatedV3Open": {
    "open": 28,
@@ -5345,7 +5484,7 @@ button.theme-btn{
    "src": "scratchpad/plan/v3-integrated-plan-2026-09-26.md §0(2), §3"
   },
   "itemsTotal": 115,
-  "plannedVsActualMedianDeltaMin": 50.0
+  "plannedVsActualMedianDeltaMin": -128
  },
  "sources": [
   "scratchpad/plan/v3-integrated-plan-2026-09-26.md",
@@ -5420,6 +5559,7 @@ function na(v, txt){ return (v===null||v===undefined||v==='') ? (txt||'<span cla
 /* ---------- status / marker meta ---------- */
 var STATUS_META = {
   merged:      {glyph:'●', cls:'st-merged',      label:'merged'},
+  prebuilt:    {glyph:'◑', cls:'st-building',    label:'pre-built'},
   building:    {glyph:'◐', cls:'st-building',    label:'building'},
   queued:      {glyph:'○', cls:'st-queued',      label:'queued'},
   gated:       {glyph:'◇', cls:'st-gated',       label:'gated'},
@@ -5715,7 +5855,7 @@ function buildTimeline(svgId, opts){
 /* ================= ROADMAP BY WAVE ================= */
 (function(){
   var order = [
-    {key:'W1', title:'Wave 1 — building since 05:44Z (13:44 SGT) 26-09', open:true, showModels:true},
+    {key:'W1', title:'Wave 1 — merged 26-09, 07:16–09:34Z (15:16–17:34 SGT); W1-FU 12:21Z', open:true, showModels:true},
     {key:'W2', title:'Wave 2 — Mon 28-09 01:00–13:00Z, T4 Tue 29-09', open:true},
     {key:'W3', title:'Wave 3 — Mon 28-09 16:00Z → Wed 30-09', open:false},
     {key:'W4', title:'Wave 4 — only after evidence (no dates)', open:false},

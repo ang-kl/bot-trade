@@ -23,7 +23,8 @@ import Badge from './common/Badge.jsx'
 import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
-import { proposalStatus } from '../lib/risk-proposal-status.js'
+import { proposalStatus, reassessApplyConfirmText } from '../lib/risk-proposal-status.js'
+import { accountLabel, selectedAccountId } from '../lib/selected-account.js'
 import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 import Collapse from './common/Collapse.jsx'
 
@@ -53,21 +54,28 @@ function show(key, v, proposable) {
   return String(v)
 }
 
-export default function RiskReassess({ onChanged, onApplied, initialLlmOff = null }) {
+export default function RiskReassess({ onChanged, onApplied, initialLlmOff = null, initialData = null, initialPicked = null }) {
   // Off is a stated position: with the AI layer disabled every button in this
   // card ends in a refusal, so the card says so once instead (llm-ui.js).
   // `initialLlmOff` exists for the tests: effects do not run under
   // react-dom/server, so without a seam the collapsed branch is the one
   // rendered path no test can reach — which is where the <Card title=> bug
   // lived (review on #755, CLAUDE.md #4).
+  // `initialData` and `initialPicked` are the same kind of seam (SAFE-0b fix
+  // round, 26-09-2026): Apply acts on a loaded assessment and ticked rows,
+  // which only the load effect and clicks produce, so without them the real
+  // Apply handler — and whether Cancel on its confirm stops the POST — is out
+  // of reach of any render (src/components/risk-reassess-apply.test.jsx). No
+  // app caller passes either; in a browser the mount effects clear the ticks
+  // and, with an agent configured, re-read the assessment.
   const [llmOff, setLlmOff] = useState(initialLlmOff)
-  const [data, setData] = useState(null)      // { last, providers, proposable }
+  const [data, setData] = useState(initialData)      // { last, providers, proposable }
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [ask, setAsk] = useState(null)        // null | { includeWatchlist }
   const [provider, setProvider] = useState('openai')
   const [model, setModel] = useState('')
-  const [picked, setPicked] = useState(() => new Set())
+  const [picked, setPicked] = useState(() => new Set(initialPicked || []))
   // Transient confirmation. Owner: "Apply 13 selected > if done, show 'done'
   // visual cue and reset the checkboxes." An action whose only feedback is the
   // numbers quietly changing somewhere else reads as "did that work?".
@@ -152,6 +160,16 @@ export default function RiskReassess({ onChanged, onApplied, initialLlmOff = nul
   const apply = async () => {
     const keys = [...picked]
     if (keys.length === 0) return
+    // SAFE-0b (OD-14): name the keys this writes to the GLOBAL risk settings,
+    // with the proposal's account and time. The agent refuses a stale or
+    // other-account proposal on its own; this is the owner's own check.
+    // Nits round (26-09-2026): also name the account CURRENTLY traded, next to
+    // the proposal's account — these are global settings, so an apply that
+    // reads right for the proposal's account can still be about to change
+    // what a different, currently-selected account trades under.
+    const tradedId = selectedAccountId()
+    const tradedAccountLabel = tradedId == null ? null : accountLabel(tradedId)
+    if (!window.confirm(reassessApplyConfirmText({ keys, last, live, format: (k, v) => show(k, v, proposable), tradedAccountLabel }))) return
     setBusy('apply'); setError(''); setDone('')
     try {
       // `at` binds this apply to the assessment ON SCREEN. If another tab ran a

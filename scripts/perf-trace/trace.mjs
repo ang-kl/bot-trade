@@ -59,8 +59,28 @@ const DOM_PROBE = `() => JSON.stringify({ nodes: document.getElementsByTagName('
   api: performance.getEntriesByType('resource').filter(r => /\\/state\\/|\\/actions\\/|\\/health/.test(r.name)).length,
   apiKB: Math.round(performance.getEntriesByType('resource').filter(r => /\\/state\\/|\\/actions\\/|\\/health/.test(r.name)).reduce((a, r) => a + (r.transferSize || 0), 0) / 1024) })`
 
+// W1-FU (26-09 plan §5): one DISCARDED warm-up load per profile — a fresh
+// isolated context still pays cold-cache/cold-JIT cost on its very first
+// navigation, which used to land in run 1 of every page and skew its LCP/CLS
+// high relative to runs 2-3 of the SAME page. The warm-up hits the home page
+// once per profile before any measured run and its result is thrown away
+// (never pushed to `results`), so cache/JIT state is warm before what gets
+// reported — the measured runs are still each a fresh isolated_context per
+// call('new_page', ...) below, only the underlying browser process is warm.
+async function warmUp(prof) {
+  const tag = `${prof.name}-warmup`
+  await call('new_page', { url: 'about:blank', isolatedContext: tag })
+  await call('resize_page', { width: prof.w, height: prof.h })
+  await call('emulate', { cpuThrottlingRate: prof.cpu, ...(prof.net ? { networkConditions: prof.net } : {}) })
+  await call('navigate_page', { type: 'url', url: `${BASE}/health`, initScript: init })
+  await call('navigate_page', { type: 'url', url: withSynthetic(BASE + PAGES[0]), initScript: init })
+  await sleep(1500)
+  await call('close_page', {}).catch(() => {})
+}
+
 const results = []
 for (const prof of PROFILES) {
+  await warmUp(prof)
   for (const p of PAGES) {
     for (let run = 1; run <= RUNS; run++) {
       const tag = `${prof.name}${p === '/' ? '-home' : p.replace(/\//g, '-')}-r${run}`
@@ -96,10 +116,20 @@ const rows = []
 for (const prof of PROFILES) for (const p of PAGES) {
   const rs = results.filter(r => r.profile === prof.name && r.page === p)
   const m = k => median(rs.map(r => r[k]))
-  rows.push({ page: p, profile: prof.name, runs: rs.length, lcp: m('lcp'), cls: m('cls'), nodes: m('nodes'), rows: m('rows'), api: m('api'), apiKB: m('apiKB') })
+  // W1-FU (26-09 plan §5): `median` already drops a run whose LCP came back
+  // null (Number.isFinite filter) before picking the middle value — a run
+  // that failed to measure LCP at all (the trace closed before a largest
+  // contentful paint fired) used to vanish from the sample with nothing in
+  // summary.md to say so. `lcpMeasured` names how many of `runs` actually
+  // had a finite LCP, so a partial or total miss is visible, not silent.
+  const lcpMeasured = rs.filter(r => Number.isFinite(r.lcp)).length
+  rows.push({ page: p, profile: prof.name, runs: rs.length, lcpMeasured, lcp: m('lcp'), cls: m('cls'), nodes: m('nodes'), rows: m('rows'), api: m('api'), apiKB: m('apiKB') })
 }
 fs.writeFileSync(path.join(OUT, 'summary.json'), JSON.stringify({ base: BASE, runs: RUNS, windowMs: WINDOW_MS, results, medians: rows }, null, 1))
+const lcpCell = r => r.lcp == null
+  ? `not measured (0/${r.runs})`
+  : `${r.lcp} ms${r.lcpMeasured < r.runs ? ` (${r.lcpMeasured}/${r.runs} runs)` : ''}`
 const md = ['| Page | Profile | Runs | LCP (median) | CLS (median) | Elements | Rows | Calls | KB |', '|---|---|---|---|---|---|---|---|---|',
-  ...rows.map(r => `| ${r.page} | ${r.profile} | ${r.runs} | ${r.lcp ?? 'not measured'} ms | ${r.cls ?? 'not measured'} | ${r.nodes ?? '—'} | ${r.rows ?? '—'} | ${r.api ?? '—'} | ${r.apiKB ?? '—'} |`)]
+  ...rows.map(r => `| ${r.page} | ${r.profile} | ${r.runs} | ${lcpCell(r)} | ${r.cls ?? 'not measured'} | ${r.nodes ?? '—'} | ${r.rows ?? '—'} | ${r.api ?? '—'} | ${r.apiKB ?? '—'} |`)]
 fs.writeFileSync(path.join(OUT, 'summary.md'), md.join('\n') + '\n')
 console.log(md.join('\n'))

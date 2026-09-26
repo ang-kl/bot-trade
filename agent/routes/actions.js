@@ -278,6 +278,42 @@ export function credsForPosition(db, positionId, opts = {}) {
 }
 
 /**
+ * Coerce a POST /actions/named-corrections `ids` body field into row ids.
+ * N6 (checker nit round): the earlier `.map(Number).filter(Number.isFinite)`
+ * let through anything Number() can be talked into: `true` (Number(true)
+ * === 1), a nested array like `[5]` (Number([5]) === 5, via its own
+ * single-element toString), `"0x10"` (=== 16), `"1e3"` (=== 1000), and `1.5`
+ * (finite but not a row id).
+ *
+ * Item 2, second fix round: only an integer number or digit-only string was
+ * not tight enough — a row `id` is SQLite's AUTOINCREMENT primary key, which
+ * is always a positive, safe integer, never zero and never negative, so
+ * anything else names no real row:
+ *   - `-7`, `0`/`"0"` — rejected (`v > 0`).
+ *   - `Number.MAX_SAFE_INTEGER + 1` (9007199254740992) as a bare number, or
+ *     an over-long digit string (e.g. 20 nines) — rejected
+ *     (`Number.isSafeInteger`). One check covers both forms: IEEE754 doubles
+ *     represent every integer up to 2**53-1 exactly, so ANY value that far
+ *     or beyond — however it rounds — stays >= 2**53 and therefore unsafe;
+ *     there is no digit string whose Number() lands back inside the safe
+ *     range while losing precision, so no separate round-trip check is
+ *     needed (confirmed by mutation: removing one proved the other dead).
+ *   - `"007"` — ACCEPTED. `Number("007") === 7` already, with no special
+ *     casing needed; rejecting it would refuse correct input over a
+ *     cosmetic leading zero, not an actual precision or type risk.
+ *
+ * @param {unknown} ids — req.body?.ids
+ * @returns {number[]|undefined}
+ */
+export function coerceCorrectionIds(ids) {
+  if (!Array.isArray(ids)) return undefined
+  const positive = n => Number.isSafeInteger(n) && n > 0
+  const fromNumber = v => (typeof v === 'number' && Number.isInteger(v) && positive(v)) ? v : null
+  const fromDigitString = v => (typeof v === 'string' && /^\d+$/.test(v) && positive(Number(v))) ? Number(v) : null
+  return ids.map(v => fromNumber(v) ?? fromDigitString(v)).filter(v => v !== null)
+}
+
+/**
  * Resolve which symbols a backtest run covers.
  * Priority: explicit `symbols` list > legacy single `symbol` > every ENABLED
  * watchlist symbol (the instruments set on Tune — never a hardcoded default).
@@ -333,6 +369,9 @@ export default function actionsRouter(db, deps = {}) {
   // timestamped frames and the feed-latency record can be exercised without
   // a broker socket.
   const streamSpotsImpl = deps.streamSpots ?? null
+  // SAFE-0b: the clock the Re-Risk apply ages a proposal against, so the
+  // 7-day refusal can be exercised at its boundary over HTTP.
+  const nowMsImpl = deps.nowMs ?? Date.now
 
   // Every successful write makes the /state/* read cache stale. Without this
   // the UI saves, re-reads, and paints the PRE-SAVE answer back over the new
@@ -4824,6 +4863,52 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/named-corrections — V3 B2b (docs/v3-integrated-plan-
+  // 2026-09-26.md §5 row 2.6, §6 OD-11/OD-12, owner yes 26-09-2026).
+  // Body: { apply?: boolean, includeNeverFilled?: boolean, includeMoney?: boolean, ids?: number[] }.
+  // DRY RUN BY DEFAULT — see services/named-corrections.js. `apply` is read
+  // strictly as the JSON boolean `true`; a string `"true"`, a query param, or
+  // anything else all read as dry run.
+  //
+  // OD-11 (the write-off REJECTION half only — see the module doc; changing
+  // the zero-deal verdict itself to never_filled is a named follow-up, not
+  // done here) and OD-12's named money corrections (H-P5b-1's five checker-
+  // confirmed net_pnl corrections, absolute + expectedOld only — see the
+  // module doc for why `delta` was removed). NOTHING IS WRITTEN WITHOUT
+  // `apply: true`; the default response is the plan (id, field, old -> new,
+  // evidence, and whether it is stale) so the operator reads it before
+  // authorising a write. A stale entry (the row moved since the evidence was
+  // captured) is reported and skipped, never forced. Even a dry-run call
+  // still lands the one `action_log` row index.js's `/actions` request
+  // middleware writes for every POST here (method, path, redacted body,
+  // before this handler runs at all) — this handler itself writes nothing
+  // until `apply: true` actually changes a row.
+  //
+  // `ids` NAMES THE NEVER-FILLED APPLY (checker N-b). It must be the exact
+  // `id`s from a prior dry-run's `neverFilled.rows` — apply acts on their
+  // intersection with the current candidates, never on a fresh, live
+  // recompute, so a row that becomes a candidate after the dry run is left
+  // alone until named in its own. Omitting `ids` on an apply call REFUSES
+  // the never-filled half (`neverFilled.refused: true`); the money
+  // corrections still apply, since OD-12's money list is always fully named.
+  // -----------------------------------------------------------------------
+  router.post('/named-corrections', async (req, res) => {
+    try {
+      const apply = req.body?.apply === true
+      const includeNeverFilled = req.body?.includeNeverFilled !== false
+      const includeMoney = req.body?.includeMoney !== false
+      const neverFilledIds = coerceCorrectionIds(req.body?.ids)
+      const { runNamedCorrections } = await import('../services/named-corrections.js')
+      const out = runNamedCorrections(db, { apply, includeNeverFilled, includeMoney, neverFilledIds })
+      console.log(`[actions] named-corrections ${out.mode}${out.dryRun ? ' (dry run — nothing written)' : ` — ${out.neverFilled.applied + out.money.applied} row(s) applied, ${out.neverFilled.skipped + out.money.skipped} skipped${out.neverFilled.refused ? ' (never-filled refused: no ids)' : ''}`}`)
+      res.json({ ok: true, ...out })
+    } catch (err) {
+      console.error('[actions/named-corrections] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/ctrader-accounts — re-list accounts from the token the
   // agent already has stored (so the UI picker survives page reloads).
   // -----------------------------------------------------------------------
@@ -5716,7 +5801,7 @@ export default function actionsRouter(db, deps = {}) {
       if (keys.length === 0) return res.status(400).json({ error: 'keys[] is required' })
       const at = String(req.body?.at || '')
       if (!at) return res.status(400).json({ error: 'at (the assessment timestamp being applied) is required' })
-      const { loadLastAssessment, markApplied, PROPOSABLE } = await import('../services/risk-reassess.js')
+      const { loadLastAssessment, markApplied, PROPOSABLE, reassessApplyRefusal } = await import('../services/risk-reassess.js')
       const last = loadLastAssessment(db)
       if (!last) return res.status(400).json({ error: 'no reassessment has been run yet' })
       if (last.at !== at) {
@@ -5725,11 +5810,27 @@ export default function actionsRouter(db, deps = {}) {
           displayed: at, current: last.at,
         })
       }
+      // SAFE-0b (owner OD-14): refuse a proposal older than 7 days or made
+      // for another account than the one traded now, with a named code —
+      // before anything is written. See reassessApplyRefusal.
+      const refusal = reassessApplyRefusal(last, { nowMs: nowMsImpl(), accountId: getState(db, 'ctrader_account_id') || null })
+      if (refusal) {
+        try {
+          db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+            'RISK_REASSESS_APPLY_REFUSED', '/risk-reassess-apply', JSON.stringify({ code: refusal.code, at: last.at, accountId: last.accountId ?? null, keys }))
+        } catch { /* non-fatal */ }
+        // `refused` has the 200/400 shape, [{ key, why }] (checker nit N5,
+        // 26-09-2026): every key is refused for the one reason, its code.
+        return res.status(409).json({ ...refusal, refused: keys.map(key => ({ key, why: refusal.code })) })
+      }
       const byKey = new Map(last.proposals.map(p => [p.key, p]))
       const patch = {}
       const refused = []
       for (const k of keys) {
-        if (!(k in PROPOSABLE)) { refused.push({ key: k, why: 'not a proposable setting' }); continue }
+        // Own keys only (checker nit N7, 26-09-2026): `k in PROPOSABLE` is true
+        // for 'constructor', 'toString', '__proto__'…, so a stored proposal row
+        // under such a name was written into the GLOBAL risk_config_json.
+        if (!Object.hasOwn(PROPOSABLE, k)) { refused.push({ key: k, why: 'not a proposable setting' }); continue }
         const p = byKey.get(k)
         if (!p) { refused.push({ key: k, why: 'not part of the last assessment' }); continue }
         patch[k] = p.proposed
