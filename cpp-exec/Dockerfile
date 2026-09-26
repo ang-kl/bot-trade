@@ -17,7 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd --system --uid 10001 --no-create-home appuser
 COPY --from=build /app/bin/cpp-exec /usr/local/bin/cpp-exec
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# GW-1: the entrypoint drops privileges with setpriv (util-linux) and execs,
+# so cpp-exec receives SIGTERM itself. Fail the BUILD if it is missing, not
+# the boot.
+RUN chmod +x /usr/local/bin/entrypoint.sh && command -v setpriv >/dev/null
 # The entrypoint prepares the volume-mounted spool as root (Railway mounts
 # volumes root-owned) and drops to appuser for the process — see the script.
 EXPOSE 8091

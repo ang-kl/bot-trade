@@ -48,6 +48,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -272,6 +273,24 @@ std::string describeBytes(uint64_t bytes);
 using FreeSpaceProbe = std::function<bool(const std::string& dir, uint64_t& availBytes, uint64_t& totalBytes)>;
 bool statvfsProbe(const std::string& dir, uint64_t& availBytes, uint64_t& totalBytes);
 
+// GW-1 (P8c item 8): what the spool's mount IS — the container's own
+// overlay (the host's disk, whatever TICK_SPOOL_PATH says: nothing survives
+// a redeploy and the usage bands read the host's usage) or a mounted
+// filesystem (a volume). `kind` is "host_overlay", "volume" or "unknown";
+// `fsType` names the statfs magic ("overlay", "ext4", "xfs", "tmpfs", or the
+// hex value). Reported only — the WARN band that stops the firer at 70 %
+// host usage is unchanged (that gating changes only on the owner's word).
+struct MountFacts { std::string kind = "unknown"; std::string fsType; };
+MountFacts probeMount(const std::string& dir);
+
+// GW-1 (P8c item 5): a torn segment's salvage. Keeps the header and every
+// complete record whose checksum holds, truncates the torn tail, and seals
+// the result under the recorder's own name (the ".open"/".torn" suffix
+// dropped) by an fsync and an atomic rename. False — the file left as it is
+// — when the header is unreadable, the sealed name already exists, or any
+// step fails (`why` names it). `records` is how many survived.
+bool salvageSegment(const std::string& path, const std::string& sealedPath, size_t& records, std::string& why);
+
 struct SymbolStat {
   uint64_t events = 0, changed = 0, repeats = 0, snapshots = 0;
   uint64_t lastRecvMs = 0;
@@ -293,10 +312,25 @@ struct RecorderStats {
   uint64_t gaps = 0;
   uint64_t recordsWritten = 0, bytesWritten = 0;
   uint64_t segmentsSealed = 0, segmentsRetired = 0, tornAtStart = 0;
+  // GW-1 (P8c item 5): torn files found at start and sealed by salvage, the
+  // records they kept, and the bytes of torn files that could NOT be
+  // salvaged — counted under the cap (retention never deletes them).
+  uint64_t salvaged = 0, salvagedRecords = 0, tornBytes = 0;
+  // GW-1 (P8c item 6): a seal, retire or salvage step whose return code said
+  // it failed. A failed seal stops the writer in ERROR (never RECORDING).
+  uint64_t sealFailures = 0, retireFailures = 0;
   uint64_t openBytes = 0, sealedBytes = 0;
   uint64_t diskTotalBytes = 0, diskAvailBytes = 0, reserveBytes = 0;
   int usagePct = -1;
   uint64_t writeErrors = 0;
+  MountFacts mount;              // GW-1 (P8c item 8)
+  // GW-1 (P8c item 9): counters persisted on the spool itself
+  // (.recorder-lifetime.json), so they survive the process: every boot that
+  // started a writer on this spool, and every segment it sealed, retired or
+  // salvaged. On an ephemeral spool they restart with the spool, which is
+  // itself the evidence that the spool was lost.
+  uint64_t lifetimeBoots = 0, lifetimeSealed = 0, lifetimeRetired = 0, lifetimeSalvaged = 0, lifetimeTornFound = 0;
+  bool lifetimeLoaded = false;   // false: no counter file was found (a new or lost spool)
   std::map<long long, SymbolStat> perSymbol;
 };
 
@@ -341,6 +375,9 @@ public:
   // Block until the queue is drained and flushed (tests). Not the hot path.
   void flush();
 
+  // TEST SEAM (GW-1): the rename a seal uses, so a test can make it fail.
+  void setRenameForTests(std::function<int(const char*, const char*)> r) { renameFn_ = std::move(r); }
+
 private:
   struct SymbolState { int64_t bid = kAbsent, ask = kAbsent; bool snapshotPending = true; };
 
@@ -349,9 +386,12 @@ private:
   void sealSegment(bool finalSeal);
   bool budgetAllows(uint64_t nextWriteBytes, uint64_t nowMs);
   void retire();
-  void scanSpool(uint64_t& sealedBytes, std::vector<std::pair<std::string, uint64_t>>& sealed) const;
+  void scanSpool(uint64_t& sealedBytes, std::vector<std::pair<std::string, uint64_t>>& sealed, uint64_t& tornBytes) const;
   bool writeRecord(const Record& r);
   void noteGap(GapReason reason, uint64_t count);
+  void loadLifetime();
+  void saveLifetime();
+  int doRename(const char* from, const char* to) { return renameFn_ ? renameFn_(from, to) : ::rename(from, to); }
 
   RecorderConfig cfg_;
   FreeSpaceProbe probe_;
@@ -385,6 +425,8 @@ private:
   uint64_t lastFsyncMs_ = 0, lastBudgetMs_ = 0;
   bool paused_ = false;
   bool wasRecording_ = false;
+  bool sealFailed_ = false;      // a seal step failed: the writer stops writing (ERROR)
+  std::function<int(const char*, const char*)> renameFn_;
   std::vector<uint8_t> buf_;
 
   // Shared counters (writer writes, status reads).

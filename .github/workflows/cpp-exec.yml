@@ -18,6 +18,8 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q g++ make libssl-dev libcurl4-openssl-dev
           make -C cpp-exec CXX=g++ -j$(nproc) test
           make -C cpp-exec CXX=g++ -j$(nproc) all
+      - name: Entrypoint delivers SIGTERM and does not SIGKILL (GW-1)
+        run: sudo sh cpp-exec/entrypoint-signal-test.sh
       - name: Threading tests under ThreadSanitizer
         run: make -C cpp-exec CXX=g++ -j$(nproc) tsan
       - uses: actions/setup-node@v4

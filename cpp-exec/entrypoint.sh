@@ -18,4 +18,13 @@ prepare() {
 }
 prepare "$TICK_SPOOL_PATH"
 [ -n "$TELEMETRY_PATH" ] && prepare "$(dirname "$TELEMETRY_PATH")"
-exec runuser -u appuser -- /usr/local/bin/cpp-exec "$@"
+# GW-1 (P8c item 2): setpriv, not runuser. runuser stays as the parent,
+# forwards SIGTERM, and SIGKILLs its child 2 s later (measured) — the SIGTERM
+# seal (src/term_seal.hpp) had 2 s at most, and a slow disk lost the tail.
+# setpriv changes the ids and EXECS: cpp-exec becomes this container's PID 1
+# and receives Railway's SIGTERM itself, with nothing in between to kill it.
+# CPP_EXEC_BIN / CPP_EXEC_USER exist for the CI shell test
+# (tests/entrypoint-signal.sh); unset, they are the production values.
+bin="${CPP_EXEC_BIN:-/usr/local/bin/cpp-exec}"
+user="${CPP_EXEC_USER:-appuser}"
+exec setpriv --reuid "$user" --regid "$(id -g "$user")" --init-groups -- "$bin" "$@"

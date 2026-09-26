@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 
@@ -62,10 +63,17 @@ uint64_t fileSize(const std::string& path) {
   return ::stat(path.c_str(), &sb) == 0 ? static_cast<uint64_t>(sb.st_size) : 0;
 }
 
-void fsyncDir(const std::string& dir) {
+// GW-1 (P8c item 6): the directory fsync that makes a rename durable
+// reports whether it worked.
+bool fsyncDir(const std::string& dir) {
   int fd = ::open(dir.c_str(), O_RDONLY);
-  if (fd >= 0) { ::fsync(fd); ::close(fd); }
+  if (fd < 0) return false;
+  const bool ok = ::fsync(fd) == 0;
+  ::close(fd);
+  return ok;
 }
+
+constexpr const char* kLifetimeFile = "/.recorder-lifetime.json";
 
 } // namespace
 
@@ -289,6 +297,40 @@ std::string base64Encode(const std::string& raw) {
 }
 
 // ---------------------------------------------------------------------------
+
+MountFacts probeMount(const std::string& dir) {
+  MountFacts m;
+  struct statfs sf{};
+  if (::statfs(dir.c_str(), &sf) != 0) return m;
+  const unsigned long long t = static_cast<unsigned long long>(sf.f_type);
+  switch (t) {
+    case 0x794c7630ULL: m.fsType = "overlay"; break;   // OVERLAYFS_SUPER_MAGIC
+    case 0xEF53ULL: m.fsType = "ext4"; break;          // ext2/3/4
+    case 0x58465342ULL: m.fsType = "xfs"; break;
+    case 0x01021994ULL: m.fsType = "tmpfs"; break;
+    case 0x9123683EULL: m.fsType = "btrfs"; break;
+    default: { char hex[24]; std::snprintf(hex, sizeof hex, "0x%llx", t); m.fsType = hex; }
+  }
+  m.kind = m.fsType == "overlay" ? "host_overlay" : "volume";
+  return m;
+}
+
+bool salvageSegment(const std::string& path, const std::string& sealedPath, size_t& records, std::string& why) {
+  records = 0;
+  const SegmentRead r = readSegment(path);
+  if (!r.headerOk) { why = "the header does not decode"; return false; }
+  struct stat sb{};
+  if (::lstat(sealedPath.c_str(), &sb) == 0) { why = "the sealed name already exists"; return false; }
+  records = r.records.size();
+  const off_t keep = static_cast<off_t>(kHeaderBytes + records * kRecordBytes);
+  const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+  if (fd < 0) { why = std::string("open: ") + std::strerror(errno); return false; }
+  if (::ftruncate(fd, keep) != 0) { why = std::string("truncate: ") + std::strerror(errno); ::close(fd); return false; }
+  if (::fsync(fd) != 0) { why = std::string("fsync: ") + std::strerror(errno); ::close(fd); return false; }
+  if (::close(fd) != 0) { why = std::string("close: ") + std::strerror(errno); return false; }
+  if (::rename(path.c_str(), sealedPath.c_str()) != 0) { why = std::string("rename: ") + std::strerror(errno); return false; }
+  return true;
+}
 
 bool statvfsProbe(const std::string& dir, uint64_t& availBytes, uint64_t& totalBytes) {
   struct statvfs sv{};
@@ -538,34 +580,118 @@ bool TickRecorder::start() {
     lockFd_ = -1;
     return fail("spool locked by another writer");
   }
-  // A torn tail from a crash is quarantined, never appended to: its complete
-  // records are still readable (readSegment stops at the first bad one) and
-  // the gap is recorded in the first new segment.
-  uint64_t torn = 0;
+  // A torn tail from a crash is never appended to. GW-1 (P8c item 5): it is
+  // SALVAGED — its header and every complete record whose checksum holds are
+  // kept, the torn tail is truncated, and the file is sealed under the
+  // recorder's own name so the keeper can list and retire it like any other
+  // segment. A ".torn" left by an older build is salvaged the same way. A
+  // file that cannot be salvaged (no readable header, a name clash, a failed
+  // step) stays ".torn": never deleted, and counted under the cap.
+  uint64_t torn = 0, salvaged = 0, salvagedRecords = 0, failures = 0;
+  std::vector<std::string> names;
   if (DIR* d = ::opendir(cfg_.spoolDir.c_str())) {
-    while (dirent* e = ::readdir(d)) {
-      const std::string name = e->d_name;
-      if (startsWith(name, "seg-") && endsWith(name, ".tks.open")) {
-        const std::string from = cfg_.spoolDir + "/" + name;
-        const std::string to = from.substr(0, from.size() - 5) + ".torn";
-        if (::rename(from.c_str(), to.c_str()) == 0) ++torn;
-      }
-    }
+    while (dirent* e = ::readdir(d)) names.emplace_back(e->d_name);
     ::closedir(d);
   }
+  std::sort(names.begin(), names.end());
+  for (const std::string& name : names) {
+    const bool open = startsWith(name, "seg-") && endsWith(name, ".tks.open");
+    const bool quarantined = startsWith(name, "seg-") && endsWith(name, ".tks.torn");
+    if (!open && !quarantined) continue;
+    if (open) ++torn; // an unclean end of the previous boot: the restart gap's count
+    const std::string from = cfg_.spoolDir + "/" + name;
+    const std::string sealedName = name.substr(0, name.size() - 5);
+    size_t kept = 0;
+    std::string why;
+    if (isSealedSegmentName(sealedName) && salvageSegment(from, cfg_.spoolDir + "/" + sealedName, kept, why)) {
+      ++salvaged;
+      salvagedRecords += kept;
+      continue;
+    }
+    if (why.empty()) why = "not a segment name this recorder writes";
+    // Reported by tornBytes, not as a write error of this boot: the file is
+    // the previous boot's, and it is on the mount inside the cap either way.
+    logError("salvage of " + name + " refused: " + why + " — kept as .torn and counted under the cap");
+    if (open) {
+      const std::string to = from.substr(0, from.size() - 5) + ".torn";
+      if (doRename(from.c_str(), to.c_str()) != 0) logError("cannot quarantine " + name + ": " + std::strerror(errno));
+    }
+  }
+  if (salvaged && !fsyncDir(cfg_.spoolDir)) ++failures;
   {
     std::lock_guard<std::mutex> lk(statsMtx_);
     st_.tornAtStart = torn;
+    st_.salvaged = salvaged;
+    st_.salvagedRecords = salvagedRecords;
+    st_.writeErrors += failures;
+    st_.mount = probeMount(cfg_.spoolDir);
     st_.state = "OFF";
     st_.reason.clear();
   }
   tornAtStart_ = torn;
-  restartGapPending_ = torn > 0;
+  // GW-1 (P8c item 4): EVERY boot's first record is GAP_RESTART, with the
+  // torn count in bid (0 when the previous boot sealed cleanly). A restart is
+  // a discontinuity whether or not a tail was torn: before this, a clean
+  // stop and start left no mark on disk at all.
+  restartGapPending_ = true;
+  loadLifetime();
+  {
+    std::lock_guard<std::mutex> lk(statsMtx_);
+    st_.lifetimeBoots++;
+    st_.lifetimeSalvaged += salvaged;
+    st_.lifetimeTornFound += torn;
+  }
   retire();
+  saveLifetime();
   stop_.store(false);
   started_.store(true);
   writer_ = std::thread([this] { writerLoop(); });
   return true;
+}
+
+void TickRecorder::loadLifetime() {
+  const std::string path = cfg_.spoolDir + kLifetimeFile;
+  std::FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return;
+  std::string text;
+  char buf[512];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0 && text.size() < 8192) text.append(buf, n);
+  std::fclose(f);
+  auto v = jsn::parse(text);
+  if (!v || !v->isObject()) { logError("lifetime counters unreadable at " + path + " — starting them from zero"); return; }
+  std::lock_guard<std::mutex> lk(statsMtx_);
+  st_.lifetimeLoaded = true;
+  st_.lifetimeBoots = static_cast<uint64_t>(v->get("boots").asNumber(0));
+  st_.lifetimeSealed = static_cast<uint64_t>(v->get("sealed").asNumber(0));
+  st_.lifetimeRetired = static_cast<uint64_t>(v->get("retired").asNumber(0));
+  st_.lifetimeSalvaged = static_cast<uint64_t>(v->get("salvaged").asNumber(0));
+  st_.lifetimeTornFound = static_cast<uint64_t>(v->get("tornFound").asNumber(0));
+}
+
+void TickRecorder::saveLifetime() {
+  jsn::Value v{jsn::Object{}};
+  {
+    std::lock_guard<std::mutex> lk(statsMtx_);
+    v.set("boots", static_cast<double>(st_.lifetimeBoots));
+    v.set("sealed", static_cast<double>(st_.lifetimeSealed));
+    v.set("retired", static_cast<double>(st_.lifetimeRetired));
+    v.set("salvaged", static_cast<double>(st_.lifetimeSalvaged));
+    v.set("tornFound", static_cast<double>(st_.lifetimeTornFound));
+  }
+  v.set("updatedAtMs", static_cast<double>(nowMs()));
+  const std::string text = jsn::dump(v);
+  const std::string path = cfg_.spoolDir + kLifetimeFile;
+  const std::string tmp = path + ".tmp";
+  bool ok = false;
+  if (std::FILE* f = std::fopen(tmp.c_str(), "wb")) {
+    ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+    ok = std::fflush(f) == 0 && ok;
+    ok = ::fsync(fileno(f)) == 0 && ok;
+    ok = std::fclose(f) == 0 && ok;
+    ok = ok && ::rename(tmp.c_str(), path.c_str()) == 0;
+  }
+  if (!ok) { std::lock_guard<std::mutex> lk(statsMtx_); st_.writeErrors++; }
 }
 
 void TickRecorder::stop() {
@@ -644,7 +770,9 @@ Record TickRecorder::onQuote(long long symbolId, bool hasBid, long long bid, boo
     if (ss.windowStartMs == 0 || recvMs - ss.windowStartMs >= 10000) { ss.windowStartMs = recvMs; ss.windowEvents = 0; }
     ss.windowEvents++;
   }
-  if (!recording_.load(std::memory_order_relaxed)) { skippedOff_.fetch_add(1); return r; }
+  // After stop() nothing more enters the ring, so the writer's final drain
+  // ends even while the feed is still delivering (GW-1: the SIGTERM seal).
+  if (!recording_.load(std::memory_order_relaxed) || stop_.load(std::memory_order_relaxed)) { skippedOff_.fetch_add(1); return r; }
   if (!ring_.push(r)) { dropped_.fetch_add(1); pendingOverflow_.fetch_add(1); }
   return r;
 }
@@ -683,13 +811,17 @@ bool TickRecorder::budgetAllows(uint64_t nextWriteBytes, uint64_t now) {
   return ok;
 }
 
-void TickRecorder::scanSpool(uint64_t& sealedBytes, std::vector<std::pair<std::string, uint64_t>>& sealed) const {
+void TickRecorder::scanSpool(uint64_t& sealedBytes, std::vector<std::pair<std::string, uint64_t>>& sealed, uint64_t& tornBytes) const {
   sealedBytes = 0;
+  tornBytes = 0;
   sealed.clear();
   DIR* d = ::opendir(cfg_.spoolDir.c_str());
   if (!d) return;
   while (dirent* e = ::readdir(d)) {
     const std::string name = e->d_name;
+    // GW-1 (P8c item 5): a torn file start() could not salvage is on the
+    // mount and inside the cap's arithmetic, though retention never deletes it.
+    if (startsWith(name, "seg-") && endsWith(name, ".tks.torn")) { tornBytes += fileSize(cfg_.spoolDir + "/" + name); continue; }
     if (!startsWith(name, "seg-") || !endsWith(name, ".tks")) continue;
     const std::string path = cfg_.spoolDir + "/" + name;
     const uint64_t size = fileSize(path);
@@ -701,23 +833,33 @@ void TickRecorder::scanSpool(uint64_t& sealedBytes, std::vector<std::pair<std::s
 }
 
 void TickRecorder::retire() {
-  uint64_t sealedBytes = 0;
+  uint64_t sealedBytes = 0, tornBytes = 0;
   std::vector<std::pair<std::string, uint64_t>> sealed;
-  scanSpool(sealedBytes, sealed);
-  uint64_t retired = 0;
+  scanSpool(sealedBytes, sealed, tornBytes);
+  uint64_t retired = 0, failed = 0;
   // Only sealed segments this recorder's naming pattern owns; never the open
   // one, never a torn one (an operator may still want it), never anything
-  // else on the mount.
+  // else on the mount. GW-1: the torn bytes count toward the cap, so a spool
+  // carrying an unsalvageable file retires that much more of its oldest.
   for (const auto& [path, size] : sealed) {
-    if (sealedBytes + openBytes_ <= cfg_.spoolCapBytes) break;
+    if (sealedBytes + tornBytes + openBytes_ <= cfg_.spoolCapBytes) break;
     if (::unlink(path.c_str()) == 0) { sealedBytes -= size; ++retired; }
+    else { ++failed; logError("retire of " + path + " failed: " + std::strerror(errno)); }
   }
-  std::lock_guard<std::mutex> lk(statsMtx_);
-  st_.sealedBytes = sealedBytes;
-  st_.segmentsRetired += retired;
+  {
+    std::lock_guard<std::mutex> lk(statsMtx_);
+    st_.sealedBytes = sealedBytes;
+    st_.tornBytes = tornBytes;
+    st_.segmentsRetired += retired;
+    st_.lifetimeRetired += retired;
+    st_.retireFailures += failed;
+    st_.writeErrors += failed;
+  }
+  if (retired) saveLifetime();
 }
 
 bool TickRecorder::openSegment(uint64_t now) {
+  if (sealFailed_) return false; // a failed seal stops the writer: nothing is written until a restart
   retire(); // make room under the cap before adding to it
   if (!budgetAllows(cfg_.segmentBytes, now)) return false;
   char name[96];
@@ -745,11 +887,14 @@ bool TickRecorder::openSegment(uint64_t now) {
   openBytes_ = kHeaderBytes;
   lastFsyncMs_ = now;
   if (restartGapPending_) {
-    // The discontinuity a crash left behind, first thing in the first segment.
+    // The restart itself, first thing in the boot's first segment; bid is
+    // how many tails the previous boot left torn (0 = it sealed cleanly).
     restartGapPending_ = false;
     Record g;
     g.recvMs = now;
-    g.seq = seq_.load(std::memory_order_relaxed);
+    // seq 0: the marker precedes every record of this boot (the feed's seq
+    // starts at 1), so a reader's per-boot seq order holds from the first record.
+    g.seq = 0;
     g.kind = GAP;
     g.bid = static_cast<int64_t>(tornAtStart_);
     g.ask = GAP_RESTART;
@@ -768,29 +913,54 @@ bool TickRecorder::openSegment(uint64_t now) {
 
 void TickRecorder::sealSegment(bool finalSeal) {
   if (!out_) return;
+  // GW-1 (P8c item 6): every step's return code is checked. Before, a failed
+  // fsync, fclose or rename was silent and the segment was counted sealed.
+  std::string failed;
   if (!buf_.empty()) {
-    if (std::fwrite(buf_.data(), 1, buf_.size(), out_) != buf_.size()) { std::lock_guard<std::mutex> lk(statsMtx_); st_.writeErrors++; }
+    if (std::fwrite(buf_.data(), 1, buf_.size(), out_) != buf_.size()) failed = "write: " + std::string(std::strerror(errno));
     buf_.clear();
   }
-  std::fflush(out_);
-  ::fsync(fileno(out_));
-  std::fclose(out_);
+  if (std::fflush(out_) != 0 && failed.empty()) failed = "flush: " + std::string(std::strerror(errno));
+  if (::fsync(fileno(out_)) != 0 && failed.empty()) failed = "fsync: " + std::string(std::strerror(errno));
+  if (std::fclose(out_) != 0 && failed.empty()) failed = "close: " + std::string(std::strerror(errno));
   out_ = nullptr;
   // The atomic rename is what makes a segment "sealed": a reader never sees
-  // a half-written .tks, and a crash leaves a .open that start() quarantines.
-  if (::rename(openPath_.c_str(), sealedPath_.c_str()) == 0) fsyncDir(cfg_.spoolDir);
+  // a half-written .tks, and a crash leaves a .open that start() salvages.
+  if (failed.empty()) {
+    if (doRename(openPath_.c_str(), sealedPath_.c_str()) != 0) failed = "rename: " + std::string(std::strerror(errno));
+    else if (!fsyncDir(cfg_.spoolDir)) failed = "directory fsync: " + std::string(std::strerror(errno));
+  }
+  if (!failed.empty() && failed.rfind("directory fsync", 0) != 0) {
+    // Not sealed. The ".open" stays for the next start() to salvage, and the
+    // writer stops in a controlled way: ERROR, not RECORDING, so the firer
+    // refuses tick entries (TM-40) and the keeper's readiness sees it.
+    sealFailed_ = true;
+    logError("seal of " + openPath_ + " failed (" + failed + ") — recording stops; the next start salvages the file");
+    std::lock_guard<std::mutex> lk(statsMtx_);
+    st_.sealFailures++;
+    st_.writeErrors++;
+    st_.openBytes = 0;
+    st_.state = "ERROR";
+    st_.reason = "seal failed: " + failed;
+    openBytes_ = 0;
+    return;
+  }
   {
     std::lock_guard<std::mutex> lk(statsMtx_);
+    if (!failed.empty()) st_.writeErrors++; // sealed, but the rename may not be durable yet
     st_.segmentsSealed++;
+    st_.lifetimeSealed++;
     st_.openBytes = 0;
   }
   openBytes_ = 0;
   retire();
+  saveLifetime();
   (void)finalSeal;
 }
 
 bool TickRecorder::writeRecord(const Record& r) {
   const uint64_t now = nowMs();
+  if (sealFailed_) { std::lock_guard<std::mutex> lk(statsMtx_); st_.pausedDrops++; return false; } // stopped after a failed seal
   if (!out_ && !openSegment(now)) {
     if (!paused_) { paused_ = true; std::lock_guard<std::mutex> lk(statsMtx_); st_.state = "PAUSED_RESERVE"; }
     std::lock_guard<std::mutex> lk(statsMtx_);
@@ -861,7 +1031,7 @@ void TickRecorder::writerLoop() {
       }
       wasRecording_ = rec;
       std::lock_guard<std::mutex> lk(statsMtx_);
-      if (rec && !paused_) st_.state = "RECORDING";
+      if (rec && !paused_ && !sealFailed_) st_.state = "RECORDING";
       if (!rec && !stop_.load()) st_.state = "OFF";
     }
     if (rec) {
@@ -887,7 +1057,8 @@ void TickRecorder::writerLoop() {
     }
     {
       std::lock_guard<std::mutex> lk(statsMtx_);
-      if (rec && !paused_ && st_.usagePct >= cfg_.warnPct && st_.usagePct >= 0) st_.state = "WARN";
+      if (sealFailed_) { /* stays ERROR */ }
+      else if (rec && !paused_ && st_.usagePct >= cfg_.warnPct && st_.usagePct >= 0) st_.state = "WARN";
       else if (rec && !paused_ && st_.state == "WARN") st_.state = "RECORDING";
     }
     if (flushRequested_.load() && ring_.empty()) flushRequested_.store(false);
@@ -1000,6 +1171,13 @@ std::string TickRecorder::statusJson() const {
   seg.set("openBytes", static_cast<double>(s.openBytes));
   seg.set("retired", static_cast<double>(s.segmentsRetired));
   seg.set("tornAtStart", static_cast<double>(s.tornAtStart));
+  // GW-1 (P8c items 5-6): what start() salvaged, the torn bytes still on
+  // the mount (inside the cap), and the failed seal/retire steps.
+  seg.set("salvaged", static_cast<double>(s.salvaged));
+  seg.set("salvagedRecords", static_cast<double>(s.salvagedRecords));
+  seg.set("tornBytes", static_cast<double>(s.tornBytes));
+  seg.set("sealFailures", static_cast<double>(s.sealFailures));
+  seg.set("retireFailures", static_cast<double>(s.retireFailures));
   seg.set("segmentBytes", static_cast<double>(cfg_.segmentBytes));
   seg.set("spoolCapBytes", static_cast<double>(cfg_.spoolCapBytes));
   seg.set("writeErrors", static_cast<double>(s.writeErrors));
@@ -1011,7 +1189,20 @@ std::string TickRecorder::statusJson() const {
   disk.set("usagePct", static_cast<double>(s.usagePct));
   disk.set("warnPct", static_cast<double>(cfg_.warnPct));
   disk.set("stopPct", static_cast<double>(cfg_.stopPct));
+  // GW-1 (P8c item 8): whether these usage figures are a volume's or the
+  // host overlay's (the WARN band above reads whichever it is).
+  disk.set("mount", s.mount.kind);
+  disk.set("fsType", s.mount.fsType.empty() ? jsn::Value(nullptr) : jsn::Value(s.mount.fsType));
   v.set("disk", std::move(disk));
+  // GW-1 (P8c item 9): the spool's own lifetime counters (R1).
+  jsn::Value life{jsn::Object{}};
+  life.set("loaded", s.lifetimeLoaded);
+  life.set("boots", static_cast<double>(s.lifetimeBoots));
+  life.set("sealed", static_cast<double>(s.lifetimeSealed));
+  life.set("retired", static_cast<double>(s.lifetimeRetired));
+  life.set("salvaged", static_cast<double>(s.lifetimeSalvaged));
+  life.set("tornFound", static_cast<double>(s.lifetimeTornFound));
+  v.set("lifetime", std::move(life));
   v.set("limits", limitsValue(cfg_, s, true));
   jsn::Value q{jsn::Object{}};
   q.set("capacityRecords", static_cast<double>(ring_.capacity()));

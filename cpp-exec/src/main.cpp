@@ -37,6 +37,7 @@
 #include "log.hpp"
 #include "spot_feed.hpp"
 #include "telemetry.hpp"
+#include "term_seal.hpp"
 #include "trail_engine.hpp"
 #include "vpo_config_store.hpp"
 #include "vpo_dispatcher.hpp"
@@ -146,6 +147,12 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  // GW-1 (P8c item 1): SIGTERM and SIGINT are blocked HERE, before the
+  // first thread (the telemetry writer, just below) exists, so every thread
+  // inherits the mask and only the watcher started after the recorder takes
+  // them — to seal the spool and exit 143 (term_seal.hpp).
+  if (!term_seal::blockTermSignals()) logError("cannot block SIGTERM/SIGINT — a redeploy will not seal the tick spool");
+
   bool ok = true;
   // The ONLY required env var. Broker credentials are pushed at runtime by
   // the Node keeper via POST /connect — the access token and account id live
@@ -237,6 +244,27 @@ int main(int argc, char** argv) {
   } else {
     logInfo("TICK_SPOOL_PATH not set — tick recorder disabled");
   }
+  if (tickRecorder && tickRecorder->started()) {
+    // GW-1 (P8c item 8): what the disk figures (and the WARN band that stops
+    // the firer) are measuring. Reported only; the gating is unchanged.
+    const tick::MountFacts mf = tickRecorder->stats().mount;
+    const tick::RecorderStats rs0 = tickRecorder->stats();
+    (mf.kind == "host_overlay" ? logError : logInfo)(
+        "tick recorder: the spool is on " + (mf.kind == "host_overlay" ? std::string("the HOST OVERLAY (") + mf.fsType + ") — nothing on it survives a redeploy, and the usage bands read the host's disk"
+                                                                        : std::string("a mounted filesystem (") + (mf.fsType.empty() ? std::string("unknown") : mf.fsType) + ")") +
+        "; start: " + std::to_string(rs0.tornAtStart) + " torn tail(s), " + std::to_string(rs0.salvaged) + " salvaged (" +
+        std::to_string(rs0.salvagedRecords) + " record(s)), " + tick::describeBytes(rs0.tornBytes) + " left torn; this boot's first record will be GAP_RESTART");
+  }
+  // GW-1 (P8c item 1): the SIGTERM seal. Railway sends SIGTERM on every
+  // redeploy; the watcher stops the recorder (the writer drains its queue,
+  // fsyncs and renames the open segment) and exits 128 + signal (143).
+  term_seal::startTermWatcher([&tickRecorder](int sig) {
+    const auto t0 = std::chrono::steady_clock::now();
+    logInfo(std::string(sig == SIGTERM ? "SIGTERM" : "SIGINT") + " received — sealing the tick spool, then exiting " + std::to_string(128 + sig));
+    if (tickRecorder) tickRecorder->stop();
+    const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    logInfo(std::string("shutdown: ") + (tickRecorder ? "tick spool sealed" : "no tick recorder") + " in " + std::to_string(ms) + " ms");
+  });
   // P3b: the symbol workers (plan §8, TM-22/TM-23) — TICK_WORKERS threads
   // (default 2), each owning a fixed shard of symbols, fed the same
   // classified observation the recorder saw. No strategy consumes them yet
@@ -581,7 +609,8 @@ int main(int argc, char** argv) {
     return v;
   });
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim, &tickFirer, &tickUniverse](const HttpRequest& req) -> HttpResponse {
+  const std::string gitCommit = envOr("RAILWAY_GIT_COMMIT_SHA", "");
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, gitCommit, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim, &tickFirer, &tickUniverse](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -721,6 +750,12 @@ int main(int argc, char** argv) {
         tj.set("segmentsSealed", static_cast<double>(ts.segmentsSealed));
         tj.set("sealedBytes", static_cast<double>(ts.sealedBytes));
         tj.set("openBytes", static_cast<double>(ts.openBytes));
+        // GW-1 (P8c items 5 and 8): torn bytes inside the cap, this boot's
+        // salvage, and whether the disk figures are a volume's or the host's.
+        tj.set("tornBytes", static_cast<double>(ts.tornBytes));
+        tj.set("tornAtStart", static_cast<double>(ts.tornAtStart));
+        tj.set("salvaged", static_cast<double>(ts.salvaged));
+        tj.set("mount", ts.mount.kind);
         tj.set("diskAvailBytes", static_cast<double>(ts.diskAvailBytes));
         tj.set("usagePct", static_cast<double>(ts.usagePct));
         // GW-CAP: the cap and reserve in force and where each came from.
@@ -804,6 +839,10 @@ int main(int argc, char** argv) {
     v.set("decisionsSeq", static_cast<double>(decisionRing.latestSeq()));
     v.set("bootId", decisionRing.bootId());
     v.set("startedAtMs", static_cast<double>(startedAtMs));
+    // GW-1 (P8c item 7, TM-37; owner OD-21 "show the web and agent
+    // commits"): the build this gateway runs, from Railway's own variable;
+    // null outside Railway. runtime-manifest.js sidecarFacts reads it.
+    v.set("commit", gitCommit.empty() ? jsn::Value(nullptr) : jsn::Value(gitCommit));
     if (peerProbe.enabled()) {
       jsn::Value pj{jsn::Object{}};
       pj.set("ok", peerProbe.peerOk());
@@ -1637,7 +1676,8 @@ int main(int argc, char** argv) {
     return handleBacktest(req.body);
   });
 
-  logInfo("starting on port " + std::to_string(port));
+  logInfo("starting on port " + std::to_string(port) + " — commit " + (gitCommit.empty() ? std::string("unknown (RAILWAY_GIT_COMMIT_SHA not set)") : gitCommit) +
+          ", boot " + decisionRing.bootId());
   const bool served = server.run();
 
   // Audit C3. server.run() returning is not the only way out of this process,
