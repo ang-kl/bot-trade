@@ -247,18 +247,37 @@ This wave has up to seven merges, so up to seven more Node restarts. Crypto keep
 
 ### Wave 1 actuals (merged 26-09-2026)
 
-| Row | PR | Item | Proof recorded |
-|---|---|---|---|
-| 1.1 | #1147 | W1.1 | NEW-1/SAFE-0a landed as planned |
-| 1.2 | #1148 | W1.2 | UI-1 + PERF-1: collapse control, section ids and reserved heights shipped; the CLS proof itself is **Failed** (see below) |
-| 1.3 | #1149 | W1.6 | UI-2 + UI-3 |
-| 1.4 | #1150 | W1.4 | UI-4 + UI-7 |
-| 1.5 | #1151 | W1.7 | UI-6 + PERF-2 + F3 |
-| — | #1152 | history follow-up | Correction to the BTCUSD history-depth read that fed the UI-6 acceptance work — not its own row above, folded in beside it |
-| 1.6 | #1153 | W1.3 | S-1 + S-3 |
-| 1.7 | #1154 | W1.5 | F1 + F4 + F5's N6 + PO-M3 |
+**Corrected 26-09 21:30 SGT.** The first version of this table (written with W1-FU) paired four rows with the wrong PR: rows are the W-labels, and #1149 is W1.6, not row 1.3. The mapping below is read from the merge commits on `main`.
 
-**Row 1.2's Reasons CLS proof: Failed.** Production traces after W1 (scripts/perf-trace, desktop profile) showed `/reasons` at CLS 0.74, against a 0.76→? target read before the wave — a real improvement over the pre-W1 baseline, but still one 0.70 shift at ~2.65s hitting three glass-panel `p-3` cards, not the passing figure the row's proof line implied. The phone profile read 0.55. W1.5 also moved every Reasons table onto the shared DataTable, which grew the page from 5,357 to 8,904 DOM elements — a second, unmeasured cost the row's own proof did not anticipate. **W1-FU** (this change) addresses both: Card ids + `loading`/`defaultCollapsed` wiring and the opt-in `lazy` mount (so the extra DOM only exists once a card is actually opened), plus folding Trade consistency into Ledger integrity per the owner's 26-09 18:05 SGT order.
+| Row | PR | Items | Merged (UTC / SGT) | Proof recorded |
+|---|---|---|---|---|
+| 1.1 | #1147 | NEW-1 + SAFE-0a (+ this checked plan and the roadmap) | 07:16Z / 15:16 | Landed as planned |
+| 1.2 | #1148 | UI-1 + PERF-1 + PERF-2 | 07:34Z / 15:34 | Performance CLS passed (desktop 0.70→0.23, phone 0.78→0.12). **Reasons CLS Failed** (0.76→0.74 desktop, 0.59→0.55 phone) — closed by W1-FU |
+| 1.6 | #1149 | S-1 + S-3 | 08:00Z / 16:00 | Read back: arming rows appended; picker ranks by armed strategies |
+| 1.4 | #1150 | UI-4 + UI-7 | 08:12Z / 16:12 | Read back: web and agent commits match; the AI page reads "off" |
+| 1.7 | #1151 | F1 + F4 + F5-N6 + PO-M3 | 08:33Z / 16:33 | Read back: the `tick_feeder` heartbeat; closers defer (inert, 0 plans) |
+| — | #1152 | Follow-up to #1149 | 08:54Z / 16:54 | BTCUSD history: monthly series starts July 2010; the "weekly starts 2018" reading was a false positive |
+| 1.3 | #1153 | UI-2 + UI-3 | 09:21Z / 17:21 | 6 h and 24 h Blockers group by day; **72 h fell back to the flat list** (24,692 records > 512 KB) — closed by W1-FU |
+| 1.5 | #1154 | UI-6 + F3 (+ ledger write-back) | 09:34Z / 17:34 | Reasons reordered on the shared table. **Its DOM grew 5,357 → 8,904 elements** — closed by W1-FU |
+| FU | #1157 | W1-FU | 12:21Z / 20:21 | See below |
+
+Wave 1 was planned to end Sun 27-09 20:00Z; its last row merged Sat 26-09 09:34Z, **about 34 h early**. Nine Node restarts; every read-back showed 0 errors and all positions protected.
+
+**W1-FU (#1157, 12:21Z)** — the three read-back gaps above:
+- The card standard on Reasons: ids, `loading`, `defaultCollapsed` after the first two, and an opt-in `lazy` mount (maximise also mounts). Trade consistency folded into Ledger integrity (owner, 26-09 18:05 SGT).
+- The Blockers 72 h window: **Passed on production at 12:40Z** — `daysIncomplete: false`, 4 day groups, 426 KB (6 h: 1 day, 24 h: 2 days).
+- The trace harness: a discarded warm-up per profile; a null run reports "not measured".
+- Reasons CLS and element count after W1-FU: traced 12:46–13:02Z on `e751b15` (median of 3 runs after a discarded warm-up).
+
+  | Page · profile | Before W1.2 | After W1.5 | After W1-FU | Target | Result |
+  |---|---|---|---|---|---|
+  | Reasons · desktop CLS | 0.76 | 0.74 | **0.53** | ≤ 0.25 | **Failed** (improved) |
+  | Reasons · phone CLS | 0.59 | 0.55 | **0.46** | ≤ 0.25 | **Failed** (improved) |
+  | Reasons elements | 5,357 | 8,904 | **2,936** | ≤ 5,400 | **Passed** |
+  | Performance · desktop CLS | 0.70 | 0.23 | **0.19** | not worse | Passed |
+  | Performance · phone CLS | 0.78 | 0.12 | **0.08** | not worse | Passed |
+
+  LCP medians rose on all four page/profile pairs (Performance desktop 1,123 → 3,860 ms, phone 4,864 → 6,351; Reasons desktop 2,374 → 7,507, phone 7,787 → 9,624). **The cause is not attributed.** Performance does not opt into `lazy`. The agent loop measured 36 s at 12:40Z, and the runs now discard a warm-up, so the old and new figures are not strictly comparable. Next: a second Reasons follow-up for the remaining shift, and a same-hour A/B trace to attribute the LCP rise.
 
 ### Wave 2 — Monday 28-09 01:00–13:00Z, then T4 on Tuesday
 
@@ -273,6 +292,28 @@ This wave has up to seven merges, so up to seven more Node restarts. Crypto keep
 | 2.7 | **T4**, Tue 29-09 | Item 32, plus a named refusal (with its test and mutation) for a closed-market momentum entry. Merges after S-2's Monday read-back, outside the P1/P4 window. Read-back: `/state/momentum-targets` wiring reads "wired" | **OD-1, OD-3**; **OD-15** for HTF limits; after 1.6, 1.7, 2.1 |
 
 **Stop merging at 13:00Z.** **The P1/P4 window: Mon 13:30–16:00Z, plus a US-closed hour around 20:00Z.** No merges except one intended restart (OD-4); no traces; you keep Desk and Performance visible.
+
+### Wave 2 pre-build status (26-09 21:30 SGT)
+
+The owner answered OD-41 yes (pre-build) and accepted the recommended answers to OD-2, OD-3, OD-6, OD-7, OD-10, OD-11, OD-12, OD-14 and OD-22. OD-4 was confirmed as proposed. OD-1 and OD-15 are still open, so T4 is draft only. Each row went maker → independent check → fix round → re-check. **Nothing in Wave 2 merges before Mon 28-09 01:00Z.** Merges go one at a time, each read back, in the order 2.1 → 2.4 → 2.3 → the rest.
+
+| Row | Branch head | Independent check | PR / CI | Ready for Monday? |
+|---|---|---|---|---|
+| 2.1 S-2 + F2 + F6 | `claude/w2-s2-book` `5d1f4a4` | MERGE (two re-checks). Fixed on the way: a MARKET_CLOSED refusal could park an owed exit for ~151 h; it now retries after 30 min, capped at 2 h | Draft #1158, CI green | Yes |
+| 2.2 C8 → C9 | `claude/w2-c8-c9` `f9e566e` | **FIX FIRST.** C8 is correct. In C9 the restart quarantine lifts without a reconcile once `expireStale` runs. This is dormant (no account admits tick). Fix round running | — | Likely. C8 needs the owner's word on its live change (below) |
+| 2.3 CV-2 | `claude/w2-cv2` `88d3dd8` | MERGE | Draft #1155, CI green | Yes |
+| 2.4 K3 + SAFE-0b | `claude/w2-k3-safe0b` `44e1d41` | MERGE | Draft #1156, CI green | Yes |
+| 2.5 M7 | `claude/w2-m7` `a73efbb` | MERGE (two re-checks). Fixed: a stale broker quote was evaluated under backoff; the cap starved positions on a down feed; the cap could be 0; plus a pre-existing late-stream socket leak | Draft #1159, CI pending | Yes |
+| 2.6 B2b + UI-5 | `claude/w2-b2b-ui5` `3367b0f` | Named corrections: MERGE after a fix round (absolute values with `expectedOld`; #47 removed; the apply takes only the ids a dry run showed). **The rest of the row** (re-stamp fix, gross-P&L consistency, refusal-time window, plan flags) **is being built now** | — | **At risk.** The named apply is a production write: the owner sees the dry-run list first |
+| 2.7 T4 | `claude/w2-t4` `699aace` | **MERGE-WHEN-ANSWERED**: with the switch off (`momentum-entries.json` `market: false`) nothing changes live; two test gaps in a nit round | — | Draft only until OD-1 and OD-15; Tue 29-09 after S-2's read-back |
+
+**Owner questions raised by the checks** (none merges without its answer):
+- **C8 changes live trading on merge.** Since #939 the book cap counted only working limit orders, because it read a column that does not exist. From Monday a third account is vetoed on any symbol and side two other accounts already hold. This applies on the bar, book, limit and manual routes. The two slots go to the accounts with the most headroom. The bar fan-out still sizes at R/N over the accounts that passed the pre-filter, so with 7 accounts a signal's book exposure drops from R to 2R/7. Questions: accept? Exempt `cross_sectional_book`? Rotate the slots, as the tick grants do?
+- **M7:** one pass can open up to 8 authed broker sockets at once, and nothing paces them. Should they be paced?
+- **S-2:** should the ranking also leave the scan branch? Should the exits and the trail run for held rows on accounts where tsmom isn't armed (…0949's 10)? Does OD-2 cover F2 on the 3 live accounts?
+- **CV-2:** does the rest of item 26 go in this PR or the next? Should delivery stay muted after the soak until an explicit unmute?
+- **K3:** what does an omitted bound mean? Should the account comparison refuse a proposal that has no account?
+- **T4:** OD-1 (when, and for which accounts; there is no per-account scope yet). OD-15. The closed-market refusal live now while the switch stays off? The swap-rate assumptions (a missing rate is refused; a missing `swapCalculationType` is read as PIPS).
 
 ### Wave 3 — Mon 16:00Z → Wed 30-09
 
@@ -301,6 +342,8 @@ This wave has up to seven merges, so up to seven more Node restarts. Crypto keep
 ---
 
 ## §6 ONE decision register
+
+**Answered 26-09 ~18:05 SGT (owner, recorded 21:30 SGT):** OD-41 yes (pre-build); the recommended answers to OD-2, OD-3, OD-6, OD-7, OD-10, OD-11, OD-12, OD-14 and OD-22; OD-4 as proposed (window Mon 13:30–16:00Z plus ~20:00Z, the 10 % skip share joins, both tabs visible, goal table off); Trade consistency folds into Ledger integrity. **Still open and blocking dated work:** OD-1 and OD-15 (T4), OD-8 (S-8), OD-9 and OD-16 (S-4/S-5), OD-20 (UI-8), OD-23 (C5), OD-24 (Q2). The recommendations in the table below are unchanged.
 
 Most-blocking first, OD-0 at the top. "Default" means built on a draft branch and merged only on your word. The pre-order decisions are OD-1, OD-15, OD-39 and §4's ASK-FIRST list. OD-9's fib scoring follows OD-5(B).
 
@@ -372,6 +415,28 @@ Most-blocking first, OD-0 at the top. "Default" means built on a draft branch an
 | fib shadow verdict | — | New; not datable |
 | P8 T2 first retire | demo 03-10, live 05-10 | Live about 25-10 to 01-11. Demo no earlier than about late January 2027 (§2) |
 | Momentum checkpoint | 19-12 | Unchanged |
+
+### Progress and on-track verdict (26-09 21:30 SGT)
+
+**Verdict: the build is on track through Monday. The whole of V3 is not yet on track, because Wave 3 has not started and is gated on answers that are not in.**
+
+| Stage | Planned | Actual / now | On track? |
+|---|---|---|---|
+| Wave 1 (7 rows) | Sat 26 → Sun 27-09 20:00Z | All 7 merged Sat 07:16–09:34Z, plus #1152 and W1-FU #1157 (12:21Z). **About 34 h early** | **Done.** One proof is still open: Reasons CLS (below) |
+| Wave 2 (7 rows) | Mon 28-09 01:00–13:00Z | 4 rows ready as draft PRs with green CI or checks passed (2.1, 2.3, 2.4, 2.5). 2.2 is in its fix round. 2.6 is half built. 2.7 is draft-only | **On track** for 2.1–2.5. **At risk:** 2.6, whose second half is being built tonight. T4 needs OD-1 and OD-15 |
+| P1/P4 window | Mon 13:30–16:00Z + ~20:00Z | OD-4 confirmed | On track if merges stop at 13:00Z |
+| Wave 3 (GW-1, S-8, S-4/S-5, W3, C5, UI-8, B5, Q2, PO-M2) | Mon 16:00Z → Wed 30-09 | **Not started** | **At risk.** S-8 has a hard deadline of Wed 30-09 ~15:00Z (HKEX holiday 01-10). GW-1 needs a gateway window. The open answers are OD-8, OD-9, OD-16, OD-20, OD-23 and OD-24 |
+| "All merged" (V3 build) | Mon 28-09 ≈12:50Z (v2.2) → revised Wed 30-09 | — | **Wed 30-09 is reachable** only if Wave 3's answers arrive by Mon 01:00Z and GW-1 and S-8 are pre-built this weekend |
+| V3 acceptance (evidence, not code) | P5a soak Tue 29-09; P2 weekends 02–05-10 and the DST weekends 25-10 / 01-11; P6/P7 stage A 30-09–02-10; P8 live retire ~25-10–01-11; demo retire not before ~late Jan 2027; momentum checkpoint 19-12 | Unchanged | These are calendar-bound. No build speed moves them (*inference*, as in §7) |
+
+**What is behind, and why:**
+- **Reasons CLS.** After W1-FU it is still above the row 1.2 target of ≤ 0.25. A second fix is needed; figures in the Wave 1 actuals.
+- **Row 2.6 was only half built.** The first build covered the named corrections only.
+- **C9's restart quarantine.** It is dormant today, but its safety hold could lift without a reconcile. It is in a fix round.
+
+**What keeps the whole plan on track:**
+1. Pre-build GW-1 and S-8 on draft branches this weekend (OD-6 and OD-7 are answered; S-8 uses OD-8's recommended default until it is answered).
+2. The answers to OD-1, OD-8, OD-9, OD-15, OD-16, OD-20, OD-23 and OD-24 by Mon 01:00Z, plus C8's live-change question (§5 Wave 2 status).
 
 ---
 
