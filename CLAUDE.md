@@ -1313,3 +1313,22 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   reply is **`№ 9,516`** plus any unstamped line made after this ledger. The
   count is by replies, not by stamps. A later re-measure that reads below this
   line is missing these, not correcting them.
+
+- 2026-09-26 07:05 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule; the container restarted ~04:49 UTC in between): the script
+  reads this container's transcript only and was refused as a reading. From
+  `№ 9,516` the replies ran on by count through K1c #1141, WEB-8b #1142, B4b
+  #1144 and B4c #1145 (merged and read back), the owner-request plan (#1143,
+  merged by the owner at 04:46 UTC), the "150 bars is ours, not cTrader's"
+  correction `№ 9,572`, the integrated plan's draft `№ 9,596`, the model and
+  budget answer `№ 9,602`, the 13:10 SGT daily report `№ 9,614`, the Wave 1
+  start `№ 9,619` (the owner: "I thought the plan is approved"), the report of
+  the diverted first Wave 1 run `№ 9,625`, and the inventory `walk()` fix
+  `№ 9,636` (14:40 SGT). One reply is not in the transcript as text: `№ 9,628`
+  (the 14:29 SGT interval report, sent beside a tool call); it is counted by
+  replies made, not by what the file captured. Two unstamped lines followed
+  `№ 9,636` (W1.1's PR prepared; its stale index restored), so the last reply
+  before this ledger is **`№ 9,638`** and the next stamped reply is
+  **`№ 9,639`** plus any unstamped line made after this ledger. The count is
+  by replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.

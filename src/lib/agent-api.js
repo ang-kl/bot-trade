@@ -401,14 +401,48 @@ export function ensureBrowserLocation() {
   } catch { /* geolocation unavailable */ }
 }
 
+// ---------------------------------------------------------------------------
+// SYNTHETIC PRESENCE (NEW-1, integrated plan 26-09-2026). A harness load — the
+// DevTools trace in scripts/perf-trace/, any headless run — opens the page
+// with `?synthetic=<tag>` (e.g. ?synthetic=trace). The tag is kept in
+// sessionStorage for the life of the tab, so an in-app navigation that drops
+// the query string still sends it, and every presence ping carries it. The
+// agent counts such tabs apart from the owner's (agent/services/
+// client-presence.js) — reported as their own number, never dropped.
+// ---------------------------------------------------------------------------
+const SYNTHETIC_KEY = 'synthetic_presence'
+const cleanTag = (v) => {
+  const t = String(v ?? '').trim().toLowerCase()
+  return /^[a-z0-9_-]{1,32}$/.test(t) && !['false', '0', 'null', 'undefined'].includes(t) ? t : null
+}
+/** The harness tag of this tab, or null for an ordinary (owner's) tab. */
+export function syntheticPresenceTag(search = (typeof window !== 'undefined' ? window.location?.search : '')) {
+  let fromUrl = null
+  try { fromUrl = cleanTag(new URLSearchParams(search || '').get('synthetic')) } catch { fromUrl = null }
+  try {
+    if (fromUrl) { sessionStorage.setItem(SYNTHETIC_KEY, fromUrl); return fromUrl }
+    return cleanTag(sessionStorage.getItem(SYNTHETIC_KEY))
+  } catch { return fromUrl }
+}
+
+/** The query string of one presence ping (exported for its test). */
+export function clientPingQuery({ tab, tz, page, hidden, idle, closed, loc, synthetic }) {
+  return new URLSearchParams({
+    tab, tz, page: page || '/',
+    hidden: String(hidden), idle: String(idle), closed: String(closed),
+    ...(loc ? { loc } : {}),
+    ...(synthetic ? { synthetic } : {}),
+  })
+}
+
 /** One presence heartbeat: tab id, timezone, page, visibility, idle state. */
 export async function sendClientPing(page, { closed = false } = {}) {
   const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'unknown' } })()
   const loc = cachedBrowserLoc()
-  const q = new URLSearchParams({
-    tab: tabId(), tz, page: page || '/',
-    hidden: String(pageHidden()), idle: String(pageIdle()), closed: String(closed),
-    ...(loc ? { loc } : {}),
+  const q = clientPingQuery({
+    tab: tabId(), tz, page,
+    hidden: pageHidden(), idle: pageIdle(), closed,
+    loc, synthetic: syntheticPresenceTag(),
   })
   if (closed) {
     // pagehide: a normal fetch is killed with the page — keepalive survives.
@@ -425,6 +459,8 @@ export async function sendClientPing(page, { closed = false } = {}) {
 }
 
 if (typeof window !== 'undefined') {
+  // Capture the harness flag at load, before any redirect drops the query.
+  syntheticPresenceTag()
   window.addEventListener('pagehide', () => { sendClientPing(window.location.pathname, { closed: true }) })
 }
 // POSTs are user-initiated actions (close, arm, save config…) — failures

@@ -22,6 +22,7 @@ This is the owner's mandate of 26-09-2026: every website PR is traced before and
 
 - **Read-only key only (`AGENT_SECRET_READ`).** That key cannot authorise any non-GET request (`agent/lib/auth-tiers.js`). The key is scrubbed from every saved response.
 - **One known exception:** the page's presence ping (`GET /state/client-ping`) registers the tab while it is open.
+- **Synthetic presence tag (NEW-1).** Every page is opened as `…/page?synthetic=trace`, and the init script also sets `sessionStorage.synthetic_presence = 'trace'` (`synthetic.mjs`). The web app then sends `synthetic=trace` on every presence ping, and the agent counts the tab apart from the owner's: `/health` `clients.openTabs` and `clients.visibleTabs` exclude it, `clients.synthetic` reports it (`openTabs`, `visibleTabs`, `tags`), and its row stays in `clients.tabs` with `synthetic: "trace"`. The P1/P4 grader's visible-page list skips those rows too, so a trace run cannot make a load window count as representative. Any other headless or scripted load should open pages the same way (`?synthetic=<tag>`, a short lowercase token of letters, digits, `-` or `_`).
 - **Privacy:** CrUX lookups and usage statistics are off, and network headers are redacted.
 - **Certificates:** no blanket certificate bypass. If an egress proxy terminates TLS, pass its CA's SPKI hash in `PROXY_CA_SPKI`; exactly that CA is then trusted. `certpin.mjs` stops the run before any key is sent if the certificate differs from `CERT_EXPECT_*`.
 
