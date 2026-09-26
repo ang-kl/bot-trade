@@ -113,3 +113,40 @@ unknown calendars, master/quiet policy, Node-down policy continuity, HTTP
 timeouts/response bounds/redirect refusal, retries, recovery, restart state,
 exclusive file ownership and preservation of approval actions. Repository gate
 results and publication state belong to the PR/progress record.
+
+## V3 CV-2 (26-09-2026): delivery muted through a 24 h soak
+
+OD-10 (owner, 26-09-2026 18:05 SGT): delivery is held until after the soak.
+cpp-verify now has a delivery gate of its own, on top of the existing switches
+(`WATCHDOG_MASTER_ENABLED`, `WATCHDOG_INCIDENT_OWNER`, the Telegram credentials
+and Node's `notificationPolicy`).
+
+- **Muted by default.** A fresh state file, a state written before CV-2, or a
+  malformed `delivery` block restores muted. The 24 h soak starts at the first
+  boot of this build (`beginSoak`) and a restart keeps it: it is never
+  restarted. The soak length is not configurable from the environment.
+- **Nothing leaves while muted.** The run loop asks `releasable(now)`, which is
+  null unless the soak has ended AND the verifier-local mute was lifted. The
+  soak's end alone never unmutes.
+- **The verifier-local mute** is `POST /watchdog/mute {"muted": true|false}`,
+  behind the service bearer, and it answers with Node down. Muting always
+  applies; unmuting is refused (409 `soak_active`) during the soak. Calling it
+  is an owner step, not part of any merge.
+- **Would-send counters.** Every outbox item created while delivery is closed
+  is counted by severity (`urgent`, `warning`, `info`), before the 512-item
+  bound, with `urgentPerHour` / `totalPerHour` since the first count: the rate
+  the owner reads at the end of the soak (OD-10: urgent alerts only).
+- **Where to read it.** `GET /watchdog-status` → `delivery` and `stateBytes`
+  (4 MiB cap); `GET /health` → `watchdog.deliveryMuted`, `deliveryOpen`,
+  `soakActive`, `soakEndsAtMs`; Node's `verify_watchdog` heartbeat (quiet: its
+  stall is recorded in action_log, never sent) carries the same block as its
+  detail on `GET /state/heartbeats`, and `runtime.watchdog.status.delivery` on
+  the same route. `effectivePolicyAllowsUrgent` is false while the gate is closed.
+- **Schema stays 1.** The gate persists under a `delivery` key that a pre-CV-2
+  `restore()` ignores, so a rollback still restores the file (unmuted state is
+  then lost with the gate itself: the pre-CV-2 build has no mute).
+
+Not in this change (the rest of V3-SEQUENCE item 26): severity floor,
+per-incident coalescing, confirm delay, the delivery budget and drill
+allowlist, the drill-incident and `dispose(createdBefore)` routes, the receipt
+ring, delivery health, and the observer nonce / `lastSeenAtMs`.

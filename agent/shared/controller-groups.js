@@ -4,7 +4,7 @@ export const CONTROLLER_GROUPS = [
   { key: 'scanning', label: 'Scanning and strategies', names: ['autopilot', 'pending_signals', 'edge_watchdog', 'fundable_universe', 'tick_feeder'] },
   { key: 'risk', label: 'Account risk and admission', names: ['adaptive_breaker', 'equity_stop', 'performance_breaker', 'weekend_loss_flag'] },
   { key: 'protection', label: 'Execution and position protection', names: ['fast_monitor', 'protection_band', 'order_monitor', 'trade_guards', 'profit_keeper', 'loss_guardian', 'guardian', 'weekend_bank', 'closed_market_sweep', 'momentum_partial'] },
-  { key: 'verification', label: 'Verification and account records', names: ['protection_audit', 'log_inspector', 'decision_audit', 'minute_review', 'pnl_reconcile', 'cross_side_equity', 'equity_snapshot', 'cashflow_collection', 'broker_readings', 'order_lifecycle', 'position_capture'] },
+  { key: 'verification', label: 'Verification and account records', names: ['protection_audit', 'log_inspector', 'decision_audit', 'minute_review', 'pnl_reconcile', 'cross_side_equity', 'equity_snapshot', 'cashflow_collection', 'broker_readings', 'order_lifecycle', 'position_capture', 'verify_watchdog'] },
   { key: 'research', label: 'Research and reports', names: ['burn_in', 'weekend_watch', 'daily_report'] },
 ]
 export const RETIRED_CONTROLLERS = ['pending_orders']

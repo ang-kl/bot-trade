@@ -215,5 +215,57 @@ int main() {
     healthy(s, {g}, T + 60000);
     assert(s.snapshot().get("incidents").get("node:work:reconcile:stalled").get("severity").asString() == "urgent");
   }
+  {
+    // V3 CV-2 (OD-10): delivery is MUTED by default through a 24 h soak.
+    // The outbox still fills and the would-send counters count it; nothing
+    // is releasable until the soak has ended AND the mute was lifted.
+    verify::WatchState s; s.beginSoak(T);
+    s.probe("node", false, {}, T); s.evaluate(T + 60000);
+    assert(active(s, "node:unreachable"));
+    assert(!s.nextDelivery(T + 60000).isNull()); // queued
+    assert(s.releasable(T + 60000).isNull());    // CV-2 mute: nothing leaves
+    assert(!s.deliveryOpen(T + 60000));
+    const auto d = s.status(T + 60000).get("delivery");
+    assert(d.get("muted").asBool() && d.get("soakActive").asBool() && !d.get("open").asBool());
+    assert(d.get("soakStartedAtMs").asNumber() == T && d.get("soakEndsAtMs").asNumber() == T + 86400000);
+    assert(d.get("reason").asString() == "soak_active");
+    assert(d.get("wouldSend").get("urgent").asNumber() == 1 && d.get("wouldSend").get("total").asNumber() == 1);
+    assert(d.get("wouldSend").get("urgentPerHour").asNumber() == 60); // one in the first minute
+    // Unmuting is refused during the soak, and the soak's end alone never unmutes.
+    assert(s.setMuted(false, T + 86399999) == "soak_active"); assert(s.releasable(T + 86399999).isNull());
+    assert(s.releasable(T + 86400000).isNull());
+    assert(s.status(T + 86400000).get("delivery").get("reason").asString() == "muted_after_soak_explicit_unmute_required");
+    // A restart keeps the soak and the counters: beginSoak does not restart it.
+    verify::WatchState reboot; assert(reboot.restore(s.snapshot())); reboot.beginSoak(T + 90000000);
+    const auto r = reboot.status(T + 86400000).get("delivery");
+    assert(r.get("soakEndsAtMs").asNumber() == T + 86400000 && r.get("muted").asBool());
+    assert(r.get("wouldSend").get("urgent").asNumber() == 1);
+    // After the soak, an explicit unmute opens delivery; a re-mute closes it at once.
+    assert(reboot.setMuted(false, T + 86400000).empty()); assert(reboot.deliveryOpen(T + 86400000));
+    assert(!reboot.releasable(T + 86400000).isNull());
+    reboot.probe("cpp-exec", false, {}, T + 86400000); reboot.evaluate(T + 86460000);
+    assert(active(reboot, "cpp-exec:unreachable"));
+    assert(reboot.status(T + 86460000).get("delivery").get("wouldSend").get("urgent").asNumber() == 1); // open: not a would-send
+    verify::WatchState open; assert(open.restore(reboot.snapshot())); assert(open.deliveryOpen(T + 86460000)); // unmute persists
+    assert(reboot.setMuted(true, T + 86460001).empty()); assert(reboot.releasable(T + 86460001).isNull());
+  }
+  {
+    // A pre-CV-2 file (no delivery key) restores MUTED with no soak; the soak
+    // starts at this boot. A malformed delivery block restores muted too.
+    verify::WatchState s; s.probe("node", false, {}, T); s.evaluate(T + 60000);
+    auto old = s.snapshot(); auto fields = old.asObject(); fields.erase("delivery"); old = Value(fields);
+    verify::WatchState r; assert(r.restore(old));
+    assert(r.setMuted(false, T + 999999999) == "soak_active"); // no soak begun: cannot open
+    assert(r.releasable(T + 999999999).isNull());
+    r.beginSoak(T + 100000); assert(r.status(T + 100000).get("delivery").get("soakEndsAtMs").asNumber() == T + 100000 + 86400000);
+    auto bad = s.snapshot(); bad.set("delivery", Value(Object{{"muted", "no"}, {"soakStartedAtMs", T}, {"soakEndsAtMs", T + 1}}));
+    verify::WatchState b; assert(b.restore(bad)); assert(!b.deliveryOpen(T + 2));
+    // Rollback: a CV-2 file still satisfies every check the pre-CV-2 restore()
+    // makes (schema 1, the three objects, their bounds, 4 MiB); it ignores
+    // the extra key.
+    const auto snap = s.snapshot();
+    assert(snap.get("schemaVersion").asNumber() == 1 && snap.get("services").isObject()
+      && snap.get("incidents").isObject() && snap.get("outbox").isObject() && jsn::dump(snap).size() < 4 * 1024 * 1024);
+  }
   std::cout << "watchdog failure, work, recovery and restart checks passed\n";
 }

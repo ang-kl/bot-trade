@@ -10,6 +10,9 @@ struct WatchPolicy {
   long long probeMs = 15000, serviceGraceMs = 60000;
   long long managementGraceMs = 60000, scannerGraceMs = 120000, noOrdersMs = 300000;
   long long repeatMs = 3600000;
+  // V3 CV-2 (OD-10): the muted soak. Not configurable from the environment:
+  // a knob that shortens the soak is a knob that skips it.
+  long long soakMs = 86400000;
   jsn::Value accountGraceMs{jsn::Object{}};
 };
 // Pure clock-injected incident state. No broker methods and no Node database.
@@ -23,6 +26,19 @@ public:
   void protection(const jsn::Value& report, long long now);
   void evaluate(long long now);
   jsn::Value nextDelivery(long long now) const;
+  // V3 CV-2 (OD-10) — the delivery gate. MUTED BY DEFAULT: a fresh state, and
+  // a state restored from a build before CV-2, starts muted with a 24 h soak
+  // beginning at its first beginSoak(). Delivery is open only when the soak
+  // has ended AND the verifier-local mute was lifted explicitly; the soak's
+  // end alone never unmutes. The run loop asks releasable(), never
+  // nextDelivery(), so a muted verifier sends nothing whatever Node's policy,
+  // the deployment switch or the credentials say.
+  void beginSoak(long long now);
+  bool deliveryOpen(long long now) const;
+  jsn::Value releasable(long long now) const;
+  // Returns "" when applied, else the refusal reason ("soak_active").
+  std::string setMuted(bool muted, long long now);
+  jsn::Value deliveryStatus(long long now) const;
   void delivery(const std::string& id, bool accepted, const std::string& messageId,
                 long long retryAfterMs, long long now);
   jsn::Value status(long long now) const;
@@ -43,6 +59,11 @@ private:
   WatchPolicy policy_;
   std::map<std::string, jsn::Value> services_, incidents_, outbox_;
   long long dropped_ = 0;
+  bool muted_ = true;
+  long long mutedAtMs_ = 0, unmutedAtMs_ = 0, soakStartedAtMs_ = 0, soakEndsAtMs_ = 0;
+  // Would-send counters: every outbox item created while delivery is closed,
+  // by severity — the soak's would-send rate (OD-10: urgent alerts only).
+  long long wouldSendUrgent_ = 0, wouldSendWarning_ = 0, wouldSendInfo_ = 0, wouldSendSinceMs_ = 0;
   jsn::Value nodeEntryDiagnostics_;
   long long nodeEntryDiagnosticsAtMs_ = 0;
 };
@@ -59,6 +80,9 @@ public:
   ~Watchdog();
   void start();
   jsn::Value status();
+  // Verifier-local mute (POST /watchdog/mute). Works with Node down. Returns
+  // {ok, error?, delivery}. Unmuting is refused during the soak.
+  jsn::Value setMuted(bool muted);
 private:
   void run(std::stop_token stop);
   bool persist();

@@ -1,6 +1,7 @@
 import { getState, setState } from '../db.js'
 import { credsForRegisteredAccount } from '../lib/ctrader-creds.js'
 import { emitBrokerRead } from '../lib/broker-read-observer.js'
+import { beat } from './heartbeat.js'
 
 const STATE_KEY = 'independent_protection_json'
 const MAX_AGE_MS = 180_000
@@ -21,6 +22,23 @@ export function independentProtectionView(db, accountId, nowMs = Date.now()) {
     summary: !ok ? `UNVERIFIED: ${readError || (stale ? 'reading absent or stale' : 'check failed')}`
       : `${row.openCount} open; ${row.missingSl} missing SL; ${row.missingTp} missing TP1`,
   }
+}
+
+/**
+ * V3 CV-2 (OD-10): cpp-verify's delivery gate as the verify_watchdog beat
+ * carries it. Delivery is muted through a 24 h soak and stays muted until an
+ * explicit verifier-local unmute; `wouldSend` is what would have left in the
+ * meantime. A status with no `delivery` block (a verifier built before CV-2,
+ * or a busy reply) is reported as such, never as muted.
+ */
+export function watchdogDeliveryDetail(status) {
+  const d = status?.delivery
+  if (!d || typeof d !== 'object' || typeof d.muted !== 'boolean') return null
+  const pick = k => d[k] ?? null
+  return { muted: d.muted, open: d.open === true, reason: pick('reason'), soakActive: pick('soakActive'),
+    soakStartedAtMs: pick('soakStartedAtMs'), soakEndsAtMs: pick('soakEndsAtMs'), soakRemainingMs: pick('soakRemainingMs'),
+    wouldSend: d.wouldSend && typeof d.wouldSend === 'object' ? d.wouldSend : null,
+    outboxPending: pick('outboxPending'), stateBytes: status.stateBytes ?? null }
 }
 
 // Node only provisions read sessions and relays cpp-verify's results. The
@@ -115,8 +133,11 @@ export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl
         const watchdog = await request('/watchdog-status')
         if (watchdog?.schemaVersion !== 1) throw new Error('Invalid watchdog status')
         setState(db, 'independent_watchdog_json', JSON.stringify({ status: watchdog, readAt: new Date().toISOString(), error: null }))
+        const detail = watchdogDeliveryDetail(watchdog)
+        try { beat(db, 'verify_watchdog', detail ? { ok: true, detail } : { ok: false, error: 'watchdog delivery gate unreported (verifier before CV-2, or busy)' }) } catch { /* a beat must not fail the relay */ }
       } catch {
         setState(db, 'independent_watchdog_json', JSON.stringify({ status: null, readAt: new Date().toISOString(), error: 'Independent watchdog status unavailable' }))
+        try { beat(db, 'verify_watchdog', { ok: false, error: 'Independent watchdog status unavailable' }) } catch { /* as above */ }
       }
     } catch (error) {
       let previous = {}

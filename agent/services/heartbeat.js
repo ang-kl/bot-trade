@@ -225,6 +225,11 @@ export const CONTROLLERS = {
   // QUIET: the watchdog writes its stall / failing events to action_log and
   // sends no message — delivery waits on OD-10 (Telegram is off).
   tick_feeder:         { label: 'Tick permit feeder (stall alarm)', expectedSec: 120, factor: 3, quiet: true, dormantWhen: tickFeederDormantReason },
+  // V3 CV-2 (OD-10): cpp-verify's watchdog read, beaten by the independent
+  // protection relay (30 s) with the verifier's delivery gate as its detail:
+  // muted, the 24 h soak's start/end and the would-send counters. QUIET like
+  // tick_feeder — a watchdog-delivery beat must not itself page.
+  verify_watchdog:     { label: 'Independent watchdog (cpp-verify) delivery gate', expectedSec: 30, factor: 10, quiet: true },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

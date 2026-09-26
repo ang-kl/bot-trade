@@ -92,6 +92,9 @@ void Watchdog::start() {
     const auto parsed = jsn::parse(raw);
     if (!parsed || !state_.restore(*parsed)) { error_ = "watchdog_state_invalid_recovery_required"; return; }
   }
+  // V3 CV-2: the 24 h muted soak starts at the first boot of this build and
+  // survives restarts (a restored soak is kept, never restarted).
+  state_.beginSoak(nowMs());
   writable_ = persist();
   worker_ = std::jthread([this](std::stop_token stop) {
     try { run(stop); }
@@ -140,7 +143,7 @@ void Watchdog::run(std::stop_token stop) {
       std::lock_guard lock(mutex_);
       const auto now = nowMs(); state_.protection(protection_(), now); state_.evaluate(now);
       if (persist() && master_ && owner_) {
-        auto next = state_.nextDelivery(now);
+        auto next = state_.releasable(now); // muted or in soak: null, nothing leaves
         if (!next.isNull() && watchAllowsNotification(state_.snapshot(), next, now)) delivery = next;
       }
     }
@@ -182,8 +185,19 @@ jsn::Value Watchdog::status() {
   s.set("masterEnabled", current ? policy.get("enabled") : jsn::Value());
   s.set("deploymentDeliveryEnabled", master_); s.set("incidentOwnerConfigured", owner_);
   s.set("deliveryCredentialsConfigured", !env("WATCHDOG_TELEGRAM_TOKEN").empty() && !env("WATCHDOG_TELEGRAM_CHAT_ID").empty());
-  s.set("effectivePolicyAllowsUrgent", master_ && owner_ && writable_ && watchAllowsNotification(state_.snapshot(), jsn::Value(jsn::Object{{"severity", "urgent"}}), nowMs()));
+  s.set("stateBytes", static_cast<long long>(jsn::dump(snapshot).size()));
+  s.set("stateBytesCap", 4LL * 1024 * 1024);
+  s.set("effectivePolicyAllowsUrgent", master_ && owner_ && writable_ && state_.deliveryOpen(nowMs()) && watchAllowsNotification(state_.snapshot(), jsn::Value(jsn::Object{{"severity", "urgent"}}), nowMs()));
   s.set("externalObserver", "unconfigured; requires independent provisioning and delivery evidence");
   return s;
+}
+jsn::Value Watchdog::setMuted(bool muted) {
+  std::lock_guard lock(mutex_);
+  const auto now = nowMs();
+  const auto refusal = state_.setMuted(muted, now);
+  const bool durable = refusal.empty() && enabled_ && !path_.empty() ? persist() : writable_;
+  jsn::Value out(jsn::Object{{"ok", refusal.empty()}, {"durable", durable}, {"delivery", state_.deliveryStatus(now)}});
+  if (!refusal.empty()) out.set("error", refusal);
+  return out;
 }
 }

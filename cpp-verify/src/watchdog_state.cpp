@@ -58,13 +58,72 @@ bool WatchState::restore(const jsn::Value& s) {
   incidents_ = copy(s.get("incidents")).asObject();
   outbox_ = copy(s.get("outbox")).asObject();
   dropped_ = number(s.get("dropped"));
+  // V3 CV-2: the delivery gate. Schema stays 1; a pre-CV-2 build's restore()
+  // ignores this key, so a rollback still restores the file. A state without
+  // it (written before CV-2) or with a malformed one restores MUTED with no
+  // soak begun, and beginSoak() starts the 24 h soak at this boot. Only an
+  // explicit boolean false restores unmuted.
+  const auto& d = s.get("delivery");
+  muted_ = !(d.isObject() && d.get("muted").isBool() && !d.get("muted").asBool());
+  mutedAtMs_ = number(d.get("mutedAtMs")); unmutedAtMs_ = number(d.get("unmutedAtMs"));
+  soakStartedAtMs_ = number(d.get("soakStartedAtMs")); soakEndsAtMs_ = number(d.get("soakEndsAtMs"));
+  if (soakStartedAtMs_ == 0 || soakEndsAtMs_ < soakStartedAtMs_) { soakStartedAtMs_ = soakEndsAtMs_ = 0; muted_ = true; }
+  const auto& w = d.get("wouldSend");
+  wouldSendUrgent_ = number(w.get("urgent")); wouldSendWarning_ = number(w.get("warning"));
+  wouldSendInfo_ = number(w.get("info")); wouldSendSinceMs_ = number(w.get("sinceMs"));
   return true;
 }
 jsn::Value WatchState::snapshot() const {
   return copy(jsn::Value(jsn::Object{{"schemaVersion", 1}, {"services", services_},
-    {"incidents", incidents_}, {"outbox", outbox_}, {"dropped", dropped_}}));
+    {"incidents", incidents_}, {"outbox", outbox_}, {"dropped", dropped_},
+    {"delivery", jsn::Object{{"muted", muted_}, {"mutedAtMs", mutedAtMs_}, {"unmutedAtMs", unmutedAtMs_},
+      {"soakStartedAtMs", soakStartedAtMs_}, {"soakEndsAtMs", soakEndsAtMs_},
+      {"wouldSend", jsn::Object{{"urgent", wouldSendUrgent_}, {"warning", wouldSendWarning_},
+        {"info", wouldSendInfo_}, {"sinceMs", wouldSendSinceMs_}}}}}}));
+}
+void WatchState::beginSoak(long long now) {
+  if (soakStartedAtMs_ > 0) return; // a restart never restarts the soak
+  soakStartedAtMs_ = now; soakEndsAtMs_ = now + policy_.soakMs;
+  muted_ = true; mutedAtMs_ = now;
+  if (wouldSendSinceMs_ == 0) wouldSendSinceMs_ = now;
+}
+bool WatchState::deliveryOpen(long long now) const {
+  return !muted_ && soakStartedAtMs_ > 0 && now >= soakEndsAtMs_;
+}
+jsn::Value WatchState::releasable(long long now) const {
+  if (!deliveryOpen(now)) return jsn::Value();
+  return nextDelivery(now);
+}
+std::string WatchState::setMuted(bool muted, long long now) {
+  if (muted) { if (!muted_) mutedAtMs_ = now; muted_ = true; return ""; }
+  if (soakStartedAtMs_ == 0 || now < soakEndsAtMs_) return "soak_active";
+  if (muted_) unmutedAtMs_ = now;
+  muted_ = false; return "";
+}
+jsn::Value WatchState::deliveryStatus(long long now) const {
+  const bool soakActive = soakStartedAtMs_ == 0 || now < soakEndsAtMs_;
+  const auto total = wouldSendUrgent_ + wouldSendWarning_ + wouldSendInfo_;
+  const auto since = wouldSendSinceMs_ > 0 && wouldSendSinceMs_ <= now ? now - wouldSendSinceMs_ : 0;
+  const auto perHour = [&](long long n) { return since >= 60000 ? jsn::Value(std::round(n * 3600000.0 / since * 100) / 100) : jsn::Value(); };
+  return jsn::Value(jsn::Object{{"muted", muted_}, {"open", deliveryOpen(now)},
+    {"reason", deliveryOpen(now) ? "open" : soakActive ? "soak_active" : "muted_after_soak_explicit_unmute_required"},
+    {"mutedAtMs", mutedAtMs_ ? jsn::Value(mutedAtMs_) : jsn::Value()}, {"unmutedAtMs", unmutedAtMs_ ? jsn::Value(unmutedAtMs_) : jsn::Value()},
+    {"soakMs", policy_.soakMs}, {"soakStartedAtMs", soakStartedAtMs_ ? jsn::Value(soakStartedAtMs_) : jsn::Value()},
+    {"soakEndsAtMs", soakEndsAtMs_ ? jsn::Value(soakEndsAtMs_) : jsn::Value()}, {"soakActive", soakActive},
+    {"soakRemainingMs", soakActive && soakEndsAtMs_ > now ? jsn::Value(soakEndsAtMs_ - now) : jsn::Value(0)},
+    {"wouldSend", jsn::Object{{"urgent", wouldSendUrgent_}, {"warning", wouldSendWarning_}, {"info", wouldSendInfo_},
+      {"total", total}, {"sinceMs", wouldSendSinceMs_ ? jsn::Value(wouldSendSinceMs_) : jsn::Value()},
+      {"urgentPerHour", perHour(wouldSendUrgent_)}, {"totalPerHour", perHour(total)}}},
+    {"outboxPending", static_cast<long long>(outbox_.size())}});
 }
 void WatchState::enqueue(const std::string& id, jsn::Value& rec, const std::string& transition, long long now) {
+  // Counted before the 512 bound, so the soak's would-send rate is what would
+  // have gone out, not what the outbox had room to keep.
+  if (!deliveryOpen(now)) {
+    const auto& severity = rec.get("severity").asString();
+    ++(severity == "urgent" ? wouldSendUrgent_ : severity == "warning" ? wouldSendWarning_ : wouldSendInfo_);
+    if (wouldSendSinceMs_ == 0) wouldSendSinceMs_ = now;
+  }
   if (outbox_.size() >= 512 && rec.get("severity").asString() == "urgent") {
     auto old = std::find_if(outbox_.begin(), outbox_.end(), [](const auto& kv) { return kv.second.get("severity").asString() != "urgent"; });
     if (old != outbox_.end()) { outbox_.erase(old); ++dropped_; }
@@ -300,7 +359,7 @@ jsn::Value WatchState::status(long long now) const {
   }
   for (const auto& [id, row] : outbox_) { auto data = row.asObject(); data.erase("detail"); outbox[id] = jsn::Value(std::move(data)); }
   jsn::Value s(jsn::Object{{"schemaVersion", 1}, {"services", std::move(services)}, {"incidents", std::move(incidents)},
-    {"outbox", std::move(outbox)}, {"dropped", dropped_}, {"observedAtMs", now}});
+    {"outbox", std::move(outbox)}, {"dropped", dropped_}, {"observedAtMs", now}, {"delivery", deliveryStatus(now)}});
   s.set("policy", jsn::Value(jsn::Object{{"probeMs", policy_.probeMs}, {"serviceGraceMs", policy_.serviceGraceMs},
     {"managementGraceMs", policy_.managementGraceMs}, {"scannerGraceMs", policy_.scannerGraceMs}, {"noOrdersMs", policy_.noOrdersMs}, {"repeatMs", policy_.repeatMs}, {"accountGraceMs", policy_.accountGraceMs}}));
   return s;
