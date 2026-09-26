@@ -28,7 +28,7 @@ import { agentGet, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import { useAnchoredPopover } from '../lib/use-anchored-popover.js'
 import {
   deployReading, controllerReading, loopReading, rosterReading, overdue, dur, toText,
-  CONTROLLER_TONE, worst,
+  CONTROLLER_TONE, worst, buildLabel,
 } from '../lib/agent-health-view.js'
 import Badge from './common/Badge.jsx'
 
@@ -266,10 +266,11 @@ export default function AgentHealthPanel({ appVersion, buildSha, compact = false
   })
 
   if (!agentConfigured()) {
-    // Nothing to compare against — show the plain tag the sidebar always had.
+    // Nothing to compare against — no agent commit exists to show, so the
+    // agent half honestly reads 'unknown' (buildLabel, never invented).
     return (
       <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-        v{appVersion}{compact ? '' : ` · ${buildSha}`}
+        {buildLabel({ uiCommit: buildSha, agentCommit: null, compact })}
       </span>
     )
   }
@@ -298,7 +299,7 @@ export default function AgentHealthPanel({ appVersion, buildSha, compact = false
         title="Build and agent health — tap for detail"
       >
         <span aria-hidden="true" style={{ color: TONE_COLOR[overall], fontSize: 'var(--fs-body)', lineHeight: 1 }}>●</span>
-        <span>v{appVersion}{compact ? '' : ` · ${buildSha}`}</span>
+        <span>{buildLabel({ uiCommit: buildSha, agentCommit: health?.commit, compact })}</span>
       </button>
 
       {/* The dot is decorative; the state is also stated in text for anyone

@@ -40,17 +40,30 @@ describe('risk page deep links', () => {
     expect(missing).toEqual([])
   })
 
-  it('the proposal row links by config key, not by label', () => {
+  it('the proposal row links by config key, not by label — UI-7: RiskReassess moved to the AI page, so this is a real cross-page navigation, not a same-page #hash click handler', () => {
     // A label can be reworded; the key is what the field registers under.
-    expect(reassess).toMatch(/href=\{`#risk-\$\{p\.key\}`\}/)
-    expect(reassess).toMatch(/jumpTo\(p\.key\)/)
+    expect(reassess).toMatch(/to=\{`\/risk#risk-\$\{p\.key\}`\}/)
+    expect(reassess).toMatch(/import \{ Link \} from 'react-router-dom'/)
+    // The old same-page jump handler is gone from here — it moved to Risk.jsx.
+    expect(reassess).not.toMatch(/jumpTo/)
+    expect(reassess).not.toMatch(/onClick=\{\(e\) => \{ e\.preventDefault\(\)/)
   })
 
-  it('the jump opens collapsed ancestors before scrolling', () => {
+  it('Risk.jsx opens collapsed ancestors before scrolling, once it lands on an incoming #risk-<key> hash', () => {
     // The fields live inside collapsibles. Scrolling to a zero-height element
-    // looks exactly like a broken link.
-    expect(reassess).toMatch(/DETAILS/)
-    expect(reassess).toMatch(/scrollIntoView/)
+    // looks exactly like a broken link. This used to run inline in
+    // RiskReassess.jsx on click; UI-7 moved the trigger to Risk.jsx's own
+    // mount effect, since the jump can now arrive from a different page.
+    expect(riskPage).toMatch(/DETAILS/)
+    expect(riskPage).toMatch(/scrollIntoView/)
+    expect(riskPage).toMatch(/risk-jump-target/)
+  })
+
+  it('RiskReassess.jsx is mounted on the AI page, not on Risk.jsx (UI-7 move)', () => {
+    const aiPage = readFileSync(new URL('./Ai.jsx', import.meta.url), 'utf8')
+    expect(aiPage).toMatch(/<RiskReassess\s*\/>/)
+    expect(riskPage).not.toMatch(/<RiskReassess/)
+    expect(riskPage).not.toMatch(/from '\.\.\/components\/RiskReassess\.jsx'/)
   })
 })
 

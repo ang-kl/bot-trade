@@ -110,10 +110,74 @@ export function engineAccountBindings(rows) {
   return ids.map(id => id && ids.filter(other => other === id).length === 1 ? id : null)
 }
 
-export function engineReadinessFor(readinessRows, accountId) {
+/**
+ * GET /state/tick-readiness answers in TWO shapes from the same route
+ * (agent/routes/state.js): the roster form `{ accounts: [...] }`, or — when a
+ * caller narrows with `?account=` (agent-api.js's viewed-account wiring,
+ * S3) — ONE record with no `accounts` field at all (tickReadinessFor, not
+ * tickReadinessView). A reader that only ever looked for `.accounts` read
+ * every row as having no readiness the moment the lens was on ANY other
+ * account — not a missing record, a shape mismatch. A bare array is also
+ * accepted, for a caller that already extracted the list.
+ */
+function readinessRows(readiness) {
+  if (Array.isArray(readiness)) return readiness
+  if (!readiness) return []
+  if (Array.isArray(readiness.accounts)) return readiness.accounts
+  return readiness.accountId != null ? [readiness] : []
+}
+
+/**
+ * `readiness` is whatever GET /state/tick-readiness returned (either shape
+ * above, or a plain array). Returns null — "no record" — when this account's
+ * readiness was not part of what came back, which is honest: a `?account=`
+ * narrowed read genuinely carries no data for any other account.
+ */
+export function engineReadinessFor(readiness, accountId) {
   if (!accountId) return null
-  const matches = (readinessRows || []).filter(row => engineAccountId(row) === accountId)
+  const matches = readinessRows(readiness).filter(row => engineAccountId(row) === accountId)
   return matches.length === 1 ? matches[0] : null
+}
+
+/**
+ * S1b (checker BLOCKER 3, W1.4 fix round; OD-30 "fix the label now"): the
+ * sidebar's readiness suffix, built from three real facts instead of the
+ * stored SETTING alone — the owner flagged "· shadow" printing straight from
+ * `tickObservation` regardless of whether anything was actually running.
+ *
+ *   - `row.stored === false` (agent/services/entry-mode.js's
+ *     engineStatusFor): this account has never had an engine record
+ *     written — "no record" is the whole answer, unprefixed, because there
+ *     is no policy to attribute either (a default record's policy would be
+ *     invented, not read).
+ *   - `readiness.shadowReady` / `shadowBlockers` (agent/services/
+ *     tick-readiness.js): whether the shadow strategy is OBSERVED running,
+ *     never merely declared. Only consulted when `tickObservation` is
+ *     'SHADOW' — "declared" is the word for exactly that stored setting.
+ *   - `row.entryModePolicy` (manual/auto — src/lib/entry-mode-policy.js):
+ *     prefixed on every answer that carries real data, so who may switch
+ *     this account sits on the same line as what it is doing.
+ *
+ * `row.readiness` may be null — the S1a join found no matching record for
+ * this account (a `?account=` narrowed read for a different account, or no
+ * answer yet) — and reads as "no record" for the shadow/blocker half too,
+ * the same honesty engineReadinessFor already applies.
+ */
+export function entryStatusNote(row) {
+  if (!row || row.stored === false) return 'no record'
+  const policy = row.entryModePolicy === 'auto' ? 'auto' : 'manual'
+  const readiness = row.readiness
+  if (row.tickObservation === 'SHADOW') {
+    if (!readiness) return 'no record'
+    if (readiness.shadowReady) return `${policy} · shadow running`
+    const first = readiness.shadowBlockers?.[0]
+    return `${policy} · shadow declared, not running${first ? `: ${first}` : ''}`
+  }
+  if (!readiness) return 'no record'
+  const obs = row.tickObservation === 'RECORD' ? 'record · ' : ''
+  if (readiness.ready) return `${policy} · ${obs}tick-ready`
+  const n = readiness.blockedReasons?.length || 0
+  return `${policy} · ${obs}${n} blocker${n === 1 ? '' : 's'}`
 }
 
 /** 'stopped' | 'active' | 'warming' | 'switching' | 'blocked' | 'unknown' */

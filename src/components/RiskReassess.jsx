@@ -16,6 +16,7 @@
 // proposal gets a tick box and one Apply button, so what lands in the config is
 // something the owner chose line by line.
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import Card from './common/Card.jsx'
 import Button from './common/Button.jsx'
 import Badge from './common/Badge.jsx'
@@ -43,25 +44,6 @@ function stamp(iso) {
 }
 
 /** Show a fraction as a percentage, everything else as itself. */
-/**
- * Scroll to the field this row controls and mark it, rather than relying on a
- * bare #hash — the fields live inside collapsibles that may be shut, and a
- * hash jump into a collapsed section lands nowhere.
- */
-function jumpTo(key) {
-  const el = document.getElementById(`risk-${key}`)
-  if (!el) return
-  // Open every collapsed ancestor first. Without this the browser scrolls to
-  // an element with zero height and the owner sees nothing move.
-  let p = el.parentElement
-  while (p) {
-    if (p.tagName === 'DETAILS' && !p.open) p.open = true
-    p = p.parentElement
-  }
-  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  el.classList.add('risk-jump-target')
-  setTimeout(() => el.classList.remove('risk-jump-target'), 2000)
-}
 
 function show(key, v, proposable) {
   if (v == null || v === '') return '—'
@@ -388,11 +370,17 @@ export default function RiskReassess({ onChanged, onApplied, initialLlmOff = nul
                           {/* Owner 2026-08-04: "a small triangle to show where
                               it is located below in this RISK page, hyperlink
                               to change". The anchor is the config key, which
-                              is what the field below registers itself under. */}
-                          <a href={`#risk-${p.key}`}
+                              is what the field registers itself under.
+                              UI-7 (checker BLOCKER 4, W1.4 fix round): this
+                              card moved to the AI page, so the field it names
+                              is on a DIFFERENT page now — a real cross-page
+                              navigation (react-router's Link), not a same-page
+                              #hash click handler. Risk.jsx opens any collapsed
+                              ancestor and scrolls to it once it lands there
+                              (the same behaviour this used to run inline). */}
+                          <Link to={`/risk#risk-${p.key}`}
                              className="mr-1 text-[var(--color-text-sub)] hover:text-[var(--color-accent)]"
-                             title={`Jump to ${p.label} below`}
-                             onClick={(e) => { e.preventDefault(); jumpTo(p.key) }}>▸</a>
+                             title={`Open Risk and jump to ${p.label}`}>▸</Link>
                           {p.label}
                           {p.clamped && (
                             <span className="ml-1 text-[var(--color-warning-text)]"

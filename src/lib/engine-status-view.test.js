@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { engineState, engineReading, mixedSummary, mixedCounts, basesFor, blockerGroups, tickBlockedReason, tickSelectionNote, ackLine, requestedSelection, requestedLabel, bulkSkips, selectionBody, basesLabel, SELECTION_LABEL, STALE_AFTER_MS } from './engine-status-view.js'
+import { engineState, engineReading, mixedSummary, mixedCounts, basesFor, blockerGroups, tickBlockedReason, tickSelectionNote, ackLine, requestedSelection, requestedLabel, bulkSkips, selectionBody, basesLabel, SELECTION_LABEL, STALE_AFTER_MS, entryStatusNote } from './engine-status-view.js'
 
 const row = (o = {}) => ({ accountId: '…9908', requestedEntryMode: 'TIME_BASED', effectiveEntryMode: 'TIME_BASED', transitionState: 'STABLE', configRevision: 3, modeEpoch: 2, entryCounts: { resting: 0, unknown: 0 }, ...o })
 
@@ -35,6 +35,60 @@ describe('engineReading', () => {
   })
   it('says unknown when nothing was answered', () => {
     expect(engineReading(null).state).toBe('unknown')
+  })
+})
+
+// Checker BLOCKER 3 (W1.4 fix round; OD-30 "fix the label now"): built from
+// row.stored, entryModePolicy and readiness.shadowReady/shadowBlockers —
+// never the stored tickObservation setting alone.
+describe('entryStatusNote', () => {
+  const withReadiness = (o = {}, readiness = null) => ({ ...row({ tickObservation: 'OFF', entryModePolicy: 'manual' }), readiness, ...o })
+
+  it('prefixes the manual policy on a ready account', () => {
+    expect(entryStatusNote(withReadiness({}, { ready: true, blockedReasons: [] }))).toBe('manual · tick-ready')
+  })
+
+  it('prefixes the auto policy, never defaulting an auto account to manual', () => {
+    expect(entryStatusNote(withReadiness({ entryModePolicy: 'auto' }, { ready: true, blockedReasons: [] }))).toBe('auto · tick-ready')
+  })
+
+  it('counts blockers, singular and plural', () => {
+    expect(entryStatusNote(withReadiness({}, { ready: false, blockedReasons: ['x'] }))).toBe('manual · 1 blocker')
+    expect(entryStatusNote(withReadiness({}, { ready: false, blockedReasons: ['x', 'y'] }))).toBe('manual · 2 blockers')
+  })
+
+  it('reads "no record", unprefixed, when the join found nothing for this account', () => {
+    expect(entryStatusNote(withReadiness({}, null))).toBe('no record')
+  })
+
+  it('reads "no record", unprefixed, when the engine record itself was never written (row.stored === false) — never inventing a policy for a default record', () => {
+    expect(entryStatusNote(withReadiness({ stored: false, entryModePolicy: 'auto' }, { ready: true, blockedReasons: [] }))).toBe('no record')
+  })
+
+  it('shows "shadow running" only when the account DECLARES shadow AND the join says it is observed running', () => {
+    expect(entryStatusNote(withReadiness({ tickObservation: 'SHADOW' }, { ready: false, blockedReasons: ['x'], shadowReady: true, shadowBlockers: [] }))).toBe('manual · shadow running')
+  })
+
+  it('shows "shadow declared, not running: ‹first blocker›" when SHADOW is declared but nothing is observed running', () => {
+    expect(entryStatusNote(withReadiness({ tickObservation: 'SHADOW' }, { ready: false, blockedReasons: ['x'], shadowReady: false, shadowBlockers: ['recorder_recording', 'disk_reserve_clear'] })))
+      .toBe('manual · shadow declared, not running: recorder_recording')
+  })
+
+  it('drops the trailing colon when SHADOW is declared, not running, and no blocker is named', () => {
+    expect(entryStatusNote(withReadiness({ tickObservation: 'SHADOW' }, { ready: false, blockedReasons: [], shadowReady: false, shadowBlockers: [] })))
+      .toBe('manual · shadow declared, not running')
+  })
+
+  it('never reads the OWNER-FLAGGED bug: a SHADOW setting with no readiness join must not print "shadow" at all — it is honestly "no record"', () => {
+    expect(entryStatusNote(withReadiness({ tickObservation: 'SHADOW' }, null))).toBe('no record')
+  })
+
+  it('names RECORD (a declared-but-not-shadow observation) alongside the readiness half', () => {
+    expect(entryStatusNote(withReadiness({ tickObservation: 'RECORD' }, { ready: true, blockedReasons: [] }))).toBe('manual · record · tick-ready')
+  })
+
+  it('returns "no record" for a missing row entirely, matching the join-miss case', () => {
+    expect(entryStatusNote(null)).toBe('no record')
   })
 })
 
