@@ -117,7 +117,13 @@ export async function recoverOldPositionPnl(db, creds, { now, isCurrent, getPosi
   }
   if (out.state === 'refused') {
     // The same refusal recurs every pass until something changes: an attempt.
-    noteTradeAttempts(db, { accountId, positionId, tradeId, includeUnattributed: false, at: new Date(now).toISOString() })
+    // includeWrittenOff: true (checker fix round, B1) — this read is bounded
+    // to ONE named row and, for an already-written-off candidate, fires at
+    // most once ever (the reread/rereadKey bookkeeping below); it must still
+    // count as an attempt even though the row is pnl_unresolvable=1, unlike
+    // the broad periodic sweep this module's own written-off exclusion guards
+    // against.
+    noteTradeAttempts(db, { accountId, positionId, tradeId, includeUnattributed: false, at: new Date(now).toISOString(), includeWrittenOff: true })
   }
   try { classify(db, { out, candidate, writtenOff, accountId, positionId, tradeId, now, reread, rereadKey }) } catch (error) {
     out.classifyError = error.message

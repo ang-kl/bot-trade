@@ -761,15 +761,23 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // helper shared with closeTradeRow and the loop's price-reconcile step, so
   // the three writers cannot disagree about what the columns mean.
   //
-  // WRITTEN-OFF ROWS ARE EXCLUDED (UI-5 / RS-1, "Unknown P/L: stop re-
-  // stamping written-off rows"). A `pnl_unresolvable = 1` row is a TERMINAL
-  // verdict — mark-unresolvable.js's whole point is that nothing here will
-  // ever look at its money again — yet this query used to restamp it anyway
-  // whenever a SIBLING on the same position landed fresh money, silently
-  // touching a row the rest of the system has agreed to stop reading.
+  // NOT EXCLUDED BY pnl_unresolvable (checker fix round, B1). An earlier
+  // version of this query excluded written-off rows outright, on the theory
+  // that "stop re-stamping written-off rows" (RS-1) meant this query. It did
+  // not: RS-1's own citation (pnl-backfill.js:1013-1017 at the plan's commit
+  // 5389a83) points at noteTradeAttempts's pnl_attempts UPDATE, not here —
+  // see that function's own comment. old-position-pnl.js:141-150 CLEARS
+  // pnl_unresolvable the moment broker money lands on a written-off row
+  // (PNL_WRITE_OFF_SETTLED): the backfill writes the money FIRST, so at the
+  // moment restampPosition runs the row is still pnl_unresolvable=1 even
+  // though it just settled — excluding it here left a just-settled row
+  // stamped with nothing (pnl_price_mismatch NULL instead of a real verdict,
+  // measured in pnl-reconcile-stall.test.js's R4 fixture, row 9). A row that
+  // is STILL unresolvable when this runs and never settles is re-stamped
+  // with the same nothing-changed verdict every time — harmless, since its
+  // money and prices are not changing — so there is no cost to leaving it in.
   const closedIds = db.prepare(
-    `SELECT id FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'
-       AND COALESCE(pnl_unresolvable, 0) = 0 ${scopeSql}`
+    `SELECT id FROM trades WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed' ${scopeSql}`
   )
   const restampPosition = (positionId) => {
     try { for (const { id } of closedIds.all(positionId, ...scopeParams)) stampRealisedAudit(db, id) } catch { /* audit columns never fail a backfill */ }
@@ -863,9 +871,15 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // Deferred and ambiguous positions are NOT attempts of this pass: the window
   // could not settle them by construction, and the per-position reader counts
   // its own evidence attempts on them (V3 B1).
+  //
+  // includeWrittenOff: !windowPass (checker fix round, B1) — the broad
+  // window pass (positionId == null) is the runaway-counter case the
+  // exclusion guards against; a position-scoped call (old-position-pnl.js's
+  // own read, bounded and paced) is the deliberate attempt that must still
+  // count even on a written-off row.
   noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString(), includeUnattributed: !strictAccount,
     positionId, tradeId, eligibleSince: lifetimeSql ? new Date(from).toISOString() : null, eligibleThrough: lifetimeSql ? new Date(now).toISOString() : null,
-    excludePositionIds: windowPass ? [...deferred, ...ambiguous.keys()] : [] })
+    excludePositionIds: windowPass ? [...deferred, ...ambiguous.keys()] : [], includeWrittenOff: !windowPass })
 
   return { backfilled, attributed, exitsRepaired, exitsFilled, dealsPersisted, closingDeals, scanned: deals.length, gap: gap.n, liveGap, blockingGap,
     // `ambiguous` counts every position whose writes were withheld;
@@ -1010,7 +1024,7 @@ export function exhaustedAccounts() {
  * history, so every pass genuinely did try it.
  */
 export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOString(), includeUnattributed = true,
-  eligibleSince = null, eligibleThrough = null, positionId = null, tradeId = null, excludePositionIds = [] } = {}) {
+  eligibleSince = null, eligibleThrough = null, positionId = null, tradeId = null, excludePositionIds = [], includeWrittenOff = false } = {}) {
   try {
     const scope = accountId == null ? '' : includeUnattributed ? 'AND (account_id = ? OR account_id IS NULL)' : 'AND account_id = ?'
     const args = accountId == null ? [at] : [at, String(accountId)]
@@ -1028,11 +1042,33 @@ export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOS
     const excluded = Array.isArray(excludePositionIds) && excludePositionIds.length
       ? 'AND (ctrader_position_id IS NULL OR CAST(ctrader_position_id AS INTEGER) NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(?)))' : ''
     if (excluded) args.push(JSON.stringify(excludePositionIds.map(String)))
+    // WRITTEN-OFF ROWS ARE EXCLUDED BY DEFAULT (checker fix round, B1; UI-5 /
+    // RS-1's actual citation, pnl-backfill.js:1013-1017 at the plan's commit
+    // 5389a83, points HERE, not at restampPosition). A pnl_unresolvable=1 row
+    // is one the backfill has already given up on and mark-unresolvable.js
+    // has recorded as terminal; the BROAD, unscoped sweep (the periodic
+    // account-wide pass, no positionId/tradeId) still visited it every pass
+    // (net_pnl stays NULL, so it never stopped matching the WHERE below) and
+    // kept bumping pnl_attempts without bound — measured in production and in
+    // pnl-reconcile-stall.test.js's fixture at pnl_attempts 15718. A counter
+    // that runs forever on a row nothing is trying to repair any more is not
+    // evidence of anything; it is just a growing number.
+    //
+    // `includeWrittenOff: true` is the escape hatch for the DELIBERATE,
+    // bounded, row-scoped re-read (old-position-pnl.js's own explicit call,
+    // and this module's own row-scoped completion at the end of
+    // backfillClosedPnl when it is NOT the broad window pass): that read
+    // targets one named row, at most once ever (old-position-pnl.js's own
+    // reread/rereadKey bookkeeping), and "the same refusal recurs every pass
+    // until something changes" IS the attempt it is meant to count — the
+    // opposite failure mode from the broad sweep's runaway counter.
+    const writtenOffGuard = includeWrittenOff ? '' : 'AND COALESCE(pnl_unresolvable, 0) = 0'
     return db.prepare(`
       UPDATE trades
          SET pnl_attempts = COALESCE(pnl_attempts, 0) + 1,
              pnl_last_attempt_at = ?
-       WHERE status = 'closed' AND net_pnl IS NULL ${scope} ${lifetime} ${position} ${row} ${excluded}
+       WHERE status = 'closed' AND net_pnl IS NULL ${writtenOffGuard}
+             ${scope} ${lifetime} ${position} ${row} ${excluded}
     `).run(...args).changes
   } catch { return 0 }
 }
