@@ -23,7 +23,8 @@ import Badge from './common/Badge.jsx'
 import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
-import { proposalStatus } from '../lib/risk-proposal-status.js'
+import { proposalStatus, reassessApplyConfirmText } from '../lib/risk-proposal-status.js'
+import { accountLabel, selectedAccountId } from '../lib/selected-account.js'
 import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 import Collapse from './common/Collapse.jsx'
 
@@ -152,6 +153,16 @@ export default function RiskReassess({ onChanged, onApplied, initialLlmOff = nul
   const apply = async () => {
     const keys = [...picked]
     if (keys.length === 0) return
+    // SAFE-0b (OD-14): name the keys this writes to the GLOBAL risk settings,
+    // with the proposal's account and time. The agent refuses a stale or
+    // other-account proposal on its own; this is the owner's own check.
+    // Nits round (26-09-2026): also name the account CURRENTLY traded, next to
+    // the proposal's account — these are global settings, so an apply that
+    // reads right for the proposal's account can still be about to change
+    // what a different, currently-selected account trades under.
+    const tradedId = selectedAccountId()
+    const tradedAccountLabel = tradedId == null ? null : accountLabel(tradedId)
+    if (!window.confirm(reassessApplyConfirmText({ keys, last, live, format: (k, v) => show(k, v, proposable), tradedAccountLabel }))) return
     setBusy('apply'); setError(''); setDone('')
     try {
       // `at` binds this apply to the assessment ON SCREEN. If another tab ran a

@@ -5,7 +5,7 @@ import express from 'express'
 import { initDB, setState, getState } from '../db.js'
 import { marketIdentity, marketIdentityKey } from '../lib/market-identity.js'
 import { projectCalendar } from '../lib/calendar-intervals.js'
-import { recordMarketCalendar, readMarketCalendar, CALENDAR_MAX_AGE_MS } from './market-calendar.js'
+import { recordMarketCalendar, readMarketCalendar, storedHolidays, CALENDAR_MAX_AGE_MS } from './market-calendar.js'
 import { refreshSymbolHours, isSymbolOpenCached } from './symbol-hours.js'
 import stateRouter from '../routes/state.js'
 
@@ -280,34 +280,39 @@ test('HTTP calendar consumer requires identity, has no name/global fallback and 
   assert.equal((await r.json()).open, null, 'a prior successful status cannot survive new invalid evidence')
 })
 
-// ---- V3 K1b: production's full-day "Closed" rows arrive as startSecond 0 /
-// endSecond 0 (measured 26-09 on all 335 unresolved rows, zones Europe/Moscow
-// and Europe/Bucharest). One dated three or more UTC days before its own
-// observation lies behind every window and is skipped; a current one keeps the
-// calendar unknown — what it means is the owner's K3 decision, not made here.
+// ---- V3 K1b: a holiday row whose bounds cannot be read, dated three or more
+// UTC days before its own observation, lies behind every window and is
+// skipped; a current one keeps the calendar unknown.
+// REWRITTEN IN THE OPEN for V3 K3 (owner OD-7, 26-09): these tests were written
+// on production's 0/0 "Closed" rows, which K1b could not read. K3 gives the
+// 0/0 pair a meaning — the whole local day — so a 0/0 row is no longer
+// unreadable and no longer exercises this rule (it is evaluated; see the K3
+// tests below). The K1b rule still governs every OTHER unreadable pair, so
+// the same cases now run on a sent-but-invalid pair (startSecond 5 >
+// endSecond 4, holiday_bounds_invalid) and on omitted bounds.
 const OBS_DAY = Math.floor(NOW / (D * 1000)) // 20718 = 2026-09-22
-const closed = (holidayDate, extra = {}) => ({ holidayId: holidayDate, name: `${new Date(holidayDate * D * 1000).toISOString().slice(0, 10)} Closed`,
-  holidayDate, isRecurring: false, scheduleTimeZone: 'Europe/Moscow', startSecond: 0, endSecond: 0, ...extra })
+const unreadable = (holidayDate, extra = {}) => ({ holidayId: holidayDate, name: `${new Date(holidayDate * D * 1000).toISOString().slice(0, 10)} Closed`,
+  holidayDate, isRecurring: false, scheduleTimeZone: 'Europe/Moscow', startSecond: 5, endSecond: 4, ...extra })
 
-test('K1b: a 0/0 "Closed" row three UTC days before its observation is skipped; two days, current and future rows stay unknown', t => {
+test('K1b: an unreadable row three UTC days before its observation is skipped; two days, current and future rows stay unknown', t => {
   const db = fixture(t)
   const cases = [
-    [[closed(OBS_DAY - 3)], 'OPEN', null],
-    [[closed(20447, { name: '25.12.2025 - Closed' }), closed(20454, { name: '01.01.2026 - Closed' }),
-      closed(20703, { name: '07.09.2026 Closed', scheduleTimeZone: 'Europe/Bucharest' }), closed(19716, { name: '25.12.2023 - Closed' })], 'OPEN', null],
-    [[closed(OBS_DAY - 2)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
-    [[closed(OBS_DAY - 1)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
-    [[closed(OBS_DAY)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
-    [[closed(OBS_DAY + 9)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
+    [[unreadable(OBS_DAY - 3)], 'OPEN', null],
+    [[unreadable(20447, { name: '25.12.2025 - Closed' }), unreadable(20454, { name: '01.01.2026 - Closed' }),
+      unreadable(20703, { name: '07.09.2026 Closed', scheduleTimeZone: 'Europe/Bucharest' }), unreadable(19716, { name: '25.12.2023 - Closed' })], 'OPEN', null],
+    [[unreadable(OBS_DAY - 2)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
+    [[unreadable(OBS_DAY - 1)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
+    [[unreadable(OBS_DAY)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
+    [[unreadable(OBS_DAY + 9)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
     // One current row keeps the whole calendar unknown, whatever else is skipped.
-    [[closed(20447), closed(20454), closed(OBS_DAY)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
+    [[unreadable(20447), unreadable(20454), unreadable(OBS_DAY)], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
     // A recurring row returns every year: it never expires.
-    [[closed(20447, { isRecurring: true })], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
+    [[unreadable(20447, { isRecurring: true })], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_invalid'],
     // Omitted bounds are unreadable too, and expire the same way.
     [[holidayRow({ holidayDate: OBS_DAY - 3 })], 'OPEN', null],
     [[holidayRow({ holidayDate: OBS_DAY - 2 })], 'MARKET_STATUS_UNKNOWN', 'holiday_bounds_omitted'],
     // The row's structure is still checked: only its bounds are skipped.
-    [[closed(OBS_DAY - 3, { scheduleTimeZone: 'Not/AZone' })], 'MARKET_STATUS_UNKNOWN', 'calendar_holiday_invalid'],
+    [[unreadable(OBS_DAY - 3, { scheduleTimeZone: 'Not/AZone' })], 'MARKET_STATUS_UNKNOWN', 'calendar_holiday_invalid'],
   ]
   for (const [holiday, status, reason] of cases) {
     const label = JSON.stringify(holiday.map(h => [h.holidayDate, h.isRecurring]))
@@ -320,7 +325,7 @@ test('K1b: a 0/0 "Closed" row three UTC days before its observation is skipped; 
 
 test('K1b: the cut is the observation\'s own UTC day, not the reader\'s clock', t => {
   const db = fixture(t)
-  const row = closed(OBS_DAY - 2) // 2026-09-20
+  const row = unreadable(OBS_DAY - 2) // 2026-09-20
   const midnight = (OBS_DAY + 1) * D * 1000 // 2026-09-23T00:00:00.000Z, a Wednesday
   write(db, spec({ holiday: [row] }), midnight - 1)
   assert.equal(read(db, midnight - 1).reason, 'holiday_bounds_invalid', 'observed 22-09 23:59:59.999Z: the row is two days old')
@@ -331,7 +336,7 @@ test('K1b: the cut is the observation\'s own UTC day, not the reader\'s clock', 
 
 test('K1b: a skipped row stays in the stored payload (same version) and is listed as holiday_expired_ignored, never hidden', t => {
   const db = fixture(t)
-  const old = closed(20447, { name: '25.12.2025 - Closed' }), current = closed(OBS_DAY, { name: '22.09.2026 Closed' })
+  const old = unreadable(20447, { name: '25.12.2025 - Closed' }), current = unreadable(OBS_DAY, { name: '22.09.2026 Closed' })
   const symbol = spec({ holiday: [old] })
   const { version } = write(db, symbol)
   const diag = () => readMarketCalendar(db, ID, { nowMs: NOW, diagnostics: true })
@@ -343,7 +348,7 @@ test('K1b: a skipped row stays in the stored payload (same version) and is liste
     'the version hashes the payload WITH the skipped row: nothing was dropped to resolve it')
   assert.deepEqual(r.unresolvedHolidays, [])
   assert.deepEqual(r.expiredHolidays, [{ reason: 'holiday_bounds_invalid', ignored: 'holiday_expired_ignored', holidayId: 20447, name: '25.12.2025 - Closed',
-    description: null, holidayDate: 20447, dateIso: '2025-12-25', isRecurring: false, scheduleTimeZone: 'Europe/Moscow', startSecond: 0, endSecond: 0 }])
+    description: null, holidayDate: 20447, dateIso: '2025-12-25', isRecurring: false, scheduleTimeZone: 'Europe/Moscow', startSecond: 5, endSecond: 4 }])
   assert.equal('expiredHolidays' in read(db), false, 'the status read carries no diagnostic')
   write(db, spec({ holiday: [old, current] }))
   r = diag()
@@ -356,17 +361,17 @@ test('K1b: a record stored before K1b, or under the old combined code, is re-jud
   const db = fixture(t)
   const storedAs = code => { const s = JSON.parse(getState(db, cacheKey(ID))); s.latest.reason = code; s.lastVerified = null; setState(db, cacheKey(ID), JSON.stringify(s)) }
   for (const code of ['holiday_bounds_invalid', 'calendar_holiday_window_unknown']) {
-    const { version } = write(db, spec({ holiday: [closed(20447), closed(OBS_DAY - 3)] }))
+    const { version } = write(db, spec({ holiday: [unreadable(20447), unreadable(OBS_DAY - 3)] }))
     storedAs(code) // exactly what the pre-K1b (or pre-K1) collector stored for this payload
     assert.equal(read(db).marketStatus, 'OPEN', code)
     assert.equal(read(db).version, version)
     assert.equal(read(db, NOW + CALENDAR_MAX_AGE_MS).reason, 'calendar_stale', 'a re-judged record still ages out')
-    write(db, spec({ holiday: [closed(OBS_DAY - 2)] }))
+    write(db, spec({ holiday: [unreadable(OBS_DAY - 2)] }))
     storedAs(code)
     assert.equal(read(db).reason, 'holiday_bounds_invalid', `${code}: a row that can still reach a window keeps it unknown`)
   }
   // A payload that no longer matches its version keeps its stored code.
-  write(db, spec({ holiday: [closed(20447)] }))
+  write(db, spec({ holiday: [unreadable(20447)] }))
   const altered = JSON.parse(getState(db, cacheKey(ID)))
   altered.latest.reason = 'holiday_bounds_invalid'; altered.latest.version = 'f'.repeat(64)
   setState(db, cacheKey(ID), JSON.stringify(altered))
@@ -375,7 +380,7 @@ test('K1b: a record stored before K1b, or under the old combined code, is re-jud
 
 test('K1b: lastVerified keeps an observation that resolved past a skipped row, judged at that observation\'s own time', t => {
   const db = fixture(t)
-  const { version } = write(db, spec({ holiday: [closed(20447)] }))
+  const { version } = write(db, spec({ holiday: [unreadable(20447)] }))
   write(db, spec({ schedule: [] }), NOW + 1000)
   assert.equal(JSON.parse(getState(db, cacheKey(ID))).lastVerified?.version, version, 'the record path retains it')
   const r = read(db, NOW + 1000)
@@ -403,3 +408,113 @@ test('K1b: a skipped row is never evaluated — the eight-day projection lookbac
   write(db, spec({ ...always, symbolId: 9, holiday: [{ ...odd, endSecond: D }] }), NOW, third)
   assert.equal(projectCalendar(read(db, NOW, third), NOW).intervals.length, 2)
 })
+
+// ---- V3 K3 (owner OD-7, answered yes 26-09-2026): a 0/0 holiday row means
+// CLOSED for the whole local day, in the row's own zone. The worst case reads
+// closed when the market was open, never the reverse.
+const zeroZero = (holidayDate, extra = {}) => ({ holidayId: holidayDate, name: 'National Day', holidayDate, isRecurring: false,
+  scheduleTimeZone: 'Asia/Hong_Kong', startSecond: 0, endSecond: 0, ...extra })
+const ALWAYS = { schedule: [{ startSecond: 0, endSecond: 7 * D }] }
+const at = iso => Date.parse(iso)
+// A 3-day freshness policy so one observation covers the whole holiday (the policy allows up to 7).
+const readAt = (db, iso) => readMarketCalendar(db, ID, { nowMs: at(iso), maxAgeMs: 3 * CALENDAR_MAX_AGE_MS })
+
+test('K3: a current 0/0 row reads CLOSED for the whole local day in its own zone, and OPEN either side of it', t => {
+  const db = fixture(t)
+  const observed = at('2026-09-30T12:00:00Z')
+  // HKEX National Day, 01-10-2026: local 00:00 HKT = 30-09 16:00Z; next local midnight = 01-10 16:00Z.
+  assert.equal(write(db, spec({ ...ALWAYS, holiday: [zeroZero(20727)] }), observed).reason, null, 'recorded as a resolved calendar, not holiday_bounds_invalid')
+  const cases = [
+    ['2026-09-30T15:59:59.999Z', 'OPEN', null],
+    ['2026-09-30T16:00:00.000Z', 'CLOSED', 'broker_holiday'],
+    ['2026-10-01T03:00:00.000Z', 'CLOSED', 'broker_holiday'],
+    ['2026-10-01T15:59:59.999Z', 'CLOSED', 'broker_holiday'],
+    ['2026-10-01T16:00:00.000Z', 'OPEN', null],
+  ]
+  for (const [iso, status, reason] of cases) {
+    const r = readAt(db, iso)
+    assert.equal(r.marketStatus, status, iso)
+    assert.equal(r.reason, reason, iso)
+  }
+})
+
+test('K3: the projection (what the verifier and scanners read) carries the same whole-day gap', t => {
+  const db = fixture(t)
+  const observed = at('2026-09-30T12:00:00Z')
+  write(db, spec({ ...ALWAYS, holiday: [zeroZero(20727)] }), observed)
+  const p = projectCalendar(read(db, observed), observed)
+  const closedGap = p.intervals.findIndex(i => i.toMs === at('2026-09-30T16:00:00Z'))
+  assert.ok(closedGap >= 0, 'an interval ends at local midnight HKT')
+  assert.equal(p.intervals[closedGap + 1].fromMs, at('2026-10-01T16:00:00Z'), 'the next opens at the following local midnight: the end is 86400 s, not 0')
+})
+
+test('K3: a future 0/0 row no longer makes today UNKNOWN; a past one inside the lookback is a closed day, not skipped', t => {
+  const db = fixture(t)
+  write(db, spec({ holiday: [zeroZero(OBS_DAY + 9)] }))
+  assert.equal(read(db).marketStatus, 'OPEN', 'Tuesday 06:00Z, FX schedule open; the holiday is nine days away')
+  write(db, spec({ holiday: [zeroZero(OBS_DAY)] }))
+  assert.equal(read(db).marketStatus, 'CLOSED', 'the current day in Hong Kong (22-09 14:00 HKT) is closed')
+  const r = readMarketCalendar(db, ID, { nowMs: NOW, diagnostics: true })
+  assert.deepEqual(r.unresolvedHolidays, [], 'nothing is unresolved')
+  assert.deepEqual(r.expiredHolidays, [], 'nothing is skipped')
+  assert.deepEqual(storedHolidays(db, ID).holidays.map(h => [h.reason, h.interpreted]), [[null, 'holiday_full_local_day']], 'the row is labelled with the meaning K3 gave it')
+})
+
+test('K3: only the exact 0/0 pair gets the meaning — omitted, single and other invalid bounds stay UNKNOWN', t => {
+  const db = fixture(t)
+  for (const [extra, reason] of [
+    [{ startSecond: undefined, endSecond: undefined }, 'holiday_bounds_omitted'],
+    [{ startSecond: 0, endSecond: undefined }, 'holiday_bounds_omitted'],
+    [{ startSecond: undefined, endSecond: 0 }, 'holiday_bounds_omitted'],
+    [{ startSecond: 0, endSecond: null }, 'holiday_bounds_omitted'],
+    [{ startSecond: '0', endSecond: '0' }, 'holiday_bounds_invalid'],
+    [{ startSecond: 7, endSecond: 7 }, 'holiday_bounds_invalid'],
+    [{ startSecond: 0, endSecond: D + 1 }, 'holiday_bounds_invalid'],
+  ]) {
+    const row = zeroZero(OBS_DAY, extra)
+    for (const k of ['startSecond', 'endSecond']) if (row[k] === undefined) delete row[k]
+    write(db, spec({ holiday: [row] }))
+    const r = read(db)
+    assert.equal(r.marketStatus, 'MARKET_STATUS_UNKNOWN', JSON.stringify(extra))
+    assert.equal(r.reason, reason, JSON.stringify(extra))
+  }
+})
+
+test('K3: a 0/0 row on a DST day closes the whole local day — 25 UTC hours on the EU autumn change', t => {
+  const db = fixture(t)
+  const observed = at('2026-10-24T12:00:00Z')
+  // 25-10-2026 in Bucharest: local 00:00 EEST = 24-10 21:00Z; next local midnight 00:00 EET = 25-10 22:00Z.
+  write(db, spec({ ...ALWAYS, holiday: [zeroZero(20751, { scheduleTimeZone: 'Europe/Bucharest' })] }), observed)
+  assert.equal(readAt(db, '2026-10-24T20:59:59Z').marketStatus, 'OPEN')
+  assert.equal(readAt(db, '2026-10-24T21:00:00Z').marketStatus, 'CLOSED')
+  assert.equal(readAt(db, '2026-10-25T21:59:59Z').marketStatus, 'CLOSED', 'the 25th local hour is still the holiday')
+  assert.equal(readAt(db, '2026-10-25T22:00:00Z').marketStatus, 'OPEN')
+})
+
+test('K3: a 0/0 row on a DST day closes the whole local day — 23 UTC hours on the EU spring change', t => {
+  const db = fixture(t)
+  const observed = at('2026-03-28T12:00:00Z')
+  // 29-03-2026 in Bucharest: local 00:00 EET = 28-03 22:00Z; next local midnight 00:00 EEST = 29-03 21:00Z.
+  write(db, spec({ ...ALWAYS, holiday: [zeroZero(20541, { scheduleTimeZone: 'Europe/Bucharest' })] }), observed)
+  assert.equal(readAt(db, '2026-03-28T21:59:59Z').marketStatus, 'OPEN')
+  assert.equal(readAt(db, '2026-03-28T22:00:00Z').marketStatus, 'CLOSED')
+  assert.equal(readAt(db, '2026-03-29T20:59:59Z').marketStatus, 'CLOSED', 'the 23rd local hour is still the holiday')
+  assert.equal(readAt(db, '2026-03-29T21:00:00Z').marketStatus, 'OPEN')
+})
+
+test('K3: a recurring 0/0 row closes that local date every year', t => {
+  const db = fixture(t)
+  const observed = at('2026-12-24T12:00:00Z') // Thu 24-12; 25-12 is a Friday, the FX schedule open
+  write(db, spec({ holiday: [zeroZero(20447, { isRecurring: true, scheduleTimeZone: 'Europe/Moscow', name: '25.12 - Closed' })] }), observed)
+  assert.equal(readAt(db, '2026-12-25T06:00:00Z').marketStatus, 'CLOSED')
+  assert.equal(readAt(db, '2026-12-24T21:00:00Z').marketStatus, 'CLOSED', 'Moscow 25-12 00:00:00')
+  assert.equal(readAt(db, '2026-12-24T20:59:59Z').marketStatus, 'OPEN', 'Moscow 24-12 23:59:59')
+})
+
+test('K3: a record stored before K3 as holiday_bounds_invalid is re-judged from its own payload — no re-collection needed', t => {
+  const db = fixture(t)
+  write(db, spec({ holiday: [zeroZero(OBS_DAY)] }))
+  const s = JSON.parse(getState(db, cacheKey(ID))); s.latest.reason = 'holiday_bounds_invalid'; setState(db, cacheKey(ID), JSON.stringify(s))
+  assert.equal(read(db).marketStatus, 'CLOSED')
+})
+
