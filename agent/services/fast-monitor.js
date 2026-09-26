@@ -285,6 +285,8 @@ const probeScheduler = new ProbeScheduler({ cap: probeCap(), backoffMs: probeBac
 export function _resetFastMonitorProbeSchedulerForTests() { probeScheduler.reset() }
 /** Test seam: the cap is normally fixed at process start (env-read once); a test overrides it directly to pin cap behaviour without an env-driven re-import. */
 export function _setFastMonitorProbeCapForTests(n) { probeScheduler.cap = clampCap(n) }
+/** Test seam: reads back what the scheduler's cap actually is — pins that the setter above clamps, not just that it assigns. */
+export function _getFastMonitorProbeCapForTests() { return probeScheduler.cap }
 
 /** Sizes and evictions for /state/route-timings-adjacent diagnostics. */
 export function fastMonitorMapStats() {

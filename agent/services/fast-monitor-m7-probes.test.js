@@ -17,7 +17,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
-import { runFastMonitor, _resetFastDecisionStateForTests, _resetFastMonitorProbeSchedulerForTests, _setFastMonitorProbeCapForTests } from './fast-monitor.js'
+import { runFastMonitor, _resetFastDecisionStateForTests, _resetFastMonitorProbeSchedulerForTests, _setFastMonitorProbeCapForTests, _getFastMonitorProbeCapForTests } from './fast-monitor.js'
+import { PROBE_CAP_DEFAULT, PROBE_CAP_MAX } from '../lib/fast-monitor-probes.js'
 
 const CREDS = { ready: true, host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '111', isLive: false }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -203,8 +204,17 @@ test('M7: a symbol with a successful probe is re-probed on its normal cadence (n
   addPos(db, 'EURUSD')
   setState(db, 'monitor_overrides_json', JSON.stringify({ EURUSD: 0.01 })) // 15s-floor cadence
   let t = clockBase += 3_600_000
-  const emptySide = { feed: 'up', generation: 1, accountId: '111', count: 0, quotes: [] }
-  const d = deps({ now: t, quotesBody: emptySide, brokerQuote: { bid: 1.1005, ask: 1.1007 } })
+  // WIRING PIN (nit round, 26-09-2026): a FRESH quote for another symbol on
+  // the same side (GBPUSD, id 2) — not the empty side used elsewhere in this
+  // file. With an empty side, sideHasFreshQuote is always false and
+  // ProbeScheduler.plan()'s backoff branch can never arm regardless of B1's
+  // no-quote gate, so mutating that gate out leaves this test green for the
+  // wrong reason (it never exercises the branch at all). With a fresh other
+  // symbol here, backoff WOULD arm on pass 2 if B1's gate were removed
+  // (EURUSD's pass-1 probe succeeded, side is fresh) — the assertion that
+  // pass 2 still reaches the broker is what actually pins the gate.
+  const sideFreshOther = (tt) => ({ feed: 'up', generation: 1, accountId: '111', nowMs: tt, count: 1, quotes: [{ symbolId: 2, bid: 1.27, ask: 1.2702, tsMs: tt - 500, recvMs: tt - 500 }] })
+  const d = deps({ now: t, quotesBody: sideFreshOther, brokerQuote: { bid: 1.1005, ask: 1.1007 } })
   const out1 = await runFastMonitor(db, CREDS, d)
   assert.equal(out1.checked, 1)
   assert.deepEqual(d.calls.ws, [1])
@@ -300,6 +310,27 @@ test('B2: fairness — N > cap positions on an empty side are ALL probed within 
       for (const id of d.calls.ws) everProbed.add(id)
     }
     assert.deepEqual([...everProbed].sort((a, b) => a - b), [1, 2, 3, 4, 5], `every symbol must be probed within ${passes} passes (cap ${CAP}, ${symbols.length} symbols)`)
+  } finally {
+    _setFastMonitorProbeCapForTests(8)
+  }
+})
+
+// N1 (nit round, 26-09-2026): _setFastMonitorProbeCapForTests must CLAMP,
+// not bare-assign — the wiring-level pin for fast-monitor-probes.js's own
+// clampCap unit tests, so a bare `probeScheduler.cap = n` regression here
+// is caught even if the library's own validation stays intact.
+test('_setFastMonitorProbeCapForTests (N1): clamps through clampCap, not a bare assignment', () => {
+  try {
+    _setFastMonitorProbeCapForTests(0)
+    assert.equal(_getFastMonitorProbeCapForTests(), PROBE_CAP_DEFAULT, 'a bare assignment would leave the scheduler with cap 0 — probing silently disabled')
+    _setFastMonitorProbeCapForTests(-5)
+    assert.equal(_getFastMonitorProbeCapForTests(), PROBE_CAP_DEFAULT)
+    _setFastMonitorProbeCapForTests(1e9)
+    assert.equal(_getFastMonitorProbeCapForTests(), PROBE_CAP_MAX, 'a bare assignment would leave the scheduler unbounded')
+    _setFastMonitorProbeCapForTests(0.5)
+    assert.equal(_getFastMonitorProbeCapForTests(), PROBE_CAP_DEFAULT, '0.5 floors to 0, not a valid 1')
+    _setFastMonitorProbeCapForTests(3)
+    assert.equal(_getFastMonitorProbeCapForTests(), 3, 'an ordinary valid value passes through unchanged')
   } finally {
     _setFastMonitorProbeCapForTests(8)
   }
