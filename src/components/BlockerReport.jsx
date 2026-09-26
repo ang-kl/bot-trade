@@ -3,6 +3,7 @@ import { agentConfigured, agentGet, pageAsleep } from '../lib/agent-api.js'
 import Card from './common/Card.jsx'
 import DataTable from './common/DataTable.jsx'
 import { defaultTimeZone } from '../lib/data-table-groups.js'
+import { readCardOpen } from '../lib/card-open.js'
 
 const LABELS = { upstream_stop: 'Upstream stops', risk_refusal: 'Risk refusals', post_approval_failure: 'After-approval failures', tick_refusal: 'Tick sidecar refusals', approved: 'Risk approvals', placement_receipt: 'Placement receipts', other_stop: 'Other recorded stops' }
 
@@ -56,6 +57,19 @@ function timeInZone(iso, timeZone) {
   catch { return iso }
 }
 
+// V3 UI-3 fix round (blocker 1, §3 "UTC under each time"): the local-zone
+// time above always carries this line underneath, in the raw window's own
+// zone — never guessed from the browser's zone the way a bare `new
+// Date(iso)` render would be.
+function timeUtc(iso) {
+  if (!iso) return null
+  try { return `${new Date(iso).toISOString().slice(11, 16)} UTC` } catch { return null }
+}
+
+function timeCell(iso, timeZone) {
+  return <>{timeInZone(iso, timeZone)}<br /><span className="text-[var(--color-text-sub)]">{timeUtc(iso)}</span></>
+}
+
 function foldedRowReason(sample) {
   return sample.firstBlocker ? sample.firstBlocker.reason || 'Reason not recorded'
     : sample.kind === 'placement_receipt' ? 'None recorded; placement does not prove a fill' : 'None recorded; approval does not prove a fill'
@@ -63,8 +77,13 @@ function foldedRowReason(sample) {
 
 function foldedRowDetail(entry) {
   const row = entry.sample
+  // V3 UI-3 fix round (blocker 3, §3 "×N records · M evaluations"): count is
+  // retained RECORDS (reconciles with the day/report totals); evaluations is
+  // the sum of each record's own repeat_count — a dedup on the broker side,
+  // not a second record.
+  const evaluations = entry.evaluations ?? row.recordedEvaluations
   return <>
-    <p>{row.recordId} · {row.recordedEvaluations} recorded evaluations · {row.disposition || 'No terminal disposition recorded'} · seen {entry.count} time{entry.count === 1 ? '' : 's'} in this day{entry.count > 1 ? ` (${entry.firstAt} – ${entry.lastAt})` : ''}</p>
+    <p>{row.recordId} · {row.disposition || 'No terminal disposition recorded'} · seen {entry.count} record{entry.count === 1 ? '' : 's'} · {evaluations} recorded evaluation{evaluations === 1 ? '' : 's'} in this day{entry.count > 1 ? ` (${entry.firstAt} – ${entry.lastAt} UTC)` : ''}</p>
     <ul>{row.diagnostics.map(d => <li key={d.stage}>{d.stage}: {d.status.replaceAll('_', ' ')}</li>)}</ul>
     <p>{row.diagnosticNote}</p>
     <pre className="whitespace-pre-wrap max-w-lg break-words">{JSON.stringify(row.recordedChecks || row.detail || { checks: row.recordedChecksStatus }, null, 2)}</pre>
@@ -87,8 +106,18 @@ function GroupedBlockerTable({ report }) {
   }))
   const columns = [
     {
+      // V3 UI-3 fix round (blocker 1): a single-occurrence row used to render
+      // `f.sample.at` — the raw, zone-less SQLite string — straight through
+      // `new Date(...)`, so the browser read it as LOCAL time (measured: a
+      // 22:45 SGT row read as "22:45" under a UTC-labelled header, really
+      // 06:45 SGT). `f.lastAt` is always the fold's own UTC ISO string,
+      // whether the entry was seen once or many times. Every time also
+      // carries its UTC value underneath (§3, "UTC under each time").
       key: 'at', label: 'Recorded time', sortAccessor: f => f.lastAt,
-      render: f => f.count > 1 ? `${timeInZone(f.firstAt, timeZone)}–${timeInZone(f.lastAt, timeZone)} (×${f.count})` : timeInZone(f.sample.at, timeZone),
+      render: f => f.count > 1
+        ? <>{timeInZone(f.firstAt, timeZone)}–{timeInZone(f.lastAt, timeZone)} (×{f.count})<br />
+            <span className="text-[var(--color-text-sub)]">{timeUtc(f.firstAt)}–{timeUtc(f.lastAt)}</span></>
+        : timeCell(f.lastAt, timeZone),
     },
     {
       key: 'account', label: 'Account / instrument', sortAccessor: f => f.sample.accountId || '',
@@ -96,16 +125,25 @@ function GroupedBlockerTable({ report }) {
     },
     {
       key: 'result', label: 'Observed result', sortAccessor: f => f.sample.kind,
-      render: f => <>{LABELS[f.sample.kind]}<br />{f.sample.stage}{f.preFixLabel && <><br /><span className="text-[var(--color-text-sub)]">{f.preFixLabel}</span></>}</>,
+      render: f => <>{LABELS[f.sample.kind]}<br />{f.sample.stage}
+        {f.preFixLabel && <><br /><span className="text-[var(--color-text-sub)]">{f.preFixLabel}</span></>}
+        {f.offSinceLabel && <><br /><span className="text-[var(--color-text-sub)]">{f.offSinceLabel}</span></>}</>,
     },
     { key: 'reason', label: 'First recorded blocker', sortable: false, render: f => <span className="max-w-md whitespace-normal inline-block">{foldedRowReason(f.sample)}</span> },
   ]
   return <DataTable id="blockers" columns={columns} groups={groups}
     getRowKey={f => f.id}
-    renderDetails={f => f.sample.stage === 'fast_monitor' ? null : foldedRowDetail(f)}
+    // V3 UI-3 fix round (nit, §3 "fast_monitor rows: an expandable count"):
+    // fast_monitor used to render its count with no way to inspect an
+    // instance at all — the plan asks for both, not one or the other.
+    renderDetails={f => foldedRowDetail(f)}
     renderStanding={group => <div className="my-1 pl-2 border-l-2 border-[var(--color-border)]">
       <p className="text-[var(--color-text-sub)]">Applies to every account, kept outside the totals above:</p>
-      <ul>{group.standing.map(s => <li key={`${s.sample.stage}|${s.firstAt}`}>{s.sample.stage} ({LABELS[s.sample.kind] || s.sample.kind}) ×{s.count} — {foldedRowReason(s.sample)}</li>)}</ul>
+      <ul>{group.standing.map(s => <li key={`${s.sample.stage}|${s.firstAt}`}>
+        {s.sample.stage} ({LABELS[s.sample.kind] || s.sample.kind}) ×{s.count}
+        {' '}({timeInZone(s.firstAt, timeZone)}–{timeInZone(s.lastAt, timeZone)}, {timeUtc(s.firstAt)}–{timeUtc(s.lastAt)})
+        {' '}— {foldedRowReason(s.sample)}{s.offSinceLabel && <><br /><span className="text-[var(--color-text-sub)]">{s.offSinceLabel}</span></>}
+      </li>)}</ul>
     </div>}
     emptyMessage="No retained decision records in this window. This does not prove that scanning ran or found no signals." />
 }
@@ -120,6 +158,12 @@ export function BlockerReading({ report, error }) {
     </div>)}</dl>
     {report.unsplitRecordsInWindow > 0 && <p>{report.unsplitRecordsInWindow} of these records cannot be split. {report.unsplitNote}</p>}
     <RosterWideStops report={report} />
+    {// V3 UI-3 fix round (blocker 7): the day-grouped view can exceed its own
+    // byte bound on a heavy window; the server then reports `daysIncomplete`
+    // and omits `days` rather than shipping a truncated one. Say so, rather
+    // than letting the ungrouped fallback below render with no explanation
+    // of why the grouped view is missing.
+    report.daysIncomplete && <p role="status">Day-grouped view unavailable: too many distinct records in this window to group. Showing the plain, paged list below instead.</p>}
     {report.days
       ? <GroupedBlockerTable report={report} />
       : report.records.length === 0 ? <p>No retained decision records in this window. This does not prove that scanning ran or found no signals.</p>
@@ -149,11 +193,14 @@ export default function BlockerReport({ accountId }) {
   // V3 UI-3 ("refresh only while expanded"): Card hides its body with
   // display:none rather than unmounting it (so sort/scroll state survives a
   // collapse), which means an effect here keeps running on its own unless it
-  // is told the card is closed. Defaults to true so the very first mount (the
-  // common case — a freshly opened page, nothing yet remembered) still loads
-  // immediately; Card's onCollapsedChange corrects this on mount when a
-  // PERSISTED choice says otherwise, before the 60s interval would ever fire.
-  const [expanded, setExpanded] = useState(true)
+  // is told the card is closed. Fix round nit: this used to default to
+  // `true` unconditionally, so a card the operator had PERSISTED as
+  // collapsed still fired one fetch on every mount before Card's
+  // onCollapsedChange corrected it a tick later. Reading the same persisted
+  // choice Card itself will read (`sec-blockers`, defaultOpen `false` to
+  // match Card's own `defaultCollapsed` here) gets it right from the first
+  // render, with no fetch-then-cancel.
+  const [expanded, setExpanded] = useState(() => readCardOpen('sec-blockers', false))
   const timeZone = defaultTimeZone()
   useEffect(() => {
     if (!expanded) return undefined

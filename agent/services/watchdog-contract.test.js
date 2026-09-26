@@ -160,4 +160,11 @@ test('UI-3 pin: entryDiagnostics/the watchdog contract are unaffected by blocker
   assert.equal('days' in before, false, 'entryDiagnostics never requests timeZone, so it must never carry a `days` field at all')
   assert.equal(afterBytes, beforeBytes, 'RED if the watchdog contract\'s size changed because grouping ran on the same db')
   assert.ok(afterBytes < 256 * 1024)
+  // W1.3 checker nit: the before/after comparison above runs the SAME code
+  // both times, so it cannot detect blockerReport computing `days` even when
+  // NO caller asked for it (entryDiagnostics never passes timeZone) — a
+  // regression there would pass every assertion above unchanged. Pin the
+  // no-timeZone contract directly.
+  assert.equal(blockerReport(db, { accountId: 'all', from: now - DAY, to: now, now }).days, null,
+    'RED if blockerReport computes `days` without a timeZone')
 })

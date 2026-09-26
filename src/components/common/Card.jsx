@@ -93,13 +93,18 @@ export default function Card({
   const [popup, setPopup] = useState(null)
   const cardId = rest.id || null
   const [collapsed, setCollapsedRaw] = useState(() => !readCardOpen(cardId, !defaultCollapsed, storage))
-  useEffect(() => { onCollapsedChange?.(collapsed) }, []) // eslint-disable-line react-hooks/exhaustive-deps -- mount-only: the initial read, not a resubscribe on every render
+  // Fix round nit: `onCollapsedChange` used to also fire from INSIDE the
+  // state updater below — a side effect during what React treats as a pure
+  // state calculation, which can run twice (or, in concurrent rendering, be
+  // discarded and retried) without the caller ever finding out. One effect
+  // keyed on `collapsed` covers both the initial read (mount) and every
+  // later toggle, so callers see exactly one call per real transition.
+  useEffect(() => { onCollapsedChange?.(collapsed) }, [collapsed]) // eslint-disable-line react-hooks/exhaustive-deps -- only real collapsed transitions matter, not onCollapsedChange's identity
   // Every setCollapsed call also writes the choice back, under this Card's
   // own id — a no-op when there is no id (card-open.js's own guard).
   const setCollapsed = (updater) => setCollapsedRaw(prev => {
     const next = typeof updater === 'function' ? updater(prev) : updater
     writeCardOpen(cardId, !next, storage)
-    onCollapsedChange?.(next)
     return next
   })
   const [maximized, setMaximized] = useState(false)

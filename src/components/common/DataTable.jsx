@@ -7,9 +7,13 @@
 //   - `sortRows`/`useSort` (lib/use-sort.jsx) for the tap-to-sort columns;
 //   - the StdTradeTable frozen-column idiom (`sticky left-0`) for the first
 //     column, generalised here as `.dt-sticky-col`;
-//   - `Collapse` for each date group's header (▾/▸, remembered, row count) —
-//     the same control the plan's own header example implies
-//     ("Sat 26 Sep 2026 · Asia/Singapore — 2,913 records this day");
+//   - a Collapse-style toggle (▾/▸, remembered, row count) for each date
+//     group's header row — the same control the plan's own header example
+//     implies ("Sat 26 Sep 2026 · Asia/Singapore — 2,913 records this day").
+//     Fix round (blocker 5): this used to BE Collapse.jsx, wrapping each
+//     group's rows in their own nested <table>; it is now inlined as a
+//     `<tr><th colSpan scope="rowgroup">` sibling of the group's own row
+//     <tr>s, in the ONE outer table — see the note on GroupRows below for why;
 //   - `Disclosure` for a row's own expandable detail line.
 //
 // GROUPING is always supplied by the caller as `groups` — either computed
@@ -27,7 +31,6 @@
 // component test; these tests cover structure and content only.
 import { useState } from 'react'
 import { sortRows } from '../../lib/use-sort.jsx'
-import Collapse from './Collapse.jsx'
 import Disclosure from './Disclosure.jsx'
 
 export default function DataTable({
@@ -111,37 +114,68 @@ export default function DataTable({
   )
 }
 
+// Fix round (blocker 5): every group used to render as ONE cell hosting its
+// OWN nested <table> — a second, independent auto-layout table whose column
+// widths have nothing to do with the outer <thead>'s. Measured in Chromium at
+// 390px: header column lefts (31/189/385/536px) drifted 30-50px from the row
+// cells' own lefts (31/139/342/505px), and `.dt-sticky-date` sat on a <div>
+// wrapping that inner table — inside a <td> that itself never moves, so it
+// could not stick to anything.
+//
+// Now every group's header AND its rows are siblings in the ONE outer
+// <tbody>, so the browser's table layout algorithm sizes every column from
+// every row at once — header and data cells share the same lefts by
+// construction, not by coincidence. The group header is its own
+// `<tr><th colSpan scope="rowgroup">` (a standard row-group header row), and
+// `.dt-sticky-date` on that real table cell can actually stick as the table
+// scrolls past it, the way `.dt-sticky-head`/`.dt-sticky-col` already do on
+// other real cells. Open/closed state keeps Collapse's own per-id storage key
+// (`tbl_open_dt_<id>_<group.key>`) so no operator's remembered choice is
+// lost by this change; only WHICH rows render moves with it, per the plan's
+// own accepted fix.
 function GroupRows({ id, group, sorted, columns, renderDetails, renderStanding, openRows, toggleRow, getRowKey }) {
   const groupKey = `dt_${id || 'table'}_${group.key}`
+  const storageKey = `tbl_open_${groupKey}`
+  const [open, setOpen] = useState(() => {
+    try {
+      const v = localStorage.getItem(storageKey)
+      return v == null ? true : v === '1'
+    } catch { return true }
+  })
+  const toggleOpen = () => setOpen(o => {
+    const next = !o
+    try { localStorage.setItem(storageKey, next ? '1' : '0') } catch { /* private mode */ }
+    return next
+  })
+  const totalCols = columns.length + (renderDetails ? 1 : 0)
+  const count = group.count ?? group.rows?.length ?? 0
   return (
-    <tr>
-      {/* One cell spanning the whole row hosts the per-day Collapse and its
-          own nested table — a <tr> cannot itself be sticky as a group, so the
-          date header's stickiness rides the Collapse label's own dt-sticky-date
-          class inside this cell instead. */}
-      <td colSpan={columns.length + (renderDetails ? 1 : 0)} className="p-0">
-        <div className="dt-sticky-date py-1">
-          <Collapse id={groupKey} label={group.label} sub={group.sub ?? ` — ${group.count ?? group.rows?.length ?? 0} record${(group.count ?? group.rows?.length ?? 0) === 1 ? '' : 's'} this day`}>
-            {renderStanding && group.standing?.length > 0 && renderStanding(group)}
-            {sorted.length > 0 && (
-              <table className="w-full text-left text-(length:--fs-body) tabular-nums">
-                <tbody>
-                  {sorted.map((row, i) => {
-                    const key = getRowKey(row, i)
-                    const detail = renderDetails ? renderDetails(row) : null
-                    const open = openRows.has(key)
-                    return (
-                      <RowLine key={key} row={row} columns={columns} detail={detail} open={open}
-                        onToggle={() => toggleRow(key)} />
-                    )
-                  })}
-                </tbody>
-              </table>
-            )}
-          </Collapse>
-        </div>
-      </td>
-    </tr>
+    <>
+      <tr>
+        <th colSpan={totalCols} scope="rowgroup" className="dt-sticky-date py-1 pr-3 text-left font-normal">
+          <button type="button" aria-expanded={open} onClick={toggleOpen}
+            className="flex items-center gap-1.5 text-(length:--fs-body) font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]">
+            <span aria-hidden="true" className="inline-block w-3">{open ? '▾' : '▸'}</span>
+            {group.label}
+            <span className="font-normal text-[var(--color-muted)]">{group.sub ?? ` — ${count} record${count === 1 ? '' : 's'} this day`}</span>
+          </button>
+        </th>
+      </tr>
+      {open && renderStanding && group.standing?.length > 0 && (
+        <tr>
+          <td colSpan={totalCols} className="p-0">{renderStanding(group)}</td>
+        </tr>
+      )}
+      {open && sorted.map((row, i) => {
+        const key = getRowKey(row, i)
+        const detail = renderDetails ? renderDetails(row) : null
+        const rowOpen = openRows.has(key)
+        return (
+          <RowLine key={key} row={row} columns={columns} detail={detail} open={rowOpen}
+            onToggle={() => toggleRow(key)} />
+        )
+      })}
+    </>
   )
 }
 
