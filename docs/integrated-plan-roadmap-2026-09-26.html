@@ -8,9 +8,9 @@
   :root{
     --bg:#f6f7f9; --panel:#ffffff; --ink:#1b2230; --muted:#5b6472; --line:#dfe3ea;
     --accent:#2f5fd6; --accent-ink:#12306e;
-    --wave1:#2f5fd6; --wave2:#8a4fc9; --waveg:#c2872b; --wave3:#1f8a63; --wave4:#7a8291;
+    --wave1:#2f5fd6; --wave2:#8a4fc9; --waveg:#c2872b; --wave3:#2563eb; --wave4:#7a8291;
     --badge-bg:#eef1f6; --badge-ink:#33394a;
-    --ok-bg:#e5f4ec; --ok-ink:#166a44; --ok-line:#a9dcc1;
+    --ok-bg:#e6ecfc; --ok-ink:#1d4ed8; --ok-line:#b9caf5;
     --warn-bg:#fdf1de; --warn-ink:#8a5a10; --warn-line:#f0cf99;
     --blocked-bg:#fdeaea; --blocked-ink:#9a2f2f; --blocked-line:#f0b8b8;
     --ask-bg:#eef0fb; --ask-ink:#3a3ea8; --ask-line:#c6caf2;
@@ -21,9 +21,9 @@
     :root:not([data-theme="light"]){
       --bg:#12151b; --panel:#1a1f28; --ink:#e7eaf0; --muted:#a1aab8; --line:#2b323f;
       --accent:#7fa2ff; --accent-ink:#cddaff;
-      --wave1:#7fa2ff; --wave2:#c79bf0; --waveg:#e0ac52; --wave3:#5fd0a1; --wave4:#9aa3b2;
+      --wave1:#7fa2ff; --wave2:#c79bf0; --waveg:#e0ac52; --wave3:#7fa2ff; --wave4:#9aa3b2;
       --badge-bg:#232a36; --badge-ink:#cdd3e0;
-      --ok-bg:#12301f; --ok-ink:#7fe0ae; --ok-line:#1f5b3c;
+      --ok-bg:#1a2a4a; --ok-ink:#a9c2ff; --ok-line:#2f4a86;
       --warn-bg:#3a2a10; --warn-ink:#f0c987; --warn-line:#6b4c1a;
       --blocked-bg:#3a1616; --blocked-ink:#f2a3a3; --blocked-line:#6b2626;
       --ask-bg:#1c2040; --ask-ink:#b7bdf5; --ask-line:#3a3f80;
@@ -34,9 +34,9 @@
   :root[data-theme="dark"]{
     --bg:#12151b; --panel:#1a1f28; --ink:#e7eaf0; --muted:#a1aab8; --line:#2b323f;
     --accent:#7fa2ff; --accent-ink:#cddaff;
-    --wave1:#7fa2ff; --wave2:#c79bf0; --waveg:#e0ac52; --wave3:#5fd0a1; --wave4:#9aa3b2;
+    --wave1:#7fa2ff; --wave2:#c79bf0; --waveg:#e0ac52; --wave3:#7fa2ff; --wave4:#9aa3b2;
     --badge-bg:#232a36; --badge-ink:#cdd3e0;
-    --ok-bg:#12301f; --ok-ink:#7fe0ae; --ok-line:#1f5b3c;
+    --ok-bg:#1a2a4a; --ok-ink:#a9c2ff; --ok-line:#2f4a86;
     --warn-bg:#3a2a10; --warn-ink:#f0c987; --warn-line:#6b4c1a;
     --blocked-bg:#3a1616; --blocked-ink:#f2a3a3; --blocked-line:#6b2626;
     --ask-bg:#1c2040; --ask-ink:#b7bdf5; --ask-line:#3a3f80;
@@ -121,10 +121,11 @@
     <p class="sub">bot-trade · plan dated 26-09-2026 · generated from <code>docs/v3-integrated-plan-2026-09-26.md</code> and <code>docs/plan-ui-and-strategy-review-2026-09-26.md</code> on <code>origin/main</code> (<code>5389a83</code>)</p>
     <div class="banner">
       <strong>Status: PLAN, awaiting owner approval.</strong> Nothing shown here is built or merged by this page.
-      The source documents (PR #1143) are drafts under check; where this page and the source disagree, the source
-      markdown files are authoritative. Times are UTC ("Z") unless marked SGT.
+      The source documents landed via PR #1143, merged as <code>5389a83</code>; as of that source's own 04:25Z
+      snapshot they are still marked DRAFT internally, under check. Where this page and the source disagree, the
+      source markdown files are authoritative. Times are UTC ("Z") unless marked SGT.
     </div>
-    <div class="checkpoint"><span class="dot"></span> Owner checkpoint: 7 PM (evening) today, 26-09-2026 — falls inside the Wave&nbsp;1 build window (Sat 26-09 → Sun 27-09 20:00Z / Mon 04:00 SGT).</div>
+    <div class="checkpoint"><span class="dot"></span> Owner checkpoint: 19:00 SGT (11:00Z) today, 26-09-2026 — falls inside the Wave&nbsp;1 build window (Sat 26-09 → Sun 27-09 20:00Z / Mon 04:00 SGT).</div>
     <nav class="toc">
       <a href="#timeline">Timeline</a>
       <a href="#wave1">Wave 1</a>
@@ -181,7 +182,7 @@
       </div>
 
       <div class="now-marker">
-        <span class="now-pill">◉ Checkpoint — 7 PM today (26-09-2026)</span>
+        <span class="now-pill">◉ Checkpoint — 19:00 SGT / 11:00Z today (26-09-2026)</span>
       </div>
 
       <div class="wave" style="--wave-color:var(--waveg)">
@@ -230,11 +231,11 @@
 
     </div>
     <div class="legend">
-      <span><span class="badge badge-ok">green</span> auto-merges on a passing gate</span>
-      <span><span class="badge badge-ask">purple</span> gated on an owner decision (OD-n)</span>
-      <span><span class="badge badge-blocked">red</span> no build/merge activity allowed</span>
-      <span><span class="badge badge-warn">amber</span> hard external deadline</span>
-      <span><span class="badge badge-neutral">grey</span> not yet datable</span>
+      <span><span class="badge badge-ok">Auto on green gate</span> merges once its gate passes</span>
+      <span><span class="badge badge-ask">Owner-gated</span> waits on an owner decision (OD-n)</span>
+      <span><span class="badge badge-blocked">No merges</span> no build/merge activity allowed</span>
+      <span><span class="badge badge-warn">Deadline</span> hard external deadline</span>
+      <span><span class="badge badge-neutral">Not datable</span> not yet datable</span>
     </div>
   </section>
 
@@ -345,12 +346,12 @@
         <tr><td>REC and WEB</td><td>L1–L2b, X1, V1, I1–I3, WEB-1..10, WEB-8b</td><td>6 close records flagged CLS-04; F3; logged-in website rows</td><td>9440 Q3, H-P5b-5</td></tr>
       </tbody>
     </table></div>
-    <p class="lead" style="margin-top:14px;">In flight now: only PR #1143 (draft, the new plan itself). No branch exists yet for any of the 15 owner-gated items.</p>
+    <p class="lead" style="margin-top:14px;">As of 04:25Z per the source: PR #1143 (the new plan itself) has since merged as <code>5389a83</code>. No branch exists yet for any of the 15 owner-gated items.</p>
   </section>
 
   <section id="decisions">
     <h2>Key decisions blocking the most work</h2>
-    <p class="lead">Full register is §6 of the integrated plan (OD-1…OD-42). The items below gate the most downstream work; UI-only defaults already reflect owner sign-off from the relayed task (OD-17(a), OD-18 fold, OD-19 remove, OD-21 show commits).</p>
+    <p class="lead">Full register is §6 of the integrated plan (OD-1…OD-42). The items below gate the most downstream work; the four UI-only rows (OD-17, OD-18, OD-19, OD-21) are built to the plan's recommended defaults for now — none is confirmed by the owner yet.</p>
     <div class="twrap"><table>
       <thead><tr><th>ID</th><th>Question</th><th>Recommendation</th><th>Blocks</th></tr></thead>
       <tbody>
@@ -359,10 +360,10 @@
         <tr><td>OD-4</td><td>P1/P4 limits and window</td><td>Confirm proposed limits; window Mon 13:30–16:00Z + 20:00Z</td><td>P1/P4 acceptance — <strong>answer by Mon 13:00Z</strong></td></tr>
         <tr><td>OD-6</td><td>Gateway chain</td><td>V3 defaults; weekday window outside P1/P4; demo first</td><td>C8, C9, GW-1; tick auto switch</td></tr>
         <tr><td>OD-7 / OD-8</td><td>Holiday reading; entry-path hours source</td><td>Yes (closed on a current 0/0 row); account calendar for every entry</td><td>K3, S-8, WEB-6b — need-by 30-09</td></tr>
-        <tr><td>OD-17</td><td>Collapse standard; memory</td><td>(a) triangle, remembered on every page — <span class="badge badge-ok">confirmed by owner</span></td><td>UI-1</td></tr>
-        <tr><td>OD-18</td><td>Blockers fold and pre-fix labels</td><td>Fold, labelled per row until pre-fix rows age out — <span class="badge badge-ok">confirmed by owner</span></td><td>UI-3</td></tr>
-        <tr><td>OD-19</td><td>Go-live card</td><td>Remove — <span class="badge badge-ok">confirmed by owner</span></td><td>UI-6</td></tr>
-        <tr><td>OD-21</td><td>Version display</td><td>Show web and agent commits — <span class="badge badge-ok">confirmed by owner</span></td><td>UI-4</td></tr>
+        <tr><td>OD-17</td><td>Collapse standard; memory</td><td>(a) triangle, remembered on every page — <span class="badge badge-ask">Recommended default — awaits owner</span></td><td>UI-1</td></tr>
+        <tr><td>OD-18</td><td>Blockers fold and pre-fix labels</td><td>Fold, labelled per row until pre-fix rows age out — <span class="badge badge-ask">Recommended default — awaits owner</span></td><td>UI-3</td></tr>
+        <tr><td>OD-19</td><td>Go-live card</td><td>Remove — <span class="badge badge-ask">Recommended default — awaits owner</span></td><td>UI-6</td></tr>
+        <tr><td>OD-21</td><td>Version display</td><td>Show web and agent commits — <span class="badge badge-ask">Recommended default — awaits owner</span></td><td>UI-4</td></tr>
       </tbody>
     </table></div>
   </section>
