@@ -70,9 +70,26 @@ export default function Card({
   // the body reserves LOADING_MIN_HEIGHT instead of growing from whatever a
   // loading placeholder measures to the settled content's real height.
   loading = false,
+  // W1-FU (26-09 UI plan §5): opt-in — while this Card is COLLAPSED and has
+  // never been opened, its `children` are not mounted at all (not just
+  // hidden with display:none). The default (false) is the existing
+  // behaviour: children always mount, collapse only toggles display:none —
+  // every existing caller and test keeps its old DOM. Once opened for the
+  // first time, children stay mounted from then on, same as a non-lazy Card,
+  // so sort/scroll/page state still survives a later re-collapse.
+  lazy = false,
   // Tests inject a fake store here; production leaves it undefined and
   // card-open.js falls back to window.localStorage.
   storage = undefined,
+  // Test-only seam, same shape as `storage` above: this repo has no jsdom /
+  // interaction harness (see Card.test.jsx), so the "maximize a lazy,
+  // never-opened, still-collapsed card, then restore it" regression cannot
+  // be reached by clicking through a fresh renderToStaticMarkup mount — that
+  // state (collapsed:true, everOpened:true) only exists mid-session, after a
+  // real maximize click. `initialEverOpened` lets a test seed it directly;
+  // production never passes it, so `everOpened` keeps deriving from
+  // `!collapsed` as before.
+  initialEverOpened = undefined,
   // WHOSE numbers is this card showing (owner 05-08-2026). 'all', 'global',
   // or an account id. Undefined means the card has not declared a scope yet
   // and renders no chip — deliberately NOT defaulted to 'global', because
@@ -93,6 +110,12 @@ export default function Card({
   const [popup, setPopup] = useState(null)
   const cardId = rest.id || null
   const [collapsed, setCollapsedRaw] = useState(() => !readCardOpen(cardId, !defaultCollapsed, storage))
+  // W1-FU: whether this Card's content has EVER been shown — the gate `lazy`
+  // reads. Seeded from the same first-render `collapsed` value (a card that
+  // starts open has, by definition, already "opened"), so a fresh mount that
+  // opens straight from a persisted choice (card-open.js) never has to wait
+  // for the toggle to mount its children.
+  const [everOpened, setEverOpened] = useState(() => initialEverOpened ?? !collapsed)
   // Fix round nit: `onCollapsedChange` used to also fire from INSIDE the
   // state updater below — a side effect during what React treats as a pure
   // state calculation, which can run twice (or, in concurrent rendering, be
@@ -105,6 +128,10 @@ export default function Card({
   const setCollapsed = (updater) => setCollapsedRaw(prev => {
     const next = typeof updater === 'function' ? updater(prev) : updater
     writeCardOpen(cardId, !next, storage)
+    // W1-FU: mark "opened" the moment collapsed goes false — here, not in an
+    // effect, so a real toggle mounts a lazy Card's children on the SAME
+    // update as the collapse state changes, never a render behind it.
+    if (!next) setEverOpened(true)
     return next
   })
   const [maximized, setMaximized] = useState(false)
@@ -186,10 +213,15 @@ export default function Card({
   // but now participates in layout: the first content line wraps around it
   // and content that does not fit starts below it. There is therefore no
   // overlay target to obscure.
+  // W1-FU: maximizing forces content to show regardless of collapse state
+  // (see the `body` style below), so it must count as "opened" too — a lazy
+  // Card someone maximizes before ever expanding must not render an empty
+  // overlay.
+  const mountChildren = !lazy || everOpened || maximized
   const body = <div className="card-body" style={{
     ...(collapsed && !maximized ? { display: 'none' } : undefined),
     ...(loading ? { minHeight: LOADING_MIN_HEIGHT } : undefined),
-  }}>{children}</div>
+  }}>{mountChildren ? children : null}</div>
 
   return (
     <CardChromeContext.Provider value={true}>
@@ -216,6 +248,13 @@ export default function Card({
             // Captured at click time — refs must not be read during render.
             setLabel(copyTitle || headingOf(ref.current) || 'Section')
             setMaximized(true)
+            // BLOCKER fix (W1-FU checker): maximizing a lazy+collapsed card
+            // that was NEVER opened via the collapse toggle used to mount an
+            // empty overlay — `mountChildren` only checked `everOpened`, and
+            // this click never set it. Mark "opened" here too, same as the
+            // collapse toggle does, so the overlay always has real content
+            // and restore (⇱) keeps children mounted afterwards.
+            setEverOpened(true)
           }}
           style={btn}
           onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
