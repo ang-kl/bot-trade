@@ -35,6 +35,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "decision_ring.hpp"
 #include "engine.hpp"
@@ -46,10 +47,31 @@ namespace tick {
 // One-use permits pushed by the keeper (/config tickPermits), keyed by
 // account, symbol id and side. `take` is the single use: the permit leaves
 // the store when the fire is built, so a second fill cannot reuse it.
+//
+// GW-1 (SEQUENCE PR-10, WP-D D3): `takeIf` spends the permit ONLY when the
+// caller's checks accept it — a fill refused by the price bound, the stop
+// floor, sizing, the profile or the boot leaves the permit for the next fill
+// (gap 3: the permit was spent before the firer's checks). `replaceAccounts`
+// makes a keeper push the COMPLETE permit set of each placing account, so a
+// key the keeper stopped sending is withdrawn at once (gap 2: the push used
+// to only add or replace).
 class TickPermitStore {
 public:
+  struct Entry { long long accountId = 0; long long symbolId = 0; std::string side; jsn::Value permit; };
   void set(long long accountId, long long symbolId, const std::string& side, jsn::Value permit);
   std::optional<jsn::Value> take(long long accountId, long long symbolId, const std::string& side, long long nowMs);
+  // Under the store lock: missing → nullopt and `accept` is never called;
+  // expired → erased, nullopt, `accept` never called; `accept` false → the
+  // permit STAYS, nullopt; `accept` true → erased and returned. `accept`
+  // runs under the store lock, so it must not take any lock that is held
+  // while this store's lock is taken (TickFirer::statusJson holds the
+  // firer's mtx_ and then reads size() here): it must be pure.
+  std::optional<jsn::Value> takeIf(long long accountId, long long symbolId, const std::string& side, long long nowMs,
+                                   const std::function<bool(const jsn::Value&)>& accept);
+  // Under ONE lock: every key of an account in `accounts` is erased, then
+  // `entries` are inserted — the keeper's push is the whole set for those
+  // accounts. Accounts not named keep their permits.
+  void replaceAccounts(const std::set<long long>& accounts, std::vector<Entry> entries);
   size_t size() const;
   void clearAccount(long long accountId);
   void clear();
@@ -68,7 +90,20 @@ struct FireCounters {
   uint64_t refusedStopFloor = 0;   // stop distance below the permit's minStopFraction × entry
   uint64_t refusedStale = 0;       // queued longer than the permit's maxFireDelayMs at the send
   uint64_t abandoned = 0;          // queued fires dropped by stop()
+  // GW-1 (WP-D D3):
+  uint64_t refusedAccountCap = 0;  // no slot left for the account (gap 1)
+  uint64_t refusedProfile = 0;     // the permit names another profile (gap 5)
+  uint64_t refusedBoot = 0;        // the permit was pushed to another boot (gap 6)
+  uint64_t slotsRefunded = 0;      // a reserved slot given back (refusal, stale, definite reject)
+  uint64_t entriesNoted = 0;       // non-tick entries this gateway sent with a permit (gap 1c)
 };
+
+// GW-1: the keeper's per-account slot figure (/config tickSlots), one per
+// placing account. `slots` is Node's max(0, maxOpen − held), counting the
+// tick fires it has pulled but not seen adopted; `firesSeen` is how many of
+// THIS boot's tick fires for the account Node had pulled when it counted, so
+// fires made after its ring pull are still subtracted here.
+struct SlotPush { long long slots = 0; long long firesSeen = 0; std::string bootId; };
 
 struct TickFire {
   long long accountId = 0;
@@ -85,6 +120,12 @@ struct TickFire {
   // kept here rather than re-derived.
   long long entry = 0, stop = 0, target = 0;
   std::string side;              // BUY | SELL, the fill's own side
+  // GW-1: the slot this fire holds — given back on a stale refusal or a
+  // definite reject, only if no keeper push has replaced the figures since
+  // (a push after the fire already counts it, from Node's side or from the
+  // fires-seen subtraction).
+  bool slotLimited = false;
+  uint64_t slotGen = 0;
   // PR-1b follow-up (21-09-2026): the signal quote the fill crossed —
   // signalAsk for BUY, signalBid for SELL — so the ledger's reason can state
   // what was crossed (`entry=…_over_ref=…`), not just where the fill landed.
@@ -101,6 +142,24 @@ public:
   std::set<long long> accounts() const;
   // TM-40: a predicate the firer asks before every fire; false refuses.
   void setRecordingCheck(std::function<bool()> ok) { recordingOk_ = std::move(ok); }
+  // GW-1 (gap 6): this process's boot (the decision ring's), set once at
+  // startup. A permit carrying another non-empty bootId is refused
+  // 'permit_other_boot' and stays unspent.
+  void setBootId(std::string bootId);
+  std::string bootId() const;
+  // GW-1 (gap 1): the keeper's per-account slot figures, a FULL replace —
+  // an account not named is unlimited (the pre-GW-1 behaviour, and what a
+  // keeper that sends no tickSlots gets). Each account's slots become
+  // max(0, slots − max(0, firesThisBoot − firesSeen)); firesSeen counts only
+  // when the push names this boot.
+  void setSlots(const std::map<long long, SlotPush>& slots);
+  // Per-account slots left (absent = unlimited), for status and tests.
+  std::map<long long, long long> slots() const;
+  // GW-1 (gap 1c): the engine's entry-sent hook. A NON-tick entry this
+  // gateway sent with a permit spends one of the account's slots until the
+  // keeper's next push; a 'tick:' label is this firer's own fire, already
+  // counted when it was queued, and is ignored.
+  void noteEntry(long long accountId, const std::string& label);
   // Tests: replace the engine call.
   void setSendHookForTests(std::function<EngineResult(const jsn::Value&)> h) { sendHook_ = std::move(h); }
   void start();
@@ -125,10 +184,16 @@ public:
   // '|' field (agent/lib/trade-labels.js labelIntentId), so a position the
   // ring never settled is still reconciled from the broker's snapshot.
   static std::string labelFor(const ShadowFill& f, const std::string& intentId);
+  // A reject that does not prove the order failed (it may have reached the
+  // broker): its slot stays spent until the keeper's count replaces it.
+  static bool isAmbiguousReject(const std::string& errorCode);
 
 private:
   void loop();
   void fireOne(const TickFire& fire);
+  // Under mtx_: false when the account has a slot figure and none is left.
+  bool reserveSlot(long long acct, bool& limited, uint64_t& gen);
+  void refundSlot(long long acct, bool limited, uint64_t gen);
   ExecEngine& engine_;
   TickPermitStore& permits_;
   DecisionRing* ring_ = nullptr;
@@ -137,6 +202,10 @@ private:
   std::function<long long()> clock_;
   mutable std::mutex mtx_;
   std::set<long long> accounts_;
+  std::string bootId_;
+  std::map<long long, long long> slots_;      // account → slots left (absent = unlimited)
+  std::map<long long, uint64_t> fires_;       // account → fires queued this boot
+  uint64_t slotGen_ = 0;                      // bumped by every setSlots
   std::deque<TickFire> queue_;
   FireCounters counters_;
   std::condition_variable cv_;

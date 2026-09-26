@@ -192,6 +192,12 @@ public:
   // guard recheck in placeOrder(), so a test can flip the halt while the
   // order is "queued" — the interleaving the recheck exists for.
   void setPreSendHookForTests(std::function<void()> h) { preSendHook_ = std::move(h); }
+  // GW-1 (WP-D D3, gap 1c): called once per entry that passed the send
+  // boundary WITH a permit, after the send, OUTSIDE mtx_ (no new lock-order
+  // edge), with the account and the order's label — the tick firer spends
+  // one of the account's slots for every non-tick entry between the
+  // keeper's pushes. Set once at startup, before any order is placed.
+  void setEntrySentHook(std::function<void(long long, const std::string&)> h) { entrySentHook_ = std::move(h); }
   // P2b-1: every execution-event frame is journaled for the keeper (non-owning;
   // null = off), and every request draws a token from the pacer first.
   void setEventJournal(EventJournal* j) { journal_ = j; }
@@ -353,6 +359,7 @@ private:
   OrderGuard guard_; // atomic knobs read on the order hot path
   Telemetry* telemetry_ = nullptr; // non-owning; null = disabled
   std::function<void()> preSendHook_;
+  std::function<void(long long, const std::string&)> entrySentHook_;
   DecisionRing* ring_ = nullptr;   // non-owning; null = disabled
   EventJournal* journal_ = nullptr; // P2b-1; non-owning; null = off
   RequestPacer* pacer_ = nullptr;   // P2b-1; non-owning; null = unpaced

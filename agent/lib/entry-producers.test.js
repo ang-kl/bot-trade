@@ -56,7 +56,8 @@ test('every route the inventory names exists in actions.js, and the C++ direct p
   // P6b: the tick path places in-process too, and only with the keeper's permit.
   const firer = strip(readFileSync(join(ROOT, 'cpp-exec/src/tick_firer.cpp'), 'utf8'))
   assert.ok(firer.includes('engine_.placeOrder('), 'the tick firer still places through the engine (the send boundary)')
-  assert.ok(firer.includes('permits_.take('), 'the tick firer takes a keeper permit before building a fire')
+  // GW-1 (WP-D D3, gap 3): takeIf — the permit is spent only once the firer's checks pass.
+  assert.ok(firer.includes('permits_.takeIf('), 'the tick firer takes a keeper permit (after its checks) before building a fire')
   const tickFeeder = strip(readFileSync(join(ROOT, 'agent/services/tick-permits.js'), 'utf8'))
   assert.ok(tickFeeder.includes('reserveStandingPermits('), 'the tick feeder issues permits through the ledger')
   assert.ok(tickFeeder.includes('tickEntryAccounts'), 'the tick feeder names the placing accounts on the push')

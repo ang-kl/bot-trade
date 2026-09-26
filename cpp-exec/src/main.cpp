@@ -287,6 +287,14 @@ int main(int argc, char** argv) {
   tick::TickPermitStore tickPermits;
   tick::TickFirer tickFirer(engine, tickPermits);
   tickFirer.setDecisionRing(&decisionRing);
+  // GW-1 (WP-D D3, gap 6): permits are bound to the boot they were pushed to.
+  tickFirer.setBootId(decisionRing.bootId());
+  // GW-1 (gap 1c): every entry this gateway sends with a permit is seen by
+  // the firer; a non-tick one spends a slot of its account until the
+  // keeper's next /config tickSlots push. The engine calls it outside its
+  // own mutex. The engine is declared first and outlives the firer only on
+  // the way out of main, after the server stopped taking orders.
+  engine.setEntrySentHook([&tickFirer](long long acct, const std::string& label) { tickFirer.noteEntry(acct, label); });
   if (tickRecorder) {
     tickFirer.setRecordingCheck([&tickRecorder] { return tickRecorder->stats().state == "RECORDING"; });
     tickFirer.start();
@@ -732,6 +740,12 @@ int main(int argc, char** argv) {
           e.set("permitsHeld", ej->get("permitsHeld"));
           e.set("sent", ej->get("sent"));
           e.set("rejected", ej->get("rejected"));
+          // GW-1 (WP-D D3): the read-back the design names — slots present
+          // once the keeper pushes tickSlots, and the new refusals counted.
+          e.set("slots", ej->get("slots"));
+          e.set("refusedAccountCap", ej->get("refusedAccountCap"));
+          e.set("refusedProfile", ej->get("refusedProfile"));
+          e.set("refusedBoot", ej->get("refusedBoot"));
           tj.set("entry", std::move(e));
         }
         if (trusted) {
@@ -1107,16 +1121,28 @@ int main(int argc, char** argv) {
       // lock, release, then stop and join it with nothing held.
       std::unique_ptr<SpotFeed> retiring;
       std::thread retiringThread;
+      // GW-1 (SEQUENCE §0 finding E): the scanner mirror's destructor joins
+      // its worker (scanner_mirror.cpp ~ScannerMirror), up to ~2 s per feed
+      // rebuild. It used to run on `scannerMirror.reset()` below, under
+      // vpoMtx, where /health and /quotes wait on it. Taken out here with the
+      // feed, it is destroyed after the lock is released — the same shape as
+      // the feed itself (Audit C2).
+      std::shared_ptr<ScannerMirror> retiringMirror;
       {
         std::lock_guard<std::mutex> lk(vpoMtx);
         retiring = std::move(spotFeed);
         retiringThread = std::move(spotFeedThread);
+        retiringMirror = std::move(scannerMirror);
       }
       if (retiring) {
         retiring->stop();
         if (retiringThread.joinable()) retiringThread.join();
       }
       retiring.reset(); // destroy only after its thread is provably gone
+      // The retired feed's tap held the other reference; with it gone, this
+      // is the last one (unless a /scanner-mirror read holds a copy, which
+      // then destroys it on its own thread, also with no lock held).
+      retiringMirror.reset();
 
       std::lock_guard<std::mutex> lk(vpoMtx);
       vpo::VpoDispatcher* dispatcherPtr = vpoDispatcher.get();
@@ -1141,7 +1167,7 @@ int main(int argc, char** argv) {
       if (tick::TickRecorder* rec = tickRecorder.get()) {
         // The tap lives in tick_tap.cpp (testable); the universe gates it.
         spotFeed->setRawTap(tick::makeRecorderTap(rec, tickWorkers.get(), &tickUniverse));
-        scannerMirror.reset();
+        // Already empty: moved out and destroyed above, outside vpoMtx (GW-1).
         if (!envOr("TICK_SCANNER_MIRROR_URL", "").empty()) {
           try {
             const auto ttlText = envOr("TICK_SCANNER_CANDIDATE_TTL_MS", ""); size_t used = 0;
@@ -1507,22 +1533,45 @@ int main(int argc, char** argv) {
       }
     }
     // P6b: the keeper's pre-issued one-use permits for the tick path —
-    // [{accountId, symbolId, side, permit}], each replacing the one held
-    // for that account/symbol/side; a permit for an account not in
+    // [{accountId, symbolId, side, permit}]; a permit for an account not in
     // tickEntryAccounts is dropped (nothing would spend it).
+    // GW-1 (WP-D D3, gap 2): the array is the COMPLETE set for every placing
+    // account — held keys the keeper no longer sends are withdrawn in the
+    // same lock as the new ones go in (it used to add or replace only, so a
+    // withdrawn symbol/side stayed spendable until it expired).
     if (v.get("tickPermits").isArray()) {
       const std::set<long long> placing = tickFirer.accounts();
-      size_t set = 0, dropped = 0;
+      std::vector<tick::TickPermitStore::Entry> entries;
+      size_t dropped = 0;
       for (const auto& e : v.get("tickPermits").asArray()) {
         const long long acct = static_cast<long long>(e.get("accountId").asNumber(0));
         const long long sym = static_cast<long long>(e.get("symbolId").asNumber(0));
         const std::string side = e.get("side").asString();
         if (acct <= 0 || sym <= 0 || (side != "BUY" && side != "SELL") || !e.get("permit").isObject() || !placing.count(acct)) { dropped++; continue; }
-        tickPermits.set(acct, sym, side, e.get("permit"));
-        set++;
+        entries.push_back({acct, sym, side, e.get("permit")});
       }
+      tickPermits.replaceAccounts(placing, std::move(entries));
       if (dropped) decisionRing.log("tick", "permits_dropped", 0, 0, std::to_string(dropped), "malformed or for an account not in tickEntryAccounts");
-      (void)set;
+    }
+    // GW-1 (WP-D D3, gap 1): the keeper's per-account slot figures —
+    // [{accountId, slots, firesSeen, bootId}], a full replace. The firer
+    // subtracts the fires it made that Node had not yet pulled; an account
+    // not named is unlimited (a keeper without C9 sends none).
+    if (v.get("tickSlots").isArray()) {
+      std::map<long long, tick::SlotPush> slots;
+      size_t dropped = 0;
+      for (const auto& e : v.get("tickSlots").asArray()) {
+        const long long acct = e.get("accountId").isNumber() ? static_cast<long long>(e.get("accountId").asNumber(0))
+                                                              : std::strtoll(e.get("accountId").asString().c_str(), nullptr, 10);
+        if (acct <= 0 || !e.get("slots").isNumber()) { dropped++; continue; }
+        tick::SlotPush sp;
+        sp.slots = static_cast<long long>(e.get("slots").asNumber(0));
+        sp.firesSeen = static_cast<long long>(e.get("firesSeen").asNumber(0));
+        sp.bootId = e.get("bootId").asString();
+        slots[acct] = sp;
+      }
+      tickFirer.setSlots(slots);
+      if (dropped) decisionRing.log("tick", "slots_dropped", 0, 0, std::to_string(dropped), "tickSlots entry without an accountId or a numeric slots");
     }
     std::vector<long long> pushedTickIds;
     if (v.get("tickSymbolIds").isArray()) {

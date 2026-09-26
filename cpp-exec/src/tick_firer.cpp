@@ -1,8 +1,10 @@
 // cpp-exec/src/tick_firer.cpp — see tick_firer.hpp.
 #include "tick_firer.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 
 #include "order_guard.hpp"
 
@@ -28,6 +30,28 @@ std::optional<jsn::Value> TickPermitStore::take(long long accountId, long long s
   return p;
 }
 
+std::optional<jsn::Value> TickPermitStore::takeIf(long long accountId, long long symbolId, const std::string& side, long long nowMs,
+                                                   const std::function<bool(const jsn::Value&)>& accept) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  auto it = permits_.find(key(accountId, symbolId, side));
+  if (it == permits_.end()) return std::nullopt;
+  const double exp = it->second.get("expiresAtMs").asNumber(0);
+  if (exp <= 0 || static_cast<long long>(exp) < nowMs) { permits_.erase(it); return std::nullopt; } // expired: gone either way
+  if (!accept(it->second)) return std::nullopt;   // refused by the caller's checks: the permit stays
+  jsn::Value p = std::move(it->second);
+  permits_.erase(it);
+  return p;
+}
+
+void TickPermitStore::replaceAccounts(const std::set<long long>& accounts, std::vector<Entry> entries) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  for (auto it = permits_.begin(); it != permits_.end();) {
+    const long long acct = std::strtoll(it->first.c_str(), nullptr, 10);
+    if (accounts.count(acct)) it = permits_.erase(it); else ++it;
+  }
+  for (auto& e : entries) permits_[key(e.accountId, e.symbolId, e.side)] = std::move(e.permit);
+}
+
 size_t TickPermitStore::size() const { std::lock_guard<std::mutex> lk(mtx_); return permits_.size(); }
 
 void TickPermitStore::clearAccount(long long accountId) {
@@ -49,6 +73,57 @@ void TickFirer::setAccounts(std::set<long long> accounts) {
 }
 std::set<long long> TickFirer::accounts() const { std::lock_guard<std::mutex> lk(mtx_); return accounts_; }
 
+void TickFirer::setBootId(std::string bootId) { std::lock_guard<std::mutex> lk(mtx_); bootId_ = std::move(bootId); }
+std::string TickFirer::bootId() const { std::lock_guard<std::mutex> lk(mtx_); return bootId_; }
+
+void TickFirer::setSlots(const std::map<long long, SlotPush>& pushed) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  slots_.clear();
+  for (const auto& [acct, sp] : pushed) {
+    const long long made = static_cast<long long>(fires_.count(acct) ? fires_.at(acct) : 0);
+    // Node's firesSeen is a count of THIS boot's fire rows; a push naming
+    // another boot (or none) acknowledges nothing, so every fire this boot
+    // made is still subtracted.
+    const long long seen = (!sp.bootId.empty() && sp.bootId == bootId_) ? std::max(0LL, sp.firesSeen) : 0;
+    const long long unacked = std::max(0LL, made - seen);
+    slots_[acct] = std::max(0LL, std::max(0LL, sp.slots) - unacked);
+  }
+  ++slotGen_;
+}
+
+std::map<long long, long long> TickFirer::slots() const { std::lock_guard<std::mutex> lk(mtx_); return slots_; }
+
+void TickFirer::noteEntry(long long accountId, const std::string& label) {
+  if (label.rfind("tick:", 0) == 0) return;
+  std::lock_guard<std::mutex> lk(mtx_);
+  counters_.entriesNoted++;
+  auto it = slots_.find(accountId);
+  if (it != slots_.end() && it->second > 0) --it->second;
+}
+
+bool TickFirer::reserveSlot(long long acct, bool& limited, uint64_t& gen) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  gen = slotGen_;
+  auto it = slots_.find(acct);
+  limited = it != slots_.end();
+  if (!limited) return true;              // no figure for the account: unlimited (pre-GW-1 behaviour)
+  if (it->second <= 0) return false;
+  --it->second;                           // check and spend in ONE critical section: two workers cannot both take the last slot
+  return true;
+}
+
+void TickFirer::refundSlot(long long acct, bool limited, uint64_t gen) {
+  if (!limited) return;
+  std::lock_guard<std::mutex> lk(mtx_);
+  // A push since the reservation replaced the figure, and that figure
+  // already accounts for this fire: giving the slot back would count it twice.
+  if (gen != slotGen_) return;
+  auto it = slots_.find(acct);
+  if (it == slots_.end()) return;
+  ++it->second;
+  counters_.slotsRefunded++;
+}
+
 void TickFirer::start() {
   if (running_.exchange(true)) return;
   thread_ = std::thread([this] { loop(); });
@@ -65,6 +140,7 @@ void TickFirer::stop() {
     dropped.swap(queue_);
     counters_.abandoned += dropped.size();
   }
+  for (const auto& d : dropped) refundSlot(d.accountId, d.slotLimited, d.slotGen);
   for (const auto& d : dropped)
     if (ring_) ring_->log("tick", "fire_abandoned", d.accountId, static_cast<long long>(d.payload.get("symbolId").asNumber(0)), "stopped", "intent=" + d.intentId);
   cv_.notify_all();
@@ -120,11 +196,13 @@ jsn::Value TickFirer::buildPayload(long long accountId, const ShadowFill& f, dou
 
 int TickFirer::onFill(const ShadowFill& f, long long nowMs) {
   std::set<long long> accounts;
-  { std::lock_guard<std::mutex> lk(mtx_); counters_.fills++; accounts = accounts_; }
+  std::string boot;
+  { std::lock_guard<std::mutex> lk(mtx_); counters_.fills++; accounts = accounts_; boot = bootId_; }
   if (accounts.empty()) return 0;
   // TM-40, asked ONCE per fill (the recorder's status copies its per-symbol
   // map): no permit is spent while the recorder is not RECORDING.
   const bool recording = !recordingOk_ || recordingOk_();
+  const long long ref = f.side == "BUY" ? f.signalAsk : f.signalBid;
   int queued = 0;
   for (long long acct : accounts) {
     auto refuse = [&](const char* kind, const std::string& why, uint64_t FireCounters::*ctr) {
@@ -132,45 +210,92 @@ int TickFirer::onFill(const ShadowFill& f, long long nowMs) {
       if (ring_) ring_->log("tick", "fire_refused", acct, f.symbolId, kind, f.side + " " + why + " seq=" + std::to_string(f.signalSeq) + " profile=" + f.profileHash);
     };
     if (!recording) { refuse("recorder_not_recording", "the recorder is not RECORDING — new tick entries pause (TM-40)", &FireCounters::refusedRecorder); continue; }
-    const long long ref = f.side == "BUY" ? f.signalAsk : f.signalBid;
-    auto permit = permits_.take(acct, f.symbolId, f.side, nowMs);
-    if (!permit) { refuse("no_permit", "no keeper permit held for this account/symbol/side", &FireCounters::refusedNoPermit); continue; }
-    const double frac = permit->get("overshootFraction").asNumber(0.25);
-    const long long maxDev = static_cast<long long>(std::floor(frac * static_cast<double>(f.stopDistance)));
-    if (!priceWithinBound(ref, f.entry, maxDev)) {
-      refuse("price_bound", "fill " + std::to_string(f.entry) + " is more than " + std::to_string(maxDev) + " from the signal's " + std::to_string(ref), &FireCounters::refusedPriceBound);
+    // GW-1 (gap 1): the account's slot is reserved BEFORE the permit is
+    // looked at, and the reservation is one critical section with the check,
+    // so two workers filling for one account cannot both take its last slot.
+    // A refusal here leaves the permit untouched.
+    bool limited = false;
+    uint64_t gen = 0;
+    if (!reserveSlot(acct, limited, gen)) {
+      refuse("account_cap", "no position slot left for this account until the keeper's next push (maxOpenPositions, counted per fire)", &FireCounters::refusedAccountCap);
       continue;
     }
-    // The account's policy floor on the stop (plan §3: the greatest of the
-    // volatility distance, the broker's minimum and the policy floor): a
-    // stop below minStopFraction × entry would let the R budget buy a lot
-    // the account cannot carry — refused, never resized.
-    const double minStopFrac = permit->get("minStopFraction").asNumber(0);
-    const long long floorDist = minStopFrac > 0 ? static_cast<long long>(std::llround(minStopFrac * static_cast<double>(f.entry))) : 0;
-    if (f.stopDistance < floorDist) {
-      refuse("stop_below_floor", "stop " + std::to_string(f.stopDistance) + " is below the policy floor " + std::to_string(floorDist) + " (" + std::to_string(minStopFrac) + " of the entry)", &FireCounters::refusedStopFloor);
-      continue;
-    }
+    // GW-1 (gap 3): every check runs INSIDE takeIf, and the permit is spent
+    // only when all of them pass. The predicate is pure — it reads the fill,
+    // the permit and the boot copied above, and takes no lock (it runs under
+    // the store's lock; statusJson takes mtx_ and then the store's lock).
+    const char* kind = nullptr;
     std::string why;
-    auto vol = sizeVolume(*permit, f.stopDistance, &why);
-    if (!vol) { refuse(why.rfind("unaffordable_lot", 0) == 0 ? "unaffordable_lot" : "sizing", why, why.rfind("unaffordable_lot", 0) == 0 ? &FireCounters::refusedUnaffordable : &FireCounters::refusedSizing); continue; }
+    uint64_t FireCounters::*ctr = nullptr;
+    double volume = 0;
+    auto accept = [&](const jsn::Value& permit) -> bool {
+      // Gap 5: a permit issued for another parameter profile is not this
+      // strategy's to spend. A permit with no hash (an older keeper) is not checked.
+      const std::string ph = permit.get("profileHash").asString();
+      if (!ph.empty() && ph != f.profileHash) {
+        kind = "profile_mismatch"; why = "the permit names profile " + ph + ", this strategy runs " + f.profileHash; ctr = &FireCounters::refusedProfile;
+        return false;
+      }
+      // Gap 6: a permit pushed to another boot of this gateway (a probe read
+      // the old boot, the push landed on the new one) is refused; the fresh
+      // engine's empty consumed-permit set could not tell it was already spent.
+      const std::string pb = permit.get("bootId").asString();
+      if (!pb.empty() && pb != boot) {
+        kind = "permit_other_boot"; why = "the permit was pushed to boot " + pb + ", this gateway is boot " + boot; ctr = &FireCounters::refusedBoot;
+        return false;
+      }
+      const double frac = permit.get("overshootFraction").asNumber(0.25);
+      const long long maxDev = static_cast<long long>(std::floor(frac * static_cast<double>(f.stopDistance)));
+      if (!priceWithinBound(ref, f.entry, maxDev)) {
+        kind = "price_bound"; why = "fill " + std::to_string(f.entry) + " is more than " + std::to_string(maxDev) + " from the signal's " + std::to_string(ref); ctr = &FireCounters::refusedPriceBound;
+        return false;
+      }
+      // The account's policy floor on the stop (plan §3: the greatest of the
+      // volatility distance, the broker's minimum and the policy floor): a
+      // stop below minStopFraction × entry would let the R budget buy a lot
+      // the account cannot carry — refused, never resized.
+      const double minStopFrac = permit.get("minStopFraction").asNumber(0);
+      const long long floorDist = minStopFrac > 0 ? static_cast<long long>(std::llround(minStopFrac * static_cast<double>(f.entry))) : 0;
+      if (f.stopDistance < floorDist) {
+        kind = "stop_below_floor"; why = "stop " + std::to_string(f.stopDistance) + " is below the policy floor " + std::to_string(floorDist) + " (" + std::to_string(minStopFrac) + " of the entry)"; ctr = &FireCounters::refusedStopFloor;
+        return false;
+      }
+      std::string sizeWhy;
+      auto vol = sizeVolume(permit, f.stopDistance, &sizeWhy);
+      if (!vol) {
+        const bool unaffordable = sizeWhy.rfind("unaffordable_lot", 0) == 0;
+        kind = unaffordable ? "unaffordable_lot" : "sizing"; why = sizeWhy; ctr = unaffordable ? &FireCounters::refusedUnaffordable : &FireCounters::refusedSizing;
+        return false;
+      }
+      volume = *vol;
+      return true;
+    };
+    auto permit = permits_.takeIf(acct, f.symbolId, f.side, nowMs, accept);
+    if (!permit) {
+      refundSlot(acct, limited, gen);
+      if (kind) refuse(kind, why, ctr);
+      else refuse("no_permit", "no keeper permit held for this account/symbol/side", &FireCounters::refusedNoPermit);
+      continue;
+    }
     TickFire fire;
     fire.accountId = acct;
-    fire.payload = buildPayload(acct, f, *vol, *permit);
+    fire.payload = buildPayload(acct, f, volume, *permit);
     fire.intentId = permit->get("intentId").asString();
     fire.fillMs = nowMs;
     fire.entry = f.entry; fire.stop = f.stop; fire.target = f.target; fire.side = f.side;
     fire.ref = ref;
     fire.maxFireDelayMs = static_cast<long long>(permit->get("maxFireDelayMs").asNumber(0));
+    fire.slotLimited = limited; fire.slotGen = gen;
     bool full = false;
     {
       std::lock_guard<std::mutex> lk(mtx_);
       if (queue_.size() >= kMaxQueue) full = true;
-      else { queue_.push_back(fire); counters_.queued++; }
+      else { queue_.push_back(fire); counters_.queued++; fires_[acct]++; }
     }
-    if (full) { refuse("queue_full", "the fire queue is full (" + std::to_string(kMaxQueue) + ")", &FireCounters::refusedQueueFull); continue; }
+    // A full queue consumed the permit (as before GW-1) but gives the slot back.
+    if (full) { refundSlot(acct, limited, gen); refuse("queue_full", "the fire queue is full (" + std::to_string(kMaxQueue) + ")", &FireCounters::refusedQueueFull); continue; }
     if (ring_) ring_->log("tick", "fire", acct, f.symbolId, f.side,
-                          "vol=" + std::to_string(static_cast<long long>(*vol)) + " stop=" + std::to_string(f.stopDistance) + " entry=" + std::to_string(f.entry) +
+                          "vol=" + std::to_string(static_cast<long long>(volume)) + " stop=" + std::to_string(f.stopDistance) + " entry=" + std::to_string(f.entry) +
                           " seq=" + std::to_string(f.signalSeq) + " intent=" + fire.intentId + " profile=" + f.profileHash);
     queued++;
   }
@@ -203,6 +328,7 @@ void TickFirer::fireOne(const TickFire& fire) {
     const long long now = clock_ ? clock_() : static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     if (now - fire.fillMs > fire.maxFireDelayMs) {
       { std::lock_guard<std::mutex> lk(mtx_); counters_.refusedStale++; }
+      refundSlot(fire.accountId, fire.slotLimited, fire.slotGen); // never sent: the slot is free again
       if (ring_) ring_->log("tick", "fire_refused", fire.accountId, sym, "fire_stale", "queued " + std::to_string(now - fire.fillMs) + " ms > " + std::to_string(fire.maxFireDelayMs) + " intent=" + fire.intentId);
       return;
     }
@@ -224,16 +350,24 @@ void TickFirer::fireOne(const TickFire& fire) {
                           " ref=" + std::to_string(fire.ref));
   } else {
     { std::lock_guard<std::mutex> lk(mtx_); counters_.rejected++; }
+    // A definite reject frees the slot. TIMEOUT and DISCONNECTED are NOT
+    // definite — the order may have reached the broker (engine.cpp
+    // failAllPending on a dropped session; "a timeout is not proof that the
+    // order failed") — so those keep the slot until the keeper's count says
+    // otherwise.
+    if (!isAmbiguousReject(r.body.get("errorCode").asString())) refundSlot(fire.accountId, fire.slotLimited, fire.slotGen);
     if (ring_) ring_->log("tick", "fire_reject", fire.accountId, sym, r.body.get("errorCode").asString(), "intent=" + fire.intentId + " " + r.body.get("description").asString());
   }
 }
+
+bool TickFirer::isAmbiguousReject(const std::string& code) { return code == "TIMEOUT" || code == "DISCONNECTED"; }
 
 FireCounters TickFirer::counters() const { std::lock_guard<std::mutex> lk(mtx_); return counters_; }
 size_t TickFirer::queueDepth() const { std::lock_guard<std::mutex> lk(mtx_); return queue_.size(); }
 
 std::string TickFirer::statusJson() const {
-  FireCounters c; std::set<long long> a; size_t depth;
-  { std::lock_guard<std::mutex> lk(mtx_); c = counters_; a = accounts_; depth = queue_.size(); }
+  FireCounters c; std::set<long long> a; size_t depth; std::map<long long, long long> sl; std::string boot;
+  { std::lock_guard<std::mutex> lk(mtx_); c = counters_; a = accounts_; depth = queue_.size(); sl = slots_; boot = bootId_; }
   jsn::Value v{jsn::Object{}};
   v.set("accounts", static_cast<double>(a.size()));
   v.set("permitsHeld", static_cast<double>(permits_.size()));
@@ -252,6 +386,18 @@ std::string TickFirer::statusJson() const {
   v.set("refusedStopFloor", static_cast<double>(c.refusedStopFloor));
   v.set("refusedStale", static_cast<double>(c.refusedStale));
   v.set("abandoned", static_cast<double>(c.abandoned));
+  // GW-1 (WP-D D3): the per-fire cap, the profile and boot refusals, and the
+  // slots left per account (absent = unlimited; an empty object = the keeper
+  // has pushed no tickSlots, the pre-GW-1 behaviour).
+  v.set("refusedAccountCap", static_cast<double>(c.refusedAccountCap));
+  v.set("refusedProfile", static_cast<double>(c.refusedProfile));
+  v.set("refusedBoot", static_cast<double>(c.refusedBoot));
+  v.set("slotsRefunded", static_cast<double>(c.slotsRefunded));
+  v.set("entriesNoted", static_cast<double>(c.entriesNoted));
+  jsn::Value so{jsn::Object{}};
+  for (const auto& [acct, n] : sl) so.set(std::to_string(acct), static_cast<double>(n));
+  v.set("slots", std::move(so));
+  v.set("bootId", boot);
   v.set("places", !a.empty());
   return jsn::dump(v);
 }

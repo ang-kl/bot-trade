@@ -755,6 +755,7 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
   }
   std::string intentTag;
   Ticket ticket;
+  bool permitSpent = false;   // GW-1: the boundary accepted a permit for this entry
   {
     // THE SEND BOUNDARY: the fence rechecks and the physical send share this
     // one critical section (plan §8: "mode fencing and physical sends share
@@ -799,6 +800,7 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
         return errResult(pv.reason, pv.reason, false);
       }
       if (!pv.permitId.empty()) {
+        permitSpent = true;
         constexpr size_t kConsumedPermitCap = 4096;
         consumedOrder_.push_back(pv.permitId);
         while (consumedOrder_.size() > kConsumedPermitCap) {
@@ -822,6 +824,12 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
     // payload that does not name one (guard_no_account).
     ticket = beginRequest(pt::NEW_ORDER_REQ, wire, pt::EXECUTION_EVENT, RequestClass::Entry);
   }
+  // GW-1 (gap 1c): outside mtx_, after the send and before the wait — an
+  // entry that reached the wire with a permit holds a position slot whatever
+  // the broker's answer turns out to be; the keeper's next count settles it.
+  // A refusal that provably never reached the wire (ticket.failed:
+  // NOT_CONNECTED, rate_limited, SEND_FAILED) spends nothing.
+  if (permitSpent && !ticket.failed && entrySentHook_) entrySentHook_(ringAcct, payload.get("label").asString());
   EngineResult r = awaitRequest(ticket, 20000);
   if (telemetry_) {
     const std::string reason = r.ok ? "" : r.body.get("errorCode").asString();

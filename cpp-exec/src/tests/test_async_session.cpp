@@ -8,6 +8,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -498,6 +499,46 @@ static void test_retry_after_defers_entries_and_reads_but_not_protection() {
   assert(third.ok && third.body.get("order").get("orderId").asNumber(0) == 65);
 }
 
+
+// GW-1 (WP-D D3, gap 1c): the entry-sent hook. An entry that passed the send
+// boundary WITH a permit and reached the wire calls it once, with its account
+// and label; an entry refused at the boundary, and an unfenced entry with no
+// permit, do not. (The 'tick:' filter is the firer's: test_tick_firer.)
+static void test_the_entry_sent_hook_sees_permitted_entries_only() {
+  FakeBroker broker([](FakeBroker& b, const jsn::Value& f) {
+    authAndReconcile(b, f);
+    if (typeOf(f) == pt::NEW_ORDER_REQ) b.reply(f, pt::EXECUTION_EVENT, executionEvent("ORDER_ACCEPTED", 71, 0));
+  });
+  ExecEngine e;
+  connectEngine(e, broker);
+  std::vector<std::pair<long long, std::string>> seen;
+  std::mutex seenMtx;
+  e.setEntrySentHook([&](long long acct, const std::string& label) { std::lock_guard<std::mutex> lk(seenMtx); seen.emplace_back(acct, label); });
+  // an unfenced account and no permit: sent, but no permit was spent → no call
+  assert(e.placeOrder(marketOrder()).ok);
+  assert(seen.empty());
+  // fenced, with a permit from the fenced epoch → one call, after the send
+  e.guard().setEntryEpochs({{4002, 3}});
+  jsn::Value o = marketOrder();
+  jsn::Value permit{jsn::Object{}};
+  permit.set("id", std::string("phook1"));
+  permit.set("intentId", std::string("ihook1"));
+  permit.set("accountId", 4002.0);
+  permit.set("symbolId", 41.0);
+  permit.set("side", std::string("BUY"));
+  permit.set("epoch", 3.0);
+  permit.set("expiresAtMs", 9000000000000.0);
+  o.set("permit", permit);
+  assert(e.placeOrder(o).ok);
+  assert(seen.size() == 1 && seen[0].first == 4002 && seen[0].second == "AU|v1|VWAP|H|LN|4h|TR|iabc123456789");
+  // the same permit again: refused at the boundary (permit_consumed) → no call
+  EngineResult again = e.placeOrder(o);
+  assert(!again.ok && again.body.get("errorCode").asString().rfind("permit_consumed", 0) == 0);
+  assert(seen.size() == 1);
+  // fenced and no permit: refused (permit_missing) → no call
+  assert(!e.placeOrder(marketOrder()).ok && seen.size() == 1);
+}
+
 int main() {
   test_unconnected_engine_paths_are_unchanged();
   test_connect_auth_reconcile_and_the_roster();
@@ -514,6 +555,7 @@ int main() {
   test_a_partial_fill_answers_the_request_and_the_final_fill_follows_in_the_journal();
   test_the_in_flight_cap_refuses_reads_and_entries_but_never_protection();
   test_retry_after_defers_entries_and_reads_but_not_protection();
+  test_the_entry_sent_hook_sees_permitted_entries_only();
   std::puts("test_async_session: all passed");
   return 0;
 }

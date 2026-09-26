@@ -3,6 +3,9 @@
 // refusals (no permit, recorder not RECORDING, price bound, unaffordable
 // lot, queue full); the payload the send boundary sees; permits are one
 // use; the fire thread under concurrent fills (run under TSan too).
+// GW-1 (WP-D D3): the permit is spent only after the firer's checks; the
+// per-fire slot counter with the fires-seen acknowledgement; the push's full
+// replace; the profile and boot refusals; non-tick entries spending slots.
 #include <atomic>
 #include <cassert>
 #include <cstdio>
@@ -106,10 +109,12 @@ static void test_refusals_and_payload() {
   assert(firer.onFill(f, 1000) == 0);
   assert(firer.counters().refusedRecorder == 1 && permits.size() == 1 && countKind(ring, "fire_refused", "recorder_not_recording") == 1);
   recording = true;
-  // price bound: 0.25 × 50 = 12 from the signal's ask 100490 → a fill at 100510 is 20 away → refused, permit spent
+  // price bound: 0.25 × 50 = 12 from the signal's ask 100490 → a fill at 100510 is 20 away → refused.
+  // GW-1 (gap 3), CHANGED DELIBERATELY: the permit is NOT spent by a refused
+  // fill any more (it used to be — take() ran before the checks).
   const ShadowFill far = fillAt(7, "BUY", 100510, 50, 100490, 100480);
   assert(firer.onFill(far, 1000) == 0);
-  assert(firer.counters().refusedPriceBound == 1 && permits.size() == 0 && countKind(ring, "fire_refused", "price_bound") == 1);
+  assert(firer.counters().refusedPriceBound == 1 && permits.size() == 1 && countKind(ring, "fire_refused", "price_bound") == 1);
   // an expired permit is no permit
   permits.set(1, 7, "BUY", permitFor(1, 7, "BUY", 500));
   assert(firer.onFill(f, 1000) == 0 && firer.counters().refusedNoPermit == 2 && permits.size() == 0);
@@ -307,6 +312,257 @@ static void test_concurrent_fills() {
               (unsigned long long)c.queued, (unsigned long long)c.refusedQueueFull, (unsigned long long)c.sent);
 }
 
+
+// GW-1 (gap 3): a permit survives every check that refuses the fill — price
+// bound, stop floor, unaffordable lot, sizing — and the next in-bound fill
+// spends it.
+static void test_permit_is_spent_only_after_the_checks() {
+  ExecEngine engine;
+  TickPermitStore permits;
+  TickFirer firer(engine, permits);
+  firer.setAccounts({1});
+  jsn::Value p = permitFor(1, 41, "BUY"); p.set("minStopFraction", 0.0015); p.set("usdPerLotPerUnit", 0.001);
+  permits.set(1, 41, "BUY", p);
+  // price bound: 0.25 × 400,000 = 100,000 from the ask; 300,000 away
+  assert(firer.onFill(fillAt(41, "BUY", 240300000, 400000, 240000000, 239990000), 1000) == 0);
+  // stop floor: 20,000 < 360,000
+  assert(firer.onFill(fillAt(41, "BUY", 240000000, 20000, 239995000, 239990000), 1000) == 0);
+  // unaffordable: a stop so wide the R buys under 0.01 lot (100 / (20,000,000 × 0.001) = 0.005)
+  assert(firer.onFill(fillAt(41, "BUY", 240000000, 20000000, 239000000, 238990000), 1000) == 0);
+  const FireCounters c = firer.counters();
+  assert(c.refusedPriceBound == 1 && c.refusedStopFloor == 1 && c.refusedUnaffordable == 1 && c.queued == 0);
+  assert(permits.size() == 1 && "every refusal left the permit");
+  // the in-bound fill spends it
+  assert(firer.onFill(fillAt(41, "BUY", 240000000, 400000, 239990000, 239980000), 1000) == 1);
+  assert(permits.size() == 0 && firer.counters().queued == 1);
+  std::puts("permit spent only after the checks: ok");
+}
+
+// GW-1 (gap 1): the per-fire slot counter and the fires-seen acknowledgement.
+static void test_slots_cap_each_fire_and_the_ack_arithmetic() {
+  ExecEngine engine;
+  TickPermitStore permits;
+  DecisionRing ring(512);
+  TickFirer firer(engine, permits);
+  firer.setDecisionRing(&ring);
+  firer.setBootId("B1");
+  firer.setAccounts({1});
+  // no slot figure: unlimited, as before GW-1
+  assert(firer.slots().empty());
+  firer.setSlots({{1, SlotPush{1, 0, "B1"}}});
+  permits.set(1, 7, "BUY", permitFor(1, 7, "BUY"));
+  permits.set(1, 8, "BUY", permitFor(1, 8, "BUY"));
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 1);
+  assert(firer.onFill(fillAt(8, "BUY", 100500, 50, 100490, 100480), 1000) == 0);
+  assert(firer.counters().refusedAccountCap == 1 && countKind(ring, "fire_refused", "account_cap") == 1);
+  assert(permits.size() == 1 && "the capped fill left its permit");
+  // the same figure pushed again, Node not having seen the fire: still capped (fires 1, seen 0)
+  firer.setSlots({{1, SlotPush{1, 0, "B1"}}});
+  assert(firer.slots().at(1) == 0);
+  assert(firer.onFill(fillAt(8, "BUY", 100500, 50, 100490, 100480), 1000) == 0 && firer.counters().refusedAccountCap == 2);
+  // a push naming ANOTHER boot acknowledges nothing
+  firer.setSlots({{1, SlotPush{1, 1, "B0"}}});
+  assert(firer.slots().at(1) == 0);
+  // Node has seen the fire (firesSeen 1 on this boot): its figure is the truth
+  firer.setSlots({{1, SlotPush{1, 1, "B1"}}});
+  assert(firer.slots().at(1) == 1);
+  assert(firer.onFill(fillAt(8, "BUY", 100500, 50, 100490, 100480), 1000) == 1);
+  assert(firer.counters().queued == 2 && permits.size() == 0);
+  // an account the push no longer names is unlimited again
+  firer.setSlots({});
+  assert(firer.slots().empty());
+  auto st = jsn::parse(firer.statusJson());
+  assert(st && st->get("refusedAccountCap").asNumber(0) == 2 && st->get("slots").isObject() && st->get("bootId").asString() == "B1");
+  std::puts("slots cap each fire; the ack arithmetic: ok");
+}
+
+// GW-1 (gap 1, concurrency; also under make tsan): two workers filling 50
+// symbols each for one account with 3 slots queue exactly 3.
+static void test_slots_hold_under_concurrent_fills() {
+  ExecEngine engine;
+  TickPermitStore permits;
+  DecisionRing ring(4096);
+  TickFirer firer(engine, permits);
+  firer.setDecisionRing(&ring);
+  firer.setBootId("B1");
+  firer.setAccounts({1});
+  firer.setSlots({{1, SlotPush{3, 0, "B1"}}});
+  for (int w = 0; w < 2; ++w) for (int i = 0; i < 50; ++i) { const long long sym = 100 * (w + 1) + i; permits.set(1, sym, "SELL", permitFor(1, sym, "SELL")); }
+  std::vector<std::thread> workers;
+  for (int w = 0; w < 2; ++w) {
+    workers.emplace_back([&, w] {
+      for (int i = 0; i < 50; ++i) firer.onFill(fillAt(100 * (w + 1) + i, "SELL", 100485, 50, 100490, 100480), 1000);
+    });
+  }
+  std::thread pusher([&] { for (int i = 0; i < 20; ++i) { (void)firer.statusJson(); (void)firer.slots(); } });
+  for (auto& t : workers) t.join();
+  pusher.join();
+  const FireCounters c = firer.counters();
+  assert(c.queued == 3);
+  assert(c.refusedAccountCap == c.fills - 3 - c.refusedQueueFull);
+  assert(permits.size() == 97);
+  std::puts("slots hold under concurrent fills: ok");
+}
+
+// GW-1: a stale fire and a definite reject give the slot back; TIMEOUT and
+// DISCONNECTED (the order may have reached the broker) do not; a push
+// between the reservation and the refund makes the refund a no-op.
+static void test_slot_refunds() {
+  assert(!TickFirer::isAmbiguousReject("NOT_ENOUGH_MONEY") && TickFirer::isAmbiguousReject("TIMEOUT") && TickFirer::isAmbiguousReject("DISCONNECTED"));
+  ExecEngine engine;
+  TickPermitStore permits;
+  TickFirer firer(engine, permits);
+  firer.setBootId("B1");
+  firer.setAccounts({1});
+  std::atomic<bool> timeout{false}; // read on the fire thread: an atomic, not a string (TSan)
+  firer.setSendHookForTests([&](const jsn::Value&) { EngineResult r; r.ok = false; r.body = jsn::Value{jsn::Object{}}; r.body.set("errorCode", std::string(timeout.load() ? "TIMEOUT" : "NOT_ENOUGH_MONEY")); return r; });
+  auto waitRejected = [&](uint64_t n) { for (int i = 0; i < 400 && firer.counters().rejected < n; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5)); };
+  firer.setSlots({{1, SlotPush{1, 0, "B1"}}});
+  firer.start();
+  // a definite reject: the slot comes back
+  permits.set(1, 7, "BUY", permitFor(1, 7, "BUY"));
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 1);
+  waitRejected(1);
+  for (int i = 0; i < 200 && firer.slots().at(1) != 1; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  assert(firer.slots().at(1) == 1 && firer.counters().slotsRefunded == 1);
+  // a TIMEOUT: the slot stays spent
+  timeout.store(true);
+  permits.set(1, 7, "BUY", permitFor(1, 7, "BUY"));
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 1);
+  waitRejected(2);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  assert(firer.slots().at(1) == 0 && firer.counters().slotsRefunded == 1);
+  firer.stop();
+  // a stale fire: never sent, the slot comes back
+  TickFirer slow(engine, permits);
+  slow.setBootId("B1");
+  slow.setAccounts({1});
+  slow.setSendHookForTests([&](const jsn::Value&) { EngineResult r; r.ok = true; r.body = jsn::Value{jsn::Object{}}; return r; });
+  slow.setClockForTests([] { return 60000LL; });
+  slow.setSlots({{1, SlotPush{1, 0, "B1"}}});
+  jsn::Value p = permitFor(1, 7, "BUY"); p.set("maxFireDelayMs", 5000.0);
+  permits.set(1, 7, "BUY", p);
+  assert(slow.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 1);
+  assert(slow.slots().at(1) == 0);
+  slow.start();
+  for (int i = 0; i < 400 && slow.counters().refusedStale == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  for (int i = 0; i < 200 && slow.slots().at(1) != 1; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  assert(slow.counters().refusedStale == 1 && slow.slots().at(1) == 1);
+  slow.stop();
+  // a push between the reservation and a refusal: no refund (the push already counts it)
+  TickFirer racing(engine, permits);
+  racing.setBootId("B1");
+  racing.setAccounts({1});
+  racing.setSendHookForTests([&](const jsn::Value&) { EngineResult r; r.ok = false; r.body = jsn::Value{jsn::Object{}}; r.body.set("errorCode", std::string("NOT_ENOUGH_MONEY")); return r; });
+  racing.setSlots({{1, SlotPush{2, 0, "B1"}}});
+  permits.set(1, 7, "BUY", permitFor(1, 7, "BUY"));
+  assert(racing.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 1); // queued, not started yet
+  racing.setSlots({{1, SlotPush{2, 1, "B1"}}});                                   // Node saw the fire
+  assert(racing.slots().at(1) == 2);
+  racing.start();
+  for (int i = 0; i < 400 && racing.counters().rejected == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  racing.stop();
+  assert(racing.slots().at(1) == 2 && racing.counters().slotsRefunded == 0);
+  std::puts("slot refunds: ok");
+}
+
+// GW-1 (gap 2): the push fully replaces an account's permits.
+static void test_replace_accounts_withdraws_dropped_keys() {
+  TickPermitStore permits;
+  permits.set(1, 7, "BUY", permitFor(1, 7, "BUY"));
+  permits.set(1, 8, "SELL", permitFor(1, 8, "SELL"));
+  permits.set(2, 7, "BUY", permitFor(2, 7, "BUY"));
+  jsn::Value fresh = permitFor(1, 7, "BUY"); fresh.set("id", std::string("fresh"));
+  permits.replaceAccounts({1}, {TickPermitStore::Entry{1, 7, "BUY", fresh}});
+  assert(permits.size() == 2);
+  assert(!permits.take(1, 8, "SELL", 1000) && "a key the push no longer carries is withdrawn");
+  auto kept = permits.take(1, 7, "BUY", 1000);
+  assert(kept && kept->get("id").asString() == "fresh");
+  assert(permits.take(2, 7, "BUY", 1000) && "an account the push does not name keeps its permits");
+  // an empty set for a placing account withdraws everything it held
+  permits.set(1, 9, "BUY", permitFor(1, 9, "BUY"));
+  permits.replaceAccounts({1}, {});
+  assert(permits.size() == 0);
+  std::puts("replaceAccounts withdraws dropped keys: ok");
+}
+
+// GW-1 (gaps 5 and 6): the profile and boot refusals keep the permit; a
+// permit with neither field (an older keeper) is not checked.
+static void test_profile_and_boot_refusals() {
+  ExecEngine engine;
+  TickPermitStore permits;
+  DecisionRing ring(512);
+  TickFirer firer(engine, permits);
+  firer.setDecisionRing(&ring);
+  firer.setBootId("B");
+  firer.setAccounts({1});
+  jsn::Value other = permitFor(1, 7, "BUY"); other.set("profileHash", std::string("0000000000000000"));
+  permits.set(1, 7, "BUY", other);
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 0);
+  assert(firer.counters().refusedProfile == 1 && permits.size() == 1 && countKind(ring, "fire_refused", "profile_mismatch") == 1);
+  jsn::Value oldBoot = permitFor(1, 7, "BUY"); oldBoot.set("profileHash", std::string("abcdef0123456789")); oldBoot.set("bootId", std::string("A"));
+  permits.set(1, 7, "BUY", oldBoot);
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 0);
+  assert(firer.counters().refusedBoot == 1 && permits.size() == 1 && countKind(ring, "fire_refused", "permit_other_boot") == 1);
+  jsn::Value mine = oldBoot; mine.set("bootId", std::string("B"));
+  permits.set(1, 7, "BUY", mine);
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 1);
+  permits.set(1, 7, "BUY", permitFor(1, 7, "BUY")); // no profileHash, no bootId: not checked
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 1);
+  std::puts("profile and boot refusals: ok");
+}
+
+// GW-1 (gap 6, the restart double-spend the WP names): boot A spends P; a new
+// engine + firer (boot B) receives the same P. The fresh engine's empty
+// consumed-permit set would accept it — the boot check is what refuses it.
+static void test_a_permit_cannot_cross_a_restart() {
+  GuardSnapshot g{false, true, true, 0.0, {}, {{1, 3}}};
+  jsn::Value P = permitFor(1, 7, "BUY"); P.set("bootId", std::string("A"));
+  {
+    ExecEngine engineA;
+    TickPermitStore permitsA;
+    TickFirer a(engineA, permitsA);
+    a.setBootId("A");
+    a.setAccounts({1});
+    permitsA.set(1, 7, "BUY", P);
+    assert(a.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 1);
+  }
+  ExecEngine engineB;
+  TickPermitStore permitsB;
+  TickFirer b(engineB, permitsB);
+  b.setBootId("B");
+  b.setAccounts({1});
+  // the gateway alone cannot remember: the new boot's boundary would accept P
+  std::set<std::string> freshConsumed;
+  jsn::Value payload = TickFirer::buildPayload(1, fillAt(7, "BUY", 100500, 50, 100490, 100480), 20000000.0, P);
+  assert(validatePermit(payload, g, freshConsumed, 1000).ok);
+  permitsB.set(1, 7, "BUY", P);
+  assert(b.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 0);
+  assert(b.counters().refusedBoot == 1 && b.counters().queued == 0);
+  std::puts("a permit cannot cross a restart: ok");
+}
+
+// GW-1 (gap 1c): a non-tick entry spends a slot of its account until the
+// next push; a 'tick:' entry (the firer's own, counted at the queue) does not.
+static void test_non_tick_entries_spend_slots() {
+  ExecEngine engine;
+  TickPermitStore permits;
+  TickFirer firer(engine, permits);
+  firer.setAccounts({1});
+  firer.setSlots({{1, SlotPush{2, 0, ""}}});
+  firer.noteEntry(1, "tick:abcdef0123456789|||||||i1BUY");
+  assert(firer.slots().at(1) == 2);
+  firer.noteEntry(1, "AU|v1|VWAP|H|LN|4h|TR|iabc");
+  assert(firer.slots().at(1) == 1);
+  firer.noteEntry(2, "AU|v1|VWAP|H|LN|4h|TR|iabc"); // an account with no figure: nothing to spend
+  assert(firer.slots().count(2) == 0);
+  firer.noteEntry(1, "AU");
+  firer.noteEntry(1, "AU");
+  assert(firer.slots().at(1) == 0 && firer.counters().entriesNoted == 4);
+  std::puts("non-tick entries spend slots: ok");
+}
+
 int main() {
   test_size_volume();
   test_refusals_and_payload();
@@ -314,6 +570,14 @@ int main() {
   test_stop_floor_stale_and_abandon();
   test_queue_bound_and_account_clear();
   test_concurrent_fills();
+  test_permit_is_spent_only_after_the_checks();
+  test_slots_cap_each_fire_and_the_ack_arithmetic();
+  test_slots_hold_under_concurrent_fills();
+  test_slot_refunds();
+  test_replace_accounts_withdraws_dropped_keys();
+  test_profile_and_boot_refusals();
+  test_a_permit_cannot_cross_a_restart();
+  test_non_tick_entries_spend_slots();
   std::puts("test_tick_firer: all passed");
   return 0;
 }
