@@ -20,8 +20,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { parse } from 'acorn'
 import { initDB, getState, setState } from '../db.js'
-import { MOMENTUM_ACCOUNT_KEY, MOMENTUM_UNIVERSE_KEY } from './momentum-account.js'
-import { runMomentumBook, MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_PASS_KEY, TSMOM_STRATEGY } from './momentum-book.js'
+import { MOMENTUM_ACCOUNT_KEY, MOMENTUM_UNIVERSE_KEY, ACCOUNT_TERMINAL_TRADE_STATES, nextBrokerOpenMs } from './momentum-account.js'
+import { runMomentumBook, MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_PASS_KEY, TSMOM_STRATEGY, BOOK_TERMINAL_TRADE_STATES } from './momentum-book.js'
 import { MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
 import { setStage } from './stage-matrix.js'
 import { CONTROLLERS, beat, heartbeatView } from './heartbeat.js'
@@ -276,4 +276,202 @@ test('F6: with the book switched off the controller is dormant, not stalled', ()
   assert.match(v.dormant_reason, /switched off/)
   setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true }))
   assert.notEqual(heartbeatView(db, { now: new Date(DUE) }).find(x => x.name === 'momentum_book').verdict, 'dormant')
+})
+
+// ---------------------------------------------------------------------------
+// Checker B1: the ROW-CURSOR entry hold. An account the momentum-account
+// config does not name takes the row-cursor path; its `tryEnter` must refuse
+// every entry — the shadow's fresh `enter` row AND the reconcile of a held
+// name — while `entriesHeld` is set, and offer both when it is null.
+// ---------------------------------------------------------------------------
+function rowCursorDb() {
+  const db = fresh({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 } } })
+  // A named account that is NOT this one: ACC is off the daily pass.
+  setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: '99990001', volTargetPct: 10, maxPositions: 8 }))
+  db.prepare(`INSERT INTO momentum_shadow (at, symbol, action, side, rank_pct, conviction, price, timeframe, universe) VALUES ('2026-09-25T21:00:00.000Z','KO.US','enter','long',0.92,9,60,'1d',20)`).run()
+  return db
+}
+
+for (const why of ['Scan disabled', 'Scan off on every trading account', 'weekend quiet with nothing to scan']) {
+  test(`B1 row-cursor: ${why} — neither the shadow's enter row nor the held name reaches autoTrade`, async () => {
+    const db = rowCursorDb()
+    const f = fakes()
+    const r = await run(db, f, DUE, { entriesHeld: why })
+    assert.equal(r.momentumAccount, undefined, 'the account took the row-cursor path, not the daily pass')
+    assert.deepEqual(f.calls.autoTrade, [], `no entry while held: ${JSON.stringify(r.skipped)}`)
+    assert.equal(r.entries, 0)
+    assert.equal(r.entriesHeld, why)
+  })
+}
+
+test('B1 row-cursor: with entriesHeld null the same pass offers the enter row and the held name to autoTrade', async () => {
+  const db = rowCursorDb()
+  const f = fakes()
+  const r = await run(db, f, DUE)
+  assert.equal(r.momentumAccount, undefined)
+  assert.ok(f.calls.autoTrade.includes('KO.US'), `the shadow's enter row is offered: ${JSON.stringify(r.skipped)}`)
+  assert.ok(f.calls.autoTrade.includes('BTCUSD'), `the held name is reconciled: ${JSON.stringify(r.skipped)}`)
+})
+
+// ---------------------------------------------------------------------------
+// Checker N1: ONE send per cycle for a refused close — the pending-only retry
+// and the pass's own exit call no longer both send the same row.
+// ---------------------------------------------------------------------------
+const refusing = (f, msg = 'TRADING_DISABLED') => { f.deps.close = async (_c, args) => { f.calls.close.push(args); throw new Error(msg) } }
+const bookRowFull = (db) => db.prepare(`SELECT status, note, exit_refusals, exit_retry_after FROM momentum_book WHERE symbol = 'KO.US'`).get()
+
+for (const label of ['entries held', 'margin exhausted']) {
+  test(`N1: ${label} — an always-refusing close is sent exactly once per cycle`, async () => {
+    const db = fresh()
+    bookRow(db)
+    const f = fakes()
+    refusing(f)
+    let opts = { entriesHeld: 'Scan disabled' }
+    if (label === 'margin exhausted') { f.deps.marginHeadroom = () => 0; opts = {} }
+    // Two cycles below the backoff threshold; the day's cursor never
+    // advances on a held pass, so both are "due".
+    for (const [i, at] of [DUE, DUE + 5 * 60_000].entries()) {
+      const before = f.calls.close.length
+      const r = await run(db, f, at, opts)
+      assert.equal(f.calls.close.length - before, 1, `cycle ${i + 1}: one send, not two: ${JSON.stringify(r.skipped)}`)
+    }
+    assert.equal(bookRowFull(db).exit_refusals, 2)
+  })
+}
+
+test('N1: a due, running pass sends an already-pending refused close once (the pending retry, not again from the rank exit)', async () => {
+  const db = fresh()
+  bookRow(db)
+  db.prepare(`UPDATE momentum_book SET note = 'exit_pending: TRADING_DISABLED', exit_refusals = 1`).run()
+  const f = fakes()
+  refusing(f)
+  const r = await run(db, f, DUE)
+  assert.equal(f.calls.close.length, 1, JSON.stringify(r.skipped))
+  assert.equal(bookRowFull(db).exit_refusals, 2)
+})
+
+// ---------------------------------------------------------------------------
+// Checker N2: the refused-exit retry backs off after 3 consecutive refusals.
+// ---------------------------------------------------------------------------
+test('N2: below 3 refusals every pass retries; from the 3rd the retry waits 30 min, recorded on the row; a send that goes clears it', async () => {
+  const db = fresh()
+  bookRow(db)
+  const f = fakes()
+  refusing(f)
+  const held = { entriesHeld: 'Scan disabled' }
+  const t = (m) => DUE + m * 60_000
+  await run(db, f, t(0), held)
+  assert.equal(bookRowFull(db).exit_retry_after, null, '1st refusal: no backoff')
+  await run(db, f, t(5), held)
+  assert.equal(bookRowFull(db).exit_retry_after, null, '2nd refusal: no backoff')
+  await run(db, f, t(10), held)
+  assert.equal(f.calls.close.length, 3, 'three passes, three sends')
+  let b = bookRowFull(db)
+  assert.equal(b.exit_refusals, 3)
+  assert.equal(b.exit_retry_after, new Date(t(40)).toISOString(), '3rd refusal: next retry 30 min on')
+  assert.equal(b.note, 'exit_pending: TRADING_DISABLED')
+  for (const m of [15, 20, 39]) {
+    const r = await run(db, f, t(m), held)
+    assert.equal(f.calls.close.length, 3, `t+${m}: backing off`)
+    assert.ok(r.skipped.some(s => s.includes('refused exit backing off')), JSON.stringify(r.skipped))
+  }
+  await run(db, f, t(40), held)
+  assert.equal(f.calls.close.length, 4, 'retried at the backoff time')
+  assert.equal(bookRowFull(db).exit_retry_after, new Date(t(70)).toISOString())
+  f.deps.close = async (_c, args) => { f.calls.close.push(args); return {} }
+  await run(db, f, t(70), held)
+  assert.equal(f.calls.close.length, 5)
+  b = bookRowFull(db)
+  assert.equal(b.status, 'exit_sent')
+  assert.equal(b.exit_retry_after, null)
+})
+
+test('N2: a MARKET_CLOSED refusal (the 3rd) waits for the broker\'s next open; with no schedule it falls back to 30 min', async () => {
+  for (const [nextOpen, expect] of [[() => MON_OPEN, MON_OPEN], [() => null, DUE + 10 * 60_000 + 30 * 60_000]]) {
+    const db = fresh()
+    bookRow(db)
+    const f = fakes()
+    refusing(f, 'MARKET_CLOSED')
+    f.deps.nextBrokerOpen = nextOpen
+    for (const m of [0, 5, 10]) await run(db, f, DUE + m * 60_000, { entriesHeld: 'Scan disabled' })
+    assert.equal(bookRowFull(db).exit_retry_after, new Date(expect).toISOString())
+    await run(db, f, expect - 60_000, { entriesHeld: 'Scan disabled' })
+    assert.equal(f.calls.close.length, 3, 'nothing before the retry time')
+    await run(db, f, expect, { entriesHeld: 'Scan disabled' })
+    assert.equal(f.calls.close.length, 4, 'sent at the retry time')
+  }
+})
+
+test('N2: nextBrokerOpenMs reads the broker schedule — the session after the current one, or the next open when closed; null with no schedule', () => {
+  const db = initDB(':memory:')
+  assert.equal(nextBrokerOpenMs(db, 'KO.US', DUE), null)
+  const day = 86_400
+  const schedule = [1, 2, 3, 4, 5].map(d => ({ startSecond: d * day + 13.5 * 3600, endSecond: d * day + 20 * 3600 }))
+  db.prepare(`INSERT INTO symbol_hours (symbol, schedule_json, tz) VALUES ('KO.US', ?, 'UTC')`).run(JSON.stringify(schedule))
+  const monOpen = Date.UTC(2026, 8, 28, 13, 30)
+  assert.equal(nextBrokerOpenMs(db, 'KO.US', Date.UTC(2026, 8, 25, 19, 0)), monOpen, 'open Friday: the session after this one')
+  assert.equal(nextBrokerOpenMs(db, 'KO.US', LATER), monOpen, 'closed Saturday: the next open')
+})
+
+test('N2: a withdrawn pending exit clears its refusal record', async () => {
+  const db = fresh()
+  bookRow(db)
+  db.prepare(`UPDATE momentum_book SET note = 'exit_pending: TRADING_DISABLED', exit_refusals = 3, exit_retry_after = ?`).run(new Date(DUE + 3600_000).toISOString())
+  setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { 'KO.US': { side: 'long', entryRank: 0.9 } }, refused: {}, lastRunMs: 2, lastUniverse: 20 }))
+  const f = fakes()
+  await run(db, f, DUE)
+  const b = bookRowFull(db)
+  assert.equal(f.calls.close.length, 0)
+  assert.match(b.note, /^exit withdrawn/)
+  assert.equal(b.exit_refusals, null)
+  assert.equal(b.exit_retry_after, null)
+})
+
+// ---------------------------------------------------------------------------
+// A failed close never relabels an exit_sent row; the pending retry skips a
+// trade already terminal.
+// ---------------------------------------------------------------------------
+test('a failure after the row reached exit_sent leaves the row exit_sent with its note', async () => {
+  const db = fresh()
+  bookRow(db)
+  const f = fakes()
+  // The close goes and the row is marked exit_sent; the log line after it
+  // then throws, which lands in the same catch as a refused close.
+  const log = (m) => { if (/rank exit KO\.US/.test(m)) throw new Error('log sink down') }
+  const r = await run(db, f, DUE, { log })
+  assert.equal(f.calls.close.length, 1)
+  assert.ok(r.skipped.some(s => s.includes('log sink down')), `the failure reached the catch: ${JSON.stringify(r.skipped)}`)
+  const b = bookRowFull(db)
+  assert.equal(b.status, 'exit_sent')
+  assert.equal(b.note, 'rank exit (daily pass)', 'not relabelled exit_pending')
+  assert.equal(b.exit_refusals, null)
+})
+
+test('row-cursor path: a failure after the row reached exit_sent leaves the row exit_sent with its note', async () => {
+  const db = rowCursorDb()
+  bookRow(db)
+  db.prepare(`INSERT INTO momentum_shadow (at, symbol, action, side, rank_pct, conviction, price, timeframe, universe) VALUES ('2026-09-25T21:01:00.000Z','KO.US','exit','long',0.2,2,60,'1d',20)`).run()
+  const f = fakes()
+  const log = (m) => { if (/momentum book: rank exit KO\.US/.test(m)) throw new Error('log sink down') }
+  const r = await run(db, f, DUE, { log })
+  assert.equal(r.momentumAccount, undefined)
+  assert.equal(f.calls.close.length, 1, JSON.stringify(r.skipped))
+  assert.ok(r.skipped.some(s => s.includes('log sink down')), `the failure reached the catch: ${JSON.stringify(r.skipped)}`)
+  const b = bookRowFull(db)
+  assert.equal(b.status, 'exit_sent')
+  assert.equal(b.note, 'rank exit', 'not relabelled exit_pending')
+})
+
+test('the pending retry skips a row whose trade is already terminal', async () => {
+  assert.deepEqual([...ACCOUNT_TERMINAL_TRADE_STATES].sort(), [...BOOK_TERMINAL_TRADE_STATES].sort(), 'one terminal set on both paths')
+  for (const st of ACCOUNT_TERMINAL_TRADE_STATES) {
+    const db = fresh()
+    bookRow(db)
+    db.prepare(`UPDATE momentum_book SET note = 'exit_pending: TRADING_DISABLED'`).run()
+    db.prepare(`UPDATE trades SET status = ?`).run(st)
+    const f = fakes()
+    const r = await run(db, f, LATER)   // not due: only the pending retry runs
+    assert.equal(f.calls.close.length, 0, `${st}: ${JSON.stringify(r.skipped)}`)
+    assert.ok(r.skipped.some(s => s.includes(`is ${st}`)), JSON.stringify(r.skipped))
+  }
 })

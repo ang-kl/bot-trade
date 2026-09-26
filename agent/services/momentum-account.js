@@ -50,12 +50,51 @@ import { recordDecision } from './decision-log.js'
 import { recordPositionEvent } from './position-events.js'
 import { assetClassOf } from './strategy-asset-cross.js'
 import { bookEntryWrite } from './book-entry-write.js'
-import { isSymbolOpenCached } from './symbol-hours.js'
+import { isSymbolOpenCached, nextOpenInfo, nextCloseInfo } from './symbol-hours.js'
 
 export const MOMENTUM_ACCOUNT_KEY = 'momentum_account_json'
 export const MOMENTUM_ACCOUNT_STATE_KEY = 'momentum_account_state_json'
 export const MOMENTUM_UNIVERSE_KEY = 'momentum_universe_json'
 export const TSMOM_STRATEGY = 'tsmom_long'
+
+/**
+ * THE REFUSED-EXIT RETRY'S BACKOFF (Wave 2 row 2.1, checker N2, 26-09-2026).
+ * An `exit_pending:` row is retried on every loop pass (~12 an hour); a close
+ * the broker keeps refusing was re-sent at that rate for ever. From the
+ * `afterRefusals`-th CONSECUTIVE refusal on, the retry waits `minIntervalMs`
+ * between sends — or, for a MARKET_CLOSED refusal, until the broker's next
+ * open when its schedule says when that is. Below the threshold nothing
+ * changes: a transient refusal is still retried on the very next pass. The
+ * count and the next-retry time live on the row (`exit_refusals`,
+ * `exit_retry_after`); a send that goes, or a withdrawal, clears them.
+ */
+export const EXIT_RETRY_BACKOFF = Object.freeze({ afterRefusals: 3, minIntervalMs: 30 * 60_000 })
+// The trade states that end a book position — the same three as
+// momentum-book.js's BOOK_TERMINAL_TRADE_STATES (not imported: momentum-book
+// imports this module; a test pins the two sets equal).
+export const ACCOUNT_TERMINAL_TRADE_STATES = Object.freeze(['closed', 'rejected', 'cancelled'])
+
+/**
+ * When does SYMBOL next open, by the BROKER's schedule? ms, or null when the
+ * schedule does not say (heuristic-only symbol, 24/7 contiguous sessions).
+ * A MARKET_CLOSED refusal arrives on a pass the schedule called open (a
+ * schedule-closed market is never sent a close — F2), so the "next open" is
+ * then the start of the session after the current one ends.
+ */
+export function nextBrokerOpenMs(db, symbol, nowMs) {
+  try {
+    const n = nextOpenInfo(db, symbol, new Date(nowMs))
+    if (n.source === 'broker' && n.open === false && n.next_open_at) {
+      const t = Date.parse(n.next_open_at)
+      return Number.isFinite(t) && t > nowMs ? t : null
+    }
+    const c = nextCloseInfo(db, symbol, new Date(nowMs))
+    if (c.source === 'broker' && c.open === true && Number(c.closes_in_sec) >= 0 && Number(c.closure_sec) > 0) {
+      return nowMs + (Number(c.closes_in_sec) + Number(c.closure_sec)) * 1000
+    }
+  } catch { /* unknown is not a time */ }
+  return null
+}
 export const TRADING_DAYS = 252
 
 /** The config value that means "every enabled registry account". */
@@ -369,7 +408,13 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   // Before F2 the daily pass sent the close into the closed market
   // (…0058, KO.US `close failed — MARKET_CLOSED`, Fri 25-09 21:05:40Z) and
   // nothing retried it until the next day's pass.
-  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, bookCfg, pendingOnly: true })
+  // N1 (checker, 26-09-2026): every row this cycle has already EVALUATED —
+  // sent, refused, deferred or withdrawn — is not evaluated again by a later
+  // call in the same pass. Without it a refused close went out TWICE on a due
+  // pass (the pending-only retry here, then the full pass below re-reading
+  // the same row), and twice again on every held / margin-exhausted cycle.
+  const evaluated = new Set()
+  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, bookCfg, pendingOnly: true, evaluated })
   if (!dailyDue({ nowMs: now, lastRunMs: state.lastRunMs, afterUtc: cfg.dailyRunAfterUtc, cadence: cfg.cadence })) {
     summary.why = 'not due (daily cadence)'
     return summary
@@ -388,7 +433,7 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
     const why = marginExhausted ? 'margin exhausted — no entries this pass' : `${entriesHeld} — no entries this pass; exits run`
     summary.why = why
     summary.skipped.push(why)
-    summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, bookCfg })
+    summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, bookCfg, evaluated })
     return summary
   }
   summary.ran = true
@@ -410,7 +455,7 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
     .sort((a, b) => (b.side === 'short' ? 1 - b.rank : b.rank) - (a.side === 'short' ? 1 - a.rank : a.rank))
 
   // EXITS FIRST: the shadow no longer holds it (or holds the other side).
-  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held, bookCfg })
+  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held, bookCfg, evaluated })
   // The open set is read AFTER the exits (checker item a): a same-day flip
   // has its long row exited above and its short entered below.
   const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?`).all(accountId)
@@ -533,8 +578,12 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
  * full pass and the margin-exhausted pass (exits run regardless of
  * headroom). Returns the number of exits sent.
  */
-async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held = undefined, bookCfg = null, pendingOnly = false }) {
-  const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?${pendingOnly ? ` AND note LIKE 'exit_pending:%'` : ''}`).all(accountId)
+async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held = undefined, bookCfg = null, pendingOnly = false, evaluated = null }) {
+  // `trade_status` rides along so the refused-exit retry can skip a row whose
+  // trade has already ended (the reconciler closes the book row; re-sending a
+  // close for a position the broker no longer holds is a refusal by design).
+  const openRows = db.prepare(`SELECT b.*, t.status AS trade_status FROM momentum_book b LEFT JOIN trades t ON t.id = b.trade_id WHERE b.status = 'open' AND b.account_id = ?${pendingOnly ? ` AND b.note LIKE 'exit_pending:%'` : ''} ORDER BY b.id`)
+    .all(accountId).filter(r => !evaluated || !evaluated.has(r.id))
   if (pendingOnly && !openRows.length) return 0
   const holdings = held === undefined ? shadowHoldingsOrNull(db) : held
   // FAIL CLOSED (checker, 16-09-2026): an unreadable ranking closes nothing.
@@ -544,13 +593,22 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
   }
   let exits = 0
   for (const row of openRows) {
+    evaluated?.add(row.id)
+    const pending = String(row.note || '').startsWith('exit_pending:')
+    // An owed exit whose TRADE is already terminal is not retried: the
+    // position is gone at the broker, and the book row is the reconciler's
+    // to close. (Only the retry — a row with no pending exit is untouched.)
+    if (pending && ACCOUNT_TERMINAL_TRADE_STATES.includes(row.trade_status)) {
+      summary.skipped.push(`${row.symbol}: pending exit not retried — trade ${row.trade_id} is ${row.trade_status}`)
+      continue
+    }
     const rowSide = row.side === 'short' ? 'short' : 'long'
     if (holdings[row.symbol]?.side === rowSide || holdings[String(row.symbol).toUpperCase()]?.side === rowSide) {
       // An exit held back for a closed market is WITHDRAWN when the ranking
       // holds the name again on this side before the market opened: the
       // opinion that owed it no longer stands, so nothing is sent.
-      if (String(row.note || '').startsWith('exit_pending:')) {
-        db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ?`).run('exit withdrawn — the shadow holds it again (daily pass)', row.id)
+      if (pending) {
+        db.prepare(`UPDATE momentum_book SET note = ?, exit_refusals = NULL, exit_retry_after = NULL WHERE id = ?`).run('exit withdrawn — the shadow holds it again (daily pass)', row.id)
         log(`momentum account: pending exit of ${row.symbol} on …${accountId.slice(-4)} withdrawn — the shadow holds it again`)
       }
       continue // still held on this side — keep (untradable-now names included)
@@ -577,6 +635,14 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
     // (source 'broker') may defer — the sessions.js heuristic and an error
     // both ATTEMPT the close, because a wrongly deferred exit on an open
     // market is the worse error (one refused line at worst).
+    // N2: a refused close in backoff waits for its retry time. Only a row the
+    // broker has refused carries `exit_retry_after`; nothing else is delayed.
+    const retryAt = pending && row.exit_retry_after ? Date.parse(row.exit_retry_after) : NaN
+    if (Number.isFinite(retryAt) && now < retryAt) {
+      summary.exitRetriesBackedOff = (summary.exitRetriesBackedOff || 0) + 1
+      summary.skipped.push(`${row.symbol}: refused exit backing off — ${Number(row.exit_refusals) || 0} consecutive refusals; next retry ${new Date(retryAt).toISOString()}`)
+      continue
+    }
     let hours = { open: true, source: 'unknown' }
     try { hours = (deps.isSymbolOpen ?? isSymbolOpenCached)(db, row.symbol, new Date(now)) } catch { hours = { open: true, source: 'error' } }
     if (hours.open === false && hours.source === 'broker') {
@@ -596,7 +662,7 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
           await deps.close(creds, { positionId: row.position_id, volume })
         }
       }
-      db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)' WHERE id = ?`).run(new Date(now).toISOString(), row.id)
+      db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)', exit_retry_after = NULL WHERE id = ?`).run(new Date(now).toISOString(), row.id)
       // Same journal line as the row-cursor exit (fix-the-exits BA).
       if (row.position_id) {
         recordPositionEvent(db, {
@@ -609,8 +675,25 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
     } catch (err) {
       // A refused close is owed, not dropped: flagged so the every-pass
       // retry above sends it again (the row-cursor path's 09-09-2026 rule).
-      try { db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ?`).run(`exit_pending: ${String(err.message).slice(0, 160)}`, row.id) } catch { /* the skip line below still reports it */ }
-      summary.skipped.push(`${row.symbol}: close failed — ${err.message}`)
+      // `status = 'open'` in the WHERE: a failure AFTER the row reached
+      // exit_sent (the journal line throwing) must not relabel a sent exit
+      // as owed. N2: the refusal is counted, and from the threshold on the
+      // next retry is spaced (see EXIT_RETRY_BACKOFF).
+      const refusals = (Number(row.exit_refusals) || 0) + 1
+      let retryAfter = null
+      if (refusals >= EXIT_RETRY_BACKOFF.afterRefusals) {
+        retryAfter = now + EXIT_RETRY_BACKOFF.minIntervalMs
+        if (/MARKET_CLOSED/i.test(String(err?.message))) {
+          let open = null
+          try { open = (deps.nextBrokerOpen ?? nextBrokerOpenMs)(db, row.symbol, now) } catch { open = null }
+          if (Number.isFinite(open) && open > now) retryAfter = open
+        }
+      }
+      try {
+        db.prepare(`UPDATE momentum_book SET note = ?, exit_refusals = ?, exit_retry_after = ? WHERE id = ? AND status = 'open'`)
+          .run(`exit_pending: ${String(err.message).slice(0, 160)}`, refusals, retryAfter == null ? null : new Date(retryAfter).toISOString(), row.id)
+      } catch { /* the skip line below still reports it */ }
+      summary.skipped.push(`${row.symbol}: close failed — ${err.message}${retryAfter != null ? ` (refusal ${refusals}; next retry ${new Date(retryAfter).toISOString()})` : ''}`)
     }
   }
   return exits

@@ -812,7 +812,9 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         summary.exits++
         log(`momentum book: ${why} ${symbol} on …${accountId.slice(-4)}`)
       } catch (err) {
-        db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ?`).run(`exit_pending: ${String(err.message).slice(0, 160)}`, row.id)
+        // `status = 'open'`: a failure after the row reached exit_sent (the
+        // journal line throwing) must not relabel a sent exit as owed.
+        db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ? AND status = 'open'`).run(`exit_pending: ${String(err.message).slice(0, 160)}`, row.id)
         summary.skipped.push(`${accountId} ${symbol}: close failed — ${err.message}`)
       }
     }
