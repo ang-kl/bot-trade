@@ -36,6 +36,7 @@ import { performance } from 'node:perf_hooks'
 import { stampFirst, noteBudgetOverrun } from './runtime-record.js'
 import { noteDueLateness, latenessEligibility } from './protection-latency.js'
 import { recordLimitFillSpread, isPreFill } from './limit-fill-spread.js'
+import { ProbeScheduler, probeCap, probeBackoffMs, sideHasFreshQuoteExcluding, selectUnderCap } from '../lib/fast-monitor-probes.js'
 
 // ---------------------------------------------------------------------------
 // PER-POSITION RECEIPT TIMINGS (V3 M1, P1/P4-1). A pass that re-prices a due
@@ -273,6 +274,18 @@ const volCache = new BoundedMap(SYM_MAP_MAX, { lru: true, name: 'fast_monitor.vo
 const quoteFreeze = new BoundedMap(SYM_MAP_MAX, { lru: true, name: 'fast_monitor.quoteFreeze' }) // symbol → { mid, changedAt, alerted }
 const VOL_TTL_MS = 5 * 60_000
 
+// ---------------------------------------------------------------------------
+// M7 (P1/P4-4, V3-SEQUENCE:536-543; OD-22 26-09-2026: "parallel probes under
+// a cap, with backoff <= 5 min"). ONE process-wide scheduler so the cap and
+// the backoff apply across ticks, exactly like the caches above. See
+// `../lib/fast-monitor-probes.js` for the mechanics and what OD-22 leaves
+// open (the quiet-symbol-in-an-open-market staleness rule).
+// ---------------------------------------------------------------------------
+const probeScheduler = new ProbeScheduler({ cap: probeCap(), backoffMs: probeBackoffMs() })
+export function _resetFastMonitorProbeSchedulerForTests() { probeScheduler.reset() }
+/** Test seam: the cap is normally fixed at process start (env-read once); a test overrides it directly to pin cap behaviour without an env-driven re-import. */
+export function _setFastMonitorProbeCapForTests(n) { probeScheduler.cap = n }
+
 /** Sizes and evictions for /state/route-timings-adjacent diagnostics. */
 export function fastMonitorMapStats() {
   return [lastCheckAt, lastPriceAt, spikeUntil, volCache, quoteFreeze].map(m => m.stats())
@@ -384,6 +397,127 @@ export async function runFastMonitor(db, creds, deps = {}) {
     // Durations on the monotonic clock: `now` may be a test's fixed clock.
     const mono = deps.monoNow ?? (() => performance.now())
     const timing = { priced: 0, pricingMs: 0, brokerQuotes: 0, volFetches: 0, volFetchMs: 0, tokenWaitMs: 0 }
+
+    // M7: positions whose broker fallback probe could not be resolved
+    // inline this pass (the scheduler said 'eligible' — a real network call
+    // is needed) are finished here, after the PARALLEL BATCH below runs.
+    const probeBatch = []
+
+    // Everything that happens once a position HAS a quote (sidecar, a
+    // resolved probe, or a reused backoff/pending result): unchanged from
+    // before M7, just extracted so both the inline path (sidecar hit,
+    // backoff, pending) and the deferred batch path (a fresh broker probe)
+    // call the same code.
+    const finishWithQuote = async (pos, receipt, q, feedKey, prior) => {
+      // V3 PO-M3: the spread at a resting limit's fill, from the quote this
+      // pass already holds — the first Node can read after the fill. Record
+      // only; never throws, never changes what the pass does next.
+      if (isPreFill(pos)) recordLimitFillSpread(db, pos, { quote: q, source: receipt.quoteSource, nowMs: now(), reason: 'quote unavailable (market closed or feed gap)' })
+      const mid = Number.isFinite(q?.bid) && Number.isFinite(q?.ask) && q.bid > 0 && q.ask >= q.bid ? (q.bid + q.ask) / 2 : null
+      if (mid == null) {
+        receipt.lastOutcome = 'quote_unavailable'
+        receipt.state = 'quote_unavailable'
+        noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
+        return
+      }
+      noteFastDecision(db, pos, 'active')
+
+      // Frozen-quote watch (FROZEN_QUOTE_MIN, minutes; 0 disables). Only
+      // while the market is open — a flat weekend quote is normal, not a
+      // frozen feed. One alert per episode, self-clearing on movement.
+      const frozenMin = Number(process.env.FROZEN_QUOTE_MIN ?? FROZEN_QUOTE_DEFAULT_MIN)
+      if (frozenMin > 0) {
+        const fq = frozenQuoteUpdate(quoteFreeze.get(feedKey), mid, now(), frozenMin * 60_000)
+        quoteFreeze.set(feedKey, fq.rec)
+        if (fq.alert) {
+          let open = true
+          try { open = isSymbolOpenCached(db, pos.symbol).open !== false } catch { /* unknown → assume open, alert */ }
+          if (open) {
+            const mins = Math.round((now() - fq.rec.changedAt) / 60_000)
+            const msg = `🧊 Frozen quote: ${pos.symbol} has printed ${mid} unchanged for ${mins}m while its market is open — SL/TP decisions may be running on a stale feed. Held position ${pos.side} from ${pos.entry_price}.`
+            console.warn(`[fast-monitor] ${msg}`)
+            import('./telegram-control.js').then(m => m.notifyOwner(msg)).catch(() => {})
+          } else {
+            // Closed market → not a freeze; restart the episode quietly.
+            quoteFreeze.set(feedKey, { mid, changedAt: now(), alerted: false })
+          }
+        } else if (fq.recovered) {
+          console.log(`[fast-monitor] ${pos.symbol}: quote moving again after freeze`)
+        }
+      }
+
+      const prevPrice = lastPriceAt.get(pos.id)
+      if (isSpikeMove(prevPrice?.mid, prevPrice?.at, mid, now())) {
+        spikeUntil.set(feedKey, now() + SPIKE_HOLD_MS)
+        console.log(`[fast-monitor] ${pos.symbol}: volatility spike detected — fast-tracking checks for ${Math.round(SPIKE_HOLD_MS / 60000)}m`)
+      }
+      lastPriceAt.set(pos.id, { mid, at: now() })
+
+      // applyManagedRules, same as the slow monitor: this evaluator ran the
+      // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
+      // 0016.HK one minute after HK open — beating the managed trail the
+      // slow loop would have applied 30s later. One ruleset, every evaluator.
+      const eval_ = evaluatePosition(pos, {
+        currentPrice: mid,
+        rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy }),
+        // Same cached ATR the slow monitor reads (PR-J). One ruleset, one
+        // trail basis, every evaluator — the 0016.HK lesson.
+        atr: cachedAtrForSymbol(db, pos.symbol),
+      })
+      s.updatePositionMetrics.run(
+        eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
+        eval_.updates.mae_r ?? pos.mae_r ?? 0,
+        eval_.updates.be_moved ?? pos.be_moved ?? 0,
+        eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
+        pos.id,
+      )
+      checked++
+      // V3 M5: the due time this evaluation answers — the carried
+      // nextDueAt, read before it is re-armed below.
+      const dueAtMs = Date.parse(receipt.nextDueAt ?? '')
+      receipt.state = 'evaluated'
+      receipt.lastOutcome = 'evaluated'
+      receipt.action = eval_.action
+      receipt.lastCompletedAt = new Date(now()).toISOString()
+      receipt.nextDueAt = new Date(now() + receipt.cadenceMs).toISOString()
+      // Due → evaluated lateness, kept only when the gap began with an
+      // evaluation (latenessEligibility); the amend below carries it too,
+      // so its round trip is recorded as one composite.
+      const evaluatedAtMs = Date.parse(receipt.lastCompletedAt)
+      const lateOk = latenessEligibility(prior)
+      noteDueLateness({ dueAtMs, evaluatedAtMs, ...lateOk })
+      const dueTiming = lateOk.eligible ? { dueAtMs, evaluatedAtMs } : { dueAtMs: null, evaluatedAtMs }
+      if (eval_.action === 'HOLD') {
+        // Same truthfulness fix as the main loop's monitor phase (owner:
+        // "why are you not monitoring") — a HOLD verdict used to write
+        // nothing, so a position checked every 30-90s for hours looked
+        // identical in the UI to one that was never touched.
+        s.updatePositionCheck.run('FAST:HOLD', eval_.reason, new Date().toISOString(), 'intact', pos.id)
+        // fix-the-exits BB: a cap HOLD carries its stamp (same helper).
+        loopMod.stampExitMarks(s, pos, eval_, null)
+        return
+      }
+      const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_, 'fast_monitor', dueTiming)
+      // PR-J stamps from the OUTCOME, same helper as the slow monitor.
+      loopMod.stampExitMarks(s, pos, eval_, outcome)
+      acted++
+      receipt.actionOutcome = outcome.error ? 'error' : outcome.skipped ? 'skipped' : 'reported_success'
+      receipt.error = outcome.error || null
+      const summary = outcome.error
+        ? `${eval_.reason} | broker_error: ${outcome.error}`
+        : outcome.skipped
+          ? `${eval_.reason} | intent_only: ${outcome.reason}`
+          : `${eval_.reason} | broker: ${outcome.summary}`
+      s.updatePositionCheck.run(
+        `FAST:${eval_.action}`,
+        summary,
+        new Date().toISOString(),
+        eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+        pos.id,
+      )
+      console.log(`[fast-monitor] ${pos.symbol}: ${eval_.action} — ${summary}`)
+    }
+
     for (const pos of positions) {
       const accountId = pos.account_id != null ? String(pos.account_id) : String(creds.accountId)
       const prior = previousById.get(`${accountId}:${pos.id}`)
@@ -479,7 +613,12 @@ export async function runFastMonitor(db, creds, deps = {}) {
         lastCheckAt.set(pos.id, now())
 
         // Sidecar first (fresh within maxAgeMs on the sidecar's receipt
-        // clock), the broker round trip otherwise — exactly as before.
+        // clock). M7 (V3-SEQUENCE:536-543, OD-22 26-09-2026): the broker
+        // fallback no longer runs inline, awaited one at a time in this
+        // loop — it is planned through the probe scheduler (cap + backoff)
+        // and, when it must actually reach the broker, launched in the
+        // PARALLEL BATCH below (after every position here has been looked
+        // at), never stacked behind this position's own slot.
         pricingStart = mono()
         const sidecarId = lookupId(pos)
         const pick = sidecarId == null
@@ -489,119 +628,36 @@ export async function runFastMonitor(db, creds, deps = {}) {
         receipt.quoteSource = q ? 'sidecar' : 'broker'
         if (q) {
           quoteCounts.fromSidecar++
-        } else {
-          if (pick.source === 'stale') quoteCounts.stale++
-          quoteCounts.fromBroker++
-          q = await ws.wsGetSpotOnce(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId)
+          finishPricing(pick.source)
+          await finishWithQuote(pos, receipt, q, feedKey, prior)
+          continue
         }
+        if (pick.source === 'stale') quoteCounts.stale++
+        quoteCounts.fromBroker++
+        // OD-22: backoff arms only when OTHER symbols on this side are
+        // fresh — a quiet SYMBOL, not a feed that has gone stale altogether
+        // (V3-SEQUENCE:539). The symbol being probed itself never counts.
+        const sideFresh = sideHasFreshQuoteExcluding(quotesBySide.get(String(sideOf(pos))), sidecarId, now(), maxAgeMs)
+        const probePlan = probeScheduler.plan(feedKey, { sideHasFreshQuote: sideFresh, nowMs: now() })
+        if (probePlan === 'eligible') {
+          // Resumed after the parallel batch below, not here — that IS the
+          // "results used on the next pass" the spec calls for.
+          probeBatch.push({ pos, receipt, feedKey, host, accountId, symbolId, pricingStart, finishPricing, prior, pickSource: pick.source })
+          continue
+        }
+        // 'pending' (this key is already being probed by the batch below —
+        // never a second concurrent broker call for the same symbol) or
+        // 'backoff' (quiet symbol, fresh side, OD-22): reuse whatever the
+        // scheduler already holds. A symbol probed for the first time is
+        // never backed off (shouldBackoff requires a prior probe), so this
+        // is always a REUSE of a real earlier answer, never an invented one.
+        // `lastQuotePick` keeps its existing contract (why the broker was
+        // asked — stale/missing); the probe's own state is recorded
+        // separately so it never masks that.
+        q = probeScheduler.lastResult(feedKey)?.quote ?? null
+        receipt.probeState = probePlan
         finishPricing(pick.source)
-        // V3 PO-M3: the spread at a resting limit's fill, from the quote this
-        // pass already holds — the first Node can read after the fill. Record
-        // only; never throws, never changes what the pass does next.
-        if (isPreFill(pos)) recordLimitFillSpread(db, pos, { quote: q, source: receipt.quoteSource, nowMs: now(), reason: 'quote unavailable (market closed or feed gap)' })
-        const mid = Number.isFinite(q?.bid) && Number.isFinite(q?.ask) && q.bid > 0 && q.ask >= q.bid ? (q.bid + q.ask) / 2 : null
-        if (mid == null) {
-          receipt.lastOutcome = 'quote_unavailable'
-          receipt.state = 'quote_unavailable'
-          noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
-          continue
-        }
-        noteFastDecision(db, pos, 'active')
-
-        // Frozen-quote watch (FROZEN_QUOTE_MIN, minutes; 0 disables). Only
-        // while the market is open — a flat weekend quote is normal, not a
-        // frozen feed. One alert per episode, self-clearing on movement.
-        const frozenMin = Number(process.env.FROZEN_QUOTE_MIN ?? FROZEN_QUOTE_DEFAULT_MIN)
-        if (frozenMin > 0) {
-          const fq = frozenQuoteUpdate(quoteFreeze.get(feedKey), mid, now(), frozenMin * 60_000)
-          quoteFreeze.set(feedKey, fq.rec)
-          if (fq.alert) {
-            let open = true
-            try { open = isSymbolOpenCached(db, pos.symbol).open !== false } catch { /* unknown → assume open, alert */ }
-            if (open) {
-              const mins = Math.round((now() - fq.rec.changedAt) / 60_000)
-              const msg = `🧊 Frozen quote: ${pos.symbol} has printed ${mid} unchanged for ${mins}m while its market is open — SL/TP decisions may be running on a stale feed. Held position ${pos.side} from ${pos.entry_price}.`
-              console.warn(`[fast-monitor] ${msg}`)
-              import('./telegram-control.js').then(m => m.notifyOwner(msg)).catch(() => {})
-            } else {
-              // Closed market → not a freeze; restart the episode quietly.
-              quoteFreeze.set(feedKey, { mid, changedAt: now(), alerted: false })
-            }
-          } else if (fq.recovered) {
-            console.log(`[fast-monitor] ${pos.symbol}: quote moving again after freeze`)
-          }
-        }
-
-        const prevPrice = lastPriceAt.get(pos.id)
-        if (isSpikeMove(prevPrice?.mid, prevPrice?.at, mid, now())) {
-          spikeUntil.set(feedKey, now() + SPIKE_HOLD_MS)
-          console.log(`[fast-monitor] ${pos.symbol}: volatility spike detected — fast-tracking checks for ${Math.round(SPIKE_HOLD_MS / 60000)}m`)
-        }
-        lastPriceAt.set(pos.id, { mid, at: now() })
-
-        // applyManagedRules, same as the slow monitor: this evaluator ran the
-        // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
-        // 0016.HK one minute after HK open — beating the managed trail the
-        // slow loop would have applied 30s later. One ruleset, every evaluator.
-        const eval_ = evaluatePosition(pos, {
-          currentPrice: mid,
-          rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy }),
-          // Same cached ATR the slow monitor reads (PR-J). One ruleset, one
-          // trail basis, every evaluator — the 0016.HK lesson.
-          atr: cachedAtrForSymbol(db, pos.symbol),
-        })
-        s.updatePositionMetrics.run(
-          eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
-          eval_.updates.mae_r ?? pos.mae_r ?? 0,
-          eval_.updates.be_moved ?? pos.be_moved ?? 0,
-          eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
-          pos.id,
-        )
-        checked++
-        // V3 M5: the due time this evaluation answers — the carried
-        // nextDueAt, read before it is re-armed below.
-        const dueAtMs = Date.parse(receipt.nextDueAt ?? '')
-        receipt.state = 'evaluated'
-        receipt.lastOutcome = 'evaluated'
-        receipt.action = eval_.action
-        receipt.lastCompletedAt = new Date(now()).toISOString()
-        receipt.nextDueAt = new Date(now() + receipt.cadenceMs).toISOString()
-        // Due → evaluated lateness, kept only when the gap began with an
-        // evaluation (latenessEligibility); the amend below carries it too,
-        // so its round trip is recorded as one composite.
-        const evaluatedAtMs = Date.parse(receipt.lastCompletedAt)
-        const lateOk = latenessEligibility(prior)
-        noteDueLateness({ dueAtMs, evaluatedAtMs, ...lateOk })
-        const dueTiming = lateOk.eligible ? { dueAtMs, evaluatedAtMs } : { dueAtMs: null, evaluatedAtMs }
-        if (eval_.action === 'HOLD') {
-          // Same truthfulness fix as the main loop's monitor phase (owner:
-          // "why are you not monitoring") — a HOLD verdict used to write
-          // nothing, so a position checked every 30-90s for hours looked
-          // identical in the UI to one that was never touched.
-          s.updatePositionCheck.run('FAST:HOLD', eval_.reason, new Date().toISOString(), 'intact', pos.id)
-          // fix-the-exits BB: a cap HOLD carries its stamp (same helper).
-          loopMod.stampExitMarks(s, pos, eval_, null)
-          continue
-        }
-        const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_, 'fast_monitor', dueTiming)
-        // PR-J stamps from the OUTCOME, same helper as the slow monitor.
-        loopMod.stampExitMarks(s, pos, eval_, outcome)
-        acted++
-        receipt.actionOutcome = outcome.error ? 'error' : outcome.skipped ? 'skipped' : 'reported_success'
-        receipt.error = outcome.error || null
-        const summary = outcome.error
-          ? `${eval_.reason} | broker_error: ${outcome.error}`
-          : outcome.skipped
-            ? `${eval_.reason} | intent_only: ${outcome.reason}`
-            : `${eval_.reason} | broker: ${outcome.summary}`
-        s.updatePositionCheck.run(
-          `FAST:${eval_.action}`,
-          summary,
-          new Date().toISOString(),
-          eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
-          pos.id,
-        )
-        console.log(`[fast-monitor] ${pos.symbol}: ${eval_.action} — ${summary}`)
+        await finishWithQuote(pos, receipt, q, feedKey, prior)
       } catch (err) {
         receipt.state = 'error'
         receipt.error = err.message
@@ -615,6 +671,47 @@ export async function runFastMonitor(db, creds, deps = {}) {
         console.error('[fast-monitor]', pos.symbol, err.message)
       }
     }
+
+    // M7 PARALLEL BATCH: every position that needed a real broker probe
+    // this pass launches together, bounded by the scheduler's cap — never
+    // one at a time behind the loop above (the 48-serial-round-trips shape
+    // the header measured before the sidecar-first change). A symbol shared
+    // by more than one position probes once.
+    if (probeBatch.length > 0) {
+      const distinctKeys = [...new Set(probeBatch.map(p => p.feedKey))]
+      const { launch } = selectUnderCap(distinctKeys, probeScheduler.inflightCount(), probeScheduler.cap)
+      const launchSet = new Set(launch)
+      const launched = new Map()
+      for (const key of launchSet) {
+        const item = probeBatch.find(p => p.feedKey === key)
+        launched.set(key, probeScheduler.run(key, () =>
+          ws.wsGetSpotOnce(item.host, creds.clientId, creds.clientSecret, creds.accessToken, item.accountId, item.symbolId), now()))
+      }
+      await Promise.all(launched.values())
+      for (const item of probeBatch) {
+        const { pos, receipt, feedKey, pricingStart: ps, finishPricing: fp, prior, pickSource } = item
+        try {
+          const q = probeScheduler.lastResult(feedKey)?.quote ?? null
+          // 'probed' when this key was actually launched just now; 'deferred'
+          // when the cap was already full and it is still waiting its turn
+          // (the NEXT pass's batch — the scheduler keeps no memory of who
+          // was deferred, so a still-eligible symbol is simply re-planned
+          // next tick from `pending`/`backoff`/`eligible` as usual).
+          // `lastQuotePick` keeps recording WHY the broker was asked
+          // (stale/missing, from the sidecar pick) — the probe's own
+          // probed/deferred state is separate, so neither masks the other.
+          receipt.probeState = launchSet.has(feedKey) ? 'probed' : 'deferred'
+          fp(pickSource)
+          await finishWithQuote(pos, receipt, q, feedKey, prior)
+        } catch (err) {
+          receipt.state = 'error'
+          receipt.error = err.message
+          if (ps != null) { fp(null); receipt.lastOutcome = 'error' }
+          console.error('[fast-monitor]', pos.symbol, err.message)
+        }
+      }
+    }
+
     setState(db, POSITION_WORK_KEY, JSON.stringify({ version: 1, at: new Date(now()).toISOString(),
       positions: work.slice(0, 2048), total: work.length, complete: work.length <= 2048 }))
     return { checked, acted, completed: true, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size, timing }
