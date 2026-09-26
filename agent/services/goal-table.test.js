@@ -517,3 +517,83 @@ test('P1/P4 rows: every measured row says load representativeness is not judged 
     assert.doesNotMatch(empty[id].note, /load representativeness/, `${id}: no reading, nothing to qualify`)
   }
 })
+
+// --- V3 B4 (P5b-3): completeness goals name what cannot be recovered -------
+// Production 26-09 00:14Z: close_completeness 17 (17 missing P&L, 17 missing
+// a postmortem; 9 flat exempt), 19 written off of which 2 carry no
+// closed_at_ms; trade_reasons 254 over 320 (plan_missing 147,
+// adopted_ours_unreasoned 106, risk_event_missing 1). Until the owner answers
+// H-P5b-3 both rows read their raw totals and verdicts; the split is beside.
+
+const B4_NOW = Date.parse('2026-09-26T00:14:00Z')
+
+function b4Close(db, { id, pos, net = null, writtenOff = false, closedAtMs = B4_NOW - 60 * 86_400_000 }) {
+  db.prepare(`INSERT INTO trades (id, symbol, side, status, closed_at, closed_at_ms, net_pnl, entry_price, opened_at, account_id, ctrader_position_id,
+                                  pnl_unresolvable, pnl_unresolvable_reason, pnl_unresolvable_at)
+              VALUES (?, 'GBPJPY', 'BUY', 'closed', '2026-08-03 21:06:24', ?, ?, 190, '2026-08-03 21:03:01', '46130058', ?, ?, ?, ?)`)
+    .run(id, closedAtMs, net, pos, writtenOff ? 1 : 0, writtenOff ? `unresolved: no broker evidence: re-read: position ${pos} refused` : null, writtenOff ? '2026-09-02 11:00:30' : null)
+}
+
+test('B4: close_completeness keeps its raw count (17, off track) and names every labelled close with its reason; the rows outside its population are named, not recovered', async () => {
+  const db = initDB(':memory:')
+  for (let i = 0; i < 17; i++) b4Close(db, { id: 1000 + i, pos: String(234843500 + i), writtenOff: true })
+  for (let i = 0; i < 9; i++) b4Close(db, { id: 2000 + i, pos: String(235000000 + i), net: 0 }) // breakeven: exempt (L2b W16)
+  b4Close(db, { id: 8, pos: '231619053', writtenOff: true, closedAtMs: null })
+  b4Close(db, { id: 353, pos: '234186932', writtenOff: true, closedAtMs: null })
+  const t = await goalTable(db, { now: B4_NOW })
+  const g = byId(t).close_completeness
+  assert.equal(g.current, 17, 'the raw count is unchanged by the split')
+  assert.equal(g.verdict, 'off_track', 'labelled rows still count until the owner answers H-P5b-3')
+  assert.deepEqual({ raw: g.split.raw, l: g.split.labelled_unrecoverable, p: g.split.broker_evidence_pending, m: g.split.postmortem_pending }, { raw: 17, l: 17, p: 0, m: 0 })
+  assert.equal(g.items.length, 17); assert.equal(g.itemsTotal, 17)
+  for (const it of g.items) {
+    assert.equal(it.class, 'labelled_unrecoverable')
+    assert.match(it.reason, /^written off 2026-09-02 11:00:30: unresolved: no broker evidence/)
+    assert.deepEqual(it.missing, ['net_pnl', 'postmortem'])
+    assert.equal(it.account, '46130058')
+  }
+  assert.match(g.note, /^17 incomplete — 17 labelled unrecoverable · 0 awaiting broker evidence · 0 awaiting a postmortem \(17 missing P&L, 17 missing a postmortem\)/)
+  assert.match(g.note, /labelled: #1000 …0058 GBPJPY, #1001 …0058 GBPJPY, #1002 …0058 GBPJPY, #1003 …0058 GBPJPY, #1004 …0058 GBPJPY, \+12 more/)
+  assert.match(g.note, /every one counted until the owner answers H-P5b-3/)
+  assert.match(g.note, /9 closed exactly flat carry no postmortem — exempt/)
+  assert.match(g.note, /2 more unpriced close\(s\) carry no closed_at_ms and are outside this count, not recovered: #8 \(written off\), #353 \(written off\)/)
+  assert.deepEqual(g.outsidePopulation.map(o => o.id), [8, 353]); assert.equal(g.outsideTotal, 2)
+  assert.equal(g.semantics.id, 'H-P5b-3')
+  assert.deepEqual(g.semantics.ifOwnerExcludes, { question: 'H-P5b-3', counted: false, current: 0, verdict: 'on_track' })
+  assert.equal(t.summary.proposed, 0, 'no summary count moves: the would-read is not a verdict')
+})
+
+test('B4: close_completeness split is a partition — pending first in the items, each class counted once', async () => {
+  const db = initDB(':memory:')
+  b4Close(db, { id: 1, pos: '1', writtenOff: true })
+  b4Close(db, { id: 2, pos: '2' })
+  b4Close(db, { id: 3, pos: '3', net: -4.5 })
+  const g = byId(await goalTable(db, { now: B4_NOW })).close_completeness
+  assert.equal(g.current, 3)
+  assert.equal(g.split.labelled_unrecoverable + g.split.broker_evidence_pending + g.split.postmortem_pending, g.split.raw)
+  assert.deepEqual(g.items.map(i => [i.tradeId, i.class]), [[2, 'broker_evidence_pending'], [3, 'postmortem_pending'], [1, 'labelled_unrecoverable']])
+  assert.deepEqual(g.semantics.ifOwnerExcludes, { question: 'H-P5b-3', counted: false, current: 2, verdict: 'off_track' })
+})
+
+test('B4: trade_reasons keeps its raw count (254, off track); pre-contract plan gaps are split beside it and the first 50 items are the post-contract ones', async () => {
+  const db = initDB(':memory:')
+  const { recordTradePlan } = await import('./trade-plans.js')
+  const bot = db.prepare(`INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status, origin, strategy, risk_event_id, account_id)
+                          VALUES ('EURUSD', 'BUY', 1.1, 1.095, 1.11, 1000, ?, 'open', 'bot_market_dispatch', 'donchian_breakout', ?, '46130058')`)
+  for (let i = 0; i < 140; i++) bot.run('2026-09-01 10:00:00', 5) // plan_missing, opened before #857
+  for (let i = 0; i < 7; i++) bot.run('2026-09-20 10:00:00', 5) // plan_missing, opened after #857
+  const noRisk = bot.run('2026-09-20 10:00:00', null).lastInsertRowid // risk_event_missing (it has a plan)
+  recordTradePlan(db, noRisk, { accountId: '46130058', symbol: 'EURUSD', side: 'BUY', strategy: 'donchian_breakout', entry: 1.1, sl: 1.095, tp: 1.11, now: B4_NOW })
+  const adopted = db.prepare(`INSERT INTO trades (symbol, side, entry_price, opened_at, status, origin, origin_source, label_raw, account_id)
+                              VALUES ('EURUSD', 'BUY', 1.1, '2026-09-01 10:00:00', 'open', 'reconciler_adopted', 'write', 'ap|v1|FIB|H|LN|4h|RG', '46130058')`)
+  for (let i = 0; i < 106; i++) adopted.run()
+  const g = byId(await goalTable(db, { now: B4_NOW })).trade_reasons
+  assert.equal(g.current, 254, 'the raw count is unchanged by the split')
+  assert.equal(g.verdict, 'off_track')
+  assert.deepEqual({ raw: g.split.raw, pre: g.split.pre_contract, post: g.split.post_contract }, { raw: 254, pre: 140, post: 114 })
+  assert.deepEqual(g.split.byContractKind, { pre_contract: { plan_missing: 140 }, post_contract: { adopted_ours_unreasoned: 106, plan_missing: 7, risk_event_missing: 1 } })
+  assert.match(g.note, /^254 violation\(s\) over 148 trade\(s\): plan_missing 147, adopted_ours_unreasoned 106, risk_event_missing 1 — 140 pre-contract \(plan_missing 140: opened before the plan writer, #857 2026-09-08T07:48:28Z\) · 114 post-contract \(adopted_ours_unreasoned 106, plan_missing 7, risk_event_missing 1\); every one counted until the owner answers H-P5b-3$/)
+  assert.equal(g.items.length, 50); assert.equal(g.itemsTotal, 254)
+  assert.ok(g.items.every(i => i.contract === 'post_contract'), 'the actionable ones first')
+  assert.deepEqual(g.semantics.ifOwnerExcludes, { question: 'H-P5b-3', counted: false, current: 114, verdict: 'off_track' })
+})

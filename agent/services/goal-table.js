@@ -31,6 +31,7 @@
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
 import { p1p4TargetDefaults, p1p4LimitsFromTargets, routeClass, p99Below, p99Unknown } from './p1p4-grade.js'
+import { GOAL_SEMANTICS, RECORD_CONTRACTS } from '../lib/record-contracts.js'
 
 export const GOAL_TABLE_KEY = 'goal_table_json'
 /** The momentum checkpoint's frozen verdict (Wave 3): written once on the date. */
@@ -325,11 +326,40 @@ export async function vetoGoal(db, targets, nowMs = Date.now()) {
   })
 }
 
+// V3 B4 (P5b-3): a completeness row carries at most this many named items.
+const GOAL_ITEMS_MAX = 50
+
+/**
+ * V3 B4: the reading if the owner answered H-P5b-3 "labelled rows meet the
+ * target" — shown BESIDE the counted verdict, in the shape of M3's
+ * proposedVerdict, never in its place. `current`/`verdict` stay on the raw
+ * count; this changes no summary number.
+ */
+function ifOwnerExcludes(n, max) {
+  return { question: GOAL_SEMANTICS.id, counted: false, current: n, verdict: n <= max ? 'on_track' : 'off_track' }
+}
+
 async function closesGoal(db, targets, nowMs) {
-  const { findIncompleteCloses, countFlatExemptCloses } = await import('./close-completeness.js')
+  const { findIncompleteCloses, countFlatExemptCloses, findUnpricedClosesWithoutCloseStamp, CLOSE_CLASSES } = await import('./close-completeness.js')
   const rows = findIncompleteCloses(db, { windowHours: targets.incompleteCloseWindowHours, now: nowMs })
   const pnl = rows.filter(r => r.missingPnl).length, flat = countFlatExemptCloses(db, { windowHours: targets.incompleteCloseWindowHours, now: nowMs })
   const pm = rows.filter(r => r.missingPostmortem).length, flatNote = flat ? `; ${flat} closed exactly flat carry no postmortem — exempt, there is no outcome to classify (V3 L2b W16)` : flat == null ? '; flat-close exemption count unavailable (read failed)' : ''
+  // V3 B4: the count is the whole; its parts are named beside it (the L1c
+  // headline shape) and every labelled row is listed with its reason.
+  const byClass = Object.fromEntries(Object.keys(CLOSE_CLASSES).map(k => [k, rows.filter(r => r.class === k).length]))
+  const order = ['broker_evidence_pending', 'postmortem_pending', 'labelled_unrecoverable']
+  const sorted = [...rows].sort((a, b) => order.indexOf(a.class) - order.indexOf(b.class) || a.closedAtMs - b.closedAtMs || a.id - b.id)
+  const items = sorted.slice(0, GOAL_ITEMS_MAX)
+    .map(r => ({ tradeId: r.id, account: r.accountId, symbol: r.symbol, positionId: r.positionId, closedAt: new Date(r.closedAtMs).toISOString(), missing: [r.missingPnl && 'net_pnl', r.missingPostmortem && 'postmortem'].filter(Boolean), class: r.class, reason: r.reason }))
+  const outside = findUnpricedClosesWithoutCloseStamp(db)
+  const parts = `${byClass.labelled_unrecoverable} labelled unrecoverable · ${byClass.broker_evidence_pending} awaiting broker evidence · ${byClass.postmortem_pending} awaiting a postmortem`
+  const labelledNames = sorted.filter(r => r.class === 'labelled_unrecoverable').slice(0, 5).map(r => `#${r.id} …${String(r.accountId ?? '????').slice(-4)} ${r.symbol}`)
+  const labelledNote = byClass.labelled_unrecoverable
+    ? `; labelled: ${labelledNames.join(', ')}${byClass.labelled_unrecoverable > labelledNames.length ? `, +${byClass.labelled_unrecoverable - labelledNames.length} more` : ''} (each with its reason in items)`
+    : ''
+  const semanticsNote = rows.length ? `; every one counted until the owner answers ${GOAL_SEMANTICS.id}` : ''
+  const outsideNote = outside == null ? '; unpriced closes without closed_at_ms: unreadable'
+    : outside.length ? `; ${outside.length} more unpriced close(s) carry no closed_at_ms and are outside this count, not recovered: ${outside.slice(0, 5).map(o => `#${o.id}${o.writtenOff ? ' (written off)' : ''}`).join(', ')}${outside.length > 5 ? ', …' : ''}` : ''
   return goal('close_completeness', {
     name: 'Closes recorded complete', subsystem: 'record',
     // The sweep's window is a GRACE period: a close is only incomplete once
@@ -338,7 +368,12 @@ async function closesGoal(db, targets, nowMs) {
     metric: `closed trades older than ${targets.incompleteCloseWindowHours}h still missing P&L or a postmortem`, target: `≤ ${targets.incompleteClosesMax}`,
     horizon: `${targets.incompleteCloseWindowHours}h grace`, current: rows.length,
     verdict: rows.length <= targets.incompleteClosesMax ? 'on_track' : 'off_track',
-    note: (rows.length ? `${pnl} missing P&L, ${pm} missing a postmortem` : flat !== 0 ? 'every close in the window carries P&L, and a postmortem unless exempt' : 'every close in the window carries P&L and a postmortem') + flatNote,
+    note: (rows.length ? `${rows.length} incomplete — ${parts} (${pnl} missing P&L, ${pm} missing a postmortem)${labelledNote}${semanticsNote}` : flat !== 0 ? 'every close in the window carries P&L, and a postmortem unless exempt' : 'every close in the window carries P&L and a postmortem') + flatNote + outsideNote,
+    // The split is a PARTITION of `current`: raw = the three classes' sum.
+    split: { raw: rows.length, ...byClass, classes: CLOSE_CLASSES },
+    semantics: { ...GOAL_SEMANTICS, ifOwnerExcludes: ifOwnerExcludes(byClass.broker_evidence_pending + byClass.postmortem_pending, targets.incompleteClosesMax) },
+    items, itemsTotal: rows.length,
+    outsidePopulation: outside == null ? null : outside.slice(0, GOAL_ITEMS_MAX), outsideTotal: outside == null ? null : outside.length,
     source: 'close-completeness',
   })
 }
@@ -456,6 +491,19 @@ async function reasonsGoal(db, targets, nowMs) {
   const stale = r.counts.byKind.intent_unknown_stale || 0
   const measurable = r.trades > 0 || (r.considered ?? 0) > 0 || stale > 0
   const kinds = Object.entries(r.counts.byKind).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')
+  // V3 B4 (P5b-3): the violations split by contract, beside the unchanged
+  // raw total. pre_contract = a plan kind on a row opened before the plan
+  // writer existed (#857); post_contract = every other violation — its
+  // writer existed when the row was opened, so the gap is the codebase's.
+  const bc = r.counts.byContract || { pre_contract: 0, post_contract: 0 }
+  const kindsOf = (cls) => Object.entries(r.counts.byContractKind?.[cls] || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')
+  const plan = RECORD_CONTRACTS.plan
+  const splitNote = r.counts.total > 0
+    ? ` — ${bc.pre_contract} pre-contract (${kindsOf('pre_contract') || 'none'}: opened before the plan writer, ${plan.pr} ${plan.since}) · ${bc.post_contract} post-contract (${kindsOf('post_contract') || 'none'}); every one counted until the owner answers ${GOAL_SEMANTICS.id}`
+    : ''
+  const order = ['post_contract', 'pre_contract']
+  const items = [...r.violations].sort((a, b) => order.indexOf(a.contract) - order.indexOf(b.contract)).slice(0, GOAL_ITEMS_MAX)
+    .map(v => ({ ...(v.tradeId != null ? { tradeId: v.tradeId } : { intentId: v.intentId }), kind: v.kind, contract: v.contract, detail: v.detail }))
   return goal('trade_reasons', {
     name: 'Every trade has a reason', subsystem: 'record',
     metric: `bot trades since ${TRADE_REASONS_CUTOFF_ISO} missing origin, strategy, plan, approval id, close reason or a scored plan, plus stale UNKNOWN sends`,
@@ -464,7 +512,11 @@ async function reasonsGoal(db, targets, nowMs) {
     verdict: !measurable ? 'not_measurable' : r.counts.total <= targets.tradeReasonsMax ? 'on_track' : 'off_track',
     note: !measurable ? `no bot trade since ${TRADE_REASONS_CUTOFF_ISO} and no UNKNOWN send — the invariant has nothing to judge; this is a fact about trading volume (the bot has not opened a trade since the cutoff), not a pass`
       : r.counts.total === 0 ? `${r.trades} bot trade(s) since the cutoff, every one with a reason on record`
-        : `${r.counts.total} violation(s) over ${r.trades} trade(s): ${kinds}`,
+        : `${r.counts.total} violation(s) over ${r.trades} trade(s): ${kinds}${splitNote}`,
+    // A PARTITION of `current`: raw = pre_contract + post_contract.
+    split: { raw: r.counts.total, pre_contract: bc.pre_contract, post_contract: bc.post_contract, byContractKind: r.counts.byContractKind ?? null, contract: plan },
+    semantics: { ...GOAL_SEMANTICS, ifOwnerExcludes: measurable ? ifOwnerExcludes(bc.post_contract, targets.tradeReasonsMax) : null },
+    items, itemsTotal: r.violations.length,
     source: 'close-completeness findUnreasonedTrades',
   })
 }

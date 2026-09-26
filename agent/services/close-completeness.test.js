@@ -2,7 +2,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { findIncompleteCloses, runCloseCompletenessSweep, findUnreasonedTrades, TRADE_REASONS_CUTOFF_ISO, UNREASONED_KINDS } from './close-completeness.js'
+import {
+  findIncompleteCloses, runCloseCompletenessSweep, findUnreasonedTrades, TRADE_REASONS_CUTOFF_ISO, UNREASONED_KINDS,
+  classifyIncompleteClose, incompleteCloseLine, findUnpricedClosesWithoutCloseStamp, reasonContractClass, CLOSE_CLASSES,
+} from './close-completeness.js'
 import { recordTradePlan, scoreClosedPlans } from './trade-plans.js'
 import { closeTradeRow } from '../db.js'
 
@@ -144,4 +147,91 @@ test('findUnreasonedTrades: every violation kind is named on a dirty fixture', (
   assert.equal(r2.counts.total, 11, 'the foreign-label adoption and the pre-cutoff backfill are not violations')
   assert.deepEqual(Object.keys(r2.counts.byKind).sort(), [...UNREASONED_KINDS].sort())
   assert.ok(r.violations.every(v => typeof v.detail === 'string' && v.detail.length > 0))
+})
+
+// ---------------------------------------------------------------------------
+// V3 B4 (P5b-3): completeness names what cannot be recovered — never counted
+// as recovered, never as zero, and every row still counted.
+// ---------------------------------------------------------------------------
+function unpricedClose(db, { account = '46130058', pos, writtenOff = false, reason = null, at = null, net = null, closedAtMs = NOW - 72 * HOUR_MS }) {
+  return db.prepare(`INSERT INTO trades (symbol, side, entry_price, opened_at, status, closed_at, closed_at_ms, net_pnl, account_id, ctrader_position_id,
+                                         pnl_unresolvable, pnl_unresolvable_reason, pnl_unresolvable_at)
+                     VALUES ('GBPJPY', 'BUY', 190, '2026-07-19 21:00:00', 'closed', '2026-07-19 21:06:24', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(closedAtMs, net, account, pos, writtenOff ? 1 : 0, reason, at).lastInsertRowid
+}
+function verdict(db, { account = '46130058', pos, verdict: v, final }) {
+  db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, reason, read_at) VALUES (?, ?, ?, ?, ?, '2026-09-25T23:00:00.450Z')`)
+    .run(account, pos, v, final ? 1 : 0, `${v} on the complete history`)
+}
+
+test('B4: every incomplete close is named by class — written off and final-unpriceable are labelled unrecoverable with the reason, the rest pending — and none is dropped', () => {
+  const db = initDB(':memory:')
+  const off = unpricedClose(db, { pos: '234843534', writtenOff: true, reason: 'unresolved: no broker evidence: position deal evidence invalid', at: '2026-09-02 11:00:30' })
+  const never = unpricedClose(db, { pos: '234843601' }); verdict(db, { pos: '234843601', verdict: 'never_filled', final: true })
+  const unread = unpricedClose(db, { pos: '234866443' }); verdict(db, { pos: '234866443', verdict: 'unreadable', final: false })
+  const bare = unpricedClose(db, { pos: '235375880' })
+  const pmOnly = unpricedClose(db, { pos: '235575497', net: -12.5 })
+  const rows = findIncompleteCloses(db, { now: NOW })
+  assert.equal(rows.length, 5, 'the class names a row, it never removes one')
+  const byId = Object.fromEntries(rows.map(r => [r.id, r]))
+  assert.equal(byId[off].class, 'labelled_unrecoverable')
+  assert.match(byId[off].reason, /^written off 2026-09-02 11:00:30: unresolved: no broker evidence: position deal evidence invalid/)
+  assert.equal(byId[off].missingPnl, true, 'still missing its P&L — never filled with a zero')
+  assert.equal(byId[never].class, 'labelled_unrecoverable')
+  assert.match(byId[never].reason, /broker verdict never_filled \(final\).*not written off in the ledger/)
+  assert.equal(byId[unread].class, 'broker_evidence_pending', 'a non-final verdict says nothing is known yet')
+  assert.match(byId[unread].reason, /broker verdict unreadable/)
+  assert.equal(byId[bare].class, 'broker_evidence_pending')
+  assert.match(byId[bare].reason, /no broker lifecycle verdict on record/)
+  assert.equal(byId[pmOnly].class, 'postmortem_pending')
+  assert.deepEqual(Object.keys(CLOSE_CLASSES).sort(), ['broker_evidence_pending', 'labelled_unrecoverable', 'postmortem_pending'])
+  assert.match(incompleteCloseLine(byId[off]), /still no P&L, no postmortem — unrecoverable: written off 2026-09-02 11:00:30/)
+  assert.doesNotMatch(incompleteCloseLine(byId[bare]), /unrecoverable/)
+})
+
+test('B4: classifyIncompleteClose — a write-off outranks the verdict; a final verdict that does not say "cannot be priced" is no label', () => {
+  assert.equal(classifyIncompleteClose({ missingPnl: true, writtenOff: true, writtenOffReason: 'r', evidence: { verdict: 'unreadable', final: false } }).class, 'labelled_unrecoverable')
+  assert.equal(classifyIncompleteClose({ missingPnl: true, writtenOff: false, evidence: { verdict: 'unpriced', final: false } }).class, 'broker_evidence_pending')
+  assert.equal(classifyIncompleteClose({ missingPnl: true, writtenOff: false, evidence: { verdict: 'no_ledger_row', final: true } }).class, 'broker_evidence_pending')
+  for (const v of ['empty_at_broker', 'never_filled', 'opening_not_retained', 'permanently_unsupported']) {
+    assert.equal(classifyIncompleteClose({ missingPnl: true, writtenOff: false, evidence: { verdict: v, final: true } }).class, 'labelled_unrecoverable', v)
+    assert.equal(classifyIncompleteClose({ missingPnl: true, writtenOff: false, evidence: { verdict: v, final: false } }).class, 'broker_evidence_pending', `${v} not final`)
+  }
+})
+
+test('B4: an unpriced close with no closed_at_ms is outside the goal population and is named, not recovered', () => {
+  const db = initDB(':memory:')
+  const outside = unpricedClose(db, { pos: '231619053', writtenOff: true, reason: 'x', closedAtMs: null })
+  unpricedClose(db, { pos: '231619054', closedAtMs: null, net: -3 }) // priced: not unpriced
+  assert.equal(findIncompleteCloses(db, { now: NOW }).length, 0)
+  assert.deepEqual(findUnpricedClosesWithoutCloseStamp(db).map(r => [r.id, r.writtenOff]), [[outside, true]])
+})
+
+test('B4: reasonContractClass — the plan kinds split at the exact #857 second; nothing else is excused by a date', () => {
+  for (const kind of ['plan_missing', 'plan_unscored']) {
+    assert.equal(reasonContractClass(kind, '2026-09-08 07:48:27'), 'pre_contract', kind)
+    assert.equal(reasonContractClass(kind, '2026-09-08T07:48:27.999Z'), 'pre_contract', `${kind} iso`)
+    assert.equal(reasonContractClass(kind, '2026-09-08 07:48:28'), 'post_contract', `${kind} at the boundary`)
+    assert.equal(reasonContractClass(kind, '2026-09-08T15:48:27+08:00'), 'pre_contract', `${kind} with a zone`)
+    assert.equal(reasonContractClass(kind, null), 'post_contract', 'an unknown open time is never excused')
+  }
+  assert.equal(reasonContractClass('adopted_ours_unreasoned', '2026-08-20 00:00:00', ['plan']), 'pre_contract', 'adopted, and only the plan is missing')
+  assert.equal(reasonContractClass('adopted_ours_unreasoned', '2026-08-20 00:00:00', ['strategy', 'plan', 'approval id']), 'post_contract')
+  for (const kind of ['origin_missing', 'strategy_missing', 'risk_event_missing', 'close_reason_missing', 'backfilled_after_cutoff']) {
+    assert.equal(reasonContractClass(kind, '2026-08-20 00:00:00'), 'post_contract', kind)
+  }
+})
+
+test('B4: findUnreasonedTrades — the contract split is a partition of the unchanged total', () => {
+  const db = initDB(':memory:')
+  const pre = botTrade(db, { plan: false, openedAt: '2026-09-08 07:48:27' })
+  const post = botTrade(db, { plan: false, openedAt: '2026-09-08 07:48:28' })
+  const noRisk = botTrade(db, { riskEventId: null, openedAt: '2026-09-01 00:00:00' })
+  const r = findUnreasonedTrades(db, { now: T1 })
+  assert.equal(r.counts.total, 3, 'every violation still counted')
+  assert.deepEqual(r.counts.byKind, { plan_missing: 2, risk_event_missing: 1 })
+  assert.deepEqual(r.counts.byContract, { pre_contract: 1, post_contract: 2 })
+  assert.deepEqual(r.counts.byContractKind, { pre_contract: { plan_missing: 1 }, post_contract: { plan_missing: 1, risk_event_missing: 1 } })
+  const c = (id) => r.violations.find(v => v.tradeId === id).contract
+  assert.equal(c(pre), 'pre_contract'); assert.equal(c(post), 'post_contract'); assert.equal(c(noRisk), 'post_contract')
 })

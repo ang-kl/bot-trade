@@ -12,6 +12,7 @@ import { initDB } from '../db.js'
 import {
   REQUIRED_FIELDS, buildPositionRecord, capturePosition, backfillPositionHistory, backfillPositionHistoryCooperatively,
   recordVerdict, positionHistoryView, directionReasonFor, managementFor,
+  classifyRefusedRecord, refusedClassesPhrase, REFUSED_CLASSES, POSITION_TRADE_SQL,
 } from './position-history.js'
 
 const ACCT = '47790949'
@@ -495,4 +496,135 @@ test('keeper truth: without a deal the volume the reconciler read off the live p
   const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
   assert.equal(record.volume, 612, 'the fill the reconciler saw, not the 612.13 requested')
   assert.equal(JSON.parse(record.sources_json).volume, 'monitored_positions.broker_volume_units')
+})
+
+// ---------------------------------------------------------------------------
+// V3 B4 (P5b-3): the refused stream names why each record is refused — and
+// what cannot be recovered — without moving, filling or uncounting any.
+// ---------------------------------------------------------------------------
+const riskEventAt = (db, createdAt) =>
+  db.prepare(`INSERT INTO risk_events (symbol, side, approved, proposal_json, created_at) VALUES ('EURUSD', 'BUY', 1, '{}', ?)`).run(createdAt).lastInsertRowid
+
+test('B4: direction_reason is classed at the exact PR-D and PR-AL seconds, dated by the approving risk event', () => {
+  const db = fresh()
+  const cls = (createdAt) => classifyRefusedRecord(db, { record: { risk_event_id: riskEventAt(db, createdAt), opened_at_ms: Date.parse('2026-01-01T00:00:00Z') }, missing: ['direction_reason'] })
+  assert.equal(cls('2026-09-11 15:03:45').class, 'pre_contract')
+  assert.equal(cls('2026-09-11 15:03:46').class, 'post_contract_pre_fix', 'PR-D had shipped: a gap this codebase built')
+  assert.equal(cls('2026-09-17 19:22:18').class, 'post_contract_pre_fix')
+  const live = cls('2026-09-17 19:22:19')
+  assert.equal(live.class, 'live_gap', 'after PR-AL\'s fix the gap is a writer defect now')
+  assert.match(live.reason, /direction_reason: live_gap \(entered 2026-09-17T19:22:19Z \(risk event\), after #934's fix 2026-09-17T19:22:19Z\)/)
+  // No risk event: the open dates the entry. No date at all: never excused.
+  assert.equal(classifyRefusedRecord(db, { record: { opened_at_ms: Date.parse('2026-09-11T15:03:45.999Z') }, missing: ['direction_reason'] }).class, 'pre_contract')
+  const undated = classifyRefusedRecord(db, { record: {}, missing: ['direction_reason'] })
+  assert.equal(undated.class, 'live_gap'); assert.match(undated.reason, /entry time unknown — not excused by a date/)
+})
+
+test('B4: the plan fields split at #857; realised_r follows its missing input; pre_contract only when EVERY field is', () => {
+  const db = fresh()
+  const rec = (createdAt) => ({ risk_event_id: riskEventAt(db, createdAt) })
+  const pre = classifyRefusedRecord(db, { record: rec('2026-09-08 07:48:27'), missing: ['planned_entry', 'risk_dist', 'realised_r'] })
+  assert.equal(pre.class, 'pre_contract')
+  assert.deepEqual(pre.fields, { planned_entry: 'pre_contract', risk_dist: 'pre_contract', realised_r: 'pre_contract' })
+  assert.equal(classifyRefusedRecord(db, { record: rec('2026-09-08 07:48:28'), missing: ['planned_entry'] }).class, 'live_gap')
+  const mixed = classifyRefusedRecord(db, { record: rec('2026-09-09 00:00:00'), missing: ['direction_reason', 'planned_entry'] })
+  assert.deepEqual(mixed.fields, { direction_reason: 'pre_contract', planned_entry: 'live_gap' })
+  assert.equal(mixed.class, 'live_gap', 'one live writer gap outranks a pre-contract field')
+  assert.equal(classifyRefusedRecord(db, { record: rec('2026-09-01 00:00:00'), missing: ['close_reason'] }).class, 'live_gap', 'no dated contract: never excused by a date')
+})
+
+test('B4: a missing broker figure is labelled unrecoverable only by a write-off or a final unpriceable verdict, else pending', () => {
+  const db = fresh()
+  let seq = 0
+  const tr = (writtenOff) => db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, origin, pnl_unresolvable, pnl_unresolvable_reason, pnl_unresolvable_at)
+                                         VALUES ('GBPJPY', 'BUY', 'closed', ?, ?, 'bot_market_dispatch', ?, ?, ?)`)
+    .run(ACCT, String(9100 + ++seq), writtenOff ? 1 : 0, writtenOff ? 'unresolved: no broker evidence: position deal evidence invalid' : null, writtenOff ? '2026-09-02 11:00:30' : null).lastInsertRowid
+  const off = classifyRefusedRecord(db, { record: { trade_id: tr(true), account_id: ACCT, ctrader_position_id: '1' }, missing: ['net_pnl', 'gross_pnl'] })
+  assert.equal(off.class, 'labelled_unrecoverable')
+  assert.match(off.reason, /net_pnl: labelled_unrecoverable \(written off 2026-09-02 11:00:30: unresolved: no broker evidence: position deal evidence invalid\)/)
+  const ev = (pos, verdict, final) => db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, read_at) VALUES (?, ?, ?, ?, '2026-09-25T23:00:00Z')`).run(ACCT, pos, verdict, final)
+  ev('2', 'never_filled', 1); ev('3', 'unreadable', 0)
+  assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr(false), account_id: ACCT, ctrader_position_id: '2' }, missing: ['net_pnl'] }).class, 'labelled_unrecoverable')
+  assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr(false), account_id: ACCT, ctrader_position_id: '2.0' }, missing: ['net_pnl'] }).class, 'labelled_unrecoverable', 'the ".0" spelling is the same position')
+  assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr(false), account_id: ACCT, ctrader_position_id: '3' }, missing: ['net_pnl'] }).class, 'broker_evidence_pending')
+  assert.equal(classifyRefusedRecord(db, { record: { account_id: ACCT, ctrader_position_id: '4' }, missing: ['volume'] }).class, 'broker_evidence_pending')
+  const both = classifyRefusedRecord(db, { record: { account_id: ACCT, ctrader_position_id: '4', opened_at_ms: Date.parse('2026-09-01T00:00:00Z') }, missing: ['direction_reason', 'volume'] })
+  assert.deepEqual(both.fields, { direction_reason: 'pre_contract', volume: 'broker_evidence_pending' })
+  assert.equal(both.class, 'broker_evidence_pending')
+})
+
+test('B4: a bot-side field on a position the bot did not open is outside_bot; an adoption wearing our label is judged as the bot\'s', () => {
+  const db = fresh()
+  const tr = (origin, label = null) => db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, origin, label_raw) VALUES ('Cocoa', 'BUY', 'closed', ?, '5', ?, ?)`).run(ACCT, origin, label).lastInsertRowid
+  const after = Date.parse('2026-09-25T13:21:20Z')
+  const manual = classifyRefusedRecord(db, { record: { trade_id: tr('manual_broker'), opened_at_ms: after }, missing: ['direction_reason', 'strategy', 'planned_entry', 'risk_dist'] })
+  assert.equal(manual.class, 'outside_bot'); assert.match(manual.reason, /origin manual_broker/)
+  assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr('reconciler_adopted', 'someone-elses-label'), opened_at_ms: after }, missing: ['direction_reason'] }).class, 'outside_bot')
+  assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr('reconciler_adopted', 'ap|v1|FIB|H|LN|4h|RG'), opened_at_ms: after }, missing: ['direction_reason'] }).class, 'live_gap')
+  assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr('bot_market_dispatch'), opened_at_ms: after }, missing: ['direction_reason'] }).class, 'live_gap')
+})
+
+test('B4: the backfill counts add up — seen = complete + incomplete + skipped — and the classes partition the incomplete', () => {
+  const db = fresh()
+  seedComplete(db)
+  db.prepare(`INSERT INTO trades (symbol, side, status, closed_at_ms, ctrader_position_id, account_id, origin) VALUES ('X', 'BUY', 'closed', ?, 'no-acct', NULL, 'bot_market_dispatch')`).run(CLOSE_MS)
+  db.prepare(`INSERT INTO trades (symbol, side, status, opened_at, closed_at_ms, ctrader_position_id, account_id, origin) VALUES ('X', 'BUY', 'closed', '2026-09-01 00:00:00', ?, 'p-pre', ?, 'bot_market_dispatch')`).run(CLOSE_MS, ACCT)
+  db.prepare(`INSERT INTO trades (symbol, side, status, opened_at, closed_at_ms, ctrader_position_id, account_id, origin) VALUES ('X', 'BUY', 'closed', '2026-09-25 00:00:00', ?, 'p-live', ?, 'bot_market_dispatch')`).run(CLOSE_MS, ACCT)
+  const out = backfillPositionHistory(db, { sinceMs: 0 })
+  assert.deepEqual({ seen: out.seen, complete: out.complete, incomplete: out.incomplete, skipped: out.skipped }, { seen: 4, complete: 1, incomplete: 2, skipped: 1 })
+  assert.equal(out.seen, out.complete + out.incomplete + out.skipped)
+  assert.equal(Object.values(out.byClass).reduce((a, b) => a + b, 0), out.incomplete)
+  // The boot count and the view classify the same stored records the same way.
+  assert.deepEqual(Object.fromEntries(positionHistoryView(db).refused.byClass.map(c => [c.class, c.n])), out.byClass)
+  assert.equal(classifyRefusedRecord(db, { record: JSON.parse(db.prepare(`SELECT partial_json FROM position_history_incomplete WHERE ctrader_position_id = 'p-live'`).get().partial_json), missing: ['direction_reason'] }).class, 'live_gap',
+    'p-live: opened after every contract, missing its reason')
+  assert.equal(refusedClassesPhrase(out.byClass), Object.entries(out.byClass).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, n]) => `${k} ${n}`).join(', '))
+  assert.equal(refusedClassesPhrase({ pre_contract: 2, live_gap: 3, outside_bot: 0 }), 'live_gap 3, pre_contract 2')
+})
+
+test('B4: a record is never built from a rejected twin, the ".0" spelling is the same position, and the lookup stays on idx_trades_position_id', () => {
+  const db = fresh()
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, status, opened_at, ctrader_position_id, account_id, origin) VALUES ('EURUSD', 'BUY', ?, '2026-09-25 00:00:00', ?, ?, 'bot_market_dispatch')`)
+  const live = ins.run('open', '907', ACCT).lastInsertRowid
+  ins.run('rejected', '907', ACCT) // newer, rejected: a twin, not the record
+  assert.equal(buildPositionRecord(db, { accountId: ACCT, positionId: '907' }).record.trade_id, Number(live))
+  const cancelledOnly = ins.run('open', '908', ACCT).lastInsertRowid
+  ins.run('cancelled', '908', ACCT)
+  assert.equal(buildPositionRecord(db, { accountId: ACCT, positionId: '908' }).record.trade_id, Number(cancelledOnly))
+  const dotted = ins.run('closed', '909.0', ACCT).lastInsertRowid
+  assert.equal(buildPositionRecord(db, { accountId: ACCT, positionId: '909' }).record.trade_id, Number(dotted), 'a row stored as "909.0" is position 909')
+  assert.equal(buildPositionRecord(db, { accountId: ACCT, positionId: '909.0' }).record.trade_id, Number(dotted))
+  const plan = db.prepare(`EXPLAIN QUERY PLAN ${POSITION_TRADE_SQL}`).all('909', '909.0', ACCT, ACCT).map(r => r.detail).join(' | ')
+  assert.match(plan, /idx_trades_position_id/, `the lookup must use the index, not scan: ${plan}`)
+})
+
+test('B4: the view classes every refused record — total equals incomplete, the classes partition it, each row carries its reason', () => {
+  const db = fresh()
+  const cutoffMs = Date.parse('2026-09-11T00:00:00Z')
+  const ins = db.prepare(`INSERT INTO position_history_incomplete (account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json) VALUES (?,?,?,?,?,?)`)
+  ins.run(ACCT, 'p-old', 'EURUSD', cutoffMs + 86400_000, JSON.stringify(['direction_reason']), JSON.stringify({ opened_at_ms: cutoffMs - 86400_000 }))
+  ins.run(ACCT, 'p-fix', 'COIN.US', cutoffMs + 2 * 86400_000, JSON.stringify(['direction_reason']), JSON.stringify({ opened_at_ms: Date.parse('2026-09-15T00:00:00Z') }))
+  ins.run(ACCT, 'p-now', 'MSFT.US', cutoffMs + 3 * 86400_000, JSON.stringify(['direction_reason', 'planned_entry', 'risk_dist']), JSON.stringify({ opened_at_ms: Date.parse('2026-09-25T16:40:00Z') }))
+  const v = positionHistoryView(db, { cutoffMs })
+  assert.equal(v.incomplete, 3)
+  assert.equal(v.refused.total, v.incomplete)
+  assert.deepEqual(v.refused.byClass, [{ class: 'live_gap', n: 1 }, { class: 'post_contract_pre_fix', n: 1 }, { class: 'pre_contract', n: 1 }])
+  assert.deepEqual(v.refused.rows.map(r => [r.ctrader_position_id, r.class]), [['p-now', 'live_gap'], ['p-fix', 'post_contract_pre_fix'], ['p-old', 'pre_contract']])
+  assert.ok(v.refused.rows.every(r => typeof r.reason === 'string' && r.reason.length > 0))
+  assert.deepEqual(Object.keys(v.refused.classes).sort(), Object.keys(REFUSED_CLASSES).sort())
+  assert.equal(v.refused.semantics.id, 'H-P5b-3')
+  assert.deepEqual(v.sinceCutoff.openedAfterCutoff.rows.map(r => [r.ctrader_position_id, r.class]), [['p-now', 'live_gap'], ['p-fix', 'post_contract_pre_fix']])
+  assert.deepEqual(v.missingFields[0], { field: 'direction_reason', n: 3 }, 'the existing ranking is unchanged')
+})
+
+test('B4: the boot line and the housekeeping line print skipped beside complete and incomplete, and the refused classes', () => {
+  // Source pin (failure mode #4: the call site is invisible from this module);
+  // comments stripped first (failure mode #2).
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const index = strip(readFileSync(new URL('../index.js', import.meta.url), 'utf8'))
+  assert.match(index, /\$\{ph\.complete\} complete · \$\{ph\.incomplete\} incomplete · \$\{ph\.skipped\} skipped \(no account identity\) of \$\{ph\.seen\}/)
+  assert.match(index, /refusedClassesPhrase\(ph\.byClass\)/)
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  assert.match(loop, /\$\{out\.complete\} complete · \$\{out\.incomplete\} incomplete · \$\{out\.skipped\} skipped \(no account identity\) of \$\{out\.seen\}/)
+  assert.match(loop, /refusedClassesPhrase\(out\.byClass\)/)
 })

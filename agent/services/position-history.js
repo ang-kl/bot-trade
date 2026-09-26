@@ -37,6 +37,11 @@
 // derived them would agree with itself by construction.
 
 import { unitsPerLot } from '../lib/lot-size-registry.js'
+import { normPosId } from '../lib/pos-id.js'
+import { isOurs } from '../lib/trade-labels.js'
+import {
+  RECORD_CONTRACTS, PLAN_FIELDS, BROKER_FIELDS, UNPRICEABLE_VERDICTS, GOAL_SEMANTICS, planContractClass, directionReasonContractClass, utcMs,
+} from '../lib/record-contracts.js'
 
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null
@@ -153,6 +158,17 @@ export function managementFor(db, { accountId, positionId, tradeId }) {
 }
 
 /**
+ * The ledger row a position's record is built from (V3 L2b W17, V3 B4):
+ * the closed row first, then a live row before a rejected or cancelled twin,
+ * newest last. Parameters: the id, its ".0" spelling, the account twice.
+ * Exported so the query plan can be checked against idx_trades_position_id.
+ */
+export const POSITION_TRADE_SQL = `
+  SELECT * FROM trades
+   WHERE ctrader_position_id IN (?, ?) AND (account_id = ? OR ? IS NULL)
+   ORDER BY (status = 'closed') DESC, (status IN ('rejected', 'cancelled')) ASC, id DESC LIMIT 1`
+
+/**
  * Build the record for one closed position from whatever the tables hold.
  *
  * Returns `{ record, missing, sources }`. `missing` is the list of REQUIRED
@@ -164,13 +180,17 @@ export function buildPositionRecord(db, { accountId, positionId }) {
   const pid = str(positionId)
   const sources = {}
 
+  // V3 B4 (P5b-3): BOTH TEXT FORMS OF THE ID, NO CAST. A row written as
+  // "234698574.0" before its writer normalised (lib/pos-id.js; db.js repairs
+  // them at boot only) is the same position; `IN (?, ?)` keeps the lookup on
+  // idx_trades_position_id, where a CAST would scan every trade. And the
+  // NON-REJECTED row: after the closed row, a live row beats a rejected or
+  // cancelled twin however new the twin is (a false close B1 rejected, a
+  // refused submission) — a twin never becomes the record.
+  const posKey = normPosId(pid)
   const trade = (() => {
     try {
-      return db.prepare(`
-        SELECT * FROM trades
-         WHERE ctrader_position_id = ? AND (account_id = ? OR ? IS NULL)
-         ORDER BY (status = 'closed') DESC, id DESC LIMIT 1 -- V3 L2b W17: the CLOSED row, not a newer duplicate
-      `).get(pid, acct, acct)
+      return db.prepare(POSITION_TRADE_SQL).get(posKey, posKey == null ? null : `${posKey}.0`, acct, acct)
     } catch { return null }
   })()
   if (trade) sources.trade = 'trades'
@@ -332,6 +352,128 @@ export function buildPositionRecord(db, { accountId, positionId }) {
 }
 
 /**
+ * V3 B4 (P5b-3): WHY A REFUSED RECORD IS REFUSED — one class per record,
+ * built from one class per missing field. The class NAMES the record; it
+ * never moves it out of the refused stream, never fills a field and never
+ * changes a count (the refused total is the same number with or without it).
+ *
+ *   pre_contract            EVERY missing field predates its writer (a dated
+ *                           contract in lib/record-contracts.js; the entry
+ *                           is dated by risk_events.created_at, else the
+ *                           open). Unrecoverable: the field never existed.
+ *   post_contract_pre_fix   direction_reason on a row entered after PR-D and
+ *                           before PR-AL's fix (#934): a gap this codebase
+ *                           built (principle 3), not history.
+ *   outside_bot             a bot-side field (reason, strategy, plan) on a
+ *                           position the bot did not open (manual_broker,
+ *                           external_system, or adopted without our label):
+ *                           no writer here could hold its reason.
+ *   broker_evidence_pending a broker figure missing, no label saying it
+ *                           cannot come: the capture queue and the position
+ *                           reader still own it.
+ *   labelled_unrecoverable  a broker figure missing on a row written off
+ *                           (pnl_unresolvable) or under a FINAL broker verdict
+ *                           it cannot be priced by (UNPRICEABLE_VERDICTS).
+ *   live_gap                anything else: a field with no dated contract, or
+ *                           entered after its writer (and after any fix) —
+ *                           a writer defect until shown otherwise. An unknown
+ *                           entry time is never excused by a date.
+ */
+export const REFUSED_CLASSES = Object.freeze({
+  live_gap: 'a field its writer should have written and did not (entered after the writer and any fix, no dated contract, or an unknown entry time) — a writer defect',
+  post_contract_pre_fix: 'direction_reason on a row entered after PR-D (#899) and before PR-AL fixed three paths that threw it away (#934) — a gap this codebase built',
+  outside_bot: 'a bot-side field (reason, strategy, plan) on a position the bot did not open — no writer here could hold it',
+  broker_evidence_pending: 'a broker figure not yet on record, with nothing saying it cannot come',
+  labelled_unrecoverable: 'a broker figure on a row written off, or under a final broker verdict it cannot be priced by',
+  pre_contract: 'every missing field predates its writer — it never existed for this row',
+})
+// When a record's fields fall in several classes, the record takes the first
+// of these present (a live writer defect outranks everything; pre_contract
+// only when EVERY field is pre-contract).
+const REFUSED_PRECEDENCE = ['live_gap', 'post_contract_pre_fix', 'outside_bot', 'broker_evidence_pending', 'labelled_unrecoverable', 'pre_contract']
+const BOT_SIDE_FIELDS = new Set(['direction_reason', 'strategy', ...PLAN_FIELDS])
+const EXTERNAL_ORIGINS = new Set(['manual_broker', 'external_system'])
+const isoOf = (t) => (t == null ? '?' : new Date(t).toISOString().slice(0, 19) + 'Z')
+// The classifier runs once per refused record — ~1,250 at boot — so its three
+// key reads are prepared once per database, not once per record.
+const classifierStmts = new WeakMap()
+function preparedFor(db, sql) {
+  let m = classifierStmts.get(db)
+  if (!m) { m = new Map(); classifierStmts.set(db, m) }
+  let st = m.get(sql)
+  if (!st) { st = db.prepare(sql); m.set(sql, st) }
+  return st
+}
+
+/**
+ * Classify one refused record. `record` is the partial record as stored
+ * (partial_json) or as buildPositionRecord returned it; `missing` its missing
+ * fields. Reads the trade row, the approving risk event and the broker's
+ * lifecycle verdict by key; a failed read labels nothing (the field falls to
+ * the conservative class). Never throws.
+ *
+ * @returns {{ class: string, fields: Record<string,string>, reason: string }}
+ */
+export function classifyRefusedRecord(db, { record = {}, missing = [] } = {}) {
+  const get = (sql, ...args) => { try { return preparedFor(db, sql).get(...args) ?? null } catch { return null } }
+  const trade = record.trade_id != null
+    ? get('SELECT origin, source, label_raw, COALESCE(pnl_unresolvable, 0) AS written_off, pnl_unresolvable_reason, pnl_unresolvable_at FROM trades WHERE id = ?', record.trade_id)
+    : null
+  const re = record.risk_event_id != null ? get('SELECT created_at FROM risk_events WHERE id = ?', record.risk_event_id) : null
+  const entryMs = utcMs(re?.created_at) ?? num(record.opened_at_ms)
+  const entrySource = re?.created_at ? 'risk event' : num(record.opened_at_ms) != null ? 'open' : null
+  const origin = str(trade?.origin) ?? str(record.origin)
+  let ours = false
+  try { ours = isOurs(trade?.label_raw || '') } catch { ours = false }
+  const external = EXTERNAL_ORIGINS.has(origin) || (origin === 'reconciler_adopted' && !ours)
+  const writtenOff = Number(trade?.written_off) === 1
+  const needsBroker = missing.some(f => BROKER_FIELDS.includes(f))
+  const ev = needsBroker && !writtenOff && record.account_id != null && record.ctrader_position_id != null
+    ? get('SELECT verdict, final, read_at FROM position_lifecycle_evidence WHERE account_id = ? AND position_id = ?', String(record.account_id), normPosId(record.ctrader_position_id))
+    : null
+  const unpriceable = ev && Number(ev.final) === 1 && UNPRICEABLE_VERDICTS.includes(ev.verdict)
+  const dr = RECORD_CONTRACTS.direction_reason, plan = RECORD_CONTRACTS.plan
+  const entered = entryMs == null ? 'entry time unknown' : `entered ${isoOf(entryMs)} (${entrySource})`
+
+  const fields = {}, why = {}
+  const put = (f, cls, reason) => { fields[f] = cls; why[f] = reason }
+  for (const f of missing) {
+    if (BROKER_FIELDS.includes(f)) {
+      if (writtenOff) put(f, 'labelled_unrecoverable', `written off${trade?.pnl_unresolvable_at ? ` ${trade.pnl_unresolvable_at}` : ''}: ${String(trade?.pnl_unresolvable_reason ?? '(no reason recorded)').slice(0, 120)}`)
+      else if (unpriceable) put(f, 'labelled_unrecoverable', `broker verdict ${ev.verdict} (final, read ${ev.read_at ?? '?'})`)
+      else put(f, 'broker_evidence_pending', ev ? `broker verdict ${ev.verdict}${Number(ev.final) === 1 ? ' (final)' : ''}` : 'no broker figure yet')
+      continue
+    }
+    if (BOT_SIDE_FIELDS.has(f) && external) { put(f, 'outside_bot', `origin ${origin ?? '?'}${origin === 'reconciler_adopted' ? ' without our label' : ''}`); continue }
+    if (f === 'direction_reason') {
+      const c = directionReasonContractClass(entryMs)
+      if (c === 'pre_contract') put(f, 'pre_contract', `${entered}, before ${dr.pr} ${dr.since}`)
+      else if (c === 'post_contract_pre_fix') put(f, 'post_contract_pre_fix', `${entered}, after ${dr.pr} and before ${dr.fixPr}'s fix ${dr.fixedAt}`)
+      else put(f, 'live_gap', c == null ? `${entered} — not excused by a date` : `${entered}, after ${dr.fixPr}'s fix ${dr.fixedAt}`)
+      continue
+    }
+    if (PLAN_FIELDS.includes(f)) {
+      const c = planContractClass(entryMs)
+      if (c === 'pre_contract') put(f, 'pre_contract', `${entered}, before ${plan.pr} ${plan.since}`)
+      else put(f, 'live_gap', c == null ? `${entered} — not excused by a date` : `${entered}, after ${plan.pr} ${plan.since}`)
+      continue
+    }
+    if (f === 'realised_r') continue // derived: judged from its inputs below
+    put(f, 'live_gap', 'no dated contract for this field')
+  }
+  if (missing.includes('realised_r')) {
+    // realised_r is (exit − entry) / risk_dist: missing because an input is.
+    const inputs = ['entry_price', 'exit_price', 'risk_dist'].filter(f => fields[f])
+    const cls = inputs.length ? REFUSED_PRECEDENCE.find(c => inputs.some(f => fields[f] === c)) : 'live_gap'
+    put('realised_r', cls, inputs.length ? `derived from ${inputs.join(', ')}` : 'inputs present, ratio not computed')
+  }
+  const present = new Set(Object.values(fields))
+  const cls = present.size === 0 ? 'live_gap' : REFUSED_PRECEDENCE.find(c => present.has(c))
+  const reason = Object.keys(fields).map(f => `${f}: ${fields[f]} (${why[f]})`).join('; ') || 'no missing field named'
+  return { class: cls, fields, reason }
+}
+
+/**
  * Build and store one record, in whichever stream it belongs.
  *
  * A position is written to exactly ONE of the two tables: promoting a record
@@ -355,7 +497,7 @@ export function capturePosition(db, { accountId, positionId }) {
         built_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
     `).run(acct, pid, record.symbol, record.closed_at_ms, JSON.stringify(missing), JSON.stringify(record))
     db.prepare('DELETE FROM position_history WHERE account_id = ? AND ctrader_position_id = ?').run(acct, pid)
-    return { ok: false, reason: 'incomplete', missing, stream: 'incomplete' }
+    return { ok: false, reason: 'incomplete', missing, stream: 'incomplete', record }
   }
 
   const cols = [
@@ -414,7 +556,10 @@ function* positionHistoryBackfill(db, { sinceMs = 0, limit = 5000 } = {}) {
      LIMIT ?
   `).all(Number(sinceMs) || 0, Number(limit) || 5000)
 
-  const out = { seen: rows.length, complete: 0, incomplete: 0, skipped: 0, missingCounts: {} }
+  // seen = complete + incomplete + skipped: every row lands in exactly one.
+  // `skipped` is a position with no account identity (capturePosition
+  // no_identity) — built nowhere, and said so rather than left out (V3 B4).
+  const out = { seen: rows.length, complete: 0, incomplete: 0, skipped: 0, missingCounts: {}, byClass: {} }
   for (const r of rows) {
     const res = capturePosition(db, { accountId: r.acct, positionId: r.pid })
     if (res.ok) out.complete++
@@ -422,10 +567,18 @@ function* positionHistoryBackfill(db, { sinceMs = 0, limit = 5000 } = {}) {
     else {
       out.incomplete++
       for (const f of res.missing || []) out.missingCounts[f] = (out.missingCounts[f] || 0) + 1
+      // V3 B4: why it is refused, one class per record (classifyRefusedRecord).
+      const cls = classifyRefusedRecord(db, { record: res.record || {}, missing: res.missing || [] }).class
+      out.byClass[cls] = (out.byClass[cls] || 0) + 1
     }
     yield out
   }
   return out
+}
+
+/** The refused classes as one clause, largest first ('' when none): "live_gap 3, pre_contract 2". */
+export function refusedClassesPhrase(byClass) {
+  return Object.entries(byClass || {}).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, n]) => `${k} ${n}`).join(', ')
 }
 
 // Preserve the synchronous public helper for its existing callers. The
@@ -561,6 +714,10 @@ export function positionHistoryView(db, { limit = 100, accountId = null, cutoffM
     disputes: parse(r.disputes_json) || [], sources: parse(r.sources_json) || {},
   }))
 
+  // V3 B4 (P5b-3): every refused record in scope, classed — the counts by
+  // class are a PARTITION of `incomplete`, the rows name each one's reason.
+  const refused = refusedRecordsView(db, where, args, parse)
+
   // C·3 (18-09-2026): the boot line said "53 refusals opened AFTER the cutoff
   // (a live gap if this is large)" and nothing listed them. This is the list:
   // the post-cutoff refusals that also OPENED after the cutoff, by missing
@@ -582,6 +739,7 @@ export function positionHistoryView(db, { limit = 100, accountId = null, cutoffM
         risk_event_id: p.risk_event_id ?? null, trade_id: p.trade_id ?? null,
         opened_at_ms: opened, closed_at_ms: row.closed_at_ms,
         missing: parse(row.missing_json) || [],
+        class: refused.classOf.get(`${row.account_id}|${row.ctrader_position_id}`)?.class ?? null,
       })
     }
   } catch { /* diagnostic; the view must not fail on it */ }
@@ -640,10 +798,39 @@ export function positionHistoryView(db, { limit = 100, accountId = null, cutoffM
     // Descending, so the first entry is the field most often missing — the
     // one worth fixing first.
     missingFields: Object.entries(missingCounts).sort((a, b) => b[1] - a[1]).map(([field, n]) => ({ field, n })),
+    // V3 B4: why each refused record is refused (REFUSED_CLASSES). `total`
+    // equals `incomplete` read in the same pass; null (never 0) if the
+    // classification could not be read.
+    refused: { total: refused.total, byClass: refused.byClass, classes: REFUSED_CLASSES, contracts: RECORD_CONTRACTS, semantics: GOAL_SEMANTICS, rows: refused.rows, ...(refused.error ? { error: refused.error } : {}) },
     disputed,
     sinceCutoff,
     recent,
   }
+}
+
+/** V3 B4: the refused stream classed row by row (newest 100 listed); see classifyRefusedRecord. */
+function refusedRecordsView(db, where, args, parse) {
+  const counts = {}, classOf = new Map(), rows = []
+  let total = 0
+  try {
+    for (const row of db.prepare(
+      `SELECT account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json
+         FROM position_history_incomplete ${where} ORDER BY closed_at_ms DESC`
+    ).all(...args)) {
+      const missing = parse(row.missing_json) || []
+      const c = classifyRefusedRecord(db, { record: parse(row.partial_json) || {}, missing })
+      total++
+      counts[c.class] = (counts[c.class] || 0) + 1
+      classOf.set(`${row.account_id}|${row.ctrader_position_id}`, c)
+      if (rows.length < 100) {
+        rows.push({ account_id: row.account_id, ctrader_position_id: row.ctrader_position_id, symbol: row.symbol, closed_at_ms: row.closed_at_ms, missing, class: c.class, reason: c.reason })
+      }
+    }
+  } catch (err) {
+    return { total: null, byClass: null, rows: [], classOf, error: `refused classification unreadable: ${String(err?.message || err).slice(0, 160)}` }
+  }
+  const byClass = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([cls, n]) => ({ class: cls, n }))
+  return { total, byClass, rows, classOf }
 }
 
 // ---------------------------------------------------------------------------
