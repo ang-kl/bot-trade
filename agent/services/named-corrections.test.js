@@ -389,6 +389,8 @@ test('every NAMED_MONEY_CORRECTIONS evidence string names its own account and br
   const expected = { 1253: '46130058', 714: '46130058', 471: '46130058', 466: '46130058', 309: '47790949' }
   for (const entry of NAMED_MONEY_CORRECTIONS) {
     assert.match(entry.evidence, new RegExp(`account ${expected[entry.id]}\\b`), `#${entry.id} evidence must name its account`)
-    assert.match(entry.evidence, /read \d{2}-\d{2}-2026\b/, `#${entry.id} evidence must name its broker-read date`)
+    // Both broker deal lists were read on 25-09-2026 (09:35Z); #309's deals
+    // had been imported on 11-08-2026, which is an import date, not a read date.
+    assert.match(entry.evidence, /read 25-09-2026\b/, `#${entry.id} evidence must name its broker-read date`)
   }
 })

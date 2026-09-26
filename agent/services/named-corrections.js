@@ -190,7 +190,8 @@ export function applyNeverFilledRejections(db, { ids } = {}) {
 // wrote to and later cleaned up, not a source anyone else can re-open):
 //   - account 46130058, read 25-09-2026 (positions 237140621 for #1253,
 //     234867098 for #714, 234697676 for #471, 234697562 for #466)
-//   - account 47790949, read 11-08-2026 (position 233866238, matched to
+//   - account 47790949, read 25-09-2026; its deals were imported 11-08-2026
+//     (position 233866238, matched to
 //     both #309 and #310)
 // The account and read date are also in each entry's `evidence` string below
 // (item 3, checker fix round #2 — not only up here); the per-deal figures
@@ -209,7 +210,7 @@ export const NAMED_MONEY_CORRECTIONS = Object.freeze([
   { id: 714, table: 'trades', field: 'net_pnl', expectedOld: 2.91, value: 202.71, evidence: 'H-P5b-1: local 2.91 against three broker deals (account 46130058, position 234867098, read 25-09-2026) 100.27 + 99.53 + 2.91 = 202.71 (deal-money.js)' },
   { id: 471, table: 'trades', field: 'net_pnl', expectedOld: 70, value: 37.5, evidence: 'H-P5b-1: local 70 against two broker deals (account 46130058, position 234697676, read 25-09-2026) 70 + -32.5 = 37.5' },
   { id: 466, table: 'trades', field: 'net_pnl', expectedOld: 115.8, value: 39.3, evidence: 'H-P5b-1: local 115.8 against three broker deals (account 46130058, position 234697562, read 25-09-2026) 75 + 40.8 + -76.5 = 39.3' },
-  { id: 309, table: 'trades', field: 'net_pnl', expectedOld: 435.5, value: 351, evidence: 'H-P5b-1: local 435.5 against two broker deals (account 47790949, position 233866238, read 11-08-2026, both matched to trade #310) -84.5 + 435.5 = 351. #309 is the corrected row; #310 on the same position stays rejected, not corrected' },
+  { id: 309, table: 'trades', field: 'net_pnl', expectedOld: 435.5, value: 351, evidence: 'H-P5b-1: local 435.5 against two broker deals (account 47790949, position 233866238, read 25-09-2026, deals imported 11-08-2026, both matched to trade #310) -84.5 + 435.5 = 351. #309 is the corrected row; #310 on the same position stays rejected, not corrected' },
 ])
 
 const FIELD_ALLOWLIST = Object.freeze(['net_pnl'])
