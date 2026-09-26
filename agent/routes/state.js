@@ -2822,6 +2822,20 @@ export default function stateRouter(db) {
       res.status(503).json({ error: 'order_lifecycle_unavailable', code: err?.reason ?? 'order_lifecycle_worker_error', lastSnapshotAt })
     }
   })
+  // V3 STK-08v2: the Telegram digest's state — the setting (enabled, mode,
+  // quiet hours), the unsent count, the oldest queued row, the reasons the
+  // rows were queued for (the newest DIGEST_REASON_ROWS_MAX, saying so), the
+  // last flush and its last error. The same reader STK-08 judges by. Counts
+  // and times only: no message text, no credential. Read-only; an unreadable
+  // outbox is a 500 naming the error, never a 0.
+  router.get('/telegram-digest', async (_req, res) => {
+    try {
+      const { digestState } = await import('../services/telegram-digest.js')
+      res.json(digestState(db))
+    } catch (err) {
+      res.status(500).json({ error: 'telegram_digest_unreadable', detail: String(err?.message ?? err).slice(0, 200) })
+    }
+  })
   // The capture queue behind the record: what is waiting, what was captured,
   // and — the part worth reading — what this system GAVE UP on, named with
   // the reason. Those rows are closed trades it could not describe.

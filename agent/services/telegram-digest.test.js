@@ -7,7 +7,7 @@ import {
   loadNotifyConfig, saveNotifyConfig, isHHMM, minutesOfDay, inQuietHours,
   classifyPriority, routeDecision, queueMessage, pendingMessages, summarise,
   markSent, flushDecision, flushDigest, attachNotifyDb, routeOutbound,
-  describeConfig,
+  describeConfig, digestState,
 } from './telegram-digest.js'
 import { handleNotifyCommand } from './telegram-control.js'
 
@@ -391,4 +391,66 @@ test('describeConfig states all three knobs in one line', () => {
   assert.match(s, /notify ON/)
   assert.match(s, /hourly digest/)
   assert.match(s, /quiet 23:00–07:00 SGT/)
+})
+
+// ---------------------------------------------------------------------------
+// digestState (V3 STK-08v2): the one reader of the digest's state, served by
+// GET /state/telegram-digest and judged by the lifecycle rule STK-08.
+// ---------------------------------------------------------------------------
+test('digestState: /notify off is read as OFF through the same loader, with the unsent count, oldest row and reasons — no text', () => {
+  const db = freshDB()
+  handleNotifyCommand(db, '/notify', 'off', AT_1400)
+  attachNotifyDb(db)
+  try {
+    assert.deepEqual(routeOutbound('EURUSD scan result, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off' })
+    assert.deepEqual(routeOutbound('🚨 margin call, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off' })
+  } finally { attachNotifyDb(null) }
+  const s = digestState(db, { nowMs: AT_1400 })
+  assert.equal(s.enabled, false)
+  assert.equal(s.configReadable, true)
+  assert.equal(s.configStored, true)
+  assert.equal(s.pending.count, 2)
+  assert.equal(s.pending.oldestReason, 'notify_off')
+  assert.equal(typeof s.pending.oldestQueuedAt, 'string')
+  assert.deepEqual(s.reasons.rows.map(r => [r.reason, r.count]), [['notify_off', 2]])
+  assert.equal(s.reasons.complete, true)
+  assert.equal(s.lastFlushAt, null)
+  assert.equal(s.lastError, null)
+  assert.doesNotMatch(JSON.stringify(s), /private words/, 'no message text in the state')
+})
+
+test('digestState: an unreadable stored config is never reported as OFF', () => {
+  for (const bad of ['{not json', '[1]', 'null']) {
+    const db = freshDB()
+    setState(db, CONFIG_KEY, bad)
+    const s = digestState(db)
+    assert.equal(s.configReadable, false, bad)
+    assert.equal(s.enabled, true, 'the loader repairs it to the default, and so does the reading')
+    assert.match(s.configError, /telegram_notify_json is not a JSON object/)
+  }
+  const none = digestState(freshDB())
+  assert.deepEqual([none.configStored, none.configReadable, none.enabled, none.pending.count, none.pending.oldestQueuedAt], [false, true, true, 0, null])
+})
+
+test('digestState: the last flush and its error are read back, a bot token redacted', async () => {
+  const db = freshDB()
+  saveNotifyConfig(db, { enabled: true, mode: 'hourly' })
+  queueMessage(db, { text: 'one', reason: 'hourly_digest' })
+  const failed = await flushDigest(db, { nowMs: AT_1400, send: async () => { throw new Error('request to https://api.telegram.org/bot42:AAsecret-token_x/sendMessage failed') } })
+  assert.equal(failed.sent, false)
+  const s = digestState(db, { nowMs: AT_1400 })
+  assert.match(s.lastError, /error: request to https:\/\/api\.telegram\.org\/bot<redacted>\/sendMessage failed$/)
+  assert.doesNotMatch(JSON.stringify(s), /AAsecret/)
+  assert.equal(s.pending.count, 1, 'a failed flush leaves the row pending')
+  await flushDigest(db, { nowMs: AT_1400, send: async () => {} })
+  const after = digestState(db, { nowMs: AT_1400 })
+  assert.equal(after.lastFlushAt, new Date(AT_1400).toISOString())
+  assert.equal(after.lastError, null)
+  assert.equal(after.pending.count, 0)
+})
+
+test('digestState: an unreadable outbox throws — a caller reports it, never a 0', () => {
+  const db = freshDB()
+  db.exec('DROP TABLE telegram_outbox')
+  assert.throws(() => digestState(db), /no such table: telegram_outbox/)
 })

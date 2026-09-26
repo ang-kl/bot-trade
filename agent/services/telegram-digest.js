@@ -342,6 +342,76 @@ export function routeOutbound(text, opts = {}) {
   }
 }
 
+// --- the digest's state, as a read (V3 STK-08v2) ----------------------------
+// What GET /state/telegram-digest serves and what the order-lifecycle rule
+// STK-08 judges the Telegram outbox by: ONE reader, so the route and the
+// rule cannot disagree about the same outbox (CLAUDE.md failure mode #3).
+// Counts, times, reasons and the settings only — never a message's text,
+// never a credential. Reads only; every statement goes through
+// idx_tg_outbox_pending (telegram_outbox is one of the four large tables).
+
+/**
+ * The reason breakdown reads at most this many pending rows, the NEWEST
+ * first: `reason` sits after `text` in the row, so each row read can walk
+ * the text's overflow pages. Production 25-09-2026: 57,750 unsent rows in a
+ * table measured at 380 MB — a full breakdown would read the whole table on
+ * every 10-minute lifecycle pass. The reply says how many rows it covered
+ * and whether that was all of them; the total and the oldest row are exact.
+ */
+export const DIGEST_REASON_ROWS_MAX = 2_000
+export const DIGEST_STATE_SQL = Object.freeze({
+  pending: 'SELECT COUNT(*) AS n FROM telegram_outbox WHERE sent_at IS NULL',
+  oldest: 'SELECT id, queued_at, reason FROM telegram_outbox WHERE sent_at IS NULL ORDER BY id LIMIT 1',
+  reasons: `SELECT COALESCE(reason, '') AS reason, COUNT(*) AS n, MIN(queued_at) AS oldest
+              FROM (SELECT reason, queued_at FROM telegram_outbox WHERE sent_at IS NULL ORDER BY id DESC LIMIT ?)
+             GROUP BY 1 ORDER BY n DESC, reason LIMIT 50`,
+})
+
+/** A flush error names what failed; a bot token inside a URL is not part of that. */
+const redactToken = s => String(s).replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<redacted>')
+
+/**
+ * The digest's state. The configuration is read through loadNotifyConfig —
+ * the loader routeDecision and flushDecision act on — and `configReadable`
+ * says whether the stored value is usable: an unreadable value is repaired to
+ * the default (enabled) by the loader, so it is never reported as OFF.
+ * `configReadable` follows the watchdog contract's definition
+ * (watchdog-contract.js notificationPolicy): absent, or a stored JSON object.
+ * Throws when the outbox cannot be read — a caller reports that, never a 0.
+ */
+export function digestState(db, { nowMs = Date.now() } = {}) {
+  let raw = null, configReadable = true, configError = null
+  try { raw = getState(db, CONFIG_KEY) } catch (err) { configReadable = false; configError = `agent_state unreadable: ${err?.message ?? err}` }
+  if (configReadable && raw != null) {
+    let parsed
+    try { parsed = JSON.parse(raw) } catch { parsed = undefined }
+    if (!(parsed != null && typeof parsed === 'object' && !Array.isArray(parsed))) { configReadable = false; configError = `${CONFIG_KEY} is not a JSON object` }
+  }
+  const cfg = loadNotifyConfig(db)
+  const count = Number(db.prepare(DIGEST_STATE_SQL.pending).get()?.n) || 0
+  const oldest = count > 0 ? db.prepare(DIGEST_STATE_SQL.oldest).get() : null
+  const rows = count > 0 ? db.prepare(DIGEST_STATE_SQL.reasons).all(DIGEST_REASON_ROWS_MAX) : []
+  const over = Math.min(count, DIGEST_REASON_ROWS_MAX)
+  let lastFlushAt = null, lastError = null
+  try {
+    const last = Number(getState(db, LAST_FLUSH_KEY))
+    lastFlushAt = Number.isFinite(last) && last > 0 ? new Date(last).toISOString() : null
+    const e = getState(db, LAST_ERROR_KEY)
+    lastError = e ? redactToken(e).slice(0, 300) : null
+  } catch { /* status only: the outbox reading above stands */ }
+  return {
+    at: new Date(nowMs).toISOString(),
+    configKey: CONFIG_KEY, configStored: raw != null, configReadable, configError,
+    enabled: cfg.enabled, mode: cfg.mode, quiet: cfg.quiet, urgentBypass: cfg.urgentBypass, tz: cfg.tz,
+    pending: { count, oldestQueuedAt: oldest?.queued_at ?? null, oldestReason: oldest ? (oldest.reason ?? '') : null },
+    reasons: {
+      rows: rows.map(r => ({ reason: r.reason, count: Number(r.n), oldestQueuedAt: r.oldest ?? null })),
+      over, of: count, complete: over === count, window: 'newest pending rows first',
+    },
+    lastFlushAt, lastError,
+  }
+}
+
 /** One-line human summary of the current settings, for /status and /notify. */
 export function describeConfig(cfg) {
   const parts = [cfg.enabled ? 'notify ON' : 'notify OFF (queued, not dropped)']
