@@ -71,7 +71,12 @@ Standing, not re-asked:
 - The position cap stays at 5 and the book at 8.
 - TP1 stays mandatory. Codex's partial-TP work resolves momentum's
   `tp1: null`.
-- The intraday strategies stay retired unless the owner says otherwise.
+- The intraday strategies stay retired. CORRECTED 26-09-2026 (S-1, principle 5):
+  the owner DID say otherwise — 25-09 ~11:45 SGT, "restore the positive ones, on
+  all accounts" (fib_confluence, rsi2_reversion, donchian_breakout;
+  `docs/claude-takeover-2026-09-25.md`). That order is not built: no pin
+  changed after #972, and it now waits on OD-5 of the 26-09 integrated plan
+  (restore at half risk, restore after scoring the shadow, or withdraw).
 
 ## Sequencing
 

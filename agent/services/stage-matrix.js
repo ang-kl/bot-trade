@@ -27,7 +27,7 @@
 
 import { readFileSync } from 'node:fs'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from './strategies.js'
-import { recordArmingChange } from './arming-log.js'
+import { recordArmingChange, whyCell } from './arming-log.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 
 export const STAGES = ['scan', 'backtest', 'trade', 'manage']
@@ -58,6 +58,10 @@ const STATE_KEY = 'stage_matrix_json'
 // account enter its overlay; every other cell keeps following the global
 // setting, so a global change still reaches accounts that never diverged.
 // No overlay = byte-identical to the old behaviour.
+//
+// S-1 (26-09-2026): only the strategy Auto Trade & Open cell of an overlay
+// binds. A per-account write to any other cell is refused with the reason
+// (NOT_ACCOUNT_SCOPED), and a stored one is reported in `unapplied`.
 export const acctMatrixKey = (accountId) => `acct:${accountId}:stage_matrix_json`
 export const acctEnabledKey = (accountId) => `acct:${accountId}:enabled_strategies_json`
 
@@ -88,24 +92,14 @@ function readJson(db, getState, key) {
   return null
 }
 
-function readStored(db, getState, accountId = null) {
-  const global = readJson(db, getState, STATE_KEY) || {}
-  if (accountId == null) return global
-  const overlay = readJson(db, getState, acctMatrixKey(accountId))
-  if (!overlay) return global
-  // Cell-level merge: { strategy: { fib: { scan: false } } } over the global,
-  // so an overlay that names ONE cell cannot silently reset its neighbours.
-  const out = {}
-  for (const kind of ['strategy', 'filter']) {
-    const g = global[kind] || {}
-    const o = overlay[kind] || {}
-    const merged = {}
-    for (const k of new Set([...Object.keys(g), ...Object.keys(o)])) {
-      merged[k] = { ...(g[k] || {}), ...(o[k] || {}) }
-    }
-    out[kind] = merged
-  }
-  return out
+// The SHARED stored matrix (scan/backtest/manage and the filter scan/backtest
+// cells). S-1 (26-09-2026): an account's overlay is no longer merged into
+// these columns — no code applied them per account, so merging only made a
+// cell show a value that did not bind (see loadStageMatrix and
+// unappliedOverlayCells). The strategy Trade cell, which does bind per
+// account, is read by armedTradeKeys.
+function readStored(db, getState) {
+  return readJson(db, getState, STATE_KEY) || {}
 }
 
 /** Which cells this account has pinned — the UI badges these, so an override
@@ -309,7 +303,16 @@ export function migrateTradeOverlay(db, { getState, setState }, accountId) {
  *   (filters have manage: null — the monitor phase has no filter concept).
  */
 export function loadStageMatrix(db, getState, accountId = null) {
-  const stored = readStored(db, getState, accountId)
+  // S-1 (26-09-2026, principle 6): ONLY the strategy Auto Trade & Open cell is
+  // per account. Scan and Back Test are one shared pass each, and Live Tweak &
+  // Close and the filters' trade flags are read from the shared matrix by
+  // every caller (`scanStageStrategies`, `backtestStageStrategies`,
+  // `manageStageAllows`, `tradeStageGate`'s filter loop). An account's view
+  // used to merge its stored overlay into those columns, so a cell showed a
+  // value no code applied — …0058's vp_value Scan OFF was scanned every cycle.
+  // The view now shows what binds, and lists a stored-but-unapplied cell by
+  // name in `unapplied` rather than hiding it or deleting it.
+  const stored = readStored(db, getState)
   const tradeOn = armedTradeKeys(db, getState, accountId)
 
   const strategies = STRATEGY_REGISTRY.map(s => {
@@ -340,7 +343,53 @@ export function loadStageMatrix(db, getState, accountId = null) {
     }
   })
 
-  return { strategies, filters }
+  const out = { strategies, filters }
+  if (accountId != null) out.unapplied = unappliedOverlayCells(db, getState, accountId, { strategies, filters })
+  return out
+}
+
+/**
+ * Why a per-account cell of this stage cannot bind — the text the refusal
+ * (400) and the `unapplied` list both carry, so they cannot say two things.
+ */
+export const NOT_ACCOUNT_SCOPED = Object.freeze({
+  scan: 'Scan is one shared pass across every account — a per-account Scan cell cannot take effect; set it on the shared matrix',
+  backtest: 'Back Test is one nightly sweep that arms the shared list — a per-account Back Test cell cannot take effect; set it on the shared matrix',
+  manage: 'Live Tweak & Close is read from the shared matrix for every position — a per-account cell is not applied; set it on the shared matrix (making it per account would change live position management on accounts that carry stored cells, which is an owner decision)',
+  filterTrade: 'a confluence filter\'s Auto Trade & Open cell is one shared flag read by every account\'s gate — a per-account cell cannot take effect; set it on the shared matrix',
+})
+
+/** Is this (kind, stage) cell stored and applied per account? Only the strategy trade cell is. */
+export function isAccountScopedCell(kind, stage) {
+  return kind === 'strategy' && stage === 'trade'
+}
+
+/**
+ * Cells stored in this account's overlay that NO code applies. Reported, not
+ * removed: …0058 carries 39 of them (26-09-2026), and realigning or clearing
+ * them is the owner's call. Each entry names the stored value, the value that
+ * binds, and why.
+ */
+export function unappliedOverlayCells(db, getState, accountId, matrix = null) {
+  if (accountId == null) return []
+  const overlay = readJson(db, getState, acctMatrixKey(String(accountId))) || {}
+  const m = matrix || loadStageMatrix(db, getState, null)
+  const out = []
+  for (const kind of ['strategy', 'filter']) {
+    for (const [key, cells] of Object.entries(overlay[kind] || {})) {
+      for (const [stage, v] of Object.entries(cells || {})) {
+        if (typeof v !== 'boolean' || isAccountScopedCell(kind, stage)) continue
+        const rows = kind === 'strategy' ? m.strategies : m.filters
+        const applied = rows?.find(r => r.key === key)?.stages?.[stage]
+        out.push({
+          cell: `${kind}:${key}:${stage}`, kind, key, stage,
+          stored: v, applied: typeof applied === 'boolean' ? applied : null,
+          reason: kind === 'filter' && stage === 'trade' ? NOT_ACCOUNT_SCOPED.filterTrade : (NOT_ACCOUNT_SCOPED[stage] || 'not applied per account'),
+        })
+      }
+    }
+  }
+  return out
 }
 
 /**
@@ -363,6 +412,18 @@ export function setStage(db, { kind, key, stage, on, accountId = null, actor = '
   if (!STAGES.includes(stage)) throw new Error(`unknown stage '${stage}' — valid: ${STAGES.join(', ')}`)
   const flag = on === true
   const attribution = { actor, reason, evidence }
+
+  // S-1: a per-account write to a cell no code applies per account is REFUSED,
+  // naming why, rather than stored and silently ignored (principle 6). The
+  // route answers it with a 400. Validation of kind/key comes first so an
+  // unknown key still reads as an unknown key.
+  if (acct != null && !isAccountScopedCell(kind, stage)
+    && ((kind === 'strategy' && STRATEGY_KEYS.includes(key)) || (kind === 'filter' && FILTER_KEYS.includes(key) && stage !== 'manage'))) {
+    const why = kind === 'filter' && stage === 'trade' ? NOT_ACCOUNT_SCOPED.filterTrade : NOT_ACCOUNT_SCOPED[stage]
+    const err = new Error(`refused: ${kind} ${key} × ${STAGE_LABELS[stage]} for account ${acct} — ${why}`)
+    err.code = 'stage_not_account_scoped'
+    throw err
+  }
 
   if (kind === 'strategy') {
     if (!STRATEGY_KEYS.includes(key)) throw new Error(`unknown strategy '${key}' — valid: ${STRATEGY_KEYS.join(', ')}`)
@@ -635,6 +696,7 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
     out.skipped.push('_off: malformed')
   }
   out.off = []
+  const trialOffKeys = new Set(cfg._trial && typeof cfg._trial === 'object' && !Array.isArray(cfg._trial) ? Object.keys(cfg._trial) : [])
   for (const [accountId, keys] of entries) {
     if (!/^[0-9]+$/.test(accountId) || !Array.isArray(keys)) { out.skipped.push(`${accountId}: malformed`); continue }
     const done = new Set(Array.isArray(seeded[accountId]) ? seeded[accountId] : [])
@@ -669,7 +731,14 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
       if (isHandPinned(db, getState, accountId, key)) {
         setStage(db, {
           kind: 'strategy', key, stage: 'trade', on: false, accountId,
-          actor: 'boot_seed', reason: 'declared OFF in agent/config/strategy-pins.json (_off/_trial — no positive live record, or on trial elsewhere)',
+          actor: 'boot_seed',
+          // S-1: this text used to assert "no positive live record" for every
+          // `_off` order — false for fib_confluence (#972 switched it off
+          // because its producer was retired, on a positive record). The seed
+          // now names where the reason lives instead of asserting one.
+          reason: trialOffKeys.has(key)
+            ? 'declared OFF in agent/config/strategy-pins.json (_trial: on trial on another account)'
+            : 'declared OFF in agent/config/strategy-pins.json (_off: the owner order and its reason are in the file\'s _off_note)',
           evidence: { file: 'agent/config/strategy-pins.json', seededOnce: true },
         }, { getState, setState })
         out.off.push(tag)
@@ -682,6 +751,81 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
     seeded[accountId] = [...done]
   }
   if (dirty) setState(db, 'strategy_pins_seeded_json', JSON.stringify(seeded))
+  return out
+}
+
+/**
+ * S-1 (26-09-2026): the strategies ANY of these accounts has Trade-armed — the
+ * union the loop's stage gate admits (`anyAccountTradeGate`). The scan winner
+ * and the analysis picker rank by THIS, not by the shared list: the shared
+ * list arms no account that carries its own cell, and on 26-09 every account
+ * did, so ranking by it handed the analysis slots to vwap_trend and
+ * fib_confluence, which the union gate then refused about once a minute.
+ * An empty roster falls back to the shared list, like `anyAccountTradeGate`.
+ */
+export function rosterArmedTradeKeys(db, getState, accountIds) {
+  const ids = Array.isArray(accountIds) ? accountIds.filter(a => a != null && a !== '') : []
+  if (ids.length === 0) return armedTradeKeys(db, getState, null)
+  const out = new Set()
+  for (const id of ids) for (const k of armedTradeKeys(db, getState, String(id))) out.add(k)
+  return out
+}
+
+/**
+ * How many enabled accounts FOLLOW the shared Auto Trade & Open cell of each
+ * strategy — i.e. carry no explicit cell (and no legacy list) of their own.
+ * Tune shows it as "followed by N of M", because a shared cell that no account
+ * follows arms nothing (26-09-2026: 0 of 7 for every strategy).
+ */
+export function tradeFollowers(db, getState) {
+  let ids = []
+  try { ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { ids = [] }
+  const out = {}
+  for (const s of STRATEGY_REGISTRY) out[s.key] = { following: 0, of: ids.length }
+  for (const id of ids) {
+    const overlay = readJson(db, getState, acctMatrixKey(id))?.strategy || {}
+    const legacy = Array.isArray(readJson(db, getState, acctEnabledKey(id)))
+    for (const s of STRATEGY_REGISTRY) {
+      if (!legacy && typeof overlay[s.key]?.trade !== 'boolean') out[s.key].following++
+    }
+  }
+  return out
+}
+
+/**
+ * S-1 (26-09-2026, principle 4): every Trade cell carries a row. A cell whose
+ * current value no ledger row explains (26-09: 17 per-account cells and 7
+ * shared ones) gets ONE appended `declared` row — value unchanged, origin
+ * stated as unrecorded — so `whyCell` answers 'recorded' for all 91
+ * per-account cells and says plainly that the origin is not on record.
+ * Idempotent: a declared cell is recorded and is never declared again. A cell
+ * that 'disagrees' with its last row is NOT declared over — that verdict is
+ * the ledger detecting an unrecorded writer and stays visible.
+ *
+ * @returns {{declared: string[], disagrees: string[], checked: number}}
+ */
+export function declareUnrecordedTradeCells(db, getState) {
+  const out = { declared: [], disagrees: [], checked: 0 }
+  let ids = []
+  try { ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { ids = [] }
+  for (const scope of [null, ...ids]) {
+    const armed = armedTradeKeys(db, getState, scope)
+    for (const { key } of STRATEGY_REGISTRY) {
+      out.checked++
+      const current = armed.has(key)
+      const why = whyCell(db, { scope, kind: 'strategy', key, stage: 'trade', current })
+      const tag = `${scope == null ? 'global' : scope}:${key}`
+      if (why.verdict === 'disagrees') { out.disagrees.push(tag); continue }
+      if (why.verdict !== 'unrecorded') continue
+      const id = recordArmingChange(db, {
+        scope, kind: 'strategy', key, stage: 'trade', from: current, to: current,
+        decision: 'declared', actor: 'boot_declaration',
+        reason: `declared as found (${current ? 'ON' : 'OFF'}): no ledger row explained this value — it was set before the arming ledger began (17-09-2026) or by a path that did not record; the value is unchanged and who first set it is not on record`,
+        evidence: { declaredFrom: scope == null ? 'shared list' : 'account cell / legacy list / shared list', originRecorded: false },
+      })
+      if (id != null) out.declared.push(tag)
+    }
+  }
   return out
 }
 
@@ -834,6 +978,7 @@ export function stageMatrixView(db, getState, statsOverride) {
     columns: STAGES.map(s => ({ key: s, label: STAGE_LABELS[s] })),
     ...loadStageMatrix(db, getState),
     stats: statsOverride === undefined ? stageMatrixStats(db, getState) : statsOverride,
+    followers: tradeFollowers(db, getState),
     windowDays: 30,
   }
 }
@@ -903,6 +1048,7 @@ export function accountStageTallies(db, getState) {
       mode: r.mode ?? null,
       stages,
       pinned: stageOverlayKeys(db, getState, id).length,
+      unapplied: (m.unapplied || []).length,
     }
   })
 }

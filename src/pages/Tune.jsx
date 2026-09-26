@@ -48,6 +48,7 @@ import { accountNumbers } from "../lib/scope-label.js"
 // research belongs with the rest of Tune's research, not on Reasons).
 // Self-fetching, so Tune's own load() carries nothing new for it.
 import { ExitCounterfactualSection } from './Reasons.jsx'
+import { cellNote } from '../lib/stage-matrix-view.js'
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
 // 2d, 1M) is parsed by src/lib/timeframes.js and synthesised agent-side.
@@ -319,7 +320,7 @@ function StrategyTfPerformance() {
 // ---------------------------------------------------------------------------
 const STAGE_MX_OPEN_KEY = 'tune_stage_mx_open'
 
-function MxCell({ on, counts, selected, na, onClick }) {
+function MxCell({ on, counts, selected, na, onClick, sub = null }) {
   if (na) {
     return <td className="py-0.5 px-1 text-center text-[var(--color-text-sub)]">—</td>
   }
@@ -356,6 +357,10 @@ function MxCell({ on, counts, selected, na, onClick }) {
             {counts.ok}<span className="text-[var(--color-accent)]">✓</span>/{counts.fail}<span className="text-[var(--color-down)]">✗</span>
           </span>
         )}
+        {/* S-1: the words beside the tick — "followed by N of M" on a shared
+            trade cell, "shared" / "stored … not applied" in an account's
+            scope (src/lib/stage-matrix-view.js). Words, not colour. */}
+        {sub && <span className="block text-(length:--fs-body) text-[var(--color-text-sub)] whitespace-nowrap">{sub}</span>}
       </button>
     </td>
   )
@@ -513,6 +518,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }
     : null
   const selOn = selRow ? selRow.stages[sel.stage] : null
   const selCol = sel ? columns.find(c => c.key === sel.stage) : null
+  const selNote = sel ? cellNote(mx, { kind: sel.kind, key: sel.key, stage: sel.stage, acct }) : null
 
   const pick = (kind, row, stage) => {
     if (kind === 'filter' && stage === 'manage') return // no such cell
@@ -550,6 +556,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }
           counts={counts(kind, row.key, c.key)}
           selected={sel?.kind === kind && sel?.key === row.key && sel?.stage === c.key}
           onClick={() => pick(kind, row, c.key)}
+          sub={row.stages[c.key] === null ? null : cellNote(mx, { kind, key: row.key, stage: c.key, acct }).sub}
         />
       ))}
     </tr>
@@ -577,7 +584,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }
           <AccountScopePills
             value={acct} onChange={onAcct} allLabel="Shared"
             note={acct && acct !== 'all'
-              ? 'Editing THIS ACCOUNT\'s overlay — only the cells you change enter it; every other cell keeps following the shared matrix.'
+              ? 'Editing THIS ACCOUNT\'s Auto Trade & Open cells — only the cells you change enter its overlay; every other cell keeps following the shared matrix. Scan, Back Test, Live Tweak & Close and the filters are shared and are set in the Shared scope.'
               : 'Editing the SHARED matrix. Every account without an overlay of its own trades exactly this.'}
           />
           {acct && acct !== 'all'
@@ -585,6 +592,10 @@ function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }
               ? <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
                   <b className="text-[var(--color-text)]">{mx.overlayKeys.length} cell{mx.overlayKeys.length === 1 ? '' : 's'} pinned</b>{' '}
                   for this account — the rest follow the shared matrix.
+                  {Array.isArray(mx.unapplied) && mx.unapplied.length > 0 && (
+                    <>{' '}<b className="text-[var(--color-text)]">{mx.unapplied.length} of them {mx.unapplied.length === 1 ? 'is' : 'are'} stored but not applied</b>:
+                    only Auto Trade &amp; Open is per account; Scan, Back Test, Live Tweak &amp; Close and the filters are shared. They are shown, not removed.</>
+                  )}
                 </p>
               : <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">This account follows the shared matrix entirely. Changing a cell here gives it its own copy of that cell only.</p>)
             : <GlobalScopeNote what="Which strategies and filters run at each pipeline stage, including Auto Trade &amp; Open" />}
@@ -631,8 +642,8 @@ function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }
               <span className="font-semibold">{sel.name}</span>
               <span className="text-[var(--color-text-sub)]">× {selCol?.label || sel.stage} — currently</span>
               <Badge tone={selOn ? 'on' : 'off'}>{selOn ? 'ON ✓' : 'OFF ✗'}</Badge>
-              <Button size="sm" disabled={busy || selOn === true} onClick={() => apply(true)}>Turn ON</Button>
-              <Button size="sm" variant="subtle" disabled={busy || selOn === false} onClick={() => apply(false)}>Turn OFF</Button>
+              <Button size="sm" disabled={busy || selOn === true || selNote?.editable === false} onClick={() => apply(true)}>Turn ON</Button>
+              <Button size="sm" variant="subtle" disabled={busy || selOn === false || selNote?.editable === false} onClick={() => apply(false)}>Turn OFF</Button>
               <Button size="sm" variant="subtle" onClick={() => setSel(null)}>Close</Button>
               <span className="w-full text-(length:--fs-body) text-[var(--color-text-sub)]">
                 {sel.stage === 'scan' && 'Scan: whether the 5-minute scan computes this at all. Filters ON here gate the scan the old strict way; OFF means analyse everything and let Auto Trade & Open decide.'}
@@ -640,6 +651,16 @@ function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }
                 {sel.stage === 'trade' && 'Auto Trade & Open: the live gate. Writes the same agent key the old toggles used — Telegram and autopilot stay in sync.'}
                 {sel.stage === 'manage' && 'Live Tweak & Close: whether the monitor may move stops / close positions opened by this strategy. Broker-side SL/TP and your per-position guards always stay active.'}
               </span>
+              {selNote?.editable === false && (
+                <span className="w-full text-(length:--fs-body) text-[var(--color-text)]">
+                  Not editable for this account: {selNote.reason}.
+                </span>
+              )}
+              {selNote?.sub && selNote.editable !== false && (
+                <span className="w-full text-(length:--fs-body) text-[var(--color-text-sub)]">
+                  Shared cell {selNote.sub} account{selNote.sub.endsWith(' 1') ? '' : 's'} — an account with its own Auto Trade &amp; Open cell ignores the shared one.
+                </span>
+              )}
             </div>
           )}
         </>

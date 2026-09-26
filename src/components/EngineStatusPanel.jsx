@@ -88,7 +88,12 @@ export function EngineRow({ row, readiness, fullId, busy, onMode, at }) {
         <span className="text-[var(--color-text-sub)] tabular-nums">rev {row.configRevision} · epoch {row.modeEpoch}</span>
         <span className="text-[var(--color-text-sub)]">observation <b>{row.tickObservation}</b> · stage <b>{row.validationStage}</b></span>
         {row.entryCounts && <span className="text-[var(--color-text-sub)] tabular-nums">resting {row.entryCounts.resting ?? 0} · in flight {row.entryCounts.inFlight ?? 0} · unknown {row.entryCounts.unknown ?? 0}</span>}
-        {readiness && <Badge tone={readiness.ready ? 'on' : 'off'} title={tickWhy || 'every readiness check holds'}>{readiness.ready ? 'tick-ready' : `${readiness.blockedReasons.length} blocker${readiness.blockedReasons.length === 1 ? '' : 's'}`}</Badge>}
+        {/* S1a: readiness is a record we may simply not have for this row (a
+            `?account=` narrowed read carries no data for any other account) —
+            shown honestly as "no record", never silently omitted. */}
+        <Badge tone={readiness ? (readiness.ready ? 'on' : 'off') : 'neutral'} title={readiness ? (tickWhy || 'every readiness check holds') : 'no readiness record for this account under the current view'}>
+          {readiness ? (readiness.ready ? 'tick-ready' : `${readiness.blockedReasons.length} blocker${readiness.blockedReasons.length === 1 ? '' : 's'}`) : 'no record'}
+        </Badge>
       </div>
       <div className="mt-1 flex flex-wrap gap-1">
         <Button size="sm" variant="danger" disabled={disabledAll || current === 'stopped'} title={why || 'stop every automatic entry on this account; resting entry orders are cancelled by id; manual orders stay admitted'} onClick={() => onMode(fullId, 'stopped', row.configRevision)}>Stop entries</Button>
@@ -261,7 +266,7 @@ export default function EngineStatusPanel({ scope = 'all' }) {
       <div className="mt-2 text-(length:--fs-body)">
         {rows.map((row, index) => (
           <EngineRow key={`${accountIds[index] || row.accountId}:${index}`} row={row} at={snap.at} busy={busy} fullId={accountIds[index]}
-            readiness={engineReadinessFor(snap.readiness?.accounts, accountIds[index])} onMode={onMode} />
+            readiness={engineReadinessFor(snap.readiness, accountIds[index])} onMode={onMode} />
         ))}
       </div>
       {acks.length > 0 && (

@@ -23,4 +23,38 @@ describe('LlmMonitorStatus', () => {
     // real alarm and must not be replaced by the muted one.
     expect(src.indexOf('fetchError && !health?.degraded')).toBeLessThan(src.indexOf("if (!health?.degraded) return null"))
   })
+
+  // Checker NIT 3 (W1.4 fix round; plan A1: "the sidebar and the health
+  // panel say 'AI off'" — the health panel already does, buildLabel). Effects
+  // do not run under react-dom/server, so the wiring is pinned at the source
+  // the same way the fetch-failure branch above already is.
+  it('renders nothing before any fetch, even with the AI-off wiring added', () => {
+    expect(renderToStaticMarkup(<LlmMonitorStatus />)).toBe('')
+  })
+
+  it('reads /state/health through llmUiState and renders an "AI off" badge, ahead of degraded and fetch-failure', () => {
+    const src = readFileSync(new URL('./LlmMonitorStatus.jsx', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+    expect(src).toMatch(/import \{ llmUiState \} from '\.\.\/lib\/llm-ui\.js'/)
+    expect(src).toMatch(/agentGet\('\/state\/health'\)\.catch\(\(\) => null\)/)
+    expect(src).toMatch(/setAiOff\(llmUiState\(h\)\.disabled\)/)
+    expect(src).toMatch(/if \(aiOff\) \{/)
+    expect(src).toMatch(/AI off/)
+    // Off must be checked BEFORE the fetch-error and degraded branches, so a
+    // stale degraded reading from before the switch was thrown cannot
+    // override the authoritative "nothing is happening because it is off".
+    const offAt = src.indexOf('if (aiOff)')
+    const errAt = src.indexOf('fetchError && !health?.degraded')
+    const degradedAt = src.indexOf('if (!health?.degraded) return null')
+    expect(offAt).toBeGreaterThan(0)
+    expect(offAt).toBeLessThan(errAt)
+    expect(offAt).toBeLessThan(degradedAt)
+  })
+
+  it('a failed /state/health read leaves aiOff at its default (false), never inventing "off" from missing evidence', () => {
+    const src = readFileSync(new URL('./LlmMonitorStatus.jsx', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+    // The catch resolves to null, not a swallowed/thrown failure — llmUiState
+    // reads absent evidence as NOT disabled (llm-ui.test.jsx: "ABSENT
+    // EVIDENCE RENDERS THE CARDS").
+    expect(src).toMatch(/const \[aiOff, setAiOff\] = useState\(false\)/)
+  })
 })

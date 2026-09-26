@@ -63,7 +63,6 @@ export const NAV_TREE = [
           { id: 'sec-risk', label: 'Risk Decisions', kind: 'T' },
           { id: 'sec-acct-engineering', label: 'Account Engineering', kind: 'T' },
           { id: 'sec-controllers', label: 'Controllers', kind: 'F' },
-          { id: 'sec-llmspend', label: 'LLM Spend', kind: 'C' },
           { id: 'sec-alphadecay', label: 'Edge Health', kind: 'T+F' },
           { id: 'sec-whynotrades', label: 'Why No Trades?', kind: 'C' },
         ],
@@ -88,7 +87,6 @@ export const NAV_TREE = [
       {
         path: '/risk', label: 'Risk', icon: '🛡️',
         sections: [
-          { id: 'sec-rerisk', label: 'Reset / Re-Risk', kind: 'T+F' },
           { id: 'sec-account', label: 'Account Snapshot', kind: 'C' },
           { id: 'sec-protection', label: 'Position Protection', kind: 'F' },
           { id: 'sec-settings-scope', label: 'Per-Account Settings', kind: 'C' },
@@ -147,6 +145,21 @@ export const NAV_TREE = [
           { id: 'sec-agent', label: 'Agent Backend', kind: 'F' },
           { id: 'sec-ctrader', label: 'cTrader account', kind: 'T+F' },
           { id: 'sec-watchlists', label: 'Compare & Copy Watchlists', kind: 'T+F' },
+        ],
+      },
+      {
+        // UI-7: one page for every AI-related surface — status, LLM spend
+        // (moved from Desk's sec-llmspend), Reset/Re-Risk (moved from Risk's
+        // sec-rerisk — checker BLOCKER 4, W1.4 fix round: its proposal rows
+        // deep-link BACK to Risk's own anchored fields instead), and a
+        // pointer to the screener-search control, which stays on Tune (it
+        // is tied to that page's own curated/custom watchlist state, not
+        // just to an anchor it can jump across pages to).
+        path: '/ai', label: 'AI', icon: '🤖',
+        sections: [
+          { id: 'sec-ai-status', label: 'AI status', kind: 'C' },
+          { id: 'sec-rerisk', label: 'Reset / Re-Risk', kind: 'T+F' },
+          { id: 'sec-llmspend', label: 'LLM Spend', kind: 'C' },
         ],
       },
     ],

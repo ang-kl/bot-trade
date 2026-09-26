@@ -30,11 +30,8 @@ import AccountEngineering from '../components/AccountEngineering.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
-import LlmSwitch from '../components/LlmSwitch.jsx'
-import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
-import Input from '../components/common/Input.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderLedger from '../components/OrderLedger.jsx'
 import LossReview from '../components/LossReview.jsx'
@@ -184,10 +181,9 @@ export default function Desk() {
   const [brokerHistory, setBrokerHistory] = useState(null) // broker's closed deals, 7d
   const [controllerRuntime, setControllerRuntime] = useState(null)
   const [heartbeats, setHeartbeats] = useState(null)       // controller reliability
-  const [llmSpend, setLlmSpend] = useState(null)           // token usage + est cost
+  // UI-7: llmSpend/capDraft/capNote moved to components/LlmSpendCard.jsx
+  // (pages/Ai.jsx) with the Section they backed.
   const [alphaDecay, setAlphaDecay] = useState(null)       // edge-erosion read
-  const [capDraft, setCapDraft] = useState('')             // LLM daily cap editor
-  const [capNote, setCapNote] = useState('')
   const [marketHours, setMarketHours] = useState(null)  // { SYM: { open, next_open_at } }
   const [orders, setOrders] = useState(null)            // durable set-order ledger (/state/orders)
   const [postmortems, setPostmortems] = useState(null)  // post-loss playback (/state/postmortems)
@@ -328,13 +324,12 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, r, atf, c, ls, ad, mh, ord, pms, corr, mp, dupe, wlf, px] = await Promise.all([
+      const [h, s, r, atf, c, ad, mh, ord, pms, corr, mp, dupe, wlf, px] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/risk-events?limit=200'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/config').catch(() => null),
-        agentGet('/state/llm-spend').catch(() => null),
         agentGet('/state/alpha-decay').catch(() => null),
         agentGet('/state/market-hours').catch(() => null),
         agentGet('/state/orders').catch(() => null),
@@ -358,7 +353,6 @@ export default function Desk() {
       setEvents(r.rows || [])
       setArmed(atf)
       setConfig(c)
-      setLlmSpend(ls)
       setAlphaDecay(ad)
       setMarketHours(mh?.hours || null)
       setOrders(ord || null)
@@ -1152,106 +1146,10 @@ export default function Desk() {
         <ControllerGroups controllers={heartbeats} />
       </Section>
 
-      {/* LLM spend — the no-bill-shock dashboard: real token usage priced
-          in USD (today/7d/30d + projection), with an owner-set daily cap
-          that alerts on Telegram once per day when crossed. */}
-      <Section
-        id="llmspend"
-        title="LLM spend"
-        summary={(() => {
-          // Review on #755: the spend ledger is money ALREADY SPENT — the
-          // invoice for the world that was running — so switching the layer
-          // off must not erase it. "AI off — no calls attempted" on a day
-          // that cost $12 before noon asserts a false zero; both facts stay.
-          const off = llmUiState(health).disabled
-          const todayUsd = llmSpend?.today?.cost_usd ?? 0
-          const spent = llmSpend ? `today $${todayUsd.toFixed(2)}` : null
-          // "$0.00 before it was off" asserts an ordering that never happened
-          // on a no-spend day — the qualifier is only true when money moved.
-          if (off) return spent && todayUsd > 0 ? `AI off — ${spent} before it was off` : 'AI off'
-          return llmSpend ? `${spent} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null
-        })()}
-        defaultOpen={false}
-      >
-        {/* The switch always renders — it is the way back on. What collapses
-            behind it is only the FORWARD-LOOKING per-call detail; the headline
-            totals are records of money already spent (same side of the line
-            as Trade lessons), and the daily cost-alert cap is a deterministic
-            Telegram threshold that must stay editable while the layer is off. */}
-        <div className="mb-2"><LlmSwitch health={health} onChanged={load} /></div>
-        {llmUiState(health).disabled && (
-          <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">{llmOffNote(llmUiState(health))}</p>
-        )}
-        {!llmSpend && !llmUiState(health).disabled && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No data yet.</p>}
-        {llmSpend && (
-          <>
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-(length:--fs-body) tabular-nums mb-2">
-              <span>Today <span className="font-semibold">${(llmSpend.today?.cost_usd ?? 0).toFixed(2)}</span> · {llmSpend.today?.calls ?? 0} calls</span>
-              <span>7 days <span className="font-semibold">${(llmSpend.last7d?.cost_usd ?? 0).toFixed(2)}</span></span>
-              <span>30 days <span className="font-semibold">${(llmSpend.last30d?.cost_usd ?? 0).toFixed(2)}</span></span>
-              {/* The one genuinely forward-looking number on the card — a
-                  forecast of spend that cannot happen while the layer is off,
-                  so it is the figure that hides. Review on #755: the first
-                  cut of this gate was inverted — it hid the historical
-                  by-purpose ledger ("where did the $2,314 go") and kept this
-                  forecast. History always renders; the forecast is gated. */}
-              {!llmUiState(health).disabled && (
-                <span>Projected month <span className="font-semibold">${(llmSpend.projected_month_usd ?? 0).toFixed(2)}</span></span>
-              )}
-            </div>
-            {(llmSpend.by_purpose?.length ?? 0) > 0 && (
-              <div className="overflow-x-auto">
-                <Collapse id="Desk_957" label="Spend by Purpose Rows">
-                <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
-                  <thead>
-                    <tr className="border-b border-[var(--color-border)]">
-                      <th className="py-1 pr-3">Purpose</th>
-                      <th className="py-1 pr-3">Model</th>
-                      <th className="py-1 pr-3 text-right">Calls</th>
-                      <th className="py-1 pr-3 text-right">In</th>
-                      <th className="py-1 pr-3 text-right">Out</th>
-                      <th className="py-1 text-right">Est. cost (30d)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {llmSpend.by_purpose.map(p2 => (
-                      <tr key={`${p2.purpose}|${p2.model}`} className="border-b border-[var(--color-border)]">
-                        <td className="py-1 pr-3">{p2.purpose}</td>
-                        <td className="py-1 pr-3 text-[var(--color-text-sub)]">{p2.model}</td>
-                        <td className="py-1 pr-3 text-right">{p2.calls.toLocaleString()}</td>
-                        <td className="py-1 pr-3 text-right">{p2.input_tokens.toLocaleString()}</td>
-                        <td className="py-1 pr-3 text-right">{p2.output_tokens.toLocaleString()}</td>
-                        <td className="py-1 text-right">${p2.cost_usd.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                </Collapse>
-              </div>
-            )}
-            <div className="mt-2 flex flex-wrap items-end gap-2">
-              <label className="block text-(length:--fs-body)">
-                <span className="text-[var(--color-text-sub)]">Daily cost alert (USD, 0 = off) — currently {llmSpend.daily_cap_usd ? `$${llmSpend.daily_cap_usd}` : 'off'}</span>
-                <Input type="number" step="0.1" min="0" value={capDraft} onChange={e => setCapDraft(e.target.value)} placeholder={llmSpend.daily_cap_usd ? String(llmSpend.daily_cap_usd) : 'e.g. 1.00'} className="w-28" />
-              </label>
-              <Button
-                size="sm" variant="subtle"
-                onClick={async () => {
-                  try {
-                    const r = await agentPost('/actions/llm-budget', { dailyCapUsd: capDraft === '' ? 0 : Number(capDraft) })
-                    setCapNote(r.dailyCapUsd ? `Alert armed at $${r.dailyCapUsd}/day.` : 'Alert disarmed.')
-                    await load()
-                  } catch (e) { setCapNote(e.message) }
-                }}
-              >Save cap</Button>
-              {capNote && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{capNote}</span>}
-            </div>
-            <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
-              Scanning, backtests, and all trading decisions are deterministic — zero tokens. The only LLM consumers are the position monitor and the weekend watch, priced at published per-model rates (estimates, not the invoice).
-            </p>
-          </>
-        )}
-      </Section>
+      {/* UI-7: the LLM spend card moved to the new AI page (pages/Ai.jsx) —
+          every AI-related surface now lives in one place, with its own nav
+          entry, rather than being one card among Desk's unrelated ones. See
+          components/LlmSpendCard.jsx for the moved content. */}
 
       {/* Edge health — banded perspectives: the auto-bot's live edge,
           signal decay, the owner's backtest baseline, and the advisory/

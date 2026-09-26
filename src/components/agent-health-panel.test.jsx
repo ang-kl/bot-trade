@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import AgentHealthPanel, { Line, ControllerRows } from './AgentHealthPanel.jsx'
 import {
-  deployReading, controllerReading, loopReading, overdue, dur, worst, toText,
+  deployReading, controllerReading, loopReading, overdue, dur, worst, toText, buildLabel,
 } from '../lib/agent-health-view.js'
 import { placeAnchored } from '../lib/use-anchored-popover.js'
 
@@ -35,6 +35,17 @@ describe('deployReading', () => {
 
   it('says unknown when the UI build carries no commit', () => {
     expect(deployReading({ uiCommit: '', agentCommit: 'abc1234' }).state).toBe('unknown')
+  })
+
+  // UI-4 S2: 'dev' is vite.config.js's own fallback (scripts/build-commit.mjs)
+  // when no build var and no git HEAD resolved — never a real commit. Reading
+  // it as a value used to compare it against the agent's real sha and warn
+  // "the two disagree" on every plain deploy where no commit var was wired.
+  it('reads a "dev" UI build as no commit, never as a mismatch against the agent\'s real commit', () => {
+    const r = deployReading({ uiCommit: 'dev', agentCommit: 'abc1234' })
+    expect(r.state).toBe('unknown')
+    expect(r.text).toMatch(/cannot be compared/)
+    expect(r.text).not.toMatch(/stale bundle/)
   })
 })
 
@@ -205,22 +216,57 @@ describe('placeAnchored', () => {
   })
 })
 
+// Checker BLOCKER 2 (W1.4 fix round): the sidebar/footer's build label
+// replaced `v{appVersion} · {buildSha}` with "web ‹sha› · agent ‹sha›"
+// (plan S2 / OD-21 / D3). Set, unset and 'dev' on each side.
+describe('buildLabel', () => {
+  it('shows both sides set', () => {
+    expect(buildLabel({ uiCommit: 'abc1234', agentCommit: 'def5678' })).toBe('web abc1234 · agent def5678')
+  })
+
+  it('reads an unset web commit as unknown, never blank or invented', () => {
+    expect(buildLabel({ uiCommit: null, agentCommit: 'def5678' })).toBe('web unknown · agent def5678')
+    expect(buildLabel({ uiCommit: undefined, agentCommit: 'def5678' })).toBe('web unknown · agent def5678')
+    expect(buildLabel({ uiCommit: '', agentCommit: 'def5678' })).toBe('web unknown · agent def5678')
+  })
+
+  it('reads an unset agent commit as unknown', () => {
+    expect(buildLabel({ uiCommit: 'abc1234', agentCommit: null })).toBe('web abc1234 · agent unknown')
+    expect(buildLabel({ uiCommit: 'abc1234' })).toBe('web abc1234 · agent unknown')
+  })
+
+  it("reads vite's own 'dev' fallback as unknown on EITHER side, never as a literal build named dev", () => {
+    expect(buildLabel({ uiCommit: 'dev', agentCommit: 'def5678' })).toBe('web unknown · agent def5678')
+    expect(buildLabel({ uiCommit: 'abc1234', agentCommit: 'dev' })).toBe('web abc1234 · agent unknown')
+    expect(buildLabel({ uiCommit: 'dev', agentCommit: 'dev' })).toBe('web unknown · agent unknown')
+  })
+
+  it('compact drops the agent half but still honestly names the web side', () => {
+    expect(buildLabel({ uiCommit: 'abc1234', agentCommit: 'def5678', compact: true })).toBe('web abc1234')
+    expect(buildLabel({ uiCommit: 'dev', agentCommit: 'def5678', compact: true })).toBe('web unknown')
+    expect(buildLabel({ uiCommit: null, compact: true })).toBe('web unknown')
+  })
+})
+
 describe('components', () => {
   it('renders the tag without throwing before any data has arrived', () => {
     const html = renderToStaticMarkup(<AgentHealthPanel appVersion="1.2.3" buildSha="abc1234" />)
     expect(html).toContain('abc1234')
   })
 
-  it('the compact tag drops the sha for the phone bar; the full one keeps it', () => {
+  it('the compact tag drops the agent half for the phone bar; the full one keeps it, and neither shows a bare version number any more', () => {
     // With no agent configured — which is this environment — both variants
     // take the plain-tag branch, so that is what is asserted. The mobile bar
-    // is width-constrained and already showed only the version; the sha is not
-    // lost, it is half of the comparison inside the panel itself.
+    // is width-constrained and drops the agent side; it is half of the
+    // comparison inside the panel itself, one tap away there.
     const compact = renderToStaticMarkup(<AgentHealthPanel appVersion="1.2.3" buildSha="abc1234" compact />)
     const full = renderToStaticMarkup(<AgentHealthPanel appVersion="1.2.3" buildSha="abc1234" />)
-    expect(compact).toContain('1.2.3')
-    expect(compact).not.toContain('abc1234')
-    expect(full).toContain('abc1234')
+    expect(compact).toContain('web abc1234')
+    expect(compact).not.toContain('agent')
+    expect(full).toContain('web abc1234 · agent unknown')
+    // Plan S2 / OD-21 / D3: the version number is dropped entirely.
+    expect(full).not.toContain('1.2.3')
+    expect(compact).not.toContain('1.2.3')
   })
 
   it('neither variant throws when the agent is unreachable', () => {

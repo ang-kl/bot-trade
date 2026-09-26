@@ -29,6 +29,7 @@
 import { getState, setState } from '../db.js'
 import { guardName } from './decision-audit.js'
 import { readSnapshot, inspectLifecycleRegression, lifecycleRuleRecurs, lifecycleRulePersists } from './order-lifecycle.js'
+import { tickEntryReceiptsRaw, readTickFeederCheck } from './tick-feeder-stall.js'
 
 export const INSPECTOR_DEFAULTS = {
   on: true,
@@ -360,8 +361,44 @@ function inspectLifecycleRegressionRun(db, _cfg, nowMs) {
   return inspectLifecycleRegression(readSnapshot(getState, db), nowMs)
 }
 
+// V3 F4: the tick permit feeder's stall, as the `tick_feeder` heartbeat
+// recorded it (heartbeat.js probeCppExec → tick-feeder-stall.js). One finding
+// per side while its latest beat — no older than ten minutes — failed with
+// that side stalled or incomplete. Read from the beat's detail only; no rule
+// runs here. A stalled feeder is silence where an alarm should be: its
+// receipt ages out and the tick no_orders evidence leaves the inventory.
+function inspectTickFeederStall(db, _cfg, nowMs) {
+  let hb = null
+  try { hb = db.prepare(`SELECT last_run_at, consecutive_failures, last_detail_json FROM controller_heartbeats WHERE name = 'tick_feeder'`).get() } catch { return [] }
+  const at = Date.parse(hb?.last_run_at || '')
+  if (!hb || !(hb.consecutive_failures > 0) || !Number.isFinite(at) || nowMs - at > 10 * 60_000) return []
+  let detail = null
+  try { detail = JSON.parse(hb.last_detail_json || 'null') } catch { detail = null }
+  const out = []
+  for (const s of Array.isArray(detail?.sides) ? detail.sides : []) {
+    if (s?.state !== 'stalled' && s?.state !== 'incomplete') continue
+    out.push({
+      source: 'controller_heartbeats',
+      subject_key: `tick_feeder_stall:${s.side}`,
+      speech_act: 'assertion',
+      said: `tick_feeder beat failed at ${hb.last_run_at} (${hb.consecutive_failures} in a row): ${s.side} ${s.state} — ${s.reason}`,
+      doing: 'keeping standing tick permits in place for every account that admits tick',
+      finding: `the tick permit feeder on ${s.side} is ${s.state} while ${s.accounts} account(s) admit tick — no permit is refreshed, so tick entries on those accounts cannot fill, and the feeder's receipt ages out of the watchdog inventory instead of raising no_orders (failure mode #3: silence, not an alarm)`,
+      principle_kind: 'none',
+      principle_params: { side: s.side, state: s.state, accounts: s.accounts, ageSec: s.ageSec ?? null },
+      falsifier: {
+        prediction: `a complete feeder pass for ${s.side} is recorded within 1h without any code change — which would mean the stall was transient (a probe gap, a sidecar restart), falsifying the stuck-feeder reading`,
+        metric: { kind: 'tick_feed_resumed', side: s.side, sinceMs: nowMs },
+        deadlineMs: nowMs + 3_600_000,
+      },
+    })
+  }
+  return out
+}
+
 export const INSPECTIONS = [
   { key: 'assertion_vs_effect', run: inspectAssertionVsEffect },
+  { key: 'tick_feeder_stall', run: inspectTickFeederStall },
   { key: 'broken_commissive', run: inspectBrokenCommissive },
   { key: 'refusal_at_scale', run: inspectRefusalAtScale },
   { key: 'unheeded_directive', run: inspectUnheededDirective },
@@ -427,6 +464,24 @@ export function evalFalsifierMetric(db, metric) {
       case 'dropped_absent': {
         const r = db.prepare(`SELECT COUNT(*) AS n FROM risk_events WHERE disposition = 'dropped' AND disposition_at >= ?`).get(sinceIso)
         return (r?.n || 0) > 0 // more drops → recurring-defect reading confirmed
+      }
+      case 'tick_feed_resumed': {
+        // The side's receipt as stored.
+        const r = tickEntryReceiptsRaw(db)?.[metric.side]
+        if (!r || !Number.isSafeInteger(r.completedAt)) {
+          // No receipt at all ("no feeder pass on record"). It cannot resume
+          // through a receipt it never wrote, so read the check instead: one
+          // made AFTER the finding that still found an account on this side
+          // admitting tick means the stall persisted → CONFIRMED. No check
+          // since, or the side no longer admits tick → unevaluable.
+          const chk = readTickFeederCheck(db)
+          const chkAt = Date.parse(chk?.at || '')
+          const row = Array.isArray(chk?.sides) ? chk.sides.find(s => s?.side === metric.side) : null
+          return Number.isFinite(chkAt) && chkAt > Number(metric.sinceMs) && Number(row?.accounts) > 0 ? true : null
+        }
+        // A complete pass after the finding → the stall was transient → the
+        // stuck-feeder reading is FALSIFIED (the state_advanced convention).
+        return !(r.complete === true && r.completedAt > Number(metric.sinceMs))
       }
       case 'lifecycle_rule_recurs':
         // A newer violation of the rule after the finding → the live-defect

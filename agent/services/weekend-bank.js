@@ -68,6 +68,7 @@
 import { getState, setState } from '../db.js'
 import { nextCloseInfo } from './symbol-hours.js'
 import { makeBookHeldCheck } from './book-held.js'
+import { protectiveExitDeferral } from './momentum-exit-coordination.js'
 
 /**
  * Symbols whose reopen gap has actually cost more than 1R, plus the classes
@@ -163,9 +164,14 @@ export { bookHeldPositionIds } from './book-held.js'
  * the spot feed itself.
  */
 export async function runWeekendBank(db, creds, positions, { windowMin = 75, minClosureHrs = 12, deps = null, now = null } = {}) {
-  if ((getState(db, 'weekend_bank') || 'true') === 'false') return { skipped: 'off', banked: [], exempt: [] }
+  if ((getState(db, 'weekend_bank') || 'true') === 'false') return { skipped: 'off', banked: [], exempt: [], deferred: [] }
   const banked = []
   const exempt = []
+  // V3 F1: positions whose close waits for this pass because a momentum
+  // partial or rank close may still be in flight (the T2 rule). Not marked
+  // done, so the next pass inside the window decides them again.
+  const deferred = []
+  const nowMs = now ? new Date(now).getTime() : Date.now()
   const gapCfg = loadGapProneConfig(db)
   const closePosition = deps?.closePosition || (await import('../lib/exec-engine.js')).closePosition
   const wsGetSpotOnce = deps?.wsGetSpotOnce || (await import('../lib/ctrader-ws.js')).wsGetSpotOnce
@@ -213,6 +219,12 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
       const gapProne = isGapProne(symbol, gapCfg)
       if (!shouldBank({ open: true, closesInSec: info.closes_in_sec, closureSec: info.closure_sec, side, entry: p.price, price, windowMin, minClosureHrs, gapProne })) continue
 
+      // V3 F1: the T2 rule (momentum-exit-coordination.js) — a partial or
+      // rank close claimed within the transport horizon defers this close for
+      // this pass only; past the horizon, or with no plan, it closes as before.
+      const inFlight = protectiveExitDeferral(db, { accountId: creds?.accountId, positionId: p.positionId, nowMs })
+      if (inFlight) { deferred.push({ symbol, positionId: p.positionId, reason: inFlight }); continue }
+
       await closePosition(creds, { positionId: parseInt(p.positionId), volume: td.volume })
       setState(db, key, JSON.stringify({ until: Date.now() + (info.closes_in_sec + info.closure_sec) * 1000 }))
       const movePct = Math.round(((price - p.price) * (side === 'SELL' ? -1 : 1) / p.price) * 10000) / 100
@@ -236,5 +248,5 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
       } catch { /* non-fatal */ }
     }
   }
-  return { banked, exempt }
+  return { banked, exempt, deferred }
 }

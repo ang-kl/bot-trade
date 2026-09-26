@@ -18,6 +18,7 @@ import { getSymbolMap } from '../lib/ctrader-creds.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { measureAmend } from './protection-latency.js'
 import { recordPositionEvent } from './position-events.js'
+import { protectiveExitDeferral } from './momentum-exit-coordination.js'
 
 /**
  * Pure decision: given one position's state and its guard rules, return the
@@ -95,7 +96,7 @@ export function runTradeGuards(db, creds, deps = {}) {
 }
 
 async function tradeGuardsPass(db, creds, deps = {}) {
-  const summary = { checked: 0, slMoves: 0, partialCloses: 0, refused: 0, errors: [] }
+  const summary = { checked: 0, slMoves: 0, partialCloses: 0, refused: 0, deferred: [], errors: [] }
   try {
     const accountId = authorisedAccountId(creds)
     const rows = db.prepare(
@@ -209,7 +210,15 @@ async function tradeGuardsPass(db, creds, deps = {}) {
         }
       }
 
-      for (const c of acts.closes) {
+      // V3 F1: the T2 rule — a momentum partial or rank close claimed within
+      // the transport horizon may still be in flight; the guard's partial
+      // take-profits wait for this pass only (not marked done, so the next
+      // pass decides them again). No plan, or past the horizon: as before.
+      const inFlight = acts.closes.length
+        ? protectiveExitDeferral(db, { accountId: r.account_id ?? accountId, positionId: r.position_id, nowMs: deps.now ?? Date.now() })
+        : null
+      if (inFlight) summary.deferred.push(`${r.symbol}: ${acts.closes.length} partial take-profit(s) deferred — ${inFlight}`)
+      for (const c of (inFlight ? [] : acts.closes)) {
         const volume = Math.round(c.lots * meta.lotSize)
         try {
           await exec.closePosition(creds, {

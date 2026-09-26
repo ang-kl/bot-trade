@@ -27,6 +27,23 @@ WORKDIR /build
 COPY package*.json ./
 RUN npm ci
 COPY . .
+# UI-4 S2 (checker NIT 1, W1.4 fix round): Railway's build-time variable
+# (RAILWAY_GIT_COMMIT_SHA, Railway docs) reaches an opaque `docker build`
+# ONLY through a declared ARG — an undeclared name is simply absent, not
+# injected by the platform. `.git` is excluded from this build context
+# (.dockerignore), so without this the frontend stage had no way to learn
+# which commit it was building, and vite.config.js's fallback stamped every
+# image 'dev' regardless of what was actually deployed. Read by
+# vite.config.js via scripts/build-commit.mjs.
+#
+# DECLARED HERE, after COPY . . and just before the build that consumes it —
+# not above `RUN npm ci`. A build ARG changes on every commit, and Docker
+# invalidates every layer from the first line that references it onward;
+# declaring it before `npm ci` would bust that layer's cache on every single
+# deploy for a value `npm ci` never reads (agent/deploy-image.test.js pins
+# this ordering).
+ARG RAILWAY_GIT_COMMIT_SHA
+ENV RAILWAY_GIT_COMMIT_SHA=$RAILWAY_GIT_COMMIT_SHA
 RUN npm run build && test -f dist/index.html
 
 # --- stage 2: the agent, plus the built site -------------------------------

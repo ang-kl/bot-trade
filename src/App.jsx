@@ -92,6 +92,7 @@ const AccountsWorkspace = lazy(() => import('./pages/AccountsWorkspace.jsx'))
 const Tune = lazy(() => import('./pages/Tune.jsx'))
 const Risk = lazy(() => import('./pages/Risk.jsx'))
 const Connect = lazy(() => import('./pages/Connect.jsx'))
+const Ai = lazy(() => import('./pages/Ai.jsx'))
 // PR-F (owner principle 4): the twelve attribution endpoints, read by no page
 // until now.
 const Reasons = lazy(() => import('./pages/Reasons.jsx'))
@@ -141,6 +142,8 @@ const NAV_GROUPS = [
       { to: '/accounts', label: 'Accounts', icon: '💼' },
       { to: '/connect', label: 'Connect', icon: '🔗' },
       { to: '/browser-sessions', label: 'Browser sessions', icon: '🌐' },
+      // UI-7: every AI/LLM surface in one place, marked off honestly when off.
+      { to: '/ai', label: 'AI', icon: '🤖' },
     ],
   },
 ]
@@ -424,6 +427,8 @@ export default function App() {
             <Route path="/risk" element={<Risk />} />
             <Route path="/reasons" element={<Reasons />} />
             <Route path="/connect" element={<Connect />} />
+            {/* UI-7: every AI/LLM surface in one place. */}
+            <Route path="/ai" element={<Ai />} />
             {/* Spotware OAuth redirect URI (registered on the cTrader app) */}
             <Route path="/link-up" element={<Connect />} />
             <Route path="*" element={<Navigate to="/desk" replace />} />
