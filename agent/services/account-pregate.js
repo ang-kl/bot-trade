@@ -38,7 +38,7 @@ import { sizingBalance } from '../lib/sizing-balance.js'
 import {
   loadRiskConfig, getAccountBalance,
   balanceScopeVerdict, dailyLossVerdict, lossStreakVerdict,
-  openPositionsForAccount, maxPositionsVerdict,
+  openPositionsForAccount, maxPositionsVerdict, countedPositionsWithTickFires,
   exposureVerdict, correlationVerdict, rrFloorVerdict,
 } from './risk.js'
 import { recordDecision } from './decision-log.js'
@@ -78,7 +78,8 @@ export function accountPregateVerdict(db, accountId, { config = null, nowMs = Da
 
   // The count is the leak-fixed scoped read; the list the proposal-level
   // checks reuse stays NULL-inclusive (see openPositionsForAccount).
-  const counted = openPositionsForAccount(db, acct, { countOnly: true })
+  // C9: the same count as the gate's step 3, unadopted tick fires included.
+  const counted = countedPositionsWithTickFires(db, acct, { now: nowMs }).counted
   const cap = maxPositionsVerdict(counted, cfg)
   if (cap.block) return refuse(cap, { balance })
   const openPositions = openPositionsForAccount(db, acct)

@@ -34,6 +34,7 @@ import { DEFAULT_NULL_EXIT_MIN_R } from './null-exit-guard.js'
 import { pulseFor } from './market-pulse.js'
 import { checkSymbolCap, DEFAULT_MAX_PER_SYMBOL } from './symbol-position-cap.js'
 import { checkBookSymbolCap, DEFAULT_MAX_ACCOUNTS_PER_SYMBOL } from './book-symbol-cap.js'
+import { unsettledTickFires } from './entry-ledger.js'
 // Leaf module (pure rule + one indexed lookback) — no cycle back into risk.js.
 import { nextOpportunityKey } from './opportunity-identity.js'
 import { reasonKey } from './veto-breakdown.js'
@@ -1463,6 +1464,29 @@ function normSide(side) {
   return null
 }
 
+/**
+ * C9 (SEQUENCE PR-9, WP-D gap 1d): what `max_positions` counts — the
+ * account's active positions (the leak-fixed scoped read) PLUS the tick
+ * fires the sidecar made that are not adopted yet (entry-ledger.js
+ * unsettledTickFires). ONE helper for both callers, the gate's step 3 and
+ * the pre-filter (account-pregate.js), so the two cannot disagree again.
+ *
+ * Only FIRED tick entries count, never a standing permit, so PR-3's rule
+ * that capacity held in advance never vetoes a bar signal still holds. The
+ * cap value is unchanged. Dormant while no account admits tick (no fire rows).
+ * An unreadable fire read leaves the count as it was before C9 and says so
+ * in `tickError` — it never widens the gate beyond the position count.
+ */
+export function countedPositionsWithTickFires(db, acct, { now = Date.now() } = {}) {
+  const counted = openPositionsForAccount(db, acct, { countOnly: true })
+  if (acct == null) return { counted, fires: 0, tickError: null }
+  let fires = []
+  let tickError = null
+  try { fires = unsettledTickFires(db, acct, { now }) } catch (err) { tickError = err?.message || String(err) }
+  if (!fires.length) return { counted, fires: 0, tickError }
+  return { counted: [...counted, ...fires.map(f => ({ symbol: f.symbol, side: f.side, tickFireIntent: f.id }))], fires: fires.length, tickError }
+}
+
 /** `max_positions`: the account's open-position cap. Cap value unchanged (owner, 11-09-2026). */
 export function maxPositionsVerdict(openPositions, config) {
   const n = openPositions.length
@@ -1820,9 +1844,12 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // ---- 3. Max open positions ---------------------------------------------
   // Shared with the pre-filter (PR-C); the account-scoped read is the leak
   // fix — see openPositionsForAccount. The cap itself is unchanged.
+  // C9: the count includes unadopted tick fires (countedPositionsWithTickFires).
   const openPositions = openPositionsForAccount(db, acct)
-  const countedPositions = openPositionsForAccount(db, acct, { countOnly: true })
+  const withFires = countedPositionsWithTickFires(db, acct, { now: opts?.nowMs ?? Date.now() })
+  const countedPositions = withFires.counted
   checks.open_positions = countedPositions.length
+  if (withFires.fires || withFires.tickError) checks.open_positions_tick_unsettled = withFires.tickError ? `unreadable: ${withFires.tickError}` : withFires.fires
   const maxPos = maxPositionsVerdict(countedPositions, config)
   if (maxPos.block) return veto(maxPos.reason, checks, proposal)
 

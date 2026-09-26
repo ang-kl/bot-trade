@@ -933,9 +933,28 @@ export async function probeCppExec(db, deps = {}) {
     : [{ name: 'cpp_exec', base: undefined, isLive: null }]
   const nowMs = (deps.now ?? new Date()).getTime()
   let primary = null
+  // C9 (SEQUENCE PR-9, WP-D gap 4): the book-wide tick grants, ONE generation
+  // per cycle, computed before either side is probed and handed to both
+  // sides' feeder passes, so the demo and the live pass apply the same
+  // decision (tick-permits.js computeTickGrants; persisted as
+  // tick_grants_json). Only while some account admits tick; its own try —
+  // a failure leaves each pass to compute its own.
+  //
+  // FIX ROUND (checker): a failed computation grants NOTHING this cycle. The
+  // first cut left each pass to compute its own generation, so the demo and
+  // the live pass could disagree — the exact case one generation prevents.
+  let tickGrants = null
+  try {
+    const tp = await import('./tick-permits.js')
+    if (tp.tickEntryAccountsFor(db).length) tickGrants = await (deps.computeTickGrants ?? tp.computeTickGrants)(db, { now: nowMs })
+  } catch (err) {
+    const why = err?.message || String(err)
+    tickGrants = { generation: null, failed: why, grants: {} }
+    console.warn(`[heartbeat] tick grants not computed — no new tick grants this cycle: ${why}`)
+  }
   for (const side of sides) {
     if (sideIsDormant(db, side)) { markSideDormant(db, side, nowMs); continue }
-    const out = await probeOneSidecar(db, exec, side, deps)
+    const out = await probeOneSidecar(db, exec, side, { ...deps, tickGrants })
     if (side.name === 'cpp_exec') primary = out
   }
   // V3 F4: the tick permit feeder's stall alarm, AFTER every side was probed
@@ -1204,8 +1223,20 @@ export const TICK_SHADOW_CURSOR_KEY = 'tick_shadow_cursor_json'
 // (the last pass pushed some, or the sidecar still lists one: its /health
 // tick.entry.accounts > 0) — an idle side costs nothing.
 let lastTickEntryPush = new Map() // side.name → count pushed
-export async function feedTickPermits(db, exec, side, nowMs = Date.now()) {
+// C9: `bootId` is the boot the probe's /health read reported for this side
+// (the permits are bound to it, and a changed boot starts the restart
+// quarantine); `grants` is the cycle's generation (probeCppExec).
+//
+// FIX ROUND (checker): `requireBoot` (the probe passes it) makes a pass whose
+// /health reported no boot a pass with NO push, rather than one that writes
+// standing rows bound to no boot — which the next pass, with the boot back,
+// would quarantine as another boot's.
+export async function feedTickPermits(db, exec, side, nowMs = Date.now(), { bootId = null, grants = null, requireBoot = false } = {}) {
   const { tickEntryAccountsFor, runTickPermitFeeder, takeTickRepush, peekTickRepush } = await import('./tick-permits.js')
+  if (requireBoot && !bootId) {
+    console.warn(`[heartbeat] ${side.name}: tick permit feeder skipped — the probe reported no sidecar boot, so no permit is bound or pushed this pass`)
+    return { skipped: 'no_boot' }
+  }
   const want = tickEntryAccountsFor(db, side)
   // V3 C4: the side's tick work receipt goes as soon as no account on the side
   // admits tick, so an old receipt never keeps emitting entry_activity items
@@ -1221,7 +1252,7 @@ export async function feedTickPermits(db, exec, side, nowMs = Date.now()) {
   if (!want.length && !(Number(reported) > 0) && !(lastTickEntryPush.get(side.name) > 0) && !peekTickRepush(want).length) return null
   const creds = await sideCreds(db, side)
   const repush = creds?.ready ? takeTickRepush(want) : []
-  const r = await runTickPermitFeeder(db, side, { creds, now: nowMs })
+  const r = await runTickPermitFeeder(db, side, { creds, now: nowMs, bootId, grants })
   lastTickEntryPush.set(side.name, want.length)
   // V3 C4 (WP-B B2c): the receipt is written by the pass that did the work,
   // with the full ids it served. Observation never controls the feeder.
@@ -1553,7 +1584,7 @@ export async function probeOneSidecar(db, exec, side, deps = {}) {
       // WP-A's Time + tick; tickEntryAccountsFor decides), refreshed
       // well inside their 5-minute life; a push happens only when there is
       // an account to place for or a set to clear.
-      try { await feedTickPermits(db, exec, side, nowMs) } catch (err) { console.warn(`[heartbeat] tick permit feeder failed (${side.name}): ${err.message}`) }
+      try { await feedTickPermits(db, exec, side, nowMs, { bootId: r.bootId ?? null, grants: deps.tickGrants ?? null, requireBoot: true }) } catch (err) { console.warn(`[heartbeat] tick permit feeder failed (${side.name}): ${err.message}`) }
     }
   } catch { /* next probe retries */ }
   // V3 R1 (P8b): the segment manifest. The sealed listing is read on EVERY

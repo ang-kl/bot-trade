@@ -13,31 +13,35 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
+import { initDB } from '../db.js'
+import { resolveInflightTrades } from './stuck-resolver.js'
 import {
   checkBookSymbolCap, accountsHolding, normalizeSide,
   DEFAULT_MAX_ACCOUNTS_PER_SYMBOL,
 } from './book-symbol-cap.js'
 
+// C8 (SEQUENCE PR-8, 26-09-2026). These fixtures used to be hand-made
+// CREATE TABLEs that gave monitored_positions and trades a `direction` column.
+// The real schema (agent/db.js) has no such column: both tables store `side`.
+// So the production queries threw into their empty catches and the ceiling
+// counted positions for no one, while every test here stayed green against a
+// schema that does not exist — failure mode #3 in the guard built to fix #3.
+// The fixtures now run on initDB(':memory:'), the schema production runs, and
+// rows are written the way reconciler.js and the order path write them
+// (`side` 'BUY'/'SELL'; pending_orders `dir` 1/−1 plus the migrated
+// `account_id`).
 function db () {
-  const d = new Database(':memory:')
-  // Column names and types mirror agent/db.js: monitored_positions.direction
-  // and trades.direction are TEXT; pending_orders carries `dir` INTEGER and an
-  // `account_id` added by migration.
-  d.exec(`
-    CREATE TABLE monitored_positions (account_id TEXT, status TEXT, symbol TEXT, direction TEXT);
-    CREATE TABLE trades            (account_id TEXT, status TEXT, symbol TEXT, direction TEXT);
-    CREATE TABLE pending_orders    (account_id TEXT, status TEXT, symbol TEXT, dir INTEGER);
-  `)
-  return d
+  return initDB(':memory:')
 }
-const pos = (d, acct, sym, dir, status = 'active') =>
-  d.prepare('INSERT INTO monitored_positions VALUES (?,?,?,?)').run(acct, status, sym, dir)
-const trd = (d, acct, sym, dir, status = 'submitting') =>
-  d.prepare('INSERT INTO trades VALUES (?,?,?,?)').run(acct, status, sym, dir)
+const pos = (d, acct, sym, side, status = 'active') =>
+  d.prepare('INSERT INTO monitored_positions (account_id, status, symbol, side) VALUES (?,?,?,?)').run(acct, status, sym, side)
+// trades.status has a CHECK; 'filled' is not one of its values, so the
+// "never counts" case below uses the real terminal statuses instead.
+const trd = (d, acct, sym, side, status = 'submitting') =>
+  d.prepare('INSERT INTO trades (account_id, status, symbol, side) VALUES (?,?,?,?)').run(acct, status, sym, side)
 const pend = (d, acct, sym, dir, status = 'working') =>
-  d.prepare('INSERT INTO pending_orders VALUES (?,?,?,?)').run(acct, status, sym, dir)
+  d.prepare('INSERT INTO pending_orders (account_id, status, symbol, dir) VALUES (?,?,?,?)').run(acct, status, sym, dir)
 
 test('normalizeSide folds both vocabularies, and refuses anything else', () => {
   assert.equal(normalizeSide('buy'), 'BUY')
@@ -80,10 +84,38 @@ test("the account's OWN holdings never count — that is the per-account ceiling
   assert.deepEqual(r.others, [])
 })
 
+// --- C8: the defect, on the real schema -----------------------------------
+
+test('C8: a held position and an in-flight order on the REAL schema both count, and the third account is refused', () => {
+  // Red on origin/main before C8: accountsHolding returned [] here because
+  // both queries read `direction` and threw into their empty catches.
+  const d = db()
+  pos(d, 'A', 'NATGAS', 'BUY')       // as reconciler.js adopts it: side 'BUY'
+  trd(d, 'B', 'NATGAS', 'BUY')       // write-ahead intent, status 'submitting'
+  assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }).sort(), ['A', 'B'])
+  const r = checkBookSymbolCap(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C', cap: 2 })
+  assert.equal(r.allow, false)
+  assert.match(r.reason, /^book_symbol_cap: 2 account\(s\) already hold NATGAS BUY/)
+})
+
+test('C8: the columns the ceiling reads exist in agent/db.js, and `direction` does not', () => {
+  // Pins WHY the fix is `side`: if a migration ever adds `direction` or drops
+  // `side`, this names the mismatch instead of the empty catch hiding it.
+  const d = db()
+  const cols = (t) => new Set(d.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name))
+  for (const t of ['monitored_positions', 'trades']) {
+    const c = cols(t)
+    for (const need of ['account_id', 'status', 'symbol', 'side']) assert.ok(c.has(need), `${t}.${need} must exist`)
+    assert.ok(!c.has('direction'), `${t} has no direction column — the query must not read one`)
+  }
+  const p = cols('pending_orders')
+  for (const need of ['account_id', 'status', 'symbol', 'dir']) assert.ok(p.has(need), `pending_orders.${need} must exist`)
+})
+
 // --- each source must actually contribute ----------------------------------
 // A silent schema mismatch shows up here and nowhere else.
 
-test('SCHEMA: an in-flight trade counts (trades.direction, status submitting)', () => {
+test('SCHEMA: an in-flight trade counts (trades.side, status submitting)', () => {
   const d = db()
   trd(d, 'A', 'NATGAS', 'BUY'); trd(d, 'B', 'NATGAS', 'LONG', 'unconfirmed')
   assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }).sort(), ['A', 'B'])
@@ -106,7 +138,7 @@ test('SCHEMA: an active position counts under either direction vocabulary', () =
 test('closed, filled and cancelled rows never count — a concurrency limit, not a quota', () => {
   const d = db()
   pos(d, 'A', 'NATGAS', 'BUY', 'closed')
-  trd(d, 'B', 'NATGAS', 'BUY', 'filled')
+  trd(d, 'B', 'NATGAS', 'BUY', 'closed')
   pend(d, 'C', 'NATGAS', 1, 'cancelled')
   assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'Z' }), [],
     'a symbol traded twenty times last week, all closed, must be at zero')
@@ -160,4 +192,47 @@ test('risk.js consults the book ceiling, and both ceilings must pass', () => {
   assert.match(src, /if\s*\(!book\.allow\)\s*return veto\(/, 'a refusal must veto, not merely be recorded')
   assert.match(src, /if\s*\(!cap\.allow\)\s*return veto\(/, 'the PER-ACCOUNT ceiling stays: this one does not replace it')
   assert.match(src, /maxAccountsPerSymbol/, 'the cap must be configurable, not a constant in the gate')
+})
+
+// --- C8 fix round 2: rows the stuck resolver ENDED stop holding -------------
+// V3 I3 keeps an ended in-flight row's status 'submitting' / 'unconfirmed' for
+// ever (the trades CHECK has no honest terminal value); `stuck_resolutions`
+// is what makes it terminal, and every exposure reader reads through
+// inflightLiveSql. These run the REAL resolver on the REAL schema.
+const sqlTs = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ')
+const stuckTrade = (d, acct, sym, side, status, openedMs, extra = {}) =>
+  d.prepare(`INSERT INTO trades (account_id, status, symbol, side, opened_at, origin, ctrader_position_id) VALUES (?,?,?,?,?,?,?)`)
+    .run(acct, status, sym, side, sqlTs(openedMs), extra.origin ?? null, extra.positionId ?? null).lastInsertRowid
+
+test('C8 fix round 2: two in-flight rows the resolver WROTE OFF (no broker evidence, six days old) stop holding — the FIRST real holder is admitted', () => {
+  const d = db()
+  const now = Date.now()
+  stuckTrade(d, 'A', 'NATGAS', 'BUY', 'unconfirmed', now - 6 * 86_400_000)
+  stuckTrade(d, 'B', 'NATGAS', 'BUY', 'submitting', now - 6 * 86_400_000)
+  // unresolved, an in-flight row IS possible exposure: the conservative reading stands
+  assert.equal(checkBookSymbolCap(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C', cap: 2 }).allow, false)
+  const r = resolveInflightTrades(d, { nowMs: now })
+  assert.equal(r.writtenOff, 2, JSON.stringify(r))
+  assert.equal(d.prepare(`SELECT COUNT(*) AS n FROM stuck_resolutions WHERE kind = 'trade_inflight' AND outcome = 'unresolved'`).get().n, 2)
+  assert.equal(d.prepare(`SELECT COUNT(*) AS n FROM trades WHERE status IN ('submitting', 'unconfirmed')`).get().n, 2, 'the rows keep their status (never deleted, never rewritten)')
+  assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }), [], 'RED without inflightLiveSql: [B, A]')
+  const c = checkBookSymbolCap(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C', cap: 2 })
+  assert.equal(c.allow, true, c.reason)
+})
+
+test('C8 fix round 2: an in-flight row the resolver settled as the DUPLICATE of an adopted row (R5) stops holding — the SECOND real holder is admitted', () => {
+  const d = db()
+  const now = Date.now()
+  const t0 = now - 2 * 86_400_000
+  // A's submission never promoted; the reconciler adopted the same fill 30 s later (since closed)
+  stuckTrade(d, 'A', 'NATGAS', 'BUY', 'submitting', t0)
+  const twin = stuckTrade(d, 'A', 'NATGAS', 'BUY', 'closed', t0 + 30_000, { origin: 'reconciler_adopted', positionId: '9001' })
+  pos(d, 'B', 'NATGAS', 'BUY') // B holds for real
+  assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }).sort(), ['A', 'B'], 'the unresolved duplicate still counts')
+  const r = resolveInflightTrades(d, { nowMs: now })
+  assert.equal(r.settledDuplicate, 1, JSON.stringify(r))
+  assert.match(d.prepare(`SELECT verdict FROM stuck_resolutions WHERE kind = 'trade_inflight'`).get().verdict, new RegExp(`duplicate of trade #${twin}`))
+  assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }), ['B'], 'RED without inflightLiveSql: [A, B]')
+  const c = checkBookSymbolCap(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C', cap: 2 })
+  assert.equal(c.allow, true, c.reason)
 })
