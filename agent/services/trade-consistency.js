@@ -85,11 +85,53 @@ export function realisedRR(trade) {
 }
 
 /**
+ * UI-5 (RS-1: "Compare gross P&L; name the fee or swap"). MEASURED
+ * 26-09-2026: every one of `/state/trade-consistency`'s then-current
+ * contradictions was a false alarm — a NET P&L sign flipped by a fee or a
+ * swap charge, never a real price/money disagreement (#1449 by swap; the
+ * other three by fees). `checkTradeConsistency` below checks NET first, same
+ * as before; only when net disagrees does it ask whether GROSS P&L (before
+ * fee/swap) agrees with the price move AND the net/gross gap is fully
+ * accounted for by `commission` + `swap` — both, not just one, because a
+ * gross-agrees coincidence with an UNEXPLAINED gap is not evidence, it is
+ * exactly the kind of guess CLAUDE.md's failure mode #6 warns against.
+ *
+ * Returns the explanation string ('commission' | 'swap' | 'commission and
+ * swap' | 'fees') or null when the gap cannot be accounted for by either —
+ * a null result must never turn a flagged row into a false-alarm exoneration.
+ */
+export function explainFeeSwapGap(trade) {
+  const gross = num(trade?.gross_pnl)
+  const net = num(trade?.net_pnl)
+  if (!Number.isFinite(gross) || !Number.isFinite(net)) return null
+  const rawCommission = num(trade?.commission)
+  const rawSwap = num(trade?.swap)
+  const commission = Number.isFinite(rawCommission) ? rawCommission : 0
+  const swap = Number.isFinite(rawSwap) ? rawSwap : 0
+  if (commission === 0 && swap === 0) return null // nothing to name
+  const gap = Math.round((net - gross) * 100) / 100
+  const feeSwapSum = Math.round((commission + swap) * 100) / 100
+  if (Math.abs(gap - feeSwapSum) > 0.02) return null // the gap is not (fully) fee/swap — do not name a guess
+  const parts = []
+  if (Math.abs(commission) > 0.005) parts.push('commission')
+  if (Math.abs(swap) > 0.005) parts.push('swap')
+  return parts.length ? parts.join(' and ') : 'fees'
+}
+
+/**
  * Does the money agree with the prices?
  *
  * `ok: true` with `decidable: false` means "no contradiction found because none
  * could be" — a missing exit, a missing side, a flat move or a zero P&L. Those
  * are not evidence of health and must not be counted as agreement.
+ *
+ * When NET P&L disagrees with the price move, GROSS P&L (before fee/swap) is
+ * checked next: if gross agrees AND `explainFeeSwapGap` can name what
+ * accounts for the net/gross gap, this is reported `ok: true` — the row's
+ * own money agrees with its own price move; only the fee or swap moved net
+ * away from it, which is not a contradiction. Every other case keeps the
+ * original net-only verdict unchanged (callers that never pass `gross_pnl`
+ * see byte-identical behaviour to before this change).
  *
  * @param {object} trade
  * @param {{epsilon?: number}} [opts] `epsilon` is the fraction of entry price
@@ -106,15 +148,26 @@ export function checkTradeConsistency(trade, { epsilon = 1e-9 } = {}) {
   if (Math.abs(move) <= entry * epsilon || pnl === 0) {
     return { ok: true, decidable: false, reason: 'flat move or zero P&L — nothing to contradict', move, pnl }
   }
-  const ok = Math.sign(move) === Math.sign(pnl)
+  const netOk = Math.sign(move) === Math.sign(pnl)
+  if (netOk) {
+    return { ok: true, decidable: true, move, pnl, reason: 'price move and P&L agree' }
+  }
+  const gross = num(trade?.gross_pnl)
+  if (Number.isFinite(gross) && gross !== 0 && Math.sign(move) === Math.sign(gross)) {
+    const explain = explainFeeSwapGap(trade)
+    if (explain) {
+      return {
+        ok: true, decidable: true, move, pnl, gross,
+        reason: `price move agrees with gross P&L ${gross}; net ${pnl} disagrees only because of ${explain}`,
+      }
+    }
+  }
   return {
-    ok,
+    ok: false,
     decidable: true,
     move,
     pnl,
-    reason: ok
-      ? 'price move and P&L agree'
-      : `price moved ${move > 0 ? 'in favour' : 'against'} by ${Math.abs(move)} but P&L is ${pnl > 0 ? 'positive' : 'negative'}`,
+    reason: `price moved ${move > 0 ? 'in favour' : 'against'} by ${Math.abs(move)} but P&L is ${pnl > 0 ? 'positive' : 'negative'}`,
   }
 }
 
@@ -201,7 +254,7 @@ export function inconsistentTrades(db, { accountId = null, limit = 200 } = {}) {
   const acct = accountId != null ? String(accountId) : null
   try {
     const rows = db.prepare(`
-      SELECT id, symbol, side, entry_price, exit_price, sl_price, net_pnl, account_id, closed_at, close_reason
+      SELECT id, symbol, side, entry_price, exit_price, sl_price, net_pnl, gross_pnl, commission, swap, account_id, closed_at, close_reason
         FROM trades
        WHERE status = 'closed' AND net_pnl IS NOT NULL
          AND entry_price IS NOT NULL AND exit_price IS NOT NULL
@@ -220,7 +273,7 @@ export function consistencySummary(db, { accountId = null } = {}) {
   const acct = accountId != null ? String(accountId) : null
   try {
     const rows = db.prepare(`
-      SELECT id, side, entry_price, exit_price, net_pnl
+      SELECT id, side, entry_price, exit_price, net_pnl, gross_pnl, commission, swap
         FROM trades
        WHERE status = 'closed' AND (account_id = ? OR ? IS NULL)
     `).all(acct, acct)

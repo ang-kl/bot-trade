@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import {
   priceMove, realisedRR, checkTradeConsistency, stampRealisedAudit, restampClosedTrades,
-  inconsistentTrades, consistencySummary, inconsistencyLine,
+  inconsistentTrades, consistencySummary, inconsistencyLine, explainFeeSwapGap,
 } from './trade-consistency.js'
 
 const ACCT = '46130058'
@@ -339,4 +339,66 @@ test('realised R uses the stop the BROKER first held when it is on record (02-09
   const id = closed(db, { symbol: 'NAS100', side: 'SELL', entry: 29135.8, exit: 29253.1, sl: 29172.77142857143, net: -445.74 })
   db.prepare(`UPDATE trades SET broker_sl_initial = 29253.3 WHERE id = ?`).run(id)
   assert.equal(Math.round(stampRealisedAudit(db, id).realisedRR * 100) / 100, -1)
+})
+
+// ---------------------------------------------------------------------------
+// UI-5 (RS-1): gross P&L consistency — name the fee or swap (checker
+// coordination, docs/v3-integrated-plan-2026-09-26.md §5 row 2.6)
+// ---------------------------------------------------------------------------
+
+test('explainFeeSwapGap names swap alone, commission alone, both, or null when unexplained', () => {
+  assert.equal(explainFeeSwapGap({ gross_pnl: 100, net_pnl: 99.7, commission: 0, swap: -0.3 }), 'swap')
+  assert.equal(explainFeeSwapGap({ gross_pnl: 100, net_pnl: 98, commission: -2, swap: 0 }), 'commission')
+  assert.equal(explainFeeSwapGap({ gross_pnl: 100, net_pnl: 97.7, commission: -2, swap: -0.3 }), 'commission and swap')
+  assert.equal(explainFeeSwapGap({ gross_pnl: 100, net_pnl: 50, commission: -2, swap: -0.3 }), null, 'a 50 gap is not accounted for by -2.3 of fee+swap')
+  assert.equal(explainFeeSwapGap({ gross_pnl: 100, net_pnl: 100 }), null, 'no commission/swap to name')
+  assert.equal(explainFeeSwapGap({ gross_pnl: null, net_pnl: 100, commission: -2 }), null, 'gross missing — cannot compare')
+})
+
+test('#1449-STYLE: net P&L disagrees with the price move, but GROSS agrees and swap explains the gap — no longer a false alarm', () => {
+  // A SELL that moved in the trade's favour (price fell): gross is positive
+  // and agrees; a positive swap charge (a cost on a short) flips net negative.
+  const t = { side: 'SELL', entry_price: 100, exit_price: 95, net_pnl: -0.3, gross_pnl: 5, commission: 0, swap: -5.3 }
+  const c = checkTradeConsistency(t)
+  assert.equal(c.decidable, true)
+  assert.equal(c.ok, true, 'gross agrees with the move and the gap is fully named — not a contradiction')
+  assert.match(c.reason, /gross P&L 5/)
+  assert.match(c.reason, /swap/)
+})
+
+test('gross ALSO disagrees with the move — still a real contradiction, not exonerated', () => {
+  const t = { side: 'BUY', entry_price: 63557.3, exit_price: 63404.5, net_pnl: 14259.55, gross_pnl: 14260, commission: 0, swap: -0.45 }
+  const c = checkTradeConsistency(t)
+  assert.equal(c.ok, false, 'a long that fell in price cannot be exonerated just because gross also disagrees')
+})
+
+test('gross agrees but the gap is NOT fully explained by commission+swap — stays flagged, never a guessed exoneration', () => {
+  const t = { side: 'SELL', entry_price: 100, exit_price: 95, net_pnl: -50, gross_pnl: 5, commission: -2, swap: -0.3 }
+  const c = checkTradeConsistency(t)
+  assert.equal(c.ok, false, 'an unexplained 55-point gap must not be silently written off as fee/swap')
+})
+
+test('a call that never supplies gross_pnl/commission/swap behaves BYTE-IDENTICALLY to the pre-existing net-only check', () => {
+  const withoutGross = checkTradeConsistency({ side: 'BUY', entry_price: 63557.3, exit_price: 63404.5, net_pnl: 14259.55 })
+  assert.equal(withoutGross.ok, false)
+  assert.equal(withoutGross.reason, `price moved against by ${Math.abs(63404.5 - 63557.3)} but P&L is positive`)
+})
+
+test('inconsistentTrades and consistencySummary read gross_pnl/commission/swap and reclassify a fee/swap-explained row as agreeing', () => {
+  const db = initDB(':memory:')
+  const explainedId = db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, volume, status, opened_at, closed_at,
+        net_pnl, gross_pnl, commission, swap, account_id)
+    VALUES ('EURUSD', 'SELL', 100, 95, 90, 1, 'closed', '2026-08-04 05:18:21', '2026-08-04 05:50:42', -0.3, 5, 0, -5.3, ?)
+  `).run(ACCT).lastInsertRowid
+  const realId = closed(db, { symbol: 'JPN225', side: 'BUY', entry: 63557.3, exit: 63404.5, net: 14259.55 })
+
+  const summary = consistencySummary(db, { accountId: ACCT })
+  assert.equal(summary.closed, 2)
+  assert.equal(summary.contradict, 1, 'only the real JPN225-style contradiction counts')
+  assert.equal(summary.agree, 1, 'the fee/swap-explained row now counts as agreeing')
+
+  const flagged = inconsistentTrades(db, { accountId: ACCT })
+  assert.deepEqual(flagged.map(r => r.id), [realId])
+  assert.ok(!flagged.some(r => r.id === explainedId), 'the fee/swap-explained row must not appear in the flagged list')
 })
