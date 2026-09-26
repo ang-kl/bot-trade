@@ -30,15 +30,19 @@
 //                with years of history behind it (EURUSD 1h: ~328 of 451).
 //                THE WINDOW ITSELF IS PADDED: wsGetTrendbarsBatch asks for
 //                WINDOW_PAD_BARS (5) periods more than fetchCount
-//                (ctrader-ws.js planWindowStartMs), so a plain COUNT-limited
-//                answer for a 24/7 symbol — the broker simply has no more
-//                bars past its most recent `fetchCount` — starts its first
-//                bar ~5 periods after the window's left edge even though
-//                nothing closed it early. Measured 26-09-2026: BTCUSD 1w
-//                asked 451, got 450, first bar 2018-02-04, window opened
-//                2017-12-30 — a 36-day gap that is exactly ~5 weekly
-//                periods, not history running out (2018-02-04..2026-09-13 is
-//                precisely 450 weekly bars; the true history-limited case,
+//                (ctrader-ws.js planWindowStartMs), so a COUNT-limited
+//                answer for a 24/7 symbol starts its first bar ~5 periods
+//                after the window's left edge even though nothing closed it
+//                early. A purely count-limited answer (got == asked) is not
+//                short and never reaches isHistoryLimited; the case that
+//                does is count-limited AND a bar short — the pad explains
+//                where its first bar sits, not the missing bar (likely the
+//                still-forming one, not returned). Measured 26-09-2026:
+//                BTCUSD 1w asked 451, got 450, first bar 2018-02-04, window
+//                opened 2017-12-30 — a 36-day gap of ~5 weekly periods, not
+//                history running out (consistent with 450 contiguous weekly
+//                bars 2018-02-04..2026-09-13; the row carries no last-bar
+//                time, so contiguity is inferred). The true history-limited case,
 //                BTCUSD 1mo, gaps by decades: asked 451, got 190, first bar
 //                2010-06-30). Only an answer whose FIRST bar starts well
 //                inside the window — past HISTORY_EDGE_MS and two periods
@@ -225,7 +229,7 @@ export function barPathView(nowMs = Date.now()) {
       : {
         state: 'measured', byPurpose: state.fetches.byPurpose, shallowRefetches: state.fetches.shallowRefetches,
         windowLimited: state.fetches.windowLimited,
-        note: '`short` = answers with fewer bars than asked; `historyLimited` = the subset where the broker ran out of history (listed under shortHistory); `windowLimited` = short only because the request\'s time window spans weekends or closures — the symbol\'s history is deeper.',
+        note: '`short` = answers with fewer bars than asked; `historyLimited` = the subset where the broker ran out of history (listed under shortHistory); `windowLimited` = short, but not the broker running out of history: the request\'s time window spans weekends or closures, or the first bar lies inside the window\'s own WINDOW_PAD_BARS pad (a count-limited answer one or more bars short) — the symbol\'s history is deeper.',
       },
     starved: state.starved.size === 0
       ? { state: s.count === 0 ? 'not_measured' : 'none', rows: [] }

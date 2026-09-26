@@ -354,8 +354,9 @@ test('S-3 fix: isHistoryLimited clears the window\'s own 5-period pad — produc
   const D = 86_400_000
 
   // Measured 26-09-2026, GET /state/data-feed barPath.shortHistory: BTCUSD 1w
-  // asked 451 got 450 — a COUNT-limited answer (one bar short of asked, the
-  // window's own pad, not the broker running out of history). Before this
+  // asked 451 got 450 — a COUNT-limited answer one bar short of asked. Its
+  // first bar sits inside the window's own pad (the pad places the first bar;
+  // it does not remove one), not the broker running out of history. Before this
   // fix the margin (14 days for a weekly period) did not clear the ~35-day
   // pad the window itself adds, so this read as history-limited.
   assert.equal(
