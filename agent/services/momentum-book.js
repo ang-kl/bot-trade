@@ -1256,6 +1256,27 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   return summary
 }
 
+/**
+ * The loop's hold line (S-2 small round, item 3, 26-09-2026): "momentum book:
+ * N exit(s) held for a closed market (exit_pending); entries held — why".
+ * It printed on every cycle while entries were held, so all weekend with no
+ * crypto to scan. Now it prints only when an exit was held for a closed
+ * market THIS pass, or when the entries-held reason differs from the one last
+ * printed (a reason appearing, changing, or clearing). A pass that did not
+ * run (book off) prints nothing and keeps the last reason. Returns
+ * `{ line, reason }`: `line` is null when there is nothing to print; the
+ * caller keeps `reason` for the next pass.
+ */
+export function bookHoldLogLine(summary, lastReason = null) {
+  const last = lastReason ?? null
+  if (!summary?.ran) return { line: null, reason: last }
+  const reason = summary.entriesHeld ? String(summary.entriesHeld) : null
+  const deferred = Number(summary.deferredClosed) || 0
+  if (!(deferred > 0 || reason !== last)) return { line: null, reason }
+  const tail = reason ? `; entries held — ${reason}` : last ? '; entries no longer held' : ''
+  return { line: `momentum book: ${deferred} exit(s) held for a closed market (exit_pending)${tail}`, reason }
+}
+
 // F6 (absorbed by S-2, Wave 2 row 2.1): the `momentum_book` heartbeat's
 // record — the pass's own counts, dated, written on EVERY pass that ran
 // (nothing to do included) so "never ran" and "ran, nothing to do" differ.

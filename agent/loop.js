@@ -28,6 +28,7 @@ import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from '.
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
 import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
 import { getCtraderCreds, getSymbolMap, attachEntryFence, bindEntryIntent } from './lib/ctrader-creds.js'
+import { thenAlways } from './lib/then-always.js'
 import { managePendingOrders } from './services/pending-orders.js'
 import { isProducerRetired } from './lib/entry-producers.js'
 import { admitEntry } from './services/entry-mode.js'
@@ -110,6 +111,9 @@ let crossSideEquitySeeded = false
 // with a pnlPassSummary after each run; 'awaited' once a beat has read it.
 let pnlCrossSidePass = { state: 'pending' }
 let consecutiveErrors = 0
+// S-2 small round (item 3): the entries-held reason the momentum book's hold
+// line last printed, so a reason that stands all weekend prints once.
+let lastBookHeldReason = null
 let loopRunning = false               // mutex — prevents concurrent iterations
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
 let pendingPhaseInFlight = false      // a budget-abandoned pending phase still executing detached
@@ -2991,6 +2995,22 @@ async function runLoop(db) {
   // entries (the counter below is reset after the catch, so it cannot say).
   let cycleErrored = false
   try {
+    // S-2: what the momentum book (after `end symbolsJson`) needs from the
+    // scan branch — the scan's own symbols for the row-cursor accounts, and
+    // why the scan did not run this cycle (null = it ran). When it did not,
+    // the book holds its entries and still runs its exits, trail and adoption.
+    let bookScanSymbols = []
+    let bookEntriesHeld = 'no symbols configured'
+    // THE BOOK RUNS EVEN WHEN A PHASE BEFORE IT THROWS (S-2 small round,
+    // 26-09-2026). Everything from here to `} // end symbolsJson` is the
+    // pre-book region; a throw in it that no phase catches for itself (the
+    // scan persist, rankHotSymbols, the llmBlocked read, runMonitorPhase)
+    // used to jump to the cycle's catch and skip the book's trail and exits
+    // for the cycle. thenAlways runs the book once either way, then rethrows
+    // the pre-book error to the cycle's catch exactly as before. No `return`
+    // in this region: it would end the closure, not the cycle (pinned by
+    // momentum-book-out-of-scan.test.js).
+    await thenAlways(async () => {
     const s = prepareStatements(db)
 
     // -----------------------------------------------------------------------
@@ -4071,12 +4091,6 @@ async function runLoop(db) {
 
     // Autopilot's own symbol universe, falling back to legacy watchlist
     const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
-    // S-2: what the momentum book (below `end symbolsJson`) needs from the
-    // scan branch — the scan's own symbols for the row-cursor accounts, and
-    // why the scan did not run this cycle (null = it ran). When it did not,
-    // the book holds its entries and still runs its exits, trail and adoption.
-    let bookScanSymbols = []
-    let bookEntriesHeld = 'no symbols configured'
 
     if (!symbolsJson) {
       log('No symbols configured — push via POST /actions/symbols')
@@ -5534,6 +5548,12 @@ async function runLoop(db) {
         stampFirst('performanceBreaker', { ok: false, error: err.message })
       }
     } // end symbolsJson
+    }, async (preBookError) => {
+    // A cycle that threw before the book still runs the book's trail, exits
+    // and adoption; its ENTRIES are held, so an errored cycle can never take
+    // an entry the clean one would not have (they wait for the next clean
+    // cycle — the daily pass does not advance its cursor while held).
+    if (preBookError) bookEntriesHeld = `the cycle errored before the book — ${String(preBookError.message || preBookError).slice(0, 160)}`
 
     // -----------------------------------------------------------------------
     // MOMENTUM BOOK (owner order 03-09-2026: "long-only momentum on demo &
@@ -5556,7 +5576,7 @@ async function runLoop(db) {
     if (getCtraderCreds(db).ready) {
       try {
         phase('momentum book')
-        const { runMomentumBook, atrOf } = await import('./services/momentum-book.js')
+        const { runMomentumBook, atrOf, bookHoldLogLine } = await import('./services/momentum-book.js')
         const { scanRates } = await import('./services/risk.js')
         const { getRegimeBars } = await import('./services/fib-strategy.js')
         const { wsGetSpotOnce, wsReconcile } = await import('./lib/ctrader-ws.js')
@@ -5628,7 +5648,11 @@ async function runLoop(db) {
         // every pass means rows are re-entering the state faster than their
         // trades close, which is a different problem and worth seeing.
         if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed${mb.reclassified ? `, ${mb.reclassified} exit_sent row(s) reclassified closed` : ''} on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
-        if (mb.deferredClosed || mb.entriesHeld) log(`momentum book: ${mb.deferredClosed || 0} exit(s) held for a closed market (exit_pending)${mb.entriesHeld ? `; entries held — ${mb.entriesHeld}` : ''}`)
+        // Printed when an exit was held for a closed market this pass, or when
+        // the entries-held reason changed — not every cycle of a weekend.
+        const hold = bookHoldLogLine(mb, lastBookHeldReason)
+        if (hold.line) log(hold.line)
+        lastBookHeldReason = hold.reason
         if (mb.momentumAccount) log(`momentum account …${String(mb.momentumAccount.account).slice(-4)}: daily pass — ${mb.momentumAccount.entries} entered, ${mb.momentumAccount.exits} exited; universe ${mb.momentumAccount.universe?.tradable}/${mb.momentumAccount.universe?.total} tradable${mb.momentumAccount.universe?.byReason ? ` (${Object.entries(mb.momentumAccount.universe.byReason).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`)
         await hbeat(db, 'momentum_book')
       } catch (err) {
@@ -5636,6 +5660,7 @@ async function runLoop(db) {
         await hbeat(db, 'momentum_book', false, err.message)
       }
     }
+    }) // end thenAlways: the pre-book region, then the book (once per cycle)
 
     // -----------------------------------------------------------------------
     // MOMENTUM PARTIAL-TP1 MANAGER (V3 T3, P0-2). Every cycle, AFTER the

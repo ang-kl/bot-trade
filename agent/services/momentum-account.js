@@ -83,6 +83,10 @@ export const TSMOM_STRATEGY = 'tsmom_long'
  * no close is ever sent into a schedule-closed market, so a refused close
  * is NOT re-sent every 2 h until the open.
  *
+ * CONSECUTIVE WHILE OPEN (S-2 small round, item 2): a closed-market deferral
+ * (F2) clears `exit_refusals` and `exit_retry_after`, so a refusal count never
+ * carries across a closure into the next session.
+ *
  * Below the threshold nothing changes: a transient
  * refusal is still retried on the very next pass. The count and the
  * next-retry time live on the row (`exit_refusals`, `exit_retry_after`); a
@@ -651,22 +655,29 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
     // (source 'broker') may defer — the sessions.js heuristic and an error
     // both ATTEMPT the close, because a wrongly deferred exit on an open
     // market is the worse error (one refused line at worst).
+    let hours = { open: true, source: 'unknown' }
+    try { hours = (deps.isSymbolOpen ?? isSymbolOpenCached)(db, row.symbol, new Date(now)) } catch { hours = { open: true, source: 'error' } }
+    if (hours.open === false && hours.source === 'broker') {
+      summary.deferredClosed = (summary.deferredClosed || 0) + 1
+      // CONSECUTIVE MEANS CONSECUTIVE WHILE OPEN (S-2 small round, item 2):
+      // a closed-market deferral clears the refusal record, so the first
+      // refusal after the reopen is the 1st — not the 3rd or 4th, which would
+      // put a 30-minute wait on the first send of the session. Asked before
+      // the backoff below, so a closure inside a backoff window clears it too.
+      if (!pending) {
+        db.prepare(`UPDATE momentum_book SET note = ?, exit_refusals = NULL, exit_retry_after = NULL WHERE id = ?`).run('exit_pending: market closed (broker schedule) — rank exit (daily pass) sent when it opens', row.id)
+        log(`momentum account: rank exit of ${row.symbol} on …${accountId.slice(-4)} held — market closed (broker schedule); marked exit_pending, sent when it opens`)
+      } else if (row.exit_refusals != null || row.exit_retry_after != null) {
+        db.prepare(`UPDATE momentum_book SET exit_refusals = NULL, exit_retry_after = NULL WHERE id = ?`).run(row.id)
+      }
+      continue
+    }
     // N2: a refused close in backoff waits for its retry time. Only a row the
     // broker has refused carries `exit_retry_after`; nothing else is delayed.
     const retryAt = pending && row.exit_retry_after ? Date.parse(row.exit_retry_after) : NaN
     if (Number.isFinite(retryAt) && now < retryAt) {
       summary.exitRetriesBackedOff = (summary.exitRetriesBackedOff || 0) + 1
       summary.skipped.push(`${row.symbol}: refused exit backing off — ${Number(row.exit_refusals) || 0} consecutive refusals; next retry ${new Date(retryAt).toISOString()}`)
-      continue
-    }
-    let hours = { open: true, source: 'unknown' }
-    try { hours = (deps.isSymbolOpen ?? isSymbolOpenCached)(db, row.symbol, new Date(now)) } catch { hours = { open: true, source: 'error' } }
-    if (hours.open === false && hours.source === 'broker') {
-      summary.deferredClosed = (summary.deferredClosed || 0) + 1
-      if (!String(row.note || '').startsWith('exit_pending:')) {
-        db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ?`).run('exit_pending: market closed (broker schedule) — rank exit (daily pass) sent when it opens', row.id)
-        log(`momentum account: rank exit of ${row.symbol} on …${accountId.slice(-4)} held — market closed (broker schedule); marked exit_pending, sent when it opens`)
-      }
       continue
     }
     // Set the moment the broker call RESOLVES — before any DB write — so a

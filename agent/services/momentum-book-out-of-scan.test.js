@@ -21,7 +21,8 @@ import { readFileSync } from 'node:fs'
 import { parse } from 'acorn'
 import { initDB, getState, setState } from '../db.js'
 import { MOMENTUM_ACCOUNT_KEY, MOMENTUM_UNIVERSE_KEY, ACCOUNT_TERMINAL_TRADE_STATES, nextBrokerOpenMs } from './momentum-account.js'
-import { runMomentumBook, MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_PASS_KEY, TSMOM_STRATEGY, BOOK_TERMINAL_TRADE_STATES } from './momentum-book.js'
+import { runMomentumBook, bookHoldLogLine, MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_PASS_KEY, TSMOM_STRATEGY, BOOK_TERMINAL_TRADE_STATES } from './momentum-book.js'
+import { thenAlways } from '../lib/then-always.js'
 import { MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
 import { setStage } from './stage-matrix.js'
 import { CONTROLLERS, beat, heartbeatView } from './heartbeat.js'
@@ -477,14 +478,69 @@ test('N-1 production path (real symbol_hours, nothing injected): schedule closed
   let b = bookRowFull(db)
   assert.equal(b.status, 'open')
   assert.equal(b.note, 'exit_pending: MARKET_CLOSED')
-  assert.equal(b.exit_refusals, 2, 'a deferral is not a refusal')
+  assert.equal(b.exit_refusals, null, 'item 2: the closure clears the refusal record — a deferral is not a refusal, and the count does not carry over')
   assert.equal(closed.deferredClosed, 1)
-  // Tue 15:00Z: the schedule says open — sent, refused (the 3rd), 30 min.
-  await run(db, f, Date.UTC(2026, 8, 29, 15, 0), { entriesHeld: 'Scan disabled' })
-  assert.equal(f.calls.close.length, 1)
+  // Tue 15:00/15:05/15:10Z: the schedule says open — each pass sends once and
+  // is refused; the count starts again at 1 and the 3rd waits 30 min.
+  for (const [i, m] of [0, 5, 10].entries()) {
+    await run(db, f, Date.UTC(2026, 8, 29, 15, m), { entriesHeld: 'Scan disabled' })
+    assert.equal(f.calls.close.length, i + 1)
+  }
   b = bookRowFull(db)
   assert.equal(b.exit_refusals, 3)
-  assert.equal(b.exit_retry_after, '2026-09-29T15:30:00.000Z')
+  assert.equal(b.exit_retry_after, '2026-09-29T15:40:00.000Z')
+})
+
+// ---------------------------------------------------------------------------
+// S-2 small round, item 2: "consecutive refusals" are consecutive WHILE THE
+// MARKET IS OPEN. A closed-market deferral clears the refusal record.
+// ---------------------------------------------------------------------------
+test('item 2: two refusals, a closure, the reopen — the first refusal after it is the 1st (no backoff), not the 3rd', async () => {
+  const db = fresh()
+  bookRow(db)
+  let hours = OPEN
+  const f = fakes({ hours: (s, at) => hours(s, at) })
+  refusing(f)
+  const held = { entriesHeld: 'Scan disabled' }
+  const t = (m) => DUE + m * 60_000
+  await run(db, f, t(0), held)
+  await run(db, f, t(5), held)
+  assert.equal(bookRowFull(db).exit_refusals, 2)
+  hours = CLOSED
+  const r = await run(db, f, t(10), held)
+  assert.equal(r.deferredClosed, 1)
+  assert.equal(f.calls.close.length, 2, 'nothing sent while closed')
+  let b = bookRowFull(db)
+  assert.equal(b.exit_refusals, null, 'the closure cleared the count')
+  assert.equal(b.exit_retry_after, null)
+  assert.match(b.note, /^exit_pending:/, 'still owed')
+  hours = OPEN
+  await run(db, f, t(15), held)
+  b = bookRowFull(db)
+  assert.equal(f.calls.close.length, 3)
+  assert.equal(b.exit_refusals, 1, 'the first refusal after the reopen is the 1st')
+  assert.equal(b.exit_retry_after, null, 'and waits no backoff')
+  await run(db, f, t(20), held)
+  assert.equal(f.calls.close.length, 4, 'retried on the very next pass')
+})
+
+test('item 2: a closure inside a backoff window clears the backoff — the reopen sends at once', async () => {
+  const db = fresh()
+  bookRow(db)
+  let hours = OPEN
+  const f = fakes({ hours: (s, at) => hours(s, at) })
+  refusing(f)
+  const held = { entriesHeld: 'Scan disabled' }
+  const t = (m) => DUE + m * 60_000
+  for (const m of [0, 5, 10]) await run(db, f, t(m), held)
+  assert.equal(bookRowFull(db).exit_retry_after, new Date(t(40)).toISOString(), 'three refusals: backing off to t+40')
+  hours = CLOSED
+  await run(db, f, t(15), held)
+  assert.equal(bookRowFull(db).exit_retry_after, null, 'the closure cleared the backoff inside its window')
+  hours = OPEN
+  await run(db, f, t(20), held)
+  assert.equal(f.calls.close.length, 4, 'sent at the reopen, not held until t+40')
+  assert.equal(bookRowFull(db).exit_refusals, 1)
 })
 
 test('N-2: the close resolves and the exit_sent UPDATE throws — no refusal recorded, no exit_pending, no re-send', async () => {
@@ -583,4 +639,124 @@ test('the pending retry skips a row whose trade is already terminal', async () =
     assert.equal(f.calls.close.length, 0, `${st}: ${JSON.stringify(r.skipped)}`)
     assert.ok(r.skipped.some(s => s.includes(`is ${st}`)), JSON.stringify(r.skipped))
   }
+})
+
+// ---------------------------------------------------------------------------
+// S-2 small round, item 1: the book runs even when a phase before it throws.
+// runLoop has no injection point, so the mechanism is exercised through
+// thenAlways (its own tests: agent/lib/then-always.test.js) with the REAL
+// book, and the loop's use of it is pinned from the parsed source.
+// ---------------------------------------------------------------------------
+function findAll(root, pred) {
+  const out = []
+  const stack = []
+  const visit = (node) => {
+    if (!node || typeof node.type !== 'string') return
+    if (pred(node)) out.push({ node, parents: [...stack] })
+    stack.push(node)
+    for (const k of Object.keys(node)) {
+      const v = node[k]
+      if (Array.isArray(v)) v.forEach(visit)
+      else if (v && typeof v.type === 'string') visit(v)
+    }
+    stack.pop()
+  }
+  visit(root)
+  return out
+}
+const namedCall = (name) => (n) => n.type === 'CallExpression' && n.callee.type === 'Identifier' && n.callee.name === name
+
+test('item 1: a phase before the book throws — the real book still sends its exit, takes no entry, and the error reaches the cycle unchanged', async () => {
+  const db = fresh({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 } } })
+  bookRow(db)
+  const f = fakes()
+  const boom = new Error('runMonitorPhase: cannot read properties of undefined')
+  let bookEntriesHeld = null   // the scan ran this cycle; then the monitor phase threw
+  let summary = null
+  // The two closures have the loop's shape (pinned below): the pre-book
+  // region throws; the book closure holds entries and runs the book.
+  await assert.rejects(thenAlways(
+    async () => { throw boom },
+    async (preBookError) => {
+      if (preBookError) bookEntriesHeld = `the cycle errored before the book — ${String(preBookError.message || preBookError).slice(0, 160)}`
+      summary = await run(db, f, DUE, { entriesHeld: bookEntriesHeld })
+    },
+  ), (err) => err === boom, 'the cycle catch receives the same error')
+  assert.equal(f.calls.close.length, 1, `the exit went out: ${JSON.stringify(summary?.skipped)}`)
+  assert.equal(row(db).status, 'exit_sent')
+  assert.deepEqual(f.calls.autoTrade, [], 'no entry on a cycle that errored')
+  assert.match(summary.entriesHeld, /^the cycle errored before the book — runMonitorPhase: cannot read/)
+})
+
+test('item 1 wiring: loop.js runs the pre-book region and the book through ONE awaited thenAlways inside the cycle try — the named phases before, the book after, entries held on an error', () => {
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  const ast = parse(src, { ecmaVersion: 'latest', sourceType: 'module', allowAwaitOutsideFunction: true })
+  const calls = findAll(ast, namedCall('thenAlways'))
+  assert.equal(calls.length, 1, 'one thenAlways call')
+  const { node: call, parents } = calls[0]
+  assert.equal(parents.at(-1).type, 'AwaitExpression', 'awaited: the rethrow reaches the cycle catch, and what follows waits for the book')
+  assert.ok(parents.some(p => p.type === 'FunctionDeclaration' && p.id?.name === 'runLoop'), 'inside runLoop')
+  const cycleTry = parents.filter(p => p.type === 'TryStatement').at(-1)
+  assert.ok(cycleTry?.handler && /cycleErrored = true/.test(src.slice(cycleTry.handler.start, cycleTry.handler.end)), 'inside the cycle try, whose catch accounts for the error')
+  const [before, after] = call.arguments
+  assert.ok(before?.type === 'ArrowFunctionExpression' && before.async, 'the pre-book region is the first closure')
+  assert.ok(after?.type === 'ArrowFunctionExpression' && after.async, 'the book is the second closure')
+  // The unguarded phases the refute named are all in the pre-book region.
+  for (const name of ['rankHotSymbols', 'llmBlocked', 'runMonitorPhase', 'runMomentumShadow']) {
+    assert.ok(findAll(before.body, namedCall(name)).length >= 1, `${name} is before the book, inside the first closure`)
+  }
+  assert.ok(findAll(before.body, n => n.type === 'CallExpression' && src.slice(n.callee.start, n.callee.end) === 's.insertScan.run').length >= 1, 'the scan persist is inside the first closure')
+  // A `return` in the pre-book region would end the closure, not the cycle,
+  // and run the book and the rest of the cycle after it — none is allowed.
+  const FN = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'])
+  const returns = []
+  const walkOwn = (n) => {
+    if (!n || typeof n.type !== 'string' || FN.has(n.type)) return
+    if (n.type === 'ReturnStatement') returns.push(src.slice(n.start, n.end))
+    for (const k of Object.keys(n)) { const v = n[k]; if (Array.isArray(v)) v.forEach(walkOwn); else if (v && typeof v.type === 'string') walkOwn(v) }
+  }
+  before.body.body.forEach(walkOwn)
+  assert.deepEqual(returns, [], 'no return in the pre-book region')
+  // The book: once, in the second closure only.
+  const books = findAll(ast, namedCall('runMomentumBook'))
+  assert.equal(books.length, 1)
+  assert.ok(books[0].parents.includes(after), 'the book call is inside the second closure')
+  // An errored cycle holds entries, before the book runs.
+  const param = after.params[0]?.name
+  assert.ok(param, 'the book closure takes the pre-book error')
+  const stmts = after.body.body
+  const guard = stmts.findIndex(st => st.type === 'IfStatement' && st.test.type === 'Identifier' && st.test.name === param &&
+    st.consequent.type === 'ExpressionStatement' && st.consequent.expression.type === 'AssignmentExpression' && st.consequent.expression.left.name === 'bookEntriesHeld')
+  assert.ok(guard >= 0, 'if (<the error>) bookEntriesHeld = …')
+  assert.ok(guard < stmts.findIndex(st => books[0].parents.includes(st)), 'set before the book runs')
+  // The partial-TP1 pass follows the book, outside thenAlways.
+  const partial = findAll(ast, namedCall('runMomentumPartialPass'))
+  assert.equal(partial.length, 1)
+  assert.ok(!partial[0].parents.includes(call) && partial[0].node.start > call.end, 'after thenAlways, not inside it')
+})
+
+// ---------------------------------------------------------------------------
+// S-2 small round, item 3: the hold line prints on a held exit or a changed
+// reason, not on every cycle of a weekend.
+// ---------------------------------------------------------------------------
+test('item 3: bookHoldLogLine — printed when an exit is held this pass or the entries-held reason changes; silent otherwise', () => {
+  let last = null
+  const step = (summary) => { const r = bookHoldLogLine(summary, last); last = r.reason; return r.line }
+  const quiet = { ran: true, deferredClosed: 0, entriesHeld: 'weekend quiet with nothing to scan' }
+  assert.equal(step(quiet), 'momentum book: 0 exit(s) held for a closed market (exit_pending); entries held — weekend quiet with nothing to scan', 'the reason appears: printed')
+  for (let i = 0; i < 5; i++) assert.equal(step(quiet), null, `cycle ${i + 2} of the weekend, the same reason, nothing held: silent`)
+  assert.match(step({ ...quiet, deferredClosed: 2 }), /^momentum book: 2 exit\(s\) held for a closed market/, 'an exit held this pass: printed')
+  assert.equal(step(quiet), null)
+  assert.match(step({ ...quiet, entriesHeld: 'Scan disabled' }), /; entries held — Scan disabled$/, 'the reason changes: printed')
+  assert.match(step({ ran: true, deferredClosed: 0 }), /; entries no longer held$/, 'the reason clears: printed once')
+  assert.equal(step({ ran: true, deferredClosed: 0 }), null, 'clean cycles: silent')
+  assert.equal(step({ ran: false, why: 'disabled' }), null, 'a book that did not run prints nothing')
+  assert.match(step({ ran: true, deferredClosed: 1 }), /^momentum book: 1 exit\(s\) held for a closed market \(exit_pending\)$/, 'a held exit with entries free: no tail')
+})
+
+test('item 3 wiring: the loop prints only what bookHoldLogLine returns and keeps the reason across cycles', () => {
+  const code = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(code, /const hold = bookHoldLogLine\(mb, lastBookHeldReason\)\s+if \(hold\.line\) log\(hold\.line\)\s+lastBookHeldReason = hold\.reason/)
+  assert.match(code, /^let lastBookHeldReason = null$/m, 'module state: it outlives the cycle')
+  assert.doesNotMatch(code, /exit\(s\) held for a closed market/, 'no second, unconditional copy of the line')
 })
