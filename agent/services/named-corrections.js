@@ -16,6 +16,14 @@
 // here as a FOLLOW-UP, not claimed done. OD-11 is therefore NOT complete
 // after this PR — only the rejection half is.
 //
+// NAMED, NOT RECOMPUTED (checker N-b). The rejection half's apply does not
+// call `neverFilledRejectionCandidates` and act on whatever it finds live —
+// that could reject a row the dry run never showed the operator, if evidence
+// for it landed in the gap between the dry run and the apply call. Apply
+// takes the exact `id`s the dry run reported (`neverFilledIds`) and acts on
+// their intersection with the current candidates; it REFUSES outright if no
+// ids are passed. See `applyNeverFilledRejections`.
+//
 // OD-12 (named corrections, owner yes 26-09-2026): "dry run first, then a
 // named apply, with nothing deleted." Covers the money fixes named in
 // H-P5b-1, the never-filled rejections above, the 28 wrong-unit trade plans
@@ -116,14 +124,33 @@ export function planNeverFilledRejections(db) {
 }
 
 /**
- * Reject the rows OD-11's rule covers. Re-reads each candidate's current
- * status at write time and only rejects if it still matches what the plan
- * saw (a race — the row closing or filling in the meantime — must win over
- * this write). Never deletes; the row, its close reason and any postmortems
- * stay, same as pnl-backfill.js's own false-close rejection.
+ * Reject the rows OD-11's rule covers — but ONLY the ones NAMED by `ids`
+ * (checker N-b). `neverFilledRejectionCandidates` re-reads live, so calling
+ * it fresh inside apply could reject a row the dry run never showed the
+ * operator — a row that became a candidate in the gap between the dry run
+ * and the apply call. `ids` is the plan the operator actually saw (the
+ * `id`s from `planNeverFilledRejections`'s dry-run output); apply acts on
+ * the INTERSECTION of that list and the current candidates, so a row that
+ * appeared after the dry run — even a genuine never_filled one — is left
+ * alone until it is named in its own dry run.
+ *
+ * REFUSED, not silently a no-op, when `ids` is missing or empty: an apply
+ * that names nothing is not a named apply (OD-12's own rule).
+ *
+ * Re-reads each named candidate's current status at write time and only
+ * rejects if it still matches what the plan saw (a race — the row closing
+ * or filling in the meantime — must win over this write). Never deletes;
+ * the row, its close reason and any postmortems stay, same as
+ * pnl-backfill.js's own false-close rejection.
+ *
+ * @param {number[]} opts.ids the exact trade ids the caller's dry run named
  */
-export function applyNeverFilledRejections(db) {
-  const candidates = neverFilledRejectionCandidates(db)
+export function applyNeverFilledRejections(db, { ids } = {}) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return { applied: [], skipped: [], refused: true, reason: 'no ids passed — the apply must name the exact rows its dry run showed' }
+  }
+  const named = new Set(ids.map(Number))
+  const candidates = neverFilledRejectionCandidates(db).filter(c => named.has(Number(c.id)))
   const stmt = db.prepare(
     `UPDATE trades SET status = 'rejected', close_reason = COALESCE(close_reason, '') || ?
       WHERE id = ? AND status = ?`
@@ -154,24 +181,25 @@ export function applyNeverFilledRejections(db) {
 // fixed in B2, not a ledger-row defect) — production holds #47 at its own
 // −59.73 and #46 at −196.35, so #47 needed no correction at all.
 //
-// STILL NAMED, NOT YET VALUED. H-P5b-1 also names the pairs #1309/#1310 and
-// #309/#310 as needing correction (#310, on #309's position, is rejected —
-// not corrected — at 351 per the checker, so it is not a money-correction
-// target here); #1309/#1310 has no concrete old/new values in anything read
-// for this build. D5/§4 name 28 wrong-unit trade plans and 7 PRE rows
-// mislabelled `external`, likewise with counts but no row-level values.
-// Inventing any of these would be exactly the failure CLAUDE.md's
-// recurring-failure-mode #6 (say which field is wrong before saying the data
-// is corrupt) warns against. `namedList` is the extension point: the owner's
-// exact evidence for those, once named, runs through the same dry-run/apply
-// path below unchanged.
+// EVIDENCE IS THE DEAL BREAKDOWN, WHERE IT EXISTS (checker N-a) — the same
+// shape deal-money.js's own comment uses for #714: "local 2.91 against three
+// broker deals 100.27 + 99.53 + 2.91 = 202.71". Found in this build's own
+// earlier broker-deal reads (scratchpad lifecycle/v/d_46130058.json,
+// d_47790949.json — the position-lifecycle-evidence lane's broker_deals
+// dump, position_id keyed) for #1253, #471, #466 and #309; not invented.
+//
+// #309/#310 (checker N-c, reworded): #309's own broker lifecycle sums to
+// 351 (its −84.5 deal plus #310's 435.5 deal — both matched_trade_id 310 in
+// the deal dump, i.e. the broker holds ONE position that this ledger split
+// across two rows). #309 is the correction target (435.5 -> 351); #310
+// itself is NOT corrected here — it stays rejected as the duplicate.
 // ---------------------------------------------------------------------------
 export const NAMED_MONEY_CORRECTIONS = Object.freeze([
-  { id: 1253, table: 'trades', field: 'net_pnl', expectedOld: 864, value: 1368.5, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #1253 (closed)' },
-  { id: 714, table: 'trades', field: 'net_pnl', expectedOld: 2.91, value: 202.71, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #714 (closed)' },
-  { id: 471, table: 'trades', field: 'net_pnl', expectedOld: 70, value: 37.5, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #471 (closed)' },
-  { id: 466, table: 'trades', field: 'net_pnl', expectedOld: 115.8, value: 39.3, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #466 (closed)' },
-  { id: 309, table: 'trades', field: 'net_pnl', expectedOld: 435.5, value: 351, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #309 (closed); #310 on the same position is rejected, not corrected' },
+  { id: 1253, table: 'trades', field: 'net_pnl', expectedOld: 864, value: 1368.5, evidence: 'H-P5b-1: local 864 against two broker deals (position 237140621) 504.5 + 864 = 1368.5' },
+  { id: 714, table: 'trades', field: 'net_pnl', expectedOld: 2.91, value: 202.71, evidence: 'H-P5b-1: local 2.91 against three broker deals (position 234867098) 100.27 + 99.53 + 2.91 = 202.71 (deal-money.js)' },
+  { id: 471, table: 'trades', field: 'net_pnl', expectedOld: 70, value: 37.5, evidence: 'H-P5b-1: local 70 against two broker deals (position 234697676) 70 + -32.5 = 37.5' },
+  { id: 466, table: 'trades', field: 'net_pnl', expectedOld: 115.8, value: 39.3, evidence: 'H-P5b-1: local 115.8 against three broker deals (position 234697562) 75 + 40.8 + -76.5 = 39.3' },
+  { id: 309, table: 'trades', field: 'net_pnl', expectedOld: 435.5, value: 351, evidence: 'H-P5b-1: local 435.5 against two broker deals (position 233866238, both matched to trade #310) -84.5 + 435.5 = 351. #309 is the corrected row; #310 on the same position stays rejected, not corrected' },
 ])
 
 const FIELD_ALLOWLIST = Object.freeze(['net_pnl'])
@@ -257,8 +285,13 @@ export function applyNamedMoneyCorrections(db, { namedList = NAMED_MONEY_CORRECT
  * @param {Array} opts.namedList override the built-in money-correction list
  *   (the extension point for the 28 plans / 7 PRE labels once the owner
  *   names their exact values)
+ * @param {number[]} opts.neverFilledIds REQUIRED to apply the never-filled
+ *   rejections (checker N-b): the exact `id`s a prior dry run's
+ *   `neverFilled.rows` showed. Apply acts on the intersection of these ids
+ *   and the current candidates; a row that became a candidate after that
+ *   dry run is left alone. Ignored on a dry run.
  */
-export function runNamedCorrections(db, { apply = false, includeNeverFilled = true, includeMoney = true, namedList = NAMED_MONEY_CORRECTIONS } = {}) {
+export function runNamedCorrections(db, { apply = false, includeNeverFilled = true, includeMoney = true, namedList = NAMED_MONEY_CORRECTIONS, neverFilledIds } = {}) {
   const neverFilledPlan = includeNeverFilled ? planNeverFilledRejections(db) : []
   const moneyPlan = includeMoney ? planNamedCorrections(db, { namedList }) : []
   if (!apply) {
@@ -268,11 +301,11 @@ export function runNamedCorrections(db, { apply = false, includeNeverFilled = tr
       money: { found: moneyPlan.length, stale: moneyPlan.filter(p => p.stale).length, rows: moneyPlan },
     }
   }
-  const neverFilledResult = includeNeverFilled ? applyNeverFilledRejections(db) : { applied: [], skipped: [] }
+  const neverFilledResult = includeNeverFilled ? applyNeverFilledRejections(db, { ids: neverFilledIds }) : { applied: [], skipped: [] }
   const moneyResult = includeMoney ? applyNamedMoneyCorrections(db, { namedList }) : { applied: [], skipped: [] }
   return {
     mode: 'apply', dryRun: false,
-    neverFilled: { applied: neverFilledResult.applied.length, skipped: neverFilledResult.skipped.length, rows: neverFilledResult.applied, skippedRows: neverFilledResult.skipped },
+    neverFilled: { applied: neverFilledResult.applied.length, skipped: neverFilledResult.skipped.length, rows: neverFilledResult.applied, skippedRows: neverFilledResult.skipped, ...(neverFilledResult.refused ? { refused: true, reason: neverFilledResult.reason } : {}) },
     money: { applied: moneyResult.applied.length, skipped: moneyResult.skipped.length, rows: moneyResult.applied, skippedRows: moneyResult.skipped },
   }
 }

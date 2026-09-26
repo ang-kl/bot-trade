@@ -83,16 +83,40 @@ test('?apply=true as a QUERY PARAM (with an empty JSON body) writes nothing — 
   } finally { server.close() }
 })
 
-test('{ apply: true } (a JSON boolean) applies the full tier — both the never-filled rejection and the named money correction', async () => {
+test('{ apply: true, ids: [<the dry run\'s never-filled id>] } applies the full tier — both the never-filled rejection and the named money correction', async () => {
   const { db, server, base, openId, moneyId } = serve()
   try {
-    const body = await (await post(base, { body: { apply: true } })).json()
+    const body = await (await post(base, { body: { apply: true, ids: [openId] } })).json()
     assert.equal(body.ok, true, JSON.stringify(body))
     assert.equal(body.dryRun, false)
     assert.equal(body.neverFilled.applied, 1, JSON.stringify(body))
+    assert.ok(!body.neverFilled.refused, JSON.stringify(body))
     assert.equal(body.money.applied, 1, JSON.stringify(body))
     assert.equal(rowSnap(db, openId).status, 'rejected')
     assert.equal(rowSnap(db, moneyId).net_pnl, 1368.5)
+  } finally { server.close() }
+})
+
+test('N-b over HTTP: { apply: true } with NO ids refuses the never-filled half but still applies the money corrections', async () => {
+  const { db, server, base, openId, moneyId } = serve()
+  try {
+    const body = await (await post(base, { body: { apply: true } })).json()
+    assert.equal(body.dryRun, false, JSON.stringify(body))
+    assert.equal(body.neverFilled.applied, 0, JSON.stringify(body))
+    assert.equal(body.neverFilled.refused, true, JSON.stringify(body))
+    assert.equal(body.money.applied, 1, JSON.stringify(body))
+    assert.equal(rowSnap(db, openId).status, 'open', 'refused, so untouched')
+    assert.equal(rowSnap(db, moneyId).net_pnl, 1368.5)
+  } finally { server.close() }
+})
+
+test('N-b over HTTP: { apply: true, ids: [<some other id>] } does not reject a candidate that was not named', async () => {
+  const { db, server, base, openId } = serve()
+  try {
+    const body = await (await post(base, { body: { apply: true, ids: [999999], includeMoney: false } })).json()
+    assert.equal(body.neverFilled.applied, 0, JSON.stringify(body))
+    assert.ok(!body.neverFilled.refused, 'ids WAS passed, just not this row\'s id — a different failure mode from refusal')
+    assert.equal(rowSnap(db, openId).status, 'open')
   } finally { server.close() }
 })
 

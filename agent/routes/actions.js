@@ -4826,7 +4826,7 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   // POST /actions/named-corrections — V3 B2b (docs/v3-integrated-plan-
   // 2026-09-26.md §5 row 2.6, §6 OD-11/OD-12, owner yes 26-09-2026).
-  // Body: { apply?: boolean, includeNeverFilled?: boolean, includeMoney?: boolean }.
+  // Body: { apply?: boolean, includeNeverFilled?: boolean, includeMoney?: boolean, ids?: number[] }.
   // DRY RUN BY DEFAULT — see services/named-corrections.js. `apply` is read
   // strictly as the JSON boolean `true`; a string `"true"`, a query param, or
   // anything else all read as dry run.
@@ -4844,15 +4844,24 @@ export default function actionsRouter(db, deps = {}) {
   // middleware writes for every POST here (method, path, redacted body,
   // before this handler runs at all) — this handler itself writes nothing
   // until `apply: true` actually changes a row.
+  //
+  // `ids` NAMES THE NEVER-FILLED APPLY (checker N-b). It must be the exact
+  // `id`s from a prior dry-run's `neverFilled.rows` — apply acts on their
+  // intersection with the current candidates, never on a fresh, live
+  // recompute, so a row that becomes a candidate after the dry run is left
+  // alone until named in its own. Omitting `ids` on an apply call REFUSES
+  // the never-filled half (`neverFilled.refused: true`); the money
+  // corrections still apply, since OD-12's money list is always fully named.
   // -----------------------------------------------------------------------
   router.post('/named-corrections', async (req, res) => {
     try {
       const apply = req.body?.apply === true
       const includeNeverFilled = req.body?.includeNeverFilled !== false
       const includeMoney = req.body?.includeMoney !== false
+      const neverFilledIds = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isFinite) : undefined
       const { runNamedCorrections } = await import('../services/named-corrections.js')
-      const out = runNamedCorrections(db, { apply, includeNeverFilled, includeMoney })
-      console.log(`[actions] named-corrections ${out.mode}${out.dryRun ? ' (dry run — nothing written)' : ` — ${out.neverFilled.applied + out.money.applied} row(s) applied, ${out.neverFilled.skipped + out.money.skipped} skipped`}`)
+      const out = runNamedCorrections(db, { apply, includeNeverFilled, includeMoney, neverFilledIds })
+      console.log(`[actions] named-corrections ${out.mode}${out.dryRun ? ' (dry run — nothing written)' : ` — ${out.neverFilled.applied + out.money.applied} row(s) applied, ${out.neverFilled.skipped + out.money.skipped} skipped${out.neverFilled.refused ? ' (never-filled refused: no ids)' : ''}`}`)
       res.json({ ok: true, ...out })
     } catch (err) {
       console.error('[actions/named-corrections] error:', err.message)

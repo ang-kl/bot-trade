@@ -107,12 +107,12 @@ test('the dry run reports old -> new and evidence, and writes nothing', t => {
   assert.deepEqual(rowSnap(db, id), before) // still nothing written
 })
 
-test('apply rejects the row, never deletes it, and stamps the OD-11 reason', t => {
+test('apply rejects the NAMED row (its id passed explicitly), never deletes it, and stamps the OD-11 reason', t => {
   const db = fresh(t)
   const id = trade(db, { pid: 700, status: 'open' })
   evidence(db, DEMO, 700, { reason: 'REJECTED,REJECTED' })
 
-  const { applied, skipped } = applyNeverFilledRejections(db)
+  const { applied, skipped } = applyNeverFilledRejections(db, { ids: [id] })
   assert.deepEqual(applied.map(a => a.id), [id])
   assert.equal(skipped.length, 0)
 
@@ -139,6 +139,56 @@ test('apply skips a row whose status changed since the plan was read (a race)', 
   const res = stmt.run(id, candidates[0].oldStatus)
   assert.equal(res.changes, 0) // proves the guard clause actually matters
   assert.equal(rowSnap(db, id).status, 'closed')
+})
+
+// ---------------------------------------------------------------------------
+// N-b: apply must NAME its ids — never recompute candidates live
+// ---------------------------------------------------------------------------
+
+test('N-b: applyNeverFilledRejections refuses when no ids are passed — an unnamed apply is not a named apply', t => {
+  const db = fresh(t)
+  const id = trade(db, { pid: 700, status: 'open' })
+  evidence(db, DEMO, 700, {})
+
+  for (const bad of [undefined, {}, { ids: [] }, { ids: 'not-an-array' }]) {
+    const out = applyNeverFilledRejections(db, bad)
+    assert.equal(out.applied.length, 0)
+    assert.equal(out.refused, true)
+    assert.match(out.reason, /no ids/)
+  }
+  assert.equal(rowSnap(db, id).status, 'open') // nothing written
+})
+
+test('N-b regression: a candidate that appears AFTER the dry run is not rejected — apply acts only on the named ids', t => {
+  const db = fresh(t)
+  // The dry run sees exactly one candidate.
+  const seenId = trade(db, { pid: 700, status: 'open' })
+  evidence(db, DEMO, 700, {})
+  const dryRunIds = planNeverFilledRejections(db).map(p => p.id)
+  assert.deepEqual(dryRunIds, [seenId])
+
+  // A second row becomes a genuine never_filled candidate AFTER the dry run
+  // (e.g. the evidence sweep just wrote its verdict) — the operator never saw it.
+  const lateId = trade(db, { pid: 701, status: 'open' })
+  evidence(db, DEMO, 701, {})
+  assert.deepEqual(neverFilledRejectionCandidates(db).map(c => c.id).sort((a, b) => a - b), [seenId, lateId].sort((a, b) => a - b))
+
+  // Apply with the ORIGINAL dry run's ids — the late one must be left alone.
+  const { applied, skipped } = applyNeverFilledRejections(db, { ids: dryRunIds })
+  assert.deepEqual(applied.map(a => a.id), [seenId])
+  assert.equal(rowSnap(db, seenId).status, 'rejected')
+  assert.equal(rowSnap(db, lateId).status, 'open', 'a candidate the dry run never showed must not be rejected')
+  assert.equal(skipped.length, 0)
+})
+
+test('N-b: naming an id that is NOT (or no longer) a current candidate has no effect on it', t => {
+  const db = fresh(t)
+  const openId = trade(db, { pid: 700, status: 'open' })
+  const closedId = trade(db, { pid: 701, status: 'closed', net: 5 }) // never a never_filled candidate
+  const { applied } = applyNeverFilledRejections(db, { ids: [openId, closedId, 999999] })
+  assert.deepEqual(applied, []) // openId has no evidence row, closedId is closed, 999999 doesn't exist
+  assert.equal(rowSnap(db, openId).status, 'open')
+  assert.equal(rowSnap(db, closedId).status, 'closed')
 })
 
 // ---------------------------------------------------------------------------
@@ -291,12 +341,29 @@ test('runNamedCorrections defaults to a dry run that writes nothing; apply:true 
   assert.equal(dry.money.found, 1)
   assert.deepEqual([rowSnap(db, neverFilledId), rowSnap(db, moneyId)], before)
 
-  const applied = runNamedCorrections(db, { apply: true, namedList })
+  // The apply must NAME the never-filled ids the dry run showed (N-b).
+  const neverFilledIds = dry.neverFilled.rows.map(r => r.id)
+  const applied = runNamedCorrections(db, { apply: true, namedList, neverFilledIds })
   assert.equal(applied.dryRun, false)
   assert.equal(applied.mode, 'apply')
   assert.equal(applied.neverFilled.applied, 1)
   assert.equal(applied.money.applied, 1)
   assert.equal(rowSnap(db, neverFilledId).status, 'rejected')
+  assert.equal(rowSnap(db, moneyId).net_pnl, -59.73)
+})
+
+test('runNamedCorrections refuses the never-filled half when apply:true is called with no neverFilledIds, but still applies the (always fully named) money corrections', t => {
+  const db = fresh(t)
+  const neverFilledId = trade(db, { pid: 700, status: 'open' })
+  evidence(db, DEMO, 700, {})
+  const moneyId = trade(db, { pid: 47, status: 'closed', net: -196.35 })
+  const namedList = [{ id: moneyId, table: 'trades', field: 'net_pnl', expectedOld: -196.35, value: -59.73, evidence: 'x' }]
+
+  const out = runNamedCorrections(db, { apply: true, namedList }) // no neverFilledIds
+  assert.equal(out.neverFilled.applied, 0)
+  assert.equal(out.neverFilled.refused, true)
+  assert.equal(out.money.applied, 1)
+  assert.equal(rowSnap(db, neverFilledId).status, 'open')
   assert.equal(rowSnap(db, moneyId).net_pnl, -59.73)
 })
 
