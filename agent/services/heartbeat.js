@@ -30,6 +30,7 @@ import { ctraderEnv } from '../lib/ctrader-env.js'
 import { independentWatchdogOwns } from './watchdog-ownership.js'
 import { autopilotRecordCadenceSec, autopilotDormantReason } from '../lib/autopilot-cadence.js'
 import { llmDisabledReason } from '../lib/llm-switch.js'
+import { tickFeederDormantReason, judgeTickFeed, recordTickFeederCheck, tickEntryReceiptsRaw } from './tick-feeder-stall.js'
 
 // Registry: every watched controller. `tiedToLoop` controllers run once per
 // main-loop cycle, so their expected interval follows loop_interval_min.
@@ -216,6 +217,14 @@ export const CONTROLLERS = {
   // position writers. The record is the pass's own summary; with no plan it
   // still runs and still writes it, so "never ran" and "nothing to do" differ.
   momentum_partial:    { label: 'Momentum partial-TP1 manager', tiedToLoop: true, factor: 3, effect: { key: 'momentum_partial_pass_json', kind: 'json' } },
+  // V3 F4 (#1099 nit 2): the tick permit feeder's stall alarm. Beaten by
+  // probeCppExec after every side was probed: ok only when every side with a
+  // tick-admitting account had a complete feeder pass within two cadences
+  // (tick-feeder-stall.js); the stalled side and why in last_error, the
+  // per-side table in the detail. Dormant while no account admits tick.
+  // QUIET: the watchdog writes its stall / failing events to action_log and
+  // sends no message — delivery waits on OD-10 (Telegram is off).
+  tick_feeder:         { label: 'Tick permit feeder (stall alarm)', expectedSec: 120, factor: 3, quiet: true, dormantWhen: tickFeederDormantReason },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
@@ -521,7 +530,8 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
     if (!def) continue
     // A retired controller is not scheduled, so its silence is not a stall.
     if (def.retired) continue
-    const report = independentWatchdogOwns(db, 'service_liveness') && ['cpp_exec', 'cpp_exec_demo', 'fast_monitor'].includes(row.name) ? () => {} : say
+    // `quiet` (V3 F4): recorded in action_log below, never sent.
+    const report = def.quiet || (independentWatchdogOwns(db, 'service_liveness') && ['cpp_exec', 'cpp_exec_demo', 'fast_monitor'].includes(row.name)) ? () => {} : say
     const expected = expectedSecFor(def, lsec)
     const limit = expected * def.factor
     const age = ageSecOf(row, now)
@@ -532,7 +542,7 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
         // per-controller flood; the stalled flag stays clear so the later
         // recovery is silent too. A stall persisting past the grace window
         // trips the normal alert on a later pass.
-        if (!restartNoticeSent) {
+        if (!restartNoticeSent && !def.quiet) {
           restartNoticeSent = true
           say(`♻️ Service restarted (deploy) — controllers resuming. Stall alerts paused for the first ${Math.round(BOOT_GRACE_SEC / 60)} minutes; anything still stalled after that will alert.`)
           events.push({ name: row.name, event: 'restart_notice' })
@@ -928,6 +938,21 @@ export async function probeCppExec(db, deps = {}) {
     const out = await probeOneSidecar(db, exec, side, deps)
     if (side.name === 'cpp_exec') primary = out
   }
+  // V3 F4: the tick permit feeder's stall alarm, AFTER every side was probed
+  // (a feeder pass made by this probe is already on record). Each side's
+  // tick-admitting accounts beside its latest receipt; the verdict is the
+  // `tick_feeder` beat and a stored check the inspector reads. Its own try:
+  // an observation never fails the probe.
+  try {
+    const accountsFor = deps.tickEntryAccountsFor ?? (await import('./tick-permits.js')).tickEntryAccountsFor
+    const verdict = judgeTickFeed({
+      sides: sides.map(side => ({ name: side.name, accounts: accountsFor(db, side) })),
+      receipts: tickEntryReceiptsRaw(db), nowMs,
+    })
+    recordTickFeederCheck(db, verdict)
+    beat(db, 'tick_feeder', { ok: verdict.ok, error: verdict.error, detail: verdict, now: new Date(nowMs) })
+    if (!verdict.ok) console.warn(`[heartbeat] tick permit feeder ${verdict.state.toUpperCase()}: ${verdict.error}`)
+  } catch (err) { console.warn(`[heartbeat] tick feeder stall check failed: ${err?.message || err}`) }
   // PR-1b (20-09-2026): the tick fire ledger turns each ACCEPTED tick fire in
   // the sidecar's ring into the one approved risk_events row its close needs
   // for `direction_reason` — the field that made every tick close fail capture

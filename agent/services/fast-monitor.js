@@ -35,6 +35,7 @@ import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { performance } from 'node:perf_hooks'
 import { stampFirst, noteBudgetOverrun } from './runtime-record.js'
 import { noteDueLateness, latenessEligibility } from './protection-latency.js'
+import { recordLimitFillSpread, isPreFill } from './limit-fill-spread.js'
 
 // ---------------------------------------------------------------------------
 // PER-POSITION RECEIPT TIMINGS (V3 M1, P1/P4-1). A pass that re-prices a due
@@ -409,6 +410,9 @@ export async function runFastMonitor(db, creds, deps = {}) {
       try {
         if (pos.source === 'external') { receipt.state = 'observe_only'; continue }
         if (!manageStageAllows(db, getState, pos.strategy)) {
+          // V3 PO-M3: a new PRE fill this pass will not price still gets a
+          // record, with the reason no quote was read. Record only.
+          if (isPreFill(pos)) recordLimitFillSpread(db, pos, { nowMs: now(), reason: 'not priced: management off for this strategy' })
           receipt.state = 'manage_off'
           noteFastDecision(db, pos, 'manage_off', `Live Tweak & Close is OFF for strategy '${pos.strategy}' — position unmonitored by this pass`)
           continue
@@ -491,6 +495,10 @@ export async function runFastMonitor(db, creds, deps = {}) {
           q = await ws.wsGetSpotOnce(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId)
         }
         finishPricing(pick.source)
+        // V3 PO-M3: the spread at a resting limit's fill, from the quote this
+        // pass already holds — the first Node can read after the fill. Record
+        // only; never throws, never changes what the pass does next.
+        if (isPreFill(pos)) recordLimitFillSpread(db, pos, { quote: q, source: receipt.quoteSource, nowMs: now(), reason: 'quote unavailable (market closed or feed gap)' })
         const mid = Number.isFinite(q?.bid) && Number.isFinite(q?.ask) && q.bid > 0 && q.ask >= q.bid ? (q.bid + q.ask) / 2 : null
         if (mid == null) {
           receipt.lastOutcome = 'quote_unavailable'
@@ -834,17 +842,20 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
   // Budgeted: the loop wrapped them in runBudgetedSubPhase for the same
   // reason, and the stake is higher here because a hung pass would hold
   // the band past its cadence — which the band's own record now reports.
+  // V3 F1: a close deferred behind an in-flight momentum partial is not a
+  // failure (the beat stays ok) but it is said, with its reason.
+  const deferredText = r => r.deferred?.length ? `; deferred (momentum close in flight): ${r.deferred.join(' · ')}` : ''
   for (const job of [
     { key: 'trade_guards', label: 'Trade guards', mod: './trade-guard.js', fn: 'runTradeGuards',
-      say: r => (r.slMoves || r.partialCloses) ? `${r.slMoves} SL move(s), ${r.partialCloses} partial close(s)` : null },
+      say: r => (r.slMoves || r.partialCloses || r.deferred?.length) ? `${r.slMoves} SL move(s), ${r.partialCloses} partial close(s)${deferredText(r)}` : null },
     { key: 'profit_keeper', label: 'Profit Keeper', mod: './profit-keeper.js', fn: 'runProfitKeeper',
-      say: r => (r.slMoves || r.closes) ? `${r.slMoves} lock(s), ${r.closes} close(s)` : null },
+      say: r => (r.slMoves || r.closes || r.deferred?.length) ? `${r.slMoves} lock(s), ${r.closes} close(s)${deferredText(r)}` : null },
     // The safety net for LOSING and NAKED positions the Profit Keeper will
     // not touch. Last of the level-4 writers off the loop, and the one
     // that most needed to be: it is what puts a stop on a position that
     // has none.
     { key: 'loss_guardian', label: 'Loss Guardian', mod: './loss-guardian.js', fn: 'runLossGuardian',
-      say: r => (r.stops || r.closes) ? `${r.stops} protective stop(s), ${r.closes} close(s)` : null },
+      say: r => (r.stops || r.closes || r.deferred?.length) ? `${r.stops} protective stop(s), ${r.closes} close(s)${deferredText(r)}` : null },
   ]) {
     try {
       if (!creds?.ready) break

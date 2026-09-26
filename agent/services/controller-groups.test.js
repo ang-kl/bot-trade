@@ -9,7 +9,7 @@ test('every registered heartbeat is mapped exactly once; retired history is sepa
   assert.deepEqual([...names].sort(), Object.keys(CONTROLLERS).sort())
   const view = groupControllers(Object.entries(CONTROLLERS).map(([name, d]) => ({ name, label: d.label, status: d.retired ? 'retired' : 'idle', retired: !!d.retired })))
   assert.equal(view.groups.length, 6)
-  assert.equal(view.groups.flatMap(g => g.rows).length, 38) // V3 L1: order_lifecycle; V3 V1: position_capture; V3 WEB-4: broker_readings; V3 T3: momentum_partial
+  assert.equal(view.groups.flatMap(g => g.rows).length, 39) // V3 L1: order_lifecycle; V3 V1: position_capture; V3 WEB-4: broker_readings; V3 T3: momentum_partial; V3 F4: tick_feeder
   assert.deepEqual(view.retired.map(r => r.name), ['pending_orders'])
 })
 

@@ -8,17 +8,41 @@ const NOW = 1_700_000_000_000
 // A closing deal as cTrader returns it: realised money on closePositionDetail,
 // scaled by moneyDigits (2 → cents). executionTimestamp lets the fake API
 // return it only in the matching weekly window, like the real wsGetDeals.
-const deal = (positionId, grossCents, { swapCents = 0, commCents = 0, ts = NOW - 3_600_000 } = {}) => ({
+// V3 F5 (B1 N6): a FILLED deal (dealStatus 2) with its closed volume, so a
+// fixture can form a whole lifecycle; `vol` defaults to 100 units.
+const deal = (positionId, grossCents, { swapCents = 0, commCents = 0, ts = NOW - 3_600_000, vol = 100 } = {}) => ({
   positionId,
   dealId: `${positionId}-${grossCents}`,
   executionTimestamp: ts,
-  closePositionDetail: { grossProfit: grossCents, swap: swapCents, commission: commCents, moneyDigits: 2 },
+  dealStatus: 2,
+  filledVolume: vol,
+  closePositionDetail: { grossProfit: grossCents, swap: swapCents, commission: commCents, moneyDigits: 2, closedVolume: vol },
 })
+
+// The opening deal of every position that has closing deals in `closes`:
+// one FILLED deal, a minute before the first close, for the whole closed
+// volume. Money is written only from a complete lifecycle on EVERY window pass
+// now (V3 F5, B1 checker N6), so a fixture that means "the broker closed this
+// position" must show the broker opening it too.
+const openingsFor = (closes) => {
+  const byPid = new Map()
+  for (const d of closes) {
+    if (!d.closePositionDetail) continue
+    const k = String(d.positionId)
+    const o = byPid.get(k) || { positionId: d.positionId, ts: Infinity, vol: 0 }
+    o.ts = Math.min(o.ts, d.executionTimestamp); o.vol += Number(d.closePositionDetail.closedVolume)
+    byPid.set(k, o)
+  }
+  return [...byPid.values()].map(o => ({ positionId: o.positionId, dealId: `${o.positionId}-open`,
+    executionTimestamp: o.ts - 60_000, dealStatus: 2, filledVolume: o.vol }))
+}
 
 // Window-aware fake of wsGetDeals: returns only the deals whose timestamp
 // falls in [t0, t1), so the service's weekly chunking is exercised honestly
-// (each deal surfaces in exactly one chunk, never double-counted).
-const dealsApi = (all) => async (t0, t1) => ({ deal: all.filter(d => d.executionTimestamp >= t0 && d.executionTimestamp < t1) })
+// (each deal surfaces in exactly one chunk, never double-counted). Each
+// position's opening deal rides with its closes (openingsFor).
+const closingOnlyApi = (all) => async (t0, t1) => ({ deal: all.filter(d => d.executionTimestamp >= t0 && d.executionTimestamp < t1) })
+const dealsApi = (all) => closingOnlyApi([...openingsFor(all), ...all])
 
 function seedClosed(db, { positionId, net = null }) {
   db.prepare(
@@ -481,7 +505,9 @@ test('liveGap excludes written-off and exhausted rows, and gap still counts them
 
 // A closing deal that also carries the price and size it executed at.
 const pricedDeal = (positionId, grossCents, px, vol, opts = {}) => ({
-  ...deal(positionId, grossCents, opts),
+  // The broker's volume is an integer (hundredths of a unit); `volume` below
+  // stays the fixture's own weighting figure, as before.
+  ...deal(positionId, grossCents, { vol: Math.round(vol * 100), ...opts }),
   executionPrice: px,
   volume: vol,
 })
@@ -811,4 +837,61 @@ test('the loop logs exact overdue P&L identities whenever the reconciliation not
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\*[^]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
   assert.match(src, /if \(verdict\.detail\.notice\) \{\s+verdict\.detail\.unreachedRows = pnlUnreachedRows\(db, \{ limit: 10 \}\)\s+log\(`P&L reconciliation not-yet-attempted rows:/)
   assert.match(src, /JSON\.stringify\(verdict\.detail\.unreachedRows\)/)
+})
+
+// ---------------------------------------------------------------------------
+// V3 F5 (B1 checker N6): the lifecycle rule on the NON-STRICT window path.
+// B1 wrote money only from a complete lifecycle on strict calls; the
+// non-strict path (no production caller today) still summed whatever closing
+// deals one window returned. Each test's control has the same closes WITH the
+// opening, so the refusal is the rule and not a broken fixture.
+// ---------------------------------------------------------------------------
+
+test('F5 N6: non-strict window pass — closing deals without their opening write NO money; the position is reported deferred', async () => {
+  const db = initDB(':memory:')
+  seedClosed(db, { positionId: 4401, net: null })
+  const r = await backfillClosedPnl(db, {}, { getDeals: closingOnlyApi([deal(4401, -5000, { vol: 100 })]), now: NOW })
+  assert.equal(db.prepare(`SELECT net_pnl FROM trades WHERE ctrader_position_id = '4401'`).get().net_pnl, null, 'no lifecycle, no money')
+  assert.equal(r.backfilled, 0)
+  assert.equal(r.deferred, 1)
+  assert.deepEqual(r.deferredPositions, ['4401'])
+  assert.equal(r.lifetimeSkipped, undefined, 'the strict-only field is not claimed on the non-strict path')
+  // Control: the same close with its opening among the deals is written.
+  const ok = initDB(':memory:')
+  seedClosed(ok, { positionId: 4401, net: null })
+  const w = await backfillClosedPnl(ok, {}, { getDeals: dealsApi([deal(4401, -5000, { vol: 100 })]), now: NOW })
+  assert.equal(ok.prepare(`SELECT net_pnl FROM trades WHERE ctrader_position_id = '4401'`).get().net_pnl, -50)
+  assert.equal(w.backfilled, 1)
+  assert.equal(w.deferred, undefined, 'nothing deferred, nothing reported')
+})
+
+test('F5 N6: non-strict — the probe-p5bd tail (opening and first partial before the window) is deferred, not paid 50 of 150', async () => {
+  const db = initDB(':memory:')
+  seedClosed(db, { positionId: 4402, net: null })
+  const old = NOW - 20 * 86_400_000 // before the 14-day window
+  const all = [
+    { positionId: 4402, dealId: '4402-open', executionTimestamp: old, dealStatus: 2, filledVolume: 300 },
+    deal(4402, 10000, { vol: 100, ts: old + 60_000 }),          // first partial, outside the window
+    { ...deal(4402, 5000, { vol: 200 }), dealId: '4402-tail' }, // the tail, inside it
+  ]
+  const r = await backfillClosedPnl(db, {}, { getDeals: closingOnlyApi(all), now: NOW })
+  assert.equal(db.prepare(`SELECT net_pnl FROM trades WHERE ctrader_position_id = '4402'`).get().net_pnl, null,
+    'the window shows 50 of a 150 lifetime; nothing is written')
+  assert.deepEqual(r.deferredPositions, ['4402'])
+  // Control: a window that reaches back to the opening writes the whole 150.
+  const whole = initDB(':memory:')
+  seedClosed(whole, { positionId: 4402, net: null })
+  await backfillClosedPnl(whole, {}, { getDeals: closingOnlyApi(all), now: NOW, days: 30 })
+  assert.equal(whole.prepare(`SELECT net_pnl FROM trades WHERE ctrader_position_id = '4402'`).get().net_pnl, 150)
+})
+
+test('F5 N6: a deferred position is not charged a backfill attempt on the non-strict path', async () => {
+  const db = initDB(':memory:')
+  seedClosed(db, { positionId: 4403, net: null })
+  seedClosed(db, { positionId: 4404, net: null })
+  await backfillClosedPnl(db, {}, { getDeals: closingOnlyApi([deal(4403, -5000)]), now: NOW })
+  const attempts = pid => db.prepare(`SELECT COALESCE(pnl_attempts, 0) AS n FROM trades WHERE ctrader_position_id = ?`).get(pid).n
+  assert.equal(db.prepare(`SELECT net_pnl FROM trades WHERE ctrader_position_id = '4403'`).get().net_pnl, null, 'deferred, not written')
+  assert.equal(attempts('4403'), 0, 'deferred: the per-position reader owns it, no attempt spent')
+  assert.equal(attempts('4404'), 1, 'control: a row the pass could not match is charged, as before')
 })
