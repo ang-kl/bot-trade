@@ -113,9 +113,9 @@ export function recorderFacts(tick) {
  * Sidecar facts from its /health, via an injected fetcher so the test never
  * touches the network. The sidecar's /health reports bootId, startedAtMs,
  * connected, accountCount, guard, counters and the tick recorder's summary.
- * It does not report a commit today (GW-1 adds it): a `commit` string is read
- * when present and otherwise the manifest says it is not reported rather than
- * inferring one.
+ * From GW-1 it reports `commit` (its RAILWAY_GIT_COMMIT_SHA, null outside
+ * Railway); an older build does not, and then the manifest says it is not
+ * reported rather than inferring one.
  */
 export async function sidecarFacts(base, { fetcher = fetch, secret = process.env.EXEC_SECRET || '', timeoutMs = 3000 } = {}) {
   if (!base) return { reachable: false, reason: 'no base url configured' }
@@ -135,7 +135,7 @@ export async function sidecarFacts(base, { fetcher = fetch, secret = process.env
       halt: h.guard?.halt ?? h.halt ?? null,
       telemetryWritten: h.telemetryWritten ?? null,
       telemetryDropped: h.telemetryDropped ?? null,
-      // Not reported by today's sidecar (plan B18 / TM-37); read if a build reports it.
+      // Reported from GW-1 on (plan B18 / TM-37); null on an older build.
       commit: typeof h.commit === 'string' && h.commit.trim() ? h.commit.trim() : null,
       ...('tick' in h ? { recorder: recorderFacts(h.tick) } : {}),
     }

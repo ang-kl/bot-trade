@@ -395,6 +395,31 @@ test('pingSidecar surfaces the authorised roster from /health', async () => {
   }
 })
 
+test('pingSidecar carries the sidecar start time and commit (GW-1), null when absent', async () => {
+  const prevEngine = process.env.EXEC_ENGINE
+  const prevUrl = process.env.EXEC_URL
+  const prevFetch = globalThis.fetch
+  process.env.EXEC_ENGINE = 'cpp'
+  process.env.EXEC_URL = 'http://sidecar.test'
+  let body = { ok: true, connected: true, bootId: 'b1', startedAtMs: 1790400000123, commit: ' 0123abcd ' }
+  globalThis.fetch = async () => ({ ok: true, json: async () => body })
+  try {
+    const { pingSidecar } = await import('./exec-engine.js')
+    let r = await pingSidecar()
+    assert.equal(r.startedAtMs, 1790400000123)
+    assert.equal(r.commit, '0123abcd')
+    assert.equal(r.bootId, 'b1')
+    body = { ok: true, connected: true, commit: null }
+    r = await pingSidecar()
+    assert.equal(r.startedAtMs, null)
+    assert.equal(r.commit, null)
+  } finally {
+    globalThis.fetch = prevFetch
+    if (prevEngine === undefined) delete process.env.EXEC_ENGINE; else process.env.EXEC_ENGINE = prevEngine
+    if (prevUrl === undefined) delete process.env.EXEC_URL; else process.env.EXEC_URL = prevUrl
+  }
+})
+
 test('pingSidecar reports a MISSING roster as null, not as an empty roster', async () => {
   // An old sidecar that does not report `accounts` must read as "unknown", so
   // rosterDrift stays quiet instead of concluding the sidecar holds nothing.

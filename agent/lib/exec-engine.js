@@ -303,6 +303,14 @@ export async function pingSidecar({ timeoutMs = 5_000, base = execBaseFor() } = 
       tick: body?.tick ?? null,
       decisionsSeq: body?.decisionsSeq ?? null,
       bootId: body?.bootId ?? null,
+      // GW-1 (SEQUENCE PR-10, WP-D gap 6): the sidecar's own start time, so the
+      // restart quarantine can bound T by the gateway's clock rather than by
+      // when Node first saw the boot. null = an older sidecar that does not
+      // report it (it always has, on /health; this normalisation dropped it).
+      startedAtMs: Number.isFinite(Number(body?.startedAtMs)) && body?.startedAtMs != null ? Number(body.startedAtMs) : null,
+      // GW-1 (P8c item 7, TM-37): the build the gateway runs (its
+      // RAILWAY_GIT_COMMIT_SHA); null when not reported.
+      commit: typeof body?.commit === 'string' && body.commit.trim() ? body.commit.trim() : null,
       ...(res.ok ? {} : { error: `health ${res.status}` }),
     }
   } catch (e) {
