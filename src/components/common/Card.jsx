@@ -81,6 +81,15 @@ export default function Card({
   // Tests inject a fake store here; production leaves it undefined and
   // card-open.js falls back to window.localStorage.
   storage = undefined,
+  // Test-only seam, same shape as `storage` above: this repo has no jsdom /
+  // interaction harness (see Card.test.jsx), so the "maximize a lazy,
+  // never-opened, still-collapsed card, then restore it" regression cannot
+  // be reached by clicking through a fresh renderToStaticMarkup mount — that
+  // state (collapsed:true, everOpened:true) only exists mid-session, after a
+  // real maximize click. `initialEverOpened` lets a test seed it directly;
+  // production never passes it, so `everOpened` keeps deriving from
+  // `!collapsed` as before.
+  initialEverOpened = undefined,
   // WHOSE numbers is this card showing (owner 05-08-2026). 'all', 'global',
   // or an account id. Undefined means the card has not declared a scope yet
   // and renders no chip — deliberately NOT defaulted to 'global', because
@@ -106,7 +115,7 @@ export default function Card({
   // starts open has, by definition, already "opened"), so a fresh mount that
   // opens straight from a persisted choice (card-open.js) never has to wait
   // for the toggle to mount its children.
-  const [everOpened, setEverOpened] = useState(() => !collapsed)
+  const [everOpened, setEverOpened] = useState(() => initialEverOpened ?? !collapsed)
   // Fix round nit: `onCollapsedChange` used to also fire from INSIDE the
   // state updater below — a side effect during what React treats as a pure
   // state calculation, which can run twice (or, in concurrent rendering, be
@@ -239,6 +248,13 @@ export default function Card({
             // Captured at click time — refs must not be read during render.
             setLabel(copyTitle || headingOf(ref.current) || 'Section')
             setMaximized(true)
+            // BLOCKER fix (W1-FU checker): maximizing a lazy+collapsed card
+            // that was NEVER opened via the collapse toggle used to mount an
+            // empty overlay — `mountChildren` only checked `everOpened`, and
+            // this click never set it. Mark "opened" here too, same as the
+            // collapse toggle does, so the overlay always has real content
+            // and restore (⇱) keeps children mounted afterwards.
+            setEverOpened(true)
           }}
           style={btn}
           onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
