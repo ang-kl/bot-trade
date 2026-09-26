@@ -17,9 +17,19 @@
 // In-memory by design: a restart forgets the roster and live tabs
 // re-announce within 30s. Active TTL 90s (three missed heartbeats = shown
 // stale, then treated as closed); closed tabs are kept for 24h, max 20.
+//
+// SYNTHETIC TABS (NEW-1, integrated plan 26-09-2026). A page loaded by a
+// harness — the DevTools trace in scripts/perf-trace/, any headless load —
+// pings exactly like the owner's tab, and the M3 record counted 9 and 8
+// "visible tabs" that were trace loads. A page opened with `?synthetic=<tag>`
+// (web app: src/lib/agent-api.js) sends that tag on every ping; the tab is
+// then stored WITH the tag. The owner's counts (openTabs, visibleTabs,
+// timezones, the tab-count warning) exclude it, and it is reported beside
+// them as its own count (`synthetic`), its rows still listed and labelled —
+// never deleted or hidden (owner principle 6).
 // ---------------------------------------------------------------------------
 
-const tabs = new Map() // tabId → { tz, page, hidden, idle, ua, ip, openedAt, at, closedAt }
+const tabs = new Map() // tabId → { tz, page, hidden, idle, ua, ip, synthetic, openedAt, at, closedAt }
 const TTL_MS = 90_000
 const CLOSED_KEEP_MS = 24 * 3600_000
 const CLOSED_KEEP_MAX = 20
@@ -48,6 +58,17 @@ export function countryFromTz(tz) {
   return t || 'unknown'
 }
 
+/**
+ * The harness tag a ping carries, or null. Only a short plain token is
+ * recognised; anything else (empty, 'false', '0', odd characters) is an
+ * ordinary ping, so a malformed flag can never hide an owner's tab.
+ */
+export function syntheticTag(v) {
+  const t = String(v ?? '').trim().toLowerCase()
+  if (!t || t === 'false' || t === '0' || t === 'null' || t === 'undefined') return null
+  return /^[a-z0-9_-]{1,32}$/.test(t) ? t : null
+}
+
 function sweep(nowMs) {
   const closed = []
   for (const [k, v] of tabs) {
@@ -69,7 +90,7 @@ function sweep(nowMs) {
 }
 
 /** Register one heartbeat (or a close beacon). Returns the live summary. */
-export function registerClientPing({ tab, tz, page, hidden, idle, closed, ua, ip, sid } = {}, nowMs = Date.now()) {
+export function registerClientPing({ tab, tz, page, hidden, idle, closed, ua, ip, sid, synthetic } = {}, nowMs = Date.now()) {
   if (tab) {
     const id = String(tab).slice(0, 64)
     const prev = tabs.get(id)
@@ -85,6 +106,10 @@ export function registerClientPing({ tab, tz, page, hidden, idle, closed, ua, ip
       idle: idle === true || idle === 'true' || idle === '1',
       ua: String(ua || prev?.ua || '').slice(0, 120),
       ip: String(ip || prev?.ip || '').slice(0, 64),
+      // Sticky per tab: once a tab has said it is a harness load, a later
+      // ping without the tag (the close beacon, a reload) does not turn it
+      // into an owner's tab.
+      synthetic: syntheticTag(synthetic) || prev?.synthetic || null,
       openedAt: prev?.openedAt ?? nowMs,
       at: nowMs,
       closedAt: (closed === true || closed === 'true' || closed === '1') ? nowMs : null,
@@ -128,18 +153,29 @@ export function clientSummary(nowMs = Date.now()) {
   const all = [...tabs.entries()].map(([id, t]) => ({ id, ...t }))
   const open = all.filter(t => !t.closedAt).sort((a, b) => b.at - a.at)
   const closed = all.filter(t => t.closedAt).sort((a, b) => b.closedAt - a.closedAt)
+  // The owner's tabs are the untagged ones; harness loads are counted apart.
+  const owner = open.filter(t => !t.synthetic)
+  const synth = open.filter(t => t.synthetic)
+  const isVisible = t => !t.hidden && !t.idle
   const shape = (t) => ({
     id: t.id, sid: t.sid || null, tz: t.tz, country: countryFromTz(t.tz), ip: t.ip || null, page: t.page,
+    synthetic: t.synthetic || null,
     status: t.closedAt ? 'closed' : t.idle ? 'idle' : t.hidden ? 'background' : 'active',
     openedAt: new Date(t.openedAt).toISOString(),
     lastSeenAt: new Date(t.at).toISOString(),
     closedAt: t.closedAt ? new Date(t.closedAt).toISOString() : null,
   })
   return {
-    openTabs: open.length,
-    visibleTabs: open.filter(t => !t.hidden && !t.idle).length,
+    openTabs: owner.length,
+    visibleTabs: owner.filter(isVisible).length,
+    // Harness loads (NEW-1): reported, never folded into the owner's counts.
+    synthetic: {
+      openTabs: synth.length,
+      visibleTabs: synth.filter(isVisible).length,
+      tags: [...new Set(synth.map(t => t.synthetic))],
+    },
     warnThreshold: WARN_THRESHOLD,
-    timezones: [...new Set(open.map(t => t.tz))],
+    timezones: [...new Set(owner.map(t => t.tz))],
     tabs: open.map(shape),
     recentlyClosed: closed.map(shape),
   }

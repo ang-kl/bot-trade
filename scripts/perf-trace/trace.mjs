@@ -14,6 +14,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
+import { withSynthetic, syntheticInit } from './synthetic.mjs'
 
 const TOOLS = process.env.TRACE_TOOLS
 const OUT = path.resolve(process.env.TRACE_OUT || 'out')
@@ -50,7 +51,9 @@ const client = new Client({ name: 'bot-trade-perf-trace', version: '1.0.0' })
 await client.connect(transport)
 const text = r => scrub((r?.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n'))
 const call = async (name, args) => text(await client.callTool({ name, arguments: args }, undefined, { timeout: 180000 }))
-const init = `try{localStorage.setItem('agent_url',${JSON.stringify(BASE)});localStorage.setItem('agent_secret',${JSON.stringify(SECRET)})}catch(e){}`
+// NEW-1: every tab this harness opens says it is synthetic (synthetic.mjs),
+// so its presence pings never count as the owner's visible tabs.
+const init = `try{localStorage.setItem('agent_url',${JSON.stringify(BASE)});localStorage.setItem('agent_secret',${JSON.stringify(SECRET)})}catch(e){}` + syntheticInit()
 const DOM_PROBE = `() => JSON.stringify({ nodes: document.getElementsByTagName('*').length, rows: document.querySelectorAll('tr').length,
   height: document.documentElement.scrollHeight,
   api: performance.getEntriesByType('resource').filter(r => /\\/state\\/|\\/actions\\/|\\/health/.test(r.name)).length,
@@ -65,7 +68,7 @@ for (const prof of PROFILES) {
       await call('resize_page', { width: prof.w, height: prof.h })
       await call('emulate', { cpuThrottlingRate: prof.cpu, ...(prof.net ? { networkConditions: prof.net } : {}) })
       await call('navigate_page', { type: 'url', url: `${BASE}/health`, initScript: init })
-      await call('navigate_page', { type: 'url', url: BASE + p, initScript: init })
+      await call('navigate_page', { type: 'url', url: withSynthetic(BASE + p), initScript: init })
       await sleep(3000)
       await call('performance_start_trace', { reload: true, autoStop: false })
       await sleep(WINDOW_MS)
