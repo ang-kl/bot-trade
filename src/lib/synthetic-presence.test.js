@@ -1,7 +1,7 @@
 // NEW-1 (integrated plan 26-09-2026): a page opened with ?synthetic=<tag>
 // sends the tag on every presence ping, for the whole life of the tab.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { syntheticPresenceTag, clientPingQuery } from './agent-api.js'
+import { syntheticPresenceTag, clientPingQuery, sendClientPing } from './agent-api.js'
 
 function memoryStorage() {
   const m = new Map()
@@ -42,5 +42,31 @@ describe('clientPingQuery', () => {
   it('an owner tab sends no synthetic field at all', () => {
     expect(clientPingQuery({ ...ping, synthetic: null }).has('synthetic')).toBe(false)
     expect(clientPingQuery({ ...ping, synthetic: null }).toString()).toBe('tab=tab_1&tz=Asia%2FSingapore&page=%2Fdesk&hidden=false&idle=false&closed=false')
+  })
+})
+
+// Wiring test (checker nit 1, W1.1): pins that sendClientPing actually reads
+// the tab's synthetic tag and puts it on the wire, not just that the two
+// helper functions above behave correctly in isolation.
+describe('sendClientPing (wiring)', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('a harness tab\'s ping URL carries synthetic=trace', async () => {
+    vi.stubGlobal('sessionStorage', memoryStorage())
+    vi.stubGlobal('localStorage', {
+      getItem: (k) => (k === 'agent_url' ? 'https://agent.example' : k === 'agent_secret' ? 'secret-value' : null),
+    })
+    // Load the tag onto the tab the way a harness page load does.
+    syntheticPresenceTag('?synthetic=trace')
+    const fetchStub = vi.fn(async () => new Response(JSON.stringify({ tabs: [] }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchStub)
+
+    await sendClientPing('/desk')
+
+    expect(fetchStub).toHaveBeenCalledTimes(1)
+    const requestedUrl = fetchStub.mock.calls[0][0]
+    expect(requestedUrl).toContain('synthetic=trace')
   })
 })

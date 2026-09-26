@@ -34,7 +34,7 @@ export function manualOrderConfirmText({ side, symbol, sl, tp, destination, view
   const login = destination?.traderLogin != null && String(destination.traderLogin) !== '' ? String(destination.traderLogin) : null
   const where = destId
     ? `account ${last4(destId)}${login ? ` (login ${login})` : ''}`
-    : 'the primary broker account (its id has not loaded on this page yet)'
+    : 'the primary broker account (its id is not reported to this page)'
   const viewed = viewedAccountId != null && String(viewedAccountId) !== '' && String(viewedAccountId) !== 'all' ? String(viewedAccountId) : null
   const mismatch = destId && viewed && viewed !== destId
     ? ` NOTE: this is NOT the account this page is showing (${last4(viewed)}).`

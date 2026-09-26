@@ -37,7 +37,7 @@ describe('manualOrderConfirmText — the confirm names the destination account',
   it('never invents an id it does not have', () => {
     for (const d of [null, {}, { accountId: null }, { accountId: '' }]) {
       const t = manualOrderConfirmText({ ...base, destination: d, viewedAccountId: '46970058' })
-      expect(t).toContain('the primary broker account (its id has not loaded on this page yet)')
+      expect(t).toContain('the primary broker account (its id is not reported to this page)')
       expect(t).not.toMatch(/…\d{4}/)
     }
   })
