@@ -30,7 +30,7 @@ import {
   inspectLifecycleRegression, lifecycleRuleRecurs, lifecycleRulePersists, lifecycleReportLines, loadLifecycleConfig, GENERIC_CLOSE_RE,
   CONTROLLERS_LINE, stageCountPhrase, UNATTRIBUTED_SAMPLE_MAX, NAMED_CLOSE_RULES, NAMED_RECORDS_MAX,
 } from './order-lifecycle.js'
-import { classifyRefusedRecord, REFUSED_CLASSES } from './position-history.js'
+import { classifyRefusedRecord, REFUSED_CLASSES, CLASSED_ON_REFUSED_VIEW, positionHistoryView } from './position-history.js'
 import { runOrderLifecyclePass, startOrderLifecycle } from './order-lifecycle-ticker.js'
 import { goalTable, DEFAULT_GOAL_TARGETS, GOAL_ITEMS_MAX } from './goal-table.js'
 import { runLogInspector, evalFalsifierMetric, INSPECTIONS } from './log-inspector.js'
@@ -1573,8 +1573,8 @@ test('L1c: a snapshot written before L1c (no parts) reads as before; the unattri
 // ---------------------------------------------------------------------------
 const GENERIC = 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot'
 /** A close whose position record is refused (CLS-04), in the production shapes of 26-09. */
-function refusedClose(db, { symbol = 'EURUSD', missing = ['direction_reason'], closeReason = null, origin = null, riskAt = null, gaveUp = false } = {}) {
-  const id = goodClose(db, { symbol, closed_at: NEW, ...(closeReason ? { close_reason: closeReason } : {}), ...(origin ? { origin } : {}) })
+function refusedClose(db, { symbol = 'EURUSD', missing = ['direction_reason'], closeReason = null, origin = null, riskAt = null, gaveUp = false, closedAt = NEW } = {}) {
+  const id = goodClose(db, { symbol, closed_at: closedAt, ...(closedAt !== NEW ? { opened_at: closedAt } : {}), ...(closeReason ? { close_reason: closeReason } : {}), ...(origin ? { origin } : {}) })
   const t = db.prepare('SELECT * FROM trades WHERE id = ?').get(id)
   if (riskAt) db.prepare('UPDATE risk_events SET created_at = ? WHERE id = ?').run(riskAt, t.risk_event_id)
   db.prepare('DELETE FROM position_history WHERE trade_id = ?').run(id)
@@ -1595,14 +1595,26 @@ test('B4b: the close row names each CLS-04 and CLS-03 record — account, symbol
   const pf = refusedClose(db, { symbol: 'COIN.US', riskAt: '2026-09-15 00:00:00' })
   // A close only CLS-02 flags (its commission is missing): counted, not named.
   const other = goodClose(db, { closed_at: NEW, commission: null })
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM position_history_incomplete').get().n, 3, 'the three refused records are in the database')
+  // Fix round (checker nit 1): a LEGACY close — refused and with a generic
+  // cause, so CLS-04 and CLS-03 both flag it — closed before the acceptance
+  // start. Production holds ~250 such older records beside a count of 6; they
+  // are counted as legacy and never named.
+  const legacy = refusedClose(db, { symbol: 'GBPJPY', closeReason: GENERIC, closedAt: OLD, riskAt: OLD })
+  assert.ok(Date.parse(OLD.replace(' ', 'T') + 'Z') < Date.parse(START), 'the legacy close predates the acceptance start')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM position_history_incomplete').get().n, 4, 'the three new refused records and the legacy one are in the database')
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM position_capture_queue WHERE state = 'gave_up'`).get().n, 1)
 
   const report = build(db)
   assert.equal(report.summary.close.new, 4, 'four distinct records: the three named and the CLS-02 one')
+  // Precondition: the named rules DID flag the legacy record — as legacy — so
+  // the filter below is exercised, not vacuously passed.
+  assert.equal(ruleOf(report, 'CLS-04').legacyViolations, 1, 'CLS-04 flags the legacy refused record')
+  assert.equal(ruleOf(report, 'CLS-03').legacyViolations, 1, 'CLS-03 flags the legacy generic cause')
+  assert.equal(report.summary.close.legacy, 1, 'one legacy record in the close stage')
   const named = report.named.close
   assert.deepEqual(named.rules, NAMED_CLOSE_RULES)
-  assert.equal(named.total, 3)
+  assert.equal(named.total, 3, 'the legacy record is not named: only new records are')
+  assert.ok(!named.items.some(i => i.positionId === legacy.pid || i.tradeId === legacy.id), 'the legacy record is absent from the named items')
   assert.deepEqual(named.byClass, { live_gap: 1, post_contract_pre_fix: 1, outside_bot: 1, broker_evidence_pending: 0, labelled_unrecoverable: 0, pre_contract: 0 })
   assert.deepEqual(named.items.map(i => [i.positionId, i.class]), [[sg.pid, 'live_gap'], [pf.pid, 'post_contract_pre_fix'], [co.pid, 'outside_bot']], 'actionable class first')
   const [s1] = named.items
@@ -1613,6 +1625,8 @@ test('B4b: the close row names each CLS-04 and CLS-03 record — account, symbol
   assert.match(s1.reason, /direction_reason: live_gap \(entered 2026-09-26T09:00:00Z \(risk event\), after #934's fix/)
   assert.match(s1.reason, /close_cause: live_gap \(no dated contract for this field\)/)
   assert.match(named.items[2].reason, /origin manual_broker/)
+  // Checker nit 3: what each class was computed on — SGDJPY also on CLS-03's close_cause.
+  assert.deepEqual(named.items.map(i => [i.positionId, i.classedOn]), [[sg.pid, 'stored missing + close flags'], [pf.pid, CLASSED_ON_REFUSED_VIEW], [co.pid, CLASSED_ON_REFUSED_VIEW]])
   // The SAME classifier, not a second one: each item's class and reason is classifyRefusedRecord's on that record.
   for (const it of named.items) {
     const row = db.prepare('SELECT partial_json FROM position_history_incomplete WHERE account_id = ? AND ctrader_position_id = ?').get(A, it.positionId)
@@ -1629,10 +1643,12 @@ test('B4b: the close row names each CLS-04 and CLS-03 record — account, symbol
   const parts = Object.keys(REFUSED_CLASSES).reduce((n, k) => n + row.split[k], 0) + row.split.other_rules
   assert.equal(parts, row.split.raw, 'the split is a partition of the count')
   assert.equal(row.split.raw, row.current)
+  assert.ok(!row.items.some(i => i.positionId === legacy.pid), 'the legacy record is not in the goal row either')
   assert.deepEqual(Object.keys(row.split.classes).sort(), [...Object.keys(REFUSED_CLASSES), 'other_rules'].sort())
   assert.equal(row.itemsTotal, 3); assert.deepEqual(row.items, snap.named.close.items)
   assert.ok(row.note.startsWith('4 new defective record(s) — '), `the existing headline is unchanged: ${row.note}`)
   assert.ok(row.note.includes(`; named 3 (CLS-04, CLS-03): live_gap 1, outside_bot 1, post_contract_pre_fix 1 — …0058 SGDJPY pos ${sg.pid} [live_gap], …0058 COIN.US pos ${pf.pid} [post_contract_pre_fix], …0058 Cocoa pos ${co.pid} [outside_bot]; items list 3 with what is missing, class and reason`), row.note)
+  assert.ok(row.note.includes("; 1 listed item(s) classed on more than /state/position-history's refused view reads (classedOn: the close flags' fields, or a record completed from the flag key or ledger row), so the class there can differ"), row.note)
   assert.match(row.note, /; 1 flagged by other close rules only \(counted, not named\)$/)
   // The other rows are untouched by the naming.
   for (const r of lifecycleGoals(snap, DEFAULT_GOAL_TARGETS, NOW).filter(x => x.id !== 'lifecycle_close')) assert.ok(!('items' in r) && !('split' in r), r.id)
@@ -1703,4 +1719,70 @@ test('B4b: nothing is counted as recovered — a gave-up record stored complete 
   const err = structuredClone(snap)
   err.named.close = { rules: ['CLS-04', 'CLS-03'], total: null, byClass: null, items: [], error: 'naming unreadable: boom' }
   assert.match(closeRow(err).note, /; records not named — naming unreadable: boom$/)
+})
+
+test('B4b fix round: a lower-bound count withholds the split (as a stale snapshot does) and keeps the named items; a named rule that is itself partial makes the named count "at least"', () => {
+  const db = initDB(':memory:')
+  const sg = refusedClose(db, { symbol: 'SGDJPY', closeReason: GENERIC, gaveUp: true })
+  const co = refusedClose(db, { symbol: 'Cocoa', origin: 'manual_broker', missing: ['direction_reason', 'strategy', 'planned_entry', 'risk_dist'] })
+  goodClose(db, { closed_at: NEW, commission: null })
+  const snap = withSnapshot(db, build(db))
+  assert.equal(closeRow(snap).split?.raw, 3, 'precondition: the whole count carries its split')
+
+  // Another close rule unreadable: the count of 3 leaves it out, so it is a lower bound.
+  const partial = structuredClone(snap)
+  partial.summary.close.unreadable = [{ id: 'CLS-01', reason: 'no such table: trades' }]
+  // Under the default target (0) the count proves off_track ("at least"); under
+  // a target above it the verdict is not_measurable and current is null — the
+  // case where a split would show a lower bound as the whole.
+  for (const [targets, verdict, current] of [[DEFAULT_GOAL_TARGETS, 'off_track', 3], [{ ...DEFAULT_GOAL_TARGETS, lifecycleNewDefectsMax: 10 }, 'not_measurable', null]]) {
+    const row = lifecycleGoals(partial, targets, NOW).find(r => r.id === 'lifecycle_close')
+    assert.equal(row.verdict, verdict); assert.equal(row.current, current)
+    assert.equal(row.split, null, `${verdict}: the split of a lower bound is withheld, not shown as whole`)
+    assert.equal(row.itemsTotal, 2, 'the named records stay: each was read and classed now')
+    assert.deepEqual(row.items.map(i => i.positionId), [sg.pid, co.pid])
+    assert.match(row.note, /unreadable: CLS-01 \(no such table: trades\)/, 'the main note already says which rule')
+    assert.match(row.note, /; split withheld — the count of 3 is a lower bound \(a close rule unreadable or truncated\), so no split of it is whole$/)
+    assert.ok(row.note.includes('; named 2 (CLS-04, CLS-03): '), 'CLS-01 is not a named rule: the named count is whole')
+    assert.ok(!/flagged by other close rules only/.test(row.note), 'no other_rules figure is derived from a lower bound')
+  }
+  // A NAMED rule truncated at its population bound: the named count is a lower bound too.
+  const trunc = structuredClone(snap)
+  trunc.summary.close.truncated = ['CLS-04']
+  const tr = closeRow(trunc)
+  assert.equal(tr.split, null); assert.equal(tr.itemsTotal, 2)
+  assert.ok(tr.note.includes('; named at least 2 (CLS-04, CLS-03; CLS-04 unreadable or truncated): '), tr.note)
+  assert.match(tr.note, /; split withheld — the count of 3 is a lower bound/)
+  // The whole snapshot is untouched by the checks above.
+  assert.equal(closeRow(snap).split.raw, 3)
+})
+
+test('B4b fix round: one record, two classes — the goal row classes on the close flags too, the refused view on the stored record alone, and classedOn says so', () => {
+  const db = initDB(':memory:')
+  // Entered before PR-D (#899): its missing direction_reason is pre_contract.
+  // Its close cause is generic, so CLS-03 adds close_cause — a live gap.
+  const r = refusedClose(db, { symbol: 'MSFT.US', closeReason: GENERIC, riskAt: '2026-09-01 00:00:00' })
+  const view = positionHistoryView(db).refused.rows.find(x => x.ctrader_position_id === r.pid)
+  assert.equal(view.class, 'pre_contract', '/state/position-history classes it on its stored missing fields alone')
+  assert.deepEqual(view.missing, ['direction_reason'])
+
+  const snap = withSnapshot(db, build(db))
+  const [it] = snap.named.close.items
+  assert.equal(it.positionId, r.pid)
+  assert.deepEqual(it.missing, ['direction_reason', 'close_cause'])
+  assert.equal(it.class, 'live_gap', 'the goal row classes it on the close flags too')
+  assert.equal(it.classedOn, 'stored missing + close flags', 'and says what it classed on')
+  assert.notEqual(it.classedOn, CLASSED_ON_REFUSED_VIEW)
+  const row = closeRow(snap)
+  assert.deepEqual(row.items, snap.named.close.items)
+  assert.match(row.note, /; 1 listed item\(s\) classed on more than \/state\/position-history's refused view reads \(classedOn: the close flags' fields, or a record completed from the flag key or ledger row\), so the class there can differ/)
+
+  // Without the CLS-03 flag the two views agree, and nothing is said.
+  const db2 = initDB(':memory:')
+  const r2 = refusedClose(db2, { symbol: 'MSFT.US', riskAt: '2026-09-01 00:00:00' })
+  const snap2 = withSnapshot(db2, build(db2))
+  const [it2] = snap2.named.close.items
+  assert.equal(it2.class, positionHistoryView(db2).refused.rows.find(x => x.ctrader_position_id === r2.pid).class)
+  assert.equal(it2.classedOn, CLASSED_ON_REFUSED_VIEW)
+  assert.ok(!/classed on more than/.test(closeRow(snap2).note))
 })

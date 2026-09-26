@@ -47,7 +47,7 @@ import { requestedAccount, scopeReport } from '../lib/account-scope.js'
 import { RETIRED_CONTROLLERS } from '../shared/controller-groups.js'
 import { CONTROLLERS, heartbeatView } from './heartbeat.js'
 import { digestState, loadNotifyConfig, DIGEST_STATE_SQL, DIGEST_REASON_ROWS_MAX } from './telegram-digest.js'
-import { classifyFlaggedClose, refusedClassesPhrase, REFUSED_CLASSES } from './position-history.js'
+import { classifyFlaggedClose, refusedClassesPhrase, REFUSED_CLASSES, CLASSED_ON_REFUSED_VIEW } from './position-history.js'
 
 export const SCHEMA_VERSION = 1
 export const SNAPSHOT_KEY = 'order_lifecycle_last_json'
@@ -1581,7 +1581,7 @@ function namedCloseRecords(db, results) {
     byClass[c.class] = (byClass[c.class] || 0) + 1
     items.push({
       record: r.key, account: r.account, symbol: c.symbol, positionId: c.positionId, tradeId: c.tradeId,
-      rules: [...r.rules].sort(), missing: c.missing, class: c.class, reason: cut(c.reason, NAMED_REASON_MAX), stored: c.stored, at: r.at,
+      rules: [...r.rules].sort(), missing: c.missing, class: c.class, classedOn: c.classedOn, reason: cut(c.reason, NAMED_REASON_MAX), stored: c.stored, at: r.at,
     })
   }
   items.sort((a, b) => order.indexOf(a.class) - order.indexOf(b.class) || (Date.parse(b.at ?? '') || 0) - (Date.parse(a.at ?? '') || 0) || a.record.localeCompare(b.record))
@@ -1794,6 +1794,16 @@ const OTHER_CLOSE_RULES_CLASS = 'a record flagged only by another close rule (CL
  * record, listed or not. Nothing is excluded or counted as recovered: every
  * item stays in `current`. A split that would not add up is withheld and
  * said, never forced. Pure.
+ *
+ * B4b fix round (checker nit 2): a stage count that leaves out an unreadable
+ * close rule, or whose population hit its bound (partialOf), is a LOWER BOUND
+ * — the verdict cannot pass on it and `current` may be null. Its split is
+ * WITHHELD (null), as the stale case withholds it: a partition of a lower
+ * bound would show `raw` and `other_rules` as whole. The named items stay —
+ * each is a record read and classed now — and when a NAMED rule is itself
+ * unreadable or truncated, `itemsTotal` is said to be a lower bound too.
+ * Checker nit 3: an item whose `classedOn` is more than the refused view's
+ * inputs is said, so the two classes of one record do not read as a clash.
  */
 function namedCloseFields(snapshot, s) {
   const c = snapshot?.named?.close
@@ -1804,19 +1814,26 @@ function namedCloseFields(snapshot, s) {
   const byClass = Object.fromEntries(Object.keys(REFUSED_CLASSES).map(k => [k, Number(c.byClass[k]) || 0]))
   const classed = Object.values(byClass).reduce((a, b) => a + b, 0)
   const other = raw - c.total
-  const whole = Number.isFinite(raw) && other >= 0 && classed === c.total
+  const lowerBound = partialOf(s) !== ''
+  const rules = c.rules || NAMED_CLOSE_RULES
+  const namedPartial = [...(Array.isArray(s?.unreadable) ? s.unreadable : []).map(u => (u && typeof u === 'object' ? u.id : u)), ...(Array.isArray(s?.truncated) ? s.truncated : [])]
+    .map(String).filter(id => rules.includes(id))
+  const whole = !lowerBound && Number.isFinite(raw) && other >= 0 && classed === c.total
   const items = Array.isArray(c.items) ? c.items : []
   const shown = items.slice(0, 5).map(i => `${tail(i.account)} ${i.symbol ?? '?'} ${i.positionId != null ? `pos ${i.positionId}` : `#${i.tradeId ?? '?'}`} [${i.class}]`)
   const more = c.total - shown.length
+  const beyond = items.filter(i => i.classedOn != null && i.classedOn !== CLASSED_ON_REFUSED_VIEW).length
   const note = (c.total > 0
-    ? `; named ${c.total} (${(c.rules || NAMED_CLOSE_RULES).join(', ')}): ${refusedClassesPhrase(byClass)}${shown.length ? ` — ${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}` : ''}` +
-      `; items list ${items.length} with what is missing, class and reason${items.length < c.total ? `, ${c.total - items.length} more counted, not listed` : ''}`
+    ? `; named ${namedPartial.length ? `at least ${c.total} (${rules.join(', ')}; ${[...new Set(namedPartial)].join(', ')} unreadable or truncated)` : `${c.total} (${rules.join(', ')})`}: ${refusedClassesPhrase(byClass)}${shown.length ? ` — ${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}` : ''}` +
+      `; items list ${items.length} with what is missing, class and reason${items.length < c.total ? `, ${c.total - items.length} more counted, not listed` : ''}` +
+      (beyond ? `; ${beyond} listed item(s) classed on more than /state/position-history's refused view reads (classedOn: the close flags' fields, or a record completed from the flag key or ledger row), so the class there can differ` : '')
     : '') +
     (whole && other > 0 ? `; ${other} flagged by other close rules only (counted, not named)` : '') +
-    (whole ? '' : `; split withheld — ${c.total} named record(s) do not partition the count of ${s.new}`)
+    (whole ? '' : lowerBound ? `; split withheld — the count of ${s.new} is a lower bound (a close rule unreadable or truncated), so no split of it is whole`
+      : `; split withheld — ${c.total} named record(s) do not partition the count of ${s.new}`)
   return {
     fields: {
-      // raw is the stage's count as the snapshot holds it (a lower bound when the note says partial).
+      // raw is the stage's whole count: a lower bound (partialOf) withholds the split, as a stale snapshot does.
       split: whole ? { raw, ...byClass, other_rules: other, classes: { ...REFUSED_CLASSES, other_rules: OTHER_CLOSE_RULES_CLASS } } : null,
       items, itemsTotal: c.total,
     },

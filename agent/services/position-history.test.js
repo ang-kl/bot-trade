@@ -13,7 +13,7 @@ import {
   REQUIRED_FIELDS, buildPositionRecord, capturePosition, backfillPositionHistory, backfillPositionHistoryCooperatively,
   recordVerdict, positionHistoryView, directionReasonFor, managementFor,
   classifyRefusedRecord, refusedClassesPhrase, REFUSED_CLASSES, POSITION_TRADE_SQL,
-  classifyFlaggedClose, FLAGGED_REFUSED_SQL, FLAGGED_COMPLETE_SQL,
+  classifyFlaggedClose, FLAGGED_REFUSED_SQL, FLAGGED_COMPLETE_SQL, CLASSED_ON_REFUSED_VIEW,
 } from './position-history.js'
 import { EVIDENCE_RULES } from './position-lifecycle-evidence.js'
 
@@ -652,10 +652,12 @@ test('B4b: a flagged close is classed from its stored refused record — either 
   const direct = classifyRefusedRecord(db, { record: { ...partial, ctrader_position_id: '909.0' }, missing: c.missing })
   assert.deepEqual({ class: c.class, fields: c.fields, reason: c.reason }, direct, 'the same classifier, the same answer')
   assert.equal(c.class, 'live_gap')
+  assert.equal(c.classedOn, CLASSED_ON_REFUSED_VIEW, 'the gave-up flag adds no field: the refused view\'s own inputs')
   // A flag's own field is added to what the stored record lacks.
   const both = classifyFlaggedClose(db, { accountId: ACCT, positionId: '909.0', missing: ['close_cause'] })
   assert.deepEqual(both.missing, ['direction_reason', 'planned_entry', 'risk_dist', 'close_cause'])
   assert.match(both.reason, /close_cause: live_gap \(no dated contract for this field\)/)
+  assert.equal(both.classedOn, 'stored missing + close flags', 'the flag\'s field is said as the flag\'s')
   // The two lookups stay on the primary keys — no SCAN of either table.
   for (const [sql, args] of [[FLAGGED_REFUSED_SQL, [ACCT, '909', '909.0', '909']], [FLAGGED_COMPLETE_SQL, [ACCT, '909', '909.0']]]) {
     const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args).map(r => r.detail).join(' | ')
@@ -672,6 +674,7 @@ test('B4b: with no refused record the ledger row is the record — a CLS-03 clos
   assert.equal(capturePosition(db, { accountId: ACCT, positionId: PID }).ok, true)
   const c = classifyFlaggedClose(db, { accountId: ACCT, positionId: PID, tradeId: Number(tradeId), missing: ['close_cause'] })
   assert.deepEqual([c.symbol, c.tradeId, c.stored, c.missing, c.class], ['EURUSD', Number(tradeId), 'complete', ['close_cause'], 'live_gap'])
+  assert.equal(c.classedOn, 'close flags; ledger row', 'no refused record: the refused view does not list it at all')
   // The same classifier on the ledger's record: dated by the risk event, origin from the trade.
   const direct = classifyRefusedRecord(db, { record: { trade_id: Number(tradeId), risk_event_id: Number(riskEventId), opened_at_ms: OPEN_MS, origin: 'scan_dispatch', account_id: ACCT, ctrader_position_id: PID }, missing: ['close_cause'] })
   assert.deepEqual({ class: c.class, fields: c.fields, reason: c.reason }, direct)
@@ -680,7 +683,26 @@ test('B4b: with no refused record the ledger row is the record — a CLS-03 clos
   // Nothing known at all: the record itself is what is missing, a writer gap, never excused.
   const bare = classifyFlaggedClose(db, { accountId: ACCT, positionId: '777', missing: ['record'] })
   assert.deepEqual([bare.stored, bare.missing, bare.class, bare.symbol], ['none', ['record'], 'live_gap', null])
+  assert.equal(bare.classedOn, 'close flags; flag key only')
   // Reading never writes: both tables are exactly as they were.
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM position_history').get().n, 1)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM position_history_incomplete').get().n, 0)
+})
+
+test('B4b fix round (checker nit 3): a stored record completed from the ledger row can take a different class than the refused view gives it — classedOn names the filled fields', () => {
+  const db = fresh()
+  const { tradeId } = seedComplete(db)
+  db.prepare(`UPDATE risk_events SET created_at = '2026-09-15 00:00:00' WHERE id = (SELECT risk_event_id FROM trades WHERE id = ?)`).run(tradeId)
+  // A refused record whose partial carries the trade id and the key, and no
+  // entry time, risk event or origin.
+  const partial = { trade_id: Number(tradeId), account_id: ACCT, ctrader_position_id: PID }
+  db.prepare(`INSERT INTO position_history_incomplete (account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json) VALUES (?, ?, 'EURUSD', ?, ?, ?)`)
+    .run(ACCT, PID, CLOSE_MS, JSON.stringify(['direction_reason']), JSON.stringify(partial))
+  const view = positionHistoryView(db).refused.rows.find(r => r.ctrader_position_id === PID)
+  assert.equal(view.class, 'live_gap', 'the refused view: the stored partial has no entry time, so nothing excuses it')
+  assert.match(view.reason, /entry time unknown/)
+  const c = classifyFlaggedClose(db, { accountId: ACCT, positionId: PID, missing: ['direction_reason'] })
+  assert.equal(c.class, 'post_contract_pre_fix', 'the goal row: the ledger row supplies the risk event, entered between PR-D and PR-AL')
+  assert.equal(c.classedOn, 'stored missing; stored record + risk_event_id, opened_at_ms, origin from the flag key or ledger row')
+  assert.notEqual(c.classedOn, CLASSED_ON_REFUSED_VIEW)
 })

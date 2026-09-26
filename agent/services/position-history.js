@@ -507,7 +507,7 @@ const FLAGGED_TRADE_BY_ID_SQL = 'SELECT * FROM trades WHERE id = ?'
  * leaves its part absent and the classifier falls to its conservative class.
  *
  * @returns {{ symbol: string|null, positionId: string|null, tradeId: number|null,
- *   missing: string[], stored: 'refused'|'complete'|'none', class: string,
+ *   missing: string[], stored: 'refused'|'complete'|'none', classedOn: string, class: string,
  *   fields: Record<string,string>, reason: string }}
  */
 export function classifyFlaggedClose(db, { accountId = null, positionId = null, tradeId = null, missing = [] } = {}) {
@@ -522,16 +522,21 @@ export function classifyFlaggedClose(db, { accountId = null, positionId = null, 
     : pid != null ? get(POSITION_TRADE_SQL, pid, `${pid}.0`, acct, acct) : null
   // The stored partial first — it is the record — and the ledger row for
   // whatever the partial does not carry (a CLS-03 close with no refused record).
+  const own = {
+    trade_id: num(partial.trade_id), risk_event_id: num(partial.risk_event_id), opened_at_ms: num(partial.opened_at_ms),
+    origin: str(partial.origin), account_id: str(partial.account_id), ctrader_position_id: str(partial.ctrader_position_id),
+  }
   const record = {
-    trade_id: num(partial.trade_id) ?? num(trade?.id),
-    risk_event_id: num(partial.risk_event_id) ?? num(trade?.risk_event_id),
-    opened_at_ms: num(partial.opened_at_ms) ?? utcMs(trade?.opened_at),
-    origin: str(partial.origin) ?? str(trade?.origin),
-    account_id: str(partial.account_id) ?? acct ?? str(trade?.account_id),
-    ctrader_position_id: str(partial.ctrader_position_id) ?? pid ?? normPosId(trade?.ctrader_position_id),
+    trade_id: own.trade_id ?? num(trade?.id),
+    risk_event_id: own.risk_event_id ?? num(trade?.risk_event_id),
+    opened_at_ms: own.opened_at_ms ?? utcMs(trade?.opened_at),
+    origin: own.origin ?? str(trade?.origin),
+    account_id: own.account_id ?? acct ?? str(trade?.account_id),
+    ctrader_position_id: own.ctrader_position_id ?? pid ?? normPosId(trade?.ctrader_position_id),
   }
   const storedMissing = parse(refused?.missing_json)
-  let fields = [...new Set([...(Array.isArray(storedMissing) ? storedMissing : []), ...(Array.isArray(missing) ? missing : [])].map(String))]
+  const storedFields = (Array.isArray(storedMissing) ? storedMissing : []).map(String)
+  let fields = [...new Set([...storedFields, ...(Array.isArray(missing) ? missing : [])].map(String))]
   // `record` names no field: when anything more specific is known, it goes.
   if (fields.length > 1) fields = fields.filter(f => f !== 'record')
   if (!fields.length) fields = ['record']
@@ -540,13 +545,29 @@ export function classifyFlaggedClose(db, { accountId = null, positionId = null, 
     : record.account_id != null && recPid != null && get(FLAGGED_COMPLETE_SQL, record.account_id, recPid, `${recPid}.0`) ? 'complete'
       : 'none'
   const c = classifyRefusedRecord(db, { record, missing: fields })
+  // B4b fix round (checker nit 3): what the class was computed ON. The refused
+  // view at /state/position-history (refusedRecordsView) classes a stored
+  // record on its stored missing fields and its stored partial ALONE; this
+  // also takes the close flags' fields (CLS-03's close_reason / close_cause)
+  // and completes the record from the flag's key and the ledger row. So one
+  // record can carry two classes — e.g. pre_contract there, live_gap here once
+  // CLS-03 adds close_cause — and `classedOn` says why, rather than the two
+  // reading as a contradiction. CLASSED_ON_REFUSED_VIEW means the same inputs.
+  const byFlags = fields.filter(f => !storedFields.includes(f))
+  const filled = Object.keys(record).filter(k => own[k] == null && record[k] != null)
+  const classedOn = [
+    refused ? `stored missing${byFlags.length ? ' + close flags' : ''}` : 'close flags',
+    refused ? (filled.length ? `stored record + ${filled.join(', ')} from the flag key or ledger row` : null) : (trade ? 'ledger row' : 'flag key only'),
+  ].filter(Boolean).join('; ')
   return {
     symbol: str(refused?.symbol) ?? str(trade?.symbol),
     positionId: pid ?? normPosId(trade?.ctrader_position_id),
     tradeId: record.trade_id,
-    missing: fields, stored, class: c.class, fields: c.fields, reason: c.reason,
+    missing: fields, stored, classedOn, class: c.class, fields: c.fields, reason: c.reason,
   }
 }
+/** classifyFlaggedClose's `classedOn` when it classed on exactly what the refused view at /state/position-history classes on. */
+export const CLASSED_ON_REFUSED_VIEW = 'stored missing'
 
 /**
  * Build and store one record, in whichever stream it belongs.

@@ -634,7 +634,10 @@ test('B4b: lifecycle_close names its refused records in B4\'s shape — an undat
   assert.equal(g.itemsTotal, 1)
   assert.deepEqual(g.items.map(i => [i.account, i.symbol, i.positionId, i.missing, i.class, i.stored]), [['47790949', 'Cocoa', '243609813', ['direction_reason'], 'live_gap', 'refused']])
   assert.match(g.items[0].reason, /direction_reason: live_gap \(entry time unknown — not excused by a date\)/)
-  assert.match(g.note, /; named 1 \(CLS-04, CLS-03\): live_gap 1 — …0949 Cocoa pos 243609813 \[live_gap\]; items list 1 with what is missing, class and reason$/)
+  // Its stored partial is empty: the key is filled from the flag, which the
+  // refused view (partial_json alone) does not do — said, not left to clash.
+  assert.equal(g.items[0].classedOn, 'stored missing; stored record + account_id, ctrader_position_id from the flag key or ledger row')
+  assert.match(g.note, /; named 1 \(CLS-04, CLS-03\): live_gap 1 — …0949 Cocoa pos 243609813 \[live_gap\]; items list 1 with what is missing, class and reason; 1 listed item\(s\) classed on more than \/state\/position-history's refused view reads \(classedOn: the close flags' fields, or a record completed from the flag key or ledger row\), so the class there can differ$/)
   assert.equal(NAMED_RECORDS_MAX, GOAL_ITEMS_MAX)
   // The same table read from a snapshot WITHOUT the names: the verdicts and the summary are identical — naming counts nothing.
   const { named: _unused, ...unnamed } = snap
