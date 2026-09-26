@@ -15,3 +15,21 @@ export function proposalStatus({ applied, proposed, live }) {
   return JSON.stringify(live ?? null) === JSON.stringify(proposed ?? null) ? 'holds' : 'superseded'
 }
 
+
+// SAFE-0b (owner OD-14, 26-09-2026): the Apply confirm NAMES THE KEYS it will
+// change. Apply writes the GLOBAL risk settings, and before this it was one
+// click with no confirm at all. Each ticked row is listed as label, config key
+// and the from→to values, followed by the account and time the proposal was
+// made for — so an apply of the wrong run reads wrong before it is sent. The
+// server still refuses a proposal older than 7 days or made for another
+// account (agent/services/risk-reassess.js reassessApplyRefusal); this text is
+// the owner's check, not the guard.
+export function reassessApplyConfirmText({ keys = [], last = null, live = {}, format = (_k, v) => String(v ?? '—') } = {}) {
+  const byKey = new Map((last?.proposals || []).map(p => [p.key, p]))
+  const lines = keys.map(k => {
+    const p = byKey.get(k)
+    return `• ${p?.label || k} (${k}): ${format(k, live?.[k])} → ${format(k, p?.proposed)}`
+  })
+  const made = `proposal made ${last?.at || 'at an unknown time'} for account ${last?.accountId ?? 'unknown'}`
+  return [`Apply ${keys.length} setting${keys.length === 1 ? '' : 's'} to the GLOBAL risk settings?`, ...lines, made].join('\n')
+}

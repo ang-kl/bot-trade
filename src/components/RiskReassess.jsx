@@ -23,7 +23,7 @@ import Badge from './common/Badge.jsx'
 import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
-import { proposalStatus } from '../lib/risk-proposal-status.js'
+import { proposalStatus, reassessApplyConfirmText } from '../lib/risk-proposal-status.js'
 import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 import Collapse from './common/Collapse.jsx'
 
@@ -152,6 +152,10 @@ export default function RiskReassess({ onChanged, onApplied, initialLlmOff = nul
   const apply = async () => {
     const keys = [...picked]
     if (keys.length === 0) return
+    // SAFE-0b (OD-14): name the keys this writes to the GLOBAL risk settings,
+    // with the proposal's account and time. The agent refuses a stale or
+    // other-account proposal on its own; this is the owner's own check.
+    if (!window.confirm(reassessApplyConfirmText({ keys, last, live, format: (k, v) => show(k, v, proposable) }))) return
     setBusy('apply'); setError(''); setDone('')
     try {
       // `at` binds this apply to the assessment ON SCREEN. If another tab ran a
