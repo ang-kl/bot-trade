@@ -770,6 +770,9 @@ export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, a
     },
     expect: PT.GET_TRENDBARS_RES,
     ...(typeof opts?.onTokenWait === 'function' ? { onTokenWait: opts.onTokenWait } : {}),
+    // S-3 Phase 0: the purpose rides the step so noteTokenWait can count the
+    // wait under it. Neither request path sends anything but `send`.
+    ...(opts?.purpose ? { purpose: String(opts.purpose) } : {}),
   }))
 
   return withRetry(async () => {

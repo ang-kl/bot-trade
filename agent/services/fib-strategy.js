@@ -16,6 +16,7 @@ import { tfMs } from '../lib/timeframes.js'
 import { computeCupHandleSignal, computeInvCupHandleSignal, traceCupHandleSearch, traceInvCupHandleSearch } from './cup-handle.js'
 import { categoriseSymbol } from '../lib/sessions.js'
 import { nativeOptionsFor } from './scanner-profiles.js'
+import { recordBarFetch, recordStarved } from '../lib/bar-path-counters.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
 const ZONE_TOLERANCE = 0.05   // +/-5% of leg range around the 61.8% level
@@ -128,15 +129,90 @@ const TIME_CAP_MINUTES = {
 const SCAN_CONCURRENCY = Math.max(1, Math.min(12, Number(process.env.SCAN_CONCURRENCY) || 6))
 
 // In-memory bar cache. A timeframe's bars only change when a new bar closes,
-// so refetching 1d candles every 5-minute loop is pure waste — cache entries
-// expire after one bar duration.
-const barCache = new Map() // `${symbolId}|${period}` -> { bars, fetchedAt }
+// so refetching 1d candles every 5-minute loop is pure waste.
+//
+// S-3 (26-09-2026) — three defects in this cache, each measured:
+//  1. DEPTH WAS NOT RECORDED. A regime read cached 30–80 bars under the scan's
+//     key and the scan accepted them, so a strategy needing 450 got nothing
+//     for up to a bar. Every entry now carries `depth` — the count that was
+//     ASKED for — and a reader that needs more treats it as absent. The asked
+//     count, not the returned one: a symbol whose whole history is shorter
+//     (BTCUSD 1mo: 190) must not be refetched every cycle.
+//  2. EXPIRY WAS BY FETCH TIME, not bar close: an entry fetched mid-bar lived
+//     a full period, so for up to a period after that bar closed the scan read
+//     the partial bar as closed. `expiresAt` is now the close of the bar that
+//     was forming at fetch time (fetch time + one period when none was).
+//  3. "CLOSED" WAS JUDGED AGAINST NOW, not against the fetch — the same
+//     partial bar passed as closed once `now` crossed its close. It is now
+//     judged against `fetchedAt` (closedBarsOf): a bar forming when it was
+//     fetched is never closed, however late it is read.
+const barCache = new Map() // `${symbolId}|${period}` -> { bars, fetchedAt, depth, expiresAt, host?, accountId? }
 
-function cachedBars(symbolId, period) {
+// A module seam so a test can stand in for the broker. Production never
+// calls the setter.
+let fetchTrendbars = wsGetTrendbarsBatch
+export function _setTrendbarFetcherForTests(fn) { fetchTrendbars = typeof fn === 'function' ? fn : wsGetTrendbarsBatch }
+export function _resetBarCacheForTests() { barCache.clear() }
+
+/**
+ * When the bar that OPENED at `t` closes. Calendar months are not 30 days:
+ * a monthly bar closes at the same offset into the next month, whatever the
+ * broker's month-start offset from UTC is.
+ */
+export function barCloseAt(t, period) {
+  if (period === '1mo') {
+    const mid = new Date(t + 15 * 86_400_000)
+    const monthStart = Date.UTC(mid.getUTCFullYear(), mid.getUTCMonth(), 1)
+    return Date.UTC(mid.getUTCFullYear(), mid.getUTCMonth() + 1, 1) + (t - monthStart)
+  }
+  const ms = tfMs(period)
+  return ms > 0 ? t + ms : t
+}
+
+/** When a cache entry fetched at `fetchedAt` stops being current. */
+export function cacheExpiryFor(bars, period, fetchedAt) {
+  const ttl = tfMs(period) || 300_000
+  const last = Array.isArray(bars) && bars.length ? bars[bars.length - 1] : null
+  if (last && Number.isFinite(last.t)) {
+    const close = barCloseAt(last.t, period)
+    // Forming at fetch → the entry is current until that bar closes.
+    if (close > fetchedAt) return close
+  }
+  return fetchedAt + ttl
+}
+
+/** The bars of `bars` that were CLOSED when they were fetched — never a bar forming at `fetchedAt`. */
+export function closedBarsOf(bars, period, fetchedAt) {
+  const list = Array.isArray(bars) ? bars : []
+  const last = list[list.length - 1]
+  return last && barCloseAt(last.t, period) > fetchedAt ? list.slice(0, -1) : list
+}
+
+function cacheEntry(symbolId, period, { minDepth = 0 } = {}) {
   const entry = barCache.get(`${symbolId}|${period}`)
   if (!entry) return null
-  const ttl = tfMs(period) || 300_000
-  return Date.now() - entry.fetchedAt < ttl ? entry.bars : null
+  const expiresAt = Number.isFinite(entry.expiresAt) ? entry.expiresAt : entry.fetchedAt + (tfMs(period) || 300_000)
+  if (Date.now() >= expiresAt) return null
+  if (minDepth > 0 && !(Number(entry.depth) >= minDepth)) return null
+  return entry
+}
+
+function cachedBars(symbolId, period, opts) {
+  return cacheEntry(symbolId, period, opts)?.bars ?? null
+}
+
+/**
+ * Store one fetch. A shallower fetch never replaces a deeper entry that is
+ * still current — the regime read must not undo the scan's depth.
+ */
+function storeBars(symbolId, period, bars, { depth, fetchedAt = Date.now(), ...meta } = {}) {
+  const key = `${symbolId}|${period}`
+  const prev = cacheEntry(symbolId, period)
+  if (prev && Number(prev.depth) > Number(depth) && prev.fetchedAt >= fetchedAt - (tfMs(period) || 300_000)) return prev
+  const list = Array.isArray(bars) ? bars : []
+  const entry = { bars: list, fetchedAt, depth: Number(depth) || list.length, expiresAt: cacheExpiryFor(list, period, fetchedAt), ...meta }
+  barCache.set(key, entry)
+  return entry
 }
 
 /** E·1: the scan's cached bars for a symbol id, read-only (null when stale/absent). */
@@ -162,12 +238,15 @@ export async function getRegimeBars(creds, symbolId, { preferredTfs = ['1d', '4h
     if (c && c.length >= 40) return { tf, bars: c }
   }
   try {
-    const fetched = await wsGetTrendbarsBatch(
+    const fetched = await fetchTrendbars(
       creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
       symbolId, [fallbackTf], count, 60_000, 0, { purpose: 'regime' },
     )
     const bars = (fetched && fetched[fallbackTf]) || []
-    if (bars.length) barCache.set(`${symbolId}|${fallbackTf}`, { bars, fetchedAt: Date.now() })
+    recordBarFetch({ purpose: 'regime', asked: count, got: bars.length })
+    // S-3: stored WITH its depth, so the scan knows this entry is `count`
+    // deep and fetches its own deeper window rather than accepting it.
+    if (bars.length) storeBars(symbolId, fallbackTf, bars, { depth: count })
     return { tf: fallbackTf, bars }
   } catch {
     return { tf: null, bars: [] }
@@ -579,21 +658,29 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   // a custom TF armed for autotrade must also be scanned, or it never fires.
   const scanTfs = scanTimeframeLadder(opts.extraTimeframes)
 
-  const stale = scanTfs.filter(tf => !cachedBars(symbolId, tf))
+  // Fetch as deep as the DEEPEST scanned strategy needs — no deeper — PLUS
+  // ONE (S-3). cTrader's response includes the forming bar, which the
+  // strategies never see, so asking for exactly the need left the deepest
+  // strategy one closed bar short on every open market (ema_pullback: 450
+  // asked, 449 closed, measured 26-09-2026 02:48Z). The broker limit is 5
+  // REQUESTS/sec, not bars/sec, so one more bar costs no request.
+  const needBars = strategyFns(opts).reduce(
+    (deepest, fn) => Math.max(deepest, Number(fn?.minBars) || 0), SIGNAL_BARS)
+  const fetchBars = needBars + 1
+  // An entry a shallower caller wrote (the regime read) is not current for
+  // this scan: its depth is below what this scan asks for.
+  const stale = scanTfs.filter(tf => !cachedBars(symbolId, tf, { minDepth: fetchBars }))
   if (stale.length > 0) {
     try {
-      // Fetch as deep as the DEEPEST armed strategy needs — no deeper. When the
-      // deep strategies are disarmed this is the historical 150 and costs
-      // exactly what it always did. The broker limit is 5 REQUESTS/sec, not
-      // bars/sec, so depth changes response size, never request count.
-      const fetchBars = strategyFns(opts).reduce(
-        (deepest, fn) => Math.max(deepest, Number(fn?.minBars) || 0), SIGNAL_BARS)
       // WEB-9b: `purpose` labels the per-timeframe bar receipt only (the
       // same 30 s timeout and live window as the defaults).
-      const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, fetchBars, 30_000, 0, { purpose: 'strategy_scan' })
+      const shallow = new Set(stale.filter(tf => cachedBars(symbolId, tf)))
+      const fetched = await fetchTrendbars(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, fetchBars, 30_000, 0, { purpose: 'strategy_scan' })
       const now = Date.now()
       for (const tf of stale) {
-        barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt: now, host, accountId })
+        const got = fetched[tf] || []
+        storeBars(symbolId, tf, got, { depth: fetchBars, fetchedAt: now, host, accountId })
+        recordBarFetch({ purpose: 'strategy_scan', symbol, timeframe: tf, asked: fetchBars, got: got.length, shallowRefetch: shallow.has(tf), atMs: now })
       }
     } catch (err) {
       return { symbol, signal: null, lastPrice: null, error: `trendbar fetch failed: ${err.message}` }
@@ -606,7 +693,6 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const bestByStrategy = new Map()
   let lastPrice = null
   let lastPriceT = -1
-  const now = Date.now()
   const fns = strategyFns(opts)
   // Cup & Handle Silence Diagnostics (Part A): rides on the existing
   // cup_handle/inv_cup_handle enable toggles — only computed when a
@@ -616,7 +702,8 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const invCupHandleOn = fns.includes(computeInvCupHandleSignal)
   const cupHandleTraces = []
   for (const timeframe of scanTfs) {
-    const bars = cachedBars(symbolId, timeframe) || []
+    const entry = cacheEntry(symbolId, timeframe)
+    const bars = entry?.bars || []
     const last = bars[bars.length - 1]
     if (last && last.t > lastPriceT) { lastPrice = last.c; lastPriceT = last.t }
     // Signals are evaluated on CLOSED bars only. cTrader's trendbar response
@@ -628,8 +715,11 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     // smaller one — a preferred-TF (armed) signal REPLACES a fallback signal.
     const preferred = opts.preferredTfs || null
     const isPreferred = (tf) => !preferred || preferred.includes(tf)
-    const periodMs = tfMs(timeframe) || 0
-    const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
+    // S-3: closed AT THE FETCH, not at `now`. A bar that was forming when it
+    // was fetched stays excluded however late it is read — its close is a
+    // mid-bar price. (The entry expires at that bar's close, so the next read
+    // refetches it closed.)
+    const closed = entry ? closedBarsOf(bars, timeframe, entry.fetchedAt) : []
     // Each strategy sees exactly its own requirement, floored at SIGNAL_BARS.
     // A strategy that needs less than the floor keeps the 150-bar window it
     // was tuned on; one that needs more gets what it needs. Nothing silently
@@ -637,6 +727,18 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     const barsFor = (fn) => {
       const want = Math.max(SIGNAL_BARS, Number(fn?.minBars) || 0)
       return closed.length > want ? closed.slice(-want) : closed
+    }
+    // S-3 Phase 0: a strategy handed fewer closed bars than its own guard is
+    // STARVED on this timeframe — counted, so "silent" can be told apart from
+    // "never had the bars" (lib/bar-path-counters.js).
+    if (closed.length) {
+      for (const fn of fns) {
+        const need = Number(fn?.minBars) || 0
+        if (need > 0 && closed.length < need) {
+          const strategy = opts.strategies?.find(s => s.compute === fn)?.key || fn.name || 'unknown'
+          recordStarved({ strategy, timeframe, have: closed.length, need })
+        }
+      }
     }
     // THE TRACE MUST SEE EXACTLY WHAT THE SEARCH SEES (05-08-2026). It used to
     // be handed the full `closed` array while computeCupHandleSignal was handed
@@ -973,10 +1075,13 @@ export async function scanPendingSetups(creds, symbolMap, pendingMatrix, opts = 
     const stale = armedTfs.filter(tf => !cachedBars(symbolId, tf))
     if (stale.length > 0) {
       try {
-        const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, BAR_COUNT, 30_000, 0, { purpose: 'pending_scan' })
+        const fetched = await fetchTrendbars(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, BAR_COUNT, 30_000, 0, { purpose: 'pending_scan' })
         const fetchedAt = Date.now()
         for (const tf of stale) {
-          barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt })
+          // S-3: stored with its depth (BAR_COUNT), so the scan does not
+          // mistake this 150-bar window for its own deeper one.
+          storeBars(symbolId, tf, fetched[tf] || [], { depth: BAR_COUNT, fetchedAt })
+          recordBarFetch({ purpose: 'pending_scan', asked: BAR_COUNT, got: (fetched[tf] || []).length, atMs: fetchedAt })
         }
       } catch (err) {
         errors.push(`${symbol}: trendbar fetch failed: ${err.message}`)
@@ -984,16 +1089,16 @@ export async function scanPendingSetups(creds, symbolMap, pendingMatrix, opts = 
       }
     }
 
-    const now = Date.now()
     let closeT = -1
     for (const timeframe of armedTfs) {
-      const bars = cachedBars(symbolId, timeframe) || []
+      const entry = cacheEntry(symbolId, timeframe)
+      const bars = entry?.bars || []
       const last = bars[bars.length - 1]
       if (last && last.t > closeT) { lastClose[symbol] = last.c; closeT = last.t }
-      // CLOSED bars only — same forming-bar drop as scanSymbolFib; a resting
-      // order placed off a repainting mid-bar swing is the same lookahead trap.
-      const periodMs = tfMs(timeframe) || 0
-      const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
+      // CLOSED bars only — same forming-bar drop as scanSymbolFib (judged at
+      // the fetch, S-3); a resting order placed off a repainting mid-bar
+      // swing is the same lookahead trap.
+      const closed = entry ? closedBarsOf(bars, timeframe, entry.fetchedAt) : []
       const signal = computeFibSignal(closed, timeframe, { ...opts, pendingSetup: true, classTuning: opts.classTuning || tuningFor(symbol) })
       if (signal) setups.push({ symbol, timeframe, signal })
     }

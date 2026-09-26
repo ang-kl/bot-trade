@@ -51,6 +51,38 @@
 
 import { tfMs, armedTimeframes } from '../lib/timeframes.js'
 import { scanTimeframeLadder } from './fib-strategy.js'
+import { shortHistory } from '../lib/bar-path-counters.js'
+import { scanStageStrategies } from './stage-matrix.js'
+
+/**
+ * S-3 (26-09-2026): IMPOSSIBLE cells — strategy × symbol × timeframe cells no
+ * fetch depth can feed, because the broker's WHOLE history for that symbol ×
+ * timeframe is shorter than the strategy's own guard. Measured: BTCUSD 1mo
+ * returns 190 bars when 450 are asked (its full history at this broker, back
+ * to ~Nov 2010), so ema_pullback (450) and the cup pair (210) can never run
+ * there. This is a third kind of finding beside (a) and (b) below: the
+ * timeframe IS scanned, and no pass will ever produce it for THIS strategy.
+ *
+ * Only what has been OBSERVED is marked: `history` comes from the bar-path
+ * counters (a fetch that returned fewer bars than it asked for). `got`
+ * counts the forming bar when there was one, so `got < need` never
+ * over-reports. Pure.
+ *
+ * @param {Array<{symbol:string, timeframe:string, asked:number, got:number}>} history
+ * @param {Array<{key:string, minBars?:number}>} strategies — the scan-staged set
+ */
+export function impossibleDepthCells(history, strategies) {
+  const out = []
+  for (const h of Array.isArray(history) ? history : []) {
+    for (const s of Array.isArray(strategies) ? strategies : []) {
+      const need = Number(s?.minBars) || 0
+      if (need > 0 && Number(h.got) < need) {
+        out.push({ strategy: s.key, symbol: h.symbol, timeframe: h.timeframe, need, history: Number(h.got), asked: Number(h.asked) })
+      }
+    }
+  }
+  return out.sort((a, b) => a.symbol.localeCompare(b.symbol) || tfMs(b.timeframe) - tfMs(a.timeframe) || a.strategy.localeCompare(b.strategy))
+}
 
 const SYMBOL_CAP = 8
 
@@ -199,7 +231,18 @@ export function readArmedCellReachability(db, getStateFn) {
   const scope = read('autotrade_scope') || 'all'
   let armedList = []
   try { armedList = armedTimeframes(db, getStateFn) } catch { armedList = [] }
-  return unreachableArmedCells({ matrix, extraTimeframes, armedList, scope })
+  const report = unreachableArmedCells({ matrix, extraTimeframes, armedList, scope })
+  let strategies = []
+  try { strategies = scanStageStrategies(db, getStateFn) } catch { strategies = [] }
+  const history = shortHistory()
+  report.impossible = {
+    cells: impossibleDepthCells(history, strategies),
+    observedShortHistories: history.length,
+    note: history.length
+      ? 'strategy × symbol × timeframe cells the broker\'s whole history cannot feed: the symbol holds fewer bars on that timeframe than the strategy\'s own guard. No depth setting fixes these; they are marked, not hidden. Observed since this agent started.'
+      : 'not measured yet: no fetch since this agent started has returned fewer bars than it asked for, so no cell can be marked impossible (this is not evidence that none is)',
+  }
+  return report
 }
 
 /**

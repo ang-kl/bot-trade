@@ -158,6 +158,24 @@ export function strategyLiveness(db, opts = {}) {
      WHERE status = 'closed' AND closed_at IS NOT NULL AND ${AT_LEAST('closed_at')} ${acctScope}
      GROUP BY ${strategyAttrSql()}`, [since, ...acctParams])
 
+  // S-3 (26-09-2026): the MOMENTUM family is not produced by the scan. Its
+  // signals are the cross-sectional ranking's would-be entries
+  // (momentum_shadow 'enter' rows, written by the daily pass / the book), so
+  // counting its scan rows reported tsmom_long "silent" — armed, zero
+  // signals — on …0058 while its ranking ran and its book held positions.
+  // Its funnel's first stage is read from the ranking instead, and its
+  // verdict needs the ranking to have run in the window, not the scan.
+  let momentum = { enters: 0, rows: 0, lastEnterAt: null }
+  try {
+    const r = db.prepare(`
+      SELECT SUM(CASE WHEN action = 'enter' THEN 1 ELSE 0 END) AS enters,
+             COUNT(*) AS n_rows,
+             MAX(CASE WHEN action = 'enter' THEN at END) AS last_enter
+        FROM momentum_shadow
+       WHERE ${AT_LEAST('at')}`).get(since)
+    momentum = { enters: Number(r?.enters || 0), rows: Number(r?.n_rows || 0), lastEnterAt: r?.last_enter || null }
+  } catch { /* table missing on an old DB — treated as no data */ }
+
   let totalScans = 0
   for (const row of scans.values()) totalScans += Number(row.n || 0)
   // Enough scanning has happened for an absence to be evidence.
@@ -177,22 +195,26 @@ export function strategyLiveness(db, opts = {}) {
     return raw == null || raw === '' ? null : String(raw)
   }
 
-  const strategies = STRATEGY_REGISTRY.map(({ key, name }) => {
+  const strategies = STRATEGY_REGISTRY.map(({ key, name, family }) => {
     const armed = armedKeys.has(key)
+    const fromRanking = family === 'momentum'
     const s = scans.get(key)
     const d = decisions.get(key)
     const o = opened.get(key)
     const c = closed.get(key)
 
-    const signals = Number(s?.n || 0)
+    const signals = fromRanking ? momentum.enters : Number(s?.n || 0)
     const openedN = Number(o?.n || 0)
+    const canJudge = fromRanking ? momentum.rows > 0 : verdictable
 
     let verdict = 'unknown'
-    let note = 'not enough scan activity in this window to judge'
+    let note = fromRanking
+      ? 'the momentum ranking wrote no row in this window, so its absence cannot be judged'
+      : 'not enough scan activity in this window to judge'
     if (!armed) {
       verdict = 'idle_unarmed'
       note = 'not armed — absence here is expected'
-    } else if (!verdictable) {
+    } else if (!canJudge) {
       verdict = 'unknown'
     } else if (openedN > 0) {
       verdict = 'trading'
@@ -209,7 +231,9 @@ export function strategyLiveness(db, opts = {}) {
         : 'producing signals but none reached an order — check the gates that stopped it'
     } else {
       verdict = 'silent'
-      note = 'armed but produced NO signal in this window — a quiet market, or a code path that cannot run'
+      note = fromRanking
+        ? 'armed, and the momentum ranking ran in this window, but it proposed NO entry — every name failed its entry band, or the pass could not reach this account'
+        : 'armed but produced NO signal in this window — a quiet market, or a code path that cannot run'
     }
 
     return {
@@ -221,7 +245,10 @@ export function strategyLiveness(db, opts = {}) {
       vetoes: Number(d?.stopped || 0),
       opened: openedN,
       closed: Number(c?.n || 0),
-      lastSignalAt: s?.last_at || null,
+      lastSignalAt: fromRanking ? momentum.lastEnterAt : (s?.last_at || null),
+      // Where `signals` is counted from, so a reader never compares a ranking
+      // count with a scan count unawares.
+      signalSource: fromRanking ? 'momentum_shadow' : 'scans',
       lastTradeAt: o?.last_at || null,
       // null means NEVER, not "unknown" — the loudest case, kept distinct.
       lastAnalyzedAt: analyzedAt(key),

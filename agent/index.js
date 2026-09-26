@@ -399,6 +399,19 @@ try {
   } catch (err) {
     console.error(`[boot] global strategy arm failed (non-fatal): ${err.message}`)
   }
+  // S-1 (26-09-2026, principle 4): AFTER every arming seed above, so it sees
+  // their rows. Appends only — a `corrected` row for each recorded reason that
+  // was wrong, and a `declared` row for each Trade cell no row explains. No
+  // cell value changes and no row is updated or deleted.
+  try {
+    const { applyArmingCorrections } = await import('./services/arming-log.js')
+    const { declareUnrecordedTradeCells } = await import('./services/stage-matrix.js')
+    const corr = applyArmingCorrections(db)
+    const decl = declareUnrecordedTradeCells(db, getState)
+    console.log(`[boot] arming ledger: ${corr.appended} reason correction(s) appended (${corr.alreadyCorrected} already corrected), ${decl.declared.length} unrecorded Trade cell(s) declared as found${decl.disagrees.length ? `, ${decl.disagrees.length} cell(s) DISAGREE with their last row and were left as they are: ${decl.disagrees.join(' ')}` : ''}`)
+  } catch (err) {
+    console.error(`[boot] arming ledger declaration failed (non-fatal): ${err.message}`)
+  }
   // P3b: the owner's tick-observation declaration from the repo (11-09-2026,
   // "ACCT-DEMO-3 records first"), seeded once per file content, same rule
   // as the pins. The recorder itself records only on a sidecar started

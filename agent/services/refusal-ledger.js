@@ -56,14 +56,21 @@ const num = (v) => { if (v == null || v === '') return null; const n = Number(v)
  * walk), so a shadow refusal is still scored for forgone R. Unscored keys
  * only; rows without a readable proposal are unscorable downstream.
  *
- * 20-09-2026 (the intraday retirement): `producer_retired` skips join them.
- * The scan, its analysis and the risk gate keep running; their proposals now
- * end at the fence and are scored here for forgone R at zero risk — one row
- * per setup per opportunity window (entry-mode.js's RETIRED_REFUSAL_WINDOW_MS,
- * the same gap this file's opportunity identity uses), so a retired stack
- * goes on producing evidence instead of going dark, without writing a row per
- * symbol per cycle. A skip with no symbol and no proposal carries nothing to
- * score and is excluded below.
+ * 20-09-2026 (the intraday retirement): `producer_retired` skips join them —
+ * one row per setup per opportunity window (entry-mode.js's
+ * RETIRED_REFUSAL_WINDOW_MS, the same gap this file's opportunity identity
+ * uses). A skip with no symbol and no proposal carries nothing to score and
+ * is excluded below.
+ *
+ * CORRECTED 26-09-2026 (S-1, principle 5). This comment used to say the
+ * retired stack's proposals "now end at the fence and are scored here", so a
+ * retired stack "goes on producing evidence". It does not: every intraday
+ * strategy is also OFF in Auto Trade & Open on every account, so the stage
+ * gate (loop.js, `stage_matrix` rows, which carry no levels and are not read
+ * here) refuses each proposal before it can reach the fence. Measured: 0
+ * `producer_retired` rows across the whole retention and 0 shadow refusals in
+ * 7 days (26-09-2026). Scoring the stage-gate refusals is S-4, an owner
+ * decision (OD-9); until then this reader has no intraday input.
  */
 export function evidenceShadowRefusals(db) {
   let rows = []
