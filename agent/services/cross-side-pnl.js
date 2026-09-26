@@ -7,6 +7,7 @@ import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { getEnabledAccounts } from './account-registry.js'
 import { backfillClosedPnl, dueForBackfill, noteBackfillAttempt, shouldRunPnlBackfill } from './pnl-backfill.js'
 import { recoverOldPositionPnl } from './old-position-pnl.js'
+import { recordReaderEvidence, sweepLifecycleEvidence } from './position-lifecycle-evidence.js'
 
 const pendingReads = new WeakMap()
 
@@ -57,15 +58,45 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
         return response
       },
     })
-    const oldHistory = await recoverOldPositionPnl(db, creds, { now: started, isCurrent,
-      getPositionDeals: positionId => boundedRead(timeout => readPosition(host, creds.clientId, creds.clientSecret,
-        creds.accessToken, accountId, positionId, started, timeout)),
+    // V3 B1: positions the window pass could not settle by construction — a
+    // lifecycle it cannot see whole, or a ledger identity it will not guess —
+    // are handed to the per-position reader in the same pass.
+    const handoff = [...(result.deferredPositions ?? []), ...(result.ambiguousPositions ?? []).map(a => a.positionId)]
+    const readPositionBounded = positionId => boundedRead(timeout => readPosition(host, creds.clientId, creds.clientSecret,
+      creds.accessToken, accountId, positionId, started, timeout))
+    // V3 B2: every position-history read leaves a verdict. The old reader's
+    // read is tapped (the same bounded read, not a second one) and classified
+    // after it wrote.
+    let capture = null
+    const oldHistory = await recoverOldPositionPnl(db, creds, { now: started, isCurrent, handoff,
+      getPositionDeals: async positionId => {
+        capture = { positionId }
+        try { capture.response = await readPositionBounded(positionId); return capture.response } catch (error) { capture.error = error; throw error }
+      },
     })
     if (oldHistory.state !== 'no_old_gap') result.positionHistory = oldHistory
+    try {
+      const verdict = recordReaderEvidence(db, { accountId, host, capture, outcome: oldHistory, now: started, isCurrent })
+      if (verdict) result.positionHistory = { ...result.positionHistory, verdict }
+    } catch (error) { result.lifecycleEvidenceError = error?.message || String(error) }
+    // The evidence sweep (receipts for money rows, receipts that disagree, rows
+    // with no account) shares the reader's pacing in both directions: each of
+    // the two reads only when neither has read on this account in the last
+    // 30 s (sweepLifecycleEvidence checks the reader's cursor, the reader
+    // checks the sweep's), so a pass makes at most one position-history read
+    // and two passes 10 s apart make one between them.
+    if (!capture && isCurrent()) {
+      try {
+        const evidence = await sweepLifecycleEvidence(db, creds, { now: started, isCurrent, getPositionDeals: readPositionBounded })
+        if (!['paced', 'no_candidate'].includes(evidence.state)) result.lifecycleEvidence = evidence
+      } catch (error) { result.lifecycleEvidenceError = error?.message || String(error) }
+    }
     if (oldHistory.result?.backfilled) {
       for (const field of ['backfilled', 'scanned', 'closingDeals', 'dealsPersisted', 'exitsRepaired', 'exitsFilled']) {
         result[field] = (result[field] || 0) + (oldHistory.result[field] || 0)
       }
+      // Same account, same currency: the fee the reader's fill excluded joins the window's.
+      result.conversionFeeExcluded = Math.round(((result.conversionFeeExcluded || 0) + (oldHistory.result.conversionFeeExcluded || 0)) * 100) / 100
     }
     noteBackfillAttempt(accountId, result, clock())
     return { accountId, result }

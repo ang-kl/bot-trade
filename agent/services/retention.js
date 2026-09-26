@@ -26,6 +26,15 @@ export const DEFAULT_RETENTION = {
   cupHandleDays: 30,     // per-scan pattern diagnostics — a month is plenty to debug a detector
   analysesDays: 90,      // LLM analysis blobs; rows a trade references are ALWAYS spared (FK)
   actionLogDays: 365,    // request journal — but AUDIT + PHASE_RAW_WRITE rows are exempt forever
+  // V3 R1 (P8b): the tick recorder's hourly samples (heartbeat.js
+  // pullTickStatus: one row per side per hour, per_symbol up to 8 KB, so at
+  // most ~140 MB a year for both sides). A bound the owner can set through
+  // POST /actions/storage-purge { retention: { tickStatusSamplesDays: N } };
+  // null until the owner answers the retention question (H-P8-2), so nothing
+  // is deleted by default. The segment manifest (tick_segment_manifest,
+  // tick_segment_boots) is evidence for the recovery and retention checks and
+  // has no horizon: one row per sealed segment, about 3 a day per side.
+  tickStatusSamplesDays: null,
 }
 
 export function loadRetentionConfig(db) {
@@ -147,6 +156,11 @@ function operationalPruners(db, cfg) {
     return Number.isFinite(d) && d > 0
       ? new Date(Date.now() - d * 86_400_000).toISOString().replace('T', ' ') : null
   }
+  // tick_status_samples keys on at_ms (epoch ms), not a text timestamp.
+  const horizonMs = days => {
+    const d = Number(days)
+    return days != null && Number.isFinite(d) && d > 0 ? Date.now() - d * 86_400_000 : null
+  }
   return [
     { key: 'cupHandle', table: 'cup_handle_diagnostics', cutoff: horizon(c.cupHandleDays),
       where: "REPLACE(created_at, 'T', ' ') < ?" },
@@ -154,6 +168,9 @@ function operationalPruners(db, cfg) {
       where: "REPLACE(analyzed_at, 'T', ' ') < ? AND id NOT IN (SELECT analysis_id FROM trades WHERE analysis_id IS NOT NULL)" },
     { key: 'actionLog', table: 'action_log', cutoff: horizon(c.actionLogDays),
       where: "REPLACE(at, 'T', ' ') < ? AND (method IS NULL OR method NOT IN ('AUDIT', 'PHASE_RAW_WRITE'))" },
+    // Off (null) by default — see DEFAULT_RETENTION.tickStatusSamplesDays.
+    { key: 'tickStatusSamples', table: 'tick_status_samples', cutoff: horizonMs(c.tickStatusSamplesDays),
+      where: 'at_ms < ?' },
   ].filter(p => p.cutoff !== null)
 }
 
@@ -177,6 +194,7 @@ export async function pruneOperationalTablesCooperatively(db, cfg = null, { onPr
       let cursor = 0
       const page = db.prepare(`SELECT id FROM ${p.table} WHERE id > ? AND id <= ? ORDER BY id LIMIT 200`)
       const remove = db.prepare(`DELETE FROM ${p.table} WHERE id > ? AND id <= ? AND ${p.where}`)
+      out[p.key] = out[p.key] ?? 0 // an opt-in table's key appears only when its sweep runs
       while (end != null && cursor < end) {
         const ids = page.all(cursor, end)
         if (!ids.length) break

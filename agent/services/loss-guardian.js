@@ -28,6 +28,7 @@ import { roundToDigits } from './trade-guard.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { recordPositionEvent } from './position-events.js'
 import { makeBookHeldCheck } from './book-held.js'
+import { measureAmend } from './protection-latency.js'
 
 export const DEFAULT_LOSS_GUARDIAN = {
   on: true,                 // safety net on by default — no naked losers
@@ -269,12 +270,13 @@ async function lossGuardianPass(db, creds, deps = {}) {
       }
       if (decision.action.sl != null) {
         try {
-          await exec.amendPosition(creds, {
+          // V3 M5: timed on the way through; the payload is untouched.
+          await measureAmend({ path: 'loss_guardian', source: 'loss_guardian', accountId: r.account_id ?? accountId ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: decision.action.sl,
             ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
             // Putting a stop on a naked position must not cost it its target.
             takeProfit: Number(bp.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
-          })
+          }))
           updAct.run(decision.action.sl, 'loss_guardian_stop', r.id)
           summary.stops++
           notify(`🛟 Loss Guardian: ${r.symbol} had NO stop — protective SL set at ${decision.action.sl} (${decision.reason})`)

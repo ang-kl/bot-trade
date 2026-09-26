@@ -46,6 +46,7 @@ import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 import { requestedAccount, scopeReport } from '../lib/account-scope.js'
 import { RETIRED_CONTROLLERS } from '../shared/controller-groups.js'
 import { CONTROLLERS, heartbeatView } from './heartbeat.js'
+import { digestState, loadNotifyConfig, DIGEST_STATE_SQL, DIGEST_REASON_ROWS_MAX } from './telegram-digest.js'
 
 export const SCHEMA_VERSION = 1
 export const SNAPSHOT_KEY = 'order_lifecycle_last_json'
@@ -63,6 +64,8 @@ export const ABSURD_RISK_FRACTION = 0.5
 export const STAGES = Object.freeze(['pre_order', 'order', 'close', 'stuck'])
 export const SAMPLE_LIMIT = 25
 export const SAMPLE_LIMIT_ONE_RULE = 200
+/** V3 L1c: unattributed violations named per rule in a report scoped to one account (bounded; ?account=all names them all). */
+export const UNATTRIBUTED_SAMPLE_MAX = 5
 /**
  * A snapshot this old is not evidence about now: the goal rows' default
  * limit (lifecycleSnapshotMaxAgeMin), the controller's own record limit
@@ -73,6 +76,8 @@ export const SNAPSHOT_FRESH_MS = 30 * 60_000
 export const WRITE_GRACE_MS = 10 * 60_000
 /** At most this many subjects are named per information class (STK-11's record_stale / never_ran). */
 const INFO_NAMES_MAX = 20
+/** The protection audit logs one row per position per kind per this (naked-position-guard.js:320): STK-09's "still reported" bound. */
+const PROTECTION_LOG_MUTE_MS = Math.max(60_000, Number(process.env.PROTECTION_LOG_MUTE_MS) || 3_600_000)
 
 const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000
 const OUT = Symbol('not-in-population')
@@ -115,6 +120,29 @@ const ours = label => { try { return isOurs(label || '') } catch { return false 
 const intentTag = label => { try { return labelIntentId(label) } catch { return null } }
 const parseJson = s => { try { return typeof s === 'string' ? JSON.parse(s) : null } catch { return undefined } }
 const directionReasonOf = p => (p && typeof p === 'object' ? (p.direction_reason ?? p.directionReason) : null)
+
+/**
+ * V3 I3: a stuck record the resolver ENDED is not stuck. Written off
+ * ('unresolved') it is a notice under STK-12; settled from broker evidence it
+ * is terminal. Either way it is still judged (population) and shown in the
+ * rule's classes, never dropped. null when the resolver has not ended it.
+ */
+function endedBy(ctx, subject) {
+  const r = ctx.resolutionBySubject?.get(subject)
+  if (!r) return null
+  return { violation: false, class: r.outcome === 'unresolved' ? 'written_off' : 'settled' }
+}
+
+/**
+ * V3 L1c: a record key naming a registered controller (STK-11's subject,
+ * `controller:<name>`). A controller is not an account record: the stage
+ * counts it, and names it on its own line — never inside an account's count,
+ * never dropped from the headline.
+ */
+const CONTROLLER_RECORD_RE = /^controller:/
+const isControllerRecord = rec => CONTROLLER_RECORD_RE.test(String(rec ?? ''))
+/** The per-account line (`accounts[]`) the stage's controllers are counted on. */
+export const CONTROLLERS_LINE = 'controllers'
 
 /** Stop (and target) on the wrong side of the entry for the direction. */
 function sideProblems(dir, entry, stop, target) {
@@ -175,11 +203,19 @@ export const CONTEXT_SQL = Object.freeze({
               SELECT id, account_id, symbol, side, created_at FROM risk_events
                WHERE disposition IS NULL AND created_at >= ? AND approved = 1
               LIMIT ?`,
-  state: `SELECT key, value FROM agent_state WHERE key IN ('independent_watchdog_json', 'ctrader_account_id') LIMIT ?`,
+  // V3 I3 fix round: + the stuck resolver's switch and last pass (STK-01,
+  // STK-09's found-but-unwritten targets) and the protection audit's
+  // per-account record (STK-09's positive evidence, naked-position-guard.js
+  // auditKeyFor: 'acct:<id>:protection_audit_last_json').
+  state: `SELECT key, value FROM agent_state
+           WHERE key IN ('independent_watchdog_json', 'ctrader_account_id', 'stuck_resolver_enabled', 'stuck_resolver_last_json')
+              OR (key LIKE 'acct:%' AND key LIKE '%:protection_audit_last_json') LIMIT ?`,
   drainLog: `SELECT id, at, account_id, body FROM action_log
               WHERE id > (SELECT COALESCE(MAX(id), 0) FROM action_log) - ${ACTION_LOG_WINDOW_IDS}
                 AND method = 'LOOP' AND path = '/entry-mode/drain' ORDER BY id LIMIT ?`,
   actionLogFloor: `SELECT at FROM action_log WHERE id > (SELECT COALESCE(MAX(id), 0) FROM action_log) - ${ACTION_LOG_WINDOW_IDS} ORDER BY id LIMIT ?`,
+  // V3 I3: how the stuck resolver ended a record (lib/stuck-resolutions.js).
+  resolutions: `SELECT subject, kind, rule_id, outcome, verdict FROM stuck_resolutions LIMIT ?`,
 })
 
 function loadContext(db, win) {
@@ -242,8 +278,24 @@ function loadContext(db, win) {
   const state = Object.fromEntries(read('state').map(r => [r.key, r.value]))
   ctx.selectedAccount = acctOf(state.ctrader_account_id)
   ctx.watchdog = parseJson(state.independent_watchdog_json ?? null) ?? null
+  ctx.stuckResolverOn = state.stuck_resolver_enabled !== 'false'
+  // The targets the resolver FOUND but did not write (R7 switched off): keyed
+  // `<account>:<position>`, named in STK-09's detail.
+  const resolverLast = parseJson(state.stuck_resolver_last_json ?? null) ?? null
+  ctx.targetFound = new Map((Array.isArray(resolverLast?.targetless?.found) ? resolverLast.targetless.found : [])
+    .map(f => [`${acctOf(f.accountId) ?? ''}:${f.positionId}`, { ...f, passAt: resolverLast.at ?? null }]))
+  // The protection audit's last SUCCESSFUL read of each account (`at` is kept
+  // through failures — recordAuditUnavailable) and the targetless positions it
+  // saw then.
+  ctx.auditByAccount = new Map()
+  for (const [k, v] of Object.entries(state)) {
+    const m = /^acct:(.+):protection_audit_last_json$/.exec(k)
+    const rec = m ? parseJson(v) : null
+    if (rec && typeof rec === 'object') ctx.auditByAccount.set(acctOf(m[1]), rec)
+  }
   ctx.drainLog = read('drainLog')
   ctx.actionLogFloorMs = tsMs(read('actionLogFloor', [], 1)[0]?.at)
+  ctx.resolutionBySubject = new Map(read('resolutions').map(r => [r.subject, r]))
   return ctx
 }
 
@@ -344,21 +396,21 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'PRE-02', key: 'refusal_unscored', version: 1, stage: 'pre_order', severity: 'defect', fix: 'writer',
-    cite: ['refusal-ledger.js:163', 'refusal-ledger.js:204-211', 'refusal-ledger.js:228', 'goal-table.js:415-429'],
-    noun: 'scored refusal row (by scored_at, refusal-ledger.js:228 — not refusals made in the window)',
+    id: 'PRE-02', key: 'refusal_unscored', version: 2, stage: 'pre_order', severity: 'defect', fix: 'writer',
+    cite: ['refusal-ledger.js:163', 'refusal-ledger.js:216-229', 'refusal-ledger.js:245', 'goal-table.js:415-429'],
+    noun: 'scored refusal row (by scored_at, refusal-ledger.js:245 — not refusals made in the window)',
     populationLimit: REFUSAL_POPULATION_LIMIT,
     sql: `SELECT opportunity_key, account_id, symbol, outcome, scored_at FROM refusal_scores WHERE scored_at >= ? LIMIT ?`,
     params: opened, when: r => tsMs(r.scored_at), subject: r => `refusal:${r.opportunity_key}`, account: acctCol,
     judge(r) {
-      if (r.outcome === 'no_bars') return { class: 'no_bars', detail: `${r.symbol}: scorer found no bars — object bars filtered as arrays (refusal-ledger.js:204)` }
+      if (r.outcome === 'no_bars') return { class: 'no_bars', detail: `${r.symbol}: scorer found no bars in the refusal's window (refusal-ledger.js:228)` }
       if (r.outcome === 'unscorable') return { class: 'unscorable', detail: `${r.symbol}: proposal carries no entry, stop or target (refusal-ledger.js:163)` }
       return ['target', 'stop', 'stop_moved', 'time_cap'].includes(r.outcome) ? { violation: false, class: 'scored' } : { violation: false, class: r.outcome ?? 'no_outcome' }
     },
   },
   {
     id: 'PRE-03', key: 'intent_incomplete', version: 1, stage: 'pre_order', severity: 'defect', fix: 'writer',
-    cite: ['exec-engine.js:809', 'loop.js:693-696', 'exec-engine.js:811', 'reconciler.js:93-98', 'db.js:2102-2114'],
+    cite: ['exec-engine.js:809', 'loop.js:693-696', 'exec-engine.js:811', 'reconciler.js:93-98', 'db.js:2113-2125'],
     noun: 'entry intent',
     sql: `SELECT id, account_id, symbol, symbol_id, side, order_type, volume, producer_id, basis, risk_event_id, created_at
             FROM entry_intents WHERE created_at >= ? OR created_at IS NULL LIMIT ?`,
@@ -436,7 +488,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'ORD-02', key: 'direction_reason_unreachable', version: 1, stage: 'order', severity: 'defect', fix: 'writer',
-    cite: ['position-history.js:77-85', 'position-history.js:99-108', 'loop.js:5664'],
+    cite: ['position-history.js:77-85', 'position-history.js:99-108', 'loop.js:5650'],
     noun: 'bot trade',
     sql: `SELECT id, account_id, symbol, side, status, origin, label_raw, risk_event_id, ctrader_position_id, opened_at FROM trades
            WHERE (status IN ('open', 'closed', 'submitting', 'unconfirmed') AND (opened_at >= ? OR opened_at IS NULL)) OR status = 'open' LIMIT ?`,
@@ -521,7 +573,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'ORD-06', key: 'position_duplicate_rows', version: 1, stage: 'order', severity: 'defect', fix: 'reporting',
-    cite: ['position-history.js:169-173', 'position-capture.js:357-361', 'broker-history-import.js:136-143', 'db.js:31'],
+    cite: ['position-history.js:169-173', 'position-capture.js:357-361', 'broker-history-import.js:136-143', 'db.js:34'],
     noun: 'broker position',
     sql: `SELECT account_id, ctrader_position_id, COUNT(*) AS n, GROUP_CONCAT(id || ':' || COALESCE(status, '?'), ',') AS rows_list,
                  GROUP_CONCAT(COALESCE(opened_at, ''), '|') AS opened_list, MAX(id) AS last_id,
@@ -710,7 +762,7 @@ export const RULES = Object.freeze([
   },
   {
     id: 'CLS-07', key: 'close_time_disagrees', version: 1, stage: 'close', severity: 'defect', fix: 'reporting',
-    cite: ['db.js:2360', 'close-completeness.js:136'],
+    cite: ['db.js:2371', 'close-completeness.js:136'],
     noun: 'close',
     sql: CLOSES_SQL, params: closedParams, when: closeMsOf, subject: byId, account: acctCol,
     judge(r) {
@@ -724,7 +776,7 @@ export const RULES = Object.freeze([
     // position_history nor position_history_incomplete — was invisible to
     // every reader (the route lists incomplete rows after its cutoff only).
     id: 'CLS-08', key: 'close_record_absent', version: 1, stage: 'close', severity: 'defect', fix: 'writer',
-    cite: ['position-history.js:578', 'position-history.js:602', 'loop.js:2087', 'loop.js:3502-3506'],
+    cite: ['position-history.js:578', 'position-history.js:602', 'loop.js:2087', 'db.js:2425', 'position-capture-accounts.js:57-67'],
     noun: 'close older than 2 h',
     sql: CLOSES_SQL, params: closedParams, when: closeMsOf, subject: byId, account: acctCol,
     inWindow: (r, w, _ctx, t) => closedOlder(t, w, 2 * HOUR),
@@ -757,8 +809,11 @@ export const RULES = Object.freeze([
   },
   // ======================================================== (d) STUCK
   {
-    id: 'STK-01', key: 'resting_record_orphaned', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['closed-market-limits.js:85-88', 'loop.js:114', 'loop.js:4600', 'entry-mode.js:82-86', 'entry-drain.js:102', 'closed-market-limits.js:276-278'],
+    // v2 (V3 I3): every working row now has a resolver — 'pending-closed'
+    // rows closed-market-limits.js:84, every other note the stuck resolver
+    // (R1, stuck-resolver.js). The row keeps naming which, never "none".
+    id: 'STK-01', key: 'resting_record_orphaned', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
+    cite: ['closed-market-limits.js:85-88', 'stuck-resolver.js:344', 'entry-mode.js:82-86', 'entry-drain.js:102', 'closed-market-limits.js:276-278'],
     noun: 'working resting-order row',
     sql: `SELECT id, account_id, symbol, dir, order_id, note, placed_at, expires_at, status FROM pending_orders WHERE status = 'working' LIMIT ?`,
     params: () => [], when: r => tsMs(r.placed_at), subject: r => `pending:${r.id}`, account: acctCol,
@@ -774,10 +829,15 @@ export const RULES = Object.freeze([
           : order?.status === 'gone' ? 'order_gone'
             : !order && placed != null && placed < w.nowMs - HOUR ? 'no_broker_order' : null
       if (!kind) return null
+      // I3 fix round (checker NIT 8): the stuck resolver is a resolver only
+      // while it is switched on — agent_state stuck_resolver_enabled = 'false'
+      // is said here, never reported as a resolver that exists.
+      const resolver = r.note === 'pending-closed' ? 'closed-market-limits reconcile'
+        : ctx.stuckResolverOn ? 'stuck resolver R1' : "none — stuck resolver R1 switched off (agent_state stuck_resolver_enabled = 'false')"
       return {
-        missing: ['terminal_status'], class: kind, resolverExists: r.note === 'pending-closed',
+        missing: ['terminal_status'], class: kind, resolverExists: r.note === 'pending-closed' || ctx.stuckResolverOn, resolver,
         corrupts: ['countResting (entry-mode.js:82-86)', 'the drain (entry-drain.js:102)', 'the cap of 20 (closed-market-limits.js:276-278)'],
-        detail: `#${r.id} ${tail(r.account_id)} ${r.symbol} ${r.note ?? ''} expires ${iso(expires)?.slice(0, 16) ?? 'NULL'}${filled ? `; ${filled.fill} carries ${filled.intent}` : ''}; resolver ${r.note === 'pending-closed' ? 'exists' : 'none (pending-fib retired, loop.js:114)'}`,
+        detail: `#${r.id} ${tail(r.account_id)} ${r.symbol} ${r.note ?? ''} expires ${iso(expires)?.slice(0, 16) ?? 'NULL'}${filled ? `; ${filled.fill} carries ${filled.intent}` : ''}; resolver: ${resolver}${kind === 'expired_working' && order?.status === 'working' ? ' (the order is still working at the broker: nothing to settle, never cancelled by a resolver)' : ''}`,
       }
     },
   },
@@ -796,15 +856,22 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'STK-03', key: 'trade_inflight_unresolved', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['loop.js:867', 'loop.js:911', 'actions.js:548-582', 'broker-history-import.js:302'],
+    // v2 (V3 I3): the stuck resolver ends these rows (R2 from a broker deal,
+    // R5 as the duplicate of an adopted row, or written off after 24 h with
+    // no broker evidence). A row it ended keeps its status — the trades CHECK
+    // has no honest terminal value for "no evidence" — and is judged here as
+    // written_off / settled, never as stuck.
+    id: 'STK-03', key: 'trade_inflight_unresolved', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
+    cite: ['loop.js:867', 'loop.js:911', 'stuck-resolver.js:229', 'actions.js:548-582'],
     noun: 'in-flight trade row',
     sql: `SELECT id, account_id, symbol, side, status, opened_at FROM trades WHERE status IN ('submitting', 'unconfirmed') LIMIT ?`,
     params: () => [], when: r => tsMs(r.opened_at), subject: byId, account: acctCol,
-    judge(r, _ctx, w) {
+    judge(r, ctx, w) {
+      const ended = endedBy(ctx, `trade:${r.id}`)
+      if (ended) return ended
       const at = tsMs(r.opened_at) ?? -Infinity
       const over = (r.status === 'submitting' && at < w.nowMs - 10 * MIN) || (r.status === 'unconfirmed' && at < w.nowMs - HOUR)
-      return over ? { missing: ['resolution'], class: r.status, detail: `#${r.id} ${tail(r.account_id)} ${r.symbol} ${r.status} since ${String(r.opened_at ?? '').slice(0, 16)}; resolver: manual POST /actions/reconcile-trades only` } : null
+      return over ? { missing: ['resolution'], class: r.status, detail: `#${r.id} ${tail(r.account_id)} ${r.symbol} ${r.status} since ${String(r.opened_at ?? '').slice(0, 16)}; resolver: the stuck resolver settles it from broker evidence, or writes it off 24 h after submission` } : null
     },
   },
   {
@@ -845,8 +912,11 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'STK-06', key: 'capture_terminal', version: 1, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['position-capture.js:73', 'position-capture.js:143', 'position-capture.js:181-222'],
+    // v2 (V3 I3): a gave_up capture the stuck resolver wrote off (R6: the
+    // field it lacked exists nowhere upstream, or it gave up again after one
+    // re-queue) is a notice under STK-12, judged here as written_off.
+    id: 'STK-06', key: 'capture_terminal', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
+    cite: ['position-capture.js:73', 'position-capture.js:143', 'position-capture.js:181-222', 'stuck-resolver.js:474'],
     noun: 'capture row',
     sql: `SELECT 'gave_up' AS kind, account_id, position_id, symbol, last_error AS note, settled_at AS at FROM position_capture_queue WHERE state = 'gave_up'
           UNION ALL
@@ -858,14 +928,22 @@ export const RULES = Object.freeze([
              AND (position_history.rebuilt_at IS NULL OR position_history.rebuilt_at <= COALESCE(position_capture_queue.settled_at, ''))
           LIMIT ?`,
     params: () => [], when: r => tsMs(r.at), subject: r => `position:${acctOf(r.account_id) ?? ''}:${r.position_id}`, account: acctCol,
-    judge: r => ({ missing: [r.kind === 'gave_up' ? 'record' : 'verdict'], class: r.kind, detail: `${tail(r.account_id)} ${r.symbol} pos ${r.position_id}: ${cut(r.note ?? '', 80)}` }),
+    judge(r, ctx) {
+      const ended = r.kind === 'gave_up' ? endedBy(ctx, `capture:${acctOf(r.account_id) ?? ''}:${r.position_id}`) : null
+      if (ended && ended.class === 'written_off') return ended
+      return { missing: [r.kind === 'gave_up' ? 'record' : 'verdict'], class: r.kind, detail: `${tail(r.account_id)} ${r.symbol} pos ${r.position_id}: ${cut(r.note ?? '', 80)}` }
+    },
   },
   {
     // v2 (L1 fix round, N7): entry-drain.js:132-140 also logs a pass whose
     // from equals its to; such a row is not an entry into the state and would
     // move `since` later, understating how long the transition has been stuck.
-    id: 'STK-07', key: 'entry_transition_stuck', version: 2, stage: 'stuck', severity: 'defect', fix: 'writer+resolver', current: true,
-    cite: ['entry-drain.js:119-140', 'entry-drain.js:130'],
+    // v3 (L2a W14): the record's own `transitionSince`, stamped by
+    // writeEngineStatus when the state was entered, is the entry time when
+    // present; the drain-row lower bound below is the fallback for a record
+    // written before the field existed.
+    id: 'STK-07', key: 'entry_transition_stuck', version: 3, stage: 'stuck', severity: 'defect', fix: 'writer+resolver', current: true,
+    cite: ['entry-drain.js:119-140', 'entry-drain.js:130', 'entry-mode.js:133-155'],
     noun: 'account engine record',
     sql: `SELECT key, value FROM agent_state WHERE key >= 'acct:' AND key < 'acct;' AND key LIKE '%:engine_status_json' LIMIT ?`,
     params: () => [], when: () => null,
@@ -880,36 +958,81 @@ export const RULES = Object.freeze([
         return { missing: ['settle'], class: 'cannot_settle', detail: `${tail(acct)} STOPPED requested with ${orphans} orphaned working resting row(s): it cannot settle (entry-drain.js:120-123)` }
       }
       if (!['WARMING', 'QUIESCING', 'RECONCILING'].includes(state)) return null
-      // updatedAt is rewritten every pass (entry-drain.js:130): the entry time
-      // is a LOWER BOUND from the newest drain row that recorded the transition.
-      const entered = ctx.drainLog.filter(d => {
+      // updatedAt is rewritten every pass (entry-drain.js:130): without the
+      // record's own stamp the entry time is a LOWER BOUND from the newest
+      // drain row that recorded the transition.
+      const stamped = tsMs(s.transitionSince)
+      const entered = stamped != null ? [] : ctx.drainLog.filter(d => {
         if (acctOf(d.account_id) !== acct) return false
         const b = parseJson(d.body)
         return b?.to === state && b?.from !== b?.to
       }).map(d => tsMs(d.at)).filter(x => x != null)
-      const since = entered.length ? Math.max(...entered) : ctx.actionLogFloorMs
+      const since = stamped ?? (entered.length ? Math.max(...entered) : ctx.actionLogFloorMs)
       if (since == null || w.nowMs - since <= 30 * MIN) return null
-      return { missing: ['settle'], class: state, since: iso(since), sinceIsLowerBound: !entered.length, detail: `${tail(acct)} ${state} since ${entered.length ? '' : 'at least '}${iso(since).slice(0, 16)}` }
+      const sinceSource = stamped != null ? 'record' : entered.length ? 'drain_log' : 'action_log_floor'
+      return { missing: ['settle'], class: state, since: iso(since), sinceSource, sinceIsLowerBound: sinceSource === 'action_log_floor', detail: `${tail(acct)} ${state} since ${sinceSource === 'action_log_floor' ? 'at least ' : ''}${iso(since).slice(0, 16)}` }
     },
   },
   {
-    id: 'STK-08', key: 'outbox_backlog', version: 1, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['db.js:1871', 'independent-protection.js:117', 'watchdog_state.cpp:61-65'],
+    // v2 (STK-08v2, owner 25-09-2026 21:30 SGT: no still-stuck records, no
+    // fake result). A channel SWITCHED OFF BY A SETTING is not a stuck
+    // delivery: its rows are held by that setting, by design, until it is
+    // switched on. Measured 25-09-2026 23:29 UTC: both production violations
+    // were exactly that —
+    //   Telegram: telegram_notify_json enabled=false; routeDecision queues
+    //     every message as 'notify_off' (telegram-digest.js:136-141) and
+    //     flushDecision never flushes while off (:257), so 57,750 rows sat
+    //     unsent from 2026-08-22 10:39 UTC;
+    //   watchdog: cpp-verify delivers only with its delivery switch, incident
+    //     owner and credentials on (watchdog.cpp:142, :149), and the Node
+    //     policy it relays (masterEnabled) was off — all four read false —
+    //     so its outbox held 512/512 never attempted and every new item was
+    //     dropped (watchdog_state.cpp:68-72): 1,526,163.
+    // Such a channel is class 'held_by_setting' — NOT a violation, so not in
+    // the stuck headline, and still named in this rule (classes, info, note),
+    // the goal row and the daily line with the setting, the unsent count, the
+    // oldest queued time and (watchdog) the dropped count. A channel that is
+    // ON with rows over a day old stays the defect, with the digest's last
+    // flush error when one is recorded. A setting that cannot be read is
+    // never taken as off: the defect stays and says so. The digest state is
+    // read by telegram-digest.js digestState — the reader GET
+    // /state/telegram-digest serves — pinned here with the loader it uses.
+    id: 'STK-08', key: 'outbox_backlog', version: 2, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
+    cite: ['db.js:1877-1886', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:117', 'watchdog.cpp:142', 'watchdog.cpp:182-185', 'watchdog_state.cpp:68-72'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,
     params: () => [], populationLimit: 1,
-    rows(dbRows, ctx) {
-      const out = [{ kind: 'telegram', ...(dbRows[0] || { n: 0 }) }]
-      out.push({ kind: 'watchdog', status: ctx.watchdog?.status ?? null, readAt: ctx.watchdog?.readAt ?? null })
+    // The readers this rule's meaning depends on, in the pin (order-lifecycle.test.js ruleHash).
+    digest: digestState, notifyLoader: loadNotifyConfig, digestSql: DIGEST_STATE_SQL, digestRowsMax: DIGEST_REASON_ROWS_MAX,
+    rows(dbRows, ctx, w, db) {
+      // Throws on an unreadable outbox: the rule is then unreadable, never 0.
+      const digest = this.digest(db, { nowMs: w.nowMs })
+      const out = [{ kind: 'telegram', ...(dbRows[0] || { n: 0 }), digest }]
+      out.push({ kind: 'watchdog', status: ctx.watchdog?.status ?? null, readAt: ctx.watchdog?.readAt ?? null, nodePolicyOff: digest.configReadable && digest.enabled === false })
       return out
     },
     when: r => (r.kind === 'telegram' ? tsMs(r.queued_at) : null), subject: r => `outbox:${r.kind}`, account: () => null,
     judge(r, _ctx, w) {
       if (r.kind === 'telegram') {
         const oldest = tsMs(r.queued_at)
-        return r.n > 0 && oldest != null && oldest < w.nowMs - DAY
-          ? { missing: ['delivery'], class: 'telegram', since: iso(oldest), detail: `${r.n} unsent Telegram row(s), oldest queued ${iso(oldest).slice(0, 16)}` } : null
+        if (!(r.n > 0 && oldest != null && oldest < w.nowMs - DAY)) return null
+        const d = r.digest
+        const base = `${r.n} unsent Telegram row(s), oldest queued ${iso(oldest).slice(0, 16)}`
+        const reasons = d.reasons.rows.length
+          ? `; reasons over the ${d.reasons.complete ? `${d.reasons.of} pending row(s)` : `newest ${d.reasons.over} of ${d.reasons.of} pending rows`}: ${d.reasons.rows.map(x => `${x.reason || '(none)'} ${x.count} (oldest ${String(x.oldestQueuedAt ?? '?').slice(0, 16)})`).join(', ')}; the oldest row's reason ${d.pending.oldestReason || '(none)'}`
+          : ''
+        const flush = `; last flush ${d.lastFlushAt ?? 'never recorded'}${d.lastError ? `; last flush error: ${cut(d.lastError, 120)}` : ''}`
+        if (d.configReadable && d.enabled === false) {
+          return { violation: false, class: 'held_by_setting',
+            info: `telegram: ${base} — held by the setting ${d.configKey} enabled=false (notify OFF: queued, not dropped; nothing is flushed while it is off)${reasons}${flush}` }
+        }
+        return {
+          missing: ['delivery'], class: 'telegram', since: iso(oldest),
+          notify: { enabled: d.enabled, mode: d.mode, configReadable: d.configReadable, configError: d.configError },
+          lastFlushAt: d.lastFlushAt, lastError: d.lastError, reasons: d.reasons,
+          detail: `${base}${d.configReadable ? '' : `; ${d.configKey} unreadable, not taken as off`}${d.lastError ? `; last flush error: ${cut(String(d.lastError).replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s+/, ''), 90)}` : ''}`,
+        }
       }
       const s = r.status
       if (!s || typeof s !== 'object') return OUT
@@ -917,13 +1040,50 @@ export const RULES = Object.freeze([
       const oldUnattempted = items.filter(i => Number(i?.attempts || 0) === 0 && Number(i?.createdAtMs) < w.nowMs - HOUR).length
       const dropped = Number(s.dropped) || 0
       if (!((items.length >= 512 && oldUnattempted > 0) || dropped > 0)) return null
+      const base = `watchdog outbox ${items.length}/512, ${oldUnattempted} never attempted and over 1 h old, dropped ${dropped}`
+      // Only a field that READS false is a setting that is off; absent or
+      // null (an older cpp-verify, a busy reply, a policy older than a day)
+      // is unknown, never off. masterEnabled is Node's own policy as relayed:
+      // the contract sends false for an UNREADABLE telegram_notify_json and
+      // for an unknown timezone too (watchdog-contract.js notificationPolicy),
+      // and cpp-verify's copy can be stale, so it counts as a setting only
+      // while Node's own value reads off (checker nit 1, 26-09).
+      const settings = [
+        ['deploymentDeliveryEnabled', 'the cpp-verify delivery switch'],
+        ['incidentOwnerConfigured', 'the cpp-verify incident owner'],
+        ['deliveryCredentialsConfigured', 'WATCHDOG_TELEGRAM_TOKEN / WATCHDOG_TELEGRAM_CHAT_ID'],
+        ['masterEnabled', "Node's telegram_notify_json as cpp-verify last read it"],
+      ]
+      const off = settings.filter(([k]) => s[k] === false && (k !== 'masterEnabled' || r.nodePolicyOff === true))
+      const delivery = Object.fromEntries([...settings.map(([k]) => k), 'effectivePolicyAllowsUrgent'].map(k => [k, s[k] ?? null]))
+      if (off.length) {
+        const created = items.map(i => Number(i?.createdAtMs)).filter(Number.isFinite)
+        return { violation: false, class: 'held_by_setting',
+          info: `watchdog: ${base}; oldest queued ${created.length ? iso(Math.min(...created)).slice(0, 16) : '?'} — held by the setting(s) ${off.map(([k, what]) => `${k}=false (${what})`).join(', ')}: cpp-verify delivers nothing while any is off; status read ${r.readAt ?? '?'}` }
+      }
       // ONE stuck mechanism, not 512 stuck items (VERIFY correction 6).
-      return { missing: ['delivery'], class: 'watchdog', detail: `watchdog outbox ${items.length}/512, ${oldUnattempted} never attempted and over 1 h old, dropped ${dropped}` }
+      return { missing: ['delivery'], class: 'watchdog', delivery, detail: base }
+    },
+    note(res) {
+      const held = res.info?.held_by_setting
+      return held?.length ? `held by a setting, not stuck (not in the stuck count) — ${held.join(' | ')}` : null
     },
   },
   {
-    id: 'STK-09', key: 'targetless_repeating', version: 1, stage: 'stuck', severity: 'defect', fix: 'resolver+owner', current: true,
-    cite: ['naked-position-guard.js:401-425'],
+    // v2 (V3 I3): (a) a position the stuck resolver wrote off (R7: no target
+    // recorded anywhere) is a notice under STK-12, judged here as
+    // written_off; (b) CURRENT state — the protection audit logs one row per
+    // position per PROTECTION_LOG_MUTE_MS (naked-position-guard.js:320), so a
+    // position whose newest row is older than two of those (+10 min) has
+    // stopped being reported targetless — clean only when the audit's own
+    // per-account record proves it read the account late enough and did not
+    // list the position, otherwise 'not_reported_now' (not a violation, named
+    // in the rule's info: an account whose read keeps failing goes quiet
+    // without the position gaining a target); (c) a target the resolver found
+    // on record but did not write (R7's write is the owner's switch) is named
+    // on the finding as class recorded_target_found.
+    id: 'STK-09', key: 'targetless_repeating', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver+owner', current: true,
+    cite: ['naked-position-guard.js:401-425', 'naked-position-guard.js:320', 'stuck-resolver.js:578'],
     noun: 'targetless position (last 5,000 action_log ids)',
     sql: `SELECT id, at, body FROM action_log
            WHERE id > (SELECT COALESCE(MAX(id), 0) FROM action_log) - ${ACTION_LOG_WINDOW_IDS} AND method = 'POSITION_NO_TARGET' ORDER BY id LIMIT ?`,
@@ -943,12 +1103,46 @@ export const RULES = Object.freeze([
       return [...by.values()]
     },
     when: r => (Number.isFinite(r.first) ? r.first : null), subject: r => `position:${r.account_id ?? ''}:${r.positionId}`, account: r => r.account_id,
-    judge(r, ctx) {
+    judge(r, ctx, w) {
       const open = ctx.trades.find(t => t.status === 'open' && String(t.ctrader_position_id) === r.positionId && (r.account_id == null || acctOf(t.account_id) === r.account_id))
       if (!open) return OUT
       r.account_id = r.account_id ?? acctOf(open.account_id)
       if (!(r.last - r.first > 2 * HOUR)) return null
-      return { missing: ['target'], since: iso(r.first), detail: `pos ${r.positionId} ${open.symbol} (#${open.id}): ${r.n} POSITION_NO_TARGET rows over ${Math.round((r.last - r.first) / HOUR)} h` }
+      const key = `${r.account_id ?? ''}:${r.positionId}`
+      let stillListed = false
+      if (r.last < w.nowMs - (2 * PROTECTION_LOG_MUTE_MS + 10 * MIN)) {
+        // NO LONGER REPORTED is not "has a target" (I3 checker NIT 3): the
+        // audit logs only after a successful account read, so an account
+        // whose read keeps failing goes quiet with the position still
+        // targetless. Clean only on POSITIVE evidence — the audit's last
+        // successful read of the account (`at`, kept through failures) came
+        // at least one mute window after the last row, when it would have
+        // logged again, and it did not list the position targetless.
+        const audit = ctx.auditByAccount?.get(r.account_id) ?? null
+        const auditAt = tsMs(audit?.at)
+        const late = auditAt != null && auditAt >= r.last + PROTECTION_LOG_MUTE_MS
+        stillListed = Array.isArray(audit?.missingTargets) && audit.missingTargets.some(m => String(m?.positionId) === r.positionId)
+        if (late && !stillListed) return null
+        if (!late) {
+          return { violation: false, class: 'not_reported_now',
+            info: `pos ${r.positionId} ${open.symbol}: last reported targetless ${iso(r.last)}; ${auditAt == null ? 'no successful audit of the account on record' : `the account's last successful audit (${iso(auditAt)}) predates the next report`} — not verifiable as fixed` }
+        }
+        // late && stillListed: the audit's own list says it is still targetless.
+      }
+      const ended = endedBy(ctx, `target:${key}`)
+      if (ended && ended.class === 'written_off') return ended
+      // BLOCKER 1 (I3 checker): a target the resolver FOUND but did not write
+      // (agent_state stuck_resolver_target_write not 'true') is named — the
+      // position stays stuck until the owner decides.
+      const found = ctx.targetFound?.get(key) ?? null
+      return {
+        missing: ['target'], since: iso(r.first), ...(found ? { class: 'recorded_target_found', recordedTarget: { tp: found.tp, source: found.source, foundAt: found.passAt, written: false } } : {}),
+        detail: `pos ${r.positionId} ${open.symbol} (#${open.id}): ${r.n} POSITION_NO_TARGET rows over ${Math.round((r.last - r.first) / HOUR)} h${stillListed ? ', still in the audit\'s list' : ''}${found ? `; recorded target ${found.tp} found (${found.source}), not written — owner decision` : ''}`,
+      }
+    },
+    note(res) {
+      const names = res.info?.not_reported_now
+      return names?.length ? `Not Verifiable as fixed — not_reported_now ${res.classes.not_reported_now}: ${names.join('; ')}${res.classes.not_reported_now > names.length ? '; …' : ''}` : null
     },
   },
   {
@@ -967,9 +1161,9 @@ export const RULES = Object.freeze([
     // heartbeat's OWN view (heartbeatView over the CONTROLLERS registry), so
     // this rule and /state/heartbeats cannot disagree about a controller —
     // two readings of one subsystem is CLAUDE.md failure mode #3's correction.
-    //   stalled — last run older than expected × factor (heartbeat.js:530):
+    //   stalled — last run older than expected × factor (heartbeat.js:611):
     //             pnl_reconcile last ran 09-20 with 0 failures is stuck;
-    //   error   — consecutive failures ≥ FAIL_ALERT_AT = 3 (heartbeat.js:183):
+    //   error   — consecutive failures ≥ FAIL_ALERT_AT = 3 (heartbeat.js:201):
     //             pnl_reconcile at 1,701 consecutive failures.
     // Unregistered names never reach the view (it iterates the registry), so a
     // row left behind by a removed controller cannot stay stuck for ever;
@@ -977,7 +1171,7 @@ export const RULES = Object.freeze([
     // (the runner beats, its product is past its limit) and never_ran (no beat
     // on record) are NOT judged stuck: they are named as Not Verifiable here.
     id: 'STK-11', key: 'controller_failing', version: 2, stage: 'stuck', severity: 'defect', fix: 'resolver', current: true,
-    cite: ['heartbeat.js:183', 'heartbeat.js:530-534', 'heartbeat.js:318-323', 'heartbeat.js:508-512', 'heartbeat.js:524-527'],
+    cite: ['heartbeat.js:201', 'heartbeat.js:611-615', 'heartbeat.js:393-399', 'heartbeat.js:584-588', 'heartbeat.js:604-608'],
     noun: 'registered controller',
     // The statement proves the table is readable (a dropped table is an
     // error, never 0); the rows are the heartbeat's own view of it.
@@ -1006,6 +1200,20 @@ export const RULES = Object.freeze([
       return parts.length ? `Not Verifiable as stuck — ${parts.join('; ')} (a stale record or a controller with no beat is not judged here; see /state/heartbeats)` : null
     },
   },
+  {
+    // V3 I3 — THE WRITE-OFF IS A NOTICE, NOT A DISAPPEARANCE (owner
+    // 25-09-2026 21:30 SGT): every record the stuck resolver ended with no
+    // broker evidence to settle it on is named here, with its verdict and
+    // reason, for as long as it exists. It is not counted as stuck (severity
+    // notice: summary.notices, never summary.new) and not money (the resolver
+    // writes no P&L onto a written-off record).
+    id: 'STK-12', key: 'stuck_written_off', version: 1, stage: 'stuck', severity: 'notice', fix: 'reporting', current: true,
+    cite: ['stuck-resolver.js:626', 'stuck-resolutions.js:60'],
+    noun: 'written-off stuck record',
+    sql: `SELECT subject, kind, rule_id, account_id, trade_id, verdict, reason, prior_state, resolved_at FROM stuck_resolutions WHERE outcome = 'unresolved' LIMIT ?`,
+    params: () => [], when: r => tsMs(r.resolved_at), subject: r => r.subject, account: acctCol,
+    judge: r => ({ class: r.kind, rule: r.rule_id, verdict: r.verdict, since: r.resolved_at, detail: `${r.subject} (${r.rule_id}, was ${r.prior_state ?? '?'}): ${r.verdict} — ${cut(r.reason, 110)}` }),
+  },
 ])
 
 /**
@@ -1019,14 +1227,33 @@ export const RULES = Object.freeze([
  * recordKeyOf, the registry check and the limits. Editing any of them
  * changes what the report says with no rule's own source changing, so it
  * must bump HELPERS_VERSION.
+ *
+ * v3 (V3 I3): the context reads the stuck resolver's record
+ * (CONTEXT_SQL.resolutions) and endedBy() turns a resolved subject into a
+ * written_off / settled class for STK-03, STK-06 and STK-09; it also reads
+ * the stuck resolver's switch and last pass (STK-01 resolverExists, STK-09's
+ * found-but-unwritten targets) and the protection audit's per-account
+ * records (STK-09's positive evidence). v3 never shipped before this fix
+ * round, so the fix round keeps the number.
+ *
+ * v4 (V3 L1c): the stage summaries count every violation, the unattributed
+ * ones included. A report scoped to one account now carries its NULL-account
+ * violations `beside` the account (runRule) and summarise counts them in the
+ * stage headline — the rule's own counts are unchanged and still never
+ * credit them to the account. A controller (STK-11, `controller:<name>`) is
+ * counted in the headline and named on its own line (`controllers` in the
+ * summary and in accounts[]), never as an account record. The all-accounts
+ * headline numbers are unchanged; its parts are new. No rule's own source
+ * changed, so no rule version moves.
  */
-export const HELPERS_VERSION = 2
+export const HELPERS_VERSION = 4
 export const JUDGE_HELPERS = Object.freeze({
   tsMs, blank, num, acctOf, idKey, upper, dirOf, ours, intentTag, parseJson, directionReasonOf, sideProblems, riskScaleWrong,
-  botTrade, proposalOf, fillOf, closeMsOf, tagEvidence, fillForPending, closedOlder, tradeInWindow,
-  loadContext, runRule, summarise, recordKeyOf, accountRegistered,
+  botTrade, proposalOf, fillOf, closeMsOf, tagEvidence, fillForPending, closedOlder, tradeInWindow, endedBy,
+  loadContext, runRule, summarise, recordKeyOf, accountRegistered, isControllerRecord, stageCountPhrase,
   constants: `${ABSURD_RISK_FRACTION}|${GENERIC_CLOSE_RE}|${[...LIMIT_PRODUCERS]}|${TERMINAL_INTENT}|${CLEAN_BOT_ORIGINS}|${ACTION_LOG_WINDOW_IDS}` +
-    `|${DEFAULT_POPULATION_LIMIT}|${REFUSAL_POPULATION_LIMIT}|${CONTEXT_LIMIT}|${WRITE_GRACE_MS}|${INFO_NAMES_MAX}|${JSON.stringify(CONTEXT_SQL)}`,
+    `|${DEFAULT_POPULATION_LIMIT}|${REFUSAL_POPULATION_LIMIT}|${CONTEXT_LIMIT}|${WRITE_GRACE_MS}|${INFO_NAMES_MAX}|${PROTECTION_LOG_MUTE_MS}|${JSON.stringify(CONTEXT_SQL)}` +
+    `|${CONTROLLER_RECORD_RE}|${CONTROLLERS_LINE}`,
 })
 export const RULESET_VERSION = [...RULES.map(r => `${r.id}@${r.version}`), `helpers@${HELPERS_VERSION}`].join(',')
 
@@ -1128,6 +1355,15 @@ function runRule(db, rule, ctx, win, scope) {
     newestAt: null, truncated: ctx.truncated.length > 0, error: null,
   }
   const entries = []
+  // V3 L1c: a report scoped to one account keeps its NULL-account rows (a
+  // controller, an outbox, a row no writer stamped) out of the rule's own
+  // counts — never credited to the account (VERIFY correction 10) — but the
+  // stage summary counts them beside it, exactly as the all-accounts report
+  // does. Measured in production with L1b live (helpers@2), 25-09-2026: the
+  // report scoped to the selected account read summary.stuck.new = 19 while
+  // STK-11 held pnl_reconcile (unattributed 1) and, at 15:05 UTC, STK-08 an
+  // outbox (unattributed 1) — neither in any stage count.
+  const beside = { entries: [], populationNew: 0 }
   let rows
   const limit = Math.max(1, Math.min(win.populationLimit ?? Infinity, rule.populationLimit ?? DEFAULT_POPULATION_LIMIT))
   try {
@@ -1138,7 +1374,7 @@ function runRule(db, rule, ctx, win, scope) {
     if (rule.rows) rows = rule.rows(rows, ctx, win, db)
   } catch (err) {
     res.measurable = false; res.error = String(err?.message || err); res.reason = `unreadable: ${cut(res.error, 120)}`
-    return { res, entries }
+    return { res, entries, beside }
   }
   let newest = -Infinity, newestJudged = -Infinity
   for (const row of rows) {
@@ -1165,7 +1401,7 @@ function runRule(db, rule, ctx, win, scope) {
       // The newest record JUDGED at all, defective or not: what lets a
       // falsifier say "a record was made since and it was stored right".
       if (t != null && t > newestJudged) newestJudged = t
-    }
+    } else if (isNew) beside.populationNew++
     if (verdict == null) continue
     if (verdict.violation === false) {
       if (!counts) continue
@@ -1174,15 +1410,16 @@ function runRule(db, rule, ctx, win, scope) {
       continue
     }
     bucket.violations++; if (isNew) bucket.newViolations++
-    if (!counts) continue
+    const at = t ?? tsMs(verdict.since)
+    const { detail, class: cls, violation: _v, info: _i, ...extra } = verdict
+    const subject = rule.subject(row, ctx)
+    const entry = { subject, record: recordKeyOf(subject, ctx), account: acct, at: iso(at), new: isNew, ...(cls ? { class: cls } : {}), ...extra, detail: cut(detail) }
+    if (!counts) { beside.entries.push(entry); continue }
     res.violations++
     if (isNew) res.newViolations++; else res.legacyViolations++
     if (verdict.class) res.classes[verdict.class] = (res.classes[verdict.class] || 0) + 1
-    const at = t ?? tsMs(verdict.since)
     if (at != null && at > newest) newest = at
-    const { detail, class: cls, violation: _v, info: _i, ...extra } = verdict
-    const subject = rule.subject(row, ctx)
-    entries.push({ subject, record: recordKeyOf(subject, ctx), account: acct, at: iso(at), new: isNew, ...(cls ? { class: cls } : {}), ...extra, detail: cut(detail) })
+    entries.push(entry)
   }
   res.newestAt = Number.isFinite(newest) ? iso(newest) : null
   res.newestJudgedAt = Number.isFinite(newestJudged) ? iso(newestJudged) : null
@@ -1195,10 +1432,32 @@ function runRule(db, rule, ctx, win, scope) {
     res.note = `scored 0 while no_bars ${res.classes.no_bars}: the scorer is not scoring (goal-table.js:415-429 reports this as "waiting")`
   }
   if (rule.note) { const n = rule.note(res); if (n) res.note = n }
-  return { res, entries }
+  return { res, entries, beside }
 }
 
 const sortEntries = list => list.sort((a, b) => (Date.parse(b.at ?? '') || 0) - (Date.parse(a.at ?? '') || 0) || String(a.subject).localeCompare(String(b.subject)))
+
+/**
+ * V3 L1c: a stage's count as one phrase. When every counted item is an
+ * account record it reads as before ("19 stuck record(s)"); otherwise it
+ * names the parts the headline adds up — "20 stuck — 19 account record(s) ·
+ * controllers: 1 stalled (pnl_reconcile: error)". Reads a snapshot written
+ * before L1c (no parts) the old way. Pure.
+ */
+export function stageCountPhrase(s, stage) {
+  const what = stage === 'stuck' ? 'stuck' : 'new defective'
+  const ctl = Number(s?.controllers) || 0
+  const una = Number(s?.unattributed) || 0
+  if (!ctl && !una) return `${s?.new} ${what} record(s)`
+  const records = Number.isFinite(Number(s?.records)) ? Number(s.records) : Number(s?.new) - ctl - una
+  const names = Array.isArray(s?.controllerNames) && s.controllerNames.length
+    ? ` (${s.controllerNames.join(', ')}${ctl > s.controllerNames.length ? ', …' : ''})`
+    : ''
+  const parts = [`${records} account record(s)`]
+  if (una) parts.push(`${una} with no account`)
+  if (ctl) parts.push(`controllers: ${ctl} stalled${names}`)
+  return `${s?.new} ${what} — ${parts.join(' · ')}`
+}
 
 function summarise(results, win, cfg) {
   const summary = {}
@@ -1212,18 +1471,43 @@ function summarise(results, win, cfg) {
     const rs = results.filter(r => r.res.stage === stage)
     const defects = rs.filter(r => r.res.severity === 'defect')
     const newS = new Set(), legS = new Set(), noticeS = new Set()
-    for (const { res, entries } of rs) {
-      for (const e of entries) {
-        const acct = e.account ?? 'unattributed'
+    // L1c: the record keys any entry credits to an account, and each
+    // controller's class — the parts the headline is made of.
+    const attributed = new Set()
+    const controllerClass = new Map()
+    for (const { res, entries, beside } of rs) {
+      // L1c: a scoped report's unattributed violations (`beside`) count in the
+      // stage as they do in the all-accounts report; the rule's own counts
+      // stay the account's.
+      for (const e of [...entries, ...(beside?.entries ?? [])]) {
         // Distinct RECORDS (N1): a trade with a broker position counts as that position.
         const rec = e.record ?? e.subject
+        const controller = isControllerRecord(rec)
+        const acct = controller ? CONTROLLERS_LINE : (e.account ?? 'unattributed')
+        if (!controller && e.account != null) attributed.add(rec)
         if (res.severity === 'notice') { noticeS.add(rec); bump(acct, stage, 'notices', rec); continue }
-        if (e.new) { newS.add(rec); bump(acct, stage, 'new', rec) } else { legS.add(rec); bump(acct, stage, 'legacy', rec) }
+        if (e.new) {
+          newS.add(rec); bump(acct, stage, 'new', rec)
+          if (controller && !controllerClass.has(rec)) controllerClass.set(rec, e.class ?? null)
+        } else { legS.add(rec); bump(acct, stage, 'legacy', rec) }
       }
     }
     for (const s of newS) legS.delete(s)
+    const controllerKeys = [...newS].filter(isControllerRecord).sort()
+    const records = [...newS].filter(k => !isControllerRecord(k) && attributed.has(k)).length
+    const parts = {
+      records,
+      unattributed: newS.size - controllerKeys.length - records,
+      controllers: controllerKeys.length,
+      controllerNames: controllerKeys.slice(0, INFO_NAMES_MAX).map(k => {
+        const cls = controllerClass.get(k)
+        return `${String(k).replace(CONTROLLER_RECORD_RE, '')}${cls ? `: ${cls}` : ''}`
+      }),
+    }
+    const counted = stageCountPhrase({ new: newS.size, ...parts }, stage)
     const measurable = defects.some(r => r.res.measurable)
-    const populationNew = defects.reduce((m, r) => Math.max(m, r.res.populationNew), 0)
+    // L1c: a new row beside a scoped account is a new row judged in the stage.
+    const populationNew = defects.reduce((m, r) => Math.max(m, r.res.populationNew + (r.beside?.populationNew ?? 0)), 0)
     // B2: a stage whose count leaves a rule out says which, every time — the
     // goal row and the daily line read these, never a bare 0.
     const unreadable = defects.filter(r => r.res.error).map(r => ({ id: r.res.id, reason: cut(r.res.error, 100) }))
@@ -1233,11 +1517,12 @@ function summarise(results, win, cfg) {
       truncated.length ? `truncated at the population bound (counts are a lower bound): ${truncated.join(', ')}` : null,
     ].filter(Boolean).join('; ')
     const note = !measurable
-      ? `not measurable: ${defects.map(r => `${r.res.id} ${r.res.reason ?? '?'}`).slice(0, 3).join('; ')}`
+      // L1c: what WAS counted (a controller is judged whatever the account) is still said.
+      ? `not measurable: ${defects.map(r => `${r.res.id} ${r.res.reason ?? '?'}`).slice(0, 3).join('; ')}${newS.size ? `; counted: ${counted}` : ''}`
       : stage !== 'stuck' && populationNew === 0
         ? `nothing new to judge since ${cfg.acceptanceStart}: a fact about volume, not a pass${partial ? `; ${partial}` : ''}`
-        : `${newS.size} ${stage === 'stuck' ? 'stuck' : 'new defective'} record(s)${partial ? `; ${partial}` : ''}`
-    summary[stage] = { new: newS.size, legacy: stage === 'stuck' ? 0 : legS.size, notices: noticeS.size, measurable, populationNew, unreadable, truncated, note }
+        : `${counted}${partial ? `; ${partial}` : ''}`
+    summary[stage] = { new: newS.size, legacy: stage === 'stuck' ? 0 : legS.size, notices: noticeS.size, measurable, populationNew, unreadable, truncated, note, ...parts }
   }
   const accounts = [...perAccount.values()]
     .map(a => ({ account: a.account, stage: a.stage, new: a.new.size, legacy: a.stage === 'stuck' ? 0 : [...a.legacy].filter(s => !a.new.has(s)).length, notices: a.notices.size }))
@@ -1306,9 +1591,12 @@ export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, d
   })()
   const shown = only ? results.filter(r => r.res.id === only.id) : results
   const stages = Object.fromEntries(STAGES.map(s => [s, []]))
-  for (const { res, entries } of shown) {
+  for (const { res, entries, beside } of shown) {
     sortEntries(entries)
-    stages[res.stage].push({ ...res, sampleTotal: entries.length, sampleOffset, sample: entries.slice(sampleOffset, sampleOffset + sampleLimit) })
+    // L1c: scoped to one account, the unattributed violations the stage
+    // headline counts are named here too (a few; ?account=all has them all).
+    const named = beside?.entries?.length ? { unattributedSample: sortEntries([...beside.entries]).slice(0, UNATTRIBUTED_SAMPLE_MAX) } : {}
+    stages[res.stage].push({ ...res, sampleTotal: entries.length, sampleOffset, sample: entries.slice(sampleOffset, sampleOffset + sampleLimit), ...named })
   }
   const flat = shown.map(({ res }) => ({
     id: res.id, key: res.key, version: res.version, stage: res.stage, severity: res.severity, fix: res.fix,
@@ -1321,6 +1609,8 @@ export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, d
   if (ctx.truncated.length) notVerifiable.push(`context read reached its bound (${ctx.truncated.join(', ')}): every rule is marked truncated`)
   const controllers = results.find(r => r.res.id === 'STK-11')?.res
   if (controllers?.note) notVerifiable.push(`STK-11 ${controllers.note}`)
+  const targetless = results.find(r => r.res.id === 'STK-09')?.res
+  if (targetless?.note) notVerifiable.push(`STK-09 ${targetless.note}`)
   return {
     schemaVersion: SCHEMA_VERSION, rulesetVersion: RULESET_VERSION, generatedAt: iso(now),
     acceptanceStart: cfg.acceptanceStart, acceptanceStartStatus: cfg.acceptanceStartStatus,
@@ -1387,18 +1677,24 @@ export function lifecycleGoals(snapshot, targets, nowMs) {
     // off_track; it can never prove on_track — that is not_measurable, named.
     const partialNote = partialOf(s)
     const verdict = !judged ? 'not_measurable' : s.new > max ? 'off_track' : partialNote ? 'not_measurable' : 'on_track'
-    const counted = `${s?.new} ${stage === 'stuck' ? 'stuck' : 'new defective'} record(s)${partialNote ? ' over the readable rules' : ''}`
+    // L1c: the count names its parts when any is not an account record
+    // (a stalled controller, a row with no account) — the number is the whole.
+    const counted = `${stageCountPhrase(s, stage)}${partialNote ? ' over the readable rules' : ''}`
+    // STK-08v2: what a setting holds is outside the count — and said beside it,
+    // so a count that fell because a channel is held never reads as delivered.
+    const held = heldBySettingOf(snapshot, stage)
     const note = !snapshot ? `no snapshot at ${SNAPSHOT_KEY} — the order_lifecycle controller has not produced one`
       : stale ? `snapshot ${ageMin} min old (limit ${maxAgeMin} min) — the controller may be failing; see /state/heartbeats`
         : !s ? `stage ${stage} missing from the snapshot`
           : s.measurable === false ? s.note
             : stage !== 'stuck' && !(s.populationNew > 0) ? `nothing new to judge since ${snapshot.acceptanceStart}: a fact about volume, not a pass; legacy ${s.legacy}${partialNote ? `; ${partialNote}` : ''}`
               : `${verdict === 'not_measurable' ? `not a pass — ${counted}` : verdict === 'off_track' && partialNote ? `at least ${counted}` : counted}` +
-                `${top.length ? ` — ${top.join(' · ')}` : ''}${stage === 'stuck' ? '' : `; legacy ${s.legacy}`}${s.notices ? `; notices ${s.notices}` : ''}${partialNote ? `; ${partialNote}` : ''}`
+                `${top.length ? ` — ${top.join(' · ')}` : ''}${stage === 'stuck' ? '' : `; legacy ${s.legacy}`}${s.notices ? `; notices ${s.notices}` : ''}` +
+                `${held.length ? `; held by a setting, not counted: ${held.join(' · ')}` : ''}${partialNote ? `; ${partialNote}` : ''}`
     return {
       id: `lifecycle_${stage}`, name: STAGE_NAMES[stage], subsystem: 'order lifecycle',
       metric: stage === 'stuck'
-        ? 'records stuck now with no terminal state (distinct records within the stage; a trade with a broker position counts as that position)'
+        ? 'records stuck now with no terminal state, plus registered controllers stalled or failing — counted in, and named on their own line (distinct records within the stage; a trade with a broker position counts as that position)'
         : `records made since ${snapshot?.acceptanceStart ?? 'the acceptance start'} that failed to store or are incomplete (distinct records within the stage; a trade with a broker position counts as that position)`,
       target: `≤ ${max}`, horizon: stage === 'stuck' ? 'now' : `since ${snapshot?.acceptanceStart ?? '?'}`,
       current: verdict === 'not_measurable' ? null : s.new,
@@ -1406,6 +1702,12 @@ export function lifecycleGoals(snapshot, targets, nowMs) {
       note, source: `/state/order-lifecycle?account=all (snapshot ${Number.isFinite(at) ? new Date(at).toISOString().slice(11, 16) + 'Z' : 'none'})`,
     }
   })
+}
+
+/** STK-08v2: the snapshot's rules in `stage` holding items by a setting, as "STK-08 outbox_backlog 2"; [] when none. */
+function heldBySettingOf(snapshot, stage) {
+  return (snapshot?.rules || []).filter(r => (stage == null || r.stage === stage) && Number(r.classes?.held_by_setting) > 0)
+    .map(r => `${r.id} ${r.key} ${Number(r.classes.held_by_setting)}`)
 }
 
 /** The unreadable and truncated rules of a snapshot stage, as one clause; '' when the stage's count is whole. */
@@ -1518,6 +1820,14 @@ export function lifecycleReportLines(snapshot) {
   const lines = [`Lifecycle since ${String(snapshot.acceptanceStart).slice(0, 16).replace('T', ' ')}Z (snapshot ${hhmm}Z): pre-order ${s.pre_order.new}${mark('pre_order')} new / ${s.pre_order.legacy} legacy; order ${s.order.new}${mark('order')}; close ${s.close.new}${mark('close')}; stuck ${s.stuck.new}${mark('stuck')}`]
   const top = (snapshot.rules || []).filter(r => r.severity === 'defect' && r.newViolations > 0).sort((a, b) => b.newViolations - a.newViolations).slice(0, 3)
   for (const r of top) lines.push(`  ${r.id} ${r.key}: ${r.newViolations} new`)
+  // STK-08v2: held by a setting is not stuck, and not silent either.
+  for (const h of heldBySettingOf(snapshot, null)) lines.push(`  ${h} held by a setting (not stuck; see the rule's note)`)
+  // L1c: a headline that counts a controller or a row with no account says
+  // so on its own line — "stuck: 20 stuck — 19 account record(s) ·
+  // controllers: 1 stalled (pnl_reconcile: error)".
+  for (const stage of STAGES) {
+    if ((Number(s[stage]?.controllers) || 0) + (Number(s[stage]?.unattributed) || 0) > 0) lines.push(`  ${stage}: ${stageCountPhrase(s[stage], stage)}`)
+  }
   for (const stage of STAGES) {
     if (s[stage]?.measurable === false || (stage !== 'stuck' && !(s[stage]?.populationNew > 0))) lines.push(`  ${stage} not measurable: ${s[stage]?.note ?? 'missing'}`)
     else if (partialOf(s[stage])) lines.push(`  ${stage}* partial — ${partialOf(s[stage])}`)

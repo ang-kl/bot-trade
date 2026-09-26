@@ -44,7 +44,7 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readCalendarCoverage, isReportUnavailable } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -58,14 +58,39 @@ const BLOCKER_REQUEST_ERRORS = new Set(['account not registered', 'explicit acco
  * empty result that reads as "nothing there" (owner principle 6). Anything
  * that is NOT a report-worker failure is left to the caller's own 500.
  *
+ * V3 M2b: a worker failure with no named code carries the driver's own words
+ * as `detail`, and is logged (at most once a minute per route and message),
+ * so a builder bug that fails every time is visible rather than dressed as a
+ * temporary outage. A report that exceeded a FIXED bound is not retryable:
+ * no Retry-After, `retryAfter: null`, `retryable: false`, and the sentence
+ * does not tell the reader to retry. `extra` carries a route's own failure
+ * fields (the watchdog's `workComplete: false`).
+ *
  * @returns {boolean} true when the response was sent
  */
-export function sendReportUnavailable(res, error, { message, code }) {
+export function sendReportUnavailable(res, error, { message, code, extra = null }) {
   if (!isReportUnavailable(error)) return false
   res.set('Cache-Control', 'no-store')
-  res.set('Retry-After', String(error.retryAfterSec))
-  res.status(503).json({ status: 'unavailable', error: message, code, reason: error.reason, retryAfter: error.retryAfterSec })
+  if (error.retryAfterSec != null) res.set('Retry-After', String(error.retryAfterSec))
+  const body = { ...extra, status: 'unavailable', error: error.retryable ? message : fixedBoundSentence(message),
+    code, reason: error.reason, retryAfter: error.retryAfterSec, retryable: error.retryable }
+  if (error.detail) {
+    body.detail = error.detail
+    logWorkerError(code, error.detail)
+  }
+  res.status(503).json(body)
   return true
+}
+const fixedBoundSentence = message =>
+  String(message).replace(/\b(is|are) temporarily unavailable\. Please retry\.$/, '$1 unavailable: the report exceeds a fixed size bound, so a retry will not help.')
+const WORKER_ERROR_LOG_EVERY_MS = 60_000
+const workerErrorLogged = new Map() // `${code}\u0000${detail}` → last logged ms
+function logWorkerError(code, detail, now = Date.now()) {
+  const key = `${code}\u0000${detail}`
+  if (now - (workerErrorLogged.get(key) ?? -Infinity) < WORKER_ERROR_LOG_EVERY_MS) return
+  if (workerErrorLogged.size >= 200) workerErrorLogged.clear() // bounded: a flood of distinct messages cannot grow it
+  workerErrorLogged.set(key, now)
+  console.warn(`[state] ${code}: report worker error — ${detail}`)
 }
 
 /**
@@ -131,8 +156,10 @@ export default function stateRouter(db) {
     } catch (error) {
       const message = String(error?.message || error)
       if (BLOCKER_REQUEST_ERRORS.has(message)) return res.status(400).json({ error: message })
-      if (/worker_capacity|report_deadline|worker_exit/.test(error?.reason || '')
-        && sendReportUnavailable(res, error, { message: 'The blocker report is temporarily unavailable. Please retry.', code: 'blocker_report_unavailable' })) return
+      // V3 M2b: every report-worker failure (a locked database included) is
+      // the same explicit 503 as the other reports, its driver words in
+      // `detail`; only a failure that is not the worker's stays a 500.
+      if (sendReportUnavailable(res, error, { message: 'The blocker report is temporarily unavailable. Please retry.', code: 'blocker_report_unavailable' })) return
       res.status(500).json({ error: 'The blocker report failed.', code: 'blocker_report_failed', reason: error?.reason ?? null })
     }
   })
@@ -140,8 +167,11 @@ export default function stateRouter(db) {
     res.set('Cache-Control', 'no-store')
     try {
       res.json(await readNodeWatchdogContract(db))
-    } catch {
+    } catch (error) {
       // Failure is unavailable evidence, never a new healthy/empty receipt.
+      // cpp-verify reads only a 2xx body; `error` and `workComplete: false`
+      // keep their pre-M2b values.
+      if (sendReportUnavailable(res, error, { message: 'watchdog_contract_unavailable', code: 'watchdog_contract_unavailable', extra: { workComplete: false } })) return
       res.status(503).json({ error: 'watchdog_contract_unavailable', workComplete: false })
     }
   })
@@ -175,7 +205,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview'])
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -306,7 +336,26 @@ export default function stateRouter(db) {
     })
     if (!identity) return res.status(400).json({ error: 'registered account and broker symbolId are required' })
     res.setHeader('Cache-Control', 'no-store')
-    res.json(readMarketCalendar(db, identity))
+    // V3 K1: with the stored holiday rows that keep it unknown, if any.
+    res.json(readMarketCalendar(db, identity, { diagnostics: true }))
+  })
+
+  // GET /state/calendar-coverage (V3 K1) — per registered account: its own
+  // symbol map, the calendar demand by tier, OPEN/CLOSED/UNKNOWN with the
+  // reasons, watchlist symbols not demanded, the symbol_hours disagreements,
+  // the next 14 days of broker holidays, and the collector's last receipt and
+  // skip (services/calendar-coverage.js). Every demanded calendar is read, so
+  // it is built on the read-only report worker, never on this event loop; no
+  // broker call. Not cached: coverage is a current reading. A failed build is
+  // an explicit 503, never an empty (healthy-looking) body.
+  router.get('/calendar-coverage', async (_req, res) => {
+    res.set('Cache-Control', 'no-store')
+    try {
+      res.json(await readCalendarCoverage(db))
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'The calendar coverage read is temporarily unavailable. Please retry.', code: 'calendar_coverage_unavailable' })) return
+      res.status(503).json({ error: 'calendar_coverage_unavailable', code: 'calendar_coverage_failed' })
+    }
   })
 
   // -----------------------------------------------------------------------
@@ -1102,7 +1151,8 @@ export default function stateRouter(db) {
     const scope = requestedAccount(db, req)
     try {
       res.json(await readPostmortemReport(db, { scope, limit }))
-    } catch {
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'Trade lessons are temporarily unavailable. Please retry.', code: 'postmortem_report_unavailable' })) return
       res.status(503).json({ error: 'Trade lessons are temporarily unavailable. Please retry.', code: 'postmortem_report_unavailable' })
     }
   })
@@ -1593,6 +1643,29 @@ export default function stateRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/ledger-reconciliation?account=<id|all> — V3 B2 (P5b-2). The
+  // ledger against the broker per account, in that account's deposit
+  // currency, every position in one class with the evidence it rests on
+  // (services/ledger-reconciliation.js). Built on the report worker; money is
+  // never summed across currencies. A worker that fails or is busy is an
+  // explicit 503 (owner principle 6), never an empty report.
+  // -----------------------------------------------------------------------
+  router.get('/ledger-reconciliation', async (req, res) => {
+    const raw = req.query.account == null || req.query.account === '' ? 'all' : String(req.query.account)
+    if (raw !== 'all' && !/^[1-9]\d{0,19}$/.test(raw)) return res.status(400).json({ error: 'account must be a registered account id or all' })
+    res.set('Cache-Control', 'no-store')
+    try {
+      res.json(await readLedgerReconciliation(db, { accountId: raw }))
+    } catch (err) {
+      // The worker loses the RangeError type; the refusal is recognised by
+      // its message before the generic unavailable answer (as blocker-report).
+      if (err?.message === 'account not registered') return res.status(400).json({ error: 'account not registered' })
+      if (sendReportUnavailable(res, err, { message: 'ledger reconciliation unavailable', code: 'ledger_reconciliation_unavailable' })) return
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/open-duplicates — the same audit as /duplicate-trades, but on
   // positions that are STILL OPEN. The closed-only version correctly reported
   // two historical pairs and was completely blind to a live 0003.HK pair
@@ -1928,9 +2001,13 @@ export default function stateRouter(db) {
   // GET /state/deal-balances — V3 WEB-8 (8,989-A row 7). Per account: the
   // broker balances stored on deals and cashflows, what is missing and why
   // (labels), how many consecutive events reconcile, and with ?at=<ms|ISO>[,…]
-  // (at most 24) the balance PROVEN at each edge or the labelled reason there
-  // is none. ?account=all|<id>. Read-only; bounded by the account's stored
-  // deals and cashflows.
+  // (at most 24) the balance the ledger carry reads at each edge — a stored
+  // broker read, else the deal/cashflow balance the next event proves — or
+  // the labelled reason there is none. The edges are answered by the carry's
+  // own reader (balance-edges.js), over the one deposit-currency map, so this
+  // route and the ledger can never state two balances for one edge.
+  // ?account=all|<id>. Read-only; bounded by the account's stored deals and
+  // cashflows.
   router.get('/deal-balances', async (req, res) => {
     try {
       const raw = String(req.query.at ?? '').trim()
@@ -1939,9 +2016,11 @@ export default function stateRouter(db) {
       const edges = parts.map(s => (/^\d+$/.test(s) ? Number(s) : Date.parse(s)))
       if (edges.some(e => !Number.isSafeInteger(e))) return res.status(400).json({ error: 'each edge is epoch milliseconds or an ISO time' })
       const scope = requestedAccount(db, req)
-      const [{ dealBalanceReport }, { depositCurrencies }] = await Promise.all([
-        import('../services/deal-balances.js'), import('../services/performance-populations.js')])
-      res.json(dealBalanceReport(db, { accountId: scope.all ? null : scope.accountId, edges, currencyByAccount: depositCurrencies(db) }))
+      const [{ dealBalanceReport }, { balanceReader }, { depositCurrencies }] = await Promise.all([
+        import('../services/deal-balances.js'), import('../services/balance-edges.js'), import('../services/deposit-currencies.js')])
+      const currencyByAccount = depositCurrencies(db)
+      const carry = edges.length ? balanceReader(db, { currencyByAccount, dealBalances: true }) : null
+      res.json(dealBalanceReport(db, { accountId: scope.all ? null : scope.accountId, edges, currencyByAccount, edgeAt: carry?.at ?? null }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2172,7 +2251,8 @@ export default function stateRouter(db) {
     res.set('Cache-Control', 'no-store')
     try {
       res.json(await readAccountEngineering(db))
-    } catch {
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'Account status is temporarily unavailable. Please retry.', code: 'account_engineering_unavailable' })) return
       res.status(503).json({ error: 'Account status is temporarily unavailable. Please retry.', code: 'account_engineering_unavailable' })
     }
   })
@@ -2297,7 +2377,12 @@ export default function stateRouter(db) {
       catch { return res.status(400).json({ error: 'valid reporting timezone required' }) }
     }
     try { res.json(await readPerformancePopulations(db, timeZone ? { timeZone } : undefined)) }
-    catch (err) { res.status(503).json({ status: 'unavailable', reason: err.message }) }
+    catch (err) {
+      // V3 M2b: the typed 503 (reason code, retry hint, driver words in
+      // `detail`) instead of the raw err.message as the reason.
+      if (sendReportUnavailable(res, err, { message: 'Performance populations are temporarily unavailable. Please retry.', code: 'performance_populations_unavailable' })) return
+      res.status(500).json({ error: err.message })
+    }
   })
   router.get('/perf-ledger', async (req, res) => {
     try {
@@ -2747,7 +2832,17 @@ export default function stateRouter(db) {
     try {
       const { positionHistoryView } = await import('../services/position-history.js')
       const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100))
-      res.json(positionHistoryView(db, { limit, accountId: req.query.account ?? null }))
+      // THE ?account=all FALSE ZERO (LIFECYCLE-SPEC §7, measured 25-09-2026):
+      // the raw query value was passed through, so ?account=all filtered on
+      // account_id = 'all' and answered 0 complete / 0 incomplete while the
+      // same read without it answered 53 / 1,255. Scope now comes from
+      // requestedAccount like every other scoped read: an explicit account
+      // filters, `all` (any case) does not. With no ?account the route keeps
+      // the default it has always had — every account — rather than
+      // narrowing silently to the selected one; the reply says which.
+      const scope = requestedAccount(db, req)
+      const accountId = scope.explicit && !scope.all ? scope.accountId : null
+      res.json({ ...positionHistoryView(db, { limit, accountId }), scope: { accountId, all: accountId == null } })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2771,20 +2866,38 @@ export default function stateRouter(db) {
       res.json(await readOrderLifecycle(db, options))
     } catch (err) {
       res.set('Cache-Control', 'no-store')
-      if (isReportUnavailable(err)) res.set('Retry-After', String(err.retryAfterSec))
+      // A fixed bound (order_lifecycle_response_bound) has no retry hint.
+      if (isReportUnavailable(err) && err.retryAfterSec != null) res.set('Retry-After', String(err.retryAfterSec))
       let lastSnapshotAt = null
       try { lastSnapshotAt = JSON.parse(getState(db, ORDER_LIFECYCLE_SNAPSHOT_KEY) || 'null')?.at ?? null } catch { lastSnapshotAt = null }
       res.status(503).json({ error: 'order_lifecycle_unavailable', code: err?.reason ?? 'order_lifecycle_worker_error', lastSnapshotAt })
     }
   })
+  // V3 STK-08v2: the Telegram digest's state — the setting (enabled, mode,
+  // quiet hours), the unsent count, the oldest queued row, the reasons the
+  // rows were queued for (the newest DIGEST_REASON_ROWS_MAX, saying so), the
+  // last flush and its last error. The same reader STK-08 judges by. Counts
+  // and times only: no message text, no credential. Read-only; an unreadable
+  // outbox is a 500 naming the error, never a 0.
+  router.get('/telegram-digest', async (_req, res) => {
+    try {
+      const { digestState } = await import('../services/telegram-digest.js')
+      res.json(digestState(db))
+    } catch (err) {
+      res.status(500).json({ error: 'telegram_digest_unreadable', detail: String(err?.message ?? err).slice(0, 200) })
+    }
+  })
   // The capture queue behind the record: what is waiting, what was captured,
   // and — the part worth reading — what this system GAVE UP on, named with
   // the reason. Those rows are closed trades it could not describe.
+  // V3 V1: plus `accounts` — per account, its closes, captures and verdicts
+  // and a status (silent / stalled / verify_failing / ok / no_closes) judged
+  // at read time — so one silent account can no longer hide in the totals.
   router.get('/position-capture', async (_req, res) => {
     try {
-      const { captureQueueView } = await import('../services/position-capture.js')
+      const { positionCaptureView } = await import('../services/position-capture-accounts.js')
       const { verifierStatus } = await import('../lib/verify-client.js')
-      res.json({ ...captureQueueView(db), verifier: verifierStatus() })
+      res.json({ ...positionCaptureView(db), verifier: verifierStatus() })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2878,11 +2991,12 @@ export default function stateRouter(db) {
   // PR-I: the sealed-segment read path, read-only — what each sidecar side
   // has sealed (GET /tick-segments on it) against what this keeper has
   // already cached, and where the cache is. Nothing here pulls; the research
-  // action does that.
+  // action does that. V3 R1: per-segment names and bytes, and the heartbeat's
+  // segment manifest with its persistence and retention verdicts.
   router.get('/tick-segments', async (_req, res) => {
     try {
       const { tickSegmentsView } = await import('../services/tick-segments.js')
-      res.json(await tickSegmentsView())
+      res.json(await tickSegmentsView({ db }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2900,7 +3014,8 @@ export default function stateRouter(db) {
       for (const name of ['cpp_exec', 'cpp_exec_demo']) {
         let rec = null
         try { rec = JSON.parse(getState(db, `${name}_tick_json`) || 'null') } catch { rec = null }
-        if (rec) sides.push({ side: name, at: rec.at, status: rec.status, rate24h: tickRate24h(db, name) })
+        // GW-CAP: the retention projection against the cap the side reports.
+        if (rec) sides.push({ side: name, at: rec.at, status: rec.status, rate24h: tickRate24h(db, name, Date.now(), rec.status?.segments?.spoolCapBytes ?? null) })
       }
       let rows = []
       try { rows = db.prepare('SELECT account_id, is_live, enabled FROM accounts ORDER BY is_live, account_id').all() } catch { rows = [] }
@@ -3371,15 +3486,23 @@ export default function stateRouter(db) {
   // latest N closes, the fast monitor's quote freshness with the record's
   // age, and the current broker-day open (the same FX-day anchor the risk
   // gate uses) so a daily bar from an earlier day can be labelled as such.
+  // WEB-9b: `barReceipts` (when the agent last received each timeframe's
+  // bars, per source, and whether the newest bar was still forming) and
+  // `feedLatency` (broker spot timestamp → agent receipt over the last 10
+  // minutes, per broker host) from lib/feed-receipts.js. Market data is not
+  // an account's: both are the agent's whole feed under every scope, with
+  // the account each receipt came through named on it.
   // Read-only. See services/data-feed-report.js.
   // -----------------------------------------------------------------------
   router.get('/data-feed', async (req, res) => {
     try {
       const { executionCosts, quoteFreshness, NOT_MEASURED, EXECUTION_WINDOW_DEFAULT } = await import('../services/data-feed-report.js')
+      const { feedReceiptsSnapshot } = await import('../lib/feed-receipts.js')
       const { fxDayOpenMs } = await import('../services/risk.js')
       const scope = requestedAccount(db, req)
       const acct = accountWhere(scope, 'account_id')
       const nowMs = Date.now()
+      const receipts = feedReceiptsSnapshot(nowMs)
       res.json({
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
         scoped: acct.active,
@@ -3387,6 +3510,8 @@ export default function stateRouter(db) {
         brokerDayOpenMs: fxDayOpenMs(nowMs),
         execution: executionCosts(db, { where: acct.where, params: acct.params, limit: req.query?.limit ?? EXECUTION_WINDOW_DEFAULT }),
         quotes: quoteFreshness(db, nowMs),
+        barReceipts: receipts.bars,
+        feedLatency: receipts.feedLatency,
         notMeasured: NOT_MEASURED,
       })
     } catch (e) {

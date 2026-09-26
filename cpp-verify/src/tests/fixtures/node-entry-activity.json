@@ -1,0 +1,28 @@
+{
+  "id": "entry-activity:11:frozen:1800000000000",
+  "role": "entry_activity",
+  "basis": "bar",
+  "provider": "ctrader",
+  "accountId": "11",
+  "host": "demo.ctraderapi.com",
+  "symbolId": "7",
+  "calendar": {
+    "identity": { "provider": "ctrader", "accountId": "11", "host": "demo.ctraderapi.com", "symbolId": "7" },
+    "source": "ctrader:ProtoOASymbol",
+    "version": "frozen",
+    "observedAtMs": 1800000000000,
+    "expiresAtMs": 1800086400000,
+    "fromMs": 1800000000000,
+    "toMs": 1800086400000,
+    "intervals": [{ "fromMs": 1800000000000, "toMs": 1800086400000 }]
+  },
+  "sessionOpenedAtMs": 1800000000000,
+  "sessionId": "frozen:1800000000000",
+  "lastCompletedAtMs": 1800000300000,
+  "nextDueMs": 1800000600000,
+  "activityComplete": true,
+  "ordersSinceOpen": 0,
+  "hasRecordedOrder": false,
+  "blocker": "margin_pool ×1 of 1 entry stops since session open; latest margin_pool: free margin exhausted",
+  "reason": "retained_account_activity_after_completed_scan_batch"
+}

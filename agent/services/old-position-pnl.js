@@ -2,7 +2,10 @@ import { getState, setState } from '../db.js'
 import { normPosId } from '../lib/pos-id.js'
 import { POSITION_HISTORY_REFUSED } from '../lib/position-deal-history.js'
 import { backfillClosedPnl, noteTradeAttempts, LIVE_GAP_MAX_ATTEMPTS, POSITION_LEDGER_IDENTITY } from './pnl-backfill.js'
-import { markUnresolvable, UNRESOLVED_NO_EVIDENCE, BROKER_DEAL_NOT_SETTLEABLE, BROKER_POSITION_STILL_OPEN } from './mark-unresolvable.js'
+import {
+  markUnresolvable, UNRESOLVED_NO_EVIDENCE, BROKER_DEAL_NOT_SETTLEABLE, BROKER_POSITION_STILL_OPEN, BROKER_NEVER_FILLED, BROKER_HISTORY_NOT_SETTLEABLE,
+} from './mark-unresolvable.js'
+import { sweepReadRecently } from './position-lifecycle-evidence.js'
 
 // One old, attributed position per account pass. The durable pacing cursor
 // also records failures, but a failed read is not an exhausted trade attempt.
@@ -25,14 +28,28 @@ import { markUnresolvable, UNRESOLVED_NO_EVIDENCE, BROKER_DEAL_NOT_SETTLEABLE, B
 // row is marked terminal with the evidence — "unresolved: no broker evidence"
 // when there is none, otherwise a label naming the broker evidence it could
 // not be settled from (a closing deal on file, a position the broker still
-// holds open): net_pnl stays NULL (excluded from money), the row stays in the
+// holds open, an order that never filled, a complete history the reader
+// refused): net_pnl stays NULL (excluded from money), the row stays in the
 // ledger and on every read route, and the pass moves on. Rows written off before the
 // per-position reader existed get ONE position-history re-read (R4): settled
 // if the broker has the close, otherwise their reason is corrected.
 export const OLD_POSITION_MAX_ATTEMPTS = LIVE_GAP_MAX_ATTEMPTS
 const REREAD_KEEP = 2000
+// THE RULES A REMEMBERED READ WAS JUDGED UNDER (V3 B1). A written-off or
+// terminal row is re-read once; that memory is keyed by this version, so rows
+// judged before the lifecycle rules (whole unique lifecycle, rejected twins
+// not counted, the false-close rule) get ONE read under them — #372/#774 AVY
+// and #373/#775 GEV on …3489 were all remembered before those rules existed.
+//
+// Rule 3 (V3 B2): the broker lifecycle verdicts. Every read now leaves a
+// verdict row (position-lifecycle-evidence.js, recorded by the account pass
+// from this reader's own response), and a history made only of rejected deals
+// is labelled "never filled" instead of "no broker evidence". Rows remembered
+// under rule 2 get ONE read under rule 3, so each written-off row carries a
+// verdict — about 20 reads, once, at the existing pacing.
+export const LIFECYCLE_RULES = 3
 
-export async function recoverOldPositionPnl(db, creds, { now, isCurrent, getPositionDeals }) {
+export async function recoverOldPositionPnl(db, creds, { now, isCurrent, getPositionDeals, handoff = [] }) {
   const accountId = String(creds.accountId), key = `position_pnl_recovery:${accountId}`
   const rereadKey = `position_pnl_reread:${accountId}`
   let prior = {}
@@ -40,16 +57,34 @@ export async function recoverOldPositionPnl(db, creds, { now, isCurrent, getPosi
   const attempts = Object.fromEntries(Object.entries(prior.attempts || {})
     .filter(([, at]) => Number.isSafeInteger(at) && at <= now && now - at < 900_000).slice(-128))
   if (Number.isSafeInteger(prior.lastReadAt) && prior.lastReadAt <= now && now - prior.lastReadAt < 30_000) return { state: 'paced' }
+  // V3 B2 checker N1: the evidence sweep reads position histories on the same
+  // account; the 30 s pacing is shared both ways, not only sweep-after-reader.
+  if (sweepReadRecently(db, accountId, now)) return { state: 'paced' }
   const reread = readJson(db, rereadKey)
-  // Live rows first; written-off rows only until their one re-read is on record.
+  const judged = Object.fromEntries(Object.entries(reread).filter(([, v]) => Number(v?.rule) >= LIFECYCLE_RULES))
+  // Live rows first; written-off rows only until their one re-read under the
+  // current rules is on record.
+  //
+  // THE 14-DAY opened_at FILTER NO LONGER HIDES WHAT THE WINDOW HANDS OFF
+  // (V3 B1, PR-1(d)). It kept rows opened inside the window for the window
+  // path alone. The window path now DEFERS a position whose opening deal it
+  // cannot see and refuses an ambiguous identity (pnl-backfill.js), and both
+  // need this reader's complete position history — a re-adopted row's local
+  // opened_at is the adoption, not the broker's open. `handoff` is those
+  // positions, from the same account pass. Rows the window can still settle
+  // stay the window's: reading them here as well would count two attempts a
+  // pass and halve the time to a write-off. Same pacing as before: one
+  // position per account per 30 s, each position at most once per 15 min.
+  const handed = JSON.stringify((Array.isArray(handoff) ? handoff : []).map(String).filter(id => /^[1-9]\d*$/.test(id)).slice(0, 200))
   const candidates = db.prepare(`SELECT id, ctrader_position_id, COALESCE(pnl_unresolvable, 0) AS written_off,
       pnl_unresolvable_reason AS written_off_reason, pnl_unresolvable_at AS written_off_at
     FROM trades WHERE account_id = ?
     AND status = 'closed' AND net_pnl IS NULL
     AND (COALESCE(pnl_unresolvable, 0) = 0 OR id NOT IN (SELECT CAST(key AS INTEGER) FROM json_each(?)))
-    AND (julianday(opened_at) IS NULL OR julianday(opened_at) < julianday(?) OR julianday(opened_at) > julianday(?))
+    AND (julianday(opened_at) IS NULL OR julianday(opened_at) < julianday(?) OR julianday(opened_at) > julianday(?)
+      OR CAST(ctrader_position_id AS INTEGER) IN (SELECT CAST(value AS INTEGER) FROM json_each(?)))
     ORDER BY COALESCE(pnl_unresolvable, 0), (id <= ?), id LIMIT 128`)
-    .all(accountId, JSON.stringify(reread), new Date(now - 14 * 86400_000).toISOString(), new Date(now).toISOString(),
+    .all(accountId, JSON.stringify(judged), new Date(now - 14 * 86400_000).toISOString(), new Date(now).toISOString(), handed,
       Number.isSafeInteger(prior.lastTradeId) ? prior.lastTradeId : 0)
   const candidate = candidates.find(row => {
     const id = normPosId(row.ctrader_position_id)
@@ -65,7 +100,8 @@ export async function recoverOldPositionPnl(db, creds, { now, isCurrent, getPosi
     strictAccount: true, now, isCurrent, getPositionDeals })
   const settled = result => ({ positionId, tradeId, state: result.backfilled ? 'recovered' : 'no_matching_close', result })
   const refusedOrFailed = (error, extra = {}) => [POSITION_LEDGER_IDENTITY, POSITION_HISTORY_REFUSED].includes(error?.code)
-    ? { positionId, tradeId, state: 'refused', reason: error.message, ...(error.openAtBroker === true ? { openAtBroker: true } : {}), ...extra }
+    ? { positionId, tradeId, state: 'refused', reason: error.message, refusal: error.code, ...(error.openAtBroker === true ? { openAtBroker: true } : {}),
+        ...(error.neverFilled === true ? { neverFilled: true } : {}), ...extra }
     : { positionId, tradeId, state: 'failed', reason: error?.message || String(error), ...extra }
   let out
   try {
@@ -93,16 +129,27 @@ export async function recoverOldPositionPnl(db, creds, { now, isCurrent, getPosi
 function classify(db, { out, candidate, writtenOff, accountId, positionId, tradeId, now, reread, rereadKey }) {
   const at = new Date(now).toISOString()
   if (out.state === 'recovered') {
-    if (!writtenOff) return
+    // V3 B1: the settling read may have marked earlier records of the
+    // position as false closes (status rejected, evidence in close_reason);
+    // pnl-backfill audits them. A candidate among them was not settled — it
+    // was shown to be a false record — so it is remembered as such.
+    const falseCloses = out.result?.falseCloses ?? []
+    if (falseCloses.includes(tradeId)) remember(db, rereadKey, reread, tradeId, at, 'false_close')
+    // The row that took the money is the one whose write-off (if any) no
+    // longer describes it — the candidate, or the true row of its position.
+    const filled = Number(out.result?.filledRowId ?? tradeId)
+    const row = db.prepare(`SELECT pnl_unresolvable_reason AS reason, pnl_unresolvable_at AS at FROM trades
+      WHERE id = ? AND net_pnl IS NOT NULL AND COALESCE(pnl_unresolvable, 0) = 1`).get(filled)
+    if (!row) return
     // The broker had the close after all: the money landed, so the write-off
     // no longer describes the row. The history of the write-off is kept.
     const cleared = db.prepare(`UPDATE trades SET pnl_unresolvable = 0, pnl_unresolvable_reason = ?
       WHERE id = ? AND net_pnl IS NOT NULL AND COALESCE(pnl_unresolvable, 0) = 1`)
-      .run(bounded(`settled from the broker's complete position history ${at}; had been written off ${candidate.written_off_at ?? '?'}: ${candidate.written_off_reason ?? ''}`), tradeId).changes
+      .run(bounded(`settled from the broker's complete position history ${at}; had been written off ${row.at ?? '?'}: ${row.reason ?? ''}`), filled).changes
     out.writeOffCleared = cleared > 0
-    remember(db, rereadKey, reread, tradeId, at, 'settled')
-    audit(db, 'PNL_WRITE_OFF_SETTLED', { tradeId, accountId, positionId, at, backfilled: out.result?.backfilled ?? 0, source: 'broker position history',
-      oldAt: candidate.written_off_at ?? null, oldReason: auditText(candidate.written_off_reason) })
+    remember(db, rereadKey, reread, filled, at, 'settled')
+    audit(db, 'PNL_WRITE_OFF_SETTLED', { tradeId: filled, accountId, positionId, at, backfilled: out.result?.backfilled ?? 0, source: 'broker position history',
+      oldAt: row.at ?? null, oldReason: auditText(row.reason) })
     return
   }
   if (!['no_matching_close', 'refused'].includes(out.state)) return
@@ -151,7 +198,17 @@ function evidenceOf(db, out, { accountId, positionId, at }) {
       AND CAST(position_id AS INTEGER) = CAST(? AS INTEGER) AND net_pnl IS NOT NULL ORDER BY deal_id LIMIT 5`).all(accountId, positionId)
   } catch { /* evidence only */ }
   const deals = local.length ? local.map(d => `${d.deal_id} net ${d.net_pnl}${d.matched_trade_id != null ? ` linked #${d.matched_trade_id}` : ''}`).join(', ') : 'none'
-  const label = out.openAtBroker ? BROKER_POSITION_STILL_OPEN : local.length ? BROKER_DEAL_NOT_SETTLEABLE : UNRESOLVED_NO_EVIDENCE
+  // A history of rejected deals only is broker evidence of its own (V3 B2):
+  // the order never filled. It outranks a local closing deal on file, whose
+  // link the complete history just contradicted.
+  //
+  // A POSITION_HISTORY_REFUSED refusal means the broker's complete answer
+  // for this account ARRIVED and could not be settled (V3 B2 checker N2): that
+  // is broker evidence, so "no broker evidence" would be false. It is kept
+  // only for a refusal that is not about the broker's answer — the ledger's
+  // own identity contradiction with no deal on file.
+  const label = out.neverFilled ? BROKER_NEVER_FILLED : out.openAtBroker ? BROKER_POSITION_STILL_OPEN
+    : local.length ? BROKER_DEAL_NOT_SETTLEABLE : out.refusal === POSITION_HISTORY_REFUSED ? BROKER_HISTORY_NOT_SETTLEABLE : UNRESOLVED_NO_EVIDENCE
   if (!out.ambiguity) {
     return { label, text: `the broker's position history for position ${positionId} on account ${accountId} was refused: ${out.reason} (read ${at})${local.length ? `; local closing deal(s): ${deals}` : ''}` }
   }
@@ -186,10 +243,11 @@ function readJson(db, key) {
 // Bounded: integer keys iterate in ascending order, so the lowest trade ids
 // drop first; a dropped row is at worst re-read once more.
 function remember(db, key, map, tradeId, at, outcome) {
-  const next = { ...map, [tradeId]: { at, outcome } }
+  const entry = { at, outcome, rule: LIFECYCLE_RULES }
+  const next = { ...map, [tradeId]: entry }
   const entries = Object.entries(next)
   setState(db, key, JSON.stringify(Object.fromEntries(entries.slice(-REREAD_KEEP))))
-  map[tradeId] = { at, outcome }
+  map[tradeId] = entry
 }
 
 function audit(db, method, body) {

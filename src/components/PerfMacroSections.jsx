@@ -19,7 +19,7 @@ import { useState } from 'react'
 import SectionTools from './common/SectionTools.jsx'
 import { sideLabelUpper } from '../lib/side.js'
 import { accountNumbers } from "../lib/scope-label.js"
-import { dailyBarAge, dailyBarNote, dailyBarsSummary, latencyLine, costLines, quoteFreshnessLine } from '../lib/data-feed.js'
+import { dailyBarAge, dailyBarNote, dailyBarsSummary, latencyLine, costLines, quoteFreshnessLine, timeframeChips, barReceiptsNote, feedLatencyLine } from '../lib/data-feed.js'
 import { dailyStopWords, dailyStopDetail } from '../lib/daily-stop-display.js'
 
 const ACC = 'var(--color-accent)', UP = 'var(--color-up)', DN = 'var(--color-down)'
@@ -332,7 +332,8 @@ export function BalanceInOut({ inModal = false }) {
  *
  * `feedReport` is GET /state/data-feed (latency + coverage, stored fees and
  * swap per deposit currency, the fast monitor's quote freshness, the broker
- * day's open).
+ * day's open; WEB-9b: the per-timeframe bar receipts behind the OHLCV chips
+ * and the broker-timestamped market-feed latency).
  *
  * `dailyStop` is dailyStopView() of the scoped account's account-overview
  * `dailyStop` — the engine's own dailyLossVerdict, the SAME reading the
@@ -358,6 +359,9 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
   const stopDetail = stopWords ? dailyStopDetail(dailyStop, money) : { text: '', note: null }
   const stopPhrase = allAccounts ? 'per account — see the account cards' : stopWords ? `${stopWords.stop}${stopWords.day}` : 'not read'
   const notMeasured = (feedReport?.notMeasured || []).map(n => n.label)
+  // WEB-9b: the chips are receipts, not labels — undefined when the report
+  // did not load, so they name the timeframe and claim nothing.
+  const tfChips = timeframeChips(feedReport ? feedReport.barReceipts : undefined, clockMs)
   return (
     <div style={{ ...panel, gap: 4 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
@@ -375,7 +379,7 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>OHLCV data</span>
           <span style={{ fontSize: 'var(--fs-body)', color: SB, lineHeight: 1.4 }}>Open · High · Low · Close · Volume across multiple timeframes</span>
           <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-            {['1m', '15m', '1h', '4h', '1D'].map(tf => <span key={tf} style={chip}>{tf}</span>)}
+            {tfChips.map(c => <span key={c.key} style={{ ...chip, ...(c.received ? {} : { color: MU, background: 'transparent' }) }} title={c.title}>{c.text}</span>)}
           </div>
           <details style={{ fontSize: 'var(--fs-body)', color: MU }}><summary>{dailyBarsSummary(marketReadings, dayOpenMs, clockMs)}</summary>
             {(marketReadings || []).filter(p => p.day).map(p => <p key={`${p.account_id}:${p.id}`}>
@@ -383,7 +387,7 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
               O {p.day.o ?? '—'} · H {p.day.h ?? '—'} · L {p.day.l ?? '—'} · C {p.day.c ?? '—'} · V {p.day.v ?? '—'}
             </p>)}
           </details>
-          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Retained bars describe their stated period. The chips name the timeframes strategies read; their receipt times are not measured.</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>{barReceiptsNote(feedReport)} Retained bars describe their stated period.</span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Account &amp; portfolio state</span>
@@ -399,10 +403,11 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
           <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Current crypto spreads · price-feed account {quoteSource || 'not selected'}</span>
           {quotes.map(q => <span key={q.sym} style={{ fontSize: 'var(--fs-body)', color: MU }} title={q.quoteNote}>{q.sym} · spread {q.spread == null ? 'unavailable' : Number(q.spread.toPrecision(6))} · {q.quoteNote}</span>)}
           <span style={line}>{quoteFreshnessLine(feedReport ? feedReport.quotes : null)}</span>
+          <span style={line}>{feedLatencyLine(feedReport ? feedReport.feedLatency ?? null : undefined)}</span>
           <span style={line}>{latencyLine(execution?.latency ?? null)}</span>
           {costLines(execution).map(c => <span key={c} style={line}>{c}</span>)}
           {execution?.window?.closes ? <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Latest {execution.window.closes} closes, as stored from broker deal history (a charged fee is negative). Slippage is recorded per trade in forensics.</span> : null}
-          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Not measured: {notMeasured.length ? notMeasured.join('; ') : 'market-feed latency (broker timestamp to receipt); per-timeframe bar receipt times'}. Open positions&apos; accrued fees and swap are not shown here.</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>{notMeasured.length ? `Not measured: ${notMeasured.join('; ')}. ` : ''}Open positions&apos; accrued fees and swap are not shown here.</span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>Risk controls</span>

@@ -20,6 +20,9 @@
 
 import { accountWhere } from '../lib/account-scope.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
+import { normPosId } from '../lib/pos-id.js'
+import { depositCurrencies } from './deposit-currencies.js'
+import { poolByCurrency, reportCurrency } from '../shared/performance-populations.js'
 
 /**
  * Group CLOSED trades sharing symbol+side+entry+exit+net_pnl. Real
@@ -83,33 +86,129 @@ export function findDuplicateTrades(db, { windowDays = 90, scope = null } = {}) 
   const seenIds = new Set(priceGroups.flatMap(g => g.map(x => x.id)))
   const extraPosIdGroups = posIdGroups.filter(g => g.some(x => !seenIds.has(x.id)))
 
-  const toEntry = (g) => ({
-    symbol: g[0].symbol,
-    accountId: g[0].account_id ?? null,
-    side: g[0].side,
-    entry_price: g[0].entry_price,
-    exit_price: g[0].exit_price,
-    net_pnl: g[0].net_pnl,
-    strategy: g[0].label_strategy || null,
-    count: g.length,
-    // If every row in the group shares one broker position id, that's
-    // near-certain confirmation it's the SAME broker fill recorded
-    // multiple times locally, not a coincidence.
-    samePositionId: g[0].ctrader_position_id != null && g.every(x => x.ctrader_position_id === g[0].ctrader_position_id),
-    tradeIds: g.map(x => x.id),
-    closedAts: [...new Set(g.map(x => x.closed_at))],
-  })
+  // BROKER EVIDENCE DECIDES WHAT IS A DUPLICATE (V3 B2, P5b-2). Identical
+  // values are a CANDIDATE, not a finding: production 25-09 reported 46 extra
+  // rows worth -1,717.34, and 42 of those rows (-1,574.41) were distinct broker
+  // positions, each with its own closing deal on file (0016.HK x17, DOW.US
+  // x17, 0066.HK x8, 0005.HK x3 and x2) — real trades the Desk card told the
+  // owner to discount. Each group is now classed:
+  //   same_position   — every row names one broker position: one fill recorded
+  //                     more than once; the rows after the first are extra;
+  //   broker_distinct — every row names its own position and each position's
+  //                     retained receipts sum to that row's money: not a
+  //                     duplicate, NOT counted as extra;
+  //   unverified      — anything else: counted as extra until evidence says
+  //                     otherwise (the conservative side of the old report).
+  // And an extra row is priced at ITS OWN money, not the group's first row's:
+  // USDCNH #46 -196.35 / #47 -59.73 double-counts -59.73, not -196.35.
+  let receiptNet = null
+  try {
+    receiptNet = db.prepare(`SELECT ROUND(SUM(net_pnl), 2) AS net, COUNT(*) AS n FROM broker_deals
+      WHERE account_id IS ? AND position_id = ? AND net_pnl IS NOT NULL`)
+  } catch { receiptNet = null }
+  const ownReceipt = (r) => {
+    const pid = normPosId(r.ctrader_position_id)
+    if (!receiptNet || !/^[1-9]\d*$/.test(pid || '') || r.account_id == null) return false
+    const got = receiptNet.get(String(r.account_id), pid)
+    return Number(got?.n) > 0 && Math.abs(Number(got.net) - Number(r.net_pnl)) <= 0.011
+  }
+  const classify = (g) => {
+    const pids = g.map(x => normPosId(x.ctrader_position_id))
+    if (pids.every(Boolean) && new Set(pids).size === 1) return 'same_position'
+    if (pids.every(Boolean) && new Set(pids).size === g.length && g.every(ownReceipt)) return 'broker_distinct'
+    return 'unverified'
+  }
+
+  const toEntry = (g) => {
+    const cls = classify(g)
+    const ordered = [...g].sort((a, b) => a.id - b.id)
+    const extra = cls === 'broker_distinct' ? [] : ordered.slice(1)
+    return {
+      symbol: g[0].symbol,
+      accountId: g[0].account_id ?? null,
+      side: g[0].side,
+      entry_price: g[0].entry_price,
+      exit_price: g[0].exit_price,
+      net_pnl: g[0].net_pnl,
+      strategy: g[0].label_strategy || null,
+      count: g.length,
+      // If every row in the group shares one broker position id, that's
+      // near-certain confirmation it's the SAME broker fill recorded
+      // multiple times locally, not a coincidence.
+      samePositionId: g[0].ctrader_position_id != null && g.every(x => x.ctrader_position_id === g[0].ctrader_position_id),
+      tradeIds: g.map(x => x.id),
+      closedAts: [...new Set(g.map(x => x.closed_at))],
+      classification: cls,
+      extraTradeIds: extra.map(x => x.id),
+      // Each extra row at its own money, in its own account's units.
+      extraRows: extra.map(x => ({ id: x.id, accountId: x.account_id ?? null, positionId: normPosId(x.ctrader_position_id) || null, net_pnl: x.net_pnl })),
+    }
+  }
 
   const groups = [...priceGroups.map(toEntry), ...extraPosIdGroups.map(toEntry)]
     .sort((a, b) => b.count - a.count)
 
+  // MONEY PER CURRENCY BY THE ONE RULE (owner default 25-09: money per
+  // currency, never summed across currencies; B2-m after V3 WEB-5). Each
+  // extra row counts at its own money on its own account. Each account's
+  // currency is reportCurrency over depositCurrencies() — the one currency
+  // source — and accounts pool only through poolByCurrency, the one pooling
+  // rule (splitByCurrency → populationStats, which re-checks that every
+  // contributing account is recorded in that currency). An account with no
+  // recorded currency keeps its own figure, in its own units, and is pooled
+  // with nothing. A row with no account belongs to no account and no
+  // currency: it is totalled only within its own broker position (one
+  // position is one account's), never across positions. `totalExtraPnl` is a
+  // number only when every extra row falls in ONE such unit — one currency
+  // pool, one account, or one unattributed position — otherwise null, and the
+  // parts are the answer (a mixed SGD+USD figure is a fake result).
+  // A currency read that FAILED is not a currency that is not recorded: every
+  // account then falls into its own units, and `currencyRead: 'unavailable'`
+  // says why, so the card reads "currency not read", never "not recorded".
+  let currencyByAccount = null, currencyRead = 'read'
+  try { currencyByAccount = depositCurrencies(db) } catch { currencyByAccount = null; currencyRead = 'unavailable' }
+  const currencies = { currencyByAccount }
+  const currencyOf = id => reportCurrency(currencies, id)
+  const round2 = v => Math.round(v * 100) / 100
+  const byAccount = new Map(), unattributed = new Map()
+  for (const g of groups) {
+    for (const x of g.extraRows) {
+      if (x.accountId == null) {
+        const key = x.positionId ? `position:${x.positionId}` : `row:${x.id}`
+        if (!unattributed.has(key)) unattributed.set(key, { positionId: x.positionId ?? null, tradeIds: [], rows: 0, pnl: 0 })
+        const u = unattributed.get(key); u.tradeIds.push(x.id); u.rows++; u.pnl += Number(x.net_pnl)
+        continue
+      }
+      const id = String(x.accountId)
+      if (!byAccount.has(id)) byAccount.set(id, { accountId: id, currency: currencyOf(id), rows: 0, pnl: 0 })
+      const b = byAccount.get(id); b.rows++; b.pnl += Number(x.net_pnl)
+    }
+  }
+  const extraByAccount = [...byAccount.values()].map(b => ({ ...b, pnl: round2(b.pnl) }))
+  const extraUnattributed = [...unattributed.values()].map(u => ({ ...u, pnl: round2(u.pnl) }))
+  const { moneyByCurrency } = poolByCurrency(extraByAccount.map(b => ({ accountId: b.accountId, recordedNet: b.pnl,
+    closedN: b.rows, pricedN: b.rows })), currencyOf)
+  const extraByCurrency = moneyByCurrency.map(c => ({ currency: c.currency, accountIds: c.accountIds, rows: c.closedN,
+    pnl: c.recordedNet == null ? null : round2(c.recordedNet), moneyState: c.moneyState }))
+  const ownUnits = extraByAccount.filter(b => b.currency == null)
+  const units = [...extraByCurrency, ...ownUnits, ...extraUnattributed]
+
   return {
     groups,
-    // "Extra" = the rows beyond the first legitimate one in each group —
-    // this is exactly how much net P&L / trade-count these duplicates are
-    // artificially adding to Performance/Edge-health stats.
-    totalExtraRows: groups.reduce((s, g) => s + (g.count - 1), 0),
-    totalExtraPnl: Math.round(groups.reduce((s, g) => s + (g.count - 1) * (Number(g.net_pnl) || 0), 0) * 100) / 100,
+    // "Extra" = the rows beyond the first legitimate one in each group whose
+    // broker evidence does not show distinct positions — this is how many
+    // trade rows these duplicates add to Performance/Edge-health stats.
+    totalExtraRows: groups.reduce((s, g) => s + g.extraRows.length, 0),
+    totalExtraPnl: units.length === 0 ? 0 : units.length === 1 ? units[0].pnl : null,
+    extraByAccount,
+    extraByCurrency,
+    extraUnattributed,
+    currencyRead,
+    windowDays,
+    moneyPolicy: 'per account in its deposit currency; pooled only within one recorded currency by the one pooling rule (poolByCurrency); an account with no recorded currency in its own units; a row with no account only within its own broker position; never summed across currencies',
+    // Groups the broker's own receipts show are distinct positions: listed,
+    // never counted as extra.
+    brokerDistinctRows: groups.filter(g => g.classification === 'broker_distinct').reduce((s, g) => s + g.count, 0),
   }
 }
 

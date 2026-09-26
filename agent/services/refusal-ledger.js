@@ -21,7 +21,7 @@
 // that touched both stop and target is `ambiguous`, not a win.
 // ---------------------------------------------------------------------------
 
-import { replayExit } from '../lib/exit-replay.js'
+import { replayExit, normaliseBars } from '../lib/exit-replay.js'
 import { reasonKey } from './veto-breakdown.js'
 import { resolveOpportunity } from './opportunity-identity.js'
 
@@ -169,6 +169,18 @@ export function pendingRefusals(db, { nowMs = Date.now(), limit = 50 } = {}) {
   return out
 }
 
+/**
+ * V3 L2b W13 (fix round) — the note on a `no_bars` row the FIXED scorer
+ * writes. It starts `fetched `, which no row the defect wrote does (those
+ * carry replayExit's own reason, "no bars stored"), and the re-score pass
+ * excludes it: a refusal the market truly printed nothing for, scored after
+ * the fix, is not a defect row and is never rewritten with the defect's cause.
+ */
+export const SCORER_NO_BARS_PREFIX = 'fetched '
+export function scorerNoBarsNote(fetchedCount, reason) {
+  return `${SCORER_NO_BARS_PREFIX}${fetchedCount} bar(s), 0 in the refusal's window: ${reason || 'no bars stored'}`.slice(0, 500)
+}
+
 function insertScore(db, it, { nowMs, outcome, rReached = null, exitAt = null, barsUsed = null, note = null }) {
   db.prepare(`
     INSERT OR REPLACE INTO refusal_scores (opportunity_key, account_id, symbol, side, strategy, timeframe, reason_key, reason,
@@ -201,14 +213,19 @@ export async function scoreRefusedOpportunities(db, fetchBars, { nowMs = Date.no
     } catch (err) {
       insertScore(db, it, { nowMs, outcome: 'fetch_failed', note: String(err?.message || err).slice(0, 200) }); failed++; continue
     }
-    const window = (Array.isArray(bars) ? bars : []).filter(b => Number(b?.[0]) >= it.firstMs)
+    const fetched = normaliseBars(bars) // V3 L2b W13: {t,o,h,l,c} → tuples
+    const window = fetched.filter(b => Number(b?.[0]) >= it.firstMs)
     const r = replayExit(window, { side: it.side, entry: it.entry, sl: it.sl, tp: it.tp, openedAtMs: it.firstMs }, { timeCapMin: it.horizonMin })
     if (r.ok) {
       insertScore(db, it, { nowMs, outcome: r.reason, rReached: r.rMultiple, exitAt: r.exitAtMs ? new Date(r.exitAtMs).toISOString() : null, barsUsed: r.barsUsed ?? null })
     } else if (r.ambiguous) {
       insertScore(db, it, { nowMs, outcome: 'ambiguous', barsUsed: r.barsUsed ?? null, note: r.reason })
+    } else if (window.length) {
+      insertScore(db, it, { nowMs, outcome: 'truncated', barsUsed: window.length, note: r.reason })
     } else {
-      insertScore(db, it, { nowMs, outcome: window.length ? 'truncated' : 'no_bars', barsUsed: window.length, note: r.reason })
+      // A no_bars this scorer writes names its own read, so the re-score pass
+      // below can tell it from a row the bar-shape defect wrote (fix round).
+      insertScore(db, it, { nowMs, outcome: 'no_bars', barsUsed: 0, note: scorerNoBarsNote(fetched.length, r.reason) })
     }
     scored++
   }
@@ -248,4 +265,137 @@ export function refusalCostReport(db, { days = 7, now = Date.now() } = {}) {
     reasons, waiting, recent: rows.slice(0, 50),
     note: 'sumR is the R the refused setups would have reached at their own stop/target within their horizon: positive = refused winners (cost), negative = avoided losers. Ambiguous, truncated, unscorable and fetch_failed rows are counted in n but not in sumR.',
   }
+}
+
+// ---------------------------------------------------------------------------
+// V3 L2b W13 — RE-SCORE THE ROWS THE BAR-SHAPE DEFECT WROTE AS `no_bars`.
+//
+// Until the fix above, the scorer filtered `{t,o,h,l,c}` bars as tuples, found
+// none, and stored `no_bars` for every refusal it scored — 31,613 rows that
+// say "the market printed nothing" when the market printed fine and our reader
+// could not see it. Those rows are corrected in place here, never deleted:
+// the outcome, R, exit time and bar count are replaced by a real replay, and
+// `note` says it was re-scored, when, and why. `scored_at` is KEPT, so every
+// window that counts rows by when they were scored (refusalCostReport, the
+// lifecycle's PRE-02) still counts the same rows — only their false outcome
+// changes, instead of 31k old refusals landing in "the last 7 days".
+//
+// BOUNDED, IN THE LOOP, NEVER AT BOOT. At most `maxFetches` broker bar reads
+// per call. Each read serves a whole group: one symbol and timeframe, anchored
+// on the newest un-re-scored refusal, 400 bars back from its horizon end, and
+// every older refusal of that group the window reaches back to is scored from
+// the same bars. A group member the window does not reach is left for a later
+// pass, which anchors on it; the anchor itself is always settled, so every
+// pass makes progress and the pass ends. A failed read settles the anchor as
+// `fetch_failed` (the scorer's own rule) and stops the pass, so an outage
+// costs one row per cycle, not the backlog — except a read refused because
+// the symbol is not on the loop account's symbol map ("symbolId unknown"),
+// which no retry can change: every waiting row of that symbol is settled
+// `fetch_failed` at once and the pass goes on. Rows re-scored once are never
+// picked again (their note starts `rescored `), even if still `no_bars`.
+//
+// ONLY THE DEFECT'S ROWS (fix round). A `no_bars` the fixed scorer writes is
+// a real finding (the fetch returned nothing in the window) and carries its
+// own note (`fetched N bar(s)…`, scorerNoBarsNote above); it is excluded here,
+// so it is never re-read, never spends this pass's reads, and never gets the
+// defect's cause written onto it. Once nothing is left the pass remembers it
+// for this database handle and stops looking: no new defect row can appear.
+// ---------------------------------------------------------------------------
+export const RESCORE_NOTE_PREFIX = 'rescored '
+const RESCORE_FETCH_BARS = 400
+// True of every row this pass touches (the fixed scorer's rows are excluded):
+// the scorer that wrote it could see no bar whatever the fetch returned.
+const RESCORE_WHY = 'was no_bars, written by the scorer that read the broker\'s {t,o,h,l,c} bars as tuples and so could see none (V3 L2b W13)'
+const SYMBOL_UNKNOWN_RE = /symbolId unknown/i
+const rescoreIndexed = new WeakSet()
+const rescoreDone = new WeakSet()
+
+function ensureRescoreIndexes(db) {
+  if (rescoreIndexed.has(db)) return
+  // Partial: only the no_bars population, so they stay small and shrink as it
+  // is corrected. Created lazily by the first pass — not a boot-time build.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_refusal_scores_no_bars_at ON refusal_scores(first_at) WHERE outcome = 'no_bars'`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_refusal_scores_no_bars_sym ON refusal_scores(symbol, timeframe, first_at) WHERE outcome = 'no_bars'`)
+  rescoreIndexed.add(db)
+}
+
+const firstAtMs = (v) => Date.parse(String(v).replace(' ', 'T') + (/[zZ]$|[+-]\d\d:\d\d$/.test(String(v)) ? '' : 'Z'))
+
+/**
+ * @param {(symbol:string, tf:string, count:number, endTimeMs:number) => Promise<Array>} fetchBars
+ *   the same fetcher the scorer uses (objects or tuples — both are read)
+ * @returns {Promise<{fetches:number, rescored:number, outcomes:Record<string,number>, left:number|null, stopped:string|null}>}
+ */
+export async function rescoreNoBarsRefusals(db, fetchBars, { nowMs = Date.now(), maxFetches = 2, groupLimit = 200, log = null } = {}) {
+  const out = { fetches: 0, rescored: 0, outcomes: {}, left: null, stopped: null }
+  if (rescoreDone.has(db)) { out.left = 0; return out }
+  ensureRescoreIndexes(db)
+  const pending = `outcome = 'no_bars' AND COALESCE(note, '') NOT LIKE '${RESCORE_NOTE_PREFIX}%' AND COALESCE(note, '') NOT LIKE '${SCORER_NO_BARS_PREFIX}%'`
+  const anchorQ = db.prepare(`SELECT * FROM refusal_scores WHERE ${pending} ORDER BY first_at DESC LIMIT 1`)
+  const groupQ = db.prepare(`SELECT * FROM refusal_scores WHERE ${pending} AND symbol = ? AND timeframe IS ? AND first_at <= ? ORDER BY first_at DESC LIMIT ?`)
+  const upd = db.prepare(`UPDATE refusal_scores SET outcome = ?, r_reached = ?, exit_at = ?, bars_used = ?, note = ? WHERE opportunity_key = ? AND outcome = 'no_bars'`)
+  const stamp = new Date(nowMs).toISOString()
+  const noteFor = (detail) => `${RESCORE_NOTE_PREFIX}${stamp}: ${RESCORE_WHY}${detail ? ` — ${detail}` : ''}`.slice(0, 500)
+  const tally = (outcome, n) => { if (n) { out.rescored += n; out.outcomes[outcome] = (out.outcomes[outcome] || 0) + n } }
+  const settle = (key, outcome, { rReached = null, exitAt = null, barsUsed = null, detail = null } = {}) => {
+    tally(outcome, upd.run(outcome, rReached, exitAt, barsUsed, noteFor(detail), key).changes)
+  }
+
+  let done = false
+  for (let f = 0; f < maxFetches; f++) {
+    const anchor = anchorQ.get()
+    if (!anchor) { done = true; break }
+    const group = groupQ.all(anchor.symbol, anchor.timeframe ?? null, anchor.first_at, groupLimit)
+    if (!group.some(r => r.opportunity_key === anchor.opportunity_key)) group.unshift(anchor)
+    const tf = anchor.timeframe || DEFAULT_TF
+    const items = group.map(row => ({ row, firstMs: firstAtMs(row.first_at), horizonMin: Number(row.horizon_min) > 0 ? Number(row.horizon_min) : horizonMinFor(tf) }))
+    const ends = items.filter(i => Number.isFinite(i.firstMs)).map(i => i.firstMs + i.horizonMin * 60_000)
+    if (!ends.length) { settle(anchor.opportunity_key, 'unscorable', { detail: 'unreadable refusal time' }); continue }
+    out.fetches++
+    let bars
+    try {
+      bars = normaliseBars(await fetchBars(anchor.symbol, tf, RESCORE_FETCH_BARS, Math.max(...ends)))
+    } catch (err) {
+      const msg = String(err?.message || err).slice(0, 200)
+      if (SYMBOL_UNKNOWN_RE.test(msg)) {
+        // Not an outage: this symbol cannot be read from the loop account at
+        // all, so every waiting row of it is settled now, and the pass goes on.
+        tally('fetch_failed', db.prepare(`UPDATE refusal_scores SET outcome = 'fetch_failed', r_reached = NULL, exit_at = NULL, bars_used = NULL, note = ? WHERE ${pending} AND symbol = ?`)
+          .run(noteFor(`the bar fetch cannot read this symbol: ${msg}`), anchor.symbol).changes)
+        continue
+      }
+      settle(anchor.opportunity_key, 'fetch_failed', { detail: `the bar fetch failed: ${msg}` })
+      out.stopped = 'fetch_failed'
+      break
+    }
+    const firstBarMs = bars.length ? Number(bars[0]?.[0]) : null
+    db.transaction(() => {
+      for (const it of items) {
+        const key = it.row.opportunity_key
+        const isAnchor = key === anchor.opportunity_key
+        if (!Number.isFinite(it.firstMs)) { if (isAnchor) settle(key, 'unscorable', { detail: 'unreadable refusal time' }); continue }
+        if (num(it.row.entry) == null || num(it.row.sl) == null || num(it.row.tp) == null) {
+          settle(key, 'unscorable', { detail: 'no entry, stop or target on the stored score' }); continue
+        }
+        // A group member this read does not reach back to waits for a pass
+        // anchored on it; the anchor is scored from what arrived, as the
+        // scorer itself would.
+        if (!isAnchor && !(Number.isFinite(firstBarMs) && firstBarMs <= it.firstMs)) continue
+        const endMs = it.firstMs + it.horizonMin * 60_000
+        const window = bars.filter(b => Number(b?.[0]) >= it.firstMs && Number(b?.[0]) <= endMs)
+        const r = replayExit(window, { side: it.row.side, entry: num(it.row.entry), sl: num(it.row.sl), tp: num(it.row.tp), openedAtMs: it.firstMs }, { timeCapMin: it.horizonMin })
+        if (r.ok) settle(key, r.reason, { rReached: r.rMultiple, exitAt: r.exitAtMs ? new Date(r.exitAtMs).toISOString() : null, barsUsed: r.barsUsed ?? null })
+        else if (r.ambiguous) settle(key, 'ambiguous', { barsUsed: r.barsUsed ?? null, detail: r.reason })
+        else settle(key, window.length ? 'truncated' : 'no_bars', { barsUsed: window.length, detail: r.reason })
+      }
+    })()
+  }
+  // The count runs only while a backlog was found this call; once nothing is
+  // left, later calls return above without scanning (checker nit, fix round).
+  out.left = done ? 0 : db.prepare(`SELECT COUNT(*) AS n FROM refusal_scores WHERE ${pending}`).get().n
+  if (out.left === 0) rescoreDone.add(db)
+  if (log && out.rescored) {
+    log(`Refusal ledger re-score: ${out.rescored} no_bars row(s) corrected from ${out.fetches} bar read(s) (${Object.entries(out.outcomes).map(([k, v]) => `${k} ${v}`).join(', ')}) — ${out.left} still to re-score${out.stopped ? ` · stopped: ${out.stopped}` : ''}`)
+  }
+  return out
 }

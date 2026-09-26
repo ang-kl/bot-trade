@@ -15,7 +15,10 @@
 //      unattributed and never credited to the account asked for;
 //   6. bounded: no SCAN of the four large tables; a limit hit says truncated;
 //   7. a rule's meaning cannot change without a version bump (the pin);
-//   8. goal rows, inspector, daily report and the ticker read one snapshot.
+//   8. goal rows, inspector, daily report and the ticker read one snapshot;
+//   9. (L1c) a stage headline counts every violation — a scoped report's
+//      unattributed ones beside the account, a controller on its own line —
+//      so a stalled controller with no account record reads stuck > 0.
 import test, { mock } from 'node:test'
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
@@ -25,6 +28,7 @@ import {
   RULES, RULESET_VERSION, HELPERS_VERSION, JUDGE_HELPERS, CONTEXT_SQL, STAGES, SNAPSHOT_KEY, SNAPSHOT_OPTIONS, SNAPSHOT_MAX_BYTES,
   buildOrderLifecycle, compactSnapshot, lifecycleGoals, normaliseLifecycleOptions, readSnapshot,
   inspectLifecycleRegression, lifecycleRuleRecurs, lifecycleRulePersists, lifecycleReportLines, loadLifecycleConfig, GENERIC_CLOSE_RE,
+  CONTROLLERS_LINE, stageCountPhrase, UNATTRIBUTED_SAMPLE_MAX,
 } from './order-lifecycle.js'
 import { runOrderLifecyclePass, startOrderLifecycle } from './order-lifecycle-ticker.js'
 import { goalTable, DEFAULT_GOAL_TARGETS } from './goal-table.js'
@@ -32,6 +36,7 @@ import { runLogInspector, evalFalsifierMetric, INSPECTIONS } from './log-inspect
 import { buildDailyReport, DAILY_REPORT_MAX_CHARS } from './daily-report.js'
 import { CONTROLLERS, heartbeatView } from './heartbeat.js'
 import { scoreRefusedOpportunities } from './refusal-ledger.js'
+import { DIGEST_STATE_SQL, DIGEST_REASON_ROWS_MAX } from './telegram-digest.js'
 
 const NOW = Date.parse('2026-09-26T12:00:00Z')
 const START = loadLifecycleConfig().acceptanceStart // 2026-09-25T08:50:00.000Z (proposed)
@@ -348,9 +353,10 @@ const FIXTURES = {
   'STK-09': {
     red(db) {
       const id = trade(db, { ctrader_position_id: '6601' })
-      for (const at of ['2026-09-26 06:00:00', '2026-09-26 09:00:00']) ins(db, 'action_log', { method: 'POSITION_NO_TARGET', path: '/protection-audit', at, body: JSON.stringify({ positionId: '6601', symbol: 'EURUSD' }) })
+      // v2 (I3): still reported — the newest row inside two log-mute windows.
+      for (const at of ['2026-09-26 06:00:00', '2026-09-26 09:00:00', '2026-09-26 11:30:00']) ins(db, 'action_log', { method: 'POSITION_NO_TARGET', path: '/protection-audit', at, body: JSON.stringify({ positionId: '6601', symbol: 'EURUSD' }) })
       assert.ok(id)
-      return { ids: [`position:${A}:6601`], present: () => assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE method = 'POSITION_NO_TARGET'`).get().n, 2) }
+      return { ids: [`position:${A}:6601`], present: () => assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE method = 'POSITION_NO_TARGET'`).get().n, 3) }
     },
     green: db => {
       trade(db, { ctrader_position_id: '6602' })
@@ -380,6 +386,19 @@ const FIXTURES = {
       }
     },
     green: db => { ins(db, 'controller_heartbeats', { name: 'pnl_reconcile', last_run_at: iso(NOW - 60_000), last_ok_at: iso(NOW - 60_000), consecutive_failures: 0, runs: 9000 }) },
+  },
+  'STK-12': {
+    // V3 I3: a written-off stuck record is a NOTICE naming it; a settled one is not.
+    red(db) {
+      const id = trade(db, { id: 1466, symbol: 'SUGAR', status: 'unconfirmed', ctrader_position_id: null, opened_at: '2026-09-07 10:35:37' })
+      ins(db, 'stuck_resolutions', { subject: `trade:${id}`, kind: 'trade_inflight', rule_id: 'STK-03', account_id: A, trade_id: id, outcome: 'unresolved', verdict: 'unresolved: no broker evidence', reason: 'no deal', evidence_json: '{}', prior_state: 'unconfirmed', resolver_version: 1, resolved_at: NEW })
+      return { ids: [`trade:${id}`], present: () => assert.equal(db.prepare(`SELECT outcome FROM stuck_resolutions WHERE subject = 'trade:1466'`).get().outcome, 'unresolved') }
+    },
+    green(db) {
+      const id = trade(db, { status: 'unconfirmed', ctrader_position_id: null, opened_at: '2026-09-07 10:35:37' })
+      ins(db, 'stuck_resolutions', { subject: `trade:${id}`, kind: 'trade_inflight', rule_id: 'STK-03', account_id: A, trade_id: id, outcome: 'settled', verdict: 'duplicate of trade #1', reason: 'adopted', evidence_json: '{}', prior_state: 'unconfirmed', resolver_version: 1, resolved_at: NEW })
+    },
+    emptyGreen: true, // a settled record is not in the notice's population: the whole population is the write-offs
   },
 }
 
@@ -440,7 +459,9 @@ test('known answer: the six orphaned resting rows, one classification each (#669
   assert.equal(by['pending:669'].class, 'filled_unlinked')
   assert.equal(by['pending:661'].class, 'filled_unlinked', '#661 filled: not also counted as expired')
   assert.equal(by['pending:663'].class, 'order_gone')
-  for (const e of r.sample) assert.equal(e.resolverExists, false, 'pending-fib has no resolver (loop.js:114)')
+  // v2 (I3): pending-fib rows now have a resolver (the stuck resolver, R1);
+  // the six classifications above are unchanged from v1.
+  for (const e of r.sample) { assert.equal(e.resolverExists, true); assert.equal(e.resolver, 'stuck resolver R1') }
   assert.equal(build(db).summary.stuck.new, 6)
 })
 
@@ -519,16 +540,22 @@ test('known answer: `direction_reason: null` — the value is tested, not the ke
   assert.ok(!subjects(r).includes(`risk_event:${camel}`), 'directionReason is read as position-history.js:99-108 does')
 })
 
-test('known answer: {t,o,h,l,c} bars through the real refusal scorer become no_bars, and PRE-02 names the row', async () => {
+test('known answer: {t,o,h,l,c} bars through the real refusal scorer are SCORED (V3 L2b W13), and PRE-02 names a no_bars row as the defect stored it', async () => {
   const db = initDB(':memory:')
   ins(db, 'risk_events', { symbol: 'EURUSD', side: 'BUY', approved: 0, veto_reason: 'bad_rr 1.50<3', account_id: A, opportunity_key: 'opp-objbars',
     created_at: '2026-09-20 10:00:00', proposal_json: JSON.stringify({ entry: 1.1, sl: 1.09, tp1: 1.13, timeframe: '1h', strategy: 'x' }) })
   const objectBars = Array.from({ length: 60 }, (_, i) => ({ t: Date.parse('2026-09-20T10:00:00Z') + i * 3_600_000, o: 1.1, h: 1.12, l: 1.095, c: 1.11 }))
   await scoreRefusedOpportunities(db, async () => objectBars, { nowMs: NOW - 3_600_000 })
-  assert.equal(db.prepare(`SELECT outcome FROM refusal_scores WHERE opportunity_key = 'opp-objbars'`).get()?.outcome, 'no_bars', 'the scorer filters bars by b?.[0] (refusal-ledger.js:204)')
+  assert.equal(db.prepare(`SELECT outcome FROM refusal_scores WHERE opportunity_key = 'opp-objbars'`).get()?.outcome, 'time_cap', 'W13: the scorer now reads the objects the broker fetch returns (refusal-ledger.js:216-217)')
+  // The rows the defect wrote before W13 are what PRE-02 still reads: one as stored.
+  const legacy = { opportunity_key: 'opp-legacy', account_id: A, symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: 1.09, tp: 1.13, first_at: '2026-09-20 10:00:00', horizon_min: 2880, scored_at: iso(NOW - 3_600_000), outcome: 'no_bars', bars_used: 0, note: 'no bars stored' }
+  ins(db, 'refusal_scores', legacy)
   const r = one(db, 'PRE-02')
-  assert.deepEqual(subjects(r), ['refusal:opp-objbars'])
-  assert.match(r.note, /scored 0 while no_bars 1/)
+  assert.deepEqual(subjects(r), ['refusal:opp-legacy'], 'the scored row is not a violation; the defect-shaped row is')
+  assert.doesNotMatch(String(r.note ?? ''), /scored 0 while/, 'one row scored: the scorer is scoring')
+  const onlyLegacy = initDB(':memory:')
+  ins(onlyLegacy, 'refusal_scores', legacy)
+  assert.match(one(onlyLegacy, 'PRE-02').note, /scored 0 while no_bars 1/)
 })
 
 test('known answer: #1715 ES.US — adopted, our label, no tag, no approval; opened_at is the adoption stamp', () => {
@@ -710,9 +737,14 @@ test('bounded: samples page at 25 (200 with one rule), counts never shrink', () 
 const src = v => (typeof v === 'function' ? v.toString() : JSON.stringify(v))
 const ruleHash = r => createHash('sha256').update(Object.keys(r).filter(k => !['id', 'version', 'cite', 'noun'].includes(k)).sort().map(k => `${k}=${src(r[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
 const helpersHash = () => createHash('sha256').update(Object.keys(JUDGE_HELPERS).sort().map(k => `${k}=${src(JUDGE_HELPERS[k])}`).join('\n␞\n')).digest('hex').slice(0, 16)
-const PINNED_HELPERS = { [`helpers@2`]: '0a3dba7780ffbc63' }
+// helpers@4 (V3 L1c): runRule carries a scoped report's unattributed
+// violations `beside`, summarise counts them and names controllers on their
+// own line. No rule's own hash moved.
+const PINNED_HELPERS = { [`helpers@4`]: '758feead1efec1bd' }
+// STK-08@2 (STK-08v2): held_by_setting, and the digest reader and notify
+// loader it judges by are pinned in its hash. No other rule's hash moved.
 const PINNED = {
-  'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@1': '1d3934917924fe6a', 'PRE-03@1': 'bf01d978a6b93535', 'PRE-04@1': 'fa04e500d8a0ca47',
+  'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@2': '8310a4e233690cf5', 'PRE-03@1': 'bf01d978a6b93535', 'PRE-04@1': 'fa04e500d8a0ca47',
   'PRE-05@1': 'c7aeb7460046a6fc',
   'ORD-01@2': '6455e3a08b70c56b', 'ORD-02@1': '520f853e457966a7', 'ORD-03@1': 'c3efa49b62d76c7e', 'ORD-04@1': '0576f08d9e583115',
   'ORD-05@1': 'ff61f53fcc0a5c36', 'ORD-06@1': '75ca883642df5b6e', 'ORD-07@1': '48d7a24785139f8d', 'ORD-08@1': '70ab525d959eef60',
@@ -720,9 +752,9 @@ const PINNED = {
   'CLS-01@1': 'd1c6f94d5d127f9b', 'CLS-02@1': '1f3a45c656e2f94b', 'CLS-03@1': '40b74e5ba9111a98', 'CLS-04@1': '4313b95a7b55beb1',
   'CLS-05@1': '2cca97ff9080477d', 'CLS-06@1': 'a4bb8873fe57a5f1', 'CLS-07@1': '77e677b6b8b4b901', 'CLS-08@1': '540f253a1c1c8eab',
   'CLS-09@1': '9985d3c5b7b5b9cf',
-  'STK-01@1': 'b7c8a96e077092aa', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@1': '9e6eef34c7fcf44e', 'STK-04@2': '30b119a04d39ebc5',
-  'STK-05@1': 'fd6653d6850b9006', 'STK-06@1': '221e983558ccd9be', 'STK-07@2': 'c45c7a3d5678fc13', 'STK-08@1': '3fecf4ac1c0a0ce3',
-  'STK-09@1': '9006966342612525', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6',
+  'STK-01@2': '969001ee6208e6c7', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@2': '92e5e73e8c8494e9', 'STK-04@2': '30b119a04d39ebc5',
+  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@2': 'f79c388f91fac5d1',
+  'STK-09@2': '29a95b3d182e245c', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6', 'STK-12@1': '20bc6106e975e370',
 }
 test('ruleset pin: every rule\'s sql + judge is pinned to its version', () => {
   const now = Object.fromEntries(RULES.map(r => [`${r.id}@${r.version}`, ruleHash(r)]))
@@ -858,7 +890,7 @@ test('B1: a stuck rule\'s finding asks whether it is STILL stuck at the deadline
   assert.equal(finding(dead).status, 'expired')
   // The metric itself: an unreadable rule and a truncated zero are no evidence either.
   const snap = readSnapshot(getState, stuck)
-  const m = { ruleId: 'STK-01', version: 1, sinceMs: NOW }
+  const m = { ruleId: 'STK-01', version: RULES.find(r => r.id === 'STK-01').version, sinceMs: NOW }
   assert.equal(lifecycleRulePersists(snap, m), true)
   assert.equal(lifecycleRulePersists({ ...snap, rules: snap.rules.map(r => (r.id === 'STK-01' ? { ...r, violations: 0, truncated: true } : r)) }, m), null)
   assert.equal(lifecycleRulePersists({ ...snap, rules: snap.rules.map(r => (r.id === 'STK-01' ? { ...r, measurable: false } : r)) }, m), null)
@@ -1020,6 +1052,25 @@ test('N7: STK-07 dates the transition from the row that ENTERED it — a later f
   assert.equal(r.sample[0].sinceIsLowerBound, false)
 })
 
+test('L2a W14: STK-07 v3 dates the transition from the record\'s own transitionSince, not the drain-row bound', () => {
+  // The record says RECONCILING since 11:45 (15 minutes before NOW) while the
+  // only drain row says it entered at 10:00: the record's stamp wins, so
+  // there is nothing stuck yet. RED if the judge ignores transitionSince.
+  const fresh = initDB(':memory:')
+  setState(fresh, `acct:${A}:engine_status_json`, JSON.stringify({ accountId: A, transitionState: 'RECONCILING', requestedEntryMode: 'TIME_BASED', updatedAt: iso(NOW), transitionSince: '2026-09-26T11:45:00.000Z' }))
+  ins(fresh, 'action_log', { method: 'LOOP', path: '/entry-mode/drain', account_id: A, at: '2026-09-26 10:00:00', body: JSON.stringify({ accountId: A, from: 'STABLE', to: 'RECONCILING' }) })
+  assert.equal(one(fresh, 'STK-07').violations, 0, 'fifteen minutes by the record, not two hours by the drain row')
+  // Stamped two hours ago with NO drain row at all: exact, not "at least".
+  const old = initDB(':memory:')
+  setState(old, `acct:${A}:engine_status_json`, JSON.stringify({ accountId: A, transitionState: 'WARMING', requestedEntryMode: 'TIME_BASED', updatedAt: iso(NOW), transitionSince: '2026-09-26T10:00:00.000Z' }))
+  const r = one(old, 'STK-07')
+  assert.equal(r.violations, 1)
+  assert.equal(r.sample[0].since, '2026-09-26T10:00:00.000Z')
+  assert.equal(r.sample[0].sinceSource, 'record')
+  assert.equal(r.sample[0].sinceIsLowerBound, false)
+  assert.doesNotMatch(r.sample[0].detail, /at least/)
+})
+
 test('N2: STK-08 watchdog outbox — the spec\'s known answer, 512/512 and 1,136,836 dropped, is one stuck mechanism', () => {
   const db = initDB(':memory:')
   const outbox = Object.fromEntries(Array.from({ length: 512 }, (_, i) => [`k${i}`, { attempts: 0, createdAtMs: NOW - 2 * 3_600_000 }]))
@@ -1031,6 +1082,178 @@ test('N2: STK-08 watchdog outbox — the spec\'s known answer, 512/512 and 1,136
   const ok = initDB(':memory:')
   setState(ok, 'independent_watchdog_json', JSON.stringify({ status: { outbox: { a: { attempts: 1, createdAtMs: NOW } }, dropped: 0 }, readAt: iso(NOW) }))
   assert.equal(one(ok, 'STK-08').violations, 0)
+})
+
+// ---------------------------------------------------------------------------
+// STK-08 v2 (owner 25-09-2026 21:30 SGT): a channel switched OFF BY A SETTING
+// holds its rows — class held_by_setting, named, not counted as stuck. A
+// channel that is ON and a day behind stays the defect; a setting that cannot
+// be read is never taken as off. Production 25-09-2026 23:29 UTC: 57,750
+// Telegram rows from 2026-08-22 10:39 UTC with notify OFF; the watchdog
+// outbox 512/512, dropped 1,526,163, all four delivery settings false.
+// ---------------------------------------------------------------------------
+const TG_OLD = '2026-08-22T10:39:26.800Z'
+const outboxRow = (db, o = {}) => ins(db, 'telegram_outbox', { queued_at: TG_OLD, kind: 'alert', priority: 'normal', text: 'SECRET-TEXT do not show', reason: 'notify_off', sent_at: null, ...o })
+const watchdogStatus = (o = {}) => ({
+  outbox: Object.fromEntries(Array.from({ length: 512 }, (_, i) => [`k${i}`, { attempts: 0, createdAtMs: Date.parse('2026-09-23T09:51:26.074Z') + i }])),
+  dropped: 1_526_163, masterEnabled: false, deploymentDeliveryEnabled: false, incidentOwnerConfigured: false, deliveryCredentialsConfigured: false, effectivePolicyAllowsUrgent: false, ...o,
+})
+const WATCHDOG_ALL_ON = { masterEnabled: true, deploymentDeliveryEnabled: true, incidentOwnerConfigured: true, deliveryCredentialsConfigured: true, effectivePolicyAllowsUrgent: true }
+
+test('STK-08 v2 telegram OFF by setting: held_by_setting, named with the setting, count, oldest and reasons — not in the stuck headline', () => {
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: false, mode: 'live', quiet: null, urgentBypass: true, tz: 'Asia/Singapore' }))
+  outboxRow(db)
+  outboxRow(db, { queued_at: '2026-09-25T10:00:00.000Z', reason: 'quiet_hours' })
+  outboxRow(db, { queued_at: '2026-09-26T11:00:00.000Z' })
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM telegram_outbox WHERE sent_at IS NULL').get().n, 3)
+  assert.equal(getState(db, 'telegram_notify_json').includes('"enabled":false'), true)
+  const report = build(db)
+  const r = ruleOf(report, 'STK-08')
+  assert.equal(r.version, 2)
+  assert.equal(r.violations, 0, 'held by a setting is not a stuck violation')
+  assert.equal(r.classes.held_by_setting, 1)
+  assert.equal(r.info.held_by_setting.length, 1)
+  const info = r.info.held_by_setting[0]
+  assert.match(info, /^telegram: 3 unsent Telegram row\(s\), oldest queued 2026-08-22T10:39 — held by the setting telegram_notify_json enabled=false/)
+  assert.match(info, /reasons over the 3 pending row\(s\): notify_off 2 \(oldest 2026-08-22T10:39\), quiet_hours 1 \(oldest 2026-09-25T10:00\); the oldest row's reason notify_off/)
+  assert.match(info, /last flush never recorded/)
+  assert.doesNotMatch(info, /SECRET-TEXT/, 'no message text')
+  assert.match(r.note, /^held by a setting, not stuck \(not in the stuck count\) — telegram: 3 unsent/)
+  assert.equal(report.summary.stuck.new, 0, 'the stuck headline excludes it')
+  assert.match(report.rules.find(x => x.id === 'STK-08').note, /held by the setting telegram_notify_json enabled=false/, 'visible on the flat rules the Reasons page renders')
+  // The goal row and the daily line say it beside the count, so a count that
+  // fell because a channel is held never reads as delivered.
+  const snap = compactSnapshot(report)
+  assert.equal(snap.rules.find(x => x.id === 'STK-08').classes.held_by_setting, 1)
+  const goal = lifecycleGoals(snap, DEFAULT_GOAL_TARGETS, NOW).find(g => g.id === 'lifecycle_stuck')
+  assert.equal(goal.current, 0)
+  assert.match(goal.note, /held by a setting, not counted: STK-08 outbox_backlog 1/)
+  assert.ok(lifecycleReportLines(snap).includes('  STK-08 outbox_backlog 1 held by a setting (not stuck; see the rule\'s note)'))
+})
+
+test('STK-08 v2 telegram ON and a day behind: still the defect, with the digest state on the finding', () => {
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: true, mode: 'hourly' }))
+  outboxRow(db, { reason: 'hourly_digest' })
+  const r = one(db, 'STK-08')
+  assert.equal(r.violations, 1)
+  assert.equal(r.classes.held_by_setting, undefined)
+  const e = r.sample.find(x => x.subject === 'outbox:telegram')
+  assert.equal(e.class, 'telegram')
+  assert.equal(e.detail, '1 unsent Telegram row(s), oldest queued 2026-08-22T10:39')
+  assert.deepEqual(e.notify, { enabled: true, mode: 'hourly', configReadable: true, configError: null })
+  assert.equal(e.lastError, null)
+  assert.deepEqual(e.reasons.rows, [{ reason: 'hourly_digest', count: 1, oldestQueuedAt: TG_OLD }])
+  assert.equal(build(db).summary.stuck.new, 1)
+})
+
+test('STK-08 v2 telegram ON with a recorded flush error: the defect names the error (token redacted)', () => {
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: true, mode: 'live' }))
+  setState(db, 'tg_digest_last_error', '2026-09-25T23:00:00.000Z error: request to https://api.telegram.org/bot123456:AAbbCC_dd-ee/sendMessage failed')
+  outboxRow(db, { reason: 'quiet_hours' })
+  const r = one(db, 'STK-08')
+  assert.equal(r.violations, 1)
+  const e = r.sample.find(x => x.subject === 'outbox:telegram')
+  // The detail drops the flush's own leading timestamp so the snapshot's cut keeps the error itself (checker nit 3).
+  assert.match(e.detail, /^1 unsent Telegram row\(s\), oldest queued 2026-08-22T10:39; last flush error: error: request to https:\/\/api\.telegram\.org\/bot<redacted>\/sendMessage failed$/)
+  assert.match(e.lastError, /bot<redacted>\/sendMessage failed$/)
+  assert.doesNotMatch(JSON.stringify(r), /AAbbCC_dd-ee/, 'no credential anywhere in the rule')
+})
+
+test('STK-08 v2 unreadable notify config: never taken as off — the defect stays and says so', () => {
+  for (const bad of ['{not json', '[false]', 'null', '"off"']) {
+    const db = initDB(':memory:')
+    setState(db, 'telegram_notify_json', bad)
+    outboxRow(db)
+    assert.equal(getState(db, 'telegram_notify_json'), bad)
+    const r = one(db, 'STK-08')
+    assert.equal(r.violations, 1, `unreadable ${bad} must not hold`)
+    assert.equal(r.classes.held_by_setting, undefined)
+    const e = r.sample.find(x => x.subject === 'outbox:telegram')
+    assert.match(e.detail, /; telegram_notify_json unreadable, not taken as off$/)
+    assert.equal(e.notify.configReadable, false)
+  }
+  // An absent config is the loader's default — enabled — and readable: the defect stays, unmarked.
+  const none = initDB(':memory:')
+  outboxRow(none)
+  const e = one(none, 'STK-08').sample.find(x => x.subject === 'outbox:telegram')
+  assert.equal(e.detail, '1 unsent Telegram row(s), oldest queued 2026-08-22T10:39')
+  assert.equal(e.notify.enabled, true)
+})
+
+test('STK-08 v2 watchdog with its delivery settings OFF: held_by_setting naming each setting, the dropped count and the oldest item', () => {
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: false }))
+  setState(db, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus(), readAt: '2026-09-25T23:33:27.475Z', error: null }))
+  const report = build(db)
+  const r = ruleOf(report, 'STK-08')
+  assert.equal(r.violations, 0)
+  assert.equal(r.classes.held_by_setting, 1)
+  const info = r.info.held_by_setting.find(x => x.startsWith('watchdog:'))
+  assert.equal(info, 'watchdog: watchdog outbox 512/512, 512 never attempted and over 1 h old, dropped 1526163; oldest queued 2026-09-23T09:51 — held by the setting(s) ' +
+    'deploymentDeliveryEnabled=false (the cpp-verify delivery switch), incidentOwnerConfigured=false (the cpp-verify incident owner), ' +
+    'deliveryCredentialsConfigured=false (WATCHDOG_TELEGRAM_TOKEN / WATCHDOG_TELEGRAM_CHAT_ID), masterEnabled=false (Node\'s telegram_notify_json as cpp-verify last read it): ' +
+    'cpp-verify delivers nothing while any is off; status read 2026-09-25T23:33:27.475Z')
+  assert.equal(report.summary.stuck.new, 0)
+  // ONE setting off is enough: cpp-verify delivers only with all of them on.
+  const one1 = initDB(':memory:')
+  setState(one1, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, deliveryCredentialsConfigured: false }), readAt: iso(NOW) }))
+  const r1 = one(one1, 'STK-08')
+  assert.equal(r1.violations, 0)
+  assert.match(r1.info.held_by_setting[0], /held by the setting\(s\) deliveryCredentialsConfigured=false \(WATCHDOG_TELEGRAM_TOKEN/)
+  // masterEnabled false relayed from an UNREADABLE Node policy is not a setting: the defect stays.
+  const unread = initDB(':memory:')
+  setState(unread, 'telegram_notify_json', '{not json')
+  setState(unread, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, masterEnabled: false }), readAt: iso(NOW) }))
+  const ru = one(unread, 'STK-08')
+  assert.equal(ru.classes.held_by_setting, undefined)
+  assert.deepEqual(ru.sample.map(e => [e.subject, e.class]), [['outbox:watchdog', 'watchdog']])
+  // Nor is masterEnabled false while Node's OWN readable setting is on (a stale cpp-verify copy,
+  // or the contract's false for an unknown timezone): the defect stays (checker nit 1, 26-09).
+  const nodeOn = initDB(':memory:')
+  setState(nodeOn, 'telegram_notify_json', JSON.stringify({ enabled: true, mode: 'live' }))
+  setState(nodeOn, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ ...WATCHDOG_ALL_ON, masterEnabled: false }), readAt: iso(NOW) }))
+  const rn = one(nodeOn, 'STK-08')
+  assert.equal(rn.violations, 1)
+  assert.equal(rn.classes.held_by_setting, undefined)
+  assert.deepEqual(rn.sample.map(e => [e.subject, e.class]), [['outbox:watchdog', 'watchdog']])
+  // A field that is absent or null is unknown, never off.
+  const nulls = initDB(':memory:')
+  setState(nulls, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus({ masterEnabled: null, deploymentDeliveryEnabled: undefined, incidentOwnerConfigured: undefined, deliveryCredentialsConfigured: undefined }), readAt: iso(NOW) }))
+  assert.equal(one(nulls, 'STK-08').violations, 1)
+})
+
+test('STK-08 v2 watchdog with delivery ON and still dropping: the defect, with the delivery settings on the finding', () => {
+  const db = initDB(':memory:')
+  setState(db, 'independent_watchdog_json', JSON.stringify({ status: watchdogStatus(WATCHDOG_ALL_ON), readAt: iso(NOW - 60_000) }))
+  const r = one(db, 'STK-08')
+  assert.equal(r.violations, 1)
+  assert.equal(r.classes.held_by_setting, undefined)
+  const e = r.sample.find(x => x.subject === 'outbox:watchdog')
+  assert.equal(e.class, 'watchdog')
+  assert.equal(e.detail, 'watchdog outbox 512/512, 512 never attempted and over 1 h old, dropped 1526163')
+  assert.deepEqual(e.delivery, WATCHDOG_ALL_ON)
+  // Dropping alone (an outbox not full) is still the defect when delivery is on.
+  const drop = initDB(':memory:')
+  setState(drop, 'independent_watchdog_json', JSON.stringify({ status: { ...WATCHDOG_ALL_ON, outbox: { a: { attempts: 3, createdAtMs: NOW } }, dropped: 7 }, readAt: iso(NOW) }))
+  assert.equal(one(drop, 'STK-08').violations, 1)
+})
+
+test('STK-08 v2 the digest reader reads the outbox only through idx_tg_outbox_pending and bounds the reason breakdown', () => {
+  const db = initDB(':memory:')
+  for (const [name, sql] of Object.entries(DIGEST_STATE_SQL)) {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(name === 'reasons' ? [10] : [])).map(p => p.detail).join(' | ')
+    assert.doesNotMatch(plan, /\bSCAN (TABLE )?telegram_outbox\b/, `${name}: ${plan}`)
+    assert.match(plan, /idx_tg_outbox_pending/, `${name}: ${plan}`)
+  }
+  const ins1 = db.prepare(`INSERT INTO telegram_outbox (queued_at, text, reason) VALUES (?, 'x', ?)`)
+  db.transaction(() => { for (let i = 0; i <= DIGEST_REASON_ROWS_MAX; i++) ins1.run(iso(Date.parse(TG_OLD) + i * 1000), i === 0 ? 'quiet_hours' : 'notify_off') })()
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: false }))
+  const r = one(db, 'STK-08')
+  // The oldest row (quiet_hours) is outside the newest-2,000 window: the reply says so rather than presenting a prefix as the whole.
+  assert.match(r.info.held_by_setting[0], new RegExp(`reasons over the newest ${DIGEST_REASON_ROWS_MAX} of ${DIGEST_REASON_ROWS_MAX + 1} pending rows: notify_off ${DIGEST_REASON_ROWS_MAX} .*; the oldest row's reason quiet_hours`))
 })
 
 test('N2: STK-06 unverified_at_cap — the spec\'s known answer, 11 records unverified at the re-verify cap', () => {
@@ -1199,4 +1422,145 @@ test('N3: the loop starts the ticker (failure mode #4: a call site the module ca
   assert.ok(start > 0)
   const body = src.slice(start, start + 40_000)
   assert.match(body, /import\('\.\/services\/order-lifecycle-ticker\.js'\)\s*\.then\(m => m\.startOrderLifecycle\(db\)\)/)
+})
+
+// ---------------------------------------------------------------------------
+// 10. V3 L1c — the stage headline counts every violation. Measured in
+// production with L1b live (25-09-2026): STK-11 flagged pnl_reconcile under
+// `unattributed` (population 35, violations 1) and STK-08 an outbox, while
+// the report scoped to the selected account read summary.stuck.new = 19 —
+// the unattributed violations were in no stage count. A controller is not an
+// account record: it is counted in the headline and named on its own line.
+// ---------------------------------------------------------------------------
+const stalledController = db => {
+  ins(db, 'controller_heartbeats', { name: 'minute_review', last_run_at: iso(NOW - 3_600_000), last_ok_at: iso(NOW - 3_600_000), consecutive_failures: 0, runs: 500 })
+  assert.equal(heartbeatView(db, { now: new Date(NOW) }).find(v => v.name === 'minute_review').verdict, 'stalled', 'precondition: the heartbeat itself says stalled')
+}
+const partsAddUp = (s, label) => assert.equal(s.new, s.records + s.unattributed + s.controllers, `${label}: the headline is the sum of its named parts`)
+
+test('L1c: a stalled controller and no account records reads stuck > 0 — all accounts, the selected account and an explicit one', () => {
+  const db = initDB(':memory:')
+  stalledController(db)
+  ins(db, 'accounts', { account_id: A, enabled: 1 })
+  setState(db, 'ctrader_account_id', A)
+  for (const t of ['trades', 'pending_orders', 'entry_intents', 'risk_events', 'monitored_positions', 'telegram_outbox']) {
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n, 0, `precondition: no account record in ${t}`)
+  }
+  const reports = [['all', build(db)], ['selected', build(db, { account: null })], ['explicit', build(db, { account: A })]]
+  assert.equal(reports[1][1].scope.account, A, 'the selected account is the scope')
+  assert.equal(reports[1][1].scope.explicit, false)
+  for (const [label, report] of reports) {
+    const s = report.summary.stuck
+    assert.ok(s.new > 0, `${label}: a stalled controller is stuck, read ${s.new}`)
+    assert.equal(s.new, 1, label)
+    assert.equal(s.controllers, 1, label)
+    assert.equal(s.records, 0, label)
+    assert.equal(s.unattributed, 0, label)
+    partsAddUp(s, label)
+    assert.deepEqual(s.controllerNames, ['minute_review: stalled'], label)
+    assert.equal(s.measurable, true, label)
+    assert.equal(s.note, '1 stuck — 0 account record(s) · controllers: 1 stalled (minute_review: stalled)', label)
+    assert.deepEqual(report.accounts.filter(a => a.stage === 'stuck').map(a => [a.account, a.new]), [[CONTROLLERS_LINE, 1]], `${label}: its own line, not an account's`)
+  }
+  // The rule's own counts still never credit it to the account asked for (VERIFY correction 10) — it is named beside.
+  const scoped = ruleOf(build(db, { account: A }), 'STK-11')
+  assert.equal(scoped.violations, 0)
+  assert.equal(scoped.unattributed.violations, 1)
+  assert.deepEqual(scoped.sample, [])
+  assert.deepEqual(scoped.unattributedSample.map(e => [e.subject, e.class]), [['controller:minute_review', 'stalled']])
+  assert.equal(ruleOf(build(db), 'STK-11').unattributedSample, undefined, 'all accounts: already in the sample')
+  // The goal row and the daily line read the all-accounts snapshot: off track, the controller named.
+  withSnapshot(db, build(db))
+  const g = lifecycleGoals(readSnapshot(getState, db), DEFAULT_GOAL_TARGETS, NOW).find(r => r.id === 'lifecycle_stuck')
+  assert.equal(g.verdict, 'off_track')
+  assert.equal(g.current, 1)
+  assert.match(g.note, /^1 stuck — 0 account record\(s\) · controllers: 1 stalled \(minute_review: stalled\) — STK-11 controller_failing 1$/)
+  assert.match(g.metric, /registered controllers stalled or failing/)
+  const lines = lifecycleReportLines(readSnapshot(getState, db))
+  assert.match(lines[0], /; stuck 1$/)
+  assert.ok(lines.includes('  stuck: 1 stuck — 0 account record(s) · controllers: 1 stalled (minute_review: stalled)'), lines.join('\n'))
+})
+
+test('L1c: scoped to one account, the headline is its records plus every unattributed one beside it — never credited to it, never dropped', () => {
+  const db = initDB(':memory:')
+  stalledController(db)
+  const onA = trade(db, { account_id: A, status: 'submitting', ctrader_position_id: null, opened_at: '2026-09-26 11:00:00' })
+  const onB = trade(db, { account_id: B, status: 'submitting', ctrader_position_id: null, opened_at: '2026-09-26 11:00:00' })
+  ins(db, 'telegram_outbox', { queued_at: '2026-09-24T00:00:00.000Z', kind: 'alert', priority: 'normal', text: 'x', sent_at: null }) // STK-08: no account
+  risk(db, { account_id: A }) // a clean approval on A: the pre-order stage has something of A's to judge
+  const nullApproval = risk(db, { account_id: null, proposal_json: '{"strategy":"x"}' }) // PRE-01, new, no account
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM risk_events WHERE account_id IS NULL').get().n, 1, 'precondition')
+  const a = build(db, { account: A })
+  const s = a.summary.stuck
+  assert.equal(s.new, 3, 'A\'s in-flight trade + the outbox + the stalled controller')
+  assert.deepEqual([s.records, s.unattributed, s.controllers], [1, 1, 1])
+  partsAddUp(s, 'scoped stuck')
+  assert.equal(s.note, '3 stuck — 1 account record(s) · 1 with no account · controllers: 1 stalled (minute_review: stalled)')
+  assert.deepEqual(a.accounts.filter(x => x.stage === 'stuck').map(x => [x.account, x.new]), [[A, 1], [CONTROLLERS_LINE, 1], ['unattributed', 1]])
+  // The rules' own counts are unchanged: A's only.
+  assert.deepEqual(subjects(ruleOf(a, 'STK-03')), [`trade:${onA}`], 'B\'s trade is not in A\'s report')
+  assert.equal(ruleOf(a, 'STK-08').violations, 0)
+  assert.equal(ruleOf(a, 'STK-08').unattributed.violations, 1)
+  assert.deepEqual(ruleOf(a, 'STK-08').unattributedSample.map(e => e.subject), ['outbox:telegram'])
+  assert.equal(ruleOf(a, 'PRE-01').violations, 0, 'the NULL-account approval is not credited to A (VERIFY correction 10)')
+  // …and the pre-order stage counts that approval beside A.
+  const p = a.summary.pre_order
+  assert.deepEqual([p.new, p.records, p.unattributed, p.controllers], [1, 0, 1, 0])
+  assert.equal(p.measurable, true)
+  assert.equal(p.note, '1 new defective — 0 account record(s) · 1 with no account')
+  assert.deepEqual(ruleOf(a, 'PRE-01').unattributedSample.map(e => e.subject), [`risk_event:${nullApproval}`])
+  // All accounts: the headline is the distinct records the samples name (the pre-L1c count), with its parts.
+  const all = build(db)
+  const st = all.summary.stuck
+  assert.equal(st.new, 4, 'B\'s trade too')
+  assert.deepEqual([st.records, st.unattributed, st.controllers], [2, 1, 1])
+  partsAddUp(st, 'all stuck')
+  const named = new Set(all.stages.stuck.filter(r => r.severity === 'defect').flatMap(r => r.sample.filter(e => e.new).map(e => e.record)))
+  assert.equal(st.new, named.size, 'all accounts: the headline is still the distinct records named')
+  assert.ok(named.has(`trade:${onB}`) && named.has('controller:minute_review') && named.has('outbox:telegram'))
+  assert.deepEqual(all.accounts.filter(x => x.stage === 'stuck').map(x => [x.account, x.new]), [[B, 1], [A, 1], [CONTROLLERS_LINE, 1], ['unattributed', 1]].sort((x, y) => String(x[0]).localeCompare(String(y[0]))))
+  for (const [label, r] of [['scoped', a], ['all', all]]) for (const stage of STAGES) partsAddUp(r.summary[stage], `${label} ${stage}`)
+  // The daily line names the parts.
+  withSnapshot(db, all)
+  assert.ok(lifecycleReportLines(readSnapshot(getState, db)).includes('  stuck: 4 stuck — 2 account record(s) · 1 with no account · controllers: 1 stalled (minute_review: stalled)'))
+})
+
+test('L1c: an explicit account nothing knows stays not measurable, and still says the controller it counted', () => {
+  const db = initDB(':memory:')
+  stalledController(db)
+  const typo = build(db, { account: '4613005' })
+  assert.equal(typo.scope.registered, false)
+  assert.equal(typo.summary.stuck.measurable, false, 'N8 still holds')
+  assert.equal(typo.summary.stuck.controllers, 1)
+  assert.match(typo.summary.stuck.note, /^not measurable: .*; counted: 1 stuck — 0 account record\(s\) · controllers: 1 stalled \(minute_review: stalled\)$/)
+})
+
+test('L1c: a new unattributed defect beside an account with only legacy rows is judged new — not "nothing new to judge"', () => {
+  const db = initDB(':memory:')
+  risk(db, { account_id: A, created_at: OLD }) // A's only approval predates the start: legacy population
+  risk(db, { account_id: null, proposal_json: '{"strategy":"x"}' }) // new, defective, no account
+  const r = build(db, { account: A })
+  assert.equal(ruleOf(r, 'PRE-01').populationNew, 0, 'precondition: nothing new of A\'s own')
+  const p = r.summary.pre_order
+  assert.equal(p.measurable, true)
+  assert.equal(p.populationNew, 1, 'the new row beside A was judged')
+  assert.equal(p.new, 1)
+  assert.equal(p.note, '1 new defective — 0 account record(s) · 1 with no account')
+})
+
+test('L1c: a snapshot written before L1c (no parts) reads as before; the unattributed sample is bounded', () => {
+  assert.equal(stageCountPhrase({ new: 19 }, 'stuck'), '19 stuck record(s)')
+  assert.equal(stageCountPhrase({ new: 0, controllers: 0, unattributed: 0 }, 'order'), '0 new defective record(s)')
+  assert.equal(stageCountPhrase({ new: 20, records: 19, unattributed: 0, controllers: 1, controllerNames: ['pnl_reconcile: error'] }, 'stuck'),
+    '20 stuck — 19 account record(s) · controllers: 1 stalled (pnl_reconcile: error)')
+  const old = { at: iso(NOW), acceptanceStart: START, summary: Object.fromEntries(STAGES.map(st => [st, { new: st === 'stuck' ? 19 : 0, legacy: 0, notices: 0, measurable: true, populationNew: 1, unreadable: [], truncated: [] }])), rules: [] }
+  assert.equal(lifecycleGoals(old, DEFAULT_GOAL_TARGETS, NOW).find(r => r.id === 'lifecycle_stuck').note, '19 stuck record(s)')
+  assert.equal(lifecycleReportLines(old).filter(l => /^ {2}stuck: /.test(l)).length, 0)
+  const db = initDB(':memory:')
+  for (let i = 0; i < UNATTRIBUTED_SAMPLE_MAX + 3; i++) risk(db, { account_id: null, proposal_json: '{}' })
+  risk(db, { account_id: A })
+  const r = build(db, { account: A })
+  assert.equal(ruleOf(r, 'PRE-01').unattributed.violations, UNATTRIBUTED_SAMPLE_MAX + 3)
+  assert.equal(ruleOf(r, 'PRE-01').unattributedSample.length, UNATTRIBUTED_SAMPLE_MAX)
+  assert.equal(r.summary.pre_order.unattributed, UNATTRIBUTED_SAMPLE_MAX + 3, 'the count is whole; only the naming is bounded')
 })

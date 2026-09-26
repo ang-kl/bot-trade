@@ -17,6 +17,7 @@ function fixture(t) {
   setState(db, 'independent_watchdog_json', JSON.stringify({ readAt: new Date(now).toISOString(), status: { enabled: true } }))
   return db
 }
+const pairs = identities => identities.map(i => `${i.accountId}:${i.symbolId}`)
 const credentials = accountId => ({ ready: true, accountId, host })
 test('real heartbeat health receipt supplies feed identities absent from recorder status', async t => {
   const db = fixture(t)
@@ -58,7 +59,8 @@ test('real account map envelope supplies isolated identities; native feed demand
   setState(db, 'cpp_exec_demo_health_json', JSON.stringify({ at: new Date(now).toISOString(), ok: true, tick: { feedAccountId: 11, subscribed: [9] } }))
   setState(db, 'cpp_exec_health_json', JSON.stringify({ at: new Date(now).toISOString(), ok: true, tick: { feedAccountId: 22, subscribed: [10] } }))
   const demand = watchdogCalendarDemand(db, now)
-  assert.deepEqual(demand.identities.map(i => [i.accountId, i.symbolId]), [['11', '7'], ['22', '8'], ['11', '9']])
+  // V3 K1: the gateway feed tier now leads the positions (it meets the cap first).
+  assert.deepEqual(demand.identities.map(i => [i.accountId, i.symbolId]), [['11', '9'], ['11', '7'], ['22', '8']])
   assert.equal(demand.complete, false)
   assert.equal(watchdogCalendarDemand(db, now + 360_000).identities.length, 2)
 })
@@ -82,7 +84,8 @@ test('wrong account response and ambiguous holiday remain unknown with diagnosti
     : { symbol: [{ ...symbol(8), holiday: [{ holidayDate: 20000, isRecurring: true, scheduleTimeZone: 'UTC' }] }] } })
   assert.equal((await refresh()).recorded, 0)
   const second = await refresh(); assert.equal(second.unknown, 1)
-  assert.ok(second.errors.includes('8:calendar_holiday_window_unknown'))
+  // V3 K1: the combined code is split; this holiday sends neither bound.
+  assert.ok(second.errors.includes('8:holiday_bounds_omitted'))
   assert.equal(readMarketCalendar(db, { host, accountId: '22', symbolId: 8 }, { nowMs: now }).open, null)
 })
 test('one in-flight batch, fresh enabled observation required; muted notification policy does not suppress calendar reads', async t => {
@@ -245,4 +248,110 @@ test('a tick demand that exactly fills the cap is complete', t => {
   const demand = watchdogCalendarDemand(db, now)
   assert.equal(demand.identities.length, 512)
   assert.equal(demand.complete, true, 'RED if the cap check runs after the last pair instead of before the next one')
+})
+
+// V3 K1: a skipped pass left no trace, so an observer outage silently stopped
+// calendar coverage while the last receipt still looked current.
+test('a skipped pass persists its reason and since-when apart from the receipt, which stays the last real batch', async t => {
+  const db = fixture(t)
+  let at = now
+  const refresh = createWatchdogCalendarRefresh(db, { now: () => at, credentials, fetchSymbols: async (_c, ids) => ({ symbol: ids.map(symbol) }) })
+  assert.equal((await refresh()).recorded, 1)
+  const receipt = getState(db, 'watchdog_calendar_refresh_json')
+  assert.equal(getState(db, 'watchdog_calendar_refresh_skip_json'), null, 'a real batch writes no skip')
+  at = now + 400_000 // the observer reading (readAt = now) is now stale
+  assert.deepEqual(await refresh(), { skipped: 'observation_disabled_or_stale' })
+  let skip = JSON.parse(getState(db, 'watchdog_calendar_refresh_skip_json'))
+  assert.deepEqual(skip, { at: new Date(now + 400_000).toISOString(), skipped: 'observation_disabled_or_stale', since: new Date(now + 400_000).toISOString(),
+    lastReceiptAt: new Date(now).toISOString() })
+  at = now + 460_000
+  await refresh()
+  skip = JSON.parse(getState(db, 'watchdog_calendar_refresh_skip_json'))
+  assert.equal(skip.at, new Date(now + 460_000).toISOString())
+  assert.equal(skip.since, new Date(now + 400_000).toISOString(), 'the same skip keeps its first time')
+  assert.equal(getState(db, 'watchdog_calendar_refresh_json'), receipt, 'the receipt is untouched by skips')
+  const staging = createWatchdogCalendarRefresh(db, { env: { RAILWAY_ENVIRONMENT_NAME: 'staging' }, now: () => at })
+  await staging()
+  skip = JSON.parse(getState(db, 'watchdog_calendar_refresh_skip_json'))
+  assert.equal(skip.skipped, 'environment_disarmed'); assert.equal(skip.since, skip.at, 'a different skip starts its own since')
+})
+
+// K1 checker blocker: `since` survived a real batch between two skips of the
+// same reason, so GET /state/calendar-coverage overstated how long collection
+// had been stopped (skip 12:00, real pass 12:10, skip 13:00 read since 12:00).
+const iso = ms => new Date(ms).toISOString()
+test('a real batch between two skips breaks the run: since is the later skip, never a stop that did not hold', async t => {
+  const db = fixture(t)
+  let at = now
+  const observe = readAt => setState(db, 'independent_watchdog_json', JSON.stringify({ readAt: iso(readAt), status: { enabled: true } }))
+  const skipRecord = () => JSON.parse(getState(db, 'watchdog_calendar_refresh_skip_json'))
+  const refresh = createWatchdogCalendarRefresh(db, { now: () => at, credentials, fetchSymbols: async (_c, ids) => ({ symbol: ids.map(symbol) }) })
+  observe(now - 400_000) // 12:00 — the observer reading is stale
+  assert.deepEqual(await refresh(), { skipped: 'observation_disabled_or_stale' })
+  assert.deepEqual(skipRecord(), { at: iso(now), skipped: 'observation_disabled_or_stale', since: iso(now), lastReceiptAt: null })
+  at = now + 600_000; observe(at) // 12:10 — a real pass
+  assert.equal((await refresh()).skipped, undefined)
+  assert.equal(JSON.parse(getState(db, 'watchdog_calendar_refresh_json')).at, iso(now + 600_000))
+  at = now + 3_600_000 // 13:00 — the 12:10 reading is stale again
+  assert.deepEqual(await refresh(), { skipped: 'observation_disabled_or_stale' })
+  assert.deepEqual(skipRecord(), { at: iso(now + 3_600_000), skipped: 'observation_disabled_or_stale', since: iso(now + 3_600_000), lastReceiptAt: iso(now + 600_000) },
+    'RED if since is carried across the 12:10 batch (it would read 12:00)')
+  at = now + 3_660_000 // 13:01 — no batch since 13:00: the run holds
+  await refresh()
+  assert.equal(skipRecord().since, iso(now + 3_600_000), 'an unbroken run keeps its first time')
+})
+
+test('a pass that finishes after an in_flight skip breaks that run too: compared by the receipt each skip saw, not by clock order', async t => {
+  const db = fixture(t)
+  let at = now
+  const releases = []
+  const skipRecord = () => JSON.parse(getState(db, 'watchdog_calendar_refresh_skip_json'))
+  const refresh = createWatchdogCalendarRefresh(db, { now: () => at, credentials, fetchSymbols: () => new Promise(resolve => releases.push(resolve)) })
+  const first = refresh() // starts 12:00; its receipt will say 12:00
+  at = now + 10_000
+  assert.deepEqual(await refresh(), { skipped: 'in_flight' })
+  assert.equal(skipRecord().since, iso(now + 10_000))
+  releases[0]({ symbol: [symbol(7)] }); assert.equal((await first).recorded, 1) // completes AFTER the 12:00:10 skip
+  at = now + 70_000
+  const second = refresh() // account 22's calendar is still due
+  assert.equal(releases.length, 2, 'the second pass is in flight')
+  at = now + 80_000
+  assert.deepEqual(await refresh(), { skipped: 'in_flight' })
+  assert.equal(skipRecord().since, iso(now + 80_000), 'RED if the run is judged by clock order: the 12:00 receipt predates the 12:00:10 skip, yet its pass ended after it')
+  releases[1]({ symbol: [symbol(8)] }); await second
+})
+
+// K1 checker nit: with the tick receipts walked after the whole bar-scan
+// scope, the cap dropped every tick account's own calendar first.
+test('the bar-scan scope and the tick receipts are merged name by name: at the cap the tick accounts keep coverage', t => {
+  const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
+  const names = Array.from({ length: 300 }, (_, i) => `SYM${i}`)
+  for (const id of ['33', '44']) db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,0)').run(id)
+  for (const [n, id] of ['11', '22', '33', '44'].entries()) {
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: iso(now), map: Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i])) }))
+  }
+  // The bar scan on feed account 11 (300 legacy identities), scoped to 22 and 44.
+  setState(db, 'legacy_scanner_work_json', JSON.stringify({ accountId: '11', host, completedAt: now - 1000, nextDue: now + 300_000,
+    scopeAccounts: ['22', '44'], instruments: names.map((symbol, i) => ({ symbol, symbolId: String(1000 + i) })) }))
+  tickReceipt(db, ['33'], names.slice(0, 100)) // tick account 33 carries the same names on its own map
+  const demand = watchdogCalendarDemand(db, now)
+  assert.equal(demand.identities.length, 512); assert.equal(demand.complete, false)
+  const count = id => demand.identities.filter(i => i.accountId === id).length
+  // 212 scope slots after the 300 legacy ones, name by name: 22, 44, 33, 22, 44, 33, ...
+  assert.deepEqual(['11', '22', '44', '33'].map(count), [300, 71, 71, 70], 'RED if the tick receipts run after the bar-scan scope (33 gets 0)')
+  assert.deepEqual(pairs(demand.identities.slice(300, 306)), ['22:2000', '44:4000', '33:3000', '22:2001', '44:4001', '33:3001'])
+})
+
+test('with only one scope source the order is unchanged: a tick receipt alone and a bar scan alone', t => {
+  const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
+  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: iso(now), map: { EURUSD: 1, GBPUSD: 2 } }))
+  setState(db, 'symbol_id_map:22', JSON.stringify({ builtAt: iso(now), map: { EURUSD: 11, GBPUSD: 12 } }))
+  tickReceipt(db, ['11', '22'], ['EURUSD', 'GBPUSD'])
+  assert.deepEqual(pairs(watchdogCalendarDemand(db, now).identities), ['11:1', '22:11', '11:2', '22:12'], 'symbol-major across the tick accounts, as C4 shipped it')
+  setState(db, 'tick_entry_work_json', '{}')
+  setState(db, 'legacy_scanner_work_json', JSON.stringify({ accountId: '11', host, completedAt: now - 1000, nextDue: now + 300_000,
+    scopeAccounts: ['11', '22'], instruments: [{ symbol: 'EURUSD', symbolId: '1' }, { symbol: 'GBPUSD', symbolId: '2' }] }))
+  const demand = watchdogCalendarDemand(db, now)
+  assert.deepEqual(pairs(demand.identities), ['11:1', '11:2', '22:11', '22:12'], 'legacy first, then scope symbol-major (11 already demanded)')
+  assert.deepEqual(demand.byTier, { feed: 0, position: 0, legacy: 2, scope: 2 })
 })

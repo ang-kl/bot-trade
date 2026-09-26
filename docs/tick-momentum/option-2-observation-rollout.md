@@ -46,9 +46,15 @@ would fail — the entrypoint is what makes this safe.)
 
 ## 2. What is expected to happen — stated in advance, so a surprise is visible
 
-The recorder's limits are **compiled in and not tunable** (`tick_recorder.hpp:172-185`):
+The recorder's DEFAULT limits are compiled in (`tick_recorder.hpp:179-182`):
 spool cap 2 GiB, `reserveMinBytes` **2 GiB**, `reservePct` 20, segments 64 MiB.
-`main.cpp:194-199` overrides none of them.
+**Corrected 25-09-2026 (GW-CAP, #1111):** the first three are no longer fixed —
+`TICK_SPOOL_CAP_BYTES`, `TICK_SPOOL_RESERVE_MIN_BYTES` and `TICK_SPOOL_RESERVE_PCT`
+override them at boot (`main.cpp:205-206`); unset keeps the default, and a value
+that does not parse is refused and reported on `/tick-status`, never guessed. The
+segment size stays compiled in. Production since the 25-09 X1 window: cap
+**20 GiB** on cpp-exec, **5 GiB** on cpp-acct, reserve at its default. The
+expectations below were written for the 2 GiB default.
 
 A Railway container filesystem is small. So the most likely steady state is:
 
@@ -81,7 +87,7 @@ not facts about the source tree, and a reader checking this document against the
 repo alone cannot confirm them:
 
 - **12.353 events/s → 42.7 MB/day**, `dropped 0`, `gaps 0`
-- 2 GiB cap ⇒ **≈1,207 h (50 days)** of retention
+- 2 GiB cap ⇒ **≈1,207 h (50 days)** of retention at that rate (the default cap; production has run 20 GiB demo / 5 GiB live since 25-09-2026 — see §2)
 - workers 2, `consumed == dispatched`, **queue depth 0** — no backlog
 
 The live side carries 3 accounts and fewer monitored symbols, so its rate will
@@ -150,6 +156,12 @@ and none silent:
 block ceases to be constructed and the sidecar returns to exactly today's
 behaviour. One step, no data loss, no migration. The readiness reporting added
 in this PR is inert without it.
+
+**The spool cap is not a no-loss rollback (added 25-09-2026, GW-CAP).** Lowering
+or unsetting `TICK_SPOOL_CAP_BYTES` on either gateway makes the next boot retire
+down to the new cap (`tick_recorder.cpp:564`, `:703-718`): the oldest sealed
+segments above it are unlinked. Copy them off the volume first once a spool
+holds more than the cap you are returning to.
 
 ---
 

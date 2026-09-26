@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { wsAmendPosition, wsClosePosition, PT } from './ctrader-ws.js'
+import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, PT } from './ctrader-ws.js'
 
 // These tests exercise the input-validation paths that run *before* any
 // WebSocket handshake — so we can assert them without mocking `ws`. The
@@ -81,4 +81,80 @@ test('wsClosePosition rejects non-numeric volume', async () => {
     }),
     /volume must be a positive number/,
   )
+})
+
+// V3 T2 fix round (checker N1). The JS WebSocket fallback answers a close
+// with the FIRST execution event, as the gateway does, and for a market close
+// that can be ORDER_ACCEPTED: an order and no deal. Its order id is the only
+// way the close's deal is found in history afterwards, so the fallback must
+// return the `order`. Driven through the pooled path, whose socket is the one
+// test seam this module has (ctrader-session _setConnectForTests).
+test('wsClosePosition keeps the ORDER_ACCEPTED order, so the partial evidence decodes its order id', async () => {
+  const { EventEmitter } = await import('node:events')
+  const { _setConnectForTests, _resetPool } = await import('./ctrader-session.js')
+  const { partialAcceptedEvidence } = await import('../services/momentum-broker-evidence.js')
+  class FakeWs extends EventEmitter {
+    constructor(answer) { super(); this.readyState = 1; this.answer = answer; setImmediate(() => this.emit('open')) }
+    send(raw) {
+      const msg = JSON.parse(raw)
+      const reply = (payloadType, payload) => setImmediate(() => this.emit('message',
+        Buffer.from(JSON.stringify({ payloadType, payload, clientMsgId: msg.clientMsgId }))))
+      if (msg.payloadType === PT.APP_AUTH_REQ) reply(PT.APP_AUTH_RES, {})
+      else if (msg.payloadType === PT.ACCOUNT_AUTH_REQ) reply(PT.ACCOUNT_AUTH_RES, {})
+      else if (msg.payloadType === PT.CLOSE_POSITION_REQ) reply(PT.EXECUTION_EVENT, this.answer)
+    }
+    close() { this.readyState = 3 }
+  }
+  const accepted = { ctidTraderAccountId: 4001, executionType: 'ORDER_ACCEPTED',
+    order: { orderId: 77, positionId: 33, closingOrder: true, tradeData: { symbolId: 22, tradeSide: 'SELL', volume: 2600 } },
+    position: { positionId: 33 } }
+  const filled = { ctidTraderAccountId: 4001, executionType: 'ORDER_FILLED', deal: { dealId: 5 }, position: { positionId: 33 } }
+  const context = { identity: { host: 'demo.ctraderapi.com', accountId: '4001', symbolId: '22' }, positionId: '33', side: 'BUY', closeVolume: 2600 }
+  const prev = process.env.CTRADER_WS_POOL
+  process.env.CTRADER_WS_POOL = '1'
+  try {
+    for (const [answer, check] of [[accepted, out => {
+      assert.equal(out.executionType, 'ORDER_ACCEPTED')
+      assert.equal(out.order?.orderId, 77)
+      assert.equal(partialAcceptedEvidence(out, context)?.orderId, '77')
+    }], [filled, out => {
+      // A fill without an order in its payload is returned as before: no key.
+      assert.deepEqual(out, { ctidTraderAccountId: 4001, executionType: 'ORDER_FILLED', deal: { dealId: 5 }, position: { positionId: 33 } })
+    }]]) {
+      _resetPool()
+      _setConnectForTests(() => new FakeWs(answer))
+      check(await wsClosePosition('demo.example.com', 'cid', 'sec', 'tok', '4001', { positionId: 33, volume: 2600 }))
+    }
+  } finally {
+    _setConnectForTests(null)
+    if (prev === undefined) delete process.env.CTRADER_WS_POOL
+    else process.env.CTRADER_WS_POOL = prev
+    _resetPool()
+  }
+})
+
+// V3 K2: the host-keyed symbol-list cache answers a read "for" account B with
+// whichever account on the host was read first. The one writer of an
+// account's own map asks for `perAccount`, which must never be served from,
+// nor stored into, that cache. Asserted on promise identity while the reads
+// are in flight (an unroutable host, so nothing reaches a broker); every
+// other caller keeps the shared cache exactly as before.
+test('an account-true symbol-list read is never served from, nor stored into, the host-shared cache', async () => {
+  const host = 'k2-symbols-list.invalid-host.localhost'
+  const first = wsGetSymbolsList(host, 'cid', 'csec', 'tok', '1', 50)
+  const shared = wsGetSymbolsList(host, 'cid', 'csec', 'tok', '2', 50)
+  assert.equal(shared, first, 'unchanged for every other caller: one read per host')
+  const own = wsGetSymbolsList(host, 'cid', 'csec', 'tok', '2', 50, { perAccount: true })
+  assert.notEqual(own, first, "RED if the per-account read returns the host entry (account 1's list)")
+  const ownAgain = wsGetSymbolsList(host, 'cid', 'csec', 'tok', '2', 50, { perAccount: true })
+  assert.notEqual(ownAgain, own, 'nor is it cached itself: the per-account map in the DB is its cache')
+  assert.equal(wsGetSymbolsList(host, 'cid', 'csec', 'tok', '3', 50), first, 'the per-account reads did not replace the host entry')
+  const settled = await Promise.allSettled([first, own, ownAgain])
+  assert.deepEqual(settled.map(s => s.status), ['rejected', 'rejected', 'rejected'])
+  // K2 fix round (B7's rule): a per-account read's failure names its account,
+  // so the reactive refresh's skip predicate can match a refused account. The
+  // host-shared promise is served to other accounts' callers, so it stays
+  // untagged exactly as before.
+  assert.deepEqual([settled[1].reason.accountId, settled[2].reason.accountId], ['2', '2'], 'RED if the per-account read\'s error is not tagged')
+  assert.equal(settled[0].reason.accountId, undefined, 'the host-shared read is unchanged: untagged')
 })

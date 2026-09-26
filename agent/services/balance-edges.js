@@ -1,0 +1,295 @@
+import { ACCOUNT_HISTORY_SUMMARY_EXPRS } from '../db.js'
+import { currencyGroups } from '../shared/balance-carry.js'
+import { reportCurrency } from '../shared/performance-populations.js'
+import { depositCurrencies } from './deposit-currencies.js'
+import { dealBalanceReader } from './deal-balances.js'
+
+// CURRENCY (V3 WEB-3m). An account's currency here is its RECORDED broker
+// deposit currency — depositCurrencies(), the map the populations report ships
+// as currencyByAccount, read through reportCurrency: the same evidence and the
+// same reader the gradients' per-currency pools use (V3 WEB-7). An observation
+// counts for an account only when the currency stamped on it IS that recorded
+// currency; the stamp is a re-check, never the source, so a stored balance can
+// never move an account into another currency's total. An account with no
+// recorded currency is in no currency group and says so.
+
+// V3 WEB-3 (8,989-A rows 5 and 7). Broker balance at a window edge, read from
+// the observations account_history already stores (every 2-3 minutes per
+// account since 2026-09-22 ~17:26 UTC). Nothing here asks the broker, derives
+// a balance from trade P&L, carries one forward past its tolerance or fills a
+// gap: an edge is either an OBSERVED broker balance with its read time and
+// source, or it is NOT STORED with the reason. Never a zero, never invented.
+//
+// The rule for an edge at time E: the latest balance the broker returned at or
+// before E and no more than BALANCE_EDGE_MAX_AGE_MS before it. At-or-before,
+// not nearest: a close that settles between an after-edge read and E would
+// otherwise land in both the carry and the window's net. The read time is
+// stated so the owner can see how far from the edge it was.
+export const BALANCE_EDGE_MAX_AGE_MS = 15 * 60_000
+// broker_equity rows are written up to 60 s after the trader read their
+// balance came from (broker-history-recorder MAX_SKEW_MS), so a row received
+// just after E can hold a balance read at or before E.
+const WRITE_SKEW_MS = 60_000
+const HOSTS = { 0: 'demo.ctraderapi.com', 1: 'live.ctraderapi.com' }
+
+// V3 WEB-8 (8,989-A row 7). The ledger's older edges. account_history holds
+// broker reads only since 22-09 ~17:26 UTC, but the broker also reports the
+// balance after every closing deal and every cashflow, and broker_deals /
+// account_cashflows now keep it (deal-balances.js). With `dealBalances` on,
+// an edge this reader cannot answer from a stored read — before the reads
+// begin, with none near it, or for an account with none — is answered by that
+// stored balance, ONLY when the next stored event reconciles to it to the
+// cent; otherwise the edge stays a labelled gap. Same account, same host, same
+// recorded deposit currency (the one map below), so the carry still pools per
+// currency and never across. The hourly card keeps the reads-only rule.
+const DEAL_FALLBACK = new Set(['before_balance_history', 'no_balance_stored', 'no_observation_near_edge'])
+
+const field = name => `CASE WHEN json_valid(observation_json) THEN json_extract(observation_json, '$.${name}') END`
+const BALANCE_FIELDS = `id, source, received_ms AS receivedMs, ${field('balance')} AS balance, ${field('currency')} AS currency,
+  ${field('error')} AS error, ${field('balanceReceivedAt')} AS balanceAt`
+// A usable balance: a finite number, a stamped deposit currency, no error and a
+// known broker read time. A snapshot whose balance time is unknown is skipped.
+const balanceOk = r => typeof r.balance === 'number' && Number.isFinite(r.balance)
+  && typeof r.currency === 'string' && /^[A-Z]{3}$/.test(r.currency) && r.error == null && Number.isSafeInteger(r.balanceAt)
+const floatOk = r => typeof r.openPnl === 'number' && Number.isFinite(r.openPnl)
+  && typeof r.currency === 'string' && /^[A-Z]{3}$/.test(r.currency) && r.error == null && Number.isSafeInteger(r.pnlAt)
+
+/** Reader over one database snapshot. Caches per account; bounded queries.
+ * `currencyByAccount` is a depositCurrencies() map; the populations report
+ * passes the one it ships, so its pools and its carry read the same evidence.
+ * Absent, it is read here from the same reader. */
+export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currencyByAccount = null, dealBalances = false } = {}) {
+  if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs <= 0) throw new RangeError('invalid balance edge tolerance')
+  const currencies = { currencyByAccount: currencyByAccount ?? depositCurrencies(db) }
+  // V3 WEB-8: the deal/cashflow balances, over the SAME currency map. A failed
+  // read of them never costs the edges the stored reads answer: they stay as
+  // before, and each gap says the deal evidence was unavailable.
+  let deals = null, dealsUnavailable = null
+  if (dealBalances) {
+    try { deals = dealBalanceReader(db, currencies) } catch { dealsUnavailable = 'deal_balance_read_failed' }
+  }
+  // Reconcile rows (about 70 % of the table) never carry a balance; skipping
+  // them by column keeps the JSON reads to the rows that can answer.
+  const edgeSql = db.prepare(`SELECT ${BALANCE_FIELDS} FROM account_history
+    WHERE account_id = ? AND host = ? AND received_ms >= ? AND received_ms <= ? AND source <> 'broker_reconcile'
+    ORDER BY received_ms DESC, id DESC`)
+  // No fixed LIMIT: the SQL filter already keeps only valued rows in the
+  // account's recorded currency, so the scan stops at the first row the JS
+  // check accepts (and the write-skew window after it). A fixed LIMIT would
+  // read "not stored" if that many valued rows in a row failed the JS check.
+  // The latest-balance query that used to NAME the account's currency is gone
+  // (V3 WEB-3m): the currency comes from the recorded deposit evidence only.
+  // It starts where the recorded currency first appears (recordedFromSql), so
+  // it never walks the history before it.
+  const firstSql = db.prepare(`SELECT ${BALANCE_FIELDS} FROM account_history WHERE account_id = ? AND host = ? AND received_ms >= ?
+    AND source <> 'broker_reconcile' AND ${field('balance')} IS NOT NULL AND ${field('currency')} = ? AND ${field('error')} IS NULL
+    AND ${field('balanceReceivedAt')} IS NOT NULL ORDER BY received_ms, id`)
+  const [currencyExpr, equityExpr, errorExpr] = ACCOUNT_HISTORY_SUMMARY_EXPRS
+  // Where the account's rows stamped in (or in other than) a currency begin.
+  // The currency is one of the covering summary index's expressions, so this
+  // reads index entries only — no row's JSON — and stops at the first match.
+  // Without it, an account none of whose rows carry its recorded currency made
+  // firstSql parse every stored row of its history on the main thread (the
+  // hourly route runs synchronously) before answering "nothing" (V3 WEB-3m B1).
+  const currencyFrom = op => db.prepare(`SELECT received_ms AS receivedMs FROM account_history INDEXED BY idx_account_history_summary
+    WHERE account_id = ? AND host = ? AND ${currencyExpr} ${op} ? ORDER BY received_ms, id LIMIT 1`)
+  const recordedFromSql = currencyFrom('='), otherFromSql = currencyFrom('<>')
+  // A usable balance stamped in a currency other than the recorded one. When
+  // the account has no balance in its recorded currency, this decides whether
+  // it stored none at all or stored reads that are not in its unit — the gap
+  // must say which, as the floating reader already does.
+  const otherSql = db.prepare(`SELECT ${BALANCE_FIELDS} FROM account_history WHERE account_id = ? AND host = ? AND received_ms >= ?
+    AND source <> 'broker_reconcile' AND ${field('balance')} IS NOT NULL AND ${field('currency')} <> ? AND ${field('error')} IS NULL
+    AND ${field('balanceReceivedAt')} IS NOT NULL ORDER BY received_ms, id`)
+  // Floating rows are exactly the rows with an equity value (balance + broker
+  // P&L), which the covering summary index already carries; only those are
+  // read from the table.
+  const floatSql = db.prepare(`SELECT id, source, received_ms AS receivedMs, host, ${currencyExpr} AS currency, ${errorExpr} AS error,
+    ${field('openPnl')} AS openPnl, ${field('pnlReceivedAt')} AS pnlReceivedAt
+    FROM account_history INDEXED BY idx_account_history_summary
+    WHERE account_id = ? AND received_ms >= ? AND received_ms <= ? AND host = ? AND ${equityExpr} IS NOT NULL ORDER BY received_ms, id`)
+  const accounts = new Map(db.prepare('SELECT account_id, is_live FROM accounts ORDER BY account_id').all()
+    .map(a => [String(a.account_id), HOSTS[a.is_live ? 1 : 0]]))
+  const meta = new Map(), edges = new Map()
+
+  /** The account's routing host, recorded deposit currency and first stored
+   * balance in that currency; without one, why not (balanceReason). */
+  function account(accountId) {
+    const id = String(accountId)
+    if (meta.has(id)) return meta.get(id)
+    const host = accounts.get(id) ?? null
+    const currency = reportCurrency(currencies, id)
+    const currencyReason = currency ? null : currencies.currencyByAccount?.[id]?.reason || 'deposit_currency_not_recorded'
+    let historyStartsAt = null, balanceReason = null
+    if (host && currency) {
+      const from = recordedFromSql.get(id, host, currency)
+      let first = null
+      if (from) {
+        for (const r of firstSql.iterate(id, host, from.receivedMs, currency)) {
+          if (!balanceOk(r) || r.currency !== currency) continue
+          if (first == null) first = r
+          else if (r.receivedMs > first.receivedMs + WRITE_SKEW_MS) break
+          historyStartsAt = historyStartsAt == null ? r.balanceAt : Math.min(historyStartsAt, r.balanceAt)
+        }
+      }
+      if (historyStartsAt == null) {
+        // Stored balance reads that all carry another currency's stamp are not
+        // "no balance stored": they are reads not in this account's unit.
+        const other = otherFromSql.get(id, host, currency)
+        let mismatch = false
+        if (other) {
+          for (const r of otherSql.iterate(id, host, other.receivedMs, currency)) {
+            if (balanceOk(r) && r.currency !== currency) { mismatch = true; break }
+          }
+        }
+        balanceReason = mismatch ? 'observation_currency_mismatch' : 'no_balance_stored'
+      }
+    }
+    const out = { accountId: id, host, registered: host != null, currency, currencyReason, historyStartsAt, balanceReason }
+    meta.set(id, out)
+    return out
+  }
+
+  /** Observed balance at an edge, or the reason there is none. */
+  function at(accountId, atMs) {
+    const a = account(accountId), key = `${a.accountId}:${atMs}`
+    if (edges.has(key)) return edges.get(key)
+    let out
+    if (!Number.isSafeInteger(atMs)) out = { status: 'not_stored', reason: 'invalid_edge' }
+    else if (!a.registered) out = { status: 'not_stored', reason: 'account_not_registered' }
+    else if (!a.currency) out = { status: 'not_stored', reason: a.currencyReason }
+    else if (a.historyStartsAt == null) out = { status: 'not_stored', reason: a.balanceReason }
+    else if (atMs < a.historyStartsAt) out = { status: 'not_stored', reason: 'before_balance_history', storedFrom: a.historyStartsAt }
+    else {
+      let best = null, otherCurrency = false
+      for (const r of edgeSql.iterate(a.accountId, a.host, atMs - maxAgeMs, atMs + WRITE_SKEW_MS)) {
+        if (!balanceOk(r) || r.balanceAt > atMs || r.balanceAt < atMs - maxAgeMs) continue
+        // A read stamped in a currency other than the recorded one is not a
+        // balance in this account's unit: never summed, and the gap says why.
+        if (r.currency !== a.currency) { otherCurrency = true; continue }
+        if (best == null || r.balanceAt > best.balanceAt) best = r
+      }
+      out = best
+        ? { status: 'observed', value: best.balance, currency: best.currency, at: best.balanceAt, source: best.source, ageMs: atMs - best.balanceAt }
+        : { status: 'not_stored', reason: otherCurrency ? 'observation_currency_mismatch' : 'no_observation_near_edge', maxAgeMs }
+    }
+    if (dealBalances && out.status === 'not_stored' && DEAL_FALLBACK.has(out.reason)) out = withDealEvidence(out, a.accountId, atMs)
+    edges.set(key, out)
+    return out
+  }
+
+  /** V3 WEB-8: an edge the stored reads left open, answered by the balance
+   * stored on the deal or cashflow before it when the next event proves it,
+   * or kept as a gap whose reason names what is missing. Never estimated. */
+  function withDealEvidence(primary, accountId, atMs) {
+    if (!deals) return { ...primary, dealBalance: { status: 'unavailable', reason: dealsUnavailable } }
+    let deal
+    try { deal = deals.at(accountId, atMs) } catch { return { ...primary, dealBalance: { status: 'unavailable', reason: 'deal_balance_read_failed' } } }
+    if (deal.status === 'observed') return deal
+    // No balance stored on any deal or cashflow: the reads' reason stands.
+    if (deal.reason === 'no_balance_evidence_stored') return primary
+    // Inside the reads' era the gap is theirs (no read near the edge); what
+    // the deals could not prove rides along.
+    if (primary.reason === 'no_observation_near_edge') return { ...primary, dealBalance: deal }
+    // Before every stored event: still "not stored before", from the earliest
+    // balance either source holds.
+    if (deal.reason === 'before_first_stored_event') {
+      const from = [primary.storedFrom, deal.storedFrom].filter(Number.isSafeInteger)
+      return { status: 'not_stored', reason: 'before_balance_history', ...(from.length ? { storedFrom: Math.min(...from) } : {}), dealBalance: deal }
+    }
+    // The edge predates every stored read (or the account has none), so the
+    // stored deals and cashflows are the only evidence: their reason is the gap.
+    return { ...deal, accountHistory: primary }
+  }
+
+  /** The earliest time any stored balance (read, deal or cashflow) exists. */
+  function storedFrom(accountId) {
+    const a = account(accountId)
+    let dealFrom = null
+    if (deals && a.registered && a.currency) { try { dealFrom = deals.storedFrom(a.accountId) } catch { dealFrom = null } }
+    const from = [a.historyStartsAt, dealFrom].filter(Number.isSafeInteger)
+    return { storedFrom: from.length ? Math.min(...from) : null, dealBalanceFrom: dealFrom }
+  }
+
+  /** The last broker floating P&L reading in each [from, to) span, counted
+   * only when stamped in the account's recorded deposit currency. */
+  function floatingBySpan(accountId, spans) {
+    const a = account(accountId)
+    const out = spans.map(() => ({ status: 'not_stored', reason: !a.registered ? 'account_not_registered' : !a.currency ? a.currencyReason : 'no_floating_reading' }))
+    if (!a.registered || !a.currency || !spans.length) return out
+    const lo = Math.min(...spans.map(s => s.from)), hi = Math.max(...spans.map(s => s.to))
+    for (const row of floatSql.iterate(a.accountId, lo, hi + WRITE_SKEW_MS, a.host)) {
+      const r = { ...row, pnlAt: Number.isSafeInteger(row.pnlReceivedAt) ? row.pnlReceivedAt : row.receivedMs }
+      if (!floatOk(r)) continue
+      const i = spans.findIndex(s => r.pnlAt >= s.from && r.pnlAt < s.to)
+      if (i < 0) continue
+      if (r.currency !== a.currency) {
+        if (out[i].status !== 'observed') out[i] = { status: 'not_stored', reason: 'observation_currency_mismatch' }
+        continue
+      }
+      if (out[i].status !== 'observed' || r.pnlAt >= out[i].at) {
+        out[i] = { status: 'observed', value: r.openPnl, currency: r.currency, at: r.pnlAt, source: r.source }
+      }
+    }
+    return out
+  }
+
+  return { account, at, floatingBySpan, storedFrom, accountIds: () => [...accounts.keys()], maxAgeMs,
+    dealBalances: dealBalances ? (deals ? 'read' : dealsUnavailable) : 'off' }
+}
+
+/** The hourly card's balance columns: open/close balance and last floating per
+ * hour, per account (one account) or per currency (all accounts). */
+export function hourlyBalances(db, scope, rows, observedThrough, options) {
+  const reader = balanceReader(db, options)
+  const ids = scope.all ? reader.accountIds() : [String(scope.accountId)]
+  const members = ids.map(id => reader.account(id))
+  // The live hour closes at the observed-through time, never in the future.
+  const spans = rows.map(r => ({ from: r.from, to: Math.min(r.to, observedThrough) }))
+  const floats = new Map(ids.map(id => [id, reader.floatingBySpan(id, spans)]))
+  const entries = (evidenceOf) => members.map(m => ({ accountId: m.accountId, currency: m.currency,
+    currencyReason: m.currencyReason, storedFrom: m.historyStartsAt, evidence: evidenceOf(m) }))
+  const shaped = spans.map((s, i) => {
+    const open = currencyGroups(entries(m => reader.at(m.accountId, s.from)))
+    const close = currencyGroups(entries(m => reader.at(m.accountId, s.to)))
+    const floating = currencyGroups(entries(m => floats.get(m.accountId)[i]))
+    return { openBal: open.total, closeBal: close.total, floating: floating.total,
+      balanceCurrency: open.currency ?? close.currency, balance: { open, close, floating } }
+  })
+  return {
+    rows: shaped,
+    balanceHistory: { basis: 'observed_broker_balance_at_or_before_edge', maxAgeMs: reader.maxAgeMs,
+      floatingBasis: 'last_broker_floating_reading_in_hour', currencyBasis: 'recorded_deposit_currency',
+      accounts: members.map(m => ({ accountId: m.accountId, currency: m.currency, currencyReason: m.currencyReason,
+        historyStartsAt: m.historyStartsAt, registered: m.registered })) },
+  }
+}
+
+/** Ledger carries: observed balance at every ledger window's two edges, per
+ * registered account. The shared reportLedger groups them for a scope, taking
+ * each account's currency from the report's currencyByAccount (the map passed
+ * in here), so the carry carries no second copy of it.
+ *
+ * V3 WEB-8: an edge the stored reads cannot answer is answered from the
+ * broker balance stored on deals and cashflows when the next stored event
+ * proves it (dealBalances on, the one reader above). Each account's
+ * historyStartsAt is then the earliest stored balance of either kind, so a
+ * "not stored before" label names where the carry's evidence really begins;
+ * accountHistoryStartsAt and dealBalanceFrom keep the two apart. */
+export function ledgerBalanceEdges(db, windows, options) {
+  const reader = balanceReader(db, { ...options, dealBalances: true })
+  const ids = reader.accountIds()
+  const byWindow = {}
+  for (const w of windows) {
+    byWindow[w.key] = Object.fromEntries(ids.map(id => [id, { in: reader.at(id, w.from), out: reader.at(id, w.to) }]))
+  }
+  return { status: 'complete', basis: 'observed_broker_balance_at_or_before_edge', currencyBasis: 'recorded_deposit_currency',
+    olderEdgeBasis: 'broker_post_event_balance_reconciled_to_next_event', dealBalances: reader.dealBalances,
+    maxAgeMs: reader.maxAgeMs,
+    accounts: ids.map(id => {
+      const from = reader.storedFrom(id)
+      return { accountId: id, historyStartsAt: from.storedFrom, accountHistoryStartsAt: reader.account(id).historyStartsAt,
+        dealBalanceFrom: from.dealBalanceFrom }
+    }),
+    windows: byWindow }
+}

@@ -42,6 +42,7 @@ import SplitFlapClock from '../components/common/SplitFlapClock.jsx'
 import Segmented from '../components/common/Segmented.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
+import { duplicateMoneyParts } from '../lib/duplicate-money.js'
 import { describeRiskCriteria } from '../lib/risk-criteria.js'
 import { useSort } from '../lib/use-sort.jsx'
 // Short strategy tags — shared so Desk and the Std trade table never drift.
@@ -794,21 +795,34 @@ export default function Desk() {
           the same timestamp in the lessons panel (same symbol/side/entry/
           exit/net_pnl to the cent, essentially impossible for independent
           real fills). Read-only warning; nothing is deleted automatically. */}
-      {(dupeTrades?.groups?.length ?? 0) > 0 && (
-        <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
-          <p className="font-semibold text-[var(--color-warning-text)]">
-            ⚠ {dupeTrades.totalExtraRows} likely-duplicate closed trade record(s) found — inflating P&amp;L/win-rate stats by ~{dupeTrades.totalExtraPnl >= 0 ? '+' : '−'}${Math.abs(dupeTrades.totalExtraPnl).toFixed(2)}
-          </p>
-          <ul className="mt-1 space-y-0.5">
-            {dupeTrades.groups.slice(0, 5).map((g, i) => (
-              <li key={i} className="text-[var(--color-text-sub)]">
-                {g.symbol} {g.side} entry {g.entry_price} → exit {g.exit_price} · net {g.net_pnl} · ×{g.count}{g.samePositionId ? ' (same broker position id — confirmed duplicate)' : ''}
-              </li>
-            ))}
-          </ul>
-          {dupeTrades.groups.length > 5 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{dupeTrades.groups.length - 5} more group(s).</p>}
-        </Card>
-      )}
+      {/* V3 B2: only groups the broker's receipts do not show as distinct
+          positions count, each extra row at its own money, and the money is
+          given per currency — never one "$" figure summed across SGD and USD
+          accounts (owner default 25-09). The server pools by the one rule
+          (poolByCurrency); an account with no recorded currency is shown in
+          its own units ("currency not read" when the read itself failed),
+          and a row with no account per broker position
+          (lib/duplicate-money.js). */}
+      {(dupeTrades?.totalExtraRows ?? 0) > 0 && (() => {
+        const counted = dupeTrades.groups.filter(g => g.classification !== 'broker_distinct')
+        const money = duplicateMoneyParts(dupeTrades).join(' · ')
+        return (
+          <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
+            <p className="font-semibold text-[var(--color-warning-text)]">
+              ⚠ {dupeTrades.totalExtraRows} likely-duplicate closed trade record(s) found — inflating P&amp;L/win-rate stats by {money || 'an amount not reported'}
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {counted.slice(0, 5).map((g, i) => (
+                <li key={i} className="text-[var(--color-text-sub)]">
+                  {g.symbol} {g.side} entry {g.entry_price} → exit {g.exit_price} · net {g.net_pnl} · ×{g.count}{g.classification === 'same_position' ? ' (same broker position id — confirmed duplicate)' : ' (not verified against broker deals)'}
+                </li>
+              ))}
+            </ul>
+            {counted.length > 5 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{counted.length - 5} more group(s).</p>}
+            {(dupeTrades.brokerDistinctRows ?? 0) > 0 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">{dupeTrades.brokerDistinctRows} identical-looking row(s) are distinct broker positions, each with its own closing deal — not counted.</p>}
+          </Card>
+        )
+      })()}
 
       {/* Post-loss playback — the bot's homework after every losing trade:
           what did the market DO next, and what does that teach per strategy. */}
@@ -1040,7 +1054,7 @@ export default function Desk() {
         title="Closed at the broker"
         summary={(() => {
           if (brokerHistory?.realized == null) return null
-          let s2 = `realised ${brokerHistory.realized >= 0 ? '+' : ''}${fmt(brokerHistory.realized, 2)} · ${brokerHistory.rows?.length ?? 0} deals`
+          let s2 = `${brokerHistory.complete === false ? `INCOMPLETE walk (${brokerHistory.incompleteReason || 'cut short'}) — realised so far` : 'realised'} ${brokerHistory.realized >= 0 ? '+' : ''}${fmt(brokerHistory.realized, 2)} · ${brokerHistory.rows?.length ?? 0} deals`
           // Best/worst contributor — the read a CTO wants before the rows.
           const rows2 = (brokerHistory.rows || []).filter(d => d.netPnl != null)
           if (rows2.length >= 2) {

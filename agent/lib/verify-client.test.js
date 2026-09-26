@@ -159,6 +159,38 @@ test('THE ANSWER IS CARRIED, NOT INTERPRETED: a dispute comes back intact', asyn
   assert.equal(v.host, 'h1')
 })
 
+// V3 V1 fix round: cpp-verify's session never re-opens its broker socket by
+// itself; once it closes, /verify answers 200 `unverified`, fetchComplete
+// false, "not connected" — never the 409 that used to trigger a reconnect.
+test('a reply that READ NOTHING is carried with its reason, and the next ask reconnects', async () => {
+  const { impl, calls } = fetchStub([
+    { status: 200, body: { authorized: 1 } },
+    { status: 200, body: { state: 'unverified', fetchComplete: false, reason: 'not connected' } },
+    { status: 200, body: { authorized: 1 } },
+    { status: 200, body: okVerdict },
+  ])
+  const verify = verifyClient({ env: ENV, fetchImpl: impl })
+  const v1 = await verify(RECORD, { host: 'h1', ...CREDS })
+  assert.equal(v1.state, 'unverified', 'carried, not interpreted')
+  assert.equal(v1.fetchComplete, false)
+  assert.equal(v1.reason, 'not connected')
+  const v2 = await verify(RECORD, { host: 'h1', ...CREDS })
+  assert.equal(v2.state, 'verified')
+  assert.deepEqual(calls.map(c => c.url.split('/').pop()), ['connect', 'verify', 'connect', 'verify'])
+})
+
+test('an unverified answer the verifier DID read (fetch complete) keeps the session', async () => {
+  const { impl, calls } = fetchStub([
+    { status: 200, body: { authorized: 1 } },
+    { status: 200, body: { state: 'unverified', fetchComplete: true, reason: 'the open falls outside the window — widen it' } },
+    { status: 200, body: okVerdict },
+  ])
+  const verify = verifyClient({ env: ENV, fetchImpl: impl })
+  await verify(RECORD, { host: 'h1', ...CREDS })
+  await verify(RECORD, { host: 'h1', ...CREDS })
+  assert.equal(calls.filter(c => /\/connect$/.test(c.url)).length, 1)
+})
+
 test('a reply with no state is bad_reply — this client never invents a verdict', async () => {
   const { impl } = fetchStub([
     { status: 200, body: { authorized: 1 } },

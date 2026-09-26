@@ -76,3 +76,147 @@ The trade row's own entry, stop and target stay exact identity checks at
 record time, because the producer writes them from the plan itself.
 Production effect: none. No plan is recorded (`recordedPlans` 0) and no
 producer calls this path.
+
+## T1b correction: off-grid prices and tick-space targets (25 September)
+
+T1's post-merge check found three things, and measuring the first found a
+fourth.
+
+- **H1: an off-grid planned stop bound worse than before T1.** Today's
+  producer builds an ATR stop (`loop.js` `synth.sl`) that is off the grid,
+  and only its relative distance is snapped when the order is sent. Planned
+  from the raw stop, the plan's risk was a fraction of a tick off. The bind
+  snaps the shifted stop, so its recomputed target moved by about Q + 1
+  times that fraction, and the bind refused on the take-profit after the
+  order was live. Measured on main after T1, on 20,000 simulated fills
+  (0/2/3/5 decimals, 1-5 ticks of slippage, the broker anchoring the
+  relativePoints distances to the fill): 3,190 bound and 16,810 refused.
+  The T1 checker's own model gave 6,685 bound after T1 and 10,190 before.
+  - Now the proposal refuses an entry or stop more than 1e-6 ticks off the
+    grid with `price_off_grid`, before anything is recorded or sent. Float
+    residue a few ulps beside a grid price is on the grid.
+  - A producer builds the stop from `relativePoints` exactly as it sends it.
+    That stop is on the grid, and all 20,000 simulated fills bind.
+  - The check is in the proposal, not in `planMomentumTargets`. A bound
+    plan's entry is the fill, which may be an off-grid average.
+- **Found while measuring H1: a cost reserve on the rounding tolerance.**
+  With the stop on the grid, 1 of 16,000 simulated fills still refused. The
+  ask-minus-bid float (2904.25 - 2904.24 = 0.010000000000218279) lifts the
+  reserve's upward rounding to 0.4900000001. At 2 decimals that is 1e-8
+  ticks, exactly the tolerance of the planner's outward rounding, so float
+  residue in the summed price decided the tick. BUY 2904.25/2830.44 planned
+  a trigger of 3126.17. Filled 3 ticks higher, the bind recomputed 3126.21
+  against the broker's 3126.20.
+  - From an entry on the grid, the planner now computes the trigger and
+    runner distances in whole ticks from the risk in ticks, then adds them
+    to the entry's ticks. A proposal and its slipped fill have the same
+    risk in ticks, so they get the same distances.
+  - An off-grid entry keeps the price rounding.
+  - Across 300,000 random planner inputs, main and this branch agree on
+    298,584. Every one of the 1,416 differences is a 2-decimal input whose
+    reserve is a whole number of ticks plus 1e-10. On those boundary
+    reserves, a proposal and its slipped fill failed to move by exactly the
+    slip in 18,136 of 300,000 cases on main, and in 0 on this branch.
+- **N1: off-grid fills are not supported.** A multi-deal average fill
+  (265.905, 265.9133, 265.875 for the BUY 265.87/247.77 case) rounds the
+  shifted stop outward. That moves the plan's risk by a fraction of a tick,
+  so the recomputed target misses the broker's.
+  - The bind now refuses with `entry fill off the price grid (multi-deal
+    average): bracket not bound`, not the plain bracket mismatch, so it is
+    not read as a wrong broker bracket. An on-grid fill keeps the plain
+    reason. The intent stays PREPARED.
+  - Simulated with the broker anchoring the distances to the average: 0 of
+    20,000 such fills bound. With the broker anchoring them to an on-grid
+    first deal: 1,226 of 20,000 bound, by coincidence. How cTrader anchors a
+    multi-deal fill's relative bracket is unverified, which is why this
+    stays open for T2 (competing and recovered closes) and T4 (the producer
+    and resting limits). Until then an off-grid fill whose bracket does not
+    match is not bound, and the position stays with the keeper.
+  - The "A fill off the grid rounds the stop outward" line in T1's section
+    above describes the stop only. It does not mean those fills bind.
+- **N2: tick comparisons that no test could turn red.** Switching these
+  checks back to float comparisons left every test green:
+  - the bind's stop and take-profit;
+  - the partial manager's entry and take-profit;
+  - the rank exit's entry.
+
+  New tests give the broker side the same grid prices a few ulps away, with
+  the stop on the wider side as a float. A float comparison refuses them;
+  the tick comparison accepts them; a real tick away still refuses.
+
+Production effect: none. `recordedPlans` is still 0, and no producer calls
+the proposal or the bind.
+
+## T3: the partial manager runs each loop and reports its real state (25 September)
+
+Before T3 nothing called the partial manager. A registered plan would have
+sat ARMED past its trigger with nobody watching, and the status route said
+`runtimeIntegration: INCOMPLETE` from a constant.
+
+What runs now (`agent/services/momentum-partial-runtime.js`, called from
+`agent/loop.js` once per cycle):
+- After the momentum book, outside everything that gates the book: the
+  symbols block, the scan switch, weekend quiet, `ctraderCreds.ready` and
+  the book's own `enabled`. Plans outlive all of those. It has its own
+  try/catch and its own heartbeat, `momentum_partial` (record:
+  `momentum_partial_pass_json`). It sits after the later phases of the
+  cycle (pending orders, autopilot, breakers), not directly after the book
+  call: an uncaught throw in one of those skips the pass for that cycle,
+  and the pass then reads stale, which is what the website shows.
+- Each account with a plan in ARMED, SENDING, AMBIGUOUS or RECEIVED runs
+  with its own registered credentials and a 15 s budget; accounts run
+  concurrently. An account without credentials is recorded, and the others
+  still run.
+- An ARMED plan is pre-filtered on the book's marks `{ c, at, bt }`: only a
+  mark whose PRICE is at most 15 minutes old and more than 0.25 R short of
+  the trigger skips the broker. The price's age is taken from the bar stamp
+  `bt` (the trendbar's open time, with `markAgeMs` from
+  `book-open-drawdown.js`), never from `at`: the book writes `at` on every
+  pass, but its close comes from the scan's cached daily bars, which can be
+  up to 24 hours old. A bar's close is observed at or after its open, so
+  the bar stamp can only over-state the price's age. A stale, missing,
+  unstamped (no usable `bt`) or near mark, or a ledger row that is no
+  longer open, falls through to the authoritative read. With the default
+  daily book the pre-filter therefore skips only in the first minutes after
+  a daily bar opens; every other pass reads the broker, bounded by the 60 s
+  limit and the 15 s account budget. `lastScanPrice` is not used: it has no
+  timestamp.
+- At most one authoritative check per plan per 60 s.
+- A proven partial receipt gets exactly one `scale_out` position event
+  (deal id, volume, price), marked on the plan row in the same transaction.
+  It is written as soon as the plan holds a receipt that reads as a proven
+  deal (account, position, deal id, the plan's close volume, a price and an
+  execution time; T2's `validReceipt` admitted it), whatever state the plan
+  is then in: RECEIVED, CONFIRMED, or CLOSED_EXTERNALLY / VOLUME_CHANGED
+  after the partial. The deal happened in each of those, so the journal
+  records it; the plan's state says what followed it. Plans already
+  journaled are filtered out in SQL.
+- An `AWAITING_BIND` intent (T4's deferred bind) becomes `BIND_ABANDONED`
+  once its book row is `exit_sent`/`closed`, its trade is terminal, or a
+  close is journaled. No plan is registered; the record stays visible with
+  its reason, evidence and time.
+
+What the status says (`GET /state/momentum-targets`):
+- `passHeartbeatAt` and `pass` (fresh within three loop intervals, else
+  "unavailable" with the reason), per account when scoped. `pass.available`
+  is false, with the reason, also when the pass is fresh but its last run
+  could not act on the account (no credentials, unreadable credentials, the
+  account's pass failed) or could not read its plans; each row carries
+  `passUnavailable` for its own account.
+- `wiring`: market and limit producers, both "not wired" until T4.
+  `MOMENTUM_TARGET_PRODUCERS` is pinned by a test to the production callers
+  of `recordMomentumEntry`, of which there are none.
+- `runtimeIntegration` is COMPLETE only when both producers are wired and
+  the pass is fresh, so it cannot be COMPLETE before T4. `integrationGaps`
+  names each missing part. `executionAuthorized` stays false.
+- Each row carries the partial target (trigger, runner TP, close volume) and
+  the attempt (state, reason, attempt time, order id, receipt deal id).
+
+The website shows the partial trigger, not only the runner TP: the cockpit's
+armed actions carry it as a `scale_out` from `momentum_partial_manager`, and
+the Performance page has a "Momentum partial targets (TP1)" card. When the
+pass is stale, or its last run could not act on the position's account,
+both show the trigger labelled unavailable with the reason, never armed.
+
+Production effect: none while `recordedPlans` is 0. The pass reads no
+credentials and makes no broker call; it writes its record and beats.

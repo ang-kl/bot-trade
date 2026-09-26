@@ -37,12 +37,18 @@
 // provable (deal-balances.test.js pins it).
 //
 // The evidence shape matches the ledger carry's edge evidence ({status,
-// value, currency, at, source} or {status: 'not_stored', reason}), so an
-// edge before account_history begins can be answered from here. The ledger's
-// carry does not call this reader yet: that fallback (when its own reader
-// returns before_balance_history) is a follow-up on WEB-3; until then this
-// serves GET /state/deal-balances only.
+// value, currency, at, source} or {status: 'not_stored', reason}). The
+// ledger's carry reads it through WEB-3's one edge reader
+// (balance-edges.js balanceReader with dealBalances on): an edge the stored
+// broker reads cannot answer — before account_history begins, with no read
+// near it, or for an account with none — is answered from here or keeps a
+// labelled reason. GET /state/deal-balances serves the same reader's
+// evidence and counts. The account's currency is its RECORDED deposit
+// currency (deposit-currencies.js, read through reportCurrency), the one
+// every other money figure on the page keys on.
 // ---------------------------------------------------------------------------
+
+import { reportCurrency } from '../shared/performance-populations.js'
 
 const HOSTS = { 0: 'demo.ctraderapi.com', 1: 'live.ctraderapi.com' }
 // Money is compared to the cent: a 2-digit account's balance changes only in
@@ -137,7 +143,7 @@ export function dealBalanceReader(db, { currencyByAccount } = {}) {
     const id = String(accountId)
     if (cache.has(id)) return cache.get(id)
     const host = hosts.get(id) ?? null
-    const currency = currencyByAccount[id]?.currency ?? null
+    const currency = reportCurrency({ currencyByAccount }, id)
     const currencyReason = currency ? null : currencyByAccount[id]?.reason || 'deposit_currency_not_recorded'
     const events = []
     let unplaced = 0
@@ -234,23 +240,34 @@ export function dealBalanceReader(db, { currencyByAccount } = {}) {
     }
   }
 
-  return { account, at, coverage, accountIds: () => [...hosts.keys()] }
+  /** Time of the earliest stored balance on a deal or cashflow, or null. */
+  function storedFrom(accountId) {
+    const first = account(accountId).events.find(e => e.balance != null)
+    return first ? first.latest : null
+  }
+
+  return { account, at, coverage, storedFrom, accountIds: () => [...hosts.keys()] }
 }
 
 /**
  * GET /state/deal-balances: per account, the stored balance evidence and its
- * gaps, and optionally the balance proven at the requested edges.
+ * gaps, and optionally the balance at the requested edges. `edgeAt(id, ms)`
+ * answers the edges: the route passes the ledger carry's own reader
+ * (balance-edges.js, dealBalances on), so an edge here reads exactly what the
+ * carry reads there — never a second answer. Absent, this reader's proof.
  */
-export function dealBalanceReport(db, { accountId = null, edges = [], currencyByAccount } = {}) {
+export function dealBalanceReport(db, { accountId = null, edges = [], currencyByAccount, edgeAt = null } = {}) {
   const reader = dealBalanceReader(db, { currencyByAccount })
   const ids = accountId == null ? reader.accountIds() : [String(accountId)]
+  const answer = typeof edgeAt === 'function' ? edgeAt : reader.at
   return {
     basis: 'broker_post_event_balance_reconciled_to_next_event',
     rule: 'Windows are [from, to): the balance at an edge is the one before any event at the edge. It is read only when the first stored event at or after the edge reconciles to the cent with the last one before it (and its balanceVersion is the next one, where both carry it). Anything else is a labelled gap.',
+    edgeBasis: typeof edgeAt === 'function' ? 'ledger_carry_reader' : 'broker_post_event_balance_reconciled_to_next_event',
     labels: BALANCE_GAP_LABELS,
     accounts: ids.map(id => ({
       ...reader.coverage(id),
-      edges: edges.map(e => ({ edge: new Date(e).toISOString(), ...reader.at(id, e) })),
+      edges: edges.map(e => ({ edge: new Date(e).toISOString(), ...answer(id, e) })),
     })),
   }
 }

@@ -13,7 +13,7 @@ import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
-import { recordTradePlan } from './services/trade-plans.js'
+import { recordTradePlan, recordPlanWriteFailure } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates } from './services/risk.js'
 import { journalMarginPoolState } from './services/margin-pool-journal.js'
@@ -22,12 +22,12 @@ import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
 import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } from './lib/sessions.js'
-import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
+import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from './lib/trade-labels.js'
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
 import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
-import { getCtraderCreds, getSymbolMap, attachEntryFence } from './lib/ctrader-creds.js'
+import { getCtraderCreds, getSymbolMap, attachEntryFence, bindEntryIntent } from './lib/ctrader-creds.js'
 import { managePendingOrders } from './services/pending-orders.js'
 import { isProducerRetired } from './lib/entry-producers.js'
 import { admitEntry } from './services/entry-mode.js'
@@ -43,6 +43,7 @@ import { recordPositionEvent } from './services/position-events.js'
 import { recordError } from './services/error-log.js'
 import { startLagMonitor, sampleLag, markLagPhase } from './services/event-loop-lag.js'
 import { noteLoopEnd, stampFirst } from './services/runtime-record.js'
+import { measureAmend } from './services/protection-latency.js'
 import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { armedTimeframes, armedScopeGate } from './lib/timeframes.js'
@@ -529,7 +530,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       log(`${symbol}: lesson_tuner: alpha-decay cool-off — skipping ${synth.strategy || 'signal'}/${synth.timeframe || '?'} (last postmortem flagged decay for this exact edge)`)
       try {
         const { recordDecision } = await import('./services/decision-log.js')
-        recordDecision(db, { symbol, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'lesson_decay', decision: 'skip', reason: 'alpha_decay_cooloff' })
+        // V3 WEB-1: the order's own account. Without it the row took the
+        // SELECTED account, whichever account this order was for.
+        recordDecision(db, { accountId: String(accountId), symbol, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'lesson_decay', decision: 'skip', reason: 'alpha_decay_cooloff' })
       } catch { /* provenance never blocks */ }
       return null
     }
@@ -698,6 +701,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   const orderPayload = {
     ctidTraderAccountId: parseInt(accountId),
     symbolId: parseInt(symbolId),
+    // X1 / W2: the intent records its symbol (entry_intents.symbol was NULL
+    // on 154 of 154). Ledger-only: exec-engine strips it before any wire.
+    symbolName: symbol,
     orderType: 'MARKET',
     tradeSide: side,
     volume,
@@ -901,9 +907,23 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     } catch { /* provenance never blocks a submission */ }
 
     const submitT0 = Date.now()
+    // V3 L2a (W5/W6): the entry intent exec-engine reserves for this order
+    // carries the approval (entry_intents.risk_event_id), and its id lands on
+    // the write-ahead row the moment it is reserved — before the send — so
+    // the row names its intent whatever happens next. `intentId` above is
+    // the TRADES row id (the write-ahead intent row); `entryIntentId` is the
+    // ledger's entry_intents id, the one the broker's label is tagged with.
+    let entryIntentId = null
+    const placeCreds = bindEntryIntent(attachEntryFence(db, { host, clientId, clientSecret, accessToken, accountId, execGuard }, { producerId }), {
+      riskEventId,
+      onReserved: (id) => {
+        entryIntentId = id
+        db.prepare(`UPDATE trades SET intent_id = ? WHERE id = ?`).run(id, intentId)
+      },
+    })
     let exec
     try {
-      exec = await execPlaceOrder(attachEntryFence(db, { host, clientId, clientSecret, accessToken, accountId, execGuard }, { producerId }), orderPayload)
+      exec = await execPlaceOrder(placeCreds, orderPayload)
     } catch (err) {
       // Mark the intent by OUTCOME rather than deleting it. A provably-unsent
       // order is dead and must not block the next attempt; an ambiguous one
@@ -1026,7 +1046,12 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // second row here would leave the 'submitting' one stranded and put two
     // ledger entries behind one broker position — the accounting version of
     // the bug this change exists to fix.
-    const parsedLabel = parseLabel(structuredLabel)
+    // The label AS THE BROKER HOLDS IT: exec-engine tagged the order's label
+    // with the intent (tagLabelWithIntent, which keeps the untagged label when
+    // the tag would not fit), so the row stores that same string rather than
+    // the untagged original (ORD-05). parseLabel reads the first seven fields,
+    // so every parsed column is unchanged.
+    const parsedLabel = parseLabel(entryIntentId ? tagLabelWithIntent(structuredLabel, entryIntentId) : structuredLabel)
     const persistTrade = db.transaction(() => {
       db.prepare(`
         UPDATE trades SET
@@ -1084,7 +1109,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
           accountId, symbol, side, strategy: synth.strategy || null, timeframe: synth.timeframe ?? null,
           entry: synth.entry, sl: synth.sl, tp: synth.tp1, timeCapAt: timeCap, source: synth.source || 'auto_signal',
         })
-      } catch (err) { log(`Trade plan not recorded for trade ${tradeId} (non-fatal): ${err.message}`) }
+      } catch (err) {
+        // W7: recorded, not only logged — the trade stays; the missing plan says why.
+        recordPlanWriteFailure(db, { tradeId, accountId, symbol, source: synth.source || 'auto_signal', stage: 'dispatch', error: err })
+      }
 
       return tradeId
     })
@@ -1317,6 +1345,9 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
       // nothing" rather than "the bot considered plenty and this gate said
       // no". Every other gate on this path already leaves a row; this one
       // now does too.
+      // V3 WEB-1: a ROSTER-WIDE stop — no account is named, so the row is
+      // stored with NULL and reported under every account as roster-wide,
+      // never charged to the selected one (decision-log.js ROSTER_STAGES).
       try {
         const { recordDecision } = await import('./services/decision-log.js')
         recordDecision(db, {
@@ -1916,7 +1947,10 @@ async function symbolDigitsFor(db, creds, symbol) {
   } catch { return null }
 }
 
-export async function executeBrokerAction(db, s, pos, eval_, source = 'position_manager') {
+// `timing` (V3 M5, optional): {dueAtMs, evaluatedAtMs} from an evaluator that
+// has a due time — the fast monitor — so an amend here is recorded with its
+// due → evaluated lateness beside the round trip. Measurement only.
+export async function executeBrokerAction(db, s, pos, eval_, source = 'position_manager', timing = null) {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
@@ -1941,6 +1975,10 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 
   const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
   const action = eval_.action
+  // V3 M5: what the amend-latency ring records about an amend from here — no
+  // credentials, no prices.
+  const amendMeta = (path) => ({ path, source, accountId, positionId: ctx.positionId,
+    dueAtMs: timing?.dueAtMs ?? null, evaluatedAtMs: timing?.evaluatedAtMs ?? null })
 
   try {
     if (action === 'MOVE_SL') {
@@ -1973,11 +2011,11 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // before — a possible rejection beats inventing a precision.
       const moveDigits = await symbolDigitsFor(db, { host, clientId, clientSecret, accessToken, accountId }, pos.symbol)
       const { stopLoss: sendSL, takeProfit: sendTp } = roundAmendPayload({ stopLoss: eval_.newSL, takeProfit: keepTp, digits: moveDigits })
-      const res = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
+      const res = await measureAmend(amendMeta('broker_action.move_sl'), () => execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         stopLoss: sendSL,
         ...(sendTp !== undefined ? { takeProfit: sendTp } : {}),
-      })
+      }))
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }
       // Record what was SENT, not the unrounded intent — the broker holds sendSL.
@@ -2060,6 +2098,11 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         return { closedRemotely: true, summary: 'already_closed' }
       }
       let volumeUnits = brokerPositionVolume(snap.positions, ctx.positionId)
+      // What the broker held just before this close — only from the snapshot.
+      // A volume reconverted from ledger lots is not evidence of the opened
+      // volume (the crypto 100× case below), so money then waits for the
+      // backfill's whole lifecycle (V3 B1).
+      const heldVolume = volumeUnits
       if (volumeUnits == null) {
         const meta = await volumeMeta()
         volumeUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
@@ -2083,11 +2126,19 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // null means closeTradeRow's COALESCE leaves the column alone, and the
       // row is marked pnl_price_mismatch if what remains disagrees with the money.
       const closePrice = res.deal?.executionPrice ?? null
-      const cpd = res.deal?.closePositionDetail || {}
-      const grossPnl = typeof cpd.grossProfit === 'number' ? cpd.grossProfit / 100 : null
-      const netPnl = cpd.grossProfit != null
-        ? ((cpd.grossProfit || 0) - Math.abs(cpd.commission || 0) - Math.abs(cpd.swap || 0)) / 100
-        : null
+      // MONEY ONLY FROM A WHOLE LIFECYCLE (V3 B1, P5b-1). This used to stamp
+      // (gross − |commission| − |swap|)/100 from this one deal: two money
+      // digits assumed, a positive swap booked as a cost, and every earlier
+      // partial close's money lost (#714 NZDUSD: 2.91 recorded, 202.71 at the
+      // broker). A deal that closes less than the position opened writes NULL,
+      // and the backfill records the lifecycle total (lib/deal-money.js).
+      const { fullCloseMoney, openedVolumeOnRecord } = await import('./lib/deal-money.js')
+      const openedVolume = openedVolumeOnRecord(db, { accountId, positionId: ctx.positionId, tradeId: pos.trade_id ?? null,
+        monitoredId: pos.id ?? null, heldVolume })
+      const { money: closeMoney, reason: moneyDeferred } = fullCloseMoney(res.deal, { openedVolume })
+      const grossPnl = closeMoney ? closeMoney.gross : null
+      const netPnl = closeMoney ? closeMoney.net : null
+      if (!closeMoney && pos.trade_id) log(`FULL_EXIT ${pos.symbol}: money left to the backfill — ${moneyDeferred}`)
       if (pos.trade_id) {
         closeTradeRow(db, pos.trade_id, { exitPrice: closePrice, closeReason: eval_.reason || 'position_manager', grossPnl, netPnl })
       }
@@ -2131,7 +2182,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
             exitFraction: 1,
             newSL: null,
             reason: `${eval_.reason} | ${unfillable} → full exit`,
-          }, source)
+          }, source, timing)
         }
         return { skipped: true, reason: unfillable }
       }
@@ -2175,11 +2226,11 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         // `peak − mult × distance` — the 2026-08-26 INVALID_REQUEST shape.
         const partialDigits = await symbolDigitsFor(db, { host, clientId, clientSecret, accessToken, accountId }, pos.symbol)
         const runnerSend = roundAmendPayload({ stopLoss: eval_.newSL, takeProfit: runnerTp, digits: partialDigits })
-        const amendRes = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
+        const amendRes = await measureAmend(amendMeta('broker_action.runner_leg'), () => execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
           positionId: ctx.positionId,
           stopLoss: runnerSend.stopLoss,
           takeProfit: runnerSend.takeProfit,
-        })
+        }))
         setState(db, 'api_ctrader_last_ok', new Date().toISOString())
         if (!amendRes.alreadyClosed) {
           s.updatePositionSl.run(runnerSend.stopLoss, pos.id)
@@ -3206,6 +3257,30 @@ async function runLoop(db) {
             } catch (err) {
               log(`Entry ledger deal-history settle failed (non-fatal): ${err.message}`)
             }
+            // X1 (25-09-2026, owner-approved): the one-time correction of the
+            // resting-order intents the old code stored FILLED at placement
+            // (DB-only; stops for good once done), then the resting orders
+            // this snapshot no longer lists are read from the broker and
+            // settled FILLED / RELEASED / EXPIRED on its answer — never
+            // guessed; a bounded number of reads, then "unresolved".
+            try {
+              const { applyX1Correction } = await import('./services/intent-corrections.js')
+              const x1 = applyX1Correction(db)
+              if (x1.corrected.length || x1.unreadable.length) {
+                log(`Entry ledger X1 correction: ${x1.corrected.length} resting intent(s) FILLED → ACCEPTED (placed, not filled)${x1.corrected.length ? ` (${x1.corrected.map(c => c.intentId).join(', ')})` : ''}, ${x1.leftFilled.length} left FILLED on fill evidence, ${x1.unreadable.length} not judged (evidence unreadable)`)
+              }
+              const { settleAcceptedFromOrderDetails } = await import('./services/entry-ledger.js')
+              const { wsGetOrderDetails } = await import('./lib/ctrader-ws.js')
+              const ad = await settleAcceptedFromOrderDetails(db, {
+                accountId, workingOrderIds: (reconcileData.order || []).map(o => o?.orderId ?? o?.tradeData?.orderId),
+                getOrderDetails: (orderId) => wsGetOrderDetails(host, clientId, clientSecret, accessToken, accountId, orderId),
+              })
+              if (ad.settled.length || ad.noted) {
+                log(`Entry ledger …${String(accountId).slice(-4)} resting orders: ${ad.read} read, ${ad.settled.length} settled${ad.settled.length ? ` (${ad.settled.map(s => `${s.intentId}→${s.to}`).join(', ')})` : ''}, ${ad.noted} noted, ${ad.unresolved.length} unresolved (no broker evidence)`)
+              }
+            } catch (err) {
+              log(`Entry ledger resting-order settle failed (non-fatal): ${err.message}`)
+            }
           } catch (err) {
             log(`Entry ledger reconcile failed (non-fatal): ${err.message}`)
           }
@@ -3445,8 +3520,8 @@ async function runLoop(db) {
             // plans against their execution (DB only). Both are records,
             // neither touches a decision.
             try {
-              const { scoreRefusedOpportunities } = await import('./services/refusal-ledger.js')
-              await scoreRefusedOpportunities(db, pmFetch, { maxPerCycle: 6, log })
+              const { scoreRefusedOpportunities, rescoreNoBarsRefusals } = await import('./services/refusal-ledger.js')
+              await scoreRefusedOpportunities(db, pmFetch, { maxPerCycle: 6, log }); await rescoreNoBarsRefusals(db, pmFetch, { maxFetches: 2, log }).catch(err => log(`Refusal ledger re-score failed (non-fatal): ${err.message}`)) // V3 L2b W13: the no_bars rows corrected, two bar reads a cycle, never at boot
             } catch (err) { log(`Refusal ledger failed (non-fatal): ${err.message}`) }
             try {
               const { scoreClosedPlans } = await import('./services/trade-plans.js')
@@ -3541,70 +3616,18 @@ async function runLoop(db) {
           // completeness gate — a refusal caused by OUR timing rather than by
           // a real gap. The queue is durable, so a redeploy seconds after a
           // close does not lose it.
+          //
+          // V3 V1: closeTradeRow already queued every trade row it closed
+          // (the close seam, db.js); this adds the detected closes whose trade
+          // row was already closed, on THIS account. The other same-side
+          // accounts and the opposite side do the same below, and the queue
+          // is drained for EVERY account in one pass after them — no longer
+          // here, where only the selected account's credentials were in scope.
           try {
-            const { enqueueCapture } = await import('./services/position-capture.js')
-            for (const c of result.closedDetected || []) {
-              enqueueCapture(db, { accountId, positionId: c.positionId, symbol: c.symbol })
-            }
+            const { enqueueReconcileCloses } = await import('./services/position-capture-accounts.js')
+            enqueueReconcileCloses(db, result, { accountId, source: 'reconcile' })
           } catch (err) {
             log(`Position capture enqueue failed: ${err.message}`)
-          }
-
-          // ...and drained here, in the same block, because this is where the
-          // account's credentials are in scope. A capture that is due pulls
-          // THAT position's deal window (not "the last N days"), builds the
-          // record, appends it to the volume archive and offers it to
-          // cpp-verify.
-          //
-          // The verifier is OPTIONAL and its absence is visible rather than
-          // silent: until VERIFY_URL is set every record stays `unverified`,
-          // which is precisely what it is. Nothing here decides a verdict on
-          // the verifier's behalf — that would re-introduce the
-          // self-certification the separate service exists to prevent.
-          try {
-            const { drainCaptureQueue, enqueueVerifyBacklog } = await import('./services/position-capture.js')
-            const { verifyClient } = await import('./lib/verify-client.js')
-            const verifier = verifyClient()
-            // PR-AP: records built while cpp-verify was unreachable are
-            // complete but never got a verdict, and their queue rows are
-            // terminal, so nothing would ever revisit them. Re-arm a few per
-            // pass into THIS queue rather than building a second scheduler —
-            // it already paces (50 a drain), retries with backoff and gives
-            // up loudly. Only when a verifier is configured: without one a
-            // re-capture buys broker traffic and no answer.
-            if (verifier) {
-              // The pass decides what is worth saying — a non-zero arming
-              // always, a zero only when its breakdown CHANGES. Logging only
-              // on success is what made 18-09's zero unexplainable.
-              const backlog = enqueueVerifyBacklog(db, { accountId })
-              if (backlog.report) log(`Position capture [${accountId}]: ${backlog.report}`)
-            }
-            const drain = await drainCaptureQueue(db, {
-              getDeals: async (t0, t1) => {
-                const { wsGetDeals } = await import('./lib/ctrader-ws.js')
-                return wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1)
-              },
-              // The credentials travel with the call because cpp-verify holds
-              // no defaults and needs POST /connect before it can answer.
-              verify: verifier ? (record) => verifier(record, { host, clientId, clientSecret, accessToken, accountId }) : null,
-              // B6: a symbol the lot-size registry has never seen is read from
-              // the broker once, so the verifier can compare its volume.
-              lotSizeFor: async (symbol) => {
-                const { symbolIdFor } = await import('./services/position-history.js')
-                const { getVolumeMeta } = await import('./lib/lot-sizing.js')
-                const symbolId = symbolIdFor(db, symbol)
-                if (symbolId == null) return null
-                return getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId)
-              },
-            })
-            if (drain.due) {
-              log(`Position capture: ${drain.captured} captured · ${drain.archived} archived · ${drain.verified} verified · ${drain.incomplete} still incomplete` +
-                  (drain.gaveUp ? ` · ${drain.gaveUp} GAVE UP` : '') +
-                  (verifier ? '' : ' (verifier unconfigured — records stay unverified)'))
-              for (const e of drain.errors) log(`Position capture error: ${e}`)
-            }
-          } catch (err) {
-            log(`Position capture drain failed: ${err.message}`)
           }
 
           // Ledger resyncs are bookkeeping, not tampering — logged, never
@@ -3739,6 +3762,15 @@ async function runLoop(db) {
                   { accountId: acc.account_id })
                 log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)`)
 
+                // V3 V1: this account's detected closes are queued for capture
+                // too (until 25-09-2026 only the selected account's were).
+                try {
+                  const { enqueueReconcileCloses } = await import('./services/position-capture-accounts.js')
+                  enqueueReconcileCloses(db, r2, { accountId: acc.account_id, source: 'reconcile' })
+                } catch (err) {
+                  log(`Position capture enqueue [${acc.account_id}] failed: ${err.message}`)
+                }
+
                 // PR-E M2 (checker, 11-09-2026): this account's intents settle
                 // on ITS snapshot and ITS deal history — until now only the
                 // primary pass reconciled intents, so an UNKNOWN on any other
@@ -3755,6 +3787,16 @@ async function runLoop(db) {
                   })
                   if (dh2.filled?.length || dh2.stillUnknown) {
                     log(`Entry ledger …${String(acc.account_id).slice(-4)} deal history: ${dh2.pulled} deal(s) over ${dh2.pages} page(s)${dh2.truncated ? ' (TRUNCATED)' : ''}, ${dh2.filled.length} FILLED, ${dh2.stillUnknown} still UNKNOWN`)
+                  }
+                  // X1: this account's resting orders that left ITS snapshot.
+                  const { settleAcceptedFromOrderDetails } = await import('./services/entry-ledger.js')
+                  const { wsGetOrderDetails } = await import('./lib/ctrader-ws.js')
+                  const ad2 = await settleAcceptedFromOrderDetails(db, {
+                    accountId: acc.account_id, workingOrderIds: (rd.order || []).map(o => o?.orderId ?? o?.tradeData?.orderId),
+                    getOrderDetails: (orderId) => wsGetOrderDetails(host, clientId, clientSecret, accessToken, acc.account_id, orderId),
+                  })
+                  if (ad2.settled.length || ad2.noted) {
+                    log(`Entry ledger …${String(acc.account_id).slice(-4)} resting orders: ${ad2.read} read, ${ad2.settled.length} settled, ${ad2.noted} noted, ${ad2.unresolved.length} unresolved (no broker evidence)`)
                   }
                 } catch (err) {
                   log(`Entry ledger [${acc.account_id}] failed (non-fatal): ${err.message}`)
@@ -3833,6 +3875,16 @@ async function runLoop(db) {
             if (r.result) log(`Reconcile[${r.accountId}] cross-side: ${r.result.newExternal.length} new external, ${r.result.closedDetected.length} closed, ${(r.result.orphansClosed || []).length} orphan(s)`)
             else log(`Reconcile[${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
           }
+          // V3 V1: the opposite side's detected closes are queued for capture
+          // as well — the other gateway's accounts were never queued before.
+          try {
+            const { enqueueReconcileCloses } = await import('./services/position-capture-accounts.js')
+            for (const r of crossReconciled) {
+              if (r.result) enqueueReconcileCloses(db, r.result, { accountId: r.accountId, source: 'cross_side' })
+            }
+          } catch (err) {
+            log(`Position capture enqueue (cross-side) failed: ${err.message}`)
+          }
           // Closing a local row must reach the P&L repair on the same host.
           // The earlier same-side pass cannot fetch the opposite account's
           // deals. Report these reads separately, preserving its own pacing.
@@ -3844,7 +3896,7 @@ async function runLoop(db) {
             const recovered = await backfillCrossSidePnl(db, getCtraderCreds(db), crossReconciled)
             pnlCrossSidePass = { state: 'reported', ...pnlPassSummary(recovered, { at: new Date().toISOString() }) }
             for (const r of recovered) {
-              if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read; ${r.result.lifetimeSkipped || 0} positions outside verified lifetime window`)
+              if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read; ${r.result.deferred ?? r.result.lifetimeSkipped ?? 0} unpriced position(s) without a whole lifecycle in the window, ${r.result.ambiguous || 0} ambiguous; conversion fee excluded from net ${r.result.conversionFeeExcluded ?? 0}`)
               else log(`P&L backfill [${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
               if (r.result?.positionHistory) log(`P&L position history [${r.accountId}]: ${JSON.stringify(r.result.positionHistory)}`)
             }
@@ -3852,6 +3904,25 @@ async function runLoop(db) {
             log(`Cross-side P&L recovery failed (non-fatal): ${err.message}`)
             pnlCrossSidePass = { state: 'reported', at: new Date().toISOString(), attempted: 1, completed: 0, skipped: 0,
               failures: [{ accountId: 'cross-side', error: String(err?.message ?? err).slice(0, 160) }], skippedFor: [] }
+          }
+
+          // ---- POSITION CAPTURE, EVERY ACCOUNT (V3 V1) --------------------
+          // One pass after all three reconciles, so every close they closed
+          // is queued: per account, with THAT account's own credentials, a
+          // bounded 7-day sweep, the verify backlog (only with a verifier)
+          // and a drain of that account's rows only — then the pass is
+          // written down and beats `position_capture` FAILED if any account
+          // is silent, stalled or refused by the verifier. Until 25-09-2026
+          // this drained the selected account alone, and the capture queue
+          // read "0 pending" while six of seven accounts queued nothing.
+          // Reads only: deal history and symbol metadata. Never an order.
+          try {
+            const { runAllAccountCapture } = await import('./services/position-capture-accounts.js')
+            const cap = await runAllAccountCapture(db, { log })
+            if (!cap.ok) log(`Position capture: ${cap.error}`)
+          } catch (err) {
+            log(`Position capture pass failed: ${err.message}`)
+            await hbeat(db, 'position_capture', false, err.message)
           }
 
           // ---- CROSS-SIDE EQUITY (READ ONLY) -----------------------------
@@ -5507,6 +5578,32 @@ async function runLoop(db) {
     } // end symbolsJson
 
     // -----------------------------------------------------------------------
+    // MOMENTUM PARTIAL-TP1 MANAGER (V3 T3, P0-2). Every cycle, AFTER the
+    // momentum book (its rank exit reserves a plan before this pass could
+    // send, and its trail pass writes the marks the pre-filter reads), and
+    // deliberately OUTSIDE everything that gates the book: the symbols block,
+    // the scan switch, weekend quiet, ctraderCreds.ready and the book's own
+    // enabled flag. A plan outlives all of those; a partial manager that
+    // stopped when the scan was switched off would be a guard whose trigger
+    // never arrives. Each account uses its own registered credentials.
+    // Inert while no plan exists: no broker call, no credential read. Its own
+    // try/catch, so a failure here is logged and beaten, never fatal.
+    // -----------------------------------------------------------------------
+    try {
+      phase('momentum partials')
+      const { runMomentumPartialPass } = await import('./services/momentum-partial-runtime.js')
+      const { credsForRegisteredAccount } = await import('./lib/ctrader-creds.js')
+      const mp = await runMomentumPartialPass(db, { credsFor: (accountId) => credsForRegisteredAccount(db, accountId), now: Date.now, log })
+      if (mp.activePlans || mp.abandonedBinds.length || mp.scaleOutsRecorded.length || !mp.ok) {
+        log(`momentum partials: ${mp.activePlans} active plan(s) on ${Object.keys(mp.accounts).length} account(s), ${mp.scaleOutsRecorded.length} scale-out(s) journaled, ${mp.abandonedBinds.length} bind(s) abandoned${mp.ok ? '' : ` — ${mp.errors[0] || Object.entries(mp.accounts).filter(([, a]) => a.error).map(([id, a]) => `…${id.slice(-4)} ${a.error}`).join('; ')}`}`)
+      }
+      await hbeat(db, 'momentum_partial', mp.ok, mp.ok ? null : (mp.errors[0] || 'account pass failed — see momentum_partial_pass_json'))
+    } catch (err) {
+      log(`momentum partial pass failed: ${err.message}`)
+      await hbeat(db, 'momentum_partial', false, err.message)
+    }
+
+    // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)
     // -----------------------------------------------------------------------
     if (loopCount % 6 === 0) {
@@ -6293,6 +6390,12 @@ export function startLoop(db) {
   import('./services/cashflow-collector.js')
     .then(m => m.startCashflowCollector(db))
     .catch(err => log('cashflow collector failed to start:', err.message))
+  // V3 WEB-4: account readings (balance, floating, equity, free margin) and
+  // the equity history they feed, read by the server once a minute on its own
+  // ticker — no longer only while a browser page asks. Read-only broker reads.
+  import('./services/broker-readings.js')
+    .then(m => m.startBrokerReadings(db))
+    .catch(err => log('broker readings failed to start:', err.message))
   // Per-minute review (§70.4) — §41's level 5, on its own ticker so it keeps
   // reviewing precisely when the loop or the fast monitor is the thing that
   // broke. Reads only: it reports when a lower-authority writer moved a stop

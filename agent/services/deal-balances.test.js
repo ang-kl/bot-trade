@@ -27,7 +27,8 @@ import { initDB, setState } from '../db.js'
 import { shapeDeals, persistDeals } from './broker-history-import.js'
 import { parseStatement, importSeedStatements } from './statement-import.js'
 import { recordCashflowWindow } from './account-cashflows.js'
-import { depositCurrencies } from './performance-populations.js'
+import { depositCurrencies } from './deposit-currencies.js'
+import { balanceReader } from './balance-edges.js'
 import { dealBalanceReader, dealBalanceReport, eventTime, brokerAmount, BALANCE_GAP_LABELS } from './deal-balances.js'
 import stateRouter from '../routes/state.js'
 
@@ -400,8 +401,16 @@ test('GET /state/deal-balances reports the evidence and the proven edge; a bad e
     { accountId: A, currency: 'USD', firstBalanceAt: new Date(T0 + 999).toISOString(), lastBalanceAt: new Date(T0 + 2 * H).toISOString() })
   assert.deepEqual(acct.edges.map(e => [e.edge, e.status, e.value ?? e.reason]), [
     [new Date(T0 + H).toISOString(), 'observed', 1000],
-    [new Date(T0 - H).toISOString(), 'not_stored', 'before_first_stored_event'],
+    // The ledger carry's reader answers the edges: before every stored
+    // balance of either kind is "not stored before" the first one.
+    [new Date(T0 - H).toISOString(), 'not_stored', 'before_balance_history'],
   ])
+  assert.equal(acct.edges[1].storedFrom, T0 + 999)
+  assert.equal(body.edgeBasis, 'ledger_carry_reader')
+  // One reader: each edge here is exactly what the ledger carry reads there.
+  const carry = balanceReader(db, { currencyByAccount: depositCurrencies(db), dealBalances: true })
+  assert.deepEqual(acct.edges, [{ edge: new Date(T0 + H).toISOString(), ...carry.at(A, T0 + H) },
+    { edge: new Date(T0 - H).toISOString(), ...carry.at(A, T0 - H) }])
   assert.deepEqual(body.labels, BALANCE_GAP_LABELS)
 
   for (const q of ['?at=yesterday', `?at=${Array.from({ length: 25 }, (_, i) => T0 + i).join(',')}`]) {

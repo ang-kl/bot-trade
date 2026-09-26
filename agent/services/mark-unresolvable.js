@@ -62,6 +62,24 @@ export const UNRESOLVED_NO_EVIDENCE = 'unresolved: no broker evidence'
  */
 export const BROKER_DEAL_NOT_SETTLEABLE = 'broker deal on file, not settleable'
 export const BROKER_POSITION_STILL_OPEN = 'broker shows position still open, not settleable'
+/**
+ * V3 B2 (P5b-2): the broker's complete position history holds deals for the
+ * position and NONE of them executed (REJECTED / INTERNALLY_REJECTED / ERROR /
+ * MISSED). That is broker evidence — "no broker evidence" would be false — and
+ * it says the order never filled. Same exclusion: net_pnl stays NULL, shown.
+ * Rejecting such a row (status) is B2b/B5's, on the owner's word; this is the
+ * label only.
+ */
+export const BROKER_NEVER_FILLED = 'broker shows the order never filled'
+/**
+ * V3 B2 checker N2: the broker's complete position history for this account
+ * ARRIVED and was refused by the settling reader (e.g. non-executed deals
+ * beside executed ones, closing money or volume it cannot read, a lifecycle
+ * that does not balance) and no closing deal is on file locally. That is
+ * broker evidence too — "no broker evidence" would be false. Same exclusion:
+ * net_pnl stays NULL, excluded from P&L, still shown.
+ */
+export const BROKER_HISTORY_NOT_SETTLEABLE = 'broker history read, not settleable'
 
 /**
  * The DURABLE half of the "we tried and gave up" evidence.

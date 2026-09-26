@@ -26,6 +26,43 @@ describe('controller evidence presentation', () => {
     expect(html).toContain('market UNKNOWN')
     expect(html).toContain('cpp-scan-timeframe')
   })
+  it('prints the no_orders blocker and labels the relayed entry records as Node records, never broker-verified (V3 CV-1)', () => {
+    const now = Date.now()
+    const watchdog = status => ({ readAt: new Date(now).toISOString(), status: { enabled: true, durable: true, policy: { serviceGraceMs: 60000 }, services: {}, ...status } })
+    const noOrders = detail => ({ 'node:no_orders:11:s1': { active: true, severity: 'info', openedAtMs: now, lastObservedAtMs: now, detail: { service: 'node', accountId: '11', ...detail } } })
+    const relay = { evidence: 'node_records_relayed', brokerVerified: false, available: true, complete: true, stale: false, nodeObservedAtMs: now,
+      note: "Pre-broker refusals are Node's own records relayed; cpp-verify did not observe them and cannot confirm them at the broker.",
+      accounts: [
+        { accountId: '11', environment: 'demo', entryMode: { effective: 'TIME_BASED' }, bases: ['bar'],
+          tick: { status: 'not_evaluated', because: 'basis_not_admitted', blockedReasons: ['profile_pinned', 'replay_evidence'] },
+          dominantRefusal: { stage: 'stage_matrix', records: 3, lastReason: 'strategy OFF' }, entryStopsInWindow: 3,
+          independent: { available: true, openCount: 2, checkedAtMs: now } },
+        { accountId: '22', environment: 'live', entryMode: { effective: 'TIME_BASED' }, bases: ['bar'], tick: { status: 'not_evaluated' },
+          dominantRefusal: null, entryStopsInWindow: 0, independent: { available: false, reason: 'broker_reconcile_stale' } },
+      ] }
+    const html = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: watchdog({
+      incidents: noOrders({ blocker: 'stage_matrix ×3 of 3 entry stops since session open; latest stage_matrix: strategy OFF' }), entryDiagnostics: relay }) }} />)
+    expect(html).toContain('blocker: stage_matrix ×3 of 3 entry stops')
+    expect(html).toContain('Node records relayed by cpp-verify (not broker-verified)')
+    expect(html).toContain('not evaluated — basis_not_admitted')
+    expect(html).toContain('Blocked: profile_pinned, replay_evidence')
+    expect(html).toContain('stage_matrix ×3; latest: strategy OFF')
+    expect(html).toContain('2 open, read')
+    expect(html).toContain('UNVERIFIED: broker_reconcile_stale')
+    expect(html).not.toContain('· STALE')
+    const stale = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: watchdog({
+      incidents: noOrders({}), entryDiagnostics: { ...relay, stale: true, complete: false, reason: 'accounts_dropped_by_relay_bound_or_shape' } }) }} />)
+    expect(stale).toContain('blocker: not recorded')
+    expect(stale).toContain('· STALE')
+    expect(stale).toContain('INCOMPLETE: accounts_dropped_by_relay_bound_or_shape')
+    // Absent or unavailable is said, never an empty clean table.
+    const busy = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: watchdog({ error: 'watchdog_status_busy' }) }} />)
+    expect(busy).toContain('unavailable: watchdog_status_busy')
+    expect(busy).not.toContain('<table class="w-full text-left"><caption class="text-left font-semibold">Entry refusals')
+    const none = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: watchdog({
+      entryDiagnostics: { available: false, reason: 'no_node_contract_since_start', accounts: [] } }) }} />)
+    expect(none).toContain('unavailable: no_node_contract_since_start')
+  })
   it('keeps absent scanner evidence unknown and shows actual mismatches and worker failures', () => {
     const runtime = { accounts: [], sides: [] }
     const empty = renderToStaticMarkup(<ControllerRuntime runtime={runtime} />)
@@ -52,5 +89,25 @@ describe('controller evidence presentation', () => {
     expect(html).toContain('Probe failed')
     expect(html).toContain('Retired history')
     expect(html).toContain('Producer retired')
+  })
+  it('says why a dormant controller is quiet and does not call its unmoving record stale (V3 I2)', () => {
+    const dormant = renderToStaticMarkup(<ControllerGroups controllers={[
+      { name: 'weekend_watch', label: 'Weekend watch (LLM)', status: 'idle', verdict: 'dormant', dormant: true,
+        dormant_reason: 'LLM switched off (LLM_DISABLED env var) — the weekend watch makes no model call while it is off, so it does not run' },
+      { name: 'autopilot', label: 'Strategy autopilot', status: 'ok', verdict: 'dormant', dormant: true,
+        dormant_reason: 'autopilot_mode is off — no evidence sweep is scheduled',
+        work_product: { fresh: false, summary: 'RECORD 300m OLD — past the 33m limit' } },
+    ]} />)
+    expect(dormant).toContain('Dormant: LLM switched off (LLM_DISABLED env var)')
+    expect(dormant).toContain('Dormant: autopilot_mode is off')
+    expect(dormant).toContain('not expected while dormant')
+    expect(dormant).not.toContain('STALE / UNAVAILABLE')
+    // The same aged record on a controller that is NOT dormant is still stale.
+    const live = renderToStaticMarkup(<ControllerGroups controllers={[
+      { name: 'autopilot', label: 'Strategy autopilot', status: 'warn', verdict: 'record_stale',
+        work_product: { fresh: false, summary: 'RECORD 40m OLD — past the 33m limit' } },
+    ]} />)
+    expect(live).toContain('STALE / UNAVAILABLE')
+    expect(live).not.toContain('Dormant:')
   })
 })
