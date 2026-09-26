@@ -3299,15 +3299,18 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/phase-audit', async (req, res) => {
     try {
-      const { recentPhaseAudit } = await import('../services/phase-audit.js')
+      const { recentPhaseAudit, phaseAuditSplit } = await import('../services/phase-audit.js')
       const { viewedAccountOf, describeScope } = await import('../services/viewed-account.js')
       const viewed = viewedAccountOf(db, req)
+      const limit = req.query.limit ? Number(req.query.limit) : 100
+      // UI-5 (RS-1: "split out switch flips" — see phase-audit.js's own
+      // doc). `audit` is kept exactly as before (every reader of it is
+      // unaffected); `switches` and `controllerEvents` are the split view,
+      // added beside it.
       res.json({
         scope: describeScope(viewed),
-        audit: recentPhaseAudit(db, {
-          limit: req.query.limit ? Number(req.query.limit) : 100,
-          accountId: viewed.accountId,
-        }),
+        audit: recentPhaseAudit(db, { limit, accountId: viewed.accountId }),
+        ...phaseAuditSplit(db, { limit, accountId: viewed.accountId }),
       })
     } catch (err) {
       res.status(500).json({ error: err.message })

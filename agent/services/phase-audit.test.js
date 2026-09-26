@@ -4,7 +4,7 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert'
 import { initDB, getState } from '../db.js'
-import { setPhaseFlag, auditControllerEvent, recentPhaseAudit } from './phase-audit.js'
+import { setPhaseFlag, auditControllerEvent, recentPhaseAudit, phaseAuditSplit } from './phase-audit.js'
 import { setAccountPhases } from './account-phases.js'
 import { disarmAccount } from './equity-stop.js'
 
@@ -67,4 +67,38 @@ test('controller events land in the same trail and recentPhaseAudit reads it all
   assert.equal(out[0].path, '/controller/fast_monitor/stalled')
   assert.equal(out[0].controller, 'fast_monitor')
   assert.equal(out[1].actor, 'telegram')
+})
+
+// ---------------------------------------------------------------------------
+// UI-5 (RS-1): "100 of 100 rows are controller events -> split out switch
+// flips" (docs/plan-ui-and-strategy-review-2026-09-26.md §2 RS-1; §5 Wave 2
+// row 2.6)
+// ---------------------------------------------------------------------------
+
+test('phaseAuditSplit separates switch flips (phase + arm) from controller events, each newest first, independently of the other\'s volume', () => {
+  // One switch flip, buried under 100 controller events (the measured shape).
+  setPhaseFlag(db, 'autotrade_enabled', 'true', { actor: 'telegram', via: '/resume' })
+  for (let i = 0; i < 100; i++) auditControllerEvent(db, { controller: 'fast_monitor', event: 'ok', detail: `pass ${i}` })
+  setAccountPhases(db, '46130058', { autotrade: false }, { actor: 'owner-ui', via: '/actions/account-phases' })
+
+  const split = phaseAuditSplit(db, { limit: 100 })
+  assert.equal(split.switches.length, 2, 'the phase flip and the arm change — never drowned out by the 100 controller events')
+  assert.ok(split.switches.every(r => r.path.startsWith('/phase/') || r.path.startsWith('/arm/')))
+  assert.equal(split.switches[0].path, '/arm/46130058', 'newest first')
+  assert.equal(split.switches[1].actor, 'telegram')
+
+  assert.equal(split.controllerEvents.length, 100)
+  assert.ok(split.controllerEvents.every(r => r.path.startsWith('/controller/')))
+  assert.equal(split.controllerEvents[0].detail, 'pass 99', 'newest first')
+})
+
+test('phaseAuditSplit respects account scope the same way recentPhaseAudit does (global rows included)', () => {
+  setPhaseFlag(db, 'autotrade_enabled', 'true', { actor: 'telegram' }) // global, account_id NULL
+  setAccountPhases(db, '46130058', { autotrade: false }, { actor: 'owner-ui' })
+  setAccountPhases(db, '43097342', { autotrade: false }, { actor: 'owner-ui' })
+  const split = phaseAuditSplit(db, { accountId: '46130058' })
+  const paths = split.switches.map(r => r.path)
+  assert.ok(paths.includes('/phase/autotrade_enabled'), 'global switches are always included')
+  assert.ok(paths.includes('/arm/46130058'))
+  assert.ok(!paths.includes('/arm/43097342'), 'another account\'s arm change is scoped out')
 })
