@@ -3,8 +3,9 @@
 // out, and the all-accounts view shows money per currency. A missing balance
 // is labelled, never drawn as zero.
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TodayHourlyBody, LedgerRow, MobileWindowCard, LedgerBody } from '../pages/Performance.jsx'
+import { TodayHourlyBody, LedgerRow, MobileWindowCard, LedgerBody, MobileLedgerDealNote, ledgerToText } from '../pages/Performance.jsx'
 import { hourRowEvidence } from '../lib/hourly-activity.js'
 import { currencyGroups, ledgerCarry } from '../../agent/shared/balance-carry.js'
 import { currentTotalsByCurrency, liveFloatingByCurrency } from '../lib/current-account-totals.js'
@@ -125,10 +126,76 @@ describe('timeframe ledger: deal-proven carries and a failed deal read', () => {
     const row = renderToStaticMarkup(<table><tbody><LedgerRow w={w} nowMs={NOW} timeZone="UTC" /></tbody></table>)
     expect(text(row)).toContain('not stored before 22-09 17:26 UTC')
     expect(row).toContain('Deal balances unread for account 11')
+    // V3 WEB-8b: marked ON SCREEN in the carry cell and on the phone card,
+    // not only in the tooltip (WEB-3m's N4 precedent). Words, not colour.
+    expect(text(row)).toContain('not stored before 22-09 17:26 UTC · deals unread')
+    expect(text(renderToStaticMarkup(<MobileWindowCard w={w} timeZone="UTC" />))).toContain('not stored before 22-09 17:26 UTC · deals unread → ')
     const body = text(renderToStaticMarkup(<LedgerBody variant="card" windows={[w]} ledger={{ windows: [w] }} nowMs={NOW} timeZone="UTC" />))
     expect(body).toContain('Deal balances unread: the broker balances stored on deals and cashflows could not be read for this report (account 11)')
     // Deals read: no such sentence.
     const ok = win({ ...edges, dealBalances: 'read', windows: { '30d': { 11: { in: before('USD').evidence, out: seen('USD', 1029).evidence } } } }, '30d')
     expect(text(renderToStaticMarkup(<LedgerBody variant="card" windows={[ok]} ledger={{ windows: [ok] }} nowMs={NOW} timeZone="UTC" />))).not.toContain('Deal balances unread')
+    // …and no on-screen mark either: the gap is the reads' own, nothing more.
+    expect(text(renderToStaticMarkup(<table><tbody><LedgerRow w={ok} nowMs={NOW} timeZone="UTC" /></tbody></table>))).not.toContain('deals unread')
+    expect(text(renderToStaticMarkup(<MobileWindowCard w={ok} timeZone="UTC" />))).not.toContain('deals unread')
+  })
+})
+
+// V3 WEB-8b (failure mode #4). WEB-8-m wired the failed-deal note into the
+// phone ledger (which has no footnote and no hover) and into copy-as-text,
+// but only LedgerBody's footnote was pinned. Both are rendered here: the note
+// appears when a deal read failed and is absent when it did not.
+describe('timeframe ledger: the phone note and copy-as-text state a failed deal read', () => {
+  const D = 24 * H
+  const recorded = id => ({ 11: 'USD' })[id]
+  const unread = { status: 'unavailable', reason: 'deal_balance_read_failed' }
+  const edgesFor = (dealBalances, inEvidence) => ({ status: 'complete', maxAgeMs: 900000, dealBalances, accounts: [{ accountId: '11', historyStartsAt: START }],
+    windows: { '30d': { 11: { in: inEvidence, out: seen('USD', 1029).evidence } } } })
+  const win = edges => ({ key: '30d', label: '30D', from: new Date(NOW - 30 * D).toISOString(), to: new Date(NOW).toISOString(),
+    trades: 0, net: 0, markets: {}, lastTradeAt: null, ...ledgerCarry(edges, '30d', '11', recorded) })
+  const failed = win(edgesFor('deal_balance_read_failed', { ...before('USD').evidence, dealBalance: unread }))
+  const oneAccount = win(edgesFor('read', { ...before('USD').evidence, dealBalance: unread }))
+  const read = win(edgesFor('read', before('USD').evidence))
+  const NOTE = 'Deal balances unread: the broker balances stored on deals and cashflows could not be read'
+
+  it('the phone note renders above the cards when the read failed, naming the account, and nothing when it did not', () => {
+    const html = renderToStaticMarkup(<MobileLedgerDealNote windows={[failed]} />)
+    expect(html).toMatch(/^<p[^>]*>/)
+    expect(text(html)).toContain(`${NOTE} for this report (account 11), so no carry edge was checked against them`)
+    expect(text(html)).toContain('it is not zero and nothing is estimated')
+    // Only this account's read failed (the report's deals were read).
+    expect(text(renderToStaticMarkup(<MobileLedgerDealNote windows={[oneAccount]} />)))
+      .toContain(`${NOTE} for account 11, so that account’s carry edges were not checked against them`)
+    // Deals read: no element at all, not an empty paragraph.
+    expect(renderToStaticMarkup(<MobileLedgerDealNote windows={[read]} />)).toBe('')
+    expect(renderToStaticMarkup(<MobileLedgerDealNote windows={[]} />)).toBe('')
+  })
+  it('copy-as-text carries the on-screen mark on the carry and the note as its last line; neither when the deals were read', () => {
+    const out = ledgerToText([failed]).split('\n')
+    expect(out[0]).toBe('Timeframe ledger')
+    expect(out[1]).toMatch(/^30D · carry not stored before 22-09 17:26 UTC · deals unread → 1,029\.00 · /)
+    expect(out).toHaveLength(3)
+    expect(out[2]).toContain(`${NOTE} for this report (account 11)`)
+    const clean = ledgerToText([read])
+    expect(clean.split('\n')).toHaveLength(2)
+    expect(clean).toContain('30D · carry not stored before 22-09 17:26 UTC → 1,029.00 · ')
+    expect(clean).not.toContain('Deal balances unread')
+    expect(clean).not.toContain('deals unread')
+  })
+  // The page hands both the same windows the cards and the table render. No
+  // DOM here and the report arrives through an effect, so there is no
+  // injection point: reading the source is the last resort for that wiring
+  // alone (failure modes #2 and #4), with comments stripped first.
+  it('the page renders the phone note above the phone cards and copies the ledger through ledgerToText (wiring)', () => {
+    const strip = src => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1')
+    const page = strip(readFileSync(new URL('../pages/Performance.jsx', import.meta.url), 'utf8'))
+    expect(page).toMatch(/const windows = useMemo\(\(\) => reportLedger\(populationReport, acct\)\.windows, \[populationReport, acct\]\)/)
+    // The phone ledger screen: from its guard to the next screen's guard.
+    const start = page.indexOf("{screen === 'ledger' && (")
+    expect(start).toBeGreaterThan(-1)
+    const phone = page.slice(start, page.indexOf('screen ===', start + 10))
+    expect(phone).toMatch(/<MobileLedgerDealNote windows=\{windows\} \/>\s*\{windows\.map\(w => <MobileWindowCard /)
+    expect(page.match(/<MobileLedgerDealNote /g)).toHaveLength(1)
+    expect(page).toMatch(/<SectionTools id="ledger" title="Timeframe Ledger table" data=\{windows\} toText=\{ledgerToText\}/)
   })
 })

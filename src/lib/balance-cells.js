@@ -54,6 +54,11 @@ const readTitle = (g, noun = 'balance') => {
 // passed off as the reads' own gap (owner principle 6).
 const dealUnread = ids => Array.isArray(ids) && ids.length
   ? ` Deal balances unread for account${ids.length === 1 ? '' : 's'} ${ids.map(String).join(', ')}: the broker balances stored on deals and cashflows could not be read, so this edge was not checked against them.` : ''
+// V3 WEB-8b. The same failed read marked ON SCREEN, on the missing line's own
+// text (as floatingText marks "USD 1/2 read"), so it reaches the carry cell,
+// the phone card and copy-as-text, not only the tooltip and the footnote.
+// Words, not colour: the owner is red/green colourblind.
+const dealUnreadMark = g => Array.isArray(g.dealBalanceUnreadAccounts) && g.dealBalanceUnreadAccounts.length ? ' · deals unread' : ''
 
 function validGroupSet(set) {
   return !!set && Array.isArray(set.groups) && set.groups.every(g => g && ccyOk(g.currency)
@@ -67,7 +72,7 @@ export function balanceLines(set, { money = fixed, withCurrency = false, unavail
   if (!validGroupSet(set)) return [{ key: 'na', text: '—', title: unavailable, missing: true }]
   const lines = set.groups.map(g => g.value != null
     ? { key: g.currency, text: `${set.groups.length > 1 || withCurrency ? `${g.currency} ` : ''}${money(g.value)}`, title: readTitle(g), missing: false, currency: g.currency, value: g.value }
-    : { key: g.currency, text: `${set.groups.length > 1 || withCurrency ? `${g.currency} ` : ''}${missingBalanceLabel(g)}`,
+    : { key: g.currency, text: `${set.groups.length > 1 || withCurrency ? `${g.currency} ` : ''}${missingBalanceLabel(g)}${dealUnreadMark(g)}`,
       title: `${g.currency}: ${missingBalanceLabel(g)}.${notRead(g.missingAccounts)}${dealUnread(g.dealBalanceUnreadAccounts)} A missing broker balance is not zero and is never estimated.`, missing: true, currency: g.currency, value: null })
   // Accounts in no currency group (V3 WEB-3m): no recorded broker deposit
   // currency, so no balance of theirs is added to any currency's total.
@@ -104,7 +109,8 @@ export function floatingText(set, { signed = plus } = {}) {
  * balances could not be read — for the whole report (carry.dealBalances) or
  * for an account at any edge — or null when nothing was hidden. Words, not
  * colour: the page states the failed read instead of showing only the reads'
- * "not stored before …" label. */
+ * "not stored before …" label (each such edge is also marked "deals unread"
+ * on screen, V3 WEB-8b). */
 export function dealBalanceReadNote(windows) {
   const list = Array.isArray(windows) ? windows : []
   const failed = list.some(w => w?.carry?.dealBalances === 'deal_balance_read_failed')
@@ -120,7 +126,7 @@ export function dealBalanceReadNote(windows) {
   const scope = failed
     ? `for this report${ids.size ? ` (${named})` : ''}, so no carry edge was checked against them`
     : `for ${named}, so ${ids.size === 1 ? 'that account’s' : 'those accounts’'} carry edges were not checked against them`
-  return `Deal balances unread: the broker balances stored on deals and cashflows could not be read ${scope}. An edge the stored reads do not answer shows only the reads' own reason (such as “not stored before …”), not a balance the deals might prove; it is not zero and nothing is estimated.`
+  return `Deal balances unread: the broker balances stored on deals and cashflows could not be read ${scope}. Where the stored reads do not answer an edge and those deals were needed, the edge shows the reads' own reason (such as “not stored before …”) marked “deals unread”, not a balance the deals might prove; it is not zero and nothing is estimated.`
 }
 
 /** Ledger carry text for copy/paste and the phone card (one line). */

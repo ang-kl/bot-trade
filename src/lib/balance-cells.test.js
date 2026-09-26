@@ -133,7 +133,8 @@ describe('a failed read of the stored deal balances is stated, not hidden', () =
   const win = (edges, key) => ({ key, ...ledgerCarry(edges, key, '11', usd) })
   it('the carry cell\'s title names the account whose deal balances were not read', () => {
     const [line] = balanceLines(win(failedEdges, '30d').carry.in)
-    expect(line.text).toBe('not stored before 22-09 17:26 UTC')
+    // V3 WEB-8b: the failed read is marked on screen too, not only in the title.
+    expect(line.text).toBe('not stored before 22-09 17:26 UTC · deals unread')
     expect(line.title).toContain('Deal balances unread for account 11: the broker balances stored on deals and cashflows could not be read, so this edge was not checked against them.')
     // An edge the reads answered was not a fallback: nothing to say there.
     expect(balanceLines(win(failedEdges, '1h').carry.in)[0].title).not.toContain('Deal balances unread')
@@ -151,5 +152,37 @@ describe('a failed read of the stored deal balances is stated, not hidden', () =
     const read = { ...failedEdges, dealBalances: 'read', windows: { '30d': { 11: { in: gap('11', 'USD').evidence, out: seen('11', 'USD', 1020).evidence } } } }
     expect(dealBalanceReadNote([win(read, '30d')])).toBeNull()
     expect(dealBalanceReadNote(null)).toBeNull()
+  })
+  // V3 WEB-8b (WEB-3m's N4 precedent: gaps are marked on screen). The mark is
+  // on the line's own text, so the carry cell, the phone card (carryText) and
+  // copy-as-text all carry it. Words, not colour.
+  it('the missing line\'s on-screen text says "deals unread"; a gap whose deals were read does not', () => {
+    const failedIn = win(failedEdges, '30d')
+    expect(carryText(failedIn, 'in')).toBe('not stored before 22-09 17:26 UTC · deals unread')
+    // The observed side of the same window has nothing to mark.
+    expect(carryText(failedIn, 'out')).toBe('1020.00')
+    // The same gap with the deals read: the reads' own label and nothing more.
+    const read = { ...failedEdges, dealBalances: 'read', windows: { '30d': { 11: { in: gap('11', 'USD').evidence, out: seen('11', 'USD', 1020).evidence } } } }
+    const [plain] = balanceLines(win(read, '30d').carry.in)
+    expect(plain.text).toBe('not stored before 22-09 17:26 UTC')
+    expect(plain.text).not.toContain('deals unread')
+    expect(carryText(win(read, '30d'), 'in')).toBe('not stored before 22-09 17:26 UTC')
+    // The note names the on-screen mark, so the reader can find it.
+    expect(dealBalanceReadNote([failedIn])).toContain('marked “deals unread”')
+  })
+  it('all accounts in two currencies: only the currency whose account went unread is marked, with its partial count', () => {
+    const edges = { status: 'complete', maxAgeMs: 900000, dealBalances: 'read',
+      accounts: [{ accountId: '11', historyStartsAt: AT }, { accountId: '22', historyStartsAt: AT }, { accountId: '33', historyStartsAt: AT }],
+      windows: { '30d': {
+        11: { in: { ...gap('11', 'USD').evidence, dealBalance: unread }, out: seen('11', 'USD', 1020).evidence },
+        22: { in: seen('22', 'USD', 500).evidence, out: seen('22', 'USD', 501).evidence },
+        33: { in: gap('33', 'SGD').evidence, out: seen('33', 'SGD', 50).evidence } } } }
+    const ccy = id => ({ 11: 'USD', 22: 'USD', 33: 'SGD' })[id]
+    const w = { key: '30d', ...ledgerCarry(edges, '30d', 'all', ccy) }
+    const lines = balanceLines(w.carry.in)
+    expect(lines.map(l => l.text)).toEqual(['SGD not stored before 22-09 17:26 UTC', 'USD not stored before 22-09 17:26 UTC (1/2 accounts read) · deals unread'])
+    expect(carryText(w, 'in')).toBe('SGD not stored before 22-09 17:26 UTC · USD not stored before 22-09 17:26 UTC (1/2 accounts read) · deals unread')
+    // No partial USD sum appears beside the mark.
+    expect(carryText(w, 'in')).not.toContain('500')
   })
 })
