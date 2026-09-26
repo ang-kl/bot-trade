@@ -4824,6 +4824,37 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/named-corrections — V3 B2b/B5 (docs/v3-integrated-plan-
+  // 2026-09-26.md §5 row 2.6, §6 OD-11/OD-12, owner yes 26-09-2026).
+  // Body: { apply?: boolean, includeNeverFilled?: boolean, includeMoney?: boolean }.
+  // DRY RUN BY DEFAULT — see services/named-corrections.js.
+  //
+  // Two named corrections, one engine: OD-11's write-off rejections (a row
+  // this ledger still holds open/pending whose broker-lifecycle evidence is
+  // a FINAL never_filled verdict is rejected — status only, never deleted)
+  // and OD-12's named money corrections (H-P5b-1's five net_pnl deltas plus
+  // the #47 duplicate-group pricing fix). NOTHING IS WRITTEN WITHOUT
+  // `apply: true`; the default response is the plan (id, field, old -> new,
+  // evidence, and whether it is stale) so the operator reads it before
+  // authorising a write. A stale entry (the row moved since the evidence was
+  // captured) is reported and skipped, never forced.
+  // -----------------------------------------------------------------------
+  router.post('/named-corrections', async (req, res) => {
+    try {
+      const apply = req.body?.apply === true
+      const includeNeverFilled = req.body?.includeNeverFilled !== false
+      const includeMoney = req.body?.includeMoney !== false
+      const { runNamedCorrections } = await import('../services/named-corrections.js')
+      const out = runNamedCorrections(db, { apply, includeNeverFilled, includeMoney })
+      console.log(`[actions] named-corrections ${out.mode}${out.dryRun ? ' (dry run — nothing written)' : ` — ${out.neverFilled.applied + out.money.applied} row(s) applied, ${out.neverFilled.skipped + out.money.skipped} skipped`}`)
+      res.json({ ok: true, ...out })
+    } catch (err) {
+      console.error('[actions/named-corrections] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/ctrader-accounts — re-list accounts from the token the
   // agent already has stored (so the UI picker survives page reloads).
   // -----------------------------------------------------------------------
