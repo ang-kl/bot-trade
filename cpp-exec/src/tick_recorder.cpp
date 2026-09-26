@@ -1066,9 +1066,12 @@ void TickRecorder::writerLoop() {
     if (!didWork) std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   sealSegment(true);
-  // A quote that passed onQuote's stop check just before stop() and landed
-  // after the last empty check above is in no segment: counted dropped, not
-  // lost silently (checker nit). Nothing pushes once stop_ is visible.
+  // A record that landed after the last empty check above is in no segment:
+  // counted dropped here, not lost silently. Two pushes can race this drain:
+  // a quote that passed onQuote's stop check just before stop(), and the
+  // reconnect gap marker, which onQuote pushes (noteGap) BEFORE that check.
+  // A push that lands after this loop is neither written nor counted; the
+  // SIGTERM path exits right after stop() returns (term_seal.hpp).
   while (ring_.pop()) dropped_.fetch_add(1);
 }
 

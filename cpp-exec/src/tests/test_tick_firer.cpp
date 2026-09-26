@@ -597,7 +597,36 @@ static void test_no_permit_is_named_before_the_cap() {
   permits.set(1, 7, "BUY", permitFor(1, 7, "BUY"));
   assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 0);
   assert(firer.counters().refusedAccountCap == 1 && permits.size() == 1);
+  // checker round 2, nit 2: an EXPIRED permit at 0 slots is no permit — the
+  // peek erases it (as takeIf would) and the refusal is no_permit, not the cap.
+  permits.set(1, 7, "BUY", permitFor(1, 7, "BUY", 500));
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 0);
+  assert(firer.counters().refusedNoPermit == 2 && firer.counters().refusedAccountCap == 1 && permits.size() == 0);
+  assert(countKind(ring, "fire_refused", "no_permit") == 2);
   std::puts("no_permit is named before the cap: ok");
+}
+
+// checker round 2, nit 1: a slot reserved for a fill that takeIf then
+// refuses (here the price bound) is given back, and the permit stays.
+static void test_a_refused_check_gives_the_slot_back() {
+  ExecEngine engine;
+  TickPermitStore permits;
+  DecisionRing ring(128);
+  TickFirer firer(engine, permits);
+  firer.setDecisionRing(&ring);
+  firer.setBootId("B1");
+  firer.setAccounts({1});
+  firer.setSlots({{1, SlotPush{1, 0, "B1"}}});
+  permits.set(1, 7, "BUY", permitFor(1, 7, "BUY"));
+  // 0.25 × 50 = 12 from the ask 100490; a fill at 100510 is 20 away
+  assert(firer.onFill(fillAt(7, "BUY", 100510, 50, 100490, 100480), 1000) == 0);
+  assert(firer.counters().refusedPriceBound == 1 && countKind(ring, "fire_refused", "price_bound") == 1);
+  assert(firer.slots().at(1) == 1 && firer.counters().slotsRefunded == 1 && "the slot came back");
+  assert(permits.size() == 1 && "and the permit stayed");
+  // so the in-bound fill that follows still has its slot and its permit
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 1);
+  assert(firer.slots().at(1) == 0 && permits.size() == 0);
+  std::puts("a refused check gives the slot back: ok");
 }
 
 int main() {
@@ -617,6 +646,7 @@ int main() {
   test_non_tick_entries_spend_slots();
   test_open_health_entry_carries_no_account_id();
   test_no_permit_is_named_before_the_cap();
+  test_a_refused_check_gives_the_slot_back();
   std::puts("test_tick_firer: all passed");
   return 0;
 }

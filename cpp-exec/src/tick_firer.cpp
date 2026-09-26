@@ -219,15 +219,15 @@ int TickFirer::onFill(const ShadowFill& f, long long nowMs) {
       if (ring_) ring_->log("tick", "fire_refused", acct, f.symbolId, kind, f.side + " " + why + " seq=" + std::to_string(f.signalSeq) + " profile=" + f.profileHash);
     };
     if (!recording) { refuse("recorder_not_recording", "the recorder is not RECORDING — new tick entries pause (TM-40)", &FireCounters::refusedRecorder); continue; }
-    // GW-1 (gap 1): the account's slot is reserved BEFORE the permit is
-    // looked at, and the reservation is one critical section with the check,
-    // so two workers filling for one account cannot both take its last slot.
-    // A refusal here leaves the permit untouched.
+    // GW-1: the order is permit, slot, checks. First a PEEK at the permit,
+    // so a fill with no permit (or an expired one, erased here as takeIf
+    // would) reads 'no_permit' whatever the slots say. Then the slot (gap 1),
+    // reserved in one critical section with its check so two workers filling
+    // for one account cannot both take its last slot; an 'account_cap'
+    // refusal leaves the permit untouched. Then takeIf runs the checks and
+    // spends the permit only if all pass (gap 3), refunding the slot if not.
     bool limited = false;
     uint64_t gen = 0;
-    // A fill with no permit at all is refused 'no_permit' whatever the
-    // slots say (checker nit: it used to read 'account_cap' at 0 slots).
-    // A peek only — the permit is still spent inside takeIf, after the slot.
     if (!permits_.has(acct, f.symbolId, f.side, nowMs)) {
       refuse("no_permit", "no keeper permit held for this account/symbol/side", &FireCounters::refusedNoPermit);
       continue;

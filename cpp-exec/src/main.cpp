@@ -32,6 +32,7 @@
 #include "event_journal.hpp"
 #include "request_pacer.hpp"
 #include "peer_probe.hpp"
+#include "health_view.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
 #include "log.hpp"
@@ -261,9 +262,16 @@ int main(int argc, char** argv) {
   term_seal::startTermWatcher([&tickRecorder](int sig) {
     const auto t0 = std::chrono::steady_clock::now();
     logInfo(std::string(sig == SIGTERM ? "SIGTERM" : "SIGINT") + " received — sealing the tick spool, then exiting " + std::to_string(128 + sig));
+    const uint64_t droppedBefore = tickRecorder ? tickRecorder->stats().dropped : 0;
     if (tickRecorder) tickRecorder->stop();
     const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-    logInfo(std::string("shutdown: ") + (tickRecorder ? "tick spool sealed" : "no tick recorder") + " in " + std::to_string(ms) + " ms");
+    // The dropped count makes the shutdown drain observable: records the
+    // final drain found in the queue after the seal (tick_recorder.cpp
+    // writerLoop), plus any queue-full drops during the stop.
+    const uint64_t droppedAfter = tickRecorder ? tickRecorder->stats().dropped : 0;
+    logInfo(std::string("shutdown: ") + (tickRecorder ? "tick spool sealed" : "no tick recorder") + " in " + std::to_string(ms) + " ms" +
+            (tickRecorder ? ", " + std::to_string(droppedAfter - droppedBefore) + " record(s) dropped during the stop (" +
+                            std::to_string(droppedAfter) + " this boot)" : std::string()));
   });
   // P3b: the symbol workers (plan §8, TM-22/TM-23) — TICK_WORKERS threads
   // (default 2), each owning a fixed shard of symbols, fed the same
@@ -709,30 +717,11 @@ int main(int argc, char** argv) {
     } else {
       v.set("vpo", jsn::Value(nullptr));
     }
-    {
-      const GuardSnapshot g = engine.guard().snapshot();
-      jsn::Value gj{jsn::Object{}};
-      gj.set("halt", g.halt);
-      gj.set("requireBracket", g.requireBracket);
-      gj.set("requireTarget", g.requireTarget);
-      gj.set("maxOrderVolume", g.maxOrderVolume);
-      gj.set("haltAccountCount", static_cast<double>(g.haltAccounts.size()));
-      // AUDIT 11-09-2026 (plan B05): the LIST, so the keeper's guard sync can
-      // compare identity — two accounts swapped for two others read as "in
-      // sync" by count alone. Bearer-gated like the account roster.
-      if (trusted) {
-        jsn::Array ha;
-        for (long long id : g.haltAccounts) ha.push_back(jsn::Value(static_cast<double>(id)));
-        gj.set("haltAccounts", jsn::Value(std::move(ha)));
-      }
-      // P2a: the fenced epochs, so the keeper's guard sync can see whether
-      // its push bound (and an older keeper reads a plain object it ignores).
-      jsn::Value eo{jsn::Object{}};
-      for (const auto& kv : g.entryEpochs) eo.set(std::to_string(kv.first), static_cast<double>(kv.second));
-      gj.set("entryEpochs", std::move(eo));
-      gj.set("entryEpochCount", static_cast<double>(g.entryEpochs.size()));
-      v.set("guard", std::move(gj));
-    }
+    // GW-1 (checker B1b): the guard block is built by health_view::guard —
+    // haltAccounts AND entryEpochs (keyed by ctidTraderAccountId, one per
+    // registry account) only on the trusted branch; the open route keeps
+    // haltAccountCount and entryEpochCount.
+    v.set("guard", health_view::guard(engine.guard().snapshot(), trusted));
     {
       // P3a: the recorder's summary — null when TICK_SPOOL_PATH is unset,
       // so "disabled" and "configured, idle" never read the same. The
@@ -765,7 +754,9 @@ int main(int argc, char** argv) {
         tj.set("symbols", static_cast<double>(ts.perSymbol.size()));
         tj.set("shadow", tickShadow.load());
         tj.set("signals", static_cast<double>(tickSignals.load()));
-        { std::lock_guard<std::mutex> lk(tickSimMtx); if (auto sj = jsn::parse(tickSim.json())) tj.set("shadowSim", *sj); }
+        // GW-1 (checker B1b): costs.symbolClass is keyed by symbol id — the
+        // open route carries costs.symbolClassCount instead (health_view).
+        { std::lock_guard<std::mutex> lk(tickSimMtx); if (auto sj = jsn::parse(tickSim.json())) tj.set("shadowSim", health_view::shadowSim(*sj, trusted)); }
         // P6b: whether this executor PLACES tick entries and for how many
         // accounts — the TM-42 marker reads places:false until P6c.
         // GW-1: built by tick::TickFirer::healthEntry, which keeps the
