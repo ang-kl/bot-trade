@@ -96,23 +96,36 @@ test('an account with no legacy list is left completely alone by the migration',
 })
 
 test('an overlay is PARTIAL — unpinned cells still follow the global matrix', () => {
+  // S-1 (26-09-2026): only the strategy Trade cell is per account, so the
+  // pin is a Trade pin (a per-account Scan write is now refused — see
+  // stage-matrix-s1.test.js). The property is unchanged: the pinned cell
+  // holds, every other cell follows the global matrix.
   const key = loadStageMatrix(db, getState).strategies[0].key
-  // Pin only the scan cell for this account…
-  setStage(db, { kind: 'strategy', key, stage: 'scan', on: false, accountId: '5203012' }, io)
+  const tradeWas = tradeOn(loadStageMatrix(db, getState), key)
+  // Pin only the trade cell for this account…
+  setStage(db, { kind: 'strategy', key, stage: 'trade', on: !tradeWas, accountId: '5203012' }, io)
   // …then change a DIFFERENT cell globally.
   setStage(db, { kind: 'strategy', key, stage: 'manage', on: false }, io)
 
   const m = loadStageMatrix(db, getState, '5203012')
-  assert.equal(scanOn(m, key), false, 'pinned cell holds')
+  assert.equal(tradeOn(m, key), !tradeWas, 'pinned cell holds')
   assert.equal(m.strategies.find(s => s.key === key).stages.manage, false, 'unpinned cell follows global')
+  assert.throws(() => setStage(db, { kind: 'strategy', key, stage: 'scan', on: false, accountId: '5203012' }, io), /Scan is one shared pass/,
+    'a per-account Scan write is refused, never stored and ignored')
 })
 
 test('a pinned cell is reportable — an override can never be invisible', () => {
   const key = loadStageMatrix(db, getState).strategies[0].key
-  setStage(db, { kind: 'strategy', key, stage: 'scan', on: false, accountId: '5203012' }, io)
+  setStage(db, { kind: 'strategy', key, stage: 'trade', on: true, accountId: '5203012' }, io)
   const keys = stageOverlayKeys(db, getState, '5203012')
-  assert.ok(keys.includes(`strategy:${key}:scan`), keys.join(','))
+  assert.ok(keys.includes(`strategy:${key}:trade`), keys.join(','))
   assert.deepEqual(stageOverlayKeys(db, getState, '5306502'), [], 'not the other account')
+  // A Scan cell STORED before S-1 is still reported — as pinned, and as not applied.
+  setState(db, acctMatrixKey('5306502'), JSON.stringify({ strategy: { [key]: { scan: false } } }))
+  assert.ok(stageOverlayKeys(db, getState, '5306502').includes(`strategy:${key}:scan`))
+  const m = loadStageMatrix(db, getState, '5306502')
+  assert.equal(scanOn(m, key), true, 'the value shown is the one applied')
+  assert.deepEqual(m.unapplied.map(u => u.cell), [`strategy:${key}:scan`])
 })
 
 test('the per-account gate answers for THAT account', () => {

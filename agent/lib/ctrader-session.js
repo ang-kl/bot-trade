@@ -52,6 +52,7 @@ import WebSocket from 'ws'
 
 import { PT } from './ctrader-payload-types.js'
 import { beginCall, endCall, describeSteps } from './inflight.js'
+import { recordTokenWait } from './bar-path-counters.js'
 
 /**
  * V3 M1 (measurement only): a step may carry `onTokenWait(ms)`, called with
@@ -62,6 +63,11 @@ import { beginCall, endCall, describeSteps } from './inflight.js'
  * request path; a step without the callback is untouched.
  */
 export function noteTokenWait(step, waited) {
+  // S-3 Phase 0: EVERY historical step's wait is also counted process-wide,
+  // by the purpose its caller named (lib/bar-path-counters.js) — not only the
+  // callers that pass a callback, which was the fast monitor alone. This is
+  // the token-wait figure OD-28's store trigger is judged on.
+  recordTokenWait(Number(waited) || 0, step?.purpose || 'other')
   if (typeof step?.onTokenWait !== 'function') return
   try { step.onTokenWait(Number(waited) || 0) } catch { /* instrumentation is not a gate */ }
 }
