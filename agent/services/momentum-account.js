@@ -50,6 +50,7 @@ import { recordDecision } from './decision-log.js'
 import { recordPositionEvent } from './position-events.js'
 import { assetClassOf } from './strategy-asset-cross.js'
 import { bookEntryWrite } from './book-entry-write.js'
+import { isSymbolOpenCached } from './symbol-hours.js'
 
 export const MOMENTUM_ACCOUNT_KEY = 'momentum_account_json'
 export const MOMENTUM_ACCOUNT_STATE_KEY = 'momentum_account_state_json'
@@ -356,12 +357,19 @@ export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
  * `bookCfg` is the book's own config (timeframe, atrPeriod, stopAtr);
  * `buildEntrySynth` is injected from momentum-book.js to avoid the cycle.
  */
-export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEntrySynth, deps = {}, now = Date.now(), log = () => {}, marginExhausted = false, entryBrake = null }) {
+export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEntrySynth, deps = {}, now = Date.now(), log = () => {}, marginExhausted = false, entryBrake = null, entriesHeld = null }) {
   const cfg = loadMomentumAccount(db)
   const accountId = String(acct.accountId)
   const slots = effectiveSlots(cfg, deps, accountId)
   const state = loadMomentumAccountState(db, accountId)
-  const summary = { account: accountId, ran: false, entries: 0, exits: 0, rankExitsDeferred: 0, skipped: [], universe: null }
+  const summary = { account: accountId, ran: false, entries: 0, exits: 0, rankExitsDeferred: 0, deferredClosed: 0, skipped: [], universe: null }
+  // F2 (Wave 2 row 2.1, 26-09-2026): a rank exit the daily pass decided but
+  // held back because the market was CLOSED carries `exit_pending:` and is
+  // retried on EVERY pass, cadence or no cadence, once its market opens.
+  // Before F2 the daily pass sent the close into the closed market
+  // (…0058, KO.US `close failed — MARKET_CLOSED`, Fri 25-09 21:05:40Z) and
+  // nothing retried it until the next day's pass.
+  summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, bookCfg, pendingOnly: true })
   if (!dailyDue({ nowMs: now, lastRunMs: state.lastRunMs, afterUtc: cfg.dailyRunAfterUtc, cadence: cfg.cadence })) {
     summary.why = 'not due (daily cadence)'
     return summary
@@ -370,10 +378,17 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   // account whose margin pool is exhausted takes NO entries this pass (owner
   // §7,453·B) — its exits still run below, and the cursor is NOT advanced,
   // so the day's pass is retried once headroom frees rather than forfeited.
-  if (marginExhausted) {
-    summary.why = 'margin exhausted — no entries this pass'
-    summary.skipped.push('margin exhausted — no entries this pass')
-    summary.exits = await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, bookCfg })
+  // S-2 (Wave 2 row 2.1): `entriesHeld` is the same shape for a cycle whose
+  // scan did not run (Scan disabled, Scan off on every account, weekend quiet
+  // with nothing to scan). The book now runs outside the scan branch so its
+  // exits, trail and adoption never stop with the scan; its ENTRIES stay
+  // where they were — not taken on a cycle the scan (and so the shadow's
+  // ranking) was skipped — and the day's cursor is not advanced.
+  if (marginExhausted || entriesHeld) {
+    const why = marginExhausted ? 'margin exhausted — no entries this pass' : `${entriesHeld} — no entries this pass; exits run`
+    summary.why = why
+    summary.skipped.push(why)
+    summary.exits += await exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, bookCfg })
     return summary
   }
   summary.ran = true
@@ -518,18 +533,28 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
  * full pass and the margin-exhausted pass (exits run regardless of
  * headroom). Returns the number of exits sent.
  */
-async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held = undefined, bookCfg = null }) {
+async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summary, held = undefined, bookCfg = null, pendingOnly = false }) {
+  const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?${pendingOnly ? ` AND note LIKE 'exit_pending:%'` : ''}`).all(accountId)
+  if (pendingOnly && !openRows.length) return 0
   const holdings = held === undefined ? shadowHoldingsOrNull(db) : held
   // FAIL CLOSED (checker, 16-09-2026): an unreadable ranking closes nothing.
   if (holdings == null) {
     summary.skipped.push('shadow state unreadable — no rank exits this pass (a missing ranking is not an instruction to close the book)')
     return 0
   }
-  const openRows = db.prepare(`SELECT * FROM momentum_book WHERE status = 'open' AND account_id = ?`).all(accountId)
   let exits = 0
   for (const row of openRows) {
     const rowSide = row.side === 'short' ? 'short' : 'long'
-    if (holdings[row.symbol]?.side === rowSide || holdings[String(row.symbol).toUpperCase()]?.side === rowSide) continue // still held on this side — keep (untradable-now names included)
+    if (holdings[row.symbol]?.side === rowSide || holdings[String(row.symbol).toUpperCase()]?.side === rowSide) {
+      // An exit held back for a closed market is WITHDRAWN when the ranking
+      // holds the name again on this side before the market opened: the
+      // opinion that owed it no longer stands, so nothing is sent.
+      if (String(row.note || '').startsWith('exit_pending:')) {
+        db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ?`).run('exit withdrawn — the shadow holds it again (daily pass)', row.id)
+        log(`momentum account: pending exit of ${row.symbol} on …${accountId.slice(-4)} withdrawn — the shadow holds it again`)
+      }
+      continue // still held on this side — keep (untradable-now names included)
+    }
     // THE MINIMUM HOLD (PR-K, 16-09-2026 — THIS is the path that trades:
     // `accountId: "_all"` routes every enabled account through the daily pass,
     // so the row-cursor path in momentum-book.js carries none of them). The
@@ -542,6 +567,24 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
     if (!heldLongEnough(db, row, now, bookCfg)) {
       summary.rankExitsDeferred = (summary.rankExitsDeferred || 0) + 1
       summary.skipped.push(`${row.symbol}: rank exit held — held ${heldHours(db, row, now)}h < bookMinHoldHours ${bookCfg?.bookMinHoldHours} — reconsidered on the next daily pass`)
+      continue
+    }
+    // HOURS FIRST (F2, Wave 2 row 2.1 — the rule the row-cursor path has
+    // carried since Wave 5 §K·15, now on the path that trades): a market the
+    // BROKER's schedule says is closed gets no broker call. The row is marked
+    // `exit_pending:` and the retry at the top of runMomentumAccountPass sends
+    // it on the first pass its market is open. Only a symbol_hours row
+    // (source 'broker') may defer — the sessions.js heuristic and an error
+    // both ATTEMPT the close, because a wrongly deferred exit on an open
+    // market is the worse error (one refused line at worst).
+    let hours = { open: true, source: 'unknown' }
+    try { hours = (deps.isSymbolOpen ?? isSymbolOpenCached)(db, row.symbol, new Date(now)) } catch { hours = { open: true, source: 'error' } }
+    if (hours.open === false && hours.source === 'broker') {
+      summary.deferredClosed = (summary.deferredClosed || 0) + 1
+      if (!String(row.note || '').startsWith('exit_pending:')) {
+        db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ?`).run('exit_pending: market closed (broker schedule) — rank exit (daily pass) sent when it opens', row.id)
+        log(`momentum account: rank exit of ${row.symbol} on …${accountId.slice(-4)} held — market closed (broker schedule); marked exit_pending, sent when it opens`)
+      }
       continue
     }
     try {
@@ -563,7 +606,12 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
       }
       exits++
       log(`momentum account: rank exit ${row.symbol} on …${accountId.slice(-4)}`)
-    } catch (err) { summary.skipped.push(`${row.symbol}: close failed — ${err.message}`) }
+    } catch (err) {
+      // A refused close is owed, not dropped: flagged so the every-pass
+      // retry above sends it again (the row-cursor path's 09-09-2026 rule).
+      try { db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ?`).run(`exit_pending: ${String(err.message).slice(0, 160)}`, row.id) } catch { /* the skip line below still reports it */ }
+      summary.skipped.push(`${row.symbol}: close failed — ${err.message}`)
+    }
   }
   return exits
 }

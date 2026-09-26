@@ -4071,6 +4071,12 @@ async function runLoop(db) {
 
     // Autopilot's own symbol universe, falling back to legacy watchlist
     const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
+    // S-2: what the momentum book (below `end symbolsJson`) needs from the
+    // scan branch — the scan's own symbols for the row-cursor accounts, and
+    // why the scan did not run this cycle (null = it ran). When it did not,
+    // the book holds its entries and still runs its exits, trail and adoption.
+    let bookScanSymbols = []
+    let bookEntriesHeld = 'no symbols configured'
 
     if (!symbolsJson) {
       log('No symbols configured — push via POST /actions/symbols')
@@ -4121,6 +4127,12 @@ async function runLoop(db) {
         log(`Pre-open window (${preOpenHours}h) — ${quietPick.preOpen.length} symbol(s) rejoin the scan before their open: ${quietPick.preOpen.join(', ')}`)
       }
 
+      bookScanSymbols = (symbols.length ? symbols : allSymbols).map(x => String(typeof x === 'string' ? x : x?.symbol || '').toUpperCase()).filter(Boolean)
+      bookEntriesHeld = allSymbols.length === 0 ? 'no enabled symbols'
+        : (weekendQuiet && symbols.length === 0) ? 'weekend quiet with nothing to scan'
+          : !scanEnabled ? 'Scan disabled'
+            : !scanWanted ? 'Scan off on every trading account'
+              : null
       if (allSymbols.length === 0) {
         log('No enabled symbols configured')
       } else if (weekendQuiet && symbols.length === 0) {
@@ -4247,90 +4259,9 @@ async function runLoop(db) {
       }
     }
 
-    // MOMENTUM BOOK (owner order 03-09-2026: "long-only momentum on demo &
-    // live"): the shadow's long entries and exits become real positions on
-    // every account where tsmom_long is trade-armed, sized by the risk gate
-    // through autoTrade, managed by the book (trailing stop, rank exit) with
-    // the keeper paused. Off until enabled; a failure is logged and the
-    // cycle moves on.
+    // MOMENTUM BOOK: moved out of the scan branch by S-2 (Wave 2 row 2.1) —
+    // it runs after `} // end symbolsJson`, before the partial-TP1 manager.
     if (ctraderCreds.ready) {
-      try {
-        const { runMomentumBook, atrOf } = await import('./services/momentum-book.js')
-        const { scanRates } = await import('./services/risk.js')
-        const { getRegimeBars } = await import('./services/fib-strategy.js')
-        const { wsGetSpotOnce, wsReconcile } = await import('./lib/ctrader-ws.js')
-        const { amendBookStop } = await import('./services/book-stop-amend.js')
-        const exec = await import('./lib/exec-engine.js')
-        const { effectivePhases } = await import('./services/account-phases.js')
-        const { accountMayTrade } = await import('./services/watchlists.js')
-        const bookCfg = (await import('./services/momentum-book.js')).loadMomentumBook(db)
-        const { isFundable } = await import('./services/fundable-universe.js')
-        const mb = await runMomentumBook(db, {
-          accounts: getAutopilotAccounts(db),
-          credsFor: (a) => getCtraderCreds(db, a),
-          now: Date.now(),
-          log,
-          deps: {
-            autoTrade,
-            symbolMap,
-            // THIS ACCOUNT's id for the symbol (03-09-2026) — the global map
-            // gave ACCT-LIVE-1 other instruments for LLY.US and GD.US.
-            symbolIdFor: async (creds, symbol) => (await (await import('./lib/ctrader-creds.js')).resolveSymbolId(db, creds, symbol)).id,
-            bars: async (creds, symbolId) => (await getRegimeBars(creds, symbolId, { preferredTfs: [bookCfg.timeframe], fallbackTf: bookCfg.timeframe, count: bookCfg.atrPeriod + 10 })).bars,
-            spot: (creds, symbolId) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId).catch(() => null),
-            // Read broker protection freshly, preserve its TP and confirm the
-            // resulting SL before the book updates its own records.
-            amend: (creds, args) => amendBookStop(creds, args, {
-              amend: exec.amendPosition,
-              readPosition: async (c, positionId) => {
-                const rec = await wsReconcile(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, 5000, 0)
-                if (String(rec.ctidTraderAccountId) !== String(c.accountId)) throw new Error('book protection account identity mismatch')
-                return (rec.position || []).find(p => String(p.positionId) === String(positionId)) || null
-              },
-            }),
-            // Price precision for the trailed stop (04-09-2026): the amend is
-            // an absolute price and the broker rejects one with more decimals
-            // than the symbol allows. Cached per process in lot-sizing.
-            digitsFor: async (creds, symbolId) => (await (await import('./lib/lot-sizing.js')).getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)).digits,
-            close: (creds, args) => exec.closePosition(creds, args),
-            // The broker's volume for a position (09-09-2026): a close without
-            // one is refused by cTrader (LLY.US rank exit, 17:00 SGT).
-            positionVolume: async (creds, positionId) => brokerPositionVolume((await exec.reconcile(creds)).position || [], positionId),
-            phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade,
-            mayTrade: (accountId, symbol) => accountMayTrade(db, accountId, symbol),
-            // The scan's own symbols: the row-cursor accounts keep this
-            // universe; the momentum universe is the momentum account's.
-            scanSymbols: symbols.map(s => String(typeof s === 'string' ? s : s?.symbol || '').toUpperCase()).filter(Boolean),
-            // The momentum account's universe build (§7,386·D1): lot meta for
-            // affordability, this account's equity for the vol target, the
-            // scan's rates for non-USD notional, the book's own ATR.
-            volumeMeta: async (creds, symbolId) => (await import('./lib/lot-sizing.js')).getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId),
-            equity: (accountId) => getAccountBalance(db, accountId),
-            rates: () => { try { return scanRates(db) } catch { return null } },
-            atrOf: (bars) => atrOf(bars, bookCfg.atrPeriod),
-            // The same pool the dispatch draws on (owner § 7,453·B): an
-            // exhausted account takes no book entries this pass and the
-            // richest account is tried first. null = unknown, not exhausted.
-            marginHeadroom: (accountId) => marginPoolForCycle(db).find(p => p.accountId === String(accountId))?.status?.headroom ?? null,
-            // Wave 1: the risk gate's per-account position cap, so the book
-            // sizes and enters against ONE cap.
-            maxOpenPositions: (accountId) => { try { return Number(loadRiskConfig(db, String(accountId))?.maxOpenPositions) || null } catch { return null } },
-            // The account's daily fundable universe (§7,437·B·3): an
-            // unfundable name is skipped by name, unknown dispatches as before.
-            fundable: (accountId, symbol) => isFundable(db, accountId, symbol),
-          },
-        })
-        // PR-AX: `reclassified` prints only when non-zero. It should be a
-        // one-off burst clearing the backlog of rows stranded in `exit_sent`
-        // and then near-silent; a line that keeps reporting reclassifications
-        // every pass means rows are re-entering the state faster than their
-        // trades close, which is a different problem and worth seeing.
-        if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed${mb.reclassified ? `, ${mb.reclassified} exit_sent row(s) reclassified closed` : ''} on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
-        if (mb.momentumAccount) log(`momentum account …${String(mb.momentumAccount.account).slice(-4)}: daily pass — ${mb.momentumAccount.entries} entered, ${mb.momentumAccount.exits} exited; universe ${mb.momentumAccount.universe?.tradable}/${mb.momentumAccount.universe?.total} tradable${mb.momentumAccount.universe?.byReason ? ` (${Object.entries(mb.momentumAccount.universe.byReason).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`)
-      } catch (err) {
-        log(`momentum book failed: ${err.message}`)
-      }
-
       // FUNDABLE UNIVERSE, daily per account (§7,437·B·3, 08-09-2026). ONE
       // account per cycle, the first whose record is a day old (or was asked
       // to rebuild), so the broker sees at most one watchlist's worth of
@@ -5603,6 +5534,108 @@ async function runLoop(db) {
         stampFirst('performanceBreaker', { ok: false, error: err.message })
       }
     } // end symbolsJson
+
+    // -----------------------------------------------------------------------
+    // MOMENTUM BOOK (owner order 03-09-2026: "long-only momentum on demo &
+    // live"): the shadow's entries and exits become real positions on every
+    // account where tsmom_long is trade-armed, sized by the risk gate through
+    // autoTrade, managed by the book (trailing stop, rank exit) with the
+    // keeper paused. Off until enabled; a failure is logged and beaten.
+    //
+    // S-2 + F6 (Wave 2 row 2.1; OD-2 answered yes 26-09-2026 18:05 SGT): it
+    // used to sit INSIDE the scan branch, so Scan disabled, Scan off on every
+    // account, and weekend quiet with no crypto on the watchlist all stopped
+    // the book's trail and its exits along with the scan (the momentum
+    // shadow, which ranks the scan's symbols, stays in the branch). It now
+    // runs on every cycle, outside the symbols block, the scan switch and
+    // weekend quiet. When the scan did not run, `entriesHeld` names why and
+    // the book takes NO entries — the entry behaviour of those cycles is what
+    // it was — while its exits, trail and adoption run. The daily exit asks
+    // the broker's hours first (F2, momentum-account.js exitDroppedHoldings).
+    // -----------------------------------------------------------------------
+    if (getCtraderCreds(db).ready) {
+      try {
+        phase('momentum book')
+        const { runMomentumBook, atrOf } = await import('./services/momentum-book.js')
+        const { scanRates } = await import('./services/risk.js')
+        const { getRegimeBars } = await import('./services/fib-strategy.js')
+        const { wsGetSpotOnce, wsReconcile } = await import('./lib/ctrader-ws.js')
+        const { amendBookStop } = await import('./services/book-stop-amend.js')
+        const exec = await import('./lib/exec-engine.js')
+        const { effectivePhases } = await import('./services/account-phases.js')
+        const { accountMayTrade } = await import('./services/watchlists.js')
+        const bookCfg = (await import('./services/momentum-book.js')).loadMomentumBook(db)
+        const { isFundable } = await import('./services/fundable-universe.js')
+        const mb = await runMomentumBook(db, {
+          accounts: getAutopilotAccounts(db),
+          credsFor: (a) => getCtraderCreds(db, a),
+          now: Date.now(),
+          log,
+          entriesHeld: bookEntriesHeld,
+          deps: {
+            autoTrade,
+            symbolMap: getSymbolMap(db),
+            // THIS ACCOUNT's id for the symbol (03-09-2026) — the global map
+            // gave ACCT-LIVE-1 other instruments for LLY.US and GD.US.
+            symbolIdFor: async (creds, symbol) => (await (await import('./lib/ctrader-creds.js')).resolveSymbolId(db, creds, symbol)).id,
+            bars: async (creds, symbolId) => (await getRegimeBars(creds, symbolId, { preferredTfs: [bookCfg.timeframe], fallbackTf: bookCfg.timeframe, count: bookCfg.atrPeriod + 10 })).bars,
+            spot: (creds, symbolId) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId).catch(() => null),
+            // Read broker protection freshly, preserve its TP and confirm the
+            // resulting SL before the book updates its own records.
+            amend: (creds, args) => amendBookStop(creds, args, {
+              amend: exec.amendPosition,
+              readPosition: async (c, positionId) => {
+                const rec = await wsReconcile(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, 5000, 0)
+                if (String(rec.ctidTraderAccountId) !== String(c.accountId)) throw new Error('book protection account identity mismatch')
+                return (rec.position || []).find(p => String(p.positionId) === String(positionId)) || null
+              },
+            }),
+            // Price precision for the trailed stop (04-09-2026): the amend is
+            // an absolute price and the broker rejects one with more decimals
+            // than the symbol allows. Cached per process in lot-sizing.
+            digitsFor: async (creds, symbolId) => (await (await import('./lib/lot-sizing.js')).getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)).digits,
+            close: (creds, args) => exec.closePosition(creds, args),
+            // The broker's volume for a position (09-09-2026): a close without
+            // one is refused by cTrader (LLY.US rank exit, 17:00 SGT).
+            positionVolume: async (creds, positionId) => brokerPositionVolume((await exec.reconcile(creds)).position || [], positionId),
+            phasesOn: (accountId) => !!effectivePhases(db, accountId)?.autotrade,
+            mayTrade: (accountId, symbol) => accountMayTrade(db, accountId, symbol),
+            // The scan's own symbols: the row-cursor accounts keep this
+            // universe; the momentum universe is the momentum account's.
+            scanSymbols: bookScanSymbols,
+            // The momentum account's universe build (§7,386·D1): lot meta for
+            // affordability, this account's equity for the vol target, the
+            // scan's rates for non-USD notional, the book's own ATR.
+            volumeMeta: async (creds, symbolId) => (await import('./lib/lot-sizing.js')).getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId),
+            equity: (accountId) => getAccountBalance(db, accountId),
+            rates: () => { try { return scanRates(db) } catch { return null } },
+            atrOf: (bars) => atrOf(bars, bookCfg.atrPeriod),
+            // The same pool the dispatch draws on (owner § 7,453·B): an
+            // exhausted account takes no book entries this pass and the
+            // richest account is tried first. null = unknown, not exhausted.
+            marginHeadroom: (accountId) => marginPoolForCycle(db).find(p => p.accountId === String(accountId))?.status?.headroom ?? null,
+            // Wave 1: the risk gate's per-account position cap, so the book
+            // sizes and enters against ONE cap.
+            maxOpenPositions: (accountId) => { try { return Number(loadRiskConfig(db, String(accountId))?.maxOpenPositions) || null } catch { return null } },
+            // The account's daily fundable universe (§7,437·B·3): an
+            // unfundable name is skipped by name, unknown dispatches as before.
+            fundable: (accountId, symbol) => isFundable(db, accountId, symbol),
+          },
+        })
+        // PR-AX: `reclassified` prints only when non-zero. It should be a
+        // one-off burst clearing the backlog of rows stranded in `exit_sent`
+        // and then near-silent; a line that keeps reporting reclassifications
+        // every pass means rows are re-entering the state faster than their
+        // trades close, which is a different problem and worth seeing.
+        if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed${mb.reclassified ? `, ${mb.reclassified} exit_sent row(s) reclassified closed` : ''} on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
+        if (mb.deferredClosed || mb.entriesHeld) log(`momentum book: ${mb.deferredClosed || 0} exit(s) held for a closed market (exit_pending)${mb.entriesHeld ? `; entries held — ${mb.entriesHeld}` : ''}`)
+        if (mb.momentumAccount) log(`momentum account …${String(mb.momentumAccount.account).slice(-4)}: daily pass — ${mb.momentumAccount.entries} entered, ${mb.momentumAccount.exits} exited; universe ${mb.momentumAccount.universe?.tradable}/${mb.momentumAccount.universe?.total} tradable${mb.momentumAccount.universe?.byReason ? ` (${Object.entries(mb.momentumAccount.universe.byReason).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`)
+        await hbeat(db, 'momentum_book')
+      } catch (err) {
+        log(`momentum book failed: ${err.message}`)
+        await hbeat(db, 'momentum_book', false, err.message)
+      }
+    }
 
     // -----------------------------------------------------------------------
     // MOMENTUM PARTIAL-TP1 MANAGER (V3 T3, P0-2). Every cycle, AFTER the
