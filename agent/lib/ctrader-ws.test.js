@@ -203,11 +203,35 @@ test('wsGetSpotOnce: the normal tick-first path is unchanged — one close, via 
   assert.equal(closed, 1, 'still exactly once — no double-close from the settled-stream branch')
 })
 
-test('wsGetSpotOnce: a stream that errors out before ever resolving leaks nothing (there is no stream object to close)', async () => {
-  const fakeStreamFn = (_host, _cid, _csec, _tok, _acct, _symbolIds, _onTick, onClose) => {
-    queueMicrotask(() => onClose())
-    return new Promise(() => {}) // never resolves — the error path settles via onClose, not the stream promise
-  }
+// Nit round 3 (26-09-2026): the PREVIOUS version of this test fired `onClose`
+// while leaving `streamFn`'s own promise permanently pending — a shape the
+// real `wsStreamSpots` never produces. Its own `finishClose` either rejects
+// the promise (nothing settled it yet) OR, once already settled, calls
+// `onClose` — never both, and never `onClose` alone with the promise left
+// hanging forever. This version matches the real contract: an auth failure
+// before the subscribe steps complete REJECTS the stream promise.
+test('wsGetSpotOnce: a stream whose auth handshake REJECTS before ever resolving leaks nothing (there is no stream object to close)', async () => {
+  const fakeStreamFn = () => Promise.reject(new Error('cTrader error: auth failed'))
   const result = await wsGetSpotOnce('demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456, 10, fakeStreamFn)
   assert.equal(result, null)
+})
+
+// Nit round 3: the OTHER half of the leak this predates M7 — an auth
+// handshake that never settles AT ALL (no tick, no error, no close: the
+// broker just never answers) leaves the real wsStreamSpots's own promise
+// pending forever, so neither wsGetSpotOnce's `.then` nor its `.catch` ever
+// fires and the underlying socket is never told to close. wsStreamSpots
+// already has a `connectTimeoutMs` option for exactly this (arms its own
+// `ws.close()` via `finishClose`); this pins that wsGetSpotOnce actually
+// hands it one.
+test('wsGetSpotOnce passes a connect deadline through to streamFn, so a hung auth handshake is bounded', async () => {
+  let capturedOptions
+  const fakeStreamFn = (_h, _c, _cs, _t, _a, _ids, _onTick, _onClose, options) => {
+    capturedOptions = options
+    return new Promise(() => {}) // never settles — wsGetSpotOnce's own 25ms timer is what ends this test
+  }
+  const result = await wsGetSpotOnce('demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456, 25, fakeStreamFn)
+  assert.equal(result, null, 'still resolves null via wsGetSpotOnce\'s own timeout — nothing here changes that')
+  assert.ok(Number.isFinite(capturedOptions?.connectTimeoutMs) && capturedOptions.connectTimeoutMs > 0,
+    `wsStreamSpots must be armed with a connect deadline, got ${JSON.stringify(capturedOptions)}`)
 })

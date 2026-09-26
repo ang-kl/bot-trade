@@ -511,6 +511,25 @@ test('recovery: a receipt file written before BOOT exempts nothing — no fast-m
   assert.match(undated.reason, /quote_unavailable in an undated receipt file/)
 })
 
+// M7 fix round 3 (26-09-2026), B4: a position legitimately sitting in
+// probe_deferred (waiting on a broker probe / cap-limited) or probe_backoff
+// (a quiet symbol under OD-22's <= 5 min backoff) since this boot's own pass
+// must be exempt exactly like quote_unavailable/observe_only — neither name
+// means the fast monitor never resumed; both can persist for a real, bounded
+// stretch by design.
+test('recovery: probe_deferred and probe_backoff (M7) exempt a position in a file this boot wrote, same as quote_unavailable', () => {
+  const w = (done, state, id) => ({ accountId: '1', positionId: id, owner: 'node_fast_monitor', lastCompletedAt: iso(done), nextDueAt: iso(done + 60_000), state, cadenceMs: 60_000 })
+  const postAt = BOOT + 305_000
+  const work = [w(postAt - 5_000, 'probe_deferred', 7), w(postAt - 5_000, 'probe_backoff', 8)]
+  const s = [
+    health(BOOT - 90_000, { bootAt: BOOT - 3_600_000, bootId: 'b0' }),
+    health(BOOT + 20_000, { bootId: 'b1' }),
+    hb(BOOT + 310_000, { accounts: [{ id: '1', indAt: BOOT + 300_000 }], work, workAt: postAt }),
+  ]
+  const c = byId(gradeRecovery(bootOf(s), L, { samples: s }).criteria)['recovery.fast_monitor_resumed']
+  assert.equal(c.verdict, PASSED, `probe_deferred/probe_backoff must not be read as the fast monitor never resuming: ${c.reason}`)
+})
+
 // Checker 25-09, blocker 2: one independent reading at BOOT − 20 s carried into
 // the BOOT + 310 s sample → Passed {1, 1, unexplained 0} while R1 said Failed.
 test('recovery: SL/TP tuples are compared only on an independent reading taken after BOOT', () => {

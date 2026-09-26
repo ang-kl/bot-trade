@@ -287,6 +287,14 @@ export function _resetFastMonitorProbeSchedulerForTests() { probeScheduler.reset
 export function _setFastMonitorProbeCapForTests(n) { probeScheduler.cap = clampCap(n) }
 /** Test seam: reads back what the scheduler's cap actually is — pins that the setter above clamps, not just that it assigns. */
 export function _getFastMonitorProbeCapForTests() { return probeScheduler.cap }
+/**
+ * Test seam (fix round 3, 26-09-2026): resolves once every probe launched
+ * so far has settled. Production code never awaits a probe it just
+ * launched — that is the whole point of the fire-and-forget redesign — so
+ * tests that need "the background probe finished" to be deterministic call
+ * this between simulated passes instead of racing real timers.
+ */
+export async function _drainFastMonitorProbesForTests() { await probeScheduler._drainForTests() }
 
 /** Sizes and evictions for /state/route-timings-adjacent diagnostics. */
 export function fastMonitorMapStats() {
@@ -400,17 +408,24 @@ export async function runFastMonitor(db, creds, deps = {}) {
     const mono = deps.monoNow ?? (() => performance.now())
     const timing = { priced: 0, pricingMs: 0, brokerQuotes: 0, volFetches: 0, volFetchMs: 0, tokenWaitMs: 0 }
 
-    // M7: positions whose broker fallback probe could not be resolved
-    // inline this pass (the scheduler said 'eligible' — a real network call
-    // is needed) are finished here, after the PARALLEL BATCH below runs.
-    const probeBatch = []
+    // M7 fix round 3 (26-09-2026): symbols this pass decided are worth a
+    // fresh broker probe. Collected here and launched together (fire-and-
+    // forget, fairness + cap applied) AFTER the per-position loop below —
+    // nothing in THIS pass ever waits on them (V3-SEQUENCE:537, "results
+    // used on the next pass"; see fast-monitor-probes.js's header for why
+    // the first design here, which awaited a batch before evaluating, was
+    // wrong: B1).
+    const launchCandidates = []
 
-    // Everything that happens once a position HAS a quote (sidecar, a
-    // resolved probe, or a reused backoff/pending result): unchanged from
-    // before M7, just extracted so both the inline path (sidecar hit,
-    // backoff, pending) and the deferred batch path (a fresh broker probe)
-    // call the same code.
-    const finishWithQuote = async (pos, receipt, q, feedKey, prior, noQuoteReason) => {
+    // Everything that happens once a position HAS a quote (sidecar, or a
+    // FRESH probe result — never a stale/scheduling-delayed one, see
+    // `peek()` below): unchanged from before M7, just extracted so every
+    // quoted path calls the same code. Fix round 3: this is now called ONLY
+    // when q is a real quote, OR when the caller has a FRESH, CLEAN
+    // confirmation that there is none (a genuine closed-market/feed-gap
+    // "quote_unavailable" — never a cap-deferred or backed-off position;
+    // those are handled entirely by the caller and never reach here).
+    const finishWithQuote = async (pos, receipt, q, feedKey, prior) => {
       // V3 PO-M3: the spread at a resting limit's fill, from the quote this
       // pass already holds — the first Node can read after the fill. Record
       // only; never throws, never changes what the pass does next.
@@ -419,10 +434,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
       if (mid == null) {
         receipt.lastOutcome = 'quote_unavailable'
         receipt.state = 'quote_unavailable'
-        // B2 (fix round, 26-09-2026): a cap-deferred position gets its own
-        // reason, distinguishable in the decision log from an ordinary
-        // no-quote pause — it was never even attempted this pass.
-        noteFastDecision(db, pos, 'no_quote', noQuoteReason ?? `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
+        noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
         return
       }
       noteFastDecision(db, pos, 'active')
@@ -534,10 +546,18 @@ export async function runFastMonitor(db, creds, deps = {}) {
       work.push(receipt)
       let pricingStart = null
       let priced = false
-      const finishPricing = (pickSource) => {
-        if (priced || pricingStart == null) return
+      // `probeMs`, when given (fix round 3, B5): the ACTUAL probe's own
+      // round-trip duration (from ProbeScheduler.peek's `durationMs`), used
+      // instead of `mono() - pricingStart` — a cached-but-fresh probe result
+      // was not fetched during THIS pass's own elapsed time at all, so
+      // measuring "since pricingStart" here would either read ~0 (honest
+      // but useless) or, worse, blend in whatever ELSE this pass did before
+      // reaching this position. The probe's own duration is the only number
+      // that is honest AND informative.
+      const finishPricing = (pickSource, probeMs) => {
+        if (priced || (pricingStart == null && probeMs == null)) return
         priced = true
-        const ms = Math.round(mono() - pricingStart)
+        const ms = probeMs != null ? Math.round(probeMs) : Math.round(mono() - pricingStart)
         receipt.lastPricedAt = new Date(now()).toISOString()
         receipt.lastPricingMs = ms
         receipt.lastQuoteSource = receipt.quoteSource
@@ -615,22 +635,15 @@ export async function runFastMonitor(db, creds, deps = {}) {
         if (!receipt.nextDueAt) receipt.nextDueAt = new Date(now()).toISOString()
         if (!due) continue
         receipt.lastAttemptAt = new Date(now()).toISOString()
-        // B2 (fix round, 26-09-2026): lastCheckAt (the cadence gate) is no
-        // longer stamped here unconditionally. A position that ends up
-        // DEFERRED by the cap below never got a this-pass verdict at all —
-        // stamping it here would make the cadence gate believe it was just
-        // checked, starving it behind the same head-of-line symbols every
-        // pass. It is stamped instead at each point below where the
-        // position actually gets an outcome this pass (sidecar hit,
-        // backoff/pending no-quote, or an actually-launched probe).
+        // B3 (fix round 3, 26-09-2026): lastCheckAt (the cadence gate) is
+        // stamped ONLY at a point below where this position actually got a
+        // this-pass verdict — a fresh sidecar quote, a fresh (still-valid)
+        // probe result, or a confirmed clean "nothing here" answer. A
+        // position that is merely DEFERRED or BACKED OFF never got one, and
+        // must stay due — not wait out a cadence it never earned.
 
         // Sidecar first (fresh within maxAgeMs on the sidecar's receipt
-        // clock). M7 (V3-SEQUENCE:536-543, OD-22 26-09-2026): the broker
-        // fallback no longer runs inline, awaited one at a time in this
-        // loop — it is planned through the probe scheduler (cap + backoff)
-        // and, when it must actually reach the broker, launched in the
-        // PARALLEL BATCH below (after every position here has been looked
-        // at), never stacked behind this position's own slot.
+        // clock).
         pricingStart = mono()
         const sidecarId = lookupId(pos)
         const pick = sidecarId == null
@@ -647,39 +660,63 @@ export async function runFastMonitor(db, creds, deps = {}) {
         }
         if (pick.source === 'stale') quoteCounts.stale++
         quoteCounts.fromBroker++
-        // OD-22: backoff arms only when OTHER symbols on this side are
-        // fresh — a quiet SYMBOL, not a feed that has gone stale altogether
-        // (V3-SEQUENCE:539). The symbol being probed itself never counts.
-        const sideFresh = sideHasFreshQuoteExcluding(quotesBySide.get(String(sideOf(pos))), sidecarId, now(), maxAgeMs)
-        const probePlan = probeScheduler.plan(feedKey, { sideHasFreshQuote: sideFresh, nowMs: now() })
-        if (probePlan === 'eligible') {
-          // Resumed after the parallel batch below, not here — that IS the
-          // "results used on the next pass" the spec calls for. No
-          // lastCheckAt stamp here either: whether this actually launches
-          // (vs. loses the cap and is deferred) is decided in the batch.
-          probeBatch.push({ pos, receipt, feedKey, host, accountId, symbolId, pricingStart, finishPricing, prior, pickSource: pick.source })
+
+        // M7 fix round 3: the broker fallback is planned through the probe
+        // scheduler — launched (fire-and-forget, never awaited by this
+        // pass) in the batch below — and a result is only ever USED here if
+        // it is fresh AT THIS EXACT MOMENT (`peek`, re-checked per position,
+        // not once at batch start). This closes B1: a quote fetched a few
+        // seconds ago could have aged past maxAgeMs by the time THIS
+        // position is reached, if an EARLIER position's broker action in
+        // this same pass took a while — `peek` catches that because it
+        // checks `now()` fresh, right here, not a value cached from before
+        // that action ran.
+        const peeked = probeScheduler.peek(feedKey, now(), maxAgeMs)
+        if (peeked.state === 'quote') {
+          q = peeked.quote
+          lastCheckAt.set(pos.id, now())
+          // B5: `lastPricingMs` is THIS PROBE's own round-trip duration —
+          // never this pass's elapsed time, never blended with any other
+          // position's broker action.
+          finishPricing(pick.source, peeked.durationMs)
+          await finishWithQuote(pos, receipt, q, feedKey, prior)
           continue
         }
-        // 'pending' (this key is already being probed by the batch below —
-        // never a second concurrent broker call for the same symbol) or
-        // 'backoff' (quiet symbol, fresh side, its LAST probe returned no
-        // quote — OD-22 and the fix round, 26-09-2026: backoff arms only on
-        // a no-quote result, never on a symbol whose last probe actually
-        // priced it; ProbeScheduler.plan enforces this).
-        //
-        // B1 (fix round): NEVER reuse a cached quote for evaluation here,
-        // backoff or pending alike — the checker's reproduction was exactly
-        // this: a cached 1.1005 quote evaluated against a stop at 1.0950
-        // while the broker had already moved to 1.0900, HOLD-ing a position
-        // that should have stopped out. Take the no-quote path exactly as
-        // fast-monitor did before M7: pause, no decision, no evaluation.
-        // `lastQuotePick` keeps its existing stale/missing contract; the
-        // probe's own state is recorded separately (`probeState`) so
-        // neither masks the other.
-        receipt.probeState = probePlan
-        lastCheckAt.set(pos.id, now())
-        finishPricing(pick.source)
-        await finishWithQuote(pos, receipt, null, feedKey, prior)
+        if (peeked.state === 'no_quote') {
+          // A FRESH, CLEAN confirmation that there is nothing to price —
+          // the genuine pre-M7 "quote unavailable" case (closed market,
+          // feed gap): nothing is in flight, nothing is being waited on, we
+          // already know the answer and it is current. lastCheckAt
+          // advances like any other resolved pass.
+          lastCheckAt.set(pos.id, now())
+          finishPricing(pick.source, peeked.durationMs)
+          await finishWithQuote(pos, receipt, null, feedKey, prior)
+          continue
+        }
+        // 'stale' or 'none': nothing usable exists right now. Decide
+        // whether this symbol is worth a fresh launch (below, after this
+        // loop — never awaited here) and record WHY there is no verdict
+        // this pass: 'probe_backoff' (B1: its last probe SUCCEEDED and
+        // found nothing, the rest of this side is fresh, and it is not
+        // inside a spike window — OD-22 and B2) or 'probe_deferred'
+        // (already in flight from an earlier pass, or newly launched /
+        // cap-limited this pass). Neither is 'quote_unavailable': that name
+        // is reserved for the confirmed case above, and protection-latency
+        // must not read a scheduling delay as a closed market (B4).
+        const sideFresh = sideHasFreshQuoteExcluding(quotesBySide.get(String(sideOf(pos))), sidecarId, now(), maxAgeMs)
+        const planResult = probeScheduler.plan(feedKey, { sideHasFreshQuote: sideFresh, spikeActive, nowMs: now() })
+        if (planResult === 'eligible') launchCandidates.push({ feedKey, host, accountId, symbolId })
+        receipt.probeState = planResult
+        receipt.state = planResult === 'backoff' ? 'probe_backoff' : 'probe_deferred'
+        receipt.lastOutcome = receipt.state
+        // B5: deliberately NO finishPricing call — nothing was fetched for
+        // THIS receipt this pass, so lastPricedAt/lastPricingMs/
+        // lastQuoteSource stay exactly as carryReceipt(prior) already set
+        // them, never invented from a probe that priced a DIFFERENT pass
+        // (or never ran at all yet).
+        noteFastDecision(db, pos, 'no_quote', planResult === 'backoff'
+          ? `${pos.symbol}: backing off — the last probe found nothing and the rest of this side is fresh`
+          : `${pos.symbol}: probe deferred — a broker check is in flight or waiting for a free slot`)
       } catch (err) {
         receipt.state = 'error'
         receipt.error = err.message
@@ -694,61 +731,21 @@ export async function runFastMonitor(db, creds, deps = {}) {
       }
     }
 
-    // M7 PARALLEL BATCH: every position that needed a real broker probe
-    // this pass launches together, bounded by the scheduler's cap — never
-    // one at a time behind the loop above (the 48-serial-round-trips shape
-    // the header measured before the sidecar-first change). A symbol shared
-    // by more than one position probes once.
-    //
-    // B2 (fix round, 26-09-2026): candidates are ordered FAIRLY before the
-    // cap is applied — never-probed symbols first, then oldest-probed-first
-    // — so a chronically-over-cap batch does not relaunch the same head-of-
-    // list symbols pass after pass while the rest starve. `selectUnderCap`
-    // itself is order-preserving; the fairness lives entirely in the order
-    // it is handed (`probeScheduler.sortFair`).
-    if (probeBatch.length > 0) {
-      const distinctKeys = probeScheduler.sortFair([...new Set(probeBatch.map(p => p.feedKey))])
+    // M7 fix round 3: every symbol this pass decided is worth a fresh probe
+    // launches together, fairly ordered and bounded by the cap — but NONE
+    // of them are awaited here. A result lands in the scheduler whenever
+    // the network call actually finishes; a LATER pass's `peek()` picks it
+    // up if it is still fresh then (V3-SEQUENCE:537). This is what keeps a
+    // slow probe from ever making THIS pass slow (skip share, point 7): the
+    // pass returns as soon as its own bookkeeping is done, never waiting on
+    // a broker round trip that can take up to 6 s.
+    if (launchCandidates.length > 0) {
+      const distinctKeys = probeScheduler.sortFair([...new Set(launchCandidates.map(c => c.feedKey))])
       const { launch } = selectUnderCap(distinctKeys, probeScheduler.inflightCount(), probeScheduler.cap)
-      const launchSet = new Set(launch)
-      const launched = new Map()
-      for (const key of launchSet) {
-        const item = probeBatch.find(p => p.feedKey === key)
-        launched.set(key, probeScheduler.run(key, () =>
-          ws.wsGetSpotOnce(item.host, creds.clientId, creds.clientSecret, creds.accessToken, item.accountId, item.symbolId), now()))
-      }
-      await Promise.all(launched.values())
-      for (const item of probeBatch) {
-        const { pos, receipt, feedKey, pricingStart: ps, finishPricing: fp, prior, pickSource } = item
-        try {
-          const wasLaunched = launchSet.has(feedKey)
-          // 'probed' when this key was actually launched just now; 'deferred'
-          // when the cap was already full and it never reached the broker
-          // this pass at all — the NEXT pass's batch re-plans it (now first
-          // in line, per sortFair) rather than carrying anything from here.
-          // `lastQuotePick` keeps recording WHY the broker was asked
-          // (stale/missing, from the sidecar pick) — the probe's own
-          // probed/deferred state is separate, so neither masks the other.
-          receipt.probeState = wasLaunched ? 'probed' : 'deferred'
-          fp(pickSource)
-          if (wasLaunched) {
-            // B1: only a probe that ACTUALLY ran this pass may price the
-            // position — its own fresh result, never an older cached one.
-            lastCheckAt.set(pos.id, now())
-            const q = probeScheduler.lastResult(feedKey)?.quote ?? null
-            await finishWithQuote(pos, receipt, q, feedKey, prior)
-          } else {
-            // B2: a cap-deferred item was never attempted this pass — no
-            // lastCheckAt stamp (it must stay due, not starve behind the
-            // symbols that won the cap), no quote of any kind, and its own
-            // named reason so the decision log tells the two apart.
-            await finishWithQuote(pos, receipt, null, feedKey, prior, `${pos.symbol}: probe deferred (cap) — waiting for a free broker-probe slot`)
-          }
-        } catch (err) {
-          receipt.state = 'error'
-          receipt.error = err.message
-          if (ps != null) { fp(null); receipt.lastOutcome = 'error' }
-          console.error('[fast-monitor]', pos.symbol, err.message)
-        }
+      for (const key of launch) {
+        const item = launchCandidates.find(c => c.feedKey === key)
+        probeScheduler.launch(key, () =>
+          ws.wsGetSpotOnce(item.host, creds.clientId, creds.clientSecret, creds.accessToken, item.accountId, item.symbolId), now, mono)
       }
     }
 

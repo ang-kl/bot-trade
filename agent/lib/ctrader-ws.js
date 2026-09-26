@@ -1201,7 +1201,17 @@ export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, a
           settled = true
           resolve({ ...quote })
         }
-      }, () => { clearTimeout(timer); settled = true; resolve(null) })
+      }, () => { clearTimeout(timer); settled = true; resolve(null) },
+        // Nit round 3 (26-09-2026): without a connect deadline, an auth
+        // handshake that never completes (broker never answers, no error,
+        // no close event) leaves wsStreamSpots's own promise pending
+        // forever — it never resolves OR rejects, so neither `.then` nor
+        // `.catch` below ever fires, and the underlying socket is never
+        // told to close. wsStreamSpots already arms exactly this timer when
+        // given `connectTimeoutMs` (`ws.close()` inside its own
+        // `finishClose`); this reuses `timeoutMs`, the same bound this
+        // function already applies to the rest of the round trip.
+        { connectTimeoutMs: timeoutMs })
         .then(s => {
           stream = s
           if (settled) closeStream()

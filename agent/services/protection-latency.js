@@ -268,9 +268,21 @@ export function noteDueLateness({ dueAtMs, evaluatedAtMs, eligible = true, reaso
  * Only a gap that began with an evaluation is: after a closed market's
  * no-quote pass, a first sighting, or a switched-off/unmapped pass the
  * position was not late, it was not evaluable.
+ *
+ * M7 fix round 3 (26-09-2026, B4): a gap caused by the fast-monitor probe
+ * scheduler — the position was DEFERRED (cap-limited, or a probe already in
+ * flight) or BACKED OFF (a genuinely quiet symbol) — is still real time the
+ * position sat due and unevaluated. That is exactly what this metric exists
+ * to surface, so it counts as eligible lateness. It must not fall into
+ * `after_no_quote`: that bucket is reserved for a GENUINE no-quote pass
+ * (closed market, feed gap) where there was nothing to wait FOR — a
+ * scheduling delay is the opposite case, and hiding it here was the bug
+ * (checker repro: a 9-position, cap-8 pass dropped the deferred position's
+ * 7,000 ms sample entirely).
  */
 export function latenessEligibility(prior) {
   if (!prior || !prior.nextDueAt) return { eligible: false, reason: 'first_seen' }
+  if (prior.lastOutcome === 'probe_deferred' || prior.lastOutcome === 'probe_backoff') return { eligible: true }
   if (prior.lastOutcome === 'quote_unavailable') return { eligible: false, reason: 'after_no_quote' }
   if (prior.lastOutcome !== 'evaluated' || !['evaluated', 'not_due'].includes(prior.state)) return { eligible: false, reason: 'after_other' }
   return { eligible: true }

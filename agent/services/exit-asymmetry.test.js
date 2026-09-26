@@ -22,7 +22,7 @@ import { initDB, setState } from '../db.js'
 import actionsRouter from '../routes/actions.js'
 import { loadManagedExit, MANAGED_EXIT_DEFAULTS } from './managed-exit.js'
 import { decideLossGuardian, DEFAULT_LOSS_GUARDIAN } from './loss-guardian.js'
-import { runFastMonitor } from './fast-monitor.js'
+import { runFastMonitor, _resetFastMonitorProbeSchedulerForTests, _drainFastMonitorProbesForTests } from './fast-monitor.js'
 import { evaluatePosition } from './position-manager.js'
 import { buildIntention } from './cockpit-intention.js'
 import { readFileSync } from 'node:fs'
@@ -88,6 +88,23 @@ function deps(priceBySymbolId, outcome = { summary: 'ok' }) {
   return d
 }
 
+// M7 (26-09-2026): the broker fallback in fast-monitor.js is fire-and-
+// forget — a pass that first sees a symbol due only LAUNCHES its probe; a
+// SECOND pass, after the probe lands, is what actually evaluates it. This
+// file's sidecar always misses (no `exec` override here, and
+// execEngineMode() is not 'cpp' in tests), so every position below takes
+// the broker path, and every position here is a symbol id never probed
+// before its own test — reset the process-wide scheduler first so an
+// earlier test's cached quote for a REUSED id can never be peeked as fresh
+// by a later, unrelated test with a different price.
+async function runFastMonitorSettled(db, creds, d) {
+  _resetFastMonitorProbeSchedulerForTests()
+  const first = await runFastMonitor(db, creds, d)
+  if ((first?.checked || 0) > 0) return first
+  await _drainFastMonitorProbesForTests()
+  return runFastMonitor(db, creds, d)
+}
+
 test('the stamp statement keeps the FIRST mark — a mark a later pass can overwrite is not a mark', () => {
   const id = addPosition('AUDUSD', { entry: 1.1, sl: 1.095 })
   wireStmts.stampPositionExitMarks.run('2026-09-11T10:00:00.000Z', null, id)
@@ -106,7 +123,7 @@ test('a WINNER past its time cap is trailed and stamped, not closed', async () =
   // +2R (entry 1.1000, risk 0.0050, price 1.1100) 3h past the cap: exactly the
   // shape of the ten positions closed in the 21:31 batch while in profit.
   addPosition('EURUSD', { entry: 1.1000, sl: 1.0950 })
-  const out = await runFastMonitor(wireDb, CREDS, deps({ 1: 1.1100 }))
+  const out = await runFastMonitorSettled(wireDb, CREDS, deps({ 1: 1.1100 }))
   assert.equal(out.checked, 1)
   const row = wireDb.prepare('SELECT * FROM monitored_positions WHERE symbol = ?').get('EURUSD')
   assert.equal(row.status, 'active', 'the winner is still open')
@@ -121,7 +138,7 @@ test('fix-the-exits BB: a winner whose stop already sits past breakeven is HELD 
   // is nothing to tighten. Before BB this closed as time_cap_expired.
   addPosition('NZDUSD', { entry: 1.1000, sl: 1.1025 })
   const d = deps({ 3: 1.1050 })
-  await runFastMonitor(wireDb, CREDS, d)
+  await runFastMonitorSettled(wireDb, CREDS, d)
   const row = wireDb.prepare('SELECT * FROM monitored_positions WHERE symbol = ?').get('NZDUSD')
   assert.equal(row.status, 'active', 'still open')
   assert.equal(d.calls.length, 0, 'nothing was sent to the broker')
@@ -145,7 +162,7 @@ test('a LOSER past its time cap still gets the close verdict, with the unchanged
   addPosition('GBPUSD', { entry: 1.3000, sl: 1.2950 })
   // EURUSD is quoted null this pass (its market "closed"), so only the loser
   // is evaluated.
-  await runFastMonitor(wireDb, CREDS, deps({ 2: 1.2975 })) // −0.5R
+  await runFastMonitorSettled(wireDb, CREDS, deps({ 2: 1.2975 })) // −0.5R
   const row = wireDb.prepare('SELECT * FROM monitored_positions WHERE symbol = ?').get('GBPUSD')
   assert.match(row.last_check_action, /FULL_EXIT/)
   assert.match(row.last_check_reasoning, /time_cap_expired \(/)
@@ -244,7 +261,7 @@ test('PR-J/M2: the guardian\'s caller reads the stamp, not just the cap', () => 
 test('PR-J/M4: a broker ERROR leaves the rule armed — nothing stamped, next pass re-decides', async () => {
   addPosition('NZDUSD', { entry: 0.6000, sl: 0.5950 })
   const d = deps({ 3: 0.6100 }, { error: 'MARKET_CLOSED' })
-  await runFastMonitor(wireDb, CREDS, d)
+  await runFastMonitorSettled(wireDb, CREDS, d)
   const row = wireDb.prepare('SELECT * FROM monitored_positions WHERE symbol = ?').get('NZDUSD')
   assert.equal(d.calls.length, 1, 'the action was attempted')
   assert.match(d.calls[0].eval_.reason, /time_cap_trailing/)
@@ -255,7 +272,7 @@ test('PR-J/M4: a broker ERROR leaves the rule armed — nothing stamped, next pa
 test('PR-J/M4: a SKIPPED action leaves the rule armed too', async () => {
   addPosition('USDCAD', { entry: 1.3000, sl: 1.2950 })
   const d = deps({ 4: 1.3100 }, { skipped: true, reason: 'partial_below_min_volume' })
-  await runFastMonitor(wireDb, CREDS, d)
+  await runFastMonitorSettled(wireDb, CREDS, d)
   const row = wireDb.prepare('SELECT * FROM monitored_positions WHERE symbol = ?').get('USDCAD')
   assert.equal(d.calls.length, 1, 'the action was attempted — not a vacuous pass')
   assert.equal(row.time_cap_trail_at, null, 'an intent-only pass stamps nothing')
@@ -264,7 +281,7 @@ test('PR-J/M4: a SKIPPED action leaves the rule armed too', async () => {
 test('PR-J/M4: a SUCCESSFUL action stamps, and only then', async () => {
   addPosition('USDJPY', { entry: 150.00, sl: 149.50 })
   const d = deps({ 5: 151.00 }, { summary: 'SL → 150.00000' })
-  await runFastMonitor(wireDb, CREDS, d)
+  await runFastMonitorSettled(wireDb, CREDS, d)
   const row = wireDb.prepare('SELECT * FROM monitored_positions WHERE symbol = ?').get('USDJPY')
   assert.equal(d.calls.length, 1)
   assert.ok(row.time_cap_trail_at, 'the stop moved, so the hold is on record')

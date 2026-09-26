@@ -10,7 +10,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { runFastMonitor } from './fast-monitor.js'
+import { runFastMonitor, _resetFastMonitorProbeSchedulerForTests, _drainFastMonitorProbesForTests } from './fast-monitor.js'
 
 const CREDS = { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }
 
@@ -40,7 +40,16 @@ test('a HOLD verdict still stamps last_check_action/last_check_at — not a sile
   const before = db.prepare(`SELECT last_check_action, last_check_at FROM monitored_positions WHERE symbol = 'EURUSD'`).get()
   assert.equal(before.last_check_action, null, 'sanity: nothing recorded yet')
 
-  const out = await runFastMonitor(db, CREDS, deps())
+  // M7 (26-09-2026): the sidecar always misses here (no `exec` override, and
+  // execEngineMode() is not 'cpp' in tests), so EURUSD's broker fallback is
+  // fire-and-forget — the first pass only LAUNCHES the probe. Reset the
+  // scheduler and let it land before the pass this test inspects.
+  _resetFastMonitorProbeSchedulerForTests()
+  const d = deps()
+  const warmup = await runFastMonitor(db, CREDS, d)
+  assert.equal(warmup.checked, 0, 'the warm-up pass only launches — the symbol is fresh')
+  await _drainFastMonitorProbesForTests()
+  const out = await runFastMonitor(db, CREDS, d)
   assert.equal(out.checked, 1)
   assert.equal(out.acted, 0)
 
