@@ -327,7 +327,9 @@ export async function vetoGoal(db, targets, nowMs = Date.now()) {
 }
 
 // V3 B4 (P5b-3): a completeness row carries at most this many named items.
-const GOAL_ITEMS_MAX = 50
+// Exported so the lifecycle close row's cap (order-lifecycle.js
+// NAMED_RECORDS_MAX, V3 B4b) is pinned to the same number by a test.
+export const GOAL_ITEMS_MAX = 50
 
 /**
  * V3 B4: the reading if the owner answered H-P5b-3 "labelled rows meet the
@@ -873,7 +875,12 @@ function loopLatencyGoal(db, targets, nowMs) {
   })
 }
 
-/** V3 L1: pre-order / order / close / stuck, from order_lifecycle_last_json (order-lifecycle.js lifecycleGoals). */
+/**
+ * V3 L1: pre-order / order / close / stuck, from order_lifecycle_last_json
+ * (order-lifecycle.js lifecycleGoals). V3 B4b: the close row also names each
+ * CLS-04 / CLS-03 record — split beside the count, items, itemsTotal — from
+ * the same snapshot, in the shape close_completeness and trade_reasons use.
+ */
 export async function lifecycleGoalRows(db, targets, now, { read = null } = {}) {
   const { lifecycleGoals, readSnapshot } = await import('./order-lifecycle.js')
   const snapshot = read ? read(db) : readSnapshot(getState, db)
