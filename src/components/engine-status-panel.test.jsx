@@ -32,6 +32,13 @@ describe('EngineRow', () => {
     const noId = renderToStaticMarkup(<EngineRow row={row()} readiness={null} fullId={null} busy={false} onMode={() => {}} at={null} />)
     expect(noId).toMatch(/full account id is not on this page yet/)
   })
+  // S1a: a null readiness reads as an honest "no record" badge, never a
+  // silently missing one — the shape that used to happen for EVERY row the
+  // instant a `?account=` narrowed read replaced the roster form.
+  it('shows "no record" when there is no readiness for this row, rather than omitting the badge', () => {
+    const html = renderToStaticMarkup(<EngineRow row={row()} readiness={null} fullId="46979908" busy={false} onMode={() => {}} at={null} />)
+    expect(html).toMatch(/>no record</)
+  })
 })
 
 // WP-A (dual admission, 25-09-2026): four selections; the tick half shown as

@@ -24,4 +24,25 @@ describe('engine account identity', () => {
     expect(engineReadinessFor([{ accountId: '…9908', ready: true }], '11119908')).toBe(null)
     expect(engineReadinessFor([rows[0], rows[0]], '11119908')).toBe(null)
   })
+
+  // S1a: GET /state/tick-readiness answers `{ accounts: [...] }` (the
+  // roster form, tickReadinessView) OR one bare record with no `accounts`
+  // field at all (the `?account=` narrowed form, tickReadinessFor) — the
+  // exact shape agent-api.js's viewed-account wiring (S3) produces the
+  // moment an operator views any account other than the traded one. A
+  // reader that only ever looked for `.accounts` read every row as having
+  // no readiness in that case, not just the ones genuinely absent.
+  it('reads the roster shape { accounts }, the narrowed single-record shape, and null honestly', () => {
+    const one = { ...row('11119908'), ready: false, blockedReasons: ['validation_stage'] }
+    const other = { ...row('22229908'), ready: true, blockedReasons: [] }
+    expect(engineReadinessFor({ accounts: [one, other] }, '11119908').ready).toBe(false)
+    expect(engineReadinessFor({ accounts: [one, other] }, '22229908').ready).toBe(true)
+    // the narrowed form: one bare record, matching this account
+    expect(engineReadinessFor(one, '11119908').ready).toBe(false)
+    // the narrowed form for a DIFFERENT account: genuinely no data here —
+    // "no record", not a crash and not another account's answer
+    expect(engineReadinessFor(one, '22229908')).toBe(null)
+    expect(engineReadinessFor(null, '11119908')).toBe(null)
+    expect(engineReadinessFor(undefined, '11119908')).toBe(null)
+  })
 })

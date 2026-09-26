@@ -36,6 +36,17 @@ describe('deployReading', () => {
   it('says unknown when the UI build carries no commit', () => {
     expect(deployReading({ uiCommit: '', agentCommit: 'abc1234' }).state).toBe('unknown')
   })
+
+  // UI-4 S2: 'dev' is vite.config.js's own fallback (scripts/build-commit.mjs)
+  // when no build var and no git HEAD resolved — never a real commit. Reading
+  // it as a value used to compare it against the agent's real sha and warn
+  // "the two disagree" on every plain deploy where no commit var was wired.
+  it('reads a "dev" UI build as no commit, never as a mismatch against the agent\'s real commit', () => {
+    const r = deployReading({ uiCommit: 'dev', agentCommit: 'abc1234' })
+    expect(r.state).toBe('unknown')
+    expect(r.text).toMatch(/cannot be compared/)
+    expect(r.text).not.toMatch(/stale bundle/)
+  })
 })
 
 describe('loopReading', () => {

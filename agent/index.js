@@ -13,7 +13,8 @@ import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
 // WebCrypto, which carries getRandomValues and randomUUID but has no randomInt —
 // calling it there is a TypeError, and it would have thrown on the login path.
 import { randomInt } from 'node:crypto';
-import { llmProviderInfo } from './lib/llm-provider.js';
+import { llmProviderInfo, llmStatusLabel } from './lib/llm-provider.js';
+import { llmDisabled as llmSwitchDisabled } from './lib/llm-switch.js';
 import { tierTable } from './lib/model-router.js';
 import { historicalRateStatus } from './lib/ctrader-ws.js';
 import { inflightSummary } from './lib/inflight.js';
@@ -946,7 +947,13 @@ app.get('/health', (req, res) => {
   // rename (OPENAI_DEFAULT_MODEL → OPENAI_MODEL_DEFAULT) and the two new tiers
   // are verifiable from outside without shell access to the box.
   const llmInfo = llmProviderInfo(process.env)
-  const llmProvider = `${llmInfo.provider}:${llmInfo.model}`
+  // UI-7 S2/A1: 'off' — a word, never a name the layer cannot actually use —
+  // when the chosen provider has no key configured, or the switch (env
+  // LLM_DISABLED or the runtime state key, lib/llm-switch.js) is on. Reusing
+  // llmSwitchDisabled here is the SAME check /state/health's llmDisabled
+  // field already reports, so the two surfaces cannot disagree.
+  const llmKeyPresent = llmInfo.provider === 'openai' ? !!process.env.OPENAI_API_KEY : !!CLAUDE_API_KEY
+  const llmProvider = llmStatusLabel(llmInfo, { keyPresent: llmKeyPresent, disabled: llmSwitchDisabled(db, getState) })
   const llmTiers = process.env.OPENAI_API_KEY ? tierTable(process.env) : null
 
   // The public liveness subset. Deliberately built FIRST and returned early, so

@@ -53,7 +53,13 @@ export function deployReading({ uiVersion, uiCommit, agentVersion, agentCommit }
   }
 }
 
-const short = (c) => (c ? String(c).slice(0, 7) : null)
+// UI-4 S2: 'dev' is vite.config.js's OWN fallback when neither a Railway/
+// Vercel/GIT_COMMIT_SHA build var nor a local git HEAD resolved (never a
+// real commit) — reading it as a value produced a false "UI is on dev but
+// the agent is on <sha>" warning on every single deploy, since 'dev' can
+// never equal a real hash. It reads as no commit, same as null or '', so
+// deployReading falls through to its honest 'unknown' branch instead.
+const short = (c) => (c && c !== 'dev' ? String(c).slice(0, 7) : null)
 
 /**
  * Roll the controller list up to one state plus the rows worth naming.

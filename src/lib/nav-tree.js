@@ -56,7 +56,6 @@ export const NAV_TREE = [
           { id: 'sec-risk', label: 'Risk Decisions', kind: 'T' },
           { id: 'sec-acct-engineering', label: 'Account Engineering', kind: 'T' },
           { id: 'sec-controllers', label: 'Controllers', kind: 'F' },
-          { id: 'sec-llmspend', label: 'LLM Spend', kind: 'C' },
           { id: 'sec-alphadecay', label: 'Edge Health', kind: 'T+F' },
           { id: 'sec-whynotrades', label: 'Why No Trades?', kind: 'C' },
         ],
@@ -140,6 +139,17 @@ export const NAV_TREE = [
           { id: 'sec-agent', label: 'Agent Backend', kind: 'F' },
           { id: 'sec-ctrader', label: 'cTrader account', kind: 'T+F' },
           { id: 'sec-watchlists', label: 'Compare & Copy Watchlists', kind: 'T+F' },
+        ],
+      },
+      {
+        // UI-7: one page for every AI-related surface — status, LLM spend
+        // (moved from Desk's sec-llmspend), and pointers to the Re-Risk and
+        // screener-search controls that stay on Risk/Tune (they deep-link
+        // to fields that live only on those pages).
+        path: '/ai', label: 'AI', icon: '🤖',
+        sections: [
+          { id: 'sec-ai-status', label: 'AI status', kind: 'C' },
+          { id: 'sec-llmspend', label: 'LLM Spend', kind: 'C' },
         ],
       },
     ],

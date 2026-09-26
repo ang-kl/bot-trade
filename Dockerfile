@@ -23,6 +23,15 @@
 # --- stage 1: build the site -----------------------------------------------
 # devDependencies are required here (vite lives there), so no --omit=dev.
 FROM node:20 AS frontend
+# UI-4 S2: Railway's build-time variable (RAILWAY_GIT_COMMIT_SHA, Railway
+# docs) reaches an opaque `docker build` ONLY through a declared ARG — an
+# undeclared name is simply absent, not injected by the platform. `.git` is
+# excluded from this build context (.dockerignore), so without this the
+# frontend stage had no way to learn which commit it was building, and
+# vite.config.js's fallback stamped every image 'dev' regardless of what was
+# actually deployed. Read by vite.config.js via scripts/build-commit.mjs.
+ARG RAILWAY_GIT_COMMIT_SHA
+ENV RAILWAY_GIT_COMMIT_SHA=$RAILWAY_GIT_COMMIT_SHA
 WORKDIR /build
 COPY package*.json ./
 RUN npm ci

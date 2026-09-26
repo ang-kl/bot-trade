@@ -110,9 +110,32 @@ export function engineAccountBindings(rows) {
   return ids.map(id => id && ids.filter(other => other === id).length === 1 ? id : null)
 }
 
-export function engineReadinessFor(readinessRows, accountId) {
+/**
+ * GET /state/tick-readiness answers in TWO shapes from the same route
+ * (agent/routes/state.js): the roster form `{ accounts: [...] }`, or — when a
+ * caller narrows with `?account=` (agent-api.js's viewed-account wiring,
+ * S3) — ONE record with no `accounts` field at all (tickReadinessFor, not
+ * tickReadinessView). A reader that only ever looked for `.accounts` read
+ * every row as having no readiness the moment the lens was on ANY other
+ * account — not a missing record, a shape mismatch. A bare array is also
+ * accepted, for a caller that already extracted the list.
+ */
+function readinessRows(readiness) {
+  if (Array.isArray(readiness)) return readiness
+  if (!readiness) return []
+  if (Array.isArray(readiness.accounts)) return readiness.accounts
+  return readiness.accountId != null ? [readiness] : []
+}
+
+/**
+ * `readiness` is whatever GET /state/tick-readiness returned (either shape
+ * above, or a plain array). Returns null — "no record" — when this account's
+ * readiness was not part of what came back, which is honest: a `?account=`
+ * narrowed read genuinely carries no data for any other account.
+ */
+export function engineReadinessFor(readiness, accountId) {
   if (!accountId) return null
-  const matches = (readinessRows || []).filter(row => engineAccountId(row) === accountId)
+  const matches = readinessRows(readiness).filter(row => engineAccountId(row) === accountId)
   return matches.length === 1 ? matches[0] : null
 }
 
