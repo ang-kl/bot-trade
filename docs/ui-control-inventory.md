@@ -60,7 +60,7 @@ going red (CLAUDE.md failure mode #3).
 | twelve attribution endpoints | served, read by no page | `src/pages/Reasons.jsx` (`/reasons`, in the Trading nav group and the phone More sheet): each endpoint rendered with its own fields, per-block "not read — <reason>" on error/401, no client-computed numbers |
 
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `44e1d41` · 120 action call sites · 99 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `caee268` · 120 action call sites · 99 state routes read.
 
 Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -91,9 +91,9 @@ Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 23 | `src/components/PositionManager.jsx:255` | Reverse | `/actions/position-double` | via recordPositionEvent(db, …), executes | reload (heuristic) | WIRED |
 | 24 | `src/components/PositionManager.jsx:258` | Close | `/actions/position-reverse` | via recordPositionEvent(db, …), executes | reload (heuristic) | WIRED |
 | 25 | `src/components/PositionManager.jsx:265` | (inline) | `/actions/position-close` | via recordPositionEvent(db, …), executes | reload (heuristic) | WIRED |
-| 26 | `src/components/RiskReassess.jsx:133` | appliedKeysStr | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
-| 27 | `src/components/RiskReassess.jsx:145` | run | `/actions/risk-reassess` | via runReassessment(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 28 | `src/components/RiskReassess.jsx:171` | (inline) | `/actions/risk-reassess-apply` | `risk_config_json` ✓, via setState(db, …), markApplied(db, …), executes | reload (heuristic) | WIRED |
+| 26 | `src/components/RiskReassess.jsx:140` | appliedKeysStr | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
+| 27 | `src/components/RiskReassess.jsx:152` | run | `/actions/risk-reassess` | via runReassessment(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 28 | `src/components/RiskReassess.jsx:178` | (inline) | `/actions/risk-reassess-apply` | `risk_config_json` ✓, via setState(db, …), markApplied(db, …), executes | reload (heuristic) | WIRED |
 | 29 | `src/components/ScreenerChat.jsx:50` | send | `/actions/screener-search` | read over POST — the reply is the value | the reply itself (heuristic) | WIRED |
 | 30 | `src/components/SessionFooter.jsx:188` | revoke | `/actions/sessions/${encodeURIComponent(session.id)}/revoke` | via revokeSession(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 31 | `src/components/TradeChronograph.jsx:45` | (inline) | `/actions/chart` | executes | the reply — route returns the effective value (heuristic) | WIRED |

@@ -83,7 +83,8 @@ test('SAFE-0b route: a 58-day-old proposal for another account is refused with a
   assert.equal(res.status, 409)
   const body = await res.json()
   assert.equal(body.code, 'assessment_too_old')
-  assert.deepEqual(body.refused, ['maxOpenPositions', 'dailyLossLimit'])
+  // Checker nit N5: the same [{ key, why }] shape as the 200 and 400 replies.
+  assert.deepEqual(body.refused, [{ key: 'maxOpenPositions', why: 'assessment_too_old' }, { key: 'dailyLossLimit', why: 'assessment_too_old' }])
   assert.equal(riskConfig(db), JSON.stringify({ maxOpenPositions: 5 }), 'the global risk config is untouched')
   assert.equal(JSON.parse(getState(db, STATE_KEY)).applied, false, 'the proposal is not marked applied')
   assert.deepEqual(log(db).map(r => [r.method, JSON.parse(r.body).code]), [['RISK_REASSESS_APPLY_REFUSED', 'assessment_too_old']])
@@ -98,7 +99,37 @@ test('SAFE-0b route: a fresh proposal for another account is refused as assessme
   const body = await res.json()
   assert.equal(body.code, 'assessment_other_account')
   assert.equal(body.assessmentAccountId, '43097342'); assert.equal(body.tradingAccountId, '46979908')
+  assert.deepEqual(body.refused, [{ key: 'maxOpenPositions', why: 'assessment_other_account' }])
   assert.equal(riskConfig(db), null, 'nothing written')
+})
+
+// Checker nit N7 (26-09-2026): `k in PROPOSABLE` is true for every name on
+// Object.prototype. Reproduced before the fix: a stored row keyed
+// 'constructor' was applied, and risk_config_json read
+// {"constructor":1,"maxOpenPositions":4}. Own keys only now.
+test('N7 route: a stored proposal row keyed by an inherited name (constructor, toString, __proto__) is refused, never written', async t => {
+  const { db, apply } = await serve(t)
+  const inherited = ['constructor', 'toString', '__proto__', 'hasOwnProperty']
+  const last = proposal()
+  // What parseAssessment stored before N7 (proposed NaN became null); 1 here so a write would show.
+  last.proposals.push(...inherited.map(key => ({ key, proposed: 1, clamped: true, reason: 'x' })))
+  setState(db, STATE_KEY, JSON.stringify(last))
+  let res = await apply({ keys: [...inherited, 'maxOpenPositions'], at: last.at })
+  assert.equal(res.status, 200)
+  let body = await res.json()
+  assert.deepEqual(body.applied, { maxOpenPositions: 4 })
+  assert.deepEqual(body.refused, inherited.map(key => ({ key, why: 'not a proposable setting' })))
+  assert.equal(riskConfig(db), JSON.stringify({ maxOpenPositions: 4 }), 'only the own proposable key reaches the global risk config')
+  assert.deepEqual(JSON.parse(getState(db, STATE_KEY)).appliedKeys, ['maxOpenPositions'])
+
+  const alone = await serve(t)
+  setState(alone.db, STATE_KEY, JSON.stringify(last))
+  res = await alone.apply({ keys: ['constructor'], at: last.at })
+  assert.equal(res.status, 400)
+  body = await res.json()
+  assert.equal(body.error, 'nothing applicable')
+  assert.deepEqual(body.refused, [{ key: 'constructor', why: 'not a proposable setting' }])
+  assert.equal(riskConfig(alone.db), null, 'nothing written')
 })
 
 test('SAFE-0b route: at exactly 7 days on the traded account the selected keys apply; a millisecond later they do not', async t => {

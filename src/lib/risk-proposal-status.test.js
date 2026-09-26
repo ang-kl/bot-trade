@@ -51,7 +51,13 @@ describe('RiskReassess.jsx wiring — SAFE-0b', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
   const applyBody = src.slice(src.indexOf('const apply = async'), src.indexOf('const toggle ='))
   it('asks window.confirm with the key-naming text before posting, and stops on cancel', () => {
-    expect(applyBody).toMatch(/if \(!window\.confirm\(reassessApplyConfirmText\(\{ keys, last, live,/)
+    // Fix round (checker blocker 2, 26-09-2026): the prefix alone could not
+    // fail on the cancel claim — `)))) return` → `)))) void 0` let Cancel fall
+    // through to the POST with this test green. The bare `return` that ends
+    // the statement is asserted now; the behaviour itself is exercised on the
+    // rendered component in src/components/risk-reassess-apply.test.jsx.
+    expect(applyBody).toMatch(/^\s*if \(!window\.confirm\(reassessApplyConfirmText\(\{ keys, last, live,[^\n]*\}\)\)\) return$/m)
     expect(applyBody.indexOf('window.confirm(')).toBeLessThan(applyBody.indexOf("agentPost('/actions/risk-reassess-apply'"))
+    expect(applyBody.match(/agentPost\(/g)).toHaveLength(1)
   })
 })

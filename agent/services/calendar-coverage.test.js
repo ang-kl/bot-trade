@@ -474,6 +474,9 @@ test('K3: 0/0 rows are evaluated as whole local days — never expired, never UN
   assert.deepEqual(a.holidays.map(h => [h.dateIso, h.bounds, h.startSecond, h.endSecond]).sort(),
     [['2026-09-25', 'full_local_day', 0, 0], ['2026-09-26', 'full_local_day', 0, 0]], 'listed as sent, labelled with the K3 meaning')
   assert.ok(report.limitations.some(l => /whole local day/.test(l) && /OD-7/.test(l)))
+  // Checker nit N3: the premise under that reading is stated, not only its conclusion.
+  assert.ok(report.limitations.some(l => /premise/.test(l) && /OD-7/.test(l) && /real closure lies inside that local day/.test(l)
+    && /reads open for the part outside/.test(l)), 'the report says when "closed when open" stops being the worst case')
 })
 
 // ---- the route ----

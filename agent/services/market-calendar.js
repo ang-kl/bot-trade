@@ -56,7 +56,13 @@ const present = value => value !== undefined && value !== null
 // CLOSED FOR THE WHOLE LOCAL DAY, in the row's own scheduleTimeZone: from
 // local 00:00 on holidayDate to local 00:00 the next day (a 23- or 25-hour
 // UTC span on a DST day). Read that way the worst case shows closed when the
-// market was open, never open when it was closed. Only the exact pair 0/0 (two
+// market was open, never open when it was closed — ON ONE PREMISE, stated here
+// because nothing in a 0/0 row can check it (checker nit N3, 26-09): the
+// broker's real closure lies INSIDE the row's own local day. A real closure
+// that began before that local midnight, or ran past the next one (one the
+// broker keeps in a zone other than the row's, say), reads OPEN for the part
+// outside the day. The premise is the owner's reading (OD-7), assumed, not
+// measured. Only the exact pair 0/0 (two
 // numbers) gets this meaning: an omitted bound, a single bound, and every
 // other invalid pair keep the whole calendar unknown exactly as before — the
 // owner answered the 0/0 question, not those.

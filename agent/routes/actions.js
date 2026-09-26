@@ -5737,13 +5737,18 @@ export default function actionsRouter(db, deps = {}) {
           db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
             'RISK_REASSESS_APPLY_REFUSED', '/risk-reassess-apply', JSON.stringify({ code: refusal.code, at: last.at, accountId: last.accountId ?? null, keys }))
         } catch { /* non-fatal */ }
-        return res.status(409).json({ ...refusal, refused: keys })
+        // `refused` has the 200/400 shape, [{ key, why }] (checker nit N5,
+        // 26-09-2026): every key is refused for the one reason, its code.
+        return res.status(409).json({ ...refusal, refused: keys.map(key => ({ key, why: refusal.code })) })
       }
       const byKey = new Map(last.proposals.map(p => [p.key, p]))
       const patch = {}
       const refused = []
       for (const k of keys) {
-        if (!(k in PROPOSABLE)) { refused.push({ key: k, why: 'not a proposable setting' }); continue }
+        // Own keys only (checker nit N7, 26-09-2026): `k in PROPOSABLE` is true
+        // for 'constructor', 'toString', '__proto__'…, so a stored proposal row
+        // under such a name was written into the GLOBAL risk_config_json.
+        if (!Object.hasOwn(PROPOSABLE, k)) { refused.push({ key: k, why: 'not a proposable setting' }); continue }
         const p = byKey.get(k)
         if (!p) { refused.push({ key: k, why: 'not part of the last assessment' }); continue }
         patch[k] = p.proposed
