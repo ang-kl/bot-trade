@@ -52,12 +52,23 @@ Two limits of C4, recorded rather than carried silently:
 - A stalled tick permit feeder goes quiet instead of raising an alarm. Its
   receipt stops being evidence after six minutes, the tick `entry_activity`
   items leave the inventory, and cpp-verify retires any open no_orders
-  incident on them as `work_no_longer_in_complete_inventory`. Nothing raises a
-  feeder stall yet; a later item is to emit one per-side feeder work item
-  whose `nextDueMs` is `completedAt + 120000`, so cpp-verify's stall alarm can
-  fire. (The bar scan receipt has no such age limit, so its `scanner` items
-  stay in the inventory and can raise the stall alarm while their market is
-  open.)
+  incident on them as `work_no_longer_in_complete_inventory`. (The bar scan
+  receipt has no such age limit, so its `scanner` items stay in the inventory
+  and can raise the stall alarm while their market is open.)
+  **Addressed by V3 F4 (26-09-2026), on the Node side:** every cpp_probe, after
+  the sides are probed, `agent/services/tick-feeder-stall.js` sets each side's
+  tick-admitting accounts beside its latest receipt. No complete pass for
+  two cadences (240 s or more, so the second missed 120 s probe) while an
+  account admits tick is `stalled`; a failed or
+  empty push is `incomplete`. The verdict is the `tick_feeder` heartbeat
+  (`GET /state/heartbeats`: warn on the first failed check, error from the
+  third; the side and reason in `last_error`, the per-side table in `detail`;
+  `dormant` with its reason while no account admits tick) and a
+  `tick_feeder_stall:<side>` finding in the log inspector (`GET
+  /state/inspector`). The controller is registered `quiet`: its stall and
+  failure events go to `action_log`, no message is sent (delivery is OD-10's).
+  cpp-verify's own inventory is unchanged: no per-side feeder work item was
+  added to the watchdog contract.
 - Worker cost: on a synthetic database (7 accounts, 100k `decision_log` rows
   over 3 days, 200k tick signal rows) the independent checker measured the
   watchdog contract build at 1.5 s before C4 and 2.35 s after, inside the
