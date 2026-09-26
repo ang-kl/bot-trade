@@ -24,6 +24,13 @@ export const NAV_TREE = [
       {
         path: '/performance', label: 'Performance', icon: '📊',
         sections: [
+          // UI-1 (26-09 UI plan §3): the two Performance cards the owner
+          // named ("Account balance, floating profit and equity" and
+          // "Recorded entry blockers") had no section id, so neither showed
+          // in this table of contents — one of §3's three named reasons the
+          // owner's collapse control "feels missing".
+          { id: 'sec-acct-balance', label: 'Account balance, floating profit and equity', kind: 'C' },
+          { id: 'sec-blockers', label: 'Recorded entry blockers', kind: 'T' },
           { id: 'sec-goal', label: 'Go-Live Gate', kind: 'C' },
           { id: 'sec-accounts', label: 'Accounts', kind: 'T' },
           { id: 'sec-today-open', label: 'Today & Open', kind: 'T' },

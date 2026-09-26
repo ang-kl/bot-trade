@@ -2003,7 +2003,7 @@ export default function Performance() {
         </span>
       </div>
 
-      <Card className="my-3 text-(length:--fs-body)" scope={acct}>
+      <Card id="sec-acct-balance" className="my-3 text-(length:--fs-body)" scope={acct} loading={!overview}>
         <h2 className="t-h3">Account balance, floating profit and equity</h2>
         <p>Today: midnight–now in {timeZone}. Broker day: 5pm New York for risk limits.</p>
         <CurrentAccountReadings report={overview} accountId={acct} history />
@@ -2428,7 +2428,12 @@ export default function Performance() {
                   <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
                   <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>
                     {t2.rows.length
-                      ? <>{t2.rows.length} open · {t2.tot != null ? <NumberFlow value={t2.tot} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : 'P&L —'}</>
+                      // PERF-2: this card is rendered twice (float / market-closed),
+                      // so a NumberFlow here was two more animated digit trees on a
+                      // page that already has one. Only the single Rolling-24h total
+                      // above (today.net) is "the one visible counter" worth
+                      // animating; these render as plain text, same figures.
+                      ? <>{t2.rows.length} open · {t2.tot != null ? signed(t2.tot) : 'P&L —'}</>
                       : 'none'}
                   </span>
                   {positions[0]?.live_pnl_at && <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>as of {String(positions[0].live_pnl_at).slice(11, 19)} UTC</span>}
