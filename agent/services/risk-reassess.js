@@ -314,6 +314,48 @@ export async function runReassessment(db, opts, deps = {}) {
   return result
 }
 
+// SAFE-0b (owner OD-14, 26-09-2026): the Apply guard. Apply writes the GLOBAL
+// risk_config_json, and before this guard it would replay any stored proposal
+// however old and whoever it was made for — measured 26-09: the stored run was
+// the 30-07 proposal for account 43097342 at $1,478.75, while the agent trades
+// 46979908. A proposal is a judgement of ONE account's balance and record at
+// ONE time; replaying it on another account, or weeks later, applies numbers
+// nobody derived for the account they now govern.
+//
+// Refused, each with its own code:
+//   assessment_time_invalid — the run's `at` does not parse, or lies in the
+//     future (a clock we cannot age is not a fresh one);
+//   assessment_too_old — the run is OLDER than 7 days (exactly 7 days old is
+//     still accepted: "older than", the owner's wording);
+//   assessment_account_unknown — the run names no account, so it cannot be
+//     shown to be this one;
+//   trading_account_unknown — the agent has no trading account to compare;
+//   assessment_other_account — made for a different account than the one the
+//     agent trades now (the same account a fresh Re-Risk would assess).
+// null means the apply may proceed. Pure: the caller supplies both clocks and
+// the account, so the boundary is testable to the millisecond.
+export const REASSESS_APPLY_MAX_AGE_MS = 7 * 86400_000
+export function reassessApplyRefusal(last, { nowMs, accountId, maxAgeMs = REASSESS_APPLY_MAX_AGE_MS } = {}) {
+  const atMs = Date.parse(String(last?.at ?? ''))
+  if (!Number.isFinite(atMs) || !Number.isFinite(nowMs) || atMs > nowMs) {
+    return { code: 'assessment_time_invalid', error: `this assessment's time (${last?.at ?? 'none'}) cannot be aged against now — run Re-Risk again` }
+  }
+  const ageMs = nowMs - atMs
+  if (ageMs > maxAgeMs) {
+    return { code: 'assessment_too_old', ageMs, maxAgeMs,
+      error: `this assessment is ${Math.floor(ageMs / 86400_000)} days old (made ${last.at}); proposals older than ${maxAgeMs / 86400_000} days are refused — run Re-Risk again` }
+  }
+  const made = last?.accountId == null || last.accountId === '' ? null : String(last.accountId)
+  if (made == null) return { code: 'assessment_account_unknown', error: 'this assessment names no account, so it cannot be shown to be for the traded account — run Re-Risk again' }
+  const trading = accountId == null || accountId === '' ? null : String(accountId)
+  if (trading == null) return { code: 'trading_account_unknown', error: 'the agent has no trading account selected, so the assessment\'s account cannot be checked' }
+  if (made !== trading) {
+    return { code: 'assessment_other_account', assessmentAccountId: made, tradingAccountId: trading,
+      error: `this assessment was made for account ${made}, not the traded account ${trading} — run Re-Risk for ${trading}` }
+  }
+  return null
+}
+
 /** Mark the stored assessment as applied, with the keys that actually went in. */
 export function markApplied(db, keys, now = new Date()) {
   const last = loadLastAssessment(db)

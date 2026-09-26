@@ -158,3 +158,51 @@ test('an account-true symbol-list read is never served from, nor stored into, th
   assert.deepEqual([settled[1].reason.accountId, settled[2].reason.accountId], ['2', '2'], 'RED if the per-account read\'s error is not tagged')
   assert.equal(settled[0].reason.accountId, undefined, 'the host-shared read is unchanged: untagged')
 })
+
+// V3 S-8 fix round 3 (N-2): the entry path's options must REACH withRetry
+// through wsGetSymbolsList and wsGetSymbolById, not only be passed to them.
+// Driven through the pooled path's socket seam: the broker refuses the account
+// auth with an auth error carrying "retry after 1ms", so the default path's
+// three attempts cost milliseconds, not the 2 s + 4 s backoff.
+test('S-8: the entry options reach withRetry — 1 connect and no refresh, where the defaults make 3 connects and 1 refresh', async () => {
+  const { EventEmitter } = await import('node:events')
+  const { _setConnectForTests, _resetPool } = await import('./ctrader-session.js')
+  const { wsGetSymbolById, setAuthErrorHook, _resetAuthRecoveryForTests } = await import('./ctrader-ws.js')
+  class FakeWs extends EventEmitter {
+    constructor() { super(); this.readyState = 1; setImmediate(() => this.emit('open')) }
+    send(raw) {
+      const msg = JSON.parse(raw)
+      const reply = (payloadType, payload) => setImmediate(() => this.emit('message', Buffer.from(JSON.stringify({ payloadType, payload, clientMsgId: msg.clientMsgId }))))
+      if (msg.payloadType === PT.APP_AUTH_REQ) reply(PT.APP_AUTH_RES, {})
+      else if (msg.payloadType === PT.ACCOUNT_AUTH_REQ) reply(PT.ERROR_RES, { errorCode: 'CH_ACCESS_TOKEN_INVALID', description: 'retry after 1ms' })
+    }
+    close() { this.readyState = 3 }
+  }
+  let connects = 0, refreshes = 0
+  const prev = process.env.CTRADER_WS_POOL
+  process.env.CTRADER_WS_POOL = '1'
+  _setConnectForTests(() => { connects++; return new FakeWs() })
+  setAuthErrorHook(async () => { refreshes++ })
+  const reads = {
+    wsGetSymbolsList: opts => wsGetSymbolsList('s8.example.com', 'cid', 'sec', 'tok', '4001', 1000, { perAccount: true, ...opts }),
+    wsGetSymbolById: opts => wsGetSymbolById('s8.example.com', 'cid', 'sec', 'tok', '4001', [22], 1000, opts),
+  }
+  try {
+    for (const [name, read] of Object.entries(reads)) {
+      for (const [opts, want] of [
+        [{ maxRetries: 0, recoverAuth: false }, { connects: 1, refreshes: 0 }],
+        [undefined, { connects: 3, refreshes: 1 }],
+      ]) {
+        _resetPool(); _resetAuthRecoveryForTests(); connects = 0; refreshes = 0
+        await assert.rejects(read(opts), /CH_ACCESS_TOKEN_INVALID/)
+        assert.deepEqual({ connects, refreshes }, want, `${name} ${opts ? 'entry options' : 'defaults'}: RED if the options stop at the function instead of reaching withRetry`)
+      }
+    }
+  } finally {
+    setAuthErrorHook(null)
+    _setConnectForTests(null)
+    if (prev === undefined) delete process.env.CTRADER_WS_POOL
+    else process.env.CTRADER_WS_POOL = prev
+    _resetPool()
+  }
+})

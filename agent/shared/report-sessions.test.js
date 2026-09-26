@@ -7,7 +7,7 @@
 // per-instant reading of each exchange's wall clock.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { REPORT_SESSIONS, SESSION_SOURCE, SESSION_EXCEPTIONS, sessionIntervals, sessionOpenAt, sessionHint, wallClockToUtc } from './report-sessions.js'
+import { REPORT_SESSIONS, SESSION_SOURCE, SESSION_EXCEPTIONS, sessionIntervals, sessionOpenAt, sessionHint, wallClockToUtc, closureIntervals, subtractIntervals, holidayWindowSeconds } from './report-sessions.js'
 
 const S = Object.fromEntries(REPORT_SESSIONS.map(s => [s.key, s]))
 const at = iso => Date.parse(iso)
@@ -138,4 +138,45 @@ test('the row hint states the rule, the zone, the WEB-6b exception and the UTC i
   assert.match(hint, /2026-10-05 23:00–05:00 UTC/)
   assert.match(sessionHint(S.JPN, []), /09:00–11:30 and 12:30–15:30 .* no cash session overlaps today's window/)
   assert.doesNotMatch(sessionHint(S.NY), /intervals|no cash session/, 'without a report the hint claims no interval')
+})
+
+// V3 WEB-6b: the closure arithmetic the report applies.
+test('WEB-6b: holiday rows become UTC closures in their own zone; 0/0 is the whole local day (OD-7); unreadable rows are counted, not applied', () => {
+  const iso = c => [c.date, new Date(c.from).toISOString(), new Date(c.to).toISOString()]
+  const rows = [
+    { dateIso: '2026-10-01', startSecond: 0, endSecond: 0, scheduleTimeZone: 'Asia/Hong_Kong', isRecurring: false, name: 'National Day' },
+    { dateIso: '2026-11-27', startSecond: 13 * 3600, endSecond: 86400, scheduleTimeZone: 'America/New_York', isRecurring: false },
+    { dateIso: '2026-10-02', scheduleTimeZone: 'Asia/Hong_Kong', isRecurring: false },                 // omitted bounds
+    { dateIso: '2026-10-03', startSecond: 5, endSecond: 5, scheduleTimeZone: 'Asia/Hong_Kong', isRecurring: false }, // invalid pair
+    { dateIso: '2020-12-25', startSecond: 0, endSecond: 0, scheduleTimeZone: 'Europe/London', isRecurring: true },
+  ]
+  const { closures, unreadable } = closureIntervals(rows, at('2026-09-30T00:00:00Z'), at('2026-12-31T00:00:00Z'))
+  assert.equal(unreadable, 2)
+  assert.deepEqual(closures.map(iso), [
+    ['2026-10-01', '2026-09-30T16:00:00.000Z', '2026-10-01T16:00:00.000Z'],
+    ['2026-11-27', '2026-11-27T18:00:00.000Z', '2026-11-28T05:00:00.000Z'],
+    ['2026-12-25', '2026-12-25T00:00:00.000Z', '2026-12-26T00:00:00.000Z'],
+  ])
+  assert.deepEqual(holidayWindowSeconds({ startSecond: 0, endSecond: 0 }), { start: 0, end: 86400 })
+  assert.equal(holidayWindowSeconds({ startSecond: 0 }), null)
+})
+
+test('WEB-6b: closures cut session intervals, splitting a lunch-split session and keeping each piece\'s date', () => {
+  const hk = sessionIntervals(S.HK, at('2026-10-01T00:00:00Z'), at('2026-10-02T00:00:00Z'))
+  assert.equal(hk.length, 2)
+  assert.deepEqual(subtractIntervals(hk, [{ from: at('2026-09-30T16:00:00Z'), to: at('2026-10-01T16:00:00Z') }]), [])
+  const partial = subtractIntervals(hk, [{ from: at('2026-10-01T02:00:00Z'), to: at('2026-10-01T03:00:00Z') }])
+  assert.deepEqual(shape(partial), [
+    { date: '2026-10-01', from: '2026-10-01T01:30:00.000Z', to: '2026-10-01T02:00:00.000Z' },
+    { date: '2026-10-01', from: '2026-10-01T03:00:00.000Z', to: '2026-10-01T04:00:00.000Z' },
+    { date: '2026-10-01', from: '2026-10-01T05:00:00.000Z', to: '2026-10-01T08:00:00.000Z' },
+  ])
+  assert.equal(subtractIntervals(hk, []), hk)
+})
+
+test('WEB-6b: the hint states what the report applied, and claims nothing without a report', () => {
+  assert.match(sessionHint(S.HK, [], { status: 'applied', identities: 2, closures: [] }), /broker-listed holidays and early closes applied \(2 HKEX calendars; none in today's window\)/)
+  assert.match(sessionHint(S.JPN, [], { status: 'not_listed' }), /not applied: no broker calendar of a TSE stock \(WEB-6b\)/)
+  assert.match(sessionHint(S.NY, [], { status: 'unavailable' }), /could not be read \(WEB-6b\)/)
+  assert.match(sessionHint(S.NY), /public holidays and early closes not applied \(WEB-6b\)/)
 })

@@ -428,7 +428,12 @@ async function maybeRecoverAuth(err, now = Date.now()) {
 /** TEST SEAM: reset the cooldown so tests need not wait a minute. */
 export function _resetAuthRecoveryForTests() { lastAuthRecoveryAt = 0 }
 
-export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null) {
+// `recoverAuth` (default true, as before): false leaves the reactive token
+// refresh to other callers. V3 S-8's entry-path reads pass false: the loop
+// awaits them serially, the refresh is an unbounded OAuth request, and
+// wsGetSymbolById's errors are not tagged with their account, so B7's skip
+// could not tell a refused account's error from a rotated token.
+export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null, { recoverAuth = true } = {}) {
   let lastErr
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -436,7 +441,7 @@ export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null
     } catch (err) {
       lastErr = err
       const msg = err.message || ''
-      await maybeRecoverAuth(err)
+      if (recoverAuth) await maybeRecoverAuth(err)
       if (msg.includes('order rejected') || msg.includes('POSITION_NOT_FOUND')) throw err
       if (noRetry && noRetry(err)) throw err
       if (attempt < maxRetries) {
@@ -864,14 +869,18 @@ export function wsGetAccountsByToken(host, clientId, clientSecret, accessToken, 
  */
 const symbolsListCache = new Map() // host -> { at, promise }
 const SYMBOLS_LIST_TTL_MS = 6 * 60 * 60 * 1000
-export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000, { perAccount = false } = {}) {
+// `maxRetries` (default 2) and `recoverAuth` (default true) leave every
+// existing caller as it was. V3 S-8's entry path passes 0 and false with a
+// short timeout (entry-hours.js ENTRY_HOURS_MAP_TIMEOUT_MS). The pass-through
+// is covered by the entry-path test's injected mock only.
+export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000, { perAccount = false, maxRetries = 2, recoverAuth = true } = {}) {
   const read = () => withRetry(() => {
     const run = wsRun(host, [
       ...authSteps(clientId, clientSecret, accessToken, accountId),
       { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
     ], timeoutMs)
     return perAccount ? run.catch((err) => { throw tagAccount(err, accountId) }) : run
-  }, 2, 'wsGetSymbolsList')
+  }, maxRetries, 'wsGetSymbolsList', null, { recoverAuth })
   if (perAccount) return read()
   const cached = symbolsListCache.get(host)
   if (cached && Date.now() - cached.at < SYMBOLS_LIST_TTL_MS) return cached.promise
@@ -888,12 +897,17 @@ export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, acco
  * `schedule: [{ startSecond, endSecond }]` measured from the week start in
  * the symbol's schedule timezone, plus `scheduleTimeZone`.
  */
-export function wsGetSymbolById(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000) {
+// `maxRetries` (default 2) and `recoverAuth` (default true) leave every
+// existing caller as it was. V3 S-8's entry-path calendar read passes 0 and
+// false (entry-hours.js): one attempt bounded by its timeout, no backoff, no
+// reactive refresh, because the loop awaits each entry serially. The
+// pass-through is covered by the entry-path test's injected mock only.
+export function wsGetSymbolById(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000, { maxRetries = 2, recoverAuth = true } = {}) {
   const ids = (Array.isArray(symbolIds) ? symbolIds : [symbolIds]).map(Number).filter(Number.isFinite)
   return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: ids } }, expect: PT.SYMBOL_BY_ID_RES },
-  ], timeoutMs), 2, 'wsGetSymbolById')
+  ], timeoutMs), maxRetries, 'wsGetSymbolById', null, { recoverAuth })
 }
 
 /**

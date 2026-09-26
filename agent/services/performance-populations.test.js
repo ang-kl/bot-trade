@@ -329,3 +329,59 @@ test('the card rows come from the report: open-now, intervals, hints, and nothin
   assert.equal(tw.find(b => b.key === 'JPN').twin, 'SYD (ASX)'); assert.equal(tw.find(b => b.key === 'SYD (ASX)').twin, 'JPN')
   assert.equal(tw.find(b => b.key === 'NY').twin, null)
 })
+
+// V3 WEB-6b: broker-listed holidays and early closes, applied where a stock
+// of the exchange has a stored broker calendar, and said so per session.
+test('WEB-6b: HKEX 01-10 (a 0/0 row on a .HK calendar) empties the HK bucket; exchanges without a stock calendar say so', async t => {
+  const { db, add } = setup(t)
+  const { setState } = await import('../db.js')
+  const { recordMarketCalendar } = await import('./market-calendar.js')
+  const { sessionHolidayCaption } = await import('../shared/performance-populations.js')
+  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: '2026-09-30T00:00:00Z', accountId: '11', map: { '0700.HK': 70, EURUSD: 1 } }))
+  const D = 86400, H = 3600
+  recordMarketCalendar(db, { host: 'demo.ctraderapi.com', accountId: '11', symbolId: '70' }, {
+    symbolId: 70, scheduleTimeZone: 'Asia/Hong_Kong', tradingMode: 0,
+    schedule: [1, 2, 3, 4, 5].map(d => ({ startSecond: d * D + 9.5 * H, endSecond: d * D + 16 * H })),
+    holiday: [{ holidayId: 1, name: 'National Day', scheduleTimeZone: 'Asia/Hong_Kong', holidayDate: Date.parse('2026-10-01T00:00:00Z') / 86400_000, isRecurring: false, startSecond: 0, endSecond: 0 }],
+  }, { nowMs: Date.parse('2026-09-30T00:00:00Z') })
+  const now = Date.parse('2026-10-01T02:30:00Z')             // Thu 10:30 HKT/SGT: HKEX's regular morning session
+  add({ pnl: 4, at: Date.parse('2026-10-01T02:00:00Z') })     // 10:00 HKT/SGT: SG session, HKEX closed all day
+  const r = buildPerformancePopulations(db, { now, timeZone: 'Asia/Singapore' })
+  const n = key => reportStats(r, `session:${key}`, '11').n
+  assert.deepEqual(['SG', 'HK', 'OFF', 'ALL'].map(n), [1, 0, 0, 1], 'RED if the holiday is not applied (HK would read 1)')
+  const hk = r.windows.find(x => x.key === 'session:HK').session
+  assert.deepEqual(hk.intervals, [], 'no HKEX cash session on its holiday')
+  assert.equal(hk.openNow, false)
+  assert.equal(hk.holidays.status, 'applied'); assert.equal(hk.holidays.identities, 1); assert.equal(hk.holidays.closedNow, true)
+  assert.deepEqual(hk.holidays.closures.map(c => [c.date, new Date(c.from).toISOString(), new Date(c.to).toISOString(), c.fullDay]),
+    [['2026-10-01', '2026-09-30T16:00:00.000Z', '2026-10-01T16:00:00.000Z', true]])
+  assert.equal(r.windows.find(x => x.key === 'session:NY').session.holidays.status, 'no_evidence')
+  assert.equal(r.windows.find(x => x.key === 'session:SG').session.holidays.status, 'not_listed')
+  assert.equal(r.sessionWindow.exceptions, 'broker_holidays_and_early_closes_applied_where_listed')
+  const rows = sessionBuckets(r, '11')
+  const hkRow = rows.buckets.find(b => b.key === 'HK')
+  assert.match(hkRow.hint, /broker-listed holidays and early closes applied \(1 HKEX calendar; closed in today's window: 2026-10-01 National Day all day\)/)
+  assert.match(rows.buckets.find(b => b.key === 'NY').hint, /not applied: no broker calendar of a NYSE stock/)
+  assert.equal(sessionHolidayCaption(rows), 'broker-listed public holidays and early closes applied for HKEX; not applied for ASX, SGX, TSE, LSE, NYSE (no broker calendar of their stocks) (WEB-6b)')
+})
+
+test('WEB-6b: a NYSE early close (explicit bounds on a .US calendar) cuts the afternoon; a close after it lands in OFF', async t => {
+  const { db, add } = setup(t)
+  const { setState } = await import('../db.js')
+  const { recordMarketCalendar } = await import('./market-calendar.js')
+  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: '2026-11-26T00:00:00Z', accountId: '11', map: { 'MSFT.US': 5 } }))
+  const D = 86400, H = 3600
+  recordMarketCalendar(db, { host: 'demo.ctraderapi.com', accountId: '11', symbolId: '5' }, {
+    symbolId: 5, scheduleTimeZone: 'America/New_York', tradingMode: 0,
+    schedule: [1, 2, 3, 4, 5].map(d => ({ startSecond: d * D + 9.5 * H, endSecond: d * D + 16 * H })),
+    holiday: [{ holidayId: 2, name: 'Early close', scheduleTimeZone: 'America/New_York', holidayDate: Date.parse('2026-11-27T00:00:00Z') / 86400_000, isRecurring: false, startSecond: 13 * H, endSecond: D }],
+  }, { nowMs: Date.parse('2026-11-26T12:00:00Z') })
+  const now = Date.parse('2026-11-27T21:30:00Z')
+  add({ at: Date.parse('2026-11-27T15:00:00Z') })   // 10:00 EST: in session
+  add({ at: Date.parse('2026-11-27T19:00:00Z') })   // 14:00 EST: after the 13:00 early close
+  const r = buildPerformancePopulations(db, { now, timeZone: 'America/New_York' })
+  const n = key => reportStats(r, `session:${key}`, '11').n
+  assert.deepEqual(['NY', 'OFF'].map(n), [1, 1], 'RED if the early close is not applied (NY would read 2)')
+  assert.deepEqual(r.windows.find(x => x.key === 'session:NY').session.intervals.map(i => [new Date(i.from).toISOString(), new Date(i.to).toISOString()]),
+    [['2026-11-27T14:30:00.000Z', '2026-11-27T18:00:00.000Z']])
+})

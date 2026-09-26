@@ -25,13 +25,15 @@
 //     observation;
 //   - watchlist symbols that are NOT demanded, named as such (the demand is
 //     bounded to scan, feed and held symbols; a 260-symbol list is not);
-//   - how often the name-keyed symbol_hours gate — the one entries use today
-//     (loop.js market-hours check) — disagrees with the account's calendar at
+//   - how often the name-keyed symbol_hours gate — the one entries used until
+//     V3 S-8 moved them onto the account calendar (services/entry-hours.js)
+//     — disagrees with the account's calendar at
 //     this instant (revision-3:216; the evidence for owner question O3);
 //   - broker holidays in the next 14 days on its demanded identities, bounded
 //     or not, each with how its bounds were sent;
 //   - V3 K1b: `expiredHolidays` — the holiday rows with unreadable bounds
-//     (production's 0/0 "Closed" rows, or omitted bounds) that no longer make
+//     (omitted or invalid bounds; since K3 no longer production's 0/0
+//     "Closed" rows, which read as the whole local day) that no longer make
 //     a calendar UNKNOWN because they lie 3+ UTC days before their own
 //     observation (market-calendar.js holidayExpired): how many rows, on how
 //     many demanded identities, and how many of those identities now read
@@ -176,7 +178,7 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
       const g = groups.get(a.accountId)
       const gk = JSON.stringify([date, h.name, h.scheduleTimeZone, h.reason, h.startSecond ?? null, h.endSecond ?? null])
       if (!g.has(gk)) g.set(gk, { dateIso: date, name: h.name, scheduleTimeZone: h.scheduleTimeZone, isRecurring: h.isRecurring,
-        bounds: h.reason ?? 'explicit', ...('startSecond' in h ? { startSecond: h.startSecond } : {}), ...('endSecond' in h ? { endSecond: h.endSecond } : {}),
+        bounds: h.reason ?? (h.interpreted === 'holiday_full_local_day' ? 'full_local_day' : 'explicit'), ...('startSecond' in h ? { startSecond: h.startSecond } : {}), ...('endSecond' in h ? { endSecond: h.endSecond } : {}),
         identities: 0, symbols: [] })
       const row = g.get(gk); row.identities++
       if (row.symbols.length < 5) row.symbols.push(name ?? identity.symbolId)
@@ -248,10 +250,10 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
     holidayWindow: { from: dates[0], to: dates.at(-1), basis: 'UTC calendar date of the broker holidayDate; recurring rows by month-day' },
     accounts: [...byAccount.values()],
     limitations: [
-      'Advisory evidence only: entries still use the name-keyed symbol_hours gate; gateDisagreements measures that gate against the account calendar at this instant.',
+      'Since V3 S-8 the entry path reads the account calendar itself (services/entry-hours.js: holidays applied, UNKNOWN never reads open). gateDisagreements measures the retired name-keyed symbol_hours gate against the account calendar at this instant: the entries whose hours reading changed with S-8.',
       'demandedCoverage covers the demanded identities only; watchlist symbols outside the demand are listed as notDemanded, never counted as covered.',
       'export.calendarsComplete stays false while any retained (non-demanded) calendar is cut, even with every demanded one exported (export.demanded.cut 0): cpp-verify gives a work item of ANY service the exported calendar with its identity, and a cpp-scan-tick row carries none of its own and can outlive the demand (a stream the gateway no longer feeds), so a cut retained calendar can be one the verifier needs. export.demanded and export.retained say which part was cut; retained.totalIsLowerBound means the cache holds more than 512 rows; retained.total counts the first 513 read (less the demanded and malformed ones), so it is a lower bound.',
-      'A bound the broker did not send is reported as omitted, and a pair it sent out of range as invalid: production sends startSecond 0 and endSecond 0 on its full-day "Closed" holiday rows (measured 26-09). No replacement boundary is invented. Such a non-recurring row dated 3 or more UTC days before its observation lies behind every evaluation window, so it is skipped: kept in the stored payload, never evaluated and counted in expiredHolidays; the calendar is then judged on its other rows. A current or future 0/0 row still keeps its calendar UNKNOWN: what it means awaits the owner (K3). Residue until K3: a skipped day inside the eight-day lookback is read as ordinary schedule time, so for a session running 3 days or more (24/5 FX, 24/7 crypto) the reported session start can be earlier than a real closure on that day.',
+      'A bound the broker did not send is reported as omitted, and a pair it sent out of range as invalid; no replacement boundary is invented for either. Such a non-recurring row dated 3 or more UTC days before its observation lies behind every evaluation window, so it is skipped: kept in the stored payload, never evaluated and counted in expiredHolidays; the calendar is then judged on its other rows. V3 K3 (owner OD-7, 26-09): production sends startSecond 0 and endSecond 0 on its full-day "Closed" holiday rows (measured 26-09); such a 0/0 row is NOT unreadable: it closes its whole local day in its own zone (bounds full_local_day), whatever its date, so it is evaluated and never skipped; the worst case reads closed when open, never the reverse. Omitted and other invalid bounds still keep their calendar UNKNOWN. Residue for those: a skipped day inside the eight-day lookback is read as ordinary schedule time, so for a session running 3 days or more (24/5 FX, 24/7 crypto) the reported session start can be earlier than a real closure on that day. This report is read-only; the entry path applies the same holidays through the account calendar (V3 S-8, services/entry-hours.js).',
       'A present map (symbolMap.status present) with symbolMapRefresh.ownList false is not proven to be the account\'s own symbol list (written before V3 K2); it is re-read once, and until then its ids are shown as stored. A missing or unreadable map also reads ownList false; symbolMap.status says which.',
       'symbolMapRefresh.blocked names why a due map is not read yet: account_disabled (a disabled account is never read; no read until it is enabled), token_refused (the broker token was refused for this account; no read until that clears), daily_cap or backoff (until notBefore).',
     ],
