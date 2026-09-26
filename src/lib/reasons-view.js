@@ -51,26 +51,43 @@ export const REASONS_PAGE_KEYS = REASON_ENDPOINTS.filter(d => !MOVED_OFF_REASONS
 
 // UI-6 (RS-1, "New order: Order lifecycle, Entry intents, Trade plans,
 // Unknown P/L, Trade origin, Ledger integrity, then 'Vetoes: count and
-// cost'"). Trade consistency is not named in that list (its own proposal is
-// a data fix, UI-5's — RS-1a's "gross P&L consistency" — out of this item's
-// scope); it keeps its earlier relative position, between Unknown P/L and
-// Trade origin, rather than being dropped or guessed into a group it was
-// never assigned to. A `heading` folds its `keys` under one card (RS-1:
-// "Absorb Unresolvable plan" into Unknown P/L; "One 'Ledger integrity' card"
-// for Price suspects + Open duplicates; the veto breakdown merged into
-// Refusal cost's card). No `heading` renders as its own single-endpoint card,
-// titled from the endpoint's own def.title — already "each heading names its
-// scope" for these.
+// cost'"). A `heading` folds its `keys` under one card (RS-1: "Absorb
+// Unresolvable plan" into Unknown P/L; "One 'Ledger integrity' card" for
+// Price suspects + Open duplicates; the veto breakdown merged into Refusal
+// cost's card). No `heading` renders as its own single-endpoint card, titled
+// from the endpoint's own def.title — already "each heading names its scope"
+// for these.
+//
+// W1-FU (26-09 UI plan §5, "fold Trade consistency into Ledger integrity"):
+// trade-consistency used to sit on its own, between Unknown P/L and Trade
+// origin — UI-6's own comment said its RS-1a data-fix proposal was out of
+// that item's scope, so it was left ungrouped rather than guessed into a
+// group it was never assigned to. It reads trades whose recorded P&L
+// disagrees with the price move (failure mode #6) — the same "is the ledger
+// telling the truth" question Ledger integrity's other two endpoints (exit
+// price suspects, open duplicates) already ask, so it folds in beside them;
+// each endpoint keeps its own per-block state (ReasonsGroup), never a merged
+// read.
 export const REASONS_PAGE_LAYOUT = [
   { keys: ['order-lifecycle'] },
   { keys: ['entry-intents'] },
   { keys: ['trade-plans'] },
   { heading: 'Unknown P/L', keys: ['unknown-pnl', 'unresolvable-plan'] },
-  { keys: ['trade-consistency'] },
   { keys: ['attribution'] },
-  { heading: 'Ledger integrity', keys: ['exit-price-suspects', 'open-duplicates'] },
+  { heading: 'Ledger integrity', keys: ['trade-consistency', 'exit-price-suspects', 'open-duplicates'] },
   { heading: 'Vetoes: count and cost', keys: ['refusal-cost', 'veto-breakdown'] },
 ]
+
+// W1-FU (26-09 UI plan §5, RS-1b's Card ids): a stable per-group nav anchor —
+// `reasons-<key>` for an ungrouped single-endpoint card, `reasons-<heading
+// slug>` for a folded group — wired into lib/nav-tree.js so the section FAB
+// and Card's own content-kind lookup (Card.jsx's sectionKind) both resolve
+// it, with no per-call-site id string duplicated between Reasons.jsx and
+// nav-tree.js.
+const slugify = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+export function reasonsGroupId(group) {
+  return `reasons-${group.heading ? slugify(group.heading) : group.keys[0]}`
+}
 
 const isScalar = v => v == null || ['string', 'number', 'boolean'].includes(typeof v)
 const isObj = v => v != null && typeof v === 'object' && !Array.isArray(v)

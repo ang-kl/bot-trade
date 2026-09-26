@@ -2371,8 +2371,16 @@ export default function Tune() {
             {/* UI-6 (26-09 UI plan §2 RS-1, "Exit counterfactual ... Move to
                 Tune"): what a different exit rule would have returned on
                 the same trades — exit research, alongside Pipeline's other
-                research/worked-example cards, not on Reasons. */}
-            <Card className="p-3" kind="reasons">
+                research/worked-example cards, not on Reasons.
+                Fix round nit: this used to hardcode kind="reasons" — not one
+                of Card's own T/F/C/T+F kinds (see NAV_KIND_LEGEND), so it
+                rendered a badge no other card shows. Tune's nav-tree entries
+                are tab keys, not per-card "sec-*" anchors (see nav-tree.js's
+                own comment on the /tune page), so there is no id this Card
+                could carry to derive a real kind the way Reasons/Desk's
+                ReasonsBlock cards do — omitted, same as every other
+                undeclared card on this page. */}
+            <Card className="p-3">
               <ExitCounterfactualSection />
             </Card>
           </div>

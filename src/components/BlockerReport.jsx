@@ -103,6 +103,12 @@ function GroupedBlockerTable({ report }) {
     count: day.totalRecords,
     rows: day.folded.map(f => ({ ...f, id: `${f.sample.recordId}|${f.firstAt}|${f.lastAt}` })),
     standing: day.standing,
+    // NIT (W1-FU checker): the server's `omitted` (blocker-report.js's
+    // FOLDED_LINES_PER_DAY_MAX, 90/day) never reached the UI — a day at the
+    // cap looked complete. Folded into the group's own header line (`sub`),
+    // next to the record count it already carries, rather than a second row
+    // that a collapsed group would hide.
+    sub: ` — ${day.totalRecords} record${day.totalRecords === 1 ? '' : 's'} this day${day.omitted > 0 ? `, ${day.omitted} more line${day.omitted === 1 ? '' : 's'} not shown` : ''}`,
   }))
   const columns = [
     {
