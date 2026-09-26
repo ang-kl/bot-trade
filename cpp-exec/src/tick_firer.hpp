@@ -72,6 +72,9 @@ public:
   // `entries` are inserted — the keeper's push is the whole set for those
   // accounts. Accounts not named keep their permits.
   void replaceAccounts(const std::set<long long>& accounts, std::vector<Entry> entries);
+  // True when an unexpired permit is held for the key. Nothing is spent; an
+  // expired one is erased, as takeIf would (gone either way).
+  bool has(long long accountId, long long symbolId, const std::string& side, long long nowMs);
   size_t size() const;
   void clearAccount(long long accountId);
   void clear();
@@ -174,6 +177,11 @@ public:
   FireCounters counters() const;
   size_t queueDepth() const;
   std::string statusJson() const;
+  // GW-1: the /health tick.entry summary from a statusJson() object. /health
+  // answers unauthenticated, so the per-account slot map — keyed by
+  // ctidTraderAccountId — is included only when `trusted`; the open route
+  // carries `slotAccounts`, a count (checker B1).
+  static jsn::Value healthEntry(const jsn::Value& status, bool trusted);
 
   // Pure sizing: lots = usdRisk / (stopDistance × usdPerLotPerUnit), floored
   // to the lot step, capped at maxLots, refused below minLots; returns the

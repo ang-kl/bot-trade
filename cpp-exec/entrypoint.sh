@@ -24,7 +24,7 @@ prepare "$TICK_SPOOL_PATH"
 # setpriv changes the ids and EXECS: cpp-exec becomes this container's PID 1
 # and receives Railway's SIGTERM itself, with nothing in between to kill it.
 # CPP_EXEC_BIN / CPP_EXEC_USER exist for the CI shell test
-# (tests/entrypoint-signal.sh); unset, they are the production values.
+# (cpp-exec/entrypoint-signal-test.sh); unset, they are the production values.
 bin="${CPP_EXEC_BIN:-/usr/local/bin/cpp-exec}"
 user="${CPP_EXEC_USER:-appuser}"
 exec setpriv --reuid "$user" --regid "$(id -g "$user")" --init-groups -- "$bin" "$@"

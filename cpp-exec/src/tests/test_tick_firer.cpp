@@ -563,6 +563,43 @@ static void test_non_tick_entries_spend_slots() {
   std::puts("non-tick entries spend slots: ok");
 }
 
+// GW-1 checker B1: /health answers unauthenticated, and the slot map is keyed
+// by ctidTraderAccountId. The open summary carries a count, never an id.
+static void test_open_health_entry_carries_no_account_id() {
+  ExecEngine engine;
+  TickPermitStore permits;
+  TickFirer firer(engine, permits);
+  firer.setAccounts({46979908});
+  firer.setSlots({{46979908, SlotPush{2, 0, ""}}, {43002148, SlotPush{1, 0, ""}}});
+  auto st = jsn::parse(firer.statusJson());
+  assert(st);
+  const std::string open = jsn::dump(TickFirer::healthEntry(*st, false));
+  assert(open.find("46979908") == std::string::npos && open.find("43002148") == std::string::npos);
+  const jsn::Value openV = TickFirer::healthEntry(*st, false);
+  assert(openV.get("slots").isNull() && openV.get("slotAccounts").asNumber(-1) == 2);
+  const jsn::Value trustedV = TickFirer::healthEntry(*st, true);
+  assert(trustedV.get("slots").get("46979908").asNumber(-1) == 2 && trustedV.get("slotAccounts").asNumber(-1) == 2);
+  std::puts("open /health entry carries no account id: ok");
+}
+
+// GW-1 checker nit: with no slot left AND no permit, the refusal names the
+// missing permit; a held permit at 0 slots is still account_cap.
+static void test_no_permit_is_named_before_the_cap() {
+  ExecEngine engine;
+  TickPermitStore permits;
+  DecisionRing ring(128);
+  TickFirer firer(engine, permits);
+  firer.setDecisionRing(&ring);
+  firer.setAccounts({1});
+  firer.setSlots({{1, SlotPush{0, 0, ""}}});
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 0);
+  assert(firer.counters().refusedNoPermit == 1 && firer.counters().refusedAccountCap == 0 && countKind(ring, "fire_refused", "no_permit") == 1);
+  permits.set(1, 7, "BUY", permitFor(1, 7, "BUY"));
+  assert(firer.onFill(fillAt(7, "BUY", 100500, 50, 100490, 100480), 1000) == 0);
+  assert(firer.counters().refusedAccountCap == 1 && permits.size() == 1);
+  std::puts("no_permit is named before the cap: ok");
+}
+
 int main() {
   test_size_volume();
   test_refusals_and_payload();
@@ -578,6 +615,8 @@ int main() {
   test_profile_and_boot_refusals();
   test_a_permit_cannot_cross_a_restart();
   test_non_tick_entries_spend_slots();
+  test_open_health_entry_carries_no_account_id();
+  test_no_permit_is_named_before_the_cap();
   std::puts("test_tick_firer: all passed");
   return 0;
 }

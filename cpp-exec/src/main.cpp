@@ -768,21 +768,10 @@ int main(int argc, char** argv) {
         { std::lock_guard<std::mutex> lk(tickSimMtx); if (auto sj = jsn::parse(tickSim.json())) tj.set("shadowSim", *sj); }
         // P6b: whether this executor PLACES tick entries and for how many
         // accounts — the TM-42 marker reads places:false until P6c.
-        if (auto ej = jsn::parse(tickFirer.statusJson())) {
-          jsn::Value e{jsn::Object{}};
-          e.set("places", ej->get("places"));
-          e.set("accounts", ej->get("accounts"));
-          e.set("permitsHeld", ej->get("permitsHeld"));
-          e.set("sent", ej->get("sent"));
-          e.set("rejected", ej->get("rejected"));
-          // GW-1 (WP-D D3): the read-back the design names — slots present
-          // once the keeper pushes tickSlots, and the new refusals counted.
-          e.set("slots", ej->get("slots"));
-          e.set("refusedAccountCap", ej->get("refusedAccountCap"));
-          e.set("refusedProfile", ej->get("refusedProfile"));
-          e.set("refusedBoot", ej->get("refusedBoot"));
-          tj.set("entry", std::move(e));
-        }
+        // GW-1: built by tick::TickFirer::healthEntry, which keeps the
+        // per-account slots (keyed by ctidTraderAccountId) on the trusted
+        // branch only, like `accounts` above (checker B1).
+        if (auto ej = jsn::parse(tickFirer.statusJson())) tj.set("entry", tick::TickFirer::healthEntry(*ej, trusted));
         if (trusted) {
           jsn::Array subs;
           std::lock_guard<std::mutex> lk(vpoMtx);

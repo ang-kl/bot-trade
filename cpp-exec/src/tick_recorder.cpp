@@ -1066,6 +1066,10 @@ void TickRecorder::writerLoop() {
     if (!didWork) std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   sealSegment(true);
+  // A quote that passed onQuote's stop check just before stop() and landed
+  // after the last empty check above is in no segment: counted dropped, not
+  // lost silently (checker nit). Nothing pushes once stop_ is visible.
+  while (ring_.pop()) dropped_.fetch_add(1);
 }
 
 void TickRecorder::flush() {

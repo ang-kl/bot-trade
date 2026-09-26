@@ -52,6 +52,15 @@ void TickPermitStore::replaceAccounts(const std::set<long long>& accounts, std::
   for (auto& e : entries) permits_[key(e.accountId, e.symbolId, e.side)] = std::move(e.permit);
 }
 
+bool TickPermitStore::has(long long accountId, long long symbolId, const std::string& side, long long nowMs) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  auto it = permits_.find(key(accountId, symbolId, side));
+  if (it == permits_.end()) return false;
+  const double exp = it->second.get("expiresAtMs").asNumber(0);
+  if (exp <= 0 || static_cast<long long>(exp) < nowMs) { permits_.erase(it); return false; } // expired: gone either way
+  return true;
+}
+
 size_t TickPermitStore::size() const { std::lock_guard<std::mutex> lk(mtx_); return permits_.size(); }
 
 void TickPermitStore::clearAccount(long long accountId) {
@@ -216,6 +225,13 @@ int TickFirer::onFill(const ShadowFill& f, long long nowMs) {
     // A refusal here leaves the permit untouched.
     bool limited = false;
     uint64_t gen = 0;
+    // A fill with no permit at all is refused 'no_permit' whatever the
+    // slots say (checker nit: it used to read 'account_cap' at 0 slots).
+    // A peek only — the permit is still spent inside takeIf, after the slot.
+    if (!permits_.has(acct, f.symbolId, f.side, nowMs)) {
+      refuse("no_permit", "no keeper permit held for this account/symbol/side", &FireCounters::refusedNoPermit);
+      continue;
+    }
     if (!reserveSlot(acct, limited, gen)) {
       refuse("account_cap", "no position slot left for this account until the keeper's next push (maxOpenPositions, counted per fire)", &FireCounters::refusedAccountCap);
       continue;
@@ -361,6 +377,16 @@ void TickFirer::fireOne(const TickFire& fire) {
 }
 
 bool TickFirer::isAmbiguousReject(const std::string& code) { return code == "TIMEOUT" || code == "DISCONNECTED"; }
+
+jsn::Value TickFirer::healthEntry(const jsn::Value& st, bool trusted) {
+  jsn::Value e{jsn::Object{}};
+  for (const char* k : {"places", "accounts", "permitsHeld", "sent", "rejected", "refusedAccountCap", "refusedProfile", "refusedBoot"})
+    e.set(k, st.get(k));
+  const jsn::Value& slots = st.get("slots");
+  e.set("slotAccounts", static_cast<double>(slots.isObject() ? slots.asObject().size() : 0));
+  if (trusted) e.set("slots", slots);
+  return e;
+}
 
 FireCounters TickFirer::counters() const { std::lock_guard<std::mutex> lk(mtx_); return counters_; }
 size_t TickFirer::queueDepth() const { std::lock_guard<std::mutex> lk(mtx_); return queue_.size(); }
