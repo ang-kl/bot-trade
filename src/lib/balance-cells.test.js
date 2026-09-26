@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { balanceLines, floatingText, carryText } from './balance-cells.js'
+import { balanceLines, floatingText, carryText, dealBalanceReadNote } from './balance-cells.js'
 import { currencyGroups, ledgerCarry } from '../../agent/shared/balance-carry.js'
 
 const AT = Date.UTC(2026, 8, 22, 17, 26)
@@ -87,5 +87,69 @@ describe('ledger carry text', () => {
     const bare = ledgerCarry(edges, '1h', '11')
     expect(bare.carryIn).toBeNull()
     expect(carryText(bare, 'in')).toBe('currency not recorded')
+  })
+})
+
+// V3 WEB-8-m (checker nit 4). A deal-proven edge's time is the close the
+// broker reported that balance after — possibly weeks before the edge — not a
+// read at the edge, so its tooltip says so. A real read keeps its wording.
+describe('carry tooltip: a read is a read, a deal-proven balance is not', () => {
+  const D = 24 * 3600_000
+  const proven = (accountId, currency, value, at, source) => ({ accountId, currency, storedFrom: AT,
+    evidence: { status: 'observed', value, currency, at, source } })
+  it('a real read keeps "read <time>" exactly', () => {
+    expect(balanceLines(currencyGroups([seen('11', 'USD', 1029)]))[0].title).toBe('USD broker balance · read 22-09 17:26 UTC · broker_trader')
+    expect(balanceLines(currencyGroups([seen('11', 'USD', 100), seen('22', 'USD', 200, AT + 60_000)]))[0].title)
+      .toBe('USD broker balance (sum of 2 accounts) · oldest read 22-09 17:26 UTC, newest 22-09 17:27 UTC · broker_trader')
+  })
+  it('broker_deal, broker_cashflow and broker_statement: "reported after the … at <time>, held until the next stored event"', () => {
+    const cases = [['broker_deal', 'deal'], ['broker_cashflow', 'cashflow'], ['broker_statement', 'statement deal']]
+    for (const [source, noun] of cases) {
+      const [line] = balanceLines(currencyGroups([proven('11', 'USD', 900, AT - 10 * D, source)]))
+      expect(line.text).toBe('900.00')
+      expect(line.title).toBe(`USD broker balance · reported after the ${noun} at 12-09 17:26 UTC, held until the next stored event · ${source}`)
+      expect(line.title).not.toContain('read 12-09')
+    }
+    const two = balanceLines(currencyGroups([proven('11', 'USD', 900, AT - 10 * D, 'broker_deal'), proven('22', 'USD', 100, AT - 3 * D, 'broker_deal')]))[0]
+    expect(two.title).toBe('USD broker balance (sum of 2 accounts) · reported after the deals, oldest 12-09 17:26 UTC, newest 19-09 17:26 UTC, each held until the next stored event · broker_deal')
+  })
+  it('a read and a deal-proven balance in one currency: each worded with its own time', () => {
+    const [line] = balanceLines(currencyGroups([proven('11', 'USD', 900, AT - 10 * D, 'broker_deal'), seen('22', 'USD', 200)]))
+    expect(line.text).toBe('1100.00')
+    expect(line.title).toBe('USD broker balance (sum of 2 accounts) · read 22-09 17:26 UTC · broker_trader · reported after the deal at 12-09 17:26 UTC, held until the next stored event · broker_deal')
+  })
+})
+
+// V3 WEB-8-m (checker nit 3). When the stored deal balances could not be
+// read, an edge the reads leave open shows the reads' own reason; the page
+// must also say, in words, that the deals were not read.
+describe('a failed read of the stored deal balances is stated, not hidden', () => {
+  const unread = { status: 'unavailable', reason: 'deal_balance_read_failed' }
+  const failedEdges = { status: 'complete', maxAgeMs: 900000, dealBalances: 'deal_balance_read_failed',
+    accounts: [{ accountId: '11', historyStartsAt: AT }],
+    windows: { '1h': { 11: { in: seen('11', 'USD', 1019).evidence, out: seen('11', 'USD', 1020).evidence } },
+      '30d': { 11: { in: { ...gap('11', 'USD').evidence, dealBalance: unread }, out: seen('11', 'USD', 1020).evidence } } } }
+  const usd = id => (id === '11' ? 'USD' : null)
+  const win = (edges, key) => ({ key, ...ledgerCarry(edges, key, '11', usd) })
+  it('the carry cell\'s title names the account whose deal balances were not read', () => {
+    const [line] = balanceLines(win(failedEdges, '30d').carry.in)
+    expect(line.text).toBe('not stored before 22-09 17:26 UTC')
+    expect(line.title).toContain('Deal balances unread for account 11: the broker balances stored on deals and cashflows could not be read, so this edge was not checked against them.')
+    // An edge the reads answered was not a fallback: nothing to say there.
+    expect(balanceLines(win(failedEdges, '1h').carry.in)[0].title).not.toContain('Deal balances unread')
+  })
+  it('the ledger note says it once, in words; a report whose deals were read has none', () => {
+    const note = dealBalanceReadNote([win(failedEdges, '1h'), win(failedEdges, '30d')])
+    expect(note).toContain('Deal balances unread')
+    expect(note).toContain('(account 11)')
+    expect(note).toContain('it is not zero and nothing is estimated')
+    // The report-level flag alone is enough (no edge fell back to the deals).
+    expect(dealBalanceReadNote([win(failedEdges, '1h')])).toContain('could not be read for this report, so no carry edge')
+    // Only one account's read failed (the report's deals were read): named.
+    const oneFailed = { ...failedEdges, dealBalances: 'read' }
+    expect(dealBalanceReadNote([win(oneFailed, '30d')])).toContain('could not be read for account 11, so that account’s carry edges were not checked against them')
+    const read = { ...failedEdges, dealBalances: 'read', windows: { '30d': { 11: { in: gap('11', 'USD').evidence, out: seen('11', 'USD', 1020).evidence } } } }
+    expect(dealBalanceReadNote([win(read, '30d')])).toBeNull()
+    expect(dealBalanceReadNote(null)).toBeNull()
   })
 })

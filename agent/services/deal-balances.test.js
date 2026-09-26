@@ -419,3 +419,39 @@ test('GET /state/deal-balances reports the evidence and the proven edge; a bad e
   }
   assert.equal(dealBalanceReport(db, { currencyByAccount: depositCurrencies(db) }).accounts.length, 1)
 })
+
+// V3 WEB-8-m (checker nit 2): the route built two deal readers per request —
+// the report's own and the one inside the carry's balanceReader — and each
+// scanned every stored deal and cashflow of the account. Counted here at the
+// statements themselves: one scan of each per account per request.
+test('GET /state/deal-balances scans an account\'s deals and cashflows once: the report and the carry share one reader', async t => {
+  const db = fixture(t)
+  storeApi(db, [apiDeal({ dealId: 1, at: T0, gross: 1000, balance: 100_000 }), apiDeal({ dealId: 2, at: T0 + 2 * H, gross: 500, balance: 100_500 })])
+  const scans = { deals: 0, cashflows: 0 }
+  const prepare = db.prepare.bind(db)
+  db.prepare = (sql) => {
+    const st = prepare(sql)
+    const text = String(sql).replace(/\s+/g, ' ').trim()
+    const kind = /FROM broker_deals WHERE account_id = \?$/.test(text) ? 'deals'
+      : /FROM account_cashflows WHERE account_id = \? AND host = \?$/.test(text) ? 'cashflows' : null
+    if (!kind) return st
+    const iterate = st.iterate.bind(st)
+    st.iterate = (...args) => { scans[kind]++; return iterate(...args) }
+    return st
+  }
+  const app = express(); app.use('/state', stateRouter(db))
+  const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)) })
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) })
+  const res = await fetch(`http://127.0.0.1:${server.address().port}/state/deal-balances?account=${A}&at=${T0 + H},${T0 - H},${T0 + 3 * H}`)
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  // The carry answered the edges (so its reader ran), and it read the deals.
+  assert.equal(body.edgeBasis, 'ledger_carry_reader')
+  assert.deepEqual(body.accounts[0].edges.map(e => [e.status, e.value ?? e.reason]),
+    [['observed', 1000], ['not_stored', 'before_balance_history'], ['not_stored', 'after_last_stored_event']])
+  assert.deepEqual(scans, { deals: 1, cashflows: 1 })
+  // One currency map, never two: a reader over another map is refused.
+  const currencyByAccount = depositCurrencies(db)
+  assert.throws(() => balanceReader(db, { currencyByAccount, dealBalances: true, dealReader: dealBalanceReader(db, { currencyByAccount: depositCurrencies(db) }) }), TypeError)
+  assert.throws(() => dealBalanceReport(db, { currencyByAccount, reader: dealBalanceReader(db, { currencyByAccount: depositCurrencies(db) }) }), TypeError)
+})

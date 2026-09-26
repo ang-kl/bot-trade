@@ -21,7 +21,7 @@ import CurrentAccountReadings from '../components/CurrentAccountReadings.jsx'
 import { useAccountOverview } from '../lib/use-account-overview.js'
 import { feedDailyStopView, dailyStopWords, cardStopFields } from '../lib/daily-stop-display.js'
 import { currentAccountTotals, liveFloatingByCurrency } from '../lib/current-account-totals.js'
-import { balanceLines, floatingText, carryText } from '../lib/balance-cells.js'
+import { balanceLines, floatingText, carryText, dealBalanceReadNote } from '../lib/balance-cells.js'
 import { utcStamp } from '../../agent/shared/balance-carry.js'
 import { calendarDay } from '../../agent/shared/performance-calendar.js'
 import { useLiveTicks } from '../lib/useLiveTicks.js'
@@ -1026,15 +1026,18 @@ function DailyStopLine({ a }) {
 function ledgerToText(windows) {
   const lines = (windows || []).map(w =>
     `${w.label} · carry ${carryText(w, 'in', { money })} → ${carryText(w, 'out', { money })} · net ${!w.trades ? '—' : currencyLines(w) ? currencyLinesText(currencyLines(w), signed) : `${signed(w.net)}${ledgerMoneyNote(w) ? ` (${ledgerMoneyNote(w).text})` : ''}`} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0}${w.manual > 0 ? ` · ${w.manual} manual` : ''} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}${!w.trades && w.lastTradeAt ? ` · last fill ${w.lastTradeAt}` : ''}`)
-  return ['Timeframe ledger', ...lines].join('\n')
+  return ['Timeframe ledger', ...lines, dealBalanceReadNote(windows)].filter(Boolean).join('\n')
 }
 
 // The ledger table body — one component for both the card and the expanded
 // modal (variant prop, never forked markup). The modal adds the owner's
-// "expand all / collapse all" toggle driving every row's detail.
-function LedgerBody({ variant, windows, ledger, error, nowMs, timeZone }) {
+// "expand all / collapse all" toggle driving every row's detail. Exported so
+// its footnote is rendered by a test (V3 WEB-8-m).
+export function LedgerBody({ variant, windows, ledger, error, nowMs, timeZone }) {
   const [expandAll, setExpandAll] = useState(false)
   const modal = variant === 'modal'
+  // V3 WEB-8-m: a failed read of the stored deal balances is said in words.
+  const dealNote = dealBalanceReadNote(windows)
   return (
     <>
       {modal && (
@@ -1066,7 +1069,7 @@ function LedgerBody({ variant, windows, ledger, error, nowMs, timeZone }) {
         </div>
       )}
       <p className={`mt-1.5 text-(length:--fs-body) ${SUB}`}>
-        Rolling windows (1H…12M) end at the report time. Calendar periods use midnight in {timeZone}; weeks start Monday. Carry in / carry out are the broker balances observed at or up to {Math.round((ledger?.windows?.find(w => w.carry?.maxAgeMs)?.carry.maxAgeMs ?? 900000) / 60000)} min before each window edge, per recorded deposit currency (the same currency evidence the gradients pool by) and never summed across currencies; a currency total is shown only when every account of that currency was read. Where no read is stored near an edge (every edge before the reads began), the carry is the balance the broker reported after the last deal or cashflow before the edge, and only when the next stored deal or cashflow reconciles to it to the cent; otherwise the edge says why it cannot be shown and is not zero. Carry is not reconciled to Net: deposits, withdrawals and closes the bot did not record also move a balance. Unknown symbols are included under Other. A net marked “partial · n of m priced” sums only the closes with a recorded P&amp;L: it is not a bound in either direction. In All accounts a net is one line per broker deposit currency (the same recorded currency the carry and the gradients use), named even when every close is one account’s, added only within that currency and never across currencies; “n in no currency” counts closes from an account with no recorded currency, which are in no line. “Not pooled” means no currency is recorded for them at all.
+        Rolling windows (1H…12M) end at the report time. Calendar periods use midnight in {timeZone}; weeks start Monday. Carry in / carry out are the broker balances observed at or up to {Math.round((ledger?.windows?.find(w => w.carry?.maxAgeMs)?.carry.maxAgeMs ?? 900000) / 60000)} min before each window edge, per recorded deposit currency (the same currency evidence the gradients pool by) and never summed across currencies; a currency total is shown only when every account of that currency was read. Where no read is stored near an edge (every edge before the reads began), the carry is the balance the broker reported after the last deal or cashflow before the edge, and only when the next stored deal or cashflow reconciles to it to the cent; otherwise the edge says why it cannot be shown and is not zero. Carry is not reconciled to Net: deposits, withdrawals and closes the bot did not record also move a balance. Unknown symbols are included under Other. A net marked “partial · n of m priced” sums only the closes with a recorded P&amp;L: it is not a bound in either direction. In All accounts a net is one line per broker deposit currency (the same recorded currency the carry and the gradients use), named even when every close is one account’s, added only within that currency and never across currencies; “n in no currency” counts closes from an account with no recorded currency, which are in no line. “Not pooled” means no currency is recorded for them at all.{dealNote ? ` ${dealNote}` : ''}
       </p>
     </>
   )
@@ -1760,6 +1763,9 @@ export default function Performance() {
   }, [analytics, acct])
 
   const windows = useMemo(() => reportLedger(populationReport, acct).windows, [populationReport, acct])
+  // V3 WEB-8-m: the phone ledger has no footnote and no hover, so a failed
+  // read of the stored deal balances is stated above its cards in words.
+  const ledgerDealNote = useMemo(() => dealBalanceReadNote(windows), [windows])
 
   // Shared client-side aggregation for the FX bands / strategy matrix —
   // mirrors the server ledger's stats (win%, PF, planned R:R → required
@@ -2130,6 +2136,7 @@ export default function Performance() {
                 )
               })}
             </div>
+            {ledgerDealNote && <p style={{ fontSize: 'var(--fs-body)', color: P_MU, margin: '4px 0' }}>{ledgerDealNote}</p>}
             {windows.map(w => <MobileWindowCard key={w.key} w={w} timeZone={timeZone} />)}
           </>
         )}

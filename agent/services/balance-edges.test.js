@@ -476,4 +476,60 @@ test('WEB-8: a failed read of the deal balances leaves the stored reads\' carry 
   assert.equal(one['30d'].carryIn, null)
   assert.equal(one['30d'].carry.in.groups[0].reason, 'before_balance_history')
   assert.deepEqual(report.balanceEdges.windows['30d']['11'].in.dealBalance, { status: 'unavailable', reason: 'deal_balance_read_failed' })
+  // V3 WEB-8-m: and the page is told. The ledger carry keeps the report's
+  // flag, and each group names the account whose deal balances were not read
+  // at that edge — the edge the reads answer names none.
+  assert.equal(one['30d'].carry.dealBalances, 'deal_balance_read_failed')
+  assert.deepEqual(one['30d'].carry.in.groups[0].dealBalanceUnreadAccounts, ['11'])
+  assert.deepEqual(one['1h'].carry.in.groups[0].dealBalanceUnreadAccounts, [])
+  const all = reportLedger(report, 'all').windows.find(w => w.key === '30d')
+  assert.deepEqual(all.carry.in.groups[0].dealBalanceUnreadAccounts, ['11'])
+})
+
+// V3 WEB-8-m (checker nit 1). DEAL_FALLBACK names three reasons; the third —
+// an edge INSIDE the reads' era with no read within the tolerance — had no
+// test, so dropping it left every test green. Two accounts, one edge (the
+// 12h window's carry in), reads every 3 minutes except within 30 minutes of
+// it: 11's deal pair reconciles to the cent, 22's breaks by 50.00.
+test('WEB-8-m: an edge inside the reads\' era with no read near it takes a proven deal balance, and a broken pair keeps "no read near edge"', t => {
+  const { db, trader } = fixture(t, [['11', 0], ['22', 0]])
+  const E = T - 12 * H
+  for (let at = T - 20 * H; at <= T; at += 3 * MIN) {
+    if (Math.abs(at - E) < 30 * MIN) continue
+    trader('11', at, at < E - H ? 850 : at < E + H ? 900 : 1000)
+    trader('22', at, at < E - H ? 850 : at < E + H ? 900 : 1050)
+  }
+  // 11: 501 leaves 900.00; 502 adds 100.00 and leaves 1,000.00 — proven.
+  closes(db, '11', [[501, E - H, 5_000, 90_000], [502, E + H, 10_000, 100_000]])
+  // 22: 512 adds 100.00 to 900.00 but reports 1,050.00 — 50.00 unexplained.
+  closes(db, '22', [[511, E - H, 5_000, 90_000], [512, E + H, 10_000, 105_000]])
+  // The fixture reaches the path under test: E is after the first stored
+  // read, and the reads alone leave it open for want of a read near it.
+  const readsOnly = balanceReader(db)
+  for (const id of ['11', '22']) {
+    assert.ok(readsOnly.account(id).historyStartsAt < E, `${id}: the edge is inside the reads' era`)
+    assert.deepEqual(readsOnly.at(id, E), { status: 'not_stored', reason: 'no_observation_near_edge', maxAgeMs: BALANCE_EDGE_MAX_AGE_MS })
+  }
+  const report = buildPerformancePopulations(db, { now: T })
+  assert.equal(report.balanceEdges.dealBalances, 'read')
+  const w11 = reportLedger(report, '11').windows.find(w => w.key === '12h')
+  assert.equal(Date.parse(w11.from), E, 'the 12h window\'s carry in is the edge in the gap')
+  // Proven: the carry is the deal's balance, and says it is one.
+  assert.equal(w11.carryIn, 900)
+  assert.deepEqual(w11.carry.in.groups[0].sources, ['broker_deal'])
+  assert.deepEqual(pick(report.balanceEdges.windows['12h']['11'].in, ['status', 'value', 'currency', 'source', 'proof', 'event', 'nextEvent']),
+    { status: 'observed', value: 900, currency: 'USD', source: 'broker_deal', proof: 'balance_arithmetic',
+      event: { kind: 'deal', id: '501' }, nextEvent: { kind: 'deal', id: '502' } })
+  // Broken: the reads' reason stands, with what the deals could not prove.
+  const ev22 = report.balanceEdges.windows['12h']['22'].in
+  assert.deepEqual(pick(ev22, ['status', 'reason', 'maxAgeMs']), { status: 'not_stored', reason: 'no_observation_near_edge', maxAgeMs: BALANCE_EDGE_MAX_AGE_MS })
+  assert.deepEqual(pick(ev22.dealBalance, ['status', 'reason', 'unexplained', 'from', 'to']),
+    { status: 'not_stored', reason: 'balance_chain_break', unexplained: 50, from: { kind: 'deal', id: '511' }, to: { kind: 'deal', id: '512' } })
+  const w22 = reportLedger(report, '22').windows.find(w => w.key === '12h')
+  assert.equal(w22.carryIn, null, 'no balance is invented across the break')
+  assert.equal(w22.carry.in.groups[0].reason, 'no_observation_near_edge')
+  assert.equal(missingBalanceLabel(w22.carry.in.groups[0]), 'no broker read near edge')
+  // The window's other edge (the report time) is a stored read for both.
+  assert.equal(w11.carryOut, 1000)
+  assert.equal(w22.carryOut, 1050)
 })

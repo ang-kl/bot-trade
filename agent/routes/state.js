@@ -2007,7 +2007,8 @@ export default function stateRouter(db) {
   // own reader (balance-edges.js), over the one deposit-currency map, so this
   // route and the ledger can never state two balances for one edge.
   // ?account=all|<id>. Read-only; bounded by the account's stored deals and
-  // cashflows.
+  // cashflows, which are scanned ONCE per account per request: the report's
+  // counts and the carry's edges share one deal reader (V3 WEB-8-m).
   router.get('/deal-balances', async (req, res) => {
     try {
       const raw = String(req.query.at ?? '').trim()
@@ -2016,11 +2017,12 @@ export default function stateRouter(db) {
       const edges = parts.map(s => (/^\d+$/.test(s) ? Number(s) : Date.parse(s)))
       if (edges.some(e => !Number.isSafeInteger(e))) return res.status(400).json({ error: 'each edge is epoch milliseconds or an ISO time' })
       const scope = requestedAccount(db, req)
-      const [{ dealBalanceReport }, { balanceReader }, { depositCurrencies }] = await Promise.all([
+      const [{ dealBalanceReport, dealBalanceReader }, { balanceReader }, { depositCurrencies }] = await Promise.all([
         import('../services/deal-balances.js'), import('../services/balance-edges.js'), import('../services/deposit-currencies.js')])
       const currencyByAccount = depositCurrencies(db)
-      const carry = edges.length ? balanceReader(db, { currencyByAccount, dealBalances: true }) : null
-      res.json(dealBalanceReport(db, { accountId: scope.all ? null : scope.accountId, edges, currencyByAccount, edgeAt: carry?.at ?? null }))
+      const deals = dealBalanceReader(db, { currencyByAccount })
+      const carry = edges.length ? balanceReader(db, { currencyByAccount, dealBalances: true, dealReader: deals }) : null
+      res.json(dealBalanceReport(db, { accountId: scope.all ? null : scope.accountId, edges, currencyByAccount, reader: deals, edgeAt: carry?.at ?? null }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

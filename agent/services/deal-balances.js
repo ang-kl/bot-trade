@@ -165,7 +165,10 @@ export function dealBalanceReader(db, { currencyByAccount } = {}) {
     events.sort((a, b) => a.earliest - b.earliest
       || (a.version != null && b.version != null ? a.version - b.version : 0)
       || (a.kind === b.kind ? Number(a.id) - Number(b.id) : a.kind === 'deal' ? -1 : 1))
-    const out = { accountId: id, host, registered: host != null, currency, currencyReason, events, unplaced }
+    // The events that carry a balance, in the same order: built once per
+    // account here, not once per edge (a ledger asks for dozens of edges).
+    const withBalance = events.filter(e => e.balance != null)
+    const out = { accountId: id, host, registered: host != null, currency, currencyReason, events, withBalance, unplaced }
     cache.set(id, out)
     return out
   }
@@ -176,8 +179,7 @@ export function dealBalanceReader(db, { currencyByAccount } = {}) {
     if (!Number.isSafeInteger(atMs)) return { status: 'not_stored', reason: 'invalid_edge' }
     if (!a.registered) return { status: 'not_stored', reason: 'account_not_registered' }
     if (!a.currency) return { status: 'not_stored', reason: a.currencyReason }
-    const ev = a.events
-    const withBalance = ev.filter(e => e.balance != null)
+    const ev = a.events, withBalance = a.withBalance
     if (!withBalance.length) return { status: 'not_stored', reason: 'no_balance_evidence_stored' }
     const storedFrom = withBalance[0].latest, storedThrough = withBalance.at(-1).earliest
     // [from, to): an event that may be at E or later is on B's side.
@@ -231,7 +233,7 @@ export function dealBalanceReader(db, { currencyByAccount } = {}) {
       else if (p.reason === 'balance_version_gap') links.versionGaps++
       else links.notCheckable++
     }
-    const withBalance = a.events.filter(e => e.balance != null)
+    const withBalance = a.withBalance
     return {
       accountId: a.accountId, registered: a.registered, currency: a.currency, currencyReason: a.currencyReason,
       deals, cashflows, unplacedEvents: a.unplaced, links,
@@ -242,11 +244,13 @@ export function dealBalanceReader(db, { currencyByAccount } = {}) {
 
   /** Time of the earliest stored balance on a deal or cashflow, or null. */
   function storedFrom(accountId) {
-    const first = account(accountId).events.find(e => e.balance != null)
+    const first = account(accountId).withBalance[0]
     return first ? first.latest : null
   }
 
-  return { account, at, coverage, storedFrom, accountIds: () => [...hosts.keys()] }
+  // currencyByAccount is returned so a caller handed this reader can check it
+  // reads the same currency map it does (balanceReader's dealReader option).
+  return { account, at, coverage, storedFrom, accountIds: () => [...hosts.keys()], currencyByAccount }
 }
 
 /**
@@ -255,9 +259,14 @@ export function dealBalanceReader(db, { currencyByAccount } = {}) {
  * answers the edges: the route passes the ledger carry's own reader
  * (balance-edges.js, dealBalances on), so an edge here reads exactly what the
  * carry reads there — never a second answer. Absent, this reader's proof.
+ * `reader` is a dealBalanceReader the caller already built over the same
+ * currency map — the route hands the SAME one to the carry's reader, so each
+ * account's broker_deals and account_cashflows are scanned once per request,
+ * not once per reader. Absent, one is built here.
  */
-export function dealBalanceReport(db, { accountId = null, edges = [], currencyByAccount, edgeAt = null } = {}) {
-  const reader = dealBalanceReader(db, { currencyByAccount })
+export function dealBalanceReport(db, { accountId = null, edges = [], currencyByAccount, edgeAt = null, reader: given = null } = {}) {
+  if (given && currencyByAccount && given.currencyByAccount !== currencyByAccount) throw new TypeError('dealBalanceReport: reader reads another currencyByAccount')
+  const reader = given ?? dealBalanceReader(db, { currencyByAccount })
   const ids = accountId == null ? reader.accountIds() : [String(accountId)]
   const answer = typeof edgeAt === 'function' ? edgeAt : reader.at
   return {

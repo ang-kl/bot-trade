@@ -57,15 +57,24 @@ const floatOk = r => typeof r.openPnl === 'number' && Number.isFinite(r.openPnl)
 /** Reader over one database snapshot. Caches per account; bounded queries.
  * `currencyByAccount` is a depositCurrencies() map; the populations report
  * passes the one it ships, so its pools and its carry read the same evidence.
- * Absent, it is read here from the same reader. */
-export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currencyByAccount = null, dealBalances = false } = {}) {
+ * Absent, it is read here from the same reader. `dealReader` (with
+ * dealBalances on) is a dealBalanceReader the caller already built over that
+ * SAME map object: GET /state/deal-balances shares one between its report and
+ * this carry, so each account's deals and cashflows are scanned once per
+ * request, not once per reader. */
+export function balanceReader(db, { maxAgeMs = BALANCE_EDGE_MAX_AGE_MS, currencyByAccount = null, dealBalances = false, dealReader = null } = {}) {
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs <= 0) throw new RangeError('invalid balance edge tolerance')
   const currencies = { currencyByAccount: currencyByAccount ?? depositCurrencies(db) }
   // V3 WEB-8: the deal/cashflow balances, over the SAME currency map. A failed
   // read of them never costs the edges the stored reads answer: they stay as
   // before, and each gap says the deal evidence was unavailable.
   let deals = null, dealsUnavailable = null
-  if (dealBalances) {
+  if (dealBalances && dealReader) {
+    // One currency map, never two: a reader over another map could pool a
+    // deal balance under a currency this carry does not use.
+    if (dealReader.currencyByAccount !== currencies.currencyByAccount) throw new TypeError('balanceReader: dealReader reads another currencyByAccount')
+    deals = dealReader
+  } else if (dealBalances) {
     try { deals = dealBalanceReader(db, currencies) } catch { dealsUnavailable = 'deal_balance_read_failed' }
   }
   // Reconcile rows (about 70 % of the table) never carry a balance; skipping

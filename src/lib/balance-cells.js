@@ -14,11 +14,46 @@ const ccyOk = c => typeof c === 'string' && /^[A-Z]{3}$/.test(c)
 const notRead = ids => Array.isArray(ids) && ids.length
   ? ` Not read: account${ids.length === 1 ? '' : 's'} ${ids.map(String).join(', ')}.` : ''
 
+// V3 WEB-8-m. A ledger edge the stored reads left open can be answered by the
+// balance the broker reported after a stored deal or cashflow (deal-balances.js).
+// Its time is that event's close — possibly weeks before the edge — not a read
+// at the edge, so it is worded as what it is. A real read keeps its wording.
+const EVENT_NOUN = { broker_deal: 'deal', broker_cashflow: 'cashflow', broker_statement: 'statement deal' }
+const readWhen = (oldestAt, newestAt) => oldestAt === newestAt ? `read ${utcStamp(oldestAt)}` : `oldest read ${utcStamp(oldestAt)}, newest ${utcStamp(newestAt)}`
+const eventWhen = (source, t) => {
+  const noun = EVENT_NOUN[source]
+  if (!t) return `reported after a stored ${noun}, held until the next stored event · ${source}`
+  return t.oldestAt === t.newestAt
+    ? `reported after the ${noun} at ${utcStamp(t.oldestAt)}, held until the next stored event · ${source}`
+    : `reported after the ${noun}s, oldest ${utcStamp(t.oldestAt)}, newest ${utcStamp(t.newestAt)}, each held until the next stored event · ${source}`
+}
+
 const readTitle = (g, noun = 'balance') => {
   if (g.oldestAt == null) return ''
-  const when = g.oldestAt === g.newestAt ? `read ${utcStamp(g.oldestAt)}` : `oldest read ${utcStamp(g.oldestAt)}, newest ${utcStamp(g.newestAt)}`
-  return `${g.currency} broker ${noun}${g.accounts > 1 ? ` (sum of ${g.accounts} accounts)` : ''} · ${when}${g.sources?.length ? ` · ${g.sources.join(', ')}` : ''}`
+  const head = `${g.currency} broker ${noun}${g.accounts > 1 ? ` (sum of ${g.accounts} accounts)` : ''}`
+  const sources = Array.isArray(g.sources) ? g.sources : []
+  const events = sources.filter(s => EVENT_NOUN[s])
+  if (!events.length) return `${head} · ${readWhen(g.oldestAt, g.newestAt)}${sources.length ? ` · ${sources.join(', ')}` : ''}`
+  // Reads and deal-proven balances in one group (All accounts): each worded
+  // by its own kind, with its own times.
+  const times = g.sourceTimes && typeof g.sourceTimes === 'object' ? g.sourceTimes : {}
+  const reads = sources.filter(s => !EVENT_NOUN[s])
+  const readTimes = reads.map(s => times[s]).filter(t => t && Number.isSafeInteger(t.oldestAt) && Number.isSafeInteger(t.newestAt))
+  const parts = []
+  if (reads.length) {
+    parts.push(readTimes.length
+      ? `${readWhen(Math.min(...readTimes.map(t => t.oldestAt)), Math.max(...readTimes.map(t => t.newestAt)))} · ${reads.join(', ')}`
+      : reads.join(', '))
+  }
+  for (const s of events) parts.push(eventWhen(s, times[s]))
+  return `${head} · ${parts.join(' · ')}`
 }
+
+// V3 WEB-8-m. The accounts at this edge whose stored deal and cashflow
+// balances could not be read: said in words, so a failed read is never
+// passed off as the reads' own gap (owner principle 6).
+const dealUnread = ids => Array.isArray(ids) && ids.length
+  ? ` Deal balances unread for account${ids.length === 1 ? '' : 's'} ${ids.map(String).join(', ')}: the broker balances stored on deals and cashflows could not be read, so this edge was not checked against them.` : ''
 
 function validGroupSet(set) {
   return !!set && Array.isArray(set.groups) && set.groups.every(g => g && ccyOk(g.currency)
@@ -33,7 +68,7 @@ export function balanceLines(set, { money = fixed, withCurrency = false, unavail
   const lines = set.groups.map(g => g.value != null
     ? { key: g.currency, text: `${set.groups.length > 1 || withCurrency ? `${g.currency} ` : ''}${money(g.value)}`, title: readTitle(g), missing: false, currency: g.currency, value: g.value }
     : { key: g.currency, text: `${set.groups.length > 1 || withCurrency ? `${g.currency} ` : ''}${missingBalanceLabel(g)}`,
-      title: `${g.currency}: ${missingBalanceLabel(g)}.${notRead(g.missingAccounts)} A missing broker balance is not zero and is never estimated.`, missing: true, currency: g.currency, value: null })
+      title: `${g.currency}: ${missingBalanceLabel(g)}.${notRead(g.missingAccounts)}${dealUnread(g.dealBalanceUnreadAccounts)} A missing broker balance is not zero and is never estimated.`, missing: true, currency: g.currency, value: null })
   // Accounts in no currency group (V3 WEB-3m): no recorded broker deposit
   // currency, so no balance of theirs is added to any currency's total.
   if (set.unknownCurrencyAccounts > 0) {
@@ -63,6 +98,29 @@ export function floatingText(set, { signed = plus } = {}) {
   const title = [...shown.map(g => readTitle(g, 'floating P&L')), ...missing, set.unknownCurrencyAccounts ? `${set.unknownCurrencyAccounts} account(s) ${unknownCurrencyLabel(set.unknownReason)}, in no currency.${notRead(set.unknownAccounts)}` : null]
     .filter(Boolean).join(' · ')
   return { text: `(${text} float)${marks}`, title: `Last broker floating (unrealised) P&L reading in this hour; not in the realised figure or the balance columns. ${title}` }
+}
+
+/** V3 WEB-8-m. One sentence for the ledger when the stored deal and cashflow
+ * balances could not be read — for the whole report (carry.dealBalances) or
+ * for an account at any edge — or null when nothing was hidden. Words, not
+ * colour: the page states the failed read instead of showing only the reads'
+ * "not stored before …" label. */
+export function dealBalanceReadNote(windows) {
+  const list = Array.isArray(windows) ? windows : []
+  const failed = list.some(w => w?.carry?.dealBalances === 'deal_balance_read_failed')
+  const ids = new Set()
+  for (const w of list) {
+    for (const side of ['in', 'out']) {
+      for (const g of w?.carry?.[side]?.groups ?? []) for (const id of g?.dealBalanceUnreadAccounts ?? []) ids.add(String(id))
+    }
+  }
+  if (!failed && !ids.size) return null
+  const named = `account${ids.size === 1 ? '' : 's'} ${[...ids].sort().join(', ')}`
+  // The whole report's read failed, or only some accounts' (the rest were read).
+  const scope = failed
+    ? `for this report${ids.size ? ` (${named})` : ''}, so no carry edge was checked against them`
+    : `for ${named}, so ${ids.size === 1 ? 'that account’s' : 'those accounts’'} carry edges were not checked against them`
+  return `Deal balances unread: the broker balances stored on deals and cashflows could not be read ${scope}. An edge the stored reads do not answer shows only the reads' own reason (such as “not stored before …”), not a balance the deals might prove; it is not zero and nothing is estimated.`
 }
 
 /** Ledger carry text for copy/paste and the phone card (one line). */
