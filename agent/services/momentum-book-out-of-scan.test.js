@@ -448,7 +448,11 @@ test('B-1: US-stock daily sessions (Mon–Fri 13:30–20:00), refused inside the
   assert.equal(b.exit_retry_after, '2026-09-28T15:30:00.000Z')
 })
 
-test('B-1: the schedule says closed now — its next open, capped at now + 2 h', async () => {
+// A DISAGREEMENT CASE, not the production path (nit round N-1): the injected
+// hours check says OPEN while the symbol_hours row says CLOSED. In
+// production both read the same row, so a send never happens here — see the
+// real-schedule test below.
+test('B-1 disagreement case (injected hours check OPEN, schedule CLOSED): the schedule\'s next open, capped at now + 2 h', async () => {
   const us = [1, 2, 3, 4, 5].map(d => ({ startSecond: d * DAY + 13.5 * 3600, endSecond: d * DAY + 20 * 3600 }))
   // Mon 21:00Z: next open Tue 13:30Z is 16.5 h away → capped at 23:00Z.
   let b = await threeMarketClosedRefusals(us, Date.UTC(2026, 8, 28, 21, 0))
@@ -456,6 +460,50 @@ test('B-1: the schedule says closed now — its next open, capped at now + 2 h',
   // Mon 12:30Z: next open 13:30Z is inside the cap → the open itself.
   b = await threeMarketClosedRefusals(us, Date.UTC(2026, 8, 28, 12, 30))
   assert.equal(b.exit_retry_after, '2026-09-28T13:30:00.000Z')
+})
+
+test('N-1 production path (real symbol_hours, nothing injected): schedule closed → no send, the row stays exit_pending; schedule open → a refusal waits 30 min', async () => {
+  const db = fresh()
+  bookRow(db)
+  db.prepare(`INSERT INTO symbol_hours (symbol, schedule_json, tz) VALUES ('KO.US', ?, 'UTC')`).run(JSON.stringify([1, 2, 3, 4, 5].map(d => ({ startSecond: d * DAY + 13.5 * 3600, endSecond: d * DAY + 20 * 3600 }))))
+  db.prepare(`UPDATE momentum_book SET note = 'exit_pending: MARKET_CLOSED', exit_refusals = 2`).run()
+  const f = fakes()
+  delete f.deps.isSymbolOpen
+  delete f.deps.nextBrokerOpen
+  refusing(f, 'MARKET_CLOSED')
+  // Mon 21:00Z: the schedule says closed — F2 defers, nothing is sent.
+  const closed = await run(db, f, Date.UTC(2026, 8, 28, 21, 0), { entriesHeld: 'Scan disabled' })
+  assert.equal(f.calls.close.length, 0, JSON.stringify(closed.skipped))
+  let b = bookRowFull(db)
+  assert.equal(b.status, 'open')
+  assert.equal(b.note, 'exit_pending: MARKET_CLOSED')
+  assert.equal(b.exit_refusals, 2, 'a deferral is not a refusal')
+  assert.equal(closed.deferredClosed, 1)
+  // Tue 15:00Z: the schedule says open — sent, refused (the 3rd), 30 min.
+  await run(db, f, Date.UTC(2026, 8, 29, 15, 0), { entriesHeld: 'Scan disabled' })
+  assert.equal(f.calls.close.length, 1)
+  b = bookRowFull(db)
+  assert.equal(b.exit_refusals, 3)
+  assert.equal(b.exit_retry_after, '2026-09-29T15:30:00.000Z')
+})
+
+test('N-2: the close resolves and the exit_sent UPDATE throws — no refusal recorded, no exit_pending, no re-send', async () => {
+  const db = fresh()
+  bookRow(db)
+  db.exec(`CREATE TRIGGER fail_exit_sent BEFORE UPDATE OF status ON momentum_book WHEN NEW.status = 'exit_sent' BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
+  const f = fakes()
+  const r = await run(db, f, DUE)
+  assert.equal(f.calls.close.length, 1, 'the close went')
+  assert.equal(r.exits, 0, 'the row never reached exit_sent, so it is not counted')
+  assert.ok(r.skipped.some(s => s.includes('KO.US: close sent; post-send record failed (row not marked exit_sent) — disk full')), JSON.stringify(r.skipped))
+  assert.ok(!r.skipped.some(s => /close failed/.test(s)), 'not a refused close')
+  const b = bookRowFull(db)
+  assert.equal(b.status, 'open')
+  assert.doesNotMatch(String(b.note), /^exit_pending:/, 'not flagged for the every-pass retry')
+  assert.equal(b.exit_refusals, null)
+  // The next pass (not due) does not send it again.
+  await run(db, f, DUE + 5 * 60_000)
+  assert.equal(f.calls.close.length, 1, 'no re-send')
 })
 
 test('N-b: a post-send record failure has its own skip reason, counts as an exit, and leaves the row exit_sent with no refusal', async () => {

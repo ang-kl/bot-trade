@@ -69,7 +69,21 @@ export const TSMOM_STRATEGY = 'tsmom_long'
  * proven wrong, and waiting for that schedule's next open would trust the
  * very thing just contradicted (fix round 2, B-1: an FX-shaped weekly
  * interval parked a Monday refusal for 151 h). Every wait is capped at
- * `maxWaitMs` (2 h). Below the threshold nothing changes: a transient
+ * `maxWaitMs` (2 h).
+ *
+ * IN PRODUCTION THAT BRANCH IS NOT REACHED (nit round, N-1). loop.js injects
+ * neither `isSymbolOpen` nor `nextBrokerOpen`, so the F2 hours check and
+ * nextBrokerOpenMs read the SAME symbol_hours row at the same `now`: a close
+ * is sent only when that read says open, and nextBrokerOpenMs then returns
+ * null. Every production MARKET_CLOSED refusal from the 3rd on therefore
+ * waits the plain 30 min. The schedule-closed-now branch (and its 2 h cap)
+ * is reachable only when the hours check and the schedule disagree — an
+ * injected check, or the schedule row changing between the two reads — and
+ * even then F2 still defers the next send while the schedule says closed:
+ * no close is ever sent into a schedule-closed market, so a refused close
+ * is NOT re-sent every 2 h until the open.
+ *
+ * Below the threshold nothing changes: a transient
  * refusal is still retried on the very next pass. The count and the
  * next-retry time live on the row (`exit_refusals`, `exit_retry_after`); a
  * send that goes clears BOTH, and so does a withdrawal.
@@ -655,9 +669,13 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
       }
       continue
     }
-    // Set once the row reached exit_sent: a throw after that point is a
-    // post-send record failure, not a refused close (fix round 2, N-b).
+    // Set the moment the broker call RESOLVES — before any DB write — so a
+    // throw after that point (the exit_sent UPDATE, the journal, the log) is a
+    // post-send record failure, never a refusal: no exit_pending, no refusal
+    // count, so no retry re-sends a close that went (fix round 2 N-b; nit
+    // round N-2). `marked` says whether the row reached exit_sent.
     let sent = false
+    let marked = false
     try {
       if (row.position_id && deps.close) {
         const coordinated = await runMomentumRankExit(db, creds, row, deps)
@@ -667,9 +685,10 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
           await deps.close(creds, { positionId: row.position_id, volume })
         }
       }
+      sent = true
       // N-a: a send that goes clears the WHOLE refusal record.
       db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)', exit_refusals = NULL, exit_retry_after = NULL WHERE id = ?`).run(new Date(now).toISOString(), row.id)
-      sent = true
+      marked = true
       exits++
       // Same journal line as the row-cursor exit (fix-the-exits BA).
       if (row.position_id) {
@@ -681,10 +700,10 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
       log(`momentum account: rank exit ${row.symbol} on …${accountId.slice(-4)}`)
     } catch (err) {
       if (sent) {
-        // The close went and the row is exit_sent (counted above); only the
-        // journal or the log line after it failed. Not a refusal: no
-        // exit_pending, no refusal count, its own reason.
-        summary.skipped.push(`${row.symbol}: close sent; post-send record failed — ${err.message}`)
+        // The close went; only a record after it failed. Not a refusal: no
+        // exit_pending, no refusal count, its own reason. Counted in exits
+        // above only if the row reached exit_sent.
+        summary.skipped.push(`${row.symbol}: close sent; post-send record failed${marked ? '' : ' (row not marked exit_sent)'} — ${err.message}`)
         continue
       }
       // A refused close is owed, not dropped: flagged so the every-pass
@@ -703,7 +722,9 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
           try { open = (deps.nextBrokerOpen ?? nextBrokerOpenMs)(db, row.symbol, now) } catch { open = null }
           if (Number.isFinite(open) && open > now) retryAfter = open
         }
-        // Every wait is capped: min(nextOpen, now + 2 h).
+        // Every wait is capped: min(nextOpen, now + 2 h). Only reachable when
+        // the hours check and the schedule disagree (see EXIT_RETRY_BACKOFF);
+        // F2 above still defers any send while the schedule says closed.
         retryAfter = Math.min(retryAfter, now + EXIT_RETRY_BACKOFF.maxWaitMs)
       }
       try {
