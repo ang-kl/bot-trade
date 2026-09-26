@@ -12,7 +12,7 @@ import {
   closedBarsOf, cacheExpiryFor, barCloseAt,
 } from './fib-strategy.js'
 import { STRATEGY_REGISTRY } from './strategies.js'
-import { barPathView, recordBarFetch, recordScanPass, isHistoryLimited, HISTORY_EDGE_MS, _resetBarPathCountersForTests } from '../lib/bar-path-counters.js'
+import { barPathView, recordBarFetch, recordScanPass, isHistoryLimited, HISTORY_EDGE_MS, WINDOW_PAD_BARS, _resetBarPathCountersForTests } from '../lib/bar-path-counters.js'
 import { trendbarWindowStartMs, trendbarFetchPlan } from '../lib/ctrader-ws.js'
 import { noteTokenWait } from '../lib/ctrader-session.js'
 import { impossibleDepthCells } from './armed-cell-reachability.js'
@@ -291,6 +291,28 @@ test('S-3 fix: a weekend-gapped FX 1h answer is window-limited, NOT an impossibl
   assert.deepEqual(impossibleDepthCells(v.shortHistory.rows, STRATEGY_REGISTRY), [], 'no cell is marked impossible')
 })
 
+test('S-3 fix: BTCUSD 1w answering one bar short of asked (the real production shape) is window-limited, NOT an impossible cell', async (t) => {
+  fresh(t)
+  // stubBroker's bars are contiguous up to "now" — a 24/7 symbol with no
+  // closures, exactly like BTCUSD. `short: { '1w': 450 }` reproduces the
+  // measured production read (asked 451, got 450): the broker simply has no
+  // bar past the one it returned, a COUNT limit, not a history limit — the
+  // window's own WINDOW_PAD_BARS pad is what puts the first returned bar
+  // several weeks after the window's left edge, not the symbol running out
+  // of history.
+  const broker = stubBroker({ short: { '1w': 450 } })
+  _setTrendbarFetcherForTests(broker.fn)
+  const spy = spyStrategy('ema_pullback', 450)
+  await scanSymbolFib(CREDS, 'BTCUSD', 12, { strategies: [spy.entry] })
+  const v = barPathView()
+  const w1 = spy.seen.find(s => s.tf === '1w')
+  assert.equal(w1.n, 449, 'ema_pullback got one fewer than its 450-bar need on 1w')
+  assert.equal(v.fetches.byPurpose.strategy_scan.historyLimited, 0, 'not the broker\'s whole history')
+  assert.ok(v.fetches.windowLimited >= 1, 'counted as window-limited instead')
+  assert.deepEqual(v.shortHistory.rows.filter(r => r.timeframe === '1w'), [], 'BTCUSD 1w is not reported as short history')
+  assert.deepEqual(impossibleDepthCells(v.shortHistory.rows, STRATEGY_REGISTRY).filter(c => c.timeframe === '1w'), [], 'no impossible cell on 1w')
+})
+
 test('S-3 fix: BTCUSD 1mo whose first bar is far past the window start IS history-limited, and a later window-limited answer clears it', async (t) => {
   fresh(t)
   const M = PERIOD_MS['1mo']
@@ -320,6 +342,54 @@ test('S-3 fix: isHistoryLimited — the margin outlasts any closure and two peri
   assert.equal(isHistoryLimited({ firstBarT: from + 30 * D, fromTs: null, periodMs: H }), false, 'no window edge: not measured, not history')
   assert.equal(isHistoryLimited({ firstBarT: null, fromTs: from, periodMs: H }), false, 'no bar: not history')
   assert.equal(HISTORY_EDGE_MS, 7 * D)
+  assert.equal(WINDOW_PAD_BARS, 5)
+})
+
+// The margin must also clear the window's OWN pad (WINDOW_PAD_BARS periods
+// beyond fetchCount, ctrader-ws.js planWindowStartMs) or a plain
+// count-limited answer — the broker has no bars past what it just returned,
+// nothing closed early — misreads as history on any period long enough for
+// 5 periods to exceed HISTORY_EDGE_MS / two periods (weekly, monthly).
+test('S-3 fix: isHistoryLimited clears the window\'s own 5-period pad — production BTCUSD cases, a young weekly series, and a daily weekend gap', () => {
+  const D = 86_400_000
+
+  // Measured 26-09-2026, GET /state/data-feed barPath.shortHistory: BTCUSD 1w
+  // asked 451 got 450 — a COUNT-limited answer (one bar short of asked, the
+  // window's own pad, not the broker running out of history). Before this
+  // fix the margin (14 days for a weekly period) did not clear the ~35-day
+  // pad the window itself adds, so this read as history-limited.
+  assert.equal(
+    isHistoryLimited({ firstBarT: Date.UTC(2018, 1, 4, 22), fromTs: Date.UTC(2017, 11, 30), periodMs: 7 * D }),
+    false,
+    'BTCUSD 1w: a 36-day gap is ~5 padded weeks, not the broker\'s whole history — windowLimited, not historyLimited',
+  )
+
+  // Same measurement, BTCUSD 1mo: asked 451 got 190, decades of gap — the
+  // true history-limited case that must stay marked after the fix.
+  assert.equal(
+    isHistoryLimited({ firstBarT: Date.UTC(2010, 5, 30, 21), fromTs: Date.UTC(1989, 3, 13), periodMs: 30 * D }),
+    true,
+    'BTCUSD 1mo: decades past the window edge — still the broker\'s whole history',
+  )
+
+  // A genuinely young weekly series: 100 of 451 bars, first bar ~351 weeks
+  // (well past any window pad) after the window opened.
+  const wFrom = Date.UTC(2020, 0, 1)
+  assert.equal(
+    isHistoryLimited({ firstBarT: wFrom + 351 * 7 * D, fromTs: wFrom, periodMs: 7 * D }),
+    true,
+    'a young symbol whose weekly history really is 100 bars deep',
+  )
+
+  // A daily weekend-closing symbol (EURUSD-shaped: fewer bars than asked
+  // because the window spans weekends, years of history behind it) — the
+  // gap a closure leaves is small next to the 12-day daily margin.
+  const dFrom = Date.UTC(2026, 0, 1)
+  assert.equal(
+    isHistoryLimited({ firstBarT: dFrom + 4 * D, fromTs: dFrom, periodMs: D }),
+    false,
+    'a 4-day weekend/holiday gap on a daily period is window-limited, not history',
+  )
 })
 
 test('S-3 fix: trendbarWindowStartMs is the request\'s own fromTimestamp — native, synthesised (base capped at 3,000), unknown', () => {
