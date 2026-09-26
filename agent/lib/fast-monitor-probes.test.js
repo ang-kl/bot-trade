@@ -9,8 +9,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  PROBE_CAP_DEFAULT, PROBE_BACKOFF_MAX_MS, PROBE_BACKOFF_DEFAULT_MS,
-  probeCap, probeBackoffMs, shouldBackoff, selectUnderCap,
+  PROBE_CAP_DEFAULT, PROBE_CAP_MAX, PROBE_BACKOFF_MAX_MS, PROBE_BACKOFF_DEFAULT_MS,
+  probeCap, probeBackoffMs, clampCap, shouldBackoff, selectUnderCap,
   sideHasFreshQuoteExcluding, ProbeScheduler,
 } from './fast-monitor-probes.js'
 
@@ -25,6 +25,39 @@ test('probeCap: env override, garbage falls back to the default', () => {
   assert.equal(probeCap({ FAST_MONITOR_PROBE_CAP: '-1' }), PROBE_CAP_DEFAULT)
   assert.equal(probeCap({ FAST_MONITOR_PROBE_CAP: 'nope' }), PROBE_CAP_DEFAULT)
   assert.equal(probeCap({ FAST_MONITOR_PROBE_CAP: '2.7' }), 2, 'floored')
+})
+
+// B3 (fix round, 26-09-2026): the cap can be 0 or unbounded unless floored
+// first, THEN required >= 1, THEN clamped to a ceiling.
+test('clampCap (B3): floors first, then requires >= 1, then clamps to PROBE_CAP_MAX', () => {
+  assert.equal(clampCap(0.5), PROBE_CAP_DEFAULT, '0.5 floors to 0, which is invalid, not a valid 1')
+  assert.equal(clampCap(0), PROBE_CAP_DEFAULT)
+  assert.equal(clampCap(-1), PROBE_CAP_DEFAULT)
+  assert.equal(clampCap(1e9), PROBE_CAP_MAX, 'an unbounded request is clamped, never passed through')
+  assert.equal(clampCap(PROBE_CAP_MAX), PROBE_CAP_MAX, 'exactly the ceiling is allowed')
+  assert.equal(clampCap(PROBE_CAP_MAX + 1), PROBE_CAP_MAX)
+  assert.equal(clampCap(1), 1, 'exactly the floor is allowed')
+  assert.equal(clampCap(4.9), 4, 'floored, not rounded')
+  assert.equal(clampCap(NaN), PROBE_CAP_DEFAULT)
+  assert.equal(clampCap(undefined), PROBE_CAP_DEFAULT)
+  assert.equal(clampCap('garbage'), PROBE_CAP_DEFAULT)
+})
+
+test('probeCap (B3): the same clampCap validation applies through the env path', () => {
+  assert.equal(probeCap({ FAST_MONITOR_PROBE_CAP: '0.5' }), PROBE_CAP_DEFAULT)
+  assert.equal(probeCap({ FAST_MONITOR_PROBE_CAP: '1e9' }), PROBE_CAP_MAX)
+})
+
+// N1 (nit): the CONSTRUCTOR itself validates the cap — a direct
+// reconfigure (fast-monitor.js's _setFastMonitorProbeCapForTests, or any
+// future caller) cannot hand it a 0/unbounded cap either.
+test('ProbeScheduler constructor (N1): validates its own cap through clampCap, not a bare assignment', () => {
+  assert.equal(new ProbeScheduler({ cap: 0 }).cap, PROBE_CAP_DEFAULT)
+  assert.equal(new ProbeScheduler({ cap: -5 }).cap, PROBE_CAP_DEFAULT)
+  assert.equal(new ProbeScheduler({ cap: 1e9 }).cap, PROBE_CAP_MAX)
+  assert.equal(new ProbeScheduler({ cap: 0.5 }).cap, PROBE_CAP_DEFAULT)
+  assert.equal(new ProbeScheduler({}).cap, PROBE_CAP_DEFAULT, 'the default itself must also pass validation')
+  assert.equal(new ProbeScheduler({ cap: 3 }).cap, 3)
 })
 
 test('probeBackoffMs: OD-22 ceiling (<= 5 min) holds even when the env asks for more', () => {
@@ -109,9 +142,9 @@ test('ProbeScheduler.plan: eligible the first time; pending while its own run() 
   assert.deepEqual(s.lastResult('k1'), { quote: { bid: 1, ask: 1.1 }, at: 1_000, error: null })
 })
 
-test('ProbeScheduler: backoff arms on the CALLER clock, not a real wall clock — the whole point of M7 (fast-monitor.js\'s injectable `now()`)', async () => {
+test('ProbeScheduler: backoff arms on the CALLER clock, not a real wall clock — the whole point of M7 (fast-monitor.js\'s injectable `now()`); ONLY after a NO-QUOTE probe (B1, fix round 26-09-2026)', async () => {
   const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  await s.run('k1', async () => ({ bid: 1, ask: 1.1 }), 1_000)
+  await s.run('k1', async () => null, 1_000) // a quiet symbol: the broker had nothing
   // a simulated clock 30s later, side fresh: still inside the 60s backoff window
   assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 31_000 }), 'backoff')
   // the same key, side NOT fresh: must keep retrying regardless of elapsed time
@@ -120,7 +153,15 @@ test('ProbeScheduler: backoff arms on the CALLER clock, not a real wall clock �
   assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 61_001 }), 'eligible')
 })
 
-test('ProbeScheduler: a failed probe still counts for cap/backoff bookkeeping, and never rejects', async () => {
+test('ProbeScheduler: B1 — a key whose LAST probe actually priced it is never backed off, no matter how fresh the side or how soon the next check', async () => {
+  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
+  await s.run('k1', async () => ({ bid: 1, ask: 1.1 }), 1_000) // a real quote, not quiet
+  // 1ms later, side fresh, well inside any backoff window: still eligible —
+  // backoff is not a "just probed" cooldown, it only protects a QUIET symbol.
+  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 1_001 }), 'eligible')
+})
+
+test('ProbeScheduler: a failed probe still counts for cap/backoff bookkeeping (it IS a no-quote result), and never rejects', async () => {
   const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
   const q = await s.run('k1', async () => { throw new Error('boom') }, 1_000)
   assert.equal(q, null)
@@ -128,7 +169,7 @@ test('ProbeScheduler: a failed probe still counts for cap/backoff bookkeeping, a
   const r = s.lastResult('k1')
   assert.equal(r.quote, null)
   assert.ok(r.error instanceof Error)
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 1_500 }), 'backoff', 'a failure still arms backoff — it is a completed probe')
+  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 1_500 }), 'backoff', 'a failure still arms backoff — it is a completed, quote-less probe')
 })
 
 test('ProbeScheduler.reset: drops all state (test seam / process restart)', async () => {
@@ -165,4 +206,39 @@ test('a batch of candidates under a cap of 2: exactly 2 launch concurrently, the
   maxInFlight = Math.max(...inflightSamples)
   assert.equal(maxInFlight, 2, 'both launched probes were in flight together')
   assert.equal(s.lastResult('c'), null, 'the deferred one never ran')
+})
+
+// ---------------------------------------------------------------------------
+// sortFair (B2, fix round 26-09-2026): never-probed keys first, then
+// oldest-probed-first — so a persistently over-cap batch does not relaunch
+// the same head-of-list keys every pass while the rest starve.
+// ---------------------------------------------------------------------------
+
+test('sortFair: never-probed keys come first, in their given order', () => {
+  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
+  assert.deepEqual(s.sortFair(['c', 'a', 'b']), ['c', 'a', 'b'])
+})
+
+test('sortFair: probed keys sort oldest lastProbeAt first, after every never-probed key', async () => {
+  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
+  await s.run('b', async () => ({ bid: 1, ask: 1 }), 3_000)
+  await s.run('a', async () => ({ bid: 1, ask: 1 }), 1_000)
+  await s.run('c', async () => ({ bid: 1, ask: 1 }), 2_000)
+  assert.deepEqual(s.sortFair(['b', 'a', 'c']), ['a', 'c', 'b'], 'oldest probe (a, t=1000) first')
+  assert.deepEqual(s.sortFair(['b', 'a', 'c', 'd']), ['d', 'a', 'c', 'b'], 'd was never probed — ahead of all three')
+})
+
+test('sortFair: starvation under a persistent over-cap batch resolves within ceil(N/cap) passes', () => {
+  const s = new ProbeScheduler({ cap: 2, backoffMs: 60_000 })
+  const all = ['a', 'b', 'c', 'd', 'e']
+  const everProbed = new Set()
+  let t = 1_000
+  for (let pass = 0; pass < 3; pass++) {
+    const ordered = s.sortFair(all)
+    const { launch } = selectUnderCap(ordered, 0, s.cap)
+    for (const k of launch) { s.lastProbeAt.set(k, t); s.results.set(k, { quote: null, at: t, error: null }); everProbed.add(k) }
+    t += 1
+  }
+  // ceil(5/2) = 3 passes must cover every key at least once.
+  assert.deepEqual([...everProbed].sort(), all, `every key must be probed within 3 passes, got ${[...everProbed].sort()}`)
 })

@@ -16,7 +16,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { initDB, setState } from '../db.js'
+import { initDB, setState, getState } from '../db.js'
 import { runFastMonitor, _resetFastDecisionStateForTests, _resetFastMonitorProbeSchedulerForTests, _setFastMonitorProbeCapForTests } from './fast-monitor.js'
 
 const CREDS = { ready: true, host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '111', isLive: false }
@@ -49,25 +49,31 @@ function addPos(db, symbol) {
 }
 
 let clockBase = 1_900_000_000_000
-function deps({ quotesBody = { feed: 'up', generation: 1, accountId: '111', count: 0, quotes: [] }, now, onProbe } = {}) {
+// `brokerQuote`: what wsGetSpotOnce resolves to — a fixed quote object by
+// default, or `null` to simulate a genuinely quiet symbol (no quote at
+// all), the only condition under which B1 lets backoff arm. May also be a
+// function of symbolId for per-symbol control.
+function deps({ quotesBody = { feed: 'up', generation: 1, accountId: '111', count: 0, quotes: [] }, now, onProbe, brokerQuote = { bid: 1.1005, ask: 1.1007 } } = {}) {
   const calls = { sidecar: [], ws: [] }
   const t = now ?? (clockBase += 3_600_000)
-  return {
+  const d = {
     calls,
     now: () => t,
+    brokerQuote, // read via `d.brokerQuote` below — reassignable mid-test, unlike a closed-over parameter
     ws: {
       wsGetTrendbarsBatch: async () => ({ '1m': [] }),
       wsGetSpotOnce: async (_h, _c, _s, _t, _a, symbolId) => {
         calls.ws.push(symbolId)
         onProbe?.(symbolId)
         await sleep(15)
-        return { bid: 1.1005, ask: 1.1007 }
+        return typeof d.brokerQuote === 'function' ? d.brokerQuote(symbolId) : d.brokerQuote
       },
     },
     exec: {
       sidecarQuotes: async (isLive) => { calls.sidecar.push({ isLive }); return typeof quotesBody === 'function' ? quotesBody(t) : quotesBody },
     },
   }
+  return d
 }
 
 test('M7 parallel batch: four symbols all needing a broker probe in ONE pass run CONCURRENTLY, not one at a time', async () => {
@@ -118,7 +124,9 @@ test('M7 backoff: a quiet symbol is not re-probed on the very next due tick whil
   // carry a fresh quote for another symbol on the same side (GBPUSD, id 2)
   // — the side is up, only EURUSD is quiet.
   const quotesWithOther = (tt) => ({ feed: 'up', generation: 1, accountId: '111', nowMs: tt, count: 1, quotes: [{ symbolId: 2, bid: 1.27, ask: 1.2702, tsMs: tt - 500, recvMs: tt - 500 }] })
-  const d = deps({ now: t, quotesBody: quotesWithOther })
+  // B1: backoff arms only after a NO-QUOTE probe — the broker mock must
+  // actually return nothing for EURUSD to legitimately exercise it.
+  const d = deps({ now: t, quotesBody: quotesWithOther, brokerQuote: null })
   const out1 = await runFastMonitor(db, CREDS, d)
   assert.deepEqual(out1.quotes, { fromSidecar: 0, fromBroker: 1, stale: 0 })
   assert.deepEqual(d.calls.ws, [1], 'first tick: probed once')
@@ -145,4 +153,154 @@ test('M7 backoff: a quiet symbol is not re-probed on the very next due tick whil
   const out2b = await runFastMonitor(db2, CREDS, d2)
   assert.deepEqual(out2b.quotes, { fromSidecar: 0, fromBroker: 1, stale: 0 })
   assert.deepEqual(d2.calls.ws, [1, 1], 'a quiet SIDE keeps retrying every tick — never backs off')
+})
+
+test('B1: a stale cached quote is NEVER evaluated — a cap-deferred position takes the no-quote path, not its old probe result', async () => {
+  const db = mkDb()
+  _setFastMonitorProbeCapForTests(1)
+  try {
+    addPos(db, 'EURUSD') // BUY, entry 1.1000, stop 1.0950
+    let t = clockBase += 3_600_000
+    setState(db, 'monitor_overrides_json', JSON.stringify({ EURUSD: 0.01, GBPUSD: 0.01 }))
+    const emptySide = { feed: 'up', generation: 1, accountId: '111', count: 0, quotes: [] }
+
+    // Pass 1: EURUSD alone, probe succeeds with a SAFE quote well clear of
+    // its stop — this is the quote a bug would later reuse.
+    const d1 = deps({ now: t, quotesBody: emptySide, brokerQuote: { bid: 1.1005, ask: 1.1007 } })
+    const out1 = await runFastMonitor(db, CREDS, d1)
+    assert.equal(out1.checked, 1, 'pass 1: evaluated on the real quote')
+    const row1 = db.prepare(`SELECT last_check_action FROM monitored_positions WHERE symbol = 'EURUSD'`).get()
+    assert.match(row1.last_check_action, /FAST:HOLD/)
+
+    // Pass 2: GBPUSD now also due; the broker would answer 1.0900 for
+    // EURUSD if asked — THROUGH the 1.0950 stop — but the cap (1) is fair
+    // (sortFair): GBPUSD, never probed, wins it; EURUSD, already probed
+    // once, is deferred. If EURUSD's OLD safe quote were reused, it would
+    // wrongly HOLD; it must instead take the no-quote path.
+    addPos(db, 'GBPUSD')
+    t += 20_000
+    const brokerNowThroughStop = (symbolId) => (symbolId === 1 ? { bid: 1.0900, ask: 1.0902 } : { bid: 1.27, ask: 1.2702 })
+    const d2 = deps({ now: t, quotesBody: emptySide, brokerQuote: brokerNowThroughStop })
+    const out2 = await runFastMonitor(db, CREDS, d2)
+    assert.deepEqual(d2.calls.ws, [2], 'only GBPUSD (never-probed) actually reached the broker this pass — EURUSD did not')
+    const row2 = db.prepare(`SELECT last_check_action, status FROM monitored_positions WHERE symbol = 'EURUSD'`).get()
+    assert.equal(row2.status, 'active', 'never touched by a broker action from a stale quote')
+    // The pass-1 HOLD stamp is the last thing written for EURUSD — pass 2
+    // must not have re-stamped it from an invented/cached evaluation.
+    assert.match(row2.last_check_action, /FAST:HOLD/, 'still the pass-1 stamp, not a fresh (and wrong) one')
+    const readWork = () => JSON.parse(getState(db, 'fast_monitor_position_work_json')).positions
+    const eurReceipt = readWork().find((p) => p.symbol === 'EURUSD')
+    assert.equal(eurReceipt.probeState, 'deferred')
+    assert.equal(eurReceipt.state, 'quote_unavailable', 'deferred takes the no-quote path — never "evaluated"')
+    void out2
+  } finally {
+    _setFastMonitorProbeCapForTests(8)
+  }
+})
+
+test('M7: a symbol with a successful probe is re-probed on its normal cadence (never permanently deferred/backed off); a spike still fast-tracks it', async () => {
+  const db = mkDb()
+  addPos(db, 'EURUSD')
+  setState(db, 'monitor_overrides_json', JSON.stringify({ EURUSD: 0.01 })) // 15s-floor cadence
+  let t = clockBase += 3_600_000
+  const emptySide = { feed: 'up', generation: 1, accountId: '111', count: 0, quotes: [] }
+  const d = deps({ now: t, quotesBody: emptySide, brokerQuote: { bid: 1.1005, ask: 1.1007 } })
+  const out1 = await runFastMonitor(db, CREDS, d)
+  assert.equal(out1.checked, 1)
+  assert.deepEqual(d.calls.ws, [1])
+
+  // Normal cadence: 20s later (past the 15s floor), still due, a SECOND
+  // real broker probe — a successful probe is never backed off (B1), so it
+  // is not stuck reusing pass 1's answer.
+  t += 20_000
+  d.now = () => t
+  const out2 = await runFastMonitor(db, CREDS, d)
+  assert.equal(out2.checked, 1, 'pass 2 evaluated again, on a fresh probe')
+  assert.deepEqual(d.calls.ws, [1, 1], 'a genuine second broker round trip, not a reuse')
+
+  // Pass 3, 20s later (normal cadence again — NOT yet a spike): the price
+  // jumps hard versus pass 2's 1.1006. isSpikeMove is evaluated AFTER this
+  // pass prices, comparing against the PREVIOUS mid — so this pass arms
+  // spikeUntil for the position but is itself still an ordinary due-by-
+  // cadence check.
+  t += 20_000
+  d.now = () => t
+  d.brokerQuote = { bid: 1.1200, ask: 1.1202 } // ~1.8% move in 20s — far past SPIKE_PCT_PER_MIN
+  const out3 = await runFastMonitor(db, CREDS, d)
+  assert.equal(out3.checked, 1, 'pass 3: due by cadence as usual, and this is where the spike is detected')
+  assert.deepEqual(d.calls.ws, [1, 1, 1])
+
+  // Pass 4, 0.5s later — far too soon for the 15s cadence on its own: the
+  // spike armed by pass 3 must fast-track it anyway.
+  t += 500
+  d.now = () => t
+  d.brokerQuote = { bid: 1.1205, ask: 1.1207 }
+  const out4 = await runFastMonitor(db, CREDS, d)
+  assert.equal(out4.checked, 1, 'the spike, not the cadence, made this due')
+  assert.deepEqual(d.calls.ws, [1, 1, 1, 1], 'the spike triggered a real fourth probe')
+})
+
+test('B2: a cap-deferred item is NOT stamped lastCheckAt — it stays due on the very next tick, no matter how soon', async () => {
+  const db = mkDb()
+  _setFastMonitorProbeCapForTests(1)
+  try {
+    addPos(db, 'EURUSD'); addPos(db, 'GBPUSD')
+    setState(db, 'monitor_overrides_json', JSON.stringify({ EURUSD: 0.01, GBPUSD: 0.01 }))
+    let t = clockBase += 3_600_000
+    const emptySide = { feed: 'up', generation: 1, accountId: '111', count: 0, quotes: [] }
+    const d = deps({ now: t, quotesBody: emptySide, brokerQuote: { bid: 1.1005, ask: 1.1007 } })
+    const out1 = await runFastMonitor(db, CREDS, d)
+    assert.equal(out1.checked, 1, 'only one of the two — the cap is 1')
+    assert.deepEqual(d.calls.ws, [1], 'EURUSD (first in insertion order, never-probed) wins the cap')
+    const readWork = () => JSON.parse(getState(db, 'fast_monitor_position_work_json')).positions
+    const gbpAfter1 = readWork().find((p) => p.symbol === 'GBPUSD')
+    assert.equal(gbpAfter1.probeState, 'deferred')
+
+    // 200ms later — nowhere near the 15s cadence floor on its own. If the
+    // deferred item had been stamped lastCheckAt in pass 1 (the bug), it
+    // would read as not_due here; it must instead still be due, because it
+    // was never actually checked.
+    t += 200
+    d.now = () => t
+    const out2 = await runFastMonitor(db, CREDS, d)
+    assert.deepEqual(d.calls.ws, [1, 2], 'GBPUSD (deferred last time, never-probed still beats EURUSD which already ran once) now gets the cap')
+    const gbpAfter2 = readWork().find((p) => p.symbol === 'GBPUSD')
+    assert.equal(gbpAfter2.probeState, 'probed', 'no longer deferred — it was still due, not skipped by a false lastCheckAt stamp')
+    assert.equal(out2.checked, 1)
+  } finally {
+    _setFastMonitorProbeCapForTests(8)
+  }
+})
+
+test('B2: fairness — N > cap positions on an empty side are ALL probed within ceil(N/cap) passes, none starved', async () => {
+  const db = mkDb()
+  const CAP = 2
+  _setFastMonitorProbeCapForTests(CAP)
+  try {
+    const symbols = ['EURUSD', 'GBPUSD', 'USDCAD', 'AUDUSD', 'NZDUSD']
+    setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1, GBPUSD: 2, USDCAD: 3, AUDUSD: 4, NZDUSD: 5 }))
+    for (const s of symbols) addPos(db, s)
+    setState(db, 'monitor_overrides_json', JSON.stringify(Object.fromEntries(symbols.map((s) => [s, 0.01]))))
+    let t = clockBase += 3_600_000
+    const emptySide = { feed: 'up', generation: 1, accountId: '111', count: 0, quotes: [] } // the side itself: nothing ever fresh
+    const d = deps({ now: t, quotesBody: emptySide, brokerQuote: { bid: 1.1005, ask: 1.1007 } })
+    const everProbed = new Set()
+    const passes = Math.ceil(symbols.length / CAP)
+    for (let pass = 0; pass < passes; pass++) {
+      // 20s each pass: past the 15s cadence floor, so EVERY symbol —
+      // winners of the previous pass's cap included — is due again, not
+      // just the ones the cap deferred. This is what makes the ordering
+      // itself (sortFair), not merely "don't stamp a deferred item",
+      // load-bearing: without it, the same first `cap` keys in raw
+      // insertion order would win every single pass, starving the rest
+      // outright rather than resolving within ceil(N/cap) passes.
+      if (pass > 0) { t += 20_000; d.now = () => t }
+      d.calls.ws.length = 0
+      await runFastMonitor(db, CREDS, d)
+      for (const id of d.calls.ws) everProbed.add(id)
+    }
+    assert.deepEqual([...everProbed].sort((a, b) => a - b), [1, 2, 3, 4, 5], `every symbol must be probed within ${passes} passes (cap ${CAP}, ${symbols.length} symbols)`)
+  } finally {
+    _setFastMonitorProbeCapForTests(8)
+  }
 })

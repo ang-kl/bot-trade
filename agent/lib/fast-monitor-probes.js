@@ -36,14 +36,29 @@
 
 /** Default concurrent-probe ceiling — comfortably above one side's usual open-position count; env-overridable per OD-22's cap. */
 export const PROBE_CAP_DEFAULT = 8
+/** Fix round (26-09-2026, B3): a cap of 0 disables probing silently and an unbounded one opens as many authed broker sockets as there are due positions — both are refused. */
+export const PROBE_CAP_MAX = 32
 
 /** OD-22: the backoff must never exceed 5 minutes, however it is configured. */
 export const PROBE_BACKOFF_MAX_MS = 5 * 60_000
 export const PROBE_BACKOFF_DEFAULT_MS = 60_000
 
+/**
+ * Validate a cap value: floor it FIRST (so 0.5 is 0, not a valid 1), THEN
+ * require it be at least 1, THEN clamp it to PROBE_CAP_MAX. A non-finite,
+ * sub-1 or missing value falls back to PROBE_CAP_DEFAULT rather than being
+ * silently coerced into something that disables or unbounds probing.
+ */
+export function clampCap(n) {
+  const num = Number(n)
+  if (!Number.isFinite(num)) return PROBE_CAP_DEFAULT
+  const floored = Math.floor(num)
+  if (floored < 1) return PROBE_CAP_DEFAULT
+  return Math.min(floored, PROBE_CAP_MAX)
+}
+
 export function probeCap(env = process.env) {
-  const n = Number(env?.FAST_MONITOR_PROBE_CAP)
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : PROBE_CAP_DEFAULT
+  return clampCap(env?.FAST_MONITOR_PROBE_CAP)
 }
 
 /** Always <= PROBE_BACKOFF_MAX_MS, whatever the env says (OD-22's ceiling is not configurable away). */
@@ -111,7 +126,12 @@ export function sideHasFreshQuoteExcluding(quotesMap, excludeSymbolId, nowMs, ma
  */
 export class ProbeScheduler {
   constructor({ cap = PROBE_CAP_DEFAULT, backoffMs = PROBE_BACKOFF_DEFAULT_MS } = {}) {
-    this.cap = cap
+    // B3 (fix round, 26-09-2026): the constructor validates its OWN cap
+    // rather than trusting the caller to have — a cap of 0 or unbounded
+    // must never reach `this.cap` by any path, including a direct
+    // reconfigure (fast-monitor.js's `_setFastMonitorProbeCapForTests`
+    // goes through this same `clampCap`, not a bare assignment).
+    this.cap = clampCap(cap)
     this.backoffMs = Math.min(backoffMs, PROBE_BACKOFF_MAX_MS)
     this.inflight = new Set()
     this.lastProbeAt = new Map()
@@ -126,16 +146,45 @@ export class ProbeScheduler {
   /**
    * Decide what a probe for `key` should do THIS pass, without running
    * anything: 'pending' (already in flight — do not relaunch), 'backoff'
-   * (recently probed, other symbols on this side are fresh — reuse the
-   * cached result, if any) or 'eligible' (may launch, subject to the cap).
-   * `nowMs` is the CALLER's clock (see the class note above).
+   * (its LAST probe returned no quote, and other symbols on this side are
+   * fresh — never used to reuse a quote, only to skip re-probing) or
+   * 'eligible' (may launch, subject to the cap). `nowMs` is the CALLER's
+   * clock (see the class note above).
+   *
+   * B1 (fix round, 26-09-2026): backoff arms ONLY when the previous probe
+   * for this key returned NO quote. A key whose last probe actually priced
+   * it is never backed off — there is nothing stale to protect against
+   * re-probing, and the caller must not be tempted to reuse that quote on
+   * a later pass. `lastResult(key)` — not `shouldBackoff` alone — is what
+   * makes that true: a key with a successful last probe always evaluates
+   * to 'eligible' here regardless of elapsed time or side freshness.
    */
   plan(key, { sideHasFreshQuote = false, nowMs } = {}) {
     if (this.inflight.has(key)) return 'pending'
-    if (shouldBackoff({ lastProbeAtMs: this.lastProbeAt.get(key) ?? null, nowMs, backoffMs: this.backoffMs, sideHasFreshQuote })) {
+    const last = this.results.get(key)
+    const lastProbeHadNoQuote = last ? last.quote == null : false
+    if (lastProbeHadNoQuote && shouldBackoff({ lastProbeAtMs: this.lastProbeAt.get(key) ?? null, nowMs, backoffMs: this.backoffMs, sideHasFreshQuote })) {
       return 'backoff'
     }
     return 'eligible'
+  }
+
+  /**
+   * Order `keys` fairly for the cap (B2, fix round 26-09-2026): symbols
+   * never probed at all come first (in the order given — first noticed
+   * this pass, not alphabetical), then symbols probed before, oldest
+   * `lastProbeAt` first. Without this, `selectUnderCap` — which is itself
+   * order-preserving — would relaunch the same head-of-list `cap` keys
+   * every pass while the rest starve indefinitely on a persistently
+   * over-subscribed side.
+   */
+  sortFair(keys) {
+    const list = Array.isArray(keys) ? keys : []
+    const never = []
+    const probed = []
+    for (const k of list) (this.lastProbeAt.has(k) ? probed : never).push(k)
+    probed.sort((a, b) => this.lastProbeAt.get(a) - this.lastProbeAt.get(b))
+    return [...never, ...probed]
   }
 
   /**

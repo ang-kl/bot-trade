@@ -13,7 +13,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
-import { runFastMonitor, startFastMonitor, pickSidecarQuote, quoteMapFrom, sidecarSymbolIdFor, quoteMaxAgeMs, QUOTE_MAX_AGE_DEFAULT_MS, PASS_RECORD_KEY, _resetFastDecisionStateForTests } from './fast-monitor.js'
+import { runFastMonitor, startFastMonitor, pickSidecarQuote, quoteMapFrom, sidecarSymbolIdFor, quoteMaxAgeMs, QUOTE_MAX_AGE_DEFAULT_MS, PASS_RECORD_KEY, _resetFastDecisionStateForTests, _resetFastMonitorProbeSchedulerForTests } from './fast-monitor.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 
 const CREDS = { ready: true, host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '111', isLive: false }
@@ -41,6 +41,14 @@ function mkDb() {
   setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1, GBPUSD: 2, USDJPY: 3, USDCAD: 4 }))
   for (const a of ['111', '222', '333', '444', '555', '666']) setState(db, accountSymbolMapKey(a), null)
   _resetFastDecisionStateForTests()
+  // M7's probe scheduler is a process-wide singleton (fast-monitor.js), so
+  // its cap/backoff/fairness bookkeeping otherwise carries between the
+  // independent cases in this file — e.g. a feedKey that happened to be
+  // probed by an earlier test would sort as "already probed" here instead
+  // of "never probed", reordering a launch batch this file asserts the
+  // order of. Every case here starts from a clean scheduler, same as it
+  // already gets a clean decision-state and a clean position table.
+  _resetFastMonitorProbeSchedulerForTests()
   return db
 }
 function addPos(db, symbol, accountId, { source = 'autopilot', sl = 1.0950 } = {}) {
