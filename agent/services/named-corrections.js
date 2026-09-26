@@ -2,18 +2,19 @@
 // agent/services/named-corrections.js — B2b + UI-5 (docs/v3-integrated-plan-
 // 2026-09-26.md §5 row 2.6, §6 OD-11/OD-12).
 //
-// OD-11 (write-off rule, owner yes 26-09-2026): "A history with no deals
-// reads never_filled. An account is written onto a row only from broker
-// evidence." This is the WRITE-OFF gate for a row this ledger still holds
-// open/pending: if position-lifecycle-evidence.js has already returned a
-// FINAL `never_filled` verdict for it (V3-SEQUENCE.md #13, B2: "the broker
-// holds only rejected/internally-rejected/errored/missed deals for this
-// position"), that is decidable NOW, from broker evidence, not after an age
-// horizon and a backoff count (mark-unresolvable.js's 2026-07-30 "option 2"
-// rule, which this reverses for exactly this case — see the module doc
-// there). Rejecting the row (never deleting it) is B2b/B5's to do, on the
-// owner's word (mark-unresolvable.js's own comment: "Rejecting such a row
-// (status) is B2b/B5's, on the owner's word; this is the label only.").
+// OD-11 SCOPE, NARROWED (checker fix round, N4). OD-11's owner-approved text
+// is "A history with no deals reads never_filled. An account is written onto
+// a row only from broker evidence." This module implements only the SECOND
+// half: a non-terminal trade row whose broker-lifecycle evidence
+// (position-lifecycle-evidence.js) is ALREADY a FINAL `never_filled` verdict
+// is rejected — status only, never deleted, only from evidence joined on the
+// row's OWN account and position, never inferred. It does NOT implement the
+// first half (changing `classifyPositionHistory`'s zero-deal answer from
+// `empty_at_broker` to `never_filled` — position-lifecycle-evidence.js:128,
+// pinned by its own tests at :83, :247, :364). That is a change to an
+// existing, separately-tested verdict and needs its own review; it is named
+// here as a FOLLOW-UP, not claimed done. OD-11 is therefore NOT complete
+// after this PR — only the rejection half is.
 //
 // OD-12 (named corrections, owner yes 26-09-2026): "dry run first, then a
 // named apply, with nothing deleted." Covers the money fixes named in
@@ -34,15 +35,32 @@
 // the one asked about", V3 I1). So every correction here re-stamps by TRADE
 // ID only (stampRealisedAudit(db, id)), never by position.
 //
+// ABSOLUTE ONLY (checker fix round, BLOCKER 1). A `delta` mode was tried and
+// removed: it always read net_pnl FRESH and added to it, so applying the same
+// named list twice moved the money twice (reproduced: a second apply on #1253
+// moved it to 1873). A named correction is evidence of what a row's value WAS
+// at one point — the broker lifecycle net measured once — so every entry
+// carries BOTH `expectedOld` and `value`, and a write only ever happens when
+// the row's current value still equals `expectedOld`. Applying the same list
+// any number of times writes the row once and skips it as stale every time
+// after — see the idempotence test.
+//
+// THE AUDIT TRAIL. A dry-run call still reaches `POST /actions/named-
+// corrections`, and index.js's `/actions` middleware logs EVERY POST there —
+// one `action_log` row (method, path, redacted body) per call, unconditionally,
+// before this module runs at all. That row is the only thing a dry run writes;
+// this module itself writes nothing until `apply: true`, and even then writes
+// only the `NAMED_CORRECTION_APPLY` row below when something was actually
+// applied.
+//
 // WHAT THIS NEVER DOES: compute or guess a P&L figure, delete a row, or
 // write anything without an explicit `apply: true`. A correction whose
 // current value no longer matches what it was named against is SKIPPED, not
-// forced — the named list is evidence captured at one point in time, and a
-// row that moved since (a fresh backfill, a race) must not be silently
-// overwritten.
+// forced.
 // ---------------------------------------------------------------------------
 
 import { stampRealisedAudit } from './trade-consistency.js'
+import { EVIDENCE_RULES } from './position-lifecycle-evidence.js'
 
 const r2 = v => Math.round(Number(v) * 100) / 100
 
@@ -56,10 +74,13 @@ export const NEVER_FILLED_REJECT_STATUSES = Object.freeze(['open', 'submitting',
 
 /**
  * PURE READ. Rows this ledger still holds non-terminal whose broker lifecycle
- * evidence (position-lifecycle-evidence.js) is a FINAL `never_filled` verdict
- * for the SAME account and position — "an account is written onto a row only
- * from broker evidence" (OD-11): the join is on both `account_id` and
- * `position_id`, never inferred.
+ * evidence (position-lifecycle-evidence.js) is a FINAL `never_filled` verdict,
+ * UNDER THE CURRENT RULES (`e.rules = EVIDENCE_RULES` — checker N5, the same
+ * finality principle position-lifecycle-evidence.js's own B2 checker N3
+ * applies: a verdict stored under an OLDER rules version is due a re-read, not
+ * trusted as final), for the SAME account and position — "an account is
+ * written onto a row only from broker evidence" (OD-11): the join is on both
+ * `account_id` and `position_id`, never inferred.
  */
 export function neverFilledRejectionCandidates(db) {
   const placeholders = NEVER_FILLED_REJECT_STATUSES.map(() => '?').join(',')
@@ -76,8 +97,9 @@ export function neverFilledRejectionCandidates(db) {
        AND CAST(t.ctrader_position_id AS INTEGER) > 0
        AND e.verdict = 'never_filled'
        AND e.final = 1
+       AND e.rules = ?
      ORDER BY t.id
-  `).all(...NEVER_FILLED_REJECT_STATUSES)
+  `).all(...NEVER_FILLED_REJECT_STATUSES, EVIDENCE_RULES)
 }
 
 /** The dry-run rows for the never-filled rejections, in the one common shape
@@ -119,35 +141,37 @@ export function applyNeverFilledRejections(db) {
 }
 
 // ---------------------------------------------------------------------------
-// OD-12's named money corrections (H-P5b-1, V3-SEQUENCE.md #13/#36).
+// OD-12's named money corrections (H-P5b-1, checker-confirmed against
+// production — every `expectedOld` below is the value the checker read live,
+// all five rows `closed`).
 //
-// Each entry is EVIDENCE CAPTURED AT ONE POINT IN TIME, never a blind
-// overwrite: `mode: 'delta'` adds `value` to whatever net_pnl holds now (the
-// broker-lifecycle-net corrections #1253/#714/#471/#466/#309); `mode:
-// 'absolute'` replaces net_pnl only if it still equals `expectedOld` (the
-// duplicate-group pricing bug, trade-integrity.js:111 — USDCNH #47 priced at
-// the DUPLICATE's -196.35 instead of its own -59.73).
+// ABSOLUTE ONLY (see the module doc — BLOCKER 1). Each entry writes `value`
+// ONLY when net_pnl still equals `expectedOld`; applying twice writes once,
+// then skips (idempotence test below).
+//
+// #47's entry was REMOVED (checker BLOCKER 2): the −196.35 named against it
+// was a REPORT bug in trade-integrity.js's duplicate-group display (already
+// fixed in B2, not a ledger-row defect) — production holds #47 at its own
+// −59.73 and #46 at −196.35, so #47 needed no correction at all.
 //
 // STILL NAMED, NOT YET VALUED. H-P5b-1 also names the pairs #1309/#1310 and
-// #309/#310 as needing correction, and D5/§4 name 28 wrong-unit trade plans
-// and 7 PRE rows mislabelled `external`, but no source read for this build
-// gives their exact old/new values or row ids beyond the pair numbers
-// themselves — inventing one would be exactly the failure CLAUDE.md's
+// #309/#310 as needing correction (#310, on #309's position, is rejected —
+// not corrected — at 351 per the checker, so it is not a money-correction
+// target here); #1309/#1310 has no concrete old/new values in anything read
+// for this build. D5/§4 name 28 wrong-unit trade plans and 7 PRE rows
+// mislabelled `external`, likewise with counts but no row-level values.
+// Inventing any of these would be exactly the failure CLAUDE.md's
 // recurring-failure-mode #6 (say which field is wrong before saying the data
 // is corrupt) warns against. `namedList` is the extension point: the owner's
 // exact evidence for those, once named, runs through the same dry-run/apply
 // path below unchanged.
 // ---------------------------------------------------------------------------
 export const NAMED_MONEY_CORRECTIONS = Object.freeze([
-  { id: 1253, table: 'trades', field: 'net_pnl', mode: 'delta', value: 504.5, evidence: 'H-P5b-1: broker lifecycle net corrects #1253 by +504.5' },
-  { id: 714, table: 'trades', field: 'net_pnl', mode: 'delta', value: 199.8, evidence: 'H-P5b-1: broker lifecycle net corrects #714 by +199.8' },
-  { id: 471, table: 'trades', field: 'net_pnl', mode: 'delta', value: -32.5, evidence: 'H-P5b-1: broker lifecycle net corrects #471 by -32.5' },
-  { id: 466, table: 'trades', field: 'net_pnl', mode: 'delta', value: -76.5, evidence: 'H-P5b-1: broker lifecycle net corrects #466 by -76.5' },
-  { id: 309, table: 'trades', field: 'net_pnl', mode: 'delta', value: -84.5, evidence: 'H-P5b-1: broker lifecycle net corrects #309 by -84.5' },
-  {
-    id: 47, table: 'trades', field: 'net_pnl', mode: 'absolute', value: -59.73, expectedOld: -196.35,
-    evidence: 'V3 B2 (P5b-2): duplicate group priced #47 at the OTHER row\'s net_pnl (-196.35); its own broker lifecycle net is -59.73 (USDCNH, trade-integrity.js:111)',
-  },
+  { id: 1253, table: 'trades', field: 'net_pnl', expectedOld: 864, value: 1368.5, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #1253 (closed)' },
+  { id: 714, table: 'trades', field: 'net_pnl', expectedOld: 2.91, value: 202.71, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #714 (closed)' },
+  { id: 471, table: 'trades', field: 'net_pnl', expectedOld: 70, value: 37.5, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #471 (closed)' },
+  { id: 466, table: 'trades', field: 'net_pnl', expectedOld: 115.8, value: 39.3, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #466 (closed)' },
+  { id: 309, table: 'trades', field: 'net_pnl', expectedOld: 435.5, value: 351, evidence: 'H-P5b-1: checker-confirmed broker lifecycle net for #309 (closed); #310 on the same position is rejected, not corrected' },
 ])
 
 const FIELD_ALLOWLIST = Object.freeze(['net_pnl'])
@@ -169,14 +193,9 @@ function planOne(db, entry) {
     return { id: entry.id, table: entry.table, field: entry.field, old: row.current, new: null, evidence: entry.evidence, stale: true, reason: `row status is ${row.status}, not closed` }
   }
   const current = row.current == null ? null : Number(row.current)
-  if (entry.mode === 'absolute') {
-    const matches = current != null && Math.abs(current - Number(entry.expectedOld)) <= TOLERANCE
-    return { id: entry.id, table: entry.table, field: entry.field, old: current, new: r2(entry.value), evidence: entry.evidence, stale: !matches,
-      ...(matches ? {} : { reason: `current ${current} does not match the named expectedOld ${entry.expectedOld}` }) }
-  }
-  // delta
-  if (current == null) return { id: entry.id, table: entry.table, field: entry.field, old: null, new: null, evidence: entry.evidence, stale: true, reason: 'net_pnl is NULL — nothing to correct a delta against' }
-  return { id: entry.id, table: entry.table, field: entry.field, old: current, new: r2(current + Number(entry.value)), evidence: entry.evidence, stale: false }
+  const matches = current != null && Math.abs(current - Number(entry.expectedOld)) <= TOLERANCE
+  return { id: entry.id, table: entry.table, field: entry.field, old: current, new: r2(entry.value), evidence: entry.evidence, stale: !matches,
+    ...(matches ? {} : { reason: `current ${current} does not match the named expectedOld ${entry.expectedOld}` }) }
 }
 
 /** Dry run: every named correction, its current value, what it would become,
@@ -186,15 +205,19 @@ export function planNamedCorrections(db, { namedList = NAMED_MONEY_CORRECTIONS }
 }
 
 /**
- * Apply the named money corrections. Re-checks each row against the SAME
- * rule planNamedCorrections used, inside the write itself (`WHERE ... AND
- * <field> = ?` on the value just read), so a row that changed between the
- * plan and the write is skipped, never overwritten out from under a race.
- * Re-stamps ONLY the corrected row (never the whole position — the re-stamp
- * fix, see the module doc) so a duplicate sibling is left untouched.
+ * Apply the named money corrections. `plan`, if given, is used AS-IS instead
+ * of being recomputed — the extension point for testing (and for any caller
+ * that wants to read the plan, let time pass, then apply exactly what it
+ * read) — the WRITE-TIME check below is what makes that safe: the UPDATE's
+ * `AND net_pnl = ?` guard re-reads the row inside the write itself, so a row
+ * that changed after `plan` was computed (whether recomputed fresh a moment
+ * ago, or read long before and handed in stale) is skipped, never
+ * overwritten out from under a race. Re-stamps ONLY the corrected row (never
+ * the whole position — the re-stamp fix, see the module doc) so a duplicate
+ * sibling is left untouched.
  */
-export function applyNamedMoneyCorrections(db, { namedList = NAMED_MONEY_CORRECTIONS } = {}) {
-  const plans = planNamedCorrections(db, { namedList })
+export function applyNamedMoneyCorrections(db, { namedList = NAMED_MONEY_CORRECTIONS, plan = null } = {}) {
+  const plans = plan ?? planNamedCorrections(db, { namedList })
   const applied = [], skipped = []
   const stmt = db.prepare(`UPDATE trades SET net_pnl = ? WHERE id = ? AND status = 'closed' AND net_pnl = ?`)
   db.transaction(() => {
@@ -223,7 +246,10 @@ export function applyNamedMoneyCorrections(db, { namedList = NAMED_MONEY_CORRECT
 /**
  * ONE entry point for the route and any script, same shape as
  * origin-backfill.js's runOriginBackfill: DRY RUN IS THE DEFAULT and
- * `apply: true` is the only way past it.
+ * `apply: true` is the only way past it. Every call — dry run included —
+ * still lands ONE `action_log` row through index.js's `/actions` request
+ * middleware (see the module doc); this function itself writes nothing on a
+ * dry run.
  *
  * @param {boolean} opts.apply
  * @param {boolean} opts.includeNeverFilled OD-11's write-off rejections

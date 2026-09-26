@@ -4824,20 +4824,26 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/named-corrections — V3 B2b/B5 (docs/v3-integrated-plan-
+  // POST /actions/named-corrections — V3 B2b (docs/v3-integrated-plan-
   // 2026-09-26.md §5 row 2.6, §6 OD-11/OD-12, owner yes 26-09-2026).
   // Body: { apply?: boolean, includeNeverFilled?: boolean, includeMoney?: boolean }.
-  // DRY RUN BY DEFAULT — see services/named-corrections.js.
+  // DRY RUN BY DEFAULT — see services/named-corrections.js. `apply` is read
+  // strictly as the JSON boolean `true`; a string `"true"`, a query param, or
+  // anything else all read as dry run.
   //
-  // Two named corrections, one engine: OD-11's write-off rejections (a row
-  // this ledger still holds open/pending whose broker-lifecycle evidence is
-  // a FINAL never_filled verdict is rejected — status only, never deleted)
-  // and OD-12's named money corrections (H-P5b-1's five net_pnl deltas plus
-  // the #47 duplicate-group pricing fix). NOTHING IS WRITTEN WITHOUT
+  // OD-11 (the write-off REJECTION half only — see the module doc; changing
+  // the zero-deal verdict itself to never_filled is a named follow-up, not
+  // done here) and OD-12's named money corrections (H-P5b-1's five checker-
+  // confirmed net_pnl corrections, absolute + expectedOld only — see the
+  // module doc for why `delta` was removed). NOTHING IS WRITTEN WITHOUT
   // `apply: true`; the default response is the plan (id, field, old -> new,
   // evidence, and whether it is stale) so the operator reads it before
   // authorising a write. A stale entry (the row moved since the evidence was
-  // captured) is reported and skipped, never forced.
+  // captured) is reported and skipped, never forced. Even a dry-run call
+  // still lands the one `action_log` row index.js's `/actions` request
+  // middleware writes for every POST here (method, path, redacted body,
+  // before this handler runs at all) — this handler itself writes nothing
+  // until `apply: true` actually changes a row.
   // -----------------------------------------------------------------------
   router.post('/named-corrections', async (req, res) => {
     try {
