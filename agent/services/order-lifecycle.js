@@ -47,6 +47,7 @@ import { requestedAccount, scopeReport } from '../lib/account-scope.js'
 import { RETIRED_CONTROLLERS } from '../shared/controller-groups.js'
 import { CONTROLLERS, heartbeatView } from './heartbeat.js'
 import { digestState, loadNotifyConfig, DIGEST_STATE_SQL, DIGEST_REASON_ROWS_MAX } from './telegram-digest.js'
+import { classifyFlaggedClose, refusedClassesPhrase, REFUSED_CLASSES, CLASSED_ON_REFUSED_VIEW } from './position-history.js'
 
 export const SCHEMA_VERSION = 1
 export const SNAPSHOT_KEY = 'order_lifecycle_last_json'
@@ -72,6 +73,18 @@ export const UNATTRIBUTED_SAMPLE_MAX = 5
  * (heartbeat.js order_lifecycle maxAgeSec 1800) and the falsifiers' coverage.
  */
 export const SNAPSHOT_FRESH_MS = 30 * 60_000
+/**
+ * V3 B4b (B4 checker nit 5): the close rules whose NEW records the close goal
+ * row names one by one — account, symbol, position id, what is missing, and
+ * the refused class with its reason (position-history.js
+ * classifyRefusedRecord, the one classifier). Every other close rule's
+ * records are counted in the same row and not named here.
+ */
+export const NAMED_CLOSE_RULES = Object.freeze(['CLS-04', 'CLS-03'])
+/** At most this many named records ride in a report or snapshot — the goal table's GOAL_ITEMS_MAX (B4); the rest are counted, never dropped. */
+export const NAMED_RECORDS_MAX = 50
+/** A named record's reason is cut to this many characters (the snapshot is bounded at SNAPSHOT_MAX_BYTES). */
+const NAMED_REASON_MAX = 240
 /** A trade younger than this is still being written (its plan, its monitored row): ORD-01 and STK-04, the same 10 minutes ORD-09 carries inline. */
 export const WRITE_GRACE_MS = 10 * 60_000
 /** At most this many subjects are named per information class (STK-11's record_stale / never_ran). */
@@ -1531,6 +1544,51 @@ function summarise(results, win, cfg) {
 }
 
 /**
+ * V3 B4b: the NEW records the named close rules flag (NAMED_CLOSE_RULES),
+ * one item per distinct record — the unit the stage headline counts — each
+ * with its account, symbol, position id, what is missing, the rule(s) and
+ * rule class that flagged it, and its refused class and reason from
+ * position-history's classifier (classifyFlaggedClose → classifyRefusedRecord).
+ * `total` and `byClass` cover EVERY such record (byClass partitions total);
+ * `items` lists the first NAMED_RECORDS_MAX, actionable class first. It reads
+ * the entries the rules already produced and changes no count: a record
+ * whose position is stored complete by now is still named and counted, with
+ * `stored` saying where it lives. A scoped report names its unattributed
+ * records beside the account too, as the stage headline counts them (L1c).
+ */
+function namedCloseRecords(db, results) {
+  const recs = new Map()
+  for (const { res, entries, beside } of results) {
+    if (!NAMED_CLOSE_RULES.includes(res.id)) continue
+    for (const e of [...entries, ...(beside?.entries ?? [])]) {
+      if (!e.new) continue
+      const key = e.record ?? e.subject
+      let r = recs.get(key)
+      if (!r) recs.set(key, (r = { key, account: e.account ?? null, rules: new Set(), missing: new Set(), tradeId: null, at: null }))
+      r.rules.add(`${res.id} ${e.class ?? res.key}`)
+      for (const f of e.missing || []) r.missing.add(String(f))
+      const t = /^trade:(\d+)$/.exec(String(e.subject))
+      if (t && r.tradeId == null) r.tradeId = Number(t[1])
+      if (e.at != null && (r.at == null || Date.parse(e.at) > Date.parse(r.at))) r.at = e.at
+    }
+  }
+  const order = Object.keys(REFUSED_CLASSES)
+  const byClass = Object.fromEntries(order.map(k => [k, 0]))
+  const items = []
+  for (const r of recs.values()) {
+    const p = /^position:([^:]*):(.+)$/.exec(r.key)
+    const c = classifyFlaggedClose(db, { accountId: r.account ?? (p?.[1] || null), positionId: p ? p[2] : null, tradeId: r.tradeId, missing: [...r.missing] })
+    byClass[c.class] = (byClass[c.class] || 0) + 1
+    items.push({
+      record: r.key, account: r.account, symbol: c.symbol, positionId: c.positionId, tradeId: c.tradeId,
+      rules: [...r.rules].sort(), missing: c.missing, class: c.class, classedOn: c.classedOn, reason: cut(c.reason, NAMED_REASON_MAX), stored: c.stored, at: r.at,
+    })
+  }
+  items.sort((a, b) => order.indexOf(a.class) - order.indexOf(b.class) || (Date.parse(b.at ?? '') || 0) - (Date.parse(a.at ?? '') || 0) || a.record.localeCompare(b.record))
+  return { rules: [...NAMED_CLOSE_RULES], total: items.length, byClass, items: items.slice(0, NAMED_RECORDS_MAX) }
+}
+
+/**
  * Build the report. Pure over the database (reads only) and safe on the
  * worker's read-only connection. `account` is the raw ?account= value (null:
  * the selected account, read on THIS connection). Throws RangeError on a bad
@@ -1611,12 +1669,18 @@ export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, d
   if (controllers?.note) notVerifiable.push(`STK-11 ${controllers.note}`)
   const targetless = results.find(r => r.res.id === 'STK-09')?.res
   if (targetless?.note) notVerifiable.push(`STK-09 ${targetless.note}`)
+  // V3 B4b: a failed naming pass is said, never an empty list read as none.
+  let namedClose
+  try { namedClose = namedCloseRecords(db, results) } catch (err) {
+    namedClose = { rules: [...NAMED_CLOSE_RULES], total: null, byClass: null, items: [], error: `naming unreadable: ${cut(err?.message || err, 120)}` }
+  }
   return {
     schemaVersion: SCHEMA_VERSION, rulesetVersion: RULESET_VERSION, generatedAt: iso(now),
     acceptanceStart: cfg.acceptanceStart, acceptanceStartStatus: cfg.acceptanceStartStatus,
     windowDays: win.windowDays, window: { since: iso(win.sinceMs), until: iso(now) },
     scope: { ...scopeReport({ accountId: scope.accountId, all: scope.all, explicit: scope.explicit }, coverage), ...(scope.explicit && !scope.all ? { registered: registry } : {}) },
     summary, rules: flat, accounts, stages, notVerifiable,
+    named: { close: namedClose },
     ...(only ? { rule: only.id } : {}),
   }
 }
@@ -1629,7 +1693,15 @@ export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, d
  */
 export function compactSnapshot(report) {
   if (!report || report.schemaVersion !== SCHEMA_VERSION) throw new Error('order_lifecycle_snapshot_shape')
-  const make = n => ({
+  // V3 B4b: the named close records ride along; under the byte bound their
+  // list shrinks only after the samples are gone, and total/byClass never do.
+  const named = m => {
+    const c = report.named?.close
+    if (!c) return {}
+    const items = (c.items || []).slice(0, m)
+    return { named: { close: { ...c, items, itemsListed: items.length } } }
+  }
+  const make = (n, m = NAMED_RECORDS_MAX) => ({
     at: report.generatedAt, schemaVersion: report.schemaVersion, rulesetVersion: report.rulesetVersion,
     acceptanceStart: report.acceptanceStart, windowDays: report.windowDays, window: report.window,
     summary: report.summary, accounts: report.accounts,
@@ -1642,9 +1714,10 @@ export function compactSnapshot(report) {
       sample: (r.sample || []).slice(0, n).map(e => ({ subject: e.subject, account: e.account, at: e.at, new: e.new, detail: cut(e.detail, 120) })),
     })),
     samplesPerRule: n,
+    ...named(m),
   })
-  for (const n of [5, 1, 0]) {
-    const s = make(n)
+  for (const [n, m] of [[5, NAMED_RECORDS_MAX], [1, NAMED_RECORDS_MAX], [0, NAMED_RECORDS_MAX], [0, 10], [0, 0]]) {
+    const s = make(n, m)
     if (Buffer.byteLength(JSON.stringify(s)) <= SNAPSHOT_MAX_BYTES) return s
   }
   throw new Error('order_lifecycle_snapshot_bound')
@@ -1691,6 +1764,10 @@ export function lifecycleGoals(snapshot, targets, nowMs) {
               : `${verdict === 'not_measurable' ? `not a pass — ${counted}` : verdict === 'off_track' && partialNote ? `at least ${counted}` : counted}` +
                 `${top.length ? ` — ${top.join(' · ')}` : ''}${stage === 'stuck' ? '' : `; legacy ${s.legacy}`}${s.notices ? `; notices ${s.notices}` : ''}` +
                 `${held.length ? `; held by a setting, not counted: ${held.join(' · ')}` : ''}${partialNote ? `; ${partialNote}` : ''}`
+    // V3 B4b: the close row names its CLS-04 / CLS-03 records one by one
+    // (B4's goal-row shape). A stale or missing snapshot names nothing: it is
+    // not evidence about now.
+    const named = stage === 'close' ? (!stale && s ? namedCloseFields(snapshot, s) : { fields: { split: null, items: null, itemsTotal: null }, note: '' }) : null
     return {
       id: `lifecycle_${stage}`, name: STAGE_NAMES[stage], subsystem: 'order lifecycle',
       metric: stage === 'stuck'
@@ -1699,9 +1776,69 @@ export function lifecycleGoals(snapshot, targets, nowMs) {
       target: `≤ ${max}`, horizon: stage === 'stuck' ? 'now' : `since ${snapshot?.acceptanceStart ?? '?'}`,
       current: verdict === 'not_measurable' ? null : s.new,
       verdict,
-      note, source: `/state/order-lifecycle?account=all (snapshot ${Number.isFinite(at) ? new Date(at).toISOString().slice(11, 16) + 'Z' : 'none'})`,
+      note: `${note}${named?.note ?? ''}`, source: `/state/order-lifecycle?account=all (snapshot ${Number.isFinite(at) ? new Date(at).toISOString().slice(11, 16) + 'Z' : 'none'})`,
+      ...(named ? named.fields : {}),
     }
   })
+}
+
+/** What `other_rules` means in the close row's split (V3 B4b). */
+const OTHER_CLOSE_RULES_CLASS = 'a record flagged only by another close rule (CLS-01, CLS-02, CLS-05 to CLS-09) — counted in this row, not named in it; /state/order-lifecycle?rule=<id> lists them'
+
+/**
+ * V3 B4b: the close row's named records from snapshot.named.close, in B4's
+ * goal-row shape. `split` is a PARTITION of the stage count (raw = the
+ * refused classes of the named records + other_rules) shown beside it;
+ * `items` (at most NAMED_RECORDS_MAX, actionable class first) each carry
+ * what is missing, the class and its reason; `itemsTotal` counts every named
+ * record, listed or not. Nothing is excluded or counted as recovered: every
+ * item stays in `current`. A split that would not add up is withheld and
+ * said, never forced. Pure.
+ *
+ * B4b fix round (checker nit 2): a stage count that leaves out an unreadable
+ * close rule, or whose population hit its bound (partialOf), is a LOWER BOUND
+ * — the verdict cannot pass on it and `current` may be null. Its split is
+ * WITHHELD (null), as the stale case withholds it: a partition of a lower
+ * bound would show `raw` and `other_rules` as whole. The named items stay —
+ * each is a record read and classed now — and when a NAMED rule is itself
+ * unreadable or truncated, `itemsTotal` is said to be a lower bound too.
+ * Checker nit 3: an item whose `classedOn` is more than the refused view's
+ * inputs is said, so the two classes of one record do not read as a clash.
+ */
+function namedCloseFields(snapshot, s) {
+  const c = snapshot?.named?.close
+  const none = { split: null, items: null, itemsTotal: null }
+  if (!c) return { fields: none, note: Number(s?.new) > 0 ? '; records not named (the snapshot predates B4b — the next pass names them)' : '' }
+  if (c.total == null || !c.byClass) return { fields: none, note: `; records not named — ${c.error ?? 'naming unreadable'}` }
+  const raw = Number(s.new)
+  const byClass = Object.fromEntries(Object.keys(REFUSED_CLASSES).map(k => [k, Number(c.byClass[k]) || 0]))
+  const classed = Object.values(byClass).reduce((a, b) => a + b, 0)
+  const other = raw - c.total
+  const lowerBound = partialOf(s) !== ''
+  const rules = c.rules || NAMED_CLOSE_RULES
+  const namedPartial = [...(Array.isArray(s?.unreadable) ? s.unreadable : []).map(u => (u && typeof u === 'object' ? u.id : u)), ...(Array.isArray(s?.truncated) ? s.truncated : [])]
+    .map(String).filter(id => rules.includes(id))
+  const whole = !lowerBound && Number.isFinite(raw) && other >= 0 && classed === c.total
+  const items = Array.isArray(c.items) ? c.items : []
+  const shown = items.slice(0, 5).map(i => `${tail(i.account)} ${i.symbol ?? '?'} ${i.positionId != null ? `pos ${i.positionId}` : `#${i.tradeId ?? '?'}`} [${i.class}]`)
+  const more = c.total - shown.length
+  const beyond = items.filter(i => i.classedOn != null && i.classedOn !== CLASSED_ON_REFUSED_VIEW).length
+  const note = (c.total > 0
+    ? `; named ${namedPartial.length ? `at least ${c.total} (${rules.join(', ')}; ${[...new Set(namedPartial)].join(', ')} unreadable or truncated)` : `${c.total} (${rules.join(', ')})`}: ${refusedClassesPhrase(byClass)}${shown.length ? ` — ${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}` : ''}` +
+      `; items list ${items.length} with what is missing, class and reason${items.length < c.total ? `, ${c.total - items.length} more counted, not listed` : ''}` +
+      (beyond ? `; ${beyond} listed item(s) classed on more than /state/position-history's refused view reads (classedOn: the close flags' fields, or a record completed from the flag key or ledger row), so the class there can differ` : '')
+    : '') +
+    (whole && other > 0 ? `; ${other} flagged by other close rules only (counted, not named)` : '') +
+    (whole ? '' : lowerBound ? `; split withheld — the count of ${s.new} is a lower bound (a close rule unreadable or truncated), so no split of it is whole`
+      : `; split withheld — ${c.total} named record(s) do not partition the count of ${s.new}`)
+  return {
+    fields: {
+      // raw is the stage's whole count: a lower bound (partialOf) withholds the split, as a stale snapshot does.
+      split: whole ? { raw, ...byClass, other_rules: other, classes: { ...REFUSED_CLASSES, other_rules: OTHER_CLOSE_RULES_CLASS } } : null,
+      items, itemsTotal: c.total,
+    },
+    note,
+  }
 }
 
 /** STK-08v2: the snapshot's rules in `stage` holding items by a setting, as "STK-08 outbox_backlog 2"; [] when none. */
