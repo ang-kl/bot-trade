@@ -60,7 +60,7 @@ going red (CLAUDE.md failure mode #3).
 | twelve attribution endpoints | served, read by no page | `src/pages/Reasons.jsx` (`/reasons`, in the Trading nav group and the phone More sheet): each endpoint rendered with its own fields, per-block "not read — <reason>" on error/401, no client-computed numbers |
 
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `8754556` · 120 action call sites · 99 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `5c54994` · 120 action call sites · 100 state routes read.
 
 Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -132,16 +132,16 @@ Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 64 | `src/pages/Risk.jsx:1205` | (inline) | `/actions/guardian-move-pct` | `guardian_move_pct` ✓, via setState(db, …) | `/state/config`, `/state/risk-full` | WIRED |
 | 65 | `src/pages/Risk.jsx:1287` | Mandatory | `/actions/vpo-settings` | `vpo_enabled` ✓, `vpo_config_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
 | 66 | `src/pages/Risk.jsx:1295` | (inline) | `/actions/exec-guard` | `exec_guard_json` ✓, via setState(db, …) | `/state/risk-full` | WIRED |
-| 67 | `src/pages/Trade.jsx:544` | (inline) | `/actions/broker-positions` | read over POST — the reply is the value | the reply itself (heuristic) | WIRED |
-| 68 | `src/pages/Trade.jsx:600` | (inline) | `/actions/validation-fill` | executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 69 | `src/pages/Trade.jsx:627` | placeOrder | `/actions/manual-order` | `api_ctrader_last_ok` ✓, via resolveSymbolId(db, …), setState(db, …), recordManualOrderTrade(db, …), executes | `/state/health` | WIRED |
-| 70 | `src/pages/Trade.jsx:704` | act('breaker', '/actions/reset-breaker')}>Reset breaker | `/actions/scan` | `last_scan_at` ✓, `last_scan_results` ✓, via setState(db, …), recordFxRates(db, …), executes | `/state/health`, `/state/scans`, `/state/watchlists` | WIRED |
-| 71 | `src/pages/Trade.jsx:712` | act('breaker', '/actions/reset-breaker')}>Reset breaker | `/actions/reset-breaker` | `circuit_breaker_tripped_at` ✓, via setState(db, …), clearErrorLog(db, …) | `/state/health` | WIRED |
-| 72 | `src/pages/Trade.jsx:716` | kill | `/actions/kill-all` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via setPhaseFlag(db, …), recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), registerBrokerReadingsReader(db, …), executes | `/state/positions` | WIRED |
-| 73 | `src/pages/Trade.jsx:894` | Cancel BOT-placed resting orders that the bot | `/actions/reconcile-pending` | via reconcileBrokerPendingOrders(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
-| 74 | `src/pages/Trade.jsx:942` | (inline) | `/actions/position-keeper-optout` | executes | reload (heuristic) | WIRED |
-| 75 | `src/pages/Trade.jsx:970` | (inline) | `/actions/reconcile-trades` | executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 76 | `src/pages/Trade.jsx:997` | (inline) | `/actions/exec-parity` | executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 67 | `src/pages/Trade.jsx:545` | (inline) | `/actions/broker-positions` | read over POST — the reply is the value | the reply itself (heuristic) | WIRED |
+| 68 | `src/pages/Trade.jsx:601` | (inline) | `/actions/validation-fill` | executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 69 | `src/pages/Trade.jsx:635` | (inline) | `/actions/manual-order` | `api_ctrader_last_ok` ✓, via resolveSymbolId(db, …), setState(db, …), recordManualOrderTrade(db, …), executes | `/state/health` | WIRED |
+| 70 | `src/pages/Trade.jsx:712` | act('breaker', '/actions/reset-breaker')}>Reset breaker | `/actions/scan` | `last_scan_at` ✓, `last_scan_results` ✓, via setState(db, …), recordFxRates(db, …), executes | `/state/health`, `/state/scans`, `/state/watchlists` | WIRED |
+| 71 | `src/pages/Trade.jsx:720` | act('breaker', '/actions/reset-breaker')}>Reset breaker | `/actions/reset-breaker` | `circuit_breaker_tripped_at` ✓, via setState(db, …), clearErrorLog(db, …) | `/state/health` | WIRED |
+| 72 | `src/pages/Trade.jsx:724` | kill | `/actions/kill-all` | `broker_snapshot_cache_json` ✓, dynamic key(s) — per-account/overlay write, via setPhaseFlag(db, …), recordDepositCurrency(db, …), recordAccountMoney(db, …), setState(db, …), registerBrokerReadingsReader(db, …), executes | `/state/positions` | WIRED |
+| 73 | `src/pages/Trade.jsx:902` | Cancel BOT-placed resting orders that the bot | `/actions/reconcile-pending` | via reconcileBrokerPendingOrders(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
+| 74 | `src/pages/Trade.jsx:950` | (inline) | `/actions/position-keeper-optout` | executes | reload (heuristic) | WIRED |
+| 75 | `src/pages/Trade.jsx:978` | (inline) | `/actions/reconcile-trades` | executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 76 | `src/pages/Trade.jsx:1005` | (inline) | `/actions/exec-parity` | executes | the reply — route returns the effective value (heuristic) | WIRED |
 | 77 | `src/pages/Tune.jsx:528` | apply | `/actions/stage-matrix` | via setStage(db, …), unpinTradeStageEverywhere(db, …), recordComboArms(db, …) | the reply — route returns the effective value (heuristic) | WIRED |
 | 78 | `src/pages/Tune.jsx:1291` | toggle | `/actions/autotrade-timeframes` | `autotrade_timeframes` ✓, `autotrade_matrix_json` ✓, via setState(db, …) | `/state/autotrade-timeframes` | WIRED |
 | 79 | `src/pages/Tune.jsx:1320` | pushSymbols | `/actions/symbols` | `autopilot_symbols_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …), writeWatchlist(db, …) | `/state/health`, `/state/config`, `/state/market-hours` | WIRED |
@@ -245,6 +245,7 @@ Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | `/state/loss-guardian` | yes |
 | `/state/market-hours` | yes |
 | `/state/market-pulse` | yes |
+| `/state/momentum-targets` | yes |
 | `/state/open-duplicates` | yes |
 | `/state/order-lifecycle` | yes |
 | `/state/orders` | yes |
