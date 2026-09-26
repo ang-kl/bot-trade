@@ -413,7 +413,7 @@ Replace it with §3's table.
 1. **Shallow reads overwrite deep ones.** Regime reads cache 30–80 bars under the scan's key, and the scan accepts them (`fib-strategy.js:159-175`, `:582`). Deeper strategies then return nothing for up to one bar.
 2. **No depth margin** (`:589-593`): 450 asked, 449 closed bars received on an open market. The forming bar counts toward the 450 and never reaches the strategies. Asking for `minBars` + 1 fixes it; this is not a broker cap.
 3. **Expiry by fetch time, not bar close** (`:134-139`, `:632`).
-4. **Monthly history ends at 190 bars** (BTCUSD, 01:32Z; 450 asked). That is the symbol's full history at this broker (back to about Nov 2010), not a limit on the request.
+4. **Monthly history ends at 190 bars** (BTCUSD, 01:32Z; 450 asked). That is the symbol's full history at this broker, not a limit on the request. Measured (26-09-2026): history starts with the July 2010 bar (first bar 2010-06-30T21:00Z = 1 July broker time), not "about Nov 2010" — and 190 bars against Jul 2010–Aug 2026 (194 months) means at least 4 months are missing inside the series; which ones is not verifiable without the raw bars.
 5. **Session and anchor cuts.** va/vp lose part of the previous session on 5m and 15m. vwap anchors are epoch buckets (`vwap-trend.js:23-28`, `indicators.js:159`).
 
 ---

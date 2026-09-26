@@ -36,14 +36,21 @@ import {
   aliveText, seenText, statusLine, localTime, splitSessions, confirmCopy,
   STATE_LABEL, STATE_TONE, STATE_HELP,
 } from '../lib/session-format.js'
+import { buildLabel } from '../lib/agent-health-view.js'
 
 const POLL_MS = 15_000
 
-export default function SessionFooter({ appVersion, buildSha }) {
+export default function SessionFooter({ buildSha }) {
   const [view, setView] = useState(null)
   const [open, setOpen] = useState(false)
   const [err, setErr] = useState(null)
   const [reloadKey, setReloadKey] = useState(0)
+  // The agent's OWN build commit, for the "Build" row (UI-4 S2 / OD-21 /
+  // D3: "web ‹sha› · agent ‹sha›" — buildLabel in agent-health-view.js).
+  // Polled the same as the session list, on the same failure convention: a
+  // read that fails leaves the last-known commit in place rather than
+  // blanking a row that was showing something correct a moment ago.
+  const [agentCommit, setAgentCommit] = useState(null)
   const popoverId = useId()
 
   // Promise-chain shape, matching the other poll loops in this app: setState
@@ -59,6 +66,9 @@ export default function SessionFooter({ appVersion, buildSha }) {
         // A failed read must not blank the line — a stale reading with an
         // error note beats an empty control that reads as "no sessions".
         .catch(e => { if (alive) setErr(e?.message || 'unavailable') })
+      agentGet('/health')
+        .then(h => { if (alive) setAgentCommit(h?.commit ?? null) })
+        .catch(() => { /* keep the last-known commit; the Build row still reads honestly via buildLabel's 'unknown' fallback if none ever arrived */ })
     }
     poll()
     const id = setInterval(() => {
@@ -142,8 +152,8 @@ export default function SessionFooter({ appVersion, buildSha }) {
           current={current}
           others={others}
           err={err}
-          appVersion={appVersion}
           buildSha={buildSha}
+          agentCommit={agentCommit}
           onClose={() => { setOpen(false); buttonRef.current?.focus() }}
           onChanged={reload}
         />,
@@ -159,7 +169,7 @@ export default function SessionFooter({ appVersion, buildSha }) {
 // out of the trading controls behind it for no reason. The CONFIRMATION for a
 // destructive disconnect is modal — that one deserves the interruption.
 // ---------------------------------------------------------------------------
-function SessionPopover({ id, ref, view, current, others, err, appVersion, buildSha, onClose, onChanged }) {
+function SessionPopover({ id, ref, view, current, others, err, buildSha, agentCommit, onClose, onChanged }) {
   const titleId = `${id}-title`
   const [pending, setPending] = useState(null)   // session awaiting confirmation
   const [busyId, setBusyId] = useState(null)
@@ -254,7 +264,7 @@ function SessionPopover({ id, ref, view, current, others, err, appVersion, build
             <Row k="Session" v={current.maskedId} />
             <Row k="IP" v={current.ip || 'not recorded'} />
             <Row k="Location" v={locationText(current) || 'unknown — allow the browser location prompt to record it'} />
-            <Row k="Build" v={`v${appVersion} · ${buildSha}`} />
+            <Row k="Build" v={buildLabel({ uiCommit: buildSha, agentCommit })} />
           </dl>
           {/* The brief: no enabled Disconnect for the current session, and a
               separate ordinary sign-out belongs elsewhere. Saying WHY beats a
@@ -278,7 +288,7 @@ function SessionPopover({ id, ref, view, current, others, err, appVersion, build
             <Row k="Open tabs" v={String(view.masterCaller.openTabs ?? 0)} />
             <Row k="IP" v={view.masterCaller.ip || 'not recorded'} />
             <Row k="Location" v={locationText(view.masterCaller) || 'unknown — allow the browser location prompt to record it'} />
-            <Row k="Build" v={`v${appVersion} · ${buildSha}`} />
+            <Row k="Build" v={buildLabel({ uiCommit: buildSha, agentCommit })} />
           </dl>
           <p className="mt-1 text-[var(--color-text-sub)]">
             No per-device session record, so there is nothing to disconnect from this panel.

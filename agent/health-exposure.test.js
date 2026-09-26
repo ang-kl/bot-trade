@@ -98,6 +98,24 @@ test('the sensitive fields are NOT in the unauthenticated branch', () => {
   }
 })
 
+// Checker NIT 2 (W1.4 fix round): llmStatusLabel's OUTPUT is pinned with
+// booleans passed straight in (agent/lib/llm-provider.test.js), but nothing
+// checked that /health's `llmProvider` field is actually WIRED to the real
+// LLM_DISABLED switch / key-presence reads rather than a hardcoded value —
+// index.js:955-956 is index.js's own code, unreachable from a pure-function
+// test since index.js starts a live server as an import side effect (no
+// factory to call in isolation). Source-anchored, the same technique this
+// file already uses for the rest of this unwrappable module.
+test('the authenticated body\'s llmProvider is llmStatusLabel(...) wired to the REAL key presence and switch state, not a hardcoded value', () => {
+  const code = CODE
+  assert.match(code, /const llmKeyPresent = llmInfo\.provider === 'openai' \? !!process\.env\.OPENAI_API_KEY : !!CLAUDE_API_KEY/,
+    'keyPresent must read the actual configured key for whichever provider is selected — a hardcoded true would report "on" with no key at all')
+  assert.match(code, /const llmProvider = llmStatusLabel\(llmInfo, \{ keyPresent: llmKeyPresent, disabled: llmSwitchDisabled\(db, getState\) \}\)/,
+    'disabled must read the real switch (env LLM_DISABLED or the runtime state key), the same check /state/health\'s llmDisabled already reports — two surfaces computing this independently could disagree')
+  const h = healthHandler()
+  assert.match(h, /\bllmProvider\b/, 'the computed value must actually be returned from the handler, not merely computed and discarded')
+})
+
 test('V3 M1: the boot record and latency windows ARE in the authenticated body (and only there)', () => {
   const h = healthHandler()
   const code = h.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n')

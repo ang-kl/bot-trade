@@ -52,6 +52,30 @@ export function llmProviderInfo(env = process.env, task = undefined) {
 }
 
 /**
+ * A HONEST status label for a display surface (the health panel's
+ * "· llm …" line, UI-7 S2/A1) — distinct from llmProviderInfo, which PICKS
+ * the fallback client and must keep naming Anthropic as that fallback
+ * regardless of whether its key happens to be configured; that is a
+ * functional decision (createLLMClient), not a display one.
+ *
+ * Before this, the health line read "llm anthropic:claude-sonnet-4-5"
+ * whenever OPENAI_API_KEY was unset — even with no Anthropic key configured
+ * and even with the LLM_DISABLED switch on — asserting a provider that could
+ * not actually be called (owner principle 6: no fake result). `keyPresent`
+ * and `disabled` are supplied by the caller (agent/index.js already knows
+ * both, from the relevant *_API_KEY var and lib/llm-switch.js's
+ * llmDisabled), so this stays pure and never touches a secret.
+ *
+ * @param {{provider: string, model: string}} info - llmProviderInfo's result
+ * @param {{keyPresent: boolean, disabled: boolean}} status
+ * @returns {string} 'off', or '<provider>:<model>' when it would actually run
+ */
+export function llmStatusLabel(info, { keyPresent, disabled }) {
+  if (disabled || !keyPresent) return 'off'
+  return `${info.provider}:${info.model}`
+}
+
+/**
  * Translate an Anthropic-style messages.create payload into an OpenAI
  * chat.completions body. `system` becomes a system message; string or
  * block-array message content is flattened to text. The claude model id the

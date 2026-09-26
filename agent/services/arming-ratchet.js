@@ -146,10 +146,15 @@ export function armingRatchetReport(db) {
     const streakNow = streak >= br.streak
     return {
       ...c,
-      disarmedBy: why.verdict === 'recorded' ? why.lastSet.actor : null,
+      // S-1: a `declared` row makes the cell 'recorded' but names no actor
+      // that disarmed it — the declaring boot pass only wrote down what it
+      // found. So the disarming actor and time stay null for it, and the row
+      // says the origin is not on record.
+      disarmedBy: why.verdict === 'recorded' && why.originRecorded ? why.lastSet.actor : null,
       disarmReason: why.verdict === 'recorded' ? why.lastSet.reason : null,
-      disarmedAt: why.verdict === 'recorded' ? why.lastSet.at : null,
+      disarmedAt: why.verdict === 'recorded' && why.originRecorded ? why.lastSet.at : null,
       reasonVerdict: why.verdict,
+      originRecorded: why.verdict === 'unrecorded' ? false : why.originRecorded !== false,
       ownEvidence: { trades: edge.trades, expectancy: edge.expectancy, profitFactor: edge.profitFactor, winRate: edge.winRate, net: edge.net, lossStreak: streak },
       bars: { window: wd.window, minTrades: wd.minTrades, pfFloor: wd.pfFloor, streak: br.streak },
       wouldDisarmAgain: { noEdge: noEdgeNow, lossStreak: streakNow },
@@ -171,7 +176,9 @@ export function armingRatchetReport(db) {
     rows,
     byAccount,
     total: rows.length,
-    unrecorded: rows.filter(r => r.reasonVerdict === 'unrecorded').length,
+    // A declared cell has a row but no recorded origin: still counted here,
+    // so declaring the 24 unrecorded cells cannot make this number look fixed.
+    unrecorded: rows.filter(r => r.reasonVerdict === 'unrecorded' || !r.originRecorded).length,
     wouldClearToday: rows.filter(r => r.wouldClearToday).length,
     evidenceThin: rows.filter(r => r.evidenceThin).length,
     note: 'a ratcheted cell is one this account refuses while the strategy is armed globally. Nothing here re-arms anything: the only automatic writer of a TRUE per-account cell is the boot seed, and it is seed-once by design, so these cells return only by the owner\'s word. `wouldClearToday` means neither the breaker nor the watchdog would disarm it on this account\'s own evidence right now — it is not a recommendation, and `evidenceThin` rows have too few closes to say anything either way.',

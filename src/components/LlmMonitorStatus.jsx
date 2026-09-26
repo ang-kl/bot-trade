@@ -24,6 +24,7 @@
 // and the fact that trading is unaffected.
 import { useEffect, useState } from 'react'
 import { agentGet, pageAsleep } from '../lib/agent-api.js'
+import { llmUiState } from '../lib/llm-ui.js'
 
 const POLL_MS = 60_000
 
@@ -44,6 +45,15 @@ export default function LlmMonitorStatus() {
   // failure now shows as its own small badge, muted rather than amber: it is
   // not a monitor failure, it is a failure to find out.
   const [fetchError, setFetchError] = useState(null)
+  // UI-7 (checker NIT 3, W1.4 fix round): "degraded" and "off" are different
+  // facts — a monitor that has not FAILED is not the same as a layer that is
+  // not RUNNING at all — but this badge used to say nothing for the second
+  // one, so an operator with the layer switched off saw no sidebar signal
+  // that anything was even expected to be quiet. The health panel already
+  // says "AI off" (agent-health-view.js buildLabel and llmProvider); this
+  // reads the same /state/health the AI page itself reads (llm-ui.js) so the
+  // two surfaces cannot disagree about what "off" means.
+  const [aiOff, setAiOff] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -51,11 +61,34 @@ export default function LlmMonitorStatus() {
       agentGet('/state/llm-monitor-health')
         .then(h => { if (alive) { setHealth(h); setFetchError(null) } })
         .catch(e => { if (alive) setFetchError(e?.message || String(e)) })
+      // Falls back to null on failure rather than a bare swallowed catch —
+      // llmUiState(null).disabled is false (ABSENT EVIDENCE RENDERS THE
+      // CARDS, llm-ui.test.jsx), so an unreachable read leaves this badge in
+      // its non-off branches instead of inventing "off".
+      agentGet('/state/health').catch(() => null)
+        .then(h => { if (alive) setAiOff(llmUiState(h).disabled) })
     }
     poll()
     const t = setInterval(() => { if (!pageAsleep()) poll() }, POLL_MS)
     return () => { alive = false; clearInterval(t) }
   }, [])
+
+  // Off is the authoritative reason nothing is happening — it takes
+  // precedence over a stale "degraded" reading from before the switch was
+  // thrown, and over "not verifiable" (there is nothing to verify: no calls
+  // are being attempted while the layer is off).
+  if (aiOff) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-[4px] px-1 py-0.5 text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)]"
+        title="The AI/LLM layer is switched off. Scanning, entries, sizing and the risk gate are deterministic and unaffected — see the AI page for detail."
+      >
+        <span aria-hidden="true">○</span>
+        <span className="hidden truncate lg:inline">AI off</span>
+        <span className="sr-only">AI off</span>
+      </span>
+    )
+  }
 
   if (fetchError && !health?.degraded) {
     return (

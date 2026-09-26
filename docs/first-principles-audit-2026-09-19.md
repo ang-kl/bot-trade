@@ -874,6 +874,15 @@ after deploy, recorded in §L of this file as it happens.
   refusal ledger scores them for forgone R at zero risk. If the intraday
   edge recovers, the owner will have the record rather than a dark year.
 
+  CORRECTION 26-09-2026 (S-1, principle 5): the paragraph above did not
+  hold. Every intraday strategy is also OFF in Auto Trade & Open on every
+  account (below), so the stage gate refuses each proposal first — a
+  `stage_matrix` skip with no levels, which the refusal ledger does not read —
+  and none reaches `admitEntry`. Measured: 0 `producer_retired` rows across
+  the whole retention, 0 shadow refusals in 7 days (26-09-2026 01:42–01:44Z).
+  The shadow is not free: it records nothing. Scoring the stage-gate
+  refusals is S-4 in the integrated plan, an owner decision (OD-9).
+
   STAGE MATRIX AGREES WITH THE INVENTORY (principle 6: no strategy shown
   armed that no producer can trade). `agent/config/strategy-pins.json`:
   `fib_confluence` moves into `_off` and `_all` is now empty — its record

@@ -13,7 +13,8 @@ import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
 // WebCrypto, which carries getRandomValues and randomUUID but has no randomInt —
 // calling it there is a TypeError, and it would have thrown on the login path.
 import { randomInt } from 'node:crypto';
-import { llmProviderInfo } from './lib/llm-provider.js';
+import { llmProviderInfo, llmStatusLabel } from './lib/llm-provider.js';
+import { llmDisabled as llmSwitchDisabled } from './lib/llm-switch.js';
 import { tierTable } from './lib/model-router.js';
 import { historicalRateStatus } from './lib/ctrader-ws.js';
 import { inflightSummary } from './lib/inflight.js';
@@ -398,6 +399,19 @@ try {
     else console.log(`[boot] global strategy arm: ${gs.armed.length} armed${gs.armed.length ? ` (${gs.armed.join(' ')})` : ''}, ${gs.present.length} already on, ${gs.seeded.length} seeded before and since disarmed (left off, by design)${gs.skipped.length ? `, skipped: ${gs.skipped.join('; ')}` : ''} (config/global-strategies.json)`)
   } catch (err) {
     console.error(`[boot] global strategy arm failed (non-fatal): ${err.message}`)
+  }
+  // S-1 (26-09-2026, principle 4): AFTER every arming seed above, so it sees
+  // their rows. Appends only — a `corrected` row for each recorded reason that
+  // was wrong, and a `declared` row for each Trade cell no row explains. No
+  // cell value changes and no row is updated or deleted.
+  try {
+    const { applyArmingCorrections } = await import('./services/arming-log.js')
+    const { declareUnrecordedTradeCells } = await import('./services/stage-matrix.js')
+    const corr = applyArmingCorrections(db)
+    const decl = declareUnrecordedTradeCells(db, getState)
+    console.log(`[boot] arming ledger: ${corr.appended} reason correction(s) appended (${corr.alreadyCorrected} already corrected), ${decl.declared.length} unrecorded Trade cell(s) declared as found${decl.disagrees.length ? `, ${decl.disagrees.length} cell(s) DISAGREE with their last row and were left as they are: ${decl.disagrees.join(' ')}` : ''}`)
+  } catch (err) {
+    console.error(`[boot] arming ledger declaration failed (non-fatal): ${err.message}`)
   }
   // P3b: the owner's tick-observation declaration from the repo (11-09-2026,
   // "ACCT-DEMO-3 records first"), seeded once per file content, same rule
@@ -946,7 +960,13 @@ app.get('/health', (req, res) => {
   // rename (OPENAI_DEFAULT_MODEL → OPENAI_MODEL_DEFAULT) and the two new tiers
   // are verifiable from outside without shell access to the box.
   const llmInfo = llmProviderInfo(process.env)
-  const llmProvider = `${llmInfo.provider}:${llmInfo.model}`
+  // UI-7 S2/A1: 'off' — a word, never a name the layer cannot actually use —
+  // when the chosen provider has no key configured, or the switch (env
+  // LLM_DISABLED or the runtime state key, lib/llm-switch.js) is on. Reusing
+  // llmSwitchDisabled here is the SAME check /state/health's llmDisabled
+  // field already reports, so the two surfaces cannot disagree.
+  const llmKeyPresent = llmInfo.provider === 'openai' ? !!process.env.OPENAI_API_KEY : !!CLAUDE_API_KEY
+  const llmProvider = llmStatusLabel(llmInfo, { keyPresent: llmKeyPresent, disabled: llmSwitchDisabled(db, getState) })
   const llmTiers = process.env.OPENAI_API_KEY ? tierTable(process.env) : null
 
   // The public liveness subset. Deliberately built FIRST and returned early, so

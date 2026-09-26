@@ -69,7 +69,25 @@ export const ARMING_ACTORS = Object.freeze([
   // effective arming does not move; the authority over it does.
   'migration',
   'telegram',           // services/telegram-control.js — /arm and the inline arm button
+  // S-1 (26-09-2026). Two boot writers that APPEND and never change a cell:
+  // `boot_declaration` writes a `declared` row for a cell whose current value
+  // no row explains (so every cell carries a row, and the row says its origin
+  // was not recorded); `boot_correction` writes a `corrected` row naming a
+  // wrong reason on an earlier row (the #1115 rule: rows are never updated).
+  'boot_declaration',
+  'boot_correction',
 ])
+
+/**
+ * Decisions that record a fact about a cell WITHOUT changing it, so rule 1's
+ * from === to test does not apply to them:
+ *   held      — a pin outvoted a disarm verdict (rule 2)
+ *   declared  — the value was found with no row explaining it; the row
+ *               declares it as found and says the origin is unrecorded
+ *   corrected — an earlier row's reason was wrong; this row names the true
+ *               reason and the row it corrects (`evidence.correctsRowId`)
+ */
+export const NON_CHANGE_DECISIONS = Object.freeze(['held', 'declared', 'corrected'])
 
 /** Cell values as the ledger stores them: a cell that was never written is 'unset', not 'false'. */
 const asValue = (v) => (v === true ? 'true' : v === false ? 'false' : 'unset')
@@ -91,7 +109,7 @@ export function recordArmingChange(db, { scope = null, kind, key, stage, from, t
   // RULE 1. A rewrite that changes nothing is not a decision. `held` rows are
   // exempt from the from===to test: they record a decision NOT to change,
   // which by definition has from === to and is the whole point of rule 2.
-  if (decision !== 'held' && fromV === toV) return null
+  if (!NON_CHANGE_DECISIONS.includes(decision) && fromV === toV) return null
   const evidenceJson = evidence == null ? null : JSON.stringify(evidence)
   // ...BUT THE HELD EXEMPTION REOPENED THE DOOR RULE 1 EXISTS TO SHUT
   // (checker, 17-09-2026, measured). The edge watchdog stamps its once-per-
@@ -190,28 +208,49 @@ export function whyCell(db, { scope = null, kind = 'strategy', key, stage = 'tra
   // the window and the answer became 'unrecorded' — for a cell the ledger HAD
   // recorded, with a note asserting no row existed. A confident wrong answer
   // to the one question this module exists to answer.
+  const scopeV = scope == null ? 'global' : String(scope)
+  // S-1: a `corrected` row is not a decision about the cell — it names a wrong
+  // reason on an EARLIER row — so it never becomes `lastSet`. It is attached
+  // to the row it corrects instead (below), which keeps a cell that moved
+  // after the corrected row from reading 'disagrees' against a correction.
   const pick = (heldOnly) => {
     try {
       const r = db.prepare(`
         SELECT * FROM arming_log
-        WHERE scope = ? AND kind = ? AND key = ? AND stage = ? AND decision ${heldOnly ? '=' : '!='} 'held'
+        WHERE scope = ? AND kind = ? AND key = ? AND stage = ? AND ${heldOnly ? "decision = 'held'" : "decision NOT IN ('held', 'corrected')"}
         ORDER BY id DESC LIMIT 1
-      `).get(scope == null ? 'global' : String(scope), String(kind), String(key), String(stage))
+      `).get(scopeV, String(kind), String(key), String(stage))
       return r ? row(r) : null
     } catch { return null }
   }
   const lastSet = pick(false)
   const lastHeld = pick(true)
+  if (lastSet) {
+    const correction = correctionFor(db, lastSet)
+    if (correction) {
+      // The row as written stays visible (`reasonAsRecorded`); the reason a
+      // reader is shown is the corrected one, with the correcting row named.
+      lastSet.reasonAsRecorded = lastSet.reason
+      lastSet.reason = correction.reason
+      lastSet.correctedBy = { id: correction.id, at: correction.at, actor: correction.actor }
+    }
+  }
   const cur = asValue(current)
   // `current` omitted means nobody checked the cell, so no verdict about the
   // cell can be earned. Saying 'recorded' there would be a verdict nothing
   // verified — the caller gets 'unverified' and the row, and can decide.
   let verdict = 'unrecorded'
   if (lastSet) verdict = current === undefined ? 'unverified' : (lastSet.to === cur ? 'recorded' : 'disagrees')
+  // A `declared` row makes the cell 'recorded' — a row now stands behind the
+  // value — but it explains nothing about how the value came to be, and the
+  // reader is told so rather than handed the declaring actor as if it acted.
+  const originRecorded = !!lastSet && lastSet.decision !== 'declared'
   return {
-    scope: scope == null ? 'global' : String(scope), kind, key, stage,
-    current: cur, verdict, lastSet, lastHeld,
-    note: verdict === 'unrecorded'
+    scope: scopeV, kind, key, stage,
+    current: cur, verdict, lastSet, lastHeld, originRecorded,
+    note: verdict === 'recorded' && !originRecorded
+      ? 'the value is declared, not explained: it was found with no row behind it, and the declaring row records only that — who first set it is not on record'
+      : verdict === 'unrecorded'
       ? 'no ledger row explains this cell — it was written before the arming ledger existed, or by a path that does not record. This is not evidence that nobody changed it.'
       : verdict === 'disagrees'
         ? 'the cell does not hold the value the last recorded decision set — something wrote it without recording, and that writer is the defect to find'
@@ -219,6 +258,84 @@ export function whyCell(db, { scope = null, kind = 'strategy', key, stage = 'tra
           ? 'a decision is on record, but the caller did not supply the cell\'s current value, so nothing here confirms the cell still holds it'
           : null,
   }
+}
+
+/** The newest `corrected` row naming this row, or null. Never throws. */
+function correctionFor(db, target) {
+  try {
+    const r = db.prepare(`
+      SELECT * FROM arming_log
+      WHERE decision = 'corrected' AND scope = ? AND kind = ? AND key = ? AND stage = ?
+        AND json_extract(evidence_json, '$.correctsRowId') = ?
+      ORDER BY id DESC LIMIT 1
+    `).get(target.scope, target.kind, target.key, target.stage, Number(target.id))
+    return r ? row(r) : null
+  } catch { return null }
+}
+
+/**
+ * S-1 (26-09-2026): reasons on the record that were WRONG, corrected by an
+ * APPENDED row per affected row — never an UPDATE (the #1115 rule: the ledger
+ * only grows). Each entry selects the rows it corrects by what they say, so it
+ * applies to exactly those rows on any database that holds them and to none
+ * elsewhere, and it is idempotent: a row that already carries a correction is
+ * skipped.
+ *
+ * `fib_confluence_retired_not_unproven`: the 20-09-2026 boot seed (#972)
+ * switched fib_confluence OFF on every account with the `_off` path's fixed
+ * text "no positive live record, or on trial elsewhere". #972's own note says
+ * the opposite — its record was positive (26 closes at PF 2.72, the 19-09
+ * basis) and it went OFF because its only producer, scan_dispatch, was
+ * retired by the owner's 20-09 order. Measured 26-09-2026: 7 such rows, one
+ * per account.
+ */
+export const ARMING_CORRECTIONS = Object.freeze([
+  Object.freeze({
+    id: 'fib_confluence_retired_not_unproven',
+    match: Object.freeze({
+      kind: 'strategy', key: 'fib_confluence', stage: 'trade', actor: 'boot_seed',
+      to: 'false', reasonLike: '%no positive live record%',
+      atFrom: '2026-09-20 00:00:00', atBefore: '2026-09-27 00:00:00',
+    }),
+    reason: 'switched OFF because its only order path (scan_dispatch) was retired by the owner\'s 20-09-2026 order "retire the intraday paths, keep momentum only" (#972) — not for lack of a positive live record: #972 records 26 closes at PF 2.72 (the 19-09 basis)',
+    source: 'agent/config/strategy-pins.json _off_note; #972 (b9f5931)',
+  }),
+])
+
+/**
+ * Append the corrections. Returns { appended, alreadyCorrected, matched }.
+ * Never updates or deletes a row, never throws (rule 4).
+ */
+export function applyArmingCorrections(db, corrections = ARMING_CORRECTIONS) {
+  const out = { appended: 0, alreadyCorrected: 0, matched: 0 }
+  for (const c of corrections || []) {
+    const m = c?.match || {}
+    let rows = []
+    try {
+      rows = db.prepare(`
+        SELECT * FROM arming_log
+        WHERE kind = ? AND key = ? AND stage = ? AND actor = ? AND to_value = ?
+          AND decision NOT IN ('held', 'corrected', 'declared')
+          AND reason LIKE ? AND at >= ? AND at < ?
+        ORDER BY id ASC
+      `).all(m.kind, m.key, m.stage, m.actor, m.to, m.reasonLike, m.atFrom, m.atBefore)
+    } catch { continue }
+    for (const r of rows) {
+      out.matched++
+      if (correctionFor(db, row(r))) { out.alreadyCorrected++; continue }
+      const id = recordArmingChange(db, {
+        scope: r.scope === 'global' ? null : r.scope,
+        kind: r.kind, key: r.key, stage: r.stage,
+        from: r.to_value === 'true' ? true : r.to_value === 'false' ? false : undefined,
+        to: r.to_value === 'true' ? true : r.to_value === 'false' ? false : undefined,
+        decision: 'corrected', actor: 'boot_correction',
+        reason: c.reason,
+        evidence: { correctsRowId: Number(r.id), correction: c.id, reasonAsRecorded: r.reason, source: c.source },
+      })
+      if (id != null) out.appended++
+    }
+  }
+  return out
 }
 
 /** GET /state/arming-log: the recent decisions, who made them, and the ledger's own health. */

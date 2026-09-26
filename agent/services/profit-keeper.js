@@ -46,6 +46,7 @@ import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { measureAmend } from './protection-latency.js'
+import { protectiveExitDeferral } from './momentum-exit-coordination.js'
 
 // P10: last-seen broker SL per position, as reported by the C++ TrailEngine's
 // GET /trail-status (a full snapshot, not a delta stream). Diffed each pass
@@ -391,7 +392,7 @@ export function runProfitKeeper(db, creds, deps = {}) {
 }
 
 async function profitKeeperPass(db, creds, deps = {}) {
-  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, earlyTrimShadow: 0, managedSkipped: 0, bookSkipped: 0, errors: [] }
+  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, earlyTrimShadow: 0, managedSkipped: 0, bookSkipped: 0, deferred: [], errors: [] }
   try {
     const cfg = loadProfitKeeperConfig(db)
     if (!cfg.on) return summary
@@ -653,7 +654,23 @@ async function profitKeeperPass(db, creds, deps = {}) {
       }
       if (!decision.action) continue
 
+      // V3 F1: the T2 rule (momentum-exit-coordination.js). A momentum partial
+      // or rank close claimed within the transport horizon may still be in
+      // flight on this position; the keeper's close or scale-out waits for
+      // this pass only and is decided again on the next. Past the horizon the
+      // deferral ends whatever the plan row says. No plan, no deferral.
+      // A scale-out below the symbol's minimum volume is never sent, so it is
+      // not a deferred close either: work that out first, and list only a
+      // close that would otherwise have gone out.
+      const scaleVol = decision.action.scaleOutFrac ? Math.round(td.volume * decision.action.scaleOutFrac) : null
+      const scaleSendable = scaleVol != null && (meta.minVolume == null || scaleVol >= meta.minVolume)
+      const inFlight = (decision.action.close || scaleSendable)
+        ? protectiveExitDeferral(db, { accountId: r.account_id ?? accountId, positionId: r.position_id, nowMs: deps.now ?? Date.now() })
+        : null
+      if (inFlight) summary.deferred.push(`${r.symbol}: ${decision.action.close ? 'close' : 'scale-out'} deferred — ${inFlight}`)
+
       if (decision.action.close) {
+        if (inFlight) continue
         try {
           await exec.closePosition(creds, { positionId: parseInt(r.position_id), volume: td.volume })
           updAct.run(null, 'profit_keeper_close', r.id)
@@ -667,9 +684,9 @@ async function profitKeeperPass(db, creds, deps = {}) {
         } catch (err) { summary.errors.push(`${r.symbol} close: ${err.message}`) }
         continue
       }
-      if (decision.action.scaleOutFrac) {
-        const vol = Math.round(td.volume * decision.action.scaleOutFrac)
-        if (meta.minVolume == null || vol >= meta.minVolume) {
+      if (decision.action.scaleOutFrac && !inFlight) {
+        const vol = scaleVol
+        if (scaleSendable) {
           try {
             await exec.closePosition(creds, { positionId: parseInt(r.position_id), volume: vol })
             updScaled.run(r.id)

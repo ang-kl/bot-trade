@@ -477,12 +477,21 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // window. A position whose lifecycle the window cannot show is DEFERRED to
   // the per-position reader (old-position-pnl.js), which reads its whole
   // history. `uncoveredPositions` keeps its name for the result field.
-  // Strict window calls only: the non-strict path has no production caller
-  // (cross-side-pnl.js is strict) and its merged tests are closing-deal-only
-  // fixtures; extending the rule there is a follow-up (B1 checker N6).
+  // EVERY WINDOW PASS, STRICT OR NOT (V3 F5, B1 checker N6). B1 applied the
+  // rule to strict calls only, because the non-strict path had no production
+  // caller and its tests were closing-deal-only fixtures. A caller added later
+  // would have written one window's closing deals as a position's money — the
+  // defect B1 exists to stop — so the rule holds on both paths now. KNOWN GAP
+  // (W1.7 checker): non-strict has no per-position reader to hand to. A
+  // deferred position stays NULL, is reported in `deferred`, and is never
+  // charged an attempt — so on a non-strict-only caller it is never written
+  // off either; only a strict pass (whose per-position reader is
+  // old-position-pnl.js) can settle it. Inert today: the only production
+  // callers (cross-side-pnl.js, old-position-pnl.js) are strict. A future
+  // non-strict caller must bring a reader or an attempt budget.
   const windowPass = positionId == null
   const uncoveredPositions = new Set()
-  if (strictAccount && windowPass) {
+  if (windowPass) {
     const byPid = new Map()
     for (const d of deals) {
       const pid = normPosId(d.positionId)
@@ -863,7 +872,8 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     // measured. Summed over the positions whose money landed in this pass.
     conversionFeeExcluded: Math.round(feeExcluded * 100) / 100,
     ...(feeUnreadable ? { conversionFeeUnreadable: feeUnreadable } : {}),
-    ...(strictAccount && windowPass ? { lifetimeSkipped: deferred.size, deferred: deferred.size,
+    ...(strictAccount && windowPass ? { lifetimeSkipped: deferred.size } : {}),
+    ...(windowPass && (strictAccount || deferred.size) ? { deferred: deferred.size,
       ...(deferred.size ? { deferredPositions: [...deferred].slice(0, 100) } : {}) } : {}) }
 }
 

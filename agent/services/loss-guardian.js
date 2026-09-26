@@ -29,6 +29,7 @@ import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } f
 import { recordPositionEvent } from './position-events.js'
 import { makeBookHeldCheck } from './book-held.js'
 import { measureAmend } from './protection-latency.js'
+import { protectiveExitDeferral } from './momentum-exit-coordination.js'
 
 export const DEFAULT_LOSS_GUARDIAN = {
   on: true,                 // safety net on by default — no naked losers
@@ -118,7 +119,7 @@ export function runLossGuardian(db, creds, deps = {}) {
 }
 
 async function lossGuardianPass(db, creds, deps = {}) {
-  const summary = { checked: 0, stops: 0, closes: 0, refused: 0, bookSkipped: 0, errors: [] }
+  const summary = { checked: 0, stops: 0, closes: 0, refused: 0, bookSkipped: 0, deferred: [], errors: [] }
   try {
     const accountId = authorisedAccountId(creds)
     // PER-ACCOUNT CONFIG (04-08-2026). `scope` and the on switch used to come
@@ -251,6 +252,11 @@ async function lossGuardianPass(db, creds, deps = {}) {
       if (!decision.action) continue
 
       if (decision.action.close) {
+        // V3 F1: the T2 rule — a momentum partial or rank close claimed within
+        // the transport horizon may still be in flight; this close waits for
+        // this pass only. No plan, or past the horizon: closes as before.
+        const inFlight = protectiveExitDeferral(db, { accountId: r.account_id ?? accountId, positionId: r.position_id, nowMs })
+        if (inFlight) { summary.deferred.push(`${r.symbol}: close deferred — ${inFlight}`); continue }
         try {
           await exec.closePosition(creds, {
             positionId: parseInt(r.position_id), volume: td.volume,

@@ -237,12 +237,18 @@ rejection. T2's classifier and tests use it verbatim.
   inexact, and `exactly one` is not met. The row stays unresolved with
   `order_deals_inexact` for owner review. It is not called `VOLUME_CHANGED`,
   because the order was the attempt's own.
-- The other automatic closers do not read the plan: the profit keeper
-  (`profit-keeper.js`), the loss guardian (`loss-guardian.js`), the trade
-  guard (`trade-guard.js`) and the weekend bank (`weekend-bank.js`). T2's
-  spec named the loss cap, the ratchet and the manual routes. The other four
-  are a follow-up; with `recordedPlans` 0 none of them can meet a plan today,
-  and before T4 produces plans each needs the same horizon-bounded deferral.
+- ~~The other automatic closers do not read the plan~~ — **done in V3 F1
+  (26-09-2026).** The profit keeper (close and scale-out), the loss guardian
+  (close), the trade guard (partial take-profits) and the weekend bank (the
+  pre-closure bank) call `protectiveExitDeferral` before they close, by the
+  loss cap's rule: deferred for that pass only while a `SENDING` or
+  `RANK_SENDING` request claimed within the transport horizon may be in
+  flight, never longer; nothing is stamped done, so the next pass decides
+  again. A deferral is reported in the closer's `deferred` list (the fast
+  monitor's log line; the loop's weekend-bank line), not as a failure. No
+  plan, another account's plan, or a claim past the horizon: each closes as
+  before (`agent/services/closer-horizon-deferral.test.js`). Inert while
+  `recordedPlans` is 0.
 - A timed-out attempt never learns its order id. The gateway journals the
   late frame by `clientMsgId`, which Node does not read here. Such an attempt
   resolves to `NOT_EXECUTED`, `CLOSED_EXTERNALLY` or `VOLUME_CHANGED`, with
