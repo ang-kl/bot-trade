@@ -64,9 +64,13 @@ import { scanStageStrategies } from './stage-matrix.js'
  * timeframe IS scanned, and no pass will ever produce it for THIS strategy.
  *
  * Only what has been OBSERVED is marked: `history` comes from the bar-path
- * counters (a fetch that returned fewer bars than it asked for). `got`
- * counts the forming bar when there was one, so `got < need` never
- * over-reports. Pure.
+ * counters, and only from an answer whose FIRST bar starts well after the
+ * request window opened (bar-path-counters.js isHistoryLimited). "Fewer bars
+ * than asked" alone is not history: the request is bounded by a time window,
+ * so a symbol that closes at weekends (EURUSD 1h: ~328 of 451) returns fewer
+ * bars with years of history behind it, and marking it here would be a fake
+ * result. `got` counts the forming bar when there was one, so `got < need`
+ * never over-reports. Pure.
  *
  * @param {Array<{symbol:string, timeframe:string, asked:number, got:number}>} history
  * @param {Array<{key:string, minBars?:number}>} strategies — the scan-staged set
@@ -239,8 +243,8 @@ export function readArmedCellReachability(db, getStateFn) {
     cells: impossibleDepthCells(history, strategies),
     observedShortHistories: history.length,
     note: history.length
-      ? 'strategy × symbol × timeframe cells the broker\'s whole history cannot feed: the symbol holds fewer bars on that timeframe than the strategy\'s own guard. No depth setting fixes these; they are marked, not hidden. Observed since this agent started.'
-      : 'not measured yet: no fetch since this agent started has returned fewer bars than it asked for, so no cell can be marked impossible (this is not evidence that none is)',
+      ? 'strategy × symbol × timeframe cells the broker\'s whole history cannot feed: the first bar it returned starts well after the request window opened, and the symbol holds fewer bars on that timeframe than the strategy\'s own guard. No depth setting fixes these; they are marked, not hidden. Short answers caused only by weekends or closures inside the request window are NOT listed (see /state/data-feed barPath.fetches.windowLimited). Observed since this agent started.'
+      : 'not measured yet: no fetch since this agent started has shown the broker\'s history ending inside the request window, so no cell can be marked impossible (this is not evidence that none is). Answers short only because of weekends or closures are counted as windowLimited, not here.',
   }
   return report
 }

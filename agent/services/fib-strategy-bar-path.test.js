@@ -12,7 +12,8 @@ import {
   closedBarsOf, cacheExpiryFor, barCloseAt,
 } from './fib-strategy.js'
 import { STRATEGY_REGISTRY } from './strategies.js'
-import { barPathView, recordBarFetch, recordScanPass, _resetBarPathCountersForTests } from '../lib/bar-path-counters.js'
+import { barPathView, recordBarFetch, recordScanPass, isHistoryLimited, HISTORY_EDGE_MS, _resetBarPathCountersForTests } from '../lib/bar-path-counters.js'
+import { trendbarWindowStartMs, trendbarFetchPlan } from '../lib/ctrader-ws.js'
 import { noteTokenWait } from '../lib/ctrader-session.js'
 import { impossibleDepthCells } from './armed-cell-reachability.js'
 import { strategyLiveness } from './strategy-liveness.js'
@@ -238,4 +239,95 @@ test('S-3 liveness: tsmom_long is read from the momentum ranking, not the scan �
   const fib = strategyLiveness(db, { accountId: '46130058', nowMs }).strategies.find(s => s.key === 'fib_confluence')
   assert.equal(fib.signalSource, 'scans')
   void getState
+})
+
+// --- S-3 fix round: "fewer bars than asked" is not "short history" ---------
+//
+// The request is bounded by a TIME window (ctrader-ws.js
+// trendbarWindowStartMs) as well as a count, so a symbol that closes at
+// weekends answers short with years of history behind it. This broker honours
+// the window exactly as cTrader does: it returns every bar whose open lies in
+// [fromTs, now], skipping closed hours, and none before `historyFrom[period]`.
+const PERIOD_MS = { '1mo': 30 * 86_400_000, '1w': 7 * 86_400_000, '1d': 86_400_000, '4h': 4 * H, '1h': H, '30m': H / 2, '15m': H / 4, '5m': H / 12 }
+/** FX: shut from Friday 21:00 UTC to Sunday 21:00 UTC. */
+const fxClosed = (t) => {
+  const d = new Date(t)
+  const day = d.getUTCDay(), hr = d.getUTCHours()
+  return day === 6 || (day === 0 && hr < 21) || (day === 5 && hr >= 21)
+}
+function windowedBroker({ closed = () => false, historyFrom = {} } = {}) {
+  const fn = async (_h, _c, _s, _t, _a, _id, periods, count) => {
+    const now = Date.now()
+    const out = {}
+    for (const p of periods) {
+      const ms = PERIOD_MS[p]
+      const fromTs = trendbarWindowStartMs(p, count, now)
+      const got = []
+      for (let t = Math.floor(now / ms) * ms; t >= fromTs; t -= ms) {
+        if (historyFrom[p] != null && t < historyFrom[p]) break
+        if (ms < 86_400_000 && closed(t)) continue
+        const c = 100 + Math.sin(t / ms) * 2
+        got.unshift({ t, o: c, h: c + 1, l: c - 1, c, v: 10 })
+      }
+      out[p] = got.slice(-count)
+    }
+    return out
+  }
+  return { fn }
+}
+
+test('S-3 fix: a weekend-gapped FX 1h answer is window-limited, NOT an impossible cell — EURUSD has years of 1h history', async (t) => {
+  fresh(t)
+  _setTrendbarFetcherForTests(windowedBroker({ closed: fxClosed }).fn)
+  const spy = spyStrategy('ema_pullback', 450)
+  await scanSymbolFib(CREDS, 'EURUSD', 7, { strategies: [spy.entry] })
+  const v = barPathView()
+  const h1 = spy.seen.find(s => s.tf === '1h')
+  assert.ok(h1 && h1.n < 450, `the 19-day 1h window spans weekends, so fewer than 450 closed bars came back (got ${h1?.n})`)
+  assert.ok(v.fetches.byPurpose.strategy_scan.short >= 1, 'the short answer is still counted as short')
+  assert.ok(v.fetches.windowLimited >= 1, '…and as window-limited')
+  assert.equal(v.fetches.byPurpose.strategy_scan.historyLimited, 0)
+  assert.deepEqual(v.shortHistory.rows, [], 'no symbol × timeframe is reported as the broker\'s whole history')
+  assert.deepEqual(impossibleDepthCells(v.shortHistory.rows, STRATEGY_REGISTRY), [], 'no cell is marked impossible')
+})
+
+test('S-3 fix: BTCUSD 1mo whose first bar is far past the window start IS history-limited, and a later window-limited answer clears it', async (t) => {
+  fresh(t)
+  const M = PERIOD_MS['1mo']
+  _setTrendbarFetcherForTests(windowedBroker({ historyFrom: { '1mo': Math.floor(Date.now() / M) * M - 189 * M } }).fn)
+  const spy = spyStrategy('ema_pullback', 450)
+  await scanSymbolFib(CREDS, 'BTCUSD', 12, { strategies: [spy.entry] })
+  const v = barPathView()
+  assert.deepEqual(v.shortHistory.rows.map(r => [r.symbol, r.timeframe, r.got]), [['BTCUSD', '1mo', 190]])
+  assert.ok(v.shortHistory.rows[0].firstBarAt > v.shortHistory.rows[0].windowFrom, 'the row carries the evidence: its first bar and the window edge')
+  assert.equal(v.fetches.byPurpose.strategy_scan.historyLimited, 1)
+  const cells = impossibleDepthCells(v.shortHistory.rows, STRATEGY_REGISTRY)
+  assert.deepEqual(cells.map(c => c.strategy).sort(), ['cup_handle', 'ema_pullback', 'inv_cup_handle'])
+  // The same symbol × timeframe answering short only because of its window
+  // supersedes the row — never a stale "impossible".
+  const now = Date.now()
+  recordBarFetch({ purpose: 'strategy_scan', symbol: 'BTCUSD', timeframe: '1mo', asked: 451, got: 440, firstBarT: now - 455 * M, fromTs: now - 456 * M, periodMs: M })
+  assert.equal(barPathView().shortHistory.rows.length, 0)
+})
+
+test('S-3 fix: isHistoryLimited — the margin outlasts any closure and two periods; missing evidence is never history', () => {
+  const D = 86_400_000
+  const from = Date.UTC(2026, 8, 1)
+  assert.equal(isHistoryLimited({ firstBarT: from + 3 * D, fromTs: from, periodMs: H }), false, 'a long weekend')
+  assert.equal(isHistoryLimited({ firstBarT: from + 8 * D, fromTs: from, periodMs: H }), true, 'past the 7-day edge')
+  assert.equal(isHistoryLimited({ firstBarT: from + 13 * D, fromTs: from, periodMs: 7 * D }), false, 'a weekly bar opens up to a week after an arbitrary edge')
+  assert.equal(isHistoryLimited({ firstBarT: from + 55 * D, fromTs: from, periodMs: 30 * D }), false, 'a synthesised/monthly first bar within two periods')
+  assert.equal(isHistoryLimited({ firstBarT: from + 30 * D, fromTs: null, periodMs: H }), false, 'no window edge: not measured, not history')
+  assert.equal(isHistoryLimited({ firstBarT: null, fromTs: from, periodMs: H }), false, 'no bar: not history')
+  assert.equal(HISTORY_EDGE_MS, 7 * D)
+})
+
+test('S-3 fix: trendbarWindowStartMs is the request\'s own fromTimestamp — native, synthesised (base capped at 3,000), unknown', () => {
+  const now = Date.UTC(2026, 8, 26, 3)
+  assert.equal(trendbarWindowStartMs('1h', 451, now), now - H * 456)
+  assert.equal(trendbarWindowStartMs('1mo', 451, now), now - 2_592_000_000 * 456)
+  // 6h = 6 × 1h; 1,000 × 6 = 6,000 base bars, capped to 3,000.
+  assert.equal(trendbarWindowStartMs('6h', 1000, now), now - H * 3005)
+  assert.equal(trendbarWindowStartMs('nonsense', 10, now), null)
+  assert.deepEqual(trendbarFetchPlan('6h', 1000), { period: '6h', base: '1h', code: 9, ms: H, fetchCount: 3000, factor: 6 })
 })

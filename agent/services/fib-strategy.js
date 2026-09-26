@@ -10,7 +10,7 @@
 // as agent/services/risk.js.
 // ---------------------------------------------------------------------------
 
-import { wsGetTrendbarsBatch, TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
+import { wsGetTrendbarsBatch, TRENDBAR_PERIODS, trendbarWindowStartMs } from '../lib/ctrader-ws.js'
 import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
 import { tfMs } from '../lib/timeframes.js'
 import { computeCupHandleSignal, computeInvCupHandleSignal, traceCupHandleSearch, traceInvCupHandleSearch } from './cup-handle.js'
@@ -661,9 +661,15 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   // Fetch as deep as the DEEPEST scanned strategy needs — no deeper — PLUS
   // ONE (S-3). cTrader's response includes the forming bar, which the
   // strategies never see, so asking for exactly the need left the deepest
-  // strategy one closed bar short on every open market (ema_pullback: 450
+  // strategy one closed bar short on a 24/7 symbol (ema_pullback: 450
   // asked, 449 closed, measured 26-09-2026 02:48Z). The broker limit is 5
   // REQUESTS/sec, not bars/sec, so one more bar costs no request.
+  // On a symbol that closes (FX, indices, stocks) the +1 adds nothing: the
+  // request is also bounded by a TIME window (ctrader-ws.js
+  // trendbarWindowStartMs) that weekends and closures fall inside, so EURUSD
+  // 1h returns ~328 of 451. That depth is window-limited, not history-limited;
+  // the starved counter shows it, and widening the window is a follow-up for
+  // the owner, not this change.
   const needBars = strategyFns(opts).reduce(
     (deepest, fn) => Math.max(deepest, Number(fn?.minBars) || 0), SIGNAL_BARS)
   const fetchBars = needBars + 1
@@ -675,12 +681,21 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
       // WEB-9b: `purpose` labels the per-timeframe bar receipt only (the
       // same 30 s timeout and live window as the defaults).
       const shallow = new Set(stale.filter(tf => cachedBars(symbolId, tf)))
+      // The fetcher reads its own clock at or after this line, so the window
+      // edge computed from it is at most milliseconds early — far inside the
+      // 7-day margin that separates the broker's history ending from a
+      // weekend inside the window (bar-path-counters.js isHistoryLimited).
+      const requestedAt = Date.now()
       const fetched = await fetchTrendbars(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, fetchBars, 30_000, 0, { purpose: 'strategy_scan' })
       const now = Date.now()
       for (const tf of stale) {
         const got = fetched[tf] || []
         storeBars(symbolId, tf, got, { depth: fetchBars, fetchedAt: now, host, accountId })
-        recordBarFetch({ purpose: 'strategy_scan', symbol, timeframe: tf, asked: fetchBars, got: got.length, shallowRefetch: shallow.has(tf), atMs: now })
+        recordBarFetch({
+          purpose: 'strategy_scan', symbol, timeframe: tf, asked: fetchBars, got: got.length,
+          firstBarT: got[0]?.t ?? null, fromTs: trendbarWindowStartMs(tf, fetchBars, requestedAt), periodMs: tfMs(tf),
+          shallowRefetch: shallow.has(tf), atMs: now,
+        })
       }
     } catch (err) {
       return { symbol, signal: null, lastPrice: null, error: `trendbar fetch failed: ${err.message}` }

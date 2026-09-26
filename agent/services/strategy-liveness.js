@@ -100,7 +100,11 @@ export function strategyLiveness(db, opts = {}) {
   //             serves every account, so "this account's signals" is not a
   //             quantity that exists. It stays global, and `signalsScope`
   //             says so in the payload rather than letting a scoped-looking
-  //             number imply otherwise.
+  //             number imply otherwise. The momentum family's signals
+  //             (signalSource 'momentum_shadow') are ROSTER-WIDE for the same
+  //             reason: momentum_shadow has no account column, so an
+  //             account-scoped read counts the ranking's entries for every
+  //             account.
   //   decisions decision_log — per account.
   //   opened    trades — per account.
   //   closed    trades — per account.
@@ -232,7 +236,7 @@ export function strategyLiveness(db, opts = {}) {
     } else {
       verdict = 'silent'
       note = fromRanking
-        ? 'armed, and the momentum ranking ran in this window, but it proposed NO entry — every name failed its entry band, or the pass could not reach this account'
+        ? 'armed, and the roster-wide momentum ranking ran in this window, but it proposed NO entry for any account — every name failed its entry band (the ranking is not per account: momentum_shadow has no account column)'
         : 'armed but produced NO signal in this window — a quiet market, or a code path that cannot run'
     }
 
@@ -269,7 +273,7 @@ export function strategyLiveness(db, opts = {}) {
     // Named per stage so a reader can never mistake a global number for a
     // scoped one.
     scope: acct
-      ? { signals: 'all accounts (scans are market observations)', decisions: acct, opened: acct, closed: acct, armed: acct }
+      ? { signals: 'all accounts (scans are market observations; the momentum family\'s ranking is roster-wide)', decisions: acct, opened: acct, closed: acct, armed: acct }
       : { signals: 'all accounts', decisions: 'all accounts', opened: 'all accounts', closed: 'all accounts', armed: 'global default' },
     // Whose arming the ARMED/OFF badge is reporting. Without this the card can
     // show "Not armed" and leave the reader with no way to know what it is

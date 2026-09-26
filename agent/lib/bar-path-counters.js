@@ -24,6 +24,14 @@
 //   history    — per symbol × timeframe: the deepest history the broker has
 //                returned when asked for more than it holds (BTCUSD 1mo: 190).
 //                Read by armed-cell-reachability to mark impossible cells.
+//                "Fewer bars than asked" is NOT this: the request is bounded
+//                by a time window (ctrader-ws.js trendbarWindowStartMs), so a
+//                symbol that closes at weekends returns fewer bars than asked
+//                with years of history behind it (EURUSD 1h: ~328 of 451).
+//                Only an answer whose FIRST bar starts well inside the window
+//                — past HISTORY_EDGE_MS and two periods after its left edge,
+//                longer than any market closure — is the broker running out
+//                of history. The rest is counted as `windowLimited`.
 //
 // "Not measured" is a first-class answer: `barPathView` returns
 // `state: 'not_measured'` for any block with no sample, never a zero that
@@ -33,6 +41,23 @@
 const SAMPLE_CAP = 512          // ring buffer for the p95 — bounded memory
 const HISTORY_CAP = 2000        // symbol × timeframe entries kept
 const STARVED_CAP = 500
+const DAY_MS = 86_400_000
+/** Longer than any market closure (a weekend plus a holiday is <= 4 days). */
+export const HISTORY_EDGE_MS = 7 * DAY_MS
+
+/**
+ * Whether one short answer is the broker's WHOLE history rather than the
+ * request window: its first bar starts more than max(HISTORY_EDGE_MS, two
+ * periods) after the window's left edge. Missing inputs -> false: an answer
+ * that cannot be placed in its window is never marked as history (it would
+ * be a guess presented as a measurement).
+ */
+export function isHistoryLimited({ firstBarT, fromTs, periodMs = 0 } = {}) {
+  const f = Number(firstBarT), w = Number(fromTs)
+  if (firstBarT == null || fromTs == null || !Number.isFinite(f) || !Number.isFinite(w) || f <= 0 || w <= 0) return false
+  const margin = Math.max(HISTORY_EDGE_MS, 2 * (Number(periodMs) || 0))
+  return f - w > margin
+}
 
 let state = fresh()
 
@@ -41,7 +66,7 @@ function fresh() {
     since: Date.now(),
     tokenWait: { count: 0, waited: 0, totalMs: 0, maxMs: 0, samples: [], next: 0, byPurpose: {} },
     scanPasses: { count: 0, deadlineHits: 0, lastAtMs: null, lastDeadlineAtMs: null },
-    fetches: { byPurpose: {}, shallowRefetches: 0 },
+    fetches: { byPurpose: {}, shallowRefetches: 0, windowLimited: 0 },
     starved: new Map(),   // `${strategy}|${tf}` -> { strategy, timeframe, count, lastHave, need, lastAtMs }
     history: new Map(),   // `${symbol}|${tf}`   -> { symbol, timeframe, asked, got, atMs }
   }
@@ -78,27 +103,39 @@ export function recordScanPass({ deadlineHit = false, atMs = Date.now() } = {}) 
 
 /**
  * One trendbar fetch for one symbol × timeframe. `asked` is the count
- * requested, `got` the bars returned. When the broker returns fewer than
- * asked, its history for that symbol × timeframe is `got` deep — recorded.
+ * requested, `got` the bars returned, `firstBarT` the open time of the first
+ * bar returned, `fromTs` the request window's left edge, `periodMs` the
+ * timeframe's length. A short answer is recorded as the symbol's history only
+ * when isHistoryLimited says the broker ran out of bars before the window
+ * did; otherwise it is `windowLimited` (weekends, closures, a capped base
+ * fetch) and says nothing about what the broker holds.
  */
-export function recordBarFetch({ purpose = 'other', symbol = null, timeframe = null, asked = 0, got = 0, shallowRefetch = false, atMs = Date.now() } = {}) {
+export function recordBarFetch({ purpose = 'other', symbol = null, timeframe = null, asked = 0, got = 0, firstBarT = null, fromTs = null, periodMs = 0, shallowRefetch = false, atMs = Date.now() } = {}) {
   safe(() => {
     const p = String(purpose || 'other')
-    const b = (state.fetches.byPurpose[p] ||= { requests: 0, barsAsked: 0, barsReturned: 0, short: 0 })
+    const b = (state.fetches.byPurpose[p] ||= { requests: 0, barsAsked: 0, barsReturned: 0, short: 0, historyLimited: 0 })
     b.requests++
     b.barsAsked += Number(asked) || 0
     b.barsReturned += Number(got) || 0
     if (shallowRefetch) state.fetches.shallowRefetches++
-    if (symbol != null && timeframe != null && Number(asked) > 0 && Number(got) < Number(asked)) {
-      b.short++
-      const key = `${String(symbol).toUpperCase()}|${timeframe}`
+    const short = Number(asked) > 0 && Number(got) < Number(asked)
+    if (short) b.short++
+    if (symbol == null || timeframe == null || !(Number(asked) > 0)) return
+    const key = `${String(symbol).toUpperCase()}|${timeframe}`
+    if (short && isHistoryLimited({ firstBarT, fromTs, periodMs })) {
+      b.historyLimited++
       if (!state.history.has(key) && state.history.size >= HISTORY_CAP) return
-      state.history.set(key, { symbol: String(symbol).toUpperCase(), timeframe, asked: Number(asked), got: Number(got), atMs })
-    } else if (symbol != null && timeframe != null && Number(asked) > 0) {
-      // A full answer supersedes an earlier short one (history grew, or the
-      // short answer was a broker hiccup) — never keep a stale "impossible".
-      state.history.delete(`${String(symbol).toUpperCase()}|${timeframe}`)
+      state.history.set(key, {
+        symbol: String(symbol).toUpperCase(), timeframe, asked: Number(asked), got: Number(got),
+        firstBarAt: new Date(Number(firstBarT)).toISOString(), windowFrom: new Date(Number(fromTs)).toISOString(), atMs,
+      })
+      return
     }
+    if (short) state.fetches.windowLimited++
+    // Any answer that is not history-limited — full, or short only because
+    // of the window — supersedes an earlier history row (history grew, or
+    // the earlier answer was a broker hiccup): never keep a stale "impossible".
+    state.history.delete(key)
   })
 }
 
@@ -113,7 +150,7 @@ export function recordStarved({ strategy, timeframe, have, need, atMs = Date.now
   })
 }
 
-/** The broker's observed history depth per symbol × timeframe, where it fell short of a request. */
+/** The broker's observed history depth per symbol × timeframe, where its history — not the request window — ended first. */
 export function shortHistory() {
   return [...state.history.values()]
 }
@@ -155,13 +192,17 @@ export function barPathView(nowMs = Date.now()) {
       },
     fetches: fetchPurposes.length === 0
       ? { state: 'not_measured', note: 'no trendbar fetch has been made since start' }
-      : { state: 'measured', byPurpose: state.fetches.byPurpose, shallowRefetches: state.fetches.shallowRefetches },
+      : {
+        state: 'measured', byPurpose: state.fetches.byPurpose, shallowRefetches: state.fetches.shallowRefetches,
+        windowLimited: state.fetches.windowLimited,
+        note: '`short` = answers with fewer bars than asked; `historyLimited` = the subset where the broker ran out of history (listed under shortHistory); `windowLimited` = short only because the request\'s time window spans weekends or closures — the symbol\'s history is deeper.',
+      },
     starved: state.starved.size === 0
       ? { state: s.count === 0 ? 'not_measured' : 'none', rows: [] }
       : { state: 'measured', rows: [...state.starved.values()].sort((a, b) => b.count - a.count) },
     shortHistory: state.history.size === 0
       ? { state: fetchPurposes.length === 0 ? 'not_measured' : 'none', rows: [] }
-      : { state: 'measured', rows: shortHistory() },
+      : { state: 'measured', rows: shortHistory(), note: 'the first bar returned starts well after the request window opened: the broker holds no earlier bars on this symbol × timeframe' },
   }
 }
 
