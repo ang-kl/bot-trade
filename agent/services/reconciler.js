@@ -5,6 +5,7 @@ import { getState, setState as setAgentState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
 import { lotsFromUnits } from '../lib/lot-size-registry.js'
 import { recordPositionEvent } from './position-events.js'
+import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -41,9 +42,8 @@ export function brokerVolumeToLots(bp, symbol, db = null) {
 // door. The intent row names the producer, and the producer names exactly one
 // strategy, so the fact is recoverable. `parsed.strategy` still wins wherever
 // the label has one; this only fills a hole.
-const PRODUCER_STRATEGY = Object.freeze({
-  tick_momentum: 'tick_momentum_breakout',
-})
+// V3 B4c: the table now lives in adopted-reasons.js (imported above), which
+// reads it for the adoption fallback and the backfill too — one copy.
 
 /** The producer and resolved state of an intent, for the adoption thesis. Never throws. */
 function intentMeta(db, intentId) {
@@ -83,6 +83,61 @@ const BREACH_STATES = new Set(['REJECTED', 'RELEASED', 'EXPIRED'])
 export const INTENT_APPROVAL_WINDOW_SQL = `SELECT id FROM risk_events WHERE account_id = ? AND UPPER(symbol) = UPPER(?) AND UPPER(side) = UPPER(?) AND approved = 1
         AND created_at <= ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 1`
 
+/**
+ * THE PLAN AN ADOPTED FILL'S OWN INTENT RECORDED — before the outcome was
+ * known: the intent's stop and target in the units the order carried them,
+ * else the broker's own stop and target on the position at adoption. Written
+ * only when no plan is on record; a write that fails is recorded (W7), never
+ * swallowed. Moved out of stampAdoptedFromIntent unchanged (V3 B4c fix round,
+ * checker nit 1) so the adoption of an UNTAGGED fill that the entry ledger's
+ * own position record links (adopted-reasons.js) gets the same plan the stamp
+ * gives a tagged one — at adoption only, never in hindsight on a closed row.
+ * A failing read of trade_plans throws to the caller, as it did in the stamp.
+ */
+export function recordAdoptedIntentPlan(db, { tradeId, it, acct, symbolName, sideWord, strategy, timeframe = null, entry, sl, tp, stage = 'adopt_stamp' }) {
+  const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(tradeId)
+  if (hasPlan) return false
+  // X1 / W3 (25-09-2026): the intent's sl/tp are in the units the order
+  // carried them (entry_intents.sl_units / tp_units). A relative leg is
+  // wire points — never a price: it becomes one from the fill (`entry`,
+  // the broker's open price the relative bracket was applied to). Before
+  // this, `it.sl` went in as a price: #1686 JPM.US planned_sl 1,732,000.
+  // A pre-X1 row recorded no units: its value is read as a price only
+  // when it IS price-shaped for this entry (right side, within
+  // planProblems' scale). Wire points cannot pass that test — a stop
+  // 0.1–5 % away is 100–5,000× the price in points — so they fall back to
+  // the broker's own stop / target on the position.
+  const dir = sideWord === 'BUY' ? 1 : -1
+  const e = Number(entry)
+  const haveEntry = entry != null && Number.isFinite(e) && e > 0
+  const legPrice = (value, units, sign, leg) => {
+    const v = Number(value)
+    if (value == null || !Number.isFinite(v)) return null
+    if (units === 'price') return v
+    if (units === 'relative_points') return haveEntry ? e + sign * dir * v / 100_000 : null
+    // planProblems judges the stop's scale only; the target's is judged here.
+    if (units == null && haveEntry && planProblems({ side: sideWord, entry: e, [leg]: v }).length === 0
+      && Math.abs(v - e) / e <= PLAN_ABSURD_RISK_FRACTION) return v
+    return null
+  }
+  // W7: a plan that fails to write is recorded; the stamp above stays.
+  // recordTradePlan refuses an absurd plan by returning `refused` (and
+  // counting it) rather than throwing — only a written plan returns true.
+  try {
+    const r = recordTradePlan(db, tradeId, {
+      accountId: acct, symbol: symbolName, side: sideWord, strategy, timeframe,
+      entry: entry ?? null,
+      sl: legPrice(it.sl, it.sl_units, -1, 'sl') ?? sl ?? null,
+      tp: legPrice(it.tp, it.tp_units, +1, 'tp') ?? tp ?? null,
+      source: 'reconciler_adopted_intent',
+    })
+    return !(r && Array.isArray(r.refused))
+  } catch (err) {
+    recordPlanWriteFailure(db, { tradeId, accountId: acct, symbol: symbolName, source: 'reconciler_adopted_intent', stage, error: err })
+    return false
+  }
+}
+
 /** M4: see the call site in reconcilePositions. Returns what was stamped, or null. */
 export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbolName, side, entry, sl, tp }) {
   try {
@@ -115,44 +170,7 @@ export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbo
     db.prepare(`UPDATE trades SET origin = ?, origin_source = 'write', strategy = COALESCE(strategy, ?), risk_event_id = COALESCE(risk_event_id, ?), intent_id = COALESCE(intent_id, ?) WHERE id = ?`)
       .run(origin, strategy, riskEventId, tag, tradeId)
     db.prepare(`UPDATE monitored_positions SET strategy = COALESCE(strategy, ?) WHERE trade_id = ?`).run(strategy, tradeId)
-    const hasPlan = db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(tradeId)
-    if (!hasPlan) {
-      // X1 / W3 (25-09-2026): the intent's sl/tp are in the units the order
-      // carried them (entry_intents.sl_units / tp_units). A relative leg is
-      // wire points — never a price: it becomes one from the fill (`entry`,
-      // the broker's open price the relative bracket was applied to). Before
-      // this, `it.sl` went in as a price: #1686 JPM.US planned_sl 1,732,000.
-      // A pre-X1 row recorded no units: its value is read as a price only
-      // when it IS price-shaped for this entry (right side, within
-      // planProblems' scale). Wire points cannot pass that test — a stop
-      // 0.1–5 % away is 100–5,000× the price in points — so they fall back to
-      // the broker's own stop / target on the position.
-      const dir = sideWord === 'BUY' ? 1 : -1
-      const e = Number(entry)
-      const haveEntry = entry != null && Number.isFinite(e) && e > 0
-      const legPrice = (value, units, sign, leg) => {
-        const v = Number(value)
-        if (value == null || !Number.isFinite(v)) return null
-        if (units === 'price') return v
-        if (units === 'relative_points') return haveEntry ? e + sign * dir * v / 100_000 : null
-        // planProblems judges the stop's scale only; the target's is judged here.
-        if (units == null && haveEntry && planProblems({ side: sideWord, entry: e, [leg]: v }).length === 0
-          && Math.abs(v - e) / e <= PLAN_ABSURD_RISK_FRACTION) return v
-        return null
-      }
-      // W7: a plan that fails to write is recorded; the stamp above stays.
-      try {
-        recordTradePlan(db, tradeId, {
-          accountId: acct, symbol: symbolName, side: sideWord, strategy, timeframe: parsed?.timeframe || null,
-          entry: entry ?? null,
-          sl: legPrice(it.sl, it.sl_units, -1, 'sl') ?? sl ?? null,
-          tp: legPrice(it.tp, it.tp_units, +1, 'tp') ?? tp ?? null,
-          source: 'reconciler_adopted_intent',
-        })
-      } catch (err) {
-        recordPlanWriteFailure(db, { tradeId, accountId: acct, symbol: symbolName, source: 'reconciler_adopted_intent', stage: 'adopt_stamp', error: err })
-      }
-    }
+    recordAdoptedIntentPlan(db, { tradeId, it, acct, symbolName, sideWord, strategy, timeframe: parsed?.timeframe || null, entry, sl, tp, stage: 'adopt_stamp' })
     return { intentId: tag, origin, strategy, riskEventId }
   } catch (err) {
     // W7: the stamp failing is recorded, never swallowed — the row stays
@@ -643,6 +661,30 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     // the row reconciler_adopted, which findUnreasonedTrades then lists as
     // adopted_ours_unreasoned rather than hiding.
     const stamped = ours ? stampAdoptedFromIntent(db, { tradeId: inserted, label, parsed, acct, symbolName, side, entry, sl, tp }) : null
+    // V3 B4c: WHAT THE STAMP CANNOT SEE. It reads only the label's tag; an
+    // OURS label with no tag (a resting order placed before the ledger, a
+    // position the broker re-opened under a new id, a transport that dropped
+    // the tag) was left with the strategy in label_strategy only, no intent
+    // and no approval — 106 such rows on 26-09. adopted-reasons.js fills what
+    // a record names (the ledger's own record of this position, the resting
+    // row that placed the intent's order, a clean bot row on this same
+    // position, the label's strategy code), each with its evidence, and
+    // never a guessed approval or an origin from the label alone.
+    const recovered = ours ? recoverTradeReason(db, inserted, { writer: 'adoption' }) : null
+    // B4c fix round (checker nit 1): when that intent proved the fill is the
+    // bot's (the origin moved), its plan is written HERE, at adoption, the
+    // way the stamp writes it for a tagged label — the intent's own stop and
+    // target, recorded before any outcome. The backfill never does this: a
+    // closed row is not given a plan in hindsight.
+    let intentPlan = false
+    if (recovered?.wrote?.origin && recovered.intent) {
+      try {
+        const strategyNow = db.prepare('SELECT strategy FROM trades WHERE id = ?').get(inserted)?.strategy ?? null
+        intentPlan = recordAdoptedIntentPlan(db, { tradeId: inserted, it: recovered.intent, acct, symbolName, sideWord: side === 'long' ? 'BUY' : 'SELL', strategy: strategyNow, timeframe: parsed?.timeframe || null, entry, sl, tp, stage: 'adopt_recover' })
+      } catch (err) {
+        recordPlanWriteFailure(db, { tradeId: inserted, accountId: acct, symbol: symbolName, source: 'reconciler_adopted_intent', stage: 'adopt_recover', error: err })
+      }
+    }
 
     // The breach is journalled AFTER the row exists, so the log line names a
     // trade that can be looked up. It changes nothing about ownership.
@@ -660,7 +702,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       console.warn(`[reconcile] FENCE BREACH adopted: intent ${intentTag} state ${intentInfo.state} account …${String(acct ?? '').slice(-4)} trade ${inserted}`)
     }
 
-    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, adopted: ours, source: adoptedSource, tradeId: inserted, ...(breach ? { fenceBreach: intentInfo.state } : {}), ...(stamped ? { stampedFromIntent: stamped } : {}) })
+    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, adopted: ours, source: adoptedSource, tradeId: inserted, ...(breach ? { fenceBreach: intentInfo.state } : {}), ...(stamped ? { stampedFromIntent: stamped } : {}), ...(recovered && Object.keys(recovered.wrote).length ? { reasonRecovered: Object.fromEntries(Object.entries(recovered.wrote).map(([f, p]) => [f, p.evidence])) } : {}), ...(intentPlan ? { planFromIntent: recovered.intent.id } : {}) })
   }
 
   const closedDetected = []

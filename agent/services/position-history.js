@@ -426,7 +426,15 @@ export function classifyRefusedRecord(db, { record = {}, missing = [] } = {}) {
   const origin = str(trade?.origin) ?? str(record.origin)
   let ours = false
   try { ours = isOurs(trade?.label_raw || '') } catch { ours = false }
-  const external = EXTERNAL_ORIGINS.has(origin) || (origin === 'reconciler_adopted' && !ours)
+  // V3 B4c: a row written before the origin column carries origin NULL, so
+  // the record's origin is the trade's `source` — and the reconciler's source
+  // for a foreign-labelled import was 'external' ("External position —
+  // reconciliation import"). Read as a writer gap, 13 such imports sat in
+  // live_gap on 26-09 (#6–#441, #372/#373). A PRE fill the reconciler also
+  // filed as 'external' before isOurs learned PRE keeps its label, so `ours`
+  // still claims it for the bot.
+  const legacyExternal = origin === 'external' && str(trade?.origin) == null
+  const external = EXTERNAL_ORIGINS.has(origin) || ((origin === 'reconciler_adopted' || legacyExternal) && !ours)
   const writtenOff = Number(trade?.written_off) === 1
   const needsBroker = missing.some(f => BROKER_FIELDS.includes(f))
   const ev = needsBroker && !writtenOff && record.account_id != null && record.ctrader_position_id != null
@@ -450,7 +458,7 @@ export function classifyRefusedRecord(db, { record = {}, missing = [] } = {}) {
       else put(f, 'broker_evidence_pending', ev ? `broker verdict ${ev.verdict}${evFinal ? ' (final)' : evStale ? ` (final under rules ${ev.rules}, re-read due)` : ''}` : 'no broker figure yet')
       continue
     }
-    if (BOT_SIDE_FIELDS.has(f) && external) { put(f, 'outside_bot', `origin ${origin ?? '?'}${origin === 'reconciler_adopted' ? ' without our label' : ''}`); continue }
+    if (BOT_SIDE_FIELDS.has(f) && external) { put(f, 'outside_bot', `origin ${origin ?? '?'}${origin === 'reconciler_adopted' ? ' without our label' : legacyExternal ? ' (source of a foreign-label import written before the origin column)' : ''}`); continue }
     if (f === 'direction_reason') {
       const c = directionReasonContractClass(entryMs)
       if (c === 'pre_contract') put(f, 'pre_contract', `${entered}, before ${dr.pr} ${dr.since}`)

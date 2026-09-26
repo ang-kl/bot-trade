@@ -28,6 +28,7 @@ import { normPosId } from '../lib/pos-id.js'
 import { UNPRICEABLE_VERDICTS, planContractClass, utcMs } from '../lib/record-contracts.js'
 import { UNKNOWN_MAX_AGE_MS } from './entry-ledger.js'
 import { EVIDENCE_RULES } from './position-lifecycle-evidence.js'
+import { HEURISTIC_LINK, heuristicLinks, matchTradeIntent } from './adopted-reasons.js'
 
 const HOUR_MS = 3_600_000
 
@@ -46,7 +47,7 @@ export const UNREASONED_KINDS = Object.freeze([
   'close_reason_missing', // closed with no close_reason
   'plan_unscored',       // closed, has a plan, the plan was never scored
   'backfilled_after_cutoff', // M3: legacy_unattributed / manual_broker written by the BACKFILL on a post-cutoff row — a write path should have stamped it
-  'adopted_ours_unreasoned', // M4: reconciler_adopted with OUR label and no strategy, plan or approval id — a bot fill whose record was lost
+  'adopted_ours_unreasoned', // M4: reconciler_adopted with OUR label and no strategy, plan or approval id — a bot fill whose record was lost (B4c: an approval id or plan standing only on the pre-L2a symbol+time link counts as missing)
   'intent_unknown_stale', // an entry_intents UNKNOWN older than UNKNOWN_MAX_AGE_MS
 ])
 
@@ -72,6 +73,56 @@ export function reasonContractClass(kind, openedAt, missing = null) {
 }
 
 /**
+ * V3 B4c: the rest of an adopted_ours_unreasoned detail — where a value on
+ * the row came from, and what alone may fill each missing piece
+ * (services/adopted-reasons.js). Named, never subtracted: the row stays
+ * counted.
+ *
+ * An approval id on a row still `reconciler_adopted` with no B4c evidence
+ * row was written by the pre-L2a closed-market sweep, the only writer that
+ * stamps an approval without moving the origin (the reconciler's stamp, the
+ * evidence-linked sweep and the book link all set a bot origin). That sweep
+ * matched "the first trade on this symbol since placement" — a heuristic L2a
+ * (#1114) removed as unreliable — so the id is shown as such, not as
+ * evidence, and (fix round, checker blocker 1) counted as missing —
+ * `approval id (heuristic link)` — as is a closed_market_limit_fill plan the
+ * same sweep wrote, until a record confirms the stored id
+ * (adopted-reasons.js heuristicLinks).
+ */
+export const ADOPTED_UNRECOVERED = Object.freeze({
+  strategy: "only our label's strategy code or the matched intent's producer may supply it",
+  plan: 'none was recorded at adoption, and none is invented after the fact',
+  'approval id': 'only an entry intent, the resting order row that placed it or a same-position bot row may supply it — never a time window',
+  // B4c fix round (checker blocker 1): the pre-L2a link is not a reason. The
+  // row stays counted, post-contract, until an evidence record confirms the
+  // stored id or the owner rules on such links.
+  [HEURISTIC_LINK.approval]: 'the id on the row stands only on the pre-L2a symbol + time link; only an entry intent, the resting order row that placed it or a same-position bot row may confirm it',
+  [HEURISTIC_LINK.plan]: 'written by the same pre-L2a sweep from the resting row it linked by symbol + time; it stands only on that link',
+})
+function adoptedEvidenceNote(db, r, missingList, ev) {
+  const parts = []
+  if (ev.strategy) parts.push(`strategy from ${ev.strategy.evidence}`)
+  const ra = ev.risk_event_id
+  if (ra) parts.push(ra.before != null && String(ra.before) === String(ra.value)
+    ? `approval id #${ra.value} confirmed by ${ra.evidence}`
+    : `approval id #${ra.value} from ${ra.evidence}`)
+  else if (r.risk_event_id != null) parts.push(`approval id #${r.risk_event_id} linked by the pre-L2a closed-market sweep (symbol + time), not by evidence`)
+  if (missingList.includes(HEURISTIC_LINK.plan)) parts.push(`plan written by the same sweep (source ${r.plan_source})`)
+  // Checker nit 3: the approval the evidence names, not only the key.
+  const c = ev.risk_event_id_conflict
+  if (c) parts.push(`an evidence record (${c.evidence}) names approval #${c.value}, not the stored #${c.before}; trade_reason_evidence`)
+  // Checker nit 4: THIS row's reason no record could supply or confirm the
+  // approval — the matcher's own refusal, not only the per-field text.
+  if (missingList.includes('approval id') || missingList.includes(HEURISTIC_LINK.approval)) {
+    let m = null
+    try { m = matchTradeIntent(db, r) } catch { m = null }
+    if (m && !m.intent && m.why) parts.push(`no entry intent matched: ${m.why}`)
+  }
+  const why = missingList.filter(f => ADOPTED_UNRECOVERED[f]).map(f => `${f}: ${ADOPTED_UNRECOVERED[f]}`)
+  return (parts.length ? ` — ${parts.join('; ')}` : '') + (why.length ? ` — missing: ${why.join('; ')}` : '')
+}
+
+/**
  * The invariant: every trade the bot decided to take since the cutoff has a
  * reason on record, and no send is left UNKNOWN past the resolver's age.
  * Population: `trades` opened at or after `sinceIso` with status open or
@@ -86,7 +137,8 @@ export function findUnreasonedTrades(db, { sinceIso = TRADE_REASONS_CUTOFF_ISO, 
   const clean = CLEAN_BOT_ORIGINS.map(() => '?').join(',')
   const rows = db.prepare(`
     SELECT t.id, t.symbol, t.side, t.status, t.origin, t.origin_source, t.label_raw, t.strategy, t.risk_event_id, t.close_reason, t.opened_at,
-           p.trade_id AS plan_id, p.scored_at
+           t.account_id, t.intent_id, t.ctrader_position_id,
+           p.trade_id AS plan_id, p.scored_at, p.source AS plan_source
       FROM trades t LEFT JOIN trade_plans p ON p.trade_id = t.id
      WHERE t.status IN ('open', 'closed')
        AND t.opened_at IS NOT NULL
@@ -97,6 +149,15 @@ export function findUnreasonedTrades(db, { sinceIso = TRADE_REASONS_CUTOFF_ISO, 
      ORDER BY t.id
   `).all(sinceIso, ...CLEAN_BOT_ORIGINS)
   const violations = []
+  // V3 B4c: what adopted-reasons.js recovered for a row, and from what. The
+  // table is written by that module; absent (a database it never ran on),
+  // nothing is named and the detail reads as before.
+  let evidenceStmt = null
+  try { evidenceStmt = db.prepare('SELECT field, evidence, value, before_value FROM trade_reason_evidence WHERE trade_id = ?') } catch { evidenceStmt = null }
+  const evidenceOf = (tradeId) => {
+    if (!evidenceStmt) return {}
+    try { return Object.fromEntries(evidenceStmt.all(tradeId).map(e => [e.field, { evidence: e.evidence, value: e.value, before: e.before_value }])) } catch { return {} }
+  }
   // V3 B4: every trade violation carries its contract class (reasonContractClass).
   const push = (tradeId, kind, detail, openedAt, missing = null) =>
     violations.push({ tradeId, kind, detail, contract: reasonContractClass(kind, openedAt, missing) })
@@ -115,9 +176,17 @@ export function findUnreasonedTrades(db, { sinceIso = TRADE_REASONS_CUTOFF_ISO, 
       // record was lost; it needs the same reasons as any bot trade.
       let ours = false
       try { ours = isOurs(r.label_raw || '') } catch { ours = false }
-      if (ours && (r.strategy == null || String(r.strategy).trim() === '' || r.plan_id == null || r.risk_event_id == null)) {
-        const missingList = [(r.strategy == null || String(r.strategy).trim() === '') && 'strategy', r.plan_id == null && 'plan', r.risk_event_id == null && 'approval id'].filter(Boolean)
-        push(r.id, 'adopted_ours_unreasoned', `${who}: adopted with our label (${String(r.label_raw).slice(0, 40)}) and no ${missingList.join(', ')}`, r.opened_at, missingList)
+      if (ours) {
+        // B4c fix round (checker blocker 1): an approval id or a plan that
+        // stands only on the pre-L2a symbol + time link is missing, not a
+        // reason — filling the strategy must not let the row leave the count
+        // or turn pre_contract on it (heuristicLinks).
+        const ev = evidenceOf(r.id)
+        const missingList = [
+          (r.strategy == null || String(r.strategy).trim() === '') && 'strategy', r.plan_id == null && 'plan', r.risk_event_id == null && 'approval id',
+          ...heuristicLinks({ origin: r.origin, riskEventId: r.risk_event_id, planSource: r.plan_source, approvalEvidence: ev.risk_event_id ?? null }),
+        ].filter(Boolean)
+        if (missingList.length) push(r.id, 'adopted_ours_unreasoned', `${who}: adopted with our label (${String(r.label_raw).slice(0, 40)}) and no ${missingList.join(', ')}${adoptedEvidenceNote(db, r, missingList, ev)}`, r.opened_at, missingList)
       }
       continue
     }
