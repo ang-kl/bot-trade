@@ -35,7 +35,7 @@
 import { automaticProducers } from '../lib/entry-producers.js'
 
 export const VERDICT = Object.freeze({ PASS: 'PASS', FAIL: 'FAIL', NOT_VERIFIABLE: 'NOT_VERIFIABLE' })
-export const EVALUATOR_VERSION = 'v3-r2-3'
+export const EVALUATOR_VERSION = 'v3-r2-4'
 const { PASS, FAIL, NOT_VERIFIABLE: NV } = VERDICT
 
 /** The two recorder sides, by the heartbeat's side names. */
@@ -80,6 +80,18 @@ export function fold(name, checks, { empty = 'nothing was evaluated' } = {}) {
 
 const arr = (x) => (Array.isArray(x) ? x : x == null ? [] : [x])
 const num = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
+/**
+ * A count as the R1 view serves it: a non-negative integer, or its decimal
+ * string. Anything else is null — never a boolean or an array that num() would
+ * read as 1 or 0, and never a missing field read as 0: a count that was not
+ * reported is not a count of nothing.
+ */
+const countOf = (v) => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN
+  return Number.isInteger(n) && n >= 0 ? n : null
+}
+/** How a field that is not a count was reported, for a NOT_VERIFIABLE reason. */
+const notACount = (v) => (v === undefined ? 'absent' : `not a count (${JSON.stringify(v) ?? String(v)})`)
 const has = (o, k) => o != null && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k)
 const empty = (v) => v == null || String(v).trim() === ''
 
@@ -359,11 +371,24 @@ export function recorderDrill(before = {}, after = {}, { sides = Object.keys(SID
       const afterBy = new Map(aSeg.list.map(s => [s.name, s]))
       const goneRows = arr(aSeg.manifest?.gone)
       const goneBy = new Map(goneRows.map(g => [g.name, g]))
-      // The view shows the newest `gone` rows only (goneLimit, 100) and counts
-      // them all in goneTotal: a name absent from a capped page may be recorded
-      // beyond it, retired or lost, and is not proof of an unaccounted loss.
+      // The view shows the newest `gone` rows only (goneLimit, 100, ordered by
+      // goneAtMs descending) and counts them all in goneTotal: a name absent
+      // from a capped page may be recorded beyond it, retired or lost, and is
+      // not proof of an unaccounted loss — UNLESS the page reaches back to the
+      // before read. Every row beyond the page is at or before the oldest one
+      // shown, so when that is at or before the before read, none of them can
+      // record a segment the before body still listed, and the page covers the
+      // drill. The manifest is never pruned, so after 100 lifetime gone rows
+      // the page is capped for good: without this, a real never-recorded loss
+      // would read NOT_VERIFIABLE forever (CLAUDE.md failure mode #3).
       const goneTotal = num(aSeg.manifest?.goneTotal)
-      const goneCapped = goneTotal != null && goneTotal > goneRows.length
+      const paged = goneTotal != null && goneTotal > goneRows.length
+      const goneAts = goneRows.map(g => num(g?.goneAtMs))
+      // Every shown row must be dated: an undated row could be the oldest one.
+      const oldestShownMs = goneAts.length && goneAts.every(x => x != null) ? Math.min(...goneAts) : null
+      const beforeReadMs = bodyAtMs(before['/state/tick-segments']) ?? num(bSeg.manifest?.lastListing?.atMs)
+      const pageReachesBefore = oldestShownMs != null && beforeReadMs != null && oldestShownMs <= beforeReadMs
+      const goneCapped = paged && !pageReachesBefore
       const missing = [], resized = [], retired = [], lost = []
       for (const s of bSeg.list) {
         const a = afterBy.get(s.name)
@@ -374,12 +399,12 @@ export function recorderDrill(before = {}, after = {}, { sides = Object.keys(SID
         else missing.push({ name: s.name, recordedAs: g?.reason ?? null })
       }
       const unaccounted = goneCapped ? missing.filter(m => m.recordedAs != null) : missing
-      const ev = { policy: pol, policySource: placed.source, ...(placed.since ? { since: placed.since, prevListingMs: placed.prevListingMs } : {}), before: bSeg.list.length, listedAgain: bSeg.list.length - missing.length - retired.length - lost.length, retired: retired.length, lostRestart: lost.length, missing, resized, tornAtStart: rowTorn, ...(goneCapped ? { goneShown: goneRows.length, goneTotal } : {}) }
+      const ev = { policy: pol, policySource: placed.source, ...(placed.since ? { since: placed.since, prevListingMs: placed.prevListingMs } : {}), before: bSeg.list.length, listedAgain: bSeg.list.length - missing.length - retired.length - lost.length, retired: retired.length, lostRestart: lost.length, missing, resized, tornAtStart: rowTorn, ...(paged ? { goneShown: goneRows.length, goneTotal, goneOldestShownMs: oldestShownMs, beforeReadMs, pageReachesBefore } : {}) }
       const openNote = rowTorn > 0 ? `; not covered: ${rowTorn} open segment(s) torn at the restart (see tornTail)` : ''
       if (resized.length) checks.push(check(p('segments'), FAIL, `${resized.length} sealed segment(s) listed again with different bytes`, ev))
       else if (pol === 'DURABLE' && (lost.length || unaccounted.length)) checks.push(check(p('segments'), FAIL, `DURABLE spool: ${lost.length + unaccounted.length} sealed segment(s) from before are gone (${[...lost, ...unaccounted.map(m => m.name)].slice(0, 3).join(', ')})`, ev))
       else if (unaccounted.length) checks.push(check(p('segments'), FAIL, `${unaccounted.length} sealed segment(s) from before are gone and the manifest does not record them as lost or retired (${unaccounted.slice(0, 3).map(m => m.name).join(', ')})`, ev))
-      else if (missing.length) checks.push(check(p('segments'), NV, `${missing.length} sealed segment(s) from before are not listed again and not among the ${goneRows.length} newest gone rows the manifest shows (of ${goneTotal}): they may be recorded beyond that page, so a retire cannot be told from a loss (${missing.slice(0, 3).map(m => m.name).join(', ')})`, ev))
+      else if (missing.length) checks.push(check(p('segments'), NV, `${missing.length} sealed segment(s) from before are not listed again and not among the ${goneRows.length} newest gone rows the manifest shows (of ${goneTotal}), and that page does not reach back to the before read (oldest row shown ${iso(oldestShownMs) ?? 'undated'}, before read ${iso(beforeReadMs) ?? 'undated'}): they may be recorded beyond it, so a retire cannot be told from a loss (${missing.slice(0, 3).map(m => m.name).join(', ')})`, ev))
       else checks.push(check(p('segments'), PASS, pol === 'DURABLE' ? `every sealed segment from before is listed again with the same bytes (${retired.length} retired oldest-first)${openNote}` : `ephemeral by declaration: ${ev.listedAgain} listed again, ${lost.length} recorded lost_restart by name, ${retired.length} retired${openNote}`, ev))
     }
 
@@ -492,9 +517,11 @@ export function retentionCheck(samples = {}, { sides = Object.keys(SIDES), allow
     const lastSeg = segs.length ? segmentsSide(segs[segs.length - 1], side) : null
     const m = lastSeg?.manifest
     if (!m) { checks.push(check(p('manifest'), NV, 'no R1 segment manifest for this side in the saved GET /state/tick-segments bodies')); continue }
-    const unexplained = num(m.unexplained) ?? 0
+    // A missing or non-numeric count is not a count of zero: NOT_VERIFIABLE, named.
+    const unexplained = countOf(m.unexplained)
     const goneUnexplained = arr(m.gone).filter(g => g.reason === 'unexplained').map(g => g.name)
-    checks.push(check(p('unexplained'), unexplained === 0 ? PASS : FAIL, unexplained === 0 ? 'no sealed segment vanished without a retire to explain it' : `${unexplained} sealed segment(s) vanished within one boot with no retire to explain them (${goneUnexplained.slice(0, 3).join(', ')})`))
+    if (unexplained == null) checks.push(check(p('unexplained'), NV, `the R1 manifest's unexplained count (manifest.unexplained) is ${notACount(m.unexplained)}, so a sealed segment that vanished within one boot cannot be ruled out`))
+    else checks.push(check(p('unexplained'), unexplained === 0 ? PASS : FAIL, unexplained === 0 ? 'no sealed segment vanished without a retire to explain it' : `${unexplained} sealed segment(s) vanished within one boot with no retire to explain them (${goneUnexplained.slice(0, 3).join(', ')})`))
     const retired = num(m.retired) ?? 0
     const retiredRows = arr(m.gone).filter(g => g.reason === 'retired')
     if (retired === 0) checks.push(check(p('retireObserved'), NV, `no segment has been retired yet (${m.listedBytes ?? '?'} B sealed): retention is observed at the first natural retire`))
@@ -873,8 +900,13 @@ export function e2eTrace(bodies = {}, { window = {}, gate = null, deadlineMs = n
   const segEnd = bodies['/state/tick-segments']
   const gapChecks = []
   for (const side of Object.keys(SIDES)) {
+    // A missing manifest or a missing / non-numeric count is not a count of
+    // zero: NOT_VERIFIABLE with the source and key named, never PASS.
     const m = segmentsSide(segEnd, side)?.manifest
-    if (m) gapChecks.push(check(`recorder.${side}.manifest`, (num(m.unexplained) ?? 0) > 0 ? FAIL : PASS, `${num(m.unexplained) ?? 0} unexplained segment loss(es)`))
+    const unexplained = countOf(m?.unexplained)
+    if (!m) gapChecks.push(check(`recorder.${side}.manifest`, NV, 'no R1 segment manifest for this side in the saved end-of-window GET /state/tick-segments body (manifest.unexplained)'))
+    else if (unexplained == null) gapChecks.push(check(`recorder.${side}.manifest`, NV, `the R1 manifest's unexplained count (manifest.unexplained) is ${notACount(m.unexplained)}, so an unexplained segment loss cannot be ruled out`))
+    else gapChecks.push(check(`recorder.${side}.manifest`, unexplained > 0 ? FAIL : PASS, `${unexplained} unexplained segment loss(es)`))
     const a = recorderSide(arr(recStart)[0], side)?.status, b = recorderSide(arr(recEnd)[0], side)?.status
     if (!a || !b) { gapChecks.push(check(`recorder.${side}.counters`, NV, 'GET /state/tick-recorder not saved at both the start and the end')); continue }
     if (a.shadowPortfolio?.bootId && b.shadowPortfolio?.bootId && a.shadowPortfolio.bootId !== b.shadowPortfolio.bootId) { gapChecks.push(check(`recorder.${side}.counters`, NV, 'the sidecar restarted inside the window: its counters reset')); continue }

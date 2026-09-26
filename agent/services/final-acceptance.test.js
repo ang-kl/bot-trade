@@ -316,6 +316,79 @@ test("T1 over main's REAL R1 manifest (#1130): a restart is judged by the policy
   assert.match(recorderDrill(torn.before, torn.after, torn.opts).checks.find(c => c.name === `${side}.tornTail`).reason, /^1 torn tail\(s\) at start/)
 })
 
+test('T1 drill: a capped gone page that reaches back to the before read still fails a loss the manifest never recorded; one that does not reach back is not verifiable', () => {
+  // The R1 manifest is never pruned, so once a side has had more than 100
+  // gone rows the view's page is capped for good (goneTotal > gone.length).
+  // The view orders gone rows by goneAtMs descending, so every row beyond the
+  // page is at or before the oldest one shown: when that is at or before the
+  // before read, no row beyond the page can record a segment the before body
+  // still listed. Here all 100 shown rows are hours older than the before read
+  // (T - 10 min) and SEGS[0] is missing after the restart and from the page.
+  const side = 'cpp_exec_demo'
+  const segOf = (r) => recorderDrill(r.before, r.after, r.opts).checks.find(c => c.name === `${side}.segments`)
+  const old = Array.from({ length: 100 }, (_, i) => ({ name: `seg-1780000000000-${String(900000 + i)}.tks`, reason: 'retired', goneAtMs: T - 20 * H - i * 60_000 }))
+  const cappedPair = (policy, gone = old, goneTotal = 250) => {
+    const r = drillPair({ policy, afterList: SEGS.slice(1), gone })
+    r.after['/state/tick-segments'].sides[0].manifest.goneTotal = goneTotal
+    return r
+  }
+
+  const eph = segOf(cappedPair('EPHEMERAL_LOSS_RECORDED'))
+  assert.equal(eph.verdict, FAIL, 'RED if a capped gone page silences a loss the manifest never recorded (CLAUDE.md failure mode #3)')
+  assert.match(eph.reason, /^1 sealed segment\(s\) from before are gone and the manifest does not record them as lost or retired \(seg-1790000000000-000001\.tks\)/)
+  assert.equal(eph.evidence.goneTotal, 250); assert.equal(eph.evidence.goneShown, 100)
+  assert.equal(eph.evidence.pageReachesBefore, true); assert.equal(eph.evidence.beforeReadMs, T - 10 * 60_000)
+  const dur = segOf(cappedPair('DURABLE'))
+  assert.equal(dur.verdict, FAIL); assert.match(dur.reason, /^DURABLE spool: 1 sealed segment\(s\) from before are gone \(seg-1790000000000-000001\.tks\)/)
+  // The before read falls back to the before body's own last listing when the body carries no time.
+  const noAt = cappedPair('EPHEMERAL_LOSS_RECORDED')
+  delete noAt.before['/state/tick-segments'].at
+  assert.equal(segOf(noAt).verdict, FAIL)
+
+  // The page does NOT reach back: its oldest row is after the before read, so
+  // a row beyond it may be the missing segment's — NOT_VERIFIABLE, named.
+  const recent = segOf(cappedPair('EPHEMERAL_LOSS_RECORDED', [{ name: 'seg-1790000900000-000009.tks', reason: 'retired', goneAtMs: T + 2 * 60_000 }]))
+  assert.equal(recent.verdict, NV, recent.reason)
+  assert.match(recent.reason, /not among the 1 newest gone rows the manifest shows \(of 250\), and that page does not reach back to the before read \(oldest row shown 2026-10-01T10:02:00\.000Z, before read 2026-10-01T09:50:00\.000Z\)/)
+  // An undated shown row could be the oldest; no before time at all places nothing: both stay NOT_VERIFIABLE.
+  assert.equal(segOf(cappedPair('EPHEMERAL_LOSS_RECORDED', [...old.slice(0, 99), { name: old[99].name, reason: 'retired' }])).verdict, NV)
+  const undatedBefore = cappedPair('EPHEMERAL_LOSS_RECORDED')
+  delete undatedBefore.before['/state/tick-segments'].at
+  delete undatedBefore.before['/state/tick-segments'].sides[0].manifest.lastListing.atMs
+  assert.equal(segOf(undatedBefore).verdict, NV)
+})
+
+test("T1 drill: the restart row's prevListingMs places the restart — a policy declared after the before body's listing but by the old boot's last listing is graded", () => {
+  // The before body saw boot-a listed at T - 10 min (lastListing.atMs); the R1
+  // restart row says boot-a was last listed at T - 1 min (prevListingMs).
+  // DURABLE in force since T - 5 min governed the old boot's spool at its LAST
+  // listing, so the restart is judged under it: the loss FAILS, never NV.
+  const side = 'cpp_exec_demo'
+  const pair = (since, { row = true } = {}) => {
+    const r = drillPair({ afterList: SEGS.slice(1) })
+    const am = r.after['/state/tick-segments'].sides[0].manifest
+    am.persistence.since = since
+    if (!row) am.restarts = []
+    return r
+  }
+  const segOf = (r) => recorderDrill(r.before, r.after, r.opts).checks.find(c => c.name === `${side}.segments`)
+  const since = iso(T - 5 * 60_000)
+  const g = pair(since)
+  const bl = g.before['/state/tick-segments'].sides[0].manifest.lastListing.atMs
+  const rowMs = g.after['/state/tick-segments'].sides[0].manifest.restarts[0].prevListingMs
+  assert.ok(bl < Date.parse(since) && Date.parse(since) <= rowMs, 'the fixture must place `since` between the two listings')
+  const graded = segOf(g)
+  assert.equal(graded.verdict, FAIL, "RED if the restart row's prevListingMs is not read: the before body's earlier listing alone predates `since`")
+  assert.match(graded.reason, /^DURABLE spool: 1 sealed segment\(s\) from before are gone/)
+  assert.equal(graded.evidence.policySource, 'the restart row'); assert.equal(graded.evidence.prevListingMs, T - 60_000)
+  // `since` exactly at the row's listing is in force at it: still graded.
+  assert.equal(segOf(pair(iso(T - 60_000))).verdict, FAIL)
+  // With no restart row the before body's earlier listing is all there is: the policy postdates it, NOT_VERIFIABLE, named.
+  const noRow = segOf(pair(since, { row: false }))
+  assert.equal(noRow.verdict, NV)
+  assert.match(noRow.reason, /in force since .* after boot boot-a was last listed \(2026-10-01T09:50:00\.000Z\)/)
+})
+
 // ---------------------------------------------------------------------------
 // T2 — retention
 // ---------------------------------------------------------------------------
@@ -343,6 +416,21 @@ test('T2 retention FAIL when a segment vanished with no retire to explain it (un
   const r = retentionCheck(retentionSamples({ unexplained: 1, verdict: 'FAILED' }), { sides: ['cpp_exec_demo'] })
   assert.equal(r.verdict, FAIL)
   assert.match(r.reason, /cpp_exec_demo\.unexplained: 1 sealed segment\(s\) vanished within one boot/)
+})
+
+test('T2 retention: a missing or non-numeric unexplained count is NOT_VERIFIABLE, named — never a PASS', () => {
+  const opts = { sides: ['cpp_exec_demo'] }
+  const withCount = (v) => { const s = retentionSamples(); const m = s.segments[0].sides[0].manifest; if (v === undefined) delete m.unexplained; else m.unexplained = v; return s }
+  const missing = retentionCheck(withCount(undefined), opts)
+  assert.equal(missing.verdict, NV, 'RED if a count the manifest did not report is read as zero')
+  assert.equal(missing.reason, "cpp_exec_demo.unexplained: the R1 manifest's unexplained count (manifest.unexplained) is absent, so a sealed segment that vanished within one boot cannot be ruled out")
+  for (const v of [null, 'n/a', false, [], -1, 0.5]) {
+    const r = retentionCheck(withCount(v), opts)
+    assert.equal(r.verdict, NV, `unexplained ${JSON.stringify(v)}`); assert.match(r.reason, /^cpp_exec_demo\.unexplained: .* is not a count/)
+  }
+  // A count served as its decimal string is still a count.
+  assert.equal(retentionCheck(withCount('0'), opts).verdict, PASS)
+  assert.equal(retentionCheck(withCount('1'), opts).verdict, FAIL)
 })
 
 test('T2 retention: no retire yet is not verifiable; torn bytes unreported is not verifiable; the open segment past the cap fails unless the owner allows it', () => {
@@ -489,6 +577,21 @@ test('T4: naked or targetless positions, duplicate intents, a refusal with no re
   assert.match(e2eTrace(refused, OPTS).reason, /^recorderGaps: recorder\.cpp_exec_demo\.counters: 7 event\(s\) dropped or refused by the reserve inside the window/, 'a gap with refused events still fails')
   const lost = e2eBodies(); lost['/state/tick-segments'].sides[0].manifest.unexplained = 1
   assert.match(e2eTrace(lost, OPTS).reason, /^recorderGaps: recorder\.cpp_exec\.manifest: 1 unexplained/)
+})
+
+test('T4: a missing or non-numeric unexplained count, or no manifest at all, leaves recorderGaps NOT_VERIFIABLE, named — never a PASS', () => {
+  const missing = e2eBodies(); delete missing['/state/tick-segments'].sides[0].manifest.unexplained
+  const r = e2eTrace(missing, OPTS)
+  assert.equal(r.verdict, NV, 'RED if a count the manifest did not report is read as zero')
+  assert.match(r.reason, /^recorderGaps: recorder\.cpp_exec\.manifest: the R1 manifest's unexplained count \(manifest\.unexplained\) is absent, so an unexplained segment loss cannot be ruled out/)
+  for (const v of [null, 'n/a', true, []]) {
+    const b = e2eBodies(); b['/state/tick-segments'].sides[0].manifest.unexplained = v
+    assert.match(e2eTrace(b, OPTS).reason, /^recorderGaps: recorder\.cpp_exec\.manifest: .* is not a count/, `unexplained ${JSON.stringify(v)}`)
+  }
+  const noManifest = e2eBodies(); delete noManifest['/state/tick-segments'].sides[1].manifest
+  assert.match(e2eTrace(noManifest, OPTS).reason, /^recorderGaps: recorder\.cpp_exec_demo\.manifest: no R1 segment manifest for this side/)
+  const noBody = e2eBodies(); delete noBody['/state/tick-segments']
+  assert.equal(e2eTrace(noBody, OPTS).verdict, NV)
 })
 
 test('T4 and T1: two sequential tick fills sharing one standing permit key are two entries, not a duplicate; two in flight at once are', () => {
