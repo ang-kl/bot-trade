@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V3 + Requests 1&amp;2 — Integrated Plan Timeline &amp; Roadmap</title>
+<meta name="description" content="Integrated build timeline and roadmap for the V3 + owner requests 1 and 2 plan (26-09-2026), generated from docs/v3-integrated-plan-2026-09-26.md and docs/plan-ui-and-strategy-review-2026-09-26.md.">
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#14181f; --ink-dim:#4b5563;
+    --line:#e2e5ea; --accent:#2f6fed; --accent-ink:#1c3f92;
+    --wave1:#2f6fed; --wave2:#8b5cf6; --wave3:#0e9f6e; --wave4:#9ca3af;
+    --warn-bg:#fff7e6; --warn-line:#f0b429; --warn-ink:#7a4d00;
+    --pass-bg:#e9f9f0; --pass-ink:#0f6b41;
+    --fail-bg:#fdecec; --fail-ink:#9b1c1c;
+    --chip-bg:#eef1f6; --code-bg:#f0f2f6;
+    --shadow:0 1px 2px rgba(20,24,31,.06), 0 1px 8px rgba(20,24,31,.04);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0f1115; --panel:#171a21; --ink:#e7e9ee; --ink-dim:#a3aab8;
+      --line:#2a2f3a; --accent:#6d99ff; --accent-ink:#bcd0ff;
+      --wave1:#6d99ff; --wave2:#b79bff; --wave3:#3ddc97; --wave4:#6b7280;
+      --warn-bg:#2a2107; --warn-line:#8a6a1c; --warn-ink:#f0c463;
+      --pass-bg:#0e2a1c; --pass-ink:#59d69b;
+      --fail-bg:#301414; --fail-ink:#ff9b9b;
+      --chip-bg:#1f232c; --code-bg:#1b1e26;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 1px 10px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f1115; --panel:#171a21; --ink:#e7e9ee; --ink-dim:#a3aab8;
+    --line:#2a2f3a; --accent:#6d99ff; --accent-ink:#bcd0ff;
+    --wave1:#6d99ff; --wave2:#b79bff; --wave3:#3ddc97; --wave4:#6b7280;
+    --warn-bg:#2a2107; --warn-line:#8a6a1c; --warn-ink:#f0c463;
+    --pass-bg:#0e2a1c; --pass-ink:#59d69b;
+    --fail-bg:#301414; --fail-ink:#ff9b9b;
+    --chip-bg:#1f232c; --code-bg:#1b1e26;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 1px 10px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    padding:0 16px 64px;
+  }
+  .wrap{max-width:980px;margin:0 auto;}
+  header.page{padding:28px 0 18px;}
+  h1{font-size:1.55rem;line-height:1.25;margin:0 0 6px;letter-spacing:-.01em;}
+  .subtitle{color:var(--ink-dim);font-size:.95rem;margin:0 0 14px;}
+  .meta-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:4px;}
+  .chip{
+    background:var(--chip-bg); color:var(--ink-dim); border:1px solid var(--line);
+    border-radius:999px; padding:4px 12px; font-size:.78rem; font-weight:600;
+    letter-spacing:.01em; white-space:nowrap;
+  }
+  .chip.checkpoint{background:var(--accent); color:#fff; border-color:var(--accent);}
+  .banner{
+    display:flex; gap:10px; align-items:flex-start;
+    background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn-ink);
+    border-radius:10px; padding:12px 14px; margin:16px 0 6px; font-size:.86rem;
+  }
+  .banner b{color:inherit;}
+  .banner .mark{font-size:1.05rem;line-height:1.4;}
+  section{margin-top:34px;}
+  h2{
+    font-size:1.05rem; margin:0 0 4px; display:flex; align-items:baseline; gap:8px;
+  }
+  h2 .num{color:var(--accent); font-variant-numeric:tabular-nums;}
+  .lede{color:var(--ink-dim); font-size:.88rem; margin:0 0 16px;}
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    box-shadow:var(--shadow); padding:18px 20px;
+  }
+  /* KPI row */
+  .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:10px;}
+  @media (max-width:720px){ .kpis{grid-template-columns:repeat(2,1fr);} }
+  .kpi{
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; box-shadow:var(--shadow);
+  }
+  .kpi .big{font-size:1.5rem;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
+  .kpi .lbl{font-size:.72rem;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.04em;margin-top:2px;}
+
+  /* Timeline */
+  .timeline{position:relative; margin:10px 0 0; padding-left:26px;}
+  .timeline::before{
+    content:""; position:absolute; left:9px; top:6px; bottom:6px; width:2px;
+    background:linear-gradient(var(--wave1),var(--wave2) 35%,var(--wave3) 68%,var(--wave4));
+    border-radius:2px;
+  }
+  .tl-item{position:relative; margin-bottom:22px;}
+  .tl-item:last-child{margin-bottom:0;}
+  .tl-dot{
+    position:absolute; left:-26px; top:3px; width:20px; height:20px; border-radius:50%;
+    background:var(--panel); border:3px solid var(--dotcolor,var(--accent));
+  }
+  .tl-item.now .tl-dot{background:var(--dotcolor,var(--accent));}
+  .tl-head{display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; margin-bottom:4px;}
+  .tl-wave{font-weight:700; font-size:.98rem;}
+  .tl-when{color:var(--ink-dim); font-size:.82rem; font-variant-numeric:tabular-nums;}
+  .tl-tag{
+    font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+    padding:2px 8px; border-radius:999px; color:#fff;
+  }
+  .tl-body{color:var(--ink-dim); font-size:.87rem;}
+  .tl-body ul{margin:6px 0 0; padding-left:18px;}
+  .tl-body li{margin:2px 0;}
+
+  /* Roadmap table */
+  table{width:100%; border-collapse:collapse; font-size:.85rem;}
+  caption{text-align:left; font-size:.8rem; color:var(--ink-dim); margin-bottom:8px;}
+  th,td{text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top;}
+  th{
+    font-size:.7rem; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-dim);
+    font-weight:700; border-bottom:2px solid var(--line);
+  }
+  tr:last-child td{border-bottom:none;}
+  td.id{font-variant-numeric:tabular-nums; color:var(--ink-dim); white-space:nowrap;}
+  td.items{font-weight:600;}
+  .gate{
+    display:inline-block; font-size:.72rem; font-weight:700; padding:2px 8px; border-radius:6px;
+    background:var(--chip-bg); color:var(--ink-dim); white-space:nowrap;
+  }
+  .gate.auto{background:var(--pass-bg); color:var(--pass-ink);}
+  .gate.ask{background:var(--warn-bg); color:var(--warn-ink);}
+  .table-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch;}
+
+  .wave-block{margin-bottom:26px;}
+  .wave-block:last-child{margin-bottom:0;}
+  .wave-title{
+    display:flex; align-items:center; gap:10px; margin-bottom:10px;
+  }
+  .wave-badge{
+    width:10px;height:10px;border-radius:50%;flex:0 0 auto;
+  }
+  .wave-title h3{margin:0; font-size:.95rem;}
+  .wave-title .w-when{color:var(--ink-dim); font-size:.78rem; margin-left:auto; font-variant-numeric:tabular-nums;}
+
+  /* Decisions */
+  .decisions{display:grid; gap:10px;}
+  .decision{
+    border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:var(--panel);
+    box-shadow:var(--shadow);
+  }
+  .decision .d-head{display:flex; justify-content:space-between; gap:10px; align-items:baseline; flex-wrap:wrap;}
+  .decision .d-id{font-weight:700; color:var(--accent-ink);}
+  .decision .d-q{font-weight:600;}
+  .decision .d-rec{color:var(--ink-dim); font-size:.86rem; margin-top:4px;}
+  .decision .d-blocks{font-size:.74rem; color:var(--ink-dim); margin-top:6px;}
+  .decision .d-blocks b{color:var(--ink);}
+
+  details.group{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    box-shadow:var(--shadow); padding:2px 20px; margin-bottom:12px;
+  }
+  details.group[open]{padding-bottom:18px;}
+  details.group > summary{
+    cursor:pointer; padding:14px 0; font-weight:700; font-size:.95rem;
+    list-style:none; display:flex; align-items:center; justify-content:space-between;
+  }
+  details.group > summary::-webkit-details-marker{display:none;}
+  details.group > summary::after{
+    content:"+"; font-size:1.1rem; color:var(--ink-dim); font-weight:400;
+  }
+  details.group[open] > summary::after{content:"–";}
+
+  .notverif{background:var(--chip-bg); color:var(--ink-dim); font-weight:700; font-size:.72rem; padding:2px 8px; border-radius:6px;}
+  .passed{background:var(--pass-bg); color:var(--pass-ink); font-weight:700; font-size:.72rem; padding:2px 8px; border-radius:6px;}
+  .failed{background:var(--fail-bg); color:var(--fail-ink); font-weight:700; font-size:.72rem; padding:2px 8px; border-radius:6px;}
+
+  footer{margin-top:44px; padding-top:18px; border-top:1px solid var(--line); color:var(--ink-dim); font-size:.78rem;}
+  footer p{margin:4px 0;}
+  code{background:var(--code-bg); padding:1px 5px; border-radius:4px; font-size:.85em;}
+  a{color:var(--accent-ink);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="page">
+    <h1>V3 + Requests 1&nbsp;&amp;&nbsp;2 — Integrated Plan Timeline &amp; Roadmap</h1>
+    <p class="subtitle">One build sequence across V3 closure and the owner's UI / performance / strategy-review requests. Generated from the plan documents in <code>docs/</code>.</p>
+    <div class="meta-row">
+      <span class="chip">Plan written 26-09-2026 12:33 SGT</span>
+      <span class="chip">Page generated 26-09-2026 13:47 SGT (05:47 UTC)</span>
+      <span class="chip checkpoint">Checkpoint 19:00 SGT</span>
+    </div>
+    <div class="banner">
+      <span class="mark">△</span>
+      <div>
+        <b>Plan status, as the documents themselves record it:</b> <code>docs/v3-integrated-plan-2026-09-26.md</code>
+        is headed <i>"DRAFT, not yet checked"</i> at its current committed revision (<code>5389a83</code>, PR&nbsp;#1143).
+        Wave&nbsp;1 build lanes (including this one) are running in parallel on the owner's go-ahead, per the session
+        record — but the plan file's own header has not been updated to say the checks finished. That gap is exactly
+        what owner principle&nbsp;5 asks to be kept audited, so it is flagged here rather than silently resolved
+        either way.
+      </div>
+    </div>
+  </header>
+
+  <section id="answers">
+    <h2><span class="num">§0</span> The headline numbers</h2>
+    <p class="lede">From the integrated plan's own summary (§0–§2). Every figure below is a plan estimate or a lane read at the times the plan cites — not re-verified by this page.</p>
+    <div class="kpis">
+      <div class="kpi"><div class="big">0</div><div class="lbl">Merged V3 items re-opened</div></div>
+      <div class="kpi"><div class="big">28</div><div class="lbl">Open V3 items (15 owner-gated · 4 conditional · 9 follow-ups)</div></div>
+      <div class="kpi"><div class="big">23</div><div class="lbl">New build items from the new plan</div></div>
+      <div class="kpi"><div class="big">42</div><div class="lbl">Decisions in the merged register (§6)</div></div>
+      <div class="kpi"><div class="big">7</div><div class="lbl">Node restarts planned, Wave 1 alone</div></div>
+      <div class="kpi"><div class="big">7 / 8</div><div class="lbl">Frozen groups whose acceptance wording changes</div></div>
+      <div class="kpi"><div class="big">13:00Z</div><div class="lbl">Wave 2 merge cutoff, Mon 28-09</div></div>
+      <div class="kpi"><div class="big">13:30–16:00Z</div><div class="lbl">P1/P4 load window, no merges, no traces</div></div>
+    </div>
+  </section>
+
+  <section id="timeline">
+    <h2><span class="num">§1</span> Build timeline</h2>
+    <p class="lede">The four waves of §5, laid out against the calendar. Times are UTC unless marked SGT (+8h). "Now" marks when this page was generated.</p>
+    <div class="card">
+      <div class="timeline">
+
+        <div class="tl-item" style="--dotcolor:var(--wave1)">
+          <div class="tl-dot"></div>
+          <div class="tl-head">
+            <span class="tl-wave">Wave 1 — no answer needed</span>
+            <span class="tl-when">Sat 26-09 → Sun 27-09 20:00Z</span>
+            <span class="tl-tag" style="background:var(--wave1)">In progress</span>
+          </div>
+          <div class="tl-body">
+            7 merges / 7 Node restarts, built and merged without waiting for owner answers (S-2 is the one exception, held for a yes).
+            <ul>
+              <li>1.1 — perf-trace harness · synthetic-presence tag (NEW-1) · manual-order confirm names the account (SAFE-0a)</li>
+              <li>1.2 — UI-1: collapse control, remembered, section ids; CLS fix (PERF-1)</li>
+              <li>1.3 — UI-2 shared DataTable + UI-3 blocker-report card <em>(this branch)</em></li>
+              <li>1.4 — UI-4 readiness fix + UI-7 AI page reads "off"</li>
+              <li>1.5 — UI-6 Reasons rework + F3's WEB-9 fixture</li>
+              <li>1.6 — S-1 arming log + S-3 depth margin / phase-0 counters</li>
+              <li>1.7 — F1 closer deferral + F4 tick-feeder alarm + PO-M3 spread recording</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="tl-item" style="--dotcolor:var(--wave2)">
+          <div class="tl-dot"></div>
+          <div class="tl-head">
+            <span class="tl-wave">Wave 2 — owner-answered V3 chain</span>
+            <span class="tl-when">Mon 28-09, 01:00–13:00Z</span>
+            <span class="tl-tag" style="background:var(--wave2)">Gated on OD-1…OD-14</span>
+          </div>
+          <div class="tl-body">
+            Each item merges only after its decision lands. Merges stop at 13:00Z so the last restart settles before the load window.
+            <ul>
+              <li>2.1 S-2 + F2 + F6 — book and daily pass leave the scan branch (OD-2)</li>
+              <li>2.2 C8 → C9 · 2.3 CV-2 (24h soak starts) · 2.4 T4, open-market only (OD-1, OD-3)</li>
+              <li>2.5 K3 + SAFE-0b (OD-7, OD-14) · 2.6 M7 (OD-22) · 2.7 B2b + UI-5 (OD-11, OD-12)</li>
+            </ul>
+            <b>Mon 13:30–16:00Z (+ ~20:00Z): the P1/P4 load window</b> — no merges except one intended restart, no traces, Desk and Performance stay visible.
+          </div>
+        </div>
+
+        <div class="tl-item" style="--dotcolor:var(--wave3)">
+          <div class="tl-dot"></div>
+          <div class="tl-head">
+            <span class="tl-wave">Wave 3 — after the window</span>
+            <span class="tl-when">Mon 16:00Z → Wed 30-09</span>
+            <span class="tl-tag" style="background:var(--wave3)">Deadline: HKEX holiday 01-10</span>
+          </div>
+          <div class="tl-body">
+            <ul>
+              <li>3.1 GW-1 gateway window (both gateways + Node)</li>
+              <li>3.2 S-8 holidays on the entry path + WEB-6b — <b>must deploy by ~30-09 15:00Z</b></li>
+              <li>3.3 S-4 → S-5 declared shadow set · 3.4 W3 after CV-2's soak</li>
+              <li>3.5 C5, UI-8, B5 · 3.6 Q2 · 3.7 PO-M2 gap report</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="tl-item" style="--dotcolor:var(--wave4)">
+          <div class="tl-dot"></div>
+          <div class="tl-head">
+            <span class="tl-wave">Wave 4 — only after evidence</span>
+            <span class="tl-when">No dates promised</span>
+            <span class="tl-tag" style="background:var(--wave4)">Evidence-gated</span>
+          </div>
+          <div class="tl-body">
+            <ul>
+              <li>S-6 strategy restore, per strategy, once its shadow reaches 30 closes</li>
+              <li>C7 re-scoped, only if S-6 routes through admission</li>
+              <li>PO-M1 → PO-B pre-order rules, after PO-M1–M3</li>
+              <li>HIST-1 bar store / HIST-2 backfill, once the D18 figure is crossed</li>
+              <li>S-7 logic fixes then walk-forward · D14 sweep · M4, M6, Q5, GW-2 on their own V3 triggers</li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <section id="roadmap">
+    <h2><span class="num">§2</span> Integration roadmap — item by item</h2>
+    <p class="lede">The full build sequence (integrated plan §5), grouped by wave. "Gate" is how the item ships: auto-merge on a green full gate, or ask-first for an owner decision.</p>
+
+    <div class="wave-block">
+      <div class="wave-title"><span class="wave-badge" style="background:var(--wave1)"></span><h3>Wave 1 — this weekend, no answer needed</h3><span class="w-when">Sat 26-09 → Sun 27-09 20:00Z</span></div>
+      <div class="card table-scroll">
+        <table>
+          <thead><tr><th>#</th><th>Items (origin)</th><th>Scope and proof</th><th>Gate</th></tr></thead>
+          <tbody>
+            <tr><td class="id">1.1</td><td class="items">#1143 + this plan + PERF-0 + NEW-1 + SAFE-0a</td><td>Perf-trace harness (<code>scripts/perf-trace/</code>); presence tag leaves <code>visibleTabs</code> unchanged; manual-order confirm names the account.</td><td><span class="gate auto">Auto on green</span></td></tr>
+            <tr><td class="id">1.2</td><td class="items">UI-1 + PERF-1</td><td>Collapse control visible, remembered, with section ids; heights reserved; font preload fixed. Proof: CLS median falls on Performance and Reasons.</td><td><span class="gate ask">Awaits OD-17</span></td></tr>
+            <tr><td class="id">1.3</td><td class="items">UI-2 + UI-3 <em>(this branch)</em></td><td>Shared DataTable + blocker-report card, server-grouped. Must keep cpp-verify's relayed counts and the watchdog contract &lt;256&nbsp;KiB.</td><td><span class="gate ask">OD-18 default</span></td></tr>
+            <tr><td class="id">1.4</td><td class="items">UI-4 + UI-7</td><td>Readiness-object bug fixed; build commit via Dockerfile ARG; AI page reads "off". Read-back: web and agent commits match.</td><td><span class="gate ask">OD-21 default</span></td></tr>
+            <tr><td class="id">1.5</td><td class="items">UI-6 + PERF-2 + F3</td><td>Reasons order/tables; digit tree as text; WEB-9 wording + fixture.</td><td><span class="gate ask">After OD-19</span></td></tr>
+            <tr><td class="id">1.6</td><td class="items">S-1 + S-3</td><td>Arming rows appended, never updated; picker ranks by armed strategies; depth margin <code>minBars</code>+1; Phase&nbsp;0 counters.</td><td><span class="gate ask">…0058's 39 pins excluded</span></td></tr>
+            <tr><td class="id">1.7</td><td class="items">F1 + F4 + F5-N6 + PO-M3</td><td>Closer deferral (inert while plans are 0); tick-feeder stall alarm; lifecycle rule; spread recorded on every new PRE fill.</td><td><span class="gate auto">Auto on green</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="wave-block">
+      <div class="wave-title"><span class="wave-badge" style="background:var(--wave2)"></span><h3>Wave 2 — Monday 28-09, each item after its answer</h3><span class="w-when">01:00–13:00Z</span></div>
+      <div class="card table-scroll">
+        <table>
+          <thead><tr><th>#</th><th>Items (origin)</th><th>Scope and proof</th><th>Gate</th></tr></thead>
+          <tbody>
+            <tr><td class="id">2.1</td><td class="items">S-2 + F2 + F6</td><td>Book/daily pass move out of the scan branch; hours-aware daily exit; <code>momentum_book</code> heartbeat.</td><td><span class="gate ask">OD-2</span></td></tr>
+            <tr><td class="id">2.2</td><td class="items">C8 → C9</td><td>V3-SEQUENCE §1, items 29–30.</td><td><span class="gate ask">OD-6</span></td></tr>
+            <tr><td class="id">2.3</td><td class="items">CV-2</td><td>Restarts cpp-verify + Node; starts the 24h muted soak.</td><td><span class="gate ask">OD-10</span> <span class="gate auto">auto on green</span></td></tr>
+            <tr><td class="id">2.4</td><td class="items">T4</td><td>Named refusal for closed-market momentum entries; open-market HTF limits rest with their plan.</td><td><span class="gate ask">OD-1, OD-3</span></td></tr>
+            <tr><td class="id">2.5</td><td class="items">K3 + SAFE-0b</td><td>Full collector sweep read-back; stale/other-account Re-Risk apply refused.</td><td><span class="gate ask">OD-7, OD-14</span></td></tr>
+            <tr><td class="id">2.6</td><td class="items">M7</td><td>Fed by S-3's token-wait counter; predicted skip share ≤10% in a US-closed hour.</td><td><span class="gate ask">OD-22</span></td></tr>
+            <tr><td class="id">2.7</td><td class="items">B2b + UI-5</td><td>Re-stamp fix, gross-P&amp;L consistency, refusal-time window, plan flags.</td><td><span class="gate ask">OD-11, OD-12</span></td></tr>
+          </tbody>
+        </table>
+        <p class="lede" style="margin-top:12px;margin-bottom:0;"><b>Stop merging at 13:00Z.</b> Mon 13:30–16:00Z + a US-closed hour ~20:00Z is the P1/P4 window: no merges except one intended restart (OD-4), no traces, Desk and Performance stay visible.</p>
+      </div>
+    </div>
+
+    <div class="wave-block">
+      <div class="wave-title"><span class="wave-badge" style="background:var(--wave3)"></span><h3>Wave 3 — after the window</h3><span class="w-when">Mon 16:00Z → Wed 30-09</span></div>
+      <div class="card table-scroll">
+        <table>
+          <thead><tr><th>#</th><th>Items (origin)</th><th>Scope and proof</th><th>Gate</th></tr></thead>
+          <tbody>
+            <tr><td class="id">3.1</td><td class="items">GW-1</td><td>Both gateways + Node; read-back all accounts connected, positions protected, RECORDING.</td><td><span class="gate ask">OD-6, your window</span></td></tr>
+            <tr><td class="id">3.2</td><td class="items">S-8 + WEB-6b</td><td>Holidays on the entry path; UNKNOWN never reads open. Deploy by ~30-09 15:00Z (HKEX holiday 01-10).</td><td><span class="gate ask">OD-7, OD-8</span></td></tr>
+            <tr><td class="id">3.3</td><td class="items">S-4 → S-5</td><td>Declared shadow set keeps fib/rsi2/donchian scanned as reference for 690 timeframe profiles; contract stays ≤256&nbsp;KiB.</td><td><span class="gate ask">OD-9, OD-16</span></td></tr>
+            <tr><td class="id">3.4</td><td class="items">W3</td><td>After CV-2's 24h soak; calling the route is ask-first.</td><td><span class="gate ask">OD-10</span></td></tr>
+            <tr><td class="id">3.5</td><td class="items">C5, UI-8, B5</td><td>V3 items 28 and 36; new plan §8 item 10.</td><td><span class="gate ask">OD-23, OD-20, OD-12</span></td></tr>
+            <tr><td class="id">3.6</td><td class="items">Q2</td><td>V3 item 37.</td><td><span class="gate ask">OD-24</span></td></tr>
+            <tr><td class="id">3.7</td><td class="items">PO-M2</td><td>Gap report, read-only broker history, within the 4/s budget.</td><td><span class="gate auto">Auto (report only)</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="wave-block">
+      <div class="wave-title"><span class="wave-badge" style="background:var(--wave4)"></span><h3>Wave 4 — only after evidence</h3><span class="w-when">No dates promised</span></div>
+      <div class="card table-scroll">
+        <table>
+          <thead><tr><th>Item (origin)</th><th>Starts when</th><th>Gate</th></tr></thead>
+          <tbody>
+            <tr><td class="items">S-6 restore, per strategy (supersedes C11)</td><td>Shadow reaches 30 closes and passes the bar; D17 applied; an order path chosen</td><td><span class="gate ask">OD-5(A), OD-29</span></td></tr>
+            <tr><td class="items">C7 re-scoped</td><td>Only if S-6 routes through admission</td><td><span class="gate ask">OD-5 (PR-7 part)</span></td></tr>
+            <tr><td class="items">PO-M1 → PO-B pre-order rules</td><td>PO-M1–M3 support it</td><td><span class="gate ask">OD-1(b), OD-15</span></td></tr>
+            <tr><td class="items">HIST-1 bar store; HIST-2 backfill</td><td>D18 figure crossed; depth set</td><td><span class="gate ask">OD-28</span></td></tr>
+            <tr><td class="items">S-7 logic fixes, then walk-forward</td><td>After Q4b; with Q2's discipline</td><td><span class="gate ask">OD-27</span></td></tr>
+            <tr><td class="items">D14 sweep; bare sections; table migrations</td><td>—</td><td><span class="gate ask">OD-26</span></td></tr>
+            <tr><td class="items">M4, M6, Q5, GW-2</td><td>Their own V3 triggers</td><td><span class="gate">V3</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="decisions">
+    <h2><span class="num">§3</span> Decisions that unblock the most</h2>
+    <p class="lede">From the merged register of 42 decisions (§6). The first eight (OD-1…OD-8) unblock most of Waves 2–3; OD-4 is needed by Mon 13:00Z. Full list in the source document.</p>
+    <div class="decisions">
+      <div class="decision">
+        <div class="d-head"><span class="d-id">OD-1</span><span class="d-q">Resume momentum entries after T4?</span></div>
+        <div class="d-rec">Recommendation: <b>(a) yes</b> — market orders and open-market HTF limits, on the Trade-armed accounts only. <b>(b) no</b> closed-market limits until PO-M1–M3.</div>
+        <div class="d-blocks">Blocks: <b>T4 merge, P0/P3</b></div>
+      </div>
+      <div class="decision">
+        <div class="d-head"><span class="d-id">OD-2</span><span class="d-q">Book out of the scan branch; hours-aware daily exit?</span></div>
+        <div class="d-rec">Recommendation: <b>yes, both.</b> Changes when exits run for 22 book rows.</div>
+        <div class="d-blocks">Blocks: <b>S-2 → T4</b></div>
+      </div>
+      <div class="decision">
+        <div class="d-head"><span class="d-id">OD-4</span><span class="d-q">P1/P4 limits and load window</span></div>
+        <div class="d-rec">Recommendation: confirm the proposed limits; window Mon 13:30–16:00Z + ~20:00Z; skip share 10%; both tabs visible on your device.</div>
+        <div class="d-blocks">Blocks: <b>P1/P4 acceptance — answer by Mon 13:00Z</b></div>
+      </div>
+      <div class="decision">
+        <div class="d-head"><span class="d-id">OD-13</span><span class="d-q">Trace rule and thresholds standing, or this plan only?</span></div>
+        <div class="d-rec">Recommendation: yes, as proposed — it edits owner-confirmed CLAUDE.md text.</div>
+        <div class="d-blocks">Blocks: <b>The merge gate for every website PR</b></div>
+      </div>
+      <div class="decision">
+        <div class="d-head"><span class="d-id">OD-17</span><span class="d-q">Collapse standard and memory (this branch's UI-1)</span></div>
+        <div class="d-rec">Recommendation: <b>(a) collapse triangle, remembered on every page</b> — the default this branch builds to while awaiting confirmation of what the owner's phone shows.</div>
+        <div class="d-blocks">Blocks: <b>UI-1's look</b></div>
+      </div>
+      <div class="decision">
+        <div class="d-head"><span class="d-id">OD-18</span><span class="d-q">Blockers table: fold repeats, list all, or hide?</span></div>
+        <div class="d-rec">Recommendation: <b>fold, labelled per row until the pre-fix rows age out</b> (≈26-09 22:46Z) — the default this branch's UI-3 builds to.</div>
+        <div class="d-blocks">Blocks: <b>UI-3</b></div>
+      </div>
+      <div class="decision">
+        <div class="d-head"><span class="d-id">OD-19</span><span class="d-q">Go-live card</span></div>
+        <div class="d-rec">Recommendation: <b>remove.</b></div>
+        <div class="d-blocks">Blocks: <b>UI-6</b></div>
+      </div>
+      <div class="decision">
+        <div class="d-head"><span class="d-id">OD-21</span><span class="d-q">Version display</span></div>
+        <div class="d-rec">Recommendation: <b>show the web and agent commits.</b></div>
+        <div class="d-blocks">Blocks: <b>UI-4's SB2</b></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="invariants">
+    <h2><span class="num">§4</span> Invariants carried into this build</h2>
+    <p class="lede">From the integrated plan's own invariant table (§8) and this repo's standing rules. Reported as the source reports them — Passed, Failed, or Not Verifiable is a first-class result here, not a gap to paper over.</p>
+    <div class="card table-scroll">
+      <table>
+        <thead><tr><th>Invariant</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>Thresholds, caps (5 and the book's 8) and mandatory TP1 unchanged by the plan</td><td><span class="passed">Passed</span></td></tr>
+          <tr><td>Gateway code ships only in a gateway window</td><td><span class="passed">Passed by construction</span></td></tr>
+          <tr><td>No merge or trace inside the P1/P4 window</td><td><span class="notverif">Not verifiable until run</span></td></tr>
+          <tr><td>Owner-confirmed CLAUDE.md text untouched without a yes</td><td><span class="passed">Passed (OD-13)</span></td></tr>
+          <tr><td>Principle 1 — live and demo accounts held equal</td><td><span class="passed">Passed</span></td></tr>
+          <tr><td>Principle 3 — carried blockages addressed, not carried</td><td><span class="failed">Failed today</span> — each is scheduled above</td></tr>
+          <tr><td>Principle 7 — vetoes minimised</td><td><span class="failed">Failed today</span> — 91.1% of stops are self-inflicted; S-1, S-4, OD-29 address it</td></tr>
+          <tr><td>Principle 5 — plans match code</td><td><span class="failed">Failed today</span> — see the DRAFT-header note above</td></tr>
+          <tr><td>No colour-only signal in the UI</td><td><span class="passed">Passed</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <p><b>Sources:</b> <code>docs/v3-integrated-plan-2026-09-26.md</code> (§0, §2, §5, §6, §7, §8) and <code>docs/plan-ui-and-strategy-review-2026-09-26.md</code> (§2–§3, §8), both in this same <code>docs/</code> folder, as committed at <code>5389a83</code> on <code>origin/main</code>.</p>
+    <p>This page is a rendering of those plan documents for a 19:00 SGT checkpoint; it adds no new facts and changes no plan content. Where the plan text and the repo disagreed (the DRAFT header), that disagreement is shown rather than resolved by this page.</p>
+    <p>Generated 26-09-2026, 13:47 SGT (05:47 UTC).</p>
+  </footer>
+
+</div>
+</body>
+</html>
