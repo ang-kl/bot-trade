@@ -29,7 +29,14 @@ recurrence and explicit intraday boundaries. These fields follow the official
 [Spotware model reference](https://help.ctrader.com/open-api/model-messages/#protooaholiday)
 and [interval reference](https://help.ctrader.com/open-api/model-messages/#protooainterval).
 The reference does not establish the business meaning of omitted optional
-holiday bounds, so these remain unknown pending broker fixtures. Missing,
+holiday bounds, nor of the `startSecond: 0, endSecond: 0` pair production sends
+on its full-day "Closed" rows (measured 26-09: every unresolved row), so a
+current or future such row keeps the calendar unknown until the owner decides
+its meaning (K3). V3 K1b: a non-recurring such row dated three or more UTC days
+before its observation lies behind every evaluation window and is skipped — kept
+in the stored payload (version unchanged), never evaluated, and listed as
+`holiday_expired_ignored` (`expiredHolidays` on the identity and coverage
+reads). Missing,
 malformed, stale, future-dated, mismatched or unversioned evidence returns
 `MARKET_STATUS_UNKNOWN`, never a permissive inferred open state. Calendar
 OPEN/CLOSED is distinct from the symbol's trading mode and account admission.
