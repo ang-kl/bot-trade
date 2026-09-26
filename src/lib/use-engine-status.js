@@ -30,7 +30,13 @@ export async function refreshEngineStatus() {
   emit({ loading: true })
   inflight = (async () => {
     try {
-      const [engines, readiness] = await Promise.all([agentGet('/state/entry-engines'), agentGet('/state/tick-readiness')])
+      // `account=all` is explicit and wins over the viewed-account lens
+      // (agent-api.js withViewedAccount): this panel shows every account's
+      // row regardless of which one is being traded, so a narrowed answer
+      // for just the viewed account is wrong here (checker BLOCKER 1).
+      // /state/entry-engines is not lens-scoped at all (state.js), so it
+      // needs no such override.
+      const [engines, readiness] = await Promise.all([agentGet('/state/entry-engines'), agentGet('/state/tick-readiness?account=all')])
       emit({ engines, readiness, at: Date.now(), error: null, loading: false })
     } catch (e) {
       emit({ error: e?.message || String(e), loading: false })

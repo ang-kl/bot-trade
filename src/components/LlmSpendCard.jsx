@@ -1,9 +1,14 @@
 // LlmSpendCard — UI-7: the "LLM spend" card, moved off Desk onto the new AI
 // page (pages/Ai.jsx) so every AI-related surface lives in one place
 // (owner principle 6: no fake result — this page is where "is the AI layer
-// actually doing anything" gets one honest answer). Self-contained: it fetches
-// its own /state/health and /state/llm-spend rather than reaching into
-// Desk's shared poll, so moving it here touches nothing else on Desk.
+// actually doing anything" gets one honest answer).
+//
+// `health` is a PROP (checker NIT 4, W1.4 fix round), not a fetch of its own:
+// Ai.jsx already reads /state/health for its own status card, and a second,
+// independent poll of the same route from this sibling would double the
+// request for no reason — the same shape of duplication AgentHealthPanel.jsx
+// exists to avoid for its two mount sites. This card still owns its OWN
+// /state/llm-spend fetch, which nothing else on the page needs.
 //
 // Unchanged from the card Desk used to render: real token usage priced in
 // USD (today/7d/30d + projection), the by-purpose breakdown, and an
@@ -17,28 +22,27 @@ import LlmSwitch from './LlmSwitch.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { llmUiState, llmOffNote } from '../lib/llm-ui.js'
 
-export default function LlmSpendCard() {
-  // One setState call for the pair fetched together (health + llmSpend),
-  // same convention as AgentHealthPanel.jsx's combined snapshot — two
-  // separate setters here would fire two renders for one poll.
-  const [{ health, llmSpend }, setSnap] = useState({ health: null, llmSpend: null })
+export default function LlmSpendCard({ health = null, onHealthChanged = null }) {
+  const [llmSpend, setLlmSpend] = useState(null)
   const [capDraft, setCapDraft] = useState('')
   const [capNote, setCapNote] = useState('')
 
-  async function load() {
+  async function loadSpend() {
     if (!agentConfigured()) return
-    const [h, ls] = await Promise.all([
-      agentGet('/state/health').catch(() => null),
-      agentGet('/state/llm-spend').catch(() => null),
-    ])
-    setSnap({ health: h, llmSpend: ls })
+    const ls = await agentGet('/state/llm-spend').catch(() => null)
+    setLlmSpend(ls)
   }
   // Deferred a tick: react-hooks/set-state-in-effect forbids state writes
   // synchronously inside an effect body (same idiom as Tune.jsx's load()).
   useEffect(() => {
-    const t = setTimeout(load, 0)
+    const t = setTimeout(loadSpend, 0)
     return () => clearTimeout(t)
   }, [])
+  // The switch flips a value on THIS record's own /state/health, so both the
+  // parent's copy (the AI status card above) and this card's own llm-spend
+  // read (its cap/history did not change, but the reload is cheap and keeps
+  // the two calls symmetric) need a fresh answer, not just one of them.
+  const load = async () => { await Promise.all([onHealthChanged?.(), loadSpend()]) }
 
   const off = llmUiState(health).disabled
 

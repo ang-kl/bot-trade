@@ -28,6 +28,32 @@ test('the root Dockerfile builds the frontend', () => {
   assert.match(df, /npm run build/)
 })
 
+// Checker NIT 2 (W1.4 fix round): nothing previously asserted the frontend
+// stage even DECLARES the build-commit ARG — vite.config.js's build-commit.mjs
+// silently falls back to 'dev' if it is missing, so a stale or removed ARG
+// would ship every image mis-stamped with no test noticing.
+test('the frontend stage declares RAILWAY_GIT_COMMIT_SHA as a build ARG and exports it as ENV for the build step to read', () => {
+  const df = code('Dockerfile')
+  assert.match(df, /ARG RAILWAY_GIT_COMMIT_SHA/,
+    'an undeclared ARG is simply absent from the build — Railway cannot inject a name Docker never declared')
+  assert.match(df, /ENV RAILWAY_GIT_COMMIT_SHA=\$RAILWAY_GIT_COMMIT_SHA/,
+    'the ARG must be re-exported as ENV, or `npm run build` (a separate process) never sees it')
+})
+
+// Checker NIT 1 (W1.4 fix round): the ARG changes on every commit, and Docker
+// invalidates every layer from the first line referencing it onward — so
+// declaring it before `RUN npm ci` busts that layer's cache on every deploy
+// for a value `npm ci` never reads.
+test('the build-commit ARG is declared AFTER npm ci, not before — so a new commit does not invalidate the dependency-install layer', () => {
+  const df = code('Dockerfile')
+  const ciAt = df.indexOf('RUN npm ci')
+  const argAt = df.indexOf('ARG RAILWAY_GIT_COMMIT_SHA')
+  const buildAt = df.indexOf('RUN npm run build')
+  assert.ok(ciAt >= 0 && argAt >= 0 && buildAt >= 0, 'all three lines must be present')
+  assert.ok(ciAt < argAt, 'ARG must come after the dependency install it must not invalidate')
+  assert.ok(argAt < buildAt, 'ARG must still be declared before the build step that consumes it')
+})
+
 test('the build is verified inside the image, not assumed', () => {
   assert.match(code('Dockerfile'), /test -f dist\/index\.html/,
     'a build that silently produced nothing must fail the image build, not ship an empty UI')

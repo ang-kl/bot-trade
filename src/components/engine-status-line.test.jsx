@@ -27,13 +27,13 @@ function engineRow(o = {}) {
 }
 
 describe('EngineStatusLine', () => {
-  it('shows tick-ready readiness from the server record (the roster shape), never a hardcoded word', () => {
+  it('shows tick-ready readiness from the server record (the roster shape), prefixed by the entry-mode policy, never a hardcoded word', () => {
     fixture.snap = {
       at: Date.now(), engines: { accounts: [engineRow()] },
       readiness: { accounts: [{ accountId: '…9908', routingAccountId: '46979908', ready: true, blockedReasons: [] }] },
     }
     const html = renderToStaticMarkup(<EngineStatusLine accountId="46979908" />)
-    expect(html).toMatch(/Time-based entries · tick-ready/)
+    expect(html).toMatch(/Time-based entries · manual · tick-ready/)
   })
 
   it('shows the blocker count when not ready', () => {
@@ -42,7 +42,7 @@ describe('EngineStatusLine', () => {
       readiness: { accounts: [{ accountId: '…9908', routingAccountId: '46979908', ready: false, blockedReasons: ['validation_stage', 'recorder_status_fresh'] }] },
     }
     const html = renderToStaticMarkup(<EngineStatusLine accountId="46979908" />)
-    expect(html).toMatch(/Time-based entries · 2 blockers/)
+    expect(html).toMatch(/Time-based entries · manual · 2 blockers/)
   })
 
   it('joins readiness for the matching account from the narrowed single-record shape (S1a)', () => {
@@ -53,25 +53,70 @@ describe('EngineStatusLine', () => {
       readiness: { accountId: '…9908', routingAccountId: '46979908', ready: false, blockedReasons: ['validation_stage'] },
     }
     const html = renderToStaticMarkup(<EngineStatusLine accountId="46979908" />)
-    expect(html).toMatch(/Time-based entries · 1 blocker\b/)
+    expect(html).toMatch(/Time-based entries · manual · 1 blocker\b/)
   })
 
-  it('shows "no record" when the narrowed answer is for a DIFFERENT account, instead of silently dropping the reading', () => {
+  it('shows "no record", unprefixed, when the narrowed answer is for a DIFFERENT account, instead of silently dropping the reading', () => {
     fixture.snap = {
       at: Date.now(), engines: { accounts: [engineRow()] },
       readiness: { accountId: '…3489', routingAccountId: '42993489', ready: true, blockedReasons: [] },
     }
     const html = renderToStaticMarkup(<EngineStatusLine accountId="46979908" />)
     expect(html).toMatch(/Time-based entries · no record/)
+    expect(html).not.toMatch(/manual · no record/)
   })
 
-  it('shows tick observation ahead of the readiness note', () => {
+  it('shows an auto-policy account prefixed "auto", not the default "manual"', () => {
     fixture.snap = {
-      at: Date.now(), engines: { accounts: [engineRow({ tickObservation: 'SHADOW' })] },
-      readiness: { accounts: [{ accountId: '…9908', routingAccountId: '46979908', ready: false, blockedReasons: ['validation_stage'] }] },
+      at: Date.now(), engines: { accounts: [engineRow({ entryModePolicy: 'auto' })] },
+      readiness: { accounts: [{ accountId: '…9908', routingAccountId: '46979908', ready: true, blockedReasons: [] }] },
     }
     const html = renderToStaticMarkup(<EngineStatusLine accountId="46979908" />)
-    expect(html).toMatch(/Time-based entries · shadow · 1 blocker\b/)
+    expect(html).toMatch(/Time-based entries · auto · tick-ready/)
+  })
+
+  // Checker BLOCKER 3 (W1.4 fix round; OD-30 "fix the label now"): the owner
+  // flagged "· shadow" printing from the STORED tickObservation setting
+  // regardless of whether the shadow strategy was actually observed running.
+  // These three replace it with readiness.shadowReady / shadowBlockers.
+  it('shows "shadow running" when the account declares SHADOW and the join says it is actually observed running', () => {
+    fixture.snap = {
+      at: Date.now(), engines: { accounts: [engineRow({ tickObservation: 'SHADOW' })] },
+      readiness: { accounts: [{ accountId: '…9908', routingAccountId: '46979908', ready: false, blockedReasons: ['validation_stage'], shadowReady: true, shadowBlockers: [] }] },
+    }
+    const html = renderToStaticMarkup(<EngineStatusLine accountId="46979908" />)
+    expect(html).toMatch(/Time-based entries · manual · shadow running/)
+  })
+
+  it('shows "shadow declared, not running: ‹first blocker›" when SHADOW is set but nothing is actually observed', () => {
+    fixture.snap = {
+      at: Date.now(), engines: { accounts: [engineRow({ tickObservation: 'SHADOW' })] },
+      readiness: { accounts: [{ accountId: '…9908', routingAccountId: '46979908', ready: false, blockedReasons: ['validation_stage'], shadowReady: false, shadowBlockers: ['recorder_recording', 'disk_reserve_clear'] }] },
+    }
+    const html = renderToStaticMarkup(<EngineStatusLine accountId="46979908" />)
+    expect(html).toMatch(/Time-based entries · manual · shadow declared, not running: recorder_recording/)
+    // ONLY the first blocker — a full list belongs to the detail popover, not this line.
+    expect(html).not.toMatch(/disk_reserve_clear/)
+  })
+
+  it('shows "no record" for a SHADOW account with no readiness join at all, same honesty as the non-SHADOW case', () => {
+    fixture.snap = {
+      at: Date.now(), engines: { accounts: [engineRow({ tickObservation: 'SHADOW' })] },
+      readiness: { accountId: '…3489', routingAccountId: '42993489', ready: true, blockedReasons: [] },
+    }
+    const html = renderToStaticMarkup(<EngineStatusLine accountId="46979908" />)
+    expect(html).toMatch(/Time-based entries · no record/)
+  })
+
+  it('shows bare "no record" for an account that has never had an engine record written (row.stored === false), never inventing a policy for it', () => {
+    fixture.snap = {
+      at: Date.now(), engines: { accounts: [engineRow({ stored: false })] },
+      readiness: { accounts: [{ accountId: '…9908', routingAccountId: '46979908', ready: true, blockedReasons: [] }] },
+    }
+    const html = renderToStaticMarkup(<EngineStatusLine accountId="46979908" />)
+    expect(html).toMatch(/Time-based entries · no record/)
+    expect(html).not.toMatch(/manual · no record/)
+    expect(html).not.toMatch(/tick-ready/)
   })
 
   it('renders nothing extra when the engine record itself is unanswered (no row at all)', () => {

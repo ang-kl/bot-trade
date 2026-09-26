@@ -2785,7 +2785,14 @@ export default function stateRouter(db) {
   router.get('/tick-readiness', async (req, res) => {
     try {
       const { tickReadinessFor, tickReadinessView } = await import('../services/tick-readiness.js')
-      if (req.query.account) return res.json(tickReadinessFor(db, String(req.query.account), { includeRoutingIdentity: true }))
+      // `?account=all` is explicit-and-everything (account-scope.js's
+      // convention): the sidebar/panel lens (agent-api.js withViewedAccount)
+      // narrows every /state read to the viewed account, but this route must
+      // keep answering for every row regardless of the lens — a caller that
+      // needs the whole roster passes `account=all` and wins over it (the
+      // explicit-argument rule withViewedAccount already documents).
+      const scope = requestedAccount(db, req)
+      if (scope.explicit && !scope.all) return res.json(tickReadinessFor(db, scope.accountId, { includeRoutingIdentity: true }))
       res.json(tickReadinessView(db, { includeRoutingIdentity: true }))
     } catch (err) {
       res.status(500).json({ error: err.message })

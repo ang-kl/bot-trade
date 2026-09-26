@@ -80,7 +80,6 @@ export const NAV_TREE = [
       {
         path: '/risk', label: 'Risk', icon: '🛡️',
         sections: [
-          { id: 'sec-rerisk', label: 'Reset / Re-Risk', kind: 'T+F' },
           { id: 'sec-account', label: 'Account Snapshot', kind: 'C' },
           { id: 'sec-protection', label: 'Position Protection', kind: 'F' },
           { id: 'sec-settings-scope', label: 'Per-Account Settings', kind: 'C' },
@@ -143,12 +142,16 @@ export const NAV_TREE = [
       },
       {
         // UI-7: one page for every AI-related surface — status, LLM spend
-        // (moved from Desk's sec-llmspend), and pointers to the Re-Risk and
-        // screener-search controls that stay on Risk/Tune (they deep-link
-        // to fields that live only on those pages).
+        // (moved from Desk's sec-llmspend), Reset/Re-Risk (moved from Risk's
+        // sec-rerisk — checker BLOCKER 4, W1.4 fix round: its proposal rows
+        // deep-link BACK to Risk's own anchored fields instead), and a
+        // pointer to the screener-search control, which stays on Tune (it
+        // is tied to that page's own curated/custom watchlist state, not
+        // just to an anchor it can jump across pages to).
         path: '/ai', label: 'AI', icon: '🤖',
         sections: [
           { id: 'sec-ai-status', label: 'AI status', kind: 'C' },
+          { id: 'sec-rerisk', label: 'Reset / Re-Risk', kind: 'T+F' },
           { id: 'sec-llmspend', label: 'LLM Spend', kind: 'C' },
         ],
       },

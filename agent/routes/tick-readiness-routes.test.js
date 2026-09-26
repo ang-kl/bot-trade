@@ -45,6 +45,22 @@ test('GET /state/tick-readiness lists every account with classed blockers; ?acco
   } finally { s.close() }
 })
 
+// Checker BLOCKER 1 (W1.4 fix round): `?account=all` is explicit-and-every-
+// account (account-scope.js's requestedAccount convention), the same as
+// every other scoped /state route — so a caller can ask for the roster even
+// while the viewed-account lens (src/lib/agent-api.js withViewedAccount)
+// would otherwise narrow a bare `/state/tick-readiness` read to one account.
+test('GET /state/tick-readiness?account=all answers the roster, same as no ?account at all', async () => {
+  const s = await server()
+  try {
+    const bare = await fetch(s.url('/state/tick-readiness')).then(r => r.json())
+    const all = await fetch(s.url('/state/tick-readiness?account=all')).then(r => r.json())
+    assert.equal(all.accounts.length, 2)
+    assert.deepEqual(all.accounts.map(a => a.accountId).sort(), bare.accounts.map(a => a.accountId).sort())
+    assert.equal(all.readyCount, bare.readyCount)
+  } finally { s.close() }
+})
+
 test('POST /actions/tick-validation is past thresholds_unset (PR-H set them): an unknown trial refuses 400 trial_not_found and writes nothing; a missing stage is 400', async () => {
   const s = await server()
   try {

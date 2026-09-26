@@ -139,6 +139,47 @@ export function engineReadinessFor(readiness, accountId) {
   return matches.length === 1 ? matches[0] : null
 }
 
+/**
+ * S1b (checker BLOCKER 3, W1.4 fix round; OD-30 "fix the label now"): the
+ * sidebar's readiness suffix, built from three real facts instead of the
+ * stored SETTING alone — the owner flagged "· shadow" printing straight from
+ * `tickObservation` regardless of whether anything was actually running.
+ *
+ *   - `row.stored === false` (agent/services/entry-mode.js's
+ *     engineStatusFor): this account has never had an engine record
+ *     written — "no record" is the whole answer, unprefixed, because there
+ *     is no policy to attribute either (a default record's policy would be
+ *     invented, not read).
+ *   - `readiness.shadowReady` / `shadowBlockers` (agent/services/
+ *     tick-readiness.js): whether the shadow strategy is OBSERVED running,
+ *     never merely declared. Only consulted when `tickObservation` is
+ *     'SHADOW' — "declared" is the word for exactly that stored setting.
+ *   - `row.entryModePolicy` (manual/auto — src/lib/entry-mode-policy.js):
+ *     prefixed on every answer that carries real data, so who may switch
+ *     this account sits on the same line as what it is doing.
+ *
+ * `row.readiness` may be null — the S1a join found no matching record for
+ * this account (a `?account=` narrowed read for a different account, or no
+ * answer yet) — and reads as "no record" for the shadow/blocker half too,
+ * the same honesty engineReadinessFor already applies.
+ */
+export function entryStatusNote(row) {
+  if (!row || row.stored === false) return 'no record'
+  const policy = row.entryModePolicy === 'auto' ? 'auto' : 'manual'
+  const readiness = row.readiness
+  if (row.tickObservation === 'SHADOW') {
+    if (!readiness) return 'no record'
+    if (readiness.shadowReady) return `${policy} · shadow running`
+    const first = readiness.shadowBlockers?.[0]
+    return `${policy} · shadow declared, not running${first ? `: ${first}` : ''}`
+  }
+  if (!readiness) return 'no record'
+  const obs = row.tickObservation === 'RECORD' ? 'record · ' : ''
+  if (readiness.ready) return `${policy} · ${obs}tick-ready`
+  const n = readiness.blockedReasons?.length || 0
+  return `${policy} · ${obs}${n} blocker${n === 1 ? '' : 's'}`
+}
+
 /** 'stopped' | 'active' | 'warming' | 'switching' | 'blocked' | 'unknown' */
 export function engineState(row) {
   if (!row) return 'unknown'
