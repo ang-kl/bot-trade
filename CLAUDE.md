@@ -1332,3 +1332,19 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   **`№ 9,639`** plus any unstamped line made after this ledger. The count is
   by replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+
+- 2026-09-26 09:22 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): the script reads this container's transcript only and was
+  refused as a reading. From `№ 9,639` the replies ran on by count through the
+  Wave 1 merges #1147–#1153 (W1.1, W1.2, W1.6, W1.4, W1.7, the history-check
+  follow-up #1152, W1.3), the 20-minute reports `№ 9,667`, `№ 9,690`,
+  `№ 9,704` and `№ 9,715`, and the BTCUSD history answers `№ 9,686` and
+  `№ 9,699` (the monthly series starts with the July 2010 bar; the "weekly
+  history starts 2018" reading was a false positive, fixed in #1152). The
+  transcript captures 20 text replies after `№ 9,715`; three more were made
+  but not captured as text (the W1.3 conflict note, the W1.5 checker's
+  verdict, the reply to the stop hook's untracked-files notice), so the last
+  reply before this ledger is **`№ 9,739`** and the next stamped reply is
+  **`№ 9,740`** plus any unstamped line made after this ledger. The count is
+  by replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.
