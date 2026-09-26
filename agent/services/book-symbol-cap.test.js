@@ -13,31 +13,34 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
+import { initDB } from '../db.js'
 import {
   checkBookSymbolCap, accountsHolding, normalizeSide,
   DEFAULT_MAX_ACCOUNTS_PER_SYMBOL,
 } from './book-symbol-cap.js'
 
+// C8 (SEQUENCE PR-8, 26-09-2026). These fixtures used to be hand-made
+// CREATE TABLEs that gave monitored_positions and trades a `direction` column.
+// The real schema (agent/db.js) has no such column: both tables store `side`.
+// So the production queries threw into their empty catches and the ceiling
+// counted positions for no one, while every test here stayed green against a
+// schema that does not exist — failure mode #3 in the guard built to fix #3.
+// The fixtures now run on initDB(':memory:'), the schema production runs, and
+// rows are written the way reconciler.js and the order path write them
+// (`side` 'BUY'/'SELL'; pending_orders `dir` 1/−1 plus the migrated
+// `account_id`).
 function db () {
-  const d = new Database(':memory:')
-  // Column names and types mirror agent/db.js: monitored_positions.direction
-  // and trades.direction are TEXT; pending_orders carries `dir` INTEGER and an
-  // `account_id` added by migration.
-  d.exec(`
-    CREATE TABLE monitored_positions (account_id TEXT, status TEXT, symbol TEXT, direction TEXT);
-    CREATE TABLE trades            (account_id TEXT, status TEXT, symbol TEXT, direction TEXT);
-    CREATE TABLE pending_orders    (account_id TEXT, status TEXT, symbol TEXT, dir INTEGER);
-  `)
-  return d
+  return initDB(':memory:')
 }
-const pos = (d, acct, sym, dir, status = 'active') =>
-  d.prepare('INSERT INTO monitored_positions VALUES (?,?,?,?)').run(acct, status, sym, dir)
-const trd = (d, acct, sym, dir, status = 'submitting') =>
-  d.prepare('INSERT INTO trades VALUES (?,?,?,?)').run(acct, status, sym, dir)
+const pos = (d, acct, sym, side, status = 'active') =>
+  d.prepare('INSERT INTO monitored_positions (account_id, status, symbol, side) VALUES (?,?,?,?)').run(acct, status, sym, side)
+// trades.status has a CHECK; 'filled' is not one of its values, so the
+// "never counts" case below uses the real terminal statuses instead.
+const trd = (d, acct, sym, side, status = 'submitting') =>
+  d.prepare('INSERT INTO trades (account_id, status, symbol, side) VALUES (?,?,?,?)').run(acct, status, sym, side)
 const pend = (d, acct, sym, dir, status = 'working') =>
-  d.prepare('INSERT INTO pending_orders VALUES (?,?,?,?)').run(acct, status, sym, dir)
+  d.prepare('INSERT INTO pending_orders (account_id, status, symbol, dir) VALUES (?,?,?,?)').run(acct, status, sym, dir)
 
 test('normalizeSide folds both vocabularies, and refuses anything else', () => {
   assert.equal(normalizeSide('buy'), 'BUY')
@@ -80,10 +83,38 @@ test("the account's OWN holdings never count — that is the per-account ceiling
   assert.deepEqual(r.others, [])
 })
 
+// --- C8: the defect, on the real schema -----------------------------------
+
+test('C8: a held position and an in-flight order on the REAL schema both count, and the third account is refused', () => {
+  // Red on origin/main before C8: accountsHolding returned [] here because
+  // both queries read `direction` and threw into their empty catches.
+  const d = db()
+  pos(d, 'A', 'NATGAS', 'BUY')       // as reconciler.js adopts it: side 'BUY'
+  trd(d, 'B', 'NATGAS', 'BUY')       // write-ahead intent, status 'submitting'
+  assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }).sort(), ['A', 'B'])
+  const r = checkBookSymbolCap(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C', cap: 2 })
+  assert.equal(r.allow, false)
+  assert.match(r.reason, /^book_symbol_cap: 2 account\(s\) already hold NATGAS BUY/)
+})
+
+test('C8: the columns the ceiling reads exist in agent/db.js, and `direction` does not', () => {
+  // Pins WHY the fix is `side`: if a migration ever adds `direction` or drops
+  // `side`, this names the mismatch instead of the empty catch hiding it.
+  const d = db()
+  const cols = (t) => new Set(d.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name))
+  for (const t of ['monitored_positions', 'trades']) {
+    const c = cols(t)
+    for (const need of ['account_id', 'status', 'symbol', 'side']) assert.ok(c.has(need), `${t}.${need} must exist`)
+    assert.ok(!c.has('direction'), `${t} has no direction column — the query must not read one`)
+  }
+  const p = cols('pending_orders')
+  for (const need of ['account_id', 'status', 'symbol', 'dir']) assert.ok(p.has(need), `pending_orders.${need} must exist`)
+})
+
 // --- each source must actually contribute ----------------------------------
 // A silent schema mismatch shows up here and nowhere else.
 
-test('SCHEMA: an in-flight trade counts (trades.direction, status submitting)', () => {
+test('SCHEMA: an in-flight trade counts (trades.side, status submitting)', () => {
   const d = db()
   trd(d, 'A', 'NATGAS', 'BUY'); trd(d, 'B', 'NATGAS', 'LONG', 'unconfirmed')
   assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'C' }).sort(), ['A', 'B'])
@@ -106,7 +137,7 @@ test('SCHEMA: an active position counts under either direction vocabulary', () =
 test('closed, filled and cancelled rows never count — a concurrency limit, not a quota', () => {
   const d = db()
   pos(d, 'A', 'NATGAS', 'BUY', 'closed')
-  trd(d, 'B', 'NATGAS', 'BUY', 'filled')
+  trd(d, 'B', 'NATGAS', 'BUY', 'closed')
   pend(d, 'C', 'NATGAS', 1, 'cancelled')
   assert.deepEqual(accountsHolding(d, { symbol: 'NATGAS', direction: 'BUY', accountId: 'Z' }), [],
     'a symbol traded twenty times last week, all closed, must be at zero')
