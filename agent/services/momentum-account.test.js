@@ -324,7 +324,7 @@ test('wiring pins (comments stripped): the size rides both dispatch paths, the g
   assert.match(risk, /if \(volTargetSized && momentumAcct && proposal\.strategy === MOMENTUM_STRATEGY\)/, 'the gate honours the size only on a momentum account for tsmom')
   assert.doesNotMatch(risk, /momentum_account_only:/, 'PR-B: the one-system veto is gone from the gate')
   const book = strip(readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8'))
-  assert.match(book, /if \(isMomentumAccount\(db, accountId\)\) \{[\s\S]*runMomentumAccountPass\(db, \{ acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted, entryBrake \}\)/, 'the book must route the momentum account to the daily pass WITH its margin state AND its entry brake (PR-P)')
+  assert.match(book, /if \(isMomentumAccount\(db, accountId\)\) \{[\s\S]*runMomentumAccountPass\(db, \{ acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted, entryBrake, entriesHeld \}\)/, 'the book must route the momentum account to the daily pass WITH its margin state, its entry brake (PR-P) AND the scan-skipped entry hold (S-2)')
   // PR-P: the brake is computed ONCE per account, above the momentum-account
   // branch, so both entry paths read the same verdict. If this moves below
   // the `continue`, the path that actually trades stops being braked — the
@@ -363,7 +363,10 @@ test('scope: a shadow row for a momentum-universe name is NOT taken by a row-cur
   await runMomentumBook(db2, { accounts: [{ accountId: OTHER, isLive: false }], credsFor: (a) => ({ accountId: a.accountId }), deps: { ...f2.deps, symbolMap: { NATGAS: 2 } }, now: DUE })
   assert.deepEqual(f2.calls.autoTrade.map(c => c.symbol), ['NATGAS'])
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
-  assert.match(loop, /scanSymbols: symbols\.map\(/, 'the loop must hand the book the scan universe')
+  // S-2: the book runs outside the scan branch, so the scan's symbols reach
+  // it through a hoisted variable set from `symbols` inside the branch.
+  assert.match(loop, /scanSymbols: bookScanSymbols,/, 'the loop must hand the book the scan universe')
+  assert.match(loop, /bookScanSymbols = \(symbols\.length \? symbols : allSymbols\)\.map\(/, 'built from the scan\'s own symbols')
 })
 
 test('the repo declaration switches the momentum account on at boot, idempotently, and overrides a differing stored value', async () => {

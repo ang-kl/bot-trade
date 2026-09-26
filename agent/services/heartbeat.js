@@ -217,6 +217,13 @@ export const CONTROLLERS = {
   // position writers. The record is the pass's own summary; with no plan it
   // still runs and still writes it, so "never ran" and "nothing to do" differ.
   momentum_partial:    { label: 'Momentum partial-TP1 manager', tiedToLoop: true, factor: 3, effect: { key: 'momentum_partial_pass_json', kind: 'json' } },
+  // F6, absorbed by S-2 (Wave 2 row 2.1, OD-2 yes 26-09-2026): the momentum
+  // book — trail, rank exits, the daily pass, adoption — once per main-loop
+  // cycle OUTSIDE the scan branch, so it beats with Scan disabled, Scan off on
+  // every account and in weekend quiet. It beats FAILED when the pass throws.
+  // The record is the pass's own counts (momentum-book.js
+  // writeMomentumBookPass). Dormant while the owner's switch has the book off.
+  momentum_book:       { label: 'Momentum book (trail, exits, daily pass)', tiedToLoop: true, factor: 3, effect: { key: 'momentum_book_pass_json', kind: 'json' }, dormantWhen: momentumBookDormantReason },
   // V3 F4 (#1099 nit 2): the tick permit feeder's stall alarm. Beaten by
   // probeCppExec after every side was probed: ok only when every side with a
   // tick-admitting account had a complete feeder pass under two cadences old
@@ -244,6 +251,15 @@ const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
 function weekendWatchDormantReason(db) {
   const why = llmDisabledReason(db, getState)
   return why ? `LLM switched off (${why}) — the weekend watch makes no model call while it is off, so it does not run` : null
+}
+
+// Read inline rather than through momentum-book.js's loader: heartbeat.js is
+// imported by nearly every module, and the book imports half the agent.
+// Same rule as momentumBookConfig: only a literal `enabled: true` is on.
+function momentumBookDormantReason(db) {
+  let cfg = null
+  try { cfg = JSON.parse(getState(db, 'momentum_book_json') || 'null') } catch { cfg = null }
+  return cfg && cfg.enabled === true ? null : 'momentum book switched off (momentum_book_json enabled is not true) — no pass runs, so none is expected'
 }
 
 function dormantReasonOf(db, def, nowMs) {

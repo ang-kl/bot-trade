@@ -386,11 +386,17 @@ export function loadBookState(db) {
  *   mayTrade(accountId, symbol) → {ok, item}
  *   symbolMap → {SYMBOL: id}
  */
-export async function runMomentumBook(db, { accounts = [], credsFor = () => null, deps = {}, now = Date.now(), log = () => {} } = {}) {
+export async function runMomentumBook(db, { accounts = [], credsFor = () => null, deps = {}, now = Date.now(), log = () => {}, entriesHeld = null } = {}) {
   const cfg = loadMomentumBook(db)
   if (!cfg.enabled) return { ran: false, why: 'disabled' }
   const state = loadBookState(db)
   const summary = { ran: true, entries: 0, exits: 0, trailed: 0, reclassified: 0, deferredClosed: 0, skipped: [], accounts: 0 }
+  // S-2 (Wave 2 row 2.1, OD-2 yes 26-09-2026): the loop calls the book on
+  // EVERY cycle, outside the scan branch. When that cycle's scan did not run,
+  // `entriesHeld` names why: exits, the trail, adoption and reconcile of held
+  // rows all run; ENTRIES are held (both paths), exactly as they were when
+  // the whole book was skipped with the scan.
+  if (entriesHeld) { summary.entriesHeld = String(entriesHeld); summary.skipped.push(`entries held — ${entriesHeld}`) }
   // Every shadow row since the cursor advances it (refusals included, so
   // nothing is re-read); LONG and SHORT entries and exits act (PR-D) — a
   // short row still has to pass directionFor at tryEnter.
@@ -609,7 +615,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         // PR-P: the SAME brake object the row-cursor path below uses, computed
         // once above. Passing the verdict rather than the marks is what makes
         // "one brake, not two" true in code and not only in the comment.
-        const ma = await runMomentumAccountPass(db, { acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted, entryBrake })
+        const ma = await runMomentumAccountPass(db, { acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted, entryBrake, entriesHeld })
         // COUNT WHAT WENT OUT, not what the pass called itself (checker,
         // 16-09-2026): the margin-exhausted branch returns `ran: false` AFTER
         // sending its exits, so real closes were reported as zero — which is
@@ -619,6 +625,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         summary.entries += ma.entries || 0
         summary.exits += ma.exits || 0
         summary.rankExitsDeferred += ma.rankExitsDeferred || 0
+        summary.deferredClosed += ma.deferredClosed || 0
         if (ma.ran || ma.exits || ma.entries || ma.rankExitsDeferred) {
           summary.momentumAccount = { account: accountId, ran: !!ma.ran, entries: ma.entries, exits: ma.exits, rankExitsDeferred: ma.rankExitsDeferred || 0, universe: ma.universe, why: ma.why || null }
         }
@@ -805,7 +812,9 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         summary.exits++
         log(`momentum book: ${why} ${symbol} on …${accountId.slice(-4)}`)
       } catch (err) {
-        db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ?`).run(`exit_pending: ${String(err.message).slice(0, 160)}`, row.id)
+        // `status = 'open'`: a failure after the row reached exit_sent (the
+        // journal line throwing) must not relabel a sent exit as owed.
+        db.prepare(`UPDATE momentum_book SET note = ? WHERE id = ? AND status = 'open'`).run(`exit_pending: ${String(err.message).slice(0, 160)}`, row.id)
         summary.skipped.push(`${accountId} ${symbol}: close failed — ${err.message}`)
       }
     }
@@ -838,6 +847,7 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     // reading), and its reason rides the synth as direction_reason.
     const tryEnter = async (symbol, { side = 'long', conviction = null, rankPct = null, note }) => {
       if (marginExhausted) return 'capped'
+      if (entriesHeld) return 'capped'   // S-2: the scan did not run this cycle
       // PR-P. 'capped', not 'skipped': the caller stops offering this account
       // names for the rest of the pass, exactly as the margin brake and
       // maxPositionsPerAccount do. The reason was pushed to summary.skipped
@@ -1242,7 +1252,47 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     summary.skipped.unshift(`considered ${summary.considered} account(s), ran on ${summary.accounts}${why.length ? ` — ${why.join(', ')}` : ''}`)
   }
   setState(db, MOMENTUM_BOOK_STATE_KEY, JSON.stringify({ lastShadowRowId: maxId, lastRunMs: now, reconciledAt: state.reconciledAt || {}, rankExitAt: state.rankExitAt || {}, pendingFlips: state.pendingFlips || {}, marks: nextMarks, markFail }))
+  writeMomentumBookPass(db, summary, now)
   return summary
+}
+
+/**
+ * The loop's hold line (S-2 small round, item 3, 26-09-2026): "momentum book:
+ * N exit(s) held for a closed market (exit_pending); entries held — why".
+ * It printed on every cycle while entries were held, so all weekend with no
+ * crypto to scan. Now it prints only when an exit was held for a closed
+ * market THIS pass, or when the entries-held reason differs from the one last
+ * printed (a reason appearing, changing, or clearing). A pass that did not
+ * run (book off) prints nothing and keeps the last reason. Returns
+ * `{ line, reason }`: `line` is null when there is nothing to print; the
+ * caller keeps `reason` for the next pass.
+ */
+export function bookHoldLogLine(summary, lastReason = null) {
+  const last = lastReason ?? null
+  if (!summary?.ran) return { line: null, reason: last }
+  const reason = summary.entriesHeld ? String(summary.entriesHeld) : null
+  const deferred = Number(summary.deferredClosed) || 0
+  if (!(deferred > 0 || reason !== last)) return { line: null, reason }
+  const tail = reason ? `; entries held — ${reason}` : last ? '; entries no longer held' : ''
+  return { line: `momentum book: ${deferred} exit(s) held for a closed market (exit_pending)${tail}`, reason }
+}
+
+// F6 (absorbed by S-2, Wave 2 row 2.1): the `momentum_book` heartbeat's
+// record — the pass's own counts, dated, written on EVERY pass that ran
+// (nothing to do included) so "never ran" and "ran, nothing to do" differ.
+// A disabled book writes nothing and the controller reads dormant.
+export const MOMENTUM_BOOK_PASS_KEY = 'momentum_book_pass_json'
+export function writeMomentumBookPass(db, summary, now = Date.now()) {
+  try {
+    setState(db, MOMENTUM_BOOK_PASS_KEY, JSON.stringify({
+      at: new Date(now).toISOString(),
+      accounts: summary.accounts, considered: summary.considered ?? null,
+      entries: summary.entries, exits: summary.exits, trailed: summary.trailed,
+      deferredClosed: summary.deferredClosed || 0, rankExitsDeferred: summary.rankExitsDeferred || 0,
+      entriesHeld: summary.entriesHeld || null,
+      skipped: (summary.skipped || []).slice(0, 8),
+    }))
+  } catch { /* the record is observation; the pass has already run */ }
 }
 
 /** The read: config, the open book, and what has closed. */

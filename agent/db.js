@@ -426,6 +426,11 @@ const TABLES = `
     exited_at    TEXT,
     status       TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'exit_sent' | 'closed'
     note         TEXT,
+    -- The refused-exit retry's own record (Wave 2 row 2.1, N2): consecutive
+    -- broker refusals of this row's close, and the earliest time the daily
+    -- pass's exit_pending retry may send it again (NULL = every pass).
+    exit_refusals    INTEGER,
+    exit_retry_after TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_momentum_book_status ON momentum_book(status, account_id);
@@ -1472,7 +1477,7 @@ export function initDB(dbPath) {
   // stop already tighter than 3 ATRs" -- the two conditions that `atr NULL`
   // collapsed into one.
   const mbColNames = new Set(db.prepare("PRAGMA table_info(momentum_book)").all().map(c => c.name));
-  for (const [col, type] of [['trail_checked_at', 'TEXT'], ['trail_note', 'TEXT']]) {
+  for (const [col, type] of [['trail_checked_at', 'TEXT'], ['trail_note', 'TEXT'], ['exit_refusals', 'INTEGER'], ['exit_retry_after', 'TEXT']]) {
     if (!mbColNames.has(col)) db.exec(`ALTER TABLE momentum_book ADD COLUMN ${col} ${type}`);
   }
 
