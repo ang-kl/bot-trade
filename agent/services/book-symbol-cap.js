@@ -49,12 +49,14 @@
 //
 // A CONCURRENCY LIMIT, NOT A QUOTA — the same rule symbol-position-cap.js
 // states. Every input is live state: active positions, submitting/unconfirmed
-// orders, working limits. A symbol traded twenty times last week, all closed,
+// orders the stuck resolver has not ended (V3 I3, inflightLiveSql), working
+// limits. A symbol traded twenty times last week, all closed,
 // is at zero. This caps simultaneous exposure and never rations opportunity
 // over time.
 // ---------------------------------------------------------------------------
 
 import { IN_FLIGHT_STATUSES } from './symbol-position-cap.js'
+import { inflightLiveSql } from '../lib/stuck-resolutions.js'
 
 /**
  * Owner default, 18-09-2026.
@@ -110,18 +112,34 @@ export function accountsHolding (db, { symbol, direction, accountId = null } = {
     }
   }
 
+  // C8 (SEQUENCE PR-8, 26-09-2026). BOTH position tables store the direction
+  // in `side` (agent/db.js: trades.side, monitored_positions.side). The first
+  // cut of these two queries read a `direction` column that exists in neither,
+  // so each threw into its empty catch and, from #939 until this fix, the
+  // ceiling counted ONLY resting limits — every held position and every
+  // in-flight order read as zero. The tests now build on initDB, the real
+  // schema, so a wrong column name goes red instead of silent.
   try {
     add(db.prepare(`
       SELECT DISTINCT account_id FROM monitored_positions
-       WHERE status = 'active' AND UPPER(symbol) = ? AND UPPER(direction) IN (?, ?)
+       WHERE status = 'active' AND UPPER(symbol) = ? AND UPPER(side) IN (?, ?)
     `).all(sym, side, side === 'BUY' ? 'LONG' : 'SHORT'))
   } catch { /* table shape varies in older databases; a missing read must not open the gate wider than it already is */ }
 
   try {
     const marks = IN_FLIGHT_STATUSES.map(() => '?').join(',')
+    // C8 fix round 2 (adversarial refute, 26-09-2026): V3 I3 — an in-flight
+    // row the stuck resolver ENDED (written off with no broker evidence, or
+    // settled as the duplicate of an adopted row, R5) keeps its status
+    // 'submitting' / 'unconfirmed' for ever (lib/stuck-resolutions.js: the
+    // trades CHECK has no honest terminal value). Read without the filter,
+    // every such row is a PERMANENT phantom holder: reproduced on the real
+    // schema with the real resolver, two written-off NATGAS BUY rows refused
+    // the FIRST real holder. symbol-position-cap.js and tick-permits.js
+    // already read in-flight rows through inflightLiveSql; so does this.
     add(db.prepare(`
       SELECT DISTINCT account_id FROM trades
-       WHERE status IN (${marks}) AND UPPER(symbol) = ? AND UPPER(direction) IN (?, ?)
+       WHERE status IN (${marks}) AND UPPER(symbol) = ? AND UPPER(side) IN (?, ?)${inflightLiveSql(db)}
     `).all(...IN_FLIGHT_STATUSES, sym, side, side === 'BUY' ? 'LONG' : 'SHORT'))
   } catch { /* as above */ }
 
