@@ -1559,3 +1559,25 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .risk-jump-target { transition: none; }
 }
+
+/* common/DataTable.jsx (UI-2, 26-09 plan §8 item 2): a 15-row viewport that
+   SCROLLS both ways inside the card instead of squashing columns (the plan's
+   measured failure — the blockers table's columns squashed to 34-124px at
+   390px). --dt-row-h is a measured average row height (line-height plus the
+   cell's own vertical padding); 15 rows is a floor, not an exact clip, so a
+   row that wraps onto two lines does not get sliced mid-row. responsive-audit
+   asserts scroll (scrollHeight > clientHeight when there are more than 15
+   rows), never squash (no column narrower than its content demands). */
+:root { --dt-row-h: 2.25rem; }
+.data-table-viewport {
+  max-height: calc(var(--dt-row-h) * 15 + 2.75rem); /* +1 row for the sticky header */
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.data-table-viewport table { min-width: 720px; }
+/* Sticky header, first (frozen) column and each date-group header row — the
+   same `sticky` idiom StdTradeTable.jsx already uses for its frozen columns,
+   generalised here so any table built on DataTable gets it for free. */
+.dt-sticky-head { position: sticky; top: 0; z-index: 12; background: var(--color-bg); }
+.dt-sticky-col  { position: sticky; left: 0; z-index: 10; background: var(--color-bg); }
+.dt-sticky-date { position: sticky; top: var(--dt-row-h); z-index: 11; background: var(--color-bg); }

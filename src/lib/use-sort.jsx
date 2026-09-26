@@ -3,14 +3,17 @@
 // ↓/↑ marker, null cells always last. Accessors map column key → value.
 import { useState } from 'react'
 
-export function useSort(rows, initial, accessors = {}) {
-  const [sort, setSort] = useState(initial)
+// Extracted so callers that must sort more than one array under the SAME
+// sort state (common/DataTable.jsx sorting rows independently within each
+// date group, so a sort never reorders rows across dates) can reuse the exact
+// comparator useSort applies, instead of forking it.
+export function sortRows(rows, sort, accessors = {}) {
   const val = (r) => {
     const a = accessors[sort.key]
     const v = a ? a(r) : r[sort.key]
     return v ?? null
   }
-  const sorted = [...(rows || [])].sort((x, y) => {
+  return [...(rows || [])].sort((x, y) => {
     const vx = val(x)
     const vy = val(y)
     if (vx == null && vy == null) return 0
@@ -21,6 +24,11 @@ export function useSort(rows, initial, accessors = {}) {
       : vx - vy
     return sort.dir === 'desc' ? -c : c
   })
+}
+
+export function useSort(rows, initial, accessors = {}) {
+  const [sort, setSort] = useState(initial)
+  const sorted = sortRows(rows, sort, accessors)
   const sortBtn = (k, label) => (
     <button
       type="button"
