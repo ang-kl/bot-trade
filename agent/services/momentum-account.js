@@ -50,7 +50,7 @@ import { recordDecision } from './decision-log.js'
 import { recordPositionEvent } from './position-events.js'
 import { assetClassOf } from './strategy-asset-cross.js'
 import { bookEntryWrite } from './book-entry-write.js'
-import { isSymbolOpenCached, nextOpenInfo, nextCloseInfo } from './symbol-hours.js'
+import { isSymbolOpenCached, nextOpenInfo } from './symbol-hours.js'
 
 export const MOMENTUM_ACCOUNT_KEY = 'momentum_account_json'
 export const MOMENTUM_ACCOUNT_STATE_KEY = 'momentum_account_state_json'
@@ -62,24 +62,30 @@ export const TSMOM_STRATEGY = 'tsmom_long'
  * An `exit_pending:` row is retried on every loop pass (~12 an hour); a close
  * the broker keeps refusing was re-sent at that rate for ever. From the
  * `afterRefusals`-th CONSECUTIVE refusal on, the retry waits `minIntervalMs`
- * between sends — or, for a MARKET_CLOSED refusal, until the broker's next
- * open when its schedule says when that is. Below the threshold nothing
- * changes: a transient refusal is still retried on the very next pass. The
- * count and the next-retry time live on the row (`exit_refusals`,
- * `exit_retry_after`); a send that goes, or a withdrawal, clears them.
+ * between sends. A MARKET_CLOSED refusal waits for the broker's next open
+ * ONLY when the broker's schedule itself says the market is closed now —
+ * a close is only ever sent when the schedule says open (F2 defers it
+ * otherwise), so a MARKET_CLOSED on a schedule-open pass is the schedule
+ * proven wrong, and waiting for that schedule's next open would trust the
+ * very thing just contradicted (fix round 2, B-1: an FX-shaped weekly
+ * interval parked a Monday refusal for 151 h). Every wait is capped at
+ * `maxWaitMs` (2 h). Below the threshold nothing changes: a transient
+ * refusal is still retried on the very next pass. The count and the
+ * next-retry time live on the row (`exit_refusals`, `exit_retry_after`); a
+ * send that goes clears BOTH, and so does a withdrawal.
  */
-export const EXIT_RETRY_BACKOFF = Object.freeze({ afterRefusals: 3, minIntervalMs: 30 * 60_000 })
+export const EXIT_RETRY_BACKOFF = Object.freeze({ afterRefusals: 3, minIntervalMs: 30 * 60_000, maxWaitMs: 2 * 3600_000 })
 // The trade states that end a book position — the same three as
 // momentum-book.js's BOOK_TERMINAL_TRADE_STATES (not imported: momentum-book
 // imports this module; a test pins the two sets equal).
 export const ACCOUNT_TERMINAL_TRADE_STATES = Object.freeze(['closed', 'rejected', 'cancelled'])
 
 /**
- * When does SYMBOL next open, by the BROKER's schedule? ms, or null when the
- * schedule does not say (heuristic-only symbol, 24/7 contiguous sessions).
- * A MARKET_CLOSED refusal arrives on a pass the schedule called open (a
- * schedule-closed market is never sent a close — F2), so the "next open" is
- * then the start of the session after the current one ends.
+ * When does SYMBOL next open, by the BROKER's schedule — asked ONLY when that
+ * schedule says the market is closed at `nowMs`. ms, or null: the schedule
+ * says open now (a MARKET_CLOSED refusal then contradicts it, and its "next
+ * open" is not evidence — fix round 2, B-1), the symbol has no broker
+ * schedule, or no next open can be read. The caller caps the wait anyway.
  */
 export function nextBrokerOpenMs(db, symbol, nowMs) {
   try {
@@ -87,10 +93,6 @@ export function nextBrokerOpenMs(db, symbol, nowMs) {
     if (n.source === 'broker' && n.open === false && n.next_open_at) {
       const t = Date.parse(n.next_open_at)
       return Number.isFinite(t) && t > nowMs ? t : null
-    }
-    const c = nextCloseInfo(db, symbol, new Date(nowMs))
-    if (c.source === 'broker' && c.open === true && Number(c.closes_in_sec) >= 0 && Number(c.closure_sec) > 0) {
-      return nowMs + (Number(c.closes_in_sec) + Number(c.closure_sec)) * 1000
     }
   } catch { /* unknown is not a time */ }
   return null
@@ -653,6 +655,9 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
       }
       continue
     }
+    // Set once the row reached exit_sent: a throw after that point is a
+    // post-send record failure, not a refused close (fix round 2, N-b).
+    let sent = false
     try {
       if (row.position_id && deps.close) {
         const coordinated = await runMomentumRankExit(db, creds, row, deps)
@@ -662,17 +667,26 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
           await deps.close(creds, { positionId: row.position_id, volume })
         }
       }
-      db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)', exit_retry_after = NULL WHERE id = ?`).run(new Date(now).toISOString(), row.id)
+      // N-a: a send that goes clears the WHOLE refusal record.
+      db.prepare(`UPDATE momentum_book SET status = 'exit_sent', exited_at = ?, note = 'rank exit (daily pass)', exit_refusals = NULL, exit_retry_after = NULL WHERE id = ?`).run(new Date(now).toISOString(), row.id)
+      sent = true
+      exits++
       // Same journal line as the row-cursor exit (fix-the-exits BA).
       if (row.position_id) {
-        recordPositionEvent(db, {
+        (deps.recordPositionEvent ?? recordPositionEvent)(db, {
           accountId, positionId: row.position_id, tradeId: row.trade_id, symbol: row.symbol, kind: 'close',
           reason: 'rank exit (daily pass)', source: 'momentum_account',
         })
       }
-      exits++
       log(`momentum account: rank exit ${row.symbol} on …${accountId.slice(-4)}`)
     } catch (err) {
+      if (sent) {
+        // The close went and the row is exit_sent (counted above); only the
+        // journal or the log line after it failed. Not a refusal: no
+        // exit_pending, no refusal count, its own reason.
+        summary.skipped.push(`${row.symbol}: close sent; post-send record failed — ${err.message}`)
+        continue
+      }
       // A refused close is owed, not dropped: flagged so the every-pass
       // retry above sends it again (the row-cursor path's 09-09-2026 rule).
       // `status = 'open'` in the WHERE: a failure AFTER the row reached
@@ -684,10 +698,13 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
       if (refusals >= EXIT_RETRY_BACKOFF.afterRefusals) {
         retryAfter = now + EXIT_RETRY_BACKOFF.minIntervalMs
         if (/MARKET_CLOSED/i.test(String(err?.message))) {
+          // Only a schedule that says CLOSED NOW names a next open (B-1).
           let open = null
           try { open = (deps.nextBrokerOpen ?? nextBrokerOpenMs)(db, row.symbol, now) } catch { open = null }
           if (Number.isFinite(open) && open > now) retryAfter = open
         }
+        // Every wait is capped: min(nextOpen, now + 2 h).
+        retryAfter = Math.min(retryAfter, now + EXIT_RETRY_BACKOFF.maxWaitMs)
       }
       try {
         db.prepare(`UPDATE momentum_book SET note = ?, exit_refusals = ?, exit_retry_after = ? WHERE id = ? AND status = 'open'`)
