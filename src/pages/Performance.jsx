@@ -1023,7 +1023,9 @@ function DailyStopLine({ a }) {
 }
 
 // Copy-as-text for the ledger (owner spec: paste-friendly aligned lines).
-function ledgerToText(windows) {
+// Exported so its deal-read note line is pinned by a test (V3 WEB-8b).
+// eslint-disable-next-line react-refresh/only-export-components -- the copy text is built from this page's own money/signed formatters
+export function ledgerToText(windows) {
   const lines = (windows || []).map(w =>
     `${w.label} · carry ${carryText(w, 'in', { money })} → ${carryText(w, 'out', { money })} · net ${!w.trades ? '—' : currencyLines(w) ? currencyLinesText(currencyLines(w), signed) : `${signed(w.net)}${ledgerMoneyNote(w) ? ` (${ledgerMoneyNote(w).text})` : ''}`} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0}${w.manual > 0 ? ` · ${w.manual} manual` : ''} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}${!w.trades && w.lastTradeAt ? ` · last fill ${w.lastTradeAt}` : ''}`)
   return ['Timeframe ledger', ...lines, dealBalanceReadNote(windows)].filter(Boolean).join('\n')
@@ -1073,6 +1075,14 @@ export function LedgerBody({ variant, windows, ledger, error, nowMs, timeZone })
       </p>
     </>
   )
+}
+
+// V3 WEB-8-m: the phone ledger has no footnote and no hover, so a failed read
+// of the stored deal balances is stated above its cards in words. A component
+// of its own, exported so a test renders it (V3 WEB-8b).
+export function MobileLedgerDealNote({ windows }) {
+  const note = useMemo(() => dealBalanceReadNote(windows), [windows])
+  return note ? <p style={{ fontSize: 'var(--fs-body)', color: P_MU, margin: '4px 0' }}>{note}</p> : null
 }
 
 // A ledger carry cell: observed broker balance per currency at the edge, or
@@ -1763,9 +1773,6 @@ export default function Performance() {
   }, [analytics, acct])
 
   const windows = useMemo(() => reportLedger(populationReport, acct).windows, [populationReport, acct])
-  // V3 WEB-8-m: the phone ledger has no footnote and no hover, so a failed
-  // read of the stored deal balances is stated above its cards in words.
-  const ledgerDealNote = useMemo(() => dealBalanceReadNote(windows), [windows])
 
   // Shared client-side aggregation for the FX bands / strategy matrix —
   // mirrors the server ledger's stats (win%, PF, planned R:R → required
@@ -2136,7 +2143,7 @@ export default function Performance() {
                 )
               })}
             </div>
-            {ledgerDealNote && <p style={{ fontSize: 'var(--fs-body)', color: P_MU, margin: '4px 0' }}>{ledgerDealNote}</p>}
+            <MobileLedgerDealNote windows={windows} />
             {windows.map(w => <MobileWindowCard key={w.key} w={w} timeZone={timeZone} />)}
           </>
         )}
