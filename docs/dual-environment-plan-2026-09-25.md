@@ -197,6 +197,31 @@ computed hash, and the permit carries the profile hash.
 - Test that a permit cannot be spent twice after a restart
   (`engine.cpp:801-808`).
 
+*Status 26-09-2026 (draft branch `claude/w2-c8-c9`, owner OD-6 "the V3
+defaults"; ask-first, merges on the owner's word). P6 ships in three parts:*
+- *C8 (SEQUENCE PR-8): the book-wide symbol cap had never counted positions —
+  `accountsHolding` read a `direction` column that `monitored_positions` and
+  `trades` do not have, so only working limits counted. It now reads `side`,
+  on a real-schema test. Live bar effect on merge: a third account on the same
+  symbol and direction is vetoed (cap 2, value unchanged).*
+- *C9 (SEQUENCE PR-9), Node half, dormant while no account admits tick:
+  unsettled tick fires (every fired state) count in the feeder's budget, in
+  the gate's step 3 and in the pre-filter (one helper); the push carries
+  `tickSlots` with the boot's `firesSeen`; tick permits go to at most the book
+  cap's accounts per symbol and side, least-recently-served first, at R / n,
+  from ONE generation per heartbeat cycle (`tick_grants_json`) that a side's
+  pass may only narrow; readiness is re-read every pass (`REVALIDATE_CHECKS`);
+  permits carry the pinned `profileHash` and the gateway `bootId`; a restart
+  holds the old boot's rows until a reconcile of the account (bounded at
+  10 min, then `tick_sidecar_restart_unreconciled`), and every reconcile path
+  stamps the account's own `last_reconcile_at`. Also fixed: the tick budget's
+  monitored-position read selected a column that table lacks and counted none.*
+- *Still open until GW-1 (SEQUENCE PR-10, restarts both gateways): the
+  gateway's per-fire slot counter, the full-replace permit push, spending the
+  permit after the firer's checks, the firer's profile and boot checks, and
+  `startedAtMs`. Gap 4c (drawdown de-risk on tick) is not built: an owner
+  question. No account may admit tick until C9 and GW-1 are both read back.*
+
 **P7 — Evidence (calendar time).**
 1. Run the predeclared search from `docs/tick-momentum/plan.md`: the stage-A
    grid, the listed local variants and the ablations, over all segments. Every

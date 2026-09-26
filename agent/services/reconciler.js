@@ -897,7 +897,16 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     })
 
   setState('broker_pending_orders_json', JSON.stringify(pendingOrders))
-  setState('last_reconcile_at', new Date().toISOString())
+  const reconciledAt = new Date().toISOString()
+  setState('last_reconcile_at', reconciledAt)
+  // C9 (SEQUENCE PR-9, per-account reconcile stamps): the SELECTED account's
+  // pass is handed a plain setState, so it wrote only the GLOBAL key and
+  // lastReconcileAt(db, id) read null for it unless it was also the selected
+  // id at read time. Every scoped pass now stamps its own account's key too,
+  // on every path (the loop's selected and per-account passes, and
+  // cross-side-reconcile.js), so the tick feeder's restart quarantine can
+  // tell, per account, that positions were read after a sidecar restart.
+  if (acct != null) { try { setAgentState(db, `acct:${acct}:last_reconcile_at`, reconciledAt) } catch { /* state unwritable */ } }
 
   // Durable ledger of the broker's resting entry orders. These fill regardless
   // of the bot's scan/autotrade switches (owner: "even if ... OFF, these
