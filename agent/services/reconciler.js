@@ -5,6 +5,7 @@ import { getState, setState as setAgentState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
 import { lotsFromUnits } from '../lib/lot-size-registry.js'
 import { recordPositionEvent } from './position-events.js'
+import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -41,9 +42,8 @@ export function brokerVolumeToLots(bp, symbol, db = null) {
 // door. The intent row names the producer, and the producer names exactly one
 // strategy, so the fact is recoverable. `parsed.strategy` still wins wherever
 // the label has one; this only fills a hole.
-const PRODUCER_STRATEGY = Object.freeze({
-  tick_momentum: 'tick_momentum_breakout',
-})
+// V3 B4c: the table now lives in adopted-reasons.js (imported above), which
+// reads it for the adoption fallback and the backfill too — one copy.
 
 /** The producer and resolved state of an intent, for the adoption thesis. Never throws. */
 function intentMeta(db, intentId) {
@@ -643,6 +643,16 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     // the row reconciler_adopted, which findUnreasonedTrades then lists as
     // adopted_ours_unreasoned rather than hiding.
     const stamped = ours ? stampAdoptedFromIntent(db, { tradeId: inserted, label, parsed, acct, symbolName, side, entry, sl, tp }) : null
+    // V3 B4c: WHAT THE STAMP CANNOT SEE. It reads only the label's tag; an
+    // OURS label with no tag (a resting order placed before the ledger, a
+    // position the broker re-opened under a new id, a transport that dropped
+    // the tag) was left with the strategy in label_strategy only, no intent
+    // and no approval — 106 such rows on 26-09. adopted-reasons.js fills what
+    // a record names (the ledger's own record of this position, the resting
+    // row that placed the intent's order, a clean bot row on this same
+    // position, the label's strategy code), each with its evidence, and
+    // never a plan, a guessed approval or an origin from the label alone.
+    const recovered = ours ? recoverTradeReason(db, inserted, { writer: 'adoption' }) : null
 
     // The breach is journalled AFTER the row exists, so the log line names a
     // trade that can be looked up. It changes nothing about ownership.
@@ -660,7 +670,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       console.warn(`[reconcile] FENCE BREACH adopted: intent ${intentTag} state ${intentInfo.state} account …${String(acct ?? '').slice(-4)} trade ${inserted}`)
     }
 
-    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, adopted: ours, source: adoptedSource, tradeId: inserted, ...(breach ? { fenceBreach: intentInfo.state } : {}), ...(stamped ? { stampedFromIntent: stamped } : {}) })
+    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, adopted: ours, source: adoptedSource, tradeId: inserted, ...(breach ? { fenceBreach: intentInfo.state } : {}), ...(stamped ? { stampedFromIntent: stamped } : {}), ...(recovered && Object.keys(recovered.wrote).length ? { reasonRecovered: Object.fromEntries(Object.entries(recovered.wrote).map(([f, p]) => [f, p.evidence])) } : {}) })
   }
 
   const closedDetected = []

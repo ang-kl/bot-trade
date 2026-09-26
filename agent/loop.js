@@ -3565,6 +3565,17 @@ async function runLoop(db) {
             } catch (err) {
               log(`Close-completeness sweep failed (non-fatal): ${err.message}`)
             }
+            // V3 B4c: the same cadence re-reads adopted bot rows for evidence
+            // that arrived after their adoption (the ledger records a resting
+            // order's position only once its fill is settled). Logs only when
+            // it wrote something or failed — the boot line carries the counts.
+            try {
+              const { backfillAdoptedReasons, adoptedReasonsLine } = await import('./services/adopted-reasons.js')
+              const ar = await backfillAdoptedReasons(db)
+              if (ar.rowsWritten > 0 || ar.errors.length > 0) log(adoptedReasonsLine(ar))
+            } catch (err) {
+              log(`Adopted reasons sweep failed (non-fatal): ${err.message}`)
+            }
           }
 
           // Proving sweep — an ARMED strategy with no backtest GO on record

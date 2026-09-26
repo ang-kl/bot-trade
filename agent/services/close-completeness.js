@@ -72,6 +72,36 @@ export function reasonContractClass(kind, openedAt, missing = null) {
 }
 
 /**
+ * V3 B4c: the rest of an adopted_ours_unreasoned detail — where a value on
+ * the row came from, and what alone may fill each missing piece
+ * (services/adopted-reasons.js). Named, never subtracted: the row stays
+ * counted.
+ *
+ * An approval id on a row still `reconciler_adopted` with no B4c evidence
+ * row was written by the pre-L2a closed-market sweep, the only writer that
+ * stamps an approval without moving the origin (the reconciler's stamp, the
+ * evidence-linked sweep and the book link all set a bot origin). That sweep
+ * matched "the first trade on this symbol since placement" — a heuristic L2a
+ * (#1114) removed as unreliable — so the id is shown as such, not as
+ * evidence.
+ */
+export const ADOPTED_UNRECOVERED = Object.freeze({
+  strategy: "only our label's strategy code or the matched intent's producer may supply it",
+  plan: 'none was recorded at adoption, and none is invented after the fact',
+  'approval id': 'only an entry intent, the resting order row that placed it or a same-position bot row may supply it — never a time window',
+})
+function adoptedEvidenceNote(r, missingList, evidenceOf) {
+  const ev = evidenceOf(r.id)
+  const parts = []
+  if (ev.strategy) parts.push(`strategy from ${ev.strategy}`)
+  if (ev.risk_event_id) parts.push(`approval id from ${ev.risk_event_id}`)
+  else if (r.risk_event_id != null) parts.push(`approval id #${r.risk_event_id} linked by the pre-L2a closed-market sweep (symbol + time), not by evidence`)
+  if (ev.risk_event_id_conflict) parts.push(`an evidence record names a different approval (${ev.risk_event_id_conflict}; trade_reason_evidence)`)
+  const why = missingList.filter(f => ADOPTED_UNRECOVERED[f]).map(f => `${f}: ${ADOPTED_UNRECOVERED[f]}`)
+  return (parts.length ? ` — ${parts.join('; ')}` : '') + (why.length ? ` — missing: ${why.join('; ')}` : '')
+}
+
+/**
  * The invariant: every trade the bot decided to take since the cutoff has a
  * reason on record, and no send is left UNKNOWN past the resolver's age.
  * Population: `trades` opened at or after `sinceIso` with status open or
@@ -97,6 +127,15 @@ export function findUnreasonedTrades(db, { sinceIso = TRADE_REASONS_CUTOFF_ISO, 
      ORDER BY t.id
   `).all(sinceIso, ...CLEAN_BOT_ORIGINS)
   const violations = []
+  // V3 B4c: what adopted-reasons.js recovered for a row, and from what. The
+  // table is written by that module; absent (a database it never ran on),
+  // nothing is named and the detail reads as before.
+  let evidenceStmt = null
+  try { evidenceStmt = db.prepare('SELECT field, evidence FROM trade_reason_evidence WHERE trade_id = ?') } catch { evidenceStmt = null }
+  const evidenceOf = (tradeId) => {
+    if (!evidenceStmt) return {}
+    try { return Object.fromEntries(evidenceStmt.all(tradeId).map(e => [e.field, e.evidence])) } catch { return {} }
+  }
   // V3 B4: every trade violation carries its contract class (reasonContractClass).
   const push = (tradeId, kind, detail, openedAt, missing = null) =>
     violations.push({ tradeId, kind, detail, contract: reasonContractClass(kind, openedAt, missing) })
@@ -117,7 +156,7 @@ export function findUnreasonedTrades(db, { sinceIso = TRADE_REASONS_CUTOFF_ISO, 
       try { ours = isOurs(r.label_raw || '') } catch { ours = false }
       if (ours && (r.strategy == null || String(r.strategy).trim() === '' || r.plan_id == null || r.risk_event_id == null)) {
         const missingList = [(r.strategy == null || String(r.strategy).trim() === '') && 'strategy', r.plan_id == null && 'plan', r.risk_event_id == null && 'approval id'].filter(Boolean)
-        push(r.id, 'adopted_ours_unreasoned', `${who}: adopted with our label (${String(r.label_raw).slice(0, 40)}) and no ${missingList.join(', ')}`, r.opened_at, missingList)
+        push(r.id, 'adopted_ours_unreasoned', `${who}: adopted with our label (${String(r.label_raw).slice(0, 40)}) and no ${missingList.join(', ')}${adoptedEvidenceNote(r, missingList, evidenceOf)}`, r.opened_at, missingList)
       }
       continue
     }

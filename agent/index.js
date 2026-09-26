@@ -434,6 +434,17 @@ try {
   } catch (err) {
     console.error(`[boot] risk config seed failed (non-fatal): ${err.message}`)
   }
+  // V3 B4c: ADOPTED BOT FILLS GET THEIR REASON BACK — from evidence only
+  // (services/adopted-reasons.js). Before the position history build, so a
+  // record rebuilt below reads the approval a deterministic record named.
+  // Idempotent: a second boot writes nothing. The line names what stays
+  // missing; those rows stay counted in trade_reasons.
+  try {
+    const { backfillAdoptedReasons, adoptedReasonsLine } = await import('./services/adopted-reasons.js')
+    console.log(`[boot] ${adoptedReasonsLine(await backfillAdoptedReasons(db))}`)
+  } catch (err) {
+    console.error(`[boot] adopted reasons backfill failed (non-fatal): ${err.message}`)
+  }
   // POSITION HISTORY, BUILT ONCE AT BOOT (owner, 17-09-2026). The sweep also
   // runs in the 8-hourly housekeeping band, but that band is not due for up to
   // eight hours after a deploy — and the owner's actual ask is to be able to

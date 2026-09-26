@@ -570,6 +570,22 @@ test('B4: a bot-side field on a position the bot did not open is outside_bot; an
   assert.equal(classifyRefusedRecord(db, { record: { trade_id: tr('bot_market_dispatch'), opened_at_ms: after }, missing: ['direction_reason'] }).class, 'live_gap')
 })
 
+test('B4c: a foreign import written before the origin column (origin NULL, source external) is outside_bot, not a writer gap; a PRE fill filed external keeps its bot judgement', () => {
+  const db = fresh()
+  const tr = (source, label = null, origin = null) => db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, origin, source, label_raw) VALUES ('AVY.US', 'BUY', 'closed', ?, '517869182', ?, ?, ?)`).run(ACCT, origin, source, label).lastInsertRowid
+  const opened = Date.parse('2026-07-29T23:27:46Z')
+  // The record stores origin = trades.origin ?? trades.source (buildPositionRecord).
+  const legacy = classifyRefusedRecord(db, { record: { trade_id: tr('external'), origin: 'external', opened_at_ms: opened }, missing: ['direction_reason', 'strategy', 'planned_entry', 'risk_dist'] })
+  assert.equal(legacy.class, 'outside_bot')
+  assert.match(legacy.reason, /strategy: outside_bot \(origin external \(source of a foreign-label import written before the origin column\)\)/)
+  const pre = classifyRefusedRecord(db, { record: { trade_id: tr('external', 'PRE|v1|VP|HI|NYC|15m|-'), origin: 'external', opened_at_ms: opened }, missing: ['strategy'] })
+  assert.equal(pre.class, 'live_gap', 'our label: the bot placed it, its missing strategy is not excused')
+  const autopilot = classifyRefusedRecord(db, { record: { trade_id: tr('autopilot', 'AP|v1|-|HI|SGP|4h|-'), origin: 'autopilot', opened_at_ms: opened }, missing: ['strategy'] })
+  assert.equal(autopilot.class, 'live_gap', 'a bot row with no strategy code stays a named gap')
+  const stamped = classifyRefusedRecord(db, { record: { trade_id: tr('external', null, 'bot_market_dispatch'), origin: 'bot_market_dispatch', opened_at_ms: opened }, missing: ['strategy'] })
+  assert.equal(stamped.class, 'live_gap', 'a stamped origin wins over the legacy source')
+})
+
 test('B4: the backfill counts add up — seen = complete + incomplete + skipped — and the classes partition the incomplete', () => {
   const db = fresh()
   seedComplete(db)
