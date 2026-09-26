@@ -33,17 +33,46 @@
 // restores it. The children are NOT remounted — the same content div gets a
 // fixed-overlay wrapper — so table sort/page/scroll state survives the trip,
 // exactly like the collapse's display:none trick.
+//
+// UI-1 (26-09 UI plan, OD-17 = D19/D8): the collapse choice used to be a
+// plain useState, so it forgot itself on reload and, for a Card remounted by
+// a changing `key` (the account switch remounts "Recorded entry blockers"),
+// on every switch too. It now reads/writes lib/card-open.js, keyed by this
+// Card's own `id` — the same `sec-*` anchor nav-tree.js already uses to find
+// this Card's content kind, so no call site needs new wiring. A Card with no
+// id has no stable key and keeps the old per-mount default.
+//
+// The collapse triangle was also "a visible triangle control, no
+// transparency" (owner, 26-09): it used to sit at 55% opacity with a border
+// that only appeared on hover — invisible on a phone, which never hovers.
+// ⇲ and ⧉ keep their existing faint/hover-only treatment; only the collapse
+// control is always fully visible now.
 import { useEffect, useRef, useState } from 'react'
 import CopyPopup from './CopyPopup.jsx'
 import { tableToJson as scrapeJson, tableToHtml, dataToHtml, textToJson, textToHtml } from '../../lib/copy-serialize.js'
 import { sectionKind, NAV_KIND_LEGEND } from '../../lib/nav-tree.js'
 import ScopeChip from './ScopeChip.jsx'
 import { CardChromeContext } from './CardChromeContext.js'
+import { readCardOpen, writeCardOpen } from '../../lib/card-open.js'
+
+// PERF-1: a conservative floor so a card whose content is still loading does
+// not sit near-zero height and then jump once data arrives — one of the
+// CLSCulprits insight's two named causes (the other is the font preload,
+// index.html). Not a measurement of any one card's settled height, only a
+// floor against the worst jump.
+const LOADING_MIN_HEIGHT = 160
 
 export default function Card({
   children, className = '', copyable = true, copyTitle = null,
   data = null, toText = null, collapsible = true, defaultCollapsed = false,
   kind: kindProp = null,
+  // PERF-1: true while this Card's own content is still being fetched, so
+  // the body reserves LOADING_MIN_HEIGHT instead of growing from whatever a
+  // loading placeholder measures to the settled content's real height.
+  loading = false,
+  // Tests inject a fake store here; production leaves it undefined and
+  // card-open.js falls back to window.localStorage.
+  storage = undefined,
   // WHOSE numbers is this card showing (owner 05-08-2026). 'all', 'global',
   // or an account id. Undefined means the card has not declared a scope yet
   // and renders no chip — deliberately NOT defaulted to 'global', because
@@ -54,7 +83,15 @@ export default function Card({
 }) {
   const ref = useRef(null)
   const [popup, setPopup] = useState(null)
-  const [collapsed, setCollapsed] = useState(defaultCollapsed)
+  const cardId = rest.id || null
+  const [collapsed, setCollapsedRaw] = useState(() => !readCardOpen(cardId, !defaultCollapsed, storage))
+  // Every setCollapsed call also writes the choice back, under this Card's
+  // own id — a no-op when there is no id (card-open.js's own guard).
+  const setCollapsed = (updater) => setCollapsedRaw(prev => {
+    const next = typeof updater === 'function' ? updater(prev) : updater
+    writeCardOpen(cardId, !next, storage)
+    return next
+  })
   const [maximized, setMaximized] = useState(false)
   // Derived once from the DOM after mount (callback ref, not an effect —
   // the anchor ids are static). kindProp bypasses the lookup entirely.
@@ -121,13 +158,23 @@ export default function Card({
   const hoverOn = (e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.borderColor = 'var(--glass-edge)' }
   const hoverOff = (e) => { e.currentTarget.style.opacity = '.55'; e.currentTarget.style.borderColor = 'transparent' }
 
+  // OD-17 (D19): the collapse control, and only the collapse control, is a
+  // VISIBLE triangle — full opacity and a border that does not depend on
+  // hover. ⇲ and ⧉ above keep the faint/hover-only `btn` look.
+  const collapseBtn = { ...btn, opacity: 1, borderColor: 'var(--glass-edge)' }
+  const collapseHoverOn = (e) => { e.currentTarget.style.color = 'var(--color-text)' }
+  const collapseHoverOff = (e) => { e.currentTarget.style.color = 'var(--color-text-sub)' }
+
   // Card controls used to be absolutely positioned over the top-right corner.
   // That made them cover the header summary and, on dense Performance/Desk
   // cards, real table columns. A floated toolbar remains at the right edge,
   // but now participates in layout: the first content line wraps around it
   // and content that does not fit starts below it. There is therefore no
   // overlay target to obscure.
-  const body = <div className="card-body" style={collapsed && !maximized ? { display: 'none' } : undefined}>{children}</div>
+  const body = <div className="card-body" style={{
+    ...(collapsed && !maximized ? { display: 'none' } : undefined),
+    ...(loading ? { minHeight: LOADING_MIN_HEIGHT } : undefined),
+  }}>{children}</div>
 
   return (
     <CardChromeContext.Provider value={true}>
@@ -167,8 +214,8 @@ export default function Card({
               if (!collapsed) setLabel(copyTitle || headingOf(ref.current) || 'Section')
               setCollapsed(c => !c)
             }}
-            style={btn}
-            onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
+            style={collapseBtn}
+            onMouseEnter={collapseHoverOn} onMouseLeave={collapseHoverOff}>
             {collapsed ? '▸' : '▾'}
           </button>
         )}

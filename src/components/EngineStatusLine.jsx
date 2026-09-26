@@ -4,7 +4,7 @@
 // same store as the Accounts panel, so the sidebar and the page can never
 // disagree about the same account.
 import { useEngineStatus, engineRowFor } from '../lib/use-engine-status.js'
-import { engineReading, mixedSummary } from '../lib/engine-status-view.js'
+import { engineReading, mixedSummary, entryStatusNote } from '../lib/engine-status-view.js'
 
 const COLOR = {
   on: 'text-[var(--color-state-on-text)]', off: 'text-[var(--color-state-off-text)]', warning: 'text-[var(--color-warning-text)]',
@@ -20,7 +20,10 @@ export default function EngineStatusLine({ accountId, className = '' }) {
     <div className={`flex items-baseline justify-between gap-1 text-(length:--fs-body) ${className}`} title={`${r.detail}${mixed ? ` — all accounts: ${mixed}` : ''}`}>
       <span className="uppercase tracking-wide text-[var(--color-text-sub)]">Entries</span>
       <span className={`font-semibold ${COLOR[r.tone] || COLOR.neutral}`}>
-        {r.label}{row?.tickObservation && row.tickObservation !== 'OFF' ? ` · ${row.tickObservation.toLowerCase()}` : ''}{r.stale ? ' · stale' : ''}
+        {/* S1b (entry-status-view.js entryStatusNote): built from
+            readiness.shadowReady/shadowBlockers, entryModePolicy and
+            row.stored — never the stored tickObservation setting alone. */}
+        {r.label}{r.stale ? ' · stale' : ''}{row ? ` · ${entryStatusNote(row)}` : ''}
       </span>
     </div>
   )

@@ -11,6 +11,17 @@
     <meta name="theme-color" content="#0a0c1c" />
     <!-- Inter is self-hosted (public/fonts + @font-face in index.css) so the
          face survives blocked CDNs and renders identically on every device. -->
+    <!-- PERF-1 (26-09 UI plan §13): weight 800 is the heading weight, so it is
+         the one most likely to be the LCP element and to cause a visible
+         reflow on the font-display:swap fallback → real-face swap. Preloaded
+         so the real face is in flight before the swap, not after. `crossorigin`
+         is required even though this file is same-origin — the Fetch spec's
+         "fetch a font" step ALWAYS uses CORS mode, so a preload without this
+         attribute is issued under a different credentials mode than the
+         later @font-face fetch and never gets reused: a silent double
+         download that defeats the preload (the trace's console warning). -->
+    <link rel="preload" href="/fonts/inter-800.woff2" as="font" type="font/woff2" crossorigin>
+
     <!-- W3.CSS moved into src/index.css under a low-priority cascade layer.
          As a plain <link> here it was UNLAYERED css, which beats every
          layered Tailwind v4 utility regardless of specificity — its

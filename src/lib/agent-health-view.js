@@ -53,7 +53,36 @@ export function deployReading({ uiVersion, uiCommit, agentVersion, agentCommit }
   }
 }
 
-const short = (c) => (c ? String(c).slice(0, 7) : null)
+// UI-4 S2: 'dev' is vite.config.js's OWN fallback when neither a Railway/
+// Vercel/GIT_COMMIT_SHA build var nor a local git HEAD resolved (never a
+// real commit) — reading it as a value produced a false "UI is on dev but
+// the agent is on <sha>" warning on every single deploy, since 'dev' can
+// never equal a real hash. It reads as no commit, same as null or '', so
+// deployReading falls through to its honest 'unknown' branch instead.
+const short = (c) => (c && c !== 'dev' ? String(c).slice(0, 7) : null)
+
+/**
+ * UI-4 S2 (checker BLOCKER 2, W1.4 fix round): the sidebar and the session
+ * footer used to print `v{appVersion} · {buildSha}` — a version number with
+ * no agent commit beside it, so it could never show the one thing worth
+ * showing: whether the two HALVES agree, and it printed the raw string
+ * 'dev' as if it were a build when no commit var was injected. Plan S2 /
+ * OD-21 / D3: drop the version number, show "web ‹sha› · agent ‹sha›".
+ *
+ * Built on the SAME `short()` deployReading uses, so this label and that
+ * verdict can never disagree about what counts as "no commit" — 'dev', null
+ * and '' all read as 'unknown', never invented.
+ *
+ * `compact` (the phone top bar, width-constrained) drops the agent half —
+ * it is half of the comparison the full panel exists for, and is one tap
+ * away there — but still names which build the WEB half is, honestly.
+ */
+export function buildLabel({ uiCommit, agentCommit, compact = false } = {}) {
+  const web = short(uiCommit) ?? 'unknown'
+  if (compact) return `web ${web}`
+  const agent = short(agentCommit) ?? 'unknown'
+  return `web ${web} · agent ${agent}`
+}
 
 /**
  * Roll the controller list up to one state plus the rows worth naming.

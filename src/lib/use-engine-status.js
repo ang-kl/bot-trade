@@ -11,6 +11,7 @@
 // panel both subscribe here.
 import { useEffect, useSyncExternalStore } from 'react'
 import { agentGet, agentConfigured, pageAsleep } from './agent-api.js'
+import { engineReadinessFor } from './engine-status-view.js'
 
 const POLL_MS = 15_000
 let snapshot = { engines: null, readiness: null, at: null, error: null, loading: false }
@@ -29,7 +30,13 @@ export async function refreshEngineStatus() {
   emit({ loading: true })
   inflight = (async () => {
     try {
-      const [engines, readiness] = await Promise.all([agentGet('/state/entry-engines'), agentGet('/state/tick-readiness')])
+      // `account=all` is explicit and wins over the viewed-account lens
+      // (agent-api.js withViewedAccount): this panel shows every account's
+      // row regardless of which one is being traded, so a narrowed answer
+      // for just the viewed account is wrong here (checker BLOCKER 1).
+      // /state/entry-engines is not lens-scoped at all (state.js), so it
+      // needs no such override.
+      const [engines, readiness] = await Promise.all([agentGet('/state/entry-engines'), agentGet('/state/tick-readiness?account=all')])
       emit({ engines, readiness, at: Date.now(), error: null, loading: false })
     } catch (e) {
       emit({ error: e?.message || String(e), loading: false })
@@ -74,11 +81,20 @@ export function useEngineStatus() {
   return s
 }
 
-/** The row for one account, matched by the redacted suffix the server prints. */
+/**
+ * The row for one account, matched by the redacted suffix the server prints,
+ * with its readiness record joined by the row's OWN full identity
+ * (routingAccountId) — never by suffix, and never assuming
+ * `snap.readiness.accounts` exists: engineReadinessFor reads both shapes
+ * GET /state/tick-readiness can answer (S1a), so a narrowed `?account=` read
+ * (S3's viewed-account wiring) still joins for the matching row and reads
+ * null — "no record" — for every other one, instead of null for all of them.
+ */
 export function engineRowFor(snap, accountId) {
   if (!snap?.engines?.accounts || accountId == null) return null
   const tail = String(accountId).slice(-4)
   const row = snap.engines.accounts.find(a => String(a.accountId).endsWith(tail)) || null
-  const ready = snap.readiness?.accounts?.find(a => String(a.accountId).endsWith(tail)) || null
-  return row ? { ...row, readiness: ready } : null
+  if (!row) return null
+  const ready = engineReadinessFor(snap.readiness, row.routingAccountId)
+  return { ...row, readiness: ready }
 }

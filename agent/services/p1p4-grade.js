@@ -293,10 +293,15 @@ export function compactHealth(body) {
       overruns10m: num(lw.budgetOverruns?.total10m),
       overrunsByName10m: lw.budgetOverruns?.byName10m ?? null,
     } : null,
+    // The owner's tabs only (NEW-1): /health's openTabs/visibleTabs already
+    // exclude harness loads, and the visible-page list drops the rows tagged
+    // `synthetic`, so a trace run cannot make a window representative. The
+    // harness count rides beside them when the build reports it.
     tabs: cl ? {
       open: num(cl.openTabs),
       visible: num(cl.visibleTabs),
-      pages: [...new Set((Array.isArray(cl.tabs) ? cl.tabs : []).filter(t => t && t.status === 'active').map(t => String(t.page ?? '').slice(0, 40)))].slice(0, 10),
+      pages: [...new Set((Array.isArray(cl.tabs) ? cl.tabs : []).filter(t => t && t.status === 'active' && !t.synthetic).map(t => String(t.page ?? '').slice(0, 40)))].slice(0, 10),
+      ...(cl.synthetic && typeof cl.synthetic === 'object' ? { synthetic: { open: num(cl.synthetic.openTabs), visible: num(cl.synthetic.visibleTabs) } } : {}),
     } : null,
   }
 }

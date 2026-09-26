@@ -7,8 +7,8 @@ import { disarmReason } from './lib/env-disarm.js'
 import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
 import { scannerObserver, startScannerBridge } from './services/scanner-feed.js'
 import { recordScannerWork } from './services/scanner-work.js'
-import { enabledStrategies } from './services/strategies.js'
-import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows } from './services/stage-matrix.js'
+import { recordScanPass } from './lib/bar-path-counters.js'
+import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows, rosterArmedTradeKeys } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
@@ -4164,7 +4164,15 @@ async function runLoop(db) {
     // one so a selective armed strategy (RSI-2/VP) isn't shadowed by a
     // higher-conviction UNARMED one (FIB) that only gets vetoed — the reason
     // armed RSI-2/VP sat at 0 trades for hours.
-    const armedStrategyKeys = enabledStrategies(db, getState).map(s => s.key)
+    //
+    // S-1 (26-09-2026): "armed" is the UNION of the entry roster's own Trade
+    // cells — the same accounts, and the same per-account cells, the stage
+    // gate below admits (anyAccountTradeGate over getAutopilotAccounts). It
+    // used to be the SHARED list, which no account with its own cell follows:
+    // on 26-09 every account had one, the shared list armed six strategies
+    // nobody traded, and the picker handed their signals the analysis slots
+    // for the union gate to refuse ~once a minute.
+    const armedStrategyKeys = [...rosterArmedTradeKeys(db, getState, getAutopilotAccounts(db).map(a => String(a.accountId)))]
     const stageFilterOpts = scanFilterOptions(db, getState)
     // Custom autotrade timeframes (e.g. 1.5h) must be scanned too — the
     // classic scan set only covers the native ladder.
@@ -4201,6 +4209,9 @@ async function runLoop(db) {
       ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, armedStrategyKeys, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols, prioritySpikeSymbols, deadlineAt: scanDeadlineAt, onEvaluation: scannerObserver(db, ctraderCreds) })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
     if (scanResult.deadlineHit) log(`Scan hit its deadline (${Math.round((Date.now() - scanT0) / 1000)}s) — partial batch, broker calls running slow`)
+    // S-3 Phase 0: every real pass is counted, with whether it hit the
+    // deadline — the share OD-28's store trigger is judged on.
+    if (ctraderCreds.ready) recordScanPass({ deadlineHit: !!scanResult.deadlineHit })
     const scanMs = Date.now() - scanT0
     setState(db, 'last_scan_ms', String(scanMs))
     if (scanResult.next_cursor != null) setState(db, 'scan_cursor', String(scanResult.next_cursor))
@@ -4679,8 +4690,12 @@ async function runLoop(db) {
       // on an armed timeframe this returns null, the old choice stands, and
       // the backstop gate refuses it exactly as before.
       // The picker ranks the way the scan does — armed STRATEGY first, then
-      // conviction — so it cannot hand the slot to a strategy the stage gate
-      // will block. `armedStrategyKeys` is the same list the scan was given.
+      // conviction. `armedStrategyKeys` is the same list the scan was given:
+      // the union of the entry roster's own Trade cells (S-1), which is the
+      // set the stage gate admits. That makes it PREFER a strategy the gate
+      // will pass; it does not make a refusal impossible — when no candidate
+      // is armed anywhere it falls back to conviction, and the gate refuses
+      // that dispatch with a stage_matrix row, as before.
       const { armedPickerFor, takeArmedGateStats, armedGateWasteLine } =
         await import('./services/armed-analysis-filter.js')
       const armedPick = armedPickerFor(autotradeScope, { allowedTfs: armedAllowedTfs, matrix: armedMatrix, armedStrategyKeys })
@@ -6000,11 +6015,14 @@ async function runLoop(db) {
       // Phase-flag tracer rows: tiny, but unbounded is unbounded. 90 days
       // matches risk_events — flips older than that are history, not evidence.
       try { db.prepare("DELETE FROM phase_flag_trace WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
-      // PR-S arming decisions, same 90 days and the same reasoning. Kept
-      // deliberately LONGER than a log window, because the whole point of the
-      // ledger is to answer a question weeks after the disarm — the 17-09
-      // investigation failed at roughly one hour.
-      try { db.prepare("DELETE FROM arming_log WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
+      // PR-S arming decisions are NOT pruned (S-1, 26-09-2026). They used to
+      // go at 90 days like the tracer rows above, and that deleted the one row
+      // explaining a cell that had not changed since: a Trade cell switched
+      // OFF by the 18-09 boot seed would read 'unrecorded' from mid-December,
+      // and the next boot would re-declare it "origin not on record" — the
+      // ledger forgetting what it knew (principle 4). The plan's rule is that
+      // the arming log only grows (corrections are appended rows, never
+      // updates — #1115). It is small: 124 rows in its first nine days.
       // RETURN THE FREED PAGES TO THE FILESYSTEM.
       //
       // Every prune above works, and every one of them has worked for months.

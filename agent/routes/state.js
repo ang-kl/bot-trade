@@ -2116,6 +2116,9 @@ export default function stateRouter(db) {
       res.json(registerClientPing({
         tab: req.query.tab, tz: req.query.tz, page: req.query.page,
         hidden: req.query.hidden, idle: req.query.idle, closed: req.query.closed,
+        // NEW-1: a harness load's tag (?synthetic=trace on the page) — the
+        // tab is counted apart from the owner's tabs, never dropped.
+        synthetic: req.query.synthetic,
         sid,
         ua: req.headers['user-agent'],
         ip: reqIp,
@@ -2785,7 +2788,14 @@ export default function stateRouter(db) {
   router.get('/tick-readiness', async (req, res) => {
     try {
       const { tickReadinessFor, tickReadinessView } = await import('../services/tick-readiness.js')
-      if (req.query.account) return res.json(tickReadinessFor(db, String(req.query.account), { includeRoutingIdentity: true }))
+      // `?account=all` is explicit-and-everything (account-scope.js's
+      // convention): the sidebar/panel lens (agent-api.js withViewedAccount)
+      // narrows every /state read to the viewed account, but this route must
+      // keep answering for every row regardless of the lens — a caller that
+      // needs the whole roster passes `account=all` and wins over it (the
+      // explicit-argument rule withViewedAccount already documents).
+      const scope = requestedAccount(db, req)
+      if (scope.explicit && !scope.all) return res.json(tickReadinessFor(db, scope.accountId, { includeRoutingIdentity: true }))
       res.json(tickReadinessView(db, { includeRoutingIdentity: true }))
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -3500,6 +3510,7 @@ export default function stateRouter(db) {
     try {
       const { executionCosts, quoteFreshness, NOT_MEASURED, EXECUTION_WINDOW_DEFAULT } = await import('../services/data-feed-report.js')
       const { feedReceiptsSnapshot } = await import('../lib/feed-receipts.js')
+      const { barPathView } = await import('../lib/bar-path-counters.js')
       const { fxDayOpenMs } = await import('../services/risk.js')
       const scope = requestedAccount(db, req)
       const acct = accountWhere(scope, 'account_id')
@@ -3514,6 +3525,11 @@ export default function stateRouter(db) {
         quotes: quoteFreshness(db, nowMs),
         barReceipts: receipts.bars,
         feedLatency: receipts.feedLatency,
+        // S-3 Phase 0: the bar path's own counters (token wait, scan
+        // deadline hits, fetch depth, starved strategies, short history).
+        // Process-wide, like the receipts; each part reads `not_measured`
+        // until it has a sample.
+        barPath: barPathView(nowMs),
         notMeasured: NOT_MEASURED,
       })
     } catch (e) {
@@ -4633,9 +4649,11 @@ export default function stateRouter(db) {
   router.get('/stage-matrix', async (req, res) => {
     try {
       // ?account=<id> returns what THAT account actually trades under: the
-      // global matrix with its overlay merged on top, plus the list of cells
-      // it has pinned so the UI can badge them rather than leaving an override
-      // invisible.
+      // global matrix with its own Auto Trade & Open cells on top, plus the
+      // list of cells it has pinned so the UI can badge them rather than
+      // leaving an override invisible. S-1: stored overlay cells no code
+      // applies per account come back in `unapplied`, each with its reason;
+      // the shared view carries `followers` ("followed by N of M").
       const acct = req.query?.account && req.query.account !== 'all' ? String(req.query.account) : null
       const stats = await readStageMatrixStats(db)
       const view = stageMatrixView(db, getState, stats)

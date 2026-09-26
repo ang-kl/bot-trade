@@ -31,8 +31,13 @@ const ROOT = new URL('../', import.meta.url).pathname
 const DOC = join(ROOT, 'docs/ui-control-inventory.md')
 const CHECK = process.argv.includes('--check')
 
-const walk = (dir, out = []) => {
+// node_modules is skipped during the recursion, not filtered afterwards: a
+// worktree set-up that symlinks agent/node_modules can leave a self-link
+// agent/node_modules/node_modules -> agent/node_modules, and descending into
+// it loops until stat throws ELOOP.
+export const walk = (dir, out = []) => {
   for (const f of readdirSync(dir)) {
+    if (f === 'node_modules') continue
     const p = join(dir, f)
     if (statSync(p).isDirectory()) walk(p, out)
     else if (/\.(jsx?|mjs)$/.test(f)) out.push(p)

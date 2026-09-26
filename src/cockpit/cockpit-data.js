@@ -810,7 +810,10 @@ export function cockpitFrame(store, tick, opts = {}) {
         ? 'not loaded — snapshot not fetched for this position'
       : invReal
         ? (gaBreach === 0 ? 'no invalidation condition met' : gaBreach + ' condition(s) met')
-        : gaBreach === 0 ? 'thesis intact — all go-around conditions clear' : gaBreach + ' condition(s) breached — bot exits on ' + (gaBreach >= 2 ? 'NEXT BAR' : 'confirmation'),
+        // UI-7 A1: "thesis intact" implied an AI judgment call; this reading
+        // is rules-based (the go-around condition count), so the label says
+        // that instead (owner principle 6, no fake result).
+        : gaBreach === 0 ? 'no go-around trigger — all conditions clear' : gaBreach + ' condition(s) breached — bot exits on ' + (gaBreach >= 2 ? 'NEXT BAR' : 'confirmation'),
     gaCol: decisionState != null
       ? (['exiting', 'blocked'].includes(decisionState) ? 'var(--dn)' : decisionState === 'managing' ? 'var(--wrn)' : ['holding', 'monitoring'].includes(decisionState) ? 'var(--acc)' : 'var(--mu)')
       : gaBreach === 0 ? 'var(--acc)' : gaBreach >= 2 ? 'var(--dn)' : 'var(--wrn)', fleet, fleetLabel, fleetIsReal,

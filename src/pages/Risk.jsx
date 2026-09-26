@@ -21,7 +21,6 @@ import WorkedExample from '../components/common/WorkedExample.jsx'
 import Field, { Unit, FIELD_W, DEFAULT_MARK } from '../components/common/Field.jsx'
 import { ratchetExample, guardianExample } from '../lib/worked-examples.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
-import RiskReassess from '../components/RiskReassess.jsx'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { markDirty, clearDirty, anyDirty, sectionsToApply } from '../lib/form-dirty.js'
@@ -31,6 +30,7 @@ import GlobalScopeNote from '../components/common/GlobalScopeNote.jsx'
 import { dailyCapState, describeBinding } from '../lib/daily-cap-state.js'
 import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 import { accountInputDraft, editAccountInput, accountInputPatch } from '../lib/account-input-draft.js'
+import { armScrollReveal } from '../lib/scroll-reveal.js'
 
 // W3C-style international number formatting (owner: "use w3 international
 // setup") — everything DISPLAYED goes through Intl.NumberFormat in the
@@ -186,15 +186,30 @@ function SectionTitle({ children, badge }) {
 export default function Risk() {
   const [data, setData] = useState(null)
   // Config keys the last Re-Risk apply wrote — drives the APPLIED highlight
-  // on the matching Fields below (owner 2026-08-01). Set-compared so the
-  // child's report of an unchanged list cannot re-render in a loop.
+  // on the matching Fields below (owner 2026-08-01).
+  //
+  // UI-7 (checker BLOCKER 4, W1.4 fix round): Reset/Re-Risk moved to the AI
+  // page (components/RiskReassess.jsx no longer mounts here), so this can no
+  // longer be a callback a co-mounted sibling reports through — this page now
+  // reads its own answer from /state/risk-reassess, the same record
+  // RiskReassess itself reads. That also means the highlight now reflects
+  // whatever was last APPLIED (even from a previous visit or another tab),
+  // not just an apply made during THIS page's lifetime — a strictly more
+  // honest reading, not a narrower one.
   const [appliedKeys, setAppliedKeys] = useState(() => new Set())
-  const onReRiskApplied = useCallback((keys) => {
-    setAppliedKeys(prev => {
-      const next = new Set(keys || [])
-      if (prev.size === next.size && [...prev].every(k => next.has(k))) return prev
-      return next
-    })
+  useEffect(() => {
+    if (!agentConfigured()) return undefined
+    let alive = true
+    agentGet('/state/risk-reassess')
+      .then(d => {
+        if (!alive) return
+        const last = d?.last
+        setAppliedKeys(new Set(last?.applied ? (last.appliedKeys || []) : []))
+      })
+      // A failed read leaves the highlight as it was rather than clearing a
+      // correct one on a transient network error.
+      .catch(() => {})
+    return () => { alive = false }
   }, [])
   const [error, setError] = useState('')
   const [saving, setSaving] = useState('')
@@ -319,6 +334,32 @@ export default function Risk() {
   }, [riskAcct])
   useEffect(() => { load() }, [load])
 
+  // UI-7 (checker BLOCKER 4, W1.4 fix round): Re-Risk's proposal rows now
+  // link here as `/risk#risk-<key>` from the AI page instead of running a
+  // same-page click handler (components/RiskReassess.jsx no longer mounts on
+  // this page at all). This runs the SAME jump RiskReassess used to run
+  // inline — open every collapsed ancestor, then scroll — once on arrival
+  // instead of on click. `Advanced`/`Collapse` sections on this page are NOT
+  // native <details> (they unmount their children while closed), so — same
+  // as before this move — a field inside one of those is simply not in the
+  // DOM yet and the jump is a no-op for it; this preserves that exact
+  // pre-existing behaviour rather than silently changing it.
+  useEffect(() => {
+    const m = /^#risk-(.+)$/.exec(window.location.hash)
+    if (!m) return undefined
+    const el = document.getElementById(`risk-${m[1]}`)
+    if (!el) return undefined
+    let p = el.parentElement
+    while (p) {
+      if (p.tagName === 'DETAILS' && !p.open) p.open = true
+      p = p.parentElement
+    }
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('risk-jump-target')
+    const t = setTimeout(() => el.classList.remove('risk-jump-target'), 2000)
+    return () => clearTimeout(t)
+  }, [])
+
   // FOLLOW THE GLOBAL ACCOUNT SWITCH. Risk was the other page that never
   // subscribed — so the limits on screen could belong to an account the bot
   // had stopped trading minutes ago. Data only; the editing scope moves by
@@ -397,13 +438,10 @@ export default function Risk() {
     const cards = document.querySelectorAll('[data-risk-card]')
     g.fromTo(cards, { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, stagger: 0.08, ease: 'power2.out' })
     if (window.ScrollTrigger) {
-      g.registerPlugin(window.ScrollTrigger)
-      document.querySelectorAll('[data-risk-reveal]').forEach(el => {
-        g.fromTo(el, { opacity: 0.3, scale: 0.985 }, {
-          opacity: 1, scale: 1, duration: 0.4, ease: 'power1.out',
-          scrollTrigger: { trigger: el, start: 'top 92%' },
-        })
-      })
+      // One ScrollTrigger.refresh() after all reveal cards are wired, not one
+      // implicit refresh per card while they are still being inserted — see
+      // src/lib/scroll-reveal.js.
+      armScrollReveal(g, window.ScrollTrigger, document.querySelectorAll('[data-risk-reveal]'))
     }
   }, [data])
 
@@ -510,13 +548,6 @@ export default function Risk() {
           </div>
         )}
       </Card>
-
-      {/* ---- Reset / Re-Risk / Re-Risk + Watchlist (owner 2026-07-30) ------
-          At the very top, above every field, because these three act on ALL
-          of them. `load` is handed over so a reset or an applied proposal
-          repaints the fields below from the agent rather than leaving the form
-          showing the values that were just replaced. */}
-      <RiskReassess onChanged={load} onApplied={onReRiskApplied} />
 
       {/* ---- Live impact strip (migrated from Tune > Risk, UI-6) ----------
           Percentages are the units the gate uses, but they are not the units

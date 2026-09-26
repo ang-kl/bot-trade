@@ -177,7 +177,10 @@ export function BotChangesFooterButton({ rows }) {
               className="compact-control button-normal ml-auto" aria-label="Close bot changes panel">Close</button>
           </div>
           <p className="text-(length:--fs-body) text-[var(--color-muted)] mb-2">
-            Changes the bot (Claude) made on your behalf — yellow-bordered in the app for {HIGHLIGHT_HOURS}h. Everything else was you.
+            {/* UI-7 A1: this table records rules-based automation (the
+                autopilot, watchdog and guards), never an LLM decision —
+                "(Claude)" implied otherwise (owner principle 6). */}
+            Changes the bot made on your behalf — yellow-bordered in the app for {HIGHLIGHT_HOURS}h. Everything else was you.
           </p>
           {rows.length === 0 && <p className="text-(length:--fs-body) text-[var(--color-muted)]">No bot changes recorded.</p>}
           {rows.map((r, i) => (

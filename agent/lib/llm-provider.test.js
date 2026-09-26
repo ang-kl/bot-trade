@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  llmProviderInfo, toOpenAIBody, fromOpenAIResponse, createLLMClient,
+  llmProviderInfo, llmStatusLabel, toOpenAIBody, fromOpenAIResponse, createLLMClient,
   REASONING_HEADROOM, MIN_COMPLETION_TOKENS,
 } from './llm-provider.js'
 
@@ -38,6 +38,18 @@ test('provider selection: OpenAI when its key is set, else Anthropic', () => {
   // Anthropic is NOT tiered — those three vars name OpenAI models.
   assert.deepEqual(llmProviderInfo({ CLAUDE_API_KEY: 'k' }), { provider: 'anthropic', model: 'claude-sonnet-4-5' })
   assert.deepEqual(llmProviderInfo({ ANTHROPIC_MODEL: 'claude-haiku-4-5' }), { provider: 'anthropic', model: 'claude-haiku-4-5' })
+})
+
+// UI-7 S2/A1: the health panel's "· llm …" line must read 'off' — a word,
+// never a provider name it cannot actually use — with no key or with
+// LLM_DISABLED, instead of always naming llmProviderInfo's fallback
+// provider regardless of whether it could ever be called.
+test('llmStatusLabel: off with no key, off when disabled, the real provider:model only when both hold', () => {
+  const info = llmProviderInfo({ CLAUDE_API_KEY: 'k' }) // { provider: 'anthropic', model: 'claude-sonnet-4-5' }
+  assert.equal(llmStatusLabel(info, { keyPresent: false, disabled: false }), 'off')
+  assert.equal(llmStatusLabel(info, { keyPresent: true, disabled: true }), 'off')
+  assert.equal(llmStatusLabel(info, { keyPresent: false, disabled: true }), 'off')
+  assert.equal(llmStatusLabel(info, { keyPresent: true, disabled: false }), 'anthropic:claude-sonnet-4-5')
 })
 
 test('toOpenAIBody: system + flattened content, emits max_completion_tokens', () => {

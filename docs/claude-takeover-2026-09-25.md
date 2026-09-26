@@ -45,7 +45,9 @@ factor and win ratio.
 - The position caps: `maxOpenPositions` 5 and the book's 8.
 - TP1 stays mandatory on every entry (`agent/lib/exec-engine.js`).
 - The intraday strategies stay retired (the 20-09 owner order) unless the owner
-  says otherwise.
+  says otherwise. CORRECTED 26-09-2026 (S-1, principle 5): the owner said
+  otherwise in the decisions below ("restore the positive ones"); that order is
+  not built and waits on OD-5 of the 26-09 integrated plan.
 - The merge policy and P7's local scope in `CLAUDE.md`.
 
 ## Owner decisions at the takeover (25-09 ~11:45 SGT, answered to № 9,033)

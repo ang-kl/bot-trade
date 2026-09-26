@@ -19,4 +19,6 @@ export const MORE_TABS = [
   { to: '/tune', label: 'Tune', icon: '⚙️' },
   { to: '/accounts', label: 'Accounts', icon: '💼' },
   { to: '/connect', label: 'Connect', icon: '🔗' },
+  // UI-7: every AI/LLM surface in one place, marked off honestly when off.
+  { to: '/ai', label: 'AI', icon: '🤖' },
 ]
