@@ -28,10 +28,27 @@
 //                by a time window (ctrader-ws.js trendbarWindowStartMs), so a
 //                symbol that closes at weekends returns fewer bars than asked
 //                with years of history behind it (EURUSD 1h: ~328 of 451).
-//                Only an answer whose FIRST bar starts well inside the window
-//                — past HISTORY_EDGE_MS and two periods after its left edge,
-//                longer than any market closure — is the broker running out
-//                of history. The rest is counted as `windowLimited`.
+//                THE WINDOW ITSELF IS PADDED: wsGetTrendbarsBatch asks for
+//                WINDOW_PAD_BARS (5) periods more than fetchCount
+//                (ctrader-ws.js planWindowStartMs), so a COUNT-limited
+//                answer for a 24/7 symbol starts its first bar ~5 periods
+//                after the window's left edge even though nothing closed it
+//                early. A purely count-limited answer (got == asked) is not
+//                short and never reaches isHistoryLimited; the case that
+//                does is count-limited AND a bar short — the pad explains
+//                where its first bar sits, not the missing bar (likely the
+//                still-forming one, not returned). Measured 26-09-2026:
+//                BTCUSD 1w asked 451, got 450, first bar 2018-02-04, window
+//                opened 2017-12-30 — a 36-day gap of ~5 weekly periods, not
+//                history running out (consistent with 450 contiguous weekly
+//                bars 2018-02-04..2026-09-13; the row carries no last-bar
+//                time, so contiguity is inferred). The true history-limited case,
+//                BTCUSD 1mo, gaps by decades: asked 451, got 190, first bar
+//                2010-06-30). Only an answer whose FIRST bar starts well
+//                inside the window — past HISTORY_EDGE_MS and two periods
+//                after its left edge, THEN past the window's own pad — is
+//                the broker running out of history. The rest is counted as
+//                `windowLimited`.
 //
 // "Not measured" is a first-class answer: `barPathView` returns
 // `state: 'not_measured'` for any block with no sample, never a zero that
@@ -46,16 +63,33 @@ const DAY_MS = 86_400_000
 export const HISTORY_EDGE_MS = 7 * DAY_MS
 
 /**
+ * How many extra periods wsGetTrendbarsBatch pads its request window by,
+ * beyond `fetchCount` (ctrader-ws.js planWindowStartMs uses this SAME
+ * constant, imported from here, so the two cannot drift apart). A
+ * count-limited answer — the broker has no bars past what it just returned,
+ * nothing closed early — therefore starts its first bar up to this many
+ * periods after the window's left edge on its own, before history is
+ * considered. isHistoryLimited's margin must clear this pad or every
+ * ordinary count-limited answer on a long-enough period (weekly, monthly)
+ * reads as the broker's whole history (measured 26-09-2026: BTCUSD 1w,
+ * asked 451 got 450, falsely marked history-limited by a 36-day gap that
+ * was 5 padded weeks, not the broker running out of bars).
+ */
+export const WINDOW_PAD_BARS = 5
+
+/**
  * Whether one short answer is the broker's WHOLE history rather than the
  * request window: its first bar starts more than max(HISTORY_EDGE_MS, two
- * periods) after the window's left edge. Missing inputs -> false: an answer
- * that cannot be placed in its window is never marked as history (it would
- * be a guess presented as a measurement).
+ * periods), PLUS the window's own WINDOW_PAD_BARS pad, after the window's
+ * left edge. Missing inputs -> false: an answer that cannot be placed in its
+ * window is never marked as history (it would be a guess presented as a
+ * measurement).
  */
 export function isHistoryLimited({ firstBarT, fromTs, periodMs = 0 } = {}) {
   const f = Number(firstBarT), w = Number(fromTs)
   if (firstBarT == null || fromTs == null || !Number.isFinite(f) || !Number.isFinite(w) || f <= 0 || w <= 0) return false
-  const margin = Math.max(HISTORY_EDGE_MS, 2 * (Number(periodMs) || 0))
+  const p = Number(periodMs) || 0
+  const margin = Math.max(HISTORY_EDGE_MS, 2 * p) + WINDOW_PAD_BARS * p
   return f - w > margin
 }
 
@@ -195,7 +229,7 @@ export function barPathView(nowMs = Date.now()) {
       : {
         state: 'measured', byPurpose: state.fetches.byPurpose, shallowRefetches: state.fetches.shallowRefetches,
         windowLimited: state.fetches.windowLimited,
-        note: '`short` = answers with fewer bars than asked; `historyLimited` = the subset where the broker ran out of history (listed under shortHistory); `windowLimited` = short only because the request\'s time window spans weekends or closures — the symbol\'s history is deeper.',
+        note: '`short` = answers with fewer bars than asked; `historyLimited` = the subset where the broker ran out of history (listed under shortHistory); `windowLimited` = short, but not the broker running out of history: the request\'s time window spans weekends or closures, or the first bar lies inside the window\'s own WINDOW_PAD_BARS pad (a count-limited answer one or more bars short) — the symbol\'s history is deeper.',
       },
     starved: state.starved.size === 0
       ? { state: s.count === 0 ? 'not_measured' : 'none', rows: [] }

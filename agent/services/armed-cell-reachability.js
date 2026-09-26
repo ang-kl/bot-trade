@@ -58,10 +58,13 @@ import { scanStageStrategies } from './stage-matrix.js'
  * S-3 (26-09-2026): IMPOSSIBLE cells — strategy × symbol × timeframe cells no
  * fetch depth can feed, because the broker's WHOLE history for that symbol ×
  * timeframe is shorter than the strategy's own guard. Measured: BTCUSD 1mo
- * returns 190 bars when 450 are asked (its full history at this broker, back
- * to ~Nov 2010), so ema_pullback (450) and the cup pair (210) can never run
- * there. This is a third kind of finding beside (a) and (b) below: the
- * timeframe IS scanned, and no pass will ever produce it for THIS strategy.
+ * returns 190 bars when 450 are asked (its full history at this broker,
+ * starting with the July 2010 bar — 2010-06-30T21:00Z is 1 July broker time,
+ * not "~Nov 2010"; 190 bars against Jul 2010-Aug 2026's 194 months means at
+ * least 4 months are missing inside the series), so ema_pullback (450) and
+ * the cup pair (210) can never run there. This is a third kind of finding
+ * beside (a) and (b) below: the timeframe IS scanned, and no pass will ever
+ * produce it for THIS strategy.
  *
  * Only what has been OBSERVED is marked: `history` comes from the bar-path
  * counters, and only from an answer whose FIRST bar starts well after the

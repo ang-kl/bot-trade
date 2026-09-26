@@ -36,6 +36,7 @@ import { PT } from './ctrader-payload-types.js'
 import { poolEnabled, pooledRun, poolStatus, noteTokenWait } from './ctrader-session.js'
 import { beginCall, endCall, describeSteps } from './inflight.js'
 import { noteBarReceipt } from './feed-receipts.js'
+import { WINDOW_PAD_BARS } from './bar-path-counters.js'
 
 // ProtoOATrendbarPeriod enum codes + bar durations, one table so a period
 // can never exist in one map but not the other (a missing duration would
@@ -742,7 +743,10 @@ export function trendbarFetchPlan(period, count) {
   }
 }
 
-const planWindowStartMs = (p, nowMs) => nowMs - p.ms * (p.fetchCount + 5)
+// WINDOW_PAD_BARS (5) is shared with bar-path-counters.js isHistoryLimited's
+// margin so the two cannot drift: that margin must clear this same pad or a
+// plain count-limited answer misreads as the broker's whole history.
+const planWindowStartMs = (p, nowMs) => nowMs - p.ms * (p.fetchCount + WINDOW_PAD_BARS)
 
 /**
  * The LEFT edge of the time window wsGetTrendbarsBatch asks the broker for
