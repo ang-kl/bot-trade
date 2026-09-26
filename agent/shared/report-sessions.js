@@ -137,7 +137,9 @@ const isInt = (n, lo, hi) => typeof n === 'number' && Number.isInteger(n) && n >
 const pad = n => String(n).padStart(2, '0')
 /** A holiday row's closed part of its local day, in seconds [start, end), or
  * null when its bounds cannot be read. 0/0 is the whole local day (owner
- * OD-7, as market-calendar.js reads it since V3 K3). */
+ * OD-7). The twin of market-calendar.js calendarHolidayWindow (V3 K3), which
+ * the entry path evaluates; this leaf module cannot import it (it reads the
+ * database), so the two must read a row the same way. */
 export function holidayWindowSeconds(row) {
   const a = row?.startSecond, b = row?.endSecond
   if (a === 0 && b === 0) return { start: 0, end: 86400 }

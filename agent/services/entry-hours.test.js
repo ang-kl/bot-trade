@@ -12,7 +12,7 @@ import { recordMarketCalendar } from './market-calendar.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
 import {
   entryMarketGate, resolveEntryMarketGate, _resetEntryHoursRefresh,
-  ENTRY_HOURS_SOURCE, ENTRY_HOURS_SOURCES, ENTRY_HOURS_REFRESH_COOLDOWN_MS,
+  ENTRY_HOURS_SOURCE, ENTRY_HOURS_SOURCES, ENTRY_HOURS_REFRESH_COOLDOWN_MS, ENTRY_HOURS_REFRESH_TIMEOUT_MS, ENTRY_HOURS_REFRESHES_PER_PASS,
 } from './entry-hours.js'
 
 const D = 86400, H = 3600, W = 7 * D
@@ -67,11 +67,25 @@ test('HKEX 01-10: a current full-day holiday reads CLOSED where the old name-key
   assert.match(g.reason, /closed per the account calendar \(broker holiday\)/)
 })
 
-test('OD-7: production\'s 0/0 "Closed" row on 01-10 never reads open (CLOSED once K3 is in, UNKNOWN before)', t => {
-  const db = fixture(t, { holiday: [{ ...HOLIDAY_0110, startSecond: 0, endSecond: 0 }], observedMs: OBSERVED_THU })
-  const g = gate(db, THU_0110_1000)
-  assert.equal(g.open, false)
-  assert.ok(g.status === 'CLOSED' || g.status === 'UNKNOWN', g.status)
+// OD-7 through K3 (an ancestor of this branch): a 0/0 row closes its own
+// local day and nothing else. RED on a tree without K3, where any current,
+// future or recurring 0/0 row makes the whole calendar UNKNOWN on every day.
+test('OD-7 (K3): a 0/0 row for 01-10 reads OPEN on 30-09 and CLOSED (broker_holiday) on 01-10', t => {
+  const db = fixture(t, { holiday: [{ ...HOLIDAY_0110, startSecond: 0, endSecond: 0 }] })
+  const wed = gate(db, WED_0930_1000)
+  assert.equal(wed.status, 'OPEN', `30-09 10:00 HKT is an ordinary session (${wed.calendarReason})`)
+  assert.equal(wed.open, true)
+  const db2 = fixture(t, { holiday: [{ ...HOLIDAY_0110, startSecond: 0, endSecond: 0 }], observedMs: OBSERVED_THU })
+  const thu = gate(db2, THU_0110_1000)
+  assert.equal(thu.status, 'CLOSED')
+  assert.equal(thu.calendarReason, 'broker_holiday')
+})
+
+test('OD-7 (K3): a recurring 25-12 0/0 row does not make the calendar UNKNOWN on a normal day', t => {
+  const xmas = { holidayId: 3, name: 'Christmas', scheduleTimeZone: 'Asia/Hong_Kong', holidayDate: dayNo('2020-12-25'), isRecurring: true, startSecond: 0, endSecond: 0 }
+  const db = fixture(t, { holiday: [xmas] })
+  const g = gate(db, WED_0930_1000)
+  assert.equal(g.status, 'OPEN', `recurring 0/0 row: ${g.calendarReason}`)
 })
 
 test('UNKNOWN never reads open: every way the account calendar cannot answer refuses the entry', t => {
@@ -210,4 +224,73 @@ test('autoTrade: UNKNOWN refuses with ONE decision_log skip per (account, symbol
   assert.equal(detail.proposal.side, 'BUY')
   assert.equal(db.prepare('SELECT count(*) AS n FROM risk_events').get().n, 0, 'a skip, not a veto')
   assert.equal(db.prepare('SELECT count(*) AS n FROM pending_signals').get().n, 0, 'UNKNOWN is not queued as closed')
+})
+
+// --- fix round: bounded broker reads on the serial entry path --------------
+
+test('B2: the entry re-read is ONE attempt with the 2 s timeout — wsGetSymbolById gets maxRetries 0', async t => {
+  const db = fixture(t, { holiday: null })
+  const calls = []
+  const g = await resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: WED_0930_1000, credentials: id => ({ ready: true, accountId: id, host: HOST }),
+    wsGetSymbolById: async (...args) => { calls.push(args); throw new Error('timeout') },
+  })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][6], ENTRY_HOURS_REFRESH_TIMEOUT_MS)
+  assert.equal(calls[0][6], 2000)
+  assert.equal(calls[0][7], 0, 'RED if the entry path lets withRetry back off (2 retries ≈ 12 s)')
+  assert.equal(g.unknown, true)
+})
+
+test('B2: withRetry with maxRetries 0 makes exactly one attempt and no backoff', async () => {
+  const { withRetry } = await import('../lib/ctrader-ws.js')
+  let n = 0
+  const t0 = Date.now()
+  await assert.rejects(withRetry(async () => { n++; throw new Error('boom') }, 0, 'test'), /boom/)
+  assert.equal(n, 1)
+  assert.ok(Date.now() - t0 < 1000)
+})
+
+test('B2: at most 2 broker reads per loop pass; the rest stay UNKNOWN (pass_cap) until the next pass', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  _resetEntryHoursRefresh()
+  const map = { A: 1, B: 2, C: 3 }
+  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: 'x', accountId: ACCT, map }))
+  let reads = 0
+  const deps = pass => ({ nowMs: WED_0930_1000, pass, credentials: id => ({ ready: true, accountId: id, host: HOST }),
+    fetchSymbols: async () => { reads++; return { symbol: [] } } })
+  const out = []
+  for (const s of ['A', 'B', 'C']) out.push((await resolveEntryMarketGate(db, { symbol: s, accountId: ACCT, host: HOST }, deps('loop:1'))).refresh)
+  assert.equal(ENTRY_HOURS_REFRESHES_PER_PASS, 2)
+  assert.equal(reads, 2, 'RED if the cap does not hold')
+  assert.deepEqual(out, ['symbol_not_returned', 'symbol_not_returned', 'pass_cap'])
+  const next = await resolveEntryMarketGate(db, { symbol: 'C', accountId: ACCT, host: HOST }, deps('loop:2'))
+  assert.equal(reads, 3, 'the capped identity is read on the next pass (not held by the cooldown)')
+  assert.equal(next.refresh, 'symbol_not_returned')
+})
+
+test('a missing account map takes autoTrade\'s own resolveSymbolId path, then the calendar decides', async t => {
+  const db = fixture(t, { map: null })
+  const asked = []
+  const g = await resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: WED_0930_1000, credentials: id => ({ ready: true, accountId: id, host: HOST }),
+    resolveSymbolId: async (_db, creds, symbol) => { asked.push([creds.accountId, symbol]); return { id: SYM_ID, source: 'account' } },
+  })
+  assert.deepEqual(asked, [[ACCT, SYM]])
+  assert.equal(g.status, 'OPEN', 'RED if account_symbol_map_missing refuses before the fallback autoTrade would take')
+  assert.equal(g.refresh, 'symbol_id_resolved')
+  const unresolved = await resolveEntryMarketGate(fixture(t, { map: null }), { symbol: SYM, accountId: ACCT, host: HOST }, {
+    nowMs: WED_0930_1000, credentials: id => ({ ready: true, accountId: id, host: HOST }),
+    resolveSymbolId: async () => ({ id: null, reason: 'symbol_map_unverified: no symbol list' }),
+  })
+  assert.equal(unresolved.unknown, true)
+  assert.match(unresolved.refresh, /^symbol_id: symbol_map_unverified/)
+})
+
+test('the entry path (K3 calendarHolidayWindow) and the session report (holidayWindowSeconds) read a holiday row the same way', async () => {
+  const { calendarHolidayWindow } = await import('./market-calendar.js')
+  const { holidayWindowSeconds } = await import('../shared/report-sessions.js')
+  for (const row of [{ startSecond: 0, endSecond: 0 }, { startSecond: 0, endSecond: 86400 }, { startSecond: 13 * 3600, endSecond: 86400 }, { startSecond: 3600, endSecond: 7200 }]) {
+    assert.deepEqual(holidayWindowSeconds(row), calendarHolidayWindow(row), JSON.stringify(row))
+  }
 })

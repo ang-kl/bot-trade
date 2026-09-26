@@ -888,12 +888,15 @@ export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, acco
  * `schedule: [{ startSecond, endSecond }]` measured from the week start in
  * the symbol's schedule timezone, plus `scheduleTimeZone`.
  */
-export function wsGetSymbolById(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000) {
+// `maxRetries` (default 2, as before): V3 S-8's entry-path calendar re-read
+// passes 0 — one attempt bounded by its timeout, no backoff — because the
+// loop awaits each entry serially (entry-hours.js).
+export function wsGetSymbolById(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000, maxRetries = 2) {
   const ids = (Array.isArray(symbolIds) ? symbolIds : [symbolIds]).map(Number).filter(Number.isFinite)
   return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: ids } }, expect: PT.SYMBOL_BY_ID_RES },
-  ], timeoutMs), 2, 'wsGetSymbolById')
+  ], timeoutMs), maxRetries, 'wsGetSymbolById')
 }
 
 /**

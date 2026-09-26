@@ -392,7 +392,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // open: no order and no resting limit, one decision_log skip per
   // (account, symbol) until the calendar is known again.
   const { resolveEntryMarketGate } = await import('./services/entry-hours.js')
-  const marketGate = await resolveEntryMarketGate(db, { symbol, accountId })
+  const marketGate = await resolveEntryMarketGate(db, { symbol, accountId }, { pass: `loop:${loopCount}` })
   const unknownKey = `mkt_hours_unknown_logged_${accountId}_${symbol}`
   if (marketGate.unknown) {
     if (getState(db, unknownKey) !== 'y') {
@@ -402,7 +402,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     log(`Auto-trade refused — ${marketGate.reason}${marketGate.refresh ? ` (calendar re-read: ${marketGate.refresh})` : ''}`)
     return null
   }
-  setState(db, unknownKey, null) // hours known again — re-arm the one-shot
+  if (getState(db, unknownKey) != null) setState(db, unknownKey, null) // hours known again — re-arm the one-shot (no write per entry)
   if (!marketGate.open) {
     // Closed market: a MARKET order would be rejected. Owner decision
     // (Option A, on by default): place a RESTING LIMIT order at the setup's

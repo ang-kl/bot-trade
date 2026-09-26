@@ -62,7 +62,10 @@ const present = value => value !== undefined && value !== null
 // owner answered the 0/0 question, not those.
 export const HOLIDAY_FULL_LOCAL_DAY = 'holiday_full_local_day'
 const fullLocalDay = h => h.startSecond === 0 && h.endSecond === 0
-// The evaluated window of a readable row, in seconds of its local date.
+// The evaluated window of a readable row, in seconds of its local date. The
+// reporting twin is agent/shared/report-sessions.js holidayWindowSeconds (a
+// leaf module shared with the browser, so it cannot import this one); the
+// two must read a row the same way.
 function holidayWindow(h) {
   return fullLocalDay(h) ? { start: 0, end: DAY } : { start: h.startSecond, end: h.endSecond }
 }
