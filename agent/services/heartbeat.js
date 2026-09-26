@@ -225,6 +225,19 @@ export const CONTROLLERS = {
   // QUIET: the watchdog writes its stall / failing events to action_log and
   // sends no message — delivery waits on OD-10 (Telegram is off).
   tick_feeder:         { label: 'Tick permit feeder (stall alarm)', expectedSec: 120, factor: 3, quiet: true, dormantWhen: tickFeederDormantReason },
+  // V3 CV-2 (OD-10): cpp-verify's watchdog read, beaten by the independent
+  // protection relay (30 s) with the verifier's delivery gate as its detail:
+  // muted, the 24 h soak's start/end and the would-send counters. QUIET like
+  // tick_feeder — a watchdog-delivery beat must not itself page.
+  // Dormant while VERIFY_URL / EXEC_SECRET are unset: no relay runs. (Kept
+  // here, not imported from independent-protection.js, which imports beat
+  // from this module.)
+  verify_watchdog:     { label: 'Independent watchdog (cpp-verify) delivery gate', expectedSec: 30, factor: 10, quiet: true, dormantWhen: verifyWatchdogDormantReason },
+}
+
+export function verifyWatchdogDormantReason(_db, { env = process.env } = {}) {
+  const missing = ['VERIFY_URL', 'EXEC_SECRET'].filter(k => !String(env[k] || '').trim())
+  return missing.length ? `independent checker not configured (${missing.join(', ')} unset) — nothing reads cpp-verify's watchdog` : null
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

@@ -6,6 +6,9 @@
 //   POST /connect  bearer; adds or refreshes a broker session FOR A HOST
 //   POST /verify   bearer; re-fetches a position's deals and answers a verdict
 //   GET  /protection-status bearer; independently checked open SL/TP coverage
+//   GET  /watchdog-status bearer; incidents, outbox, the delivery gate (CV-2)
+//   POST /watchdog/mute bearer; the verifier-local delivery mute (CV-2) —
+//        touches only the watchdog state file, never a broker
 //
 // There is no route that writes to a broker because there is no code in this
 // binary that can: the Makefile links verify_session.cpp and verdict.cpp, not
@@ -146,6 +149,17 @@ int main() {
   server.route("GET", "/watchdog-status", [&](const HttpRequest&) {
     return jsonRes(200, jsn::dump(watchdog.status()));
   });
+  // V3 CV-2: the verifier-local mute, behind the same bearer as every route
+  // but /health, and answered with Node down. {"muted": true} always applies;
+  // {"muted": false} is refused (409) until the 24 h soak has ended. It
+  // gates delivery only: incidents, the outbox and the would-send counters
+  // keep running either way.
+  server.route("POST", "/watchdog/mute", [&](const HttpRequest& req) {
+    auto body = jsn::parse(req.body);
+    if (!body || !body->isObject() || !body->get("muted").isBool()) return errRes(400, "body must be {\"muted\": true|false}");
+    const auto result = watchdog.setMuted(body->get("muted").asBool());
+    return jsonRes(result.get("ok").asBool() ? 200 : 409, jsn::dump(result));
+  });
   server.route("GET", "/protection-status", [&](const HttpRequest&) {
     return jsonRes(200, jsn::dump(protection.status()));
   });
@@ -167,7 +181,11 @@ int main() {
     o.set("writes", jsn::Value(std::move(writes)));
     o.set("watchdog", jsn::Value(jsn::Object{{"enabled", watch.get("enabled")},
       {"durable", watch.get("durable")}, {"error", watch.get("error")},
-      {"effectivePolicyAllowsUrgent", watch.get("effectivePolicyAllowsUrgent")}}));
+      {"effectivePolicyAllowsUrgent", watch.get("effectivePolicyAllowsUrgent")},
+      // V3 CV-2: the soak on the health probe too, so Railway's own check
+      // shows whether a message could leave.
+      {"deliveryMuted", watch.get("delivery").get("muted")}, {"deliveryOpen", watch.get("delivery").get("open")},
+      {"soakActive", watch.get("delivery").get("soakActive")}, {"soakEndsAtMs", watch.get("delivery").get("soakEndsAtMs")}}));
     o.set("hostPinIgnored", hostPinIgnored);
     jsn::Value j{jsn::Object{}};
     j.set("configured", verify::journal().configured());

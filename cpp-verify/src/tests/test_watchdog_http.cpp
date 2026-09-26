@@ -5,7 +5,11 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <fcntl.h>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <sys/file.h>
 #include <iostream>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -75,6 +79,46 @@ int main() {
     {
       verify::Watchdog off([] { return jsn::Value(jsn::Object{}); }); // never started: supervision off
       assert(off.status().get("entryDiagnostics").get("reason").asString() == "watchdog_supervision_disabled");
+    }
+    std::filesystem::remove_all(path);
+  }
+  {
+    // V3 CV-2 fix round: POST /watchdog/mute never writes a state file this
+    // process does not own. (a) a corrupt file (start refused recovery) and
+    // (b) the lock held by another owner: a mute leaves the file byte-
+    // identical and the start error unchanged, and answers durable:false.
+    char path[] = "/tmp/watchdog-mute-owner-XXXXXX"; assert(::mkdtemp(path));
+    ::setenv("WATCHDOG_ENABLED", "1", 1); ::setenv("WATCHDOG_MASTER_ENABLED", "0", 1);
+    ::setenv("VERIFY_JOURNAL_DIR", path, 1);
+    for (const auto key : {"WATCHDOG_NODE_URL", "WATCHDOG_EXEC_URL", "WATCHDOG_ACCT_URL", "WATCHDOG_TICK_URL", "WATCHDOG_TIMEFRAME_URL", "WATCHDOG_POLICY_JSON"}) ::unsetenv(key);
+    const auto file = std::string(path) + "/watchdog-state.json";
+    const auto read = [&] { std::ifstream in(file); std::stringstream b; b << in.rdbuf(); return b.str(); };
+    const auto check = [&](const std::string& expectedError) {
+      const auto before = read();
+      verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
+      assert(w.status().get("error").asString() == expectedError);
+      for (const bool muted : {true, false}) {
+        const auto r = w.setMuted(muted);
+        assert(!r.get("ok").asBool() && !r.get("durable").asBool() && r.get("error").asString() == "watchdog_not_started");
+      }
+      assert(read() == before); // byte-identical
+      assert(w.status().get("error").asString() == expectedError); // error unchanged
+    };
+    { std::ofstream out(file); out << "{corrupt"; }
+    check("watchdog_state_invalid_recovery_required");
+    { std::ofstream out(file); out << R"({"owner":"another process"})"; }
+    const int held = ::open((file + ".lock").c_str(), O_WRONLY | O_CREAT, 0600);
+    assert(held >= 0 && ::flock(held, LOCK_EX | LOCK_NB) == 0);
+    check("watchdog_state_already_owned_or_lock_unavailable");
+    ::close(held);
+    std::filesystem::remove(file);
+    {
+      // The owner, once started, does persist: mute applies durably, and an
+      // unmute during the soak is refused.
+      verify::Watchdog owner([] { return jsn::Value(jsn::Object{}); }); owner.start();
+      const auto m = owner.setMuted(true); assert(m.get("ok").asBool() && m.get("durable").asBool());
+      const auto u = owner.setMuted(false); assert(!u.get("ok").asBool() && u.get("error").asString() == "soak_active");
+      assert(read().find("\"soakStartedAtMs\"") != std::string::npos);
     }
     std::filesystem::remove_all(path);
   }

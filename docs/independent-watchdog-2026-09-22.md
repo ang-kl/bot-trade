@@ -113,3 +113,62 @@ unknown calendars, master/quiet policy, Node-down policy continuity, HTTP
 timeouts/response bounds/redirect refusal, retries, recovery, restart state,
 exclusive file ownership and preservation of approval actions. Repository gate
 results and publication state belong to the PR/progress record.
+
+## V3 CV-2 (26-09-2026): delivery muted through a 24 h soak
+
+OD-10 (owner, 26-09-2026 18:05 SGT): delivery is held until after the soak.
+cpp-verify now has a delivery gate of its own, on top of the existing switches
+(`WATCHDOG_MASTER_ENABLED`, `WATCHDOG_INCIDENT_OWNER`, the Telegram credentials
+and Node's `notificationPolicy`).
+
+- **Muted by default.** A fresh state file, a state written before CV-2, or a
+  malformed `delivery` block restores muted. The 24 h soak starts at the first
+  boot of this build (`beginSoak`) and a restart keeps it: it is never
+  restarted. The soak length is not configurable from the environment.
+- **Nothing leaves while muted.** The run loop asks `releasable(now)`, which is
+  null unless the soak has ended AND the verifier-local mute was lifted. The
+  soak's end alone never unmutes.
+- **The verifier-local mute** is `POST /watchdog/mute {"muted": true|false}`,
+  behind the service bearer, and it answers with Node down. Muting always
+  applies; unmuting is refused (409 `soak_active`) during the soak. Calling it
+  is an owner step, not part of any merge. The bearer is `EXEC_SECRET`, which
+  Node also holds (it is the secret Node's relay uses for `/protection-status`),
+  so anything with Node's environment can call it; that is accepted for a mute
+  and a post-soak unmute, and it is the reason the unmute is refused in the soak.
+- **Only the owner of the state writes.** A mute is applied and persisted only
+  once `start()` has taken the lock and restored (or created) the state. With
+  supervision off, the lock held by another process, or an unreadable state,
+  the route answers `watchdog_not_started` with `durable: false`, never writes
+  the file and never clears the start error.
+- **One in-flight message.** The message is chosen under the state lock and
+  sent outside it, so a mute that lands between the two can still let that one
+  already-chosen message go (at most one per probe cycle). Every later
+  selection sees the mute.
+- **Would-send counters.** Every outbox item created while delivery is closed
+  is counted by severity (`urgent`, `warning`, `info`), before the 512-item
+  bound, with `urgentPerHour` / `totalPerHour` since the first count: the rate
+  the owner reads at the end of the soak (OD-10: urgent alerts only).
+- **Where to read it.** `GET /watchdog-status` → `delivery` and `stateBytes`
+  (4 MiB cap); `GET /health` → `watchdog.deliveryMuted`, `deliveryOpen`,
+  `soakActive`, `soakEndsAtMs`; Node's `verify_watchdog` heartbeat (quiet: its
+  stall is recorded in action_log, never sent) carries the same block as its
+  detail on `GET /state/heartbeats`, and `runtime.watchdog.status.delivery` on
+  the same route. `effectivePolicyAllowsUrgent` is false while the gate is closed.
+- **Schema stays 1.** The gate persists under a `delivery` key that a pre-CV-2
+  `restore()` ignores, so a rollback still restores the file. **A rollback to a
+  pre-CV-2 build re-enables sending under the old gates alone** (master switch,
+  incident owner, credentials, Node's policy): that build has no mute and no
+  soak, so the would-be backlog becomes deliverable if those gates are open.
+- A restored soak window must be exactly the build's soak length from a real
+  start; anything else restores muted with no soak (`reason: soak_not_started`
+  until `beginSoak`).
+- The `verify_watchdog` beat is ok only when the gate is reported AND
+  `enabled` is true AND `error` is empty; it carries `enabled`, `durable` and
+  `error` in its detail. It is dormant while `VERIFY_URL` / `EXEC_SECRET` are
+  unset. A busy `/watchdog-status` reply (no gate in it) counts as one beat
+  failure; with `factor: 10` on a 30 s cadence that does not stall the beat.
+
+Not in this change (the rest of V3-SEQUENCE item 26): severity floor,
+per-incident coalescing, confirm delay, the delivery budget and drill
+allowlist, the drill-incident and `dispose(createdBefore)` routes, the receipt
+ring, delivery health, and the observer nonce / `lastSeenAtMs`.
