@@ -302,6 +302,37 @@ test('the coverage read: a missing map is missing, reasons are split, disagreeme
   assert.ok(report.export.contractBytes > 0 && report.export.contractBytes < report.export.contractMaxBytes)
   assert.equal(report.export.workItemsSharingAnExportedCalendar, 1, 'the EURUSD management item points at its exported calendar')
   assert.equal(report.brokerCalls, 0)
+  assert.equal(report.expiredHolidays.rows, 0, 'no row was skipped in this fixture')
+})
+
+// V3 K1b: production's full-day "Closed" rows (startSecond 0, endSecond 0,
+// isRecurring false; measured 26-09) that lie 3+ UTC days behind their
+// observation are skipped — and counted here, so a calendar that resolved past
+// them is visible as such (owner principle 6).
+test('K1b: expired 0/0 "Closed" rows are counted per account and in total; the calendar they no longer block is exported', t => {
+  const db = database(t, ['47790949'])
+  setState(db, 'symbol_id_map:47790949', JSON.stringify({ builtAt: new Date(now - 3600_000).toISOString(), map: { 'KO.US': 21, USDKRW: 10995 } }))
+  const closed = (holidayDate, name) => ({ holidayDate, isRecurring: false, scheduleTimeZone: 'Europe/Moscow', name, startSecond: 0, endSecond: 0 })
+  // KO.US: US Labor Day and 01-07, both past → skipped; the calendar resolves.
+  recordMarketCalendar(db, { host: LIVE, accountId: '47790949', symbolId: '21' }, { symbolId: 21, ...SHAPES[6],
+    holiday: [closed(20703, '07.09.2026 Closed'), closed(20635, '01.07.2026 Closed')] }, { nowMs: now - 1000 })
+  // USDKRW: one past row, and 24-09 — one UTC day before the observation — still current.
+  recordMarketCalendar(db, { host: LIVE, accountId: '47790949', symbolId: '10995' }, { symbolId: 10995, ...SHAPES[0],
+    holiday: [closed(20447, '25.12.2025 - Closed'), closed(20720, '24.09.2026 Closed')] }, { nowMs: now - 1000 })
+  position(db, '47790949', 'KO.US', { paused: 1 })
+  position(db, '47790949', 'USDKRW')
+  const report = buildCalendarCoverage(db, { now })
+  const a = report.accounts.find(x => x.accountId === '47790949')
+  assert.deepEqual(a.status, { OPEN: 1, CLOSED: 0, UNKNOWN: 1 })
+  assert.deepEqual(a.unknownReasons, { holiday_bounds_invalid: 1 }, 'the current 0/0 row still keeps USDKRW unknown: its meaning is K3')
+  assert.deepEqual(a.expiredHolidays, { rows: 3, identities: 2, identitiesKnown: 1 })
+  const { basis, ...total } = report.expiredHolidays
+  assert.deepEqual(total, { rows: 3, identities: 2, identitiesKnown: 1, afterUtcDays: 3 })
+  assert.match(basis, /kept in the stored payload/)
+  assert.equal(report.export.withCalendar, 1, 'the resolved KO.US calendar reaches the verifier export; USDKRW does not')
+  assert.deepEqual(a.holidays.map(h => [h.dateIso, h.name, h.bounds, h.startSecond, h.endSecond]), [['2026-09-24', '24.09.2026 Closed', 'holiday_bounds_invalid', 0, 0]],
+    'the current row is listed as sent; the skipped rows are outside the 14-day window')
+  assert.ok(report.limitations.some(l => /startSecond 0 and endSecond 0/.test(l) && /K3/.test(l)))
 })
 
 // ---- the route ----
@@ -317,8 +348,11 @@ function diskFixture() {
   db.prepare('INSERT INTO accounts (account_id,is_live,enabled) VALUES (?,?,1)').run('46979908', 0)
   db.prepare('INSERT INTO accounts (account_id,is_live,enabled) VALUES (?,?,1)').run('43002148', 1)
   setState(db, 'symbol_id_map:46979908', JSON.stringify({ builtAt: new Date().toISOString(), map: { '0066.HK': 12095 } }))
+  // Observed at the fixed `now` (V3 K1b): recorded on the wall clock, the
+  // 01-10 row would lie three UTC days behind its observation from 04-10 on,
+  // be skipped, and this fixture would stop being the omitted-bounds case.
   recordMarketCalendar(db, { host: DEMO, accountId: '46979908', symbolId: '12095' }, { symbolId: 12095, ...SHAPES[7],
-    holiday: [{ holidayDate: 20727, isRecurring: false, scheduleTimeZone: 'Asia/Hong_Kong', name: 'National Day' }] })
+    holiday: [{ holidayDate: 20727, isRecurring: false, scheduleTimeZone: 'Asia/Hong_Kong', name: 'National Day' }] }, { nowMs: now })
   position(db, '46979908', '0066.HK', { paused: 1 })
   return { dir, db }
 }

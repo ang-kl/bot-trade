@@ -29,7 +29,13 @@
 //     (loop.js market-hours check) — disagrees with the account's calendar at
 //     this instant (revision-3:216; the evidence for owner question O3);
 //   - broker holidays in the next 14 days on its demanded identities, bounded
-//     or not, each with how its bounds were sent.
+//     or not, each with how its bounds were sent;
+//   - V3 K1b: `expiredHolidays` — the holiday rows with unreadable bounds
+//     (production's 0/0 "Closed" rows, or omitted bounds) that no longer make
+//     a calendar UNKNOWN because they lie 3+ UTC days before their own
+//     observation (market-calendar.js holidayExpired): how many rows, on how
+//     many demanded identities, and how many of those identities now read
+//     OPEN/CLOSED. Counted, never hidden (owner principle 6).
 // Plus the collector's last receipt AND its last persisted skip, and the size
 // of what the watchdog export carries.
 //
@@ -45,7 +51,7 @@
 import { getState } from '../db.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 import { marketIdentityKey } from '../lib/market-identity.js'
-import { readMarketCalendar, storedHolidays } from './market-calendar.js'
+import { readMarketCalendar, storedHolidays, HOLIDAY_EXPIRED_IGNORED, HOLIDAY_EXPIRY_UTC_DAYS } from './market-calendar.js'
 import { watchdogCalendarDemand, registeredCalendarAccounts, DEMAND_TIERS, CALENDAR_REFRESH_SKIP_KEY, CALENDAR_DEMAND_MAX_IDENTITIES } from './watchdog-calendar-refresh.js'
 import { CALENDAR_EXPORT_MAX_BYTES } from './scanner-work.js'
 import { nodeWatchdogContract, CONTRACT_MAX_BYTES } from './watchdog-contract.js'
@@ -93,6 +99,7 @@ function blankAccount(account, map, refresh) {
     symbolMapRefresh: refreshOf(refresh),
     demand: { total: 0, byTier: Object.fromEntries(DEMAND_TIERS.map(t => [t, 0])), missingMap: false, unresolvedNames: 0 },
     status: { OPEN: 0, CLOSED: 0, UNKNOWN: 0 }, unknownReasons: {}, oldestObservedAt: null,
+    expiredHolidays: { rows: 0, identities: 0, identitiesKnown: 0 },
     demandedCoverage: 'missing',
     watchlist: null,
     gateDisagreements: { compared: 0, disagree: 0, bySource: {}, examples: [] },
@@ -150,6 +157,12 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
       }
     }
     const stored = storedHolidays(db, identity)
+    // V3 K1b: rows skipped as behind every window of their observation.
+    const expired = (stored?.holidays ?? []).filter(h => h.ignored === HOLIDAY_EXPIRED_IGNORED).length
+    if (expired > 0) {
+      a.expiredHolidays.rows += expired; a.expiredHolidays.identities++
+      if (status !== 'UNKNOWN') a.expiredHolidays.identitiesKnown++
+    }
     for (const h of stored?.holidays ?? []) {
       if (!h.dateIso) continue
       const date = h.isRecurring === true ? dates.find(d => d.slice(5) === h.dateIso.slice(5)) : dateSet.has(h.dateIso) ? h.dateIso : null
@@ -197,9 +210,13 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
   const feedKeys = [...demand.detail].filter(([, d]) => d.tier === 'feed').map(([k]) => k)
   const receipt = read(db, 'watchdog_calendar_refresh_json'), skip = read(db, CALENDAR_REFRESH_SKIP_KEY)
   const receiptAt = Date.parse(receipt?.at), skipAt = Date.parse(skip?.at)
+  const expiredTotal = { rows: 0, identities: 0, identitiesKnown: 0 }
+  for (const a of byAccount.values()) for (const k of Object.keys(expiredTotal)) expiredTotal[k] += a.expiredHolidays[k]
   return {
     schemaVersion: 1, observedAtMs: now, source: 'node_records', brokerCalls: 0,
     demand: { total: demand.identities.length, max: CALENDAR_DEMAND_MAX_IDENTITIES, complete: demand.complete, byTier: demand.byTier },
+    expiredHolidays: { ...expiredTotal, afterUtcDays: HOLIDAY_EXPIRY_UTC_DAYS,
+      basis: 'demanded identities only: non-recurring holiday rows with unreadable bounds, dated at least afterUtcDays UTC days before their own observation; kept in the stored payload, never evaluated; identitiesKnown of these identities read OPEN or CLOSED, the rest remain UNKNOWN on another row or defect' },
     export: {
       entries: calendars.length, withCalendar: exportedKeys.size, bytes: Buffer.byteLength(JSON.stringify(calendars)),
       maxBytes: CALENDAR_EXPORT_MAX_BYTES, calendarsComplete: contract.calendarsComplete === true, demandComplete: contract.demandComplete === true,
@@ -225,7 +242,7 @@ export function buildCalendarCoverage(db, { now = Date.now() } = {}) {
     limitations: [
       'Advisory evidence only: entries still use the name-keyed symbol_hours gate; gateDisagreements measures that gate against the account calendar at this instant.',
       'demandedCoverage covers the demanded identities only; watchlist symbols outside the demand are listed as notDemanded, never counted as covered.',
-      'A bound the broker did not send is reported as omitted; no replacement boundary is invented.',
+      'A bound the broker did not send is reported as omitted, and a pair it sent out of range as invalid: production sends startSecond 0 and endSecond 0 on its full-day "Closed" holiday rows (measured 26-09). No replacement boundary is invented. Such a non-recurring row dated 3 or more UTC days before its observation lies behind every evaluation window, so it is skipped: kept in the stored payload, never evaluated and counted in expiredHolidays; the calendar is then judged on its other rows. A current or future 0/0 row still keeps its calendar UNKNOWN: what it means awaits the owner (K3). Residue until K3: a skipped day inside the eight-day lookback is read as ordinary schedule time, so for a session running 3 days or more (24/5 FX, 24/7 crypto) the reported session start can be earlier than a real closure on that day.',
       'A present map (symbolMap.status present) with symbolMapRefresh.ownList false is not proven to be the account\'s own symbol list (written before V3 K2); it is re-read once, and until then its ids are shown as stored. A missing or unreadable map also reads ownList false; symbolMap.status says which.',
       'symbolMapRefresh.blocked names why a due map is not read yet: account_disabled (a disabled account is never read; no read until it is enabled), token_refused (the broker token was refused for this account; no read until that clears), daily_cap or backoff (until notBefore).',
     ],

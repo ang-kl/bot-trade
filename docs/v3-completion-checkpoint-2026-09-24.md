@@ -264,6 +264,14 @@ the same condition for account 46979908, symbols 12095 and 11766. The official
 marks the boundaries optional but supplies no omitted-value business meaning.
 Do not infer a full-day holiday or ignore it. Exact broker holiday payloads and
 confirmed boundary semantics remain necessary before changing classification.
+**Correction (V3 K1b, 26-09):** the payloads have since been read. The
+unresolved rows are not omitted bounds: production sends `startSecond: 0,
+endSecond: 0` on its full-day "Closed" rows (all 335 unresolved rows measured
+26-09; `holiday_bounds_invalid` since K1). A non-recurring such row dated three
+or more UTC days before its observation lies behind every evaluation window and
+is now skipped — kept in the stored payload, counted as `expiredHolidays`. The
+meaning of a current 0/0 row awaits the owner (K3); until then it keeps the
+calendar UNKNOWN.
 This explains these collected UNKNOWNs; it does not explain every gateway
 UNKNOWN or prove full subscription/calendar identity coverage.
 
