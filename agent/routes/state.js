@@ -2116,6 +2116,9 @@ export default function stateRouter(db) {
       res.json(registerClientPing({
         tab: req.query.tab, tz: req.query.tz, page: req.query.page,
         hidden: req.query.hidden, idle: req.query.idle, closed: req.query.closed,
+        // NEW-1: a harness load's tag (?synthetic=trace on the page) — the
+        // tab is counted apart from the owner's tabs, never dropped.
+        synthetic: req.query.synthetic,
         sid,
         ua: req.headers['user-agent'],
         ip: reqIp,

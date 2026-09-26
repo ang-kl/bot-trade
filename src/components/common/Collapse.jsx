@@ -1,8 +1,15 @@
 // Collapse — the ▸/▾ collapsible triangle EVERY table and card must carry
 // (owner 02-08-2026: "every single page, in every page — the cards, table to
-// have collapsible triangle"). Cards get it from Card.jsx and the
-// Performance-style sections from SectionTools; this is the same control for
-// the remaining standalone tables. Choice persisted per id.
+// have collapsible triangle"). Cards get it from Card.jsx; this is the same
+// control for the remaining standalone tables. Choice persisted per id.
+//
+// STALE NOTE, corrected 26-09-2026 (UI-1): this used to also credit
+// "Performance-style sections from SectionTools" with providing the
+// triangle. SectionTools.jsx deliberately does NOT collapse anything — its
+// own comment says so ("Collapse deliberately belongs to the owning Card or
+// Collapse component… gives every section exactly one disclosure owner"). A
+// Performance-style section without a Card wrapper gets its triangle from
+// THIS component or nothing; it never came from SectionTools.
 import { useState } from 'react'
 
 export default function Collapse({ id, label, sub = null, defaultOpen = true, children }) {
