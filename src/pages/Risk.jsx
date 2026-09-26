@@ -30,6 +30,7 @@ import GlobalScopeNote from '../components/common/GlobalScopeNote.jsx'
 import { dailyCapState, describeBinding } from '../lib/daily-cap-state.js'
 import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 import { accountInputDraft, editAccountInput, accountInputPatch } from '../lib/account-input-draft.js'
+import { armScrollReveal } from '../lib/scroll-reveal.js'
 
 // W3C-style international number formatting (owner: "use w3 international
 // setup") — everything DISPLAYED goes through Intl.NumberFormat in the
@@ -437,13 +438,10 @@ export default function Risk() {
     const cards = document.querySelectorAll('[data-risk-card]')
     g.fromTo(cards, { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, stagger: 0.08, ease: 'power2.out' })
     if (window.ScrollTrigger) {
-      g.registerPlugin(window.ScrollTrigger)
-      document.querySelectorAll('[data-risk-reveal]').forEach(el => {
-        g.fromTo(el, { opacity: 0.3, scale: 0.985 }, {
-          opacity: 1, scale: 1, duration: 0.4, ease: 'power1.out',
-          scrollTrigger: { trigger: el, start: 'top 92%' },
-        })
-      })
+      // One ScrollTrigger.refresh() after all reveal cards are wired, not one
+      // implicit refresh per card while they are still being inserted — see
+      // src/lib/scroll-reveal.js.
+      armScrollReveal(g, window.ScrollTrigger, document.querySelectorAll('[data-risk-reveal]'))
     }
   }, [data])
 

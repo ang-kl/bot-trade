@@ -24,4 +24,19 @@ describe('index.html scripts', () => {
       expect(existsSync(resolve(__dirname, '../../public/vendor/gsap', f))).toBe(true)
     }
   })
+
+  // PERF-1 (26-09 UI plan §13): the trace's console flagged a font preload
+  // whose credentials mode did not match its @font-face fetch — a silent
+  // double download. The fix is `crossorigin` on the preload; without it,
+  // the preload is worse than no preload at all.
+  it('the preloaded heading-weight font is same-origin, carries crossorigin, and exists on disk', () => {
+    const m = html.match(/<link[^>]*rel="preload"[^>]*as="font"[^>]*>/)
+    expect(m, 'expected a <link rel="preload" as="font"> for the heading weight').toBeTruthy()
+    const tag = m[0]
+    expect(tag).toMatch(/\scrossorigin(?:=|\s|>)/)
+    const href = tag.match(/href="([^"]+)"/)?.[1]
+    expect(href, 'preload tag has no href').toBeTruthy()
+    expect(href).toMatch(/^\/(?!\/)/) // same-origin, like the scripts above
+    expect(existsSync(resolve(__dirname, '../../public', href.replace(/^\//, '')))).toBe(true)
+  })
 })

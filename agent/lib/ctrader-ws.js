@@ -724,6 +724,39 @@ export function decodeTrendbars(payload) {
 }
 
 /**
+ * The request plan for one period of wsGetTrendbarsBatch: the native period
+ * the broker is asked for (the period itself, or the largest native period
+ * that divides a custom one), how many of those bars, and the aggregation
+ * factor. Throws on a period nothing can serve — as the batch always did.
+ */
+export function trendbarFetchPlan(period, count) {
+  const spec = TRENDBAR_PERIODS[period]
+  if (spec) return { period, base: period, code: spec.code, ms: spec.ms, fetchCount: count, factor: 1 }
+  const parsed = parseTimeframe(period)
+  const plan = parsed && fetchPlan(parsed.ms)
+  if (!plan) throw new Error(`wsGetTrendbarsBatch: unknown period "${period}"`)
+  const baseSpec = TRENDBAR_PERIODS[plan.base]
+  return {
+    period, base: plan.base, code: baseSpec.code, ms: baseSpec.ms,
+    fetchCount: Math.min(count * plan.factor, 3000), factor: plan.factor,
+  }
+}
+
+const planWindowStartMs = (p, nowMs) => nowMs - p.ms * (p.fetchCount + 5)
+
+/**
+ * The LEFT edge of the time window wsGetTrendbarsBatch asks the broker for
+ * (`fromTimestamp`), for `count` bars of `period` ending at `nowMs`. The
+ * request is bounded by this window as well as by `count`: a symbol that does
+ * not trade 24/7 returns fewer bars than asked because weekends and closures
+ * fall inside the window, not because its history is short (S-3 fix round).
+ * Null for a period nothing can serve.
+ */
+export function trendbarWindowStartMs(period, count, nowMs) {
+  try { return planWindowStartMs(trendbarFetchPlan(period, count), nowMs) } catch { return null }
+}
+
+/**
  * Fetch historical OHLC trendbars for a symbol across one or more periods
  * over a SINGLE authenticated connection (one WS + one app/account auth for
  * the whole batch, instead of one per period).
@@ -744,18 +777,7 @@ export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, a
   // period that divides them, then aggregate. Base fetch is capped at 3,000
   // bars, so high factors return fewer target bars rather than failing —
   // e.g. 1,000 requested 6h bars = 6,000 1h bars → capped to 500 × 6h.
-  const plans = periods.map(period => {
-    const spec = TRENDBAR_PERIODS[period]
-    if (spec) return { period, base: period, code: spec.code, ms: spec.ms, fetchCount: count, factor: 1 }
-    const parsed = parseTimeframe(period)
-    const plan = parsed && fetchPlan(parsed.ms)
-    if (!plan) throw new Error(`wsGetTrendbarsBatch: unknown period "${period}"`)
-    const baseSpec = TRENDBAR_PERIODS[plan.base]
-    return {
-      period, base: plan.base, code: baseSpec.code, ms: baseSpec.ms,
-      fetchCount: Math.min(count * plan.factor, 3000), factor: plan.factor,
-    }
-  })
+  const plans = periods.map(period => trendbarFetchPlan(period, count))
   const steps = plans.map(p => ({
     send: {
       payloadType: PT.GET_TRENDBARS_REQ,
@@ -763,13 +785,16 @@ export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, a
         ctidTraderAccountId: parseInt(accountId),
         symbolId: parseInt(symbolId),
         period: p.code,
-        fromTimestamp: now - p.ms * (p.fetchCount + 5),
+        fromTimestamp: planWindowStartMs(p, now),
         toTimestamp: now,
         count: p.fetchCount,
       },
     },
     expect: PT.GET_TRENDBARS_RES,
     ...(typeof opts?.onTokenWait === 'function' ? { onTokenWait: opts.onTokenWait } : {}),
+    // S-3 Phase 0: the purpose rides the step so noteTokenWait can count the
+    // wait under it. Neither request path sends anything but `send`.
+    ...(opts?.purpose ? { purpose: String(opts.purpose) } : {}),
   }))
 
   return withRetry(async () => {

@@ -8,8 +8,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { strip, collect, decorativeControls, DECORATIVE_ALLOWLIST } from '../../scripts/ui-control-inventory.mjs'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { strip, collect, walk as inventoryWalk, decorativeControls, DECORATIVE_ALLOWLIST } from '../../scripts/ui-control-inventory.mjs'
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 const ROOT = new URL('../../', import.meta.url).pathname
@@ -135,6 +135,21 @@ export default function Probe() {
       expect(probe.filter(r => r.cls === 'WIRED')).toEqual([])
       // and the doc's own generator would have printed DECORATIVE 3 for it
       expect(dec).toHaveLength(3)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  // A worktree set-up that symlinks agent/node_modules can leave a self-link
+  // node_modules/node_modules -> node_modules; collect() walks agent/ on every
+  // call, so descending into it looped until stat threw ELOOP.
+  it('walk() skips node_modules during the recursion, so a self-linked node_modules cannot loop', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ui-inv-walk-'))
+    try {
+      mkdirSync(join(dir, 'lib'))
+      writeFileSync(join(dir, 'lib', 'kept.js'), 'export const k = 1\n')
+      mkdirSync(join(dir, 'node_modules'))
+      writeFileSync(join(dir, 'node_modules', 'dep.js'), 'export const d = 1\n')
+      symlinkSync(join(dir, 'node_modules'), join(dir, 'node_modules', 'node_modules'))
+      expect(inventoryWalk(dir)).toEqual([join(dir, 'lib', 'kept.js')])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 

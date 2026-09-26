@@ -3261,7 +3261,10 @@ export default function actionsRouter(db, deps = {}) {
       // counts is the defect the tally was added to remove.
       res.json({ ok: true, ...matrix, tallies: accountStageTallies(db, getState), unpinned })
     } catch (e) {
-      res.status(400).json({ error: e.message })
+      // S-1: a per-account write to a cell that cannot bind per account is
+      // refused by setStage with `code: 'stage_not_account_scoped'` and the
+      // reason in the message — a 400 naming why, never a silent store.
+      res.status(400).json({ error: e.message, ...(e.code ? { code: e.code } : {}) })
     }
   })
 

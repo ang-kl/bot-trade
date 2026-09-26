@@ -28,6 +28,7 @@ import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 import Collapse from '../components/common/Collapse.jsx'
 import LatestPricesNote from '../components/LatestPricesNote.jsx'
 import { loadLatestPrices } from '../lib/latest-prices.js'
+import { manualOrderConfirmText } from '../lib/manual-order-confirm.js'
 
 // Inline tab link used by the "Next:" guide line
 function NavTab({ to, children }) {
@@ -620,7 +621,14 @@ export default function Trade() {
   const placeOrder = async () => {
     const sym = order.symbol.toUpperCase().trim()
     if (!sym || !order.sl) { setOrderResult({ ok: false, text: 'Symbol and Stop Loss are required' }); return }
-    if (!window.confirm(`Place a REAL ${order.side} market order on ${sym} (SL ${order.sl}${order.tp ? `, TP ${order.tp}` : ''})?`)) return
+    // SAFE-0a: the confirm names the account the order will reach (the
+    // primary broker account — the route gets no `account`), and says so when
+    // that is not the account this page shows.
+    if (!window.confirm(manualOrderConfirmText({
+      side: order.side, symbol: sym, sl: order.sl, tp: order.tp,
+      destination: health?.broker ? { accountId: health.broker.accountId, traderLogin: health.broker.traderLogin } : null,
+      viewedAccountId: account?.accountId ?? null,
+    }))) return
     setPlacing(true)
     setOrderResult(null)
     try {
