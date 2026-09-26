@@ -1931,6 +1931,11 @@ export function initDB(dbPath) {
       // enables DEPTH_FEED_ENABLED on the sidecar — never fabricated.
       ['depth_json', 'TEXT'],
       ['depth_imbalance', 'REAL'],
+      // V3 PO-M3 (26-09-2026): the spread at a resting limit's (PRE) fill,
+      // as the first quote Node read after it, with the lag and the basis in
+      // fill_spread_json (services/limit-fill-spread.js). Record only.
+      ['fill_spread', 'REAL'],
+      ['fill_spread_json', 'TEXT'],
     ]) {
       if (!cols.has(name)) db.exec(`ALTER TABLE trades ADD COLUMN ${name} ${type}`);
     }
