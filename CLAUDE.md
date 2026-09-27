@@ -1419,3 +1419,16 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   DevTools traces are unavailable. No further production mutation occurred.
   PR #1170 remains draft and undeployed. See the dated review/readback and
   append-only progress documents for exact evidence and unresolved gates.
+
+- **27-09-2026 21:36 SGT, CODEX final review evidence, partial corpus:**
+  latest completed visible reply before this checkpoint is **`№ 10,112`**;
+  the next reply is **`№ 10,113`**, and later visible replies take precedence.
+  Code commit `281318d` passed application, scanner and execution CI. The
+  local full run retained one 109-ms latency failure; the isolated rerun
+  passed 30/30 with the same limit. Main group 7,124 passed/three skipped,
+  hygiene six passed, private TMPDIR empty. The final follow-up changes
+  documentation only. Runtime source remains the reviewed commit. PR #1170
+  stays draft; no new production action occurred. Tick identity alignment,
+  full performance traces, final-partial-fill acceptance and V3 outcome
+  evidence remain open. The dated review/readback and append-only progress
+  log carry the details; no skipped automated review is counted as review.

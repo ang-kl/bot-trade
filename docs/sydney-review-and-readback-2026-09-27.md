@@ -66,10 +66,11 @@ The production Performance screenshot was captured at 21:00:43 SGT as `bot-trade
 - Focused corrected money path: 51 passed, zero failed.
 - Focused session concurrency/roster path: 58 passed, zero failed.
 - Focused selection/capability path: eight passed, zero failed.
-- Isolated scanner latency suite: 30 passed, zero failed in 31.442 seconds.
+- Isolated scanner latency suite: an initial run passed 30/30 in 31.442 seconds. After the full run and other local checks finished, the final-source rerun `node --test --test-concurrency=2 agent/routes/tick-readiness-routes.test.js` passed 30/30 in 34.880 seconds, including the unchanged under-100-ms health check.
 - Changed-file ESLint and whitespace checks passed.
-- An earlier whole backend run was interrupted without a final summary and is not counted as a pass. The next run recorded one latency failure: a health request took 109 ms against the unchanged under-100-ms requirement. Its other groups are still running at this checkpoint. The preceding standalone 30-test run passed; neither that pass nor a possible contention explanation cancels the recorded failure. A rerun without competing local checks and current CI are required; final results belong in the PR and subsequent progress checkpoint.
-- Earlier frontend/native passes predate these backend corrections. They are historical evidence, not relabelled as new-head results.
+- An earlier whole backend run was interrupted without a final summary and is not counted as a pass. The completed next run of `node scripts/run-agent-tests.mjs` exited 1: latency 29 passed/one failed, hygiene six passed, main group 7,124 passed/three skipped/zero failed, private TMPDIR empty. The failure was a health request at 109 ms against the unchanged under-100-ms requirement. The successful isolated rerun does not erase that failed command; its cause was not proved. No assertion, threshold or timeout was relaxed.
+- Current code commit `281318de9b9f8e9ec2b88e3f6e0c05fc8e7c67bb`: [application CI](https://github.com/ang-kl/bot-trade/actions/runs/36322040188/job/108627616072) passed the full backend gate, frontend tests, lint, build, colour and syntax gates. [Scanner CI](https://github.com/ang-kl/bot-trade/actions/runs/36322040180/job/108627616281) passed. [Gateway CI](https://github.com/ang-kl/bot-trade/actions/runs/36322040170/job/108627616341) passed, including C++ unit tests and production compilation, ThreadSanitizer and Node delegation. All three code workflows were confirmed successful at 21:36 SGT.
+- The current GitHub review job was inspected: its reviewer action was skipped. It supplies no code-review evidence. Later documentation-only checkpoints do not change the tested application/native source; any newly triggered CI status must still be read separately rather than assumed.
 
 ## INVARIANTS REPORT
 
@@ -78,6 +79,7 @@ The production Performance screenshot was captured at 21:00:43 SGT as `bot-trade
 | Partial/uncertain resting exposure retains cap and margin reserve | Passed in tested source | Reproduced partial-fill/missing-snapshot case and final focused regression suite; production branch is undeployed. |
 | Full fill releases its slot only after account-owned monitored exposure replaces it, or full closure | Passed in tested source | Missing/inactive/foreign/null-account monitor regressions and immutable-volume identity checks. |
 | Equivalent failed connects coalesce; explicit forced recovery survives | Passed in tested source | Session concurrency regressions and 58-test focused run. |
+| Application, scanner and execution regression gates on the reviewed code commit | Passed in CI | All three workflows on `281318d`; local full-command latency failure and successful separate rerun are both retained above. |
 | Selection preserves the intended seven-account dispatch and unrelated phase policy | Passed in tested source | Real Express route, SQLite fixture and downstream `getAutopilotAccounts` assertions for forward/rollback selection. |
 | No production policy or trading mutation in this review | Passed for performed actions | Read-only runtime requests/SQLite; only draft-branch source changes. |
 | Actual tick feed accounts match registered profiles | Failed in observed production state | Recovered feeds 9908/3489 versus registered tick profiles 0058/9009. |
