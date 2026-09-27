@@ -140,7 +140,7 @@ Production `5389a83` at 05:16:42Z. None of the eight frozen groups is accepted.
 | P0/P3 | Book exits run with Scan disabled, with Scan off everywhere, and in quiet hours. The book beats a heartbeat |
 | P1/P4 | Visible tabs exclude synthetic presence. The window measures the UI after Wave 1. The M3 record covers every merge |
 | P2 | UNKNOWN never reads open on the entry path. A current 0/0 holiday reads closed |
-| P5a | The watchdog contract stays ≤ 256 KiB after UI-3 and S-4 (`cpp-verify/src/watchdog_state.cpp:117`) |
+| P5a | The watchdog contract stays ≤ 256 KiB after UI-3 and S-4 (`cpp-verify/src/watchdog_state.cpp:328`) |
 | P5c | Admission needs D10(A) and S-6. Observation needs S-4 to keep the three profile strategies scanned |
 | P6/P7 | D10 is judged on Q4b's frozen metric. The fib shadow verdict is a new milestone |
 | P8 | The comparison's "time" arm narrows to momentum only |
@@ -495,7 +495,7 @@ Most-blocking first, OD-0 at the top. "Default" means built on a draft branch an
 - **F7, C11** (weekend passes): the code, and the 25-09 21:05:40Z pass. **F9, C15** (watchPatterns). **F10, F11** (citations): re-read `loop.js:380-512`, `exec-engine.js:567-602`, `closed-market-limits.js`. **F12**: fixed by renaming, not only reported.
 - **F13–F16, F18, F20:** `reply-9440.md`, `LIFECYCLE-SPEC:405-413`, the `V3-SEQUENCE` H-rows and :540/:623/:791, `momentum-partial-runtime.js:74-113`, `db.js:528-540, 1897`.
 - **F17, M4** (F1–F9): the inventory lane, `exit-coordination:205-245`, the #1099, #1110 and #1116 commit messages, the harness doc.
-- **C2–C5, C7–C10, C12–C14, C16, C17, C20:** the verifiers' saved reads and the code (C14's mechanism is `closed-market-limits.js:56-57`; C7's limit `watchdog_state.cpp:117`; …0949's 12 PRE fills from the 04:59:51Z positions read). **C18:** as notes and splits (OD-22b; OD-31(c)), without renumbering. **M1–M3, M5–M10.**
+- **C2–C5, C7–C10, C12–C14, C16, C17, C20:** the verifiers' saved reads and the code (C14's mechanism is `closed-market-limits.js:56-57`; C7's limit `watchdog_state.cpp:328`; …0949's 12 PRE fills from the 04:59:51Z positions read). **C18:** as notes and splits (OD-22b; OD-31(c)), without renumbering. **M1–M3, M5–M10.**
 
 **Modified:**
 - **F6 against C19 (P8 T2 dates):** the verifiers disagree, so I recomputed from the 05:05:40Z segment list and the 04:59:20Z `rate24h`. Measured rates span 0.044–0.163 GiB a day, so both dates are ranges. Rejected: "demo not before April 2027" (V3's planning rate is below the measured weekday rate) and "live no earlier than 01-11" (V3's own rate gives 25-10).
