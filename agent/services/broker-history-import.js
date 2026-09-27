@@ -33,6 +33,7 @@ import { brokerDealLinkIdentities } from './broker-deal-link-identity.js'
 import { brokerAmount, brokerVersion } from './deal-balances.js'
 import { normPosId } from '../lib/pos-id.js'
 import { FALSE_CLOSE_TOLERANCE_MS } from '../lib/position-deal-history.js'
+import { captureCloseDeals } from './broker-exit-attribution.js'
 
 // Ledger timestamps come in both 'YYYY-MM-DD HH:MM:SS' (UTC) and ISO forms.
 const ledgerMs = v => {
@@ -593,6 +594,9 @@ export async function importBrokerHistory(db, { days = 30, nowMs = Date.now(), d
   }
   const rows = shapeDeals(deals, symMeta, deps.accountId ?? null)
   const result = persistDeals(db, rows)
+  // Reuse the already-requested broker history; the account reader resolves
+  // queued closing orders within its existing deadline on subsequent passes.
+  captureCloseDeals(db, deps.accountId, deals, nowMs)
   // Correct the local rows' fill prices from the broker's, now that this
   // window's deals are linked. See the header above reconcileTradePricesToBroker.
   const priceFix = reconcileTradePricesToBroker(db)

@@ -14,6 +14,7 @@ class ScannerMirror {
 public:
   enum class Delivery { Accepted, Retryable, Rejected };
   using Send = std::function<Delivery(const std::string&)>;
+  using Report = std::function<void(const std::string&, bool)>; // message, recovery
   static constexpr unsigned maxDeliveryAttempts = 6;
   ScannerMirror(std::string host, long long account, std::string configVersion,
                 long long candidateTtlMs, tick::StrategyParams profile, Send send,
@@ -21,7 +22,7 @@ public:
   ~ScannerMirror();
   void observe(const tick::Record& record, long long sourceTimestampMs) noexcept;
   jsn::Value status() const;
-  static Send httpSender(const std::string& url, const std::string& secret);
+  static Send httpSender(const std::string& url, const std::string& secret, Report report = {});
 private:
   struct Event { tick::Record record; long long sourceTime = 0; uint64_t losses = 0; };
   void run(std::stop_token stop);

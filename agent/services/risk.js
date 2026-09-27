@@ -50,6 +50,7 @@ import { strategyVerdict } from './strategy-verdicts.js'
 // Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
 import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
 import { hourlyAtrFor, stopFloor } from '../lib/stop-floor.js'
+import { restingExposure } from './resting-exposure.js'
 
 /**
  * THE EXPECTANCY FLOOR. Owner-set 13-08-2026, and not overridable from the
@@ -877,8 +878,21 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
       } catch { /* skip a row we can't price — never block sizing on one bad row */ }
     }
   }
+  let restingMargin = 0
+  const restingUnpriced = []
+  for (const p of restingExposure(db, scopedTo)) {
+    const estimate = p.reservedMarginUsd ?? ((p.volume > 0 && p.entry > 0 && p.symbol)
+      ? requiredMargin(p.symbol, p.volume, p.entry, leverage, rates,
+        p.volumeKind === 'units' ? 1 : unitsPerLotFromRegistry(db, p.symbol).unitsPerLot, marginRateFor(config, p.symbol)).marginRequired : null)
+    if (!Number.isFinite(estimate) || estimate < 0) restingUnpriced.push(p.orderId ?? p.intentId ?? p.symbol)
+    else restingMargin += estimate
+  }
+  // Conservative additional reservation: a broker may already include some
+  // pending margin in usedMargin. Keep the reserve visible, never subtract an
+  // unproven overlap or treat an unpriceable order as free capacity.
+  usedMargin += restingMargin
   const cap = balance * config.maxMarginUsagePct
-  return { usedMargin, cap, headroom: cap - usedMargin, source, brokerSnapshot }
+  return { usedMargin, cap, headroom: restingUnpriced.length ? 0 : cap - usedMargin, source, brokerSnapshot, restingMargin, restingUnpriced }
 }
 
 /**
@@ -1478,7 +1492,8 @@ function normSide(side) {
  * in `tickError` — it never widens the gate beyond the position count.
  */
 export function countedPositionsWithTickFires(db, acct, { now = Date.now() } = {}) {
-  const counted = openPositionsForAccount(db, acct, { countOnly: true })
+  const counted = [...openPositionsForAccount(db, acct, { countOnly: true }),
+    ...restingExposure(db, acct).map(p => ({ symbol: p.symbol, side: p.side, restingOrder: p.orderId ?? p.intentId }))]
   if (acct == null) return { counted, fires: 0, tickError: null }
   let fires = []
   let tickError = null
@@ -2380,6 +2395,8 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     checks.margin_cap_usd = Number(marginCap.toFixed(2))
     checks.margin_source = pm.source
     checks.margin_snapshot = pm.brokerSnapshot
+    checks.resting_margin_usd = pm.restingMargin
+    if (pm.restingUnpriced.length) return veto('resting_margin_unpriced', { ...checks, resting_unpriced: pm.restingUnpriced }, proposal)
 
     if (headroom <= 0) {
       // Existing positions alone already consume the whole cap — no amount

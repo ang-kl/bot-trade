@@ -7,6 +7,24 @@ import { scannerMirrorStatus, recordScannerMirrorPage } from './scanner-candidat
 const env = { SCANNER_TICK_URL: 'http://fixture', SCANNER_TICK_SECRET: 'fixture' }
 function fixture(t) { const db = initDB(':memory:'); t.after(() => db.close()); return db }
 const page = (after, latest = 12, instanceId = 'a'.repeat(64)) => ({ instanceId, orderAuthority: false, oldestCursor: 1, latestCursor: latest, gap: false, candidates: after < latest ? [{ cursor: after + 1 }] : [] })
+test('slow mirror polling cannot spend the tick drain budget before its first page', async t => {
+  const db = fixture(t); let clock = 1_800_000_000_000, calls = 0
+  const collect = createScannerCollector(db, { env, now: () => clock,
+    mirrors: async () => { clock += 2100; return { outcomes: [] } },
+    request: async (_url, _secret, path) => { calls++; clock += 600; return page(Number(path.split('=')[1]), 3) },
+    yieldTurn: async () => {},
+  })
+  const first = await collect()
+  assert.equal(first.tickPages, 2)
+  assert.equal(first.tickCursor, 2)
+  assert.equal(first.tickBacklog, true)
+  assert.equal(first.delayMs, 10)
+  assert.equal(first.durationMs, 3300, 'total duration still includes mirror polling')
+  const second = await collect()
+  assert.equal(second.tickCursor, 3)
+  assert.equal(calls, 3)
+  assert.equal(second.orderAuthority, false)
+})
 test('bounded drain reschedules backlog promptly and continues exact cursor, servicing mirror streams every round', async t => {
   const db = fixture(t), seen = []; let mirrorRounds = 0, yields = 0
   const collect = createScannerCollector(db, { env, now: () => 1800000000000,

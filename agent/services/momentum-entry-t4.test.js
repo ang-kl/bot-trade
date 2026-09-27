@@ -9,8 +9,8 @@
 //     exactly the pre-T4 path: no evidence read, no intent, the order refused
 //     at the shared execution boundary for having no target;
 //   * with it on, a closed-market momentum entry is refused BY NAME and
-//     nothing rests (OD-1(b)); an entry that would rest as an HTF limit is
-//     refused by name (P0-4 and OD-15's counting not built);
+//     nothing rests (OD-1(b)); an open-market HTF entry reaches the mandatory
+//     limit-plan transport (P0-4 and OD-15);
 //   * with it on, an open-market entry runs end to end — tryEnter's
 //     autoTrade → bookEntryWrite → ARMED → trigger → one close → CONFIRMED —
 //     through the test seam and the fake broker, with the database closed and
@@ -31,7 +31,7 @@ import { validateOrderBracket, invalidateSidecarSession } from '../lib/exec-engi
 import { relativePoints } from '../lib/lot-sizing.js'
 import { loadMomentumEntrySwitch, momentumPlanApplies, MOMENTUM_ENTRY_PRODUCERS } from './momentum-entry-switch.js'
 import { swapCarryReserve, medianBookHoldingNights, gridStop, MOMENTUM_CLOSED_MARKET_REFUSAL,
-  MOMENTUM_RESTING_LIMIT_REFUSAL, MOMENTUM_INTENT_AMBIGUOUS } from './momentum-entry-producer.js'
+  MOMENTUM_INTENT_AMBIGUOUS } from './momentum-entry-producer.js'
 import { readMomentumEntry } from './momentum-entry-contract.js'
 import { loadClosedMarketLimitsConfig } from './closed-market-limits.js'
 import { bookEntryWrite } from './book-entry-write.js'
@@ -234,6 +234,10 @@ async function scene(t, { open = true } = {}) {
       s.limits.push({ symbol, synth, opts })
       return { placed: true, limitPrice: synth.entry, expiresAt: 'test' }
     },
+    placeMomentumLimit: async (_db, _creds, symbol, synth, opts) => {
+      s.limits.push({ symbol, synth, opts, momentum: true })
+      return { placed: true, limitPrice: synth.entry, expiresAt: 'test' }
+    },
     momentum: s.momentum, skipForensics: true, bindSleep: async () => {},
     resolveSymbolId: async () => ({ id: String(SID), source: 'test' }),
     getVolumeMeta: async () => ({ lotSize: 100, minVolume: 1, stepVolume: 1, digits: 2 }),
@@ -311,7 +315,7 @@ test('SWITCH OFF, an HTF entry of the daily momentum account takes the pre-T4 re
     assert.equal(await s.run({ market: false }, synth, 'daily_momentum_account') ?? null, null)
   } finally { console.log = orig }
   assert.ok(lines.some(l => /HTF limit for ETHUSD 1d: off/.test(l)), 'the pre-T4 resting-limit branch was reached: ' + JSON.stringify(lines.filter(l => /HTF|MOMENTUM/.test(l))))
-  assert.ok(!s.vetoes().some(v => v.startsWith(MOMENTUM_RESTING_LIMIT_REFUSAL)), JSON.stringify(s.vetoes()))
+  assert.ok(!s.vetoes().some(v => v.startsWith('momentum_resting_limit_held')), JSON.stringify(s.vetoes()))
   assert.ok(!lines.some(l => /MOMENTUM REFUSED/.test(l)), 'no T4 refusal while off')
   assert.deepEqual(s.reads, { symbolsList: 0, assets: 0, symbolsById: 0, quote: 0, reconcile: 0 })
   assert.equal(s.sent.length, 0)
@@ -351,17 +355,18 @@ test('SWITCH ON, closed market: refused by name, nothing rested, no evidence rea
   assert.equal(s.vetoes().filter(x => x.startsWith(MOMENTUM_CLOSED_MARKET_REFUSAL)).length, 1)
 })
 
-test('SWITCH ON, an entry that would rest as an HTF limit is refused by name (OD-15, P0-4)', async t => {
+test('SWITCH ON, an open-market HTF entry dispatches through the mandatory-plan limit path', async t => {
   const s = await scene(t)
-  // The resting-limit feature ON and no parity window: without the named
-  // refusal the entry would rest (SF5: the seam records it in s.limits).
+  // No parity window: exercise HTF routing. The transport and its mandatory
+  // pre-send plan are exercised separately in momentum-limit-entry.test.js.
   setState(s.db(), 'risk_config_json', JSON.stringify({ htfLimitDispatch: { minTf: '4h', freshnessMin: 0 } }))
   setState(s.db(), 'closed_market_limits_json', JSON.stringify({ on: true }))
   const synth = bookSynth({ marketOnly: false, source: 'momentum_account', timeframe: '1d' })
   assert.equal(await s.run({ market: true }, synth, 'daily_momentum_account') ?? null, null)
-  const v = s.vetoes()
-  assert.ok(v.some(x => x.startsWith(`${MOMENTUM_RESTING_LIMIT_REFUSAL}: ${SYMBOL} 1d would rest as a limit`)), JSON.stringify(v))
-  assert.equal(s.limits.length, 0, 'the resting-limit placement was never asked')
+  assert.equal(s.limits.length, 1)
+  assert.equal(s.limits[0].momentum, true)
+  assert.equal(s.limits[0].opts.reason, 'htf')
+  assert.equal(s.limits[0].opts.producerId, 'daily_momentum_account')
   assert.equal(s.db().prepare(`SELECT count(*) n FROM pending_orders`).get().n, 0)
   assert.equal(s.sent.length, 0)
 })

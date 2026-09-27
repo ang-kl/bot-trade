@@ -690,6 +690,7 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_entry_intents_open ON entry_intents(account_id, state);
   CREATE INDEX IF NOT EXISTS idx_entry_intents_key ON entry_intents(account_id, symbol_id, side, state);
+  CREATE INDEX IF NOT EXISTS idx_entry_intents_order_account ON entry_intents(account_id, broker_order_id) WHERE broker_order_id IS NOT NULL;
   -- V3 B4c (checker nit 8): adopted-reasons.js looks an intent up by the
   -- broker position it recorded, for every adopted row on every pass of the
   -- close-completeness cadence; on the account prefix alone that read grows
@@ -1120,6 +1121,18 @@ const TABLES = `
     wf_active        INTEGER,          -- walk-forward segments with any trades
     error            TEXT              -- per-symbol fetch/data failure, honestly kept
   );
+
+  CREATE TABLE IF NOT EXISTS broker_close_attribution (
+    account_id TEXT NOT NULL, deal_id TEXT NOT NULL, position_id TEXT NOT NULL, order_id TEXT NOT NULL,
+    execution_at INTEGER NOT NULL, expected_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+    cause TEXT, reason TEXT, confidence TEXT, evidence_json TEXT, verified_at INTEGER,
+    next_attempt_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT,
+    PRIMARY KEY(account_id, deal_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_close_attribution_due
+    ON broker_close_attribution(account_id, state, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_close_attribution_position
+    ON broker_close_attribution(account_id, position_id, execution_at);
 
   CREATE TABLE IF NOT EXISTS broker_deals (
     deal_id          TEXT PRIMARY KEY,

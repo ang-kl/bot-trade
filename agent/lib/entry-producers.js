@@ -51,6 +51,12 @@ export const ENTRY_PRODUCERS = Object.freeze([
     retired: '2026-09-19 Wave 5 (first-principles audit §K·15): fib_618_fade is OFF on every account; the phase is not scheduled',
   },
   {
+    id: 'momentum_limit_transport', family: 'transport', basis: 'bar',
+    file: 'agent/services/momentum-limit-entry.js', via: 'exec.placeOrder',
+    trigger: 'open-market HTF limits from the enabled daily momentum account or cross-sectional book', admission: 'exec-engine',
+    note: 'Not an independent producer: retains the calling momentum producer id and account allow-list; atomically reserves the target plan, capacity and margin before sending.',
+  },
+  {
     id: 'closed_market_limits', family: 'automatic', basis: 'bar',
     file: 'agent/services/closed-market-limits.js', via: 'exec.placeOrder',
     trigger: 'closed-market and higher-timeframe limits placed for the next open', admission: 'exec-engine',

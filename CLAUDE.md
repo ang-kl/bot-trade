@@ -1394,3 +1394,82 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   is by replies, not by stamps; it is a lower bound, because a reply neither
   captured nor known cannot be counted. A later re-measure that reads below
   this line is missing these, not correcting them.
+
+- **27-09-2026 CODEX continuation, partial corpus rebase:** the owner supplied
+  Claude Code's last reply as `№ 10,009` at 15:12 SGT and requested continuation
+  of T4 option (a), OD-15 and the four diagnosed blockages for Sydney readiness.
+  CODEX continued that shared count; the latest reply before this checkpoint
+  is **`№ 10,023`**, 16:32 SGT. Subsequent visible replies take precedence.
+  Work is on `codex/sydney-readiness-20260927`, based on `cf121d4`.
+  Scope, evidence, corrections and remaining owner decisions are recorded in
+  `docs/sydney-readiness-2026-09-27.md` and
+  `docs/v3-momentum-target-policy-2026-09-24.progress.md`.
+  No deployment, gateway variable change/restart, account selection, re-arming,
+  exit retry or sizing-policy change was performed. The uploaded instructions'
+  explicit production approval requirement is retained; the separate conflict
+  about future fresh builds remains deferred by the owner.
+
+- **27-09-2026 16:37 SGT, CODEX local gate complete:** draft PR #1170 is open;
+  latest reply before this checkpoint is **`№ 10,026`**. Backend 7,152 passed,
+  three skipped; frontend 1,311 passed; 40 C++ test binaries, production
+  compilation and the changed mirror's ThreadSanitizer test passed. Production
+  remains unchanged. The automated review step was skipped and is not checker
+  evidence. PR CI, independent review and scoped production approval remain
+  distinct gates; follow the PR checks and append-only progress log.
+
+- **27-09-2026 20:08 SGT, CODEX gateway recovery checkpoint, partial corpus:**
+  the shared count continues from the owner's supplied rebase and visible
+  replies, not a new full-corpus measurement. Latest reply before this
+  checkpoint is **`№ 10,083`**; subsequent visible replies take precedence.
+  The owner-approved `/feed` correction and sequential restarts of cpp-exec
+  and cpp-acct are complete. Seven accounts recovered; fresh independent
+  broker readback found 26 positions with SL and TP. Native tick processing
+  reached 3658 observations across 106 streams. Current feed anchors differ
+  from registered profile accounts, and Node comparison acceptance remains
+  open. The collector fix is still in undeployed draft PR #1170. No account
+  selection, profile registration, broker-order, sizing or cap change was
+  performed by this operation. The chosen return to account ending 0058
+  remains unapplied. Detailed evidence and limitations are recorded in
+  `docs/v3-momentum-target-policy-2026-09-24.progress.md`.
+
+- **27-09-2026 21:16 SGT, CODEX review checkpoint, partial corpus:**
+  latest visible reply before this checkpoint is **`№ 10,097`**; later visible
+  replies take precedence. Owner paragraph 10087.3 authorised review, scanner
+  alignment investigation and performance assessment. Source fixes cover
+  exposure reservation, failed-connect coalescing and account-roster IDs.
+  Focused checks passed; the full backend gate has a recorded 109-ms latency
+  failure requiring rerun, and current CI remains pending. Six warm browser
+  readiness observations and a private screenshot were captured; full
+  DevTools traces are unavailable. No further production mutation occurred.
+  PR #1170 remains draft and undeployed. See the dated review/readback and
+  append-only progress documents for exact evidence and unresolved gates.
+
+- **27-09-2026 21:36 SGT, CODEX final review evidence, partial corpus:**
+  latest completed visible reply before this checkpoint is **`№ 10,112`**;
+  the next reply is **`№ 10,113`**, and later visible replies take precedence.
+  Code commit `281318d` passed application, scanner and execution CI. The
+  local full run retained one 109-ms latency failure; the isolated rerun
+  passed 30/30 with the same limit. Main group 7,124 passed/three skipped,
+  hygiene six passed, private TMPDIR empty. The final follow-up changes
+  documentation only. Runtime source remains the reviewed commit. PR #1170
+  stays draft; no new production action occurred. Tick identity alignment,
+  full performance traces, final-partial-fill acceptance and V3 outcome
+  evidence remain open. The dated review/readback and append-only progress
+  log carry the details; no skipped automated review is counted as review.
+
+- **28-09-2026 05:24 SGT, CODEX exit-evidence checkpoint, partial corpus:**
+  latest visible reply before this checkpoint is **`№ 10,148`**; later visible
+  replies take precedence. The owner ordered exit-attribution correction,
+  costed candidate replay with unchanged risk, and V3 continuation. The local
+  increment passed a frozen-source backend gate (7,176 passed, three skipped),
+  1,311 frontend tests, lint, build, colour and whitespace checks. Broker cause
+  evidence is account/order/deal scoped; the false open-book trailing-stop
+  inference is removed. Replay remains censored and does not qualify PF 1.71.
+  An exact private 902-profile scanner proposal and rollback pass the actual
+  registry locally but remain unapplied. Main is cf121d4; remote draft #1170 is
+  aa59db0. No push, deployment, production record/profile/account mutation or
+  broker action occurred in this increment. The 05:00 target was missed.
+  Full V3 production, partial-fill, trace and empirical acceptance remain open.
+  See docs/exit-attribution-replay-2026-09-28.md and its append-only progress
+  record. Explicit push/production approval remains required by the uploaded
+  instructions; the separate fresh-build-rule conflict remains deferred.

@@ -1,8 +1,11 @@
 #include "scanner_mirror.hpp"
+#include "log.hpp"
 #include <curl/curl.h>
 #include <openssl/rand.h>
 #include <chrono>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 namespace {
 long long clockMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
@@ -100,12 +103,18 @@ jsn::Value ScannerMirror::status() const {
     {"delivered",static_cast<long long>(delivered_.load())},{"lastInputAtMs",lastInput_.load()},
     {"lastDeliveredAtMs",lastDelivered_.load()},{"queueCapacity",static_cast<long long>(queue_.capacity()-1)}});
 }
-ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::string& secret) {
+ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::string& secret,Report report) {
   if((!url.starts_with("http://")&&!url.starts_with("https://")) || secret.empty()
       || secret.find_first_of("\r\n")!=std::string::npos)throw std::invalid_argument("mirror_endpoint_or_secret_invalid");
   static const int initialized=curl_global_init(CURL_GLOBAL_DEFAULT);
   if(initialized!=CURLE_OK || !(curl_version_info(CURLVERSION_NOW)->features&CURL_VERSION_ASYNCHDNS))throw std::runtime_error("bounded_dns_unavailable");
-  return [url,secret](const std::string& body) {
+  struct Diagnostics { std::mutex mutex; bool reported=false, unhealthy=false; std::chrono::steady_clock::time_point last; };
+  auto diagnostics=std::make_shared<Diagnostics>();
+  if(!report)report=[](const std::string& message,bool recovery){
+    if(recovery)sidecar_log::logInfo("[tick-scanner-mirror]",message);
+    else sidecar_log::logError("[tick-scanner-mirror]",message);
+  };
+  return [url,secret,report,diagnostics](const std::string& body) {
     CURL* c=curl_easy_init();if(!c)return Delivery::Retryable;
     curl_slist* headers=nullptr;headers=curl_slist_append(headers,("Authorization: Bearer "+secret).c_str());headers=curl_slist_append(headers,"Content-Type: application/json");
     size_t received=0;
@@ -116,6 +125,22 @@ ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::
     curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,boundedBody);curl_easy_setopt(c,CURLOPT_WRITEDATA,&received);
     const auto rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);
     curl_slist_free_all(headers);curl_easy_cleanup(c);
+    // Never log the URL, headers, credentials or quote payload. Repeated
+    // rejection used to be silent; at half-second ingress it must also not
+    // flood the logs. Diagnostics cannot alter delivery or retry semantics.
+    const bool accepted=rc==CURLE_OK&&status==202;
+    std::string message;
+    {
+      std::lock_guard lock(diagnostics->mutex);
+      const auto now=std::chrono::steady_clock::now();
+      if(accepted&&diagnostics->unhealthy){message="delivery recovered (HTTP 202)";diagnostics->unhealthy=false;}
+      if(!accepted&&(!diagnostics->reported||now-diagnostics->last>=std::chrono::seconds(60))){
+        diagnostics->reported=true;diagnostics->unhealthy=true;diagnostics->last=now;
+        message="delivery failed: HTTP "+std::to_string(status)+", transport code "+std::to_string(static_cast<int>(rc));
+        if(status==404)message+="; verify TICK_SCANNER_MIRROR_URL targets /feed";
+      }
+    }
+    if(!message.empty()){try{report(message,accepted);}catch(...){/* diagnostics never change delivery */}}
     if(rc!=CURLE_OK)return Delivery::Retryable;
     if(status==202)return Delivery::Accepted;
     if(status==408 || status==429 || status>=500)return Delivery::Retryable;

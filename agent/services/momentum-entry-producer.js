@@ -9,9 +9,8 @@
 //
 //   1. refuses a momentum entry into a CLOSED market by name
 //      (MOMENTUM_CLOSED_MARKET_REFUSAL; OD-1(b): no pre-order is rested);
-//   2. refuses a momentum entry that would REST as an HTF limit by name
-//      (MOMENTUM_RESTING_LIMIT_REFUSAL; resting momentum limits carry no plan
-//      until P0-4, and OD-15's counting is not built);
+//   2. routes an OPEN-market HTF limit to momentum-limit-entry.js, which
+//      reserves its capacity and margin and records its plan before sending;
 //   3. before the risk gate, reads the account's own broker evidence and
 //      shows the gate the plan's prices (preGatePlan): the entry at the live
 //      quote, the stop exactly as relativePoints will send it, TP1 at the
@@ -45,7 +44,6 @@ import { readMomentumEntry, markMomentumAwaitingBind, bindMomentumEntry, enrollM
 import { TICK_SHADOW_SIM_FILE } from '../lib/tick-cost-schedule.js'
 
 export const MOMENTUM_CLOSED_MARKET_REFUSAL = 'momentum_closed_market_entry'
-export const MOMENTUM_RESTING_LIMIT_REFUSAL = 'momentum_resting_limit_held'
 export const MOMENTUM_PLAN_REFUSAL = 'momentum_plan_refused'
 // SF3 (T4 fix round): an ambiguous send leaves the intent PREPARED with no
 // position to name, and a position the broker did open is resolved later
@@ -62,11 +60,6 @@ export const EVIDENCE_MAX_AGE_MS = 5000
 /** The named refusal for a momentum entry into a closed market (OD-1(b)). */
 export function closedMarketMomentumRefusal({ symbol, producerId, marketReason = null }) {
   return `${MOMENTUM_CLOSED_MARKET_REFUSAL}: ${symbol} market closed${marketReason ? ` (${marketReason})` : ''} — a ${producerId} entry is not rested for the next open (owner OD-1(b): closed-market momentum limits stay off until PO-M1–M3 and an explicit order)`
-}
-
-/** The named refusal for a momentum entry that would rest as an HTF limit. */
-export function restingMomentumRefusal({ symbol, producerId, timeframe = null }) {
-  return `${MOMENTUM_RESTING_LIMIT_REFUSAL}: ${symbol}${timeframe ? ` ${timeframe}` : ''} would rest as a limit — a resting ${producerId} entry carries no partial-TP1 plan yet (P0-4), and resting orders do not yet count toward the caps and margin (OD-15: answered yes, not built)`
 }
 
 const finite = n => typeof n === 'number' && Number.isFinite(n)
@@ -185,7 +178,8 @@ export async function readEntryEvidence({ creds, symbolId, reference, transports
   const lotSize = Number(s?.lotSize), minVolume = Number(s?.minVolume), stepVolume = Number(s?.stepVolume)
   if (!s || !Number.isSafeInteger(lotSize) || !Number.isSafeInteger(minVolume) || !Number.isSafeInteger(stepVolume)
     || !Number.isInteger(s.digits)) return { ok: false, reason: 'fresh_owned_symbol_required' }
-  const symbolMeta = { ...identity, quoteAsset: reference.quoteAsset, lotSize, minVolume, stepVolume, digits: s.digits,
+  const symbolMeta = { ...identity, quoteAsset: reference.quoteAsset, lotSize, minVolume, stepVolume,
+    maxVolume: Number(s.maxVolume) > 0 ? Number(s.maxVolume) : null, digits: s.digits,
     pipPosition: Number.isInteger(s.pipPosition) ? s.pipPosition : null, receivedAtMs: metaAt, source: 'broker_symbol' }
   const swap = { swapLong: s.swapLong, swapShort: s.swapShort, swapCalculationType: s.swapCalculationType ?? null, swapRollover3Days: s.swapRollover3Days ?? null }
   let conversion
@@ -233,10 +227,11 @@ function carryFor(db, { side, evidence, entry, medianNights }) {
 }
 
 /** Step 3: the prices the risk gate is shown. No volume yet, so no mode. */
-export function preGatePlan(db, { symbol, side, stopDistance, requiredRr, evidence, relativePoints, schedule, medianNights = null }) {
+export function preGatePlan(db, { symbol, side, stopDistance, requiredRr, evidence, relativePoints, schedule, medianNights = null, limitEntry = null }) {
   const refuse = reason => ({ ok: false, reason })
   if (!evidence?.ok) return refuse(evidence?.reason || 'evidence_required')
-  const entry = side === 'BUY' ? evidence.quote.ask : evidence.quote.bid
+  const entry = limitEntry ?? (side === 'BUY' ? evidence.quote.ask : evidence.quote.bid)
+  if (limitEntry != null && (!finite(entry) || entry <= 0 || (side === 'BUY' ? entry > evidence.quote.ask : entry < evidence.quote.bid))) return refuse('proposal_quote_price_mismatch')
   const g = gridStop({ side, entry, stopDistance, digits: evidence.symbolMeta.digits, relativePoints })
   if (!g) return refuse(evidence.symbolMeta.digits > 5 ? 'relative_bracket_precision_unsupported' : 'stop_not_expressible')
   const carry = carryFor(db, { side, evidence, entry, medianNights })
@@ -255,16 +250,17 @@ export function preGatePlan(db, { symbol, side, stopDistance, requiredRr, eviden
 /** Step 4: the plan, with the integer broker volume and fresh evidence. The
  * stop keeps the approved distance in whole ticks from the fresh entry, so
  * the risk the gate sized on is the risk the plan carries. */
-export function finalPlan(db, { symbol, side, stopDistance, requiredRr, volume, evidence, relativePoints, schedule, medianNights = null, nowMs }) {
+export function finalPlan(db, { symbol, side, stopDistance, requiredRr, volume, evidence, relativePoints, schedule, medianNights = null, nowMs, limitEntry = null }) {
   const refuse = reason => ({ ok: false, reason })
   if (!evidence?.ok) return refuse(evidence?.reason || 'evidence_required')
   const meta = evidence.symbolMeta
-  const entry = side === 'BUY' ? evidence.quote.ask : evidence.quote.bid
+  const entry = limitEntry ?? (side === 'BUY' ? evidence.quote.ask : evidence.quote.bid)
   const g = gridStop({ side, entry, stopDistance, digits: meta.digits, relativePoints })
   if (!g) return refuse(meta.digits > 5 ? 'relative_bracket_precision_unsupported' : 'stop_not_expressible')
   const carry = carryFor(db, { side, evidence, entry, medianNights })
   if (!carry.ok) return refuse(carry.reason)
   const proposal = prepareMomentumTargetProposal({ identity: evidence.identity, symbol, side, entry, originalStop: g.stop,
+    orderType: limitEntry == null ? 'MARKET' : 'LIMIT',
     volume, requiredRr, nowMs, maxAgeMs: EVIDENCE_MAX_AGE_MS, carryingCostReservePrice: carry.carryingCostReservePrice,
     quote: evidence.quote, symbolMeta: meta, conversion: evidence.conversion }, schedule)
   if (!proposal.ok) return refuse(proposal.reason)

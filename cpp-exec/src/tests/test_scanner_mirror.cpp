@@ -99,7 +99,7 @@ int main() {
     assert(listen(listener,4)==0);
     std::vector<std::string> received;
     std::jthread server([&]{
-      for(const auto status:{429,202,202,403,503,408}) {
+      for(const auto status:{404,404,202,429,202,202,403,503,408}) {
         const int client=accept(listener,nullptr,nullptr);assert(client>=0);
         timeval timeout{5,0};setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);
         std::string request;char buffer[4096];size_t boundary=std::string::npos, bodySize=0;
@@ -113,6 +113,18 @@ int main() {
         assert(send(client,response.data(),response.size(),0)==static_cast<ssize_t>(response.size()));close(client);
       }
     });
+    std::vector<std::string> diagnosticLines;
+    const auto missing=ScannerMirror::httpSender("http://127.0.0.1:"+std::to_string(ntohs(address.sin_port))+"/wrong","private-fixture-secret",
+      [&](const std::string& message,bool){diagnosticLines.push_back(message);});
+    assert(missing("private-fixture-payload")==Delivery::Rejected);
+    assert(missing("private-fixture-payload")==Delivery::Rejected);
+    assert(diagnosticLines.size()==1); // sustained refusal is rate limited
+    assert(diagnosticLines[0].find("HTTP 404")!=std::string::npos);
+    assert(diagnosticLines[0].find("/feed")!=std::string::npos);
+    assert(diagnosticLines[0].find("private-fixture")==std::string::npos);
+    assert(diagnosticLines[0].find("127.0.0.1")==std::string::npos);
+    assert(missing("{}")==Delivery::Accepted);
+    assert(diagnosticLines.size()==2&&diagnosticLines[1].find("recovered")!=std::string::npos);
     const auto sender=ScannerMirror::httpSender("http://127.0.0.1:"+std::to_string(ntohs(address.sin_port))+"/feed","fixture");
     {
       ScannerMirror http("demo.ctraderapi.com",11,"comparison-v1",60000,{},sender);
@@ -127,8 +139,8 @@ int main() {
     assert(sender("{}") == Delivery::Retryable);
     assert(sender("{}") == Delivery::Retryable);
     server.join();close(listener);
-    assert(received.size()==6);assert(received[0]==received[1]);
-    assert(jsn::parse(received[2])->get("records").asArray().front().get("sequence").asNumber()==2);
+    assert(received.size()==9);assert(received[3]==received[4]);
+    assert(jsn::parse(received[5])->get("records").asArray().front().get("sequence").asNumber()==2);
   }
   std::cout<<"bounded mirror preserves feed identity/source time, gap recovery, recorder universe and quote priority\n";
 }

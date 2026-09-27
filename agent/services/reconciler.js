@@ -6,6 +6,7 @@ import { contractSize } from '../lib/contracts.js'
 import { lotsFromUnits } from '../lib/lot-size-registry.js'
 import { recordPositionEvent } from './position-events.js'
 import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
+import { brokerCloseReason, LEGACY_BOOK_STOP, replaceableCloseReason } from './broker-exit-attribution.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -188,7 +189,7 @@ export function stampAdoptedFromIntent(db, { tradeId, label, parsed, acct, symbo
 
 
 /** The reconciler's generic stamp for a close it cannot attribute. */
-export const GENERIC_BROKER_CLOSE = 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot'
+export const GENERIC_BROKER_CLOSE = 'closed at the broker - exit cause and initiating actor not yet verified'
 
 /**
  * WHO closed this position, read from the ledgers the bot's own closers
@@ -217,20 +218,24 @@ export const GENERIC_BROKER_CLOSE = 'closed at the broker (manual close or broke
 export function attributeBrokerClose(db, { positionId = null, tradeId = null, accountId = null } = {}) {
   const pid = positionId != null ? normPosId(positionId) : null
   try {
+    const receipt = brokerCloseReason(db, { accountId, positionId: pid, tradeId })
+    if (receipt) return receipt
     if (pid != null || tradeId != null) {
       const ev = db.prepare(
         `SELECT source, reason, kind FROM position_events
           WHERE kind IN ('close', 'loss_cap_close')
             AND ((? IS NOT NULL AND position_id = ?) OR (? IS NOT NULL AND trade_id = ?))
+            AND ((? IS NOT NULL AND account_id = ?) OR (trade_id = ? AND (? IS NULL OR account_id IS NULL))
+              OR (? IS NULL AND account_id IS NULL))
           ORDER BY id DESC LIMIT 1`
-      ).get(pid, pid, tradeId, tradeId)
+      ).get(pid, pid, tradeId, tradeId, accountId, accountId, tradeId, accountId, accountId)
       if (ev) {
         const src = ev.source || 'bot'
         const why = ev.reason || ev.kind
         return `${src}: ${why}`
       }
     }
-    if (pid != null) {
+    if (pid != null && accountId != null) {
       const book = db.prepare(
         `SELECT note FROM momentum_book WHERE status = 'exit_sent' AND position_id = ?
             ${accountId != null ? 'AND account_id = ?' : ''}
@@ -238,19 +243,18 @@ export function attributeBrokerClose(db, { positionId = null, tradeId = null, ac
       ).get(...(accountId != null ? [pid, String(accountId)] : [pid]))
       if (book) return `momentum_book: ${book.note || 'exit sent'}`
     }
-    // Wave 2 (§K·8): a close on a row the BOOK holds with no journal entry is
-    // the book's broker-side stop (its 3×ATR trail is amended at the broker,
-    // so the fill leaves no event) — named as such, not "closed at the
-    // broker (manual close …)". Matched on either key, exit_sent or open.
+    // Book ownership is not exit evidence: a native TP or manual close also
+    // leaves the book row open until reconciliation. Only an exit request
+    // may supply a book note; a filled broker order above takes precedence.
     if (pid != null || tradeId != null) {
       const held = db.prepare(
         `SELECT status, note FROM momentum_book
-          WHERE status IN ('open', 'exit_sent')
+          WHERE status = 'exit_sent'
             AND ((? IS NOT NULL AND position_id = ?) OR (? IS NOT NULL AND trade_id = ?))
-            ${accountId != null ? 'AND account_id = ?' : ''}
+            ${accountId != null ? 'AND account_id = ?' : 'AND trade_id = ?'}
           ORDER BY id DESC LIMIT 1`
-      ).get(...[pid, pid, tradeId, tradeId, ...(accountId != null ? [String(accountId)] : [])])
-      if (held) return held.status === 'exit_sent' ? `momentum_book: ${held.note || 'exit sent'}` : 'momentum_book: broker-side stop fill (3×ATR trail)'
+      ).get(...[pid, pid, tradeId, tradeId, accountId != null ? String(accountId) : tradeId])
+      if (held) return `momentum_book: ${held.note || 'exit sent'}`
     }
   } catch { /* attribution is best-effort; the generic stamp stays */ }
   return null
@@ -1153,6 +1157,24 @@ export function decodeRawBrokerOrder(o) {
  * generic sentence, which is now an honest residual instead of a catch-all.
  */
 export function reclassifyBrokerCloses(db) {
+  // Only attribution changes. Never rewrite money, original plans or risk.
+  let evidenceChanges = 0
+  const evidenceRows = db.prepare(`SELECT t.id, t.account_id, t.ctrader_position_id, t.close_reason
+    FROM trades t WHERE t.status = 'closed' AND (t.close_reason = ? OR EXISTS
+      (SELECT 1 FROM broker_close_attribution e WHERE e.account_id = t.account_id
+        AND e.position_id = t.ctrader_position_id AND e.state = 'verified'))`).all(LEGACY_BOOK_STOP)
+  const verifiedIds = new Set()
+  for (const t of evidenceRows) {
+    if (!replaceableCloseReason(t.close_reason)) continue // preserve explicit human/closer notes
+    const reason = brokerCloseReason(db, { accountId: t.account_id, positionId: t.ctrader_position_id, tradeId: t.id })
+      || (t.close_reason === LEGACY_BOOK_STOP ? 'broker close recorded - former trailing-stop attribution unsupported; awaiting order evidence' : null)
+    if (!reason) continue
+    verifiedIds.add(t.id)
+    if (reason !== t.close_reason) {
+      db.prepare('UPDATE trades SET close_reason = ? WHERE id = ?').run(reason, t.id)
+      evidenceChanges++
+    }
+  }
   // The stop the broker actually held wins over the proposal's stop when it
   // is on record (02-09-2026) — the reclassifier judges against the level
   // that could have filled, not the one that was asked for.
@@ -1171,7 +1193,7 @@ export function reclassifyBrokerCloses(db) {
        )`
   ).all()
   const upd = db.prepare('UPDATE trades SET close_reason = ? WHERE id = ?')
-  let n = 0
+  let n = evidenceChanges
   // Rows stamped generic BEFORE the reconciler read the closers' journal
   // (fix-the-exits BA): the journal is retained 90 days, so the stamp is
   // upgraded to who closed it wherever an event exists. Judged before the
@@ -1184,12 +1206,16 @@ export function reclassifyBrokerCloses(db) {
   ).all()
   const attributedIds = new Set()
   for (const t of generic) {
+    if (verifiedIds.has(t.id)) continue
     const who = attributeBrokerClose(db, { positionId: t.ctrader_position_id, tradeId: t.id, accountId: t.account_id })
     if (!who) continue
     upd.run(who, t.id); n++; attributedIds.add(t.id)
   }
   for (const t of rows) {
-    if (attributedIds.has(t.id)) continue
+    if (attributedIds.has(t.id) || verifiedIds.has(t.id)) continue
+    // New closes wait for the order receipt. Price proximity alone cannot
+    // distinguish a manual/application market fill from a native TP or SL.
+    if (t.close_reason === GENERIC_BROKER_CLOSE) continue
     const exit = Number(t.exit_price)
     if (!Number.isFinite(exit)) continue
     const near = (p) => Number.isFinite(Number(p)) && Math.abs(exit - Number(p)) <= Math.abs(exit) * 0.001

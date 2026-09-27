@@ -59,6 +59,8 @@ export default function ControllerRuntime({ runtime }) {
   return (
     <div className="text-(length:--fs-body) mb-3 space-y-2">
       <p>The clock updates every second. Strategy checks follow quote events or scheduled scans. A heartbeat does not confirm an entry or a protected position.</p>
+      {runtime.scannerComparison?.bridge?.timeframeCoverage?.status === 'account_profile_mismatch' &&
+        <p role="status">Timeframe scanner input mismatch: scanned account {runtime.scannerComparison.bridge.timeframeCoverage.accountId} has no matching profiles among {count(runtime.scannerComparison.bridge.timeframeCoverage.registeredProfiles)} registered setups. Review the scan account or profile registration. No account or setup was changed automatically.</p>}
       <details><summary>Scanner comparison observations</summary>
         <p>Mirror observations have no order authority. Existing strategy ownership remains in place.</p>
         <p>Observation worker: {onOff(runtime.scannerComparison?.bridge?.enabled)}; queued: {count(runtime.scannerComparison?.bridge?.pending)}; dropped: {count(runtime.scannerComparison?.bridge?.dropped)}{runtime.scannerComparison?.bridge?.failed ? ' · Worker failed' : ''}.</p>

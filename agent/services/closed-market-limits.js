@@ -24,6 +24,7 @@ import { getActiveSessions } from '../lib/sessions.js'
 import { expiryMsFor } from './pending-signals.js'
 import { stopTriggerField } from '../lib/order-protection.js'
 import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
+import { isFullMomentumLimitFill } from './resting-exposure.js'
 
 export const DEFAULT_CLOSED_MARKET_LIMITS = {
   on: true, // owner: on by default — closed-market setups get locked in
@@ -221,6 +222,7 @@ function stampLimitFill(db, row, trade, intentId) {
  *   nothing to say about them — worth watching, never a reason to retire a row.
  */
 export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}) {
+  const hasMomentumLimits = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_limit_intents'").get()
   const rows = db.prepare(
     `SELECT * FROM pending_orders WHERE status = 'working' AND note = 'pending-closed'`
   ).all()
@@ -260,6 +262,33 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
   }
 
   for (const row of rows) {
+    // T4 write-ahead reservations survive missing snapshots and local expiry.
+    // Only ledger evidence can release them; accepted/pre-created positions
+    // and an elapsed clock are not proof that broker exposure disappeared.
+    const momentumLimit = hasMomentumLimits && db.prepare('SELECT * FROM momentum_limit_intents WHERE pending_id=?').get(row.id)
+    if (momentumLimit) {
+      const intent = db.prepare('SELECT * FROM entry_intents WHERE id=? AND account_id=?').get(row.intent_id, row.account_id)
+      const link = findLimitFill(db, row)
+      const trade = link.trade && db.prepare('SELECT * FROM trades WHERE id=?').get(link.trade.id)
+      // FILLED also describes ORDER_PARTIAL_FILL. Keep the local reservation
+      // until the whole original volume is proved, even when broker_orders
+      // has not yet captured the working remainder or the clock has expired.
+      if (intent?.state === 'FILLED' && isFullMomentumLimitFill(trade, intent, momentumLimit)) {
+        // The risk gate counts active monitors, not bare open trade rows.
+        // Never remove the only slot while monitor adoption is incomplete.
+        const counted = trade.status === 'closed' || (trade.status === 'open'
+          && db.prepare("SELECT 1 FROM monitored_positions WHERE trade_id=? AND account_id=? AND status='active'").get(trade.id, row.account_id))
+        if (counted) {
+          settleFill(row)
+          continue
+        }
+      }
+      if (['REJECTED', 'RELEASED', 'EXPIRED'].includes(intent?.state)) {
+        markExpired.run(`momentum limit: ledger ${intent.state}`, row.id)
+        expired++
+      } else { stillWorking++; unknown++ }
+      continue
+    }
     if (row.order_id) {
       const broker = db.prepare(`SELECT status FROM broker_orders WHERE order_id = ?`).get(String(row.order_id))
       if (broker?.status === 'working') { stillWorking++; continue } // genuinely still resting — leave it
@@ -358,10 +387,12 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
 
   // Retire our own working rows whose broker expiry has passed, so idempotency
   // below doesn't wrongly treat an expired order as still resting.
+  const protectMomentum = db.prepare("SELECT 1 FROM sqlite_master WHERE name='momentum_limit_intents' AND type='table'").get()
+    ? ' AND NOT EXISTS (SELECT 1 FROM momentum_limit_intents m WHERE m.pending_id=pending_orders.id)' : ''
   db.prepare(
     `UPDATE pending_orders SET status = 'expired'
      WHERE note = 'pending-closed' AND status = 'working'
-       AND expires_at IS NOT NULL AND expires_at < ?`
+       AND expires_at IS NOT NULL AND expires_at < ?${protectMomentum}`
   ).run(new Date(nowMs).toISOString())
 
   const side = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'

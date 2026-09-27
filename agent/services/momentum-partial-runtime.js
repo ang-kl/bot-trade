@@ -319,6 +319,15 @@ export async function runMomentumPartialPass(db, { credsFor = () => null, now: c
     scaleOutsPending: [], errors: [], lastCheckAt: {} }
   const fail = (where, e) => { summary.ok = false; summary.errors.push(`${where}: ${short(e)}`) }
 
+  if (hasTable(db, 'momentum_limit_intents')) {
+    try {
+      const { promoteMomentumLimitFills } = await import('./momentum-entry-contract.js')
+      const transfers = promoteMomentumLimitFills(db)
+      summary.limitFillsTransferred = transfers.filter(r => r && !r.error).length
+      for (const r of transfers) if (r?.error) fail(`limit_fill_transfer account ${r.accountId} trade ${r.tradeId}`, r.error)
+    } catch (e) { fail('limit_fill_transfer', e) }
+  }
+
   try { summary.abandonedBinds = abandonExitedBinds(db, { nowMs: startMs }) } catch (e) { fail('bind_abandon', e) }
 
   // V3 T4, the deferred half of binding: an AWAITING_BIND intent whose book

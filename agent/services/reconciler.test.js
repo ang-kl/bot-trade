@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState } from '../db.js'
-import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, undoIntentUpgrades, attributeBrokerClose } from './reconciler.js'
+import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, undoIntentUpgrades, attributeBrokerClose, GENERIC_BROKER_CLOSE } from './reconciler.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -197,7 +197,7 @@ test('closed position detection marks status=closed', () => {
   // detected here happened AT THE BROKER, and the ledger now says so
   // instead of leaving the reason blank.
   assert.match(trade.close_reason, /closed at the broker/)
-  assert.match(trade.close_reason, /not closed by the bot/)
+  assert.match(trade.close_reason, /initiating actor not yet verified/)
 })
 
 // Orphan sweep — trades left status='open' with NO active monitored row are
@@ -670,6 +670,7 @@ test('contamination: broker_orders gone-sweep is account-scoped', () => {
 // integrity = 0% — investigate", 2026-07-27).
 // ---------------------------------------------------------------------------
 
+// Legacy snapshots continue to exercise the historical price-hint migration.
 const GENERIC = 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot'
 
 function seedClosedTrade(db, { side = 'BUY', exit = null, sl = null, tp = null, reason = GENERIC }) {
@@ -1174,7 +1175,7 @@ test('BA: a scale_out (partial take-profit) is NOT a close — a later broker cl
   const tradeId = seedKnownPosition(db, { symbol: 'EURUSD', positionId: '5103' })
   db.prepare(`INSERT INTO position_events (position_id, trade_id, symbol, kind, reason, source) VALUES ('5103', ?, 'EURUSD', 'scale_out', 'partial take-profit TP1', 'trade_guard')`).run(tradeId)
   reconcilePositions(db, [], [], setState)
-  assert.equal(db.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(tradeId).close_reason, GENERIC)
+  assert.equal(db.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(tradeId).close_reason, GENERIC_BROKER_CLOSE)
 })
 
 test('BA: the momentum book\'s exit_sent row attributes a book close; another account\'s row does not', () => {
@@ -1186,7 +1187,7 @@ test('BA: the momentum book\'s exit_sent row attributes a book close; another ac
   db.prepare(`UPDATE monitored_positions SET account_id = 'A' WHERE trade_id = ?`).run(tradeId)
   db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, status, note, entered_at) VALUES (?, 'B', 'NATGAS', '5104', 'exit_sent', 'rank exit (flip)', datetime('now'))`).run(tradeId)
   reconcilePositions(db, [], [], setState, { accountId: 'A' })
-  assert.equal(db.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(tradeId).close_reason, GENERIC, 'B\'s book row says nothing about A\'s position')
+  assert.equal(db.prepare(`SELECT close_reason FROM trades WHERE id = ?`).get(tradeId).close_reason, GENERIC_BROKER_CLOSE, 'B\'s book row says nothing about A\'s position')
 
   const db2 = mkDb()
   db2.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', 'A')`).run()
@@ -1218,13 +1219,13 @@ test('BA: reclassifyBrokerCloses upgrades a row stamped generic BEFORE the fix w
   assert.equal(reclassifyBrokerCloses(db), 0, 'idempotent: an attributed row is never rewritten')
 })
 
-test('Wave 2 (§K·8): a close on a row the BOOK holds with no journal entry is attributed to the book\'s broker-side stop, by trade id or position id; an exit_sent row keeps its note; another account\'s row does not match', () => {
+test('book ownership alone leaves exit cause unverified; exit_sent keeps its note within the account', () => {
   const db = mkDb()
   const t = seedKnownPosition(db, { symbol: 'JPM.US', positionId: '5201' })
   db.prepare(`UPDATE trades SET account_id = 'A' WHERE id = ?`).run(t)
   assert.equal(attributeBrokerClose(db, { tradeId: t, accountId: 'A' }), null, 'no book row, no journal → not attributed')
   db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, status, note, entered_at) VALUES (?, 'A', 'JPM.US', NULL, 'open', 'entered', datetime('now'))`).run(t)
-  assert.equal(attributeBrokerClose(db, { tradeId: t, accountId: 'A' }), 'momentum_book: broker-side stop fill (3×ATR trail)')
+  assert.equal(attributeBrokerClose(db, { tradeId: t, accountId: 'A' }), null)
   assert.equal(attributeBrokerClose(db, { positionId: '5201', tradeId: t, accountId: 'B' }), null, 'scoped to the account')
   db.prepare(`UPDATE momentum_book SET status = 'exit_sent', note = 'rank exit', position_id = '5201' WHERE trade_id = ?`).run(t)
   assert.equal(attributeBrokerClose(db, { positionId: '5201', accountId: 'A' }), 'momentum_book: rank exit')

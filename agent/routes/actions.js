@@ -5043,9 +5043,9 @@ export default function actionsRouter(db, deps = {}) {
         const armed = new Set(regAuto(db).map(a => String(a.accountId)))
         armed.add(String(accountId))
         const roster = regEnabled(db).map(a => ({
-          accountId: String(a.accountId),
+          accountId: String(a.account_id),
           isLive: a.is_live === 1,
-          autopilot: armed.has(String(a.accountId)),
+          autopilot: armed.has(String(a.account_id)),
         }))
         if (!roster.some(r => r.accountId === String(accountId))) {
           roster.unshift({ accountId: String(accountId), isLive: !!isLive, autopilot: true })
@@ -5082,7 +5082,7 @@ export default function actionsRouter(db, deps = {}) {
 
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
       const { wsGetSymbolsList, wsGetTrader, traderBalance } = await import('../lib/ctrader-ws.js')
-      const data = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
+      const data = await (deps.wsGetSymbolsList ?? wsGetSymbolsList)(host, clientId, clientSecret, accessToken, accountId)
       const map = {}
       for (const s of (data.symbol || [])) {
         if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId
@@ -5095,7 +5095,7 @@ export default function actionsRouter(db, deps = {}) {
       // equity-aware without manual entry (Tune's fields remain an override).
       let balance = null
       try {
-        const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
+        const trader = await (deps.wsGetTrader ?? wsGetTrader)(host, clientId, clientSecret, accessToken, accountId)
         balance = traderBalance(trader)
         const { recordAccountMoney } = await import('../services/account-money.js')
         recordAccountMoney(db, { accountId, host, trader, balance })

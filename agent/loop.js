@@ -652,16 +652,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const lastBarCloseMs = sigMs > 0 ? (nextBarCloseMs(synth.timeframe) ?? 0) - sigMs : 0
     const fresh = freshMin > 0 && lastBarCloseMs > 0 && (Date.now() - lastBarCloseMs) <= freshMin * 60_000
     if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {
-      // V3 T4: a momentum entry that would rest carries no plan (P0-4 is not
-      // built) and resting orders do not yet count toward the caps and margin
-      // (OD-15, answered yes, not built); refused by name, not rested.
-      if (momentumPlanOn) {
-        const { restingMomentumRefusal } = await import('./services/momentum-entry-producer.js')
-        await refuseMomentumEntry(restingMomentumRefusal({ symbol, producerId, timeframe: synth.timeframe }), 'momentum_resting_limit')
-        return null
-      }
       const expiresAtMs = nextBarCloseMs(synth.timeframe)
-      const placeClosedMarketLimit = seam?.placeClosedMarketLimit || (await import('./services/closed-market-limits.js')).placeClosedMarketLimit
+      const placeClosedMarketLimit = momentumPlanOn
+        ? (seam?.placeMomentumLimit || (await import('./services/momentum-limit-entry.js')).placeMomentumLimit)
+        : (seam?.placeClosedMarketLimit || (await import('./services/closed-market-limits.js')).placeClosedMarketLimit)
       const r = await placeClosedMarketLimit(
         db,
         attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId }),

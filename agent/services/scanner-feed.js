@@ -10,6 +10,7 @@ import { SCANNER_PROFILE_LIMIT } from '../lib/scanner-bounds.js'
 import { secondWriterRefusal, readSqliteVersion, WAL_RESET_FIXED_FROM } from '../lib/sqlite-wal-reset.js'
 
 const bridges = new WeakMap(), restarts = new WeakMap(), refusals = new WeakMap(), epoch = randomUUID()
+const timeframeCoverage = new WeakMap()
 const hash = text => createHash('sha256').update(text).digest('hex')
 
 // HTTP belongs to the isolated observation worker. No credential can be sent
@@ -209,11 +210,22 @@ export function scannerObserver(db, creds, env = process.env, deps = {}) {
   // JSON (the registry admits only string values for these), so no delimiter
   // inside a value can make two cells collide and a hit needs no re-check.
   const cells = new Map()
+  let registeredProfiles = 0, matchingProfiles = 0
   const cell = (symbolId, timeframe, strategy) => JSON.stringify([symbolId, timeframe, strategy])
   for (const p of ensured.profiles) {
-    if (p?.source !== 'cpp-scan-timeframe' || p.feed?.host !== host || p.feed?.accountId !== accountId) continue
+    if (p?.source !== 'cpp-scan-timeframe') continue
+    registeredProfiles++
+    if (p.feed?.host !== host || p.feed?.accountId !== accountId) continue
+    matchingProfiles++
     const key = cell(p.feed.symbolId, p.timeframe, p.strategy)
     if (cells.has(key)) cells.get(key).push(p); else cells.set(key, [p])
+  }
+  const status = matchingProfiles ? 'matched' : registeredProfiles ? 'account_profile_mismatch' : 'no_timeframe_profiles'
+  const previous = timeframeCoverage.get(db)
+  timeframeCoverage.set(db, { status, accountId, host, registeredProfiles, matchingProfiles,
+    observedAtMs: deps.now ?? Date.now() })
+  if (status === 'account_profile_mismatch' && (previous?.status !== status || previous?.accountId !== accountId || previous?.host !== host)) {
+    console.warn(`[scanner-bridge] timeframe observation paused: scanned account ${accountId} has no matching profiles (${registeredProfiles} registered). Review the scan account or profile registration; neither was changed.`)
   }
   return input => {
     const feed = { provider: 'ctrader', host, accountId, symbolId: String(input.symbolId) }
@@ -226,7 +238,8 @@ export function scannerObserver(db, creds, env = process.env, deps = {}) {
 }
 export const scannerBridgeStatus = db => {
   const record = bridges.get(db)
-  if (record) return { ...record.bridge.status(), restarts: restarts.get(db) || 0, builtAtMs: record.builtAtMs }
+  if (record) return { ...record.bridge.status(), restarts: restarts.get(db) || 0, builtAtMs: record.builtAtMs,
+    timeframeCoverage: timeframeCoverage.get(db) ?? null }
   // Approved but refused (SQLite without the WAL-reset fix, or the degraded
   // exclusive mode): say so, rather than reading like a bridge nobody enabled.
   const refused = refusals.get(db)

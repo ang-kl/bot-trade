@@ -19,7 +19,12 @@ export function prepareMomentumTargetProposal(input, schedule) {
     return refuse('fresh_owned_quote_required')
   if (marketIdentityKey(meta) !== key || meta?.source !== 'broker_symbol' || !fresh(meta.receivedAtMs))
     return refuse('fresh_owned_symbol_required')
-  if (!['BUY', 'SELL'].includes(input.side) || input.entry !== (input.side === 'BUY' ? quote.ask : quote.bid))
+  const orderType = input.orderType ?? 'MARKET'
+  if (!['MARKET', 'LIMIT'].includes(orderType)) return refuse('order_type_unsupported')
+  if (!['BUY', 'SELL'].includes(input.side)
+    || (orderType === 'MARKET' && input.entry !== (input.side === 'BUY' ? quote.ask : quote.bid))
+    || (orderType === 'LIMIT' && (!Number.isFinite(input.entry) || input.entry <= 0
+      || (input.side === 'BUY' ? input.entry > quote.ask : input.entry < quote.bid))))
     return refuse('proposal_quote_price_mismatch')
   if (typeof input.symbol !== 'string' || !input.symbol.trim()) return refuse('symbol_required')
   // USD identity is exact. Other conversions must carry their own account,
@@ -52,7 +57,7 @@ export function prepareMomentumTargetProposal(input, schedule) {
     requiredRr: input.requiredRr, costReservePrice: cost.costReservePrice, digits: meta.digits,
     volume: input.volume, minVolume: meta.minVolume, stepVolume: meta.stepVolume })
   if (!plan.ok) return refuse(plan.reason)
-  const evidence = { identity, symbol: input.symbol, quote: { bid: quote.bid, ask: quote.ask,
+  const evidence = { identity, symbol: input.symbol, ...(orderType === 'LIMIT' ? { orderType } : {}), quote: { bid: quote.bid, ask: quote.ask,
     observedAtMs: quote.observedAtMs, receivedAtMs: quote.receivedAtMs }, symbolMeta: {
     lotSize: meta.lotSize, minVolume: meta.minVolume, stepVolume: meta.stepVolume, digits: meta.digits,
     receivedAtMs: meta.receivedAtMs, quoteAsset: meta.quoteAsset }, conversion: {
