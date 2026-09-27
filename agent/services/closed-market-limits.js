@@ -25,6 +25,7 @@ import { expiryMsFor } from './pending-signals.js'
 import { stopTriggerField } from '../lib/order-protection.js'
 import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
 import { isFullMomentumLimitFill } from './resting-exposure.js'
+import { isFinalMomentumLimitFill } from './momentum-limit-fill-evidence.js'
 
 export const DEFAULT_CLOSED_MARKET_LIMITS = {
   on: true, // owner: on by default — closed-market setups get locked in
@@ -273,7 +274,8 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
       // FILLED also describes ORDER_PARTIAL_FILL. Keep the local reservation
       // until the whole original volume is proved, even when broker_orders
       // has not yet captured the working remainder or the clock has expired.
-      if (intent?.state === 'FILLED' && isFullMomentumLimitFill(trade, intent, momentumLimit)) {
+      if (intent?.state === 'FILLED' && (isFullMomentumLimitFill(trade, intent, momentumLimit)
+        || isFinalMomentumLimitFill(db, trade, intent, momentumLimit))) {
         // The risk gate counts active monitors, not bare open trade rows.
         // Never remove the only slot while monitor adoption is incomplete.
         const counted = trade.status === 'closed' || (trade.status === 'open'

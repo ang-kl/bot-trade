@@ -133,7 +133,8 @@ async function defaultTransports() {
     assets: (c) => ws.wsGetAssets(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId),
     symbolsById: (c, ids) => ws.wsSymbolsByIds(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, ids),
     quote: (c, symbolId, opts) => readMomentumTimedQuote(c, symbolId, opts),
-    reconcile: (c) => ws.wsReconcile(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, 8000, 0),
+    reconcile: (c, timeoutMs = 8000) => ws.wsReconcile(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, timeoutMs, 0),
+    orderDetails: (c, orderId) => ws.wsGetOrderDetails(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, orderId, 4000),
   }
 }
 
@@ -306,9 +307,11 @@ export async function bindMomentumFill(db, { accountId, tradeId, positionId, cre
 // When each awaiting intent was last read, so a fill that cannot bind (a
 // multi-deal average, F8) is re-read at most once a minute, not every loop.
 const lastDeferredRead = new Map()
+const finalFillReadTurns = new WeakMap()
 
 export async function bindAwaitingMomentumEntries(db, { credsFor, transports, now = Date.now, minIntervalMs = 60_000 } = {}) {
   const out = []
+  let finalFillReads = 0
   let waiting = []
   try {
     waiting = db.prepare(`SELECT i.account_id, i.trade_id, i.position_id, i.proposal_json FROM momentum_target_intents i
@@ -316,6 +319,13 @@ export async function bindAwaitingMomentumEntries(db, { credsFor, transports, no
       WHERE i.state = 'AWAITING_BIND'`).all()
   } catch { return out }
   if (!waiting.length) return out
+  // One unresolved order must not consume every pass's single details read.
+  // Keep turns per database, and discard completed intents from this cache.
+  const turns = finalFillReadTurns.get(db) ?? new Map()
+  finalFillReadTurns.set(db, turns)
+  const keys = new Set(waiting.map(w => `${w.account_id}|${w.trade_id}`))
+  for (const key of turns.keys()) if (!keys.has(key)) turns.delete(key)
+  waiting.sort((a, b) => (turns.get(`${a.account_id}|${a.trade_id}`) ?? 0) - (turns.get(`${b.account_id}|${b.trade_id}`) ?? 0))
   const t = transports || await defaultTransports()
   for (const w of waiting) {
     const key = `${w.account_id}|${w.trade_id}`, at = now()
@@ -330,12 +340,33 @@ export async function bindAwaitingMomentumEntries(db, { credsFor, transports, no
     const identity = marketIdentity(proposal?.identity)
     if (!identity || identity.host !== creds.host) { out.push({ accountId: w.account_id, tradeId: w.trade_id, bound: false, reason: 'identity_mismatch' }); continue }
     try {
-      const raw = await t.reconcile(creds)
-      const nowMs = now()
-      const position = partialPositionEvidence(raw, { identity, positionId: w.position_id, nowMs })
+      let raw = await t.reconcile(creds)
+      let nowMs = now()
+      let position = partialPositionEvidence(raw, { identity, positionId: w.position_id, nowMs })
       if (!position) { out.push({ accountId: w.account_id, tradeId: w.trade_id, bound: false, reason: 'position_without_bracket_evidence' }); continue }
+      let limitFinalFill = null
+      if (proposal?.evidence?.orderType === 'LIMIT' && position.volume < proposal.plan.volume) {
+        // At most one additional terminal-order read per pass, with bounded
+        // transports. A failed read never manufactures finality or capacity.
+        if (finalFillReads >= 1) throw Error('final_limit_fill_read_budget')
+        const entry = db.prepare(`SELECT i.broker_order_id FROM entry_intents i
+          JOIN momentum_limit_intents m ON m.intent_id=i.id AND m.account_id=i.account_id
+          JOIN trades tr ON tr.id=m.trade_id AND tr.account_id=m.account_id AND tr.intent_id=i.id
+          WHERE m.account_id=? AND m.trade_id=? AND i.state='FILLED'`).get(w.account_id, w.trade_id)
+        if (!entry?.broker_order_id || typeof t.orderDetails !== 'function') throw Error('final_limit_fill_order_details_required')
+        finalFillReads++
+        turns.set(key, now())
+        const details = await t.orderDetails(creds, String(entry.broker_order_id))
+        const detailsReceivedAtMs = now()
+        const reconcileStartedAtMs = now()
+        raw = await t.reconcile(creds, 4000)
+        nowMs = now()
+        position = partialPositionEvidence(raw, { identity, positionId: w.position_id, nowMs })
+        if (!position) throw Error('final_limit_fill_position_unproven')
+        limitFinalFill = { details, detailsReceivedAtMs, reconcileStartedAtMs, reconcile: raw }
+      }
       const mode = db.transaction(() => {
-        bindMomentumEntry(db, { accountId: w.account_id, tradeId: w.trade_id, position, nowMs })
+        bindMomentumEntry(db, { accountId: w.account_id, tradeId: w.trade_id, position, nowMs, limitFinalFill })
         return enrollMomentumBook(db, { accountId: w.account_id, tradeId: w.trade_id, positionId: w.position_id })
       })()
       out.push({ accountId: w.account_id, tradeId: w.trade_id, bound: true, mode })

@@ -5,6 +5,7 @@ import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-o
 import { registerPartialPlan } from './momentum-partial-manager.js'
 import { readMomentumPartialPass, partialPassFreshness, partialPassForAccount } from './momentum-partial-runtime.js'
 import { loadMomentumEntrySwitch, momentumAccountListed } from './momentum-entry-switch.js'
+import { finalMomentumLimitEvidence, isFinalMomentumLimitFill } from './momentum-limit-fill-evidence.js'
 
 const json = value => { try { return JSON.parse(value) } catch { return null } }
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -160,7 +161,7 @@ export function recordMomentumEntry(db, { accountId, tradeId, proposal, nowMs })
 /** A fresh confirmed position can bind the immutable plan; this does not
  * register a partial or claim book ownership. Atomic handover does that later.
  */
-export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, maxAgeMs = 5000 }) {
+export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, maxAgeMs = 5000, limitFinalFill = null }) {
   const intent = readMomentumEntry(db, accountId, tradeId), p = intent?.proposal?.plan
   if (!intent || !verified(intent.proposal)) throw Error('entry fill has no valid recorded proposal')
   const t = db.prepare('SELECT * FROM trades WHERE id=? AND account_id=?').get(tradeId, accountId)
@@ -173,8 +174,14 @@ export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, max
     || !Number.isSafeInteger(nowMs) || !Number.isSafeInteger(position.observedAtMs)
     || !(maxAgeMs > 0) || maxAgeMs > 10000 || position.observedAtMs < intent.created_at_ms
     || position.observedAtMs > nowMs || nowMs - position.observedAtMs > maxAgeMs
-    || position.side !== p.side || position.volume !== p.volume
+    || position.side !== p.side
     || !Number.isFinite(position.entry) || position.entry <= 0) throw Error('entry fill evidence mismatch')
+  let finalFill = null
+  if (position.volume !== p.volume || limitFinalFill != null) {
+    const entry = t.intent_id && db.prepare('SELECT * FROM entry_intents WHERE id=? AND account_id=?').get(t.intent_id, accountId)
+    finalFill = finalMomentumLimitEvidence(limitFinalFill, { proposal: intent.proposal, intent: entry, trade: t, position, nowMs, maxAgeMs })
+    if (!finalFill) throw Error('entry fill lacks final limit fill evidence')
+  }
   // The stop moves with the fill in whole ticks, as the broker moves a
   // relative stop. The unrounded p.originalStop + shift (247.81000000000003
   // against the broker's 247.81) refused 5,057 of the P0 reviewer's 30,000
@@ -182,7 +189,7 @@ export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, max
   // momentum-plan-arithmetic.test.js. Broker prices are then compared in
   // ticks at the plan's digits, never as floats.
   const stop = shiftStopToFill(p, position.entry)
-  const plan = stop == null ? null : planMomentumTargets({ ...p, entry: position.entry, originalStop: stop })
+  const plan = stop == null ? null : planMomentumTargets({ ...p, volume: position.volume, entry: position.entry, originalStop: stop })
   if (!plan?.ok || !stopHeld(p.side, position.stopLoss, plan.originalStop, p.digits)
     || !sameTicks(position.takeProfit, plan.brokerTarget, p.digits)) {
     // A fill off the grid (a multi-deal average, 265.9133) is not supported
@@ -204,7 +211,8 @@ export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, max
   if (intent.state !== 'PREPARED' && intent.state !== 'AWAITING_BIND') throw Error('entry fill state mismatch')
   const receipt = { ...intent.proposal.identity, positionId: position.positionId, side: position.side,
     entry: position.entry, volume: position.volume, stopLoss: position.stopLoss, takeProfit: position.takeProfit,
-    observedAtMs: position.observedAtMs, source: position.source }
+    observedAtMs: position.observedAtMs, source: position.source,
+    ...(finalFill ? { finalLimitFill: finalFill } : {}) }
   const changed = db.prepare("UPDATE momentum_target_intents SET state='BOUND',position_id=?,plan_json=?,fill_json=? WHERE account_id=? AND trade_id=? AND state IN ('PREPARED','AWAITING_BIND')")
     .run(position.positionId, JSON.stringify(plan), JSON.stringify(receipt), accountId, tradeId)
   if (changed.changes !== 1) throw Error('entry fill state changed')
@@ -261,6 +269,23 @@ export function enrollMomentumBook(db, { accountId, tradeId, positionId }) {
   const changed = db.prepare("UPDATE momentum_target_intents SET state='ENROLLED' WHERE account_id=? AND trade_id=? AND state='BOUND'")
     .run(accountId, tradeId)
   if (changed.changes !== 1) throw Error('entry enrollment state changed')
+  if (intent.fill?.finalLimitFill) {
+    // The same partial pass may execute TP1 immediately. Settle the final
+    // remainder with enrollment, before that close changes the trade volume.
+    const filledTrade = db.prepare('SELECT * FROM trades WHERE id=? AND account_id=?').get(tradeId, accountId)
+    const entry = db.prepare('SELECT * FROM entry_intents WHERE id=? AND account_id=?').get(filledTrade.intent_id, accountId)
+    const limit = db.prepare('SELECT * FROM momentum_limit_intents WHERE intent_id=? AND account_id=?').get(entry.id, accountId)
+    if (!isFinalMomentumLimitFill(db, filledTrade, entry, limit)) throw Error('final limit fill enrollment proof changed')
+    const pending = db.prepare(`UPDATE pending_orders SET status='filled',note=?
+      WHERE id=? AND account_id=? AND intent_id=? AND status='working'`).run(
+      `momentum limit: final partial enrolled, order ${entry.broker_order_id} ${intent.fill.finalLimitFill.status.toLowerCase()}`,
+      limit.pending_id, accountId, entry.id)
+    if (pending.changes !== 1) throw Error('final limit fill reservation changed')
+    // This exact order was absent in the subsequent snapshot. Retire only an
+    // older cached working row; isFinalMomentumLimitFill refuses a newer one.
+    db.prepare("UPDATE broker_orders SET status='gone',gone_at=? WHERE order_id=? AND account_id=? AND status='working'")
+      .run(new Date(intent.fill.observedAtMs).toISOString(), entry.broker_order_id, accountId)
+  }
   return intent.plan.mode
 }
 

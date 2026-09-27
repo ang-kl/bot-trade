@@ -1,0 +1,3187 @@
+{
+  "version": 1,
+  "date": "2026-09-28",
+  "commit": "1a0d34429f80db95c4476defe615b05961fbfa12",
+  "source": "Railway deployment logs, read-only get_logs",
+  "durationUnitSource": "https://docs.railway.com/cli/logs#http-logs",
+  "limitations": [
+    "Bounded returned samples, not complete window coverage; later call requested 500 rows but returned 501.",
+    "HTTP durations include all returned statuses and are not browser LCP/CLS.",
+    "Client IPs, request paths, user agents and account identities omitted.",
+    "CPU phase summaries are runtime samples, not full DevTools trace files."
+  ],
+  "samples": [
+    {
+      "name": "startup_bounded_sample",
+      "deploymentId": "9f44c6c2-39e4-4c91-9796-51df6e7d0a87",
+      "count": 57,
+      "first": "2026-09-27T23:00:33.607064439Z",
+      "last": "2026-09-27T23:01:50.183972704Z",
+      "statusCounts": {
+        "200": 51,
+        "499": 5,
+        "503": 1
+      },
+      "medianMs": 236,
+      "p95NearestRankMs": 4315,
+      "http": [
+        {
+          "timestamp": "2026-09-27T23:00:33.607064439Z",
+          "httpStatus": 200,
+          "totalDurationMs": 671
+        },
+        {
+          "timestamp": "2026-09-27T23:00:48.456072994Z",
+          "httpStatus": 200,
+          "totalDurationMs": 462
+        },
+        {
+          "timestamp": "2026-09-27T23:00:56.599483654Z",
+          "httpStatus": 200,
+          "totalDurationMs": 14
+        },
+        {
+          "timestamp": "2026-09-27T23:00:56.655233274Z",
+          "httpStatus": 200,
+          "totalDurationMs": 15
+        },
+        {
+          "timestamp": "2026-09-27T23:00:56.919910111Z",
+          "httpStatus": 200,
+          "totalDurationMs": 286
+        },
+        {
+          "timestamp": "2026-09-27T23:00:57.022248733Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:01:05.085474873Z",
+          "httpStatus": 499,
+          "totalDurationMs": 1992
+        },
+        {
+          "timestamp": "2026-09-27T23:01:20.104493807Z",
+          "httpStatus": 499,
+          "totalDurationMs": 1918
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.370368309Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1310
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.765067237Z",
+          "httpStatus": 200,
+          "totalDurationMs": 16
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.804952145Z",
+          "httpStatus": 200,
+          "totalDurationMs": 14
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.814964431Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.817352777Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.831903591Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.835953000Z",
+          "httpStatus": 200,
+          "totalDurationMs": 10
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.837849545Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.840851734Z",
+          "httpStatus": 200,
+          "totalDurationMs": 35
+        },
+        {
+          "timestamp": "2026-09-27T23:01:22.933685040Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:01:23.854041426Z",
+          "httpStatus": 200,
+          "totalDurationMs": 11
+        },
+        {
+          "timestamp": "2026-09-27T23:01:23.895806763Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:01:23.896682533Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:01:23.896827149Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:01:23.898284023Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:01:23.906648768Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:01:23.916850707Z",
+          "httpStatus": 200,
+          "totalDurationMs": 14
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.024707464Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.059524166Z",
+          "httpStatus": 200,
+          "totalDurationMs": 10
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.328920251Z",
+          "httpStatus": 200,
+          "totalDurationMs": 239
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.330347663Z",
+          "httpStatus": 200,
+          "totalDurationMs": 211
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.335515196Z",
+          "httpStatus": 200,
+          "totalDurationMs": 207
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.342157973Z",
+          "httpStatus": 200,
+          "totalDurationMs": 201
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.347519743Z",
+          "httpStatus": 200,
+          "totalDurationMs": 247
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.360825749Z",
+          "httpStatus": 200,
+          "totalDurationMs": 239
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.361363242Z",
+          "httpStatus": 200,
+          "totalDurationMs": 228
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.365545804Z",
+          "httpStatus": 200,
+          "totalDurationMs": 289
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.367981838Z",
+          "httpStatus": 200,
+          "totalDurationMs": 239
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.371654064Z",
+          "httpStatus": 200,
+          "totalDurationMs": 236
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.380570852Z",
+          "httpStatus": 200,
+          "totalDurationMs": 197
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.424873022Z",
+          "httpStatus": 200,
+          "totalDurationMs": 52
+        },
+        {
+          "timestamp": "2026-09-27T23:01:24.434505770Z",
+          "httpStatus": 200,
+          "totalDurationMs": 53
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.705280931Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4328
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.712785118Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4382
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.713242072Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4293
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.738920548Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4249
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.740581436Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4250
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.744067577Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4255
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.744792947Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4252
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.746707889Z",
+          "httpStatus": 503,
+          "totalDurationMs": 4252
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.781144139Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4277
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.783889835Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3913
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.785693243Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3824
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.785851926Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3824
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.803809291Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4103
+        },
+        {
+          "timestamp": "2026-09-27T23:01:28.805231890Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4315
+        },
+        {
+          "timestamp": "2026-09-27T23:01:29.254991698Z",
+          "httpStatus": 499,
+          "totalDurationMs": 4282
+        },
+        {
+          "timestamp": "2026-09-27T23:01:35.114529411Z",
+          "httpStatus": 499,
+          "totalDurationMs": 1995
+        },
+        {
+          "timestamp": "2026-09-27T23:01:50.183972704Z",
+          "httpStatus": 499,
+          "totalDurationMs": 1995
+        }
+      ],
+      "profiles": [
+        {
+          "timestamp": "2026-09-27T23:01:17.596514244Z",
+          "phase": "scan",
+          "profile": {
+            "totalMs": 42067.1,
+            "idleMs": 27785.5,
+            "gcMs": 64,
+            "top": [
+              {
+                "frame": "(idle)",
+                "selfMs": 27785.5,
+                "pct": 66.1
+              },
+              {
+                "frame": "get",
+                "selfMs": 10952.7,
+                "pct": 26,
+                "callers": [
+                  {
+                    "frame": "nextCashflowWindow @ services/cashflow-collector.js:18",
+                    "selfMs": 10850.1
+                  },
+                  {
+                    "frame": "getState @ agent/db.js:2478",
+                    "selfMs": 55.3
+                  },
+                  {
+                    "frame": "detectFlip @ quant/signals.js:17",
+                    "selfMs": 29.3
+                  }
+                ]
+              },
+              {
+                "frame": "run",
+                "selfMs": 2690.1,
+                "pct": 6.4,
+                "callers": [
+                  {
+                    "frame": "setState @ agent/db.js:2507",
+                    "selfMs": 1215
+                  },
+                  {
+                    "frame": "insertCupHandleDiagnostic @ agent/db.js:2682",
+                    "selfMs": 897.2
+                  },
+                  {
+                    "frame": "(anonymous) @ agent/loop.js:3297",
+                    "selfMs": 235.6
+                  }
+                ]
+              },
+              {
+                "frame": "(program)",
+                "selfMs": 87,
+                "pct": 0.2
+              },
+              {
+                "frame": "(garbage collector)",
+                "selfMs": 64,
+                "pct": 0.2
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "post_recovery_bounded_sample",
+      "deploymentId": "9f44c6c2-39e4-4c91-9796-51df6e7d0a87",
+      "count": 501,
+      "first": "2026-09-27T23:07:00.003997687Z",
+      "last": "2026-09-27T23:08:58.518972084Z",
+      "statusCounts": {
+        "200": 490,
+        "304": 10,
+        "499": 1
+      },
+      "medianMs": 285,
+      "p95NearestRankMs": 1095,
+      "http": [
+        {
+          "timestamp": "2026-09-27T23:07:00.003997687Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.007888237Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.349506486Z",
+          "httpStatus": 200,
+          "totalDurationMs": 340
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.351573489Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1150
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.354518491Z",
+          "httpStatus": 200,
+          "totalDurationMs": 346
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.355658659Z",
+          "httpStatus": 200,
+          "totalDurationMs": 342
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.356141040Z",
+          "httpStatus": 200,
+          "totalDurationMs": 339
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.356427487Z",
+          "httpStatus": 200,
+          "totalDurationMs": 338
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.366331842Z",
+          "httpStatus": 200,
+          "totalDurationMs": 346
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.367359756Z",
+          "httpStatus": 200,
+          "totalDurationMs": 346
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.370111226Z",
+          "httpStatus": 200,
+          "totalDurationMs": 347
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.374189566Z",
+          "httpStatus": 200,
+          "totalDurationMs": 369
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.376469645Z",
+          "httpStatus": 200,
+          "totalDurationMs": 343
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.377020716Z",
+          "httpStatus": 200,
+          "totalDurationMs": 345
+        },
+        {
+          "timestamp": "2026-09-27T23:07:00.446576985Z",
+          "httpStatus": 200,
+          "totalDurationMs": 424
+        },
+        {
+          "timestamp": "2026-09-27T23:07:01.381202408Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1354
+        },
+        {
+          "timestamp": "2026-09-27T23:07:03.213974606Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:07:03.224640794Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:03.230989992Z",
+          "httpStatus": 200,
+          "totalDurationMs": 10
+        },
+        {
+          "timestamp": "2026-09-27T23:07:03.270492703Z",
+          "httpStatus": 200,
+          "totalDurationMs": 48
+        },
+        {
+          "timestamp": "2026-09-27T23:07:04.357331569Z",
+          "httpStatus": 200,
+          "totalDurationMs": 22
+        },
+        {
+          "timestamp": "2026-09-27T23:07:04.585263339Z",
+          "httpStatus": 200,
+          "totalDurationMs": 478
+        },
+        {
+          "timestamp": "2026-09-27T23:07:04.927943768Z",
+          "httpStatus": 200,
+          "totalDurationMs": 10
+        },
+        {
+          "timestamp": "2026-09-27T23:07:04.936513325Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.025137280Z",
+          "httpStatus": 200,
+          "totalDurationMs": 11
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.025251371Z",
+          "httpStatus": 200,
+          "totalDurationMs": 11
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.030069849Z",
+          "httpStatus": 200,
+          "totalDurationMs": 14
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.038710666Z",
+          "httpStatus": 200,
+          "totalDurationMs": 27
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.349077882Z",
+          "httpStatus": 200,
+          "totalDurationMs": 314
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.355473440Z",
+          "httpStatus": 200,
+          "totalDurationMs": 335
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.355784905Z",
+          "httpStatus": 200,
+          "totalDurationMs": 334
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.362365864Z",
+          "httpStatus": 200,
+          "totalDurationMs": 349
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.364413861Z",
+          "httpStatus": 200,
+          "totalDurationMs": 342
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.366883791Z",
+          "httpStatus": 200,
+          "totalDurationMs": 341
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.369288124Z",
+          "httpStatus": 200,
+          "totalDurationMs": 342
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.373422621Z",
+          "httpStatus": 200,
+          "totalDurationMs": 356
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.373635530Z",
+          "httpStatus": 200,
+          "totalDurationMs": 359
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.374510927Z",
+          "httpStatus": 200,
+          "totalDurationMs": 334
+        },
+        {
+          "timestamp": "2026-09-27T23:07:05.454159380Z",
+          "httpStatus": 200,
+          "totalDurationMs": 428
+        },
+        {
+          "timestamp": "2026-09-27T23:07:06.405217999Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1357
+        },
+        {
+          "timestamp": "2026-09-27T23:07:06.619440691Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1667
+        },
+        {
+          "timestamp": "2026-09-27T23:07:09.071033029Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:09.079256017Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:09.949414016Z",
+          "httpStatus": 200,
+          "totalDurationMs": 15
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.055995420Z",
+          "httpStatus": 200,
+          "totalDurationMs": 15
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.056721579Z",
+          "httpStatus": 200,
+          "totalDurationMs": 35
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.351698791Z",
+          "httpStatus": 200,
+          "totalDurationMs": 334
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.354342946Z",
+          "httpStatus": 200,
+          "totalDurationMs": 325
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.354761635Z",
+          "httpStatus": 200,
+          "totalDurationMs": 336
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.356273687Z",
+          "httpStatus": 200,
+          "totalDurationMs": 326
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.356808042Z",
+          "httpStatus": 200,
+          "totalDurationMs": 329
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.358108140Z",
+          "httpStatus": 200,
+          "totalDurationMs": 328
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.421158078Z",
+          "httpStatus": 200,
+          "totalDurationMs": 391
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.423938729Z",
+          "httpStatus": 200,
+          "totalDurationMs": 388
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.428528634Z",
+          "httpStatus": 200,
+          "totalDurationMs": 392
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.430366632Z",
+          "httpStatus": 200,
+          "totalDurationMs": 393
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.435075615Z",
+          "httpStatus": 200,
+          "totalDurationMs": 405
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.435790424Z",
+          "httpStatus": 200,
+          "totalDurationMs": 396
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.437012822Z",
+          "httpStatus": 200,
+          "totalDurationMs": 393
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.441595271Z",
+          "httpStatus": 200,
+          "totalDurationMs": 405
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.443472350Z",
+          "httpStatus": 200,
+          "totalDurationMs": 395
+        },
+        {
+          "timestamp": "2026-09-27T23:07:10.526748462Z",
+          "httpStatus": 200,
+          "totalDurationMs": 491
+        },
+        {
+          "timestamp": "2026-09-27T23:07:11.099221634Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1053
+        },
+        {
+          "timestamp": "2026-09-27T23:07:13.199908939Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:13.224300692Z",
+          "httpStatus": 200,
+          "totalDurationMs": 16
+        },
+        {
+          "timestamp": "2026-09-27T23:07:13.236990354Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:07:13.237473740Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.283988497Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1091
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.790845656Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1457
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.852462251Z",
+          "httpStatus": 200,
+          "totalDurationMs": 838
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.856967291Z",
+          "httpStatus": 200,
+          "totalDurationMs": 881
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.858810218Z",
+          "httpStatus": 200,
+          "totalDurationMs": 844
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.914560286Z",
+          "httpStatus": 200,
+          "totalDurationMs": 896
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.924789140Z",
+          "httpStatus": 200,
+          "totalDurationMs": 906
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.925430859Z",
+          "httpStatus": 200,
+          "totalDurationMs": 987
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.931370726Z",
+          "httpStatus": 200,
+          "totalDurationMs": 906
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.931521746Z",
+          "httpStatus": 200,
+          "totalDurationMs": 905
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.932464830Z",
+          "httpStatus": 200,
+          "totalDurationMs": 905
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.933856262Z",
+          "httpStatus": 200,
+          "totalDurationMs": 917
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.934286086Z",
+          "httpStatus": 200,
+          "totalDurationMs": 909
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.936666492Z",
+          "httpStatus": 200,
+          "totalDurationMs": 906
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.941803077Z",
+          "httpStatus": 200,
+          "totalDurationMs": 918
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.946141607Z",
+          "httpStatus": 200,
+          "totalDurationMs": 913
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.948692979Z",
+          "httpStatus": 200,
+          "totalDurationMs": 912
+        },
+        {
+          "timestamp": "2026-09-27T23:07:15.952817772Z",
+          "httpStatus": 200,
+          "totalDurationMs": 911
+        },
+        {
+          "timestamp": "2026-09-27T23:07:16.050777503Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1033
+        },
+        {
+          "timestamp": "2026-09-27T23:07:16.984241257Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1939
+        },
+        {
+          "timestamp": "2026-09-27T23:07:19.741442362Z",
+          "httpStatus": 200,
+          "totalDurationMs": 471
+        },
+        {
+          "timestamp": "2026-09-27T23:07:19.969415060Z",
+          "httpStatus": 200,
+          "totalDurationMs": 30
+        },
+        {
+          "timestamp": "2026-09-27T23:07:19.978962761Z",
+          "httpStatus": 200,
+          "totalDurationMs": 45
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.014946463Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.292408870Z",
+          "httpStatus": 200,
+          "totalDurationMs": 270
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.292663287Z",
+          "httpStatus": 200,
+          "totalDurationMs": 278
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.294872903Z",
+          "httpStatus": 200,
+          "totalDurationMs": 285
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.296607016Z",
+          "httpStatus": 200,
+          "totalDurationMs": 279
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.297609691Z",
+          "httpStatus": 200,
+          "totalDurationMs": 279
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.300007962Z",
+          "httpStatus": 200,
+          "totalDurationMs": 272
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.300187689Z",
+          "httpStatus": 200,
+          "totalDurationMs": 267
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.300826486Z",
+          "httpStatus": 200,
+          "totalDurationMs": 268
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.301467323Z",
+          "httpStatus": 200,
+          "totalDurationMs": 275
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.302166976Z",
+          "httpStatus": 200,
+          "totalDurationMs": 266
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.303419411Z",
+          "httpStatus": 200,
+          "totalDurationMs": 254
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.303897875Z",
+          "httpStatus": 200,
+          "totalDurationMs": 279
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.312861208Z",
+          "httpStatus": 200,
+          "totalDurationMs": 295
+        },
+        {
+          "timestamp": "2026-09-27T23:07:20.318983579Z",
+          "httpStatus": 200,
+          "totalDurationMs": 298
+        },
+        {
+          "timestamp": "2026-09-27T23:07:21.564840361Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1593
+        },
+        {
+          "timestamp": "2026-09-27T23:07:23.202923429Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:23.229584370Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:23.236181942Z",
+          "httpStatus": 200,
+          "totalDurationMs": 20
+        },
+        {
+          "timestamp": "2026-09-27T23:07:23.248418789Z",
+          "httpStatus": 200,
+          "totalDurationMs": 46
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.073554914Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.107021739Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.110811158Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.119134756Z",
+          "httpStatus": 200,
+          "totalDurationMs": 10
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.123482134Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.129509247Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.135432192Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.317849154Z",
+          "httpStatus": 200,
+          "totalDurationMs": 213
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.362586580Z",
+          "httpStatus": 200,
+          "totalDurationMs": 27
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.378214854Z",
+          "httpStatus": 200,
+          "totalDurationMs": 38
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.448363053Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.493134053Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.541268417Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.544625847Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:24.960556369Z",
+          "httpStatus": 200,
+          "totalDurationMs": 21
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.024404225Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.026303957Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.030055925Z",
+          "httpStatus": 200,
+          "totalDurationMs": 42
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.300885289Z",
+          "httpStatus": 200,
+          "totalDurationMs": 269
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.305077423Z",
+          "httpStatus": 200,
+          "totalDurationMs": 266
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.305903456Z",
+          "httpStatus": 200,
+          "totalDurationMs": 264
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.311931652Z",
+          "httpStatus": 200,
+          "totalDurationMs": 247
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.360155713Z",
+          "httpStatus": 200,
+          "totalDurationMs": 321
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.361389797Z",
+          "httpStatus": 200,
+          "totalDurationMs": 322
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.361391678Z",
+          "httpStatus": 200,
+          "totalDurationMs": 341
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.374292572Z",
+          "httpStatus": 200,
+          "totalDurationMs": 331
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.381838300Z",
+          "httpStatus": 200,
+          "totalDurationMs": 325
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.383921464Z",
+          "httpStatus": 200,
+          "totalDurationMs": 331
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.385471836Z",
+          "httpStatus": 200,
+          "totalDurationMs": 331
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.386363706Z",
+          "httpStatus": 200,
+          "totalDurationMs": 353
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.387125022Z",
+          "httpStatus": 200,
+          "totalDurationMs": 331
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.389593506Z",
+          "httpStatus": 200,
+          "totalDurationMs": 346
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.391651305Z",
+          "httpStatus": 200,
+          "totalDurationMs": 335
+        },
+        {
+          "timestamp": "2026-09-27T23:07:25.394397204Z",
+          "httpStatus": 200,
+          "totalDurationMs": 351
+        },
+        {
+          "timestamp": "2026-09-27T23:07:27.323869065Z",
+          "httpStatus": 200,
+          "totalDurationMs": 2267
+        },
+        {
+          "timestamp": "2026-09-27T23:07:29.597768770Z",
+          "httpStatus": 200,
+          "totalDurationMs": 413
+        },
+        {
+          "timestamp": "2026-09-27T23:07:29.984685922Z",
+          "httpStatus": 200,
+          "totalDurationMs": 30
+        },
+        {
+          "timestamp": "2026-09-27T23:07:29.995900085Z",
+          "httpStatus": 200,
+          "totalDurationMs": 45
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.033686326Z",
+          "httpStatus": 200,
+          "totalDurationMs": 56
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.038824712Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.392443169Z",
+          "httpStatus": 200,
+          "totalDurationMs": 349
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.394591036Z",
+          "httpStatus": 200,
+          "totalDurationMs": 362
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.396825612Z",
+          "httpStatus": 200,
+          "totalDurationMs": 362
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.405906814Z",
+          "httpStatus": 200,
+          "totalDurationMs": 370
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.410038035Z",
+          "httpStatus": 200,
+          "totalDurationMs": 371
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.415319597Z",
+          "httpStatus": 200,
+          "totalDurationMs": 371
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.418756446Z",
+          "httpStatus": 200,
+          "totalDurationMs": 372
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.419259865Z",
+          "httpStatus": 200,
+          "totalDurationMs": 369
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.422012148Z",
+          "httpStatus": 200,
+          "totalDurationMs": 384
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.425846533Z",
+          "httpStatus": 200,
+          "totalDurationMs": 384
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.426661826Z",
+          "httpStatus": 200,
+          "totalDurationMs": 372
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.428380697Z",
+          "httpStatus": 200,
+          "totalDurationMs": 373
+        },
+        {
+          "timestamp": "2026-09-27T23:07:30.484835033Z",
+          "httpStatus": 200,
+          "totalDurationMs": 429
+        },
+        {
+          "timestamp": "2026-09-27T23:07:31.412640267Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1359
+        },
+        {
+          "timestamp": "2026-09-27T23:07:33.199529457Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:33.231239696Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:07:33.236633074Z",
+          "httpStatus": 200,
+          "totalDurationMs": 21
+        },
+        {
+          "timestamp": "2026-09-27T23:07:33.243875829Z",
+          "httpStatus": 200,
+          "totalDurationMs": 42
+        },
+        {
+          "timestamp": "2026-09-27T23:07:34.358314951Z",
+          "httpStatus": 200,
+          "totalDurationMs": 21
+        },
+        {
+          "timestamp": "2026-09-27T23:07:34.717705464Z",
+          "httpStatus": 200,
+          "totalDurationMs": 452
+        },
+        {
+          "timestamp": "2026-09-27T23:07:34.955896848Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:34.957602264Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:07:34.970022258Z",
+          "httpStatus": 200,
+          "totalDurationMs": 24
+        },
+        {
+          "timestamp": "2026-09-27T23:07:34.984056039Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.013268531Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.021264234Z",
+          "httpStatus": 200,
+          "totalDurationMs": 13
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.023146011Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.028891500Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.029703111Z",
+          "httpStatus": 200,
+          "totalDurationMs": 15
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.029915723Z",
+          "httpStatus": 200,
+          "totalDurationMs": 19
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.032447456Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.034824263Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.037361906Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.037539996Z",
+          "httpStatus": 200,
+          "totalDurationMs": 2
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.041527527Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.046380837Z",
+          "httpStatus": 200,
+          "totalDurationMs": 2
+        },
+        {
+          "timestamp": "2026-09-27T23:07:35.054312771Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:07:36.616193252Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1666
+        },
+        {
+          "timestamp": "2026-09-27T23:07:39.058638641Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:07:39.061327247Z",
+          "httpStatus": 200,
+          "totalDurationMs": 13
+        },
+        {
+          "timestamp": "2026-09-27T23:07:39.963470922Z",
+          "httpStatus": 200,
+          "totalDurationMs": 18
+        },
+        {
+          "timestamp": "2026-09-27T23:07:39.990983422Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.001784167Z",
+          "httpStatus": 200,
+          "totalDurationMs": 45
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.023607350Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.026300741Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.318823727Z",
+          "httpStatus": 200,
+          "totalDurationMs": 298
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.324574700Z",
+          "httpStatus": 200,
+          "totalDurationMs": 300
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.332412865Z",
+          "httpStatus": 200,
+          "totalDurationMs": 295
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.332836856Z",
+          "httpStatus": 200,
+          "totalDurationMs": 305
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.339835937Z",
+          "httpStatus": 200,
+          "totalDurationMs": 313
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.341955703Z",
+          "httpStatus": 200,
+          "totalDurationMs": 313
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.343920360Z",
+          "httpStatus": 200,
+          "totalDurationMs": 313
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.345048659Z",
+          "httpStatus": 200,
+          "totalDurationMs": 312
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.401602183Z",
+          "httpStatus": 200,
+          "totalDurationMs": 364
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.405972119Z",
+          "httpStatus": 200,
+          "totalDurationMs": 376
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.407072064Z",
+          "httpStatus": 200,
+          "totalDurationMs": 361
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.407578988Z",
+          "httpStatus": 200,
+          "totalDurationMs": 358
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.407619284Z",
+          "httpStatus": 200,
+          "totalDurationMs": 382
+        },
+        {
+          "timestamp": "2026-09-27T23:07:40.419773395Z",
+          "httpStatus": 200,
+          "totalDurationMs": 392
+        },
+        {
+          "timestamp": "2026-09-27T23:07:41.330062666Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1288
+        },
+        {
+          "timestamp": "2026-09-27T23:07:43.203952375Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:43.222593059Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:43.228958829Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:43.237762136Z",
+          "httpStatus": 200,
+          "totalDurationMs": 19
+        },
+        {
+          "timestamp": "2026-09-27T23:07:44.350567767Z",
+          "httpStatus": 200,
+          "totalDurationMs": 20
+        },
+        {
+          "timestamp": "2026-09-27T23:07:44.947546323Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:07:44.947588250Z",
+          "httpStatus": 200,
+          "totalDurationMs": 22
+        },
+        {
+          "timestamp": "2026-09-27T23:07:44.968993081Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:44.987663764Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:44.994519649Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.284787461Z",
+          "httpStatus": 200,
+          "totalDurationMs": 274
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.285632538Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1095
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.293037344Z",
+          "httpStatus": 200,
+          "totalDurationMs": 275
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.293088106Z",
+          "httpStatus": 200,
+          "totalDurationMs": 277
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.294952638Z",
+          "httpStatus": 200,
+          "totalDurationMs": 278
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.297637731Z",
+          "httpStatus": 200,
+          "totalDurationMs": 270
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.301202883Z",
+          "httpStatus": 200,
+          "totalDurationMs": 293
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.302933464Z",
+          "httpStatus": 200,
+          "totalDurationMs": 291
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.304400347Z",
+          "httpStatus": 200,
+          "totalDurationMs": 291
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.305971057Z",
+          "httpStatus": 200,
+          "totalDurationMs": 291
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.320881089Z",
+          "httpStatus": 200,
+          "totalDurationMs": 306
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.369994205Z",
+          "httpStatus": 200,
+          "totalDurationMs": 346
+        },
+        {
+          "timestamp": "2026-09-27T23:07:45.443043463Z",
+          "httpStatus": 200,
+          "totalDurationMs": 412
+        },
+        {
+          "timestamp": "2026-09-27T23:07:46.380522028Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1253
+        },
+        {
+          "timestamp": "2026-09-27T23:07:49.803221103Z",
+          "httpStatus": 200,
+          "totalDurationMs": 457
+        },
+        {
+          "timestamp": "2026-09-27T23:07:49.992493026Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:49.999499990Z",
+          "httpStatus": 200,
+          "totalDurationMs": 53
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.329527284Z",
+          "httpStatus": 200,
+          "totalDurationMs": 311
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.331127893Z",
+          "httpStatus": 200,
+          "totalDurationMs": 309
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.337596322Z",
+          "httpStatus": 200,
+          "totalDurationMs": 309
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.337978770Z",
+          "httpStatus": 200,
+          "totalDurationMs": 308
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.340788725Z",
+          "httpStatus": 200,
+          "totalDurationMs": 309
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.341323714Z",
+          "httpStatus": 200,
+          "totalDurationMs": 310
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.342699748Z",
+          "httpStatus": 200,
+          "totalDurationMs": 311
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.344251114Z",
+          "httpStatus": 200,
+          "totalDurationMs": 312
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.344511150Z",
+          "httpStatus": 200,
+          "totalDurationMs": 315
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.345709773Z",
+          "httpStatus": 200,
+          "totalDurationMs": 306
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.348528235Z",
+          "httpStatus": 200,
+          "totalDurationMs": 309
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.349300200Z",
+          "httpStatus": 200,
+          "totalDurationMs": 307
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.351328623Z",
+          "httpStatus": 200,
+          "totalDurationMs": 326
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.354005490Z",
+          "httpStatus": 200,
+          "totalDurationMs": 324
+        },
+        {
+          "timestamp": "2026-09-27T23:07:50.356910213Z",
+          "httpStatus": 200,
+          "totalDurationMs": 257
+        },
+        {
+          "timestamp": "2026-09-27T23:07:51.847129745Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1907
+        },
+        {
+          "timestamp": "2026-09-27T23:07:53.227030344Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:53.237138590Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:07:53.262362883Z",
+          "httpStatus": 200,
+          "totalDurationMs": 30
+        },
+        {
+          "timestamp": "2026-09-27T23:07:53.274995564Z",
+          "httpStatus": 200,
+          "totalDurationMs": 43
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.058567843Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.093168046Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.099147272Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.106117268Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.348321861Z",
+          "httpStatus": 200,
+          "totalDurationMs": 22
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.419256132Z",
+          "httpStatus": 200,
+          "totalDurationMs": 336
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.435034940Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.506820003Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.948479850Z",
+          "httpStatus": 200,
+          "totalDurationMs": 11
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.959650629Z",
+          "httpStatus": 200,
+          "totalDurationMs": 20
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.976909542Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.980609937Z",
+          "httpStatus": 200,
+          "totalDurationMs": 12
+        },
+        {
+          "timestamp": "2026-09-27T23:07:54.987362074Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.015384958Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.021728588Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.437101697Z",
+          "httpStatus": 200,
+          "totalDurationMs": 420
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.438880695Z",
+          "httpStatus": 200,
+          "totalDurationMs": 424
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.453573484Z",
+          "httpStatus": 200,
+          "totalDurationMs": 424
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.455144141Z",
+          "httpStatus": 200,
+          "totalDurationMs": 424
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.521430148Z",
+          "httpStatus": 200,
+          "totalDurationMs": 495
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.521439838Z",
+          "httpStatus": 200,
+          "totalDurationMs": 499
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.522310111Z",
+          "httpStatus": 200,
+          "totalDurationMs": 493
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.528890754Z",
+          "httpStatus": 200,
+          "totalDurationMs": 490
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.531272081Z",
+          "httpStatus": 200,
+          "totalDurationMs": 515
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.534243833Z",
+          "httpStatus": 200,
+          "totalDurationMs": 479
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.535619453Z",
+          "httpStatus": 200,
+          "totalDurationMs": 487
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.536771917Z",
+          "httpStatus": 200,
+          "totalDurationMs": 491
+        },
+        {
+          "timestamp": "2026-09-27T23:07:55.614601841Z",
+          "httpStatus": 200,
+          "totalDurationMs": 584
+        },
+        {
+          "timestamp": "2026-09-27T23:07:56.532787982Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1476
+        },
+        {
+          "timestamp": "2026-09-27T23:07:59.739751303Z",
+          "httpStatus": 200,
+          "totalDurationMs": 550
+        },
+        {
+          "timestamp": "2026-09-27T23:07:59.945435844Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:07:59.973627155Z",
+          "httpStatus": 200,
+          "totalDurationMs": 23
+        },
+        {
+          "timestamp": "2026-09-27T23:07:59.975570182Z",
+          "httpStatus": 200,
+          "totalDurationMs": 35
+        },
+        {
+          "timestamp": "2026-09-27T23:07:59.979129083Z",
+          "httpStatus": 200,
+          "totalDurationMs": 12
+        },
+        {
+          "timestamp": "2026-09-27T23:07:59.984527061Z",
+          "httpStatus": 200,
+          "totalDurationMs": 46
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.338279396Z",
+          "httpStatus": 200,
+          "totalDurationMs": 313
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.340440255Z",
+          "httpStatus": 200,
+          "totalDurationMs": 348
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.341454710Z",
+          "httpStatus": 200,
+          "totalDurationMs": 312
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.341866446Z",
+          "httpStatus": 200,
+          "totalDurationMs": 315
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.345136674Z",
+          "httpStatus": 200,
+          "totalDurationMs": 314
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.350980437Z",
+          "httpStatus": 200,
+          "totalDurationMs": 315
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.351644320Z",
+          "httpStatus": 200,
+          "totalDurationMs": 313
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.360224992Z",
+          "httpStatus": 200,
+          "totalDurationMs": 339
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.363198864Z",
+          "httpStatus": 200,
+          "totalDurationMs": 322
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.366952397Z",
+          "httpStatus": 200,
+          "totalDurationMs": 321
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.370908446Z",
+          "httpStatus": 200,
+          "totalDurationMs": 337
+        },
+        {
+          "timestamp": "2026-09-27T23:08:00.376343622Z",
+          "httpStatus": 200,
+          "totalDurationMs": 336
+        },
+        {
+          "timestamp": "2026-09-27T23:08:01.309722673Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1275
+        },
+        {
+          "timestamp": "2026-09-27T23:08:03.192778675Z",
+          "httpStatus": 200,
+          "totalDurationMs": 393884
+        },
+        {
+          "timestamp": "2026-09-27T23:08:03.206402488Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:03.219087963Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:03.228392692Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:08:03.228742385Z",
+          "httpStatus": 200,
+          "totalDurationMs": 21
+        },
+        {
+          "timestamp": "2026-09-27T23:08:04.807817677Z",
+          "httpStatus": 200,
+          "totalDurationMs": 442
+        },
+        {
+          "timestamp": "2026-09-27T23:08:13.220350022Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:08:13.248820165Z",
+          "httpStatus": 200,
+          "totalDurationMs": 34
+        },
+        {
+          "timestamp": "2026-09-27T23:08:13.252051363Z",
+          "httpStatus": 200,
+          "totalDurationMs": 35
+        },
+        {
+          "timestamp": "2026-09-27T23:08:13.262018503Z",
+          "httpStatus": 200,
+          "totalDurationMs": 47
+        },
+        {
+          "timestamp": "2026-09-27T23:08:20.079231751Z",
+          "httpStatus": 200,
+          "totalDurationMs": 572
+        },
+        {
+          "timestamp": "2026-09-27T23:08:23.231144510Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:08:23.354867029Z",
+          "httpStatus": 200,
+          "totalDurationMs": 100
+        },
+        {
+          "timestamp": "2026-09-27T23:08:23.365298006Z",
+          "httpStatus": 200,
+          "totalDurationMs": 105
+        },
+        {
+          "timestamp": "2026-09-27T23:08:23.396974997Z",
+          "httpStatus": 200,
+          "totalDurationMs": 137
+        },
+        {
+          "timestamp": "2026-09-27T23:08:24.070905747Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:08:24.124119424Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:08:24.365527810Z",
+          "httpStatus": 200,
+          "totalDurationMs": 248
+        },
+        {
+          "timestamp": "2026-09-27T23:08:24.464574702Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:29.772009103Z",
+          "httpStatus": 304,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.186553615Z",
+          "httpStatus": 200,
+          "totalDurationMs": 13
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.238157520Z",
+          "httpStatus": 304,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.245487855Z",
+          "httpStatus": 304,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.265673052Z",
+          "httpStatus": 304,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.323374825Z",
+          "httpStatus": 304,
+          "totalDurationMs": 2
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.366898597Z",
+          "httpStatus": 304,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.374027224Z",
+          "httpStatus": 304,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.900687586Z",
+          "httpStatus": 200,
+          "totalDurationMs": 11
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.949152756Z",
+          "httpStatus": 304,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.958651645Z",
+          "httpStatus": 200,
+          "totalDurationMs": 20
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.966458337Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:30.993052061Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.008035261Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.008683838Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.012126156Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.019487227Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.019721365Z",
+          "httpStatus": 200,
+          "totalDurationMs": 11
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.022844109Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.022940780Z",
+          "httpStatus": 200,
+          "totalDurationMs": 11
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.308148428Z",
+          "httpStatus": 304,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.331070015Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.356447200Z",
+          "httpStatus": 200,
+          "totalDurationMs": 22
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.366722670Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.413297616Z",
+          "httpStatus": 200,
+          "totalDurationMs": 27
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.418848735Z",
+          "httpStatus": 200,
+          "totalDurationMs": 12
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.439666404Z",
+          "httpStatus": 200,
+          "totalDurationMs": 85
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.501508850Z",
+          "httpStatus": 200,
+          "totalDurationMs": 22
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.549363194Z",
+          "httpStatus": 200,
+          "totalDurationMs": 28
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.606696531Z",
+          "httpStatus": 200,
+          "totalDurationMs": 72
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.879662017Z",
+          "httpStatus": 200,
+          "totalDurationMs": 342
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.914337655Z",
+          "httpStatus": 200,
+          "totalDurationMs": 364
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.915482680Z",
+          "httpStatus": 200,
+          "totalDurationMs": 368
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.917385369Z",
+          "httpStatus": 304,
+          "totalDurationMs": 361
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.918923119Z",
+          "httpStatus": 200,
+          "totalDurationMs": 345
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.925319580Z",
+          "httpStatus": 200,
+          "totalDurationMs": 390
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.929091334Z",
+          "httpStatus": 200,
+          "totalDurationMs": 180
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.936057024Z",
+          "httpStatus": 200,
+          "totalDurationMs": 397
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.936977105Z",
+          "httpStatus": 200,
+          "totalDurationMs": 399
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.937177322Z",
+          "httpStatus": 200,
+          "totalDurationMs": 391
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.938282679Z",
+          "httpStatus": 200,
+          "totalDurationMs": 389
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.939995286Z",
+          "httpStatus": 200,
+          "totalDurationMs": 153
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.942001867Z",
+          "httpStatus": 200,
+          "totalDurationMs": 388
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.945154366Z",
+          "httpStatus": 200,
+          "totalDurationMs": 406
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.945326380Z",
+          "httpStatus": 200,
+          "totalDurationMs": 391
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.948638955Z",
+          "httpStatus": 200,
+          "totalDurationMs": 383
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.952016694Z",
+          "httpStatus": 200,
+          "totalDurationMs": 383
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.952653723Z",
+          "httpStatus": 200,
+          "totalDurationMs": 384
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.955541790Z",
+          "httpStatus": 200,
+          "totalDurationMs": 361
+        },
+        {
+          "timestamp": "2026-09-27T23:08:31.967639963Z",
+          "httpStatus": 200,
+          "totalDurationMs": 426
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.034025212Z",
+          "httpStatus": 499,
+          "totalDurationMs": 1
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.039583416Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.045957904Z",
+          "httpStatus": 200,
+          "totalDurationMs": 15
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.057666119Z",
+          "httpStatus": 200,
+          "totalDurationMs": 26
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.338233418Z",
+          "httpStatus": 200,
+          "totalDurationMs": 13
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.350010971Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.391772994Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.409621928Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.417978885Z",
+          "httpStatus": 200,
+          "totalDurationMs": 387
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.451553334Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.476304234Z",
+          "httpStatus": 200,
+          "totalDurationMs": 483
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.490156990Z",
+          "httpStatus": 200,
+          "totalDurationMs": 28
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.491815656Z",
+          "httpStatus": 200,
+          "totalDurationMs": 43
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.501969675Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.508160283Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.508163169Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.521615869Z",
+          "httpStatus": 200,
+          "totalDurationMs": 17
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.523086989Z",
+          "httpStatus": 200,
+          "totalDurationMs": 20
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.525675250Z",
+          "httpStatus": 200,
+          "totalDurationMs": 22
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.526628499Z",
+          "httpStatus": 200,
+          "totalDurationMs": 11
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.618034210Z",
+          "httpStatus": 200,
+          "totalDurationMs": 113
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.827960337Z",
+          "httpStatus": 200,
+          "totalDurationMs": 7
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.927525827Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:32.952659612Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1398
+        },
+        {
+          "timestamp": "2026-09-27T23:08:33.348021006Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:33.400823990Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1371
+        },
+        {
+          "timestamp": "2026-09-27T23:08:33.401628505Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1911
+        },
+        {
+          "timestamp": "2026-09-27T23:08:34.953354464Z",
+          "httpStatus": 200,
+          "totalDurationMs": 441
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.054746755Z",
+          "httpStatus": 200,
+          "totalDurationMs": 44
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.064508340Z",
+          "httpStatus": 200,
+          "totalDurationMs": 17
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.065101932Z",
+          "httpStatus": 200,
+          "totalDurationMs": 19
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.068958738Z",
+          "httpStatus": 200,
+          "totalDurationMs": 18
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.349871250Z",
+          "httpStatus": 200,
+          "totalDurationMs": 256
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.351306266Z",
+          "httpStatus": 200,
+          "totalDurationMs": 272
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.353246367Z",
+          "httpStatus": 200,
+          "totalDurationMs": 285
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.402440594Z",
+          "httpStatus": 200,
+          "totalDurationMs": 330
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.403352547Z",
+          "httpStatus": 200,
+          "totalDurationMs": 327
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.404185998Z",
+          "httpStatus": 200,
+          "totalDurationMs": 319
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.405654401Z",
+          "httpStatus": 200,
+          "totalDurationMs": 319
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.407188932Z",
+          "httpStatus": 200,
+          "totalDurationMs": 378
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.412626741Z",
+          "httpStatus": 200,
+          "totalDurationMs": 324
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.415947556Z",
+          "httpStatus": 200,
+          "totalDurationMs": 310
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.419487313Z",
+          "httpStatus": 200,
+          "totalDurationMs": 351
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.419724242Z",
+          "httpStatus": 200,
+          "totalDurationMs": 333
+        },
+        {
+          "timestamp": "2026-09-27T23:08:37.490535810Z",
+          "httpStatus": 200,
+          "totalDurationMs": 408
+        },
+        {
+          "timestamp": "2026-09-27T23:08:38.358761669Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1262
+        },
+        {
+          "timestamp": "2026-09-27T23:08:41.387439306Z",
+          "httpStatus": 200,
+          "totalDurationMs": 21
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.008874337Z",
+          "httpStatus": 200,
+          "totalDurationMs": 20
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.068985930Z",
+          "httpStatus": 200,
+          "totalDurationMs": 39
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.077587927Z",
+          "httpStatus": 200,
+          "totalDurationMs": 20
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.079846526Z",
+          "httpStatus": 200,
+          "totalDurationMs": 17
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.082878031Z",
+          "httpStatus": 200,
+          "totalDurationMs": 20
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.357421116Z",
+          "httpStatus": 200,
+          "totalDurationMs": 294
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.358541398Z",
+          "httpStatus": 200,
+          "totalDurationMs": 296
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.368163829Z",
+          "httpStatus": 200,
+          "totalDurationMs": 278
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.369483034Z",
+          "httpStatus": 200,
+          "totalDurationMs": 305
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.369997989Z",
+          "httpStatus": 200,
+          "totalDurationMs": 303
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.371073838Z",
+          "httpStatus": 200,
+          "totalDurationMs": 290
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.375864253Z",
+          "httpStatus": 200,
+          "totalDurationMs": 297
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.419883543Z",
+          "httpStatus": 200,
+          "totalDurationMs": 338
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.421845073Z",
+          "httpStatus": 200,
+          "totalDurationMs": 331
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.425815274Z",
+          "httpStatus": 200,
+          "totalDurationMs": 326
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.432684087Z",
+          "httpStatus": 200,
+          "totalDurationMs": 356
+        },
+        {
+          "timestamp": "2026-09-27T23:08:42.455986721Z",
+          "httpStatus": 200,
+          "totalDurationMs": 387
+        },
+        {
+          "timestamp": "2026-09-27T23:08:43.397952641Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1314
+        },
+        {
+          "timestamp": "2026-09-27T23:08:45.900823814Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:45.961342152Z",
+          "httpStatus": 200,
+          "totalDurationMs": 8
+        },
+        {
+          "timestamp": "2026-09-27T23:08:46.572680333Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:08:46.574089311Z",
+          "httpStatus": 200,
+          "totalDurationMs": 11
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.017152440Z",
+          "httpStatus": 200,
+          "totalDurationMs": 22
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.030750207Z",
+          "httpStatus": 200,
+          "totalDurationMs": 51
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.068207160Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.068652153Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.074297305Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.075766689Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.081023753Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.083518982Z",
+          "httpStatus": 200,
+          "totalDurationMs": 17
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.084121355Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.084134143Z",
+          "httpStatus": 200,
+          "totalDurationMs": 6
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.085465513Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.086118179Z",
+          "httpStatus": 200,
+          "totalDurationMs": 16
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.088376372Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.088560410Z",
+          "httpStatus": 200,
+          "totalDurationMs": 10
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.088833465Z",
+          "httpStatus": 200,
+          "totalDurationMs": 9
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.090192933Z",
+          "httpStatus": 200,
+          "totalDurationMs": 5
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.107707758Z",
+          "httpStatus": 200,
+          "totalDurationMs": 12
+        },
+        {
+          "timestamp": "2026-09-27T23:08:47.481027502Z",
+          "httpStatus": 200,
+          "totalDurationMs": 396
+        },
+        {
+          "timestamp": "2026-09-27T23:08:48.712297774Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1683
+        },
+        {
+          "timestamp": "2026-09-27T23:08:49.976963279Z",
+          "httpStatus": 200,
+          "totalDurationMs": 445
+        },
+        {
+          "timestamp": "2026-09-27T23:08:51.376847484Z",
+          "httpStatus": 200,
+          "totalDurationMs": 22
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.061116953Z",
+          "httpStatus": 200,
+          "totalDurationMs": 10
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.062067767Z",
+          "httpStatus": 200,
+          "totalDurationMs": 49
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.062829657Z",
+          "httpStatus": 200,
+          "totalDurationMs": 58
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.065447928Z",
+          "httpStatus": 200,
+          "totalDurationMs": 3
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.089846336Z",
+          "httpStatus": 200,
+          "totalDurationMs": 4
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.159618267Z",
+          "httpStatus": 200,
+          "totalDurationMs": 55
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.429027787Z",
+          "httpStatus": 200,
+          "totalDurationMs": 338
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.429966285Z",
+          "httpStatus": 200,
+          "totalDurationMs": 329
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.432793611Z",
+          "httpStatus": 200,
+          "totalDurationMs": 326
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.432835821Z",
+          "httpStatus": 200,
+          "totalDurationMs": 333
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.432996539Z",
+          "httpStatus": 200,
+          "totalDurationMs": 329
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.434141050Z",
+          "httpStatus": 200,
+          "totalDurationMs": 343
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.434958975Z",
+          "httpStatus": 200,
+          "totalDurationMs": 327
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.439098294Z",
+          "httpStatus": 200,
+          "totalDurationMs": 325
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.439197830Z",
+          "httpStatus": 200,
+          "totalDurationMs": 323
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.445495554Z",
+          "httpStatus": 200,
+          "totalDurationMs": 323
+        },
+        {
+          "timestamp": "2026-09-27T23:08:52.517671609Z",
+          "httpStatus": 200,
+          "totalDurationMs": 412
+        },
+        {
+          "timestamp": "2026-09-27T23:08:53.399223018Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1277
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.082047703Z",
+          "httpStatus": 200,
+          "totalDurationMs": 35
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.114716092Z",
+          "httpStatus": 200,
+          "totalDurationMs": 36
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.477843112Z",
+          "httpStatus": 200,
+          "totalDurationMs": 390
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.478394361Z",
+          "httpStatus": 200,
+          "totalDurationMs": 395
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.479027872Z",
+          "httpStatus": 200,
+          "totalDurationMs": 403
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.480400446Z",
+          "httpStatus": 200,
+          "totalDurationMs": 398
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.491013227Z",
+          "httpStatus": 200,
+          "totalDurationMs": 403
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.495271169Z",
+          "httpStatus": 200,
+          "totalDurationMs": 407
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.496657574Z",
+          "httpStatus": 200,
+          "totalDurationMs": 408
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.496863964Z",
+          "httpStatus": 200,
+          "totalDurationMs": 408
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.496908701Z",
+          "httpStatus": 200,
+          "totalDurationMs": 414
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.498595170Z",
+          "httpStatus": 200,
+          "totalDurationMs": 405
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.500621485Z",
+          "httpStatus": 200,
+          "totalDurationMs": 409
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.508889828Z",
+          "httpStatus": 200,
+          "totalDurationMs": 415
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.509324108Z",
+          "httpStatus": 200,
+          "totalDurationMs": 412
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.510716017Z",
+          "httpStatus": 200,
+          "totalDurationMs": 412
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.590356774Z",
+          "httpStatus": 200,
+          "totalDurationMs": 498
+        },
+        {
+          "timestamp": "2026-09-27T23:08:57.764303590Z",
+          "httpStatus": 200,
+          "totalDurationMs": 26236
+        },
+        {
+          "timestamp": "2026-09-27T23:08:58.518972084Z",
+          "httpStatus": 200,
+          "totalDurationMs": 1426
+        }
+      ],
+      "profiles": [
+        {
+          "timestamp": "2026-09-27T23:07:27.236199317Z",
+          "phase": "scan",
+          "profile": {
+            "totalMs": 9099.7,
+            "idleMs": 6370.3,
+            "gcMs": 50.7,
+            "top": [
+              {
+                "frame": "(idle)",
+                "selfMs": 6370.3,
+                "pct": 70
+              },
+              {
+                "frame": "run",
+                "selfMs": 1540,
+                "pct": 16.9,
+                "callers": [
+                  {
+                    "frame": "insertCupHandleDiagnostic @ agent/db.js:2682",
+                    "selfMs": 943.7
+                  },
+                  {
+                    "frame": "setState @ agent/db.js:2507",
+                    "selfMs": 212.9
+                  },
+                  {
+                    "frame": "detectFlip @ quant/signals.js:17",
+                    "selfMs": 179.4
+                  }
+                ]
+              },
+              {
+                "frame": "get",
+                "selfMs": 741.5,
+                "pct": 8.1,
+                "callers": [
+                  {
+                    "frame": "scopeCoverage @ lib/account-scope.js:142",
+                    "selfMs": 553.4
+                  },
+                  {
+                    "frame": "nextCashflowWindow @ services/cashflow-collector.js:18",
+                    "selfMs": 148.6
+                  },
+                  {
+                    "frame": "countUnattributed @ lib/account-scope.js:96",
+                    "selfMs": 20.3
+                  }
+                ]
+              },
+              {
+                "frame": "dispatch",
+                "selfMs": 103.4,
+                "pct": 1.1,
+                "callers": [
+                  {
+                    "frame": "startPhaseProfile @ services/cpu-profile.js:151",
+                    "selfMs": 103.4
+                  }
+                ]
+              },
+              {
+                "frame": "(garbage collector)",
+                "selfMs": 50.7,
+                "pct": 0.6
+              }
+            ]
+          }
+        },
+        {
+          "timestamp": "2026-09-27T23:07:33.731514427Z",
+          "phase": "monitor",
+          "profile": {
+            "totalMs": 6121.2,
+            "idleMs": 5013,
+            "gcMs": 38.2,
+            "top": [
+              {
+                "frame": "(idle)",
+                "selfMs": 5013,
+                "pct": 81.9
+              },
+              {
+                "frame": "get",
+                "selfMs": 349.2,
+                "pct": 5.7,
+                "callers": [
+                  {
+                    "frame": "scopeCoverage @ lib/account-scope.js:142",
+                    "selfMs": 295.9
+                  },
+                  {
+                    "frame": "countUnattributed @ lib/account-scope.js:96",
+                    "selfMs": 20.3
+                  },
+                  {
+                    "frame": "inspectSilentGap @ services/log-inspector.js:328",
+                    "selfMs": 16.7
+                  }
+                ]
+              },
+              {
+                "frame": "run",
+                "selfMs": 338.9,
+                "pct": 5.5,
+                "callers": [
+                  {
+                    "frame": "setState @ agent/db.js:2507",
+                    "selfMs": 204.2
+                  },
+                  {
+                    "frame": "recordAccountHistory @ services/account-history.js:12",
+                    "selfMs": 91.9
+                  },
+                  {
+                    "frame": "monitorOnePosition @ agent/loop.js:2601",
+                    "selfMs": 15.9
+                  }
+                ]
+              },
+              {
+                "frame": "dispatch",
+                "selfMs": 98.9,
+                "pct": 1.6,
+                "callers": [
+                  {
+                    "frame": "startPhaseProfile @ services/cpu-profile.js:151",
+                    "selfMs": 98.9
+                  }
+                ]
+              },
+              {
+                "frame": "all",
+                "selfMs": 68.5,
+                "pct": 1.1,
+                "callers": [
+                  {
+                    "frame": "inspectUnheededDirective @ services/log-inspector.js:297",
+                    "selfMs": 20.3
+                  },
+                  {
+                    "frame": "mergeAccountAudits @ services/naked-position-guard.js:878",
+                    "selfMs": 19.4
+                  },
+                  {
+                    "frame": "comparisonStatus @ services/scanner-comparison.js:135",
+                    "selfMs": 10.1
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "timestamp": "2026-09-27T23:08:19.559329496Z",
+          "phase": "scan",
+          "profile": {
+            "totalMs": 3471.4,
+            "idleMs": 1869.3,
+            "gcMs": 0,
+            "top": [
+              {
+                "frame": "(idle)",
+                "selfMs": 1869.3,
+                "pct": 53.8
+              },
+              {
+                "frame": "run",
+                "selfMs": 1401.3,
+                "pct": 40.4,
+                "callers": [
+                  {
+                    "frame": "insertCupHandleDiagnostic @ agent/db.js:2682",
+                    "selfMs": 861.5
+                  },
+                  {
+                    "frame": "setState @ agent/db.js:2507",
+                    "selfMs": 297.2
+                  },
+                  {
+                    "frame": "detectFlip @ quant/signals.js:17",
+                    "selfMs": 124.5
+                  }
+                ]
+              },
+              {
+                "frame": "dispatch",
+                "selfMs": 100.9,
+                "pct": 2.9,
+                "callers": [
+                  {
+                    "frame": "startPhaseProfile @ services/cpu-profile.js:151",
+                    "selfMs": 100.9
+                  }
+                ]
+              },
+              {
+                "frame": "volumeProfile @ lib/indicators.js:229",
+                "selfMs": 10.2,
+                "pct": 0.3
+              },
+              {
+                "frame": "(anonymous) @ services/fib-strategy.js:782",
+                "selfMs": 10.1,
+                "pct": 0.3
+              }
+            ]
+          }
+        },
+        {
+          "timestamp": "2026-09-27T23:08:26.075060984Z",
+          "phase": "monitor",
+          "profile": {
+            "totalMs": 6129.1,
+            "idleMs": 5500,
+            "gcMs": 5.1,
+            "top": [
+              {
+                "frame": "(idle)",
+                "selfMs": 5500,
+                "pct": 89.7
+              },
+              {
+                "frame": "run",
+                "selfMs": 224.8,
+                "pct": 3.7,
+                "callers": [
+                  {
+                    "frame": "setState @ agent/db.js:2507",
+                    "selfMs": 209.4
+                  },
+                  {
+                    "frame": "monitorOnePosition @ agent/loop.js:2601",
+                    "selfMs": 12.3
+                  },
+                  {
+                    "frame": "beat @ services/heartbeat.js:480",
+                    "selfMs": 3.1
+                  }
+                ]
+              },
+              {
+                "frame": "get",
+                "selfMs": 190.4,
+                "pct": 3.1,
+                "callers": [
+                  {
+                    "frame": "nextCashflowWindow @ services/cashflow-collector.js:18",
+                    "selfMs": 190.4
+                  }
+                ]
+              },
+              {
+                "frame": "dispatch",
+                "selfMs": 108.8,
+                "pct": 1.8,
+                "callers": [
+                  {
+                    "frame": "startPhaseProfile @ services/cpu-profile.js:151",
+                    "selfMs": 108.8
+                  }
+                ]
+              },
+              {
+                "frame": "all",
+                "selfMs": 10.1,
+                "pct": 0.2,
+                "callers": [
+                  {
+                    "frame": "comparisonStatus @ services/scanner-comparison.js:135",
+                    "selfMs": 5.1
+                  },
+                  {
+                    "frame": "mergeAccountAudits @ services/naked-position-guard.js:878",
+                    "selfMs": 5.1
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
