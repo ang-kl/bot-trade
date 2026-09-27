@@ -346,3 +346,26 @@ test('PR-AN: cpp-verify builds from its own directory, so it cannot inherit the 
   assert.doesNotMatch(df, /COPY\s+cpp-verify\b/, 'same')
   assert.match(df, /COPY\s+src\s+\.\/src/, 'the sources come from this directory')
 })
+
+// cpp-verify's twin of the gateways' /health fix (owner 27-09, "including the
+// cpp-verify leak"). GET /health answers UNAUTHENTICATED (http_server.cpp
+// exempts it; Railway probes bare) and the repository is public, and it
+// listed sessions[].accounts — every ctidTraderAccountId the verifier's history
+// sessions were authorized on. cpp-verify/src/tests/test_health_view.cpp tests
+// the builder, but main.cpp is outside every C++ test binary, so the call site
+// is what this pins: `true` where `trusted` belongs, or the old inline loop
+// back beside the view, republishes every id with the C++ suite green
+// (CLAUDE.md #4). No Node code reads cpp-verify's /health (independent-
+// protection.js reads /protection-status and /watchdog-status, verify-client.js
+// /connect and /verify, all with the bearer), so nothing downstream moves.
+test('cpp-verify GET /health builds sessions through health_view with the caller\'s trust, never a literal', () => {
+  const main = src('../../cpp-verify/src/main.cpp').replace(/\/\/.*$/gm, '')
+  assert.match(main, /server\.route\("GET", "\/health", \[&\]\(const HttpRequest& req\) \{\s*auto authIt = req\.headers\.find\("authorization"\);\s*const bool trusted = authIt != req\.headers\.end\(\) && authIt->second == "Bearer " \+ secret;/,
+    'trusted is the bearer check, computed in the /health route')
+  assert.match(main, /o\.set\("sessions", health_view::sessions\(rows, trusted\)\);/,
+    'the sessions block is health_view::sessions under the caller\'s trust')
+  assert.doesNotMatch(main, /health_view::sessions\([^;]*,\s*true\s*\)/, 'never a literal true')
+  assert.equal((main.match(/\.set\("sessions",/g) || []).length, 1, 'and no second sessions block is assembled beside it')
+  assert.doesNotMatch(main, /\.set\("accounts", jsn::Value\(std::move\(accts\)\)\)/,
+    'and the old inline account list is gone from main.cpp')
+})
