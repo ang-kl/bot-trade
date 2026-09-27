@@ -32,6 +32,26 @@ function EntryRelay({ status }) {
   </div>
 }
 
+// V3 CV-2 (round 3): cpp-verify's delivery gate. A status without it (a
+// verifier before CV-2, a busy reply) says so, never reads as open or muted.
+// An unmute a stale backlog refuses is named with its remedy: the dispose
+// route it needs is not built, so nothing on this page can lift it.
+function DeliveryGate({ status }) {
+  const d = status?.delivery
+  if (!d || typeof d.muted !== 'boolean') return <p>Delivery gate: not reported by this cpp-verify build.</p>
+  const n = v => (v == null || !Number.isFinite(Number(v)) ? 'Unverified' : String(v))
+  const unmute = d.unmuteRefusal === 'stale_backlog'
+    ? `REFUSED — ${n(d.staleBacklog?.count)} held item(s) older than ${n(Math.round(Number(d.staleBacklog?.olderThanMs) / 60000))} min must be disposed of first, and the dispose route is not built yet`
+    : d.unmuteRefusal === 'soak_active' ? 'refused until the 24 h soak ends' : d.muted ? 'would apply' : 'not needed (not muted)'
+  // OPEN only as the verifier reports it: not muted is not the same claim.
+  const gate = d.muted ? 'MUTED' : d.open === true ? 'OPEN' : `CLOSED (${d.reason || 'reason not reported'})`
+  return <>
+    <p>Delivery gate: {gate}{d.soakActive === true ? ` · soak ends ${stamp(d.soakEndsAtMs)}` : ''}. An unmute now: {unmute}.
+      {status.muteNotDurable === true ? ` The mute is NOT on disk yet: a restart could reopen delivery (${status.muteFallback || 'fallback not reported'}).` : ''}</p>
+    <p>Due to send (demand): {n(d.wouldSend?.total)} ({n(d.wouldSend?.urgent)} urgent); an open verifier would deliver, at one a probe cycle (up to {n(d.sendCeilingPerHour)} an hour): {n(d.wouldDeliver?.total)} ({n(d.wouldDeliver?.urgent)} urgent){d.saturated === true ? ' — SATURATED: more was due than it can send' : ''}. Refused at the 512-item bound, one per message: {n(d.refused?.total)}.</p>
+  </>
+}
+
 export default function ControllerRuntime({ runtime }) {
   const now = useTableClock(1000)
   if (!runtime) return <p role="status">Tick and protection status unavailable.</p>
@@ -60,7 +80,8 @@ export default function ControllerRuntime({ runtime }) {
           <p>Master notification permission: {onOff(runtime.watchdog.status.masterEnabled)}. Delivery credentials configured: {onOff(runtime.watchdog.status.deliveryCredentialsConfigured)}. Incident owner configured: {onOff(runtime.watchdog.status.incidentOwnerConfigured)}.</p>
           <p>{runtime.watchdog.status.error || 'No reported storage error'}. External verifier observer: {runtime.watchdog.status.externalObserver}.</p>
           <p>Effective probe interval: {count(runtime.watchdog.status.policy?.probeMs)} ms; service grace: {count(runtime.watchdog.status.policy?.serviceGraceMs)} ms; management overdue grace: {count(runtime.watchdog.status.policy?.managementGraceMs)} ms; scanner overdue grace: {count(runtime.watchdog.status.policy?.scannerGraceMs)} ms.</p>
-          <p>Pending deliveries: {Object.keys(runtime.watchdog.status.outbox || {}).length}; capacity refusals: {count(runtime.watchdog.status.dropped)}. Telegram acceptance is not confirmation that the message was read.</p>
+          <p>Pending deliveries: {Object.keys(runtime.watchdog.status.outbox || {}).length}; items not stored (every refused offer and each retry of it, evictions, incidents over the cap): {count(runtime.watchdog.status.dropped)}. Telegram acceptance is not confirmation that the message was read.</p>
+          <DeliveryGate status={runtime.watchdog.status} />
           <div className="overflow-x-auto"><table className="w-full text-left">
             <caption className="text-left font-semibold">Independent watchdog service receipts</caption>
             <thead><tr>{['Service', 'Latest probe', 'Reachable / valid work contract', 'Last valid receipt', 'Retained work items'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>

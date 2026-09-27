@@ -428,7 +428,12 @@ async function maybeRecoverAuth(err, now = Date.now()) {
 /** TEST SEAM: reset the cooldown so tests need not wait a minute. */
 export function _resetAuthRecoveryForTests() { lastAuthRecoveryAt = 0 }
 
-export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null) {
+// `recoverAuth` (default true, as before): false leaves the reactive token
+// refresh to other callers. V3 S-8's entry-path reads pass false: the loop
+// awaits them serially, the refresh is an unbounded OAuth request, and
+// wsGetSymbolById's errors are not tagged with their account, so B7's skip
+// could not tell a refused account's error from a rotated token.
+export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null, { recoverAuth = true } = {}) {
   let lastErr
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -436,7 +441,7 @@ export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null
     } catch (err) {
       lastErr = err
       const msg = err.message || ''
-      await maybeRecoverAuth(err)
+      if (recoverAuth) await maybeRecoverAuth(err)
       if (msg.includes('order rejected') || msg.includes('POSITION_NOT_FOUND')) throw err
       if (noRetry && noRetry(err)) throw err
       if (attempt < maxRetries) {
@@ -864,14 +869,19 @@ export function wsGetAccountsByToken(host, clientId, clientSecret, accessToken, 
  */
 const symbolsListCache = new Map() // host -> { at, promise }
 const SYMBOLS_LIST_TTL_MS = 6 * 60 * 60 * 1000
-export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000, { perAccount = false } = {}) {
+// `maxRetries` (default 2) and `recoverAuth` (default true) leave every
+// existing caller as it was. V3 S-8's entry path passes 0 and false with a
+// short timeout (entry-hours.js ENTRY_HOURS_MAP_TIMEOUT_MS). The pass-through
+// is pinned by ctrader-ws.test.js ("S-8: the entry options reach withRetry",
+// a FakeWs on the pooled socket seam: 1 connect and no refresh vs 3 and 1).
+export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000, { perAccount = false, maxRetries = 2, recoverAuth = true } = {}) {
   const read = () => withRetry(() => {
     const run = wsRun(host, [
       ...authSteps(clientId, clientSecret, accessToken, accountId),
       { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
     ], timeoutMs)
     return perAccount ? run.catch((err) => { throw tagAccount(err, accountId) }) : run
-  }, 2, 'wsGetSymbolsList')
+  }, maxRetries, 'wsGetSymbolsList', null, { recoverAuth })
   if (perAccount) return read()
   const cached = symbolsListCache.get(host)
   if (cached && Date.now() - cached.at < SYMBOLS_LIST_TTL_MS) return cached.promise
@@ -888,12 +898,18 @@ export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, acco
  * `schedule: [{ startSecond, endSecond }]` measured from the week start in
  * the symbol's schedule timezone, plus `scheduleTimeZone`.
  */
-export function wsGetSymbolById(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000) {
+// `maxRetries` (default 2) and `recoverAuth` (default true) leave every
+// existing caller as it was. V3 S-8's entry-path calendar read passes 0 and
+// false (entry-hours.js): one attempt bounded by its timeout, no backoff, no
+// reactive refresh, because the loop awaits each entry serially. The
+// pass-through is pinned by ctrader-ws.test.js ("S-8: the entry options reach
+// withRetry", a FakeWs on the pooled socket seam).
+export function wsGetSymbolById(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000, { maxRetries = 2, recoverAuth = true } = {}) {
   const ids = (Array.isArray(symbolIds) ? symbolIds : [symbolIds]).map(Number).filter(Number.isFinite)
   return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: ids } }, expect: PT.SYMBOL_BY_ID_RES },
-  ], timeoutMs), 2, 'wsGetSymbolById')
+  ], timeoutMs), maxRetries, 'wsGetSymbolById', null, { recoverAuth })
 }
 
 /**
@@ -1158,33 +1174,109 @@ export function wsStreamSpots(host, clientId, clientSecret, accessToken, account
 }
 
 /**
+ * One-shot probe: subscribe to a single symbol's spots and answer WHY there
+ * is or is not a quote (M7 round 4, I3 of fast-monitor-probes.js):
+ *
+ *   { kind: 'quote', bid, ask }  — the first tick(s) carrying BOTH sides
+ *                                  (bid/ask merged across ticks);
+ *   { kind: 'empty', reason }    — the broker CONFIRMED the subscription and
+ *                                  printed no two-sided price before the
+ *                                  deadline: a closed market or a quiet
+ *                                  symbol, the one answer that may back off;
+ *   { kind: 'failed', reason }   — anything else: the deadline passed before
+ *                                  the subscription was confirmed (a hung
+ *                                  handshake), an auth or cTrader error, the
+ *                                  socket erroring or closing, a throw.
+ *
+ * Never rejects; always settles by `timeoutMs`. The socket is closed however
+ * the probe ends, including a stream that arrives after the deadline.
+ *
+ * `streamFn` (test-only): overrides `wsStreamSpots` so a fake stream can be
+ * injected — every production call omits it.
+ *
+ * @returns {Promise<{kind: 'quote', bid: number, ask: number}|{kind: 'empty'|'failed', reason: string}>}
+ */
+export async function wsProbeSpot(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs = 6000, streamFn = wsStreamSpots) {
+  let stream = null
+  // M7 nit round (26-09-2026): wsStreamSpots is awaited asynchronously
+  // (`.then(s => { stream = s })`) while the promise it feeds can ALSO settle
+  // from the timer or the error callback. If the timer (or error callback)
+  // fires FIRST, the `finally` below runs with `stream` still null — a no-op
+  // — and the real stream, arriving afterwards, would never be closed: a
+  // leaked authenticated socket. `settled` records that the answer is in, so
+  // a late-arriving stream closes itself; `closeStream` makes that
+  // self-close and the outer `finally` idempotent together.
+  let settled = false
+  let streamClosed = false
+  let subscribed = false
+  const closeStream = () => {
+    if (streamClosed || !stream) return
+    streamClosed = true
+    try { stream.close() } catch { /* already closed */ }
+  }
+  try {
+    return await new Promise((resolve) => {
+      const quote = { bid: null, ask: null }
+      let timer = null
+      const answer = (a) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(a)
+      }
+      timer = setTimeout(() => answer(subscribed
+        ? { kind: 'empty', reason: `subscribed; no two-sided price within ${timeoutMs} ms` }
+        : { kind: 'failed', reason: `timeout: the subscription was not confirmed within ${timeoutMs} ms` }), timeoutMs)
+      let started
+      try {
+        started = streamFn(host, clientId, clientSecret, accessToken, accountId, [symbolId], (tick) => {
+          if (tick.bid != null) quote.bid = tick.bid
+          if (tick.ask != null) quote.ask = tick.ask
+          if (quote.bid != null && quote.ask != null) answer({ kind: 'quote', bid: quote.bid, ask: quote.ask })
+        }, (reason) => answer({ kind: 'failed', reason: `closed: ${reason ?? 'socket closed'}` }),
+        // Nit round 3 (26-09-2026): without a connect deadline, an auth
+        // handshake that never completes (broker never answers, no error,
+        // no close event) leaves wsStreamSpots's own promise pending
+        // forever — it never resolves OR rejects — and the underlying
+        // socket is never told to close. wsStreamSpots arms exactly this
+        // timer when given `connectTimeoutMs`; this reuses `timeoutMs`.
+        { connectTimeoutMs: timeoutMs })
+      } catch (err) {
+        answer({ kind: 'failed', reason: err?.message || 'stream failed' })
+        return
+      }
+      Promise.resolve(started)
+        .then(s => {
+          stream = s
+          subscribed = true
+          if (settled) closeStream()
+        })
+        .catch((err) => answer({ kind: 'failed', reason: err?.message || 'stream failed' }))
+    })
+  } finally {
+    settled = true
+    closeStream()
+  }
+}
+
+/**
  * One-shot quote: subscribe to a single symbol's spots, resolve with the
  * first tick that carries BOTH sides (merging bid/ask across ticks), then
  * close. Resolves null on timeout instead of rejecting — callers use this
  * as a best-effort pre-trade check and must fail open.
  *
+ * Contract unchanged by M7: a quote, or null for EVERY other outcome
+ * (wsProbeSpot's `empty` and `failed` alike). Callers that must tell those
+ * apart ask wsProbeSpot.
+ *
+ * `streamFn` (test-only): overrides `wsStreamSpots` so a fake stream can be
+ * injected — every production call omits it.
+ *
  * @returns {Promise<{bid: number, ask: number}|null>}
  */
-export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs = 6000) {
-  let stream = null
-  try {
-    return await new Promise((resolve) => {
-      const quote = { bid: null, ask: null }
-      const timer = setTimeout(() => resolve(null), timeoutMs)
-      wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, [symbolId], (tick) => {
-        if (tick.bid != null) quote.bid = tick.bid
-        if (tick.ask != null) quote.ask = tick.ask
-        if (quote.bid != null && quote.ask != null) {
-          clearTimeout(timer)
-          resolve({ ...quote })
-        }
-      }, () => { clearTimeout(timer); resolve(null) })
-        .then(s => { stream = s })
-        .catch(() => { clearTimeout(timer); resolve(null) })
-    })
-  } finally {
-    try { stream?.close() } catch { /* already closed */ }
-  }
+export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs = 6000, streamFn = wsStreamSpots) {
+  const r = await wsProbeSpot(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs, streamFn)
+  return r.kind === 'quote' ? { bid: r.bid, ask: r.ask } : null
 }
 
 // Exposed for tests that need to stub WebSocket behaviour.

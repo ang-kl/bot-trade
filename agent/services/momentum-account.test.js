@@ -11,7 +11,7 @@ import { mkdtempSync } from '../test-support/temp-dir.js'
 import { initDB, getState, setState } from '../db.js'
 import {
   momentumAccountConfig, loadMomentumAccount, isMomentumAccount, momentumAccountIds, momentumAccountStateKey, migrateLegacyPassCursor, ALL_ACCOUNTS, MOMENTUM_ACCOUNT_KEY, MOMENTUM_ACCOUNT_STATE_KEY, MOMENTUM_UNIVERSE_KEY,
-  momentumUniverse, momentumUniverseSymbols, volTargetLots, dailyDue, thresholdMs, buildUniverse, runMomentumAccountPass, momentumAccountReport,
+  momentumUniverse, momentumUniverseSymbols, volTargetLots, dailyDue, thresholdMs, buildUniverse, runMomentumAccountPass, momentumAccountReport, workingTsmomLimitSlots,
 } from './momentum-account.js'
 import { buildEntrySynth, loadMomentumBook, momentumBookConfig, runMomentumBook, MOMENTUM_BOOK_CONFIG_KEY, TSMOM_STRATEGY } from './momentum-book.js'
 import { MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
@@ -137,6 +137,29 @@ test('buildUniverse: unknown names are reported, unaffordable names are excluded
   const small = await buildUniverse(db, { accountId: MOM, creds: {}, cfg: loadMomentumAccount(db), deps: fakes({ equity: 300 }).deps })
   assert.equal(small.universe.BTCUSD.ok, false)
   assert.match(small.universe.BTCUSD.reason, /below_min_lot/)
+})
+
+test('SF2 (T4 fix round): a working tsmom limit holds a slot, so market entries cannot fill every slot before it fills', async () => {
+  const run = async (withLimit) => {
+    const db = fresh()
+    setState(db, MOMENTUM_ACCOUNT_KEY, JSON.stringify({ accountId: MOM, volTargetPct: 10, maxPositions: 2, cadence: 'daily', dailyRunAfterUtc: '21:05' }))
+    setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD', 'NATGAS'] }))
+    setState(db, MOMENTUM_SHADOW_STATE_KEY, JSON.stringify({ holdings: { BTCUSD: { side: 'long', entryRank: 0.95, entryConviction: 9 }, NATGAS: { side: 'long', entryRank: 0.85, entryConviction: 8 } }, refused: {}, lastRunMs: 1, lastUniverse: 20 }))
+    // A limit placed before T4, still working, on a name the shadow no longer ranks.
+    if (withLimit) db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, status, note, strategy, account_id) VALUES ('XAUUSD','1d','o-pre',1,2300,2200,NULL,1,'working','pending-closed',?,?)`).run(TSMOM_STRATEGY, MOM)
+    const f = fakes()
+    const r = await runMomentumAccountPass(db, { acct: { accountId: MOM, isLive: false }, creds: {}, bookCfg: loadMomentumBook(db), buildEntrySynth, deps: f.deps, now: DUE })
+    const slots = workingTsmomLimitSlots(db, MOM)
+    db.close()
+    return { r, f, slots }
+  }
+  const control = await run(false)
+  assert.equal(control.r.entries, 2, `control: both slots taken by market entries: ${JSON.stringify(control.r.skipped)}`)
+  const held = await run(true)
+  assert.equal(held.slots, 1, 'the working limit is counted once')
+  assert.equal(held.r.entries, 1, `one slot left: ${JSON.stringify(held.r.skipped)}`)
+  assert.deepEqual(held.f.calls.autoTrade.map(c => c.symbol), ['BTCUSD'])
+  assert.ok(held.r.skipped.some(x => /^at maxPositions 2/.test(x)), JSON.stringify(held.r.skipped))
 })
 
 test('the daily pass: not due → nothing; due → the shadow\'s tradable longs are entered best rank first, sized by the vol target, once per day; a dropped name exits next day', async () => {

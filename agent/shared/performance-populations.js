@@ -219,7 +219,10 @@ export function sessionBuckets(report, accountId = 'all') {
   const windowOf = key => report?.windows?.find(w => w.key === `session:${key}`)?.session
   const buckets = REPORT_SESSIONS.map(s => {
     const w = windowOf(s.key), intervals = Array.isArray(w?.intervals) ? w.intervals : null
-    return { key: s.key, exchange: s.exchange, intervals, hint: sessionHint(s, intervals),
+    // V3 WEB-6b: the report's own holiday verdict for this exchange, or null
+    // from an older server (then nothing is claimed either way).
+    const holidays = w?.holidays && typeof w.holidays.status === 'string' ? w.holidays : null
+    return { key: s.key, exchange: s.exchange, intervals, hint: sessionHint(s, intervals, holidays), holidays,
       open: typeof w?.openNow === 'boolean' ? w.openNow : null, ...stat(s.key) }
   })
   // Two rows with the same UTC intervals show the same figures by
@@ -228,4 +231,17 @@ export function sessionBuckets(report, accountId = 'all') {
   for (const b of buckets) b.twin = sig(b) ? buckets.find(o => o !== b && sig(o) === sig(b))?.key ?? null : null
   const sw = report?.sessionWindow
   return { source: sw?.source ?? null, exceptions: sw?.exceptions ?? null, buckets, off: stat('OFF'), total: stat('ALL') }
+}
+
+// V3 WEB-6b: the caption says, per exchange, what the REPORT applied — broker-
+// listed holidays and early closes where a stock's calendar lists them, regular
+// hours elsewhere. A report without the per-session verdict claims nothing new.
+export function sessionHolidayCaption(stats) {
+  const buckets = stats?.buckets ?? []
+  const applied = buckets.filter(b => b.holidays?.status === 'applied').map(b => b.exchange)
+  if (!buckets.some(b => b.holidays)) return 'public holidays and early closes not applied yet (WEB-6b), so a holiday’s closes still count in that exchange’s row'
+  if (buckets.some(b => b.holidays?.status === 'unavailable')) return 'public holidays and early closes not applied: the broker calendars could not be read (WEB-6b)'
+  const rest = buckets.filter(b => b.holidays?.status !== 'applied').map(b => b.exchange)
+  if (!applied.length) return `public holidays and early closes not applied: no broker calendar of a stock on ${rest.join(', ')} (WEB-6b)`
+  return `broker-listed public holidays and early closes applied for ${applied.join(', ')}${rest.length ? `; not applied for ${rest.join(', ')} (no broker calendar of their stocks)` : ''} (WEB-6b)`
 }

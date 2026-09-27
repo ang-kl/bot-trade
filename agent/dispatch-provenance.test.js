@@ -15,7 +15,7 @@ const strip = (s) => s.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
 
 test('the intent row carries proposal_entry_price and analysis_id; the fill stamps broker_sl_initial', () => {
   const src = strip(readFileSync(new URL('./loop.js', import.meta.url), 'utf8'))
-  const intent = src.slice(src.indexOf('const intentId = db.prepare('), src.indexOf('const intentId = db.prepare(') + 900)
+  const intent = src.slice(src.indexOf('const insertIntent = () => db.prepare('), src.indexOf('const insertIntent = () => db.prepare(') + 900)
   assert.match(intent, /origin, origin_source, proposal_entry_price, analysis_id\)/)
   assert.match(intent, /Number\.isFinite\(Number\(synth\.entry\)\) \? Number\(synth\.entry\) : null/)
   assert.match(intent, /Number\.isFinite\(Number\(synth\.analysisId\)\) \? Number\(synth\.analysisId\) : null/)

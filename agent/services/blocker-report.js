@@ -1,4 +1,4 @@
-import { REGIME_BLOCK_STAGE, EVIDENCE_GATE_STAGE, PRODUCER_RETIRED_STAGE } from './gate-skips.js'
+import { REGIME_BLOCK_STAGE, EVIDENCE_GATE_STAGE, PRODUCER_RETIRED_STAGE, MARKET_HOURS_UNKNOWN_STAGE } from './gate-skips.js'
 import { ROSTER_ONLY_STAGES, ROSTER_STAGES, ATTRIBUTION_MARKED_STAGES, ACCOUNT_ATTRIBUTION_MARK } from './decision-log.js'
 import { getState } from '../db.js'
 import { engineStatusFor, basesFor } from './entry-mode.js'
@@ -13,7 +13,8 @@ const clip = (value, n = 200) => value == null ? null : String(value).slice(0, n
 const UPSTREAM = ['account_horizon', 'account_probe', 'account_watchlist', 'armed_scope_prefilter',
   'cluster_conviction', 'equity_stop', 'fundable_universe', 'horizon', 'lesson_decay', 'margin_pool',
   'ratchet_gate', 'stage_matrix', 'style_filter', 'symbol_strategy',
-  'watchlist_override', 'weekend_quiet', 'entry_mode', 'regime_gate', REGIME_BLOCK_STAGE, EVIDENCE_GATE_STAGE, PRODUCER_RETIRED_STAGE]
+  'watchlist_override', 'weekend_quiet', 'entry_mode', 'regime_gate', REGIME_BLOCK_STAGE, EVIDENCE_GATE_STAGE, PRODUCER_RETIRED_STAGE,
+  MARKET_HOURS_UNKNOWN_STAGE]
 
 // V3 C4 (WP-C PR-C1): the sidecar's tick refusals, as its decision ring
 // writes them (cpp-exec/src/tick_firer.cpp). `fire_refused` carries the check

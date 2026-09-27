@@ -105,7 +105,7 @@ import { checkRegimeGate } from './regime-gate.js'
 import { recordDecision } from './decision-log.js'
 import { recordPositionEvent } from './position-events.js'
 import { roundToDigits } from './trade-guard.js'
-import { isMomentumAccount, runMomentumAccountPass, loadMomentumAccount, dailyDue, thresholdMs } from './momentum-account.js'
+import { isMomentumAccount, runMomentumAccountPass, loadMomentumAccount, dailyDue, thresholdMs, workingTsmomLimitSlots } from './momentum-account.js'
 import { bookEntryWrite } from './book-entry-write.js'
 import { bookCloseVolume } from './book-close-volume.js'
 import { runMomentumRankExit } from './momentum-rank-exit.js'
@@ -876,7 +876,8 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         const fu = deps.fundable(accountId, symbol)
         if (fu && fu.ok === false) { summary.skipped.push(`${accountId} ${symbol}: ${fu.reason}`); return 'skipped' }
       }
-      if ((openCount.get(accountId)?.n || 0) >= cfg.maxPositionsPerAccount) { summary.skipped.push(`${accountId}: at maxPositionsPerAccount`); return 'capped' }
+      // SF2 (T4 fix round): a working tsmom limit holds a slot too.
+      if ((openCount.get(accountId)?.n || 0) + workingTsmomLimitSlots(db, accountId) >= cfg.maxPositionsPerAccount) { summary.skipped.push(`${accountId}: at maxPositionsPerAccount`); return 'capped' }
       const may = deps.mayTrade ? deps.mayTrade(accountId, symbol) : { ok: true, item: null }
       if (!may.ok) { summary.skipped.push(`${accountId} ${symbol}: ${may.reason}`); return 'skipped' }
       // THIS ACCOUNT's id (03-09-2026): `symbolIdFor(creds, symbol)` reads the

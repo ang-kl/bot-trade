@@ -6,7 +6,8 @@ import { realisedRR, checkTradeConsistency } from './trade-consistency.js'
 import { CLEAN_BOT_ORIGINS } from '../lib/trade-origin.js'
 import { categorize, MARKETS, closedAtMs, dayAnchorMs, isFxWeekend } from '../shared/formulas.js'
 import { emptyPopulation } from '../shared/performance-populations.js'
-import { REPORT_SESSIONS, SESSION_SOURCE, SESSION_EXCEPTIONS, sessionIntervals, sessionOpenAt, inIntervals } from '../shared/report-sessions.js'
+import { REPORT_SESSIONS, SESSION_SOURCE, SESSION_EXCEPTIONS, SESSION_EXCEPTIONS_APPLIED, SESSION_HOLIDAY_EVIDENCE, sessionIntervals, inIntervals, closureIntervals, subtractIntervals } from '../shared/report-sessions.js'
+import { sessionHolidayRows } from './session-holidays.js'
 import { cupHandleFunnel } from './cup-handle-funnel.js'
 import { calendarDate, calendarDay, calendarLedgerWindows } from '../shared/performance-calendar.js'
 import { storageReport } from './storage-report.js'
@@ -43,8 +44,28 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
   // V3 WEB-6: each exchange's regular cash intervals for THIS window, derived
   // in its own IANA zone (DST applied, lunch breaks excluded, weekends in local
   // time). A close is in a session when its instant falls inside one of them.
-  const sessions = REPORT_SESSIONS.map(s => ({ key: s.key, exchange: s.exchange, tz: s.tz, hours: s.hours,
-    intervals: sessionIntervals(s, sessionFrom, sessionTo), openNow: sessionOpenAt(s, now) }))
+  // V3 WEB-6b: broker-listed holidays and early closes cut out of the
+  // exchanges whose stocks' calendars list them (session-holidays.js); every
+  // other exchange keeps regular hours and says so (`holidays.status`). A
+  // failed read applies nothing and says that, never a silent "no holiday".
+  let holidayRows = null
+  try { holidayRows = sessionHolidayRows(db) } catch { holidayRows = null }
+  const sessions = REPORT_SESSIONS.map(s => {
+    const regular = sessionIntervals(s, sessionFrom, sessionTo), regularNow = sessionIntervals(s, now, now + 1)
+    const evidence = holidayRows?.[s.exchange]
+    if (!evidence) {
+      const status = holidayRows == null ? 'unavailable' : s.exchange in SESSION_HOLIDAY_EVIDENCE ? 'no_evidence' : 'not_listed'
+      return { key: s.key, exchange: s.exchange, tz: s.tz, hours: s.hours, intervals: regular, openNow: inIntervals(now, regularNow),
+        holidays: { status } }
+    }
+    const lo = Math.min(sessionFrom, now) - DAY, hi = Math.max(sessionTo, now + 1) + DAY
+    const { closures, unreadable } = closureIntervals(evidence.rows, lo, hi)
+    const inWindow = closures.filter(c => c.to > sessionFrom && c.from < sessionTo)
+    return { key: s.key, exchange: s.exchange, tz: s.tz, hours: s.hours,
+      intervals: subtractIntervals(regular, closures), openNow: inIntervals(now, subtractIntervals(regularNow, closures)),
+      holidays: { status: 'applied', identities: evidence.identities, observedAt: evidence.observedAt, unreadable,
+        closures: inWindow, closedNow: closures.some(c => now >= c.from && now < c.to) } }
+  })
   const defs = [...ledgerDefs.map(w => ({ ...w, ledger: true })),
     { key: '24h', from: now - DAY, to: now }, { key: 'day', from: day0, to: now },
     ...sessions.map(s => ({ key: `session:${s.key}`, from: sessionFrom, to: sessionTo, session: s })),
@@ -133,7 +154,8 @@ export function buildPerformancePopulations(db, { now = Date.now(), maxGroups = 
     markets: MARKETS, coverage, windows, daily: [...daily.values()], bestByAccount: Object.fromEntries(best),
     lastCloseByAccount: Object.fromEntries([...last].map(([a, t]) => [a, new Date(t).toISOString()])),
     openByAccount: db.prepare('SELECT account_id,count(*) AS n FROM monitored_positions WHERE status=\'active\' GROUP BY account_id').all(),
-    sessionWindow: { from: sessionFrom, to: sessionTo, weekend, source: SESSION_SOURCE, exceptions: SESSION_EXCEPTIONS } }
+    sessionWindow: { from: sessionFrom, to: sessionTo, weekend, source: SESSION_SOURCE,
+      exceptions: sessions.some(s => s.holidays.status === 'applied') ? SESSION_EXCEPTIONS_APPLIED : SESSION_EXCEPTIONS } }
 }
 
 // A report that could not be produced is UNAVAILABLE, never empty (owner

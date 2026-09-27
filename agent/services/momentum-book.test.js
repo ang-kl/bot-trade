@@ -350,6 +350,25 @@ test('PR-D: the trail moves a short\'s stop DOWN and never up; the ledger follow
   assert.equal(db.prepare(`SELECT status FROM momentum_book`).get().status, 'exit_sent')
 })
 
+test('SF2 (T4 fix round): on the row-cursor path a working tsmom limit holds a slot of maxPositionsPerAccount', async () => {
+  const run = async (limitStatus) => {
+    const db = fresh()
+    setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true, maxPositionsPerAccount: 1 }))
+    setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+    shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+    db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, status, note, strategy, account_id) VALUES ('XAUUSD','1d','o-pre',1,2300,2200,NULL,1,?,'pending-closed',?,?)`).run(limitStatus, TSMOM_STRATEGY, DEMO)
+    const f = fakes()
+    return { r: await runMomentumBook(db, { accounts, credsFor, deps: f.deps }), f }
+  }
+  const held = await run('working')
+  assert.equal(held.r.entries, 0, `the one slot is held by the working limit: ${JSON.stringify(held.r.skipped)}`)
+  assert.equal(held.f.calls.autoTrade.length, 0)
+  assert.ok(held.r.skipped.some(s => /at maxPositionsPerAccount/.test(s)), JSON.stringify(held.r.skipped))
+  // Control: a cancelled limit holds nothing.
+  const free = await run('cancelled')
+  assert.equal(free.r.entries, 1, JSON.stringify(free.r.skipped))
+})
+
 test('accounts where tsmom_long is not armed, or autotrade is off, are skipped; the cap holds; an unfilled autoTrade leaves no row', async () => {
   const db = fresh()
   setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify({ enabled: true, maxPositionsPerAccount: 1 }))

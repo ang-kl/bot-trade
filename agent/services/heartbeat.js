@@ -232,6 +232,30 @@ export const CONTROLLERS = {
   // QUIET: the watchdog writes its stall / failing events to action_log and
   // sends no message — delivery waits on OD-10 (Telegram is off).
   tick_feeder:         { label: 'Tick permit feeder (stall alarm)', expectedSec: 120, factor: 3, quiet: true, dormantWhen: tickFeederDormantReason },
+  // V3 CV-2 (OD-10): cpp-verify's watchdog read, beaten by the independent
+  // protection relay (30 s) with the verifier's delivery gate as its detail:
+  // muted, the 24 h soak's start/end and the would-send counters. QUIET like
+  // tick_feeder — a watchdog-delivery beat must not itself page.
+  // Dormant while VERIFY_URL / EXEC_SECRET are unset (no relay runs), and
+  // while cpp-verify reports its supervision switched off (WATCHDOG_ENABLED
+  // unset there). (Kept here, not imported from independent-protection.js,
+  // which imports beat from this module.)
+  verify_watchdog:     { label: 'Independent watchdog (cpp-verify) delivery gate', expectedSec: 30, factor: 10, quiet: true, dormantWhen: verifyWatchdogDormantReason },
+}
+
+export function verifyWatchdogDormantReason(db, { env = process.env } = {}) {
+  const missing = ['VERIFY_URL', 'EXEC_SECRET'].filter(k => !String(env[k] || '').trim())
+  if (missing.length) return `independent checker not configured (${missing.join(', ')} unset) — nothing reads cpp-verify's watchdog`
+  // CV-2 fix round nit 7: WATCHDOG_ENABLED is cpp-verify's own switch, so Node
+  // reads it from the status the relay last stored (independent-protection.js).
+  // `enabled: false` with no error is supervision off by design — a switch,
+  // not a fault; an unreadable or failing status is not dormancy.
+  let relayed = null
+  try { relayed = JSON.parse(getState(db, 'independent_watchdog_json') || 'null') } catch { return null }
+  const s = relayed?.status
+  return s && s.enabled === false && !s.error
+    ? "cpp-verify's watchdog supervision is switched off (WATCHDOG_ENABLED unset on cpp-verify) — it raises and delivers nothing, so no soak is running"
+    : null
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
