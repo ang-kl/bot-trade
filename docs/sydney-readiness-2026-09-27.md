@@ -15,7 +15,7 @@ The requested deadline is 28 September 05:00 SGT, derived from the owner's messa
 3. Assumptions: the approved account list and numerical caps remain authoritative. The proposed `/feed` correction is an inference from the 404 evidence; gateway variable values were not read. No scanner-account selection is inferred from the user's login.
 4. Invariants: account isolation; mandatory native protection; durable plan before send; broker-confirmed fill before binding; no duplicate submission on uncertainty; resting capacity and margin reservation; unchanged sizing, thresholds, scope and scanner order authority.
 5. Execution: local code changes listed below. No runtime settings or broker operations have been performed.
-6. Evidence: all local gates pass. Final backend: 7,152 passed, three skipped, zero failures. Frontend: 1,311 passed. C++: 40 test binaries and the production compile passed; the changed mirror test passed ThreadSanitizer. Independent review, PR CI and production readback are separate gates; see the progress log and [PR #1170](https://github.com/ang-kl/bot-trade/pull/1170) for their recorded state.
+6. Evidence: the completed full local gate recorded 7,152 backend passes, three skips and zero failures; 1,311 frontend passes; 40 C++ test binaries and the production compile passed; the changed mirror test passed ThreadSanitizer. Subsequent exposure corrections passed eight targeted checks and require final-head regression and CI. Independent review, PR CI and production readback are separate gates; see the progress log and [PR #1170](https://github.com/ang-kl/bot-trade/pull/1170) for their current recorded state.
 
 ## File changes
 
@@ -30,7 +30,7 @@ The requested deadline is 28 September 05:00 SGT, derived from the owner's messa
 | `agent/services/momentum-partial-runtime.js` | Recovers a fill transfer after restart or delayed ledger reconciliation before running the existing deferred binder. Per-row failures are visible. |
 | `agent/loop.js` | Routes the existing open-market HTF branch through the new momentum transport for already-enabled accounts only. |
 | `agent/services/momentum-entry-t4.test.js`, `agent/routes/momentum-target-status.test.js` | Checks the revised authorised routing and producer-status declarations. Closed-market and unlisted-account protections remain covered. |
-| `agent/services/resting-exposure.js`, `.test.js` | Account-scoped order union, correct lots-versus-units interpretation, broker/local deduplication and exact adopted-fill replacement. Includes manual broker entry orders. |
+| `agent/services/resting-exposure.js`, `.test.js` | Account-scoped order union, correct lots-versus-units interpretation, broker/local deduplication and fully filled adopted-position replacement. Partial fills retain a conservative reserve; distinct broker order IDs cannot borrow another order's fill or margin proof. Includes manual broker entry orders. |
 | `agent/services/risk.js` | Adds working entry orders to existing position caps and adds explicit resting-margin reservation to used margin. Unknown pending margin blocks new margin allocation. |
 | `agent/services/closed-market-limits.js` | Protects T4 reservations from clock-only expiry or missing broker snapshots; ledger evidence settles terminal exposure. |
 | `agent/db.js` | Adds an index for account/order lineage lookups used in resting exposure. No destructive migration. |
