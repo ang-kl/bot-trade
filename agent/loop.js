@@ -42,6 +42,7 @@ import { accountPregate, proposalPregate, invalidateAccountPregate } from './ser
 import { markTickRepush } from './services/tick-permits.js'
 import { recordPositionEvent } from './services/position-events.js'
 import { recordError } from './services/error-log.js'
+import { createLoopBreaker } from './lib/loop-breaker.js'
 import { startLagMonitor, sampleLag, markLagPhase } from './services/event-loop-lag.js'
 import { noteLoopEnd, stampFirst } from './services/runtime-record.js'
 import { measureAmend } from './services/protection-latency.js'
@@ -110,7 +111,11 @@ let crossSideEquitySeeded = false
 // (V3 I1 checker B1). 'pending' until its first run this process; 'reported'
 // with a pnlPassSummary after each run; 'awaited' once a beat has read it.
 let pnlCrossSidePass = { state: 'pending' }
-let consecutiveErrors = 0
+// The consecutive-failing-cycle counter, backoff and breaker (27-09-2026:
+// the counter was zeroed after every cycle, failing ones included, so it never
+// passed 1 — see lib/loop-breaker.js). Values unchanged: back off from 5, cap
+// one sleep at 15 min, trip at MAX_CONSECUTIVE_ERRORS.
+const loopBreaker = createLoopBreaker({ maxConsecutive: MAX_CONSECUTIVE_ERRORS, backoffAfter: 5, backoffCapMs: 15 * 60_000 })
 // S-2 small round (item 3): the entries-held reason the momentum book's hold
 // line last printed, so a reason that stands all weekend prints once.
 let lastBookHeldReason = null
@@ -202,14 +207,14 @@ async function runBudgetedSubPhase(db, name, startWork, budgetMs = SUB_PHASE_BUD
  * Clear the in-process consecutive-error count. POST /actions/reset-breaker
  * was only clearing the DB-persisted `circuit_breaker_tripped_at`/`errors_today`
  * — the trip condition at the top of runLoop() checks the in-memory
- * `consecutiveErrors` counter above, which a route handler in a different
+ * consecutive-error counter (`loopBreaker` above), which a route handler in a different
  * module can't reach directly. Without this, a "successful" manual reset
  * looked fine in the response but the very next tick re-tripped the breaker
  * instantly (consecutiveErrors was still >= MAX_CONSECUTIVE_ERRORS), so the
  * loop stayed halted until the whole process restarted.
  */
 export function resetCircuitBreaker() {
-  consecutiveErrors = 0
+  loopBreaker.reset()
 }
 
 /**
@@ -2818,11 +2823,15 @@ async function runLoop(db) {
   }
 
   // ---- Circuit breaker: hard stop after too many consecutive failures ----
-  if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+  if (loopBreaker.isTripped()) {
     const tripped = getState(db, 'circuit_breaker_tripped_at')
     if (!tripped) {
+      const consecutiveErrors = loopBreaker.count
       setState(db, 'circuit_breaker_tripped_at', new Date().toISOString())
       log(`CIRCUIT BREAKER TRIPPED — ${consecutiveErrors} consecutive errors. Loop halted.`)
+      // The heartbeat says why main_loop stops beating, rather than going
+      // silent and reading as a stall with no cause.
+      await hbeat(db, 'main_loop', false, `circuit breaker tripped — ${consecutiveErrors} consecutive failing cycles; loop halted until POST /actions/reset-breaker`)
       if (process.env.TELEGRAM_BOT_TOKEN) {
         try {
           const { sendMessage } = await import('./services/telegram.js')
@@ -2838,6 +2847,7 @@ async function runLoop(db) {
   loopRunning = true
   loopCount++
   lastLoopActivityAt = Date.now()
+  loopBreaker.beginCycle()
   const start = Date.now()
   // Cycle soft deadline (incident 2026-07-28, third fix of the night: the
   // per-sub-phase budgets each held, but under a SYSTEMIC slowdown — every
@@ -2992,7 +3002,7 @@ async function runLoop(db) {
   }
 
   // V3 M1: whether this cycle's main block threw, for the boot record's loop
-  // entries (the counter below is reset after the catch, so it cannot say).
+  // entries.
   let cycleErrored = false
   try {
     // S-2: what the momentum book (after `end symbolsJson`) needs from the
@@ -5848,12 +5858,14 @@ async function runLoop(db) {
   } catch (err) {
     cycleErrored = true
     console.error('[loop] error:', err.message)
-    await hbeat(db, 'main_loop', false, err.message)
-    consecutiveErrors++
+    const failure = loopBreaker.recordFailure(loopIntervalMs(db))
+    const consecutiveErrors = failure.count
+    await hbeat(db, 'main_loop', false, `${err.message} [consecutive failing cycles: ${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}]`)
     recordError(db, 'loop', err.message)
+    log(`Loop cycle failed — ${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS} consecutive failing cycles`)
 
-    if (consecutiveErrors >= 5) {
-      const backoff = Math.min(15 * 60_000, loopIntervalMs(db) * consecutiveErrors)
+    if (failure.backoffMs > 0) {
+      const backoff = failure.backoffMs
       log(`Self-healing: ${consecutiveErrors} consecutive errors — backing off ${Math.round(backoff / 60000)}m`)
       // Persist the breakdown on the way out too: the phase that was running
       // when a cycle died is exactly the one worth seeing.
@@ -5868,8 +5880,14 @@ async function runLoop(db) {
     }
   }
 
-  consecutiveErrors = 0
-  setState(db, 'circuit_breaker_tripped_at', null)
+  // Only a CLEAN cycle clears the streak; a failing one below the backoff
+  // threshold falls through here with its count kept.
+  const cycleEnd = loopBreaker.endCycle()
+  if (cycleEnd.reset) log(`Circuit breaker counter cleared — clean cycle after ${cycleEnd.was} consecutive failing cycle(s)`)
+  if (cycleEnd.clean && getState(db, 'circuit_breaker_tripped_at')) {
+    setState(db, 'circuit_breaker_tripped_at', null)
+    log('Circuit breaker reset — clean cycle completed')
+  }
 
   // ---- Housekeeping: data retention (once per 8 hours, WALL CLOCK) --------
   //
