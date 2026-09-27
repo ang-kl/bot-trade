@@ -82,8 +82,10 @@ test('wiring pins: loop.js stores the anchored bracket and runs the drift gate b
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
   // The ledger writes read the anchored bracket, not the proposal's.
   assert.ok(src.includes("anchorBracketToFill({ side, proposalEntry: synth.entry, fill: executionPrice, sl: synth.sl, tp1: synth.tp1, tp2: synth.tp2 })"))
-  assert.ok(src.includes('const slP = anchored.sl ?? null'))
-  assert.ok(src.includes('const tpP = anchored.tp1 ?? null'))
+  // V3 T4: a bound momentum plan's bracket replaces the float anchor; every
+  // other entry still stores the anchored stop and target.
+  assert.ok(src.includes('const slP = boundPlan ? boundPlan.originalStop : (anchored.sl ?? null)'))
+  assert.ok(src.includes('const tpP = boundPlan ? boundPlan.brokerTarget : (anchored.tp1 ?? null)'))
   assert.ok(src.includes('entryP, slP, tpP, volLots,'), 'trades row takes the anchored stop and target')
   assert.ok(/entryP,\s*slP,\s*tpP,\s*synth\.synthesis \|\| '',/.test(src), 'monitored_positions takes the anchored stop and target')
   assert.ok(!/slP, synth\.tp1 \?\? null, volLots/.test(src), 'the proposal target is no longer written to the trade row')
@@ -108,7 +110,7 @@ test('wiring pins: loop.js stores the anchored bracket and runs the drift gate b
   assert.ok(block.includes('confirmFill(() => wsReconcile(host, clientId, clientSecret, accessToken, accountId), positionId)'))
   assert.ok(!block.includes('confirmFill(() => execReconcile('), 'the sidecar snapshot is not a fill confirmation')
   assert.ok(block.includes('executionPrice = confirmed'))
-  assert.ok(confirm < src.indexOf('const entryP = executionPrice ?? synth.entry ?? null'), 'the confirmed fill is what entryP reads')
+  assert.ok(confirm < src.indexOf('const entryP = boundPlan ? boundPlan.entry : (executionPrice ?? synth.entry ?? null)'), 'the confirmed fill is what entryP reads')
   assert.ok(confirm < src.indexOf('anchorBracketToFill({ side, proposalEntry: synth.entry, fill: executionPrice'), 'the confirmed fill is what the anchor reads')
 })
 

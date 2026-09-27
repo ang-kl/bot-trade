@@ -369,3 +369,26 @@ test('cpp-verify GET /health builds sessions through health_view with the caller
   assert.doesNotMatch(main, /\.set\("accounts", jsn::Value\(std::move\(accts\)\)\)/,
     'and the old inline account list is gone from main.cpp')
 })
+
+// GW-1 checker B1b, shipped ahead of GW-1 (owner 27-09, "(b) sooner"). GET
+// /health answers UNAUTHENTICATED (http_server.cpp exempts it; Railway probes
+// bare), and it published guard.entryEpochs — keyed by ctidTraderAccountId,
+// one per registry account, since #881 — and tick.shadowSim.costs.symbolClass
+// — keyed by symbol id — to any caller. cpp-exec/src/tests/test_health_view.cpp
+// tests the builders, but main.cpp is outside every C++ test binary, so the
+// call site is the one thing that suite cannot see: `true` where `trusted`
+// belongs republishes every id with the C++ suite green (CLAUDE.md #4).
+test('GET /health builds guard and tick.shadowSim through health_view with the caller\'s trust, never a literal', () => {
+  // trailing comments stripped too, so no sentence can satisfy an assertion
+  const main = src('../../cpp-exec/src/main.cpp').replace(/\/\/.*$/gm, '')
+  assert.match(main, /const bool trusted = execSecret\.empty\(\) \|\|\s*\(authIt != req\.headers\.end\(\) && authIt->second == "Bearer " \+ execSecret\);/,
+    'trusted is the bearer check, computed in the route')
+  assert.match(main, /v\.set\("guard", health_view::guard\(engine\.guard\(\)\.snapshot\(\), trusted\)\);/,
+    'the guard block is health_view::guard under the caller\'s trust')
+  assert.match(main, /tj\.set\("shadowSim", health_view::shadowSim\(\*sj, trusted\)\)/,
+    'tick.shadowSim is health_view::shadowSim under the caller\'s trust')
+  assert.doesNotMatch(main, /health_view::(?:guard|shadowSim)\([^;]*,\s*true\s*\)/, 'never a literal true')
+  assert.doesNotMatch(main, /\.set\("shadowSim", \*sj\)/, 'never the raw sim object')
+  assert.equal((main.match(/\.set\("guard",/g) || []).length, 1, 'and no second guard block is assembled beside it')
+  assert.equal((main.match(/\.set\("shadowSim",/g) || []).length, 1, 'nor a second shadowSim')
+})

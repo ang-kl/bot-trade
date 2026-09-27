@@ -32,6 +32,7 @@
 #include "event_journal.hpp"
 #include "request_pacer.hpp"
 #include "peer_probe.hpp"
+#include "health_view.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
 #include "log.hpp"
@@ -584,9 +585,9 @@ int main(int argc, char** argv) {
     // raw ctidTraderAccountIds were the one piece of broker-identifying data
     // on that open response (audit #12). Node's roster gates NEED the ids
     // (exec-engine sidecarRoster, heartbeat rosterDrift), so they are served
-    // only when the caller authenticates — or when no EXEC_SECRET is
-    // configured at all, where redaction would protect nothing. Everyone
-    // always gets the count.
+    // only when the caller authenticates. (The execSecret.empty() arm below
+    // never runs: main() exits at boot without EXEC_SECRET.) Everyone always
+    // gets the count.
     v.set("accountCount", static_cast<double>(engine.accountIds().size()));
     auto authIt = req.headers.find("authorization");
     const bool trusted = execSecret.empty() ||
@@ -672,30 +673,11 @@ int main(int argc, char** argv) {
     } else {
       v.set("vpo", jsn::Value(nullptr));
     }
-    {
-      const GuardSnapshot g = engine.guard().snapshot();
-      jsn::Value gj{jsn::Object{}};
-      gj.set("halt", g.halt);
-      gj.set("requireBracket", g.requireBracket);
-      gj.set("requireTarget", g.requireTarget);
-      gj.set("maxOrderVolume", g.maxOrderVolume);
-      gj.set("haltAccountCount", static_cast<double>(g.haltAccounts.size()));
-      // AUDIT 11-09-2026 (plan B05): the LIST, so the keeper's guard sync can
-      // compare identity — two accounts swapped for two others read as "in
-      // sync" by count alone. Bearer-gated like the account roster.
-      if (trusted) {
-        jsn::Array ha;
-        for (long long id : g.haltAccounts) ha.push_back(jsn::Value(static_cast<double>(id)));
-        gj.set("haltAccounts", jsn::Value(std::move(ha)));
-      }
-      // P2a: the fenced epochs, so the keeper's guard sync can see whether
-      // its push bound (and an older keeper reads a plain object it ignores).
-      jsn::Value eo{jsn::Object{}};
-      for (const auto& kv : g.entryEpochs) eo.set(std::to_string(kv.first), static_cast<double>(kv.second));
-      gj.set("entryEpochs", std::move(eo));
-      gj.set("entryEpochCount", static_cast<double>(g.entryEpochs.size()));
-      v.set("guard", std::move(gj));
-    }
+    // GW-1 (checker B1b): the guard block is built by health_view::guard —
+    // haltAccounts AND entryEpochs (keyed by ctidTraderAccountId, one per
+    // registry account) only on the trusted branch; the open route keeps
+    // haltAccountCount and entryEpochCount.
+    v.set("guard", health_view::guard(engine.guard().snapshot(), trusted));
     {
       // P3a: the recorder's summary — null when TICK_SPOOL_PATH is unset,
       // so "disabled" and "configured, idle" never read the same. The
@@ -722,7 +704,9 @@ int main(int argc, char** argv) {
         tj.set("symbols", static_cast<double>(ts.perSymbol.size()));
         tj.set("shadow", tickShadow.load());
         tj.set("signals", static_cast<double>(tickSignals.load()));
-        { std::lock_guard<std::mutex> lk(tickSimMtx); if (auto sj = jsn::parse(tickSim.json())) tj.set("shadowSim", *sj); }
+        // GW-1 (checker B1b): costs.symbolClass is keyed by symbol id — the
+        // open route carries costs.symbolClassCount instead (health_view).
+        { std::lock_guard<std::mutex> lk(tickSimMtx); if (auto sj = jsn::parse(tickSim.json())) tj.set("shadowSim", health_view::shadowSim(*sj, trusted)); }
         // P6b: whether this executor PLACES tick entries and for how many
         // accounts — the TM-42 marker reads places:false until P6c.
         if (auto ej = jsn::parse(tickFirer.statusJson())) {

@@ -6,7 +6,7 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { initDB, setState } from '../db.js'
 import stateRouter from './state.js'
-import { MOMENTUM_TARGET_PRODUCERS } from '../services/momentum-entry-contract.js'
+import { MOMENTUM_TARGET_PRODUCERS, momentumTargetStatus } from '../services/momentum-entry-contract.js'
 import { runMomentumPartialPass, MOMENTUM_PARTIAL_PASS_KEY } from '../services/momentum-partial-runtime.js'
 import { registerPartialPlan } from '../services/momentum-partial-manager.js'
 import { planMomentumTargets } from '../services/momentum-target-policy.js'
@@ -18,6 +18,18 @@ async function fixture(t) {
   t.after(async () => { server.closeAllConnections(); await new Promise(r => server.close(r)); db.close() })
   return { db, get: async q => { const r = await fetch(`http://127.0.0.1:${server.address().port}/state/momentum-targets${q || ''}`); return { status: r.status, body: await r.json(), cache: r.headers.get('cache-control') } } }
 }
+
+test('a switched-off or unreadable market switch reads "wired, switched off" and never as on (T4)', () => {
+  const db = initDB(':memory:')
+  try {
+    for (const sw of [{ market: false, accounts: ['11'], error: null }, { market: false, accounts: [], error: 'unreadable (off): boom' }]) {
+      const out = momentumTargetStatus(db, { accountId: '11', loadSwitch: () => sw })
+      assert.deepEqual([out.wiring.market.enabled, out.wiring.market.switch], [false, 'off'])
+      assert.ok(out.integrationGaps.some(g => /^market: wired, switched off /.test(g)), JSON.stringify(out.integrationGaps))
+      assert.equal(out.runtimeIntegration, 'INCOMPLETE')
+    }
+  } finally { db.close() }
+})
 
 test('target status is read-only, explicit about absent plans, and requires an account or all', async t => {
   const { db, get } = await fixture(t)
@@ -31,8 +43,21 @@ test('target status is read-only, explicit about absent plans, and requires an a
   assert.equal(out.body.passHeartbeatAt, null)
   assert.equal(out.body.pass.fresh, false)
   assert.match(out.body.pass.unavailable, /never run/)
-  assert.deepEqual(Object.fromEntries(Object.entries(out.body.wiring).map(([k, w]) => [k, w.status])), { market: 'not wired', limit: 'not wired' })
+  // V3 T4: the market producer is wired and switched ON by the repo's
+  // config (owner OD-1, 27-09) for the accounts the file names only (B1).
+  // Account 11 is not named, so its read says so; the limit producer is not
+  // wired, and the pass never ran: three gaps.
+  assert.deepEqual(Object.fromEntries(Object.entries(out.body.wiring).map(([k, w]) => [k, w.status])), { market: 'wired', limit: 'not wired' })
+  assert.deepEqual([out.body.wiring.market.enabled, out.body.wiring.market.switch], [false, 'off'])
+  assert.deepEqual(out.body.wiring.market.accounts, ['46130058'])
+  assert.deepEqual([out.body.wiring.limit.enabled, out.body.wiring.limit.switch], [false, null])
+  assert.ok(out.body.integrationGaps.some(g => /^market: wired, switched on, but account 11 is not in /.test(g)), JSON.stringify(out.body.integrationGaps))
   assert.equal(out.body.integrationGaps.length, 3)
+  // The listed account reads it on, with no market gap.
+  const listed = await get('?account=46130058')
+  assert.deepEqual([listed.body.wiring.market.enabled, listed.body.wiring.market.switch], [true, 'on'])
+  assert.ok(!listed.body.integrationGaps.some(g => /^market: /.test(g)), JSON.stringify(listed.body.integrationGaps))
+  assert.ok(out.body.integrationGaps.some(g => /^limit: /.test(g)), JSON.stringify(out.body.integrationGaps))
   assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='momentum_target_intents'").get().n, 0)
 })
 
@@ -75,7 +100,9 @@ test('a running pass is reported by its heartbeat, a stale one as unavailable, a
   assert.equal(fresh.body.passHeartbeatAt, JSON.parse(db.prepare("SELECT value FROM agent_state WHERE key=?").get(MOMENTUM_PARTIAL_PASS_KEY).value).at)
   assert.equal(fresh.body.pass.fresh, true); assert.equal(fresh.body.pass.unavailable, null)
   assert.equal(fresh.body.runtimeIntegration, 'INCOMPLETE', 'a running pass with no producer feeding it is not a complete runtime')
+  // T4 (OD-1, B1): the unwired limit producer, and account 11 is not listed.
   assert.equal(fresh.body.integrationGaps.length, 2)
+  assert.match(fresh.body.integrationGaps[0], /^limit: /)
   assert.equal(fresh.body.executionAuthorized, false)
   setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify({ at: new Date(Date.now() - 16 * 60_000).toISOString(), ok: true, accounts: {} }))
   const stale = await get('?account=11')
@@ -147,10 +174,13 @@ test('a fresh pass that could not act on an account reports its triggers unavail
 })
 
 // A producer that records target intents is the only thing that can make the
-// wiring "wired". Pinned to the code: while no production file calls
-// recordMomentumEntry, both producers must say "not wired"; the first call
-// T4 adds turns this red until MOMENTUM_TARGET_PRODUCERS is updated with it.
-test('producer wiring is pinned to the code: no production caller of recordMomentumEntry, so nothing is wired', () => {
+// wiring "wired". Pinned to the code (V3 T4): the market producer is wired
+// because exactly one production file, loop.js, calls recordMomentumEntry,
+// and it does so inside autoTrade's market path, in the transaction that
+// writes the submitting trade. No resting path calls it, so `limit` stays
+// "not wired"; a new caller turns this red until MOMENTUM_TARGET_PRODUCERS
+// and this pin are updated in the same change.
+test('producer wiring is pinned to the code: the market path records target intents, no resting path does', () => {
   const agentDir = fileURLToPath(new URL('..', import.meta.url))
   const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1')
   const files = []
@@ -166,7 +196,19 @@ test('producer wiring is pinned to the code: no production caller of recordMomen
   assert.ok(files.length > 100, `scanned ${files.length} files`)
   const callers = files.filter(f => !f.endsWith('momentum-entry-contract.js') && /\brecordMomentumEntry\s*\(/.test(strip(readFileSync(f, 'utf8'))))
     .map(f => relative(agentDir, f))
-  assert.deepEqual(callers, [], 'a producer now records target intents: update MOMENTUM_TARGET_PRODUCERS (and this pin) in the same change')
-  assert.equal(MOMENTUM_TARGET_PRODUCERS.market.wired, false)
+  assert.deepEqual(callers, ['loop.js'], 'a new producer records target intents: update MOMENTUM_TARGET_PRODUCERS (and this pin) in the same change')
+  const loop = strip(readFileSync(join(agentDir, 'loop.js'), 'utf8'))
+  const start = loop.indexOf('export async function autoTrade('), end = loop.indexOf('\nexport ', start + 1)
+  const body = loop.slice(start, end)
+  const call = body.indexOf('recordMomentumEntry(db, {')
+  assert.ok(start > 0 && call > 0, 'the call is inside autoTrade')
+  assert.equal(loop.split('recordMomentumEntry(').length - 1, 1, 'one call site')
+  // Inside the transaction that inserts the submitting trade, and before the send.
+  const tx = body.lastIndexOf('intentId = db.transaction(() => {', call)
+  assert.ok(tx > 0 && body.indexOf('insertIntent()', tx) < call, 'the INSERT and the intent share one transaction')
+  assert.ok(call < body.indexOf('execPlaceOrder('), 'the intent is recorded before the order is sent')
+  // On the market path only: after the closed-market and HTF-limit refusals.
+  assert.ok(body.indexOf('closedMarketMomentumRefusal(') < call && body.indexOf('restingMomentumRefusal(') < call)
+  assert.equal(MOMENTUM_TARGET_PRODUCERS.market.wired, true)
   assert.equal(MOMENTUM_TARGET_PRODUCERS.limit.wired, false)
 })
