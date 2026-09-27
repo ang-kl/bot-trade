@@ -722,3 +722,15 @@ test('mutation check: the fold key\'s scope/attribution and pre-fix discriminato
     assert.equal(day.folded.length, 1, `RED if removing the ${name} still keeps the two rows apart — the mutation must actually merge them`)
   }
 })
+
+// V3 S-8: an UNKNOWN account calendar refuses the entry upstream of the risk
+// gate. Its skip is an upstream stop, never "other".
+test('S-8: a market_hours_unknown skip is an upstream stop for its own account', t => {
+  const { stop, read } = fixture(t)
+  stop('market_hours_unknown')
+  const r = read()
+  assert.equal(r.summary.upstream_stop.records, 1, 'RED if MARKET_HOURS_UNKNOWN_STAGE leaves UPSTREAM')
+  assert.equal(r.summary.other_stop.records, 0)
+  const row = r.records.find(x => x.stage === 'market_hours_unknown')
+  assert.equal(row.kind, 'upstream_stop')
+})

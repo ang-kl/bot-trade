@@ -56,7 +56,7 @@ import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 import { fleetFrom } from '../cockpit/cockpit-fleet.js'
 import Collapse from '../components/common/Collapse.jsx'
 import { accountNumbers } from "../lib/scope-label.js"
-import { reportStats, reportGroups, reportLedger, sessionBuckets } from '../../agent/shared/performance-populations.js'
+import { reportStats, reportGroups, reportLedger, sessionBuckets, sessionHolidayCaption } from '../../agent/shared/performance-populations.js'
 import { SESSION_SOURCE } from '../../agent/shared/report-sessions.js'
 import { performanceGradients, gradientData, gradientFoot, OVERLAP_LABEL, OVERLAP_TITLE } from '../lib/performance-gradients.js'
 import { ledgerMoneyNote } from '../lib/partial-money.js'
@@ -935,7 +935,9 @@ function SessionStatsBody({ stats }) {
             <span>
               <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{s.key}</span>
               {s.open === false && (
-                <span title={`outside ${s.exchange}’s regular cash hours right now — public holidays and early closes not applied (WEB-6b); the row keeps today’s closes`} style={{ marginLeft: 3, fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
+                <span title={s.holidays?.status === 'applied'
+                  ? `outside ${s.exchange}’s cash hours right now${s.holidays.closedNow ? ' — a broker-listed holiday or early close' : ''} (broker-listed holidays and early closes applied, WEB-6b); the row keeps today’s closes made in its hours`
+                  : `outside ${s.exchange}’s regular cash hours right now — public holidays and early closes not applied (WEB-6b); the row keeps today’s closes`} style={{ marginLeft: 3, fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
               )}
               {s.twin && (
                 <span title={`Same UTC cash-hours intervals as ${s.twin} in today’s window — identical figures are expected, not a bug.`} style={{ marginLeft: 3, fontSize: 'var(--fs-body)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_SB, border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>={s.twin}</span>
@@ -2509,7 +2511,7 @@ export default function Performance() {
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Today by market session</h3>
             <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>realised closes since {todayWin.label} · {sessionStats.source === SESSION_SOURCE
-              ? 'bucketed by each exchange’s regular cash hours in its own time zone (DST applied, lunch breaks excluded) · public holidays and early closes not applied yet (WEB-6b), so a holiday’s closes still count in that exchange’s row'
+              ? `bucketed by each exchange’s regular cash hours in its own time zone (DST applied, lunch breaks excluded) · ${sessionHolidayCaption(sessionStats)}`
               : sessionStats.source == null ? 'session buckets arrive with the report'
                 : 'approximate UTC session buckets from an older server'} · rows overlap · refreshes every minute while active · floating profit appears in current account readings</span>
             <SectionTools id="sessions" title="Today by Market Session table" window="today"
