@@ -24,6 +24,7 @@ import { getActiveSessions } from '../lib/sessions.js'
 import { expiryMsFor } from './pending-signals.js'
 import { stopTriggerField } from '../lib/order-protection.js'
 import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
+import { isFullMomentumLimitFill } from './resting-exposure.js'
 
 export const DEFAULT_CLOSED_MARKET_LIMITS = {
   on: true, // owner: on by default — closed-market setups get locked in
@@ -264,10 +265,24 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
     // T4 write-ahead reservations survive missing snapshots and local expiry.
     // Only ledger evidence can release them; accepted/pre-created positions
     // and an elapsed clock are not proof that broker exposure disappeared.
-    if (hasMomentumLimits && db.prepare('SELECT 1 FROM momentum_limit_intents WHERE pending_id=?').get(row.id)) {
-      const intent = db.prepare('SELECT state FROM entry_intents WHERE id=? AND account_id=?').get(row.intent_id, row.account_id)
-      const link = settleFill(row)
-      if (link.trade) continue
+    const momentumLimit = hasMomentumLimits && db.prepare('SELECT * FROM momentum_limit_intents WHERE pending_id=?').get(row.id)
+    if (momentumLimit) {
+      const intent = db.prepare('SELECT * FROM entry_intents WHERE id=? AND account_id=?').get(row.intent_id, row.account_id)
+      const link = findLimitFill(db, row)
+      const trade = link.trade && db.prepare('SELECT * FROM trades WHERE id=?').get(link.trade.id)
+      // FILLED also describes ORDER_PARTIAL_FILL. Keep the local reservation
+      // until the whole original volume is proved, even when broker_orders
+      // has not yet captured the working remainder or the clock has expired.
+      if (intent?.state === 'FILLED' && isFullMomentumLimitFill(trade, intent, momentumLimit)) {
+        // The risk gate counts active monitors, not bare open trade rows.
+        // Never remove the only slot while monitor adoption is incomplete.
+        const counted = trade.status === 'closed' || (trade.status === 'open'
+          && db.prepare("SELECT 1 FROM monitored_positions WHERE trade_id=? AND account_id=? AND status='active'").get(trade.id, row.account_id))
+        if (counted) {
+          settleFill(row)
+          continue
+        }
+      }
       if (['REJECTED', 'RELEASED', 'EXPIRED'].includes(intent?.state)) {
         markExpired.run(`momentum limit: ledger ${intent.state}`, row.id)
         expired++

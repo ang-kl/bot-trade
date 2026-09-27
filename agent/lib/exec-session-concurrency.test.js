@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { setImmediate as turn } from 'node:timers/promises'
-import { reconcile, pushSidecarSession, invalidateSidecarSession } from './exec-engine.js'
+import { reconcile, pushSidecarSession, invalidateSidecarSession, setExecGuard } from './exec-engine.js'
 
 const creds = (over = {}) => ({ ready: true, host: 'demo.ctraderapi.com', clientId: 'fixture',
   clientSecret: 'fixture', accessToken: 'fixture-token', accountId: '11', accountIds: ['11', '22', '33'], ...over })
@@ -58,5 +58,40 @@ test('failed forced connect does not poison the queue or become a successful bel
   await assert.rejects(pushSidecarSession(creds()), /fixture_connect_failed/)
   await pushSidecarSession(creds())
   await reconcile(creds())
+  assert.equal(seen.length, 2)
+})
+test('equivalent concurrent callers share a failed connect; a later call can retry', { timeout: 5000 }, async t => {
+  const failure = new Error('fixture_connect_timeout')
+  let failing = true
+  const seen = transport(t, async () => { await turn(); if (failing) throw failure })
+  const result = await Promise.allSettled([
+    setExecGuard(creds(), {}),
+    setExecGuard(creds({ accountId: '22', accountIds: ['33', '11', '22'] }), {}),
+    setExecGuard(creds({ accountId: '33' }), {}),
+  ])
+  assert.equal(seen.length, 1, 'waiting callers do not each spend another connection timeout')
+  assert.ok(result.every(r => r.status === 'rejected' && r.reason === failure))
+  failing = false
+  await setExecGuard(creds(), {})
+  assert.equal(seen.length, 2, 'settled failure is not cached')
+  await setExecGuard(creds(), {})
+  assert.equal(seen.length, 2, 'successful retry is memoised')
+})
+test('a forced resend queues a fresh attempt after a shared failed connection', { timeout: 5000 }, async t => {
+  let release
+  const failure = new Error('fixture_connect_timeout')
+  const seen = transport(t, (_row, n) => n === 1
+    ? new Promise((_resolve, reject) => { release = () => reject(failure) }) : Promise.resolve())
+  const callers = Promise.allSettled([setExecGuard(creds(), {}), setExecGuard(creds(), {})])
+  while (!release) await turn()
+  const forced = pushSidecarSession(creds())
+  await turn()
+  assert.equal(seen.length, 1)
+  release()
+  const result = await callers
+  assert.ok(result.every(r => r.status === 'rejected' && r.reason === failure))
+  assert.equal(await forced, true)
+  assert.equal(seen.length, 2, 'force is a separate attempt, never satisfied by the shared failure')
+  await setExecGuard(creds(), {})
   assert.equal(seen.length, 2)
 })

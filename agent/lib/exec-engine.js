@@ -170,12 +170,26 @@ export async function pushSidecarSession(creds) {
 }
 async function ensureSidecarSession(creds, { force = false } = {}) {
   const base = execBaseFor(creds)
+  const preceding = sessionPushes.get(base)
+  const requested = (Array.isArray(creds.accountIds) && creds.accountIds.length
+    ? creds.accountIds : [creds.accountId]).map(String)
+  // Equivalent concurrent callers share the result, INCLUDING a failure.
+  // Retrying once per waiter would turn one 30 s timeout into N * 30 s
+  // before a protective close or an explicit recovery push can proceed.
+  if (!force && preceding?.generation === sessionGeneration
+    && preceding.host === creds.host && preceding.token === creds.accessToken
+    && preceding.clientId === creds.clientId && preceding.clientSecret === creds.clientSecret
+    && requested.length === preceding.accounts.size && requested.every(id => preceding.accounts.has(id))) {
+    return preceding.task
+  }
   // Recheck the belief AFTER the preceding connect, so concurrent callers
   // neither repeat one roster nor overwrite each other's account additions.
   // A force is queued as a force, never satisfied by an older in-flight push.
-  const task = (sessionPushes.get(base) ?? Promise.resolve()).catch(() => {}).then(() => connectSidecarSession(creds, base, force))
-  sessionPushes.set(base, task)
-  try { await task } finally { if (sessionPushes.get(base) === task) sessionPushes.delete(base) }
+  const task = (preceding?.task ?? Promise.resolve()).catch(() => {}).then(() => connectSidecarSession(creds, base, force))
+  const push = { task, generation: sessionGeneration, host: creds.host, token: creds.accessToken,
+    clientId: creds.clientId, clientSecret: creds.clientSecret, accounts: new Set(requested) }
+  sessionPushes.set(base, push)
+  try { await task } finally { if (sessionPushes.get(base) === push) sessionPushes.delete(base) }
 }
 async function connectSidecarSession(creds, base, force) {
   const generation = sessionGeneration

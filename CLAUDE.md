@@ -1407,3 +1407,15 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   performed by this operation. The chosen return to account ending 0058
   remains unapplied. Detailed evidence and limitations are recorded in
   `docs/v3-momentum-target-policy-2026-09-24.progress.md`.
+
+- **27-09-2026 21:16 SGT, CODEX review checkpoint, partial corpus:**
+  latest visible reply before this checkpoint is **`№ 10,097`**; later visible
+  replies take precedence. Owner paragraph 10087.3 authorised review, scanner
+  alignment investigation and performance assessment. Source fixes cover
+  exposure reservation, failed-connect coalescing and account-roster IDs.
+  Focused checks passed; the full backend gate has a recorded 109-ms latency
+  failure requiring rerun, and current CI remains pending. Six warm browser
+  readiness observations and a private screenshot were captured; full
+  DevTools traces are unavailable. No further production mutation occurred.
+  PR #1170 remains draft and undeployed. See the dated review/readback and
+  append-only progress documents for exact evidence and unresolved gates.

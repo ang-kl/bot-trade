@@ -2,8 +2,12 @@ import { labelIntentId } from '../lib/trade-labels.js'
 
 const has = (db, name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
 const positionKey = (account, position) => `${account}|${String(position).replace(/\.0+$/, '')}`
-function fullFill(trade, intent, plan) {
-  if (!trade || !plan || trade.symbol !== intent.symbol || trade.side !== intent.side) return false
+export function isFullMomentumLimitFill(trade, intent, plan) {
+  if (!trade || !intent || !plan || trade.symbol !== intent.symbol || trade.side !== intent.side
+    || String(trade.account_id) !== String(intent.account_id)
+    || plan.intent_id !== intent.id || String(plan.account_id) !== String(intent.account_id)
+    || !intent.broker_position_id || trade.ctrader_position_id == null
+    || positionKey(trade.account_id, trade.ctrader_position_id) !== positionKey(intent.account_id, intent.broker_position_id)) return false
   let proposal
   try { proposal = JSON.parse(plan.proposal_json) } catch { return false }
   const lotSize = proposal?.evidence?.symbolMeta?.lotSize, expected = proposal?.plan?.volume
@@ -28,7 +32,7 @@ export function restingExposure(db, accountId) {
   const byId = hasLedger ? db.prepare('SELECT * FROM entry_intents WHERE id=? AND account_id=?') : null
   const byOrder = hasLedger ? db.prepare('SELECT * FROM entry_intents WHERE broker_order_id=? AND account_id=? LIMIT 1') : null
   const adopted = has(db, 'monitored_positions') ? db.prepare(`SELECT t.account_id,t.ctrader_position_id,t.symbol,t.side,t.volume FROM trades t
-    JOIN monitored_positions mp ON mp.trade_id=t.id AND mp.status='active'
+    JOIN monitored_positions mp ON mp.trade_id=t.id AND mp.account_id=t.account_id AND mp.status='active'
     WHERE t.status='open' AND (t.account_id=? OR ? IS NULL)`).all(acct, acct) : []
   const held = new Map()
   for (const trade of adopted) {
@@ -45,7 +49,7 @@ export function restingExposure(db, accountId) {
     const ordered = !matches(tagged) && row.order_id != null ? byOrder?.get(String(row.order_id), row.account_id) : null
     const intent = matches(tagged) ? tagged : matches(ordered) ? ordered : null
     const plan = intent ? planByIntent?.get(intent.id, row.account_id) : null
-    if (intent?.state === 'FILLED' && fullFill(held.get(positionKey(intent.account_id, intent.broker_position_id)), intent, plan)) return
+    if (intent?.state === 'FILLED' && isFullMomentumLimitFill(held.get(positionKey(intent.account_id, intent.broker_position_id)), intent, plan)) return
     // The reply can be lost after the ledger learnt the order id, leaving the
     // pending row id-less. Use that exact ledger id to meet the broker row;
     // two distinct broker ids must still consume two slots.

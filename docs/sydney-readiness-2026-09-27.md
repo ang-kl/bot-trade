@@ -2,6 +2,8 @@
 
 Version 1 - 27 September 2026
 
+Review checkpoint, 27 September 21:16 SGT: the authorised continuation found and corrected reserve-release, failed-connect coalescing and account-roster writer defects. Focused suites passed; the final backend run and new-head CI remain pending, with one 109-ms health latency failure already recorded against the unchanged 100-ms limit. Six warm browser readiness observations and a private production screenshot are available, but full DevTools desktop/phone traces are not. Feed/profile alignment remains unresolved; selection alone does not move a retained gateway tick feed. See the [review and readback](sydney-review-and-readback-2026-09-27.md) for precise evidence, limitations and operational options. The snapshot below is historical; later dated checkpoints take precedence.
+
 Current operational checkpoint, 27 September 20:08 SGT: the owner-approved tick endpoint corrections and sequential gateway restarts are complete, with seven accounts reconnected, 26 positions carrying broker SL/TP, and native tick processing restored. Full scanner acceptance remains open because current feed identities do not match registered tick profiles and the collector fix is still undeployed. The account-selection choice remains unapplied; PR #1170 remains a draft. The original build snapshot below is retained; see the append-only [progress log](v3-momentum-target-policy-2026-09-24.progress.md) for timestamps, deployment IDs, exact evidence and remaining gates.
 
 ## Outcome and authority

@@ -130,6 +130,85 @@ test('capacity consumed while evidence was read vetoes the final atomic reservat
   assert.equal(f.sent.length, 0)
 })
 
+test('a partial limit fill keeps its slot and margin when the broker order snapshot is absent', async t => {
+  const f = fixture(t)
+  assert.equal((await f.place()).placed, true)
+  const stored = f.db.prepare('SELECT * FROM momentum_limit_intents').get()
+  const proposal = JSON.parse(stored.proposal_json)
+  f.db.prepare("UPDATE entry_intents SET state='FILLED',broker_position_id='33',resolution_source='event' WHERE id=?").run(stored.intent_id)
+  f.db.prepare(`INSERT INTO trades(id,account_id,symbol,side,status,ctrader_position_id,origin,entry_price,sl_price,tp_price,volume,label_strategy,intent_id)
+    VALUES(7,'11','ETHUSD','BUY','open','33','reconciler_adopted',98,88,?,50,'tsmom_long',?)`).run(proposal.plan.brokerTarget, stored.intent_id)
+  f.db.prepare(`INSERT INTO monitored_positions(symbol,trade_id,side,entry_price,initial_risk,current_sl,current_tp,account_id,strategy)
+    VALUES('ETHUSD',7,'long',98,10,88,?,'11','tsmom_long')`).run(proposal.plan.brokerTarget)
+  assert.equal(f.db.prepare('SELECT count(*) n FROM broker_orders').get().n, 0)
+  assert.equal(countedPositionsWithTickFires(f.db, '11').counted.length, 2)
+  for (const nowMs of [f.now, f.now + 7200000]) {
+    const swept = reconcileStaleClosedMarketLimits(f.db, { nowMs })
+    assert.equal(swept.filled, 0, 'FILLED from a partial execution is not full-order proof')
+    assert.equal(swept.stillWorking, 1)
+    assert.equal(f.db.prepare('SELECT status FROM pending_orders').get().status, 'working')
+    assert.equal(countedPositionsWithTickFires(f.db, '11').counted.length, 2)
+    assert.equal(restingExposure(f.db, '11')[0].reservedMarginUsd, stored.reserved_margin_usd)
+  }
+  // Once the same position proves the whole original volume, its exposure
+  // replaces the reservation even if no broker_orders row was ever observed.
+  f.db.prepare('UPDATE trades SET volume=100 WHERE id=7').run()
+  assert.equal(reconcileStaleClosedMarketLimits(f.db).filled, 1)
+  assert.equal(f.db.prepare('SELECT status FROM pending_orders').get().status, 'filled')
+  assert.equal(restingExposure(f.db, '11').length, 0)
+  assert.equal(countedPositionsWithTickFires(f.db, '11').counted.length, 1)
+})
+
+test('a proven unfilled terminal limit releases its reservation without a broker order snapshot', async t => {
+  for (const state of ['REJECTED', 'RELEASED', 'EXPIRED']) {
+    const f = fixture(t)
+    assert.equal((await f.place()).placed, true)
+    f.db.prepare('UPDATE entry_intents SET state=?,resolution_source=?').run(state, 'event')
+    const swept = reconcileStaleClosedMarketLimits(f.db)
+    assert.equal(swept.expired, 1, state)
+    assert.equal(swept.stillWorking, 0, state)
+    assert.equal(restingExposure(f.db, '11').length, 0, state)
+  }
+})
+
+test('a full open fill retains capacity until the same-account active monitor counts it', async t => {
+  const f = fixture(t)
+  assert.equal((await f.place()).placed, true)
+  const stored = f.db.prepare('SELECT * FROM momentum_limit_intents').get()
+  f.db.prepare("UPDATE entry_intents SET state='FILLED',broker_position_id='33',resolution_source='event' WHERE id=?").run(stored.intent_id)
+  f.db.prepare(`INSERT INTO trades(id,account_id,symbol,side,status,ctrader_position_id,origin,entry_price,sl_price,tp_price,volume,label_strategy,intent_id)
+    VALUES(7,'11','ETHUSD','BUY','open','33','reconciler_adopted',98,88,140,100,'tsmom_long',?)`).run(stored.intent_id)
+  const held = () => {
+    assert.equal(restingExposure(f.db, '11').length, 1)
+    assert.equal(countedPositionsWithTickFires(f.db, '11').counted.length, 1)
+    assert.equal(reconcileStaleClosedMarketLimits(f.db).stillWorking, 1)
+    assert.equal(restingExposure(f.db, '11')[0].reservedMarginUsd, stored.reserved_margin_usd)
+  }
+  held() // The trade write succeeded but monitor adoption has not completed.
+  f.db.prepare(`INSERT INTO monitored_positions(symbol,trade_id,side,entry_price,initial_risk,current_sl,current_tp,account_id,strategy,status)
+    VALUES('ETHUSD',7,'long',98,10,88,140,'11','tsmom_long','closed')`).run()
+  held()
+  f.db.prepare("UPDATE monitored_positions SET status='active',account_id='12' WHERE trade_id=7").run()
+  held()
+  f.db.prepare('UPDATE monitored_positions SET account_id=NULL WHERE trade_id=7').run()
+  held()
+  f.db.prepare("UPDATE monitored_positions SET account_id='11' WHERE trade_id=7").run()
+  assert.equal(reconcileStaleClosedMarketLimits(f.db).filled, 1)
+  assert.equal(restingExposure(f.db, '11').length, 0)
+  assert.equal(countedPositionsWithTickFires(f.db, '11').counted.length, 1)
+})
+
+test('a confirmed full fill already closed can retire its reservation without an active monitor', async t => {
+  const f = fixture(t)
+  assert.equal((await f.place()).placed, true)
+  const stored = f.db.prepare('SELECT * FROM momentum_limit_intents').get()
+  f.db.prepare("UPDATE entry_intents SET state='FILLED',broker_position_id='33',resolution_source='event' WHERE id=?").run(stored.intent_id)
+  f.db.prepare(`INSERT INTO trades(id,account_id,symbol,side,status,ctrader_position_id,origin,entry_price,sl_price,tp_price,volume,label_strategy,intent_id,closed_at)
+    VALUES(7,'11','ETHUSD','BUY','closed','33','reconciler_adopted',98,88,140,100,'tsmom_long',?,?)`).run(stored.intent_id, new Date(f.now).toISOString())
+  assert.equal(reconcileStaleClosedMarketLimits(f.db).filled, 1)
+  assert.equal(restingExposure(f.db, '11').length, 0)
+})
+
 test('unknown send stays reserved across restart; delayed confirmed fill transfers once and binds from fresh broker evidence', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'momentum-limit-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
   const path = join(dir, 'state.db'), f = fixture(t, path)
