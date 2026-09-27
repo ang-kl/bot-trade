@@ -89,6 +89,12 @@ export const VPO_PERMIT_TTL_MS = 5 * 60 * 1000 // the sidecar store's maxAgeMs; 
 export const TICK_PRODUCER = 'tick_momentum'
 export const TICK_PERMIT_TTL_MS = VPO_PERMIT_TTL_MS
 export const STANDING_PRODUCERS = Object.freeze([VPO_PRODUCER, TICK_PRODUCER])
+// C9 fix round: the error_code the tick feeder writes on a standing row it
+// HOLDS through a gateway restart (tick-permits.js). expireStale skips such a
+// row: it must stay RESERVED — FILLED by its tag if the old boot spent it —
+// until a reconcile of its account lifts the hold, never EXPIRED, which the
+// reconciler reads as a fence breach for a late fill.
+export const TICK_RESTART_HOLD = 'tick_restart_hold'
 
 function openConflict(db, { accountId, symbolId, symbol, side, producerId = null }) {
   const key = symbolId != null ? Number(symbolId) : String(symbol || '')
@@ -147,7 +153,7 @@ export function reserveVpoPermits(db, opts = {}) {
  * maxOrderVolume cap still binds. A standing row is reused only when its
  * epoch, volume and symbol id are unchanged.
  */
-export function reserveStandingPermits(db, { accountId, producerId, basis = null, entries = [], sizeRequired = true, ttlMs = VPO_PERMIT_TTL_MS, now = Date.now(), admit = admitEntry } = {}) {
+export function reserveStandingPermits(db, { accountId, producerId, basis = null, entries = [], sizeRequired = true, ttlMs = VPO_PERMIT_TTL_MS, now = Date.now(), admit = admitEntry, bootId = null } = {}) {
   const id = String(accountId)
   if (!STANDING_PRODUCERS.includes(producerId)) throw new Error(`reserveStandingPermits: ${producerId} is not a standing producer`)
   const st = engineStatusFor(db, id)
@@ -164,7 +170,9 @@ export function reserveStandingPermits(db, { accountId, producerId, basis = null
       if (!carried.has(String(r.signal_ref))) { release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + 'permit_withdrawn', iso(now), iso(now), r.id); out.released++ }
     }
     for (const e of entries) {
-      const { key, symbol, symbolId, volume, sides = null } = e || {}
+      // C9: `withheld` names why a side is not carried ({ SELL: 'book_symbol_cap' });
+      // a side left out without a name is the PR-D trend withhold.
+      const { key, symbol, symbolId, volume, sides = null, withheld = null } = e || {}
       if (!key || !symbol) continue
       const usable = sizeRequired ? Number(volume) > 0 : (volume == null || Number(volume) > 0)
       const sameVolume = (r) => (volume == null ? r.volume == null : Number(r.volume) === Number(volume))
@@ -173,7 +181,8 @@ export function reserveStandingPermits(db, { accountId, producerId, basis = null
         // withholds the against-trend side); a side not named has its
         // standing rows released now, not left for the sidecar to spend.
         if (Array.isArray(sides) && !sides.includes(side)) {
-          for (const r of standing.all(id, producerId, String(key), side)) { release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + 'direction_against_trend', iso(now), iso(now), r.id); out.released++ }
+          const why = (withheld && withheld[side]) || 'direction_against_trend'
+          for (const r of standing.all(id, producerId, String(key), side)) { release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + why, iso(now), iso(now), r.id); out.released++ }
           continue
         }
         let kept = null
@@ -185,7 +194,11 @@ export function reserveStandingPermits(db, { accountId, producerId, basis = null
         // then excluded and only a real open intent answers.
         const taken = openConflict(db, { accountId: id, symbolId, symbol, side, producerId: null })
         for (const r of standing.all(id, producerId, String(key), side)) {
-          const same = usable && !taken && r.mode_epoch === st.modeEpoch && sameVolume(r) && Number(r.symbol_id) === Number(symbolId)
+          // C9 (WP-D gap 6): with a boot named, a row is reused only on the
+          // gateway boot it was pushed to — one permit id never crosses a
+          // restart (the fresh boot's consumedPermits_ is empty).
+          const sameBoot = bootId == null || r.sidecar_boot_id === String(bootId)
+          const same = usable && !taken && sameBoot && r.mode_epoch === st.modeEpoch && sameVolume(r) && Number(r.symbol_id) === Number(symbolId)
           if (same && !kept) { kept = r; continue }
           release.run((producerId === VPO_PRODUCER ? 'vpo_' : 'tick_') + (taken ? 'permit_withdrawn' : usable ? 'permit_superseded' : 'no_sizing'), iso(now), iso(now), r.id)
           out.released++
@@ -197,7 +210,7 @@ export function reserveStandingPermits(db, { accountId, producerId, basis = null
           out.permits.push({ key, symbol, side, permit: permitOf(kept, now + ttlMs) })
           continue
         }
-        const r = reserveEntry(db, { accountId: id, producerId, basis, symbol, symbolId, side, orderType: 'MARKET', volume, signalRef: String(key), ttlMs, now, admit })
+        const r = reserveEntry(db, { accountId: id, producerId, basis, symbol, symbolId, side, orderType: 'MARKET', volume, signalRef: String(key), ttlMs, now, admit, sidecarBootId: bootId })
         if (!r.ok) { out.refused.push({ key, symbol, side, reason: r.reason }); continue }
         out.issued++
         out.permits.push({ key, symbol, side, permit: r.permit })
@@ -252,6 +265,9 @@ export function reserveEntry(db, {
   // invariant vacuous. The DEFAULT is the real fence; the refusal it produces
   // is asserted at the end of this module's test file.
   admit = admitEntry,
+  // C9: the gateway boot a standing permit is pushed to (the existing
+  // sidecar_boot_id column, until now written only by markSent).
+  sidecarBootId = null,
 } = {}) {
   const id = accountId != null ? String(accountId) : null
   if (id == null) return { ok: false, reason: 'no_account' }
@@ -276,13 +292,13 @@ export function reserveEntry(db, {
     const units = (u, v) => (v == null ? null : BRACKET_UNITS.includes(u) ? u : null)
     db.prepare(`INSERT INTO entry_intents
       (id, account_id, environment, symbol, symbol_id, side, order_type, volume, sl, tp, sl_units, tp_units, producer_id, basis, signal_ref,
-       mode_epoch, config_revision, permit_id, permit_expires_at, state, gateway_instance, created_at, updated_at, risk_event_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?, ?)`)
+       mode_epoch, config_revision, permit_id, permit_expires_at, state, gateway_instance, created_at, updated_at, risk_event_id, sidecar_boot_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?, ?, ?)`)
       .run(intentId, id, st.environment, symbol ?? null, symbolId != null ? Number(symbolId) : null, sideU, orderType ?? null,
         volume != null ? Number(volume) : null, sl != null ? Number(sl) : null, tp != null ? Number(tp) : null,
         units(slUnits, sl), units(tpUnits, tp),
         String(producerId), String(basis ?? producerBasis(producerId) ?? 'unknown'), signalRef != null ? String(signalRef) : null,
-        st.modeEpoch, st.configRevision, permitId, expiresAt, gatewayInstance, iso(now), iso(now), riskId)
+        st.modeEpoch, st.configRevision, permitId, expiresAt, gatewayInstance, iso(now), iso(now), riskId, sidecarBootId != null ? String(sidecarBootId) : null)
     return {
       ok: true, intentId,
       permit: {
@@ -425,7 +441,7 @@ export function releaseOldEpoch(db, accountId, epoch, { now = Date.now() } = {})
  */
 export function expireStale(db, { now = Date.now(), sentTimeoutMs = DEFAULT_SENT_TIMEOUT_MS } = {}) {
   const expired = db.prepare(`UPDATE entry_intents SET state = 'EXPIRED', resolution_source = 'timeout', resolved_at = ?, updated_at = ?
-    WHERE state = 'RESERVED' AND permit_expires_at <= ?`).run(iso(now), iso(now), iso(now)).changes
+    WHERE state = 'RESERVED' AND permit_expires_at <= ? AND NOT (producer_id = ? AND COALESCE(error_code, '') = ?)`).run(iso(now), iso(now), iso(now), TICK_PRODUCER, TICK_RESTART_HOLD).changes
   const stale = db.prepare(`SELECT id FROM entry_intents WHERE state IN ('DISPATCHING', 'SENT') AND updated_at <= ?`).all(iso(now - sentTimeoutMs))
   let unknown = 0
   for (const { id } of stale) if (resolveIntent(db, id, { state: 'UNKNOWN', source: 'timeout', errorCode: 'no verdict within the send timeout', now }).ok) unknown++
@@ -459,6 +475,71 @@ export function pendingExposure(db, accountId, { includeAccepted = false } = {})
       AND bo.account_id = entry_intents.account_id AND bo.status = 'working'))` : ''
   return db.prepare(`SELECT symbol, symbol_id AS symbolId, side, volume, state, producer_id AS producerId, basis FROM entry_intents
     WHERE account_id = ? AND (state IN (${OPEN_STATES.map(() => '?').join(',')}) ${accepted})`).all(String(accountId), ...OPEN_STATES)
+}
+
+// ---------------------------------------------------------------------------
+// C9 (SEQUENCE PR-9, WP-D D1 gap 1 with the review's fixes, 26-09-2026):
+// the tick fires the sidecar made that the position tables do not show yet.
+//
+// A tick fire is placed in-process by the firer (cpp-exec/src/tick_firer.cpp)
+// and rung as `tick/fire … intent=<id>`. Node learns of it only on the next
+// ring pull, and the position appears in monitored_positions only when the
+// reconciler adopts it. In between, the bar gate's position count (risk.js
+// step 3), the pre-filter's (account-pregate.js) and the tick feeder's own
+// budget did not see it, so bar + tick could pass the unchanged cap of 5.
+//
+// EVERY FIRED STATE (review blocker): the intent of a fire moves RESERVED →
+// SENT (ring order_submit) → FILLED / UNKNOWN (TIMEOUT); a RELEASED standing
+// row can still be spent by a fire that raced the release, and ACCEPTED is
+// possible for a resting order. So a row counts in any of those states, while
+// the ring names it as fired and nothing names it refused (a fire_stale
+// refusal, a fire abandoned when the firer stopped — tick_firer.cpp
+// fire_abandoned, nothing sent — or a send rejected with any code other than
+// TIMEOUT — a timeout
+// may well have filled) and it has not yet been adopted (no active monitored
+// row and no trades row carries its broker position id). The window bounds a
+// fill that closed before it was ever adopted: it keeps counting, as an extra
+// veto, for up to TICK_FIRE_UNSETTLED_WINDOW_MS.
+//
+// DORMANT TODAY: no account admits tick (all 7 read bases [bar]), so no
+// `tick/fire` row exists and this returns [] everywhere.
+// ---------------------------------------------------------------------------
+export const TICK_FIRE_UNSETTLED_WINDOW_MS = 15 * 60_000
+export const TICK_FIRED_STATES = Object.freeze(['RESERVED', 'RELEASED', 'DISPATCHING', 'SENT', 'UNKNOWN', 'ACCEPTED', 'FILLED'])
+
+/**
+ * Unsettled tick fires for one account (`accountId`), or for every account
+ * when `accountId` is null. Rows: { id, accountId, symbol, symbolId, side, state }.
+ */
+/** The query unsettledTickFires runs (exported so its plan can be pinned; db.js idx_entry_intents_account_producer). */
+export function unsettledTickFiresSql(byAccount) {
+  return `SELECT ei.id, ei.account_id AS accountId, ei.symbol, ei.symbol_id AS symbolId, ei.side, ei.state
+      FROM entry_intents ei
+     WHERE ${byAccount ? 'ei.account_id = ? AND' : ''} ei.producer_id = ?
+       AND ei.state IN (${TICK_FIRED_STATES.map(() => '?').join(',')})
+       AND ei.updated_at >= ?
+       AND EXISTS (SELECT 1 FROM cpp_decisions d WHERE d.component = 'tick' AND d.kind = 'fire'
+                    AND d.detail LIKE '%intent=' || ei.id || '%')
+       AND NOT EXISTS (SELECT 1 FROM cpp_decisions d WHERE d.component = 'tick'
+                    AND ((d.kind = 'fire_refused' AND d.code = 'fire_stale')
+                      OR d.kind = 'fire_abandoned'
+                      OR (d.kind = 'fire_reject' AND UPPER(COALESCE(d.code, '')) <> 'TIMEOUT'))
+                    AND d.detail LIKE '%intent=' || ei.id || '%')
+       AND (ei.broker_position_id IS NULL OR (
+            -- monitored_positions carries no broker position id of its own:
+            -- it links to its trades row (trade_id), which does. Adoption
+            -- writes that trades row, so a trades row of the account carrying
+            -- the position id — open or already closed — is the evidence.
+            NOT EXISTS (SELECT 1 FROM trades t WHERE t.account_id = ei.account_id
+                         AND CAST(t.ctrader_position_id AS TEXT) = ei.broker_position_id)))
+     ORDER BY ei.id`
+}
+
+export function unsettledTickFires(db, accountId = null, { now = Date.now(), windowMs = TICK_FIRE_UNSETTLED_WINDOW_MS } = {}) {
+  const byAccount = accountId != null
+  return db.prepare(unsettledTickFiresSql(byAccount))
+    .all(...(byAccount ? [String(accountId)] : []), TICK_PRODUCER, ...TICK_FIRED_STATES, iso(now - windowMs))
+    .map(r => ({ ...r, accountId: String(r.accountId) }))
 }
 
 const posField = (p, key) => p?.tradeData?.[key] ?? p?.[key]
