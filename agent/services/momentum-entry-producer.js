@@ -3,15 +3,15 @@
 // entry carries the partial-TP1 plan.
 //
 // WHAT RUNS, AND WHEN. Nothing here runs unless config/momentum-entries.json
-// says `"market": true` (momentum-entry-switch.js), which it does not: the
-// owner has not answered OD-1. autoTrade (loop.js) asks the switch for the
+// says `"market": true` (momentum-entry-switch.js), which it does since the
+// owner's OD-1 (27-09-2026). autoTrade (loop.js) asks the switch for the
 // calling producer and, only when it is on for a momentum producer:
 //
 //   1. refuses a momentum entry into a CLOSED market by name
 //      (MOMENTUM_CLOSED_MARKET_REFUSAL; OD-1(b): no pre-order is rested);
 //   2. refuses a momentum entry that would REST as an HTF limit by name
 //      (MOMENTUM_RESTING_LIMIT_REFUSAL; resting momentum limits carry no plan
-//      until P0-4, and wait for OD-15);
+//      until P0-4, and OD-15's counting is not built);
 //   3. before the risk gate, reads the account's own broker evidence and
 //      shows the gate the plan's prices (preGatePlan): the entry at the live
 //      quote, the stop exactly as relativePoints will send it, TP1 at the
@@ -56,7 +56,7 @@ export function closedMarketMomentumRefusal({ symbol, producerId, marketReason =
 
 /** The named refusal for a momentum entry that would rest as an HTF limit. */
 export function restingMomentumRefusal({ symbol, producerId, timeframe = null }) {
-  return `${MOMENTUM_RESTING_LIMIT_REFUSAL}: ${symbol}${timeframe ? ` ${timeframe}` : ''} would rest as a limit — a resting ${producerId} entry carries no partial-TP1 plan yet (P0-4) and waits for the owner's OD-15 (resting orders count toward the caps)`
+  return `${MOMENTUM_RESTING_LIMIT_REFUSAL}: ${symbol}${timeframe ? ` ${timeframe}` : ''} would rest as a limit — a resting ${producerId} entry carries no partial-TP1 plan yet (P0-4), and resting orders do not yet count toward the caps and margin (OD-15: answered yes, not built)`
 }
 
 const finite = n => typeof n === 'number' && Number.isFinite(n)

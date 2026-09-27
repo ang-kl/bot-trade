@@ -6,7 +6,7 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { initDB, setState } from '../db.js'
 import stateRouter from './state.js'
-import { MOMENTUM_TARGET_PRODUCERS } from '../services/momentum-entry-contract.js'
+import { MOMENTUM_TARGET_PRODUCERS, momentumTargetStatus } from '../services/momentum-entry-contract.js'
 import { runMomentumPartialPass, MOMENTUM_PARTIAL_PASS_KEY } from '../services/momentum-partial-runtime.js'
 import { registerPartialPlan } from '../services/momentum-partial-manager.js'
 import { planMomentumTargets } from '../services/momentum-target-policy.js'
@@ -18,6 +18,18 @@ async function fixture(t) {
   t.after(async () => { server.closeAllConnections(); await new Promise(r => server.close(r)); db.close() })
   return { db, get: async q => { const r = await fetch(`http://127.0.0.1:${server.address().port}/state/momentum-targets${q || ''}`); return { status: r.status, body: await r.json(), cache: r.headers.get('cache-control') } } }
 }
+
+test('a switched-off or unreadable market switch reads "wired, switched off" and never as on (T4)', () => {
+  const db = initDB(':memory:')
+  try {
+    for (const sw of [{ market: false, error: null }, { market: false, error: 'unreadable (off): boom' }]) {
+      const out = momentumTargetStatus(db, { accountId: '11', loadSwitch: () => sw })
+      assert.deepEqual([out.wiring.market.enabled, out.wiring.market.switch], [false, 'off'])
+      assert.ok(out.integrationGaps.some(g => /^market: wired, switched off /.test(g)), JSON.stringify(out.integrationGaps))
+      assert.equal(out.runtimeIntegration, 'INCOMPLETE')
+    }
+  } finally { db.close() }
+})
 
 test('target status is read-only, explicit about absent plans, and requires an account or all', async t => {
   const { db, get } = await fixture(t)
@@ -31,14 +43,15 @@ test('target status is read-only, explicit about absent plans, and requires an a
   assert.equal(out.body.passHeartbeatAt, null)
   assert.equal(out.body.pass.fresh, false)
   assert.match(out.body.pass.unavailable, /never run/)
-  // V3 T4: the market producer is wired, and switched OFF by the repo's
-  // config (OD-1 unanswered): wired is not on, and the runtime stays
-  // INCOMPLETE with the switch named as the gap.
+  // V3 T4: the market producer is wired and switched ON by the repo's
+  // config (owner OD-1, 27-09); the limit producer is not wired, so the
+  // runtime stays INCOMPLETE with the limit and the never-run pass as gaps.
   assert.deepEqual(Object.fromEntries(Object.entries(out.body.wiring).map(([k, w]) => [k, w.status])), { market: 'wired', limit: 'not wired' })
-  assert.deepEqual([out.body.wiring.market.enabled, out.body.wiring.market.switch], [false, 'off'])
+  assert.deepEqual([out.body.wiring.market.enabled, out.body.wiring.market.switch], [true, 'on'])
   assert.deepEqual([out.body.wiring.limit.enabled, out.body.wiring.limit.switch], [false, null])
-  assert.ok(out.body.integrationGaps.some(g => /^market: wired, switched off .*OD-1/.test(g)), JSON.stringify(out.body.integrationGaps))
-  assert.equal(out.body.integrationGaps.length, 3)
+  assert.ok(!out.body.integrationGaps.some(g => /^market: wired, switched off/.test(g)), JSON.stringify(out.body.integrationGaps))
+  assert.ok(out.body.integrationGaps.some(g => /^limit: /.test(g)), JSON.stringify(out.body.integrationGaps))
+  assert.equal(out.body.integrationGaps.length, 2)
   assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='momentum_target_intents'").get().n, 0)
 })
 
@@ -81,13 +94,15 @@ test('a running pass is reported by its heartbeat, a stale one as unavailable, a
   assert.equal(fresh.body.passHeartbeatAt, JSON.parse(db.prepare("SELECT value FROM agent_state WHERE key=?").get(MOMENTUM_PARTIAL_PASS_KEY).value).at)
   assert.equal(fresh.body.pass.fresh, true); assert.equal(fresh.body.pass.unavailable, null)
   assert.equal(fresh.body.runtimeIntegration, 'INCOMPLETE', 'a running pass with no producer feeding it is not a complete runtime')
-  assert.equal(fresh.body.integrationGaps.length, 2)
+  // T4 with the switch on (OD-1): the one gap left is the unwired limit producer.
+  assert.equal(fresh.body.integrationGaps.length, 1)
+  assert.match(fresh.body.integrationGaps[0], /^limit: /)
   assert.equal(fresh.body.executionAuthorized, false)
   setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify({ at: new Date(Date.now() - 16 * 60_000).toISOString(), ok: true, accounts: {} }))
   const stale = await get('?account=11')
   assert.equal(stale.body.pass.fresh, false)
   assert.match(stale.body.pass.unavailable, /stale: last pass .*16 min ago \(limit 15 min\)/)
-  assert.equal(stale.body.integrationGaps.length, 3)
+  assert.equal(stale.body.integrationGaps.length, 2)
 })
 
 test('rows carry the partial target and the partial attempt, scoped to their own account', async t => {

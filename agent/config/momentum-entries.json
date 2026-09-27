@@ -1,5 +1,5 @@
 {
-  "_note": "V3 T4 (P0-3): whether momentum entries (the book's cross_sectional_book and the daily momentum_account) are sent WITH the partial-TP1 plan. OFF until the owner answers OD-1 (resume momentum entries). While market is false, autoTrade treats a momentum proposal exactly as before T4 (no target, refused at the shared execution boundary). Only the literal true turns it on; anything else is off. Resting momentum limits are not switchable here: closed-market ones are refused by name (OD-1(b)), open-market HTF ones are held by name until OD-15 is answered and P0-4 is built. Turning this on is an owner-ordered change to this file, merged like code.",
-  "market": false,
-  "declaredBy": "T4 build, 26-09-2026: off by default; OD-1 and OD-15 unanswered"
+  "_note": "V3 T4 (P0-3): whether momentum entries (the book's cross_sectional_book and the daily momentum_account) are sent WITH the partial-TP1 plan. Owner OD-1 (27-09-2026 ~12:30 SGT: \"yes. Resume momentum entries after T4\") turned market entries ON. The producers only dispatch on accounts where tsmom_long is Trade-armed (momentum-book.js arm gate); this file does not widen that. Resting momentum limits are not switchable here: closed-market ones are refused by name (OD-1(b), until PO-M1-M3 and an explicit order); open-market HTF ones are held by name until P0-4 (the plan on a resting limit) and OD-15's counting (resting orders toward the caps and margin, answered yes 27-09, not built) land. Only the literal true turns this on; anything else is off. Turning it off is a change to this file, merged like code.",
+  "market": true,
+  "declaredBy": "owner OD-1, 27-09-2026 ~12:30 SGT (market entries: yes); T4 build 26-09-2026 shipped it off"
 }

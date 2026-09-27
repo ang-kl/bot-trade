@@ -180,14 +180,15 @@ export function enrollMomentumBook(db, { accountId, tradeId, positionId }) {
  * the transaction that writes the 'submitting' trade, for the book's and the
  * daily momentum account's market entries. RESTING limits are not wired
  * (P0-4): a momentum entry that would rest is refused by name instead
- * (closed market: OD-1(b); open-market HTF limit: held until OD-15).
+ * (closed market: OD-1(b); open-market HTF limit: held until P0-4 and
+ * OD-15's counting are built).
  * momentum-target-status.test.js pins both to the code: `market` must be
  * wired while a production file calls recordMomentumEntry from the market
  * path, and `limit` must stay not wired while no resting path does.
  *
  * WIRED IS NOT ON. The market path runs only while
- * config/momentum-entries.json says `"market": true` (OFF until the owner
- * answers OD-1). The status reads that switch and keeps the runtime
+ * config/momentum-entries.json says `"market": true` (ON since the owner's
+ * OD-1, 27-09-2026; it shipped OFF). The status reads that switch and keeps the runtime
  * INCOMPLETE while it is off (owner principle 6: a wired producer that is
  * switched off feeds the partial manager nothing).
  */
@@ -195,7 +196,7 @@ export const MOMENTUM_TARGET_PRODUCERS = Object.freeze({
   market: Object.freeze({ wired: true, producer: 'momentum book market entries',
     note: 'Market entries of the book and the daily momentum account record a target intent in the submitting-trade transaction (T4, P0-3).' }),
   limit: Object.freeze({ wired: false, producer: 'momentum resting limits',
-    note: 'No resting limit records a target intent (P0-4 not built): a closed-market momentum entry is refused by name (OD-1(b)) and an open-market HTF limit is held by name until OD-15.' }),
+    note: 'No resting limit records a target intent (P0-4 not built): a closed-market momentum entry is refused by name (OD-1(b)) and an open-market HTF limit is held by name until P0-4 and OD-15\'s counting are built.' }),
 })
 
 // Small, bounded diagnostic over the write-ahead ledger. Reading it never
@@ -231,13 +232,13 @@ export function momentumTargetStatus(db, { accountId, all = false, limit = 50, n
   const accountGaps = all
     ? (globalPass.why ? [] : Object.entries(record?.accounts ?? {}).filter(([, a]) => a?.error).map(([id, a]) => `account ${id}: the partial manager could not act on it — ${a.error}`))
     : []
-  // T4: whether the wired market path is switched on (OFF until OD-1).
+  // T4: whether the wired market path is switched on (ON since OD-1, 27-09).
   const entrySwitch = loadSwitch()
   const enabledOf = k => k === 'market' ? entrySwitch.market === true : false
   const integrationGaps = [
     ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([, w]) => !w.wired).map(([k, w]) => `${k}: ${w.note}`),
     ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([k, w]) => w.wired && !enabledOf(k))
-      .map(([k]) => `${k}: wired, switched off (config/momentum-entries.json ${k} is not true${entrySwitch.error ? `; ${entrySwitch.error}` : ''}) until the owner answers OD-1`),
+      .map(([k]) => `${k}: wired, switched off (config/momentum-entries.json ${k} is not true${entrySwitch.error ? `; ${entrySwitch.error}` : ''}) — the owner's OD-1 turns it on in that file`),
     ...(passNow.why ? [passNow.why] : []),
     ...accountGaps,
   ]

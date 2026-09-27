@@ -1,15 +1,16 @@
 // node --test agent/services/momentum-entry-t4.test.js
 //
 // V3 T4 (P0-3): a momentum market entry carries the partial-TP1 plan, behind
-// config/momentum-entries.json (OFF until the owner answers OD-1).
+// config/momentum-entries.json (shipped OFF; ON since the owner's OD-1,
+// 27-09-2026 ~12:30 SGT: "yes. Resume momentum entries after T4").
 //
 // What is proven here, by behaviour through the real autoTrade:
-//   * the switch is OFF as shipped, and with it off a momentum entry takes
+//   * the switch is ON as the repo declares it, and with it off a momentum entry takes
 //     exactly the pre-T4 path: no evidence read, no intent, the order refused
 //     at the shared execution boundary for having no target;
 //   * with it on, a closed-market momentum entry is refused BY NAME and
 //     nothing rests (OD-1(b)); an entry that would rest as an HTF limit is
-//     refused by name (OD-15 / P0-4);
+//     refused by name (P0-4 and OD-15's counting not built);
 //   * with it on, an open-market entry runs end to end — tryEnter's
 //     autoTrade → bookEntryWrite → ARMED → trigger → one close → CONFIRMED —
 //     through the test seam and the fake broker, with the database closed and
@@ -49,11 +50,15 @@ const bookSynth = (over = {}) => ({ consensus_bias: 'long', direction_reason: 't
 // ---------------------------------------------------------------------------
 // The switch
 // ---------------------------------------------------------------------------
-test('the switch ships OFF: no momentum producer takes the T4 path', () => {
+test('the switch is ON as the repo declares it (owner OD-1, 27-09): both momentum producers take the T4 path, nothing else does', () => {
   const sw = loadMomentumEntrySwitch()
-  assert.equal(sw.market, false, 'config/momentum-entries.json must ship with market off until the owner answers OD-1')
+  assert.equal(sw.market, true, 'config/momentum-entries.json carries the owner\'s OD-1: market entries on')
   assert.equal(sw.error, null, 'the shipped file is readable')
-  for (const p of MOMENTUM_ENTRY_PRODUCERS) assert.equal(momentumPlanApplies(p), false, p)
+  for (const p of MOMENTUM_ENTRY_PRODUCERS) assert.equal(momentumPlanApplies(p), true, p)
+  // No widening: the switch names exactly the two momentum producers; every
+  // other producer (the scan, the routes, the fib orders) never takes the path.
+  assert.deepEqual([...MOMENTUM_ENTRY_PRODUCERS], ['cross_sectional_book', 'daily_momentum_account'])
+  for (const p of ['scan_dispatch', 'pending_fib_orders', 'manual_assisted', undefined]) assert.equal(momentumPlanApplies(p), false, String(p))
 })
 
 test('only the literal true turns the switch on; unreadable is off; non-momentum producers never take the path', () => {

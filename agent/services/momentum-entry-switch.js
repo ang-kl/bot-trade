@@ -2,8 +2,8 @@
 // agent/services/momentum-entry-switch.js — V3 T4: the one switch that decides
 // whether a momentum entry carries the partial-TP1 plan.
 //
-// OFF BY DEFAULT, and off until the owner answers OD-1. The file
-// config/momentum-entries.json is the declaration; only `"market": true`
+// Shipped OFF; ON since the owner's OD-1 (27-09-2026, market entries: yes).
+// The file config/momentum-entries.json is the declaration; only `"market": true`
 // turns it on. A missing, unreadable or malformed file is OFF, never on: a
 // switch that fails open would resume live entries on a bad deploy.
 //

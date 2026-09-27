@@ -399,8 +399,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   }
 
   // V3 T4 (P0-3): a momentum entry carries the partial-TP1 plan — but ONLY
-  // while config/momentum-entries.json says "market": true, which it does not
-  // until the owner answers OD-1. Off, this is false for every producer and
+  // while config/momentum-entries.json says "market": true (on since the
+  // owner's OD-1, 27-09-2026). Off, this is false for every producer and
   // nothing below changes: a momentum proposal still carries no target and
   // the shared execution boundary refuses it, exactly as before T4.
   const momentumPlanOn = momentumPlanApplies(producerId, seam?.entrySwitch ? { load: () => seam.entrySwitch } : undefined)
@@ -544,7 +544,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const fresh = freshMin > 0 && lastBarCloseMs > 0 && (Date.now() - lastBarCloseMs) <= freshMin * 60_000
     if (minMs > 0 && sigMs >= minMs && synth.marketOnly !== true && !fresh) {
       // V3 T4: a momentum entry that would rest carries no plan (P0-4 is not
-      // built) and waits for the owner's OD-15; refused by name, not rested.
+      // built) and resting orders do not yet count toward the caps and margin
+      // (OD-15, answered yes, not built); refused by name, not rested.
       if (momentumPlanOn) {
         const { restingMomentumRefusal } = await import('./services/momentum-entry-producer.js')
         await refuseMomentumEntry(restingMomentumRefusal({ symbol, producerId, timeframe: synth.timeframe }), 'momentum_resting_limit')
