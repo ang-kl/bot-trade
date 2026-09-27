@@ -76,7 +76,35 @@ function x1({ pAhead = false } = {}) {
   }
 }
 
+// X1 on its FIRST pass — the checker's own shape: P through its trigger from
+// the start, and Q's 11 s erroring action in the same pass. Behind Q, main
+// exits P right after Q's action; AHEAD of Q, main exits P before Q's action
+// starts — so must this tree (the barrier before a later position's action).
+function x1First({ pAhead }) {
+  const q = { id: pAhead ? 1202 : 1201, symbol: 'EURUSD', entry: 1.1000, sl: 1.0950, risk: 0.005, trigger: 'price<1.0950' }
+  const p = { id: pAhead ? 1201 : 1202, symbol: 'GBPUSD', entry: 1.2700, sl: 1.2650, risk: 0.005, trigger: 'price<1.2650' }
+  return {
+    startMs: T0, durationMs: 60_000, symbolMap: SYM, overrides: { EURUSD: 0.25, GBPUSD: 0.25 },
+    positions: pAhead ? [p, q] : [q, p],
+    sidecar: () => ({ [SYM.EURUSD]: quote(1.0900) }),
+    broker: () => ({ kind: 'quote', latencyMs: 400, ...quote(1.2621) }),
+    action: (pos) => (pos.symbol === 'EURUSD' ? { durationMs: 11_000, outcome: { error: 'TRADING_BAD_VOLUME' } } : null),
+    pId: p.id,
+  }
+}
+
 for (const w of WAITS) {
+  test(`X1 first pass (${waitLabel(w)}): behind Q's 11 s action, P exits within one tick of main's pass-1 exit`, async (t) => {
+    const sc = x1First({ pAhead: false })
+    exitNotLater(t, 'X1 first pass', await both(sc, w), sc.pId)
+  })
+  test(`X1 first pass, P ahead (${waitLabel(w)}): P exits before Q's 11 s action starts, as on main`, async (t) => {
+    const sc = x1First({ pAhead: true })
+    const r = await both(sc, w)
+    exitNotLater(t, 'X1 first pass, P ahead', r, sc.pId)
+    const qAction = (run) => run.obs.actions.find(a => a.symbol === 'EURUSD')?.at
+    assert.ok(r.branch.exitAt(sc.pId) <= qAction(r.branch), 'P\'s exit went to the broker before Q\'s action started')
+  })
   test(`X1 (${waitLabel(w)}): a broker-priced position BEHIND an 11 s action every pass exits within one tick of main`, async (t) => {
     const sc = x1()
     const r = await both(sc, w)
@@ -141,10 +169,10 @@ function x3(reason, { spike = false } = {}) {
 }
 for (const w of WAITS) {
   for (const reason of ['timeout', 'auth', 'close']) {
-    test(`X3 (${reason}, probe wait ${w} ms): a failing broker is retried on main's schedule, never backed off`, async (t) => {
+    test(`X3 (${reason}, ${waitLabel(w)}): a failing broker is retried on main's schedule, never backed off`, async (t) => {
       exitNotLater(t, `X3 ${reason}`, await both(x3(reason), w), 301)
     })
-    test(`X3 spike (${reason}, probe wait ${w} ms): a failure inside a spike window is retried on the next tick`, async (t) => {
+    test(`X3 spike (${reason}, ${waitLabel(w)}): a failure inside a spike window is retried on the next tick`, async (t) => {
       exitNotLater(t, `X3 spike ${reason}`, await both(x3(reason, { spike: true }), w), 301)
     })
   }
