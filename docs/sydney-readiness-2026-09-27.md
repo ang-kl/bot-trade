@@ -15,7 +15,7 @@ The requested deadline is 28 September 05:00 SGT, derived from the owner's messa
 3. Assumptions: the approved account list and numerical caps remain authoritative. The proposed `/feed` correction is an inference from the 404 evidence; gateway variable values were not read. No scanner-account selection is inferred from the user's login.
 4. Invariants: account isolation; mandatory native protection; durable plan before send; broker-confirmed fill before binding; no duplicate submission on uncertainty; resting capacity and margin reservation; unchanged sizing, thresholds, scope and scanner order authority.
 5. Execution: local code changes listed below. No runtime settings or broker operations have been performed.
-6. Evidence: focused regressions are passing; final gate results and production limitations are recorded in the progress log and the PR.
+6. Evidence: all local gates pass. Final backend: 7,152 passed, three skipped, zero failures. Frontend: 1,311 passed. C++: 40 test binaries and the production compile passed; the changed mirror test passed ThreadSanitizer. Independent review, PR CI and production readback are separate gates; see the progress log and [PR #1170](https://github.com/ang-kl/bot-trade/pull/1170) for their recorded state.
 
 ## File changes
 

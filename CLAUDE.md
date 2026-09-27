@@ -1384,3 +1384,11 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   exit retry or sizing-policy change was performed. The uploaded instructions'
   explicit production approval requirement is retained; the separate conflict
   about future fresh builds remains deferred by the owner.
+
+- **27-09-2026 16:37 SGT, CODEX local gate complete:** draft PR #1170 is open;
+  latest reply before this checkpoint is **`№ 10,026`**. Backend 7,152 passed,
+  three skipped; frontend 1,311 passed; 40 C++ test binaries, production
+  compilation and the changed mirror's ThreadSanitizer test passed. Production
+  remains unchanged. The automated review step was skipped and is not checker
+  evidence. PR CI, independent review and scoped production approval remain
+  distinct gates; follow the PR checks and append-only progress log.
