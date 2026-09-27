@@ -1,6 +1,6 @@
 // UTC projection of the existing calendar semantics for read-only consumers.
 // Scanners/verifier do not invent another regional-hours or crypto calendar.
-import { calendarAt } from '../services/market-calendar.js'
+import { calendarAt, calendarHolidayWindow } from '../services/market-calendar.js'
 const DAY = 86400_000, HOUR = 3600_000
 const formatters = new Map(), windows = new Map()
 function localStamp(at, zone) {
@@ -51,8 +51,12 @@ export function calendarIntervals(calendar, from, to) {
     for (const h of calendar.holiday) {
       const match = new Date(h.holidayDate * DAY).toISOString().slice(0, 10)
       if (h.isRecurring ? date.slice(5) === match.slice(5) : date === match) {
-        addLocal(day + h.startSecond * 1000, h.scheduleTimeZone)
-        addLocal(day + h.endSecond * 1000, h.scheduleTimeZone)
+        // V3 K3: a 0/0 row's window is the whole local day, so its end is
+        // the next local midnight (86400 s), not 0 — the same window
+        // calendarAt evaluates.
+        const w = calendarHolidayWindow(h)
+        addLocal(day + w.start * 1000, h.scheduleTimeZone)
+        addLocal(day + w.end * 1000, h.scheduleTimeZone)
       }
     }
   }

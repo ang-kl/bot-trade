@@ -98,6 +98,30 @@ test('refusalCostReport: sums R over decided outcomes per reason and keeps the r
   assert.equal(r.reasons.find(x => x.reason === 'overexposed_USD=<n>').outcomes.ambiguous, 1)
 })
 
+test('UI-5 (RS-1): refusalCostReport windows on first_at (refusal time), not scored_at (when the scorer got to it)', () => {
+  const db = initDB(':memory:')
+  const insert = db.prepare(`INSERT INTO refusal_scores (opportunity_key, account_id, symbol, side, reason_key, reason,
+      entry, sl, tp, first_at, last_at, refusals, horizon_min, scored_at, outcome, r_reached)
+    VALUES (@key, 'A1', @symbol, 'BUY', 'bad_rr', 'bad_rr', 1.1, 1.095, 1.11, @first_at, @first_at, 1, 60, @scored_at, 'target', 1)`)
+  const now = T0
+  const since7d = now - 7 * 86_400_000
+
+  // Refused 10 days ago (OUTSIDE the 7-day window), but the background
+  // scorer only just got to it — the OLD scored_at-windowed query would
+  // wrongly include it in "the last 7 days".
+  insert.run({ key: 'old-refusal-late-score', symbol: 'OLDREF', first_at: iso(now - 10 * 86_400_000), scored_at: iso(now - 60_000) })
+
+  // Refused 2 days ago (INSIDE the window) and scored promptly.
+  insert.run({ key: 'recent-refusal', symbol: 'RECENT', first_at: iso(now - 2 * 86_400_000), scored_at: iso(now - 2 * 86_400_000 + 3_600_000) })
+
+  const r = refusalCostReport(db, { days: 7, now })
+  const symbols = r.recent.map(x => x.symbol)
+  assert.ok(!symbols.includes('OLDREF'), 'a refusal from 10 days ago must not count as "the last 7 days" just because it was scored late')
+  assert.ok(symbols.includes('RECENT'))
+  assert.equal(r.total.n, 1)
+  assert.ok(since7d < now) // sanity: the window constant used above is meaningful
+})
+
 test('wiring pin: the loop scores refusals with the postmortem fetcher, capped per cycle, and both hot paths carry a timeframe', () => {
   const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))

@@ -1348,3 +1348,25 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   **`№ 9,740`** plus any unstamped line made after this ledger. The count is
   by replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+
+- 2026-09-27 00:50 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): the script reads this container's transcript only and was
+  refused as a reading. From `№ 9,740` the replies ran on by count through
+  W1-FU #1157 and the plan/roadmap update #1160, the 21:30 SGT report
+  `№ 9,798` (buried under status lines, re-sent as `№ 9,819`), the owner's
+  C8 "yes", the Wave 2 adversarial pass, the handover order `№ 9,841`, the
+  session pause 26-09 23:33 → 27-09 05:34 SGT, and then 27-09: the
+  "can I merge them" answer `№ 9,862`, the owner's merges of #1156, #1162,
+  #1158 and #1161 read back at `№ 9,867`, `№ 9,873` and `№ 9,888`, the
+  broker-holiday interject `№ 9,869`, the M7 and CV-2 fix-first reports
+  `№ 9,883` and `№ 9,885`, the handover additions order and `№ 9,895`. The
+  container restarted about 00:1xZ; the restart report was stamped
+  `№ 9,897` (08:30 SGT). One stamp in this run used a guessed time:
+  `№ 9,821` read 22:23 SGT where the clock said about 22:18 (corrected at
+  `№ 9,822`); another, `№ 9,892`, was written "08:0x" (corrected to 08:02 at
+  `№ 9,894`). Five unstamped lines followed `№ 9,897` (the relaunch, the
+  wait note, the M7 round-4 report, the agent-count check, the vet fixes),
+  so the last reply before this ledger is **`№ 9,902`** and the next stamped
+  reply is **`№ 9,903`** plus any unstamped line made after this ledger. The
+  count is by replies, not by stamps. A later re-measure that reads below
+  this line is missing these, not correcting them.

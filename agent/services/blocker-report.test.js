@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { initDB, setState } from '../db.js'
-import { blockerReport, tickEntryEvaluation, validateBlockerRequest, entryDiagnostics, TICK_EVIDENCE_CHECKS, verifiedOffEverywhere, preFixLabel, offEverywhereLedger, offEverywhereLabel, BLOCKER_DAYS_MAX_BYTES } from './blocker-report.js'
+import { blockerReport, tickEntryEvaluation, validateBlockerRequest, entryDiagnostics, TICK_EVIDENCE_CHECKS, verifiedOffEverywhere, preFixLabel, offEverywhereLedger, offEverywhereLabel, BLOCKER_DAYS_MAX_BYTES, FOLDED_LINES_PER_DAY_MAX } from './blocker-report.js'
 import { engineStatusFor, writeEngineStatus } from './entry-mode.js'
 import { recordTickEntryWork } from './tick-entry-work.js'
 import { profileHashFull, DEFAULT_PARAMS } from '../lib/tick-strategy.js'
@@ -580,18 +580,18 @@ test('UI-3 fix round (blocker 6): a strategy off on every account reads its off-
 test('UI-3 fix round (blocker 7): an oversized day-grouped view reports daysIncomplete and falls back to the paged flat records, not a silent truncation', t => {
   const { db, read } = fixture(t)
   const put = db.prepare("INSERT INTO decision_log (account_id,stage,decision,reason,created_at) VALUES ('11','stage_matrix','skip',?,?)")
-  // Three days, each holding exactly FOLDED_LINES_PER_DAY_MAX (300) distinct,
-  // long reasons — every row gets its OWN fold line (none capped away), and
-  // each line's own evidence (reason repeated in `reason` and
+  // Three days, each holding exactly FOLDED_LINES_PER_DAY_MAX distinct, long
+  // reasons — every row gets its OWN fold line (none capped away), and each
+  // line's own evidence (reason repeated in `reason` and
   // `firstBlocker.reason`, plus diagnosticNote) is heavy enough that three
   // full days of them exceeds BLOCKER_DAYS_MAX_BYTES.
   const longReason = i => `distinct reason ${i} `.padEnd(480, 'x')
   const wideFrom = Date.parse('2026-09-20T00:00:00Z')
   for (const day of ['2026-09-20', '2026-09-21', '2026-09-22']) {
-    for (let i = 0; i < 300; i++) put.run(longReason(i), `${day} 11:30:00`)
+    for (let i = 0; i < FOLDED_LINES_PER_DAY_MAX; i++) put.run(longReason(i), `${day} 11:30:00`)
   }
   const r = read({ accountId: '11', timeZone: 'Asia/Singapore', from: wideFrom })
-  assert.equal(r.totalRecords, 900)
+  assert.equal(r.totalRecords, FOLDED_LINES_PER_DAY_MAX * 3)
   assert.equal(r.daysIncomplete, true, 'RED if the bound never trips on a window built to exceed it')
   assert.equal(r.days, null, 'an incomplete grouped view is not shipped partially — it falls back to null')
   assert.equal(r.records.length, r.limit, 'RED if the ungrouped fallback page is also skipped when grouping overflows')
@@ -600,15 +600,56 @@ test('UI-3 fix round (blocker 7): an oversized day-grouped view reports daysInco
 test('UI-3 fix round (blocker 7): a day past its fold-line cap still counts every record in totalRecords, with the excess named as omitted', t => {
   const { db, read } = fixture(t)
   const put = db.prepare("INSERT INTO decision_log (account_id,stage,decision,reason,created_at) VALUES ('11','stage_matrix','skip',?,?)")
-  const linesOverCap = 310 // FOLDED_LINES_PER_DAY_MAX is 300
+  const linesOverCap = FOLDED_LINES_PER_DAY_MAX + 10
   for (let i = 0; i < linesOverCap; i++) put.run(`distinct reason ${i}`, '2026-09-22 11:30:00')
   const r = read({ accountId: '11', timeZone: 'Asia/Singapore' })
   assert.equal(r.totalRecords, linesOverCap)
   const day = r.days.find(d => d.totalRecords > 0)
   assert.equal(day.totalRecords, linesOverCap, 'RED if rows beyond the fold cap stop being counted')
-  assert.ok(day.folded.length <= 300, 'the rendered fold lines stay bounded')
+  assert.ok(day.folded.length <= FOLDED_LINES_PER_DAY_MAX, 'the rendered fold lines stay bounded')
   assert.equal(day.folded.length + day.omitted, linesOverCap, 'every record is either a rendered fold line or an explicitly counted omission')
   assert.ok(day.omitted > 0, 'RED if nothing was actually capped')
+})
+
+// ---------------------------------------------------------------------------
+// W1-FU: production traces (26-09 UI plan §5) showed a real 72h all-accounts
+// window of ~24,692 retained records exceeding BLOCKER_DAYS_MAX_BYTES while
+// the 6h and 24h windows fit — the day-grouped cap (blocker 7's fix) was
+// still too loose at the old FOLDED_LINES_PER_DAY_MAX (300). This reproduces
+// that shape (many accounts/stages/symbols, and a reason that differs per
+// record — the exact case the comment above already names) at ~25,000
+// records over a 72h all-accounts window, and pins the tightened bound.
+// ---------------------------------------------------------------------------
+test('W1-FU: a realistic 72h all-accounts window of ~25,000 records fits the day-grouped byte bound', t => {
+  const { db, read } = fixture(t)
+  for (const id of ['33', '44', '55', '66', '77']) db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,0)').run(id)
+  const ACCOUNTS = ['11', '22', '33', '44', '55', '66', '77']
+  const STAGES = ['stage_matrix', 'margin_pool', 'horizon', 'cluster_conviction', 'equity_stop', 'watchlist_override', 'ratchet_gate']
+  const SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'XAUUSD', 'BTCUSD', 'US500']
+  const REASONS = ['no armed timeframe', 'below conviction floor', 'regime misaligned', 'margin insufficient', 'cluster cap reached', 'stale watchlist entry']
+  const days = ['2026-09-21', '2026-09-22', '2026-09-23']
+  const put = db.prepare('INSERT INTO decision_log (account_id,symbol,stage,decision,reason,created_at) VALUES (?,?,?,?,?,?)')
+  const target = 25_000
+  db.transaction(() => {
+    for (let i = 0; i < target; i++) {
+      const day = days[i % days.length]
+      const hh = String(i % 24).padStart(2, '0'), mm = String((i * 7) % 60).padStart(2, '0')
+      const acct = (i % 5 === 0) ? null : ACCOUNTS[i % ACCOUNTS.length]
+      // The dynamic detail folded into the reason text — the exact shape the
+      // fold-cap comment already warns about: "every row's reason differs".
+      const reason = `${REASONS[i % REASONS.length]} (level ${(i % 60).toFixed(2)})`
+      put.run(acct, SYMBOLS[i % SYMBOLS.length], STAGES[i % STAGES.length], 'skip', reason, `${day} ${hh}:${mm}:00`)
+    }
+  })()
+  const wideFrom = Date.parse('2026-09-21T00:00:00Z')
+  const r = read({ accountId: 'all', timeZone: 'Asia/Singapore', from: wideFrom, to: Date.parse('2026-09-24T00:00:00Z'), now: Date.parse('2026-09-24T00:00:00Z') })
+  assert.equal(r.totalRecords, target, 'every generated row is retained')
+  assert.equal(r.daysIncomplete, false, 'RED if the tightened cap still overflows this realistic window')
+  assert.ok(r.days, 'the grouped view ships, not the null fallback')
+  const daysTotal = r.days.reduce((n, d) => n + d.totalRecords, 0)
+  assert.equal(daysTotal, target, 'the day-grouped totals still reconcile with totalRecords')
+  const bytes = Buffer.byteLength(JSON.stringify(r.days))
+  assert.ok(bytes <= BLOCKER_DAYS_MAX_BYTES, `RED if the grouped payload (${bytes} bytes) exceeds the byte bound`)
 })
 
 test('BLOCKER_DAYS_MAX_BYTES is a real, positive bound', () => {

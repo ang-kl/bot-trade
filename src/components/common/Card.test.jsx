@@ -96,3 +96,59 @@ describe('loading reserves height (PERF-1)', () => {
     expect(render({ id: 'sec-h', storage: fakeStorage(), loading: false })).not.toContain('min-height')
   })
 })
+
+describe('lazy mount (W1-FU: children of a collapsed card are not mounted at all, not just hidden)', () => {
+  it('default behaviour (lazy omitted/false) is unchanged: children mount even while collapsed', () => {
+    const html = render({ id: 'sec-i', storage: fakeStorage(), defaultCollapsed: true }, 'lazy-marker')
+    expect(html).toContain('style="display:none"')
+    expect(html).toContain('lazy-marker')
+  })
+
+  it('lazy + collapsed on first mount: children never render', () => {
+    const html = render({ id: 'sec-j', storage: fakeStorage(), defaultCollapsed: true, lazy: true }, 'lazy-marker')
+    expect(html).toContain('style="display:none"')
+    expect(html).not.toContain('lazy-marker')
+  })
+
+  it('lazy + open on first mount: children render, same as non-lazy', () => {
+    const html = render({ id: 'sec-k', storage: fakeStorage(), defaultCollapsed: false, lazy: true }, 'lazy-marker')
+    expect(html).not.toContain('style="display:none"')
+    expect(html).toContain('lazy-marker')
+  })
+
+  it('lazy + a persisted "open" choice mounts children on the very first render — no waiting for a toggle', () => {
+    const st = fakeStorage({ 'card_open_sec-l': '1' })
+    const html = render({ id: 'sec-l', storage: st, defaultCollapsed: true, lazy: true }, 'lazy-marker')
+    expect(html).not.toContain('style="display:none"')
+    expect(html).toContain('lazy-marker')
+  })
+
+  it('lazy + a persisted "collapsed" choice keeps children unmounted on the very first render', () => {
+    const st = fakeStorage({ 'card_open_sec-m': '0' })
+    const html = render({ id: 'sec-m', storage: st, defaultCollapsed: false, lazy: true }, 'lazy-marker')
+    expect(html).toContain('style="display:none"')
+    expect(html).not.toContain('lazy-marker')
+  })
+
+  // BLOCKER (W1-FU checker): the ⇲ maximize button used to call
+  // setMaximized(true) only, never setEverOpened(true) — so a lazy,
+  // collapsed card that a user opened ONLY via maximize (never via the
+  // ▾/▸ toggle) came back from ⇱ restore with an empty card-body, having
+  // lost whatever sort/scroll state its children held. This repo has no
+  // jsdom/interaction harness (see the header comment above), so the
+  // post-maximize-then-restore state (still collapsed, but opened) is
+  // seeded directly via `initialEverOpened` rather than clicked through —
+  // see that prop's own comment in Card.jsx. The wiring itself (maximize's
+  // onClick really calling setEverOpened(true)) is pinned by the mutation
+  // check in this task's report, not by this test.
+  it('maximise then restore keeps children mounted: still collapsed + everOpened=true renders children (hidden, not gone)', () => {
+    const html = render({ id: 'sec-n', storage: fakeStorage(), defaultCollapsed: true, lazy: true, initialEverOpened: true }, 'lazy-marker')
+    expect(html).toContain('style="display:none"') // still collapsed — body hidden, not shown
+    expect(html).toContain('lazy-marker') // but mounted: restore does not come back empty
+  })
+
+  it('without the fix (initialEverOpened omitted) the same collapsed+lazy card has never opened, so children are absent', () => {
+    const html = render({ id: 'sec-o', storage: fakeStorage(), defaultCollapsed: true, lazy: true }, 'lazy-marker')
+    expect(html).not.toContain('lazy-marker')
+  })
+})

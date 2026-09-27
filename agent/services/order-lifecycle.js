@@ -1021,7 +1021,7 @@ export const RULES = Object.freeze([
     // read by telegram-digest.js digestState — the reader GET
     // /state/telegram-digest serves — pinned here with the loader it uses.
     id: 'STK-08', key: 'outbox_backlog', version: 3, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['db.js:1965-1974', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:164', 'watchdog.cpp:181', 'watchdog.cpp:225-234', 'watchdog_state.cpp:209-213', 'watchdog_state.cpp:125-126', 'watchdog_state.cpp:132-148'],
+    cite: ['db.js:1984-1993', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:164', 'watchdog.cpp:181', 'watchdog.cpp:225-234', 'watchdog_state.cpp:209-213', 'watchdog_state.cpp:125-126', 'watchdog_state.cpp:132-148'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,

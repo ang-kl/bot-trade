@@ -426,6 +426,11 @@ const TABLES = `
     exited_at    TEXT,
     status       TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'exit_sent' | 'closed'
     note         TEXT,
+    -- The refused-exit retry's own record (Wave 2 row 2.1, N2): consecutive
+    -- broker refusals of this row's close, and the earliest time the daily
+    -- pass's exit_pending retry may send it again (NULL = every pass).
+    exit_refusals    INTEGER,
+    exit_retry_after TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_momentum_book_status ON momentum_book(status, account_id);
@@ -494,6 +499,12 @@ const TABLES = `
   -- leads with reason_key, so a scored_at range was a full scan of a table
   -- measured at 35,395 rows / 13.6 MB on 25-09-2026).
   CREATE INDEX IF NOT EXISTS idx_refusal_scores_scored ON refusal_scores(scored_at, outcome, account_id);
+  -- UI-5 (RS-1): refusalCostReport now windows on first_at (the refusal
+  -- time), not scored_at (when the background scorer got to it) — see
+  -- refusal-ledger.js's own comment. Same shape as the scored_at index
+  -- above, for the same reason: a first_at range without this leads with
+  -- the table's own primary key ordering, not a covering scan.
+  CREATE INDEX IF NOT EXISTS idx_refusal_scores_first ON refusal_scores(first_at);
 
   -- Account Registry (multi-account migration plan, Phase 1 R1 / milestone
   -- M0). Single source of truth for which cTrader accounts exist and which
@@ -684,6 +695,14 @@ const TABLES = `
   -- close-completeness cadence; on the account prefix alone that read grows
   -- with the whole entry ledger. Partial: most intents never record one.
   CREATE INDEX IF NOT EXISTS idx_entry_intents_position ON entry_intents(broker_position_id, account_id) WHERE broker_position_id IS NOT NULL;
+  -- C9 fix round 2 (N4): unsettledTickFires runs on EVERY evaluateTrade and
+  -- pre-gate call (risk.js countedPositionsWithTickFires). On the (account_id,
+  -- state) prefix it read every one of the account's intents in the fired
+  -- states, bar ones included, and filtered producer and time from the table:
+  -- measured ~1.9 ms at 10k and ~38 ms at 100k intents per account. Account,
+  -- producer, state and the window's lower bound are all index terms here.
+  -- IF NOT EXISTS: idempotent on every boot, existing databases included.
+  CREATE INDEX IF NOT EXISTS idx_entry_intents_account_producer ON entry_intents(account_id, producer_id, state, updated_at);
 
   -- P2b-1: the sidecar's execution-event journal, pulled like cpp_decisions.
   -- A late answer to a request that gave up, or an unsolicited fill, lands
@@ -1472,7 +1491,7 @@ export function initDB(dbPath) {
   // stop already tighter than 3 ATRs" -- the two conditions that `atr NULL`
   // collapsed into one.
   const mbColNames = new Set(db.prepare("PRAGMA table_info(momentum_book)").all().map(c => c.name));
-  for (const [col, type] of [['trail_checked_at', 'TEXT'], ['trail_note', 'TEXT']]) {
+  for (const [col, type] of [['trail_checked_at', 'TEXT'], ['trail_note', 'TEXT'], ['exit_refusals', 'INTEGER'], ['exit_retry_after', 'TEXT']]) {
     if (!mbColNames.has(col)) db.exec(`ALTER TABLE momentum_book ADD COLUMN ${col} ${type}`);
   }
 
