@@ -248,12 +248,47 @@ export function loopActivityAt() { return lastLoopActivityAt }
 /** The breaker instance, for tests that need a parked loop. */
 export const loopBreakerForTest = loopBreaker
 
-/** Telegram for breaker transitions; fire-and-forget, never fatal. */
+// sendMessage has no timeout of its own; a breaker alert gives up after this
+// so a hung Telegram call cannot hold anything open. Callers do not await it.
+const BREAKER_NOTIFY_TIMEOUT_MS = 10_000
+
+/** Telegram for breaker transitions; fire-and-forget, bounded, never fatal. */
 function notifyBreaker(text) {
   if (!process.env.TELEGRAM_BOT_TOKEN) return Promise.resolve()
-  return import('./services/telegram.js')
+  let timer
+  const timeout = new Promise(resolve => { timer = setTimeout(resolve, BREAKER_NOTIFY_TIMEOUT_MS); timer.unref?.() })
+  const send = import('./services/telegram.js')
     .then(({ sendMessage }) => sendMessage(text))
     .catch(() => { /* non-fatal */ })
+  return Promise.race([send, timeout]).finally(() => clearTimeout(timer))
+}
+
+/**
+ * The tripped path of runLoop: park on the re-check timer, and announce the
+ * trip once. The timer is parked BEFORE any await, so a reset that lands
+ * while the announcement is in flight finds it, cancels it and resumes the
+ * loop (27-09-2026: parking after `await hbeat` / `await notifyBreaker` left
+ * a window where a reset found nothing parked, the gate then parked a 30-min
+ * timer and the untripped watchdog could exit the process). Telegram is not
+ * awaited. `beat`, `notify` and `reschedule` are injectable for tests.
+ */
+export async function parkTripped(db, {
+  beat = hbeat,
+  notify = notifyBreaker,
+  reschedule = () => setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), CIRCUIT_BREAKER_RESET_MS),
+} = {}) {
+  loopBreaker.park(reschedule())
+  const tripped = getState(db, 'circuit_breaker_tripped_at')
+  if (loopBreaker.tripNeedsAnnouncing(tripped)) {
+    const consecutiveErrors = loopBreaker.count
+    setState(db, 'circuit_breaker_tripped_at', new Date().toISOString())
+    log(`CIRCUIT BREAKER TRIPPED — ${consecutiveErrors} consecutive errors. Loop halted.`)
+    notify(`🔴 CIRCUIT BREAKER: Agent loop halted after ${consecutiveErrors} consecutive errors. Manual reset required via POST /actions/reset-breaker`)
+    // The heartbeat says why main_loop stops beating, rather than going
+    // silent and reading as a stall with no cause.
+    await beat(db, 'main_loop', false, `circuit breaker tripped — ${consecutiveErrors} consecutive failing cycles; loop halted until POST /actions/reset-breaker`)
+  }
+  markLagPhase('idle')
 }
 
 /**
@@ -2865,18 +2900,7 @@ async function runLoop(db) {
   // A re-check timer that fired is spent; a reset must not cancel it.
   loopBreaker.unpark()
   if (loopBreaker.isTripped()) {
-    const tripped = getState(db, 'circuit_breaker_tripped_at')
-    if (loopBreaker.tripNeedsAnnouncing(tripped)) {
-      const consecutiveErrors = loopBreaker.count
-      setState(db, 'circuit_breaker_tripped_at', new Date().toISOString())
-      log(`CIRCUIT BREAKER TRIPPED — ${consecutiveErrors} consecutive errors. Loop halted.`)
-      // The heartbeat says why main_loop stops beating, rather than going
-      // silent and reading as a stall with no cause.
-      await hbeat(db, 'main_loop', false, `circuit breaker tripped — ${consecutiveErrors} consecutive failing cycles; loop halted until POST /actions/reset-breaker`)
-      await notifyBreaker(`🔴 CIRCUIT BREAKER: Agent loop halted after ${consecutiveErrors} consecutive errors. Manual reset required via POST /actions/reset-breaker`)
-    }
-    loopBreaker.park(setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), CIRCUIT_BREAKER_RESET_MS))
-    markLagPhase('idle')
+    await parkTripped(db)
     return
   }
 
@@ -5930,7 +5954,7 @@ async function runLoop(db) {
   if (cycleEnd.clean && getState(db, 'circuit_breaker_tripped_at')) {
     setState(db, 'circuit_breaker_tripped_at', null)
     log('Circuit breaker reset — clean cycle completed')
-    await notifyBreaker('🟢 CIRCUIT BREAKER: cleared — the agent loop completed a clean cycle.')
+    notifyBreaker('🟢 CIRCUIT BREAKER: cleared — the agent loop completed a clean cycle.')
   }
 
   // ---- Housekeeping: data retention (once per 8 hours, WALL CLOCK) --------

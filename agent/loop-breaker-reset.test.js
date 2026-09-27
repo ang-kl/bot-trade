@@ -51,3 +51,47 @@ test('the watchdog holds while this process is tripped, exits on a real stall', 
   assert.equal(watchdogVerdict({ quietMs: 13 * 60_000, loopRunning: true, midCycleMs: MID, idleMs: IDLE, tripped: false }), 'exit')
   assert.equal(watchdogVerdict({ quietMs: 11 * 60_000, loopRunning: true, midCycleMs: MID, idleMs: IDLE, tripped: false }), 'ok')
 })
+
+// Re-check of 27a5b2b: park() ran only after `await hbeat` / `await
+// notifyBreaker`, so a reset during the announcement found nothing parked and
+// did not resume. The announcement below is held open until after the reset.
+test('a reset issued while the trip announcement is pending still resumes the loop', async () => {
+  const { mkdtempSync } = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const { initDB, getState } = await import('./db.js')
+  const { parkTripped } = await import('./loop.js')
+  const db = initDB(path.join(mkdtempSync(path.join(os.tmpdir(), 'loopbrk-')), 'agent.db'))
+
+  loopBreakerForTest.reset()
+  loopBreakerForTest.unpark()
+  for (let i = 0; i < 10; i++) { loopBreakerForTest.beginCycle(); loopBreakerForTest.recordFailure(60_000) }
+  assert.equal(loopBreakerForTest.isTripped(), true)
+
+  let releaseBeat
+  const beatHeld = new Promise(resolve => { releaseBeat = resolve })
+  const notes = []
+  let parkedFired = false
+  const pending = parkTripped(db, {
+    beat: () => beatHeld,
+    notify: (t) => { notes.push(t); return new Promise(() => {}) },   // Telegram that never answers
+    reschedule: () => setTimeout(() => { parkedFired = true }, 50),
+  })
+
+  // The announcement is in flight: the stamp is written, the beat has not returned.
+  assert.ok(getState(db, 'circuit_breaker_tripped_at'), 'the trip was stamped')
+  assert.equal(notes.length, 1)
+  assert.match(notes[0], /CIRCUIT BREAKER/)
+
+  let scheduled = 0
+  const r = resetCircuitBreaker({ schedule: () => { scheduled++ } })
+  assert.equal(r.resumed, true, 'the reset found the parked timer')
+  assert.equal(scheduled, 1, 'and resumed the loop')
+
+  releaseBeat()
+  await pending   // resolves although notify never does: Telegram is not awaited
+  assert.equal(loopBreakerForTest.unpark(), null, 'nothing is left parked after the gate finishes')
+  await new Promise(resolve => setTimeout(resolve, 80))
+  assert.equal(parkedFired, false, 'the parked re-check was cancelled')
+  db.close()
+})
