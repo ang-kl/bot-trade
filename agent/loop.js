@@ -43,6 +43,7 @@ import { accountPregate, proposalPregate, invalidateAccountPregate } from './ser
 import { markTickRepush } from './services/tick-permits.js'
 import { recordPositionEvent } from './services/position-events.js'
 import { recordError } from './services/error-log.js'
+import { createLoopBreaker, clearStaleTripStampAtBoot } from './lib/loop-breaker.js'
 import { startLagMonitor, sampleLag, markLagPhase } from './services/event-loop-lag.js'
 import { noteLoopEnd, stampFirst } from './services/runtime-record.js'
 import { measureAmend } from './services/protection-latency.js'
@@ -114,7 +115,14 @@ let crossSideEquitySeeded = false
 // (V3 I1 checker B1). 'pending' until its first run this process; 'reported'
 // with a pnlPassSummary after each run; 'awaited' once a beat has read it.
 let pnlCrossSidePass = { state: 'pending' }
-let consecutiveErrors = 0
+// The consecutive-failing-cycle counter, backoff and breaker (27-09-2026:
+// the counter was zeroed after every cycle, failing ones included, so it never
+// passed 1 — see lib/loop-breaker.js). Values unchanged: back off from 5, cap
+// one sleep at 15 min, trip at MAX_CONSECUTIVE_ERRORS.
+const loopBreaker = createLoopBreaker({ maxConsecutive: MAX_CONSECUTIVE_ERRORS, backoffAfter: 5, backoffCapMs: 15 * 60_000 })
+// The db handle startLoop was given, so a manual breaker reset (from a route,
+// which has no loop handle) can resume the parked loop.
+let loopDb = null
 // S-2 small round (item 3): the entries-held reason the momentum book's hold
 // line last printed, so a reason that stands all weekend prints once.
 let lastBookHeldReason = null
@@ -206,14 +214,85 @@ async function runBudgetedSubPhase(db, name, startWork, budgetMs = SUB_PHASE_BUD
  * Clear the in-process consecutive-error count. POST /actions/reset-breaker
  * was only clearing the DB-persisted `circuit_breaker_tripped_at`/`errors_today`
  * — the trip condition at the top of runLoop() checks the in-memory
- * `consecutiveErrors` counter above, which a route handler in a different
- * module can't reach directly. Without this, a "successful" manual reset
- * looked fine in the response but the very next tick re-tripped the breaker
- * instantly (consecutiveErrors was still >= MAX_CONSECUTIVE_ERRORS), so the
+ * consecutive-error counter (`loopBreaker` above), which a route handler in a
+ * different module can't reach directly. Without this, a "successful" manual
+ * reset looked fine in the response but the very next tick re-tripped the
+ * breaker instantly (the count was still >= MAX_CONSECUTIVE_ERRORS), so the
  * loop stayed halted until the whole process restarted.
+ *
+ * It also resumes a parked loop (27-09-2026). The tripped path never stamps
+ * loop activity, so after a reset the watchdog saw the loop idle past its
+ * 30-min limit and exited the process — a restart nobody asked for, logged as
+ * a stall. The activity stamp is refreshed here and the parked re-check timer
+ * is replaced by a prompt cycle, so the route's "loop will resume on next
+ * tick" is true. `schedule` is injectable for tests.
  */
-export function resetCircuitBreaker() {
-  consecutiveErrors = 0
+export function resetCircuitBreaker({ schedule = resumeAfterReset } = {}) {
+  loopBreaker.reset()
+  lastLoopActivityAt = Date.now()
+  const parked = loopBreaker.unpark()
+  if (parked != null) {
+    clearTimeout(parked)
+    schedule()
+  }
+  notifyBreaker(`🟢 CIRCUIT BREAKER: manually reset${parked != null ? ' — agent loop resuming now' : ''}.`)
+  return { resumed: parked != null }
+}
+
+function resumeAfterReset() {
+  if (!loopDb) return
+  const db = loopDb
+  log('Circuit breaker reset — loop resuming now')
+  setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), 1000)
+}
+
+/** Read-only view of the watchdog's activity stamp (tests). */
+export function loopActivityAt() { return lastLoopActivityAt }
+
+/** The breaker instance, for tests that need a parked loop. */
+export const loopBreakerForTest = loopBreaker
+
+// sendMessage has no timeout of its own; a breaker alert gives up after this
+// so a hung Telegram call cannot hold anything open. Callers do not await it.
+const BREAKER_NOTIFY_TIMEOUT_MS = 10_000
+
+/** Telegram for breaker transitions; fire-and-forget, bounded, never fatal. */
+function notifyBreaker(text) {
+  if (!process.env.TELEGRAM_BOT_TOKEN) return Promise.resolve()
+  let timer
+  const timeout = new Promise(resolve => { timer = setTimeout(resolve, BREAKER_NOTIFY_TIMEOUT_MS); timer.unref?.() })
+  const send = import('./services/telegram.js')
+    .then(({ sendMessage }) => sendMessage(text))
+    .catch(() => { /* non-fatal */ })
+  return Promise.race([send, timeout]).finally(() => clearTimeout(timer))
+}
+
+/**
+ * The tripped path of runLoop: park on the re-check timer, and announce the
+ * trip once. The timer is parked BEFORE any await, so a reset that lands
+ * while the announcement is in flight finds it, cancels it and resumes the
+ * loop (27-09-2026: parking after `await hbeat` / `await notifyBreaker` left
+ * a window where a reset found nothing parked, the gate then parked a 30-min
+ * timer and the untripped watchdog could exit the process). Telegram is not
+ * awaited. `beat`, `notify` and `reschedule` are injectable for tests.
+ */
+export async function parkTripped(db, {
+  beat = hbeat,
+  notify = notifyBreaker,
+  reschedule = () => setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), CIRCUIT_BREAKER_RESET_MS),
+} = {}) {
+  loopBreaker.park(reschedule())
+  const tripped = getState(db, 'circuit_breaker_tripped_at')
+  if (loopBreaker.tripNeedsAnnouncing(tripped)) {
+    const consecutiveErrors = loopBreaker.count
+    setState(db, 'circuit_breaker_tripped_at', new Date().toISOString())
+    log(`CIRCUIT BREAKER TRIPPED — ${consecutiveErrors} consecutive errors. Loop halted.`)
+    notify(`🔴 CIRCUIT BREAKER: Agent loop halted after ${consecutiveErrors} consecutive errors. Manual reset required via POST /actions/reset-breaker`)
+    // The heartbeat says why main_loop stops beating, rather than going
+    // silent and reading as a stall with no cause.
+    await beat(db, 'main_loop', false, `circuit breaker tripped — ${consecutiveErrors} consecutive failing cycles; loop halted until POST /actions/reset-breaker`)
+  }
+  markLagPhase('idle')
 }
 
 /**
@@ -3038,26 +3117,17 @@ async function runLoop(db) {
   }
 
   // ---- Circuit breaker: hard stop after too many consecutive failures ----
-  if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-    const tripped = getState(db, 'circuit_breaker_tripped_at')
-    if (!tripped) {
-      setState(db, 'circuit_breaker_tripped_at', new Date().toISOString())
-      log(`CIRCUIT BREAKER TRIPPED — ${consecutiveErrors} consecutive errors. Loop halted.`)
-      if (process.env.TELEGRAM_BOT_TOKEN) {
-        try {
-          const { sendMessage } = await import('./services/telegram.js')
-          await sendMessage(`🔴 CIRCUIT BREAKER: Agent loop halted after ${consecutiveErrors} consecutive errors. Manual reset required via POST /actions/reset-breaker`)
-        } catch { /* non-fatal */ }
-      }
-    }
-    setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), CIRCUIT_BREAKER_RESET_MS)
-    markLagPhase('idle')
+  // A re-check timer that fired is spent; a reset must not cancel it.
+  loopBreaker.unpark()
+  if (loopBreaker.isTripped()) {
+    await parkTripped(db)
     return
   }
 
   loopRunning = true
   loopCount++
   lastLoopActivityAt = Date.now()
+  loopBreaker.beginCycle()
   const start = Date.now()
   // Cycle soft deadline (incident 2026-07-28, third fix of the night: the
   // per-sub-phase budgets each held, but under a SYSTEMIC slowdown — every
@@ -3212,7 +3282,7 @@ async function runLoop(db) {
   }
 
   // V3 M1: whether this cycle's main block threw, for the boot record's loop
-  // entries (the counter below is reset after the catch, so it cannot say).
+  // entries.
   let cycleErrored = false
   try {
     // S-2: what the momentum book (after `end symbolsJson`) needs from the
@@ -6068,19 +6138,28 @@ async function runLoop(db) {
   } catch (err) {
     cycleErrored = true
     console.error('[loop] error:', err.message)
-    await hbeat(db, 'main_loop', false, err.message)
-    consecutiveErrors++
-    recordError(db, 'loop', err.message)
+    // Nothing in this catch may throw: a throw here would leave loopRunning
+    // true with no next cycle scheduled. The interval read and the error
+    // record touch the db, so they fall back rather than propagate.
+    let intervalMs = LOOP_INTERVAL
+    try { intervalMs = loopIntervalMs(db) } catch { /* default interval */ }
+    const failure = loopBreaker.recordFailure(intervalMs)
+    const consecutiveErrors = failure.count
+    await hbeat(db, 'main_loop', false, `${err.message} [consecutive failing cycles: ${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}]`)
+    try { recordError(db, 'loop', err.message) } catch (e) { console.error('[loop] recordError failed:', e.message) }
+    log(`Loop cycle failed — ${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS} consecutive failing cycles`)
 
-    if (consecutiveErrors >= 5) {
-      const backoff = Math.min(15 * 60_000, loopIntervalMs(db) * consecutiveErrors)
+    if (failure.backoffMs > 0) {
+      const backoff = failure.backoffMs
       log(`Self-healing: ${consecutiveErrors} consecutive errors — backing off ${Math.round(backoff / 60000)}m`)
       // Persist the breakdown on the way out too: the phase that was running
       // when a cycle died is exactly the one worth seeing.
-      const erroredPhaseMs = closePhases()
-      // V3 M1: a cycle that died still took time and, if it was the first,
-      // is still the first loop — recorded with ok: false, not skipped.
-      noteLoopEnd({ startedAtMs: start, ms: Date.now() - start, phaseMs: erroredPhaseMs, ok: false })
+      try {
+        const erroredPhaseMs = closePhases()
+        // V3 M1: a cycle that died still took time and, if it was the first,
+        // is still the first loop — recorded with ok: false, not skipped.
+        noteLoopEnd({ startedAtMs: start, ms: Date.now() - start, phaseMs: erroredPhaseMs, ok: false })
+      } catch (e) { console.error('[loop] errored-cycle record failed:', e.message) }
       loopRunning = false
       lastLoopActivityAt = Date.now()
       setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), backoff)
@@ -6088,8 +6167,15 @@ async function runLoop(db) {
     }
   }
 
-  consecutiveErrors = 0
-  setState(db, 'circuit_breaker_tripped_at', null)
+  // Only a CLEAN cycle clears the streak; a failing one below the backoff
+  // threshold falls through here with its count kept.
+  const cycleEnd = loopBreaker.endCycle()
+  if (cycleEnd.reset) log(`Circuit breaker counter cleared — clean cycle after ${cycleEnd.was} consecutive failing cycle(s)`)
+  if (cycleEnd.clean && getState(db, 'circuit_breaker_tripped_at')) {
+    setState(db, 'circuit_breaker_tripped_at', null)
+    log('Circuit breaker reset — clean cycle completed')
+    notifyBreaker('🟢 CIRCUIT BREAKER: cleared — the agent loop completed a clean cycle.')
+  }
 
   // ---- Housekeeping: data retention (once per 8 hours, WALL CLOCK) --------
   //
@@ -6636,6 +6722,19 @@ export function watchdogLine(detail, inflight) {
   return `[watchdog] LOOP HUNG — no cycle activity for ${detail.quietMin}m (limit ${detail.limitMin}m), stuck in phase "${detail.phase}" — ${inflightStr} (loop #${detail.loopCount}, started ${detail.startedAt}). Exiting for a Railway auto-restart.`
 }
 
+/**
+ * The watchdog's decision for one tick, pure so a test can drive it.
+ * `tripped` is THIS process's breaker state, not the persisted stamp: a stamp
+ * a previous process left behind must not switch the watchdog off.
+ * @returns {'ok'|'tripped'|'exit'}
+ */
+export function watchdogVerdict({ quietMs, loopRunning: running, midCycleMs, idleMs, tripped }) {
+  const limit = running ? midCycleMs : idleMs
+  if (quietMs < limit) return 'ok'
+  if (tripped) return 'tripped'
+  return 'exit'
+}
+
 function startLoopWatchdog(db) {
   const minutes = Number(process.env.LOOP_WATCHDOG_MINUTES ?? 12)
   if (!(minutes > 0)) { log('Loop watchdog DISABLED (LOOP_WATCHDOG_MINUTES=0)'); return }
@@ -6646,8 +6745,7 @@ function startLoopWatchdog(db) {
     try {
       const quietMs = Date.now() - lastLoopActivityAt
       const limit = loopRunning ? midCycleMs : idleMs
-      if (quietMs < limit) return
-      if (getState(db, 'circuit_breaker_tripped_at')) return
+      if (watchdogVerdict({ quietMs, loopRunning, midCycleMs, idleMs, tripped: loopBreaker.isTripped() }) !== 'exit') return
       const phase = getState(db, 'loop_phase') || 'unknown'
       const startedAt = getState(db, 'loop_started_at') || 'unknown'
       // Wave 5 (§K·15): the stuck CALL, not just the phase. Read from the
@@ -6670,6 +6768,17 @@ function startLoopWatchdog(db) {
   t.unref?.()
 }
 
+/** Boot: clear a trip stamp a previous process left (see clearStaleTripStampAtBoot). */
+function bootBreaker(db) {
+  try {
+    clearStaleTripStampAtBoot({
+      getStamp: () => getState(db, 'circuit_breaker_tripped_at'),
+      clearStamp: () => setState(db, 'circuit_breaker_tripped_at', null),
+      log,
+    })
+  } catch (err) { log('[boot] circuit breaker stamp check failed (non-fatal):', err.message) }
+}
+
 export function startLoop(db) {
   // Staging shares production's cTrader grant — an armed staging agent
   // invalidates production's token on every refresh (the 26-08-2026 token
@@ -6683,8 +6792,10 @@ export function startLoop(db) {
     }
   }
   log('Agent loop starting...')
+  loopDb = db
+  bootBreaker(db)
   if (PENDING_PRODUCER_RETIRED) log('[boot] pending orders: producer retired — phase not scheduled')
-  setTimeout(() => runLoop(db), 5000) // 5s delay on startup
+  setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), 5000) // 5s delay on startup
   if (CLOSED_MARKET_PRODUCER_RETIRED) log('[boot] closed-market limits: producer retired — the scan rests no limits for the next open; the momentum and manual paths rest their own under their own producer')
   // Wave 5 (§K·15): the in-flight call registry stamps its oldest call to
   // loop_inflight_json from here on, so the watchdog's finding survives the
