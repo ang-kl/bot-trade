@@ -35,6 +35,8 @@ import { readPartialPlan, runPartialPlan } from './momentum-partial-manager.js'
 import { makeMomentumPartialBroker } from './momentum-partial-broker.js'
 import { runMomentumPartialPass } from './momentum-partial-runtime.js'
 import { secondsIntoWeek } from './symbol-hours.js'
+import { recordMarketCalendar } from './market-calendar.js'
+import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 
 const ACCT = '4001', SYMBOL = 'ETHUSD', SID = 22
 const ENV = ['EXEC_ENGINE', 'EXEC_URL', 'EXEC_URL_DEMO', 'EXEC_URL_LIVE', 'EXEC_SECRET', 'EXEC_FALLBACK', 'CTRADER_CLIENT_ID', 'CTRADER_CLIENT_SECRET']
@@ -150,7 +152,17 @@ async function scene(t, { open = true } = {}) {
   })
   setState(db, 'ctrader_access_token', 't')
   setState(db, 'evidence_gate_json', JSON.stringify({ on: false }))
-  db.prepare(`INSERT INTO symbol_hours (symbol, schedule_json, tz) VALUES (?, ?, ?)`).run(SYMBOL, open ? ALWAYS_OPEN : closedNow(), 'UTC')
+  const hours = open ? ALWAYS_OPEN : closedNow()
+  db.prepare(`INSERT INTO symbol_hours (symbol, schedule_json, tz) VALUES (?, ?, ?)`).run(SYMBOL, hours, 'UTC')
+  // The SAME hours as the account's own calendar (V3 S-8's entry-hours
+  // source: the registry's host, the account's own symbol map, the recorded
+  // calendar), so the scene reads one market state whichever source the
+  // entry gate uses — symbol_hours before S-8, the account calendar after.
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, '1', 0, 1, 'active')`).run(ACCT)
+  setState(db, accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: new Date().toISOString(), accountId: ACCT, map: { [SYMBOL]: SID } }))
+  const cal = recordMarketCalendar(db, { host: 'demo.ctraderapi.com', accountId: ACCT, symbolId: String(SID) },
+    { symbolId: SID, scheduleTimeZone: 'UTC', tradingMode: 0, schedule: JSON.parse(hours), holiday: [] })
+  assert.deepEqual([cal.recorded, cal.reason], [true, null], 'the scene\'s calendar is valid evidence')
   // The book's holding record: one closed row of 10 nights (OD-3's median).
   db.prepare(`INSERT INTO momentum_book (account_id, symbol, side, entered_at, exited_at, status) VALUES (?, 'BTCUSD', 'long', ?, ?, 'closed')`)
     .run(ACCT, '2026-09-01T00:00:00Z', '2026-09-11T00:00:00Z')

@@ -289,3 +289,19 @@ only under `node --test`, pinned) and the fake broker: entry → bind →
 database closed and reopened between stages. Not covered: P0-4 (resting
 limits) and F8 (how cTrader anchors a multi-deal average fill's bracket; such
 a fill is refused at the bind by name and stays `AWAITING_BIND`).
+
+## T4 after OD-1 and OD-15 (27 September)
+
+Owner, 27-09 ~12:30 SGT: "3. yes. Resume momentum entries after T4" (OD-1)
+and "4. yes. OD-15" (resting orders count toward the caps and margin, the
+values unchanged). What T4 now does:
+
+| Answer | In T4 |
+|---|---|
+| OD-1(a) market entries: yes | `momentum-entries.json` `"market": true`. Both momentum producers still dispatch only on accounts where `tsmom_long` is Trade-armed (the book's arm gate); the switch names exactly those two producers. No account is added. |
+| OD-1(a) open-market HTF limits: yes after OD-15, Trade-armed accounts | **Still refused by name** (`momentum_resting_limit_held`). OD-15 is answered, but P0-4 (the plan on a resting limit, its bind at the fill, the F8 check from fills) and the OD-15 counting itself are not built. Without them a momentum limit would rest with no partial-TP1 plan and outside the caps. |
+| OD-1(b) closed-market limits: no | Refused by name (`momentum_closed_market_entry`), once per closed spell, nothing rested. |
+| OD-15 resting orders count toward caps and margin | **Not built.** Today `max_positions` counts positions plus unsettled tick fires (`risk.js` `countedPositionsWithTickFires`), the book's 8 counts book rows, the margin pool reads the broker's used margin (positions only); only the per-symbol caps (`symbol-position-cap.js`, `book-symbol-cap.js`) read `pending_orders`. Counting resting orders is a shared risk-gate change for every account and producer, a row of its own (PO-5). |
+
+`/state/momentum-targets` now reads `wiring.market` wired and on; the runtime
+stays INCOMPLETE with the unwired limit producer as its gap.
