@@ -2,6 +2,8 @@
 
 Version 1 - 27 September 2026
 
+Current operational checkpoint, 27 September 20:08 SGT: the owner-approved tick endpoint corrections and sequential gateway restarts are complete, with seven accounts reconnected, 26 positions carrying broker SL/TP, and native tick processing restored. Full scanner acceptance remains open because current feed identities do not match registered tick profiles and the collector fix is still undeployed. The account-selection choice remains unapplied; PR #1170 remains a draft. The original build snapshot below is retained; see the append-only [progress log](v3-momentum-target-policy-2026-09-24.progress.md) for timestamps, deployment IDs, exact evidence and remaining gates.
+
 ## Outcome and authority
 
 This branch continues the owner's T4 option (a), OD-15 and four diagnosed code defects from the 27 September 15:12 SGT handover. The main baseline is `cf121d4f2e58ba7b480f4b371e8fe4eff3934b4f`. The updated handover draft was read at `9f33c7d72981fd919fb7d4ad4a33f06a9d54a710` (PR #1169); it is newer than main's handover text. The old `claude/w2-t4` branch has no unmerged continuation to recover.

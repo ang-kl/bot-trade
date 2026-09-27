@@ -1392,3 +1392,18 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   remains unchanged. The automated review step was skipped and is not checker
   evidence. PR CI, independent review and scoped production approval remain
   distinct gates; follow the PR checks and append-only progress log.
+
+- **27-09-2026 20:08 SGT, CODEX gateway recovery checkpoint, partial corpus:**
+  the shared count continues from the owner's supplied rebase and visible
+  replies, not a new full-corpus measurement. Latest reply before this
+  checkpoint is **`№ 10,083`**; subsequent visible replies take precedence.
+  The owner-approved `/feed` correction and sequential restarts of cpp-exec
+  and cpp-acct are complete. Seven accounts recovered; fresh independent
+  broker readback found 26 positions with SL and TP. Native tick processing
+  reached 3658 observations across 106 streams. Current feed anchors differ
+  from registered profile accounts, and Node comparison acceptance remains
+  open. The collector fix is still in undeployed draft PR #1170. No account
+  selection, profile registration, broker-order, sizing or cap change was
+  performed by this operation. The chosen return to account ending 0058
+  remains unapplied. Detailed evidence and limitations are recorded in
+  `docs/v3-momentum-target-policy-2026-09-24.progress.md`.
