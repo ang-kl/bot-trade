@@ -58,6 +58,25 @@ export const MOMENTUM_UNIVERSE_KEY = 'momentum_universe_json'
 export const TSMOM_STRATEGY = 'tsmom_long'
 
 /**
+ * T4 fix round SF2: working tsmom_long limits on this account, one per
+ * symbol, for symbols with no open book row. A limit placed before T4 (or by
+ * any earlier momentum pass) fills later into a book row; counting it only
+ * when it fills let a pass fill every slot with market entries and the later
+ * fill push the book over its cap. So a working limit holds a slot. This is
+ * the momentum book's own slot count, not the shared OD-15 gate (risk.js).
+ * An unreadable table counts 0, as before this change.
+ */
+export function workingTsmomLimitSlots(db, accountId) {
+  try {
+    return db.prepare(`
+      SELECT COUNT(DISTINCT UPPER(symbol)) AS n FROM pending_orders
+       WHERE account_id = ? AND status = 'working' AND strategy = ?
+         AND UPPER(symbol) NOT IN (SELECT UPPER(symbol) FROM momentum_book WHERE status = 'open' AND account_id = ?)
+    `).get(String(accountId), TSMOM_STRATEGY, String(accountId))?.n || 0
+  } catch { return 0 }
+}
+
+/**
  * THE REFUSED-EXIT RETRY'S BACKOFF (Wave 2 row 2.1, checker N2, 26-09-2026).
  * An `exit_pending:` row is retried on every loop pass (~12 an hour); a close
  * the broker keeps refusing was re-sent at that rate for ever. From the
@@ -486,7 +505,8 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   // the book — the two used to be separate statements here.
   const tradeRowFor = db.prepare(`SELECT id, ctrader_position_id, entry_price, sl_price FROM trades WHERE symbol = ? AND account_id = ? AND label_strategy = ? AND status = 'open' ORDER BY id DESC LIMIT 1`)
   const workingLimit = db.prepare(`SELECT id FROM pending_orders WHERE account_id = ? AND symbol = ? AND status = 'working' AND strategy = ? LIMIT 1`)
-  let open = openSyms.size
+  // SF2: a working tsmom limit holds a slot until it fills or is cancelled.
+  let open = openSyms.size + workingTsmomLimitSlots(db, accountId)
   // PR-P (16-09-2026): THE PER-ACCOUNT ENTRY BRAKE, decided in
   // momentum-book.js by book-open-drawdown.js and handed in here. THIS is the
   // path that trades — `accountId: "_all"` routes every enabled account

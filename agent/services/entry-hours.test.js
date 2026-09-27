@@ -206,7 +206,9 @@ test('autoTrade: a holiday TODAY on the account calendar takes the closed-market
     holiday: [{ holidayId: 9, name: 'today', scheduleTimeZone: 'UTC', holidayDate: today, isRecurring: false, startSecond: 0, endSecond: D }] }, { nowMs: now })
   db.prepare('INSERT INTO symbol_hours (symbol, schedule_json, tz) VALUES (?, ?, ?)').run(SYM, '[]', 'UTC') // the old gate: always open
   const { autoTrade } = await import('../loop.js')
-  const out = await withCreds(() => autoTrade(db, SYM, SYNTH, {}, { accountId: ACCT, isLive: false, producerId: 'daily_momentum_account' }))
+  // S-8 x T4: a producer that still takes the generic closed-market branch. With T4's switch on a
+  // momentum producer is refused by name instead (OD-1(b)), pinned in momentum-entry-t4.test.js.
+  const out = await withCreds(() => autoTrade(db, SYM, SYNTH, {}, { accountId: ACCT, isLive: false, producerId: 'route_execute_trade' }))
   assert.equal(out ?? null, null, 'nothing placed')
   const veto = db.prepare('SELECT veto_reason FROM risk_events').all().map(r => r.veto_reason)
   assert.equal(veto.length, 1)
