@@ -198,7 +198,7 @@ export function scannerWork(db, accounts, now) {
 export const CALENDAR_EXPORT_MAX_BYTES = 96 * 1024
 
 /**
- * The calendars Node exports to cpp-verify (watchdog_state.cpp:162-166 copies
+ * The calendars Node exports to cpp-verify (watchdog_state.cpp:373-377 copies
  * `calendars[i].calendar` onto every work item of every service whose
  * (accountId, host, symbolId) matches `calendars[i].identity`).
  *
@@ -230,8 +230,8 @@ export const CALENDAR_EXPORT_MAX_BYTES = 96 * 1024
  * (watchdog-calendar-refresh.js:90-99). A stream the gateway no longer feeds
  * therefore keeps a row whose only calendar source is this export's retained
  * part — and with it the verifier reads OPEN and raises the urgent stale-quote
- * incident (watchdog_state.cpp:217), without it UNKNOWN and a warning
- * (watchdog_state.cpp:200-201). cpp-exec's quote_flow rows (calendar null,
+ * incident (watchdog_state.cpp:428), without it UNKNOWN and a warning
+ * (watchdog_state.cpp:411-412). cpp-exec's quote_flow rows (calendar null,
  * watchdog_contract.cpp:24) are in the same position for a symbol added
  * between two gateway health reads. Node's own items do not need it: each
  * carries its own calendar unless its identity is exported with one
