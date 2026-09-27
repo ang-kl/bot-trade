@@ -16,7 +16,10 @@
 // clock). The monitor's EXIT behaviour is held to main's by six invariants:
 //
 //   I1  NO BROKER-PRICED POSITION IS EVALUATED MORE THAN ONE TICK LATER THAN
-//       MAIN WOULD, however slow other positions' work is. How:
+//       MAIN WOULD, however slow other positions' work is — for a price
+//       change aligned to the cadence; one that falls between the two
+//       implementations' samples is a phase shift, bounded below under WHAT
+//       IS HELD, AND WHAT CANNOT BE. How:
 //         · LAUNCH AT THE ATTEMPT — a due position's probe starts right where
 //           main would await it, inside the loop, never after it; beyond the
 //           cap it queues FIFO and starts the moment a slot frees. So it starts
@@ -87,17 +90,41 @@
 //       launches counts nothing, so it never replaces the last priced pass's
 //       record.
 //
-// WHAT IS HELD, AND THE ONE THING THAT CANNOT BE. The differential harness
-// holds every scenario's exit to within one tick of main's under the
-// ticker's wait (and the round-3 reproductions X1–X5 even with no wait at
-// all). Probing in parallel necessarily samples a position at main's cadence
-// but not at main's INSTANTS — main samples it only after the probes ahead
-// of it; that shift is what bounds the "observed before main would" rule
-// above to one tick. A crossing that falls inside that last tick before
-// main's sample is seen by main in this cycle and here only at the next
-// sample; a crossing just after this sample is seen here first. No parallel
-// design removes that without sampling at main's instants — which is main's
-// serial loop.
+// WHAT IS HELD, AND WHAT CANNOT BE (corrected round 6, SF2). The
+// differential harness holds every CADENCE-ALIGNED scenario's exit to within
+// one tick of main's under the ticker's wait (and the round-3 reproductions
+// X1–X5 even with no wait at all). What no parallel design can hold to one
+// tick is a crossing that is NOT aligned to the cadence, because the two
+// sample a position at different PHASES of its cycle:
+//
+//   · main samples position k only when its serial pass reaches it — C_k
+//     after the pass began, C_k being main's chain ahead of k (the probe
+//     round trips and actions of the positions before it: ≈ k × a probe's
+//     latency, ≈ 20 s at the 48 serial round trips measured in production);
+//   · this tree samples every due position at the start of its cycle.
+//
+// So, with P the position's cadence period:
+//   · a crossing inside the C_k window (after this tree's sample, before
+//     main's) is seen by main in that cycle and here at the next sample —
+//     up to P − C_k LATER, plus the exits this tree serves ahead of k in
+//     that pass (each a broker action, and a re-ask once the chain has aged
+//     its quote: when many positions cross together this tree exits them in
+//     main's position order, while main exits first those it happened to
+//     sample after the crossing);
+//   · a crossing in the rest of the cycle (after main's sample, before this
+//     tree's next) is seen here first — up to C_k EARLIER.
+// Over a crossing placed uniformly in the cycle the two cancel (window C_k
+// × lateness P − C_k against window P − C_k × lead C_k): a phase shift,
+// not a lag in expectation — but its worst case is a cadence period, not a
+// tick. fast-monitor-m7-differential.test.js pins both directions ("phase"
+// scenarios) against the bound as stated here. Holding the worst case to a
+// tick would mean sampling at main's instants — which is main's serial loop.
+//
+// THE COST OF WAITING FOR A RE-ASK (B1). A pass that waits for a re-asked
+// probe past its end-of-pass deadline can run up to PROBE_GUARD_MS (10 s)
+// over, so the ticker SKIPS the ticks it overlaps — as main's own long
+// serial passes do. Read `skipShare` with that in mind: a skipped tick
+// under M7 is time spent serving an exit chain, not an idle pass.
 //
 // THE ONE DELIBERATE DEPARTURE FROM MAIN'S TIMING — OD-22's backoff. A symbol
 // whose last probe was a clean empty answer, while other symbols on its side
@@ -302,14 +329,25 @@ export class ProbeBoard {
   retain(keep) { this.waiters = this.waiters.filter(w => keep(w.posId, w)) }
 
   /**
+   * Whether an empty answer for `key` would (re-)arm OD-22's backoff right
+   * now, time aside: the last answer was a clean `empty`, the rest of the
+   * side streams, and no spike window is open. When this is false a backoff
+   * has LIFTED for a reason other than its time running out (SF1).
+   */
+  backoffCanArm(key, { sideHasFreshQuote = false, spikeActive = false } = {}) {
+    if (spikeActive || !sideHasFreshQuote) return false
+    const h = this.history.get(key)
+    return !!h && h.lastKind === 'empty'
+  }
+
+  /**
    * OD-22's backoff for `key` at `nowMs` (I3): only after a clean `empty`
    * answer, only while the side is otherwise fresh, never in a spike window,
    * and for at most backoffMs after that probe was sent.
    */
   backoffActive(key, { nowMs, sideHasFreshQuote = false, spikeActive = false } = {}) {
-    if (spikeActive) return false
+    if (!this.backoffCanArm(key, { sideHasFreshQuote, spikeActive })) return false
     const h = this.history.get(key)
-    if (!h || h.lastKind !== 'empty') return false
     return shouldBackoff({ lastProbeAtMs: h.lastLaunchAt, nowMs, backoffMs: this.backoffMs, sideHasFreshQuote })
   }
 

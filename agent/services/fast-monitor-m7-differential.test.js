@@ -411,6 +411,87 @@ for (const w of WAITS) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// PHASE (round 6, SF2) — a crossing NOT aligned to the cadence. Main samples
+// position k C_k after its pass begins (its serial chain ahead of k); this
+// tree samples every due position at the start of its cycle. A crossing in
+// the C_k window is main's first (this tree up to P − C_k later, plus the
+// exits it serves ahead of k); one in the rest of the cycle is this tree's
+// first (up to C_k earlier). The header of ../lib/fast-monitor-probes.js
+// states that bound; these pin BOTH directions against it — not one tick.
+// ---------------------------------------------------------------------------
+// One crossing position behind fifteen quiet ones: main's chain ahead of it
+// is fifteen 1 s probes (C = 15 s) on a 30 s cadence (P).
+const PHASE_P = 30_000
+const PHASE_C = 15_000
+function phaseSingle(crossAt) {
+  return {
+    startMs: T0, durationMs: 200_000, symbolMap: SYM, overrides: { GBPUSD: PHASE_P / 60_000, EURUSD: PHASE_P / 60_000 },
+    positions: [
+      ...Array.from({ length: 15 }, (_, i) => ({ id: 1500 + i, symbol: 'EURUSD', entry: 100, sl: 99, risk: 1, trigger: 'price<99' })),
+      { id: 1515, symbol: 'GBPUSD', entry: 100, sl: 99, risk: 1, trigger: 'price<99' },
+    ],
+    sidecar: () => ({}),
+    broker: (id, t) => ({ kind: 'quote', latencyMs: 1_000, ...quote(id === SYM.GBPUSD && t >= T0 + crossAt ? 98.5 : 100, 0.02) }),
+  }
+}
+// The re-check's own shape: sixteen positions on one symbol, 2 s actions,
+// the 15 s cadence floor, 400 ms probes.
+const PHASE16_P = 15_000
+const PHASE16_LAT = 400
+const PHASE16_ACT = 2_000
+function phaseSixteen(crossAt) {
+  return {
+    startMs: T0, durationMs: 150_000, symbolMap: SYM, overrides: { GBPUSD: 0.25 },
+    positions: Array.from({ length: 16 }, (_, i) => ({ id: 1600 + i, symbol: 'GBPUSD', entry: 100, sl: 99, risk: 1, trigger: 'price<99' })),
+    sidecar: () => ({}),
+    broker: (id, t) => ({ kind: 'quote', latencyMs: PHASE16_LAT, ...quote(t < T0 + crossAt ? 100 : 98.5, 0.02) }),
+    action: () => ({ durationMs: PHASE16_ACT, outcome: { summary: 'ok' } }),
+  }
+}
+for (const w of WAITS) {
+  const slack = compoundTicks(w) * TICK
+  test(`phase, late side (${waitLabel(w)}): a crossing inside main's chain window is main's first — this tree is later by at most P − C, not one tick`, async (t) => {
+    const r = await both(phaseSingle(35_000), w)
+    const m = r.main.exitAt(1515)
+    const b = r.branch.exitAt(1515)
+    t.diagnostic(`phase late: main +${(m - T0) / 1000} s, branch +${(b - T0) / 1000} s, shift ${(b - m) / 1000} s (P ${PHASE_P / 1000} s, C ${PHASE_C / 1000} s)`)
+    assert.ok(m != null && b != null)
+    assert.ok(b - m > TICK, 'the phase shift is real and more than a tick: the bound is NOT one tick here')
+    assert.ok(b - m <= PHASE_P - PHASE_C + slack, `later by at most P − C (+ tolerance): ${(b - m) / 1000} s`)
+  })
+  test(`phase, early side (${waitLabel(w)}): a crossing after main's sample is this tree's first — earlier by up to C`, async (t) => {
+    const r = await both(phaseSingle(50_000), w)
+    const m = r.main.exitAt(1515)
+    const b = r.branch.exitAt(1515)
+    t.diagnostic(`phase early: main +${(m - T0) / 1000} s, branch +${(b - T0) / 1000} s, shift ${(b - m) / 1000} s`)
+    assert.ok(m != null && b != null)
+    assert.ok(m - b > TICK, 'the mirror crossing: this tree exits first, by more than a tick')
+    assert.ok(m - b <= PHASE_C + slack, 'earlier by at most C')
+  })
+  test(`phase ×16, late side (${waitLabel(w)}): the re-check's shape — each position within P − C_k plus the exits served ahead of it`, async (t) => {
+    const sc = phaseSixteen(20_000)
+    const r = await both(sc, w)
+    const lines = []
+    sc.positions.forEach((p, k) => {
+      const m = r.main.exitAt(p.id)
+      const b = r.branch.exitAt(p.id)
+      const bound = PHASE16_P - k * PHASE16_LAT + k * (PHASE16_ACT + PHASE16_LAT) + slack
+      lines.push(`#${k} main +${(m - T0) / 1000} branch +${(b - T0) / 1000} shift ${((b - m) / 1000).toFixed(2)} bound ${(bound / 1000).toFixed(1)}`)
+      assert.ok(m != null && b != null, `#${k} exits on both`)
+      assert.ok(b - m <= bound, `#${k}: shift ${(b - m) / 1000} s over the stated bound ${bound / 1000} s`)
+    })
+    t.diagnostic(`phase ×16 late: ${lines.join(' | ')}`)
+    const worst = Math.max(...sc.positions.map(p => r.branch.exitAt(p.id) - r.main.exitAt(p.id)))
+    assert.ok(worst > TICK, 'harness sanity: this crossing is not cadence-aligned — some position is shifted by more than a tick')
+  })
+  test(`phase ×16, early side (${waitLabel(w)}): the mirror crossing — no position exits later than main`, async (t) => {
+    const sc = phaseSixteen(25_000)
+    const r = await both(sc, w)
+    for (const p of sc.positions) exitNotLater(t, `phase ×16 early #${p.id}`, r, p.id, compoundTicks(w))
+  })
+}
+
 // A slow probe AHEAD of a crossed one: waiters are served in main's order, so
 // R waits for S — never longer than main's serial loop makes it wait.
 function slowHead() {

@@ -26,7 +26,7 @@ import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
 import {
   runFastMonitor, startFastMonitor, waitEligibility, _resetFastDecisionStateForTests, _resetFastMonitorProbeSchedulerForTests,
-  _setFastMonitorProbeCapForTests, _getFastMonitorProbeCapForTests, _drainFastMonitorProbesForTests,
+  _setFastMonitorProbeCapForTests, _getFastMonitorProbeCapForTests, _drainFastMonitorProbesForTests, _openSpikeWindowForTests,
 } from './fast-monitor.js'
 import { PROBE_CAP_DEFAULT, PROBE_CAP_MAX } from '../lib/fast-monitor-probes.js'
 import { _resetAmendLatencyForTests, _amendLatencyStateForTests } from './protection-latency.js'
@@ -273,6 +273,69 @@ test('I3: only a CLEAN EMPTY answer backs off — while the side streams, for ba
   await runFastMonitor(db2, CREDS, d2)
   assert.deepEqual(d2.calls.ws, [1, 1, 1, 1], 'inside the spike window every tick probes, empty answer or not')
   assert.notEqual(readWork(db2)[0].state, 'probe_backoff')
+})
+
+// SF1 (round 6): a backoff row must never outlive the backoff. The empty
+// answer that ends a backoff stays in the same quiet episode ONLY while the
+// backoff will re-arm; once it cannot (the rest of the side stopped
+// streaming, or a spike window opened) the log says no_quote again, while
+// the position is probed on main's cadence.
+async function intoBackoff({ quotesBody }) {
+  const db = mkDb()
+  addPos(db, 'EURUSD')
+  setState(db, 'monitor_overrides_json', JSON.stringify({ EURUSD: 0.01 }))
+  const clk = { t: clockBase += 3_600_000 }
+  const t0 = clk.t
+  const d = deps({ now: clk.t, quotesBody, answer: { kind: 'empty', reason: 'subscribed; no two-sided price' } })
+  d.now = () => clk.t
+  await runFastMonitor(db, CREDS, d)
+  clk.t = t0 + 16_000
+  await runFastMonitor(db, CREDS, d)
+  assert.equal(readWork(db)[0].state, 'probe_backoff', 'harness: in the backoff')
+  assert.match(rows(db).at(-1).reason, /backing off.*OD-22/)
+  return { db, d, clk, t0 }
+}
+const lastState = (db) => {
+  const r = db.prepare(`SELECT detail_json FROM decision_log WHERE stage = 'fast_monitor' ORDER BY id DESC LIMIT 1`).get()
+  return JSON.parse(r.detail_json).state
+}
+
+test('SF1: the side stops streaming mid-backoff — the backoff lifts and the log says no_quote again, not "backing off" while probed on cadence', async () => {
+  let sideFresh = true
+  const { db, d, clk, t0 } = await intoBackoff({ quotesBody: (tt) => (sideFresh ? sideFreshOther(tt) : { feed: 'up', generation: 1, accountId: '111', nowMs: tt, count: 0, quotes: [] }) })
+  const before = rows(db).length
+  sideFresh = false
+  clk.t = t0 + 19_000
+  await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.ws, [1, 1], 'no longer backed off: probed on main\'s cadence')
+  assert.equal(rows(db).length, before + 1, 'one row: the backoff lifted')
+  assert.equal(lastState(db), 'no_quote', 'the log no longer says the position is backing off')
+  clk.t = t0 + 35_000 // the next due time on the 15 s cadence floor
+  await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.ws, [1, 1, 1], 'still probed every cadence')
+  assert.equal(rows(db).length, before + 1, 'the same no-quote episode: no further row')
+  // Quiet → failure → quiet still holds: a failure is still no_quote, no row.
+  d.answer = { kind: 'failed', reason: 'cTrader error: CH_ACCESS_TOKEN_INVALID' }
+  clk.t = t0 + 51_000
+  await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.ws, [1, 1, 1, 1])
+  assert.equal(rows(db).length, before + 1, 'a failure inside a no-quote episode adds no row')
+  assert.equal(lastState(db), 'no_quote')
+})
+
+test('SF1: a spike window opens mid-backoff — the backoff lifts and the log says no_quote again', async () => {
+  const { db, d, clk, t0 } = await intoBackoff({ quotesBody: sideFreshOther })
+  const before = rows(db).length
+  _openSpikeWindowForTests('demo.ctraderapi.com:111:1', t0 + 600_000)
+  clk.t = t0 + 19_000
+  await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.ws, [1, 1], 'a spike window never backs off: probed')
+  assert.equal(rows(db).length, before + 1, 'one row: the backoff lifted')
+  assert.equal(lastState(db), 'no_quote', 'the log no longer says the position is backing off')
+  clk.t = t0 + 22_000
+  await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.ws, [1, 1, 1], 'every tick probes inside the spike window')
+  assert.equal(rows(db).length, before + 1, 'the same no-quote episode: no further row')
 })
 
 test('I6 (nit 1): two positions on one symbol share ONE probe — one broker call counted once, two positions priced', async () => {

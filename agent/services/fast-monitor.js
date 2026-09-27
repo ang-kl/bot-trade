@@ -289,6 +289,8 @@ export function _setFastMonitorProbeCapForTests(n) { probes.cap = clampCap(n) }
 export function _getFastMonitorProbeCapForTests() { return probes.cap }
 /** Test seam: resolves once every probe open right now has settled (queued ones included). Production never waits on this. */
 export async function _drainFastMonitorProbesForTests() { await probes._drainForTests() }
+/** Test seam: open a spike window on a feed key (`host:accountId:symbolId`) until `untilMs`, as a sharp move would. */
+export function _openSpikeWindowForTests(feedKey, untilMs) { spikeUntil.set(feedKey, untilMs) }
 
 /**
  * The eligibility of the evaluation a probe answers (I5): main's own
@@ -620,6 +622,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
         const probe = w.probe
         const r = probe.result
         probes.shift()
+        w.reasked = false // consumed: the re-ask it carried is answered
         const pos = currentRow(e.pos)
         if (!pos) return
         const { receipt } = e
@@ -831,6 +834,16 @@ export async function runFastMonitor(db, creds, deps = {}) {
           now() - (lastCheckAt.get(pos.id) || 0) >= effectiveCadenceMs(overrideMin, relVol, baseMin)
         receipt.cadenceMs = effectiveCadenceMs(overrideMin, relVol, baseMin)
         if (!receipt.nextDueAt) receipt.nextDueAt = new Date(now()).toISOString()
+        // SF1 (round 6): a backoff row must not outlive the backoff. The empty
+        // answer that ends a backoff is kept in the same quiet episode only
+        // while the backoff can re-arm; once it cannot (the rest of the side
+        // stopped streaming, or a spike window opened) the log says no_quote
+        // again — the position is being probed on main's cadence.
+        if (decisionState.get(pos.id) === 'probe_backoff' && !probes.backoffCanArm(feedKey, {
+          sideHasFreshQuote: sideHasFreshQuoteExcluding(quotesBySide.get(String(sideOf(pos))), lookupId(pos), now(), maxAgeMs), spikeActive,
+        })) {
+          noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: backoff lifted (${spikeActive ? 'spike window' : 'the rest of its side is not streaming'}) — probed on main's cadence, still no quote`)
+        }
         // I4: a position whose probe is still open has no verdict yet — due
         // again or not, it is neither re-asked nor recorded.
         const waiting = probes.waiterOf(pos.id)
