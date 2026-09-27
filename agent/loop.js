@@ -400,10 +400,11 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
 
   // V3 T4 (P0-3): a momentum entry carries the partial-TP1 plan — but ONLY
   // while config/momentum-entries.json says "market": true (on since the
-  // owner's OD-1, 27-09-2026). Off, this is false for every producer and
+  // owner's OD-1, 27-09-2026) AND names this account in its `accounts` list.
+  // Off, or for an unlisted account, this is false and
   // nothing below changes: a momentum proposal still carries no target and
   // the shared execution boundary refuses it, exactly as before T4.
-  const momentumPlanOn = momentumPlanApplies(producerId, seam?.entrySwitch ? { load: () => seam.entrySwitch } : undefined)
+  const momentumPlanOn = momentumPlanApplies(producerId, { accountId, ...(seam?.entrySwitch ? { load: () => seam.entrySwitch } : {}) })
   // One refusal record for the T4 path's named refusals: the proposal as it
   // stands, refused, in the risk ledger and the decision log.
   const refuseMomentumEntry = async (reason, stage = 'momentum_entry') => {
@@ -461,7 +462,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // here anyway, having been refused at the top of autoTrade), a kept one
     // rests its limit exactly as before.
     try {
-      const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
+      const placeClosedMarketLimit = seam?.placeClosedMarketLimit || (await import('./services/closed-market-limits.js')).placeClosedMarketLimit
       const r = await placeClosedMarketLimit(
         db,
         attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId }),
@@ -552,7 +553,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         return null
       }
       const expiresAtMs = nextBarCloseMs(synth.timeframe)
-      const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
+      const placeClosedMarketLimit = seam?.placeClosedMarketLimit || (await import('./services/closed-market-limits.js')).placeClosedMarketLimit
       const r = await placeClosedMarketLimit(
         db,
         attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId }),
@@ -1087,6 +1088,17 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         db.prepare(`UPDATE trades SET status = ? WHERE id = ?`)
           .run(unknown ? 'unconfirmed' : 'rejected', intentId)
       } catch { /* the throw below is the report */ }
+      // V3 T4 SF3: a momentum intent whose send is ambiguous cannot be bound
+      // (no position id; a later fill resolves through another row). Named.
+      if (momentumFinal && unknown) {
+        try {
+          const { ambiguousMomentumIntent } = await import('./services/momentum-entry-producer.js')
+          const reason = ambiguousMomentumIntent({ symbol, tradeId: intentId, error: err?.message })
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, { accountId: String(accountId), symbol, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'momentum_intent_ambiguous', decision: 'proceed', reason, detail: { tradeId: Number(intentId), intentState: 'PREPARED' } })
+          log(`MOMENTUM ${reason}`)
+        } catch { /* the throw below is the report */ }
+      }
       throw err
     }
     const entryLatencyMs = Date.now() - submitT0

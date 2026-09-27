@@ -298,10 +298,20 @@ values unchanged). What T4 now does:
 
 | Answer | In T4 |
 |---|---|
-| OD-1(a) market entries: yes | `momentum-entries.json` `"market": true`. Both momentum producers still dispatch only on accounts where `tsmom_long` is Trade-armed (the book's arm gate); the switch names exactly those two producers. No account is added. |
+| OD-1(a) market entries: yes | `momentum-entries.json` `"market": true` with `"accounts": ["46130058"]`. No account is added, and that is **enforced by the account list** (`momentumPlanApplies` requires the account), not by arm state: on a fresh or restored database `global-strategies.json` arms `tsmom_long` on every account with no explicit cell, and `momentum-account.json` `_all` sends every enabled account through the daily pass. An unlisted account takes the pre-T4 path. Widening is a one-line change to the list with the owner's yes (declared data, principle 9). The switch names exactly the two momentum producers. |
 | OD-1(a) open-market HTF limits: yes after OD-15, Trade-armed accounts | **Still refused by name** (`momentum_resting_limit_held`). OD-15 is answered, but P0-4 (the plan on a resting limit, its bind at the fill, the F8 check from fills) and the OD-15 counting itself are not built. Without them a momentum limit would rest with no partial-TP1 plan and outside the caps. |
 | OD-1(b) closed-market limits: no | Refused by name (`momentum_closed_market_entry`), once per closed spell, nothing rested. |
 | OD-15 resting orders count toward caps and margin | **Not built.** Today `max_positions` counts positions plus unsettled tick fires (`risk.js` `countedPositionsWithTickFires`), the book's 8 counts book rows, the margin pool reads the broker's used margin (positions only); only the per-symbol caps (`symbol-position-cap.js`, `book-symbol-cap.js`) read `pending_orders`. Counting resting orders is a shared risk-gate change for every account and producer, a row of its own (PO-5). |
 
 `/state/momentum-targets` now reads `wiring.market` wired and on; the runtime
 stays INCOMPLETE with the unwired limit producer as its gap.
+
+**Fix round (27 September).** SF2: a working `tsmom_long` limit holds one of
+the book's slots (both the daily pass's `maxPositions` and the row-cursor
+`maxPositionsPerAccount`; `workingTsmomLimitSlots` in `momentum-account.js`),
+so market entries cannot fill every slot before an older limit fills. This is
+the book's own count, not OD-15's shared gate. SF3: an ambiguous momentum send
+leaves the intent `PREPARED` with no position; it is recorded by name
+(`momentum_intent_unbound_ambiguous`, decision_log stage
+`momentum_intent_ambiguous`). A position that did open carries the plan's
+broker stop and runner target, without the partial.

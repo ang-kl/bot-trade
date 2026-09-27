@@ -4,7 +4,7 @@ import { planMomentumTargets, shiftStopToFill, stopHeld, sameTicks, offPriceGrid
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { registerPartialPlan } from './momentum-partial-manager.js'
 import { readMomentumPartialPass, partialPassFreshness, partialPassForAccount } from './momentum-partial-runtime.js'
-import { loadMomentumEntrySwitch } from './momentum-entry-switch.js'
+import { loadMomentumEntrySwitch, momentumAccountListed } from './momentum-entry-switch.js'
 
 const json = value => { try { return JSON.parse(value) } catch { return null } }
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -234,11 +234,18 @@ export function momentumTargetStatus(db, { accountId, all = false, limit = 50, n
     : []
   // T4: whether the wired market path is switched on (ON since OD-1, 27-09).
   const entrySwitch = loadSwitch()
-  const enabledOf = k => k === 'market' ? entrySwitch.market === true : false
+  // B1 (T4 fix round): on only for the accounts the file names. A scoped read
+  // of an unlisted account says so; `all` is on when any account is listed.
+  const accounts = Array.isArray(entrySwitch.accounts) ? entrySwitch.accounts : []
+  const listed = all ? accounts.length > 0 : momentumAccountListed(entrySwitch, accountId)
+  const enabledOf = k => k === 'market' ? entrySwitch.market === true && listed : false
+  const offWhy = k => entrySwitch.market !== true
+    ? `switched off (config/momentum-entries.json ${k} is not true${entrySwitch.error ? `; ${entrySwitch.error}` : ''}) — the owner's OD-1 turns it on in that file`
+    : `switched on, but ${all ? 'no account is' : `account ${accountId} is not`} in config/momentum-entries.json \`accounts\` — widening is an owner yes`
   const integrationGaps = [
     ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([, w]) => !w.wired).map(([k, w]) => `${k}: ${w.note}`),
     ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([k, w]) => w.wired && !enabledOf(k))
-      .map(([k]) => `${k}: wired, switched off (config/momentum-entries.json ${k} is not true${entrySwitch.error ? `; ${entrySwitch.error}` : ''}) — the owner's OD-1 turns it on in that file`),
+      .map(([k]) => `${k}: wired, ${offWhy(k)}`),
     ...(passNow.why ? [passNow.why] : []),
     ...accountGaps,
   ]
@@ -246,7 +253,8 @@ export function momentumTargetStatus(db, { accountId, all = false, limit = 50, n
     runtimeIntegration: integrationGaps.length ? 'INCOMPLETE' : 'COMPLETE', integrationGaps,
     passHeartbeatAt: freshness.at, pass,
     wiring: Object.fromEntries(Object.entries(MOMENTUM_TARGET_PRODUCERS).map(([k, w]) => [k, { wired: w.wired, status: w.wired ? 'wired' : 'not wired',
-      enabled: w.wired && enabledOf(k), switch: w.wired ? (enabledOf(k) ? 'on' : 'off') : null, producer: w.producer, note: w.note }])) }
+      enabled: w.wired && enabledOf(k), switch: w.wired ? (enabledOf(k) ? 'on' : 'off') : null,
+      ...(k === 'market' ? { accounts } : {}), producer: w.producer, note: w.note }])) }
   const partial = has('momentum_partial_plans')
   const pcols = partial ? cols('momentum_partial_plans') : new Set()
   const pWhere = all ? '' : 'WHERE account_id=?', pParams = all ? [] : [accountId]

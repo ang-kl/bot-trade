@@ -23,13 +23,17 @@ import { writeFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { tempDir } from '../test-support/temp-dir.js'
 import { startFakeBroker } from '../test-support/fake-broker.js'
-import { initDB, setState } from '../db.js'
+import { initDB, setState, getState } from '../db.js'
+import { seedMomentumAccountFromConfig, isMomentumAccount } from './momentum-account.js'
+import { seedStrategyPinsFromConfig, armedTradeKeys } from './stage-matrix.js'
+import { seedGlobalStrategiesFromConfig } from './global-strategy-seed.js'
 import { validateOrderBracket, invalidateSidecarSession } from '../lib/exec-engine.js'
 import { relativePoints } from '../lib/lot-sizing.js'
 import { loadMomentumEntrySwitch, momentumPlanApplies, MOMENTUM_ENTRY_PRODUCERS } from './momentum-entry-switch.js'
 import { swapCarryReserve, medianBookHoldingNights, gridStop, MOMENTUM_CLOSED_MARKET_REFUSAL,
-  MOMENTUM_RESTING_LIMIT_REFUSAL } from './momentum-entry-producer.js'
+  MOMENTUM_RESTING_LIMIT_REFUSAL, MOMENTUM_INTENT_AMBIGUOUS } from './momentum-entry-producer.js'
 import { readMomentumEntry } from './momentum-entry-contract.js'
+import { loadClosedMarketLimitsConfig } from './closed-market-limits.js'
 import { bookEntryWrite } from './book-entry-write.js'
 import { readPartialPlan, runPartialPlan } from './momentum-partial-manager.js'
 import { makeMomentumPartialBroker } from './momentum-partial-broker.js'
@@ -39,6 +43,7 @@ import { recordMarketCalendar } from './market-calendar.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 
 const ACCT = '4001', SYMBOL = 'ETHUSD', SID = 22
+const TRIAL_ACCT = '46130058' // the approved account in config/momentum-entries.json (B1)
 const ENV = ['EXEC_ENGINE', 'EXEC_URL', 'EXEC_URL_DEMO', 'EXEC_URL_LIVE', 'EXEC_SECRET', 'EXEC_FALLBACK', 'CTRADER_CLIENT_ID', 'CTRADER_CLIENT_SECRET']
 const ALWAYS_OPEN = JSON.stringify([{ startSecond: 0, endSecond: 7 * 86400 }])
 // One minute of trading two hours from now: closed at the time of the test.
@@ -56,11 +61,48 @@ test('the switch is ON as the repo declares it (owner OD-1, 27-09): both momentu
   const sw = loadMomentumEntrySwitch()
   assert.equal(sw.market, true, 'config/momentum-entries.json carries the owner\'s OD-1: market entries on')
   assert.equal(sw.error, null, 'the shipped file is readable')
-  for (const p of MOMENTUM_ENTRY_PRODUCERS) assert.equal(momentumPlanApplies(p), true, p)
+  // B1: exactly the approved account (…0058, the tsmom_long trial account).
+  assert.deepEqual(sw.accounts, [TRIAL_ACCT])
+  for (const p of MOMENTUM_ENTRY_PRODUCERS) {
+    assert.equal(momentumPlanApplies(p, { accountId: TRIAL_ACCT }), true, p)
+    assert.equal(momentumPlanApplies(p, { accountId: '46130949' }), false, `${p} on an unlisted account`)
+    assert.equal(momentumPlanApplies(p), false, `${p} with no account`)
+  }
   // No widening: the switch names exactly the two momentum producers; every
   // other producer (the scan, the routes, the fib orders) never takes the path.
   assert.deepEqual([...MOMENTUM_ENTRY_PRODUCERS], ['cross_sectional_book', 'daily_momentum_account'])
-  for (const p of ['scan_dispatch', 'pending_fib_orders', 'manual_assisted', undefined]) assert.equal(momentumPlanApplies(p), false, String(p))
+  for (const p of ['scan_dispatch', 'pending_fib_orders', 'manual_assisted', undefined]) assert.equal(momentumPlanApplies(p, { accountId: TRIAL_ACCT }), false, String(p))
+})
+
+test('B1: a fresh database seeded with the shipped configs in boot order arms tsmom_long on every account, and only the listed account takes the momentum market path', () => {
+  const db = initDB(':memory:')
+  try {
+    const ids = [TRIAL_ACCT, '46130949', '46139908', '46133489']
+    for (const id of ids) db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')`).run(id, id.slice(-4))
+    // index.js boot order: momentum account → strategy pins → (watchlists) → global arm.
+    seedMomentumAccountFromConfig(db)
+    seedStrategyPinsFromConfig(db, { getState, setState })
+    seedGlobalStrategiesFromConfig(db, { getState, setState })
+    // The hazard the account list closes: the arm state alone arms every account.
+    for (const id of ids) assert.equal(armedTradeKeys(db, getState, id).has('tsmom_long'), true, `tsmom_long armed on ${id} by the shipped seeds`)
+    for (const id of ids) assert.equal(isMomentumAccount(db, id), true, `${id} runs the daily pass under _all`)
+    // The shipped switch: only the listed account takes the plan path.
+    for (const p of MOMENTUM_ENTRY_PRODUCERS) {
+      assert.deepEqual(ids.filter(id => momentumPlanApplies(p, { accountId: id })), [TRIAL_ACCT], p)
+    }
+  } finally { db.close() }
+})
+
+test('the account list: only well-formed ids count; missing, empty or malformed names no account (fail closed)', () => {
+  const dir = tempDir('t4-accounts-')
+  const at = (name, text) => { const f = join(dir, name); writeFileSync(f, text); return f }
+  for (const [name, text] of [['none.json', '{"market":true}'], ['empty.json', '{"market":true,"accounts":[]}'],
+    ['string.json', '{"market":true,"accounts":"46130058"}'], ['number.json', '{"market":true,"accounts":[46130058]}'],
+    ['alias.json', '{"market":true,"accounts":["_all"]}']]) {
+    const load = () => loadMomentumEntrySwitch(at(name, text))
+    assert.deepEqual(load().accounts, [], name)
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: TRIAL_ACCT, load }), false, name)
+  }
 })
 
 test('only the literal true turns the switch on; unreadable is off; non-momentum producers never take the path', () => {
@@ -70,13 +112,13 @@ test('only the literal true turns the switch on; unreadable is off; non-momentum
     ['missing.json', null], ['null.json', 'null']]) {
     assert.equal(loadMomentumEntrySwitch(at(name, text)).market, false, name)
   }
-  const on = at('on.json', '{"market":true}')
+  const on = at('on.json', '{"market":true,"accounts":["11"]}')
   assert.equal(loadMomentumEntrySwitch(on).market, true)
   const load = () => loadMomentumEntrySwitch(on)
-  assert.equal(momentumPlanApplies('cross_sectional_book', { load }), true)
-  assert.equal(momentumPlanApplies('daily_momentum_account', { load }), true)
+  assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '11', load }), true)
+  assert.equal(momentumPlanApplies('daily_momentum_account', { accountId: 11, load }), true)
   for (const p of ['scan_dispatch', 'tick_momentum', 'closed_market_limits', 'manual_assisted', undefined]) {
-    assert.equal(momentumPlanApplies(p, { load }), false, String(p))
+    assert.equal(momentumPlanApplies(p, { accountId: '11', load }), false, String(p))
   }
 })
 
@@ -167,7 +209,7 @@ async function scene(t, { open = true } = {}) {
   db.prepare(`INSERT INTO momentum_book (account_id, symbol, side, entered_at, exited_at, status) VALUES (?, 'BTCUSD', 'long', ?, ?, 'closed')`)
     .run(ACCT, '2026-09-01T00:00:00Z', '2026-09-11T00:00:00Z')
   broker.setQuote(SID, { bid: 99.9, ask: 100 })
-  const s = { broker, dbPath, reads: { symbolsList: 0, assets: 0, symbolsById: 0, quote: 0, reconcile: 0 }, sent: [], fillAsk: null }
+  const s = { broker, dbPath, reads: { symbolsList: 0, assets: 0, symbolsById: 0, quote: 0, reconcile: 0 }, sent: [], limits: [], fillAsk: null }
   const count = (k, fn) => async (...a) => { s.reads[k]++; return fn(...a) }
   s.momentum = {
     symbolsList: count('symbolsList', async () => ({ symbol: [{ symbolId: SID, symbolName: SYMBOL, baseAssetId: 5, quoteAssetId: 1, enabled: true }] })),
@@ -178,8 +220,21 @@ async function scene(t, { open = true } = {}) {
     quote: count('quote', async (c, symbolId) => ({ ...broker.spot(c.accountId, symbolId), timestamp: Date.now() })),
     reconcile: count('reconcile', async (c) => broker.reconcile(c.accountId)),
   }
+  // A switch given without an account list names the scene's account (B1:
+  // the switch applies only to listed accounts); a test that passes its own
+  // `accounts` gets exactly that.
   s.seam = (entrySwitch) => ({
-    entrySwitch, momentum: s.momentum, skipForensics: true, bindSleep: async () => {},
+    entrySwitch: entrySwitch && !('accounts' in entrySwitch) ? { ...entrySwitch, accounts: [ACCT] } : entrySwitch,
+    // SF5: the resting-limit placement, recorded instead of sent. It answers
+    // 'off' exactly as the real module does when the feature is off, and a
+    // placement otherwise, so a mutant that reaches it fails on an assertion
+    // (s.limits) rather than on a broker read that never answers.
+    placeClosedMarketLimit: async (db_, _creds, symbol, synth, opts) => {
+      if (!loadClosedMarketLimitsConfig(db_).on) return { skipped: 'off' }
+      s.limits.push({ symbol, synth, opts })
+      return { placed: true, limitPrice: synth.entry, expiresAt: 'test' }
+    },
+    momentum: s.momentum, skipForensics: true, bindSleep: async () => {},
     resolveSymbolId: async () => ({ id: String(SID), source: 'test' }),
     getVolumeMeta: async () => ({ lotSize: 100, minVolume: 1, stepVolume: 1, digits: 2 }),
     wsGetSpotOnce: async () => ({ bid: 99.9, ask: 100 }),
@@ -187,6 +242,7 @@ async function scene(t, { open = true } = {}) {
     // The shared execution boundary's own guard, then the fake broker's fill.
     execPlaceOrder: async (_creds, payload) => {
       s.sent.push(payload)
+      if (s.placeError) throw s.placeError
       const v = validateOrderBracket(payload)
       if (!v.ok) throw new Error(v.reason)
       if (s.fillAsk != null) broker.setQuote(SID, { bid: s.fillAsk - 0.1, ask: s.fillAsk })
@@ -218,6 +274,18 @@ test('SWITCH OFF: a momentum entry takes the pre-T4 path — no evidence read, n
   assert.equal(s.sent[0].relativeTakeProfit, undefined, 'without a target, as before T4')
   assert.ok(s.vetoes().some(v => /guard_no_target/.test(v)), JSON.stringify(s.vetoes()))
   assert.ok(!s.vetoes().some(v => v.startsWith('momentum_')), 'no T4 refusal while off')
+})
+
+test('B1, SWITCH ON as shipped, an account NOT in the list takes the pre-T4 path — no evidence read, no intent, refused at the boundary', async t => {
+  const s = await scene(t)
+  const shipped = loadMomentumEntrySwitch()
+  assert.deepEqual([shipped.market, shipped.accounts.includes(ACCT)], [true, false], 'the scene account is not listed')
+  assert.equal(await s.run(shipped) ?? null, null, 'no entry')
+  assert.deepEqual(s.reads, { symbolsList: 0, assets: 0, symbolsById: 0, quote: 0, reconcile: 0 }, 'no momentum evidence read')
+  assert.equal(s.intents().length, 0, 'no target intent recorded')
+  assert.equal(s.broker.positions(ACCT).length, 0)
+  assert.ok(s.vetoes().some(v => /guard_no_target/.test(v)), JSON.stringify(s.vetoes()))
+  assert.ok(!s.vetoes().some(v => v.startsWith('momentum_')), 'no T4 refusal for an unlisted account')
 })
 
 test('SWITCH OFF, closed market: the pre-T4 closed-market branch runs, no named momentum refusal', async t => {
@@ -276,6 +344,7 @@ test('SWITCH ON, closed market: refused by name, nothing rested, no evidence rea
   const d = s.db().prepare(`SELECT stage, decision FROM decision_log WHERE stage = 'momentum_closed_market'`).all()
   assert.deepEqual(d, [{ stage: 'momentum_closed_market', decision: 'veto' }])
   assert.equal(s.db().prepare(`SELECT count(*) n FROM pending_orders`).get().n, 0, 'no limit rested')
+  assert.equal(s.limits.length, 0, 'the resting-limit placement was never asked')
   assert.equal(s.sent.length, 0); assert.equal(s.reads.quote, 0)
   // Once per closed spell: a second attempt logs but does not add a row.
   await s.run({ market: true })
@@ -284,10 +353,15 @@ test('SWITCH ON, closed market: refused by name, nothing rested, no evidence rea
 
 test('SWITCH ON, an entry that would rest as an HTF limit is refused by name (OD-15, P0-4)', async t => {
   const s = await scene(t)
+  // The resting-limit feature ON and no parity window: without the named
+  // refusal the entry would rest (SF5: the seam records it in s.limits).
+  setState(s.db(), 'risk_config_json', JSON.stringify({ htfLimitDispatch: { minTf: '4h', freshnessMin: 0 } }))
+  setState(s.db(), 'closed_market_limits_json', JSON.stringify({ on: true }))
   const synth = bookSynth({ marketOnly: false, source: 'momentum_account', timeframe: '1d' })
   assert.equal(await s.run({ market: true }, synth, 'daily_momentum_account') ?? null, null)
   const v = s.vetoes()
   assert.ok(v.some(x => x.startsWith(`${MOMENTUM_RESTING_LIMIT_REFUSAL}: ${SYMBOL} 1d would rest as a limit`)), JSON.stringify(v))
+  assert.equal(s.limits.length, 0, 'the resting-limit placement was never asked')
   assert.equal(s.db().prepare(`SELECT count(*) n FROM pending_orders`).get().n, 0)
   assert.equal(s.sent.length, 0)
 })
@@ -396,6 +470,32 @@ test('the partial pass makes no deferred-bind read when nothing awaits', async (
   let called = 0
   const summary = await runMomentumPartialPass(db, { deps: { bindAwaiting: async () => { called++; return [] } } })
   assert.equal(called, 0); assert.equal(summary.deferredBinds, undefined)
+})
+
+test('SF3: an ambiguous momentum send leaves the intent PREPARED and records it by name (no silent loss of the partial)', async t => {
+  const s = await scene(t)
+  // A sidecar timeout after the request left: the outcome is UNKNOWN.
+  s.placeError = new Error('exec sidecar timeout after 30000 ms')
+  assert.equal(await s.run({ market: true }) ?? null, null)
+  const db = s.db()
+  const trade = db.prepare(`SELECT id, status FROM trades WHERE account_id = ?`).get(ACCT)
+  assert.equal(trade.status, 'unconfirmed', 'the ledger row says the outcome is unknown')
+  const [intent] = s.intents()
+  assert.deepEqual([intent.state, intent.position_id], ['PREPARED', null], 'nothing to bind: no position was named')
+  const rows = db.prepare(`SELECT stage, decision, reason, detail_json FROM decision_log WHERE stage = 'momentum_intent_ambiguous'`).all()
+  assert.equal(rows.length, 1, JSON.stringify(rows))
+  assert.ok(rows[0].reason.startsWith(`${MOMENTUM_INTENT_AMBIGUOUS}: ${SYMBOL} trade ${trade.id}`), rows[0].reason)
+  assert.equal(JSON.parse(rows[0].detail_json).tradeId, trade.id)
+  assert.ok(s.vetoes().some(v => v.startsWith('order_ambiguous:')), JSON.stringify(s.vetoes()))
+})
+
+test('SF3 control: a provably-unsent momentum order is not recorded as an ambiguous intent', async t => {
+  const s = await scene(t)
+  // The sidecar's own attestation that the request never reached the socket.
+  s.placeError = new Error('sidecar 503: {"errorCode":"NOT_CONNECTED","description":"not sent"}')
+  await s.run({ market: true })
+  assert.equal(s.db().prepare(`SELECT status FROM trades WHERE account_id = ?`).get(ACCT)?.status, 'rejected')
+  assert.equal(s.db().prepare(`SELECT count(*) n FROM decision_log WHERE stage = 'momentum_intent_ambiguous'`).get().n, 0)
 })
 
 test('a plan the evidence cannot stand on refuses the entry by name before the gate', async t => {

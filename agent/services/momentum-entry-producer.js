@@ -47,6 +47,16 @@ import { TICK_SHADOW_SIM_FILE } from '../lib/tick-cost-schedule.js'
 export const MOMENTUM_CLOSED_MARKET_REFUSAL = 'momentum_closed_market_entry'
 export const MOMENTUM_RESTING_LIMIT_REFUSAL = 'momentum_resting_limit_held'
 export const MOMENTUM_PLAN_REFUSAL = 'momentum_plan_refused'
+// SF3 (T4 fix round): an ambiguous send leaves the intent PREPARED with no
+// position to name, and a position the broker did open is resolved later
+// through another trade row (the reconciler's adoption, the stuck resolver),
+// so the deferred bind cannot reach it. Recorded by name, not silently.
+export const MOMENTUM_INTENT_AMBIGUOUS = 'momentum_intent_unbound_ambiguous'
+
+/** The named record for a momentum intent whose order outcome is unknown. */
+export function ambiguousMomentumIntent({ symbol, tradeId, error }) {
+  return `${MOMENTUM_INTENT_AMBIGUOUS}: ${symbol} trade ${tradeId} — the order was sent and its outcome is unknown (${String(error ?? '').slice(0, 160)}); the intent stays PREPARED with no position, so no partial-TP1 plan is bound. A position that did open carries the plan's broker stop and runner target and is managed by the book without the partial`
+}
 export const EVIDENCE_MAX_AGE_MS = 5000
 
 /** The named refusal for a momentum entry into a closed market (OD-1(b)). */
