@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState, setState } from '../db.js'
 import { reconcileCrossSideAccounts } from './cross-side-reconcile.js'
-import { backfillCrossSidePnl } from './cross-side-pnl.js'
+import { backfillAccountPnl, backfillCrossSidePnl } from './cross-side-pnl.js'
 import { backfillClosedPnl, resetBackfillPacing } from './pnl-backfill.js'
+import { reclassifyBrokerCloses } from './reconciler.js'
+import { captureCloseDeals } from './broker-exit-attribution.js'
 
 const now = Date.now()
 const base = { ready: true, accountId: '1', isLive: false }
@@ -201,4 +203,56 @@ test('the main loop reaches cross-side money recovery after cross-side reconcili
   const source = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
   assert.match(source, /const crossReconciled = await reconcileCrossSideAccounts\(db, getCtraderCreds\(db\)\)/)
   assert.match(source, /await backfillCrossSidePnl\(db, getCtraderCreds\(db\), crossReconciled\)/)
+})
+
+test('real account backfill queues its filled close, reads that account order and upgrades attribution', async t => {
+  const db = fixture(t), id = seed(db, '2')
+  const filled = { ...close(), orderId: '990', tradeSide: 2,
+    closePositionDetail: { ...close().closePositionDetail, entryPrice: 100 } }
+  let reads = 0
+  const result = await backfillAccountPnl(db, getCreds(db, { accountId: '2', isLive: true }), {
+    clock: () => now, getDeals: getter([], [open(), filled]),
+    getPositionDeals: async () => ({ ctidTraderAccountId: '2', deal: [open(), filled] }),
+    getOrderDetails: async (host, _client, _secret, _token, account, orderId, timeout) => {
+      reads++
+      assert.deepEqual([host, account, orderId], ['live.ctraderapi.com', '2', '990'])
+      assert.ok(timeout > 0 && timeout <= 5000)
+      return { ctidTraderAccountId: account, order: { orderId, positionId: '700', closingOrder: true,
+        orderStatus: 2, orderType: 4, stopPrice: 95, limitPrice: 120,
+        tradeData: { symbolId: 10, tradeSide: 2 } }, deal: [filled] }
+    },
+  })
+  assert.equal(result.result.closeAttribution.state, 'verified')
+  assert.equal(reads, 1)
+  assert.equal(row(db, id).net_pnl, -5.5, 'existing broker-money backfill still owns the amount')
+  const before = db.prepare('SELECT net_pnl, volume, sl_price, account_id FROM trades WHERE id=?').get(id)
+  assert.equal(reclassifyBrokerCloses(db), 1)
+  assert.match(db.prepare('SELECT close_reason FROM trades WHERE id=?').get(id).close_reason, /^stop loss hit.*inferred/)
+  assert.deepEqual(db.prepare('SELECT net_pnl, volume, sl_price, account_id FROM trades WHERE id=?').get(id), before)
+  assert.equal(getState(db, 'ctrader_account_id'), '1')
+})
+
+test('queued attribution works without a money gap and a timed-out order cannot write late or overlap', async t => {
+  const db = fixture(t)
+  seed(db, '2', { net: -5.5 })
+  const filled = { ...close(), orderId: '990', tradeSide: 2,
+    closePositionDetail: { ...close().closePositionDetail, entryPrice: 100 } }
+  captureCloseDeals(db, '2', [filled], now)
+  let release, reads = 0
+  const order = new Promise(resolve => { release = resolve })
+  const creds = getCreds(db, { accountId: '2', isLive: true })
+  const deps = { clock: () => now, budgetMs: 20,
+    getDeals: async () => { throw Error('money gap must not be invented') },
+    getPositionDeals: async () => ({ ctidTraderAccountId: '2', deal: [open(), filled] }),
+    getOrderDetails: async () => { reads++; return order } }
+  const result = await backfillAccountPnl(db, creds, deps)
+  assert.equal(result.result.closeAttribution.state, 'read_failed')
+  assert.equal((await backfillAccountPnl(db, creds, deps)).skipped, 'read_still_in_flight')
+  assert.equal(reads, 1)
+  release({ ctidTraderAccountId: '2', order: { orderId: '990', positionId: '700', closingOrder: true,
+    orderStatus: 2, orderType: 4, stopPrice: 95, limitPrice: 120,
+    tradeData: { symbolId: 10, tradeSide: 2 } }, deal: [filled] })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(db.prepare('SELECT state FROM broker_close_attribution').get().state, 'pending')
+  assert.equal(db.prepare('SELECT net_pnl FROM trades').get().net_pnl, -5.5)
 })

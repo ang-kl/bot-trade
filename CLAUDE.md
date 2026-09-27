@@ -1432,3 +1432,20 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   full performance traces, final-partial-fill acceptance and V3 outcome
   evidence remain open. The dated review/readback and append-only progress
   log carry the details; no skipped automated review is counted as review.
+
+- **28-09-2026 05:24 SGT, CODEX exit-evidence checkpoint, partial corpus:**
+  latest visible reply before this checkpoint is **`№ 10,148`**; later visible
+  replies take precedence. The owner ordered exit-attribution correction,
+  costed candidate replay with unchanged risk, and V3 continuation. The local
+  increment passed a frozen-source backend gate (7,176 passed, three skipped),
+  1,311 frontend tests, lint, build, colour and whitespace checks. Broker cause
+  evidence is account/order/deal scoped; the false open-book trailing-stop
+  inference is removed. Replay remains censored and does not qualify PF 1.71.
+  An exact private 902-profile scanner proposal and rollback pass the actual
+  registry locally but remain unapplied. Main is cf121d4; remote draft #1170 is
+  aa59db0. No push, deployment, production record/profile/account mutation or
+  broker action occurred in this increment. The 05:00 target was missed.
+  Full V3 production, partial-fill, trace and empirical acceptance remain open.
+  See docs/exit-attribution-replay-2026-09-28.md and its append-only progress
+  record. Explicit push/production approval remains required by the uploaded
+  instructions; the separate fresh-build-rule conflict remains deferred.

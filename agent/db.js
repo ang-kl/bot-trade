@@ -1122,6 +1122,18 @@ const TABLES = `
     error            TEXT              -- per-symbol fetch/data failure, honestly kept
   );
 
+  CREATE TABLE IF NOT EXISTS broker_close_attribution (
+    account_id TEXT NOT NULL, deal_id TEXT NOT NULL, position_id TEXT NOT NULL, order_id TEXT NOT NULL,
+    execution_at INTEGER NOT NULL, expected_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+    cause TEXT, reason TEXT, confidence TEXT, evidence_json TEXT, verified_at INTEGER,
+    next_attempt_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT,
+    PRIMARY KEY(account_id, deal_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_close_attribution_due
+    ON broker_close_attribution(account_id, state, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_close_attribution_position
+    ON broker_close_attribution(account_id, position_id, execution_at);
+
   CREATE TABLE IF NOT EXISTS broker_deals (
     deal_id          TEXT PRIMARY KEY,
     position_id      TEXT,

@@ -2,7 +2,8 @@
 // it belongs to the selected environment or the opposite-side reconciler.
 // No broker writes, account selection, unknown-row attribution or risk changes.
 import { getCtraderCreds } from '../lib/ctrader-creds.js'
-import { wsGetDeals, wsGetPositionDeals } from '../lib/ctrader-ws.js'
+import { wsGetDeals, wsGetPositionDeals, wsGetOrderDetails } from '../lib/ctrader-ws.js'
+import { captureCloseDeals, collectCloseAttribution } from './broker-exit-attribution.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { getEnabledAccounts } from './account-registry.js'
 import { backfillClosedPnl, dueForBackfill, noteBackfillAttempt, shouldRunPnlBackfill } from './pnl-backfill.js'
@@ -55,6 +56,7 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
             || c.grossProfit == null || ![c.grossProfit, c.swap ?? 0, c.commission ?? 0]
               .every(v => /^-?\d+$/.test(String(v)) && Number.isSafeInteger(Number(v))))) throw new Error('closing deal money invalid')
         }
+        if (isCurrent()) captureCloseDeals(db, accountId, response.deal, started)
         return response
       },
     })
@@ -62,8 +64,15 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
     // lifecycle it cannot see whole, or a ledger identity it will not guess —
     // are handed to the per-position reader in the same pass.
     const handoff = [...(result.deferredPositions ?? []), ...(result.ambiguousPositions ?? []).map(a => a.positionId)]
-    const readPositionBounded = positionId => boundedRead(timeout => readPosition(host, creds.clientId, creds.clientSecret,
-      creds.accessToken, accountId, positionId, started, timeout))
+    const readPositionBounded = async positionId => {
+      const response = await boundedRead(timeout => readPosition(host, creds.clientId, creds.clientSecret,
+        creds.accessToken, accountId, positionId, started, timeout))
+      // The lifecycle sweep also reads positions whose money is already known.
+      // Tap that same receipt so historical attribution does not need a P&L gap.
+      if (isCurrent() && String(response?.ctidTraderAccountId) === accountId && !response.error && !response.errorCode)
+        captureCloseDeals(db, accountId, response.deal, started)
+      return response
+    }
     // V3 B2: every position-history read leaves a verdict. The old reader's
     // read is tapped (the same bounded read, not a second one) and classified
     // after it wrote.
@@ -71,7 +80,10 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
     const oldHistory = await recoverOldPositionPnl(db, creds, { now: started, isCurrent, handoff,
       getPositionDeals: async positionId => {
         capture = { positionId }
-        try { capture.response = await readPositionBounded(positionId); return capture.response } catch (error) { capture.error = error; throw error }
+        try {
+          capture.response = await readPositionBounded(positionId)
+          return capture.response
+        } catch (error) { capture.error = error; throw error }
       },
     })
     if (oldHistory.state !== 'no_old_gap') result.positionHistory = oldHistory
@@ -97,6 +109,14 @@ export async function backfillAccountPnl(db, creds, deps = {}) {
       }
       // Same account, same currency: the fee the reader's fill excluded joins the window's.
       result.conversionFeeExcluded = Math.round(((result.conversionFeeExcluded || 0) + (oldHistory.result.conversionFeeExcluded || 0)) * 100) / 100
+    }
+    // Attribution shares the existing bounded reader, after money/lifecycle work.
+    // A missing budget leaves a paced durable queue, never an unbounded loop stall.
+    if (isCurrent()) {
+      const readOrder = deps.getOrderDetails ?? wsGetOrderDetails
+      result.closeAttribution = await collectCloseAttribution(db, { accountId, now: started, isCurrent,
+        getOrderDetails: orderId => boundedRead(timeout => readOrder(host, creds.clientId, creds.clientSecret,
+          creds.accessToken, accountId, orderId, timeout)) })
     }
     noteBackfillAttempt(accountId, result, clock())
     return { accountId, result }
