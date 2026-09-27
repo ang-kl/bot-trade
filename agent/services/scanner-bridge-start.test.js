@@ -38,6 +38,23 @@ function timer() {
 }
 const env = { SCANNER_BRIDGE_ENABLED: '1', SCANNER_TICK_URL: 'http://tick', SCANNER_TICK_SECRET: 's', UNRELATED: 'x' }
 
+test('an account/profile mismatch is visible and never relabels or registers a feed', t => {
+  const db = fileDb(t), w = workers()
+  const observe = scannerObserver(db, { host: feed.host, accountId: '22' }, env, { createWorker: w.createWorker })
+  observe({ symbolId: '7', timeframe: '1h', strategy: 'fib_confluence', bars: [{ t: 1 }], cacheIdentity: { host: feed.host, accountId: '22' } })
+  const coverage = scannerBridgeStatus(db).timeframeCoverage
+  assert.equal(coverage.status, 'account_profile_mismatch')
+  assert.equal(coverage.accountId, '22')
+  assert.equal(coverage.matchingProfiles, 0)
+  assert.equal(coverage.registeredProfiles, 1)
+  assert.equal(w.built[0].sent.length, 0)
+  assert.deepEqual(JSON.parse(db.prepare('SELECT value FROM agent_state WHERE key=?').get('scanner_mirror_profiles_json').value), [profile()])
+  scannerObserver(db, { host: feed.host, accountId: '11' }, env, { createWorker: w.createWorker })
+  assert.equal(scannerBridgeStatus(db).timeframeCoverage.status, 'matched')
+  assert.equal(scannerBridgeStatus(db).timeframeCoverage.matchingProfiles, 1)
+  assert.equal(scannerBridgeStatus(db).orderAuthority, false)
+})
+
 test('collector starts at boot without any bar scan', t => {
   const db = fileDb(t), w = workers(), clock = timer()
   const stop = startScannerBridge(db, { env, createWorker: w.createWorker, setInterval: clock.setInterval, clearInterval: clock.clearInterval, now: () => 1_000_000 })

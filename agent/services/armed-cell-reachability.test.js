@@ -292,6 +292,18 @@ test('the boot report is wired into index.js', () => {
   assert.match(src, /armedCellBootLine\(\s*readArmedCellReachability\(db,\s*getState\)\s*\)/)
 })
 
+test('retired scan dispatch labels unreachable armed cells as latent without changing their settings', t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const matrix = JSON.stringify(PROD_MATRIX)
+  setState(db, 'autotrade_scope', 'armed')
+  setState(db, 'autotrade_matrix_json', matrix)
+  setState(db, 'autotrade_timeframes', JSON.stringify(PROD_LIST))
+  const report = readArmedCellReachability(db, getState)
+  assert.equal(report.scanProducerRetired, true)
+  assert.match(armedCellBootLine(report), /latent.*scan_dispatch is retired/)
+  assert.equal(getState(db, 'autotrade_matrix_json'), matrix)
+})
+
 test('the scanner builds its scan set from the same exported ladder the diagnostic reads', () => {
   // The whole defect is a second copy of the timeframe list. If scanSymbolFib
   // ever stops calling scanTimeframeLadder, the diagnostic starts reporting

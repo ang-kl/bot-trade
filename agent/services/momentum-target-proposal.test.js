@@ -13,6 +13,19 @@ const input = { identity, symbol: 'ETHUSD', side: 'BUY', entry: 100, originalSto
   conversion: { quoteAsset: 'USD', quoteUsdRate: 1, source: 'usd_identity' },
 }
 
+test('resting limits retain their entry and fresh quote separately, and reject marketable or unknown order types', () => {
+  const limit = prepareMomentumTargetProposal({ ...input, orderType: 'LIMIT', entry: 98, originalStop: 88 }, schedule)
+  assert.equal(limit.ok, true, limit.reason)
+  assert.equal(limit.plan.entry, 98)
+  assert.equal(limit.evidence.quote.ask, 100)
+  assert.equal(limit.evidence.orderType, 'LIMIT')
+  assert.notEqual(limit.evidenceId, prepareMomentumTargetProposal(input, schedule).evidenceId)
+  for (const patch of [{ entry: 101 }, { side: 'SELL', entry: 98, originalStop: 108 },
+    { quote: { ...input.quote, observedAtMs: now - 5001 } }, { orderType: 'STOP' }]) {
+    assert.equal(prepareMomentumTargetProposal({ ...input, orderType: 'LIMIT', ...patch }, schedule).ok, false)
+  }
+})
+
 test('target proposal binds formula, cost source and exact account/instrument inputs into a reproducible hash', () => {
   const r = prepareMomentumTargetProposal(input, schedule)
   assert.equal(r.ok, true); assert.equal(r.plan.mode, 'partial_runner')

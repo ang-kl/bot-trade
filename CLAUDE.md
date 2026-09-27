@@ -1370,3 +1370,17 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   reply is **`№ 9,903`** plus any unstamped line made after this ledger. The
   count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
+
+- **27-09-2026 CODEX continuation, partial corpus rebase:** the owner supplied
+  Claude Code's last reply as `№ 10,009` at 15:12 SGT and requested continuation
+  of T4 option (a), OD-15 and the four diagnosed blockages for Sydney readiness.
+  CODEX continued that shared count; the latest reply before this checkpoint
+  is **`№ 10,023`**, 16:32 SGT. Subsequent visible replies take precedence.
+  Work is on `codex/sydney-readiness-20260927`, based on `cf121d4`.
+  Scope, evidence, corrections and remaining owner decisions are recorded in
+  `docs/sydney-readiness-2026-09-27.md` and
+  `docs/v3-momentum-target-policy-2026-09-24.progress.md`.
+  No deployment, gateway variable change/restart, account selection, re-arming,
+  exit retry or sizing-policy change was performed. The uploaded instructions'
+  explicit production approval requirement is retained; the separate conflict
+  about future fresh builds remains deferred by the owner.

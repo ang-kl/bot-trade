@@ -690,6 +690,7 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_entry_intents_open ON entry_intents(account_id, state);
   CREATE INDEX IF NOT EXISTS idx_entry_intents_key ON entry_intents(account_id, symbol_id, side, state);
+  CREATE INDEX IF NOT EXISTS idx_entry_intents_order_account ON entry_intents(account_id, broker_order_id) WHERE broker_order_id IS NOT NULL;
   -- V3 B4c (checker nit 8): adopted-reasons.js looks an intent up by the
   -- broker position it recorded, for every adopted row on every pass of the
   -- close-completeness cadence; on the account prefix alone that read grows

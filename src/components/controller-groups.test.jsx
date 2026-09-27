@@ -107,6 +107,14 @@ describe('controller evidence presentation', () => {
     expect(html).toContain('mismatch — 4 retained observations')
     expect(html).toContain('no order authority')
   })
+  it('shows the timeframe account mismatch outside the collapsed scanner details', () => {
+    const html = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], scannerComparison: {
+      bridge: { enabled: true, timeframeCoverage: { status: 'account_profile_mismatch', accountId: '22', registeredProfiles: 690 } },
+    } }} />)
+    expect(html).toContain('scanned account 22 has no matching profiles among 690 registered setups')
+    expect(html.indexOf('Timeframe scanner input mismatch')).toBeLessThan(html.indexOf('<details>'))
+    expect(html).toContain('No account or setup was changed automatically')
+  })
   it('separates retired and busy ticks from completed business work and retains faults', () => {
     const html = renderToStaticMarkup(<ControllerGroups controllers={[
       { name: 'fast_monitor', label: 'Fast monitor', status: 'ok', detail: { busy: true }, last_ok_at: '2026-09-22T00:00:00Z' },

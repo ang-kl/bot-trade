@@ -47,10 +47,10 @@ test('target status is read-only, explicit about absent plans, and requires an a
   // config (owner OD-1, 27-09) for the accounts the file names only (B1).
   // Account 11 is not named, so its read says so; the limit producer is not
   // wired, and the pass never ran: three gaps.
-  assert.deepEqual(Object.fromEntries(Object.entries(out.body.wiring).map(([k, w]) => [k, w.status])), { market: 'wired', limit: 'not wired' })
+  assert.deepEqual(Object.fromEntries(Object.entries(out.body.wiring).map(([k, w]) => [k, w.status])), { market: 'wired', limit: 'wired' })
   assert.deepEqual([out.body.wiring.market.enabled, out.body.wiring.market.switch], [false, 'off'])
   assert.deepEqual(out.body.wiring.market.accounts, ['46130058'])
-  assert.deepEqual([out.body.wiring.limit.enabled, out.body.wiring.limit.switch], [false, null])
+  assert.deepEqual([out.body.wiring.limit.enabled, out.body.wiring.limit.switch], [false, 'off'])
   assert.ok(out.body.integrationGaps.some(g => /^market: wired, switched on, but account 11 is not in /.test(g)), JSON.stringify(out.body.integrationGaps))
   assert.equal(out.body.integrationGaps.length, 3)
   // The listed account reads it on, with no market gap.
@@ -100,9 +100,9 @@ test('a running pass is reported by its heartbeat, a stale one as unavailable, a
   assert.equal(fresh.body.passHeartbeatAt, JSON.parse(db.prepare("SELECT value FROM agent_state WHERE key=?").get(MOMENTUM_PARTIAL_PASS_KEY).value).at)
   assert.equal(fresh.body.pass.fresh, true); assert.equal(fresh.body.pass.unavailable, null)
   assert.equal(fresh.body.runtimeIntegration, 'INCOMPLETE', 'a running pass with no producer feeding it is not a complete runtime')
-  // T4 (OD-1, B1): the unwired limit producer, and account 11 is not listed.
+  // Both producer paths are wired, but account 11 is not listed.
   assert.equal(fresh.body.integrationGaps.length, 2)
-  assert.match(fresh.body.integrationGaps[0], /^limit: /)
+  assert.ok(fresh.body.integrationGaps.some(g => /^limit: /.test(g)))
   assert.equal(fresh.body.executionAuthorized, false)
   setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify({ at: new Date(Date.now() - 16 * 60_000).toISOString(), ok: true, accounts: {} }))
   const stale = await get('?account=11')
@@ -174,13 +174,8 @@ test('a fresh pass that could not act on an account reports its triggers unavail
 })
 
 // A producer that records target intents is the only thing that can make the
-// wiring "wired". Pinned to the code (V3 T4): the market producer is wired
-// because exactly one production file, loop.js, calls recordMomentumEntry,
-// and it does so inside autoTrade's market path, in the transaction that
-// writes the submitting trade. No resting path calls it, so `limit` stays
-// "not wired"; a new caller turns this red until MOMENTUM_TARGET_PRODUCERS
-// and this pin are updated in the same change.
-test('producer wiring is pinned to the code: the market path records target intents, no resting path does', () => {
+// The status declaration must track both production target writers.
+test('producer wiring is pinned to both market and resting-limit target writers', () => {
   const agentDir = fileURLToPath(new URL('..', import.meta.url))
   const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1')
   const files = []
@@ -207,8 +202,10 @@ test('producer wiring is pinned to the code: the market path records target inte
   const tx = body.lastIndexOf('intentId = db.transaction(() => {', call)
   assert.ok(tx > 0 && body.indexOf('insertIntent()', tx) < call, 'the INSERT and the intent share one transaction')
   assert.ok(call < body.indexOf('execPlaceOrder('), 'the intent is recorded before the order is sent')
-  // On the market path only: after the closed-market and HTF-limit refusals.
-  assert.ok(body.indexOf('closedMarketMomentumRefusal(') < call && body.indexOf('restingMomentumRefusal(') < call)
+  // The market record follows the closed-market refusal and HTF dispatch.
+  assert.ok(body.indexOf('closedMarketMomentumRefusal(') < call && body.indexOf('momentum-limit-entry.js') < call)
   assert.equal(MOMENTUM_TARGET_PRODUCERS.market.wired, true)
-  assert.equal(MOMENTUM_TARGET_PRODUCERS.limit.wired, false)
+  assert.equal(MOMENTUM_TARGET_PRODUCERS.limit.wired, true)
+  const limitCallers = files.filter(f => !f.endsWith('momentum-entry-contract.js') && /\brecordMomentumLimit\s*\(/.test(strip(readFileSync(f, 'utf8')))).map(f => relative(agentDir, f))
+  assert.deepEqual(limitCallers, ['services/momentum-limit-entry.js'])
 })

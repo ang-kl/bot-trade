@@ -19,7 +19,10 @@ export function createScannerCollector(db, deps = {}) {
       if (lastRetention == null || started - lastRetention >= 60_000) { retainComparisons(db, started); lastRetention = started }
       out.mirrors = await mirrors({ env, now })
       if (env.SCANNER_TICK_URL && env.SCANNER_TICK_SECRET) {
-        for (let pages = 0; pages < 8 && now() - started < 1000; pages++) {
+        // Candidate polling may use its own two-second HTTP deadlines. It
+        // must not consume the comparison drain's budget before page one.
+        const tickStarted = now()
+        for (let pages = 0; pages < 8 && (pages === 0 || now() - tickStarted < 1000); pages++) {
           let page = await request(env.SCANNER_TICK_URL, env.SCANNER_TICK_SECRET, `/comparisons?after=${tick.after}`)
           if (tick.instance && tick.instance !== page.instanceId) page = await request(env.SCANNER_TICK_URL, env.SCANNER_TICK_SECRET, '/comparisons?after=0')
           const before = tick.after

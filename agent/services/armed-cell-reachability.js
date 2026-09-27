@@ -53,6 +53,7 @@ import { tfMs, armedTimeframes } from '../lib/timeframes.js'
 import { scanTimeframeLadder } from './fib-strategy.js'
 import { shortHistory } from '../lib/bar-path-counters.js'
 import { scanStageStrategies } from './stage-matrix.js'
+import { isProducerRetired } from '../lib/entry-producers.js'
 
 /**
  * S-3 (26-09-2026): IMPOSSIBLE cells — strategy × symbol × timeframe cells no
@@ -239,6 +240,7 @@ export function readArmedCellReachability(db, getStateFn) {
   let armedList = []
   try { armedList = armedTimeframes(db, getStateFn) } catch { armedList = [] }
   const report = unreachableArmedCells({ matrix, extraTimeframes, armedList, scope })
+  report.scanProducerRetired = isProducerRetired('scan_dispatch')
   let strategies = []
   try { strategies = scanStageStrategies(db, getStateFn) } catch { strategies = [] }
   const history = shortHistory()
@@ -285,5 +287,6 @@ export function armedCellBootLine(report) {
   const fix = report.ladderAdditionThatFixesAll.length
     ? `re-arm onto one of ${report.ladder.join(',')}, or add ${report.ladderAdditionThatFixesAll.join(',')} to autotrade_timeframes`
     : `re-arm onto one of ${report.ladder.join(',')}`
-  return `[boot] armed cells: ${parts.join(' · ')} — fix: ${fix} (GET /state/armed-cell-reachability)`
+  const context = report.scanProducerRetired ? 'latent (scan_dispatch is retired; changing armed cells does not enable trading): ' : ''
+  return `[boot] armed cells: ${context}${parts.join(' · ')} — fix: ${fix} (GET /state/armed-cell-reachability)`
 }

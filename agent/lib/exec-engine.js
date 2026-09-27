@@ -143,6 +143,8 @@ async function sidecarInner(base, method, path, body) {
 // sent any credentials at all. With one base configured this map holds exactly
 // one entry and behaves as the scalar did.
 const sessionBelief = new Map() // base → { host, token, accounts: Set<string> }
+const sessionPushes = new Map() // serialize only the same gateway's connects
+let sessionGeneration = 0
 
 // M4 finding (2026-07-24): when the SIDECAR alone restarts (env change,
 // crash, Railway redeploy of just that service) it loses its credentials,
@@ -154,6 +156,7 @@ const sessionBelief = new Map() // base → { host, token, accounts: Set<string>
 // sidecar session" — a partial clear would leave exactly the stale belief they
 // are trying to discard.
 export function invalidateSidecarSession() {
+  sessionGeneration++
   sessionBelief.clear()
 }
 
@@ -162,10 +165,20 @@ export function invalidateSidecarSession() {
 export async function pushSidecarSession(creds) {
   if (!creds?.ready) return false
   invalidateSidecarSession()
-  await ensureSidecarSession(creds)
+  await ensureSidecarSession(creds, { force: true })
   return true
 }
-async function ensureSidecarSession(creds) {
+async function ensureSidecarSession(creds, { force = false } = {}) {
+  const base = execBaseFor(creds)
+  // Recheck the belief AFTER the preceding connect, so concurrent callers
+  // neither repeat one roster nor overwrite each other's account additions.
+  // A force is queued as a force, never satisfied by an older in-flight push.
+  const task = (sessionPushes.get(base) ?? Promise.resolve()).catch(() => {}).then(() => connectSidecarSession(creds, base, force))
+  sessionPushes.set(base, task)
+  try { await task } finally { if (sessionPushes.get(base) === task) sessionPushes.delete(base) }
+}
+async function connectSidecarSession(creds, base, force) {
+  const generation = sessionGeneration
   // M2: the sidecar multiplexes many ctidTraderAccountIds on ONE session
   // (same host+token). creds.accountIds (optional) pre-authorizes a whole
   // roster in one push; a roster-less creds object names just its own account.
@@ -197,10 +210,9 @@ async function ensureSidecarSession(creds) {
   const requested = (Array.isArray(creds.accountIds) && creds.accountIds.length
     ? creds.accountIds
     : [creds.accountId]).map(String)
-  const base = execBaseFor(creds)
   const prev = sessionBelief.get(base)
   const sameSession = prev && prev.host === creds.host && prev.token === creds.accessToken
-  if (sameSession && requested.every(id => prev.accounts.has(id))) return
+  if (!force && sameSession && requested.every(id => prev.accounts.has(id))) return
   const union = sameSession
     ? [...new Set([...requested, ...prev.accounts])]
     : requested
@@ -212,7 +224,8 @@ async function ensureSidecarSession(creds) {
     accountId: creds.accountId,
     accountIds: union,
   })
-  sessionBelief.set(base, { host: creds.host, token: creds.accessToken, accounts: new Set(union) })
+  // An invalidate while this request was away must survive its late answer.
+  if (generation === sessionGeneration) sessionBelief.set(base, { host: creds.host, token: creds.accessToken, accounts: new Set(union) })
 }
 
 // Option 4: hand the profit keeper's trail specs to the sidecar's

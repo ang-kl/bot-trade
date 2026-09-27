@@ -40,6 +40,95 @@ export function readMomentumEntry(db, accountId, tradeId) {
   return row ? { ...row, proposal: json(row.proposal_json), plan: json(row.plan_json), fill: json(row.fill_json) } : null
 }
 
+function freshProposal(proposal, nowMs) {
+  if (!verified(proposal) || !Number.isSafeInteger(nowMs) || nowMs <= 0) throw Error('entry evidence invalid')
+  const e = proposal.evidence
+  const stamps = [e.quote.observedAtMs, e.quote.receivedAtMs, e.symbolMeta.receivedAtMs]
+  if (e.conversion.source !== 'usd_identity') stamps.push(e.conversion.observedAtMs, e.conversion.receivedAtMs)
+  if (stamps.some(s => !Number.isSafeInteger(s) || s > nowMs || nowMs - s > 5000)) throw Error('entry evidence must be fresh before submission')
+}
+
+// A resting order has no trade yet. Its plan and reserved margin must commit
+// with the entry permit and pending row, before any broker submission.
+export function recordMomentumLimit(db, { accountId, intentId, pendingId, proposal, reservedMarginUsd, marginEvidence, nowMs }) {
+  if (!db.inTransaction) throw Error('limit plan requires atomic reservation')
+  freshProposal(proposal, nowMs)
+  if (proposal.evidence.orderType !== 'LIMIT' || proposal.identity.accountId !== accountId
+    || !Number.isFinite(reservedMarginUsd) || reservedMarginUsd <= 0 || marginEvidence?.currency !== 'USD') throw Error('limit plan identity or margin invalid')
+  const i = db.prepare('SELECT * FROM entry_intents WHERE id=? AND account_id=?').get(intentId, accountId)
+  const row = db.prepare('SELECT * FROM pending_orders WHERE id=? AND account_id=?').get(pendingId, accountId)
+  const p = proposal.plan
+  if (!i || i.state !== 'RESERVED' || i.order_type !== 'LIMIT' || !(i.risk_event_id > 0)
+    || i.symbol !== proposal.evidence.symbol || String(i.symbol_id) !== proposal.identity.symbolId
+    || i.environment !== (proposal.identity.host.startsWith('live.') ? 'live' : 'demo')
+    || i.sl_units !== 'relative_points' || i.tp_units !== 'relative_points'
+    || i.sl !== Math.round(Math.abs(p.entry - p.originalStop) * 100000)
+    || i.tp !== Math.round(Math.abs(p.brokerTarget - p.entry) * 100000)
+    || i.side !== p.side || i.volume !== p.volume || !row || row.intent_id !== intentId || row.status !== 'working'
+    || row.dir !== (p.side === 'BUY' ? 1 : -1)
+    || row.risk_event_id !== i.risk_event_id || row.symbol !== i.symbol || row.level !== p.entry
+    || row.sl !== p.originalStop || row.tp !== p.brokerTarget
+    || brokerVolume(row.volume, proposal.evidence.symbolMeta.lotSize) !== p.volume) throw Error('limit reservation mismatch')
+  db.exec(`CREATE TABLE IF NOT EXISTS momentum_limit_intents (
+    intent_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, pending_id INTEGER NOT NULL UNIQUE,
+    risk_event_id INTEGER NOT NULL, proposal_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+    reserved_margin_usd REAL NOT NULL, margin_json TEXT NOT NULL, trade_id INTEGER,
+    UNIQUE(account_id,trade_id)
+  )`)
+  db.prepare(`INSERT INTO momentum_limit_intents(intent_id,account_id,pending_id,risk_event_id,proposal_json,created_at_ms,reserved_margin_usd,margin_json)
+    VALUES(?,?,?,?,?,?,?,?)`).run(intentId, accountId, pendingId, i.risk_event_id, JSON.stringify(proposal), nowMs, reservedMarginUsd, JSON.stringify(marginEvidence))
+}
+
+// Acceptance (including a pre-created position id) is never a fill. Transfer
+// only after the ledger proves FILLED and an actual trade on the same account
+// names that position. Keep the original proposal and its original timestamp.
+export function promoteMomentumLimitFill(db, { accountId, tradeId, positionId }) {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='momentum_limit_intents' AND type='table'").get()) return null
+  const previous = readMomentumEntry(db, accountId, tradeId)
+  if (previous) return previous
+  if (!db.inTransaction) throw Error('limit fill transfer requires atomic handover')
+  const matches = db.prepare(`SELECT m.*,i.broker_position_id FROM momentum_limit_intents m
+    JOIN entry_intents i ON i.id=m.intent_id AND i.account_id=m.account_id
+    WHERE m.account_id=? AND i.state='FILLED' AND CAST(i.broker_position_id AS TEXT) IN (?,?)`).all(accountId, positionId, `${positionId}.0`)
+  if (matches.length > 1) throw Error('limit fill lineage ambiguous')
+  const row = matches[0]
+  if (!row) return null
+  const proposal = json(row.proposal_json), p = proposal?.plan
+  const t = db.prepare('SELECT * FROM trades WHERE id=? AND account_id=?').get(tradeId, accountId)
+  if (!verified(proposal) || proposal.evidence.orderType !== 'LIMIT' || !t || t.status !== 'open'
+    || String(t.ctrader_position_id).replace(/\.0+$/, '') !== positionId
+    || t.symbol !== proposal.evidence.symbol || t.side !== p.side
+    || (t.risk_event_id != null && t.risk_event_id !== row.risk_event_id)
+    || (t.intent_id != null && t.intent_id !== row.intent_id)
+    || !['bot_pending_fill', 'reconciler_adopted', 'unknown', null].includes(t.origin)
+    || (row.trade_id != null && row.trade_id !== tradeId)) throw Error('limit fill lifecycle mismatch')
+  schema(db)
+  db.prepare(`UPDATE trades SET risk_event_id=?,intent_id=?,origin='bot_pending_fill',origin_source='momentum_limit_fill' WHERE id=? AND account_id=?`)
+    .run(row.risk_event_id, row.intent_id, tradeId, accountId)
+  db.prepare(`INSERT INTO momentum_target_intents(account_id,trade_id,risk_event_id,proposal_json,created_at_ms,state,position_id)
+    VALUES(?,?,?,?,?,'AWAITING_BIND',?)`).run(accountId, tradeId, row.risk_event_id, row.proposal_json, row.created_at_ms, positionId)
+  db.prepare('UPDATE momentum_limit_intents SET trade_id=? WHERE intent_id=?').run(tradeId, row.intent_id)
+  return readMomentumEntry(db, accountId, tradeId)
+}
+
+// Handles a restart or ledger reconciliation arriving after the book adopted
+// the position. Each transfer is atomic and idempotent; never reads credentials.
+export function promoteMomentumLimitFills(db) {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='momentum_limit_intents' AND type='table'").get()) return []
+  const rows = db.prepare(`SELECT b.account_id,b.trade_id,b.position_id FROM momentum_book b
+    JOIN trades t ON t.id=b.trade_id AND t.account_id=b.account_id
+    JOIN entry_intents i ON i.account_id=b.account_id AND i.broker_position_id=CAST(b.position_id AS TEXT) AND i.state='FILLED'
+    JOIN momentum_limit_intents m ON m.intent_id=i.id AND m.trade_id IS NULL
+    WHERE b.status='open' AND t.status='open'`).all()
+  return rows.map(r => {
+    try {
+      return db.transaction(() => promoteMomentumLimitFill(db, {
+        accountId: r.account_id, tradeId: r.trade_id, positionId: String(r.position_id),
+      }))()
+    } catch (error) { return { accountId: r.account_id, tradeId: r.trade_id, error: error.message } }
+  })
+}
+
 /** Must share the transaction that creates the existing 'submitting' trade.
  * An exception must prevent submission; this is not best-effort analytics.
  */
@@ -75,7 +164,8 @@ export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, max
   const intent = readMomentumEntry(db, accountId, tradeId), p = intent?.proposal?.plan
   if (!intent || !verified(intent.proposal)) throw Error('entry fill has no valid recorded proposal')
   const t = db.prepare('SELECT * FROM trades WHERE id=? AND account_id=?').get(tradeId, accountId)
-  if (!t || !['submitting', 'open'].includes(t.status) || t.origin !== 'bot_market_dispatch'
+  const origin = intent.proposal.evidence.orderType === 'LIMIT' ? 'bot_pending_fill' : 'bot_market_dispatch'
+  if (!t || !['submitting', 'open'].includes(t.status) || t.origin !== origin
     || t.risk_event_id !== intent.risk_event_id || t.symbol !== intent.proposal.evidence.symbol || t.side !== p.side
     || (t.ctrader_position_id != null && String(t.ctrader_position_id) !== position?.positionId)) throw Error('entry fill lifecycle mismatch')
   if (marketIdentityKey(position) !== marketIdentityKey(intent.proposal.identity)
@@ -144,7 +234,7 @@ export function markMomentumAwaitingBind(db, { accountId, tradeId, positionId })
  * without a recorded target intent retain their existing handover contract.
  */
 export function enrollMomentumBook(db, { accountId, tradeId, positionId }) {
-  const intent = readMomentumEntry(db, accountId, tradeId)
+  const intent = readMomentumEntry(db, accountId, tradeId) ?? promoteMomentumLimitFill(db, { accountId, tradeId, positionId })
   if (!intent) return null
   if (!db.inTransaction) throw Error('entry enrollment requires atomic book handover')
   // V3 T4, deferred binding: the book takes the position now (its broker
@@ -174,29 +264,16 @@ export function enrollMomentumBook(db, { accountId, tradeId, positionId }) {
   return intent.plan.mode
 }
 
-/**
- * Which entry producers record a target intent before they submit.
- * V3 T4 wires the MARKET producer: autoTrade (loop.js) records the intent in
- * the transaction that writes the 'submitting' trade, for the book's and the
- * daily momentum account's market entries. RESTING limits are not wired
- * (P0-4): a momentum entry that would rest is refused by name instead
- * (closed market: OD-1(b); open-market HTF limit: held until P0-4 and
- * OD-15's counting are built).
- * momentum-target-status.test.js pins both to the code: `market` must be
- * wired while a production file calls recordMomentumEntry from the market
- * path, and `limit` must stay not wired while no resting path does.
- *
- * WIRED IS NOT ON. The market path runs only while
- * config/momentum-entries.json says `"market": true` (ON since the owner's
- * OD-1, 27-09-2026; it shipped OFF). The status reads that switch and keeps the runtime
- * INCOMPLETE while it is off (owner principle 6: a wired producer that is
- * switched off feeds the partial manager nothing).
+/** Both producers write their mandatory target plan before submission. Market
+ * entries attach it to a submitting trade; open-market HTF limits attach it to
+ * the reserved entry intent until a confirmed fill becomes a trade. Both use
+ * the existing account allow-list and switch. Closed markets remain refused.
  */
 export const MOMENTUM_TARGET_PRODUCERS = Object.freeze({
   market: Object.freeze({ wired: true, producer: 'momentum book market entries',
     note: 'Market entries of the book and the daily momentum account record a target intent in the submitting-trade transaction (T4, P0-3).' }),
-  limit: Object.freeze({ wired: false, producer: 'momentum resting limits',
-    note: 'No resting limit records a target intent (P0-4 not built): a closed-market momentum entry is refused by name (OD-1(b)) and an open-market HTF limit is held by name until P0-4 and OD-15\'s counting are built.' }),
+  limit: Object.freeze({ wired: true, producer: 'momentum open-market resting limits',
+    note: 'Open-market HTF limits record their plan and margin with the entry reservation before submission; confirmed fills transfer it for deferred binding. Closed-market momentum limits remain refused.' }),
 })
 
 // Small, bounded diagnostic over the write-ahead ledger. Reading it never
@@ -238,7 +315,7 @@ export function momentumTargetStatus(db, { accountId, all = false, limit = 50, n
   // of an unlisted account says so; `all` is on when any account is listed.
   const accounts = Array.isArray(entrySwitch.accounts) ? entrySwitch.accounts : []
   const listed = all ? accounts.length > 0 : momentumAccountListed(entrySwitch, accountId)
-  const enabledOf = k => k === 'market' ? entrySwitch.market === true && listed : false
+  const enabledOf = () => entrySwitch.market === true && listed
   const offWhy = k => entrySwitch.market !== true
     ? `switched off (config/momentum-entries.json ${k} is not true${entrySwitch.error ? `; ${entrySwitch.error}` : ''}) — the owner's OD-1 turns it on in that file`
     : `switched on, but ${all ? 'no account is' : `account ${accountId} is not`} in config/momentum-entries.json \`accounts\` — widening is an owner yes`
@@ -254,7 +331,7 @@ export function momentumTargetStatus(db, { accountId, all = false, limit = 50, n
     passHeartbeatAt: freshness.at, pass,
     wiring: Object.fromEntries(Object.entries(MOMENTUM_TARGET_PRODUCERS).map(([k, w]) => [k, { wired: w.wired, status: w.wired ? 'wired' : 'not wired',
       enabled: w.wired && enabledOf(k), switch: w.wired ? (enabledOf(k) ? 'on' : 'off') : null,
-      ...(k === 'market' ? { accounts } : {}), producer: w.producer, note: w.note }])) }
+      accounts, producer: w.producer, note: w.note }])) }
   const partial = has('momentum_partial_plans')
   const pcols = partial ? cols('momentum_partial_plans') : new Set()
   const pWhere = all ? '' : 'WHERE account_id=?', pParams = all ? [] : [accountId]
