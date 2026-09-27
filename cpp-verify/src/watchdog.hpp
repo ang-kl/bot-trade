@@ -36,8 +36,8 @@ public:
   // restore() has no clock. beginSoak(now), called at every boot right after
   // it, is where a restored soak meets the clock: a start dated in the future
   // is rejected and the soak begins now, muted (fix-round nit 5). A soak that
-  // begins starts a new counting window: counters, rate base and the modelled
-  // sender reset with it (round 3, S-3).
+  // begins starts a new counting window: counters and rate base reset with it
+  // (round 3, S-3); the modelled sender's queue is kept (round 4).
   void beginSoak(long long now);
   bool deliveryOpen(long long now) const;
   jsn::Value releasable(long long now) const;
@@ -78,7 +78,8 @@ private:
   void modelOffer(const std::string& id, jsn::Value& record, long long now);
   bool modelPending(const std::string& id) const;
   void modelRelease(long long now);
-  // A new counting window: every counter, the rate base and the model queue.
+  // A new counting window: every counter and the rate base. Not the model's
+  // queue — the open verifier's outbox keeps its items across it (round 4).
   void resetWindow(long long now);
   // Outbox items created more than repeatMs before `now`: {count, oldestCreatedAtMs}.
   jsn::Value staleBacklog(long long now) const;

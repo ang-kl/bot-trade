@@ -104,7 +104,9 @@ void WatchState::resetWindow(long long now) {
   wouldSendUrgent_ = wouldSendWarning_ = wouldSendInfo_ = 0;
   refusedUrgent_ = refusedWarning_ = refusedInfo_ = 0;
   deliverUrgent_ = deliverWarning_ = deliverInfo_ = modelDropped_ = 0;
-  model_.clear(); // the model starts each window empty, as at a first boot
+  // The model's QUEUE is kept (round 4): it is the open verifier's outbox,
+  // and a new counting window does not empty that. Cleared, a re-mute lost up
+  // to 512 items the open verifier still holds and would deliver.
   wouldSendSinceMs_ = now;
 }
 void WatchState::beginSoak(long long now) {
@@ -158,7 +160,11 @@ jsn::Value WatchState::deliveryStatus(long long now) const {
   const bool soakActive = soakStartedAtMs_ == 0 || now < soakEndsAtMs_;
   const auto total = wouldSendUrgent_ + wouldSendWarning_ + wouldSendInfo_;
   const auto since = wouldSendSinceMs_ > 0 && wouldSendSinceMs_ <= now ? now - wouldSendSinceMs_ : 0;
-  const auto perHour = [&](long long n) { return since >= 60000 ? jsn::Value(std::round(n * 3600000.0 / since * 100) / 100) : jsn::Value(); };
+  // A window of `since` ms holds since/probeMs + 1 probe cycles — the cycle at
+  // its start counts too — so the rate divides by that many cycles' worth of
+  // time (round 4: dividing by `since` alone read 48 releases over 47 elapsed
+  // cycles as 245 an hour, above the 240 ceiling).
+  const auto perHour = [&](long long n) { return since >= 60000 ? jsn::Value(std::round(n * 3600000.0 / (since + policy_.probeMs) * 100) / 100) : jsn::Value(); };
   const auto stale = staleBacklog(now);
   // What an unmute requested now would answer (null: it would apply).
   const jsn::Value unmuteRefusal = !muted_ ? jsn::Value() : soakActive ? jsn::Value("soak_active")

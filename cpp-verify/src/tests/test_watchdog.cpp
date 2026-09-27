@@ -109,6 +109,12 @@ struct Twin {
       assert(equal);
     };
     check("wouldDeliver", d.get("wouldDeliver"));
+    // One release a cycle can never read above the ceiling (round 4: the rate
+    // once divided by one cycle too few, 245.11 against 240).
+    const auto& rate = d.get("wouldDeliver").get("totalPerHour");
+    if (rate.isNumber() && rate.asNumber() > d.get("sendCeilingPerHour").asNumber())
+      std::cerr << scenario << ": wouldDeliver.totalPerHour " << rate.asNumber() << " above the ceiling " << d.get("sendCeilingPerHour").asNumber() << "\n";
+    assert(!rate.isNumber() || rate.asNumber() <= d.get("sendCeilingPerHour").asNumber());
     const auto queued = static_cast<double>(open.snapshot().get("outbox").asObject().size());
     if (d.get("wouldDeliver").get("pending").asNumber() != queued)
       std::cerr << scenario << ": model queue " << d.get("wouldDeliver").get("pending").asNumber() << " but the open outbox holds " << queued << "\n";
@@ -342,7 +348,7 @@ int main() {
     assert(d.get("soakStartedAtMs").asNumber() == T && d.get("soakEndsAtMs").asNumber() == T + 86400000);
     assert(d.get("reason").asString() == "soak_active");
     assert(d.get("wouldSend").get("urgent").asNumber() == 1 && d.get("wouldSend").get("total").asNumber() == 1);
-    assert(d.get("wouldSend").get("urgentPerHour").asNumber() == 60); // one in the first minute
+    assert(d.get("wouldSend").get("urgentPerHour").asNumber() == 48); // one in the first minute: five cycles, 75 s of probing
     // Unmuting is refused during the soak, and the soak's end alone never unmutes.
     assert(s.setMuted(false, T + 86399999) == "soak_active"); assert(s.releasable(T + 86399999).isNull());
     assert(s.releasable(T + 86400000).isNull());
@@ -555,6 +561,33 @@ int main() {
     assert(d.get("wouldDeliver").get("dropped").asNumber() == t.open.snapshot().get("dropped").asNumber() - openDropped0);
   }
   {
+    // Round 4: a RE-MUTE of an open verifier starts a new counting window,
+    // but it must not discard the modelled sender's queue: the open verifier's
+    // real outbox keeps what it had not yet sent, so the model must too, or
+    // modelPending() reads false, repeats are re-offered early and the queue
+    // under-reads. At S5's load (30 persistent urgent incidents, repeatMs 24
+    // cycles): both twins open for 48 cycles, then the first is re-muted and
+    // counted from there. Round 3 cleared the queue here: pending 12 against
+    // the outbox's 24, and 90 delivered against 102 sent after the drain.
+    verify::WatchPolicy p; p.repeatMs = 24 * CYCLE;
+    Twin t(p); assert(t.muted.restore(emptyAfterSoak())); t.muted.beginSoak(T);
+    assert(t.open.restore(emptyAfterSoak())); t.open.beginSoak(T);
+    const auto fleet = [](bool missing) { return [missing](verify::WatchState& s, long long now) {
+      Array rows; for (int i = 1; i <= 30; ++i) rows.push_back(row(now, std::to_string(i), missing));
+      s.protection(accounts(rows), now); s.evaluate(now); }; };
+    long long k = 0;
+    for (; k < 48; ++k) t.cycle(T + k * CYCLE, fleet(true));
+    assert(t.muted.setMuted(true, T + k * CYCLE).empty());
+    t.sent = t.urgent = t.warning = t.info = 0; // the window starts at the re-mute
+    for (const long long end = k + 48; k < end; ++k) t.cycle(T + k * CYCLE, fleet(true));
+    t.matches(T + (k - 1) * CYCLE, "(re-mute) 48 cycles muted", false);
+    assert(t.would(T + (k - 1) * CYCLE).get("wouldDeliver").get("pending").asNumber() == 24);
+    const long long muteEnd = k;
+    do { t.cycle(T + k * CYCLE, fleet(false)); ++k; } while (t.released && k < muteEnd + 1000);
+    t.matches(T + (k - 1) * CYCLE, "(re-mute) recovered and drained", false);
+    assert(t.sent == 102 && t.would(T + (k - 1) * CYCLE).get("wouldDeliver").get("total").asNumber() == 102);
+  }
+  {
     // Mixed severities at the bound: two urgent flappers around a warning one.
     // When the queue is full an urgent offer EVICTS the first warning in id
     // order and a warning offer is refused; release stays urgent first, so the
@@ -602,13 +635,17 @@ int main() {
     // new window: counters zero, rate base now, so the rate is a number again.
     auto w = Value(Object{{"schemaVersion", 1}, {"services", Object{}}, {"incidents", Object{}}, {"outbox", Object{}},
       {"delivery", Object{{"muted", true}, {"soakStartedAtMs", T + 5 * DAY}, {"soakEndsAtMs", T + 6 * DAY},
-        {"wouldSend", Object{{"urgent", 120}, {"sinceMs", T + 5 * DAY}}}, {"wouldDeliver", Object{{"urgent", 120}}}}}});
+        {"wouldSend", Object{{"urgent", 120}, {"sinceMs", T + 5 * DAY}}}, {"wouldDeliver", Object{{"urgent", 120}}},
+        {"model", Object{{"queue", Object{{"held:1", Object{{"incidentId", "held"}, {"severity", "urgent"}, {"createdAtMs", T - 1000}}}}}}}}}});
     verify::WatchState r; assert(r.restore(w)); r.beginSoak(T);
     auto d = r.status(T).get("delivery");
+    // The counters reset; the model's queue does not (round 4): it is what the
+    // open verifier restoring the same file still holds.
+    assert(d.get("wouldDeliver").get("pending").asNumber() == 1);
     assert(d.get("wouldSend").get("urgent").asNumber() == 0 && d.get("wouldDeliver").get("urgent").asNumber() == 0 && d.get("wouldSend").get("sinceMs").asNumber() == T);
     r.protection(missingSl(T, true), T); r.evaluate(T);
     d = r.status(T + 60000).get("delivery");
-    assert(d.get("wouldSend").get("urgent").asNumber() == 1 && d.get("wouldSend").get("urgentPerHour").asNumber() == 60);
+    assert(d.get("wouldSend").get("urgent").asNumber() == 1 && d.get("wouldSend").get("urgentPerHour").asNumber() == 48); // 1 over 5 cycles
     // A re-mute of an open verifier starts a new window too: an hour open, then muted.
     verify::WatchState o; assert(o.restore(emptyAfterSoak())); o.beginSoak(T);
     o.protection(missingSl(T, true), T); o.evaluate(T); // open: sent, not counted
@@ -617,7 +654,7 @@ int main() {
     assert(d.get("wouldSend").get("total").asNumber() == 0 && d.get("wouldSend").get("sinceMs").asNumber() == T + HOUR);
     o.protection(missingSl(T + HOUR, true), T + HOUR); o.evaluate(T + HOUR); // the hourly repeat, now a would-send
     d = o.status(T + HOUR + 60000).get("delivery");
-    assert(d.get("wouldSend").get("urgent").asNumber() == 1 && d.get("wouldSend").get("urgentPerHour").asNumber() == 60);
+    assert(d.get("wouldSend").get("urgent").asNumber() == 1 && d.get("wouldSend").get("urgentPerHour").asNumber() == 48); // 1 over 5 cycles
     assert(d.get("wouldDeliver").get("urgent").asNumber() == 1);
     // Muting an already muted verifier keeps its window.
     assert(o.setMuted(true, T + 2 * HOUR).empty() && o.status(T + 2 * HOUR).get("delivery").get("wouldSend").get("urgent").asNumber() == 1);

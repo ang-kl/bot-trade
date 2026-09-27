@@ -170,7 +170,8 @@ and Node's `notificationPolicy`).
   state write and the marker, and the first success clears it.
 - **A change that is not durable is not "ok".** The reply carries `applied`,
   `durable` and `restartSafe`; `ok` is true only when all hold, and anything
-  else answers **503** (`state_not_durable`, or `mute_marker_not_removed`). An
+  else answers **503** (`state_not_durable`, or `mute_marker_not_removed` with
+  a `remedy`: remove what stands at the marker path, then unmute again). An
   unmute is applied only when the unmuted state is on disk AND the marker is
   gone; otherwise it is undone — and the undo holds across a restart: the
   marker is re-written (the failed write may already have renamed an unmuted
@@ -242,11 +243,18 @@ and Node's `notificationPolicy`).
   incidents, `repeatMs` 1 h) outside the suite: 240 / 2,880 / 3,392, equal.
   S6 drained reads 1,951 here where the re-check wrote 1,952; the suite's
   drain stops at the first cycle that sends nothing.
-- **Counting windows.** The counters, the rate base and the model's queue
-  reset together when a soak begins — including one that replaces a soak dated
-  ahead of the clock, whose counts are not this soak's — and when an open
-  verifier is re-muted: a window is one closed period, never diluted by open
-  time in between.
+- **Counting windows.** The counters and the rate base reset together when a
+  soak begins — including one that replaces a soak dated ahead of the clock,
+  whose counts are not this soak's — and when an open verifier is re-muted: a
+  window is one closed period, never diluted by open time in between. The
+  model's QUEUE is not reset (round 4): it stands for the open verifier's
+  outbox, which keeps what it has not sent. Round 3 cleared it, and a re-mute
+  at S5's load (30 incidents, `repeatMs` 24 cycles, 48 cycles open) then read
+  pending 12 against the outbox's 24, and 90 delivered against 102 sent after
+  the drain; kept, 24 = 24 and 102 = 102 (`test_watchdog.cpp`, "(re-mute)").
+  A rate divides by the window's probe cycles, the one at its start included
+  (`since + probeMs`), so one release a cycle reads the ceiling, never above
+  it (round 3 read 48 releases over 47 elapsed cycles as 245.11 an hour).
 - **Refusal counter** (`delivery.refused`, by severity): refusals by the
   512-item bound, THROTTLED — one per would-send refused, however many cycles
   its retry is refused again. The retry itself is never delayed: the incident

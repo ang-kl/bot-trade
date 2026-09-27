@@ -328,6 +328,8 @@ int main() {
         assert(status(w).get("delivery").get("muted").asBool()); // the directory counts as the marker
         const auto u = w.setMuted(false);
         assert(!u.get("ok").asBool() && !u.get("applied").asBool() && u.get("error").asString() == "mute_marker_not_removed");
+        assert(u.get("remedy").asString().find("watchdog-state.json.muted") != std::string::npos
+          && u.get("remedy").asString().find("then unmute again") != std::string::npos); // round 4
         assert(u.get("durable").asBool() && u.get("restartSafe").asBool() && u.get("delivery").get("muted").asBool());
         assert(read().find("\"muted\":true") != std::string::npos);
       }

@@ -32,6 +32,7 @@ bool syncDirectoryOf(const std::string& file) {
 // not be recorded at all. It needs no disk: with the deployment switch off
 // the run loop selects nothing, whatever the state file says.
 constexpr const char* kMuteFallback = "set WATCHDOG_MASTER_ENABLED=0 on cpp-verify: a restart then delivers nothing whatever the state file says (a Railway variable change, the owner's step)";
+constexpr const char* kMarkerRemedy = "remove what stands at the mute marker path (watchdog-state.json.muted on the /data volume: a directory, or an entry this process cannot unlink) — the owner's step — then unmute again: while anything is there the verifier stays muted, restarts included";
 constexpr const char* kStaleRemedy = "dispose of the held backlog first (the owner's step, after a /data backup): the dispose(createdBefore) route that does it is required and not built yet, so until it exists the verifier stays muted; any re-mute that holds an item longer than repeatMs wedges it again";
 }
 std::string watchNotificationText(const jsn::Value& item, long long now) {
@@ -287,6 +288,7 @@ jsn::Value Watchdog::setMuted(bool muted) {
     {"markerRecorded", marker}, {"error", written ? "mute_marker_not_removed" : "state_not_durable"},
     {"persistError", error_}, {"delivery", state_.deliveryStatus(now)}});
   if (!restartSafe) out.set("fallback", kMuteFallback);
+  if (written) out.set("remedy", kMarkerRemedy); // round 4
   return out;
 }
 }

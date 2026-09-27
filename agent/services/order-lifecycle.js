@@ -997,14 +997,14 @@ export const RULES = Object.freeze([
     //     flushDecision never flushes while off (:257), so 57,750 rows sat
     //     unsent from 2026-08-22 10:39 UTC;
     //   watchdog: cpp-verify delivers only with its delivery switch, incident
-    //     owner and credentials on (watchdog.cpp:180, :191), and the Node
+    //     owner and credentials on (watchdog.cpp:181, :192), and the Node
     //     policy it relays (masterEnabled) was off — all four read false —
     //     so its outbox held 512/512 never attempted and every new item was
-    //     dropped (watchdog_state.cpp:203-207): 1,526,163.
+    //     dropped (watchdog_state.cpp:209-213): 1,526,163.
     // v3 (V3 CV-2 fix round nit 3): cpp-verify's own delivery MUTE is a fifth
     // holding setting. Muted by default through the 24 h soak and until an
-    // explicit POST /watchdog/mute after it (watchdog_state.cpp:123-124,
-    // :130-146), it holds the outbox by design; only `delivery.muted` reading
+    // explicit POST /watchdog/mute after it (watchdog_state.cpp:125-126,
+    // :132-148), it holds the outbox by design; only `delivery.muted` reading
     // TRUE holds — absent (a verifier before CV-2, a busy reply) is unknown.
     // Round 3 (S-2): after the soak, an unmute is REFUSED while the held
     // backlog is stale (older than repeatMs), and the dispose route that would
@@ -1021,7 +1021,7 @@ export const RULES = Object.freeze([
     // read by telegram-digest.js digestState — the reader GET
     // /state/telegram-digest serves — pinned here with the loader it uses.
     id: 'STK-08', key: 'outbox_backlog', version: 3, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['db.js:1965-1974', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:164', 'watchdog.cpp:180', 'watchdog.cpp:224-233', 'watchdog_state.cpp:203-207', 'watchdog_state.cpp:123-124', 'watchdog_state.cpp:130-146'],
+    cite: ['db.js:1965-1974', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:164', 'watchdog.cpp:181', 'watchdog.cpp:225-234', 'watchdog_state.cpp:209-213', 'watchdog_state.cpp:125-126', 'watchdog_state.cpp:132-148'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,
