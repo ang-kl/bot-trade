@@ -1370,3 +1370,22 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   reply is **`№ 9,903`** plus any unstamped line made after this ledger. The
   count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
+
+- 2026-09-27 06:42 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): the script reads **287** here and was refused as a
+  reading. From `№ 9,903` the replies ran on by count through the handover
+  merge (#1165) `№ 9,907`/`№ 9,908`, the 18-decision list `№ 9,919`, the
+  owner's twelve decisions (27-09 ~12:30 SGT) and their builds, the merges of
+  M7 #1159, CV-2 #1155, S-8 #1163, T4 #1168, #1164, #1166 and #1167 (27-09
+  13:43–14:27 SGT, one at a time, each read back), the "why nothing trades"
+  answer `№ 9,959` and the numbering answer **`№ 9,983`** (14:39 SGT).
+  Twenty replies were made between `№ 9,962` and `№ 9,983`; the transcript
+  captured seventeen (three written beside tool calls are missing), and the
+  count uses twenty. `№ 9,892` and `№ 9,897` are named by the ledger line
+  above but are not in this container's transcript. The handover
+  (`docs/handover-2026-09-27.md` §17) now carries the stamp format, this
+  counting rule, the stamp errors found and an index of every stamped reply
+  since the takeover. The next stamped reply is **`№ 9,984`** plus any
+  unstamped line made after this ledger. The count is by replies, not by
+  stamps. A later re-measure that reads below this line is missing these, not
+  correcting them.
