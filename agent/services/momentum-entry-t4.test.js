@@ -519,3 +519,42 @@ test('the bound plan survives a restart: the intent, the trade and the partial p
   t.after(() => raw.close())
   assert.equal(raw.prepare(`SELECT state FROM momentum_target_intents`).get().state, 'BOUND')
 })
+
+// ---------------------------------------------------------------------------
+// S-8 x T4: one market verdict, no double refusal and no gap. S-8's UNKNOWN
+// (the account calendar cannot say) is refused by S-8 for every producer; a
+// real CLOSED reading, a broker holiday included, gets T4's named refusal.
+// ---------------------------------------------------------------------------
+test('S-8 x T4, SWITCH ON, hours UNKNOWN: S-8 refuses it once; no T4 closed-market refusal and nothing rested', async t => {
+  const s = await scene(t)
+  // The account's own map lacks the symbol: UNKNOWN, not refreshable, no broker read.
+  setState(s.db(), accountSymbolMapKey(ACCT), JSON.stringify({ builtAt: new Date().toISOString(), accountId: ACCT, map: { OTHER: 99 } }))
+  setState(s.db(), 'closed_market_limits_json', JSON.stringify({ on: true }))
+  assert.equal(await s.run({ market: true }) ?? null, null)
+  const d = s.db().prepare(`SELECT stage, decision FROM decision_log WHERE stage IN ('market_hours_unknown', 'momentum_closed_market') ORDER BY id`).all()
+  assert.deepEqual(d.map(r => r.stage), ['market_hours_unknown'], JSON.stringify(d))
+  assert.ok(!s.vetoes().some(v => v.startsWith(MOMENTUM_CLOSED_MARKET_REFUSAL)), 'UNKNOWN is not recorded as a closed market')
+  assert.equal(s.db().prepare(`SELECT value FROM agent_state WHERE key = ?`).get(`momentum_closed_refused_cross_sectional_book_${ACCT}_${SYMBOL}`)?.value ?? null, null,
+    'an UNKNOWN pass neither records nor re-arms the closed-spell key')
+  assert.equal(s.db().prepare(`SELECT count(*) n FROM pending_orders`).get().n, 0, 'no limit rested')
+  assert.equal(s.sent.length, 0); assert.equal(s.reads.quote, 0)
+})
+
+test('S-8 x T4, SWITCH ON, a broker holiday on the account calendar: T4 refuses it by name, once; S-8 records no UNKNOWN', async t => {
+  const s = await scene(t)
+  const today = Math.floor(Date.now() / 86400_000)
+  const cal = recordMarketCalendar(s.db(), { host: 'demo.ctraderapi.com', accountId: ACCT, symbolId: String(SID) }, {
+    symbolId: SID, scheduleTimeZone: 'UTC', tradingMode: 0, schedule: JSON.parse(ALWAYS_OPEN),
+    holiday: [{ holidayId: 1, name: 'test holiday', scheduleTimeZone: 'UTC', holidayDate: today, isRecurring: false, startSecond: 0, endSecond: 86400 }] })
+  assert.deepEqual([cal.recorded, cal.reason], [true, null])
+  setState(s.db(), 'closed_market_limits_json', JSON.stringify({ on: true }))
+  assert.equal(await s.run({ market: true }) ?? null, null)
+  await s.run({ market: true })
+  const refusals = s.vetoes().filter(v => v.startsWith(`${MOMENTUM_CLOSED_MARKET_REFUSAL}: ${SYMBOL} market closed`))
+  assert.equal(refusals.length, 1, JSON.stringify(s.vetoes()))
+  assert.match(refusals[0], /broker holiday/, 'the calendar\'s reason rides the named refusal')
+  const d = s.db().prepare(`SELECT stage FROM decision_log WHERE stage IN ('market_hours_unknown', 'momentum_closed_market') ORDER BY id`).all()
+  assert.deepEqual(d.map(r => r.stage), ['momentum_closed_market'])
+  assert.equal(s.db().prepare(`SELECT count(*) n FROM pending_orders`).get().n, 0, 'no limit rested for the next open')
+  assert.equal(s.sent.length, 0); assert.equal(s.reads.quote, 0)
+})
