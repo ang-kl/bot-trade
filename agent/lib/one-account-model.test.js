@@ -89,6 +89,9 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/entry-drain.js': { reason: 'creds per account for the drain (plan §3.1)', max: { is_live: 3, isLive: 1 } },
   'agent/services/exec-guard-sync.js': { reason: 'the side\'s roster for the guard push (plan §3.1); the tick-entry roster reads mode + STABLE only; the open positions carried on the side\'s sidecar (19-09-2026)', max: { is_live: 4, isLive: 14 } },
   'agent/services/fast-monitor.js': { reason: 'which sidecar to pull quotes from per position (plan §3.1 routing, 19-09-2026); the evaluation reads no side', max: { is_live: 2, isLive: 4 } },
+  // M7 round 4's differential harness: main's fast-monitor.js frozen byte for byte (the same routing as the entry above), and the simulator that seeds the registry row and the creds' side it routes by.
+  'agent/test-support/m7-baseline/fast-monitor.main-580308e.js': { reason: 'origin/main 580308e fast-monitor.js, frozen for the M7 differential harness: the same sidecar routing as agent/services/fast-monitor.js', max: { is_live: 2, isLive: 4 } },
+  'agent/test-support/fast-monitor-sim.js': { reason: 'test-only simulator: seeds the accounts registry row and the creds side the monitor routes by; no gate', max: { is_live: 1, isLive: 1 } },
   'agent/services/tick-permits.js': { reason: 'the side the feeder pushes to (plan §3.1); no environment strike since PR-B', max: { is_live: 1, isLive: 4 } },
   'agent/services/tick-readiness.js': { reason: 'sideFor (plan §3.1: tick-readiness.js:27) and registry ordering; the validation_stage check reads no environment', max: { is_live: 2, live_str: 1, environment_cmp: 1 } },
   'agent/services/tick-validation.js': { reason: 'which side\'s shadow signals to read (plan §3.1: tick-validation.js side)', max: { live_str: 1, environment_cmp: 1 } },

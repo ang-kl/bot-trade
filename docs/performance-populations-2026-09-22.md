@@ -12,9 +12,18 @@ anchors define half-open ledger windows. Session buckets (V3 WEB-6, 25-09-2026)
 are each exchange's regular cash hours derived in its own IANA zone with DST
 (`agent/shared/report-sessions.js`: ASX, SGX, HKEX, TSE, LSE, NYSE; lunch
 breaks excluded, Monday–Friday local). They replaced fixed UTC minute ranges
-that were wrong after each DST change. Public holidays and early closes are not
-applied (WEB-6b); the payload says so in `sessionWindow.exceptions`. They are
-reporting buckets and gate nothing.
+that were wrong after each DST change. Public holidays and early closes (V3
+WEB-6b, 26-09-2026) are applied only where the broker lists them: from the
+stored account calendars of the exchange's stocks, found by symbol suffix
+(HKEX ← `.HK`, NYSE ← `.US`; `agent/services/session-holidays.js`). A 0/0
+holiday row closes its whole local day (owner OD-7); a row with explicit bounds
+closes that part (an early close). ASX, SGX, TSE and LSE have no stock in the
+universe, so they keep regular hours and say so. Each session carries
+`holidays.status` (`applied`, `no_evidence`, `not_listed`, `unavailable`) with
+the closures in the window; `sessionWindow.exceptions` reads
+`broker_holidays_and_early_closes_applied_where_listed` when any exchange had
+them applied. They are reporting buckets and gate nothing; the entry path reads
+the account calendar itself (V3 S-8, `agent/services/entry-hours.js`).
 Every close counts, including unpriced closes. Invalid/unknown dates, future
 dates and missing account identities are counted in portfolio coverage. Named
 accounts include only their stamped rows. Unstamped rows never migrate to the

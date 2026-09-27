@@ -116,3 +116,19 @@ test('B7: tagAccount names the account once and never overwrites an existing tag
   assert.equal(tagAccount(e, '999').accountId, '43002148')
   assert.equal(tagAccount(null, '1'), null)
 })
+
+// V3 S-8: the entry path's broker reads pass recoverAuth false. The loop
+// awaits them serially; the refresh is an OAuth request with no timeout of its
+// own; and wsGetSymbolById's errors carry no account, so B7's skip could not
+// tell a refused account's error from a rotated token.
+test('recoverAuth false: an auth error never fires the hook; the default still does', async () => {
+  _resetAuthRecoveryForTests()
+  let refreshes = 0
+  setAuthErrorHook(async () => { refreshes++ })
+  try {
+    await assert.rejects(withRetry(async () => { throw authErr() }, 0, 'test', null, { recoverAuth: false }), /CH_ACCESS_TOKEN_INVALID/)
+    assert.equal(refreshes, 0, 'RED if an entry-path read can fire the reactive OAuth refresh')
+    await assert.rejects(withRetry(async () => { throw authErr() }, 0, 'test'), /CH_ACCESS_TOKEN_INVALID/)
+    assert.equal(refreshes, 1, 'every other caller keeps the reactive refresh')
+  } finally { setAuthErrorHook(null) }
+})

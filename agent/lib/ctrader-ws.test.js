@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, PT } from './ctrader-ws.js'
+import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, wsGetSpotOnce, wsProbeSpot, PT } from './ctrader-ws.js'
 
 // These tests exercise the input-validation paths that run *before* any
 // WebSocket handshake — so we can assert them without mocking `ws`. The
@@ -157,4 +157,170 @@ test('an account-true symbol-list read is never served from, nor stored into, th
   // untagged exactly as before.
   assert.deepEqual([settled[1].reason.accountId, settled[2].reason.accountId], ['2', '2'], 'RED if the per-account read\'s error is not tagged')
   assert.equal(settled[0].reason.accountId, undefined, 'the host-shared read is unchanged: untagged')
+})
+
+// V3 S-8 fix round 3 (N-2): the entry path's options must REACH withRetry
+// through wsGetSymbolsList and wsGetSymbolById, not only be passed to them.
+// Driven through the pooled path's socket seam: the broker refuses the account
+// auth with an auth error carrying "retry after 1ms", so the default path's
+// three attempts cost milliseconds, not the 2 s + 4 s backoff.
+test('S-8: the entry options reach withRetry — 1 connect and no refresh, where the defaults make 3 connects and 1 refresh', async () => {
+  const { EventEmitter } = await import('node:events')
+  const { _setConnectForTests, _resetPool } = await import('./ctrader-session.js')
+  const { wsGetSymbolById, setAuthErrorHook, _resetAuthRecoveryForTests } = await import('./ctrader-ws.js')
+  class FakeWs extends EventEmitter {
+    constructor() { super(); this.readyState = 1; setImmediate(() => this.emit('open')) }
+    send(raw) {
+      const msg = JSON.parse(raw)
+      const reply = (payloadType, payload) => setImmediate(() => this.emit('message', Buffer.from(JSON.stringify({ payloadType, payload, clientMsgId: msg.clientMsgId }))))
+      if (msg.payloadType === PT.APP_AUTH_REQ) reply(PT.APP_AUTH_RES, {})
+      else if (msg.payloadType === PT.ACCOUNT_AUTH_REQ) reply(PT.ERROR_RES, { errorCode: 'CH_ACCESS_TOKEN_INVALID', description: 'retry after 1ms' })
+    }
+    close() { this.readyState = 3 }
+  }
+  let connects = 0, refreshes = 0
+  const prev = process.env.CTRADER_WS_POOL
+  process.env.CTRADER_WS_POOL = '1'
+  _setConnectForTests(() => { connects++; return new FakeWs() })
+  setAuthErrorHook(async () => { refreshes++ })
+  const reads = {
+    wsGetSymbolsList: opts => wsGetSymbolsList('s8.example.com', 'cid', 'sec', 'tok', '4001', 1000, { perAccount: true, ...opts }),
+    wsGetSymbolById: opts => wsGetSymbolById('s8.example.com', 'cid', 'sec', 'tok', '4001', [22], 1000, opts),
+  }
+  try {
+    for (const [name, read] of Object.entries(reads)) {
+      for (const [opts, want] of [
+        [{ maxRetries: 0, recoverAuth: false }, { connects: 1, refreshes: 0 }],
+        [undefined, { connects: 3, refreshes: 1 }],
+      ]) {
+        _resetPool(); _resetAuthRecoveryForTests(); connects = 0; refreshes = 0
+        await assert.rejects(read(opts), /CH_ACCESS_TOKEN_INVALID/)
+        assert.deepEqual({ connects, refreshes }, want, `${name} ${opts ? 'entry options' : 'defaults'}: RED if the options stop at the function instead of reaching withRetry`)
+      }
+    }
+  } finally {
+    setAuthErrorHook(null)
+    _setConnectForTests(null)
+    if (prev === undefined) delete process.env.CTRADER_WS_POOL
+    else process.env.CTRADER_WS_POOL = prev
+    _resetPool()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// wsGetSpotOnce: late-stream socket leak (M7 nit round, 26-09-2026). Predates
+// M7, but M7's parallel batch opens several of these at once, multiplying
+// it. If the 6s timer fires before wsStreamSpots resolves, the `finally`
+// block closes a null `stream`; the stream that arrives LATER
+// (`.then(s => { stream = s })`) is then never closed and leaks an
+// authenticated socket. `streamFn` (test-only, 8th param) injects a fake
+// stream provider — every production call site omits it.
+// ---------------------------------------------------------------------------
+
+test('wsGetSpotOnce: a stream that resolves AFTER the timeout is closed immediately, not leaked', async () => {
+  let closed = 0
+  const fakeStream = { close: () => { closed++ } }
+  let resolveStream
+  // Never ticks, never errors — ONLY the timeout settles the outer promise,
+  // exactly the race this bug depends on.
+  const fakeStreamFn = () => new Promise((resolve) => { resolveStream = resolve })
+
+  const result = await wsGetSpotOnce('demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456, 10, fakeStreamFn)
+  assert.equal(result, null, 'the timeout resolved the outer promise with null, as before')
+  assert.equal(closed, 0, 'the stream has not arrived yet at this point — nothing to close yet')
+
+  // The stream arrives NOW, after wsGetSpotOnce has already returned.
+  resolveStream(fakeStream)
+  await new Promise((r) => setTimeout(r, 0)) // let the `.then()` microtask run
+  assert.equal(closed, 1, 'RED before the fix: the late-arriving stream was never closed — an authed socket leaked')
+})
+
+test('wsGetSpotOnce: the normal tick-first path is unchanged — one close, via the outer finally', async () => {
+  let closed = 0
+  const fakeStream = { close: () => { closed++ } }
+  const fakeStreamFn = (_host, _cid, _csec, _tok, _acct, _symbolIds, onTick) => {
+    // The stream resolves BEFORE any tick — the ordinary case (subscribe,
+    // then ticks arrive on it).
+    queueMicrotask(() => onTick({ bid: 1.1, ask: 1.1002 }))
+    return Promise.resolve(fakeStream)
+  }
+  const result = await wsGetSpotOnce('demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456, 10, fakeStreamFn)
+  assert.deepEqual(result, { bid: 1.1, ask: 1.1002 })
+  assert.equal(closed, 1, 'closed exactly once, via the outer finally')
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(closed, 1, 'still exactly once — no double-close from the settled-stream branch')
+})
+
+// Nit round 3 (26-09-2026): the PREVIOUS version of this test fired `onClose`
+// while leaving `streamFn`'s own promise permanently pending — a shape the
+// real `wsStreamSpots` never produces. Its own `finishClose` either rejects
+// the promise (nothing settled it yet) OR, once already settled, calls
+// `onClose` — never both, and never `onClose` alone with the promise left
+// hanging forever. This version matches the real contract: an auth failure
+// before the subscribe steps complete REJECTS the stream promise.
+test('wsGetSpotOnce: a stream whose auth handshake REJECTS before ever resolving leaks nothing (there is no stream object to close)', async () => {
+  const fakeStreamFn = () => Promise.reject(new Error('cTrader error: auth failed'))
+  const result = await wsGetSpotOnce('demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456, 10, fakeStreamFn)
+  assert.equal(result, null)
+})
+
+// Nit round 3: the OTHER half of the leak this predates M7 — an auth
+// handshake that never settles AT ALL (no tick, no error, no close: the
+// broker just never answers) leaves the real wsStreamSpots's own promise
+// pending forever, so neither wsGetSpotOnce's `.then` nor its `.catch` ever
+// fires and the underlying socket is never told to close. wsStreamSpots
+// already has a `connectTimeoutMs` option for exactly this (arms its own
+// `ws.close()` via `finishClose`); this pins that wsGetSpotOnce actually
+// hands it one.
+test('wsGetSpotOnce passes a connect deadline through to streamFn, so a hung auth handshake is bounded', async () => {
+  let capturedOptions
+  const fakeStreamFn = (_h, _c, _cs, _t, _a, _ids, _onTick, _onClose, options) => {
+    capturedOptions = options
+    return new Promise(() => {}) // never settles — wsGetSpotOnce's own 25ms timer is what ends this test
+  }
+  const result = await wsGetSpotOnce('demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456, 25, fakeStreamFn)
+  assert.equal(result, null, 'still resolves null via wsGetSpotOnce\'s own timeout — nothing here changes that')
+  assert.ok(Number.isFinite(capturedOptions?.connectTimeoutMs) && capturedOptions.connectTimeoutMs > 0,
+    `wsStreamSpots must be armed with a connect deadline, got ${JSON.stringify(capturedOptions)}`)
+})
+
+// ---------------------------------------------------------------------------
+// wsProbeSpot (M7 round 4, I3 of fast-monitor-probes.js): a probe says WHY
+// there is no quote. Only `empty` — the broker CONFIRMED the subscription and
+// printed nothing before the deadline — may arm the fast monitor's backoff;
+// every failure shape is `failed`. wsGetSpotOnce keeps its contract: the
+// quote, or null for both.
+// ---------------------------------------------------------------------------
+const PROBE = ['demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456]
+const shapes = {
+  quote: (_h, _c, _s, _t, _a, _ids, onTick) => { queueMicrotask(() => { onTick({ bid: 1.1 }); onTick({ ask: 1.1002 }) }); return Promise.resolve({ close() {} }) },
+  // subscribed (the stream resolved), then silence
+  empty: () => Promise.resolve({ close() {} }),
+  // the handshake never completes
+  hung: () => new Promise(() => {}),
+  // the broker refuses the account before the subscription
+  auth: () => Promise.reject(new Error('cTrader error: CH_ACCESS_TOKEN_INVALID — auth failed')),
+  // subscribed, then the socket drops before a price
+  close: (_h, _c, _s, _t, _a, _ids, _onTick, onClose) => { setTimeout(() => onClose('socket closed'), 5); return Promise.resolve({ close() {} }) },
+}
+
+test('wsProbeSpot: a quote, a clean empty answer and three failure shapes are told apart', async () => {
+  const quote = await wsProbeSpot(...PROBE, 40, shapes.quote)
+  assert.deepEqual(quote, { kind: 'quote', bid: 1.1, ask: 1.1002 })
+  const empty = await wsProbeSpot(...PROBE, 40, shapes.empty)
+  assert.equal(empty.kind, 'empty', 'subscribed and silent is the ONE clean empty answer')
+  const hung = await wsProbeSpot(...PROBE, 40, shapes.hung)
+  assert.equal(hung.kind, 'failed', 'a deadline that passes before the subscription is confirmed is a FAILURE, not a quiet symbol')
+  assert.match(hung.reason, /timeout/)
+  const auth = await wsProbeSpot(...PROBE, 40, shapes.auth)
+  assert.equal(auth.kind, 'failed')
+  assert.match(auth.reason, /auth failed/)
+  const closed = await wsProbeSpot(...PROBE, 40, shapes.close)
+  assert.equal(closed.kind, 'failed')
+  assert.match(closed.reason, /closed/)
+})
+
+test('wsGetSpotOnce keeps its contract: the quote, or null for an empty answer and every failure alike', async () => {
+  assert.deepEqual(await wsGetSpotOnce(...PROBE, 40, shapes.quote), { bid: 1.1, ask: 1.1002 })
+  for (const shape of ['empty', 'hung', 'auth', 'close']) assert.equal(await wsGetSpotOnce(...PROBE, 40, shapes[shape]), null, shape)
 })

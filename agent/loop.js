@@ -38,7 +38,7 @@ import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { reconcileCrossSideAccounts } from './services/cross-side-reconcile.js'
 import { checkRegimeGate, latestRegime } from './services/regime-gate.js'
-import { recordRegimeBlock, recordEvidenceShadow } from './services/gate-skips.js'
+import { recordRegimeBlock, recordEvidenceShadow, recordMarketHoursUnknown } from './services/gate-skips.js'
 import { accountPregate, proposalPregate, invalidateAccountPregate } from './services/account-pregate.js'
 import { markTickRepush } from './services/tick-permits.js'
 import { recordPositionEvent } from './services/position-events.js'
@@ -105,6 +105,9 @@ const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops ent
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
 const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens exceed this
 let loopCount = 0
+/** TEST SEAM (V3 S-8): set the loop pass counter, so a test can pin that
+ * autoTrade's entry-hours budget follows the loop pass. Never called in production. */
+export function _setLoopCountForTests(n) { loopCount = n }
 // Seeded once per process: see the FIRST-CYCLE SEED block in runLoop.
 let crossSideEquitySeeded = false
 // The other session's P&L repair outcome, read by the next pnl_reconcile beat
@@ -429,10 +432,36 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // reopens — see services/pending-signals.js and its runPendingSignals()
   // loop.js phase (owner: "do you separate which one you would trade based
   // on market open... which will trade later when NY opens?").
-  // Broker-truth schedule (symbol_hours table) when cached; the sessions.js
-  // heuristic is the fallback for symbols not yet refreshed.
-  const { isSymbolOpenCached } = await import('./services/symbol-hours.js')
-  const marketGate = isSymbolOpenCached(db, symbol)
+  // V3 S-8 (26-09-2026): the hours source is the ACCOUNT CALENDAR — this
+  // account's own broker calendar for the symbol, weekly schedule AND public
+  // holidays (services/entry-hours.js; the OD-8 switch ENTRY_HOURS_SOURCE
+  // lives there). It replaced the name-keyed symbol_hours read, which ignored
+  // holidays and fell back to the sessions.js heuristic. UNKNOWN never reads
+  // open: no order and no resting limit, one decision_log skip per
+  // (account, symbol) until the calendar is known again. Its broker reads are
+  // bounded per pass: the loop's own producers share `loop:<loopCount>`, every
+  // other caller (the manual-assisted routes) a per-minute budget of its own
+  // (entry-hours.js entryHoursPassKey).
+  const { resolveEntryMarketGate, entryHoursPassKey } = await import('./services/entry-hours.js')
+  const marketGate = await resolveEntryMarketGate(db, { symbol, accountId }, { pass: entryHoursPassKey(producerId, loopCount) })
+  const unknownKey = `mkt_hours_unknown_logged_${accountId}_${symbol}`
+  if (marketGate.unknown) {
+    if (getState(db, unknownKey) !== 'y') {
+      recordMarketHoursUnknown(db, { accountId, symbol, side, synth, requestedVolume: requestedVol, gate: marketGate, producerId, loopId: loopCount })
+      setState(db, unknownKey, 'y')
+    }
+    log(`Auto-trade refused — ${marketGate.reason}${marketGate.refresh ? ` (calendar re-read: ${marketGate.refresh})` : ''}`)
+    return null
+  }
+  if (getState(db, unknownKey) != null) setState(db, unknownKey, null) // hours known again — re-arm the one-shot (no write per entry)
+  // S-8 x T4, ONE verdict, in this order: UNKNOWN is refused above for every
+  // producer (S-8's one decision_log skip; UNKNOWN is `open: false` too, so
+  // the momentum refusal below must never see it, or an unknown calendar
+  // would be recorded as a closed market). What reaches here is OPEN or a
+  // real CLOSED reading (the weekly schedule or a broker holiday), and a
+  // closed momentum entry gets T4's named refusal instead of the resting
+  // limit below. An UNKNOWN pass neither records nor re-arms T4's once-per-
+  // closed-spell key; only an OPEN reading re-arms it.
   if (!marketGate.open && momentumPlanOn) {
     // V3 T4: the named refusal for a closed-market momentum entry (owner
     // OD-1(b)). Nothing is rested for the next open. Recorded once per
