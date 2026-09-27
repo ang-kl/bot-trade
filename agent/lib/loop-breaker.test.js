@@ -7,7 +7,7 @@
 // reachable, with the loop's own values.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createLoopBreaker } from './loop-breaker.js'
+import { createLoopBreaker, clearStaleTripStampAtBoot } from './loop-breaker.js'
 
 const MAX = 10
 const BACKOFF_AFTER = 5
@@ -112,4 +112,62 @@ test('manual reset clears a tripped breaker', () => {
   b.reset()
   assert.equal(b.isTripped(), false)
   assert.equal(cycle(b, true).failure.count, 1)
+})
+
+// ---- B1: a restart must not leave a stale stamp that silences the next trip
+
+/** The trip gate as runLoop runs it: announce (stamp) or stay silent. */
+function gate(b, store, nowIso) {
+  if (!b.isTripped()) return 'run'
+  if (b.tripNeedsAnnouncing(store.stamp)) { store.stamp = nowIso; return 'announced' }
+  return 'silent'
+}
+
+test('restart then re-trip: the boot clear lets the next trip alert again', () => {
+  const store = { stamp: null }
+  const p1 = make()
+  for (let i = 0; i < MAX; i++) p1.recordFailure(INTERVAL, Date.parse('2026-09-27T01:00:00Z') + i)
+  assert.equal(gate(p1, store, '2026-09-27T03:00:00Z'), 'announced')
+  // deploy: a new process, count 0, the stamp still persisted
+  const p2 = make()
+  const logs = []
+  const cleared = clearStaleTripStampAtBoot({ getStamp: () => store.stamp, clearStamp: () => { store.stamp = null }, log: (m) => logs.push(m) })
+  assert.equal(cleared, '2026-09-27T03:00:00Z')
+  assert.equal(store.stamp, null)
+  assert.match(logs[0], /cleared a trip stamp/)
+  for (let i = 0; i < MAX; i++) cycle(p2, true)
+  assert.equal(gate(p2, store, new Date().toISOString()), 'announced', 'the second trip must stamp and alert')
+})
+
+test('boot with no stamp clears nothing and logs nothing', () => {
+  const logs = []
+  assert.equal(clearStaleTripStampAtBoot({ getStamp: () => null, clearStamp: () => assert.fail('cleared'), log: (m) => logs.push(m) }), null)
+  assert.equal(logs.length, 0)
+})
+
+test('a stamp older than the current streak does not silence the trip', () => {
+  const b = make()
+  const t0 = Date.parse('2026-09-27T05:00:00Z')
+  for (let i = 0; i < MAX; i++) b.recordFailure(INTERVAL, t0 + i * 60_000)
+  const store = { stamp: '2026-09-27T03:00:00Z' }   // an earlier trip's
+  assert.equal(gate(b, store, '2026-09-27T06:00:00Z'), 'announced')
+})
+
+test('the same trip is announced once, not on every 30-min re-check', () => {
+  const b = make()
+  const t0 = Date.parse('2026-09-27T05:00:00Z')
+  for (let i = 0; i < MAX; i++) b.recordFailure(INTERVAL, t0 + i * 60_000)
+  const store = { stamp: null }
+  assert.equal(gate(b, store, '2026-09-27T06:00:00Z'), 'announced')
+  assert.equal(gate(b, store, '2026-09-27T06:30:00Z'), 'silent')
+  assert.equal(gate(b, store, '2026-09-27T07:00:00Z'), 'silent')
+})
+
+test('park / unpark hands back the parked timer once', () => {
+  const b = make()
+  assert.equal(b.unpark(), null)
+  b.park(42)
+  b.reset()
+  assert.equal(b.unpark(), 42, 'reset leaves the parked timer for the caller to cancel')
+  assert.equal(b.unpark(), null)
 })

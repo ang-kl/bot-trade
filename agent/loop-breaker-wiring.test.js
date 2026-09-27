@@ -54,6 +54,32 @@ test('the persisted trip stamp is cleared only by a clean cycle', () => {
 })
 
 test('the manual reset route reaches the same breaker', () => {
-  const fn = src.slice(src.indexOf('export function resetCircuitBreaker()'))
-  assert.match(fn.slice(0, 120), /loopBreaker\.reset\(\)/)
+  const fn = src.slice(src.indexOf('export function resetCircuitBreaker('))
+  assert.match(fn.slice(0, 400), /loopBreaker\.reset\(\)/)
+})
+
+test('the tripped path returns before the cycle takes the mutex', () => {
+  const gate = at('if (loopBreaker.isTripped())')
+  const running = at('loopRunning = true', gate)
+  const tripped = body.slice(gate, running)
+  assert.match(tripped, /\breturn\b/, 'a tripped loop must return before loopRunning = true')
+  assert.match(tripped, /loopBreaker\.tripNeedsAnnouncing\(/, 'the trip gate announces by tripNeedsAnnouncing, not by !stamp')
+  assert.match(tripped, /loopBreaker\.park\(setTimeout\(/, 'the re-check timer is parked so a reset can resume')
+  assert.ok(body.indexOf('loopBreaker.unpark()') < gate, 'a fired re-check timer is unparked before the gate')
+})
+
+test('startLoop clears a stale trip stamp at boot', () => {
+  const helper = src.slice(src.indexOf('function bootBreaker(db) {'), src.indexOf('export function startLoop(db) {'))
+  assert.match(helper, /clearStaleTripStampAtBoot\(\{/, 'bootBreaker clears the stamp')
+  const start = src.slice(src.indexOf('export function startLoop(db) {'))
+  const boot = start.indexOf('bootBreaker(db)')
+  const first = start.indexOf('setTimeout(() => runLoop(db)')
+  assert.ok(boot >= 0 && first > boot, 'the stamp is cleared before the first cycle is scheduled')
+})
+
+test('the watchdog decides by this process\'s breaker, not the persisted stamp', () => {
+  const wd = src.slice(src.indexOf('function startLoopWatchdog(db) {'))
+  const tick = wd.slice(0, wd.indexOf('process.exit(1)'))
+  assert.match(tick, /watchdogVerdict\(\{[^}]*tripped: loopBreaker\.isTripped\(\)/)
+  assert.doesNotMatch(tick, /circuit_breaker_tripped_at/)
 })
