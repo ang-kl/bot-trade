@@ -13,6 +13,7 @@ import { readPartialPlan } from './momentum-partial-manager.js'
 import { readPartialOwnership } from './momentum-partial-ownership.js'
 import { reconcileStaleClosedMarketLimits } from './closed-market-limits.js'
 import { bookEntryWrite } from './book-entry-write.js'
+import { bindAwaitingMomentumEntries } from './momentum-entry-producer.js'
 
 const accountId = '11', producerId = 'daily_momentum_account'
 const synth = { consensus_bias: 'long', entry: 98, sl: 88, strategy: 'tsmom_long', timeframe: '1d', sizing: 'vol_target', sizedVolume: 100 }
@@ -264,4 +265,223 @@ test('unknown send stays reserved across restart; delayed confirmed fill transfe
   assert.ok(readPartialOwnership(db, '11', 7, '33', 2))
   db.prepare("UPDATE trades SET intent_id='unrelated' WHERE id=7").run()
   assert.equal(readPartialOwnership(db, '11', 7, '33', 2), null, 'an origin label does not authorise a different lifecycle')
+})
+
+async function finalPartialFixture(t, status = 5, path = ':memory:') {
+  const f = fixture(t, path)
+  assert.equal((await f.place()).placed, true)
+  const stored = f.db.prepare('SELECT * FROM momentum_limit_intents').get()
+  const proposal = JSON.parse(stored.proposal_json), p = proposal.plan
+  f.db.prepare("UPDATE entry_intents SET state='FILLED',broker_position_id='33',resolution_source='event' WHERE id=?").run(stored.intent_id)
+  f.db.prepare(`INSERT INTO trades(id,account_id,symbol,side,status,ctrader_position_id,origin,entry_price,sl_price,tp_price,volume,label_strategy,intent_id)
+    VALUES(7,'11','ETHUSD','BUY','open','33','reconciler_adopted',98,88,?,50,'tsmom_long',?)`).run(p.brokerTarget, stored.intent_id)
+  f.db.prepare(`INSERT INTO monitored_positions(symbol,trade_id,side,entry_price,initial_risk,current_sl,current_tp,account_id,strategy)
+    VALUES('ETHUSD',7,'long',98,10,88,?,'11','tsmom_long')`).run(p.brokerTarget)
+  bookEntryWrite(f.db, { accountId: '11', row: { tradeId: 7, symbol: 'ETHUSD', positionId: '33', side: 'long', entry: 98, stop: 88, enteredAt: new Date(f.now).toISOString() } })
+  const nowMs = f.now + 200
+  const position = { ...proposal.identity, positionId: '33', side: 'BUY', entry: 98, volume: 5000,
+    stopLoss: 88, takeProfit: p.brokerTarget, observedAtMs: nowMs, source: 'broker_reconcile' }
+  const limitFinalFill = {
+    detailsReceivedAtMs: f.now + 100, reconcileStartedAtMs: f.now + 101,
+    details: { ctidTraderAccountId: 11, order: { orderId: 900, positionId: 33, orderType: 2,
+      orderStatus: status, executedVolume: 5000, tradeData: { symbolId: 22, tradeSide: 1, volume: 10000 } },
+    deal: [2500, 2500].map((volume, n) => ({ dealId: 81 + n, orderId: 900, positionId: 33, symbolId: 22,
+      tradeSide: 1, dealStatus: 2, volume, filledVolume: volume, executionPrice: 98, executionTimestamp: f.now + 50 + n })) },
+    reconcile: { ctidTraderAccountId: 11, order: [], position: [{ positionId: 33, positionStatus: 1, price: 98,
+      stopLoss: 88, takeProfit: p.brokerTarget, tradeData: { symbolId: 22, tradeSide: 1, volume: 5000 } }] },
+  }
+  return { ...f, stored, proposal, p, nowMs, position, limitFinalFill,
+    bind: () => bindMomentumEntry(f.db, { accountId: '11', tradeId: 7, position, nowMs, limitFinalFill }) }
+}
+
+test('a final partial entry enrolls TP1 and releases only its cancelled or expired remainder after counted ownership', async t => {
+  for (const status of [4, 5]) {
+    const f = await finalPartialFixture(t, status)
+    assert.equal(restingExposure(f.db, '11').length, 1)
+    const bound = f.bind()
+    assert.equal(bound.state, 'BOUND')
+    assert.equal(bound.plan.volume, 5000)
+    assert.equal(bound.proposal.plan.volume, 10000, 'the original approval stays immutable')
+    assert.equal(bound.plan.costReservePrice, f.p.costReservePrice)
+    assert.equal(bound.plan.originalStop, f.p.originalStop)
+    assert.equal(reconcileStaleClosedMarketLimits(f.db, { nowMs: f.nowMs }).stillWorking, 1, 'binding alone is not TP1 enrollment')
+    f.db.transaction(() => enrollMomentumBook(f.db, { accountId: '11', tradeId: 7, positionId: '33' }))()
+    const plan = readPartialPlan(f.db, '11', 7)
+    assert.equal(plan.state, 'ARMED')
+    assert.equal(plan.plan.volume, 5000)
+    assert.ok(plan.plan.closeVolume > 0 && plan.plan.runnerVolume > 0)
+    assert.equal(f.db.prepare('SELECT status FROM pending_orders WHERE id=?').get(f.stored.pending_id).status, 'filled')
+    assert.equal(reconcileStaleClosedMarketLimits(f.db, { nowMs: f.nowMs }).stillWorking, 0)
+    assert.equal(countedPositionsWithTickFires(f.db, '11').counted.length, 1)
+    assert.equal(restingExposure(f.db, '11').length, 0)
+  }
+})
+
+test('final partial entry uncertainty cannot bind TP1 or release reserved capacity', async t => {
+  const cases = [
+    ['still accepted', f => { f.limitFinalFill.details.order.orderStatus = 1 }],
+    ['wrong account details', f => { f.limitFinalFill.details.ctidTraderAccountId = 12 }],
+    ['wrong account snapshot', f => { f.limitFinalFill.reconcile.ctidTraderAccountId = 12 }],
+    ['wrong order', f => { f.limitFinalFill.details.order.orderId = 901 }],
+    ['wrong requested volume', f => { f.limitFinalFill.details.order.tradeData.volume = 9000 }],
+    ['wrong type', f => { f.limitFinalFill.details.order.orderType = 1 }],
+    ['closing order', f => { f.limitFinalFill.details.order.closingOrder = true }],
+    ['wrong deal position', f => { f.limitFinalFill.details.deal[0].positionId = 34 }],
+    ['wrong deal side', f => { f.limitFinalFill.details.deal[0].tradeSide = 2 }],
+    ['wrong deal symbol', f => { f.limitFinalFill.details.deal[0].symbolId = 23 }],
+    ['missing deal', f => { f.limitFinalFill.details.deal.pop() }],
+    ['duplicate deal', f => { f.limitFinalFill.details.deal[1].dealId = 81 }],
+    ['changed open volume', f => { f.limitFinalFill.details.order.executedVolume = 6000 }],
+    ['closing deal', f => { f.limitFinalFill.details.deal[0].closePositionDetail = {} }],
+    ['remaining order', f => { f.limitFinalFill.reconcile.order.push({ orderId: 900 }) }],
+    ['old snapshot', f => { f.limitFinalFill.reconcileStartedAtMs = f.now + 99 }],
+    ['future details', f => { f.limitFinalFill.detailsReceivedAtMs = f.nowMs + 1 }],
+    ['old details', f => { f.limitFinalFill.detailsReceivedAtMs = f.now - 6000 }],
+    ['future deal', f => { f.limitFinalFill.details.deal[0].executionTimestamp = f.nowMs + 1 }],
+    ['different execution price', f => { f.limitFinalFill.details.deal[0].executionPrice = 99 }],
+    ['fractional broker unit', f => { f.limitFinalFill.details.deal[0].filledVolume = 2499.5 }],
+    ['broker error', f => { f.limitFinalFill.reconcile.errorCode = 'TIMEOUT' }],
+    ['trade volume mismatch', f => { f.db.prepare('UPDATE trades SET volume=40 WHERE id=7').run() }],
+    ['position grows after terminal details', f => {
+      f.position.volume = 10000
+      f.limitFinalFill.reconcile.position[0].tradeData.volume = 10000
+    }],
+  ]
+  for (const [name, corrupt] of cases) {
+    const f = await finalPartialFixture(t)
+    corrupt(f)
+    assert.throws(f.bind, /entry fill|limit fill/, name)
+    assert.equal(readMomentumEntry(f.db, '11', 7).state, 'AWAITING_BIND', name)
+    assert.equal(f.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_partial_plans'").get(), undefined, name)
+    assert.equal(reconcileStaleClosedMarketLimits(f.db, { nowMs: f.nowMs }).stillWorking, 1, name)
+    assert.equal(restingExposure(f.db, '11')[0].reservedMarginUsd, f.stored.reserved_margin_usd, name)
+  }
+})
+
+test('final partial receipt cannot hide a newer working remainder or another order, or release an uncounted position', async t => {
+  const f = await finalPartialFixture(t)
+  f.bind()
+  f.db.prepare(`INSERT INTO broker_orders(order_id,account_id,symbol,side,volume,limit_price,status,last_seen)
+    VALUES('900','11','ETHUSD','BUY',50,98,'working',?)`).run(new Date(f.nowMs + 1).toISOString())
+  assert.throws(() => f.db.transaction(() => enrollMomentumBook(f.db, { accountId: '11', tradeId: 7, positionId: '33' }))(), /proof changed/)
+  assert.equal(reconcileStaleClosedMarketLimits(f.db, { nowMs: f.nowMs + 2 }).stillWorking, 1)
+  assert.equal(restingExposure(f.db, '11').length, 1)
+  f.db.prepare("UPDATE broker_orders SET status='gone' WHERE order_id='900'").run()
+  f.db.prepare(`INSERT INTO broker_orders(order_id,account_id,symbol,side,volume,limit_price,status)
+    VALUES('901','11','ETHUSD','BUY',50,98,'working')`).run()
+  f.db.prepare("UPDATE monitored_positions SET account_id='12' WHERE trade_id=7").run()
+  assert.equal(reconcileStaleClosedMarketLimits(f.db, { nowMs: f.nowMs }).stillWorking, 1)
+  assert.throws(() => f.db.transaction(() => enrollMomentumBook(f.db, { accountId: '11', tradeId: 7, positionId: '33' }))(), /ownership/)
+  f.db.prepare("UPDATE monitored_positions SET account_id='11' WHERE trade_id=7").run()
+  f.db.transaction(() => enrollMomentumBook(f.db, { accountId: '11', tradeId: 7, positionId: '33' }))()
+  assert.deepEqual(restingExposure(f.db, '11').map(r => r.orderId), ['901'])
+})
+
+test('a final partial below the runner minimum cannot adopt the original runner bracket as TP1', async t => {
+  const f = await finalPartialFixture(t)
+  f.position.volume = 100
+  f.limitFinalFill.details.order.executedVolume = 100
+  f.limitFinalFill.details.deal = [{ ...f.limitFinalFill.details.deal[0], volume: 100, filledVolume: 100 }]
+  f.limitFinalFill.reconcile.position[0].tradeData.volume = 100
+  f.db.prepare('UPDATE trades SET volume=1 WHERE id=7').run()
+  assert.throws(f.bind, /bracket mismatch/)
+  assert.equal(readMomentumEntry(f.db, '11', 7).state, 'AWAITING_BIND')
+  assert.equal(restingExposure(f.db, '11').length, 1)
+})
+
+test('final partial enrollment transfers the reservation before TP1 can reduce the position on that same pass', async t => {
+  const f = await finalPartialFixture(t)
+  f.bind()
+  f.db.transaction(() => enrollMomentumBook(f.db, { accountId: '11', tradeId: 7, positionId: '33' }))()
+  assert.equal(f.db.prepare('SELECT status FROM pending_orders WHERE id=?').get(f.stored.pending_id).status, 'filled')
+  const plan = readPartialPlan(f.db, '11', 7).plan
+  f.db.prepare('UPDATE trades SET volume=? WHERE id=7').run(plan.runnerVolume / 100)
+  assert.equal(restingExposure(f.db, '11').length, 0, 'a later owned partial cannot resurrect the cancelled remainder')
+})
+
+test('deferred runtime reads terminal details before a new snapshot and atomically enrolls a final partial', async t => {
+  const f = await finalPartialFixture(t)
+  const calls = []
+  let clock = f.now + 50
+  const transports = {
+    reconcile: async c => { assert.equal(c.accountId, '11'); calls.push('reconcile'); clock += 10; return f.limitFinalFill.reconcile },
+    orderDetails: async (c, orderId) => { assert.equal(c.accountId, '11'); assert.equal(orderId, '900'); calls.push('details'); clock += 10; return f.limitFinalFill.details },
+  }
+  const result = await bindAwaitingMomentumEntries(f.db, { credsFor: () => f.creds, transports, now: () => clock, minIntervalMs: 0 })
+  assert.equal(result.length, 1)
+  assert.equal(result[0].bound, true, result[0].reason)
+  assert.deepEqual(calls, ['reconcile', 'details', 'reconcile'])
+  assert.equal(readMomentumEntry(f.db, '11', 7).state, 'ENROLLED')
+  assert.equal(readPartialPlan(f.db, '11', 7).plan.volume, 5000)
+  assert.equal(reconcileStaleClosedMarketLimits(f.db, { nowMs: clock }).stillWorking, 0)
+  assert.equal(f.db.prepare('SELECT status FROM pending_orders WHERE id=?').get(f.stored.pending_id).status, 'filled')
+  const again = await bindAwaitingMomentumEntries(f.db, { credsFor: () => f.creds, transports, now: () => clock, minIntervalMs: 0 })
+  assert.deepEqual(again, [])
+  assert.equal(calls.length, 3, 'enrollment is idempotent')
+})
+
+test('final partial enrollment survives a restart with the same immutable plan and no recreated reservation', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'momentum-final-partial-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'state.db'), f = await finalPartialFixture(t, 5, path)
+  f.bind()
+  f.db.close()
+  const db = initDB(path)
+  db.transaction(() => enrollMomentumBook(db, { accountId: '11', tradeId: 7, positionId: '33' }))()
+  const before = readPartialPlan(db, '11', 7)
+  db.close()
+  const after = initDB(path); t.after(() => after.close())
+  assert.deepEqual(readPartialPlan(after, '11', 7), before)
+  assert.equal(readMomentumEntry(after, '11', 7).state, 'ENROLLED')
+  assert.equal(restingExposure(after, '11').length, 0)
+  assert.equal(countedPositionsWithTickFires(after, '11').counted.length, 1)
+  assert.equal(reconcileStaleClosedMarketLimits(after).stillWorking, 0)
+})
+
+test('a final reservation write failure rolls back the deferred bind and TP1 enrollment together', async t => {
+  const f = await finalPartialFixture(t)
+  f.db.exec("CREATE TRIGGER fail_final_fill BEFORE UPDATE OF status ON pending_orders WHEN NEW.status='filled' BEGIN SELECT RAISE(ABORT, 'reservation_write_failed'); END")
+  let clock = f.now + 60
+  const result = await bindAwaitingMomentumEntries(f.db, { credsFor: () => f.creds, now: () => clock, minIntervalMs: 0,
+    transports: {
+      reconcile: async () => { clock += 10; return f.limitFinalFill.reconcile },
+      orderDetails: async () => { clock += 10; return f.limitFinalFill.details },
+    } })
+  assert.equal(result[0].bound, false)
+  assert.match(result[0].reason, /reservation_write_failed/)
+  assert.equal(readMomentumEntry(f.db, '11', 7).state, 'AWAITING_BIND')
+  assert.equal(f.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_partial_plans'").get(), undefined)
+  assert.equal(restingExposure(f.db, '11')[0].reservedMarginUsd, f.stored.reserved_margin_usd)
+  assert.equal(f.db.prepare('SELECT status FROM pending_orders WHERE id=?').get(f.stored.pending_id).status, 'working')
+})
+
+test('an unresolved first partial cannot starve another order of the bounded details read', async t => {
+  const f = await finalPartialFixture(t)
+  const clone = (table, patch) => {
+    const row = { ...f.db.prepare(`SELECT * FROM ${table} LIMIT 1`).get(), ...patch }
+    const keys = Object.keys(row)
+    f.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`).run(...Object.values(row))
+  }
+  clone('entry_intents', { id: 'second-entry', permit_id: 'second-permit', broker_order_id: '901', broker_position_id: '34' })
+  clone('trades', { id: 8, intent_id: 'second-entry', ctrader_position_id: '34' })
+  clone('pending_orders', { id: 100, intent_id: 'second-entry', order_id: '901' })
+  clone('momentum_limit_intents', { intent_id: 'second-entry', trade_id: 8, pending_id: 100 })
+  clone('momentum_target_intents', { trade_id: 8, position_id: '34' })
+  clone('momentum_book', { id: 100, trade_id: 8, position_id: '34' })
+  const snapshot = structuredClone(f.limitFinalFill.reconcile)
+  snapshot.position.push({ ...snapshot.position[0], positionId: 34 })
+  const reads = []
+  let clock = f.now + 100
+  const opts = { credsFor: () => f.creds, now: () => clock, minIntervalMs: 0,
+    transports: {
+      reconcile: async () => { clock += 10; return snapshot },
+      orderDetails: async (c, orderId) => { reads.push(orderId); throw Error('order still working') },
+    } }
+  await bindAwaitingMomentumEntries(f.db, opts)
+  assert.equal(reads.length, 1, 'one extra order investigation per pass')
+  clock += 60_000
+  await bindAwaitingMomentumEntries(f.db, opts)
+  assert.equal(reads.length, 2)
+  assert.deepEqual(new Set(reads), new Set(['900', '901']), 'both orders get a turn even when the first never resolves')
+  assert.equal(f.db.prepare("SELECT count(*) n FROM momentum_target_intents WHERE state='AWAITING_BIND'").get().n, 2)
 })

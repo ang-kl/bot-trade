@@ -1473,3 +1473,26 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   See docs/exit-attribution-replay-2026-09-28.md and its append-only progress
   record. Explicit push/production approval remains required by the uploaded
   instructions; the separate fresh-build-rule conflict remains deferred.
+
+- **28-09-2026 07:20 SGT, CODEX authorised release and V3 checkpoint, partial corpus:**
+  latest visible reply before this checkpoint is **`№ 10,207`**; the next
+  handover reply is **`№ 10,208`**, and later visible replies take precedence.
+  The owner's explicit approval covered resolving and merging #1169/#1170
+  after CI and their resulting deployments. Both merged as `4f8cbac` and
+  `1a0d344`. Final-head CI passed; skipped automated review is not independent
+  verification. Node, demo gateway and live gateway deployments succeeded.
+  Fresh post-boot receipts covered seven accounts and 26 protected positions;
+  both native feeds recorded in shadow mode with tick placement false.
+  Scanner alignment remains failed. The separate final-partial-fill follow-up
+  is local and unpublished on `codex/v3-final-partialfill-20260928`, based on
+  `1a0d344`. Final backend: 7,184 passed, four native-dependent skips, zero
+  failures; 19 focused lifecycle checks, 1,311 frontend checks, lint, build,
+  colour and whitespace gates passed with the scopes in the progress log.
+  Full browser traces, natural final-fill execution and later-session/empirical
+  acceptance remain open. Bounded read-only session checks are scheduled;
+  they do not replace the continuous harness or owner-visible tabs.
+  See `docs/v3-final-partial-fill-2026-09-28.progress.md` and
+  `docs/v3-production-readback-2026-09-28.md`. No scanner/account/risk/credential
+  change or broker order was performed. New push/deployment approval is
+  separate from the completed named release. The original checkout's two
+  uncommitted documentation edits remain preserved.
