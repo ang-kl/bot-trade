@@ -2,7 +2,8 @@
 // BROKER; the one thing it writes is its own verdict journal.
 //
 // READ-ONLY BROKER ROUTES:
-//   GET  /health   public (Railway's probe sends no headers)
+//   GET  /health   public (Railway's probe sends no headers); account ids only
+//                  with the bearer (health_view.hpp)
 //   POST /connect  bearer; adds or refreshes a broker session FOR A HOST
 //   POST /verify   bearer; re-fetches a position's deals and answers a verdict
 //   GET  /protection-status bearer; independently checked open SL/TP coverage
@@ -30,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include "health_view.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
 #include "journal.hpp"
@@ -169,7 +171,12 @@ int main() {
     return jsonRes(200, jsn::dump(protection.status()));
   });
 
-  server.route("GET", "/health", [&](const HttpRequest&) {
+  server.route("GET", "/health", [&](const HttpRequest& req) {
+    // /health is the one route http_server.cpp lets through without the
+    // bearer, so the route itself decides what an anonymous caller sees:
+    // account ids only with `Bearer <EXEC_SECRET>` (see health_view.hpp).
+    auto authIt = req.headers.find("authorization");
+    const bool trusted = authIt != req.headers.end() && authIt->second == "Bearer " + secret;
     std::lock_guard<std::mutex> lk(g_mtx);
     jsn::Value o{jsn::Object{}};
     o.set("ok", true);
@@ -205,17 +212,13 @@ int main() {
     if (!verify::journal().lastError().empty()) j.set("lastError", verify::journal().lastError());
     j.set("written", static_cast<double>(verify::journal().written()));
     o.set("journal", j);
-    jsn::Array hosts;
+    std::vector<health_view::SessionRow> rows;
     for (const auto& [host, sess] : g_sessions) {
-      jsn::Value h{jsn::Object{}};
-      h.set("host", host);
-      h.set("open", sess->isOpen());
-      jsn::Array accts;
-      for (long long id : g_accounts[host]) accts.push_back(jsn::Value(static_cast<double>(id)));
-      h.set("accounts", jsn::Value(std::move(accts)));
-      hosts.push_back(h);
+      health_view::SessionRow r{host, sess->isOpen(), {}};
+      if (auto it = g_accounts.find(host); it != g_accounts.end()) r.accounts = it->second;
+      rows.push_back(std::move(r));
     }
-    o.set("sessions", jsn::Value(std::move(hosts)));
+    o.set("sessions", health_view::sessions(rows, trusted));
     return jsonRes(200, jsn::dump(o));
   });
 
