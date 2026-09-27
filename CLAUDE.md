@@ -1371,6 +1371,30 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
 
+- 2026-09-27 07:05 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): the script reads **287** here and was refused as a
+  reading. From `№ 9,903` the replies ran on through the handover merge
+  (#1165), the 18-decision list `№ 9,919`, the owner's twelve decisions
+  (27-09 ~12:30 SGT), the merges of M7 #1159, CV-2 #1155, S-8 #1163, T4
+  #1168, #1164, #1166 and #1167 (27-09 13:43–14:27 SGT) and the "why nothing
+  trades" answer `№ 9,959`. **The stamps had run behind by count since 26-09
+  evening, and an independent check found it.** Five windows hold more
+  replies than their stamp gap allows (`№ 9,767`→`9,768`,
+  `№ 9,768`→`9,790`, `№ 9,790`→`9,791`, `№ 9,888`→`9,894`,
+  `№ 9,915`→`9,918`). Anchored at `№ 9,767` (the stamp giving the highest
+  bound) and counting every captured reply plus the thirteen known
+  uncaptured ones (`№ 9,780`, `9,869`, `9,892`, `9,897`, `9,999` and eight
+  unstamped lines), the stamps from 26-09 19:33 SGT to 27-09 14:59 SGT ran 1
+  to 7 behind: `№ 9,983` (the first numbering answer) is at least `№ 9,988`,
+  `№ 9,993` at least `9,996`, `№ 9,999` at least `10,000`. **`№ 10,003`
+  (15:02 SGT) is the first stamp back in line.** The serial moved forward,
+  never back. Three unstamped lines followed it by this ledger, so the next
+  stamped reply is **`№ 10,007`** plus any unstamped line made after this
+  ledger. The per-stamp table is `docs/handover-2026-09-27.md` §17. The count
+  is by replies, not by stamps; it is a lower bound, because a reply neither
+  captured nor known cannot be counted. A later re-measure that reads below
+  this line is missing these, not correcting them.
+
 - **27-09-2026 CODEX continuation, partial corpus rebase:** the owner supplied
   Claude Code's last reply as `№ 10,009` at 15:12 SGT and requested continuation
   of T4 option (a), OD-15 and the four diagnosed blockages for Sydney readiness.
