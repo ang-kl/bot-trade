@@ -47,7 +47,13 @@ import { initDB, setState, getState } from '../db.js'
 
 const AGENT_DIR = fileURLToPath(new URL('..', import.meta.url))
 
-/** origin/main's fast-monitor.js, frozen: which commit, which blob, where. */
+/**
+ * origin/main's fast-monitor.js, frozen: which commit, which blob, where.
+ * `commit` names where it was frozen; main has moved since (584237b, #1161)
+ * without touching the file — the blob there is this same one. The harness
+ * pins the BLOB, so a later main that changes fast-monitor.js fails the
+ * byte-for-byte test rather than being compared against silently.
+ */
 export const BASELINE = Object.freeze({
   commit: '580308e',
   blob: '0b15e092bcac1fd5af42de1409c1fb3e7558697a',

@@ -227,16 +227,33 @@ test('I3: only a CLEAN EMPTY answer backs off — while the side streams, for ba
   assert.equal(skips, 1, 'one skip row for the no-quote verdict, as on main')
 
   t = t0 + 16_000 // due on the cadence
-  await runFastMonitor(db, CREDS, d)
+  const out2 = await runFastMonitor(db, CREDS, d)
   assert.deepEqual(d.calls.ws, [1], 'backed off: no second broker call')
   const r2 = readWork(db)[0]
   assert.equal(r2.state, 'probe_backoff', 'named as what it is — graded like any state, never exempt (X5)')
   assert.equal(r2.lastOutcome, 'quote_unavailable', 'the verdict that armed it is carried')
-  assert.equal(rows(db).length, skips, 'still the same skip state: no second row')
+  // S1 (round 5): the backoff is its own decision state, so the transition-
+  // gated log records it — under 'no_quote' (the empty answer's state) it
+  // never reached the log.
+  const logged = rows(db)
+  assert.equal(logged.length, skips + 1, 'entering the backoff writes ONE decision row')
+  assert.match(logged.at(-1).reason, /backing off.*OD-22/, 'the row says it is OD-22\'s backoff')
+  assert.equal(out2.probes.backoff, 1, 'the pass result counts the position it left to the backoff')
+
+  t = t0 + 19_000 // still inside the backoff, due again
+  const out3 = await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.ws, [1], 'still backed off')
+  assert.equal(rows(db).length, skips + 1, 'the same backoff episode: no second row')
+  assert.equal(out3.probes.backoff, 1)
 
   t = t0 + 61_000 // past the 60 s backoff from the launch
   await runFastMonitor(db, CREDS, d)
   assert.deepEqual(d.calls.ws, [1, 1], 'past the backoff: asked again')
+  assert.equal(rows(db).length, skips + 1, 'still empty: the same quiet episode — no row per backoff cycle')
+  t = t0 + 80_000 // backed off again after the second empty answer
+  await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.ws, [1, 1], 'backed off again')
+  assert.equal(rows(db).length, skips + 1, 'and still one row per state for the whole episode')
 
   // A spike window: price the symbol twice with a sharp move, then answer empty — the next tick still probes.
   const db2 = mkDb()
@@ -303,6 +320,10 @@ test('nit 4: a landed quote older than the probe\'s own one-tick bound is never 
   const t0 = t
   const d = deps({ now: t, probeWaitMs: 0, answer: { kind: 'quote', bid: 1.0900, ask: 1.0902 } }) // through the trigger
   d.now = () => t
+  // S2 (round 5): a landed answer's age is read on the monotonic clock, so
+  // the 11 s this test skips must pass on that clock too — as it does in a
+  // real process, where both clocks advance together.
+  d.monoNow = () => t
   d.quoteMaxAgeMs = 60_000
   d.loop = null
   await runFastMonitor(db, CREDS, d)
@@ -316,6 +337,26 @@ test('nit 4: a landed quote older than the probe\'s own one-tick bound is never 
   const row = db.prepare(`SELECT status, last_check_action FROM monitored_positions`).get()
   assert.equal(row.status, 'active', 'never closed on the stale price')
   assert.match(row.last_check_action, /FAST:HOLD/)
+})
+
+test('S2 (round 5): a landed answer\'s age is read on the MONOTONIC clock — a wall-clock step (NTP) alone neither ages it nor re-asks the broker', async () => {
+  const db = mkDb()
+  addPos(db, 'EURUSD', { trigger: 'price<1.0950' })
+  let t = clockBase += 3_600_000
+  let m = 1_000_000
+  const t0 = t
+  const d = deps({ now: t, probeWaitMs: 0, answer: { kind: 'quote', bid: 1.1005, ask: 1.1007 } })
+  d.now = () => t
+  d.monoNow = () => m
+  await runFastMonitor(db, CREDS, d)
+  await _drainFastMonitorProbesForTests()
+  // The wall clock steps 11 s forward; only 1 s really passed.
+  t = t0 + 11_000
+  m += 1_000
+  d.probeWaitMs = 2_000
+  const out = await runFastMonitor(db, CREDS, d)
+  assert.deepEqual(d.calls.ws, [1], 'the 1 s old answer was used: no second broker call on a wall-clock step')
+  assert.equal(out.checked, 1)
 })
 
 test('I5: a waiter carries main\'s lateness eligibility — a first sighting stays first_seen, and a restart mid-wait keeps the eligibility the wait began with', async () => {

@@ -408,6 +408,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
     const work = []
     let checked = 0
     let acted = 0
+    let backoffCount = 0 // S1: positions this pass left to OD-22's backoff
     // Durations on the monotonic clock: `now` may be a test's fixed clock.
     const mono = deps.monoNow ?? (() => performance.now())
     const timing = { priced: 0, pricingMs: 0, brokerQuotes: 0, volFetches: 0, volFetchMs: 0, tokenWaitMs: 0 }
@@ -415,7 +416,10 @@ export async function runFastMonitor(db, creds, deps = {}) {
 
     // M7 round 4 (see ../lib/fast-monitor-probes.js for I1–I6): the clock the
     // pass waits on, and how long its end may wait for open probes.
-    const passStartMs = now()
+    // S2: the pass's end deadline and main's chain position are measured on
+    // the MONOTONIC clock, the same clock actionMs and a probe's settledMono
+    // are read on — never wall time mixed with monotonic durations.
+    const passStartMono = mono()
     const clock = { now, mono, sleep: deps.sleep ?? null }
     const tickMs = Number(deps.tickMs) > 0 ? Number(deps.tickMs) : 3_000
     const waitMs = Number(deps.probeWaitMs)
@@ -641,10 +645,10 @@ export async function runFastMonitor(db, creds, deps = {}) {
         if (r.kind === 'quote') {
           const actionMs = await evaluateQuoted({ pos, receipt, q: { bid: r.bid, ask: r.ask }, feedKey: w.key, lateOk: w.lateOk, quoteAtMs: probe.settledAt, cadenceMs: w.cadenceMs, settleFirst: false })
           // Where main's serial loop would be now: past this landing and this action.
-          probes.chainAt = probes.waiters.length ? Math.max(probes.chainAt ?? -Infinity, probe.settledAt) + actionMs : null
+          probes.chainAt = probes.waiters.length ? Math.max(probes.chainAt ?? -Infinity, probe.settledMono) + actionMs : null
           return
         }
-        probes.chainAt = probes.waiters.length ? Math.max(probes.chainAt ?? -Infinity, probe.settledAt) : null
+        probes.chainAt = probes.waiters.length ? Math.max(probes.chainAt ?? -Infinity, probe.settledMono) : null
         // No price (I3): recorded exactly as main records a null quote, and
         // retried on main's cadence. Only `empty` arms the backoff (the board
         // remembers the kind); a failure never does.
@@ -652,7 +656,11 @@ export async function runFastMonitor(db, creds, deps = {}) {
         if (isPreFill(pos)) recordLimitFillSpread(db, pos, { quote: null, source: 'broker', nowMs: now(), reason: 'quote unavailable (market closed or feed gap)' })
         receipt.lastOutcome = 'quote_unavailable'
         receipt.state = 'quote_unavailable'
-        noteFastDecision(db, pos, 'no_quote', r.kind === 'empty'
+        // S1: the empty answer that ends a backoff is the same quiet episode —
+        // it does not flip the transition-gated log back to no_quote (one
+        // no_quote row and one probe_backoff row per episode, never a pair
+        // per backoff cycle). A failure or a quote still transitions.
+        if (!(r.kind === 'empty' && decisionState.get(pos.id) === 'probe_backoff')) noteFastDecision(db, pos, 'no_quote', r.kind === 'empty'
           ? `${pos.symbol}: no quote (market closed or feed gap) — checks paused`
           : `${pos.symbol}: no quote (broker probe failed: ${r.reason}) — checks paused`)
       } catch (err) {
@@ -678,18 +686,27 @@ export async function runFastMonitor(db, creds, deps = {}) {
     // two ticks. Never a failure or an empty answer: they carry no price, and
     // re-asking them one by one would rebuild main's serial chain of timeouts.
     const agedQuote = (x) => x.probe.state === 'settled' && x.probe.result.kind === 'quote' && (
-      (probes.chainAt != null && probes.chainAt - x.probe.settledAt > probeMaxAgeMs) ||
-      now() - x.probe.settledAt > 2 * probeMaxAgeMs)
+      (probes.chainAt != null && probes.chainAt - x.probe.settledMono > probeMaxAgeMs) ||
+      mono() - x.probe.settledMono > 2 * probeMaxAgeMs)
     const consume = async ({ wait = false, deadlineMs = null } = {}) => {
       for (let guard = 0; guard < 10_000; guard++) {
         const w = probes.head()
         if (!w) return
         if (probes.hasLanded(w) && agedQuote(w)) {
-          for (const x of probes.waiters) if (agedQuote(x)) probes.reprobe(x, probeRun(x.host, x.accountId, x.symbolId), clock)
+          for (const x of probes.waiters) {
+            if (!agedQuote(x)) continue
+            probes.reprobe(x, probeRun(x.host, x.accountId, x.symbolId), clock)
+            x.reasked = true
+          }
         }
         if (!probes.hasLanded(w)) {
           if (!wait) return
-          const left = deadlineMs == null ? Infinity : Math.max(0, deadlineMs - now())
+          // B1 (round 5): a waiter this pass RE-ASKED — its quote aged while
+          // main's serial chain would still be walking towards it — is waited
+          // for past the pass's deadline: main's serial pass would be sampling
+          // it right now, and ending the pass idle costs a tick per re-ask,
+          // compounding down a queue of slow exits. PROBE_GUARD_MS bounds it.
+          const left = deadlineMs == null || w.reasked ? Infinity : Math.max(0, deadlineMs - mono())
           if (isTimedOut(await raceTimeout(w.probe.settled, left, clock.sleep))) return
           continue
         }
@@ -856,7 +873,11 @@ export async function runFastMonitor(db, creds, deps = {}) {
         if (probes.backoffActive(feedKey, { nowMs: now(), sideHasFreshQuote: sideFresh, spikeActive })) {
           receipt.state = 'probe_backoff'
           receipt.probeState = 'backoff'
-          noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: backing off — its last probe was answered with no price while the rest of its side streams (OD-22, at most ${Math.round(probes.backoffMs / 1000)} s)`)
+          // S1 (round 5): its own decision state — 'no_quote' was already set
+          // by the empty answer that armed it, and the log is transition-gated,
+          // so under that state the backoff never reached the log.
+          backoffCount++
+          noteFastDecision(db, pos, 'probe_backoff', `${pos.symbol}: backing off — its last probe was answered with no price while the rest of its side streams (OD-22, at most ${Math.round(probes.backoffMs / 1000)} s)`)
           continue
         }
         // The attempt, stamped where main stamps it: the cadence runs from here.
@@ -884,7 +905,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
     // I1 (d): the end of the pass waits for open probes, in order, until
     // probeWaitMs after the pass began — an answer inside the tick is acted
     // on in the pass that asked. What is still open waits for the next pass.
-    await consume({ wait: true, deadlineMs: passStartMs + probeWaitMs })
+    await consume({ wait: true, deadlineMs: passStartMono + probeWaitMs })
     for (const w of probes.waiters) {
       const e = entryOf.get(w.posId)
       if (e) markPending(e.receipt, w)
@@ -893,7 +914,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
     setState(db, POSITION_WORK_KEY, JSON.stringify({ version: 1, at: new Date(now()).toISOString(),
       positions: work.slice(0, 2048), total: work.length, complete: work.length <= 2048 }))
     return { checked, acted, completed: true, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size, timing,
-      probes: { pending: probes.waiters.length, inFlight: probes.inflightCount(), queued: probes.queuedCount() } }
+      probes: { pending: probes.waiters.length, inFlight: probes.inflightCount(), queued: probes.queuedCount(), backoff: backoffCount } }
   } finally {
     running = false
   }

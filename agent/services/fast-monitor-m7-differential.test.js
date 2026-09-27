@@ -364,6 +364,53 @@ for (const w of WAITS) {
   })
 }
 
+// ---------------------------------------------------------------------------
+// B1 (round-5 re-check of c99fc0a) — correlated exits behind SLOW broker
+// actions. Many broker-priced positions cross together and every exit takes
+// 2 s at the broker. Main walks them serially: probe, exit, probe, exit —
+// one exit every ~2.4 s. After ~3 s of actions the landed quotes behind the
+// chain are older than main's sample would be and are asked again; the
+// re-probe must be waited for in THAT pass (the head's own re-ask), or each
+// re-probe cycle costs a tick and the lag grows linearly with the queue.
+// capOverflow's 250 ms actions never reached that threshold.
+// ---------------------------------------------------------------------------
+// Every position's main/branch exit and lag is printed BEFORE any assertion,
+// so a failure shows the whole lag table, not just the first breach.
+function allExitNotLater(t, label, r, positions, ticks) {
+  const lag = positions.map((p) => {
+    const m = r.main.exitAt(p.id)
+    const b = r.branch.exitAt(p.id)
+    return `${p.symbol}#${p.id} main +${m == null ? '—' : (m - T0) / 1000} s, branch +${b == null ? 'never' : (b - T0) / 1000} s, lag ${m == null || b == null ? '—' : ((b - m) / 1000).toFixed(2)} s`
+  })
+  t.diagnostic(`${label}: ${lag.join(' | ')}`)
+  for (const p of positions) exitNotLater(t, `${label} ${p.symbol}#${p.id}`, r, p.id, ticks)
+}
+const B1_NAMES = ['GBPUSD', 'USDJPY', 'AUDUSD', 'NZDUSD', 'USDCAD', 'EURGBP', 'EURJPY', 'GBPJPY', 'AUDJPY', 'CHFJPY', 'CADJPY', 'NZDJPY']
+function correlatedSlow({ sameSymbol = false, n = 12, actionMs = 2_000 } = {}) {
+  const names = sameSymbol ? Array.from({ length: n }, () => 'GBPUSD') : B1_NAMES.slice(0, n)
+  return {
+    startMs: T0, durationMs: 120_000, symbolMap: SYM, overrides: Object.fromEntries(names.map(s => [s, 0.25])),
+    positions: names.map((s, i) => ({ id: 1300 + i, symbol: s, entry: 100, sl: 99, risk: 1, trigger: 'price<99' })),
+    sidecar: () => ({}),
+    broker: (id, t) => ({ kind: 'quote', latencyMs: 400, ...quote(t < T0 + 30_000 ? 100 : 98.5, 0.02) }),
+    action: () => ({ durationMs: actionMs, outcome: { summary: 'ok' } }),
+  }
+}
+for (const w of WAITS) {
+  test(`B1 (${waitLabel(w)}): twelve symbols crossing together behind 2 s broker actions all exit within ${compoundTicks(w)} tick(s) of main`, async (t) => {
+    const sc = correlatedSlow()
+    const r = await both(sc, w)
+    allExitNotLater(t, 'B1', r, sc.positions, compoundTicks(w))
+  })
+  for (const n of [8, 16]) {
+    test(`B1 same symbol ×${n} (${waitLabel(w)}): ${n} positions on ONE symbol behind 2 s broker actions all exit within ${compoundTicks(w)} tick(s) of main`, async (t) => {
+      const sc = correlatedSlow({ sameSymbol: true, n })
+      const r = await both(sc, w)
+      allExitNotLater(t, `B1 same ×${n}`, r, sc.positions, compoundTicks(w))
+    })
+  }
+}
+
 // A slow probe AHEAD of a crossed one: waiters are served in main's order, so
 // R waits for S — never longer than main's serial loop makes it wait.
 function slowHead() {

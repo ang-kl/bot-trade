@@ -41,6 +41,14 @@
 //           `probeWaitMs` (the ticker tells each pass its tick; the wait is
 //           the tick less one second), so a probe that answers inside the
 //           tick is acted on in the pass that sent it.
+//         · A RE-ASK IS WAITED FOR (round 5, B1) — a waiter this pass asked
+//           again, because its landed quote aged while main's chain would
+//           still be walking towards it, is waited for past the end-of-pass
+//           deadline (PROBE_GUARD_MS bounds it): main's serial pass would be
+//           sampling it at that moment. Ending the pass idle instead costs a
+//           tick per re-ask, and behind slow exits that compounds down the
+//           queue. The chain position and the deadline are both measured on
+//           the monotonic clock (S2).
 //       A probe is therefore acted on at the first of those points after it
 //       lands: at once while a pass runs, and between passes on the next
 //       tick. Main acts on it the moment it lands. Broker actions keep main's
@@ -57,6 +65,9 @@
 //       `empty` can arm the backoff, and never inside a spike window or while
 //       the rest of the side is stale. Both are recorded as main records a
 //       null quote (quote_unavailable) and retried on main's cadence.
+//       A position the backoff holds gets its own decision state,
+//       probe_backoff (round 5, S1), so the transition-gated log records it,
+//       and the pass result counts it (probes.backoff).
 //   I4  `null` FROM THE BOARD MEANS "NO VERDICT YET". A waiter whose probe is
 //       queued or in flight has no verdict: its receipt says probe_pending,
 //       and nothing — no quote_unavailable, no decision row, no lateness — is
@@ -67,7 +78,9 @@
 //       it — the pass main would have evaluated in — and carried through the
 //       wait (and across a restart, on the receipt as `waitLateness`). R3
 //       exempts main's states only; probe_pending and probe_backoff are
-//       graded on lastCompletedAt like any other state.
+//       graded on lastCompletedAt like any other state. Both graders are
+//       main's code, UNCHANGED by M7: protection-latency.js and
+//       services/p1p4-grade.js are byte-identical to origin/main.
 //   I6  PASS COUNTERS COUNT REAL BROKER CALLS ONCE. fromBroker, stale,
 //       brokerQuotes and pricingMs are counted per probe, in the pass that
 //       consumes it, whatever number of positions share it; a pass that only
@@ -324,7 +337,7 @@ export class ProbeBoard {
 
   _create(key, run, pick, clock) {
     let settle
-    const probe = { key, run, pick, gen: this.gen, state: 'queued', result: null, launchedAt: null, settledAt: null, durationMs: null, counted: false, startMono: null, settled: new Promise(r => { settle = r }) }
+    const probe = { key, run, pick, gen: this.gen, state: 'queued', result: null, launchedAt: null, settledAt: null, settledMono: null, durationMs: null, counted: false, startMono: null, settled: new Promise(r => { settle = r }) }
     probe._resolve = settle
     this.open.set(key, probe)
     this.all.add(probe)
@@ -354,7 +367,8 @@ export class ProbeBoard {
     probe.state = 'settled'
     probe.result = result
     probe.settledAt = clock.now()
-    probe.durationMs = Math.max(0, clock.mono() - probe.startMono)
+    probe.settledMono = clock.mono()
+    probe.durationMs = Math.max(0, probe.settledMono - probe.startMono)
     this.inflight--
     if (this.open.get(probe.key) === probe) this.open.delete(probe.key)
     this.all.delete(probe)
