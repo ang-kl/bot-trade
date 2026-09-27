@@ -56,7 +56,7 @@ test('the watchdog holds while this process is tripped, exits on a real stall', 
 // notifyBreaker`, so a reset during the announcement found nothing parked and
 // did not resume. The announcement below is held open until after the reset.
 test('a reset issued while the trip announcement is pending still resumes the loop', async () => {
-  const { mkdtempSync } = await import('node:fs')
+  const { mkdtempSync } = await import('./test-support/temp-dir.js')
   const os = await import('node:os')
   const path = await import('node:path')
   const { initDB, getState } = await import('./db.js')
