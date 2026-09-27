@@ -28,12 +28,16 @@ export function restingExposure(db, accountId) {
     const intent = (id ? byId?.get(id, row.account_id) : null)
       || (row.order_id != null ? byOrder?.get(String(row.order_id), row.account_id) : null)
     if (intent?.state === 'FILLED' && held.has(`${intent.account_id}|${String(intent.broker_position_id).replace(/\.0+$/, '')}`)) return
-    const key = orderKey || (intent ? `intent:${intent.id}` : `pending:${row.id}`)
+    // The reply can be lost after the ledger learnt the order id, leaving the
+    // pending row id-less. Use that exact ledger id to meet the broker row;
+    // two distinct broker ids must still consume two slots.
+    const orderId = row.order_id ?? intent?.broker_order_id ?? null
+    const key = orderId != null ? `${row.account_id}|${orderId}` : (intent ? `intent:${intent.id}` : `pending:${row.id}`)
     const plan = byIntent.get(intent?.id || row.intent_id)
     const existing = out.get(key)
     out.set(key, { symbol: row.symbol, side: source === 'pending' ? (row.dir < 0 ? 'SELL' : 'BUY') : row.side,
       volume: Number(row.volume), entry: Number(source === 'pending' ? row.level : row.limit_price ?? row.stop_price),
-      volumeKind: source === 'pending' ? 'lots' : 'units', accountId: row.account_id, orderId: row.order_id,
+      volumeKind: source === 'pending' ? 'lots' : 'units', accountId: row.account_id, orderId,
       intentId: intent?.id ?? row.intent_id ?? null, source,
       reservedMarginUsd: plan?.reserved_margin_usd ?? existing?.reservedMarginUsd ?? null })
   }

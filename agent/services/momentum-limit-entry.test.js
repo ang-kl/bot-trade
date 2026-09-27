@@ -141,6 +141,13 @@ test('unknown send stays reserved across restart; delayed confirmed fill transfe
   f.db.close()
   const db = initDB(path); t.after(() => db.close())
   assert.equal(restingExposure(db, '11').length, 1)
+  db.prepare(`INSERT INTO broker_orders(order_id,account_id,symbol,side,volume,limit_price,status,label)
+    VALUES('900','11','ETHUSD','BUY',100,98,'working',?)`).run(`PRE|v1|TM|H|NY|1d|TR|${stored.intent_id}`)
+  assert.equal(restingExposure(db, '11').length, 1, 'a missing local order id still deduplicates through the ledger')
+  db.prepare(`INSERT INTO broker_orders(order_id,account_id,symbol,side,volume,limit_price,status,label)
+    VALUES('901','11','ETHUSD','BUY',100,98,'working',?)`).run(`PRE|v1|TM|H|NY|1d|TR|${stored.intent_id}`)
+  assert.equal(restingExposure(db, '11').length, 2, 'two broker orders remain two slots even with the same intent tag')
+  db.prepare("DELETE FROM broker_orders WHERE order_id='901'").run()
   const proposal = JSON.parse(stored.proposal_json), p = proposal.plan
   db.prepare(`INSERT INTO trades(id,account_id,symbol,side,status,ctrader_position_id,origin,entry_price,sl_price,tp_price,volume,label_strategy)
     VALUES(7,'11','ETHUSD','BUY','open','33','reconciler_adopted',98,88,?,100,'tsmom_long')`).run(p.brokerTarget)
