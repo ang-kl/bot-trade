@@ -1,46 +1,45 @@
 // node --test agent/lib/fast-monitor-probes.test.js
 //
 // M7 (P1/P4-4, V3-SEQUENCE:536-543; OD-22 26-09-2026: "parallel probes under
-// a cap, with backoff <= 5 min"). Pins the mechanisms fast-monitor.js's
-// broker-fallback relies on: the CAP (how many probes may be in flight at
-// once), the BACKOFF (how often the same quiet symbol may be re-probed) and
-// PEEK (whether a result is still fresh enough to evaluate with, checked at
-// the CALLER's chosen moment, never cached from an earlier check).
-//
-// Fix round 3 (26-09-2026): `run()` (awaited by the caller) is replaced by
-// `launch()` (fire-and-forget — this IS the "results used on the next pass"
-// the spec asks for, V3-SEQUENCE:537) plus `_drainForTests()`, a test-only
-// seam that waits for whatever is currently in flight instead of racing real
-// timers. `lastResult()` is replaced by `peek(key, nowMs, maxAgeMs)`, which
-// judges freshness against a caller-supplied clock reading, not "however
-// long ago it happened to finish".
+// a cap, with backoff <= 5 min"). Unit pins for the board fast-monitor.js
+// keeps its broker probes on (round 4 — the design and its invariants I1–I6
+// are the header of ./fast-monitor-probes.js): the CAP and its FIFO queue,
+// JOINING an open probe, never joining a LANDED one (I2), the BACKOFF only
+// after a clean empty answer (I3), the answer's normal form, and the clock
+// every stamp is taken on. The wiring is pinned in
+// ../services/fast-monitor-m7-probes.test.js and the behaviour against
+// origin/main in ../services/fast-monitor-m7-differential.test.js.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  PROBE_CAP_DEFAULT, PROBE_CAP_MAX, PROBE_BACKOFF_MAX_MS, PROBE_BACKOFF_DEFAULT_MS, PROBE_KEY_CAP,
-  probeCap, probeBackoffMs, clampCap, shouldBackoff, selectUnderCap,
-  sideHasFreshQuoteExcluding, ProbeScheduler,
+  PROBE_CAP_DEFAULT, PROBE_CAP_MAX, PROBE_BACKOFF_MAX_MS, PROBE_BACKOFF_DEFAULT_MS, PROBE_KEY_CAP, PROBE_GUARD_MS,
+  PROBE_WAIT_DEFAULT_MS, PROBE_WAIT_MARGIN_MS, PROBE_RESULT_MAX_AGE_MS, PROBE_RESULT_MIN_AGE_MS,
+  probeCap, probeBackoffMs, clampCap, shouldBackoff, sideHasFreshQuoteExcluding, probeResultOf, raceTimeout, isTimedOut,
+  probeWaitForTick, probeMaxAgeForTick, ProbeBoard,
 } from './fast-monitor-probes.js'
 
-/**
- * Launch `key` and wait for it to settle — the test-seam equivalent of the
- * old awaited `run()`. Pins BOTH clocks to fixed values (not launch()'s own
- * real-Date.now() default for the monotonic one) so a caller that does not
- * care about durationMs gets a deterministic 0 every time — a real clock
- * here occasionally measures 1ms+ of genuine wall-clock time between two
- * back-to-back synchronous statements under load, which is exactly the kind
- * of flake `peek: durationMs is the probe's OWN round trip` (below) tests
- * FOR on purpose and everything else here must not trip over by accident.
- */
-async function launchAndDrain(s, key, fn, nowMs, monoMs = nowMs) {
-  s.launch(key, fn, () => nowMs, () => monoMs)
-  await s._drainForTests()
+/** A manual clock: `now`/`mono` read `t`; `sleep` parks until `advance` passes it. */
+function manualClock(t0 = 1_000_000) {
+  let t = t0
+  const timers = []
+  return {
+    now: () => t,
+    mono: () => t,
+    sleep: (ms) => new Promise(r => timers.push({ at: t + ms, r })),
+    advance(ms) {
+      t += ms
+      for (const x of timers.splice(0)) { if (x.at <= t) x.r(); else timers.push(x) }
+    },
+  }
 }
-
-// ---------------------------------------------------------------------------
-// probeCap / probeBackoffMs — env overrides, with OD-22's ceiling enforced
-// ---------------------------------------------------------------------------
+/** A broker call the test answers by hand. */
+function handCall() {
+  const calls = []
+  const run = (label) => () => new Promise((resolve, reject) => calls.push({ label, resolve, reject }))
+  return { calls, run }
+}
+const tick = () => new Promise(r => setImmediate(r))
 
 test('probeCap: env override, garbage falls back to the default', () => {
   assert.equal(probeCap({}), PROBE_CAP_DEFAULT)
@@ -70,18 +69,6 @@ test('clampCap (B3): floors first, then requires >= 1, then clamps to PROBE_CAP_
 test('probeCap (B3): the same clampCap validation applies through the env path', () => {
   assert.equal(probeCap({ FAST_MONITOR_PROBE_CAP: '0.5' }), PROBE_CAP_DEFAULT)
   assert.equal(probeCap({ FAST_MONITOR_PROBE_CAP: '1e9' }), PROBE_CAP_MAX)
-})
-
-// N1 (nit, fix round 2): the CONSTRUCTOR itself validates the cap — a direct
-// reconfigure (fast-monitor.js's _setFastMonitorProbeCapForTests, or any
-// future caller) cannot hand it a 0/unbounded cap either.
-test('ProbeScheduler constructor (N1): validates its own cap through clampCap, not a bare assignment', () => {
-  assert.equal(new ProbeScheduler({ cap: 0 }).cap, PROBE_CAP_DEFAULT)
-  assert.equal(new ProbeScheduler({ cap: -5 }).cap, PROBE_CAP_DEFAULT)
-  assert.equal(new ProbeScheduler({ cap: 1e9 }).cap, PROBE_CAP_MAX)
-  assert.equal(new ProbeScheduler({ cap: 0.5 }).cap, PROBE_CAP_DEFAULT)
-  assert.equal(new ProbeScheduler({}).cap, PROBE_CAP_DEFAULT, 'the default itself must also pass validation')
-  assert.equal(new ProbeScheduler({ cap: 3 }).cap, 3)
 })
 
 test('probeBackoffMs: OD-22 ceiling (<= 5 min) holds even when the env asks for more', () => {
@@ -120,18 +107,6 @@ test('shouldBackoff: non-finite or missing inputs never arm (a guard that cannot
 })
 
 // ---------------------------------------------------------------------------
-// selectUnderCap — the concurrency ceiling
-// ---------------------------------------------------------------------------
-
-test('selectUnderCap: launches only up to the room the cap leaves, in order; the rest are deferred', () => {
-  assert.deepEqual(selectUnderCap(['a', 'b', 'c'], 0, 2), { launch: ['a', 'b'], deferred: ['c'] })
-  assert.deepEqual(selectUnderCap(['a', 'b', 'c'], 2, 2), { launch: [], deferred: ['a', 'b', 'c'] }, 'no room left')
-  assert.deepEqual(selectUnderCap(['a', 'b'], 0, 8), { launch: ['a', 'b'], deferred: [] }, 'cap far above the candidate count')
-  assert.deepEqual(selectUnderCap([], 0, 8), { launch: [], deferred: [] })
-  assert.deepEqual(selectUnderCap(['a'], 5, 2), { launch: [], deferred: ['a'] }, 'inflight already above the cap')
-})
-
-// ---------------------------------------------------------------------------
 // sideHasFreshQuoteExcluding — "OTHER symbols on the side", never the probed
 // symbol itself, stale or otherwise (V3-SEQUENCE:539); fix round 3 nit: a
 // row with a bad/invalid price does not count as fresh either.
@@ -165,190 +140,220 @@ test('sideHasFreshQuoteExcluding (nit, fix round 3): a fresh-timestamped but INV
   assert.equal(sideHasFreshQuoteExcluding(nonFinite, 1, now, maxAge), false)
 })
 
+
 // ---------------------------------------------------------------------------
-// ProbeScheduler — cap + backoff + peek, wired together, on the CALLER's clock
+// ProbeBoard — the board fast-monitor.js keeps (I1, I2, I3)
 // ---------------------------------------------------------------------------
 
-test('ProbeScheduler.plan: eligible the first time; pending while its own launch() is still in flight', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 1_000 }), 'eligible')
+test('ProbeBoard constructor (N1): validates its own cap through clampCap, and the backoff against OD-22\'s ceiling', () => {
+  assert.equal(new ProbeBoard({ cap: 0 }).cap, PROBE_CAP_DEFAULT)
+  assert.equal(new ProbeBoard({ cap: -5 }).cap, PROBE_CAP_DEFAULT)
+  assert.equal(new ProbeBoard({ cap: 1e9 }).cap, PROBE_CAP_MAX)
+  assert.equal(new ProbeBoard({ cap: 0.5 }).cap, PROBE_CAP_DEFAULT)
+  assert.equal(new ProbeBoard({}).cap, PROBE_CAP_DEFAULT)
+  assert.equal(new ProbeBoard({ cap: 3 }).cap, 3)
+  assert.equal(new ProbeBoard({ backoffMs: PROBE_BACKOFF_MAX_MS * 4 }).backoffMs, PROBE_BACKOFF_MAX_MS)
+})
+
+test('register: the first waiter on a key starts ONE probe; a second waiter on the same key JOINS it; waiters queue in registration order', async () => {
+  const clock = manualClock()
+  const b = new ProbeBoard({ cap: 8 })
+  const { calls, run } = handCall()
+  const w1 = b.register({ posId: 1, key: 'k', run: run('k'), pick: 'missing' }, clock)
+  const w2 = b.register({ posId: 2, key: 'k', run: run('k-again'), pick: 'stale' }, clock)
+  assert.equal(calls.length, 1, 'one broker call for two positions on one feed key')
+  assert.equal(w1.probe, w2.probe)
+  assert.equal(b.inflightCount(), 1)
+  assert.deepEqual(b.waiters.map(w => w.posId), [1, 2])
+  assert.equal(b.head(), w1)
+  assert.equal(b.hasLanded(w1), false, 'no verdict yet (I4)')
+  calls[0].resolve({ kind: 'quote', bid: 1, ask: 1.1 })
+  await w1.probe.settled
+  assert.equal(b.hasLanded(w1), true)
+  assert.equal(b.hasLanded(w2), true)
+  assert.deepEqual(w1.probe.result, { kind: 'quote', bid: 1, ask: 1.1 })
+  assert.equal(b.inflightCount(), 0)
+})
+
+test('I2: a waiter never joins a probe that has LANDED — a due position after the answer asks the broker again', async () => {
+  const clock = manualClock()
+  const b = new ProbeBoard({ cap: 8 })
+  const { calls, run } = handCall()
+  const w1 = b.register({ posId: 1, key: 'k', run: run('first') }, clock)
+  calls[0].resolve({ kind: 'quote', bid: 1, ask: 1.1 })
+  await w1.probe.settled
+  const w2 = b.register({ posId: 2, key: 'k', run: run('second') }, clock)
+  assert.equal(calls.length, 2, 'a second, real broker call')
+  assert.notEqual(w2.probe, w1.probe)
+  assert.equal(b.hasLanded(w2), false)
+})
+
+test('cap: beyond the cap a probe QUEUES, and starts the moment a slot frees, FIFO', async () => {
+  const clock = manualClock()
+  const b = new ProbeBoard({ cap: 2 })
+  const { calls, run } = handCall()
+  const wa = b.register({ posId: 1, key: 'a', run: run('a') }, clock)
+  b.register({ posId: 2, key: 'b', run: run('b') }, clock)
+  const wc = b.register({ posId: 3, key: 'c', run: run('c') }, clock)
+  const wd = b.register({ posId: 4, key: 'd', run: run('d') }, clock)
+  assert.deepEqual(calls.map(c => c.label), ['a', 'b'], 'exactly the cap started')
+  assert.equal(b.queuedCount(), 2)
+  assert.equal(wc.probe.state, 'queued')
+  // a queued probe can still be JOINED: no second call when it starts
+  const wc2 = b.register({ posId: 5, key: 'c', run: run('c-dup') }, clock)
+  assert.equal(wc2.probe, wc.probe)
+  clock.advance(700)
+  calls[0].resolve({ kind: 'quote', bid: 1, ask: 1.1 })
+  await wa.probe.settled
+  assert.deepEqual(calls.map(c => c.label), ['a', 'b', 'c'], 'c starts in a\'s settle — not on a later pass')
+  assert.equal(wc.probe.launchedAt, clock.now(), 'stamped when it STARTED, on the caller\'s clock')
+  assert.equal(wd.probe.state, 'queued')
+  calls[1].reject(new Error('socket closed'))
+  await tick(); await tick(); await tick()
+  assert.deepEqual(calls.map(c => c.label), ['a', 'b', 'c', 'd'])
+})
+
+test('durationMs is the probe\'s own round trip on the caller\'s monotonic clock; settledAt on its wall clock', async () => {
+  const clock = manualClock(5_000)
+  const b = new ProbeBoard({})
+  const { calls, run } = handCall()
+  const w = b.register({ posId: 1, key: 'k', run: run('k') }, clock)
+  clock.advance(1_234)
+  calls[0].resolve({ kind: 'empty', reason: 'quiet' })
+  await w.probe.settled
+  assert.equal(w.probe.durationMs, 1_234)
+  assert.equal(w.probe.settledAt, 6_234)
+  assert.equal(w.probe.launchedAt, 5_000)
+})
+
+test('I3: backoff arms ONLY after a clean empty answer, only while the side is fresh, never in a spike window, and only for backoffMs from the launch', async () => {
+  const clock = manualClock()
+  const b = new ProbeBoard({ backoffMs: 60_000 })
+  const answer = async (key, a) => {
+    const w = b.register({ posId: 1, key, run: () => Promise.resolve(a) }, clock)
+    await w.probe.settled
+    b.shift()
+  }
+  const at = (key, extra = {}) => b.backoffActive(key, { nowMs: clock.now(), sideHasFreshQuote: true, spikeActive: false, ...extra })
+  assert.equal(at('never'), false, 'never probed')
+  await answer('empty', { kind: 'empty', reason: 'subscribed, silent' })
+  assert.equal(at('empty'), true)
+  assert.equal(at('empty', { sideHasFreshQuote: false }), false, 'a quiet SIDE keeps retrying')
+  assert.equal(at('empty', { spikeActive: true }), false, 'a spike window never backs off')
+  for (const failure of [{ kind: 'failed', reason: 'auth' }, null]) {
+    await answer(`failed-${failure ? 'tagged' : 'null'}`, failure)
+    assert.equal(at(`failed-${failure ? 'tagged' : 'null'}`), false, `${JSON.stringify(failure)} is a failure, not a quiet symbol`)
+  }
+  const thrown = b.register({ posId: 1, key: 'thrown', run: () => { throw new Error('boom') } }, clock)
+  await thrown.probe.settled
+  assert.equal(thrown.probe.result.kind, 'failed')
+  assert.equal(at('thrown'), false)
+  await answer('priced', { kind: 'quote', bid: 1, ask: 1.1 })
+  assert.equal(at('priced'), false)
+  clock.advance(59_999)
+  assert.equal(at('empty'), true, 'still inside the window')
+  clock.advance(1)
+  assert.equal(at('empty'), false, 'backoffMs after the LAUNCH, and no longer')
+})
+
+test('the guard: a probe that never answers is settled as failed after PROBE_GUARD_MS — a pass waiting on it is never wedged', async () => {
+  const clock = manualClock()
+  const b = new ProbeBoard({})
+  const w = b.register({ posId: 1, key: 'k', run: () => new Promise(() => {}) }, clock)
+  await tick()
+  assert.equal(b.hasLanded(w), false)
+  clock.advance(PROBE_GUARD_MS)
+  await w.probe.settled
+  assert.equal(w.probe.result.kind, 'failed')
+  assert.match(w.probe.result.reason, /still open/)
+  assert.equal(b.inflightCount(), 0)
+})
+
+test('reset: a probe in flight at a reset settles into nothing — the in-flight count never goes negative, nothing starts in the new generation', async () => {
+  const clock = manualClock()
+  const b = new ProbeBoard({ cap: 1 })
+  const { calls, run } = handCall()
+  const old = b.register({ posId: 1, key: 'a', run: run('a') }, clock)
+  b.register({ posId: 2, key: 'b', run: run('b') }, clock)
+  b.reset()
+  assert.equal(b.inflightCount(), 0)
+  assert.equal(b.queuedCount(), 0)
+  assert.equal(b.head(), null)
+  calls[0].resolve({ kind: 'quote', bid: 1, ask: 1.1 })
+  await old.probe.settled
+  assert.equal(b.inflightCount(), 0, 'the old generation does not decrement the new one')
+  assert.deepEqual(calls.map(c => c.label), ['a'], 'the pre-reset queue never starts')
+})
+
+test('retain drops waiters, not probes: the answer still lands, it just serves no one', async () => {
+  const clock = manualClock()
+  const b = new ProbeBoard({})
+  const { calls, run } = handCall()
+  const w = b.register({ posId: 1, key: 'k', run: run('k') }, clock)
+  b.retain(() => false)
+  assert.equal(b.head(), null)
+  calls[0].resolve({ kind: 'quote', bid: 1, ask: 1.1 })
+  await w.probe.settled
+  assert.equal(b.inflightCount(), 0)
+})
+
+test('the probe history is bounded by PROBE_KEY_CAP — an evicted key reads as never probed', async () => {
+  const clock = manualClock()
+  const b = new ProbeBoard({ cap: PROBE_CAP_MAX })
+  for (let i = 0; i <= PROBE_KEY_CAP; i++) {
+    const w = b.register({ posId: i, key: `k${i}`, run: () => Promise.resolve({ kind: 'empty' }) }, clock)
+    await w.probe.settled
+    b.shift()
+  }
+  assert.ok(b.history.size <= PROBE_KEY_CAP)
+  assert.equal(b.backoffActive('k0', { nowMs: clock.now(), sideHasFreshQuote: true }), false, 'the oldest key was evicted')
+  assert.equal(b.backoffActive(`k${PROBE_KEY_CAP}`, { nowMs: clock.now(), sideHasFreshQuote: true }), true)
+})
+
+// ---------------------------------------------------------------------------
+// The answer's normal form, the race, the end-of-pass wait
+// ---------------------------------------------------------------------------
+
+test('probeResultOf (I3): tagged answers pass through; a bare quote is a quote; null and anything unknown are FAILURES, never a clean empty', () => {
+  assert.deepEqual(probeResultOf({ kind: 'quote', bid: 1, ask: 2 }), { kind: 'quote', bid: 1, ask: 2 })
+  assert.deepEqual(probeResultOf({ kind: 'empty', reason: 'r' }), { kind: 'empty', reason: 'r' })
+  assert.deepEqual(probeResultOf({ kind: 'failed', reason: 'auth' }), { kind: 'failed', reason: 'auth' })
+  assert.deepEqual(probeResultOf({ bid: 1, ask: 2 }), { kind: 'quote', bid: 1, ask: 2 }, 'the legacy wsGetSpotOnce quote')
+  assert.equal(probeResultOf(null).kind, 'failed', 'the legacy null cannot tell failure from silence — never arms the backoff')
+  assert.equal(probeResultOf(undefined).kind, 'failed')
+  assert.equal(probeResultOf({ kind: 'weird' }).kind, 'failed')
+})
+
+test('raceTimeout: the value when it is faster, TIMED_OUT when it is not, on an injected clock or a cleared real timer', async () => {
+  const clock = manualClock()
   let resolve
-  s.launch('k1', () => new Promise((r) => { resolve = r }), () => 1_000, () => 1_000)
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 1_001 }), 'pending', 'the same key is already in flight — realistic now that probes are never awaited within a pass')
-  resolve({ bid: 1, ask: 1.1 })
-  await s._drainForTests()
-  assert.equal(s.inflightCount(), 0)
-  assert.deepEqual(s.peek('k1', 1_000, 10_000), { state: 'quote', quote: { bid: 1, ask: 1.1 }, durationMs: 0 })
+  const p = new Promise(r => { resolve = r })
+  const raced = raceTimeout(p, 500, clock.sleep)
+  clock.advance(500)
+  assert.equal(isTimedOut(await raced), true)
+  resolve('late')
+  assert.equal(await raceTimeout(Promise.resolve('now'), 500, clock.sleep), 'now')
+  assert.equal(await raceTimeout(Promise.resolve('real'), 50), 'real', 'the default timer is cleared, never left to hold the process')
+  assert.equal(isTimedOut(await raceTimeout(new Promise(() => {}), 5)), true)
+  assert.equal(await raceTimeout(Promise.resolve('forever'), Infinity), 'forever', 'no deadline: just the promise')
 })
 
-test('ProbeScheduler: backoff arms on the CALLER clock, not a real wall clock — the whole point of M7 (fast-monitor.js\'s injectable `now()`); ONLY after a probe that SUCCEEDED with no quote (B1)', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  await launchAndDrain(s, 'k1', async () => null, 1_000) // a quiet symbol: the broker had nothing, cleanly
-  // a simulated clock 30s later, side fresh, no spike: still inside the 60s backoff window
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 31_000 }), 'backoff')
-  // the same key, side NOT fresh: must keep retrying regardless of elapsed time
-  assert.equal(s.plan('k1', { sideHasFreshQuote: false, nowMs: 31_000 }), 'eligible')
-  // past the window: eligible again
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 61_001 }), 'eligible')
+test('probeWaitForTick: the tick less PROBE_WAIT_MARGIN_MS, at most PROBE_WAIT_DEFAULT_MS, never negative', () => {
+  assert.equal(PROBE_WAIT_DEFAULT_MS, 2_000)
+  assert.equal(PROBE_WAIT_MARGIN_MS, 1_000)
+  assert.equal(probeWaitForTick(3_000), 2_000, 'the production tick')
+  assert.equal(probeWaitForTick(10_000), 2_000)
+  assert.equal(probeWaitForTick(2_500), 1_500)
+  assert.equal(probeWaitForTick(1_000), 0, 'FAST_MONITOR_MS\'s 1 s floor waits for nothing')
+  assert.equal(probeWaitForTick(5), 0)
+  assert.equal(probeWaitForTick(NaN), 0)
 })
 
-test('ProbeScheduler: B2 — backoff never arms while the position is inside its spike window, regardless of the last result', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  await launchAndDrain(s, 'k1', async () => null, 1_000) // quiet, would otherwise arm backoff
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, spikeActive: true, nowMs: 1_500 }), 'eligible', 'a spike overrides backoff outright — re-pricing matters most exactly here')
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, spikeActive: false, nowMs: 1_500 }), 'backoff', 'without the spike, the same inputs DO back off — pinning the spike check actually matters')
-})
-
-test('ProbeScheduler: B1/B2 — a THROWN probe never arms backoff (a technical failure is not "genuinely quiet")', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  await launchAndDrain(s, 'k1', async () => { throw new Error('ECONNRESET') }, 1_000)
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 1_500 }), 'eligible', 'a throw/timeout/socket error keeps retrying — never mistaken for a quiet symbol')
-})
-
-test('ProbeScheduler: B1 — a key whose LAST probe actually priced it is never backed off, no matter how fresh the side or how soon the next check', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  await launchAndDrain(s, 'k1', async () => ({ bid: 1, ask: 1.1 }), 1_000) // a real quote, not quiet
-  // 1ms later, side fresh, well inside any backoff window: still eligible —
-  // backoff is not a "just probed" cooldown, it only protects a QUIET symbol.
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 1_001 }), 'eligible')
-})
-
-test('ProbeScheduler.reset: drops all state (test seam / process restart)', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  await launchAndDrain(s, 'k1', async () => ({ bid: 1, ask: 1.1 }), 1_000)
-  s.reset()
-  assert.deepEqual(s.peek('k1', 1_000, 10_000), { state: 'none' })
-  assert.equal(s.plan('k1', { sideHasFreshQuote: true, nowMs: 1_001 }), 'eligible')
-})
-
-// Nit (fix round 3, 26-09-2026): the scheduler's own per-symbol history
-// (lastProbeAt, results) is a BoundedMap, not a bare Map — a process that
-// stays up for weeks and eventually probes more than PROBE_KEY_CAP distinct
-// symbols must not grow these without limit (#123's exact shape). Eviction
-// is oldest-first: an evicted key is simply never-probed again, same as a
-// fresh process — never a crash, never an unbounded Map.
-test('ProbeScheduler: lastProbeAt/results are bounded by PROBE_KEY_CAP — a process that outlives its cap evicts the oldest key, it does not grow forever', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  for (let i = 0; i < PROBE_KEY_CAP + 5; i++) {
-    await launchAndDrain(s, `k${i}`, async () => ({ bid: 1, ask: 1.1 }), 1_000)
-  }
-  assert.equal(s.lastProbeAt.size, PROBE_KEY_CAP, `lastProbeAt must never exceed PROBE_KEY_CAP, got ${s.lastProbeAt.size}`)
-  assert.equal(s.results.size, PROBE_KEY_CAP, `results must never exceed PROBE_KEY_CAP, got ${s.results.size}`)
-  // the first 5 keys (oldest) were evicted; peek reads them as never-probed,
-  // not an error — exactly like a fresh process.
-  assert.deepEqual(s.peek('k0', 1_000, 10_000), { state: 'none' })
-  assert.deepEqual(s.peek(`k${PROBE_KEY_CAP + 4}`, 1_000, 10_000), { state: 'quote', quote: { bid: 1, ask: 1.1 }, durationMs: 0 }, 'the most recent key is still there')
-})
-
-// ---------------------------------------------------------------------------
-// peek — freshness is judged at the CALLER's chosen moment, not "since it
-// finished". This is what closes B1 at the fast-monitor.js level: two
-// `peek()` calls for the SAME result, at different `nowMs`, can legitimately
-// disagree about whether it is still usable.
-// ---------------------------------------------------------------------------
-
-test('peek: "none" before any probe, "quote" while fresh, "stale" once maxAgeMs has elapsed — SAME result, judged at different moments', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  assert.deepEqual(s.peek('k1', 1_000, 10_000), { state: 'none' })
-  await launchAndDrain(s, 'k1', async () => ({ bid: 1.1, ask: 1.1002 }), 1_000)
-  assert.deepEqual(s.peek('k1', 1_005, 10_000), { state: 'quote', quote: { bid: 1.1, ask: 1.1002 }, durationMs: 0 })
-  // The EXACT same stored result, now judged 11s later: stale.
-  assert.deepEqual(s.peek('k1', 12_001, 10_000), { state: 'stale', error: null })
-})
-
-test('peek: "no_quote" for a fresh, clean null result (a genuine quote_unavailable case) — distinct from "stale"', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  await launchAndDrain(s, 'k1', async () => null, 1_000)
-  assert.deepEqual(s.peek('k1', 1_500, 10_000), { state: 'no_quote', error: null, durationMs: 0 })
-  assert.equal(s.peek('k1', 12_000, 10_000).state, 'stale', 'the same clean null, now too old to trust without asking again')
-})
-
-test('peek: a THROWN probe reads as "no_quote" (fresh) / "stale" (old) with its error attached — callers decide what that means, peek does not judge', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  await launchAndDrain(s, 'k1', async () => { throw new Error('boom') }, 1_000)
-  const fresh = s.peek('k1', 1_100, 10_000)
-  assert.equal(fresh.state, 'no_quote')
-  assert.ok(fresh.error instanceof Error)
-})
-
-test('peek: durationMs is the probe\'s OWN round trip — never blended with anything that happens after it lands (B5)', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-  s.launch('k1', async () => { await sleep(40); return { bid: 1, ask: 1.1 } }, () => 1_000)
-  await s._drainForTests()
-  const peeked = s.peek('k1', 1_000, 10_000)
-  assert.equal(peeked.state, 'quote')
-  assert.ok(peeked.durationMs >= 30, `expected the probe's own ~40ms round trip, got ${peeked.durationMs}`)
-  assert.ok(peeked.durationMs < 5_000, `must not include anything else — got ${peeked.durationMs}`)
-})
-
-// ---------------------------------------------------------------------------
-// End-to-end shape: several symbols needing a probe in one pass, bounded by
-// the cap, launched together (not one at a time) — this is what
-// fast-monitor.js's launch batch relies on. None of this is awaited by a
-// pass in production; the test drains explicitly instead.
-// ---------------------------------------------------------------------------
-
-test('a batch of candidates under a cap of 2: exactly 2 launch concurrently, the third waits its turn', async () => {
-  const s = new ProbeScheduler({ cap: 2, backoffMs: 60_000 })
-  const candidates = ['a', 'b', 'c']
-  const plans = candidates.map((k) => s.plan(k, { sideHasFreshQuote: false, nowMs: 1_000 }))
-  assert.deepEqual(plans, ['eligible', 'eligible', 'eligible'])
-  const { launch, deferred } = selectUnderCap(candidates, s.inflightCount(), s.cap)
-  assert.deepEqual(launch, ['a', 'b'])
-  assert.deepEqual(deferred, ['c'])
-  const inflightSamples = []
-  for (const k of launch) {
-    s.launch(k, async () => { inflightSamples.push(s.inflightCount()); await new Promise((r) => setTimeout(r, 5)); return { bid: k.length, ask: k.length } }, () => 1_000)
-  }
-  await s._drainForTests()
-  assert.equal(Math.max(...inflightSamples), 2, 'both launched probes were in flight together')
-  assert.deepEqual(s.peek('c', 1_000, 10_000), { state: 'none' }, 'the deferred one never ran')
-})
-
-test('launch: a key already in flight is never relaunched, even if the caller calls launch() again without checking plan() first', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  let calls = 0
-  let resolve
-  s.launch('k1', () => { calls++; return new Promise((r) => { resolve = r }) }, () => 1_000)
-  s.launch('k1', () => { calls++; return Promise.resolve({ bid: 9, ask: 9 }) }, () => 1_000)
-  assert.equal(calls, 1, 'the second launch() was a no-op — the key was already in flight')
-  resolve({ bid: 1, ask: 1.1 })
-  await s._drainForTests()
-  assert.deepEqual(s.peek('k1', 1_000, 10_000).quote, { bid: 1, ask: 1.1 })
-})
-
-// ---------------------------------------------------------------------------
-// sortFair (B2, fix round 2 26-09-2026): never-probed keys first, then
-// oldest-probed-first — so a persistently over-cap batch does not relaunch
-// the same head-of-list keys every pass while the rest starve.
-// ---------------------------------------------------------------------------
-
-test('sortFair: never-probed keys come first, in their given order', () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  assert.deepEqual(s.sortFair(['c', 'a', 'b']), ['c', 'a', 'b'])
-})
-
-test('sortFair: probed keys sort oldest lastProbeAt first, after every never-probed key', async () => {
-  const s = new ProbeScheduler({ cap: 8, backoffMs: 60_000 })
-  await launchAndDrain(s, 'b', async () => ({ bid: 1, ask: 1 }), 3_000)
-  await launchAndDrain(s, 'a', async () => ({ bid: 1, ask: 1 }), 1_000)
-  await launchAndDrain(s, 'c', async () => ({ bid: 1, ask: 1 }), 2_000)
-  assert.deepEqual(s.sortFair(['b', 'a', 'c']), ['a', 'c', 'b'], 'oldest probe (a, t=1000) first')
-  assert.deepEqual(s.sortFair(['b', 'a', 'c', 'd']), ['d', 'a', 'c', 'b'], 'd was never probed — ahead of all three')
-})
-
-test('sortFair: starvation under a persistent over-cap batch resolves within ceil(N/cap) passes', async () => {
-  const s = new ProbeScheduler({ cap: 2, backoffMs: 60_000 })
-  const all = ['a', 'b', 'c', 'd', 'e']
-  const everProbed = new Set()
-  let t = 1_000
-  for (let pass = 0; pass < 3; pass++) {
-    const ordered = s.sortFair(all)
-    const { launch } = selectUnderCap(ordered, 0, s.cap)
-    for (const k of launch) { await launchAndDrain(s, k, async () => null, t); everProbed.add(k) }
-    t += 1
-  }
-  // ceil(5/2) = 3 passes must cover every key at least once.
-  assert.deepEqual([...everProbed].sort(), all, `every key must be probed within 3 passes, got ${[...everProbed].sort()}`)
+test('probeMaxAgeForTick: a landed quote may wait one tick for its turn — the probe\'s own bound (nit 4), never the sidecar\'s env knob', () => {
+  assert.equal(PROBE_RESULT_MAX_AGE_MS, 3_000, 'one production tick')
+  assert.equal(probeMaxAgeForTick(3_000), 3_000)
+  assert.equal(probeMaxAgeForTick(10_000), 10_000, 'a slower ticker consumes a pass later, so its answers may be that much older')
+  assert.equal(probeMaxAgeForTick(5), PROBE_RESULT_MIN_AGE_MS, 'a test ticker never re-asks an answer that waited one of its passes')
+  assert.equal(probeMaxAgeForTick(undefined), PROBE_RESULT_MAX_AGE_MS)
+  assert.equal(PROBE_GUARD_MS > 6_000, true, 'above wsProbeSpot\'s own 6 s deadline')
 })

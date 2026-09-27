@@ -13,7 +13,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
-import { runFastMonitor, startFastMonitor, pickSidecarQuote, quoteMapFrom, sidecarSymbolIdFor, quoteMaxAgeMs, QUOTE_MAX_AGE_DEFAULT_MS, PASS_RECORD_KEY, _resetFastDecisionStateForTests, _resetFastMonitorProbeSchedulerForTests, _drainFastMonitorProbesForTests } from './fast-monitor.js'
+import { runFastMonitor, startFastMonitor, pickSidecarQuote, quoteMapFrom, sidecarSymbolIdFor, quoteMaxAgeMs, QUOTE_MAX_AGE_DEFAULT_MS, PASS_RECORD_KEY, _resetFastDecisionStateForTests } from './fast-monitor.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 
 const CREDS = { ready: true, host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '111', isLive: false }
@@ -41,14 +41,6 @@ function mkDb() {
   setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1, GBPUSD: 2, USDJPY: 3, USDCAD: 4 }))
   for (const a of ['111', '222', '333', '444', '555', '666']) setState(db, accountSymbolMapKey(a), null)
   _resetFastDecisionStateForTests()
-  // M7's probe scheduler is a process-wide singleton (fast-monitor.js), so
-  // its cap/backoff/fairness bookkeeping otherwise carries between the
-  // independent cases in this file — e.g. a feedKey that happened to be
-  // probed by an earlier test would sort as "already probed" here instead
-  // of "never probed", reordering a launch batch this file asserts the
-  // order of. Every case here starts from a clean scheduler, same as it
-  // already gets a clean decision-state and a clean position table.
-  _resetFastMonitorProbeSchedulerForTests()
   return db
 }
 function addPos(db, symbol, accountId, { source = 'autopilot', sl = 1.0950 } = {}) {
@@ -170,15 +162,10 @@ test('CHECKER 1 (blocker): a same-name symbol with different ids on two same-sid
   addPos(db, 'EURUSD', '333', { sl: 1.2650 }) // a stop GBPUSD's price would touch and EURUSD's would not
   const d = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', nowMs: t, count: 2, quotes: [fresh(t, 1), fresh(t, 2, 1.2601, 1.2603)] }) })
   const out = await runFastMonitor(db, CREDS, d)
-  assert.equal(out.quotes.fromSidecar, 0, `priced from the sidecar by another account's id space: ${JSON.stringify(out.quotes)}`)
+  const row = db.prepare('SELECT last_check_action, status FROM monitored_positions').get()
+  assert.equal(out.quotes.fromSidecar, 0, `priced from the sidecar by another account's id space: ${JSON.stringify(out.quotes)} → ${row.last_check_action}`)
   assert.deepEqual(d.calls.sidecar, [{ isLive: false, ids: null }], 'one pull for the side; the answer\'s accountId (111) is the space the lookup is refused in')
   assert.deepEqual(d.calls.ws, [2], 'fallback uses the held account instrument ID')
-  // M7: the broker fallback is launched (fire-and-forget) this pass, not
-  // evaluated yet — a second pass, after the probe lands, is what actually
-  // prices the position from it.
-  await _drainFastMonitorProbesForTests()
-  await runFastMonitor(db, CREDS, d)
-  const row = db.prepare('SELECT last_check_action, status FROM monitored_positions').get()
   assert.equal(row.status, 'active')
   assert.ok(String(row.last_check_action).startsWith('FAST:HOLD'), row.last_check_action)
 })
@@ -225,13 +212,9 @@ test('stale fallback: a sidecar quote older than the max age on recvMs is not us
   addPos(db, 'EURUSD', '111')
   const d = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', count: 1, quotes: [{ symbolId: 1, bid: 1.1, ask: 1.1002, tsMs: t - 10_001, recvMs: t - 10_001 }] }) })
   const out = await runFastMonitor(db, CREDS, d)
-  assert.equal(out.checked, 0, 'M7: this pass only LAUNCHES the broker probe (fire-and-forget)')
-  assert.deepEqual(out.quotes, { fromSidecar: 0, fromBroker: 1, stale: 1 }, 'the stale/broker decision is made this pass, independent of when the probe itself resolves')
+  assert.equal(out.checked, 1)
+  assert.deepEqual(out.quotes, { fromSidecar: 0, fromBroker: 1, stale: 1 })
   assert.deepEqual(d.calls.ws, [1], 'the broker round trip, exactly as before')
-  await _drainFastMonitorProbesForTests()
-  const out1b = await runFastMonitor(db, CREDS, d)
-  assert.equal(out1b.checked, 1, 'the second pass evaluates it from the now-fresh probe result')
-  assert.deepEqual(d.calls.ws, [1], 'no second broker round trip — the fresh cached result was reused')
   // the max age is injectable and env-driven: the same quote is fresh under a 20 s bound
   const db2 = mkDb()
   addPos(db2, 'EURUSD', '111')
@@ -252,12 +235,9 @@ test('missing-symbol fallback: the sidecar does not carry the symbol (or has no 
     addPos(db, 'EURUSD', '111')
     const d = deps({ quotesBody: body })
     const out = await runFastMonitor(db, CREDS, d)
-    assert.equal(out.checked, 0, 'M7: this pass only LAUNCHES the broker probe (fire-and-forget)')
+    assert.equal(out.checked, 1)
     assert.deepEqual(out.quotes, { fromSidecar: 0, fromBroker: 1, stale: 0 })
     assert.deepEqual(d.calls.ws, [1])
-    await _drainFastMonitorProbesForTests()
-    const out1b = await runFastMonitor(db, CREDS, d)
-    assert.equal(out1b.checked, 1, 'the second pass evaluates it from the now-fresh probe result')
   }
   // a throwing sidecarQuotes is the same as null
   const db = mkDb()
@@ -359,30 +339,16 @@ test('R2-1c: the selected account switched to 333 while the demo feed stays on 1
   const out = await runFastMonitor(db, { ...CREDS, accountId: '333' }, d)
   assert.deepEqual(out.quotes, { fromSidecar: 1, fromBroker: 1, stale: 0 })
   assert.deepEqual(d.calls.ws, [2], 'the 333 position priced through the broker with ITS id (the global map, 333\'s)')
-  // M7: the 111 position priced immediately from the sidecar; the 333
-  // position's broker fallback only LAUNCHED this pass — a second pass,
-  // after the probe lands, is what actually prices it.
-  await _drainFastMonitorProbesForTests()
-  await runFastMonitor(db, { ...CREDS, accountId: '333' }, d)
   const rows = db.prepare('SELECT account_id, last_check_action FROM monitored_positions ORDER BY id').all()
   assert.ok(rows.every(r => String(r.last_check_action).startsWith('FAST:HOLD')), JSON.stringify(rows))
 })
 
 test('the counts land in the pass record (fast_monitor_pass_json tick.quotes) through the ticker', async () => {
   const db = mkDb()
+  addPos(db, 'EURUSD', '111')
   addPos(db, 'GBPUSD', '111')
   const hb = { beat: () => {} }
   const d = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', count: 1, quotes: [fresh(t, 1)] }) }) // GBPUSD (id 2) missing → broker
-  // M7: GBPUSD's broker fallback is fire-and-forget — a pass that first sees
-  // it due only LAUNCHES the probe, it does not evaluate it. Warm the probe
-  // up (launch + drain) before EURUSD even exists, so this warm-up pass does
-  // not also consume EURUSD's own due-ness on the fixed clock the ticker
-  // itself will use — by the time EURUSD is added and the ticker starts,
-  // GBPUSD's probe is already fresh and the ticker's first tick evaluates
-  // both positions together, same as this test always expected.
-  await runFastMonitor(db, CREDS, d)
-  await _drainFastMonitorProbesForTests()
-  addPos(db, 'EURUSD', '111')
   const stop = startFastMonitor(db, () => CREDS, { ...d, tickMs: 5, bandMs: 10_000, heartbeat: hb, runBand: async () => {} })
   await sleep(80)
   stop()
@@ -556,14 +522,6 @@ test('P4 fallback routes each position to its own account and host and records a
     { host: 'live.ctraderapi.com', accountId: '222', symbolId: 903 },
     { host: 'demo.ctraderapi.com', accountId: '111', symbolId: 1 },
   ])
-  // M7: both fallbacks are launched (fire-and-forget) this pass — a second
-  // pass, after both probes land, is what actually evaluates them.
-  await _drainFastMonitorProbesForTests()
-  await runFastMonitor(db, CREDS, d)
-  assert.deepEqual(d.calls.brokerRoutes, [
-    { host: 'live.ctraderapi.com', accountId: '222', symbolId: 903 },
-    { host: 'demo.ctraderapi.com', accountId: '111', symbolId: 1 },
-  ], 'no second broker round trip on the evaluating pass — the fresh cached results were reused')
   const record = JSON.parse(getState(db, 'fast_monitor_position_work_json'))
   assert.equal(record.positions.length, 2)
   assert.equal(record.complete, true)
@@ -601,41 +559,23 @@ test('RECEIPT CARRY-FORWARD: quote_unavailable, its pricing ms, the vol fetch ms
   d.ws.wsGetSpotOnce = async (_h, _c, _s, _t, _a, symbolId) => { d.calls.ws.push(symbolId); await sleep(40); return null }
   const read = () => JSON.parse(getState(db, 'fast_monitor_position_work_json')).positions[0]
 
-  // M7: pass 0 — due: stale sidecar → the broker probe is LAUNCHED (fire-
-  // and-forget), never awaited inline. The vol fetch is unrelated to M7 and
-  // still runs inline this same pass — it is what this pass's receipt
-  // actually carries.
-  const out0 = await runFastMonitor(db, CREDS, d)
-  const r0 = read()
-  assert.equal(r0.state, 'probe_deferred', 'nothing PRICED yet — the probe is still in flight')
-  assert.ok(r0.lastVolFetchMs >= 15, `vol fetch ms, got ${r0.lastVolFetchMs}`)
-  assert.equal(r0.lastTokenWaitMs, 250)
-  assert.equal(typeof volOpts[0]?.onTokenWait, 'function', 'the fetch is handed the token-wait callback')
-  assert.equal(out0.timing.priced, 0)
-  assert.equal(out0.timing.volFetches, 1)
-  assert.equal(out0.timing.tokenWaitMs, 250)
-  await _drainFastMonitorProbesForTests()
-
-  // pass 1 — same instant: the now-fresh (null) probe result is peeked and
-  // confirmed — a genuine quote_unavailable. This is the priced pass the
-  // rest of this test (carry-forward across the not_due passes below) is
-  // actually about.
+  // pass 1 — due: stale sidecar → broker → null
   const out1 = await runFastMonitor(db, CREDS, d)
   const r1 = read()
   assert.equal(r1.state, 'quote_unavailable')
   assert.equal(r1.lastOutcome, 'quote_unavailable')
   assert.equal(r1.lastQuoteSource, 'broker')
   assert.equal(r1.lastQuotePick, 'stale', 'WHY the broker was asked: the sidecar had a quote, but an old one')
-  assert.ok(r1.lastPricingMs >= 30, `pricing ms must be the broker probe's OWN round trip (B5), got ${r1.lastPricingMs}`)
+  assert.ok(r1.lastPricingMs >= 30, `pricing ms must include the broker wait, got ${r1.lastPricingMs}`)
   assert.equal(r1.lastPricedAt, new Date(t).toISOString())
-  // the vol fetch is unchanged from pass 0 — a TTL cache hit, not re-fetched.
-  assert.equal(r1.lastVolFetchMs, r0.lastVolFetchMs)
-  assert.equal(r1.lastTokenWaitMs, r0.lastTokenWaitMs)
+  assert.ok(r1.lastVolFetchMs >= 15, `vol fetch ms, got ${r1.lastVolFetchMs}`)
+  assert.equal(r1.lastTokenWaitMs, 250)
+  assert.equal(typeof volOpts[0]?.onTokenWait, 'function', 'the fetch is handed the token-wait callback')
   assert.equal(out1.timing.priced, 1)
   assert.equal(out1.timing.brokerQuotes, 1)
-  assert.equal(out1.timing.volFetches, 0, 'a cache hit — not re-fetched this pass')
+  assert.equal(out1.timing.volFetches, 1)
+  assert.equal(out1.timing.tokenWaitMs, 250)
   assert.ok(out1.timing.pricingMs >= 30)
-  assert.deepEqual(d.calls.ws, [1], 'no second broker round trip — the fresh cached probe result was reused')
 
   // pass 2 — 3 s later: not due, no fetch (cache), no quote
   t += 3_000
@@ -709,11 +649,6 @@ test('P4 invalid or future quotes cannot complete a position check; missing map 
   assert.equal(record.positions[0].lastCompletedAt, null)
   setState(db, accountSymbolMapKey('222'), JSON.stringify({ map: { EURUSD: 903 } }))
   d.ws.wsGetSpotOnce = async () => ({ bid: 2, ask: 1 })
-  await runFastMonitor(db, CREDS, d)
-  // M7: this pass only LAUNCHES the broker probe (fire-and-forget); a
-  // second pass, after the (invalid, crossed) quote lands, is what actually
-  // confirms it cannot complete a check.
-  await _drainFastMonitorProbesForTests()
   await runFastMonitor(db, CREDS, d)
   record = JSON.parse(getState(db, 'fast_monitor_position_work_json'))
   assert.equal(record.positions[0].state, 'quote_unavailable')

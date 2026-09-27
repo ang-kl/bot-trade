@@ -1158,32 +1158,41 @@ export function wsStreamSpots(host, clientId, clientSecret, accessToken, account
 }
 
 /**
- * One-shot quote: subscribe to a single symbol's spots, resolve with the
- * first tick that carries BOTH sides (merging bid/ask across ticks), then
- * close. Resolves null on timeout instead of rejecting — callers use this
- * as a best-effort pre-trade check and must fail open.
+ * One-shot probe: subscribe to a single symbol's spots and answer WHY there
+ * is or is not a quote (M7 round 4, I3 of fast-monitor-probes.js):
+ *
+ *   { kind: 'quote', bid, ask }  — the first tick(s) carrying BOTH sides
+ *                                  (bid/ask merged across ticks);
+ *   { kind: 'empty', reason }    — the broker CONFIRMED the subscription and
+ *                                  printed no two-sided price before the
+ *                                  deadline: a closed market or a quiet
+ *                                  symbol, the one answer that may back off;
+ *   { kind: 'failed', reason }   — anything else: the deadline passed before
+ *                                  the subscription was confirmed (a hung
+ *                                  handshake), an auth or cTrader error, the
+ *                                  socket erroring or closing, a throw.
+ *
+ * Never rejects; always settles by `timeoutMs`. The socket is closed however
+ * the probe ends, including a stream that arrives after the deadline.
  *
  * `streamFn` (test-only): overrides `wsStreamSpots` so a fake stream can be
  * injected — every production call omits it.
  *
- * @returns {Promise<{bid: number, ask: number}|null>}
+ * @returns {Promise<{kind: 'quote', bid: number, ask: number}|{kind: 'empty'|'failed', reason: string}>}
  */
-export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs = 6000, streamFn = wsStreamSpots) {
+export async function wsProbeSpot(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs = 6000, streamFn = wsStreamSpots) {
   let stream = null
-  // M7 nit round (26-09-2026): predates M7, but M7's parallel batch opens
-  // several of these at once, multiplying it. wsStreamSpots is awaited
-  // asynchronously (`.then(s => { stream = s })`) while the promise it
-  // feeds can ALSO settle from the timer or the error callback. If the
-  // timer (or error callback) fires FIRST, the `finally` below used to run
-  // with `stream` still null — a no-op — closing nothing; the real stream
-  // then arrived afterwards, got assigned to `stream`, and nothing ever
-  // closed IT, leaking an authenticated socket. `settled` records that the
-  // promise is already done, so a late-arriving stream closes itself; a
-  // `closeStream` helper (rather than two separate `.close()` call sites)
-  // makes that self-close and the outer `finally` idempotent together —
-  // whichever of the two runs first is the one that actually closes it.
+  // M7 nit round (26-09-2026): wsStreamSpots is awaited asynchronously
+  // (`.then(s => { stream = s })`) while the promise it feeds can ALSO settle
+  // from the timer or the error callback. If the timer (or error callback)
+  // fires FIRST, the `finally` below runs with `stream` still null — a no-op
+  // — and the real stream, arriving afterwards, would never be closed: a
+  // leaked authenticated socket. `settled` records that the answer is in, so
+  // a late-arriving stream closes itself; `closeStream` makes that
+  // self-close and the outer `finally` idempotent together.
   let settled = false
   let streamClosed = false
+  let subscribed = false
   const closeStream = () => {
     if (streamClosed || !stream) return
     streamClosed = true
@@ -1192,36 +1201,66 @@ export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, a
   try {
     return await new Promise((resolve) => {
       const quote = { bid: null, ask: null }
-      const timer = setTimeout(() => { settled = true; resolve(null) }, timeoutMs)
-      streamFn(host, clientId, clientSecret, accessToken, accountId, [symbolId], (tick) => {
-        if (tick.bid != null) quote.bid = tick.bid
-        if (tick.ask != null) quote.ask = tick.ask
-        if (quote.bid != null && quote.ask != null) {
-          clearTimeout(timer)
-          settled = true
-          resolve({ ...quote })
-        }
-      }, () => { clearTimeout(timer); settled = true; resolve(null) },
+      let timer = null
+      const answer = (a) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(a)
+      }
+      timer = setTimeout(() => answer(subscribed
+        ? { kind: 'empty', reason: `subscribed; no two-sided price within ${timeoutMs} ms` }
+        : { kind: 'failed', reason: `timeout: the subscription was not confirmed within ${timeoutMs} ms` }), timeoutMs)
+      let started
+      try {
+        started = streamFn(host, clientId, clientSecret, accessToken, accountId, [symbolId], (tick) => {
+          if (tick.bid != null) quote.bid = tick.bid
+          if (tick.ask != null) quote.ask = tick.ask
+          if (quote.bid != null && quote.ask != null) answer({ kind: 'quote', bid: quote.bid, ask: quote.ask })
+        }, (reason) => answer({ kind: 'failed', reason: `closed: ${reason ?? 'socket closed'}` }),
         // Nit round 3 (26-09-2026): without a connect deadline, an auth
         // handshake that never completes (broker never answers, no error,
         // no close event) leaves wsStreamSpots's own promise pending
-        // forever — it never resolves OR rejects, so neither `.then` nor
-        // `.catch` below ever fires, and the underlying socket is never
-        // told to close. wsStreamSpots already arms exactly this timer when
-        // given `connectTimeoutMs` (`ws.close()` inside its own
-        // `finishClose`); this reuses `timeoutMs`, the same bound this
-        // function already applies to the rest of the round trip.
+        // forever — it never resolves OR rejects — and the underlying
+        // socket is never told to close. wsStreamSpots arms exactly this
+        // timer when given `connectTimeoutMs`; this reuses `timeoutMs`.
         { connectTimeoutMs: timeoutMs })
+      } catch (err) {
+        answer({ kind: 'failed', reason: err?.message || 'stream failed' })
+        return
+      }
+      Promise.resolve(started)
         .then(s => {
           stream = s
+          subscribed = true
           if (settled) closeStream()
         })
-        .catch(() => { clearTimeout(timer); settled = true; resolve(null) })
+        .catch((err) => answer({ kind: 'failed', reason: err?.message || 'stream failed' }))
     })
   } finally {
     settled = true
     closeStream()
   }
+}
+
+/**
+ * One-shot quote: subscribe to a single symbol's spots, resolve with the
+ * first tick that carries BOTH sides (merging bid/ask across ticks), then
+ * close. Resolves null on timeout instead of rejecting — callers use this
+ * as a best-effort pre-trade check and must fail open.
+ *
+ * Contract unchanged by M7: a quote, or null for EVERY other outcome
+ * (wsProbeSpot's `empty` and `failed` alike). Callers that must tell those
+ * apart ask wsProbeSpot.
+ *
+ * `streamFn` (test-only): overrides `wsStreamSpots` so a fake stream can be
+ * injected — every production call omits it.
+ *
+ * @returns {Promise<{bid: number, ask: number}|null>}
+ */
+export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs = 6000, streamFn = wsStreamSpots) {
+  const r = await wsProbeSpot(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs, streamFn)
+  return r.kind === 'quote' ? { bid: r.bid, ask: r.ask } : null
 }
 
 // Exposed for tests that need to stub WebSocket behaviour.

@@ -158,14 +158,6 @@ test('lateness: eligible evaluations are kept, the rest are counted apart by rea
   assert.deepEqual(latenessEligibility({ nextDueAt: 'x', lastOutcome: 'quote_unavailable', state: 'quote_unavailable' }), { eligible: false, reason: 'after_no_quote' })
   assert.deepEqual(latenessEligibility({ nextDueAt: 'x', lastOutcome: 'evaluated', state: 'manage_off' }), { eligible: false, reason: 'after_other' })
   assert.deepEqual(latenessEligibility({ nextDueAt: 'x', lastOutcome: 'evaluated', state: 'not_due' }), { eligible: true })
-  // B4 (M7 fix round 3, 26-09-2026): a pass that ended in probe_deferred or
-  // probe_backoff — the fast-monitor.js scheduler waiting on a broker probe,
-  // or backing off a quiet symbol under the cap — carries REAL lateness, not
-  // a closed-market/feed-gap pause. Conflating either with the genuine
-  // quote_unavailable case would let the M5 lateness metric silently exclude
-  // exactly the delay OD-22's cap and backoff are expected to introduce.
-  assert.deepEqual(latenessEligibility({ nextDueAt: 'x', lastOutcome: 'probe_deferred', state: 'probe_deferred' }), { eligible: true })
-  assert.deepEqual(latenessEligibility({ nextDueAt: 'x', lastOutcome: 'probe_backoff', state: 'probe_backoff' }), { eligible: true })
   const now = 1_758_800_000_000
   assert.equal(noteDueLateness({ dueAtMs: now - 12_000, evaluatedAtMs: now, eligible: true }), true)
   assert.equal(noteDueLateness({ dueAtMs: now + 500, evaluatedAtMs: now, eligible: true }), true, 'early reads as 0, never negative')

@@ -1,72 +1,136 @@
 // ---------------------------------------------------------------------------
-// agent/lib/fast-monitor-probes.js — M7 (P1/P4-4, V3-SEQUENCE:536-543;
-// queue item 33; owner OD-22, 26-09-2026: "parallel probes under a cap, with
-// backoff ≤ 5 min").
+// agent/lib/fast-monitor-probes.js — M7 (P1/P4-4, V3-SEQUENCE:536-543; queue
+// item 33; owner OD-22, 26-09-2026: "parallel probes under a cap, with
+// backoff ≤ 5 min"). The broker probes of the fast monitor's price fallback.
 //
-// PROBLEM MEASURED (fast-monitor.js header, fast-monitor-sidecar-quotes.js):
-// the fast monitor prices most open positions from the sidecar's one-pull-
-// per-side quote table, and falls back to a broker round trip
-// (wsGetSpotOnce) only for a symbol the sidecar does not carry or whose
-// quote is stale. That fallback used to run ONE AT A TIME, awaited inline in
-// the per-position loop — 48 serial round trips in one measured pass, worst
-// tick 51 s, skipShare10m 0.45-0.75 against the goal table's <= 10% (M7's
-// own post-deploy prediction, V3-SEQUENCE:543).
+// PROBLEM MEASURED (fast-monitor.js header): a position the sidecar does not
+// price is priced by a broker round trip (≤ 6 s), and main awaits those one
+// after another inside the pass — 48 serial round trips in one measured
+// pass, worst tick 51 s, skipShare10m 0.45–0.75 against the goal table's
+// ≤ 10 %.
 //
-// FIX ROUND 3 (26-09-2026): an adversarial refute reproduced five blockers
-// against the FIRST design here (batch-launch, `Promise.all`, then evaluate
-// sequentially) — that design still let one position's `executeBrokerAction`
-// age out ANOTHER position's already-fetched quote before it was evaluated
-// (B1), among others. The spec (V3-SEQUENCE item 33) already said the
-// answer: probes run "with results used on the next pass". This module now
-// does that literally:
+// ROUND 4 DESIGN (26-09-2026). Rounds 1–3 were each refuted by a
+// reproduction run side by side against origin/main; round 4 was written
+// against a differential harness first (fast-monitor-m7-differential.test.js
+// drives main's frozen runFastMonitor and this tree's through one virtual
+// clock). The monitor's EXIT behaviour is held to main's by six invariants:
 //
-//   LAUNCH  — `launch()` is fire-and-forget. It never blocks the caller and
-//             is never awaited by fast-monitor.js's own pass. A result lands
-//             in `results` whenever the network call actually finishes,
-//             independent of which pass (if any) is running at that moment.
-//   PEEK    — `peek()` is how a LATER pass asks "do I have something fresh
-//             enough to evaluate with, RIGHT NOW?" — re-checked at every
-//             single position's own evaluation moment, never once for a
-//             whole batch. This is what closes B1: a quote fetched 4s ago
-//             was fresh when this pass started, but if evaluating an EARLIER
-//             position this same pass took 6 more seconds (a broker amend),
-//             the SAME quote is correctly judged stale for a LATER position,
-//             because the age check runs again, right before that specific
-//             evaluation, against the current clock.
-//   CAP     — bounds how many probes may be IN FLIGHT at once, so a batch of
-//             quiet symbols launches concurrently instead of stacking behind
-//             each other's 6 s broker timeout.
-//   BACKOFF — bounds how OFTEN the same symbol is re-probed. It arms ONLY
-//             when the symbol's LAST probe actually SUCCEEDED (no throw, no
-//             timeout, no socket error) and came back with no quote — a
-//             genuinely quiet symbol — and only while the rest of its side
-//             still has a fresh quote for some OTHER symbol. It never arms
-//             for a symbol currently inside its spike window (fast-monitor's
-//             `spikeActive`): a spike is exactly when re-pricing matters
-//             most, and a single failed probe must not suspend it for up to
-//             5 minutes.
+//   I1  NO BROKER-PRICED POSITION IS EVALUATED MORE THAN ONE TICK LATER THAN
+//       MAIN WOULD, however slow other positions' work is. How:
+//         · LAUNCH AT THE ATTEMPT — a due position's probe starts right where
+//           main would await it, inside the loop, never after it; beyond the
+//           cap it queues FIFO and starts the moment a slot frees. So it starts
+//           no later than main starts it (earlier probes no longer block the
+//           loop).
+//         · CONSUME IN MAIN'S ORDER — waiters are served strictly in the order
+//           they registered (earlier passes first, then this pass in loop
+//           order), which is the order main processes them in. A quote
+//           observed more than one tick before main would have observed it
+//           (main samples a position when its serial loop reaches it: after
+//           the waiters ahead landed and acted) is not acted on as it stands:
+//           it is asked again, together with every landed quote behind it as
+//           far behind. A failure or an empty answer carries no price and is
+//           served as it stands (re-asking those one by one would rebuild
+//           main's serial chain of timeouts).
+//         · CONSUME AT EVERY WAIT — at the start of every pass before any
+//           awaited work; WHILE the pass awaits a read (the sidecar pull, a
+//           relVol fetch), a landing does not wait for the read; BEFORE any
+//           later position's broker action, the pass first settles every
+//           earlier waiter (main would have finished those positions before
+//           starting that action); and at the end of the pass for up to
+//           `probeWaitMs` (the ticker tells each pass its tick; the wait is
+//           the tick less one second), so a probe that answers inside the
+//           tick is acted on in the pass that sent it.
+//       A probe is therefore acted on at the first of those points after it
+//       lands: at once while a pass runs, and between passes on the next
+//       tick. Main acts on it the moment it lands. Broker actions keep main's
+//       relative order.
+//   I2  INSIDE A SPIKE WINDOW EVERY TICK RE-PRICES. Results are consumed ONCE,
+//       by the waiters registered before the probe landed; nothing is cached
+//       for reuse. A due position whose probe was consumed earlier in the
+//       pass launches a fresh one on that same tick.
+//   I3  A PROBE FAILURE IS NOT A QUIET SYMBOL. A failure — the deadline
+//       before the subscription was confirmed, an auth or cTrader error, a
+//       closed socket, a throw — is `failed`; only a clean empty answer — the
+//       broker confirmed the subscription and printed no two-sided price
+//       before the deadline — is `empty` (ctrader-ws.js wsProbeSpot). Only
+//       `empty` can arm the backoff, and never inside a spike window or while
+//       the rest of the side is stale. Both are recorded as main records a
+//       null quote (quote_unavailable) and retried on main's cadence.
+//   I4  `null` FROM THE BOARD MEANS "NO VERDICT YET". A waiter whose probe is
+//       queued or in flight has no verdict: its receipt says probe_pending,
+//       and nothing — no quote_unavailable, no decision row, no lateness — is
+//       recorded for it until its own result is consumed.
+//   I5  LATENESS AND R3 EXCLUDE EXACTLY WHAT MAIN EXCLUDES. The eligibility of
+//       the evaluation a probe answers is main's (protection-latency.js
+//       latenessEligibility, unchanged) computed at the pass that ATTEMPTED
+//       it — the pass main would have evaluated in — and carried through the
+//       wait (and across a restart, on the receipt as `waitLateness`). R3
+//       exempts main's states only; probe_pending and probe_backoff are
+//       graded on lastCompletedAt like any other state.
+//   I6  PASS COUNTERS COUNT REAL BROKER CALLS ONCE. fromBroker, stale,
+//       brokerQuotes and pricingMs are counted per probe, in the pass that
+//       consumes it, whatever number of positions share it; a pass that only
+//       launches counts nothing, so it never replaces the last priced pass's
+//       record.
 //
-// OPEN, NOT ANSWERED HERE (OD-22's second half): the staleness RULE for a
-// symbol that stays quiet in an OPEN market — whether its last (old) sidecar
-// or broker quote should ever be treated as current, and for how long — is
-// an owner decision (0066.HK, `fast-monitor.js:48-49,64-68`'s 10 s recvMs
-// rule). This module does not invent one: it never hands a caller a quote
-// older than the maxAgeMs THAT CALLER supplies to `peek()` — fast-monitor.js
-// supplies its own QUOTE_MAX_AGE (10 s), unchanged from before M7.
+// WHAT IS HELD, AND THE ONE THING THAT CANNOT BE. The differential harness
+// holds every scenario's exit to within one tick of main's under the
+// ticker's wait (and the round-3 reproductions X1–X5 even with no wait at
+// all). Probing in parallel necessarily samples a position at main's cadence
+// but not at main's INSTANTS — main samples it only after the probes ahead
+// of it; that shift is what bounds the "observed before main would" rule
+// above to one tick. A crossing that falls inside that last tick before
+// main's sample is seen by main in this cycle and here only at the next
+// sample; a crossing just after this sample is seen here first. No parallel
+// design removes that without sampling at main's instants — which is main's
+// serial loop.
+//
+// THE ONE DELIBERATE DEPARTURE FROM MAIN'S TIMING — OD-22's backoff. A symbol
+// whose last probe was a clean empty answer, while other symbols on its side
+// stream fresh quotes and it is not in a spike window, is not probed again
+// until `backoffMs` (≤ 5 min) after that probe was sent; its receipt says
+// probe_backoff. Main would have asked on its cadence. That is the owner's
+// decision, bounded by PROBE_BACKOFF_MAX_MS, and nothing else re-orders or
+// delays a probe main would make.
+//
+// OPEN, NOT ANSWERED HERE (OD-22's second half): whether a quiet symbol's old
+// quote in an OPEN market may ever count as current (0066.HK, the 10 s recvMs
+// rule in fast-monitor.js). Nothing here treats an old price as current: a
+// landed quote observed more than one tick before main would have observed
+// it is never evaluated — its waiter is probed again.
 // ---------------------------------------------------------------------------
 
 import { BoundedMap } from './bounded-map.js'
 
 /** Default concurrent-probe ceiling — comfortably above one side's usual open-position count; env-overridable per OD-22's cap. */
 export const PROBE_CAP_DEFAULT = 8
-/** Fix round 2 (26-09-2026, B3): a cap of 0 disables probing silently and an unbounded one opens as many authed broker sockets as there are due positions — both are refused. */
+/** A cap of 0 disables probing silently and an unbounded one opens as many authed broker sockets as there are due positions — both are refused. */
 export const PROBE_CAP_MAX = 32
 
 /** OD-22: the backoff must never exceed 5 minutes, however it is configured. */
 export const PROBE_BACKOFF_MAX_MS = 5 * 60_000
 export const PROBE_BACKOFF_DEFAULT_MS = 60_000
 
-/** Bound on how many distinct symbols' probe history this process remembers (fix round 3 nit) — an evicted key is simply never-probed again, same as a fresh process. */
+/**
+ * A landed quote older than this when its waiter's turn comes is never
+ * evaluated: the waiter is asked again (I1, I2). One production tick — main
+ * samples a position when its turn comes, so an answer that waited longer
+ * than a tick behind slower work is older than main's would be. Its own
+ * bound: the sidecar's FAST_MONITOR_QUOTE_MAX_AGE_MS governs sidecar quotes
+ * only, and raising it must not let a broker answer be replayed (nit 4).
+ */
+export const PROBE_RESULT_MAX_AGE_MS = 3_000
+/** Never below this, whatever the tick: a sub-second tick must not re-ask every answer that waited one pass. */
+export const PROBE_RESULT_MIN_AGE_MS = 1_000
+/** wsProbeSpot settles within its own 6 s deadline; a probe still open after this is settled as failed (a hung mock or a regression must never wedge a pass that waits on it). */
+export const PROBE_GUARD_MS = 10_000
+/** The end-of-pass wait for a direct runFastMonitor call; the ticker passes probeWaitForTick(tickMs). */
+export const PROBE_WAIT_DEFAULT_MS = 2_000
+/** The end-of-pass wait leaves this much of the tick free, so waiting for probes never makes the ticker skip. */
+export const PROBE_WAIT_MARGIN_MS = 1_000
+
+/** Bound on how many distinct symbols' probe history this process remembers — an evicted key is simply never-probed again, same as a fresh process. */
 export const PROBE_KEY_CAP = 2_000
 
 /**
@@ -94,13 +158,26 @@ export function probeBackoffMs(env = process.env) {
   return Math.min(n, PROBE_BACKOFF_MAX_MS)
 }
 
+/** The end-of-pass probe wait for a ticker of `tickMs`: the tick less PROBE_WAIT_MARGIN_MS, at most PROBE_WAIT_DEFAULT_MS, never negative. Pure. */
+export function probeWaitForTick(tickMs) {
+  const t = Number(tickMs)
+  if (!Number.isFinite(t)) return 0
+  return Math.max(0, Math.min(PROBE_WAIT_DEFAULT_MS, t - PROBE_WAIT_MARGIN_MS))
+}
+
+/** How old a landed quote may be when its turn comes, for a ticker of `tickMs`: one tick, at least PROBE_RESULT_MIN_AGE_MS. Pure. */
+export function probeMaxAgeForTick(tickMs) {
+  const t = Number(tickMs)
+  if (!(Number.isFinite(t) && t > 0)) return PROBE_RESULT_MAX_AGE_MS
+  return Math.max(PROBE_RESULT_MIN_AGE_MS, t)
+}
+
 /**
- * Pure: does a symbol's backoff arm right now? Never arms for a symbol that
- * has not been probed yet, and never arms while the rest of its side is NOT
- * fresh (a quiet feed must keep retrying — only a quiet SYMBOL backs off).
- * This is the TIMING half only; `ProbeScheduler.plan` additionally requires
- * the last probe to have SUCCEEDED with no quote (fix round 3, B2) and never
- * consults this at all while the position is inside its spike window.
+ * Pure: the TIMING half of the backoff. Never arms for a symbol never
+ * probed, nor while the rest of its side is NOT fresh (a quiet feed must
+ * keep retrying — only a quiet SYMBOL backs off). ProbeBoard.backoffActive
+ * additionally requires the last answer to have been a clean `empty` and
+ * never consults this inside a spike window.
  */
 export function shouldBackoff({ lastProbeAtMs = null, nowMs, backoffMs, sideHasFreshQuote = false } = {}) {
   if (!sideHasFreshQuote) return false
@@ -111,25 +188,12 @@ export function shouldBackoff({ lastProbeAtMs = null, nowMs, backoffMs, sideHasF
 }
 
 /**
- * Pure: of `candidates` (probe keys already filtered to ones NOT in flight,
- * cached-fresh or backed off), which may launch right now under `cap` given
- * `inflightCount` already running. Order is preserved; the remainder is
- * deferred (picked up on a later pass once room frees up).
- */
-export function selectUnderCap(candidates, inflightCount, cap) {
-  const room = Math.max(0, Math.floor(cap) - Math.floor(inflightCount))
-  const list = Array.isArray(candidates) ? candidates : []
-  return { launch: list.slice(0, room), deferred: list.slice(room) }
-}
-
-/**
  * Pure: does the given side have a FRESH, VALID quote for some symbol OTHER
- * than `excludeSymbolId`? This is the "other symbols on the same side are
- * fresh" condition backoff requires (V3-SEQUENCE:539) — a quote for the
- * probed symbol itself never counts, stale or otherwise. Fix round 3 nit:
- * a row with an age inside the window but an invalid price (missing side,
- * non-positive bid, or a crossed/equal-but-backwards book) does not count
- * as "fresh" either — freshness describes a PRICE, not a timestamp alone.
+ * than `excludeSymbolId`? The "other symbols on the same side are fresh"
+ * condition backoff requires (V3-SEQUENCE:539) — a quote for the probed
+ * symbol itself never counts, and a row with an age inside the window but an
+ * invalid price (missing side, non-positive bid, crossed book) is not fresh:
+ * freshness describes a PRICE, not a timestamp alone.
  */
 export function sideHasFreshQuoteExcluding(quotesMap, excludeSymbolId, nowMs, maxAgeMs) {
   if (!quotesMap || typeof quotesMap.entries !== 'function') return false
@@ -145,175 +209,181 @@ export function sideHasFreshQuoteExcluding(quotesMap, excludeSymbolId, nowMs, ma
 }
 
 /**
- * A bounded-concurrency, backing-off probe scheduler that never blocks its
- * caller. One instance is meant to live for the process (fast-monitor.js
- * keeps a module-level one), so the cap and backoff apply ACROSS ticks.
- *
- * `nowFn` is passed IN to `plan`/`peek`/`launch` on every call — a live
- * function, not a snapshot value — rather than read from a clock this
- * object owns: fast-monitor.js's own clock is injectable (fixed in tests,
- * `Date.now` in production), and both backoff timing AND a launched probe's
- * OWN completion stamp must use that SAME clock. A scheduler with its own
- * `Date.now()` would judge freshness against real wall-clock gaps between
- * test cases (milliseconds) while the caller's simulated clock believes
- * hours have passed.
+ * Normalise one probe answer (I3):
+ *   { kind: 'quote', bid, ask }   — both sides arrived (validity is the evaluator's check, as on main)
+ *   { kind: 'empty', reason }     — subscribed, no two-sided price before the deadline
+ *   { kind: 'failed', reason }    — anything else
+ * A bare {bid, ask} is a quote. A bare null is `failed`: the legacy
+ * wsGetSpotOnce contract cannot tell failure from silence, so it never arms
+ * the backoff.
  */
-export class ProbeScheduler {
+export function probeResultOf(answer) {
+  if (answer && typeof answer === 'object' && typeof answer.kind === 'string') {
+    if (answer.kind === 'quote') return { kind: 'quote', bid: answer.bid, ask: answer.ask }
+    if (answer.kind === 'empty') return { kind: 'empty', reason: answer.reason ?? null }
+    return { kind: 'failed', reason: answer.reason ?? 'failed' }
+  }
+  if (answer && typeof answer === 'object' && ('bid' in answer || 'ask' in answer)) return { kind: 'quote', bid: answer.bid, ask: answer.ask }
+  return { kind: 'failed', reason: 'no quote (a null answer cannot say whether the broker failed or the symbol was silent)' }
+}
+
+const TIMED_OUT = Symbol('timed out')
+
+/**
+ * Race `promise` against `ms` on the caller's clock: an injected `sleep`
+ * (virtual time in the harness), else a referenced timer that is cleared as
+ * soon as the race settles — never unref'd (an unref'd timer cannot fire when
+ * it is the last thing on the loop; fast-monitor.js withBudget has the story).
+ * Resolves to the promise's value, or TIMED_OUT.
+ */
+export function raceTimeout(promise, ms, sleep = null) {
+  if (!(ms >= 0) || !Number.isFinite(ms)) return promise
+  if (sleep) return Promise.race([promise, sleep(ms).then(() => TIMED_OUT)])
+  let timer = null
+  return Promise.race([promise, new Promise(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })])
+    .finally(() => { if (timer) clearTimeout(timer) })
+}
+export const isTimedOut = (v) => v === TIMED_OUT
+
+/**
+ * The probes and their waiters, for one process. fast-monitor.js keeps one
+ * module-level board, so the cap, the queue and the backoff memory span
+ * passes. Every method that stamps time takes the CALLER's clock
+ * `{ now, mono, sleep }` (injected in tests, Date.now / performance.now in
+ * production) — a board with its own clock would judge freshness against a
+ * different time than the pass it serves.
+ *
+ * A WAITER is one due position waiting on one probe: { posId, key, probe,
+ * ...ctx }. Waiters form one FIFO in registration order (I1). A PROBE is
+ * { key, state: 'queued'|'inflight'|'settled', result, launchedAt,
+ * settledAt, durationMs, settled: Promise, counted, pick }; positions on the
+ * same feed key JOIN the probe that is still open (queued or in flight)
+ * rather than launching another, and never join one that has landed (I2).
+ */
+export class ProbeBoard {
   constructor({ cap = PROBE_CAP_DEFAULT, backoffMs = PROBE_BACKOFF_DEFAULT_MS } = {}) {
-    // Fix round 2 (B3): the constructor validates its OWN cap rather than
-    // trusting the caller to have — a cap of 0 or unbounded must never
-    // reach `this.cap` by any path, including a direct reconfigure
-    // (fast-monitor.js's `_setFastMonitorProbeCapForTests` goes through
-    // this same `clampCap`, not a bare assignment).
     this.cap = clampCap(cap)
     this.backoffMs = Math.min(backoffMs, PROBE_BACKOFF_MAX_MS)
-    this.inflight = new Set()
-    // Fix round 3 nit: bounded, so a process that has ever probed more than
-    // PROBE_KEY_CAP distinct symbols does not grow these without limit. An
-    // evicted key is simply treated as never-probed on its next sighting —
-    // the same as it would be on a fresh restart.
-    this.lastProbeAt = new BoundedMap(PROBE_KEY_CAP, { lru: true, name: 'probe.lastProbeAt' })
-    this.results = new BoundedMap(PROBE_KEY_CAP, { lru: true, name: 'probe.results' }) // key -> { quote, error, fetchedAtMs, durationMs }
-    this._inflightPromises = new Map() // key -> promise, test seam only (see _drainForTests)
+    this.waiters = []
+    this.open = new Map()
+    this.queue = []
+    this.inflight = 0
+    this.history = new BoundedMap(PROBE_KEY_CAP, { lru: true, name: 'probe.history' }) // key → { lastLaunchAt, lastKind }
+    this.landings = []
+    this.all = new Set() // every probe not yet settled — the drain seam
+    this.gen = 0 // bumped by reset(): a probe from before a reset settles into nothing
+    // Where main's serial loop would be in the chain of waiters being served:
+    // the latest landing served plus the actions taken since, on the caller's
+    // wall clock; null while no chain is open (fast-monitor.js sets it).
+    this.chainAt = null
   }
 
-  inflightCount() { return this.inflight.size }
+  inflightCount() { return this.inflight }
+  queuedCount() { return this.queue.length }
+  head() { return this.waiters[0] ?? null }
+  waiterOf(posId) { return this.waiters.find(w => w.posId === posId) ?? null }
+  hasLanded(w) { return w?.probe?.state === 'settled' }
+  shift() { return this.waiters.shift() ?? null }
+
+  /** Drop every waiter whose position fails `keep(posId)` (closed, paused, re-routed). Its probe runs on; its answer is simply not consumed. */
+  retain(keep) { this.waiters = this.waiters.filter(w => keep(w.posId, w)) }
 
   /**
-   * What THIS CALL knows about `key`, judged against `nowMs` (the caller's
-   * OWN clock, at the exact moment of THIS evaluation — never cached from
-   * earlier in the pass; this is what closes B1):
-   *   'quote'    — a fresh (age <= maxAgeMs), priced result. Safe to
-   *                evaluate with. `durationMs` is that probe's OWN
-   *                round-trip time, never blended with anything else.
-   *   'no_quote' — a fresh, CLEAN confirmation there is nothing (no error) —
-   *                the genuine pre-M7 "quote unavailable" case (closed
-   *                market, feed gap). Nothing to wait for.
-   *   'stale'    — a result exists but has aged past maxAgeMs. Must not be
-   *                used for evaluation; `plan()` decides whether to relaunch.
-   *   'none'     — no result has ever been recorded for this key.
+   * OD-22's backoff for `key` at `nowMs` (I3): only after a clean `empty`
+   * answer, only while the side is otherwise fresh, never in a spike window,
+   * and for at most backoffMs after that probe was sent.
    */
-  peek(key, nowMs, maxAgeMs) {
-    const r = this.results.get(key)
-    if (!r || r.fetchedAtMs == null) return { state: 'none' }
-    const age = Number(nowMs) - r.fetchedAtMs
-    if (!(age >= 0) || age > maxAgeMs) return { state: 'stale', error: r.error }
-    if (r.quote != null) return { state: 'quote', quote: r.quote, durationMs: r.durationMs }
-    return { state: 'no_quote', error: r.error, durationMs: r.durationMs }
-  }
-
-  /**
-   * Decide what a probe for `key` should do THIS pass, without running
-   * anything: 'pending' (already in flight — do not relaunch; entirely
-   * ordinary now that probes are never awaited within a pass, since a 6 s
-   * round trip regularly outlives a single 3 s tick), 'backoff' (its LAST
-   * probe SUCCEEDED and returned no quote, other symbols on this side are
-   * fresh, and the position is NOT inside its spike window) or 'eligible'
-   * (may launch, subject to the cap).
-   *
-   * Fix round 3, B1/B2: backoff requires `last.error == null` — a throw,
-   * timeout or socket error is never treated as "genuinely quiet", so a
-   * technical failure keeps retrying aggressively rather than being
-   * mistaken for silence. `spikeActive` bypasses backoff entirely: a spike
-   * is exactly when re-pricing matters most, and a single failed probe
-   * must not suspend it for up to 5 minutes (the B2 reproduction).
-   */
-  plan(key, { sideHasFreshQuote = false, spikeActive = false, nowMs } = {}) {
-    if (this.inflight.has(key)) return 'pending'
-    if (!spikeActive) {
-      const last = this.results.get(key)
-      const cleanNoQuote = last ? (last.error == null && last.quote == null) : false
-      if (cleanNoQuote && shouldBackoff({ lastProbeAtMs: this.lastProbeAt.get(key) ?? null, nowMs, backoffMs: this.backoffMs, sideHasFreshQuote })) {
-        return 'backoff'
-      }
-    }
-    return 'eligible'
+  backoffActive(key, { nowMs, sideHasFreshQuote = false, spikeActive = false } = {}) {
+    if (spikeActive) return false
+    const h = this.history.get(key)
+    if (!h || h.lastKind !== 'empty') return false
+    return shouldBackoff({ lastProbeAtMs: h.lastLaunchAt, nowMs, backoffMs: this.backoffMs, sideHasFreshQuote })
   }
 
   /**
-   * Order `keys` fairly for the cap: symbols never probed at all come first
-   * (in the order given — first noticed this pass, not alphabetical), then
-   * symbols probed before, oldest `lastProbeAt` first. Without this,
-   * `selectUnderCap` — which is itself order-preserving — would relaunch the
-   * same head-of-list `cap` keys every pass while the rest starve
-   * indefinitely on a persistently over-subscribed side.
+   * Register a due position as a waiter on `key`'s probe: join the open one,
+   * or create one (started now under the cap, or queued FIFO). `run()` makes
+   * the broker call; `pick` is why the broker is asked ('missing' | 'stale').
    */
-  sortFair(keys) {
-    const list = Array.isArray(keys) ? keys : []
-    const never = []
-    const probed = []
-    for (const k of list) (this.lastProbeAt.has(k) ? probed : never).push(k)
-    probed.sort((a, b) => this.lastProbeAt.get(a) - this.lastProbeAt.get(b))
-    return [...never, ...probed]
+  register({ posId, key, run, pick = null, ctx = {} }, clock) {
+    let probe = this.open.get(key)
+    if (!probe) probe = this._create(key, run, pick, clock)
+    const w = { ...ctx, posId, key, probe }
+    this.waiters.push(w)
+    return w
   }
 
-  /**
-   * Launch `runProbe(key)` WITHOUT blocking the caller — fire-and-forget.
-   * This is the spec's "results used on the next pass" (V3-SEQUENCE:537),
-   * taken literally: nothing in fast-monitor.js's current pass ever awaits
-   * this call. A later pass's `peek(key, ...)` is how the result is used,
-   * once it has arrived and while it is still fresh.
-   *
-   * `nowFn` stamps `lastProbeAt` (at launch) and `fetchedAtMs` (at
-   * completion) on the CALLER's clock (see the class note above), so a
-   * later `peek()`'s age check is judged on the same clock throughout.
-   * `monoFn` (defaults to `nowFn`; fast-monitor.js passes its own
-   * monotonic `mono()`) measures the probe's OWN round-trip duration —
-   * this is what `finishPricing`'s `lastPricingMs` reports (fix round 3,
-   * B5): never another position's broker-action time, never a fabricated
-   * "since batch start" figure.
-   *
-   * A key already in flight is never relaunched — the caller should check
-   * `plan()` first, but this guard makes double-launch impossible even if
-   * it does not.
-   */
-  launch(key, runProbe, nowFn, monoFn = () => Date.now()) {
-    if (this.inflight.has(key)) return
-    this.inflight.add(key)
-    this.lastProbeAt.set(key, nowFn())
-    const startMono = monoFn()
-    const settle = (quote, error) => {
-      this.results.set(key, { quote: quote ?? null, error: error ?? null, fetchedAtMs: nowFn(), durationMs: Math.max(0, monoFn() - startMono) })
-      this.inflight.delete(key)
-      this._inflightPromises.delete(key)
-    }
-    // Call runProbe SYNCHRONOUSLY (not deferred behind a Promise.resolve()
-    // microtask): a caller that captures a resolver/rejecter reference from
-    // inside runProbe (as fast-monitor-probes.test.js's in-flight tests do,
-    // and as any real WS call effectively does by opening its socket the
-    // instant it is invoked) must be able to use that reference right after
-    // launch() returns, not one tick later. This is still fire-and-forget —
-    // launch() itself never awaits anything — it only starts the work eagerly,
-    // the same way calling fetch() starts a request immediately.
+  /** Give a waiter whose landed quote went stale a fresh probe, keeping its place in the FIFO. */
+  reprobe(w, run, clock) {
+    w.probe = this.open.get(w.key) ?? this._create(w.key, run, w.probe?.pick ?? null, clock)
+    return w
+  }
+
+  /** A promise that resolves at the next probe landing (never, while nothing is open). */
+  nextLanding() { return new Promise(resolve => this.landings.push(resolve)) }
+
+  _create(key, run, pick, clock) {
+    let settle
+    const probe = { key, run, pick, gen: this.gen, state: 'queued', result: null, launchedAt: null, settledAt: null, durationMs: null, counted: false, startMono: null, settled: new Promise(r => { settle = r }) }
+    probe._resolve = settle
+    this.open.set(key, probe)
+    this.all.add(probe)
+    if (this.inflight < this.cap) this._start(probe, clock)
+    else this.queue.push({ probe, clock })
+    return probe
+  }
+
+  _start(probe, clock) {
+    probe.state = 'inflight'
+    this.inflight++
+    probe.launchedAt = clock.now()
+    probe.startMono = clock.mono()
+    const h = this.history.get(probe.key)
+    this.history.set(probe.key, { lastLaunchAt: probe.launchedAt, lastKind: h?.lastKind ?? null })
     let started
-    try {
-      started = runProbe(key)
-    } catch (err) {
-      settle(null, err)
-      return
+    try { started = Promise.resolve(probe.run()) } catch (err) { started = Promise.reject(err) }
+    const answered = started.then(probeResultOf, (err) => ({ kind: 'failed', reason: err?.message || String(err) }))
+    raceTimeout(answered, PROBE_GUARD_MS, clock.sleep)
+      .then(r => (isTimedOut(r) ? { kind: 'failed', reason: `probe still open after ${PROBE_GUARD_MS} ms` } : r))
+      .then(r => this._settle(probe, r, clock))
+  }
+
+  _settle(probe, result, clock) {
+    if (probe.state === 'settled') return
+    if (probe.gen !== this.gen) { probe.state = 'settled'; probe.result = result; probe._resolve(); return }
+    probe.state = 'settled'
+    probe.result = result
+    probe.settledAt = clock.now()
+    probe.durationMs = Math.max(0, clock.mono() - probe.startMono)
+    this.inflight--
+    if (this.open.get(probe.key) === probe) this.open.delete(probe.key)
+    this.all.delete(probe)
+    this.history.set(probe.key, { lastLaunchAt: probe.launchedAt, lastKind: result.kind })
+    probe._resolve()
+    const landings = this.landings.splice(0)
+    for (const r of landings) r()
+    while (this.inflight < this.cap && this.queue.length) {
+      const next = this.queue.shift()
+      this._start(next.probe, next.clock)
     }
-    const tracked = Promise.resolve(started).then(
-      (quote) => settle(quote ?? null, null),
-      (err) => settle(null, err),
-    )
-    this._inflightPromises.set(key, tracked)
   }
 
-  /**
-   * Test seam: resolves once every probe currently in flight has settled.
-   * Production code never calls this — a pass never waits on a probe it
-   * just launched, by design. Tests use it to make "the background probe
-   * finished" deterministic instead of racing real timers.
-   */
+  /** Test seam: resolves once every probe open right now has settled (a queued one included). */
   async _drainForTests() {
-    await Promise.all([...this._inflightPromises.values()])
+    while (this.all.size) await Promise.all([...this.all].map(p => p.settled))
   }
 
-  /** Test seam / process restart: drop all state. */
+  /** Test seam / process restart: drop all state (probes in flight settle into nothing). */
   reset() {
-    this.inflight.clear()
-    this.lastProbeAt.clear()
-    this.results.clear()
-    this._inflightPromises.clear()
+    this.gen++
+    this.chainAt = null
+    this.waiters = []
+    this.open.clear()
+    this.queue = []
+    this.inflight = 0
+    this.history.clear()
+    this.all.clear()
+    const landings = this.landings.splice(0)
+    for (const r of landings) r()
   }
 }

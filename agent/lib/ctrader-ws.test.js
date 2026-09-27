@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, wsGetSpotOnce, PT } from './ctrader-ws.js'
+import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, wsGetSpotOnce, wsProbeSpot, PT } from './ctrader-ws.js'
 
 // These tests exercise the input-validation paths that run *before* any
 // WebSocket handshake — so we can assert them without mocking `ws`. The
@@ -234,4 +234,45 @@ test('wsGetSpotOnce passes a connect deadline through to streamFn, so a hung aut
   assert.equal(result, null, 'still resolves null via wsGetSpotOnce\'s own timeout — nothing here changes that')
   assert.ok(Number.isFinite(capturedOptions?.connectTimeoutMs) && capturedOptions.connectTimeoutMs > 0,
     `wsStreamSpots must be armed with a connect deadline, got ${JSON.stringify(capturedOptions)}`)
+})
+
+// ---------------------------------------------------------------------------
+// wsProbeSpot (M7 round 4, I3 of fast-monitor-probes.js): a probe says WHY
+// there is no quote. Only `empty` — the broker CONFIRMED the subscription and
+// printed nothing before the deadline — may arm the fast monitor's backoff;
+// every failure shape is `failed`. wsGetSpotOnce keeps its contract: the
+// quote, or null for both.
+// ---------------------------------------------------------------------------
+const PROBE = ['demo.ctraderapi.com', 'cid', 'csec', 'tok', '123', 456]
+const shapes = {
+  quote: (_h, _c, _s, _t, _a, _ids, onTick) => { queueMicrotask(() => { onTick({ bid: 1.1 }); onTick({ ask: 1.1002 }) }); return Promise.resolve({ close() {} }) },
+  // subscribed (the stream resolved), then silence
+  empty: () => Promise.resolve({ close() {} }),
+  // the handshake never completes
+  hung: () => new Promise(() => {}),
+  // the broker refuses the account before the subscription
+  auth: () => Promise.reject(new Error('cTrader error: CH_ACCESS_TOKEN_INVALID — auth failed')),
+  // subscribed, then the socket drops before a price
+  close: (_h, _c, _s, _t, _a, _ids, _onTick, onClose) => { setTimeout(() => onClose('socket closed'), 5); return Promise.resolve({ close() {} }) },
+}
+
+test('wsProbeSpot: a quote, a clean empty answer and three failure shapes are told apart', async () => {
+  const quote = await wsProbeSpot(...PROBE, 40, shapes.quote)
+  assert.deepEqual(quote, { kind: 'quote', bid: 1.1, ask: 1.1002 })
+  const empty = await wsProbeSpot(...PROBE, 40, shapes.empty)
+  assert.equal(empty.kind, 'empty', 'subscribed and silent is the ONE clean empty answer')
+  const hung = await wsProbeSpot(...PROBE, 40, shapes.hung)
+  assert.equal(hung.kind, 'failed', 'a deadline that passes before the subscription is confirmed is a FAILURE, not a quiet symbol')
+  assert.match(hung.reason, /timeout/)
+  const auth = await wsProbeSpot(...PROBE, 40, shapes.auth)
+  assert.equal(auth.kind, 'failed')
+  assert.match(auth.reason, /auth failed/)
+  const closed = await wsProbeSpot(...PROBE, 40, shapes.close)
+  assert.equal(closed.kind, 'failed')
+  assert.match(closed.reason, /closed/)
+})
+
+test('wsGetSpotOnce keeps its contract: the quote, or null for an empty answer and every failure alike', async () => {
+  assert.deepEqual(await wsGetSpotOnce(...PROBE, 40, shapes.quote), { bid: 1.1, ask: 1.1002 })
+  for (const shape of ['empty', 'hung', 'auth', 'close']) assert.equal(await wsGetSpotOnce(...PROBE, 40, shapes[shape]), null, shape)
 })

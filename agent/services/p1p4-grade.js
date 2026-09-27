@@ -745,13 +745,7 @@ export function gradeRecovery(boot, limits, { samples = [], evidence = null } = 
     const fileThisBoot = toMs(postHb.data.work.at) != null
     const mine = postHb.data.work.positions.filter(p => p.owner == null || p.owner === 'node_fast_monitor')
     for (const p of mine) {
-      // M7 fix round 3 (26-09-2026): a position sampled mid-'probe_deferred'
-      // or mid-'probe_backoff' is being actively managed by the probe
-      // scheduler (cap contention, or a genuinely quiet symbol backing off
-      // for up to 5 min) — a snapshot inside that window is not evidence of
-      // an unmonitored position the way a stuck quote_unavailable/
-      // observe_only reading would be, and must not fail this criterion.
-      if (['quote_unavailable', 'observe_only', 'probe_deferred', 'probe_backoff'].includes(p.state)) {
+      if (['quote_unavailable', 'observe_only'].includes(p.state)) {
         if (!fileThisBoot) nv.push(`${p.a}:${p.id} ${p.state} in an undated receipt file — not shown to be this boot's`)
         continue
       }

@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs'
 import express from 'express'
 import { initDB, setState } from './db.js'
 import { prepareStatements, executeBrokerAction, stampExitMarks } from './loop.js'
-import { runFastMonitor, POSITION_WORK_KEY, _resetFastMonitorProbeSchedulerForTests, _drainFastMonitorProbesForTests } from './services/fast-monitor.js'
+import { runFastMonitor, POSITION_WORK_KEY } from './services/fast-monitor.js'
 import actionsRouter from './routes/actions.js'
 import { _resetAmendLatencyForTests, _amendLatencyStateForTests } from './services/protection-latency.js'
 
@@ -151,8 +151,13 @@ test('the fast monitor hands executeBrokerAction the due time it answered; laten
   const T = Date.now()
   const seen = capPosition('EURUSD')
   capPosition('GBPUSD')
+  // EURUSD was last evaluated a while ago and fell due 45 s before this pass;
+  // GBPUSD has no receipt (first sighting).
+  setState(db, POSITION_WORK_KEY, JSON.stringify({ version: 1, positions: [
+    { accountId: '1', positionId: seen, nextDueAt: new Date(T - 45_000).toISOString(), lastOutcome: 'evaluated', state: 'not_due' },
+  ] }))
   const calls = []
-  const fmDeps = {
+  const out = await runFastMonitor(db, { ready: true, host: 'demo.ctraderapi.com', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '1' }, {
     exec: { sidecarQuotes: async () => null },
     ws: {
       wsGetTrendbarsBatch: async () => ({ '1m': [] }),
@@ -164,27 +169,7 @@ test('the fast monitor hands executeBrokerAction the due time it answered; laten
       stampExitMarks,
     },
     now: () => T,
-  }
-  const creds = { ready: true, host: 'demo.ctraderapi.com', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '1' }
-  // M7 (26-09-2026): both EURUSD and GBPUSD need the broker fallback here
-  // (the sidecar always misses), and neither has been probed before —
-  // fire-and-forget launches the probe, it does not evaluate it. Warm both
-  // probes up (launch + drain) BEFORE seeding the receipt state this test
-  // actually cares about — the scheduler's cached quotes (a separate,
-  // module-level store) survive the seed below untouched, but a warm-up
-  // pass's OWN receipt writes must not be what the real, evaluated pass
-  // reads back as "prior" (it would wrongly give GBPUSD a nextDueAt and
-  // spoil its "first sighting" case).
-  _resetFastMonitorProbeSchedulerForTests()
-  const warmup = await runFastMonitor(db, creds, fmDeps)
-  assert.equal(warmup.checked, 0, 'the warm-up pass only launches — both symbols are fresh')
-  await _drainFastMonitorProbesForTests()
-  // EURUSD was last evaluated a while ago and fell due 45 s before this pass;
-  // GBPUSD has no receipt (first sighting).
-  setState(db, POSITION_WORK_KEY, JSON.stringify({ version: 1, positions: [
-    { accountId: '1', positionId: seen, nextDueAt: new Date(T - 45_000).toISOString(), lastOutcome: 'evaluated', state: 'not_due' },
-  ] }))
-  const out = await runFastMonitor(db, creds, fmDeps)
+  })
   assert.equal(out.checked, 2, JSON.stringify(out))
   const bySym = Object.fromEntries(calls.map(c => [c.symbol, c]))
   assert.equal(bySym.EURUSD.action, 'MOVE_SL')

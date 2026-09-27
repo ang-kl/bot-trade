@@ -36,7 +36,6 @@ import { performance } from 'node:perf_hooks'
 import { stampFirst, noteBudgetOverrun } from './runtime-record.js'
 import { noteDueLateness, latenessEligibility } from './protection-latency.js'
 import { recordLimitFillSpread, isPreFill } from './limit-fill-spread.js'
-import { ProbeBoard, probeCap, probeBackoffMs, clampCap, sideHasFreshQuoteExcluding, raceTimeout, isTimedOut, probeWaitForTick, probeMaxAgeForTick } from '../lib/fast-monitor-probes.js'
 
 // ---------------------------------------------------------------------------
 // PER-POSITION RECEIPT TIMINGS (V3 M1, P1/P4-1). A pass that re-prices a due
@@ -274,34 +273,6 @@ const volCache = new BoundedMap(SYM_MAP_MAX, { lru: true, name: 'fast_monitor.vo
 const quoteFreeze = new BoundedMap(SYM_MAP_MAX, { lru: true, name: 'fast_monitor.quoteFreeze' }) // symbol → { mid, changedAt, alerted }
 const VOL_TTL_MS = 5 * 60_000
 
-// ---------------------------------------------------------------------------
-// M7 (P1/P4-4; OD-22 26-09-2026: "parallel probes under a cap, with backoff
-// <= 5 min"). ONE process-wide board of broker probes and the positions
-// waiting on them, so the cap, the queue and the backoff span passes like
-// the caches above. The design and its six invariants are the header of
-// ../lib/fast-monitor-probes.js; runFastMonitor below is where they are kept.
-// ---------------------------------------------------------------------------
-const probes = new ProbeBoard({ cap: probeCap(), backoffMs: probeBackoffMs() })
-export function _resetFastMonitorProbeSchedulerForTests() { probes.reset() }
-/** Test seam: the cap is normally fixed at process start (env-read once); a test overrides it directly, through the same clamp. */
-export function _setFastMonitorProbeCapForTests(n) { probes.cap = clampCap(n) }
-/** Test seam: reads back what the board's cap actually is — pins that the setter clamps, not just that it assigns. */
-export function _getFastMonitorProbeCapForTests() { return probes.cap }
-/** Test seam: resolves once every probe open right now has settled (queued ones included). Production never waits on this. */
-export async function _drainFastMonitorProbesForTests() { await probes._drainForTests() }
-
-/**
- * The eligibility of the evaluation a probe answers (I5): main's own
- * latenessEligibility, read from the receipt BEFORE the pass that attempted
- * it. A position that was waiting on a probe when the process restarted
- * carries the eligibility of that wait on its receipt (`waitLateness`), so
- * the chain that began before the wait is judged as main would judge it.
- */
-export function waitEligibility(before) {
-  if (before?.state === 'probe_pending' && before.waitLateness && typeof before.waitLateness.eligible === 'boolean') return before.waitLateness
-  return latenessEligibility(before)
-}
-
 /** Sizes and evictions for /state/route-timings-adjacent diagnostics. */
 export function fastMonitorMapStats() {
   return [lastCheckAt, lastPriceAt, spikeUntil, volCache, quoteFreeze].map(m => m.stats())
@@ -342,15 +313,7 @@ export function _resetFastDecisionStateForTests() { decisionState.clear() }
 
 let running = false
 
-/**
- * One tick. Deps injectable for tests: { ws, exec, loop, now, monoNow,
- * quoteMaxAgeMs, sleep, tickMs, probeWaitMs, probeMaxAgeMs }. `sleep(ms)` is
- * the clock the pass waits on (a virtual one in the differential harness);
- * `tickMs` is the ticker's interval (startFastMonitor passes its own; a
- * direct call is taken as the 3 s production tick), from which the
- * end-of-pass probe wait (the tick less a second) and the age a landed quote
- * may reach before its turn (one tick) follow unless given explicitly.
- */
+/** One tick. Deps injectable for tests: { ws, exec: {executeBrokerAction, prepareStatements}, now }. */
 export async function runFastMonitor(db, creds, deps = {}) {
   if (running) return { skipped: 'busy' }
   running = true
@@ -365,8 +328,6 @@ export async function runFastMonitor(db, creds, deps = {}) {
       `SELECT * FROM monitored_positions WHERE status = 'active' AND paused IS NOT 1`
     ).all()
     if (positions.length === 0) {
-      // M7: a waiter's position left with the rest — its answer serves no one.
-      probes.retain(() => false)
       setState(db, POSITION_WORK_KEY, JSON.stringify({ version: 1, at: new Date(now()).toISOString(), positions: [], complete: true }))
       return { skipped: 'no positions', checked: 0, completed: true }
     }
@@ -400,6 +361,18 @@ export async function runFastMonitor(db, creds, deps = {}) {
       if (pos.source === 'external') continue
       sidecarSides.add(String(sideOf(pos)))
     }
+    // The sides are pulled CONCURRENTLY (checker SHOULD 3): two hung sidecars
+    // cost one timeout before the first position is priced, not two.
+    const quotesBySide = new Map()   // side key → Map symbolId → quote
+    const feedAccountBySide = new Map() // side key → the feed's account (its id space), or null
+    await Promise.all([...sidecarSides].map(async (key) => {
+      const isLive = key === 'true' ? true : key === 'false' ? false : null
+      let body = null
+      try { body = typeof exec.sidecarQuotes === 'function' ? await exec.sidecarQuotes(isLive) : null } catch { body = null }
+      quotesBySide.set(key, quoteMapFrom(body))
+      feedAccountBySide.set(key, body && body.feed !== 'absent' && body.accountId != null ? String(body.accountId) : null)
+    }))
+    const lookupId = (pos) => sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache, feedAccountBySide.get(String(sideOf(pos))) ?? null)
     const quoteCounts = { fromSidecar: 0, fromBroker: 0, stale: 0 }
 
     let previous = []
@@ -411,20 +384,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
     // Durations on the monotonic clock: `now` may be a test's fixed clock.
     const mono = deps.monoNow ?? (() => performance.now())
     const timing = { priced: 0, pricingMs: 0, brokerQuotes: 0, volFetches: 0, volFetchMs: 0, tokenWaitMs: 0 }
-    const iso = (ms) => new Date(ms).toISOString()
-
-    // M7 round 4 (see ../lib/fast-monitor-probes.js for I1–I6): the clock the
-    // pass waits on, and how long its end may wait for open probes.
-    const passStartMs = now()
-    const clock = { now, mono, sleep: deps.sleep ?? null }
-    const tickMs = Number(deps.tickMs) > 0 ? Number(deps.tickMs) : 3_000
-    const waitMs = Number(deps.probeWaitMs)
-    const probeWaitMs = Number.isFinite(waitMs) ? Math.max(0, waitMs) : probeWaitForTick(tickMs)
-    const probeMaxAgeMs = Number(deps.probeMaxAgeMs) > 0 ? Number(deps.probeMaxAgeMs) : probeMaxAgeForTick(tickMs)
-
-    // Every position's receipt, built up front in main's loop order: a probe
-    // answer can be consumed before the loop reaches its position.
-    const entries = positions.map((pos) => {
+    for (const pos of positions) {
       const accountId = pos.account_id != null ? String(pos.account_id) : String(creds.accountId)
       const prior = previousById.get(`${accountId}:${pos.id}`)
       const receipt = { accountId, positionId: pos.id, brokerPositionId: pos.broker_position_id ?? null,
@@ -433,306 +393,6 @@ export async function runFastMonitor(db, creds, deps = {}) {
         lastAttemptAt: null, state: 'not_due', quoteSource: null, error: null,
         ...carryReceipt(prior) }
       work.push(receipt)
-      return { pos, receipt, prior, accountId }
-    })
-    const entryOf = new Map(entries.map(e => [e.pos.id, e]))
-    // Positions priced (evaluated, or found without a quote) in this pass, and
-    // positions whose ROW this pass may have changed (metrics, an action): a
-    // second evaluation in the same pass re-reads the row first (I2).
-    const pricedThisPass = new Set()
-    const touchedThisPass = new Set()
-    const currentRow = (pos) => {
-      if (!touchedThisPass.has(pos.id)) return pos
-      const row = db.prepare(`SELECT * FROM monitored_positions WHERE id = ? AND status = 'active' AND paused IS NOT 1`).get(pos.id) ?? null
-      const e = entryOf.get(pos.id)
-      if (row && e) e.pos = row
-      return row
-    }
-
-    // Main's per-position gates, in main's order: where the position may be
-    // priced, or the state that says why not.
-    const routeOf = (pos, accountId) => {
-      if (pos.source === 'external') return { state: 'observe_only' }
-      if (!manageStageAllows(db, getState, pos.strategy)) return { state: 'manage_off' }
-      const ownMap = accountMap(db, accountId, acctMapCache)
-        ?? ((primaryId == null || String(primaryId) === accountId) && String(creds.accountId) === accountId ? symbolMap : null)
-      const knownSide = acctLive.get(accountId)
-      const host = typeof knownSide === 'boolean' ? (knownSide ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')
-        : accountId === String(creds.accountId) ? creds.host : null
-      const symbolId = ownMap?.[String(pos.symbol).toUpperCase()]
-      if (!host) return { state: 'account_route_unknown' }
-      if (!symbolId) return { state: 'symbol_unmapped' }
-      return { host, symbolId, feedKey: `${host}:${accountId}:${symbolId}` }
-    }
-
-    // The broker call a probe makes: wsProbeSpot, which says WHY there is no
-    // quote (I3); an injected ws without it (older tests) answers through
-    // wsGetSpotOnce, whose null is read as a failure and never backs off.
-    const probeRun = (host, accountId, symbolId) => () => (typeof ws.wsProbeSpot === 'function'
-      ? ws.wsProbeSpot(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId)
-      : ws.wsGetSpotOnce(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId))
-    const dropWaiter = (posId) => probes.retain((id) => id !== posId)
-    // I4: a position waiting on an open probe has no verdict yet.
-    const markPending = (receipt, w) => {
-      receipt.state = 'probe_pending'
-      receipt.probeState = w.probe.state === 'queued' ? 'queued' : w.probe.state === 'settled' ? 'landed' : 'in_flight'
-      receipt.lastAttemptAt = iso(w.attemptAt)
-      receipt.waitLateness = w.lateOk
-    }
-
-    // Everything that happens once a position HAS a price — main's code,
-    // unchanged but for the clock the spike detector reads: `quoteAtMs` is
-    // when the price was OBSERVED (a probe's landing; `now()` for the
-    // sidecar, as main), never the pass that consumed it.
-    const evaluateQuoted = async ({ pos, receipt, q, feedKey, lateOk, quoteAtMs, cadenceMs, settleFirst }) => {
-      pricedThisPass.add(pos.id)
-      // V3 PO-M3: the spread at a resting limit's fill, from the quote this
-      // pass already holds — the first Node can read after the fill. Record
-      // only; never throws, never changes what the pass does next.
-      if (isPreFill(pos)) recordLimitFillSpread(db, pos, { quote: q, source: receipt.quoteSource, nowMs: now(), reason: 'quote unavailable (market closed or feed gap)' })
-      const mid = Number.isFinite(q?.bid) && Number.isFinite(q?.ask) && q.bid > 0 && q.ask >= q.bid ? (q.bid + q.ask) / 2 : null
-      if (mid == null) {
-        receipt.lastOutcome = 'quote_unavailable'
-        receipt.state = 'quote_unavailable'
-        noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
-        return 0
-      }
-      noteFastDecision(db, pos, 'active')
-
-      // Frozen-quote watch (FROZEN_QUOTE_MIN, minutes; 0 disables). Only
-      // while the market is open — a flat weekend quote is normal, not a
-      // frozen feed. One alert per episode, self-clearing on movement.
-      const frozenMin = Number(process.env.FROZEN_QUOTE_MIN ?? FROZEN_QUOTE_DEFAULT_MIN)
-      if (frozenMin > 0) {
-        const fq = frozenQuoteUpdate(quoteFreeze.get(feedKey), mid, quoteAtMs, frozenMin * 60_000)
-        quoteFreeze.set(feedKey, fq.rec)
-        if (fq.alert) {
-          let open = true
-          try { open = isSymbolOpenCached(db, pos.symbol).open !== false } catch { /* unknown → assume open, alert */ }
-          if (open) {
-            const mins = Math.round((quoteAtMs - fq.rec.changedAt) / 60_000)
-            const msg = `🧊 Frozen quote: ${pos.symbol} has printed ${mid} unchanged for ${mins}m while its market is open — SL/TP decisions may be running on a stale feed. Held position ${pos.side} from ${pos.entry_price}.`
-            console.warn(`[fast-monitor] ${msg}`)
-            import('./telegram-control.js').then(m => m.notifyOwner(msg)).catch(() => {})
-          } else {
-            // Closed market → not a freeze; restart the episode quietly.
-            quoteFreeze.set(feedKey, { mid, changedAt: quoteAtMs, alerted: false })
-          }
-        } else if (fq.recovered) {
-          console.log(`[fast-monitor] ${pos.symbol}: quote moving again after freeze`)
-        }
-      }
-
-      const prevPrice = lastPriceAt.get(pos.id)
-      if (isSpikeMove(prevPrice?.mid, prevPrice?.at, mid, quoteAtMs)) {
-        spikeUntil.set(feedKey, now() + SPIKE_HOLD_MS)
-        console.log(`[fast-monitor] ${pos.symbol}: volatility spike detected — fast-tracking checks for ${Math.round(SPIKE_HOLD_MS / 60000)}m`)
-      }
-      lastPriceAt.set(pos.id, { mid, at: quoteAtMs })
-
-      // applyManagedRules, same as the slow monitor: this evaluator ran the
-      // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
-      // 0016.HK one minute after HK open — beating the managed trail the
-      // slow loop would have applied 30s later. One ruleset, every evaluator.
-      const eval_ = evaluatePosition(pos, {
-        currentPrice: mid,
-        rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy }),
-        // Same cached ATR the slow monitor reads (PR-J). One ruleset, one
-        // trail basis, every evaluator — the 0016.HK lesson.
-        atr: cachedAtrForSymbol(db, pos.symbol),
-      })
-      s.updatePositionMetrics.run(
-        eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
-        eval_.updates.mae_r ?? pos.mae_r ?? 0,
-        eval_.updates.be_moved ?? pos.be_moved ?? 0,
-        eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
-        pos.id,
-      )
-      touchedThisPass.add(pos.id)
-      checked++
-      if (receipt.cadenceMs == null) receipt.cadenceMs = cadenceMs
-      // V3 M5: the due time this evaluation answers — the carried
-      // nextDueAt, read before it is re-armed below.
-      const dueAtMs = Date.parse(receipt.nextDueAt ?? '')
-      receipt.state = 'evaluated'
-      receipt.lastOutcome = 'evaluated'
-      receipt.action = eval_.action
-      receipt.lastCompletedAt = new Date(now()).toISOString()
-      receipt.nextDueAt = new Date(now() + cadenceMs).toISOString()
-      // Due → evaluated lateness, kept only when the gap began with an
-      // evaluation — main's latenessEligibility, read at the pass that
-      // attempted this evaluation (waitEligibility, I5); the amend below
-      // carries it too, so its round trip is recorded as one composite.
-      const evaluatedAtMs = Date.parse(receipt.lastCompletedAt)
-      noteDueLateness({ dueAtMs, evaluatedAtMs, ...lateOk })
-      const dueTiming = lateOk.eligible ? { dueAtMs, evaluatedAtMs } : { dueAtMs: null, evaluatedAtMs }
-      if (eval_.action === 'HOLD') {
-        // Same truthfulness fix as the main loop's monitor phase (owner:
-        // "why are you not monitoring") — a HOLD verdict used to write
-        // nothing, so a position checked every 30-90s for hours looked
-        // identical in the UI to one that was never touched.
-        s.updatePositionCheck.run('FAST:HOLD', eval_.reason, new Date().toISOString(), 'intact', pos.id)
-        // fix-the-exits BB: a cap HOLD carries its stamp (same helper).
-        loopMod.stampExitMarks(s, pos, eval_, null)
-        return 0
-      }
-      // I1: main finishes every position ahead of this one — probe, verdict,
-      // action — before this action starts; so does this pass.
-      if (settleFirst) await settleEarlier()
-      const actionStart = mono()
-      const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_, 'fast_monitor', dueTiming)
-      const actionMs = Math.max(0, mono() - actionStart)
-      // PR-J stamps from the OUTCOME, same helper as the slow monitor.
-      loopMod.stampExitMarks(s, pos, eval_, outcome)
-      acted++
-      receipt.actionOutcome = outcome.error ? 'error' : outcome.skipped ? 'skipped' : 'reported_success'
-      receipt.error = outcome.error || null
-      const summary = outcome.error
-        ? `${eval_.reason} | broker_error: ${outcome.error}`
-        : outcome.skipped
-          ? `${eval_.reason} | intent_only: ${outcome.reason}`
-          : `${eval_.reason} | broker: ${outcome.summary}`
-      s.updatePositionCheck.run(
-        `FAST:${eval_.action}`,
-        summary,
-        new Date().toISOString(),
-        eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
-        pos.id,
-      )
-      console.log(`[fast-monitor] ${pos.symbol}: ${eval_.action} — ${summary}`)
-      return actionMs
-    }
-
-    // Consume the FIRST waiter, whose probe has landed (I1 order). Its answer
-    // is served once (I2).
-    const consumeHead = async () => {
-      const w = probes.head()
-      if (!w) return
-      const e = entryOf.get(w.posId)
-      try {
-        if (!e) { probes.shift(); return }
-        const route = routeOf(e.pos, e.accountId)
-        if (route.state || route.feedKey !== w.key) { probes.shift(); return } // gated or re-routed since it asked: the loop records why
-        const probe = w.probe
-        const r = probe.result
-        probes.shift()
-        const pos = currentRow(e.pos)
-        if (!pos) return
-        const { receipt } = e
-        delete receipt.probeState
-        delete receipt.waitLateness
-        receipt.quoteSource = 'broker'
-        receipt.lastAttemptAt = iso(w.attemptAt)
-        receipt.lastPricedAt = iso(probe.settledAt)
-        receipt.lastPricingMs = Math.round(probe.durationMs)
-        receipt.lastQuoteSource = 'broker'
-        receipt.lastQuotePick = w.pick ?? null
-        receipt.probeResult = r.kind
-        receipt.probeError = r.kind === 'failed' ? (r.reason ?? null) : null
-        timing.priced++
-        // I6: one broker call is counted once, however many positions it priced.
-        if (!probe.counted) {
-          probe.counted = true
-          quoteCounts.fromBroker++
-          if (probe.pick === 'stale') quoteCounts.stale++
-          timing.brokerQuotes++
-          timing.pricingMs += Math.round(probe.durationMs)
-        }
-        if (r.kind === 'quote') {
-          const actionMs = await evaluateQuoted({ pos, receipt, q: { bid: r.bid, ask: r.ask }, feedKey: w.key, lateOk: w.lateOk, quoteAtMs: probe.settledAt, cadenceMs: w.cadenceMs, settleFirst: false })
-          // Where main's serial loop would be now: past this landing and this action.
-          probes.chainAt = probes.waiters.length ? Math.max(probes.chainAt ?? -Infinity, probe.settledAt) + actionMs : null
-          return
-        }
-        probes.chainAt = probes.waiters.length ? Math.max(probes.chainAt ?? -Infinity, probe.settledAt) : null
-        // No price (I3): recorded exactly as main records a null quote, and
-        // retried on main's cadence. Only `empty` arms the backoff (the board
-        // remembers the kind); a failure never does.
-        pricedThisPass.add(pos.id)
-        if (isPreFill(pos)) recordLimitFillSpread(db, pos, { quote: null, source: 'broker', nowMs: now(), reason: 'quote unavailable (market closed or feed gap)' })
-        receipt.lastOutcome = 'quote_unavailable'
-        receipt.state = 'quote_unavailable'
-        noteFastDecision(db, pos, 'no_quote', r.kind === 'empty'
-          ? `${pos.symbol}: no quote (market closed or feed gap) — checks paused`
-          : `${pos.symbol}: no quote (broker probe failed: ${r.reason}) — checks paused`)
-      } catch (err) {
-        if (probes.head() === w) probes.shift()
-        if (e) {
-          e.receipt.state = 'error'
-          e.receipt.error = err.message
-          e.receipt.lastOutcome = 'error'
-        }
-        console.error('[fast-monitor]', e?.pos?.symbol, err.message)
-      }
-    }
-    // Serve waiters in order while their probes have landed; with `wait`,
-    // wait for each in turn — until `deadlineMs`, or for as long as it takes.
-    // A deadline already reached still yields one zero-delay turn: an answer
-    // that is already in (an instant one) is taken, not left for a pass.
-    // A quote observed more than one tick before main would have observed it
-    // is not acted on as it stands (B1, I1). Main samples a position only
-    // when its serial loop reaches it: after the waiters ahead have landed
-    // and acted — `probes.chainAt`, the end of that chain on this pass's
-    // clock. Such a quote is asked again, together with every landed quote
-    // behind it that is as far behind. So is one a stalled process kept past
-    // two ticks. Never a failure or an empty answer: they carry no price, and
-    // re-asking them one by one would rebuild main's serial chain of timeouts.
-    const agedQuote = (x) => x.probe.state === 'settled' && x.probe.result.kind === 'quote' && (
-      (probes.chainAt != null && probes.chainAt - x.probe.settledAt > probeMaxAgeMs) ||
-      now() - x.probe.settledAt > 2 * probeMaxAgeMs)
-    const consume = async ({ wait = false, deadlineMs = null } = {}) => {
-      for (let guard = 0; guard < 10_000; guard++) {
-        const w = probes.head()
-        if (!w) return
-        if (probes.hasLanded(w) && agedQuote(w)) {
-          for (const x of probes.waiters) if (agedQuote(x)) probes.reprobe(x, probeRun(x.host, x.accountId, x.symbolId), clock)
-        }
-        if (!probes.hasLanded(w)) {
-          if (!wait) return
-          const left = deadlineMs == null ? Infinity : Math.max(0, deadlineMs - now())
-          if (isTimedOut(await raceTimeout(w.probe.settled, left, clock.sleep))) return
-          continue
-        }
-        await consumeHead()
-      }
-    }
-    // Before a broker action: every waiter now open was registered earlier,
-    // so main would have finished it first.
-    const settleEarlier = () => consume({ wait: true })
-    // A read the pass must await (the sidecar pull, a relVol fetch): answers
-    // that land meanwhile are served at once, not after it (I1).
-    const whileConsuming = async (work) => {
-      let done = false
-      const tracked = Promise.resolve().then(work).then(v => { done = true; return { v } }, err => { done = true; return { err } })
-      await consume()
-      while (!done && probes.head()) {
-        await Promise.race([tracked, probes.nextLanding()])
-        if (!done) await consume()
-      }
-      const r = await tracked
-      if ('err' in r) throw r.err
-      return r.v
-    }
-
-    // A waiter whose position left the active set (closed, paused) is dropped.
-    probes.retain((posId) => entryOf.has(posId))
-    // I1 (a): answers that landed since the last pass are acted on FIRST.
-    await consume()
-
-    // The sides are pulled CONCURRENTLY (checker SHOULD 3): two hung sidecars
-    // cost one timeout before the first position is priced, not two.
-    const quotesBySide = new Map()   // side key → Map symbolId → quote
-    const feedAccountBySide = new Map() // side key → the feed's account (its id space), or null
-    await whileConsuming(() => Promise.all([...sidecarSides].map(async (key) => {
-      const isLive = key === 'true' ? true : key === 'false' ? false : null
-      let body = null
-      try { body = typeof exec.sidecarQuotes === 'function' ? await exec.sidecarQuotes(isLive) : null } catch { body = null }
-      quotesBySide.set(key, quoteMapFrom(body))
-      feedAccountBySide.set(key, body && body.feed !== 'absent' && body.accountId != null ? String(body.accountId) : null)
-    })))
-    const lookupId = (pos) => sidecarSymbolIdFor(db, pos, symbolMap, primaryId, acctMapCache, feedAccountBySide.get(String(sideOf(pos))) ?? null)
-
-    for (const { pos, receipt, prior, accountId } of entries) {
       let pricingStart = null
       let priced = false
       const finishPricing = (pickSource) => {
@@ -748,23 +408,28 @@ export async function runFastMonitor(db, creds, deps = {}) {
         if (receipt.quoteSource === 'broker') timing.brokerQuotes++
       }
       try {
-        const route = routeOf(pos, accountId)
-        if (route.state) {
-          dropWaiter(pos.id)
-          receipt.state = route.state
-          if (route.state === 'manage_off') {
-            // V3 PO-M3: a new PRE fill this pass will not price still gets a
-            // record, with the reason no quote was read. Record only.
-            if (isPreFill(pos)) recordLimitFillSpread(db, pos, { nowMs: now(), reason: 'not priced: management off for this strategy' })
-            noteFastDecision(db, pos, 'manage_off', `Live Tweak & Close is OFF for strategy '${pos.strategy}' — position unmonitored by this pass`)
-          } else if (route.state === 'symbol_unmapped') {
-            noteFastDecision(db, pos, 'symbol_unmapped', `${pos.symbol} not in symbol_id_map — no quote, no checks`)
-          }
+        if (pos.source === 'external') { receipt.state = 'observe_only'; continue }
+        if (!manageStageAllows(db, getState, pos.strategy)) {
+          // V3 PO-M3: a new PRE fill this pass will not price still gets a
+          // record, with the reason no quote was read. Record only.
+          if (isPreFill(pos)) recordLimitFillSpread(db, pos, { nowMs: now(), reason: 'not priced: management off for this strategy' })
+          receipt.state = 'manage_off'
+          noteFastDecision(db, pos, 'manage_off', `Live Tweak & Close is OFF for strategy '${pos.strategy}' — position unmonitored by this pass`)
           continue
         }
-        const { host, symbolId, feedKey } = route
-        // An answer for another route or instrument than the position's now is not its answer.
-        if (probes.waiterOf(pos.id) && probes.waiterOf(pos.id).key !== feedKey) dropWaiter(pos.id)
+        const ownMap = accountMap(db, accountId, acctMapCache)
+          ?? ((primaryId == null || String(primaryId) === accountId) && String(creds.accountId) === accountId ? symbolMap : null)
+        const knownSide = acctLive.get(accountId)
+        const host = typeof knownSide === 'boolean' ? (knownSide ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')
+          : accountId === String(creds.accountId) ? creds.host : null
+        const symbolId = ownMap?.[String(pos.symbol).toUpperCase()]
+        const feedKey = `${host}:${accountId}:${symbolId}`
+        if (!host) { receipt.state = 'account_route_unknown'; continue }
+        if (!symbolId) {
+          receipt.state = 'symbol_unmapped'
+          noteFastDecision(db, pos, 'symbol_unmapped', `${pos.symbol} not in symbol_id_map — no quote, no checks`)
+          continue
+        }
 
         // Cadence: owner per-symbol override wins; otherwise volume-aware
         // (relVol cached per symbol for 5 minutes — skipped entirely when an
@@ -776,19 +441,14 @@ export async function runFastMonitor(db, creds, deps = {}) {
           if (!vc || now() - vc.at > VOL_TTL_MS) {
             // V3 M1: timed, with the token-bucket wait reported by the
             // historical step itself (null when it never reached that step).
-            // M7: awaited through whileConsuming — a probe answer landing
-            // during the read is served at once (I1); the fetch's own time is
-            // measured to its own settle, not to the end of that serving.
             let tokenWaitMs = null
             const volStart = mono()
-            let volEnd = null
             try {
-              const byTf = await whileConsuming(() => Promise.resolve(ws.wsGetTrendbarsBatch(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId, ['1m'], 21, 15_000, 0,
-                { onTokenWait: (ms) => { tokenWaitMs = (tokenWaitMs ?? 0) + (Number(ms) || 0) }, purpose: 'fast_monitor_volume' }))
-                .finally(() => { volEnd = mono() }))
+              const byTf = await ws.wsGetTrendbarsBatch(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId, ['1m'], 21, 15_000, 0,
+                { onTokenWait: (ms) => { tokenWaitMs = (tokenWaitMs ?? 0) + (Number(ms) || 0) }, purpose: 'fast_monitor_volume' })
               relVol = relVolFromBars(byTf['1m'] || [])
             } catch { /* unknown volume → middle pace */ }
-            const volMs = Math.round((volEnd ?? mono()) - volStart)
+            const volMs = Math.round(mono() - volStart)
             receipt.lastVolFetchAt = new Date(now()).toISOString()
             receipt.lastVolFetchMs = volMs
             receipt.lastTokenWaitMs = tokenWaitMs == null ? null : Math.round(tokenWaitMs)
@@ -814,59 +474,134 @@ export async function runFastMonitor(db, creds, deps = {}) {
           now() - (lastCheckAt.get(pos.id) || 0) >= effectiveCadenceMs(overrideMin, relVol, baseMin)
         receipt.cadenceMs = effectiveCadenceMs(overrideMin, relVol, baseMin)
         if (!receipt.nextDueAt) receipt.nextDueAt = new Date(now()).toISOString()
-        // I4: a position whose probe is still open has no verdict yet — due
-        // again or not, it is neither re-asked nor recorded.
-        const waiting = probes.waiterOf(pos.id)
-        if (waiting) { markPending(receipt, waiting); continue }
         if (!due) continue
-        // One evaluation per row read: a position priced earlier in this pass
-        // (its previous probe's answer) is re-read before it is priced again.
-        const row = currentRow(pos)
-        if (!row) continue
-        // The eligibility main would read for THIS attempt (I5): the receipt
-        // before it — this pass's own, when this pass already priced it.
-        const lateOk = waitEligibility(pricedThisPass.has(pos.id)
-          ? { nextDueAt: receipt.nextDueAt, lastOutcome: receipt.lastOutcome, state: receipt.state }
-          : prior)
+        receipt.lastAttemptAt = new Date(now()).toISOString()
+        lastCheckAt.set(pos.id, now())
 
         // Sidecar first (fresh within maxAgeMs on the sidecar's receipt
-        // clock), the broker otherwise.
+        // clock), the broker round trip otherwise — exactly as before.
         pricingStart = mono()
         const sidecarId = lookupId(pos)
         const pick = sidecarId == null
           ? { quote: null, source: 'missing' }
           : pickSidecarQuote(quotesBySide.get(String(sideOf(pos))), sidecarId, now(), maxAgeMs)
-        if (pick.quote) {
-          receipt.lastAttemptAt = new Date(now()).toISOString()
-          lastCheckAt.set(pos.id, now())
-          receipt.quoteSource = 'sidecar'
+        let q = pick.quote
+        receipt.quoteSource = q ? 'sidecar' : 'broker'
+        if (q) {
           quoteCounts.fromSidecar++
-          finishPricing(pick.source)
-          await evaluateQuoted({ pos: row, receipt, q: pick.quote, feedKey, lateOk, quoteAtMs: now(), cadenceMs: receipt.cadenceMs, settleFirst: true })
+        } else {
+          if (pick.source === 'stale') quoteCounts.stale++
+          quoteCounts.fromBroker++
+          q = await ws.wsGetSpotOnce(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, symbolId)
+        }
+        finishPricing(pick.source)
+        // V3 PO-M3: the spread at a resting limit's fill, from the quote this
+        // pass already holds — the first Node can read after the fill. Record
+        // only; never throws, never changes what the pass does next.
+        if (isPreFill(pos)) recordLimitFillSpread(db, pos, { quote: q, source: receipt.quoteSource, nowMs: now(), reason: 'quote unavailable (market closed or feed gap)' })
+        const mid = Number.isFinite(q?.bid) && Number.isFinite(q?.ask) && q.bid > 0 && q.ask >= q.bid ? (q.bid + q.ask) / 2 : null
+        if (mid == null) {
+          receipt.lastOutcome = 'quote_unavailable'
+          receipt.state = 'quote_unavailable'
+          noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
           continue
         }
-        // Broker fallback (M7): nothing is priced for this position until its
-        // probe's answer is consumed.
-        pricingStart = null
-        // OD-22's backoff (I3): only after a clean empty answer, only while
-        // the rest of this side streams, never in a spike window. Not an
-        // attempt: re-checked on the next tick, so the probe goes the moment
-        // the backoff ends.
-        const sideFresh = sideHasFreshQuoteExcluding(quotesBySide.get(String(sideOf(pos))), sidecarId, now(), maxAgeMs)
-        if (probes.backoffActive(feedKey, { nowMs: now(), sideHasFreshQuote: sideFresh, spikeActive })) {
-          receipt.state = 'probe_backoff'
-          receipt.probeState = 'backoff'
-          noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: backing off — its last probe was answered with no price while the rest of its side streams (OD-22, at most ${Math.round(probes.backoffMs / 1000)} s)`)
+        noteFastDecision(db, pos, 'active')
+
+        // Frozen-quote watch (FROZEN_QUOTE_MIN, minutes; 0 disables). Only
+        // while the market is open — a flat weekend quote is normal, not a
+        // frozen feed. One alert per episode, self-clearing on movement.
+        const frozenMin = Number(process.env.FROZEN_QUOTE_MIN ?? FROZEN_QUOTE_DEFAULT_MIN)
+        if (frozenMin > 0) {
+          const fq = frozenQuoteUpdate(quoteFreeze.get(feedKey), mid, now(), frozenMin * 60_000)
+          quoteFreeze.set(feedKey, fq.rec)
+          if (fq.alert) {
+            let open = true
+            try { open = isSymbolOpenCached(db, pos.symbol).open !== false } catch { /* unknown → assume open, alert */ }
+            if (open) {
+              const mins = Math.round((now() - fq.rec.changedAt) / 60_000)
+              const msg = `🧊 Frozen quote: ${pos.symbol} has printed ${mid} unchanged for ${mins}m while its market is open — SL/TP decisions may be running on a stale feed. Held position ${pos.side} from ${pos.entry_price}.`
+              console.warn(`[fast-monitor] ${msg}`)
+              import('./telegram-control.js').then(m => m.notifyOwner(msg)).catch(() => {})
+            } else {
+              // Closed market → not a freeze; restart the episode quietly.
+              quoteFreeze.set(feedKey, { mid, changedAt: now(), alerted: false })
+            }
+          } else if (fq.recovered) {
+            console.log(`[fast-monitor] ${pos.symbol}: quote moving again after freeze`)
+          }
+        }
+
+        const prevPrice = lastPriceAt.get(pos.id)
+        if (isSpikeMove(prevPrice?.mid, prevPrice?.at, mid, now())) {
+          spikeUntil.set(feedKey, now() + SPIKE_HOLD_MS)
+          console.log(`[fast-monitor] ${pos.symbol}: volatility spike detected — fast-tracking checks for ${Math.round(SPIKE_HOLD_MS / 60000)}m`)
+        }
+        lastPriceAt.set(pos.id, { mid, at: now() })
+
+        // applyManagedRules, same as the slow monitor: this evaluator ran the
+        // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
+        // 0016.HK one minute after HK open — beating the managed trail the
+        // slow loop would have applied 30s later. One ruleset, every evaluator.
+        const eval_ = evaluatePosition(pos, {
+          currentPrice: mid,
+          rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy }),
+          // Same cached ATR the slow monitor reads (PR-J). One ruleset, one
+          // trail basis, every evaluator — the 0016.HK lesson.
+          atr: cachedAtrForSymbol(db, pos.symbol),
+        })
+        s.updatePositionMetrics.run(
+          eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
+          eval_.updates.mae_r ?? pos.mae_r ?? 0,
+          eval_.updates.be_moved ?? pos.be_moved ?? 0,
+          eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
+          pos.id,
+        )
+        checked++
+        // V3 M5: the due time this evaluation answers — the carried
+        // nextDueAt, read before it is re-armed below.
+        const dueAtMs = Date.parse(receipt.nextDueAt ?? '')
+        receipt.state = 'evaluated'
+        receipt.lastOutcome = 'evaluated'
+        receipt.action = eval_.action
+        receipt.lastCompletedAt = new Date(now()).toISOString()
+        receipt.nextDueAt = new Date(now() + receipt.cadenceMs).toISOString()
+        // Due → evaluated lateness, kept only when the gap began with an
+        // evaluation (latenessEligibility); the amend below carries it too,
+        // so its round trip is recorded as one composite.
+        const evaluatedAtMs = Date.parse(receipt.lastCompletedAt)
+        const lateOk = latenessEligibility(prior)
+        noteDueLateness({ dueAtMs, evaluatedAtMs, ...lateOk })
+        const dueTiming = lateOk.eligible ? { dueAtMs, evaluatedAtMs } : { dueAtMs: null, evaluatedAtMs }
+        if (eval_.action === 'HOLD') {
+          // Same truthfulness fix as the main loop's monitor phase (owner:
+          // "why are you not monitoring") — a HOLD verdict used to write
+          // nothing, so a position checked every 30-90s for hours looked
+          // identical in the UI to one that was never touched.
+          s.updatePositionCheck.run('FAST:HOLD', eval_.reason, new Date().toISOString(), 'intact', pos.id)
+          // fix-the-exits BB: a cap HOLD carries its stamp (same helper).
+          loopMod.stampExitMarks(s, pos, eval_, null)
           continue
         }
-        // The attempt, stamped where main stamps it: the cadence runs from here.
-        receipt.lastAttemptAt = new Date(now()).toISOString()
-        lastCheckAt.set(pos.id, now())
-        const w = probes.register({
-          posId: pos.id, key: feedKey, run: probeRun(host, accountId, symbolId), pick: pick.source,
-          ctx: { lateOk, cadenceMs: receipt.cadenceMs, attemptAt: now(), host, accountId, symbolId, pick: pick.source },
-        }, clock)
-        markPending(receipt, w)
+        const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_, 'fast_monitor', dueTiming)
+        // PR-J stamps from the OUTCOME, same helper as the slow monitor.
+        loopMod.stampExitMarks(s, pos, eval_, outcome)
+        acted++
+        receipt.actionOutcome = outcome.error ? 'error' : outcome.skipped ? 'skipped' : 'reported_success'
+        receipt.error = outcome.error || null
+        const summary = outcome.error
+          ? `${eval_.reason} | broker_error: ${outcome.error}`
+          : outcome.skipped
+            ? `${eval_.reason} | intent_only: ${outcome.reason}`
+            : `${eval_.reason} | broker: ${outcome.summary}`
+        s.updatePositionCheck.run(
+          `FAST:${eval_.action}`,
+          summary,
+          new Date().toISOString(),
+          eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+          pos.id,
+        )
+        console.log(`[fast-monitor] ${pos.symbol}: ${eval_.action} — ${summary}`)
       } catch (err) {
         receipt.state = 'error'
         receipt.error = err.message
@@ -880,20 +615,9 @@ export async function runFastMonitor(db, creds, deps = {}) {
         console.error('[fast-monitor]', pos.symbol, err.message)
       }
     }
-
-    // I1 (d): the end of the pass waits for open probes, in order, until
-    // probeWaitMs after the pass began — an answer inside the tick is acted
-    // on in the pass that asked. What is still open waits for the next pass.
-    await consume({ wait: true, deadlineMs: passStartMs + probeWaitMs })
-    for (const w of probes.waiters) {
-      const e = entryOf.get(w.posId)
-      if (e) markPending(e.receipt, w)
-    }
-
     setState(db, POSITION_WORK_KEY, JSON.stringify({ version: 1, at: new Date(now()).toISOString(),
       positions: work.slice(0, 2048), total: work.length, complete: work.length <= 2048 }))
-    return { checked, acted, completed: true, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size, timing,
-      probes: { pending: probes.waiters.length, inFlight: probes.inflightCount(), queued: probes.queuedCount() } }
+    return { checked, acted, completed: true, positions: positions.length, quotes: quoteCounts, sidecarPulls: sidecarSides.size, timing }
   } finally {
     running = false
   }
@@ -1311,11 +1035,6 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   // volume inside the 50 req/s connection budget.
   const tickMs = deps.tickMs ?? Math.max(1_000, Number(process.env.FAST_MONITOR_MS) || 3_000)
   const bandMs = deps.bandMs ?? Math.max(5_000, Number(process.env.PROTECTION_BAND_MS) || 60_000)
-  // M7: each pass is told its tick — it may wait for its own broker probes
-  // until the tick less a second (never long enough to make the ticker
-  // skip), and a landed quote older than one tick at its turn is asked
-  // again (../lib/fast-monitor-probes.js I1).
-  const passDeps = { ...deps, tickMs }
   const tickSamples = []
   const bandSamples = []
   const tickSkips = []       // { at } per skipped tick, kept for the window
@@ -1410,7 +1129,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     let completed = false
     let timing = null
     try {
-      const r = await runFastMonitor(db, creds, passDeps)
+      const r = await runFastMonitor(db, creds, deps)
       completed = r?.completed === true
       if (r?.quotes) { quotes = r.quotes; checked = r.checked ?? 0 }
       timing = r?.timing ?? null
