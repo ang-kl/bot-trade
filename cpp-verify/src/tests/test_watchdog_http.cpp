@@ -205,15 +205,26 @@ int main() {
     std::filesystem::remove_all(path);
   }
   {
-    // CV-2 fix round nits 2 and 8 at the route's own call: an unmute over a
-    // stale backlog is refused with nothing disposed of; a change that cannot
-    // be persisted answers ok:false state_not_durable (503 at the route). A
-    // mute stays applied in the process; an unmute is undone.
+    // The mute route's durability, at the route's own call (rounds 2 and 3).
+    // Probes every second here, so the run loop's own retries are observable;
+    // the deployment switch is off, so nothing can be sent.
     char path[] = "/tmp/watchdog-durable-XXXXXX"; assert(::mkdtemp(path));
     const auto file = std::string(path) + "/watchdog-state.json";
-    ::setenv("WATCHDOG_ENABLED", "1", 1); ::setenv("VERIFY_JOURNAL_DIR", path, 1);
+    const auto marker = file + ".muted", blocked = file + ".tmp";
+    ::setenv("WATCHDOG_ENABLED", "1", 1); ::setenv("WATCHDOG_MASTER_ENABLED", "0", 1); ::setenv("VERIFY_JOURNAL_DIR", path, 1);
+    ::setenv("WATCHDOG_POLICY_JSON", R"({"probeMs":1000,"serviceGraceMs":1000})", 1);
     const auto read = [&] { std::ifstream in(file); std::stringstream b; b << in.rdbuf(); return b.str(); };
+    // A directory where persist() opens its temp file (or where the marker
+    // goes) makes that write fail — as root too.
+    const auto block = [](const std::string& at) { std::error_code ec; for (int i = 0; i < 500 && !std::filesystem::create_directory(at, ec); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10)); assert(std::filesystem::is_directory(at)); };
+    const auto status = [](verify::Watchdog& w) { // status() answers busy while the run loop holds the lock
+      jsn::Value st;
+      for (int i = 0; i < 400 && (st = w.status()).get("error").asString() == "watchdog_status_busy"; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(25));
+      return st;
+    };
     {
+      // Round 2, nit 2 + round 3, S-2: an unmute over a stale backlog is
+      // refused, nothing is disposed of, and the reply names the remedy.
       const auto now = wallMs();
       { std::ofstream out(file); out << seededState(now, soakEnded(now, true), 2 * 3600000LL); } // one item 2 h old
       verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
@@ -221,37 +232,156 @@ int main() {
       assert(!r.get("ok").asBool() && !r.get("applied").asBool() && r.get("error").asString() == "stale_backlog");
       assert(r.get("delivery").get("muted").asBool() && r.get("delivery").get("staleBacklog").get("count").asNumber() == 1);
       assert(r.get("delivery").get("unmuteRefusal").asString() == "stale_backlog");
-      jsn::Value st; // status() answers busy while the run loop holds the lock
-      for (int i = 0; i < 200 && (st = w.status()).get("error").asString() == "watchdog_status_busy"; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(25));
-      assert(st.get("outbox").get("fixture:gate:1").isObject()); // nothing disposed of
+      assert(r.get("remedy").asString().find("dispose(createdBefore) route") != std::string::npos
+        && r.get("remedy").asString().find("not built yet") != std::string::npos);
+      assert(status(w).get("outbox").get("fixture:gate:1").isObject()); // nothing disposed of
     }
     {
+      // Round 3, S-1: an unmute that cannot be recorded is undone, and the
+      // undo holds across a restart: the marker is written (the failed write
+      // may already have renamed an unmuted file into place), so a restart
+      // comes up muted whatever the file says.
       const auto now = wallMs();
       { std::ofstream out(file); out << seededState(now, soakEnded(now, true)); } // the item is 5 s old: not stale
       const auto before = read();
-      // persist() cannot open its temp file while a directory stands there.
-      // Blocked BEFORE start, so no write of the run loop's can race it.
-      const auto blocked = file + ".tmp";
-      const auto block = [&] { std::error_code ec; for (int i = 0; i < 500 && !std::filesystem::create_directory(blocked, ec); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10)); assert(std::filesystem::is_directory(blocked)); };
-      block();
-      verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
-      const auto u = w.setMuted(false);
-      assert(!u.get("ok").asBool() && !u.get("applied").asBool() && !u.get("durable").asBool() && u.get("error").asString() == "state_not_durable");
-      assert(u.get("delivery").get("muted").asBool() && !u.get("delivery").get("open").asBool()); // undone
-      assert(read() == before);
+      block(blocked); // before start, so no write of the run loop's can race it
+      {
+        verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
+        const auto u = w.setMuted(false);
+        assert(!u.get("ok").asBool() && !u.get("applied").asBool() && !u.get("durable").asBool() && u.get("error").asString() == "state_not_durable");
+        assert(u.get("restartSafe").asBool() && u.get("markerRecorded").asBool() && u.get("fallback").isNull());
+        assert(u.get("delivery").get("muted").asBool() && !u.get("delivery").get("open").asBool()); // undone
+        assert(read() == before && std::filesystem::exists(marker));
+      }
       std::filesystem::remove(blocked);
-      // (Read from the replies: status() answers busy while the run loop holds the lock.)
-      const auto opened = w.setMuted(false);
-      assert(opened.get("ok").asBool() && opened.get("durable").asBool() && opened.get("delivery").get("open").asBool());
-      block();
-      const auto m = w.setMuted(true);
-      assert(!m.get("ok").asBool() && m.get("applied").asBool() && !m.get("durable").asBool() && m.get("error").asString() == "state_not_durable");
-      assert(m.get("delivery").get("muted").asBool() && !m.get("delivery").get("open").asBool()); // applied in this process
-      assert(read().find("\"muted\":false") != std::string::npos); // ... and not on disk: a restart would reopen it
-      std::filesystem::remove(blocked);
-      const auto ok = w.setMuted(true);
-      assert(ok.get("ok").asBool() && ok.get("durable").asBool() && read().find("\"muted\":true") != std::string::npos);
+      {
+        verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start(); // the restart: muted by the marker
+        assert(status(w).get("delivery").get("muted").asBool());
+        // Written, the unmute applies — and it takes the marker away.
+        const auto opened = w.setMuted(false);
+        assert(opened.get("ok").asBool() && opened.get("durable").asBool() && opened.get("restartSafe").asBool() && opened.get("delivery").get("open").asBool());
+        assert(!std::filesystem::exists(marker) && read().find("\"muted\":false") != std::string::npos);
+      }
     }
+    {
+      // Round 3, B2: a mute whose state write fails still holds across a
+      // restart, through the marker. (Round 2 left the disk saying unmuted and
+      // a restart reopened delivery.)
+      block(blocked);
+      {
+        verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
+        assert(status(w).get("delivery").get("open").asBool()); // unmuted on disk, from the case above
+        const auto m = w.setMuted(true);
+        assert(!m.get("ok").asBool() && m.get("applied").asBool() && !m.get("durable").asBool() && m.get("error").asString() == "state_not_durable");
+        assert(m.get("restartSafe").asBool() && m.get("markerRecorded").asBool() && m.get("fallback").isNull());
+        assert(m.get("delivery").get("muted").asBool() && !m.get("delivery").get("open").asBool()); // applied in this process
+        assert(read().find("\"muted\":false") != std::string::npos && std::filesystem::exists(marker)); // the file is behind; the marker is not
+        assert(!status(w).get("muteNotDurable").asBool());
+      }
+      std::filesystem::remove(blocked); // the volume is writable again
+      {
+        verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
+        const auto d = status(w).get("delivery");
+        assert(d.get("muted").asBool() && !d.get("open").asBool()); // no reopening without an explicit unmute
+        assert(read().find("\"muted\":true") != std::string::npos); // and the file caught up at boot
+      }
+    }
+    {
+      // Round 3, B2's floor: NEITHER write lands (the temp file and the marker
+      // both blocked). The mute holds in this process; the reply says a restart
+      // might lose it and names the restart-proof fallback; muteNotDurable shows
+      // until a write lands — which the run loop retries every cycle: first the
+      // marker (the state file still blocked), then, separately, the state.
+      std::filesystem::remove(marker);
+      {
+        verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
+        assert(w.setMuted(false).get("ok").asBool()); // start open
+        block(blocked); block(marker);
+        const auto m = w.setMuted(true);
+        assert(!m.get("ok").asBool() && m.get("applied").asBool() && !m.get("durable").asBool() && !m.get("restartSafe").asBool() && !m.get("markerRecorded").asBool());
+        assert(m.get("fallback").asString().find("WATCHDOG_MASTER_ENABLED=0") != std::string::npos);
+        auto st = status(w);
+        assert(st.get("muteNotDurable").asBool() && st.get("muteFallback").asString().find("WATCHDOG_MASTER_ENABLED=0") != std::string::npos);
+        assert(st.get("delivery").get("muted").asBool());
+        std::filesystem::remove(marker); // the marker can be written again; the state file still cannot
+        for (int i = 0; i < 200 && (st = status(w)).get("muteNotDurable").asBool(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        assert(!st.get("muteNotDurable").asBool() && std::filesystem::exists(marker) && !std::filesystem::is_directory(marker));
+        assert(read().find("\"muted\":false") != std::string::npos); // settled by the marker alone
+        // Again, now settled by the STATE write: unmute, then block both and mute.
+        std::filesystem::remove(blocked);
+        assert(w.setMuted(false).get("ok").asBool() && !std::filesystem::exists(marker));
+        block(blocked); block(marker);
+        assert(!w.setMuted(true).get("restartSafe").asBool() && status(w).get("muteNotDurable").asBool());
+        std::filesystem::remove(blocked); // the state file can be written; the marker still cannot
+        for (int i = 0; i < 200 && (st = status(w)).get("muteNotDurable").asBool(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        assert(!st.get("muteNotDurable").asBool() && read().find("\"muted\":true") != std::string::npos);
+      }
+      std::filesystem::remove(marker);
+    }
+    {
+      // Round 3, S-1's other half: the unmuted state is written but the marker
+      // cannot be removed (a non-empty directory stands at its path). The
+      // unmute is undone and the muted state re-written; a restart stays muted.
+      std::filesystem::create_directories(marker + "/keep");
+      {
+        verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
+        assert(status(w).get("delivery").get("muted").asBool()); // the directory counts as the marker
+        const auto u = w.setMuted(false);
+        assert(!u.get("ok").asBool() && !u.get("applied").asBool() && u.get("error").asString() == "mute_marker_not_removed");
+        assert(u.get("durable").asBool() && u.get("restartSafe").asBool() && u.get("delivery").get("muted").asBool());
+        assert(read().find("\"muted\":true") != std::string::npos);
+      }
+      std::filesystem::remove_all(marker);
+    }
+    ::unsetenv("WATCHDOG_POLICY_JSON");
+    std::filesystem::remove_all(path);
+  }
+  {
+    // Round 3, B2 end to end, as the re-check reproduced it: delivery open
+    // (unmuted after the soak, one urgent item queued), a mute while the state
+    // file cannot be written, then a restart with the volume writable again
+    // and EVERY other gate open. Round 2 came back unmuted and sent (a CONNECT
+    // to api.telegram.org); now the marker holds the mute and nothing leaves.
+    char path[] = "/tmp/watchdog-restart-XXXXXX"; assert(::mkdtemp(path));
+    const auto file = std::string(path) + "/watchdog-state.json";
+    ::setenv("WATCHDOG_ENABLED", "1", 1); ::setenv("VERIFY_JOURNAL_DIR", path, 1);
+    ::setenv("WATCHDOG_POLICY_JSON", R"({"probeMs":1000,"serviceGraceMs":1000})", 1);
+    { std::ofstream out(file); out << seededState(wallMs(), soakEnded(wallMs(), false)); }
+    std::filesystem::create_directory(file + ".tmp");
+    {
+      ::setenv("WATCHDOG_MASTER_ENABLED", "0", 1); // this first process cannot send before the mute lands
+      verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
+      const auto m = w.setMuted(true);
+      assert(m.get("applied").asBool() && !m.get("durable").asBool() && m.get("restartSafe").asBool());
+    }
+    std::filesystem::remove(file + ".tmp");
+    ::setenv("WATCHDOG_MASTER_ENABLED", "1", 1); ::setenv("WATCHDOG_INCIDENT_OWNER", "cpp-verify", 1);
+    ::setenv("WATCHDOG_TELEGRAM_TOKEN", "fixture-token", 1); ::setenv("WATCHDOG_TELEGRAM_CHAT_ID", "1", 1);
+    Server proxy("{}", 0, 403);
+    const auto via = "http://127.0.0.1:" + std::to_string(proxy.port);
+    ::setenv("HTTPS_PROXY", via.c_str(), 1); ::setenv("https_proxy", via.c_str(), 1);
+    double attempts = 0; std::set<double> cycles; bool muted = false, open = true, urgentAllowed = true;
+    {
+      verify::Watchdog w([] { return jsn::Value(jsn::Object{}); }); w.start();
+      const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+      while (std::chrono::steady_clock::now() < until && cycles.size() < 4) {
+        const auto st = w.status();
+        if (st.get("error").asString() != "watchdog_status_busy") {
+          cycles.insert(st.get("services").get("node").get("attemptedAtMs").asNumber());
+          attempts = 0; for (const auto& [id, item] : st.get("outbox").asObject()) attempts += item.get("attempts").asNumber();
+          muted = st.get("delivery").get("muted").asBool(); open = st.get("delivery").get("open").asBool();
+          urgentAllowed = st.get("effectivePolicyAllowsUrgent").asBool();
+          if (attempts > 0) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+    }
+    ::shutdown(proxy.fd, SHUT_RDWR); proxy.worker.join();
+    assert(muted && !open && !urgentAllowed);
+    assert(attempts == 0 && proxy.request.find("CONNECT api.telegram.org:443") == std::string::npos);
+    assert(cycles.size() >= 4); // three probe cycles with every gate but the mute open
+    for (const auto key : {"HTTPS_PROXY", "https_proxy", "WATCHDOG_TELEGRAM_TOKEN", "WATCHDOG_TELEGRAM_CHAT_ID", "WATCHDOG_POLICY_JSON", "WATCHDOG_INCIDENT_OWNER"}) ::unsetenv(key);
+    ::setenv("WATCHDOG_MASTER_ENABLED", "0", 1);
     std::filesystem::remove_all(path);
   }
   std::cout << "bounded HTTP and durable exclusive watchdog state passed\n";

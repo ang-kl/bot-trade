@@ -75,6 +75,18 @@ bool WatchState::restore(const jsn::Value& s) {
   wouldSendInfo_ = number(w.get("info")); wouldSendSinceMs_ = number(w.get("sinceMs"));
   const auto& f = d.get("refused");
   refusedUrgent_ = number(f.get("urgent")); refusedWarning_ = number(f.get("warning")); refusedInfo_ = number(f.get("info"));
+  // Round 3 (B1): the modelled sender's queue and counters. A queue that is
+  // not a bounded set of well-formed items restores empty (as at a first
+  // boot), never failing the file: it is a model, not the outbox.
+  const auto& m = d.get("model");
+  model_.clear();
+  bool modelValid = m.get("queue").isObject() && m.get("queue").asObject().size() <= 512;
+  if (modelValid) for (const auto& [id, item] : m.get("queue").asObject())
+    if (id.empty() || item.get("incidentId").asString().empty() || !item.get("severity").isString() || !item.get("createdAtMs").isNumber()) modelValid = false;
+  if (modelValid) model_ = copy(m.get("queue")).asObject();
+  modelDropped_ = number(m.get("dropped"));
+  const auto& g = d.get("wouldDeliver");
+  deliverUrgent_ = number(g.get("urgent")); deliverWarning_ = number(g.get("warning")); deliverInfo_ = number(g.get("info"));
   return true;
 }
 jsn::Value WatchState::snapshot() const {
@@ -84,7 +96,16 @@ jsn::Value WatchState::snapshot() const {
       {"soakStartedAtMs", soakStartedAtMs_}, {"soakEndsAtMs", soakEndsAtMs_},
       {"wouldSend", jsn::Object{{"urgent", wouldSendUrgent_}, {"warning", wouldSendWarning_},
         {"info", wouldSendInfo_}, {"sinceMs", wouldSendSinceMs_}}},
-      {"refused", jsn::Object{{"urgent", refusedUrgent_}, {"warning", refusedWarning_}, {"info", refusedInfo_}}}}}}));
+      {"refused", jsn::Object{{"urgent", refusedUrgent_}, {"warning", refusedWarning_}, {"info", refusedInfo_}}},
+      {"wouldDeliver", jsn::Object{{"urgent", deliverUrgent_}, {"warning", deliverWarning_}, {"info", deliverInfo_}}},
+      {"model", jsn::Object{{"queue", model_}, {"dropped", modelDropped_}}}}}}));
+}
+void WatchState::resetWindow(long long now) {
+  wouldSendUrgent_ = wouldSendWarning_ = wouldSendInfo_ = 0;
+  refusedUrgent_ = refusedWarning_ = refusedInfo_ = 0;
+  deliverUrgent_ = deliverWarning_ = deliverInfo_ = modelDropped_ = 0;
+  model_.clear(); // the model starts each window empty, as at a first boot
+  wouldSendSinceMs_ = now;
 }
 void WatchState::beginSoak(long long now) {
   // A start dated after this boot's clock (a clock that ran ahead, or an
@@ -94,7 +115,10 @@ void WatchState::beginSoak(long long now) {
   if (soakStartedAtMs_ > 0) return; // a restart never restarts the soak
   soakStartedAtMs_ = now; soakEndsAtMs_ = now + policy_.soakMs;
   muted_ = true; mutedAtMs_ = now;
-  if (wouldSendSinceMs_ == 0) wouldSendSinceMs_ = now;
+  // A new soak is a new reading (round 3, S-3): counts carried from a soak
+  // that was rejected (dated ahead of the clock) or never trusted are not
+  // this soak's, and a rate base dated in the future left the rates null.
+  resetWindow(now);
 }
 bool WatchState::deliveryOpen(long long now) const {
   return !muted_ && soakStartedAtMs_ > 0 && now >= soakEndsAtMs_;
@@ -104,7 +128,10 @@ jsn::Value WatchState::releasable(long long now) const {
   return nextDelivery(now);
 }
 std::string WatchState::setMuted(bool muted, long long now) {
-  if (muted) { if (!muted_) mutedAtMs_ = now; muted_ = true; return ""; }
+  // A re-mute of an open verifier starts a new counting window (round 3): the
+  // counts and rate base of an earlier closed window, and the open time in
+  // between, are not this window's reading.
+  if (muted) { if (!muted_) { mutedAtMs_ = now; resetWindow(now); } muted_ = true; return ""; }
   if (soakStartedAtMs_ == 0 || now < soakEndsAtMs_) return "soak_active";
   // Fix-round nit 2. An unmute releases what the mute held, oldest urgent
   // first, one per probe cycle: a fresh urgent incident would wait behind the
@@ -136,6 +163,7 @@ jsn::Value WatchState::deliveryStatus(long long now) const {
   // What an unmute requested now would answer (null: it would apply).
   const jsn::Value unmuteRefusal = !muted_ ? jsn::Value() : soakActive ? jsn::Value("soak_active")
     : number(stale.get("count")) > 0 ? jsn::Value("stale_backlog") : jsn::Value();
+  const auto delivered = deliverUrgent_ + deliverWarning_ + deliverInfo_;
   return jsn::Value(jsn::Object{{"muted", muted_}, {"open", deliveryOpen(now)},
     {"reason", deliveryOpen(now) ? "open" : soakStartedAtMs_ == 0 ? "soak_not_started" : soakActive ? "soak_active" : "muted_after_soak_explicit_unmute_required"},
     {"mutedAtMs", mutedAtMs_ ? jsn::Value(mutedAtMs_) : jsn::Value()}, {"unmutedAtMs", unmutedAtMs_ ? jsn::Value(unmutedAtMs_) : jsn::Value()},
@@ -147,6 +175,18 @@ jsn::Value WatchState::deliveryStatus(long long now) const {
       {"urgentPerHour", perHour(wouldSendUrgent_)}, {"totalPerHour", perHour(total)}}},
     {"refused", jsn::Object{{"urgent", refusedUrgent_}, {"warning", refusedWarning_}, {"info", refusedInfo_},
       {"total", refusedUrgent_ + refusedWarning_ + refusedInfo_}}},
+    // Round 3 (B1): what an open verifier would DELIVER — the modelled
+    // sender, one message a probe cycle — beside the demand above. `pending`
+    // is the model's queue now; `dropped` its bound refusals and evictions.
+    {"wouldDeliver", jsn::Object{{"urgent", deliverUrgent_}, {"warning", deliverWarning_}, {"info", deliverInfo_},
+      {"total", delivered}, {"urgentPerHour", perHour(deliverUrgent_)}, {"totalPerHour", perHour(delivered)},
+      {"pending", static_cast<long long>(model_.size())}, {"dropped", modelDropped_}}},
+    {"sendCeilingPerHour", std::round(3600000.0 / policy_.probeMs * 100) / 100},
+    // Demand the one-per-cycle sender has not delivered: queued behind the
+    // ceiling, dropped at the bound, or folded into a message still pending.
+    // A burst that drains clears it; a drop or a folded repeat keeps it set
+    // for the rest of the window.
+    {"saturated", total > delivered},
     {"staleBacklog", stale}, {"unmuteRefusal", unmuteRefusal},
     {"outboxPending", static_cast<long long>(outbox_.size())}});
 }
@@ -186,6 +226,47 @@ void WatchState::offer(const std::string& id, jsn::Value& rec, const std::string
   const auto& severity = rec.get("severity").asString();
   ++(severity == "urgent" ? refusedUrgent_ : severity == "warning" ? refusedWarning_ : refusedInfo_);
 }
+// Round 3 (B1): the modelled sender. enqueue()'s bound and eviction exactly,
+// on the model's queue and the open verifier's own serial.
+void WatchState::modelOffer(const std::string& id, jsn::Value& rec, long long now) {
+  const auto& severity = rec.get("severity").asString();
+  if (model_.size() >= 512 && severity == "urgent") {
+    auto old = std::find_if(model_.begin(), model_.end(), [](const auto& kv) { return kv.second.get("severity").asString() != "urgent"; });
+    if (old != model_.end()) { model_.erase(old); ++modelDropped_; }
+  }
+  if (model_.size() >= 512) { ++modelDropped_; return; }
+  const auto serial = number(rec.get("modelSerial")) + 1;
+  rec.set("modelSerial", serial); rec.set("modelLastQueuedAtMs", now);
+  model_[id + ":" + std::to_string(serial)] = jsn::Value(jsn::Object{{"incidentId", id}, {"severity", severity}, {"createdAtMs", now}});
+}
+bool WatchState::modelPending(const std::string& id) const {
+  // Model ids are `incidentId:serial`, so an incident's items sit together
+  // under its prefix; the incidentId check excludes a longer id that shares it.
+  const auto prefix = id + ":";
+  for (auto it = model_.lower_bound(prefix); it != model_.end() && it->first.compare(0, prefix.size(), prefix) == 0; ++it)
+    if (it->second.get("incidentId").asString() == id) return true;
+  return false;
+}
+void WatchState::modelRelease(long long now) {
+  // nextDelivery()'s order exactly (an accepted item is never retried, so its
+  // nextAtMs is its createdAtMs and its attempts 0): urgent first; within a
+  // severity the oldest; a tie keeps the first in id order.
+  auto best = model_.end();
+  for (auto it = model_.begin(); it != model_.end(); ++it) {
+    const auto& item = it->second;
+    if (number(item.get("createdAtMs")) > now) continue;
+    if (best == model_.end()) { best = it; continue; }
+    const auto& b = best->second;
+    if ((item.get("severity").asString() == "urgent" && b.get("severity").asString() != "urgent")
+        || (item.get("severity").asString() == b.get("severity").asString() && number(item.get("createdAtMs")) < number(b.get("createdAtMs")))) best = it;
+  }
+  if (best == model_.end()) return;
+  if (!deliveryOpen(now)) {
+    const auto& severity = best->second.get("severity").asString();
+    ++(severity == "urgent" ? deliverUrgent_ : severity == "warning" ? deliverWarning_ : deliverInfo_);
+  }
+  model_.erase(best);
+}
 void WatchState::incident(const std::string& id, bool bad, const std::string& severity,
                           const jsn::Value& evidence, long long now, bool once) {
   auto it = incidents_.find(id);
@@ -195,10 +276,20 @@ void WatchState::incident(const std::string& id, bool bad, const std::string& se
     it = incidents_.emplace(id, jsn::Value(jsn::Object{{"active", false}, {"serial", 0}})).first;
   }
   auto& r = it->second;
+  // The modelled sender's per-incident state starts from this record's own
+  // (the open verifier restoring the same file), before anything is queued.
+  if (!r.get("modelSerial").isNumber()) { r.set("modelSerial", number(r.get("serial"))); r.set("modelLastQueuedAtMs", number(r.get("lastQueuedAtMs"))); }
   const bool was = r.get("active").asBool();
   const bool deteriorated = was && r.get("severity").asString() != "urgent" && severity == "urgent";
   r.set("detail", copy(evidence)); r.set("severity", severity); r.set("lastObservedAtMs", now);
   if (bad) {
+    // The open verifier's offer, on its own serial, pending check and repeat
+    // clock — ahead of the once-notice return below, which reads this
+    // outbox's serial, not the open verifier's.
+    const auto modelSerial = number(r.get("modelSerial"));
+    if (once ? modelSerial == 0
+        : (!was || deteriorated || (!modelPending(id) && now - number(r.get("modelLastQueuedAtMs")) >= policy_.repeatMs)))
+      modelOffer(id, r, now);
     if (once && number(r.get("serial")) > 0) return;
     r.set("active", true);
     if (!was) r.set("openedAtMs", now);
@@ -214,7 +305,7 @@ void WatchState::incident(const std::string& id, bool bad, const std::string& se
       offer(id, r, !was ? "opened" : deteriorated ? "escalated" : "still_active", now);
   } else if (was) {
     r.set("active", false); r.set("resolvedAtMs", now);
-    if (!once) { wouldSend(r, now); offer(id, r, "recovered", now); }
+    if (!once) { wouldSend(r, now); modelOffer(id, r, now); offer(id, r, "recovered", now); }
   }
 }
 void WatchState::probe(const std::string& service, bool reachable, const jsn::Value& contract, long long now) {
@@ -346,6 +437,11 @@ void WatchState::evaluate(long long now) {
         || (it->first.find(":no_orders:") != std::string::npos && now - number(it->second.get("openedAtMs"), now) > 30LL * 86400000)) it = incidents_.erase(it);
     else ++it;
   }
+  // Round 3 (B1): evaluate() closes the probe cycle — the run loop calls it
+  // once a cycle, after the probes and protection() made every offer and
+  // before it selects its own one delivery — so the modelled sender releases
+  // its one item here.
+  modelRelease(now);
 }
 void WatchState::protection(const jsn::Value& report, long long now) {
   std::set<std::string> observed;

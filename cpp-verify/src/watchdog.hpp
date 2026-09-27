@@ -35,7 +35,9 @@ public:
   // the deployment switch or the credentials say.
   // restore() has no clock. beginSoak(now), called at every boot right after
   // it, is where a restored soak meets the clock: a start dated in the future
-  // is rejected and the soak begins now, muted (fix-round nit 5).
+  // is rejected and the soak begins now, muted (fix-round nit 5). A soak that
+  // begins starts a new counting window: counters, rate base and the modelled
+  // sender reset with it (round 3, S-3).
   void beginSoak(long long now);
   bool deliveryOpen(long long now) const;
   jsn::Value releasable(long long now) const;
@@ -71,6 +73,13 @@ private:
   void offer(const std::string& id, jsn::Value& record, const std::string& transition, long long now);
   // One message an open verifier would send for this incident now.
   void wouldSend(jsn::Value& record, long long now);
+  // The modelled sender (round 3, B1): the open verifier's own offer for this
+  // incident, into the model queue, and its one release per probe cycle.
+  void modelOffer(const std::string& id, jsn::Value& record, long long now);
+  bool modelPending(const std::string& id) const;
+  void modelRelease(long long now);
+  // A new counting window: every counter, the rate base and the model queue.
+  void resetWindow(long long now);
   // Outbox items created more than repeatMs before `now`: {count, oldestCreatedAtMs}.
   jsn::Value staleBacklog(long long now) const;
   WatchPolicy policy_;
@@ -81,18 +90,30 @@ private:
   long long dropped_ = 0;
   bool muted_ = true;
   long long mutedAtMs_ = 0, unmutedAtMs_ = 0, soakStartedAtMs_ = 0, soakEndsAtMs_ = 0;
-  // Would-send counters (V3 CV-2 fix round): what an open verifier would have
-  // SENT while delivery is closed, by severity — one per opened, escalated or
-  // recovered transition and at most one still_active repeat per incident per
-  // repeatMs. Kept on each incident's own schedule (`wouldSendAtMs`), apart
-  // from the outbox: a refused item is never counted again, and an item held
-  // pending by the mute does not hide the repeats an open verifier would have
-  // sent. The soak's would-send rate (OD-10: urgent alerts only).
+  // Would-send counters — DEMAND (V3 CV-2 fix round): the messages due while
+  // delivery is closed, by severity — one per opened, escalated or recovered
+  // transition and at most one still_active repeat per incident per repeatMs.
+  // Kept on each incident's own schedule (`wouldSendAtMs`), apart from the
+  // outbox: a refused item is never counted again, and an item held pending by
+  // the mute does not hide the repeats that fall due. Demand has no ceiling:
+  // once more than one message a probe cycle is due, an open verifier sends
+  // fewer (round 3, B1) — that is wouldDeliver's reading, below.
   long long wouldSendUrgent_ = 0, wouldSendWarning_ = 0, wouldSendInfo_ = 0, wouldSendSinceMs_ = 0;
   // Refusals by the 512-item bound, THROTTLED: one per would-send refused,
   // however many cycles its retry is refused again. The retry itself is not
   // delayed (lastQueuedAtMs stays untouched until an item is stored).
   long long refusedUrgent_ = 0, refusedWarning_ = 0, refusedInfo_ = 0;
+  // The modelled sender (round 3, B1): WHAT AN OPEN VERIFIER WOULD DELIVER.
+  // Every offer the open verifier would make — on its own serial, pending
+  // check and repeat clock per incident (`modelSerial`,
+  // `modelLastQueuedAtMs`), not this outbox's — goes into model_, with the
+  // real 512 bound and eviction; evaluate() then releases one item, as the run
+  // loop releases one a probe cycle, in nextDelivery()'s order (urgent first,
+  // then the oldest), accepted. Ids are the open verifier's own
+  // (`incidentId:serial`), so ties break as they would there. Kept whether
+  // delivery is open or closed; counted only while closed.
+  std::map<std::string, jsn::Value> model_;
+  long long deliverUrgent_ = 0, deliverWarning_ = 0, deliverInfo_ = 0, modelDropped_ = 0;
   jsn::Value nodeEntryDiagnostics_;
   long long nodeEntryDiagnosticsAtMs_ = 0;
 };
@@ -110,15 +131,32 @@ public:
   void start();
   jsn::Value status();
   // Verifier-local mute (POST /watchdog/mute). Works with Node down. Returns
-  // {ok, applied, durable, error?, delivery}. Unmuting is refused during the
-  // soak and while the outbox holds a stale backlog. ok is true only when the
-  // change is applied AND persisted: a mute that cannot be persisted stays
-  // applied in this process (nothing is selected for delivery) and answers
-  // ok:false "state_not_durable"; an unmute that cannot be persisted is undone.
+  // {ok, applied, durable, restartSafe, error?, fallback?, delivery}. Unmuting
+  // is refused during the soak and while the outbox holds a stale backlog.
+  // ok is true only when the change is applied, persisted AND survives a
+  // restart. A MUTE is recorded twice: the marker file (an empty file beside
+  // the state, the likeliest write to succeed) and the state file; a restart
+  // with the marker present comes up muted whatever the state file says. So a
+  // mute holds across a restart if EITHER write succeeded (restartSafe), and
+  // stays applied in this process either way. If neither did, the reply says
+  // restartSafe:false and names the restart-proof fallback; muteNotDurable
+  // shows on /health and /watchdog-status, and every probe cycle retries both
+  // writes until one lands. An UNMUTE is applied only when the state file is
+  // persisted AND the marker removed; otherwise it is undone, the marker is
+  // re-written and the state re-persisted muted (round 3, B2 and S-1).
   jsn::Value setMuted(bool muted);
 private:
   void run(std::stop_token stop);
   bool persist();
+  // The mute marker, `<state>.muted` (round 3, B2): written (and its
+  // directory entry synced) before a mute's state write; removed only after
+  // an unmute's state write succeeded.
+  bool writeMuteMarker();
+  bool removeMuteMarker();
+  bool muteMarkerPresent() const;
+  // A mute this process holds that a restart might lose: no marker and no
+  // muted state file reached the disk. Cleared by the next write that lands.
+  bool muteNotDurable_ = false;
   std::function<jsn::Value()> protection_;
   WatchState state_;
   std::mutex mutex_;

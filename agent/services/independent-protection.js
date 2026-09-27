@@ -38,10 +38,15 @@ export function watchdogDeliveryDetail(status) {
   const obj = k => (d[k] && typeof d[k] === 'object' ? d[k] : null)
   // CV-2 fix round: `refused` (throttled bound refusals), `staleBacklog` and
   // `unmuteRefusal` (what an unmute would answer now) ride the beat too.
+  // Round 3: `wouldSend` is DEMAND; `wouldDeliver` is what an open verifier
+  // would deliver at its ceiling of one a probe cycle (`sendCeilingPerHour`),
+  // `saturated` when demand outran it; `muteNotDurable` when a mute this
+  // process holds has not reached the disk (a restart might lose it).
   return { muted: d.muted, open: d.open === true, reason: pick('reason'), soakActive: pick('soakActive'),
     soakStartedAtMs: pick('soakStartedAtMs'), soakEndsAtMs: pick('soakEndsAtMs'), soakRemainingMs: pick('soakRemainingMs'),
-    wouldSend: obj('wouldSend'), refused: obj('refused'), staleBacklog: obj('staleBacklog'), unmuteRefusal: pick('unmuteRefusal'),
-    outboxPending: pick('outboxPending'), stateBytes: status.stateBytes ?? null,
+    wouldSend: obj('wouldSend'), wouldDeliver: obj('wouldDeliver'), sendCeilingPerHour: pick('sendCeilingPerHour'), saturated: pick('saturated'),
+    refused: obj('refused'), staleBacklog: obj('staleBacklog'), unmuteRefusal: pick('unmuteRefusal'),
+    outboxPending: pick('outboxPending'), stateBytes: status.stateBytes ?? null, muteNotDurable: status.muteNotDurable ?? null,
     enabled: status.enabled ?? null, durable: status.durable ?? null, error: status.error || null }
 }
 

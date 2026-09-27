@@ -997,15 +997,20 @@ export const RULES = Object.freeze([
     //     flushDecision never flushes while off (:257), so 57,750 rows sat
     //     unsent from 2026-08-22 10:39 UTC;
     //   watchdog: cpp-verify delivers only with its delivery switch, incident
-    //     owner and credentials on (watchdog.cpp:146, :157), and the Node
+    //     owner and credentials on (watchdog.cpp:180, :191), and the Node
     //     policy it relays (masterEnabled) was off — all four read false —
     //     so its outbox held 512/512 never attempted and every new item was
-    //     dropped (watchdog_state.cpp:163-167): 1,526,163.
+    //     dropped (watchdog_state.cpp:203-207): 1,526,163.
     // v3 (V3 CV-2 fix round nit 3): cpp-verify's own delivery MUTE is a fifth
     // holding setting. Muted by default through the 24 h soak and until an
-    // explicit POST /watchdog/mute after it (watchdog_state.cpp:99-100,
-    // :106-120), it holds the outbox by design; only `delivery.muted` reading
+    // explicit POST /watchdog/mute after it (watchdog_state.cpp:123-124,
+    // :130-146), it holds the outbox by design; only `delivery.muted` reading
     // TRUE holds — absent (a verifier before CV-2, a busy reply) is unknown.
+    // Round 3 (S-2): after the soak, an unmute is REFUSED while the held
+    // backlog is stale (older than repeatMs), and the dispose route that would
+    // clear it is not built — so a mute nobody can lift is a codebase-built
+    // blockage (owner principle 3), not a setting: the defect, named, unless
+    // another setting holds the channel anyway (then held, with it named).
     // Such a channel is class 'held_by_setting' — NOT a violation, so not in
     // the stuck headline, and still named in this rule (classes, info, note),
     // the goal row and the daily line with the setting, the unsent count, the
@@ -1016,7 +1021,7 @@ export const RULES = Object.freeze([
     // read by telegram-digest.js digestState — the reader GET
     // /state/telegram-digest serves — pinned here with the loader it uses.
     id: 'STK-08', key: 'outbox_backlog', version: 3, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['db.js:1877-1886', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:159', 'watchdog.cpp:146', 'watchdog.cpp:190-195', 'watchdog_state.cpp:163-167', 'watchdog_state.cpp:99-100'],
+    cite: ['db.js:1965-1974', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:164', 'watchdog.cpp:180', 'watchdog.cpp:224-233', 'watchdog_state.cpp:203-207', 'watchdog_state.cpp:123-124', 'watchdog_state.cpp:130-146'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,
@@ -1074,23 +1079,39 @@ export const RULES = Object.freeze([
       ]
       const off = settings.filter(([k]) => s[k] === false && (k !== 'masterEnabled' || r.nodePolicyOff === true))
         .map(([k, what]) => `${k}=false (${what})`)
-      // v3: the verifier-local mute, which holds while it reads true.
-      const muted = s.delivery && typeof s.delivery === 'object' && s.delivery.muted === true
-      if (muted) {
-        const d = s.delivery
-        const soak = d.soakActive === true && Number.isFinite(Number(d.soakEndsAtMs)) && Number(d.soakEndsAtMs) > 0
-          ? `the 24 h soak, ending ${iso(Number(d.soakEndsAtMs)).slice(0, 16)}` : 'lifted only by an explicit POST /watchdog/mute'
-        off.push(`delivery.muted=true (the cpp-verify delivery mute: ${soak})`)
+      // v3: the verifier-local mute, which holds while it reads true — by
+      // design through the 24 h soak, and after it while the owner leaves it
+      // on. But once the soak is over and an unmute would be REFUSED for a
+      // stale backlog, nobody can lift it: the dispose route that clears the
+      // backlog is not built. That is a codebase-built blockage (principle 3),
+      // not a setting, so it is the defect, named (CV-2 round 3, S-2).
+      const d = s.delivery && typeof s.delivery === 'object' ? s.delivery : null
+      let wedge = null
+      if (d?.muted === true) {
+        const stale = d.staleBacklog && typeof d.staleBacklog === 'object' && Number(d.staleBacklog.count) > 0 ? d.staleBacklog : null
+        const staleText = stale ? `${Number(stale.count)} held item(s) older than ${Math.round(Number(stale.olderThanMs) / 60000) || '?'} min, oldest ${Number(stale.oldestCreatedAtMs) > 0 ? iso(Number(stale.oldestCreatedAtMs)).slice(0, 16) : '?'}` : null
+        const unbuilt = 'an unmute is refused until they are disposed of, and the dispose route is not built'
+        if (d.soakActive === true) {
+          const ends = Number(d.soakEndsAtMs) > 0 ? `, ending ${iso(Number(d.soakEndsAtMs)).slice(0, 16)}` : ''
+          off.push(`delivery.muted=true (the cpp-verify delivery mute: the 24 h soak${ends}${stale ? `; after it, ${staleText}: ${unbuilt}` : ''})`)
+        } else if (d.unmuteRefusal === 'stale_backlog') {
+          // The full sentence rides the finding as `wedge`; `detail` is cut at
+          // 160 characters, so it carries the short form.
+          wedge = { text: `the cpp-verify delivery mute cannot be lifted — ${stale ? `${staleText}: ${unbuilt}` : 'an unmute is refused (stale_backlog) and the dispose route is not built'}`,
+            short: `mute unliftable: ${stale ? `${Number(stale.count)} stale held item(s)` : 'stale backlog'}, dispose route not built` }
+        } else {
+          off.push('delivery.muted=true (the cpp-verify delivery mute, lifted by an explicit POST /watchdog/mute)')
+        }
       }
       const delivery = Object.fromEntries([...settings.map(([k]) => k), 'effectivePolicyAllowsUrgent'].map(k => [k, s[k] ?? null]))
-      delivery.muted = typeof s.delivery?.muted === 'boolean' ? s.delivery.muted : null
+      delivery.muted = typeof d?.muted === 'boolean' ? d.muted : null
       if (off.length) {
         const created = items.map(i => Number(i?.createdAtMs)).filter(Number.isFinite)
         return { violation: false, class: 'held_by_setting',
-          info: `watchdog: ${base}; oldest queued ${created.length ? iso(Math.min(...created)).slice(0, 16) : '?'} — held by the setting(s) ${off.join(', ')}: cpp-verify delivers nothing while any is off; status read ${r.readAt ?? '?'}` }
+          info: `watchdog: ${base}; oldest queued ${created.length ? iso(Math.min(...created)).slice(0, 16) : '?'} — held by the setting(s) ${off.join(', ')}: cpp-verify delivers nothing while any is off${wedge ? `; and ${wedge.text}` : ''}; status read ${r.readAt ?? '?'}` }
       }
       // ONE stuck mechanism, not 512 stuck items (VERIFY correction 6).
-      return { missing: ['delivery'], class: 'watchdog', delivery, detail: base }
+      return { missing: ['delivery'], class: 'watchdog', delivery, ...(wedge ? { wedge: wedge.text } : {}), detail: wedge ? `${base}; ${wedge.short}` : base }
     },
     note(res) {
       const held = res.info?.held_by_setting

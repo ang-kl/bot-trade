@@ -152,15 +152,17 @@ int main() {
   // V3 CV-2: the verifier-local mute, behind the same bearer as every route
   // but /health, and answered with Node down. {"muted": true} always applies;
   // {"muted": false} is refused (409) until the 24 h soak has ended, and
-  // while the outbox holds a stale backlog (409 stale_backlog). A change that
-  // could not be persisted answers 503 state_not_durable, never 200. It
-  // gates delivery only: incidents, the outbox and the would-send counters
-  // keep running either way.
+  // while the outbox holds a stale backlog (409 stale_backlog, with the
+  // remedy). A change that could not be persisted answers 503
+  // state_not_durable, never 200; its `restartSafe` says whether a restart
+  // keeps it, and `fallback` names the restart-proof step when not. It gates
+  // delivery only: incidents, the outbox and the counters keep running.
   server.route("POST", "/watchdog/mute", [&](const HttpRequest& req) {
     auto body = jsn::parse(req.body);
     if (!body || !body->isObject() || !body->get("muted").isBool()) return errRes(400, "body must be {\"muted\": true|false}");
     const auto result = watchdog.setMuted(body->get("muted").asBool());
-    const int code = result.get("ok").asBool() ? 200 : result.get("error").asString() == "state_not_durable" ? 503 : 409;
+    const auto& error = result.get("error").asString();
+    const int code = result.get("ok").asBool() ? 200 : error == "state_not_durable" || error == "mute_marker_not_removed" ? 503 : 409;
     return jsonRes(code, jsn::dump(result));
   });
   server.route("GET", "/protection-status", [&](const HttpRequest&) {
@@ -188,7 +190,13 @@ int main() {
       // V3 CV-2: the soak on the health probe too, so Railway's own check
       // shows whether a message could leave.
       {"deliveryMuted", watch.get("delivery").get("muted")}, {"deliveryOpen", watch.get("delivery").get("open")},
-      {"soakActive", watch.get("delivery").get("soakActive")}, {"soakEndsAtMs", watch.get("delivery").get("soakEndsAtMs")}}));
+      {"soakActive", watch.get("delivery").get("soakActive")}, {"soakEndsAtMs", watch.get("delivery").get("soakEndsAtMs")},
+      // Round 3: why an unmute would be refused now (S-2: a stale backlog
+      // wedges it until a dispose route exists), and a mute this process
+      // holds that a restart might lose (B2).
+      {"unmuteRefusal", watch.get("delivery").get("unmuteRefusal")},
+      {"staleBacklog", watch.get("delivery").get("staleBacklog").get("count")},
+      {"muteNotDurable", watch.get("muteNotDurable")}}));
     o.set("hostPinIgnored", hostPinIgnored);
     jsn::Value j{jsn::Object{}};
     j.set("configured", verify::journal().configured());

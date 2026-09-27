@@ -18,7 +18,8 @@ const DELIVERY = { muted: true, open: false, reason: 'soak_active', soakActive: 
   soakStartedAtMs: T, soakEndsAtMs: T + 86_400_000, soakRemainingMs: 86_000_000, mutedAtMs: T, unmutedAtMs: null,
   wouldSend: { urgent: 3, warning: 5, info: 1, total: 9, sinceMs: T, urgentPerHour: 27, totalPerHour: 81 },
   refused: { urgent: 1, warning: 2, info: 0, total: 3 }, staleBacklog: { count: 4, oldestCreatedAtMs: T - 7_200_000, olderThanMs: 3_600_000 },
-  unmuteRefusal: 'soak_active', outboxPending: 9 }
+  wouldDeliver: { urgent: 3, warning: 4, info: 1, total: 8, urgentPerHour: 27, totalPerHour: 72, pending: 1, dropped: 0 },
+  sendCeilingPerHour: 240, saturated: true, unmuteRefusal: 'soak_active', outboxPending: 9 }
 
 function fixture(t, watchdogReply) {
   const db = initDB(':memory:'); t.after(() => db.close())
@@ -55,6 +56,11 @@ test('CV-2: the muted soak reaches the verify_watchdog beat and the relayed stat
   assert.deepEqual(detail.refused, DELIVERY.refused)
   assert.deepEqual(detail.staleBacklog, DELIVERY.staleBacklog)
   assert.equal(detail.unmuteRefusal, 'soak_active')
+  // Round 3: demand beside what an open verifier would deliver at its ceiling.
+  assert.deepEqual(detail.wouldDeliver, DELIVERY.wouldDeliver)
+  assert.equal(detail.sendCeilingPerHour, 240)
+  assert.equal(detail.saturated, true)
+  assert.equal(detail.muteNotDurable, null) // a reply without the field reads unknown, never false
   assert.equal(detail.stateBytes, 4096)
   const view = heartbeatView(db).find(v => v.name === 'verify_watchdog')
   assert.equal(view.detail.muted, true)
@@ -90,6 +96,11 @@ test('CV-2 fix round: a muted gate on a failing verifier fails the beat, with th
   await poll()
   assert.equal(row(db).consecutive_failures, 2)
   assert.equal(verifyWatchdogBeat({ enabled: true, error: '', delivery: DELIVERY }).ok, true)
+  // Round 3 (B2): a mute the verifier holds but could not write reaches the beat's detail.
+  reply = { schemaVersion: 1, enabled: true, error: 'watchdog_state_open_failed', muteNotDurable: true, delivery: DELIVERY }
+  await poll()
+  assert.equal(row(db).consecutive_failures, 3)
+  assert.equal(JSON.parse(row(db).last_detail_json).muteNotDurable, true)
 })
 
 // CV-2 fix round nit 7: WATCHDOG_ENABLED unset on cpp-verify is a switch, not

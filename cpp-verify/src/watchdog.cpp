@@ -2,6 +2,7 @@
 #include "entry_diagnostics.hpp"
 #include "watchdog_http.hpp"
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
@@ -21,6 +22,17 @@ std::string stamp(long long now) {
   char out[40]; std::strftime(out, sizeof out, "%Y-%m-%d %H:%M:%S SGT", &tm); return out;
 }
 std::string suffix(const std::string& id) { return id.empty() ? "unknown" : "…" + id.substr(id.size() > 4 ? id.size() - 4 : 0); }
+bool syncDirectoryOf(const std::string& file) {
+  const int dir = ::open(file.substr(0, file.find_last_of('/')).c_str(), O_RDONLY | O_DIRECTORY);
+  const bool synced = dir >= 0 && ::fsync(dir) == 0;
+  if (dir >= 0) ::close(dir);
+  return synced;
+}
+// Round 3 (B2): the restart-proof fallback a reply names when a mute could
+// not be recorded at all. It needs no disk: with the deployment switch off
+// the run loop selects nothing, whatever the state file says.
+constexpr const char* kMuteFallback = "set WATCHDOG_MASTER_ENABLED=0 on cpp-verify: a restart then delivers nothing whatever the state file says (a Railway variable change, the owner's step)";
+constexpr const char* kStaleRemedy = "dispose of the held backlog first (the owner's step, after a /data backup): the dispose(createdBefore) route that does it is required and not built yet, so until it exists the verifier stays muted; any re-mute that holds an item longer than repeatMs wedges it again";
 }
 std::string watchNotificationText(const jsn::Value& item, long long now) {
   const auto& d = item.get("detail");
@@ -95,6 +107,9 @@ void Watchdog::start() {
   // V3 CV-2: the 24 h muted soak starts at the first boot of this build and
   // survives restarts (a restored soak is kept, never restarted).
   state_.beginSoak(nowMs());
+  // Round 3 (B2): a mute recorded by the marker holds whatever the state file
+  // says — the file may be older than the mute (its write failed).
+  if (muteMarkerPresent()) state_.setMuted(true, nowMs());
   started_ = true;
   writable_ = persist();
   worker_ = std::jthread([this](std::stop_token stop) {
@@ -113,12 +128,29 @@ bool Watchdog::persist() {
   const bool synced = done == body.size() && ::fsync(fd) == 0;
   const bool closed = ::close(fd) == 0;
   if (!synced || !closed || ::rename(temp.c_str(), path_.c_str()) != 0) { error_ = "watchdog_state_write_failed"; return writable_ = false; }
-  const auto parent = path_.substr(0, path_.find_last_of('/'));
-  const int dir = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY);
-  const bool durable = dir >= 0 && ::fsync(dir) == 0;
-  if (dir >= 0) ::close(dir);
+  const bool durable = syncDirectoryOf(path_);
   error_ = durable ? "" : "watchdog_directory_sync_failed";
+  // Round 3 (B2): a muted state on disk makes a pending mute restart-safe.
+  if (durable && state_.muteGate().muted) muteNotDurable_ = false;
   return writable_ = durable;
+}
+bool Watchdog::writeMuteMarker() {
+  const auto marker = path_ + ".muted";
+  const int fd = ::open(marker.c_str(), O_WRONLY | O_CREAT | O_NOFOLLOW, 0600);
+  if (fd < 0) return false;
+  const bool closed = ::close(fd) == 0;
+  return closed && syncDirectoryOf(marker);
+}
+bool Watchdog::removeMuteMarker() {
+  const auto marker = path_ + ".muted";
+  if (::unlink(marker.c_str()) != 0 && errno != ENOENT) return false;
+  return syncDirectoryOf(marker);
+}
+bool Watchdog::muteMarkerPresent() const {
+  // Any entry at the path counts (a directory there included): the marker
+  // only ever keeps a verifier muted, so reading it widely is the safe way.
+  struct stat info{};
+  return !path_.empty() && ::lstat((path_ + ".muted").c_str(), &info) == 0;
 }
 void Watchdog::run(std::stop_token stop) {
   struct Target { const char* name; const char* url; const char* key; };
@@ -143,7 +175,9 @@ void Watchdog::run(std::stop_token stop) {
     {
       std::lock_guard lock(mutex_);
       const auto now = nowMs(); state_.protection(protection_(), now); state_.evaluate(now);
-      if (persist() && master_ && owner_) {
+      const bool persisted = persist(); // a success also settles a pending mute (round 3, B2)
+      if (muteNotDurable_ && writeMuteMarker()) muteNotDurable_ = false; // ... and so does the marker, retried every cycle
+      if (persisted && master_ && owner_) {
         auto next = state_.releasable(now); // muted or in soak: null, nothing leaves
         if (!next.isNull() && watchAllowsNotification(state_.snapshot(), next, now)) delivery = next;
       }
@@ -192,6 +226,10 @@ jsn::Value Watchdog::status() {
   s.set("deliveryCredentialsConfigured", !env("WATCHDOG_TELEGRAM_TOKEN").empty() && !env("WATCHDOG_TELEGRAM_CHAT_ID").empty());
   s.set("stateBytes", static_cast<long long>(jsn::dump(snapshot).size()));
   s.set("stateBytesCap", 4LL * 1024 * 1024);
+  // Round 3 (B2): this process is muted, but no write recorded it yet — a
+  // restart now might come up unmuted. Cleared by the first write that lands.
+  s.set("muteNotDurable", muteNotDurable_);
+  if (muteNotDurable_) s.set("muteFallback", kMuteFallback);
   s.set("effectivePolicyAllowsUrgent", master_ && owner_ && writable_ && state_.deliveryOpen(nowMs()) && watchAllowsNotification(state_.snapshot(), jsn::Value(jsn::Object{{"severity", "urgent"}}), nowMs()));
   s.set("externalObserver", "unconfigured; requires independent provisioning and delivery evidence");
   return s;
@@ -209,16 +247,46 @@ jsn::Value Watchdog::setMuted(bool muted) {
   }
   const auto before = state_.muteGate();
   const auto refusal = state_.setMuted(muted, now);
-  if (!refusal.empty()) return jsn::Value(jsn::Object{{"ok", false}, {"applied", false}, {"durable", writable_},
-    {"error", refusal}, {"delivery", state_.deliveryStatus(now)}});
-  if (persist()) return jsn::Value(jsn::Object{{"ok", true}, {"applied", true}, {"durable", true}, {"delivery", state_.deliveryStatus(now)}});
-  // Not durable (fix-round nit 8): the caller must not read this as done. A
-  // mute stays applied in this process — the safe direction; the run loop
-  // selects nothing, and it cannot send while writes fail anyway — but a
-  // restart would restore the file's older state. An unmute is undone: one
-  // that cannot be recorded does not open delivery.
-  if (!muted) state_.restoreMuteGate(before);
-  return jsn::Value(jsn::Object{{"ok", false}, {"applied", muted}, {"durable", false}, {"error", "state_not_durable"},
+  if (!refusal.empty()) {
+    jsn::Value out(jsn::Object{{"ok", false}, {"applied", false}, {"durable", writable_},
+      {"error", refusal}, {"delivery", state_.deliveryStatus(now)}});
+    if (refusal == "stale_backlog") out.set("remedy", kStaleRemedy); // round 3, S-2
+    return out;
+  }
+  if (muted) {
+    // Round 3 (B2): the marker first — an empty file, the likeliest write to
+    // succeed — then the state. Either one keeps a restart muted.
+    const bool marker = writeMuteMarker();
+    const bool durable = persist();
+    const bool restartSafe = marker || durable;
+    muteNotDurable_ = !restartSafe;
+    jsn::Value out(jsn::Object{{"ok", durable && restartSafe}, {"applied", true}, {"durable", durable},
+      {"restartSafe", restartSafe}, {"markerRecorded", marker}, {"delivery", state_.deliveryStatus(now)}});
+    if (!durable) { out.set("error", "state_not_durable"); out.set("persistError", error_); }
+    if (!restartSafe) out.set("fallback", kMuteFallback);
+    return out;
+  }
+  // An unmute is applied only when the unmuted state is on disk AND the
+  // marker is gone; either failing, it is undone (fix-round nit 8).
+  const bool written = persist();
+  if (written && removeMuteMarker()) {
+    muteNotDurable_ = false;
+    return jsn::Value(jsn::Object{{"ok", true}, {"applied", true}, {"durable", true}, {"restartSafe", true},
+      {"delivery", state_.deliveryStatus(now)}});
+  }
+  // Round 3 (S-1): "undone" must hold across a restart too. The failed write
+  // may already have renamed an unmuted file into place (its directory sync
+  // failed after the rename), so re-write the marker — a restart then comes
+  // up muted whatever the file says — and re-persist the muted state.
+  state_.restoreMuteGate(before);
+  const bool marker = writeMuteMarker();
+  const bool rewritten = persist();
+  const bool restartSafe = marker || rewritten;
+  muteNotDurable_ = !restartSafe;
+  jsn::Value out(jsn::Object{{"ok", false}, {"applied", false}, {"durable", rewritten}, {"restartSafe", restartSafe},
+    {"markerRecorded", marker}, {"error", written ? "mute_marker_not_removed" : "state_not_durable"},
     {"persistError", error_}, {"delivery", state_.deliveryStatus(now)}});
+  if (!restartSafe) out.set("fallback", kMuteFallback);
+  return out;
 }
 }

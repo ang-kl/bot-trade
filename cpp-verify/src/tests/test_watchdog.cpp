@@ -62,6 +62,17 @@ Value missingSl(long long now, bool missing) {
     {"source", "broker_reconcile"}, {"checkedAtMs", now}, {"openCount", static_cast<long long>(positions.size())},
     {"positions", positions}, {"missingSl", missing ? 1 : 0}, {"missingTp", 0}})}}});
 }
+// Round 3: one broker-verified account row — `missing` gives its one position
+// no stop loss (the urgent :missing incident); `ok` false makes the read
+// unknown (the :unknown warning) with no position.
+Value row(long long now, const std::string& account, bool missing, bool ok = true) {
+  Array positions; if (missing && ok) positions.push_back(Value(Object{{"positionId", "99"}, {"stopLoss", 0}, {"takeProfit", 2}}));
+  return Value(Object{{"host", "demo.ctraderapi.com"}, {"accountId", account}, {"ok", ok}, {"source", "broker_reconcile"},
+    {"checkedAtMs", now}, {"openCount", static_cast<long long>(positions.size())}, {"positions", positions},
+    {"missingSl", static_cast<long long>(positions.size())}, {"missingTp", 0}});
+}
+Value accounts(Array rows) { return Value(Object{{"accounts", std::move(rows)}}); }
+Value emptyAfterSoak() { return afterSoak(Value(Object{{"schemaVersion", 1}, {"services", Object{}}, {"incidents", Object{}}, {"outbox", Object{}}}), false); }
 // GROUND TRUTH: the same inputs, each probe cycle, to a muted verifier and to
 // an OPEN one that releases one item per cycle, accepted by Telegram. The
 // counter is right when the muted twin's wouldSend equals what the open twin
@@ -70,25 +81,43 @@ Value missingSl(long long now, bool missing) {
 struct Twin {
   verify::WatchState muted, open;
   long long sent = 0, urgent = 0, warning = 0, info = 0;
+  bool released = false; // the last cycle sent something (false once the open outbox is drained)
+  explicit Twin(verify::WatchPolicy p = {}) : muted(p), open(p) {}
   template <class Drive> void cycle(long long now, Drive drive) {
     drive(muted, now); drive(open, now);
     const auto next = open.releasable(now);
+    released = !next.isNull();
     if (next.isNull()) return;
     ++sent; const auto& sev = next.get("severity").asString();
     ++(sev == "urgent" ? urgent : sev == "warning" ? warning : info);
     open.delivery(next.get("id").asString(), true, "1", 0, now);
   }
   Value would(long long now) const { return muted.status(now).get("delivery"); }
-  // The equality the blocker asks for, severity by severity. A mismatch names
-  // its scenario and both readings before the assert stops the run.
-  void matches(long long now, const char* scenario) const {
-    const auto w = would(now).get("wouldSend");
-    const bool equal = w.get("total").asNumber() == sent && w.get("urgent").asNumber() == urgent
-      && w.get("warning").asNumber() == warning && w.get("info").asNumber() == info;
-    if (!equal) std::cerr << scenario << ": wouldSend " << jsn::dump(w) << " but the open verifier sent " << sent
-      << " (urgent " << urgent << ", warning " << warning << ", info " << info << ")\n";
-    assert(equal);
-    assert(open.snapshot().get("outbox").asObject().empty()); // everything it would send, it has sent
+  // The equality the blockers ask for, severity by severity. `wouldDeliver`
+  // (the modelled sender) must equal what the open verifier SENT, and its
+  // queue must hold what the open verifier's outbox holds, always.
+  // `wouldSend` (demand) equals it only while no more than one message a
+  // cycle is due, so `demandEqual` is asked of unsaturated scenarios only. A
+  // mismatch names its scenario and both readings before the assert stops.
+  void matches(long long now, const char* scenario, bool demandEqual = true) const {
+    const auto d = would(now);
+    const auto check = [&](const char* name, const Value& c) {
+      const bool equal = c.get("total").asNumber() == sent && c.get("urgent").asNumber() == urgent
+        && c.get("warning").asNumber() == warning && c.get("info").asNumber() == info;
+      if (!equal) std::cerr << scenario << ": " << name << " " << jsn::dump(c) << " but the open verifier sent " << sent
+        << " (urgent " << urgent << ", warning " << warning << ", info " << info << ")\n";
+      assert(equal);
+    };
+    check("wouldDeliver", d.get("wouldDeliver"));
+    const auto queued = static_cast<double>(open.snapshot().get("outbox").asObject().size());
+    if (d.get("wouldDeliver").get("pending").asNumber() != queued)
+      std::cerr << scenario << ": model queue " << d.get("wouldDeliver").get("pending").asNumber() << " but the open outbox holds " << queued << "\n";
+    assert(d.get("wouldDeliver").get("pending").asNumber() == queued);
+    if (demandEqual) {
+      check("wouldSend", d.get("wouldSend"));
+      assert(queued == 0); // everything it would send, it has sent
+      assert(!d.get("saturated").asBool());
+    }
   }
 };
 // The Node contract behind production's 149 active non-pending incidents:
@@ -333,6 +362,7 @@ int main() {
     clean.probe("cpp-exec", false, {}, T + 86400000); clean.evaluate(T + 86460000);
     assert(active(clean, "cpp-exec:unreachable")); assert(!clean.releasable(T + 86460000).isNull());
     assert(clean.status(T + 86460000).get("delivery").get("wouldSend").get("urgent").asNumber() == 1); // open: not a would-send
+    assert(clean.status(T + 86460000).get("delivery").get("wouldDeliver").get("urgent").asNumber() == 1); // nor a would-deliver (round 3)
     verify::WatchState open; assert(open.restore(clean.snapshot())); assert(open.deliveryOpen(T + 86460000)); // unmute persists
     assert(clean.setMuted(true, T + 86460001).empty()); assert(clean.releasable(T + 86460001).isNull());
     // Unmuting an already open verifier is not refused by what it has queued since.
@@ -376,7 +406,8 @@ int main() {
     Twin t; assert(t.muted.restore(snap)); t.muted.beginSoak(T);
     assert(t.open.restore(afterSoak(disposed(snap), false))); t.open.beginSoak(T);
     const auto dropped = t.muted.snapshot().get("dropped").asNumber();
-    for (long long k = 0; k < 239; ++k) t.cycle(T + k * CYCLE, [](verify::WatchState& s, long long now) { s.protection(missingSl(now, true), now); });
+    // (A cycle ends in evaluate(), as the run loop's does: the modelled sender releases there.)
+    for (long long k = 0; k < 239; ++k) t.cycle(T + k * CYCLE, [](verify::WatchState& s, long long now) { s.protection(missingSl(now, true), now); s.evaluate(now); });
     const long long last = T + 238 * CYCLE;
     assert(t.sent == 1 && t.urgent == 1); t.matches(last, "(A) one persistent urgent incident over the bound");
     // Refused every cycle, counted once; `dropped` still counts every offer —
@@ -441,7 +472,7 @@ int main() {
     // and hid the repeats.
     Twin t; t.muted.beginSoak(T);
     assert(t.open.restore(afterSoak(Value(Object{{"schemaVersion", 1}, {"services", Object{}}, {"incidents", Object{}}, {"outbox", Object{}}}), false)));
-    for (long long k = 0; k < 720; ++k) t.cycle(T + k * CYCLE, [](verify::WatchState& s, long long now) { s.protection(missingSl(now, true), now); });
+    for (long long k = 0; k < 720; ++k) t.cycle(T + k * CYCLE, [](verify::WatchState& s, long long now) { s.protection(missingSl(now, true), now); s.evaluate(now); });
     const long long last = T + 719 * CYCLE;
     assert(t.sent == 3 && t.urgent == 3); t.matches(last, "(F) one incident, an empty outbox, 3 h");
     assert(t.would(last).get("refused").get("total").asNumber() == 0);
@@ -462,6 +493,134 @@ int main() {
     });
     const long long last = T + 239 * CYCLE;
     assert(t.sent == 7 && t.urgent == 6 && t.warning == 1); t.matches(last, "transitions: flaps, an escalation, recoveries");
+  }
+  {
+    // Round 3, B1 reproduction S5 — demand above the send ceiling. The run loop
+    // releases ONE item a probe cycle (240 an hour at 15 s); 300 persistent
+    // urgent incidents an hour are 1.25 due a cycle. Here at 1:10 scale — 30
+    // incidents, repeatMs 6 min (24 cycles), the same 1.25 a cycle — for 12
+    // repeat periods, then all recover and the open outbox drains. At full
+    // scale (12 h) demand read 3,600 against 2,880 sent, and 3,900 against
+    // 3,392 drained. wouldDeliver must equal the open verifier's sends at every
+    // checkpoint; demand exceeds them, and the reading says so (saturated).
+    verify::WatchPolicy p; p.repeatMs = 24 * CYCLE;
+    Twin t(p); t.muted.beginSoak(T); assert(t.open.restore(emptyAfterSoak())); t.open.beginSoak(T);
+    const auto fleet = [](bool missing) { return [missing](verify::WatchState& s, long long now) {
+      Array rows; for (int i = 1; i <= 30; ++i) rows.push_back(row(now, std::to_string(i), missing));
+      s.protection(accounts(rows), now); s.evaluate(now); }; };
+    long long k = 0;
+    for (; k < 24; ++k) t.cycle(T + k * CYCLE, fleet(true));
+    t.matches(T + (k - 1) * CYCLE, "(S5) one repeat period", false);
+    assert(t.sent == 24 && t.would(T + (k - 1) * CYCLE).get("wouldSend").get("total").asNumber() == 30);
+    assert(t.would(T + (k - 1) * CYCLE).get("saturated").asBool());
+    assert(t.would(T + (k - 1) * CYCLE).get("sendCeilingPerHour").asNumber() == 240);
+    for (; k < 12 * 24; ++k) t.cycle(T + k * CYCLE, fleet(true));
+    t.matches(T + (k - 1) * CYCLE, "(S5) twelve repeat periods", false);
+    assert(t.sent == 288 && t.would(T + (k - 1) * CYCLE).get("wouldSend").get("total").asNumber() == 360);
+    do { t.cycle(T + k * CYCLE, fleet(false)); ++k; } while (t.released && k < 12 * 24 + 1000);
+    t.matches(T + (k - 1) * CYCLE, "(S5) recovered and drained", false);
+    const auto d = t.would(T + (k - 1) * CYCLE);
+    assert(d.get("wouldSend").get("total").asNumber() == 390 && d.get("wouldDeliver").get("total").asNumber() == t.sent && t.sent < 390);
+    assert(d.get("saturated").asBool()); // repeats folded into items still pending were never delivered
+  }
+  {
+    // Round 3, B1 reproduction S6 — two urgent incidents flapping every cycle:
+    // two transitions due a cycle against one sent, so the open outbox fills
+    // to its 512 bound and drops. Demand read 480 against 240 sent after 1 h,
+    // and 2,880 against 1,951 drained after 6 h (the gap is what the open
+    // outbox itself dropped). The muted verifier RESTARTS every hour, as a
+    // deploy would: the modelled sender's queue and counters persist.
+    Twin t; t.muted.beginSoak(T); assert(t.open.restore(emptyAfterSoak())); t.open.beginSoak(T);
+    long long k = 0;
+    const auto flap = [&k](verify::WatchState& s, long long now) {
+      s.protection(accounts(Array{row(now, "1", k % 2 == 0), row(now, "2", k % 2 == 0)}), now); s.evaluate(now); };
+    const auto openDropped0 = t.open.snapshot().get("dropped").asNumber();
+    for (; k < 240; ++k) t.cycle(T + k * CYCLE, flap);
+    t.matches(T + (k - 1) * CYCLE, "(S6) 1 h", false);
+    assert(t.sent == 240 && t.would(T + (k - 1) * CYCLE).get("wouldSend").get("total").asNumber() == 480);
+    for (int restart = 0; restart < 5; ++restart) {
+      verify::WatchState reboot; assert(reboot.restore(t.muted.snapshot())); reboot.beginSoak(T + k * CYCLE);
+      t.muted = std::move(reboot);
+      for (const long long end = k + 240; k < end; ++k) t.cycle(T + k * CYCLE, flap);
+      t.matches(T + (k - 1) * CYCLE, "(S6) after a restart", false);
+    }
+    assert(t.sent == 1440 && t.would(T + (k - 1) * CYCLE).get("wouldSend").get("total").asNumber() == 2880);
+    const auto steady = [](verify::WatchState& s, long long now) {
+      s.protection(accounts(Array{row(now, "1", false), row(now, "2", false)}), now); s.evaluate(now); };
+    do { t.cycle(T + k * CYCLE, steady); ++k; } while (t.released && k < 1440 + 1000);
+    t.matches(T + (k - 1) * CYCLE, "(S6) drained", false);
+    const auto d = t.would(T + (k - 1) * CYCLE);
+    assert(t.sent == 1951 && d.get("wouldSend").get("total").asNumber() == 2880 && d.get("saturated").asBool());
+    // The model dropped at the bound exactly what the open outbox dropped.
+    assert(d.get("wouldDeliver").get("dropped").asNumber() == t.open.snapshot().get("dropped").asNumber() - openDropped0);
+  }
+  {
+    // Mixed severities at the bound: two urgent flappers around a warning one.
+    // When the queue is full an urgent offer EVICTS the first warning in id
+    // order and a warning offer is refused; release stays urgent first, so the
+    // warnings wait for the drain. Severity by severity, the modelled sender
+    // matches the open verifier through fill, eviction and drain.
+    Twin t; t.muted.beginSoak(T); assert(t.open.restore(emptyAfterSoak())); t.open.beginSoak(T);
+    long long k = 0;
+    const auto flap = [&k](verify::WatchState& s, long long now) {
+      const bool on = k % 2 == 0;
+      s.protection(accounts(Array{row(now, "1", on), row(now, "2", false, !on), row(now, "3", on)}), now); s.evaluate(now); };
+    const auto openDropped0 = t.open.snapshot().get("dropped").asNumber();
+    // The queue fills near cycle 256; from then one warning a cycle is
+    // evicted, so stopping at 400 leaves some for the drain to deliver last.
+    for (; k < 400; ++k) t.cycle(T + k * CYCLE, flap);
+    t.matches(T + (k - 1) * CYCLE, "(mixed) 100 min", false);
+    const auto steady = [](verify::WatchState& s, long long now) {
+      s.protection(accounts(Array{row(now, "1", false), row(now, "2", false), row(now, "3", false)}), now); s.evaluate(now); };
+    do { t.cycle(T + k * CYCLE, steady); ++k; } while (t.released && k < 400 + 1000);
+    t.matches(T + (k - 1) * CYCLE, "(mixed) drained", false);
+    assert(t.warning > 0 && t.urgent > 0);
+    assert(t.would(T + (k - 1) * CYCLE).get("wouldDeliver").get("dropped").asNumber() == t.open.snapshot().get("dropped").asNumber() - openDropped0);
+  }
+  {
+    // Round 3, B1: the modelled sender releases URGENT FIRST, as the run loop
+    // does, not simply the oldest. Two warnings open in the first cycle (one
+    // is sent, one waits); an urgent opens in the second — younger than the
+    // waiting warning, and released before it. Checked cycle by cycle. The
+    // urgent's account sorts AFTER the warnings', so neither id order nor
+    // arrival order can pick it: only the severity rule does.
+    Twin t; t.muted.beginSoak(T); assert(t.open.restore(emptyAfterSoak())); t.open.beginSoak(T);
+    t.cycle(T, [](verify::WatchState& s, long long now) {
+      s.protection(accounts(Array{row(now, "2", false, false), row(now, "4", false, false)}), now); s.evaluate(now); });
+    t.matches(T, "(urgent first) two warnings", false);
+    assert(t.sent == 1 && t.warning == 1);
+    t.cycle(T + CYCLE, [](verify::WatchState& s, long long now) {
+      s.protection(accounts(Array{row(now, "9", true), row(now, "2", false, false), row(now, "4", false, false)}), now); s.evaluate(now); });
+    t.matches(T + CYCLE, "(urgent first) a younger urgent", false);
+    assert(t.sent == 2 && t.urgent == 1 && t.warning == 1);
+    const auto d = t.would(T + CYCLE).get("wouldDeliver");
+    assert(d.get("urgent").asNumber() == 1 && d.get("warning").asNumber() == 1 && d.get("pending").asNumber() == 1);
+  }
+  {
+    // Round 3, S-3: a soak started on a clock 5 days ahead, and its 120 urgent
+    // would-sends, are not the corrected boot's reading. The new soak starts a
+    // new window: counters zero, rate base now, so the rate is a number again.
+    auto w = Value(Object{{"schemaVersion", 1}, {"services", Object{}}, {"incidents", Object{}}, {"outbox", Object{}},
+      {"delivery", Object{{"muted", true}, {"soakStartedAtMs", T + 5 * DAY}, {"soakEndsAtMs", T + 6 * DAY},
+        {"wouldSend", Object{{"urgent", 120}, {"sinceMs", T + 5 * DAY}}}, {"wouldDeliver", Object{{"urgent", 120}}}}}});
+    verify::WatchState r; assert(r.restore(w)); r.beginSoak(T);
+    auto d = r.status(T).get("delivery");
+    assert(d.get("wouldSend").get("urgent").asNumber() == 0 && d.get("wouldDeliver").get("urgent").asNumber() == 0 && d.get("wouldSend").get("sinceMs").asNumber() == T);
+    r.protection(missingSl(T, true), T); r.evaluate(T);
+    d = r.status(T + 60000).get("delivery");
+    assert(d.get("wouldSend").get("urgent").asNumber() == 1 && d.get("wouldSend").get("urgentPerHour").asNumber() == 60);
+    // A re-mute of an open verifier starts a new window too: an hour open, then muted.
+    verify::WatchState o; assert(o.restore(emptyAfterSoak())); o.beginSoak(T);
+    o.protection(missingSl(T, true), T); o.evaluate(T); // open: sent, not counted
+    assert(o.setMuted(true, T + HOUR).empty());
+    d = o.status(T + HOUR).get("delivery");
+    assert(d.get("wouldSend").get("total").asNumber() == 0 && d.get("wouldSend").get("sinceMs").asNumber() == T + HOUR);
+    o.protection(missingSl(T + HOUR, true), T + HOUR); o.evaluate(T + HOUR); // the hourly repeat, now a would-send
+    d = o.status(T + HOUR + 60000).get("delivery");
+    assert(d.get("wouldSend").get("urgent").asNumber() == 1 && d.get("wouldSend").get("urgentPerHour").asNumber() == 60);
+    assert(d.get("wouldDeliver").get("urgent").asNumber() == 1);
+    // Muting an already muted verifier keeps its window.
+    assert(o.setMuted(true, T + 2 * HOUR).empty() && o.status(T + 2 * HOUR).get("delivery").get("wouldSend").get("urgent").asNumber() == 1);
   }
   {
     // Fix-round nit 2: after the soak an unmute is refused while any held item
