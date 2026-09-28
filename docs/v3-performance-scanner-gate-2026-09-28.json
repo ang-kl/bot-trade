@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "at": "2026-09-28T01:24:39.959673+00:00",
+  "baseCommit": "f1853891b840b38ca7336a6e7af2eeb79059fb93",
+  "applied": false,
+  "sourceUnchangedDuringFinalGate": true,
+  "sourceSha256": {
+    "agent/db.js": "8923e17dbeba8f726f27186064006b35b747d3495dd1f6db2ff727365bd90911",
+    "agent/lib/account-scope-risk-coverage.test.js": "5c9eb57eb474ef54c8b657aa35f27b02cb09808415814d65e59c6ba164a0c896",
+    "agent/lib/account-scope.js": "58cfa25de677df63e79847ae540a155207d3cb1a16f70120eb24fbab3206c73e",
+    "agent/lib/one-account-model.test.js": "f26ca4ae766711ff899c31d96bb12eb25adcc25ac6ab30804896421878b31579",
+    "agent/lib/scans-scope-coverage.test.js": "adf7d78278a35b69e8a9da2288e3a34be214b62276f17a0be788ec017a5ccd6a",
+    "agent/loop-starting-profile.test.js": "2e829fa5037e97359c573186763d6df7a1d90762c9d16a336475cfd8fbcb0476",
+    "agent/loop.js": "a6d659f45c13dde2f78a7381ea4c08176ff4338b6e7990ca3d555e21fcbbd824",
+    "agent/services/phase-audit-history-read.test.js": "7cf5459ff5e7cff1c0c9ea5149d4d5a40d68eb9ddbdf2d3af5fb4db9533a842d",
+    "agent/services/phase-audit-indexes.js": "c786866a218db8167fe6573958746c5b57ce4a0aed60215c73367451ebe957d4",
+    "agent/services/phase-audit.js": "46310d586a0425ae9a8380be7e246e8e529a28f9c2c5387efbe17b46f75d7108",
+    "agent/services/scanner-alignment-proposal.test.js": "4c17db9a7ff8c7966dc4c622743abe0cf022e15a9286ea9702e39280337a6c26",
+    "scripts/prepare-scanner-alignment.mjs": "efd3d49a9e1fe534ad6443bdc592eb63603b4b8b3c6c0f4098da259cb2ce92ec"
+  },
+  "backend": {
+    "command": "node scripts/run-agent-tests.mjs",
+    "exit": 0,
+    "tests": 7221,
+    "pass": 7221,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0,
+    "privateTmpEmpty": true,
+    "groups": [
+      {
+        "tests": 30,
+        "purpose": "isolated latency"
+      },
+      {
+        "tests": 6,
+        "purpose": "isolated hygiene"
+      },
+      {
+        "tests": 7185,
+        "purpose": "remaining suite"
+      }
+    ]
+  },
+  "frontend": {
+    "command": "npm test -- --reporter=dot",
+    "exit": 0,
+    "tests": 1311,
+    "files": 136
+  },
+  "otherGates": {
+    "npm run lint": 0,
+    "npx eslint scripts/prepare-scanner-alignment.mjs": 0,
+    "npm run build": 0,
+    "npm run check:no-green": 0,
+    "git diff --check": 0
+  },
+  "native": {
+    "built": [
+      "cpp-exec",
+      "cpp-scan-tick",
+      "cpp-scan-timeframe"
+    ],
+    "dependentChecksPassed": 4,
+    "skipped": 0,
+    "identityFile": "v3-native-build-identity-2026-09-28.json"
+  },
+  "logs": {
+    "backend": {
+      "sha256": "3fc1d4628929e2aa079e1522316751cd80e1d88272e1e7d81841d9783c2d4b31",
+      "bytes": 3691652
+    },
+    "frontend": {
+      "sha256": "e3be7b72d9bbaed7d1d75e2ebc731065e1291e106f5399582635cc88959c5292",
+      "bytes": 3925
+    },
+    "lint": {
+      "sha256": "5a0fb6be9d2f04f3dbc9b07b768710f4dec94c40041b824ac53f31012a23afe2",
+      "bytes": 137
+    },
+    "scriptLint": {
+      "sha256": "7125f194612fcff2f454c05d848e7cb71facc1967b4d5017e25b34fdee3ba74f",
+      "bytes": 99
+    },
+    "build": {
+      "sha256": "dd9f3dff92b3c2914eb1f1e0349343cd5f3fd7b0d1bfb3ed28a94166f05a49c4",
+      "bytes": 3543
+    },
+    "colour": {
+      "sha256": "751fd77da8497fb59ab9c60b5709098e7ff5d016d3ddb10364e55969929943d9",
+      "bytes": 210
+    },
+    "native": {
+      "sha256": "8121af04261216684e316b44f431fbdc501e1c413784fca407162d1d426f548d",
+      "bytes": 2427
+    }
+  },
+  "limitations": [
+    "Local automated evidence only; no new push or deployment",
+    "Current executable scanner package requires fresh maps, feeds, revision and native capacity; browser access timed out",
+    "Native registry rollback is not proof of immediate cell-capacity restoration",
+    "Production latency, full startup attribution, natural fills and market-session acceptance remain unverified"
+  ]
+}

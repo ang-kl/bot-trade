@@ -1,7 +1,7 @@
 import { marketIdentityKey } from '../lib/market-identity.js'
 import { orderStatusName } from '../lib/order-answer.js'
 import { partialPositionEvidence } from './momentum-broker-evidence.js'
-import { sameTicks, planMomentumTargets } from './momentum-target-policy.js'
+import { sameTicks, planMomentumTargets, offPriceGrid } from './momentum-target-policy.js'
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 
 const id = x => (typeof x === 'string' && /^[1-9]\d*$/.test(x)) || (Number.isSafeInteger(x) && x > 0) ? String(x) : null
@@ -14,6 +14,33 @@ export function exactBrokerVolume(lots, lotSize) {
   return positiveInt(rounded) && Math.abs(units - rounded) <= rounded * 1e-12 ? rounded : null
 }
 
+// A prior adoption may describe only the first opening deals. A chronological
+// prefix, ending between distinct broker timestamps, must explain its exact
+// volume and on-grid entry. Equal-time deals are one group: their ordering is
+// not proven by array order or deal id. Arbitrary/manual local changes cannot
+// be reinterpreted as an earlier fill merely because the position grew.
+function earlierOpeningFill(deals, trade, volume, digits) {
+  const sorted = [...deals].sort((a, b) => a.executionTimestamp - b.executionTimestamp)
+  let units = 0, value = 0
+  const dealIds = []
+  for (let i = 0; i < sorted.length; i++) {
+    const d = sorted[i]
+    units += d.filledVolume
+    value += d.filledVolume * d.executionPrice
+    dealIds.push(id(d.dealId))
+    if (i + 1 < sorted.length && sorted[i + 1].executionTimestamp === d.executionTimestamp) continue
+    if (units > volume) return null
+    if (units === volume) {
+      const entry = value / units
+      return !offPriceGrid(entry, digits) && !offPriceGrid(trade.entry_price, digits)
+        && sameTicks(entry, trade.entry_price, digits)
+        ? { source: 'same_order_opening_deal_prefix', volume, entry: trade.entry_price,
+          dealIds: [...dealIds], throughTimestamp: d.executionTimestamp } : null
+    }
+  }
+  return null
+}
+
 // A terminal status alone cannot tell a partial entry from a position later
 // reduced manually. All opening deals must explain exactly the remaining
 // position, and a newly requested reconcile must follow the terminal reply.
@@ -23,6 +50,7 @@ export function finalMomentumLimitEvidence(input, { proposal, intent, trade, pos
   const d = input?.details, o = d?.order, td = o?.tradeData
   const received = input?.detailsReceivedAtMs, started = input?.reconcileStartedAtMs
   const observed = position?.observedAtMs, orderId = id(intent?.broker_order_id)
+  const adoptedVolume = exactBrokerVolume(trade?.volume, proposal?.evidence?.symbolMeta?.lotSize)
   const created = Date.parse(intent?.created_at)
   const status = orderStatusName(o?.orderStatus)
   if (proposal?.evidence?.orderType !== 'LIMIT' || intent?.state !== 'FILLED'
@@ -37,7 +65,7 @@ export function finalMomentumLimitEvidence(input, { proposal, intent, trade, pos
     || !['CANCELLED', 'EXPIRED'].includes(status) || id(td?.symbolId) !== identity.symbolId
     || side(td?.tradeSide) !== p.side || td?.volume !== p.volume || intent.volume !== p.volume
     || !positiveInt(o?.executedVolume) || o.executedVolume >= p.volume || o.executedVolume !== position.volume
-    || exactBrokerVolume(trade.volume, proposal.evidence.symbolMeta.lotSize) !== position.volume
+    || !adoptedVolume || adoptedVolume > position.volume
     || ![received, started, observed, nowMs, created].every(positiveInt)
     || received < created || started < received || observed < started
     || observed > nowMs || nowMs - received > maxAgeMs || nowMs - observed > maxAgeMs) return null
@@ -68,9 +96,12 @@ export function finalMomentumLimitEvidence(input, { proposal, intent, trade, pos
     value += deal.filledVolume * deal.executionPrice
   }
   if (!Number.isSafeInteger(volume) || volume !== o.executedVolume || !sameTicks(value / volume, position.entry, p.digits)) return null
+  const adoptionRefresh = adoptedVolume < volume ? earlierOpeningFill(d.deal, trade, adoptedVolume, p.digits) : null
+  if (adoptedVolume < volume && !adoptionRefresh) return null
   return { ...identity, positionId: position.positionId, orderId, status,
     originalVolume: p.volume, filledVolume: volume, dealIds: [...ids],
     detailsReceivedAtMs: received, reconcileStartedAtMs: started, observedAtMs: observed,
+    ...(adoptionRefresh ? { adoptionRefresh } : {}),
     source: 'broker_order_details_then_reconcile' }
 }
 

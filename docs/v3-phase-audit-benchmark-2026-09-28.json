@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "at": "2026-09-28T01:00:34.254Z",
+  "rows": 250000,
+  "history": "synthetic 1.8KB bodies; relevant audits precede 200,000 unrelated newer rows; tied timestamps; account B dominates A",
+  "beforeDigest": "cb56a27d5f14d616bf1e6ea48400f2fb2332a91d10f1704adb9f7ceb8dcf614d",
+  "before": [
+    {
+      "account": null,
+      "threeReadsMs": [
+        367.667,
+        375.109,
+        354.469,
+        372,
+        378.834
+      ]
+    },
+    {
+      "account": "A",
+      "threeReadsMs": [
+        384.5,
+        410.506,
+        414.552,
+        410.161,
+        415.071
+      ]
+    },
+    {
+      "account": "unknown",
+      "threeReadsMs": [
+        405.812,
+        431.92,
+        467.236,
+        437.305,
+        440.535
+      ]
+    }
+  ],
+  "indexCreateMs": 280.628,
+  "indexBytes": 647168,
+  "after": [
+    {
+      "account": null,
+      "threeReadsMs": [
+        3.698,
+        2.98,
+        2.908,
+        1.605,
+        1.489
+      ]
+    },
+    {
+      "account": "A",
+      "threeReadsMs": [
+        1.975,
+        2.074,
+        1.986,
+        2.341,
+        2
+      ]
+    },
+    {
+      "account": "unknown",
+      "threeReadsMs": [
+        3.429,
+        2.987,
+        3.333,
+        3.052,
+        2.974
+      ]
+    }
+  ],
+  "afterDigest": "cb56a27d5f14d616bf1e6ea48400f2fb2332a91d10f1704adb9f7ceb8dcf614d",
+  "repeatEnsureMs": [
+    0.073,
+    0.009,
+    0.007,
+    0.006,
+    0.006
+  ],
+  "indexedInsert1000RollbackMs": [
+    3.255,
+    3.775,
+    3.099,
+    2.747,
+    2.66
+  ],
+  "indexedRetention25000RollbackMs": [
+    40.423,
+    37.596,
+    56.055,
+    38.352,
+    39.441
+  ],
+  "indexedOperationalRetention25000RollbackMs": [
+    31.644,
+    31.558,
+    34.405,
+    30.816,
+    40.213
+  ],
+  "indexedIntegrity": "ok",
+  "originalRetention25000RollbackMs": [
+    27.215,
+    23.943,
+    22.322,
+    22.742,
+    23.044
+  ],
+  "originalInsert1000RollbackMs": [
+    3.012,
+    2.642,
+    2.521,
+    2.584,
+    2.495
+  ],
+  "originalOperationalRetention25000RollbackMs": [
+    34.979,
+    31.819,
+    31.542,
+    30.211,
+    31.456
+  ],
+  "integrity": "ok"
+}

@@ -1,0 +1,9 @@
+{
+  "expectedRevision": "d1de0d9879cb83f66c321b1a8fbb7c5ea3ff08291495335c5a5e4afb812d1fe5",
+  "selectedAccountId": "46979908",
+  "tickMoves": [
+    { "fromAccountId": "46130058", "toAccountId": "46979908" },
+    { "fromAccountId": "43069009", "toAccountId": "42993489" }
+  ],
+  "timeframeMove": { "fromAccountId": "46130058", "toAccountId": "46979908" }
+}

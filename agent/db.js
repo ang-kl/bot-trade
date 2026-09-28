@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { openJournal } from './lib/wal-open.js';
 import { maybeEmergencyReclaim } from './services/emergency-reclaim.js';
 import { resetReverifyAttempts } from './services/reverify-reset.js';
+import { ensurePhaseAuditIndexes } from './services/phase-audit-indexes.js';
 // Leaf module — imports nothing, takes `db` as a parameter — so this cannot
 // cycle back into db.js. See closeTradeRow for why the stamp lives here.
 import { stampRealisedAudit } from './services/trade-consistency.js';
@@ -1220,6 +1221,9 @@ const INDEXES = `
   -- retention DELETE both filter on time alone; idx_scans_symbol_at leads with
   -- symbol, so both walked the whole index.
   CREATE INDEX IF NOT EXISTS idx_scans_at                 ON scans   (scanned_at);
+  -- Coverage counts read account_id across retained scans. Keep the payload
+  -- off that path without making account_id a leading list-query key.
+  CREATE INDEX IF NOT EXISTS idx_scans_scope_coverage     ON scans   (id, account_id);
   CREATE INDEX IF NOT EXISTS idx_signals_at               ON signals (recorded_at);
   CREATE INDEX IF NOT EXISTS idx_regimes_at               ON regimes (computed_at);
   -- Read every 3s by fast-monitor and several times per cycle by the loop;
@@ -1232,6 +1236,13 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_risk_events_symbol     ON risk_events(symbol, created_at);
   CREATE INDEX IF NOT EXISTS idx_risk_events_account_latest
     ON risk_events(account_id, created_at DESC) WHERE account_id IS NOT NULL;
+  -- /risk-events reports the exact legacy-row count on every cache miss.
+  -- Its NULL count otherwise walks the full retained-history lookback index.
+  -- Key this partial index by id, not account_id: an account-keyed index also
+  -- changes the OR-NULL list query's plan, sorting all account history and
+  -- changing the existing time-index order when timestamps tie.
+  CREATE INDEX IF NOT EXISTS idx_risk_events_unattributed
+    ON risk_events(id) WHERE account_id IS NULL;
   CREATE INDEX IF NOT EXISTS idx_pending_signals_status ON pending_signals(status, symbol);
   CREATE INDEX IF NOT EXISTS idx_cup_handle_diag_symbol_at ON cup_handle_diagnostics(symbol, scanned_at);
   -- The funnel readout (services/cup-handle-funnel.js) scans a TIME window
@@ -1976,6 +1987,9 @@ export function initDB(dbPath) {
   // Now that all columns exist, create indexes
   timedPhase('column_migrations');
   db.exec(INDEXES);
+  // After column upgrades, include these additive report indexes in the
+  // recorded index phase so their first-build cost remains visible.
+  ensurePhaseAuditIndexes(db);
   timedPhase('indexes');
 
   // -------------------------------------------------------------------------

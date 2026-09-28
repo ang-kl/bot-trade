@@ -3238,8 +3238,13 @@ async function runLoop(db) {
     return Object.fromEntries(ordered)
   }
 
+  // Starting has a phase/lag bucket too. Honour the same explicit opt-in
+  // before its first await; otherwise its blocking work is never sampled.
+  // The outer cleanup also covers failures before the main cycle's catch.
+  try {
   markLagPhase('starting')
   setState(db, 'loop_phase', 'starting')
+  startPhaseProfile('starting')
   setState(db, 'loop_started_at', new Date().toISOString())
 
   // Keep the OAuth access token alive (daily proactive refresh; no-op if no
@@ -6679,6 +6684,12 @@ async function runLoop(db) {
   console.log(`[diag] LOOP #${loopCount} end ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), delay)
+  } finally {
+    // closePhases normally stopped it already, including error backoff.
+    // This idempotent stop prevents a thrown state read/write retaining an
+    // active diagnostic session and swallowing the next cycle's profile.
+    stopPhaseProfile(takeProfile)
+  }
 }
 
 // ---------------------------------------------------------------------------
