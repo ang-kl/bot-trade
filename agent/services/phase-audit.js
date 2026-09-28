@@ -27,6 +27,7 @@
 // no new table, no new retention policy.
 // ---------------------------------------------------------------------------
 import { getState, setState, withPhaseWriteAuthority } from '../db.js'
+import { PHASE_AUDIT_PREDICATES } from './phase-audit-indexes.js'
 
 /** The three pipeline flags; per-account variants are acct:<id>:<key>. */
 export const PHASE_KEYS = Object.freeze(['scan_enabled', 'analyze_enabled', 'autotrade_enabled'])
@@ -203,17 +204,22 @@ const shapeAuditRow = (r) => {
 }
 
 /** PURE query shared by recentPhaseAudit and phaseAuditSplit: audit rows
- * whose path matches ANY of `pathPatterns` (SQL LIKE patterns), newest first. */
-function auditRowsLike(db, pathPatterns, { limit, accountId }) {
+ * in the fixed LIKE predicate families, newest first. */
+function auditRowsLike(db, predicates, { limit, accountId }) {
   try {
     const scope = scopeFor(accountId)
-    const pathSql = pathPatterns.map(() => 'path LIKE ?').join(' OR ')
-    return db.prepare(
-      `SELECT id, at, method, path, body, account_id FROM action_log
-        WHERE method = 'AUDIT' AND (${pathSql})
-        ${scope.sql}
-        ORDER BY id DESC LIMIT ?`
-    ).all(...pathPatterns, ...scope.params, Math.min(500, Math.max(1, limit))).map(shapeAuditRow)
+    const cap = Math.min(500, Math.max(1, limit))
+    const select = predicate => `SELECT id, at, method, path, body, account_id
+      FROM action_log WHERE ${predicate} ${scope.sql} ORDER BY id DESC LIMIT ?`
+    // The combined view keeps one SQLite snapshot. Each disjoint family is
+    // capped first, so its final sort sees at most 1,000 rows even when the
+    // retained action log contains millions of unrelated records.
+    const sql = predicates.length === 1 ? select(predicates[0])
+      : `${predicates.map(predicate => `SELECT * FROM (${select(predicate)})`).join(' UNION ALL ')}
+          ORDER BY id DESC LIMIT ?`
+    const params = predicates.flatMap(() => [...scope.params, cap])
+    if (predicates.length > 1) params.push(cap)
+    return db.prepare(sql).all(...params).map(shapeAuditRow)
   } catch { return [] }
 }
 
@@ -228,7 +234,7 @@ function auditRowsLike(db, pathPatterns, { limit, accountId }) {
  * which layer answered it to find out.
  */
 export function recentPhaseAudit(db, { limit = 100, accountId = null } = {}) {
-  return auditRowsLike(db, ['/phase/%', '/controller/%', '/arm/%'], { limit, accountId })
+  return auditRowsLike(db, [PHASE_AUDIT_PREDICATES.switches, PHASE_AUDIT_PREDICATES.controllerEvents], { limit, accountId })
 }
 
 /**
@@ -248,7 +254,7 @@ export function recentPhaseAudit(db, { limit = 100, accountId = null } = {}) {
  */
 export function phaseAuditSplit(db, { limit = 100, accountId = null } = {}) {
   return {
-    switches: auditRowsLike(db, ['/phase/%', '/arm/%'], { limit, accountId }),
-    controllerEvents: auditRowsLike(db, ['/controller/%'], { limit, accountId }),
+    switches: auditRowsLike(db, [PHASE_AUDIT_PREDICATES.switches], { limit, accountId }),
+    controllerEvents: auditRowsLike(db, [PHASE_AUDIT_PREDICATES.controllerEvents], { limit, accountId }),
   }
 }

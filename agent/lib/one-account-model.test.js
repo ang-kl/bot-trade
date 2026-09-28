@@ -87,6 +87,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/watchdog-calendar-refresh.js': { reason: 'registeredCalendarAccounts: the one registered-host pick shared by the calendar demand and the calendar coverage read (the SELECT and the host pick); identical refresh policy for every account', max: { is_live: 2 } },
   'agent/services/watchdog-contract.js': { reason: 'select the registered broker host for identified calendar evidence; identical watchdog policy for every account', max: { is_live: 2 } },
   'scripts/tick-shadow-preflight.mjs': { reason: 'read-only deployment preparation for cpp-acct; never changes eligibility or sends orders', max: { live_str: 1, environment_cmp: 1 } },
+  'scripts/prepare-scanner-alignment.mjs': { reason: 'validate the snapshot routing column and import account rows into an isolated in-memory registry only; registeredCalendarAccounts supplies host choice, with identical profile rules and no production writer or eligibility gate', max: { is_live: 3 } },
   'agent/services/entry-drain.js': { reason: 'creds per account for the drain (plan §3.1)', max: { is_live: 3, isLive: 1 } },
   'agent/services/exec-guard-sync.js': { reason: 'the side\'s roster for the guard push (plan §3.1); the tick-entry roster reads mode + STABLE only; the open positions carried on the side\'s sidecar (19-09-2026)', max: { is_live: 4, isLive: 14 } },
   'agent/services/fast-monitor.js': { reason: 'which sidecar to pull quotes from per position (plan §3.1 routing, 19-09-2026); the evaluation reads no side', max: { is_live: 2, isLive: 4 } },

@@ -126,7 +126,7 @@ export function countUnattributed(db, table, extraWhere = '', extraParams = []) 
  * by the OR-NULL. `pct` is what the UI turns into a dot — 100% blue, anything
  * below amber with the figure shown (owner, 2026-08-03).
  *
- * One COUNT over the predicate the caller already runs. Never throws: a
+ * One statement over the predicate the caller already runs. Never throws: a
  * coverage read that fails must not take a read route down, so it degrades to
  * `pct: null`, which the UI renders as UNKNOWN — never as healthy.
  *
@@ -155,15 +155,24 @@ export function scopeCoverage(db, { table, column = 'account_id', scope, extraWh
       return out
     }
     out.scoped = true
-    const r = db.prepare(`
+    // The risk route has no additional coverage predicate. Its two disjoint
+    // sets already have compact indexes, but the OR aggregate cannot combine
+    // them and scans retained history instead. One statement keeps both
+    // counts on the same snapshot. Other tables/predicates keep one traversal:
+    // splitting an unindexed table would double its full-history scan.
+    const indexedRiskCounts = table === 'risk_events' && column === 'account_id' && !extraWhere && extraParams.length === 0
+    const r = indexedRiskCounts ? db.prepare(`
+      SELECT (SELECT COUNT(*) FROM risk_events WHERE account_id = ?) AS attributable,
+             (SELECT COUNT(*) FROM risk_events WHERE account_id IS NULL) AS unstamped
+    `).get(String(scope.accountId)) : db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN ${column} = ? THEN 1 ELSE 0 END) AS attributable,
              SUM(CASE WHEN ${column} IS NULL THEN 1 ELSE 0 END) AS unstamped
         FROM ${table} ${filt ? filt + ' AND' : 'WHERE'} ${acct.where}
     `).get(String(scope.accountId), ...extraParams, ...acct.params)
-    out.total = Number(r?.total || 0)
     out.attributable = Number(r?.attributable || 0)
     out.unstamped = Number(r?.unstamped || 0)
+    out.total = indexedRiskCounts ? out.attributable + out.unstamped : Number(r?.total || 0)
     // No rows is a fact, not a gap. An account with no trades painted amber
     // would teach the operator to ignore amber, which costs the real ones.
     out.pct = out.total === 0 ? 100 : Math.round((out.attributable / out.total) * 1000) / 10

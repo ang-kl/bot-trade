@@ -1,0 +1,75 @@
+{
+  "generatedAt": "2026-09-28T00:07:43.568Z",
+  "purpose": "Synthetic one-index experiment; no production DB or settings read",
+  "fixtureRows": 250000,
+  "nullRows": 8065,
+  "buildMs": 68.66615600000023,
+  "bytesAdded": 102400,
+  "retentionRowsPerRollback": 46800,
+  "baseline": {
+    "plans": {
+      "count": [
+        "SCAN risk_events USING COVERING INDEX idx_risk_events_lookback"
+      ],
+      "route": [
+        "SCAN risk_events USING INDEX idx_risk_events_at"
+      ],
+      "symbolRoute": [
+        "SEARCH risk_events USING INDEX idx_risk_events_symbol (symbol=?)"
+      ]
+    },
+    "countMs": [
+      11.109,
+      8.557,
+      7.86,
+      8.477,
+      9.888
+    ],
+    "retentionDeleteRollbackMs": [
+      199.054,
+      177.273,
+      176.555,
+      190.765,
+      200.581
+    ]
+  },
+  "after": {
+    "plans": {
+      "count": [
+        "SCAN risk_events USING INDEX idx_risk_events_unattributed_candidate"
+      ],
+      "route": [
+        "SCAN risk_events USING INDEX idx_risk_events_at"
+      ],
+      "symbolRoute": [
+        "SEARCH risk_events USING INDEX idx_risk_events_symbol (symbol=?)"
+      ]
+    },
+    "countMs": [
+      0.234,
+      0.177,
+      0.172,
+      0.213,
+      0.166
+    ],
+    "retentionDeleteRollbackMs": [
+      194.048,
+      182.619,
+      177.712,
+      204.468,
+      188.209
+    ]
+  },
+  "validation": {
+    "exactReadOutputs": true,
+    "fullRiskRowDigest": true,
+    "journalMode": "wal",
+    "synchronous": 2
+  },
+  "limits": [
+    "warm local reads, not production timing",
+    "index creation scans entire risk table once",
+    "NULL counting still scales with NULL-row population",
+    "scopeCoverage is deliberately unchanged"
+  ]
+}

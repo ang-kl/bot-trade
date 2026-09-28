@@ -14,6 +14,7 @@ import { readPartialOwnership } from './momentum-partial-ownership.js'
 import { reconcileStaleClosedMarketLimits } from './closed-market-limits.js'
 import { bookEntryWrite } from './book-entry-write.js'
 import { bindAwaitingMomentumEntries } from './momentum-entry-producer.js'
+import { reconcilePositions } from './reconciler.js'
 
 const accountId = '11', producerId = 'daily_momentum_account'
 const synth = { consensus_bias: 'long', entry: 98, sl: 88, strategy: 'tsmom_long', timeframe: '1d', sizing: 'vol_target', sizedVolume: 100 }
@@ -484,4 +485,152 @@ test('an unresolved first partial cannot starve another order of the bounded det
   assert.equal(reads.length, 2)
   assert.deepEqual(new Set(reads), new Set(['900', '901']), 'both orders get a turn even when the first never resolves')
   assert.equal(f.db.prepare("SELECT count(*) n FROM momentum_target_intents WHERE state='AWAITING_BIND'").get().n, 2)
+})
+
+
+// A terminal snapshot can arrive after an earlier partial was already adopted.
+// Keep all three local owners at that earlier fill, as production does.
+function earlierLimitAdoption(f, entry = 98) {
+  const shift = entry - f.p.entry, stop = f.p.originalStop + shift, target = f.p.brokerTarget + shift
+  f.db.prepare('UPDATE trades SET volume=25,entry_price=?,sl_price=?,tp_price=?,broker_sl_initial=? WHERE id=7')
+    .run(entry, stop, target, stop)
+  f.db.prepare('UPDATE momentum_book SET entry_price=?,stop=? WHERE trade_id=7').run(entry, stop)
+  f.db.prepare(`UPDATE monitored_positions SET entry_price=?,current_sl=?,current_tp=?,
+    broker_sl=?,broker_tp=?,broker_volume_units=25 WHERE trade_id=7`).run(entry, stop, target, stop, target)
+  f.limitFinalFill.details.deal[0].executionPrice = entry
+  f.limitFinalFill.details.deal[1].executionPrice = 196 - entry
+}
+
+let laterFillClock = 0
+async function bindLaterOpeningFill(f) {
+  // The earlier fairness regression advances the module's read clock by a
+  // minute. Use a monotonic clock across these isolated same-id databases.
+  laterFillClock = Math.max(laterFillClock + 1000, f.now + 120_000)
+  let clock = laterFillClock
+  return bindAwaitingMomentumEntries(f.db, { credsFor: () => f.creds, now: () => clock, minIntervalMs: 0,
+    transports: {
+      reconcile: async () => { clock += 10; return f.limitFinalFill.reconcile },
+      orderDetails: async () => { clock += 10; return f.limitFinalFill.details },
+    } })
+}
+
+function adoptionRows(f) {
+  return {
+    trade: f.db.prepare('SELECT * FROM trades WHERE id=7').get(),
+    book: f.db.prepare('SELECT * FROM momentum_book WHERE trade_id=7').get(),
+    monitor: f.db.prepare('SELECT * FROM monitored_positions WHERE trade_id=7').get(),
+    intent: readMomentumEntry(f.db, '11', 7),
+    pending: f.db.prepare('SELECT * FROM pending_orders WHERE id=?').get(f.stored.pending_id),
+  }
+}
+
+test('later same-order opening deals refresh an earlier adoption before final partial TP1 enrollment', async t => {
+  for (const entry of [98, 97]) {
+    const f = await finalPartialFixture(t)
+    earlierLimitAdoption(f, entry)
+    if (entry === 97) f.limitFinalFill.details.deal.reverse()
+    const before = adoptionRows(f)
+    const proposalJson = before.intent.proposal_json
+    // A real account reconcile updates broker baselines but deliberately does
+    // not reinterpret recorded fill volume or entry on an existing trade.
+    reconcilePositions(f.db, f.limitFinalFill.reconcile.position.map(p => ({ ...p, symbolName: 'ETHUSD' })), [], () => {}, { accountId: '11' })
+    assert.equal(f.db.prepare('SELECT volume FROM trades WHERE id=7').get().volume, 25)
+    const result = await bindLaterOpeningFill(f)
+    assert.equal(result[0].bound, true, result[0].reason)
+    const after = adoptionRows(f), plan = readPartialPlan(f.db, '11', 7).plan
+    assert.equal(after.trade.volume, 50)
+    assert.equal(after.trade.entry_price, 98)
+    assert.equal(after.trade.sl_price, 88)
+    assert.equal(after.trade.tp_price, f.p.brokerTarget)
+    assert.equal(after.book.entry_price, 98)
+    assert.equal(after.book.stop, 88)
+    assert.equal(after.monitor.entry_price, 98)
+    assert.equal(after.monitor.initial_risk, before.monitor.initial_risk)
+    assert.equal(after.monitor.current_sl, 88)
+    assert.equal(after.monitor.current_tp, f.p.brokerTarget)
+    assert.equal(after.monitor.broker_volume_units, 50)
+    assert.equal(after.trade.broker_sl_initial, before.trade.broker_sl_initial, 'the first broker stop remains historical evidence')
+    assert.equal(after.trade.risk_event_id, before.trade.risk_event_id)
+    assert.equal(after.intent.proposal_json, proposalJson)
+    assert.equal(plan.initialRisk, f.p.initialRisk)
+    assert.equal(plan.costReservePrice, f.p.costReservePrice)
+    assert.equal(plan.volume, 5000)
+    assert.equal(after.intent.state, 'ENROLLED')
+    assert.deepEqual(after.intent.fill.finalLimitFill.adoptionRefresh.dealIds, ['81'])
+    assert.equal(after.intent.fill.finalLimitFill.adoptionRefresh.volume, 2500)
+    assert.equal(after.intent.fill.finalLimitFill.adoptionRefresh.entry, entry)
+    assert.equal(restingExposure(f.db, '11').length, 0)
+    const receipt = after.intent.fill_json
+    assert.deepEqual(await bindLaterOpeningFill(f), [])
+    assert.equal(readMomentumEntry(f.db, '11', 7).fill_json, receipt, 'the successful migration receipt stays immutable')
+  }
+})
+
+test('a later fill cannot reinterpret manual, ambiguous or differently owned local exposure', async t => {
+  const cases = [
+    ['unproven local volume', f => { f.db.prepare('UPDATE trades SET volume=40 WHERE id=7').run() }],
+    ['reduced final volume', f => { f.db.prepare('UPDATE trades SET volume=60 WHERE id=7').run() }],
+    ['unproven local entry', f => {
+      for (const table of ['trades', 'momentum_book', 'monitored_positions']) {
+        f.db.prepare(`UPDATE ${table} SET entry_price=96 WHERE ${table === 'trades' ? 'id' : 'trade_id'}=7`).run()
+      }
+    }],
+    ['ambiguous same-time opening prefix', f => { f.limitFinalFill.details.deal[1].executionTimestamp = f.limitFinalFill.details.deal[0].executionTimestamp }],
+    ['monitor ownership changed', f => { f.db.prepare("UPDATE monitored_positions SET account_id='12' WHERE trade_id=7").run() }],
+    ['monitor resumed', f => { f.db.prepare('UPDATE monitored_positions SET paused=0 WHERE trade_id=7').run() }],
+    ['guard acquired ownership', f => { f.db.prepare("UPDATE monitored_positions SET guard_json='{}' WHERE trade_id=7").run() }],
+    ['book entry changed', f => { f.db.prepare('UPDATE momentum_book SET entry_price=96 WHERE trade_id=7').run() }],
+    ['initial risk changed', f => { f.db.prepare('UPDATE monitored_positions SET initial_risk=9 WHERE trade_id=7').run() }],
+    ['trade bracket changed', f => { f.db.prepare('UPDATE trades SET sl_price=90 WHERE id=7').run() }],
+    ['book stop changed', f => { f.db.prepare('UPDATE momentum_book SET stop=90 WHERE trade_id=7').run() }],
+    ['monitor target changed', f => { f.db.prepare('UPDATE monitored_positions SET current_tp=150 WHERE trade_id=7').run() }],
+  ]
+  for (const [name, mutate] of cases) {
+    const f = await finalPartialFixture(t)
+    earlierLimitAdoption(f, 97)
+    mutate(f)
+    const before = adoptionRows(f)
+    const result = await bindLaterOpeningFill(f)
+    assert.equal(result[0].bound, false, name)
+    assert.notEqual(result[0].reason, 'read_within_interval', name)
+    assert.deepEqual(adoptionRows(f), before, name)
+    assert.equal(f.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_partial_plans'").get(), undefined, name)
+    assert.equal(restingExposure(f.db, '11').length, 1, name)
+  }
+})
+
+test('later-fill anchor refresh rolls back with any ownership or reservation write failure', async t => {
+  for (const table of ['trades', 'momentum_book', 'monitored_positions', 'pending_orders']) {
+    const f = await finalPartialFixture(t)
+    earlierLimitAdoption(f, 97)
+    const before = adoptionRows(f)
+    f.db.exec(`CREATE TRIGGER fail_adoption_refresh BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(ABORT, 'adoption_write_failed'); END`)
+    const result = await bindLaterOpeningFill(f)
+    assert.equal(result[0].bound, false, table)
+    assert.match(result[0].reason, /adoption_write_failed/, table)
+    assert.deepEqual(adoptionRows(f), before, table)
+    assert.equal(f.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_partial_plans'").get(), undefined, table)
+    assert.equal(restingExposure(f.db, '11').length, 1, table)
+  }
+})
+
+test('later-fill migration requires a transaction and preserves its receipt across restart', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'momentum-later-fill-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'state.db'), f = await finalPartialFixture(t, 5, path)
+  earlierLimitAdoption(f, 97)
+  const before = adoptionRows(f)
+  assert.throws(f.bind, /requires atomic handover/)
+  assert.deepEqual(adoptionRows(f), before)
+  assert.equal((await bindLaterOpeningFill(f))[0].bound, true)
+  const receipt = readMomentumEntry(f.db, '11', 7).fill_json
+  const plan = readPartialPlan(f.db, '11', 7)
+  f.db.close()
+  const after = initDB(path); t.after(() => after.close())
+  assert.equal(readMomentumEntry(after, '11', 7).fill_json, receipt)
+  assert.deepEqual(readPartialPlan(after, '11', 7), plan)
+  assert.equal(after.prepare('SELECT volume FROM trades WHERE id=7').get().volume, 50)
+  assert.equal(after.prepare('SELECT entry_price FROM momentum_book WHERE trade_id=7').get().entry_price, 98)
+  assert.equal(after.prepare('SELECT entry_price FROM monitored_positions WHERE trade_id=7').get().entry_price, 98)
+  assert.equal(restingExposure(after, '11').length, 0)
 })

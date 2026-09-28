@@ -1496,3 +1496,69 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   change or broker order was performed. New push/deployment approval is
   separate from the completed named release. The original checkout's two
   uncommitted documentation edits remain preserved.
+
+- **28-09-2026 07:49 SGT, CODEX #1171 release checkpoint, partial corpus:**
+  latest visible reply is **`№ 10,220`**; the next handover reply is
+  **`№ 10,221`**, with later visible replies taking precedence. The owner
+  approved publication of `ed142c3`, then instructed "merge if ready".
+  GitHub publication `e6688d5` and squash `41aa2cb` have the identical approved
+  tree. PR #1171 CI 36359325227 passed all gates; optional reviewer execution
+  was skipped for an absent key and is not independent review. Node deployment
+  e6106ccd-3c1f-4705-8d88-4cdb61a9fcc5 succeeded; the five native services kept
+  their existing successful deployments. Fresh post-boot receipts at 07:47 SGT
+  cover seven accounts and 26 positions, all with SL/TP; 40 controllers are
+  healthy, one retired and one idle. The 144-second first loop and temporary
+  startup warnings are preserved as evidence. Scanner alignment, natural new
+  partial-fill execution, full traces and graded session/empirical V3 gates
+  remain open. See the append-only final-partial-fill progress record and
+  PR #1171's release checkpoint. No settings, credentials or broker operation
+  was added. Original checkout edits remain intact. This checkpoint is local
+  so the deployed approved tree is not changed by a documentation-only release.
+
+- **28-09-2026 08:22 SGT, CODEX V3 verification correction checkpoint, partial corpus:**
+  latest visible reply is **`№ 10,235`**; next handover is **`№ 10,236`**;
+  later visible replies take precedence. The owner's reported Astra Ultra
+  setting and "proceed" resumed authorised local V3 fixes and read-only
+  verification. A realistic later partial opening fill was reproduced and
+  fixed with exact same-order deal-prefix proof and atomic trade/book/monitor
+  refresh before TP1/reservation settlement. A separate narrow partial index
+  reduces the legacy NULL-risk-row count without changing list results or
+  tied ordering. Full backend 7,191 passed/four native-dependent skips,
+  frontend 1,311 passed, full lint/build/colour/whitespace gates passed.
+  Local branch: codex/v3-verification-fixes-20260928. No push or deployment.
+  Production remains #1171/41aa2cb; all six deployments successful. Natural
+  partial plans remain unobserved. Scanner796 revision unchanged; actual
+  feed anchors differ and three of56 configured names remain unresolved per
+  feed. Registry/account changes remain unapplied. The persisted startup
+  144,370-ms first loop, 58,220-ms lag maximum, two HTTP5xx and budget overruns
+  remain failed evidence despite later recovery. Continuous session evidence,
+  full browser traces, natural partial execution and empirical V3 closure
+  remain open. See docs/v3-verification-followup-2026-09-28.md and the appended
+  partial-fill progress checkpoint. New publication requires scoped approval
+  under the uploaded CLAUDE.md. Original checkout edits remain intact.
+
+- **28-09-2026 09:24 SGT, CODEX performance/scanner implementation checkpoint, partial corpus:**
+  latest visible reply is **`№ 10,258`**; later visible replies take precedence.
+  The owner's continuation order completed the local retained-history query
+  remedies, opt-in starting profiler lifecycle and guarded offline scanner
+  alignment builder. Final frozen-source backend: 7,221 passed, zero failures
+  or skips; frontend 1,311/136 files; full/explicit-script lint, build, colour,
+  whitespace and temporary-file hygiene passed. Three unchanged native
+  production targets built and all four previously skipped native checks ran.
+  The initial account-routing inventory failure was fixed through the existing
+  routing helper and a documented exact schema/import inventory entry; its
+  policy assertions remain intact. The earlier f185389 partial-fill and risk
+  correction is inherited. New performance benchmarks are synthetic evidence,
+  not measured Railway recovery. The scanner plan preserves 106 tick profiles,
+  adds 106 current-feed profiles and remaps 690 timeframe profiles without an
+  account selection. Fresh executable payloads remain pending: authenticated
+  browser reads timed out and native capacity was not established. Missing
+  SPX500/USOIL/UKOIL identities are not aliased. Registry rollback does not
+  prove immediate native cell recovery. Production remains main 41aa2cb with
+  six successful deployments; no new push/deploy/configuration/broker action.
+  See docs/v3-performance-scanner-remedies-2026-09-28.md, its append-only
+  progress record and machine-readable gate JSON. Local candidate publication
+  needs scoped approval under the uploaded CLAUDE.md; production configuration
+  has its own exact-payload approval. Owner-observed acceptance follows
+  implementation handover. V3 is not production-complete. Original checkout
+  documentation edits remain preserved.

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "at": "2026-09-28T01:04:36.775537+00:00",
+  "head": "f1853891b840b38ca7336a6e7af2eeb79059fb93",
+  "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0",
+  "sourceStatus": "",
+  "commands": [
+    "make -C cpp-exec CXX=g++ -j2 all",
+    "make -C cpp-scan-tick CXX=g++ -j2 all",
+    "make -C cpp-scan-timeframe CXX=g++ -j2 all"
+  ],
+  "services": {
+    "cpp-exec": {
+      "sourceTree": "53eced7fa3032b971457a2f7cba617b863f693b7",
+      "binarySha256": "daa907a77f5061cdbc4d3c15944a49189fce34549d33c18985642606214224aa",
+      "bytes": 2991208,
+      "buildLog": "/tmp/v3-native-build-cpp-exec.log"
+    },
+    "cpp-scan-tick": {
+      "sourceTree": "980c09118ce43252941a0b786de51bb7c4c81768",
+      "binarySha256": "722fbd13e772cd7b4bba397f8d3d0eb0955d22100093973123deab318006ef86",
+      "bytes": 251888,
+      "buildLog": "/tmp/v3-native-build-cpp-scan-tick.log"
+    },
+    "cpp-scan-timeframe": {
+      "sourceTree": "c9272fba04718c791a90d5f5436123546bb76ba6",
+      "binarySha256": "db0525714374efffd52db2154d86e5b4b2c7d585a23ab5931c62de676b3f6e1d",
+      "bytes": 456904,
+      "buildLog": "/tmp/v3-native-build-cpp-scan-timeframe.log"
+    }
+  }
+}

@@ -158,6 +158,48 @@ export function recordMomentumEntry(db, { accountId, tradeId, proposal, nowMs })
   return readMomentumEntry(db, accountId, tradeId)
 }
 
+// Refresh only an earlier adoption proven by this order's opening deals. The
+// generic reconciler intentionally cannot reinterpret an existing entry. Here
+// the final broker proof and the same transaction as TP1 enrollment provide
+// that authority; every pre-existing owner and bracket must still agree.
+function refreshEarlierLimitAdoption(db, { accountId, trade, proposal, position, plan, proof }) {
+  const prior = proof.adoptionRefresh, p = proposal.plan
+  if (!db.inTransaction) throw Error('final fill adoption refresh requires atomic handover')
+  const oldStop = shiftStopToFill(p, prior.entry), oldTarget = p.brokerTarget + prior.entry - p.entry
+  const oldPlan = { ...p, entry: prior.entry }
+  const owner = readPartialOwnership(db, accountId, trade.id, position.positionId, p.digits)
+  const book = db.prepare('SELECT * FROM momentum_book WHERE trade_id=?').get(trade.id)
+  const monitor = db.prepare("SELECT * FROM monitored_positions WHERE trade_id=? AND status='active'").get(trade.id)
+  const either = (value, before, after) => sameTicks(value, before, p.digits) || sameTicks(value, after, p.digits)
+  const baseline = (value, before, after) => value == null || either(value, before, after)
+  if (!ownershipMatchesPlan(owner, { accountId, tradeId: trade.id, positionId: position.positionId, plan: oldPlan })
+    || !sameTicks(plan.initialRisk, p.initialRisk, p.digits) || monitor?.be_moved
+    || !sameTicks(trade.sl_price, oldStop, p.digits) || !sameTicks(trade.tp_price, oldTarget, p.digits)
+    || !either(book?.stop, oldStop, position.stopLoss)
+    || !either(monitor?.current_sl, oldStop, position.stopLoss) || !either(monitor?.current_tp, oldTarget, position.takeProfit)
+    || !baseline(monitor?.broker_sl, oldStop, position.stopLoss) || !baseline(monitor?.broker_tp, oldTarget, position.takeProfit)
+    || (monitor?.broker_volume_units != null && monitor.broker_volume_units !== prior.volume / 100
+      && monitor.broker_volume_units !== position.volume / 100)) throw Error('final fill prior adoption ownership or bracket changed')
+
+  const changes = [
+    db.prepare(`UPDATE trades SET volume=?,entry_price=?,sl_price=?,tp_price=?
+      WHERE id=? AND account_id=? AND intent_id=? AND ctrader_position_id=? AND status='open'
+        AND volume=? AND entry_price=? AND sl_price IS ? AND tp_price IS ?`).run(
+      position.volume / proposal.evidence.symbolMeta.lotSize, plan.entry, plan.originalStop, plan.brokerTarget,
+      trade.id, accountId, trade.intent_id, position.positionId, trade.volume, trade.entry_price, trade.sl_price, trade.tp_price),
+    db.prepare(`UPDATE momentum_book SET entry_price=?,stop=?
+      WHERE id=? AND account_id=? AND trade_id=? AND position_id=? AND status='open' AND entry_price=? AND stop IS ?`).run(
+      plan.entry, position.stopLoss, book.id, accountId, trade.id, position.positionId, book.entry_price, book.stop),
+    db.prepare(`UPDATE monitored_positions SET entry_price=?,current_sl=?,current_tp=?,broker_volume_units=?,broker_sl=?,broker_tp=?
+      WHERE id=? AND account_id=? AND trade_id=? AND status='active' AND paused=1 AND entry_price=? AND initial_risk=?
+        AND current_sl IS ? AND current_tp IS ? AND broker_volume_units IS ? AND broker_sl IS ? AND broker_tp IS ?`).run(
+      plan.entry, position.stopLoss, position.takeProfit, position.volume / 100, position.stopLoss, position.takeProfit,
+      monitor.id, accountId, trade.id, monitor.entry_price, monitor.initial_risk,
+      monitor.current_sl, monitor.current_tp, monitor.broker_volume_units, monitor.broker_sl, monitor.broker_tp),
+  ]
+  if (changes.some(change => change.changes !== 1)) throw Error('final fill adoption anchor changed')
+}
+
 /** A fresh confirmed position can bind the immutable plan; this does not
  * register a partial or claim book ownership. Atomic handover does that later.
  */
@@ -181,6 +223,7 @@ export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, max
     const entry = t.intent_id && db.prepare('SELECT * FROM entry_intents WHERE id=? AND account_id=?').get(t.intent_id, accountId)
     finalFill = finalMomentumLimitEvidence(limitFinalFill, { proposal: intent.proposal, intent: entry, trade: t, position, nowMs, maxAgeMs })
     if (!finalFill) throw Error('entry fill lacks final limit fill evidence')
+    if (finalFill.adoptionRefresh && !db.inTransaction) throw Error('final fill adoption refresh requires atomic handover')
   }
   // The stop moves with the fill in whole ticks, as the broker moves a
   // relative stop. The unrounded p.originalStop + shift (247.81000000000003
@@ -216,6 +259,9 @@ export function bindMomentumEntry(db, { accountId, tradeId, position, nowMs, max
   const changed = db.prepare("UPDATE momentum_target_intents SET state='BOUND',position_id=?,plan_json=?,fill_json=? WHERE account_id=? AND trade_id=? AND state IN ('PREPARED','AWAITING_BIND')")
     .run(position.positionId, JSON.stringify(plan), JSON.stringify(receipt), accountId, tradeId)
   if (changed.changes !== 1) throw Error('entry fill state changed')
+  if (finalFill?.adoptionRefresh) refreshEarlierLimitAdoption(db, {
+    accountId, trade: t, proposal: intent.proposal, position, plan, proof: finalFill,
+  })
   return readMomentumEntry(db, accountId, tradeId)
 }
 
