@@ -50,6 +50,8 @@ test('a human master stop holds the entire order, including live account arming'
 
 test('a disabled or paused account is not promoted by a boot order', () => {
   const db = fixture()
+  upsertAccount(db, { accountId: '99999999', isLive: true })
+  db.prepare("UPDATE accounts SET mode = 'manage_only', enabled = 1 WHERE account_id = '99999999'").run()
   db.prepare("UPDATE accounts SET mode = 'paused' WHERE account_id = '42993489'").run()
   db.prepare("UPDATE accounts SET enabled = 0 WHERE account_id = '43002148'").run()
   const result = restoreApprovedAccountPhases(db)
@@ -57,4 +59,5 @@ test('a disabled or paused account is not promoted by a boot order', () => {
   assert.ok(!result.applied.includes('43002148'))
   assert.equal(db.prepare("SELECT mode FROM accounts WHERE account_id = '42993489'").get().mode, 'paused')
   assert.equal(db.prepare("SELECT mode FROM accounts WHERE account_id = '43002148'").get().mode, 'manage_only')
+  assert.equal(db.prepare("SELECT mode FROM accounts WHERE account_id = '99999999'").get().mode, 'manage_only', 'a future account cannot inherit the seven-account approval')
 })

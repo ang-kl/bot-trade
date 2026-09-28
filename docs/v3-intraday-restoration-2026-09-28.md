@@ -11,7 +11,7 @@ The 20 September intraday retirement is superseded for the ordinary `scan_dispat
 - Restore `scan_dispatch` to the automatic producer roster.
 - Add the 12 intraday strategies to the global seed-once order and the enabled-account pins. `_reseed_all` gives existing accounts a new, one-time owner order without hardcoded account IDs. A later guard or human disarm survives subsequent boots.
 - Reject automated and raw `scan_enabled=false` writes globally and per account. The authenticated owner UI and human Telegram commands remain able to pause scanning and use the emergency stop with an audited actor.
-- At boot, apply the owner-approved Scan/Analyze/Autotrade account order once to every enabled `active` or `manage_only` account. A master OFF holds the entire order; `paused`, archived and disabled accounts are not promoted. A later human pause or guard disarm is retained.
+- At boot, apply the owner-approved Scan/Analyze/Autotrade account order once to the seven named existing accounts only, when enabled and `active` or `manage_only`. A future account cannot inherit approval to leave `manage_only`. A master OFF holds the entire order; `paused`, archived and disabled accounts are not promoted. A later human pause or guard disarm is retained.
 - Make family goal rows reflect the current producer retirement state rather than permanently describing the intraday families as retired.
 
 The historical 19 September sample was weak or inconclusive for most intraday strategies. For example, the earlier 90-day record included `vwap_trend` PF 0.70 over 30 closes and `fib_confluence` PF 2.72 over 26 closes. The restoration is an owner decision, not evidence of positive expectancy.

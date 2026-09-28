@@ -12,6 +12,10 @@ export function restoreApprovedAccountPhases(db, { file = null, log = () => {} }
   if (!cfg || typeof cfg.orderId !== 'string' || !/^owner-approved-intraday-[0-9]{8}$/.test(cfg.orderId)) {
     return { applied: [], held: [], skipped: [], error: 'phase order has no valid owner order ID' }
   }
+  if (!Array.isArray(cfg.accountIds) || cfg.accountIds.length !== 7
+      || new Set(cfg.accountIds).size !== 7 || !cfg.accountIds.every(id => typeof id === 'string' && /^[0-9]+$/.test(id))) {
+    return { applied: [], held: [], skipped: [], error: 'phase order needs seven distinct existing account IDs' }
+  }
   const result = { applied: [], held: [], skipped: [], error: null }
   const master = masterPhases(db)
   if (!master.scan || !master.analyze || !master.autotrade) {
@@ -22,8 +26,10 @@ export function restoreApprovedAccountPhases(db, { file = null, log = () => {} }
   try { prior = JSON.parse(getState(db, PHASE_RESTORE_STATE_KEY) || '{}') || {} } catch { prior = {} }
   const done = new Set(prior.orderId === cfg.orderId && Array.isArray(prior.doneIds) ? prior.doneIds.map(String) : [])
   const rows = db.prepare('SELECT account_id, mode FROM accounts WHERE enabled = 1 ORDER BY account_id').all()
+  const approved = new Set(cfg.accountIds)
   for (const row of rows) {
     const id = String(row.account_id)
+    if (!approved.has(id)) continue // no future account inherits this financial approval
     if (done.has(id)) { result.held.push(id); continue }
     if (!['active', 'manage_only'].includes(row.mode)) { result.skipped.push(`${id}: mode ${row.mode}`); continue }
     setAccountPhases(db, id, { scan: true, analyze: true, autotrade: true }, {
