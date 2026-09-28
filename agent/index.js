@@ -400,6 +400,16 @@ try {
   } catch (err) {
     console.error(`[boot] global strategy arm failed (non-fatal): ${err.message}`)
   }
+  // One-time owner order 28-09-2026: after the registry and strategy seeds,
+  // restore S/A/T before dispatch. A human master pause vetoes this order.
+  try {
+    const { restoreApprovedAccountPhases } = await import('./services/intraday-phase-restoration.js')
+    const restore = restoreApprovedAccountPhases(db, { log: m => console.log(m) })
+    if (restore.error) console.error(`[boot] account S/A/T restoration held: ${restore.error}`)
+    else console.log(`[boot] account S/A/T restoration: ${restore.applied.length} applied, ${restore.held.length} already ordered, ${restore.skipped.length} skipped${restore.skipped.length ? ` (${restore.skipped.join('; ')})` : ''}`)
+  } catch (err) {
+    console.error(`[boot] account S/A/T restoration failed: ${err.message}`)
+  }
   // S-1 (26-09-2026, principle 4): AFTER every arming seed above, so it sees
   // their rows. Appends only — a `corrected` row for each recorded reason that
   // was wrong, and a `declared` row for each Trade cell no row explains. No

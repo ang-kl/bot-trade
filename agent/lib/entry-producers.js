@@ -31,8 +31,7 @@ export const ENTRY_PRODUCERS = Object.freeze([
     id: 'scan_dispatch', family: 'automatic', basis: 'bar',
     file: 'agent/loop.js', via: 'autoTrade → execPlaceOrder',
     trigger: 'main loop: scan → analyse → risk gate → dispatch', admission: 'exec-engine',
-    note: 'the ordinary scanner and synthesis path; every strategy in the registry',
-    retired: '2026-09-20 owner order: intraday paths retired, momentum only (9 strategies, 61 trades, net −62.63 over 30 days — ~7 trades each, nothing decidable); the scan still runs, but every intraday strategy is also OFF in Auto Trade & Open on every account, so the stage gate refuses its proposals first (stage_matrix rows, no levels) and none reaches this fence: 0 producer_retired rows ever (26-09-2026)',
+    note: 'ordinary scanner and synthesis path, restored by owner approval 2026-09-28 under the existing stage, entry-mode, account and risk gates',
   },
   {
     id: 'daily_momentum_account', family: 'automatic', basis: 'bar',

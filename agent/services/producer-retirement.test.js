@@ -23,7 +23,7 @@ import { evidenceShadowRefusals } from './refusal-ledger.js'
 import { DEFAULT_GAP_MS } from './opportunity-identity.js'
 
 const DEMO = '46130058', OTHER = '42993489'
-const RETIRED_BY_THIS_ORDER = ['scan_dispatch', 'closed_market_limits']
+const RETIRED_BY_THIS_ORDER = ['closed_market_limits']
 
 function fresh() {
   const db = initDB(':memory:')
@@ -37,6 +37,14 @@ const proposal = (o = {}) => ({
   strategy: 'donchian_breakout', timeframe: '1h', conviction: 8, ...o,
 })
 const skips = (db) => db.prepare(`SELECT * FROM decision_log WHERE stage = 'producer_retired'`).all()
+
+test('restored scan dispatch is admitted on an enabled account and does not create a retirement refusal', () => {
+  const db = fresh()
+  assert.equal(isProducerRetired('scan_dispatch'), false)
+  const result = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', proposal: proposal() })
+  assert.equal(result.ok, true, result.reason)
+  assert.equal(skips(db).length, 0)
+})
 
 test('the fence refuses each producer this order retired, with the reason head producer_retired', () => {
   const db = fresh()
@@ -65,7 +73,7 @@ test('the kept producers still trade: the two momentum paths are admitted under 
   const tick = admitEntry(db, { accountId: DEMO, producerId: 'tick_momentum', basis: 'tick' })
   assert.equal(tick.ok, false)
   assert.equal(reasonHead(tick.reason), 'entry_mode_basis', tick.reason)
-  assert.deepEqual(automaticProducers().map(p => p.id), ['daily_momentum_account', 'cross_sectional_book', 'tick_momentum'])
+  assert.deepEqual(automaticProducers().map(p => p.id), ['scan_dispatch', 'daily_momentum_account', 'cross_sectional_book', 'tick_momentum'])
 })
 
 test('every manual and manual_assisted route is still admitted — the owner keeps every hand', () => {
@@ -88,7 +96,7 @@ test('the refusal is a decision_log skip and NOT a risk_events veto, deduped per
   // Three cycles of the same proposal, on two accounts.
   for (let cycle = 0; cycle < 3; cycle++) {
     for (const acct of [DEMO, OTHER]) {
-      admitEntry(db, { accountId: acct, producerId: 'scan_dispatch', basis: 'bar', proposal: proposal() })
+      admitEntry(db, { accountId: acct, producerId: 'closed_market_limits', basis: 'bar', proposal: proposal() })
     }
   }
   const rows = skips(db)
@@ -96,7 +104,7 @@ test('the refusal is a decision_log skip and NOT a risk_events veto, deduped per
   assert.deepEqual(rows.map(r => r.account_id).sort(), [OTHER, DEMO].sort())
   for (const r of rows) {
     assert.equal(r.decision, 'skip')
-    assert.equal(r.reason, 'producer_retired: scan_dispatch')
+    assert.equal(r.reason, 'producer_retired: closed_market_limits')
     assert.equal(r.symbol, 'EURUSD')
     assert.equal(r.strategy, 'donchian_breakout')
   }
@@ -105,19 +113,19 @@ test('the refusal is a decision_log skip and NOT a risk_events veto, deduped per
   // A DIFFERENT setup is its own record — the ledger needs one scoreable row
   // per opportunity, and collapsing them all into one would throw the
   // evidence away.
-  admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar', proposal: proposal({ symbol: 'XAUUSD', strategy: 'vwap_trend' }) })
+  admitEntry(db, { accountId: DEMO, producerId: 'closed_market_limits', basis: 'bar', proposal: proposal({ symbol: 'XAUUSD', strategy: 'vwap_trend' }) })
   assert.equal(skips(db).length, 3)
   // …but a second cycle on that same setup still writes nothing.
-  admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar', proposal: proposal({ symbol: 'XAUUSD', strategy: 'vwap_trend' }) })
+  admitEntry(db, { accountId: DEMO, producerId: 'closed_market_limits', basis: 'bar', proposal: proposal({ symbol: 'XAUUSD', strategy: 'vwap_trend' }) })
   assert.equal(skips(db).length, 3)
 })
 
 test('the refusal carries the proposal levels, so the refusal ledger can score what the retired stack forwent', () => {
   const db = fresh()
-  admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar', proposal: proposal() })
+  admitEntry(db, { accountId: DEMO, producerId: 'closed_market_limits', basis: 'bar', proposal: proposal() })
   const detail = JSON.parse(skips(db)[0].detail_json)
-  assert.equal(detail.producerId, 'scan_dispatch')
-  assert.match(detail.reason, /^producer_retired: scan_dispatch/)
+  assert.equal(detail.producerId, 'closed_market_limits')
+  assert.match(detail.reason, /^producer_retired: closed_market_limits/)
   assert.deepEqual(
     { entry: detail.proposal.entry, sl: detail.proposal.sl, tp1: detail.proposal.tp1, side: detail.proposal.side },
     { entry: 1.1, sl: 1.09, tp1: 1.13, side: 'BUY' },
@@ -134,7 +142,7 @@ test('the refusal carries the proposal levels, so the refusal ledger can score w
 test('INVARIANT: every producer marked retired in the inventory is refused by admitEntry — marking one is sufficient and cannot silently do nothing', () => {
   const db = fresh()
   const retired = retiredProducers()
-  assert.ok(retired.length >= 5, `the retired roster: ${retired.map(p => p.id).join(', ')}`)
+  assert.ok(retired.length >= 4, `the retired roster: ${retired.map(p => p.id).join(', ')}`)
   for (const p of retired) {
     const a = admitEntry(db, { accountId: DEMO, producerId: p.id, basis: p.basis || 'bar' })
     assert.equal(a.ok, false, `${p.id} must be refused`)
@@ -150,7 +158,7 @@ test('INVARIANT: every producer marked retired in the inventory is refused by ad
 test('the fence is asked BEFORE the mode and basis checks, so the reason a reader sees is the true one', () => {
   const db = fresh()
   requestEntryMode(db, DEMO, 'STOPPED')
-  const a = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar' })
+  const a = admitEntry(db, { accountId: DEMO, producerId: 'closed_market_limits', basis: 'bar' })
   assert.equal(reasonHead(a.reason), 'producer_retired', `a stopped account still names the retirement: ${a.reason}`)
   // A tick-basis ask on a bar account would have said entry_mode_basis.
   const b = admitEntry(db, { accountId: OTHER, producerId: 'closed_market_limits', basis: 'tick' })
@@ -243,7 +251,7 @@ test('the closed-market branch does not queue a kept producer\'s signal — ther
 test('the evidence does not go dark: a setup refused again after the opportunity window writes a fresh scoreable row', () => {
   const db = fresh()
   const t0 = Date.parse('2026-09-20T10:00:00Z')
-  const ask = (now) => admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar', proposal: proposal(), now })
+  const ask = (now) => admitEntry(db, { accountId: DEMO, producerId: 'closed_market_limits', basis: 'bar', proposal: proposal(), now })
   ask(t0)
   ask(t0 + 60_000)                                // next cycle: same opportunity, no row
   ask(t0 + RETIRED_REFUSAL_WINDOW_MS - 1000)      // still inside the window
@@ -266,6 +274,6 @@ test('a refusal with no proposal is recorded once and is NOT read by the refusal
   assert.deepEqual(evidenceShadowRefusals(db), [],
     'two producers must not collapse into one opportunity key and surface under whichever reason was written first')
   // A proposal-carrying refusal on the same account is still read.
-  admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'bar', proposal: proposal() })
+  admitEntry(db, { accountId: DEMO, producerId: 'closed_market_limits', basis: 'bar', proposal: proposal() })
   assert.equal(evidenceShadowRefusals(db).length, 1)
 })

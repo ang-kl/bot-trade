@@ -306,8 +306,8 @@ test('one account model: the hardcoded-account configs declare every account', (
   // record turned, but because its only producer (scan_dispatch) is retired
   // in lib/entry-producers.js, and principle 6 forbids showing a strategy
   // armed that no producer can trade. The armed set is `_trial` alone.
-  assert.ok(Array.isArray(pins._all) && pins._all.length <= 3)
-  assert.ok(Array.isArray(pins._off) && pins._off.length >= 10, 'the shadow set is named')
+  assert.deepEqual(pins._all, pins._reseed_all.map(x => x.split(':')[0]), 'each intraday arm is issued once on every enabled account')
+  assert.deepEqual(pins._off, [], 'the prior blanket off order is superseded')
   assert.deepEqual(Object.keys(pins).filter(k => /^\d+$/.test(k)), [], 'no account ids as keys in the pins file')
   assert.deepEqual(Object.keys(pins._trial), ['tsmom_long'])
   assert.equal(pins._trial.tsmom_long.length, 1, 'one trial account')

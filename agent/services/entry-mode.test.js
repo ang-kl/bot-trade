@@ -724,7 +724,7 @@ test('WP-A: admitEntry derives the basis from the registered producer — no \'b
   const d = admitEntry(db, { accountId: DEMO, producerId: 'daily_momentum_account' })
   assert.equal(d.ok, true); assert.equal(d.basis, 'bar')
   assert.equal(admitEntry(db, { accountId: DEMO, producerId: 'route_manual_order', basis: 'bar' }).ok, true, 'a manual producer declares no basis: no conflict')
-  const retired = admitEntry(db, { accountId: DEMO, producerId: 'scan_dispatch', basis: 'tick' })
+  const retired = admitEntry(db, { accountId: DEMO, producerId: 'closed_market_limits', basis: 'tick' })
   assert.equal(retired.ok, false); assert.match(retired.reason, /^producer_retired/, 'the retired fence is first, whatever basis is asked')
   const row = db.prepare(`SELECT reason FROM decision_log WHERE stage = 'entry_mode' AND account_id = ? AND reason LIKE 'producer_basis_conflict%'`).get(LIVE)
   assert.ok(row, 'the conflict leaves one decision_log row')

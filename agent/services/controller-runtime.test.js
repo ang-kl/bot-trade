@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
+import { setPhaseFlag } from './phase-audit.js'
 import { controllerRuntimeView } from './controller-runtime.js'
 import { upsertAccount, setAccountEnabled } from './account-registry.js'
 
@@ -41,7 +42,7 @@ test('runtime reports effective pipeline permission separately from tick validat
   upsertAccount(db, { accountId: '11' })
   setAccountEnabled(db, '11', true, 'active')
   setState(db, 'autotrade_enabled', 'true')
-  setState(db, 'acct:11:scan_enabled', 'false')
+  setPhaseFlag(db, 'acct:11:scan_enabled', 'false', { actor: 'owner-ui', accountId: '11' })
   const account = controllerRuntimeView(db, { nowMs }).accounts[0]
   assert.equal(account.entryReady, false, 'no validated tick profile')
   assert.equal(account.phases.autotrade, true, 'tick readiness is not the scheduled-entry master switch')

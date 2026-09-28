@@ -30,6 +30,7 @@
 
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
+import { isProducerRetired } from '../lib/entry-producers.js'
 import { p1p4TargetDefaults, p1p4LimitsFromTargets, routeClass, p99Below, p99Unknown } from './p1p4-grade.js'
 import { GOAL_SEMANTICS, RECORD_CONTRACTS } from '../lib/record-contracts.js'
 
@@ -570,12 +571,9 @@ async function horizonGoal(db, targets) {
 const FAMILY_LABEL = { mean_reversion: 'mean reversion', breakout: 'breakout', trend: 'trend', momentum: 'momentum' }
 
 /**
- * Owner order 20-09-2026 ("retire the intraday paths, keep momentum only").
- * These three families measure a stack no producer can trade any more: their
- * only automatic producer was scan_dispatch, retired in
- * lib/entry-producers.js. The rows STAY — deleting them would delete the
- * measurement the decision was made on — but they read as history, not as
- * live failures. The momentum family is untouched.
+ * Historical 20-09 retirement labels. They apply only while scan_dispatch
+ * remains retired. The 28-09 restoration makes these families active again;
+ * their historical measurements remain in the rows.
  */
 const RETIRED_FAMILIES = Object.freeze({
   mean_reversion: 'retired 2026-09-20 (intraday retirement)',
@@ -606,7 +604,8 @@ async function familyGoals(db, targets, now) {
     const f = rep.families[fam]
     const v = familyVerdict(f, targets)
     const atHorizon = horizonFams.has(fam)
-    const retiredNote = RETIRED_FAMILIES[fam] ? ` · ${RETIRED_FAMILY_NOTE}` : ''
+    const retired = isProducerRetired('scan_dispatch') ? RETIRED_FAMILIES[fam] || null : null
+    const retiredNote = retired ? ` · ${RETIRED_FAMILY_NOTE}` : ''
     return goal(`family_edge_${fam}`, {
       name: `${FAMILY_LABEL[fam] || fam} family: PF, tail share and drawdown`, subsystem: 'strategy family',
       metric: 'closed-trade profit factor · share of closes beyond +2R · max drawdown of the cumulative R curve',
@@ -618,7 +617,7 @@ async function familyGoals(db, targets, now) {
         ? `${f.decidable} decidable of ${f.closes} close(s); ${targets.familyMinCloses} needed` + (f.undecidable ? ` (${f.undecidable} with no readable R)` : '')
         : `${f.decidable} decidable close(s)` + (f.undecidable ? `, ${f.undecidable} with no readable R` : '') + (atHorizon ? '; the momentum verdict is the checkpoint row' : '')) + retiredNote,
       source: '/state/family-edge',
-      retired: RETIRED_FAMILIES[fam] || null,
+      retired,
     })
   })
 }

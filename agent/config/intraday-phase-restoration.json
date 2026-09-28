@@ -1,0 +1,5 @@
+{
+  "orderId": "owner-approved-intraday-20260928",
+  "_note": "One-time owner approval for Scan, Analyze and Autotrade on these seven existing account IDs only, including live accounts. A future account needs its own human approval to leave manage_only. Applied at boot before dispatch. A later human pause or risk-guard disarm persists across restarts. A master emergency stop vetoes the entire order.",
+  "accountIds": ["42993489", "43002148", "43069009", "43097342", "46130058", "46979908", "47790949"]
+}

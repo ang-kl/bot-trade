@@ -50,6 +50,10 @@ export const PHASE_KEYS = Object.freeze(['scan_enabled', 'analyze_enabled', 'aut
 export function setPhaseFlag(db, key, value, { actor, via = null, reason = null, accountId = null } = {}) {
   const from = getState(db, key) ?? null
   const to = value ?? null
+  if ((key === 'scan_enabled' || /^acct:[^:]+:scan_enabled$/.test(key)) && to === 'false'
+      && actor !== 'owner-ui' && actor !== 'telegram') {
+    throw new Error(`scan disable requires human approval: ${key} by ${actor || 'unknown'}`)
+  }
   // The ONE authorized write path for these keys — setState logs any other
   // writer as PHASE_RAW_WRITE with its stack (owner 01-08: ironclad).
   withPhaseWriteAuthority(() => setState(db, key, value))

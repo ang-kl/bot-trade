@@ -388,24 +388,21 @@ test('strategy-pin seed: _all pins the list on every ENABLED account, a per-id k
   assert.deepEqual(seedStrategyPinsFromConfig(db, io, { file }).skipped, ['_all: malformed'])
 })
 
-test('strategy-pin seed: the checked-in file parses — Wave 1 (19-09-2026): `_all` pins only what has earned it, `_off` names the shadow set, `_trial` names ONE account for the momentum book, no bare account-id keys — and index.js applies it at boot after the momentum seed', () => {
+test('strategy-pin seed: restored intraday keys rearm once on all enabled accounts and the momentum trial stays scoped', () => {
   const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
   const ids = Object.keys(cfg).filter(k => /^\d+$/.test(k))
   assert.deepEqual(ids, [], 'no hardcoded account ids as keys (principle 9)')
-  // 20-09-2026 (owner: "retire the intraday paths, keep momentum only"):
-  // `_all` is EMPTY and fib_confluence joined `_off`. Its record did not turn
-  // (PF 2.72 over 26) — its only producer did: scan_dispatch is retired in
-  // lib/entry-producers.js, and principle 6 forbids the UI showing a strategy
-  // armed that no producer can trade.
-  assert.deepEqual(cfg._all, [], '_all: empty — no intraday strategy has a producer any more')
-  assert.deepEqual([...cfg._off].sort(), [...STRATEGY_KEYS.filter(k => k !== 'tsmom_long')].sort(), '_off: every scan strategy is shadow, the momentum book aside')
+  // 28-09 owner restoration supersedes the 20-09 blanket retirement.
+  assert.deepEqual([...cfg._all].sort(), [...STRATEGY_KEYS.filter(k => k !== 'tsmom_long')].sort(), '_all: the owner restored all intraday strategies')
+  assert.deepEqual(cfg._off, [], '_off: prior blanket retirement superseded')
+  assert.deepEqual(cfg._reseed_all.map(s => s.split(':')[0]).sort(), [...cfg._all].sort(), 'fresh one-time rearm for existing accounts')
   assert.deepEqual(Object.keys(cfg._trial), ['tsmom_long'], '_trial: the momentum book only')
   assert.equal(cfg._trial.tsmom_long.length, 1, 'one account per system on trial (07-09 P5 reconciled with P9 in the note)')
   assert.match(cfg._trial_note, /2026-12-19/, 'the trial names its checkpoint date')
   // The 19-09 fib_confluence re-arm is spent AND superseded by the 20-09
   // retirement: the list is empty, the mechanism documented.
   assert.deepEqual(cfg._reseed, [])
-  assert.match(cfg._reseed_note, /intraday retirement/)
+  assert.match(cfg._reseed_all_note, /One-time owner-approved rearm/)
   const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.match(src, /seedMomentumAccountFromConfig\(db, \{ log[\s\S]{0,1500}?seedStrategyPinsFromConfig\(db, \{ getState, setState \}, \{ log/, 'the boot seed runs after the momentum-account seed')
   assert.match(src, /switched off/, 'the boot line reports the OFF orders')
@@ -415,12 +412,26 @@ function seedShipped(db) {
   return seedStrategyPinsFromConfig(db, io, { file: new URL('../config/strategy-pins.json', import.meta.url) })
 }
 
+test('restoration rearms an existing account once after the 20-09 OFF seed and respects a later guard disarm', () => {
+  const db = withAccounts(initDB(':memory:'), ['111'])
+  const cfg = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
+  setState(db, 'strategy_pins_seeded_json', JSON.stringify({ '111': cfg._all.flatMap(k => [k, `off:${k}`]) }))
+  for (const key of cfg._all) setStage(db, { kind: 'strategy', key, stage: 'trade', on: false, accountId: '111' }, io)
+  const first = seedShipped(db)
+  assert.equal(first.applied.filter(x => x.endsWith(':restore-20260928')).length, cfg._all.length)
+  for (const key of cfg._all) assert.equal(armedTradeKeys(db, getState, '111').has(key), true, key)
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: false, accountId: '111' }, io)
+  const again = seedShipped(db)
+  assert.equal(again.applied.length, 0)
+  assert.equal(armedTradeKeys(db, getState, '111').has('vwap_trend'), false)
+})
+
 const TRIAL_ID = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))._trial.tsmom_long[0]
 
-test('momentum trial: the SHIPPED pins file arms tsmom_long on the ONE trial account and switches it OFF everywhere else; fib_confluence is ON everywhere; the shadow set is OFF everywhere', () => {
+test('shipped pins restore every intraday strategy while the momentum trial stays on one account', () => {
   const db = withAccounts(initDB(':memory:'), ['111', '222', TRIAL_ID])
   setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend']))
-  // production shape before the seed: the old `_all` had pinned everything
+  // Production shape before restoration: some historic account pins are ON.
   for (const id of ['111', '222', TRIAL_ID]) for (const k of ['tsmom_long', 'vwap_trend', 'donchian_breakout']) setStage(db, { kind: 'strategy', key: k, stage: 'trade', on: true, accountId: id }, io)
   const r = seedShipped(db)
   assert.equal(r.error, null)
@@ -429,16 +440,12 @@ test('momentum trial: the SHIPPED pins file arms tsmom_long on the ONE trial acc
   for (const id of ['111', '222']) {
     assert.ok(r.off.includes(`${id}:tsmom_long`), `${id}: tsmom_long switched OFF (on trial elsewhere)`)
     assert.equal(armedTradeKeys(db, getState, id).has('tsmom_long'), false)
-    assert.ok(r.off.includes(`${id}:vwap_trend`) && r.off.includes(`${id}:donchian_breakout`), `${id}: the shadow set switched OFF`)
-    assert.equal(armedTradeKeys(db, getState, id).has('vwap_trend'), false)
+    assert.equal(armedTradeKeys(db, getState, id).has('vwap_trend'), true)
+    assert.equal(armedTradeKeys(db, getState, id).has('donchian_breakout'), true)
   }
   for (const id of ['111', '222', TRIAL_ID]) {
-    // 20-09-2026: fib_confluence is OFF everywhere now — `_all` is empty and
-    // it sits in `_off`, because scan_dispatch (its only producer) is retired.
-    assert.ok(!r.applied.includes(`${id}:fib_confluence`), `${id}: nothing is armed from _all any more`)
-    assert.ok(r.off.includes(`${id}:fib_confluence`) || r.unchanged.includes(`${id}:fib_confluence:off`),
-      `${id}: fib_confluence carries an OFF order (written where a hand pin had to be cleared, recorded as unchanged where it was already off)`)
-    assert.equal(armedTradeKeys(db, getState, id).has('fib_confluence'), false)
+    // The new owner order restores fib_confluence to every enabled account.
+    assert.equal(armedTradeKeys(db, getState, id).has('fib_confluence'), true)
   }
   // Second boot changes nothing (seed-once on every record, ON and OFF alike).
   const again = seedShipped(db)
@@ -446,7 +453,7 @@ test('momentum trial: the SHIPPED pins file arms tsmom_long on the ONE trial acc
   assert.deepEqual(again.off, [], 'idempotent OFF')
 })
 
-test('momentum trial: an account enabled AFTER the first boot gets the same orders on its first boot (fib_confluence ON, tsmom_long OFF unless it is the trial account); a DISABLED account gets nothing', () => {
+test('a later enabled account receives the intraday order and only the named momentum account stays on trial', () => {
   const db = withAccounts(initDB(':memory:'), ['111', '999'])
   setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend']))
   db.prepare(`UPDATE accounts SET enabled = 0 WHERE account_id = '999'`).run()
@@ -455,23 +462,22 @@ test('momentum trial: an account enabled AFTER the first boot gets the same orde
   assert.ok(!a.applied.some(t => t.startsWith('999:')) && !a.off.some(t => t.startsWith('999:')), 'a disabled account is not touched at all')
   db.prepare(`UPDATE accounts SET enabled = 1 WHERE account_id = '999'`).run()
   const b = seedShipped(db)
-  assert.ok(b.off.includes('999:fib_confluence') || b.unchanged.includes('999:fib_confluence:off'), 'the late joiner gets the OFF order for the retired stack')
-  assert.equal(armedTradeKeys(db, getState, '999').has('fib_confluence'), false)
+  assert.equal(armedTradeKeys(db, getState, '999').has('fib_confluence'), true, 'the late joiner gets the restored intraday order')
   assert.ok(b.off.includes('999:tsmom_long'), 'and the OFF order for the strategy on trial elsewhere')
   assert.equal(armedTradeKeys(db, getState, '999').has('tsmom_long'), false)
 })
 
-test('momentum trial: seed-once holds a HUMAN change made after the seed — a re-armed shadow strategy is not switched off again, and a disarmed trial cell is held', () => {
+test('seed-once preserves later intraday guard disarms and the momentum trial disarm', () => {
   const db = withAccounts(initDB(':memory:'), ['111', TRIAL_ID])
   setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend']))
   setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: true, accountId: '111' }, io)
-  const a = seedShipped(db)
-  assert.ok(a.off.includes('111:vwap_trend'))
-  // the owner re-arms it by hand after the seed: the next boot leaves it alone
-  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: true, accountId: '111' }, io)
+  seedShipped(db)
+  assert.equal(armedTradeKeys(db, getState, '111').has('vwap_trend'), true)
+  // A guard disarms it after the one-time rearm; the next boot leaves it off.
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: false, accountId: '111' }, io)
   const b = seedShipped(db)
-  assert.ok(!b.off.includes('111:vwap_trend'), 'the OFF order was spent on the first boot')
-  assert.equal(armedTradeKeys(db, getState, '111').has('vwap_trend'), true, 'the human re-arm stands')
+  assert.ok(!b.applied.includes('111:vwap_trend:restore-20260928'), 'the ON order was spent on the first boot')
+  assert.equal(armedTradeKeys(db, getState, '111').has('vwap_trend'), false, 'the later guard disarm stands')
   // a guard disarms the trial cell: held across the next boot (the seed-once rule)
   setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: false, accountId: TRIAL_ID }, io)
   const c = seedShipped(db)
