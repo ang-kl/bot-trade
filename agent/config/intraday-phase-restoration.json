@@ -1,0 +1,4 @@
+{
+  "orderId": "owner-approved-intraday-20260928",
+  "_note": "One-time owner approval for Scan, Analyze and Autotrade on every enabled active or manage_only account, including live accounts. Applied at boot before dispatch. A later human pause or risk-guard disarm persists across restarts. A master emergency stop vetoes the entire order."
+}
