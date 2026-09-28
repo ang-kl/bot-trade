@@ -2519,6 +2519,12 @@ export function withPhaseWriteAuthority(fn) {
 }
 
 export function setState(db, key, value) {
+  // An unattended caller may not turn scanning off by bypassing the audited
+  // human control path. setPhaseFlag grants the write authority only after
+  // checking the authenticated human actor for a scan disable.
+  if (phaseWriteDepth === 0 && (key === 'scan_enabled' || /^acct:[^:]+:scan_enabled$/.test(key)) && value === 'false') {
+    throw new Error(`scan disable requires human approval through setPhaseFlag: ${key}`);
+  }
   if (phaseWriteDepth === 0 && PHASE_KEY_RE.test(key)) {
     try {
       const prev = getState(db, key);

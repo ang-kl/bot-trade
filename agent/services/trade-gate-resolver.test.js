@@ -11,6 +11,7 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
+import { setPhaseFlag } from './phase-audit.js'
 import { setStage, tradeStageGate } from './stage-matrix.js'
 import { ENTRY_PRODUCERS } from '../lib/entry-producers.js'
 import { admitEntry } from './entry-mode.js'
@@ -22,7 +23,7 @@ const io = { getState, setState }
 const ACCT = '46130058'
 // The existing nine-switch regressions use the surviving momentum producer.
 // Retired scan strategies have a separate structural failure, tested below.
-const retiredCount = STRATEGY_REGISTRY.filter(s => s.family !== 'momentum').length
+const retiredCount = 0 // scan_dispatch restored; pending-only paths remain retired
 
 // Every switch ON, so each test turns off exactly the one it is about.
 //
@@ -79,7 +80,7 @@ test('each master switch blocks on its own, and is named', () => {
     ['autotrade_enabled', 'master_autotrade'],
   ]) {
     db = initDB(':memory:'); allOn(db)
-    setState(db, key, 'false')
+    setPhaseFlag(db, key, 'false', { actor: 'owner-ui' })
     const r = chain()
     assert.equal(r.ok, false, `${key} off must block`)
     assert.equal(r.blockedBy, gate)
@@ -107,7 +108,7 @@ test('a matrix SCAN cell blocks BEFORE the trade cell — order is the point', (
 test('THE FIRST BLOCKER WINS even when everything below it is also off', () => {
   // Turning off the master used to make every downstream readout look broken
   // too. One answer, and it is the one worth acting on.
-  setState(db, 'scan_enabled', 'false')
+  setPhaseFlag(db, 'scan_enabled', 'false', { actor: 'owner-ui' })
   setState(db, 'autotrade_enabled', 'false')
   setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: false }, io)
   const r = chain()
@@ -123,7 +124,7 @@ test("an account override cannot defeat a master OFF, and is not blamed for it",
   // account-phases ANDs master in, so with the master off the account row is
   // meaningless. Reporting it as the blocker would point at a switch that
   // cannot fix anything.
-  setState(db, 'scan_enabled', 'false')
+  setPhaseFlag(db, 'scan_enabled', 'false', { actor: 'owner-ui' })
   setState(db, `acct:${ACCT}:scan_enabled`, 'true')
   const r = chain({ accountId: ACCT })
   assert.equal(r.blockedBy, 'master_scan')
@@ -132,7 +133,7 @@ test("an account override cannot defeat a master OFF, and is not blamed for it",
 })
 
 test('an account override blocks on its own when the master is on', () => {
-  setState(db, `acct:${ACCT}:scan_enabled`, 'false')
+  setPhaseFlag(db, `acct:${ACCT}:scan_enabled`, 'false', { actor: 'owner-ui', accountId: ACCT })
   const r = chain({ accountId: ACCT })
   assert.equal(r.blockedBy, 'account_scan')
   assert.match(r.gates.find(g => g.key === 'account_scan').detail, /switched off for this account/)
@@ -160,9 +161,7 @@ test('the matrix counts tradable vs blocked and names the top blocker', () => {
   assert.equal(m.tradable, 0)
   assert.ok(m.blocked > 0)
   assert.equal(m.retired, retiredCount)
-  assert.equal(m.topBlocker.gate, 'producer_available')
-  assert.equal(m.topBlocker.strategies, retiredCount)
-  assert.match(m.topBlocker.where, /owner-approved/)
+  assert.equal(m.topBlocker.gate, 'master_autotrade')
   assert.equal(m.rows.find(r => r.strategy === 'tsmom_long').blockedBy, 'master_autotrade')
   assert.equal(m.rows.find(r => r.strategy === 'tsmom_long').gates.find(g => g.key === 'master_autotrade').pass, false)
 })
@@ -175,10 +174,9 @@ test('the matrix separates retired paths from an active strategy with a switch o
   // switch problem, or silently restore the old retired paths.
   setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: false }, io)
   const m = tradeGateMatrix(db, {})
-  assert.equal(m.topBlocker.gate, 'producer_available')
-  assert.equal(m.topBlocker.strategies, retiredCount)
-  assert.equal(m.blocked, STRATEGY_REGISTRY.length)
-  assert.equal(m.tradable, 0)
+  assert.equal(m.topBlocker.gate, 'matrix_trade')
+  assert.equal(m.blocked, 1)
+  assert.equal(m.tradable, STRATEGY_REGISTRY.length - 1)
   assert.equal(m.rows.find(r => r.strategy === 'tsmom_long').blockedBy, 'matrix_trade')
 })
 
@@ -195,41 +193,39 @@ test('the line reads as an answer either way', () => {
 })
 
 
-test('all switches ON cannot make a retired ordinary producer look tradable', () => {
+test('all switches ON expose the restored scan path under the ordinary entry fence', () => {
   const before = db.prepare('SELECT * FROM agent_state ORDER BY key').all()
   const canonical = ENTRY_PRODUCERS.find(p => p.id === 'scan_dispatch')
-  assert.ok(canonical.retired, 'this regression exercises the recorded retirement, not a mock flag')
+  assert.equal(canonical.retired, undefined)
   for (const s of STRATEGY_REGISTRY.filter(s => s.family !== 'momentum' && s.key !== 'fib_618_fade')) {
     const r = tradeGateChain(db, { accountId: ACCT, strategy: s.key })
     assert.equal(tradeStageGate(db, getState, { accountId: ACCT, strategy: s.key }).ok, true)
     assert.equal(r.configurationOpen, true)
-    assert.equal(r.ok, false)
-    assert.equal(r.blockedBy, 'producer_available')
-    assert.equal(r.producer.state, 'retired')
-    assert.equal(r.reason, `scan_dispatch: ${canonical.retired}`)
+    assert.equal(r.ok, true, s.key)
+    assert.equal(r.blockedBy, null)
+    assert.equal(r.producer.state, 'available')
     assert.equal(r.scope, 'automatic_bar_configuration')
-    assert.match(gateLine(r), /retired/)
+    assert.match(gateLine(r), /configuration\/producer checks open/)
   }
   // The unchanged real admission fence independently rejects this producer.
   const admission = admitEntry(db, { accountId: ACCT, producerId: 'scan_dispatch' })
-  assert.equal(admission.ok, false)
-  assert.match(admission.reason, /producer_retired/)
+  assert.equal(admission.ok, true)
   assert.deepEqual(db.prepare('SELECT * FROM agent_state ORDER BY key').all(), before,
     'read-model and admission checks cannot arm a strategy or mutate state')
 })
 
 test('fib_618_fade readout includes its retired pending-order producer', () => {
   const r = tradeGateChain(db, { accountId: ACCT, strategy: 'fib_618_fade' })
-  assert.equal(r.blockedBy, 'producer_available')
+  assert.equal(r.blockedBy, null)
   assert.deepEqual(r.producer.producers.map(p => p.id), ['scan_dispatch', 'pending_fib_orders'])
-  assert.equal(r.producer.producers.every(p => p.retired === true), true)
-  assert.match(r.reason, /pending_fib_orders:/)
+  assert.equal(r.producer.producers.find(p => p.id === 'pending_fib_orders').retired, true)
+  assert.equal(r.producer.producers.find(p => p.id === 'scan_dispatch').retired, false)
 })
 
 test('a retired path stays visible even under an OFF master', () => {
   setState(db, 'autotrade_enabled', 'false')
   const r = tradeGateChain(db, { accountId: ACCT, strategy: 'fib_confluence' })
-  assert.equal(r.blockedBy, 'producer_available')
+  assert.equal(r.blockedBy, 'master_autotrade')
   assert.equal(r.configurationOpen, false)
   assert.equal(r.gates.find(g => g.key === 'master_autotrade').pass, false)
   assert.match(r.gates[0].where, /owner-approved/)

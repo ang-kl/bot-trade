@@ -651,6 +651,22 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
   } else if ('_reseed' in cfg) {
     out.skipped.push('_reseed: malformed')
   }
+  // A fresh owner order may rearm the same strategy on every enabled account
+  // without hardcoding account IDs. Each token is spent once per account;
+  // subsequent guard or human disarms remain in force across later boots.
+  if (Array.isArray(cfg._reseed_all)) {
+    for (const item of cfg._reseed_all) {
+      if (typeof item !== 'string' || !/^[a-z][a-z0-9_]*:[a-zA-Z0-9_-]+$/.test(item)) {
+        out.skipped.push(`${JSON.stringify(item)}: _reseed_all needs <strategy>:<token>`)
+        continue
+      }
+      for (const id of db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id))) {
+        entries.push([id, [item]])
+      }
+    }
+  } else if ('_reseed_all' in cfg) {
+    out.skipped.push('_reseed_all: malformed')
+  }
   // `_trial` (Wave 1 of the first-principles audit, 19-09-2026): ONE account
   // per strategy on a pre-registered trial — ON there, OFF everywhere else.
   // The listed ids ride as ordinary ON entries (`<strategy>` under a per-id

@@ -88,18 +88,18 @@ test('non-phase keys pass through setState untouched', () => {
 test('phaseTraceView: audited flip attributed, raw flip named, nothing silent', () => {
   const db = tmpDb()
   setPhaseFlag(db, 'autotrade_enabled', 'true', { actor: 'profit_ratchet', reason: 'test flip' })
-  setState(db, 'scan_enabled', 'false') // raw bypass
+  setState(db, 'analyze_enabled', 'false') // raw bypass remains traceable
 
   const v = phaseTraceView(db)
   assert.equal(v.current.autotrade_enabled, 'true')
-  assert.equal(v.current.scan_enabled, 'false')
+  assert.equal(v.current.analyze_enabled, 'false')
 
   const audited = v.changes.find(c => c.key === 'autotrade_enabled' && c.new_value === 'true')
   assert.equal(audited.source, 'audited')
   assert.equal(audited.actor, 'profit_ratchet')
   assert.equal(audited.reason, 'test flip')
 
-  const raw = v.changes.find(c => c.key === 'scan_enabled' && c.new_value === 'false')
+  const raw = v.changes.find(c => c.key === 'analyze_enabled' && c.new_value === 'false')
   assert.equal(raw.source, 'raw_write')
   assert.match(raw.stack, /phase-trace\.test\.js/)
   assert.equal(v.unattributed, 0)

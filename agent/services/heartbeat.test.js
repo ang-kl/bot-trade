@@ -1700,7 +1700,7 @@ test('retired controller: checkHeartbeats never stalls it, heartbeatView labels 
   // scan_dispatch is retired too — but its phase KEEPS running as a free
   // shadow (the proposals end at the fence and are scored), so unlike the
   // pending phase there is no loop guard and no boot line for it.
-  assert.equal(isProducerRetired('scan_dispatch'), true)
+  assert.equal(isProducerRetired('scan_dispatch'), false)
   assert.equal(isProducerRetired('daily_momentum_account'), false, 'the kept momentum producers are not retired')
   assert.equal(isProducerRetired('cross_sectional_book'), false)
   assert.equal(isProducerRetired('tick_momentum'), false, 'the tick engine stays reachable')

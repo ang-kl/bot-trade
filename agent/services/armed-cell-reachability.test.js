@@ -299,8 +299,8 @@ test('retired scan dispatch labels unreachable armed cells as latent without cha
   setState(db, 'autotrade_matrix_json', matrix)
   setState(db, 'autotrade_timeframes', JSON.stringify(PROD_LIST))
   const report = readArmedCellReachability(db, getState)
-  assert.equal(report.scanProducerRetired, true)
-  assert.match(armedCellBootLine(report), /latent.*scan_dispatch is retired/)
+  assert.equal(report.scanProducerRetired, false)
+  assert.match(armedCellBootLine(report), /GER40|JPN225|US2000/)
   assert.equal(getState(db, 'autotrade_matrix_json'), matrix)
 })
 

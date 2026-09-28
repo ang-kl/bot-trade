@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDB, setState } from '../db.js'
+import { setPhaseFlag } from './phase-audit.js'
 import { mkdtempSync } from '../test-support/temp-dir.js'
 import {
   PHASES, acctPhaseKey, masterPhases, accountOverrides,
@@ -88,7 +89,7 @@ test('THE MASTER IS AN ABSOLUTE VETO — a per-account ON cannot defeat it', () 
   // Master off ⇒ everything off, regardless of any override. The kill switch
   // has to remain a kill switch.
   setState(db, 'autotrade_enabled', 'false')
-  setState(db, 'scan_enabled', 'false')
+  setPhaseFlag(db, 'scan_enabled', 'false', { actor: 'owner-ui' })
   setState(db, 'analyze_enabled', 'false')
   const e = effectivePhases(db, '46130058')
   assert.equal(e.autotrade, false)
@@ -122,7 +123,7 @@ test('null clears an override back to inheriting', () => {
 test('setAccountPhases ignores junk instead of throwing or writing it', () => {
   const db = db_()
   armAll(db)
-  const r = setAccountPhases(db, '46130058', { autotrade: 'yes', nonsense: true, scan: false })
+  const r = setAccountPhases(db, '46130058', { autotrade: 'yes', nonsense: true, scan: false }, { actor: 'owner-ui' })
   // 'yes' is not a boolean → not written; an unknown phase name → ignored.
   assert.deepEqual(Object.keys(r.set), ['scan'])
   assert.equal(effectivePhases(db, '46130058').autotrade, true, 'unchanged by the junk')
@@ -146,7 +147,7 @@ test('the key namespace matches the acct: convention the loop already uses', () 
 test('phaseWanted: one account off does NOT stop the shared scan', () => {
   const db = db_()
   armAll(db)
-  setAccountPhases(db, '46130058', { scan: false })
+  setAccountPhases(db, '46130058', { scan: false }, { actor: 'owner-ui' })
   // The other account still needs the scan, so the work must still happen —
   // scan is one shared pass, not per-account work that can be skipped in part.
   assert.equal(phaseWanted(db, 'scan', ['46130058', '42993489']), true)
@@ -155,8 +156,8 @@ test('phaseWanted: one account off does NOT stop the shared scan', () => {
 test('phaseWanted: nobody wants it ⇒ stop paying for it', () => {
   const db = db_()
   armAll(db)
-  setAccountPhases(db, '46130058', { scan: false })
-  setAccountPhases(db, '42993489', { scan: false })
+  setAccountPhases(db, '46130058', { scan: false }, { actor: 'owner-ui' })
+  setAccountPhases(db, '42993489', { scan: false }, { actor: 'owner-ui' })
   assert.equal(phaseWanted(db, 'scan', ['46130058', '42993489']), false)
   // ...and the other phases are unaffected by a scan decision.
   assert.equal(phaseWanted(db, 'analyze', ['46130058', '42993489']), true)
@@ -177,7 +178,7 @@ test('phaseWanted: master off answers false whatever the accounts say', () => {
   const db = db_()
   armAll(db)
   setAccountPhases(db, '46130058', { scan: true })
-  setState(db, 'scan_enabled', 'false')
+  setPhaseFlag(db, 'scan_enabled', 'false', { actor: 'owner-ui' })
   assert.equal(phaseWanted(db, 'scan', ['46130058']), false)
 })
 

@@ -3,7 +3,7 @@
 // what. These tests pin the contract of the audit trail that closes that gap.
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert'
-import { initDB, getState } from '../db.js'
+import { initDB, getState, setState } from '../db.js'
 import { setPhaseFlag, auditControllerEvent, recentPhaseAudit, phaseAuditSplit } from './phase-audit.js'
 import { setAccountPhases } from './account-phases.js'
 import { disarmAccount } from './equity-stop.js'
@@ -30,6 +30,20 @@ test('a real flip writes the flag AND one audit row with from/to/actor/via/reaso
 test('an idempotent write leaves NO audit row — the trail records changes, not chatter', () => {
   setPhaseFlag(db, 'scan_enabled', 'true', { actor: 'owner-ui' }) // already 'true' by seed
   assert.equal(auditRows().length, 0)
+})
+
+test('automated and raw writes cannot disable scanning, globally or per account; human controls remain audited', () => {
+  for (const key of ['scan_enabled', 'acct:46130058:scan_enabled']) {
+    for (const actor of ['performance_breaker', 'unknown', undefined]) {
+      assert.throws(() => setPhaseFlag(db, key, 'false', { actor }), /human approval/)
+      assert.notEqual(getState(db, key), 'false')
+    }
+    assert.throws(() => setState(db, key, 'false'), /human approval/)
+    assert.notEqual(getState(db, key), 'false')
+    setPhaseFlag(db, key, 'false', { actor: 'owner-ui', via: '/actions/scan-toggle' })
+    assert.equal(getState(db, key), 'false')
+    assert.equal(JSON.parse(auditRows().at(-1).body).actor, 'owner-ui')
+  }
 })
 
 // PER-ACCOUNT ARMING MOVED TRAILS (owner 04-08-2026). It is stored in
