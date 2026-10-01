@@ -44,7 +44,7 @@ import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
 import { makeBookHeldCheck } from './book-held.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
-import { sinceEntryTrailSpec } from './mae-chandelier-observe.js'
+import { sinceEntryTrailSpec, recordAmendReceipt, receiptFromTrailMove } from './mae-chandelier-observe.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { measureAmend } from './protection-latency.js'
 import { protectiveExitDeferral } from './momentum-exit-coordination.js'
@@ -562,6 +562,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
         meta = await sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, td.symbolId)
       } catch (err) { summary.errors.push(`${r.symbol}: ${err.message}`); continue }
       summary.checked++
+      if (Number.isFinite(Number(meta.digits))) digitsByPosition.set(String(parseInt(r.position_id)), Number(meta.digits))
 
       const lots = td.volume && meta.lotSize ? td.volume / meta.lotSize : null
       const decision = decideProfitKeeper(cfg, {
@@ -654,7 +655,6 @@ async function profitKeeperPass(db, creds, deps = {}) {
             currentTp: bp.takeProfit ?? r.current_tp ?? null,
             digits: meta.digits,
           })
-          if (Number.isFinite(Number(meta.digits))) digitsByPosition.set(String(parseInt(r.position_id)), Number(meta.digits))
         }
       }
       if (!decision.action) continue
@@ -787,6 +787,8 @@ async function profitKeeperPass(db, creds, deps = {}) {
               kind: 'trail_tightened', fromValue: prev, toValue: p.lastSl,
               source: 'cpp_trail_engine',
             })
+            const ack = receiptFromTrailMove(key, prev, p.lastSl)
+            if (ack) recordAmendReceipt(db, ack).catch(() => {})
           }
         }
       }

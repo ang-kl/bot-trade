@@ -140,6 +140,11 @@ export function decideAdjust({ side, entry, price, sl, bars, period = DEFAULT_AT
   return out
 }
 
+export function receiptFromTrailMove(id, prevSl, nextSl) {
+  if (typeof prevSl !== 'number' || !(Number(nextSl) > 0) || prevSl === Number(nextSl)) return null
+  return receiptFromBrokerOutcome(id, Number(nextSl), { summary: `trail lastSl ${nextSl}` })
+}
+
 export function receiptFromBrokerOutcome(id, sl, outcome) {
   const accepted = !!outcome && !outcome.error && !outcome.skipped && outcome.closedRemotely !== true && typeof outcome.summary === 'string' && outcome.summary.length > 0
   return {

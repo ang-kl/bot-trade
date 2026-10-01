@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   observePosition, wilderAtr, foldExcursion, recordObserve, observeIntervalMs,
   chandelierSinceEntry, decideAdjust, shouldSendChandelierAdjust, sinceEntryTrailSpec,
-  recordAmendReceipt, receiptFromBrokerOutcome, OBSERVE_STATE_KEY,
+  recordAmendReceipt, receiptFromBrokerOutcome, receiptFromTrailMove, OBSERVE_STATE_KEY,
 } from './mae-chandelier-observe.js'
 
 function barsFrom(closes) {
@@ -85,6 +85,14 @@ test('a receipt is accepted only when the broker returns a summary', async () =>
   assert.equal(saved.receipts.length, 1)
   assert.equal(saved.receipts[0].broker, 'SL → 104.00000')
   assert.equal(saved.mayAmend, false)
+})
+
+test('a trail read-back is a broker ack only when the stop actually moved', () => {
+  assert.equal(receiptFromTrailMove('9', undefined, 104), null)
+  assert.equal(receiptFromTrailMove('9', 104, 104), null)
+  const moved = receiptFromTrailMove('9', 100, 104)
+  assert.equal(moved.sent, true)
+  assert.equal(moved.broker, 'trail lastSl 104')
 })
 
 test('state write keeps a tighten flag and the heat', async () => {
