@@ -114,3 +114,16 @@ test('"follow the master" while master Scan is off is a Scan OFF too: refused wi
     assert.equal((await s.post('/account-phases', { accountId: '46130058', scan: null })).status, 200, 'inherit while the master is on is not a scan off')
   } finally { s.close() }
 })
+
+test('a refused Scan OFF never blocks a stop in the same request: Autotrade off still applies (Codex review, #1176)', async () => {
+  const s = await server('agent_secret')
+  try {
+    const r = await s.post('/account-phases', { accountId: '46130058', scan: false, autotrade: false })
+    assert.equal(r.status, 200)
+    const body = await r.json()
+    assert.equal(body.scanRefused.code, 'scan_off_needs_owner_device')
+    assert.equal(body.set.autotrade, false, 'the stop was applied')
+    assert.equal('scan' in body.set, false, 'the scan was left alone')
+    assert.equal(getState(s.db, 'acct:46130058:scan_enabled') ?? null, null)
+  } finally { s.close() }
+})
