@@ -128,6 +128,8 @@ let loopDb = null
 let lastBookHeldReason = null
 let loopRunning = false               // mutex — prevents concurrent iterations
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
+/** A long phase that is making progress stamps the watchdog's clock. */
+export function noteLoopProgress() { lastLoopActivityAt = Date.now() }
 let pendingPhaseInFlight = false      // a budget-abandoned pending phase still executing detached
 // Wave 5 (§K·15): the pending-order producer is retired in the inventory
 // (lib/entry-producers.js) — fib_618_fade is OFF on every account, and the
@@ -5955,6 +5957,10 @@ async function runLoop(db) {
             // The account's daily fundable universe (§7,437·B·3): an
             // unfundable name is skipped by name, unknown dispatches as before.
             fundable: (accountId, symbol) => isFundable(db, accountId, symbol),
+            // The watchdog's beat (01-10-2026): the daily pass stamps activity
+            // per name and per account, so a long pass that is WORKING is not
+            // read as a hung await. One call that never returns beats nothing.
+            progress: noteLoopProgress,
           },
         })
         // PR-AX: `reclassified` prints only when non-zero. It should be a
@@ -5968,7 +5974,7 @@ async function runLoop(db) {
         const hold = bookHoldLogLine(mb, lastBookHeldReason)
         if (hold.line) log(hold.line)
         lastBookHeldReason = hold.reason
-        if (mb.momentumAccount) log(`momentum account …${String(mb.momentumAccount.account).slice(-4)}: daily pass — ${mb.momentumAccount.entries} entered, ${mb.momentumAccount.exits} exited; universe ${mb.momentumAccount.universe?.tradable}/${mb.momentumAccount.universe?.total} tradable${mb.momentumAccount.universe?.byReason ? ` (${Object.entries(mb.momentumAccount.universe.byReason).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`)
+        for (const m of mb.momentumAccounts || (mb.momentumAccount ? [mb.momentumAccount] : [])) log(`momentum account …${String(m.account).slice(-4)}: daily pass — ${m.entries} entered, ${m.exits} exited; universe ${m.universe?.tradable}/${m.universe?.total} tradable${m.universe?.byReason ? ` (${Object.entries(m.universe.byReason).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}${Number.isFinite(m.ms) ? ` in ${Math.round(m.ms / 1000)}s` : ''}`)
         await hbeat(db, 'momentum_book')
       } catch (err) {
         log(`momentum book failed: ${err.message}`)

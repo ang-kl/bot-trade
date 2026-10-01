@@ -386,35 +386,74 @@ export function effectiveSlots(cfg, deps, accountId) {
   return riskCap != null ? Math.max(1, Math.min(cfg.maxPositions, riskCap)) : cfg.maxPositions
 }
 
-export async function buildUniverse(db, { accountId, creds, cfg, deps }) {
+// The pass's symbols are built UNIVERSE_CONCURRENCY at a time (01-10-2026).
+// Strictly serial, 56 names × four broker round-trips — and a 6 s quote probe
+// that waits out its full timeout on every closed market at 21:05Z — took
+// 7–11 minutes PER ACCOUNT, and the loop watchdog (12 min) killed Node in the
+// "momentum book" phase every night from 29-09. Small on purpose: each worker
+// opens its own broker sockets.
+export const UNIVERSE_CONCURRENCY = 4
+
+export async function buildUniverse(db, { accountId, creds, cfg, deps, now = Date.now() }) {
   const slots = effectiveSlots(cfg, deps, accountId)
   const out = {}
   const equity = deps.equity ? deps.equity(accountId) : null
   const rates = deps.rates ? deps.rates() : null
-  for (const u of momentumUniverse(db)) {
+  // MARKET DATA IS THE BROKER'S, NOT THE ACCOUNT'S: bars and the quote for a
+  // name are the same for every account on one host, so the book's per-pass
+  // `marketCache` holds them by host + NAME (symbol ids differ per account,
+  // 03-09-2026). The promise is cached, so concurrent workers share one call.
+  const cache = deps.marketCache instanceof Map ? deps.marketCache : null
+  const shared = (kind, symbol, fn) => {
+    if (!cache) return fn()
+    const key = `${kind}|${creds?.host ?? ''}|${symbol}`
+    if (!cache.has(key)) cache.set(key, Promise.resolve().then(fn))
+    return cache.get(key)
+  }
+  const isOpen = deps.isSymbolOpen ?? isSymbolOpenCached
+  const universe = momentumUniverse(db)
+  // Rows are created in the universe's order before any await, so the report
+  // reads the same as the serial build did whatever order the workers finish.
+  for (const u of universe) out[u.symbol.toUpperCase()] = { class: u.class, ok: false, reason: null, lots: 0, notionalUsd: 0, assetVolPct: null, atr: null, price: null, bid: null, symbolId: null }
+  const buildOne = async (u) => {
     const symbol = u.symbol.toUpperCase()
-    const row = { class: u.class, ok: false, reason: null, lots: 0, notionalUsd: 0, assetVolPct: null, atr: null, price: null, bid: null, symbolId: null }
-    out[symbol] = row
+    const row = out[symbol]
     try {
       const id = deps.symbolIdFor ? await deps.symbolIdFor(creds, symbol) : null
-      if (id == null) { row.reason = 'unknown_symbol'; continue }
+      if (id == null) { row.reason = 'unknown_symbol'; return }
       row.symbolId = id
-      if (!(equity > 0)) { row.reason = 'no_equity'; continue }
+      if (!(equity > 0)) { row.reason = 'no_equity'; return }
       const meta = deps.volumeMeta ? await deps.volumeMeta(creds, id) : null
-      if (!meta) { row.reason = 'no_lot_meta'; continue }
-      const bars = deps.bars ? await deps.bars(creds, id) : []
+      if (!meta) { row.reason = 'no_lot_meta'; return }
+      const bars = deps.bars ? await shared('bars', symbol, () => deps.bars(creds, id)) : []
       const atr = deps.atrOf ? deps.atrOf(bars) : null
-      const q = deps.spot ? await deps.spot(creds, id) : null
+      // A market the BROKER's schedule says is closed has no two-sided price
+      // to give: the probe would only wait out its timeout. The last bar's
+      // close below is the price, as it already was for a failed probe. Only
+      // a broker-sourced closure skips (the rule the rank-exit hold uses).
+      let hours = { open: true, source: 'unknown' }
+      try { hours = isOpen(db, symbol, new Date(now)) } catch { hours = { open: true, source: 'error' } }
+      const closed = hours?.open === false && hours?.source === 'broker'
+      const q = deps.spot && !closed ? await shared('spot', symbol, () => deps.spot(creds, id)) : null
       const price = Number(q?.ask) > 0 ? Number(q.ask) : Number(bars[bars.length - 1]?.c)
-      if (!(atr > 0) || !(price > 0)) { row.reason = 'no_bars'; continue }
+      if (!(atr > 0) || !(price > 0)) { row.reason = 'no_bars'; return }
       row.atr = atr; row.price = price
       row.bid = Number(q?.bid) > 0 ? Number(q.bid) : null // a short is priced at the bid (checker item c)
       const s = volTargetLots({ equity, volTargetPct: cfg.volTargetPct, maxPositions: slots, atr, price, symbol, meta, rates })
       row.lots = s.lots; row.notionalUsd = s.notionalUsd; row.assetVolPct = s.assetVolPct ?? null
-      if (!s.affordable) { row.reason = s.note; continue }
+      if (!s.affordable) { row.reason = s.note; return }
       row.ok = true
-    } catch (err) { row.reason = `error: ${err.message}` }
+    } catch (err) { row.reason = `error: ${err.message}` } finally {
+      // The watchdog's beat: a pass that is WORKING stamps activity once per
+      // name; a single broker call that never returns still stamps nothing.
+      try { deps.progress?.() } catch { /* a beat never breaks the pass */ }
+    }
   }
+  const width = Math.max(1, Math.floor(Number(deps.universeConcurrency) || UNIVERSE_CONCURRENCY))
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(width, universe.length) }, async () => {
+    while (next < universe.length) await buildOne(universe[next++])
+  }))
   return { equity, universe: out }
 }
 
@@ -477,7 +516,7 @@ export async function runMomentumAccountPass(db, { acct, creds, bookCfg, buildEn
   }
   summary.ran = true
 
-  const built = await buildUniverse(db, { accountId, creds, cfg, deps })
+  const built = await buildUniverse(db, { accountId, creds, cfg, deps, now })
   const tradable = Object.entries(built.universe).filter(([, u]) => u.ok).map(([s]) => s)
   const byReason = {}
   for (const u of Object.values(built.universe)) if (!u.ok) byReason[String(u.reason).split(':')[0]] = (byReason[String(u.reason).split(':')[0]] || 0) + 1
