@@ -4945,16 +4945,37 @@ export default function stateRouter(db) {
       ).all(...acct.params)
       let pendingOrders = []
       try { pendingOrders = JSON.parse(pendingJson || '[]') } catch { /* non-fatal */ }
+      // A NAMED ACCOUNT READS ITS OWN ORDERS (01-10-2026). The snapshot blob
+      // above is whichever account reconciled last, so ?account=42993489
+      // answered "no pending orders" while that account held a BTC limit the
+      // margin pool was counting. The broker_orders ledger is per account and
+      // refreshed by every account's reconcile (syncBrokerOrders) — the same
+      // rows the margin pool reserves for. No account named: unchanged.
+      const named = !scope.all && scope.accountId != null
+      let pendingOrdersSource = 'snapshot'
+      if (named) {
+        pendingOrders = db.prepare(
+          `SELECT order_id, symbol, side, order_type, volume, limit_price, stop_price, sl, tp, label, is_bot, last_seen
+           FROM broker_orders WHERE status = 'working' AND account_id = ? ORDER BY first_seen`
+        ).all(String(scope.accountId)).map(r => ({
+          orderId: r.order_id, symbolName: r.symbol, side: r.side, orderType: r.order_type,
+          limitPrice: r.limit_price, stopPrice: r.stop_price, sl: r.sl, tp: r.tp,
+          volume: r.volume, volumeUnits: r.volume, label: r.label || '', bot: r.is_bot === 1, lastSeen: r.last_seen,
+        }))
+        pendingOrdersSource = 'broker_orders'
+      }
       res.json({
         externalPositions, pendingOrders, lastReconcileAt,
+        pendingOrdersSource,
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
         scoped: acct.active,
         scope: scopeReport(scope, scopeCoverage(db, {
           table: 'monitored_positions', scope,
           extraWhere: "status = 'active' AND source = 'external'",
         })),
-        // The broker pending-order snapshot has no account column of its own.
-        pendingOrdersScoped: false,
+        // The shared snapshot has no account column; a named account reads
+        // its own rows from the broker_orders ledger instead.
+        pendingOrdersScoped: named,
       })
     } catch (e) {
       res.json({ externalPositions: [], pendingOrders: [], lastReconcileAt: null, error: e.message })
