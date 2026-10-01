@@ -558,7 +558,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
           bars: bars || keeper?.bars || null,
         })
         recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, ...reading }]).catch(() => {})
-        if (reading.adjust) {
+        if (reading.adjust && pos.source !== 'external') {
           await loopMod.executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier')
         }
       } catch (err) { console.error('[mae-chandelier-observe] tick row failed:', err?.message || err) }

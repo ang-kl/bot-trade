@@ -747,9 +747,9 @@ async function profitKeeperPass(db, creds, deps = {}) {
       const acct = Number(creds.accountId)
       if (!Number.isFinite(acct) || acct <= 0) continue
       const dir = String(r.side || '').toUpperCase() === 'SHORT' || String(r.side || '').toUpperCase() === 'SELL' ? -1 : 1
-      const extreme = dir === 1
-        ? Math.max(Number(r.entry_price) || 0, ...bars.map(b => Number(b.h)))
-        : Math.min(Number(r.entry_price) || Infinity, ...bars.map(b => Number(b.l)))
+      const extreme = Number(r.entry_price) > 0 ? Number(r.entry_price) : (dir === 1 ? Math.max(...bars.map(b => Number(b.h))) : Math.min(...bars.map(b => Number(b.l))))
+      const digits = Number(r.digits ?? bp.digits)
+      if (!Number.isFinite(digits)) continue
       trailSpecs.push({
         positionId: parseInt(r.position_id),
         ctidTraderAccountId: acct,
@@ -759,7 +759,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
         peakPrice: extreme,
         currentSl: bp.stopLoss ?? r.current_sl ?? null,
         currentTp: bp.takeProfit ?? r.current_tp ?? null,
-        digits: 2,
+        digits,
         source: 'mae_chandelier_since_entry',
       })
     }
