@@ -100,6 +100,32 @@ export function observePosition({
   return out
 }
 
+export function decideAdjust({ side, entry, price, sl, bars, period = DEFAULT_ATR_PERIOD, multiplier = DEFAULT_ATR_MULT } = {}) {
+  const reading = observePosition({ side, entry, price, sl, bars, period, multiplier })
+  const dir = reading.dir
+  const since = chandelierSinceEntry(bars, 0, dir, reading.atr, multiplier)
+  const out = { ...reading, chandelierSinceEntry: since, mayAmend: false, adjust: null }
+  if (!(since > 0) || !(sl > 0) || !dir) return out
+  const tighter = dir === 1 ? since > sl && since < price : since < sl && since > price
+  if (!tighter) return out
+  out.mayAmend = true
+  out.adjust = { action: 'MOVE_SL', sl: since, reason: 'mae_chandelier_since_entry_tighten' }
+  return out
+}
+
+const BAR_CACHE = new Map()
+
+export function cachedBars(symbolId, now = Date.now(), ttlMs = 3_600_000) {
+  const hit = BAR_CACHE.get(String(symbolId))
+  if (!hit || now - hit.at >= ttlMs) return null
+  return hit.bars
+}
+
+export function storeBars(symbolId, bars, now = Date.now()) {
+  BAR_CACHE.set(String(symbolId), { bars, at: now })
+  return bars
+}
+
 export function chandelierSinceEntry(bars, entryIndex, dir, atr, multiplier = DEFAULT_ATR_MULT) {
   if (!Array.isArray(bars) || entryIndex < 0 || entryIndex >= bars.length || !(atr > 0) || !dir) return null
   const held = bars.slice(entryIndex)
@@ -131,17 +157,18 @@ export async function recordObserve(db, rows, nowMs = Date.now(), io = {}) {
     positions[row.id] = {
       ...row,
       ...folded,
-      mayAmend: false,
+      mayAmend: row.mayAmend === true,
       at: new Date(nowMs).toISOString(),
     }
   }
   const next = {
-    mode: 'observe_only',
+    mode: 'observe_and_tighten',
     mayAmend: false,
     at: new Date(nowMs).toISOString(),
     positions,
   }
   write(db, OBSERVE_STATE_KEY, JSON.stringify(next))
+  console.log(`[mae-chandelier-observe] ${JSON.stringify({ n: rows.length, mayAmend: rows.some(r => r.mayAmend === true) })}`)
   return next
 }
 

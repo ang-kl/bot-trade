@@ -11,6 +11,7 @@ import { recordScanPass } from './lib/bar-path-counters.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows, rosterArmedTradeKeys } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
+import { decideAdjust, recordObserve, cachedBars } from './services/mae-chandelier-observe.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
 import { recordTradePlan, recordPlanWriteFailure } from './services/trade-plans.js'
@@ -2635,6 +2636,22 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // whenever the keeper has not computed one for this symbol this bar, in
   // which case the multiplier falls back to the position's own 1R distance.
   const eval_ = evaluatePosition(pos, { currentPrice, rules, atr: cachedAtrForSymbol(db, pos.symbol) })
+  // Timeframe pass: same tighten as the tick. Cached bars only, so this pass
+  // does not add a trendbar fetch. External rows are recorded and not amended.
+  try {
+    const bars = cachedBars(pos.symbol_id || pos.symbolId || '')
+    const reading = decideAdjust({
+      side: pos.side,
+      entry: Number(pos.entry_price),
+      price: Number(currentPrice),
+      sl: Number(pos.current_sl) || null,
+      bars,
+    })
+    recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, pass: 'timeframe', ...reading }]).catch(() => {})
+    if (reading.adjust && pos.source !== 'external') {
+      await executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier_timeframe')
+    }
+  } catch (err) { log(`[mae-chandelier-observe] timeframe row failed: ${err?.message || err}`) }
 
   // Persist MFE/MAE and any flag flips every loop, regardless of action.
   s.updatePositionMetrics.run(
