@@ -25,7 +25,7 @@
 import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
-import { observePosition, recordObserve, decideAdjust, cachedBars, storeBars } from './mae-chandelier-observe.js'
+import { recordObserve, decideAdjust, cachedBars, storeBars } from './mae-chandelier-observe.js'
 import { readAtrCache } from './profit-keeper.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
