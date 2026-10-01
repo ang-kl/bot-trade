@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-SG" xml:lang="en-SG">
+<head>
+  <meta charset="utf-8">
+  <meta name="generator" content="pandoc">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+  <title>V3 handover - 1 October 2026, Version 1.0</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">:root{color-scheme:light;--ink:#172338;--muted:#475569;--line:#ccd6e2;--blue:#12539b;--pale:#f2f6fb}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#fff;color:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;line-height:1.65}main{max-width:1120px;margin:auto;padding:36px 30px 70px}h1{font-size:clamp(1.8rem,4vw,2.5rem);line-height:1.2;margin:0 0 22px}h2{font-size:1.5rem;line-height:1.3;margin:38px 0 16px;padding-top:12px;border-top:2px solid var(--line)}h3{font-size:1.12rem;margin-top:28px}p,li{overflow-wrap:anywhere}p{margin:14px 0}a{color:var(--blue);text-decoration:underline;text-underline-offset:3px}a:focus-visible{outline:3px solid var(--blue);outline-offset:3px}strong{font-weight:700}nav{background:var(--pale);border:1px solid var(--line);border-radius:10px;padding:18px 22px;margin:24px 0}nav h2{font-size:1.1rem;margin:0;padding:0;border:0}nav ul{padding-left:22px;margin:10px 0}nav>ul{columns:2;column-gap:32px}nav li{break-inside:avoid}nav a{font-size:.94rem}.table-wrap{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:8px;max-width:100%}table{border-collapse:collapse;width:100%;min-width:600px;font-size:.91rem;line-height:1.5}th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{background:#e8eff8;font-weight:700}tr:last-child td{border-bottom:0}tbody tr:nth-child(even){background:#f8fafc}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:#eef2f6;padding:2px 4px;border-radius:3px;overflow-wrap:anywhere}pre{overflow:auto;background:#eef2f6;border:1px solid var(--line);padding:16px;border-radius:8px;line-height:1.5}pre code{background:none;padding:0;overflow-wrap:normal}li{margin:9px 0}h2,h3{scroll-margin-top:20px}@media(max-width:650px){main{padding:24px 16px 48px}body{font-size:16px}nav{padding:14px 16px}nav>ul{columns:1}h2{font-size:1.3rem}th,td{padding:10px}table{min-width:580px}.table-wrap{border-radius:5px}}@media print{body{font-size:10pt;color:#000}main{max-width:none;padding:0}nav{display:none}h1{font-size:21pt}h2{font-size:15pt;break-after:avoid}h3{break-after:avoid}a{color:#000}table{font-size:8.5pt;min-width:0}.table-wrap{overflow:visible;border-radius:0}tr,pre{break-inside:avoid}thead{display:table-header-group}pre{white-space:pre-wrap}th,td{padding:7px}h2{margin-top:22px}}
+</style>
+</head>
+<body>
+<main><h1 id="v3-handover---1-october-2026">V3 handover - 1 October 2026</h1>
+<p>Version 1.0. Prepared 01-10-2026 at 05:59 SGT (30-09-2026 21:59 UTC).
+Repository: <a href="https://github.com/ang-kl/bot-trade">ang-kl/bot-trade</a>.</p>
+<p><strong>V3 is not complete. Releases through PR #1173 are on main.
+Two follow-up fixes are local and unpublished; full integrated CI/review
+and current production acceptance remain outstanding.</strong> This
+handover records status changes and continuation actions. Earlier
+specifications and detailed evidence remain in the linked documents.</p>
+<nav id="TOC" role="doc-toc">
+<h2>Contents</h2><ul>
+<li><a href="#v3-handover---1-october-2026" id="toc-v3-handover---1-october-2026">V3 handover - 1 October 2026</a>
+<ul>
+<li><a href="#1-done-doing-now-about-to-do" id="toc-1-done-doing-now-about-to-do">1. Done, doing now, about to
+do</a></li>
+<li><a href="#2-released-work---reference-index" id="toc-2-released-work---reference-index">2. Released work - reference
+index</a></li>
+<li><a href="#3-current-local-fixes-and-verification" id="toc-3-current-local-fixes-and-verification">3. Current local fixes
+and verification</a></li>
+<li><a href="#4-outstanding-by-approved-v3-plan" id="toc-4-outstanding-by-approved-v3-plan">4. Outstanding by approved V3
+plan</a></li>
+<li><a href="#5-ad-hoc-continuation-and-urgent-fix-register" id="toc-5-ad-hoc-continuation-and-urgent-fix-register">5. Ad hoc
+continuation and urgent fix register</a></li>
+<li><a href="#6-investigation-plans-to-reach-a-justified-fix" id="toc-6-investigation-plans-to-reach-a-justified-fix">6. Investigation
+plans to reach a justified fix</a></li>
+<li><a href="#7-challenges-unresolved-decisions-and-handoff-safeguards" id="toc-7-challenges-unresolved-decisions-and-handoff-safeguards">7.
+Challenges, unresolved decisions and handoff safeguards</a></li>
+</ul></li>
+</ul>
+</nav>
+<h2 id="1-done-doing-now-about-to-do">1. Done, doing now, about to
+do</h2>
+<div class="table-wrap" role="region" aria-label="Handover status table" tabindex="0"><table>
+<thead>
+<tr class="header">
+<th>Stage</th>
+<th>Completed</th>
+<th>Not completed / next action</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Released implementation</td>
+<td>PRs #1169-#1173 merged; release purposes are indexed below.</td>
+<td>A merged implementation does not close its production or empirical
+acceptance gate.</td>
+</tr>
+<tr class="even">
+<td>Accepted continuation, responses 10330-10331</td>
+<td>Investigated blocked entries, reproduced zero-balance failure,
+implemented two local remedies, obtained a production exposure
+sample.</td>
+<td>Finish integrated review, reconcile remaining broker/currency
+discrepancies, obtain fresh seven-account receipts, present the patches
+before a new production release.</td>
+</tr>
+<tr class="odd">
+<td>Current handover work</td>
+<td>Refreshed GitHub main and Node deployment metadata; inspected local
+changes; reran 25 focused checks successfully.</td>
+<td>Upload this document only through a draft PR in the existing
+<code>docs/</code> folder.</td>
+</tr>
+<tr class="even">
+<td>Immediately after handover</td>
+<td>Local work is preserved on the branch identified below.</td>
+<td>Resume the urgent investigations in section 6, then finish the local
+release gate. Continue the approved V3 acceptance sequence after its
+prerequisites are met.</td>
+</tr>
+</tbody>
+</table>
+</div><p>The owner accepted continuation under plan 10331 on 28 September.
+Recovered scope: reconcile accounts <code>42993489</code> and
+<code>47790949</code>; fix zero-balance and strategy Scan OFF
+authorization defects; regression-test; verify all seven accounts;
+present the patches before a new production release; continue V3
+acceptance. Numerical risk limits, broker positions, scanner feed
+settings and later human pauses must be preserved.</p>
+<h3 id="authoritative-checkpoint-and-freshness">Authoritative checkpoint
+and freshness</h3>
+<ul>
+<li>GitHub main, refreshed 01-10-2026 around 05:51 SGT:
+<code>8629232fa173e13c177fe345e375944322762949</code>, <a href="https://github.com/ang-kl/bot-trade/pull/1173">PR #1173</a>.</li>
+<li>Latest Node deployment, refreshed at the same checkpoint: Railway
+<code>8ebe5b63-d7fe-461c-89fb-337897a17068</code>, SUCCESS, same commit;
+successful at 28-09-2026 11:44:26 SGT.</li>
+<li>Local branch: <code>codex/v3-entry-readiness-fixes-20260928</code>;
+local HEAD equals that main commit.</li>
+<li>Local changes: eight tracked modified files and three new test
+files. No commit, push, PR or deployment exists for these fixes.</li>
+<li>Broker, protection, phase, scanner and performance readings below
+are <strong>historical 28 September evidence</strong>. Only
+repository/deployment metadata and focused local tests were refreshed
+for this handover. Current trading health is unverified.</li>
+</ul>
+<p>Older documents' statements such as “#1171 is main” or “candidate
+unpublished” describe their dated checkpoints. #1172 and #1173 supersede
+those release identities; their unfulfilled acceptance requirements
+remain open.</p>
+<h2 id="2-released-work---reference-index">2. Released work - reference
+index</h2>
+<div class="table-wrap" role="region" aria-label="Handover status table" tabindex="0"><table>
+<thead>
+<tr class="header">
+<th>Previous PR</th>
+<th>Completed release</th>
+<th>Detail and remaining evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><a href="https://github.com/ang-kl/bot-trade/pull/1169">#1169</a>,
+<code>4f8cbac</code></td>
+<td>Handover/ledger documentation and numbering.</td>
+<td><a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/handover-2026-09-27.md">Previous handover</a> and <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/handover-2026-09-27-appendix.md">appendix</a>.</td>
+</tr>
+<tr class="even">
+<td><a href="https://github.com/ang-kl/bot-trade/pull/1170">#1170</a>,
+<code>1a0d344</code></td>
+<td>Momentum T4 resting-entry plans, resting exposure count/margin,
+broker exit attribution and readiness work. Node and both gateway
+releases succeeded.</td>
+<td><a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/exit-attribution-replay-2026-09-28.md">Exit
+attribution</a>, <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/exit-attribution-replay-2026-09-28.progress.md">progress</a>, <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-production-readback-2026-09-28.md">production readback</a>.
+Natural execution and scanner alignment were not closed.</td>
+</tr>
+<tr class="odd">
+<td><a href="https://github.com/ang-kl/bot-trade/pull/1171">#1171</a>,
+<code>41aa2cb</code></td>
+<td>Final partial cancel/expiry proof, subsequent broker snapshot
+requirement, atomic TP1 handover/reservation settlement.</td>
+<td><a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-final-partial-fill-2026-09-28.md">Partial-fill
+contract</a> and <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-final-partial-fill-2026-09-28.progress.md">progress</a>.
+Natural new final partial/TP1 outcomes remain unobserved.</td>
+</tr>
+<tr class="even">
+<td><a href="https://github.com/ang-kl/bot-trade/pull/1172">#1172</a>,
+<code>7583678</code></td>
+<td>Later opening-deal prefix correction, bounded reporting reads,
+opt-in starting profiler lifecycle, offline scanner alignment builder.
+Approved candidate <code>d1eacf5</code> was released.</td>
+<td><a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-verification-followup-2026-09-28.md">Verification
+follow-up</a>, <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-performance-scanner-remedies-2026-09-28.md">performance/scanner
+remedies</a> and <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-performance-scanner-remedies-2026-09-28.progress.md">progress</a>.
+Production profiling/configuration were not applied.</td>
+</tr>
+<tr class="odd">
+<td><a href="https://github.com/ang-kl/bot-trade/pull/1173">#1173</a>,
+<code>8629232</code></td>
+<td>Ordinary <code>scan_dispatch</code>, 12 intraday trade pins and
+one-time Scan/Analyze/Autotrade restoration for the seven approved
+accounts; master/account scan-write protection.</td>
+<td><a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-intraday-restoration-2026-09-28.md">Restoration
+scope</a>. Risk/capacity/symbol/timeframe gates still operate.
+Strategy-level/shared-credential Scan OFF gaps are addressed only by the
+unpublished follow-up.</td>
+</tr>
+</tbody>
+</table>
+</div><p>Exact release CI passed in the recorded checkpoints. The optional
+automated reviewer was skipped where its key was absent; a green wrapper
+is <strong>not independent review</strong>. #1172's retained full gate
+records 7,221 backend and 1,311 frontend passes, with native checks run;
+#1173's recorded gate has 7,227 backend passes. Those are earlier
+frozen-source results, not the gate for today's changed files.</p>
+<h2 id="3-current-local-fixes-and-verification">3. Current local fixes
+and verification</h2>
+<div class="table-wrap" role="region" aria-label="Handover status table" tabindex="0"><table>
+<thead>
+<tr class="header">
+<th>Fix</th>
+<th>Implemented locally</th>
+<th>Still required</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Known zero equity, extending <a href="https://github.com/ang-kl/bot-trade/pull/1173">#1173</a>'s entry
+readback</td>
+<td><code>agent/services/risk.js</code> returns an account-specific
+<code>insufficient_equity</code> refusal before zero-budget sizing.
+Margin status accepts a genuine zero balance, retains observed exposure
+and marks the pool exhausted. Funded-account sizing and configured caps
+are preserved.</td>
+<td>Integrated review/full gate, exact-head PR CI, scoped release
+approval and production readback. Truly absent balance retains the older
+fallback; its policy is a separate unresolved issue.</td>
+</tr>
+<tr class="even">
+<td>Human authority for Scan OFF, extending <a href="https://github.com/ang-kl/bot-trade/pull/1173">#1173</a></td>
+<td>Strategy scan writes require trusted human attribution; raw matrix
+writes cannot introduce Scan OFF. HTTP master/account/strategy/emergency
+pauses require the server-stamped device credential. Shared-secret
+requests cannot forge approval in body/headers. Automated trade disarms
+and existing human pauses remain supported.</td>
+<td>Full authentication middleware/UI review, human emergency-stop
+verification, integrated gate and release. Trusted internal actor
+strings are an attribution boundary, not a sandbox against arbitrary
+malicious code.</td>
+</tr>
+</tbody>
+</table>
+</div><p>Modified source: <code>agent/db.js</code>,
+<code>agent/routes/actions.js</code>,
+<code>agent/services/risk.js</code>,
+<code>agent/services/stage-matrix.js</code>. Adjusted existing tests:
+<code>account-phases-routes.test.js</code>,
+<code>stage-matrix-s1.test.js</code>, <code>stage-matrix.test.js</code>,
+<code>trade-gate-resolver.test.js</code>. New tests:
+<code>stage-matrix-scan-authority.test.js</code>,
+<code>scan-stage-authority.test.js</code>,
+<code>zero-balance-risk.test.js</code>.</p>
+<p><strong>Fresh handover verification:</strong> 25 tests passed, zero
+failed/skipped, 1,000.433396 ms, using:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">node</span> <span class="at">--test</span> agent/services/zero-balance-risk.test.js <span class="dt">\</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>  agent/services/scan-stage-authority.test.js <span class="dt">\</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>  agent/routes/stage-matrix-scan-authority.test.js <span class="dt">\</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>  agent/routes/account-phases-routes.test.js</span></code></pre></div>
+<p>Log: <code>/tmp/v3-handover-focused-20261001.log</code>. This covers
+the named focused paths; the combined full gate, frontend gate, CI and
+production verification have not run for these edits. Tracked patch
+SHA-256 at handover:
+<code>32faf9b736523f98c443a35b3b8da1c86e5030b7f000c9507449f91c7367299f</code>;
+this digest excludes the three untracked tests.</p>
+<h2 id="4-outstanding-by-approved-v3-plan">4. Outstanding by approved V3
+plan</h2>
+<p>Use the <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-integrated-plan-2026-09-26.md">integrated
+plan</a> for ordering and decisions; the <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-closure-2026-09-24.md">frozen closure register</a>, <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-acceptance-sequence-2026-09-23.md">acceptance sequence</a> and
+<a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/performance-cards-reassessment-2026-09-22-revision-3.md">original
+V3 reassessment</a> retain the specifications. Expired September load
+windows are not future appointments. Older open-item lists require
+reconciliation against the releases below before implementation.</p>
+<div class="table-wrap" role="region" aria-label="Handover status table" tabindex="0"><table>
+<thead>
+<tr class="header">
+<th>Plan group</th>
+<th>Completed implementation/evidence reference</th>
+<th>Outstanding / acceptance status</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>P0/P3 - targets and partials</td>
+<td>T4 in #1170; terminal partial in #1171; later-fill anchor correction
+in #1172.</td>
+<td>Natural final partial, TP1 reduction, minimum-volume/off-grid
+refusals and subsequent ownership/reservation readback.
+<strong>Open.</strong></td>
+</tr>
+<tr class="even">
+<td>P1/P4 - performance</td>
+<td>Reporting remedies and starting-capture capability in #1172. <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-p1p4-harness-2026-09-25.md">Harness</a>; <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-starting-profile-2026-09-28.progress.md">starting
+profile</a>.</td>
+<td>Actual starting profile/root cause, desktop/phone traces and
+LCP/CLS, a continuous graded open/closed-session load and recovery
+window. <strong>Open.</strong></td>
+</tr>
+<tr class="odd">
+<td>P2 - accounts/calendars</td>
+<td>Earlier calendar/map implementation is indexed in the closure
+register; #1173 restored the seven phases.</td>
+<td>Fresh exact account maps, calendar/holiday boundary and coverage
+readback. Calendar follow-ups K3/WEB-6b/S-8 are not newly certified by
+this handover. <strong>Current closure unverified.</strong></td>
+</tr>
+<tr class="even">
+<td>P5a - watchdog/protection</td>
+<td>Historical independent protection receipts; #1170/#1171/#1173
+release readbacks. <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-watchdog-production-drill-proposal-2026-09-23.md">Drill
+proposal</a>.</td>
+<td>CV-2 delivery/soak, external observer, sole-sender/backlog/recipient
+evidence and approved drills. No new outbound alert/drill performed.
+<strong>Open.</strong></td>
+</tr>
+<tr class="odd">
+<td>P5b/P5d - accounting</td>
+<td>Broker exit identity/cost replay #1170; reporting reads #1172.</td>
+<td>Reconcile unresolved historical money rows separately; resolve
+currency provenance and ledger/broker exposure mismatch. No
+historical-money repair authorized by this handover.
+<strong>Open.</strong></td>
+</tr>
+<tr class="even">
+<td>P5c - scanners</td>
+<td>Order-authority fences and offline guarded alignment builder, #1172.
+<a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-scanner-remedy-2026-09-28.progress.md">Scanner
+progress</a>.</td>
+<td>Fresh identities/revision/maps/native capacity, executable proposal
+and approved operational alignment; acceptance receipt afterward.
+<strong>Not applied / open.</strong></td>
+</tr>
+<tr class="odd">
+<td>P6/P7 - research/tick</td>
+<td>Existing replay/shadow implementation remains indexed in the closure
+register; #1172 prepared scanner inputs.</td>
+<td>Profile/sample provenance and unchanged replay/shadow qualification
+bars, including remaining Q2/conditional gates. Tick shadow readiness
+does not authorize tick entries. <strong>Open.</strong></td>
+</tr>
+<tr class="even">
+<td>P8 - capacity/recovery</td>
+<td>Earlier capacity/recovery implementation is indexed in the closure
+register; native builds checked with #1170/#1172.</td>
+<td>Outstanding GW-1/soak-host work and durable
+capacity/recovery/empirical evidence. No fresh completion audit
+performed. <strong>Open.</strong></td>
+</tr>
+<tr class="odd">
+<td>REC/WEB - reasons and UI</td>
+<td>Attribution/readiness/reporting changes through #1170-#1173.</td>
+<td>Logged-in UI regression, full traces, truthful freshness/currency
+labels and receipts for the unpublished authority patch.
+<strong>Open.</strong></td>
+</tr>
+</tbody>
+</table>
+</div><p>No full V3 group acceptance is newly granted here. Owner-observed
+acceptance follows implementation and assistant verification; the owner
+explicitly said they will perform their observation after V3
+completion.</p>
+<h2 id="5-ad-hoc-continuation-and-urgent-fix-register">5. Ad hoc
+continuation and urgent fix register</h2>
+<p>These extend the approved plan without replacing its acceptance
+bars.</p>
+<div class="table-wrap" role="region" aria-label="Handover status table" tabindex="0"><table>
+<thead>
+<tr class="header">
+<th>Priority / item</th>
+<th>Completed</th>
+<th>Not completed / dependency</th>
+<th>Previous PR</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Urgent: zero-balance exception</td>
+<td>Reproduced <code>usedMargin</code> null failure and implemented the
+local refusal/margin fix; fresh focused checks pass.</td>
+<td>Integrated gate/release/readback; no claim that zero funds should
+permit trading.</td>
+<td>#1173</td>
+</tr>
+<tr class="even">
+<td>Urgent: unattended Scan OFF</td>
+<td>Local strategy/raw-write/HTTP authority fix; focused human/bot paths
+pass.</td>
+<td>Full middleware/device/emergency-control review and release.</td>
+<td>#1173</td>
+</tr>
+<tr class="odd">
+<td>Urgent investigation: native currency labelled USD</td>
+<td>Account <code>42993489</code> reported SGD; native 51.46 was used
+under a USD state key. Code provenance issue identified.</td>
+<td>Decide and implement explicit currency handling with verified
+conversion/provenance or an explicit refusal; no FX rate guessed and no
+correction applied.</td>
+<td>#1170 margin accounting; #1173 readback</td>
+</tr>
+<tr class="even">
+<td>High: exposure disagreement</td>
+<td>Historical read-only ledger sample explains the 14-count mechanism;
+no NULL-account active-position contamination found.</td>
+<td>Fresh raw broker orders, positions and reconciliation receipt;
+resolve filtered-view versus ledger disagreement before any destructive
+repair.</td>
+<td>#1170</td>
+</tr>
+<tr class="odd">
+<td>High: startup stall</td>
+<td>#1172 adds diagnostic coverage; synthetic reporting gains
+documented.</td>
+<td>Capture real starting work; identify cause; only then remedy and
+measure. Diagnostic configuration/restarts need scoped approval.</td>
+<td>#1171 failure evidence; #1172</td>
+</tr>
+<tr class="even">
+<td>High: scanner identity mismatch</td>
+<td>Offline builder/tests and proposal inputs exist.</td>
+<td>Fresh capacity/maps/CAS payload, instrument decisions, approval,
+apply/rollback evidence.</td>
+<td>#1172</td>
+</tr>
+<tr class="odd">
+<td>Continuing: natural trading evidence</td>
+<td>#1173 logs include UBER.US/PANW.US resting submissions.</td>
+<td>Independently verified broker fill, protection and subsequent
+lifecycle evidence; logs alone do not prove fills.</td>
+<td>#1173</td>
+</tr>
+</tbody>
+</table>
+</div><h3 id="exposure-investigation-correction---dated-evidence">Exposure
+investigation correction - dated evidence</h3>
+<p>Read-only production SQLite sample: <strong>28-09-2026 13:32:23.796
+SGT</strong>, opened with <code>readonly: true</code> and
+<code>fileMustExist: true</code>, without <code>initDB</code>.</p>
+<ul>
+<li>Active monitored position counts were 3/6/5/12 on the four
+position-holding accounts, with <strong>no NULL-account active
+positions</strong>.</li>
+<li><code>47790949</code>: 12 positions plus two distinct
+<code>broker_orders</code> records marked working = 14. Cocoa BUY STOP
+orders <code>358927828</code> and <code>358927854</code>, each volume 1
+at 6347.6, were last seen at 13:30:56 SGT.</li>
+<li><code>42993489</code>: BTCUSD BUY LIMIT <code>333512466</code>,
+volume 0.05 at 44252.71, last seen at 13:30:57 SGT. The arithmetic
+<code>0.05 × 44252.71 × 0.5 = 1106.31775</code> matches the reported
+1106.32 estimated margin. This is a supported mechanism inference; the
+submitted deployed-function calculation's output was not retrieved.</li>
+<li>The <code>pending_orders</code> query for these two accounts was
+empty. A working broker ledger and an empty local pending-intent table
+are different sources.</li>
+<li>Old creation dates do not prove stale broker orders: recent
+reconciliation timestamps were observed. <strong>Current broker
+presence/absence is not yet established.</strong> The earlier
+NULL-account hypothesis is ruled out for this sample.</li>
+</ul>
+<p>Historical all-account blockers after #1173, not an October live
+status:</p>
+<div class="table-wrap" role="region" aria-label="Handover status table" tabindex="0"><table>
+<thead>
+<tr class="header">
+<th>Account</th>
+<th>Observed blocker</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>42993489</td>
+<td>SGD/native-balance provenance issue and matching BTC resting-margin
+estimate.</td>
+</tr>
+<tr class="even">
+<td>43002148</td>
+<td>Known zero balance; risk evaluation exception.</td>
+</tr>
+<tr class="odd">
+<td>43069009</td>
+<td>Known zero balance; risk evaluation exception.</td>
+</tr>
+<tr class="even">
+<td>43097342</td>
+<td>Three positions plus two entry reservations reached the five-slot
+cap in the readback.</td>
+</tr>
+<tr class="odd">
+<td>46130058</td>
+<td>Six positions against the ordinary five-position cap.</td>
+</tr>
+<tr class="even">
+<td>46979908</td>
+<td>Five positions at that cap.</td>
+</tr>
+<tr class="odd">
+<td>47790949</td>
+<td>Twelve positions plus the two working Cocoa ledger orders counted as
+fourteen.</td>
+</tr>
+</tbody>
+</table>
+</div><p>The sampled Scan/Analyze/Autotrade flags were ON and no later account
+disarm was found in that audit window. This does not prove permanent
+switch protection or force a trade through valid admission/risk gates.
+The original intraday producer retirement was deliberate configuration
+under an older order; #1173 superseded it. It was not established as a
+generic weekend shutoff. See the <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-intraday-restoration-2026-09-28.md">restoration scope</a> and
+<a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-phase-audit-2026-09-28.progress.md">phase audit</a>.</p>
+<h2 id="6-investigation-plans-to-reach-a-justified-fix">6. Investigation
+plans to reach a justified fix</h2>
+<ol type="1">
+<li><strong>Refresh baseline before diagnosis.</strong> Capture
+commit/deployment, seven account phases and per-strategy scan/trade
+state, balances with currency, raw positions/orders, reconciliation
+timestamps, protection and first-blocker reasons. Preserve account and
+broker IDs. Relate the receipts to #1173 and the section 5 sample.</li>
+<li><strong>Reconcile exposure, then choose a remedy.</strong> Compare
+raw broker orders <code>358927828</code>, <code>358927854</code> and
+<code>333512466</code> with the ledger and selected/filtered UI; trace
+the actual #1170 count and margin functions. If broker orders are
+present, explain legitimate capacity use. If absent, reproduce the
+reconciliation lifecycle failure before proposing a ledger correction.
+Do not cancel orders, delete ledger rows or clear reservations on
+inference.</li>
+<li><strong>Trace currency and missing-balance handling.</strong> Audit
+all writers/readers of <code>account_balance_usd</code>, including
+loop/action/index paths and broker snapshot currency checks. Reproduce
+with SGD/USD/zero/absent balances and retained exposure. Preserve actual
+money and thresholds. Present a concrete currency contract and the
+missing-balance decision before changing policy.</li>
+<li><strong>Complete the two local fixes' review.</strong> Verify
+trusted server credentials through the real auth middleware; test owner
+device and human emergency pause, ordinary bot Scan ON, trade disarms,
+raw matrix rewrites and preserved human pauses. Inspect
+funded/zero/missing balance behavior and invariants. Run the required
+full backend/lint/frontend/build/colour gate once the combined candidate
+is settled; then exact-head draft-PR CI/review and scoped
+publication/release approval.</li>
+<li><strong>Prepare scanner alignment separately.</strong> Obtain fresh
+observations (within five minutes), current account-owned maps, registry
+revision, selected account and native cells/free-or-stale capacity with
+no pending work. Validate profile count/bytes/hash, exact symbols and
+<code>orderAuthority=false</code>. Produce reviewable CAS apply/rollback
+files; obtain exact-payload approval before bridge
+pause/configuration/restarts.</li>
+<li><strong>Capture performance cause and acceptance
+separately.</strong> #1172 made <code>starting</code> capture possible.
+Historically <code>CPU_PROFILE_PHASES=scan,monitor</code> omitted it.
+Present a bounded <code>starting,scan,monitor</code> diagnostic and
+restore plan with its Node restarts. Capture outside the graded load
+window. Preserve the failed startup receipt; then collect a new
+continuous calendar-defined load/recovery window and full browser/phone
+traces.</li>
+<li><strong>Observe natural lifecycle and close V3 by group.</strong>
+Follow #1171/#1172 contracts on an eligible naturally occurring fill
+through terminal proof, final volume/entry, TP1 and atomic reservation
+settlement. Do not force a signal or submit a manual test order.
+Reconcile every acceptance row against the linked register, then hand
+the evidence to the owner for their observation.</li>
+</ol>
+<h2 id="7-challenges-unresolved-decisions-and-handoff-safeguards">7.
+Challenges, unresolved decisions and handoff safeguards</h2>
+<ul>
+<li><strong>Evidence freshness:</strong> the 28 September independent
+protection sample covered 26 positions, all with SL/TP1; it is not
+today's protection receipt. Short recovered loops of 13.023-29.785
+seconds do not replace continuous session evidence. #1171's 144,370-ms
+first loop, 58,220-ms starting lag and HTTP5xx remain failed evidence;
+#1172's profiler implementation does not explain or repair them.</li>
+<li><strong>Scanner coverage/capacity:</strong> historical registry 796
+= 106 old-feed tick profiles + 690 timeframe profiles. The intended
+902-profile correction preserves the old 106, adds 106 current-feed tick
+profiles and remaps the 690; it has not been applied. SPX500/USOIL/UKOIL
+remain unresolved exact names, not approved aliases. Bounds are 1,024
+profiles/native timeframe cells and 524,288 payload bytes. Registry
+rollback alone does not prove native-cell recovery. Reference <a href="https://github.com/ang-kl/bot-trade/pull/1172">#1172</a>, <a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-scanner-remedy-2026-09-28.progress.md">scanner progress</a> and
+<a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/v3-scanner-alignment-plan-2026-09-28.json">plan input</a>.</li>
+<li><strong>Operational decisions:</strong> missing-balance fallback
+policy, unresolved instrument identities, scanner exact-payload
+application, temporary profiling/restarts and watchdog drills still
+require their stated decisions/approval. Prior #1173 intraday approval
+does not silently widen symbol/timeframe combinations, activate private
+scanner feeds or authorize direct tick orders.</li>
+<li><strong>Review and access:</strong> optional reviewer skips cannot
+be counted as independent review. Prior authenticated browser timeouts
+blocked fresh scanner payload preparation; current access has not been
+retested. Local authority tests stamp the server credential directly, so
+full auth/UI proof remains needed.</li>
+<li><strong>Historical accounting:</strong> unresolved money cannot be
+repaired by relabelling or deleting rows. Keep broker-native currency,
+identity and historical causality explicit. Reference <a href="https://github.com/ang-kl/bot-trade/pull/1170">#1170</a> and the
+<a href="https://github.com/ang-kl/bot-trade/blob/8629232fa173e13c177fe345e375944322762949/docs/exit-attribution-replay-2026-09-28.progress.md">exit-attribution
+progress</a>.</li>
+<li><strong>Workspace recovery:</strong> start at the named local branch
+and inspect <code>git status --short</code> and <code>git diff</code>.
+Preserve all eleven changed/new code/test files; do not
+reset/clean/checkout over them. The document upload includes only this
+Markdown file. Older continuation ledgers are dated, not current release
+truth.</li>
+<li><strong>Model/tokens:</strong> the owner reported Astra Ultra;
+actual hidden model routing/effort and remaining token allocation are
+not independently measurable. Do not estimate or describe a context
+handoff as verified V3 completion.</li>
+</ul>
+<div class="table-wrap" role="region" aria-label="Handover status table" tabindex="0"><table>
+<thead>
+<tr class="header">
+<th>Material invariant at handover</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Existing implementation/test edits preserved; handover publication
+scoped to one Markdown file</td>
+<td>Passed locally; remote upload is verified separately on the draft
+PR.</td>
+</tr>
+<tr class="even">
+<td>Zero/funded-account behavior and sampled human/bot scan
+authority</td>
+<td>Passed in the 25 focused checks; production behavior not verifiable
+yet.</td>
+</tr>
+<tr class="odd">
+<td>Production risk limits, broker orders/positions, scanner
+configuration and credentials unchanged by this handover task</td>
+<td>Passed - this task performed read-only metadata checks and local
+focused tests.</td>
+</tr>
+<tr class="even">
+<td>Current seven-account protection, trading lifecycle, scanner
+alignment and performance acceptance</td>
+<td>Not Verifiable from refreshed evidence; remains outstanding.</td>
+</tr>
+</tbody>
+</table>
+</div><p>Unknown broker/runtime facts should be measured. Unknown owner policy
+should be asked, with the linked PR, concrete proposed change and
+approval boundary. This handover needs no invented decision or new
+trading action.</p>
+</main></body>
+</html>

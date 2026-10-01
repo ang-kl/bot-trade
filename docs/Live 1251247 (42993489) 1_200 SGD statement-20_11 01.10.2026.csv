@@ -1,0 +1,25 @@
+Deals
+Deal ID,Order ID,Symbol,Opening Direction,Closing Direction,Opening time (UTC+8),Closing Time (UTC+8),Entry price,Closing price,Closing quantity,Commissions,Pips,Net SGD,Channel,Balance SGD
+DID339325380,386366231,ES.US,Buy,Sell,03 Sep 2026 21:31:00.093,24 Sep 2026 23:14:05.901,71.00,64.32,0.6 Lots,-0.06,-66.8,-5.41,openapi_cbot-t,51.46
+DID336498158,387292693,9618.HK,Sell,Buy,09 Sep 2026 13:54:47.284,10 Sep 2026 09:31:21.083,106.090,105.190,1 Lots,-0.06,90.0,0.09,openapi_cbot-t,56.45
+DID336389481,366268243,AVY.US,Buy,Sell,05 Jun 2026 22:40:48.214,09 Sep 2026 21:32:38.182,155.68,166.98,0.1 Lots,-0.06,113.0,1.23,openapi_Tradingview,56.36
+DID331217978,343739661,GEV.US,Buy,Sell,06 Mar 2026 22:31:00.870,07 Aug 2026 21:59:32.772,786.00,980.20,0.1 Lots,-0.06,1942.0,21.59,openapi_Tradingview,55.04
+DID329586112,378912941,LTCUSD,Buy,Sell,30 Jul 2026 08:13:28.845,30 Jul 2026 08:51:38.333,45.44,44.90,0.63 Lots,0.00,-5.4,-0.44,openapi_cbot-t,33.45
+DID329579862,378913166,VIX,Buy,Sell,30 Jul 2026 08:14:18.239,30 Jul 2026 08:14:18.398,19.30,19.07,1.4 Lots,0.00,-2.3,-0.41,openapi_cbot-t,33.89
+,,,,,,,,,,-0.24,,16.65,,
+
+Orders
+Symbol,Direction,Submission Time (UTC+8),Order type,Current quantity,Submitted price,Distance,TP,SL
+BTCUSD,Buy,02 Feb 2026 12:25:01.657,Limit,0.05 Lots,44252.71,—,,
+
+Transactions
+ID,Time (UTC+8),Transaction type,Payment type,Gross SGD,Note
+TID127145885,02 Sep 2026 08:00:00.003,Deposit,Dividends,0.09,Dividends for AVY.US for Position PID517869182
+TID128731941,21 Sep 2026 08:00:00.004,Deposit,Dividends,0.42,Dividends for ES.US for Position PID586195695
+
+Summary
+Deposit,Withdrawal,Total net,Equity,Unr. P&L,Realised P&L,Margin,Free margin,Margin level
+6 543.36,-519.37,6 023.99,51.46,0.00,16.65,0.00,51.46,—
+
+Balance
+51.46
