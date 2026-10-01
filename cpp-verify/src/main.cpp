@@ -173,6 +173,7 @@ int main() {
   server.route("GET", "/protection-status", [&](const HttpRequest&) {
     return jsonRes(200, jsn::dump(protection.status()));
   });
+  // № 10,425 · 02-10'26 06:38 SGT · Grok 4.7 · effort not metered.
   // mae-chandelier-observe: Railway cpp-verify, read-only. The constant is
   // the guarantee. This route does not read a broker and does not amend.
   server.route("GET", "/mae-chandelier-observe", [&](const HttpRequest&) {

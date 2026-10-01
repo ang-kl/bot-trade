@@ -30,6 +30,16 @@ The live check is the Railway service `cpp-verify`, healthcheck `GET /health`. T
 
 There is no directory named `verify-cpp`. Do not add a second Railway service for this.
 
+## Serial ledger
+
+Shared with the other desk. This desk's earlier count stopped at № 11. The other desk was at № 10,424 · 02-10'26 06:35 SGT, so this file continues that series.
+
+| Serial | When | Model | Effort | What |
+|---|---|---|---|---|
+| № 10,425 | 02-10'26 06:38 SGT | Grok 4.7 | not metered on this turn | Ledger baked into this change. Commits `0bcdd23` observe-only, `faad844` cpp-verify route. |
+
+Effort is not a number this session exposes. It is not invented here. A later desk should add its own row rather than renumber these.
+
 ## How to verify
 
 ```bash
