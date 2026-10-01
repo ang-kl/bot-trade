@@ -25,6 +25,8 @@
 import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
+import { observePosition, recordObserve, decideAdjust, cachedBars, storeBars } from './mae-chandelier-observe.js'
+import { readAtrCache } from './profit-keeper.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
 import { cachedAtrForSymbol } from './profit-keeper.js'
@@ -535,6 +537,31 @@ export async function runFastMonitor(db, creds, deps = {}) {
         console.log(`[fast-monitor] ${pos.symbol}: volatility spike detected — fast-tracking checks for ${Math.round(SPIKE_HOLD_MS / 60000)}m`)
       }
       lastPriceAt.set(pos.id, { mid, at: quoteAtMs })
+
+      // mae-chandelier: record every priced position. Bars from the hour cache,
+      // else one trendbar fetch. Tighten only, through the account's gateway.
+      try {
+        const symbolId = symbolMap[String(pos.symbol || '').toUpperCase()]
+        let bars = symbolId ? cachedBars(symbolId) : null
+        if (!bars && symbolId && creds?.ready) {
+          const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
+          const got = await ws.wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, pos.account_id || creds.accountId, symbolId, ['1h'], 40, 8_000, 0, { purpose: 'mae-chandelier-observe' })
+          bars = got?.['1h'] || null
+          if (bars) storeBars(symbolId, bars)
+        }
+        const keeper = !bars && symbolId ? readAtrCache(symbolId, '1h') : null
+        const reading = decideAdjust({
+          side: pos.side,
+          entry: Number(pos.entry_price),
+          price: mid,
+          sl: Number(pos.current_sl) || null,
+          bars: bars || keeper?.bars || null,
+        })
+        recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, ...reading }]).catch(() => {})
+        if (reading.adjust && pos.source !== 'external') {
+          await loopMod.executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier')
+        }
+      } catch (err) { console.error('[mae-chandelier-observe] tick row failed:', err?.message || err) }
 
       // applyManagedRules, same as the slow monitor: this evaluator ran the
       // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed

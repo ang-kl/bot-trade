@@ -44,6 +44,7 @@ import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
 import { makeBookHeldCheck } from './book-held.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
+import { wilderAtr } from './mae-chandelier-observe.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { measureAmend } from './protection-latency.js'
 import { protectiveExitDeferral } from './momentum-exit-coordination.js'
@@ -507,6 +508,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     //      burst the broker throttles.
     const atrBySymbolId = {}
     const barsBySymbolId = {}
+    const fullBarsBySymbolId = {}
     if (cfg.mode === 'adaptive') {
       const stale = []
       for (const id of symbolIds) {
@@ -527,6 +529,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
             const tail = list.slice(-Math.max(1, Math.floor(Number(cfg.spikeBars) || 3)))
             atrBySymbolId[id] = atr
             barsBySymbolId[id] = tail
+            fullBarsBySymbolId[id] = list
             // Only a REAL answer is cached. Caching a failed fetch would make
             // one bad round-trip suppress retries for a whole bar, and the
             // fallback (fixed thresholds) is looser than the adaptive one.
@@ -729,6 +732,38 @@ async function profitKeeperPass(db, creds, deps = {}) {
         }
       }
     }
+
+    // Since-entry Chandelier on the same tick ratchet. One push, so this does
+    // not replace the keeper's specs and does not add a service. A position
+    // the keeper already trails is left to that spec. TrailEngine still
+    // refuses a target that does not improve the stop.
+    const already = new Set(trailSpecs.map(s => String(s.positionId)))
+    for (const { r, bp } of involved) {
+      const td = bp.tradeData || {}
+      if (already.has(String(parseInt(r.position_id)))) continue
+      const bars = fullBarsBySymbolId[td.symbolId]
+      const atr = wilderAtr(bars, 22)
+      if (!(atr > 0)) continue
+      const acct = Number(creds.accountId)
+      if (!Number.isFinite(acct) || acct <= 0) continue
+      const dir = String(r.side || '').toUpperCase() === 'SHORT' || String(r.side || '').toUpperCase() === 'SELL' ? -1 : 1
+      const extreme = Number(r.entry_price) > 0 ? Number(r.entry_price) : (dir === 1 ? Math.max(...bars.map(b => Number(b.h))) : Math.min(...bars.map(b => Number(b.l))))
+      const digits = Number(r.digits ?? bp.digits)
+      if (!Number.isFinite(digits)) continue
+      trailSpecs.push({
+        positionId: parseInt(r.position_id),
+        ctidTraderAccountId: acct,
+        symbolId: td.symbolId,
+        dir,
+        trailDistance: 3 * atr,
+        peakPrice: extreme,
+        currentSl: bp.stopLoss ?? r.current_sl ?? null,
+        currentTp: bp.takeProfit ?? r.current_tp ?? null,
+        digits,
+        source: 'mae_chandelier_since_entry',
+      })
+    }
+    console.log(`[mae-chandelier-observe] trail-config ${trailSpecs.length} spec(s) for account ${creds.accountId}`)
 
     // Hand the armed set to the C++ tick ratchet (best-effort by contract).
     try {

@@ -7,6 +7,8 @@
 //   POST /connect  bearer; adds or refreshes a broker session FOR A HOST
 //   POST /verify   bearer; re-fetches a position's deals and answers a verdict
 //   GET  /protection-status bearer; independently checked open SL/TP coverage
+//   GET  /mae-chandelier-observe bearer; observe-only MAE/Chandelier flag.
+//        mayAmend is constant false. No broker write.
 //   GET  /watchdog-status bearer; incidents, outbox, the delivery gate (CV-2)
 //   POST /watchdog/mute bearer; the verifier-local delivery mute (CV-2) —
 //        touches only the watchdog state file, never a broker
@@ -39,6 +41,7 @@
 #include "verdict.hpp"
 #include "verify_session.hpp"
 #include "protection_watch.hpp"
+#include "mae_chandelier_observe.hpp"
 #include "watchdog.hpp"
 
 namespace {
@@ -169,6 +172,20 @@ int main() {
   });
   server.route("GET", "/protection-status", [&](const HttpRequest&) {
     return jsonRes(200, jsn::dump(protection.status()));
+  });
+  // № 10,425 · 02-10'26 06:38 SGT · Grok 4.7 · effort not metered.
+  // mae-chandelier-observe: Railway cpp-verify, read-only. The constant is
+  // the guarantee. This route does not read a broker and does not amend.
+  server.route("GET", "/mae-chandelier-observe", [&](const HttpRequest&) {
+    jsn::Value o{jsn::Object{}};
+    o.set("ok", true);
+    o.set("service", std::string("cpp-verify"));
+    o.set("mode", std::string("observe_only"));
+    o.set("mayAmend", false);
+    o.set("readOnly", true);
+    const MaeObserve sample = mae_chandelier_observe(0, 0, {});
+    o.set("sampleMayAmend", sample.may_amend);
+    return jsonRes(200, jsn::dump(o));
   });
 
   server.route("GET", "/health", [&](const HttpRequest& req) {
