@@ -26,6 +26,7 @@ import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
 import { observePosition, recordObserve } from './mae-chandelier-observe.js'
+import { readAtrCache } from './profit-keeper.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
 import { cachedAtrForSymbol } from './profit-keeper.js'
@@ -537,13 +538,18 @@ export async function runFastMonitor(db, creds, deps = {}) {
       }
       lastPriceAt.set(pos.id, { mid, at: quoteAtMs })
 
-      // mae-chandelier-observe: record only. A throw here must not change the exit.
+      // mae-chandelier-observe: record only. Bars come from the keeper cache
+      // if that symbol was already fetched. No new broker call. A throw here
+      // must not change the exit.
       try {
+        const symbolId = symbolMap[String(pos.symbol || '').toUpperCase()]
+        const cached = symbolId ? readAtrCache(symbolId, '1h') : null
         const reading = observePosition({
           side: pos.side,
           entry: Number(pos.entry_price),
           price: mid,
           sl: Number(pos.current_sl) || null,
+          bars: cached?.bars || null,
         })
         recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, ...reading }]).catch(() => {})
       } catch { /* observe-only: never block the tick */ }
