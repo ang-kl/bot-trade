@@ -173,6 +173,18 @@ export function loadObserveState(db, read) {
   try { return JSON.parse(read(db, OBSERVE_STATE_KEY) || '{}') } catch { return {} }
 }
 
+export async function recordAmendReceipt(db, receipt, nowMs = Date.now(), io = {}) {
+  const read = io.read || (await import('../db.js')).getState
+  const write = io.write || (await import('../db.js')).setState
+  const prev = loadObserveState(db, read)
+  const receipts = Array.isArray(prev.receipts) ? prev.receipts.slice(-19) : []
+  receipts.push({ ...receipt, at: new Date(nowMs).toISOString() })
+  const next = { ...prev, mode: 'observe_and_tighten', mayAmend: false, receipts }
+  write(db, OBSERVE_STATE_KEY, JSON.stringify(next))
+  console.log(`[mae-chandelier-observe] amend-receipt ${JSON.stringify({ id: receipt?.id, sl: receipt?.sl, sent: receipt?.sent === true })}`)
+  return next
+}
+
 export async function recordObserve(db, rows, nowMs = Date.now(), io = {}) {
   const read = io.read || (await import('../db.js')).getState
   const write = io.write || (await import('../db.js')).setState

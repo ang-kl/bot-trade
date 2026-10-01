@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   observePosition, wilderAtr, foldExcursion, recordObserve, observeIntervalMs,
-  chandelierSinceEntry, decideAdjust, shouldSendChandelierAdjust, sinceEntryTrailSpec, OBSERVE_STATE_KEY,
+  chandelierSinceEntry, decideAdjust, shouldSendChandelierAdjust, sinceEntryTrailSpec,
+  recordAmendReceipt, OBSERVE_STATE_KEY,
 } from './mae-chandelier-observe.js'
 
 function barsFrom(closes) {
@@ -68,6 +69,20 @@ test('external is recorded and not sent; missing digits drop the trail spec', ()
   assert.equal(spec.digits, 5)
   assert.equal(spec.peakPrice, 100)
   assert.ok(spec.trailDistance > 0)
+})
+
+test('an amend receipt is stored only when the gate sends', async () => {
+  const store = new Map()
+  const io = { read: (_db, key) => store.get(key) || null, write: (_db, key, value) => store.set(key, value) }
+  const reading = { adjust: { action: 'MOVE_SL', sl: 104 } }
+  assert.equal(shouldSendChandelierAdjust({ source: 'external' }, reading), false)
+  if (shouldSendChandelierAdjust({ source: 'bot', id: '9' }, reading)) {
+    await recordAmendReceipt({}, { id: '9', sl: 104, sent: true }, 0, io)
+  }
+  const saved = JSON.parse(store.get(OBSERVE_STATE_KEY))
+  assert.equal(saved.receipts.length, 1)
+  assert.equal(saved.receipts[0].sent, true)
+  assert.equal(saved.mayAmend, false)
 })
 
 test('state write keeps a tighten flag and the heat', async () => {

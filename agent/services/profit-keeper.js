@@ -551,6 +551,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     // as we decide. Pushed even when EMPTY — /trail-config is full-replace,
     // so an empty push clears positions that closed or disarmed.
     const trailSpecs = []
+    const digitsByPosition = new Map()
 
     for (const { r, bp } of involved) {
       const td = bp.tradeData || {}
@@ -653,6 +654,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
             currentTp: bp.takeProfit ?? r.current_tp ?? null,
             digits: meta.digits,
           })
+          if (Number.isFinite(Number(meta.digits))) digitsByPosition.set(String(parseInt(r.position_id)), Number(meta.digits))
         }
       }
       if (!decision.action) continue
@@ -751,7 +753,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
         bars,
         currentSl: bp.stopLoss ?? r.current_sl ?? null,
         currentTp: bp.takeProfit ?? r.current_tp ?? null,
-        digits: r.digits ?? bp.digits,
+        digits: digitsByPosition.get(String(parseInt(r.position_id))) ?? r.digits ?? bp.digits,
       })
       if (!spec) continue
       trailSpecs.push(spec)
