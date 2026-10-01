@@ -26,7 +26,9 @@ Not a new 1-second loop. The fast monitor already re-prices on a seconds clock: 
 
 Nothing deleted.
 
-There is no directory named `verify-cpp`. The independent verifier in this repo is `cpp-verify`. The check lives there, and the re-test script calls it.
+The live check is the Railway service `cpp-verify`, healthcheck `GET /health`. The observe flag is `GET /mae-chandelier-observe` on that same service, bearer `EXEC_SECRET`, same gate as `/protection-status`. It returns `service: cpp-verify`, `mode: observe_only`, `mayAmend: false`. It does not place or amend.
+
+There is no directory named `verify-cpp`. Do not add a second Railway service for this.
 
 ## How to verify
 
