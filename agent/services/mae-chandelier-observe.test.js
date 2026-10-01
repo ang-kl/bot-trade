@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   observePosition, wilderAtr, foldExcursion, recordObserve, observeIntervalMs,
   chandelierSinceEntry, decideAdjust, shouldSendChandelierAdjust, sinceEntryTrailSpec,
-  recordAmendReceipt, OBSERVE_STATE_KEY,
+  recordAmendReceipt, receiptFromBrokerOutcome, OBSERVE_STATE_KEY,
 } from './mae-chandelier-observe.js'
 
 function barsFrom(closes) {
@@ -54,6 +54,7 @@ test('tighten is allowed only when the since-entry line is tighter and still beh
   assert.equal(yes.mayAmend, true)
   assert.equal(yes.adjust.action, 'MOVE_SL')
   assert.ok(yes.adjust.sl > 90)
+  assert.equal(yes.adjust.newSL, yes.adjust.sl)
   assert.ok(yes.adjust.sl < 120)
   const no = decideAdjust({ side: 'LONG', entry: 100, price: 95, sl: 90, bars })
   assert.equal(no.mayAmend, false)
@@ -71,17 +72,18 @@ test('external is recorded and not sent; missing digits drop the trail spec', ()
   assert.ok(spec.trailDistance > 0)
 })
 
-test('an amend receipt is stored only when the gate sends', async () => {
+test('a receipt is accepted only when the broker returns a summary', async () => {
   const store = new Map()
   const io = { read: (_db, key) => store.get(key) || null, write: (_db, key, value) => store.set(key, value) }
-  const reading = { adjust: { action: 'MOVE_SL', sl: 104 } }
-  assert.equal(shouldSendChandelierAdjust({ source: 'external' }, reading), false)
-  if (shouldSendChandelierAdjust({ source: 'bot', id: '9' }, reading)) {
-    await recordAmendReceipt({}, { id: '9', sl: 104, sent: true }, 0, io)
-  }
+  const refused = receiptFromBrokerOutcome('9', 104, { error: 'INVALID_REQUEST' })
+  assert.equal(refused.sent, false)
+  assert.equal(refused.broker, 'INVALID_REQUEST')
+  const accepted = receiptFromBrokerOutcome('9', 104, { summary: 'SL → 104.00000' })
+  assert.equal(accepted.sent, true)
+  await recordAmendReceipt({}, accepted, 0, io)
   const saved = JSON.parse(store.get(OBSERVE_STATE_KEY))
   assert.equal(saved.receipts.length, 1)
-  assert.equal(saved.receipts[0].sent, true)
+  assert.equal(saved.receipts[0].broker, 'SL → 104.00000')
   assert.equal(saved.mayAmend, false)
 })
 
