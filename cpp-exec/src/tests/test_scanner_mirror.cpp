@@ -88,6 +88,15 @@ int main() {
     s=saturated.status();assert(s.get("accepted").asNumber()==s.get("delivered").asNumber()+s.get("deliveryFailures").asNumber());
     std::lock_guard lock(m);assert(delivered.front().get("records").asArray().front().get("gapBefore").asBool());
   }
+  // The refusal cause is read from the scanner's reply (02-10-2026): a fixed
+  // lowercase token only, so a reply can never put arbitrary text in the log.
+  assert(ScannerMirror::refusalCause(R"({"error":"bounded_capacity_unavailable","cause":"ingress_busy"})")=="ingress_busy");
+  assert(ScannerMirror::refusalCause(R"({"error":"bounded_capacity_unavailable"})").empty());
+  assert(ScannerMirror::refusalCause(R"({"cause":"Bad Token"})").empty());
+  assert(ScannerMirror::refusalCause("{\"cause\":\"x\ninjected\"}").empty());
+  assert(ScannerMirror::refusalCause(R"({"cause":"")").empty());
+  assert(ScannerMirror::refusalCause(std::string(R"({"cause":")")+std::string(41,'a')+"\"}").empty());
+  assert(ScannerMirror::refusalCause(std::string(R"({"cause":")")+std::string(40,'a')+"\"}")==std::string(40,'a'));
   bool refused=false;try{ScannerMirror::httpSender("file:///etc/hosts","x");}catch(const std::invalid_argument&){refused=true;}assert(refused);
   {
     // Actual loopback HTTP: the gateway retains a 429 batch byte-for-byte,
@@ -109,7 +118,9 @@ int main() {
           if(boundary!=std::string::npos){const auto h=request.find("Content-Length: ");assert(h!=std::string::npos);bodySize=std::stoul(request.substr(h+16));}
         } while(boundary==std::string::npos || request.size()<boundary+4+bodySize);
         received.push_back(request.substr(boundary+4,bodySize));
-        const auto response="HTTP/1.1 "+std::to_string(status)+" Result\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+        // A 429 carries the scanner's cause, as cpp-scan-tick now answers.
+        const std::string reply=status==429?R"({"error":"bounded_capacity_unavailable","cause":"ingress_busy"})":"{}";
+        const auto response="HTTP/1.1 "+std::to_string(status)+" Result\r\nContent-Length: "+std::to_string(reply.size())+"\r\nConnection: close\r\n\r\n"+reply;
         assert(send(client,response.data(),response.size(),0)==static_cast<ssize_t>(response.size()));close(client);
       }
     });
@@ -125,7 +136,9 @@ int main() {
     assert(diagnosticLines[0].find("127.0.0.1")==std::string::npos);
     assert(missing("{}")==Delivery::Accepted);
     assert(diagnosticLines.size()==2&&diagnosticLines[1].find("recovered")!=std::string::npos);
-    const auto sender=ScannerMirror::httpSender("http://127.0.0.1:"+std::to_string(ntohs(address.sin_port))+"/feed","fixture");
+    std::mutex linesMutex;std::vector<std::string> senderLines;
+    const auto sender=ScannerMirror::httpSender("http://127.0.0.1:"+std::to_string(ntohs(address.sin_port))+"/feed","fixture",
+      [&](const std::string& message,bool){std::lock_guard lock(linesMutex);senderLines.push_back(message);});
     {
       ScannerMirror http("demo.ctraderapi.com",11,"comparison-v1",60000,{},sender);
       r.seq=1;http.observe(r,900);
@@ -134,6 +147,12 @@ int main() {
       waitFor([&]{return http.status().get("delivered").asNumber()==2;});
       assert(http.status().get("deliveryFailures").asNumber()==0);
       assert(http.status().get("retryAttempts").asNumber()==1);
+    }
+    {
+      // The refused delivery's log line names the bound that refused it.
+      std::lock_guard lock(linesMutex);
+      assert(!senderLines.empty()&&senderLines[0].find("HTTP 429")!=std::string::npos);
+      assert(senderLines[0].find("; cause ingress_busy")!=std::string::npos);
     }
     assert(sender("{}") == Delivery::Rejected);
     assert(sender("{}") == Delivery::Retryable);

@@ -2,8 +2,20 @@
 #include "scanner_contract.hpp"
 #include "tick_strategy.hpp"
 #include "tick_workers.hpp"
+#include <string_view>
 
 namespace scan {
+// The 429 a refused /feed batch answers with names WHICH bound refused it
+// (02-10-2026): the three capacity refusals in submit() shared one body, so
+// the gateway's "HTTP 429" could not say whether the other gateway held the
+// producer, the stream table was full or a worker queue was. Only these fixed
+// tokens leave the process; an unrecognised message is "unknown".
+inline const char* capacityCause(std::string_view what) {
+  if (what.starts_with("ingress_busy")) return "ingress_busy";
+  if (what.starts_with("stream_capacity")) return "stream_capacity";
+  if (what.starts_with("ingress_capacity")) return "ingress_capacity";
+  return "unknown";
+}
 class TickScanner {
 public:
   // One stream per (feed, config, profile), never per gateway feed epoch. The

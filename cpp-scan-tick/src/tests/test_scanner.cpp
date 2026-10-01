@@ -31,15 +31,24 @@ void matches(const Value& c, const Value& w) {
   assert(c.get("evaluatedAtMs").asNumber() < c.get("expiresAtMs").asNumber());
 }
 int main() {
+  // Every capacity refusal submit() throws maps to its own token; anything
+  // else is "unknown", never echoed (02-10-2026).
+  assert(std::string(scan::capacityCause("ingress_busy")) == "ingress_busy");
+  assert(std::string(scan::capacityCause("stream_capacity; no_stale_stream_to_evict")) == "stream_capacity");
+  assert(std::string(scan::capacityCause("stream_capacity; retired_slots_draining")) == "stream_capacity");
+  assert(std::string(scan::capacityCause("ingress_capacity_retry_batch")) == "ingress_capacity");
+  assert(std::string(scan::capacityCause("std::bad_alloc")) == "unknown");
   const auto fixture = read("src/tests/fixtures/tick_momentum_fixture.json");
   const auto expected = read("src/tests/fixtures/tick_momentum_expected.json");
   const long long now = fixture.get("events").asArray().back().get("recvMs").asNumber() + 1;
   {
     scan::TickScanner scanner(1, 8, [=] { return now; });
     auto body = batch(fixture, expected, "11"); const auto records = body.get("records").asArray();
-    bool refused = false;
-    try { scanner.submit(body); } catch (const std::runtime_error&) { refused = true; }
+    bool refused = false; std::string cause;
+    try { scanner.submit(body); } catch (const std::runtime_error& e) { refused = true; cause = scan::capacityCause(e.what()); }
     assert(refused); assert(scanner.status().get("work").asArray().empty());
+    // The 429 names the bound that refused (02-10-2026): a full worker queue.
+    assert(cause == "ingress_capacity");
     // A refused batch must remain entirely retryable, even after previous
     // batches have completed. Replayed prefixes consume no queue capacity.
     for (size_t start = 0; start < records.size(); start += 7) {
