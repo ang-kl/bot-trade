@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   observePosition, wilderAtr, foldExcursion, recordObserve, observeIntervalMs,
-  chandelierSinceEntry, OBSERVE_STATE_KEY,
+  chandelierSinceEntry, decideAdjust, OBSERVE_STATE_KEY,
 } from './mae-chandelier-observe.js'
 
 function barsFrom(closes) {
@@ -46,7 +46,18 @@ test('fold keeps the worst heat and never raises mayAmend', () => {
   assert.equal(folded.mayAmend, false)
 })
 
-test('state write is observe-only', async () => {
+test('tighten is allowed only when the since-entry line is tighter and still behind price', () => {
+  const bars = barsFrom(Array.from({ length: 30 }, () => 100))
+  bars[29] = { h: 110, l: 100, c: 108 }
+  const yes = decideAdjust({ side: 'LONG', entry: 100, price: 120, sl: 90, bars })
+  assert.equal(yes.mayAmend, true)
+  assert.equal(yes.adjust.action, 'MOVE_SL')
+  assert.ok(yes.adjust.sl > 90)
+  assert.ok(yes.adjust.sl < 120)
+  const no = decideAdjust({ side: 'LONG', entry: 100, price: 95, sl: 90, bars })
+  assert.equal(no.mayAmend, false)
+})
+test('state write keeps a tighten flag and the heat', async () => {
   const store = new Map()
   const db = {}
   const io = {
@@ -55,8 +66,7 @@ test('state write is observe-only', async () => {
   }
   await recordObserve(db, [{ id: '242243012', symbol: 'MA.US', mae: 18.89, mfe: 6.34, mayAmend: true }], 0, io)
   const saved = JSON.parse(store.get(OBSERVE_STATE_KEY))
-  assert.equal(saved.mayAmend, false)
-  assert.equal(saved.mode, 'observe_only')
-  assert.equal(saved.positions['242243012'].mayAmend, false)
+  assert.equal(saved.mode, 'observe_and_tighten')
+  assert.equal(saved.positions['242243012'].mayAmend, true)
   assert.equal(saved.positions['242243012'].mae, 18.89)
 })
