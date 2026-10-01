@@ -4298,7 +4298,17 @@ export default function actionsRouter(db, deps = {}) {
       // "Follow the master" while the master Scan is off switches this
       // account's scan off too — the same decision, refused the same way.
       const inheritsOff = patch.scan === null && getState(db, 'scan_enabled') === 'false'
-      if ((patch.scan === false || inheritsOff) && !scanOffAllowed(req)) return refuseScanOff(req, res, '/actions/account-phases')
+      // A refused Scan OFF never takes the stops in the same request with it:
+      // {scan:false, autotrade:false} from the master secret still switches
+      // Autotrade off (Codex review on #1176). Only the scan field is dropped,
+      // and the reply says so; a request that was ONLY a Scan OFF is a 403.
+      let scanRefused = null
+      if ((patch.scan === false || inheritsOff) && !scanOffAllowed(req)) {
+        if (Object.keys(patch).length === 1) return refuseScanOff(req, res, '/actions/account-phases')
+        delete patch.scan
+        scanRefused = { code: 'scan_off_needs_owner_device', error: 'Scan was left as it is: switching a scan off needs your signed-in device or Telegram /pause. The other switches in this request were applied.' }
+        console.warn(`[actions] /actions/account-phases: Scan OFF refused for ${accountId} — credential ${req?.authCredential || 'none'}; the other fields were applied`)
+      }
 
       const result = setAccountPhases(db, accountId, patch, { actor: 'owner-ui', via: '/actions/account-phases' })
       const master = masterPhases(db)
@@ -4310,7 +4320,7 @@ export default function actionsRouter(db, deps = {}) {
       const initials = { scan: 'S', analyze: 'A', autotrade: 'T' }
       console.log(`[actions] Account phases ${accountId}: ${words} → effective ` +
         PHASES.map(p => `${initials[p]}${effective[p] ? '+' : '-'}`).join(' '))
-      res.json({ ok: true, accountId, set: result.set, master, effective })
+      res.json({ ok: true, accountId, set: result.set, master, effective, ...(scanRefused ? { scanRefused } : {}) })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
