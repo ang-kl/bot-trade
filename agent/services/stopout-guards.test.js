@@ -21,6 +21,7 @@ import {
   evaluateTrade,
   blocklistedSymbol,
   OWNER_DISARMED_SYMBOLS,
+  fxDayOpenMs,
 } from './risk.js'
 import { estimateStopoutLossUsd, plannedRiskUsd, countsAsStopout } from './stopout-estimate.js'
 import { accountPnlToday } from './equity-stop.js'
@@ -86,7 +87,16 @@ function goodProposal(overrides = {}) {
 
 /** A broker-side stop-out: closed, NULL net_pnl, entry/sl/volume recorded. */
 function insertStopout(db, { symbol = 'EURUSD', entry = 1.1000, sl = 1.0970, volume = 0.5, minsAgo = 5, accountId = null, closeReason = null, exitPrice = null, tp = null } = {}) {
-  const closedAt = new Date(Date.now() - minsAgo * 60_000).toISOString()
+  // A same-day fixture stays inside the CURRENT FX day (17:00 New York): a
+  // row "10 minutes ago" fell into yesterday for the first ten minutes after
+  // the rollover and turned the daily-gauge tests red on the clock, not the
+  // code (01-10-2026 21:09 UTC, red on main too). Only the minutes-old
+  // fixtures (5, 8, 10) are pinned; the cooldown and two-day ones are untouched.
+  const sameDay = minsAgo <= 15
+  const closedMs = sameDay
+    ? Math.max(Date.now() - minsAgo * 60_000, fxDayOpenMs() + 1000)
+    : Date.now() - minsAgo * 60_000
+  const closedAt = new Date(closedMs).toISOString()
   db.prepare(
     `INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, tp_price, volume, net_pnl, status, close_reason, closed_at, account_id)
      VALUES (?, 'BUY', ?, ?, ?, ?, ?, NULL, 'closed', ?, ?, ?)`
