@@ -4,7 +4,7 @@ Date: 02-10-2026. Approval: `APPROVE mae-chandelier-observe`. Mode: observe only
 
 ## What this does
 
-Records, for each open position the observer is given, the worst price against the entry (MAE) and the best price for it (MFE). When 23 or more bars are present it also computes LeBeau's Chandelier: highest high of 22 sessions minus 3 times Wilder ATR(22), and the same line from the high since the entry index. Both numbers are stored. Neither is sent to the broker.
+Records, for each open position the observer is given, the worst price against the entry (MAE) and the best price for it (MFE). When 23 or more bars are present it also computes LeBeau's Chandelier: highest high of 22 sessions minus 3 times Wilder ATR(22), and the same line from the high since the entry index. Both numbers are stored. Neither is sent to the broker. The tick does not fetch bars. It passes 1h bars only if the profit keeper has already cached them. Otherwise the row says `observe_only_bars_missing`.
 
 `mayAmend` is constant false in the Node module and in `cpp-verify`. A reading that asks for an amend is folded back to false before it is written.
 
