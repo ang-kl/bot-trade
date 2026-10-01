@@ -25,7 +25,7 @@
 import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
-import { observePosition, recordObserve, decideAdjust, cachedBars, storeBars } from './mae-chandelier-observe.js'
+import { observePosition, recordObserve, decideAdjust, shouldSendChandelierAdjust, cachedBars, storeBars } from './mae-chandelier-observe.js'
 import { readAtrCache } from './profit-keeper.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
@@ -558,7 +558,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
           bars: bars || keeper?.bars || null,
         })
         recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, ...reading }]).catch(() => {})
-        if (reading.adjust && pos.source !== 'external') {
+        if (shouldSendChandelierAdjust(pos, reading)) {
           await loopMod.executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier')
         }
       } catch (err) { console.error('[mae-chandelier-observe] tick row failed:', err?.message || err) }

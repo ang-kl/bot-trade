@@ -11,7 +11,7 @@ import { recordScanPass } from './lib/bar-path-counters.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows, rosterArmedTradeKeys } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
-import { decideAdjust, recordObserve, cachedBars } from './services/mae-chandelier-observe.js'
+import { decideAdjust, recordObserve, cachedBars, shouldSendChandelierAdjust } from './services/mae-chandelier-observe.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
 import { recordTradePlan, recordPlanWriteFailure } from './services/trade-plans.js'
@@ -2648,7 +2648,7 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
       bars,
     })
     recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, pass: 'timeframe', ...reading }]).catch(() => {})
-    if (reading.adjust && pos.source !== 'external') {
+    if (shouldSendChandelierAdjust(pos, reading)) {
       await executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier_timeframe')
     }
   } catch (err) { log(`[mae-chandelier-observe] timeframe row failed: ${err?.message || err}`) }

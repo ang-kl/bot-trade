@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   observePosition, wilderAtr, foldExcursion, recordObserve, observeIntervalMs,
-  chandelierSinceEntry, decideAdjust, OBSERVE_STATE_KEY,
+  chandelierSinceEntry, decideAdjust, shouldSendChandelierAdjust, sinceEntryTrailSpec, OBSERVE_STATE_KEY,
 } from './mae-chandelier-observe.js'
 
 function barsFrom(closes) {
@@ -57,6 +57,19 @@ test('tighten is allowed only when the since-entry line is tighter and still beh
   const no = decideAdjust({ side: 'LONG', entry: 100, price: 95, sl: 90, bars })
   assert.equal(no.mayAmend, false)
 })
+test('external is recorded and not sent; missing digits drop the trail spec', () => {
+  const reading = { adjust: { action: 'MOVE_SL', sl: 104 } }
+  assert.equal(shouldSendChandelierAdjust({ source: 'external' }, reading), false)
+  assert.equal(shouldSendChandelierAdjust({ source: 'bot' }, reading), true)
+  assert.equal(shouldSendChandelierAdjust({ source: 'bot' }, { adjust: null }), false)
+  const bars = barsFrom(Array.from({ length: 30 }, () => 100))
+  assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100, bars, digits: undefined }), null)
+  const spec = sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100, bars, digits: 5, currentSl: 90 })
+  assert.equal(spec.digits, 5)
+  assert.equal(spec.peakPrice, 100)
+  assert.ok(spec.trailDistance > 0)
+})
+
 test('state write keeps a tighten flag and the heat', async () => {
   const store = new Map()
   const db = {}

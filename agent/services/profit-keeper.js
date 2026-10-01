@@ -44,7 +44,7 @@ import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
 import { makeBookHeldCheck } from './book-held.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
-import { wilderAtr } from './mae-chandelier-observe.js'
+import { sinceEntryTrailSpec } from './mae-chandelier-observe.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { measureAmend } from './protection-latency.js'
 import { protectiveExitDeferral } from './momentum-exit-coordination.js'
@@ -742,26 +742,19 @@ async function profitKeeperPass(db, creds, deps = {}) {
       const td = bp.tradeData || {}
       if (already.has(String(parseInt(r.position_id)))) continue
       const bars = fullBarsBySymbolId[td.symbolId]
-      const atr = wilderAtr(bars, 22)
-      if (!(atr > 0)) continue
-      const acct = Number(creds.accountId)
-      if (!Number.isFinite(acct) || acct <= 0) continue
-      const dir = String(r.side || '').toUpperCase() === 'SHORT' || String(r.side || '').toUpperCase() === 'SELL' ? -1 : 1
-      const extreme = Number(r.entry_price) > 0 ? Number(r.entry_price) : (dir === 1 ? Math.max(...bars.map(b => Number(b.h))) : Math.min(...bars.map(b => Number(b.l))))
-      const digits = Number(r.digits ?? bp.digits)
-      if (!Number.isFinite(digits)) continue
-      trailSpecs.push({
-        positionId: parseInt(r.position_id),
-        ctidTraderAccountId: acct,
+      const spec = sinceEntryTrailSpec({
+        positionId: r.position_id,
+        accountId: creds.accountId,
         symbolId: td.symbolId,
-        dir,
-        trailDistance: 3 * atr,
-        peakPrice: extreme,
+        side: r.side,
+        entry: r.entry_price,
+        bars,
         currentSl: bp.stopLoss ?? r.current_sl ?? null,
         currentTp: bp.takeProfit ?? r.current_tp ?? null,
-        digits,
-        source: 'mae_chandelier_since_entry',
+        digits: r.digits ?? bp.digits,
       })
+      if (!spec) continue
+      trailSpecs.push(spec)
     }
     console.log(`[mae-chandelier-observe] trail-config ${trailSpecs.length} spec(s) for account ${creds.accountId}`)
 

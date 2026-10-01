@@ -100,6 +100,33 @@ export function observePosition({
   return out
 }
 
+export function shouldSendChandelierAdjust(pos, reading) {
+  if (!reading?.adjust) return false
+  if (pos?.source === 'external') return false
+  return true
+}
+
+export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits } = {}) {
+  const atr = wilderAtr(bars, DEFAULT_ATR_PERIOD)
+  const d = Number(digits)
+  if (!(atr > 0) || !Number.isFinite(d)) return null
+  const dir = String(side || '').toUpperCase() === 'SHORT' || String(side || '').toUpperCase() === 'SELL' ? -1 : 1
+  const peak = Number(entry)
+  if (!(peak > 0)) return null
+  return {
+    positionId: parseInt(positionId),
+    ctidTraderAccountId: Number(accountId),
+    symbolId,
+    dir,
+    trailDistance: 3 * atr,
+    peakPrice: peak,
+    currentSl: currentSl ?? null,
+    currentTp: currentTp ?? null,
+    digits: d,
+    source: 'mae_chandelier_since_entry',
+  }
+}
+
 export function decideAdjust({ side, entry, price, sl, bars, period = DEFAULT_ATR_PERIOD, multiplier = DEFAULT_ATR_MULT } = {}) {
   const reading = observePosition({ side, entry, price, sl, bars, period, multiplier })
   const dir = reading.dir
