@@ -372,10 +372,12 @@ export function scanOffAllowed(req) {
 }
 function refuseScanOff(req, res, via) {
   console.warn(`[actions] ${via}: Scan OFF refused — credential ${req?.authCredential || 'none'} is not the owner's device session`)
+  // `error` is the sentence the page shows (agent-api.js copies only `error`
+  // into the toast); the stable code rides in `code`.
   return res.status(403).json({
     ok: false,
-    error: 'scan_off_needs_owner_device',
-    where: 'Switching a scan off is a human decision: send it from your signed-in device or with Telegram /pause. Turning a scan on, Autotrade off and kill-all are not restricted.',
+    error: 'Switching a scan off needs your signed-in device: sign in with the Telegram code, or use Telegram /pause. Turning a scan on, Autotrade off and kill-all are not restricted.',
+    code: 'scan_off_needs_owner_device',
     credential: req?.authCredential || null,
   })
 }
@@ -4293,7 +4295,10 @@ export default function actionsRouter(db, deps = {}) {
       if (Object.keys(patch).length === 0) {
         return res.status(400).json({ error: 'nothing to set — send scan, analyze and/or autotrade' })
       }
-      if (patch.scan === false && !scanOffAllowed(req)) return refuseScanOff(req, res, '/actions/account-phases')
+      // "Follow the master" while the master Scan is off switches this
+      // account's scan off too — the same decision, refused the same way.
+      const inheritsOff = patch.scan === null && getState(db, 'scan_enabled') === 'false'
+      if ((patch.scan === false || inheritsOff) && !scanOffAllowed(req)) return refuseScanOff(req, res, '/actions/account-phases')
 
       const result = setAccountPhases(db, accountId, patch, { actor: 'owner-ui', via: '/actions/account-phases' })
       const master = masterPhases(db)

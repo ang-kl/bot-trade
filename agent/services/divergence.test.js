@@ -94,7 +94,9 @@ test('divergenceReport joins arm evidence to live closes, buckets evidence level
   // production stamps bot trades source 'autopilot' (label pass) — must count
   trade(db, { symbol: 'GER40', strategy: 'donchian_breakout', tf: '15m', net: -20, r: -1, openedMin: 45, source: 'autopilot' })
 
-  const r = divergenceReport(db, { days: 30 })
+  // The fixtures are dated 01-09-2026; a 30-day window aged them out on
+  // 01-10-2026 and the test went red on a calendar, not on the code.
+  const r = divergenceReport(db, { days: 3650 })
   assert.equal(r.combos.length, 1)
   const c = r.combos[0]
   assert.equal(c.strategy, 'donchian_breakout')
@@ -220,7 +222,9 @@ test('optimism.pooled weighs backtest WR by live trades across every evidenced c
   arm(db, { kind: 'matrix', strategy: 'donchian_breakout', symbol: 'US30', timeframe: '4h', bt_pf: 1.6, bt_win: 40, bt_trades: 30 })
   for (let i = 0; i < 4; i++) trade(db, { symbol: 'COTTON', strategy: 'ema_pullback', tf: '1h', net: i < 2 ? 20 : -10, r: i < 2 ? 2 : -1, openedMin: 5 + i })
   for (let i = 0; i < 6; i++) trade(db, { symbol: 'US30', strategy: 'donchian_breakout', tf: '4h', net: i < 1 ? 15 : -10, r: i < 1 ? 1.5 : -1, openedMin: 5 + i })
-  const r = divergenceReport(db, { days: 30 })
+  // The fixtures are dated 01-09-2026; a 30-day window aged them out on
+  // 01-10-2026 and the test went red on a calendar, not on the code.
+  const r = divergenceReport(db, { days: 3650 })
   assert.equal(r.optimism.combos, 0, 'no combo reached minLive')
   assert.equal(r.optimism.pooled.combos, 2)
   assert.equal(r.optimism.pooled.trades, 10)

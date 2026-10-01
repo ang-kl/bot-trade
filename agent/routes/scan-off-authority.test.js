@@ -36,7 +36,10 @@ test('agent secret: every Scan OFF path is refused with 403 and nothing is writt
   const s = await server('agent_secret')
   try {
     const a = await s.post('/scan-toggle', { on: false })
-    assert.equal(a.status, 403); assert.equal((await a.json()).error, 'scan_off_needs_owner_device')
+    assert.equal(a.status, 403)
+    const body = await a.json()
+    assert.equal(body.code, 'scan_off_needs_owner_device')
+    assert.match(body.error, /signed-in device/, 'the page shows a sentence, not a code')
     assert.equal(getState(s.db, 'scan_enabled'), 'true')
 
     const b = await s.post('/account-phases', { accountId: '46130058', scan: false })
@@ -95,4 +98,19 @@ test('setStage: an automatic actor cannot switch a strategy scan off; it can sti
   assert.equal(scanCell(db, 'vwap_trend'), false)
   setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'scan', on: true, actor: 'boot_seed' }, io)
   assert.equal(scanCell(db, 'vwap_trend'), true)
+})
+
+test('"follow the master" while master Scan is off is a Scan OFF too: refused without the owner device', async () => {
+  const s = await server('agent_secret')
+  try {
+    setState(s.db, 'acct:46130058:scan_enabled', 'true')
+    // master off was set by a human earlier (setPhaseFlag as owner-ui)
+    const { setPhaseFlag } = await import('../services/phase-audit.js')
+    setPhaseFlag(s.db, 'scan_enabled', 'false', { actor: 'owner-ui' })
+    const r = await s.post('/account-phases', { accountId: '46130058', scan: null })
+    assert.equal(r.status, 403)
+    assert.equal(getState(s.db, 'acct:46130058:scan_enabled'), 'true')
+    setPhaseFlag(s.db, 'scan_enabled', 'true', { actor: 'owner-ui' })
+    assert.equal((await s.post('/account-phases', { accountId: '46130058', scan: null })).status, 200, 'inherit while the master is on is not a scan off')
+  } finally { s.close() }
 })
