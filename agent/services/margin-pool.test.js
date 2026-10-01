@@ -104,7 +104,7 @@ test('wiring pin: the dispatch reads the pool once, skips only the exhausted acc
   assert.doesNotMatch(src, /function portfolioMarginExhausted/, 'the single-account pre-gate is gone')
   assert.match(src, /const pool = marginPoolForCycle\(db\)\s+if \(pool\.length && pool\.every\(p => p\.exhausted\)\) return \{ fired: false, synth \}\s+const apAccounts = pool\.map\(p => p\.acct\)/,
     'the pool is read before the fan-out and only an ALL-exhausted pool ends the dispatch')
-  assert.match(src, /const poolEntry = pool\.find\(p => String\(p\.accountId\) === String\(acct\.accountId\)\)\s+if \(poolEntry\?\.exhausted\) \{[\s\S]{0,700}?stage: 'margin_pool'[\s\S]{0,300}?continue\s+\}/,
+  assert.match(src, /const poolEntry = pool\.find\(p => String\(p\.accountId\) === String\(acct\.accountId\)\)\s+if \(poolEntry\?\.exhausted\) \{[\s\S]{0,700}?stage: 'margin_pool'[\s\S]{0,600}?continue\s+\}/,
     'an exhausted account is skipped by name inside the fan-out, with a decision row')
   assert.match(src, /accountMarginPool\(db, config, accounts\.map\(a => a\.accountId\)/, 'the pool is the per-account status from risk.js')
   // THE VETO BOUNDARY (19-09-2026): the pool journals a state CHANGE through

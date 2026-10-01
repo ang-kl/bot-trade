@@ -121,7 +121,7 @@ test('the runner-leg amend goes through the same recorder (source pin, comments 
   const src = readFileSync(new URL('./loop.js', import.meta.url), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n')
   const start = src.indexOf("if (action === 'PARTIAL_EXIT')")
-  const end = src.indexOf('return { summary: `closed ', start)
+  const end = src.indexOf('return { summary: partialExitSummary(', start)
   assert.ok(start > 0 && end > start, 'PARTIAL_EXIT branch not found — re-anchor')
   const branch = src.slice(start, end)
   assert.match(branch, /measureAmend\(amendMeta\('broker_action\.runner_leg'\), \(\) => execAmendPosition\(/)

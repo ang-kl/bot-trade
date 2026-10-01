@@ -55,8 +55,8 @@ export function journalMarginPoolState(db, pool, { loopId = null } = {}) {
     const row = now
       ? {
         accountId: id, symbol: null, stage: MARGIN_POOL_STAGE, decision: 'skip', loopId,
-        reason: `portfolio_margin_exhausted used=${used} cap=${cap} source=${source}`,
-        detail: { margin_used_usd: usedN, margin_cap_usd: capN, margin_source: source, account_id: id, transition: 'exhausted' },
+        reason: `portfolio_margin_exhausted used=${used} cap=${cap} source=${source}${p.unfunded ? ' unfunded=balance_0' : ''}`,
+        detail: { margin_used_usd: usedN, margin_cap_usd: capN, margin_source: source, account_id: id, transition: 'exhausted', ...(p.unfunded ? { unfunded: true } : {}) },
       }
       : {
         accountId: id, symbol: null, stage: MARGIN_POOL_STAGE, decision: 'proceed', loopId,

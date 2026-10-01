@@ -99,7 +99,7 @@ test('a matrix SCAN cell blocks BEFORE the trade cell — order is the point', (
   // Scan runs first, so a scan-off strategy never reaches the trade gate. A
   // resolver that reported the trade cell here would send the owner to change
   // a switch that changes nothing.
-  setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'scan', on: false }, io)
+  setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'scan', on: false, actor: 'owner_route' }, io)
   setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: false }, io)
   const r = chain()
   assert.equal(r.blockedBy, 'matrix_scan')

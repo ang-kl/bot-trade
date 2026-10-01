@@ -29,6 +29,8 @@ function server() {
   setState(db, 'autotrade_enabled', 'true')
   const app = express()
   app.use(express.json())
+  // The owner's browser: index.js stamps a device session's credential.
+  app.use((req, _res, next) => { req.authCredential = 'device_session'; next() })
   app.use('/state', stateRouter(db))
   app.use('/actions', actionsRouter(db))
   return new Promise(resolve => {

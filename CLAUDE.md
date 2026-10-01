@@ -883,6 +883,22 @@ Measurement history — each line is a real run of the script, not a claim:
   recorded rebase, not a new measured transcript count. Later visible replies
   take precedence; no cumulative agent/token count is inferred.
 
+
+- 2026-10-01 13:10 UTC, **remote container, PARTIAL corpus** (the §1
+  write-back rule; Codex worked 27-09 evening to 01-10 and handed back on
+  01-10, `docs/v3-handover-2026-10-01.html`): the highest stamp recorded on
+  main is Codex's `№ 10,331` (28-09); Codex's later replies are not recorded
+  anywhere readable here, so every number below is a LOWER BOUND. Claude's
+  first reply after the hand-back was stamped `№ 10,332` but one unstamped
+  line preceded it, so it is at least `№ 10,333`; three unstamped lines
+  followed, so the 01-10 20:42 SGT files report (statements, logs, live
+  per-account blockers) is at least **`№ 10,337`**. Seventeen unstamped
+  status lines followed it while fix A (zero balance), the partial-exit
+  wording and fix B (Scan OFF needs the owner) were built, so the last reply
+  before this ledger is at least `№ 10,354` and the next stamped reply is at
+  least **`№ 10,355`** plus any unstamped line made after this ledger. The
+  count is by replies, not by stamps. A later re-measure that reads below
+  this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

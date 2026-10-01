@@ -895,7 +895,7 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
   // unproven overlap or treat an unpriceable order as free capacity.
   usedMargin += restingMargin
   const cap = balance * config.maxMarginUsagePct
-  return { usedMargin, cap, headroom: restingUnpriced.length || balance === 0 ? Math.min(0, cap - usedMargin) : cap - usedMargin, source, brokerSnapshot, restingMargin, restingUnpriced }
+  return { usedMargin, cap, headroom: restingUnpriced.length ? 0 : balance === 0 ? Math.min(0, cap - usedMargin) : cap - usedMargin, source, brokerSnapshot, restingMargin, restingUnpriced }
 }
 
 /**
@@ -924,7 +924,7 @@ export function accountMarginPool(db, config, accountIds, { rates = null } = {})
     const status = balance != null
       ? portfolioMarginStatus(db, config, { balance, leverage: leverageEvidence.value, rates, accountId })
       : null
-    out.push({ accountId, balance: balance != null ? balance : null, leverageEvidence, status, exhausted: !!(status && status.headroom <= 0) })
+    out.push({ accountId, balance: balance != null ? balance : null, unfunded: balance === 0, leverageEvidence, status, exhausted: !!(status && status.headroom <= 0) })
   }
   const key = (p) => p.status ? p.status.headroom : 0
   return out.sort((a, b) => key(b) - key(a))

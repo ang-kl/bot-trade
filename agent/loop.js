@@ -1855,7 +1855,11 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
             accountId: String(acct.accountId),
             symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
             stage: 'margin_pool', decision: 'skip',
-            reason: `margin exhausted on this account (used $${poolEntry.status.usedMargin.toFixed(2)} vs cap $${poolEntry.status.cap.toFixed(2)}, ${poolEntry.status.source})`,
+            // An unfunded account is named as unfunded, not as a margin
+            // overrun: its cap is 0 because its balance is 0 (principle 4).
+            reason: poolEntry.unfunded
+              ? `unfunded account (broker balance 0) — no budget to size against`
+              : `margin exhausted on this account (used $${poolEntry.status.usedMargin.toFixed(2)} vs cap $${poolEntry.status.cap.toFixed(2)}, ${poolEntry.status.source})`,
           })
         } catch { /* provenance never blocks */ }
         continue
@@ -2112,7 +2116,7 @@ function marginPoolForCycle(db) {
       .map(p => ({ ...p, acct: byId.get(p.accountId) }))
       .filter(p => p.acct)
     const said = pool.map(p => p.status
-      ? `${p.accountId}: ${p.exhausted ? 'EXHAUSTED' : `headroom $${p.status.headroom.toFixed(2)}`} (used $${p.status.usedMargin.toFixed(2)} / cap $${p.status.cap.toFixed(2)}, ${p.status.source})`
+      ? `${p.accountId}: ${p.unfunded ? 'UNFUNDED (balance 0)' : p.exhausted ? 'EXHAUSTED' : `headroom $${p.status.headroom.toFixed(2)}`} (used $${p.status.usedMargin.toFixed(2)} / cap $${p.status.cap.toFixed(2)}, ${p.status.source})`
       : `${p.accountId}: no balance on record — judged by the risk gate`)
     if (pool.length) log(`Margin pool (maxMarginUsagePct=${config.maxMarginUsagePct}): ${said.join(' · ')}${pool.every(p => p.exhausted) ? ' — every account exhausted, dispatch paused this cycle' : ''}`)
     // THE VETO BOUNDARY (19-09-2026): an exhausted account is a cycle-stable
