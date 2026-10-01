@@ -71,9 +71,8 @@ test('parity: the reading equals the daily_cap_usd the risk gate stamps on its o
   const db = fresh()
   // Tier (A), floor over the small tier (B), floor over the flat cap with no
   // balance stamped (D). A stamped zero is covered by the floor test above:
-  // evaluateTrade itself throws on it past the daily step (portfolioMarginStatus
-  // returns null for balance 0 at risk.js:845, read at :2349), which is not
-  // this change's to fix.
+  // evaluateTrade refuses it with insufficient_equity before sizing (it used
+  // to throw on a null margin status; fixed 01-10-2026, risk.test.js).
   const cases = { A: '30004.36', B: '695.59', D: null }
   for (const [id, bal] of Object.entries(cases)) if (bal != null) setState(db, `acct:${id}:account_balance_usd`, bal)
   // An overlay the gate merges on top: the reading must follow it too.

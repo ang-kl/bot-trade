@@ -129,7 +129,7 @@ test('MOVE_SL rounds the prices it sends to the symbol digits', () => {
 function partialBranch() {
   const start = loop.indexOf("if (action === 'PARTIAL_EXIT')")
   assert.ok(start > 0, 'PARTIAL_EXIT branch not found — this test needs re-anchoring')
-  const end = loop.indexOf('return { summary: `closed ', start)
+  const end = loop.indexOf('return { summary: partialExitSummary(', start)
   assert.ok(end > start, 'PARTIAL_EXIT branch end not found')
   return loop.slice(start, end).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 }

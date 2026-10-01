@@ -356,6 +356,32 @@ function storedObject(db, key) {
   } catch { return {} }
 }
 
+/**
+ * SCAN OFF NEEDS THE OWNER'S DEVICE. A scan switched off stops the signal
+ * being computed, so nothing can even record what was missed — #1173 made
+ * that a human decision. Over HTTP the only credential that names the owner
+ * is a device session (minted by the Telegram login code sent to the owner,
+ * stamped by the server in index.js); the master AGENT_SECRET names nobody,
+ * and nothing the client sends can claim either. Switching a scan back ON,
+ * and every other pause (Autotrade off, kill-all), stay open to any
+ * authenticated caller: a stop is never refused. Telegram /pause is the
+ * other human path. Exported for tests.
+ */
+export function scanOffAllowed(req) {
+  return req?.authCredential === 'device_session'
+}
+function refuseScanOff(req, res, via) {
+  console.warn(`[actions] ${via}: Scan OFF refused — credential ${req?.authCredential || 'none'} is not the owner's device session`)
+  // `error` is the sentence the page shows (agent-api.js copies only `error`
+  // into the toast); the stable code rides in `code`.
+  return res.status(403).json({
+    ok: false,
+    error: 'Switching a scan off needs your signed-in device: sign in with the Telegram code, or use Telegram /pause. Turning a scan on, Autotrade off and kill-all are not restricted.',
+    code: 'scan_off_needs_owner_device',
+    credential: req?.authCredential || null,
+  })
+}
+
 export default function actionsRouter(db, deps = {}) {
   const router = Router()
 
@@ -3256,6 +3282,7 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   router.post('/stage-matrix', async (req, res) => {
     const { kind, key, stage, on, accountId = null } = req.body || {}
+    if (kind === 'strategy' && stage === 'scan' && on !== true && !scanOffAllowed(req)) return refuseScanOff(req, res, '/actions/stage-matrix')
     try {
       // accountId writes THAT account's overlay and nothing else; absent, the
       // global matrix — byte-identical to the behaviour before overlays.
@@ -3832,6 +3859,7 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   router.post('/scan-toggle', (req, res) => {
     const on = req.body?.on !== false
+    if (!on && !scanOffAllowed(req)) return refuseScanOff(req, res, '/actions/scan-toggle')
     setPhaseFlag(db, 'scan_enabled', on ? 'true' : 'false', { actor: 'owner-ui', via: '/actions/scan-toggle' })
     res.json({ ok: true, scan_enabled: on })
   })
@@ -4267,6 +4295,10 @@ export default function actionsRouter(db, deps = {}) {
       if (Object.keys(patch).length === 0) {
         return res.status(400).json({ error: 'nothing to set — send scan, analyze and/or autotrade' })
       }
+      // "Follow the master" while the master Scan is off switches this
+      // account's scan off too — the same decision, refused the same way.
+      const inheritsOff = patch.scan === null && getState(db, 'scan_enabled') === 'false'
+      if ((patch.scan === false || inheritsOff) && !scanOffAllowed(req)) return refuseScanOff(req, res, '/actions/account-phases')
 
       const result = setAccountPhases(db, accountId, patch, { actor: 'owner-ui', via: '/actions/account-phases' })
       const master = masterPhases(db)

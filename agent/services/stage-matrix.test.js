@@ -88,7 +88,7 @@ test('setStage trade writes THROUGH to the legacy keys', () => {
 
 test('setStage scan/backtest/manage persist in stage_matrix_json only', () => {
   const db = initDB(':memory:')
-  setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'scan', on: false }, io)
+  setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'scan', on: false, actor: 'owner_route' }, io)
   setStage(db, { kind: 'filter', key: 'fvg', stage: 'backtest', on: true }, io)
   const m = loadStageMatrix(db, getState)
   assert.equal(m.strategies.find(s => s.key === 'rsi_meanrev').stages.scan, false)
@@ -110,7 +110,7 @@ test('setStage rejects unknown kind/key/stage and filter×manage', () => {
 test('scanStageStrategies is wide by default and honours scan cells', () => {
   const db = initDB(':memory:')
   assert.deepEqual(scanStageStrategies(db, getState).map(s => s.key), STRATEGY_KEYS)
-  setStage(db, { kind: 'strategy', key: 'donchian_breakout', stage: 'scan', on: false }, io)
+  setStage(db, { kind: 'strategy', key: 'donchian_breakout', stage: 'scan', on: false, actor: 'owner_route' }, io)
   assert.equal(scanStageStrategies(db, getState).some(s => s.key === 'donchian_breakout'), false)
 })
 

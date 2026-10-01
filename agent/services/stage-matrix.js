@@ -31,6 +31,9 @@ import { recordArmingChange, whyCell } from './arming-log.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 
 export const STAGES = ['scan', 'backtest', 'trade', 'manage']
+
+/** The only actors that may switch a strategy's Scan cell OFF (see setStage). */
+export const HUMAN_SCAN_ACTORS = Object.freeze(['owner_route', 'telegram'])
 export const STAGE_LABELS = {
   scan: 'Scan',
   backtest: 'Back Test',
@@ -422,6 +425,19 @@ export function setStage(db, { kind, key, stage, on, accountId = null, actor = '
     const why = kind === 'filter' && stage === 'trade' ? NOT_ACCOUNT_SCOPED.filterTrade : NOT_ACCOUNT_SCOPED[stage]
     const err = new Error(`refused: ${kind} ${key} × ${STAGE_LABELS[stage]} for account ${acct} — ${why}`)
     err.code = 'stage_not_account_scoped'
+    throw err
+  }
+
+  // SCAN OFF IS A HUMAN DECISION (#1173 made it so for the master and
+  // per-account switches; this is the same rule one level down). A strategy's
+  // Scan cell stops the signal being computed at all, so nothing downstream
+  // can even record what it missed. Automatic controllers disarm TRADE, which
+  // leaves the scan and its record running; none of them may switch a scan
+  // off. HUMAN_SCAN_ACTORS is the whole list — the route only passes
+  // 'owner_route' after checking the owner's device session.
+  if (kind === 'strategy' && stage === 'scan' && !flag && !HUMAN_SCAN_ACTORS.includes(actor)) {
+    const err = new Error(`refused: strategy ${key} × Scan OFF by ${actor || 'unknown'} — switching a scan off is a human decision (owner device or Telegram)`)
+    err.code = 'scan_off_needs_human'
     throw err
   }
 
