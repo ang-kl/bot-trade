@@ -820,3 +820,72 @@ test('Wave 2 (§K·7): weekToDateFor counts this strategy\'s closes on this acco
   const view = (await import('./momentum-account.js')).momentumAccountReport(db)
   assert.ok(view, 'the report still renders')
 })
+
+// ---------------------------------------------------------------------------
+// The nightly LOOP HUNG (01-10-2026): the daily pass built 56 names serially,
+// re-fetched the broker's market data for every account and probed quotes on
+// closed markets for their full 6 s timeout — 7–11 minutes per account, and
+// the 12-minute watchdog exited Node in the "momentum book" phase every night
+// from 29-09. These pin the four parts of the fix.
+// ---------------------------------------------------------------------------
+
+test('buildUniverse: a market the broker schedule closes is priced from the last bar, with no quote probe', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD', 'NATGAS'] }))
+  const f = fakes({ equity: 100_000 })
+  const probed = []
+  const deps = { ...f.deps, spot: async (c, id) => { probed.push(id); return f.deps.spot(c, id) },
+    isSymbolOpen: (_db, symbol) => (symbol === 'NATGAS' ? { open: false, source: 'broker' } : { open: true, source: 'broker' }) }
+  const b = await buildUniverse(db, { accountId: MOM, creds: {}, cfg: loadMomentumAccount(db), deps })
+  assert.deepEqual(probed, [1], 'only the open market (BTCUSD, id 1) is probed')
+  assert.equal(b.universe.NATGAS.ok, true, `NATGAS: ${b.universe.NATGAS.reason}`)
+  assert.equal(b.universe.NATGAS.price, 2.9, 'priced at the last bar close')
+  assert.equal(b.universe.NATGAS.bid, null, 'no quote, no bid')
+  // A closure the broker did not state (heuristic, error) still probes.
+  const probed2 = []
+  await buildUniverse(db, { accountId: MOM, creds: {}, cfg: loadMomentumAccount(db), deps: { ...deps, spot: async (c, id) => { probed2.push(id); return null }, isSymbolOpen: () => ({ open: false, source: 'heuristic' }) } })
+  assert.deepEqual(probed2.sort(), [1, 2])
+})
+
+test('buildUniverse: bars and quotes are fetched once per host and name across accounts in one pass; another host fetches its own', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: ['BTCUSD', 'NATGAS'] }))
+  const f = fakes({ equity: 100_000 })
+  const n = { bars: 0, spot: 0 }
+  const marketCache = new Map()
+  const deps = { ...f.deps, marketCache, bars: async (c, id) => { n.bars++; return f.deps.bars(c, id) }, spot: async (c, id) => { n.spot++; return f.deps.spot(c, id) } }
+  const cfg = loadMomentumAccount(db)
+  const a = await buildUniverse(db, { accountId: MOM, creds: { host: 'demo' }, cfg, deps })
+  const b = await buildUniverse(db, { accountId: OTHER, creds: { host: 'demo' }, cfg, deps })
+  assert.deepEqual(n, { bars: 2, spot: 2 }, 'the second account on the host pays nothing for market data')
+  assert.deepEqual(b.universe, a.universe, 'and builds the same rows from it')
+  await buildUniverse(db, { accountId: OTHER, creds: { host: 'live' }, cfg, deps })
+  assert.deepEqual(n, { bars: 4, spot: 4 }, 'another host is another price feed')
+})
+
+test('buildUniverse: the bounded pool keeps the universe order and the serial result, and beats the watchdog once per name', async () => {
+  const db = fresh()
+  const names = ['BTCUSD', 'NATGAS', 'MYSTERY', 'ETHUSD', 'XAUUSD', 'EURUSD']
+  setState(db, MOMENTUM_UNIVERSE_KEY, JSON.stringify({ symbols: names }))
+  const f = fakes({ equity: 100_000 })
+  let inFlight = 0, peak = 0
+  const slow = (fn) => async (...a) => { inFlight++; peak = Math.max(peak, inFlight); await new Promise(r => setTimeout(r, 5)); inFlight--; return fn(...a) }
+  const cfg = loadMomentumAccount(db)
+  const serial = await buildUniverse(db, { accountId: MOM, creds: {}, cfg, deps: { ...f.deps, universeConcurrency: 1 } })
+  let beats = 0
+  const pooled = await buildUniverse(db, { accountId: MOM, creds: {}, cfg, deps: { ...f.deps, symbolIdFor: slow(f.deps.symbolIdFor), progress: () => { beats++ } } })
+  assert.deepEqual(Object.keys(pooled.universe), names, 'rows in universe order')
+  assert.deepEqual(pooled.universe, serial.universe, 'same rows as the serial build')
+  assert.ok(peak > 1 && peak <= 4, `pool width observed ${peak}`)
+  assert.equal(beats, names.length, 'one beat per name, failures included')
+})
+
+test('the book creates one market cache per pass and the loop wires the watchdog beat and prints every account', () => {
+  const book = strip(readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8'))
+  assert.match(book, /if \(!\(deps\.marketCache instanceof Map\)\) deps = \{ \.\.\.deps, marketCache: new Map\(\) \}/)
+  assert.match(book, /\(summary\.momentumAccounts \|\|= \[\]\)\.push\(summary\.momentumAccount\)/)
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  assert.match(loop, /export function noteLoopProgress\(\) \{ lastLoopActivityAt = Date\.now\(\) \}/)
+  assert.match(loop, /progress: noteLoopProgress,/)
+  assert.match(loop, /for \(const m of mb\.momentumAccounts \|\|/)
+})

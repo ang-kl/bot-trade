@@ -391,6 +391,11 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   if (!cfg.enabled) return { ran: false, why: 'disabled' }
   const state = loadBookState(db)
   const summary = { ran: true, entries: 0, exits: 0, trailed: 0, reclassified: 0, deferredClosed: 0, skipped: [], accounts: 0 }
+  // ONE MARKET-DATA CACHE PER PASS (01-10-2026): the daily pass builds the
+  // momentum universe once per account, and bars and quotes are the broker's,
+  // not the account's — fetched again for each account they made the pass
+  // outlast the 12-minute loop watchdog every night. A caller's own cache wins.
+  if (!(deps.marketCache instanceof Map)) deps = { ...deps, marketCache: new Map() }
   // S-2 (Wave 2 row 2.1, OD-2 yes 26-09-2026): the loop calls the book on
   // EVERY cycle, outside the scan branch. When that cycle's scan did not run,
   // `entriesHeld` names why: exits, the trail, adoption and reconcile of held
@@ -615,7 +620,9 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         // PR-P: the SAME brake object the row-cursor path below uses, computed
         // once above. Passing the verdict rather than the marks is what makes
         // "one brake, not two" true in code and not only in the comment.
+        const passStartedMs = Date.now()
         const ma = await runMomentumAccountPass(db, { acct, creds, bookCfg: cfg, buildEntrySynth, deps, now, log, marginExhausted, entryBrake, entriesHeld })
+        try { deps.progress?.() } catch { /* a beat never breaks the pass */ }
         // COUNT WHAT WENT OUT, not what the pass called itself (checker,
         // 16-09-2026): the margin-exhausted branch returns `ran: false` AFTER
         // sending its exits, so real closes were reported as zero — which is
@@ -627,7 +634,10 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
         summary.rankExitsDeferred += ma.rankExitsDeferred || 0
         summary.deferredClosed += ma.deferredClosed || 0
         if (ma.ran || ma.exits || ma.entries || ma.rankExitsDeferred) {
-          summary.momentumAccount = { account: accountId, ran: !!ma.ran, entries: ma.entries, exits: ma.exits, rankExitsDeferred: ma.rankExitsDeferred || 0, universe: ma.universe, why: ma.why || null }
+          summary.momentumAccount = { account: accountId, ran: !!ma.ran, entries: ma.entries, exits: ma.exits, rankExitsDeferred: ma.rankExitsDeferred || 0, universe: ma.universe, why: ma.why || null, ms: Date.now() - passStartedMs }
+          // EVERY account's pass, not only the last one's: a single field was
+          // overwritten per account, so the log named one account a night.
+          ;(summary.momentumAccounts ||= []).push(summary.momentumAccount)
         }
         for (const s of ma.skipped || []) summary.skipped.push(`${accountId} ${s}`)
       } catch (err) { summary.skipped.push(`${accountId}: momentum account pass failed — ${err.message}`) }
