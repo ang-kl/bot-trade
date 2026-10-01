@@ -355,6 +355,41 @@ let running = false
  * end-of-pass probe wait (the tick less a second) and the age a landed quote
  * may reach before its turn (one tick) follow unless given explicitly.
  */
+// Bars for the Chandelier reading come from the hour cache only. A miss starts
+// ONE background fetch per symbol and this tick records "bars missing"; the
+// tick never waits on the broker for a reading (02-10-2026).
+const maeBarFetches = new Set()
+function maeBarsFor(symbolId, pos, creds, deps) {
+  const bars = cachedBars(symbolId)
+  if (bars || !creds?.ready || maeBarFetches.has(symbolId)) return bars || null
+  maeBarFetches.add(symbolId)
+  Promise.resolve(deps.ws ?? import('../lib/ctrader-ws.js'))
+    .then(ws => ws.wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, pos.account_id || creds.accountId, symbolId, ['1h'], 40, 8_000, 0, { purpose: 'mae-chandelier-observe' }))
+    .then(got => { if (got?.['1h']) storeBars(symbolId, got['1h']) })
+    .catch(() => { /* the next miss tries again */ })
+    .finally(() => maeBarFetches.delete(symbolId))
+  return null
+}
+
+async function maeChandelierTick(db, s, pos, mid, symbolMap, creds, deps, loopMod) {
+  try {
+    const symbolId = symbolMap[String(pos.symbol || '').toUpperCase()]
+    const bars = symbolId ? maeBarsFor(symbolId, pos, creds, deps) : null
+    const keeper = !bars && symbolId ? readAtrCache(symbolId, '1h') : null
+    const reading = decideAdjust({
+      side: pos.side,
+      entry: Number(pos.entry_price),
+      price: mid,
+      sl: Number(pos.current_sl) || null,
+      bars: bars || keeper?.bars || null,
+    })
+    recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, ...reading }]).catch(() => {})
+    if (reading.adjust && pos.source !== 'external') {
+      await loopMod.executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier')
+    }
+  } catch (err) { console.error('[mae-chandelier-observe] tick row failed:', err?.message || err) }
+}
+
 export async function runFastMonitor(db, creds, deps = {}) {
   if (running) return { skipped: 'busy' }
   running = true
@@ -538,31 +573,6 @@ export async function runFastMonitor(db, creds, deps = {}) {
       }
       lastPriceAt.set(pos.id, { mid, at: quoteAtMs })
 
-      // mae-chandelier: record every priced position. Bars from the hour cache,
-      // else one trendbar fetch. Tighten only, through the account's gateway.
-      try {
-        const symbolId = symbolMap[String(pos.symbol || '').toUpperCase()]
-        let bars = symbolId ? cachedBars(symbolId) : null
-        if (!bars && symbolId && creds?.ready) {
-          const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
-          const got = await ws.wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, pos.account_id || creds.accountId, symbolId, ['1h'], 40, 8_000, 0, { purpose: 'mae-chandelier-observe' })
-          bars = got?.['1h'] || null
-          if (bars) storeBars(symbolId, bars)
-        }
-        const keeper = !bars && symbolId ? readAtrCache(symbolId, '1h') : null
-        const reading = decideAdjust({
-          side: pos.side,
-          entry: Number(pos.entry_price),
-          price: mid,
-          sl: Number(pos.current_sl) || null,
-          bars: bars || keeper?.bars || null,
-        })
-        recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, ...reading }]).catch(() => {})
-        if (reading.adjust && pos.source !== 'external') {
-          await loopMod.executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier')
-        }
-      } catch (err) { console.error('[mae-chandelier-observe] tick row failed:', err?.message || err) }
-
       // applyManagedRules, same as the slow monitor: this evaluator ran the
       // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
       // 0016.HK one minute after HK open — beating the managed trail the
@@ -607,6 +617,12 @@ export async function runFastMonitor(db, creds, deps = {}) {
         s.updatePositionCheck.run('FAST:HOLD', eval_.reason, new Date().toISOString(), 'intact', pos.id)
         // fix-the-exits BB: a cap HOLD carries its stamp (same helper).
         loopMod.stampExitMarks(s, pos, eval_, null)
+        // The Chandelier reading runs only AFTER the exit verdict, and only on
+        // a HOLD (02-10-2026): placed before the verdict it awaited a bar
+        // fetch of up to 8 s per position, and the m7 differential measured
+        // exits up to 5 s later than main. A position that exits this tick
+        // needs no tightened stop.
+        await maeChandelierTick(db, s, pos, mid, symbolMap, creds, deps, loopMod)
         return 0
       }
       // I1: main finishes every position ahead of this one — probe, verdict,

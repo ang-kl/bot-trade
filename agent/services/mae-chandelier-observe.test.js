@@ -70,3 +70,18 @@ test('state write keeps a tighten flag and the heat', async () => {
   assert.equal(saved.positions['242243012'].mayAmend, true)
   assert.equal(saved.positions['242243012'].mae, 18.89)
 })
+
+// 02-10-2026 (№ 10,436): the reading runs AFTER the exit verdict, on a HOLD,
+// and never waits on the broker for bars — placed before the verdict it held
+// every exit up to 8 s (fast-monitor-m7-differential went red: +3.7 s, +5 s).
+test('fast monitor: the Chandelier reading follows the HOLD verdict and its bar fetch is never awaited', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('./fast-monitor.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  const hold = src.indexOf("if (eval_.action === 'HOLD') {")
+  const call = src.indexOf('await maeChandelierTick(db, s, pos, mid, symbolMap, creds, deps, loopMod)')
+  const verdict = src.indexOf('const eval_ = evaluatePosition(pos, {')
+  assert.ok(verdict > 0 && hold > verdict && call > hold, 'the reading sits inside the HOLD branch, after the verdict')
+  assert.equal(src.split('maeChandelierTick(').length - 1, 2, 'one definition, one call site')
+  const helper = src.slice(src.indexOf('function maeBarsFor('), src.indexOf('async function maeChandelierTick('))
+  assert.ok(helper.includes('wsGetTrendbarsBatch') && !/await\s/.test(helper), 'the bar fetch runs in the background')
+})
