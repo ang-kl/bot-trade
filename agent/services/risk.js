@@ -841,10 +841,13 @@ export function marginRateFor(config, symbol) {
  *
  * Returns { usedMargin, cap, headroom, source: 'broker'|'estimate' },
  * or null when balance is unknown (margin checks are skipped then, same
- * as the gate itself).
+ * as the gate itself). A balance the broker answered as 0 is a reading,
+ * not an unknown: the cap is 0, the exposure still held is kept, and the
+ * headroom is never positive — the pool reads it as exhausted. It used to
+ * return null here too, and the gate read `.usedMargin` off that null.
  */
 export function portfolioMarginStatus(db, config, { balance, leverage, openPositions = null, rates = null, accountId = null, nowMs = Date.now() } = {}) {
-  if (!(balance > 0)) return null
+  if (balance == null || !Number.isFinite(balance) || balance < 0) return null
   let usedMargin = null
   let source = 'broker'
   const selected = getState(db, 'ctrader_account_id') || null
@@ -892,7 +895,7 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
   // unproven overlap or treat an unpriceable order as free capacity.
   usedMargin += restingMargin
   const cap = balance * config.maxMarginUsagePct
-  return { usedMargin, cap, headroom: restingUnpriced.length ? 0 : cap - usedMargin, source, brokerSnapshot, restingMargin, restingUnpriced }
+  return { usedMargin, cap, headroom: restingUnpriced.length || balance === 0 ? Math.min(0, cap - usedMargin) : cap - usedMargin, source, brokerSnapshot, restingMargin, restingUnpriced }
 }
 
 /**
@@ -908,7 +911,9 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
  *
  * An account with no balance on record has no status: unknown is NOT
  * exhausted — it is dispatched and judged by the risk gate as before, and
- * sorts after every account with known positive headroom.
+ * sorts after every account with known positive headroom. An account whose
+ * balance was read as 0 is not unknown: it has a status with a 0 cap and is
+ * exhausted, so no entry is dispatched to it.
  */
 export function accountMarginPool(db, config, accountIds, { rates = null } = {}) {
   const out = []
@@ -916,10 +921,10 @@ export function accountMarginPool(db, config, accountIds, { rates = null } = {})
     const accountId = String(id)
     const balance = getAccountBalance(db, accountId)
     const leverageEvidence = getAccountLeverageEvidence(db, accountId)
-    const status = balance > 0
+    const status = balance != null
       ? portfolioMarginStatus(db, config, { balance, leverage: leverageEvidence.value, rates, accountId })
       : null
-    out.push({ accountId, balance: balance > 0 ? balance : null, leverageEvidence, status, exhausted: !!(status && status.headroom <= 0) })
+    out.push({ accountId, balance: balance != null ? balance : null, leverageEvidence, status, exhausted: !!(status && status.headroom <= 0) })
   }
   const key = (p) => p.status ? p.status.headroom : 0
   return out.sort((a, b) => key(b) - key(a))
@@ -2258,6 +2263,14 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   const hasCap = Number.isFinite(reqVol) && reqVol > 0
   let sizingFloor = hasCap ? reqVol : config.minLotSize
   let sizingNote = null
+  // A balance the broker answered as 0 has no budget. Say so here, before
+  // the sizing divides by it: budget / balance was 0 / 0, NaN slipped past
+  // the min-lot comparison, and the margin step then threw on a null status
+  // ("Cannot read properties of null (reading 'usedMargin')", 01-10-2026
+  // 06:19 SGT, the two unfunded live accounts). Thresholds are untouched.
+  if (balance === 0) {
+    return veto(`insufficient_equity balance=0 — account ${acct ?? '(selected)'} has no funds to size against`, checks, proposal)
+  }
   if (balance != null) {
     // Live rates for cross-pair sizing (GBPJPY loss is in JPY; convert via
     // USDJPY from the scan's freshest closes) — the whole watchlist of USD

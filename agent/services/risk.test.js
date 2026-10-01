@@ -2149,3 +2149,50 @@ test('Wave 2: three losing tsmom_long closes do NOT put the account in cooldown;
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /loss_streak_cooldown/)
 })
+
+// ---- A balance the broker answered as 0 (01-10-2026) --------------------
+// The two unfunded live accounts threw "Cannot read properties of null
+// (reading 'usedMargin')" at 06:19 SGT: budget / balance was 0 / 0, the NaN
+// passed the min-lot comparison, and the margin step read a null status.
+
+test('zero balance: the gate refuses with insufficient_equity instead of throwing', t => {
+  const db = freshDB(); t.after(() => db.close())
+  riskAccount(db, '22', 0)
+  let result
+  assert.doesNotThrow(() => { result = evaluateTrade(db, goodProposal({ accountId: '22' }), NO_SYMBOL_COOLDOWN) })
+  assert.equal(result.approved, false)
+  assert.match(result.veto_reason, /^insufficient_equity balance=0/)
+  assert.equal(result.checks.balance, 0)
+})
+
+test('zero balance is a reading: margin status has a 0 cap, keeps held exposure and no positive headroom', t => {
+  const db = freshDB(); t.after(() => db.close())
+  riskAccount(db, '22', 0)
+  const trade = db.prepare("INSERT INTO trades (symbol, side, entry_price, volume, status, account_id) VALUES ('EURUSD', 'BUY', 1.1, 1, 'open', '22')").run().lastInsertRowid
+  db.prepare("INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, status, account_id) VALUES ('EURUSD', ?, 'long', 1.1, 'active', '22')").run(trade)
+  const held = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 0, leverage: 100, accountId: '22' })
+  assert.equal(held.cap, 0)
+  assert.ok(held.usedMargin > 0, 'the exposure still held is kept, not zeroed')
+  assert.ok(held.headroom <= 0)
+  const empty = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 0, leverage: 100, accountId: '33' })
+  assert.equal(empty.headroom, 0, 'nothing held: still no headroom, never a positive one')
+  for (const unknown of [null, undefined, NaN, -1]) {
+    assert.equal(portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: unknown, leverage: 100, accountId: '22' }), null, String(unknown))
+  }
+})
+
+test('zero balance: the margin pool marks the account exhausted; no balance on record stays unknown', async t => {
+  const { accountMarginPool } = await import('./risk.js')
+  const db = freshDB(); t.after(() => db.close())
+  riskAccount(db, 'ZERO', 0)
+  riskAccount(db, 'FUNDED', 10000)
+  const pool = accountMarginPool(db, DEFAULT_RISK_CONFIG, ['ZERO', 'FUNDED', 'UNSTAMPED'])
+  const by = Object.fromEntries(pool.map(p => [p.accountId, p]))
+  assert.equal(by.ZERO.exhausted, true)
+  assert.equal(by.ZERO.balance, 0)
+  assert.equal(by.ZERO.status.cap, 0)
+  assert.equal(by.FUNDED.exhausted, false)
+  assert.equal(by.FUNDED.status.cap, 10000 * DEFAULT_RISK_CONFIG.maxMarginUsagePct, 'funded caps are unchanged')
+  assert.equal(by.UNSTAMPED.status, null)
+  assert.equal(by.UNSTAMPED.exhausted, false)
+})

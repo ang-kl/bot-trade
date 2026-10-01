@@ -2148,6 +2148,23 @@ function marginPoolForCycle(db) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The partial-exit line says what the BROKER did, not what was asked. The
+ * close is floored to the symbol's volume step, so a 50% request on 0.3 lots
+ * closes 0.1 and leaves 0.2 — and the line used to print "closed 50%" over
+ * it (COST.US on …7342, 01-10-2026 03:50 SGT; the statement shows 0.1 closed,
+ * 0.2 left). The requested fraction is kept, labelled as the request.
+ * Exported for tests.
+ */
+export function partialExitSummary({ fraction, closeUnits, totalUnits, lotSize }) {
+  const lots = units => (Number(units) / (Number(lotSize) || 1)).toFixed(2)
+  const executedPct = totalUnits > 0 ? (closeUnits / totalUnits) * 100 : 0
+  const asked = (Number(fraction) * 100).toFixed(0)
+  const executed = executedPct.toFixed(0)
+  const note = executed === asked ? '' : ` (asked ${asked}%, floored to the volume step)`
+  return `closed ${lots(closeUnits)}L of ${lots(totalUnits)}L = ${executed}%${note} · runner ${lots(totalUnits - closeUnits)}L`
+}
+
+/**
  * Which account (and therefore which host) a position must be managed on.
  *
  * AUDIT F-L4-02: this used to read `ctrader_account_id` and `ctrader_is_live`
@@ -2538,7 +2555,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
           })
         }
       }
-      return { summary: `closed ${(fraction * 100).toFixed(0)}% · runner ${remainingLots.toFixed(2)}L` }
+      return { summary: partialExitSummary({ fraction, closeUnits, totalUnits, lotSize: meta.lotSize }) }
     }
 
     return { skipped: true, reason: `unhandled_action:${action}` }
