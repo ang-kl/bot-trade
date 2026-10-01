@@ -25,6 +25,7 @@
 import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
+import { observePosition, recordObserve } from './mae-chandelier-observe.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
 import { cachedAtrForSymbol } from './profit-keeper.js'
@@ -535,6 +536,17 @@ export async function runFastMonitor(db, creds, deps = {}) {
         console.log(`[fast-monitor] ${pos.symbol}: volatility spike detected — fast-tracking checks for ${Math.round(SPIKE_HOLD_MS / 60000)}m`)
       }
       lastPriceAt.set(pos.id, { mid, at: quoteAtMs })
+
+      // mae-chandelier-observe: record only. A throw here must not change the exit.
+      try {
+        const reading = observePosition({
+          side: pos.side,
+          entry: Number(pos.entry_price),
+          price: mid,
+          sl: Number(pos.current_sl) || null,
+        })
+        recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, ...reading }]).catch(() => {})
+      } catch { /* observe-only: never block the tick */ }
 
       // applyManagedRules, same as the slow monitor: this evaluator ran the
       // raw per-symbol ladder until 2026-08-31, when bank_target_4R closed
