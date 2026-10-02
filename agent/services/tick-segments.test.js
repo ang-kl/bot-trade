@@ -700,3 +700,29 @@ test('C·6: syncSegments with `names` pulls exactly the named segment and leaves
     assert.equal(both.pulled, 1); assert.deepEqual(readdirSync(dest2), [NAME_B])
   } finally { s.close() }
 })
+
+// Codex review of #1196 (P2): a NAMED sync must read only the named cache
+// files. Before, `verify` CRC-decoded every cached segment first and applied
+// the name filter after, so a two-segment replay could scan the whole cache.
+test('Codex #1196: a named sync verifies ONLY the named cache files — an unnamed corrupt neighbour is neither read nor reported', async () => {
+  const a = makeSegment(10), b = makeSegment(20, { startedMs: 1_757_548_900_000 })
+  const s = await fakeSidecar({ files: new Map([[NAME_A, a], [NAME_B, b]]), chunkCap: 4096 })
+  const dest = tmp('tick-cache-')
+  try {
+    const corrupt = Buffer.from(a); corrupt[200] = corrupt[200] ^ 0xFF
+    writeFileSync(join(dest, NAME_A), corrupt)
+    writeFileSync(join(dest, NAME_B), b)
+    // cachedSegments with names: only the named file is in the map, the other is not even opened
+    const only = cachedSegments(dest, { verify: true, names: [NAME_B] })
+    assert.deepEqual([...only.keys()], [NAME_B])
+    assert.equal(only.corrupt.length, 0, 'RED if the whole cache is still verified: the corrupt unnamed NAME_A is reported')
+    // a name not in the cache is simply absent
+    assert.deepEqual([...cachedSegments(dest, { verify: true, names: ['seg-1790000000000-000009.tks'] }).keys()], [])
+    // through syncSegments: the named one is present and skipped; the corrupt unnamed one stays untouched on disk
+    const r = await syncSegments(dep(s), dest, { names: [NAME_B] })
+    assert.deepEqual([r.pulled, r.skipped, r.corrupt.length], [0, 1, 0])
+    assert.ok(Buffer.compare(readFileSync(join(dest, NAME_A)), corrupt) === 0, 'the unnamed file is not re-pulled by a named sync')
+    // without names the whole cache is still verified (the old behaviour is kept for the bounded pull)
+    assert.equal(cachedSegments(dest, { verify: true }).corrupt.length, 1)
+  } finally { s.close() }
+})

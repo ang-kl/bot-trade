@@ -57,6 +57,7 @@ import { trialIdFor, importTickTrial, testOpeningsFor, recordTestOpening, settle
 import { loadThresholds, replayChecks, shadowLiveFilters } from './tick-validation.js'
 import { loadRepoSchedule, TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
 import { getState } from '../db.js'
+import { SEGMENT_NAME_RE } from './tick-segments.js'
 import { loadTickEntryConfig } from './tick-permits.js'
 import { permittedSides } from './direction-policy.js'
 import { loadRegimeGateConfig, DEFAULT_MAX_REGIME_AGE_MIN } from './regime-gate.js'
@@ -149,8 +150,14 @@ export function maxSegmentsFrom(body = {}) {
  * never a hardcoded number, because segment sizes are a runtime fact and a
  * refusal that names the wrong number is worse than one that names none.
  */
-/** A sealed segment's file name, as the sidecar lists it (the keeper refuses anything else before a request is made). */
-export const SEGMENT_NAME_RE = /^seg-\d+-\d+\.tks$/
+/**
+ * A sealed segment's file name, as the sidecar lists it (the keeper refuses
+ * anything else before a request is made). Codex review of #1196: the
+ * canonical pattern (13-digit start, 6-digit index) is the sidecar's and the
+ * cache's; a looser one here let `seg-9-1.tks` past `bad_segments` only to
+ * reach a misleading 409, and would sort `seg-10-…` before `seg-9-…`.
+ */
+export { SEGMENT_NAME_RE } from './tick-segments.js'
 export const BAD_SEGMENTS_WHERE = '`segments` names the sealed segments to replay: a non-empty array of distinct seg-<start>-<index>.tks names, at most 64, and not together with `maxSegments` (one bound or the other).'
 
 /**
