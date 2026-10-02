@@ -258,7 +258,7 @@ test('after the canary the accounts are stamped in PARALLEL (the pass is as long
   let overlapped = null
   let release
   const bothStarted = new Promise(res => { release = res })
-  const exec = { ...r.exec, amendPosition: async (c, a) => {
+  const exec = { ...r.exec, amendPosition: async () => {
     started++
     if (started === 2) release()
     const together = await Promise.race([bothStarted.then(() => true), new Promise(res => setTimeout(() => res(false), 300))])
