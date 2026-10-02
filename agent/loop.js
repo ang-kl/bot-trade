@@ -2624,6 +2624,22 @@ export function posTag(pos) {
   return `${pos?.symbol} [${acct} row${pos?.id} ${trade}]`
 }
 
+/**
+ * The broker symbol id for a monitored row: the row's own column when a
+ * caller supplies one, else the account's symbol map (`symbol_id_map`,
+ * keyed by upper-case symbol). '' when neither knows the symbol, so the bar
+ * cache misses rather than throws.
+ */
+export function monitorSymbolIdFor(db, pos) {
+  const own = pos?.symbol_id || pos?.symbolId
+  if (own) return String(own)
+  try {
+    const map = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+    const hit = map[String(pos?.symbol || '').toUpperCase()]
+    return hit == null ? '' : String(hit)
+  } catch { return '' }
+}
+
 export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false) {
   // Managed-exit trail (owner "c1" 25-08-2026; ONE SIMPLE SYSTEM 28-08-2026:
   // "proceed as plan", win-rate goal > 69%): on managed accounts the
@@ -2641,7 +2657,12 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // Timeframe pass: same tighten as the tick. Cached bars only, so this pass
   // does not add a trendbar fetch. External rows are recorded and not amended.
   try {
-    const bars = cachedBars(pos.symbol_id || pos.symbolId || '')
+    // The monitored row carries no symbol id (02-10-2026, № 10,473·B·1):
+    // asked with '' the bar cache always missed, so this pass never had an
+    // ATR and never tightened. The id comes from the account's symbol map,
+    // the same lookup the fast monitor makes.
+    const symbolId = monitorSymbolIdFor(db, pos)
+    const bars = cachedBars(symbolId)
     const reading = decideAdjust({
       side: pos.side,
       entry: Number(pos.entry_price),
@@ -2649,7 +2670,7 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
       sl: Number(pos.current_sl) || null,
       bars,
     })
-    recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, pass: 'timeframe', ...reading }]).catch(() => {})
+    recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, symbolId: symbolId || null, pass: 'timeframe', ...reading }]).catch(() => {})
     if (shouldSendChandelierAdjust(pos, reading)) {
       const outcome = await executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier_timeframe')
       recordAmendReceipt(db, receiptFromBrokerOutcome(pos.id, reading.adjust.newSL, outcome)).catch(() => {})
