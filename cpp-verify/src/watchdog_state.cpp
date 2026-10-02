@@ -366,7 +366,13 @@ void WatchState::evaluate(long long now) {
     const auto& contract = s.get("contract");
     struct Feed { long long newest = 0, grace = 0, streams = 0; jsn::Value detail; };
     std::map<std::string, Feed> feeds;
-    std::set<std::string> feedsInInventory; // every feed with a quote-bearing row, open market or not: an UNKNOWN calendar cannot clear a prior fault
+    // Every feed with a quote-bearing row, and how many of its rows read
+    // CLOSED. An UNKNOWN calendar cannot clear a prior fault, so a feed with
+    // an UNKNOWN or OPEN row stays in the inventory; a feed whose EVERY row
+    // reads CLOSED has no open market to be silent in, and its incident
+    // resolves (Codex review of #1198, P1).
+    std::set<std::string> feedsInInventory;
+    std::map<std::string, std::pair<long long, long long>> feedRows; // feed -> {rows, closed rows}
     for (const auto& raw : contract.get("work").asArray()) {
       auto w = copy(raw);
       // The actual owner supplies progress; Node supplies only the shared
@@ -383,7 +389,8 @@ void WatchState::evaluate(long long now) {
       if (id.empty() || id.size() > 256) continue;
       const auto key = service + ":work:" + id;
       auto d = copy(w); d.set("service", service);
-      if (number(w.get("quoteMaxAgeMs")) > 0) feedsInInventory.insert(service + ":feed:" + w.get("accountId").asString() + ":" + w.get("host").asString());
+      const auto feedKeyOf = service + ":feed:" + w.get("accountId").asString() + ":" + w.get("host").asString();
+      if (number(w.get("quoteMaxAgeMs")) > 0) { feedsInInventory.insert(feedKeyOf); ++feedRows[feedKeyOf].first; }
       // A lost owner produces one service incident. Keep existing work faults
       // open, but do not generate a new incident for every cached position on
       // each failed probe. Independent broker protection findings still run.
@@ -412,6 +419,7 @@ void WatchState::evaluate(long long now) {
       }
       const auto m = market(w, now);
       d.set("marketStatus", m);
+      if (m == "CLOSED" && number(w.get("quoteMaxAgeMs")) > 0) ++feedRows[feedKeyOf].second;
       incident(key + ":calendar", m == "UNKNOWN", "warning", d, now);
       if (m == "UNKNOWN") continue; // cannot clear a prior fault on unknown hours
       const auto due = number(w.get(m == "CLOSED" ? "closedAuditDueMs" : "nextDueMs"));
@@ -462,6 +470,7 @@ void WatchState::evaluate(long long now) {
       feed.detail.set("streams", feed.streams); feed.detail.set("newestQuoteAtMs", feed.newest ? jsn::Value(feed.newest) : jsn::Value()); feed.detail.set("effectiveGraceMs", feed.grace);
       incident(feedKey + ":quote", !fresh(feed.newest, now, feed.grace), "urgent", feed.detail, now);
     }
+    for (const auto& [feedKey, rows] : feedRows) if (rows.first > 0 && rows.second == rows.first) feedsInInventory.erase(feedKey);
     if (!lost) {
       std::vector<std::string> gone;
       for (const auto& [key, value] : incidents_) if (key.starts_with(feedPrefix) && value.get("active").asBool() && !feedsInInventory.contains(key.substr(0, key.size() - 6))) gone.push_back(key);
@@ -541,7 +550,7 @@ jsn::Value WatchState::status(long long now) const {
     {"workCount", static_cast<long long>(row.get("contract").get("work").asArray().size())}});
   for (const auto& [id, row] : incidents_) {
     auto data = row.asObject(); jsn::Object summary;
-    for (const auto field : {"service", "reason", "role", "accountId", "symbolId", "sessionId", "lastCompletedAtMs", "nextDueMs", "marketStatus", "blocker", "missingSl", "missingTp", "effectiveGraceMs", "knownWorkCount"})
+    for (const auto field : {"service", "reason", "role", "accountId", "symbolId", "sessionId", "lastCompletedAtMs", "nextDueMs", "marketStatus", "blocker", "missingSl", "missingTp", "effectiveGraceMs", "knownWorkCount", "streams", "newestQuoteAtMs"})
       summary[field] = row.get("detail").get(field);
     data["detail"] = jsn::Value(std::move(summary)); incidents[id] = jsn::Value(std::move(data));
   }
