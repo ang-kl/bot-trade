@@ -36,7 +36,7 @@ function scenario({ sl }) {
 }
 
 test('a stop below the since-entry Chandelier level is tightened through the broker path (MOVE_SL, source mae_chandelier)', async () => {
-  storeBars(SYMBOL_ID, climbingBars())
+  storeBars('EURUSD', climbingBars())
   const run = await runScenario('branch', scenario({ sl: 1.0950 }))
   const sends = run.obs.actions.filter(a => a.source === 'mae_chandelier')
   assert.ok(sends.length >= 1, `expected a mae_chandelier action, got ${JSON.stringify(run.obs.actions)}`)
@@ -47,7 +47,7 @@ test('a stop below the since-entry Chandelier level is tightened through the bro
 })
 
 test('a stop already above the level is left alone', async () => {
-  storeBars(SYMBOL_ID, climbingBars())
+  storeBars('EURUSD', climbingBars())
   const run = await runScenario('branch', scenario({ sl: 1.1005 }))
   assert.deepEqual(run.obs.actions.filter(a => a.source === 'mae_chandelier'), [])
   assert.ok(run.obs.evaluations.length > 0, 'the position was evaluated')

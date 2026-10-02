@@ -4,6 +4,7 @@ import {
   observePosition, wilderAtr, foldExcursion, recordObserve, observeIntervalMs,
   chandelierSinceEntry, decideAdjust, shouldSendChandelierAdjust, sinceEntryTrailSpec,
   recordAmendReceipt, receiptFromBrokerOutcome, receiptFromTrailMove, OBSERVE_STATE_KEY,
+  heldBarsSince, positionOpenedAtMs, noteMid, freshMid, maeChandelierView,
 } from './mae-chandelier-observe.js'
 
 function barsFrom(closes) {
@@ -50,13 +51,13 @@ test('fold keeps the worst heat and never raises mayAmend', () => {
 test('tighten is allowed only when the since-entry line is tighter and still behind price', () => {
   const bars = barsFrom(Array.from({ length: 30 }, () => 100))
   bars[29] = { h: 110, l: 100, c: 108 }
-  const yes = decideAdjust({ side: 'LONG', entry: 100, price: 120, sl: 90, bars })
+  const yes = decideAdjust({ side: 'LONG', entry: 100, price: 120, sl: 90, bars, openedAtMs: 0 })
   assert.equal(yes.mayAmend, true)
   assert.equal(yes.adjust.action, 'MOVE_SL')
   assert.ok(yes.adjust.sl > 90)
   assert.equal(yes.adjust.newSL, yes.adjust.sl)
   assert.ok(yes.adjust.sl < 120)
-  const no = decideAdjust({ side: 'LONG', entry: 100, price: 95, sl: 90, bars })
+  const no = decideAdjust({ side: 'LONG', entry: 100, price: 95, sl: 99, bars, openedAtMs: 0 })
   assert.equal(no.mayAmend, false)
 })
 test('external is recorded and not sent; missing digits drop the trail spec', () => {
@@ -116,10 +117,10 @@ test('fast monitor: the Chandelier reading follows the HOLD verdict and its bar 
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('./fast-monitor.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
   const hold = src.indexOf("if (eval_.action === 'HOLD') {")
-  const call = src.indexOf('await maeChandelierTick(db, s, pos, mid, symbolMap, creds, deps, loopMod)')
+  const call = src.indexOf('await maeChandelierTick(db, s, pos, mid, routeOf(pos, receipt.accountId), creds, deps, loopMod)')
   const verdict = src.indexOf('const eval_ = evaluatePosition(pos, {')
   assert.ok(verdict > 0 && hold > verdict && call > hold, 'the reading sits inside the HOLD branch, after the verdict')
-  assert.equal(src.split('maeChandelierTick(').length - 1, 2, 'one definition, one call site')
+  assert.equal(src.split('maeChandelierTick(').length - 1, 4, 'one definition, the HOLD call site, and the two no-quote recordings')
   const helper = src.slice(src.indexOf('function maeBarsFor('), src.indexOf('async function maeChandelierTick('))
   assert.ok(helper.includes('wsGetTrendbarsBatch') && !/await\s/.test(helper), 'the bar fetch runs in the background')
 })
@@ -154,3 +155,80 @@ test('a receipt carries what the sidecar confirmed: sent, unchanged, confirmed r
   assert.equal('unchanged' in plain, false)
 })
 
+
+// 03-10-2026 (owner: "fix since-entry first"; "no excuse like incomplete").
+test('since entry uses only the bars that began after the fill, not the whole fetched window', () => {
+  // 30 hourly bars: the first 20 (before the fill) peaked at 150, the last 10 (after it) at 110.
+  const H = 3_600_000
+  const bars = Array.from({ length: 30 }, (_, i) => ({ t: i * H, h: i < 20 ? 150 : 110, l: 100, c: 105 }))
+  const openedAtMs = 19.5 * H
+  assert.equal(heldBarsSince(bars, openedAtMs).length, 10, 'only bars that began after the fill')
+  const r = decideAdjust({ side: 'LONG', entry: 105, price: 120, sl: 90, bars, openedAtMs })
+  // 110 - 3 x ATR must sit below the 22-bar-wide 150 - 3 x ATR the old index-0 cut gave.
+  const old = decideAdjust({ side: 'LONG', entry: 105, price: 120, sl: 90, bars, openedAtMs: -1 })
+  assert.ok(r.chandelierSinceEntry < old.chandelierSinceEntry, `since-entry ${r.chandelierSinceEntry} must be below the whole-window ${old.chandelierSinceEntry}`)
+  assert.equal(r.heldBars, 10)
+})
+
+test('a trade with no completed bar since the fill still gets a level from its own entry and price', () => {
+  const H = 3_600_000
+  const bars = Array.from({ length: 30 }, (_, i) => ({ t: i * H, h: 101, l: 99, c: 100 }))
+  const r = decideAdjust({ side: 'LONG', entry: 100, price: 110, sl: 90, bars, openedAtMs: 40 * H })
+  assert.equal(r.heldBars, 0)
+  assert.ok(r.chandelierSinceEntry > 0 && r.chandelierSinceEntry < 110)
+  assert.equal(r.mayAmend, true, 'level above the 90 stop and below the price')
+  const short = decideAdjust({ side: 'SHORT', entry: 100, price: 90, sl: 110, bars, openedAtMs: 40 * H })
+  assert.equal(short.mayAmend, true)
+  assert.ok(short.adjust.sl > 90 && short.adjust.sl < 110)
+})
+
+test('an unknown open time is named, never guessed, and cannot amend', () => {
+  const bars = barsFrom(Array.from({ length: 30 }, () => 100))
+  const r = decideAdjust({ side: 'LONG', entry: 100, price: 120, sl: 90, bars })
+  assert.equal(r.reason, 'entry_time_unknown')
+  assert.equal(r.mayAmend, false)
+  assert.equal(r.adjust, null)
+})
+
+test('a missing quote is named by market state: closed is expected, open is a counted defect', () => {
+  const closed = decideAdjust({ side: 'LONG', entry: 100, price: null, sl: 90, bars: null, marketOpen: false })
+  assert.equal(closed.reason, 'market_closed')
+  const open = decideAdjust({ side: 'LONG', entry: 100, price: null, sl: 90, bars: null, marketOpen: true })
+  assert.equal(open.reason, 'quote_missing_market_open')
+  assert.equal(decideAdjust({ side: 'LONG', entry: null, price: 100, sl: 90 }).reason, 'entry_price_missing')
+  assert.equal(decideAdjust({ side: '', entry: 100, price: 100, sl: 90 }).reason, 'direction_missing')
+  for (const r of [closed, open]) assert.equal(r.mayAmend, false)
+  const view = maeChandelierView({}, () => JSON.stringify({ positions: { a: { reason: 'quote_missing_market_open' }, b: { reason: 'market_closed' }, c: { reason: 'entry_time_unknown' } } }))
+  assert.equal(view.summary.quoteMissingMarketOpen, 1)
+  assert.equal(view.summary.entryTimeUnknown, 1)
+})
+
+test('open time comes from the trade fill, else the row stamp, as UTC', () => {
+  const db = { prepare: () => ({ get: id => (id === 5 ? { opened_at: '2026-10-02 13:31:00' } : undefined) }) }
+  assert.equal(positionOpenedAtMs(db, { trade_id: 5, created_at: '2026-10-02 15:00:00' }), Date.parse('2026-10-02T13:31:00Z'))
+  assert.equal(positionOpenedAtMs(db, { trade_id: 9, created_at: '2026-10-02 15:00:00' }), Date.parse('2026-10-02T15:00:00Z'))
+  assert.equal(positionOpenedAtMs(db, { created_at: null }), null)
+})
+
+test('the slow pass reads the fast monitor\'s fresh mid before calling a position quote-less', () => {
+  noteMid('p1', 101.5, 1_000)
+  assert.equal(freshMid('p1', 1_000 + 30_000), 101.5)
+  assert.equal(freshMid('p1', 1_000 + 61_000), null, 'older than a minute is not a price')
+  assert.equal(freshMid('never', 1_000), null)
+})
+
+test('wiring: the bar fetch uses the position\'s own host and keys the cache by symbol name', async () => {
+  const { readFileSync } = await import('node:fs')
+  const strip = f => readFileSync(new URL(f, import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  const fast = strip('./fast-monitor.js')
+  const helper = fast.slice(fast.indexOf('function maeBarsFor('), fast.indexOf('async function maeChandelierTick('))
+  assert.ok(helper.includes('wsGetTrendbarsBatch(route.host'), 'the position\'s own host, not the selected account\'s')
+  assert.ok(helper.includes('route.symbolId'), 'the position\'s own symbol id space')
+  assert.ok(helper.includes('console.warn'), 'a failed fetch is logged, not swallowed')
+  assert.equal(fast.split('maeChandelierTick(db, s, pos, null,').length - 1, 2, 'both no-quote paths record a named reading')
+  assert.ok(fast.includes('if (!isPreFill(pos)) await maeChandelierTick(db, s, pos, null, routeOf('), 'the sidecar-priced no-quote path records one')
+  const loop = strip('../loop.js')
+  assert.ok(loop.includes("cachedBars(String(pos.symbol || '').toUpperCase())"), 'the slow pass reads the same name-keyed cache')
+  assert.ok(loop.includes('openedAtMs: positionOpenedAtMs(db, pos)'), 'the slow pass cuts at the open time')
+  assert.ok(fast.includes('openedAtMs: positionOpenedAtMs(db, pos)'), 'the fast pass cuts at the open time')
+})

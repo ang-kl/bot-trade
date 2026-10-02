@@ -18,7 +18,7 @@ import { prepareStatements, monitorOnePosition } from '../loop.js'
 import { runFastMonitor } from './fast-monitor.js'
 import { startStopBrokerModel } from '../test-support/stop-broker-model.js'
 import { setStopPolicy, resetTrailingRegistry, resetStopPolicyStats } from '../lib/stop-policy.js'
-import { storeBars, maeChandelierView, OBSERVE_STATE_KEY } from './mae-chandelier-observe.js'
+import { storeBars, maeChandelierView, OBSERVE_STATE_KEY, noteMid } from './mae-chandelier-observe.js'
 import { invalidateSidecarSession } from '../lib/exec-engine.js'
 import { _seedVolumeMetaForTests } from '../lib/lot-sizing.js'
 
@@ -96,7 +96,7 @@ const settle = () => new Promise(r => setTimeout(r, 60)) // recordObserve / reco
 for (const omittedFlags of ['preserve', 'reset']) {
   test(`fast Chandelier tick (omittedFlags=${omittedFlags}): the stop is tightened AT THE BROKER, Opposite, target kept, receipt confirmed with the policy outcome`, async () => {
     await useModel({ omittedFlags })
-    storeBars(SYMBOL_ID, climbingBars())
+    storeBars('EURUSD', climbingBars())
     const pos = openLong()
     const out = await runFastMonitor(db, { ready: true, host: 'demo.ctraderapi.com', clientId: 'fixture', clientSecret: 'fixture', accessToken: 'fixture', accountId: ACCOUNT, isLive: false }, fastDeps())
     assert.equal(out.error, undefined, JSON.stringify(out))
@@ -123,7 +123,7 @@ for (const omittedFlags of ['preserve', 'reset']) {
 
 test('fast Chandelier tick, stop already tighter than the Chandelier level: nothing is sent and the broker\'s stop is untouched', async () => {
   await useModel()
-  storeBars(SYMBOL_ID, climbingBars())
+  storeBars('EURUSD', climbingBars())
   const pos = openLong({ sl: 1.1005 }) // already tighter than the ~1.0990 level: the reading may not amend
   const before = model.amendRequests().length
   await runFastMonitor(db, { ready: true, host: 'demo.ctraderapi.com', clientId: 'fixture', clientSecret: 'fixture', accessToken: 'fixture', accountId: ACCOUNT, isLive: false }, fastDeps())
@@ -135,7 +135,7 @@ test('fast Chandelier tick, stop already tighter than the Chandelier level: noth
 test('slow-pass timeframe Chandelier: the symbol id comes from the map, the stop is tightened at the broker with the same wire and a confirmed receipt', async () => {
   await useModel()
   setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: SYMBOL_ID }))
-  storeBars(SYMBOL_ID, climbingBars())
+  storeBars('EURUSD', climbingBars())
   const pos = openLong()
   await monitorOnePosition(db, { ...s, selectBrokerContext: s.selectBrokerContext }, pos.row(), QUOTE.bid, null, () => true)
   await settle()
@@ -147,9 +147,39 @@ test('slow-pass timeframe Chandelier: the symbol id comes from the map, the stop
   assert.ok(receipt?.confirmed, `receipt confirmed: ${JSON.stringify(receipt)}`)
 })
 
+test('slow pass with no held price uses the fast monitor\'s fresh mid and still tightens (no "incomplete" excuse)', async () => {
+  await useModel()
+  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: SYMBOL_ID }))
+  storeBars('EURUSD', climbingBars())
+  const pos = openLong()
+  noteMid(pos.id, (QUOTE.bid + QUOTE.ask) / 2, Date.now())
+  await monitorOnePosition(db, { ...s, selectBrokerContext: s.selectBrokerContext }, pos.row(), null, null, () => true)
+  await settle()
+  assert.ok(model.position(pos.bp.positionId).stopLoss > 1.0950, 'tightened from the fast monitor\'s mid')
+})
+
+test('fast monitor with no quote still records a NAMED reading, and sends nothing', async () => {
+  await useModel()
+  storeBars('EURUSD', climbingBars())
+  const pos = openLong()
+  const deps = { ...fastDeps(), ws: { wsProbeSpot: async () => ({ kind: 'empty', reason: 'no price' }), wsGetSpotOnce: async () => null, wsGetTrendbarsBatch: async () => ({ '1h': climbingBars() }) },
+    exec: { sidecarQuotes: async () => ({ feed: 'up', generation: 1, accountId: ACCOUNT, nowMs: T0, count: 0, quotes: [] }) } }
+  const before = model.amendRequests().length
+  const creds = { ready: true, host: 'demo.ctraderapi.com', clientId: 'fixture', clientSecret: 'fixture', accessToken: 'fixture', accountId: ACCOUNT, isLive: false }
+  // The first pass registers the broker probe; the next tick consumes its (empty) answer.
+  await runFastMonitor(db, creds, deps)
+  await settle()
+  await runFastMonitor(db, creds, { ...deps, now: () => T0 + 3_000, monoNow: () => T0 + 3_000 })
+  await settle()
+  const reading = readObserve().positions?.[String(pos.id)]
+  assert.ok(['market_closed', 'quote_missing_market_open'].includes(reading?.reason), `named reason, got ${JSON.stringify(reading?.reason)}`)
+  assert.equal(reading.mayAmend, false)
+  assert.equal(model.amendRequests().length, before, 'no stop moved without a price')
+})
+
 test('a refused policy does not stop the Chandelier tightening, and the receipt records the refusal', async () => {
   await useModel({ refuseFlags: true })
-  storeBars(SYMBOL_ID, climbingBars())
+  storeBars('EURUSD', climbingBars())
   const pos = openLong()
   await runFastMonitor(db, { ready: true, host: 'demo.ctraderapi.com', clientId: 'fixture', clientSecret: 'fixture', accessToken: 'fixture', accountId: ACCOUNT, isLive: false }, fastDeps())
   await settle()

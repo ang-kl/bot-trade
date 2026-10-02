@@ -25,7 +25,7 @@
 import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
-import { recordObserve, decideAdjust, shouldSendChandelierAdjust, recordAmendReceipt, receiptFromBrokerOutcome, cachedBars, storeBars } from './mae-chandelier-observe.js'
+import { recordObserve, decideAdjust, shouldSendChandelierAdjust, recordAmendReceipt, receiptFromBrokerOutcome, cachedBars, storeBars, positionOpenedAtMs, noteMid } from './mae-chandelier-observe.js'
 import { readAtrCache } from './profit-keeper.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
@@ -359,31 +359,54 @@ let running = false
 // ONE background fetch per symbol and this tick records "bars missing"; the
 // tick never waits on the broker for a reading (02-10-2026).
 const maeBarFetches = new Set()
-function maeBarsFor(symbolId, pos, creds, deps) {
-  const bars = cachedBars(symbolId)
-  if (bars || !creds?.ready || maeBarFetches.has(symbolId)) return bars || null
-  maeBarFetches.add(symbolId)
+const maeBarFailures = new Map()
+// Bars are one symbol's price history, so the cache key is the symbol NAME:
+// a broker symbol id is only meaningful inside one account's id space and two
+// accounts can use the same number for different symbols.
+const maeBarKey = pos => String(pos?.symbol || '').toUpperCase()
+function maeBarsFor(route, pos, creds, deps) {
+  const key = maeBarKey(pos)
+  const bars = cachedBars(key)
+  if (bars || !creds?.ready || !route?.symbolId || !route?.host || maeBarFetches.has(key)) return bars || null
+  maeBarFetches.add(key)
   Promise.resolve(deps.ws ?? import('../lib/ctrader-ws.js'))
-    .then(ws => ws.wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, pos.account_id || creds.accountId, symbolId, ['1h'], 40, 8_000, 0, { purpose: 'mae-chandelier-observe' }))
-    .then(got => { if (got?.['1h']) storeBars(symbolId, got['1h']) })
-    .catch(() => { /* the next miss tries again */ })
-    .finally(() => maeBarFetches.delete(symbolId))
+    // The position's OWN host and account id space: the creds' host is the
+    // selected account's side only, and a position on the other side asked
+    // there never got bars (and the failure used to be swallowed).
+    .then(ws => ws.wsGetTrendbarsBatch(route.host, creds.clientId, creds.clientSecret, creds.accessToken, pos.account_id || creds.accountId, route.symbolId, ['1h'], 40, 8_000, 0, { purpose: 'mae-chandelier-observe' }))
+    .then(got => {
+      if (got?.['1h']?.length) { storeBars(key, got['1h']); maeBarFailures.delete(key) }
+      else throw new Error('no 1h bars returned')
+    })
+    .catch(err => {
+      const n = (maeBarFailures.get(key) || 0) + 1
+      maeBarFailures.set(key, n)
+      // First failure and every tenth after it: loud enough to see, not a flood.
+      if (n === 1 || n % 10 === 0) console.warn(`[mae-chandelier-observe] bar fetch failed for ${key} on ${route.host} (${n}x): ${err?.message || err}`)
+    })
+    .finally(() => maeBarFetches.delete(key))
   return null
 }
 
-async function maeChandelierTick(db, s, pos, mid, symbolMap, creds, deps, loopMod) {
+function marketOpenFor(db, pos) {
+  try { return isSymbolOpenCached(db, pos.symbol).open !== false } catch { return null }
+}
+
+async function maeChandelierTick(db, s, pos, mid, route, creds, deps, loopMod) {
   try {
-    const symbolId = symbolMap[String(pos.symbol || '').toUpperCase()]
-    const bars = symbolId ? maeBarsFor(symbolId, pos, creds, deps) : null
-    const keeper = !bars && symbolId ? readAtrCache(symbolId, '1h') : null
+    const bars = maeBarsFor(route, pos, creds, deps)
+    const keeper = !bars && route?.symbolId ? readAtrCache(route.symbolId, '1h') : null
+    noteMid(pos.id, mid)
     const reading = decideAdjust({
       side: pos.side,
       entry: Number(pos.entry_price),
       price: mid,
       sl: Number(pos.current_sl) || null,
       bars: bars || keeper?.bars || null,
+      openedAtMs: positionOpenedAtMs(db, pos),
+      marketOpen: marketOpenFor(db, pos),
     })
-    recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, ...reading }]).catch(() => {})
+    recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, symbolId: route?.symbolId || null, pass: 'fast', ...reading }]).catch(() => {})
     if (shouldSendChandelierAdjust(pos, reading)) {
       const outcome = await loopMod.executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier')
       recordAmendReceipt(db, receiptFromBrokerOutcome(pos.id, reading.adjust.newSL, outcome)).catch(() => {})
@@ -539,6 +562,10 @@ export async function runFastMonitor(db, creds, deps = {}) {
         receipt.lastOutcome = 'quote_unavailable'
         receipt.state = 'quote_unavailable'
         noteFastDecision(db, pos, 'no_quote', `${pos.symbol}: no quote (market closed or feed gap) — checks paused`)
+        // The Chandelier row still records WHY there is no reading (market
+        // closed, or an open market with no quote, which the view counts) and
+        // keeps the bar cache warm for the first quote that does arrive.
+        if (!isPreFill(pos)) await maeChandelierTick(db, s, pos, null, routeOf(pos, receipt.accountId), creds, deps, loopMod)
         return 0
       }
       noteFastDecision(db, pos, 'active')
@@ -623,7 +650,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
         // fetch of up to 8 s per position, and the m7 differential measured
         // exits up to 5 s later than main. A position that exits this tick
         // needs no tightened stop.
-        await maeChandelierTick(db, s, pos, mid, symbolMap, creds, deps, loopMod)
+        await maeChandelierTick(db, s, pos, mid, routeOf(pos, receipt.accountId), creds, deps, loopMod)
         return 0
       }
       // I1: main finishes every position ahead of this one — probe, verdict,
@@ -710,6 +737,8 @@ export async function runFastMonitor(db, creds, deps = {}) {
         if (!(r.kind === 'empty' && decisionState.get(pos.id) === 'probe_backoff')) noteFastDecision(db, pos, 'no_quote', r.kind === 'empty'
           ? `${pos.symbol}: no quote (market closed or feed gap) — checks paused`
           : `${pos.symbol}: no quote (broker probe failed: ${r.reason}) — checks paused`)
+        // Same as the sidecar-priced path: a position with no price still records WHY (market closed, or an open market with no quote).
+        if (!isPreFill(pos)) await maeChandelierTick(db, s, pos, null, { host: w.ctx?.host, symbolId: w.ctx?.symbolId }, creds, deps, loopMod)
       } catch (err) {
         if (probes.head() === w) probes.shift()
         if (e) {

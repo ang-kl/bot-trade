@@ -1045,6 +1045,17 @@ Measurement history — each line is a real run of the script, not a claim:
   after this ledger. All lower bounds. The count is by replies, not by stamps.
   A later re-measure that reads below this line is missing these, not
   correcting them.
+- 2026-10-02 16:26 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,626`), the replies ran on by count through the C·2 snapshot route
+  (#1192, merged), the status `№ 10,645`, the C·2 payload report `№ 10,646`
+  (nothing applied; awaiting the owner's "apply"), the build-order advice
+  `№ 10,647`, the Chandelier status `№ 10,648` and the since-entry diagnosis
+  `№ 10,649`. The owner then ordered the since-entry fix ("no excuse like
+  incomplete"); this PR carries it. The next stamped reply is at least
+  **`№ 10,651`** plus any unstamped line made after this ledger. All lower
+  bounds. The count is by replies, not by stamps. A later re-measure that
+  reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
