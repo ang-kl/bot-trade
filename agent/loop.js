@@ -24,6 +24,8 @@ import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
 import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } from './lib/sessions.js'
+import { runWithClosedMarketHold } from './lib/closed-market-hold.js'
+import { isSymbolOpenCached } from './services/symbol-hours.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from './lib/trade-labels.js'
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
@@ -2777,7 +2779,17 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
       log(`PM ${posTag(pos)}: ${eval_.action} suppressed — Live Tweak & Close is off for ${pos.strategy || 'unlabelled'}`)
       return
     }
-    const outcome = await executeBrokerAction(db, s, pos, eval_)
+    // A close the broker just refused because the market is closed is not sent
+    // again every cycle (lib/closed-market-hold.js): it is held until the
+    // symbol's session opens, or 15 minutes at most. The rule still fires each
+    // cycle; only the send is withheld, so the first cycle after the open sends.
+    const outcome = await runWithClosedMarketHold({
+      pos,
+      action: eval_.action,
+      run: () => executeBrokerAction(db, s, pos, eval_),
+      isOpen: () => isSymbolOpenCached(db, pos.symbol).open === true,
+    })
+    if (outcome.heldClosedMarket) return
     // PR-J stamps, written FROM THE OUTCOME (checker M4). Stamping before the
     // broker answered meant a refused amend (MARKET_CLOSED is routine here) or
     // a partial the broker would not size left the rule disarmed forever: the
@@ -2788,7 +2800,7 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
     let thesisStatus = eval_.action === 'FULL_EXIT' ? 'broken' : 'intact'
     if (outcome.error) {
       reasoning = `${reasoning} | broker_error: ${outcome.error}`
-      log(`PM ${posTag(pos)}: ${eval_.action} FAILED — ${outcome.error}`)
+      log(`PM ${posTag(pos)}: ${eval_.action} FAILED — ${outcome.error}${outcome.closedMarketHeld ? ' (market closed: held until the session opens, retry in 15 min at most)' : ''}`)
     } else if (outcome.skipped) {
       reasoning = `${reasoning} | intent_only: ${outcome.reason}`
       log(`PM ${posTag(pos)}: ${eval_.action} — ${eval_.reason} (intent-only, ${outcome.reason})`)
