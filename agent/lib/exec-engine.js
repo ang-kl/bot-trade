@@ -1155,6 +1155,16 @@ export async function amendPosition(creds, args) {
   let result
   let failure
   try {
+    // policyOnly carries NO stop or target: the sidecar reads the broker's own
+    // and re-sends them with the policy fields. The JS transport cannot do that,
+    // and an amend with neither a stop nor a target would CLEAR both — so a
+    // policyOnly amend has no fallback and no JS path (02-10-2026).
+    if (args.policyOnly === true) {
+      if (execEngineMode() !== 'cpp') throw new Error('amendPosition: policyOnly needs the C++ sidecar (it reads the broker stop itself); no JS path exists')
+      await ensureSidecarSession(creds)
+      result = await sidecar(execBaseFor(creds), 'POST', '/amend', args)
+      return result
+    }
     if (execEngineMode() === 'cpp') {
       result = await withFallback('amend',
         async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/amend', args) },

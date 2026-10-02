@@ -123,6 +123,10 @@ export const CONTROLLERS = {
   // a position that has NONE was the one writer nobody could see running.
   // Now on the fast monitor's 60s band with the other level-4 writers.
   loss_guardian:    { label: 'Loss Guardian',          expectedSec: 60,   factor: 4 },
+  // 02-10-2026: stamps the stop policy (Opposite trigger, broker-side trailing
+  // once profit is locked) onto positions the bot never amends. A canary first,
+  // then at most one stamp per account per pass. See stop-policy-controller.js.
+  stop_policy:      { label: 'Stop policy',            expectedSec: 60,   factor: 4 },
   // Found by the same test, same defect: both beat every loop cycle to a name
   // this registry did not contain, so neither has ever been visible. Neither
   // writes to a position — pending_signals re-checks queued setups against a

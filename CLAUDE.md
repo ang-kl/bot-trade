@@ -948,6 +948,21 @@ Measurement history — each line is a real run of the script, not a claim:
   `get_session` is `max`. All lower bounds. The count is by replies, not by
   stamps. A later re-measure that reads below this line is missing these, not
   correcting them.
+- 2026-10-02 06:35 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,515`), the replies ran on by count through the #1183 PR-1 report
+  `№ 10,516`, the deploy read-back `№ 10,520`, the Railway log read
+  `№ 10,521`, the PR-2 build and the plan for `№ 10,521·B` `№ 10,522`–
+  `№ 10,528` (several unstamped status lines among them), the ask before
+  executing `№ 10,529` (14:18 SGT) and the pre-merge fixes `№ 10,530`
+  (stamped 14:32 SGT, a guessed time: about 14:25 by the clock);
+  `№ 10,531` was stamped 14:55 SGT where the clock read 14:32 (the §2
+  failure, corrected in the open at `№ 10,532`, 14:35 SGT). #1183 (stop-loss policy wire) merged 03:09 UTC and read back
+  clean; PR-2 (the stop-policy controller) is built and gated and is the PR
+  this line rides. The next stamped reply is at least **`№ 10,533`** plus any
+  unstamped line made after this ledger. All lower bounds. The count is by
+  replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

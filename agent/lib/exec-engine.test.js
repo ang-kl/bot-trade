@@ -119,6 +119,17 @@ test('cpp amendPosition: stopContext decides the trailing flag and never reaches
   } finally { setStopPolicy(null) }
 })
 
+test('policyOnly: POST /amend with no stop or target of Node\'s own; a sidecar failure is not retried over the JS transport; js mode refuses it', async () => {
+  await amendPosition(CREDS, { positionId: 7, policyOnly: true, expectedDirection: 1, stopContext: { side: 'BUY', entry: 100, stop: 101 } })
+  assert.deepEqual(JSON.parse(requests[0].body), { positionId: 7, policyOnly: true, expectedDirection: 1, ctidTraderAccountId: 123, stopLossTriggerMethod: 2, trailingStopLoss: true })
+  requests.length = 0
+  // A JS amend with neither a stop nor a target would CLEAR both at the broker.
+  nextResponse = { status: 502, body: JSON.stringify({ errorCode: 'guard_policy_no_stop', description: 'position has no broker stop' }) }
+  await assert.rejects(amendPosition(CREDS, { positionId: 7, policyOnly: true, expectedDirection: 1 }), /guard_policy_no_stop|no broker stop/)
+  delete process.env.EXEC_ENGINE
+  await assert.rejects(amendPosition(CREDS, { positionId: 7, policyOnly: true, expectedDirection: 1 }), /policyOnly needs the C\+\+ sidecar/)
+})
+
 test('cpp pushTrailConfig carries the stop policy block, and omits it when the policy is off (full-replace clears it)', async () => {
   const { pushTrailConfig } = await import('./exec-engine.js')
   const { setStopPolicy } = await import('./stop-policy.js')

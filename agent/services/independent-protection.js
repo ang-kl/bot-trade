@@ -2,6 +2,8 @@ import { getState, setState } from '../db.js'
 import { credsForRegisteredAccount } from '../lib/ctrader-creds.js'
 import { emitBrokerRead } from '../lib/broker-read-observer.js'
 import { beat } from './heartbeat.js'
+import { getStopPolicy, triggerValue, brokerTrigger, brokerTrailing } from '../lib/stop-policy.js'
+import { confirmedAt as stopPolicyConfirmedAt } from './stop-policy-controller.js'
 
 const STATE_KEY = 'independent_protection_json'
 const MAX_AGE_MS = 180_000
@@ -43,6 +45,41 @@ export function misplacedRows(db, status) {
   return out
 }
 
+/**
+ * The stop policy as the VERIFIER reads it (02-10-2026): per account, how many
+ * stops carry the trigger method the policy asks for, how many differ, and how
+ * many the broker does not report. DRIFT is narrow on purpose: a position this
+ * controller got a confirmed answer for more than `graceMs` ago whose broker
+ * trigger now reads a DIFFERENT method. A position not yet stamped, or one whose
+ * trigger the broker does not report, is "unknown" — counted, never alarmed (a
+ * guard that fires on every unstamped position at rollout, or on a field the
+ * broker may not return, would be silenced by its own noise). The trailing flag
+ * is reported but never judged: Spotware's read-back for it has been unreliable.
+ * Pure: it reads the status and two lookups it is handed.
+ */
+export function policyView(status, { desiredTrigger, enabled = true, confirmedAt = () => null, nowMs = Date.now(), graceMs = 10 * 60 * 1000 } = {}) {
+  const out = { enabled, desiredTrigger, accounts: {}, totals: { stops: 0, compliant: 0, differs: 0, unknown: 0, trailing: 0 }, drift: [] }
+  if (!enabled) return out
+  for (const row of status?.accounts || []) {
+    if (!Array.isArray(row?.positions) || row.ok !== true) continue
+    const acct = String(row.accountId)
+    const a = out.accounts[acct] = { stops: 0, compliant: 0, differs: 0, unknown: 0, trailing: 0 }
+    for (const p of row.positions) {
+      if (!(Number(p?.stopLoss) > 0)) continue
+      a.stops++
+      if (brokerTrailing(p) === true) a.trailing++
+      const t = brokerTrigger(p)
+      if (t == null) { a.unknown++; continue }
+      if (t === Number(desiredTrigger)) { a.compliant++; continue }
+      a.differs++
+      const at = confirmedAt(acct, String(p.positionId).replace(/\.0+$/, ''))
+      if (at != null && nowMs - at > graceMs) out.drift.push({ accountId: acct, positionId: String(p.positionId), trigger: t, desired: desiredTrigger })
+    }
+    for (const k of Object.keys(out.totals)) out.totals[k] += a[k]
+  }
+  return out
+}
+
 export function independentProtectionView(db, accountId, nowMs = Date.now()) {
   let state
   try { state = JSON.parse(getState(db, STATE_KEY) || 'null') } catch { /* unknown */ }
@@ -54,10 +91,11 @@ export function independentProtectionView(db, accountId, nowMs = Date.now()) {
   const valid = ['openCount', 'missingSl', 'missingTp'].every(k => Number.isInteger(row?.[k]) && row[k] >= 0)
     && row.missingSl <= row.openCount && row.missingTp <= row.openCount && row.source === 'broker_reconcile'
   const misplaced = (state?.misplaced || []).filter(m => String(m.accountId) === String(accountId))
-  const ok = !readError && row?.ok === true && valid && !stale && misplaced.length === 0
-  return { ...row, ok, stale, ageMs, misplaced, checkedAt: checkedAt > 0 ? new Date(checkedAt).toISOString() : null,
-    error: readError || (!row ? 'No independent broker reading' : !valid ? 'Invalid independent reading' : misplaced.length ? `${misplaced.length} row(s) held by another account per the verifier` : null),
-    summary: !ok ? `UNVERIFIED: ${readError || (stale ? 'reading absent or stale' : misplaced.length ? `${misplaced.length} MISPLACED row(s): ${misplaced.map(m => `${m.symbol} ${m.positionId} held by …${String(m.heldBy).slice(-4)}`).join(', ')}` : 'check failed')}`
+  const policyDrift = (state?.policy?.drift || []).filter(d => String(d.accountId) === String(accountId))
+  const ok = !readError && row?.ok === true && valid && !stale && misplaced.length === 0 && policyDrift.length === 0
+  return { ...row, ok, stale, ageMs, misplaced, policy: state?.policy?.accounts?.[String(accountId)] ?? null, policyDrift, checkedAt: checkedAt > 0 ? new Date(checkedAt).toISOString() : null,
+    error: readError || (!row ? 'No independent broker reading' : !valid ? 'Invalid independent reading' : misplaced.length ? `${misplaced.length} row(s) held by another account per the verifier` : policyDrift.length ? `${policyDrift.length} stop(s) read back with a trigger method other than the policy's` : null),
+    summary: !ok ? `UNVERIFIED: ${readError || (stale ? 'reading absent or stale' : misplaced.length ? `${misplaced.length} MISPLACED row(s): ${misplaced.map(m => `${m.symbol} ${m.positionId} held by …${String(m.heldBy).slice(-4)}`).join(', ')}` : policyDrift.length ? `${policyDrift.length} STOP POLICY DRIFT: ${policyDrift.map(d => `position ${d.positionId} trigger ${d.trigger}`).join(', ')}` : 'check failed')}`
       : `${row.openCount} open; ${row.missingSl} missing SL; ${row.missingTp} missing TP1`,
   }
 }
@@ -194,7 +232,10 @@ export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl
       // № 10,448: Node's open rows against the verifier's independent lists.
       const misplaced = misplacedRows(db, { accounts: rows })
       if (misplaced.length) log(`[independent-protection] MISPLACED ROWS: ${misplaced.map(m => `…${m.accountId.slice(-4)} trade ${m.tradeId} ${m.symbol} position ${m.positionId} is held by …${m.heldBy.slice(-4)}`).join('; ')}`)
-      setState(db, STATE_KEY, JSON.stringify({ ...status, accounts: rows, hostErrors, accountErrors, misplaced, readAt: new Date().toISOString(), error: null }))
+      const sp = getStopPolicy()
+      const policy = policyView({ accounts: rows }, { desiredTrigger: triggerValue(sp), enabled: sp.enabled, confirmedAt: stopPolicyConfirmedAt, nowMs: now() })
+      if (policy.drift.length) log(`[independent-protection] STOP POLICY DRIFT: ${policy.drift.map(d => `…${d.accountId.slice(-4)} position ${d.positionId} trigger ${d.trigger}, policy ${d.desired}`).join('; ')}`)
+      setState(db, STATE_KEY, JSON.stringify({ ...status, accounts: rows, hostErrors, accountErrors, misplaced, policy, readAt: new Date().toISOString(), error: null }))
       for (const row of rows) if (!accountErrors[String(row.accountId)] && !hostErrors[row.host])
         emitBrokerRead({ kind: 'protection', accountId: String(row.accountId), host: row.host, receivedAt: row.checkedAtMs, payload: row })
       // Optional read-only watchdog status. Its failure must not invalidate

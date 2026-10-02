@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import {
   DEFAULT_STOP_POLICY, normaliseStopPolicy, setStopPolicy, getStopPolicy, loadStopPolicy,
   triggerValue, triggerWire, sideDirection, locksProfit, policyFields, applyStopPolicyToAmend,
-  trailConfigPolicy, POLICY_KEY,
+  trailConfigPolicy, POLICY_KEY, noteAmendOutcome, isTrailing, markTrailing, resetTrailingRegistry, loadTrailingRegistry, saveTrailingRegistry, stopTightened, TRAILING_KEY,
 } from './stop-policy.js'
 
 test.beforeEach(() => setStopPolicy(null))
@@ -102,4 +102,52 @@ test('applyStopPolicyToAmend: stamps the fields, strips the instructions, explic
 test('trailConfigPolicy: the /trail-config block, absent when the policy is off', () => {
   assert.deepEqual(trailConfigPolicy(), { stopLossTriggerMethod: 2, trailing: 'on_lock' })
   assert.equal(trailConfigPolicy(normaliseStopPolicy({ enabled: false })), null)
+})
+
+test('the trailing registry: a sent trailing flag marks the position, a refusal, a cooldown strip or an error does not', () => {
+  resetTrailingRegistry()
+  const args = (id) => ({ positionId: id, ctidTraderAccountId: 42, stopLossTriggerMethod: 2, trailingStopLoss: true })
+  noteAmendOutcome({ args: args(1), result: { policy: { applied: true, readback: 'confirmed' } } })
+  noteAmendOutcome({ args: args(2), result: { unchanged: true, policy: { applied: false, readback: 'confirmed' } } })
+  noteAmendOutcome({ args: args(3), result: { policy: { refused: { errorCode: 'X' } } } })
+  noteAmendOutcome({ args: args(4), result: { policy: { skipped: 'cooldown' } } })
+  noteAmendOutcome({ args: args(5), error: new Error('down') })
+  noteAmendOutcome({ args: { positionId: 6, ctidTraderAccountId: 42, stopLossTriggerMethod: 2 }, result: {} })
+  assert.deepEqual([1, 2, 3, 4, 5, 6].map(id => isTrailing(42, id)), [true, true, false, false, false, false])
+  assert.equal(isTrailing('42', '1'), true, 'string and number ids are the same key')
+  assert.equal(isTrailing(43, 1), false, 'another account does not borrow it')
+  resetTrailingRegistry()
+})
+
+test('the trailing registry persists only when dirty and reloads', () => {
+  resetTrailingRegistry()
+  const store = {}
+  const write = (_db, k, v) => { store[k] = v }
+  assert.equal(saveTrailingRegistry({}, write), false, 'clean: nothing written')
+  markTrailing(42, 7)
+  assert.equal(saveTrailingRegistry({}, write), true)
+  assert.equal(saveTrailingRegistry({}, write), false, 'written once')
+  resetTrailingRegistry()
+  assert.equal(loadTrailingRegistry({}, (_db, k) => store[k]), 1)
+  assert.equal(isTrailing(42, 7), true)
+  assert.equal(loadTrailingRegistry({}, () => '{not json'), 0, 'unreadable storage: empty, never a throw')
+  assert.ok(TRAILING_KEY)
+  resetTrailingRegistry()
+})
+
+test('stopTightened: up for a long, down for a short, unknown is not tightened', () => {
+  assert.equal(stopTightened('BUY', 99, 101), true)
+  assert.equal(stopTightened('BUY', 99, 97), false)
+  assert.equal(stopTightened('SELL', 101, 99), true)
+  assert.equal(stopTightened('SELL', 101, 103), false)
+  assert.equal(stopTightened('BUY', 99, 99), false)
+  assert.equal(stopTightened('HOLD', 99, 101), false)
+  assert.equal(stopTightened('BUY', null, 101), false)
+})
+
+test('policyOnly uses the broker stop named in stopContext for the lock rule', () => {
+  const out = applyStopPolicyToAmend({ positionId: 7, policyOnly: true, stopContext: { side: 'BUY', entry: 100, stop: 101 } })
+  assert.equal(out.trailingStopLoss, true)
+  const below = applyStopPolicyToAmend({ positionId: 7, policyOnly: true, stopContext: { side: 'BUY', entry: 100, stop: 95 } })
+  assert.equal('trailingStopLoss' in below, false)
 })

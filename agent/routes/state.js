@@ -29,6 +29,7 @@ import { loadRegimeGateConfig } from '../services/regime-gate.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { loadPulse, pulseFor, PULSE_STATES } from '../services/market-pulse.js'
 import { assetControllersView } from '../services/asset-controllers.js'
+import { stopPolicyControllerView } from '../services/stop-policy-controller.js'
 import { loadArmBar } from '../services/strategy-autopilot.js'
 import { stageMatrixView, loadStageMatrix, stageOverlayKeys, accountStageTallies } from '../services/stage-matrix.js'
 // Aliased: this handler already has a local `overlayKeys` for the RISK
@@ -4647,6 +4648,8 @@ export default function stateRouter(db) {
       wire: { trigger: triggerValue(policy), encoding: policy.encoding },
       trailConfig: trailConfigPolicy(policy),
       ...stopPolicyStats(),
+      // The desired-state pass: canary, hold, tracked positions, the last pass.
+      controller: stopPolicyControllerView(),
     })
   })
 

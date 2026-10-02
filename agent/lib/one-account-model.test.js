@@ -83,6 +83,7 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/broker-history-recorder.js': { reason: 'verify each read observation against its registered broker host; identical recording rules, no risk or order behavior', max: { is_live: 2 } },
   'agent/services/equity-snapshot.js': { reason: 'the nightly equity pass routes each account to its own host (plan §3.1); the record carries no side (the SELECT and the host pick)', max: { is_live: 2 } },
   'agent/services/acting-layer.js': { reason: 'same-side roster filter (plan §3.1)', max: { is_live: 2, isLive: 3 } },
+  'agent/services/stop-policy-controller.js': { reason: 'one credential set reaches one broker host, so the stop-policy pass builds one context per side (as the protection audit does); identical policy on both sides', max: { is_live: 2, isLive: 9 } },
   'agent/services/naked-position-guard.js': { reason: 'route each protection sweep and its in-flight lock to its broker host; identical protection policy on both sides', max: { is_live: 2, isLive: 10, live_str: 1, demo_str: 1 } },
   'agent/services/controller-runtime.js': { reason: 'display the two sidecars and account environment; read-only, no policy gates', max: { is_live: 3, live_str: 2, demo_str: 2 } },
   'agent/services/watchdog-calendar-refresh.js': { reason: 'registeredCalendarAccounts: the one registered-host pick shared by the calendar demand and the calendar coverage read (the SELECT and the host pick); identical refresh policy for every account', max: { is_live: 2 } },
