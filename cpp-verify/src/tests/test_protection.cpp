@@ -15,7 +15,8 @@ int main() {
     }
     assert(type == 2124); // No order-writing payload exists in this session.
     auto payload = jsn::parse(mode == 0
-      ? R"({"ctidTraderAccountId":"22","position":[{"positionId":"7","stopLoss":90,"tradeData":{"symbolId":1}},{"positionId":"8","takeProfit":120}]})"
+      ? R"({"ctidTraderAccountId":"22","position":[{"positionId":"7","stopLoss":90,"stopLossTriggerMethod":2,"trailingStopLoss":true,"tradeData":{"symbolId":1}},{"positionId":"8","takeProfit":120}]})"
+      : mode == 5 ? R"({"ctidTraderAccountId":22,"position":[{"positionId":"9","stopLoss":90,"stopLossTriggerMethod":"DOUBLE_OPPOSITE","trailingStopLoss":false},{"positionId":"10","stopLoss":90,"stopLossTriggerMethod":9,"trailingStopLoss":"yes"}]})"
       : mode == 1 ? R"({"ctidTraderAccountId":11,"position":[]})"
       : mode == 2 ? R"({"ctidTraderAccountId":22})"
       : mode == 3 ? R"({"ctidTraderAccountId":22,"position":[{"positionId":7},{"positionId":7}]})"
@@ -36,6 +37,22 @@ int main() {
   assert(first.get("missingTp").asNumber() == 1);
   assert(first.get("accountId").asString() == "22");
   assert(first.get("checkedAtMs").asNumber() > 0);
+  // 02-10-2026: each row carries the policy read-back, null when the broker
+  // omits it (absent is unknown, never false) or sends something malformed.
+  {
+    auto rows = session->protection(22).get("positions").asArray();
+    assert(rows.size() == 2);
+    assert(rows[0].get("stopLossTriggerMethod").asNumber() == 2);
+    assert(rows[0].get("trailingStopLoss").isBool() && rows[0].get("trailingStopLoss").asBool());
+    assert(rows[1].get("stopLossTriggerMethod").isNull() && rows[1].get("trailingStopLoss").isNull());
+    mode = 5;
+    auto named = session->protection(22).get("positions").asArray();
+    assert(named.size() == 2);
+    assert(named[0].get("stopLossTriggerMethod").asNumber() == 4);
+    assert(named[0].get("trailingStopLoss").isBool() && !named[0].get("trailingStopLoss").asBool());
+    assert(named[1].get("stopLossTriggerMethod").isNull() && named[1].get("trailingStopLoss").isNull());
+    mode = 0;
+  }
   mode = 1; watch.pollOnce();
   assert(!watch.status().get("accounts").asArray()[0].get("ok").asBool());
   mode = 2; watch.pollOnce();

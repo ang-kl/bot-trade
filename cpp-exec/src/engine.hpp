@@ -206,6 +206,9 @@ public:
   // call's own), so the late-frame and heartbeat paths can be exercised in
   // seconds rather than minutes.
   void setHeartbeatIdleMsForTests(int ms) { heartbeatIdleMs_.store(ms); }
+  void clearPolicyCooldownForTests() {
+    std::lock_guard<std::mutex> lk(policyCooldownMtx_); policyCooldownUntilMs_.clear();
+  }
   void setRequestTimeoutMsForTests(int ms) { requestTimeoutOverrideMs_.store(ms); }
   // The in-flight cap for entries and reads (default kMaxInFlightDefault);
   // protection is never capped. Configured from EXEC_MAX_IN_FLIGHT in main.
@@ -242,6 +245,12 @@ private:
   std::mutex protectionLocksMtx_;
   std::map<std::pair<long long, long long>, std::weak_ptr<std::mutex>> protectionLocks_;
   std::shared_ptr<std::mutex> protectionLock(long long accountId, long long positionId);
+  // 02-10-2026: after the broker refuses an amend that carried the stop-loss
+  // policy fields, (account, symbol) is left alone for 6 hours — retrying a
+  // refusing symbol on every ratchet would double every amend. Mutex-guarded.
+  std::mutex policyCooldownMtx_;
+  std::map<std::pair<long long, long long>, long long> policyCooldownUntilMs_;
+  bool policyCooldownActive(long long accountId, long long symbolId);
   // One request in flight: its id, what answers it, and the promise the
   // reader settles. `extraAuth` marks an EXTRA account's ACCOUNT_AUTH so an
   // auth-family rejection there is charged to that account, not the session

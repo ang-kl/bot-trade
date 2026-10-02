@@ -856,16 +856,31 @@ std::shared_ptr<std::mutex> ExecEngine::protectionLock(long long accountId, long
   return ptr;
 }
 
+bool ExecEngine::policyCooldownActive(long long accountId, long long symbolId) {
+  std::lock_guard<std::mutex> lk(policyCooldownMtx_);
+  const auto it = policyCooldownUntilMs_.find({accountId, symbolId});
+  return it != policyCooldownUntilMs_.end() && it->second > nowMs();
+}
+
 EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
   if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
   const auto accountId = protectionId(payload.get("ctidTraderAccountId"));
   const auto positionId = protectionId(payload.get("positionId"));
   if (positionId <= 0) return errResult("guard_no_position", "positionId required", false);
+  // 02-10-2026: the stop-loss policy fields are validated before anything is
+  // read or sent — an invalid value must never reach the broker half-applied.
+  const StopPolicyRequest pol = parseStopPolicy(payload);
+  if (!pol.error.empty()) return errResult("guard_policy_invalid", pol.error, false);
+  const bool policyOnly = payload.get("policyOnly").asBool();
+  if (policyOnly && !pol.any())
+    return errResult("guard_policy_invalid", "policyOnly needs stopLossTriggerMethod or trailingStopLoss", false);
   const auto positionMutex = protectionLock(accountId, positionId);
   std::lock_guard positionLock(*positionMutex);
   // Automatic stop updates never trust the caller's old TP or SL snapshot.
   // No failover bypass: a failed/ambiguous read or amend remains unconfirmed.
-  const bool ratchet = payload.get("ratchetOnly").asBool();
+  // policyOnly is a ratchet-shaped transaction too (fresh broker read, identity
+  // check, rebuilt wire) whose stop comes from the broker, never the caller.
+  const bool ratchet = payload.get("ratchetOnly").asBool() || policyOnly;
   const double stop = payload.get("stopLoss").asNumber();
   const double deadline = payload.get("amendBeforeMs").asNumber();
   const auto expired = [&] { return deadline > 0 && nowMs() > deadline; };
@@ -887,8 +902,19 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
   };
   BrokerProtection before;
   jsn::Value wire = payload;
+  bool stamp = false;           // an amend that only carries policy, at the broker's own stop
+  double confirmStop = stop;    // the floor the after-read must show
+  bool cooldown = false;        // policy fields stripped for a refusing symbol
+  long long policySymbol = static_cast<long long>(
+      payload.get("expectedSymbolId").asNumber(payload.get("symbolId").asNumber(0)));
+  const auto policyResult = [&](const jsn::Value& protectionResult, bool applied, const std::string& readback,
+                                const jsn::Value& refused) {
+    jsn::Value out = protectionResult;
+    out.set("policy", policyBlock(pol, applied, readback, refused, cooldown ? "cooldown" : ""));
+    return out;
+  };
   if (ratchet) {
-    if (!std::isfinite(stop) || stop <= 0 || expired())
+    if (!policyOnly && (!std::isfinite(stop) || stop <= 0 || expired()))
       return errResult("guard_ratchet_intent", "invalid stop or expired quote", false);
     auto read = readProtection(before);
     if (!read.ok) return read;
@@ -897,15 +923,37 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
     if ((expectedDir != 1 && expectedDir != -1) || expectedDir != before.dir ||
         (expectedSymbol > 0 && expectedSymbol != before.symbolId))
       return errResult("guard_ratchet_identity", "broker position direction/symbol mismatch", false);
+    policySymbol = before.symbolId;
     if (payload.get("requireTakeProfit").asBool() && before.tp <= 0)
       return errResult("guard_ratchet_target", "broker TP1 missing", false);
-    if (stopAtLeastAsTight(before.sl, stop, before.dir))
-      return {true, confirmedProtection(before, true), false};
+    cooldown = pol.any() && policyCooldownActive(accountId, policySymbol);
+    const bool tightEnough = !policyOnly && stopAtLeastAsTight(before.sl, stop, before.dir);
+    if (policyOnly || tightEnough) {
+      // policyOnly never invents a stop; and a tight-enough ratchet that needs
+      // no policy is today's early return.
+      if (policyOnly && before.sl <= 0)
+        return errResult("guard_policy_no_stop", "position has no broker stop; policy is never stamped onto a missing stop", false);
+      const bool needs = pol.any() && !policyAlreadyApplied(pol, before);
+      if (!needs || cooldown) {
+        // Nothing to apply, or the symbol is cooling off after a refusal: a
+        // stamp without its fields would be a pointless amend, so none is sent.
+        auto res = confirmedProtection(before, true);
+        if (pol.any()) res = policyResult(res, false, policyReadback(pol, before), jsn::Value(nullptr));
+        return {true, res, false};
+      }
+      stamp = true;
+      confirmStop = before.sl;
+    }
     wire = jsn::Value{jsn::Object{}};
     wire.set("ctidTraderAccountId", accountId);
     wire.set("positionId", positionId);
-    wire.set("stopLoss", stop);
+    wire.set("stopLoss", stamp ? before.sl : stop);
     if (before.tp > 0) wire.set("takeProfit", before.tp);
+    if (pol.trigger > 0 && !cooldown) wire.set("stopLossTriggerMethod", pol.triggerWire);
+    if (pol.hasTrailing && !cooldown) wire.set("trailingStopLoss", pol.trailing);
+  } else if (pol.any()) {
+    cooldown = policyCooldownActive(accountId, policySymbol);
+    if (cooldown) wire = withoutPolicyFields(wire);
   }
   // The kill switch freezes everything except REDUCING risk: closes and
   // cancels stay allowed, but an amend can widen a stop — during a halt that
@@ -920,16 +968,48 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
   }
   // No engine lock: the request is a future, and a protection request must
   // never queue behind an entry's wait for the broker.
-  if (ratchet && expired()) return errResult("guard_ratchet_expired", "quote expired before amend", false);
+  if (ratchet && !policyOnly && expired()) return errResult("guard_ratchet_expired", "quote expired before amend", false);
   EngineResult r = request(pt::AMEND_POSITION_SLTP_REQ, wire, pt::EXECUTION_EVENT, 15000, RequestClass::Protection);
+  const bool carries = !wire.get("stopLossTriggerMethod").isNull() || !wire.get("trailingStopLoss").isNull();
+  bool applied = r.ok && carries;
+  jsn::Value refused{nullptr};
+  if (!r.ok && r.brokerError && carries) {
+    // REFUSAL FALLBACK (02-10-2026): the broker answered with an error frame
+    // to an amend carrying the policy fields — it may not support them for
+    // this symbol. Retry ONCE with the identical wire minus those fields, so
+    // the stop itself still lands; a transport/timeout/guard failure is not a
+    // refusal and is returned as-is.
+    jsn::Value info{jsn::Object{}};
+    info.set("errorCode", r.body.get("errorCode"));
+    info.set("description", r.body.get("description"));
+    if (ratchet && !policyOnly && expired()) return r;
+    EngineResult retry = request(pt::AMEND_POSITION_SLTP_REQ, withoutPolicyFields(wire), pt::EXECUTION_EVENT,
+                                 15000, RequestClass::Protection);
+    if (!retry.ok) {
+      if (ring_) ring_->log("engine", "amend_reject", accountId, policySymbol, retry.body.get("errorCode").asString());
+      return retry;
+    }
+    {
+      std::lock_guard<std::mutex> lk(policyCooldownMtx_);
+      policyCooldownUntilMs_[{accountId, policySymbol}] = nowMs() + 6LL * 3600 * 1000;
+    }
+    r = retry;
+    applied = false;
+    refused = info;
+  }
   if (ratchet && r.ok) {
     BrokerProtection after;
     auto read = readProtection(after);
     if (!read.ok) return read;
     if (after.dir != before.dir || after.symbolId != before.symbolId ||
-        !stopAtLeastAsTight(after.sl, stop, before.dir) || after.tp != before.tp)
+        !stopAtLeastAsTight(after.sl, confirmStop, before.dir) || after.tp != before.tp)
       return errResult("guard_ratchet_unconfirmed", "broker read-back did not confirm SL and preserved TP", false);
+    // The stop level is what is confirmed; a policy mismatch or an unreadable
+    // field is REPORTED, never a failure (the trailing read-back may be absent).
     r.body = confirmedProtection(after, false);
+    if (pol.any()) r.body = policyResult(r.body, applied, policyReadback(pol, after), refused);
+  } else if (!ratchet && r.ok && pol.any()) {
+    r.body.set("policy", policyBlock(pol, applied, applied ? "unverified" : "none", refused, cooldown ? "cooldown" : ""));
   }
   // Amends never had telemetry (it covers placeOrder only, a measured gap) —
   // the ring is where amend outcomes become inspectable.
