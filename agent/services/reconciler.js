@@ -306,6 +306,24 @@ export function reconcileReplyIdentity(reply, accountId) {
   return { ok: true, replyAccount: got, verified: true, reason: null }
 }
 
+/**
+ * The same identity check as a throwing guard, for the reads that are not the
+ * main loop's two reconcile passes (the exit-volume snapshot and the manual
+ * routes, 02-10-2026). A reply naming ANOTHER account must never be read as
+ * this account's positions: those reads CLOSE and ADD to what they find.
+ * Returns the verdict when the reply is acceptable (including "unverifiable").
+ */
+export function assertReconcileIdentity(reply, accountId, where = 'reconcile') {
+  const identity = reconcileReplyIdentity(reply, accountId)
+  if (!identity.ok) {
+    const err = new Error(`${where}: reconcile identity refused: ${identity.reason}`)
+    err.code = 'RECONCILE_IDENTITY_REFUSED'
+    err.replyAccount = identity.replyAccount
+    throw err
+  }
+  return identity
+}
+
 export function reconcilePositions(db, brokerPositions, brokerOrders, setState, opts = {}) {
   const selected = getState(db, 'ctrader_account_id') || null
   const acct = opts.accountId != null ? String(opts.accountId) : selected

@@ -40,7 +40,7 @@ import { isProducerRetired } from './lib/entry-producers.js'
 import { admitEntry } from './services/entry-mode.js'
 import { configureInflight, inflightSummary, describeCall, maybeStamp as maybeStampInflight } from './lib/inflight.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
-import { reconcilePositions, reconcileReplyIdentity } from './services/reconciler.js'
+import { reconcilePositions, reconcileReplyIdentity, assertReconcileIdentity } from './services/reconciler.js'
 import { reconcileCrossSideAccounts } from './services/cross-side-reconcile.js'
 import { checkRegimeGate, latestRegime } from './services/regime-gate.js'
 import { recordRegimeBlock, recordEvidenceShadow, recordMarketHoursUnknown } from './services/gate-skips.js'
@@ -2430,6 +2430,10 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
     const brokerSnapshot = async () => {
       try {
         const rec = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
+        // A reply naming another account is not this account's snapshot: the
+        // close volume below comes from it. Refused, the caller falls back to
+        // the computed volume exactly as for an unreadable snapshot.
+        assertReconcileIdentity(rec, accountId, 'exit snapshot')
         return { ok: true, positions: rec.position || [] }
       } catch { return { ok: false, positions: [] } }
     }

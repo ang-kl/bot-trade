@@ -1523,7 +1523,7 @@ test('a position another account holds OPEN is not adopted — refused, counted,
 
 test('the loop guards BOTH reconcile call sites with the identity check (wiring pin, comments stripped)', () => {
   const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
-  assert.ok(src.includes("import { reconcilePositions, reconcileReplyIdentity } from './services/reconciler.js'"))
+  assert.ok(src.includes("import { reconcilePositions, reconcileReplyIdentity, assertReconcileIdentity } from './services/reconciler.js'"))
   const calls = src.split('reconcileReplyIdentity(').length - 1
   assert.equal(calls, 2, 'the selected-account site and the per-account site')
   assert.ok(/const identity = reconcileReplyIdentity\(reconcileData, accountId\)[\s\S]{0,1200}throw new Error\(`reconcile identity refused/.test(src), 'the selected-account site refuses the whole pass')
