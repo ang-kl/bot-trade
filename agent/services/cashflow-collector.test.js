@@ -199,3 +199,40 @@ test('collection cannot reach beyond retention or relabel an older currency regi
   const next = nextCashflowWindow(db, { accountId: '11', host, currency: 'USD', now: T + 1000 })
   assert.equal(next.from, T - 120_000)
 })
+
+// ---------------------------------------------------------------------------
+// 02-10-2026: the window scans read the covering summary index. A bare
+// json_extract(observation_json, '$.currency') could not use it, so SQLite
+// parsed the ~2 KB JSON of every retained row, 27.1 s of the first loop's
+// 69.6 s scan phase at boot (CPU profile, starting,scan,monitor).
+// ---------------------------------------------------------------------------
+import { CASHFLOW_WINDOW_SQL } from './cashflow-collector.js'
+
+test('both window scans are answered from the covering summary index, not from the observation rows', t => {
+  const { db, account } = fixture(t)
+  account('11')
+  const args = { changed: ['11', 0, T + 1, host, 'USD'], span: ['11', host, 0, T + 1, 'USD'] }
+  for (const key of ['changed', 'span']) {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${CASHFLOW_WINDOW_SQL[key]}`).all(...args[key]).map(r => r.detail).join(' | ')
+    assert.match(plan, /COVERING INDEX idx_account_history_summary/, `${key}: ${plan}`)
+    assert.doesNotMatch(plan, /\bSCAN account_history\b(?! USING)/, `${key} must not scan the table: ${plan}`)
+  }
+})
+
+test('the plan check can tell a covering scan from a drifted spelling (which still uses the index but reads every row)', t => {
+  const { db } = fixture(t)
+  const drifted = CASHFLOW_WINDOW_SQL.span.replaceAll(/CASE WHEN json_valid\(observation_json\) THEN json_extract\(observation_json, '\$\.currency'\) END/g, "json_extract(observation_json,'$.currency')")
+  assert.notEqual(drifted, CASHFLOW_WINDOW_SQL.span, 'the expression was present to drift')
+  const plan = db.prepare(`EXPLAIN QUERY PLAN ${drifted}`).all('11', host, 0, T, 'USD').map(r => r.detail).join(' | ')
+  assert.doesNotMatch(plan, /COVERING INDEX/, 'the check above can tell a covering plan from a non-covering one')
+})
+
+test('a malformed observation row reads as no currency and never throws', t => {
+  const { db, account } = fixture(t)
+  account('11')
+  db.prepare(`INSERT INTO account_history (account_id, host, source, bucket_ms, received_ms, observation_json) VALUES ('11', ?, 'nightly_equity', ?, ?, 'not json')`)
+    .run(host, T - 30_000, T - 30_000)
+  let next
+  assert.doesNotThrow(() => { next = nextCashflowWindow(db, { accountId: '11', host, currency: 'USD', now: T + 1000 }) })
+  assert.equal(next.from, T - 120_000, 'the valid rows still define the window')
+})
