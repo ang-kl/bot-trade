@@ -1097,6 +1097,15 @@ Measurement history — each line is a real run of the script, not a claim:
   any unstamped line made after this ledger. All lower bounds. The count is
   by replies, not by stamps. A later re-measure that reads below this line
   is missing these, not correcting them.
+- 2026-10-02 19:23 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,671`), the replies ran on through #1197 (Codex's two findings on
+  #1196, merged 96ec17ce) and the C·3 verifier change this PR carries (quote
+  liveness judged per feed; the dispose of the held backlog left to the
+  owner), with unstamped status lines between. The next stamped reply is at
+  least **`№ 10,676`** plus any unstamped line made after this ledger. All
+  lower bounds. The count is by replies, not by stamps. A later re-measure
+  that reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

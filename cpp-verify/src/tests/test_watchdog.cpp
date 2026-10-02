@@ -158,7 +158,8 @@ int main() {
     a.set("lastCompletedAtMs", T + 65000); a.set("nextDueMs", T + 68000); healthy(s, {a, b}, T + 65000);
     assert(!active(s, "node:work:one:stalled"));
     a.set("quoteMaxAgeMs", 10000); a.set("lastQuoteAtMs", T); healthy(s, {a, b}, T + 66000);
-    assert(active(s, "node:work:one:quote"));
+    // C·3: liveness is judged per FEED (account, host) against the role's grace, not per stream against the strategy's gap parameter
+    assert(active(s, "node:feed:11:demo.ctraderapi.com:quote")); assert(!active(s, "node:work:one:quote"));
   }
   {
     verify::WatchState s; auto w = work("scan", "scanner"); w.set("outcome", "no_signal");
@@ -195,10 +196,10 @@ int main() {
     assert(!active(s, "cpp-exec:work:quote:calendar"));
     s.probe("node", false, {}, T + 1);
     c.set("observedAtMs", T + 90000); s.probe("cpp-exec", true, c, T + 90000); s.evaluate(T + 90000);
-    assert(active(s, "cpp-exec:work:quote:quote")); assert(active(s, "cpp-exec:work:reconcile:stalled"));
+    assert(active(s, "cpp-exec:feed:11:demo.ctraderapi.com:quote")); assert(active(s, "cpp-exec:work:reconcile:stalled"));
     assert(!active(s, "cpp-exec:work:quote:calendar")); // original verified calendar survives Node loss
     c.set("observedAtMs", T + 86400001); s.probe("cpp-exec", true, c, T + 86400001); s.evaluate(T + 86400001);
-    assert(active(s, "cpp-exec:work:quote:calendar")); assert(active(s, "cpp-exec:work:quote:quote")); // expiry cannot clear it
+    assert(active(s, "cpp-exec:work:quote:calendar")); assert(active(s, "cpp-exec:feed:11:demo.ctraderapi.com:quote")); // expiry cannot clear it
   }
   {
     verify::WatchState s; auto accepted = work("limit", "intent"), missing = work("lost", "intent");
@@ -260,9 +261,47 @@ int main() {
     healthy(s, {w}, T + 124000);
     assert(!active(s, "node:work:ticks:stalled"));
     assert(!active(s, "node:work:ticks:deadline_unknown"));
-    assert(active(s, "node:work:ticks:quote"));
+    assert(active(s, "node:feed:11:demo.ctraderapi.com:quote")); assert(!active(s, "node:work:ticks:quote"));
     w.set("pending", 1); healthy(s, {w}, T + 125000);
     assert(active(s, "node:work:ticks:deadline_unknown"));
+  }
+  {
+    // C·3 (03-10-2026): the feed-level quote rule. Two scanner streams on one
+    // feed: one quiet symbol is not a fault while the other ticks; a stream
+    // silent beyond streamQuoteSilenceMs is a warning on that stream; the
+    // feed is urgent only when EVERY stream on it is silent beyond the grace.
+    verify::WatchState s;
+    auto a = work("a", "scanner"), b = work("b", "scanner");
+    for (auto* w : {&a, &b}) { w->set("state", "waiting_for_quote"); w->set("pending", 0); w->set("nextDueMs", Value()); w->set("quoteMaxAgeMs", 60000); }
+    a.set("lastQuoteAtMs", T); b.set("lastQuoteAtMs", T + 299000);
+    healthy(s, {a, b}, T + 300000); // a silent 5 min, b ticked a second ago
+    assert(!active(s, "node:feed:11:demo.ctraderapi.com:quote")); // RED if liveness is still per stream
+    assert(!active(s, "node:work:a:quote")); // 5 min < streamQuoteSilenceMs (10 min): no warning yet
+    b.set("lastQuoteAtMs", T + 600000); healthy(s, {a, b}, T + 601000); // a silent 10 min + 1 s, b fresh
+    assert(active(s, "node:work:a:quote")); assert(!active(s, "node:work:b:quote"));
+    assert(s.snapshot().get("incidents").get("node:work:a:quote").get("severity").asString() == "warning");
+    assert(!active(s, "node:feed:11:demo.ctraderapi.com:quote"));
+    // every stream silent 90 s: beyond the strategy's 60 s gap parameter but inside the scanner grace (120 s) — not a feed fault
+    a.set("lastQuoteAtMs", T + 611000); b.set("lastQuoteAtMs", T + 611000); healthy(s, {a, b}, T + 701000);
+    assert(!active(s, "node:feed:11:demo.ctraderapi.com:quote")); // RED if the feed grace is the gap parameter alone
+    // every stream silent beyond the scanner grace (120 s): the feed is urgent, once, per feed
+    auto c = work("c", "scanner"); c.set("accountId", "22"); c.set("state", "waiting_for_quote"); c.set("pending", 0); c.set("nextDueMs", Value());
+    c.set("quoteMaxAgeMs", 60000); c.set("lastQuoteAtMs", T + 740000);
+    healthy(s, {a, b, c}, T + 740000);
+    assert(active(s, "node:feed:11:demo.ctraderapi.com:quote"));
+    assert(s.snapshot().get("incidents").get("node:feed:11:demo.ctraderapi.com:quote").get("severity").asString() == "urgent");
+    assert(s.snapshot().get("incidents").get("node:feed:11:demo.ctraderapi.com:quote").get("detail").get("streams").asNumber() == 2);
+    assert(!active(s, "node:feed:22:demo.ctraderapi.com:quote")); // the other feed ticks
+    // a feed that leaves the inventory resolves its own incident, like a retired work id
+    healthy(s, {c}, T + 741000);
+    assert(!active(s, "node:feed:11:demo.ctraderapi.com:quote")); // RED if the retirement pass is removed
+    assert(!active(s, "node:work:a:quote"));
+    // the silence threshold is policy
+    verify::WatchPolicy p; p.streamQuoteSilenceMs = 30000;
+    verify::WatchState t(p);
+    // the threshold is max(the strategy's own quoteMaxAgeMs, streamQuoteSilenceMs): 60 s here, not the default 10 min
+    a.set("lastQuoteAtMs", T); b.set("lastQuoteAtMs", T + 61000); healthy(t, {a, b}, T + 61000);
+    assert(active(t, "node:work:a:quote")); assert(!active(t, "node:feed:11:demo.ctraderapi.com:quote"));
   }
   {
     verify::WatchState s;

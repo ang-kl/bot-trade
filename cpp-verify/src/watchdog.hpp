@@ -10,6 +10,13 @@ struct WatchPolicy {
   long long probeMs = 15000, serviceGraceMs = 60000;
   long long managementGraceMs = 60000, scannerGraceMs = 120000, noOrdersMs = 300000;
   long long repeatMs = 3600000;
+  // C·3 (03-10-2026): a single stream silent this long in an OPEN market is a
+  // WARNING; feed liveness (any stream on the feed ticking within the role's
+  // grace) is the urgent question. The strategy's own `quoteMaxAgeMs` (60 s
+  // by default) is its gap rule, not a liveness threshold: judged per stream
+  // it raised 244 urgent incidents on quiet symbols in a week (344 would-send
+  // messages an hour against a 240 ceiling, measured 02-10 18:47-19:00Z).
+  long long streamQuoteSilenceMs = 600000;
   // V3 CV-2 (OD-10): the muted soak. Not configurable from the environment:
   // a knob that shortens the soak is a knob that skips it.
   long long soakMs = 86400000;

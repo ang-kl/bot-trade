@@ -74,7 +74,7 @@ void Watchdog::start() {
     bool valid = config && config->isObject();
     if (valid) {
       std::map<std::string, long long*> fields{{"probeMs", &policy.probeMs}, {"serviceGraceMs", &policy.serviceGraceMs},
-        {"managementGraceMs", &policy.managementGraceMs}, {"scannerGraceMs", &policy.scannerGraceMs}, {"noOrdersMs", &policy.noOrdersMs}, {"repeatMs", &policy.repeatMs}};
+        {"managementGraceMs", &policy.managementGraceMs}, {"scannerGraceMs", &policy.scannerGraceMs}, {"noOrdersMs", &policy.noOrdersMs}, {"repeatMs", &policy.repeatMs}, {"streamQuoteSilenceMs", &policy.streamQuoteSilenceMs}};
       for (const auto& [key, value] : config->asObject()) {
         if (key == "accountGraceMs") {
           if (!value.isObject() || value.asObject().size() > 128) { valid = false; break; }
