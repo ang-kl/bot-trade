@@ -620,3 +620,33 @@ test('V3 M5: the keeper\'s SL ratchet is timed in the amend-latency ring, payloa
   assert.deepEqual([amends[0].path, amends[0].source, amends[0].positionId, amends[0].account, amends[0].outcome],
     ['profit_keeper', 'profit_keeper', '9001', '…1', 'ok'])
 })
+
+// ---------------------------------------------------------------------------
+// The since-entry Chandelier spec reaches the TrailEngine on a MANAGED
+// account (owner decision № 10,474, 02-10-2026). The fence still keeps the
+// keeper's own decisions off the row; only the spec push passes it. Before
+// this, `kept` was empty on every registered account and the pass returned
+// before /trail-config — 0 push lines in 47 production passes.
+// ---------------------------------------------------------------------------
+
+test('managed account: the decision step is fenced, the since-entry spec is still pushed', async () => {
+  const db = mkManagedKeeperDb({ managedOn: true })
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, scope: 'external', mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22, armProfitUsd: 50, givebackPct: 40 }))
+  const bars = Array.from({ length: 40 }, () => ({ h: 2.95, l: 2.90, c: 2.92 })) // ATR 0.05
+  let pushed = null
+  const deps = keeperDeps()
+  deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': bars })
+  deps.exec.amendPosition = async () => { throw new Error('the fence must keep the keeper from amending') }
+  deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+  const out = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+  assert.equal(out.managedSkipped, 1, 'the fence still counts the row')
+  assert.equal(out.checked, 0, 'the fence still keeps the keeper decision off the row')
+  assert.equal(out.slMoves, 0)
+  assert.ok(Array.isArray(pushed) && pushed.length === 1, `expected one spec, got ${JSON.stringify(pushed)}`)
+  assert.equal(pushed[0].source, 'mae_chandelier_since_entry')
+  assert.equal(pushed[0].positionId, 9001)
+  assert.equal(pushed[0].dir, -1)
+  assert.equal(pushed[0].digits, 3, 'digits come from getVolumeMeta even though the decision step never ran')
+  assert.ok(Math.abs(pushed[0].trailDistance - 0.15) < 1e-9, '3 × ATR')
+  assert.equal(out.trailPushed, 1)
+})

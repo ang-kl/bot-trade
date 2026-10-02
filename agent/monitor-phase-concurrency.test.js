@@ -154,3 +154,39 @@ test('monitorOnePosition stamps a HOLD the time cap decided (stop already past b
   assert.match(row.last_check_reasoning, /time_cap_held/)
   assert.ok(row.time_cap_trail_at, 'the slow monitor stamps the hold in the DB')
 })
+
+// ---------------------------------------------------------------------------
+// The timeframe Chandelier pass reads bars under the ACCOUNT'S symbol id
+// (02-10-2026, № 10,473·B·1). The monitored row carries no symbol id; before
+// this the pass asked the bar cache for '' and never had an ATR.
+// ---------------------------------------------------------------------------
+import { storeBars } from './services/mae-chandelier-observe.js'
+import { setState, getState } from './db.js'
+
+test('timeframe Chandelier pass resolves the symbol id from the map and reads a tightening level', async () => {
+  const db = mkDb()
+  const s = { ...mkStmts(db), selectBrokerContext: { get: () => ({}) } }
+  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 7 }))
+  // 40 hourly bars climbing to 1.1200 with a 0.0010 range → ATR ≈ 0.0010,
+  // since-entry level ≈ 1.1200 − 0.0030 = 1.1170: above the 1.1010 stop,
+  // below the 1.1200 price.
+  const bars = Array.from({ length: 40 }, (_, i) => { const c = 1.1000 + i * 0.0005; return { h: c + 0.0005, l: c - 0.0005, c } })
+  storeBars(7, bars)
+  const id = db.prepare(`
+    INSERT INTO monitored_positions
+      (symbol, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status, strategy, created_at)
+    VALUES ('EURUSD', 'BUY', 1.1000, 1.1010, NULL, 'x', 0.0050, 'autopilot', 'active', 'fib_618_fade', datetime('now', '-2 hours'))
+  `).run().lastInsertRowid
+  const pos = db.prepare('SELECT * FROM monitored_positions WHERE id = ?').get(id)
+  assert.equal(pos.symbol_id, undefined, 'the fixture row carries no symbol id — that is the defect')
+  await monitorOnePosition(db, s, pos, 1.1200, null, () => true)
+  await new Promise(r => setTimeout(r, 50)) // recordObserve is fire-and-forget
+  const state = JSON.parse(getState(db, 'mae_chandelier_observe_json') || '{}')
+  const reading = state.positions?.[String(id)]
+  assert.ok(reading, 'the pass records the row')
+  assert.equal(reading.pass, 'timeframe')
+  assert.equal(reading.symbolId, '7', 'the id came from the map')
+  assert.ok(reading.atr > 0, `an ATR from the mapped bars, got ${reading.atr}`)
+  assert.equal(reading.mayAmend, true, 'the level tightens the stop')
+  assert.ok(reading.chandelierSinceEntry > 1.1010 && reading.chandelierSinceEntry < 1.1200)
+})

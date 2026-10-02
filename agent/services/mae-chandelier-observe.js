@@ -186,6 +186,37 @@ export function loadObserveState(db, read) {
   try { return JSON.parse(read(db, OBSERVE_STATE_KEY) || '{}') } catch { return {} }
 }
 
+/**
+ * The read-only view behind GET /state/mae-chandelier: the stored record
+ * plus counts a reader can act on. `read` is db.js's getState (passed in,
+ * since this module never loads the native driver itself). Never throws; an
+ * empty key reads as an empty record.
+ */
+export function maeChandelierView(db, read) {
+  const state = loadObserveState(db, read)
+  const positions = state.positions && typeof state.positions === 'object' ? state.positions : {}
+  const receipts = Array.isArray(state.receipts) ? state.receipts : []
+  const rows = Object.values(positions)
+  const withBars = rows.filter(r => Number(r?.atr) > 0).length
+  const sent = receipts.filter(r => r?.sent === true)
+  return {
+    mode: state.mode || null,
+    at: state.at || null,
+    mayAmend: state.mayAmend === true,
+    summary: {
+      positions: rows.length,
+      withBars,
+      withoutBars: rows.length - withBars,
+      adjustable: rows.filter(r => r?.mayAmend === true).length,
+      receipts: receipts.length,
+      receiptsSent: sent.length,
+      lastReceiptAt: receipts.length ? receipts[receipts.length - 1]?.at || null : null,
+    },
+    positions,
+    receipts,
+  }
+}
+
 export async function recordAmendReceipt(db, receipt, nowMs = Date.now(), io = {}) {
   const read = io.read || (await import('../db.js')).getState
   const write = io.write || (await import('../db.js')).setState

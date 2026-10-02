@@ -453,7 +453,16 @@ async function profitKeeperPass(db, creds, deps = {}) {
       if (managedByAcct.get(k)) summary.managedSkipped += 1
       else kept.push(r)
     }
-    if (kept.length === 0) return summary
+    // The fence stops here: decisions, closes and scale-outs read `kept`.
+    // The since-entry Chandelier spec below reads every non-book row, managed
+    // accounts included (owner decision № 10,474, 02-10-2026): with the fence
+    // in front of it, `kept` was empty on every registered account and the
+    // pass returned before the /trail-config push, so the spec never reached
+    // the C++ TrailEngine (0 push lines in 47 passes). The engine only
+    // tightens, so on a managed account the tighter of the managed trail and
+    // this spec governs — the 01-09 earned-floor cohort is what to watch.
+    if (rows.length === 0) return summary
+    const keptIds = new Set(kept.map(r => r.id))
 
     const exec = deps.exec ?? await import('../lib/exec-engine.js')
     const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
@@ -472,15 +481,18 @@ async function profitKeeperPass(db, creds, deps = {}) {
       if (p.positionId != null) live.set(String(p.positionId), p)
     }
 
-    const scoped = scopeToAccount(kept, { accountId, live })
+    const scoped = scopeToAccount(rows, { accountId, live })
     summary.refused = scoped.foreign.length
     if (scoped.foreign.length) {
       summary.errors.push(`${scoped.foreign.length} position(s) belong to another account and were not touched`)
     }
-    const involved = scoped.owned
+    // involvedAll: every owned row the broker holds (the spec set);
+    // involved: the subset the managed fence left to this keeper (decisions).
+    const involvedAll = scoped.owned
       .map(r => ({ r, bp: live.get(String(r.position_id)) }))
       .filter(x => x.bp)
-    const symbolIds = [...new Set(involved.map(x => x.bp.tradeData?.symbolId).filter(Boolean))]
+    const involved = involvedAll.filter(x => keptIds.has(x.r.id))
+    const symbolIds = [...new Set(involvedAll.map(x => x.bp.tradeData?.symbolId).filter(Boolean))]
     if (symbolIds.length === 0) return summary
     const prices = await ws.wsGetLastCloses(
       creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolIds
@@ -740,10 +752,18 @@ async function profitKeeperPass(db, creds, deps = {}) {
     // the keeper already trails is left to that spec. TrailEngine still
     // refuses a target that does not improve the stop.
     const already = new Set(trailSpecs.map(s => String(s.positionId)))
-    for (const { r, bp } of involved) {
+    for (const { r, bp } of involvedAll) {
       const td = bp.tradeData || {}
       if (already.has(String(parseInt(r.position_id)))) continue
       const bars = fullBarsBySymbolId[td.symbolId]
+      // A row the fence kept from the decision step has no digits yet (the
+      // decision step is where getVolumeMeta ran); read them here, cached.
+      if (!digitsByPosition.has(String(parseInt(r.position_id))) && td.symbolId) {
+        try {
+          const meta = await sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, td.symbolId)
+          if (Number.isFinite(Number(meta?.digits))) digitsByPosition.set(String(parseInt(r.position_id)), Number(meta.digits))
+        } catch { /* no digits → sinceEntryTrailSpec drops this row, as before */ }
+      }
       const spec = sinceEntryTrailSpec({
         positionId: r.position_id,
         accountId: creds.accountId,
@@ -771,7 +791,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     // next pass catches it.
     try {
       if (exec.getTrailStatus) {
-        const byPositionId = new Map(involved.map(x => [String(x.r.position_id), x.r]))
+        const byPositionId = new Map(involvedAll.map(x => [String(x.r.position_id), x.r]))
         const status = await exec.getTrailStatus(creds)
         if (status?.enabled && Array.isArray(status.positions)) {
           for (const p of status.positions) {
