@@ -296,6 +296,22 @@ int main() {
     healthy(s, {c}, T + 741000);
     assert(!active(s, "node:feed:11:demo.ctraderapi.com:quote")); // RED if the retirement pass is removed
     assert(!active(s, "node:work:a:quote"));
+    // Codex review of #1198 (P1): a feed whose EVERY row reads CLOSED has no
+    // open market to be silent in — its urgent incident resolves. A feed
+    // with an UNKNOWN row keeps it (expiry cannot clear a fault).
+    a.set("lastQuoteAtMs", T + 800000); b.set("lastQuoteAtMs", T + 800000); healthy(s, {a, b}, T + 940000);
+    assert(active(s, "node:feed:11:demo.ctraderapi.com:quote"));
+    auto closed = calendar(); closed.set("observedAtMs", T + 940000); closed.set("toMs", T + 2 * DAY); closed.set("expiresAtMs", T + 2 * DAY);
+    closed.set("intervals", Array{Value(Object{{"fromMs", T + DAY}, {"toMs", T + 2 * DAY}})});
+    auto ac = clone(a), bc = clone(b); ac.set("calendar", closed); bc.set("calendar", closed);
+    healthy(s, {ac, bc}, T + 941000);
+    assert(!active(s, "node:feed:11:demo.ctraderapi.com:quote")); // RED if a closed feed is kept in the inventory
+    assert(!active(s, "node:work:a:calendar"));
+    // Codex review of #1198 (P2): the feed evidence reaches GET /watchdog-status, not only the private snapshot
+    healthy(s, {a, b}, T + 942000);
+    assert(active(s, "node:feed:11:demo.ctraderapi.com:quote"));
+    const auto shown = s.status(T + 942000).get("incidents").get("node:feed:11:demo.ctraderapi.com:quote").get("detail");
+    assert(shown.get("streams").asNumber() == 2); assert(shown.get("newestQuoteAtMs").asNumber() == T + 800000); // RED if the status projection drops them
     // the silence threshold is policy
     verify::WatchPolicy p; p.streamQuoteSilenceMs = 30000;
     verify::WatchState t(p);
