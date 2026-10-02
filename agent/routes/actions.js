@@ -4905,6 +4905,29 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/positions/void-cross-account-duplicates — № 10,448 (owner
+  // № 10,447: "remove duplicates"). Dry run by default: the reply is the plan
+  // (phantom rows to void, false-close pairs to reopen) with the evidence for
+  // each; `{ apply: true }` writes it, one transaction per item, every write
+  // in action_log. See services/cross-account-duplicates.js.
+  // -----------------------------------------------------------------------
+  router.post('/positions/void-cross-account-duplicates', async (req, res) => {
+    try {
+      const apply = req.body?.apply === true
+      const { planCrossAccountDuplicates, applyCrossAccountDuplicates } = await import('../services/cross-account-duplicates.js')
+      let verifierState = null
+      try { verifierState = JSON.parse(getState(db, 'independent_protection_json') || 'null') } catch { verifierState = null }
+      const plan = planCrossAccountDuplicates(db, { verifierState })
+      const result = apply ? applyCrossAccountDuplicates(db, plan) : null
+      console.log(`[actions] cross-account duplicates ${apply ? 'APPLIED' : 'dry run'} — ${plan.phantoms.length} phantom(s), ${plan.pairs.length} pair(s)${result ? `; voided ${result.voided.length}, reopened ${result.reopened.length}, errors ${result.errors.length}` : ' (nothing written)'}`)
+      res.json({ ok: true, mode: apply ? 'apply' : 'dry_run', dryRun: !apply, plan, result })
+    } catch (err) {
+      console.error('[actions/positions/void-cross-account-duplicates] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/named-corrections — V3 B2b (docs/v3-integrated-plan-
   // 2026-09-26.md §5 row 2.6, §6 OD-11/OD-12, owner yes 26-09-2026).
   // Body: { apply?: boolean, includeNeverFilled?: boolean, includeMoney?: boolean, ids?: number[] }.

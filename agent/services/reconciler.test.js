@@ -5,6 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { initDB, getState } from '../db.js'
 import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, undoIntentUpgrades, attributeBrokerClose, GENERIC_BROKER_CLOSE } from './reconciler.js'
 
@@ -1472,4 +1473,50 @@ test('tick fill: a RELEASED permit that fired anyway is STILL adopted — and th
   ], [], mkSetState(db), { accountId: ACCT })
   assert.equal(db.prepare(`SELECT COUNT(*) c FROM action_log WHERE method = 'FENCE_BREACH_ADOPTED'`).get().c, 1,
     'one breach, one row — a FILLED intent is not a breach')
+})
+
+// ---------------------------------------------------------------------------
+// № 10,448 (02-10-2026): at 30-09 07:45:55Z one reply for …0058 carried
+// …9908's four positions — adopted as …0058's, and …0058's own five closed.
+// ---------------------------------------------------------------------------
+import { reconcileReplyIdentity } from './reconciler.js'
+
+test('reconcileReplyIdentity: a reply naming another account is refused; the same account passes; none is unverifiable but passes', () => {
+  const refused = reconcileReplyIdentity({ ctidTraderAccountId: 46979908 }, '46130058')
+  assert.equal(refused.ok, false)
+  assert.equal(refused.verified, true)
+  assert.match(refused.reason, /…9908.*…0058/)
+  assert.equal(reconcileReplyIdentity({ ctidTraderAccountId: '46130058' }, 46130058).ok, true)
+  assert.equal(reconcileReplyIdentity({ ctidTraderAccountId: '46130058.0' }, '46130058').ok, true, 'a ".0" suffix is the same id')
+  const none = reconcileReplyIdentity({ position: [] }, '46130058')
+  assert.equal(none.ok, true)
+  assert.equal(none.verified, false)
+  assert.equal(reconcileReplyIdentity({ ctidTraderAccountId: 1 }, null).ok, true, 'nothing asked for: nothing to refuse')
+})
+
+test('a position another account holds OPEN is not adopted — refused, counted, audited', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  db.prepare(`INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, account_id)
+              VALUES ('V.US', 'BUY', 360, 0.1, '241760418', 'autopilot', 'open', datetime('now'), '46979908')`).run()
+  const brokerPos = [makeBrokerPosition({ positionId: '241760418', symbolName: 'V.US', openPrice: 360, label: 'PRE|v1|TSM|HI|OFF|1d|-|i3jvakmszkpe3' })]
+  const result = reconcilePositions(db, brokerPos, [], setState, { accountId: '46130058' })
+  assert.equal(result.newExternal.length, 0, 'not adopted')
+  assert.deepEqual(result.crossAccountRefused.map(r => [r.positionId, r.heldBy]), [['241760418', '46979908']])
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM trades WHERE account_id = '46130058'`).get().n, 0, 'no phantom row on the asking account')
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM action_log WHERE method = 'RECONCILE_CROSS_ACCOUNT_REFUSED'`).get().n, 1)
+  // The same position offered to its OWN account is adopted as before.
+  db.prepare(`DELETE FROM trades`).run()
+  const own = reconcilePositions(db, brokerPos, [], setState, { accountId: '46979908' })
+  assert.equal(own.newExternal.length, 1)
+  assert.equal(own.crossAccountRefused.length, 0)
+})
+
+test('the loop guards BOTH reconcile call sites with the identity check (wiring pin, comments stripped)', () => {
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  assert.ok(src.includes("import { reconcilePositions, reconcileReplyIdentity } from './services/reconciler.js'"))
+  const calls = src.split('reconcileReplyIdentity(').length - 1
+  assert.equal(calls, 2, 'the selected-account site and the per-account site')
+  assert.ok(/const identity = reconcileReplyIdentity\(reconcileData, accountId\)[\s\S]{0,1200}throw new Error\(`reconcile identity refused/.test(src), 'the selected-account site refuses the whole pass')
+  assert.ok(/const identity2 = reconcileReplyIdentity\(rd, acc\.account_id\)[\s\S]{0,1200}continue/.test(src), 'the per-account site skips the account')
 })

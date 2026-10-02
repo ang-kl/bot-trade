@@ -69,3 +69,31 @@ test('an unconfigured independent checker reports the missing configuration inst
   stop()
   assert.match(independentProtectionView(db, '22').summary, /not configured: VERIFY_URL/)
 })
+
+// № 10,448 (02-10-2026): cpp-verify's per-account position lists are the
+// independent source; a Node row open on A whose position the verifier holds
+// under B is misplaced. 30-09 07:46:42Z: …0058: 5 open, …9908: 4 open while
+// Node had just adopted …9908's four as …0058's.
+import { misplacedRows } from './independent-protection.js'
+test('misplaced rows: a row open on one account whose position the verifier lists under another is named; absent-everywhere is not', t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const ins = db.prepare(`INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, account_id) VALUES (?, 'BUY', 100, 0.1, ?, 'autopilot', ?, datetime('now'), ?)`)
+  ins.run('V.US', '241760418', 'open', '46130058')      // phantom: …9908's position on …0058
+  ins.run('V.US', '241760418', 'open', '46979908')      // the real row
+  ins.run('JNJ.US', '240732676', 'open', '46130058')    // rightly placed
+  ins.run('KO.US', '999', 'open', '46130058')           // absent from every list: not named
+  ins.run('XOM.US', '242533301', 'closed', '46130058')  // closed rows are not judged
+  const status = { accounts: [
+    { accountId: '46130058', ok: true, positions: [{ positionId: '240732676' }] },
+    { accountId: '46979908', ok: true, positions: [{ positionId: '241760418' }, { positionId: '242533301' }] },
+  ] }
+  const out = misplacedRows(db, status)
+  assert.deepEqual(out.map(m => [m.accountId, m.symbol, m.positionId, m.heldBy]), [['46130058', 'V.US', '241760418', '46979908']])
+  assert.deepEqual(misplacedRows(db, { accounts: [{ accountId: '46130058', ok: false, positions: [] }] }), [], 'a failed reading judges nothing')
+  // The view carries it: the account is not ok while a misplaced row stands.
+  const now = 1_000_000
+  setState(db, 'independent_protection_json', JSON.stringify({ accounts: [{ accountId: '46130058', ok: true, source: 'broker_reconcile', checkedAtMs: now, openCount: 1, missingSl: 0, missingTp: 0 }], misplaced: out }))
+  const v = independentProtectionView(db, '46130058', now)
+  assert.equal(v.ok, false)
+  assert.match(v.summary, /MISPLACED.*V\.US 241760418 held by …9908/)
+})

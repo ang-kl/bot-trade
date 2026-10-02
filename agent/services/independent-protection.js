@@ -6,6 +6,43 @@ import { beat } from './heartbeat.js'
 const STATE_KEY = 'independent_protection_json'
 const MAX_AGE_MS = 180_000
 
+/**
+ * THE VERIFIER POLICES ACCOUNT IDENTITY (02-10-2026, № 10,448; owner: "cpp-verify
+ * has to do its job"). cpp-verify's protection reading lists every open
+ * position per account, independently of Node's own rows. A Node row that is
+ * OPEN on account A, absent from A's independent list and present in account
+ * B's list is a misplaced row — the 30-09 07:45:55Z shape, when …0058's
+ * reconcile adopted …9908's four positions and cpp-verify read …0058: 5,
+ * …9908: 4 the same minute. Pure: reads the status it is handed.
+ * A row absent from EVERY list is not named here (a just-closed position, or
+ * a verifier that has not read that account); only a position another
+ * account's reading holds is evidence.
+ */
+export function misplacedRows(db, status) {
+  const held = new Map() // positionId → accountId per the verifier
+  const listed = new Set()
+  for (const row of status?.accounts || []) {
+    if (!Array.isArray(row?.positions) || row.ok !== true) continue
+    const acct = String(row.accountId)
+    listed.add(acct)
+    for (const p of row.positions) if (p?.positionId != null) held.set(String(p.positionId).replace(/\.0+$/, ''), acct)
+  }
+  if (listed.size === 0) return []
+  let rows = []
+  try {
+    rows = db.prepare(`SELECT id, account_id, symbol, ctrader_position_id FROM trades WHERE status = 'open' AND ctrader_position_id IS NOT NULL AND account_id IS NOT NULL`).all()
+  } catch { return [] }
+  const out = []
+  for (const t of rows) {
+    const acct = String(t.account_id)
+    if (!listed.has(acct)) continue
+    const pid = String(t.ctrader_position_id).replace(/\.0+$/, '')
+    const owner = held.get(pid)
+    if (owner != null && owner !== acct) out.push({ accountId: acct, tradeId: t.id, symbol: t.symbol, positionId: pid, heldBy: owner })
+  }
+  return out
+}
+
 export function independentProtectionView(db, accountId, nowMs = Date.now()) {
   let state
   try { state = JSON.parse(getState(db, STATE_KEY) || 'null') } catch { /* unknown */ }
@@ -16,10 +53,11 @@ export function independentProtectionView(db, accountId, nowMs = Date.now()) {
   const readError = state?.error || state?.accountErrors?.[String(accountId)] || state?.hostErrors?.[row?.host] || row?.error
   const valid = ['openCount', 'missingSl', 'missingTp'].every(k => Number.isInteger(row?.[k]) && row[k] >= 0)
     && row.missingSl <= row.openCount && row.missingTp <= row.openCount && row.source === 'broker_reconcile'
-  const ok = !readError && row?.ok === true && valid && !stale
-  return { ...row, ok, stale, ageMs, checkedAt: checkedAt > 0 ? new Date(checkedAt).toISOString() : null,
-    error: readError || (!row ? 'No independent broker reading' : !valid ? 'Invalid independent reading' : null),
-    summary: !ok ? `UNVERIFIED: ${readError || (stale ? 'reading absent or stale' : 'check failed')}`
+  const misplaced = (state?.misplaced || []).filter(m => String(m.accountId) === String(accountId))
+  const ok = !readError && row?.ok === true && valid && !stale && misplaced.length === 0
+  return { ...row, ok, stale, ageMs, misplaced, checkedAt: checkedAt > 0 ? new Date(checkedAt).toISOString() : null,
+    error: readError || (!row ? 'No independent broker reading' : !valid ? 'Invalid independent reading' : misplaced.length ? `${misplaced.length} row(s) held by another account per the verifier` : null),
+    summary: !ok ? `UNVERIFIED: ${readError || (stale ? 'reading absent or stale' : misplaced.length ? `${misplaced.length} MISPLACED row(s): ${misplaced.map(m => `${m.symbol} ${m.positionId} held by …${String(m.heldBy).slice(-4)}`).join(', ')}` : 'check failed')}`
       : `${row.openCount} open; ${row.missingSl} missing SL; ${row.missingTp} missing TP1`,
   }
 }
@@ -153,7 +191,10 @@ export function makeIndependentProtectionPoll(db, { env = process.env, fetchImpl
       status = await request('/protection-status')
       if (status?.source !== 'cpp-verify' || !Array.isArray(status.accounts)) throw new Error('Invalid independent protection reply')
       const rows = status.accounts.filter(row => groups.get(row.host)?.ids.includes(String(row.accountId)))
-      setState(db, STATE_KEY, JSON.stringify({ ...status, accounts: rows, hostErrors, accountErrors, readAt: new Date().toISOString(), error: null }))
+      // № 10,448: Node's open rows against the verifier's independent lists.
+      const misplaced = misplacedRows(db, { accounts: rows })
+      if (misplaced.length) log(`[independent-protection] MISPLACED ROWS: ${misplaced.map(m => `…${m.accountId.slice(-4)} trade ${m.tradeId} ${m.symbol} position ${m.positionId} is held by …${m.heldBy.slice(-4)}`).join('; ')}`)
+      setState(db, STATE_KEY, JSON.stringify({ ...status, accounts: rows, hostErrors, accountErrors, misplaced, readAt: new Date().toISOString(), error: null }))
       for (const row of rows) if (!accountErrors[String(row.accountId)] && !hostErrors[row.host])
         emitBrokerRead({ kind: 'protection', accountId: String(row.accountId), host: row.host, receivedAt: row.checkedAtMs, payload: row })
       // Optional read-only watchdog status. Its failure must not invalidate

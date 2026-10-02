@@ -284,6 +284,27 @@ export function attributeBrokerClose(db, { positionId = null, tradeId = null, ac
  *   which only ever happened while that account was the one trading).
  * @returns {{ newExternal: Array, closedDetected: Array, manualChanges: Array, pendingOrders: Array }}
  */
+/**
+ * Does a reconcile reply belong to the account that asked for it?
+ * (02-10-2026, № 10,448.) At 30-09 07:45:55Z one reply for …0058 carried
+ * …9908's four positions: Node adopted them as …0058's and closed …0058's own
+ * five; the next pass re-adopted the five as new rows. The broker's reconcile
+ * response names its account (`ctidTraderAccountId`); a reply naming ANOTHER
+ * account is refused whole. A reply naming none is "unverifiable" and
+ * proceeds — the cross-account adoption refusal inside reconcilePositions
+ * covers it — because a guard that stalls every reconcile on a path that never
+ * carries the field would be CLAUDE.md failure mode #3.
+ */
+export function reconcileReplyIdentity(reply, accountId) {
+  const asked = accountId == null || accountId === '' ? null : String(accountId).replace(/\.0+$/, '')
+  const raw = reply?.ctidTraderAccountId
+  const got = raw == null || raw === '' ? null : String(raw).replace(/\.0+$/, '')
+  if (asked == null) return { ok: true, replyAccount: got, verified: false, reason: 'no account asked for' }
+  if (got == null) return { ok: true, replyAccount: null, verified: false, reason: 'reply names no account — identity unverifiable' }
+  if (got !== asked) return { ok: false, replyAccount: got, verified: true, reason: `reply names account …${got.slice(-4)}, asked for …${asked.slice(-4)} — refused whole: no adoption, no closes` }
+  return { ok: true, replyAccount: got, verified: true, reason: null }
+}
+
 export function reconcilePositions(db, brokerPositions, brokerOrders, setState, opts = {}) {
   const selected = getState(db, 'ctrader_account_id') || null
   const acct = opts.accountId != null ? String(opts.accountId) : selected
@@ -316,6 +337,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   const brokerIds = new Set()
 
   const newExternal = []
+  const crossAccountRefused = []
   const manualChanges = []
   // Kept SEPARATE from manualChanges on purpose. manualChanges means "the
   // owner touched this at the broker" and drives an alert; a resync means
@@ -622,6 +644,26 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
               : 'trade was open with no monitored_positions row at all (fill never got one written) — created fresh',
           }).slice(0, 2000)
         )
+      } catch { /* audit best-effort */ }
+      continue
+    }
+
+    // CROSS-ACCOUNT ADOPTION REFUSAL (02-10-2026, № 10,448). A broker position
+    // id is unique across accounts, so a position another account's row
+    // already holds OPEN cannot be this account's. The 30-09 reply bled
+    // …9908's four positions into …0058; this is the line that would have
+    // refused them whatever the reply said about itself.
+    const heldElsewhere = acct != null
+      ? db.prepare(`SELECT id, account_id FROM trades WHERE ctrader_position_id IN (?, ?) AND status = 'open' AND account_id IS NOT NULL AND account_id <> ? ORDER BY id DESC LIMIT 1`)
+        .get(posId, `${posId}.0`, acct)
+      : null
+    if (heldElsewhere) {
+      crossAccountRefused.push({ symbol: symbolName, positionId: posId, heldBy: String(heldElsewhere.account_id), tradeId: heldElsewhere.id })
+      console.warn(`[reconcile] CROSS-ACCOUNT REFUSED: position ${posId} (${symbolName}) offered to …${String(acct).slice(-4)} is held open by …${String(heldElsewhere.account_id).slice(-4)} (trade ${heldElsewhere.id}) — not adopted`)
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)').run(
+          'RECONCILE_CROSS_ACCOUNT_REFUSED', '/reconcile',
+          JSON.stringify({ symbol: symbolName, positionId: posId, offeredTo: acct, heldBy: String(heldElsewhere.account_id), tradeId: heldElsewhere.id }).slice(0, 2000), acct)
       } catch { /* audit best-effort */ }
       continue
     }
@@ -948,7 +990,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   try { setAgentState(db, RESYNC_WATCH_KEY, JSON.stringify(resyncWatch)) } catch { /* non-fatal */ }
 
   return {
-    newExternal, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified, sourcesRepaired,
+    newExternal, crossAccountRefused, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified, sourcesRepaired,
     ...(dedupError ? { dedupError } : {}),
     ...(dupPnlError ? { dupPnlError } : {}),
   }
