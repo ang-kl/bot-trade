@@ -1,0 +1,12 @@
+{
+  "_note": "Per-side slippage (bps of price) for the momentum TP1 cost reserve ONLY. Overlaid on the shared tick-shadow-sim.json classes by loadMomentumCostSchedule; the tick shadow and replay evidence keep their own 0.5 bps placeholder. Owner confirmed these figures 02-10-2026 (reply to № 10,585·B·5).",
+  "_source": "MEASURED, entry side, mean ADVERSE part of trades.slippage_price over entry_price (the statistic risk.js already uses for sizing), 147 of the last 1,000 closed trades across five accounts, 02-09 to 01-10-2026. Against the proposal price, so a stale proposal reads as slippage; mean signed slippage on US stocks is favourable (-11 bps), so these are upper estimates. No exit-side slippage is recorded.",
+  "classes": {
+    "stock_us":  { "slippageBpsPerSide": 23, "n": 77, "_basis": "measured, 21 symbols" },
+    "commodity": { "slippageBpsPerSide": 24, "n": 43, "_basis": "measured, two symbols" },
+    "stock_hk":  { "slippageBpsPerSide": 14, "n": 16, "_basis": "measured, one 660 bps row removed (54 bps with it)" },
+    "index_cfd": { "slippageBpsPerSide": 24, "n": 5,  "_basis": "too few rows: charged the dearest measured class until 15 rows" },
+    "fx":        { "slippageBpsPerSide": 24, "n": 2,  "_basis": "too few rows: charged the dearest measured class until 15 rows" },
+    "crypto":    { "slippageBpsPerSide": 24, "n": 4,  "_basis": "too few rows: charged the dearest measured class until 15 rows" }
+  }
+}
