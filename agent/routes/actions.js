@@ -1556,7 +1556,9 @@ export default function actionsRouter(db, deps = {}) {
   // cannot reach any segment (the sealed spool is on the demo sidecar's
   // volume); 409 research_running while a job runs; 413 too_many_records
   // over the cap. dryRun judges, writes nothing. The stage still moves only
-  // through POST /actions/tick-validation.
+  // through POST /actions/tick-validation. C·6 (03-10-2026): `segments`
+  // names the sealed segments to replay (pulled and replayed exactly), the
+  // door to the weekday recordings `maxSegments` (oldest first) never reached.
   router.post('/tick-research', async (req, res) => {
     try {
       // PR-I: when nothing is reachable locally the sidecar's sealed
