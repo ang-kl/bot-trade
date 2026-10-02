@@ -211,3 +211,10 @@ test('the refusal breakdown reads at most REFUSAL_ROW_LIMIT rows and says when i
   assert.equal(s.inputRefusedTruncated, true, 'RED without the row limit: the whole hour is opened')
   assert.equal(read, REFUSAL_ROW_LIMIT)
 })
+
+test('a stored tick comparison carries the native profile hash (the alignment snapshot reads it back as the observed feed hash)', t => {
+  const db = database(t, { symbols: 4, profiles: [tickProfile(tickFeed(1000))] }), now = 1_800_000_000_000
+  new TickComparisonReader().consume(db, page([row(1, tickFeed(1000))]), now)
+  const stored = db.prepare("SELECT detail FROM scanner_comparisons WHERE source='cpp-scan-tick' ORDER BY rowid DESC LIMIT 1").get()
+  assert.equal(JSON.parse(stored.detail).profileHash, HASH)
+})
