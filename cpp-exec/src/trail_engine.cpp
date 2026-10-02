@@ -8,6 +8,7 @@
 #include "engine.hpp"
 #include "json.hpp"
 #include "log.hpp"
+#include "protection_ratchet.hpp"
 
 using namespace std::chrono;
 
@@ -46,6 +47,47 @@ double trailDecide(TrailSpec& s, double bid, double ask) {
   // Never place the stop through the current market (broker would reject).
   if (s.dir == 1 ? target >= px : target <= px) return 0;
   return target;
+}
+
+jsn::Value buildTrailAmend(long long positionId, const TrailSpec& snap, const StopPolicyCfg& cfg) {
+  jsn::Value payload{jsn::Object{}};
+  payload.set("positionId", positionId);
+  payload.set("stopLoss", snap.pendingSl);
+  // The configured TP can be several Node passes old. The engine reads
+  // current broker protection, preserves that TP, then confirms the amend.
+  payload.set("ratchetOnly", true);
+  payload.set("requireTakeProfit", true);
+  payload.set("expectedDirection", snap.dir);
+  payload.set("expectedSymbolId", snap.symbolId);
+  // UNCONDITIONAL. configure() refuses any spec with accountId <= 0, so every
+  // stored spec names its account. It used to be `if (accountId > 0)`, which is
+  // exactly how an unstamped amend would sneak back in if that invariant ever
+  // slipped - amendPosition would then refuse it, silently stopping the ratchet.
+  payload.set("ctidTraderAccountId", snap.accountId);
+  // 02-10-2026: an amend REPLACES the position's protection, so the policy has
+  // to ride on every ratchet amend or the first tick trail would reset it.
+  if (!cfg.triggerWire.isNull()) payload.set("stopLossTriggerMethod", cfg.triggerWire);
+  if (cfg.trailingOnLock && snap.hasEntry && stopLocksProfit(snap.dir, snap.entryPrice, snap.pendingSl))
+    payload.set("trailingStopLoss", true);
+  return payload;
+}
+
+StopPolicyCfg parseTrailStopPolicy(const jsn::Value& v) {
+  StopPolicyCfg cfg;
+  if (!v.isObject()) return cfg;
+  const auto& t = v.get("stopLossTriggerMethod");
+  const auto& tr = v.get("trailing");
+  if (parseTriggerMethod(t) == 0) return StopPolicyCfg{};
+  if (!tr.isNull() && !(tr.isString() && (tr.asString() == "on_lock" || tr.asString() == "off")))
+    return StopPolicyCfg{};
+  cfg.triggerWire = t;
+  cfg.trailingOnLock = tr.isString() && tr.asString() == "on_lock";
+  return cfg;
+}
+
+void TrailEngine::configurePolicy(const StopPolicyCfg& cfg) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  policy_ = cfg;
 }
 
 void TrailEngine::configure(const std::vector<std::pair<long long, TrailSpec>>& specs) {
@@ -145,6 +187,10 @@ std::string TrailEngine::statusJson() {
   // named no account. Non-zero means some positions are NOT being ratcheted here.
   v.set("specsDroppedNoAccount", static_cast<double>(specsDroppedNoAccount_.load()));
   v.set("specsDroppedNoTarget", static_cast<double>(specsDroppedNoTarget_.load()));
+  jsn::Value pol{jsn::Object{}};
+  pol.set("stopLossTriggerMethod", policy_.triggerWire);
+  pol.set("trailingOnLock", policy_.trailingOnLock);
+  v.set("stopPolicy", pol);
   jsn::Array rows;
   for (const auto& [id, s] : byPosition_) {
     jsn::Value r{jsn::Object{}};
@@ -180,27 +226,16 @@ void TrailEngine::workerLoop(ExecEngine& engine) {
     // engine mutex anyway; spreading them keeps this thread responsive).
     long long posId = 0;
     TrailSpec snap;
+    StopPolicyCfg cfg;
     {
       std::lock_guard<std::mutex> lk(mtx_);
       for (auto& [id, s] : byPosition_) {
         if (s.pendingSl != 0) { posId = id; snap = s; break; }
       }
+      cfg = policy_;
     }
     if (posId == 0) continue;
-    jsn::Value payload{jsn::Object{}};
-    payload.set("positionId", posId);
-    payload.set("stopLoss", snap.pendingSl);
-    // The configured TP can be several Node passes old. The engine reads
-    // current broker protection, preserves that TP, then confirms the amend.
-    payload.set("ratchetOnly", true);
-    payload.set("requireTakeProfit", true);
-    payload.set("expectedDirection", snap.dir);
-    payload.set("expectedSymbolId", snap.symbolId);
-    // UNCONDITIONAL. configure() refuses any spec with accountId <= 0, so every
-    // stored spec names its account. It used to be `if (accountId > 0)`, which is
-    // exactly how an unstamped amend would sneak back in if that invariant ever
-    // slipped — amendPosition would then refuse it, silently stopping the ratchet.
-    payload.set("ctidTraderAccountId", snap.accountId);
+    const jsn::Value payload = buildTrailAmend(posId, snap, cfg);
     auto r = engine.amendPosition(payload);
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = byPosition_.find(posId);

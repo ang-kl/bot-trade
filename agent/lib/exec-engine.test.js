@@ -89,14 +89,48 @@ test('cpp placeOrder: pushes /connect once, then POST /order with bearer auth', 
   assert.deepEqual(JSON.parse(requests[1].body), { ...payload, ctidTraderAccountId: 123 })
 })
 
-test('cpp amendPosition: POST /amend with args passthrough', async () => {
+test('cpp amendPosition: POST /amend with args passthrough, the stop policy stamped on', async () => {
   const args = { positionId: 7, stopLoss: 1.1, takeProfit: 1.2 }
   await amendPosition(CREDS, args)
   assert.equal(requests[0].method, 'POST')
   assert.equal(requests[0].url, '/amend')
   assert.equal(requests[0].auth, 'Bearer sekret')
-  // args + the stamped account — see the /order test above.
-  assert.deepEqual(JSON.parse(requests[0].body), { ...args, ctidTraderAccountId: 123 })
+  // args + the stamped account — see the /order test above — + the stop
+  // policy (02-10-2026): Opposite trigger on every stop. No stopContext, so
+  // no trailing flag: the policy cannot tell whether this stop locks profit.
+  assert.deepEqual(JSON.parse(requests[0].body), { ...args, ctidTraderAccountId: 123, stopLossTriggerMethod: 2 })
+})
+
+test('cpp amendPosition: stopContext decides the trailing flag and never reaches the wire; noStopPolicy and a disabled policy send neither field', async () => {
+  const { setStopPolicy } = await import('./stop-policy.js')
+  try {
+    await amendPosition(CREDS, { positionId: 7, stopLoss: 101, takeProfit: 110, stopContext: { side: 'BUY', entry: 100 } })
+    assert.deepEqual(JSON.parse(requests[0].body), { positionId: 7, stopLoss: 101, takeProfit: 110, ctidTraderAccountId: 123, stopLossTriggerMethod: 2, trailingStopLoss: true })
+    requests.length = 0
+    await amendPosition(CREDS, { positionId: 7, stopLoss: 95, takeProfit: 110, stopContext: { side: 'BUY', entry: 100 } })
+    assert.deepEqual(JSON.parse(requests[0].body), { positionId: 7, stopLoss: 95, takeProfit: 110, ctidTraderAccountId: 123, stopLossTriggerMethod: 2 }, 'a risk-side stop: Opposite, no trailing')
+    requests.length = 0
+    await amendPosition(CREDS, { positionId: 7, stopLoss: 101, takeProfit: 110, noStopPolicy: true })
+    assert.deepEqual(JSON.parse(requests[0].body), { positionId: 7, stopLoss: 101, takeProfit: 110, ctidTraderAccountId: 123 })
+    requests.length = 0
+    setStopPolicy({ enabled: false })
+    await amendPosition(CREDS, { positionId: 7, stopLoss: 101, takeProfit: 110, stopContext: { side: 'BUY', entry: 100 } })
+    assert.deepEqual(JSON.parse(requests[0].body), { positionId: 7, stopLoss: 101, takeProfit: 110, ctidTraderAccountId: 123 }, 'the kill switch: no policy fields')
+  } finally { setStopPolicy(null) }
+})
+
+test('cpp pushTrailConfig carries the stop policy block, and omits it when the policy is off (full-replace clears it)', async () => {
+  const { pushTrailConfig } = await import('./exec-engine.js')
+  const { setStopPolicy } = await import('./stop-policy.js')
+  try {
+    await pushTrailConfig(CREDS, [{ positionId: 7 }])
+    const push = requests.find(r => r.url === '/trail-config')
+    assert.deepEqual(JSON.parse(push.body), { positions: [{ positionId: 7 }], stopPolicy: { stopLossTriggerMethod: 2, trailing: 'on_lock' } })
+    requests.length = 0
+    setStopPolicy({ enabled: false })
+    await pushTrailConfig(CREDS, [])
+    assert.deepEqual(JSON.parse(requests.find(r => r.url === '/trail-config').body), { positions: [] })
+  } finally { setStopPolicy(null) }
 })
 
 test('cpp closePosition: POST /close with args passthrough', async () => {

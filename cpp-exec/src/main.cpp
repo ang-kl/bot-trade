@@ -1164,7 +1164,9 @@ int main(int argc, char** argv) {
   // the full tracked set here every pass; this engine only executes the
   // ratchet at tick speed between pushes. Body:
   //   {positions: [{positionId, ctidTraderAccountId, symbolId, dir,
-  //                 trailDistance, peakPrice?, currentSl?, currentTp, digits?}]}
+  //                 trailDistance, peakPrice?, currentSl?, currentTp, digits?,
+  //                 entryPrice?}],
+  //    stopPolicy?: {stopLossTriggerMethod: 1..4|name, trailing: "on_lock"|"off"}}
   // Full replace: positions absent from the push stop tick-trailing.
   server.route("POST", "/trail-config", [&trailEngine, &spotFeed, &vpoMtx, trailTickEnabled](const HttpRequest& req) -> HttpResponse {
     if (!trailTickEnabled)
@@ -1192,12 +1194,20 @@ int main(int argc, char** argv) {
       const jsn::Value& tp = p.get("currentTp");
       if (tp.isNumber() && tp.asNumber(0) > 0) { s.currentTp = tp.asNumber(0); s.hasTp = true; }
       s.digits = static_cast<int>(p.get("digits").asNumber(5));
+      // 02-10-2026: entry price (number > 0) lets the engine tell whether a
+      // stop locks profit; absent or invalid just means no trailing request.
+      const jsn::Value& entry = p.get("entryPrice");
+      if (entry.isNumber() && std::isfinite(entry.asNumber()) && entry.asNumber() > 0) {
+        s.entryPrice = entry.asNumber(); s.hasEntry = true;
+      }
       const bool valid = posId > 0 && s.symbolId > 0 && s.trailDist > 0 && s.hasTp &&
                          (dirN == 1 || dirN == -1);
       if (valid) specs.emplace_back(posId, s);
       else ++rejected;
     }
     trailEngine.configure(specs);
+    // Full replace like the positions: an absent or invalid stopPolicy clears it.
+    trailEngine.configurePolicy(parseTrailStopPolicy(parsed->get("stopPolicy")));
     {
       std::lock_guard<std::mutex> lk(vpoMtx);
       if (spotFeed) spotFeed->ensureSymbols(trailEngine.symbolIds());

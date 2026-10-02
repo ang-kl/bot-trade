@@ -666,6 +666,11 @@ async function profitKeeperPass(db, creds, deps = {}) {
             // the broker target; a targetless spec is rejected fail-closed.
             currentTp: bp.takeProfit ?? r.current_tp ?? null,
             digits: meta.digits,
+            // The TrailEngine decides, per amend, whether the stop it sends
+            // locks profit (broker-side trailing starts then — stop policy
+            // 02-10-2026), so it needs the entry. The broker's own price when
+            // it gave one, else the row's.
+            entryPrice: Number(bp.price ?? r.entry_price) > 0 ? Number(bp.price ?? r.entry_price) : undefined,
           })
         }
       }
@@ -727,6 +732,10 @@ async function profitKeeperPass(db, creds, deps = {}) {
           await measureAmend({ path: 'profit_keeper', source: 'profit_keeper', accountId: r.account_id ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: decision.action.sl,
             takeProfit: Number(bp.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
+            // What the stop MEANS, for the stop policy (02-10-2026): it decides
+            // whether this lock earns the broker-side trailing flag. The keeper
+            // already excludes momentum-book rows, so this is never one.
+            stopContext: { side: r.side, entry: Number(bp.price ?? r.entry_price) || null, book: false },
           }))
           updAct.run(decision.action.sl, 'profit_keeper_lock', r.id)
           summary.slMoves++

@@ -29,6 +29,8 @@
 #include <thread>
 #include <vector>
 
+#include "json.hpp"
+
 class ExecEngine;
 
 struct TrailSpec {
@@ -45,7 +47,32 @@ struct TrailSpec {
   double pendingSl = 0;      // computed target awaiting the worker (0 = none)
   unsigned long long generation = 0; // prevents an old completion updating a new config
   long long protectionCheckedAtMs = 0;
+  // 02-10-2026: the position's entry price, so the worker can tell whether the
+  // stop it is about to send locks profit (trailing is only asked for then).
+  double entryPrice = 0;
+  bool hasEntry = false;
 };
+
+// 02-10-2026 stop-loss policy, pushed by Node with /trail-config (full
+// replace). Node decides the values; this engine only stamps them onto the
+// ratchet amends it builds. triggerWire is the caller's own value (number or
+// name) emitted verbatim; null = none. The engine never sends
+// trailingStopLoss:false - turning trailing off is Node's explicit amend.
+struct StopPolicyCfg {
+  jsn::Value triggerWire;
+  bool trailingOnLock = false;
+};
+
+// The ratchet amend the worker sends for one pending target. Pure so the
+// policy fields are unit-tested without a broker: the trigger rides on every
+// amend when configured; trailingStopLoss:true only when trailingOnLock is set
+// and the spec's entry price shows this stop locks profit.
+// The /trail-config `stopPolicy` object: {"stopLossTriggerMethod": number|name,
+// "trailing": "on_lock"|"off"}. Absent, malformed or invalid anywhere = no
+// policy at all (full-replace, never half a policy).
+StopPolicyCfg parseTrailStopPolicy(const jsn::Value& v);
+
+jsn::Value buildTrailAmend(long long positionId, const TrailSpec& snap, const StopPolicyCfg& cfg);
 
 // Pure ratchet decision, unit-tested without a feed or engine: advance the
 // peak from the exit-side price and return the rounded Chandelier target
@@ -59,6 +86,9 @@ public:
   // already tracked keep the LOCAL peak/lastSl when they are further along
   // than the pushed values — ticks may have advanced them since Node read.
   void configure(const std::vector<std::pair<long long, TrailSpec>>& specs);
+
+  // Full replace of the stop policy (absent/invalid on the wire clears it).
+  void configurePolicy(const StopPolicyCfg& cfg);
 
   void onTick(long long symbolId, double bid, double ask);
 
@@ -86,6 +116,7 @@ private:
 
   std::mutex mtx_;
   std::map<long long, TrailSpec> byPosition_;
+  StopPolicyCfg policy_;
   std::thread worker_;
   std::atomic<bool> running_{false};
   std::atomic<long long> amendsOk_{0};

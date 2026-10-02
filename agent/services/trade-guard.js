@@ -201,6 +201,9 @@ async function tradeGuardsPass(db, creds, deps = {}) {
             // moved to break-even would read tp=None, and it held on both
             // cases available to test — this is the amend that did it.
             takeProfit: Number(bp?.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
+            // For the stop policy (02-10-2026): a break-even or trailed stop at
+            // or past entry earns the broker-side trailing flag.
+            stopContext: { side: r.side, entry: Number(bp?.price ?? r.entry_price) || null, book: false },
           }))
           updSl.run(sl, acts.beMoved ? 1 : 0, acts.beMoved ? 'guard_break_even' : 'guard_trail', r.id)
           summary.slMoves++

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstdio>
 
+#include "../protection_ratchet.hpp"
 #include "../trail_engine.hpp"
 
 namespace {
@@ -156,6 +157,88 @@ void testSymbolIdsDedupe() {
   assert(e.symbolIds().size() == 2);
 }
 
+// 02-10-2026 stop-loss policy. stopLocksProfit: trailing is only requested for a
+// stop at or beyond breakeven; equality counts (a breakeven stop locks zero loss);
+// unknown entry/stop or direction never does.
+void testStopLocksProfitTruthTable() {
+  assert(stopLocksProfit(1, 100, 101));
+  assert(stopLocksProfit(1, 100, 100));
+  assert(!stopLocksProfit(1, 100, 99.99));
+  assert(stopLocksProfit(-1, 100, 99));
+  assert(stopLocksProfit(-1, 100, 100));
+  assert(!stopLocksProfit(-1, 100, 100.01));
+  assert(!stopLocksProfit(1, 0, 101) && !stopLocksProfit(1, -5, 101));
+  assert(!stopLocksProfit(1, 100, 0) && !stopLocksProfit(-1, 100, -1));
+  assert(!stopLocksProfit(0, 100, 101));
+}
+
+jsn::Value cfgWire(const char* raw) { return *jsn::parse(raw); }
+
+void testTrailAmendPayloadPolicy() {
+  TrailSpec s = longSpec();
+  s.pendingSl = 101; s.entryPrice = 100; s.hasEntry = true;
+  // No policy: today's payload, no policy keys at all.
+  auto none = buildTrailAmend(7, s, StopPolicyCfg{});
+  assert(none.get("stopLossTriggerMethod").isNull() && none.get("trailingStopLoss").isNull());
+  assert(none.get("ratchetOnly").asBool() && none.get("stopLoss").asNumber() == 101);
+  // Trigger configured, trailing off: trigger always, trailing never.
+  StopPolicyCfg trig; trig.triggerWire = jsn::Value(2);
+  auto t = buildTrailAmend(7, s, trig);
+  assert(t.get("stopLossTriggerMethod").asNumber() == 2 && t.get("trailingStopLoss").isNull());
+  // Name form is emitted verbatim.
+  StopPolicyCfg named; named.triggerWire = jsn::Value(std::string("DOUBLE_TRADE")); named.trailingOnLock = true;
+  auto n = buildTrailAmend(7, s, named);
+  assert(n.get("stopLossTriggerMethod").asString() == "DOUBLE_TRADE");
+  assert(n.get("trailingStopLoss").isBool() && n.get("trailingStopLoss").asBool());
+  // on_lock but the stop does not lock profit: no trailing key (never false).
+  s.pendingSl = 99;
+  auto below = buildTrailAmend(7, s, named);
+  assert(below.get("stopLossTriggerMethod").asString() == "DOUBLE_TRADE" && below.get("trailingStopLoss").isNull());
+  // on_lock without an entry price: no trailing.
+  s.pendingSl = 101; s.hasEntry = false;
+  assert(buildTrailAmend(7, s, named).get("trailingStopLoss").isNull());
+  // Short: stop below entry locks profit.
+  TrailSpec sh = longSpec(); sh.dir = -1; sh.pendingSl = 99; sh.entryPrice = 100; sh.hasEntry = true;
+  assert(buildTrailAmend(7, sh, named).get("trailingStopLoss").asBool());
+  sh.pendingSl = 101;
+  assert(buildTrailAmend(7, sh, named).get("trailingStopLoss").isNull());
+  // Trailing on lock with no trigger: only the trailing flag.
+  StopPolicyCfg onlyTrail; onlyTrail.trailingOnLock = true;
+  s.hasEntry = true;
+  auto ot = buildTrailAmend(7, s, onlyTrail);
+  assert(ot.get("stopLossTriggerMethod").isNull() && ot.get("trailingStopLoss").asBool());
+}
+
+void testParseTrailStopPolicy() {
+  auto a = parseTrailStopPolicy(cfgWire(R"({"stopLossTriggerMethod":2,"trailing":"on_lock"})"));
+  assert(a.triggerWire.asNumber() == 2 && a.trailingOnLock);
+  auto b = parseTrailStopPolicy(cfgWire(R"({"stopLossTriggerMethod":"OPPOSITE","trailing":"off"})"));
+  assert(b.triggerWire.asString() == "OPPOSITE" && !b.trailingOnLock);
+  auto c = parseTrailStopPolicy(cfgWire(R"({"stopLossTriggerMethod":1})"));
+  assert(c.triggerWire.asNumber() == 1 && !c.trailingOnLock);
+  // Absent or invalid anywhere clears the whole policy.
+  for (const char* bad : {R"({"stopLossTriggerMethod":9,"trailing":"on_lock"})",
+                          R"({"stopLossTriggerMethod":2,"trailing":"always"})",
+                          R"({"trailing":"on_lock"})", R"([])", R"("x")"}) {
+    auto d = parseTrailStopPolicy(cfgWire(bad));
+    assert(d.triggerWire.isNull() && !d.trailingOnLock);
+  }
+  assert(parseTrailStopPolicy(jsn::Value()).triggerWire.isNull());
+}
+
+void testPolicyReportedInStatus() {
+  TrailEngine e;
+  StopPolicyCfg cfg; cfg.triggerWire = jsn::Value(3); cfg.trailingOnLock = true;
+  e.configurePolicy(cfg);
+  auto st = *jsn::parse(e.statusJson());
+  assert(st.get("stopPolicy").get("stopLossTriggerMethod").asNumber() == 3);
+  assert(st.get("stopPolicy").get("trailingOnLock").asBool());
+  e.configurePolicy(StopPolicyCfg{});
+  st = *jsn::parse(e.statusJson());
+  assert(st.get("stopPolicy").get("stopLossTriggerMethod").isNull());
+  assert(!st.get("stopPolicy").get("trailingOnLock").asBool());
+}
+
 } // namespace
 
 int main() {
@@ -167,6 +250,10 @@ int main() {
   testSymbolIdsDedupe();
   testConfigureDropsSpecsWithNoAccount();
   testConfigureDropsSpecsWithNoTarget();
+  testStopLocksProfitTruthTable();
+  testTrailAmendPayloadPolicy();
+  testParseTrailStopPolicy();
+  testPolicyReportedInStatus();
   std::puts("test_trail_engine: OK");
   return 0;
 }

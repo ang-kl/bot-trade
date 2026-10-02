@@ -94,7 +94,14 @@ test('executeBrokerAction MOVE_SL: the amend the gateway answered is recorded wi
   assert.match(out.summary, /^SL → 1\.10000/)
   const amend = requests.find(r => r.url === '/amend')
   assert.ok(amend, 'the amend reached the gateway')
-  assert.deepEqual(JSON.parse(amend.body), { positionId: 9301, stopLoss: 1.1, takeProfit: 1.2, ctidTraderAccountId: 42 }, 'the payload is what it always was')
+  // What it always was, plus the stop policy and the never-loosen rail
+  // (02-10-2026): Opposite trigger; broker-side trailing because 1.1 is AT the
+  // 1.1 entry (the stop locks breakeven); ratchetOnly + expectedDirection so
+  // the sidecar reads the live broker stop and refuses to loosen it.
+  assert.deepEqual(JSON.parse(amend.body), {
+    positionId: 9301, stopLoss: 1.1, takeProfit: 1.2, ctidTraderAccountId: 42,
+    ratchetOnly: true, expectedDirection: 1, stopLossTriggerMethod: 2, trailingStopLoss: true,
+  }, 'the payload is what it always was plus the stop policy and the rail')
   const { amends } = _amendLatencyStateForTests()
   assert.equal(amends.length, 1, 'one amend sent, one amend timed')
   const e = amends[0]

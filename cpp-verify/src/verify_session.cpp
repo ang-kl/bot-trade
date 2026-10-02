@@ -62,6 +62,22 @@ double asF64(const jsn::Value& v) {
   return 0;
 }
 
+// 02-10-2026 stop-loss policy read-back: ProtoOAOrderTriggerMethod arrives as a
+// number 1..4 (or an enum name). Absent or malformed is null, never an error
+// and never "false": ProtoOAPosition.trailingStopLoss has had a read-back bug
+// where an enabled trailing stop reads absent, so absence is "unknown".
+jsn::Value triggerMethodOrNull(const jsn::Value& v) {
+  int n = 0;
+  if (v.isNumber()) {
+    const double d = v.asNumber(0);
+    if (std::isfinite(d) && std::floor(d) == d && d >= 1 && d <= 4) n = static_cast<int>(d);
+  } else if (v.isString()) {
+    const auto& t = v.asString();
+    n = t == "TRADE" ? 1 : t == "OPPOSITE" ? 2 : t == "DOUBLE_TRADE" ? 3 : t == "DOUBLE_OPPOSITE" ? 4 : 0;
+  }
+  return n > 0 ? jsn::Value(n) : jsn::Value();
+}
+
 } // namespace
 
 VerifySession::VerifySession(std::string host, std::string clientId,
@@ -248,6 +264,8 @@ jsn::Value VerifySession::protection(long long accountId) {
     row.set("symbolId", std::to_string(asI64(p.get("tradeData").get("symbolId"))));
     row.set("stopLoss", hasSl ? jsn::Value(sl) : jsn::Value());
     row.set("takeProfit", hasTp ? jsn::Value(tp) : jsn::Value());
+    row.set("stopLossTriggerMethod", triggerMethodOrNull(p.get("stopLossTriggerMethod")));
+    row.set("trailingStopLoss", p.get("trailingStopLoss").isBool() ? p.get("trailingStopLoss") : jsn::Value());
     rows.push_back(std::move(row));
   }
   out.set("ok", true);

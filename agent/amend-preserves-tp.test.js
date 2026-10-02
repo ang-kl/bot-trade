@@ -39,7 +39,10 @@ const ws = readFileSync(new URL('./lib/ctrader-ws.js', import.meta.url), 'utf8')
 function moveSlBranch() {
   const start = loop.indexOf("if (action === 'MOVE_SL')")
   assert.ok(start > 0, 'MOVE_SL branch not found — this test needs re-anchoring')
-  const end = loop.indexOf("return { summary: `SL →", start)
+  // Ends where the next action's helper begins: the branch's return grew a
+  // conditional summary (stop policy rail, 02-10-2026), so the old anchor on
+  // its first template literal no longer marks the end.
+  const end = loop.indexOf('const volumeMeta', start)
   assert.ok(end > start, 'MOVE_SL branch end not found')
   return loop.slice(start, end)
     .split('\n')
@@ -62,15 +65,26 @@ test('MOVE_SL does not invent a target where none existed', () => {
   const branch = moveSlBranch()
   assert.match(branch, /Number\(pos\.current_tp\) > 0/,
     'only a real, positive target may be re-sent')
-  // EXACT, not `/undefined/`. The first version matched any `undefined` in
-  // the branch — and `sendTp !== undefined` two lines down is one — so the
-  // mutation `: undefined` → `: null` (which sends `takeProfit: null`, a
-  // different broker instruction: "amend to no target") kept the test green.
   assert.match(branch, /const keepTp = Number\(pos\.current_tp\) > 0 \? Number\(pos\.current_tp\) : undefined/,
-    'no target means keepTp is undefined — NOT null, which would be sent')
-  assert.match(branch, /\.\.\.\(sendTp !== undefined \? \{ takeProfit: sendTp \} : \{\}\)/,
-    'the payload must OMIT takeProfit when there is none, not carry it as null')
-  assert.doesNotMatch(branch, /takeProfit: null/, 'a null target is an instruction, not an omission')
+    'no target means keepTp is undefined, never a made-up number')
+  // 02-10-2026: the payload used to OMIT the key when there was no target.
+  // assertAmendIntent (17-09) rejects an omitted takeProfit on a stop amend —
+  // "pass the value to keep, or null if the position has none" — so a
+  // TP-less row's stop move THREW. The explicit null is that contract's
+  // spelling of "I looked, there is none"; the exec layer deletes it before
+  // the wire, so the broker still receives no target instruction (the
+  // behaviour test below proves both halves).
+  assert.match(branch, /takeProfit: sendTp \?\? null/,
+    'no target is passed as an explicit null — the exec layer strips it; omitting the key throws')
+  assert.doesNotMatch(branch, /\.\.\.\(sendTp !== undefined/, 'the old omit-the-key spelling must not return')
+})
+
+test('behaviour: a stop amend with no target needs the explicit null, and the null never reaches the wire', async () => {
+  const { assertAmendIntent } = await import('./lib/exec-engine.js')
+  assert.throws(() => assertAmendIntent({ positionId: 1, stopLoss: 5 }), /CLEARS the take profit/,
+    'omitting takeProfit is rejected — the old MOVE_SL payload for a TP-less row')
+  const ok = assertAmendIntent({ positionId: 1, stopLoss: 5, takeProfit: null })
+  assert.equal('takeProfit' in ok, false, 'null is stripped: the broker gets no target instruction')
 })
 
 test('the clearing semantics are recorded where the payload is built', () => {
@@ -140,7 +154,10 @@ test('PARTIAL_EXIT rounds the runner leg it amends, and carries its target', () 
   assert.match(branch, /stopLoss: runnerSend\.stopLoss/, 'the payload carries the ROUNDED stop')
   assert.doesNotMatch(amendPayload(branch), /eval_\.newSL/, 'the raw unrounded stop must not reach the payload')
   assert.match(branch, /takeProfit: runnerSend\.takeProfit/, 'the runner keeps its target, rounded too')
-  assert.match(branch, /updatePositionSl\.run\(runnerSend\.stopLoss/, 'the DB records what was SENT')
+  // What the broker HOLDS: the sent, rounded stop — unless the sidecar's
+  // read-back says it already held a tighter one (heldStop).
+  assert.match(branch, /updatePositionSl\.run\(heldStop\(amendRes, runnerSend\.stopLoss\)/, 'the DB records what the broker holds')
+  assert.match(branch, /\.\.\.stopAmendExtras\(db, pos, ctx, accountId\)/, 'the runner amend carries the stop policy context and the never-loosen rail')
 })
 
 test('roundAmendPayload: behaviour, not source — digits applied, absent digits pass through', () => {
@@ -165,8 +182,13 @@ test('MOVE_SL records the value it sent, not the unrounded intent', () => {
   const start = loop.indexOf("if (action === 'MOVE_SL')")
   const end = loop.indexOf('const volumeMeta', start)
   const wide = loop.slice(start, end).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-  assert.match(wide, /updatePositionSl\.run\(sendSL/,
-    'the DB must store what was sent to the broker')
+  // `held` is the sent (rounded) stop unless the sidecar's live read found the
+  // broker already tighter (broker-side trailing) — then THAT is what the
+  // broker holds and nothing was sent.
+  assert.match(wide, /const held = heldStop\(res, sendSL\)/,
+    'the stored stop is derived from the sent, rounded value and the broker read-back')
+  assert.match(wide, /updatePositionSl\.run\(held/,
+    'the DB must store what the broker holds')
   assert.match(wide, /toValue: sendSL/,
     'the position event must record what was sent to the broker')
 })

@@ -366,14 +366,17 @@ and effort for each PR."*
   the reply that ordered the work and the reply that reported it, e.g.
   `Conversation ref: ordered № 10,337·E·1 · reported № 10,374`, plus the
   session link. Plan items carry the same serials.
-- Model and effort: NOT written by Claude Code in this environment. The cloud
-  session's own instructions forbid any model identifier in commits, PR text
-  or code, and the reasoning effort is not exposed to the session (P8: never
-  infer or invent it). The session link on every PR is what resolves the
-  model. If the platform setting changes, this paragraph changes with it; until
-  then the owner adds model and effort by hand if wanted. Recorded as an
-  open conflict between the owner's order and the environment, not resolved
-  by guessing.
+- Model and effort. CORRECTED 02-10-2026: the reasoning effort IS readable —
+  the session's `get_session` tool returns `effort_level`, and reading it is
+  not inferring it (P8). So every PR body carries `Effort: <level>` read from
+  that tool at the time. The MODEL is still NOT written: the cloud session's
+  own instructions forbid any model identifier in commits, PR text or code,
+  and the session link on every PR is what resolves it. (The model can change
+  mid-session — the owner's `/model` switch on 02-10 did — which is one more
+  reason to read it from the session record, never from memory.) The earlier
+  version of this paragraph said effort was not exposed; that was wrong, and
+  is recorded here rather than silently replaced. The model half stays an open
+  conflict between the owner's order and the environment.
 
 ## PR merge policy (owner, 2026-07-22)
 
@@ -930,6 +933,20 @@ Measurement history — each line is a real run of the script, not a claim:
   next stamped reply is at least **`№ 10,435`** plus any unstamped line made
   after this ledger. All lower bounds. The count is by replies, not by stamps.
   A later re-measure that reads below this line is missing these, not
+  correcting them.
+- 2026-10-02 02:50 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from `№ 10,435` the replies ran on by count through the
+  429-cause PR #1181 (merged with the duplicate removal: four phantoms voided,
+  five originals reopened, read back clean), the Chandelier PR #1182, the
+  MAE/Chandelier verification `№ 10,473`–`№ 10,474`, the cTrader trigger/
+  trailing capability answer **`№ 10,492`** (09:43 SGT), and the stop-loss
+  policy plan (Opposite trigger, broker-side trailing once the stop locks
+  profit; approved 10:2x SGT) with PR-1's build. At least twenty-two unstamped
+  status lines followed `№ 10,492`, so the next stamped reply is at least
+  **`№ 10,515`** plus any unstamped line made after this ledger. The model
+  was switched by the owner mid-session (`/model`); effort read from
+  `get_session` is `max`. All lower bounds. The count is by replies, not by
+  stamps. A later re-measure that reads below this line is missing these, not
   correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
