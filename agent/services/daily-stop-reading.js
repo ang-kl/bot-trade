@@ -67,10 +67,13 @@ const usd = (v) => `USD ${Number(v).toFixed(2)}`
  * 'pct', 'usd' and 'both'; it has no 'floor' branch (it would say "both caps
  * agree"), so the floor is worded here rather than misreported.
  */
-function explainBinding(p) {
+function explainBinding(p, nativeCcy = null) {
   if (!p || p.capUsd == null) return 'both daily checks are off — the day is uncapped'
   if (p.binding === 'floor') {
-    const other = p.pctCapUsd != null ? `${usd(p.pctCapUsd)} from the % check`
+    // The % check is a fraction of the stored balance, which is the broker's
+    // NATIVE money; on a non-USD account it is in that currency, not USD (C·1).
+    const pctLabel = nativeCcy && nativeCcy !== DAILY_STOP_CURRENCY ? `${nativeCcy} ${Number(p.pctCapUsd).toFixed(2)}` : (p.pctCapUsd != null ? usd(p.pctCapUsd) : null)
+    const other = p.pctCapUsd != null ? `${pctLabel} from the % check`
       : p.usdInForce != null ? `the ${usd(p.usdInForce)} flat cap` : 'no other check'
     return `the ${usd(p.floorUsd)} floor binds — above ${other}`
   }
@@ -148,7 +151,7 @@ export function dailyStopReading(db, accountId, { nowMs = Date.now(), moneyCurre
     capUsd,
     currency: DAILY_STOP_CURRENCY,
     binding: p.binding,
-    explain: explainBinding(p),
+    explain: explainBinding(p, ccy),
     parts: {
       pctCapUsd: round2(p.pctCapUsd),
       tierPct: p.tierPct ?? null,

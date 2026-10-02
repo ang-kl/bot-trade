@@ -173,8 +173,9 @@ test('telegram /status account lines: only with 2+ enabled accounts, per-account
   const a = lines.find(l => l.includes('5306502'))
   const b = lines.find(l => l.includes('5268549'))
   assert.match(a, /▶/)
-  assert.match(a, /\$10000\.00/)
+  // C·1: no broker-verified currency here, so the unit is said to be unverified, not assumed to be dollars.
+  assert.match(a, /10000\.00 \(currency unverified\)/)
   assert.match(a, /1 open/, 'legacy NULL open trade counts for the selected account')
-  assert.match(b, /\$538\.58/)
+  assert.match(b, /538\.58 \(currency unverified\)/)
   assert.match(b, /1 open/)
 })

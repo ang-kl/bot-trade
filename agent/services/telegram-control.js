@@ -41,6 +41,7 @@ import { setPhaseFlag } from './phase-audit.js'
 import * as notify from './telegram-digest.js'
 import { recordArmingChange } from './arming-log.js'
 import { parseProtectionCallback, protectionCredentials } from './protection-account.js'
+import { balanceUnit, moneyLabel } from './balance-unit.js'
 
 const TG_API = 'https://api.telegram.org'
 
@@ -234,7 +235,8 @@ export function fmtAccountLines(db) {
     // one line you read on a phone named an account by a number you could not
     // match to anything else in the system.
     const who = a.trader_login ? `${a.trader_login} · ${id}` : String(id)
-    return `  ${isSelected ? '▶' : '·'} ${who} ${a.is_live ? 'LIVE' : 'demo'} · $${bal != null ? bal.toFixed(2) : '?'} · ${open} open`
+    // The stored number is the broker's NATIVE balance whatever the key says; label it in the account's own currency (C·1).
+    return `  ${isSelected ? '▶' : '·'} ${who} ${a.is_live ? 'LIVE' : 'demo'} · ${moneyLabel(bal, balanceUnit(db, id))} · ${open} open`
   })
 }
 
@@ -311,7 +313,7 @@ export function handleNotifyCommand(db, cmd, argsText, nowMs = Date.now()) {
   return null
 }
 
-function fmtStatus(db) {
+export function fmtStatus(db) {
   const on = (k, dflt) => (getState(db, k) ?? dflt)
   let matrix = {}
   try { matrix = JSON.parse(getState(db, 'pending_matrix_json') || '{}') } catch { /* show empty */ }
@@ -327,7 +329,15 @@ function fmtStatus(db) {
     `pending armed: ${Object.entries(matrix).map(([s, t]) => `${s}(${t.join('/')})`).join(' ') || '—'}`,
     `working pending orders: ${pend.map(p => `${p.symbol} ${p.timeframe}`).join(', ') || 'none'}`,
     `open positions: ${pos.map(p => `${p.symbol} ${String(p.side).toUpperCase()}`).join(', ') || 'flat'}`,
-    `balance: $${Number(getState(db, 'account_balance_usd')) || '?'}`,
+    // The selected account's OWN stamped balance in its own currency. The global
+    // `account_balance_usd` key belongs to whichever account refreshed it last
+    // and the broker's native money is not always USD (C·1).
+    (() => {
+      const sel = getState(db, 'ctrader_account_id') || null
+      const own = sel != null ? Number(getState(db, `acct:${sel}:account_balance_usd`)) : NaN
+      const bal = Number.isFinite(own) && own > 0 ? own : (sel == null ? (Number(getState(db, 'account_balance_usd')) || null) : null)
+      return `balance: ${moneyLabel(bal, sel != null ? balanceUnit(db, sel) : null)}`
+    })(),
     ...(() => {
       const lines = fmtAccountLines(db)
       return lines.length ? ['accounts:', ...lines] : []

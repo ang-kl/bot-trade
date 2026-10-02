@@ -1066,6 +1066,15 @@ Measurement history — each line is a real run of the script, not a claim:
   least **`№ 10,656`** plus any unstamped line made after this ledger. All
   lower bounds. The count is by replies, not by stamps. A later re-measure
   that reads below this line is missing these, not correcting them.
+- 2026-10-02 18:09 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,656`), the replies ran on through the #1194 report `№ 10,656`
+  (the closed-position cleanup, merged and read back), the "nothing open to
+  merge" answer `№ 10,657` and the owner's "C·1 currency in SGD"; this PR
+  (labels and provenance only, no value changed) carries it. The next stamped
+  reply is at least **`№ 10,659`** plus any unstamped line made after this
+  ledger. All lower bounds. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
