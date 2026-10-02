@@ -614,7 +614,8 @@ test('C·6: a named segment that is not in the directory is refused by name — 
 test('C·6: the shape is refused 400 before anything is read — empty, not a name, a duplicate, or together with maxSegments', () => {
   const db = initDB(':memory:')
   const { dir, names } = fourSegments(400)
-  for (const segments of [[], ['../etc/passwd'], [names[0], names[0]], 'seg-1-1.tks', [1]]) {
+  // Codex review of #1196: only the sidecar's canonical seg-<13 digits>-<6 digits>.tks is a name
+  for (const segments of [[], ['../etc/passwd'], [names[0], names[0]], 'seg-1-1.tks', [1], ['seg-9-1.tks'], ['seg-000001.tks']]) {
     const r = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, dryRun: true, segments }, { segmentsDir: dir, maxRecords: 1000 })
     assert.equal(r.status, 400, JSON.stringify(segments)); assert.equal(r.body.error, 'bad_segments')
   }

@@ -249,11 +249,16 @@ export function verifySegmentFile(path) {
  * is not this function's call) — it is left out of the map, so the sync
  * re-pulls and overwrites it, and it is reported in `corrupt`.
  */
-export function cachedSegments(destDir, { verify = false } = {}) {
+export function cachedSegments(destDir, { verify = false, names = null } = {}) {
   const out = new Map()
   const corrupt = []
+  // Codex review of #1196: a NAMED sync reads only the named files. Before,
+  // `verify` CRC-decoded every cached segment (up to 500 of 64 MiB) before
+  // the name filter was applied, so a two-segment replay could scan tens of
+  // GiB first. A name not in the cache is simply absent from the map.
+  const want = Array.isArray(names) && names.length ? names.filter(n => SEGMENT_NAME_RE.test(n)) : null
   try {
-    for (const f of readdirSync(destDir)) {
+    for (const f of want || readdirSync(destDir)) {
       if (!SEGMENT_NAME_RE.test(f)) continue
       const path = join(destDir, f)
       try {
@@ -287,7 +292,7 @@ export async function syncSegments(d, destDir, { maxBytes = DEFAULT_MAX_BYTES, m
   if (!list.ok) return { pulled: 0, skipped: 0, bytes: 0, truncated: false, failed: [], corrupt: [], enabled: null, error: list.error }
   if (list.enabled === false) return { pulled: 0, skipped: 0, bytes: 0, truncated: false, failed: [], corrupt: [], enabled: false, reason: list.reason }
   // Presence is DECODES-and-has-the-right-length, not length alone (M-2).
-  const have = cachedSegments(destDir, { verify: verifyCache })
+  const have = cachedSegments(destDir, { verify: verifyCache, names: want ? [...want] : null })
   const corrupt = have.corrupt || []
   let pulled = 0, skipped = 0, bytes = 0, truncated = list.truncated
   const failed = []
