@@ -4,7 +4,7 @@ import {
   observePosition, wilderAtr, foldExcursion, recordObserve, observeIntervalMs,
   chandelierSinceEntry, decideAdjust, shouldSendChandelierAdjust, sinceEntryTrailSpec,
   recordAmendReceipt, receiptFromBrokerOutcome, receiptFromTrailMove, OBSERVE_STATE_KEY,
-  heldBarsSince, positionOpenedAtMs, noteMid, freshMid, maeChandelierView,
+  heldBarsSince, positionOpenedAtMs, noteMid, freshMid, maeChandelierView, activeMonitoredIds,
 } from './mae-chandelier-observe.js'
 
 function barsFrom(closes) {
@@ -231,4 +231,18 @@ test('wiring: the bar fetch uses the position\'s own host and keys the cache by 
   assert.ok(loop.includes("cachedBars(String(pos.symbol || '').toUpperCase())"), 'the slow pass reads the same name-keyed cache')
   assert.ok(loop.includes('openedAtMs: positionOpenedAtMs(db, pos)'), 'the slow pass cuts at the open time')
   assert.ok(fast.includes('openedAtMs: positionOpenedAtMs(db, pos)'), 'the fast pass cuts at the open time')
+})
+
+test('recording a reading drops the rows of positions that are no longer open', async () => {
+  let stored = JSON.stringify({ positions: { 1: { id: '1', symbol: 'A' }, 2: { id: '2', symbol: 'B' } } })
+  const db = { prepare: () => ({ all: () => [{ id: 1 }, { id: 3 }] }) }
+  await recordObserve(db, [{ id: '3', symbol: 'C', mayAmend: false }], Date.now(), { read: () => stored, write: (_d, _k, v) => { stored = v } })
+  assert.deepEqual(Object.keys(JSON.parse(stored).positions).sort(), ['1', '3'], 'row 2 (closed) is gone, 1 and the new 3 stay')
+})
+
+test('an unreadable monitored table drops nothing', async () => {
+  assert.equal(activeMonitoredIds({ prepare: () => { throw new Error('no table') } }), null)
+  let stored = JSON.stringify({ positions: { 1: { id: '1' } } })
+  await recordObserve({ prepare: () => { throw new Error('no table') } }, [{ id: '2', mayAmend: false }], Date.now(), { read: () => stored, write: (_d, _k, v) => { stored = v } })
+  assert.deepEqual(Object.keys(JSON.parse(stored).positions).sort(), ['1', '2'])
 })

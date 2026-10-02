@@ -21,7 +21,7 @@ import { requestedAccount, accountWhere, countUnattributed, scopeCoverage, scope
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
-import { maeChandelierView } from '../services/mae-chandelier-observe.js'
+import { maeChandelierView, activeMonitoredIds } from '../services/mae-chandelier-observe.js'
 import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, getStopPolicy, trailConfigPolicy, triggerValue, stopPolicyStats } from '../lib/stop-policy.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
@@ -4638,7 +4638,7 @@ export default function stateRouter(db) {
   // straight from the key the ticks write; nothing is recomputed here, so a
   // reading with no ATR shows as such ("withoutBars") instead of healthy.
   router.get('/mae-chandelier', (_req, res) => {
-    res.json(maeChandelierView(db, getState))
+    res.json(maeChandelierView(db, getState, activeMonitoredIds(db)))
   })
 
   // GET /state/stop-policy — the stop-loss policy as the bot is running it and
