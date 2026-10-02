@@ -74,8 +74,6 @@ export function observePosition({
   }
   const adverse = dir === 1 ? entry - price : price - entry
   const favourable = dir === 1 ? price - entry : entry - price
-  const mae = Math.max(Number(peak) > 0 ? 0 : 0, Number.isFinite(trough) ? trough : 0, adverse)
-  const mfe = Math.max(Number.isFinite(peak) ? peak : 0, favourable)
   // peak/trough here are price excursions already in price units, not USD.
   out.mae = Math.max(0, Number.isFinite(trough) ? Math.max(trough, adverse) : Math.max(0, adverse))
   out.mfe = Math.max(0, Number.isFinite(peak) ? Math.max(peak, favourable) : Math.max(0, favourable))

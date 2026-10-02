@@ -11,7 +11,14 @@ namespace {
 long long clockMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
 bool safe(const std::string& s) { return !s.empty() && s.size() <= 128 && std::all_of(s.begin(), s.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.'; }); }
 std::string epoch() { unsigned char bytes[16]; if (RAND_bytes(bytes, sizeof bytes) != 1) throw std::runtime_error("mirror_epoch_unavailable"); std::string s; const char* h="0123456789abcdef"; for (auto b:bytes) { s+=h[b>>4];s+=h[b&15]; } return s; }
-size_t boundedBody(char*, size_t size, size_t count, void* ptr) { const auto n=size*count; auto& used=*static_cast<size_t*>(ptr); if(n>65536-used)return 0; used+=n; return n; }
+// The reply is bounded at 64 KiB as before; its first 512 bytes are kept so a
+// refusal's cause can be named (the scanner's 429 body is a few dozen bytes).
+struct ReplyHead { size_t used=0; std::string head; };
+size_t boundedBody(char* data, size_t size, size_t count, void* ptr) {
+  const auto n=size*count; auto& reply=*static_cast<ReplyHead*>(ptr); if(n>65536-reply.used)return 0; reply.used+=n;
+  if(reply.head.size()<512)reply.head.append(data,std::min(n,512-reply.head.size()));
+  return n;
+}
 }
 ScannerMirror::ScannerMirror(std::string host, long long account, std::string config, long long ttl,
                             tick::StrategyParams profile, Send send, size_t queueCapacity)
@@ -103,6 +110,14 @@ jsn::Value ScannerMirror::status() const {
     {"delivered",static_cast<long long>(delivered_.load())},{"lastInputAtMs",lastInput_.load()},
     {"lastDeliveredAtMs",lastDelivered_.load()},{"queueCapacity",static_cast<long long>(queue_.capacity()-1)}});
 }
+std::string ScannerMirror::refusalCause(std::string_view body) {
+  static constexpr std::string_view key="\"cause\":\"";
+  const auto at=body.find(key); if(at==std::string_view::npos)return {};
+  const auto start=at+key.size(); auto end=start;
+  while(end<body.size()&&end-start<=40&&((body[end]>='a'&&body[end]<='z')||body[end]=='_'))++end;
+  if(end==start||end-start>40||end>=body.size()||body[end]!='"')return {};
+  return std::string(body.substr(start,end-start));
+}
 ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::string& secret,Report report) {
   if((!url.starts_with("http://")&&!url.starts_with("https://")) || secret.empty()
       || secret.find_first_of("\r\n")!=std::string::npos)throw std::invalid_argument("mirror_endpoint_or_secret_invalid");
@@ -117,7 +132,7 @@ ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::
   return [url,secret,report,diagnostics](const std::string& body) {
     CURL* c=curl_easy_init();if(!c)return Delivery::Retryable;
     curl_slist* headers=nullptr;headers=curl_slist_append(headers,("Authorization: Bearer "+secret).c_str());headers=curl_slist_append(headers,"Content-Type: application/json");
-    size_t received=0;
+    ReplyHead received;
     curl_easy_setopt(c,CURLOPT_URL,url.c_str());curl_easy_setopt(c,CURLOPT_HTTPHEADER,headers);
     curl_easy_setopt(c,CURLOPT_POSTFIELDS,body.data());curl_easy_setopt(c,CURLOPT_POSTFIELDSIZE,static_cast<long>(body.size()));
     curl_easy_setopt(c,CURLOPT_TIMEOUT_MS,2000L);curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT_MS,1000L);curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
@@ -137,6 +152,7 @@ ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::
       if(!accepted&&(!diagnostics->reported||now-diagnostics->last>=std::chrono::seconds(60))){
         diagnostics->reported=true;diagnostics->unhealthy=true;diagnostics->last=now;
         message="delivery failed: HTTP "+std::to_string(status)+", transport code "+std::to_string(static_cast<int>(rc));
+        if(const auto cause=refusalCause(received.head);!cause.empty())message+="; cause "+cause;
         if(status==404)message+="; verify TICK_SCANNER_MIRROR_URL targets /feed";
       }
     }

@@ -381,6 +381,7 @@ export function buildPositionRecord(db, { accountId, positionId }) {
  *                           entry time is never excused by a date.
  */
 export const REFUSED_CLASSES = Object.freeze({
+  cross_account_duplicate: 'a row for a position another account\'s bot row holds with evidence — the 30-09 cross-account adoption; not a writer gap of this account\'s (№ 10,448)',
   live_gap: 'a field its writer should have written and did not (entered after the writer and any fix, no dated contract, or an unknown entry time) — a writer defect',
   post_contract_pre_fix: 'direction_reason on a row entered after PR-D (#899) and before PR-AL fixed three paths that threw it away (#934) — a gap this codebase built',
   outside_bot: 'a bot-side field (reason, strategy, plan) on a position the bot did not open — no writer here could hold it',
@@ -391,7 +392,7 @@ export const REFUSED_CLASSES = Object.freeze({
 // When a record's fields fall in several classes, the record takes the first
 // of these present (a live writer defect outranks everything; pre_contract
 // only when EVERY field is pre-contract).
-const REFUSED_PRECEDENCE = ['live_gap', 'post_contract_pre_fix', 'outside_bot', 'broker_evidence_pending', 'labelled_unrecoverable', 'pre_contract']
+const REFUSED_PRECEDENCE = ['cross_account_duplicate', 'live_gap', 'post_contract_pre_fix', 'outside_bot', 'broker_evidence_pending', 'labelled_unrecoverable', 'pre_contract']
 const BOT_SIDE_FIELDS = new Set(['direction_reason', 'strategy', ...PLAN_FIELDS])
 const EXTERNAL_ORIGINS = new Set(['manual_broker', 'external_system'])
 const isoOf = (t) => (t == null ? '?' : new Date(t).toISOString().slice(0, 19) + 'Z')
@@ -451,6 +452,18 @@ export function classifyRefusedRecord(db, { record = {}, missing = [] } = {}) {
 
   const fields = {}, why = {}
   const put = (f, cls, reason) => { fields[f] = cls; why[f] = reason }
+  // № 10,448: a record whose position another account's bot row holds (with
+  // deal evidence, or open) is a cross-account duplicate — the 30-09 phantom
+  // adoption — and no field of it is a writer gap of THIS account's.
+  const twin = record.account_id != null && record.ctrader_position_id != null
+    ? get(`SELECT id, account_id, status FROM trades WHERE ctrader_position_id IN (?, ?) AND account_id IS NOT NULL AND account_id <> ?
+             AND status IN ('open', 'closed') AND (status = 'open' OR exit_price IS NOT NULL OR net_pnl IS NOT NULL) ORDER BY id LIMIT 1`,
+      normPosId(record.ctrader_position_id), `${normPosId(record.ctrader_position_id)}.0`, String(record.account_id))
+    : null
+  if (twin) {
+    for (const f of missing) put(f, 'cross_account_duplicate', `position ${normPosId(record.ctrader_position_id)} is …${String(twin.account_id).slice(-4)}'s (trade ${twin.id}, ${twin.status})`)
+    return { class: 'cross_account_duplicate', fields, reason: Object.keys(fields).map(f => `${f}: ${fields[f]} (${why[f]})`).join('; ') }
+  }
   for (const f of missing) {
     if (BROKER_FIELDS.includes(f)) {
       if (writtenOff) put(f, 'labelled_unrecoverable', `written off${trade?.pnl_unresolvable_at ? ` ${trade.pnl_unresolvable_at}` : ''}: ${String(trade?.pnl_unresolvable_reason ?? '(no reason recorded)').slice(0, 120)}`)

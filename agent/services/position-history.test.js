@@ -722,3 +722,21 @@ test('B4b fix round (checker nit 3): a stored record completed from the ledger r
   assert.equal(c.classedOn, 'stored missing; stored record + risk_event_id, opened_at_ms, origin from the flag key or ledger row')
   assert.notEqual(c.classedOn, CLASSED_ON_REFUSED_VIEW)
 })
+
+// № 10,448: a refused record whose position another account's bot row holds
+// (with deal evidence, or open) is a cross-account duplicate — never a live
+// writer gap of this account's.
+test('a refused record for a position another account holds classes cross_account_duplicate', () => {
+  const db = fresh()
+  db.prepare(`INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, closed_at, exit_price, net_pnl, account_id, origin)
+              VALUES ('V.US', 'BUY', 360, 0.1, '241760418', 'autopilot', 'closed', datetime('now','-10 days'), datetime('now'), 358.83, -1.77, '46979908', 'bot_pending_fill')`).run()
+  const rec = { account_id: '46130058', ctrader_position_id: '241760418', opened_at_ms: Date.parse('2026-09-30T07:45:55Z') }
+  const c = classifyRefusedRecord(db, { record: rec, missing: ['direction_reason', 'planned_entry', 'exit_price'] })
+  assert.equal(c.class, 'cross_account_duplicate')
+  assert.ok(Object.values(c.fields).every(v => v === 'cross_account_duplicate'), JSON.stringify(c.fields))
+  assert.match(c.reason, /…9908/)
+  assert.ok(REFUSED_CLASSES.cross_account_duplicate)
+  // The same record with no twin on another account is judged as before.
+  db.prepare(`DELETE FROM trades`).run()
+  assert.equal(classifyRefusedRecord(db, { record: rec, missing: ['direction_reason'] }).class, 'live_gap')
+})

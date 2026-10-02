@@ -13,7 +13,7 @@ int main() {
     if (req.body.size() > 256 * 1024) return HttpResponse{413, "{\"error\":\"batch_bound\"}"};
     try { const auto body = jsn::parse(req.body); if (!body) throw std::invalid_argument("invalid_json"); return HttpResponse{202, jsn::dump(scanner.submit(*body))}; }
     catch (const std::invalid_argument& e) { return HttpResponse{400, jsn::dump(jsn::Value(jsn::Object{{"error", e.what()}}))}; }
-    catch (const std::exception&) { return HttpResponse{429, "{\"error\":\"bounded_capacity_unavailable\"}"}; }
+    catch (const std::exception& e) { return HttpResponse{429, std::string("{\"error\":\"bounded_capacity_unavailable\",\"cause\":\"") + scan::capacityCause(e.what()) + "\"}"}; }
   });
   server.route("GET", "/candidates", [&](const HttpRequest& req) {
     try { const auto raw = queryParam(req.query, "after", "0"); size_t end; const auto after = std::stoll(raw, &end); if (after < 0 || end != raw.size()) throw std::invalid_argument("cursor"); return HttpResponse{200, jsn::dump(scanner.candidates(after))}; }

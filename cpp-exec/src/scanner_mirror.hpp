@@ -6,6 +6,7 @@
 #include <atomic>
 #include <functional>
 #include <thread>
+#include <string_view>
 
 // Optional mirror transport. Feed-thread work is one fixed-size ring push;
 // serialization, HTTP, retries and per-symbol state belong to the consumer.
@@ -23,6 +24,10 @@ public:
   void observe(const tick::Record& record, long long sourceTimestampMs) noexcept;
   jsn::Value status() const;
   static Send httpSender(const std::string& url, const std::string& secret, Report report = {});
+  // The scanner's refusal cause from a reply body: a `"cause":"<token>"` of
+  // 1–40 lowercase letters and underscores, else "". Nothing else of the
+  // reply is ever logged.
+  static std::string refusalCause(std::string_view body);
 private:
   struct Event { tick::Record record; long long sourceTime = 0; uint64_t losses = 0; };
   void run(std::stop_token stop);

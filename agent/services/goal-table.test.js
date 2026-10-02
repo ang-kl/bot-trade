@@ -630,7 +630,7 @@ test('B4b: lifecycle_close names its refused records in B4\'s shape — an undat
   const t = await goalTable(db, { now, lifecycleRead: () => snap })
   const g = byId(t).lifecycle_close
   assert.equal(g.current, 1); assert.equal(g.verdict, 'off_track')
-  assert.deepEqual(g.split, { raw: 1, live_gap: 1, post_contract_pre_fix: 0, outside_bot: 0, broker_evidence_pending: 0, labelled_unrecoverable: 0, pre_contract: 0, other_rules: 0, classes: g.split.classes })
+  assert.deepEqual(g.split, { raw: 1, cross_account_duplicate: 0, live_gap: 1, post_contract_pre_fix: 0, outside_bot: 0, broker_evidence_pending: 0, labelled_unrecoverable: 0, pre_contract: 0, other_rules: 0, classes: g.split.classes })
   assert.equal(g.itemsTotal, 1)
   assert.deepEqual(g.items.map(i => [i.account, i.symbol, i.positionId, i.missing, i.class, i.stored]), [['47790949', 'Cocoa', '243609813', ['direction_reason'], 'live_gap', 'refused']])
   assert.match(g.items[0].reason, /direction_reason: live_gap \(entry time unknown — not excused by a date\)/)

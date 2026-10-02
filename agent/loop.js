@@ -36,7 +36,7 @@ import { isProducerRetired } from './lib/entry-producers.js'
 import { admitEntry } from './services/entry-mode.js'
 import { configureInflight, inflightSummary, describeCall, maybeStamp as maybeStampInflight } from './lib/inflight.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
-import { reconcilePositions } from './services/reconciler.js'
+import { reconcilePositions, reconcileReplyIdentity } from './services/reconciler.js'
 import { reconcileCrossSideAccounts } from './services/cross-side-reconcile.js'
 import { checkRegimeGate, latestRegime } from './services/regime-gate.js'
 import { recordRegimeBlock, recordEvidenceShadow, recordMarketHoursUnknown } from './services/gate-skips.js'
@@ -129,6 +129,8 @@ let loopDb = null
 let lastBookHeldReason = null
 let loopRunning = false               // mutex — prevents concurrent iterations
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
+// № 10,448: accounts whose reconcile reply names no account, warned once per boot.
+const reconcileIdentityWarned = new Set()
 /** A long phase that is making progress stamps the watchdog's clock. */
 export function noteLoopProgress() { lastLoopActivityAt = Date.now() }
 let pendingPhaseInFlight = false      // a budget-abandoned pending phase still executing detached
@@ -3420,6 +3422,14 @@ async function runLoop(db) {
           // hold compares it with a sidecar boot's first sight).
           const reconcileReadAt = Date.now()
           const reconcileData = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
+          // № 10,448: a reply naming another account is refused whole.
+          const identity = reconcileReplyIdentity(reconcileData, accountId)
+          if (!identity.ok) {
+            log(`Reconcile[${accountId}]: REFUSED — ${identity.reason}`)
+            try { db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)').run('RECONCILE_IDENTITY_REFUSED', '/reconcile', JSON.stringify({ asked: String(accountId), replyAccount: identity.replyAccount }), String(accountId)) } catch { /* audit best-effort */ }
+            throw new Error(`reconcile identity refused: ${identity.reason}`)
+          }
+          if (!identity.verified && !reconcileIdentityWarned.has(String(accountId))) { reconcileIdentityWarned.add(String(accountId)); log(`Reconcile[${accountId}]: ${identity.reason}`) }
 
           const allSymbolIds = [...new Set([
             ...(reconcileData.position || []).map(p => p.tradeData?.symbolId),
@@ -4111,6 +4121,15 @@ async function runLoop(db) {
               try {
                 const accReadAt = Date.now() // C9 N5: the request time, stamped as this account's read time
                 const rd = await execReconcile({ host, clientId, clientSecret, accessToken, accountId: acc.account_id })
+                // № 10,448: the 30-09 07:45:55Z reply for …0058 carried …9908's
+                // positions; a reply naming another account is refused whole.
+                const identity2 = reconcileReplyIdentity(rd, acc.account_id)
+                if (!identity2.ok) {
+                  log(`Reconcile[${acc.account_id}]: REFUSED — ${identity2.reason}`)
+                  try { db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)').run('RECONCILE_IDENTITY_REFUSED', '/reconcile', JSON.stringify({ asked: String(acc.account_id), replyAccount: identity2.replyAccount }), String(acc.account_id)) } catch { /* audit best-effort */ }
+                  continue
+                }
+                if (!identity2.verified && !reconcileIdentityWarned.has(String(acc.account_id))) { reconcileIdentityWarned.add(String(acc.account_id)); log(`Reconcile[${acc.account_id}]: ${identity2.reason}`) }
                 // The primary pass only fetched the symbol-name list when IT
                 // had positions — fetch on demand if this account has rows
                 // the map can't name.
@@ -4127,7 +4146,7 @@ async function runLoop(db) {
                 const r2 = reconcilePositions(db, pos2, ord2,
                   (k, v) => setAccountState(db, acc.account_id, k, v),
                   { accountId: acc.account_id, readAt: accReadAt })
-                log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)`)
+                log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)${r2.crossAccountRefused?.length ? `, ${r2.crossAccountRefused.length} CROSS-ACCOUNT REFUSED (${r2.crossAccountRefused.map(x => `${x.symbol} held by …${x.heldBy.slice(-4)}`).join(', ')})` : ''}`)
 
                 // V3 V1: this account's detected closes are queued for capture
                 // too (until 25-09-2026 only the selected account's were).

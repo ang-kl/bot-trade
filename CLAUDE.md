@@ -355,6 +355,26 @@ proposed defaults (replay 40 trades / PF ≥ 1.3 / max DD 8R / expectancy lower
 bound ≥ 0; shadow 200 signals / 48 h / 30 trades / 8 losses / PF ≥ 1.3 /
 lower bound ≥ 0 / max DD 8R / resets ≤ 20 %).
 
+## Conversation reference on every PR (owner, 2026-10-02) — standing rule
+
+Owner, 02-10-2026 (№ 10,424–10,425): *"bake-in the serial numberings of our
+dialogue … so that each PR has a reference to the conversation regardless of
+LLM"*, and *"Henceforth must include conversation serial numbering, LLM model
+and effort for each PR."*
+
+- Every PR body and its squash commit carry a `Conversation ref:` line naming
+  the reply that ordered the work and the reply that reported it, e.g.
+  `Conversation ref: ordered № 10,337·E·1 · reported № 10,374`, plus the
+  session link. Plan items carry the same serials.
+- Model and effort: NOT written by Claude Code in this environment. The cloud
+  session's own instructions forbid any model identifier in commits, PR text
+  or code, and the reasoning effort is not exposed to the session (P8: never
+  infer or invent it). The session link on every PR is what resolves the
+  model. If the platform setting changes, this paragraph changes with it; until
+  then the owner adds model and effort by hand if wanted. Recorded as an
+  open conflict between the owner's order and the environment, not resolved
+  by guessing.
+
 ## PR merge policy (owner, 2026-07-22)
 
 Auto-merge is standing approval, not a one-off: once a PR's full gate is
@@ -899,6 +919,18 @@ Measurement history — each line is a real run of the script, not a claim:
   least **`№ 10,355`** plus any unstamped line made after this ledger. The
   count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
+- 2026-10-02 00:10 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): continuing from the line above (next stamp at least
+  `№ 10,355`), the replies ran on by count through the #1176 report
+  `№ 10,374`, #1177 `№ 10,380`, the Cocoa/BTC/scanner orders `№ 10,389`, the
+  monitor and tampering answer `№ 10,395`, the nightly LOOP HUNG fix #1179
+  `№ 10,419` and its merge `№ 10,422`, the check-in `№ 10,424`, the
+  conversation-ref rule `№ 10,425` and the E·4/D·3/D·5 read `№ 10,429`. Five
+  unstamped status lines followed it while the 429-cause PR was built, so the
+  next stamped reply is at least **`№ 10,435`** plus any unstamped line made
+  after this ledger. All lower bounds. The count is by replies, not by stamps.
+  A later re-measure that reads below this line is missing these, not
+  correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
