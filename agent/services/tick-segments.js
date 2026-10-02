@@ -277,7 +277,12 @@ export function cachedSegments(destDir, { verify = false } = {}) {
  * `truncated` is true when the sidecar's own list was capped OR a bound cut
  * this run short — so a caller can say "there is more" honestly.
  */
-export async function syncSegments(d, destDir, { maxBytes = DEFAULT_MAX_BYTES, maxSegments = DEFAULT_MAX_SEGMENTS, verifyCache = true } = {}) {
+export async function syncSegments(d, destDir, { maxBytes = DEFAULT_MAX_BYTES, maxSegments = DEFAULT_MAX_SEGMENTS, verifyCache = true, names = null } = {}) {
+  // C·6 research (03-10-2026): `names` restricts the pull to the segments the
+  // operator NAMED. Oldest-first with a bound can only ever reach the oldest
+  // segments a side still lists; on production that was the 11-09 weekend
+  // pair, replayed already, while thirteen weekday segments sat behind them.
+  const want = Array.isArray(names) && names.length ? new Set(names) : null
   const list = await listSidecarSegments(d)
   if (!list.ok) return { pulled: 0, skipped: 0, bytes: 0, truncated: false, failed: [], corrupt: [], enabled: null, error: list.error }
   if (list.enabled === false) return { pulled: 0, skipped: 0, bytes: 0, truncated: false, failed: [], corrupt: [], enabled: false, reason: list.reason }
@@ -296,6 +301,7 @@ export async function syncSegments(d, destDir, { maxBytes = DEFAULT_MAX_BYTES, m
   // cold cache and a warm one.
   let taken = 0
   for (const s of list.segments) {
+    if (want && !want.has(s.name)) continue
     if (taken >= maxSegments) { truncated = true; break }
     if (have.get(s.name) === s.bytes) { skipped++; taken++; continue }
     if (bytes + s.bytes > maxBytes) { truncated = true; break }
@@ -318,7 +324,7 @@ export async function syncSegments(d, destDir, { maxBytes = DEFAULT_MAX_BYTES, m
  * order and their results reported separately; a side that is unreachable or
  * has no recorder is a REPORTED fact, never an exception.
  */
-export async function syncFromSidecars(destDir, { sides = segmentSides(), fetch: fetchImpl, secret, timeoutMs, maxBytes, maxSegments, verifyCache = true } = {}) {
+export async function syncFromSidecars(destDir, { sides = segmentSides(), fetch: fetchImpl, secret, timeoutMs, maxBytes, maxSegments, verifyCache = true, names = null } = {}) {
   const out = { destDir, pulled: 0, skipped: 0, bytes: 0, truncated: false, corrupt: 0, taken: 0, sides: [] }
   let budget = maxBytes ?? DEFAULT_MAX_BYTES
   // The SEGMENT bound is shared across the sides the same way the byte budget
@@ -328,7 +334,7 @@ export async function syncFromSidecars(destDir, { sides = segmentSides(), fetch:
   // default, which is the unbounded path this function had before.
   let segmentBudget = maxSegments
   for (const side of sides) {
-    const r = await syncSegments({ base: side.base, fetch: fetchImpl, secret, timeoutMs }, destDir, { maxBytes: budget, ...(segmentBudget === undefined ? {} : { maxSegments: Math.max(0, segmentBudget) }), verifyCache })
+    const r = await syncSegments({ base: side.base, fetch: fetchImpl, secret, timeoutMs }, destDir, { maxBytes: budget, ...(segmentBudget === undefined ? {} : { maxSegments: Math.max(0, segmentBudget) }), verifyCache, names })
     if (segmentBudget !== undefined) segmentBudget = Math.max(0, segmentBudget - (r.taken ?? 0))
     out.taken += r.taken ?? 0
     out.pulled += r.pulled
@@ -391,11 +397,11 @@ export const SYNC_WORKER_FILE = new URL('./tick-segments-worker.js', import.meta
  * and false of the effect. The whole sync — list, pull, decode, verify —
  * now happens off the loop; the main thread awaits a message.
  */
-export function syncInWorker(destDir, { sides = segmentSides(), secret = process.env.EXEC_SECRET ?? '', timeoutMs, maxBytes, maxSegments, workerFile = SYNC_WORKER_FILE } = {}) {
+export function syncInWorker(destDir, { sides = segmentSides(), secret = process.env.EXEC_SECRET ?? '', timeoutMs, maxBytes, maxSegments, names = null, workerFile = SYNC_WORKER_FILE } = {}) {
   return new Promise((resolve) => {
     let worker
     try {
-      worker = new Worker(workerFile, { workerData: { destDir, sides, secret, timeoutMs, maxBytes, maxSegments } })
+      worker = new Worker(workerFile, { workerData: { destDir, sides, secret, timeoutMs, maxBytes, maxSegments, names } })
     } catch (err) {
       resolve({ destDir, pulled: 0, skipped: 0, bytes: 0, truncated: false, corrupt: 0, sides: [], error: `sync worker did not start: ${err?.message || String(err)}` })
       return

@@ -17,8 +17,8 @@
 import { parentPort, workerData } from 'node:worker_threads'
 import { syncFromSidecars } from './tick-segments.js'
 
-const { destDir, sides, secret, timeoutMs, maxBytes, maxSegments } = workerData || {}
+const { destDir, sides, secret, timeoutMs, maxBytes, maxSegments, names } = workerData || {}
 
-syncFromSidecars(destDir, { sides, secret, timeoutMs, maxBytes, maxSegments })
+syncFromSidecars(destDir, { sides, secret, timeoutMs, maxBytes, maxSegments, names })
   .then((result) => parentPort.postMessage({ ok: true, result }))
   .catch((err) => parentPort.postMessage({ ok: false, error: err?.message || String(err) }))

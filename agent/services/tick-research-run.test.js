@@ -580,3 +580,89 @@ test('PR-EX: a segment that FAILED to pull is named on the polled job, not only 
   assert.ok(done.segmentsFailed.includes(names[0]), 'the finished job still says it')
   _resetTickResearchJobs()
 })
+
+// ---- C·6 research, 03-10-2026: the operator NAMES the segments to replay ----
+// `maxSegments` reaches only the OLDEST segments a side still lists. On
+// production (02-10, 18:27Z) those were the demo spool's 11-09 weekend pair,
+// replayed already on 20-09 with 0 trades, while thirteen weekday segments
+// recorded since (28-09 to 02-10) sat behind them and no job could reach one.
+// `segments` names the files: the sync pulls exactly those, the replay reads
+// exactly those, and a name that is not there is refused BY NAME.
+import { segmentNamesFrom } from './tick-research-run.js'
+
+test('C·6: `segments` replays exactly the named segments, not the oldest, and the report says so', () => {
+  const db = initDB(':memory:')
+  const { dir, names } = fourSegments(400)
+  const pick = [names[3], names[2]] // newest two, given out of order
+  const r = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, dryRun: true, segments: pick }, { segmentsDir: dir, maxRecords: 1000 })
+  assert.equal(r.status, 200, JSON.stringify(r.body).slice(0, 300))
+  assert.deepEqual(r.body.manifest.files, [names[2], names[3]], 'the NAMED two, chronological, RED if the oldest two are replayed instead')
+  assert.deepEqual(r.body.segmentsNamed, [names[2], names[3]])
+  assert.equal(r.body.maxSegments, null)
+  assert.equal(r.body.segments, 2); assert.equal(r.body.segmentsAvailable, 4); assert.equal(r.body.segmentsDropped, 2)
+})
+
+test('C·6: a named segment that is not in the directory is refused by name — never replaced by another', () => {
+  const db = initDB(':memory:')
+  const { dir, names } = fourSegments(400)
+  const r = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, dryRun: true, segments: [names[1], 'seg-1790000000000-000009.tks'] }, { segmentsDir: dir, maxRecords: 1000 })
+  assert.equal(r.status, 409); assert.equal(r.body.error, 'segments_not_found')
+  assert.deepEqual(r.body.missing, ['seg-1790000000000-000009.tks'])
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM tick_trials').get().c, 0)
+})
+
+test('C·6: the shape is refused 400 before anything is read — empty, not a name, a duplicate, or together with maxSegments', () => {
+  const db = initDB(':memory:')
+  const { dir, names } = fourSegments(400)
+  for (const segments of [[], ['../etc/passwd'], [names[0], names[0]], 'seg-1-1.tks', [1]]) {
+    const r = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, dryRun: true, segments }, { segmentsDir: dir, maxRecords: 1000 })
+    assert.equal(r.status, 400, JSON.stringify(segments)); assert.equal(r.body.error, 'bad_segments')
+  }
+  const both = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM, dryRun: true, segments: [names[0]], maxSegments: 1 }, { segmentsDir: dir, maxRecords: 1000 })
+  assert.equal(both.status, 400); assert.match(both.body.where, /Both were given/)
+  assert.deepEqual(segmentNamesFrom({}), { value: null })
+  assert.deepEqual(segmentNamesFrom({ segments: [names[1], names[0]] }).value, [names[0], names[1]], 'sorted: chronological by name')
+  assert.equal(researchPlanImpl({ segments: [names[0]] }, {}).segments[0], names[0])
+})
+
+test('C·6: through the sidecar path the NAMES reach the sync (only those are pulled), a name nobody lists is refused before a byte moves, and the cap is judged on the named set', async () => {
+  _resetTickResearchJobs()
+  const db = initDB(':memory:')
+  const { dir: source, names } = fourSegments(400)
+  const empty = mkdtempSync(join(tmpdir(), 'tick-seg-none-'))
+  const listed = { segments: 4, bytes: 0, records: 1600, truncated: false, reachable: 1, names, recordsPerSegment: [400, 400, 400, 400], sides: [] }
+  const run = async (body, dest) => {
+    const calls = []
+    const r = await startTickResearchJobWithSync(db, body, {
+      segmentsDir: empty, cacheDir: dest, maxRecords: 1000,
+      listAll: async () => listed,
+      sync: async (d, o) => {
+        calls.push(o)
+        mkdirSync(d, { recursive: true })
+        const want = o.names ? names.filter(n => o.names.includes(n)) : names.slice(0, o.maxSegments ?? names.length)
+        for (const n of want) copyFileSync(join(source, n), join(d, n))
+        return { destDir: d, pulled: want.length, skipped: 0, bytes: 0, truncated: false, sides: [] }
+      },
+    })
+    return { r, calls }
+  }
+  // not listed anywhere: refused by name, nothing pulled
+  const nl = await run({ stageA: false, params: PARAMS, sim: SIM, dryRun: true, segments: ['seg-1790000000000-000009.tks'] }, mkdtempSync(join(tmpdir(), 'tick-cache-n-')))
+  assert.equal(nl.r.status, 409); assert.equal(nl.r.body.error, 'segments_not_listed'); assert.equal(nl.calls.length, 0)
+  // over the cap by NAME: three named × 400 > 1000, refused from the listing before a byte moves
+  const over = await run({ stageA: false, params: PARAMS, sim: SIM, dryRun: true, segments: names.slice(1, 4) }, mkdtempSync(join(tmpdir(), 'tick-cache-o-')))
+  assert.equal(over.r.status, 413); assert.equal(over.r.body.records, 1200); assert.equal(over.calls.length, 0)
+  assert.match(over.r.body.where, /named segment/)
+  // the newest two by name: the sync is asked for exactly those, the job replays exactly those
+  const dest = mkdtempSync(join(tmpdir(), 'tick-cache-s-'))
+  const b = await run({ stageA: false, params: PARAMS, sim: SIM, dryRun: true, segments: [names[2], names[3]] }, dest)
+  assert.equal(b.calls.length, 1, 'the sync ran')
+  assert.deepEqual(b.calls[0].names, [names[2], names[3]], 'RED if the names are not handed to the sync: the oldest are pulled')
+  assert.equal(b.calls[0].maxSegments, undefined)
+  assert.equal(b.r.status, 202, JSON.stringify(b.r.body).slice(0, 300))
+  assert.deepEqual(b.r.body.segmentsNamed, [names[2], names[3]]); assert.equal(b.r.body.segments, 2); assert.equal(b.r.body.records, 800)
+  const done = await waitDone(b.r.body.jobId)
+  assert.equal(done.state, 'done', JSON.stringify(done).slice(0, 300))
+  assert.deepEqual(done.result.manifest.files, [names[2], names[3]], 'the newest two were replayed, which maxSegments could never reach')
+  assert.deepEqual(readdirSync(dest).sort(), [names[2], names[3]], 'only the named segments were pulled')
+})

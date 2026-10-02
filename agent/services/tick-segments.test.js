@@ -680,3 +680,23 @@ test('R1 (rebuild): Node\'s segment cache is labelled for what it is — under o
     assert.equal(view.cacheDurability.kept, false)
   } finally { s.close() }
 })
+
+// ---- C·6 research, 03-10-2026: `names` restricts the pull to the named segments ----
+test('C·6: syncSegments with `names` pulls exactly the named segment and leaves the older one unasked', async () => {
+  const a = makeSegment(10), b = makeSegment(20, { startedMs: 1_757_548_900_000 })
+  const s = await fakeSidecar({ files: new Map([[NAME_A, a], [NAME_B, b]]), chunkCap: 4096 })
+  const dest = tmp('tick-cache-')
+  try {
+    const r = await syncSegments(dep(s), dest, { names: [NAME_B] })
+    assert.deepEqual([r.pulled, r.skipped, r.taken], [1, 0, 1])
+    assert.deepEqual(readdirSync(dest), [NAME_B], 'RED if the oldest is pulled: NAME_A is older and was not named')
+    // a second run with the same names moves nothing; the unnamed older one is still not pulled
+    const again = await syncSegments(dep(s), dest, { names: [NAME_B] })
+    assert.deepEqual([again.pulled, again.skipped], [0, 1])
+    assert.deepEqual(readdirSync(dest), [NAME_B])
+    // the two-side front door hands the names through
+    const dest2 = tmp('tick-cache-')
+    const both = await syncFromSidecars(dest2, { sides: [{ name: 'fake', base: s.base }], secret: SECRET, names: [NAME_B] })
+    assert.equal(both.pulled, 1); assert.deepEqual(readdirSync(dest2), [NAME_B])
+  } finally { s.close() }
+})
