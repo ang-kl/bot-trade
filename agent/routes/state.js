@@ -22,6 +22,7 @@ import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 import { maeChandelierView, activeMonitoredIds } from '../services/mae-chandelier-observe.js'
+import { balanceUnit } from '../services/balance-unit.js'
 import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, getStopPolicy, trailConfigPolicy, triggerValue, stopPolicyStats } from '../lib/stop-policy.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
@@ -454,6 +455,8 @@ export default function stateRouter(db) {
         isLive: getState(db, 'ctrader_is_live') === 'true',
         symbolsMapped: (() => { try { return Object.keys(JSON.parse(getState(db, 'symbol_id_map') || '{}')).length } catch { return 0 } })(),
         balance: Number(getState(db, 'account_balance_usd')) || null,
+        // The stored number is the broker's native money; this names its unit (C·1). null = not verified.
+        balanceCurrency: balanceUnit(db, getState(db, 'ctrader_account_id') || null).currency,
       },
       scanEnabled: getState(db, 'scan_enabled') !== 'false',
       analyzeEnabled: getState(db, 'analyze_enabled') !== 'false',
@@ -972,6 +975,7 @@ export default function stateRouter(db) {
         return {
           accountId: id,
           balance,
+          balanceCurrency: balanceUnit(db, id).currency,
           step,
           state: st,
           equity: st?.lastEquity ?? null,
@@ -2425,6 +2429,7 @@ export default function stateRouter(db) {
       ledger.balance = rawBalance != null && String(rawBalance).trim() !== '' && Number.isFinite(Number(rawBalance)) ? Number(rawBalance) : null
       ledger.balanceSource = ledger.balance == null ? null : 'scoped'
       ledger.balanceStatus = 'legacy_stored_input_unverified'
+      ledger.balanceCurrency = scoped ? balanceUnit(db, scoped).currency : null
       // null means "check off" (risk.js DEFAULT_RISK_CONFIG) and stays null:
       // Number(null) is 0, and 0 would print as a zero-loss daily stop where
       // there is no stop at all (independent checker, 11-09-2026).
@@ -3928,6 +3933,7 @@ export default function stateRouter(db) {
     const derived = balance != null
       ? {
           balance,
+          balanceCurrency: balanceUnit(db, resolvedAccountId).currency,
           leverage,
           tier,
           // BOTH daily brakes, either of which may be off (owner 04-08-2026).
