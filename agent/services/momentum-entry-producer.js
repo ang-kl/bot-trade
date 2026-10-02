@@ -215,8 +215,23 @@ export function gridStop({ side, entry, stopDistance, digits, relativePoints }) 
   return stopTicks > 0 ? { stop: stopTicks / 10 ** digits, ticks, points } : null
 }
 
-export function loadMomentumCostSchedule(file = TICK_SHADOW_SIM_FILE) {
-  return JSON.parse(readFileSync(file, 'utf8'))
+export const MOMENTUM_SLIPPAGE_FILE = new URL('../config/momentum-target-slippage.json', import.meta.url)
+
+/** The shared cost schedule with the momentum TP1 slippage overlaid. The
+ * overlay is measured (see the file's _source); the shared file's 0.5 bps
+ * placeholder still serves the tick shadow and its evidence bar. */
+export function loadMomentumCostSchedule(file = TICK_SHADOW_SIM_FILE, slippageFile = MOMENTUM_SLIPPAGE_FILE) {
+  const schedule = JSON.parse(readFileSync(file, 'utf8'))
+  const overlay = JSON.parse(readFileSync(slippageFile, 'utf8'))
+  for (const [cls, row] of Object.entries(overlay.classes ?? {})) {
+    const target = schedule.costs?.classes?.[cls]
+    if (!target || !Number.isFinite(row.slippageBpsPerSide) || row.slippageBpsPerSide < 0) {
+      throw new Error(`momentum slippage overlay names an unusable class: ${cls}`)
+    }
+    target.slippageBpsPerSide = row.slippageBpsPerSide
+    target._slippageSource = `${overlay._source} Class ${cls}: n=${row.n}, ${row._basis}.`
+  }
+  return schedule
 }
 
 function carryFor(db, { side, evidence, entry, medianNights }) {

@@ -1022,6 +1022,16 @@ Measurement history — each line is a real run of the script, not a claim:
   startup-stall fix (this PR) comes from the profiler capture the owner
   approved. All lower bounds. The count is by replies, not by stamps. A later
   re-measure that reads below this line is missing these, not correcting them.
+- 2026-10-02 11:34 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule; the container restarted ~10:15 UTC in between; the owner replied ~11:30 UTC): from the
+  ledger line above, the report `№ 10,585` (17:58 SGT: the seven §10,572·C
+  items answered), #1189 merged and read back (scan phase 67.3 s to 39.5 s,
+  first loop 145.9 s to 123.6 s; the profiler restored to scan,monitor), and
+  `№ 10,586` (18:22 SGT). The owner's "confirm the slippage figures" followed;
+  this PR carries it. The next stamped reply is at least **`№ 10,590`** plus
+  any unstamped line made after this ledger. All lower bounds. The count is by
+  replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
