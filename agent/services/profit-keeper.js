@@ -44,7 +44,7 @@ import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
 import { makeBookHeldCheck } from './book-held.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
-import { wilderAtr } from './mae-chandelier-observe.js'
+import { sinceEntryTrailSpec, recordAmendReceipt, receiptFromTrailMove } from './mae-chandelier-observe.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { measureAmend } from './protection-latency.js'
 import { protectiveExitDeferral } from './momentum-exit-coordination.js'
@@ -551,6 +551,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     // as we decide. Pushed even when EMPTY — /trail-config is full-replace,
     // so an empty push clears positions that closed or disarmed.
     const trailSpecs = []
+    const digitsByPosition = new Map()
 
     for (const { r, bp } of involved) {
       const td = bp.tradeData || {}
@@ -561,6 +562,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
         meta = await sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, td.symbolId)
       } catch (err) { summary.errors.push(`${r.symbol}: ${err.message}`); continue }
       summary.checked++
+      if (Number.isFinite(Number(meta.digits))) digitsByPosition.set(String(parseInt(r.position_id)), Number(meta.digits))
 
       const lots = td.volume && meta.lotSize ? td.volume / meta.lotSize : null
       const decision = decideProfitKeeper(cfg, {
@@ -742,26 +744,19 @@ async function profitKeeperPass(db, creds, deps = {}) {
       const td = bp.tradeData || {}
       if (already.has(String(parseInt(r.position_id)))) continue
       const bars = fullBarsBySymbolId[td.symbolId]
-      const atr = wilderAtr(bars, 22)
-      if (!(atr > 0)) continue
-      const acct = Number(creds.accountId)
-      if (!Number.isFinite(acct) || acct <= 0) continue
-      const dir = String(r.side || '').toUpperCase() === 'SHORT' || String(r.side || '').toUpperCase() === 'SELL' ? -1 : 1
-      const extreme = Number(r.entry_price) > 0 ? Number(r.entry_price) : (dir === 1 ? Math.max(...bars.map(b => Number(b.h))) : Math.min(...bars.map(b => Number(b.l))))
-      const digits = Number(r.digits ?? bp.digits)
-      if (!Number.isFinite(digits)) continue
-      trailSpecs.push({
-        positionId: parseInt(r.position_id),
-        ctidTraderAccountId: acct,
+      const spec = sinceEntryTrailSpec({
+        positionId: r.position_id,
+        accountId: creds.accountId,
         symbolId: td.symbolId,
-        dir,
-        trailDistance: 3 * atr,
-        peakPrice: extreme,
+        side: r.side,
+        entry: r.entry_price,
+        bars,
         currentSl: bp.stopLoss ?? r.current_sl ?? null,
         currentTp: bp.takeProfit ?? r.current_tp ?? null,
-        digits,
-        source: 'mae_chandelier_since_entry',
+        digits: digitsByPosition.get(String(parseInt(r.position_id))) ?? r.digits ?? bp.digits,
       })
+      if (!spec) continue
+      trailSpecs.push(spec)
     }
     console.log(`[mae-chandelier-observe] trail-config ${trailSpecs.length} spec(s) for account ${creds.accountId}`)
 
@@ -792,6 +787,8 @@ async function profitKeeperPass(db, creds, deps = {}) {
               kind: 'trail_tightened', fromValue: prev, toValue: p.lastSl,
               source: 'cpp_trail_engine',
             })
+            const ack = receiptFromTrailMove(key, prev, p.lastSl)
+            if (ack) recordAmendReceipt(db, ack).catch(() => {})
           }
         }
       }

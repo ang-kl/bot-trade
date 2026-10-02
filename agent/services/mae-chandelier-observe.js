@@ -98,6 +98,33 @@ export function observePosition({
   return out
 }
 
+export function shouldSendChandelierAdjust(pos, reading) {
+  if (!reading?.adjust) return false
+  if (pos?.source === 'external') return false
+  return true
+}
+
+export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits } = {}) {
+  const atr = wilderAtr(bars, DEFAULT_ATR_PERIOD)
+  const d = Number(digits)
+  if (!(atr > 0) || !Number.isFinite(d)) return null
+  const dir = String(side || '').toUpperCase() === 'SHORT' || String(side || '').toUpperCase() === 'SELL' ? -1 : 1
+  const peak = Number(entry)
+  if (!(peak > 0)) return null
+  return {
+    positionId: parseInt(positionId),
+    ctidTraderAccountId: Number(accountId),
+    symbolId,
+    dir,
+    trailDistance: 3 * atr,
+    peakPrice: peak,
+    currentSl: currentSl ?? null,
+    currentTp: currentTp ?? null,
+    digits: d,
+    source: 'mae_chandelier_since_entry',
+  }
+}
+
 export function decideAdjust({ side, entry, price, sl, bars, period = DEFAULT_ATR_PERIOD, multiplier = DEFAULT_ATR_MULT } = {}) {
   const reading = observePosition({ side, entry, price, sl, bars, period, multiplier })
   const dir = reading.dir
@@ -107,8 +134,23 @@ export function decideAdjust({ side, entry, price, sl, bars, period = DEFAULT_AT
   const tighter = dir === 1 ? since > sl && since < price : since < sl && since > price
   if (!tighter) return out
   out.mayAmend = true
-  out.adjust = { action: 'MOVE_SL', sl: since, reason: 'mae_chandelier_since_entry_tighten' }
+  out.adjust = { action: 'MOVE_SL', sl: since, newSL: since, reason: 'mae_chandelier_since_entry_tighten' }
   return out
+}
+
+export function receiptFromTrailMove(id, prevSl, nextSl) {
+  if (typeof prevSl !== 'number' || !(Number(nextSl) > 0) || prevSl === Number(nextSl)) return null
+  return receiptFromBrokerOutcome(id, Number(nextSl), { summary: `trail lastSl ${nextSl}` })
+}
+
+export function receiptFromBrokerOutcome(id, sl, outcome) {
+  const accepted = !!outcome && !outcome.error && !outcome.skipped && outcome.closedRemotely !== true && typeof outcome.summary === 'string' && outcome.summary.length > 0
+  return {
+    id: String(id),
+    sl,
+    sent: accepted,
+    broker: accepted ? outcome.summary : (outcome?.error || outcome?.reason || 'no_broker_ack'),
+  }
 }
 
 const BAR_CACHE = new Map()
@@ -142,6 +184,18 @@ export function foldExcursion(prev, reading) {
 
 export function loadObserveState(db, read) {
   try { return JSON.parse(read(db, OBSERVE_STATE_KEY) || '{}') } catch { return {} }
+}
+
+export async function recordAmendReceipt(db, receipt, nowMs = Date.now(), io = {}) {
+  const read = io.read || (await import('../db.js')).getState
+  const write = io.write || (await import('../db.js')).setState
+  const prev = loadObserveState(db, read)
+  const receipts = Array.isArray(prev.receipts) ? prev.receipts.slice(-19) : []
+  receipts.push({ ...receipt, at: new Date(nowMs).toISOString() })
+  const next = { ...prev, mode: 'observe_and_tighten', mayAmend: false, receipts }
+  write(db, OBSERVE_STATE_KEY, JSON.stringify(next))
+  console.log(`[mae-chandelier-observe] amend-receipt ${JSON.stringify({ id: receipt?.id, sl: receipt?.sl, sent: receipt?.sent === true, broker: receipt?.broker || null })}`)
+  return next
 }
 
 export async function recordObserve(db, rows, nowMs = Date.now(), io = {}) {

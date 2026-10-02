@@ -25,7 +25,7 @@
 import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
 import { evaluatePosition } from './position-manager.js'
-import { recordObserve, decideAdjust, cachedBars, storeBars } from './mae-chandelier-observe.js'
+import { recordObserve, decideAdjust, shouldSendChandelierAdjust, recordAmendReceipt, receiptFromBrokerOutcome, cachedBars, storeBars } from './mae-chandelier-observe.js'
 import { readAtrCache } from './profit-keeper.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
@@ -384,8 +384,9 @@ async function maeChandelierTick(db, s, pos, mid, symbolMap, creds, deps, loopMo
       bars: bars || keeper?.bars || null,
     })
     recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, ...reading }]).catch(() => {})
-    if (reading.adjust && pos.source !== 'external') {
-      await loopMod.executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier')
+    if (shouldSendChandelierAdjust(pos, reading)) {
+      const outcome = await loopMod.executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier')
+      recordAmendReceipt(db, receiptFromBrokerOutcome(pos.id, reading.adjust.newSL, outcome)).catch(() => {})
     }
   } catch (err) { console.error('[mae-chandelier-observe] tick row failed:', err?.message || err) }
 }
