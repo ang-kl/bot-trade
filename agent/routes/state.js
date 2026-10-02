@@ -202,6 +202,18 @@ export default function stateRouter(db) {
     res.setHeader('Cache-Control', 'no-store')
     res.json(scannerMirrorStatus(db))
   })
+  // GET /state/scanner-alignment-snapshot (C·2, 02-10-2026): the fresh,
+  // non-secret input scripts/prepare-scanner-alignment.mjs needs. Read only;
+  // never cached (the builder refuses anything older than five minutes).
+  router.get('/scanner-alignment-snapshot', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    try {
+      const { buildScannerAlignmentSnapshot } = await import('../services/scanner-alignment-snapshot.js')
+      res.json(await buildScannerAlignmentSnapshot(db))
+    } catch (e) {
+      res.status(500).json({ error: String(e.message).slice(0, 200) })
+    }
+  })
   const respCache = new Map() // originalUrl → { body, etag, at }
   const STATE_CACHE_MS = Math.max(1000, Number(process.env.STATE_CACHE_MS || 10_000))
   // /sessions is excluded too: it reports a live "seen 3s ago" age, and a 10s
@@ -214,7 +226,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview'])
+  const NO_CACHE = new Set(['/scanner-alignment-snapshot', '/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads

@@ -272,7 +272,7 @@ export class TickComparisonReader {
           state = !stream.known ? 'reference_warmup_unknown' : differences.length ? 'mismatch' : expired ? 'native_expired' : 'matched'
         } else state = stream ? 'source_sequence_invalid' : 'reference_capacity'
       }
-      comparisonRecord(db, id, 'cpp-scan-tick', state, { feed: row.feed, sourceSequence: q?.seq, differences, orderAuthority: false }, now)
+      comparisonRecord(db, id, 'cpp-scan-tick', state, { feed: row.feed, profileHash: typeof row.profileHash === 'string' ? row.profileHash : null, sourceSequence: q?.seq, differences, orderAuthority: false }, now)
       this.after = row.cursor
     }
     return { after: this.after, instanceId: this.instance, orderAuthority: false }
