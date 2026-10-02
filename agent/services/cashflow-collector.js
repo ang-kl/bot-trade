@@ -1,6 +1,6 @@
 // Reporting-only broker reads, independent of scan/entry and UI refreshes.
 // One account, one <=7-day interval per tick; persisted coverage is the cursor.
-import { getState, setState } from '../db.js'
+import { getState, setState, ACCOUNT_HISTORY_SUMMARY_EXPRS } from '../db.js'
 import { credsForRegisteredAccount } from '../lib/ctrader-creds.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { wsGetCashflowHistory } from '../lib/ctrader-ws.js'
@@ -14,15 +14,34 @@ export const CASHFLOW_POLL_MS = 30_000
 const statusKey = id => `acct:${id}:cashflow_collection_json`
 const readStatus = (db, id) => { try { return JSON.parse(getState(db, statusKey(id)) || 'null') } catch { return null } }
 
+// The observation's currency, spelled EXACTLY as idx_account_history_summary
+// indexes it (db.js). Written as a bare json_extract(observation_json, ...) the
+// two scans below could not use that covering index: SQLite read and parsed the
+// ~2 KB JSON of every retained row (90 days, one per minute, per account), and
+// the profiler (02-10-2026, CPU_PROFILE_PHASES=starting,scan,monitor) put 27.1 s
+// of the first loop's 69.6 s scan phase inside this function, synchronously, at
+// every boot. The expression comes from the same constant that builds the index,
+// so the two cannot drift apart; INDEXED BY makes a dropped or renamed index a
+// loud error ("no such index"), and the plan test pins that the scan stays
+// COVERING (a drifted spelling would still use the index, but read every row).
+// A malformed row now reads as "no currency", never throws.
+const CURRENCY = ACCOUNT_HISTORY_SUMMARY_EXPRS[0]
+export const CASHFLOW_WINDOW_SQL = Object.freeze({
+  // Latest observation of another host or currency inside the retention window.
+  changed: `SELECT MAX(received_ms) at FROM account_history INDEXED BY idx_account_history_summary
+    WHERE account_id=? AND received_ms>=? AND received_ms<=?
+    AND (host<>? OR (${CURRENCY} IS NOT NULL AND ${CURRENCY}<>?))`,
+  // First and last observation of this host and currency since then.
+  span: `SELECT MIN(received_ms) first, MAX(received_ms) last FROM account_history INDEXED BY idx_account_history_summary
+    WHERE account_id=? AND host=? AND received_ms>=? AND received_ms<=? AND ${CURRENCY}=?`,
+})
+
 /** Earliest hole in retained observations, never a cursor guessed from a failure. */
 export function nextCashflowWindow(db, { accountId, host, currency, now }) {
   const cutoff = now - ACCOUNT_HISTORY_RETENTION_DAYS * 86400_000
   // Do not label an earlier currency/host regime with today's currency.
-  const changed = db.prepare(`SELECT MAX(received_ms) at FROM account_history WHERE account_id=? AND received_ms>=? AND received_ms<=?
-    AND (host<>? OR (json_extract(observation_json,'$.currency') IS NOT NULL AND json_extract(observation_json,'$.currency')<>?))`)
-    .get(accountId, cutoff, now, host, currency).at
-  const span = db.prepare(`SELECT MIN(received_ms) first, MAX(received_ms) last FROM account_history
-    WHERE account_id=? AND host=? AND received_ms>=? AND received_ms<=? AND json_extract(observation_json,'$.currency')=?`)
+  const changed = db.prepare(CASHFLOW_WINDOW_SQL.changed).get(accountId, cutoff, now, host, currency).at
+  const span = db.prepare(CASHFLOW_WINDOW_SQL.span)
     .get(accountId, host, Math.max(cutoff, changed == null ? cutoff : changed + 1), now, currency)
   if (span.first == null || span.last <= span.first) return null
   const windows = db.prepare(`SELECT from_ms,to_ms FROM account_cashflow_windows

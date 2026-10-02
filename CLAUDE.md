@@ -1008,6 +1008,20 @@ Measurement history — each line is a real run of the script, not a claim:
   suite) is merged. All lower bounds. The count is by replies, not by stamps.
   A later re-measure that reads below this line is missing these, not
   correcting them.
+- 2026-10-02 09:52 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,565`), the replies ran on through the #1188 report and merge, the
+  XRPUSD / MSFT.US decision and the "what else isn't built" list `№ 10,572`
+  (the stamps `№ 10,568` and `№ 10,569` were two behind by count, and were
+  `№ 10,570` and `№ 10,571`; disclosed in the open at `№ 10,572·A`), the
+  owner's `№ 10,572·C` answers (SGD, scanner alignment, startup stall, the
+  1.5R cap and the tick switch-on approved, TP1 numbers left to Claude to
+  confirm) and the short status `№ 10,573` (17:33 SGT). Three unstamped
+  status lines followed, so the next stamped reply is at least
+  **`№ 10,577`** plus any unstamped line made after this ledger. The
+  startup-stall fix (this PR) comes from the profiler capture the owner
+  approved. All lower bounds. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
