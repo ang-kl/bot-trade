@@ -28,3 +28,13 @@ test('the measured slippage moves the TP1 reserve: US stock reserve rises from t
   assert.ok(placeholder.ok && measured.ok)
   assert.ok(measured.costReservePrice > placeholder.costReservePrice * 5, `${measured.costReservePrice} vs ${placeholder.costReservePrice}`)
 })
+
+test('the slippage limitation follows the schedule supplied: placeholder text for the shared file, measured text for the overlay', () => {
+  const input = { symbol: 'XOM.US', side: 'BUY', entry: 161.86, initialRisk: 9.28, requiredRr: 3, spread: 0.05, quoteUsdRate: 1,
+    lotSize: 100, minVolume: 100, digits: 2, carryingCostReservePrice: 0 }
+  const shared = _model(input, JSON.parse(_read(_SHARED, 'utf8'))), overlaid = _model(input, _loadSched())
+  assert.ok(shared.limitations.some(t => /repository placeholder/.test(t)))
+  assert.ok(!shared.limitations.some(t => /measured entry-side/.test(t)))
+  assert.ok(overlaid.limitations.some(t => /measured entry-side/.test(t)))
+  assert.ok(!overlaid.limitations.some(t => /repository placeholder/.test(t)))
+})
