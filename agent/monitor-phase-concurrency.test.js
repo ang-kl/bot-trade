@@ -171,7 +171,7 @@ test('timeframe Chandelier pass resolves the symbol id from the map and reads a 
   // since-entry level ≈ 1.1200 − 0.0030 = 1.1170: above the 1.1010 stop,
   // below the 1.1200 price.
   const bars = Array.from({ length: 40 }, (_, i) => { const c = 1.1000 + i * 0.0005; return { h: c + 0.0005, l: c - 0.0005, c } })
-  storeBars(7, bars)
+  storeBars('EURUSD', bars)
   const id = db.prepare(`
     INSERT INTO monitored_positions
       (symbol, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status, strategy, created_at)
