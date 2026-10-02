@@ -53,7 +53,7 @@ export function modelMomentumCost(input, schedule) {
     slippageSource: row._slippageSource, carryingCostReservePrice,
     scheduleHash: createHash('sha256').update(JSON.stringify(schedule)).digest('hex'),
     empiricallyValidated: false,
-    limitations: ['Slippage is a measured entry-side average against the proposal price (see slippageSource), not exit-side execution performance.',
+    limitations: [/^MEASURED/.test(row._slippageSource) ? 'Slippage is a measured entry-side average against the proposal price (see slippageSource), not exit-side execution performance.' : 'Slippage is the repository placeholder, not measured execution performance.',
       'Carry/swap reserve is an explicit modeling assumption, not a forecast of an unlimited holding period.',
       'Class commission measurements can differ from this account; gaps and future spread/FX changes are not bounded.',
       'The commodity class includes the documented gold-based rate approximation.'],
