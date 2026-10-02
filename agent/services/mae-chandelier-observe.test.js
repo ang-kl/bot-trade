@@ -123,3 +123,34 @@ test('fast monitor: the Chandelier reading follows the HOLD verdict and its bar 
   const helper = src.slice(src.indexOf('function maeBarsFor('), src.indexOf('async function maeChandelierTick('))
   assert.ok(helper.includes('wsGetTrendbarsBatch') && !/await\s/.test(helper), 'the bar fetch runs in the background')
 })
+
+test('a receipt carries what the sidecar confirmed: sent, unchanged, confirmed read-back and the stop-policy outcome', () => {
+  // sent and read back by the sidecar's ratchet
+  const sent = receiptFromBrokerOutcome('9', 104, {
+    summary: 'SL → 104.00000',
+    protection: { verified: true, stopLoss: 104, takeProfit: 110 },
+    policy: { applied: true, readback: 'confirmed', refused: null, skipped: null },
+  })
+  assert.equal(sent.sent, true)
+  assert.equal(sent.confirmed, true)
+  assert.equal(sent.heldSl, 104)
+  assert.deepEqual(sent.policy, { applied: true, readback: 'confirmed', refused: false, skipped: null })
+  // the broker already held a tighter stop (broker-side trailing): an answer, not a send, not a failure
+  const kept = receiptFromBrokerOutcome('9', 104, {
+    summary: 'SL kept 105.00000 (broker already tighter than 104.00000)', unchanged: true,
+    protection: { verified: true, stopLoss: 105 },
+  })
+  assert.equal(kept.sent, false)
+  assert.equal(kept.unchanged, true)
+  assert.equal(kept.heldSl, 105)
+  // the broker refused the policy flags and the stop still went through without them
+  const refused = receiptFromBrokerOutcome('9', 104, { summary: 'SL → 104.00000', policy: { applied: false, readback: 'unverified', refused: { errorCode: 'INVALID_REQUEST' }, skipped: null } })
+  assert.equal(refused.sent, true)
+  assert.equal(refused.policy.refused, true)
+  // no read-back, no policy block: the old shapes are unchanged
+  const plain = receiptFromBrokerOutcome('9', 104, { summary: 'SL → 104.00000' })
+  assert.equal('confirmed' in plain, false)
+  assert.equal('policy' in plain, false)
+  assert.equal('unchanged' in plain, false)
+})
+

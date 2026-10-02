@@ -22,6 +22,7 @@ import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 import { maeChandelierView } from '../services/mae-chandelier-observe.js'
+import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, getStopPolicy, trailConfigPolicy, triggerValue, stopPolicyStats } from '../lib/stop-policy.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadRegimeGateConfig } from '../services/regime-gate.js'
@@ -4625,6 +4626,28 @@ export default function stateRouter(db) {
   // reading with no ATR shows as such ("withoutBars") instead of healthy.
   router.get('/mae-chandelier', (_req, res) => {
     res.json(maeChandelierView(db, getState))
+  })
+
+  // GET /state/stop-policy — the stop-loss policy as the bot is running it and
+  // what it has done since boot (02-10-2026, lib/stop-policy.js): the policy,
+  // the exact enum on the wire, what the sidecar's TrailEngine is told, and
+  // the first live evidence — how many amends carried the flags, whether the
+  // broker accepted them, how the sidecar's read-back judged them. Counts are
+  // since process start (`since`); the recent ring is the last 50 amends that
+  // carried the policy. A refusal ("refused") means the broker rejected the
+  // flags and the stop went through without them.
+  router.get('/stop-policy', (_req, res) => {
+    let stored = null
+    try { stored = JSON.parse(getState(db, STOP_POLICY_KEY) || 'null') } catch { stored = null }
+    const policy = getStopPolicy()
+    res.json({
+      policy,
+      stored,
+      defaults: DEFAULT_STOP_POLICY,
+      wire: { trigger: triggerValue(policy), encoding: policy.encoding },
+      trailConfig: trailConfigPolicy(policy),
+      ...stopPolicyStats(),
+    })
   })
 
   // GET /state/bot-changes — the bot's change ledger (see /actions/bot-note):

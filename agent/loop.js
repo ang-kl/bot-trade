@@ -29,6 +29,8 @@ import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from '.
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
 import { placeOrder as placeOrderLive, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
+import { sideDirection } from './lib/stop-policy.js'
+import { makeBookHeldCheck } from './services/book-held.js'
 import { getCtraderCreds, getSymbolMap, attachEntryFence, bindEntryIntent } from './lib/ctrader-creds.js'
 import { thenAlways } from './lib/then-always.js'
 import { managePendingOrders } from './services/pending-orders.js'
@@ -2240,6 +2242,41 @@ export function brokerPositionVolume(brokerPositions, positionId) {
  * `digits` null (lookup failed) sends the values through unrounded — a
  * possible rejection beats inventing a precision.
  */
+/**
+ * What an AUTOMATIC stop amend tells the exec layer about the stop it moves
+ * (02-10-2026, lib/stop-policy.js; owner: Opposite trigger + broker-side
+ * trailing).
+ *
+ * `stopContext` lets the policy decide the trailing flag (the stop locks
+ * profit, and the row is not a momentum-book row). `ratchetOnly` +
+ * `expectedDirection` make the sidecar read the LIVE broker stop first and
+ * refuse to loosen it. That is the safety rail broker-side trailing needs: the
+ * broker now moves a stop between the bot's reads, so a decision computed from
+ * the stored `current_sl` (the ladder, the break-even lock, the Chandelier)
+ * can be looser than what the broker already holds — before trailing, only the
+ * bot moved stops and the stored value was the truth. Without a known side
+ * there is no rail (the plain amend, as before).
+ *
+ * expectedSymbolId is deliberately NOT sent: `symbol_id_map` belongs to the
+ * selected account, and a position on another account would be refused on a
+ * wrong id — a protection regression for a guard that is about direction.
+ */
+export function stopAmendExtras(db, pos, ctx, accountId) {
+  const dir = sideDirection(pos?.side)
+  let book = false
+  try { book = makeBookHeldCheck(db, accountId)(ctx?.positionId, pos?.trade_id) === true } catch { book = false }
+  return {
+    stopContext: { side: pos?.side, entry: Number(pos?.entry_price) || null, book },
+    ...(dir ? { ratchetOnly: true, expectedDirection: dir } : {}),
+  }
+}
+
+/** The stop the broker holds after an amend: the sidecar's confirmed read-back when it gave one, else what was sent. */
+export function heldStop(res, sent) {
+  const broker = Number(res?.protection?.stopLoss)
+  return broker > 0 ? broker : sent
+}
+
 export function roundAmendPayload({ stopLoss, takeProfit, digits }, round = roundToDigits) {
   if (digits == null || !Number.isFinite(Number(digits))) return { stopLoss, takeProfit }
   return {
@@ -2337,18 +2374,35 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       const res = await measureAmend(amendMeta('broker_action.move_sl'), () => execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         stopLoss: sendSL,
-        ...(sendTp !== undefined ? { takeProfit: sendTp } : {}),
+        // Explicit null when the row has no target: "the caller looked and
+        // there is none" is assertAmendIntent's contract, and OMITTING the key
+        // is what it rejects — a TP-less row's stop move threw here (02-10-2026).
+        takeProfit: sendTp ?? null,
+        ...stopAmendExtras(db, pos, ctx, accountId),
       }))
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }
-      // Record what was SENT, not the unrounded intent — the broker holds sendSL.
-      s.updatePositionSl.run(sendSL, pos.id)
-      recordPositionEvent(db, {
-        accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
-        kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: sendSL,
-        reason: eval_.reason, source,
-      })
-      return { summary: `SL → ${Number(sendSL).toFixed(5)}` }
+      // Record what the BROKER holds: the sent value, rounded — unless the
+      // sidecar read the live stop and found it already tighter (broker-side
+      // trailing moved it), in which case that is the truth and nothing was
+      // sent. Writing the sent value then would make the stored stop looser
+      // than the broker's, and the next decision would start from it.
+      const held = heldStop(res, sendSL)
+      const unchanged = res.unchanged === true
+      s.updatePositionSl.run(held, pos.id)
+      if (!unchanged) {
+        recordPositionEvent(db, {
+          accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
+          kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: sendSL,
+          reason: eval_.reason, source,
+        })
+      }
+      return {
+        summary: unchanged ? `SL kept ${Number(held).toFixed(5)} (broker already tighter than ${Number(sendSL).toFixed(5)})` : `SL → ${Number(sendSL).toFixed(5)}`,
+        ...(unchanged ? { unchanged: true } : {}),
+        ...(res.protection ? { protection: res.protection } : {}),
+        ...(res.policy ? { policy: res.policy } : {}),
+      }
     }
 
     // Per-symbol volume math — lotSize varies by asset class; a hardcoded
@@ -2553,15 +2607,19 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
           positionId: ctx.positionId,
           stopLoss: runnerSend.stopLoss,
           takeProfit: runnerSend.takeProfit,
+          ...stopAmendExtras(db, pos, ctx, accountId),
         }))
         setState(db, 'api_ctrader_last_ok', new Date().toISOString())
         if (!amendRes.alreadyClosed) {
-          s.updatePositionSl.run(runnerSend.stopLoss, pos.id)
-          recordPositionEvent(db, {
-            accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
-            kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: runnerSend.stopLoss,
-            reason: `${eval_.reason} | runner leg`, source,
-          })
+          // Same rule as MOVE_SL: store what the broker holds.
+          s.updatePositionSl.run(heldStop(amendRes, runnerSend.stopLoss), pos.id)
+          if (amendRes.unchanged !== true) {
+            recordPositionEvent(db, {
+              accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
+              kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: runnerSend.stopLoss,
+              reason: `${eval_.reason} | runner leg`, source,
+            })
+          }
         }
       }
       return { summary: partialExitSummary({ fraction, closeUnits, totalUnits, lotSize: meta.lotSize }) }

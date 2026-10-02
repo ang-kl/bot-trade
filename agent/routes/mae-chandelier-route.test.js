@@ -43,15 +43,16 @@ test('GET /state/mae-chandelier: counts readings with and without bars, adjustab
         3: { id: '3', symbol: 'BTCUSD', atr: 120, chandelierSinceEntry: 61000, mayAmend: false, mae: 0.1, mfe: 0.4 },
       },
       receipts: [
-        { id: '1', sl: 1.1175, sent: true, broker: 'SL → 1.11750', at: '2026-10-02T01:00:03.000Z' },
+        { id: '1', sl: 1.1175, sent: true, confirmed: true, broker: 'SL → 1.11750', at: '2026-10-02T01:00:03.000Z' },
         { id: '3', sl: 61000, sent: false, broker: 'INVALID_REQUEST', at: '2026-10-02T01:00:05.000Z' },
+        { id: '1', sl: 1.1176, sent: false, unchanged: true, broker: 'SL kept 1.11800 (broker already tighter than 1.11760)', at: '2026-10-02T01:00:07.000Z' },
       ],
     }))
     const body = await fetch(s.url('/state/mae-chandelier')).then(r => r.json())
     assert.equal(body.mode, 'observe_and_tighten')
     assert.deepEqual(body.summary, {
       positions: 3, withBars: 2, withoutBars: 1, adjustable: 1,
-      receipts: 2, receiptsSent: 1, lastReceiptAt: '2026-10-02T01:00:05.000Z',
+      receipts: 3, receiptsSent: 1, receiptsConfirmed: 1, receiptsUnchanged: 1, lastReceiptAt: '2026-10-02T01:00:07.000Z',
     })
     assert.equal(body.positions['2'].atr, null, 'a reading with no bars is shown as such, not hidden')
   } finally { s.close() }

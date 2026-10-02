@@ -499,7 +499,7 @@ export function wsPlaceOrder(host, clientId, clientSecret, accessToken, accountI
  *   position was closed between our snapshot and the amend request.
  * - On any other broker error: throws.
  */
-export async function wsAmendPosition(host, clientId, clientSecret, accessToken, accountId, { positionId, stopLoss, takeProfit }, timeoutMs = 15_000) {
+export async function wsAmendPosition(host, clientId, clientSecret, accessToken, accountId, { positionId, stopLoss, takeProfit, stopLossTriggerMethod, trailingStopLoss }, timeoutMs = 15_000) {
   if (!positionId) throw new Error('wsAmendPosition: positionId required')
   const hasSl = typeof stopLoss === 'number' && stopLoss > 0
   const hasTp = typeof takeProfit === 'number' && takeProfit > 0
@@ -519,6 +519,12 @@ export async function wsAmendPosition(host, clientId, clientSecret, accessToken,
   const payload = { ctidTraderAccountId: parseInt(accountId), positionId: parseInt(positionId) }
   if (hasSl) payload.stopLoss = Number(stopLoss)
   if (hasTp) payload.takeProfit = Number(takeProfit)
+  // The stop policy (02-10-2026, lib/stop-policy.js): the trigger method and
+  // trailing flag are properties of the STOP, so they ride only with one. This
+  // path is the js transport and the cpp fallback; it forwards what the policy
+  // chokepoint stamped, nothing else.
+  if (hasSl && stopLossTriggerMethod != null) payload.stopLossTriggerMethod = stopLossTriggerMethod
+  if (hasSl && trailingStopLoss === true) payload.trailingStopLoss = true
   if (hasSl && !hasTp) {
     console.warn(`[ctrader-ws] amend ${positionId}: stop-only — this CLEARS any take profit at the broker`)
   }

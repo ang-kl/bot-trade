@@ -10,6 +10,7 @@ import { tagLabelWithIntent } from './trade-labels.js'
 import { isAmbiguousOrderOutcome } from './exec-fallback.js'
 import { beginCall, endCall } from './inflight.js'
 import { entryAnswerVerdict } from './order-answer.js'
+import { getStopPolicy, applyStopPolicyToAmend, trailConfigPolicy, noteAmendOutcome } from './stop-policy.js'
 
 export function execEngineMode() {
   return process.env.EXEC_ENGINE === 'cpp' ? 'cpp' : 'js'
@@ -247,11 +248,19 @@ async function connectSidecarSession(creds, base, force) {
 // cpp mode only; BEST-EFFORT by contract: any failure returns false and the
 // keeper carries on — its own 3s ratchet remains the fallback. Never
 // throws, never blocks the keeper on a broken sidecar.
-export async function pushTrailConfig(creds, positions) {
+export async function pushTrailConfig(creds, positions, opts = {}) {
   if (execEngineMode() !== 'cpp') return false
   try {
     await ensureSidecarSession(creds)
-    const r = await sidecar(execBaseFor(creds), 'POST', '/trail-config', { positions: Array.isArray(positions) ? positions : [] })
+    // The stop policy rides every push (02-10-2026): the TrailEngine sends its
+    // own amends from C++ and must stamp the same trigger method / trailing
+    // flag. /trail-config is full-replace, so an ABSENT block clears it — when
+    // the policy is off the block is simply not sent.
+    const stopPolicy = opts.stopPolicy === undefined ? trailConfigPolicy(getStopPolicy()) : opts.stopPolicy
+    const r = await sidecar(execBaseFor(creds), 'POST', '/trail-config', {
+      positions: Array.isArray(positions) ? positions : [],
+      ...(stopPolicy ? { stopPolicy } : {}),
+    })
     // The sidecar now reports specs it REFUSED (bad dir / missing ids) —
     // surface the coverage gap instead of letting "sent N" read as "tracking N".
     if (r && Number(r.rejected) > 0) {
@@ -1136,16 +1145,35 @@ export function assertAmendIntent(args) {
 
 export async function amendPosition(creds, args) {
   args = withNumericIds(withAccount(creds, assertAmendIntent(args)))
-  if (execEngineMode() === 'cpp') {
-    return withFallback('amend',
-      async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/amend', args) },
-      async () => {
-        const m = await ws()
-        return m.wsAmendPosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
-      }, execBaseFor(creds))
+  // THE ONE PLACE THE STOP POLICY IS STAMPED (02-10-2026). Every Node amend —
+  // the ladder, the Chandelier, the keeper, the guards, the book, the repairs —
+  // passes here, and an amend REPLACES a position's protection, so a caller
+  // that forgot the trigger method / trailing flag could reset them. Callers
+  // say what the stop MEANS (`stopContext`: side, entry, book); the policy
+  // decides the fields. See lib/stop-policy.js.
+  args = applyStopPolicyToAmend(args, getStopPolicy())
+  let result
+  let failure
+  try {
+    if (execEngineMode() === 'cpp') {
+      result = await withFallback('amend',
+        async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/amend', args) },
+        async () => {
+          const m = await ws()
+          return m.wsAmendPosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
+        }, execBaseFor(creds))
+    } else {
+      const m = await ws()
+      result = await m.wsAmendPosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
+    }
+    return result
+  } catch (err) {
+    failure = err
+    throw err
+  } finally {
+    // The first live evidence of the stop policy (GET /state/stop-policy).
+    noteAmendOutcome({ args, result, error: failure })
   }
-  const m = await ws()
-  return m.wsAmendPosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
 }
 
 export async function closePosition(creds, args) {

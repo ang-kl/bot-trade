@@ -121,6 +121,9 @@ export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, ent
     currentSl: currentSl ?? null,
     currentTp: currentTp ?? null,
     digits: d,
+    // The sidecar decides per amend whether the stop it sends locks profit
+    // (broker-side trailing, stop policy 02-10-2026); it needs the entry.
+    entryPrice: peak,
     source: 'mae_chandelier_since_entry',
   }
 }
@@ -145,10 +148,31 @@ export function receiptFromTrailMove(id, prevSl, nextSl) {
 
 export function receiptFromBrokerOutcome(id, sl, outcome) {
   const accepted = !!outcome && !outcome.error && !outcome.skipped && outcome.closedRemotely !== true && typeof outcome.summary === 'string' && outcome.summary.length > 0
+  // The sidecar's ratchet found the broker's stop already tighter (broker-side
+  // trailing moved it) and sent nothing: an answer, not a failure and not a
+  // send. Stop policy, 02-10-2026.
+  const unchanged = accepted && outcome.unchanged === true
+  const protection = outcome?.protection
+  const policy = outcome?.policy
   return {
     id: String(id),
     sl,
-    sent: accepted,
+    sent: accepted && !unchanged,
+    ...(unchanged ? { unchanged: true } : {}),
+    // confirmed: the sidecar read the broker back after the amend and the stop
+    // held (the old receipt only said the broker answered).
+    ...(protection?.verified === true ? { confirmed: true, heldSl: protection.stopLoss ?? null } : {}),
+    // What happened to the stop policy on this amend (trigger method /
+    // trailing flag): applied, how the read-back judged it, whether the broker
+    // refused the flags and the stop went through without them.
+    ...(policy && typeof policy === 'object' ? {
+      policy: {
+        applied: policy.applied === true,
+        readback: policy.readback ?? null,
+        refused: !!policy.refused,
+        skipped: policy.skipped ?? null,
+      },
+    } : {}),
     broker: accepted ? outcome.summary : (outcome?.error || outcome?.reason || 'no_broker_ack'),
   }
 }
@@ -210,6 +234,8 @@ export function maeChandelierView(db, read) {
       adjustable: rows.filter(r => r?.mayAmend === true).length,
       receipts: receipts.length,
       receiptsSent: sent.length,
+      receiptsConfirmed: receipts.filter(r => r?.confirmed === true).length,
+      receiptsUnchanged: receipts.filter(r => r?.unchanged === true).length,
       lastReceiptAt: receipts.length ? receipts[receipts.length - 1]?.at || null : null,
     },
     positions,

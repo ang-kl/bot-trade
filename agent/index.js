@@ -5,6 +5,7 @@ import { resolve, dirname, isAbsolute } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
+import { loadStopPolicy } from './lib/stop-policy.js';
 import { touchSession } from './services/browser-sessions.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
 import * as clientPresence from './services/client-presence.js';
@@ -122,6 +123,12 @@ if (!DB_PATH) {
   console.warn('[boot] ⚠⚠⚠ DB_PATH is NOT set — the database lives inside the container and EVERY REDEPLOY WIPES IT (account link, logins, trade history). Attach a Railway Volume at /data and set DB_PATH=/data/agent.db.');
 }
 const db = initDB(resolvedDbPath);
+// The stop-loss policy (owner 02-10-2026: Opposite trigger, broker-side
+// trailing once profit is locked) is read once at boot and on every config
+// change. Synchronous, before anything can amend: a stored kill switch
+// ({enabled:false}) must hold from the first amend. Unreadable storage means
+// the default, which is ON as ordered.
+loadStopPolicy(db, getState);
 // V3 M1: the boot record's first entry — the database's own phase timings and
 // when it finished opening, measured from process start (boot-clock.js).
 noteDbStartup(db.startupTiming);

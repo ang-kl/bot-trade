@@ -30,6 +30,7 @@ import { loadManualGuards, checkAddCap, inheritedBracket, mirroredBracket, isDup
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadManagedExit, MANAGED_EXIT_DEFAULTS } from '../services/managed-exit.js'
+import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, TRAILING_MODES, TRIGGER_ENCODINGS, parseTriggerMethod, setStopPolicy } from '../lib/stop-policy.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
@@ -1924,6 +1925,49 @@ export default function actionsRouter(db, deps = {}) {
     const effective = loadManagedExit(db)
     console.log('[actions] managed-exit →', effective)
     res.json({ ok: true, stored: next, effective, defaults: MANAGED_EXIT_DEFAULTS })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/stop-policy — the stop-loss policy and its KILL SWITCH
+  // (owner 02-10-2026: Opposite trigger on every stop, broker-side trailing
+  // once the stop locks profit; lib/stop-policy.js).
+  //
+  //   { enabled: false }          → no amend carries the trigger method or the
+  //                                 trailing flag any more. Takes effect on the
+  //                                 next amend; the sidecar's TrailEngine picks
+  //                                 it up with the keeper's next /trail-config
+  //                                 push (within a minute). No redeploy.
+  //   { trailing: 'off' }         → Opposite stays, broker-side trailing stops
+  //                                 being requested (it never turns an existing
+  //                                 flag OFF — the bot does not clear trailing).
+  //   { triggerMethod, encoding } → the enum, and whether it goes on the wire
+  //                                 as a number or as its name.
+  //
+  // Starts from what is STORED and applies the patch (failure mode #5); every
+  // field is validated and a bad value is refused loudly, never defaulted: an
+  // operator asking for a policy must not silently get another one.
+  // -----------------------------------------------------------------------
+  router.post('/stop-policy', (req, res) => {
+    const b = req.body || {}
+    const next = { ...storedObject(db, STOP_POLICY_KEY) }
+    const bad = []
+    if (b.enabled !== undefined) { if (typeof b.enabled !== 'boolean') bad.push('enabled'); else next.enabled = b.enabled }
+    if (b.trailing !== undefined) { if (!TRAILING_MODES.includes(b.trailing)) bad.push('trailing'); else next.trailing = b.trailing }
+    if (b.encoding !== undefined) { if (!TRIGGER_ENCODINGS.includes(b.encoding)) bad.push('encoding'); else next.encoding = b.encoding }
+    if (b.triggerMethod !== undefined) { const t = parseTriggerMethod(b.triggerMethod); if (!t) bad.push('triggerMethod'); else next.triggerMethod = t }
+    if (bad.length) {
+      return res.status(400).json({
+        error: 'invalid_value', fields: bad,
+        allowed: { enabled: 'true|false', trailing: TRAILING_MODES, encoding: TRIGGER_ENCODINGS, triggerMethod: 'TRADE|OPPOSITE|DOUBLE_TRADE|DOUBLE_OPPOSITE or 1-4' },
+      })
+    }
+    setState(db, STOP_POLICY_KEY, JSON.stringify(next))
+    // The EFFECTIVE policy is what the amends will see, read back through the
+    // normaliser — not an echo of the patch.
+    const effective = setStopPolicy(next)
+    try { db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run('STOP_POLICY', '/actions/stop-policy', JSON.stringify({ patch: b, effective }).slice(0, 2000)) } catch { /* action_log appears after first boot */ }
+    console.log('[actions] stop-policy →', effective)
+    res.json({ ok: true, stored: next, effective, defaults: DEFAULT_STOP_POLICY })
   })
 
   // -----------------------------------------------------------------------
