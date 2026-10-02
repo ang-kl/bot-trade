@@ -51,7 +51,7 @@ test('GET /state/mae-chandelier: counts readings with and without bars, adjustab
     const body = await fetch(s.url('/state/mae-chandelier')).then(r => r.json())
     assert.equal(body.mode, 'observe_and_tighten')
     assert.deepEqual(body.summary, {
-      positions: 3, withBars: 2, withoutBars: 1, adjustable: 1,
+      positions: 3, withBars: 2, withoutBars: 1, adjustable: 1, quoteMissingMarketOpen: 0, entryTimeUnknown: 0,
       receipts: 3, receiptsSent: 1, receiptsConfirmed: 1, receiptsUnchanged: 1, lastReceiptAt: '2026-10-02T01:00:07.000Z',
     })
     assert.equal(body.positions['2'].atr, null, 'a reading with no bars is shown as such, not hidden')

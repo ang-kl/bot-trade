@@ -53,6 +53,7 @@ export function observePosition({
   side, entry, price, sl = null, bars = null,
   peak = null, trough = null,
   period = DEFAULT_ATR_PERIOD, multiplier = DEFAULT_ATR_MULT,
+  marketOpen = null,
 } = {}) {
   const dir = dirOf(side)
   const out = {
@@ -68,8 +69,13 @@ export function observePosition({
     atr: null,
     reason: 'observe_only',
   }
-  if (!dir || !(entry > 0) || !(price > 0)) {
-    out.reason = 'incomplete_quote'
+  // Each missing input is NAMED (owner 03-10-2026: "no excuse like incomplete").
+  // A closed market with no quote is expected; an OPEN market with no quote is
+  // a defect the view counts, never a quiet skip.
+  if (!dir) { out.reason = 'direction_missing'; return out }
+  if (!(entry > 0)) { out.reason = 'entry_price_missing'; return out }
+  if (!(price > 0)) {
+    out.reason = marketOpen === false ? 'market_closed' : 'quote_missing_market_open'
     return out
   }
   const adverse = dir === 1 ? entry - price : price - entry
@@ -128,17 +134,71 @@ export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, ent
   }
 }
 
-export function decideAdjust({ side, entry, price, sl, bars, period = DEFAULT_ATR_PERIOD, multiplier = DEFAULT_ATR_MULT } = {}) {
-  const reading = observePosition({ side, entry, price, sl, bars, period, multiplier })
+export function decideAdjust({ side, entry, price, sl, bars, openedAtMs = null, marketOpen = null, period = DEFAULT_ATR_PERIOD, multiplier = DEFAULT_ATR_MULT } = {}) {
+  const reading = observePosition({ side, entry, price, sl, bars, period, multiplier, marketOpen })
   const dir = reading.dir
-  const since = chandelierSinceEntry(bars, 0, dir, reading.atr, multiplier)
-  const out = { ...reading, chandelierSinceEntry: since, mayAmend: false, adjust: null }
-  if (!(since > 0) || !(sl > 0) || !dir) return out
+  const out = { ...reading, chandelierSinceEntry: null, heldBars: null, mayAmend: false, adjust: null }
+  if (!dir || !(entry > 0) || !(price > 0)) return out
+  // SINCE ENTRY means the bars that began after the fill. The fetched window is
+  // 40 hourly bars; cutting at index 0 (the old call) took the highest high of
+  // the last 40 hours, including hours before the position existed, and put the
+  // level above where this trade's own high could justify.
+  if (!Number.isFinite(openedAtMs)) { out.reason = 'entry_time_unknown'; return out }
+  if (!(reading.atr > 0)) return out
+  const held = heldBarsSince(bars, openedAtMs)
+  out.heldBars = held.length
+  const since = chandelierSinceEntryLevel({ held, dir, atr: reading.atr, multiplier, entry, price })
+  out.chandelierSinceEntry = since
+  if (!(since > 0) || !(sl > 0)) return out
   const tighter = dir === 1 ? since > sl && since < price : since < sl && since > price
   if (!tighter) return out
   out.mayAmend = true
   out.adjust = { action: 'MOVE_SL', sl: since, newSL: since, reason: 'mae_chandelier_since_entry_tighten' }
   return out
+}
+
+/** Bars that BEGAN after the position opened; the bar holding the fill is excluded because part of it predates the trade. */
+export function heldBarsSince(bars, openedAtMs) {
+  if (!Array.isArray(bars) || !Number.isFinite(openedAtMs)) return []
+  return bars.filter(b => Number(b?.t) > openedAtMs)
+}
+
+/**
+ * The extreme since entry. With no completed bar yet the extreme is the entry
+ * and the live price themselves, so a just-opened trade still gets a level.
+ */
+export function chandelierSinceEntryLevel({ held, dir, atr, multiplier = DEFAULT_ATR_MULT, entry, price }) {
+  if (!(atr > 0) || !dir) return null
+  const highs = [Number(entry), Number(price), ...(held || []).map(b => Number(b.h))].filter(Number.isFinite)
+  const lows = [Number(entry), Number(price), ...(held || []).map(b => Number(b.l))].filter(Number.isFinite)
+  if (!highs.length) return null
+  return dir === 1 ? Math.max(...highs) - multiplier * atr : Math.min(...lows) + multiplier * atr
+}
+
+/** Open time of a monitored row in ms: the trade's fill time, else the row's own stamp (adoption time is later, so safer). */
+export function positionOpenedAtMs(db, pos) {
+  const parse = v => {
+    if (typeof v !== 'string' || !v) return null
+    const ms = Date.parse(/Z|[+-]\d\d:?\d\d$/.test(v) ? v : `${v.replace(' ', 'T')}Z`)
+    return Number.isFinite(ms) ? ms : null
+  }
+  try {
+    if (pos?.trade_id != null) {
+      const row = db.prepare('SELECT opened_at FROM trades WHERE id = ?').get(pos.trade_id)
+      const ms = parse(row?.opened_at)
+      if (ms != null) return ms
+    }
+  } catch { /* fall through to the row's own stamp */ }
+  return parse(pos?.created_at)
+}
+
+// The fast monitor's last live mid per position, so the slow pass never reads
+// "no price" for a position the fast pass priced seconds ago.
+const MID_CACHE = new Map()
+export function noteMid(id, mid, atMs = Date.now()) { if (mid > 0) MID_CACHE.set(String(id), { mid, at: atMs }) }
+export function freshMid(id, nowMs = Date.now(), maxAgeMs = 60_000) {
+  const hit = MID_CACHE.get(String(id))
+  return hit && nowMs - hit.at <= maxAgeMs ? hit.mid : null
 }
 
 export function receiptFromTrailMove(id, prevSl, nextSl) {
@@ -232,6 +292,8 @@ export function maeChandelierView(db, read) {
       withBars,
       withoutBars: rows.length - withBars,
       adjustable: rows.filter(r => r?.mayAmend === true).length,
+      quoteMissingMarketOpen: rows.filter(r => r?.reason === 'quote_missing_market_open').length,
+      entryTimeUnknown: rows.filter(r => r?.reason === 'entry_time_unknown').length,
       receipts: receipts.length,
       receiptsSent: sent.length,
       receiptsConfirmed: receipts.filter(r => r?.confirmed === true).length,

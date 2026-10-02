@@ -11,7 +11,7 @@ import { recordScanPass } from './lib/bar-path-counters.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows, rosterArmedTradeKeys } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
-import { decideAdjust, recordObserve, cachedBars, shouldSendChandelierAdjust, recordAmendReceipt, receiptFromBrokerOutcome } from './services/mae-chandelier-observe.js'
+import { decideAdjust, recordObserve, cachedBars, shouldSendChandelierAdjust, recordAmendReceipt, receiptFromBrokerOutcome, positionOpenedAtMs, freshMid } from './services/mae-chandelier-observe.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
 import { recordTradePlan, recordPlanWriteFailure } from './services/trade-plans.js'
@@ -2726,13 +2726,22 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
     // ATR and never tightened. The id comes from the account's symbol map,
     // the same lookup the fast monitor makes.
     const symbolId = monitorSymbolIdFor(db, pos)
-    const bars = cachedBars(symbolId)
+    // Same key as the fast monitor's fill: the symbol name (an id is only
+    // meaningful inside one account's id space).
+    const bars = cachedBars(String(pos.symbol || '').toUpperCase())
+    // A held price missing here is read from the fast monitor's own latest
+    // quote (at most a minute old) before the reading is called quote-less.
+    const priceNow = Number(currentPrice) > 0 ? Number(currentPrice) : freshMid(pos.id)
+    let marketOpen = null
+    try { marketOpen = isSymbolOpenCached(db, pos.symbol).open !== false } catch { marketOpen = null }
     const reading = decideAdjust({
       side: pos.side,
       entry: Number(pos.entry_price),
-      price: Number(currentPrice),
+      price: priceNow,
       sl: Number(pos.current_sl) || null,
       bars,
+      openedAtMs: positionOpenedAtMs(db, pos),
+      marketOpen,
     })
     recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, symbolId: symbolId || null, pass: 'timeframe', ...reading }]).catch(() => {})
     if (shouldSendChandelierAdjust(pos, reading)) {
