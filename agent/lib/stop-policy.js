@@ -202,8 +202,9 @@ export function noteAmendOutcome({ args, result, error, now = Date.now() } = {})
       if (rb) counts.readback[rb] += 1
     }
     // The bot's evidence that this position's stop is now trailed by the broker:
-    // the flag went out, and the sidecar neither refused it nor stripped it.
-    if (trailingRequested && !error && !policy?.refused && policy?.skipped !== 'cooldown') markTrailing(args?.ctidTraderAccountId, args?.positionId)
+    // the flag went out, and the sidecar neither refused it, stripped it, nor read
+    // back that the broker is NOT trailing (a mismatch is not evidence of a trail).
+    if (trailingRequested && !error && !policy?.refused && policy?.skipped !== 'cooldown' && policy?.readback !== 'mismatch') markTrailing(args?.ctidTraderAccountId, args?.positionId)
     if (trigger == null && !trailing && !policy) return
     ring.push({
       at: new Date(now).toISOString(),

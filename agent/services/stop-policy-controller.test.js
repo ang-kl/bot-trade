@@ -26,8 +26,12 @@ function rig({ live = false } = {}) {
         VALUES ('EURUSD', ?, ?, 0.01, 'open', ?, ?, datetime('now'))`).run(side, entry, String(posId), account).lastInsertRowid
       db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, status, account_id, source, paused, keeper_opt_out)
         VALUES ('EURUSD', ?, ?, ?, ?, 110, 'active', ?, 'autopilot', ?, ?)`).run(tradeId, side, entry, sl, account, paused, optOut)
-      if (book) db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
-        VALUES (?, ?, 'EURUSD', ?, 'long', ?, ?, datetime('now'), 'open')`).run(tradeId, account, String(posId), entry, sl)
+      if (book) {
+        db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, position_id, side, entry_price, stop, entered_at, status)
+          VALUES (?, ?, 'EURUSD', ?, 'long', ?, ?, datetime('now'), 'open')`).run(tradeId, account, String(posId), entry, sl)
+        // As in production: the book PAUSES its own rows (book-entry-write.js).
+        db.prepare(`UPDATE monitored_positions SET paused = 1 WHERE trade_id = ?`).run(tradeId)
+      }
     }
     return { positionId: posId, stopLoss: sl, takeProfit: 110 }
   }
@@ -276,4 +280,14 @@ test('F5: the tracked map is bounded and drops the oldest', () => {
   assert.equal(v.tracked, TRACKED_MAX)
   assert.equal(confirmedAt('42', 0), null, 'the oldest is gone')
   assert.notEqual(confirmedAt('42', TRACKED_MAX + 24), null, 'the newest is kept')
+})
+
+
+test('a momentum-book row is paused BY DESIGN and is stamped (trigger only); an owner-paused row is still left alone', async () => {
+  const r = rig()
+  r.broker['42'] = [r.position('42', { book: true }), r.position('42', { paused: 1 })]
+  const p = await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW })
+  assert.equal(r.sent.length, 1, 'only the book row was asked')
+  assert.equal(r.sent[0].args.stopContext.book, true)
+  assert.equal(p.skipped.paused, 1, 'the owner-paused row was skipped')
 })

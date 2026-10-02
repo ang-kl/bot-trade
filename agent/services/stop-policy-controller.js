@@ -39,7 +39,8 @@
 //     trailingStopLoss reads false when enabled, so "not confirmed" must not
 //     become "stamp again every minute".
 //   · Never stamps: a position with no broker stop (the naked-position guard's
-//     job), a paused row, a keeper_opt_out row, a position with no monitored
+//     job), a row the OWNER paused (momentum-book rows are paused by design and
+//     ARE stamped, trigger method only), a keeper_opt_out row, a position with no monitored
 //     row (nothing says its side or entry), or any position while the policy
 //     is off.
 //   · Momentum-book rows get the trigger method but never the trailing flag
@@ -216,7 +217,14 @@ async function stopPolicyPass(db, baseCreds, deps = {}) {
       if (!(brokerSl > 0)) { skip('no_stop'); continue }
       const row = rowByPos.get(pid)
       if (!row) { skip('no_row'); continue }
-      if (Number(row.paused) === 1) { skip('paused'); continue }
+      // PAUSED HAS TWO ORIGINS (found on the first live pass, 02-10-2026: six
+      // positions skipped, the five …0058 book rows among them). An owner's
+      // pause is "hands off" and is respected. The momentum book pauses its own
+      // rows by design (book-entry-write.js sets paused = 1), and a policy stamp
+      // moves no stop level, so a book row is stamped: trigger method only,
+      // never trailing (stopContext.book).
+      const isBook = bookHolds(p.positionId, row.trade_id) === true
+      if (Number(row.paused) === 1 && !isBook) { skip('paused'); continue }
       if (Number(row.keeper_opt_out) === 1) { skip('keeper_opt_out'); continue }
       const dir = sideDirection(row.side)
       if (!dir) { skip('unknown_side'); continue }
@@ -224,13 +232,13 @@ async function stopPolicyPass(db, baseCreds, deps = {}) {
       const prev = state.lastAsk.get(key)
       const wait = prev ? (prev.outcome === 'error' ? RETRY_MS : RECHECK_MS) : 0
       if (prev && now - prev.at < wait) { skip('recent'); continue }
-      eligible.push({ p, pid, row, dir, brokerSl, key })
+      eligible.push({ p, pid, row, dir, brokerSl, key, isBook })
     }
     if (!eligible.length) return null
     for (let i = 1; i < eligible.length; i++) skip('one_per_account')
     if (late()) { out.deadline = true; skip('deadline'); return null }
 
-    const { p, pid, row, dir, brokerSl, key } = eligible[0]
+    const { p, pid, row, dir, brokerSl, key, isBook } = eligible[0]
     let result = null
     let error = null
     try {
@@ -238,7 +246,7 @@ async function stopPolicyPass(db, baseCreds, deps = {}) {
         positionId: p.positionId,
         policyOnly: true,
         expectedDirection: dir,
-        stopContext: { side: row.side, entry: Number(row.entry_price) || null, book: bookHolds(p.positionId, row.trade_id) === true, stop: brokerSl },
+        stopContext: { side: row.side, entry: Number(row.entry_price) || null, book: isBook, stop: brokerSl },
       })
     } catch (err) { error = err }
     const outcome = classifyOutcome(result, error)
