@@ -5,6 +5,7 @@ import { getState, setState as setAgentState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
 import { lotsFromUnits } from '../lib/lot-size-registry.js'
 import { recordPositionEvent } from './position-events.js'
+import { isTrailing, stopTightened } from '../lib/stop-policy.js'
 import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
 import { brokerCloseReason, LEGACY_BOOK_STOP, replaceableCloseReason } from './broker-exit-attribution.js'
 
@@ -433,7 +434,21 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       }
       if (!updates.side) { // side flip already adopts SL/TP wholesale
         if (row.broker_sl != null && differs(bSl, row.broker_sl) && differs(bSl, row.current_sl)) {
-          manualChanges.push({ kind: 'sl_moved', symbol: row.symbol, positionId: posId, from: row.broker_sl, to: bSl })
+          // A BROKER-TRAILED STOP IS NOT TAMPERING (02-10-2026). The bot asked
+          // the broker to trail this position (lib/stop-policy.js registry), the
+          // stop moved the SAFER way, and it is not looser than the stored one:
+          // adopt it quietly — no TAMPER row, no Telegram, no re-strategize. A
+          // loosening, or a position the bot never asked to trail, is still a
+          // manual change.
+          if (isTrailing(acct, posId) && stopTightened(row.side, row.broker_sl, bSl) && stopTightened(row.side, row.current_sl, bSl)) {
+            recordPositionEvent(db, {
+              accountId: acct, positionId: posId, tradeId: row.trade_id ?? null, symbol: row.symbol,
+              kind: 'sl_moved', fromValue: row.current_sl, toValue: bSl, source: 'broker_trailing',
+              reason: 'the broker moved a stop the bot asked it to trail (tightening); adopted without a tamper alert',
+            })
+          } else {
+            manualChanges.push({ kind: 'sl_moved', symbol: row.symbol, positionId: posId, from: row.broker_sl, to: bSl })
+          }
           updates.current_sl = bSl
         }
         if (row.broker_tp != null && differs(bTp, row.broker_tp) && differs(bTp, row.current_tp)) {
@@ -528,7 +543,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       // actually existed differed on 5 of 5 day-one trades and realised R
       // read up to 2R off. Stamped ONCE, and only before any break-even move
       // — a trailed stop is not the risk taken at entry.
-      if (row.trade_id && row.broker_sl_initial == null && Number(bSl) > 0 && !row.be_moved) {
+      if (row.trade_id && row.broker_sl_initial == null && Number(bSl) > 0 && !row.be_moved && !isTrailing(acct, posId)) {
         try {
           db.prepare(`UPDATE trades SET broker_sl_initial = ? WHERE id = ? AND broker_sl_initial IS NULL`).run(Number(bSl), row.trade_id)
         } catch { /* a forensics column must never fail the reconcile */ }

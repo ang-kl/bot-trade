@@ -1210,6 +1210,10 @@ export async function runProtectionBand(db, creds, deps = {}, nowMs = Date.now()
     // has none.
     { key: 'loss_guardian', label: 'Loss Guardian', mod: './loss-guardian.js', fn: 'runLossGuardian',
       say: r => (r.stops || r.closes || r.deferred?.length) ? `${r.stops} protective stop(s), ${r.closes} close(s)${deferredText(r)}` : null },
+    // The stop policy's desired-state pass (02-10-2026): canary first, then at
+    // most one policy-only stamp per account. It never moves a stop level.
+    { key: 'stop_policy', label: 'Stop policy', mod: './stop-policy-controller.js', fn: 'runStopPolicyPass',
+      say: r => (r.stamped || r.refused || r.unverifiable || r.held) ? `${r.stamped} stamped, ${r.compliant} already compliant, ${r.refused} refused, ${r.unverifiable} unverifiable${r.held ? ' (held after the canary)' : ''}` : null },
   ]) {
     try {
       if (!creds?.ready) break

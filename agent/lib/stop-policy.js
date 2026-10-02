@@ -142,7 +142,11 @@ export function applyStopPolicyToAmend(args, policy = current) {
   delete out.noStopPolicy
   if (skip || !policy.enabled) return out
   if (!(Number(out.stopLoss) > 0) && out.policyOnly !== true) return out
-  const fields = policyFields({ policy, side: ctx?.side, entry: ctx?.entry, stop: out.stopLoss, book: ctx?.book === true })
+  // A policyOnly amend carries no stop of its own (the sidecar reads the
+  // broker's); the caller names the broker's stop in stopContext.stop so the
+  // lock rule can still be decided.
+  const stopForRule = Number(out.stopLoss) > 0 ? out.stopLoss : ctx?.stop
+  const fields = policyFields({ policy, side: ctx?.side, entry: ctx?.entry, stop: stopForRule, book: ctx?.book === true })
   for (const [k, v] of Object.entries(fields)) if (out[k] === undefined) out[k] = v
   return out
 }
@@ -182,7 +186,8 @@ export function noteAmendOutcome({ args, result, error, now = Date.now() } = {})
   try {
     counts.amends += 1
     const trigger = args?.stopLossTriggerMethod
-    const trailing = args?.trailingStopLoss === true
+    const trailingRequested = args?.trailingStopLoss === true
+    const trailing = trailingRequested
     if (trigger != null) counts.withTrigger += 1
     if (trailing) counts.withTrailing += 1
     if (args?.ratchetOnly === true) counts.ratchet += 1
@@ -196,6 +201,9 @@ export function noteAmendOutcome({ args, result, error, now = Date.now() } = {})
       const rb = typeof policy.readback === 'string' && policy.readback in counts.readback ? policy.readback : null
       if (rb) counts.readback[rb] += 1
     }
+    // The bot's evidence that this position's stop is now trailed by the broker:
+    // the flag went out, and the sidecar neither refused it nor stripped it.
+    if (trailingRequested && !error && !policy?.refused && policy?.skipped !== 'cooldown') markTrailing(args?.ctidTraderAccountId, args?.positionId)
     if (trigger == null && !trailing && !policy) return
     ring.push({
       at: new Date(now).toISOString(),
@@ -209,6 +217,71 @@ export function noteAmendOutcome({ args, result, error, now = Date.now() } = {})
     })
     if (ring.length > RING_MAX) ring = ring.slice(-RING_MAX)
   } catch { /* evidence only — never blocks an amend */ }
+}
+
+// ---------------------------------------------------------------------------
+// Positions the bot has asked the broker to TRAIL (02-10-2026). A broker-trailed
+// stop moves between the bot's reads; the reconciler would otherwise call every
+// such move a "manual change" (a TAMPER row, a Telegram alert, a re-strategize).
+// The registry is the bot's own evidence that a stop move may be the trail: it
+// is only ever the TIGHTENING direction that is adopted quietly, and a position
+// not in the registry keeps the old rules. Persisted (agent_state) because a
+// restart must not turn every trailing stop back into "tampering".
+// ---------------------------------------------------------------------------
+export const TRAILING_KEY = 'stop_policy_trailing_json'
+const TRAILING_MAX = 500
+let trailedPositions = new Map() // `${account}:${positionId}` -> ISO time first requested
+let trailingDirty = false
+
+const trailKey = (accountId, positionId) => `${String(accountId)}:${String(positionId)}`
+
+export function markTrailing(accountId, positionId, at = new Date().toISOString()) {
+  if (accountId == null || positionId == null) return
+  const k = trailKey(accountId, positionId)
+  if (trailedPositions.has(k)) return
+  trailedPositions.set(k, at)
+  if (trailedPositions.size > TRAILING_MAX) trailedPositions = new Map([...trailedPositions].slice(-TRAILING_MAX))
+  trailingDirty = true
+}
+
+export function isTrailing(accountId, positionId) {
+  return accountId != null && positionId != null && trailedPositions.has(trailKey(accountId, positionId))
+}
+
+export function loadTrailingRegistry(db, read) {
+  let stored = null
+  try { stored = JSON.parse(read(db, TRAILING_KEY) || 'null') } catch { stored = null }
+  trailedPositions = new Map(Object.entries(stored && typeof stored === 'object' ? stored : {}))
+  trailingDirty = false
+  return trailedPositions.size
+}
+
+/** Persist when something changed. `write` is db.js's setState. Never throws. */
+export function saveTrailingRegistry(db, write) {
+  if (!trailingDirty) return false
+  try { write(db, TRAILING_KEY, JSON.stringify(Object.fromEntries(trailedPositions))); trailingDirty = false; return true } catch { return false }
+}
+
+export function resetTrailingRegistry() { trailedPositions = new Map(); trailingDirty = false }
+
+/** The trigger method a verifier's position row reports (number), or null when the broker does not report one. */
+export function brokerTrigger(position) {
+  const v = position?.stopLossTriggerMethod
+  return v == null ? null : Number(v)
+}
+
+/** The trailing flag a verifier's position row reports: true, false, or null when not reported. */
+export function brokerTrailing(position) {
+  return typeof position?.trailingStopLoss === 'boolean' ? position.trailingStopLoss : null
+}
+
+/** Did the stop move to the SAFER side (up for a long, down for a short)? False on unknown input. */
+export function stopTightened(side, from, to) {
+  const dir = sideDirection(side)
+  const a = Number(from)
+  const b = Number(to)
+  if (!dir || !(a > 0) || !(b > 0)) return false
+  return dir === 1 ? b > a : b < a
 }
 
 export function stopPolicyStats() {

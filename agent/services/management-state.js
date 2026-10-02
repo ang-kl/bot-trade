@@ -106,6 +106,7 @@ export const EVENT_SOURCE_AUTHORITY = Object.freeze({
   profit_ratchet: 'emergency_control',
   equity_stop: 'emergency_control',       // loop.js:3573
   cpp_trail_engine: 'tick_safety',
+  broker_trailing: 'tick_safety',         // the broker's own trail on a stop the bot asked it to trail (stop-policy)
   profit_keeper: 'fast_manager',
   trade_guard: 'fast_manager',
   loss_guardian: 'fast_manager',

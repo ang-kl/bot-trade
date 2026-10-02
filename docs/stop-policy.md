@@ -47,3 +47,24 @@ The TrailEngine picks a change up with the keeper's next `/trail-config` push (w
 If the broker refuses an amend that carries the flags, the stop level still goes through: the sidecar retries once without them, records the refusal and cools down that account and symbol for six hours.
 
 Sources: Spotware Open API `ProtoOAAmendPositionSLTPReq`, `ProtoOAPosition`, `ProtoOAOrderTriggerMethod` (help.ctrader.com/open-api); cTrader protections page (trigger table).
+
+## Existing positions: the desired-state controller (PR-2)
+
+`agent/services/stop-policy-controller.js`, a fast-monitor band job (heartbeat `stop_policy`, 60 s). It sends each open position that has a broker stop one `policyOnly` amend: the sidecar reads the live stop and target itself and re-sends them with the two policy fields, so Node never sends a stale level; when the broker already carries the policy the sidecar answers `unchanged` and sends nothing. The stop LEVEL never moves.
+
+- **Both broker sides.** The band job is handed the selected account's credentials, which reach one host. The controller builds one context per side the way the protection audit does (`runProtectionAuditBothSides`), so every enabled account is covered; a side with no credentials is an error (the heartbeat goes red), never a quiet gap.
+- **Canary first, confirmed by a real stamp.** Until one amend has been applied AND read back as confirmed, the pass is sequential and the first real stamp ends its pass. A no-op (the broker already carries the policy) neither confirms the canary, nor holds it, nor uses up its one stamp. A refusal, an error, a disagreeing read-back or one that cannot vouch for it holds the whole controller for 30 minutes.
+- Then at most one policy call per account per pass, accounts in parallel. A soft deadline (3.5 s) stops new calls so the band's 5 s budget is not overrun; the rest wait for the next pass.
+- A position is not asked again for 6 hours (5 minutes after an error), so an unreliable trailing read-back is "unverifiable", never a re-stamp every minute. The tracked map is bounded (2,000).
+- Skips: no broker stop, paused row, `keeper_opt_out`, no monitored row, policy off. Momentum-book rows get the trigger method and never the trailing flag. Position ids are matched with `normPosId` (either side may carry the float spelling).
+- A policyOnly amend has no JS fallback: an amend with neither stop nor target would clear both.
+- `GET /state/stop-policy` carries a `controller` block (canary time, hold, tracked positions, last pass).
+- Rollback: `POST /actions/stop-policy {"enabled":false}` stops further stamps; it does not revert positions already stamped. `{"triggerMethod":"TRADE"}` makes the controller re-stamp the trigger back (design inference, untested live). The bot never sends `trailingStopLoss:false`, so a trailing flag it set can only be cleared by hand in cTrader.
+
+## A broker-trailed stop is not tampering
+
+The bot records each position it asked the broker to trail (`stop_policy_trailing_json`, loaded at boot). The reconciler adopts a broker stop move quietly (journal event `sl_moved`, source `broker_trailing`; no TAMPER row, no Telegram) only when the position is in that registry, the stop moved the safer way, and it is not looser than the stored stop. Anything else is still a manual change. `broker_sl_initial` is not taken from a trailed position.
+
+## Independent view
+
+`policyView` (independent-protection.js) reads the verifier's rows: stops carrying the policy's trigger method, differing, unknown (not reported), trailing. DRIFT is narrow: a position the controller confirmed more than 10 minutes ago that now reads a different trigger method; it flips that account's independent reading to unverified. Unstamped or unreported positions are counted, never alarmed. The trailing flag is shown, never judged.

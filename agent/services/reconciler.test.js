@@ -7,6 +7,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState } from '../db.js'
+import { markTrailing, resetTrailingRegistry } from '../lib/stop-policy.js'
 import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, undoIntentUpgrades, attributeBrokerClose, GENERIC_BROKER_CLOSE } from './reconciler.js'
 
 function mkDb() {
@@ -1527,4 +1528,69 @@ test('the loop guards BOTH reconcile call sites with the identity check (wiring 
   assert.equal(calls, 2, 'the selected-account site and the per-account site')
   assert.ok(/const identity = reconcileReplyIdentity\(reconcileData, accountId\)[\s\S]{0,1200}throw new Error\(`reconcile identity refused/.test(src), 'the selected-account site refuses the whole pass')
   assert.ok(/const identity2 = reconcileReplyIdentity\(rd, acc\.account_id\)[\s\S]{0,1200}continue/.test(src), 'the per-account site skips the account')
+})
+
+// ---------------------------------------------------------------------------
+// 02-10-2026 — a broker-trailed stop is not tampering (stop policy)
+// ---------------------------------------------------------------------------
+function trailRig(positionId) {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  setState('ctrader_account_id', '777')
+  seedKnownPosition(db, { positionId })
+  resetTrailingRegistry()
+  const bp = (sl) => [makeBrokerPosition({ positionId, symbolName: 'XAUUSD', stopLoss: sl, takeProfit: 110 })]
+  reconcilePositions(db, bp(99), [], setState) // baseline: broker_sl 99
+  return { db, setState, bp }
+}
+
+test('trailing: a tightening broker move on a position the bot asked to trail is adopted quietly (no TAMPER row)', () => {
+  const { db, setState, bp } = trailRig('51')
+  markTrailing('777', '51')
+  const r = reconcilePositions(db, bp(101), [], setState)
+  assert.deepEqual(r.manualChanges, [], 'no manual change, so no TAMPER alert and no re-strategize')
+  assert.equal(db.prepare(`SELECT current_sl FROM monitored_positions`).get().current_sl, 101, 'the stored stop follows the broker')
+  const ev = db.prepare(`SELECT kind, source, to_value FROM position_events WHERE position_id = '51'`).all()
+  assert.deepEqual(ev.filter(e => e.source === 'broker_trailing').map(e => [e.kind, e.to_value]), [['sl_moved', 101]])
+  resetTrailingRegistry()
+})
+
+test('trailing: the same move on a position the bot did NOT ask to trail is still a manual change', () => {
+  const { setState, bp, db } = trailRig('52')
+  const r = reconcilePositions(db, bp(101), [], setState)
+  assert.equal(r.manualChanges.length, 1)
+  assert.equal(r.manualChanges[0].kind, 'sl_moved')
+})
+
+test('trailing: a LOOSENING move is a manual change even on a trailed position', () => {
+  const { setState, bp, db } = trailRig('53')
+  markTrailing('777', '53')
+  const r = reconcilePositions(db, bp(97), [], setState)
+  assert.equal(r.manualChanges.length, 1, 'loosening is never the trail')
+  assert.equal(r.manualChanges[0].to, 97)
+  resetTrailingRegistry()
+})
+
+test('trailing: broker_sl_initial is not stamped from a trailed position', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  setState('ctrader_account_id', '777')
+  seedKnownPosition(db, { positionId: '54' })
+  resetTrailingRegistry()
+  markTrailing('777', '54')
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '54', symbolName: 'XAUUSD', stopLoss: 101, takeProfit: 110 })], [], setState)
+  assert.equal(db.prepare(`SELECT broker_sl_initial FROM trades`).get().broker_sl_initial, null)
+  resetTrailingRegistry()
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '54', symbolName: 'XAUUSD', stopLoss: 101, takeProfit: 110 })], [], setState)
+  assert.equal(db.prepare(`SELECT broker_sl_initial FROM trades`).get().broker_sl_initial, 101, 'control: an untrailed position is stamped as before')
+})
+
+test('trailing: a move that tightens the broker stop but is LOOSER than the stored stop is still a manual change', () => {
+  const { db, setState, bp } = trailRig('55')
+  markTrailing('777', '55')
+  // The bot tightened its own stored stop to 103 while the broker still held 99.
+  db.prepare(`UPDATE monitored_positions SET current_sl = 103`).run()
+  const r = reconcilePositions(db, bp(101), [], setState)
+  assert.equal(r.manualChanges.length, 1, 'the stored stop is the floor: a trail may not loosen it')
+  resetTrailingRegistry()
 })

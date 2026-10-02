@@ -5,7 +5,7 @@ import { resolve, dirname, isAbsolute } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
-import { loadStopPolicy } from './lib/stop-policy.js';
+import { loadStopPolicy, loadTrailingRegistry } from './lib/stop-policy.js';
 import { touchSession } from './services/browser-sessions.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
 import * as clientPresence from './services/client-presence.js';
@@ -129,6 +129,7 @@ const db = initDB(resolvedDbPath);
 // ({enabled:false}) must hold from the first amend. Unreadable storage means
 // the default, which is ON as ordered.
 loadStopPolicy(db, getState);
+loadTrailingRegistry(db, getState);
 // V3 M1: the boot record's first entry — the database's own phase timings and
 // when it finished opening, measured from process start (boot-clock.js).
 noteDbStartup(db.startupTiming);

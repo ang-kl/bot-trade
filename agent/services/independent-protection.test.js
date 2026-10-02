@@ -97,3 +97,29 @@ test('misplaced rows: a row open on one account whose position the verifier list
   assert.equal(v.ok, false)
   assert.match(v.summary, /MISPLACED.*V\.US 241760418 held by …9908/)
 })
+
+// 02-10-2026 — the stop policy as the verifier reads it
+import { policyView } from './independent-protection.js'
+
+const polRow = (positions) => ({ accountId: '42', ok: true, positions })
+const NOWP = 1_800_000_000_000
+
+test('policyView: compliant, differing, unknown and trailing are counted; only a confirmed-then-different stop is drift', () => {
+  const status = { accounts: [polRow([
+    { positionId: '1', stopLoss: 95, stopLossTriggerMethod: 2, trailingStopLoss: true },
+    { positionId: '2', stopLoss: 95, stopLossTriggerMethod: 1 },
+    { positionId: '3', stopLoss: 95, stopLossTriggerMethod: 1 },
+    { positionId: '4', stopLoss: 95, stopLossTriggerMethod: null },
+    { positionId: '5', stopLoss: null, stopLossTriggerMethod: 1 },
+  ])] }
+  const confirmed = { '42:2': NOWP - 11 * 60 * 1000, '42:3': NOWP - 60 * 1000 }
+  const v = policyView(status, { desiredTrigger: 2, confirmedAt: (a, p) => confirmed[`${a}:${p}`] ?? null, nowMs: NOWP })
+  assert.deepEqual(v.accounts['42'], { stops: 4, compliant: 1, differs: 2, unknown: 1, trailing: 1 }, 'a position with no stop is not a stop')
+  assert.deepEqual(v.drift.map(d => d.positionId), ['2'], 'position 3 is inside the grace window, 4 has no trigger reading')
+})
+
+test('policyView: policy off, an unread account, or no positions list produce no drift', () => {
+  assert.deepEqual(policyView({ accounts: [polRow([{ positionId: '2', stopLoss: 95, stopLossTriggerMethod: 1 }])] }, { desiredTrigger: 2, enabled: false, confirmedAt: () => 1, nowMs: NOWP }).drift, [])
+  assert.deepEqual(policyView({ accounts: [{ accountId: '42', ok: false, positions: [{ positionId: '2', stopLoss: 95, stopLossTriggerMethod: 1 }] }] }, { desiredTrigger: 2, confirmedAt: () => 1, nowMs: NOWP }).drift, [])
+  assert.deepEqual(policyView({ accounts: [{ accountId: '42', ok: true }] }, { desiredTrigger: 2, nowMs: NOWP }).totals, { stops: 0, compliant: 0, differs: 0, unknown: 0, trailing: 0 })
+})
