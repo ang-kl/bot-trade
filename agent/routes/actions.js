@@ -21,6 +21,7 @@ import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.j
 import { describeBracketGap } from '../lib/bracket-advice.js'
 import { setPhaseFlag } from '../services/phase-audit.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard, execBaseFor } from '../lib/exec-engine.js'
+import { assertReconcileIdentity } from '../services/reconciler.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { invalidateStateCache } from '../lib/state-cache.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
@@ -2331,6 +2332,8 @@ export default function actionsRouter(db, deps = {}) {
   // stale ids must fail loudly, not act on a ghost).
   async function findLivePosition(creds, positionId) {
     const rec = await execReconcile(creds)
+    // A reply for another account would make a ghost of this one's position id.
+    assertReconcileIdentity(rec, creds.accountId, 'findLivePosition')
     return (rec.position || []).find(p => String(p.positionId) === String(positionId)) || null
   }
 
@@ -2681,6 +2684,9 @@ export default function actionsRouter(db, deps = {}) {
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const rec = await execReconcile(creds)
+      // close-all closes EVERYTHING in the reply: another account's snapshot
+      // must never be taken for this one's.
+      assertReconcileIdentity(rec, creds.accountId, 'close-all')
       const positions = rec.position || []
       const closed = []
       const failures = []
@@ -2736,6 +2742,7 @@ export default function actionsRouter(db, deps = {}) {
       if (dupe.duplicate) return res.status(409).json({ error: dupe.reason })
 
       const rec = await execReconcile(creds)
+      assertReconcileIdentity(rec, creds.accountId, 'position-double')
       const positions = rec.position || []
       const pos = positions.find(p => String(p.positionId) === String(positionId)) || null
       if (!pos) return res.status(404).json({ error: `position ${positionId} not found at the broker` })

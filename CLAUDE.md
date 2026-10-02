@@ -994,6 +994,20 @@ Measurement history — each line is a real run of the script, not a claim:
   with PR-3". All lower bounds. The count is by replies, not by stamps. A
   later re-measure that reads below this line is missing these, not
   correcting them.
+- 2026-10-02 09:05 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,548`), the replies ran on through the #1187 report `№ 10,550`, its
+  merge `№ 10,553`, the "what else isn't built" list `№ 10,554`, the owner's
+  keep/drop answers `№ 10,555`–`№ 10,556`, the TP1/TP2, 27-09 follow-up and
+  broker-order report `№ 10,560`, the 30-09 wrong-account reply report
+  `№ 10,561` and the keeper-coverage report `№ 10,562`, with unstamped status
+  lines between them. The owner then ordered the identity check at the four
+  unguarded reconcile reads (this PR); two unstamped lines followed
+  `№ 10,562`, so the next stamped reply is at least **`№ 10,565`** plus any
+  unstamped line made after this ledger. #1187 (the integrated stop-loss
+  suite) is merged. All lower bounds. The count is by replies, not by stamps.
+  A later re-measure that reads below this line is missing these, not
+  correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
