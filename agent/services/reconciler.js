@@ -653,9 +653,17 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     // already holds OPEN cannot be this account's. The 30-09 reply bled
     // …9908's four positions into …0058; this is the line that would have
     // refused them whatever the reply said about itself.
+    // HOST-SCOPED: position ids collide across hosts (a demo id and a live id
+    // can be equal — cross-side-reconcile.test.js pins that a live adoption
+    // never refuses on a demo row's id), so only a row the REGISTRY places on
+    // the same host (accounts.is_live equal, both known) is evidence.
     const heldElsewhere = acct != null
-      ? db.prepare(`SELECT id, account_id FROM trades WHERE ctrader_position_id IN (?, ?) AND status = 'open' AND account_id IS NOT NULL AND account_id <> ? ORDER BY id DESC LIMIT 1`)
-        .get(posId, `${posId}.0`, acct)
+      ? db.prepare(`SELECT t.id, t.account_id FROM trades t
+                      JOIN accounts a ON a.account_id = t.account_id
+                      JOIN accounts me ON me.account_id = ?
+                     WHERE t.ctrader_position_id IN (?, ?) AND t.status = 'open' AND t.account_id <> ? AND a.is_live = me.is_live
+                     ORDER BY t.id DESC LIMIT 1`)
+        .get(acct, posId, `${posId}.0`, acct)
       : null
     if (heldElsewhere) {
       crossAccountRefused.push({ symbol: symbolName, positionId: posId, heldBy: String(heldElsewhere.account_id), tradeId: heldElsewhere.id })

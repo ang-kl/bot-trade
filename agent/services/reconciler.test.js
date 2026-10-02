@@ -1497,6 +1497,9 @@ test('reconcileReplyIdentity: a reply naming another account is refused; the sam
 test('a position another account holds OPEN is not adopted — refused, counted, audited', () => {
   const db = mkDb()
   const setState = mkSetState(db)
+  // Both demo accounts, as the registry says: the refusal is host-scoped
+  // (a live id equal to a demo id is a different position).
+  for (const id of ['46130058', '46979908', '42993489']) db.prepare(`INSERT INTO accounts (account_id, is_live, enabled) VALUES (?, ?, 1)`).run(id, id === '42993489' ? 1 : 0)
   db.prepare(`INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, account_id)
               VALUES ('V.US', 'BUY', 360, 0.1, '241760418', 'autopilot', 'open', datetime('now'), '46979908')`).run()
   const brokerPos = [makeBrokerPosition({ positionId: '241760418', symbolName: 'V.US', openPrice: 360, label: 'PRE|v1|TSM|HI|OFF|1d|-|i3jvakmszkpe3' })]
@@ -1505,7 +1508,12 @@ test('a position another account holds OPEN is not adopted — refused, counted,
   assert.deepEqual(result.crossAccountRefused.map(r => [r.positionId, r.heldBy]), [['241760418', '46979908']])
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM trades WHERE account_id = '46130058'`).get().n, 0, 'no phantom row on the asking account')
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM action_log WHERE method = 'RECONCILE_CROSS_ACCOUNT_REFUSED'`).get().n, 1)
+  // The same id offered to a LIVE account is another host's position: adopted.
+  const live = reconcilePositions(db, brokerPos, [], setState, { accountId: '42993489' })
+  assert.equal(live.newExternal.length, 1, 'ids collide across hosts; the live row is not a duplicate of the demo row')
+  assert.equal(live.crossAccountRefused.length, 0)
   // The same position offered to its OWN account is adopted as before.
+  db.prepare(`DELETE FROM monitored_positions`).run()
   db.prepare(`DELETE FROM trades`).run()
   const own = reconcilePositions(db, brokerPos, [], setState, { accountId: '46979908' })
   assert.equal(own.newExternal.length, 1)

@@ -1691,7 +1691,7 @@ test('B4b: the close row names each CLS-04 and CLS-03 record — account, symbol
   assert.deepEqual(named.rules, NAMED_CLOSE_RULES)
   assert.equal(named.total, 3, 'the legacy record is not named: only new records are')
   assert.ok(!named.items.some(i => i.positionId === legacy.pid || i.tradeId === legacy.id), 'the legacy record is absent from the named items')
-  assert.deepEqual(named.byClass, { live_gap: 1, post_contract_pre_fix: 1, outside_bot: 1, broker_evidence_pending: 0, labelled_unrecoverable: 0, pre_contract: 0 })
+  assert.deepEqual(named.byClass, { cross_account_duplicate: 0, live_gap: 1, post_contract_pre_fix: 1, outside_bot: 1, broker_evidence_pending: 0, labelled_unrecoverable: 0, pre_contract: 0 })
   assert.deepEqual(named.items.map(i => [i.positionId, i.class]), [[sg.pid, 'live_gap'], [pf.pid, 'post_contract_pre_fix'], [co.pid, 'outside_bot']], 'actionable class first')
   const [s1] = named.items
   assert.equal(s1.record, `position:${A}:${sg.pid}`)
@@ -1715,7 +1715,7 @@ test('B4b: the close row names each CLS-04 and CLS-03 record — account, symbol
   const snap = withSnapshot(db, report)
   const row = closeRow(snap)
   assert.equal(row.verdict, 'off_track'); assert.equal(row.current, 4, 'the count is unchanged — nothing named leaves it')
-  assert.deepEqual(row.split, { raw: 4, live_gap: 1, post_contract_pre_fix: 1, outside_bot: 1, broker_evidence_pending: 0, labelled_unrecoverable: 0, pre_contract: 0, other_rules: 1, classes: row.split.classes })
+  assert.deepEqual(row.split, { raw: 4, cross_account_duplicate: 0, live_gap: 1, post_contract_pre_fix: 1, outside_bot: 1, broker_evidence_pending: 0, labelled_unrecoverable: 0, pre_contract: 0, other_rules: 1, classes: row.split.classes })
   const parts = Object.keys(REFUSED_CLASSES).reduce((n, k) => n + row.split[k], 0) + row.split.other_rules
   assert.equal(parts, row.split.raw, 'the split is a partition of the count')
   assert.equal(row.split.raw, row.current)
