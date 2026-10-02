@@ -13,6 +13,8 @@ Date: 02-10-2026. Approval: `APPROVE mae-chandelier-observe`.
 - **What the fix changes in behaviour.** A stop moves only when since-entry (entry or best price, minus 3 ATR) is tighter than the stop and still behind price. A stop within 3 ATR of entry is not touched until the trade has run; a stop wider than 3 ATR is tightened to 3 ATR from entry at the first reading. Never-loosen and the stop policy still apply on the wire.
 - The `cpp-verify` observer is a read-only stub and is unchanged.
 
+**Update 03-10-2026 (closed rows).** The observe record keeps one row per position id and nothing wrote a closed position's row again, so rows of closed positions stayed for ever and counted as "withoutBars" (read back at 16:58Z: 4 of 5 rows). `recordObserve` now drops rows whose monitored position is no longer open, and `GET /state/mae-chandelier` hides them and reports `closedRowsHidden` (the record is cleaned at the next write; a record with no open positions is only hidden, since the monitor writes nothing then). An unreadable monitored table drops nothing.
+
 ## What this does
 
 Records, for each open position the observer is given, the worst price against the entry (MAE) and the best price for it (MFE). When 23 or more bars are present it also computes LeBeau's Chandelier: highest high of 22 sessions minus 3 times Wilder ATR(22), and the same line from the high since the entry index. Both numbers are stored. Neither is sent to the broker. The tick does not fetch bars. It passes 1h bars only if the profit keeper has already cached them. Otherwise the row says `observe_only_bars_missing`.

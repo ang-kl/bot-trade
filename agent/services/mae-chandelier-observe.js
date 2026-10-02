@@ -276,9 +276,15 @@ export function loadObserveState(db, read) {
  * since this module never loads the native driver itself). Never throws; an
  * empty key reads as an empty record.
  */
-export function maeChandelierView(db, read) {
+export function maeChandelierView(db, read, activeIds = null) {
   const state = loadObserveState(db, read)
-  const positions = state.positions && typeof state.positions === 'object' ? state.positions : {}
+  const stored = state.positions && typeof state.positions === 'object' ? state.positions : {}
+  // A row for a position that is no longer open is history, not a reading: it
+  // would count as "without bars" for ever and hide whether the open ones work.
+  const positions = activeIds instanceof Set
+    ? Object.fromEntries(Object.entries(stored).filter(([id]) => activeIds.has(String(id))))
+    : stored
+  const closedRowsHidden = Object.keys(stored).length - Object.keys(positions).length
   const receipts = Array.isArray(state.receipts) ? state.receipts : []
   const rows = Object.values(positions)
   const withBars = rows.filter(r => Number(r?.atr) > 0).length
@@ -287,6 +293,7 @@ export function maeChandelierView(db, read) {
     mode: state.mode || null,
     at: state.at || null,
     mayAmend: state.mayAmend === true,
+    closedRowsHidden,
     summary: {
       positions: rows.length,
       withBars,
@@ -317,11 +324,24 @@ export async function recordAmendReceipt(db, receipt, nowMs = Date.now(), io = {
   return next
 }
 
+/** Ids of the monitored rows still open, or null when the table cannot be read. */
+export function activeMonitoredIds(db) {
+  try {
+    const rows = db.prepare(`SELECT id FROM monitored_positions WHERE status = 'active'`).all()
+    return new Set(rows.map(r => String(r.id)))
+  } catch { return null }
+}
+
 export async function recordObserve(db, rows, nowMs = Date.now(), io = {}) {
   const read = io.read || (await import('../db.js')).getState
   const write = io.write || (await import('../db.js')).setState
   const prev = loadObserveState(db, read)
   const positions = { ...(prev.positions || {}) }
+  // Drop rows of positions that are no longer open (closed rows never clear
+  // themselves: nothing writes them again). The open ids come from the
+  // monitored table; with no readable table nothing is dropped.
+  const open = activeMonitoredIds(db)
+  if (open) for (const id of Object.keys(positions)) if (!open.has(String(id))) delete positions[id]
   for (const row of rows || []) {
     if (!row?.id) continue
     const folded = foldExcursion(positions[row.id], row)

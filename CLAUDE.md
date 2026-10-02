@@ -1056,6 +1056,16 @@ Measurement history — each line is a real run of the script, not a claim:
   **`№ 10,651`** plus any unstamped line made after this ledger. All lower
   bounds. The count is by replies, not by stamps. A later re-measure that
   reads below this line is missing these, not correcting them.
+- 2026-10-02 17:30 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,651`), the replies ran on through #1193 (the since-entry fix, merged
+  and deployed; `№ 10,650`, `№ 10,652`, `№ 10,653`), the C·2 apply (the
+  registry at revision `5bd5533f`, 902 profiles; bridge off then on, two Node
+  restarts; `№ 10,654`, 00:58 SGT) and the owner's order to build the
+  closed-position cleanup; this PR carries it. The next stamped reply is at
+  least **`№ 10,656`** plus any unstamped line made after this ledger. All
+  lower bounds. The count is by replies, not by stamps. A later re-measure
+  that reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

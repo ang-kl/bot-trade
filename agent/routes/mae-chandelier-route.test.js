@@ -35,6 +35,10 @@ test('GET /state/mae-chandelier: empty key → empty record', async () => {
 test('GET /state/mae-chandelier: counts readings with and without bars, adjustable rows and sent receipts', async () => {
   const s = await server()
   try {
+    // The three readings belong to open positions; the view hides rows of closed ones.
+    for (const [id, sym] of [[1, 'EURUSD'], [2, 'XAUUSD'], [3, 'BTCUSD']]) {
+      s.db.prepare(`INSERT INTO monitored_positions (id, symbol, side, entry_price, status) VALUES (?, ?, 'BUY', 1, 'active')`).run(id, sym)
+    }
     setState(s.db, OBSERVE_STATE_KEY, JSON.stringify({
       mode: 'observe_and_tighten', at: '2026-10-02T01:00:00.000Z', mayAmend: false,
       positions: {
@@ -55,5 +59,27 @@ test('GET /state/mae-chandelier: counts readings with and without bars, adjustab
       receipts: 3, receiptsSent: 1, receiptsConfirmed: 1, receiptsUnchanged: 1, lastReceiptAt: '2026-10-02T01:00:07.000Z',
     })
     assert.equal(body.positions['2'].atr, null, 'a reading with no bars is shown as such, not hidden')
+    assert.equal(body.closedRowsHidden, 0)
+  } finally { s.close() }
+})
+
+test('GET /state/mae-chandelier: a reading of a position that is no longer open is hidden and counted, not shown as a position without bars', async () => {
+  const s = await server()
+  try {
+    s.db.prepare(`INSERT INTO monitored_positions (id, symbol, side, entry_price, status) VALUES (10, 'EURUSD', 'BUY', 1, 'active')`).run()
+    s.db.prepare(`INSERT INTO monitored_positions (id, symbol, side, entry_price, status) VALUES (11, 'PG.US', 'BUY', 1, 'closed')`).run()
+    setState(s.db, OBSERVE_STATE_KEY, JSON.stringify({
+      mode: 'observe_and_tighten', at: '2026-10-02T01:00:00.000Z', mayAmend: false,
+      positions: {
+        10: { id: '10', symbol: 'EURUSD', atr: 0.001, mayAmend: false },
+        11: { id: '11', symbol: 'PG.US', atr: null, reason: 'observe_only_bars_missing', mayAmend: false },
+      },
+      receipts: [],
+    }))
+    const body = await fetch(s.url('/state/mae-chandelier')).then(r => r.json())
+    assert.deepEqual(Object.keys(body.positions), ['10'])
+    assert.equal(body.summary.positions, 1)
+    assert.equal(body.summary.withoutBars, 0)
+    assert.equal(body.closedRowsHidden, 1)
   } finally { s.close() }
 })
