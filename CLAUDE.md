@@ -1116,7 +1116,7 @@ Measurement history — each line is a real run of the script, not a claim:
   made after this ledger. All lower bounds. The count is by replies, not by
   stamps. A later re-measure that reads below this line is missing these,
   not correcting them.
-- 2026-10-02 23:52 UTC, **same remote container, PARTIAL corpus** (the §1
+- 2026-10-02 23:50 UTC, **same remote container, PARTIAL corpus** (the §1
   write-back rule): from the ledger line above (next stamp at least
   `№ 10,686`), the replies ran on through the #1199 report `№ 10,686`, the
   C·3 rate after the change `№ 10,688` (8 would-send an hour, 0 urgent), the
