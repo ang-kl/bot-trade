@@ -1,0 +1,7 @@
+{
+  "_note": "Literals copied VERBATIM from cpp-exec/src/tests/test_protection_ratchet.cpp (ratchetRebuildCarriesPolicy, refusalFallbackAndCooldown). agent/lib/stop-policy-golden.test.js asserts the C++ test still contains each one and that the Node side and the stateful broker model agree with it, so the two encoders cannot drift apart unnoticed. Change a literal here only together with the C++ test.",
+  "wireWithPolicy": "{\"ctidTraderAccountId\":4002,\"positionId\":7,\"stopLoss\":95,\"stopLossTriggerMethod\":2,\"takeProfit\":120,\"trailingStopLoss\":true}",
+  "wireStripped": "{\"ctidTraderAccountId\":4002,\"positionId\":7,\"stopLoss\":95,\"takeProfit\":120}",
+  "policyApplied": "{\"applied\":true,\"readback\":\"confirmed\",\"refused\":null,\"requested\":{\"stopLossTriggerMethod\":2,\"trailingStopLoss\":true},\"skipped\":null}",
+  "policyRefused": "{\"applied\":false,\"readback\":\"unreadable\",\"refused\":{\"description\":\"policy not supported\",\"errorCode\":\"INVALID_REQUEST\"},\"requested\":{\"stopLossTriggerMethod\":2,\"trailingStopLoss\":true},\"skipped\":null}"
+}

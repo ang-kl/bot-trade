@@ -44,6 +44,11 @@ export async function getVolumeMeta(host, clientId, clientSecret, accessToken, a
   return meta
 }
 
+/** Test seam: seed one symbol's broker record so a test that reaches the executor's digits lookup never opens a websocket. */
+export function _seedVolumeMetaForTests(accountId, symbolId, meta) {
+  metaCache.set(`${accountId}|${symbolId}`, { lotSize: 100000, minVolume: 1000, maxVolume: null, stepVolume: 1000, digits: 5, pipPosition: 4, ...meta })
+}
+
 /**
  * Convert lots → protocol volume (cents of units), snapped DOWN to the
  * broker's step. Pure function — unit-testable.

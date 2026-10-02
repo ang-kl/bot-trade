@@ -982,6 +982,18 @@ Measurement history — each line is a real run of the script, not a claim:
   after this ledger. All lower bounds. The count is by replies, not by
   stamps. A later re-measure that reads below this line is missing these, not
   correcting them.
+- 2026-10-02 07:58 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,542`), the replies ran on by count through the R1 read-back
+  `№ 10,544` (15:40 SGT: the PG.US hold's first minute clear, not yet proof),
+  the notification answer `№ 10,545` and two unstamped status lines while PR-3
+  (the integrated stop-loss suite) was built (`№ 10,546`–`№ 10,547`), so the
+  next stamped reply is at least **`№ 10,548`** plus any unstamped line made
+  after this ledger. #1186 (the closed-market exit hold) was merged by the
+  owner and is live; the plan-mode flag was lifted by the owner's "continue
+  with PR-3". All lower bounds. The count is by replies, not by stamps. A
+  later re-measure that reads below this line is missing these, not
+  correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

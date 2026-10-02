@@ -1,6 +1,8 @@
 # mae-chandelier-observe
 
-Date: 02-10-2026. Approval: `APPROVE mae-chandelier-observe`. Mode: observe only. No stop is amended.
+Date: 02-10-2026. Approval: `APPROVE mae-chandelier-observe`.
+
+**Update 02-10-2026 (since #1182, checked in PR-3).** The Node side is no longer observe-only: when the since-entry Chandelier is tighter than the stop and still behind price, the fast monitor (and the slow pass) send a `MOVE_SL` through the normal executor (`source` `mae_chandelier` / `mae_chandelier_timeframe`), and the outcome is recorded as a receipt (`GET /state/mae-chandelier`: `receiptsSent`, `receiptsConfirmed`, `receiptsUnchanged`). That amend carries the stop policy (Opposite trigger, broker trailing once the stop locks profit) and the never-loosen rail, see `docs/stop-policy.md`. The independent `cpp-verify` observer is still read-only (`mayAmend` false, no broker write). The text below is the original observe-only record and is kept as written; where it says no stop is amended, it describes the first release.
 
 ## What this does
 

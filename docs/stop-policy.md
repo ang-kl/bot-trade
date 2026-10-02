@@ -68,3 +68,15 @@ The bot records each position it asked the broker to trail (`stop_policy_trailin
 ## Independent view
 
 `policyView` (independent-protection.js) reads the verifier's rows: stops carrying the policy's trigger method, differing, unknown (not reported), trailing. DRIFT is narrow: a position the controller confirmed more than 10 minutes ago that now reads a different trigger method; it flips that account's independent reading to unverified. Unstamped or unreported positions are counted, never alarmed. The trailing flag is shown, never judged.
+
+## Integrated tests and the live grader (PR-3)
+
+| What | Where |
+|---|---|
+| A stateful sidecar + broker model: an amend that replaces protection, server-side trailing, a refusable policy, the four unknowns as switches (`omittedFlags`, `trailingAnchor`, `trailingReadback`, `refuseFlags`) | `agent/test-support/stop-broker-model.js` |
+| Sequences through the real executor, exec-engine, controller and trailing registry, run under both answers to each unknown: ladder, broker trailing ahead of a stale decision, a seeded random walk (the stop never loosens, stays Opposite, keeps its target), controller stamping, a refused policy and its cooldown, the kill switch | `agent/stop-loss-integrated.test.js` |
+| MAE / Chandelier through the real fast monitor and slow pass to the broker model: the stop tightens at the broker, Opposite, target kept, receipt confirmed with the policy outcome, `GET /state/mae-chandelier` counts agree | `agent/services/stop-loss-chandelier-integrated.test.js` |
+| One set of wire literals shared with the C++ test: the C++ test must still contain them, Node stamps the same fields, the model answers the same policy block | `agent/test-support/fixtures/stop-policy-golden.json`, `agent/lib/stop-policy-golden.test.js` |
+| Live, read-only grader over `/state/stop-policy`, `/state/mae-chandelier`, `/state/heartbeats`; verdicts PASS, FAIL, NOT VERIFIABLE; `--baseline file` compares take-profit levels across runs | `agent/lib/stop-loss-grader.js`, `scripts/verify-stop-loss-integrated.mjs` |
+
+The model is a copy of the CONTRACT pinned by `cpp-exec/src/tests/test_protection_ratchet.cpp`, not of the C++ code, and the four unknowns are inventions until measured live: the integrated tests prove Node's behaviour under either answer, not which answer the broker gives. The grader reports what the broker reads back and says NOT VERIFIABLE where the evidence has not arrived (no Chandelier amend yet, no baseline). The C++ side needed no new test binary: PR-1 already pins the ratchet, the policy-only amend, the refusal fallback and the TrailEngine stamping in `test_protection_ratchet.cpp` and `test_trail_engine.cpp`.
