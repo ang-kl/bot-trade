@@ -963,6 +963,25 @@ Measurement history — each line is a real run of the script, not a claim:
   unstamped line made after this ledger. All lower bounds. The count is by
   replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+- 2026-10-02 07:30 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule; the session restarted twice in between and plan mode came
+  back on each time): from the ledger line above (next stamp at least
+  `№ 10,533`), the replies ran on by count through the PR-2 ask `№ 10,534`
+  (14:55 SGT) and its explanation `№ 10,535`, the #1184 merge `№ 10,536`
+  and the book-row defect `№ 10,537`, `№ 10,538`–`№ 10,539`, and the #1185
+  merge and read-back `№ 10,540` (about 15:25 SGT), with unstamped status
+  lines between them. **Three stamps used a guessed time and are corrected
+  here:** `№ 10,536` and `№ 10,537` read 15:07 and 15:11 SGT where the clock
+  said 15:03 and 15:05, and `№ 10,540` read 15:26 where it said about 15:25
+  (the §2 failure, third time today; the clock is fetched before every stamp
+  from `№ 10,538` on). #1184 (the stop-policy controller) and #1185 (book
+  rows are stamped; a read-back mismatch is not a trail) are merged and read
+  back: 10 of 17 stops Opposite at 07:25Z and rising, no refusal, no stop
+  level moved. This line rides the R1 fix (the closed-market exit hold). The
+  next stamped reply is at least **`№ 10,542`** plus any unstamped line made
+  after this ledger. All lower bounds. The count is by replies, not by
+  stamps. A later re-measure that reads below this line is missing these, not
+  correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
