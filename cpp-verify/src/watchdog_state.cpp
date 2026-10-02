@@ -364,6 +364,9 @@ void WatchState::evaluate(long long now) {
     // Retained deadlines/calendars continue through Node loss, without stamping
     // retained work fresh. Only an actual new receipt advances lastCompleted.
     const auto& contract = s.get("contract");
+    struct Feed { long long newest = 0, grace = 0, streams = 0; jsn::Value detail; };
+    std::map<std::string, Feed> feeds;
+    std::set<std::string> feedsInInventory; // every feed with a quote-bearing row, open market or not: an UNKNOWN calendar cannot clear a prior fault
     for (const auto& raw : contract.get("work").asArray()) {
       auto w = copy(raw);
       // The actual owner supplies progress; Node supplies only the shared
@@ -380,6 +383,7 @@ void WatchState::evaluate(long long now) {
       if (id.empty() || id.size() > 256) continue;
       const auto key = service + ":work:" + id;
       auto d = copy(w); d.set("service", service);
+      if (number(w.get("quoteMaxAgeMs")) > 0) feedsInInventory.insert(service + ":feed:" + w.get("accountId").asString() + ":" + w.get("host").asString());
       // A lost owner produces one service incident. Keep existing work faults
       // open, but do not generate a new incident for every cached position on
       // each failed probe. Independent broker protection findings still run.
@@ -425,7 +429,21 @@ void WatchState::evaluate(long long now) {
         else if ((m == "CLOSED" && role == "scanner") || waitingForQuote) incident(key + ":stalled", false, "urgent", d, now);
       }
       const auto quoteLimit = number(w.get("quoteMaxAgeMs"));
-      if (m == "OPEN" && quoteLimit > 0) incident(key + ":quote", !fresh(number(w.get("lastQuoteAtMs")), now, quoteLimit), "urgent", d, now);
+      if (m == "OPEN" && quoteLimit > 0) {
+        // C·3 (03-10-2026): liveness is a FEED question. A quiet symbol goes
+        // a minute without a tick in an open market as a matter of course;
+        // judged per stream against the strategy's own gap parameter this
+        // raised 244 urgent incidents in a week, 90 open at once. So: the
+        // feed (service, account, host) is urgent when NO stream on it has
+        // ticked within the role's grace; one stream silent beyond
+        // streamQuoteSilenceMs is a warning on that stream.
+        const auto lastQuote = number(w.get("lastQuoteAtMs"));
+        auto& feed = feeds[service + ":feed:" + w.get("accountId").asString() + ":" + w.get("host").asString()];
+        feed.newest = std::max(feed.newest, lastQuote <= now ? lastQuote : 0LL);
+        feed.grace = std::max({feed.grace, quoteLimit, role == "scanner" ? policy_.scannerGraceMs : policy_.serviceGraceMs});
+        ++feed.streams; feed.detail = detail(service, "feed_silent"); feed.detail.set("accountId", w.get("accountId")); feed.detail.set("host", w.get("host")); feed.detail.set("role", role);
+        incident(key + ":quote", !fresh(lastQuote, now, std::max(quoteLimit, policy_.streamQuoteSilenceMs)), "warning", d, now);
+      }
       const auto opened = number(w.get("sessionOpenedAtMs"));
       const auto session = w.get("sessionId").asString();
       if (role == "entry_activity" && w.get("activityComplete").asBool() && completed >= opened
@@ -435,6 +453,19 @@ void WatchState::evaluate(long long now) {
         incident(service + ":no_orders:" + w.get("accountId").asString() + ":" + session, true, "info", d, now, true);
       if (role == "entry_activity" && w.get("activityComplete").asBool() && w.get("hasRecordedOrder").asBool() && !session.empty())
         incident(service + ":no_orders:" + w.get("accountId").asString() + ":" + session, false, "info", d, now, true);
+    }
+    // C·3: one urgent incident per feed with every stream silent beyond its
+    // grace; a feed that left the inventory (or has no open-market stream)
+    // resolves its own incident, the way a retired work id does.
+    const auto feedPrefix = service + ":feed:";
+    for (auto& [feedKey, feed] : feeds) {
+      feed.detail.set("streams", feed.streams); feed.detail.set("newestQuoteAtMs", feed.newest ? jsn::Value(feed.newest) : jsn::Value()); feed.detail.set("effectiveGraceMs", feed.grace);
+      incident(feedKey + ":quote", !fresh(feed.newest, now, feed.grace), "urgent", feed.detail, now);
+    }
+    if (!lost) {
+      std::vector<std::string> gone;
+      for (const auto& [key, value] : incidents_) if (key.starts_with(feedPrefix) && value.get("active").asBool() && !feedsInInventory.contains(key.substr(0, key.size() - 6))) gone.push_back(key);
+      for (const auto& key : gone) incident(key, false, "info", detail(service, "feed_no_longer_in_complete_inventory"), now);
     }
   }
   // Retain resolved history for 30 days, bounded independently of the outbox.

@@ -305,3 +305,36 @@ routes, the receipt ring, delivery health, and the observer nonce /
 well as urgent ones, one per probe cycle, with no message cap: in the
 production shape, the 147 current warnings and notices would all go out in
 the 147 probe cycles (about 37 minutes) after an unmute.
+
+## C·3 (03-10-2026): quote liveness is judged per feed, not per stream
+
+Measured 02-10 18:47–19:00Z from the relayed `/watchdog-status`: the verifier
+would have sent 344 messages an hour (244 urgent) over the 132.8 h since the
+27-09 soak began, against a send ceiling of 240 an hour; 119 an hour in the
+13-minute window, 13 of the 18 sending incidents being cpp-scan-tick
+per-stream `:quote` incidents (90 open at once on …9908 and …0058 with the
+market OPEN). Mechanism: the per-stream rule compared a stream's last received
+tick with the STRATEGY's `quoteMaxAgeMs` (its 60 s gap rule, TM-40), so a
+quiet symbol flapped an urgent incident open and closed every minute. That is
+the strategy's business (it resets its own state and counts `resets`), not a
+liveness fault.
+
+- **Feed liveness is the urgent question.** One incident per feed
+  (`<service>:feed:<accountId>:<host>:quote`), urgent when NO stream on the
+  feed has ticked within the role's grace (`scannerGraceMs` for scanners,
+  `serviceGraceMs` for the gateways' quote flow, never below the largest
+  `quoteMaxAgeMs` on the feed). Detail carries `streams`, `newestQuoteAtMs`
+  and `effectiveGraceMs`.
+- **A single stream's silence is a warning** on that stream
+  (`<service>:work:<id>:quote`), after `max(quoteMaxAgeMs,
+  streamQuoteSilenceMs)` — `streamQuoteSilenceMs` is a new policy field
+  (default 600000, settable in `WATCHDOG_POLICY_JSON`).
+- A feed that leaves the inventory resolves its own incident, the way a
+  retired work id does; an UNKNOWN calendar still cannot clear a prior fault.
+
+Not changed here: the held backlog (512 items, the oldest 23-09) that refuses
+the unmute. Disposing of it deletes queued alert records, so that route is
+left for the owner to order and build with their eyes on it; the verifier's
+own remedy text still names it as not built. Delivery credentials on
+cpp-verify are also unconfigured. Switching Telegram on therefore still needs:
+the backlog disposed, the credentials, and the owner's word.
