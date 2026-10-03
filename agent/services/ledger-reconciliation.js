@@ -171,7 +171,9 @@ export function buildLedgerReconciliation(db, { accountId = null } = {}) {
   }
 }
 
-function accountSection(db, accountId, { enabled, currency, currencyEvidence, noAccountPids, dupes }) {
+// `listMax` / `listQuiet` are the row lister's (listLedgerReconciliationRows):
+// the report keeps LIST_MAX entries per class and lists no quiet class.
+function accountSection(db, accountId, { enabled, currency, currencyEvidence, noAccountPids, dupes, listMax = LIST_MAX, listQuiet = false }) {
   // Ledger positions: closed rows (any status but rejected/cancelled count as
   // holders; rejected twins are kept for the broker-side classes).
   const ledger = new Map()
@@ -201,9 +203,9 @@ function accountSection(db, accountId, { enabled, currency, currencyEvidence, no
     if (ledgerNet != null) { c.ledgerNet = addMoney(c.ledgerNet, ledgerNet); c.ledgerPriced++ }
     if (brokerNet != null) { c.brokerNet = addMoney(c.brokerNet, brokerNet); c.brokerPriced++ }
     if (ledgerNet != null && brokerNet != null) { c.delta = addMoney(c.delta, ledgerNet - brokerNet); c.pricedBoth++ }
-    if (!QUIET.has(cls)) {
+    if (listQuiet || !QUIET.has(cls)) {
       const list = lists[cls] ??= []
-      if (list.length < LIST_MAX) list.push(entry)
+      if (list.length < listMax) list.push(entry)
     }
   }
   const receiptsMs = ms(RECEIPTS_SINCE)
@@ -272,6 +274,81 @@ function accountSection(db, accountId, { enabled, currency, currencyEvidence, no
     classes,
     positions: lists,
     duplicates,
+  }
+}
+
+/** The meaning of each class that is not a broker verdict (VERDICTS carries those). */
+export const CLASS_MEANING = Object.freeze({
+  ...Object.fromEntries(Object.entries(VERDICTS).map(([k, v]) => [k, v.meaning])),
+  agrees_on_receipts: 'the retained deal receipts (completeness not proven) price the position within tolerance of the ledger row',
+  differs_on_receipts: 'the retained deal receipts (completeness not proven) price the position differently from the ledger row',
+  unpriced_with_receipts: 'the broker retained deal receipts for the position; the ledger row carries no money',
+  ledger_only_before_receipts: 'closed before the loop kept deal receipts (RECEIPTS_SINCE); nothing from the broker to compare against',
+  ledger_only_awaiting_receipt: 'closed with no deal receipt yet; the sweep has not read the broker for it',
+  broker_only: 'the broker retained deals for a position no ledger row on this account holds',
+  broker_deals_on_rejected_row: 'the broker retained deals for a position whose only ledger rows are rejected or cancelled',
+})
+
+/**
+ * GET /state/ledger-reconciliation-rows (P5b, 03-10-2026): the rows of ONE
+ * class on ONE registered account, named — trade id, symbol, side, the
+ * timestamps, the ledger money (net_pnl, exit_price), the broker figure the
+ * class was judged against and the class's meaning. The class comes from
+ * accountSection, the same classification the report counts by; nothing is
+ * re-classed here. One row per ledger trade in the position (a position held
+ * by two closed rows lists twice, with the position's money on both); a
+ * broker-side class with no ledger row lists the position with `tradeId`
+ * null. Read-only: trades, broker_deals and position_lifecycle_evidence are
+ * read, nothing is written.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{ accountId: string, cls: string, limit?: number }} options
+ */
+export function listLedgerReconciliationRows(db, { accountId, cls, limit = 200 } = {}) {
+  if (!/^[1-9]\d{0,19}$/.test(String(accountId ?? ''))) throw new RangeError('explicit registered account required')
+  const account = db.prepare('SELECT account_id, enabled FROM accounts WHERE account_id = ?').get(String(accountId))
+  if (!account) throw new RangeError('explicit registered account required')
+  if (!CLASS_BASIS[cls]) throw new RangeError('unknown class')
+  const max = Math.min(1000, Math.max(1, Number(limit) || 200))
+  const currencies = { currencyByAccount: depositCurrencies(db) }
+  const noAccountPids = new Set(db.prepare(`SELECT ctrader_position_id AS pid FROM trades WHERE account_id IS NULL AND ctrader_position_id IS NOT NULL`)
+    .all().map(r => normPosId(r.pid)).filter(Boolean))
+  // The duplicates block is not listed; the classification does not read it.
+  const section = accountSection(db, String(account.account_id), {
+    enabled: Number(account.enabled) === 1, currency: reportCurrency(currencies, account.account_id),
+    currencyEvidence: currencies.currencyByAccount[String(account.account_id)] ?? null,
+    noAccountPids, dupes: null, listMax: Infinity, listQuiet: true,
+  })
+  const entries = section.positions[cls] ?? []
+  const tradeRow = db.prepare(`SELECT id, symbol, side, status, opened_at, closed_at, entry_price, exit_price, net_pnl, close_reason,
+    COALESCE(pnl_unresolvable, 0) AS written_off FROM trades WHERE id = ?`)
+  const rows = []
+  for (const e of entries) {
+    const ids = Array.isArray(e.tradeIds) && e.tradeIds.length ? e.tradeIds : [null]
+    for (const id of ids) {
+      const t = id == null ? null : tradeRow.get(id)
+      rows.push({
+        positionId: e.positionId, class: cls, basis: CLASS_BASIS[cls], meaning: CLASS_MEANING[cls] ?? null,
+        tradeId: t?.id ?? id ?? null, symbol: t?.symbol ?? null, side: t?.side ?? null, status: t?.status ?? null,
+        openedAt: t?.opened_at ?? null, closedAt: t?.closed_at ?? null,
+        ledger: t ? { entryPrice: t.entry_price, exitPrice: t.exit_price, netPnl: t.net_pnl, closeReason: t.close_reason ?? null, writtenOff: Number(t.written_off) === 1 } : null,
+        // The position's money as the class judged it: the ledger side over
+        // every closed row in the position, the broker side the figure the
+        // class rests on (a verdict's broker_net, or the retained receipts').
+        ledgerNet: e.ledgerNet ?? null, brokerNet: e.brokerNet ?? null, delta: e.delta ?? null,
+        ...(e.receipts != null ? { receipts: e.receipts } : {}),
+        ...(e.reason != null ? { reason: e.reason, readAt: e.readAt ?? null } : {}),
+        ...(e.ledgerChangedSinceRead ? { ledgerChangedSinceRead: true } : {}),
+      })
+    }
+  }
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    accountId: String(account.account_id), enabled: section.enabled, currency: section.currency,
+    class: cls, basis: CLASS_BASIS[cls], meaning: CLASS_MEANING[cls] ?? null,
+    positions: entries.length, total: rows.length, truncated: rows.length > max,
+    rows: rows.slice(0, max),
   }
 }
 

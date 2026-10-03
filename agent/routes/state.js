@@ -43,12 +43,13 @@ import { accountMoney } from '../services/account-money.js'
 import { accountOverview } from '../services/account-overview.js'
 import { dailyStopReading } from '../services/daily-stop-reading.js'
 import { accountHistory } from '../services/account-history.js'
+import { CLASS_BASIS as LEDGER_CLASS_BASIS } from '../services/ledger-reconciliation.js'
 import { validateBlockerRequest } from '../services/blocker-report.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readCalendarCoverage, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -227,7 +228,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/scanner-alignment-snapshot', '/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview'])
+  const NO_CACHE = new Set(['/scanner-alignment-snapshot', '/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview', '/ledger-reconciliation-rows', '/position-history-missing'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -1691,6 +1692,33 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/ledger-reconciliation-rows?account=<id>&class=<class>&limit= —
+  // P5b (03-10-2026). /ledger-reconciliation gives the CLASS COUNTS; this
+  // names the rows of one class on one explicit registered account (the
+  // /account-history guard) with trade id, symbol, side, the timestamps, the
+  // ledger money, the broker figure the class was judged against and the
+  // class's meaning — so the repairable rows can be named. The same
+  // classification (services/ledger-reconciliation.js accountSection), on the
+  // same worker slot; read-only; never cached.
+  router.get('/ledger-reconciliation-rows', async (req, res) => {
+    const id = typeof req.query.account === 'string' ? req.query.account : null
+    if (!id || !/^[1-9]\d*$/.test(id) || !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(id)) {
+      return res.status(400).json({ error: 'explicit registered account required' })
+    }
+    const cls = typeof req.query.class === 'string' ? req.query.class.trim() : ''
+    if (!cls || !Object.hasOwn(LEDGER_CLASS_BASIS, cls)) {
+      return res.status(400).json({ error: 'unknown class', classes: Object.keys(LEDGER_CLASS_BASIS) })
+    }
+    res.set('Cache-Control', 'no-store')
+    try {
+      res.json(await readLedgerReconciliationRows(db, { accountId: id, cls, limit: req.query.limit == null ? 200 : Number(req.query.limit) }))
+    } catch (err) {
+      if (err?.message === 'explicit registered account required' || err?.message === 'unknown class') return res.status(400).json({ error: err.message })
+      if (sendReportUnavailable(res, err, { message: 'ledger reconciliation unavailable', code: 'ledger_reconciliation_unavailable' })) return
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/open-duplicates — the same audit as /duplicate-trades, but on
   // positions that are STILL OPEN. The closed-only version correctly reported
   // two historical pairs and was completely blind to a live 0003.HK pair
@@ -2883,6 +2911,30 @@ export default function stateRouter(db) {
       res.json({ ...positionHistoryView(db, { limit, accountId }), scope: { accountId, all: accountId == null } })
     } catch (err) {
       res.status(500).json({ error: err.message })
+    }
+  })
+  // GET /state/position-history-missing?account=<id|all>&field=<f>&limit= —
+  // P5b (03-10-2026). /position-history ranks `missingFields` as COUNTS; this
+  // names the refused closed records behind them — trade id, account, symbol,
+  // closed time, the fields missing — filtered to the three close fields
+  // (exit_price, net_pnl, close_reason) unless ?field= names one or more
+  // (repeatable). Scope as /position-history: an explicit account filters,
+  // `all` or no account lists every account. Account ids are in the reply,
+  // never logged. Read-only; never cached.
+  router.get('/position-history-missing', async (req, res) => {
+    try {
+      const { incompleteClosedRows, CLOSE_MONEY_FIELDS } = await import('../services/position-history.js')
+      const scope = requestedAccount(db, req)
+      const accountId = scope.explicit && !scope.all ? scope.accountId : null
+      if (accountId != null && (!/^[1-9]\d*$/.test(accountId) || !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(accountId))) {
+        return res.status(400).json({ error: 'account must be a registered account id or all' })
+      }
+      const asked = req.query.field == null ? [] : [].concat(req.query.field).map(f => String(f).trim()).filter(Boolean)
+      const fields = asked.length ? asked : CLOSE_MONEY_FIELDS
+      res.set('Cache-Control', 'no-store')
+      res.json(incompleteClosedRows(db, { accountId, fields, limit: req.query.limit == null ? 200 : Number(req.query.limit) }))
+    } catch (err) {
+      res.status(err instanceof RangeError ? 400 : 500).json({ error: err.message })
     }
   })
   // ORDER LIFECYCLE (V3 L1, owner order 25-09-2026 16:50 SGT): pre-order,

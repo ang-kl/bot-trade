@@ -132,6 +132,16 @@ reserve clears, and the recorder reports `RECORDING`. **No volume is needed for
 shadow, and none is needed for arming either** on the disk currently attached.
 The runbook's conditional should be updated to the measurement.
 
+> **Superseded 03-10-2026.** The runbook
+> (`docs/tick-momentum/option-2-observation-rollout.md` §2) was corrected to
+> the measurement in #1200 (03-10-2026): its table now reads `RECORDING`
+> with the `PAUSED_RESERVE` prediction kept beside it as superseded, not
+> deleted. The measurement stands on three readings: this one (22-09, 47.27
+> ev/s live), the 28-09 readback (both gateways "Recording / shadow true /
+> true", tick entry placement false, `v3-production-readback-2026-09-28.md:66-67`)
+> and 03-10 (both feeds RECORDING on the mounted volumes). The paragraph
+> above is kept as written on 22-09; only its last sentence is now done.
+
 The live side's 64% usage is the **host** filesystem, not this service's data.
 The recorder self-caps at a compiled-in **2 GiB spool** per side
 (`spoolCapBytes: 2147483648`), so its own footprint cannot grow beyond that
