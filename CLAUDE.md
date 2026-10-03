@@ -1277,6 +1277,29 @@ Measurement history — each line is a real run of the script, not a claim:
   unstamped line made after this ledger. All lower bounds. The count is by
   replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+- 2026-10-03 13:22 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,891`), the replies ran on by count through the replays report
+  `№ 10,902` (21:07 SGT: D1 no support for a wider stop, D2 not measurable,
+  D3 the gate's own rr admits none at 3.0 and real money says do not lower
+  it, D4 three strategies OFF pooled; five record defects R1–R5), #1216
+  merged (5ebe5514, a merge commit, not a squash: the API was asked for
+  squash and GitHub recorded a merge; the Conversation ref lives in the PR
+  body and in 9f5ed09c) and read back clean (icon 200, the sign-in page
+  with no app shell, the bearer model intact, 43 controllers ok), and the
+  owner's "merge when green and read back, then build R1 and R2". R2 was
+  traced read-only before anything was built: every one of the seven
+  "bypass" cells was hand-pinned when its trades opened and unpinned
+  afterwards by the edge watchdog or the breaker (arming log), and the
+  stage matrix refuses those cells upstream of the evidence gate, so the
+  zero was structural, not a bypass. This PR carries R1 (the ledger replays
+  the gate's stop and records the unit; the goal reads known-unit rows) and
+  R2 (the evidence-gate report shows a shadow cell's upstream skips, its
+  last pin change and `whyZero`). Fourteen unstamped status lines followed
+  `№ 10,902`, so the next stamped reply is at least **`№ 10,917`** plus any
+  unstamped line made after this ledger. All lower bounds. The count is by
+  replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

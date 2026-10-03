@@ -23,6 +23,7 @@
 
 import { getState } from '../db.js'
 import { isHandPinned } from './stage-matrix.js'
+import { whyCell } from './arming-log.js'
 import { STRATEGY_REGISTRY } from './strategies.js'
 import { isMomentumAccount, TSMOM_STRATEGY } from './momentum-account.js'
 import { netRof, summarizeR, summarizeUsd, PF_METRICS } from './pf-metrics.js'
@@ -163,19 +164,69 @@ export function evidenceGateReport(db) {
        WHERE stage = 'evidence_gate' AND decision = 'skip' AND created_at >= datetime('now', '-7 days')
        GROUP BY s, a`).all()) shadow[`${r.s}|${r.a ?? ''}`] = (shadow[`${r.s}|${r.a ?? ''}`] || 0) + r.n
   } catch { /* nothing to add */ }
+  // R2 (the 03-10-2026 replays, docs/replays-2026-10-03.md): a shadow cell
+  // with ZERO shadow refusals was read as "an entry path bypasses the gate".
+  // It was not: the cells had been hand-pinned when their trades opened and
+  // were unpinned afterwards by the edge watchdog or the breaker, and once a
+  // cell's trade pin is false the STAGE MATRIX refuses the proposal upstream
+  // (loop.js, `stage_matrix` skips), so the evidence gate never sees it and
+  // its counter stays at zero for a reason the report did not show. A zero
+  // that cannot tell "nothing proposed" from "refused upstream" from "pinned
+  // until yesterday" is the shape of failure mode #3. So each cell now
+  // carries the upstream skips, the last pin change and `whyZero`.
+  let stageSkips = {}
+  try {
+    // A roster-wide skip (account_id NULL, decision-log.js ROSTER_STAGES)
+    // applies to every account and is counted under each.
+    for (const r of db.prepare(`
+      SELECT strategy AS s, account_id AS a, COUNT(*) AS n
+        FROM decision_log
+       WHERE stage = 'stage_matrix' AND decision = 'skip' AND created_at >= datetime('now', '-7 days')
+       GROUP BY s, a`).all()) stageSkips[`${r.s}|${r.a ?? ''}`] = (stageSkips[`${r.s}|${r.a ?? ''}`] || 0) + r.n
+  } catch { stageSkips = {} }
   const strategies = {}
   for (const s of STRATEGY_REGISTRY) {
     strategies[s.key] = {}
     for (const a of accounts) {
       const id = String(a.account_id)
       const v = evidenceGate(db, { strategy: s.key, accountId: id })
+      const shadowRefusals7d = shadow[`${s.key}|${id}`] || 0
+      const stageSkips7d = (stageSkips[`${s.key}|${id}`] || 0) + (stageSkips[`${s.key}|`] || 0)
+      const pin = lastPinChange(db, id, s.key)
       strategies[s.key][id] = {
         live: Number(a.is_live) !== 0,
         allowed: v.allowed, via: v.via,
         record: v.record ?? evidenceRecord(db, { strategy: s.key, accountId: id, windowDays: cfg.windowDays }),
-        shadowRefusals7d: shadow[`${s.key}|${id}`] || 0,
+        shadowRefusals7d,
+        stageSkips7d,
+        pin,
+        whyZero: whyZero({ allowed: v.allowed, shadowRefusals7d, stageSkips7d, pin }),
       }
     }
   }
   return { reportOnly: true, config: cfg, accounts: accounts.map(a => String(a.account_id)), strategies }
+}
+
+/** The last arming-log row that SET this cell's trade pin, or null when none recorded. */
+function lastPinChange(db, accountId, strategy) {
+  try {
+    const w = whyCell(db, { scope: accountId, kind: 'strategy', key: strategy, stage: 'trade', current: isHandPinned(db, getState, accountId, strategy) })
+    const r = w?.lastSet
+    return r ? { at: r.at, to: r.to, actor: r.actor, reason: r.reason, verdict: w.verdict } : null
+  } catch { return null }
+}
+
+/**
+ * Why a cell the gate would refuse shows no shadow refusal. Exported for the
+ * test; null when the cell is allowed or has shadow refusals to show.
+ *   'refused_upstream' — the stage matrix skipped the strategy here first
+ *   'unpinned_recently' — the pin was set false inside the window and
+ *                         nothing has been proposed since
+ *   'no_proposals'      — nothing reached either gate in the window
+ */
+export function whyZero({ allowed, shadowRefusals7d, stageSkips7d, pin }) {
+  if (allowed || shadowRefusals7d > 0) return null
+  if (stageSkips7d > 0) return 'refused_upstream'
+  if (pin && String(pin.to) === 'false' && pin.at && Date.now() - Date.parse(String(pin.at).replace(' ', 'T') + (/[zZ]$/.test(String(pin.at)) ? '' : 'Z')) <= 7 * 86_400_000) return 'unpinned_recently'
+  return 'no_proposals'
 }

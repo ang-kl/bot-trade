@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import { persistRiskEvent } from './risk.js'
-import { pendingRefusals, scoreRefusedOpportunities, refusalCostReport, horizonMinFor, evidenceShadowRefusals } from './refusal-ledger.js'
+import { pendingRefusals, scoreRefusedOpportunities, refusalCostReport, horizonMinFor, evidenceShadowRefusals, stopForReplay } from './refusal-ledger.js'
 import { recordEvidenceShadow } from './gate-skips.js'
 
 const T0 = Date.parse('2026-09-01T10:00:00Z')
@@ -19,9 +19,9 @@ const iso = (ms) => new Date(ms).toISOString()
 // The opportunity key is derived from the previous evaluation of the same
 // tuple (opportunity-identity.js), so rows are persisted at wall-clock time
 // and backdated afterwards — the key groups them, the date sets the horizon.
-function refuse(db, { symbol = 'EURUSD', side = 'BUY', entry = 1.1, sl = 1.095, tp = 1.11, reason = 'bad_rr 2.0<3', tf = '1h', at = T0, accountId = 'A1' } = {}) {
+function refuse(db, { symbol = 'EURUSD', side = 'BUY', entry = 1.1, sl = 1.095, tp = 1.11, reason = 'bad_rr 2.0<3', tf = '1h', at = T0, accountId = 'A1', checks = {} } = {}) {
   const proposal = { symbol, side, entry, sl, tp1: tp, strategy: 'donchian_breakout', timeframe: tf, accountId }
-  const id = persistRiskEvent(db, proposal, { approved: false, veto_reason: reason, checks: {} })
+  const id = persistRiskEvent(db, proposal, { approved: false, veto_reason: reason, checks })
   db.prepare('UPDATE risk_events SET created_at = ? WHERE id = ?').run(iso(at).replace('T', ' ').slice(0, 19), id)
   return id
 }
@@ -159,4 +159,89 @@ test('PR-C: evidence-gate SKIPS are scored too — read from decision_log, keyed
   db.prepare(`INSERT INTO refusal_scores (opportunity_key, symbol, scored_at, outcome) VALUES (?, 'EURUSD', datetime('now'), 'target')`).run(it.opportunityKey)
   assert.equal(pendingRefusals(db, { nowMs: Date.now() }).length, 0)
   assert.equal(evidenceShadowRefusals(db).length, 0)
+})
+
+// ---------------------------------------------------------------------------
+// R1 (the 03-10-2026 replays, docs/replays-2026-10-03.md): the stop the
+// ledger replays is the stop the GATE judged — the hourly-ATR floor's `to`
+// when it widened the proposal's stop — not the strategy's pre-floor stop.
+// Measured: 354 of 357 bad_rr vetoes floored, median 4.1×, so the old unit
+// described trades four times tighter than any the gate would have sized.
+// ---------------------------------------------------------------------------
+
+test('R1: stopForReplay — the floor\'s `to` when the gate widened, the proposal\'s stop when it did not, and the unit says which', () => {
+  const p = { entry: 1.1, sl: 1.095 }
+  assert.deepEqual(stopForReplay(p, { stop_floor: { from: 1.095, to: 1.09, atr1h: 0.01, mult: 1 } }), { sl: 1.09, slProposal: 1.095, stopUnit: 'gate' })
+  assert.deepEqual(stopForReplay(p, { stop_floor: { ok: true, atr1h: 0.001, mult: 1 } }), { sl: 1.095, slProposal: 1.095, stopUnit: 'gate' }, 'the proposal\'s stop cleared the floor: it IS the gate\'s stop')
+  assert.deepEqual(stopForReplay(p, { stop_floor: 'no_atr' }), { sl: 1.095, slProposal: 1.095, stopUnit: 'gate' }, 'no ATR, no floor: the gate judged the proposal\'s stop')
+  assert.deepEqual(stopForReplay(p, {}), { sl: 1.095, slProposal: 1.095, stopUnit: 'gate' })
+  assert.deepEqual(stopForReplay(p, null), { sl: 1.095, slProposal: 1.095, stopUnit: 'proposal' }, 'no checks at all: the gate never ran (a shadow refusal)')
+  assert.deepEqual(stopForReplay(p, undefined), { sl: 1.095, slProposal: 1.095, stopUnit: 'proposal' })
+})
+
+test('R1: a floored refusal is replayed at the gate\'s stop — its R is in the unit the gate sized, and the row records both stops', async () => {
+  const db = initDB(':memory:')
+  // Proposal stop 1.095 (5 pips); the gate widened it to 1.09 (10 pips). The
+  // target 1.11 is 10 pips away: 2 R at the proposal's stop, 1 R at the
+  // gate's. A bar that reaches 1.111 hits the target either way; the R must
+  // be the gate's 1, not the proposal's 2.
+  refuse(db, { symbol: 'EURUSD', entry: 1.1, sl: 1.095, tp: 1.11, at: T0, checks: { stop_floor: { from: 1.095, to: 1.09, atr1h: 0.01, mult: 1 } } })
+  // An unfloored refusal keeps the proposal's stop and still reads as the gate's unit.
+  refuse(db, { symbol: 'USDJPY', entry: 150, sl: 149.5, tp: 151, at: T0, checks: { stop_floor: { ok: true, atr1h: 0.2, mult: 1 } } })
+  backdate(db, T0)
+  const pending = pendingRefusals(db, { nowMs: T0 + 3 * 86_400_000 })
+  const eur = pending.find(p => p.symbol === 'EURUSD')
+  assert.deepEqual([eur.sl, eur.slProposal, eur.stopUnit], [1.09, 1.095, 'gate'])
+  const jpy = pending.find(p => p.symbol === 'USDJPY')
+  assert.deepEqual([jpy.sl, jpy.slProposal, jpy.stopUnit], [149.5, 149.5, 'gate'])
+  const H = 3600_000
+  const fetchBars = async (symbol) => symbol === 'EURUSD'
+    ? [bar(T0 + H, 1.1, 1.111, 1.0995, 1.11)]
+    : [bar(T0 + H, 150, 151.2, 149.9, 151)]
+  await scoreRefusedOpportunities(db, fetchBars, { nowMs: T0 + 3 * 86_400_000, maxPerCycle: 10 })
+  const by = Object.fromEntries(db.prepare('SELECT * FROM refusal_scores').all().map(x => [x.symbol, x]))
+  assert.equal(by.EURUSD.outcome, 'target')
+  assert.equal(by.EURUSD.r_reached, 1, 'R in the gate\'s unit (the old code said 2)')
+  assert.deepEqual([by.EURUSD.sl, by.EURUSD.sl_proposal, by.EURUSD.stop_unit], [1.09, 1.095, 'gate'])
+  assert.equal(by.USDJPY.r_reached, 2)
+  assert.deepEqual([by.USDJPY.sl, by.USDJPY.sl_proposal, by.USDJPY.stop_unit], [149.5, 149.5, 'gate'])
+})
+
+test('R1: a shadow refusal (the gate never ran) is replayed at the proposal\'s stop and says so', async () => {
+  const db = initDB(':memory:')
+  const synth = { strategy: 'vwap_trend', timeframe: '1h', entry: 100, sl: 99, tp1: 103 }
+  recordEvidenceShadow(db, { symbol: 'EURUSD', side: 'BUY', accountId: '44440001', synth, gate: { reason: 'thin record' } })
+  db.prepare(`UPDATE decision_log SET created_at = datetime('now', '-3 days')`).run()
+  const it = pendingRefusals(db, { nowMs: Date.now() })[0]
+  assert.deepEqual([it.sl, it.slProposal, it.stopUnit], [99, 99, 'proposal'])
+  await scoreRefusedOpportunities(db, async () => [bar(it.firstMs + 3600_000, 100, 103.5, 99.5, 103)], { nowMs: Date.now(), maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.deepEqual([row.outcome, row.r_reached, row.sl_proposal, row.stop_unit], ['target', 3, 99, 'proposal'])
+})
+
+test('R1: refusalCostReport splits known-unit rows from legacy rows, and the refusal_cost goal reads only the known', async () => {
+  const db = initDB(':memory:')
+  refuse(db, { symbol: 'EURUSD', entry: 1.1, sl: 1.095, tp: 1.11, at: T0, checks: { stop_floor: { from: 1.095, to: 1.09, atr1h: 0.01, mult: 1 } } })
+  backdate(db, T0)
+  const now = T0 + 3 * 86_400_000
+  await scoreRefusedOpportunities(db, async () => [bar(T0 + 3600_000, 1.1, 1.111, 1.0995, 1.11)], { nowMs: now, maxPerCycle: 10 })
+  // A row scored before the unit existed: stop_unit NULL, R in the old (pre-floor) unit.
+  db.prepare(`INSERT INTO refusal_scores (opportunity_key, account_id, symbol, side, reason_key, reason, entry, sl, tp, first_at, last_at, refusals, horizon_min, scored_at, outcome, r_reached)
+    VALUES ('legacy-1', 'A1', 'GBPUSD', 'BUY', 'bad_rr <n><3', 'bad_rr 2.0<3', 1.3, 1.299, 1.31, ?, ?, 1, 60, ?, 'target', 10)`).run(iso(T0), iso(T0), iso(now))
+  const r = refusalCostReport(db, { days: 7, now })
+  assert.equal(r.total.scored, 2, 'total keeps every row')
+  assert.equal(r.known.scored, 1); assert.equal(r.known.sumR, 1)
+  assert.equal(r.legacy.scored, 1); assert.equal(r.legacy.sumR, 10)
+  assert.deepEqual(r.byUnit, { gate: 1, proposal: 0, legacy: 1 })
+
+  // The goal: known rows only, the legacy count named in the note. One scored
+  // row is under the 20 floor, so the verdict is not_measurable — and the
+  // legacy row must not be what makes it measurable.
+  const { goalTable } = await import('./goal-table.js')
+  const table = await goalTable(db, { now })
+  const g = table.goals.find(x => x.id === 'refusal_cost')
+  assert.ok(g, 'the goal exists')
+  assert.equal(g.verdict, 'not_measurable')
+  assert.match(g.note, /1 scored refusal\(s\) in the gate's stop unit/)
+  assert.match(g.note, /1 older row\(s\) in an unknown stop unit left out/)
 })

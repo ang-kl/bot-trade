@@ -475,15 +475,22 @@ async function plansGoal(db, targets, nowMs) {
 async function refusalGoal(db, targets, nowMs) {
   const { refusalCostReport } = await import('./refusal-ledger.js')
   const r = refusalCostReport(db, { days: targets.refusalDays, now: nowMs })
-  const t = r.total
+  // R1 (03-10-2026): only rows whose R is in a known unit — the stop the gate
+  // judged. Rows scored before the unit was recorded (`legacy`) were replayed
+  // at the proposal's pre-floor stop, about 4× tighter than the gate sized
+  // where the floor applied, and said "+714 R, 42% would have paid" for
+  // trades nobody could have taken. They are named here, never summed.
+  const t = r.known
+  const legacy = r.legacy?.scored || 0
   const measurable = t.scored >= targets.refusalMinScored
+  const legacyNote = legacy ? ` · ${legacy} older row(s) in an unknown stop unit left out` : ''
   return goal('refusal_cost', {
     name: 'Refusals avoid losers, not winners', subsystem: 'risk gate',
-    metric: `net R the refused setups would have reached, last ${targets.refusalDays}d`, target: `≤ ${targets.refusalNetRMax}R`,
+    metric: `net R the refused setups would have reached at the gate's stop, last ${targets.refusalDays}d`, target: `≤ ${targets.refusalNetRMax}R`,
     horizon: `${targets.refusalDays}d`, current: measurable ? `${t.sumR}R over ${t.scored} scored` : null,
     verdict: !measurable ? 'not_measurable' : t.sumR <= targets.refusalNetRMax ? 'on_track' : 'off_track',
-    note: !measurable ? `${t.scored} scored refusal(s) — below the ${targets.refusalMinScored} floor (${r.waiting} waiting on their horizon)`
-      : `${t.wouldHavePaid}/${t.scored} would have paid · ` + r.reasons.slice(0, 3).map(x => `${x.reason} ${x.sumR}R/${x.scored}`).join(' · '),
+    note: !measurable ? `${t.scored} scored refusal(s) in the gate's stop unit — below the ${targets.refusalMinScored} floor (${r.waiting} waiting on their horizon)${legacyNote}`
+      : `${t.wouldHavePaid}/${t.scored} would have paid · ` + r.reasons.slice(0, 3).map(x => `${x.reason} ${x.sumR}R/${x.scored}`).join(' · ') + legacyNote,
     source: '/state/refusal-cost',
   })
 }
