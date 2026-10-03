@@ -1343,6 +1343,18 @@ Measurement history — each line is a real run of the script, not a claim:
   next stamped reply is at least **`№ 10,955`** plus any unstamped line made
   after it. All lower bounds. The count is by replies, not by stamps. A later
   re-measure that reads below this line is missing these, not correcting them.
+- 2026-10-03 21:45 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): `№ 10,955` (#1220 open) is right by count; the #1220 merge
+  and read-back report was `№ 10,956` (23:41 SGT: Node half confirmed, verifier
+  build still running), the verifier read-back `№ 10,957` (23:53 SGT: total
+  1,682 to 1,655, 9 active, heartbeat ok), the slow-request booking `№ 10,958`
+  (its stamp read "05:30 SGT 04-10", the clock then read 21:30 UTC, which is
+  05:30 SGT: right), the slow-request read `№ 10,959` (`/watchdog-status` worst
+  655 ms against 9.6 s) and the outstanding list `№ 10,960`. The owner then
+  ordered this handover (`docs/handover-2026-10-04.md`); the next stamped
+  reply is at least **`№ 10,962`** plus any unstamped line made after this
+  ledger. All lower bounds. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
