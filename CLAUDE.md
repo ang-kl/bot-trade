@@ -1226,6 +1226,24 @@ Measurement history — each line is a real run of the script, not a claim:
   All lower bounds. The count is by replies, not by stamps. A later
   re-measure that reads below this line is missing these, not correcting
   them.
+- 2026-10-03 09:13 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,824`), the #1207 merge and read-back `№ 10,824` (15:46 SGT: JNJ
+  #1489 settled at −63.58, the observer route 404, the breaker config
+  without auto-disarm, the verifier's channel none), the live-gateway
+  diagnosis `№ 10,826` (15:58 SGT: payload-2164 account-disconnect events
+  at 07:30Z, the session kept "connected" with no reconcile; broker side
+  recovered ~07:45Z), #1208 (Codex P1 on the supersede query) merged under
+  the standing policy, the owner's "restart cpp-acct and build it" (the
+  restart at 08:07:58Z, authenticated 3/3 at 08:09:08Z, heartbeat ok at
+  08:11:00Z) and this PR. One commit mistake is recorded: 93d12a53 was cut
+  while a mutation check had its first mutation applied to the working tree,
+  so it carried the mutated line; d9da9061 restored it and the gate ran on
+  the restored tree. Unstamped status lines between the stamps are in the
+  count, so the next stamped reply is at least **`№ 10,836`** plus any
+  unstamped line made after this ledger. All lower bounds. The count is by
+  replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
