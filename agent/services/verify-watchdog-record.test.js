@@ -156,19 +156,21 @@ test('verify_watchdog is quiet — its stall is recorded, never sent', () => {
 // D1/D3 (03-10-2026 log assessment): the verifier reports its incident record's
 // occupancy, and the beat goes red at 80% of the bound, well before a new
 // incident can be refused. A verifier that does not report it is unchanged.
-test('the beat carries the incident record occupancy and goes red at 80% of the bound or on any drop', () => {
+test('the beat carries the incident record occupancy and goes red at 80% ACTIVE or on any drop', () => {
   const base = { schemaVersion: 1, enabled: true, durable: true, error: '', stateBytes: 4096, delivery: DELIVERY, incidentsCap: 2048 }
   const ok = verifyWatchdogBeat({ ...base, incidentsTotal: 1000, incidentsActive: 12, dropped: 0 })
   assert.equal(ok.ok, true)
   assert.deepEqual(ok.detail.incidents, { total: 1000, active: 12, cap: 2048, dropped: 0 })
-  const edge = verifyWatchdogBeat({ ...base, incidentsTotal: 1639, incidentsActive: 12, dropped: 0 }) // 1639 >= 0.8 * 2048 = 1638.4
+  // The live record on 03-10: 1,682 kept, 9 active. History is evicted at the bound, so this is healthy.
+  assert.equal(verifyWatchdogBeat({ ...base, incidentsTotal: 1682, incidentsActive: 9, dropped: 0 }).ok, true)
+  assert.equal(verifyWatchdogBeat({ ...base, incidentsTotal: 2048, incidentsActive: 100, dropped: 0 }).ok, true)
+  const edge = verifyWatchdogBeat({ ...base, incidentsTotal: 2048, incidentsActive: 1639, dropped: 0 }) // 1639 >= 0.8 * 2048 = 1638.4
   assert.equal(edge.ok, false)
-  assert.match(edge.error, /incident record at 1639 of 2048 \(80%\)/)
-  assert.equal(verifyWatchdogBeat({ ...base, incidentsTotal: 1638, incidentsActive: 12, dropped: 0 }).ok, true)
+  assert.match(edge.error, /1639 active incidents of 2048 \(80%\)/)
+  assert.equal(verifyWatchdogBeat({ ...base, incidentsTotal: 2048, incidentsActive: 1638, dropped: 0 }).ok, true)
   const full = verifyWatchdogBeat({ ...base, incidentsTotal: 2048, incidentsActive: 2048, dropped: 3 })
   assert.equal(full.ok, false)
   assert.match(full.error, /3 new incident\(s\) were not recorded/)
-  // An older verifier reports no occupancy: no detail.incidents, no verdict from it.
   const old = verifyWatchdogBeat({ schemaVersion: 1, enabled: true, durable: true, error: '', stateBytes: 4096, delivery: DELIVERY })
   assert.equal(old.ok, true)
   assert.equal('incidents' in old.detail, false)

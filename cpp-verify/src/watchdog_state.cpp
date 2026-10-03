@@ -290,7 +290,9 @@ void WatchState::evaluate(long long now) {
     if (noOrders && it->second.get("active").asBool() && now - number(it->second.get("openedAtMs"), now) > 86400000) {
       it->second.set("active", false); it->second.set("resolvedAtMs", now);
     }
-    if ((!it->second.get("active").asBool() && now - number(it->second.get("resolvedAtMs"), now) > (noOrders ? 7LL : 30LL) * 86400000)) it = incidents_.erase(it);
+    // A no_orders notice ages from when it OPENED (closing it stamps resolvedAtMs=now, which would restart the clock on a notice weeks old).
+    const auto since = noOrders ? number(it->second.get("openedAtMs"), now) : number(it->second.get("resolvedAtMs"), now);
+    if (!it->second.get("active").asBool() && now - since > (noOrders ? 7LL : 30LL) * 86400000) it = incidents_.erase(it);
     else ++it;
   }
 }

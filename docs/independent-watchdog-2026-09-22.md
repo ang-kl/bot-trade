@@ -358,9 +358,11 @@ record stood at 1,686 of its 2,048 bound, gaining about 250 to 390 a day, with
   oldest first) is evicted to take a new one; only a record of all-active
   incidents refuses it (`dropped`). A `no_orders` notice is about one session:
   it closes quietly (no transition, serial unchanged) when a day old and is
-  erased 7 days after, not 30.
-- **The beat says so first.** `verify_watchdog` goes red at 80% of the bound
-  (1,639 of 2,048) or on any dropped incident, with the occupancy in its detail.
+  erased 7 days after it OPENED, not 30.
+- **The beat says so first.** `verify_watchdog` goes red when ACTIVE incidents reach
+  80% of the bound (1,639 of 2,048) or on any dropped incident, with the occupancy
+  in its detail. (A first version judged the total and read red on the live
+  record: 1,682 kept, 9 active.)
 
 Not Verifiable until deployed: the live reply size and its time. Read it from
 the verifier's next slow-request lines and `GET /state/heartbeats`.
