@@ -26,6 +26,7 @@
 import { getState, setState } from '../db.js'
 import { readWatchlist } from './watchlists.js'
 import { loadRiskConfig, riskBudgetUsd, requiredMargin, marginRateFor, getAccountBalance, getAccountLeverage, accountMarginPool } from './risk.js'
+import { sizingBalanceUsd, conversionView } from './account-currency.js'
 import { usdLossPerLot } from '../lib/contracts.js'
 import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
 
@@ -136,7 +137,12 @@ async function withTimeout(p, ms, label) {
 export async function buildFundableUniverse(db, { accountId, creds, deps = {}, now = Date.now(), config = null, maxSymbols = FUNDABLE_BATCH, budgetMs = FUNDABLE_BUDGET_MS, callTimeoutMs = FUNDABLE_CALL_TIMEOUT_MS } = {}) {
   const id = String(accountId)
   const cfg = config || loadRiskConfig(db)
-  const balance = deps.balanceOf ? deps.balanceOf(id) : getAccountBalance(db, id)
+  // C·1 PR-2: the budget and the headroom are USD, so the native balance is
+  // valued in USD through the FX rate table first; a refused conversion
+  // leaves the budget at 0 and is named on the record (`fx`).
+  const balanceNative = deps.balanceOf ? deps.balanceOf(id) : getAccountBalance(db, id)
+  const money = sizingBalanceUsd(db, id, { balance: balanceNative, now })
+  const balance = money.balanceUsd
   const budget = balance > 0 ? riskBudgetUsd(balance, cfg) : 0
   const leverage = getAccountLeverage(db, cfg, id)
   let headroom = null
@@ -195,6 +201,7 @@ export async function buildFundableUniverse(db, { accountId, creds, deps = {}, n
   const record = {
     at: complete ? new Date(now).toISOString() : (prev?.at ?? null), accountId: id, balance: balance > 0 ? balance : null, riskBudgetUsd: r2(budget), headroomUsd: headroom != null ? r2(headroom) : null,
     perTradeRiskPct: cfg.perTradeRiskPct ?? null, rows,
+    ...(money.conversion === 'identity' ? {} : { balanceNative: balanceNative > 0 ? balanceNative : null, fx: conversionView(money) }),
     summary: { total: items.length, judged: all.length, fundable: all.filter(r => r.ok).length, unfundable: all.filter(r => r.verdict === 'unfundable').length, unknown: all.filter(r => r.verdict === 'unknown').length, byReason },
     ...(complete ? {} : { building: { startedAt, pending, judgedThisCall: judged } }),
   }

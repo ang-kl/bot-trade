@@ -2131,9 +2131,15 @@ function marginPoolForCycle(db) {
     pool = accountMarginPool(db, config, accounts.map(a => a.accountId), { rates })
       .map(p => ({ ...p, acct: byId.get(p.accountId) }))
       .filter(p => p.acct)
+    // C·1 PR-2: a converted account prints its native balance and the rate
+    // it was valued at; a refused one says `fx_rate_unavailable` and is held
+    // out of dispatch this cycle (exhausted), never sized on an assumed rate.
+    const fxNote = (p) => p.money ? (p.money.refused ? '' : ` [${p.money.currency} ${p.balanceNative} @ ${p.money.rate} ${p.money.rateSymbol} ${p.money.rateAgeMin}m]`) : ''
     const said = pool.map(p => p.status
-      ? `${p.accountId}: ${p.unfunded ? 'UNFUNDED (balance 0)' : p.exhausted ? 'EXHAUSTED' : `headroom $${p.status.headroom.toFixed(2)}`} (used $${p.status.usedMargin.toFixed(2)} / cap $${p.status.cap.toFixed(2)}, ${p.status.source})`
-      : `${p.accountId}: no balance on record — judged by the risk gate`)
+      ? `${p.accountId}: ${p.unfunded ? 'UNFUNDED (balance 0)' : p.exhausted ? 'EXHAUSTED' : `headroom $${p.status.headroom.toFixed(2)}`} (used $${p.status.usedMargin.toFixed(2)} / cap $${p.status.cap.toFixed(2)}, ${p.status.source})${fxNote(p)}`
+      : p.refused
+        ? `${p.accountId}: ${p.refused} (${p.money?.currency} ${p.balanceNative}) — not dispatched this cycle`
+        : `${p.accountId}: no balance on record — judged by the risk gate`)
     if (pool.length) log(`Margin pool (maxMarginUsagePct=${config.maxMarginUsagePct}): ${said.join(' · ')}${pool.every(p => p.exhausted) ? ' — every account exhausted, dispatch paused this cycle' : ''}`)
     // THE VETO BOUNDARY (19-09-2026): an exhausted account is a cycle-stable
     // state, not a refused proposal. It used to be journaled here as a
@@ -5310,11 +5316,16 @@ async function runLoop(db) {
           const { readTradableUnion } = await import('./services/watchlists.js')
           let symbols = []
           try { symbols = readTradableUnion(db).map(w => w.symbol).filter(Boolean) } catch { symbols = [] }
-          if (symbols.length) {
+          // C·1 PR-2: the enabled accounts' non-USD deposit currencies are
+          // legs too (USDSGD values the SGD balances before anything is
+          // sized on them), refreshed from the broker on the same schedule.
+          let accountCurrencies = []
+          try { const { accountDepositCurrencies } = await import('./services/account-currency.js'); accountCurrencies = [...accountDepositCurrencies(db)] } catch { accountCurrencies = [] }
+          if (symbols.length || accountCurrencies.length) {
             const symbolMap = getSymbolMap(db)
             const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
             const r = await refreshFxLegs(db, {
-              symbols, symbolMap,
+              symbols, symbolMap, accountCurrencies,
               getSpot: (sid) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, sid),
             })
             if (r.fetched.length) log(`FX legs refreshed: ${r.fetched.join(', ')}${r.failed.length ? ` (failed: ${r.failed.join(', ')})` : ''}`)

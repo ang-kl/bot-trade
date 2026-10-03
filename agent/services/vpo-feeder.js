@@ -23,6 +23,7 @@ import { admitEntry } from './entry-mode.js'
 import { reserveVpoPermits, releaseVpoReservations } from './entry-ledger.js'
 import { execBaseFor } from '../lib/exec-engine.js'
 import { loadRiskConfig, getAccountBalance, computeRiskBasedVolume, persistRiskEvent } from './risk.js'
+import { sizingBalanceUsd } from './account-currency.js'
 import { evaluateGlobalGuards } from './global-guards.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { readAccountSnapshot, RISK_MARGIN_SNAPSHOT_MAX_AGE_MS } from './account-snapshot.js'
@@ -166,7 +167,13 @@ export async function runVpoFeeder(db, deps = {}) {
 
   const accountId = String(creds.accountId)
   const cfg = loadRiskConfig(db, accountId)
-  const balance = getAccountBalance(db, accountId)
+  // C·1 PR-2: the VPO sizes with the gate's own USD maths, so the native
+  // balance is valued in USD first; a refused conversion leaves `balance`
+  // null and every symbol is pushed with volume -1 (no_sizing), named once.
+  const balanceNative = getAccountBalance(db, accountId)
+  const money = sizingBalanceUsd(db, accountId, { balance: balanceNative })
+  const balance = money.balanceUsd
+  if (money.refused) console.log(`[vpo-feeder] …${accountId.slice(-4)} ${money.refused}: ${money.detail} — every symbol pushed unsized (-1)`)
 
   const barsOut = []
   const volumesOut = []

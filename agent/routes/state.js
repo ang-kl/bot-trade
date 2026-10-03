@@ -24,6 +24,7 @@ import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 import { maeChandelierView, activeMonitoredIds } from '../services/mae-chandelier-observe.js'
 import { balanceUnit } from '../services/balance-unit.js'
+import { sizingBalanceUsd, conversionView, accountDepositCurrencies } from '../services/account-currency.js'
 import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, getStopPolicy, trailConfigPolicy, triggerValue, stopPolicyStats } from '../lib/stop-policy.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
@@ -344,7 +345,15 @@ export default function stateRouter(db) {
     const id = typeof req.query.account === 'string' ? req.query.account : null
     if (!id || !/^[1-9]\d*$/.test(id)) return res.status(400).json({ error: 'explicit account required' })
     if (!db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(id)) return res.status(404).json({ error: 'account not registered' })
-    res.set('Cache-Control', 'no-store').json(accountMoney(db, id))
+    // C·1 PR-2: beside the observation, the conversion the risk engine applies
+    // to it — rate, source symbol, age — or `fx_rate_unavailable`.
+    const money = accountMoney(db, id)
+    let sizing = null
+    try {
+      const conv = sizingBalanceUsd(db, id, { balance: getAccountBalance(db, id) })
+      sizing = { ...conversionView(conv), balanceNative: conv.nativeBalance, balanceUsd: conv.balanceUsd != null ? Number(conv.balanceUsd.toFixed(2)) : null }
+    } catch (err) { sizing = { error: String(err?.message || err) } }
+    res.set('Cache-Control', 'no-store').json({ ...money, sizing })
   })
 
   // GET /state/market-calendar?account=<id>&symbolId=<broker instrument id>
@@ -3986,27 +3995,52 @@ export default function stateRouter(db) {
     const balance = getAccountBalance(db, acctParam)
     const leverageEvidence = getAccountLeverageEvidence(db, acctParam)
     const leverage = leverageEvidence.value
-    const tier = balance != null ? tierForBalance(balance) : null
-    const derived = balance != null
+    // C·1 PR-2: `balance` is the broker's native money (labelled by
+    // balanceCurrency, PR-1); every `_usd` figure below is taken from its USD
+    // value through the FX rate table. `fx` names the rate used and its age;
+    // a refused conversion leaves the USD figures null and says so, rather
+    // than printing a USD cap computed from an SGD number.
+    const money = sizingBalanceUsd(db, resolvedAccountId, { balance })
+    const sizingBal = money.balanceUsd
+    const fx = { ...conversionView(money), balanceUsd: sizingBal != null ? Number(sizingBal.toFixed(2)) : null }
+    const tier = sizingBal != null ? tierForBalance(sizingBal) : null
+    const derived = sizingBal != null
       ? {
           balance,
           balanceCurrency: balanceUnit(db, resolvedAccountId).currency,
+          fx,
           leverage,
           tier,
           // BOTH daily brakes, either of which may be off (owner 04-08-2026).
           // The headline number is the one that actually binds — the tighter
           // of the checks that are on — and null when neither is, because a
           // number here would claim a limit that does not exist.
-          daily_cap_usd: dailyCapOf(effective, balance),
+          daily_cap_usd: dailyCapOf(effective, sizingBal),
           daily_cap_pct_usd: effective.dailyLossPct > 0
-            ? Number((balance * effective.dailyLossPct).toFixed(2)) : null,
+            ? Number((sizingBal * effective.dailyLossPct).toFixed(2)) : null,
           daily_cap_flat_usd: effective.dailyLossLimit > 0
             ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
-          per_trade_budget_usd: Number((balance * effective.perTradeRiskPct).toFixed(2)),
-          margin_cap_usd: Number((balance * effective.maxMarginUsagePct).toFixed(2)),
+          per_trade_budget_usd: Number((sizingBal * effective.perTradeRiskPct).toFixed(2)),
+          margin_cap_usd: Number((sizingBal * effective.maxMarginUsagePct).toFixed(2)),
           mode: 'equity_aware',
         }
-      : {
+      : balance != null && money.refused
+        ? {
+            balance,
+            balanceCurrency: balanceUnit(db, resolvedAccountId).currency,
+            fx,
+            leverage,
+            tier: null,
+            daily_cap_usd: null,
+            daily_cap_pct_usd: null,
+            daily_cap_flat_usd: effective.dailyLossLimit > 0
+              ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
+            per_trade_budget_usd: null,
+            margin_cap_usd: null,
+            mode: money.refused,
+            refused: money.refused,
+          }
+        : {
           balance: null,
           leverage,
           tier: null,
@@ -4976,7 +5010,9 @@ export default function stateRouter(db) {
       const { getSymbolMap } = await import('../lib/ctrader-creds.js')
       let symbols = []
       try { symbols = readTradableUnion(db).map(w => w.symbol).filter(Boolean) } catch { symbols = [] }
-      const report = fxLegReport(db, { symbols, symbolMap: getSymbolMap(db) })
+      let accountCurrencies = []
+      try { accountCurrencies = [...accountDepositCurrencies(db)] } catch { accountCurrencies = [] }
+      const report = fxLegReport(db, { symbols, symbolMap: getSymbolMap(db), accountCurrencies })
       res.json({
         ok: true,
         ...report,

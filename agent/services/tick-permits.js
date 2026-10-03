@@ -308,8 +308,9 @@ export function accountTickPause(db, accountId, { readinessFor, now = Date.now()
   let poolStatus = null
   try { poolStatus = accountMarginPool(db, riskCfg || loadRiskConfig(db), [accountId], { rates })[0] || null } catch { poolStatus = null }
   if (!pregate?.ok || poolStatus?.exhausted) {
-    const guard = !pregate?.ok ? String(pregate?.guard || 'refused') : 'portfolio_margin_exhausted'
-    return { pause: { reason: `account_pregate:${guard}`, detail: !pregate?.ok ? String(pregate?.reason || '') : poolStatus?.unfunded ? 'unfunded (broker balance 0)' : `headroom $${Number(poolStatus?.status?.headroom ?? 0).toFixed(2)}` }, riskCfg, rd }
+    // C·1 PR-2: a pool entry held out because its balance could not be valued in USD names that, not margin.
+    const guard = !pregate?.ok ? String(pregate?.guard || 'refused') : poolStatus?.refused ? String(poolStatus.refused) : 'portfolio_margin_exhausted'
+    return { pause: { reason: `account_pregate:${guard}`, detail: !pregate?.ok ? String(pregate?.reason || '') : poolStatus?.refused ? String(poolStatus.money?.detail || poolStatus.refused) : poolStatus?.unfunded ? 'unfunded (broker balance 0)' : `headroom $${Number(poolStatus?.status?.headroom ?? 0).toFixed(2)}` }, riskCfg, rd }
   }
   return { pause: null, riskCfg, rd }
 }

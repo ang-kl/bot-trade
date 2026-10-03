@@ -52,12 +52,20 @@ export function journalMarginPoolState(db, pool, { loopId = null } = {}) {
     const used = usedN == null ? 'na' : usedN.toFixed(2)
     const cap = capN == null ? 'na' : capN.toFixed(2)
     const source = st.source ?? 'na'
+    // C·1 PR-2: an account held out because its balance could not be valued
+    // in USD is journaled under ITS reason, not as margin exhaustion.
     const row = now
-      ? {
-        accountId: id, symbol: null, stage: MARGIN_POOL_STAGE, decision: 'skip', loopId,
-        reason: `portfolio_margin_exhausted used=${used} cap=${cap} source=${source}${p.unfunded ? ' unfunded=balance_0' : ''}`,
-        detail: { margin_used_usd: usedN, margin_cap_usd: capN, margin_source: source, account_id: id, transition: 'exhausted', ...(p.unfunded ? { unfunded: true } : {}) },
-      }
+      ? p.refused
+        ? {
+          accountId: id, symbol: null, stage: MARGIN_POOL_STAGE, decision: 'skip', loopId,
+          reason: `${p.refused} currency=${p.money?.currency ?? 'na'} balance=${p.balanceNative ?? 'na'} — ${p.money?.detail ?? ''}`.trim(),
+          detail: { account_id: id, transition: 'exhausted', fx_refused: p.refused, balance_currency: p.money?.currency ?? null, balance_native: p.balanceNative ?? null },
+        }
+        : {
+          accountId: id, symbol: null, stage: MARGIN_POOL_STAGE, decision: 'skip', loopId,
+          reason: `portfolio_margin_exhausted used=${used} cap=${cap} source=${source}${p.unfunded ? ' unfunded=balance_0' : ''}`,
+          detail: { margin_used_usd: usedN, margin_cap_usd: capN, margin_source: source, account_id: id, transition: 'exhausted', ...(p.unfunded ? { unfunded: true } : {}) },
+        }
       : {
         accountId: id, symbol: null, stage: MARGIN_POOL_STAGE, decision: 'proceed', loopId,
         reason: `portfolio_margin_recovered used=${used} cap=${cap} source=${source}`,
