@@ -1,4 +1,5 @@
 import { resolveSymbolId } from '../lib/ctrader-creds.js'
+import { trendReadingFor } from './regime-gate.js'
 import { lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
 import { encodeLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { entryMarketGate, resolveEntryMarketGate } from './entry-hours.js'
@@ -47,7 +48,7 @@ export async function placeMomentumLimit(db, creds, symbol, synth, opts = {}) {
     if (!pre.ok) return refuse(pre.reason)
     proposal = { symbol, side, accountId, entry: pre.entry, sl: pre.stop, tp1: pre.trigger, tp2: pre.runnerTarget,
       strategy: synth.strategy, timeframe: synth.timeframe, conviction: synth.overall_conviction ?? null,
-      direction_reason: synth.direction_reason ?? null, requestedVolume: opts.requestedVolume ?? null,
+      direction_reason: synth.direction_reason ?? null, trend_at_evaluation: trendReadingFor(db, symbol), requestedVolume: opts.requestedVolume ?? null,
       sizing: synth.sizing ?? null, sizedVolume: synth.sizedVolume ?? null, source: 'momentum_htf_limit' }
     const config = risk.loadRiskConfig(db, accountId)
     const preliminary = risk.evaluateTrade(db, proposal, config)

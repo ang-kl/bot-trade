@@ -634,3 +634,16 @@ test('later-fill migration requires a transaction and preserves its receipt acro
   assert.equal(after.prepare('SELECT entry_price FROM monitored_positions WHERE trade_id=7').get().entry_price, 98)
   assert.equal(restingExposure(after, '11').length, 0)
 })
+
+// R4 (the 03-10-2026 replays): the momentum HTF limit stamps the trend reading
+// at evaluation on the proposal the gate judges, as the market path does.
+test('R4: the trend reading at evaluation rides into the momentum limit proposal', async t => {
+  const f = fixture(t)
+  f.db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('ETHUSD', 'trending', 'long', datetime('now'))`).run()
+  const seen = []
+  const risk = { ...f.opts.risk, evaluateTrade: (db, proposal) => { seen.push(proposal); return f.opts.risk.evaluateTrade(db, proposal) } }
+  const result = await f.place({ risk })
+  assert.equal(result.placed, true, result.reason)
+  assert.ok(seen.length >= 1)
+  for (const p of seen) assert.deepEqual([p.trend_at_evaluation?.regime, p.trend_at_evaluation?.trend_direction, p.trend_at_evaluation?.stale], ['trending', 'long', false])
+})

@@ -7,6 +7,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
+import { trendReadingFor } from './regime-gate.js'
 import {
   regimeBlocks, checkRegimeGate, latestRegime, loadRegimeGateConfig, DEFAULT_REGIME_GATE,
   STRATEGY_KIND,
@@ -117,4 +118,17 @@ test('latestRegime asOfMs: the newest row at or before T, aged against T; the la
   assert.equal(latestRegime(db, 'EURUSD', { maxAgeMin: 0, asOfMs: T - 400 * 60_000 }), null, 'nothing computed before T - 400 m')
   // without asOfMs, behaviour is unchanged: the newest row
   assert.equal(latestRegime(db, 'EURUSD', { maxAgeMin: 0 }).trend_direction, 'short')
+})
+
+// R4 (the 03-10-2026 replays): one helper stamps the trend reading on every
+// entry path's proposal, in the shape proposal_json has carried since PR-D.
+test('R4: trendReadingFor — the newest regime row in proposal_json shape, stale when old, null when none', () => {
+  const db = initDB(':memory:')
+  assert.equal(trendReadingFor(db, 'EURUSD'), null, 'no row, no reading — never a fabricated one')
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('EURUSD', 'trending', 'long', datetime('now'))`).run()
+  const fresh = trendReadingFor(db, 'EURUSD')
+  assert.deepEqual([fresh.regime, fresh.trend_direction, fresh.stale], ['trending', 'long', false])
+  assert.ok(typeof fresh.computed_at === 'string')
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('GBPUSD', 'ranging', 'flat', datetime('now', '-3 days'))`).run()
+  assert.equal(trendReadingFor(db, 'GBPUSD').stale, true, 'an old reading is stamped as stale, not hidden')
 })

@@ -438,3 +438,25 @@ test('the retired producer is refused here too: naming closed_market_limits (or 
   assert.equal(f.placed.length, 0, 'the fence refused before the broker was called')
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE note='pending-closed'`).get().n, 0)
 })
+
+// R4 (the 03-10-2026 replays): this path recorded direction_reason without the
+// trend reading the market path stamps beside it, so 71% of closed trades had
+// none and the direction replay could not be measured.
+test('R4: the trend reading at evaluation rides into the proposal; null when the regime table holds nothing', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('US30', 'trending', 'long', datetime('now'))`).run()
+  const f = fakes()
+  const seen = []
+  f.risk.persistRiskEvent = (_db, proposal) => { seen.push(proposal); return 1 }
+  await placeClosedMarketLimit(db, CREDS, 'US30', SYNTH, f)
+  assert.ok(seen.length >= 1)
+  for (const p of seen) assert.deepEqual([p.trend_at_evaluation?.regime, p.trend_at_evaluation?.trend_direction, p.trend_at_evaluation?.stale], ['trending', 'long', false])
+  const db2 = initDB(':memory:')
+  setState(db2, 'symbol_id_map', JSON.stringify({ US30: 7 }))
+  const f2 = fakes(); const seen2 = []
+  f2.risk.persistRiskEvent = (_db, proposal) => { seen2.push(proposal); return 1 }
+  await placeClosedMarketLimit(db2, CREDS, 'US30', SYNTH, f2)
+  assert.ok(seen2.length >= 1)
+  for (const p of seen2) assert.equal(p.trend_at_evaluation, null)
+})

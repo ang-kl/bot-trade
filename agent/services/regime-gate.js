@@ -121,6 +121,24 @@ export function latestRegime(db, symbol, { maxAgeMin = DEFAULT_MAX_REGIME_AGE_MI
 }
 
 /**
+ * The trend reading to stamp on a proposal at the moment it is evaluated
+ * (PR-D, owner principle 8), in the one shape proposal_json carries:
+ * `{ regime, trend_direction, computed_at, stale }`, or null when the regime
+ * table holds nothing for the symbol. R4 (the 03-10-2026 replays): the market
+ * path in loop.js built this inline and the three other entry paths (the
+ * closed-market and HTF resting limits, the momentum HTF limit, the pending
+ * fib orders) recorded `direction_reason` without it, so 71% of closed trades
+ * had no trend reading and the direction replay could not be measured. One
+ * helper, every path.
+ */
+export function trendReadingFor(db, symbol) {
+  try {
+    const rr = latestRegime(db, symbol)
+    return rr ? { regime: rr.regime ?? null, trend_direction: rr.trend_direction ?? null, computed_at: rr.computed_at ?? null, stale: !!rr.stale } : null
+  } catch { return null }
+}
+
+/**
  * Should this signal be blocked by the current regime? Pure decision — no DB.
  *
  * @param {string} strategy  strategy key

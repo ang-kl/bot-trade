@@ -25,7 +25,11 @@ import { replayExit, normaliseBars } from '../lib/exit-replay.js'
 import { reasonKey } from './veto-breakdown.js'
 import { resolveOpportunity } from './opportunity-identity.js'
 
-const TF_MIN = { m1: 1, '1m': 1, m5: 5, '5m': 5, m15: 15, '15m': 15, m30: 30, '30m': 30, h1: 60, '1h': 60, h4: 240, '4h': 240, h8: 480, '8h': 480, h12: 720, '12h': 720, d1: 1440, '1d': 1440, w1: 10080, '1w': 10080 }
+// R5 (the 03-10-2026 replays): 2m and 10m are native timeframes
+// (lib/timeframes.js) and the scanner proposes on them; missing here they
+// fell to the 1h default horizon (2,880 min) — 22 of 43 sample rows scored
+// over the wrong window.
+const TF_MIN = { m1: 1, '1m': 1, m2: 2, '2m': 2, m5: 5, '5m': 5, m10: 10, '10m': 10, m15: 15, '15m': 15, m30: 30, '30m': 30, h1: 60, '1h': 60, h4: 240, '4h': 240, h8: 480, '8h': 480, h12: 720, '12h': 720, d1: 1440, '1d': 1440, w1: 10080, '1w': 10080 }
 const MAX_HORIZON_MIN = 20 * 1440   // the book's measured median hold (№ 7,379)
 const MIN_HORIZON_MIN = 240
 const DEFAULT_TF = '1h'

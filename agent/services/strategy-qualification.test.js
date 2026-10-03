@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import express from 'express'
 import { initDB, getState, setState } from '../db.js'
 import { setStage } from './stage-matrix.js'
+import { recordDepositCurrency } from './account-money.js'
 import {
   strategyQualificationReport, reachability, clusterCopies, monthWindows, sealClosedWindows, stampMs,
   QUALIFICATION_DEFINITION, UNREACHABLE, COPY_WINDOW_MS,
@@ -322,4 +323,39 @@ test('GET /state/strategy-qualification: report only, reconciled, and the read s
     const sealedRows = db.prepare("SELECT COUNT(*) AS n FROM qualification_windows WHERE kind = 'sealed' AND scope = 'window'").get().n
     assert.equal(sealedRows, 3, 'RED if the route stops sealing: a record nothing writes is not a record')
   } finally { s.close() }
+})
+
+// R3 (the 03-10-2026 replays): accounts.base_currency is NULL on every
+// registered account in production, so the mixed_currency guard never fired
+// and a pooled money PF was printed across SGD and USD. The broker-verified
+// deposit currency is the first source; the registry is the fallback; a pool
+// with no known unit publishes no money figure.
+test('R3: the pooled currency guard reads the broker-verified deposit currency when the registry has none', () => {
+  const db = initDB(':memory:')
+  const acct = db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode, base_currency) VALUES (?, ?, 0, 1, 'active', NULL)`)
+  acct.run(A, '1'); acct.run(B, '2'); acct.run(C, '3')
+  const t = NOW - 2 * DAY
+  const seed = () => {
+    close(db, { strategy: 'donchian_breakout', account: A, r: 2, net: 200, openMs: t, atMs: t + DAY / 4 })
+    close(db, { strategy: 'donchian_breakout', account: C, r: -1, net: -30, openMs: t + 3 * 3_600_000, atMs: t + DAY / 2 })
+  }
+  seed()
+  // No evidence, no registry value: the pool's unit is unknown and no money figure is published.
+  let p = strategyQualificationReport(db, { now: NOW }).pooled.find(x => x.strategy === 'donchian_breakout')
+  assert.deepEqual(p.currencies, ['unknown'])
+  assert.deepEqual(p.profitFactorUsd, { status: 'unknown_currency', currencies: ['unknown'] }, 'RED if a pool of unknown units prints a number')
+  // The gateway's asset-list evidence names A as USD and C as SGD: the guard fires.
+  assert.equal(recordDepositCurrency(db, { accountId: A, host: 'demo.ctraderapi.com', depositAssetId: '1', currency: 'USD' }), true)
+  assert.equal(recordDepositCurrency(db, { accountId: C, host: 'demo.ctraderapi.com', depositAssetId: '2', currency: 'SGD' }), true)
+  p = strategyQualificationReport(db, { now: NOW }).pooled.find(x => x.strategy === 'donchian_breakout')
+  assert.deepEqual(p.currencies, ['SGD', 'USD'])
+  assert.deepEqual(p.profitFactorUsd, { status: 'mixed_currency', currencies: ['SGD', 'USD'] })
+  // Evidence recorded for the WRONG host is not this account's unit (deposit-currencies.js refuses it).
+  const db2 = initDB(':memory:')
+  const acct2 = db2.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode, base_currency) VALUES (?, ?, 0, 1, 'active', NULL)`)
+  acct2.run(A, '1'); acct2.run(C, '3')
+  recordDepositCurrency(db2, { accountId: A, host: 'live.ctraderapi.com', depositAssetId: '1', currency: 'USD' })
+  close(db2, { strategy: 'donchian_breakout', account: A, r: 2, net: 200, openMs: t, atMs: t + DAY / 4 })
+  p = strategyQualificationReport(db2, { now: NOW }).pooled.find(x => x.strategy === 'donchian_breakout')
+  assert.deepEqual(p.currencies, ['unknown'])
 })
