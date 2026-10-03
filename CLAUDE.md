@@ -2034,3 +2034,12 @@ The next substantive reply is `№ 8,425`. No full-corpus or token count is clai
   has its own exact-payload approval. Owner-observed acceptance follows
   implementation handover. V3 is not production-complete. Original checkout
   documentation edits remain preserved.
+
+<!-- Continuation ledger 2026-10-03 22:36 UTC: owner supplied lower bound
+№ 10,964; visible Codex continuation has reached № 10,972, next at least
+№ 10,973. The partial-container count is not adopted. Security work ordered
+after № 10,966: Dependabot #40/#41/#42 affect development-only brace-expansion
+1.1.18 through ESLint/minimatch; candidate updates the root lockfile to 1.1.21.
+Base is main 8b4b360 (#1221), source tree verified byte-for-byte. Independent
+diff review found no blockers; full gates are running. No deployment approval
+for this security change has been recorded; no trading settings changed. -->
