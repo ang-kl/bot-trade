@@ -4,6 +4,9 @@
 #include <sstream>
 #include <set>
 #include <iostream>
+#include <atomic>
+#include <chrono>
+#include <thread>
 using jsn::Value; using jsn::Object; using jsn::Array;
 Value read(const char* path) { std::ifstream f(path); assert(f); std::stringstream s; s << f.rdbuf(); return *jsn::parse(s.str()); }
 Value batch(const Value& fixture, const Value& expected, const std::string& account, const std::string& host = "demo.ctraderapi.com",
@@ -203,6 +206,65 @@ int main() {
     const auto status = scanner.status();
     assert(status.get("streams").get("evicted").asNumber() == 1 && status.get("work").asArray().size() == 512);
     assert(row(status, "1").isNull() && !row(status, "513").isNull());
+  }
+  {
+    // 03-10-2026: two gateways delivering at once must NOT bounce each other.
+    // Before the fix the producer lock was a try-lock held for the whole
+    // ingest, so concurrent submits produced ingress_busy (HTTP 429) hundreds
+    // of times a day on both gateways. Now a colliding batch waits for its
+    // turn: 2 threads x 200 batches, zero refusals, every record admitted.
+    scan::TickScanner scanner(2, 8192, [=] { return now; });
+    std::atomic<int> busy{0}, accepted{0};
+    const auto producer = [&](const char* host) {
+      for (int i = 0; i < 200; ++i) {
+        try { accepted += static_cast<int>(scanner.submit(batch(fixture, expected, "11", host, "e1", std::to_string(i + 1), 10)).get("accepted").asNumber()); }
+        catch (const std::runtime_error& e) { if (std::string(e.what()) == "ingress_busy") ++busy; else throw; }
+      }
+    };
+    std::thread live(producer, "live.ctraderapi.com"), demo(producer, "demo.ctraderapi.com");
+    live.join(); demo.join(); scanner.flush();
+    assert(busy == 0);
+    assert(accepted == 2 * 200 * 10);
+    assert(scanner.status().get("processed").asNumber() == 2 * 200 * 10);
+  }
+  {
+    // The bound still refuses: a producer that holds the lock past
+    // kIngressWaitMs is an overloaded scanner, and the colliding batch is
+    // answered ingress_busy within the bound (not blocked indefinitely, which
+    // would exceed the gateway's 2 s transport timeout and become a code-28
+    // failure instead of a retryable 429). The clock runs under the lock, so
+    // a clock that sleeps once simulates the slow holder.
+    static_assert(scan::TickScanner::kIngressWaitMs == 250);
+    std::atomic<bool> sleepOnce{true};
+    scan::TickScanner scanner(1, 4096, [&] {
+      if (sleepOnce.exchange(false)) std::this_thread::sleep_for(std::chrono::milliseconds(600));
+      return now;
+    });
+    std::thread holder([&] { scanner.submit(batch(fixture, expected, "11", "live.ctraderapi.com", "e1", "7", 10)); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // the holder is inside its 600 ms clock call
+    const auto t0 = std::chrono::steady_clock::now();
+    bool refused = false;
+    try { scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "e1", "7", 10)); }
+    catch (const std::runtime_error& e) { refused = std::string(e.what()) == "ingress_busy"; }
+    const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    holder.join();
+    assert(refused);
+    assert(waitedMs >= scan::TickScanner::kIngressWaitMs && waitedMs < 500); // bounded: refused before the holder released
+    scanner.flush();
+    assert(scanner.status().get("processed").asNumber() == 10); // the holder's batch was admitted
+  }
+  {
+    // receivedAtMs is still bounded by the scanner's clock. The bound moved
+    // from the parse (before the lock) to the admission (under the lock);
+    // a record from the future is refused as invalid_integer either way and
+    // nothing of the batch is admitted.
+    scan::TickScanner scanner(1, 4096, [=] { return now; });
+    auto future = batch(fixture, expected, "11", "demo.ctraderapi.com", "e1", "7", 10);
+    auto records = future.get("records").asArray(); records.back().set("receivedAtMs", now + 1); future.set("records", records);
+    bool refused = false;
+    try { scanner.submit(future); } catch (const std::invalid_argument& e) { refused = std::string(e.what()) == "invalid_integer"; }
+    assert(refused); scanner.flush();
+    assert(scanner.status().get("work").asArray().empty() && scanner.status().get("processed").asNumber() == 0);
   }
   std::cout << "scanner frozen oracle, account/feed isolation, retries, gaps, expiry and bounded output passed\n";
 }

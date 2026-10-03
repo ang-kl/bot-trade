@@ -1128,6 +1128,19 @@ Measurement history — each line is a real run of the script, not a claim:
   plus any unstamped line made after this ledger. All lower bounds. The
   count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
+- 2026-10-03 00:16 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,698`), the 03-10 plan report `№ 10,698` (#1200, merged 00:11 UTC as
+  81e181fa with the Saturday measurements), the owner's urgent order on the
+  gateways' 429 `ingress_busy` / `recovered` pairs and its diagnosis
+  `№ 10,701` (the scanner's try-lock held over the whole ingest, two
+  gateways colliding on it). Five unstamped status lines followed while this
+  PR was built (the tests, the TSan finding that moved the bound from a
+  timed mutex to a condition variable, the three mutations, the #1200 merge,
+  the gate), so the next stamped reply is at least **`№ 10,707`** plus any
+  unstamped line made after this ledger. All lower bounds. The count is by
+  replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

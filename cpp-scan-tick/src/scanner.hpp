@@ -2,6 +2,7 @@
 #include "scanner_contract.hpp"
 #include "tick_strategy.hpp"
 #include "tick_workers.hpp"
+#include <condition_variable>
 #include <string_view>
 
 namespace scan {
@@ -26,6 +27,18 @@ public:
   // A stream nothing has fed for an hour, with no event in flight, is stale.
   // Stale streams are evicted only to admit a new stream.
   static constexpr long long kStaleAfterMs = 3600000;
+  // 03-10-2026 (owner: the gateways' "delivery failed: HTTP 429 … ingress_busy /
+  // delivery recovered" pairs, 400+ a day per gateway). The producer lock used
+  // to be a try-lock held for the WHOLE ingest, parsing included, so the live
+  // and demo gateways' batches collided on it many times an hour and each
+  // collision was a 429 bounce the gateway then retried. Now the batch is
+  // parsed and validated before the lock, the lock covers only the registry
+  // decision and the ring commit, and a colliding batch WAITS up to this bound
+  // instead of bouncing. 429 ingress_busy is still answered when the bound
+  // expires: a scanner that cannot admit a batch within it is overloaded, and
+  // the gateway's retry window (5 + 10 + 20 + 40 + 80 ms) sits inside the 2 s
+  // transport timeout either way.
+  static constexpr long long kIngressWaitMs = 250;
   explicit TickScanner(int workers = 2, size_t queue = 2048, std::function<long long()> clock = nowMs, long long staleAfterMs = kStaleAfterMs);
   ~TickScanner();
   jsn::Value submit(const jsn::Value& batch);
@@ -55,7 +68,14 @@ private:
   void evaluate(Slot& slot, const tick::WorkerEvent& event);
   std::function<long long()> clock_;
   const long long staleAfterMs_;
-  std::mutex producer_, registry_;
+  // The producer turn is a bounded wait on a condition variable rather than
+  // a std::timed_mutex: libstdc++'s timed lock goes through
+  // pthread_mutex_clocklock, which ThreadSanitizer does not intercept, so the
+  // TSan build (make tsan, run in CI) reported the matching unlock as "unlock
+  // of an unlocked mutex". A plain mutex plus a condition variable is seen by
+  // the sanitizer end to end.
+  std::mutex producerGate_; std::condition_variable producerFree_; bool producerBusy_ = false;
+  std::mutex registry_;
   std::map<std::string, Stream> streams_;
   std::map<uint32_t, std::shared_ptr<Slot>> slots_; // current and draining slots
   uint32_t nextId_ = 0;
