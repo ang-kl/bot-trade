@@ -1,23 +1,24 @@
 // agent/services/mae-chandelier-observe.js
 //
-// Observe-only MAE and LeBeau Chandelier. Approved as mae-chandelier-observe.
-// This module never returns an amend and never calls the broker.
+// What remains of the MAE/Chandelier module: Wilder's ATR and the since-entry
+// trail spec the profit keeper hands to the sidecar's TrailEngine (the stop
+// policy's since-entry trail, 02-10-2026). The file keeps its name because
+// agent/stop-policy-callsites.test.js reads it by name.
 //
-// Interval: it does not start its own 1-second loop. A second loop would
-// stack broker calls on the tick that already re-prices positions. The
-// caller passes the fast-monitor tick (default 3s, floor 1s, FAST_MONITOR_MS).
-// ATR does not change every second; the quote extreme can.
-// db.js is loaded only when a tick writes, so the pure test does not need
-// the native driver.
+// The OBSERVER that used to live here was REMOVED 03-10-2026 on the owner's
+// order ("remove all three", after the statement review at № 10,812). Measured
+// reason: since it was built (02-10-2026) it never produced a usable reading
+// in production — GET /state/mae-chandelier at 06:25Z 03-10-2026 read
+// positions 1, withBars 0, adjustable 0, receipts 0 — while its fast-monitor
+// bar fetch added broker calls on every tick, and it was a third stop
+// authority beside the stop policy and the profit keeper. Gone with it: the
+// per-position readings and their state record (`mae_chandelier_observe_json`,
+// deleted once at boot by agent/index.js), the bar cache and fetch, the fast
+// tick and the timeframe pass, the amend path and its receipts, the route and
+// the verifier script. Nothing here calls the broker or writes state.
 
-export const OBSERVE_STATE_KEY = 'mae_chandelier_observe_json'
 export const DEFAULT_ATR_PERIOD = 22
 export const DEFAULT_ATR_MULT = 3
-
-export function observeIntervalMs(env = process.env, override = null) {
-  if (Number(override) > 0) return Math.max(1_000, Number(override))
-  return Math.max(1_000, Number(env.FAST_MONITOR_MS) || 3_000)
-}
 
 export function wilderAtr(bars, period = DEFAULT_ATR_PERIOD) {
   if (!Array.isArray(bars) || bars.length < period + 1) return null
@@ -35,81 +36,12 @@ export function wilderAtr(bars, period = DEFAULT_ATR_PERIOD) {
   return atr
 }
 
-function dirOf(side) {
-  const s = String(side || '').toUpperCase()
-  if (s === 'LONG' || s === 'BUY') return 1
-  if (s === 'SHORT' || s === 'SELL') return -1
-  return 0
-}
-
 /**
- * One reading. mayAmend is a constant false. A Chandelier price is a
- * candidate to display, not an order.
- *
- * since-entry high is this trade. The 22-session high can sit before the
- * fill, which is why both are reported and neither is sent.
+ * The since-entry trail spec for the sidecar's TrailEngine: 3 × ATR(22)
+ * behind the peak, the peak seeded at the entry. Null when the ATR or the
+ * digits are missing, so the keeper drops the row rather than push a spec
+ * the sidecar cannot round.
  */
-export function observePosition({
-  side, entry, price, sl = null, bars = null,
-  peak = null, trough = null,
-  period = DEFAULT_ATR_PERIOD, multiplier = DEFAULT_ATR_MULT,
-  marketOpen = null,
-} = {}) {
-  const dir = dirOf(side)
-  const out = {
-    mayAmend: false,
-    dir,
-    mae: null,
-    mfe: null,
-    maeOverRisk: null,
-    chandelier22: null,
-    chandelierSinceEntry: null,
-    closeBelow22: null,
-    closeBelowSinceEntry: null,
-    atr: null,
-    reason: 'observe_only',
-  }
-  // Each missing input is NAMED (owner 03-10-2026: "no excuse like incomplete").
-  // A closed market with no quote is expected; an OPEN market with no quote is
-  // a defect the view counts, never a quiet skip.
-  if (!dir) { out.reason = 'direction_missing'; return out }
-  if (!(entry > 0)) { out.reason = 'entry_price_missing'; return out }
-  if (!(price > 0)) {
-    out.reason = marketOpen === false ? 'market_closed' : 'quote_missing_market_open'
-    return out
-  }
-  const adverse = dir === 1 ? entry - price : price - entry
-  const favourable = dir === 1 ? price - entry : entry - price
-  // peak/trough here are price excursions already in price units, not USD.
-  out.mae = Math.max(0, Number.isFinite(trough) ? Math.max(trough, adverse) : Math.max(0, adverse))
-  out.mfe = Math.max(0, Number.isFinite(peak) ? Math.max(peak, favourable) : Math.max(0, favourable))
-  const risk = sl > 0 ? Math.abs(entry - sl) : null
-  out.maeOverRisk = risk > 0 ? out.mae / risk : null
-  if (!Array.isArray(bars) || bars.length < period + 1) {
-    out.reason = 'observe_only_bars_missing'
-    return out
-  }
-  const atr = wilderAtr(bars, period)
-  out.atr = atr
-  if (!(atr > 0)) {
-    out.reason = 'observe_only_atr_missing'
-    return out
-  }
-  const look = bars.slice(-period)
-  const hh22 = Math.max(...look.map(b => Number(b.h)))
-  const ll22 = Math.min(...look.map(b => Number(b.l)))
-  out.chandelier22 = dir === 1 ? hh22 - multiplier * atr : ll22 + multiplier * atr
-  out.closeBelow22 = dir === 1 ? price < out.chandelier22 : price > out.chandelier22
-  out.reason = 'observe_only'
-  return out
-}
-
-export function shouldSendChandelierAdjust(pos, reading) {
-  if (!reading?.adjust) return false
-  if (pos?.source === 'external') return false
-  return true
-}
-
 export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits } = {}) {
   const atr = wilderAtr(bars, DEFAULT_ATR_PERIOD)
   const d = Number(digits)
@@ -122,7 +54,7 @@ export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, ent
     ctidTraderAccountId: Number(accountId),
     symbolId,
     dir,
-    trailDistance: 3 * atr,
+    trailDistance: DEFAULT_ATR_MULT * atr,
     peakPrice: peak,
     currentSl: currentSl ?? null,
     currentTp: currentTp ?? null,
@@ -132,259 +64,4 @@ export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, ent
     entryPrice: peak,
     source: 'mae_chandelier_since_entry',
   }
-}
-
-export function decideAdjust({ side, entry, price, sl, bars, openedAtMs = null, marketOpen = null, period = DEFAULT_ATR_PERIOD, multiplier = DEFAULT_ATR_MULT } = {}) {
-  const reading = observePosition({ side, entry, price, sl, bars, period, multiplier, marketOpen })
-  const dir = reading.dir
-  const out = { ...reading, chandelierSinceEntry: null, heldBars: null, mayAmend: false, adjust: null }
-  if (!dir || !(entry > 0) || !(price > 0)) return out
-  // SINCE ENTRY means the bars that began after the fill. The fetched window is
-  // 40 hourly bars; cutting at index 0 (the old call) took the highest high of
-  // the last 40 hours, including hours before the position existed, and put the
-  // level above where this trade's own high could justify.
-  if (!Number.isFinite(openedAtMs)) { out.reason = 'entry_time_unknown'; return out }
-  if (!(reading.atr > 0)) return out
-  const held = heldBarsSince(bars, openedAtMs)
-  out.heldBars = held.length
-  const since = chandelierSinceEntryLevel({ held, dir, atr: reading.atr, multiplier, entry, price })
-  out.chandelierSinceEntry = since
-  if (!(since > 0) || !(sl > 0)) return out
-  const tighter = dir === 1 ? since > sl && since < price : since < sl && since > price
-  if (!tighter) return out
-  out.mayAmend = true
-  out.adjust = { action: 'MOVE_SL', sl: since, newSL: since, reason: 'mae_chandelier_since_entry_tighten' }
-  return out
-}
-
-/** Bars that BEGAN after the position opened; the bar holding the fill is excluded because part of it predates the trade. */
-export function heldBarsSince(bars, openedAtMs) {
-  if (!Array.isArray(bars) || !Number.isFinite(openedAtMs)) return []
-  return bars.filter(b => Number(b?.t) > openedAtMs)
-}
-
-/**
- * The extreme since entry. With no completed bar yet the extreme is the entry
- * and the live price themselves, so a just-opened trade still gets a level.
- */
-export function chandelierSinceEntryLevel({ held, dir, atr, multiplier = DEFAULT_ATR_MULT, entry, price }) {
-  if (!(atr > 0) || !dir) return null
-  const highs = [Number(entry), Number(price), ...(held || []).map(b => Number(b.h))].filter(Number.isFinite)
-  const lows = [Number(entry), Number(price), ...(held || []).map(b => Number(b.l))].filter(Number.isFinite)
-  if (!highs.length) return null
-  return dir === 1 ? Math.max(...highs) - multiplier * atr : Math.min(...lows) + multiplier * atr
-}
-
-/** Open time of a monitored row in ms: the trade's fill time, else the row's own stamp (adoption time is later, so safer). */
-export function positionOpenedAtMs(db, pos) {
-  const parse = v => {
-    if (typeof v !== 'string' || !v) return null
-    const ms = Date.parse(/Z|[+-]\d\d:?\d\d$/.test(v) ? v : `${v.replace(' ', 'T')}Z`)
-    return Number.isFinite(ms) ? ms : null
-  }
-  try {
-    if (pos?.trade_id != null) {
-      const row = db.prepare('SELECT opened_at FROM trades WHERE id = ?').get(pos.trade_id)
-      const ms = parse(row?.opened_at)
-      if (ms != null) return ms
-    }
-  } catch { /* fall through to the row's own stamp */ }
-  return parse(pos?.created_at)
-}
-
-// The fast monitor's last live mid per position, so the slow pass never reads
-// "no price" for a position the fast pass priced seconds ago.
-const MID_CACHE = new Map()
-export function noteMid(id, mid, atMs = Date.now()) { if (mid > 0) MID_CACHE.set(String(id), { mid, at: atMs }) }
-export function freshMid(id, nowMs = Date.now(), maxAgeMs = 60_000) {
-  const hit = MID_CACHE.get(String(id))
-  return hit && nowMs - hit.at <= maxAgeMs ? hit.mid : null
-}
-
-export function receiptFromTrailMove(id, prevSl, nextSl) {
-  if (typeof prevSl !== 'number' || !(Number(nextSl) > 0) || prevSl === Number(nextSl)) return null
-  return receiptFromBrokerOutcome(id, Number(nextSl), { summary: `trail lastSl ${nextSl}` })
-}
-
-export function receiptFromBrokerOutcome(id, sl, outcome) {
-  const accepted = !!outcome && !outcome.error && !outcome.skipped && outcome.closedRemotely !== true && typeof outcome.summary === 'string' && outcome.summary.length > 0
-  // The sidecar's ratchet found the broker's stop already tighter (broker-side
-  // trailing moved it) and sent nothing: an answer, not a failure and not a
-  // send. Stop policy, 02-10-2026.
-  const unchanged = accepted && outcome.unchanged === true
-  const protection = outcome?.protection
-  const policy = outcome?.policy
-  return {
-    id: String(id),
-    sl,
-    sent: accepted && !unchanged,
-    ...(unchanged ? { unchanged: true } : {}),
-    // confirmed: the sidecar read the broker back after the amend and the stop
-    // held (the old receipt only said the broker answered).
-    ...(protection?.verified === true ? { confirmed: true, heldSl: protection.stopLoss ?? null } : {}),
-    // What happened to the stop policy on this amend (trigger method /
-    // trailing flag): applied, how the read-back judged it, whether the broker
-    // refused the flags and the stop went through without them.
-    ...(policy && typeof policy === 'object' ? {
-      policy: {
-        applied: policy.applied === true,
-        readback: policy.readback ?? null,
-        refused: !!policy.refused,
-        skipped: policy.skipped ?? null,
-      },
-    } : {}),
-    broker: accepted ? outcome.summary : (outcome?.error || outcome?.reason || 'no_broker_ack'),
-  }
-}
-
-const BAR_CACHE = new Map()
-
-export function cachedBars(symbolId, now = Date.now(), ttlMs = 3_600_000) {
-  const hit = BAR_CACHE.get(String(symbolId))
-  if (!hit || now - hit.at >= ttlMs) return null
-  return hit.bars
-}
-
-export function storeBars(symbolId, bars, now = Date.now()) {
-  BAR_CACHE.set(String(symbolId), { bars, at: now })
-  return bars
-}
-
-export function chandelierSinceEntry(bars, entryIndex, dir, atr, multiplier = DEFAULT_ATR_MULT) {
-  if (!Array.isArray(bars) || entryIndex < 0 || entryIndex >= bars.length || !(atr > 0) || !dir) return null
-  const held = bars.slice(entryIndex)
-  if (!held.length) return null
-  if (dir === 1) return Math.max(...held.map(b => Number(b.h))) - multiplier * atr
-  return Math.min(...held.map(b => Number(b.l))) + multiplier * atr
-}
-
-export function foldExcursion(prev, reading) {
-  return {
-    mae: Math.max(Number(prev?.mae) || 0, Number(reading?.mae) || 0),
-    mfe: Math.max(Number(prev?.mfe) || 0, Number(reading?.mfe) || 0),
-    mayAmend: false,
-  }
-}
-
-export function loadObserveState(db, read) {
-  try { return JSON.parse(read(db, OBSERVE_STATE_KEY) || '{}') } catch { return {} }
-}
-
-/**
- * The read-only view behind GET /state/mae-chandelier: the stored record
- * plus counts a reader can act on. `read` is db.js's getState (passed in,
- * since this module never loads the native driver itself). Never throws; an
- * empty key reads as an empty record.
- */
-export function maeChandelierView(db, read, activeIds = null) {
-  const state = loadObserveState(db, read)
-  const stored = state.positions && typeof state.positions === 'object' ? state.positions : {}
-  // A row for a position that is no longer open is history, not a reading: it
-  // would count as "without bars" for ever and hide whether the open ones work.
-  const positions = activeIds instanceof Set
-    ? Object.fromEntries(Object.entries(stored).filter(([id]) => activeIds.has(String(id))))
-    : stored
-  const closedRowsHidden = Object.keys(stored).length - Object.keys(positions).length
-  const receipts = Array.isArray(state.receipts) ? state.receipts : []
-  const rows = Object.values(positions)
-  const withBars = rows.filter(r => Number(r?.atr) > 0).length
-  const sent = receipts.filter(r => r?.sent === true)
-  return {
-    mode: state.mode || null,
-    at: state.at || null,
-    mayAmend: state.mayAmend === true,
-    closedRowsHidden,
-    summary: {
-      positions: rows.length,
-      withBars,
-      withoutBars: rows.length - withBars,
-      adjustable: rows.filter(r => r?.mayAmend === true).length,
-      quoteMissingMarketOpen: rows.filter(r => r?.reason === 'quote_missing_market_open').length,
-      entryTimeUnknown: rows.filter(r => r?.reason === 'entry_time_unknown').length,
-      receipts: receipts.length,
-      receiptsSent: sent.length,
-      receiptsConfirmed: receipts.filter(r => r?.confirmed === true).length,
-      receiptsUnchanged: receipts.filter(r => r?.unchanged === true).length,
-      lastReceiptAt: receipts.length ? receipts[receipts.length - 1]?.at || null : null,
-    },
-    positions,
-    receipts,
-  }
-}
-
-export async function recordAmendReceipt(db, receipt, nowMs = Date.now(), io = {}) {
-  const read = io.read || (await import('../db.js')).getState
-  const write = io.write || (await import('../db.js')).setState
-  const prev = loadObserveState(db, read)
-  const receipts = Array.isArray(prev.receipts) ? prev.receipts.slice(-19) : []
-  receipts.push({ ...receipt, at: new Date(nowMs).toISOString() })
-  const next = { ...prev, mode: 'observe_and_tighten', mayAmend: false, receipts }
-  write(db, OBSERVE_STATE_KEY, JSON.stringify(next))
-  console.log(`[mae-chandelier-observe] amend-receipt ${JSON.stringify({ id: receipt?.id, sl: receipt?.sl, sent: receipt?.sent === true, broker: receipt?.broker || null })}`)
-  return next
-}
-
-/** Ids of the monitored rows still open, or null when the table cannot be read. */
-export function activeMonitoredIds(db) {
-  try {
-    const rows = db.prepare(`SELECT id FROM monitored_positions WHERE status = 'active'`).all()
-    return new Set(rows.map(r => String(r.id)))
-  } catch { return null }
-}
-
-export async function recordObserve(db, rows, nowMs = Date.now(), io = {}) {
-  const read = io.read || (await import('../db.js')).getState
-  const write = io.write || (await import('../db.js')).setState
-  const prev = loadObserveState(db, read)
-  const positions = { ...(prev.positions || {}) }
-  // Drop rows of positions that are no longer open (closed rows never clear
-  // themselves: nothing writes them again). The open ids come from the
-  // monitored table; with no readable table nothing is dropped.
-  const open = activeMonitoredIds(db)
-  if (open) for (const id of Object.keys(positions)) if (!open.has(String(id))) delete positions[id]
-  for (const row of rows || []) {
-    if (!row?.id) continue
-    const folded = foldExcursion(positions[row.id], row)
-    positions[row.id] = {
-      ...row,
-      ...folded,
-      mayAmend: row.mayAmend === true,
-      at: new Date(nowMs).toISOString(),
-    }
-  }
-  const next = {
-    mode: 'observe_and_tighten',
-    mayAmend: false,
-    at: new Date(nowMs).toISOString(),
-    positions,
-  }
-  write(db, OBSERVE_STATE_KEY, JSON.stringify(next))
-  console.log(`[mae-chandelier-observe] ${JSON.stringify({ n: rows.length, mayAmend: rows.some(r => r.mayAmend === true) })}`)
-  return next
-}
-
-/**
- * 24/7 recorder. Overlap-guarded. unref so it does not hold the process open
- * by itself. listPositions must not place an order; a throw is logged and
- * the next tick tries again.
- */
-export function startMaeChandelierObserve(db, listPositions, opts = {}) {
-  const tickMs = observeIntervalMs(opts.env, opts.tickMs)
-  let running = false
-  let skipped = 0
-  const timer = setInterval(async () => {
-    if (running) { skipped++; return }
-    running = true
-    try {
-      const rows = await listPositions()
-      recordObserve(db, Array.isArray(rows) ? rows : [], opts.clock ? opts.clock() : Date.now())
-      skipped = 0
-    } catch (err) {
-      console.error('[mae-chandelier-observe] tick failed:', err?.message || err)
-    } finally {
-      running = false
-    }
-  }, tickMs)
-  timer.unref?.()
-  return { stop: () => clearInterval(timer), tickMs, skipped: () => skipped }
 }

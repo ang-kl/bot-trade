@@ -148,6 +148,17 @@ import('./services/statement-import.js')
   })
   .catch((err) => console.warn(`[statements] seed import failed (non-fatal): ${err.message}`))
 
+// The MAE/Chandelier observer was removed 03-10-2026 (owner: "remove all
+// three"; it never produced a usable reading in production). Its state key
+// is dropped once at boot so the record does not outlive the code; one log
+// line only when it existed.
+try {
+  if (getState(db, 'mae_chandelier_observe_json') != null) {
+    db.prepare('DELETE FROM agent_state WHERE key = ?').run('mae_chandelier_observe_json')
+    console.log('[boot] stale mae_chandelier_observe_json state removed (observer retired 03-10-2026)')
+  }
+} catch (err) { console.warn(`[boot] mae_chandelier_observe_json cleanup failed (non-fatal): ${err.message}`) }
+
 // One-shot re-stamp of realised R and the consistency verdict on every
 // closed row with both prices (02-09-2026). The per-writer stamp is
 // forward-only; rows corrected before it existed never get another write.

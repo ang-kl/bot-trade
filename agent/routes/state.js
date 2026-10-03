@@ -22,7 +22,6 @@ import { requestedAccount, accountWhere, countUnattributed, scopeCoverage, scope
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
-import { maeChandelierView, activeMonitoredIds } from '../services/mae-chandelier-observe.js'
 import { balanceUnit } from '../services/balance-unit.js'
 import { sizingBalanceUsd, conversionView, accountDepositCurrencies } from '../services/account-currency.js'
 import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, getStopPolicy, trailConfigPolicy, triggerValue, stopPolicyStats } from '../lib/stop-policy.js'
@@ -4727,15 +4726,6 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/profit-keeper', (_req, res) => {
     res.json({ config: loadProfitKeeperConfig(db) })
-  })
-
-  // GET /state/mae-chandelier — the MAE/Chandelier observer's own record
-  // (02-10-2026, № 10,474): the per-position readings every monitor tick
-  // writes, the last amend receipts, and counts derived from them. Read
-  // straight from the key the ticks write; nothing is recomputed here, so a
-  // reading with no ATR shows as such ("withoutBars") instead of healthy.
-  router.get('/mae-chandelier', (_req, res) => {
-    res.json(maeChandelierView(db, getState, activeMonitoredIds(db)))
   })
 
   // GET /state/stop-policy — the stop-loss policy as the bot is running it and

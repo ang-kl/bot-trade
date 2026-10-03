@@ -22,14 +22,13 @@ async function get(path) {
   if (!r.ok) throw new Error(`${path} answered ${r.status}`)
   return r.json()
 }
-const [policy, maeChandelier, heartbeats] = await Promise.all([
+const [policy, heartbeats] = await Promise.all([
   get('/state/stop-policy').catch(e => { console.error(e.message); return null }),
-  get('/state/mae-chandelier').catch(e => { console.error(e.message); return null }),
   get('/state/heartbeats').catch(e => { console.error(e.message); return null }),
 ])
 let baselineTp = null
 if (baselinePath && existsSync(baselinePath)) baselineTp = JSON.parse(readFileSync(baselinePath, 'utf8'))
-const result = gradeStopLoss({ policy, maeChandelier, heartbeats, baselineTp })
+const result = gradeStopLoss({ policy, heartbeats, baselineTp })
 if (baselinePath && !baselineTp && heartbeats) { writeFileSync(baselinePath, JSON.stringify(targetSnapshot(heartbeats), null, 1)); console.log(`baseline written to ${baselinePath}`) }
 for (const c of result.checks) console.log(`${c.verdict.padEnd(15)} ${c.id.padEnd(20)} ${c.detail}`)
 console.log(`\nOVERALL ${result.verdict}`)
