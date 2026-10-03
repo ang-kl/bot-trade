@@ -240,11 +240,13 @@ int main() {
       if (sleepOnce.exchange(false)) std::this_thread::sleep_for(std::chrono::milliseconds(600));
       return now;
     });
-    std::thread holder([&] { scanner.submit(batch(fixture, expected, "11", "live.ctraderapi.com", "e1", "7", 10)); });
+    scan::TickScanner::IngestTiming holderTiming;
+    std::thread holder([&] { scanner.submit(batch(fixture, expected, "11", "live.ctraderapi.com", "e1", "7", 10), &holderTiming); });
     std::this_thread::sleep_for(std::chrono::milliseconds(100)); // the holder is inside its 600 ms clock call
+    assert(scanner.status().get("ingest").get("inflight").asNumber() == 1); // the holder is counted while it holds
     const auto t0 = std::chrono::steady_clock::now();
-    bool refused = false;
-    try { scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "e1", "7", 10)); }
+    bool refused = false; scan::TickScanner::IngestTiming refusedTiming;
+    try { scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "e1", "7", 10), &refusedTiming); }
     catch (const std::runtime_error& e) { refused = std::string(e.what()) == "ingress_busy"; }
     const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     holder.join();
@@ -252,6 +254,27 @@ int main() {
     assert(waitedMs >= scan::TickScanner::kIngressWaitMs && waitedMs < 500); // bounded: refused before the holder released
     scanner.flush();
     assert(scanner.status().get("processed").asNumber() == 10); // the holder's batch was admitted
+    // §10,725·C·1: the phases are reported on both exits. The refused ingest
+    // spent its time waiting for the turn; the holder spent its time under
+    // the turn (the clock sleeps in the commit phase); both count as slow.
+    assert(refusedTiming.waitUs >= scan::TickScanner::kIngressWaitMs * 1000 && refusedTiming.commitUs == 0);
+    assert(holderTiming.waitUs < 100000 && holderTiming.commitUs >= 600000);
+    const auto ingest = scanner.status().get("ingest");
+    assert(ingest.get("inflight").asNumber() == 0 && ingest.get("slow").asNumber() == 2 && ingest.get("maxMs").asNumber() >= 600);
+    assert(ingest.get("slowAfterMs").asNumber() == scan::TickScanner::kSlowIngestMs);
+  }
+  {
+    // A fast ingest reports its phases and counts as neither slow nor in flight.
+    scan::TickScanner scanner(1, 4096, [=] { return now; }); scan::TickScanner::IngestTiming t;
+    scanner.submit(batch(fixture, expected, "11", "demo.ctraderapi.com", "e1", "7", 10), &t); scanner.flush();
+    assert(t.parseUs >= 0 && t.waitUs < 100000 && t.commitUs < 100000);
+    const auto ingest = scanner.status().get("ingest");
+    assert(ingest.get("inflight").asNumber() == 0 && ingest.get("slow").asNumber() == 0 && ingest.get("maxMs").asNumber() < 250);
+    // The slow line fires on the end-to-end bound only, and names every phase.
+    assert(scan::TickScanner::slowIngestLine(249999, 100, t, 1, 10, "accepted").empty());
+    scan::TickScanner::IngestTiming slow; slow.parseUs = 1200; slow.waitUs = 1500000; slow.commitUs = 2100;
+    const auto line = scan::TickScanner::slowIngestLine(1532000, 900, slow, 3, 256, "refused");
+    assert(line == "slow feed: total 1532 ms (json 0, parse 1, wait 1500, commit 2) inflight 3 records 256 outcome refused");
   }
   {
     // receivedAtMs is still bounded by the scanner's clock. The bound moved

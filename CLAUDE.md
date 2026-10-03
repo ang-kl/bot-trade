@@ -1141,6 +1141,23 @@ Measurement history — each line is a real run of the script, not a claim:
   unstamped line made after this ledger. All lower bounds. The count is by
   replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+- 2026-10-03 01:12 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,707`), eight unstamped status lines ran through #1201's CI, merge
+  (4fced3ec, 00:23 UTC) and scanner deploy, so the read-back report was
+  stamped **`№ 10,715`** (08:29 SGT); the owner's "investigate the code 28
+  transport timeouts on cpp-acct" followed, nine unstamped status lines
+  carried the flow-log measurements, and the diagnosis was stamped
+  **`№ 10,725`** (08:51 SGT: every delivery's IPv6 attempt refused by the
+  IPv4-only listener, fresh A+AAAA lookups per request, the three timeouts
+  held 1.56 s inside an idle scanner). The owner's "build §10,725·C"
+  followed; three unstamped lines preceded this ledger (the two-PR plan, the
+  route wiring, the TSan re-run after my own sequencing error), so the next
+  stamped reply is at least **`№ 10,729`** plus any unstamped line made
+  after this ledger. This PR carries C·1 (the scanner's ingest timing).
+  All lower bounds. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting
+  them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
