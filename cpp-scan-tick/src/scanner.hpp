@@ -53,9 +53,20 @@ public:
   // route's JSON decode included), or an empty string for a fast one. Pure:
   // the threshold and the wording are tested; main.cpp only prints it.
   static std::string slowIngestLine(long long totalUs, long long jsonUs, const IngestTiming& t, long long inflight, long long records, std::string_view outcome);
+  // 03-10-2026 (after #1203): cpp-acct's mirror logged "delivery failed:
+  // HTTP 400" once a minute (its line is rate-limited) and nothing named the
+  // batch's error token, so the cause could not be read from either side.
+  // An invalid batch now counts in status() ("ingest.invalid") and is
+  // reported by invalidBatchLine(): the token, the record count and the
+  // newest receivedAtMs relative to this scanner's clock (positive = the
+  // gateway's clock runs ahead, which is what invalid_integer would mean).
+  static std::string invalidBatchLine(std::string_view token, long long records, long long newestOffsetMs);
+  void countInvalid() { ingestInvalid_.fetch_add(1, std::memory_order_relaxed); }
+  long long clockNow() const { return clock_(); }
   explicit TickScanner(int workers = 2, size_t queue = 2048, std::function<long long()> clock = nowMs, long long staleAfterMs = kStaleAfterMs);
   ~TickScanner();
   jsn::Value submit(const jsn::Value& batch, IngestTiming* timing = nullptr);
+  jsn::Value submitChecked(const jsn::Value& batch, IngestTiming* timing);
   jsn::Value status();
   jsn::Value candidates(long long after) { return output_.read(after); }
   jsn::Value comparisons(long long after) { return comparisons_.read(after, 128); }
@@ -97,7 +108,7 @@ private:
   CandidateRing output_, comparisons_;
   const size_t queueCapacity_;
   std::vector<std::atomic<size_t>> pendingPerWorker_;
-  std::atomic<long long> ingestInflight_{0}, ingestSlow_{0}, ingestMaxUs_{0};
+  std::atomic<long long> ingestInflight_{0}, ingestSlow_{0}, ingestMaxUs_{0}, ingestInvalid_{0};
   tick::SymbolWorkers workers_;
 };
 }

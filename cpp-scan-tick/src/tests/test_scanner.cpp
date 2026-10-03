@@ -277,6 +277,21 @@ int main() {
     assert(line == "slow feed: total 1532 ms (json 0, parse 1, wait 1500, commit 2) inflight 3 records 256 outcome refused");
   }
   {
+    // An invalid batch counts in status() and its line names the token, the
+    // record count and the newest receivedAtMs against the scanner's clock.
+    scan::TickScanner scanner(1, 4096, [=] { return now; });
+    assert(scanner.status().get("ingest").get("invalid").asNumber() == 0);
+    bool thrown = false;
+    try { scanner.submit(Value(Object{{"records", Array{}}})); } catch (const std::invalid_argument& e) { thrown = !std::string(e.what()).empty(); }
+    assert(thrown && scanner.status().get("ingest").get("invalid").asNumber() == 1);
+    scanner.countInvalid(); // the route's invalid_json path, which never reaches submit
+    assert(scanner.status().get("ingest").get("invalid").asNumber() == 2);
+    assert(scanner.clockNow() == now);
+    assert(scan::TickScanner::invalidBatchLine("invalid_integer", 12, 3) == "invalid feed batch: invalid_integer records 12 newest receivedAtMs +3 ms vs clock");
+    assert(scan::TickScanner::invalidBatchLine("batch_out_of_order", 1, -250) == "invalid feed batch: batch_out_of_order records 1 newest receivedAtMs -250 ms vs clock");
+    assert(scan::TickScanner::invalidBatchLine("invalid_json", 0, 0) == "invalid feed batch: invalid_json records 0 newest receivedAtMs +0 ms vs clock");
+  }
+  {
     // receivedAtMs is still bounded by the scanner's clock. The bound moved
     // from the parse (before the lock) to the admission (under the lock);
     // a record from the future is refused as invalid_integer either way and

@@ -1173,6 +1173,22 @@ Measurement history — each line is a real run of the script, not a claim:
   after this ledger. All lower bounds. The count is by replies, not by
   stamps. A later re-measure that reads below this line is missing these,
   not correcting them.
+- 2026-10-03 02:26 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,707`), the replies ran on through the #1201 report and its 429
+  read-back `№ 10,739` (zero 429 on both gateways in the hour after the
+  deploy), the code-28 diagnosis `№ 10,725` and the owner's "build
+  §10,725·C", #1202 (C·1 scanner ingest timing) and #1203 (C·2 curl handle
+  reuse + phase timings, C·3 dual-stack listener) merged on "merge when green
+  and read back the gateways", `№ 10,740`, and sixteen unstamped status
+  lines (the gates, the merges, the five deploy read-backs, the HTTP 400
+  finding on cpp-acct and this PR's build), so the next stamped reply is at
+  least **`№ 10,757`** plus any unstamped line made after this ledger. One
+  working-tree mistake in this run is recorded: a mutation loop restored
+  `scanner.cpp` with `git checkout`, which also erased the uncommitted edit;
+  it was re-applied and the loop re-run from a saved copy. All lower bounds.
+  The count is by replies, not by stamps. A later re-measure that reads below
+  this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
