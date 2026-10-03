@@ -80,7 +80,18 @@ void WatchState::incident(const std::string& id, bool bad, const std::string& se
   auto it = incidents_.find(id);
   if (it == incidents_.end()) {
     if (!bad) return;
-    if (incidents_.size() >= 2048) { ++dropped_; return; }
+    if (incidents_.size() >= kIncidentCap) {
+      // Full: a RESOLVED incident is history, an unrecorded new one is lost
+      // evidence. Evict the oldest resolved record to make room; only when
+      // every stored incident is still active is the new one refused.
+      auto oldest = incidents_.end();
+      for (auto at = incidents_.begin(); at != incidents_.end(); ++at) {
+        if (at->second.get("active").asBool()) continue;
+        if (oldest == incidents_.end() || number(at->second.get("resolvedAtMs")) < number(oldest->second.get("resolvedAtMs"))) oldest = at;
+      }
+      if (oldest == incidents_.end()) { ++dropped_; return; }
+      incidents_.erase(oldest);
+    }
     it = incidents_.emplace(id, jsn::Value(jsn::Object{{"active", false}, {"serial", 0}})).first;
   }
   auto& r = it->second;
@@ -269,10 +280,17 @@ void WatchState::evaluate(long long now) {
       for (const auto& key : gone) incident(key, false, "info", detail(service, "feed_no_longer_in_complete_inventory"), now);
     }
   }
-  // Retain resolved history for 30 days.
+  // Retain resolved history for 30 days. A no_orders notice is one fact about
+  // one trading session ("this session had placed nothing by hour N"); it has
+  // no recovery transition, so it never resolved and 328 of them sat "active"
+  // and filled the 2,048 bound. It is closed (no transition, no mark) once the
+  // session is a day old, and its record kept 7 days, not 30.
   for (auto it = incidents_.begin(); it != incidents_.end();) {
-    if ((!it->second.get("active").asBool() && now - number(it->second.get("resolvedAtMs"), now) > 30LL * 86400000)
-        || (it->first.find(":no_orders:") != std::string::npos && now - number(it->second.get("openedAtMs"), now) > 30LL * 86400000)) it = incidents_.erase(it);
+    const bool noOrders = it->first.find(":no_orders:") != std::string::npos;
+    if (noOrders && it->second.get("active").asBool() && now - number(it->second.get("openedAtMs"), now) > 86400000) {
+      it->second.set("active", false); it->second.set("resolvedAtMs", now);
+    }
+    if ((!it->second.get("active").asBool() && now - number(it->second.get("resolvedAtMs"), now) > (noOrders ? 7LL : 30LL) * 86400000)) it = incidents_.erase(it);
     else ++it;
   }
 }
@@ -307,7 +325,7 @@ void WatchState::protection(const jsn::Value& report, long long now) {
     }
   }
 }
-jsn::Value WatchState::status(long long now) const {
+jsn::Value WatchState::status(long long now, bool allIncidents) const {
   // Controllers need incident/work receipts, not repeated copies of every
   // persisted calendar and broker position payload on each UI refresh.
   jsn::Object services, incidents;
@@ -316,7 +334,10 @@ jsn::Value WatchState::status(long long now) const {
     {"reachable", row.get("reachable")}, {"lastReachableAtMs", row.get("lastReachableAtMs")},
     {"lastContractAtMs", row.get("lastContractAtMs")}, {"validContract", row.get("validContract")},
     {"workCount", static_cast<long long>(row.get("contract").get("work").asArray().size())}});
+  long long active = 0;
   for (const auto& [id, row] : incidents_) {
+    if (row.get("active").asBool()) ++active;
+    else if (!allIncidents) continue;
     auto data = row.asObject(); jsn::Object summary;
     for (const auto field : {"service", "reason", "role", "accountId", "symbolId", "sessionId", "lastCompletedAtMs", "nextDueMs", "marketStatus", "blocker", "missingSl", "missingTp", "effectiveGraceMs", "knownWorkCount", "streams", "newestQuoteAtMs"})
       summary[field] = row.get("detail").get(field);
@@ -327,6 +348,8 @@ jsn::Value WatchState::status(long long now) const {
   // and from the CV-2 builds (muted, soak, counters): nothing is sent.
   jsn::Value s(jsn::Object{{"schemaVersion", 1}, {"services", std::move(services)}, {"incidents", std::move(incidents)},
     {"dropped", dropped_}, {"observedAtMs", now},
+    {"incidentsTotal", static_cast<long long>(incidents_.size())}, {"incidentsActive", active},
+    {"incidentsCap", static_cast<long long>(kIncidentCap)}, {"incidentsListed", allIncidents ? std::string("all") : std::string("active")},
     {"delivery", jsn::Object{{"channel", "none"}, {"removedOn", "2026-10-03"}, {"note", "incidents are a record; nothing is sent"}}}});
   s.set("policy", jsn::Value(jsn::Object{{"probeMs", policy_.probeMs}, {"serviceGraceMs", policy_.serviceGraceMs},
     {"managementGraceMs", policy_.managementGraceMs}, {"scannerGraceMs", policy_.scannerGraceMs}, {"noOrdersMs", policy_.noOrdersMs}, {"repeatMs", policy_.repeatMs}, {"accountGraceMs", policy_.accountGraceMs}}));

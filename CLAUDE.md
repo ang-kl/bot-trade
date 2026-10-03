@@ -1317,6 +1317,21 @@ Measurement history — each line is a real run of the script, not a claim:
   least **`№ 10,932`** plus any unstamped line made after this ledger. All
   lower bounds. The count is by replies, not by stamps. A later re-measure
   that reads below this line is missing these, not correcting them.
+- 2026-10-03 14:50 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,932`), the replies ran on by count through the R3/R4/R5 merge and
+  read-back (#1218) and the three Railway logs assessment `№ 10,944`
+  (22:24 SGT: the "errors" are #1203's slow-request line plus known broker
+  refusals; cpp-verify's `/watchdog-status` is the heaviest request, 9.6 s
+  worst against Node's 10 s abort; the incident record at 1,686 of 2,048).
+  The owner's "build D1 and D3, merge when green and read back" followed; two
+  unstamped status lines preceded this ledger, so the next stamped reply is at
+  least **`№ 10,948`** plus any unstamped line made after it. This PR carries
+  D1 (a slim `/watchdog-status`, `stateBytes` from the last persist) and D3
+  (resolved incidents evicted at the bound, `no_orders` closed after a day and
+  kept 7, an occupancy beat at 80%). All lower bounds. The count is by
+  replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

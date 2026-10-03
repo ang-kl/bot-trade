@@ -438,3 +438,19 @@ test('cpp-verify sends nothing: no Telegram host, no delivery variable, no mute 
   // The record names the removed channel, so a reader can tell this build from one before CV-2.
   assert.match(src('../../cpp-verify/src/watchdog_state.cpp'), /\{"delivery", jsn::Object\{\{"channel", "none"\}, \{"removedOn", "2026-10-03"\}/)
 })
+
+// D1/D3 (03-10-2026): /watchdog-status serves the ACTIVE incidents by default
+// (the full list was ~1 MB, the slowest request on the verifier) and the
+// resolved history only on ?incidents=all; stateBytes is the size persist()
+// wrote, not a second serialisation per read.
+test('cpp-verify /watchdog-status is slim by default and reads stateBytes from the last persist', () => {
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\/\/.*$/gm, '')
+  const main = strip(src('../../cpp-verify/src/main.cpp'))
+  assert.match(main, /watchdog\.status\(queryParam\(req\.query, "incidents"\) == "all"\)/)
+  const wd = strip(src('../../cpp-verify/src/watchdog.cpp'))
+  assert.match(wd, /stateBytes_ = static_cast<long long>\(body\.size\(\)\)/)
+  assert.match(wd, /s\.set\("stateBytes", stateBytes_\)/)
+  assert.doesNotMatch(wd, /jsn::dump\(state_\.snapshot\(\)\)\.size\(\)/)
+  const st = strip(src('../../cpp-verify/src/watchdog_state.cpp'))
+  assert.match(st, /else if \(!allIncidents\) continue;/)
+})
