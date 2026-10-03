@@ -1332,6 +1332,17 @@ Measurement history — each line is a real run of the script, not a claim:
   kept 7, an occupancy beat at 80%). All lower bounds. The count is by
   replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+- 2026-10-03 15:20 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): `№ 10,949` (PR #1219 open) and `№ 10,950` (#1219 merged as
+  1e0ed7ec; the verifier deploy a6314c81 SUCCESS) are right by count. The
+  read-back found two flaws in my own D3, corrected in the next PR: the beat
+  judged the TOTAL record (1,682 kept, 9 active, so red for no reason) where it
+  should judge ACTIVE incidents, and a no_orders notice's retention clock
+  restarted at its close instead of its opening. The relayed reply is 16 KB
+  (was about 1 MB). Four unstamped status lines preceded this ledger, so the
+  next stamped reply is at least **`№ 10,955`** plus any unstamped line made
+  after it. All lower bounds. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

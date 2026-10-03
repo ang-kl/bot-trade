@@ -451,6 +451,16 @@ int main() {
     healthy(s, {}, T + 300000 + 3 * DAY); assert(!s.snapshot().get("incidents").get(id).isNull()); // kept as record
     healthy(s, {}, T + 300000 + 9 * DAY); assert(s.snapshot().get("incidents").get(id).isNull()); // 7 days after it closed
   }
+  {
+    // The retention clock of a no_orders notice is its OPENING, not the moment it closes: a notice 20 days old is gone on the pass that would close it.
+    verify::WatchState s; auto w = work("orders", "entry_activity"); w.set("ordersSinceOpen", 0); w.set("sessionOpenedAtMs", T); w.set("sessionId", "ancient");
+    w.set("activityComplete", true); w.set("nextDueMs", T + 600000);
+    healthy(s, {w}, T + 300000);
+    const auto id = "node:no_orders:11:ancient";
+    assert(active(s, id));
+    healthy(s, {}, T + 300000 + 20 * DAY);
+    assert(s.snapshot().get("incidents").get(id).isNull());
+  }
   std::cout << "watchdog incident record passed\n";
   return 0;
 }

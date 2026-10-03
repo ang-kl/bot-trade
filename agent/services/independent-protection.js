@@ -123,9 +123,9 @@ export function watchdogDeliveryDetail(status) {
   return out
 }
 
-// At this share of the verifier's incident bound the beat goes red, well before
-// the bound refuses a new incident (it refused 52 in a test, and on production
-// the record stood at 1,686 of 2,048 with about 250-390 new a day).
+// At this share of the verifier's incident bound held by ACTIVE incidents the
+// beat goes red, well before the bound refuses a new incident. (First version
+// judged the TOTAL and read red on the live record: 1,682 kept, 9 active.)
 export const INCIDENT_RECORD_WARN_SHARE = 0.8
 
 /**
@@ -148,7 +148,10 @@ export function verifyWatchdogBeat(status) {
   if (status.error) return { ok: false, error: `watchdog error: ${String(status.error).slice(0, 200)}`, detail }
   const inc = detail.incidents
   if (inc && inc.dropped > 0) return { ok: false, error: `watchdog incident record is full: ${inc.dropped} new incident(s) were not recorded (${inc.total} of ${inc.cap} kept)`, detail }
-  if (inc && inc.cap > 0 && inc.total >= inc.cap * INCIDENT_RECORD_WARN_SHARE) return { ok: false, error: `watchdog incident record at ${inc.total} of ${inc.cap} (${Math.round(100 * inc.total / inc.cap)}%): resolved history is evicted first, but a record of active incidents only would then refuse new ones`, detail }
+  // ACTIVE incidents, not the total: at the bound resolved history is evicted
+  // for a new incident, so a record full of history is healthy and a record
+  // full of ACTIVE incidents is the one that would refuse a new one.
+  if (inc && inc.cap > 0 && Number.isFinite(inc.active) && inc.active >= inc.cap * INCIDENT_RECORD_WARN_SHARE) return { ok: false, error: `watchdog incident record has ${inc.active} active incidents of ${inc.cap} (${Math.round(100 * inc.active / inc.cap)}%): at the bound a new incident would be refused (${inc.total} kept in all)`, detail }
   return { ok: true, detail }
 }
 
