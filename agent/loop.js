@@ -27,6 +27,7 @@ import { persistScanContext } from './services/context.js'
 import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } from './lib/sessions.js'
 import { runWithClosedMarketHold } from './lib/closed-market-hold.js'
 import { isSymbolOpenCached } from './services/symbol-hours.js'
+import { exitMarketHours } from './services/exit-hours.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from './lib/trade-labels.js'
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
@@ -132,6 +133,9 @@ let loopDb = null
 // S-2 small round (item 3): the entries-held reason the momentum book's hold
 // line last printed, so a reason that stands all weekend prints once.
 let lastBookHeldReason = null
+// The book's last printed summary line (bookSummaryLogLine): an identical
+// idle pass prints nothing (27-09 follow-up (2), the #1158 log noise).
+let lastBookSummaryLine = null
 let loopRunning = false               // mutex — prevents concurrent iterations
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
 // № 10,448: accounts whose reconcile reply names no account, warned once per boot.
@@ -2798,13 +2802,15 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
     }
     // A close the broker just refused because the market is closed is not sent
     // again every cycle (lib/closed-market-hold.js): it is held until the
-    // symbol's session opens, or 15 minutes at most. The rule still fires each
-    // cycle; only the send is withheld, so the first cycle after the open sends.
+    // ACCOUNT CALENDAR says the session is open (exit-hours.js — the same
+    // source S-8 entries read, holidays included; 27-09 follow-up (1)), or 15
+    // minutes at most. The rule still fires each cycle; only the send is
+    // withheld, so the first cycle after the open sends.
     const outcome = await runWithClosedMarketHold({
       pos,
       action: eval_.action,
       run: () => executeBrokerAction(db, s, pos, eval_),
-      isOpen: () => isSymbolOpenCached(db, pos.symbol).open === true,
+      isOpen: () => exitMarketHours(db, { symbol: pos.symbol, accountId: pos.account_id }).open === true,
     })
     if (outcome.heldClosedMarket) return
     // PR-J stamps, written FROM THE OUTCOME (checker M4). Stamping before the
@@ -6038,7 +6044,7 @@ async function runLoop(db) {
     if (getCtraderCreds(db).ready) {
       try {
         phase('momentum book')
-        const { runMomentumBook, atrOf, bookHoldLogLine } = await import('./services/momentum-book.js')
+        const { runMomentumBook, atrOf, bookHoldLogLine, bookSummaryLogLine } = await import('./services/momentum-book.js')
         const { scanRates } = await import('./services/risk.js')
         const { getRegimeBars } = await import('./services/fib-strategy.js')
         const { wsGetSpotOnce, wsReconcile } = await import('./lib/ctrader-ws.js')
@@ -6113,7 +6119,11 @@ async function runLoop(db) {
         // and then near-silent; a line that keeps reporting reclassifications
         // every pass means rows are re-entering the state faster than their
         // trades close, which is a different problem and worth seeing.
-        if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed${mb.reclassified ? `, ${mb.reclassified} exit_sent row(s) reclassified closed` : ''} on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
+        // Printed when the pass did something, or when the line changed —
+        // not on every idle cycle (27-09 follow-up (2): the #1158 log noise).
+        const summaryLine = bookSummaryLogLine(mb, lastBookSummaryLine)
+        if (summaryLine.line) log(summaryLine.line)
+        lastBookSummaryLine = summaryLine.last
         // Printed when an exit was held for a closed market this pass, or when
         // the entries-held reason changed — not every cycle of a weekend.
         const hold = bookHoldLogLine(mb, lastBookHeldReason)
@@ -6126,7 +6136,6 @@ async function runLoop(db) {
         await hbeat(db, 'momentum_book', false, err.message)
       }
     }
-    }) // end thenAlways: the pre-book region, then the book (once per cycle)
 
     // -----------------------------------------------------------------------
     // MOMENTUM PARTIAL-TP1 MANAGER (V3 T3, P0-2). Every cycle, AFTER the
@@ -6139,6 +6148,14 @@ async function runLoop(db) {
     // never arrives. Each account uses its own registered credentials.
     // Inert while no plan exists: no broker call, no credential read. Its own
     // try/catch, so a failure here is logged and beaten, never fatal.
+    //
+    // INSIDE the book closure (27-09 follow-up (3), 03-10-2026): it used to
+    // follow `}) // end thenAlways`, so a pre-book throw — rethrown by
+    // thenAlways once the book had run — jumped to the cycle catch and
+    // SKIPPED this pass: a plan's TP1 waited for the next clean cycle while
+    // the book's exits did not. It runs here, after the book, on every cycle
+    // the book runs, errored or not (pinned by
+    // momentum-book-out-of-scan.test.js).
     // -----------------------------------------------------------------------
     try {
       phase('momentum partials')
@@ -6153,6 +6170,12 @@ async function runLoop(db) {
       log(`momentum partial pass failed: ${err.message}`)
       await hbeat(db, 'momentum_partial', false, err.message)
     }
+    }, {
+      // 27-09 follow-up (4): when the pre-book region AND the book closure
+      // both threw, the book's error is named here instead of dropped; the
+      // pre-book error is still what the cycle catch receives.
+      onAfterError: (afterErr, preBookErr) => log(`momentum book closure failed after the pre-book error (${String(preBookErr?.message ?? preBookErr).slice(0, 120)}): ${String(afterErr?.message ?? afterErr).slice(0, 200)}`),
+    }) // end thenAlways: the pre-book region, then the book (once per cycle)
 
     // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)

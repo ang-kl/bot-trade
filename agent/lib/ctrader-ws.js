@@ -28,6 +28,12 @@ import WebSocket from 'ws'
 import { parseTimeframe, fetchPlan, aggregateBars } from './timeframes.js'
 import { emitBrokerRead } from './broker-read-observer.js'
 
+// The socket class wsRunInner opens (27-09 follow-up (6), 03-10-2026): a test
+// seam so the connect-timeout path can be driven with a socket that never
+// opens. Production never sets it; the readyState constants are `ws`'s own.
+let WebSocketImpl = WebSocket
+export function _setWebSocketForTests(impl) { WebSocketImpl = impl || WebSocket }
+
 // Payload-type constants live in their own module so ctrader-session.js can
 // share them without an import cycle. Re-exported here so existing importers
 // are unaffected.
@@ -190,7 +196,7 @@ function wsRunInner(host, steps, timeoutMs = 20_000, collectAll = false) {
     })
   }
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`wss://${host}:5036`)
+    const ws = new WebSocketImpl(`wss://${host}:5036`)
     let hb, timer, stepIdx = 0
     const seen = []
     const collected = []
@@ -198,7 +204,13 @@ function wsRunInner(host, steps, timeoutMs = 20_000, collectAll = false) {
     const cleanup = () => {
       clearTimeout(timer)
       clearInterval(hb)
-      if (ws.readyState === WebSocket.OPEN) ws.close()
+      // S-8 N-5 (27-09 follow-up (6), 03-10-2026): a socket still CONNECTING
+      // at the timeout was left to finish its handshake and sit open, with
+      // its listeners, until the broker or the process dropped it — every
+      // bounded caller (entry-hours.js, the K1 collector) leaked one per
+      // timed-out read. `ws` aborts a CONNECTING handshake on close(), the
+      // same call the stream path makes (wsStreamSpot below).
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
     }
 
     const onTimeout = () => {

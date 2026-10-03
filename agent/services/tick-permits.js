@@ -375,17 +375,6 @@ export async function computeTickGrants(db, { now = Date.now(), readiness = null
   return record
 }
 
-/**
- * When this keeper first saw `bootId` on `sideName`, on Node's clock; a boot
- * the store does not hold is recorded as seen now. A boot never seen before
- * (the first pass after this ships included) counts as a change: every tick
- * account on the side waits for one reconcile — the conservative reading. ONE clock on purpose
- * (review correction: the synthetic sidecar_restart row mixes the sidecar's
- * ts_ms with Node's, and is absent on a first-seen boot). The boot began
- * before Node first saw it, so a reconcile stamped after this moment read
- * the account's positions after the boot began. GW-1 (SEQUENCE PR-10) may
- * tighten T to the sidecar's own startedAtMs; this bound is the safe side.
- */
 /** When the account's last reconciled snapshot was REQUESTED (acct:<id>:last_reconcile_read_at, reconciler.js), in ms; NaN when never stamped. */
 export function reconcileReadAtMs(db, accountId) {
   let raw = null
@@ -393,6 +382,18 @@ export function reconcileReadAtMs(db, accountId) {
   return raw ? Date.parse(raw) : NaN
 }
 
+/**
+ * When this keeper first saw `bootId` on `sideName`, on Node's clock; a boot
+ * the store does not hold is recorded as seen now. A boot never seen before
+ * (the first pass after this ships included) counts as a change: every tick
+ * account on the side waits for one reconcile — the conservative reading.
+ * ONE clock on purpose (review correction: the synthetic sidecar_restart row
+ * mixes the sidecar's ts_ms with Node's, and is absent on a first-seen
+ * boot). The boot began before Node first saw it, so a reconcile stamped
+ * after this moment read the account's positions after the boot began. GW-1
+ * (SEQUENCE PR-10) may tighten T to the sidecar's own startedAtMs; this
+ * bound is the safe side.
+ */
 export function bootFirstSeen(db, sideName, bootId, now = Date.now()) {
   let m = {}
   try { m = JSON.parse(getState(db, TICK_BOOT_SEEN_KEY) || '{}') || {} } catch { m = {} }

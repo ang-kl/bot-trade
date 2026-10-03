@@ -492,19 +492,23 @@ export function beat(db, name, { ok = true, error = null, detail = null, now = n
       detailJson = s.length > 4000 ? JSON.stringify({ truncated: true, bytes: s.length }) : s
     } catch { detailJson = JSON.stringify({ unserialisable: true }) }
   }
+  // last_error_at (27-09 follow-up (7), 03-10-2026): the error keeps its own
+  // date, kept across later successes exactly as last_error is, so a
+  // resolved error on the panel is dated history, not an undated alarm.
   db.prepare(
     `INSERT INTO controller_heartbeats
-       (name, last_run_at, last_ok_at, last_error, consecutive_failures, runs, updated_at, last_detail_json)
-     VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+       (name, last_run_at, last_ok_at, last_error, last_error_at, consecutive_failures, runs, updated_at, last_detail_json)
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
      ON CONFLICT(name) DO UPDATE SET
        last_run_at = excluded.last_run_at,
        last_ok_at = CASE WHEN ? = 1 THEN excluded.last_run_at ELSE last_ok_at END,
        last_error = CASE WHEN ? = 1 THEN last_error ELSE excluded.last_error END,
+       last_error_at = CASE WHEN ? = 1 THEN last_error_at ELSE excluded.last_error_at END,
        consecutive_failures = CASE WHEN ? = 1 THEN 0 ELSE consecutive_failures + 1 END,
        runs = runs + 1,
        updated_at = excluded.updated_at,
        last_detail_json = excluded.last_detail_json`
-  ).run(name, ts, ok ? ts : null, errText, ok ? 0 : 1, ts, detailJson, okInt, okInt, okInt)
+  ).run(name, ts, ok ? ts : null, errText, ok ? null : ts, ok ? 0 : 1, ts, detailJson, okInt, okInt, okInt, okInt)
 }
 
 function parseDetail(row) {
@@ -711,6 +715,9 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
       last_run_at: row.last_run_at,
       last_ok_at: row.last_ok_at,
       last_error: row.last_error,
+      // When that error was recorded (27-09 follow-up (7)); null for a row
+      // written before the column existed, never a guess from last_run_at.
+      last_error_at: row.last_error_at ?? null,
       // IS THAT ERROR STILL TRUE? (owner, 04-08-2026, reading the panel:
       // "ATR baseline refresh {hasn't refresh since 9 AM yesterday}".)
       //

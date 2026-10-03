@@ -1920,8 +1920,12 @@ test('OWED EXIT, hours known OPEN: the close is sent', async () => {
   assert.equal(f.calls.close.length, 1)
 })
 
-test('wiring pin: the hours are asked BEFORE the owed close, and the default is the cached broker schedule', () => {
+test('wiring pin: the hours are asked BEFORE the owed close, and the default is the account calendar (exit-hours.js), deferring only on a deferring source', () => {
+  // 27-09 follow-up (1), 03-10-2026: the default reader is exitMarketHours
+  // (the account calendar S-8 entries read, holidays included), and the
+  // deferral is exitMayDefer — never a bare `source === 'broker'` test.
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   const src = strip(readFileSync(new URL('./momentum-book.js', import.meta.url), 'utf8'))
-  assert.match(src, /\(deps\.isSymbolOpen \?\? isSymbolOpenCached\)\(db, symbol, new Date\(now\)\)[\s\S]{0,600}?if \(hours\.open === false && hours\.source === 'broker'\) \{[\s\S]{0,900}?continue[\s\S]{0,700}?const volume = await bookCloseVolume/)
+  assert.match(src, /deps\.isSymbolOpen \? deps\.isSymbolOpen\(db, symbol, new Date\(now\)\) : exitMarketHours\(db, \{ symbol, accountId, now: new Date\(now\) \}\)[\s\S]{0,600}?if \(exitMayDefer\(hours\)\) \{[\s\S]{0,900}?continue[\s\S]{0,700}?const volume = await bookCloseVolume/)
+  assert.ok(!/isSymbolOpenCached/.test(src), 'the book no longer reads the name-keyed schedule directly')
 })

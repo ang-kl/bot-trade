@@ -159,6 +159,10 @@ const TABLES = `
     last_run_at          TEXT,
     last_ok_at           TEXT,
     last_error           TEXT,
+    -- When last_error was recorded (27-09 follow-up (7), 03-10-2026): the
+    -- error is kept across later successes as forensics, and without its own
+    -- stamp it read as undated ("disk I/O error" on main_loop, no date).
+    last_error_at        TEXT,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     runs                 INTEGER NOT NULL DEFAULT 0,
     stalled              INTEGER NOT NULL DEFAULT 0,
@@ -1525,6 +1529,10 @@ export function initDB(dbPath) {
   const hbColNames = new Set(db.prepare("PRAGMA table_info(controller_heartbeats)").all().map(c => c.name));
   if (!hbColNames.has('last_detail_json')) {
     db.exec('ALTER TABLE controller_heartbeats ADD COLUMN last_detail_json TEXT');
+  }
+  // 27-09 follow-up (7): the error's own date (see the CREATE above).
+  if (!hbColNames.has('last_error_at')) {
+    db.exec('ALTER TABLE controller_heartbeats ADD COLUMN last_error_at TEXT');
   }
 
   const equityHistoryCols = new Set(db.prepare('PRAGMA table_info(equity_snapshots)').all().map(c => c.name));

@@ -1,6 +1,48 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, wsGetSpotOnce, wsProbeSpot, PT } from './ctrader-ws.js'
+import { EventEmitter } from 'node:events'
+import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, wsGetSpotOnce, wsProbeSpot, PT, _internal, _setWebSocketForTests } from './ctrader-ws.js'
+
+// S-8 N-5 (27-09 follow-up (6), 03-10-2026): a socket still CONNECTING when
+// the request times out is closed, not left to finish its handshake and sit
+// open with its listeners. Driven with a socket that never opens.
+test('wsRun: a socket still CONNECTING at the timeout is closed (the handshake aborted), and the timeout is reported as before', async () => {
+  class NeverOpens extends EventEmitter {
+    constructor(url) { super(); this.url = url; this.readyState = 0 /* CONNECTING */; this.closeCalls = 0; NeverOpens.last = this }
+    close() { this.closeCalls++; this.readyState = 2 /* CLOSING */ }
+    send() { throw new Error('not open') }
+  }
+  _setWebSocketForTests(NeverOpens)
+  try {
+    await assert.rejects(
+      _internal.wsRun('demo.example.test', [{ send: { payloadType: PT.APP_AUTH_REQ, payload: {} }, expect: PT.APP_AUTH_RES }], 25),
+      /cTrader WS timeout after 25ms — expecting 2101 after sending 2100/,
+    )
+    assert.equal(NeverOpens.last.url, 'wss://demo.example.test:5036')
+    assert.equal(NeverOpens.last.closeCalls, 1, 'RED if the connecting socket is left open at the timeout')
+  } finally {
+    _setWebSocketForTests(null)
+  }
+})
+
+test('wsRun: an OPEN socket is still closed at the timeout, and a socket already CLOSED is not closed again', async () => {
+  class Scripted extends EventEmitter {
+    constructor() { super(); this.readyState = Scripted.state; this.closeCalls = 0; Scripted.last = this }
+    close() { this.closeCalls++; this.readyState = 3 }
+    send() { /* the reply never comes */ }
+  }
+  _setWebSocketForTests(Scripted)
+  try {
+    Scripted.state = 1 // OPEN from the start: 'open' is emitted by the real socket; here the step is never answered
+    await assert.rejects(_internal.wsRun('h', [{ send: { payloadType: PT.APP_AUTH_REQ, payload: {} }, expect: PT.APP_AUTH_RES }], 25), /timeout/)
+    assert.equal(Scripted.last.closeCalls, 1)
+    Scripted.state = 3 // CLOSED
+    await assert.rejects(_internal.wsRun('h', [{ send: { payloadType: PT.APP_AUTH_REQ, payload: {} }, expect: PT.APP_AUTH_RES }], 25), /timeout/)
+    assert.equal(Scripted.last.closeCalls, 0, 'a closed socket is not closed again')
+  } finally {
+    _setWebSocketForTests(null)
+  }
+})
 
 // These tests exercise the input-validation paths that run *before* any
 // WebSocket handshake — so we can assert them without mocking `ws`. The

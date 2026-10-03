@@ -21,7 +21,7 @@ import { readFileSync } from 'node:fs'
 import { parse } from 'acorn'
 import { initDB, getState, setState } from '../db.js'
 import { MOMENTUM_ACCOUNT_KEY, MOMENTUM_UNIVERSE_KEY, ACCOUNT_TERMINAL_TRADE_STATES, nextBrokerOpenMs } from './momentum-account.js'
-import { runMomentumBook, bookHoldLogLine, MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_PASS_KEY, TSMOM_STRATEGY, BOOK_TERMINAL_TRADE_STATES } from './momentum-book.js'
+import { runMomentumBook, bookHoldLogLine, bookSummaryLogLine, MOMENTUM_BOOK_CONFIG_KEY, MOMENTUM_BOOK_PASS_KEY, TSMOM_STRATEGY, BOOK_TERMINAL_TRADE_STATES } from './momentum-book.js'
 import { thenAlways } from '../lib/then-always.js'
 import { MOMENTUM_SHADOW_STATE_KEY } from './momentum-shadow.js'
 import { setStage } from './stage-matrix.js'
@@ -730,9 +730,21 @@ test('item 1 wiring: loop.js runs the pre-book region and the book through ONE a
   assert.ok(guard >= 0, 'if (<the error>) bookEntriesHeld = …')
   assert.ok(guard < stmts.findIndex(st => books[0].parents.includes(st)), 'set before the book runs')
   // The partial-TP1 pass follows the book, outside thenAlways.
+  // The partial-TP1 pass runs INSIDE the book closure, after the book, on
+  // every cycle the book runs (27-09 follow-up (3), 03-10-2026): outside
+  // thenAlways it was skipped by the rethrow on every cycle whose pre-book
+  // region threw. It is not under the credentials gate the book sits under.
   const partial = findAll(ast, namedCall('runMomentumPartialPass'))
   assert.equal(partial.length, 1)
-  assert.ok(!partial[0].parents.includes(call) && partial[0].node.start > call.end, 'after thenAlways, not inside it')
+  assert.ok(partial[0].parents.includes(after), 'RED if the partial-TP1 pass is outside the book closure (skipped on a pre-book throw)')
+  assert.ok(partial[0].node.start > books[0].node.end, 'after the book (its rank exit reserves a plan first)')
+  const credsGate = partial[0].parents.filter(p => p.type === 'IfStatement').map(p => src.slice(p.test.start, p.test.end))
+  assert.ok(!credsGate.includes('getCtraderCreds(db).ready'), `not under the book's credentials gate: ${JSON.stringify(credsGate)}`)
+  // Its own try/catch, inside the closure: a partial failure never reaches
+  // the cycle catch or masks the pre-book error.
+  const ownTry = partial[0].parents.filter(p => p.type === 'TryStatement').at(-1)
+  assert.ok(ownTry && after.body.body.includes(ownTry), 'the pass has its own try statement directly in the closure body')
+  assert.match(src.slice(ownTry.handler.start, ownTry.handler.end), /momentum partial pass failed/)
 })
 
 // ---------------------------------------------------------------------------
@@ -759,4 +771,50 @@ test('item 3 wiring: the loop prints only what bookHoldLogLine returns and keeps
   assert.match(code, /const hold = bookHoldLogLine\(mb, lastBookHeldReason\)\s+if \(hold\.line\) log\(hold\.line\)\s+lastBookHeldReason = hold\.reason/)
   assert.match(code, /^let lastBookHeldReason = null$/m, 'module state: it outlives the cycle')
   assert.doesNotMatch(code, /exit\(s\) held for a closed market/, 'no second, unconditional copy of the line')
+})
+
+// ---------------------------------------------------------------------------
+// 27-09 follow-up (2), 03-10-2026 — the #1158 log noise: the per-pass summary
+// line printed on every cycle once the book left the scan branch. It prints
+// when the pass did something or when the line changed; an identical idle
+// pass is silent.
+// ---------------------------------------------------------------------------
+test('follow-up (2): bookSummaryLogLine — an idle pass prints once, then only when something happens or the line changes', () => {
+  let last = null
+  const step = (summary) => { const r = bookSummaryLogLine(summary, last); last = r.last; return r.line }
+  const idle = { ran: true, entries: 0, exits: 0, trailed: 0, reclassified: 0, accounts: 7, skipped: ['considered 7 account(s), ran on 7', 'KO.US: rank exit held — held 3h < bookMinHoldHours 24'] }
+  assert.equal(step(idle), 'momentum book: 0 entered, 0 exited, 0 trailed on 7 account(s) — considered 7 account(s), ran on 7; KO.US: rank exit held — held 3h < bookMinHoldHours 24', 'the first idle pass: printed')
+  for (let i = 0; i < 5; i++) assert.equal(step(idle), null, `cycle ${i + 2}, the same idle pass: silent (RED if it prints every cycle)`)
+  assert.match(step({ ...idle, exits: 1 }), /^momentum book: 0 entered, 1 exited, 0 trailed on 7 account\(s\)/, 'an exit: printed')
+  assert.match(step({ ...idle, exits: 1 }), /1 exited/, 'a pass that DID something prints even when the line repeats')
+  assert.match(step({ ...idle, trailed: 2 }), /2 trailed/, 'a trail: printed')
+  assert.match(step({ ...idle, reclassified: 1 }), /1 exit_sent row\(s\) reclassified closed/, 'a reclassification: printed')
+  assert.match(step(idle), /^momentum book: 0 entered, 0 exited, 0 trailed/, 'back to idle: the line differs from the last printed, so it prints once')
+  assert.equal(step(idle), null, 'and then it is silent again')
+})
+
+test('follow-up (2): bookSummaryLogLine — a changed skip reason prints, a pass that did not run prints nothing and keeps the last line', () => {
+  let last = null
+  const step = (summary) => { const r = bookSummaryLogLine(summary, last); last = r.last; return r.line }
+  const idle = { ran: true, entries: 0, exits: 0, trailed: 0, accounts: 1, skipped: ['a'] }
+  assert.ok(step(idle))
+  assert.equal(step(idle), null)
+  assert.match(step({ ...idle, skipped: ['b'] }), / — b$/, 'the skip reason changed: printed')
+  assert.equal(step({ ran: false, why: 'disabled' }), null, 'a book that did not run prints nothing')
+  assert.equal(step({ ...idle, skipped: ['b'] }), null, 'and the last line survived the off pass')
+  assert.match(step({ ...idle, skipped: [] }), /on 1 account\(s\)$/, 'the reasons cleared: printed once, no tail')
+  assert.equal(step({ ...idle, skipped: [] }), null)
+})
+
+test('follow-up (2) wiring: the loop prints only what bookSummaryLogLine returns and keeps the last line across cycles', () => {
+  const code = readFileSync(new URL('../loop.js', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(code, /const summaryLine = bookSummaryLogLine\(mb, lastBookSummaryLine\)\s+if \(summaryLine\.line\) log\(summaryLine\.line\)\s+lastBookSummaryLine = summaryLine\.last/)
+  assert.match(code, /^let lastBookSummaryLine = null$/m, 'module state: it outlives the cycle')
+  assert.doesNotMatch(code, /if \(mb\.ran\) log\(`momentum book: \$\{mb\.entries\} entered/, 'RED if the unconditional per-cycle line is back')
+})
+
+test('follow-up (2): the idle line is the old line verbatim — only its repetition is dropped', () => {
+  const idle = { ran: true, entries: 0, exits: 0, trailed: 0, accounts: 2, skipped: ['x', 'y', 'z', 'w', 'v'] }
+  const { line } = bookSummaryLogLine(idle, null)
+  assert.equal(line, 'momentum book: 0 entered, 0 exited, 0 trailed on 2 account(s) — x; y; z; w', 'first four reasons, as before')
 })

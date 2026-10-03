@@ -44,6 +44,35 @@ const deps = (afterAuth) => ({
   isHistorical: () => false,
 })
 
+// S-8 N-5 (27-09 follow-up (6), 03-10-2026): destroy() — the auth timeout's
+// `fail` path — closes a socket that is still CONNECTING, so a session whose
+// handshake outlives its auth budget does not leave the socket to finish and
+// sit open with no owner.
+test('destroy while the socket is still CONNECTING closes it (the auth-timeout path); an already-closed socket is left alone', async () => {
+  class Connecting extends EventEmitter {
+    constructor() { super(); this.readyState = 0 /* CONNECTING: never emits open */; this.closeCalls = 0 }
+    send() { throw new Error('not open') }
+    close() { this.closeCalls++; this.readyState = 3 }
+  }
+  const ws = new Connecting()
+  const s = new _SessionForTests('k-connecting', { host: 'h', appAuth: APP, accountAuth: ACC, connect: () => ws, log: () => {} })
+  const opened = s.open()
+  // The auth timer and a pre-auth socket error share one `fail` closure
+  // (open(): destroy, then reject). The timer is 20 s and not injectable, so
+  // the same path is entered through the error event while still CONNECTING.
+  ws.emit('error', new Error('ECONNRESET during handshake'))
+  await assert.rejects(opened, /cTrader WS error: ECONNRESET during handshake/)
+  assert.equal(ws.closeCalls, 1, 'RED if a connecting socket is left open on destroy')
+  assert.equal(s.dead, true)
+  // A socket already closed by the peer: no second close().
+  const ws2 = new Connecting(); ws2.readyState = 3
+  const s2 = new _SessionForTests('k-closed', { host: 'h', appAuth: APP, accountAuth: ACC, connect: () => ws2, log: () => {} })
+  const opened2 = s2.open()
+  ws2.emit('close')
+  await assert.rejects(opened2, /cTrader WS closed/)
+  assert.equal(ws2.closeCalls, 0)
+})
+
 const APP = { clientId: 'cid', clientSecret: 'sec' }
 const ACC = { ctidTraderAccountId: 111, accessToken: 'tok' }
 const run = (steps, d, timeout = 1000, collectAll = false) =>

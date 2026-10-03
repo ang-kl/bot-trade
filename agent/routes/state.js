@@ -6,6 +6,7 @@ import { Router } from 'express'
 import { scannerMirrorStatus } from '../services/scanner-candidates.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { createHash } from 'node:crypto'
+import { statSync } from 'node:fs'
 import { getState } from '../db.js'
 import { llmDisabled as llmDisabledFlag, llmDisabledReason as llmDisabledWhy } from '../lib/llm-switch.js'
 import { loadRiskConfig, accountRiskOverlay, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverageEvidence } from '../services/risk.js'
@@ -438,7 +439,11 @@ export default function stateRouter(db) {
       recentErrors: readRecentErrors(db),
       circuitBreaker: circuitBreaker || null,
       memoryMB: Math.round(memUsage.rss / 1048576),
-      dbSizeMB: (() => { try { const { size } = require('fs').statSync(db.name); return Math.round(size / 1048576 * 10) / 10 } catch { return null } })(),
+      // 27-09 follow-up (8), 03-10-2026: this read `require('fs')` from an ES
+      // module — a ReferenceError on every call, swallowed by the catch — so
+      // dbSizeMB was null since the route was written. null now means only
+      // "the file could not be stat'ed" (an in-memory db, a missing file).
+      dbSizeMB: (() => { try { const { size } = statSync(db.name); return Math.round(size / 1048576 * 10) / 10 } catch { return null } })(),
       openTrades: (() => { try { return db.prepare("SELECT COUNT(*) as c FROM monitored_positions WHERE status = 'active'").get()?.c || 0 } catch { return 0 } })(),
       symbols: {
         total: symbols.length,
