@@ -6,7 +6,8 @@ import express from 'express';
 import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
 import { loadStopPolicy, loadTrailingRegistry } from './lib/stop-policy.js';
-import { touchSession } from './services/browser-sessions.js';
+import { touchSession, publicSessionId, revokeSession } from './services/browser-sessions.js';
+import { siteGateMiddleware, sessionFromRequest, sessionCookieHeader, clearSessionCookieHeader } from './lib/site-gate.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
 import * as clientPresence from './services/client-presence.js';
 import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
@@ -776,6 +777,13 @@ app.use('/api/ctrader', ctraderOauthRouter());
 // job is trading, and it must boot without a frontend.
 const DIST_DIR = resolve(dirname(new URL(import.meta.url).pathname), '../dist');
 const HAS_DIST = (() => { try { return fs.existsSync(resolve(DIST_DIR, 'index.html')); } catch { return false; } })();
+// THE LOGIN GATE (owner, 03-10-2026): the page and its assets are served only
+// to a browser carrying a live device-session cookie; anyone else gets the
+// sign-in page (lib/site-gate.js). Mounted BEFORE express.static and the SPA
+// fallback so no shell, chunk, font or icon leaks past it. API paths are not
+// its business — authMiddleware below keeps the bearer model for those.
+app.use(siteGateMiddleware({ isValidSession }));
+
 if (HAS_DIST) {
   // Cache split, and the split is the point (2026-08-24, owner: "i still
   // cannot load connect page" — three times, across two deploys):
@@ -830,19 +838,24 @@ let lastCodeRequestAt = 0
 let verifyFailures = 0
 
 app.post('/auth/telegram/request', async (_req, res) => {
+  const r = await issueLoginCode()
+  if (!r.ok) return res.status(r.status).json({ error: r.error })
+  res.json({ ok: true, sentVia: 'telegram' })
+})
+
+// Mint and send a login code. Shared by the in-app Telegram login above and
+// the site gate's POST /auth/login below, so the two cannot drift.
+async function issueLoginCode() {
+  if (Date.now() - lastCodeRequestAt < 30_000) {
+    return { ok: false, status: 429, error: 'A code was just sent — check Telegram (new code possible in 30s)' }
+  }
   try {
-    if (Date.now() - lastCodeRequestAt < 30_000) {
-      return res.status(429).json({ error: 'A code was just sent — check Telegram (new code possible in 30s)' })
-    }
     // NOT Math.random(). It is not a CSPRNG — V8 seeds it from a source an
     // attacker can influence and its output is predictable from observed values,
     // so a login code built from it is guessable in a way a 6-digit space
     // already makes tight. Finding P1-5, validated 2026-07-30. randomInt is
     // rejection-sampled over the crypto pool, so the distribution stays uniform
     // across the full 100000-999999 range (a plain `% 900000` would not).
-    //
-    // The session token minted on success already used getRandomValues; this was
-    // the one weak link, and it was the link an attacker would actually attack.
     const code = String(randomInt(100000, 1000000))
     setState(db, 'login_code', code)
     setState(db, 'login_code_expires', String(Date.now() + 5 * 60_000))
@@ -850,45 +863,103 @@ app.post('/auth/telegram/request', async (_req, res) => {
     verifyFailures = 0
     // sendMessageRaw, NOT sendMessage. THIS IS THE WHOLE FIX (2026-08-22,
     // owner: "i ask for Telegram code but is suppress by the notification
-    // off" / "it use to work until we have /status /notify /digest").
-    //
-    // sendMessage routes through the notify gate, which queues into the hourly
-    // digest under master-mute or quiet hours. A login code queued for up to an
-    // hour is a login code that has expired — this one dies in five minutes —
-    // and the route still answered `{ ok: true, sentVia: 'telegram' }` with a
-    // 200, so the button reported success while nothing was sent. The digest
-    // was built for the 03:00 buzz; a code the owner is standing there waiting
-    // for is not a notification, it is the reply to a button press.
+    // off"). sendMessage routes through the notify gate, which queues into the
+    // hourly digest under master-mute or quiet hours; a login code queued for
+    // up to an hour is a login code that has expired — this one dies in five
+    // minutes. A code the owner is standing there waiting for is not a
+    // notification, it is the reply to a button press.
     const { sendMessageRaw } = await import('./services/telegram.js')
     await sendMessageRaw(`🔑 bot-trade login code: *${code}*\n\nValid 5 minutes. If you didn't request this, ignore it.`)
-    res.json({ ok: true, sentVia: 'telegram' })
+    return { ok: true }
   } catch (err) {
-    res.status(502).json({ error: `Could not send Telegram code: ${err.message}` })
+    return { ok: false, status: 502, error: `Could not send Telegram code: ${err.message}` }
   }
-})
+}
 
-app.post('/auth/telegram/verify', (req, res) => {
-  if (verifyFailures >= 5) return res.status(429).json({ error: 'Too many wrong codes — request a new one' })
-  const code = String(req.body?.code || '').trim()
+// Check a code against the one issued; single use; five wrong codes lock
+// until a new code is requested.
+function verifyLoginCode(code) {
+  if (verifyFailures >= 5) return { ok: false, status: 429, error: 'Too many wrong codes — request a new one' }
   const stored = getState(db, 'login_code')
   const expires = Number(getState(db, 'login_code_expires') || 0)
   if (!stored || !code || code !== stored || Date.now() > expires) {
     verifyFailures++
-    return res.status(401).json({ error: 'Wrong or expired code' })
+    return { ok: false, status: 401, error: 'Wrong or expired code' }
   }
   setState(db, 'login_code', '')   // single use
-  const token = addSession()
+  return { ok: true }
+}
+
+function announceNewDevice() {
   // Confirm on Telegram (fire-and-forget) — an unexpected one of these
   // means someone else has your code: rotate AGENT_SECRET, which (since the
   // 24-08 secret-rotation sweep) clears every device session at next boot.
-  // Raw for the same reason as the code above: the gate queues even `urgent`
-  // when notify is off (telegram-digest.js:139), so a break-in alert saying
-  // "act now" would surface in a digest up to an hour later, or not at all.
-  // Authentication messages do not go through the notification gate.
+  // Raw for the same reason as the code: the gate queues even `urgent`
+  // when notify is off (telegram-digest.js:139). Authentication messages do
+  // not go through the notification gate.
   import('./services/telegram.js')
     .then(({ sendMessageRaw }) => sendMessageRaw('✅ bot-trade: a new device just logged in with your code (valid 90 days). If this was not you, act now.'))
     .catch(() => { /* alert is best-effort */ })
+}
+
+// Railway terminates TLS in front of the service, so the request itself is
+// plain HTTP; the forwarded protocol says whether the browser spoke HTTPS.
+function isSecureRequest(req) {
+  return !!(req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https')
+}
+
+app.post('/auth/telegram/verify', (req, res) => {
+  const code = String(req.body?.code || '').trim()
+  const v = verifyLoginCode(code)
+  if (!v.ok) return res.status(v.status).json({ error: v.error })
+  const token = addSession()
+  announceNewDevice()
+  // The in-app login also opens the site gate for this browser.
+  res.setHeader('Set-Cookie', sessionCookieHeader(token, { secure: isSecureRequest(req) }))
   res.json({ ok: true, token })
+})
+
+// THE SITE GATE'S LOGIN (owner, 03-10-2026): the secret AND the Telegram
+// code. Step 1 — a body with the secret alone: the secret must be one of the
+// two env secrets (a device session is not a secret), then a code is sent.
+// Step 2 — secret and code: the code is checked, a device session is minted,
+// the HttpOnly cookie that opens the page is set, and the token is returned
+// so the page can hand it to the app. Wrong secrets are counted and locked
+// out after ten until a code is issued, the same shape as the code lockout.
+let loginSecretFailures = 0
+app.post('/auth/login', async (req, res) => {
+  const secret = String(req.body?.secret || '')
+  const code = String(req.body?.code || '').trim()
+  if (loginSecretFailures >= 10) return res.status(429).json({ error: 'Too many wrong secrets — try again later' })
+  const tier = classifyToken(secret, { agentSecret: AGENT_SECRET, agentSecretRead: AGENT_SECRET_READ })
+  if (!tier) {
+    loginSecretFailures++
+    console.warn('[auth] /auth/login wrong secret')
+    return res.status(401).json({ error: 'Wrong secret' })
+  }
+  if (!code) {
+    const r = await issueLoginCode()
+    if (!r.ok) return res.status(r.status).json({ error: r.error })
+    loginSecretFailures = 0
+    return res.json({ ok: true, sentVia: 'telegram' })
+  }
+  const v = verifyLoginCode(code)
+  if (!v.ok) return res.status(v.status).json({ error: v.error })
+  const token = addSession()
+  announceNewDevice()
+  res.setHeader('Set-Cookie', sessionCookieHeader(token, { secure: isSecureRequest(req) }))
+  res.json({ ok: true, token })
+})
+
+// Sign out this browser: the cookie is cleared and the session it named is
+// revoked, so the token the page stored stops working too.
+app.post('/auth/logout', (req, res) => {
+  const token = sessionFromRequest(req)
+  if (token) {
+    try { revokeSession(db, { sessionId: publicSessionId(token), reason: 'logout' }) } catch { /* already gone */ }
+  }
+  res.setHeader('Set-Cookie', clearSessionCookieHeader())
+  res.json({ ok: true })
 })
 
 // Bot icon (public) — same artwork as the site favicon and the Telegram bot.
