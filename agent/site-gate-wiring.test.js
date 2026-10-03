@@ -47,13 +47,35 @@ test('POST /auth/login checks the secret against the env secrets only, then the 
   assert.match(route, /issueLoginCode\(\)/)
 })
 
-test('logout clears the cookie and revokes the session it named', () => {
+test('logout deletes the raw token itself, then clears the cookie (a session with no metadata row is still revoked)', () => {
   const src = source()
   const start = src.indexOf("app.post('/auth/logout'")
   assert.ok(start > 0)
-  const route = src.slice(start, start + 800)
+  const route = src.slice(start, start + 900)
+  assert.match(route, /removeSession\(token\)/, 'the raw token must be deleted from device_sessions directly')
   assert.match(route, /revokeSession\(db, \{ sessionId: publicSessionId\(token\)/)
   assert.match(route, /clearSessionCookieHeader\(\)/)
+})
+
+test('the code-only verify route never sets the gate cookie (Codex P1 on #1215)', () => {
+  const src = source()
+  const start = src.indexOf("app.post('/auth/telegram/verify'")
+  const end = src.indexOf("app.post('/auth/login'")
+  assert.ok(start > 0 && end > start)
+  const route = src.slice(start, end)
+  assert.ok(!/sessionCookieHeader/.test(route), 'a code alone must not open the page')
+  assert.match(route, /addSession\(\)/)
+})
+
+test('the secret lockout is time-windowed, not a counter only a success can reset', () => {
+  const src = source()
+  const start = src.indexOf("app.post('/auth/login'")
+  const end = src.indexOf("app.post('/auth/logout'")
+  const route = src.slice(start, end)
+  assert.match(src, /createLockout\(\{ max: 10, windowMs: 15 \* 60_000 \}\)/)
+  assert.match(route, /secretLockout\.locked\(\)/)
+  assert.match(route, /secretLockout\.fail\(\)/)
+  assert.ok(!/loginSecretFailures/.test(route), 'the bare counter is gone')
 })
 
 test('the mutation this file guards is reachable', () => {

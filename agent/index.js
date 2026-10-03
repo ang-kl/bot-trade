@@ -7,7 +7,7 @@ import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
 import { loadStopPolicy, loadTrailingRegistry } from './lib/stop-policy.js';
 import { touchSession, publicSessionId, revokeSession } from './services/browser-sessions.js';
-import { siteGateMiddleware, sessionFromRequest, sessionCookieHeader, clearSessionCookieHeader } from './lib/site-gate.js';
+import { siteGateMiddleware, sessionFromRequest, sessionCookieHeader, clearSessionCookieHeader, createLockout } from './lib/site-gate.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
 import * as clientPresence from './services/client-presence.js';
 import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
@@ -687,6 +687,13 @@ function isValidSession(token) {
   const s = getSessions()
   return !!token && !!s[token] && s[token] > Date.now()
 }
+function removeSession(token) {
+  const s = getSessions()
+  if (!token || !(token in s)) return false
+  delete s[token]
+  setState(db, 'device_sessions', JSON.stringify(s))
+  return true
+}
 function addSession() {
   const token = 'sess_' + [...crypto.getRandomValues(new Uint8Array(24))].map(b => b.toString(16).padStart(2, '0')).join('')
   const s = getSessions()
@@ -914,8 +921,9 @@ app.post('/auth/telegram/verify', (req, res) => {
   if (!v.ok) return res.status(v.status).json({ error: v.error })
   const token = addSession()
   announceNewDevice()
-  // The in-app login also opens the site gate for this browser.
-  res.setHeader('Set-Cookie', sessionCookieHeader(token, { secure: isSecureRequest(req) }))
+  // No gate cookie here (Codex P1 on #1215): this route proves the code
+  // alone. The site gate needs the secret AND the code, which is
+  // /auth/login's job; a code-only login must not open the page.
   res.json({ ok: true, token })
 })
 
@@ -924,23 +932,25 @@ app.post('/auth/telegram/verify', (req, res) => {
 // two env secrets (a device session is not a secret), then a code is sent.
 // Step 2 — secret and code: the code is checked, a device session is minted,
 // the HttpOnly cookie that opens the page is set, and the token is returned
-// so the page can hand it to the app. Wrong secrets are counted and locked
-// out after ten until a code is issued, the same shape as the code lockout.
-let loginSecretFailures = 0
+// so the page can hand it to the app. Ten wrong secrets inside fifteen
+// minutes lock the route for the rest of that window; the lockout expires
+// on its own (Codex P1 on #1215: a counter that only a correct secret could
+// reset was a lockout nothing could clear short of a restart).
+const secretLockout = createLockout({ max: 10, windowMs: 15 * 60_000 })
 app.post('/auth/login', async (req, res) => {
   const secret = String(req.body?.secret || '')
   const code = String(req.body?.code || '').trim()
-  if (loginSecretFailures >= 10) return res.status(429).json({ error: 'Too many wrong secrets — try again later' })
+  if (secretLockout.locked()) return res.status(429).json({ error: 'Too many wrong secrets — try again in a few minutes' })
   const tier = classifyToken(secret, { agentSecret: AGENT_SECRET, agentSecretRead: AGENT_SECRET_READ })
   if (!tier) {
-    loginSecretFailures++
+    secretLockout.fail()
     console.warn('[auth] /auth/login wrong secret')
     return res.status(401).json({ error: 'Wrong secret' })
   }
+  secretLockout.reset()
   if (!code) {
     const r = await issueLoginCode()
     if (!r.ok) return res.status(r.status).json({ error: r.error })
-    loginSecretFailures = 0
     return res.json({ ok: true, sentVia: 'telegram' })
   }
   const v = verifyLoginCode(code)
@@ -956,7 +966,13 @@ app.post('/auth/login', async (req, res) => {
 app.post('/auth/logout', (req, res) => {
   const token = sessionFromRequest(req)
   if (token) {
-    try { revokeSession(db, { sessionId: publicSessionId(token), reason: 'logout' }) } catch { /* already gone */ }
+    // The raw token is deleted here, directly (Codex P2 on #1215): a session
+    // that never made an authenticated API call has no browser_sessions row
+    // yet, and revokeSession answers not_found without touching
+    // device_sessions — the token would have stayed valid for 90 days behind
+    // a cleared cookie. revokeSession then records the audit when it can.
+    removeSession(token)
+    try { revokeSession(db, { sessionId: publicSessionId(token), reason: 'logout' }) } catch { /* audit is best-effort */ }
   }
   res.setHeader('Set-Cookie', clearSessionCookieHeader())
   res.json({ ok: true })
