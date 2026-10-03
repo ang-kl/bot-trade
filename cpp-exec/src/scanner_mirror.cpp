@@ -118,6 +118,10 @@ std::string ScannerMirror::refusalCause(std::string_view body) {
   if(end==start||end-start>40||end>=body.size()||body[end]!='"')return {};
   return std::string(body.substr(start,end-start));
 }
+std::string ScannerMirror::phaseSummary(long long lookupUs,long long connectUs,long long firstByteUs,long long totalUs) {
+  const auto ms=[](long long us){return std::to_string(us<0?0:us/1000);};
+  return "; phases lookup "+ms(lookupUs)+" ms, connect "+ms(connectUs)+" ms, first byte "+ms(firstByteUs)+" ms, total "+ms(totalUs)+" ms";
+}
 ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::string& secret,Report report) {
   if((!url.starts_with("http://")&&!url.starts_with("https://")) || secret.empty()
       || secret.find_first_of("\r\n")!=std::string::npos)throw std::invalid_argument("mirror_endpoint_or_secret_invalid");
@@ -129,8 +133,19 @@ ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::
     if(recovery)sidecar_log::logInfo("[tick-scanner-mirror]",message);
     else sidecar_log::logError("[tick-scanner-mirror]",message);
   };
-  return [url,secret,report,diagnostics](const std::string& body) {
-    CURL* c=curl_easy_init();if(!c)return Delivery::Retryable;
+  // 03-10-2026 (§10,725·C·2): one handle per sender, reused. A fresh handle
+  // per delivery resolved the scanner's name twice on EVERY request (about
+  // 40 lookups a second per gateway in the US session, measured in the DNS
+  // flow logs); a kept handle caches the answer. curl_easy_reset clears the
+  // options, never the DNS cache. The sender serialises on the handle: each
+  // mirror worker owns one sender, and a shared one would not corrupt it.
+  struct Handle { std::mutex mutex; CURL* curl=nullptr; ~Handle(){ if(curl)curl_easy_cleanup(curl); } };
+  auto handle=std::make_shared<Handle>();
+  return [url,secret,report,diagnostics,handle](const std::string& body) {
+    std::lock_guard keep(handle->mutex);
+    if(!handle->curl)handle->curl=curl_easy_init();
+    CURL* c=handle->curl;if(!c)return Delivery::Retryable;
+    curl_easy_reset(c);
     curl_slist* headers=nullptr;headers=curl_slist_append(headers,("Authorization: Bearer "+secret).c_str());headers=curl_slist_append(headers,"Content-Type: application/json");
     ReplyHead received;
     curl_easy_setopt(c,CURLOPT_URL,url.c_str());curl_easy_setopt(c,CURLOPT_HTTPHEADER,headers);
@@ -139,7 +154,10 @@ ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::
     curl_easy_setopt(c,CURLOPT_FOLLOWLOCATION,0L);curl_easy_setopt(c,CURLOPT_PROTOCOLS_STR,"http,https");
     curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,boundedBody);curl_easy_setopt(c,CURLOPT_WRITEDATA,&received);
     const auto rc=curl_easy_perform(c);long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);
-    curl_slist_free_all(headers);curl_easy_cleanup(c);
+    curl_off_t lookupUs=0,connectUs=0,firstByteUs=0,totalUs=0;
+    curl_easy_getinfo(c,CURLINFO_NAMELOOKUP_TIME_T,&lookupUs);curl_easy_getinfo(c,CURLINFO_CONNECT_TIME_T,&connectUs);
+    curl_easy_getinfo(c,CURLINFO_STARTTRANSFER_TIME_T,&firstByteUs);curl_easy_getinfo(c,CURLINFO_TOTAL_TIME_T,&totalUs);
+    curl_slist_free_all(headers);
     // Never log the URL, headers, credentials or quote payload. Repeated
     // rejection used to be silent; at half-second ingress it must also not
     // flood the logs. Diagnostics cannot alter delivery or retry semantics.
@@ -154,6 +172,7 @@ ScannerMirror::Send ScannerMirror::httpSender(const std::string& url,const std::
         message="delivery failed: HTTP "+std::to_string(status)+", transport code "+std::to_string(static_cast<int>(rc));
         if(const auto cause=refusalCause(received.head);!cause.empty())message+="; cause "+cause;
         if(status==404)message+="; verify TICK_SCANNER_MIRROR_URL targets /feed";
+        message+=phaseSummary(lookupUs,connectUs,firstByteUs,totalUs);
       }
     }
     if(!message.empty()){try{report(message,accepted);}catch(...){/* diagnostics never change delivery */}}

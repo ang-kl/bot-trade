@@ -5,6 +5,7 @@
 // traffic is a handful of keeper calls per minute, not a web workload.
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <map>
 #include <string>
@@ -45,10 +46,32 @@ public:
   // Blocking accept loop. Returns false only if bind/listen failed.
   bool run();
 
+  // 03-10-2026 (§10,725·C): the port the listener bound, 0 until it has.
+  // A test passes port 0 and reads the kernel's choice here.
+  int boundPort() const { return boundPort_.load(); }
+  // True once a dual-stack (AF_INET6, V6ONLY off) listener is bound; false
+  // on a host without IPv6, where the listener is the AF_INET fallback.
+  bool dualStack() const { return dualStack_.load(); }
+
+  // A request slower than this end to end (read, handler, write) is reported
+  // with its phases: the gateways' scanner transport timeouts were requests
+  // the scanner held for 1.5 s with nothing inside it saying where.
+  static constexpr long long kSlowRequestMs = 250;
+  using SlowRequestReporter = std::function<void(const std::string&)>;
+  // Default: the shared stream header (stderr). Tests capture the line.
+  void setSlowRequestReporter(SlowRequestReporter reporter) { slowReporter_ = std::move(reporter); }
+  // The line for a slow request, or "" for one inside the bound. Method and
+  // path only: never the query, headers or body.
+  static std::string slowRequestLine(const std::string& method, const std::string& path, int status,
+                                     long long readUs, long long handleUs, long long writeUs);
+
 private:
   void handleClient(int fd);
 
   int port_;
   std::string secret_;
   std::map<std::string, HttpHandler> routes_; // key: "METHOD path"
+  std::atomic<int> boundPort_{0};
+  std::atomic<bool> dualStack_{false};
+  SlowRequestReporter slowReporter_;
 };

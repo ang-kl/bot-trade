@@ -9,8 +9,10 @@
 #include <unistd.h>
 
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 static void logInfo(const std::string& msg) { sidecar_log::logInfo("[cpp-exec]", msg); }
@@ -25,21 +27,51 @@ void HttpServer::route(const std::string& method, const std::string& path,
 }
 
 bool HttpServer::run() {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  // 03-10-2026 (§10,725·C·3, measured in Railway's flow logs): the private
+  // network is IPv6 natively and a service name resolves to BOTH families,
+  // so a gateway's curl tried IPv6 first on every delivery and this listener,
+  // AF_INET only, refused it (NO_SOCKET at the scanner, 251 refused attempts
+  // beside 249 answered IPv4 requests in 13 s). The listener is dual-stack
+  // now: an AF_INET6 socket with V6ONLY off serves both families on the
+  // INADDR_ANY equivalent, and a host without IPv6 falls back to AF_INET.
+  int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
+  const bool dual = fd >= 0;
+  if (!dual) fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) { logError("http: socket failed"); return false; }
   int one = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = INADDR_ANY;
-  addr.sin_port = htons(static_cast<uint16_t>(port_));
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) < 0 ||
-      ::listen(fd, 16) < 0) {
+  int bound = -1;
+  if (dual) {
+    int off = 0;
+    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof off);
+    sockaddr_in6 addr{};
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_any;
+    addr.sin6_port = htons(static_cast<uint16_t>(port_));
+    bound = ::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr);
+  } else {
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(static_cast<uint16_t>(port_));
+    bound = ::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr);
+  }
+  if (bound < 0 || ::listen(fd, 16) < 0) {
     logError("http: bind/listen failed on port " + std::to_string(port_));
     ::close(fd);
     return false;
   }
-  logInfo("http: listening on :" + std::to_string(port_));
+  {
+    // The kernel's choice when port_ is 0 (tests); the configured port otherwise.
+    sockaddr_storage name{};
+    socklen_t len = sizeof name;
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&name), &len) == 0)
+      boundPort_.store(ntohs(name.ss_family == AF_INET6 ? reinterpret_cast<sockaddr_in6*>(&name)->sin6_port
+                                                         : reinterpret_cast<sockaddr_in*>(&name)->sin_port));
+    else boundPort_.store(port_);
+    dualStack_.store(dual);
+  }
+  logInfo("http: listening on :" + std::to_string(boundPort_.load()) + (dual ? " (dual-stack)" : " (ipv4 only)"));
   for (;;) {
     int cfd = ::accept(fd, nullptr, nullptr);
     if (cfd < 0) continue;
@@ -174,7 +206,40 @@ static void writeResponse(int fd, int status, const std::string& body) {
   }
 }
 
+std::string HttpServer::slowRequestLine(const std::string& method, const std::string& path, int status,
+                                        long long readUs, long long handleUs, long long writeUs) {
+  const auto total = readUs + handleUs + writeUs;
+  if (total < kSlowRequestMs * 1000) return {};
+  const auto ms = [](long long us) { return std::to_string(us / 1000); };
+  return "http: slow request " + method + " " + path + " status " + std::to_string(status) + " total " + ms(total)
+       + " ms (read " + ms(readUs) + ", handle " + ms(handleUs) + ", write " + ms(writeUs) + ")";
+}
+
+static long long elapsedUs(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+  return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+}
+
 void HttpServer::handleClient(int fd) {
+  using Clock = std::chrono::steady_clock;
+  // Every exit of this function settles the request's timing: a request that
+  // was slow to READ (a stalled peer) is reported the same as a slow handler.
+  struct Timing {
+    explicit Timing(HttpServer& s) : server(s) {}
+    HttpServer& server; std::string method, path; int status = 0;
+    Clock::time_point t0 = Clock::now(), read = Clock::time_point{}, handled = Clock::time_point{};
+    ~Timing() {
+      const auto end = Clock::now();
+      const auto readEnd = read == Clock::time_point{} ? end : read;
+      const auto handleEnd = handled == Clock::time_point{} ? readEnd : handled;
+      const auto line = slowRequestLine(method, path, status, elapsedUs(t0, readEnd), elapsedUs(readEnd, handleEnd), elapsedUs(handleEnd, end));
+      if (line.empty()) return;
+      // At most one line a second: a stalled scanner must not flood the log
+      // with one line per queued request.
+      static std::mutex gate; static Clock::time_point last;
+      { std::lock_guard lock(gate); if (last != Clock::time_point{} && end - last < std::chrono::seconds(1)) return; last = end; }
+      if (server.slowReporter_) server.slowReporter_(line); else logError(line);
+    }
+  } timing(*this);
   HttpRequest req;
   bool tooLarge = false;
   if (!readRequest(fd, req, tooLarge)) {
@@ -184,12 +249,14 @@ void HttpServer::handleClient(int fd) {
     return;
   }
 
+  timing.read = Clock::now(); timing.method = req.method; timing.path = req.path;
   // GET /health stays open: Railway's healthcheck probes without headers,
   // and the response carries no credentials or broker data.
   const bool isHealth = req.method == "GET" && req.path == "/health";
   auto auth = req.headers.find("authorization");
   if (!isHealth &&
       (auth == req.headers.end() || auth->second != "Bearer " + secret_)) {
+    timing.handled = Clock::now(); timing.status = 401;
     writeResponse(fd, 401, "{\"error\":\"unauthorized\"}");
     ::close(fd);
     return;
@@ -197,12 +264,14 @@ void HttpServer::handleClient(int fd) {
 
   auto it = routes_.find(req.method + " " + req.path);
   if (it == routes_.end()) {
+    timing.handled = Clock::now(); timing.status = 404;
     writeResponse(fd, 404, "{\"error\":\"not found\"}");
     ::close(fd);
     return;
   }
 
   HttpResponse res = it->second(req);
+  timing.handled = Clock::now(); timing.status = res.status;
   writeResponse(fd, res.status, res.body);
   ::close(fd);
 }

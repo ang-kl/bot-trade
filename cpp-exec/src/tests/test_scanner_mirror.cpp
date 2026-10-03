@@ -98,6 +98,8 @@ int main() {
   assert(ScannerMirror::refusalCause(std::string(R"({"cause":")")+std::string(41,'a')+"\"}").empty());
   assert(ScannerMirror::refusalCause(std::string(R"({"cause":")")+std::string(40,'a')+"\"}")==std::string(40,'a'));
   bool refused=false;try{ScannerMirror::httpSender("file:///etc/hosts","x");}catch(const std::invalid_argument&){refused=true;}assert(refused);
+  assert(ScannerMirror::phaseSummary(3200,210900,0,2001400)=="; phases lookup 3 ms, connect 210 ms, first byte 0 ms, total 2001 ms");
+  assert(ScannerMirror::phaseSummary(-1,0,0,0)=="; phases lookup 0 ms, connect 0 ms, first byte 0 ms, total 0 ms");
   {
     // Actual loopback HTTP: the gateway retains a 429 batch byte-for-byte,
     // then delivers later source sequences only after the acknowledgement.
@@ -134,6 +136,9 @@ int main() {
     assert(diagnosticLines[0].find("/feed")!=std::string::npos);
     assert(diagnosticLines[0].find("private-fixture")==std::string::npos);
     assert(diagnosticLines[0].find("127.0.0.1")==std::string::npos);
+    // §10,725·C·2: a failure line carries curl's phase clocks, in fixed wording.
+    assert(diagnosticLines[0].find("; phases lookup ")!=std::string::npos&&diagnosticLines[0].find(" ms, connect ")!=std::string::npos);
+    assert(diagnosticLines[0].find(" ms, first byte ")!=std::string::npos&&diagnosticLines[0].find(" ms, total ")!=std::string::npos);
     assert(missing("{}")==Delivery::Accepted);
     assert(diagnosticLines.size()==2&&diagnosticLines[1].find("recovered")!=std::string::npos);
     std::mutex linesMutex;std::vector<std::string> senderLines;
