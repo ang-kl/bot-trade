@@ -1158,6 +1158,21 @@ Measurement history — each line is a real run of the script, not a claim:
   All lower bounds. The count is by replies, not by stamps. A later
   re-measure that reads below this line is missing these, not correcting
   them.
+- 2026-10-03 01:31 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,729`), ten unstamped status lines ran through #1202's build, gate
+  and CI (the sandbox's missing IPv6, the gate re-run from the root, the
+  second PR's drafts and their mutation checks, the Expect-header
+  hypothesis measured and discarded), so the #1201 hour read-back and the
+  §10,725·C status were stamped **`№ 10,739`** (09:29 SGT: zero 429 lines
+  on either gateway in the hour; three new code-56 resets on cpp-acct,
+  cause open). #1202 (C·1, the scanner's ingest timing) merged 01:30 UTC
+  as 2d250d71. This PR carries C·2 and C·3 and restarts both gateways,
+  cpp-verify and both scanners on the owner's "build §10,725·C". The next
+  stamped reply is at least **`№ 10,740`** plus any unstamped line made
+  after this ledger. All lower bounds. The count is by replies, not by
+  stamps. A later re-measure that reads below this line is missing these,
+  not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

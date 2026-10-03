@@ -28,6 +28,11 @@ public:
   // 1–40 lowercase letters and underscores, else "". Nothing else of the
   // reply is ever logged.
   static std::string refusalCause(std::string_view body);
+  // 03-10-2026 (§10,725·C·2): the phases of a failed delivery, from curl's
+  // own clocks, so a transport timeout says which phase ate the 2 s budget
+  // (name lookup, connect, or the scanner's first byte). Microseconds in,
+  // one fixed-wording clause out.
+  static std::string phaseSummary(long long lookupUs, long long connectUs, long long firstByteUs, long long totalUs);
 private:
   struct Event { tick::Record record; long long sourceTime = 0; uint64_t losses = 0; };
   void run(std::stop_token stop);
