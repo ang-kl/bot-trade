@@ -64,7 +64,7 @@ code{font-family:var(--mono);font-size:.86em;background:var(--node);padding:1px 
 </style>
 
 <main>
-<p class="eyebrow">bot-trade · read from the code and production on 03-10-2026 · corrected № 10,842</p>
+<p class="eyebrow">bot-trade · read from the code and production on 03-10-2026 · corrected № 10,842 and № 10,866</p>
 <h1>bot-trade Architecture</h1>
 <p class="lede">Six processes on Railway, one broker. The Node service decides; two C++ gateways place and protect; two C++ scanners mirror the feed; one C++ verifier reads the broker on its own session and judges the rest. This page shows how work flows, how fast each part runs, and the logic that lets a trade in and takes it out. Every number is from the code, with the file named.</p>
 
@@ -89,7 +89,7 @@ code{font-family:var(--mono);font-size:.86em;background:var(--node);padding:1px 
   <text x="316" y="46" class="t-title">bot-trade (Node) · port 3001 · SQLite /data/agent.db</text>
   <text x="316" y="68" class="t-muted">main loop every 1 min in production (code default 5; Tune 1–60): scan → analyse → risk gate → dispatch</text>
   <text x="316" y="86" class="t-muted">fast monitor every 3 s · protection band every 60 s · 182 state/action routes</text>
-  <text x="316" y="106" class="t-muted">reconcile every 3rd loop (every 3 min in production) · momentum daily pass after 21:05 UTC</text>
+  <text x="316" y="106" class="t-muted">reconcile every 3rd loop (about 3 min while a cycle stays under a minute) · momentum daily pass after 21:05 UTC</text>
   <text x="316" y="128" class="t-mono">own cTrader websocket :5036 for bars, quotes, deal history</text>
   <text x="316" y="150" class="t-mono">tables: trades · monitored_positions · position_history · accounts</text>
   <text x="316" y="166" class="t-mono">entry_intents (permits) · momentum_book · controller_heartbeats</text>
@@ -165,7 +165,7 @@ code{font-family:var(--mono);font-size:.86em;background:var(--node);padding:1px 
 <div class="wrap"><table>
 <thead><tr><th>Clock</th><th class="n">Period</th><th>What runs on it</th><th>Where</th></tr></thead>
 <tbody>
-<tr><td>Main loop</td><td class="n">1 min in production<br>(default 5 min; Tune 1–60)</td><td>scan the universe, analyse, risk gate, dispatch, reconcile every 3rd loop (so every 3 min), P&amp;L backfill, daily passes. The next pass starts at the interval minus the cycle's own time, floored at 10 s, so cycles of 10–31 s give close to one pass a minute. Soft deadline 7 min; the scan gets half.</td><td>agent/loop.js:70-77, :3299, :6884</td></tr>
+<tr><td>Main loop</td><td class="n">1 min in production<br>(default 5 min; Tune 1–60)</td><td>scan the universe, analyse, risk gate, dispatch, reconcile every 3rd loop, P&amp;L backfill, daily passes. The next pass starts at the interval minus the cycle's own time, floored at 10 s, so cycles of 10–31 s give close to one pass a minute and a reconcile about every 3 min; a cycle longer than the interval starts the next pass 10 s after it ends, so the 63–74 s cycles measured while a research job runs put loops 73–84 s apart and the reconcile at roughly 3.5–4 min. Soft deadline 7 min; the scan gets half.</td><td>agent/loop.js:70-77, :3299, :6884</td></tr>
 <tr><td>Fast monitor</td><td class="n">3 s (default; floor 1 s; no override set)</td><td>re-price every open position from the gateway quote, run the exit ladder, send MOVE_SL / exits through the one amend chokepoint</td><td>agent/services/fast-monitor.js:1424</td></tr>
 <tr><td>Protection band</td><td class="n">60 s (default; floor 5 s; no override set)</td><td>profit keeper, trade guards, loss guardian, stop-policy controller, protection audit; each job gets a 5 s budget, the audit 4 s per account</td><td>fast-monitor.js:1425, :1145-1299; naked-position-guard.js:1133</td></tr>
 <tr><td>Sidecar TrailEngine</td><td class="n">every tick, drain 200 ms</td><td>advances the since-entry trail on the gateway; ratchet only, never loosens</td><td>cpp-exec/src/trail_engine.cpp:224</td></tr>
