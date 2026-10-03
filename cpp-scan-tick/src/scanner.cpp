@@ -1,4 +1,6 @@
 #include "scanner.hpp"
+#include <chrono>
+#include <optional>
 
 namespace scan {
 namespace {
@@ -21,7 +23,32 @@ TickScanner::TickScanner(int workers, size_t queue, std::function<long long()> c
     pendingPerWorker_(workers > 0 ? workers : 1),
     workers_(workers, queue, [this](int, const auto& event) { consume(event); }) { workers_.start(); }
 TickScanner::~TickScanner() { workers_.stop(); }
-jsn::Value TickScanner::submit(const jsn::Value& batch) {
+std::string TickScanner::slowIngestLine(long long totalUs, long long jsonUs, const IngestTiming& t, long long inflight, long long records, std::string_view outcome) {
+  if (totalUs < kSlowIngestMs * 1000) return {};
+  const auto ms = [](long long us) { return std::to_string(us / 1000); };
+  return "slow feed: total " + ms(totalUs) + " ms (json " + ms(jsonUs) + ", parse " + ms(t.parseUs) + ", wait " + ms(t.waitUs)
+    + ", commit " + ms(t.commitUs) + ") inflight " + std::to_string(inflight) + " records " + std::to_string(records)
+    + " outcome " + std::string(outcome);
+}
+jsn::Value TickScanner::submit(const jsn::Value& batch, IngestTiming* timing) {
+  using Clock = std::chrono::steady_clock;
+  const auto micros = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count(); };
+  IngestTiming tm;
+  // Phase timing and the in-flight count are settled on every exit, a throw
+  // included: a refused ingest is exactly the one whose timing matters.
+  struct Settle {
+    TickScanner& s; IngestTiming& tm; IngestTiming* out; Clock::time_point t0 = Clock::now();
+    Settle(TickScanner& scanner, IngestTiming& timing, IngestTiming* output) : s(scanner), tm(timing), out(output) { s.ingestInflight_.fetch_add(1, std::memory_order_relaxed); }
+    ~Settle() {
+      s.ingestInflight_.fetch_sub(1, std::memory_order_relaxed);
+      const auto total = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - t0).count();
+      if (total >= kSlowIngestMs * 1000) s.ingestSlow_.fetch_add(1, std::memory_order_relaxed);
+      auto seen = s.ingestMaxUs_.load(std::memory_order_relaxed);
+      while (total > seen && !s.ingestMaxUs_.compare_exchange_weak(seen, total, std::memory_order_relaxed)) {}
+      if (out) *out = tm;
+    }
+  } settle(*this, tm, timing);
+  const auto t0 = settle.t0;
   // Parse and validate the whole batch BEFORE the producer lock: none of it
   // touches shared state, and it is the millisecond part of an ingest. The
   // receivedAtMs upper bound (the clock) is applied under the lock below, so
@@ -63,7 +90,16 @@ jsn::Value TickScanner::submit(const jsn::Value& batch) {
       { std::lock_guard gate(s.producerGate_); s.producerBusy_ = false; }
       s.producerFree_.notify_one();
     }
-  } oneProducer(*this);
+  };
+  tm.parseUs = micros(t0, Clock::now());
+  const auto beforeTurn = Clock::now();
+  std::optional<ProducerTurn> oneProducer;
+  try { oneProducer.emplace(*this); }
+  catch (...) { tm.waitUs = micros(beforeTurn, Clock::now()); throw; }
+  tm.waitUs = micros(beforeTurn, Clock::now());
+  const auto beforeCommit = Clock::now();
+  // The commit phase ends wherever this function exits, a refusal included.
+  struct CommitClock { IngestTiming& tm; Clock::time_point from; decltype(micros) m; ~CommitClock() { tm.commitUs = m(from, Clock::now()); } } commitClock{tm, beforeCommit, micros};
   const auto now = clock_();
   for (const auto& in : inputs) if (in.event.recvMs > static_cast<uint64_t>(now)) throw std::invalid_argument("invalid_integer");
   uint32_t slotId = 0, replaced = 0; std::shared_ptr<Slot> slot; bool newSlot = false;
@@ -235,7 +271,8 @@ jsn::Value TickScanner::status() {
     {"draining", static_cast<long long>(slots_.size() - streams_.size())}, {"stale", stale}, {"staleAfterMs", staleAfterMs_},
     {"epochTurnovers", turnovers_}, {"evicted", evicted_}, {"supersededEpochRefusals", superseded_},
     {"note", "A stream is one registered (feed, config, profile) across gateway feed epochs. A new epoch rewarms the stream on a new slot; the old slot drains."}});
-  return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-tick"}, {"observedAtMs", now}, {"workComplete", true}, {"work", work}, {"streams", streams},
+  jsn::Value ingest(jsn::Object{{"inflight", ingestInflight_.load()}, {"slow", ingestSlow_.load()}, {"maxMs", ingestMaxUs_.load() / 1000}, {"slowAfterMs", kSlowIngestMs}});
+  return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-tick"}, {"observedAtMs", now}, {"workComplete", true}, {"work", work}, {"streams", streams}, {"ingest", ingest},
     {"processed", static_cast<long long>(stats.processed)}, {"dropped", static_cast<long long>(stats.dropped)}, {"orderAuthority", false}, {"mode", "mirror"}});
 }
 }

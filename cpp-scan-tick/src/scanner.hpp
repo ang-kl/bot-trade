@@ -39,9 +39,23 @@ public:
   // the gateway's retry window (5 + 10 + 20 + 40 + 80 ms) sits inside the 2 s
   // transport timeout either way.
   static constexpr long long kIngressWaitMs = 250;
+  // 03-10-2026 (owner, §10,725·C·1): the gateways' transport timeouts (curl
+  // code 28) were three concurrent /feed posts the scanner held for 1.5 s
+  // while otherwise idle, and nothing inside the scanner said where the time
+  // went. Every ingest is now timed in three phases (parse before the turn,
+  // the wait for the turn, the commit under it); an ingest slower than this
+  // bound end to end counts in status() and is reported by slowIngestLine().
+  // 250 ms is the producer-turn bound: a slower ingest is a request the
+  // gateway will give up on at 2 s if a few of them queue.
+  static constexpr long long kSlowIngestMs = 250;
+  struct IngestTiming { long long parseUs = 0, waitUs = 0, commitUs = 0; };
+  // The log line for an ingest slower than kSlowIngestMs end to end (the
+  // route's JSON decode included), or an empty string for a fast one. Pure:
+  // the threshold and the wording are tested; main.cpp only prints it.
+  static std::string slowIngestLine(long long totalUs, long long jsonUs, const IngestTiming& t, long long inflight, long long records, std::string_view outcome);
   explicit TickScanner(int workers = 2, size_t queue = 2048, std::function<long long()> clock = nowMs, long long staleAfterMs = kStaleAfterMs);
   ~TickScanner();
-  jsn::Value submit(const jsn::Value& batch);
+  jsn::Value submit(const jsn::Value& batch, IngestTiming* timing = nullptr);
   jsn::Value status();
   jsn::Value candidates(long long after) { return output_.read(after); }
   jsn::Value comparisons(long long after) { return comparisons_.read(after, 128); }
@@ -83,6 +97,7 @@ private:
   CandidateRing output_, comparisons_;
   const size_t queueCapacity_;
   std::vector<std::atomic<size_t>> pendingPerWorker_;
+  std::atomic<long long> ingestInflight_{0}, ingestSlow_{0}, ingestMaxUs_{0};
   tick::SymbolWorkers workers_;
 };
 }
