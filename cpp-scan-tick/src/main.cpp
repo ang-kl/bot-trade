@@ -5,6 +5,7 @@
 #include <mutex>
 #include <optional>
 #include <algorithm>
+#include <cmath>
 #include <csignal>
 #include <cstdlib>
 int main() {
@@ -37,7 +38,14 @@ int main() {
     const auto reportInvalid = [&](const char* token) {
       long long newest = 0;
       if (body && body->get("records").isArray())
-        for (const auto& r : body->get("records").asArray()) if (r.get("receivedAtMs").isNumber()) newest = std::max(newest, static_cast<long long>(r.get("receivedAtMs").asNumber()));
+        for (const auto& r : body->get("records").asArray()) {
+          // Codex P2 on #1204: a syntactically valid batch may carry
+          // receivedAtMs: 1e999, which submit() rejects as invalid_integer;
+          // converting a non-finite or out-of-range double to long long is
+          // undefined, so the diagnostic bounds it the way the parser does.
+          const auto v = r.get("receivedAtMs").isNumber() ? r.get("receivedAtMs").asNumber() : 0.0;
+          if (std::isfinite(v) && v >= 1 && v <= 9007199254740991.0) newest = std::max(newest, static_cast<long long>(v));
+        }
       const auto line = scan::TickScanner::invalidBatchLine(token, records, newest ? newest - scanner.clockNow() : 0);
       std::lock_guard lock(invalidLogMutex); const auto now = std::chrono::steady_clock::now();
       if (invalidLogLast.time_since_epoch().count() && now - invalidLogLast < std::chrono::seconds(1)) return;
