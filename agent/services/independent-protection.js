@@ -101,38 +101,31 @@ export function independentProtectionView(db, accountId, nowMs = Date.now()) {
 }
 
 /**
- * V3 CV-2 (OD-10): cpp-verify's delivery gate as the verify_watchdog beat
- * carries it. Delivery is muted through a 24 h soak and stays muted until an
- * explicit verifier-local unmute; `wouldSend` is what would have left in the
- * meantime. A status with no `delivery` block (a verifier built before CV-2,
- * or a busy reply) is reported as such, never as muted.
+ * cpp-verify's `delivery` block as the verify_watchdog beat carries it. Since
+ * 03-10-2026 (owner: "remove all three") the verifier has NO delivery
+ * channel: the Telegram transport, its mute and soak and its outbox were
+ * removed, having never delivered a message. The block now names the removed
+ * channel — `{channel: 'none', removedOn, note}` — so a reader can tell this
+ * build from a verifier before CV-2, which reported no `delivery` block at
+ * all (and from the CV-2 builds, whose block carried `muted`). A status with
+ * no block (an older verifier, or a busy reply) returns null, reported as
+ * such, never as a channel of any kind.
  */
 export function watchdogDeliveryDetail(status) {
   const d = status?.delivery
-  if (!d || typeof d !== 'object' || typeof d.muted !== 'boolean') return null
-  const pick = k => d[k] ?? null
-  const obj = k => (d[k] && typeof d[k] === 'object' ? d[k] : null)
-  // CV-2 fix round: `refused` (throttled bound refusals), `staleBacklog` and
-  // `unmuteRefusal` (what an unmute would answer now) ride the beat too.
-  // Round 3: `wouldSend` is DEMAND; `wouldDeliver` is what an open verifier
-  // would deliver at its ceiling of one a probe cycle (`sendCeilingPerHour`),
-  // `saturated` when demand outran it; `muteNotDurable` when a mute this
-  // process holds has not reached the disk (a restart might lose it).
-  return { muted: d.muted, open: d.open === true, reason: pick('reason'), soakActive: pick('soakActive'),
-    soakStartedAtMs: pick('soakStartedAtMs'), soakEndsAtMs: pick('soakEndsAtMs'), soakRemainingMs: pick('soakRemainingMs'),
-    wouldSend: obj('wouldSend'), wouldDeliver: obj('wouldDeliver'), sendCeilingPerHour: pick('sendCeilingPerHour'), saturated: pick('saturated'),
-    refused: obj('refused'), staleBacklog: obj('staleBacklog'), unmuteRefusal: pick('unmuteRefusal'),
-    outboxPending: pick('outboxPending'), stateBytes: status.stateBytes ?? null, muteNotDurable: status.muteNotDurable ?? null,
-    enabled: status.enabled ?? null, durable: status.durable ?? null, error: status.error || null }
+  if (!d || typeof d !== 'object' || d.channel !== 'none') return null
+  return { channel: 'none', removedOn: typeof d.removedOn === 'string' ? d.removedOn : null, note: typeof d.note === 'string' ? d.note : null,
+    stateBytes: status.stateBytes ?? null, enabled: status.enabled ?? null, durable: status.durable ?? null, error: status.error || null }
 }
 
 /**
- * The verify_watchdog beat for one /watchdog-status reply. ok when the gate
- * is reported AND supervision is enabled with no error: a muted gate on a
- * verifier whose supervision is failing (lock held elsewhere, state
- * unreadable) is not a working soak. Supervision switched OFF (WATCHDOG_ENABLED
- * unset on cpp-verify: enabled false, no error) is a switch, not a fault
- * (CV-2 fix round nit 7): the relay read succeeded, so the beat is ok and the
+ * The verify_watchdog beat for one /watchdog-status reply. ok when the
+ * record is reported (this build's `delivery.channel === 'none'`) AND
+ * supervision is enabled with no error: a record on a verifier whose
+ * supervision is failing (lock held elsewhere, state unreadable) is not a
+ * working record. Supervision switched OFF (WATCHDOG_ENABLED unset on
+ * cpp-verify: enabled false, no error) is a switch, not a fault (CV-2 fix
+ * round nit 7): the relay read succeeded, so the beat is ok and the
  * registry's dormantWhen labels it dormant, with the reason, instead of error.
  */
 export function verifyWatchdogBeat(status) {
@@ -140,7 +133,7 @@ export function verifyWatchdogBeat(status) {
     return { ok: true, detail: { ...(watchdogDeliveryDetail(status) || { enabled: false, durable: status.durable ?? null, error: null }), supervision: 'off' } }
   }
   const detail = watchdogDeliveryDetail(status)
-  if (!detail) return { ok: false, error: 'watchdog delivery gate unreported (verifier before CV-2, or busy)' }
+  if (!detail) return { ok: false, error: 'watchdog incident record unreported (a cpp-verify build before the delivery channel was removed on 03-10-2026, or busy)' }
   if (status.enabled !== true) return { ok: false, error: 'watchdog supervision disabled on cpp-verify', detail }
   if (status.error) return { ok: false, error: `watchdog error: ${String(status.error).slice(0, 200)}`, detail }
   return { ok: true, detail }

@@ -1208,6 +1208,24 @@ Measurement history — each line is a real run of the script, not a claim:
   plus any unstamped line made after this ledger. All lower bounds. The count
   is by replies, not by stamps. A later re-measure that reads below this line
   is missing these, not correcting them.
+- 2026-10-03 07:15 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,798`), the replies ran on by count through the #1206 merge and
+  read-back `№ 10,818` (14:25 SGT: horizon backfill 52 rows, SGD FX on
+  …3489/…7342 verified), the queue answer `№ 10,820`, and the owner's
+  "remove all three and fix the JNJ row, then draw the architecture
+  diagram" (14:3x SGT). This PR carries it: the breaker's auto-disarm
+  removed, the MAE/Chandelier observer removed, cpp-verify's Telegram
+  delivery channel removed (the watchdog is a record), the P&L rule that
+  a verdict is about one close (#1489 JNJ.US …0058 is reset at boot and
+  settled from the deal history), and `docs/architecture-2026-10-03.html`
+  (published as an Artifact). Built by three lane agents in worktrees,
+  cherry-picked, gated on the integrated tree. Three unstamped status
+  lines followed `№ 10,820` by this ledger, so the next stamped reply is
+  at least **`№ 10,824`** plus any unstamped line made after this ledger.
+  All lower bounds. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting
+  them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

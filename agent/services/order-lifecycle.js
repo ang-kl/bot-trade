@@ -221,7 +221,7 @@ export const CONTEXT_SQL = Object.freeze({
   // per-account record (STK-09's positive evidence, naked-position-guard.js
   // auditKeyFor: 'acct:<id>:protection_audit_last_json').
   state: `SELECT key, value FROM agent_state
-           WHERE key IN ('independent_watchdog_json', 'ctrader_account_id', 'stuck_resolver_enabled', 'stuck_resolver_last_json')
+           WHERE key IN ('ctrader_account_id', 'stuck_resolver_enabled', 'stuck_resolver_last_json')
               OR (key LIKE 'acct:%' AND key LIKE '%:protection_audit_last_json') LIMIT ?`,
   drainLog: `SELECT id, at, account_id, body FROM action_log
               WHERE id > (SELECT COALESCE(MAX(id), 0) FROM action_log) - ${ACTION_LOG_WINDOW_IDS}
@@ -290,7 +290,6 @@ function loadContext(db, win) {
   ctx.approvals = read('approvals', [win.lowSpace, win.lowSpace])
   const state = Object.fromEntries(read('state').map(r => [r.key, r.value]))
   ctx.selectedAccount = acctOf(state.ctrader_account_id)
-  ctx.watchdog = parseJson(state.independent_watchdog_json ?? null) ?? null
   ctx.stuckResolverOn = state.stuck_resolver_enabled !== 'false'
   // The targets the resolver FOUND but did not write (R7 switched off): keyed
   // `<account>:<position>`, named in STK-09's detail.
@@ -990,38 +989,30 @@ export const RULES = Object.freeze([
     // v2 (STK-08v2, owner 25-09-2026 21:30 SGT: no still-stuck records, no
     // fake result). A channel SWITCHED OFF BY A SETTING is not a stuck
     // delivery: its rows are held by that setting, by design, until it is
-    // switched on. Measured 25-09-2026 23:29 UTC: both production violations
-    // were exactly that —
-    //   Telegram: telegram_notify_json enabled=false; routeDecision queues
-    //     every message as 'notify_off' (telegram-digest.js:136-141) and
-    //     flushDecision never flushes while off (:257), so 57,750 rows sat
-    //     unsent from 2026-08-22 10:39 UTC;
-    //   watchdog: cpp-verify delivers only with its delivery switch, incident
-    //     owner and credentials on (watchdog.cpp:181, :192), and the Node
-    //     policy it relays (masterEnabled) was off — all four read false —
-    //     so its outbox held 512/512 never attempted and every new item was
-    //     dropped (watchdog_state.cpp:209-213): 1,526,163.
-    // v3 (V3 CV-2 fix round nit 3): cpp-verify's own delivery MUTE is a fifth
-    // holding setting. Muted by default through the 24 h soak and until an
-    // explicit POST /watchdog/mute after it (watchdog_state.cpp:125-126,
-    // :132-148), it holds the outbox by design; only `delivery.muted` reading
-    // TRUE holds — absent (a verifier before CV-2, a busy reply) is unknown.
-    // Round 3 (S-2): after the soak, an unmute is REFUSED while the held
-    // backlog is stale (older than repeatMs), and the dispose route that would
-    // clear it is not built — so a mute nobody can lift is a codebase-built
-    // blockage (owner principle 3), not a setting: the defect, named, unless
-    // another setting holds the channel anyway (then held, with it named).
+    // switched on. Measured 25-09-2026 23:29 UTC on the Telegram outbox:
+    // telegram_notify_json enabled=false; routeDecision queues every message
+    // as 'notify_off' (telegram-digest.js:136-141) and flushDecision never
+    // flushes while off (:257), so 57,750 rows sat unsent from 2026-08-22
+    // 10:39 UTC.
+    // v4 (owner 03-10-2026, "remove all three"): the cpp-verify watchdog
+    // outbox is GONE — the verifier's Telegram channel, its mute and soak and
+    // its 512-item outbox were removed (never delivered a message; the mute
+    // could not be lifted over a backlog nobody could dispose of). The
+    // verifier keeps an incident RECORD and sends nothing, so there is no
+    // second outbox to judge: this rule reads the Telegram outbox only. v3's
+    // watchdog kind (held by the delivery switch / owner / credentials / the
+    // mute, the stale-backlog wedge) is removed with it.
     // Such a channel is class 'held_by_setting' — NOT a violation, so not in
     // the stuck headline, and still named in this rule (classes, info, note),
     // the goal row and the daily line with the setting, the unsent count, the
-    // oldest queued time and (watchdog) the dropped count. A channel that is
-    // ON with rows over a day old stays the defect, with the digest's last
-    // flush error when one is recorded. A setting that cannot be read is
-    // never taken as off: the defect stays and says so. The digest state is
-    // read by telegram-digest.js digestState — the reader GET
-    // /state/telegram-digest serves — pinned here with the loader it uses.
-    id: 'STK-08', key: 'outbox_backlog', version: 3, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
-    cite: ['db.js:1984-1993', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'independent-protection.js:164', 'watchdog.cpp:181', 'watchdog.cpp:225-234', 'watchdog_state.cpp:209-213', 'watchdog_state.cpp:125-126', 'watchdog_state.cpp:132-148'],
+    // oldest queued time. A channel that is ON with rows over a day old stays
+    // the defect, with the digest's last flush error when one is recorded. A
+    // setting that cannot be read is never taken as off: the defect stays and
+    // says so. The digest state is read by telegram-digest.js digestState —
+    // the reader GET /state/telegram-digest serves — pinned here with the
+    // loader it uses.
+    id: 'STK-08', key: 'outbox_backlog', version: 4, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
+    cite: ['db.js:1984-1993', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'watchdog_state.cpp:325-330'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
            WHERE sent_at IS NULL ORDER BY id LIMIT ?`,
@@ -1031,87 +1022,28 @@ export const RULES = Object.freeze([
     rows(dbRows, ctx, w, db) {
       // Throws on an unreadable outbox: the rule is then unreadable, never 0.
       const digest = this.digest(db, { nowMs: w.nowMs })
-      const out = [{ kind: 'telegram', ...(dbRows[0] || { n: 0 }), digest }]
-      out.push({ kind: 'watchdog', status: ctx.watchdog?.status ?? null, readAt: ctx.watchdog?.readAt ?? null, nodePolicyOff: digest.configReadable && digest.enabled === false })
-      return out
+      return [{ kind: 'telegram', ...(dbRows[0] || { n: 0 }), digest }]
     },
-    when: r => (r.kind === 'telegram' ? tsMs(r.queued_at) : null), subject: r => `outbox:${r.kind}`, account: () => null,
+    when: r => tsMs(r.queued_at), subject: r => `outbox:${r.kind}`, account: () => null,
     judge(r, _ctx, w) {
-      if (r.kind === 'telegram') {
-        const oldest = tsMs(r.queued_at)
-        if (!(r.n > 0 && oldest != null && oldest < w.nowMs - DAY)) return null
-        const d = r.digest
-        const base = `${r.n} unsent Telegram row(s), oldest queued ${iso(oldest).slice(0, 16)}`
-        const reasons = d.reasons.rows.length
-          ? `; reasons over the ${d.reasons.complete ? `${d.reasons.of} pending row(s)` : `newest ${d.reasons.over} of ${d.reasons.of} pending rows`}: ${d.reasons.rows.map(x => `${x.reason || '(none)'} ${x.count} (oldest ${String(x.oldestQueuedAt ?? '?').slice(0, 16)})`).join(', ')}; the oldest row's reason ${d.pending.oldestReason || '(none)'}`
-          : ''
-        const flush = `; last flush ${d.lastFlushAt ?? 'never recorded'}${d.lastError ? `; last flush error: ${cut(d.lastError, 120)}` : ''}`
-        if (d.configReadable && d.enabled === false) {
-          return { violation: false, class: 'held_by_setting',
-            info: `telegram: ${base} — held by the setting ${d.configKey} enabled=false (notify OFF: queued, not dropped; nothing is flushed while it is off)${reasons}${flush}` }
-        }
-        return {
-          missing: ['delivery'], class: 'telegram', since: iso(oldest),
-          notify: { enabled: d.enabled, mode: d.mode, configReadable: d.configReadable, configError: d.configError },
-          lastFlushAt: d.lastFlushAt, lastError: d.lastError, reasons: d.reasons,
-          detail: `${base}${d.configReadable ? '' : `; ${d.configKey} unreadable, not taken as off`}${d.lastError ? `; last flush error: ${cut(String(d.lastError).replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s+/, ''), 90)}` : ''}`,
-        }
-      }
-      const s = r.status
-      if (!s || typeof s !== 'object') return OUT
-      const items = s.outbox && typeof s.outbox === 'object' ? Object.values(s.outbox) : []
-      const oldUnattempted = items.filter(i => Number(i?.attempts || 0) === 0 && Number(i?.createdAtMs) < w.nowMs - HOUR).length
-      const dropped = Number(s.dropped) || 0
-      if (!((items.length >= 512 && oldUnattempted > 0) || dropped > 0)) return null
-      const base = `watchdog outbox ${items.length}/512, ${oldUnattempted} never attempted and over 1 h old, dropped ${dropped}`
-      // Only a field that READS false is a setting that is off; absent or
-      // null (an older cpp-verify, a busy reply, a policy older than a day)
-      // is unknown, never off. masterEnabled is Node's own policy as relayed:
-      // the contract sends false for an UNREADABLE telegram_notify_json and
-      // for an unknown timezone too (watchdog-contract.js notificationPolicy),
-      // and cpp-verify's copy can be stale, so it counts as a setting only
-      // while Node's own value reads off (checker nit 1, 26-09).
-      const settings = [
-        ['deploymentDeliveryEnabled', 'the cpp-verify delivery switch'],
-        ['incidentOwnerConfigured', 'the cpp-verify incident owner'],
-        ['deliveryCredentialsConfigured', 'WATCHDOG_TELEGRAM_TOKEN / WATCHDOG_TELEGRAM_CHAT_ID'],
-        ['masterEnabled', "Node's telegram_notify_json as cpp-verify last read it"],
-      ]
-      const off = settings.filter(([k]) => s[k] === false && (k !== 'masterEnabled' || r.nodePolicyOff === true))
-        .map(([k, what]) => `${k}=false (${what})`)
-      // v3: the verifier-local mute, which holds while it reads true — by
-      // design through the 24 h soak, and after it while the owner leaves it
-      // on. But once the soak is over and an unmute would be REFUSED for a
-      // stale backlog, nobody can lift it: the dispose route that clears the
-      // backlog is not built. That is a codebase-built blockage (principle 3),
-      // not a setting, so it is the defect, named (CV-2 round 3, S-2).
-      const d = s.delivery && typeof s.delivery === 'object' ? s.delivery : null
-      let wedge = null
-      if (d?.muted === true) {
-        const stale = d.staleBacklog && typeof d.staleBacklog === 'object' && Number(d.staleBacklog.count) > 0 ? d.staleBacklog : null
-        const staleText = stale ? `${Number(stale.count)} held item(s) older than ${Math.round(Number(stale.olderThanMs) / 60000) || '?'} min, oldest ${Number(stale.oldestCreatedAtMs) > 0 ? iso(Number(stale.oldestCreatedAtMs)).slice(0, 16) : '?'}` : null
-        const unbuilt = 'an unmute is refused until they are disposed of, and the dispose route is not built'
-        if (d.soakActive === true) {
-          const ends = Number(d.soakEndsAtMs) > 0 ? `, ending ${iso(Number(d.soakEndsAtMs)).slice(0, 16)}` : ''
-          off.push(`delivery.muted=true (the cpp-verify delivery mute: the 24 h soak${ends}${stale ? `; after it, ${staleText}: ${unbuilt}` : ''})`)
-        } else if (d.unmuteRefusal === 'stale_backlog') {
-          // The full sentence rides the finding as `wedge`; `detail` is cut at
-          // 160 characters, so it carries the short form.
-          wedge = { text: `the cpp-verify delivery mute cannot be lifted — ${stale ? `${staleText}: ${unbuilt}` : 'an unmute is refused (stale_backlog) and the dispose route is not built'}`,
-            short: `mute unliftable: ${stale ? `${Number(stale.count)} stale held item(s)` : 'stale backlog'}, dispose route not built` }
-        } else {
-          off.push('delivery.muted=true (the cpp-verify delivery mute, lifted by an explicit POST /watchdog/mute)')
-        }
-      }
-      const delivery = Object.fromEntries([...settings.map(([k]) => k), 'effectivePolicyAllowsUrgent'].map(k => [k, s[k] ?? null]))
-      delivery.muted = typeof d?.muted === 'boolean' ? d.muted : null
-      if (off.length) {
-        const created = items.map(i => Number(i?.createdAtMs)).filter(Number.isFinite)
+      const oldest = tsMs(r.queued_at)
+      if (!(r.n > 0 && oldest != null && oldest < w.nowMs - DAY)) return null
+      const d = r.digest
+      const base = `${r.n} unsent Telegram row(s), oldest queued ${iso(oldest).slice(0, 16)}`
+      const reasons = d.reasons.rows.length
+        ? `; reasons over the ${d.reasons.complete ? `${d.reasons.of} pending row(s)` : `newest ${d.reasons.over} of ${d.reasons.of} pending rows`}: ${d.reasons.rows.map(x => `${x.reason || '(none)'} ${x.count} (oldest ${String(x.oldestQueuedAt ?? '?').slice(0, 16)})`).join(', ')}; the oldest row's reason ${d.pending.oldestReason || '(none)'}`
+        : ''
+      const flush = `; last flush ${d.lastFlushAt ?? 'never recorded'}${d.lastError ? `; last flush error: ${cut(d.lastError, 120)}` : ''}`
+      if (d.configReadable && d.enabled === false) {
         return { violation: false, class: 'held_by_setting',
-          info: `watchdog: ${base}; oldest queued ${created.length ? iso(Math.min(...created)).slice(0, 16) : '?'} — held by the setting(s) ${off.join(', ')}: cpp-verify delivers nothing while any is off${wedge ? `; and ${wedge.text}` : ''}; status read ${r.readAt ?? '?'}` }
+          info: `telegram: ${base} — held by the setting ${d.configKey} enabled=false (notify OFF: queued, not dropped; nothing is flushed while it is off)${reasons}${flush}` }
       }
-      // ONE stuck mechanism, not 512 stuck items (VERIFY correction 6).
-      return { missing: ['delivery'], class: 'watchdog', delivery, ...(wedge ? { wedge: wedge.text } : {}), detail: wedge ? `${base}; ${wedge.short}` : base }
+      return {
+        missing: ['delivery'], class: 'telegram', since: iso(oldest),
+        notify: { enabled: d.enabled, mode: d.mode, configReadable: d.configReadable, configError: d.configError },
+        lastFlushAt: d.lastFlushAt, lastError: d.lastError, reasons: d.reasons,
+        detail: `${base}${d.configReadable ? '' : `; ${d.configKey} unreadable, not taken as off`}${d.lastError ? `; last flush error: ${cut(String(d.lastError).replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s+/, ''), 90)}` : ''}`,
+      }
     },
     note(res) {
       const held = res.info?.held_by_setting
@@ -1294,8 +1226,14 @@ export const RULES = Object.freeze([
  * summary and in accounts[]), never as an account record. The all-accounts
  * headline numbers are unchanged; its parts are new. No rule's own source
  * changed, so no rule version moves.
+ *
+ * v5 (03-10-2026, the cpp-verify delivery channel removed): the context no
+ * longer reads `independent_watchdog_json` (CONTEXT_SQL.state, loadContext)
+ * — STK-08@4 reads the Telegram outbox only, and no other rule read the
+ * relayed watchdog status. Nothing a rule says changed; the statement and
+ * the loader did, so the number moves.
  */
-export const HELPERS_VERSION = 4
+export const HELPERS_VERSION = 5
 export const JUDGE_HELPERS = Object.freeze({
   tsMs, blank, num, acctOf, idKey, upper, dirOf, ours, intentTag, parseJson, directionReasonOf, sideProblems, riskScaleWrong,
   botTrade, proposalOf, fillOf, closeMsOf, tagEvidence, fillForPending, closedOlder, tradeInWindow, endedBy,

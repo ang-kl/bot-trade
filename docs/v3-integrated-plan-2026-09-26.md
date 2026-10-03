@@ -1,5 +1,7 @@
 # V3 + requests 1 and 2 — one integrated plan
 
+> **Note, 03-10-2026 (owner: "remove all three"):** cpp-verify's Telegram delivery channel — the transport, the 24 h muted soak, `POST /watchdog/mute`, the 512-item outbox, the would-send/would-deliver counters, `WATCHDOG_TELEGRAM_*` / `WATCHDOG_MASTER_ENABLED` / `WATCHDOG_INCIDENT_OWNER` and the Node `verify-observer` outbox — was removed. It never delivered a message. The verifier keeps its incident record on `GET /watchdog-status` (`delivery.channel: "none"`) and sends nothing; the dispose route this record lists as outstanding was removed with the channel, 03-10-2026. What follows is the dated record as written.
+
 26-09-2026 · checked version
 
 **APPROVED by the owner on 26-09-2026**: #1143 merged at 12:46 SGT, then "I thought the plan is approved" at about 13:40 SGT. That also answers OD-0 yes (the UI defaults OD-17, OD-18, OD-19 and OD-21 apply). Wave 1 building since 13:44 SGT; every other decision in §6 stays open until answered, and ask-first items still need their own yes.

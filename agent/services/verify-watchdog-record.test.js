@@ -1,25 +1,24 @@
-// V3 CV-2 (OD-10): cpp-verify's watchdog delivery is MUTED through a 24 h
-// soak by default. The C++ gate itself is exercised by
-// cpp-verify/src/tests/test_watchdog.cpp; this file pins the Node half:
-// the soak state reaches the verify_watchdog heartbeat (GET /state/heartbeats
-// → controllers[].detail) and independent_watchdog_json (GET
-// /state/heartbeats → runtime.watchdog), the beat is QUIET, and the verifier's
-// run loop asks the gated releasable(), never the raw nextDelivery().
+// cpp-verify's watchdog is a RECORD, not a channel (owner, 03-10-2026:
+// "remove all three"). Its Telegram delivery — the transport, the 24 h muted
+// soak, the mute route and the 512-item outbox — never delivered a message
+// (no credentials were ever set on the service; the mute could not be lifted
+// over a backlog nobody could dispose of) and was removed. The C++ record is
+// exercised by cpp-verify/src/tests/test_watchdog.cpp; this file pins the
+// Node half: the removed channel reaches the verify_watchdog heartbeat (GET
+// /state/heartbeats → controllers[].detail) and independent_watchdog_json
+// (→ runtime.watchdog) as `channel: 'none'`, a verifier that reports no
+// block is said to, the beat is QUIET, and supervision off reads dormant.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { initDB, getState, setState } from '../db.js'
 import { upsertAccount } from './account-registry.js'
 import { makeIndependentProtectionPoll, watchdogDeliveryDetail, verifyWatchdogBeat } from './independent-protection.js'
 import { CONTROLLERS, heartbeatView, checkHeartbeats, verifyWatchdogDormantReason } from './heartbeat.js'
 
 const T = 1_800_000_000_000
-const DELIVERY = { muted: true, open: false, reason: 'soak_active', soakActive: true, soakMs: 86_400_000,
-  soakStartedAtMs: T, soakEndsAtMs: T + 86_400_000, soakRemainingMs: 86_000_000, mutedAtMs: T, unmutedAtMs: null,
-  wouldSend: { urgent: 3, warning: 5, info: 1, total: 9, sinceMs: T, urgentPerHour: 27, totalPerHour: 81 },
-  refused: { urgent: 1, warning: 2, info: 0, total: 3 }, staleBacklog: { count: 4, oldestCreatedAtMs: T - 7_200_000, olderThanMs: 3_600_000 },
-  wouldDeliver: { urgent: 3, warning: 4, info: 1, total: 8, urgentPerHour: 27, totalPerHour: 72, pending: 1, dropped: 0 },
-  sendCeilingPerHour: 240, saturated: true, unmuteRefusal: 'soak_active', outboxPending: 9 }
+const DELIVERY = { channel: 'none', removedOn: '2026-10-03', note: 'incidents are a record; nothing is sent' }
+// What the CV-2 builds reported, and what the build before CV-2 did not.
+const CV2_DELIVERY = { muted: true, open: false, reason: 'soak_active', soakActive: true, soakEndsAtMs: T + 86_400_000 }
 
 function fixture(t, watchdogReply) {
   const db = initDB(':memory:'); t.after(() => db.close())
@@ -41,48 +40,38 @@ function fixture(t, watchdogReply) {
 }
 const row = db => db.prepare("SELECT * FROM controller_heartbeats WHERE name = 'verify_watchdog'").get()
 
-test('CV-2: the muted soak reaches the verify_watchdog beat and the relayed status', async t => {
-  const { db, poll } = fixture(t, () => ({ ok: true, json: async () => ({ schemaVersion: 1, enabled: true, stateBytes: 4096, delivery: DELIVERY }) }))
+test('the removed channel reaches the verify_watchdog beat and the relayed status as channel none', async t => {
+  const { db, poll } = fixture(t, () => ({ ok: true, json: async () => ({ schemaVersion: 1, enabled: true, durable: true, error: '', stateBytes: 4096, delivery: DELIVERY }) }))
   await poll()
   const beat = row(db)
   assert.ok(beat, 'verify_watchdog beaten')
   assert.equal(beat.consecutive_failures, 0)
   const detail = JSON.parse(beat.last_detail_json)
-  assert.equal(detail.muted, true)
-  assert.equal(detail.open, false)
-  assert.equal(detail.soakActive, true)
-  assert.equal(detail.soakEndsAtMs, T + 86_400_000)
-  assert.deepEqual(detail.wouldSend, DELIVERY.wouldSend)
-  assert.deepEqual(detail.refused, DELIVERY.refused)
-  assert.deepEqual(detail.staleBacklog, DELIVERY.staleBacklog)
-  assert.equal(detail.unmuteRefusal, 'soak_active')
-  // Round 3: demand beside what an open verifier would deliver at its ceiling.
-  assert.deepEqual(detail.wouldDeliver, DELIVERY.wouldDeliver)
-  assert.equal(detail.sendCeilingPerHour, 240)
-  assert.equal(detail.saturated, true)
-  assert.equal(detail.muteNotDurable, null) // a reply without the field reads unknown, never false
-  assert.equal(detail.stateBytes, 4096)
+  assert.deepEqual(detail, { channel: 'none', removedOn: '2026-10-03', note: 'incidents are a record; nothing is sent', stateBytes: 4096, enabled: true, durable: true, error: null })
+  for (const gone of ['muted', 'open', 'soakActive', 'wouldSend', 'wouldDeliver', 'staleBacklog', 'unmuteRefusal', 'muteNotDurable', 'outboxPending']) assert.equal(gone in detail, false, gone)
   const view = heartbeatView(db).find(v => v.name === 'verify_watchdog')
-  assert.equal(view.detail.muted, true)
-  assert.equal(view.detail.soakEndsAtMs, T + 86_400_000)
+  assert.equal(view.detail.channel, 'none')
+  assert.equal(CONTROLLERS.verify_watchdog.label, 'Independent watchdog (cpp-verify) incident record')
   const relayed = JSON.parse(getState(db, 'independent_watchdog_json'))
-  assert.equal(relayed.status.delivery.muted, true)
+  assert.equal(relayed.status.delivery.channel, 'none')
 })
 
-test('CV-2: a verifier without the delivery gate is reported, never read as muted', async t => {
+test('a verifier that reports no delivery block, or the CV-2 shape, is reported — never read as the removed channel', async t => {
   let reply = { schemaVersion: 1, enabled: true }
   const { db, poll } = fixture(t, () => ({ ok: true, json: async () => reply }))
   await poll()
   assert.equal(row(db).consecutive_failures, 1)
-  assert.match(row(db).last_error, /delivery gate unreported/)
+  assert.match(row(db).last_error, /incident record unreported .*before the delivery channel was removed on 03-10-2026/)
   assert.equal(watchdogDeliveryDetail(reply), null)
-  assert.equal(watchdogDeliveryDetail({ delivery: { muted: 'yes' } }), null)
+  assert.equal(watchdogDeliveryDetail({ delivery: CV2_DELIVERY }), null)
+  assert.equal(watchdogDeliveryDetail({ delivery: { channel: 'telegram' } }), null)
+  assert.equal(watchdogDeliveryDetail({ delivery: 'none' }), null)
   reply = { schemaVersion: 1, enabled: true, error: '', delivery: DELIVERY }
   await poll()
   assert.equal(row(db).consecutive_failures, 0)
 })
 
-test('CV-2 fix round: a muted gate on a failing verifier fails the beat, with the detail kept', async t => {
+test('the record on a failing verifier fails the beat, with the detail kept', async t => {
   let reply = { schemaVersion: 1, enabled: true, error: 'watchdog_state_already_owned_or_lock_unavailable', durable: false, delivery: DELIVERY }
   const { db, poll } = fixture(t, () => ({ ok: true, json: async () => reply }))
   await poll()
@@ -90,28 +79,24 @@ test('CV-2 fix round: a muted gate on a failing verifier fails the beat, with th
   assert.match(row(db).last_error, /already_owned/)
   const detail = JSON.parse(row(db).last_detail_json)
   assert.equal(detail.error, 'watchdog_state_already_owned_or_lock_unavailable')
-  assert.equal(detail.enabled, true); assert.equal(detail.durable, false); assert.equal(detail.muted, true)
+  assert.equal(detail.enabled, true); assert.equal(detail.durable, false); assert.equal(detail.channel, 'none')
   // Switched off WITH an error is a fault too, not the switch alone.
   reply = { schemaVersion: 1, enabled: false, error: 'watchdog_status_busy' }
   await poll()
   assert.equal(row(db).consecutive_failures, 2)
   assert.equal(verifyWatchdogBeat({ enabled: true, error: '', delivery: DELIVERY }).ok, true)
-  // Round 3 (B2): a mute the verifier holds but could not write reaches the beat's detail.
-  reply = { schemaVersion: 1, enabled: true, error: 'watchdog_state_open_failed', muteNotDurable: true, delivery: DELIVERY }
-  await poll()
-  assert.equal(row(db).consecutive_failures, 3)
-  assert.equal(JSON.parse(row(db).last_detail_json).muteNotDurable, true)
+  assert.equal(verifyWatchdogBeat({ enabled: true, error: '', delivery: CV2_DELIVERY }).ok, false)
 })
 
-// CV-2 fix round nit 7: WATCHDOG_ENABLED unset on cpp-verify is a switch, not
-// a fault — the row reads dormant with the reason, never error.
-test('CV-2 fix round: supervision switched off on cpp-verify reads dormant, not error', async t => {
+// WATCHDOG_ENABLED unset on cpp-verify is a switch, not a fault — the row
+// reads dormant with the reason, never error.
+test('supervision switched off on cpp-verify reads dormant, not error', async t => {
   const env = { VERIFY_URL: 'https://verifier.test', EXEC_SECRET: 'fixture' }
   for (const key of Object.keys(env)) {
     const old = process.env[key]; process.env[key] = env[key]
     t.after(() => { if (old === undefined) delete process.env[key]; else process.env[key] = old })
   }
-  let reply = { schemaVersion: 1, enabled: false, error: '', durable: false, delivery: { ...DELIVERY, reason: 'soak_not_started', soakActive: true, soakStartedAtMs: null, soakEndsAtMs: null } }
+  let reply = { schemaVersion: 1, enabled: false, error: '', durable: false, delivery: DELIVERY }
   const { db, poll } = fixture(t, () => ({ ok: true, json: async () => reply }))
   await poll()
   assert.equal(row(db).consecutive_failures, 0)
@@ -120,8 +105,9 @@ test('CV-2 fix round: supervision switched off on cpp-verify reads dormant, not 
   const view = heartbeatView(db).find(v => v.name === 'verify_watchdog')
   assert.equal(view.verdict, 'dormant')
   assert.equal(view.dormant, true)
-  assert.match(view.dormant_reason, /supervision is switched off .* no soak is running/)
-  // A verifier before CV-2 with supervision off (no gate in the reply) reads the same.
+  assert.match(view.dormant_reason, /supervision is switched off .* records no incident/)
+  assert.doesNotMatch(view.dormant_reason, /soak|deliver/)
+  // An older verifier with supervision off (no block in the reply) reads the same.
   reply = { schemaVersion: 1, enabled: false, error: '' }
   await poll()
   assert.equal(row(db).consecutive_failures, 0)
@@ -138,14 +124,14 @@ test('CV-2 fix round: supervision switched off on cpp-verify reads dormant, not 
   assert.notEqual(heartbeatView(db).find(v => v.name === 'verify_watchdog').verdict, 'dormant')
 })
 
-test('CV-2 fix round: verify_watchdog is dormant while the relay is unconfigured', () => {
+test('verify_watchdog is dormant while the relay is unconfigured', () => {
   assert.equal(CONTROLLERS.verify_watchdog.dormantWhen, verifyWatchdogDormantReason)
   assert.match(verifyWatchdogDormantReason(null, { env: {} }), /VERIFY_URL, EXEC_SECRET unset/)
   assert.match(verifyWatchdogDormantReason(null, { env: { VERIFY_URL: 'https://v.test' } }), /EXEC_SECRET unset/)
   assert.equal(verifyWatchdogDormantReason(null, { env: { VERIFY_URL: 'https://v.test', EXEC_SECRET: 'x' } }), null)
 })
 
-test('CV-2: an unreachable watchdog status fails the beat, not the protection relay', async t => {
+test('an unreachable watchdog status fails the beat, not the protection relay', async t => {
   const { db, poll } = fixture(t, () => ({ ok: false, status: 503 }))
   await poll()
   assert.equal(row(db).consecutive_failures, 1)
@@ -153,7 +139,7 @@ test('CV-2: an unreachable watchdog status fails the beat, not the protection re
   assert.equal(JSON.parse(getState(db, 'independent_protection_json')).error, null)
 })
 
-test('CV-2: verify_watchdog is quiet — its stall is recorded, never sent', () => {
+test('verify_watchdog is quiet — its stall is recorded, never sent', () => {
   assert.equal(CONTROLLERS.verify_watchdog.quiet, true)
   const db = initDB(':memory:')
   try {
@@ -165,15 +151,4 @@ test('CV-2: verify_watchdog is quiet — its stall is recorded, never sent', () 
     assert.ok(events.some(e => e.name === 'verify_watchdog' && e.event === 'stalled'))
     assert.equal(sent.filter(s => /Independent watchdog/.test(s)).length, 0)
   } finally { db.close() }
-})
-
-test('CV-2 wiring: the verifier run loop sends only what releasable() returns', () => {
-  const strip = src => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-  const source = strip(readFileSync(new URL('../../cpp-verify/src/watchdog.cpp', import.meta.url), 'utf8'))
-  const run = source.slice(source.indexOf('void Watchdog::run('), source.indexOf('jsn::Value Watchdog::status('))
-  assert.ok(run.length > 100, 'run() located')
-  assert.match(run, /state_\.releasable\(now\)/)
-  assert.doesNotMatch(run, /state_\.nextDelivery\(/)
-  const gate = strip(readFileSync(new URL('../../cpp-verify/src/watchdog_state.cpp', import.meta.url), 'utf8'))
-  assert.match(gate, /jsn::Value WatchState::releasable\(long long now\) const \{\s*if \(!deliveryOpen\(now\)\) return jsn::Value\(\);/)
 })

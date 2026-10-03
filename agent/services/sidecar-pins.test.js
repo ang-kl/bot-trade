@@ -392,3 +392,49 @@ test('GET /health builds guard and tick.shadowSim through health_view with the c
   assert.equal((main.match(/\.set\("guard",/g) || []).length, 1, 'and no second guard block is assembled beside it')
   assert.equal((main.match(/\.set\("shadowSim",/g) || []).length, 1, 'nor a second shadowSim')
 })
+
+// 03-10-2026 (owner: "remove all three"): cpp-verify's Telegram delivery
+// channel — the sendMessage call in the watchdog's run loop, the credentials
+// it read, the mute route and the outbox — is REMOVED. It never delivered a
+// message: WATCHDOG_TELEGRAM_TOKEN / WATCHDOG_TELEGRAM_CHAT_ID were never set
+// on the service, and the mute could not be lifted over a 512-item backlog
+// nobody could dispose of. The verifier keeps its incident record and sends
+// nothing. A re-added call would be invisible to the C++ suite (the run loop
+// is outside every test binary's reach but one behavioural proxy test), so
+// the source is pinned here, comments stripped: no Telegram host, no Telegram
+// variable, no mute route, no outbox, in any cpp-verify source or test.
+test('cpp-verify sends nothing: no Telegram host, no delivery variable, no mute route, no outbox in its source', () => {
+  const dir = new URL('../../cpp-verify/src/', import.meta.url)
+  const files = readdirSync(dir).filter((f) => /\.(cpp|hpp)$/.test(f)).map((f) => `../../cpp-verify/src/${f}`)
+  const tests = readdirSync(new URL('tests/', dir)).filter((f) => /\.(cpp|hpp)$/.test(f)).map((f) => `../../cpp-verify/src/tests/${f}`)
+  for (const f of ['../../cpp-verify/src/watchdog.cpp', '../../cpp-verify/src/watchdog_state.cpp', '../../cpp-verify/src/main.cpp'])
+    assert.ok(files.includes(f), `${f} is scanned — a listing that silently shrank would scan nothing`)
+  assert.ok(tests.includes('../../cpp-verify/src/tests/test_watchdog_http.cpp'), 'the tests are scanned too')
+  // The tests may NAME the old variables (one sets them to prove nothing
+  // leaves) and the old state keys (the old-shape fixture); they may never
+  // reach the host or call the API either.
+  for (const f of [...files, ...tests]) {
+    const code = src(f)
+    assert.doesNotMatch(code, /api\.telegram\.org/, `${f}: no Telegram host`)
+    assert.doesNotMatch(code, /sendMessage/, `${f}: no sendMessage call`)
+    assert.doesNotMatch(code, /\/watchdog\/mute/, `${f}: no mute route`)
+  }
+  for (const f of files) {
+    const code = src(f)
+    assert.doesNotMatch(code, /WATCHDOG_TELEGRAM|WATCHDOG_MASTER_ENABLED|WATCHDOG_INCIDENT_OWNER/, `${f}: no delivery variable is read`)
+    // identifiers, not the string keys restore() strips from an old file
+    assert.doesNotMatch(code, /\b(?:setMuted|beginSoak|releasable|nextDelivery|wouldSend|modelOffer|modelRelease|staleBacklog|deliveryStatus|enqueue)\(/, `${f}: no gate, soak, outbox or modelled sender`)
+    assert.doesNotMatch(code, /\boutbox_\b|\bmodel_\b|\bmuted_\b/, `${f}: no outbox, model queue or mute state`)
+  }
+  // The run loop's whole output is the persisted record: one persist() per cycle, no second HTTP call after the probes.
+  const run = src('../../cpp-verify/src/watchdog.cpp')
+  const loop = run.slice(run.indexOf('void Watchdog::run('), run.indexOf('jsn::Value Watchdog::status('))
+  assert.ok(loop.length > 100, 'run() located')
+  assert.equal((loop.match(/watchHttp\(/g) || []).length, 1, 'the one watchHttp call in run() is the probe')
+  assert.match(loop, /state_\.protection\(protection_\(\), now\); state_\.evaluate\(now\);\s*persist\(\);/)
+  // watchHttp posts nothing: a GET with a bearer, no body parameter.
+  assert.match(src('../../cpp-verify/src/watchdog_http.hpp'), /WatchHttpResult watchHttp\(const std::string& url, const std::string& bearer, long deadlineMs = 2000\);/)
+  assert.doesNotMatch(src('../../cpp-verify/src/watchdog_http.cpp'), /POSTFIELDS/)
+  // The record names the removed channel, so a reader can tell this build from one before CV-2.
+  assert.match(src('../../cpp-verify/src/watchdog_state.cpp'), /\{"delivery", jsn::Object\{\{"channel", "none"\}, \{"removedOn", "2026-10-03"\}/)
+})

@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // agent/lib/stop-loss-grader.js — grade the LIVE stop-loss policy from the
 // agent's own read-only state routes (02-10-2026, PR-3). Pure: it takes what
-// GET /state/stop-policy, /state/mae-chandelier and /state/heartbeats answered
+// GET /state/stop-policy and /state/heartbeats answered
 // and returns one verdict per check. scripts/verify-stop-loss-integrated.mjs
 // fetches (GET only, never /actions) and prints; this file decides.
 //
@@ -20,10 +20,10 @@ const last4 = id => `…${String(id ?? '').slice(-4)}`
 const check = (id, verdict, detail) => ({ id, verdict, detail })
 
 /**
- * @param {{policy?: object, maeChandelier?: object, heartbeats?: object, baselineTp?: Record<string, number|null>}} input
+ * @param {{policy?: object, heartbeats?: object, baselineTp?: Record<string, number|null>}} input
  *   baselineTp — take-profit by `${account}:${positionId}` from an earlier run.
  */
-export function gradeStopLoss({ policy, maeChandelier, heartbeats, baselineTp = null } = {}) {
+export function gradeStopLoss({ policy, heartbeats, baselineTp = null } = {}) {
   const out = []
   const accounts = Array.isArray(heartbeats?.runtime?.accounts) ? heartbeats.runtime.accounts : []
   const prot = accounts.map(a => ({ id: last4(a.accountId), ...(a.independentProtection ?? a) , raw: a }))
@@ -82,17 +82,8 @@ export function gradeStopLoss({ policy, maeChandelier, heartbeats, baselineTp = 
     : Number(counts.amends) === 0 ? check('amend_outcomes', NOT_VERIFIABLE, 'no amend since the last boot')
     : check('amend_outcomes', PASS, `${counts.amends} amends, ${counts.applied} applied, ${counts.unchanged} unchanged, none refused`))
 
-  // 6. MAE / Chandelier receipts.
-  const s = maeChandelier?.summary
-  if (!s) out.push(check('chandelier_receipts', NOT_VERIFIABLE, 'GET /state/mae-chandelier did not answer'))
-  else if (!s.receiptsSent && !s.receiptsUnchanged) out.push(check('chandelier_receipts', NOT_VERIFIABLE, `no Chandelier amend yet (${s.positions} positions read, ${s.adjustable} may amend)`))
-  else {
-    const unconfirmed = (maeChandelier.receipts ?? []).filter(r => r.sent === true && r.confirmed !== true)
-    const refused = (maeChandelier.receipts ?? []).filter(r => r.policy?.refused === true)
-    out.push(unconfirmed.length || refused.length
-      ? check('chandelier_receipts', FAIL, `${unconfirmed.length} sent without a broker read-back, ${refused.length} with a refused policy`)
-      : check('chandelier_receipts', PASS, `${s.receiptsSent} sent, ${s.receiptsConfirmed} confirmed, ${s.receiptsUnchanged} unchanged`))
-  }
+  // (Check 6, the MAE/Chandelier observer's receipts, was removed with the
+  // observer on 03-10-2026: it never produced a usable reading in production.)
 
   // 7. Take profit identical to the baseline (an amend REPLACES protection).
   if (baselineTp) {

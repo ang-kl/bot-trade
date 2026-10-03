@@ -46,8 +46,7 @@ test('read-only worker preserves exact account, calendar, activity, ownership an
   assert.equal(direct.work.find(w => w.accountId === '22').calendar, null)
   assert.equal(direct.work.find(w => w.id === 'position:1').lastCompletedAtMs, now - 2000)
   assert.equal(direct.work.some(w => w.id === 'position:3' || w.id === 'position:4'), false)
-  assert.equal(direct.notificationPolicy.owner, 'cpp-verify')
-  assert.equal(direct.notificationPolicy.enabled, false)
+  assert.equal(direct.notificationPolicy, undefined) // removed 03-10-2026 with cpp-verify's delivery gate
   assert.deepEqual(db.prepare('SELECT * FROM agent_state ORDER BY key').all(), before)
   assert.equal(db.prepare('SELECT count(*) n FROM entry_intents').get().n, 0)
 })

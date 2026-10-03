@@ -1,5 +1,7 @@
 # Bounded production watchdog acceptance proposal
 
+> **Note, 03-10-2026 (owner: "remove all three"):** cpp-verify's Telegram delivery channel — the transport, the 24 h muted soak, `POST /watchdog/mute`, the 512-item outbox, the would-send/would-deliver counters, `WATCHDOG_TELEGRAM_*` / `WATCHDOG_MASTER_ENABLED` / `WATCHDOG_INCIDENT_OWNER` and the Node `verify-observer` outbox — was removed. It never delivered a message. The verifier keeps its incident record on `GET /watchdog-status` (`delivery.channel: "none"`) and sends nothing; the dispose route this record lists as outstanding was removed with the channel, 03-10-2026. What follows is the dated record as written.
+
 Status: prepared, not executed. Production observation remains enabled; delivery,
 incident ownership handoff and the external observer remain disabled/unconfigured.
 This proposal does not authorise orders, position changes or scanner feeds.

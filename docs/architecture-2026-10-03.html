@@ -1,0 +1,226 @@
+<title>bot-trade Architecture</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap">
+<style>
+/* Layout: one reading column (68ch) with full-width diagram bands; a trading-desk ledger look, slate neutrals, one amber accent for "the money path". */
+:root{
+  --bg:#f6f7f4; --panel:#ffffff; --ink:#1f2630; --muted:#5b6673; --line:#cfd6dc;
+  --accent:#b8681a; --accent-ink:#7a4208; --node:#e8eef3; --cpp:#fbf1e3; --broker:#e9f0e6; --removed:#f3e5e5; --removed-ink:#8a3a3a;
+  --good:#2e7d4f; --warn:#a56a00;
+  --display:"Fraunces",Georgia,serif; --body:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#161a1f; --panel:#1f252c; --ink:#e7eaee; --muted:#9aa5b1; --line:#3a434d;
+  --accent:#e09a4a; --accent-ink:#f2c48a; --node:#263241; --cpp:#3a2f1f; --broker:#223126; --removed:#3a2424; --removed-ink:#e3a3a3;
+  --good:#6fce95; --warn:#e4b35a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#161a1f; --panel:#1f252c; --ink:#e7eaee; --muted:#9aa5b1; --line:#3a434d;
+  --accent:#e09a4a; --accent-ink:#f2c48a; --node:#263241; --cpp:#3a2f1f; --broker:#223126; --removed:#3a2424; --removed-ink:#e3a3a3;
+  --good:#6fce95; --warn:#e4b35a; color-scheme:dark}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.55;margin:0}
+main{max-width:1100px;margin:0 auto;padding-block:32px 72px;padding-inline:16px}
+h1{font-family:var(--display);font-weight:600;font-size:clamp(1.9rem,4vw,2.7rem);line-height:1.1;margin:0 0 6px;text-wrap:balance}
+h2{font-family:var(--display);font-weight:500;font-size:1.45rem;margin:44px 0 12px;text-wrap:balance}
+h3{font-size:1rem;margin:22px 0 8px}
+p,li{max-width:68ch}
+.lede{color:var(--muted);margin:0 0 18px;max-width:72ch}
+.eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.band{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px;margin:14px 0;overflow-x:auto}
+svg{display:block;max-width:100%;height:auto;font-family:var(--body)}
+svg text{fill:var(--ink)}
+svg .t-muted{fill:var(--muted);font-size:11px}
+svg .t-mono{font-family:var(--mono);font-size:11px}
+svg .t-title{font-weight:600;font-size:13px}
+svg .box-node{fill:var(--node);stroke:var(--line)}
+svg .box-cpp{fill:var(--cpp);stroke:var(--line)}
+svg .box-broker{fill:var(--broker);stroke:var(--line)}
+svg .box-removed{fill:var(--removed);stroke:var(--line);stroke-dasharray:4 3}
+svg .edge{stroke:var(--muted);stroke-width:1.3;fill:none}
+svg .edge-money{stroke:var(--accent);stroke-width:2;fill:none}
+svg .arrow{fill:var(--muted)} svg .arrow-money{fill:var(--accent)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;min-width:0}
+.card h3{margin:0 0 6px}
+.card .meta{font-family:var(--mono);font-size:.78rem;color:var(--muted)}
+table{border-collapse:collapse;width:100%;font-size:.92rem;min-width:620px}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{font-weight:600;background:var(--node)}
+td.n,th.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.wrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:6px}
+ol.chain{counter-reset:s;list-style:none;padding:0;margin:0;display:grid;gap:8px}
+ol.chain li{counter-increment:s;display:grid;grid-template-columns:2.2rem 1fr;gap:10px;align-items:start;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;max-width:none}
+ol.chain li::before{content:counter(s);font-family:var(--mono);font-weight:500;color:var(--accent-ink);font-size:1.05rem;line-height:1.3}
+ol.chain b{font-weight:600}
+code{font-family:var(--mono);font-size:.86em;background:var(--node);padding:1px 5px;border-radius:3px}
+.pill{display:inline-block;font-family:var(--mono);font-size:.72rem;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted);vertical-align:middle}
+.pill.removed{background:var(--removed);color:var(--removed-ink)}
+.pill.keep{color:var(--good)}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.85rem;color:var(--muted);margin:6px 0 0}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:14px;height:14px;border:1px solid var(--line);border-radius:3px;display:inline-block}
+.foot{color:var(--muted);font-size:.85rem;margin-top:40px;border-top:1px solid var(--line);padding-top:12px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<main>
+<p class="eyebrow">bot-trade · read from the code on 03-10-2026 · № 10,82x</p>
+<h1>bot-trade Architecture</h1>
+<p class="lede">Six processes on Railway, one broker. The Node service decides; two C++ gateways place and protect; two C++ scanners mirror the feed; one C++ verifier reads the broker on its own session and judges the rest. This page shows how work flows, how fast each part runs, and the logic that lets a trade in and takes it out. Every number is from the code, with the file named.</p>
+
+<h2>1. The services and who talks to whom</h2>
+<div class="band">
+<svg viewBox="0 0 1040 560" role="img" aria-label="Service map: Node decides, gateways execute, scanners mirror the feed, verifier audits, all against cTrader">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5 0 10z" class="arrow"/></marker>
+    <marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5 0 10z" class="arrow-money"/></marker>
+  </defs>
+  <!-- Owner / web -->
+  <rect x="20" y="20" width="200" height="70" rx="6" class="box-node"/>
+  <text x="32" y="44" class="t-title">Website (React, dist/)</text>
+  <text x="32" y="62" class="t-muted">served by Node; same-origin</text>
+  <text x="32" y="78" class="t-mono">/state/* · /actions/*</text>
+  <!-- Telegram -->
+  <rect x="20" y="120" width="200" height="60" rx="6" class="box-broker"/>
+  <text x="32" y="144" class="t-title">Telegram (owner)</text>
+  <text x="32" y="162" class="t-muted">daily report, alerts via outbox + digest</text>
+  <!-- Node -->
+  <rect x="300" y="20" width="400" height="190" rx="8" class="box-node"/>
+  <text x="316" y="46" class="t-title">bot-trade (Node) · port 3001 · SQLite /data/agent.db</text>
+  <text x="316" y="68" class="t-muted">main loop every 5 min (Tune 1–60): scan → analyse → risk gate → dispatch</text>
+  <text x="316" y="86" class="t-muted">fast monitor every 3 s · protection band every 60 s · 182 state/action routes</text>
+  <text x="316" y="106" class="t-muted">reconcile every 3rd loop · momentum daily pass after 21:05 UTC</text>
+  <text x="316" y="128" class="t-mono">own cTrader websocket :5036 for bars, quotes, deal history</text>
+  <text x="316" y="150" class="t-mono">tables: trades · monitored_positions · position_history · accounts</text>
+  <text x="316" y="166" class="t-mono">entry_intents (permits) · momentum_book · controller_heartbeats</text>
+  <text x="316" y="192" class="t-muted">42 controllers with heartbeats; 7 connected accounts (4 demo, 3 live)</text>
+  <!-- Gateways -->
+  <rect x="300" y="260" width="190" height="110" rx="8" class="box-cpp"/>
+  <text x="312" y="284" class="t-title">cpp-exec (demo gateway)</text>
+  <text x="312" y="302" class="t-muted">C++ · holds the broker session</text>
+  <text x="312" y="318" class="t-mono">/order /amend /close /cancel</text>
+  <text x="312" y="334" class="t-mono">/positions /trail-config /config</text>
+  <text x="312" y="356" class="t-muted">TrailEngine on every tick · pacer 40/s</text>
+  <rect x="510" y="260" width="190" height="110" rx="8" class="box-cpp"/>
+  <text x="522" y="284" class="t-title">cpp-acct (live gateway)</text>
+  <text x="522" y="302" class="t-muted">same binary, live host</text>
+  <text x="522" y="318" class="t-mono">reconcile every 30 s per account</text>
+  <text x="522" y="334" class="t-mono">peer /health probe every 60 s</text>
+  <text x="522" y="356" class="t-muted">tick spool /data/tick (TICK_SPOOL_PATH)</text>
+  <!-- Scanners -->
+  <rect x="300" y="420" width="190" height="90" rx="8" class="box-cpp"/>
+  <text x="312" y="444" class="t-title">cpp-scan-tick</text>
+  <text x="312" y="462" class="t-muted">tick candidates, comparisons</text>
+  <text x="312" y="478" class="t-mono">POST /feed · 250 ms ingest bound</text>
+  <text x="312" y="496" class="t-mono">GET /comparisons (Node polls 100 ms)</text>
+  <rect x="510" y="420" width="190" height="90" rx="8" class="box-cpp"/>
+  <text x="522" y="444" class="t-title">cpp-scan-timeframe</text>
+  <text x="522" y="462" class="t-muted">bar candidates, mirrored</text>
+  <text x="522" y="478" class="t-mono">POST /evaluate from a Node worker</text>
+  <text x="522" y="496" class="t-mono">bridge checked every 60 s</text>
+  <!-- Verifier -->
+  <rect x="760" y="260" width="260" height="140" rx="8" class="box-cpp"/>
+  <text x="772" y="284" class="t-title">cpp-verify (independent)</text>
+  <text x="772" y="302" class="t-muted">own read-only broker session; never amends</text>
+  <text x="772" y="320" class="t-mono">POST /verify · /protection-status (60 s)</text>
+  <text x="772" y="336" class="t-mono">watchdog probes all 5 services every 15 s</text>
+  <text x="772" y="356" class="t-mono">verdict journal + watchdog-state.json on /data</text>
+  <text x="772" y="380" class="t-muted">Telegram channel: removed 03-10-2026 (record only)</text>
+  <!-- Broker -->
+  <rect x="760" y="20" width="260" height="110" rx="8" class="box-broker"/>
+  <text x="772" y="44" class="t-title">cTrader Open API (Spotware)</text>
+  <text x="772" y="62" class="t-muted">demo.ctraderapi.com · live.ctraderapi.com</text>
+  <text x="772" y="80" class="t-mono">JSON over websocket, TLS, port 5036</text>
+  <text x="772" y="100" class="t-muted">stops carry Opposite trigger; broker-side</text>
+  <text x="772" y="116" class="t-muted">trailing once a stop locks profit</text>
+  <!-- edges -->
+  <path d="M220 55H300" class="edge" marker-end="url(#a)"/>
+  <path d="M300 150H220" class="edge" marker-end="url(#a)"/>
+  <path d="M400 210V260" class="edge-money" marker-end="url(#am)"/>
+  <path d="M600 210V260" class="edge-money" marker-end="url(#am)"/>
+  <text x="408" y="240" class="t-mono" style="fill:var(--accent-ink)">orders, amends, closes (Bearer, 30 s timeout)</text>
+  <path d="M490 110H760" class="edge" marker-end="url(#a)"/>
+  <text x="700" y="100" class="t-muted" text-anchor="end">bars, quotes, deals</text>
+  <path d="M490 300C560 230 700 150 760 120" class="edge-money" marker-end="url(#am)"/>
+  <path d="M700 300C740 260 780 200 820 130" class="edge-money" marker-end="url(#am)"/>
+  <path d="M890 260V130" class="edge" marker-end="url(#a)"/>
+  <text x="900" y="200" class="t-muted">read-only</text>
+  <path d="M395 370V420" class="edge" marker-end="url(#a)"/>
+  <text x="402" y="398" class="t-muted">gateway pushes ticks (/feed)</text>
+  <path d="M520 420C520 400 560 390 600 370" class="edge" marker-end="url(#a)"/>
+  <path d="M700 330H760" class="edge" marker-end="url(#a)"/>
+  <text x="704" y="322" class="t-muted">probes</text>
+  <path d="M700 210C740 230 760 240 790 260" class="edge" marker-end="url(#a)"/>
+  <text x="712" y="226" class="t-muted">verify, probe</text>
+  <path d="M300 465C260 465 240 300 300 210" class="edge" marker-end="url(#a)"/>
+  <text x="228" y="380" class="t-muted" transform="rotate(-80 228 380)">candidates read back</text>
+</svg>
+<div class="legend"><span><i class="sw" style="background:var(--node)"></i>Node (JavaScript)</span><span><i class="sw" style="background:var(--cpp)"></i>C++ sidecars</span><span><i class="sw" style="background:var(--broker)"></i>outside the repo</span><span><i class="sw" style="background:var(--accent);border-color:var(--accent)"></i>the money path</span></div>
+</div>
+<p>One rule shapes the whole map: only the two gateways can place, amend or close. Node never holds order authority itself; it sends a request with a one-use permit and reads back what the broker holds. The verifier can read the broker but has no write route at all, which is what makes its verdicts independent.</p>
+
+<h2>2. The clocks: how fast each part runs</h2>
+<p>Three speeds coexist. Decisions are slow and batched (minutes). Protection is fast and narrow (seconds). The broker-side stop is instant, because the broker holds it even if every service here is down.</p>
+<div class="wrap"><table>
+<thead><tr><th>Clock</th><th class="n">Period</th><th>What runs on it</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Main loop</td><td class="n">5 min (Tune 1–60)</td><td>scan the universe, analyse, risk gate, dispatch, reconcile every 3rd loop, P&amp;L backfill, daily passes. Soft deadline 7 min; the scan gets half.</td><td>agent/loop.js:70-77, :3299</td></tr>
+<tr><td>Fast monitor</td><td class="n">3 s (floor 1 s)</td><td>re-price every open position from the gateway quote, run the exit ladder, send MOVE_SL / exits through the one amend chokepoint</td><td>agent/services/fast-monitor.js:1424</td></tr>
+<tr><td>Protection band</td><td class="n">60 s (floor 5 s)</td><td>profit keeper, trade guards, loss guardian, stop-policy controller, protection audit; each job gets a 5 s budget, the audit 4 s per account</td><td>fast-monitor.js:1425, :1145-1299; naked-position-guard.js:1133</td></tr>
+<tr><td>Sidecar TrailEngine</td><td class="n">every tick, drain 200 ms</td><td>advances the since-entry trail on the gateway; ratchet only, never loosens</td><td>cpp-exec/src/trail_engine.cpp:224</td></tr>
+<tr><td>Gateway reconcile</td><td class="n">30 s per account</td><td>broker position read the gateway keeps for Node's reconcile and the never-loosen check</td><td>cpp-exec/src/engine.cpp:1098</td></tr>
+<tr><td>Verifier</td><td class="n">15 s probes · 60 s watch · 9 s heartbeat</td><td>watchdog probes the five services; protection watch reads every account's stops on its own session; Node polls it every 30 s</td><td>cpp-verify/src/watchdog.hpp:10, protection_watch.cpp:47</td></tr>
+<tr><td>Tick mirror</td><td class="n">5 ms idle · 250 ms bound</td><td>gateway drains up to 256 records per pass to the tick scanner; the scanner parses before the producer's turn with a bounded wait</td><td>cpp-exec/src/scanner_mirror.cpp:50-67; cpp-scan-tick/src/scanner.hpp:41</td></tr>
+<tr><td>Momentum daily pass</td><td class="n">once a day after 21:05 UTC</td><td>rank exits and new book entries for the weeks-horizon accounts</td><td>momentum-account.js:147,351</td></tr>
+<tr><td>Daily report</td><td class="n">24 h after the last</td><td>the Telegram summary; observed at 13:10 SGT</td><td>daily-report.js:24-48</td></tr>
+</tbody></table></div>
+<h3>Measured, not designed</h3>
+<div class="grid">
+  <div class="card"><h3>Scan phase</h3><p class="meta">67.3 s → 39.5 s after #1189</p><p>The first loop after boot: 145.9 s → 123.6 s; re-measured 03-10 at 81.3 s. Loops after that take 10–31 s, or 63–74 s while a research job runs.</p></div>
+  <div class="card"><h3>Amend path</h3><p class="meta">Node → gateway → broker → read-back</p><p>One chokepoint stamps the stop policy on every amend; the sidecar reads the live stop first and refuses to loosen. The sidecar call times out at 30 s.</p></div>
+  <div class="card"><h3>Exit latency</h3><p class="meta">up to 5 s behind main</p><p>The fast monitor's own exits can land up to 5 s after the main loop's, by design of the ordering (main finishes every position first).</p></div>
+</div>
+
+<h2>3. Entry logic: what a signal has to pass to become a trade</h2>
+<p>The order below is the order in the code. A refusal at any step is recorded with its reason (owner principle 4: every trade, and every refusal, has a reason).</p>
+<ol class="chain">
+<li><div><b>A producer proposes.</b> Strategy autopilot on the scan, the momentum account's daily pass, the cross-sectional book, the tick firer on the gateway, or a manual route. The inventory of producers is pinned in <code>agent/lib/entry-producers.js</code>.</div></li>
+<li><div><b>Entry-mode admission.</b> Each account is TIME_BASED (bars), TICK_MOMENTUM or STOPPED. <code>admitEntry</code> is asked at the start of the trade step and again inside <code>placeOrder</code>, so nothing bypasses it (entry-mode.js:749).</div></li>
+<li><div><b>Vetoes, minimised.</b> Regime gate (no fading a trend), direction policy (shorts on the book only above the 9/10 conviction floor), the R:R floor (3.0 for momentum), a 20-minute dedupe window, cluster conviction. Vetoes are counted as a goal to shrink (principle 7).</div></li>
+<li><div><b>Account pre-gate.</b> Balance in USD through the FX rate table (SGD accounts convert via USDSGD; a stale rate over 26 h refuses), the daily-loss stop, the shared margin pool, the fundable universe, and the caps: 5 open positions, 8 on the book (account-pregate.js:127; risk.js:371).</div></li>
+<li><div><b>Sizing.</b> Per-trade risk 0.25–3 % of balance from Tune; momentum accounts size to a 10 % volatility target; lots rounded to the symbol's step (risk.js:1685; lot-sizing.js:57).</div></li>
+<li><div><b>Permit.</b> The entry-intent ledger reserves one permit for this intent and the order redeems it; a second send with the same intent is refused (entry-ledger.js:246,315).</div></li>
+<li><div><b>Gateway guard and pacing.</b> OrderGuard checks halt, volume cap and bracket; the pacer holds 40 requests a second with a 25 % reserve for protection calls; then the broker (cpp-exec/src/order_guard.cpp, request_pacer.cpp).</div></li>
+<li><div><b>Stop policy on the fill.</b> Every stop is sent with trigger Opposite; broker-side trailing is requested once the stop locks profit (never on book rows); the controller stamps existing positions one per account per pass after a canary (stop-policy.js:37-127; stop-policy-controller.js:169).</div></li>
+</ol>
+
+<h2>4. Exit and protection: the stack that watches a position</h2>
+<p>Each layer has one authority and a named owner. Where two layers could move the same stop, the code gives the position to one of them (the one-horizon rule) rather than letting both act.</p>
+<div class="grid">
+  <div class="card"><h3>Broker-side stop <span class="pill keep">always on</span></h3><p>Opposite trigger on every stop; trailing at the broker once in profit. Survives every outage here. <span class="meta">exec-engine.js:1146</span></p></div>
+  <div class="card"><h3>Fast monitor ladder</h3><p>Peak trail is the only exit-timing rule on managed accounts; +1R partial take for mean reversion only; the time cap applies to intraday rows, weeks-horizon rows are exempt. <span class="meta">managed-exit.js:47-85</span></p></div>
+  <div class="card"><h3>Profit keeper + TrailEngine</h3><p>Since-entry 3×ATR(22) trail spec pushed to the gateway, which ratchets on every tick. Managed accounts and book rows are fenced out. <span class="meta">profit-keeper.js:790</span></p></div>
+  <div class="card"><h3>Momentum book</h3><p>3×ATR(20) stop and trail, 8 positions per account, rank exit on the daily pass after a 24 h minimum hold, partial TP1 overlay. <span class="meta">momentum-book.js:146-177</span></p></div>
+  <div class="card"><h3>Never-loosen rail</h3><p>Every MOVE_SL asks the sidecar to read the broker's stop first; a looser level is refused and the stored stop becomes what the broker holds. <span class="meta">engine.cpp:883</span></p></div>
+  <div class="card"><h3>Closed-market hold</h3><p>An exit refused with MARKET_CLOSED is held until the symbol's session opens instead of resent every minute. <span class="meta">closed-market-hold.js:44</span></p></div>
+  <div class="card"><h3>Account circuit breakers</h3><p>Equity stop flattens and disarms one account on its daily drawdown; the adaptive breaker disarms a strategy on a losing streak; the performance breaker alerts on a bad rolling profit factor and does nothing else <span class="pill removed">auto-disarm removed 03-10</span>. <span class="meta">equity-stop.js, adaptive-breaker.js, performance-breaker.js</span></p></div>
+  <div class="card"><h3>Reconciler</h3><p>Adopts broker positions the bot did not open, refuses another account's reply, voids duplicate rows, and treats a broker-trailed tightening as its own work rather than tampering. <span class="meta">reconciler.js:328-907</span></p></div>
+  <div class="card"><h3>Protection audit</h3><p>Every 60 s, 4 s per account: no naked position, every target present. <span class="meta">naked-position-guard.js:384</span></p></div>
+  <div class="card"><h3>Money record</h3><p>Closed trades get realised P&amp;L from the broker's deal history; a verdict about an earlier false close is superseded when the row closes again later <span class="pill">rule added 03-10</span>. <span class="meta">pnl-backfill.js:162</span></p></div>
+  <div class="card"><h3>Independent verdicts</h3><p>cpp-verify reads every account's positions on its own session and writes verdicts and a protection watch; Node shows them beside its own view. <span class="meta">cpp-verify/src/main.cpp:300</span></p></div>
+  <div class="card"><h3>MAE / Chandelier observer <span class="pill removed">removed 03-10</span></h3><p>Never produced a usable reading in production and was a third stop authority. Only its ATR helper and the keeper's since-entry trail spec remain.</p></div>
+</div>
+
+<h2>5. Where the record lives</h2>
+<div class="grid">
+  <div class="card"><h3>SQLite on the volume</h3><p class="meta">/data/agent.db</p><p>Trades, monitored positions, accounts, permits, the momentum book, heartbeats, the action log, the Telegram outbox and the tick research tables. A path outside the mount is wiped on redeploy.</p></div>
+  <div class="card"><h3>Gateways</h3><p class="meta">/data/tick · telemetry log</p><p>The tick spool with sealed segments served to Node for replay research, and a binary order telemetry log.</p></div>
+  <div class="card"><h3>Verifier</h3><p class="meta">/data/verdicts · watchdog-state.json</p><p>The verdict journal and the incident record of every service probe. No delivery channel: incidents are read into Node's heartbeats, nothing is sent.</p></div>
+  <div class="card"><h3>What the owner sees</h3><p class="meta">Performance · Desk · Trade · Accounts · Risk · Tune · Reasons</p><p>The site reads the same state routes the bot uses; a switch on the site is a switch in the logic (principle 6). Telegram carries the daily report and the urgent alerts through quiet hours and the digest.</p></div>
+</div>
+
+<h2>6. The two accounts of truth</h2>
+<p>Everything above reduces to one habit: a reading from the service that acts is never trusted alone. The gateway holds the broker session and reports what it sent; the verifier reads the broker on another session and reports what is held; the heartbeats show whether each controller ran, not whether it was configured. When two readings of one subsystem disagree, the one that updated most recently is the one to believe, and the disagreement itself is the finding.</p>
+
+<p class="foot">Read from the repository at main 1197192c plus the 03-10-2026 removal bundle. Cadences are code defaults with their environment or Tune overrides named; production may run overrides. Measured figures are from the Railway logs and the dated plan documents, not estimates.</p>
+</main>

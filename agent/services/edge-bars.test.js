@@ -44,9 +44,9 @@ test('an inverted ordering is REPORTED, not silently accepted', () => {
     'a go-live PF of 1.2 sits below the 1.7 arming bar — that is the drift')
 })
 
-test('the register records that the breaker only alerts', () => {
-  // Owner 2026-07-30, re-confirmed 2026-08-03. A reader of the register must
-  // not mistake a PF floor for an automatic stop.
-  assert.equal(BREAKER_BAR.autoDisarm, false)
-  assert.equal(DEFAULT_PERFORMANCE_BREAKER.autoDisarm, false, 'the register must not disagree with the module')
+test('the register records that the breaker only alerts — there is no auto-disarm knob to mistake for a stop', () => {
+  // Owner 2026-07-30, re-confirmed 2026-08-03; the capability itself was
+  // removed 03-10-2026 on the owner's order.
+  assert.equal('autoDisarm' in BREAKER_BAR, false)
+  assert.equal('autoDisarm' in DEFAULT_PERFORMANCE_BREAKER, false, 'the register must not disagree with the module')
 })

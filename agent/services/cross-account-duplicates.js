@@ -26,6 +26,7 @@
 // reader that selects open/closed already excludes — with the marker in
 // close_reason ('cross_account_duplicate:' / 'duplicate_adoption:').
 import { normPosId } from '../lib/pos-id.js'
+import { resetPnlVerdict } from './pnl-verdict-supersede.js'
 
 export const VOID_STATUS = 'cancelled'
 const NO_DEAL = "(exit_price IS NULL AND net_pnl IS NULL AND gross_pnl IS NULL)"
@@ -114,6 +115,12 @@ export function applyCrossAccountDuplicates(db, plan, { at = new Date().toISOStr
         // and the close stamp wrote is cleared, since the close never happened.
         db.prepare(`UPDATE trades SET status = 'open', closed_at = NULL, closed_at_ms = NULL, hold_duration_ms = NULL, close_reason = NULL,
                       exit_price = NULL, gross_pnl = NULL, net_pnl = NULL, realised_rr = NULL, pnl_price_mismatch = NULL WHERE id = ?`).run(pr.originalTradeId)
+        // Rule 1 (03-10-2026, #1489 JNJ.US): the P&L verdict accumulated
+        // against the close that did not happen — six refused attempts, the
+        // write-off, the reader's memory, the capture give-up — goes with it,
+        // or the next REAL close inherits a terminal verdict about this one.
+        resetPnlVerdict(db, pr.originalTradeId, { method: 'PNL_VERDICT_RESET_ON_REOPEN', path: '/actions/positions/void-cross-account-duplicates', at,
+          note: `reopened: the 30-09 close was false (twin ${pr.twinTradeId} voided)` })
         // Management rows follow the position, not the row id: the twin's
         // monitor and book rows (the stop they trailed since 30-09 included)
         // are relinked to the original; the original's own stale rows close.

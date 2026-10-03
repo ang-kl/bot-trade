@@ -1,8 +1,7 @@
 import { getState } from '../db.js'
 import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { readMarketCalendar } from './market-calendar.js'
-import { projectCalendar, calendarIntervals, contractCalendar } from '../lib/calendar-intervals.js'
-import { loadNotifyConfig } from './telegram-digest.js'
+import { projectCalendar, contractCalendar } from '../lib/calendar-intervals.js'
 import { DEFAULT_SENT_TIMEOUT_MS } from './entry-ledger.js'
 import { scannerWork, watchdogCalendars, scannerCollectorWork } from './scanner-work.js'
 import { entryDiagnostics } from './blocker-report.js'
@@ -14,31 +13,11 @@ const DAY = 86400_000
 // cpp-verify rejects a Node contract over 256 KiB (watchdog_state.cpp) and an
 // oversize contract empties `work` here, which blinds the watchdog.
 export const CONTRACT_MAX_BYTES = 256 * 1024
-let quietCache = null
-function notificationPolicy(db, now) {
-  const cfg = loadNotifyConfig(db), raw = getState(db, 'telegram_notify_json')
-  // Preserve the master's OFF and treat a corrupt persisted policy as unknown.
-  const parsed = read(db, 'telegram_notify_json')
-  const valid = raw == null || (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed))
-  const owner = getState(db, 'watchdog_incident_owner') === 'cpp-verify' ? 'cpp-verify' : 'node'
-  let quietIntervals = []
-  const from = Math.floor(now / DAY) * DAY, to = from + 2 * DAY
-  try {
-    if (cfg.quiet) {
-      const key = JSON.stringify([cfg.quiet, cfg.tz, from])
-      if (quietCache?.key !== key) {
-        const sec = s => { const [h, m] = s.split(':').map(Number); return h * 3600 + m * 60 }
-        const a = sec(cfg.quiet.start), b = sec(cfg.quiet.end)
-        const schedule = Array.from({ length: 7 }, (_, day) => ({ startSecond: day * 86400 + a,
-          endSecond: (day * 86400 + (b > a ? b : 86400 + b)) % (7 * 86400) }))
-        quietCache = { key, intervals: calendarIntervals({ scheduleTimeZone: cfg.tz, schedule, holiday: [] }, from, to) }
-      }
-      quietIntervals = quietCache.intervals
-    }
-  } catch { return { enabled: false, owner, observedAtMs: now, expiresAtMs: now, quietIntervals: [], reason: 'notification_timezone_unknown' } }
-  return { enabled: valid && cfg.enabled, owner, observedAtMs: now, expiresAtMs: now + DAY,
-    quietIntervals, urgentBypass: cfg.urgentBypass, source: 'telegram_notify_json' }
-}
+// The contract once carried a `notificationPolicy` (Node's telegram_notify
+// master, the quiet hours as intervals, the incident owner) for cpp-verify's
+// delivery gate to read when Node was down. That gate — the verifier's
+// Telegram channel — was removed 03-10-2026 (owner: "remove all three");
+// nothing read the policy but it, so it is gone from the contract.
 
 const exactKey = (accountId, host, symbolId) => [accountId, host, symbolId].every(v => typeof v === 'string' && v) ? `${accountId}|${host}|${symbolId}` : null
 /**
@@ -115,7 +94,7 @@ export function nodeWatchdogContract(db, { now = Date.now(), env = process.env, 
   const calendars = watchdogCalendars(db, now, { lead })
   shareCalendars(work, calendars.calendars, now)
   const out = { schemaVersion: 1, service: 'node', observedAtMs: now, ...calendars, workComplete: positions.length <= 2048 && intents.length <= 2048 && work.length <= 2048 && !work.some(w => w.inventoryComplete === false),
-    work: work.slice(0, 2048), notificationPolicy: notificationPolicy(db, now), entryDiagnostics: diagnostics,
+    work: work.slice(0, 2048), entryDiagnostics: diagnostics,
     limitations: ['Scanner work is published by its actual owner; a Node timer is not a scanner receipt.', 'No closed-market management deadline has been invented.',
       'A work item marked calendarIn "calendars" carries no calendar of its own: its calendar is the calendars entry with the same accountId, host and symbolId.'] }
   if (Buffer.byteLength(JSON.stringify(out)) > CONTRACT_MAX_BYTES) out.entryDiagnostics = { schemaVersion: 1, source: 'node_records', observedAtMs: now, complete: false, reason: 'contract_size_bound', accounts: [] }

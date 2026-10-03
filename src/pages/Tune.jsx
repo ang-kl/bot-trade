@@ -1910,7 +1910,8 @@ export default function Tune() {
                 bad rolling profit factor that never strings 3 losses in a
                 row still bleeds, so this watches the AGGREGATE edge
                 (owner: "what checkpoints would trigger all hands on deck to
-                turn the tide"). Alert-first — auto-disarm is opt-in. */}
+                turn the tide"). Alert only — its auto-disarm toggle was
+                removed 03-10-2026 on the owner's order. */}
             <div className="mt-2 flex flex-wrap items-center gap-2 text-(length:--fs-body)">
               <Toggle on={config?.performance_breaker?.on !== false} label="Performance breaker (all hands on deck)" onClick={() => {
                 const next = !(config?.performance_breaker?.on !== false)
@@ -1922,14 +1923,6 @@ export default function Tune() {
               <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
                 profit factor below {config?.performance_breaker?.pfThreshold ?? 0.8} over the last {config?.performance_breaker?.window ?? 20} closed trades (min {config?.performance_breaker?.minTrades ?? 15} to judge an edge) → urgent Telegram alert
               </span>
-              <Toggle on={config?.performance_breaker?.autoDisarm === true} label="also auto-disarm autotrade" onClick={() => {
-                const next = !(config?.performance_breaker?.autoDisarm === true)
-                if (next && !window.confirm('Auto-disarm autotrade when the performance breaker fires? New entries stop until you re-arm from Tune — open positions keep being managed normally.')) return
-                run(async () => {
-                  const r = await agentPost('/actions/performance-breaker', { autoDisarm: next })
-                  setConfig(c => ({ ...c, performance_breaker: r }))
-                }, `Performance breaker auto-disarm ${next ? 'ON' : 'off'}`)
-              }} />
             </div>
             {/* Regime gate — owner: "trading like a beginner" (PF 0.15). The
                 fade strategy was firing into trends where its levels get

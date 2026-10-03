@@ -1,5 +1,7 @@
 # V3 acceptance sequence — 23 September 2026
 
+> **Note, 03-10-2026 (owner: "remove all three"):** cpp-verify's Telegram delivery channel — the transport, the 24 h muted soak, `POST /watchdog/mute`, the 512-item outbox, the would-send/would-deliver counters, `WATCHDOG_TELEGRAM_*` / `WATCHDOG_MASTER_ENABLED` / `WATCHDOG_INCIDENT_OWNER` and the Node `verify-observer` outbox — was removed. It never delivered a message. The verifier keeps its incident record on `GET /watchdog-status` (`delivery.channel: "none"`) and sends nothing; the dispose route this record lists as outstanding was removed with the channel, 03-10-2026. What follows is the dated record as written.
+
 The owner requested protection exceptions, watchdog/scanner load acceptance,
 then a scoped production end-to-end test before the New York open. This record
 separates observed production facts from local tests. It is not trading approval

@@ -63,35 +63,27 @@ describe('controller evidence presentation', () => {
       entryDiagnostics: { available: false, reason: 'no_node_contract_since_start', accounts: [] } }) }} />)
     expect(none).toContain('unavailable: no_node_contract_since_start')
   })
-  it('shows the cpp-verify delivery gate: a wedged unmute with its remedy, an undurable mute, demand against delivery (V3 CV-2 round 3)', () => {
+  it('names the removed cpp-verify delivery channel (03-10-2026) and says so for a build that reports none', () => {
     const now = Date.now()
-    const watchdog = status => ({ readAt: new Date(now).toISOString(), status: { enabled: true, durable: false, policy: { serviceGraceMs: 60000 }, services: {}, dropped: 1526163, ...status } })
+    const watchdog = status => ({ readAt: new Date(now).toISOString(), status: { enabled: true, durable: true, policy: { serviceGraceMs: 60000 }, services: {}, dropped: 3, ...status } })
     const html = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: watchdog({
-      muteNotDurable: true, muteFallback: 'set WATCHDOG_MASTER_ENABLED=0 on cpp-verify',
-      delivery: { muted: true, open: false, soakActive: false, unmuteRefusal: 'stale_backlog', staleBacklog: { count: 512, olderThanMs: 3600000 },
-        wouldSend: { total: 3600, urgent: 3600 }, wouldDeliver: { total: 2880, urgent: 2880 }, sendCeilingPerHour: 240, saturated: true, refused: { total: 88 } },
-    }) }} />)
-    expect(html).toContain('items not stored (every refused offer and each retry of it, evictions, incidents over the cap): 1526163')
-    expect(html).not.toContain('capacity refusals')
-    expect(html).toContain('Delivery gate: MUTED')
-    expect(html).toContain('REFUSED — 512 held item(s) older than 60 min must be disposed of first, and the dispose route is not built yet')
-    expect(html).toContain('The mute is NOT on disk yet: a restart could reopen delivery (set WATCHDOG_MASTER_ENABLED=0 on cpp-verify)')
-    expect(html).toContain('Due to send (demand): 3600 (3600 urgent)')
-    expect(html).toContain('up to 240 an hour): 2880 (2880 urgent) — SATURATED')
-    expect(html).toContain('Refused at the 512-item bound, one per message: 88')
-    // An older cpp-verify reports no gate: said, never read as open or muted.
+      delivery: { channel: 'none', removedOn: '2026-10-03', note: 'incidents are a record; nothing is sent' } }) }} />)
+    expect(html).toContain('Delivery channel: none (removed 03-10-2026). Incidents on this page are a record; the verifier sends nothing.')
+    expect(html).toContain('Incidents not recorded (over the verifier&#x27;s 2,048 cap): 3')
+    // Nothing of the removed channel is rendered: no gate verdict, no demand, no mute, no credentials, no observer.
+    for (const gone of ['Delivery gate: MUTED', 'Delivery gate: OPEN', 'Due to send', 'would deliver', 'Pending deliveries', 'Telegram',
+      'Master notification permission', 'Delivery credentials configured', 'Incident owner configured', 'External verifier observer', 'Urgent notifications permitted']) {
+      expect(html).not.toContain(gone)
+    }
+    // A cpp-verify build before the removal reports no block: said, never read as a channel of any kind.
     const old = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: watchdog({}) }} />)
     expect(old).toContain('Delivery gate: not reported by this cpp-verify build')
-    expect(old).not.toContain('Delivery gate: MUTED')
-    expect(old).not.toContain('Delivery gate: OPEN')
-    // Not muted is not open: OPEN is shown only when the verifier says so.
-    const closed = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: watchdog({
-      delivery: { muted: false, open: false, reason: 'soak_active', soakActive: true, soakEndsAtMs: now + 3600000 } }) }} />)
-    expect(closed).toContain('Delivery gate: CLOSED (soak_active)')
-    expect(closed).not.toContain('Delivery gate: OPEN')
-    const open = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: watchdog({
-      delivery: { muted: false, open: true, reason: 'open', soakActive: false } }) }} />)
-    expect(open).toContain('Delivery gate: OPEN. An unmute now: not needed (not muted).')
+    expect(old).not.toContain('Delivery channel: none')
+    // The CV-2 shape (muted/open) is not read as the removed channel either.
+    const cv2 = renderToStaticMarkup(<ControllerRuntime runtime={{ accounts: [], sides: [], watchdog: watchdog({
+      delivery: { muted: true, open: false, reason: 'soak_active' } }) }} />)
+    expect(cv2).toContain('reported in a shape this page does not read')
+    expect(cv2).not.toContain('Delivery channel: none')
   })
   it('keeps absent scanner evidence unknown and shows actual mismatches and worker failures', () => {
     const runtime = { accounts: [], sides: [] }

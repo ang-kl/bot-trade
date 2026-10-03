@@ -11,7 +11,6 @@ import { recordScanPass } from './lib/bar-path-counters.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows, rosterArmedTradeKeys } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
-import { decideAdjust, recordObserve, cachedBars, shouldSendChandelierAdjust, recordAmendReceipt, receiptFromBrokerOutcome, positionOpenedAtMs, freshMid } from './services/mae-chandelier-observe.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
 import { horizonForStrategy } from './services/trade-horizon.js'
@@ -26,7 +25,6 @@ import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
 import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } from './lib/sessions.js'
 import { runWithClosedMarketHold } from './lib/closed-market-hold.js'
-import { isSymbolOpenCached } from './services/symbol-hours.js'
 import { exitMarketHours } from './services/exit-hours.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from './lib/trade-labels.js'
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
@@ -2701,22 +2699,6 @@ export function posTag(pos) {
   return `${pos?.symbol} [${acct} row${pos?.id} ${trade}]`
 }
 
-/**
- * The broker symbol id for a monitored row: the row's own column when a
- * caller supplies one, else the account's symbol map (`symbol_id_map`,
- * keyed by upper-case symbol). '' when neither knows the symbol, so the bar
- * cache misses rather than throws.
- */
-export function monitorSymbolIdFor(db, pos) {
-  const own = pos?.symbol_id || pos?.symbolId
-  if (own) return String(own)
-  try {
-    const map = JSON.parse(getState(db, 'symbol_id_map') || '{}')
-    const hit = map[String(pos?.symbol || '').toUpperCase()]
-    return hit == null ? '' : String(hit)
-  } catch { return '' }
-}
-
 export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false) {
   // Managed-exit trail (owner "c1" 25-08-2026; ONE SIMPLE SYSTEM 28-08-2026:
   // "proceed as plan", win-rate goal > 69%): on managed accounts the
@@ -2732,38 +2714,6 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // whenever the keeper has not computed one for this symbol this bar, in
   // which case the multiplier falls back to the position's own 1R distance.
   const eval_ = evaluatePosition(pos, { currentPrice, rules, atr: cachedAtrForSymbol(db, pos.symbol) })
-  // Timeframe pass: same tighten as the tick. Cached bars only, so this pass
-  // does not add a trendbar fetch. External rows are recorded and not amended.
-  try {
-    // The monitored row carries no symbol id (02-10-2026, № 10,473·B·1):
-    // asked with '' the bar cache always missed, so this pass never had an
-    // ATR and never tightened. The id comes from the account's symbol map,
-    // the same lookup the fast monitor makes.
-    const symbolId = monitorSymbolIdFor(db, pos)
-    // Same key as the fast monitor's fill: the symbol name (an id is only
-    // meaningful inside one account's id space).
-    const bars = cachedBars(String(pos.symbol || '').toUpperCase())
-    // A held price missing here is read from the fast monitor's own latest
-    // quote (at most a minute old) before the reading is called quote-less.
-    const priceNow = Number(currentPrice) > 0 ? Number(currentPrice) : freshMid(pos.id)
-    let marketOpen = null
-    try { marketOpen = isSymbolOpenCached(db, pos.symbol).open !== false } catch { marketOpen = null }
-    const reading = decideAdjust({
-      side: pos.side,
-      entry: Number(pos.entry_price),
-      price: priceNow,
-      sl: Number(pos.current_sl) || null,
-      bars,
-      openedAtMs: positionOpenedAtMs(db, pos),
-      marketOpen,
-    })
-    recordObserve(db, [{ id: String(pos.id), symbol: pos.symbol, accountId: pos.account_id || null, symbolId: symbolId || null, pass: 'timeframe', ...reading }]).catch(() => {})
-    if (shouldSendChandelierAdjust(pos, reading)) {
-      const outcome = await executeBrokerAction(db, s, pos, reading.adjust, 'mae_chandelier_timeframe')
-      recordAmendReceipt(db, receiptFromBrokerOutcome(pos.id, reading.adjust.newSL, outcome)).catch(() => {})
-    }
-  } catch (err) { log(`[mae-chandelier-observe] timeframe row failed: ${err?.message || err}`) }
-
   // Persist MFE/MAE and any flag flips every loop, regardless of action.
   s.updatePositionMetrics.run(
     eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
@@ -3804,6 +3754,14 @@ async function runLoop(db) {
             // A detected close still forces an immediate attempt, so a fresh
             // stop-out is filled the same cycle instead of waiting on pacing.
             const closeSeen = shouldRunPnlBackfill(result)
+            // Rule 2 (03-10-2026, #1489 JNJ.US): a row closed AFTER its last
+            // P&L attempt carries a verdict about an earlier, false close.
+            // One indexed read; resets it to a fresh candidate and names it,
+            // before this cycle's pass so the same pass can settle it.
+            try {
+              const { sweepSupersededPnlVerdicts } = await import('./services/pnl-verdict-supersede.js')
+              sweepSupersededPnlVerdicts(db, { log })
+            } catch (e) { log(`P&L verdict sweep failed (non-fatal): ${e.message}`) }
             {
               // Cheap pre-check so the log can tell "nothing was missing"
               // apart from "something was missing and still is after this
@@ -6018,7 +5976,7 @@ async function runLoop(db) {
         const pb = runPerformanceBreaker(db, {
           notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
         })
-        if (pb.triggered) log(`Performance breaker: PF ${pb.stats.profitFactor} over ${pb.stats.trades} trades${pb.autoDisarmed ? ' — autotrade disarmed' : ''}`)
+        if (pb.triggered) log(`Performance breaker: PF ${pb.stats.profitFactor} over ${pb.stats.trades} trades — alert only`)
         await hbeat(db, 'performance_breaker')
         stampFirst('performanceBreaker', { ok: true, triggered: !!pb.triggered })
       } catch (err) {

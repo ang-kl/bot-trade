@@ -91,3 +91,26 @@ test('dry run writes nothing; apply voids the phantoms, reopens JNJ and relinks 
   const again = await post(base, { apply: true })
   assert.deepEqual([again.plan.phantoms.length, again.plan.pairs.length], [0, 0])
 })
+
+// Rule 1 (03-10-2026): the reopen resets the P&L verdict the false close had
+// accumulated. On production #1489 kept pnl_attempts 6 (the cap), the terminal
+// write-off and the reader's "judged" memory through its reopen, so its REAL
+// close on 02-10 was skipped by every repair for ever.
+test('reopening the original resets the verdict spent on its false close: attempts, write-off, reader memory, capture give-up', async t => {
+  const { db, server, base } = serve(); t.after(() => server.close())
+  const VERDICT = 'unresolved: no broker evidence: ledger identity ambiguous for position 240732676 on account 46130058 (#1489:closed,#1733:open); 6 attempt(s), last 2026-09-30T09:49:45.677Z; net_pnl stays NULL, excluded from P&L, shown'
+  db.prepare(`UPDATE trades SET pnl_attempts = 6, pnl_last_attempt_at = '2026-09-30T09:49:45.677Z', pnl_unresolvable = 1, pnl_unresolvable_reason = ?, pnl_unresolvable_at = '2026-09-30T09:49:45.677Z' WHERE id = 1489`).run(VERDICT)
+  setState(db, `position_pnl_reread:${A}`, JSON.stringify({ 1489: { at: '2026-09-30T09:49:45.677Z', outcome: 'terminal', rule: 3 }, 1500: { at: '2026-09-12T00:00:00Z', outcome: 'settled', rule: 3 } }))
+  db.prepare(`INSERT INTO position_capture_queue (account_id, position_id, symbol, due_at_ms, attempts, state, last_error, settled_at) VALUES (?, '240732676', 'JNJ.US', 0, 6, 'gave_up', 'missing: close_deal', '2026-09-30T08:31:00.000Z')`).run(A)
+  const r = await post(base, { apply: true })
+  assert.deepEqual(r.result.reopened, [{ originalTradeId: 1489, voidedTwin: 1733 }])
+  const jnj = db.prepare(`SELECT status, pnl_attempts, pnl_last_attempt_at, COALESCE(pnl_unresolvable,0) AS pnl_unresolvable, pnl_unresolvable_reason, pnl_unresolvable_at FROM trades WHERE id = 1489`).get()
+  assert.deepEqual(jnj, { status: 'open', pnl_attempts: 0, pnl_last_attempt_at: null, pnl_unresolvable: 0, pnl_unresolvable_reason: null, pnl_unresolvable_at: null })
+  assert.deepEqual(JSON.parse(db.prepare(`SELECT value FROM agent_state WHERE key = ?`).get(`position_pnl_reread:${A}`).value),
+    { 1500: { at: '2026-09-12T00:00:00Z', outcome: 'settled', rule: 3 } }, 'only the reopened row is forgotten')
+  assert.deepEqual(db.prepare(`SELECT state, attempts, last_error FROM position_capture_queue WHERE account_id = ? AND position_id = '240732676'`).get(A), { state: 'pending', attempts: 0, last_error: null })
+  const audit = db.prepare(`SELECT body FROM action_log WHERE method = 'PNL_VERDICT_RESET_ON_REOPEN'`).all()
+  assert.equal(audit.length, 1)
+  const body = JSON.parse(audit[0].body)
+  assert.equal(body.tradeId, 1489); assert.equal(body.attempts, 6); assert.equal(body.writtenOffReason, VERDICT); assert.match(body.note, /twin 1733 voided/)
+})

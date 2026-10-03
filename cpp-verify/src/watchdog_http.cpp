@@ -9,13 +9,13 @@ size_t collect(char* ptr, size_t size, size_t count, void* data) {
   out.append(ptr, size * count); return size * count;
 }
 }
-WatchHttpResult watchHttp(const std::string& url, const std::string& bearer, const std::string& post, long deadlineMs) {
+WatchHttpResult watchHttp(const std::string& url, const std::string& bearer, long deadlineMs) {
   WatchHttpResult result;
   static std::once_flag init;
   std::call_once(init, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
   if ((!url.starts_with("http://") && !url.starts_with("https://")) || url.size() > 2048
       || url.find_first_of("\r\n") != std::string::npos || bearer.find_first_of("\r\n") != std::string::npos
-      || deadlineMs < 1 || deadlineMs > 5000 || post.size() > 16384) return result;
+      || deadlineMs < 1 || deadlineMs > 5000) return result;
   CURL* curl = curl_easy_init(); if (!curl) return result;
   // A threaded or asynchronous resolver is necessary for a bounded DNS wait
   // with NOSIGNAL. Refuse an unsuitable build rather than making a false claim.
@@ -23,7 +23,6 @@ WatchHttpResult watchHttp(const std::string& url, const std::string& bearer, con
   std::string body;
   curl_slist* headers = nullptr;
   if (!bearer.empty()) headers = curl_slist_append(headers, ("Authorization: Bearer " + bearer).c_str());
-  if (!post.empty()) headers = curl_slist_append(headers, "Content-Type: application/json");
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
@@ -35,7 +34,6 @@ WatchHttpResult watchHttp(const std::string& url, const std::string& bearer, con
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-  if (!post.empty()) { curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post.c_str()); curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(post.size())); }
   const auto code = curl_easy_perform(curl);
   if (code == CURLE_OK) {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &result.status);

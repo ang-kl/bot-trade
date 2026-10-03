@@ -1980,21 +1980,23 @@ export default function actionsRouter(db, deps = {}) {
 
   // -----------------------------------------------------------------------
   // POST /actions/performance-breaker — { on?, window?, minTrades?,
-  // pfThreshold?, autoDisarm? } tunes the "all hands on deck" rolling
-  // profit-factor checkpoint (owner: "what checkpoints would trigger all
-  // hands on deck to turn the tide").
+  // pfThreshold? } tunes the "all hands on deck" rolling profit-factor
+  // checkpoint (owner: "what checkpoints would trigger all hands on deck to
+  // turn the tide"). The breaker is alert-only: its auto-disarm knob was
+  // removed 2026-10-03 (owner order), so a stale stored `autoDisarm` key is
+  // dropped here rather than carried forever by the spread.
   // -----------------------------------------------------------------------
   router.post('/performance-breaker', (req, res) => {
     const cur = loadPerformanceBreakerConfig(db)
     const b = req.body || {}
+    const { autoDisarm: _removedKnob, ...stored } = storedObject(db, 'performance_breaker_json')
     const next = {
-      ...storedObject(db, 'performance_breaker_json'),
+      ...stored,
       ...cur,
       on: b.on !== undefined ? b.on !== false : cur.on,
       window: b.window !== undefined ? Math.min(200, Math.max(5, Math.round(Number(b.window) || cur.window))) : cur.window,
       minTrades: b.minTrades !== undefined ? Math.min(200, Math.max(5, Math.round(Number(b.minTrades) || cur.minTrades))) : cur.minTrades,
       pfThreshold: b.pfThreshold !== undefined ? Math.min(2, Math.max(0.1, Number(b.pfThreshold) || cur.pfThreshold)) : cur.pfThreshold,
-      autoDisarm: b.autoDisarm !== undefined ? b.autoDisarm === true : cur.autoDisarm,
     }
     setState(db, 'performance_breaker_json', JSON.stringify(next))
     console.log(`[actions] performance breaker →`, next)

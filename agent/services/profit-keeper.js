@@ -44,7 +44,7 @@ import { atrFromBars, registerAtrSource } from '../lib/stop-floor.js'
 import { makeBookHeldCheck } from './book-held.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
-import { sinceEntryTrailSpec, recordAmendReceipt, receiptFromTrailMove } from './mae-chandelier-observe.js'
+import { sinceEntryTrailSpec } from './mae-chandelier-observe.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { measureAmend } from './protection-latency.js'
 import { protectiveExitDeferral } from './momentum-exit-coordination.js'
@@ -787,7 +787,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
       if (!spec) continue
       trailSpecs.push(spec)
     }
-    console.log(`[mae-chandelier-observe] trail-config ${trailSpecs.length} spec(s) for account ${creds.accountId}`)
+    console.log(`[since-entry-trail] trail-config ${trailSpecs.length} spec(s) for account ${creds.accountId}`)
 
     // Hand the armed set to the C++ tick ratchet (best-effort by contract).
     try {
@@ -816,8 +816,6 @@ async function profitKeeperPass(db, creds, deps = {}) {
               kind: 'trail_tightened', fromValue: prev, toValue: p.lastSl,
               source: 'cpp_trail_engine',
             })
-            const ack = receiptFromTrailMove(key, prev, p.lastSl)
-            if (ack) recordAmendReceipt(db, ack).catch(() => {})
           }
         }
       }

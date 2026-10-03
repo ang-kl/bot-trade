@@ -21,10 +21,10 @@
 // - equity-stop trips are PER-ACCOUNT (owner 30-07: a global disarm for one
 //   account's trip is the defect that module removed) → they land in
 //   haltAccounts, never in the process-wide halt.
-// - the performance breaker is ALERT-ONLY unless the owner arms autoDisarm
-//   (owner 30-07, twice-confirmed) → its halt mirror binds only when
-//   autoDisarm is armed AND the master autotrade flag is off, i.e. only when
-//   the machine was already authorized to stop trading.
+// - the performance breaker is ALERT-ONLY and never contributes a halt. Its
+//   auto-disarm knob was removed 2026-10-03 (owner order); the breaker halt
+//   mirror that bound on it went with it. exec-guard-sync.test.js pins the
+//   absence, including against a stale stored `autoDisarm: true` key.
 // ---------------------------------------------------------------------------
 
 import { readFileSync } from 'node:fs'
@@ -33,7 +33,6 @@ import { classifyUniverse, normalizeSchedule, scheduleHash, TICK_COST_MAP_KEY, T
 import { engineStatusFor, acknowledgeEntryEpochs, basesFor } from './entry-mode.js'
 import { alreadyTrippedToday } from './equity-stop.js'
 import { loadGlobalGuards } from './global-guards.js'
-import { loadPerformanceBreakerConfig } from './performance-breaker.js'
 import { fxDayOpenMs } from '../lib/volume-structure.js'
 
 /**
@@ -103,15 +102,6 @@ export function desiredGuardFor(db, side = { isLive: null }, nowMs = Date.now())
   try {
     if (loadGlobalGuards(db)?.halt === true) halt = true
   } catch { /* guards unreadable — stored value stands */ }
-
-  // Performance breaker, ONLY when the owner armed autoDisarm: the breaker's
-  // authority is the master autotrade flag, so mirror exactly that — armed
-  // breaker + master off = the machine stopped trading, and the cpp guard
-  // should agree. autoDisarm off (the default, owner order) changes nothing.
-  try {
-    const pb = loadPerformanceBreakerConfig(db)
-    if (pb?.autoDisarm === true && getState(db, 'autotrade_enabled') !== 'true') halt = true
-  } catch { /* breaker unreadable — no halt from it */ }
 
   // Equity-stop trips, per account, self-clearing at the FX-day rollover.
   const haltAccounts = []

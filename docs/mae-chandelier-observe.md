@@ -1,5 +1,17 @@
 # mae-chandelier-observe
 
+## RETIRED 03-10-2026
+
+**Owner order (03-10-2026, after the statement review at № 10,812): "remove all three."** The MAE/Chandelier OBSERVER described below is removed. Measured reason: since it was built (02-10-2026) it never produced a usable reading in production — `GET /state/mae-chandelier` at 06:25Z 03-10-2026 read `positions 1, withBars 0, adjustable 0, receipts 0` — while its fast-monitor bar fetch added broker calls on every tick, and it was a third stop authority beside the stop policy (`docs/stop-policy.md`) and the profit keeper.
+
+What went: the per-position readings and their state record (`mae_chandelier_observe_json`, deleted once at boot by `agent/index.js`), the bar cache and background fetch, the fast-monitor tick (`maeChandelierTick`), the slow monitor's timeframe pass, the amend path (`source` `mae_chandelier` / `mae_chandelier_timeframe`) and its receipts, `GET /state/mae-chandelier`, the grader's check 6 (`chandelier_receipts`) and `scripts/verify-mae-chandelier-observe.mjs`.
+
+What survives in `agent/services/mae-chandelier-observe.js` (the file keeps its name because `agent/stop-policy-callsites.test.js` reads it by name): `wilderAtr` and `sinceEntryTrailSpec`, the since-entry trail spec the profit keeper pushes to the sidecar's TrailEngine. That push is the stop policy's since-entry trail, not the observer, and is unchanged; its log line is now `[since-entry-trail] trail-config N spec(s)`. The `cpp-verify` read-only stub is removed by the verifier lane of the same bundle. The pin is `agent/services/fast-monitor-no-observer.test.js`.
+
+Everything below is the record of the observer as it was built and is kept as written.
+
+---
+
 Date: 02-10-2026. Approval: `APPROVE mae-chandelier-observe`.
 
 **Update 02-10-2026 (since #1182, checked in PR-3).** The Node side is no longer observe-only: when the since-entry Chandelier is tighter than the stop and still behind price, the fast monitor (and the slow pass) send a `MOVE_SL` through the normal executor (`source` `mae_chandelier` / `mae_chandelier_timeframe`), and the outcome is recorded as a receipt (`GET /state/mae-chandelier`: `receiptsSent`, `receiptsConfirmed`, `receiptsUnchanged`). That amend carries the stop policy (Opposite trigger, broker trailing once the stop locks profit) and the never-loosen rail, see `docs/stop-policy.md`. The independent `cpp-verify` observer is still read-only (`mayAmend` false, no broker write). The text below is the original observe-only record and is kept as written; where it says no stop is amended, it describes the first release.

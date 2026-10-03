@@ -148,6 +148,17 @@ import('./services/statement-import.js')
   })
   .catch((err) => console.warn(`[statements] seed import failed (non-fatal): ${err.message}`))
 
+// The MAE/Chandelier observer was removed 03-10-2026 (owner: "remove all
+// three"; it never produced a usable reading in production). Its state key
+// is dropped once at boot so the record does not outlive the code; one log
+// line only when it existed.
+try {
+  if (getState(db, 'mae_chandelier_observe_json') != null) {
+    db.prepare('DELETE FROM agent_state WHERE key = ?').run('mae_chandelier_observe_json')
+    console.log('[boot] stale mae_chandelier_observe_json state removed (observer retired 03-10-2026)')
+  }
+} catch (err) { console.warn(`[boot] mae_chandelier_observe_json cleanup failed (non-fatal): ${err.message}`) }
+
 // One-shot re-stamp of realised R and the consistency verdict on every
 // closed row with both prices (02-09-2026). The per-writer stamp is
 // forward-only; rows corrected before it existed never get another write.
@@ -576,22 +587,16 @@ if (rsi2Seed.seeded) {
   console.log(`[boot] RSI-2 GO seed applied — strategy armed: ${rsi2Seed.addedStrategy}, combos: ${rsi2Seed.addedCombos?.length ?? 0}${rsi2Seed.note ? ` (${rsi2Seed.note})` : ''}`)
 }
 
-// One-time: execute the owner's 2026-07-30 "autoDisarm - leave it OFF" against
-// data that predates it. #509 changed only the DEFAULT, and
-// loadPerformanceBreakerConfig honours a PRESENT stored key — so an instance
-// that stored `autoDisarm: true` when the owner armed it on 2026-07-20 kept
-// auto-disarming, and this breaker writes the MASTER autotrade flag, which is an
-// absolute veto over every per-account switch. Strips the stored key so the
-// documented default applies; preserves every other stored field; guarded by a
-// state flag so a later deliberate `true` is never undone.
+// Rule 2 of pnl-verdict-supersede.js at boot: a closed, unpriced row whose
+// close is NEWER than its last P&L attempt is reset to a fresh repair
+// candidate (03-10-2026, #1489 JNJ.US: a verdict about a false 30-09 close was
+// governing the real 02-10 close). The loop repeats this every cycle.
 try {
-  const { migrateAutoDisarmOff } = await import('./services/performance-breaker.js')
-  const pbMig = migrateAutoDisarmOff(db)
-  if (pbMig.migrated) {
-    console.log(`[boot] performance-breaker autoDisarm migration applied — stored ${pbMig.was} removed, default (off) now applies`)
-  }
+  const { sweepSupersededPnlVerdicts } = await import('./services/pnl-verdict-supersede.js')
+  const sv = sweepSupersededPnlVerdicts(db, { log: (m) => console.log(m.replace(/^\[loop\]/, '[boot]')) })
+  if (sv.error) console.warn('[boot] P&L verdict sweep failed (non-fatal):', sv.error)
 } catch (e) {
-  console.warn('[boot] performance-breaker autoDisarm migration failed (non-fatal):', e.message)
+  console.warn('[boot] P&L verdict sweep failed (non-fatal):', e.message)
 }
 
 // One-time: turn ON the Strategy Autopilot in full-auto (owner opted in) so it
