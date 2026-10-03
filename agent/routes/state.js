@@ -748,7 +748,7 @@ export default function stateRouter(db) {
     // have 'P&L, To TP/SL'").
     const rows = db
       .prepare(
-        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at, t.ctrader_position_id AS ctrader_position_id, a.tp2_price AS tp2_price
+        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at, t.ctrader_position_id AS ctrader_position_id, t.horizon AS horizon, a.tp2_price AS tp2_price
          FROM monitored_positions mp
          LEFT JOIN trades t ON t.id = mp.trade_id
          LEFT JOIN analyses a ON a.id = t.analysis_id

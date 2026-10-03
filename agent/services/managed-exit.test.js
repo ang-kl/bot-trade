@@ -111,9 +111,12 @@ test('the policy is wired at the fill-time cap and at EVERY position evaluator',
   const loop = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
   assert.match(loop, /managedExitApplies\(db, accountId\)/, 'fill-time cap gate missing')
   assert.match(loop, /managedCapAt\(Date\.now\(\)/, 'fill-time cap stamp missing')
-  assert.match(loop, /applyManagedRules\(db, pos\.account_id, rulesForSymbol\(db, pos\.symbol\), \{ strategy: pos\.strategy \}\)/, 'loop monitor must evaluate through applyManagedRules WITH the position strategy')
+  // §5 (03-10-2026): and WITH the trade id, which is what reaches the horizon
+  // stored on the trade row (§4-D) — an evaluator that drops it reads the
+  // family rule for every position and the weeks fence never fires.
+  assert.match(loop, /applyManagedRules\(db, pos\.account_id, rulesForSymbol\(db, pos\.symbol\), \{ strategy: pos\.strategy, tradeId: pos\.trade_id \}\)/, 'loop monitor must evaluate through applyManagedRules WITH the position strategy AND its trade id')
   const fast = readFileSync(new URL('./fast-monitor.js', import.meta.url), 'utf8')
-  assert.match(fast, /applyManagedRules\(db, pos\.account_id, rulesForSymbol\(db, pos\.symbol\), \{ strategy: pos\.strategy \}\)/, 'fast-monitor must evaluate through applyManagedRules WITH the position strategy')
+  assert.match(fast, /applyManagedRules\(db, pos\.account_id, rulesForSymbol\(db, pos\.symbol\), \{ strategy: pos\.strategy, tradeId: pos\.trade_id \}\)/, 'fast-monitor must evaluate through applyManagedRules WITH the position strategy AND its trade id')
 })
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,96 @@
+{
+  "accounts": {
+    "dailyPassAccountId": "_all",
+    "marketEntries": true,
+    "planAccounts": [
+      "46130058"
+    ],
+    "trialPins": {
+      "tsmom_long": [
+        "46130058"
+      ]
+    }
+  },
+  "strategies": {
+    "momentumFamilies": [
+      "momentum"
+    ],
+    "momentumKeys": [
+      "tsmom_long"
+    ],
+    "globalArms": [
+      "tsmom_long"
+    ]
+  },
+  "book": {
+    "enabled": true
+  },
+  "symbols": {
+    "commodity": [
+      "Cocoa",
+      "Coffee",
+      "Copper",
+      "NatGas",
+      "Sugar",
+      "UKOIL",
+      "USOIL",
+      "XAGUSD",
+      "XAUUSD",
+      "XPTUSD"
+    ],
+    "crypto": [
+      "BTCUSD",
+      "ETHUSD",
+      "SOLUSD",
+      "XRPUSD"
+    ],
+    "fx": [
+      "AUDUSD",
+      "EURGBP",
+      "EURJPY",
+      "EURUSD",
+      "GBPJPY",
+      "GBPUSD",
+      "NZDUSD",
+      "USDCAD",
+      "USDCHF",
+      "USDJPY"
+    ],
+    "index": [
+      "AUS200",
+      "FRA40",
+      "GER40",
+      "HK50",
+      "JPN225",
+      "NAS100",
+      "SPX500",
+      "UK100",
+      "US2000",
+      "US30"
+    ],
+    "stock": [
+      "0005.HK",
+      "0700.HK",
+      "2020.HK",
+      "AAPL.US",
+      "AMZN.US",
+      "AVGO.US",
+      "COST.US",
+      "GD.US",
+      "GOOGL.US",
+      "JPM.US",
+      "LLY.US",
+      "MA.US",
+      "META.US",
+      "MSFT.US",
+      "NFLX.US",
+      "NVDA.US",
+      "ORCL.US",
+      "TSLA.US",
+      "UNH.US",
+      "V.US",
+      "WMT.US",
+      "XOM.US"
+    ]
+  }
+}

@@ -8,6 +8,7 @@ import { recordPositionEvent } from './position-events.js'
 import { isTrailing, stopTightened } from '../lib/stop-policy.js'
 import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
 import { brokerCloseReason, LEGACY_BOOK_STOP, replaceableCloseReason } from './broker-exit-attribution.js'
+import { horizonForStrategy } from './trade-horizon.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -716,10 +717,13 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       const tradeInsert = db.prepare(`
         INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
           ctrader_position_id, source, label_raw, label_strategy, account_id, status,
-          origin, origin_source)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'open', 'reconciler_adopted', 'write')
+          origin, origin_source, horizon)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'open', 'reconciler_adopted', 'write', ?)
       `).run(symbolName, side === 'long' ? 'BUY' : 'SELL', entry, sl, tp, volume, posId,
-        adoptedSource, label || null, parsed.strategy || null, acct)
+        adoptedSource, label || null, parsed.strategy || null, acct,
+        // §4-D: the horizon from the strategy the broker label decodes to —
+        // an adopted tsmom fill is a weeks position, an unlabelled one intraday.
+        horizonForStrategy(parsed.strategy || null))
       // ADOPTED, and it says so. `parsed.strategy` above is the label found on
       // the broker's position, not a decision this system made — recording it
       // is right, presenting it as strategy edge is not. Phase 6 of the

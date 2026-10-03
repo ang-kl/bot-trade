@@ -20,6 +20,7 @@ import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, labelIntentId
 import { getActiveSessions } from '../lib/sessions.js'
 import { normPosId } from '../lib/pos-id.js'
 import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
+import { horizonForStrategy } from './trade-horizon.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -194,12 +195,12 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
         status, ctrader_position_id, analysis_id, strategy, conviction,
         label_raw, source, label_version, label_strategy, label_conviction,
         label_session, label_timeframe, label_regime, account_id, risk_event_id,
-        origin, origin_source, intent_id
+        origin, origin_source, intent_id, horizon
       ) VALUES (
         ?, ?, ?, ?, ?, ?, datetime('now'),
         'open', ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        'bot_pending_fill', 'write', ?
+        'bot_pending_fill', 'write', ?, ?
       )
     `).run(
       row.symbol, side, executionPrice, row.sl ?? null, row.tp ?? null, row.volume ?? null,
@@ -219,6 +220,8 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
       // The lineage existed; it just did not survive the last hop.
       row.risk_event_id ?? null,
       intentId,
+      // §4-D: the horizon at entry, from the strategy the fill is attributed to.
+      horizonForStrategy(strategy),
     )
     const tradeId = tradeInsert.lastInsertRowid
 

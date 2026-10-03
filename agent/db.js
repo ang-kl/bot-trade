@@ -2372,6 +2372,20 @@ export function initDB(dbPath) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_trades_intent ON trades(intent_id) WHERE intent_id IS NOT NULL');
   }
 
+  // §4-D (03-10-2026, № 10,777·B·4): the HORIZON a position is held for —
+  // 'intraday' | 'weeks' — decided at entry from the strategy family and
+  // stored on the row, so every exit rule (§5: the managed-exit take, the
+  // time cap) selects its regime from the row rather than from a family
+  // list that can be edited after the position is open. Written by every
+  // entry writer through services/trade-horizon.js; open rows that predate
+  // the column are backfilled once at boot from the same rule (index.js).
+  // Additive: a row nobody backfilled reads NULL, and the evaluators fall
+  // back to the strategy rule for it — the regime it already lived under.
+  {
+    const tc = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
+    if (tc.size && !tc.has('horizon')) db.exec("ALTER TABLE trades ADD COLUMN horizon TEXT CHECK (horizon IN ('intraday', 'weeks'))");
+  }
+
   // X1: the correction log — one row per step of a record correction, with
   // the row before and after and the evidence that decided it. Rows are
   // never deleted; a step is written once (UNIQUE), so a re-run is a no-op.

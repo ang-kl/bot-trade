@@ -243,7 +243,11 @@ export function evaluatePosition(pos, ctx) {
   // for the measurement that ordered it. Everything above still holds: the cap
   // is evaluated before the price gate, and a position nobody can price still
   // dies at the clock, because `r` is null and null is not ≥ the threshold.
-  if (pos.time_cap_at) {
+  // §5 (03-10-2026): a WEEKS-horizon row is never cut at the clock —
+  // applyManagedRules sets `timeCapApplies: false` from the horizon stored
+  // on the trade row. Absent (every intraday row, every caller that builds
+  // its own rules) the cap fires exactly as it always has.
+  if (pos.time_cap_at && rules.timeCapApplies !== false) {
     const capEarly = new Date(pos.time_cap_at)
     if (Number.isFinite(capEarly.getTime()) && now >= capEarly) {
       const capMetrics = { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade: minutesEarly }

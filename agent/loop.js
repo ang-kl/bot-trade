@@ -14,6 +14,7 @@ import { evaluatePosition } from './services/position-manager.js'
 import { decideAdjust, recordObserve, cachedBars, shouldSendChandelierAdjust, recordAmendReceipt, receiptFromBrokerOutcome, positionOpenedAtMs, freshMid } from './services/mae-chandelier-observe.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
+import { horizonForStrategy } from './services/trade-horizon.js'
 import { recordTradePlan, recordPlanWriteFailure } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates, effectiveRrFloor } from './services/risk.js'
@@ -1117,14 +1118,16 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const insertIntent = () => db.prepare(`
       INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume,
                           opened_at, status, strategy, account_id, source, risk_event_id,
-                          origin, origin_source, proposal_entry_price, analysis_id)
+                          origin, origin_source, proposal_entry_price, analysis_id, horizon)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade', ?,
-              'bot_market_dispatch', 'write', ?, ?)
+              'bot_market_dispatch', 'write', ?, ?, ?)
     `).run(
       symbol, side, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
       volLots, synth.strategy || null, String(accountId), riskEventId ?? null,
       Number.isFinite(Number(synth.entry)) ? Number(synth.entry) : null,
       Number.isFinite(Number(synth.analysisId)) ? Number(synth.analysisId) : null,
+      // §4-D: the horizon is set HERE, at entry, from the strategy family.
+      horizonForStrategy(synth.strategy || null),
     ).lastInsertRowid
     let intentId
     if (momentumFinal) {
@@ -2712,7 +2715,8 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // The merge lives in applyManagedRules so EVERY evaluator (this monitor
   // and fast-monitor.js) silences the same ladder — it silenced only here
   // until 0016.HK's bank_target_4R close, 2026-08-31.
-  const rules = applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy })
+  // §5: the trade id is what reaches the horizon stored on the row (§4-D).
+  const rules = applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy, tradeId: pos.trade_id })
   // PR-J's cap trail and bank trail are ATR multiples. The ATR comes from the
   // profit keeper's in-memory cache — a read, never a fetch — and is null
   // whenever the keeper has not computed one for this symbol this bar, in
