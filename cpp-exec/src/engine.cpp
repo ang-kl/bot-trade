@@ -288,7 +288,7 @@ AuthErrorAction authErrorAction(const std::string& code, bool authorizingExtra) 
 }
 
 SessionEventAction sessionEventAction(int payloadType) {
-  return payloadType == pt::ACCOUNTS_TOKEN_INVALIDATED_EVENT
+  return payloadType == pt::ACCOUNT_DISCONNECT_EVENT || payloadType == pt::ACCOUNTS_TOKEN_INVALIDATED_EVENT
     ? SessionEventAction::KillSession : SessionEventAction::Ignore;
 }
 
