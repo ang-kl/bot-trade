@@ -1,11 +1,13 @@
 #include "watchdog.hpp"
 #include "entry_diagnostics.hpp"
+#include "log.hpp"
 #include "watchdog_http.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
-#include <ctime>
+#include <cstring>
 #include <fcntl.h>
 #include <fstream>
 #include <future>
@@ -17,56 +19,17 @@ namespace verify {
 namespace {
 std::string env(const char* name) { const auto p = std::getenv(name); return p ? p : ""; }
 long long nowMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
-std::string stamp(long long now) {
-  time_t seconds = now / 1000 + 8 * 3600; std::tm tm{}; gmtime_r(&seconds, &tm);
-  char out[40]; std::strftime(out, sizeof out, "%Y-%m-%d %H:%M:%S SGT", &tm); return out;
-}
-std::string suffix(const std::string& id) { return id.empty() ? "unknown" : "…" + id.substr(id.size() > 4 ? id.size() - 4 : 0); }
 bool syncDirectoryOf(const std::string& file) {
   const int dir = ::open(file.substr(0, file.find_last_of('/')).c_str(), O_RDONLY | O_DIRECTORY);
   const bool synced = dir >= 0 && ::fsync(dir) == 0;
   if (dir >= 0) ::close(dir);
   return synced;
 }
-// Round 3 (B2): the restart-proof fallback a reply names when a mute could
-// not be recorded at all. It needs no disk: with the deployment switch off
-// the run loop selects nothing, whatever the state file says.
-constexpr const char* kMuteFallback = "set WATCHDOG_MASTER_ENABLED=0 on cpp-verify: a restart then delivers nothing whatever the state file says (a Railway variable change, the owner's step)";
-constexpr const char* kMarkerRemedy = "remove what stands at the mute marker path (watchdog-state.json.muted on the /data volume: a directory, or an entry this process cannot unlink) — the owner's step — then unmute again: while anything is there the verifier stays muted, restarts included";
-constexpr const char* kStaleRemedy = "dispose of the held backlog first (the owner's step, after a /data backup): the dispose(createdBefore) route that does it is required and not built yet, so until it exists the verifier stays muted; any re-mute that holds an item longer than repeatMs wedges it again";
-}
-std::string watchNotificationText(const jsn::Value& item, long long now) {
-  const auto& d = item.get("detail");
-  std::string out = "bot-trade " + item.get("severity").asString() + " / " + item.get("transition").asString()
-    + "\nService: " + d.get("service").asString() + " · account " + suffix(d.get("accountId").asString())
-    + "\nInstrument: " + d.get("symbolId").asString() + " · session " + d.get("sessionId").asString()
-    + "\nExpected work: " + d.get("role").asString() + " · " + d.get("reason").asString()
-    + "\nLast completion: " + jsn::dump(d.get("lastCompletedAtMs")) + " · next due: " + jsn::dump(d.get("nextDueMs"))
-    + "\nMarket: " + d.get("marketStatus").asString() + " · blocker: " + d.get("blocker").asString()
-    + "\nBroker missing SL/TP: " + jsn::dump(d.get("missingSl")) + "/" + jsn::dump(d.get("missingTp"))
-    + "\n" + stamp(now);
-  // No raw payload, full account ID, URL, credential or exception is forwarded.
-  if (out.size() > 3000) out.resize(3000);
-  return out;
-}
-bool watchAllowsNotification(const jsn::Value& snapshot, const jsn::Value& delivery, long long now) {
-  const auto& p = snapshot.get("services").get("node").get("contract").get("notificationPolicy");
-  const auto observed = p.get("observedAtMs").asNumber(), expiry = p.get("expiresAtMs").asNumber();
-  if (!p.get("enabled").asBool() || p.get("owner").asString() != "cpp-verify" || observed <= 0
-      || observed > now || now - observed >= 86400000 || expiry <= now || !p.get("quietIntervals").isArray()) return false;
-  for (const auto& iv : p.get("quietIntervals").asArray()) {
-    const auto from = iv.get("fromMs").asNumber(), to = iv.get("toMs").asNumber();
-    if (from <= 0 || to <= from) return false;
-    if (from <= now && now < to && !(delivery.get("severity").asString() == "urgent" && p.get("urgentBypass").asBool())) return false;
-  }
-  return true;
 }
 Watchdog::Watchdog(std::function<jsn::Value()> protection) : protection_(std::move(protection)) {}
 Watchdog::~Watchdog() { if (worker_.joinable()) { worker_.request_stop(); worker_.join(); } if (lockFd_ >= 0) ::close(lockFd_); }
 void Watchdog::start() {
   enabled_ = env("WATCHDOG_ENABLED") == "1";
-  master_ = env("WATCHDOG_MASTER_ENABLED") == "1";
-  owner_ = env("WATCHDOG_INCIDENT_OWNER") == "cpp-verify";
   if (!enabled_) return;
   if (!env("WATCHDOG_POLICY_JSON").empty()) {
     const auto config = jsn::parse(env("WATCHDOG_POLICY_JSON"));
@@ -105,13 +68,16 @@ void Watchdog::start() {
     const auto parsed = jsn::parse(raw);
     if (!parsed || !state_.restore(*parsed)) { error_ = "watchdog_state_invalid_recovery_required"; return; }
   }
-  // V3 CV-2: the 24 h muted soak starts at the first boot of this build and
-  // survives restarts (a restored soak is kept, never restarted).
-  state_.beginSoak(nowMs());
-  // Round 3 (B2): a mute recorded by the marker holds whatever the state file
-  // says — the file may be older than the mute (its write failed).
-  if (muteMarkerPresent()) state_.setMuted(true, nowMs());
-  started_ = true;
+  // The delivery mute's marker file, left on the volume by the build before
+  // the channel was removed (03-10-2026). It gated nothing any more; it is
+  // unlinked once, said once, and never read. A marker that cannot be
+  // unlinked (a directory there) is left where it is: nothing reads it.
+  const auto marker = path_ + ".muted";
+  struct stat markerInfo{};
+  if (::lstat(marker.c_str(), &markerInfo) == 0) {
+    if (::unlink(marker.c_str()) == 0) { syncDirectoryOf(marker); sidecar_log::logInfoF("[verify]", "watchdog: removed the stale delivery-mute marker %s (the delivery channel was removed 03-10-2026; incidents are a record)", marker.c_str()); }
+    else sidecar_log::logInfoF("[verify]", "watchdog: a stale delivery-mute marker stands at %s and could not be unlinked (%s); it is ignored", marker.c_str(), std::strerror(errno));
+  }
   writable_ = persist();
   worker_ = std::jthread([this](std::stop_token stop) {
     try { run(stop); }
@@ -131,27 +97,7 @@ bool Watchdog::persist() {
   if (!synced || !closed || ::rename(temp.c_str(), path_.c_str()) != 0) { error_ = "watchdog_state_write_failed"; return writable_ = false; }
   const bool durable = syncDirectoryOf(path_);
   error_ = durable ? "" : "watchdog_directory_sync_failed";
-  // Round 3 (B2): a muted state on disk makes a pending mute restart-safe.
-  if (durable && state_.muteGate().muted) muteNotDurable_ = false;
   return writable_ = durable;
-}
-bool Watchdog::writeMuteMarker() {
-  const auto marker = path_ + ".muted";
-  const int fd = ::open(marker.c_str(), O_WRONLY | O_CREAT | O_NOFOLLOW, 0600);
-  if (fd < 0) return false;
-  const bool closed = ::close(fd) == 0;
-  return closed && syncDirectoryOf(marker);
-}
-bool Watchdog::removeMuteMarker() {
-  const auto marker = path_ + ".muted";
-  if (::unlink(marker.c_str()) != 0 && errno != ENOENT) return false;
-  return syncDirectoryOf(marker);
-}
-bool Watchdog::muteMarkerPresent() const {
-  // Any entry at the path counts (a directory there included): the marker
-  // only ever keeps a verifier muted, so reading it widely is the safe way.
-  struct stat info{};
-  return !path_.empty() && ::lstat((path_ + ".muted").c_str(), &info) == 0;
 }
 void Watchdog::run(std::stop_token stop) {
   struct Target { const char* name; const char* url; const char* key; };
@@ -172,33 +118,13 @@ void Watchdog::run(std::stop_token stop) {
       const auto response = pending.get();
       std::lock_guard lock(mutex_); state_.probe(name, response.received, response.body, nowMs());
     }
-    jsn::Value delivery;
     {
       std::lock_guard lock(mutex_);
       const auto now = nowMs(); state_.protection(protection_(), now); state_.evaluate(now);
-      const bool persisted = persist(); // a success also settles a pending mute (round 3, B2)
-      if (muteNotDurable_ && writeMuteMarker()) muteNotDurable_ = false; // ... and so does the marker, retried every cycle
-      if (persisted && master_ && owner_) {
-        auto next = state_.releasable(now); // muted or in soak: null, nothing leaves
-        if (!next.isNull() && watchAllowsNotification(state_.snapshot(), next, now)) delivery = next;
-      }
+      persist();
     }
-    // Delivery is outside every state/protection lock. A blocked/failed
-    // Telegram call cannot stop the independent ProtectionWatch thread.
-    // V3 CV-2: a consequence — a message chosen by releasable() above, under
-    // the lock, can still be sent if a POST /watchdog/mute lands between the
-    // lock's release and this call (at most one message, one probe cycle).
-    // The mute stops every later selection.
-    const auto token = env("WATCHDOG_TELEGRAM_TOKEN"), chat = env("WATCHDOG_TELEGRAM_CHAT_ID");
-    if (!delivery.isNull() && !token.empty() && !chat.empty()) {
-      const auto body = jsn::dump(jsn::Value(jsn::Object{{"chat_id", chat}, {"text", watchNotificationText(delivery, nowMs())}}));
-      const auto r = watchHttp("https://api.telegram.org/bot" + token + "/sendMessage", "", body, 5000);
-      const bool accepted = r.received && r.body.get("ok").asBool() && r.body.get("result").get("message_id").isNumber();
-      const auto message = accepted ? jsn::dump(r.body.get("result").get("message_id")) : "";
-      const auto retry = std::clamp(r.body.get("parameters").get("retry_after").asNumber(), 0.0, 86400.0);
-      std::lock_guard lock(mutex_);
-      state_.delivery(delivery.get("id").asString(), accepted, message, static_cast<long long>(retry * 1000), nowMs()); persist();
-    }
+    // The cycle ends here. Nothing is sent anywhere: the record above is the
+    // whole output, read on GET /watchdog-status.
     while (!stop.stop_requested() && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(state_.probeIntervalMs()))
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
@@ -218,77 +144,8 @@ jsn::Value Watchdog::status() {
   if (!enabled_) relay.set("reason", "watchdog_supervision_disabled"); // nothing probes Node, so nothing can be relayed
   s.set("entryDiagnostics", relay);
   s.set("enabled", enabled_); s.set("durable", writable_); s.set("error", error_);
-  const auto snapshot = state_.snapshot();
-  const auto& policy = snapshot.get("services").get("node").get("contract").get("notificationPolicy");
-  const double observed = policy.get("observedAtMs").asNumber();
-  const bool current = observed > 0 && observed <= nowMs() && nowMs() - observed < 86400000;
-  s.set("masterEnabled", current ? policy.get("enabled") : jsn::Value());
-  s.set("deploymentDeliveryEnabled", master_); s.set("incidentOwnerConfigured", owner_);
-  s.set("deliveryCredentialsConfigured", !env("WATCHDOG_TELEGRAM_TOKEN").empty() && !env("WATCHDOG_TELEGRAM_CHAT_ID").empty());
-  s.set("stateBytes", static_cast<long long>(jsn::dump(snapshot).size()));
+  s.set("stateBytes", static_cast<long long>(jsn::dump(state_.snapshot()).size()));
   s.set("stateBytesCap", 4LL * 1024 * 1024);
-  // Round 3 (B2): this process is muted, but no write recorded it yet — a
-  // restart now might come up unmuted. Cleared by the first write that lands.
-  s.set("muteNotDurable", muteNotDurable_);
-  if (muteNotDurable_) s.set("muteFallback", kMuteFallback);
-  s.set("effectivePolicyAllowsUrgent", master_ && owner_ && writable_ && state_.deliveryOpen(nowMs()) && watchAllowsNotification(state_.snapshot(), jsn::Value(jsn::Object{{"severity", "urgent"}}), nowMs()));
-  s.set("externalObserver", "unconfigured; requires independent provisioning and delivery evidence");
   return s;
-}
-jsn::Value Watchdog::setMuted(bool muted) {
-  std::lock_guard lock(mutex_);
-  const auto now = nowMs();
-  // Not started (supervision off, lock held elsewhere, state unreadable):
-  // never touch the file or error_. The in-memory state is not the owner's
-  // and nothing here delivers, so the request is refused, not applied.
-  if (!started_) {
-    jsn::Value out(jsn::Object{{"ok", false}, {"durable", false}, {"error", "watchdog_not_started"},
-      {"startError", error_}, {"delivery", state_.deliveryStatus(now)}});
-    return out;
-  }
-  const auto before = state_.muteGate();
-  const auto refusal = state_.setMuted(muted, now);
-  if (!refusal.empty()) {
-    jsn::Value out(jsn::Object{{"ok", false}, {"applied", false}, {"durable", writable_},
-      {"error", refusal}, {"delivery", state_.deliveryStatus(now)}});
-    if (refusal == "stale_backlog") out.set("remedy", kStaleRemedy); // round 3, S-2
-    return out;
-  }
-  if (muted) {
-    // Round 3 (B2): the marker first — an empty file, the likeliest write to
-    // succeed — then the state. Either one keeps a restart muted.
-    const bool marker = writeMuteMarker();
-    const bool durable = persist();
-    const bool restartSafe = marker || durable;
-    muteNotDurable_ = !restartSafe;
-    jsn::Value out(jsn::Object{{"ok", durable && restartSafe}, {"applied", true}, {"durable", durable},
-      {"restartSafe", restartSafe}, {"markerRecorded", marker}, {"delivery", state_.deliveryStatus(now)}});
-    if (!durable) { out.set("error", "state_not_durable"); out.set("persistError", error_); }
-    if (!restartSafe) out.set("fallback", kMuteFallback);
-    return out;
-  }
-  // An unmute is applied only when the unmuted state is on disk AND the
-  // marker is gone; either failing, it is undone (fix-round nit 8).
-  const bool written = persist();
-  if (written && removeMuteMarker()) {
-    muteNotDurable_ = false;
-    return jsn::Value(jsn::Object{{"ok", true}, {"applied", true}, {"durable", true}, {"restartSafe", true},
-      {"delivery", state_.deliveryStatus(now)}});
-  }
-  // Round 3 (S-1): "undone" must hold across a restart too. The failed write
-  // may already have renamed an unmuted file into place (its directory sync
-  // failed after the rename), so re-write the marker — a restart then comes
-  // up muted whatever the file says — and re-persist the muted state.
-  state_.restoreMuteGate(before);
-  const bool marker = writeMuteMarker();
-  const bool rewritten = persist();
-  const bool restartSafe = marker || rewritten;
-  muteNotDurable_ = !restartSafe;
-  jsn::Value out(jsn::Object{{"ok", false}, {"applied", false}, {"durable", rewritten}, {"restartSafe", restartSafe},
-    {"markerRecorded", marker}, {"error", written ? "mute_marker_not_removed" : "state_not_durable"},
-    {"persistError", error_}, {"delivery", state_.deliveryStatus(now)}});
-  if (!restartSafe) out.set("fallback", kMuteFallback);
-  if (written) out.set("remedy", kMarkerRemedy); // round 4
-  return out;
 }
 }

@@ -375,8 +375,9 @@ const redactToken = s => String(s).replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<redact
  * the loader routeDecision and flushDecision act on — and `configReadable`
  * says whether the stored value is usable: an unreadable value is repaired to
  * the default (enabled) by the loader, so it is never reported as OFF.
- * `configReadable` follows the watchdog contract's definition
- * (watchdog-contract.js notificationPolicy): absent, or a stored JSON object.
+ * `configReadable` is: absent, or a stored JSON object (the definition the
+ * watchdog contract's notificationPolicy used until it was removed on
+ * 03-10-2026 with cpp-verify's delivery gate).
  * Throws when the outbox cannot be read — a caller reports that, never a 0.
  */
 export function digestState(db, { nowMs = Date.now() } = {}) {

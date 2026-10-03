@@ -42,7 +42,7 @@ test('disk-backed watchdog HTTP reads never execute SQL on the management connec
   assert.equal(body.service, 'node')
   assert.equal(body.work[0].accountId, '11')
   assert.equal(body.work[0].lastCompletedAtMs, null)
-  assert.equal(body.notificationPolicy.enabled, false)
+  assert.equal(body.notificationPolicy, undefined) // removed 03-10-2026 with cpp-verify's delivery gate
 })
 
 test('failed watchdog worker reports unavailable rather than a healthy empty contract', async t => {

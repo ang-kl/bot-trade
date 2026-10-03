@@ -78,10 +78,11 @@ test('work receipts retain their own account and completion time; master OFF and
   assert.equal(own.calendar.identity.accountId, '11')
   assert.equal(out.work[1].calendar, null)
   assert.equal(out.work[1].lastCompletedAtMs, null)
-  assert.equal(out.notificationPolicy.enabled, false)
-  assert.equal(out.notificationPolicy.owner, 'node')
+  // 03-10-2026: the contract carries no notificationPolicy — the cpp-verify
+  // delivery gate it fed was removed, and nothing else read it.
+  assert.equal(out.notificationPolicy, undefined)
   setState(db, 'telegram_notify_json', '{broken')
-  assert.equal(nodeWatchdogContract(db, { now }).notificationPolicy.enabled, false)
+  assert.equal(nodeWatchdogContract(db, { now }).notificationPolicy, undefined)
 })
 test('intent timeout is the existing acknowledgement deadline, never permit expiry; acknowledged resting orders are excluded', t => {
   const db = fixture(t)
@@ -92,13 +93,12 @@ test('intent timeout is the existing acknowledgement deadline, never permit expi
   const work = nodeWatchdogContract(db, { now }).work.filter(w => w.role === 'intent')
   assert.equal(work.length, 1); assert.equal(work[0].deadlineMs, now + 30000)
 })
-test('quiet hours are independently usable after Node loss and preserve urgent bypass policy', t => {
+test('a stored quiet-hours policy no longer reaches the contract (the gate that read it is gone)', t => {
   const db = fixture(t)
   setState(db, 'telegram_notify_json', JSON.stringify({ enabled: true, quiet: { start: '13:00', end: '15:00' }, tz: 'Asia/Singapore', urgentBypass: false }))
-  const p = nodeWatchdogContract(db, { now }).notificationPolicy
-  assert.equal(p.enabled, true); assert.equal(p.urgentBypass, false)
-  assert.ok(p.quietIntervals.some(iv => iv.fromMs <= now && iv.toMs > now))
-  assert.equal(p.expiresAtMs, now + DAY)
+  const out = nodeWatchdogContract(db, { now })
+  assert.equal(out.notificationPolicy, undefined)
+  assert.equal(JSON.stringify(out).includes('quietIntervals'), false)
 })
 test('HTTP contract bypasses response cache without refreshing completed-work timestamps', async t => {
   const db = fixture(t), app = express(); app.use('/state', stateRouter(db))
