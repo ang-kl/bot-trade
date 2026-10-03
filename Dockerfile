@@ -59,6 +59,10 @@ RUN npm ci --omit=dev && echo "Agent dependencies installed successfully"
 WORKDIR /app
 COPY agent ./agent
 COPY --from=frontend /build/dist ./dist
+# The public bot icon (GET /icon.png, also the sign-in page's mark): index.js
+# resolves it as ../bot-icon.png, i.e. /app/bot-icon.png. It was never copied
+# into the runtime stage, so the route 404'd in production (read 03-10-2026).
+COPY bot-icon.png ./bot-icon.png
 
 # A START SCRIPT AT /app, because the platform may not use the CMD below.
 #

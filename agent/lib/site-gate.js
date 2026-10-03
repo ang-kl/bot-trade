@@ -109,7 +109,7 @@ button[disabled]{opacity:.6;cursor:wait}
 </head>
 <body>
 <main>
-<h1><img src="/icon.png" alt="">bot-trade</h1>
+<h1><img src="/icon.png" alt="" onerror="this.remove()">bot-trade</h1>
 <p>Sign in with the secret, then the code sent to the owner's Telegram.</p>
 <form id="f" autocomplete="off">
 <label for="secret">Secret</label>
