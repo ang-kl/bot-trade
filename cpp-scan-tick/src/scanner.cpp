@@ -30,7 +30,15 @@ std::string TickScanner::slowIngestLine(long long totalUs, long long jsonUs, con
     + ", commit " + ms(t.commitUs) + ") inflight " + std::to_string(inflight) + " records " + std::to_string(records)
     + " outcome " + std::string(outcome);
 }
+std::string TickScanner::invalidBatchLine(std::string_view token, long long records, long long newestOffsetMs) {
+  return "invalid feed batch: " + std::string(token) + " records " + std::to_string(records)
+    + " newest receivedAtMs " + (newestOffsetMs >= 0 ? "+" : "") + std::to_string(newestOffsetMs) + " ms vs clock";
+}
 jsn::Value TickScanner::submit(const jsn::Value& batch, IngestTiming* timing) {
+  try { return submitChecked(batch, timing); }
+  catch (const std::invalid_argument&) { countInvalid(); throw; }
+}
+jsn::Value TickScanner::submitChecked(const jsn::Value& batch, IngestTiming* timing) {
   using Clock = std::chrono::steady_clock;
   const auto micros = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count(); };
   IngestTiming tm;
@@ -271,7 +279,7 @@ jsn::Value TickScanner::status() {
     {"draining", static_cast<long long>(slots_.size() - streams_.size())}, {"stale", stale}, {"staleAfterMs", staleAfterMs_},
     {"epochTurnovers", turnovers_}, {"evicted", evicted_}, {"supersededEpochRefusals", superseded_},
     {"note", "A stream is one registered (feed, config, profile) across gateway feed epochs. A new epoch rewarms the stream on a new slot; the old slot drains."}});
-  jsn::Value ingest(jsn::Object{{"inflight", ingestInflight_.load()}, {"slow", ingestSlow_.load()}, {"maxMs", ingestMaxUs_.load() / 1000}, {"slowAfterMs", kSlowIngestMs}});
+  jsn::Value ingest(jsn::Object{{"inflight", ingestInflight_.load()}, {"slow", ingestSlow_.load()}, {"maxMs", ingestMaxUs_.load() / 1000}, {"slowAfterMs", kSlowIngestMs}, {"invalid", ingestInvalid_.load()}});
   return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"service", "cpp-scan-tick"}, {"observedAtMs", now}, {"workComplete", true}, {"work", work}, {"streams", streams}, {"ingest", ingest},
     {"processed", static_cast<long long>(stats.processed)}, {"dropped", static_cast<long long>(stats.dropped)}, {"orderAuthority", false}, {"mode", "mirror"}});
 }
