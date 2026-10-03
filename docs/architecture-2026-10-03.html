@@ -64,7 +64,7 @@ code{font-family:var(--mono);font-size:.86em;background:var(--node);padding:1px 
 </style>
 
 <main>
-<p class="eyebrow">bot-trade · read from the code and production on 03-10-2026 · corrected № 10,842 and № 10,866</p>
+<p class="eyebrow">bot-trade · read from the code and production on 03-10-2026 · corrected № 10,842, № 10,866 and № 10,873</p>
 <h1>bot-trade Architecture</h1>
 <p class="lede">Six processes on Railway, one broker. The Node service decides; two C++ gateways place and protect; two C++ scanners mirror the feed; one C++ verifier reads the broker on its own session and judges the rest. This page shows how work flows, how fast each part runs, and the logic that lets a trade in and takes it out. Every number is from the code, with the file named.</p>
 
@@ -87,13 +87,14 @@ code{font-family:var(--mono);font-size:.86em;background:var(--node);padding:1px 
   <!-- Node -->
   <rect x="300" y="20" width="400" height="190" rx="8" class="box-node"/>
   <text x="316" y="46" class="t-title">bot-trade (Node) · port 3001 · SQLite /data/agent.db</text>
-  <text x="316" y="68" class="t-muted">main loop every 1 min in production (code default 5; Tune 1–60): scan → analyse → risk gate → dispatch</text>
-  <text x="316" y="86" class="t-muted">fast monitor every 3 s · protection band every 60 s · 182 state/action routes</text>
-  <text x="316" y="106" class="t-muted">reconcile every 3rd loop (about 3 min while a cycle stays under a minute) · momentum daily pass after 21:05 UTC</text>
+  <text x="316" y="68" class="t-muted">main loop every 1 min in production (default 5; Tune 1–60)</text>
+  <text x="316" y="86" class="t-muted">scan → analyse → risk gate → dispatch · monitor 3 s · band 60 s</text>
+  <text x="316" y="106" class="t-muted">reconcile every 3rd loop (about 3 min at sub-minute cycles)</text>
   <text x="316" y="128" class="t-mono">own cTrader websocket :5036 for bars, quotes, deal history</text>
   <text x="316" y="150" class="t-mono">tables: trades · monitored_positions · position_history · accounts</text>
   <text x="316" y="166" class="t-mono">entry_intents (permits) · momentum_book · controller_heartbeats</text>
-  <text x="316" y="192" class="t-muted">42 controllers with heartbeats; 7 connected accounts (4 demo, 3 live)</text>
+  <text x="316" y="190" class="t-muted">42 controllers · 7 accounts (4 demo, 3 live) · 182 routes</text>
+  <text x="316" y="204" class="t-muted">momentum daily pass after 21:05 UTC</text>
   <!-- Gateways -->
   <rect x="300" y="260" width="190" height="110" rx="8" class="box-cpp"/>
   <text x="312" y="284" class="t-title">cpp-exec (demo gateway)</text>
@@ -155,6 +156,24 @@ code{font-family:var(--mono);font-size:.86em;background:var(--node);padding:1px 
   <path d="M300 465C260 465 240 300 300 210" class="edge" marker-end="url(#a)"/>
   <text x="228" y="380" class="t-muted" transform="rotate(-80 228 380)">candidates read back</text>
 </svg>
+<script>
+// SVG text does not wrap. Fonts differ by machine, so a label that fits in one
+// browser can run past its box in another (Codex P2 on #1211). Measure each
+// label against the box it starts in and squeeze only the ones that overflow.
+(function fitSvgLabels(){
+  const svg = document.querySelector('svg');
+  if (!svg) return;
+  const boxes = [...svg.querySelectorAll('rect')].map(r => ({x:+r.getAttribute('x'), y:+r.getAttribute('y'), w:+r.getAttribute('width'), h:+r.getAttribute('height')}));
+  for (const t of svg.querySelectorAll('text')) {
+    const x = +t.getAttribute('x'), y = +t.getAttribute('y');
+    const box = boxes.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+    if (!box) continue;
+    const room = box.x + box.w - 8 - x;
+    const w = t.getBBox().width;
+    if (w > room) { t.setAttribute('textLength', String(room)); t.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+  }
+})();
+</script>
 <div class="legend"><span><i class="sw" style="background:var(--node)"></i>Node (JavaScript)</span><span><i class="sw" style="background:var(--cpp)"></i>C++ sidecars</span><span><i class="sw" style="background:var(--broker)"></i>outside the repo</span><span><i class="sw" style="background:var(--accent);border-color:var(--accent)"></i>the money path</span></div>
 </div>
 <p>One rule shapes the whole map: only the two gateways can place, amend or close. Node never holds order authority itself; it sends a request with a one-use permit and reads back what the broker holds. The verifier can read the broker but has no write route at all, which is what makes its verdicts independent.</p>
