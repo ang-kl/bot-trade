@@ -11,7 +11,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState, setState } from '../db.js'
 import { setStage } from './stage-matrix.js'
-import { evidenceGate, evidenceRecord, evidenceGateReport, evidenceGateConfig, EVIDENCE_GATE_KEY, EVIDENCE_GATE_DEFAULTS } from './evidence-gate.js'
+import { evidenceGate, evidenceRecord, evidenceGateReport, evidenceGateConfig, EVIDENCE_GATE_KEY, EVIDENCE_GATE_DEFAULTS, whyZero } from './evidence-gate.js'
+import { recordArmingChange } from './arming-log.js'
+import { recordDecision } from './decision-log.js'
 
 const DEMO = '111', LIVE = '222'
 function fresh() {
@@ -153,4 +155,46 @@ test('evidenceRecord: an explicit `now` reads the same window SQLite\'s clock do
   assert.equal(a.rScored, 0); assert.equal(a.rUnscorable, 5); assert.equal(a.profitFactorR, null)
   // 200 days on, the rows are outside the 90-day window.
   assert.equal(evidenceRecord(db, { strategy: 'ema_pullback', accountId: DEMO, now: Date.now() + 200 * 86_400_000 }).closes, 0)
+})
+
+// ---------------------------------------------------------------------------
+// R2 (the 03-10-2026 replays): a shadow cell's zero says WHY it is zero.
+// Traced: the 14 "bypass" trades opened while their cells were pinned; the
+// watchdog/breaker unpinned them afterwards, and from then on the stage
+// matrix refused the strategy upstream of this gate. The report must show
+// that, not a bare 0.
+// ---------------------------------------------------------------------------
+
+test('R2: whyZero names the reason — upstream stage-matrix skips, a recent unpin, or nothing proposed; null where there is something to show', () => {
+  assert.equal(whyZero({ allowed: true, shadowRefusals7d: 0, stageSkips7d: 9, pin: null }), null, 'an allowed cell has no zero to explain')
+  assert.equal(whyZero({ allowed: false, shadowRefusals7d: 2, stageSkips7d: 9, pin: null }), null, 'shadow refusals are the evidence')
+  assert.equal(whyZero({ allowed: false, shadowRefusals7d: 0, stageSkips7d: 9, pin: null }), 'refused_upstream')
+  assert.equal(whyZero({ allowed: false, shadowRefusals7d: 0, stageSkips7d: 0, pin: { to: 'false', at: new Date(Date.now() - 3600_000).toISOString() } }), 'unpinned_recently')
+  assert.equal(whyZero({ allowed: false, shadowRefusals7d: 0, stageSkips7d: 0, pin: { to: 'false', at: new Date(Date.now() - 10 * 86_400_000).toISOString() } }), 'no_proposals', 'an old unpin is not the reason')
+  assert.equal(whyZero({ allowed: false, shadowRefusals7d: 0, stageSkips7d: 0, pin: null }), 'no_proposals')
+})
+
+test('R2: the report shows a shadow cell\'s upstream stage-matrix skips and its last pin change, and reads it as refused_upstream', () => {
+  const db = fresh()
+  // The cell WAS pinned (trades opened), then the edge watchdog unpinned it.
+  setStage(db, { kind: 'strategy', key: 'donchian_breakout', stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  setStage(db, { kind: 'strategy', key: 'donchian_breakout', stage: 'trade', on: false, accountId: DEMO }, { getState, setState })
+  recordArmingChange(db, { scope: DEMO, kind: 'strategy', key: 'donchian_breakout', stage: 'trade', from: true, to: false, actor: 'edge_watchdog', reason: 'no edge: expectancy -29.73, PF 0.02 over 20 closes' })
+  // Since then the stage matrix refuses it upstream: two account-scoped skips and one roster-wide.
+  recordDecision(db, { accountId: DEMO, symbol: 'DOW.US', strategy: 'donchian_breakout', stage: 'stage_matrix', decision: 'skip', reason: 'trade off' })
+  recordDecision(db, { accountId: DEMO, symbol: 'GD.US', strategy: 'donchian_breakout', stage: 'stage_matrix', decision: 'skip', reason: 'trade off' })
+  recordDecision(db, { accountId: null, symbol: 'GD.US', strategy: 'donchian_breakout', stage: 'stage_matrix', decision: 'skip', reason: 'roster-wide' })
+  const r = evidenceGateReport(db)
+  const cell = r.strategies.donchian_breakout[DEMO]
+  assert.equal(cell.allowed, false); assert.equal(cell.via, 'shadow')
+  assert.equal(cell.shadowRefusals7d, 0, 'the gate never saw a proposal')
+  assert.equal(cell.stageSkips7d, 3, 'two scoped skips plus the roster-wide one')
+  assert.equal(cell.pin?.actor, 'edge_watchdog'); assert.equal(cell.pin?.to, 'false'); assert.equal(cell.pin?.verdict, 'recorded')
+  assert.equal(cell.whyZero, 'refused_upstream')
+  // The other account never had the pin or the skips: nothing proposed.
+  const other = r.strategies.donchian_breakout[LIVE]
+  assert.equal(other.stageSkips7d, 1, 'the roster-wide skip counts under every account')
+  assert.equal(other.whyZero, 'refused_upstream')
+  const quiet = r.strategies.vwap_trend[LIVE]
+  assert.equal(quiet.stageSkips7d, 0); assert.equal(quiet.whyZero, 'no_proposals'); assert.equal(quiet.pin, null)
 })

@@ -140,12 +140,43 @@ function waitingCount(db) {
   return n + evidenceShadowRefusals(db).length
 }
 
+/**
+ * THE STOP THE LEDGER REPLAYS IS THE STOP THE GATE JUDGED (R1, the 03-10-2026
+ * replays, docs/replays-2026-10-03.md). `proposal_json.sl` is the strategy's
+ * stop BEFORE the gate; the gate widens it to the hourly-ATR floor
+ * (risk.js, `checks.stop_floor = { from, to }`) and computes its `rr` and
+ * its sizing on the widened stop. Measured on 50 of 50 sample rows: 354 of
+ * 357 `bad_rr` vetoes were floored, by a median 4.1×, so a row replayed at
+ * the proposal's stop described a trade about four times tighter than any
+ * the gate would have sized, and its R was in a unit nobody traded. The
+ * `refusal_cost` goal (+714 R, "42% would have paid") was built on it.
+ *
+ * So each pending item carries the stop the gate sized (`sl`), the
+ * proposal's own (`slProposal`) and the unit (`stopUnit`):
+ *   'gate'     — a risk_events refusal: the gate ran, `sl` is what it judged
+ *                (the floor's `to` when it widened, the proposal's stop when
+ *                it did not or had no ATR);
+ *   'proposal' — a decision_log shadow refusal: the gate never ran, no floor
+ *                is known, the proposal's stop is all there is.
+ * Rows scored before this change have `stop_unit` NULL: an unknown mix of
+ * the two, reported apart (refusalCostReport `legacy`) and never summed into
+ * the goal.
+ */
+export function stopForReplay(proposal, checks) {
+  const slProposal = num(proposal?.sl)
+  if (checks === undefined || checks === null) return { sl: slProposal, slProposal, stopUnit: 'proposal' }
+  const floor = checks?.stop_floor
+  const to = floor && typeof floor === 'object' ? num(floor.to) : null
+  return { sl: to ?? slProposal, slProposal, stopUnit: 'gate' }
+}
+
 export function pendingRefusals(db, { nowMs = Date.now(), limit = 50 } = {}) {
   const rows = db.prepare(`
     SELECT opportunity_key, symbol, side, account_id,
            MIN(created_at) AS first_at, MAX(COALESCE(last_at, created_at)) AS last_at,
            SUM(COALESCE(repeat_count, 1)) AS refusals,
-           MAX(veto_reason) AS reason, MAX(proposal_json) AS proposal_json
+           MAX(veto_reason) AS reason, MAX(proposal_json) AS proposal_json,
+           MAX(checks_json) AS checks_json
       FROM risk_events
      WHERE approved = 0 AND opportunity_key IS NOT NULL AND COALESCE(symbol, '') <> ?
        AND opportunity_key NOT IN (SELECT opportunity_key FROM refusal_scores)
@@ -156,16 +187,20 @@ export function pendingRefusals(db, { nowMs = Date.now(), limit = 50 } = {}) {
     .sort((a, b) => String(a.first_at).replace('T', ' ').localeCompare(String(b.first_at).replace('T', ' ')))
   const out = []
   for (const r of rows) {
-    let p = null
+    let p = null, checks = null
     try { p = JSON.parse(r.proposal_json || 'null') } catch { p = null }
-    const entry = num(p?.entry), sl = num(p?.sl), tp = num(p?.tp1)
+    // A shadow refusal (evidenceShadowRefusals) carries no checks_json key at
+    // all: the gate never ran. A risk_events row always carries one.
+    if ('checks_json' in r) { try { checks = JSON.parse(r.checks_json || 'null') ?? {} } catch { checks = {} } }
+    const entry = num(p?.entry), tp = num(p?.tp1)
+    const { sl, slProposal, stopUnit } = stopForReplay(p, checks)
     const firstMs = Date.parse(String(r.first_at).replace(' ', 'T') + (String(r.first_at).endsWith('Z') ? '' : 'Z'))
     const tf = p?.timeframe || null
     const horizon = horizonMinFor(tf)
     const item = {
       opportunityKey: r.opportunity_key, symbol: r.symbol, side: r.side, accountId: r.account_id,
       strategy: p?.strategy || null, timeframe: tf, reason: r.reason, reasonKey: reasonKey(r.reason),
-      entry, sl, tp, firstAt: r.first_at, firstMs, lastAt: r.last_at, refusals: r.refusals, horizonMin: horizon,
+      entry, sl, slProposal, stopUnit, tp, firstAt: r.first_at, firstMs, lastAt: r.last_at, refusals: r.refusals, horizonMin: horizon,
     }
     if (entry == null || sl == null || tp == null || !(Math.abs(entry - sl) > 0)) { item.unscorable = 'no entry, stop or target on the proposal'; out.push(item); continue }
     if (!Number.isFinite(firstMs)) { item.unscorable = 'unreadable refusal time'; out.push(item); continue }
@@ -191,11 +226,13 @@ export function scorerNoBarsNote(fetchedCount, reason) {
 function insertScore(db, it, { nowMs, outcome, rReached = null, exitAt = null, barsUsed = null, note = null }) {
   db.prepare(`
     INSERT OR REPLACE INTO refusal_scores (opportunity_key, account_id, symbol, side, strategy, timeframe, reason_key, reason,
-      entry, sl, tp, first_at, last_at, refusals, horizon_min, scored_at, outcome, r_reached, exit_at, bars_used, note)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      entry, sl, tp, first_at, last_at, refusals, horizon_min, scored_at, outcome, r_reached, exit_at, bars_used, note,
+      sl_proposal, stop_unit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(it.opportunityKey, it.accountId, it.symbol, it.side, it.strategy, it.timeframe, it.reasonKey, it.reason,
     it.entry, it.sl, it.tp, it.firstAt, it.lastAt, it.refusals, it.horizonMin, new Date(nowMs).toISOString(),
-    outcome, rReached, exitAt, barsUsed, note)
+    outcome, rReached, exitAt, barsUsed, note,
+    it.slProposal ?? null, it.stopUnit ?? null)
 }
 
 /**
@@ -293,17 +330,29 @@ export function refusalCostReport(db, { days = 7, now = Date.now() } = {}) {
     }
   }
   const total = { n: 0, scored: 0, sumR: 0, wouldHavePaid: 0, outcomes: {} }
+  // R1 (03-10-2026): the unit of a row's R is the stop it was replayed at.
+  // `known` sums only rows whose stop is the gate's (or, for shadow refusals,
+  // declared as the proposal's); `legacy` is the rows scored before the unit
+  // was recorded, an unknown mix of the two (measured: about 4× too generous
+  // where the floor applied). The goal reads `known`; `total` keeps every row
+  // for readers that want the whole population.
+  const known = { n: 0, scored: 0, sumR: 0, wouldHavePaid: 0, outcomes: {} }
+  const legacy = { n: 0, scored: 0, sumR: 0, wouldHavePaid: 0, outcomes: {} }
+  const byUnit = { gate: 0, proposal: 0, legacy: 0 }
   for (const r of rows) {
     const b = byReason[r.reason_key] || (byReason[r.reason_key] = { reason: r.reason_key, n: 0, scored: 0, sumR: 0, wouldHavePaid: 0, outcomes: {}, example: r.reason })
     tally(b, r); tally(total, r)
+    if (r.stop_unit === 'gate' || r.stop_unit === 'proposal') { tally(known, r); byUnit[r.stop_unit]++ } else { tally(legacy, r); byUnit.legacy++ }
   }
+  const mean = (t) => ({ ...t, meanR: t.scored ? Math.round((t.sumR / t.scored) * 1000) / 1000 : null })
   const reasons = Object.values(byReason).map(b => ({ ...b, meanR: b.scored ? Math.round((b.sumR / b.scored) * 1000) / 1000 : null }))
     .sort((a, b) => b.n - a.n)
   const waiting = waitingCount(db)
   return {
-    days, since, total: { ...total, meanR: total.scored ? Math.round((total.sumR / total.scored) * 1000) / 1000 : null },
+    days, since, total: mean(total), known: mean(known), legacy: mean(legacy), byUnit,
     reasons, waiting, recent: rows.slice(0, 50),
-    note: 'sumR is the R the refused setups would have reached at their own stop/target within their horizon: positive = refused winners (cost), negative = avoided losers. Ambiguous, truncated, unscorable and fetch_failed rows are counted in n but not in sumR.',
+    note: 'sumR is the R the refused setups would have reached at their own stop/target within their horizon: positive = refused winners (cost), negative = avoided losers. Ambiguous, truncated, unscorable and fetch_failed rows are counted in n but not in sumR. '
+      + 'The stop is the one the risk gate judged (stop_unit gate: the hourly-ATR floor applied); a shadow refusal the gate never saw is replayed at the proposal\'s stop (proposal); rows scored before 03-10-2026 carry no unit (legacy) and are kept out of `known`, which the refusal_cost goal reads.',
   }
 }
 

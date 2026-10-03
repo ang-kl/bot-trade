@@ -497,7 +497,9 @@ const TABLES = `
     r_reached       REAL,
     exit_at         TEXT,
     bars_used       INTEGER,
-    note            TEXT
+    note            TEXT,
+    sl_proposal     REAL,   -- R1 (03-10-2026): the strategy's own stop; sl is the stop the gate judged
+    stop_unit       TEXT    -- gate | proposal | NULL (scored before the unit was recorded)
   );
   CREATE INDEX IF NOT EXISTS idx_refusal_scores_reason ON refusal_scores(reason_key, scored_at);
   -- V3 L1: the order-lifecycle PRE-02 read by scored_at (the index above
@@ -1533,6 +1535,15 @@ export function initDB(dbPath) {
   // 27-09 follow-up (7): the error's own date (see the CREATE above).
   if (!hbColNames.has('last_error_at')) {
     db.exec('ALTER TABLE controller_heartbeats ADD COLUMN last_error_at TEXT');
+  }
+
+  // refusal_scores (R1, 03-10-2026): the stop a row was replayed at is the
+  // gate's, and the row says so. `sl_proposal` keeps the strategy's own stop
+  // beside it; `stop_unit` is 'gate' | 'proposal' | NULL (scored before the
+  // unit was recorded). See refusal-ledger.js stopForReplay.
+  const rsColNames = new Set(db.prepare("PRAGMA table_info(refusal_scores)").all().map(c => c.name));
+  for (const [col, type] of [['sl_proposal', 'REAL'], ['stop_unit', 'TEXT']]) {
+    if (!rsColNames.has(col)) db.exec(`ALTER TABLE refusal_scores ADD COLUMN ${col} ${type}`);
   }
 
   const equityHistoryCols = new Set(db.prepare('PRAGMA table_info(equity_snapshots)').all().map(c => c.name));
