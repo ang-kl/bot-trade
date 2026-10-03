@@ -55,11 +55,15 @@ const tail = a => (a == null ? 'no account' : `…${String(a).slice(-4)}`)
 const iso = ms => (Number.isFinite(ms) ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z') : '?')
 
 /**
- * Pure read (Rule 2): closed, unpriced rows at or past the attempt cap, split
- * by what their timestamps prove.
+ * Pure read (Rule 2): closed, unpriced rows carrying a terminal verdict, split
+ * by what their timestamps prove. A verdict is EITHER the attempt cap OR a
+ * write-off (`pnl_unresolvable = 1`): mark-unresolvable.js's account-level
+ * sweep writes off every old unresolved row on an exhausted account, so a row
+ * with ONE attempt can be terminal too (Codex P1 on #1207, 03-10-2026). Both
+ * are examined; the attempt count alone is not the test.
  *   superseded — closed_at is LATER than pnl_last_attempt_at: the verdict
  *                predates this close and must not govern it.
- *   unordered  — attempts at the cap but no last-attempt stamp: no evidence
+ *   unordered  — a verdict but no last-attempt stamp: no evidence
  *                of ordering; reported, never reset by this rule.
  * Everything else (closed at or before the last attempt) is a standing
  * terminal verdict and is not returned.
@@ -70,7 +74,7 @@ export function supersededPnlVerdicts(db, { maxAttempts = LIVE_GAP_MAX_ATTEMPTS 
            COALESCE(pnl_unresolvable, 0) AS pnl_unresolvable, pnl_unresolvable_reason
       FROM trades
      WHERE status = 'closed' AND net_pnl IS NULL
-       AND COALESCE(pnl_attempts, 0) >= ?
+       AND (COALESCE(pnl_attempts, 0) >= ? OR COALESCE(pnl_unresolvable, 0) = 1)
      ORDER BY id
   `).all(Math.max(1, Number(maxAttempts) || LIVE_GAP_MAX_ATTEMPTS))
   const superseded = [], unordered = []

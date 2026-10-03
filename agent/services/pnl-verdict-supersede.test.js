@@ -26,12 +26,12 @@ function fixture(t) {
 }
 
 /** #1489 exactly, plus every other place its verdict lives. */
-function seed1489(db, { closedAt = REAL_CLOSE, lastAttempt = LAST_ATTEMPT, attempts = LIVE_GAP_MAX_ATTEMPTS, id = 1489 } = {}) {
+function seed1489(db, { closedAt = REAL_CLOSE, lastAttempt = LAST_ATTEMPT, attempts = LIVE_GAP_MAX_ATTEMPTS, id = 1489, writtenOff = true } = {}) {
   db.prepare(`INSERT INTO trades (id, symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, closed_at, close_reason, exit_price,
       net_pnl, gross_pnl, account_id, origin, pnl_attempts, pnl_last_attempt_at, pnl_unresolvable, pnl_unresolvable_reason, pnl_unresolvable_at)
     VALUES (?, 'JNJ.US', 'BUY', 254, 0.1, ?, 'autopilot', 'closed', '2026-09-09 13:33:48', ?, 'momentum_account: rank exit (daily pass)', 257.5,
-      NULL, NULL, ?, 'reconciler_adopted', ?, ?, 1, ?, ?)`)
-    .run(id, POS, closedAt, A, attempts, lastAttempt, VERDICT, lastAttempt)
+      NULL, NULL, ?, 'reconciler_adopted', ?, ?, ?, ?, ?)`)
+    .run(id, POS, closedAt, A, attempts, lastAttempt, writtenOff ? 1 : 0, writtenOff ? VERDICT : null, writtenOff ? lastAttempt : null)
   setState(db, `position_pnl_reread:${A}`, JSON.stringify({ [id]: { at: lastAttempt, outcome: 'terminal', rule: LIFECYCLE_RULES }, 777: { at: lastAttempt, outcome: 'settled', rule: LIFECYCLE_RULES } }))
   db.prepare(`INSERT OR IGNORE INTO position_capture_queue (account_id, position_id, symbol, due_at_ms, attempts, state, last_error, settled_at)
     VALUES (?, ?, 'JNJ.US', 0, 6, 'gave_up', 'missing: close_deal', '2026-09-30T08:31:00.000Z')`).run(A, POS)
@@ -110,9 +110,32 @@ test('a row at the cap with NO last-attempt stamp is not reset (no ordering evid
   assert.match(lines[0], /0 row\(s\) closed after their last attempt; 1 unordered \(left terminal, no ordering evidence\) — #1489 JNJ\.US …0058 \(6 attempts, no last-attempt stamp\)/)
 })
 
-test('rows under the cap are not the sweep\'s business, whatever their timestamps say', t => {
-  const db = fixture(t); seed1489(db, { attempts: LIVE_GAP_MAX_ATTEMPTS - 1 })
+test('a row under the cap with NO write-off carries no verdict: not the sweep\'s business, whatever its timestamps say', t => {
+  const db = fixture(t); seed1489(db, { attempts: LIVE_GAP_MAX_ATTEMPTS - 1, writtenOff: false })
   assert.deepEqual(supersededPnlVerdicts(db), { superseded: [], unordered: [] })
+})
+
+// Codex P1 on #1207: mark-unresolvable.js's account-level sweep writes off
+// every old unresolved row on an exhausted account, so a row with ONE attempt
+// can carry a terminal verdict. Closed after that attempt, it is superseded
+// like any other; the attempt count alone must not hide it.
+test('a WRITTEN-OFF row under the cap, closed after its last attempt, is superseded (the verdict, not the count, is the test)', t => {
+  const db = fixture(t); seed1489(db, { attempts: 1 })
+  const r = supersededPnlVerdicts(db)
+  assert.deepEqual(r.superseded.map(x => x.id), [1489])
+  const out = sweepSupersededPnlVerdicts(db, { log: () => {} })
+  assert.deepEqual(out.superseded.map(x => x.id), [1489])
+  const after = row(db, 1489)
+  assert.equal(after.pnl_unresolvable, 0); assert.equal(after.pnl_unresolvable_reason, null); assert.equal(after.pnl_attempts, 0)
+  assert.deepEqual(pnlLiveGapIds(db, { accountId: A }), [1489], 'a backfill candidate again')
+})
+
+test('a written-off row under the cap with no last-attempt stamp is unordered, not reset', t => {
+  const db = fixture(t); seed1489(db, { attempts: 1, lastAttempt: null })
+  const r = supersededPnlVerdicts(db)
+  assert.deepEqual(r.superseded, []); assert.deepEqual(r.unordered.map(x => x.id), [1489])
+  sweepSupersededPnlVerdicts(db, { log: () => {} })
+  assert.equal(row(db, 1489).pnl_unresolvable, 1, 'untouched')
 })
 
 test('resetPnlVerdict on an unknown id is a no-op that says so', t => {
