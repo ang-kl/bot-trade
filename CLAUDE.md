@@ -1244,6 +1244,21 @@ Measurement history — each line is a real run of the script, not a claim:
   unstamped line made after this ledger. All lower bounds. The count is by
   replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+- 2026-10-03 10:20 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,836`), the replies ran on by count through the #1209 CI wait, the
+  architecture-page correction `№ 10,842` (the page said the code default,
+  5 min; production runs the Tune setting, 1 min; corrected and republished),
+  the #1209 merge (f539ff0a, 09:31Z) and read-back `№ 10,848` (cpp-acct
+  authenticated 3/3 at 09:33:16Z; the demo broker refused every demo session
+  with CANT_ROUTE_REQUEST from 09:32:01Z to 09:41:13Z, seen by the unchanged
+  verifier too, so broker-side), and the Codex P1 on #1209 `№ 10,851` (the
+  reconcile sweep discarded a secondary account's refusal), which this PR
+  carries. Unstamped status lines between them are in the count, so the next
+  stamped reply is at least **`№ 10,858`** plus any unstamped line made after
+  this ledger. All lower bounds. The count is by replies, not by stamps. A
+  later re-measure that reads below this line is missing these, not
+  correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

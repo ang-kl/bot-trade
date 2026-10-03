@@ -349,6 +349,27 @@ static void test_account_disconnect_event_kills_the_session_for_reauth() {
   assert(e.reconcile().ok);
 }
 
+// 03-10-2026 (Codex P1 on #1209): the sweep returns a secondary account's
+// broker refusal over the primary's success, so runLoop's refusal streak
+// counts it; the primary's snapshot is still stored.
+static void test_a_secondary_account_s_refused_reconcile_outranks_the_primary_s_success() {
+  FakeBroker broker([](FakeBroker& b, const jsn::Value& f) {
+    if (typeOf(f) == pt::RECONCILE_REQ && f.get("payload").get("ctidTraderAccountId").asNumber(0) == 4003) {
+      b.reply(f, pt::ERROR_RES, errorPayload("CANT_ROUTE_REQUEST", "Cannot route request"));
+      return;
+    }
+    authAndReconcile(b, f);
+  });
+  ExecEngine e;
+  connectEngine(e, broker, {4003});
+  EngineResult r = e.reconcile();
+  assert(!r.ok && r.brokerError);
+  assert(r.body.get("errorCode").asString() == "CANT_ROUTE_REQUEST");
+  assert(e.lastReconcileAtMs(4002) > 0); // the primary's snapshot still landed
+  assert(e.lastReconcileAtMs(4003) == 0);
+  assert(e.isConnected()); // a refusal is not a transport failure: the session is runLoop's to judge
+}
+
 static void test_the_reader_heartbeats_while_idle() {
   FakeBroker broker(authAndReconcile);
   ExecEngine e;
@@ -539,6 +560,7 @@ int main() {
   test_disconnect_fails_the_pending_request_at_once_and_reconnect_works();
   test_auth_family_errors_skip_an_extra_account_but_kill_the_session_otherwise();
   test_account_disconnect_event_kills_the_session_for_reauth();
+  test_a_secondary_account_s_refused_reconcile_outranks_the_primary_s_success();
   test_the_reader_heartbeats_while_idle();
   test_new_credentials_drop_the_session_without_touching_the_reader_s_socket();
   test_accepted_then_filled_for_one_request_answers_once_and_journals_both();
