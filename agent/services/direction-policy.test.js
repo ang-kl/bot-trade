@@ -166,7 +166,10 @@ test('proposal_json carries direction_reason and trend_at_evaluation; the loop b
   assert.equal(p.direction_reason, 'donchian:close<lo20'); assert.equal(p.trend_at_evaluation.trend_direction, 'short')
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
   assert.match(loop, /const proposal = \{\s*symbol,\s*side,\s*direction_reason: synth\.direction_reason \?\? null,\s*trend_at_evaluation: trendAtEvaluation,/, 'autoTrade puts both on the proposal persistRiskEvent stores')
-  assert.match(loop, /const rr = latestRegime\(db, symbol\)/, 'the trend reading is the regime table\'s, read at evaluation')
+  // R4 (03-10-2026): the read moved into regime-gate.js's trendReadingFor so every entry path shares it; the loop calls the helper.
+  assert.match(loop, /const trendAtEvaluation = trendReadingFor\(db, symbol\)/, 'the trend reading is the regime table\'s, read at evaluation through the shared helper')
+  const gate = strip(readFileSync(new URL('./regime-gate.js', import.meta.url), 'utf8'))
+  assert.match(gate, /export function trendReadingFor\(db, symbol\) \{\s*try \{\s*const rr = latestRegime\(db, symbol\)/, 'the helper reads the regime table')
   // the tick oracle
   const ev = []; let seq = 0, t = 1_000_000, bid = 100_000
   const push = (o = {}) => { seq++; t += 50; ev.push({ seq, recvMs: t, bid, ask: bid + 10, snapshot: false, crossed: false, changed: true, ...o }) }
@@ -212,4 +215,17 @@ test('the quant phase computes regimes for the momentum universe and the tick un
   assert.match(loop, /const \{ regimeSymbols: unionRegimeSymbols, computeRegime \} = await import\('\.\/services\/regime\.js'\)/, 'the helper is imported under another name (a same-name const is a TDZ throw)')
   assert.match(loop, /for \(const \{ symbol \} of regimeSymbols\) \{/)
   assert.ok(!/for \(const \{ symbol \} of recentScans\)/.test(loop), 'the old scanned-only loop is gone')
+})
+
+// R4 (the 03-10-2026 replays): every entry path stamps the trend reading
+// through the one helper (comments stripped before matching, failure mode #2).
+test('R4 wiring: the closed-market, momentum-limit and pending paths stamp trend_at_evaluation through trendReadingFor', () => {
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  for (const f of ['./closed-market-limits.js', './momentum-limit-entry.js', './pending-orders.js']) {
+    const src = strip(readFileSync(new URL(f, import.meta.url), 'utf8'))
+    assert.match(src, /trend_at_evaluation: trendReadingFor\(db, symbol\)/, `${f} stamps the reading`)
+    assert.match(src, /import \{ trendReadingFor \} from '\.\/regime-gate\.js'/, `${f} imports the helper`)
+  }
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  assert.match(loop, /const trendAtEvaluation = trendReadingFor\(db, symbol\)/, 'the market path uses the same helper')
 })

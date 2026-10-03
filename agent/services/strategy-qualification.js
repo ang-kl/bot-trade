@@ -38,6 +38,7 @@
 
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
+import { depositCurrencies } from './deposit-currencies.js'
 import { wilsonInterval } from '../lib/tick-replay-sim.js'
 import { evidenceRecord, evidenceRows, loadEvidenceGate } from './evidence-gate.js'
 import { isHandPinned } from './stage-matrix.js'
@@ -243,9 +244,25 @@ function pooledRaw(rows) {
   }
 }
 
+/**
+ * Each account's money unit. R3 (the 03-10-2026 replays): `accounts.base_currency`
+ * is NULL on every registered account, so the mixed_currency guard below never
+ * fired and a pooled money PF was printed across SGD and USD. The first source
+ * is the broker-verified deposit currency (deposit-currencies.js, the
+ * asset-list evidence the gateway records per account and host); the
+ * registry's base_currency is the fallback; neither → null, which
+ * presentPooled reports as 'unknown' and refuses to sum.
+ */
 function accountCurrencies(db) {
   const m = new Map()
-  try { for (const r of db.prepare('SELECT account_id, base_currency FROM accounts').all()) m.set(String(r.account_id), r.base_currency ? String(r.base_currency) : null) } catch { /* none */ }
+  let verified = {}
+  try { verified = depositCurrencies(db) } catch { verified = {} }
+  try {
+    for (const r of db.prepare('SELECT account_id, base_currency FROM accounts').all()) {
+      const id = String(r.account_id)
+      m.set(id, verified[id]?.currency || (r.base_currency ? String(r.base_currency).toUpperCase() : null))
+    }
+  } catch { /* none */ }
   return m
 }
 
@@ -257,11 +274,15 @@ function accountCurrencies(db) {
 function presentPooled(raw, bar, ccy) {
   const shown = present(raw, bar)
   const currencies = [...new Set(raw.pooled.accountIds.map(a => (a === 'unscoped' ? 'unknown' : (ccy.get(a) || 'unknown'))))].sort()
+  // R3: more than one unit is not a sum in any of them; a pool whose only
+  // unit is 'unknown' is not a sum in a known one either. Both refuse the
+  // money figure; only a pool of one known currency publishes it.
   const mixed = currencies.length > 1
+  const status = mixed ? 'mixed_currency' : currencies[0] === 'unknown' ? 'unknown_currency' : null
   return {
     ...shown,
-    profitFactorUsd: mixed ? { status: 'mixed_currency', currencies } : shown.profitFactorUsd,
-    usd: mixed ? { ...shown.usd, netUsd: { status: 'mixed_currency', currencies } } : shown.usd,
+    profitFactorUsd: status ? { status, currencies } : shown.profitFactorUsd,
+    usd: status ? { ...shown.usd, netUsd: { status, currencies } } : shown.usd,
     currencies,
     signals: raw.pooled.signals, copies: raw.pooled.copies, collapsed: raw.pooled.collapsed,
     unmatched: raw.pooled.unmatched, accounts: raw.pooled.accountIds.length,

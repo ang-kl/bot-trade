@@ -42,7 +42,7 @@ import { configureInflight, inflightSummary, describeCall, maybeStamp as maybeSt
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions, reconcileReplyIdentity, assertReconcileIdentity } from './services/reconciler.js'
 import { reconcileCrossSideAccounts } from './services/cross-side-reconcile.js'
-import { checkRegimeGate, latestRegime } from './services/regime-gate.js'
+import { checkRegimeGate, trendReadingFor } from './services/regime-gate.js'
 import { recordRegimeBlock, recordEvidenceShadow, recordMarketHoursUnknown } from './services/gate-skips.js'
 import { accountPregate, proposalPregate, invalidateAccountPregate } from './services/account-pregate.js'
 import { markTickRepush } from './services/tick-permits.js'
@@ -750,11 +750,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // this symbol at the moment of evaluation, recorded beside the strategy's
   // own direction reason so a later read of proposal_json can say what the
   // bot knew about the trend when it chose the side. null when no reading.
-  let trendAtEvaluation = null
-  try {
-    const rr = latestRegime(db, symbol)
-    trendAtEvaluation = rr ? { regime: rr.regime ?? null, trend_direction: rr.trend_direction ?? null, computed_at: rr.computed_at ?? null, stale: !!rr.stale } : null
-  } catch { trendAtEvaluation = null }
+  // R4 (03-10-2026): the same helper every entry path stamps with.
+  const trendAtEvaluation = trendReadingFor(db, symbol)
 
   const proposal = {
     symbol,

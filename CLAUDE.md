@@ -1300,6 +1300,23 @@ Measurement history — each line is a real run of the script, not a claim:
   unstamped line made after this ledger. All lower bounds. The count is by
   replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+- 2026-10-03 13:50 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,917`), the replies ran on by count through #1217's gate, merge
+  (bf22bc06, squashed) and read-back, and the R1/R2 report **`№ 10,930`**
+  (21:34 SGT: all 756 scored refusals of the week now read as legacy, the
+  goal not measurable until rows score in the gate's unit; the 14 shadow
+  cells read 11 refused upstream and 3 unpinned recently). The owner's
+  "build R3, R4 and R5, merge when green and read back" followed; this PR
+  carries them: R3 the pooled money guard reads the broker-verified deposit
+  currency (the registry's base_currency is NULL on every account) and a pool
+  with no known unit publishes no money figure; R4 one helper
+  (`trendReadingFor`) stamps the trend reading on every entry path; R5 the
+  2m and 10m horizons. Seven mutations, each red on a named test. One
+  unstamped status line followed `№ 10,930`, so the next stamped reply is at
+  least **`№ 10,932`** plus any unstamped line made after this ledger. All
+  lower bounds. The count is by replies, not by stamps. A later re-measure
+  that reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

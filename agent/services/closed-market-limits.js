@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { trendReadingFor } from './regime-gate.js'
 import { admitEntry } from './entry-mode.js'
 import { encodeLabel, convictionBucket, LABEL_VERSION, labelIntentId } from '../lib/trade-labels.js'
 import { tradePrice } from './alert-format.js'
@@ -444,6 +445,9 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     // unable to say why it was long — the field was computed upstream and
     // thrown away one line before it would have been stored.
     direction_reason: synth.direction_reason ?? null,
+    // R4 (03-10-2026): the trend reading at evaluation, as the market path
+    // records it; a resting limit's position must say what the bot knew.
+    trend_at_evaluation: trendReadingFor(db, symbol),
     entry: synth.entry ?? null, sl: synth.sl ?? null,
     tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
     requestedVolume: opts.requestedVolume ?? null,

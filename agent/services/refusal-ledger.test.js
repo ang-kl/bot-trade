@@ -38,6 +38,12 @@ test('horizon: 48 bars of the timeframe, floored at 4h, capped at 20 days; unkno
   assert.equal(horizonMinFor('4h'), 11520)
   assert.equal(horizonMinFor('1d'), 20 * 1440)
   assert.equal(horizonMinFor(null), 2880)
+  // R5 (03-10-2026): 2m and 10m are native timeframes; before this they fell
+  // to the 1h default (2,880 min). 48 bars of 2m is 96 min → the 4h floor;
+  // 48 bars of 10m is 480 min.
+  assert.equal(horizonMinFor('2m'), 240)
+  assert.equal(horizonMinFor('10m'), 480)
+  assert.equal(horizonMinFor('m10'), 480)
 })
 
 test('pendingRefusals: same setup refused on many loops is one opportunity, waits for its horizon, names unscorable ones', () => {

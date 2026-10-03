@@ -687,6 +687,25 @@ test('PR-AL: a signal with no reason records null, not an invented one', async (
   assert.equal(seen[0].direction_reason, null)
 })
 
+// R4 (the 03-10-2026 replays): the pending path stamps the trend reading at
+// evaluation beside direction_reason, as the market path does.
+test('R4: the trend reading at evaluation rides into the pending proposal; null when the regime table holds nothing', async () => {
+  const db = freshDb()
+  db.prepare(`INSERT INTO regimes (symbol, regime, trend_direction, computed_at) VALUES ('EURUSD', 'ranging', 'flat', datetime('now'))`).run()
+  const { deps } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  const seen = []
+  deps.risk.evaluateTrade = (_db, proposal) => { seen.push(proposal); return { approved: true, adjusted_volume: 0.05 } }
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(seen.length, 1)
+  assert.deepEqual([seen[0].trend_at_evaluation?.regime, seen[0].trend_at_evaluation?.trend_direction, seen[0].trend_at_evaluation?.stale], ['ranging', 'flat', false])
+  const db2 = freshDb()
+  const { deps: deps2 } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  const seen2 = []
+  deps2.risk.evaluateTrade = (_db, proposal) => { seen2.push(proposal); return { approved: true, adjusted_volume: 0.05 } }
+  await managePendingOrders(db2, CREDS, SYMBOL_MAP, deps2)
+  assert.equal(seen2[0].trend_at_evaluation, null)
+})
+
 test('the injected fence is a test fixture, not a hole: through the REAL fence nothing is placed — the producer is retired', async () => {
   const db = freshDb()
   const { deps, calls } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })

@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { trendReadingFor } from './regime-gate.js'
 import { admitEntry } from './entry-mode.js'
 import { recordDecision } from './decision-log.js'
 import { readTradableUnion } from './watchlists.js'
@@ -537,6 +538,8 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       // rather than being dropped, so a filled pending order's position can
       // say why it took its direction.
       direction_reason: signal.direction_reason ?? null,
+      // R4 (03-10-2026): the trend reading at evaluation, as the market path records it.
+      trend_at_evaluation: trendReadingFor(db, symbol),
       entry: signal.entry,
       sl: signal.sl,
       tp1: signal.tp1,
