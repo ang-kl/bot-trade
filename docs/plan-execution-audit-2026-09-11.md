@@ -759,7 +759,7 @@ Columns: Sec = the investigator's subsection; Where = the code/component cell as
 |  | Observability: unattributedCount named in the reason string | unresolved-pnl.js:117, 288, 298, 330, 377-378 —… | EXECUTED |  |
 |  | New agent/services/equity-stop.js, master never touched | file present; :17,:27 comments preserve the old… | EXECUTED |  |
 |  | "19 new tests … first two named IRONCLAD" | agent/services/equity-stop.test.js — exactly 19… | EXECUTED |  |
-|  | §3 autoDisarm default "awaits their word" | — | UNVERIFIABLE |  |
+|  | §3 autoDisarm default "awaits their word" | — | UNVERIFIABLE | the auto-disarm capability was removed 03-10-2026 on the owner's order (alert-only breaker) |
 |  | §5 "no production evidence" | still true from here | UNVERIFIABLE |  |
 |  | §7 next-step 2 · fix unattributed rows / add NOT NULL | not found | NOT EXECUTED |  |
 |  | §7 next-step 4 · build the PnLState enum | not found | NOT EXECUTED |  |

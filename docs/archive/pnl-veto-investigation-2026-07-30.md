@@ -248,3 +248,6 @@ Plus 5 new tests on the veto's observability. Full gate: **1618** node tests,
    "the backfill has not run yet" from "the broker rejected the deal-history
    request", and the risk log should say which.
 5. **Decide the `autoDisarm` default** with §3's correction in front of you.
+   *(Note added 03-10-2026: the knob no longer exists — the breaker's
+   auto-disarm capability was removed on the owner's order after the
+   statement review; the breaker is alert-only.)*

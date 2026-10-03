@@ -53,17 +53,16 @@ export const ARM_BAR = {
   question: 'is this specific combo proven enough to put money behind?',
 }
 
-/** Rolling live-trade alert floor. ALERT ONLY — autoDisarm is off by owner. */
+/** Rolling live-trade alert floor. ALERT ONLY — auto-disarm removed 03-10-2026. */
 export const BREAKER_BAR = {
   profitFactor: 0.8,
   minTrades: 15,
   window: 20,
   source: 'agent/services/performance-breaker.js — DEFAULT_PB',
   question: 'is live performance bad enough to interrupt a human?',
-  // Owner, 2026-07-30 and re-confirmed 2026-08-03: "leave autoDisarm OFF".
-  // The breaker reports; the owner decides. Recorded here so a reader of this
-  // register does not mistake the bar for an automatic stop.
-  autoDisarm: false,
+  // The breaker reports; the owner decides. Its auto-disarm capability
+  // (owner-off since 2026-07-30) was removed 2026-10-03 on the owner's order,
+  // so there is no knob here for a reader to mistake for an automatic stop.
 }
 
 /** One seed strategy's own auto-arming floor. */

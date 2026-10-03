@@ -100,17 +100,16 @@ test('the un-halt is automatic: a trip from BEFORE the FX-day open ages out', ()
     'FX-day rollover empties the derived set — no imperative un-halt to forget')
 })
 
-test('performance breaker default-off contributes NOTHING (absence asserted)', () => {
+test('the performance breaker never contributes a halt (absence asserted; auto-disarm removed 03-10-2026)', () => {
   const db = withAccounts(initDB(':memory:'))
-  // Master autotrade off + breaker at defaults (autoDisarm OFF, owner order):
-  // the halt must stay false — mirroring an unarmed breaker would invent an
-  // automatic stop the owner explicitly declined twice.
+  // Master autotrade off + breaker at defaults: the halt must stay false —
+  // mirroring an alert-only breaker would invent an automatic stop.
   setState(db, 'autotrade_enabled', 'false')
   assert.equal(desiredGuardFor(db, { isLive: null }).halt, false)
-  // Armed breaker + master off → the machine was authorized to stop, mirror it.
+  // A STALE stored autoDisarm:true (saved before the capability was removed)
+  // + master off: still no halt. The key means nothing any more.
   setState(db, 'performance_breaker_json', JSON.stringify({ autoDisarm: true }))
-  assert.equal(desiredGuardFor(db, { isLive: null }).halt, true)
-  // Armed breaker + master ON → trading, no halt.
+  assert.equal(desiredGuardFor(db, { isLive: null }).halt, false)
   setState(db, 'autotrade_enabled', 'true')
   assert.equal(desiredGuardFor(db, { isLive: null }).halt, false)
 })

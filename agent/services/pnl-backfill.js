@@ -13,7 +13,7 @@
 // stop-outs unless a human had the dashboard open:
 //   · daily-loss veto / equity stop   — SUM(net_pnl) skips NULLs → under-count
 //   · consecutive-loss cooldown        — (net_pnl||0)<0 → a stop-out reads as 0
-//   · performance breaker / auto-disarm — WHERE net_pnl IS NOT NULL → excluded
+//   · performance breaker (alert only)  — WHERE net_pnl IS NOT NULL → excluded
 //   · Kelly negative-expectancy veto    — censored sample
 // The exact trades most likely to close at the broker (losers hitting the
 // resting SL) were exactly the ones the safety system could not see. For an
@@ -1071,6 +1071,28 @@ export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOS
              ${scope} ${lifetime} ${position} ${row} ${excluded}
     `).run(...args).changes
   } catch { return 0 }
+}
+
+/**
+ * The LIVE-GAP predicate — the rows a retry could still help — as one helper,
+ * so a test can ask "is this row a repair candidate again?" against the same
+ * clauses backfillClosedPnl's liveGap / blockingGap counts use (above: not
+ * written off, under the attempt cap). pnl-verdict-supersede.js resets a row
+ * so that it re-enters this set; this is what proves it did.
+ */
+export function pnlLiveGapIds(db, { accountId = null, limit = 200 } = {}) {
+  try {
+    const scope = accountId == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
+    const args = accountId == null ? [LIVE_GAP_MAX_ATTEMPTS] : [LIVE_GAP_MAX_ATTEMPTS, String(accountId)]
+    return db.prepare(`
+      SELECT id FROM trades
+       WHERE status = 'closed' AND net_pnl IS NULL
+         AND COALESCE(pnl_unresolvable, 0) = 0
+         AND COALESCE(pnl_attempts, 0) < ?
+         ${scope}
+       ORDER BY id LIMIT ?
+    `).all(...args, Math.max(1, Math.min(1000, limit))).map(r => Number(r.id))
+  } catch { return [] }
 }
 
 /**

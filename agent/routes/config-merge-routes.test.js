@@ -49,7 +49,10 @@ test('performance-breaker: a stored key the route does not know survives a parti
     assert.equal(r.ok, true)
     const stored = JSON.parse(getState(h.db, 'performance_breaker_json'))
     assert.equal(stored.futureKnob, 'x')
-    assert.equal(stored.autoDisarm, true, 'the armed auto-disarm must not be reset by an unrelated POST')
+    // 03-10-2026: the auto-disarm knob was removed; a stale stored key is
+    // dropped by the route rather than carried forever by the spread.
+    assert.equal('autoDisarm' in stored, false, 'the removed knob is stripped from the stored config')
+    assert.equal('autoDisarm' in r, false)
     assert.equal(stored.minTrades, 20)
     assert.equal(stored.window, 50)
     assert.equal(r.futureKnob, 'x')

@@ -3804,6 +3804,14 @@ async function runLoop(db) {
             // A detected close still forces an immediate attempt, so a fresh
             // stop-out is filled the same cycle instead of waiting on pacing.
             const closeSeen = shouldRunPnlBackfill(result)
+            // Rule 2 (03-10-2026, #1489 JNJ.US): a row closed AFTER its last
+            // P&L attempt carries a verdict about an earlier, false close.
+            // One indexed read; resets it to a fresh candidate and names it,
+            // before this cycle's pass so the same pass can settle it.
+            try {
+              const { sweepSupersededPnlVerdicts } = await import('./services/pnl-verdict-supersede.js')
+              sweepSupersededPnlVerdicts(db, { log })
+            } catch (e) { log(`P&L verdict sweep failed (non-fatal): ${e.message}`) }
             {
               // Cheap pre-check so the log can tell "nothing was missing"
               // apart from "something was missing and still is after this
@@ -6018,7 +6026,7 @@ async function runLoop(db) {
         const pb = runPerformanceBreaker(db, {
           notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
         })
-        if (pb.triggered) log(`Performance breaker: PF ${pb.stats.profitFactor} over ${pb.stats.trades} trades${pb.autoDisarmed ? ' — autotrade disarmed' : ''}`)
+        if (pb.triggered) log(`Performance breaker: PF ${pb.stats.profitFactor} over ${pb.stats.trades} trades — alert only`)
         await hbeat(db, 'performance_breaker')
         stampFirst('performanceBreaker', { ok: true, triggered: !!pb.triggered })
       } catch (err) {
