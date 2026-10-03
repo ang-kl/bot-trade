@@ -57,6 +57,29 @@ enum class AuthErrorAction { Ignore, SkipAccount, KillSession };
 bool isAuthFamilyError(const std::string& code);
 AuthErrorAction authErrorAction(const std::string& code, bool authorizingExtra);
 
+// What an unsolicited SESSION EVENT should cost. Production incident
+// 03-10-2026 07:30Z (live gateway): the broker pushed ACCOUNT_DISCONNECT_EVENT
+// for every authorized account and kept the socket open. The engine logged
+// "unsolicited payloadType=2164" and nothing else: authed_ stayed true,
+// /health said connected, every reconcile was refused by the broker (not an
+// auth-family code, so no session kill), and the gateway never re-authorized
+// until it was restarted by hand 38 minutes later. At 06:25Z the same event
+// had been followed by a socket drop, so the ordinary reconnect path healed
+// it; the healing was luck, not design. An account disconnect or a token
+// invalidation means the session's authorization is gone: the session is
+// closed for re-auth, the same path an auth-family error takes.
+// Pure and free-standing, same reason as authErrorAction.
+enum class SessionEventAction { Ignore, KillSession };
+SessionEventAction sessionEventAction(int payloadType);
+
+// A reconcile the broker REFUSES (an error frame, not a transport failure)
+// this many passes in a row is a session whose authorization is gone in a
+// way no event announced: the session is closed for re-auth. Transport
+// failures already take the reconnect path; one refusal is left alone (a
+// broker hiccup must not drop a healthy session).
+constexpr int kReconcileRefusalsBeforeReauth = 3;
+bool reconcileRefusalStreakKillsSession(int consecutiveRefusals);
+
 // ---------------------------------------------------------------------------
 // HOST PIN (two-sidecar plan, Phase 3).
 //
@@ -100,6 +123,13 @@ constexpr int RECONCILE_RES           = 2125;
 constexpr int EXECUTION_EVENT         = 2126;
 constexpr int ORDER_ERROR_EVENT       = 2132;
 constexpr int ERROR_RES               = 2142;
+// Session events the broker pushes with no request behind them (Spotware's
+// ProtoOAPayloadType numbering). 03-10-2026: three ACCOUNT_DISCONNECT_EVENTs
+// arrived at 07:30:01Z on the live gateway and the session stayed "connected
+// and authenticated" with no reconcile for 35 minutes, because nothing read
+// them (see sessionEventAction below).
+constexpr int ACCOUNTS_TOKEN_INVALIDATED_EVENT = 2147;
+constexpr int ACCOUNT_DISCONNECT_EVENT         = 2164;
 } // namespace pt
 
 // P2a: the order as the broker receives it — ledger fields stripped.

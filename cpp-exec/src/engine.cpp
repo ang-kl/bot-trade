@@ -234,6 +234,20 @@ void ExecEngine::noteRetryAfter(const jsn::Value& p) {
 void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
   int type = static_cast<int>(msg.get("payloadType").asNumber(-1));
   if (type == pt::HEARTBEAT) return;
+  // A session event (account disconnected, token invalidated) means this
+  // session's authorization is gone: close it for re-auth, exactly as an
+  // auth-family error does. On the reader thread, the socket's owner, so the
+  // close is the C1-safe path (noteBrokerError below does the same).
+  if (sessionEventAction(type) == SessionEventAction::KillSession) {
+    const long long acct = static_cast<long long>(msg.get("payload").get("ctidTraderAccountId").asNumber(0));
+    logError("session event payloadType=" + std::to_string(type) +
+             (type == pt::ACCOUNT_DISCONNECT_EVENT ? " (account disconnected)" : " (access token invalidated)") +
+             (acct > 0 ? " for account " + std::to_string(acct) : "") + " — closing session for reauth");
+    if (ring_) ring_->log("engine", "session_event", 0, 0, std::to_string(type), "kill_session: closing for reauth");
+    authed_.store(false);
+    ws_.close();
+    return;
+  }
   // SYMBOL_CHANGED_EVENT is the broker announcing a spec update (spreads,
   // swaps, session windows) — routine around rollover, one copy per
   // authorized account, and nothing here consumes symbol specs (Node fetches
@@ -271,6 +285,15 @@ bool isAuthFamilyError(const std::string& code) {
 AuthErrorAction authErrorAction(const std::string& code, bool authorizingExtra) {
   if (!isAuthFamilyError(code)) return AuthErrorAction::Ignore;
   return authorizingExtra ? AuthErrorAction::SkipAccount : AuthErrorAction::KillSession;
+}
+
+SessionEventAction sessionEventAction(int payloadType) {
+  return payloadType == pt::ACCOUNTS_TOKEN_INVALIDATED_EVENT
+    ? SessionEventAction::KillSession : SessionEventAction::Ignore;
+}
+
+bool reconcileRefusalStreakKillsSession(int consecutiveRefusals) {
+  return consecutiveRefusals >= kReconcileRefusalsBeforeReauth;
 }
 
 // --- host pin -------------------------------------------------------------
@@ -1072,6 +1095,7 @@ EngineResult ExecEngine::reconcile() {
 
 void ExecEngine::runLoop() {
   int backoffMs = 1000;
+  int reconcileRefusals = 0;
   constexpr int kBackoffCapMs = 60000;
   for (;;) {
     if (!hasCredentials()) { // waiting for POST /connect from the keeper
@@ -1093,6 +1117,25 @@ void ExecEngine::runLoop() {
     auto r = reconcile();
     if (!r.ok && !r.brokerError)
       continue; // transport problem — loop back into reconnect path
+    // A reconcile the broker REFUSES leaves isConnected() true and
+    // lastReconcileAt frozen: the shape of the 03-10-2026 live stall. One
+    // refusal is a hiccup; a streak is a dead authorization — close the
+    // session for re-auth (see reconcileRefusalStreakKillsSession).
+    if (!r.ok && r.brokerError) {
+      ++reconcileRefusals;
+      const std::string code = r.body.get("errorCode").asString();
+      logError("reconcile refused by the broker (" + code + ") — " + std::to_string(reconcileRefusals) + " in a row");
+      if (reconcileRefusalStreakKillsSession(reconcileRefusals)) {
+        logError("reconcile refused " + std::to_string(reconcileRefusals) + " times in a row — closing session for reauth");
+        if (ring_) ring_->log("engine", "reconcile_refused", 0, 0, code, "kill_session: closing for reauth");
+        { std::lock_guard lk(mtx_); stopReaderLocked(); }
+        authed_.store(false);
+        reconcileRefusals = 0;
+        continue;
+      }
+    } else {
+      reconcileRefusals = 0;
+    }
     // Idle between reconcile polls. The heartbeat is the reader's now, so a
     // 1 s slice here only bounds how fast a drop is noticed.
     for (int slept = 0; slept < 30000 && isConnected(); slept += 1000)

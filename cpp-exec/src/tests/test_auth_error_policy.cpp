@@ -58,6 +58,27 @@ int main() {
     assert(isAuthFamilyError(code));
   }
 
+  // 03-10-2026, live gateway: an unsolicited ACCOUNT_DISCONNECT_EVENT (2164)
+  // for every account, socket kept open, session "connected" with no
+  // reconcile for 35 minutes. A session event that removes the session's
+  // authorization closes it for re-auth; routine events never do.
+  assert(sessionEventAction(pt::ACCOUNT_DISCONNECT_EVENT) == SessionEventAction::KillSession);
+  assert(sessionEventAction(pt::ACCOUNTS_TOKEN_INVALIDATED_EVENT) == SessionEventAction::KillSession);
+  for (int type : {pt::HEARTBEAT, pt::SYMBOL_CHANGED_EVENT, pt::EXECUTION_EVENT, pt::ORDER_ERROR_EVENT,
+                   pt::RECONCILE_RES, pt::ERROR_RES, -1, 0}) {
+    assert(sessionEventAction(type) == SessionEventAction::Ignore);
+  }
+
+  // A reconcile the broker refuses: one or two in a row are a hiccup, the
+  // third closes the session for re-auth. Below the threshold a healthy
+  // session is never dropped by a single bad answer.
+  assert(kReconcileRefusalsBeforeReauth == 3);
+  assert(!reconcileRefusalStreakKillsSession(0));
+  assert(!reconcileRefusalStreakKillsSession(1));
+  assert(!reconcileRefusalStreakKillsSession(2));
+  assert(reconcileRefusalStreakKillsSession(3));
+  assert(reconcileRefusalStreakKillsSession(4));
+
   std::printf("test_auth_error_policy OK\n");
   return 0;
 }

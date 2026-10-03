@@ -318,6 +318,37 @@ static void test_auth_family_errors_skip_an_extra_account_but_kill_the_session_o
   assert(!broker.clientConnected());
 }
 
+// 03-10-2026 07:30Z, the live gateway: ACCOUNT_DISCONNECT_EVENT (2164) for
+// every account with the socket left open. Before this the engine logged the
+// event and stayed "connected and authenticated" (no reconcile for 35 min,
+// healed only by a hand restart). The event now closes the session for
+// re-auth; the ordinary reconnect path then rebuilds it with a full handshake.
+static void test_account_disconnect_event_kills_the_session_for_reauth() {
+  FakeBroker broker(authAndReconcile);
+  DecisionRing ring(64);
+  ExecEngine e;
+  e.setDecisionRing(&ring);
+  connectEngine(e, broker, {4003});
+  assert(e.reconcile().ok);
+  jsn::Value p{jsn::Object{}};
+  p.set("ctidTraderAccountId", 4002.0);
+  broker.send(FakeBroker::pushFrame(pt::ACCOUNT_DISCONNECT_EVENT, p));
+  for (int i = 0; i < 30 && e.isConnected(); ++i) std::this_thread::sleep_for(milliseconds(100));
+  assert(!e.isConnected());
+  std::this_thread::sleep_for(milliseconds(200));
+  assert(!e.sessionStats().readerRunning);
+  bool killed = false;
+  for (const auto& rec : ring.since(0)) if (rec.component == "engine" && rec.kind == "session_event") killed = true;
+  assert(killed);
+  // Re-auth works: a second connection, the full handshake again, reconcile flows.
+  assert(e.connectAndAuth());
+  assert(e.isConnected());
+  assert(broker.connections() == 2);
+  const auto ids = e.accountIds();
+  assert(ids.size() == 2 && ids[0] == 4002 && ids[1] == 4003);
+  assert(e.reconcile().ok);
+}
+
 static void test_the_reader_heartbeats_while_idle() {
   FakeBroker broker(authAndReconcile);
   ExecEngine e;
@@ -507,6 +538,7 @@ int main() {
   test_idless_error_answers_the_sole_request_but_never_one_of_two();
   test_disconnect_fails_the_pending_request_at_once_and_reconnect_works();
   test_auth_family_errors_skip_an_extra_account_but_kill_the_session_otherwise();
+  test_account_disconnect_event_kills_the_session_for_reauth();
   test_the_reader_heartbeats_while_idle();
   test_new_credentials_drop_the_session_without_touching_the_reader_s_socket();
   test_accepted_then_filled_for_one_request_answers_once_and_journals_both();
