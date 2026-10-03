@@ -22,21 +22,22 @@ TickScanner::TickScanner(int workers, size_t queue, std::function<long long()> c
     workers_(workers, queue, [this](int, const auto& event) { consume(event); }) { workers_.start(); }
 TickScanner::~TickScanner() { workers_.stop(); }
 jsn::Value TickScanner::submit(const jsn::Value& batch) {
-  std::unique_lock oneProducer(producer_, std::try_to_lock);
-  if (!oneProducer.owns_lock()) throw std::runtime_error("ingress_busy");
+  // Parse and validate the whole batch BEFORE the producer lock: none of it
+  // touches shared state, and it is the millisecond part of an ingest. The
+  // receivedAtMs upper bound (the clock) is applied under the lock below, so
+  // the clock is read once, where the admission decision is made.
   const auto ident = identity(batch); const auto p = params(batch.get("profile"));
   if (ident.profile != p.profileHash()) throw std::invalid_argument("profile_hash_mismatch");
   if (!batch.get("records").isArray() || batch.get("records").asArray().empty() || batch.get("records").asArray().size() > 512) throw std::invalid_argument("batch_bound");
   struct Input { tick::WorkerEvent event; Meta meta; };
   std::vector<Input> inputs; uint32_t previous = 0;
-  const auto now = clock_();
   for (const auto& r : batch.get("records").asArray()) {
     Input in;
     in.event.seq = integer(r.get("sequence"), 1, UINT32_MAX);
     if (in.event.seq <= previous) throw std::invalid_argument("batch_out_of_order");
     previous = in.event.seq;
     in.meta.sourceSequence = integer(r.get("sourceSequence"), 1, UINT32_MAX);
-    in.event.recvMs = integer(r.get("receivedAtMs"), 1, now);
+    in.event.recvMs = integer(r.get("receivedAtMs"), 1, 9007199254740991LL);
     in.meta.receivedAt = in.event.recvMs;
     in.event.flags = integer(r.get("flags"), 0, 127);
     in.event.bid = r.get("bid").isNull() ? 0 : integer(r.get("bid"), 1, 1000000000000LL);
@@ -46,6 +47,25 @@ jsn::Value TickScanner::submit(const jsn::Value& batch) {
     if (!in.meta.sourceTime.isNull()) integer(in.meta.sourceTime, 1, 9007199254740991LL);
     in.meta.gap = r.get("gapBefore").asBool(); inputs.push_back(std::move(in));
   }
+  // One producer at a time into the worker rings. A colliding batch waits up
+  // to kIngressWaitMs for its turn; past that the scanner is overloaded and
+  // answers ingress_busy (429), which the gateway retries.
+  struct ProducerTurn {
+    TickScanner& s; bool held = false;
+    explicit ProducerTurn(TickScanner& scanner) : s(scanner) {
+      std::unique_lock gate(s.producerGate_);
+      if (!s.producerFree_.wait_for(gate, std::chrono::milliseconds(kIngressWaitMs), [&] { return !s.producerBusy_; }))
+        throw std::runtime_error("ingress_busy");
+      s.producerBusy_ = held = true;
+    }
+    ~ProducerTurn() {
+      if (!held) return;
+      { std::lock_guard gate(s.producerGate_); s.producerBusy_ = false; }
+      s.producerFree_.notify_one();
+    }
+  } oneProducer(*this);
+  const auto now = clock_();
+  for (const auto& in : inputs) if (in.event.recvMs > static_cast<uint64_t>(now)) throw std::invalid_argument("invalid_integer");
   uint32_t slotId = 0, replaced = 0; std::shared_ptr<Slot> slot; bool newSlot = false;
   std::string evict;
   {
@@ -90,11 +110,11 @@ jsn::Value TickScanner::submit(const jsn::Value& batch) {
     }
     // HTTP can refuse the entire batch for retry. Never advance identity,
     // sequence or metadata for an input the bounded worker cannot accept.
-    // producer_ is held, so the consumer can only increase available space.
+    // the producer turn is held, so the consumer can only increase available space.
     if (required > queueCapacity_ - pendingPerWorker_[workers_.workerFor(slotId)].load(std::memory_order_acquire))
       throw std::runtime_error("ingress_capacity_retry_batch");
   }
-  // producer_ is held: nothing else admits, dispatches or refreshes a stream
+  // the producer turn is held: nothing else admits, dispatches or refreshes a stream
   // between the decision above and this commit; workers only drain.
   if (newSlot) {
     std::lock_guard lock(registry_);
