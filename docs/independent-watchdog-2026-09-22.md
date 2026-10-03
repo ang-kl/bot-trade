@@ -340,3 +340,27 @@ left for the owner to order and build with their eyes on it; the verifier's
 own remedy text still names it as not built. Delivery credentials on
 cpp-verify are also unconfigured. Switching Telegram on therefore still needs:
 the backlog disposed, the credentials, and the owner's word.
+
+## Update 03-10-2026: a slim status and a bounded record (owner: "build D1 and D3")
+
+Read from the three Railway logs of 03-10: `GET /watchdog-status` was the
+heaviest request on the verifier. The reply listed all ~1,700 incident
+summaries (about 1 MB), `stateBytes` serialised the whole snapshot a second time
+on every read, and the worst request took 9.6 s against Node's 10 s abort. The
+record stood at 1,686 of its 2,048 bound, gaining about 250 to 390 a day, with
+328 `no_orders` information notices that never resolved.
+
+- **The reply is slim.** It lists the ACTIVE incidents and counts the rest
+  (`incidentsTotal`, `incidentsActive`, `incidentsCap`, `incidentsListed`).
+  `?incidents=all` adds the resolved history. The website already showed active
+  incidents only. `stateBytes` is the size of the last body `persist()` wrote.
+- **The record cannot silently fill.** At the bound a resolved incident (the
+  oldest first) is evicted to take a new one; only a record of all-active
+  incidents refuses it (`dropped`). A `no_orders` notice is about one session:
+  it closes quietly (no transition, serial unchanged) when a day old and is
+  erased 7 days after, not 30.
+- **The beat says so first.** `verify_watchdog` goes red at 80% of the bound
+  (1,639 of 2,048) or on any dropped incident, with the occupancy in its detail.
+
+Not Verifiable until deployed: the live reply size and its time. Read it from
+the verifier's next slow-request lines and `GET /state/heartbeats`.

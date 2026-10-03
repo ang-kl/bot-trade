@@ -44,7 +44,13 @@ public:
   void probe(const std::string& service, bool reachable, const jsn::Value& contract, long long now);
   void protection(const jsn::Value& report, long long now);
   void evaluate(long long now);
-  jsn::Value status(long long now) const;
+  // `allIncidents` false (the default, and what /watchdog-status serves) lists
+  // the ACTIVE incidents only; the resolved history stays in the state file
+  // and is counted (`incidentsTotal`, `incidentsActive`, `incidentsCap`).
+  // Listing all ~1,700 summaries made the reply ~1 MB and the slowest request
+  // on the service (9.6 s worst, against Node's 10 s abort).
+  jsn::Value status(long long now, bool allIncidents = false) const;
+  static constexpr size_t kIncidentCap = 2048;
   long long probeIntervalMs() const { return policy_.probeMs; }
   long long serviceGraceMs() const { return policy_.serviceGraceMs; }
   // Node's entryDiagnostics from the latest valid Node contract, for the
@@ -71,7 +77,7 @@ public:
   explicit Watchdog(std::function<jsn::Value()> protection);
   ~Watchdog();
   void start();
-  jsn::Value status();
+  jsn::Value status(bool allIncidents = false);
 private:
   void run(std::stop_token stop);
   bool persist();
@@ -81,6 +87,9 @@ private:
   std::jthread worker_;
   std::string path_, error_;
   bool enabled_ = false, writable_ = false;
+  // The size of the last body persist() wrote. status() reports it instead of
+  // serialising the whole snapshot a second time on every read.
+  long long stateBytes_ = 0;
   int lockFd_ = -1;
 };
 }

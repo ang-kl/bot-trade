@@ -114,9 +114,19 @@ export function independentProtectionView(db, accountId, nowMs = Date.now()) {
 export function watchdogDeliveryDetail(status) {
   const d = status?.delivery
   if (!d || typeof d !== 'object' || d.channel !== 'none') return null
-  return { channel: 'none', removedOn: typeof d.removedOn === 'string' ? d.removedOn : null, note: typeof d.note === 'string' ? d.note : null,
+  const out = { channel: 'none', removedOn: typeof d.removedOn === 'string' ? d.removedOn : null, note: typeof d.note === 'string' ? d.note : null,
     stateBytes: status.stateBytes ?? null, enabled: status.enabled ?? null, durable: status.durable ?? null, error: status.error || null }
+  // The record's occupancy, when the verifier reports it (a build before the
+  // slim /watchdog-status does not): total kept, active, and the bound.
+  if (Number.isFinite(status.incidentsTotal) && Number.isFinite(status.incidentsCap))
+    out.incidents = { total: status.incidentsTotal, active: status.incidentsActive ?? null, cap: status.incidentsCap, dropped: status.dropped ?? 0 }
+  return out
 }
+
+// At this share of the verifier's incident bound the beat goes red, well before
+// the bound refuses a new incident (it refused 52 in a test, and on production
+// the record stood at 1,686 of 2,048 with about 250-390 new a day).
+export const INCIDENT_RECORD_WARN_SHARE = 0.8
 
 /**
  * The verify_watchdog beat for one /watchdog-status reply. ok when the
@@ -136,6 +146,9 @@ export function verifyWatchdogBeat(status) {
   if (!detail) return { ok: false, error: 'watchdog incident record unreported (a cpp-verify build before the delivery channel was removed on 03-10-2026, or busy)' }
   if (status.enabled !== true) return { ok: false, error: 'watchdog supervision disabled on cpp-verify', detail }
   if (status.error) return { ok: false, error: `watchdog error: ${String(status.error).slice(0, 200)}`, detail }
+  const inc = detail.incidents
+  if (inc && inc.dropped > 0) return { ok: false, error: `watchdog incident record is full: ${inc.dropped} new incident(s) were not recorded (${inc.total} of ${inc.cap} kept)`, detail }
+  if (inc && inc.cap > 0 && inc.total >= inc.cap * INCIDENT_RECORD_WARN_SHARE) return { ok: false, error: `watchdog incident record at ${inc.total} of ${inc.cap} (${Math.round(100 * inc.total / inc.cap)}%): resolved history is evicted first, but a record of active incidents only would then refuse new ones`, detail }
   return { ok: true, detail }
 }
 

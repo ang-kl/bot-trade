@@ -394,6 +394,63 @@ int main() {
     assert(s.snapshot().get("incidents").asObject().size() == 2048);
     assert(s.status(T).get("dropped").asNumber() == 52);
   }
+  {
+    // D1: /watchdog-status lists ACTIVE incidents only and counts the rest, so
+    // a record near its bound no longer makes a ~1 MB reply. `all` is the
+    // explicit way to the history.
+    verify::WatchState s; Array rows;
+    for (int i = 0; i < 40; ++i) rows.push_back(row(T, std::to_string(200000 + i), false, false)); // 40 active :unknown warnings
+    s.protection(accounts(rows), T);
+    Array healed; for (int i = 0; i < 30; ++i) healed.push_back(row(T + 1000, std::to_string(200000 + i), false, true)); // 30 recover
+    for (int i = 30; i < 40; ++i) healed.push_back(row(T + 1000, std::to_string(200000 + i), false, false));
+    s.protection(accounts(healed), T + 1000);
+    const auto slim = s.status(T + 2000);
+    assert(slim.get("incidentsActive").asNumber() == 10);
+    assert(slim.get("incidentsTotal").asNumber() == 40);
+    assert(slim.get("incidentsCap").asNumber() == 2048);
+    assert(slim.get("incidentsListed").asString() == "active");
+    assert(slim.get("incidents").asObject().size() == 10);
+    for (const auto& [id, inc] : slim.get("incidents").asObject()) assert(inc.get("active").asBool());
+    const auto all = s.status(T + 2000, true);
+    assert(all.get("incidentsListed").asString() == "all");
+    assert(all.get("incidents").asObject().size() == static_cast<size_t>(slim.get("incidentsTotal").asNumber()));
+    assert(jsn::dump(slim).size() < jsn::dump(all).size());
+  }
+  {
+    // D3: at the bound a RESOLVED incident is evicted to take a new one (the
+    // oldest first); only an all-active record refuses (and counts) it.
+    verify::WatchState s; Array rows;
+    for (int i = 0; i < 2048; ++i) rows.push_back(row(T, std::to_string(300000 + i), false, false));
+    s.protection(accounts(rows), T);
+    assert(s.snapshot().get("incidents").asObject().size() == 2048);
+    Array one = rows; one[0] = row(T + 1000, "300000", false, true); // 300000 resolves
+    s.protection(accounts(one), T + 1000);
+    assert(!active(s, "protection:demo.ctraderapi.com:300000:unknown"));
+    Array more = one; more.push_back(row(T + 2000, "999999", false, false)); // a new one arrives at the bound
+    s.protection(accounts(more), T + 2000);
+    assert(s.snapshot().get("incidents").asObject().size() == 2048);
+    assert(active(s, "protection:demo.ctraderapi.com:999999:unknown")); // recorded, not dropped
+    assert(s.snapshot().get("incidents").get("protection:demo.ctraderapi.com:300000:unknown").isNull()); // the resolved one made room
+    assert(s.status(T + 2000).get("dropped").asNumber() == 0);
+    Array again = more; again.push_back(row(T + 3000, "888888", false, false)); // now every stored incident is active
+    s.protection(accounts(again), T + 3000);
+    assert(s.status(T + 3000).get("dropped").asNumber() == 1);
+    assert(!active(s, "protection:demo.ctraderapi.com:888888:unknown"));
+  }
+  {
+    // D3: a no_orders notice is about one session. It closes (no transition,
+    // no serial change) when the session is a day old, and is erased at 7 days.
+    verify::WatchState s; auto w = work("orders", "entry_activity"); w.set("ordersSinceOpen", 0); w.set("sessionOpenedAtMs", T); w.set("sessionId", "old-session");
+    w.set("activityComplete", true); w.set("nextDueMs", T + 600000);
+    healthy(s, {w}, T + 300000);
+    const auto id = "node:no_orders:11:old-session";
+    assert(active(s, id)); const auto serialBefore = serial(s, id);
+    healthy(s, {}, T + 300000 + DAY - 1000); assert(active(s, id)); // not yet a day
+    healthy(s, {}, T + 300000 + DAY + 1000);
+    assert(!active(s, id)); assert(serial(s, id) == serialBefore); // closed quietly
+    healthy(s, {}, T + 300000 + 3 * DAY); assert(!s.snapshot().get("incidents").get(id).isNull()); // kept as record
+    healthy(s, {}, T + 300000 + 9 * DAY); assert(s.snapshot().get("incidents").get(id).isNull()); // 7 days after it closed
+  }
   std::cout << "watchdog incident record passed\n";
   return 0;
 }

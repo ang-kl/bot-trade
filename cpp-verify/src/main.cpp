@@ -150,8 +150,9 @@ int main() {
   verify::Watchdog watchdog([&] { return protection.status(); });
   watchdog.start();
   HttpServer server(port, secret);
-  server.route("GET", "/watchdog-status", [&](const HttpRequest&) {
-    return jsonRes(200, jsn::dump(watchdog.status()));
+  server.route("GET", "/watchdog-status", [&](const HttpRequest& req) {
+    // Active incidents by default; `?incidents=all` adds the resolved history.
+    return jsonRes(200, jsn::dump(watchdog.status(queryParam(req.query, "incidents") == "all")));
   });
   server.route("GET", "/protection-status", [&](const HttpRequest&) {
     return jsonRes(200, jsn::dump(protection.status()));

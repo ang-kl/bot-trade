@@ -103,6 +103,10 @@ int main() {
       const auto& relay = st.get("entryDiagnostics");
       assert(relay.get("evidence").asString() == "node_records_relayed" && relay.get("brokerVerified").isBool() && !relay.get("brokerVerified").asBool());
       assert(!relay.get("available").asBool() && relay.get("reason").asString() == "no_node_contract_since_start" && relay.get("accounts").isArray());
+      // stateBytes is the size of the body persist() wrote (no second
+      // serialisation per read): it equals the file on the volume.
+      assert(st.get("stateBytes").asNumber() == static_cast<double>(std::filesystem::file_size(std::string(path) + "/watchdog-state.json")));
+      assert(st.get("incidentsCap").asNumber() == 2048 && st.get("incidentsListed").asString() == "active");
       // The removed channel is named on the process status too.
       assert(st.get("delivery").get("channel").asString() == "none");
     }

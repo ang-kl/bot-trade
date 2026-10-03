@@ -86,6 +86,7 @@ void Watchdog::start() {
 }
 bool Watchdog::persist() {
   const auto body = jsn::dump(state_.snapshot());
+  stateBytes_ = static_cast<long long>(body.size());
   if (path_.empty() || body.size() > 4 * 1024 * 1024) { error_ = "watchdog_state_unavailable_or_oversized"; return writable_ = false; }
   const auto temp = path_ + ".tmp";
   const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
@@ -129,7 +130,7 @@ void Watchdog::run(std::stop_token stop) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 }
-jsn::Value Watchdog::status() {
+jsn::Value Watchdog::status(bool allIncidents) {
   // Read before mutex_, never under it: ProtectionWatch's own lock is the one
   // /protection-status takes, and a broker read never holds it.
   const auto protection = protection_();
@@ -139,12 +140,12 @@ jsn::Value Watchdog::status() {
   std::unique_lock lock(mutex_, std::try_to_lock);
   if (!lock.owns_lock()) return jsn::Value(jsn::Object{{"schemaVersion", 1}, {"enabled", enabled_},
     {"error", "watchdog_status_busy"}, {"observedAtMs", nowMs()}});
-  auto s = state_.status(nowMs());
+  auto s = state_.status(nowMs(), allIncidents);
   auto relay = entryDiagnosticsView(state_.nodeEntryDiagnostics(), state_.nodeEntryDiagnosticsAtMs(), protection, nowMs(), state_.serviceGraceMs());
   if (!enabled_) relay.set("reason", "watchdog_supervision_disabled"); // nothing probes Node, so nothing can be relayed
   s.set("entryDiagnostics", relay);
   s.set("enabled", enabled_); s.set("durable", writable_); s.set("error", error_);
-  s.set("stateBytes", static_cast<long long>(jsn::dump(state_.snapshot()).size()));
+  s.set("stateBytes", stateBytes_);
   s.set("stateBytesCap", 4LL * 1024 * 1024);
   return s;
 }
