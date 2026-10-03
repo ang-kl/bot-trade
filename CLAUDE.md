@@ -1116,6 +1116,18 @@ Measurement history — each line is a real run of the script, not a claim:
   made after this ledger. All lower bounds. The count is by replies, not by
   stamps. A later re-measure that reads below this line is missing these,
   not correcting them.
+- 2026-10-02 23:50 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,686`), the replies ran on through the #1199 report `№ 10,686`, the
+  C·3 rate after the change `№ 10,688` (8 would-send an hour, 0 urgent), the
+  research job start `№ 10,691`, the C·6 job 1 result `№ 10,692` (636
+  trials, no candidate, 19 stops per target), the #1179 read-back `№ 10,694`,
+  the outstanding list `№ 10,695` (the owner switched the model to Sonnet
+  for that reply and back after it) and the owner's sequence order; this PR
+  carries the 03-10 plan. The next stamped reply is at least **`№ 10,698`**
+  plus any unstamped line made after this ledger. All lower bounds. The
+  count is by replies, not by stamps. A later re-measure that reads below
+  this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

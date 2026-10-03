@@ -56,23 +56,31 @@ segment size stays compiled in. Production since the 25-09 X1 window: cap
 **20 GiB** on cpp-exec, **5 GiB** on cpp-acct, reserve at its default. The
 expectations below were written for the 2 GiB default.
 
-A Railway container filesystem is small. So the most likely steady state is:
+A Railway container filesystem is small, so this runbook first predicted
+`PAUSED_RESERVE`. **Measured otherwise** (22-09 at 47.27 ev/s on the live side,
+`performance-cards-reassessment-2026-09-22.md:104`; 28-09 both gateways
+"Recording / shadow true / true", `v3-production-readback-2026-09-28.md:66-67`;
+03-10 both feeds RECORDING with the spools on the mounted volumes): the
+steady state is RECORDING. The table is corrected to the measurement
+(03-10-2026, plan `docs/plan-2026-10-03.md` §2); the prediction is kept below
+it so the correction is visible, not silent.
 
-| reading | expected value |
+| reading | measured value |
 |---|---|
 | `/tick-status` `enabled` | `true` |
-| `/tick-status` `state` | **`PAUSED_RESERVE`** (the reserve cannot be met) |
-| `recorder_recording` | false |
-| `disk_reserve_clear` | false |
+| `/tick-status` `state` | **`RECORDING`** (predicted `PAUSED_RESERVE`; the reserve was met once the spools moved to the mounted volumes) |
+| `recorder_recording` | true |
+| `disk_reserve_clear` | true |
 | `shadow_strategy_running` | **true** — the shadow runs off the raw tap |
 | `shadowReady` on …3489 / …2148 / …9009 | **true** (predicted, not yet observed) |
 | `ready` on every account | **false** — `profile_pinned`, `replay_evidence`, `validation_stage` |
 | `entry.places` | **false** |
 | `entry.accounts` | **0** |
 
-**`PAUSED_RESERVE` here is the fail-safe working, not a fault.** If the recorder
-instead reports `RECORDING`, that is also fine and simply means the container fs
-had room.
+**`PAUSED_RESERVE`, if it ever appears, is the fail-safe working, not a
+fault**: the reserve cannot be met and the recorder pauses rather than fill the
+filesystem. `RECORDING` is the measured state since the spools moved to the
+mounted volumes.
 
 **Shadow-ready is not trade-ready.** `shadowReady` gates nothing
 (`tick-readiness.js` view note); only `ready` gates promotion
