@@ -1081,15 +1081,26 @@ EngineResult ExecEngine::reconcile() {
     ids = accountIds_;
     if (ids.empty()) ids.push_back(primaryAccountLocked());
   }
+  //
+  // 03-10-2026 (Codex P1 on #1209): a broker REFUSAL on any account in the
+  // sweep outranks the primary's success. runLoop counts refusals toward
+  // re-auth, and a secondary whose reconcile is refused every pass would
+  // otherwise sit unauthorized for ever behind a healthy primary, its
+  // snapshot frozen. Every successful account still stores its snapshot in
+  // reconcileOne before this returns.
   EngineResult primary;
+  EngineResult refused;
   bool havePrimary = false;
+  bool haveRefused = false;
   for (long long id : ids) {
     if (id <= 0) continue;
     EngineResult r = reconcileOne(id);
     if (!havePrimary) { primary = r; havePrimary = true; }
     if (!r.ok && !r.brokerError) return r;
+    if (!r.ok && r.brokerError && !haveRefused) { refused = r; haveRefused = true; }
   }
   if (!havePrimary) return errResult("NOT_CONNECTED", "no account to reconcile", false);
+  if (haveRefused) return refused;
   return primary;
 }
 
