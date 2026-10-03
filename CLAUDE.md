@@ -1259,6 +1259,24 @@ Measurement history — each line is a real run of the script, not a claim:
   this ledger. All lower bounds. The count is by replies, not by stamps. A
   later re-measure that reads below this line is missing these, not
   correcting them.
+- 2026-10-03 12:50 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,858`), the replies ran on by count through the #1210 merge and
+  read-back `№ 10,864`, the three architecture-page docs PRs #1211–#1213
+  (`№ 10,866`, `№ 10,871`, `№ 10,873`, `№ 10,876`, `№ 10,878`, `№ 10,881`;
+  Codex's three findings each fixed in the next PR), the outstanding-items
+  investigation `№ 10,884` (production measured read-only: PF 0.78 over 294
+  closes in 30 days, 79% of losses from initial stops, longs PF 0.47 against
+  shorts 1.77, the bad_rr<3 gate refusing setups that would have paid; no
+  outstanding engineering item moves profit), the owner's questions answered
+  at `№ 10,885` (V3 built, not accepted; 10 Oct with one live account; the
+  front login; the README moved to docs/1st_README.md in #1214), and the
+  owner's "yes to the four replays and the login gate, go ahead". This PR
+  carries the login gate. Unstamped status lines between the stamps are in
+  the count, so the next stamped reply is at least **`№ 10,891`** plus any
+  unstamped line made after this ledger. All lower bounds. The count is by
+  replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
