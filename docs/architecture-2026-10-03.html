@@ -64,7 +64,7 @@ code{font-family:var(--mono);font-size:.86em;background:var(--node);padding:1px 
 </style>
 
 <main>
-<p class="eyebrow">bot-trade · read from the code and production on 03-10-2026 · corrected № 10,842, № 10,866 and № 10,873</p>
+<p class="eyebrow">bot-trade · read from the code and production on 03-10-2026 · corrected № 10,842, № 10,866, № 10,873 and № 10,878</p>
 <h1>bot-trade Architecture</h1>
 <p class="lede">Six processes on Railway, one broker. The Node service decides; two C++ gateways place and protect; two C++ scanners mirror the feed; one C++ verifier reads the broker on its own session and judges the rest. This page shows how work flows, how fast each part runs, and the logic that lets a trade in and takes it out. Every number is from the code, with the file named.</p>
 
@@ -160,17 +160,28 @@ code{font-family:var(--mono);font-size:.86em;background:var(--node);padding:1px 
 // SVG text does not wrap. Fonts differ by machine, so a label that fits in one
 // browser can run past its box in another (Codex P2 on #1211). Measure each
 // label against the box it starts in and squeeze only the ones that overflow.
+// The web font arrives after the first paint (display=swap), so the fit runs
+// again once the fonts are ready and after any later font load (Codex P2 on
+// #1212); each pass clears the previous squeeze before measuring.
 (function fitSvgLabels(){
   const svg = document.querySelector('svg');
   if (!svg) return;
   const boxes = [...svg.querySelectorAll('rect')].map(r => ({x:+r.getAttribute('x'), y:+r.getAttribute('y'), w:+r.getAttribute('width'), h:+r.getAttribute('height')}));
-  for (const t of svg.querySelectorAll('text')) {
-    const x = +t.getAttribute('x'), y = +t.getAttribute('y');
-    const box = boxes.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
-    if (!box) continue;
-    const room = box.x + box.w - 8 - x;
-    const w = t.getBBox().width;
-    if (w > room) { t.setAttribute('textLength', String(room)); t.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+  const fit = () => {
+    for (const t of svg.querySelectorAll('text')) {
+      t.removeAttribute('textLength'); t.removeAttribute('lengthAdjust');
+      const x = +t.getAttribute('x'), y = +t.getAttribute('y');
+      const box = boxes.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+      if (!box) continue;
+      const room = box.x + box.w - 8 - x;
+      const w = t.getBBox().width;
+      if (w > room) { t.setAttribute('textLength', String(room)); t.setAttribute('lengthAdjust', 'spacingAndGlyphs'); }
+    }
+  };
+  fit();
+  if (document.fonts) {
+    document.fonts.ready.then(fit);
+    document.fonts.addEventListener('loadingdone', fit);
   }
 })();
 </script>
