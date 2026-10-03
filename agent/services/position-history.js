@@ -925,6 +925,57 @@ export function positionHistoryView(db, { limit = 100, accountId = null, cutoffM
   }
 }
 
+/** The money and close fields a closed record must carry; the lister's default filter. */
+export const CLOSE_MONEY_FIELDS = Object.freeze(['exit_price', 'net_pnl', 'close_reason'])
+
+/**
+ * GET /state/position-history-missing (P5b, 03-10-2026): the refused closed
+ * records — the rows behind `missingFields` on /state/position-history —
+ * NAMED, one per record: trade id (the partial record's, else the closed
+ * ledger row holding the position on that account), account, symbol, closed
+ * time and the fields it is missing. The default filter is the three close
+ * fields (exit_price, net_pnl, close_reason); `fields` narrows it to one or
+ * more. `accountId` null lists every account. The ledger row's own
+ * exit_price / net_pnl / close_reason ride along so the reader can see which
+ * are repairable from the ledger and which are missing on both sides.
+ * Read-only: position_history_incomplete and trades are read, never written.
+ */
+export function incompleteClosedRows(db, { accountId = null, fields = CLOSE_MONEY_FIELDS, limit = 200 } = {}) {
+  const acct = accountId == null ? null : String(accountId)
+  const wanted = [...new Set((Array.isArray(fields) ? fields : [fields]).map(f => String(f ?? '').trim()).filter(Boolean))]
+  if (!wanted.length) throw new RangeError('at least one field required')
+  const max = Math.min(1000, Math.max(1, Number(limit) || 200))
+  const parse = (v) => { try { return v ? JSON.parse(v) : null } catch { return null } }
+  const byId = db.prepare('SELECT id, status, symbol, side, exit_price, net_pnl, close_reason, closed_at FROM trades WHERE id = ?')
+  const byPosition = db.prepare(`SELECT id, status, symbol, side, exit_price, net_pnl, close_reason, closed_at FROM trades
+    WHERE account_id = ? AND ctrader_position_id = ? AND status = 'closed' ORDER BY id LIMIT 1`)
+  const rows = []
+  for (const r of db.prepare(`SELECT account_id, ctrader_position_id, symbol, closed_at_ms, missing_json, partial_json, built_at
+      FROM position_history_incomplete ${acct ? 'WHERE account_id = ?' : ''} ORDER BY closed_at_ms DESC, ctrader_position_id`).all(...(acct ? [acct] : []))) {
+    const parsedMissing = parse(r.missing_json)
+    const missing = Array.isArray(parsedMissing) ? parsedMissing : []
+    const hit = missing.filter(f => wanted.includes(f))
+    if (!hit.length) continue
+    const partial = parse(r.partial_json) || {}
+    const own = Number.isFinite(Number(partial.trade_id)) && partial.trade_id != null ? byId.get(Number(partial.trade_id)) : null
+    const trade = own ?? byPosition.get(r.account_id, r.ctrader_position_id) ?? null
+    rows.push({
+      accountId: r.account_id, positionId: r.ctrader_position_id, tradeId: trade?.id ?? null,
+      tradeIdSource: own ? 'partial_record' : trade ? 'ledger_row' : null,
+      symbol: r.symbol ?? trade?.symbol ?? null, side: partial.direction ?? trade?.side ?? null,
+      closedAtMs: r.closed_at_ms ?? null,
+      closedAt: Number.isFinite(Number(r.closed_at_ms)) && r.closed_at_ms != null ? new Date(Number(r.closed_at_ms)).toISOString() : trade?.closed_at ?? null,
+      missing, missingWanted: hit, builtAt: r.built_at,
+      ledger: trade ? { status: trade.status, exitPrice: trade.exit_price, netPnl: trade.net_pnl, closeReason: trade.close_reason ?? null } : null,
+    })
+  }
+  return {
+    schemaVersion: 1, generatedAt: new Date().toISOString(),
+    scope: { accountId: acct, all: acct == null }, fields: wanted,
+    total: rows.length, truncated: rows.length > max, rows: rows.slice(0, max),
+  }
+}
+
 /** V3 B4: the refused stream classed row by row (newest 100 listed); see classifyRefusedRecord. */
 function refusedRecordsView(db, where, args, parse) {
   const counts = {}, classOf = new Map(), rows = []

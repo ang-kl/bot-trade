@@ -219,6 +219,23 @@ export function seedWatchlistAdditionsFromConfig(db, { file = null, log = () => 
   }
   const symbols = Array.isArray(cfg?.symbols) ? [...new Set(cfg.symbols.map(s => String(s || '').toUpperCase().trim()).filter(Boolean))] : null
   if (!symbols) { out.error = 'watchlist-additions.json has no symbols array'; return out }
+  // C·1 PR-2 (03-10-2026): further additions under their OWN group —
+  // `groups: [{ group, symbols }]` — so a conversion leg (USDSGD, which
+  // values the SGD balances) is not filed under "US Stocks". Same rules:
+  // appended enabled where missing, never removed, never re-ordered. The
+  // top-level `symbols` keep the top-level `group`.
+  const groupOf = new Map()
+  const topGroup = typeof cfg.group === 'string' && cfg.group.trim() ? cfg.group.trim() : null
+  for (const s of symbols) groupOf.set(s, topGroup)
+  for (const g of Array.isArray(cfg?.groups) ? cfg.groups : []) {
+    const name = typeof g?.group === 'string' && g.group.trim() ? g.group.trim() : null
+    for (const raw of Array.isArray(g?.symbols) ? g.symbols : []) {
+      const s = String(raw || '').toUpperCase().trim()
+      if (!s || groupOf.has(s)) continue
+      groupOf.set(s, name)
+      symbols.push(s)
+    }
+  }
   // C·2 (18-09-2026): a declared REMOVAL, for a name the broker does not
   // offer. ARM.US was seeded on 09-09 and the fundable universe has reported
   // it `unknown_symbol` since (absent from the 1,940-symbol list the broker
@@ -232,7 +249,6 @@ export function seedWatchlistAdditionsFromConfig(db, { file = null, log = () => 
   const removals = Array.isArray(cfg?.remove) ? [...new Set(cfg.remove.map(s => String(s || '').toUpperCase().trim()).filter(Boolean))] : []
   out.removed = 0
   out.removedDetail = {}
-  const group = typeof cfg.group === 'string' && cfg.group.trim() ? cfg.group.trim() : null
   const targets = [{ key: WATCHLIST_KEY, name: 'global', items: readWatchlist(db, null) }]
   let accounts = []
   try { accounts = getEnabledAccounts(db).map(a => String(a.account_id)) } catch { accounts = [] }
@@ -255,7 +271,7 @@ export function seedWatchlistAdditionsFromConfig(db, { file = null, log = () => 
     const missing = symbols.filter(s => !have.has(s) && !removeSet.has(s))
     out.present += symbols.filter(s => have.has(s)).length
     if (!missing.length && !gone.length) continue
-    const next = [...items, ...missing.map(symbol => ({ symbol, enabled: true, ...(group ? { group } : {}) }))]
+    const next = [...items, ...missing.map(symbol => { const group = groupOf.get(symbol) ?? null; return { symbol, enabled: true, ...(group ? { group } : {}) } })]
     setState(db, t.key, JSON.stringify(next))
     if (missing.length) {
       out.added += missing.length

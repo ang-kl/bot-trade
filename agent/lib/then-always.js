@@ -20,9 +20,16 @@
 //     beat, recordError, the backoff counter) sees exactly what it did.
 //   • `after`'s own throw never masks `before`'s error; when `before`
 //     returned, `after`'s throw propagates as usual.
+//   • When BOTH threw (27-09 follow-up (4), 03-10-2026): `after`'s error used
+//     to be dropped on the floor — the book's own failure vanished behind the
+//     pre-book one. It is now handed to `onAfterError(afterError, error)`
+//     (default: console.error) and attached to the rethrown error as
+//     `.afterError` when that error is an object, so the cycle catch's record
+//     can name both. The rethrown value is still `before`'s error, unchanged
+//     in identity.
 // ---------------------------------------------------------------------------
 
-export async function thenAlways(before, after) {
+export async function thenAlways(before, after, { onAfterError = defaultOnAfterError } = {}) {
   let threw = false
   let error
   try {
@@ -39,6 +46,18 @@ export async function thenAlways(before, after) {
     afterThrew = true
     afterError = err
   }
-  if (threw) throw error
+  if (threw) {
+    if (afterThrew) {
+      try { onAfterError(afterError, error) } catch { /* the report must not replace the error */ }
+      if (error !== null && (typeof error === 'object' || typeof error === 'function')) {
+        try { error.afterError = afterError } catch { /* frozen: the hook still saw it */ }
+      }
+    }
+    throw error
+  }
   if (afterThrew) throw afterError
+}
+
+function defaultOnAfterError(afterError, error) {
+  console.error(`[thenAlways] after() also threw (not masking the first error "${String(error?.message ?? error)}"): ${String(afterError?.message ?? afterError)}`)
 }

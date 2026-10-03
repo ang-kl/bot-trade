@@ -42,6 +42,7 @@ import {
   exposureVerdict, correlationVerdict, rrFloorVerdict,
 } from './risk.js'
 import { recordDecision } from './decision-log.js'
+import { sizingBalanceUsd } from './account-currency.js'
 
 export const PREGATE_STAGE_PREFIX = 'account_pregate:'
 export const RR_PREFILTER_STAGE = 'rr_prefilter'
@@ -69,8 +70,13 @@ export function accountPregateVerdict(db, accountId, { config = null, nowMs = Da
   const scope = balanceScopeVerdict(bal)
   if (scope.block) return refuse(scope)
 
-  const balance = getAccountBalance(db, acct)
-  const daily = dailyLossVerdict(db, cfg, acct, { balance, nowMs })
+  // C·1 PR-2: the daily cap is judged in USD, so the native balance is valued
+  // in USD first; a refused conversion blocks inside dailyLossVerdict
+  // (guard `fx_rate_unavailable`), the same way the gate itself refuses.
+  const balanceNative = getAccountBalance(db, acct)
+  const money = sizingBalanceUsd(db, acct, { balance: balanceNative, now: nowMs })
+  const balance = money.balanceUsd
+  const daily = dailyLossVerdict(db, cfg, acct, { balance, nowMs, money })
   if (daily.block) return refuse(daily, { balance })
 
   const streak = lossStreakVerdict(db, cfg, acct, nowMs)

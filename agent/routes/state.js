@@ -6,6 +6,7 @@ import { Router } from 'express'
 import { scannerMirrorStatus } from '../services/scanner-candidates.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { createHash } from 'node:crypto'
+import { statSync } from 'node:fs'
 import { getState } from '../db.js'
 import { llmDisabled as llmDisabledFlag, llmDisabledReason as llmDisabledWhy } from '../lib/llm-switch.js'
 import { loadRiskConfig, accountRiskOverlay, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverageEvidence } from '../services/risk.js'
@@ -23,6 +24,7 @@ import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 import { maeChandelierView, activeMonitoredIds } from '../services/mae-chandelier-observe.js'
 import { balanceUnit } from '../services/balance-unit.js'
+import { sizingBalanceUsd, conversionView, accountDepositCurrencies } from '../services/account-currency.js'
 import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, getStopPolicy, trailConfigPolicy, triggerValue, stopPolicyStats } from '../lib/stop-policy.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
@@ -43,12 +45,13 @@ import { accountMoney } from '../services/account-money.js'
 import { accountOverview } from '../services/account-overview.js'
 import { dailyStopReading } from '../services/daily-stop-reading.js'
 import { accountHistory } from '../services/account-history.js'
+import { CLASS_BASIS as LEDGER_CLASS_BASIS } from '../services/ledger-reconciliation.js'
 import { validateBlockerRequest } from '../services/blocker-report.js'
 import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readCalendarCoverage, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -227,7 +230,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/scanner-alignment-snapshot', '/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview'])
+  const NO_CACHE = new Set(['/scanner-alignment-snapshot', '/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview', '/ledger-reconciliation-rows', '/position-history-missing'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -342,7 +345,15 @@ export default function stateRouter(db) {
     const id = typeof req.query.account === 'string' ? req.query.account : null
     if (!id || !/^[1-9]\d*$/.test(id)) return res.status(400).json({ error: 'explicit account required' })
     if (!db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(id)) return res.status(404).json({ error: 'account not registered' })
-    res.set('Cache-Control', 'no-store').json(accountMoney(db, id))
+    // C·1 PR-2: beside the observation, the conversion the risk engine applies
+    // to it — rate, source symbol, age — or `fx_rate_unavailable`.
+    const money = accountMoney(db, id)
+    let sizing = null
+    try {
+      const conv = sizingBalanceUsd(db, id, { balance: getAccountBalance(db, id) })
+      sizing = { ...conversionView(conv), balanceNative: conv.nativeBalance, balanceUsd: conv.balanceUsd != null ? Number(conv.balanceUsd.toFixed(2)) : null }
+    } catch (err) { sizing = { error: String(err?.message || err) } }
+    res.set('Cache-Control', 'no-store').json({ ...money, sizing })
   })
 
   // GET /state/market-calendar?account=<id>&symbolId=<broker instrument id>
@@ -437,7 +448,11 @@ export default function stateRouter(db) {
       recentErrors: readRecentErrors(db),
       circuitBreaker: circuitBreaker || null,
       memoryMB: Math.round(memUsage.rss / 1048576),
-      dbSizeMB: (() => { try { const { size } = require('fs').statSync(db.name); return Math.round(size / 1048576 * 10) / 10 } catch { return null } })(),
+      // 27-09 follow-up (8), 03-10-2026: this read `require('fs')` from an ES
+      // module — a ReferenceError on every call, swallowed by the catch — so
+      // dbSizeMB was null since the route was written. null now means only
+      // "the file could not be stat'ed" (an in-memory db, a missing file).
+      dbSizeMB: (() => { try { const { size } = statSync(db.name); return Math.round(size / 1048576 * 10) / 10 } catch { return null } })(),
       openTrades: (() => { try { return db.prepare("SELECT COUNT(*) as c FROM monitored_positions WHERE status = 'active'").get()?.c || 0 } catch { return 0 } })(),
       symbols: {
         total: symbols.length,
@@ -747,7 +762,7 @@ export default function stateRouter(db) {
     // have 'P&L, To TP/SL'").
     const rows = db
       .prepare(
-        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at, t.ctrader_position_id AS ctrader_position_id, a.tp2_price AS tp2_price
+        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at, t.ctrader_position_id AS ctrader_position_id, t.horizon AS horizon, a.tp2_price AS tp2_price
          FROM monitored_positions mp
          LEFT JOIN trades t ON t.id = mp.trade_id
          LEFT JOIN analyses a ON a.id = t.analysis_id
@@ -1686,6 +1701,33 @@ export default function stateRouter(db) {
       // The worker loses the RangeError type; the refusal is recognised by
       // its message before the generic unavailable answer (as blocker-report).
       if (err?.message === 'account not registered') return res.status(400).json({ error: 'account not registered' })
+      if (sendReportUnavailable(res, err, { message: 'ledger reconciliation unavailable', code: 'ledger_reconciliation_unavailable' })) return
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /state/ledger-reconciliation-rows?account=<id>&class=<class>&limit= —
+  // P5b (03-10-2026). /ledger-reconciliation gives the CLASS COUNTS; this
+  // names the rows of one class on one explicit registered account (the
+  // /account-history guard) with trade id, symbol, side, the timestamps, the
+  // ledger money, the broker figure the class was judged against and the
+  // class's meaning — so the repairable rows can be named. The same
+  // classification (services/ledger-reconciliation.js accountSection), on the
+  // same worker slot; read-only; never cached.
+  router.get('/ledger-reconciliation-rows', async (req, res) => {
+    const id = typeof req.query.account === 'string' ? req.query.account : null
+    if (!id || !/^[1-9]\d*$/.test(id) || !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(id)) {
+      return res.status(400).json({ error: 'explicit registered account required' })
+    }
+    const cls = typeof req.query.class === 'string' ? req.query.class.trim() : ''
+    if (!cls || !Object.hasOwn(LEDGER_CLASS_BASIS, cls)) {
+      return res.status(400).json({ error: 'unknown class', classes: Object.keys(LEDGER_CLASS_BASIS) })
+    }
+    res.set('Cache-Control', 'no-store')
+    try {
+      res.json(await readLedgerReconciliationRows(db, { accountId: id, cls, limit: req.query.limit == null ? 200 : Number(req.query.limit) }))
+    } catch (err) {
+      if (err?.message === 'explicit registered account required' || err?.message === 'unknown class') return res.status(400).json({ error: err.message })
       if (sendReportUnavailable(res, err, { message: 'ledger reconciliation unavailable', code: 'ledger_reconciliation_unavailable' })) return
       res.status(500).json({ error: err.message })
     }
@@ -2885,6 +2927,30 @@ export default function stateRouter(db) {
       res.status(500).json({ error: err.message })
     }
   })
+  // GET /state/position-history-missing?account=<id|all>&field=<f>&limit= —
+  // P5b (03-10-2026). /position-history ranks `missingFields` as COUNTS; this
+  // names the refused closed records behind them — trade id, account, symbol,
+  // closed time, the fields missing — filtered to the three close fields
+  // (exit_price, net_pnl, close_reason) unless ?field= names one or more
+  // (repeatable). Scope as /position-history: an explicit account filters,
+  // `all` or no account lists every account. Account ids are in the reply,
+  // never logged. Read-only; never cached.
+  router.get('/position-history-missing', async (req, res) => {
+    try {
+      const { incompleteClosedRows, CLOSE_MONEY_FIELDS } = await import('../services/position-history.js')
+      const scope = requestedAccount(db, req)
+      const accountId = scope.explicit && !scope.all ? scope.accountId : null
+      if (accountId != null && (!/^[1-9]\d*$/.test(accountId) || !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(accountId))) {
+        return res.status(400).json({ error: 'account must be a registered account id or all' })
+      }
+      const asked = req.query.field == null ? [] : [].concat(req.query.field).map(f => String(f).trim()).filter(Boolean)
+      const fields = asked.length ? asked : CLOSE_MONEY_FIELDS
+      res.set('Cache-Control', 'no-store')
+      res.json(incompleteClosedRows(db, { accountId, fields, limit: req.query.limit == null ? 200 : Number(req.query.limit) }))
+    } catch (err) {
+      res.status(err instanceof RangeError ? 400 : 500).json({ error: err.message })
+    }
+  })
   // ORDER LIFECYCLE (V3 L1, owner order 25-09-2026 16:50 SGT): pre-order,
   // order and close records that failed to store or are incomplete, and
   // anything stuck — per account, each rule versioned and cited
@@ -3929,27 +3995,52 @@ export default function stateRouter(db) {
     const balance = getAccountBalance(db, acctParam)
     const leverageEvidence = getAccountLeverageEvidence(db, acctParam)
     const leverage = leverageEvidence.value
-    const tier = balance != null ? tierForBalance(balance) : null
-    const derived = balance != null
+    // C·1 PR-2: `balance` is the broker's native money (labelled by
+    // balanceCurrency, PR-1); every `_usd` figure below is taken from its USD
+    // value through the FX rate table. `fx` names the rate used and its age;
+    // a refused conversion leaves the USD figures null and says so, rather
+    // than printing a USD cap computed from an SGD number.
+    const money = sizingBalanceUsd(db, resolvedAccountId, { balance })
+    const sizingBal = money.balanceUsd
+    const fx = { ...conversionView(money), balanceUsd: sizingBal != null ? Number(sizingBal.toFixed(2)) : null }
+    const tier = sizingBal != null ? tierForBalance(sizingBal) : null
+    const derived = sizingBal != null
       ? {
           balance,
           balanceCurrency: balanceUnit(db, resolvedAccountId).currency,
+          fx,
           leverage,
           tier,
           // BOTH daily brakes, either of which may be off (owner 04-08-2026).
           // The headline number is the one that actually binds — the tighter
           // of the checks that are on — and null when neither is, because a
           // number here would claim a limit that does not exist.
-          daily_cap_usd: dailyCapOf(effective, balance),
+          daily_cap_usd: dailyCapOf(effective, sizingBal),
           daily_cap_pct_usd: effective.dailyLossPct > 0
-            ? Number((balance * effective.dailyLossPct).toFixed(2)) : null,
+            ? Number((sizingBal * effective.dailyLossPct).toFixed(2)) : null,
           daily_cap_flat_usd: effective.dailyLossLimit > 0
             ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
-          per_trade_budget_usd: Number((balance * effective.perTradeRiskPct).toFixed(2)),
-          margin_cap_usd: Number((balance * effective.maxMarginUsagePct).toFixed(2)),
+          per_trade_budget_usd: Number((sizingBal * effective.perTradeRiskPct).toFixed(2)),
+          margin_cap_usd: Number((sizingBal * effective.maxMarginUsagePct).toFixed(2)),
           mode: 'equity_aware',
         }
-      : {
+      : balance != null && money.refused
+        ? {
+            balance,
+            balanceCurrency: balanceUnit(db, resolvedAccountId).currency,
+            fx,
+            leverage,
+            tier: null,
+            daily_cap_usd: null,
+            daily_cap_pct_usd: null,
+            daily_cap_flat_usd: effective.dailyLossLimit > 0
+              ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
+            per_trade_budget_usd: null,
+            margin_cap_usd: null,
+            mode: money.refused,
+            refused: money.refused,
+          }
+        : {
           balance: null,
           leverage,
           tier: null,
@@ -4919,7 +5010,9 @@ export default function stateRouter(db) {
       const { getSymbolMap } = await import('../lib/ctrader-creds.js')
       let symbols = []
       try { symbols = readTradableUnion(db).map(w => w.symbol).filter(Boolean) } catch { symbols = [] }
-      const report = fxLegReport(db, { symbols, symbolMap: getSymbolMap(db) })
+      let accountCurrencies = []
+      try { accountCurrencies = [...accountDepositCurrencies(db)] } catch { accountCurrencies = [] }
+      const report = fxLegReport(db, { symbols, symbolMap: getSymbolMap(db), accountCurrencies })
       res.json({
         ok: true,
         ...report,

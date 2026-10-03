@@ -1189,6 +1189,25 @@ Measurement history — each line is a real run of the script, not a claim:
   it was re-applied and the loop re-run from a saved copy. All lower bounds.
   The count is by replies, not by stamps. A later re-measure that reads below
   this line is missing these, not correcting them.
+- 2026-10-03 05:53 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 10,757`), the replies ran on by count through the #1203 read-back
+  `№ 10,757`, #1204 (the scanner names an invalid feed batch) `№ 10,761`,
+  #1205 (Codex's P2 on it) `№ 10,770`, the outstanding list `№ 10,772`, the
+  build sequence `№ 10,773`, the 03:41Z check-in `№ 10,774`, the step-1 reads
+  and the owner's eight answers `№ 10,777`, the grid start and the 1.5R
+  finding (all four rows already closed) `№ 10,784`, and the grid result and
+  the refused retire apply `№ 10,790` (the exits grid: nine points, 477
+  trials, none pass; the compare-and-set on the scanner registry was refused
+  to the agent by the permission classifier, the bridge restored, the payload
+  left in docs/ for the owner). Unstamped status lines between them are in the
+  count. This PR (#1206, the Sunday bundle: §4-D/§5/§6 horizon, C·1 PR-2 FX
+  rate table, the #101 fixes, the P5b row route, the docs catch-up) was built
+  by four lane agents in worktrees and integrated by cherry-pick; gate green
+  on the integrated tree. The next stamped reply is at least **`№ 10,798`**
+  plus any unstamped line made after this ledger. All lower bounds. The count
+  is by replies, not by stamps. A later re-measure that reads below this line
+  is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

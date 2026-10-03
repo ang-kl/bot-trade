@@ -220,6 +220,9 @@ const RESERVED_POOLS = {
   // V3 B2: the ledger-versus-broker reconciliation. Its own slot, so an owner
   // reading it cannot take a dashboard's; identical requests share one job.
   'ledger-reconciliation': { pool: reconciliationFlights, capacity: 1, error: 'ledger_reconciliation_worker_capacity' },
+  // P5b rows (03-10-2026): one class's rows on one account, the same
+  // classification, the same slot — it reads the same tables at the same cost.
+  'ledger-reconciliation-rows': { pool: reconciliationFlights, capacity: 1, error: 'ledger_reconciliation_worker_capacity' },
 }
 const SHARED_POOL = { pool: flights, capacity: 2, error: 'performance_report_worker_capacity' }
 // Production profiling measured the legacy prices/decision scans at up to
@@ -460,6 +463,8 @@ export function readStorageReport(db, { fresh = false } = {}) {
 export function readOrderLifecycle(db, options) { return isolatedReport(db, 'order-lifecycle', options) }
 /** GET /state/ledger-reconciliation (V3 B2): per account, native currency, off the event loop. */
 export function readLedgerReconciliation(db, options) { return isolatedReport(db, 'ledger-reconciliation', options) }
+/** GET /state/ledger-reconciliation-rows (P5b): one class's rows on one account, named, off the event loop. */
+export function readLedgerReconciliationRows(db, options) { return isolatedReport(db, 'ledger-reconciliation-rows', options) }
 /** GET /state/calendar-coverage (V3 K1): every demanded calendar is read, so
  * off the event loop. No `now` from the route: the in-flight dedupe keys on
  * the options. */
@@ -538,6 +543,10 @@ async function buildReport(db, kind, options, hooks = {}) {
     const { buildLedgerReconciliation } = await import('./ledger-reconciliation.js')
     // One snapshot across trades, receipts and verdicts.
     return db.transaction(() => buildLedgerReconciliation(db, options))()
+  }
+  if (kind === 'ledger-reconciliation-rows') {
+    const { listLedgerReconciliationRows } = await import('./ledger-reconciliation.js')
+    return db.transaction(() => listLedgerReconciliationRows(db, options))()
   }
   if (kind === 'calendar-coverage') {
     const { buildCalendarCoverage } = await import('./calendar-coverage.js')

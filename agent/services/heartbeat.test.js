@@ -34,6 +34,42 @@ test('beat: upserts, counts runs, tracks ok/error and failure streaks', () => {
   assert.equal(row2.last_ok_at, plus(900).toISOString())
 })
 
+// 27-09 follow-up (7), 03-10-2026: an error kept as forensics carries its own
+// date. "disk I/O error" on main_loop read undated because the row had no
+// stamp for it — last_run_at and last_ok_at both move on after a recovery.
+test('beat: last_error_at dates the error, survives a later success like last_error does, and the view carries it', () => {
+  const db = initDB(':memory:')
+  beat(db, 'main_loop', { now: T0 })
+  let row = db.prepare(`SELECT last_error, last_error_at FROM controller_heartbeats WHERE name = 'main_loop'`).get()
+  assert.equal(row.last_error_at, null, 'no error yet: no date')
+  beat(db, 'main_loop', { ok: false, error: 'disk I/O error [consecutive failing cycles: 1/5]', now: plus(300) })
+  beat(db, 'main_loop', { ok: false, error: 'disk I/O error [consecutive failing cycles: 2/5]', now: plus(600) })
+  row = db.prepare(`SELECT last_error, last_error_at FROM controller_heartbeats WHERE name = 'main_loop'`).get()
+  assert.equal(row.last_error_at, plus(600).toISOString(), 'RED if the error is undated: the latest failure stamps it')
+  beat(db, 'main_loop', { now: plus(900) })
+  row = db.prepare(`SELECT last_error, last_error_at, last_run_at FROM controller_heartbeats WHERE name = 'main_loop'`).get()
+  assert.equal(row.last_error, 'disk I/O error [consecutive failing cycles: 2/5]', 'forensics kept')
+  assert.equal(row.last_error_at, plus(600).toISOString(), 'and dated: the recovery does not move the error\'s date')
+  assert.equal(row.last_run_at, plus(900).toISOString())
+  const v = heartbeatView(db, { now: plus(1000) }).find(c => c.name === 'main_loop')
+  assert.equal(v.last_error_at, plus(600).toISOString())
+  assert.equal(v.error_is_current, false)
+})
+
+test('beat: a database created before last_error_at existed gets the column on initDB (the migration), and beats without it', () => {
+  const db = initDB(':memory:')
+  // Recreate the pre-column table, then re-run the migration path by hand.
+  db.exec(`DROP TABLE controller_heartbeats; CREATE TABLE controller_heartbeats (name TEXT PRIMARY KEY, last_run_at TEXT, last_ok_at TEXT, last_error TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, runs INTEGER NOT NULL DEFAULT 0, stalled INTEGER NOT NULL DEFAULT 0, fail_alerted INTEGER NOT NULL DEFAULT 0, updated_at TEXT, last_detail_json TEXT)`)
+  assert.throws(() => beat(db, 'x', { ok: false, error: 'e', now: T0 }), /last_error_at/, 'the pre-column table refuses the new beat — which is why initDB migrates it')
+  const cols = new Set(db.prepare("PRAGMA table_info(controller_heartbeats)").all().map(c => c.name))
+  if (!cols.has('last_error_at')) db.exec('ALTER TABLE controller_heartbeats ADD COLUMN last_error_at TEXT')
+  beat(db, 'x', { ok: false, error: 'e', now: T0 })
+  assert.equal(db.prepare(`SELECT last_error_at FROM controller_heartbeats WHERE name = 'x'`).get().last_error_at, T0.toISOString())
+  // The real migration: a fresh initDB on a file whose table lacks the column.
+  const fresh = initDB(':memory:')
+  assert.ok(new Set(fresh.prepare("PRAGMA table_info(controller_heartbeats)").all().map(c => c.name)).has('last_error_at'))
+})
+
 test('checkHeartbeats: fresh beats raise nothing; stall alerts ONCE, then recovery once', () => {
   const db = initDB(':memory:')
   const alerts = []

@@ -67,8 +67,20 @@ function writeLegAttempts(db, attempts) {
  * anyway, because that same currency is what a CROSS like EURJPY needs, and
  * USDJPY is exactly the leg that resolves it.
  */
-export function requiredQuoteCurrencies(symbols) {
+export function requiredQuoteCurrencies(symbols, accountCurrencies = null) {
   const out = new Set()
+  // C·1 PR-2 (03-10-2026): an account's DEPOSIT currency is a demand of its
+  // own. An SGD account's balance is valued in USD through USDSGD before
+  // anything is sized on it (account-currency.js), and USDSGD is exactly the
+  // leg the C·5 rule above excludes — it is a USD-base pair that no cross on
+  // the watchlist needs, so without this the only writer would be the scan
+  // rotation happening upon USDSGD, days apart. The deposit currency is
+  // infrastructure like the quote currencies: refreshed from the broker on
+  // its own schedule, whether or not the scanner looks at it today.
+  for (const raw of accountCurrencies || []) {
+    const c = String(raw || '').toUpperCase()
+    if (/^[A-Z]{3}$/.test(c) && c !== 'USD') out.add(c)
+  }
   for (const raw of symbols || []) {
     const sym = String(raw?.symbol ?? raw ?? '').toUpperCase()
     if (!sym) continue
@@ -171,10 +183,10 @@ export function staleLegs(table, legSymbols, {
  *            skipped?:string, currencies:string[]}}
  */
 export async function refreshFxLegs(db, {
-  symbols, symbolMap, getSpot,
+  symbols, symbolMap, getSpot, accountCurrencies = null,
   now = Date.now(), refreshAfterMs = LEG_REFRESH_AFTER_MS, limit = LEG_FETCH_LIMIT,
 } = {}) {
-  const currencies = [...requiredQuoteCurrencies(symbols)].sort()
+  const currencies = [...requiredQuoteCurrencies(symbols, accountCurrencies)].sort()
   const legs = []
   for (const c of currencies) {
     const leg = legSymbolFor(c, symbolMap)
@@ -240,17 +252,21 @@ export async function refreshFxLegs(db, {
  * that leg is fresh / stale / missing. This is the view that would have made
  * the 1,859 vetoes obvious in a glance instead of a day of inference.
  */
-export function fxLegReport(db, { symbols, symbolMap, now = Date.now() } = {}) {
+export function fxLegReport(db, { symbols, symbolMap, now = Date.now(), accountCurrencies = null } = {}) {
   const table = readFxTable(db)
   const demand = legVetoDemand(db, { symbolMap })
   const rows = []
-  for (const c of [...requiredQuoteCurrencies(symbols)].sort()) {
+  const deposit = new Set([...(accountCurrencies || [])].map(c => String(c || '').toUpperCase()))
+  for (const c of [...requiredQuoteCurrencies(symbols, accountCurrencies)].sort()) {
     const leg = legSymbolFor(c, symbolMap)
     const row = leg ? table[leg] : null
     const ageMs = row && Number.isFinite(row.t) ? now - row.t : null
     rows.push({
       currency: c,
       leg,
+      // C·1 PR-2: a deposit currency's leg values an account's BALANCE, not a
+      // cross's loss — named so the operator can see why USDSGD is here.
+      ...(deposit.has(c) ? { depositCurrency: true } : {}),
       price: row?.p ?? null,
       ageMin: ageMs == null ? null : Math.round(ageMs / 60_000),
       // Entries this leg blocked over the last 7 days — the number that

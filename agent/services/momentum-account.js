@@ -51,6 +51,7 @@ import { recordPositionEvent } from './position-events.js'
 import { assetClassOf } from './strategy-asset-cross.js'
 import { bookEntryWrite } from './book-entry-write.js'
 import { isSymbolOpenCached, nextOpenInfo } from './symbol-hours.js'
+import { exitMarketHours, exitMayDefer, exitHoursSourceLabel } from './exit-hours.js'
 
 export const MOMENTUM_ACCOUNT_KEY = 'momentum_account_json'
 export const MOMENTUM_ACCOUNT_STATE_KEY = 'momentum_account_state_json'
@@ -708,15 +709,19 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
     }
     // HOURS FIRST (F2, Wave 2 row 2.1 — the rule the row-cursor path has
     // carried since Wave 5 §K·15, now on the path that trades): a market the
-    // BROKER's schedule says is closed gets no broker call. The row is marked
-    // `exit_pending:` and the retry at the top of runMomentumAccountPass sends
-    // it on the first pass its market is open. Only a symbol_hours row
-    // (source 'broker') may defer — the sessions.js heuristic and an error
-    // both ATTEMPT the close, because a wrongly deferred exit on an open
-    // market is the worse error (one refused line at worst).
+    // ACCOUNT CALENDAR (exit-hours.js: the same source S-8 entries read,
+    // holidays included; 27-09 follow-up (1)) or the broker's schedule says
+    // is closed gets no broker call. The row is marked `exit_pending:` and
+    // the retry at the top of runMomentumAccountPass sends it on the first
+    // pass its market is open. Only a calendar or a symbol_hours row (source
+    // 'broker') may defer — the sessions.js heuristic and an error both
+    // ATTEMPT the close, because a wrongly deferred exit on an open market
+    // is the worse error (one refused line at worst).
     let hours = { open: true, source: 'unknown' }
-    try { hours = (deps.isSymbolOpen ?? isSymbolOpenCached)(db, row.symbol, new Date(now)) } catch { hours = { open: true, source: 'error' } }
-    if (hours.open === false && hours.source === 'broker') {
+    try {
+      hours = deps.isSymbolOpen ? deps.isSymbolOpen(db, row.symbol, new Date(now)) : exitMarketHours(db, { symbol: row.symbol, accountId, now: new Date(now) })
+    } catch { hours = { open: true, source: 'error' } }
+    if (exitMayDefer(hours)) {
       summary.deferredClosed = (summary.deferredClosed || 0) + 1
       // CONSECUTIVE MEANS CONSECUTIVE WHILE OPEN (S-2 small round, item 2):
       // a closed-market deferral clears the refusal record, so the first
@@ -724,8 +729,8 @@ async function exitDroppedHoldings(db, { accountId, creds, deps, now, log, summa
       // put a 30-minute wait on the first send of the session. Asked before
       // the backoff below, so a closure inside a backoff window clears it too.
       if (!pending) {
-        db.prepare(`UPDATE momentum_book SET note = ?, exit_refusals = NULL, exit_retry_after = NULL WHERE id = ?`).run('exit_pending: market closed (broker schedule) — rank exit (daily pass) sent when it opens', row.id)
-        log(`momentum account: rank exit of ${row.symbol} on …${accountId.slice(-4)} held — market closed (broker schedule); marked exit_pending, sent when it opens`)
+        db.prepare(`UPDATE momentum_book SET note = ?, exit_refusals = NULL, exit_retry_after = NULL WHERE id = ?`).run(`exit_pending: market closed (${exitHoursSourceLabel(hours)}) — rank exit (daily pass) sent when it opens`, row.id)
+        log(`momentum account: rank exit of ${row.symbol} on …${accountId.slice(-4)} held — market closed (${exitHoursSourceLabel(hours)}); marked exit_pending, sent when it opens`)
       } else if (row.exit_refusals != null || row.exit_retry_after != null) {
         db.prepare(`UPDATE momentum_book SET exit_refusals = NULL, exit_retry_after = NULL WHERE id = ?`).run(row.id)
       }

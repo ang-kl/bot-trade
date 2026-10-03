@@ -14,6 +14,7 @@ import { evaluatePosition } from './services/position-manager.js'
 import { decideAdjust, recordObserve, cachedBars, shouldSendChandelierAdjust, recordAmendReceipt, receiptFromBrokerOutcome, positionOpenedAtMs, freshMid } from './services/mae-chandelier-observe.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { loadManagedExit, managedExitApplies, managedCapAt, applyManagedRules } from './services/managed-exit.js'
+import { horizonForStrategy } from './services/trade-horizon.js'
 import { recordTradePlan, recordPlanWriteFailure } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates, effectiveRrFloor } from './services/risk.js'
@@ -26,6 +27,7 @@ import { persistScanContext } from './services/context.js'
 import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } from './lib/sessions.js'
 import { runWithClosedMarketHold } from './lib/closed-market-hold.js'
 import { isSymbolOpenCached } from './services/symbol-hours.js'
+import { exitMarketHours } from './services/exit-hours.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from './lib/trade-labels.js'
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
@@ -131,6 +133,9 @@ let loopDb = null
 // S-2 small round (item 3): the entries-held reason the momentum book's hold
 // line last printed, so a reason that stands all weekend prints once.
 let lastBookHeldReason = null
+// The book's last printed summary line (bookSummaryLogLine): an identical
+// idle pass prints nothing (27-09 follow-up (2), the #1158 log noise).
+let lastBookSummaryLine = null
 let loopRunning = false               // mutex — prevents concurrent iterations
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
 // № 10,448: accounts whose reconcile reply names no account, warned once per boot.
@@ -1117,14 +1122,16 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const insertIntent = () => db.prepare(`
       INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume,
                           opened_at, status, strategy, account_id, source, risk_event_id,
-                          origin, origin_source, proposal_entry_price, analysis_id)
+                          origin, origin_source, proposal_entry_price, analysis_id, horizon)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade', ?,
-              'bot_market_dispatch', 'write', ?, ?)
+              'bot_market_dispatch', 'write', ?, ?, ?)
     `).run(
       symbol, side, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
       volLots, synth.strategy || null, String(accountId), riskEventId ?? null,
       Number.isFinite(Number(synth.entry)) ? Number(synth.entry) : null,
       Number.isFinite(Number(synth.analysisId)) ? Number(synth.analysisId) : null,
+      // §4-D: the horizon is set HERE, at entry, from the strategy family.
+      horizonForStrategy(synth.strategy || null),
     ).lastInsertRowid
     let intentId
     if (momentumFinal) {
@@ -2124,9 +2131,15 @@ function marginPoolForCycle(db) {
     pool = accountMarginPool(db, config, accounts.map(a => a.accountId), { rates })
       .map(p => ({ ...p, acct: byId.get(p.accountId) }))
       .filter(p => p.acct)
+    // C·1 PR-2: a converted account prints its native balance and the rate
+    // it was valued at; a refused one says `fx_rate_unavailable` and is held
+    // out of dispatch this cycle (exhausted), never sized on an assumed rate.
+    const fxNote = (p) => p.money ? (p.money.refused ? '' : ` [${p.money.currency} ${p.balanceNative} @ ${p.money.rate} ${p.money.rateSymbol} ${p.money.rateAgeMin}m]`) : ''
     const said = pool.map(p => p.status
-      ? `${p.accountId}: ${p.unfunded ? 'UNFUNDED (balance 0)' : p.exhausted ? 'EXHAUSTED' : `headroom $${p.status.headroom.toFixed(2)}`} (used $${p.status.usedMargin.toFixed(2)} / cap $${p.status.cap.toFixed(2)}, ${p.status.source})`
-      : `${p.accountId}: no balance on record — judged by the risk gate`)
+      ? `${p.accountId}: ${p.unfunded ? 'UNFUNDED (balance 0)' : p.exhausted ? 'EXHAUSTED' : `headroom $${p.status.headroom.toFixed(2)}`} (used $${p.status.usedMargin.toFixed(2)} / cap $${p.status.cap.toFixed(2)}, ${p.status.source})${fxNote(p)}`
+      : p.refused
+        ? `${p.accountId}: ${p.refused} (${p.money?.currency} ${p.balanceNative}) — not dispatched this cycle`
+        : `${p.accountId}: no balance on record — judged by the risk gate`)
     if (pool.length) log(`Margin pool (maxMarginUsagePct=${config.maxMarginUsagePct}): ${said.join(' · ')}${pool.every(p => p.exhausted) ? ' — every account exhausted, dispatch paused this cycle' : ''}`)
     // THE VETO BOUNDARY (19-09-2026): an exhausted account is a cycle-stable
     // state, not a refused proposal. It used to be journaled here as a
@@ -2712,7 +2725,8 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // The merge lives in applyManagedRules so EVERY evaluator (this monitor
   // and fast-monitor.js) silences the same ladder — it silenced only here
   // until 0016.HK's bank_target_4R close, 2026-08-31.
-  const rules = applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy })
+  // §5: the trade id is what reaches the horizon stored on the row (§4-D).
+  const rules = applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy, tradeId: pos.trade_id })
   // PR-J's cap trail and bank trail are ATR multiples. The ATR comes from the
   // profit keeper's in-memory cache — a read, never a fetch — and is null
   // whenever the keeper has not computed one for this symbol this bar, in
@@ -2794,13 +2808,15 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
     }
     // A close the broker just refused because the market is closed is not sent
     // again every cycle (lib/closed-market-hold.js): it is held until the
-    // symbol's session opens, or 15 minutes at most. The rule still fires each
-    // cycle; only the send is withheld, so the first cycle after the open sends.
+    // ACCOUNT CALENDAR says the session is open (exit-hours.js — the same
+    // source S-8 entries read, holidays included; 27-09 follow-up (1)), or 15
+    // minutes at most. The rule still fires each cycle; only the send is
+    // withheld, so the first cycle after the open sends.
     const outcome = await runWithClosedMarketHold({
       pos,
       action: eval_.action,
       run: () => executeBrokerAction(db, s, pos, eval_),
-      isOpen: () => isSymbolOpenCached(db, pos.symbol).open === true,
+      isOpen: () => exitMarketHours(db, { symbol: pos.symbol, accountId: pos.account_id }).open === true,
     })
     if (outcome.heldClosedMarket) return
     // PR-J stamps, written FROM THE OUTCOME (checker M4). Stamping before the
@@ -5300,11 +5316,16 @@ async function runLoop(db) {
           const { readTradableUnion } = await import('./services/watchlists.js')
           let symbols = []
           try { symbols = readTradableUnion(db).map(w => w.symbol).filter(Boolean) } catch { symbols = [] }
-          if (symbols.length) {
+          // C·1 PR-2: the enabled accounts' non-USD deposit currencies are
+          // legs too (USDSGD values the SGD balances before anything is
+          // sized on them), refreshed from the broker on the same schedule.
+          let accountCurrencies = []
+          try { const { accountDepositCurrencies } = await import('./services/account-currency.js'); accountCurrencies = [...accountDepositCurrencies(db)] } catch { accountCurrencies = [] }
+          if (symbols.length || accountCurrencies.length) {
             const symbolMap = getSymbolMap(db)
             const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
             const r = await refreshFxLegs(db, {
-              symbols, symbolMap,
+              symbols, symbolMap, accountCurrencies,
               getSpot: (sid) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, sid),
             })
             if (r.fetched.length) log(`FX legs refreshed: ${r.fetched.join(', ')}${r.failed.length ? ` (failed: ${r.failed.join(', ')})` : ''}`)
@@ -6034,7 +6055,7 @@ async function runLoop(db) {
     if (getCtraderCreds(db).ready) {
       try {
         phase('momentum book')
-        const { runMomentumBook, atrOf, bookHoldLogLine } = await import('./services/momentum-book.js')
+        const { runMomentumBook, atrOf, bookHoldLogLine, bookSummaryLogLine } = await import('./services/momentum-book.js')
         const { scanRates } = await import('./services/risk.js')
         const { getRegimeBars } = await import('./services/fib-strategy.js')
         const { wsGetSpotOnce, wsReconcile } = await import('./lib/ctrader-ws.js')
@@ -6109,7 +6130,11 @@ async function runLoop(db) {
         // and then near-silent; a line that keeps reporting reclassifications
         // every pass means rows are re-entering the state faster than their
         // trades close, which is a different problem and worth seeing.
-        if (mb.ran) log(`momentum book: ${mb.entries} entered, ${mb.exits} exited, ${mb.trailed} trailed${mb.reclassified ? `, ${mb.reclassified} exit_sent row(s) reclassified closed` : ''} on ${mb.accounts} account(s)${mb.skipped.length ? ` — ${mb.skipped.slice(0, 4).join('; ')}` : ''}`)
+        // Printed when the pass did something, or when the line changed —
+        // not on every idle cycle (27-09 follow-up (2): the #1158 log noise).
+        const summaryLine = bookSummaryLogLine(mb, lastBookSummaryLine)
+        if (summaryLine.line) log(summaryLine.line)
+        lastBookSummaryLine = summaryLine.last
         // Printed when an exit was held for a closed market this pass, or when
         // the entries-held reason changed — not every cycle of a weekend.
         const hold = bookHoldLogLine(mb, lastBookHeldReason)
@@ -6122,7 +6147,6 @@ async function runLoop(db) {
         await hbeat(db, 'momentum_book', false, err.message)
       }
     }
-    }) // end thenAlways: the pre-book region, then the book (once per cycle)
 
     // -----------------------------------------------------------------------
     // MOMENTUM PARTIAL-TP1 MANAGER (V3 T3, P0-2). Every cycle, AFTER the
@@ -6135,6 +6159,14 @@ async function runLoop(db) {
     // never arrives. Each account uses its own registered credentials.
     // Inert while no plan exists: no broker call, no credential read. Its own
     // try/catch, so a failure here is logged and beaten, never fatal.
+    //
+    // INSIDE the book closure (27-09 follow-up (3), 03-10-2026): it used to
+    // follow `}) // end thenAlways`, so a pre-book throw — rethrown by
+    // thenAlways once the book had run — jumped to the cycle catch and
+    // SKIPPED this pass: a plan's TP1 waited for the next clean cycle while
+    // the book's exits did not. It runs here, after the book, on every cycle
+    // the book runs, errored or not (pinned by
+    // momentum-book-out-of-scan.test.js).
     // -----------------------------------------------------------------------
     try {
       phase('momentum partials')
@@ -6149,6 +6181,12 @@ async function runLoop(db) {
       log(`momentum partial pass failed: ${err.message}`)
       await hbeat(db, 'momentum_partial', false, err.message)
     }
+    }, {
+      // 27-09 follow-up (4): when the pre-book region AND the book closure
+      // both threw, the book's error is named here instead of dropped; the
+      // pre-book error is still what the cycle catch receives.
+      onAfterError: (afterErr, preBookErr) => log(`momentum book closure failed after the pre-book error (${String(preBookErr?.message ?? preBookErr).slice(0, 120)}): ${String(afterErr?.message ?? afterErr).slice(0, 200)}`),
+    }) // end thenAlways: the pre-book region, then the book (once per cycle)
 
     // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)

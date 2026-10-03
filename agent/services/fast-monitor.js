@@ -607,7 +607,8 @@ export async function runFastMonitor(db, creds, deps = {}) {
       // slow loop would have applied 30s later. One ruleset, every evaluator.
       const eval_ = evaluatePosition(pos, {
         currentPrice: mid,
-        rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy }),
+        // §5: the trade id is what reaches the horizon stored on the row (§4-D).
+        rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy, tradeId: pos.trade_id }),
         // Same cached ATR the slow monitor reads (PR-J). One ruleset, one
         // trail basis, every evaluator — the 0016.HK lesson.
         atr: cachedAtrForSymbol(db, pos.symbol),

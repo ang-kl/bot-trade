@@ -31,6 +31,7 @@ import { loadManualGuards, checkAddCap, inheritedBracket, mirroredBracket, isDup
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadManagedExit, MANAGED_EXIT_DEFAULTS } from '../services/managed-exit.js'
+import { horizonForStrategy } from '../services/trade-horizon.js'
 import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, TRAILING_MODES, TRIGGER_ENCODINGS, parseTriggerMethod, setStopPolicy } from '../lib/stop-policy.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { setAssetController } from '../services/asset-controllers.js'
@@ -111,12 +112,14 @@ export function recordManualOrderTrade(db, {
     const tradeInsert = db.prepare(`
       INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
         ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status,
-        origin, origin_source, account_id, strategy, risk_event_id)
+        origin, origin_source, account_id, strategy, risk_event_id, horizon)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open',
-              'manual_broker', 'write', ?, ?, ?)
+              'manual_broker', 'write', ?, ?, ?, ?)
     `).run(symbol, side, entryP, sl, tp, volLots, positionId, structuredLabel,
       parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session,
-      acct, strat, riskEventId != null ? Number(riskEventId) : null)
+      acct, strat, riskEventId != null ? Number(riskEventId) : null,
+      // §4-D: the horizon at entry, from the strategy family ('manual' is intraday).
+      horizonForStrategy(strat))
     const id = Number(tradeInsert.lastInsertRowid)
     db.prepare(`
       INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
@@ -157,10 +160,12 @@ const finiteOrNull = (v) => (v != null && v !== '' && Number.isFinite(Number(v))
 export function writeAheadAnalysisTrade(db, { symbol, side, entry = null, sl = null, tp = null, volLots = null, accountId = null, strategy = null, riskEventId = null } = {}) {
   const r = db.prepare(`
     INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status,
-      strategy, account_id, source, risk_event_id, origin, origin_source, proposal_entry_price)
-    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'manual', ?, 'manual_broker', 'write', ?)
+      strategy, account_id, source, risk_event_id, origin, origin_source, proposal_entry_price, horizon)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'manual', ?, 'manual_broker', 'write', ?, ?)
   `).run(symbol, side, finiteOrNull(entry), finiteOrNull(sl), finiteOrNull(tp), finiteOrNull(volLots),
-    strategy || null, accountId != null ? String(accountId) : null, finiteOrNull(riskEventId), finiteOrNull(entry))
+    strategy || null, accountId != null ? String(accountId) : null, finiteOrNull(riskEventId), finiteOrNull(entry),
+    // §4-D: the horizon at entry, from the strategy family.
+    horizonForStrategy(strategy || null))
   return Number(r.lastInsertRowid)
 }
 

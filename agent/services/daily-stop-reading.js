@@ -54,6 +54,7 @@
 
 import { loadRiskConfig, getAccountBalance, dailyLossVerdict } from './risk.js'
 import { describeBinding } from './daily-loss-pacing.js'
+import { sizingBalanceUsd, conversionView, FX_RATE_UNAVAILABLE } from './account-currency.js'
 
 /** The unit the risk config states the daily cap in (risk.js DEFAULT_RISK_CONFIG). */
 export const DAILY_STOP_CURRENCY = 'USD'
@@ -119,16 +120,32 @@ export function lossCapUsed({ capUsd, realisedTodayPnl, openPnl, unitsComparable
 export function dailyStopReading(db, accountId, { nowMs = Date.now(), moneyCurrency = null, openPnl = null } = {}) {
   const acct = String(accountId)
   const ccy = typeof moneyCurrency === 'string' && moneyCurrency.trim() ? moneyCurrency.trim().toUpperCase() : null
-  const unitsComparable = ccy == null ? null : ccy === DAILY_STOP_CURRENCY
-  const unitsNote = unitsComparable === false
+  let unitsComparable = ccy == null ? null : ccy === DAILY_STOP_CURRENCY
+  let unitsNote = unitsComparable === false
     ? `The risk engine compares this ${DAILY_STOP_CURRENCY}-configured cap with this account's ${ccy} P&L; units question H-P2-4 is open and nothing here converts it.`
     : null
-  let balance, verdict
+  let balance, balanceNative, verdict, money = null, fx = null
   try {
     // The pre-gate's three calls, in its order (account-pregate.js).
     const config = loadRiskConfig(db, acct)
-    balance = getAccountBalance(db, acct)
-    verdict = dailyLossVerdict(db, config, acct, { balance, nowMs })
+    // C·1 PR-2: the same conversion the pre-gate and the gate apply. On a
+    // converted account every figure below is USD, including the native
+    // balance and P&L valued at the table's rate; a refused conversion is
+    // the engine's own block and is reported as such, not as a USD cap.
+    balanceNative = getAccountBalance(db, acct)
+    money = sizingBalanceUsd(db, acct, { balance: balanceNative, now: nowMs })
+    balance = money.balanceUsd
+    verdict = dailyLossVerdict(db, config, acct, { balance, nowMs, money })
+    if (money.conversion !== 'identity') {
+      fx = conversionView(money)
+      if (money.conversion === 'fx_table') {
+        unitsComparable = true
+        unitsNote = `The engine values this account's ${money.currency} money in ${DAILY_STOP_CURRENCY} at ${Number(money.rate).toPrecision(6)} (${money.rateSymbol} ${money.ratePrice}, ${money.rateAgeMin} min old) from the FX rate table; the figures here are ${DAILY_STOP_CURRENCY}.`
+      } else {
+        unitsComparable = false
+        unitsNote = `${FX_RATE_UNAVAILABLE}: ${money.detail}. The engine blocks the day rather than assume a rate; the % figure shown is in ${money.currency} against ${money.currency} P&L, with the USD floor and flat cap not applied.`
+      }
+    }
   } catch (err) {
     const reason = `engine read failed: ${String(err?.message || err)}`
     return {
@@ -137,21 +154,27 @@ export function dailyStopReading(db, accountId, { nowMs = Date.now(), moneyCurre
       balanceUsed: null, balanceKey: `acct:${acct}:account_balance_usd`,
       dayAnchor: 'fx_day_17_00_new_york', dayStartSql: null,
       realisedTodayPnl: null, estimatedStopoutUsd: null, remainingUsd: null, engineBlock: null,
-      moneyCurrency: ccy, unitsComparable, unitsNote,
+      moneyCurrency: ccy, unitsComparable, unitsNote, fx,
       lossCapUsed: { status: 'not_read', reason: 'the daily stop could not be read', pct: null, consumed: null, realisedLoss: null, floatingLoss: finite(openPnl) ? round2(Math.max(0, -openPnl)) : null },
     }
   }
   const p = verdict.pacing
   const capUsd = round2(p.capUsd)
   const realisedTodayPnl = round2(verdict.todayPnl)
+  const converted = money?.conversion === 'fx_table'
+  const refused = money?.conversion === 'refused'
+  // The floating P&L is the broker's native money too: valued at the same
+  // rate as everything else, or left native beside a native % figure.
+  const openPnlUsed = converted && finite(openPnl) ? openPnl * money.rate : openPnl
   return {
     accountId: acct,
     status: capUsd == null ? 'uncapped' : 'in_force',
     reason: null,
     capUsd,
-    currency: DAILY_STOP_CURRENCY,
+    // Refused: the % figure is native (see unitsNote); converted or USD: USD.
+    currency: refused ? money.currency : DAILY_STOP_CURRENCY,
     binding: p.binding,
-    explain: explainBinding(p, ccy),
+    explain: explainBinding(p, converted ? DAILY_STOP_CURRENCY : (refused ? money.currency : ccy)),
     parts: {
       pctCapUsd: round2(p.pctCapUsd),
       tierPct: p.tierPct ?? null,
@@ -163,8 +186,10 @@ export function dailyStopReading(db, accountId, { nowMs = Date.now(), moneyCurre
     // What the % check took a fraction of: the engine's own balance read
     // (the account's `_usd` key; null when never stamped, when the % check is
     // inapplicable and only the flat/floor checks remain).
-    balanceUsed: finite(balance) ? balance : null,
+    balanceUsed: finite(balance) ? (converted ? round2(balance) : balance) : (refused && finite(balanceNative) ? balanceNative : null),
+    balanceNative: finite(balanceNative) ? balanceNative : null,
     balanceKey: `acct:${acct}:account_balance_usd`,
+    fx,
     dayAnchor: 'fx_day_17_00_new_york',
     dayStartSql: verdict.dayStartSql ?? null,
     realisedTodayPnl,
@@ -176,6 +201,6 @@ export function dailyStopReading(db, accountId, { nowMs = Date.now(), moneyCurre
     moneyCurrency: ccy,
     unitsComparable,
     unitsNote,
-    lossCapUsed: lossCapUsed({ capUsd, realisedTodayPnl, openPnl, unitsComparable, moneyCurrency: ccy }),
+    lossCapUsed: lossCapUsed({ capUsd, realisedTodayPnl, openPnl: openPnlUsed, unitsComparable, moneyCurrency: refused ? money.currency : ccy }),
   }
 }

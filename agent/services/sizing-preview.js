@@ -16,11 +16,17 @@
 import { getState } from '../db.js'
 import { readTradableUnion } from './watchlists.js'
 import { loadRiskConfig, getAccountBalance, computeRiskBasedVolume } from './risk.js'
+import { sizingBalanceUsd, conversionView } from './account-currency.js'
 import { contractSize, instrumentType, usdLossPerLot } from '../lib/contracts.js'
 
 export function sizingPreview(db) {
   const cfg = loadRiskConfig(db)
-  const balance = getAccountBalance(db)
+  // C·1 PR-2: the preview sizes with the gate's USD maths, so the selected
+  // account's native balance is valued in USD first; refused → every row
+  // says so instead of a size on an assumed rate.
+  const balanceNative = getAccountBalance(db)
+  const money = sizingBalanceUsd(db, null, { balance: balanceNative })
+  const balance = money.balanceUsd
   const budget = balance != null ? Math.round(balance * cfg.perTradeRiskPct * 100) / 100 : null
 
   let watch = []
@@ -46,6 +52,7 @@ export function sizingPreview(db) {
     const price = prices[symbol] ?? null
     const maxCap = Number(w.maxVolume) > 0 ? Number(w.maxVolume) : null
     const base = { symbol, type, enabled: w.enabled !== false, price, contractSize: contractSize(symbol), maxCap }
+    if (money.refused) return { ...base, autoLots: null, usdPerLot: null, note: `${money.refused} — ${money.detail}` }
     if (balance == null) return { ...base, autoLots: null, usdPerLot: null, note: 'balance unknown — link the account' }
     if (price == null) return { ...base, autoLots: null, usdPerLot: null, note: 'no scan price yet' }
 
@@ -67,6 +74,7 @@ export function sizingPreview(db) {
 
   return {
     balance,
+    ...(money.conversion === 'identity' ? {} : { balanceNative, fx: conversionView(money) }),
     riskPct: cfg.perTradeRiskPct,
     minSLDistancePct: cfg.minSLDistancePct,
     minLotSize: cfg.minLotSize,

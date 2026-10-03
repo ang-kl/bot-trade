@@ -109,7 +109,7 @@ import { isMomentumAccount, runMomentumAccountPass, loadMomentumAccount, dailyDu
 import { bookEntryWrite } from './book-entry-write.js'
 import { bookCloseVolume } from './book-close-volume.js'
 import { runMomentumRankExit } from './momentum-rank-exit.js'
-import { isSymbolOpenCached } from './symbol-hours.js'
+import { exitMarketHours, exitMayDefer } from './exit-hours.js'
 // PR-K: the hold-age rule lives in its own module because the momentum-account
 // path enforces the SAME minimum hold and may not import this file (cycle).
 import { parseStamp, heldLongEnough as heldLongEnoughFor, heldHours, minHoldMsFor } from './book-hold-age.js'
@@ -764,19 +764,23 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
     for (const [symbol] of acctExits) {
       const row = openRow.get(accountId, symbol)
       if (!row) continue
-      // Hours first (Wave 5, §K·15): a market the BROKER's schedule says is
-      // closed gets no broker call. The row keeps its note (exit_pending /
-      // owed), the retry stays owed, and the pass counts it. Only a
-      // symbol_hours row (source 'broker') may defer: with no row,
-      // isSymbolOpenCached falls to the sessions.js heuristic, which calls
+      // Hours first (Wave 5, §K·15): a market the ACCOUNT CALENDAR (the
+      // source S-8 entries read, holidays included — exit-hours.js, 27-09
+      // follow-up (1)) or the BROKER's schedule says is closed gets no
+      // broker call. The row keeps its note (exit_pending / owed), the retry
+      // stays owed, and the pass counts it. Only the calendar or a
+      // symbol_hours row (source 'broker') may defer: with neither,
+      // exitMarketHours falls to the sessions.js heuristic, which calls
       // US500 closed at 02:00 UTC and XTIUSD closed outside New York — a
       // wrongly deferred exit on an open market is the worse error, so the
       // heuristic and an error both ATTEMPT the close (one refused line at
       // worst).
       const deferKey = `${accountId}|${symbol}`
       let hours = { open: true, source: 'unknown' }
-      try { hours = (deps.isSymbolOpen ?? isSymbolOpenCached)(db, symbol, new Date(now)) } catch { hours = { open: true, source: 'error' } }
-      if (hours.open === false && hours.source === 'broker') {
+      try {
+        hours = deps.isSymbolOpen ? deps.isSymbolOpen(db, symbol, new Date(now)) : exitMarketHours(db, { symbol, accountId, now: new Date(now) })
+      } catch { hours = { open: true, source: 'error' } }
+      if (exitMayDefer(hours)) {
         summary.deferredClosed++
         // A flip whose exit waits for the market keeps its other side on the
         // book's own state, exactly as the cadence deferral does — the
@@ -1286,6 +1290,29 @@ export function bookHoldLogLine(summary, lastReason = null) {
   if (!(deferred > 0 || reason !== last)) return { line: null, reason }
   const tail = reason ? `; entries held — ${reason}` : last ? '; entries no longer held' : ''
   return { line: `momentum book: ${deferred} exit(s) held for a closed market (exit_pending)${tail}`, reason }
+}
+
+/**
+ * The loop's per-pass summary line (27-09 follow-up (2), 03-10-2026: the
+ * #1158 log noise). "momentum book: N entered, N exited, N trailed on N
+ * account(s) — skipped…" printed on EVERY cycle once S-2 moved the book out
+ * of the scan branch — about 288 lines a day of "0 entered, 0 exited, 0
+ * trailed" with the same four skip reasons, which buries the pass that did
+ * something. Now it prints when the pass DID something (an entry, an exit, a
+ * trail or a reclassification), or when the line differs from the one last
+ * printed (a count or a skip reason appearing, changing or clearing); an
+ * identical idle pass prints nothing. A pass that did not run prints nothing
+ * and keeps the last line. Returns `{ line, last }`: `line` is null when
+ * there is nothing to print; the caller keeps `last` for the next pass.
+ */
+export function bookSummaryLogLine(summary, lastLine = null) {
+  const last = lastLine ?? null
+  if (!summary?.ran) return { line: null, last }
+  const skipped = Array.isArray(summary.skipped) ? summary.skipped : []
+  const line = `momentum book: ${summary.entries} entered, ${summary.exits} exited, ${summary.trailed} trailed${summary.reclassified ? `, ${summary.reclassified} exit_sent row(s) reclassified closed` : ''} on ${summary.accounts} account(s)${skipped.length ? ` — ${skipped.slice(0, 4).join('; ')}` : ''}`
+  const acted = (Number(summary.entries) || 0) + (Number(summary.exits) || 0) + (Number(summary.trailed) || 0) + (Number(summary.reclassified) || 0) > 0
+  if (!acted && line === last) return { line: null, last }
+  return { line, last: line }
 }
 
 // F6 (absorbed by S-2, Wave 2 row 2.1): the `momentum_book` heartbeat's

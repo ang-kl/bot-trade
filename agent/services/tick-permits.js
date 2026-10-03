@@ -308,8 +308,9 @@ export function accountTickPause(db, accountId, { readinessFor, now = Date.now()
   let poolStatus = null
   try { poolStatus = accountMarginPool(db, riskCfg || loadRiskConfig(db), [accountId], { rates })[0] || null } catch { poolStatus = null }
   if (!pregate?.ok || poolStatus?.exhausted) {
-    const guard = !pregate?.ok ? String(pregate?.guard || 'refused') : 'portfolio_margin_exhausted'
-    return { pause: { reason: `account_pregate:${guard}`, detail: !pregate?.ok ? String(pregate?.reason || '') : poolStatus?.unfunded ? 'unfunded (broker balance 0)' : `headroom $${Number(poolStatus?.status?.headroom ?? 0).toFixed(2)}` }, riskCfg, rd }
+    // C·1 PR-2: a pool entry held out because its balance could not be valued in USD names that, not margin.
+    const guard = !pregate?.ok ? String(pregate?.guard || 'refused') : poolStatus?.refused ? String(poolStatus.refused) : 'portfolio_margin_exhausted'
+    return { pause: { reason: `account_pregate:${guard}`, detail: !pregate?.ok ? String(pregate?.reason || '') : poolStatus?.refused ? String(poolStatus.money?.detail || poolStatus.refused) : poolStatus?.unfunded ? 'unfunded (broker balance 0)' : `headroom $${Number(poolStatus?.status?.headroom ?? 0).toFixed(2)}` }, riskCfg, rd }
   }
   return { pause: null, riskCfg, rd }
 }
@@ -375,17 +376,6 @@ export async function computeTickGrants(db, { now = Date.now(), readiness = null
   return record
 }
 
-/**
- * When this keeper first saw `bootId` on `sideName`, on Node's clock; a boot
- * the store does not hold is recorded as seen now. A boot never seen before
- * (the first pass after this ships included) counts as a change: every tick
- * account on the side waits for one reconcile — the conservative reading. ONE clock on purpose
- * (review correction: the synthetic sidecar_restart row mixes the sidecar's
- * ts_ms with Node's, and is absent on a first-seen boot). The boot began
- * before Node first saw it, so a reconcile stamped after this moment read
- * the account's positions after the boot began. GW-1 (SEQUENCE PR-10) may
- * tighten T to the sidecar's own startedAtMs; this bound is the safe side.
- */
 /** When the account's last reconciled snapshot was REQUESTED (acct:<id>:last_reconcile_read_at, reconciler.js), in ms; NaN when never stamped. */
 export function reconcileReadAtMs(db, accountId) {
   let raw = null
@@ -393,6 +383,18 @@ export function reconcileReadAtMs(db, accountId) {
   return raw ? Date.parse(raw) : NaN
 }
 
+/**
+ * When this keeper first saw `bootId` on `sideName`, on Node's clock; a boot
+ * the store does not hold is recorded as seen now. A boot never seen before
+ * (the first pass after this ships included) counts as a change: every tick
+ * account on the side waits for one reconcile — the conservative reading.
+ * ONE clock on purpose (review correction: the synthetic sidecar_restart row
+ * mixes the sidecar's ts_ms with Node's, and is absent on a first-seen
+ * boot). The boot began before Node first saw it, so a reconcile stamped
+ * after this moment read the account's positions after the boot began. GW-1
+ * (SEQUENCE PR-10) may tighten T to the sidecar's own startedAtMs; this
+ * bound is the safe side.
+ */
 export function bootFirstSeen(db, sideName, bootId, now = Date.now()) {
   let m = {}
   try { m = JSON.parse(getState(db, TICK_BOOT_SEEN_KEY) || '{}') || {} } catch { m = {} }

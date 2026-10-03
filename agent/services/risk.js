@@ -42,6 +42,7 @@ import { recordDecision } from './decision-log.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
+import { sizingBalanceUsd, conversionView, FX_RATE_UNAVAILABLE } from './account-currency.js'
 import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
 import { accountEconomics } from './config-controller.js'
 import { unitsPerLot as unitsPerLotFromRegistry, brokerMinLots } from '../lib/lot-size-registry.js'
@@ -846,7 +847,7 @@ export function marginRateFor(config, symbol) {
  * headroom is never positive — the pool reads it as exhausted. It used to
  * return null here too, and the gate read `.usedMargin` off that null.
  */
-export function portfolioMarginStatus(db, config, { balance, leverage, openPositions = null, rates = null, accountId = null, nowMs = Date.now() } = {}) {
+export function portfolioMarginStatus(db, config, { balance, leverage, openPositions = null, rates = null, accountId = null, nowMs = Date.now(), money = null } = {}) {
   if (balance == null || !Number.isFinite(balance) || balance < 0) return null
   let usedMargin = null
   let source = 'broker'
@@ -855,12 +856,20 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
   // Every account can supply its own broker truth. Never borrow the selected
   // account's snapshot. Money must be USD to compare with the existing USD
   // estimates/caps; a margin-level percentage below has no currency unit.
+  // C·1 PR-2: on a converted account the broker's used margin is in the
+  // account's own currency — the snapshot is accepted in THAT currency and
+  // valued in USD at the balance's rate, instead of being refused as a
+  // mismatch and replaced by the estimate.
+  const converted = money?.conversion === 'fx_table' && Number(money.rate) > 0
   const { snapshot, ...brokerSnapshot } = readAccountSnapshot(db, scopedTo, {
-    nowMs, maxAgeMs: RISK_MARGIN_SNAPSHOT_MAX_AGE_MS, expectedCurrency: 'USD',
+    nowMs, maxAgeMs: RISK_MARGIN_SNAPSHOT_MAX_AGE_MS, expectedCurrency: converted ? money.currency : 'USD',
   })
   const bm = snapshot?.account?.health?.usedMargin
-  if (Number.isFinite(bm) && bm >= 0) usedMargin = bm
-  else if (snapshot) brokerSnapshot.reason = 'used_margin_unavailable'
+  let usedMarginNative = null
+  if (Number.isFinite(bm) && bm >= 0) {
+    usedMargin = converted ? bm * Number(money.rate) : bm
+    if (converted) usedMarginNative = bm
+  } else if (snapshot) brokerSnapshot.reason = 'used_margin_unavailable'
   if (usedMargin == null) {
     source = 'estimate'
     usedMargin = 0
@@ -895,7 +904,10 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
   // unproven overlap or treat an unpriceable order as free capacity.
   usedMargin += restingMargin
   const cap = balance * config.maxMarginUsagePct
-  return { usedMargin, cap, headroom: restingUnpriced.length ? 0 : balance === 0 ? Math.min(0, cap - usedMargin) : cap - usedMargin, source, brokerSnapshot, restingMargin, restingUnpriced }
+  return {
+    usedMargin, cap, headroom: restingUnpriced.length ? 0 : balance === 0 ? Math.min(0, cap - usedMargin) : cap - usedMargin, source, brokerSnapshot, restingMargin, restingUnpriced,
+    ...(converted ? { currency: money.currency, fxRate: money.rate, usedMarginNative } : {}),
+  }
 }
 
 /**
@@ -919,12 +931,23 @@ export function accountMarginPool(db, config, accountIds, { rates = null } = {})
   const out = []
   for (const id of accountIds || []) {
     const accountId = String(id)
-    const balance = getAccountBalance(db, accountId)
+    // C·1 PR-2: the pool's headroom is USD, so the balance is valued in USD
+    // first. A balance that CANNOT be valued (no fresh USDSGD close) is not
+    // "unknown" — unknown is dispatched and judged by the gate — it is
+    // refused: the account is held out of dispatch this cycle, the
+    // conservative side, with the refusal named on the entry.
+    const balanceNative = getAccountBalance(db, accountId)
+    const money = sizingBalanceUsd(db, accountId, { balance: balanceNative })
+    const balance = money.balanceUsd
     const leverageEvidence = getAccountLeverageEvidence(db, accountId)
     const status = balance != null
-      ? portfolioMarginStatus(db, config, { balance, leverage: leverageEvidence.value, rates, accountId })
+      ? portfolioMarginStatus(db, config, { balance, leverage: leverageEvidence.value, rates, accountId, money })
       : null
-    out.push({ accountId, balance: balance != null ? balance : null, unfunded: balance === 0, leverageEvidence, status, exhausted: !!(status && status.headroom <= 0) })
+    out.push({
+      accountId, balance: balance != null ? balance : null, unfunded: balance === 0, leverageEvidence, status,
+      exhausted: !!(status && status.headroom <= 0) || !!money.refused,
+      ...(money.conversion === 'identity' ? {} : { money: conversionView(money), balanceNative, refused: money.refused }),
+    })
   }
   const key = (p) => p.status ? p.status.headroom : 0
   return out.sort((a, b) => key(b) - key(a))
@@ -1017,9 +1040,13 @@ export function riskBudgetUsd(balance, cfg, ddFactor = 1) {
  * net PnL over the last cfg.derisk.windowHours is worse than −(balance ×
  * derisk.triggerPct).
  */
-export function drawdownDeriskFactor(db, balance, cfg, accountId = null) {
+export function drawdownDeriskFactor(db, balance, cfg, accountId = null, { pnlRate = 1 } = {}) {
   const d = cfg?.derisk
   if (!d?.on || !(balance > 0)) return 1
+  // C·1 PR-2: `balance` is USD; the trades' net_pnl is the broker's native
+  // money. `pnlRate` (USD per native unit) puts both in one unit; 1 on a USD
+  // account. A caller holding a refused conversion must not reach here.
+  const rate = Number.isFinite(Number(pnlRate)) && Number(pnlRate) > 0 ? Number(pnlRate) : 1
   try {
     // M1 scoping: the anti-tilt window looks at THIS account's realized
     // P&L, not the whole book (NULL legacy rows count everywhere).
@@ -1030,7 +1057,7 @@ export function drawdownDeriskFactor(db, balance, cfg, accountId = null) {
          AND closed_at >= datetime('now', ?)
          AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
     ).get(`-${Math.max(1, Math.round(d.windowHours || 24))} hours`, acct, acct)
-    const pnl = row?.pnl ?? 0
+    const pnl = (row?.pnl ?? 0) * rate
     return pnl <= -(balance * (d.triggerPct ?? 1)) ? (d.mult ?? 1) : 1
   } catch { return 1 }
 }
@@ -1237,7 +1264,7 @@ export function balanceScopeVerdict(bal) {
  * effectiveDailyCap }`; `checks` carries every daily_* / campaign_* /
  * unresolved_* field the gate stamps on its row.
  */
-export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowOpt } = {}) {
+export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowOpt, money = null } = {}) {
   const checks = {}
   const dayStartSql = fxDayStartSql()
   const todayRow = db
@@ -1261,8 +1288,28 @@ export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowO
     scope: acct == null ? 'all' : 'scoped',
     rates: scanRates(db),
   })
-  const todayPnl = (todayRow?.pnl || 0) - stopoutEst.estUsd
+  // C·1 PR-2: `net_pnl` is the broker's NATIVE money (pnl-backfill scales the
+  // deal's grossProfit by moneyDigits, no conversion). On a converted account
+  // it is valued in USD at the balance's rate, so the cap (USD) and the spend
+  // (USD) are one unit. On a REFUSED conversion there is no USD value: the %
+  // check is then taken in the account's own currency against its own P&L
+  // (consistent units, no rate needed), the USD-configured floor, flat cap
+  // and tier threshold cannot be applied and are left out, and the verdict
+  // BLOCKS below — the conservative side — with the figures still on the
+  // checks row so the Risk page can show what it measured.
+  const converted = money?.conversion === 'fx_table' && Number(money.rate) > 0
+  const refusedFx = !!money?.refused
+  const pnlNative = todayRow?.pnl || 0
+  const pnlUsd = converted ? pnlNative * Number(money.rate) : pnlNative
+  const todayPnl = refusedFx ? pnlNative : pnlUsd - stopoutEst.estUsd
   checks.daily_pnl = todayPnl
+  if (converted || refusedFx) {
+    checks.daily_pnl_native = pnlNative
+    checks.daily_pnl_currency = money.currency
+    checks.daily_fx_rate = converted ? Number(Number(money.rate).toPrecision(8)) : null
+    checks.daily_fx_rate_age_min = converted ? money.rateAgeMin : null
+    if (refusedFx) checks.daily_fx = FX_RATE_UNAVAILABLE
+  }
   if (stopoutEst.counted || stopoutEst.unpriceable) {
     checks.daily_pnl_estimated_stopout_usd = Number(stopoutEst.estUsd.toFixed(2))
     checks.daily_pnl_estimated_stopouts = stopoutEst.counted
@@ -1275,13 +1322,15 @@ export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowO
   // retired in Wave 4b, never set anywhere), so it is null here.
   const nowMs = Number.isFinite(Number(nowOpt)) ? Number(nowOpt) : Date.now()
   const pacing = pacedDailyCap({
-    balance,
+    // Refused conversion: the % check in native money (see above); every
+    // USD-configured knob is out of reach without a rate and is left off.
+    balance: refusedFx ? (money.nativeBalance ?? null) : balance,
     basePct: config.dailyLossPct,
     maxPct: null,
-    absoluteFallback: config.dailyLossLimit,
+    absoluteFallback: refusedFx ? null : config.dailyLossLimit,
     // Owner's two-tier floor, 2026-08-07. See DEFAULT_RISK_CONFIG.
-    floorUsd: config.dailyLossFloorUsd,
-    tierAtUsd: config.dailyLossTierAtUsd,
+    floorUsd: refusedFx ? null : config.dailyLossFloorUsd,
+    tierAtUsd: refusedFx ? null : config.dailyLossTierAtUsd,
     tierSmallPct: config.dailyLossTierSmallPct,
     tierLargePct: config.dailyLossTierLargePct,
     nowMs,
@@ -1316,6 +1365,12 @@ export function dailyLossVerdict(db, config, acct, { balance = null, nowMs: nowO
   checks.daily_budget_left_usd = pacing.remainingUsd == null ? null : Number(pacing.remainingUsd.toFixed(2))
   checks.daily_trades_left = pacing.tradesLeft
   const out = (block, guard, reason) => ({ block, guard, reason, checks, dayStartSql, todayPnl, pacing, effectiveDailyCap })
+
+  // C·1 PR-2: a balance that cannot be valued in USD cannot be capped in
+  // USD. The native figures above are recorded; the day is blocked, not
+  // assumed. Same guard name as the gate's own veto so the breakdown keys on
+  // one reason.
+  if (refusedFx) return out(true, FX_RATE_UNAVAILABLE, `${FX_RATE_UNAVAILABLE} currency=${money.currency} — ${money.detail}`)
 
   // CAMPAIGN STOP — spans days, so it is checked separately from the daily cap
   // and cannot be reset by the FX day rolling over. Deliberately placed AFTER
@@ -1665,7 +1720,16 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   const config = overlay ? mergeRiskConfig(base, migrateLegacyRiskKeys(overlay)) : base
   // Named accounts use their own sizing inputs. A missing leverage retains
   // the existing default assumption, never another account's global value.
-  const balance = getAccountBalance(db, acct)
+  // C·1 PR-2 (03-10-2026): the stored number is the broker's NATIVE money.
+  // On a USD (or unverified) account it passes through untouched — identity,
+  // no table read. On an SGD account it is valued in USD through the FX rate
+  // table (account-currency.js) so that every USD formula below — the
+  // budget, the lots, the margin cap, the daily cap — is fed a USD number;
+  // with no usable USDSGD close the gate REFUSES below rather than sizing on
+  // an assumed 1.0. `balanceNative` is kept for the checks row.
+  const balanceNative = getAccountBalance(db, acct)
+  const money = sizingBalanceUsd(db, acct, { balance: balanceNative, now: opts?.nowMs })
+  const balance = money.balanceUsd
   const leverageEvidence = getAccountLeverageEvidence(db, acct)
   const leverage = leverageEvidence.value
   // WHOSE BALANCE IS THIS? (owner, 06-08-2026, two screenshots.) The same
@@ -1691,6 +1755,16 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     balance_source: bal.source,
     balance_is_account_scoped: bal.ok,
     ...(bal.ok ? {} : { balance_scope_warning: bal.reason }),
+    // Only a converted (or refused) account carries these: a USD account's
+    // checks row is byte-identical to before PR-2.
+    ...(money.conversion === 'identity' ? {} : {
+      balance_native: balanceNative,
+      balance_currency: money.currency,
+      fx_conversion: money.conversion,
+      fx_rate: money.rate != null ? Number(Number(money.rate).toPrecision(8)) : null,
+      fx_rate_symbol: money.rateSymbol,
+      fx_rate_age_min: money.rateAgeMin,
+    }),
   }
 
   // MARKET PULSE — ADVISORY, recorded, never gating.
@@ -1764,6 +1838,16 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // PR-C: the same predicate the per-account pre-filter asks once per cycle.
   const balScope = balanceScopeVerdict(bal)
   if (balScope.block) return veto(balScope.reason, checks, proposal)
+
+  // ---- 0a'. FAIL CLOSED ON A BALANCE THAT CANNOT BE VALUED IN USD --------
+  // C·1 PR-2: an SGD balance with no fresh USDSGD (or SGDUSD) close in the
+  // FX rate table has no USD value, and every figure below is USD. The same
+  // honest veto the table already gives a cross pair whose leg is missing
+  // (`usd_per_lot_unknown`), applied to the account's own currency. Nothing
+  // is sized on an assumed rate.
+  if (money.refused) {
+    return veto(`${FX_RATE_UNAVAILABLE} currency=${money.currency} balance=${balanceNative} — ${money.detail}`, checks, proposal)
+  }
 
   // ---- 0b. News-window entry gate (config-gated, default OFF) -------------
   // Pure in-memory check against the cached calendar — microseconds, no
@@ -1851,7 +1935,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // One helper, shared with the per-account pre-filter (PR-C). Day anchor =
   // FX day open, 17:00 NY; stop-outs counted at planned risk; the campaign
   // stop reported before the daily cap. See dailyLossVerdict.
-  const daily = dailyLossVerdict(db, config, acct, { balance, nowMs: opts?.nowMs })
+  const daily = dailyLossVerdict(db, config, acct, { balance, nowMs: opts?.nowMs, money })
   Object.assign(checks, daily.checks)
   if (daily.block) return veto(daily.reason, checks, proposal)
 
@@ -2276,7 +2360,9 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     // USDJPY from the scan's freshest closes) — the whole watchlist of USD
     // majors doubles as the conversion table.
     // Algo-capped, drawdown-aware budget → effective risk fraction for sizing.
-    const ddFactor = drawdownDeriskFactor(db, balance, config)
+    // The anti-tilt window's realised P&L is native money; on a converted
+    // account it is valued in USD at the same rate as the balance (PR-2).
+    const ddFactor = drawdownDeriskFactor(db, balance, config, null, { pnlRate: money.conversion === 'fx_table' ? money.rate : 1 })
     const budget = riskBudgetUsd(balance, config, ddFactor)
     // Earned-floor admits run at a fraction of the normal budget (PR-C stage
     // 1: 0.5) — the admitted population is unproven BY CONSTRUCTION (it is
@@ -2400,7 +2486,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     )
     // Margin already committed — broker truth when the snapshot is fresh,
     // the per-row estimate otherwise (see portfolioMarginStatus).
-    const pm = portfolioMarginStatus(db, config, { balance, leverage, openPositions, rates, accountId: acct, nowMs: opts.nowMs ?? Date.now() })
+    const pm = portfolioMarginStatus(db, config, { balance, leverage, openPositions, rates, accountId: acct, nowMs: opts.nowMs ?? Date.now(), money })
     const usedMargin = pm.usedMargin
     const marginCap = pm.cap
     const headroom = pm.headroom

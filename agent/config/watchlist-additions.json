@@ -37,6 +37,10 @@
     "CRWD.US",
     "SHOP.US"
   ],
+  "_groupsNote": "C·1 PR-2 (03-10-2026, owner № 10,777·B·5 'rate table'): further additions under their own group. USDSGD is the conversion leg that values the two SGD accounts' balances (…3489, …7342) in USD before anything is sized on them (services/account-currency.js); on the watchlist the scan writes its close into the FX rate table whenever it visits it, and the leg refresher prices it from the broker regardless. The symbol name is the broker's convention for the pair (sessions.js names USDSGD; contracts.js reads its quote currency as SGD); its broker symbol id is learned at runtime like every other name — if the broker does not offer it, the fundable universe reports unknown_symbol and nothing is invented.",
+  "groups": [
+    { "group": "FX Conversion Legs", "symbols": ["USDSGD"] }
+  ],
   "_removeNote": "C·2 (18-09-2026): names the broker does not offer, removed from the global list and every account's own list at boot. ARM.US: seeded 09-09, reported unknown_symbol by the fundable universe ever since (absent from the broker's symbol list for this account), \"symbolId unknown — call POST /actions/symbol-map\" on every scan. A name here that is also in `symbols` is removed.",
   "remove": [
     "ARM.US"

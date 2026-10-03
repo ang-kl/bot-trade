@@ -365,6 +365,16 @@ try {
   } catch (err) {
     console.error(`[boot] momentum book seed failed (non-fatal): ${err.message}`)
   }
+  // §4-D (03-10-2026): open rows written before the `horizon` column get
+  // theirs once, from the same strategy-family rule a new entry uses, so the
+  // §5 exit rules read a stored fact on every open position from this boot.
+  try {
+    const { backfillTradeHorizons } = await import('./services/trade-horizon.js')
+    const bh = backfillTradeHorizons(db)
+    console.log(`[boot] trade horizons: ${bh.total} open row(s) backfilled (${bh.weeks} weeks, ${bh.intraday} intraday)`)
+  } catch (err) {
+    console.error(`[boot] trade horizon backfill failed (non-fatal): ${err.message}`)
+  }
   // Owner-declared strategy pins from the repo (§7,522·B·2), same reason and
   // same rule as the two seeds above.
   try {

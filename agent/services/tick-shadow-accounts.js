@@ -62,6 +62,7 @@ import {
   drawdownDeriskFactor, getAccountLeverage, loadRiskConfig, marginRateFor,
   openPositionsForAccount, portfolioMarginStatus, requiredMargin, riskBudgetUsd, scanRates,
 } from './risk.js'
+import { sizingBalanceUsd, conversionView } from './account-currency.js'
 import { pendingExposure, STANDING_PRODUCERS } from './entry-ledger.js'
 import { sharedShadowTrades, sideAccounts, sideCostSchedule } from './tick-shadow.js'
 import { brokerLotStep, brokerMinLots, unitsPerLot } from '../lib/lot-size-registry.js'
@@ -128,13 +129,21 @@ export function snapToStep(lots, stepLots) {
 export function accountContext(db, accountId, { sharedAccounts = 1, rates = null } = {}) {
   const id = String(accountId)
   const raw = getState(db, `acct:${id}:account_balance_usd`)
-  const balance = raw == null || String(raw).trim() === '' ? null : num(raw)
+  const balanceNative = raw == null || String(raw).trim() === '' ? null : num(raw)
   const cfg = loadRiskConfig(db, id)
-  if (!(balance > 0)) {
+  if (!(balanceNative > 0)) {
     return { accountId: id, balance: null, config: cfg, blocked: 'balance_not_read' }
   }
+  // C·1 PR-2: the shadow sizes in USD like the gate; the native balance is
+  // valued through the FX rate table, and a refused conversion blocks the
+  // account's pass the same way an unread balance does.
+  const money = sizingBalanceUsd(db, id, { balance: balanceNative })
+  if (money.refused) {
+    return { accountId: id, balance: null, balanceNative, config: cfg, blocked: money.refused, fx: conversionView(money) }
+  }
+  const balance = money.balanceUsd
   // THE FIX THE RESCALE DOES NOT HAVE: the real anti-tilt factor, not 1.
-  const ddFactor = drawdownDeriskFactor(db, balance, cfg, id)
+  const ddFactor = drawdownDeriskFactor(db, balance, cfg, id, { pnlRate: money.conversion === 'fx_table' ? money.rate : 1 })
   const budget = riskBudgetUsd(balance, cfg, ddFactor)
   // E·2: one signal, N accounts — the budget is SPLIT, not multiplied.
   const n = Number(sharedAccounts)
@@ -142,11 +151,12 @@ export function accountContext(db, accountId, { sharedAccounts = 1, rates = null
   const leverage = getAccountLeverage(db, cfg, id)
   const open = openPositionsForAccount(db, id)
   const openCount = openPositionsForAccount(db, id, { countOnly: true }).length
-  const margin = portfolioMarginStatus(db, cfg, { balance, leverage, rates, accountId: id })
+  const margin = portfolioMarginStatus(db, cfg, { balance, leverage, rates, accountId: id, money })
   const intents = pendingExposure(db, id, { includeAccepted: true }).filter(i => !(i.state === 'RESERVED' && STANDING_PRODUCERS.includes(i.producerId)))
   return {
     accountId: id,
     balance,
+    ...(money.conversion === 'identity' ? {} : { balanceNative, fx: conversionView(money) }),
     config: cfg,
     ddFactor,
     riskBudgetUsd: +(budget * sharedSplit).toFixed(2),

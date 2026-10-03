@@ -51,3 +51,51 @@ test('a nullish throw is still seen by the book as an error, and rethrown as thr
   await assert.rejects(thenAlways(async () => { throw undefined }, async (err) => { handed = err }), (err) => err === undefined)
   assert.ok(handed instanceof Error, 'the book can tell the cycle errored')
 })
+
+// 27-09 follow-up (4), 03-10-2026: when both threw, the book's error is not
+// dropped — it reaches onAfterError and rides on the rethrown error.
+test('both throw: after\'s error is handed to onAfterError and attached as .afterError; before\'s error is still what is rethrown', async () => {
+  const first = new Error('llmBlocked read failed')
+  const second = new Error('book gate failed')
+  const seen = []
+  await assert.rejects(
+    thenAlways(async () => { throw first }, async () => { throw second }, { onAfterError: (a, b) => seen.push([a, b]) }),
+    (err) => err === first,
+    'the SAME before error is rethrown',
+  )
+  assert.deepEqual(seen, [[second, first]], 'RED if after\'s error is dropped: onAfterError is called once with (afterError, beforeError)')
+  assert.equal(first.afterError, second, 'the rethrown error carries the book\'s error')
+})
+
+test('both throw, no hook given: the default hook reports to console.error and nothing else changes', async () => {
+  const first = new Error('first')
+  const lines = []
+  const orig = console.error
+  console.error = (...a) => lines.push(a.join(' '))
+  try {
+    await assert.rejects(thenAlways(async () => { throw first }, async () => { throw new Error('second') }), (err) => err === first)
+  } finally { console.error = orig }
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /after\(\) also threw .*"first".*: second/)
+})
+
+test('a hook that throws, and a frozen before error, never replace the rethrown error', async () => {
+  const first = Object.freeze(new Error('frozen'))
+  await assert.rejects(
+    thenAlways(async () => { throw first }, async () => { throw new Error('second') }, { onAfterError: () => { throw new Error('hook broke') } }),
+    (err) => err === first,
+  )
+  assert.equal(first.afterError, undefined, 'frozen: not attached, and no throw for it')
+  // A primitive before error: the hook still sees both; nothing is attached.
+  const seen = []
+  await assert.rejects(thenAlways(async () => { throw 'str' }, async () => { throw new Error('second') }, { onAfterError: (a, b) => seen.push([a.message, b]) }), (err) => err === 'str')
+  assert.deepEqual(seen, [['second', 'str']])
+})
+
+test('only before throws: the hook is not called; only after throws: it is not called either, after\'s error propagates', async () => {
+  let calls = 0
+  const hook = () => { calls++ }
+  await assert.rejects(thenAlways(async () => { throw new Error('a') }, async () => {}, { onAfterError: hook }), /a/)
+  await assert.rejects(thenAlways(async () => {}, async () => { throw new Error('b') }, { onAfterError: hook }), /b/)
+  assert.equal(calls, 0)
+})

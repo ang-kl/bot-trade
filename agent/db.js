@@ -159,6 +159,10 @@ const TABLES = `
     last_run_at          TEXT,
     last_ok_at           TEXT,
     last_error           TEXT,
+    -- When last_error was recorded (27-09 follow-up (7), 03-10-2026): the
+    -- error is kept across later successes as forensics, and without its own
+    -- stamp it read as undated ("disk I/O error" on main_loop, no date).
+    last_error_at        TEXT,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     runs                 INTEGER NOT NULL DEFAULT 0,
     stalled              INTEGER NOT NULL DEFAULT 0,
@@ -1526,6 +1530,10 @@ export function initDB(dbPath) {
   if (!hbColNames.has('last_detail_json')) {
     db.exec('ALTER TABLE controller_heartbeats ADD COLUMN last_detail_json TEXT');
   }
+  // 27-09 follow-up (7): the error's own date (see the CREATE above).
+  if (!hbColNames.has('last_error_at')) {
+    db.exec('ALTER TABLE controller_heartbeats ADD COLUMN last_error_at TEXT');
+  }
 
   const equityHistoryCols = new Set(db.prepare('PRAGMA table_info(equity_snapshots)').all().map(c => c.name));
   for (const [name, type] of [['currency','TEXT'], ['broker_host','TEXT'], ['balance_received_at','TEXT'], ['pnl_received_at','TEXT']]) {
@@ -2370,6 +2378,20 @@ export function initDB(dbPath) {
     const pc = new Set(db.prepare('PRAGMA table_info(pending_orders)').all().map(c => c.name));
     if (pc.size && !pc.has('intent_id')) db.exec('ALTER TABLE pending_orders ADD COLUMN intent_id TEXT');
     db.exec('CREATE INDEX IF NOT EXISTS idx_trades_intent ON trades(intent_id) WHERE intent_id IS NOT NULL');
+  }
+
+  // §4-D (03-10-2026, № 10,777·B·4): the HORIZON a position is held for —
+  // 'intraday' | 'weeks' — decided at entry from the strategy family and
+  // stored on the row, so every exit rule (§5: the managed-exit take, the
+  // time cap) selects its regime from the row rather than from a family
+  // list that can be edited after the position is open. Written by every
+  // entry writer through services/trade-horizon.js; open rows that predate
+  // the column are backfilled once at boot from the same rule (index.js).
+  // Additive: a row nobody backfilled reads NULL, and the evaluators fall
+  // back to the strategy rule for it — the regime it already lived under.
+  {
+    const tc = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
+    if (tc.size && !tc.has('horizon')) db.exec("ALTER TABLE trades ADD COLUMN horizon TEXT CHECK (horizon IN ('intraday', 'weeks'))");
   }
 
   // X1: the correction log — one row per step of a record correction, with

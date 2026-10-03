@@ -254,7 +254,10 @@ class Session {
     const f = this.inflight
     this.inflight = null
     this.busy = false
-    try { if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.close() } catch { /* already gone */ }
+    // S-8 N-5 (27-09 follow-up (6), 03-10-2026): a socket still CONNECTING
+    // when the auth timeout fires is closed too — `ws` aborts the handshake —
+    // instead of being left to finish and sit open with no owner.
+    try { if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) this.ws.close() } catch { /* already gone */ }
     const siblings = pool.get(this.key)
     if (siblings) {
       const i = siblings.indexOf(this)

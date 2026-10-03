@@ -31,6 +31,7 @@
 
 import { getState } from '../db.js'
 import { familyOf } from './strategies.js'
+import { horizonOfPosition, isWeeksHorizon } from './trade-horizon.js'
 
 // One Simple System (owner 28-08-2026, "proceed as plan", win-rate goal
 // > 69%): the trail-distance sweep over the same 44-trade population put
@@ -59,13 +60,23 @@ import { familyOf } from './strategies.js'
  * open and the managed trail never got to answer. A rule silenced at one of
  * two call sites is failure mode #3 wearing #4's clothes.
  */
-export function applyManagedRules(db, accountId, rules, { strategy = null } = {}) {
+export function applyManagedRules(db, accountId, rules, { strategy = null, tradeId = null, horizon = null } = {}) {
   const policy = loadManagedExit(db)
+  // §5 (03-10-2026, № 10,777·B·4): the regime is selected by the horizon
+  // STORED ON THE TRADE ROW at entry (§4-D), not by the family list. A
+  // weeks-horizon position takes the momentum book's target policy and is
+  // never capped by takeAtR or the time cap; an intraday row keeps exactly
+  // the behaviour below. A row with no stored horizon (written before the
+  // column, or a fixture with no trade) falls back to its strategy family —
+  // the regime it already lived under. The fence rides OUTSIDE the governed
+  // check, like the time-cap fields it fences: the cap reaches every account,
+  // so the horizon must too.
+  const weeks = isWeeksHorizon(horizonOfPosition(db, { tradeId, strategy, horizon }))
   // PR-J: the time-cap fields ride OUTSIDE the governed check — see
   // timeCapRulesFrom. Everything below it stays exactly as scoped as it was.
-  const withCap = { ...rules, ...timeCapRulesFrom(policy) }
+  const withCap = { ...rules, ...timeCapRulesFrom(policy), ...(weeks ? { timeCapApplies: false } : {}) }
   if (!managedExitApplies(db, accountId, policy)) return withCap
-  const takeAtR = takeAtRFor(policy, strategy)
+  const takeAtR = takeAtRFor(policy, strategy, weeks ? 'weeks' : 'intraday')
   return {
     ...withCap,
     alwaysTrailR: policy.trailR,
@@ -94,8 +105,13 @@ export function applyManagedRules(db, accountId, rules, { strategy = null } = {}
  * The R at which THIS position is taken whole, or 0 for trail-only. Pure:
  * the policy's takeAtR applies only when the strategy's family is in
  * takeAtRFamilies. Unknown strategy → no family → 0.
+ *
+ * §5: a WEEKS horizon is never taken, whatever the family list says — the
+ * horizon is the row's stored fact and the list is an editable policy. A
+ * caller that passes no horizon gets the family rule, exactly as before.
  */
-export function takeAtRFor(policy, strategy) {
+export function takeAtRFor(policy, strategy, horizon = null) {
+  if (isWeeksHorizon(horizon)) return 0
   if (!(policy.takeAtR > 0)) return 0
   const fam = strategy ? familyOf(strategy) : null
   return fam && policy.takeAtRFamilies.includes(fam) ? policy.takeAtR : 0
