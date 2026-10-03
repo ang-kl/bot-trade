@@ -77,6 +77,23 @@ export function siteGateMiddleware({ isValidSession, html = loginPageHtml } = {}
   }
 }
 
+/**
+ * A lockout that recovers on its own: `max` failures inside `windowMs` lock
+ * until the oldest of them ages out of the window. A counter that only a
+ * success could reset is a lockout nothing can clear once it has tripped
+ * (Codex P1 on #1215).
+ */
+export function createLockout({ max = 10, windowMs = 15 * 60_000, now = () => Date.now() } = {}) {
+  let failures = []
+  const prune = () => { const cutoff = now() - windowMs; failures = failures.filter(t => t > cutoff) }
+  return {
+    fail() { failures.push(now()); prune() },
+    locked() { prune(); return failures.length >= max },
+    reset() { failures = [] },
+    count() { prune(); return failures.length },
+  }
+}
+
 /** The login page. Inline, no app code, no green (the owner is red/green
  * colour-blind: blue is positive, red is negative). */
 export function loginPageHtml() {
@@ -109,7 +126,7 @@ button[disabled]{opacity:.6;cursor:wait}
 </head>
 <body>
 <main>
-<h1><img src="/icon.png" alt="">bot-trade</h1>
+<h1><img src="/icon.png" alt="" onerror="this.remove()">bot-trade</h1>
 <p>Sign in with the secret, then the code sent to the owner's Telegram.</p>
 <form id="f" autocomplete="off">
 <label for="secret">Secret</label>

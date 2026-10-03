@@ -8,7 +8,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   SESSION_COOKIE, isApiPath, parseCookies, sessionCookieHeader, clearSessionCookieHeader,
-  sessionFromRequest, siteGateMiddleware, loginPageHtml,
+  sessionFromRequest, siteGateMiddleware, loginPageHtml, createLockout,
 } from './site-gate.js'
 
 function run(mw, { method = 'GET', path = '/', cookie = '' } = {}) {
@@ -112,4 +112,22 @@ test('the sign-in page: both factors, the app\'s storage key, the login route, n
 
 test('the middleware refuses to exist without a session check', () => {
   assert.throws(() => siteGateMiddleware({}), /isValidSession/)
+})
+
+test('the secret lockout trips at max inside the window and recovers on its own', () => {
+  let t = 1_000_000
+  const lock = createLockout({ max: 3, windowMs: 1000, now: () => t })
+  assert.equal(lock.locked(), false)
+  lock.fail(); lock.fail()
+  assert.equal(lock.locked(), false)
+  lock.fail()
+  assert.equal(lock.locked(), true, 'three failures inside the window lock')
+  t += 500
+  assert.equal(lock.locked(), true, 'still inside the window')
+  t += 600
+  assert.equal(lock.locked(), false, 'the oldest failure aged out: the lockout clears without a success')
+  lock.fail(); lock.fail(); lock.fail()
+  assert.equal(lock.locked(), true)
+  lock.reset()
+  assert.equal(lock.locked(), false, 'a correct secret clears it at once')
 })
