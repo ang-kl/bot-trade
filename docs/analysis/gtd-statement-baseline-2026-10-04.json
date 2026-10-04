@@ -1,0 +1,1782 @@
+{
+  "as_of_sgt": "2026-10-01T06:22:00+08:00",
+  "accounts": {
+    "42993489": {
+      "filename": "1251247 Pepperstone (42993489) statement-06_25 01.10.2026.csv",
+      "sha256": "984b5c82caab43b8aa26779e5db0fb33f4f7143cd76afb283f8bc52967e2faf6",
+      "currency": "SGD",
+      "first_close_sgt": "2026-07-30T08:14:18.398000+08:00",
+      "last_close_sgt": "2026-09-24T23:14:05.901000+08:00",
+      "deal_metrics": {
+        "n": 6,
+        "wins": 3,
+        "losses": 3,
+        "scratches": 0,
+        "wr_pct": 50.0,
+        "pf": 3.659744408945687,
+        "net": "16.65",
+        "winning_net": "22.91",
+        "losing_net_abs": "6.26",
+        "avg_win": "7.636666666666666666666666667",
+        "avg_loss_abs": "2.086666666666666666666666667",
+        "closed_realised_drawdown": "5.41"
+      },
+      "cohort_metrics": {
+        "statement": {
+          "n": 6,
+          "wins": 3,
+          "losses": 3,
+          "scratches": 0,
+          "wr_pct": 50.0,
+          "pf": 3.659744408945687,
+          "net": "16.65",
+          "winning_net": "22.91",
+          "losing_net_abs": "6.26",
+          "avg_win": "7.636666666666666666666666667",
+          "avg_loss_abs": "2.086666666666666666666666667",
+          "closed_realised_drawdown": "5.41"
+        },
+        "last_30d": {
+          "n": 3,
+          "wins": 2,
+          "losses": 1,
+          "scratches": 0,
+          "wr_pct": 66.66666666666667,
+          "pf": 0.24399260628465805,
+          "net": "-4.09",
+          "winning_net": "1.32",
+          "losing_net_abs": "5.41",
+          "avg_win": "0.66",
+          "avg_loss_abs": "5.41",
+          "closed_realised_drawdown": "5.41"
+        },
+        "latest_20": {
+          "n": 6,
+          "wins": 3,
+          "losses": 3,
+          "scratches": 0,
+          "wr_pct": 50.0,
+          "pf": 3.659744408945687,
+          "net": "16.65",
+          "winning_net": "22.91",
+          "losing_net_abs": "6.26",
+          "avg_win": "7.636666666666666666666666667",
+          "avg_loss_abs": "2.086666666666666666666666667",
+          "closed_realised_drawdown": "5.41"
+        }
+      },
+      "direction_metrics": {
+        "statement": {
+          "Buy": {
+            "n": 5,
+            "wins": 2,
+            "losses": 3,
+            "scratches": 0,
+            "wr_pct": 40.0,
+            "pf": 3.6453674121405752,
+            "net": "16.56",
+            "winning_net": "22.82",
+            "losing_net_abs": "6.26",
+            "avg_win": "11.41",
+            "avg_loss_abs": "2.086666666666666666666666667",
+            "closed_realised_drawdown": "5.41"
+          },
+          "Sell": {
+            "n": 1,
+            "wins": 1,
+            "losses": 0,
+            "scratches": 0,
+            "wr_pct": 100.0,
+            "pf": null,
+            "net": "0.09",
+            "winning_net": "0.09",
+            "losing_net_abs": "0",
+            "avg_win": "0.09",
+            "avg_loss_abs": null,
+            "closed_realised_drawdown": "0"
+          }
+        },
+        "last_30d": {
+          "Buy": {
+            "n": 2,
+            "wins": 1,
+            "losses": 1,
+            "scratches": 0,
+            "wr_pct": 50.0,
+            "pf": 0.22735674676524953,
+            "net": "-4.18",
+            "winning_net": "1.23",
+            "losing_net_abs": "5.41",
+            "avg_win": "1.23",
+            "avg_loss_abs": "5.41",
+            "closed_realised_drawdown": "5.41"
+          },
+          "Sell": {
+            "n": 1,
+            "wins": 1,
+            "losses": 0,
+            "scratches": 0,
+            "wr_pct": 100.0,
+            "pf": null,
+            "net": "0.09",
+            "winning_net": "0.09",
+            "losing_net_abs": "0",
+            "avg_win": "0.09",
+            "avg_loss_abs": null,
+            "closed_realised_drawdown": "0"
+          }
+        },
+        "latest_20": {
+          "Buy": {
+            "n": 5,
+            "wins": 2,
+            "losses": 3,
+            "scratches": 0,
+            "wr_pct": 40.0,
+            "pf": 3.6453674121405752,
+            "net": "16.56",
+            "winning_net": "22.82",
+            "losing_net_abs": "6.26",
+            "avg_win": "11.41",
+            "avg_loss_abs": "2.086666666666666666666666667",
+            "closed_realised_drawdown": "5.41"
+          },
+          "Sell": {
+            "n": 1,
+            "wins": 1,
+            "losses": 0,
+            "scratches": 0,
+            "wr_pct": 100.0,
+            "pf": null,
+            "net": "0.09",
+            "winning_net": "0.09",
+            "losing_net_abs": "0",
+            "avg_win": "0.09",
+            "avg_loss_abs": null,
+            "closed_realised_drawdown": "0"
+          }
+        }
+      },
+      "closing_channel_deal_metrics": {
+        "openapi_Tradingview": {
+          "n": 2,
+          "wins": 2,
+          "losses": 0,
+          "scratches": 0,
+          "wr_pct": 100.0,
+          "pf": null,
+          "net": "22.82",
+          "winning_net": "22.82",
+          "losing_net_abs": "0",
+          "avg_win": "11.41",
+          "avg_loss_abs": null,
+          "closed_realised_drawdown": "0"
+        },
+        "openapi_cbot-t": {
+          "n": 4,
+          "wins": 1,
+          "losses": 3,
+          "scratches": 0,
+          "wr_pct": 25.0,
+          "pf": 0.01437699680511182,
+          "net": "-6.17",
+          "winning_net": "0.09",
+          "losing_net_abs": "6.26",
+          "avg_win": "0.09",
+          "avg_loss_abs": "2.086666666666666666666666667",
+          "closed_realised_drawdown": "6.17"
+        }
+      },
+      "open_position_rows": 0,
+      "unmatched_open_position_lines": [],
+      "excluded_open_cohorts": [],
+      "multi_deal_closed_cohorts": 0,
+      "worst_10_cohorts": [
+        {
+          "net": "-5.41",
+          "closed": "2026-09-24T23:14:05.901000+08:00",
+          "tie": "DID339325380",
+          "side": "Buy",
+          "symbol": "ES.US",
+          "opened": "2026-09-03T21:31:00.093000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            3
+          ]
+        },
+        {
+          "net": "-0.44",
+          "closed": "2026-07-30T08:51:38.333000+08:00",
+          "tie": "DID329586112",
+          "side": "Buy",
+          "symbol": "LTCUSD",
+          "opened": "2026-07-30T08:13:28.845000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            7
+          ]
+        },
+        {
+          "net": "-0.41",
+          "closed": "2026-07-30T08:14:18.398000+08:00",
+          "tie": "DID329579862",
+          "side": "Buy",
+          "symbol": "VIX",
+          "opened": "2026-07-30T08:14:18.239000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            8
+          ]
+        },
+        {
+          "net": "0.09",
+          "closed": "2026-09-10T09:31:21.083000+08:00",
+          "tie": "DID336498158",
+          "side": "Sell",
+          "symbol": "9618.HK",
+          "opened": "2026-09-09T13:54:47.284000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            4
+          ]
+        },
+        {
+          "net": "1.23",
+          "closed": "2026-09-09T21:32:38.182000+08:00",
+          "tie": "DID336389481",
+          "side": "Buy",
+          "symbol": "AVY.US",
+          "opened": "2026-06-05T22:40:48.214000+08:00",
+          "closing_channels": [
+            "openapi_Tradingview"
+          ],
+          "deal_lines": [
+            5
+          ]
+        },
+        {
+          "net": "21.59",
+          "closed": "2026-08-07T21:59:32.772000+08:00",
+          "tie": "DID331217978",
+          "side": "Buy",
+          "symbol": "GEV.US",
+          "opened": "2026-03-06T22:31:00.870000+08:00",
+          "closing_channels": [
+            "openapi_Tradingview"
+          ],
+          "deal_lines": [
+            6
+          ]
+        }
+      ],
+      "quality": {
+        "input_hash": "PASS",
+        "shape": "PASS",
+        "unique_deal_ids": "PASS",
+        "dates": "PASS",
+        "net_footer": "PASS",
+        "commission_footer": "PASS",
+        "unambiguous_open_matches": "PASS",
+        "full_deal_partition": "PASS",
+        "position_id": "ABSENT",
+        "strategy": "ABSENT",
+        "mae_mfe": "ABSENT",
+        "closed_exit_reason": "ABSENT",
+        "full_lifecycle_volume_balance": "NOT_VERIFIABLE"
+      }
+    },
+    "46979908": {
+      "filename": "268549 Pepperstone (46979908) statement-06_26 01.10.2026.csv",
+      "sha256": "21d8c99f3cbf45e9b4847268979c331d14b173dc8954af88df0c06b015ea738e",
+      "currency": "USD",
+      "first_close_sgt": "2026-07-30T07:49:01.499000+08:00",
+      "last_close_sgt": "2026-09-29T21:35:31.754000+08:00",
+      "deal_metrics": {
+        "n": 96,
+        "wins": 37,
+        "losses": 59,
+        "scratches": 0,
+        "wr_pct": 38.541666666666664,
+        "pf": 1.6613720166943555,
+        "net": "163.22",
+        "winning_net": "410.01",
+        "losing_net_abs": "246.79",
+        "avg_win": "11.08135135135135135135135135",
+        "avg_loss_abs": "4.182881355932203389830508475",
+        "closed_realised_drawdown": "136.27"
+      },
+      "cohort_metrics": {
+        "statement": {
+          "n": 92,
+          "wins": 34,
+          "losses": 58,
+          "scratches": 0,
+          "wr_pct": 36.95652173913044,
+          "pf": 1.661398816759867,
+          "net": "163.22",
+          "winning_net": "410.00",
+          "losing_net_abs": "246.78",
+          "avg_win": "12.05882352941176470588235294",
+          "avg_loss_abs": "4.254827586206896551724137931",
+          "closed_realised_drawdown": "136.27"
+        },
+        "last_30d": {
+          "n": 58,
+          "wins": 22,
+          "losses": 36,
+          "scratches": 0,
+          "wr_pct": 37.93103448275862,
+          "pf": 0.4912223133716161,
+          "net": "-31.01",
+          "winning_net": "29.94",
+          "losing_net_abs": "60.95",
+          "avg_win": "1.360909090909090909090909091",
+          "avg_loss_abs": "1.693055555555555555555555556",
+          "closed_realised_drawdown": "42.77"
+        },
+        "latest_20": {
+          "n": 20,
+          "wins": 8,
+          "losses": 12,
+          "scratches": 0,
+          "wr_pct": 40.0,
+          "pf": 0.7059694129255056,
+          "net": "-5.96",
+          "winning_net": "14.31",
+          "losing_net_abs": "20.27",
+          "avg_win": "1.78875",
+          "avg_loss_abs": "1.689166666666666666666666667",
+          "closed_realised_drawdown": "12.17"
+        }
+      },
+      "direction_metrics": {
+        "statement": {
+          "Buy": {
+            "n": 43,
+            "wins": 9,
+            "losses": 34,
+            "scratches": 0,
+            "wr_pct": 20.930232558139537,
+            "pf": 0.1593292953168858,
+            "net": "-113.81",
+            "winning_net": "21.57",
+            "losing_net_abs": "135.38",
+            "avg_win": "2.396666666666666666666666667",
+            "avg_loss_abs": "3.981764705882352941176470588",
+            "closed_realised_drawdown": "118.74"
+          },
+          "Sell": {
+            "n": 49,
+            "wins": 25,
+            "losses": 24,
+            "scratches": 0,
+            "wr_pct": 51.02040816326531,
+            "pf": 3.4868043087971277,
+            "net": "277.03",
+            "winning_net": "388.43",
+            "losing_net_abs": "111.40",
+            "avg_win": "15.5372",
+            "avg_loss_abs": "4.641666666666666666666666667",
+            "closed_realised_drawdown": "47.30"
+          }
+        },
+        "last_30d": {
+          "Buy": {
+            "n": 26,
+            "wins": 5,
+            "losses": 21,
+            "scratches": 0,
+            "wr_pct": 19.23076923076923,
+            "pf": 0.225545476832557,
+            "net": "-31.59",
+            "winning_net": "9.20",
+            "losing_net_abs": "40.79",
+            "avg_win": "1.84",
+            "avg_loss_abs": "1.942380952380952380952380952",
+            "closed_realised_drawdown": "34.98"
+          },
+          "Sell": {
+            "n": 32,
+            "wins": 17,
+            "losses": 15,
+            "scratches": 0,
+            "wr_pct": 53.125,
+            "pf": 1.0287698412698412,
+            "net": "0.58",
+            "winning_net": "20.74",
+            "losing_net_abs": "20.16",
+            "avg_win": "1.22",
+            "avg_loss_abs": "1.344",
+            "closed_realised_drawdown": "10.34"
+          }
+        },
+        "latest_20": {
+          "Buy": {
+            "n": 11,
+            "wins": 2,
+            "losses": 9,
+            "scratches": 0,
+            "wr_pct": 18.181818181818183,
+            "pf": 0.40324384787472034,
+            "net": "-10.67",
+            "winning_net": "7.21",
+            "losing_net_abs": "17.88",
+            "avg_win": "3.605",
+            "avg_loss_abs": "1.986666666666666666666666667",
+            "closed_realised_drawdown": "13.68"
+          },
+          "Sell": {
+            "n": 9,
+            "wins": 6,
+            "losses": 3,
+            "scratches": 0,
+            "wr_pct": 66.66666666666667,
+            "pf": 2.9707112970711296,
+            "net": "4.71",
+            "winning_net": "7.10",
+            "losing_net_abs": "2.39",
+            "avg_win": "1.183333333333333333333333333",
+            "avg_loss_abs": "0.7966666666666666666666666667",
+            "closed_realised_drawdown": "1.60"
+          }
+        }
+      },
+      "closing_channel_deal_metrics": {
+        "openapi_cbot-t": {
+          "n": 96,
+          "wins": 37,
+          "losses": 59,
+          "scratches": 0,
+          "wr_pct": 38.541666666666664,
+          "pf": 1.6613720166943555,
+          "net": "163.22",
+          "winning_net": "410.01",
+          "losing_net_abs": "246.79",
+          "avg_win": "11.08135135135135135135135135",
+          "avg_loss_abs": "4.182881355932203389830508475",
+          "closed_realised_drawdown": "136.27"
+        }
+      },
+      "open_position_rows": 4,
+      "unmatched_open_position_lines": [
+        103,
+        104,
+        105,
+        106
+      ],
+      "excluded_open_cohorts": [],
+      "multi_deal_closed_cohorts": 4,
+      "worst_10_cohorts": [
+        {
+          "net": "-38.80",
+          "closed": "2026-08-03T07:46:40.500000+08:00",
+          "tie": "DID312353937",
+          "side": "Sell",
+          "symbol": "USDX",
+          "opened": "2026-08-03T06:07:19.264000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            89
+          ]
+        },
+        {
+          "net": "-28.29",
+          "closed": "2026-08-07T09:22:37.965000+08:00",
+          "tie": "DID313128955",
+          "side": "Sell",
+          "symbol": "JPYX",
+          "opened": "2026-08-07T08:57:20.307000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            85
+          ]
+        },
+        {
+          "net": "-16.00",
+          "closed": "2026-08-07T09:22:38.477000+08:00",
+          "tie": "DID313128957",
+          "side": "Buy",
+          "symbol": "USDX",
+          "opened": "2026-08-07T08:58:48.257000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            83
+          ]
+        },
+        {
+          "net": "-13.83",
+          "closed": "2026-08-25T10:00:05.490000+08:00",
+          "tie": "DID315853812",
+          "side": "Buy",
+          "symbol": "9618.HK",
+          "opened": "2026-08-25T09:52:25.163000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            74
+          ]
+        },
+        {
+          "net": "-10.25",
+          "closed": "2026-07-31T05:04:30.893000+08:00",
+          "tie": "DID312082318",
+          "side": "Buy",
+          "symbol": "ADAUSD",
+          "opened": "2026-07-31T05:04:01.523000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            97
+          ]
+        },
+        {
+          "net": "-8.97",
+          "closed": "2026-08-27T21:31:00.340000+08:00",
+          "tie": "DID316486170",
+          "side": "Buy",
+          "symbol": "JPM.US",
+          "opened": "2026-08-26T21:31:00.277000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            65
+          ]
+        },
+        {
+          "net": "-8.80",
+          "closed": "2026-08-07T21:37:52.460000+08:00",
+          "tie": "DID313217897",
+          "side": "Buy",
+          "symbol": "DOW.US",
+          "opened": "2026-08-07T21:31:00.353000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            80
+          ]
+        },
+        {
+          "net": "-8.60",
+          "closed": "2026-08-26T15:43:55.044000+08:00",
+          "tie": "DID316182586",
+          "side": "Buy",
+          "symbol": "0003.HK",
+          "opened": "2026-08-25T09:44:11.017000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            69
+          ]
+        },
+        {
+          "net": "-7.56",
+          "closed": "2026-08-27T21:32:49.076000+08:00",
+          "tie": "DID316488143",
+          "side": "Sell",
+          "symbol": "AVGO.US",
+          "opened": "2026-08-25T21:31:00.306000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            64
+          ]
+        },
+        {
+          "net": "-6.77",
+          "closed": "2026-09-15T15:10:32.633000+08:00",
+          "tie": "DID319307239",
+          "side": "Buy",
+          "symbol": "0005.HK",
+          "opened": "2026-09-08T09:31:00.296000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            34
+          ]
+        }
+      ],
+      "quality": {
+        "input_hash": "PASS",
+        "shape": "PASS",
+        "unique_deal_ids": "PASS",
+        "dates": "PASS",
+        "net_footer": "PASS",
+        "commission_footer": "PASS",
+        "unambiguous_open_matches": "PASS",
+        "full_deal_partition": "PASS",
+        "position_id": "ABSENT",
+        "strategy": "ABSENT",
+        "mae_mfe": "ABSENT",
+        "closed_exit_reason": "ABSENT",
+        "full_lifecycle_volume_balance": "NOT_VERIFIABLE"
+      }
+    },
+    "43097342": {
+      "filename": "5067353 Pepperstone (43097342) statement-06_26 01.10.2026.csv",
+      "sha256": "79006ea2c3e5da9124ff277626b5c8c9b2acf6182cd40ca934581b2f9d4a3af1",
+      "currency": "SGD",
+      "first_close_sgt": "2026-07-30T09:06:49.490000+08:00",
+      "last_close_sgt": "2026-10-01T03:50:18.593000+08:00",
+      "deal_metrics": {
+        "n": 284,
+        "wins": 67,
+        "losses": 214,
+        "scratches": 3,
+        "wr_pct": 23.591549295774648,
+        "pf": 2.900360381306673,
+        "net": "1634.69",
+        "winning_net": "2494.89",
+        "losing_net_abs": "860.20",
+        "avg_win": "37.23716417910447761194029851",
+        "avg_loss_abs": "4.019626168224299065420560748",
+        "closed_realised_drawdown": "502.91"
+      },
+      "cohort_metrics": {
+        "statement": {
+          "n": 268,
+          "wins": 62,
+          "losses": 203,
+          "scratches": 3,
+          "wr_pct": 23.134328358208954,
+          "pf": 2.8995803252769736,
+          "net": "1634.00",
+          "winning_net": "2494.19",
+          "losing_net_abs": "860.19",
+          "avg_win": "40.22887096774193548387096774",
+          "avg_loss_abs": "4.237389162561576354679802956",
+          "closed_realised_drawdown": "502.91"
+        },
+        "last_30d": {
+          "n": 70,
+          "wins": 32,
+          "losses": 38,
+          "scratches": 0,
+          "wr_pct": 45.714285714285715,
+          "pf": 8.208481073310972,
+          "net": "1504.41",
+          "winning_net": "1713.11",
+          "losing_net_abs": "208.70",
+          "avg_win": "53.5346875",
+          "avg_loss_abs": "5.492105263157894736842105263",
+          "closed_realised_drawdown": "110.42"
+        },
+        "latest_20": {
+          "n": 20,
+          "wins": 10,
+          "losses": 10,
+          "scratches": 0,
+          "wr_pct": 50.0,
+          "pf": 25.532423208191126,
+          "net": "1581.36",
+          "winning_net": "1645.82",
+          "losing_net_abs": "64.46",
+          "avg_win": "164.582",
+          "avg_loss_abs": "6.446",
+          "closed_realised_drawdown": "25.67"
+        }
+      },
+      "direction_metrics": {
+        "statement": {
+          "Buy": {
+            "n": 175,
+            "wins": 35,
+            "losses": 139,
+            "scratches": 1,
+            "wr_pct": 20.0,
+            "pf": 3.671530121793775,
+            "net": "1717.50",
+            "winning_net": "2360.39",
+            "losing_net_abs": "642.89",
+            "avg_win": "67.43971428571428571428571429",
+            "avg_loss_abs": "4.625107913669064748201438849",
+            "closed_realised_drawdown": "424.01"
+          },
+          "Sell": {
+            "n": 93,
+            "wins": 27,
+            "losses": 64,
+            "scratches": 2,
+            "wr_pct": 29.032258064516128,
+            "pf": 0.6157386102162908,
+            "net": "-83.50",
+            "winning_net": "133.80",
+            "losing_net_abs": "217.30",
+            "avg_win": "4.955555555555555555555555556",
+            "avg_loss_abs": "3.3953125",
+            "closed_realised_drawdown": "117.08"
+          }
+        },
+        "last_30d": {
+          "Buy": {
+            "n": 40,
+            "wins": 15,
+            "losses": 25,
+            "scratches": 0,
+            "wr_pct": 37.5,
+            "pf": 10.181057810578105,
+            "net": "1492.84",
+            "winning_net": "1655.44",
+            "losing_net_abs": "162.60",
+            "avg_win": "110.3626666666666666666666667",
+            "avg_loss_abs": "6.504",
+            "closed_realised_drawdown": "115.13"
+          },
+          "Sell": {
+            "n": 30,
+            "wins": 17,
+            "losses": 13,
+            "scratches": 0,
+            "wr_pct": 56.666666666666664,
+            "pf": 1.2509761388286333,
+            "net": "11.57",
+            "winning_net": "57.67",
+            "losing_net_abs": "46.10",
+            "avg_win": "3.392352941176470588235294118",
+            "avg_loss_abs": "3.546153846153846153846153846",
+            "closed_realised_drawdown": "13.52"
+          }
+        },
+        "latest_20": {
+          "Buy": {
+            "n": 14,
+            "wins": 7,
+            "losses": 7,
+            "scratches": 0,
+            "wr_pct": 50.0,
+            "pf": 30.582558571959837,
+            "net": "1590.95",
+            "winning_net": "1644.73",
+            "losing_net_abs": "53.78",
+            "avg_win": "234.9614285714285714285714286",
+            "avg_loss_abs": "7.682857142857142857142857143",
+            "closed_realised_drawdown": "25.67"
+          },
+          "Sell": {
+            "n": 6,
+            "wins": 3,
+            "losses": 3,
+            "scratches": 0,
+            "wr_pct": 50.0,
+            "pf": 0.10205992509363296,
+            "net": "-9.59",
+            "winning_net": "1.09",
+            "losing_net_abs": "10.68",
+            "avg_win": "0.3633333333333333333333333333",
+            "avg_loss_abs": "3.56",
+            "closed_realised_drawdown": "10.01"
+          }
+        }
+      },
+      "closing_channel_deal_metrics": {
+        "cTrader 2 iOS": {
+          "n": 60,
+          "wins": 0,
+          "losses": 60,
+          "scratches": 0,
+          "wr_pct": 0.0,
+          "pf": 0.0,
+          "net": "-24.72",
+          "winning_net": "0",
+          "losing_net_abs": "24.72",
+          "avg_win": null,
+          "avg_loss_abs": "0.412",
+          "closed_realised_drawdown": "24.72"
+        },
+        "openapi_Tradingview": {
+          "n": 13,
+          "wins": 1,
+          "losses": 12,
+          "scratches": 0,
+          "wr_pct": 7.6923076923076925,
+          "pf": 9.029701854252382,
+          "net": "1424.71",
+          "winning_net": "1602.14",
+          "losing_net_abs": "177.43",
+          "avg_win": "1602.14",
+          "avg_loss_abs": "14.78583333333333333333333333",
+          "closed_realised_drawdown": "177.43"
+        },
+        "openapi_cbot-t": {
+          "n": 211,
+          "wins": 66,
+          "losses": 142,
+          "scratches": 3,
+          "wr_pct": 31.27962085308057,
+          "pf": 1.3566598282805258,
+          "net": "234.70",
+          "winning_net": "892.75",
+          "losing_net_abs": "658.05",
+          "avg_win": "13.52651515151515151515151515",
+          "avg_loss_abs": "4.634154929577464788732394366",
+          "closed_realised_drawdown": "338.46"
+        }
+      },
+      "open_position_rows": 2,
+      "unmatched_open_position_lines": [
+        291
+      ],
+      "excluded_open_cohorts": [
+        {
+          "symbol": "COST.US",
+          "side": "Sell",
+          "opened_sgt": "2026-09-30T23:59:44.458000+08:00",
+          "deal_lines": [
+            3
+          ],
+          "open_lines": [
+            292
+          ],
+          "partial_realised_net": "0.69"
+        }
+      ],
+      "multi_deal_closed_cohorts": 15,
+      "worst_10_cohorts": [
+        {
+          "net": "-83.83",
+          "closed": "2026-08-07T10:28:44.224000+08:00",
+          "tie": "DID313136093",
+          "side": "Buy",
+          "symbol": "0003.HK",
+          "opened": "2026-08-05T09:31:00.314000+08:00",
+          "closing_channels": [
+            "openapi_Tradingview"
+          ],
+          "deal_lines": [
+            179
+          ]
+        },
+        {
+          "net": "-53.54",
+          "closed": "2026-08-24T09:31:00.296000+08:00",
+          "tie": "DID315072536",
+          "side": "Buy",
+          "symbol": "2020.HK",
+          "opened": "2026-08-20T09:34:21.782000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            100,
+            168
+          ]
+        },
+        {
+          "net": "-44.42",
+          "closed": "2026-08-18T02:22:56.743000+08:00",
+          "tie": "DID314572368",
+          "side": "Sell",
+          "symbol": "DOW.US",
+          "opened": "2026-08-17T21:31:04.697000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            170
+          ]
+        },
+        {
+          "net": "-34.02",
+          "closed": "2026-08-28T10:06:35.561000+08:00",
+          "tie": "DID316639118",
+          "side": "Buy",
+          "symbol": "0003.HK",
+          "opened": "2026-08-28T10:06:18.804000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            76
+          ]
+        },
+        {
+          "net": "-32.38",
+          "closed": "2026-08-07T10:28:56.002000+08:00",
+          "tie": "DID313136098",
+          "side": "Buy",
+          "symbol": "0005.HK",
+          "opened": "2026-08-04T09:31:00.278000+08:00",
+          "closing_channels": [
+            "openapi_Tradingview"
+          ],
+          "deal_lines": [
+            175,
+            178
+          ]
+        },
+        {
+          "net": "-31.99",
+          "closed": "2026-08-03T08:34:22.399000+08:00",
+          "tie": "DID312360487",
+          "side": "Buy",
+          "symbol": "USDX",
+          "opened": "2026-08-03T08:33:47.365000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            267
+          ]
+        },
+        {
+          "net": "-29.08",
+          "closed": "2026-08-05T01:45:00.915000+08:00",
+          "tie": "DID312704297",
+          "side": "Sell",
+          "symbol": "DOW.US",
+          "opened": "2026-08-04T23:31:48.799000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            181
+          ]
+        },
+        {
+          "net": "-28.31",
+          "closed": "2026-08-19T13:14:51.334000+08:00",
+          "tie": "DID314860345",
+          "side": "Buy",
+          "symbol": "0003.HK",
+          "opened": "2026-08-19T10:29:21.444000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            169
+          ]
+        },
+        {
+          "net": "-25.62",
+          "closed": "2026-08-28T03:32:42.425000+08:00",
+          "tie": "DID316596337",
+          "side": "Buy",
+          "symbol": "DOW.US",
+          "opened": "2026-08-28T02:43:43.887000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            77
+          ]
+        },
+        {
+          "net": "-24.58",
+          "closed": "2026-08-20T21:38:19.989000+08:00",
+          "tie": "DID315179942",
+          "side": "Buy",
+          "symbol": "JPM.US",
+          "opened": "2026-08-20T21:31:00.329000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            166
+          ]
+        }
+      ],
+      "quality": {
+        "input_hash": "PASS",
+        "shape": "PASS",
+        "unique_deal_ids": "PASS",
+        "dates": "PASS",
+        "net_footer": "PASS",
+        "commission_footer": "PASS",
+        "unambiguous_open_matches": "PASS",
+        "full_deal_partition": "PASS",
+        "position_id": "ABSENT",
+        "strategy": "ABSENT",
+        "mae_mfe": "ABSENT",
+        "closed_exit_reason": "ABSENT",
+        "full_lifecycle_volume_balance": "NOT_VERIFIABLE"
+      }
+    },
+    "46130058": {
+      "filename": "5203012 Pepperstone (46130058) statement-06_27 01.10.2026.csv",
+      "sha256": "5339f3f47169c5e8fc70c8a9639a492f7e0f9ceb137686dc8d9d43f9bf5e2960",
+      "currency": "USD",
+      "first_close_sgt": "2026-07-09T08:30:17.687000+08:00",
+      "last_close_sgt": "2026-09-28T21:31:43.976000+08:00",
+      "deal_metrics": {
+        "n": 564,
+        "wins": 164,
+        "losses": 397,
+        "scratches": 3,
+        "wr_pct": 29.078014184397162,
+        "pf": 0.6169052628764898,
+        "net": "-19489.01",
+        "winning_net": "31383.55",
+        "losing_net_abs": "50872.56",
+        "avg_win": "191.3631097560975609756097561",
+        "avg_loss_abs": "128.1424685138539042821158690",
+        "closed_realised_drawdown": "23834.08"
+      },
+      "cohort_metrics": {
+        "statement": {
+          "n": 554,
+          "wins": 157,
+          "losses": 394,
+          "scratches": 3,
+          "wr_pct": 28.339350180505416,
+          "pf": 0.6160826782046018,
+          "net": "-19489.01",
+          "winning_net": "31274.55",
+          "losing_net_abs": "50763.56",
+          "avg_win": "199.2009554140127388535031847",
+          "avg_loss_abs": "128.8415228426395939086294416",
+          "closed_realised_drawdown": "23834.08"
+        },
+        "last_30d": {
+          "n": 74,
+          "wins": 31,
+          "losses": 42,
+          "scratches": 1,
+          "wr_pct": 41.891891891891895,
+          "pf": 0.34865407637069334,
+          "net": "-3661.73",
+          "winning_net": "1960.06",
+          "losing_net_abs": "5621.79",
+          "avg_win": "63.22774193548387096774193548",
+          "avg_loss_abs": "133.8521428571428571428571429",
+          "closed_realised_drawdown": "4336.17"
+        },
+        "latest_20": {
+          "n": 20,
+          "wins": 11,
+          "losses": 9,
+          "scratches": 0,
+          "wr_pct": 55.0,
+          "pf": 1.657291569102319,
+          "net": "491.24",
+          "winning_net": "1238.61",
+          "losing_net_abs": "747.37",
+          "avg_win": "112.6009090909090909090909091",
+          "avg_loss_abs": "83.04111111111111111111111111",
+          "closed_realised_drawdown": "370.90"
+        }
+      },
+      "direction_metrics": {
+        "statement": {
+          "Buy": {
+            "n": 268,
+            "wins": 83,
+            "losses": 183,
+            "scratches": 2,
+            "wr_pct": 30.970149253731343,
+            "pf": 1.3934013144650101,
+            "net": "7073.93",
+            "winning_net": "25055.39",
+            "losing_net_abs": "17981.46",
+            "avg_win": "301.8721686746987951807228916",
+            "avg_loss_abs": "98.25934426229508196721311475",
+            "closed_realised_drawdown": "7593.15"
+          },
+          "Sell": {
+            "n": 286,
+            "wins": 74,
+            "losses": 211,
+            "scratches": 1,
+            "wr_pct": 25.874125874125873,
+            "pf": 0.18971206847639413,
+            "net": "-26562.94",
+            "winning_net": "6219.16",
+            "losing_net_abs": "32782.10",
+            "avg_win": "84.04270270270270270270270270",
+            "avg_loss_abs": "155.3654028436018957345971564",
+            "closed_realised_drawdown": "28619.55"
+          }
+        },
+        "last_30d": {
+          "Buy": {
+            "n": 31,
+            "wins": 7,
+            "losses": 23,
+            "scratches": 1,
+            "wr_pct": 22.580645161290324,
+            "pf": 0.2743311052157557,
+            "net": "-2368.83",
+            "winning_net": "895.51",
+            "losing_net_abs": "3264.34",
+            "avg_win": "127.93",
+            "avg_loss_abs": "141.9278260869565217391304348",
+            "closed_realised_drawdown": "2836.76"
+          },
+          "Sell": {
+            "n": 43,
+            "wins": 24,
+            "losses": 19,
+            "scratches": 0,
+            "wr_pct": 55.81395348837209,
+            "pf": 0.45156843199219493,
+            "net": "-1292.90",
+            "winning_net": "1064.55",
+            "losing_net_abs": "2357.45",
+            "avg_win": "44.35625",
+            "avg_loss_abs": "124.0763157894736842105263158",
+            "closed_realised_drawdown": "1664.08"
+          }
+        },
+        "latest_20": {
+          "Buy": {
+            "n": 10,
+            "wins": 3,
+            "losses": 7,
+            "scratches": 0,
+            "wr_pct": 30.0,
+            "pf": 1.2016231746689967,
+            "net": "136.14",
+            "winning_net": "811.36",
+            "losing_net_abs": "675.22",
+            "avg_win": "270.4533333333333333333333333",
+            "avg_loss_abs": "96.46",
+            "closed_realised_drawdown": "343.02"
+          },
+          "Sell": {
+            "n": 10,
+            "wins": 8,
+            "losses": 2,
+            "scratches": 0,
+            "wr_pct": 80.0,
+            "pf": 5.921690921690922,
+            "net": "355.10",
+            "winning_net": "427.25",
+            "losing_net_abs": "72.15",
+            "avg_win": "53.40625",
+            "avg_loss_abs": "36.075",
+            "closed_realised_drawdown": "72.15"
+          }
+        }
+      },
+      "closing_channel_deal_metrics": {
+        "cTrader 2 iOS": {
+          "n": 13,
+          "wins": 8,
+          "losses": 5,
+          "scratches": 0,
+          "wr_pct": 61.53846153846154,
+          "pf": 4.703269492045405,
+          "net": "1689.95",
+          "winning_net": "2146.29",
+          "losing_net_abs": "456.34",
+          "avg_win": "268.28625",
+          "avg_loss_abs": "91.268",
+          "closed_realised_drawdown": "340.54"
+        },
+        "cTrader 2 iPad": {
+          "n": 3,
+          "wins": 3,
+          "losses": 0,
+          "scratches": 0,
+          "wr_pct": 100.0,
+          "pf": null,
+          "net": "591.38",
+          "winning_net": "591.38",
+          "losing_net_abs": "0",
+          "avg_win": "197.1266666666666666666666667",
+          "avg_loss_abs": null,
+          "closed_realised_drawdown": "0"
+        },
+        "openapi_cbot-t": {
+          "n": 548,
+          "wins": 153,
+          "losses": 392,
+          "scratches": 3,
+          "wr_pct": 27.919708029197082,
+          "pf": 0.5681877776636169,
+          "net": "-21770.34",
+          "winning_net": "28645.88",
+          "losing_net_abs": "50416.22",
+          "avg_win": "187.2279738562091503267973856",
+          "avg_loss_abs": "128.6128061224489795918367347",
+          "closed_realised_drawdown": "25276.41"
+        }
+      },
+      "open_position_rows": 5,
+      "unmatched_open_position_lines": [
+        571,
+        572,
+        573,
+        574,
+        575
+      ],
+      "excluded_open_cohorts": [],
+      "multi_deal_closed_cohorts": 8,
+      "worst_10_cohorts": [
+        {
+          "net": "-9171.76",
+          "closed": "2026-08-03T21:37:31.643000+08:00",
+          "tie": "DID312470276",
+          "side": "Sell",
+          "symbol": "JPN225",
+          "opened": "2026-08-03T21:31:22.087000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            423
+          ]
+        },
+        {
+          "net": "-2681.29",
+          "closed": "2026-08-04T17:39:17.704000+08:00",
+          "tie": "DID312607220",
+          "side": "Sell",
+          "symbol": "JPN225",
+          "opened": "2026-08-04T17:13:36.420000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            377
+          ]
+        },
+        {
+          "net": "-2535.41",
+          "closed": "2026-08-13T06:07:59.979000+08:00",
+          "tie": "DID313857061",
+          "side": "Buy",
+          "symbol": "EURX",
+          "opened": "2026-08-13T06:05:53.852000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            114
+          ]
+        },
+        {
+          "net": "-2186.29",
+          "closed": "2026-08-03T06:24:12.522000+08:00",
+          "tie": "DID312346325",
+          "side": "Buy",
+          "symbol": "USDZAR",
+          "opened": "2026-08-03T05:01:01.061000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            509
+          ]
+        },
+        {
+          "net": "-1315.92",
+          "closed": "2026-08-03T20:54:45.953000+08:00",
+          "tie": "DID312455395",
+          "side": "Sell",
+          "symbol": "JPN225",
+          "opened": "2026-08-03T20:53:44.203000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            436
+          ]
+        },
+        {
+          "net": "-1298.01",
+          "closed": "2026-09-03T21:31:00.312000+08:00",
+          "tie": "DID317606277",
+          "side": "Buy",
+          "symbol": "AVGO.US",
+          "opened": "2026-09-03T00:52:05.988000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            69
+          ]
+        },
+        {
+          "net": "-1090.00",
+          "closed": "2026-08-12T09:07:08.211000+08:00",
+          "tie": "DID313687660",
+          "side": "Sell",
+          "symbol": "USDX",
+          "opened": "2026-08-12T08:36:15.889000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            145
+          ]
+        },
+        {
+          "net": "-817.11",
+          "closed": "2026-08-10T08:10:03.289000+08:00",
+          "tie": "DID313315301",
+          "side": "Sell",
+          "symbol": "XPTUSD",
+          "opened": "2026-08-10T07:57:19.314000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            297
+          ]
+        },
+        {
+          "net": "-790.40",
+          "closed": "2026-08-17T08:10:30.231000+08:00",
+          "tie": "DID314361395",
+          "side": "Sell",
+          "symbol": "NatGas",
+          "opened": "2026-08-17T08:00:40.195000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            99
+          ]
+        },
+        {
+          "net": "-756.02",
+          "closed": "2026-08-02T10:52:28.507000+08:00",
+          "tie": "DID312319822",
+          "side": "Sell",
+          "symbol": "BNBUSD",
+          "opened": "2026-08-02T10:40:39.990000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            523
+          ]
+        }
+      ],
+      "quality": {
+        "input_hash": "PASS",
+        "shape": "PASS",
+        "unique_deal_ids": "PASS",
+        "dates": "PASS",
+        "net_footer": "PASS",
+        "commission_footer": "PASS",
+        "unambiguous_open_matches": "PASS",
+        "full_deal_partition": "PASS",
+        "position_id": "ABSENT",
+        "strategy": "ABSENT",
+        "mae_mfe": "ABSENT",
+        "closed_exit_reason": "ABSENT",
+        "full_lifecycle_volume_balance": "NOT_VERIFIABLE"
+      }
+    },
+    "47790949": {
+      "filename": "5306502 Pepperstone (47790949) statement-06_24 01.10.2026.csv",
+      "sha256": "6699c86c76637763871e56e3facf93f162ed27993fd98aafa0ba83487cf5c472",
+      "currency": "USD",
+      "first_close_sgt": "2026-07-09T18:39:44.885000+08:00",
+      "last_close_sgt": "2026-09-30T20:20:06.091000+08:00",
+      "deal_metrics": {
+        "n": 471,
+        "wins": 189,
+        "losses": 278,
+        "scratches": 4,
+        "wr_pct": 40.12738853503185,
+        "pf": 0.803979888412798,
+        "net": "-6874.49",
+        "winning_net": "28195.84",
+        "losing_net_abs": "35070.33",
+        "avg_win": "149.1843386243386243386243386",
+        "avg_loss_abs": "126.1522661870503597122302158",
+        "closed_realised_drawdown": "7734.79"
+      },
+      "cohort_metrics": {
+        "statement": {
+          "n": 462,
+          "wins": 185,
+          "losses": 273,
+          "scratches": 4,
+          "wr_pct": 40.04329004329004,
+          "pf": 0.8037560033707942,
+          "net": "-6874.49",
+          "winning_net": "28155.83",
+          "losing_net_abs": "35030.32",
+          "avg_win": "152.1936756756756756756756757",
+          "avg_loss_abs": "128.3161904761904761904761905",
+          "closed_realised_drawdown": "7734.79"
+        },
+        "last_30d": {
+          "n": 95,
+          "wins": 48,
+          "losses": 46,
+          "scratches": 1,
+          "wr_pct": 50.526315789473685,
+          "pf": 0.7165593829294865,
+          "net": "-2411.68",
+          "winning_net": "6096.91",
+          "losing_net_abs": "8508.59",
+          "avg_win": "127.0189583333333333333333333",
+          "avg_loss_abs": "184.9693478260869565217391304",
+          "closed_realised_drawdown": "3097.54"
+        },
+        "latest_20": {
+          "n": 20,
+          "wins": 11,
+          "losses": 9,
+          "scratches": 0,
+          "wr_pct": 55.0,
+          "pf": 0.5758965243582663,
+          "net": "-913.82",
+          "winning_net": "1240.89",
+          "losing_net_abs": "2154.71",
+          "avg_win": "112.8081818181818181818181818",
+          "avg_loss_abs": "239.4122222222222222222222222",
+          "closed_realised_drawdown": "1333.69"
+        }
+      },
+      "direction_metrics": {
+        "statement": {
+          "Buy": {
+            "n": 241,
+            "wins": 95,
+            "losses": 145,
+            "scratches": 1,
+            "wr_pct": 39.41908713692946,
+            "pf": 0.8888427226394118,
+            "net": "-2078.70",
+            "winning_net": "16621.83",
+            "losing_net_abs": "18700.53",
+            "avg_win": "174.9666315789473684210526316",
+            "avg_loss_abs": "128.9691724137931034482758621",
+            "closed_realised_drawdown": "4815.49"
+          },
+          "Sell": {
+            "n": 221,
+            "wins": 90,
+            "losses": 128,
+            "scratches": 3,
+            "wr_pct": 40.723981900452486,
+            "pf": 0.7063164927411804,
+            "net": "-4795.79",
+            "winning_net": "11534.00",
+            "losing_net_abs": "16329.79",
+            "avg_win": "128.1555555555555555555555556",
+            "avg_loss_abs": "127.576484375",
+            "closed_realised_drawdown": "7080.31"
+          }
+        },
+        "last_30d": {
+          "Buy": {
+            "n": 45,
+            "wins": 20,
+            "losses": 25,
+            "scratches": 0,
+            "wr_pct": 44.44444444444444,
+            "pf": 0.31908461767078505,
+            "net": "-3207.52",
+            "winning_net": "1503.08",
+            "losing_net_abs": "4710.60",
+            "avg_win": "75.154",
+            "avg_loss_abs": "188.424",
+            "closed_realised_drawdown": "3209.51"
+          },
+          "Sell": {
+            "n": 50,
+            "wins": 28,
+            "losses": 21,
+            "scratches": 1,
+            "wr_pct": 56.0,
+            "pf": 1.2095424158568084,
+            "net": "795.84",
+            "winning_net": "4593.83",
+            "losing_net_abs": "3797.99",
+            "avg_win": "164.0653571428571428571428571",
+            "avg_loss_abs": "180.8566666666666666666666667",
+            "closed_realised_drawdown": "1648.74"
+          }
+        },
+        "latest_20": {
+          "Buy": {
+            "n": 15,
+            "wins": 7,
+            "losses": 8,
+            "scratches": 0,
+            "wr_pct": 46.666666666666664,
+            "pf": 0.37633159829107665,
+            "net": "-1337.17",
+            "winning_net": "806.87",
+            "losing_net_abs": "2144.04",
+            "avg_win": "115.2671428571428571428571429",
+            "avg_loss_abs": "268.005",
+            "closed_realised_drawdown": "1640.56"
+          },
+          "Sell": {
+            "n": 5,
+            "wins": 4,
+            "losses": 1,
+            "scratches": 0,
+            "wr_pct": 80.0,
+            "pf": 40.67666354264293,
+            "net": "423.35",
+            "winning_net": "434.02",
+            "losing_net_abs": "10.67",
+            "avg_win": "108.505",
+            "avg_loss_abs": "10.67",
+            "closed_realised_drawdown": "10.67"
+          }
+        }
+      },
+      "closing_channel_deal_metrics": {
+        "cTrader 2 iOS": {
+          "n": 20,
+          "wins": 3,
+          "losses": 17,
+          "scratches": 0,
+          "wr_pct": 15.0,
+          "pf": 0.615989321628195,
+          "net": "-598.40",
+          "winning_net": "959.89",
+          "losing_net_abs": "1558.29",
+          "avg_win": "319.9633333333333333333333333",
+          "avg_loss_abs": "91.66411764705882352941176471",
+          "closed_realised_drawdown": "1000.66"
+        },
+        "cTrader 2 iPad": {
+          "n": 7,
+          "wins": 6,
+          "losses": 1,
+          "scratches": 0,
+          "wr_pct": 85.71428571428571,
+          "pf": 9.486762075134168,
+          "net": "1423.23",
+          "winning_net": "1590.93",
+          "losing_net_abs": "167.70",
+          "avg_win": "265.155",
+          "avg_loss_abs": "167.70",
+          "closed_realised_drawdown": "167.70"
+        },
+        "cTrader Web": {
+          "n": 4,
+          "wins": 0,
+          "losses": 4,
+          "scratches": 0,
+          "wr_pct": 0.0,
+          "pf": 0.0,
+          "net": "-178.76",
+          "winning_net": "0",
+          "losing_net_abs": "178.76",
+          "avg_win": null,
+          "avg_loss_abs": "44.69",
+          "closed_realised_drawdown": "178.76"
+        },
+        "openapi_Tradingview": {
+          "n": 37,
+          "wins": 12,
+          "losses": 25,
+          "scratches": 0,
+          "wr_pct": 32.432432432432435,
+          "pf": 1.2514116736403167,
+          "net": "1409.62",
+          "winning_net": "7016.44",
+          "losing_net_abs": "5606.82",
+          "avg_win": "584.7033333333333333333333333",
+          "avg_loss_abs": "224.2728",
+          "closed_realised_drawdown": "1595.02"
+        },
+        "openapi_cbot-t": {
+          "n": 403,
+          "wins": 168,
+          "losses": 231,
+          "scratches": 4,
+          "wr_pct": 41.687344913151364,
+          "pf": 0.6759585699792008,
+          "net": "-8930.18",
+          "winning_net": "18628.58",
+          "losing_net_abs": "27558.76",
+          "avg_win": "110.8844047619047619047619048",
+          "avg_loss_abs": "119.3019913419913419913419913",
+          "closed_realised_drawdown": "9791.86"
+        }
+      },
+      "open_position_rows": 8,
+      "unmatched_open_position_lines": [
+        478,
+        479,
+        480,
+        481,
+        482,
+        483,
+        484,
+        485
+      ],
+      "excluded_open_cohorts": [],
+      "multi_deal_closed_cohorts": 9,
+      "worst_10_cohorts": [
+        {
+          "net": "-1426.68",
+          "closed": "2026-09-02T21:31:00.320000+08:00",
+          "tie": "DID317395695",
+          "side": "Sell",
+          "symbol": "JPM.US",
+          "opened": "2026-09-02T03:53:38.770000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            88
+          ]
+        },
+        {
+          "net": "-1049.40",
+          "closed": "2026-08-04T06:38:46.405000+08:00",
+          "tie": "DID312541979",
+          "side": "Sell",
+          "symbol": "NatGas",
+          "opened": "2026-08-04T06:38:02.183000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            316
+          ]
+        },
+        {
+          "net": "-1013.08",
+          "closed": "2026-07-29T07:44:56.302000+08:00",
+          "tie": "DID311639601",
+          "side": "Sell",
+          "symbol": "NAS100",
+          "opened": "2026-07-29T07:31:53.621000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            349
+          ]
+        },
+        {
+          "net": "-990.00",
+          "closed": "2026-09-30T20:20:06.091000+08:00",
+          "tie": "DID322081664",
+          "side": "Buy",
+          "symbol": "NatGas",
+          "opened": "2026-09-30T18:02:14.523000+08:00",
+          "closing_channels": [
+            "openapi_Tradingview"
+          ],
+          "deal_lines": [
+            3
+          ]
+        },
+        {
+          "net": "-863.79",
+          "closed": "2026-07-24T22:42:04.231000+08:00",
+          "tie": "DID311138538",
+          "side": "Buy",
+          "symbol": "ASML.US",
+          "opened": "2026-07-24T21:31:00.411000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            391
+          ]
+        },
+        {
+          "net": "-770.88",
+          "closed": "2026-08-17T08:03:33.295000+08:00",
+          "tie": "DID314359940",
+          "side": "Buy",
+          "symbol": "BTCUSD",
+          "opened": "2026-08-10T21:34:27.213000+08:00",
+          "closing_channels": [
+            "openapi_Tradingview"
+          ],
+          "deal_lines": [
+            117
+          ]
+        },
+        {
+          "net": "-745.85",
+          "closed": "2026-07-27T22:13:10.284000+08:00",
+          "tie": "DID311355028",
+          "side": "Sell",
+          "symbol": "GOOG.US",
+          "opened": "2026-07-24T21:31:00.324000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            376
+          ]
+        },
+        {
+          "net": "-740.00",
+          "closed": "2026-08-06T17:38:08.488000+08:00",
+          "tie": "DID313006074",
+          "side": "Sell",
+          "symbol": "USDX",
+          "opened": "2026-08-06T17:37:58.728000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            264
+          ]
+        },
+        {
+          "net": "-720.82",
+          "closed": "2026-07-22T02:04:46.887000+08:00",
+          "tie": "DID310592316",
+          "side": "Sell",
+          "symbol": "USDCAD",
+          "opened": "2026-07-21T19:25:35.949000+08:00",
+          "closing_channels": [
+            "openapi_cbot-t"
+          ],
+          "deal_lines": [
+            433
+          ]
+        },
+        {
+          "net": "-685.29",
+          "closed": "2026-07-29T10:00:54.148000+08:00",
+          "tie": "DID311661431",
+          "side": "Buy",
+          "symbol": "NAS100",
+          "opened": "2026-07-29T09:15:30.773000+08:00",
+          "closing_channels": [
+            "openapi_Tradingview"
+          ],
+          "deal_lines": [
+            348
+          ]
+        }
+      ],
+      "quality": {
+        "input_hash": "PASS",
+        "shape": "PASS",
+        "unique_deal_ids": "PASS",
+        "dates": "PASS",
+        "net_footer": "PASS",
+        "commission_footer": "PASS",
+        "unambiguous_open_matches": "PASS",
+        "full_deal_partition": "PASS",
+        "position_id": "ABSENT",
+        "strategy": "ABSENT",
+        "mae_mfe": "ABSENT",
+        "closed_exit_reason": "ABSENT",
+        "full_lifecycle_volume_balance": "NOT_VERIFIABLE"
+      }
+    }
+  }
+}

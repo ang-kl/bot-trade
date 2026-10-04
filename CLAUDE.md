@@ -1,5 +1,32 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-10-04 02:54 UTC: partial corpus remains
+unavailable; visible continuation through № 11,064, next at least № 11,065.
+The owner's bounded auto-approval expired at 10:00 SGT. Preparation, report
+and draft PR continue under "proceed"; a new merge/deployment requires scoped
+approval of the concrete candidate. Main remains #1227 1afda08, Railway
+087b0a2d-e408-4fb5-9591-58003c6084e4 SUCCESS. Five statements ending Oct1
+reconcile 1421 deals and 1382 closed entry-cohort proxies; no certified whole
+position/strategy baseline or new forward target achievement is claimed.
+Current BTC FVG5 resolves shared default threshold8 (source-derived); one
+separate VA_BREAKOUT refusal is recorded for spread15 >8.6255238, gate stop
+unit287.51746. SGD FX refuses unusable fresh direct legs; two live accounts
+are unfunded; seven S/A/T ON and all11 current positions protected in dated
+read-back. Dynamic Chandelier/scanner and natural-fill acceptance remain open.
+Live WMT lesson contradicted banked2.95R versus best0.07R and advised Repeat.
+Bounded candidate marks future such wins inconclusive, withholds excursion
+certification/recommendations, and never rewrites history or changes orders.
+Focused postmortems35 passed, frontendUTC1316 passed, lint/build/colour/syntax
+passed; initial backend local-zone run had two unchanged fixture failures and
+four skips. Complete UTC backend now passed7487 with four existing native skips.
+PR#1228 opened3eeab9f. Integration review found positive-net inconclusive
+rows incorrectly grouped under Losses. UI correction preserves them in Wins,
+with a rendering regression that fails the published UI and passes the fix.
+Final frontend1317 and lint/build/colour passed; final-head CI pending.
+Claude workflow actual action SKIPPED; manual source review is the evidence.
+See docs/gtd-2026-10-04-evidence-checkpoint.md and original carry-forward.
+Actual model/effort/session metadata unavailable; none is invented. -->
+
 <!-- Continuation ledger 2026-10-04 01:39 UTC: partial corpus remains
 unavailable; visible replies through № 11,039, next at least № 11,040.
 Owner authorised bounded GTD corrections, checked merges and resulting

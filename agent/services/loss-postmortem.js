@@ -164,6 +164,20 @@ export function classifyWin(trade, bars, openedAtMs, closedAtMs) {
     mfeR = Math.max(mfeR, ((long ? b.h : b.l) - entry) * dir / risk)
     maeR = Math.min(maeR, ((long ? b.l : b.h) - entry) * dir / risk)
   }
+  // A closed fill is itself evidence of a price reached during the trade.
+  // Production WMT: the retained bars said +0.07R best, but the recorded
+  // exit banked +2.95R. That window cannot support a win-quality lesson.
+  // Do not invent its missing peak or advise repeating/tightening the setup.
+  const roundoff = 1e-9 * Math.max(1, Math.abs(realizedR), Math.abs(mfeR))
+  if (!Number.isFinite(mfeR) || !Number.isFinite(maeR) || realizedR > mfeR + roundoff) {
+    return {
+      classification: 'inconclusive',
+      detail: Number.isFinite(mfeR) && Number.isFinite(maeR)
+        ? `Recorded exit banked ${realizedR.toFixed(2)}R but holding-period bars show only ${mfeR.toFixed(2)}R best — excursion evidence is inconsistent; win quality cannot be judged.`
+        : 'Holding-period bars contain invalid excursion prices — win quality cannot be judged.',
+      realizedR,
+    }
+  }
   if (maeR <= -0.8) {
     return {
       classification: 'escaped',

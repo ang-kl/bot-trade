@@ -33,6 +33,9 @@ const VERDICTS = {
   escaped: { label: 'ESCAPED', hint: 'won after near-stop — luck, not edge' },
 }
 const WIN_CLASSES = new Set(['clean_win', 'gave_back', 'escaped'])
+// Missing excursion evidence cannot turn recorded positive net into a loss.
+const isWinRow = r => WIN_CLASSES.has(r.classification)
+  || (r.classification === 'inconclusive' && r.net_pnl > 0)
 
 // Owner: "so many the same, where is the date, time" — the collapsed row
 // carried no timestamp at all, so a genuinely repeated setup (same symbol,
@@ -144,8 +147,8 @@ export default function LossReview({ postmortems }) {
   const safePage = Math.min(page, pageCount - 1)
   const rows = filteredRows.slice(safePage * pageSize, (safePage + 1) * pageSize)
 
-  const losses = rows.filter(r => !WIN_CLASSES.has(r.classification))
-  const wins = rows.filter(r => WIN_CLASSES.has(r.classification))
+  const losses = rows.filter(r => !isWinRow(r))
+  const wins = rows.filter(isWinRow)
   const bySymbol = {}
   for (const r of rows) (bySymbol[r.symbol] ||= []).push(r)
 
