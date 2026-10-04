@@ -1,21 +1,23 @@
 # Instructions for Claude — bot-trade
 
-<!-- Continuation ledger 2026-10-04 01:22 UTC: partial corpus remains
-unavailable; visible replies through № 11,032, next at least № 11,033.
-Owner authorised bounded GTD corrections, gated merges and resulting
-production deployment verification until 10:00 SGT on 4 October.
-#1225 merged bf90e3d, all required gates passed; Railway SUCCESS and matching
-web/agent health and live corrected reporting verified. Dependabot #40-#42
-are fixed, with zero open alerts. W1 now resolved: per-account latest 20 whole
-positions closed after 07:35 SGT; each consecutive SGT day meets its own
-threshold with at least one eligible close; empty days break; reporting only.
-New assessor uses completed days, broker whole-lifecycle native money and
-explicit incomplete evidence. No new entry gate, risk setting or broker action.
-Focused backend 52 and frontend 6 pass; full frontend 1315 passes; full backend
-and exact-head CI pending for this candidate. Existing SGD FX refusal,
-unfunded accounts, outcome/MAE/Chandelier and market-open acceptance remain.
+<!-- Continuation ledger 2026-10-04 01:39 UTC: partial corpus remains
+unavailable; visible replies through № 11,039, next at least № 11,040.
+Owner authorised bounded GTD corrections, checked merges and resulting
+production deployments until 10:00 SGT on 4 October. #1225 bf90e3d and #1226
+4342718 merged, exact-head CI passed and Railway SUCCESS. Browser web/agent
+4342718 healthy; per-account forward WR75/PF1.68 card shows zero closes and
+Not yet assessed on all seven accounts. Numerical achievement not claimed.
+W1 resolved: per-account latest20 whole closes after07:35SGT; each completed
+SGT day meets its own threshold, min1 close, empty day breaks; reporting only.
+Live inspection found the new card's expand body missing. UI-only follow-up
+supplies it and an assessment timestamp. Full frontend1316 passes; backend
+source unchanged from the7485-pass/four-skip #1226 candidate; CI pending.
+Dependabot40-42 fixed, zero open. All seven S/A/T on; no unresolved intents;
+11 positions independently protected. Dynamic management, final MAE/MFE,
+Chandelier/scanner acceptance and exact current BTC decision remain unverified.
+SGD FX entry refusal and two unfunded live accounts persist; no gate lowered.
 See docs/performance-targets-2026-10-04.md and original GTD carry-forward.
-Actual model, effort and session metadata unavailable. -->
+Actual model/effort/session metadata unavailable. -->
 
 <!-- Continuation ledger 2026-09-24 23:30 UTC: visible replies through
 № 8,977, partial local corpus still not adopted. #1083 deployed d61d84d;
