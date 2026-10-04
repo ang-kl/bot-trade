@@ -34,6 +34,7 @@ import { engineStatusFor, acknowledgeEntryEpochs, basesFor } from './entry-mode.
 import { alreadyTrippedToday } from './equity-stop.js'
 import { loadGlobalGuards } from './global-guards.js'
 import { fxDayOpenMs } from '../lib/volume-structure.js'
+import { recordSymbolResolution } from '../lib/account-symbol-resolution.js'
 
 /**
  * The guard the sidecar SHOULD be running, derived from durable state only.
@@ -249,35 +250,46 @@ const unresolvedLogged = new Set()
  * logged once per (side, name), as before.
  */
 export async function resolveTickSymbols(db, creds, side, { resolveSymbolId = null } = {}) {
-  return resolveNames(db, creds, side, tickSymbolNames(db), { resolveSymbolId })
+  return resolveNames(db, creds, side, tickSymbolNames(db), { resolveSymbolId, purpose: 'configured' })
 }
 
 /** The quotes-only names (quoteSymbolNames) resolved to this side's ids, same rules. */
 export async function resolveQuoteSymbols(db, creds, side, { resolveSymbolId = null } = {}) {
-  return resolveNames(db, creds, side, quoteSymbolNames(db, side), { resolveSymbolId })
+  return resolveNames(db, creds, side, quoteSymbolNames(db, side), { resolveSymbolId, purpose: 'quotes' })
 }
 
-async function resolveNames(db, creds, side, names, { resolveSymbolId = null } = {}) {
-  if (!names.length || !creds?.ready) return []
+async function resolveNames(db, creds, side, names, { resolveSymbolId = null, purpose } = {}) {
+  if (!creds?.ready) return []
   const resolve = resolveSymbolId || (await import('../lib/ctrader-creds.js')).resolveSymbolId
   const out = []
+  const resolved = [], unresolved = []
   const seen = new Set()
   for (const name of names) {
+    let source = 'unverified', reason = 'symbol_resolution_failed'
     try {
       const r = await resolve(db, creds, name)
+      if (['account', 'account-stale', 'global', 'unverified', 'none'].includes(r?.source)) source = r.source
       const id = Number(r?.id ?? r?.symbolId ?? r) // resolveSymbolId → { id, source }
-      if (!Number.isFinite(id) || id <= 0) throw new Error('no id')
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        const code = String(r?.reason || '').split(':')[0]
+        reason = ['symbol_not_on_account', 'symbol_map_unverified', 'symbol_id_unknown'].includes(code) ? code : 'symbol_id_invalid'
+        throw new Error(reason)
+      }
+      resolved.push({ name, id, source })
       if (seen.has(id)) continue
       seen.add(id)
       out.push({ name, id })
-    } catch (err) {
-      const key = `${side?.name || 'exec'}:${name}`
+    } catch {
+      unresolved.push({ name, source, reason })
+      const key = `${side?.name || 'exec'}:${creds.accountId ?? 'unknown'}:${name}:${reason}`
       if (!unresolvedLogged.has(key)) {
         unresolvedLogged.add(key)
-        console.warn(`[tick] ${side?.name || 'exec'}: symbol ${name} not resolvable on this side (${err?.message || err}) — not carried`)
+        console.warn(`[tick] ${side?.name || 'exec'}: account=${creds.accountId ?? 'unknown'} symbol ${name} not resolvable (${reason}; source=${source}) — not carried`)
       }
     }
   }
+  try { recordSymbolResolution(db, { side: side?.name || 'exec', purpose, accountId: String(creds.accountId ?? ''),
+    host: creds.host ?? null, resolved, unresolved }) } catch { /* observation only; never stops protection */ }
   return out.sort((a, b) => a.id - b.id)
 }
 

@@ -29,6 +29,7 @@ import {
   SYMBOL_MAP_RECEIPT_KEY, SYMBOL_MAP_PASS_MS, SYMBOL_MAP_REFRESH_AGE_MS,
 } from './account-symbol-maps.js'
 import { buildCalendarCoverage } from './calendar-coverage.js'
+import { resolveTickSymbolIds } from './exec-guard-sync.js'
 
 const DEMO = 'demo.ctraderapi.com', LIVE = 'live.ctraderapi.com'
 const H = 3600_000, MIN = 60_000
@@ -56,6 +57,88 @@ function broker({ fail = () => false, answerAs = id => id, clock = null } = {}) 
 }
 const stored = (db, id) => JSON.parse(getState(db, accountSymbolMapKey(id)) || 'null')
 const ownMap = (db, id, builtAtMs) => setState(db, accountSymbolMapKey(id), JSON.stringify({ builtAt: new Date(builtAtMs).toISOString(), accountId: id, map: { EURUSD: 1 } }))
+
+test('an exact name missing from a fresh feed-account map requests one bounded own-list refresh and resolves its new ID', async t => {
+  let now = Date.now()
+  const db = database(t, ['46130058', '43002148'])
+  for (const id of ['46130058', '43002148']) ownMap(db, id, now - H)
+  setState(db, 'symbol_id_map', JSON.stringify({ SPX500: 77 })) // belongs to the demo primary, never the live feed
+  setState(db, 'tick_symbols_json', '["SPX500"]')
+  const side = { name: 'cpp_exec', isLive: true }, creds = credentials('43002148')
+  assert.deepEqual(await resolveTickSymbolIds(db, creds, side), [])
+  assert.equal(accountSymbolMapRefreshView(db).accounts.find(a => a.accountId === '43002148').dueReason, 'unresolved_symbols')
+  const calls = []
+  now = Date.now() + 1
+  const refresh = createAccountSymbolMapRefresh(db, { env: {}, now: () => now, credentials, fetchDeps: {
+    wsGetSymbolsList: async (host, _c, _s, _t, id, _timeout, opts) => {
+      calls.push({ host, id, perAccount: opts.perAccount })
+      return { ctidTraderAccountId: id, symbol: [{ symbolName: 'SPX500', symbolId: 987 }] }
+    },
+  } })
+  assert.equal((await refresh()).accountId, '43002148')
+  assert.deepEqual(calls, [{ host: LIVE, id: '43002148', perAccount: true }])
+  assert.deepEqual(await resolveTickSymbolIds(db, creds, side), [987], 'the refreshed live ID, never the demo global ID')
+  assert.equal((await refresh()).result, 'nothing_due')
+  assert.equal(JSON.parse(getState(db, 'symbol_id_map')).SPX500, 77)
+})
+
+test('an own list that still lacks the exact name stays unresolved across probes and restarts without guessed aliases or repeated reads', async t => {
+  let now = Date.now()
+  const db = database(t, ['46130058'])
+  ownMap(db, '46130058', now - H)
+  setState(db, 'tick_symbols_json', '["SPX500"]')
+  const side = { name: 'cpp_exec_demo', isLive: false }, creds = credentials('46130058')
+  assert.deepEqual(await resolveTickSymbolIds(db, creds, side), [])
+  let calls = 0
+  now = Date.now() + 1
+  const deps = { env: {}, now: () => now, credentials, fetchDeps: {
+    wsGetSymbolsList: async (_h, _c, _s, _t, id) => {
+      calls++
+      return { ctidTraderAccountId: id, symbol: [{ symbolName: 'US500', symbolId: 985 }] }
+    },
+  } }
+  assert.equal((await createAccountSymbolMapRefresh(db, deps)()).result, 'refreshed')
+  assert.deepEqual(await resolveTickSymbolIds(db, creds, side), [])
+  now += SYMBOL_MAP_PASS_MS
+  const view = accountSymbolMapRefreshView(db, { now }).accounts[0]
+  assert.deepEqual(view.unresolvedSymbols, ['SPX500'])
+  assert.equal(view.due, false, 'a newer own list completed the request even though the exact name is unavailable')
+  assert.equal((await createAccountSymbolMapRefresh(db, deps)()).result, 'nothing_due')
+  assert.equal(calls, 1, 'the persisted request is not re-dated by another probe or restart')
+  assert.equal(getState(db, 'tick_symbols_json'), '["SPX500"]')
+})
+
+test('a missing-name refresh respects the persisted daily cap', async t => {
+  const now = Date.now()
+  const db = database(t, ['46130058'])
+  ownMap(db, '46130058', now - H)
+  setState(db, 'tick_symbols_json', '["SPX500"]')
+  await resolveTickSymbolIds(db, credentials('46130058'), { name: 'cpp_exec_demo', isLive: false })
+  setState(db, SYMBOL_MAP_RECEIPT_KEY, JSON.stringify({ accounts: { '46130058': {
+    day: new Date(now).toISOString().slice(0, 10), readsToday: 3, lastAttemptAt: new Date(now - H).toISOString(),
+  } } }))
+  let calls = 0
+  const refresh = createAccountSymbolMapRefresh(db, { env: {}, now: Date.now, credentials,
+    fetchMap: async () => { calls++; return { SPX500: 987 } } })
+  assert.equal(accountSymbolMapRefreshView(db).accounts[0].blocked, 'daily_cap')
+  assert.equal((await refresh()).result, 'waiting')
+  assert.equal(calls, 0)
+})
+
+for (const symbols of [
+  [{ symbolName: 'SPX500', symbolId: 1.5 }],
+  [{ symbolName: 'SPX500', symbolId: 1 }, { symbolName: 'spx500', symbolId: 2 }],
+]) test('invalid or ambiguous IDs in an own symbol list cannot replace the stored map', async t => {
+  const now = Date.now(), db = database(t, ['46130058'])
+  ownMap(db, '46130058', now - 24 * H)
+  const before = stored(db, '46130058')
+  const refresh = createAccountSymbolMapRefresh(db, { env: {}, now: () => now, credentials, fetchDeps: {
+    wsGetSymbolsList: async (_h, _c, _s, _t, id) => ({ ctidTraderAccountId: id, symbol: symbols }),
+  } })
+  assert.equal((await refresh()).result, 'failed')
+  assert.deepEqual(stored(db, '46130058'), before)
+  assert.equal(accountSymbolMapRefreshView(db).accounts[0].lastError, 'account_symbol_list_invalid')
+})
 
 test('an account that never trades gets its own map from its own list, stamped as its own, and coverage stops naming it missing', async t => {
   const now = Date.parse('2026-09-25T14:00:00Z')

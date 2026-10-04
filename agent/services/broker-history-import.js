@@ -275,7 +275,9 @@ export function persistDeals(db, rows) {
       stored.set(String(r.deal_id), merged)
     }
   })
-  write()
+  // storedDealFields reads before the upserts: a deferred WAL snapshot can
+  // otherwise fail to upgrade after the scanner worker commits.
+  write.immediate()
   const after = db.prepare('SELECT COUNT(*) AS c FROM broker_deals').get().c
   const matched = rows.filter(r => localIdFor(r) != null).length
   return {

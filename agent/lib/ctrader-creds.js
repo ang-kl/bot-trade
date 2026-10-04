@@ -250,7 +250,13 @@ export async function fetchAccountSymbolMap(db, creds, deps = {}) {
   }
   const map = {}
   for (const s of (data?.symbol || [])) {
-    if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId
+    if (s.symbolName && s.symbolId != null) {
+      const name = String(s.symbolName).toUpperCase(), id = Number(s.symbolId)
+      if (!Number.isSafeInteger(id) || id <= 0 || (map[name] != null && Number(map[name]) !== id)) {
+        throw new Error('account_symbol_list_invalid')
+      }
+      map[name] = s.symbolId
+    }
   }
   if (Object.keys(map).length > 0) {
     const { setState } = await import('../db.js')

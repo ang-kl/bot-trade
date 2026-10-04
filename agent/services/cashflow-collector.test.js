@@ -5,11 +5,12 @@ import { accountHistory, recordAccountHistory, cashflowCoverage } from './accoun
 import { recordAccountMoney, recordDepositCurrency } from './account-money.js'
 import { recordCashflowWindow } from './account-cashflows.js'
 import { makeCashflowCollector, nextCashflowWindow } from './cashflow-collector.js'
+import { walFilename, installWalWriterRace } from '../test-support/wal-writer-race.js'
 
 const T = Math.floor(Date.now() / 60_000) * 60_000
 const host = 'demo.ctraderapi.com', WEEK = 604800_000
-function fixture(t) {
-  const db = initDB(':memory:'); t.after(() => db.close())
+function fixture(t, filename = ':memory:') {
+  const db = initDB(filename); t.after(() => db.close())
   setState(db, 'account_history_pruned_ms', String(Date.now()))
   const point = (accountId, at, equity, currency = 'USD', route = host) => recordAccountHistory(db,
     { accountId, host: route, source: 'nightly_equity', receivedAt: at, currency, balance: equity, equity, openPnl: 0 })
@@ -29,6 +30,21 @@ function fixture(t) {
   const status = id => JSON.parse(getState(db, `acct:${id}:cashflow_collection_json`))
   return { db, point, money, account, getCreds, report, response, collector, status }
 }
+
+for (const withEvent of [false, true]) test(`cashflow ${withEvent ? 'event and' : 'empty'} coverage commits while a WAL peer waits`, t => {
+  const { db, response } = fixture(t, walFilename())
+  const race = installWalWriterRace(t, db)
+  const events = withEvent ? [{ balanceHistoryId: '9', changeBalanceTimestamp: T - 90_000,
+    delta: 50000, moneyDigits: 2, operationType: 0 }] : []
+  const result = recordCashflowWindow(db, { accountId: '11', host, currency: 'USD',
+    from: T - 120_000, to: T, receivedAt: T + 1000, response: response('11', events) })
+  assert.equal(result.events, events.length)
+  assert.deepEqual(race.state, { attempted: true, blocked: true })
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM account_cashflow_windows').get().n, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM account_cashflows').get().n, events.length)
+  race.write()
+  assert.equal(getState(db, 'wal_peer_receipt'), 'committed')
+})
 
 test('the real producer records deposits and makes the report reconcile for manage-only accounts', async t => {
   const { account, collector, response, report, status, db } = fixture(t)
@@ -105,6 +121,46 @@ test('a failed account keeps its hole and cannot starve a peer or leak request c
   assert.deepEqual(calls.map(a => a[4]), ['11', '22', '11'])
   assert.equal(calls[2][5], calls[0][5])
   assert.equal(db.prepare("SELECT COUNT(*) n FROM account_cashflow_windows WHERE account_id='11'").get().n, 0)
+})
+
+test('cashflow failures identify bounded transport categories without retaining descriptions or secrets', async t => {
+  const { account, collector, status, db } = fixture(t)
+  account('11')
+  const cases = [
+    ['cTrader WS timeout after 5000ms — accessToken=PRIVATE', 'cashflow_read_timeout', null],
+    ['cTrader WS queued_timeout after 6000ms — PRIVATE', 'cashflow_queue_timeout', null],
+    ['cTrader WS error: PRIVATE', 'cashflow_transport_failed', null],
+    ['cTrader error: CH_ACCESS_TOKEN_INVALID — PRIVATE', 'cashflow_broker_rejected', 'CH_ACCESS_TOKEN_INVALID'],
+    ['cTrader error: PRIVATE — PRIVATE', 'cashflow_read_failed', null],
+    ['cashflow_private_token', 'cashflow_read_failed', null],
+  ]
+  for (const [message, expected, brokerCode] of cases) {
+    const lines = []
+    assert.equal((await collector({ read: async () => { throw new Error(message) }, log: line => lines.push(line) }).poll()).error, expected)
+    assert.equal(status('11').reason, expected)
+    assert.equal(status('11').phase, 'read')
+    assert.equal(status('11').brokerCode ?? null, brokerCode)
+    assert.doesNotMatch(JSON.stringify(status('11')) + lines.join(''), /PRIVATE|private_token/)
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM account_cashflow_windows').get().n, 0)
+  }
+})
+
+test('a persistence lock is distinguished from a read failure and retries the same uncompleted window', async t => {
+  const { account, collector, response, status, db } = fixture(t)
+  account('11')
+  const windows = [], c = collector({ read: async (...args) => { windows.push(args.slice(5, 7)); return response('11') } })
+  const transaction = db.transaction
+  db.transaction = () => ({ immediate: () => { throw Object.assign(new Error('PRIVATE'), { code: 'SQLITE_BUSY_SNAPSHOT' }) } })
+  try {
+    assert.equal((await c.poll()).error, 'cashflow_database_busy')
+    assert.equal(status('11').phase, 'persist')
+    assert.equal(status('11').storageCode, 'SQLITE_BUSY_SNAPSHOT')
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM account_cashflow_windows').get().n, 0)
+  } finally { db.transaction = transaction }
+  assert.equal((await c.poll()).events, 0)
+  assert.deepEqual(windows[1], windows[0])
+  assert.equal(status('11').status, 'success')
+  assert.equal(status('11').storageCode, undefined)
 })
 
 test('refused, stale, unknown-currency and mismatched-route accounts do not initiate reads', async t => {

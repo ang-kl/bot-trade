@@ -57,6 +57,7 @@ import { accountSymbolMapKey, credsForRegisteredAccount, fetchAccountSymbolMap, 
 import { registeredCalendarAccounts } from './watchdog-calendar-refresh.js'
 import { disarmReason } from '../lib/env-disarm.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
+import { unresolvedAccountSymbols } from '../lib/account-symbol-resolution.js'
 
 export const SYMBOL_MAP_RECEIPT_KEY = 'account_symbol_map_refresh_json'
 export const SYMBOL_MAP_PASS_MS = 5 * 60_000
@@ -66,7 +67,7 @@ export const SYMBOL_MAP_MAX_BACKOFF_MS = 6 * 3600_000
 export const SYMBOL_MAP_MAX_READS_PER_DAY = 3
 const MAX_ACCOUNTS = 64, DAY_MS = 86400_000, FUTURE_SLACK_MS = 3600_000
 // Missing coverage is worse than old coverage: never-built maps lead.
-const DUE_RANK = { missing: 0, unreadable: 0, empty: 0, undated: 1, unproven_source: 2, stale: 3 }
+const DUE_RANK = { missing: 0, unreadable: 0, empty: 0, undated: 1, unproven_source: 2, unresolved_symbols: 2, stale: 3 }
 
 const readJson = (db, key) => { try { return JSON.parse(getState(db, key) || 'null') } catch { return null } }
 const utcDay = ms => new Date(ms).toISOString().slice(0, 10)
@@ -141,7 +142,8 @@ export function accountSymbolMapRefreshView(db, { now = Date.now() } = {}) {
   const accounts = registered(db).map(({ accountId, host, enabled }) => {
     const record = accountSymbolMapRecord(db, accountId, now)
     const state = receipt?.accounts?.[accountId] ?? null
-    const dueReason = symbolMapDueReason(record)
+    const unresolved = unresolvedAccountSymbols(db, { accountId, host, builtAt: record.builtAt, now })
+    const dueReason = symbolMapDueReason(record) ?? (unresolved.refreshRequested ? 'unresolved_symbols' : null)
     // Neither a disabled account nor a refused token has a known end: no
     // notBefore, re-checked every pass.
     const wait = !dueReason ? null
@@ -150,6 +152,7 @@ export function accountSymbolMapRefreshView(db, { now = Date.now() } = {}) {
           : waitFor(state, now)
     return {
       accountId, host, enabled, map: record, due: dueReason != null, dueReason,
+      unresolvedSymbols: unresolved.names,
       blocked: wait?.blocked ?? null, notBefore: wait?.notBefore != null ? iso(wait.notBefore) : null,
       lastAttemptAt: state?.lastAttemptAt ?? null, lastResult: state?.lastResult ?? null, lastError: state?.lastError ?? null,
       consecutiveFailures: Number(state?.consecutiveFailures) || 0,
@@ -211,8 +214,16 @@ export function createAccountSymbolMapRefresh(db, deps = {}) {
       } else {
         brokerRead = true
         try {
-          const size = Object.keys(await fetchMap(c, now) ?? {}).length
+          const map = await fetchMap(c, now) ?? {}
+          const size = Object.keys(map).length
           outcome = size > 0 ? { result: 'built', error: null, size } : { result: 'empty_symbol_list', error: null, size: 0 }
+          if (size > 0 && pick.unresolvedSymbols.length) {
+            const resolved = pick.unresolvedSymbols.filter(name => Number.isSafeInteger(Number(map[name])) && Number(map[name]) > 0)
+              .map(name => ({ name, id: Number(map[name]) }))
+            const found = new Set(resolved.map(s => s.name))
+            outcome.resolutionCheck = { checkedAt: iso(now), resolved, unresolved: pick.unresolvedSymbols.filter(name => !found.has(name)) }
+            console.log(`[account-symbol-maps] account=${pick.accountId} host=${pick.host} ownList=true builtAt=${iso(now)} resolved=${JSON.stringify(resolved)} unresolved=${JSON.stringify(outcome.resolutionCheck.unresolved)}`)
+          }
         } catch (e) {
           const message = String(e?.message || e).slice(0, 200)
           outcome = { result: /^account_identity_mismatch/.test(message) ? 'account_identity_mismatch' : 'read_failed', error: message, size: null }
@@ -225,6 +236,7 @@ export function createAccountSymbolMapRefresh(db, deps = {}) {
         dueReason: pick.dueReason,
         consecutiveFailures: built ? 0 : (Number(previous?.consecutiveFailures) || 0) + 1,
         day, readsToday: readsBefore + (brokerRead ? 1 : 0),
+        ...(outcome.resolutionCheck ? { resolutionCheck: outcome.resolutionCheck } : {}),
       }
       return writeReceipt(db, now, {
         result: built ? 'refreshed' : 'failed', accountId: pick.accountId, dueReason: pick.dueReason,

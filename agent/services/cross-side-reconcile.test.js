@@ -4,9 +4,10 @@ import { readFileSync } from 'node:fs'
 import { initDB, getState, setState } from '../db.js'
 import { reconcileCrossSideAccounts } from './cross-side-reconcile.js'
 import { reconcilePositions } from './reconciler.js'
+import { walFilename, installWalWriterRace } from '../test-support/wal-writer-race.js'
 
-function fixture(t) {
-  const db = initDB(':memory:')
+function fixture(t, filename = ':memory:') {
+  const db = initDB(filename)
   t.after(() => db.close())
   for (const [id, live, enabled] of [['1', 0, 1], ['2', 1, 1], ['3', 1, 1], ['4', 1, 0]]) {
     db.prepare('INSERT INTO accounts (account_id, is_live, enabled, mode) VALUES (?, ?, ?, ?)')
@@ -35,6 +36,22 @@ const getCreds = (_db, { accountId, isLive }) => ({ ready: true, accountId, isLi
 const base = { ready: true, accountId: '1', isLive: false }
 const status = (db, id) => db.prepare('SELECT status FROM trades WHERE id = ?').get(id).status
 const position = { positionId: '700', tradeData: { symbolId: 10, tradeSide: 'BUY', volume: 10000 }, price: 100, stopLoss: 90, takeProfit: 120 }
+
+test('a concurrent WAL writer cannot invalidate a cross-side reconciliation snapshot', async t => {
+  const db = fixture(t, walFilename())
+  const demo = seed(db, '1'), live = seed(db, '2')
+  const race = installWalWriterRace(t, db)
+  const results = await reconcileCrossSideAccounts(db, base, { getCreds,
+    readSnapshot: async (_h, _i, _s, _t, id) => ({ ctidTraderAccountId: id }),
+  })
+  assert.ok(results.every(r => r.result), JSON.stringify(results))
+  assert.equal(race.state.attempted, true, 'the peer tried after a real transaction read')
+  assert.equal(race.state.blocked, true, 'the peer must wait for this writer to commit')
+  assert.equal(status(db, demo), 'open')
+  assert.equal(status(db, live), 'closed')
+  race.write()
+  assert.equal(getState(db, 'wal_peer_receipt'), 'committed', 'the peer can write after reconciliation')
+})
 
 test('fresh empty live snapshots close only those accounts, including colliding position IDs', async t => {
   const db = fixture(t)

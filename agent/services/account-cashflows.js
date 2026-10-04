@@ -29,6 +29,8 @@ export function recordCashflowWindow(db, { accountId, host, currency, from, to, 
       balance, balanceVersion: balance == null ? null : brokerVersion(r.balanceVersion) }
   })
   let balanceConflicts = 0
+  // The duplicate checks and coverage merge read before writing. Reserve the
+  // writer first so a concurrent WAL commit cannot invalidate that snapshot.
   db.transaction(() => {
     // An event already stored keeps every field it had (DO NOTHING before
     // WEB-8); only a missing balance is filled, from this read. The WHERE
@@ -67,6 +69,6 @@ export function recordCashflowWindow(db, { accountId, host, currency, from, to, 
     db.prepare('DELETE FROM account_cashflow_windows WHERE account_id=? AND host=? AND currency=?').run(String(accountId),host,currency)
     const insertWindow = db.prepare('INSERT INTO account_cashflow_windows (account_id,host,currency,from_ms,to_ms,received_ms) VALUES (?,?,?,?,?,?)')
     for (const w of merged) insertWindow.run(String(accountId),host,currency,w.from_ms,w.to_ms,w.received_ms)
-  })()
+  }).immediate()
   return { events: rows.length, from, to, balanceConflicts }
 }
