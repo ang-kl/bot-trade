@@ -1,7 +1,7 @@
 # Instructions for Claude — bot-trade
 
 <!-- Continuation ledger 2026-10-04 02:54 UTC: partial corpus remains
-unavailable; visible continuation through № 11,061, next at least № 11,062.
+unavailable; visible continuation through № 11,064, next at least № 11,065.
 The owner's bounded auto-approval expired at 10:00 SGT. Preparation, report
 and draft PR continue under "proceed"; a new merge/deployment requires scoped
 approval of the concrete candidate. Main remains #1227 1afda08, Railway
@@ -18,7 +18,12 @@ Bounded candidate marks future such wins inconclusive, withholds excursion
 certification/recommendations, and never rewrites history or changes orders.
 Focused postmortems35 passed, frontendUTC1316 passed, lint/build/colour/syntax
 passed; initial backend local-zone run had two unchanged fixture failures and
-four skips. One complete UTC gate and exact-head PR CI remain required.
+four skips. Complete UTC backend now passed7487 with four existing native skips.
+PR#1228 opened3eeab9f. Integration review found positive-net inconclusive
+rows incorrectly grouped under Losses. UI correction preserves them in Wins,
+with a rendering regression that fails the published UI and passes the fix.
+Final frontend1317 and lint/build/colour passed; final-head CI pending.
+Claude workflow actual action SKIPPED; manual source review is the evidence.
 See docs/gtd-2026-10-04-evidence-checkpoint.md and original carry-forward.
 Actual model/effort/session metadata unavailable; none is invented. -->
 
