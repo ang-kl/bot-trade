@@ -650,3 +650,74 @@ test('managed account: the decision step is fenced, the since-entry spec is stil
   assert.ok(Math.abs(pushed[0].trailDistance - 0.15) < 1e-9, '3 × ATR')
   assert.equal(out.trailPushed, 1)
 })
+
+test('managed since-entry trail survives the next pass without refetching the same bars', async (t) => {
+  clearAtrCache()
+  t.after(clearAtrCache)
+  const db = mkManagedKeeperDb()
+  t.after(() => db.close())
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
+  const before = db.prepare('SELECT * FROM monitored_positions').all()
+  const bars = Array.from({ length: 40 }, () => ({ h: 2.35, l: 2.30, c: 2.32 }))
+  const deps = keeperDeps()
+  const pushed = []
+  let reads = 0
+  deps.ws.wsGetTrendbarsBatch = async () => { reads++; return { '1h': bars } }
+  deps.exec.amendPosition = async () => { assert.fail('managed keeper must not amend') }
+  deps.exec.closePosition = async () => { assert.fail('managed keeper must not close') }
+  deps.exec.pushTrailConfig = async (_creds, specs) => { pushed.push(specs); return true }
+  const creds = { ...CREDS, accountId: 777 }
+  for (let i = 0; i < 2; i++) {
+    const out = await runProfitKeeper(db, creds, deps)
+    assert.equal(out.managedSkipped, 1)
+    assert.equal(out.checked, 0)
+    assert.equal(out.slMoves, 0)
+    assert.equal(out.closes, 0)
+    assert.deepEqual(out.errors, [])
+  }
+  assert.deepEqual(pushed.map(specs => specs.length), [1, 1], 'full-replace must retain the eligible trail on a cache hit')
+  assert.equal(reads, 1, 'the same host/account reuses the fetched bar window')
+  assert.deepEqual(pushed[1], pushed[0])
+  assert.equal(pushed[1][0].ctidTraderAccountId, 777)
+  assert.equal(pushed[1][0].positionId, 9001)
+  assert.equal(pushed[1][0].source, 'mae_chandelier_since_entry')
+  assert.equal(pushed[1][0].currentSl, 2.918)
+  assert.equal(pushed[1][0].currentTp, 1.8)
+  assert.equal(pushed[1][0].digits, 3)
+  assert.ok(Math.abs(pushed[1][0].trailDistance - 0.15) < 1e-9, '3 × Wilder ATR(22)')
+  assert.deepEqual(db.prepare('SELECT * FROM monitored_positions').all(), before, 'the managed row remains untouched')
+})
+
+test('since-entry bars are refetched when cached host/account differs or full bars are absent', async (t) => {
+  clearAtrCache()
+  t.after(clearAtrCache)
+  const db = mkManagedKeeperDb()
+  t.after(() => db.close())
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
+  const bars = Array.from({ length: 40 }, () => ({ h: 2.35, l: 2.30, c: 2.32 }))
+  const foreignBars = Array.from({ length: 40 }, () => ({ h: 2.60, l: 2.30, c: 2.45 }))
+  const creds = { ...CREDS, accountId: 777 }
+  const deps = keeperDeps()
+  let reads = 0, pushed
+  deps.ws.wsGetTrendbarsBatch = async (host, _id, _secret, _token, account) => {
+    assert.equal(host, creds.host)
+    assert.equal(account, creds.accountId)
+    reads++
+    return { '1h': bars }
+  }
+  deps.exec.amendPosition = async () => { assert.fail('managed keeper must not amend') }
+  deps.exec.closePosition = async () => { assert.fail('managed keeper must not close') }
+  deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+  for (const origin of [
+    { barHost: 'live', barAccountId: 777, fullBars: foreignBars },
+    { barHost: 'demo', barAccountId: 888, fullBars: foreignBars },
+    { barHost: 'demo', barAccountId: 777 },
+  ]) {
+    writeAtrCache(1, '1h', { atr: 0.30, bars: foreignBars.slice(-3), ...origin })
+    const out = await runProfitKeeper(db, creds, deps)
+    assert.deepEqual(out.errors, [])
+    assert.equal(pushed.length, 1)
+    assert.ok(Math.abs(pushed[0].trailDistance - 0.15) < 1e-9, 'the current account supplies its own ATR bars')
+  }
+  assert.equal(reads, 3)
+})
