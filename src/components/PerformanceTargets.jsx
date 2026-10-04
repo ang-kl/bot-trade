@@ -10,18 +10,20 @@ const label = {
 const value = (v, digits = 2) => v == null ? '—' : Number(v).toFixed(digits)
 
 /** Forward, per-account reporting; it never controls entry eligibility. */
-export default function PerformanceTargets({ report, accounts = [], selected, variant = 'full' }) {
+export default function PerformanceTargets({ report, accounts = [], selected, variant = 'full', expanded = false }) {
   const registry = new Map(accounts.map(r => [String(r.accountId), r]))
   const rows = [...(report.accounts || [])].sort((a, b) =>
     Number(String(b.accountId) === String(selected)) - Number(String(a.accountId) === String(selected)))
   return (
-    <section id={variant === 'compact' ? 'sec-goal-mobile' : 'sec-goal'} style={{ color: 'var(--color-text)', fontSize: 'var(--fs-body)' }}>
+    <section id={expanded ? 'sec-goal-expanded' : variant === 'compact' ? 'sec-goal-mobile' : 'sec-goal'} style={{ color: 'var(--color-text)', fontSize: 'var(--fs-body)' }}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
         <strong>Performance targets · per account</strong>
         <span>Win rate ≥ 75% · Profit factor ≥ 1.68</span>
-        <SectionTools id={variant === 'compact' ? 'targets-mobile' : 'targets'} title="Performance targets" data={report}
-          toText={() => JSON.stringify(report, null, 2)} />
+        {!expanded && <SectionTools id={variant === 'compact' ? 'targets-mobile' : 'targets'} title="Performance targets" data={report}
+          toText={() => JSON.stringify(report, null, 2)}
+          render={() => <PerformanceTargets report={report} accounts={accounts} selected={selected} expanded />} />}
       </div>
+      <p>Assessment read: {report.at || 'time unavailable'} · completed SGT days only.</p>
       <p>From 4 Oct 2026, 07:35 SGT. Latest 20 whole positions OR consecutive SGT days: win rate 3 days; profit factor 8 days.</p>
       <p>Each completed day requires at least one eligible close and meets its own target. An empty day breaks the streak. Today is provisional. Reporting only.</p>
       {report.unavailable && <p role="status">Evidence unavailable: {report.unavailable}</p>}

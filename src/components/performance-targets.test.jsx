@@ -21,6 +21,14 @@ describe('forward target card', () => {
     expect(html).not.toContain('2026-08-15')
     expect(html).not.toContain('All accounts')
   })
+  it('the expanded body retains all evidence, exposes its read time and has no recursive expand control', () => {
+    const html = renderToStaticMarkup(<PerformanceTargets report={{ at: '2026-10-04T01:36:40.000Z', accounts: [row] }} expanded />)
+    expect(html).toContain('id="sec-goal-expanded"')
+    expect(html).toContain('Assessment read: 2026-10-04T01:36:40.000Z')
+    expect(html).toContain('Evidence incomplete')
+    expect(html).toContain('11 · SGD')
+    expect(html).not.toContain('aria-label="Expand Performance targets"')
+  })
   it('renders a reader failure and preserves separate account identities in the compact card', () => {
     const html = renderToStaticMarkup(<PerformanceTargets variant="compact" report={{ unavailable: 'source failed', accounts: [row, { ...row, accountId: '22', currency: 'USD' }] }} />)
     expect(html).toContain('id="sec-goal-mobile"')
