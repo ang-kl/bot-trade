@@ -56,6 +56,8 @@
 // SCRATCHES COUNT AS LOSSES, consistent with accountAnalytics — a flat trade
 // consumed a slot and returned nothing.
 import { accountAnalytics } from './account-analytics.js'
+import { balanceUnit } from './balance-unit.js'
+import { scopeReport } from '../lib/account-scope.js'
 import { listAccounts } from './account-registry.js'
 import { getState } from '../db.js'
 import { GO_LIVE_BAR } from './edge-bars.js'
@@ -334,6 +336,7 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
       // selected account's balance on two empty live accounts' cards
       // (11-09-2026). Null when never read — the card says "not read".
       balance: safeBalance(db, id),
+      balanceCurrency: balanceUnit(db, id).currency,
       isLive: reg?.is_live === 1,
       enabled: reg?.enabled === 1,
       // STAMPED ROWS ONLY (11-09-2026). Under the OR-NULL convention the
@@ -341,7 +344,7 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
       // live accounts that never traded showed the same four closed trades,
       // 1W / 3L, identical averages — a record that was nobody's. Those rows
       // now count once, in the roll-up, and are named there.
-      stats: accountAnalytics(db, { accountId: id, days, now, unstamped: 'exclude' }),
+      stats: accountAnalytics(db, { accountId: id, days, now, unstamped: 'exclude', reporting: true }),
       // S4b — the card's OWN coverage, so its dot can print a number instead
       // of "no scope reported". This is the panel that showed six per-account
       // headings over one pooled set of 245 trades; the figure it lacked is
@@ -366,7 +369,7 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
     // cards carry the balances; this row carries the pooled RECORD, which is
     // a different kind of thing.
     balance: null,
-    stats: accountAnalytics(db, { accountId: null, days, now }),
+    stats: accountAnalytics(db, { accountId: null, days, now, reporting: true }),
     // The roll-up is portfolio BY DESIGN — every closed trade belongs in it,
     // so coverage is 100 by definition rather than by measurement.
     coverage: null,
@@ -409,13 +412,26 @@ function rowCoverage(db, accountId, days) {
     // The card now counts only `mine` (accountAnalytics unstamped: 'exclude'),
     // so every row behind it is attributable by construction; `excluded` is
     // what the old convention would have added and the roll-up still holds.
-    return { total: mine, attributable: mine, pct: 100, excluded: total - mine }
+    return { scoped: true, total: mine, attributable: mine, pct: 100, excluded: total - mine }
   } catch { return null }
 }
 
-function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left, coverage = null, balance = null }) {
+function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left, coverage = null, balance = null, balanceCurrency = null }) {
   const trades = stats.trades || 0
-  const sampleOk = trades >= goal.minTrades
+  const missingPnl = stats.unpricedTrades > 0
+  const unknownCloseTime = stats.unknownCloseTimeN > 0
+  const moneyComparable = stats.moneyState === 'recorded_account_units'
+  const denominatorMissing = trades > 0 && stats.grossLoss === 0
+  const evidenceReason = !moneyComparable && trades > 0
+    ? 'Historical cross-account currency units are unverified; pooled money and PF are withheld.'
+    : missingPnl ? `${stats.unpricedTrades} recorded closes have missing P&L; the priced subset cannot qualify.`
+      : unknownCloseTime ? `${stats.unknownCloseTimeN} recorded closes have no usable close time; the assessment is incomplete.`
+        : denominatorMissing ? 'PF is undefined without losing P&L; this record cannot establish that the PF target is met.'
+          : null
+  const assessable = evidenceReason == null
+  const sampleOk = assessable && trades >= goal.minTrades
+  const onlySmallLosslessSample = denominatorMissing && trades < goal.minTrades
+    && !missingPnl && !unknownCloseTime && moneyComparable
   // Observed closing rate over this account's own span, floored at one day so
   // an account that closed everything today reports today's count, not ∞.
   const spanDays = stats.firstMs != null && stats.lastMs != null
@@ -427,12 +443,9 @@ function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left
     : null
 
   const m = expectedRemaining ?? 0
-  // A record with no losses has no profit factor to compute — grossLoss is the
-  // denominator. Requiring 0 more winners is the honest encoding: nothing the
-  // remaining trades do can make an all-winning record fail the ratio, and the
-  // sample-size guard still governs whether that counts as evidence.
-  const noLosses = trades > 0 && stats.losses === 0
-  const pfNeed = noLosses ? 0 : trades > 0
+  // A forecast needs comparable money, a complete close population and a PF
+  // denominator. Missing evidence must not become a favourable verdict.
+  const pfNeed = assessable && trades > 0
     ? winnersNeededForPf({
         grossWin: stats.grossWin, grossLoss: stats.grossLoss,
         avgWin: stats.avgWin, avgLoss: stats.avgLoss,
@@ -458,18 +471,18 @@ function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left
     gap: stats.profitFactor != null ? round2(stats.profitFactor - goal.profitFactor) : null,
     winsNeeded: pfNeed,
     requiredRateOnRemaining: pfNeed != null && m > 0 ? round2((pfNeed / m) * 100) : null,
-    // No losses = no denominator = nothing the ratio can fail on.
-    meetsNow: noLosses ? true : (stats.profitFactor != null ? stats.profitFactor >= goal.profitFactor : null),
-    verdict: verdictFor({
+    meetsNow: assessable && stats.profitFactor != null ? stats.profitFactor >= goal.profitFactor : null,
+    verdict: !assessable && !onlySmallLosslessSample
+      ? 'unmeasurable' : verdictFor({
       needed: pfNeed, remaining: m, sampleOk, trades,
-      meetsNow: noLosses || (stats.profitFactor != null && stats.profitFactor >= goal.profitFactor),
+      meetsNow: assessable && stats.profitFactor != null && stats.profitFactor >= goal.profitFactor,
     }),
     // The win rate this PF target implies at the CURRENT payoff — the
     // actionable number, and usually far below the configured win-rate goal.
-    impliedWinRatePct: impliedWinRateForPf({
+    impliedWinRatePct: assessable ? impliedWinRateForPf({
       avgWin: stats.avgWin, avgLoss: stats.avgLoss, target: goal.profitFactor,
-    }),
-    payoffRatio: (stats.avgWin > 0 && stats.avgLoss > 0) ? round2(stats.avgWin / stats.avgLoss) : null,
+    }) : null,
+    payoffRatio: assessable && (stats.avgWin > 0 && stats.avgLoss > 0) ? round2(stats.avgWin / stats.avgLoss) : null,
     // Named so the UI can print it rather than implying the tracker knows the
     // size of trades that have not happened.
     assumes: pfNeed != null
@@ -480,6 +493,13 @@ function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left
   return {
     accountId: key,
     balance,
+    balanceCurrency,
+    scope: scopeReport({ all: key === 'all', accountId: key === 'all' ? null : key, explicit: true }, coverage),
+    moneyState: stats.moneyState,
+    closedTrades: stats.closedTrades,
+    unpricedTrades: stats.unpricedTrades,
+    unknownCloseTimeN: stats.unknownCloseTimeN,
+    evidenceReason,
     // What fraction of the rows behind this card are actually this account's.
     // null on the portfolio row, which spans them all by design.
     attributablePct: coverage ? coverage.pct : null,

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
+import { recordAccountMoney, recordDepositCurrency } from './account-money.js'
 import {
   goalTracker, loadGoal, daysRemaining, winnersNeededForPf,
   impliedWinRateForPf, DEFAULT_GOAL, GOAL_STATE_KEY, auditGoalChange,
@@ -14,7 +15,7 @@ function freshDb() {
 }
 
 /** Insert `n` closed trades for an account, `wins` of them profitable. */
-function seedTrades(db, { accountId, wins, losses, winAmt = 100, lossAmt = -50, startMs = NOW - 10 * DAY, spacingMs = DAY / 4 }) {
+function seedTrades(db, { accountId, wins, losses, winAmt = 100, lossAmt = -50, startMs = NOW - 11 * DAY, spacingMs = DAY / 4 }) {
   const ins = db.prepare(
     `INSERT INTO trades (symbol, side, status, net_pnl, closed_at_ms, opened_at, account_id)
      VALUES ('EURUSD', 'buy', 'closed', ?, ?, ?, ?)`
@@ -267,13 +268,78 @@ test('the profit-factor requirement names the assumption it rests on', () => {
   assert.match(row.profitFactor.assumes, /50\.00/)
 })
 
-test('a record with no losses does not fail the profit-factor gate', () => {
+test('a record with no losses has an undefined PF, never a met assessment', () => {
   const db = freshDb()
   seedAccount(db, '5203012')
   seedTrades(db, { accountId: '5203012', wins: 35, losses: 0 })
   const row = goalTracker(db, { now: NOW }).accounts.find(a => a.accountId === '5203012')
   assert.equal(row.profitFactor.value, null, 'PF is undefined without a denominator, not Infinity')
-  assert.equal(row.profitFactor.verdict, 'met')
+  assert.equal(row.profitFactor.verdict, 'unmeasurable')
+  assert.equal(row.profitFactor.meetsNow, null)
+})
+
+test('a mixed-account portfolio withholds money and PF forecasts while retaining count-based WR', () => {
+  const db = freshDb()
+  seedAccount(db, 'USD'); seedAccount(db, 'SGD')
+  seedTrades(db, { accountId: 'USD', wins: 20, losses: 20 })
+  seedTrades(db, { accountId: 'SGD', wins: 20, losses: 20, winAmt: 1000 })
+  const out = goalTracker(db, { now: NOW })
+  assert.equal(out.portfolio.winRate.value, 50)
+  assert.equal(out.portfolio.trades, 80)
+  assert.equal(out.portfolio.net, null)
+  assert.equal(out.portfolio.profitFactor.value, null)
+  assert.equal(out.portfolio.profitFactor.winsNeeded, null)
+  assert.equal(out.portfolio.profitFactor.assumes, null)
+  assert.equal(out.portfolio.profitFactor.meetsNow, null)
+  assert.equal(out.portfolio.verdict, 'unmeasurable')
+  assert.match(out.portfolio.evidenceReason, /cross-account/)
+  assert.equal(out.accounts.find(r => r.accountId === 'USD').profitFactor.value, 2)
+  assert.equal(out.accounts.find(r => r.accountId === 'SGD').profitFactor.value, 20)
+})
+
+test('an incomplete close population cannot qualify from only its profitable priced subset', () => {
+  const db = freshDb()
+  seedAccount(db, 'A')
+  seedTrades(db, { accountId: 'A', wins: 30, losses: 5, spacingMs: DAY / 8 })
+  seedTrades(db, { accountId: 'A', wins: 1, losses: 0, startMs: NOW - DAY, winAmt: null })
+  const row = goalTracker(db, { now: NOW }).accounts[0]
+  assert.equal(row.closedTrades, 36)
+  assert.equal(row.unpricedTrades, 1)
+  assert.equal(row.trades, 35)
+  assert.equal(row.verdict, 'unmeasurable')
+  assert.equal(row.profitFactor.meetsNow, null)
+  assert.equal(row.profitFactor.assumes, null)
+  assert.match(row.evidenceReason, /missing P&L/)
+})
+
+test('each row reports its own scope and broker-verified balance currency', () => {
+  const db = freshDb()
+  for (const id of ['11', '22']) seedAccount(db, id)
+  const host = 'demo.ctraderapi.com'
+  recordDepositCurrency(db, { accountId: '11', host, depositAssetId: '14', currency: 'SGD', receivedAt: NOW })
+  recordAccountMoney(db, { accountId: '11', host, trader: { depositAssetId: 14, moneyDigits: 2 }, balance: 51.41, receivedAt: NOW })
+  setState(db, 'acct:11:account_balance_usd', '51.41')
+  const out = goalTracker(db, { now: NOW })
+  assert.equal(out.accounts[0].balanceCurrency, 'SGD')
+  assert.equal(out.accounts[0].balance, 51.41)
+  assert.equal(out.accounts[0].scope.account, '11')
+  assert.equal(out.accounts[1].balanceCurrency, null)
+  assert.equal(out.accounts[1].scope.account, '22')
+  assert.equal(out.portfolio.scope.account, 'all')
+})
+
+test('undated closes make the assessment incomplete and future closes are not counted', () => {
+  const db = freshDb()
+  seedAccount(db, 'A')
+  seedTrades(db, { accountId: 'A', wins: 30, losses: 5, spacingMs: DAY / 8 })
+  db.prepare("INSERT INTO trades (symbol, side, status, net_pnl, account_id) VALUES ('EURUSD', 'buy', 'closed', -500, 'A')").run()
+  seedTrades(db, { accountId: 'A', wins: 1, losses: 0, startMs: NOW + DAY })
+  const row = goalTracker(db, { now: NOW }).accounts[0]
+  assert.equal(row.trades, 35)
+  assert.equal(row.closedTrades, 35)
+  assert.equal(row.unknownCloseTimeN, 1)
+  assert.equal(row.verdict, 'unmeasurable')
+  assert.match(row.evidenceReason, /no usable close time/)
 })
 
 test('the portfolio row is rebuilt from every trade, not averaged from accounts', () => {
