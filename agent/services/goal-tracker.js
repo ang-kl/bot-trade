@@ -56,6 +56,7 @@
 // SCRATCHES COUNT AS LOSSES, consistent with accountAnalytics — a flat trade
 // consumed a slot and returned nothing.
 import { accountAnalytics } from './account-analytics.js'
+import { performanceTargets } from './performance-targets.js'
 import { balanceUnit } from './balance-unit.js'
 import { scopeReport } from '../lib/account-scope.js'
 import { listAccounts } from './account-registry.js'
@@ -378,7 +379,7 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
   })
 
   const unattributed = unattributedClosed(db, days)
-  return { goal, now, daysRemaining: left, windowDays: days || null, accounts, portfolio: { ...portfolio, unattributed }, unattributed }
+  return { goal, now, performanceTargets: performanceTargets(db, { accountIds: ids, now }), daysRemaining: left, windowDays: days || null, accounts, portfolio: { ...portfolio, unattributed }, unattributed }
 }
 
 /**

@@ -29,6 +29,7 @@ import { agentGet } from '../lib/agent-api.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { selectedAccountId } from '../lib/selected-account.js'
 import SectionTools from './common/SectionTools.jsx'
+import PerformanceTargets from './PerformanceTargets.jsx'
 import ScopeDot from './common/ScopeDot.jsx'
 import { useAccountScope, MODES } from '../lib/use-account-scope.js'
 
@@ -243,6 +244,7 @@ export default function GoalTracker({ variant = 'full' }) {
   // error body, or an older agent build without the goal block, and reading
   // data.goal.profitFactor then takes the whole Performance page down (measured
   // 03-08-2026 in the degraded-payload sweep). No goal = nothing to show.
+  if (data.performanceTargets) return <PerformanceTargets report={data.performanceTargets} accounts={data.accounts || []} selected={sel} variant={variant} />
   if (!data.goal) return null
 
   const rows = data.accounts || []
