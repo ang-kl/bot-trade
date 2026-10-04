@@ -42,6 +42,7 @@ const VERDICT = {
   out_of_reach: { label: 'Out of reach', tone: DN },
   insufficient_sample: { label: 'Not enough trades', tone: MU },
   no_data: { label: 'No closed trades', tone: MU },
+  unmeasurable: { label: 'Evidence incomplete', tone: WRN },
 }
 
 const pct = (v) => (v == null ? '—' : `${Number(v).toFixed(1)}%`)
@@ -121,7 +122,7 @@ function MetricRow({ m, label, fmt, row }) {
   )
 }
 
-function AccountRow({ row }) {
+export function AccountRow({ row }) {
   const v = VERDICT[row.verdict] || VERDICT.no_data
   // S4b — THIS IS THE PANEL THE WHOLE WORKSTREAM STARTED FROM. On 2026-08-03
   // it showed six cards under six different per-account headings, every one
@@ -190,18 +191,19 @@ function AccountRow({ row }) {
             <span style={{ fontWeight: 800, color: 'var(--color-text)' }}
               title="Live account balance, read per account">
               {row.balance != null
-                ? row.balance.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+                ? `${row.balanceCurrency ? `${row.balanceCurrency} ` : ''}${row.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${row.balanceCurrency ? '' : ' (currency unverified)'}`
                 : 'balance not read'}
             </span>
             {' · '}
           </>
         )}
-        {row.trades} closed · {row.wins}W / {row.losses}L
+        {row.closedTrades ?? row.trades} recorded closes · {row.trades} priced · {row.wins}W / {row.losses}L
         {row.tradesPerDay != null && <> · {row.tradesPerDay}/day over {row.spanDays}d</>}
         {row.expectedRemaining != null && <> · ~{row.expectedRemaining} more expected</>}
       </span>
       <MetricRow m={row.winRate} label="Win rate" fmt={pct} row={row} />
       <MetricRow m={row.profitFactor} label="Profit factor" fmt={num2} row={row} />
+      {row.evidenceReason && <span style={{ fontSize: 'var(--fs-body)', color: WRN }}>{row.evidenceReason}</span>}
     </div>
   )
 }

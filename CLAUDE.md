@@ -1,5 +1,14 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-10-04 00:52 UTC: partial corpus remains
+unavailable; visible replies through № 11,024, next at least № 11,025.
+Owner authorised bounded GTD corrections, gated merges and deployment
+verification until 10:00 SGT on 4 October. Numerical WR/PF targets stand;
+W1 window/cohort/streak definitions remain unresolved. Reporting correction
+withholds unverifiable pooled money and incomplete/undefined PF qualification,
+and labels native balances and account scope. Release checks are in progress;
+this ledger does not certify merge, deployment or profitable outcomes. -->
+
 <!-- Continuation ledger 2026-09-24 23:30 UTC: visible replies through
 № 8,977, partial local corpus still not adopted. #1083 deployed d61d84d;
 seven-account current money and all-time rows, all-account Desk positions,
