@@ -1,5 +1,7 @@
 # bot-trade: GTD work plan for 4 October 2026
 
+Execution update: see the [dated evidence and next-action checkpoint](gtd-2026-10-04-evidence-checkpoint.md) for shipped #1225-#1227, target-window resolution, the statement baseline, concrete BTC/FX constraints, MAE/MFE findings and the noon disposition. The original capture register below is retained.
+
 Version 1.0 | Prepared 4 October 2026, 07:55 SGT | Review draft
 
 Repository: `ang-kl/bot-trade`. Source baseline: main `94682929ff6fe1ec4d8f697d347d4f7ff3472e5e`, including #1222 and #1223. Execution starts after owner approval. Primary checkpoint: **10:00 SGT**. Contingency and final hand-back: **12:00 SGT**. Publishing this draft is authorised; executing its changes, merging this PR and deploying are not granted by publishing it.

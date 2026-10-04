@@ -100,6 +100,40 @@ test('runLossPostmortems: fetch failure skips without inserting; stats aggregate
 
 // Wins carry lessons too --------------------------------------------------
 
+test('classifyWin: WMT exit beyond the retained bar peak cannot recommend repeating the setup', async () => {
+  const { classifyWin, lessonLine } = await import('./loss-postmortem.js')
+  const trade = { symbol: 'WMT.US', side: 'SELL', entry_price: 108.71, sl_price: 109.4, exit_price: 106.68 }
+  const v = classifyWin(trade, [{ t: 10, h: 108.8, l: 108.66, c: 108.7 }], 5, 20)
+  assert.equal(v.classification, 'inconclusive')
+  assert.match(v.detail, /exit banked 2.94R.*only 0.07R best.*inconsistent/)
+  assert.equal(v.mfeR, undefined, 'no certified peak is invented from an inconsistent window')
+  assert.equal(v.maeR, undefined, 'the window cannot certify adverse excursion either')
+  assert.doesNotMatch(lessonLine(v.classification, v), /Repeat|Bank earlier|Enter later/)
+})
+
+test('sweep stores an inconclusive lesson without changing WMT broker net or result', async () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO trades (account_id, symbol, side, entry_price, exit_price, sl_price, tp_price,
+                        net_pnl, status, opened_at, closed_at, label_strategy, label_timeframe)
+    VALUES ('46979908', 'WMT.US', 'SELL', 108.71, 106.68, 109.4, 106.11,
+            3.20, 'closed', datetime('now', '-3 hours'), datetime('now', '-1 hours'), 'vp_value', '1h')
+  `).run()
+  const closedMs = sqliteMs(db.prepare('SELECT closed_at FROM trades').get().closed_at)
+  const bars = Array.from({ length: 5 }, (_, i) => ({
+    t: closedMs - (4 - i) * 3_600_000, o: 108.7, h: 108.8, l: 108.66, c: 108.7, v: 10,
+  }))
+  const res = await runLossPostmortems(db, async () => bars)
+  assert.equal(res.classified, 1)
+  const pm = db.prepare('SELECT * FROM trade_postmortems').get()
+  assert.equal(pm.classification, 'inconclusive')
+  assert.equal(pm.result, 'Partial', 'the broker exit still missed the original TP1')
+  assert.equal(pm.net_pnl, 3.20, 'realised money is unchanged')
+  assert.equal(pm.account_id, '46979908')
+  assert.doesNotMatch(pm.lesson, /Repeat|Bank earlier|Enter later/)
+  assert.equal(db.prepare('SELECT net_pnl FROM trades').get().net_pnl, 3.20)
+})
+
 test('classifyWin: gave_back — peaked far above the banked R', async () => {
   const { classifyWin } = await import('./loss-postmortem.js')
   // Long entry 100, SL 98 (risk 2), banked at 103 (+1.5R) but peaked 108 (+4R).
