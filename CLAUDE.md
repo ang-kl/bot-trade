@@ -1,5 +1,35 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-10-04 07:19 UTC: lower bound through № 11,088.
+Direct user request was to read the continuation attachment; implementer also
+prepared a local cache correction. Auto-review rejected remote tree creation
+because publication was not directly authorised. No remote tree/commit/branch/
+PR created; #1228 and production unchanged. No workaround. Local four-file
+patch is reviewable; full native gates/new CI have not run. Additional mocked
+foreign-host/account/missing-bars checks pass with own-source fetches and zero
+broker/DB actions. Publication needs explicit approval; merge/deployment still
+requires concrete exact-head scope. See checkpoint section9. -->
+
+
+<!-- Continuation ledger 2026-10-04 07:12 UTC: cloud partial corpus continues
+through at least № 11,084; later replies supersede this lower bound. Morning
+auto-approval expired at 10:00 SGT. Main/#1228 unchanged (1afda08/4ea69e1);
+#1228 exact-head CI reused, actual automated review action skipped. Fresh
+15:10 SGT account reads: 11 protected, no missing SL/TP1; aggregate close
+completeness17 and written-off unknown19 remain unjoined, not added. Four
+repo statement bytes fail the original manifest; no baseline rerun/certification.
+Focused real keeper/ATR/account/book modules with mocked DB and broker I/O
+reproduce warm-cache since-entry trail counts [1,0]; local correction [1,1],
+one bar read, zero amendments/closes/DB writes. Full bars retained with
+host/account provenance; managed fence, book exclusion and risk unchanged.
+Distinct cache candidate is stacked on #1228, not a replacement; new full
+CI and exact-head verification required. Shell proxy/native dependencies
+unavailable; no bypass. Read secret/row exports and original unpublished
+Oct1 checkout unavailable. Full performance/Chandelier/V3 acceptance stays
+open; no merge, deployment, broker/history/activation/variable mutation.
+See appended docs/gtd-2026-10-04-evidence-checkpoint.md. Actual model,
+effort/session metadata unavailable; no independent review claimed. -->
+
 <!-- Continuation ledger 2026-10-04 02:54 UTC: partial corpus remains
 unavailable; visible continuation through № 11,064, next at least № 11,065.
 The owner's bounded auto-approval expired at 10:00 SGT. Preparation, report
