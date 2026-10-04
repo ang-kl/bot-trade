@@ -103,7 +103,7 @@ export const TRENDBAR_PERIODS = Object.freeze({
 // requests (auth, reconcile, spot, trader) are untouched.
 // ---------------------------------------------------------------------------
 // X1: ORDER_DETAILS_REQ is an order-HISTORY read, paced like the deal reads.
-const HISTORICAL_PAYLOADS = new Set([PT.GET_TRENDBARS_REQ, PT.DEAL_LIST_REQ, PT.DEAL_LIST_BY_POSITION_ID_REQ, PT.ORDER_DETAILS_REQ])
+const HISTORICAL_PAYLOADS = new Set([PT.GET_TRENDBARS_REQ, PT.DEAL_LIST_REQ, PT.DEAL_LIST_BY_POSITION_ID_REQ, PT.ORDER_DETAILS_REQ, PT.CASH_FLOW_HISTORY_REQ])
 // 4/s against a documented 5/s: headroom for clock skew and for the broker
 // counting arrival rather than send time. Override for probes/tests.
 const HIST_RATE_PER_SEC = Math.max(1, Number(process.env.CTRADER_HIST_RATE_PER_SEC) || 4)
@@ -166,16 +166,16 @@ export function historicalRateStatus() {
   return { ...histBucket.status(), pool: poolEnabled() ? poolStatus() : null }
 }
 
-function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
+function wsRun(host, steps, timeoutMs = 20_000, collectAll = false, options = {}) {
   // Wave 5 (§K·15): every call is registered while it is open, named by its
   // request step, so the loop watchdog can say WHICH call hung rather than
   // which phase. Ended in `finally` on both paths — a token left open would
   // be reported as the oldest call on every /health read.
   const token = beginCall(describeSteps(steps))
-  return wsRunInner(host, steps, timeoutMs, collectAll).finally(() => endCall(token))
+  return wsRunInner(host, steps, timeoutMs, collectAll, options).finally(() => endCall(token))
 }
 
-function wsRunInner(host, steps, timeoutMs = 20_000, collectAll = false) {
+function wsRunInner(host, steps, timeoutMs = 20_000, collectAll = false, { usePool = true, extendTokenWait = true } = {}) {
   // POOLED PATH (2026-07-28, CTRADER_WS_POOL=1). Every helper below builds its
   // steps as [APP_AUTH_REQ, ACCOUNT_AUTH_REQ, ...the actual request], so the
   // auth prefix is peeled off here and satisfied once per socket instead of
@@ -185,7 +185,7 @@ function wsRunInner(host, steps, timeoutMs = 20_000, collectAll = false) {
   // Peeled here rather than at the 19 call sites so no helper can be missed,
   // and so a helper that does NOT start with the auth pair (there are none
   // today) silently keeps the legacy path instead of losing its auth.
-  if (poolEnabled() && steps.length > 2 &&
+  if (usePool && poolEnabled() && steps.length > 2 &&
       steps[0]?.send?.payloadType === PT.APP_AUTH_REQ &&
       steps[1]?.send?.payloadType === PT.ACCOUNT_AUTH_REQ) {
     return pooledRun(host, steps[0].send.payload, steps[1].send.payload, steps.slice(2), timeoutMs, collectAll, {
@@ -234,7 +234,7 @@ function wsRunInner(host, steps, timeoutMs = 20_000, collectAll = false) {
         const waited = await takeHistoricalToken()
         noteTokenWait(step, waited)
         if (ws.readyState !== WebSocket.OPEN) return // closed while queued
-        if (waited > 0) {
+        if (waited > 0 && extendTokenWait) {
           clearTimeout(timer)
           timer = setTimeout(onTimeout, timeoutMs)
         }
@@ -1305,8 +1305,12 @@ export const _internal = { wsRun }
 export async function wsGetCashflowHistory(host, clientId, clientSecret, accessToken, accountId, fromTimestamp, toTimestamp, timeoutMs = 10_000) {
   if (!Number.isSafeInteger(fromTimestamp) || !Number.isSafeInteger(toTimestamp) || fromTimestamp < 0
     || toTimestamp <= fromTimestamp || toTimestamp - fromTimestamp > 604800_000 || toTimestamp > 2147483646000) throw new RangeError('invalid cashflow interval')
+  // The collector has one end-to-end deadline. Pooled auth and its request
+  // queue have separate, longer budgets, so that path can send the read after
+  // the collector has already timed out. One reporting read per 30 s uses a
+  // short-lived socket instead; auth and historical pacing share its deadline.
   return wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.CASH_FLOW_HISTORY_REQ, payload: { ctidTraderAccountId: parseInt(accountId), fromTimestamp, toTimestamp } }, expect: PT.CASH_FLOW_HISTORY_RES },
-  ], timeoutMs)
+  ], timeoutMs, false, { usePool: false, extendTokenWait: false })
 }

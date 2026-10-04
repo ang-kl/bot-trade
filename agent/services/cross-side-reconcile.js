@@ -58,8 +58,11 @@ export async function reconcileCrossSideAccounts(db, baseCreds, deps = {}) {
       })
       const namedPositions = named(positions)
       const namedOrders = named(orders)
+      // Reserve the WAL writer before any ledger read. A deferred snapshot
+      // cannot upgrade if the scanner worker commits between its read/write;
+      // busy_timeout cannot repair SQLITE_BUSY_SNAPSHOT. Broker I/O is above.
       const result = db.transaction(() => reconcilePositions(db, namedPositions, namedOrders,
-        (key, value) => setAccountState(db, accountId, key, value), { accountId, readAt }))()
+        (key, value) => setAccountState(db, accountId, key, value), { accountId, readAt })).immediate()
       return { accountId, result }
     } catch (error) {
       return { accountId, error: error?.message || String(error) }

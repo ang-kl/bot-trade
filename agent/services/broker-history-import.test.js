@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB } from '../db.js'
 import { fetchDeals, shapeDeals, persistDeals, importBrokerHistory } from './broker-history-import.js'
+import { walFilename, installWalWriterRace } from '../test-support/wal-writer-race.js'
 
 const WEEK = 7 * 24 * 3_600_000
 const NOW = Date.parse('2026-07-25T00:00:00Z')
@@ -20,6 +21,17 @@ function openingDeal({ dealId, positionId, symbolId = 1, ms, price = 1.1 }) {
   return { dealId, positionId, symbolId, tradeSide: 1, volume: 10_000, executionTimestamp: ms, executionPrice: price }
 }
 const SYM = { 1: { symbolName: 'EURUSD', lotSize: 100_000 } }
+
+test('deal evidence persists without upgrading a snapshot invalidated by a WAL peer', t => {
+  const db = initDB(walFilename()); t.after(() => db.close())
+  const race = installWalWriterRace(t, db)
+  const out = persistDeals(db, shapeDeals([closingDeal({ dealId: 2, positionId: 900, ms: NOW })], SYM, '11'))
+  assert.equal(out.inserted, 1)
+  assert.deepEqual(race.state, { attempted: true, blocked: true })
+  assert.equal(db.prepare("SELECT account_id FROM broker_deals WHERE deal_id='2'").get().account_id, '11')
+  race.write()
+  assert.equal(db.prepare("SELECT value FROM agent_state WHERE key='wal_peer_receipt'").get().value, 'committed')
+})
 
 test('fetchDeals pages the window a week at a time', async () => {
   const asked = []

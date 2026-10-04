@@ -1,7 +1,50 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, wsGetSpotOnce, wsProbeSpot, PT, _internal, _setWebSocketForTests } from './ctrader-ws.js'
+import { wsAmendPosition, wsClosePosition, wsGetSymbolsList, wsGetSpotOnce, wsProbeSpot, wsGetCashflowHistory, PT, _internal, _setWebSocketForTests } from './ctrader-ws.js'
+
+test('cashflow reads meet their own deadline without entering a congested pooled session', async () => {
+  const { _setConnectForTests, _resetPool } = await import('./ctrader-session.js')
+  const previous = process.env.CTRADER_WS_POOL
+  process.env.CTRADER_WS_POOL = '1'
+  let pooled = 0
+  _setConnectForTests(() => { pooled++; throw new Error('shared pool unavailable') })
+  class CashflowSocket extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.sent = []; this.closed = 0; CashflowSocket.last = this; setImmediate(() => this.emit('open')) }
+    send(raw) {
+      const msg = JSON.parse(raw); this.sent.push(msg)
+      const type = { [PT.APP_AUTH_REQ]: PT.APP_AUTH_RES, [PT.ACCOUNT_AUTH_REQ]: PT.ACCOUNT_AUTH_RES,
+        [PT.CASH_FLOW_HISTORY_REQ]: PT.CASH_FLOW_HISTORY_RES }[msg.payloadType]
+      setImmediate(() => this.emit('message', Buffer.from(JSON.stringify({ payloadType: type, payload: { ctidTraderAccountId: 111 } }))))
+    }
+    close() { this.closed++; this.readyState = 3 }
+  }
+  _setWebSocketForTests(CashflowSocket)
+  try {
+    assert.deepEqual(await wsGetCashflowHistory('demo.example.test', 'cid', 'secret', 'token', '111', 1000, 2000, 1000), { ctidTraderAccountId: 111 })
+    assert.equal(pooled, 0, 'a reporting read does not queue behind a trading/scan session')
+    assert.deepEqual(CashflowSocket.last.sent.at(-1).payload, { ctidTraderAccountId: 111, fromTimestamp: 1000, toTimestamp: 2000 })
+    assert.equal(CashflowSocket.last.closed, 1)
+  } finally {
+    _setWebSocketForTests(null); _setConnectForTests(null); _resetPool()
+    if (previous === undefined) delete process.env.CTRADER_WS_POOL
+    else process.env.CTRADER_WS_POOL = previous
+  }
+})
+
+test('cashflow authentication shares the total deadline and closes the unfinished socket', async () => {
+  class NeverAuthenticates extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.sent = []; this.closed = 0; NeverAuthenticates.last = this; setImmediate(() => this.emit('open')) }
+    send(raw) { this.sent.push(JSON.parse(raw)) }
+    close() { this.closed++; this.readyState = 3 }
+  }
+  _setWebSocketForTests(NeverAuthenticates)
+  try {
+    await assert.rejects(wsGetCashflowHistory('demo.example.test', 'cid', 'secret', 'token', '111', 1000, 2000, 25), /cTrader WS timeout after 25ms/)
+    assert.equal(NeverAuthenticates.last.closed, 1)
+    assert.deepEqual(NeverAuthenticates.last.sent.map(m => m.payloadType), [PT.APP_AUTH_REQ], 'a timed-out read never submits a cashflow request')
+  } finally { _setWebSocketForTests(null) }
+})
 
 // S-8 N-5 (27-09 follow-up (6), 03-10-2026): a socket still CONNECTING when
 // the request times out is closed, not left to finish its handshake and sit

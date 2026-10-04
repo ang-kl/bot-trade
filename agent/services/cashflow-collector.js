@@ -14,6 +14,29 @@ export const CASHFLOW_POLL_MS = 30_000
 const statusKey = id => `acct:${id}:cashflow_collection_json`
 const readStatus = (db, id) => { try { return JSON.parse(getState(db, statusKey(id)) || 'null') } catch { return null } }
 
+const CASHFLOW_ERRORS = new Set(['cashflow_read_timeout', 'cashflow_identity_changed', 'cashflow_response_invalid',
+  'cashflow_item_invalid', 'cashflow_money_invalid', 'cashflow_money_precision_unavailable', 'cashflow_duplicate_conflict'])
+const BROKER_CODES = new Set(['CH_ACCESS_TOKEN_INVALID', 'ACCOUNT_NOT_AUTHORIZED', 'NOT_LOGGED_IN', 'NO_SUCH_SESSION',
+  'CANT_ROUTE_REQUEST', 'REQUEST_FREQUENCY_EXCEEDED', 'REQUEST_FREQUENCY_LIMIT_EXCEEDED', 'INVALID_REQUEST', 'BAD_REQUEST'])
+const STORAGE_CODES = new Set(['SQLITE_BUSY', 'SQLITE_BUSY_SNAPSHOT', 'SQLITE_LOCKED', 'SQLITE_FULL', 'SQLITE_IOERR', 'SQLITE_CORRUPT'])
+
+// Allowlisted categories only: never retain a broker description, token, URL
+// or arbitrary error message in the account receipt or logs.
+function failureDetails(error, phase) {
+  const message = typeof error?.message === 'string' ? error.message : ''
+  if (CASHFLOW_ERRORS.has(message)) return { reason: message }
+  if (STORAGE_CODES.has(error?.code)) return {
+    reason: ['SQLITE_BUSY', 'SQLITE_BUSY_SNAPSHOT', 'SQLITE_LOCKED'].includes(error.code) ? 'cashflow_database_busy' : 'cashflow_storage_failed',
+    storageCode: error.code,
+  }
+  if (/^cTrader WS queued_timeout after \d+ms/.test(message)) return { reason: 'cashflow_queue_timeout' }
+  if (/^cTrader WS timeout after \d+ms/.test(message)) return { reason: 'cashflow_read_timeout' }
+  if (/^cTrader WS (error:|closed\b)/.test(message)) return { reason: 'cashflow_transport_failed' }
+  const code = message.match(/^cTrader error: ([A-Z_]+)\b/)?.[1]
+  if (code && BROKER_CODES.has(code)) return { reason: 'cashflow_broker_rejected', brokerCode: code }
+  return { reason: phase === 'persist' ? 'cashflow_persistence_failed' : 'cashflow_read_failed' }
+}
+
 // The observation's currency, spelled EXACTLY as idx_account_history_summary
 // indexes it (db.js). Written as a bare json_extract(observation_json, ...) the
 // two scans below could not use that covering index: SQLite read and parsed the
@@ -64,6 +87,7 @@ export function makeCashflowCollector(db, { getCreds = credsForRegisteredAccount
     if (running || stopped) return { skipped: stopped ? 'stopped' : 'in_flight' }
     running = true
     let task, timer, accountId, state
+    let phase = 'prepare'
     const now = clock()
     try {
       const rows = db.prepare('SELECT account_id FROM accounts ORDER BY account_id').all()
@@ -92,6 +116,7 @@ export function makeCashflowCollector(db, { getCreds = credsForRegisteredAccount
       // Advance fairness even when this account fails; retry its same hole next round.
       setState(db, 'cashflow_collection_account_cursor', accountId)
       const deadline = now + timeoutMs
+      phase = 'read'
       task = Promise.resolve().then(() => read(host, creds.clientId, creds.clientSecret, creds.accessToken, accountId, window.from, window.to, timeoutMs))
       // A misbehaving transport that never settles holds this lock even after
       // our deadline. No next tick can create overlapping broker reads.
@@ -105,21 +130,25 @@ export function makeCashflowCollector(db, { getCreds = credsForRegisteredAccount
       if (!current?.ready || String(current.accountId) !== accountId || current.host !== host
         || money.status !== 'fresh' || money.observation.host !== host || money.observation.currency !== currency
         || tokenRefusedAccounts(db).has(accountId)) throw new Error('cashflow_identity_changed')
+      phase = 'persist'
       const result = recordCashflowWindow(db, { accountId, host, currency, ...window, response, receivedAt: clock() })
       // balanceConflicts (V3 WEB-8): events whose stored broker balance this
       // read disagreed with. The first stays stored; the count is kept and
       // logged so the disagreement is visible, not silent.
       state = { ...state, status: 'success', lastSuccessAt: clock(), completed: window, events: result.events,
         balanceConflicts: result.balanceConflicts }
+      phase = 'status'
       save(accountId, state)
       log(`[cashflow-collector] account=${accountId} host=${host} currency=${currency} from=${window.from} to=${window.to} events=${result.events} balanceConflicts=${result.balanceConflicts}`)
       return { accountId, ...result }
     } catch (error) {
       // Never copy a transport error that might contain request credentials.
-      const reason = /^cashflow_[a-z_]+$/.test(error?.message || '') ? error.message : 'cashflow_read_failed'
+      const details = failureDetails(error, phase)
+      const { reason } = details
       if (!stopped && accountId) {
-        save(accountId, { ...state, status: 'failed', reason, checkedAt: clock() })
-        log(`[cashflow-collector] account=${accountId} failed=${reason}`)
+        try { save(accountId, { ...state, status: 'failed', ...details, phase, checkedAt: clock() }) }
+        catch (statusError) { log(`[cashflow-collector] account=${accountId} status_write_failed=${failureDetails(statusError, 'status').reason}`) }
+        log(`[cashflow-collector] account=${accountId} failed=${reason} phase=${phase}${details.brokerCode ? ` brokerCode=${details.brokerCode}` : ''}${details.storageCode ? ` storageCode=${details.storageCode}` : ''}`)
       }
       return { accountId, error: reason }
     } finally { clearTimeout(timer); if (!task) running = false }
