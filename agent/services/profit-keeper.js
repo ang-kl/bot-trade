@@ -136,7 +136,7 @@ export const ATR_TF_MS = Object.freeze({
   '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000,
 })
 
-const ATR_CACHE = new Map()   // `${symbolId}|${tf}` → { atr, bars, at }
+const ATR_CACHE = new Map()   // `${symbolId}|${tf}` → { atr, bars, fullBars, barHost, barAccountId, at }
 
 /** Bounded so a long-running process with a wide symbol universe cannot grow it forever. */
 const ATR_CACHE_MAX = 500
@@ -151,7 +151,7 @@ export function readAtrCache(symbolId, timeframe, now = Date.now()) {
   return hit
 }
 
-export function writeAtrCache(symbolId, timeframe, { atr, bars }, now = Date.now()) {
+export function writeAtrCache(symbolId, timeframe, { atr, bars, fullBars, barHost, barAccountId }, now = Date.now()) {
   if (ATR_CACHE.size >= ATR_CACHE_MAX) {
     // Drop the oldest rather than clearing: a full flush would make every
     // symbol refetch at once, which is the burst the concurrency cap avoids.
@@ -159,7 +159,7 @@ export function writeAtrCache(symbolId, timeframe, { atr, bars }, now = Date.now
     for (const [k, v] of ATR_CACHE) if (v.at < oldAt) { oldAt = v.at; oldK = k }
     if (oldK) ATR_CACHE.delete(oldK)
   }
-  ATR_CACHE.set(`${symbolId}|${timeframe}`, { atr, bars, at: now })
+  ATR_CACHE.set(`${symbolId}|${timeframe}`, { atr, bars, fullBars, barHost, barAccountId, at: now })
 }
 
 /** Test seam — the cache is process-level, so a test must be able to clear it. */
@@ -525,7 +525,15 @@ async function profitKeeperPass(db, creds, deps = {}) {
       const stale = []
       for (const id of symbolIds) {
         const hit = readAtrCache(id, cfg.atrTimeframe)
-        if (hit) { atrBySymbolId[id] = hit.atr; barsBySymbolId[id] = hit.bars; continue }
+        // /trail-config replaces the whole set, so every warm pass still
+        // needs the full window for the since-entry ATR(22). Numeric symbol
+        // IDs alone do not establish the broker host/account of those bars.
+        if (hit && Array.isArray(hit.fullBars) && hit.barHost === creds.host && String(hit.barAccountId) === String(creds.accountId)) {
+          atrBySymbolId[id] = hit.atr
+          barsBySymbolId[id] = hit.bars
+          fullBarsBySymbolId[id] = hit.fullBars
+          continue
+        }
         stale.push(id)
       }
       const CONCURRENCY = 4
@@ -545,7 +553,9 @@ async function profitKeeperPass(db, creds, deps = {}) {
             // Only a REAL answer is cached. Caching a failed fetch would make
             // one bad round-trip suppress retries for a whole bar, and the
             // fallback (fixed thresholds) is looser than the adaptive one.
-            if (atr != null) writeAtrCache(id, cfg.atrTimeframe, { atr, bars: tail })
+            if (atr != null) writeAtrCache(id, cfg.atrTimeframe, {
+              atr, bars: tail, fullBars: list, barHost: creds.host, barAccountId: creds.accountId,
+            })
           } catch { atrBySymbolId[id] = null /* falls back to fixed thresholds */ }
         }))
       }
