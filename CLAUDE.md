@@ -1,13 +1,21 @@
 # Instructions for Claude — bot-trade
 
-<!-- Continuation ledger 2026-10-04 00:52 UTC: partial corpus remains
-unavailable; visible replies through № 11,024, next at least № 11,025.
-Owner authorised bounded GTD corrections, gated merges and deployment
-verification until 10:00 SGT on 4 October. Numerical WR/PF targets stand;
-W1 window/cohort/streak definitions remain unresolved. Reporting correction
-withholds unverifiable pooled money and incomplete/undefined PF qualification,
-and labels native balances and account scope. Release checks are in progress;
-this ledger does not certify merge, deployment or profitable outcomes. -->
+<!-- Continuation ledger 2026-10-04 01:22 UTC: partial corpus remains
+unavailable; visible replies through № 11,032, next at least № 11,033.
+Owner authorised bounded GTD corrections, gated merges and resulting
+production deployment verification until 10:00 SGT on 4 October.
+#1225 merged bf90e3d, all required gates passed; Railway SUCCESS and matching
+web/agent health and live corrected reporting verified. Dependabot #40-#42
+are fixed, with zero open alerts. W1 now resolved: per-account latest 20 whole
+positions closed after 07:35 SGT; each consecutive SGT day meets its own
+threshold with at least one eligible close; empty days break; reporting only.
+New assessor uses completed days, broker whole-lifecycle native money and
+explicit incomplete evidence. No new entry gate, risk setting or broker action.
+Focused backend 52 and frontend 6 pass; full frontend 1315 passes; full backend
+and exact-head CI pending for this candidate. Existing SGD FX refusal,
+unfunded accounts, outcome/MAE/Chandelier and market-open acceptance remain.
+See docs/performance-targets-2026-10-04.md and original GTD carry-forward.
+Actual model, effort and session metadata unavailable. -->
 
 <!-- Continuation ledger 2026-09-24 23:30 UTC: visible replies through
 № 8,977, partial local corpus still not adopted. #1083 deployed d61d84d;
