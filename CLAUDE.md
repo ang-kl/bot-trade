@@ -1,5 +1,22 @@
 # Instructions for Claude — bot-trade
 
+<!-- Auth stability follow-up 2026-10-05 13:22 UTC: lower bound through
+№11,249; later visible replies win. Owner ordered resolution of cpp-exec
+broker-authentication failures after №11,243. Current base main a0fe36c;
+PR1233 precision release and its passed gates remain complete. Temporary
+4/4 demo authentication recovered at20:32SGT, then primary invalid-token
+errors recurred21:14SGT; independent spot-feed ticks remained fresh.
+Actual-source offline probes reproduce stale queued token rollback and
+concurrent refresh response overwrites. A bounded correction is being
+prepared with required full local/exact-head CI gates and authorised
+auto-merge; no new production source release or incident-cause proof yet.
+Keep the25 active rows, withdrawals18/31, closed-review gaps17/32/39 and
+historical archives11/24/37/41. No credential extraction/manual refresh,
+test orders, risk/account/activation/history/region/volume changes or
+native rebuild. Conversation ref: ordered after №11,243, investigation
+№11,244–11,249. Session link/measured effort unavailable; do not invent.
+-->
+
 <!-- Continuation ledger 2026-10-05 03:40 UTC: lower bound through №11,144;
 next at least №11,145. Owner explicitly authorised execution of the 17
 matching register rows and auto-merge after the full gate. This supersedes

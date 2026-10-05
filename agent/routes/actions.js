@@ -6303,7 +6303,9 @@ export default function actionsRouter(db, deps = {}) {
       try {
         exec = await execPlaceOrder(
           bindEntryIntent(
-            { ...getCtraderCreds(db, undefined, { producerId: 'route_execute_trade' }), host, clientId, clientSecret, accessToken, accountId },
+            // Keep current DB-grant auth: the risk pass's earlier token must
+            // not override the source-bound snapshot at dispatch.
+            { ...getCtraderCreds(db, undefined, { producerId: 'route_execute_trade' }), host, accountId },
             { riskEventId, onReserved: (id) => { entryIntentId = id; db.prepare('UPDATE trades SET intent_id = ? WHERE id = ?').run(id, tradeId) } },
           ),
           orderPayload)

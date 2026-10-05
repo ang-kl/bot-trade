@@ -439,7 +439,7 @@ test('W8 wiring (comments stripped, bounded): the route writes ahead BEFORE the 
 // ========================================================================= W6 loop
 test('W6/W7 wiring in loop.js autoTrade (comments stripped, bounded): the reserved intent lands on the write-ahead row, the stored label is the tagged one, and a plan failure is recorded', () => {
   const loop = src('../loop.js')
-  assert.match(loop, /bindEntryIntent\(attachEntryFence\(db, \{ host, clientId, clientSecret, accessToken, accountId, execGuard \}, \{ producerId \}\), \{\s+riskEventId,\s+onReserved: \(id\) => \{\s+entryIntentId = id\s+db\.prepare\(`UPDATE trades SET intent_id = \? WHERE id = \?`\)\.run\(id, intentId\)/)
+  assert.match(loop, /bindEntryIntent\(attachEntryFence\(db, withCtraderTokenSource\(db, \{ host, clientId, clientSecret, accessToken, accountId, execGuard \}\), \{ producerId \}\), \{\s+riskEventId,\s+onReserved: \(id\) => \{\s+entryIntentId = id\s+db\.prepare\(`UPDATE trades SET intent_id = \? WHERE id = \?`\)\.run\(id, intentId\)/)
   assert.match(loop, /const parsedLabel = parseLabel\(entryIntentId \? tagLabelWithIntent\(structuredLabel, entryIntentId\) : structuredLabel\)/)
   assert.match(loop, /source: synth\.source \|\| 'auto_signal',\s+\}\)\s+\} catch \(err\) \{\s+recordPlanWriteFailure\(db, \{ tradeId, accountId, symbol, source: synth\.source \|\| 'auto_signal', stage: 'dispatch', error: err \}\)/)
 })

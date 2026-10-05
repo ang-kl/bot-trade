@@ -147,6 +147,13 @@ const sessionBelief = new Map() // base → { host, token, accounts: Set<string>
 const sessionPushes = new Map() // serialize only the same gateway's connects
 let sessionGeneration = 0
 
+function currentSessionCreds(creds) {
+  if (typeof creds?.resolveAccessToken !== 'function') return creds
+  const accessToken = creds.resolveAccessToken(creds)
+  if (typeof accessToken !== 'string' || !accessToken.trim()) throw new Error('current cTrader access token unavailable')
+  return { ...creds, accessToken }
+}
+
 // M4 finding (2026-07-24): when the SIDECAR alone restarts (env change,
 // crash, Railway redeploy of just that service) it loses its credentials,
 // but this memo still matches — so every ensureSidecarSession call returns
@@ -170,6 +177,7 @@ export async function pushSidecarSession(creds) {
   return true
 }
 async function ensureSidecarSession(creds, { force = false } = {}) {
+  const current = currentSessionCreds(creds)
   const base = execBaseFor(creds)
   const preceding = sessionPushes.get(base)
   const requested = (Array.isArray(creds.accountIds) && creds.accountIds.length
@@ -178,21 +186,31 @@ async function ensureSidecarSession(creds, { force = false } = {}) {
   // Retrying once per waiter would turn one 30 s timeout into N * 30 s
   // before a protective close or an explicit recovery push can proceed.
   if (!force && preceding?.generation === sessionGeneration
-    && preceding.host === creds.host && preceding.token === creds.accessToken
-    && preceding.clientId === creds.clientId && preceding.clientSecret === creds.clientSecret
+    && preceding.host === current.host && preceding.token === current.accessToken
+    && preceding.clientId === current.clientId && preceding.clientSecret === current.clientSecret
     && requested.length === preceding.accounts.size && requested.every(id => preceding.accounts.has(id))) {
-    return preceding.task
+    if (typeof creds?.resolveAccessToken !== 'function') return preceding.task
+    // Source-bound callers share failures, but must validate the source again
+    // after a successful wait. A rotation/removal while waiting cannot be
+    // satisfied by the earlier submitted token.
+    return preceding.task.then(() => {
+      const latest = currentSessionCreds(creds)
+      if (latest.accessToken !== preceding.token) return ensureSidecarSession(creds)
+    })
   }
   // Recheck the belief AFTER the preceding connect, so concurrent callers
   // neither repeat one roster nor overwrite each other's account additions.
   // A force is queued as a force, never satisfied by an older in-flight push.
   const task = (preceding?.task ?? Promise.resolve()).catch(() => {}).then(() => connectSidecarSession(creds, base, force))
-  const push = { task, generation: sessionGeneration, host: creds.host, token: creds.accessToken,
-    clientId: creds.clientId, clientSecret: creds.clientSecret, accounts: new Set(requested) }
+  const push = { task, generation: sessionGeneration, host: current.host, token: current.accessToken,
+    clientId: current.clientId, clientSecret: current.clientSecret, accounts: new Set(requested) }
   sessionPushes.set(base, push)
   try { await task } finally { if (sessionPushes.get(base) === push) sessionPushes.delete(base) }
 }
 async function connectSidecarSession(creds, base, force) {
+  // Resolve again AFTER the preceding queued connect, not just before dedupe.
+  // Keep the original caller for its resolver; never mutate its snapshot.
+  creds = currentSessionCreds(creds)
   const generation = sessionGeneration
   // M2: the sidecar multiplexes many ctidTraderAccountIds on ONE session
   // (same host+token). creds.accountIds (optional) pre-authorizes a whole
