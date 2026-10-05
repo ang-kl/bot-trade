@@ -62,8 +62,9 @@ function tableColumns(db, table) {
  * Intent-creation → broker-acknowledgement intervals, in ms.
  *
  * One sample per intent: the EARLIEST `cpp_events.ts_ms` recorded under that
- * intent's `client_msg_id`. Rows with no acknowledgement, no clock, or an
- * implausible interval are counted apart rather than dropped silently.
+ * intent's account, environment, symbol and `client_msg_id`. Joined rows with
+ * no usable clock or an implausible interval are counted apart rather than
+ * dropped silently; events without owned identity cannot supply a measurement.
  *
  * @returns {{samples:number[], pairs:number, skipped:object, source:string, note:string}}
  */
@@ -78,6 +79,8 @@ export function latencySamples(db, { side = null, accountId = null, limit = 2000
       SELECT i.id AS intentId, i.created_at AS createdAt, MIN(e.ts_ms) AS ackMs
         FROM entry_intents i
         JOIN cpp_events e ON e.client_msg_id = i.client_msg_id
+         AND e.account_id = i.account_id AND e.symbol_id = i.symbol_id
+         AND e.side = CASE i.environment WHEN 'live' THEN 'cpp_exec' WHEN 'demo' THEN 'cpp_exec_demo' END
        WHERE ${where.join(' AND ')}
        GROUP BY i.id
        ORDER BY i.created_at DESC
@@ -98,7 +101,7 @@ export function latencySamples(db, { side = null, accountId = null, limit = 2000
     samples,
     pairs: rows.length,
     skipped,
-    source: 'entry_intents.created_at → min(cpp_events.ts_ms) on the same client_msg_id',
+    source: 'entry_intents.created_at → min(cpp_events.ts_ms) on the same account, environment, symbol and client_msg_id',
     note: 'intent creation to broker acknowledgement — WIDER than network latency, it includes this agent\'s own dispatch. Reported as what it is.',
   }
 }

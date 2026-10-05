@@ -129,9 +129,28 @@ function intent(db, id, createdAt, clientMsgId) {
     .run(id, 'p' + id, clientMsgId, createdAt, createdAt)
 }
 function ack(db, seq, clientMsgId, tsMs) {
-  db.prepare(`INSERT INTO cpp_events (side, boot_id, seq, ts_ms, client_msg_id, execution_type)
-    VALUES ('cpp_exec_demo', 'b1', ?, ?, ?, 'ORDER_FILLED')`).run(seq, tsMs, clientMsgId)
+  db.prepare(`INSERT INTO cpp_events (side, boot_id, seq, ts_ms, client_msg_id, execution_type, account_id, symbol_id)
+    VALUES ('cpp_exec_demo', 'b1', ?, ?, ?, 'ORDER_FILLED', '1', 1)`).run(seq, tsMs, clientMsgId)
 }
+
+test('latency evidence belongs to the intent account, environment and symbol, not just its message ID', (t) => {
+  const db = initDB(':memory:')
+  t.after(() => db.close())
+  const t0 = Date.parse('2026-10-05T00:00:00.000Z')
+  intent(db, 'owned', new Date(t0).toISOString(), 'same-id')
+  const event = db.prepare(`INSERT INTO cpp_events (side, boot_id, seq, ts_ms, client_msg_id, execution_type, account_id, symbol_id)
+    VALUES (?, 'b1', ?, ?, 'same-id', 'ORDER_FILLED', ?, ?)`)
+  event.run('cpp_exec_demo', 1, t0 + 25, '2', 1)
+  event.run('cpp_exec_demo', 2, t0 + 40, '1', 2)
+  event.run('cpp_exec', 3, t0 + 60, '1', 1)
+  event.run('cpp_exec_demo', 4, t0 + 80, null, 1)
+  event.run('cpp_exec_demo', 5, t0 + 100, '1', null)
+  assert.deepEqual(latencySamples(db, { accountId: '1' }).samples, [], 'foreign or unstamped events provide no measurement')
+  ack(db, 6, 'same-id', t0 + 400)
+  ack(db, 7, 'same-id', t0 + 600)
+  assert.deepEqual(latencySamples(db, { accountId: '1' }).samples, [400], 'use the earliest owned acknowledgement')
+  assert.deepEqual(latencySamples(db, { side: 'cpp_exec' }).samples, [], 'a side filter cannot pair a demo intent to live evidence')
+})
 
 test('LATENCY IS MEASURABLE: intent creation → broker acknowledgement yields a real p90 through the replayer\'s own path', () => {
   const db = initDB(':memory:')

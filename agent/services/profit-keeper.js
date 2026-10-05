@@ -584,7 +584,9 @@ async function profitKeeperPass(db, creds, deps = {}) {
         meta = await sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, td.symbolId)
       } catch (err) { summary.errors.push(`${r.symbol}: ${err.message}`); continue }
       summary.checked++
-      if (Number.isFinite(Number(meta.digits))) digitsByPosition.set(String(parseInt(r.position_id)), Number(meta.digits))
+      // Keep the broker value intact; the since-entry spec validates it.
+      // Coercing missing/blank precision here would manufacture zero digits.
+      if (meta.digits != null) digitsByPosition.set(String(parseInt(r.position_id)), meta.digits)
 
       const lots = td.volume && meta.lotSize ? td.volume / meta.lotSize : null
       const decision = decideProfitKeeper(cfg, {
@@ -780,7 +782,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
       if (!digitsByPosition.has(String(parseInt(r.position_id))) && td.symbolId) {
         try {
           const meta = await sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, td.symbolId)
-          if (Number.isFinite(Number(meta?.digits))) digitsByPosition.set(String(parseInt(r.position_id)), Number(meta.digits))
+          if (meta?.digits != null) digitsByPosition.set(String(parseInt(r.position_id)), meta.digits)
         } catch { /* no digits → sinceEntryTrailSpec drops this row, as before */ }
       }
       const spec = sinceEntryTrailSpec({

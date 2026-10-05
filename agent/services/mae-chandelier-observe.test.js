@@ -51,3 +51,13 @@ test('the observer is gone: the module exports only the ATR and the trail spec',
     assert.equal(gone in mod, false, `${gone} was removed with the observer on 03-10-2026`)
   }
 })
+
+test('since-entry precision: absent or invalid metadata cannot become whole-price rounding', () => {
+  const input = { positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100,
+    bars: barsFrom(Array.from({ length: 30 }, () => 100)), currentSl: 90, currentTp: 120 }
+  for (const digits of [null, '', ' ', false, true, -1, 2.5, NaN, Infinity]) {
+    assert.equal(sinceEntryTrailSpec({ ...input, digits }), null, `invalid precision ${String(digits)} must omit the spec`)
+  }
+  assert.equal(sinceEntryTrailSpec({ ...input, digits: 0 }).digits, 0, 'an explicit zero-digit instrument is valid')
+  assert.equal(sinceEntryTrailSpec({ ...input, digits: '3' }).digits, 3, 'numeric broker metadata retains its precision')
+})
