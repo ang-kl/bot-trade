@@ -1,7 +1,7 @@
 // node --test agent/lib/lot-sizing.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { lotsToVolume, volumeToLots, relativePoints } from './lot-sizing.js'
+import { lotsToVolume, volumeToLots, relativePoints, getVolumeMeta, _cache } from './lot-sizing.js'
 
 // Real Pepperstone-style FX meta: 1 lot = 100,000 units = 10,000,000 cents.
 const FX = { lotSize: 10_000_000, minVolume: 100_000, maxVolume: 10_000_000_000, stepVolume: 100_000 }
@@ -67,4 +67,26 @@ test('relativePoints: never collapses to zero — a tiny real stop keeps one ste
 test('relativePoints: missing/garbage digits default to 5', () => {
   assert.equal(relativePoints(0.005, undefined), 500)
   assert.equal(relativePoints(0.005, 'nope'), 500)
+})
+
+test('the actual symbol adapter retains raw broker precision on fresh and cached reads', async (t) => {
+  _cache.clear()
+  t.after(() => _cache.clear())
+  const cases = [
+    [undefined, 5], [null, 5], ['', 0], [' ', 0], [false, 0], [true, 1],
+    [-1, -1], [2.5, 2.5], [NaN, NaN], [Infinity, Infinity], [0, 0], ['3', 3],
+  ]
+  for (let i = 0; i < cases.length; i++) {
+    const [raw, legacy] = cases[i]
+    const symbol = { symbolId: i + 1, lotSize: 10000, ...(raw === undefined ? {} : { digits: raw }) }
+    let reads = 0
+    const deps = { wsSymbolsByIds: async () => { reads++; return { symbol: [symbol] } } }
+    const args = ['fixture', 'id', 'secret', 'token', 8000 + i, i + 1, deps]
+    const meta = await getVolumeMeta(...args)
+    assert.equal(Object.hasOwn(meta, 'brokerDigits'), true, 'absence must remain explicit, not a sizing default')
+    assert.ok(Object.is(meta.brokerDigits, raw), `raw precision ${String(raw)} is retained`)
+    assert.ok(Object.is(meta.digits, legacy), 'existing sizing normalization stays unchanged')
+    assert.equal(await getVolumeMeta(...args), meta, 'cache retains the same provenance')
+    assert.equal(reads, 1)
+  }
 })

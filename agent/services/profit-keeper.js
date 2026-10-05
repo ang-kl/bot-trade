@@ -573,7 +573,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     // as we decide. Pushed even when EMPTY — /trail-config is full-replace,
     // so an empty push clears positions that closed or disarmed.
     const trailSpecs = []
-    const digitsByPosition = new Map()
+    const brokerDigitsByPosition = new Map()
 
     for (const { r, bp } of involved) {
       const td = bp.tradeData || {}
@@ -584,9 +584,10 @@ async function profitKeeperPass(db, creds, deps = {}) {
         meta = await sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, td.symbolId)
       } catch (err) { summary.errors.push(`${r.symbol}: ${err.message}`); continue }
       summary.checked++
-      // Keep the broker value intact; the since-entry spec validates it.
-      // Coercing missing/blank precision here would manufacture zero digits.
-      if (meta.digits != null) digitsByPosition.set(String(parseInt(r.position_id)), meta.digits)
+      // Keep the RAW broker value, including absence, separate from sizing.
+      // Map.has records a completed lookup; missing precision is not retried
+      // or replaced by a manufactured default from another snapshot.
+      brokerDigitsByPosition.set(String(parseInt(r.position_id)), meta.brokerDigits)
 
       const lots = td.volume && meta.lotSize ? td.volume / meta.lotSize : null
       const decision = decideProfitKeeper(cfg, {
@@ -779,10 +780,10 @@ async function profitKeeperPass(db, creds, deps = {}) {
       const bars = fullBarsBySymbolId[td.symbolId]
       // A row the fence kept from the decision step has no digits yet (the
       // decision step is where getVolumeMeta ran); read them here, cached.
-      if (!digitsByPosition.has(String(parseInt(r.position_id))) && td.symbolId) {
+      if (!brokerDigitsByPosition.has(String(parseInt(r.position_id))) && td.symbolId) {
         try {
           const meta = await sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, td.symbolId)
-          if (meta?.digits != null) digitsByPosition.set(String(parseInt(r.position_id)), meta.digits)
+          brokerDigitsByPosition.set(String(parseInt(r.position_id)), meta?.brokerDigits)
         } catch { /* no digits → sinceEntryTrailSpec drops this row, as before */ }
       }
       const spec = sinceEntryTrailSpec({
@@ -794,7 +795,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
         bars,
         currentSl: bp.stopLoss ?? r.current_sl ?? null,
         currentTp: bp.takeProfit ?? r.current_tp ?? null,
-        digits: digitsByPosition.get(String(parseInt(r.position_id))) ?? r.digits ?? bp.digits,
+        digits: brokerDigitsByPosition.get(String(parseInt(r.position_id))),
       })
       if (!spec) continue
       trailSpecs.push(spec)
