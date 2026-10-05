@@ -2135,3 +2135,29 @@ after № 10,966: Dependabot #40/#41/#42 affect development-only brace-expansion
 Base is main 8b4b360 (#1221), source tree verified byte-for-byte. Independent
 diff review found no blockers; full gates are running. No deployment approval
 for this security change has been recorded; no trading settings changed. -->
+
+
+- 2026-10-05 10:42 UTC, Codex continuation in a partial cloud corpus: lower bound
+  through №11,226, next at least №11,227; later main-thread replies win.
+  The owner said continue after the6PM handback. Fresh main09b5a708 and
+  all source blobs remain pinned. Seven verified complete/25active,45tracked;
+ 18/31withdrawn,17/32/39closed-review-with-gaps,11/24/37/41historicalarchives
+  remain excluded and are not technicalpasses. The deadline sprint ended.
+  Necessary reproduced stability fixes and exact-head gated auto-merge
+  remain authorised; no new routine approval request is required.
+  PR1232post-merge Codex automated P1 review revealed an upstream precision
+  bypass: getVolumeMeta normalised missing/blank/boolean broker digits
+  before the since-entry validator. Four new realadapter/keeper regressions
+  fail before and the65-check focused suite passes after the bounded fix.
+  Preserve raw brokerDigits alongside legacy sizing digits, use only raw
+  precision at both since-entry lookup paths and remove ledger/position
+  fallback; actual0andnumeric3 remain valid, invalid/unavailable values
+  withhold the spec. Existing keeper actions,ATR,account/host,managed/book
+  fences,TP,risk and cached sizing defaults remain unchanged. Native code
+  and all broker/risk/history/account/activation/region/storage controls
+  are untouched. Full local/CI gate and release are pending at this stamp;
+  no merge/deployment or whole-row13 acceptance is claimed. Read access
+  remains unbound; source fixes do not establish trailing or WR/PF.
+  Actual session link/effort metadata unavailable; no human independent
+  review is claimed. Source and focused evidence live in
+  /workspace/bot-trade-raw-precision-evidence-2026-10-05 when available.

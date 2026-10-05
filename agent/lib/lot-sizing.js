@@ -21,10 +21,10 @@ const metaCache = new Map() // `${accountId}|${symbolId}` -> meta
  * @throws when the broker doesn't return the symbol or lotSize is missing —
  *         callers must treat that as "cannot size safely", not guess.
  */
-export async function getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId) {
+export async function getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId, deps = {}) {
   const key = `${accountId}|${symbolId}`
   if (metaCache.has(key)) return metaCache.get(key)
-  const data = await wsSymbolsByIds(host, clientId, clientSecret, accessToken, accountId, [symbolId])
+  const data = await (deps.wsSymbolsByIds || wsSymbolsByIds)(host, clientId, clientSecret, accessToken, accountId, [symbolId])
   const s = (data.symbol || []).find(x => String(x.symbolId) === String(symbolId))
   if (!s || !Number(s.lotSize)) {
     throw new Error(`symbol ${symbolId}: broker returned no lotSize — cannot size the order safely`)
@@ -37,6 +37,9 @@ export async function getVolumeMeta(host, clientId, clientSecret, accessToken, a
     // Price precision — the broker REJECTS order prices with more decimals
     // than the symbol allows ("more digits than symbol allows").
     digits: s.digits != null ? Number(s.digits) : 5,
+    // Since-entry trails require broker provenance, not the sizing default.
+    // Retain absence and malformed values; their validator withholds the spec.
+    brokerDigits: s.digits,
     // Pip position → pip size = 10^-pipPosition (trade-guard pip math).
     pipPosition: s.pipPosition != null ? Number(s.pipPosition) : null,
   }
@@ -46,7 +49,8 @@ export async function getVolumeMeta(host, clientId, clientSecret, accessToken, a
 
 /** Test seam: seed one symbol's broker record so a test that reaches the executor's digits lookup never opens a websocket. */
 export function _seedVolumeMetaForTests(accountId, symbolId, meta) {
-  metaCache.set(`${accountId}|${symbolId}`, { lotSize: 100000, minVolume: 1000, maxVolume: null, stepVolume: 1000, digits: 5, pipPosition: 4, ...meta })
+  // This seam supplies a broker fixture; an explicit brokerDigits overrides it.
+  metaCache.set(`${accountId}|${symbolId}`, { lotSize: 100000, minVolume: 1000, maxVolume: null, stepVolume: 1000, digits: 5, brokerDigits: Object.hasOwn(meta, 'digits') ? meta.digits : 5, pipPosition: 4, ...meta })
 }
 
 /**

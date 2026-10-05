@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER, runProfitKeeper, clearAtrCache, readAtrCache, writeAtrCache, swingTrailLevel } from './profit-keeper.js'
+import { getVolumeMeta, _cache as volumeMetaCache } from '../lib/lot-sizing.js'
 
 const eventsFor = (db, positionId) => db.prepare('SELECT * FROM position_events WHERE position_id = ? ORDER BY id DESC').all(String(positionId))
 
@@ -291,7 +292,7 @@ function keeperDeps() {
       wsGetLastCloses: async () => ({ 1: 2.30 }), // deep in profit → would arm if considered
       wsGetTrendbarsBatch: async () => ({}),
     },
-    sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3 }) },
+    sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3, brokerDigits: 3 }) },
     notify: () => {},
   }
 }
@@ -699,7 +700,7 @@ test('managed since-entry push omits invalid broker precision without amending o
   const deps = keeperDeps()
   const originalMeta = deps.sizing.getVolumeMeta
   let precision, pushed
-  deps.sizing.getVolumeMeta = async (...args) => ({ ...await originalMeta(...args), digits: precision })
+  deps.sizing.getVolumeMeta = async (...args) => ({ ...await originalMeta(...args), brokerDigits: precision })
   deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': bars })
   deps.exec.amendPosition = async () => assert.fail('the managed fence must not amend')
   deps.exec.closePosition = async () => assert.fail('the managed fence must not close')
@@ -716,6 +717,83 @@ test('managed since-entry push omits invalid broker precision without amending o
   assert.equal(pushed.length, 1, 'explicit zero-digit metadata still creates the eligible spec')
   assert.equal(pushed[0].digits, 0)
   assert.deepEqual(db.prepare('SELECT * FROM monitored_positions').all(), before)
+})
+
+for (const managedOn of [true, false]) {
+  test(`actual broker adapter: ${managedOn ? 'managed' : 'decision'} since-entry path rejects invalid raw precision through cache hits`, async (t) => {
+    clearAtrCache()
+    volumeMetaCache.clear()
+    t.after(clearAtrCache)
+    t.after(() => volumeMetaCache.clear())
+    const db = mkManagedKeeperDb({ managedOn })
+    t.after(() => db.close())
+    setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
+    db.exec('ALTER TABLE monitored_positions ADD COLUMN digits INTEGER')
+    db.exec('UPDATE monitored_positions SET digits = 3')
+    const before = db.prepare('SELECT * FROM monitored_positions').all()
+    const deps = keeperDeps()
+    deps.ws.wsGetLastCloses = async () => ({ 1: 2.8795 }) // no keeper action or original trail
+    deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': Array.from({ length: 40 }, () => ({ h: 2.35, l: 2.30, c: 2.32 })) })
+    const originalReconcile = deps.exec.reconcile
+    deps.exec.reconcile = async (...args) => {
+      const response = await originalReconcile(...args)
+      response.position[0].digits = 3 // stale snapshot digits must not rescue missing broker precision
+      return response
+    }
+    deps.exec.amendPosition = async () => assert.fail('fixture must never amend')
+    deps.exec.closePosition = async () => assert.fail('fixture must never close')
+    let raw, reads = 0, pushed
+    deps.sizing.getVolumeMeta = (...args) => getVolumeMeta(...args, {
+      wsSymbolsByIds: async () => {
+        reads++
+        return { symbol: [{ symbolId: 1, lotSize: 10000, ...(raw === undefined ? {} : { digits: raw }) }] }
+      },
+    })
+    deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+    const invalid = [undefined, null, '', ' ', false, true, -1, 2.5, NaN, Infinity]
+    for (raw of [...invalid, 0, '3']) {
+      volumeMetaCache.clear()
+      const was = reads
+      for (let pass = 0; pass < 2; pass++) {
+        const out = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+        const eligible = raw === 0 || raw === '3'
+        assert.equal(out.checked, managedOn ? 0 : 1)
+        assert.equal(pushed.length, eligible ? 1 : 0, `raw ${String(raw)} pass${pass}`)
+        if (eligible) assert.equal(pushed[0].digits, Number(raw))
+        assert.equal(out.trailPushed, eligible ? 1 : 0)
+        assert.equal(out.slMoves, 0)
+        assert.equal(out.closes, 0)
+      }
+      assert.equal(reads - was, 1, 'raw precision survives the real adapter cache hit')
+    }
+    assert.deepEqual(db.prepare('SELECT * FROM monitored_positions').all(), before)
+  })
+}
+
+test('failed broker metadata cannot use ledger or position digits to create a since-entry spec', async (t) => {
+  clearAtrCache()
+  volumeMetaCache.clear()
+  t.after(clearAtrCache)
+  t.after(() => volumeMetaCache.clear())
+  const db = mkManagedKeeperDb()
+  t.after(() => db.close())
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
+  db.exec('ALTER TABLE monitored_positions ADD COLUMN digits INTEGER')
+  db.exec('UPDATE monitored_positions SET digits = 3')
+  const deps = keeperDeps()
+  deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': Array.from({ length: 40 }, () => ({ h: 2.35, l: 2.30, c: 2.32 })) })
+  const reconcile = deps.exec.reconcile
+  deps.exec.reconcile = async (...args) => { const r = await reconcile(...args); r.position[0].digits = 3; return r }
+  let reads = 0, pushed
+  deps.sizing.getVolumeMeta = (...args) => getVolumeMeta(...args, { wsSymbolsByIds: async () => { reads++; throw new Error('fixture unavailable') } })
+  deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+  deps.exec.amendPosition = async () => assert.fail('must not amend')
+  deps.exec.closePosition = async () => assert.fail('must not close')
+  for (let pass = 0; pass < 2; pass++) {
+    await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+    assert.deepEqual(pushed, [], 'unavailable metadata is not valid price precision')
+  }
+  assert.equal(reads, 2, 'failed reads are retried rather than cached as a valid default')
 })
 
 test('since-entry bars are refetched when cached host/account differs or full bars are absent', async (t) => {
