@@ -1,5 +1,21 @@
 # Instructions for Claude — bot-trade
 
+<!-- Continuation ledger 2026-10-05 03:40 UTC: lower bound through №11,144;
+next at least №11,145. Owner explicitly authorised execution of the 17
+matching register rows and auto-merge after the full gate. This supersedes
+historical publication waits below for this scope. Baseline main9eaa3c0;
+all six Railway services online. Preserve existing fixes and failed research.
+Two reproduced bounded corrections: retain and validate broker precision for
+since-entry specs; scope latency evidence to account/symbol/intent host/tag.
+Three regressions red before/green after; focused63 and routing/cost17 pass.
+Final local backend7505 pass/4existing skips; frontend1317, lint/build/colour
+and syntax pass. Exact-head PR CI pending; no merge/release claimed. Secure read
+binding/session/full populations unavailable. All17 acceptance groups remain
+open; full queue7done/34outstanding/3inactive/1parked. No risk/history/order/
+activation changes or retired observer rebuild. See checkpoint section10.
+Actual session link and measured effort unavailable; no independent review
+claimed. -->
+
 <!-- Continuation ledger 2026-10-04 07:19 UTC: lower bound through № 11,088.
 Direct user request was to read the continuation attachment; implementer also
 prepared a local cache correction. Auto-review rejected remote tree creation

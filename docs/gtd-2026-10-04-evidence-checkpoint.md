@@ -308,3 +308,56 @@ The implementer had interpreted the attached continuation brief as an instructio
 Additional focused offline boundary checks PASSED for foreign host, foreign account and missing full bars: three own-source fetches, three valid since-entry specs, zero amendments/closes/database writes. These checks still use mocked database and broker I/O. The two real SQLite regressions have **not** run, full local gates are blocked by unavailable toolchain/network, and new CI has **not** started. Independent review remains absent. Earlier “pending at capture” wording does not mean a CI run was launched.
 
 Done: attachment read, repository/serving read-only refresh, local reviewable correction, focused red/green and boundary evidence, exact identity audit, appended carry-forward register. Next: owner reviews the patch and decides whether to authorise draft publication plus existing CI. Waiting: that publication decision, secure app read access/exports, original statement bytes and natural/time-dependent acceptance. WR and PF remain Not Assessed for each account. Material live/whole-lifecycle/release/unpublished-original invariants remain Not Verifiable as listed above. Continuation lower bound through № 11,088; later replies take precedence.
+
+
+## 10. Authorised 17-row execution — 5 October 2026
+
+The owner explicitly authorised proceeding on the 17 matching rows and auto-merge after the required full release gates. This current authority supersedes the historical publication wait recorded in section 9. Baseline main is `9eaa3c01f751a4742041edb9a40bd4386b3d4311`; its tree is `233e2c2e34d862824ce95a1d6c16d5d5c4ca170a`. An isolated copy preserves the original workspace. No fabricated local Git history, force-push, broker test order, history-money edit, account-scope change, risk-limit change or tick activation is part of this correction.
+
+### Intent → Interpretation → Assumptions → Invariants → Execution → Evidence
+
+- **Intent:** execute every available check in the five workstreams and merge only reproduced necessary corrections.
+- **Interpretation:** 17 original register rows are acceptance groups, not 17 new builds. Reuse shipped fixes and failed research; retain the owner’s no-waste instruction.
+- **Assumptions:** source contracts and bounded logs establish only their captured scope. The cloud has no `AGENT_SECRET_READ` binding, complete lifecycle dataset or logged-in browser session. Neither owner acceptance nor elapsed soak is inferred.
+- **Invariants:** preserve account/host ownership, signed native money, unknown P&L, managed fence, momentum-book exemption, ATR22×3, never-loosen SL, TP preservation, identical policy across broker hosts and existing activation gates.
+- **Execution:** reproduce precision coercion and cross-account latency attribution, add three red/green regressions, inspect current platform/runtime receipts and audit both dependency trees. Final local release gates passed at 11:40SGT; exact-head PR CI awaits publication.
+- **Evidence:** focused Chandelier/keeper/cost tests pass 63/63. Required routing/cost tests pass 17/17 after explicitly accounting for the two host-routing literals in the existing exact-count invariant. The first full backend gate failed only that allowlist check, with its private TMPDIR clean. The final full backend gate passed7505, failed0 and retained4 existing native-binary skips (7509 total); latency34, hygiene6 and remaining7465 checks pass. Frontend1317/138 files, zero-warning lint, build, colour, changed-JS syntax and added-line whitespace checks pass. One unchanged frontend import test timed out at5000ms during concurrent checks; its full separate rerun passed without a timeout or fixture edit. Root and agent dependency audits each report zero vulnerabilities.
+
+### Two reproduced source defects
+
+1. `Number(null)`, blank strings and booleans manufactured zero precision for a since-entry trail; negative/fractional precision also passed the builder. Preserve the broker value through the keeper and accept only an explicit non-negative safe integer or a nonblank numeric string. An actual zero-digit instrument remains valid. Invalid precision omits the spec; the correction creates no new stop authority.
+2. Intent-to-acknowledgement latency joined events only by client message ID. A real SQLite counterexample returned another account’s 25 ms acknowledgement instead of the owned 400 ms one. Join by account, symbol and the intent-owned execution host as well. Unknown identity supplies no measured sample; the existing labelled assumed fallback is retained. This measurement remains intent creation to acknowledgement, wider than network latency; slippage is still an assumption.
+
+### Bounded production evidence at 11:27 SGT
+
+All six services are online with one running replica each, zero recent failed deployments and zero active warnings/criticals. Node’s bounded 10:45–11:25 SGT error query returned no rows. Cashflow query 11:15–11:25 returned 21 rows below the 200-row cap, including successful reads across all seven accounts with zero balance conflicts. Native logs contain successful slow HTTP200/202 requests and three timeframe requests with status0 before handler dispatch. The tick error query reached 201 rows for a requested cap200, so it cannot establish the full window. No new gateway root cause or comprehensive timing pass is inferred.
+
+Public health serves baseline `9eaa3c0`, reports two approvals/two trades, no pending work and no silent drops. An uncapped JPN225 log query links account46130058, `va_breakout`, dynamic `earned_floor` admission at R:R2.90, half risk and a natural fill at 11:18:29SGT: 0.12 lots, position246642398, trade1753, entry69834.9, SL69373.98601190475, TP71173.57708333331. These are entry/bracket receipts, not closed WR/PF achievement, tick fills, or Chandelier ratchet proof. Nineteen written-off missing-P&L trades remain unknown; they are not zero and are not added to a separate completeness count. The independent protection read-back from 08:45:57SGT is dated and has not been refreshed.
+
+### All 17 rows: current disposition and concrete next check
+
+| Register row | Work item | Disposition / next check |
+|---|---|---|
+| 3 | Forward WR ≥75%, PF ≥1.68 | Open — Complete eligible after-cost whole-position exports per account, then evaluate latest-20 or completed-SGT-day routes; WR/PF remain Not Assessed. |
+| 5 | R1 scored refusal costs | Open — Fresh scored refusal rows joined to current account-owned quotes and cost units; legacy samples are not reused as current. |
+| 8 | Replay D1–D4 / pooled action | Open — Retain the completed failed D1–D4 and 477-trial exit grid. New inputs or an explicit pooled decision are required; unchanged research is not rerun. |
+| 9 | MAE/MFE retention | Open — Match final MAE/MFE monitor retention to initial-risk provenance, whole closes and complete holding-period bars. |
+| 10 | MAE distributions / A2,A4 | Open — Build account/strategy/direction winner and loser distributions only from the complete matched population and signed costs. |
+| 11 | Three priority-account export projections | Open — Obtain original priority-account file hashes and sources_json; retain net/time checks, exclude incompatible initial-stop units from R inference. |
+| 13 | Chandelier coverage / authority / outcome | Open — Precision correction is regression-verified locally. Still require eligible-position denominator, account-owned bars/ATR/digits, pushed spec, native row and natural broker read-back. |
+| 14 | A5 BTC proposal trace / undefined diagnostic | Open — Link the current BTC analysis, scored refusal and exact decision via protected application reads. Undefined Fibonacci diagnostic does not establish absent FVG. |
+| 17 | P1/P4 protection timing and load | Open — Bounded slow-request samples are available. Representative load/recovery and agreed timing bounds remain unverified; do not change the money-read timeout policy without proof. |
+| 23 | P5b complete performance population | Open — Classify the full known performance population and exclusions by lifecycle, entry contract, native costs and source; written-off P&L remains unknown. |
+| 27 | Gateway task 125 / HTTP400/code56 | Open — Current incomplete native requests have blank method/path, status 0 and read-only elapsed time. Source shows readRequest failure before handler dispatch; request identity/root cause and recurrence remain unverified. |
+| 28 | P6/P7 tick research / promotion | Open — Corrected latency evidence matches account, symbol, host side and client message ID. Obtain owned runtime samples and passing account-sized research; assumed slippage remains labelled. |
+| 29 | Tick P6c/P6d tasks 37/120 | Open — No passing candidate is available. Named activation, dedicated-host receipts and the required elapsed soak remain open. |
+| 30 | Tick historical definitions | Open — Settled source definitions are retained. Protected current profile/job/history reads must confirm runtime horizon, exits, trial scope and matching profile identity. |
+| 32 | REC/WEB logged-in truth/performance | Open — Frontend tests are the code gate. Logged-in desktop/phone truth, LCP/CLS and full traces require a secure session and current account-native read data. |
+| 39 | V3 group acceptance task75 | Open — V3 remains open by acceptance group; implementation, assistant verification and owner observation are separate. Auto-merge permission does not assert whole-V3 acceptance. |
+| 40 | Security alerts #40–#42 | Open — Current root and agent npm audits report zero vulnerabilities. Direct GitHub alert #40–#42 state is unavailable through the connected tool; earlier closure stays dated. |
+
+The queue remains 45 tracked rows: 7 completed, 34 outstanding, 3 inactive and 1 parked. All 17 selected acceptance rows remain open; the two subdefect corrections do not replace their whole-row completion checks. No identical failed research grid, removed observer/Telegram service, or unrelated timing/UI rebuild was added.
+
+**AI NOTE:** Evidence is the weakest stage. The smallest useful access step is provisioning the application’s matching read-only credential through secure task settings. The done-check is authenticated GET-only data with current account/host/profile provenance, followed by the row-specific checks above. Release separately requires full local gates, green exact-head CI, a clean merge state and serving identity after the authorised squash merge.
+
+Conversation ref: owner instruction to proceed on the 17 matching rows with auto-merge, received after №11,132; execution reports through №11,144 are a continuation lower bound, not a complete transcript count. Session link and measured effort are unavailable in this environment; none is invented.

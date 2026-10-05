@@ -44,8 +44,10 @@ export function wilderAtr(bars, period = DEFAULT_ATR_PERIOD) {
  */
 export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits } = {}) {
   const atr = wilderAtr(bars, DEFAULT_ATR_PERIOD)
-  const d = Number(digits)
-  if (!(atr > 0) || !Number.isFinite(d)) return null
+  // Number(null), Number('') and Number(false) are zero, but they are not
+  // broker precision. Preserve a genuine zero-digit instrument only.
+  const d = typeof digits === 'number' || (typeof digits === 'string' && digits.trim() !== '') ? Number(digits) : NaN
+  if (!(atr > 0) || !Number.isSafeInteger(d) || d < 0) return null
   const dir = String(side || '').toUpperCase() === 'SHORT' || String(side || '').toUpperCase() === 'SELL' ? -1 : 1
   const peak = Number(entry)
   if (!(peak > 0)) return null

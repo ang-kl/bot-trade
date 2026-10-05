@@ -688,6 +688,36 @@ test('managed since-entry trail survives the next pass without refetching the sa
   assert.deepEqual(db.prepare('SELECT * FROM monitored_positions').all(), before, 'the managed row remains untouched')
 })
 
+test('managed since-entry push omits invalid broker precision without amending or closing', async (t) => {
+  clearAtrCache()
+  t.after(clearAtrCache)
+  const db = mkManagedKeeperDb()
+  t.after(() => db.close())
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
+  const before = db.prepare('SELECT * FROM monitored_positions').all()
+  const bars = Array.from({ length: 40 }, () => ({ h: 2.35, l: 2.30, c: 2.32 }))
+  const deps = keeperDeps()
+  const originalMeta = deps.sizing.getVolumeMeta
+  let precision, pushed
+  deps.sizing.getVolumeMeta = async (...args) => ({ ...await originalMeta(...args), digits: precision })
+  deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': bars })
+  deps.exec.amendPosition = async () => assert.fail('the managed fence must not amend')
+  deps.exec.closePosition = async () => assert.fail('the managed fence must not close')
+  deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+  for (precision of [null, '', -1, 2.5]) {
+    const out = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+    assert.deepEqual(pushed, [], `invalid broker digits ${String(precision)} must not reach the sidecar`)
+    assert.equal(out.trailPushed, 0)
+    assert.equal(out.slMoves, 0)
+    assert.equal(out.closes, 0)
+  }
+  precision = 0
+  await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+  assert.equal(pushed.length, 1, 'explicit zero-digit metadata still creates the eligible spec')
+  assert.equal(pushed[0].digits, 0)
+  assert.deepEqual(db.prepare('SELECT * FROM monitored_positions').all(), before)
+})
+
 test('since-entry bars are refetched when cached host/account differs or full bars are absent', async (t) => {
   clearAtrCache()
   t.after(clearAtrCache)
