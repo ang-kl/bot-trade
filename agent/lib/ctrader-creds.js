@@ -9,6 +9,10 @@ import { ctraderEnv } from './ctrader-env.js'
 import { admitEntry } from '../services/entry-mode.js'
 import { reserveEntry, redeemPermit, markSent, resolveIntent } from '../services/entry-ledger.js'
 
+// Once this DB grant has a stored token, source-bound snapshots cannot
+// resurrect an older env seed if that stored authentication is removed.
+const storedTokenSources = new WeakSet()
+
 /** Read credentials for one registered account; unknown never falls back. */
 export function credsForRegisteredAccount(db, accountId) {
   const row = db.prepare('SELECT account_id, is_live FROM accounts WHERE account_id = ?').get(String(accountId))
@@ -26,7 +30,8 @@ export function credsForRegisteredAccount(db, accountId) {
 export function getCtraderCreds(db, accountOverride, { producerId = null, basis = null } = {}) {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
-  const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
+  const storedAccessToken = getState(db, 'ctrader_access_token')
+  const accessToken = storedAccessToken || ctraderEnv('accessToken')
   const accountId = accountOverride?.accountId || getState(db, 'ctrader_account_id') || ctraderEnv('accountId')
   const isLive = accountOverride
     ? !!accountOverride.isLive
@@ -57,7 +62,7 @@ export function getCtraderCreds(db, accountOverride, { producerId = null, basis 
     }
   } catch { /* accounts table may predate this — roster stays null */ }
 
-  return {
+  return withCtraderTokenSource(db, {
     host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com',
     // F-RISK-01: this was COMPUTED at :23-25, used at :43 and :53, and then
     // dropped on the floor. `sameSideAccountIds` reads `baseCreds?.isLive`, so
@@ -79,6 +84,35 @@ export function getCtraderCreds(db, accountOverride, { producerId = null, basis 
     // rides the same way (attachEntryFence).
     ...(producerId ? entryFenceFor(db, accountId, { producerId, basis }) : {}),
     ready: !!(clientId && clientSecret && accessToken && accountId),
+  })
+}
+
+/** Bind only an internally assembled snapshot of this DB's broker grant. */
+export function withCtraderTokenSource(db, creds) {
+  if (typeof creds?.resolveAccessToken === 'function') return creds
+  const { accessToken, clientId, clientSecret } = creds
+  const storedAccessToken = getState(db, 'ctrader_access_token')
+  if (storedAccessToken) storedTokenSources.add(db)
+  const sourceApp = clientId === ctraderEnv('clientId') && clientSecret === ctraderEnv('clientSecret')
+  return {
+    ...creds,
+    // Resolve at the queued send boundary; spreads retain this callback.
+    // Explicit token/app overrides stay explicit. No account/host/roster
+    // replacement and no mutation of the captured object is allowed.
+    resolveAccessToken: (caller) => {
+      if (caller && (caller.accessToken !== accessToken || caller.clientId !== clientId || caller.clientSecret !== clientSecret)) return caller.accessToken
+      // An explicit other-app snapshot cannot borrow this DB grant. A
+      // canonical app change must not pair its new token with the old app.
+      if (!sourceApp) return caller?.accessToken ?? accessToken
+      if (clientId !== ctraderEnv('clientId') || clientSecret !== ctraderEnv('clientSecret')) throw new Error('current cTrader application changed')
+      const current = getState(db, 'ctrader_access_token')
+      if (current) storedTokenSources.add(db)
+      // Stored-auth removal cannot revive an older environment token.
+      // Failed DB reads propagate instead of using the captured snapshot.
+      const resolved = current || (!storedTokenSources.has(db) ? ctraderEnv('accessToken') : null)
+      if (typeof resolved !== 'string' || !resolved.trim()) throw new Error('current cTrader access token unavailable')
+      return resolved
+    },
   }
 }
 

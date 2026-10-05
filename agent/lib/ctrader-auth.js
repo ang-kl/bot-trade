@@ -13,6 +13,7 @@ import { disarmReason } from './env-disarm.js'
 
 const CTRADER_API = 'https://openapi.ctrader.com'
 const REFRESH_EVERY_MS = 24 * 3600_000
+const refreshes = new WeakMap()
 
 /**
  * Exchange the stored refresh token for a fresh access token and persist
@@ -24,6 +25,14 @@ export async function refreshCtraderToken(db) {
   // point kills every refresh path — proactive, reactive hook, manual route.
   const disarmed = disarmReason()
   if (disarmed) throw new Error(`token refresh disabled: ${disarmed}`)
+  const pending = refreshes.get(db)
+  if (pending) return pending
+  const task = exchangeCtraderToken(db)
+  refreshes.set(db, task)
+  try { return await task } finally { if (refreshes.get(db) === task) refreshes.delete(db) }
+}
+
+async function exchangeCtraderToken(db) {
   const refreshToken = getState(db, 'ctrader_refresh_token') || ctraderEnv('refreshToken')
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')

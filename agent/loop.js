@@ -33,7 +33,7 @@ import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from '.
 import { placeOrder as placeOrderLive, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
 import { sideDirection } from './lib/stop-policy.js'
 import { makeBookHeldCheck } from './services/book-held.js'
-import { getCtraderCreds, getSymbolMap, attachEntryFence, bindEntryIntent } from './lib/ctrader-creds.js'
+import { getCtraderCreds, getSymbolMap, attachEntryFence, bindEntryIntent, withCtraderTokenSource } from './lib/ctrader-creds.js'
 import { thenAlways } from './lib/then-always.js'
 import { managePendingOrders } from './services/pending-orders.js'
 import { isProducerRetired } from './lib/entry-producers.js'
@@ -585,7 +585,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       const placeClosedMarketLimit = seam?.placeClosedMarketLimit || (await import('./services/closed-market-limits.js')).placeClosedMarketLimit
       const r = await placeClosedMarketLimit(
         db,
-        attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId }),
+        attachEntryFence(db, withCtraderTokenSource(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }), { producerId }),
         symbol, synth,
         { producerId, requestedVolume: requestedVol, notify: (t) => import('./services/telegram-control.js').then(m => m.notifyOwner(t)).catch(() => {}) }
       )
@@ -670,7 +670,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         : (seam?.placeClosedMarketLimit || (await import('./services/closed-market-limits.js')).placeClosedMarketLimit)
       const r = await placeClosedMarketLimit(
         db,
-        attachEntryFence(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }, { producerId }),
+        attachEntryFence(db, withCtraderTokenSource(db, { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId }), { producerId }),
         symbol, synth,
         {
           producerId, requestedVolume: requestedVol, reason: 'htf', expiresAtMs,
@@ -1180,7 +1180,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // the TRADES row id (the write-ahead intent row); `entryIntentId` is the
     // ledger's entry_intents id, the one the broker's label is tagged with.
     let entryIntentId = null
-    const placeCreds = bindEntryIntent(attachEntryFence(db, { host, clientId, clientSecret, accessToken, accountId, execGuard }, { producerId }), {
+    const placeCreds = bindEntryIntent(attachEntryFence(db, withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId, execGuard }), { producerId }), {
       riskEventId,
       onReserved: (id) => {
         entryIntentId = id
@@ -2381,7 +2381,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // before — a possible rejection beats inventing a precision.
       const moveDigits = await symbolDigitsFor(db, { host, clientId, clientSecret, accessToken, accountId }, pos.symbol)
       const { stopLoss: sendSL, takeProfit: sendTp } = roundAmendPayload({ stopLoss: eval_.newSL, takeProfit: keepTp, digits: moveDigits })
-      const res = await measureAmend(amendMeta('broker_action.move_sl'), () => execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
+      const res = await measureAmend(amendMeta('broker_action.move_sl'), () => execAmendPosition(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }), {
         positionId: ctx.positionId,
         stopLoss: sendSL,
         // Explicit null when the row has no target: "the caller looked and
@@ -2437,7 +2437,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
     // remains only a fallback for a snapshot that could not be read.
     const brokerSnapshot = async () => {
       try {
-        const rec = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
+        const rec = await execReconcile(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }))
         // A reply naming another account is not this account's snapshot: the
         // close volume below comes from it. Refused, the caller falls back to
         // the computed volume exactly as for an unreadable snapshot.
@@ -2499,7 +2499,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         volumeUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
       }
       if (!(volumeUnits > 0)) return { skipped: true, reason: 'unknown_volume' }
-      const res = await execClosePosition({ host, clientId, clientSecret, accessToken, accountId }, {
+      const res = await execClosePosition(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }), {
         positionId: ctx.positionId,
         volume: volumeUnits,
       })
@@ -2578,7 +2578,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         return { skipped: true, reason: unfillable }
       }
 
-      const closeRes = await execClosePosition({ host, clientId, clientSecret, accessToken, accountId }, {
+      const closeRes = await execClosePosition(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }), {
         positionId: ctx.positionId,
         volume: closeUnits,
       })
@@ -2617,7 +2617,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         // `peak − mult × distance` — the 2026-08-26 INVALID_REQUEST shape.
         const partialDigits = await symbolDigitsFor(db, { host, clientId, clientSecret, accessToken, accountId }, pos.symbol)
         const runnerSend = roundAmendPayload({ stopLoss: eval_.newSL, takeProfit: runnerTp, digits: partialDigits })
-        const amendRes = await measureAmend(amendMeta('broker_action.runner_leg'), () => execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
+        const amendRes = await measureAmend(amendMeta('broker_action.runner_leg'), () => execAmendPosition(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }), {
           positionId: ctx.positionId,
           stopLoss: runnerSend.stopLoss,
           takeProfit: runnerSend.takeProfit,
@@ -3488,7 +3488,7 @@ async function runLoop(db) {
           // reconciler stamps it as the account's read time (the tick restart
           // hold compares it with a sidecar boot's first sight).
           const reconcileReadAt = Date.now()
-          const reconcileData = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
+          const reconcileData = await execReconcile(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }))
           // № 10,448: a reply naming another account is refused whole.
           const identity = reconcileReplyIdentity(reconcileData, accountId)
           if (!identity.ok) {
@@ -3571,7 +3571,7 @@ async function runLoop(db) {
               notify = (await import('./services/telegram.js')).sendMessage
             }
             const { makeTargetSuggester, makeTargetApplier } = await import('./services/tp-suggest.js')
-            const protCreds = { host, clientId, clientSecret, accessToken, accountId }
+            const protCreds = withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId })
             const prot = await runProtectionAudit(db, openRows, brokerSl, {
               sendMessage: notify,
               // accountId scopes the alert-mute maps. Without it this pass and
@@ -3649,7 +3649,7 @@ async function runLoop(db) {
           // above — no second reconcile round-trip. Best-effort.
           try {
             const { reconcileBrokerPendingOrders } = await import('./services/pending-orders.js')
-            const sw = await reconcileBrokerPendingOrders(db, { host, clientId, clientSecret, accessToken, accountId }, { brokerOrders: reconcileData.order || [] })
+            const sw = await reconcileBrokerPendingOrders(db, withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }), { brokerOrders: reconcileData.order || [] })
             if (sw.cancelled.length > 0) {
               log(`Broker order cleanup: cancelled ${sw.cancelled.length} stale/duplicate bot order(s) (${sw.kept} kept, ${sw.manual} manual untouched)`)
             }
@@ -4034,7 +4034,7 @@ async function runLoop(db) {
           // owner is often asleep at these hours (owner order 2026-07-20).
           try {
             const { runWeekendBank } = await import('./services/weekend-bank.js')
-            const wb = await runWeekendBank(db, { host, clientId, clientSecret, accessToken, accountId }, positions)
+            const wb = await runWeekendBank(db, withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }), positions)
             if (wb.banked?.length) log(`Weekend bank: closed ${wb.banked.map(b => `${b.symbol} +${b.movePct}%`).join(', ')} ahead of the long closure`)
             if (wb.exempt?.length) log(`Weekend bank: left ${wb.exempt.map(e => `${e.symbol} (position ${e.positionId})`).join(', ')} to the momentum book's stop — book rows are exempt from the sweep`)
             if (wb.deferred?.length) log(`Weekend bank: deferred ${wb.deferred.map(e => `${e.symbol} (position ${e.positionId}): ${e.reason}`).join('; ')} — decided again next pass`)
@@ -4104,7 +4104,7 @@ async function runLoop(db) {
             let tail = ''
             try {
               const rs = await import('./services/restrategize.js')
-              outcome = await rs.restrategizeAfterTamper(db, { host, clientId, clientSecret, accessToken, accountId }, mc)
+              outcome = await rs.restrategizeAfterTamper(db, withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }), mc)
               tail = rs.summarize(outcome)
             } catch { /* verdict optional */ }
             const text = mc.kind === 'reversed'
@@ -4195,7 +4195,7 @@ async function runLoop(db) {
             for (const acc of others) {
               try {
                 const accReadAt = Date.now() // C9 N5: the request time, stamped as this account's read time
-                const rd = await execReconcile({ host, clientId, clientSecret, accessToken, accountId: acc.account_id })
+                const rd = await execReconcile(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId: acc.account_id }))
                 // № 10,448: the 30-09 07:45:55Z reply for …0058 carried …9908's
                 // positions; a reply naming another account is refused whole.
                 const identity2 = reconcileReplyIdentity(rd, acc.account_id)
@@ -4309,7 +4309,7 @@ async function runLoop(db) {
                     // Same creds shape the suggester's bar fetch needs, scoped
                     // to THIS account — the pass's own snapshot, own truth, and
                     // the amend below must never land on another account.
-                    const creds2 = { host, clientId, clientSecret, accessToken, accountId: acc.account_id }
+                    const creds2 = withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId: acc.account_id })
                     const p2 = await runProtectionAudit(db, rows2, bp2, {
                       sendMessage: notify2, accountId: acc.account_id,
                       suggestTarget: mkSuggest2(db, creds2, pos2),

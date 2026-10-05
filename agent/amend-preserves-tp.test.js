@@ -110,7 +110,12 @@ test('the clearing semantics are recorded where the payload is built', () => {
 function amendPayload(branch) {
   const start = branch.indexOf('execAmendPosition(')
   assert.ok(start > 0, 'no execAmendPosition call in this branch — re-anchor')
-  const from = branch.indexOf('{', branch.indexOf('},', start))
+  // The first argument may bind its token source around the credential
+  // object. Anchor the second argument so the price assertion still reads
+  // the actual broker payload rather than earlier rounding arithmetic.
+  const payloadStart = branch.slice(start).match(/\}\)?,\s*\{/)
+  assert.ok(payloadStart, 'amend second argument not found — re-anchor')
+  const from = start + payloadStart.index + payloadStart[0].lastIndexOf('{')
   const end = branch.indexOf('})', from)
   assert.ok(from > 0 && end > from, 'amend payload not found — re-anchor')
   return branch.slice(from, end)
