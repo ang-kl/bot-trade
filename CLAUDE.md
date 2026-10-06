@@ -1558,6 +1558,25 @@ Measurement history — each line is a real run of the script, not a claim:
   **`№ 11,599`** plus any unstamped line made after this ledger. All lower
   bounds. The count is by replies, not by stamps. A later re-measure that
   reads below this line is missing these, not correcting them.
+- 2026-10-06 22:40 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 11,599`), the replies ran on by count through the interim report
+  `№ 11,602` (06:02 SGT: built, not merged), the gate report `№ 11,609`
+  (06:16 SGT), the owner's "merge when green" and "continue with next fix",
+  #1243 merged (31ad4b14, 22:22Z) and read back `№ 11,614` (06:37 SGT: the
+  sweep covers every demo account with positions, one union per side; the
+  demo gateway refuses every union and `/state/trail-status` reads
+  `enabled:false` there, so `TRAIL_TICK_ENABLED` is not the literal `true`
+  in the running demo gateway and the engine-side Chandelier has not been
+  active on it; the live side pushes nothing, holding nothing). Unstamped
+  status lines between the stamps are in the count. This PR (#1245) carries
+  F·1 (the shared sidecar HTTP server's slow-request line to stdout, stderr
+  only past 5 s, four byte-identical copies) and the named `/trail-config`
+  refusal (recorded, logged, read back); it redeploys both gateways and
+  waits for the owner's word. The next stamped reply is at least
+  **`№ 11,615`** plus any unstamped line made after this ledger. All lower
+  bounds. The count is by replies, not by stamps. A later re-measure that
+  reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
