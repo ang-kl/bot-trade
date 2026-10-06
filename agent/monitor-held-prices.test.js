@@ -62,7 +62,7 @@ async function run(f, quotes, { now = () => NOW } = {}) {
   const reads = []
   const readQuote = async (creds, id) => {
     reads.push({ accountId: String(creds.accountId), host: creds.host, symbolId: String(id) })
-    return quotes[`${creds.accountId}:${id}`] ?? null
+    return (typeof quotes === 'function' ? quotes(creds, id) : quotes[`${creds.accountId}:${id}`]) ?? null
   }
   const loadHeld = async () => ({ ...held,
     refreshHeldPrices: (creds, map, symbols) => held.refreshHeldPrices(creds, map, symbols, {
@@ -177,4 +177,39 @@ test('missing price preserves the existing expired time-cap exit', async t => {
   assert.match(row.last_check_reasoning, /time_cap/)
   assert.equal(row.current_sl, 27.83967261904762)
   assert.equal(row.current_tp, 30.089375)
+})
+
+test('later monitor batches refresh after earlier work ages its quotes out', async t => {
+  const f = fixture(t, Array.from({ length: 6 }, () => ({ account: '11' })))
+  let at = NOW, completed = 0
+  const update = f.s.updatePositionCheck
+  f.s.updatePositionCheck = { run(...args) {
+    const result = update.run(...args)
+    // Advance a virtual clock at the real first batch's last persistence.
+    // No sleep, broker action or LLM request is needed to model its elapsed work.
+    if (++completed === 4) at += 6000
+    return result
+  } }
+  const reads = await run(f, (creds, id) => quote(creds.accountId, id, 28.51, at), { now: () => at })
+  assert.equal(completed, 6)
+  for (const pos of f.positions) {
+    assert.ok(f.row(pos.id).mfe_r > 0.96, 'later positions consumed their own batch fresh quote')
+    assert.equal(f.row(pos.id).last_check_action, 'EXT:MOVE_SL')
+  }
+  assert.equal(reads.length, 2, 'one deduplicated owned quote per monitor batch')
+})
+
+test('a later batch failed refresh cannot reuse the preceding batch quote', async t => {
+  const f = fixture(t, Array.from({ length: 6 }, () => ({ account: '11' })))
+  let completed = 0
+  const update = f.s.updatePositionCheck
+  f.s.updatePositionCheck = { run(...args) { ++completed; return update.run(...args) } }
+  const reads = await run(f, (creds, id) => completed < 4 ? quote(creds.accountId, id, 28.51) : null)
+  assert.equal(completed, 6)
+  assert.ok(f.row(f.positions[0].id).mfe_r > 0.96)
+  for (const pos of f.positions.slice(4)) {
+    assert.equal(f.row(pos.id).mfe_r, 0)
+    assert.equal(f.row(pos.id).last_check_action, 'HOLD')
+  }
+  assert.equal(reads.length, 2)
 })
