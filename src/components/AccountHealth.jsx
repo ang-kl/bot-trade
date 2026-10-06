@@ -45,9 +45,10 @@ export default function AccountHealth({ acct }) {
   if (!h) return null
   const ccy = acct.currency || ''
   return (
-    <Card>
+    // Codex · №11,643·R (ui-followup-2026-10-07) — each account owns its persisted disclosure.
+    <Card id={acct.accountId != null ? `sec-account-health-${acct.accountId}` : undefined}>
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-(length:--fs-body) font-semibold">Account health</div>
+        <h3 className="text-(length:--fs-body) font-semibold">Account health</h3>
         <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
         <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{accountNumbers(acct)}</span>
         <span className="ml-auto flex items-center gap-2 text-(length:--fs-body) text-[var(--color-text-sub)]">

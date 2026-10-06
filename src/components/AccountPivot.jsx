@@ -35,8 +35,9 @@ export default function AccountPivot({ acct }) {
   }
 
   return (
-    <Card>
-      <div className="text-(length:--fs-body) font-semibold mb-2">By trading type — market open vs. closed</div>
+    // Codex · №11,643·R (ui-followup-2026-10-07) — independent account state, one leading card control.
+    <Card id={acct.accountId != null ? `sec-account-pivot-${acct.accountId}` : undefined}>
+      <h3 className="text-(length:--fs-body) font-semibold mb-2">By trading type — market open vs. closed</h3>
       <div className="overflow-x-auto">
         <Collapse wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} id="AccountPivot_40" label="Pivot Rows">
         <table className="w-full text-(length:--fs-body)">

@@ -42,9 +42,10 @@ export default function StrategyInsights({ account = 'all' }) {
   }, [days, account])
 
   return (
-    <Card>
+    // Codex · №11,643·R (ui-followup-2026-10-07) — retain this card's preference across reloads.
+    <Card id="sec-strategy-insights">
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-(length:--fs-body) font-semibold">Strategy Forecast vs. Actual table</div>
+        <h3 className="text-(length:--fs-body) font-semibold">Strategy Forecast vs. Actual table</h3>
         <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           {account === 'all' ? 'all accounts' : `account ${account} only`} · closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires
         </span>

@@ -1191,7 +1191,7 @@ export default function Desk() {
             )}
             {(alphaDecay.strategies?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
-                <Collapse wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} id="Desk_1052" label="Strategy Decay Rows">
+                <Collapse /* Codex · №11,643·R (ui-followup-2026-10-07): independent edge band. */ id="Desk_1052" label="Strategy Decay Rows">
                 <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
                   <thead>
                     <tr className="border-b border-[var(--color-border)]">
@@ -1282,7 +1282,7 @@ export default function Desk() {
                     </div>
                   )}
                   <div className="overflow-x-auto">
-                    <Collapse wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} id="Desk_1146" label="Backtest Rows">
+                    <Collapse /* Codex · №11,643·R (ui-followup-2026-10-07): independent baseline band. */ id="Desk_1146" label="Backtest Rows">
                     <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
                       <thead>
                         <tr className="border-b border-[var(--color-border)]">
