@@ -935,3 +935,21 @@ test('19-09-2026 sidecarQuotes: GET /quotes with the bearer and the ids filter, 
   assert.equal(await sidecarQuotes(false), null)
   assert.equal(requests.length, before, 'js mode makes no HTTP call')
 })
+
+// Claude · #1243 read-back, after № 11,609 (07-10-2026): a refused push is
+// named and read back; the next accepted push clears it. Before this the
+// catch returned false and nothing recorded why — a gateway with
+// TRAIL_TICK_ENABLED off read exactly like one holding every spec.
+test('pushTrailConfig: a refused push is named, read back, and cleared by the next accepted push', async () => {
+  const { pushTrailConfig, lastTrailConfigRefusal } = await import('./exec-engine.js')
+  requests.length = 0
+  nextResponse = { status: 503, body: JSON.stringify({ error: 'TRAIL_TICK_ENABLED not set' }) }
+  assert.equal(await pushTrailConfig(CREDS, [{ positionId: 7 }]), false)
+  const refusal = lastTrailConfigRefusal(CREDS)
+  assert.ok(refusal && /TRAIL_TICK_ENABLED not set/.test(refusal.reason), `the refusal is named: ${JSON.stringify(refusal)}`)
+  assert.equal(refusal.count, 1)
+  assert.ok(Date.parse(refusal.at) > 0)
+  nextResponse = { status: 200, body: JSON.stringify({ ok: true, tracked: 1, rejected: 0 }) } // the harness keeps the last response until reset
+  assert.equal(await pushTrailConfig(CREDS, [{ positionId: 7 }]), true)
+  assert.equal(lastTrailConfigRefusal(CREDS), null, 'an accepted push clears the refusal')
+})

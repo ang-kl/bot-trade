@@ -41,6 +41,8 @@ export async function trailStatusView(db, accountId, deps = {}) {
       account: String(creds.accountId),
       side: creds.isLive ? 'live' : 'demo',
       execMode,
+      // The last refused push to this gateway, named (exec-engine.js), or null.
+      lastPushRefusal: typeof exec.lastTrailConfigRefusal === 'function' ? exec.lastTrailConfigRefusal(creds) : null,
       ...(status && typeof status === 'object' ? status : { enabled: false }),
     },
   }
