@@ -6439,7 +6439,8 @@ async function runLoop(db) {
         {
           name: 'prune-outbox',
           run: async () => (await import('./services/outbox-prune.js')).pruneSentOutboxCooperatively(
-            db, new Date(Date.now() - 14 * 86_400_000).toISOString()
+            db, new Date(Date.now() - 14 * 86_400_000).toISOString(),
+            { onProgress: () => { lastLoopActivityAt = Date.now() } }
           ),
         },
         // Owner 01-09-2026 ("every stale, triggerless or dead piece goes: wire

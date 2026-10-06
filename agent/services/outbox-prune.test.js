@@ -15,14 +15,18 @@ const pruner = existsSync(moduleUrl) ? await import(moduleUrl) : null
 
 // Run the actual loop step with its database and clock boundaries supplied.
 // Importing the whole trading loop would run unrelated broker/controller code.
-function actualStep(db) {
+function actualStep(db, { date = Clock, activity = { at: date.now() } } = {}) {
   const sourceUrl = process.env.OUTBOX_PRUNE_LOOP_SOURCE || new URL('../loop.js', import.meta.url)
   const source = readFileSync(sourceUrl, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
   const match = source.match(/name: 'prune-outbox',\s*run: ([\s\S]*?)\n\s*},/)
   assert.ok(match, 'the isolated housekeeping list must contain the outbox step')
   const expression = match[1].trim().replace(/,$/, '')
     .replace(/import\('\.\/services\/outbox-prune\.js'\)/g, 'loadPruner()')
-  return new Function('db', 'Date', 'loadPruner', `return (${expression})`)(db, Clock, () => Promise.resolve(pruner))
+  return new Function('db', 'Date', 'loadPruner', 'activity', `
+    let lastLoopActivityAt = activity.at;
+    Object.defineProperty(activity, 'at', { get: () => lastLoopActivityAt });
+    return (${expression});
+  `)(db, date, () => Promise.resolve(pruner), activity)
 }
 
 function freshDB() {
@@ -37,6 +41,53 @@ function add(db, queuedAt, sentAt, n = 1) {
   db.transaction(() => { for (let i = 0; i < n; i++) stmt.run(queuedAt, sentAt) })()
 }
 const expired = db => db.prepare('SELECT count(*) n FROM telegram_outbox WHERE sent_at IS NOT NULL AND queued_at < ?').get(cutoff).n
+
+const loopSource = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+const verdictSource = loopSource.match(/export function watchdogVerdict\([\s\S]*?\n}/)?.[0]
+assert.ok(verdictSource, 'the actual watchdog verdict must remain identifiable')
+const watchdogVerdict = new Function(`${verdictSource.replace('export ', '')}; return watchdogVerdict;`)()
+
+for (const sparse of [false, true]) test(`actual watchdog stays live during ${sparse ? 'sparse' : 'dense'} outbox progress beyond its 12-minute budget`, async () => {
+  const db = freshDB()
+  const time = { now: fixedNow }
+  class ProgressClock extends Clock { static now() { return time.now } }
+  const activity = { at: time.now }
+  const verdicts = []
+  let done = false
+  try {
+    if (sparse) { add(db, recent, recent, 250); add(db, old, null, 250); add(db, old, old) }
+    else add(db, old, old, 601)
+    // Execute the original SQLite statements. Only advance the supplied clock
+    // to represent slow completed batches; no real minutes or process exit.
+    const prepare = db.prepare.bind(db)
+    db.prepare = sql => {
+      const stmt = prepare(sql)
+      if (sql.startsWith('DELETE FROM telegram_outbox')) {
+        const run = stmt.run.bind(stmt)
+        stmt.run = (...args) => { const result = run(...args); time.now += 5 * 60_000; return result }
+      }
+      return stmt
+    }
+    const tick = () => {
+      if (done) return
+      verdicts.push(watchdogVerdict({ quietMs: time.now - activity.at, loopRunning: true,
+        midCycleMs: 12 * 60_000, idleMs: 30 * 60_000, tripped: false }))
+      setImmediate(tick)
+    }
+    setImmediate(tick)
+    const result = await runHousekeepingSteps([{ name: 'prune-outbox', run: actualStep(db, { date: ProgressClock, activity }) }])
+    done = true
+    assert.deepEqual(result.failed, [])
+    assert.ok(time.now - fixedNow > 12 * 60_000, 'fixture must cross the unchanged watchdog budget')
+    assert.ok(verdicts.length >= 3, 'the ready watchdog must run across multiple actual batches')
+    assert.ok(verdicts.every(v => v === 'ok'), `progress must prevent a false exit; observed ${verdicts}`)
+    assert.equal(activity.at, time.now, 'the last completed batch must stamp progress')
+    // Genuine lack of progress must still trip the existing watchdog.
+    assert.equal(watchdogVerdict({ quietMs: 12 * 60_000, loopRunning: true,
+      midCycleMs: 12 * 60_000, idleMs: 30 * 60_000, tripped: false }), 'exit')
+    assert.equal(expired(db), 0)
+  } finally { done = true; db.close() }
+})
 
 test('actual housekeeping yields to a ready callback before draining all old sent rows', async () => {
   const db = freshDB()
