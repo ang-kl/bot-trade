@@ -69,7 +69,7 @@ export default function AccountCompare({ accounts, onNeedAll, loading }) {
             })}
           </div>
           <div className="overflow-x-auto">
-            <Collapse id="AccountCompare" label="Comparison Rows">
+            <Collapse wholeSection id="AccountCompare" label="Comparison Rows">
               <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
                 <thead>
                   <tr className="border-b border-[var(--color-border)]">

@@ -3807,16 +3807,17 @@ export default function actionsRouter(db, deps = {}) {
         strategies: enabledStrategies(db, getState), // same set the loop runs
       })
 
-      // Persist latest results to state
-      setState(db, 'last_scan_at', new Date().toISOString())
+      // One batch stamp, as in the loop: presentation joins the retained
+      // scan rows to this exact batch, never by nearby timestamps.
+      const now = new Date().toISOString()
+      setState(db, 'last_scan_at', now)
       setState(db, 'last_scan_results', JSON.stringify(scanResult))
       try { const { recordFxRates } = await import('../services/fx-rates.js'); recordFxRates(db, scanResult) } catch { /* best effort */ }
 
       // Persist individual scan rows
-      const now = new Date().toISOString()
       const insertScan = db.prepare(`
-        INSERT INTO scans (symbol, bias, confidence, thesis, timeframe, session_fit, trade_at, price, trade_grade, desk_note, scanned_at, loop_id)
-        VALUES (@symbol, @bias, @confidence, @thesis, @timeframe, @session_fit, @trade_at, @price, @trade_grade, @desk_note, @scanned_at, @loop_id)
+        INSERT INTO scans (symbol, bias, confidence, thesis, timeframe, session_fit, trade_at, price, trade_grade, desk_note, strategy, scanned_at, loop_id)
+        VALUES (@symbol, @bias, @confidence, @thesis, @timeframe, @session_fit, @trade_at, @price, @trade_grade, @desk_note, @strategy, @scanned_at, @loop_id)
       `)
 
       for (const scan of scanResult.scans) {
@@ -3831,6 +3832,7 @@ export default function actionsRouter(db, deps = {}) {
           price: scan.price ?? null,
           trade_grade: scan.trade_grade || null,
           desk_note: scanResult.desk_note || null,
+          strategy: scan.strategy || null,
           scanned_at: now,
           loop_id: 0, // manual trigger
         })

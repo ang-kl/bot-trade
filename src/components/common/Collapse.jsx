@@ -14,7 +14,7 @@ import { useContext, useState } from 'react'
 
 import { CardChromeContext } from './CardChromeContext.js'
 
-export default function Collapse({ id, label, sub = null, defaultOpen = true, children }) {
+export default function Collapse({ id, label, sub = null, defaultOpen = true, wholeSection = false, children }) {
   const inCard = useContext(CardChromeContext)
   const [open, setOpen] = useState(() => {
     try {
@@ -27,8 +27,9 @@ export default function Collapse({ id, label, sub = null, defaultOpen = true, ch
     try { localStorage.setItem(`tbl_open_${id}`, next ? '1' : '0') } catch { /* private mode */ }
     return next
   })
-  // A containing Card already owns this whole-section disclosure.
-  if (inCard) return children
+  // Only an explicitly identified duplicate of the whole-card disclosure
+  // belongs to Card. Independent groups keep their label and stored state.
+  if (inCard && wholeSection) return children
   return (
     <div>
       <button type="button" aria-expanded={open} onClick={toggle}

@@ -38,7 +38,7 @@ export default function AccountPivot({ acct }) {
     <Card>
       <div className="text-(length:--fs-body) font-semibold mb-2">By trading type — market open vs. closed</div>
       <div className="overflow-x-auto">
-        <Collapse id="AccountPivot_40" label="Pivot Rows">
+        <Collapse wholeSection id="AccountPivot_40" label="Pivot Rows">
         <table className="w-full text-(length:--fs-body)">
           <thead>
             <tr>

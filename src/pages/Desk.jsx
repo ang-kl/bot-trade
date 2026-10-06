@@ -1069,7 +1069,7 @@ export default function Desk() {
           <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
         )}
         {(brokerHistory?.rows?.length ?? 0) > 0 && (
-          <StdTradeTable rows={brokerDealRows(brokerHistory.rows, { rates: rateMap })} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
+          <StdTradeTable wholeSection rows={brokerDealRows(brokerHistory.rows, { rates: rateMap })} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
         )}
         {brokerHistory && brokerHistory.rows?.length === 0 && (
           <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Nothing closed in the last {historyDays === 7 ? '7 days' : historyDays === 30 ? '30 days' : historyDays === 90 ? '3 months' : '6 months'}.</p>
@@ -1191,7 +1191,7 @@ export default function Desk() {
             )}
             {(alphaDecay.strategies?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
-                <Collapse id="Desk_1052" label="Strategy Decay Rows">
+                <Collapse wholeSection id="Desk_1052" label="Strategy Decay Rows">
                 <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
                   <thead>
                     <tr className="border-b border-[var(--color-border)]">
@@ -1282,7 +1282,7 @@ export default function Desk() {
                     </div>
                   )}
                   <div className="overflow-x-auto">
-                    <Collapse id="Desk_1146" label="Backtest Rows">
+                    <Collapse wholeSection id="Desk_1146" label="Backtest Rows">
                     <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
                       <thead>
                         <tr className="border-b border-[var(--color-border)]">

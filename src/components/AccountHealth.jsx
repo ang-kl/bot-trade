@@ -64,7 +64,7 @@ export default function AccountHealth({ acct }) {
         </span>
       </div>
       <div className="overflow-x-auto">
-        <Collapse id="AccountHealth_65" label="Health Rows">
+        <Collapse wholeSection id="AccountHealth_65" label="Health Rows">
         <table className="w-full text-(length:--fs-body)">
           <thead>
             <tr>

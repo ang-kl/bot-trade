@@ -387,7 +387,7 @@ function OrderLogTable({ rows, marketHours = null, prices = {}, trades = [], lev
         : null,
     }
   })
-  return <StdTradeTable rows={mapped} countLabel="attempts" marketHours={marketHours} />
+  return <StdTradeTable wholeSection rows={mapped} countLabel="attempts" marketHours={marketHours} />
 }
 
 
@@ -833,7 +833,7 @@ export default function Trade() {
           {brokerRefresh.error ? ` · refresh failed: ${brokerRefresh.error}` : ' · refreshed on request'}
         </p>}
         <LatestPricesNote read={pricesRead} />
-        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById, account?.leverage)} countLabel="open positions" marketHours={marketHours} />}
+        {positions.length > 0 && <StdTradeTable wholeSection rows={openPositionRows(positions, priceMap, enrichById, account?.leverage)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
       {/* Manual order — a FAB bottom-left (owner spec): the form floats
@@ -1009,7 +1009,7 @@ export default function Trade() {
           </div>
           {reconcileNote && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">{reconcileNote}</p>}
           {trades.length === 0 && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">None yet.</div>}
-          {trades.length > 0 && <StdTradeTable rows={closedTradeRows(trades, priceMap, account?.leverage)} countLabel="trades" marketHours={marketHours} />}
+          {trades.length > 0 && <StdTradeTable wholeSection rows={closedTradeRows(trades, priceMap, account?.leverage)} countLabel="trades" marketHours={marketHours} />}
         </Card>
 
         {/* Order log — the audit trail the owner asked for: EVERY order
