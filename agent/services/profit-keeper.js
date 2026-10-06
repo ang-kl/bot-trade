@@ -577,6 +577,11 @@ async function profitKeeperPass(db, creds, deps = {}) {
     // contribution travels on the summary, so a caller sweeping every account
     // can merge the sides and push one union per gateway.
     summary.trailSpecs = trailSpecs
+    // Codex P1 on #1245 (Claude · after № 11,623): the keeper never throws, so a
+    // caller merging sides needs a marker, not a rejection — false once any
+    // row's spec was dropped by a failure or the pass aborted, so the union
+    // for that side is withheld instead of wiping this account's trails.
+    summary.trailSpecsComplete = true
     const brokerDigitsByPosition = new Map()
 
     for (const { r, bp } of involved) {
@@ -586,7 +591,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
       let meta
       try {
         meta = await sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, td.symbolId)
-      } catch (err) { summary.errors.push(`${r.symbol}: ${err.message}`); continue }
+      } catch (err) { summary.errors.push(`${r.symbol}: ${err.message}`); summary.trailSpecsComplete = false; continue }
       summary.checked++
       // Keep the RAW broker value, including absence, separate from sizing.
       // Map.has records a completed lookup; missing precision is not retried
@@ -859,6 +864,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     }
   } catch (err) {
     summary.errors.push(err.message)
+    if (summary.trailSpecsComplete) summary.trailSpecsComplete = false // Codex P1 on #1245: an aborted pass is not a complete list
   }
   return summary
 }

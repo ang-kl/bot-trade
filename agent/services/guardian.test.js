@@ -102,7 +102,7 @@ async function until(pred, ms = 2000) {
   assert.ok(pred(), 'condition not reached in time')
 }
 
-function sweepFixture(t, { backstopMs, keeperThrowsFor = null, symbolMap = { NATGAS: 2280 } } = {}) {
+function sweepFixture(t, { backstopMs, keeperThrowsFor = null, keeperIncompleteFor = null, symbolMap = { NATGAS: 2280 } } = {}) {
   const db = initDB(':memory:')
   t.after(() => db.close())
   setState(db, 'symbol_id_map', JSON.stringify(symbolMap))
@@ -125,6 +125,8 @@ function sweepFixture(t, { backstopMs, keeperThrowsFor = null, symbolMap = { NAT
       runProfitKeeper: async (_db, c, d) => {
         keeper.push({ id: c.accountId, deferred: d?.deferTrailPush === true })
         if (c.accountId === keeperThrowsFor) throw new Error(`broker down for …000${c.accountId}`)
+        // Codex P1 on #1245: the real keeper never throws; it returns an incomplete list.
+        if (c.accountId === keeperIncompleteFor) return { slMoves: 0, errors: ['NATGAS: price fetch failed'], trailSpecs: [], trailSpecsComplete: false }
         return { slMoves: 0, trailSpecs: [{ positionId: Number(c.accountId) * 100, ctidTraderAccountId: Number(c.accountId) }] }
       },
     },
@@ -178,4 +180,11 @@ test('backstop: gated on active rows, not on the symbol map (Codex P1 on #1243)'
   await until(() => f.keeper.length >= 3, 1500)
   assert.equal(f.tick(), null, 'no stream was opened (nothing to subscribe)')
   assert.deepEqual(f.keeper.slice(0, 3).map(k => k.id), ['1', '3', '2'])
+})
+
+test('sweep: a keeper pass that RETURNS an incomplete spec list withholds its side\'s push, like one that throws (Codex P1 on #1245)', async t => {
+  const f = sweepFixture(t, { backstopMs: 20, keeperIncompleteFor: '2' })
+  await until(() => f.keeper.filter(k => k.id === '2').length >= 2, 1500)
+  assert.ok(f.pushes.length >= 1, 'the live side still pushes')
+  assert.ok(f.pushes.every(p => p.side === 'live'), `the demo side is withheld while …0002 returns an incomplete list: ${JSON.stringify(f.pushes.map(p => p.side))}`)
 })

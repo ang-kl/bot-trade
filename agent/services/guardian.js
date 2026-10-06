@@ -270,7 +270,9 @@ export function startGuardian(db, getCreds, deps = {}) {
         // withheld this sweep and the engine keeps its previous set. A pass
         // that returned early (keeper off, nothing held) contributed nothing
         // legitimately and withholds nothing.
-        if (p?.error) entry.failed.push(tag)
+        // Codex P1 on #1245: the keeper never throws — a pass whose spec list is
+        // incomplete (summary.trailSpecsComplete false) counts as failed too.
+        if (p?.error || p?.trailSpecsComplete === false) entry.failed.push(tag)
         if (Array.isArray(p?.trailSpecs)) { entry.built = true; entry.specs.push(...p.trailSpecs) }
       }
       for (const [side, entry] of bySide) {

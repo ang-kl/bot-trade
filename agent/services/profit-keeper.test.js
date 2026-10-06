@@ -884,3 +884,17 @@ test('trail read-back: another account\'s position on the same gateway is left f
   await runProfitKeeper(db, { ...CREDS, accountId: '2' }, deps) // account '2' owns 7777
   assert.equal(eventsFor(db, '7777').filter(r => r.kind === 'trail_tightened').length, 1, 'its own pass journals it; the first pass must not have consumed it')
 })
+
+// Codex P1 on #1245: the pass never throws, so its summary says whether the
+// spec list is complete; a failed per-row lookup makes it incomplete.
+test('trailSpecsComplete: true on a clean pass, false when a row\'s lookup fails', async () => {
+  const db = mkKeeperDb()
+  const deps = keeperDeps()
+  deps.exec.amendPosition = async () => ({})
+  deps.exec.pushTrailConfig = async () => true
+  assert.equal((await runProfitKeeper(db, CREDS, deps)).trailSpecsComplete, true)
+  deps.sizing.getVolumeMeta = async () => { throw new Error('broker meta unavailable') }
+  const out = await runProfitKeeper(db, CREDS, deps)
+  assert.equal(out.trailSpecsComplete, false)
+  assert.ok(out.errors.some(e => /broker meta unavailable/.test(e)))
+})
