@@ -213,3 +213,27 @@ test('a later batch failed refresh cannot reuse the preceding batch quote', asyn
   }
   assert.equal(reads.length, 2)
 })
+
+for (const [name, quoteOffset, nowOffset, expectedPeak] of [
+  ['same-second replay is ambiguous', 500, 900, false],
+  ['quote after the whole recorded second is proven later', 1000, 1100, true],
+]) test(`production second-precision creation: ${name}`, async t => {
+  const f = fixture(t, [])
+  // Omit created_at, exercising the actual production schema default.
+  const id = f.db.prepare(`INSERT INTO monitored_positions
+    (account_id, symbol, side, entry_price, current_sl, current_tp, initial_risk, source, status, strategy)
+    VALUES ('11', 'DOW.US', 'BUY', 28.18, 27.83967261904762, 30.089375, ?, 'external', 'active', 'vp_value')`)
+    .run(risk).lastInsertRowid
+  const pos = f.row(id)
+  assert.match(pos.created_at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+  const second = Date.parse(`${pos.created_at.replace(' ', 'T')}Z`)
+  f.positions.push(pos)
+  setState(f.db, 'symbol_id_map:11', JSON.stringify({ accountId: '11',
+    builtAt: new Date(second - 1000).toISOString(), map: { 'DOW.US': 7 } }))
+  await run(f, { '11:7': quote('11', 7, 28.51, second + quoteOffset) }, { now: () => second + nowOffset })
+  const row = f.row(id)
+  assert.equal(row.mfe_r > 0.96, expectedPeak)
+  assert.equal(row.last_check_action, expectedPeak ? 'EXT:MOVE_SL' : 'HOLD')
+  assert.equal(row.current_sl, 27.83967261904762)
+  assert.equal(row.current_tp, 30.089375)
+})

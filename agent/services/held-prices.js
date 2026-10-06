@@ -9,10 +9,17 @@ import { freshBrokerStamp } from './momentum-broker-evidence.js'
 // time never renews a broker quote, and scan prices are not position quotes.
 const HELD_QUOTE_MAX_AGE_MS = 5000
 
-function positionCreatedAt(pos) {
+function positionRecordedUpperBound(pos) {
   if (typeof pos.created_at !== 'string' || !pos.created_at.trim()) return NaN
   const text = pos.created_at.trim().replace(' ', 'T')
-  return Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : `${text}Z`)
+  const recorded = Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : `${text}Z`)
+  // SQLite's production default records only whole seconds. That denotes
+  // an interval, not a proven millisecond entry time: reject the whole
+  // uncertain second rather than accepting a pre-position replay within it.
+  const fraction = text.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})?$/i)?.[1]
+  const uncertainty = fraction?.length === 3 ? 0
+    : fraction?.length > 3 ? 1 : 10 ** (3 - (fraction?.length || 0))
+  return recorded + uncertainty
 }
 
 /** Fresh account-owned quotes for the main monitor, without map refreshes. */
@@ -56,7 +63,7 @@ export function heldPositionPrice(pos, receipts, { now = Date.now } = {}) {
   const symbol = String(pos.symbol || '').toUpperCase()
   const receipt = receipts?.get?.(`${accountId}|${symbol}`)
   const q = receipt?.quote
-  const createdAt = positionCreatedAt(pos)
+  const createdAt = positionRecordedUpperBound(pos)
   if (!q || receipt.accountId !== accountId || receipt.symbol !== symbol
     || String(q.ctidTraderAccountId) !== accountId || String(q.symbolId) !== receipt.symbolId
     || !Number.isFinite(createdAt) || q.timestamp < createdAt
