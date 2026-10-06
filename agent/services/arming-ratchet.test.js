@@ -10,6 +10,7 @@ import { mkdtempSync } from '../test-support/temp-dir.js'
 import { initDB, getState, setState } from '../db.js'
 import { setStage } from './stage-matrix.js'
 import { ratchetedCells, armingRatchetReport, armingRatchetLine } from './arming-ratchet.js'
+import { recordDepositCurrency } from './account-money.js'
 
 const io = { getState, setState }
 function freshDb() {
@@ -19,7 +20,10 @@ function freshDb() {
   setState(db, 'enabled_strategies_json', JSON.stringify(['tsmom_long', 'rsi2_reversion', 'vwap_trend']))
   return db
 }
-const addAccount = (db, id) => db.prepare('INSERT INTO accounts (account_id, is_live, enabled) VALUES (?, 0, 1)').run(id)
+const addAccount = (db, id) => {
+  db.prepare('INSERT INTO accounts (account_id, is_live, enabled) VALUES (?, 0, 1)').run(id)
+  recordDepositCurrency(db, { accountId: id, host: 'demo.ctraderapi.com', depositAssetId: '1', currency: 'USD', receivedAt: Date.parse('2026-10-06T00:00:00Z') })
+}
 
 test('the measured production case: tsmom_long off on three accounts, armed globally', () => {
   const db = freshDb()

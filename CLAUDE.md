@@ -1,5 +1,21 @@
 # Instructions for Claude — bot-trade
 
+<!-- Edge-watchdog currency correction 2026-10-06: owner ordered after
+№11,382; progress №11,383–11,386. Fresh base2ad23e16/tree667fbf9f retains
+completed PR1233/1234/1235 and their gates. Reproduced source-only currency
+mixing is not proof of production impact. Rolling edge preserves exact
+selection/count/win-rate populations; money requires one account/host-owned
+verified currency. Mixed/unknown money cannot retire global/other-account
+cells or consume pooled dedupe. Existing full-window/negative-expectancy/PF
+bars remain unchanged; verified own-only losing accounts retain their own
+protection and dedupe when pooled money is unavailable. Other hand pins hold.
+No synthetic FX/history rewrite, manual strategy/risk/credential/order
+operation or native production rebuild. Full local/exact-head CI gates,
+merge and deployment remain pending at this source stamp. Keep7verified/
+25active/zero new whole-row closures and all latest owner exclusions.
+Hourly watch remains disabled; unused staging untouched. Session link and
+measured effort unavailable; no independent human review claimed. -->
+
 <!-- Bounded morning reporting correction 2026-10-06 00:41 UTC: owner
 authorised the morning plan after №11,347 and requested a09:30SGT report.
 Fresh main d137b181 and tree a39f558c are unchanged; PR1233/1234 and their

@@ -542,7 +542,7 @@ function writeCell(db, { getState, setState }, accountId, kind, key, stage, flag
  *
  * @returns {string[]} scopes changed: 'global' and/or account ids.
  */
-export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exemptHandPinned = false, ownVerdictScopes = [], actor = 'unattributed', reason = null, evidence = null } = {}) {
+export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exemptHandPinned = false, ownVerdictScopes = [], onlyScopes = null, actor = 'unattributed', reason = null, evidence = null } = {}) {
   const { getState } = io
   const changed = []
   const held = []
@@ -554,11 +554,15 @@ export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exempt
   // scope named here had the verdict measured on ITS OWN closes, and its
   // cell is written false like any other; the other pins still hold.
   const own = new Set((ownVerdictScopes || []).map(String))
+  // An own-account monetary verdict cannot retire global/other-account cells.
+  // Omitted = the existing everywhere behavior for all other callers.
+  const only = onlyScopes == null ? null : new Set(onlyScopes.map(String))
   const scopes = [null]
   try {
     for (const r of db.prepare('SELECT account_id FROM accounts').all()) scopes.push(String(r.account_id))
   } catch { /* no accounts table — global only */ }
   for (const scope of scopes) {
+    if (only && !only.has(scope == null ? 'global' : scope)) continue
     const armed = armedTradeKeys(db, getState, scope)
     if (!armed.has(key)) continue
     if (neverZero && ![...armed].some(k => k !== key)) continue // last armed here — hold
