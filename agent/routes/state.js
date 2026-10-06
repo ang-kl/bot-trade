@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
+import { accountSignals } from '../services/account-signals.js'
 import { scannerMirrorStatus } from '../services/scanner-candidates.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { createHash } from 'node:crypto'
@@ -247,7 +248,7 @@ export default function stateRouter(db) {
     for (const w of flight) { try { fn(w) } catch { /* client gone */ } }
   }
   router.use((req, res, next) => {
-    if (req.method !== 'GET' || NO_CACHE.has(req.path)) return next()
+    if (req.method !== 'GET' || NO_CACHE.has(req.path) || (req.path === '/scans' && req.query.view === 'signals')) return next()
     const key = req.originalUrl
     const hit = respCache.get(key)
     // An entry from before the last write is not merely old, it is WRONG —
@@ -487,6 +488,14 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/scans', (req, res) => {
     const lastResults = getState(db, 'last_scan_results')
+    if (req.query.view === 'signals') {
+      res.set('Cache-Control', 'no-store')
+      const scope = requestedAccount(db, req)
+      const snapshot = lastResults ? (() => { try { return JSON.parse(lastResults) } catch { return null } })() : null
+      const lastScanAt = getState(db, 'last_scan_at')
+      return res.json({ lastResults: snapshot, lastScanAt,
+        signals: accountSignals(db, snapshot, { accountId: scope.all ? 'all' : scope.accountId, lastScanAt }) })
+    }
     // S1 batch 3, corrected. scans carries account_id, but db.js calls scans
     // "account-independent market observations [that] may stay NULL (global)"
     // — this is the plan's `global` mode, so it FILTERS ONLY WHEN ASKED.

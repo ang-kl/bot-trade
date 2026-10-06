@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import Card from './Card.jsx'
+import Collapse from './Collapse.jsx'
 
 const fakeStorage = (init = {}) => {
   const m = new Map(Object.entries(init))
@@ -151,4 +152,28 @@ describe('lazy mount (W1-FU: children of a collapsed card are not mounted at all
     const html = render({ id: 'sec-o', storage: fakeStorage(), defaultCollapsed: true, lazy: true }, 'lazy-marker')
     expect(html).not.toContain('lazy-marker')
   })
+})
+
+describe('card heading disclosure placement', () => {
+  it('places the sole ▼ control before the title, outside the right toolbar', () => {
+    const html = render({}, <div><h3>Account performance</h3><p>kept body</p></div>)
+    expect(html).toMatch(/<h3><button[^>]*aria-label="Collapse this section"[\s\S]*?▼[\s\S]*?<\/button>Account performance<\/h3>/)
+    expect(html.match(/aria-label="Collapse this section"/g)).toHaveLength(1)
+    expect(html.match(/role="toolbar"[\s\S]*?<\/span>/)?.[0]).not.toContain('Collapse this section')
+  })
+  it('keeps a named ▶ header when persisted collapsed, without a second hidden control', () => {
+    const html = render({ id: 'named', storage: fakeStorage({ card_open_named: '0' }) }, <h3>Account performance</h3>)
+    expect(html).toContain('▶')
+    expect(html).toContain('Account performance')
+    expect(html.match(/aria-label="Expand this section"/g)).toHaveLength(1)
+  })
+})
+
+
+it('a table inside its Card shares the card disclosure instead of adding a second one', () => {
+  const html = render({}, <><h3>Signals</h3><Collapse id="rows" label="Signal rows"><table><tbody><tr><td>EURUSD</td></tr></tbody></table></Collapse></>)
+  expect(html.match(/aria-label="Collapse this section"/g)).toHaveLength(1)
+  expect(html).not.toContain('Signal rows')
+  expect(html).toContain('EURUSD')
+  expect(html).toMatch(/<h3><button/)
 })

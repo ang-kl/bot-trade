@@ -58,9 +58,9 @@ describe('Performance evidence availability', () => {
     expect(card).not.toContain('regular cash hours in its own time zone')
     expect(card).not.toContain('approximate UTC session buckets')
     expect(card).not.toContain('>closed<')
-    // Each row's tooltip still states the rule it will use, and the exception.
-    expect(card).toContain('TSE 09:00–11:30 and 12:30–15:30 Asia/Tokyo local time')
-    expect(card).toContain('public holidays and early closes not applied (WEB-6b)')
+    // An unread report must not render zero-count session rows.
+    expect(card).toContain('Session statistics unavailable.')
+    expect(card).toContain('Session report has not loaded.')
   })
   it('does not hide an available journal observation or expose stale rows as available', () => {
     const props = { nowMs: Date.parse('2026-09-23T01:00:00Z'), allTrades: [
