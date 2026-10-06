@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { initDB, getState, setState } from '../db.js'
 import { setStage } from './stage-matrix.js'
 import { handPinnedCells, handPinReport, handPinLine } from './hand-pin-watch.js'
+import { recordDepositCurrency } from './account-money.js'
 
 const io = { getState, setState }
 const PINNED = ['47790949', '46130058', '43097342']
@@ -20,7 +21,10 @@ function freshDb() {
   setState(db, 'enabled_strategies_json', JSON.stringify(['tsmom_long', 'rsi2_reversion', 'vwap_trend']))
   return db
 }
-const addAccount = (db, id) => db.prepare('INSERT INTO accounts (account_id, is_live, enabled) VALUES (?, 0, 1)').run(id)
+const addAccount = (db, id) => {
+  db.prepare('INSERT INTO accounts (account_id, is_live, enabled) VALUES (?, 0, 1)').run(id)
+  recordDepositCurrency(db, { accountId: id, host: 'demo.ctraderapi.com', depositAssetId: '1', currency: 'USD', receivedAt: Date.parse('2026-10-06T00:00:00Z') })
+}
 
 /** Closed trades on ONE account, newest last. */
 function closes(db, accountId, strategy, pnls) {

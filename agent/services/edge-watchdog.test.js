@@ -4,12 +4,23 @@ import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
 import { runEdgeWatchdog, strategyRollingEdge } from './edge-watchdog.js'
 import { setStage, armedTradeKeys } from './stage-matrix.js'
+import { upsertAccount } from './account-registry.js'
+import { recordDepositCurrency } from './account-money.js'
+
+function verifyUnit(db, id) {
+  if (!/^[1-9]\d*$/.test(String(id))) return
+  let row = db.prepare('SELECT is_live FROM accounts WHERE account_id=?').get(id)
+  if (!row) { upsertAccount(db, { accountId: id, isLive: false }); row = { is_live: 0 } }
+  recordDepositCurrency(db, { accountId: String(id), host: row.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com',
+    depositAssetId: '1', currency: 'USD', receivedAt: Date.parse('2026-10-06T00:00:00Z') })
+}
 
 // Insert n closed trades for a strategy with the given per-trade pnls.
 function seed(db, strategy, pnls) {
+  verifyUnit(db, '5555')
   const ins = db.prepare(
-    `INSERT INTO trades (symbol, side, status, label_strategy, net_pnl, closed_at)
-     VALUES ('EURUSD','BUY','closed',?,?,?)`
+    `INSERT INTO trades (symbol, side, status, label_strategy, net_pnl, closed_at, account_id)
+     VALUES ('EURUSD','BUY','closed',?,?,?,'5555')`
   )
   pnls.forEach((p, i) => ins.run(strategy, p, `2026-07-10 ${String(i % 24).padStart(2, '0')}:00:00`))
 }
@@ -35,6 +46,7 @@ test('rollingEdge: honest expectancy/PF, excludes NULL net_pnl', () => {
 // ---------------------------------------------------------------------------
 
 function seedScoped(db, strategy, accountId, pnls, bracket = null) {
+  verifyUnit(db, accountId)
   const ins = db.prepare(
     `INSERT INTO trades (symbol, side, status, label_strategy, net_pnl, closed_at, account_id, entry_price, sl_price, tp_price)
      VALUES ('EURUSD','BUY','closed',?,?,?,?,?,?,?)`
@@ -49,7 +61,7 @@ test('rollingEdge accountId: a string scopes to that account plus unscoped legac
   seedScoped(db, 'rsi_meanrev', 'B', [-20, -20, -20])
   seedScoped(db, 'rsi_meanrev', null, [4])
   assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: 'A' }).trades, 3, 'A + legacy NULL rows')
-  assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: 'A' }).net, 9)
+  assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: 'A' }).net, null, 'legacy/missing currency cannot be assigned a monetary unit')
   assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: 'B' }).trades, 4)
   assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20, { accountId: null }).trades, 6, 'pooled')
   assert.equal(strategyRollingEdge(db, 'rsi_meanrev', 20).trades, 6, 'no option = pooled (unchanged default)')
@@ -231,7 +243,8 @@ test('production shape (every account pinned): a no-edge record on account X\'s 
   assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), false)
   assert.equal(armedTradeKeys(db, getState, '222').has('rsi_meanrev'), true)
   assert.equal(armedTradeKeys(db, getState, '333').has('rsi_meanrev'), true)
-  // Pooled only: 16 legacy (NULL-account) losses — no account owns the record → every pin holds, the global list is disarmed.
+  // Pooled only relative to these pins: verified losses on a different owner
+  // must not be used as the pinned accounts' own no-edge record.
   const db2 = initDB(':memory:')
   for (const id of ids) db2.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')`).run(id, id)
   arm(db2, ['vwap_trend', 'rsi_meanrev'])
@@ -243,9 +256,11 @@ test('production shape (every account pinned): a no-edge record on account X\'s 
   assert.deepEqual(p.actions[0].scopes, ['global'])
   assert.deepEqual(p.actions[0].heldPinned, ids)
   for (const id of ids) assert.equal(armedTradeKeys(db2, getState, id).has('rsi_meanrev'), true)
-  // ownOnly excludes the legacy rows; the default scoping still counts them.
+  // Add true legacy rows: only the count/win-rate population admits them;
+  // their monetary unit remains unavailable.
+  seedScoped(db2, 'rsi_meanrev', null, [-5])
   assert.equal(strategyRollingEdge(db2, 'rsi_meanrev', 30, { accountId: '111', ownOnly: true }).trades, 0)
-  assert.equal(strategyRollingEdge(db2, 'rsi_meanrev', 30, { accountId: '111' }).trades, 16)
+  assert.equal(strategyRollingEdge(db2, 'rsi_meanrev', 30, { accountId: '111' }).trades, 1)
 })
 
 test('Wave 1 (19-09-2026): a momentum-family strategy is judged at its horizon, never by the 20-close window — losing tsmom_long stays armed and is reported as skipped', () => {
