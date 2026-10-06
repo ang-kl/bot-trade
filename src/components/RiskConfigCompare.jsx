@@ -82,7 +82,7 @@ export default function RiskConfigCompare() {
       {!err && !cols && <Skeleton lines={3} />}
       {cols && (
         <div className="overflow-x-auto">
-          <Collapse id="RiskConfigCompare" label="Risk Knob Rows">
+          <Collapse wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} id="RiskConfigCompare" label="Risk Knob Rows">
             <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
               <thead>
                 <tr className="border-b border-[var(--color-border)]">

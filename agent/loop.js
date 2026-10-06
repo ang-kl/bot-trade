@@ -1528,11 +1528,12 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
   }
   const result = synthesizeFibSignal(sym, signal, wItem.autoTradeThreshold || 8)
 
-  // Find latest scan id for this symbol to link
-  const latestScan = s.latestScanForSymbol.get(sym)
+  // Codex · №11,627·R (ui-followup-2026-10-07) — tie the receipt to the dispatched strategy, timeframe and bias.
+  const synth = result.synthesis || {}
+  const latestScan = s.latestScanForSymbol.get(sym, synth.strategy ?? null,
+    synth.timeframe ?? null, synth.consensus_bias ?? null, getState(db, 'last_scan_at'))
   const scanId = latestScan ? latestScan.id : null
 
-  const synth = result.synthesis || {}
   const analysisIns = s.insertAnalysis.run({
     symbol: result.symbol,
     consensus_bias: synth.consensus_bias || null,
@@ -3131,7 +3132,10 @@ export function prepareStatements(db) {
     `),
 
     latestScanForSymbol: db.prepare(`
-      SELECT id FROM scans WHERE symbol = ? ORDER BY scanned_at DESC LIMIT 1
+      -- Codex · №11,627·R (ui-followup-2026-10-07): an older or different cell is not the analyzed scan.
+      SELECT id FROM scans WHERE symbol = ? AND strategy = ?
+        AND timeframe = ? AND lower(bias) = lower(?) AND scanned_at = ?
+      ORDER BY id DESC LIMIT 1
     `),
   }
 

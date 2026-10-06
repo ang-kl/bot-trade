@@ -75,7 +75,7 @@ export default function LlmSpendCard({ health = null, onHealthChanged = null }) 
           </div>
           {(llmSpend.by_purpose?.length ?? 0) > 0 && (
             <div className="overflow-x-auto">
-              <Collapse id="Ai_llmspend_bypurpose" label="Spend by Purpose Rows">
+              <Collapse /* Codex · №11,643·R (ui-followup-2026-10-07): keep detail separate from totals and cap. */ id="Ai_llmspend_bypurpose" label="Spend by Purpose Rows">
                 <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
                   <thead>
                     <tr className="border-b border-[var(--color-border)]">

@@ -3807,16 +3807,18 @@ export default function actionsRouter(db, deps = {}) {
         strategies: enabledStrategies(db, getState), // same set the loop runs
       })
 
-      // Persist latest results to state
-      setState(db, 'last_scan_at', new Date().toISOString())
+      // Codex · №11,601·R (ui-followup-2026-10-07) — retain the manual scan receipt contract.
+      // One batch stamp, as in the loop: presentation joins the retained
+      // scan rows to this exact batch, never by nearby timestamps.
+      const now = new Date().toISOString()
+      setState(db, 'last_scan_at', now)
       setState(db, 'last_scan_results', JSON.stringify(scanResult))
       try { const { recordFxRates } = await import('../services/fx-rates.js'); recordFxRates(db, scanResult) } catch { /* best effort */ }
 
       // Persist individual scan rows
-      const now = new Date().toISOString()
       const insertScan = db.prepare(`
-        INSERT INTO scans (symbol, bias, confidence, thesis, timeframe, session_fit, trade_at, price, trade_grade, desk_note, scanned_at, loop_id)
-        VALUES (@symbol, @bias, @confidence, @thesis, @timeframe, @session_fit, @trade_at, @price, @trade_grade, @desk_note, @scanned_at, @loop_id)
+        INSERT INTO scans (symbol, bias, confidence, thesis, timeframe, session_fit, trade_at, price, trade_grade, desk_note, strategy, scanned_at, loop_id)
+        VALUES (@symbol, @bias, @confidence, @thesis, @timeframe, @session_fit, @trade_at, @price, @trade_grade, @desk_note, @strategy, @scanned_at, @loop_id)
       `)
 
       for (const scan of scanResult.scans) {
@@ -3831,6 +3833,7 @@ export default function actionsRouter(db, deps = {}) {
           price: scan.price ?? null,
           trade_grade: scan.trade_grade || null,
           desk_note: scanResult.desk_note || null,
+          strategy: scan.strategy || null,
           scanned_at: now,
           loop_id: 0, // manual trigger
         })
@@ -3875,14 +3878,17 @@ export default function actionsRouter(db, deps = {}) {
       }
       const result = synthesizeFibSignal(symbol, signal, req.body?.autoTradeThreshold || 8)
 
-      // Find latest scan for this symbol to link
+      // Codex · №11,627·R (ui-followup-2026-10-07) — link only the analyzed identity in the current retained batch.
+      const synth = result.synthesis || {}
       const latestScan = db
-        .prepare('SELECT id FROM scans WHERE symbol = ? ORDER BY scanned_at DESC LIMIT 1')
-        .get(symbol)
+        .prepare(`SELECT id FROM scans WHERE symbol = ? AND strategy = ?
+          AND timeframe = ? AND lower(bias) = lower(?) AND scanned_at = ?
+          ORDER BY id DESC LIMIT 1`)
+        .get(symbol, synth.strategy ?? null, synth.timeframe ?? null,
+          synth.consensus_bias ?? null, getState(db, 'last_scan_at'))
       const scanId = latestScan ? latestScan.id : null
 
       // Persist analysis
-      const synth = result.synthesis || {}
       db.prepare(`
         INSERT INTO analyses (symbol, consensus_bias, overall_conviction, consensus_summary, synthesis, entry_price, sl_price, tp1_price, tp2_price, auto_trade, strategy, risk_note, minion_reports, invalidation_trigger, time_cap_minutes, analyzed_at, scan_id)
         VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @invalidation_trigger, @time_cap_minutes, @analyzed_at, @scan_id)
