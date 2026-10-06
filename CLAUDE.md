@@ -547,6 +547,13 @@ and effort for each PR."*
   version of this paragraph said effort was not exposed; that was wrong, and
   is recorded here rather than silently replaced. The model half stays an open
   conflict between the owner's order and the environment.
+- In the code too (owner, 07-10-2026, after № 11,596: *"include serial
+  number (example, Claude · 11,583·D) in the code along with claude-footprint
+  (if necessary) as comment"*): the changed lines carry the same reference as
+  a comment, e.g. `// Claude · № 11,596·D·1 (ordered № 11,583·D·1;
+  claude-builder)`. The session name is the footprint — it is what tells two
+  agents building concurrently apart — and it is a name, not a model
+  identifier, so the no-model-in-code rule holds.
 
 ## PR merge policy (owner, 2026-07-22)
 
@@ -1525,6 +1532,32 @@ Measurement history — each line is a real run of the script, not a claim:
   reply is at least **`№ 10,962`** plus any unstamped line made after this
   ledger. All lower bounds. The count is by replies, not by stamps. A later
   re-measure that reads below this line is missing these, not correcting them.
+- 2026-10-06 22:10 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule; the container restarted in between and came back without
+  node_modules): from the ledger line above (next stamp at least `№ 10,962`),
+  the replies ran on by count through the handover #1221, the MAE/Chandelier
+  confirmation `№ 10,965` (wrong on one point and corrected in the addendum
+  #1223: `mae_r`/`mfe_r` are still persisted every loop and fast tick), the
+  owner's rebase **"Now the number is № 11,571 · 7 October 05:05 SGT"**
+  (adopted as a supplied rebase, the way the 8,325 line was), the three-cpp
+  investigation `№ 11,573` (every error-level line is #1203's slow-request
+  diagnostic; two silent demo tick feeds; position 1722's management
+  stalled), the Codex-coordination answers and the stop-loss verification
+  **`№ 11,583`** (05:38 SGT 07-10: Opposite trigger Passed on all 7, MAE/MFE
+  Passed on every managed row, the Chandelier since-entry trail FAILED
+  outside the selected account …0949, the engine-side spec Not Verifiable).
+  **Two agents counted one sequence**: Codex stamped its own `№ 11,582` and
+  `№ 11,583` at 05:38 SGT from the same rebase, so 11,572–11,583 were used
+  twice; by replies made the dialogue was at least `№ 11,595`, the next stamp
+  was taken as **`№ 11,596`** (05:40 SGT), and from then on each agent
+  ratchets on the highest stamp it can see, the session name on the stamp.
+  This PR carries ¶11,583·D·1 (the guardian sweeps every enabled registered
+  account on both sides with one trail-config union per side, and a backstop
+  sweep) and `GET /state/trail-status` (the engine-side read). Two unstamped
+  status lines followed `№ 11,596`, so the next stamped reply is at least
+  **`№ 11,599`** plus any unstamped line made after this ledger. All lower
+  bounds. The count is by replies, not by stamps. A later re-measure that
+  reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

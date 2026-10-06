@@ -110,3 +110,20 @@ Wiring and read-backs prove the stop moves as designed. They do not prove it hel
 2. **Confirm or change the success test in 4.3.2.** I will not invent the thresholds.
 3. **Run or authorise the Monday reads.** I can do the read-only checks in 4.2 once the market is open and the session is running; they need the read secret and market hours.
 4. **Anything that moves a stop by hand, changes a risk limit, or touches a broker order** stays with you.
+
+---
+
+## 6. Verified 07-10-2026 (Claude · № 11,583·A, fixed under № 11,596·D·1)
+
+The owner's condition was "proceed after this verification on the stop-loss programming (Chandelier, MAE, etc.) is active on all accounts". Read-only, production, 06-10 21:00–21:35Z:
+
+| Part | Verdict | Evidence |
+|---|---|---|
+| Opposite trigger on every stop, broker trailing once the stop locks profit | Passed, all 7 accounts | `/state/stop-policy`: enabled, OPPOSITE on_lock; controller last pass 7 accounts, 9 positions, 9 amends, 9 read back. Verifier: 9/9 `stopLossTriggerMethod: 2`; the 3 live accounts read ok with 0 positions. Trailing 0/9 is right: the two profit-locked stops (ETHUSD 1644, SHOP.US 1692) are momentum-book rows, trigger-only by design. |
+| MAE / MFE readings | Passed, every managed position | `mae_r`/`mfe_r` refreshed by the position manager and persisted each loop and fast tick on …7342, …9908, …0949; book rows read 0/0 by design. |
+| Chandelier since-entry trail | **Failed outside the selected account …0949** | Node log: `[since-entry-trail] trail-config N spec(s) for account 47790949` only; nothing for …9908 or …7342 since 05-10 while they held eligible managed positions (1722, 1723, 1724). Cause: `agent/loop.js` starts the guardian with `getCtraderCreds` and `agent/services/guardian.js` ran the trade guards and the profit keeper with that one account's credentials. `loop.js` no longer calls either, so the guardian's sweep was the only caller. |
+| Engine-side spec held by cpp-exec | Not Verifiable at the time | `GET /trail-status` on the gateway needs EXEC_SECRET; no Node read existed. |
+
+**The fix (PR under № 11,596·D·1).** The guardian's sweep walks every enabled registered account on both sides, the stream's account first (`sweepAccounts`), and runs the trade guards and the keeper per account. One constraint shaped it: the sidecar's `POST /trail-config` is a single full replace per gateway (`cpp-exec/src/trail_engine.cpp`, `configure`: `byPosition_.swap(next)`), so account-by-account pushes would each wipe the others' specs. Each keeper pass therefore defers its push (`deps.deferTrailPush`, `summary.trailSpecs`) and the sweep sends one union per side. A backstop sweep now runs at least every 5 minutes while anything is held, so a gateway restart no longer waits for the next 0.05% move to get its specs back. `GET /state/trail-status?account=<id>` reads the engine's live set for that account's side, which turns the last row above from Not Verifiable into a read: the union must list every eligible managed position on both gateways.
+
+**Read-back to do after the deploy:** `[since-entry-trail] trail-config N spec(s) pushed for the demo side (accepted)` and the same for the live side in the Node log; `/state/trail-status?account=46979908` listing 1722/1723/1724 beside …0949's positions; the heartbeat `guardian` ok.
