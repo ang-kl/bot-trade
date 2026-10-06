@@ -6438,9 +6438,9 @@ async function runLoop(db) {
         },
         {
           name: 'prune-outbox',
-          run: () => db.prepare(
-            `DELETE FROM telegram_outbox WHERE sent_at IS NOT NULL AND queued_at < ?`
-          ).run(new Date(Date.now() - 14 * 86_400_000).toISOString()),
+          run: async () => (await import('./services/outbox-prune.js')).pruneSentOutboxCooperatively(
+            db, new Date(Date.now() - 14 * 86_400_000).toISOString()
+          ),
         },
         // Owner 01-09-2026 ("every stale, triggerless or dead piece goes: wire
         // it so it fires, or delete it"). The three steps below existed as
