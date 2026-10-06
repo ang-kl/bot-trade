@@ -86,24 +86,19 @@ function clockSecs(iso) {
 
 function Section({ id, title, summary, tag = null, defaultOpen = true, children }) {
   const KEY = `desk_open_${id}`
-  const [open, setOpen] = useState(() => {
+  const [open] = useState(() => {
     try { const v = localStorage.getItem(KEY); return v == null ? defaultOpen : v === '1' } catch { return defaultOpen }
   })
-  const toggle = () => setOpen(o => {
-    const n = !o
-    try { localStorage.setItem(KEY, n ? '1' : '0') } catch { /* private mode */ }
-    return n
-  })
+
   return (
-    <Card id={`sec-${id}`}>
-      <button type="button" onClick={toggle} aria-expanded={open} className="w-full flex items-center gap-1.5 text-left cursor-pointer">
-        <span aria-hidden="true" className="w-3 text-(length:--fs-body) shrink-0">{open ? '▾' : '▸'}</span>
+    <Card id={`sec-${id}`} defaultCollapsed={!open}>
+      <div className="w-full flex items-center gap-1.5 text-left">
         <h2 className="t-h3">{title}</h2>
         {/* Owner: state the account beside the table, not only in the sidebar. */}
         {tag}
         {summary && <span className="ml-auto text-(length:--fs-body) text-[var(--color-text-sub)] truncate">{summary}</span>}
-      </button>
-      {open && <div className="mt-1.5">{children}</div>}
+      </div>
+      <div className="mt-1.5">{children}</div>
     </Card>
   )
 }

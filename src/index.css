@@ -1581,3 +1581,10 @@ textarea {
 .dt-sticky-head { position: sticky; top: 0; z-index: 12; background: var(--color-bg); }
 .dt-sticky-col  { position: sticky; left: 0; z-index: 10; background: var(--color-bg); }
 .dt-sticky-date { position: sticky; top: var(--dt-row-h); z-index: 11; background: var(--color-bg); }
+
+/* One consistent leading disclosure for standalone native detail cards. */
+details > summary { list-style: none; }
+details > summary::marker { content: ""; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "▶︎"; display: inline-block; margin-right: 6px; }
+details[open] > summary::before { content: "▼"; }

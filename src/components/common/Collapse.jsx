@@ -10,9 +10,12 @@
 // Collapse component… gives every section exactly one disclosure owner"). A
 // Performance-style section without a Card wrapper gets its triangle from
 // THIS component or nothing; it never came from SectionTools.
-import { useState } from 'react'
+import { useContext, useState } from 'react'
+
+import { CardChromeContext } from './CardChromeContext.js'
 
 export default function Collapse({ id, label, sub = null, defaultOpen = true, children }) {
+  const inCard = useContext(CardChromeContext)
   const [open, setOpen] = useState(() => {
     try {
       const v = localStorage.getItem(`tbl_open_${id}`)
@@ -24,11 +27,13 @@ export default function Collapse({ id, label, sub = null, defaultOpen = true, ch
     try { localStorage.setItem(`tbl_open_${id}`, next ? '1' : '0') } catch { /* private mode */ }
     return next
   })
+  // A containing Card already owns this whole-section disclosure.
+  if (inCard) return children
   return (
     <div>
       <button type="button" aria-expanded={open} onClick={toggle}
         className="flex items-center gap-1.5 text-(length:--fs-body) font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]">
-        <span aria-hidden="true" className="inline-block w-3">{open ? '▾' : '▸'}</span>
+        <span aria-hidden="true" className="inline-block w-3">{open ? '▼' : '▶︎'}</span>
         {label}
         {sub && <span className="font-normal text-[var(--color-muted)]">{sub}</span>}
       </button>

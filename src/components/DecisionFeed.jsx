@@ -1,3 +1,4 @@
+import Card from './common/Card.jsx'
 // DecisionFeed — "why didn't it trade?", on the page where the question gets
 // asked.
 //
@@ -155,9 +156,9 @@ export default function DecisionFeed({ variant = 'full' }) {
     const top = stages.slice(0, 2)
     const rest = stages.slice(2)
     return (
-      <div id="sec-decisions-mobile" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <Card data={shown} toText={shown ? () => toText(shown) : undefined} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 4 }} id="sec-decisions-mobile" style={{  }}>
         <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Why it did or did not trade</span>
+          <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Why it did or did not trade</h3>
           <Segmented label="Decision window" value={String(hours)}
             options={WINDOWS.map(h => ({ value: String(h), label: `${h}h` }))}
             onChange={v => setHours(Number(v))} />
@@ -201,14 +202,14 @@ export default function DecisionFeed({ variant = 'full' }) {
             </details>
           </>
         )}
-      </div>
+      </Card>
     )
   }
 
   return (
-    <div id="sec-decisions" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <Card data={shown} toText={shown ? () => toText(shown) : undefined} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 4 }} id="sec-decisions" style={{  }}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Decision Feed card</span>
+        <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Decision Feed card</h3>
         <Segmented label="Decision window" value={String(hours)}
           options={WINDOWS.map(h => ({ value: String(h), label: `${h}h` }))}
           onChange={v => setHours(Number(v))} />
@@ -271,6 +272,6 @@ export default function DecisionFeed({ variant = 'full' }) {
           {showRows && <RowsTable rows={shown.rows} />}
         </>
       )}
-    </div>
+    </Card>
   )
 }

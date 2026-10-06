@@ -47,7 +47,7 @@
 // that only appeared on hover — invisible on a phone, which never hovers.
 // ⇲ and ⧉ keep their existing faint/hover-only treatment; only the collapse
 // control is always fully visible now.
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, Children, cloneElement, isValidElement, useEffect, useRef, useState } from 'react'
 import CopyPopup from './CopyPopup.jsx'
 import { tableToJson as scrapeJson, tableToHtml, dataToHtml, textToJson, textToHtml } from '../../lib/copy-serialize.js'
 import { sectionKind, NAV_KIND_LEGEND } from '../../lib/nav-tree.js'
@@ -62,6 +62,24 @@ import { readCardOpen, writeCardOpen } from '../../lib/card-open.js'
 // floor against the worst jump.
 const LOADING_MIN_HEIGHT = 160
 
+// Preserve the existing heading and its children; only its owning card adds
+// a control. Do not descend into another Card or an opaque child component.
+function headingDisclosure(children, control) {
+  let found = false, title = ''
+  const words = value => Children.toArray(value).map(c => isValidElement(c) ? words(c.props.children) : typeof c === 'string' || typeof c === 'number' ? c : '').join('')
+  const walk = value => Children.map(value, child => {
+    if (found || !isValidElement(child) || (typeof child.type !== 'string' && child.type !== Fragment)) return child
+    if ((typeof child.type === 'string' && /^h[1-6]$/.test(child.type)) || /(?:^|\s)t-h[1-6](?:\s|$)/.test(child.props.className || '')) {
+      found = true
+      title = words(child.props.children)
+      return cloneElement(child, {}, control, child.props.children)
+    }
+    if (['table', 'button', 'details'].includes(child.type)) return child
+    return cloneElement(child, {}, walk(child.props.children))
+  })
+  return { children: walk(children), found, title }
+}
+
 export default function Card({
   children, className = '', copyable = true, copyTitle = null,
   data = null, toText = null, collapsible = true, defaultCollapsed = false,
@@ -70,6 +88,7 @@ export default function Card({
   // the body reserves LOADING_MIN_HEIGHT instead of growing from whatever a
   // loading placeholder measures to the settled content's real height.
   loading = false,
+  bodyStyle = undefined,
   // W1-FU (26-09 UI plan §5): opt-in — while this Card is COLLAPSED and has
   // never been opened, its `children` are not mounted at all (not just
   // hidden with display:none). The default (false) is the existing
@@ -160,7 +179,7 @@ export default function Card({
   ].filter(Boolean).join(' ')
 
   // The card's own heading, used for the popup title and the collapsed label.
-  const headingOf = (el) => el?.querySelector('h1,h2,h3,h4,[class*="t-h"]')?.innerText?.split('\n')[0]?.trim() || null
+  const headingOf = (el) => el?.querySelector('h1,h2,h3,h4,[class*="t-h"]')?.innerText?.replace(/^[▶▼]\uFE0E?\s*/, '')?.split('\n')[0]?.trim() || null
 
   const openCopy = () => {
     const el = ref.current
@@ -171,9 +190,10 @@ export default function Card({
     // clipboard paste and is not in a saved .txt/.json file, so the control
     // glyphs are dropped here. Only the glyphs: no text is removed.
     // Also drops the lone-line content-kind tag (T / F / C / T+F).
-    const CHROME_GLYPHS = /^(?:[▾▸⧉↓✕⇲⇱]|T|F|C|T\+F)$/
+    const CHROME_GLYPHS = /^(?:[▾▸▶▼⧉↓✕⇲⇱]|T|F|C|T\+F)$/
     const domText = (el.innerText || '')
       .split('\n')
+      .map(l => l.replace(/^[▶▼]\uFE0E?\s*/, ''))
       .filter(l => !CHROME_GLYPHS.test(l.trim()))
       .join('\n')
       .replace(/\n{3,}/g, '\n\n')
@@ -217,11 +237,26 @@ export default function Card({
   // (see the `body` style below), so it must count as "opened" too — a lazy
   // Card someone maximizes before ever expanding must not render an empty
   // overlay.
+  const disclosure = collapsible ? (
+          <button type="button" aria-expanded={!collapsed || maximized}
+            title={collapsed ? 'Expand this section' : 'Collapse this section'}
+            aria-label={collapsed ? 'Expand this section' : 'Collapse this section'}
+            onClick={() => {
+              if (!collapsed) setLabel(copyTitle || headingOf(ref.current) || 'Section')
+              setCollapsed(c => !c)
+            }}
+            style={{ ...collapseBtn, marginRight: 6, flexShrink: 0 }}
+            onMouseEnter={collapseHoverOn} onMouseLeave={collapseHoverOff}>
+            {collapsed && !maximized ? '▶︎' : '▼'}
+          </button>
+) : null
+  const heading = headingDisclosure(children, collapsed && !maximized ? null : disclosure)
   const mountChildren = !lazy || everOpened || maximized
   const body = <div className="card-body" style={{
+    ...bodyStyle,
     ...(collapsed && !maximized ? { display: 'none' } : undefined),
     ...(loading ? { minHeight: LOADING_MIN_HEIGHT } : undefined),
-  }}>{mountChildren ? children : null}</div>
+  }}>{mountChildren ? heading.children : null}</div>
 
   return (
     <CardChromeContext.Provider value={true}>
@@ -260,19 +295,6 @@ export default function Card({
           onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
           ⇲
         </button>
-        {collapsible && (
-          <button type="button" aria-expanded={!collapsed}
-            title={collapsed ? 'Expand this section' : 'Collapse this section'}
-            aria-label={collapsed ? 'Expand this section' : 'Collapse this section'}
-            onClick={() => {
-              if (!collapsed) setLabel(copyTitle || headingOf(ref.current) || 'Section')
-              setCollapsed(c => !c)
-            }}
-            style={collapseBtn}
-            onMouseEnter={collapseHoverOn} onMouseLeave={collapseHoverOff}>
-            {collapsed ? '▸' : '▾'}
-          </button>
-        )}
         {copyable && (
           <button type="button" title="Copy this section" aria-label="Copy this section"
             onClick={openCopy} style={btn}
@@ -286,9 +308,10 @@ export default function Card({
           survives and the card collapses to a single line. */}
       {collapsed && !maximized && (
         <span className="text-(length:--fs-body) font-semibold text-[var(--color-text-sub)]">
-          {label || copyTitle || 'Section'}
+          {disclosure}{label || copyTitle || heading.title || 'Section'}
         </span>
       )}
+      {!collapsed && !heading.found && <span style={{ float: 'left', marginRight: 6 }}>{disclosure}</span>}
       {/* Maximized: the SAME body node renders inside a fixed overlay — no
           remount, so table/scroll/sort state survives; ⇱ or Esc restores. */}
       {maximized

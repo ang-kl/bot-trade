@@ -989,9 +989,9 @@ function AcctCardsGrid({ acctCards }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
             {acctCards.map(a => (
-              <div key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <Card id={`perf-account-${a.id}`} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 3 }} key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '6px 10px' }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
+                  <h3 style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</h3>
                   <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -1005,7 +1005,7 @@ function AcctCardsGrid({ acctCards }) {
                   <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Forecast · 30D pace</span><span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
                 </div>
                 <DailyStopLine a={a} />
-              </div>
+              </Card>
             ))}
     </div>
   )
@@ -1170,7 +1170,7 @@ export function MobileWindowCard({ w, timeZone }) {
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         style={{ cursor: 'pointer', fontFamily: 'inherit', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', color: P_TX, display: 'grid', gridTemplateColumns: '76px 1fr 82px', gap: 6, alignItems: 'center', padding: '7px 11px', fontVariantNumeric: 'tabular-nums', minHeight: 44 }}>
         <span style={{ display: 'flex', flexDirection: 'column' }}>
-          <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{w.label}</span>
+          <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}><span aria-hidden="true">{open ? '▼' : '▶︎'}</span> {w.label}</span>
           <span style={{ fontSize: 'var(--fs-body)', color: P_ACC }}>{dRange(w.from, w.to, timeZone)}</span>
         </span>
         <span style={{ display: 'flex', flexDirection: 'column' }}>
@@ -1233,9 +1233,10 @@ const MOBILE_SCREENS = [
 export default function Performance() {
   const overview = useAccountOverview()
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-  const populationUrl = `/state/performance-populations?timeZone=${encodeURIComponent(timeZone)}`
+  const populationUrl = `/state/performance-populations?account=all&timeZone=${encodeURIComponent(timeZone)}`
   const [ledger, setLedger] = useState(null)
   const [populationReport, setPopulationReport] = useState(null)
+  const [populationError, setPopulationError] = useState(null)
   const [tradeScope, setTradeScope] = useState(null)
   const loadGeneration = useRef(0)
   const [accounts, setAccounts] = useState([])
@@ -1321,20 +1322,32 @@ export default function Performance() {
       // switch account"). `?account=` is now threaded through all four —
       // 'all' means the portfolio view, explicitly.
       const q = acct === 'all' ? '?account=all' : `?account=${encodeURIComponent(acct)}`
-      const [ac, t, p, populations, an] = await Promise.all([
+      // A ready session report paints immediately; unrelated broker/history
+      // requests can be slow or never settle and must not hold this card back.
+      const populationRead = readPerformanceReport(populationUrl).then(report => {
+        if (generation !== loadGeneration.current) return report
+        const complete = report?.status === 'complete'
+        setPopulationReport(complete ? report : null)
+        setLedger(complete ? reportLedger(report, acct) : null)
+        if (complete) setLoadedAt(report.asOfMs)
+        setPopulationError(complete ? null : 'Performance report unavailable.')
+        return report
+      }).catch(e => {
+        if (generation === loadGeneration.current) setPopulationError(e.message)
+        return null
+      })
+      const [ac, t, p, , an] = await Promise.all([
         agentGet('/state/accounts').catch(() => null),
         agentGet(`/state/trades${q}`).catch(() => null),
         agentGet(`/state/positions${q}`).catch(() => null),
-        readPerformanceReport(populationUrl).catch(() => null),
+        populationRead,
         readPerformanceReport(`/state/account-analytics?account=${encodeURIComponent(acct)}`).catch(() => null),
       ])
       if (generation !== loadGeneration.current) return
-      setPopulationReport(populations?.status === 'complete' ? populations : null)
       const tradeRows = scopedPerformanceRows(t, acct, 'trades')
       const positionRows = scopedPerformanceRows(p, acct, 'positions')
       setTradeScope(tradeRows ? acct : null)
       setAnalytics(an && !an.error ? an : null)
-      setLedger(populations?.status === 'complete' ? reportLedger(populations, acct) : null)
       setAccounts(ac?.accounts || [])
       setSelectedAccountId(ac?.selectedAccountId || null)
       setAllTrades(tradeRows || [])
@@ -1358,7 +1371,7 @@ export default function Performance() {
       // route (or an error body) leaves the card saying "did not load".
       setFeedReport(df && !df.error && String(df.accountId) === String(acct) ? df : null)
 
-      setLoadedAt(populations?.asOfMs ?? Date.now())
+      // The population timestamp belongs to its independent report read.
       setError('')
     } catch (e) {
       if (generation === loadGeneration.current) {
@@ -2065,9 +2078,9 @@ export default function Performance() {
               <SessionClock />
             </div>
             {acctCards.map(a => (
-              <div key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <Card id={`perf-mobile-account-${a.id}`} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 4 }} key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px' }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
+                  <h3 style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</h3>
                   <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -2086,25 +2099,25 @@ export default function Performance() {
                   </div>
                   <DailyStopLine a={a} />
                 </div>
-              </div>
+              </Card>
             ))}
-            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <Card id="perf-mobile-rolling" bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 4 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                 {/* Phone copy of the same card — it must not keep saying FX day
                     open when the desktop one no longer does (owner, 2026-07-31).
                     Both read the same `today`, which is now on rollingWin. */}
-                <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</span>
+                <h3 style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</h3>
                 <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>latest 24 one-hour windows · newest first</span>
                 <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.net != null ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.split ? <HeadlineCurrencyLines split={today.split} /> : today.net != null ? signed(today.net) : '—'}</span>
               </div>
               <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.pricedN} with P&L · ${today.wr ?? 'unknown'}% wins among priced closes${today.split?.unpooled ? ` · ${today.split.unpooled.text}` : ''}` : (today.n == null ? 'Close evidence unavailable' : '0 recorded closes in the last 24 hours')}</span>
-            </div>
+            </Card>
             {[{ key: 'float', title: 'Open positions — floating', rows: openSplit.floating, tot: openSplit.floatTot, border: P_GBD, titleCol: P_MU },
               { key: 'closed', title: 'Open trade but market closed', rows: openSplit.closed, tot: openSplit.closedTot, border: 'var(--color-warning-border)', titleCol: P_WRN }]
               .filter(t2 => t2.key === 'float' || t2.rows.length > 0).map(t2 => (
-              <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <Card id={`perf-mobile-positions-${t2.key}`} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 5 }} key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 14, padding: '9px 12px' }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
+                  <h3 style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</h3>
                   <AccountTag accountId={posScope.accountId} legacyRows={t2.key === 'float' ? posScope.legacyRows : 0} />
                   <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>{!positionsAvailable ? 'Position evidence unavailable' : t2.rows.length ? `${t2.rows.length} open · ${t2.tot != null ? signed(t2.tot) : '—'}` : 'No recorded positions in this group'}</span>
                 </div>
@@ -2126,7 +2139,7 @@ export default function Performance() {
                     <span style={{ fontSize: 'var(--fs-body)', color: P_MU, textAlign: 'right' }}>SL {p2.sld} · TP {p2.tpd}</span>
                   </div>
                 ))}
-              </div>
+              </Card>
             ))}
           </>
         )}
@@ -2168,9 +2181,9 @@ export default function Performance() {
         {screen === 'markets' && (
           <>
             {/* Crypto — account-scoped live quotes on mobile. */}
-            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <Card id="perf-mobile-crypto" bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 5 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
+                <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</h3>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
                   {crypto.k.map(k2 => (
                     <span key={k2.k} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, padding: '2px 7px', borderRadius: 999, border: `1px solid ${P_GBD}`, background: P_ACS }}>
@@ -2192,10 +2205,10 @@ export default function Performance() {
                   <span style={{ fontSize: 'var(--fs-body)', color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
                 </div>
               ))}
-            </div>
+            </Card>
             {/* Forex bands — exact mobile panel. */}
-            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-              <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
+            <Card id="perf-mobile-forex" bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 5 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px' }}>
+              <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</h3>
               {fxBands.map(b => (
                 <div key={b.band} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 3 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
@@ -2212,7 +2225,7 @@ export default function Performance() {
                   </div>
                 </div>
               ))}
-            </div>
+            </Card>
           </>
         )}
 
@@ -2220,8 +2233,8 @@ export default function Performance() {
           <>
             {[{ title: 'Winners — best closed', tcol: P_UP, rows: winLag.win },
               { title: 'Laggards — worst closed', tcol: P_DN, rows: winLag.lag }].map(panel => (
-              <div key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-                <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</span>
+              <Card id={`perf-mobile-outcome-${panel.title}`} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 5 }} key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px' }}>
+                <h3 style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</h3>
                 {panel.rows.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{populationReport ? 'No priced closes in the last 30 days.' : 'Report unavailable.'}</span>}
                 {panel.rows.map((t2, ti) => (
                   <div key={ti} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -2235,7 +2248,7 @@ export default function Performance() {
                     <span style={{ fontSize: 'var(--fs-body)', color: P_ACC, fontVariantNumeric: 'tabular-nums' }}>{t2.ind}</span>
                   </div>
                 ))}
-              </div>
+              </Card>
             ))}
           </>
         )}
@@ -2243,8 +2256,8 @@ export default function Performance() {
         {screen === 'accounts' && (
           <>
             {/* Gradients — exact mobile panels (52px label col, 7px headers). */}
-            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — timeframe × account</span>
+            <Card id="perf-mobile-gradient-timeframe" bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 3 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px' }}>
+              <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — timeframe × account</h3>
               <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, color: P_MU }}>
                 <span>Window</span>
                 {gradients.cols.map(c2 => <span key={c2.id} title={c2.full} style={{ textAlign: 'center' }}>{c2.name}</span>)}
@@ -2256,9 +2269,9 @@ export default function Performance() {
                 </div>
               ))}
               <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>blue = net gain · red = net loss · shaded per column · money per currency, never across currencies · &apos;n of m priced&apos; = partial</span>
-            </div>
-            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — asset × account · 30D</span>
+            </Card>
+            <Card id="perf-mobile-gradient-asset" bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 3 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px' }}>
+              <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — asset × account · 30D</h3>
               <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.assetCols.length},1fr)`, gap: 3, color: P_MU }}>
                 <span>Asset</span>
                 {gradients.assetCols.map(c2 => <span key={c2.id} title={c2.full} style={{ textAlign: 'center' }}>{c2.name}</span>)}
@@ -2269,7 +2282,7 @@ export default function Performance() {
                   {r.cells.map((c2, ci) => <span key={gradients.assetCols[ci]?.id ?? ci} title={c2.why?.long} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '3px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}><GradientFigure c={c2} /></span>)}
                 </div>
               ))}
-            </div>
+            </Card>
             {/* Regime + balance + data feed — the desktop exact-port
                 components render responsively here (the mobile prototype's
                 variants share their data model; the desktop components carry
@@ -2361,9 +2374,14 @@ export default function Performance() {
               hourly table (Close bal truncated, Trades/Closed invisible).
               Reverted to an even flex share with a flex-basis that clears
               the table's 420px min-width, so nothing is ever cut off. */}
-          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, flex: '1 1 440px', minWidth: 300 }}>
+          <Card id="perf-rolling" copyTitle="Rolling 24 Hours table" data={{ hourly: todayHourly, closedTrades: todayTrades }} toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.split ? currencyLinesText(today.split, signed) : today.net != null ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr ?? 'unknown'}% wins among ${today.pricedN} priced closes` : ''}`,
+                  // The copied text carries the same label the row shows — the
+                  // END of the window, in SGT over UTC — not the window start.
+                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${balanceLines(r.balance?.open, { money }).map(l => l.text).join(' / ')} · P/L ${r.split ? currencyLinesText(r.split, signed) : r.net != null ? signed(r.net) : '—'}${floatingText(r.balance?.floating, { signed }) ? ` ${floatingText(r.balance?.floating, { signed }).text}` : ''} · close ${balanceLines(r.balance?.close, { money }).map(l => l.text).join(' / ')} · ${openingCountLabel(r.openedN, r.unknownOpeningTimeN, r.incompleteOpeningWindow)} opened / ${openingCountLabel(r.closedN, r.unknownCloseTimeN, r.incompleteOpeningWindow)} closed`),
+                  '', `Journal sample (${journalAvailable ? todayTrades.length : 'unavailable'})`,
+                  ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 2 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', flex: '1 1 440px', minWidth: 300 }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</span>
+              <h3 style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</h3>
               {/* Owner ruling 2026-07-31. The old heading named the FX day open
                   as the anchor, and had to be footnoted ("every symbol · the FX
                   day open is only where the window starts") because the title
@@ -2412,7 +2430,7 @@ export default function Performance() {
               Journal sample ({journalAvailable ? todayTrades.length : 'unavailable'} of {today.n ?? 'unknown'} recorded closes) · tap a row
             </span>
             <PagedRows rows={todayTrades} pageSize={8} maxHeight={300}>{(pageRows) => <TodayTradesBody rows={pageRows} available={journalAvailable} />}</PagedRows>
-          </div>
+          </Card>
           {(() => {
             if (!positionsAvailable) return <p role="status">Position evidence unavailable; an empty display is not a flat account.</p>
             const defs = [{
@@ -2425,9 +2443,9 @@ export default function Performance() {
               note: 'market closed — the bot cannot exit these until their market reopens; P&L is the latest computed value before/at close',
             }]
             const card = (t2, extraStyle = {}) => (
-              <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 12, padding: '7px 11px', display: 'flex', flexDirection: 'column', gap: 3, flex: '2 1 320px', minWidth: 320, ...extraStyle }}>
+              <Card id={`perf-positions-${t2.key}`} copyTitle={t2.title} data={t2.rows.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, price: p2.price, dayOhlcv: p2.day, market: p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : 'unknown', slAway: p2.sld, tpAway: p2.tpd }))} toText={() => [t2.title, ...t2.rows.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · O ${fmtPx(p2.day?.o)} H ${fmtPx(p2.day?.h)} L ${fmtPx(p2.day?.l)} C ${fmtPx(p2.day?.c)} · vol ${fmtVol(p2.day?.v)} · mkt ${p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 3 }} key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 12, padding: '7px 11px', flex: '2 1 320px', minWidth: 320, ...extraStyle }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
+                  <h3 style={{ flexShrink: 0, fontSize: 'var(--fs-body)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</h3>
                   <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>
                     {t2.rows.length
                       // PERF-2: this card is rendered twice (float / market-closed),
@@ -2447,7 +2465,7 @@ export default function Performance() {
                 {t2.rows.length > 0 && (
                   <PagedRows rows={t2.rows} pageSize={14} maxHeight={332}>{(pageRows) => <OpenTableBody rows={pageRows} />}</PagedRows>
                 )}
-              </div>
+              </Card>
             )
             // Owner (2026-07-25): "If Open now has nothing, collapse and
             // tuck away above the open-but-market-closed like a filing
@@ -2525,7 +2543,11 @@ export default function Performance() {
                     : `${s.key} · no closed trades`)].join('\n')}
               render={() => <SessionStatsBody stats={sessionStats} />} />
           </div>
-          <div className="mt-2"><SessionStatsBody stats={sessionStats} /></div>
+          <p className={`text-(length:--fs-body) ${SUB}`} role="status">
+            {populationReport?.asOfMs ? `Report as of ${new Date(populationReport.asOfMs).toLocaleString()}` : 'Session report has not loaded.'}
+            {populationError ? ` · Refresh failed: ${populationError}${populationReport ? ' · showing the last successful report' : ''}` : ''}
+          </p>
+          {populationReport ? <div className="mt-2"><SessionStatsBody stats={sessionStats} /></div> : <p className={SUB}>Session statistics unavailable.</p>}
         </Card>
 
         {/* Account filter chips — exact prototype two-line buttons. */}
@@ -2567,33 +2589,28 @@ export default function Performance() {
         {/* Performance gradients — exact prototype panels (timeframe ×
             account, asset class × account heat tables; column count follows
             the real registry). */}
-        {/* Owner (2026-07-25, latest): "two cards 50% each side" and "both
-            Performance gradient cards must be symmetric in height" — an even
-            split with stretch alignment, so the shorter card matches the
-            taller one instead of leaving a ragged bottom edge. The wide left
-            table scrolls inside its own panel (minmax(0,…) + overflowX), which
-            is what keeps it from stealing the right card's track. */}
-        <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 8, alignItems: 'stretch' }}>
-          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
+        {/* Each gradient has a full-width row; the table scrolls within it. */}
+        <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 8, alignItems: 'stretch' }}>
+          <Card id="sec-gradient-timeframe" copyTitle="Performance Gradient — Timeframe × Account table" data={gradientData(gradients.tWide, gradients.wideCols, 'window', gradients.tWideSub, OVERLAP_LABEL)} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 2 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
+              <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</h3>
               <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>always shows all accounts + overall per currency · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance Gradient — Timeframe × Account table"
                 data={gradientData(gradients.tWide, gradients.wideCols, 'window', gradients.tWideSub, OVERLAP_LABEL)}
                 render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} subtotalLabel={OVERLAP_LABEL} subtotalTitle={OVERLAP_TITLE} banded smallHead colW="minmax(46px,72px)" foot={gradientFoot(gradients, 't')} />} />
             </div>
             <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} subtotalLabel={OVERLAP_LABEL} subtotalTitle={OVERLAP_TITLE} banded smallHead colW="minmax(46px,72px)" foot={gradientFoot(gradients, 't')} />
-          </div>
-          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
+          </Card>
+          <Card id="sec-gradient-asset" copyTitle="Performance Gradient — Asset Class × Account table" data={gradientData(gradients.a, gradients.assetCols, 'asset', gradients.aSub, 'Subtotal')} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 2 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
+              <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</h3>
               <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>rolling 30 days</span>
               <SectionTools id="grad-asset" title="Performance Gradient — Asset Class × Account table" window="30D"
                 data={gradientData(gradients.a, gradients.assetCols, 'asset', gradients.aSub, 'Subtotal')}
                 render={() => <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradientFoot(gradients, 'a')} />} />
             </div>
             <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradientFoot(gradients, 'a')} />
-          </div>
+          </Card>
         </div>
 
         {/* FX banded panel + Strategy × market — exact prototype grid (the
@@ -2603,32 +2620,32 @@ export default function Performance() {
             every pair, so width is what makes it readable) and the strategy
             matrix + crypto panels sit side by side beneath it. */}
         <div id="sec-fx-bands" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ minWidth: 0, background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <Card id="perf-forex" copyTitle="Forex — Banded, All Pairs table" data={fxBands} toText={(rows) => ['Forex — banded, all pairs (1W)', ...(rows || []).map(b => `${b.band} · ${b.net} · ${b.meta} · ${b.pairs.filter(p2 => p2.v !== '·').map(p2 => `${p2.sym} ${p2.v}`).join(' · ') || 'no trades'}`)].join('\n')} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 4 }} style={{ minWidth: 0, background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px' }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
+              <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</h3>
               <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · tap a pair for TP/SL detail</span>
               <SectionTools id="fx-bands" title="Forex — Banded, All Pairs table" window="1W" data={fxBands}
                 toText={(rows) => ['Forex — banded, all pairs (1W)', ...(rows || []).map(b => `${b.band} · ${b.net} · ${b.meta} · ${b.pairs.filter(p2 => p2.v !== '·').map(p2 => `${p2.sym} ${p2.v}`).join(' · ') || 'no trades'}`)].join('\n')}
                 render={() => <FxBandsBody fxBands={fxBands} />} />
             </div>
             <FxBandsBody fxBands={fxBands} />
-          </div>
+          </Card>
           <div className="perf-2col-even">
-            <div id="sec-strategy-matrix" style={{ minWidth: 0, overflowX: 'auto', background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <Card copyTitle="Strategy × Market — 30D table" data={stratMx} toText={(rows) => ['Strategy × market — 30D', ...(rows || []).map(s => `${s.label || s.name} · net ${s.net} · edge ${s.edge} · ${s.cells.map((c, ci) => `${MARKET_COLS[ci].label} ${c.v}`).join(' · ')}`)].join('\n')} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 3 }} id="sec-strategy-matrix" style={{ minWidth: 0, overflowX: 'auto', background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
+                <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</h3>
                 <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>
                 <SectionTools id="strategy-matrix" title="Strategy × Market — 30D table" window="30D" data={stratMx}
                   toText={(rows) => ['Strategy × market — 30D', ...(rows || []).map(s => `${s.label || s.name} · net ${s.net} · edge ${s.edge} · ${s.cells.map((c, ci) => `${MARKET_COLS[ci].label} ${c.v}`).join(' · ')}`)].join('\n')}
                   render={() => <StratMxBody stratMx={stratMx} />} />
               </div>
               <StratMxBody stratMx={stratMx} />
-            </div>
+            </Card>
             {/* Crypto 24/7 — exact prototype panel; live price/Δ not
                 streamed to this page → honest —. */}
-            <div id="sec-crypto" style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <Card copyTitle="Crypto — Runs 24/7 table" data={crypto.rows} toText={(rows) => ['Crypto — runs 24/7', ...crypto.k.map(k2 => `${k2.k} ${k2.v}`), ...(rows || []).map(c2 => `${c2.sym} · 7D ${c2.pnl} · ${c2.meta}`)].join('\n')} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 3 }} id="sec-crypto" style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
+                <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</h3>
                 <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>tracked separately · never session-gated · = the ledger's Crypto column</span>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 5 }}>
                   {crypto.k.map(k2 => (
@@ -2642,7 +2659,7 @@ export default function Performance() {
                   render={() => <CryptoBody crypto={crypto} />} />
               </div>
               <CryptoBody crypto={crypto} />
-            </div>
+            </Card>
           </div>
         </div>
 
@@ -2652,16 +2669,16 @@ export default function Performance() {
         <div id="sec-winlag" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' }}>
           {[{ title: 'Winners explained — best closed trades, 30D', tcol: P_UP, sub: 'full anatomy: time in → out, side, lots, plan, volume context at open/close', rows: winLag.win },
             { title: 'Laggards explained — worst closed trades, 30D', tcol: P_DN, sub: 'same anatomy — what went wrong and under what volume conditions', rows: winLag.lag }].map(panel => (
-            <div key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <Card id={`perf-outcome-${panel.title}`} copyTitle={panel.title} data={panel.rows} toText={(rows) => [panel.title, ...(rows || []).map(t2 => `${t2.when} · ${t2.sym} · ${t2.sd} · ${t2.why} · ${t2.stratLabel || t2.strat} · ${t2.pnl}`)].join('\n')} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 3 }} key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</span>
+                <h3 style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</h3>
                 <span style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{panel.sub}</span>
                 <SectionTools id={panel.title.startsWith('Winners') ? 'winners' : 'laggards'} title={panel.title} window="30D" data={panel.rows}
                   toText={(rows) => [panel.title, ...(rows || []).map(t2 => `${t2.when} · ${t2.sym} · ${t2.sd} · ${t2.why} · ${t2.stratLabel || t2.strat} · ${t2.pnl}`)].join('\n')}
                   render={() => <WlBody available={populationReport != null} rows={panel.rows} />} />
               </div>
               <WlBody available={populationReport != null} rows={panel.rows} />
-            </div>
+            </Card>
           ))}
         </div>
 

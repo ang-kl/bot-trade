@@ -1,3 +1,4 @@
+import Card from './common/Card.jsx'
 // PerfAccountScope — "Am I looking at all accounts, or one?"
 //
 // Owner (2026-07-30): "The current Performance Ledger does not clearly indicate
@@ -192,11 +193,11 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
       </div>
 
       {/* THE DETAIL PANEL — the only thing that changes when the scope changes. */}
-      <div style={{ marginTop: 8, background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '6px 10px' }}>
+      <Card id="perf-account-detail" bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 4 }} style={{ marginTop: 8, background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '6px 10px' }}>
         <div style={{ ...cell, marginBottom: 4, display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>
+          <h3 style={{ fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>
             Showing
-          </span>
+          </h3>
           <span style={{ fontWeight: 800, color: P_ACC }}>{label}</span>
         </div>
         <p style={cell}>Today = midnight–now{timeZone ? ` in ${timeZone}` : ''}. Floating is the current open-position amount. Historical realised amounts retain their recorded account units.</p>
@@ -258,7 +259,7 @@ export default function PerfAccountScope({ acctCards, palette, money, signed, sc
             </div>
           )
         })()}
-      </div>
+      </Card>
     </div>
   )
 }

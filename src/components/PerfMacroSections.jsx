@@ -16,6 +16,7 @@ import { reportStats } from '../../agent/shared/performance-populations.js'
 //    stop the engine enforces — the account cards' own reading); anything
 //    nobody measures is named as not measured.
 import { useState } from 'react'
+import Card from './common/Card.jsx'
 import SectionTools from './common/SectionTools.jsx'
 import { sideLabelUpper } from '../lib/side.js'
 import { accountNumbers } from "../lib/scope-label.js"
@@ -28,7 +29,7 @@ const WRN = 'var(--color-warning-text)', EDG = 'var(--glass-edge)'
 const GL = 'var(--color-surface)', GBD = 'var(--color-border)', ACS = 'var(--color-accent-soft)'
 const panel = {
   background: GL, border: `1px solid ${GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)',
-  backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column',
+  backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px',
 }
 const nf1 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const signed = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : `${v > 0 ? '+' : ''}${nf1.format(Number(v))}`)
@@ -90,9 +91,9 @@ const OIA = [
 
 function QuadCard({ q }) {
   return (
-    <div style={{ minWidth: 0, border: `1px solid ${q.bd}`, background: q.bg, borderRadius: 14, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <Card id={`perf-quadrant-${q.title}`} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 4 }} style={{ minWidth: 0, border: `1px solid ${q.bd}`, background: q.bg, borderRadius: 14, padding: '6px 8px' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>{q.title}</span>
+        <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>{q.title}</h3>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: MU }}>{q.tot}</span>
       </div>
       <span style={{ fontSize: 'var(--fs-body)', lineHeight: 1.4, color: SB }}>{q.txt}</span>
@@ -105,7 +106,7 @@ function QuadCard({ q }) {
         </div>
       ))}
       {q.rows.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: MU, borderTop: `1px solid ${EDG}`, paddingTop: 3 }}>{q.available ? 'No recorded open positions in this quadrant.' : 'Position evidence unavailable.'}</span>}
-    </div>
+    </Card>
   )
 }
 
@@ -170,9 +171,9 @@ export function RegimeMatrix({ populationReport, positions, positionsAvailable =
   }))
   const rOpts = [{ id: 'all', label: 'All Accounts' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ${accountNumbers(a)}` }))]
   return (
-    <div style={{ ...panel, gap: 2 }}>
+    <Card id="perf-macro" copyTitle="Macro Regime Matrix — Where the Book Sits table" data={dots.map(d => ({ group: d.name, net30d: d.pnl }))} toText={() => ['Macro regime matrix — 30D net per asset group', ...dots.map(d => `${d.name} · ${d.pnl}`)].join('\n')} bodyStyle={{ gap: 2 }} style={{ ...panel }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Macro regime matrix — where the book sits</span>
+        <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Macro regime matrix — where the book sits</h3>
         <span style={{ fontSize: 'var(--fs-body)', color: SB }}>growth × inflation, not static correlations · ring = volatility band · dot color = 30D net for that group · hover a dot</span>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 700, color: WRN }}>quadrant playbooks are the design's reference copy — the bot does not compute a live regime read yet</span>
         {!inModal && (
@@ -287,15 +288,15 @@ export function RegimeMatrix({ populationReport, positions, positionsAvailable =
           </div>
         ))}
       </div>
-    </div>
+    </Card>
   )
 }
 
 export function BalanceInOut({ inModal = false }) {
   return (
-    <div style={{ ...panel, gap: 3 }}>
+    <Card id="perf-cashflows" copyTitle="Balance In / Out table" data={[]} toText={() => 'Cashflow detail unavailable here; consult Account balance, equity and cashflows for retained coverage.'} bodyStyle={{ gap: 3 }} style={{ ...panel }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Balance in / out — deposits, withdrawals &amp; transfers</span>
+        <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Balance in / out — deposits, withdrawals &amp; transfers</h3>
         <span style={{ fontSize: 'var(--fs-body)', color: SB }}>cashflow detail not connected to this legacy panel</span>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: MU }}>net —</span>
         {!inModal && (
@@ -317,7 +318,7 @@ export function BalanceInOut({ inModal = false }) {
           Cashflow detail unavailable here. Consult Account balance, equity and cashflows for retained account coverage. This panel cannot establish zero transfers or a reconciled balance.
         </span>
       </div>
-    </div>
+    </Card>
   )
 }
 
@@ -363,9 +364,10 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
   // did not load, so they name the timeframe and claim nothing.
   const tfChips = timeframeChips(feedReport ? feedReport.barReceipts : undefined, clockMs)
   return (
-    <div style={{ ...panel, gap: 4 }}>
+    <Card id="perf-data-feed" copyTitle="Data Feed — Core Universal Essentials table" data={[{ balance, freeMargin, equity, openCount, dailyStop: stopWords ? dailyStop.cap : null, dailyStopCcy: stopWords ? dailyStop.capCcy : null, dailyStopState: allAccounts ? 'per_account' : dailyStop?.capState ?? 'not_read', dailyStopBinding: stopWords ? dailyStop.binding ?? null : null, equityStopArmed, slSet, tpSet, scope: scopeNote,
+              entryLatencyP50Ms: execution?.latency?.p50Ms ?? null, entryLatencyP90Ms: execution?.latency?.p90Ms ?? null, entryLatencyMeasured: execution?.latency?.measured ?? null, closesInWindow: execution?.window?.closes ?? null }]} bodyStyle={{ gap: 4 }} style={{ ...panel }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: 'var(--color-special-text)' }}>Data feed — core universal essentials</span>
+        <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: 'var(--color-special-text)' }}>Data feed — core universal essentials</h3>
         <span style={{ fontSize: 'var(--fs-body)', color: SB }}>what the bot ingests before any strategy fires, regardless of asset class</span>
         {!inModal && (
           <SectionTools id="data-feed" title="Data Feed — Core Universal Essentials table"
@@ -418,6 +420,6 @@ export function DataFeed({ balance, freeMargin, equity, floating = null, currenc
           <span style={line}>equity stop <span style={{ fontWeight: 800, color: ACC }}>{equityStopArmed == null ? 'unverified' : equityStopArmed ? `configured${equityStopPct != null ? ` ${+(equityStopPct * 100).toFixed(2)}%` : ''}` : 'off'}</span>{equityStopArmed ? ' · armed state not measured' : ''}</span>
         </div>
       </div>
-    </div>
+    </Card>
   )
 }
