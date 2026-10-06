@@ -151,7 +151,7 @@ export default function AccountEngineering() {
 
       {accounts.length > 0 && (
         <div className="overflow-x-auto">
-          <Collapse id="AccountEngineering_129" label="Switch Rows">
+          <Collapse wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} id="AccountEngineering_129" label="Switch Rows">
           <table className="w-full text-(length:--fs-body) tabular-nums">
             <thead>
               <tr className="text-left text-[var(--color-text-sub)]">

@@ -59,7 +59,7 @@ export default function StrategyInsights({ account = 'all' }) {
       {rows && rows.length === 0 && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">No closed trades in this range.</div>}
       {rows && rows.length > 0 && (
         <div className="overflow-x-auto">
-          <Collapse id="StrategyInsights_59" label="Strategy Rows">
+          <Collapse wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} id="StrategyInsights_59" label="Strategy Rows">
           <table className="w-full text-(length:--fs-body)">
             <thead>
               <tr>

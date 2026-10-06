@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import Card from './Card.jsx'
 import Collapse from './Collapse.jsx'
+import { EngineRow } from '../EngineStatusPanel.jsx'
 
 const fakeStorage = (init = {}) => {
   const m = new Map(Object.entries(init))
@@ -171,9 +172,34 @@ describe('card heading disclosure placement', () => {
 
 
 it('a table inside its Card shares the card disclosure instead of adding a second one', () => {
-  const html = render({}, <><h3>Signals</h3><Collapse id="rows" label="Signal rows"><table><tbody><tr><td>EURUSD</td></tr></tbody></table></Collapse></>)
+  const html = render({}, <><h3>Signals</h3><Collapse wholeSection id="rows" label="Signal rows"><table><tbody><tr><td>EURUSD</td></tr></tbody></table></Collapse></>)
   expect(html.match(/aria-label="Collapse this section"/g)).toHaveLength(1)
   expect(html).not.toContain('Signal rows')
   expect(html).toContain('EURUSD')
   expect(html).toMatch(/<h3><button/)
+})
+
+// Codex · №11,601·R (ui-followup-2026-10-07) — regress the real nested disclosure boundary.
+it('independent subsections keep their labels and closed state inside a card', () => {
+  const html = render({}, <><h3>Risk summary</h3>
+    <Collapse id="day" label="Day limits"><p>Daily limits</p></Collapse>
+    <Collapse id="holding" label="Holding limits" defaultOpen={false}><p>Hidden holding limits</p></Collapse>
+  </>)
+  expect(html).toContain('Day limits')
+  expect(html).toContain('Daily limits')
+  expect(html).toContain('Holding limits')
+  expect(html).toContain('aria-expanded="false"')
+  expect(html).not.toContain('Hidden holding limits')
+  expect(html.match(/aria-label="Collapse this section"/g)).toHaveLength(1)
+})
+
+it('the actual engine account blocker disclosure stays closed within its card', () => {
+  const readiness = { ready: false, blockedReasons: ['recorder_status_fresh'], readiness: [
+    { check: 'recorder_status_fresh', ok: false, blockClass: 'infrastructure', observed: 'never pulled', remedy: 'check the sidecar' },
+  ] }
+  const html = render({}, <><h3>Entry engines</h3><EngineRow row={{ accountId: 'A', requestedEntryMode: 'TIME_BASED', effectiveEntryMode: 'STOPPED', transitionState: 'WARMING' }}
+    fullId="A" readiness={readiness} busy={false} onMode={() => {}} at={null} /></>)
+  expect(html).toContain('Why not tick-ready (1)')
+  expect(html).toContain('aria-expanded="false"')
+  expect(html).not.toContain('remedy: check the sidecar')
 })

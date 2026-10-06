@@ -150,7 +150,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
         <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">All {rows.length} available symbols in this set are already on the watchlist.</p>
       )}
       {visible.length > 0 && <div className="overflow-x-auto">
-        <Collapse id="WatchlistScreener_152" label="Screener Rows">
+        <Collapse wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} id="WatchlistScreener_152" label="Screener Rows">
         <table className="w-full text-(length:--fs-body) tabular-nums">
           <thead>
             <tr className="border-b border-[var(--color-border)]">
