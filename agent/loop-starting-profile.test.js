@@ -5,7 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { parse } from 'acorn'
-import { startPhaseProfile, stopPhaseProfile, _resetForTests } from './services/cpu-profile.js'
+import { startPhaseProfile, stopPhaseProfile, startStartupProfile, _resetForTests } from './services/cpu-profile.js'
 
 const source = readFileSync(new URL('./loop.js', import.meta.url), 'utf8')
 const tree = parse(source, { ecmaVersion: 'latest', sourceType: 'module' })
@@ -24,7 +24,7 @@ assert.ok(begin && end && end.end > begin.start, 'the real cycle accounting bloc
 const definitions = source.slice(begin.start, guard ? guard.start : end.end)
 const prefix = guard ? source.slice(guard.block.start + 1, end.end) : ''
 const dependencyBindings = `const { db, start, startLagMonitor, sampleLag, markLagPhase, setState,
-    startPhaseProfile, stopPhaseProfile, log } = deps;`
+    startPhaseProfile, stopPhaseProfile, startStartupProfile, loopCount, console, log } = deps;`
 const phaseBlock = new Function('deps', `
   ${dependencyBindings}
   ${definitions}
@@ -75,22 +75,25 @@ function setup(t, phases) {
   })
   const state = new Map()
   const marked = []
+  const logged = []
   let failing = false
   let failureKey = null
   const deps = {
-    db: {}, start: Date.now(),
+    db: {}, start: Date.now(), loopCount: 2,
     startLagMonitor: () => {}, sampleLag: () => ({ maxMs: 0 }),
     markLagPhase: key => marked.push(key),
     setState: (_db, key, value) => {
       if (failing || key === failureKey) throw new Error('injected diagnostic write failure')
       state.set(key, value)
     },
-    startPhaseProfile, stopPhaseProfile, log: () => {},
+    startPhaseProfile, stopPhaseProfile, startStartupProfile, log: () => {},
+    console: { log: line => logged.push(line) },
   }
   return {
     ...phaseBlock(deps), state, marked,
     nextCycle: () => phaseBlock({ ...deps, start: Date.now() }),
-    guardedCycle: work => guardedBlock({ ...deps, start: Date.now() }, work),
+    guardedCycle: (work, cycle = 2) => guardedBlock({ ...deps, start: Date.now(), loopCount: cycle }, work),
+    logged,
     failWrites: () => { failing = true },
     failOnKey: key => { failureKey = key },
   }
@@ -184,4 +187,37 @@ test('the real lifecycle guard remains harmless after normal close and stops a t
     else assert.equal(await work, outcome)
     assert.equal(stopPhaseProfile(() => assert.fail(`sampling leaked after ${outcome}`)), false)
   }
+})
+
+test('first-cycle trace covers real phase handoffs and emits a log without diagnostic DB persistence', async t => {
+  const run = setup(t, null)
+  run.closePhases()
+  const value = { original: true }
+  assert.equal(await run.guardedCycle(async ({ phase, closePhases }) => {
+    phase('scanning fixture symbols', 'scan')
+    deliberateScanBurner()
+    phase('analyzing fixture symbols', 'analyze')
+    await new Promise(resolve => setImmediate(resolve))
+    closePhases()
+    return value
+  }, 1), value)
+  const records = run.logged.filter(line => line.startsWith('[diag] Startup CPU profile: '))
+  assert.equal(records.length, 1)
+  const summary = JSON.parse(records[0].split(': ').slice(1).join(': '))
+  assert.equal(summary.phase, 'startup-first-cycle')
+  assert.ok(summary.top.some(row => /deliberateScanBurner/.test(row.frame)))
+  assert.equal(run.state.has('loop_cpu_profile_json'), false)
+  assert.equal(stopPhaseProfile(() => assert.fail('startup leaked')), false)
+})
+
+test('first-cycle trace is released by the actual guard when its first DB stamp fails', async t => {
+  const run = setup(t, null)
+  run.closePhases()
+  run.failOnKey('loop_phase')
+  await assert.rejects(run.guardedCycle(() => assert.fail('failed stamp admitted work'), 1),
+    /injected diagnostic write failure/)
+  assert.equal(run.logged.filter(line => line.startsWith('[diag] Startup CPU profile: ')).length, 1)
+  process.env.CPU_PROFILE_PHASES = 'scan'
+  assert.equal(startPhaseProfile('scan'), true, 'failure must release the inspector')
+  stopPhaseProfile(() => {})
 })

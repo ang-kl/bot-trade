@@ -52,7 +52,7 @@ import { createLoopBreaker, clearStaleTripStampAtBoot } from './lib/loop-breaker
 import { startLagMonitor, sampleLag, markLagPhase } from './services/event-loop-lag.js'
 import { noteLoopEnd, stampFirst } from './services/runtime-record.js'
 import { measureAmend } from './services/protection-latency.js'
-import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
+import { startPhaseProfile, stopPhaseProfile, startStartupProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { armedTimeframes, armedScopeGate } from './lib/timeframes.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
@@ -3293,6 +3293,7 @@ async function runLoop(db) {
   // (tests, scripts), so a phase never reports lag of "unknown" for want of a
   // monitor nobody started.
   startLagMonitor()
+  let stopStartupProfile = () => {}
   const phaseMs = {}
   const phaseLag = {}
   let phaseName = 'starting'
@@ -3353,6 +3354,11 @@ async function runLoop(db) {
   // The outer cleanup also covers failures before the main cycle's catch.
   try {
   markLagPhase('starting')
+  // Cover phase handoff writes and concurrent callbacks as well as scanning.
+  // Start inside the existing cleanup guard, before its first database write.
+  stopStartupProfile = loopCount === 1 ? startStartupProfile(summary => {
+    console.log(`[diag] Startup CPU profile: ${JSON.stringify({ observedAt: new Date().toISOString(), ...summary })}`)
+  }) : () => {}
   setState(db, 'loop_phase', 'starting')
   startPhaseProfile('starting')
   setState(db, 'loop_started_at', new Date().toISOString())
@@ -6846,6 +6852,7 @@ async function runLoop(db) {
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), delay)
   } finally {
+    stopStartupProfile()
     // closePhases normally stopped it already, including error backoff.
     // This idempotent stop prevents a thrown state read/write retaining an
     // active diagnostic session and swallowing the next cycle's profile.

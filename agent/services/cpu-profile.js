@@ -17,10 +17,10 @@
 // named phase costs a few percent and answers the question directly instead of
 // ranking suspects.
 //
-// Deliberately OPT-IN via CPU_PROFILE_PHASES (comma-separated phase keys, e.g.
-// "monitor,autopilot"). Left off, this module does nothing at all: no inspector
-// session, no sampling, no allocation. Diagnostics that are always on become
-// part of the problem they are meant to explain.
+// Recurring phase profiles are OPT-IN via CPU_PROFILE_PHASES. The loop also
+// requests ONE bounded first-cycle profile: phase handoffs and background
+// callbacks were outside the retained scan trace during a measured 47s stall.
+// It logs code locations/timings only, then returns to the opt-in policy.
 import inspector from 'node:inspector'
 
 // 5ms between samples. At the ~200s phases we are chasing that is ~40k samples,
@@ -30,6 +30,51 @@ const SAMPLE_INTERVAL_US = Math.max(200, Number(process.env.CPU_PROFILE_INTERVAL
 
 let session = null
 let activePhase = null
+let startupAttempted = false
+let startupStop = null
+
+/**
+ * Sample the entire first cycle, including phase handoff writes and independent
+ * callbacks. Never re-arm in this process; stop on completion/error or after
+ * 120s. A blocked thread can delay that timer, so this is a target duration,
+ * not a claim that diagnostics can interrupt synchronous application work.
+ * Recurring phase profiles resume after this owner releases the inspector.
+ */
+export function startStartupProfile(onResult, { maxMs = 120_000 } = {}) {
+  if (startupAttempted) return () => {}
+  startupAttempted = true
+  if (activePhase || typeof onResult !== 'function') return () => {}
+  let timer
+  let stopped = false
+  const stop = () => {
+    if (stopped) return
+    stopped = true
+    clearTimeout(timer)
+    startupStop = null
+    stopPhaseProfile(onResult)
+  }
+  try {
+    if (!session) {
+      session = new inspector.Session()
+      session.connect()
+      session.post('Profiler.enable')
+    }
+    // Fixed 10ms sampling bounds the ordinary 120s trace to about 12k samples;
+    // operator-selected high-frequency phase sampling cannot amplify this.
+    session.post('Profiler.setSamplingInterval', { interval: 10_000 })
+    session.post('Profiler.start')
+    activePhase = 'startup-first-cycle'
+    startupStop = stop
+    const duration = Math.min(120_000, Math.max(1, Number(maxMs) || 120_000))
+    timer = setTimeout(stop, duration)
+    timer.unref?.()
+    return stop
+  } catch {
+    activePhase = null
+    startupStop = null
+    return () => {}
+  }
+}
 
 /** Which phases the operator asked to profile. Null (the default) = none. */
 export function profileEnabledFor(key) {
@@ -175,6 +220,9 @@ export function startPhaseProfile(key) {
  * a caller can persist unconditionally.
  */
 export function stopPhaseProfile(onResult) {
+  // Phase boundaries must not end the continuous first-cycle trace. Its own
+  // once-only stop clears this guard before using the shared stop operation.
+  if (startupStop) return false
   if (!activePhase || !session) return false
   const phase = activePhase
   activePhase = null
@@ -191,7 +239,9 @@ export function stopPhaseProfile(onResult) {
 
 /** Test seam — tear the session down so a fresh one can be built. */
 export function _resetForTests() {
+  startupStop?.()
   try { session?.disconnect() } catch { /* already gone */ }
   session = null
   activePhase = null
+  startupAttempted = false
 }
