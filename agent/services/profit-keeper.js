@@ -831,11 +831,16 @@ async function profitKeeperPass(db, creds, deps = {}) {
           for (const p of status.positions) {
             if (p?.positionId == null || !(p.lastSl > 0)) continue
             const key = String(p.positionId)
+            // Codex P2 on #1243 (Claude · after № 11,614): /trail-status is the
+            // whole gateway, every account's positions. The cursor is advanced
+            // only for THIS pass's own rows; another account's position is
+            // journaled by its own pass, which would otherwise read "unchanged"
+            // and lose the trail_tightened event.
+            const r = byPositionId.get(key)
+            if (!r) continue
             const prev = lastSeenTrailSl.get(key)
             lastSeenTrailSl.set(key, p.lastSl)
             if (prev === p.lastSl) continue // unchanged since the last pass — nothing to journal
-            const r = byPositionId.get(key)
-            if (!r) continue
             recordPositionEvent(db, {
               accountId: r.account_id, positionId: key, tradeId: r.trade_id, symbol: r.symbol,
               kind: 'trail_tightened', fromValue: prev, toValue: p.lastSl,

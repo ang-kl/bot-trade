@@ -853,3 +853,34 @@ test('deferTrailPush: the pass builds its specs and leaves the push to the calle
   assert.ok(Array.isArray(out.trailSpecs) && out.trailSpecs.length === 1, `one spec on the summary, got ${JSON.stringify(out.trailSpecs)}`)
   assert.equal(out.trailSpecs[0].positionId, 9001)
 })
+
+// Codex P2 on #1243 (Claude · after № 11,614): /trail-status answers for the
+// whole gateway, every account's positions; the shared cursor advances only
+// for the pass's own rows, so another account's tightening is journaled by
+// its own pass instead of being consumed silently.
+test('trail read-back: another account\'s position on the same gateway is left for its own pass', async () => {
+  const db = mkKeeperDb()
+  db.prepare(`INSERT INTO trades (symbol, side, ctrader_position_id, status, account_id) VALUES ('XAUUSD', 'BUY', '7777', 'open', '2')`).run()
+  const t2 = db.prepare(`SELECT id FROM trades WHERE ctrader_position_id = '7777'`).get().id
+  db.prepare(`
+    INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, status, source, trade_id, account_id)
+    VALUES ('XAUUSD', 'long', 50, 49, 60, 'active', 'external', ?, '2')
+  `).run(t2)
+  const deps = keeperDeps()
+  deps.exec.amendPosition = async () => ({})
+  deps.exec.pushTrailConfig = async () => true
+  deps.exec.reconcile = async () => ({ position: [
+    { positionId: 9001, price: 2.8795, stopLoss: 2.918, takeProfit: 1.8, tradeData: { symbolId: 1, volume: 10000, tradeSide: 2 } },
+    { positionId: 7777, price: 50.5, stopLoss: 49, takeProfit: 60, tradeData: { symbolId: 2, volume: 10000, tradeSide: 1 } },
+  ] })
+  deps.ws.wsGetLastCloses = async () => ({ 1: 2.30, 2: 50.5 })
+  deps.exec.getTrailStatus = async () => ({
+    enabled: true,
+    positions: [{ positionId: 9001, symbolId: 1, lastSl: 2.75 }, { positionId: 7777, symbolId: 2, lastSl: 49.5 }],
+  })
+  await runProfitKeeper(db, CREDS, deps) // account '1' owns 9001 (unstamped row) and not 7777
+  assert.equal(eventsFor(db, '9001').filter(r => r.kind === 'trail_tightened' && r.to_value === 2.75).length, 1)
+  assert.equal(eventsFor(db, '7777').filter(r => r.kind === 'trail_tightened').length, 0, 'not this account\'s row: not journaled by this pass')
+  await runProfitKeeper(db, { ...CREDS, accountId: '2' }, deps) // account '2' owns 7777
+  assert.equal(eventsFor(db, '7777').filter(r => r.kind === 'trail_tightened').length, 1, 'its own pass journals it; the first pass must not have consumed it')
+})
