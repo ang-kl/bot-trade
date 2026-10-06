@@ -1,5 +1,19 @@
 # Instructions for Claude — bot-trade
 
+<!-- Startup-stall investigation 2026-10-06: owner ordered fix after
+№11,420; progress №11,421–11,424. Fresh base9e19565 retains completed
+PR1233/1234/1235/1236. Scan-only profiling omitted phase handoff writes
+and independent callbacks during a measured startup stall. Add one
+first-cycle CPU trace, stopped on completion/error or a120s timer
+(synchronous blocking can delay the timer), then restore opt-in profiling.
+Output only bounded code locations/timings; no SQL, args or credentials.
+This corrects diagnostic coverage, not a proven production stall cause.
+Trading gates/deadlines/protections and all owner exclusions remain intact.
+Full local/exact-head CI and deployed verification still required.
+Conversation ref: ordered after №11,420; reported №11,424.
+Session link and measured effort unavailable; do not invent.
+-->
+
 <!-- Edge-watchdog currency correction 2026-10-06: owner ordered after
 №11,382; progress №11,383–11,386. Fresh base2ad23e16/tree667fbf9f retains
 completed PR1233/1234/1235 and their gates. Reproduced source-only currency
