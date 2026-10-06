@@ -165,4 +165,7 @@ test('backstop: beyond the boot pass, no sweep without a tick when backstopMs is
   await until(() => f.pushes.length >= 2)
   await new Promise(resolve => setTimeout(resolve, 120))
   assert.equal(f.keeper.length, 3, 'exactly the boot sweep (three accounts), nothing more')
+  const demo = f.pushes.find(p => p.side === 'demo'), live = f.pushes.find(p => p.side === 'live')
+  assert.deepEqual(demo.specs.map(s => s.positionId), [100, 200], 'the demo union carries BOTH demo accounts, not the last one to pass')
+  assert.deepEqual(live.specs.map(s => s.positionId), [300])
 })
