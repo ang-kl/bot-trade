@@ -42,9 +42,10 @@ export default function StrategyInsights({ account = 'all' }) {
   }, [days, account])
 
   return (
-    <Card>
+    // Codex · №11,643·R (ui-followup-2026-10-07) — retain this card's preference across reloads.
+    <Card id="sec-strategy-insights">
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-(length:--fs-body) font-semibold">Strategy Forecast vs. Actual table</div>
+        <h3 className="text-(length:--fs-body) font-semibold">Strategy Forecast vs. Actual table</h3>
         <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           {account === 'all' ? 'all accounts' : `account ${account} only`} · closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires
         </span>
@@ -59,7 +60,7 @@ export default function StrategyInsights({ account = 'all' }) {
       {rows && rows.length === 0 && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">No closed trades in this range.</div>}
       {rows && rows.length > 0 && (
         <div className="overflow-x-auto">
-          <Collapse id="StrategyInsights_59" label="Strategy Rows">
+          <Collapse wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} id="StrategyInsights_59" label="Strategy Rows">
           <table className="w-full text-(length:--fs-body)">
             <thead>
               <tr>

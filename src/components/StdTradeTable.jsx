@@ -49,7 +49,8 @@ function sortVal(r, k) {
 const PAGE = 8
 const COL1_W = 76 // px — frozen date/time column; col 2 offset builds on it
 
-export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick = null, panel = null, marketHours = null, extraAction = null }) {
+// Codex · №11,601·R (ui-followup-2026-10-07) — ownership is explicit at the single-table card caller.
+export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick = null, panel = null, marketHours = null, extraAction = null, wholeSection = false }) {
   const [page, setPage] = useState(0)
   const [chartFor, setChartFor] = useState(null)
   const [panelFor, setPanelFor] = useState(null)
@@ -189,9 +190,9 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
 
   return (
     <div>
-      {/* ▸/▾ on the table itself (owner 02-08: every table carries the
-          collapsible triangle, even inside an already-collapsible card). */}
-      <Collapse id={`stt_${countLabel.replace(/\W+/g, '_')}`} label={`${rows?.length ?? 0} ${countLabel}`}>
+      {/* Independent tables keep a leading disclosure. A table that is the
+          containing card's whole body can explicitly share its control. */}
+      <Collapse wholeSection={wholeSection} id={`stt_${countLabel.replace(/\W+/g, '_')}`} label={`${rows?.length ?? 0} ${countLabel}`}>
       <div className="overflow-x-auto">
         <table className="std-cols min-w-[880px] w-full text-(length:--fs-body) tabular-nums">
           <thead>
@@ -488,4 +489,3 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     </div>
   )
 }
-
