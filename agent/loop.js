@@ -2955,12 +2955,15 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
 // per-position LLM calls (see monitorOnePosition's header comment).
 export const MONITOR_CONCURRENCY = 4
 
-export async function runMonitorPhase(db, s, positions, currentPriceOf, client, skipLlm = () => false) {
+export async function runMonitorPhase(db, s, positions, currentPriceOf, client, skipLlm = () => false, { beforeBatch = null } = {}) {
   for (let i = 0; i < positions.length; i += MONITOR_CONCURRENCY) {
     // Progress in the phase label — a stall here now reads "monitoring 22
     // positions (9-12)" instead of a frozen count (incident forensics).
     setState(db, 'loop_phase', `monitoring ${positions.length} positions (${i + 1}-${Math.min(i + MONITOR_CONCURRENCY, positions.length)})`)
     const chunk = positions.slice(i, i + MONITOR_CONCURRENCY)
+    // Refresh immediately before consumption: earlier batches' broker/LLM
+    // work must not age later positions' quotes out of their freshness limit.
+    if (beforeBatch) await beforeBatch(chunk)
     await Promise.all(chunk.map(pos =>
       monitorOnePosition(db, s, pos, currentPriceOf(pos), client, skipLlm).catch(err => {
         log(`Monitor check failed for ${pos.symbol}:`, err.message)
@@ -5689,35 +5692,25 @@ async function runLoop(db) {
       const activePositions = openPositions.length > 0
         ? openPositions
         : s.selectActivePositions.all('active')
-      const lastScanResultsJson = getState(db, 'last_scan_results')
-      let lastScanResults = null
-      try { lastScanResults = JSON.parse(lastScanResultsJson || 'null') } catch { /* non-fatal */ }
-
       // Cheap price refresh for held positions — one spot quote each, decoupled
       // from the heavy new-setup scan (held symbols are no longer force-scanned,
-      // so monitoring can't crowd out hunting). This is the PRIMARY price for
-      // the deterministic rules; the last scan row is only a fallback for a
-      // symbol whose quote failed this cycle.
-      let heldPrices = {}
-      if (activePositions.length > 0) {
-        try {
-          const monCreds = getCtraderCreds(db)
-          if (monCreds.ready) {
-            const { refreshHeldPrices } = await import('./services/held-prices.js')
-            const monSymbolMap = getSymbolMap(db)
-            heldPrices = await refreshHeldPrices(monCreds, monSymbolMap, activePositions.map(p => p.symbol))
-          }
-        } catch (err) {
-          log(`Held-price refresh failed (non-fatal): ${err.message}`)
-        }
-      }
-
+      // so monitoring can't crowd out hunting). Prices belong to each account,
+      // are broker-timestamped and must postdate the position record. An old
+      // scan or another account's quote cannot seed this position's MFE/MAE.
+      const { refreshHeldPositionPrices, heldPositionPrice } = await import('./services/held-prices.js')
+      let heldPrices = new Map()
       // D4: bounded-concurrency, not one-position-at-a-time — see
       // monitorOnePosition/runMonitorPhase above (docs/d4-loop-block-fix-plan.md).
-      await runMonitorPhase(db, s, activePositions, pos => {
-        const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
-        return heldPrices[String(pos.symbol).toUpperCase()] ?? scanRow?.price ?? null
-      }, client, skipLlmMonitor)
+      await runMonitorPhase(db, s, activePositions, pos => heldPositionPrice(pos, heldPrices), client, skipLlmMonitor, {
+        beforeBatch: async chunk => {
+          heldPrices = new Map()
+          try {
+            heldPrices = await refreshHeldPositionPrices(db, chunk)
+          } catch (err) {
+            log(`Held-price refresh failed (non-fatal): ${err.message}`)
+          }
+        },
+      })
       // V3 M1: the first slow-monitor pass after boot (memory only; the boot
       // record persists it on its own 30-second cadence).
       stampFirst('slowMonitor', { positions: activePositions.length })
