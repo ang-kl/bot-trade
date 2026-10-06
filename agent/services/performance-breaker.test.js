@@ -10,11 +10,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
 import { rollingStats, runPerformanceBreaker, loadPerformanceBreakerConfig, DEFAULT_PERFORMANCE_BREAKER } from './performance-breaker.js'
+import { upsertAccount } from './account-registry.js'
+import { recordDepositCurrency } from './account-money.js'
 
 function closeTrade(db, pnl, minutesAgo = 0) {
+  upsertAccount(db, { accountId: '1001', isLive: false })
+  recordDepositCurrency(db, { accountId: '1001', host: 'demo.ctraderapi.com',
+    depositAssetId: '1', currency: 'USD', receivedAt: Date.now() })
   db.prepare(
-    `INSERT INTO trades (symbol, side, status, net_pnl, opened_at, closed_at)
-     VALUES ('EURUSD', 'BUY', 'closed', ?, datetime('now', ?), datetime('now', ?))`
+    `INSERT INTO trades (symbol, side, status, account_id, net_pnl, opened_at, closed_at)
+     VALUES ('EURUSD', 'BUY', 'closed', '1001', ?, datetime('now', ?), datetime('now', ?))`
   ).run(pnl, `-${minutesAgo + 30} minutes`, `-${minutesAgo} minutes`)
 }
 
