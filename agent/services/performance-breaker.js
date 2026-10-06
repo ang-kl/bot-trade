@@ -25,6 +25,7 @@
 
 import { getState, setState } from '../db.js'
 import { BREAKER_BAR } from './edge-bars.js'
+import { depositCurrencies } from './deposit-currencies.js'
 
 export const DEFAULT_PERFORMANCE_BREAKER = {
   on: true,          // alerting armed by default — it only ever sends a message
@@ -50,31 +51,49 @@ export function loadPerformanceBreakerConfig(db) {
   return { ...DEFAULT_PERFORMANCE_BREAKER }
 }
 
-/** Rolling stats over the last `window` closed trades (all strategies). */
+/** Legacy last-N closed ledger rows, with monetary stats only in one known unit. */
 export function rollingStats(db, window) {
   const rows = db.prepare(
-    `SELECT id, net_pnl FROM trades
+    `SELECT id, account_id, net_pnl FROM trades
       WHERE status = 'closed' AND net_pnl IS NOT NULL
       ORDER BY closed_at DESC, id DESC LIMIT ?`
   ).all(window)
   const trades = rows.length
   const wins = rows.filter(r => Number(r.net_pnl) > 0)
+  const sample = {
+    trades,
+    winRate: trades ? Math.round((wins.length / trades) * 100) : null,
+    newestId: rows[0]?.id ?? null,
+  }
+  const units = trades ? depositCurrencies(db) : {}
+  const currencyCounts = {}
+  let unverifiedTrades = 0
+  for (const row of rows) {
+    const currency = units[String(row.account_id ?? '').trim()]?.currency
+    if (!currency) unverifiedTrades++
+    else currencyCounts[currency] = (currencyCounts[currency] || 0) + 1
+  }
+  const currencies = Object.keys(currencyCounts)
+  if (unverifiedTrades || currencies.length !== 1) {
+    return { ...sample, currency: null, currencyCounts, unverifiedTrades,
+      moneyReason: unverifiedTrades ? 'unverified_currency' : (trades ? 'mixed_currencies' : 'empty_sample'),
+      profitFactor: null, expectancy: null, net: null }
+  }
   const losses = rows.filter(r => Number(r.net_pnl) < 0)
   const grossWin = wins.reduce((s, r) => s + Number(r.net_pnl), 0)
   const grossLoss = Math.abs(losses.reduce((s, r) => s + Number(r.net_pnl), 0))
   const net = rows.reduce((s, r) => s + Number(r.net_pnl), 0)
   return {
-    trades,
-    winRate: trades ? Math.round((wins.length / trades) * 100) : null,
+    ...sample,
+    currency: currencies[0], currencyCounts, unverifiedTrades: 0, moneyReason: null,
     profitFactor: grossLoss > 0 ? Math.round((grossWin / grossLoss) * 100) / 100 : (grossWin > 0 ? null : 0),
     expectancy: trades ? Math.round((net / trades) * 100) / 100 : null,
     net: Math.round(net * 100) / 100,
-    newestId: rows[0]?.id ?? null,
   }
 }
 
 /**
- * One pass — call once per loop cycle (cheap: one indexed query). Fires the
+ * One pass — last-N query plus existing account-owned currency evidence. Fires the
  * alert AT MOST once per newest-trade-id (same "act once per streak"
  * dedupe pattern as adaptive-breaker), so it doesn't repeat every cycle
  * while the window stays bad.
@@ -85,13 +104,16 @@ export function runPerformanceBreaker(db, { notify } = {}) {
 
   const stats = rollingStats(db, cfg.window)
   if (stats.trades < cfg.minTrades || stats.newestId == null) return { skipped: 'insufficient_sample', stats }
+  // A ratio of amounts in different or unknown units is not monetary PF.
+  // Do not consume the newest ID: currency evidence may arrive later.
+  if (stats.moneyReason) return { skipped: stats.moneyReason, stats }
   if (stats.profitFactor == null || stats.profitFactor >= cfg.pfThreshold) return { skipped: 'above_threshold', stats }
 
   const seenKey = 'performance_breaker_acted_id'
   if (String(getState(db, seenKey)) === String(stats.newestId)) return { skipped: 'already_alerted', stats }
   setState(db, seenKey, String(stats.newestId))
 
-  const msg = `🚨 ALL HANDS ON DECK: last ${stats.trades} closed trades — profit factor ${stats.profitFactor.toFixed(2)} (floor ${cfg.pfThreshold}), ${stats.winRate}% win rate, expectancy ${stats.expectancy >= 0 ? '+' : ''}${stats.expectancy}/trade, net ${stats.net >= 0 ? '+' : ''}${stats.net}. Autotrade left running — the breaker alerts only.`
+  const msg = `🚨 ALL HANDS ON DECK: last ${stats.trades} closed trades — profit factor ${stats.profitFactor.toFixed(2)} (floor ${cfg.pfThreshold}), ${stats.winRate}% win rate, expectancy ${stats.currency} ${stats.expectancy >= 0 ? '+' : ''}${stats.expectancy}/trade, net ${stats.currency} ${stats.net >= 0 ? '+' : ''}${stats.net}. Autotrade left running — the breaker alerts only.`
   try {
     db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
       .run('PERF_BREAKER', '/performance', JSON.stringify({ stats }).slice(0, 2000))

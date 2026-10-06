@@ -1,5 +1,23 @@
 # Instructions for Claude — bot-trade
 
+<!-- Bounded morning reporting correction 2026-10-06 00:41 UTC: owner
+authorised the morning plan after №11,347 and requested a09:30SGT report.
+Fresh main d137b181 and tree a39f558c are unchanged; PR1233/1234 and their
+completed gates are reused. A real in-memory DB fixture reproduces the
+legacy performance alert pooling verified USD/SGD amounts. Eight new
+regressions fail unchanged source and pass the isolated correction: monetary
+PF/net/expectancy require one account-owned known currency across the same
+last-N ledger rows; mixed/unknown units consume no alert dedupe state.
+Homogeneous alert thresholds/window and all trading flags remain unchanged.
+This is not forward whole-position performance acceptance. Full local and
+exact-head CI gates, merge and deployed identity remain pending at this stamp.
+Transport499 corroborates client cancellation, but caller/cause remains
+unproven. App read access remains unbound;25 active/7 verified, no new full
+closure. Hourly watch remains disabled; staging and all owner exclusions
+remain unchanged. Conversation ref: ordered after №11,347; progress
+№11,350–11,351. Session link/effort unavailable; no independent human review.
+-->
+
 <!-- Auth stability follow-up 2026-10-05 13:22 UTC: lower bound through
 №11,249; later visible replies win. Owner ordered resolution of cpp-exec
 broker-authentication failures after №11,243. Current base main a0fe36c;
