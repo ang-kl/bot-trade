@@ -198,9 +198,17 @@ export async function refreshFxLegs(db, {
     return { checked: unique.length, stale: 0, fetched: [], failed: [], currencies, skipped: 'no_quote_source' }
   }
 
-  const demand = legVetoDemand(db, { symbolMap })
   const attempts = readLegAttempts(db)
-  const stale = staleLegs(readFxTable(db), unique, { now, refreshAfterMs, demand, attempts })
+  const table = readFxTable(db)
+  // Veto demand ranks eligible quote requests; it cannot make a fresh or
+  // cooling leg eligible. Avoid its synchronous history read on zero-quote
+  // sweeps. The startup trace measured 3.8s inside that read, independently
+  // of whether a quote was needed. Preserve demand-first ranking when it is.
+  let stale = staleLegs(table, unique, { now, refreshAfterMs, attempts })
+  if (stale.length) {
+    const demand = legVetoDemand(db, { symbolMap })
+    stale = staleLegs(table, unique, { now, refreshAfterMs, demand, attempts })
+  }
   const fetched = []
   const failed = []
   // WHY A REASON AND NOT JUST A NAME (2026-08-22). The loop logged
