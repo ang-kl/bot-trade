@@ -4752,6 +4752,22 @@ export default function stateRouter(db) {
     })
   })
 
+  // GET /state/trail-status?account=<id> — the C++ TrailEngine's live set on
+  // that account's gateway, every account on that side (07-10-2026, Claude ·
+  // № 11,596·D·1, ordered № 11,583·D·1; services/trail-status-view.js). The
+  // read that makes "the engine holds the since-entry spec" verifiable from
+  // outside the gateway. Read-only, never cached.
+  router.get('/trail-status', async (req, res) => {
+    try {
+      const { trailStatusView } = await import('../services/trail-status-view.js')
+      const out = await trailStatusView(db, typeof req.query.account === 'string' ? req.query.account : null)
+      res.set('Cache-Control', 'no-store')
+      res.status(out.status).json(out.body)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/bot-changes — the bot's change ledger (see /actions/bot-note):
   // what the agent changed on the owner's behalf, and when. The UI paints
   // yellow borders on the touched sections and lists entries in the sidebar.

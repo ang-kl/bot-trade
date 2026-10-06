@@ -14,11 +14,24 @@
 //   instead of waiting for the next loop. No new decision logic: the same
 //   rules, fired by price instead of by schedule.
 // - Single-flight with a short cooldown so a tick storm can't stampede the
-//   broker API; the 5-minute loop remains the guaranteed backstop.
+//   broker API; a backstop sweep runs at least every 5 minutes regardless of
+//   ticks (see below — the main loop no longer calls the guards itself).
 //
 // A 30s maintenance tick keeps the subscription honest: re-reads the open
 // set, reconnects dropped sockets, beats the `guardian` heartbeat. Toggle:
 // agent_state `guardian` ('true' default; 'false' disables).
+//
+// EVERY ACCOUNT, ONE PUSH PER SIDE (07-10-2026, Claude · № 11,596·D·1,
+// ordered № 11,583·D·1; claude-builder). The sweep used to run the trade
+// guards and the profit keeper with the SELECTED account's credentials only,
+// so the keeper's Chandelier since-entry trail covered one account: measured
+// 06-10, `[since-entry-trail]` push lines for …0949 alone, none for …9908 or
+// …7342 while they held eligible managed positions (1722, 1723, 1724). Now
+// the sweep walks every enabled registered account on both sides, the
+// stream's account first. Because the sidecar's POST /trail-config is ONE
+// full replace per gateway (trail_engine.cpp configure: byPosition_.swap),
+// account-by-account pushes would each wipe the others' specs — so each
+// keeper pass defers its push and the sweep sends one union per side.
 //
 // Owner (2026-07-26): "when market volume spike, check immediately" — for a
 // FLAT watchlist symbol (no open position), the SCAN phase only reaches it
@@ -168,6 +181,10 @@ export function takeScanPrioritySymbols(db, ttlMs = SCAN_PRIORITY_TTL_MS) {
 export function startGuardian(db, getCreds, deps = {}) {
   const maintMs = deps.maintMs ?? 30_000
   const cooldownMs = deps.cooldownMs ?? 2_500
+  // Claude · № 11,596·D·1: the backstop interval, and the first-attach delay
+  // as a test seam (production keeps the 3 s it always had).
+  const backstopMs = deps.backstopMs ?? 5 * 60_000
+  const firstAttachMs = deps.firstAttachMs ?? 3_000
   let stream = null
   let streamKey = ''          // which symbolId set the open stream covers
   let lastEval = new Map()    // symbolId → price at last guard evaluation
@@ -184,18 +201,67 @@ export function startGuardian(db, getCreds, deps = {}) {
     streamKey = ''
   }
 
+  // Claude · № 11,596·D·1 (ordered № 11,583·D·1): the accounts one sweep
+  // covers — every enabled registered account on both sides, the stream's
+  // account first, each with its own credentials (host, roster, fence). One
+  // account's unreadable row never blocks the others.
+  const sweepAccounts = async (primary) => {
+    const registry = deps.accountRegistry ?? await import('./account-registry.js')
+    const credsLib = deps.credsLib ?? await import('../lib/ctrader-creds.js')
+    const out = []
+    const seen = new Set()
+    const push = (c) => {
+      const id = c?.accountId != null ? String(c.accountId) : ''
+      if (!c?.ready || !id || seen.has(id)) return
+      seen.add(id)
+      out.push(c)
+    }
+    push(primary)
+    let rows = []
+    try { rows = registry.getEnabledAccounts(db) } catch { rows = [] }
+    for (const r of rows) {
+      try { push(credsLib.credsForRegisteredAccount(db, r.account_id)) }
+      catch (err) { console.error(`[guardian] credentials for …${String(r.account_id).slice(-4)} unavailable:`, err.message) }
+    }
+    return out
+  }
+
   const sweep = async (creds, why) => {
     const now = Date.now()
     if (sweeping || now - lastSweepAt < cooldownMs) return
     sweeping = true
     lastSweepAt = now
     try {
-      const tg = await import('./trade-guard.js')
-      const pk = await import('./profit-keeper.js')
-      const g = await tg.runTradeGuards(db, creds).catch(err => ({ error: err.message }))
-      const p = await pk.runProfitKeeper(db, creds).catch(err => ({ error: err.message }))
-      const acted = (g?.slMoves || 0) + (g?.partialCloses || 0) + (p?.slMoves || 0) + (p?.closes || 0) + (p?.scaleOuts || 0)
-      if (acted > 0) console.log(`[guardian] ${why} → ${acted} guard action(s)`)
+      const tg = deps.tradeGuard ?? await import('./trade-guard.js')
+      const pk = deps.profitKeeper ?? await import('./profit-keeper.js')
+      const exec = deps.exec ?? await import('../lib/exec-engine.js')
+      const accounts = await sweepAccounts(creds)
+      // Claude · № 11,596·D·1: the trail specs each side's accounts
+      // contributed, pushed ONCE per side (one gateway = one full replace).
+      // A side whose passes built no list at all (keeper off, nothing held)
+      // is left as it was — the keeper's own semantics before this change.
+      const bySide = new Map() // 'demo' | 'live' → { creds, specs, built }
+      let acted = 0
+      for (const c of accounts) {
+        const tag = `…${String(c.accountId).slice(-4)}`
+        const g = await tg.runTradeGuards(db, c).catch(err => ({ error: err.message }))
+        const p = await pk.runProfitKeeper(db, c, { deferTrailPush: true }).catch(err => ({ error: err.message }))
+        const n = (g?.slMoves || 0) + (g?.partialCloses || 0) + (p?.slMoves || 0) + (p?.closes || 0) + (p?.scaleOuts || 0)
+        acted += n
+        if (n > 0) console.log(`[guardian] ${why} → ${tag}: ${n} guard action(s)`)
+        if (g?.error || p?.error) console.error(`[guardian] ${tag} sweep error:`, g?.error || p?.error)
+        const side = c.isLive ? 'live' : 'demo'
+        if (!bySide.has(side)) bySide.set(side, { creds: c, specs: [], built: false })
+        const entry = bySide.get(side)
+        if (Array.isArray(p?.trailSpecs)) { entry.built = true; entry.specs.push(...p.trailSpecs) }
+      }
+      for (const [side, entry] of bySide) {
+        if (!entry.built) continue
+        let ok = false
+        try { ok = !!(exec.pushTrailConfig && await exec.pushTrailConfig(entry.creds, entry.specs)) } catch { ok = false }
+        console.log(`[since-entry-trail] trail-config ${entry.specs.length} spec(s) pushed for the ${side} side (${ok ? 'accepted' : 'not accepted'})`)
+      }
+      if (acted > 0) console.log(`[guardian] ${why} → ${acted} guard action(s) across ${accounts.length} account(s)`)
     } catch (err) {
       console.error('[guardian] sweep failed:', err.message)
     } finally {
@@ -285,6 +351,13 @@ export function startGuardian(db, getCreds, deps = {}) {
           console.log(`[guardian] watching ticks on ${watched.map(w => w.symbol).join(', ')} (${held.length} held, ${watched.length - held.length} watchlist-only)`)
         }
       }
+      // Claude · № 11,596·D·1: the guaranteed backstop this file's header
+      // promised. loop.js stopped calling the guards and the keeper, so
+      // between significant moves nothing ran them: after a gateway restart a
+      // since-entry spec was not re-pushed until the next 0.05% move on a
+      // held symbol. A sweep now runs at least every backstopMs while
+      // anything is held, ticks or not.
+      if (held.length > 0 && Date.now() - lastSweepAt >= backstopMs) sweep(creds, 'backstop')
     } catch (e) {
       err = e
       teardown() // rebuilt next tick
@@ -310,6 +383,6 @@ export function startGuardian(db, getCreds, deps = {}) {
   }
   const t = setInterval(maintainOnce, maintMs)
   t.unref?.()
-  setTimeout(maintainOnce, 3_000) // first attach shortly after boot
+  setTimeout(maintainOnce, firstAttachMs) // first attach shortly after boot
   return () => { stopped = true; clearInterval(t); teardown(); flushScanPriority(db) }
 }

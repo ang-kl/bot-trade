@@ -829,3 +829,27 @@ test('since-entry bars are refetched when cached host/account differs or full ba
   }
   assert.equal(reads, 3)
 })
+
+// 07-10-2026 (Claude · № 11,596·D·1, ordered № 11,583·D·1): the guardian
+// sweeps every account and pushes ONE union per side, because the sidecar's
+// /trail-config is a full replace per gateway. The pass therefore hands its
+// specs back instead of pushing when asked to.
+test('deferTrailPush: the pass builds its specs and leaves the push to the caller', async () => {
+  const db = mkKeeperDb()
+  setState(db, 'profit_keeper_json', JSON.stringify({
+    on: true, scope: 'external', mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 14,
+    armAtrMult: 1, armBalancePct: 0, trailAtrMult: 2.5, spikeTightenEnabled: false,
+  }))
+  const bars = Array.from({ length: 30 }, () => ({ h: 2.35, l: 2.30, c: 2.32 }))
+  let pushed = null
+  const deps = keeperDeps()
+  deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': bars })
+  deps.exec.amendPosition = async () => ({})
+  deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+  deps.deferTrailPush = true
+  const out = await runProfitKeeper(db, CREDS, deps)
+  assert.equal(pushed, null, 'nothing is pushed from inside the pass')
+  assert.equal(out.trailPushed, 'deferred')
+  assert.ok(Array.isArray(out.trailSpecs) && out.trailSpecs.length === 1, `one spec on the summary, got ${JSON.stringify(out.trailSpecs)}`)
+  assert.equal(out.trailSpecs[0].positionId, 9001)
+})

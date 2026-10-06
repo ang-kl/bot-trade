@@ -573,6 +573,10 @@ async function profitKeeperPass(db, creds, deps = {}) {
     // as we decide. Pushed even when EMPTY — /trail-config is full-replace,
     // so an empty push clears positions that closed or disarmed.
     const trailSpecs = []
+    // Claude · № 11,596·D·1 (ordered № 11,583·D·1): this account's
+    // contribution travels on the summary, so a caller sweeping every account
+    // can merge the sides and push one union per gateway.
+    summary.trailSpecs = trailSpecs
     const brokerDigitsByPosition = new Map()
 
     for (const { r, bp } of involved) {
@@ -803,9 +807,17 @@ async function profitKeeperPass(db, creds, deps = {}) {
     console.log(`[since-entry-trail] trail-config ${trailSpecs.length} spec(s) for account ${creds.accountId}`)
 
     // Hand the armed set to the C++ tick ratchet (best-effort by contract).
-    try {
-      summary.trailPushed = exec.pushTrailConfig && await exec.pushTrailConfig(creds, trailSpecs) ? trailSpecs.length : null
-    } catch { summary.trailPushed = null }
+    // Claude · № 11,596·D·1: POST /trail-config is one full replace PER
+    // GATEWAY (trail_engine.cpp configure: byPosition_.swap), so when the
+    // guardian sweeps every account it defers this push, merges each side's
+    // specs and sends one union per side; `trailPushed: 'deferred'` says so.
+    if (deps.deferTrailPush) {
+      summary.trailPushed = 'deferred'
+    } else {
+      try {
+        summary.trailPushed = exec.pushTrailConfig && await exec.pushTrailConfig(creds, trailSpecs) ? trailSpecs.length : null
+      } catch { summary.trailPushed = null }
+    }
 
     // P10: read back what the sidecar actually ratcheted to and journal any
     // change since the last pass. Best-effort — getTrailStatus never throws

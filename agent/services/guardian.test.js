@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
   significantMove, watchedSymbolIds, watchlistSymbolIds,
-  flagScanPriority, takeScanPrioritySymbols,
+  flagScanPriority, takeScanPrioritySymbols, startGuardian,
 } from './guardian.js'
 
 test('significantMove: percentage threshold, bad inputs never wake', () => {
@@ -91,4 +91,78 @@ test('takeScanPrioritySymbols: never throws on a closed db handle', () => {
   db.close()
   assert.doesNotThrow(() => flagScanPriority(db, 'EURUSD'))
   assert.deepEqual(takeScanPrioritySymbols(db), [])
+})
+
+// ---- every account, one push per side; the backstop sweep (07-10-2026,
+// Claude · № 11,596·D·1, ordered № 11,583·D·1) ------------------------------
+
+async function until(pred, ms = 2000) {
+  const deadline = Date.now() + ms
+  while (!pred() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.ok(pred(), 'condition not reached in time')
+}
+
+function sweepFixture(t, { backstopMs, keeperThrowsFor = null } = {}) {
+  const db = initDB(':memory:')
+  t.after(() => db.close())
+  setState(db, 'symbol_id_map', JSON.stringify({ NATGAS: 2280 }))
+  db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, status) VALUES ('NATGAS', 'BUY', 1, 'active')`).run()
+  const creds = {
+    1: { ready: true, accountId: '1', isLive: false },
+    2: { ready: true, accountId: '2', isLive: false },
+    3: { ready: true, accountId: '3', isLive: true },
+    4: { ready: false, accountId: '4', isLive: true }, // no credentials → skipped, never guessed
+  }
+  const guards = [], keeper = [], pushes = []
+  let onTick = null
+  const stop = startGuardian(db, () => creds[1], {
+    maintMs: 5, cooldownMs: 0, firstAttachMs: 1, backstopMs,
+    streamSpots: async (...args) => { onTick = args[6]; return { close() {} } },
+    accountRegistry: { getEnabledAccounts: () => [{ account_id: '3' }, { account_id: '1' }, { account_id: '2' }, { account_id: '4' }] },
+    credsLib: { credsForRegisteredAccount: (_db, id) => creds[id] ?? null },
+    tradeGuard: { runTradeGuards: async (_db, c) => { guards.push(c.accountId); return { slMoves: 0 } } },
+    profitKeeper: {
+      runProfitKeeper: async (_db, c, d) => {
+        keeper.push({ id: c.accountId, deferred: d?.deferTrailPush === true })
+        if (c.accountId === keeperThrowsFor) throw new Error(`broker down for …000${c.accountId}`)
+        return { slMoves: 0, trailSpecs: [{ positionId: Number(c.accountId) * 100, ctidTraderAccountId: Number(c.accountId) }] }
+      },
+    },
+    exec: { pushTrailConfig: async (c, specs) => { pushes.push({ side: c.isLive ? 'live' : 'demo', account: c.accountId, specs }); return true } },
+  })
+  t.after(stop)
+  return { db, guards, keeper, pushes, tick: () => onTick, stop }
+}
+
+test('sweep: every enabled registered account on both sides, one trail-config union per side', async t => {
+  // backstopMs huge → only the tick below can fire the sweep after the boot pass.
+  const f = sweepFixture(t, { backstopMs: 10 * 60_000, keeperThrowsFor: '2' })
+  await until(() => typeof f.tick() === 'function')
+  await until(() => f.pushes.length >= 2) // the boot backstop (lastSweepAt starts at 0)
+  await new Promise(resolve => setTimeout(resolve, 20)) // let the boot sweep release its single-flight
+  const bootGuards = f.guards.length
+  f.tick()({ symbolId: 2280, bid: 100, ask: 100 })
+  f.tick()({ symbolId: 2280, bid: 101, ask: 101 }) // +1% → significant
+  await until(() => f.pushes.length >= 4)
+  assert.deepEqual(f.guards.slice(bootGuards), ['1', '3', '2'], 'the stream account first, then the registry order; …0004 (not ready) skipped')
+  assert.deepEqual(f.keeper.slice(bootGuards).map(k => k.id), ['1', '3', '2'])
+  assert.ok(f.keeper.every(k => k.deferred), 'every keeper pass defers its push to the sweep')
+  const demo = f.pushes.slice(2).find(p => p.side === 'demo'), live = f.pushes.slice(2).find(p => p.side === 'live')
+  assert.deepEqual(demo.specs.map(s => s.positionId), [100], '…0002 threw: contributed nothing, blocked nothing')
+  assert.equal(demo.account, '1', 'the demo union rides the first demo credentials')
+  assert.deepEqual(live.specs.map(s => s.positionId), [300])
+  assert.equal(f.pushes.length, 4, 'one push per side per sweep, never one per account')
+})
+
+test('backstop: with something held, the sweep runs on its own at least every backstopMs', async t => {
+  const f = sweepFixture(t, { backstopMs: 20 })
+  await until(() => f.keeper.filter(k => k.id === '1').length >= 3, 1500)
+  assert.ok(f.pushes.length >= 4, `pushes accompany every sweep (${f.pushes.length})`)
+})
+
+test('backstop: beyond the boot pass, no sweep without a tick when backstopMs is far away', async t => {
+  const f = sweepFixture(t, { backstopMs: 10 * 60_000 })
+  await until(() => f.pushes.length >= 2)
+  await new Promise(resolve => setTimeout(resolve, 120))
+  assert.equal(f.keeper.length, 3, 'exactly the boot sweep (three accounts), nothing more')
 })
