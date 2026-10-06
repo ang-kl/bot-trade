@@ -17,7 +17,7 @@ export default function Disclosure({ open, onToggle, children, label, className 
         className,
       ].join(' ')}
       {...rest}>
-      <span aria-hidden="true" className="inline-block w-[14px] shrink-0">{open ? '▾' : '▸'}</span>
+      <span aria-hidden="true" className="inline-block w-[14px] shrink-0">{open ? '▼' : '▶︎'}</span>
       {children}
     </button>
   )

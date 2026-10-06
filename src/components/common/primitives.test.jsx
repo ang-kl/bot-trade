@@ -101,8 +101,8 @@ describe('Disclosure', () => {
     const open = Disclosure({ open: true, children: 'Section' })
     expect(open.type).toBe('button')
     expect(open.props['aria-expanded']).toBe(true)
-    expect(renderToStaticMarkup(<Disclosure open>{'S'}</Disclosure>)).toContain('▾')
-    expect(renderToStaticMarkup(<Disclosure open={false}>{'S'}</Disclosure>)).toContain('▸')
+    expect(renderToStaticMarkup(<Disclosure open>{'S'}</Disclosure>)).toContain('▼')
+    expect(renderToStaticMarkup(<Disclosure open={false}>{'S'}</Disclosure>)).toContain('▶')
   })
 })
 

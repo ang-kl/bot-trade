@@ -394,6 +394,8 @@ function OrderLogTable({ rows, marketHours = null, prices = {}, trades = [], lev
 export default function Trade() {
   const [health, setHealth] = useState(null)
   const [scans, setScans] = useState([])
+  const [signalReport, setSignalReport] = useState(null)
+  const signalGeneration = useRef(0)
   // Newest close per symbol across ALL cycles — the currency-conversion base.
   const [latestPrices, setLatestPrices] = useState({})
   // Whether that base read succeeded: an unavailable read is said, not shown
@@ -487,13 +489,25 @@ export default function Trade() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     const view = brokerViewGuard.current()
-    if (view.changed) { setEnrichById({}); setLiveOrders([]); setBroker(null); setBrokerRefresh({ at: null, error: null }); setPositions([]); setPositionsLoaded(false); setPosScope({ accountId: view.id || null, legacyRows: 0, scope: null }) }
+    if (view.changed) { setSignalReport(null); setEnrichById({}); setLiveOrders([]); setBroker(null); setBrokerRefresh({ at: null, error: null }); setPositions([]); setPositionsLoaded(false); setPosScope({ accountId: view.id || null, legacyRows: 0, scope: null }) }
+    const generation = ++signalGeneration.current
+    // Paint scans independently: broker/history reads must not freeze this card.
+    const scanRead = agentGet(`/state/scans?view=signals&account=${encodeURIComponent(view.id || 'all')}`)
+      .then(s => {
+        if (!view.current() || generation !== signalGeneration.current) return s
+        setScans(s.lastResults?.scans || []) // retain the global FX price base
+        setSignalReport(s.signals || { rows: [], accountId: view.id || 'all', lastScanAt: s.lastScanAt, error: 'Account-linked signals are unavailable from this agent.' })
+        return s
+      }).catch(e => {
+        if (view.current() && generation === signalGeneration.current) setSignalReport({ rows: [], accountId: view.id || 'all', error: e.message })
+        return null
+      })
     try {
       // Slot count matters: destructure order must mirror the array below —
       // append new fetches at the END or every later variable shifts.
-      const [h, s, p, t, r, rc, bo, cfg, mh, px] = await Promise.all([
+      const [h, , p, t, r, rc, bo, cfg, mh, px] = await Promise.all([
         agentGet('/state/health'),
-        agentGet('/state/scans'),
+        scanRead,
         agentGet('/state/positions'),
         agentGet('/state/trades'),
         agentGet('/state/risk-events?limit=200'),
@@ -511,7 +525,7 @@ export default function Trade() {
       // symbol) — recentScans is the last 50 DB rows across cycles, which can
       // carry a stale non-skip row past a later skip for the same symbol, and
       // duplicate `key={symbol}` rows in the list below (Codex review).
-      setScans(s.lastResults?.scans || [])
+      // Scans are already painted by the independent read above.
       setPositions(p.rows || p.positions || [])
       setPositionsLoaded(true)
       setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0, scope: p?.scope ?? null })
@@ -567,7 +581,9 @@ export default function Trade() {
   useEffect(() => {
     load()
     const id = setInterval(() => { if (!pageAsleep()) load() }, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
-    return () => clearInterval(id)
+    const wake = () => { if (!pageAsleep()) load() }
+    document.addEventListener('visibilitychange', wake); window.addEventListener('agent-wake', wake)
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', wake); window.removeEventListener('agent-wake', wake) }
   }, [load, hasActivity])
 
   // An account switch must not wait out this page's poll interval (see
@@ -606,8 +622,9 @@ export default function Trade() {
     } catch (e) { setVfillMsg(`🛑 ${e.message}`) } finally { setBusy('') }
   }
 
-  const signalScans = scans.filter(sc => sc.bias && sc.bias !== 'skip')
-  const skipScans = scans.filter(sc => !sc.bias || sc.bias === 'skip')
+  const accountScans = String(signalReport?.accountId) === String(viewedAccountId() || 'all') ? signalReport.rows || [] : []
+  const signalScans = accountScans.filter(sc => sc.bias && sc.bias !== 'skip')
+  const skipScans = accountScans.filter(sc => !sc.bias || sc.bias === 'skip')
   // Signals table sorts like every other table — conviction first by default.
   const sigSort = useSort(signalScans, { key: 'confidence', dir: 'desc' }, {
     strategy: sc => strategyLabel(sc.strategy) || '',
@@ -752,33 +769,37 @@ export default function Trade() {
         {vfillMsg && <div className="mt-1.5 text-(length:--fs-body) font-semibold" role="status">{vfillMsg}</div>}
       </Card>
 
-      {/* Signals — folded by default (owner: "still needed?"). The Desk scan
-          strip carries the live read; this stays as the detail table for the
-          full thesis text, one tap away instead of a page of rows. */}
-      <Card id="sec-signals">
-        <details open={signalScans.length > 0 && signalScans.length <= 4}>
-          <summary className="cursor-pointer select-none text-(length:--fs-body) font-semibold">
+      {/* One disclosure owner; rows declare account applicability and real receipts. */}
+      <Card id="sec-signals" scope={signalReport?.accountId}>
+          <h3 className="t-h3">
             Signals — {signalScans.length} active{skipScans.length > 0 ? ` · ${skipScans.length} scanned flat` : ''}
-          </summary>
+          </h3>
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+          {signalReport?.error || (signalReport?.lastScanAt ? `Last scan: ${new Date(signalReport.lastScanAt).toLocaleString()} · refreshes while this page is active.` : 'No scan timestamp available.')}
+          {' '}Candidates feed the entry pipeline; account and risk gates still apply. Recorded entries below require an exact stored link.
+        </p>
         {signalScans.length === 0 && <div className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">No active signals right now.</div>}
         {signalScans.length > 0 && (
           <div className="overflow-x-auto">
-            <Collapse id="Trade_673" label="Signal Rows">
+            
             <table className="std-cols w-full text-(length:--fs-body)">
               <thead>
                 <tr>
+                  <th className="pr-3">Account</th>
                   <th aria-sort={sigSort.ariaSort('symbol')} className="pr-3 py-1">{sigSort.sortBtn('symbol', 'Symbol')}</th>
                   <th aria-sort={sigSort.ariaSort('strategy')} className="pr-3">{sigSort.sortBtn('strategy', 'Strategy')}</th>
                   <th aria-sort={sigSort.ariaSort('bias')} className="pr-3">{sigSort.sortBtn('bias', 'Bias')}</th>
                   <th aria-sort={sigSort.ariaSort('timeframe')} className="pr-3">{sigSort.sortBtn('timeframe', 'TF')}</th>
                   <th aria-sort={sigSort.ariaSort('confidence')} className="pr-3">{sigSort.sortBtn('confidence', 'Conviction')}</th>
                   <th aria-sort={sigSort.ariaSort('price')} className="pr-3">{sigSort.sortBtn('price', 'Price')}</th>
+                  <th className="pr-3">Entry status</th>
                   <th>Thesis</th>
                 </tr>
               </thead>
               <tbody>
                 {sigSort.sorted.map(sc => (
-                  <tr key={sc.symbol} className="border-t border-[var(--color-border)]">
+                  <tr key={JSON.stringify([sc.account_id, sc.symbol, sc.strategy, sc.timeframe])} className="border-t border-[var(--color-border)]">
+                    <td className="pr-3 whitespace-nowrap">{sc.accountLabel || sc.account_id}</td>
                     <td className="pr-3 py-1.5">{sc.symbol}</td>
                     <td className="pr-3 whitespace-nowrap">{strategyLabel(sc.strategy) || 'Fibonacci 61.8% Fade'}</td>
                     {/* Direction, not P&L (inventory T10) — blue = long, red = short via the state tints. */}
@@ -786,15 +807,17 @@ export default function Trade() {
                     <td className="pr-3">{sc.timeframe || '—'}</td>
                     <td className="pr-3">{fmt(sc.confidence, 0)}/10</td>
                     <td className="pr-3">{fmt(sc.price)}</td>
+                    <td className="pr-3" title={sc.reason || undefined}>{sc.entry
+                      ? `Trade ${sc.entry.tradeId} · ${sc.entry.status}${sc.entry.positionId ? ` · position ${sc.entry.positionId}` : ''}`
+                      : sc.eligibility === 'candidate' ? 'Candidate · no linked entry' : `Scan only · ${sc.reason || 'entry eligibility unverified'}`}</td>
                     <td className="text-[var(--color-text-sub)]">{sc.thesis}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            </Collapse>
+
           </div>
         )}
-        </details>
       </Card>
 
       {/* Open positions */}

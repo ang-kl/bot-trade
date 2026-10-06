@@ -52,6 +52,7 @@ export const PATTERNS = Object.freeze({
  * carry NONE of the tokens; a listed file may carry exactly the counts named.
  */
 export const ALLOWLIST = Object.freeze({
+  'agent/services/account-signals.js': { reason: 'registered account badge on read-only signal rows; the side is used only in the label, with identical applicability and entry-link rules for every account', max: { is_live: 1, live_str: 1, demo_str: 1 } },
   'agent/lib/tick-exec-measurements.js': { reason: 'match acknowledgement evidence to the intent-owned broker host; identical measurement and fallback rules for every account, no policy gate', max: { live_str: 1, demo_str: 1 } },
   'agent/services/momentum-entry-contract.js': { reason: 'verify the reserved ledger host matches the account-owned broker evidence; identical plan and margin rules on both hosts', max: { environment_cmp: 1, live_str: 1, demo_str: 1 } },
   'agent/services/account-overview.js': { reason: 'verify cached readings against the registered broker host and echo its badge; identical money/freshness rules for every account, no execution', max: { is_live: 3, isLive: 1 } },
