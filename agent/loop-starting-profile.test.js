@@ -63,6 +63,15 @@ function deliberateTransitionStartingBurner() {
   return value
 }
 
+// A separate target prevents the earlier scan test warming/inlining this
+// function away before the continuous first-cycle attribution is exercised.
+function deliberateFirstCycleBurner() {
+  const until = Date.now() + 300
+  let value = 0
+  while (Date.now() < until) value += Math.sqrt(value + 1)
+  return value
+}
+
 function setup(t, phases) {
   const before = process.env.CPU_PROFILE_PHASES
   if (phases == null) delete process.env.CPU_PROFILE_PHASES
@@ -195,7 +204,7 @@ test('first-cycle trace covers real phase handoffs and emits a log without diagn
   const value = { original: true }
   assert.equal(await run.guardedCycle(async ({ phase, closePhases }) => {
     phase('scanning fixture symbols', 'scan')
-    deliberateScanBurner()
+    deliberateFirstCycleBurner()
     phase('analyzing fixture symbols', 'analyze')
     await new Promise(resolve => setImmediate(resolve))
     closePhases()
@@ -205,7 +214,9 @@ test('first-cycle trace covers real phase handoffs and emits a log without diagn
   assert.equal(records.length, 1)
   const summary = JSON.parse(records[0].split(': ').slice(1).join(': '))
   assert.equal(summary.phase, 'startup-first-cycle')
-  assert.ok(summary.top.some(row => /deliberateScanBurner/.test(row.frame)))
+  assert.ok(summary.top.some(row => /deliberateFirstCycleBurner/.test(row.frame)
+    || row.callers?.some(caller => /deliberateFirstCycleBurner/.test(caller.frame))),
+  JSON.stringify(summary))
   assert.equal(run.state.has('loop_cpu_profile_json'), false)
   assert.equal(stopPhaseProfile(() => assert.fail('startup leaked')), false)
 })
