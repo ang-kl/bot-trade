@@ -231,13 +231,18 @@ void HttpServer::handleClient(int fd) {
       const auto end = Clock::now();
       const auto readEnd = read == Clock::time_point{} ? end : read;
       const auto handleEnd = handled == Clock::time_point{} ? readEnd : handled;
-      const auto line = slowRequestLine(method, path, status, elapsedUs(t0, readEnd), elapsedUs(readEnd, handleEnd), elapsedUs(handleEnd, end));
+      const long long readUs = elapsedUs(t0, readEnd), handleUs = elapsedUs(readEnd, handleEnd), writeUs = elapsedUs(handleEnd, end);
+      const auto line = slowRequestLine(method, path, status, readUs, handleUs, writeUs);
       if (line.empty()) return;
       // At most one line a second: a stalled scanner must not flood the log
       // with one line per queued request.
       static std::mutex gate; static Clock::time_point last;
       { std::lock_guard lock(gate); if (last != Clock::time_point{} && end - last < std::chrono::seconds(1)) return; last = end; }
-      if (server.slowReporter_) server.slowReporter_(line); else logError(line);
+      // Claude · № 11,609 (F·1): stdout for the ordinary slow request, stderr
+      // only past kVerySlowRequestMs — see the header.
+      if (server.slowReporter_) server.slowReporter_(line);
+      else if (slowRequestIsError(readUs, handleUs, writeUs)) logError(line);
+      else logInfo(line);
     }
   } timing(*this);
   HttpRequest req;
