@@ -1,5 +1,18 @@
 # Instructions for Claude — bot-trade
 
+<!-- FX startup correction 2026-10-06: owner ordered fix after №11,420.
+PR1237 released bounded first-cycle attribution at494c155; do not repeat
+its gate. Trace reported3.8s in legVetoDemand, not proof of the earlier47s
+block. The unchanged FX sweep reads veto history even with no eligible
+quote request. Two actual-DB regressions fail before correction; retain
+eligible-leg priority, repeated veto counts, deposit currencies, freshness,
+retry delays and quote validation. Skip that read only when eligibility
+is empty. No rate invention, money/history edits, broker forcing or config
+changes. Full local/exact-head CI and deployed verification required.
+Conversation ref: ordered after №11,420; progress №11,448–11,450.
+Session link and measured effort unavailable; no independent review claimed.
+-->
+
 <!-- Startup-stall investigation 2026-10-06: owner ordered fix after
 №11,420; progress №11,421–11,424. Fresh base9e19565 retains completed
 PR1233/1234/1235/1236. Scan-only profiling omitted phase handoff writes
