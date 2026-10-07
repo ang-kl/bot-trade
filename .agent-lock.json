@@ -1,4 +1,21 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": []
+  "locks": [
+    {
+      "locked_by": "claude-builder",
+      "session": "https://claude.ai/code/session_01C1hz86KuE5JKVq6W2KtUE2",
+      "branch": "claude/handover-outstanding-file-1ktjs7",
+      "pr": "pending",
+      "since": "2026-10-07T03:05Z",
+      "expires_at": "2026-10-07T07:05Z",
+      "last_serial": 11690,
+      "active_files": [
+        "agent/lib/exec-engine.js",
+        "agent/services/profit-keeper.js",
+        "agent/services/trade-guard.js",
+        "CLAUDE.md"
+      ],
+      "intent": "Codex P1 on #1246: the keeper and trade-guard stop amends are ratchet transactions (sidecar re-reads the broker stop under the position lock); no JS fallback for a ratchet amend"
+    }
+  ]
 }
