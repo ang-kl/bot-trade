@@ -121,7 +121,7 @@ test('BA: runTradeGuards journals a partial take-profit as scale_out with the po
   const closed = []
   const summary = await runTradeGuards(db, { accountId: '42', host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't' }, {
     exec: {
-      reconcile: async () => ({ position: [{ positionId: 7, price: 1.1000, stopLoss: 1.0950 }] }),
+      reconcile: async () => ({ position: [{ positionId: 7, price: 1.1000, stopLoss: 1.0950, tradeData: { symbolId: 1 } }] }),
       closePosition: async (_c, args) => { closed.push(args) },
       amendPosition: async () => {},
     },
@@ -154,7 +154,7 @@ test('V3 M5: the guard\'s trailing stop move is timed in the amend-latency ring,
   const sent = []
   const summary = await runTradeGuards(db, { accountId: '42', host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't' }, {
     exec: {
-      reconcile: async () => ({ position: [{ positionId: 8, price: 1.1000, stopLoss: 1.0950, takeProfit: 1.1200 }] }),
+      reconcile: async () => ({ position: [{ positionId: 8, price: 1.1000, stopLoss: 1.0950, takeProfit: 1.1200, tradeData: { symbolId: 1 } }] }),
       closePosition: async () => ({}),
       amendPosition: async (_c, args) => { sent.push(args); return { executionType: 'ORDER_REPLACED' } },
     },

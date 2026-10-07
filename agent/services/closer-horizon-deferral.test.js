@@ -113,7 +113,7 @@ const CASES = {
       const out = await runTradeGuards(db, { accountId: '42', host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't' }, {
         now: NOW,
         exec: {
-          reconcile: async () => ({ position: [{ positionId: 7, price: 1.1000, stopLoss: 1.0950 }] }),
+          reconcile: async () => ({ position: [{ positionId: 7, price: 1.1000, stopLoss: 1.0950, tradeData: { symbolId: 1 } }] }),
           closePosition: async (_c, args) => { closed.push(args) },
           amendPosition: async () => {},
         },
