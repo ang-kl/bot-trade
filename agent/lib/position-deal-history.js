@@ -84,6 +84,14 @@ export function lifecycleBalance(deals, positionId) {
     const c = d.closePositionDetail
     const volume = c ? c.closedVolume : d.filledVolume
     if (!positive(volume)) { reason = c ? 'closing volume unknown' : 'opening volume unknown'; break }
+    // Codex · №11,889 · 2026-10-07; codex-footprint: reversal-lifecycle-guard.
+    // A mixed close/open reversal can close the old leg while opening a
+    // residual. Its closed leg alone cannot prove this position fully closed.
+    // Match the exact reader: missing/mismatched actual fill stays unsupported;
+    // requested d.volume is never evidence of an executed closing quantity.
+    if (c && (!positive(d.filledVolume) || Number(volume) !== Number(d.filledVolume))) {
+      reason = 'closing volume does not match filled volume'; break
+    }
     if (c) {
       closed += Number(volume)
       if (closed > opened) { reason = 'opening not among the deals'; break }
@@ -154,5 +162,11 @@ export function verifiedPositionHistory(response, { accountId, positionId, now }
   if (deals.length && closed !== opened) {
     throw Object.assign(refused(`broker shows position still open: opened volume ${opened}, closed volume ${closed}`), { openAtBroker: true })
   }
-  return { deals, complete: true, pages: 1, lifecycle: lifecycleBalance(ordered, positionId) }
+  // Codex · №11,889 · 2026-10-07; codex-footprint: reversal-lifecycle-guard.
+  // Matching aggregate totals can conceal another episode after a full close.
+  // Callers trust complete:true to settle money, so never return a nonempty
+  // history whose shared one-lifecycle proof rejected it. Preserve empty reads.
+  const lifecycle = lifecycleBalance(ordered, positionId)
+  if (deals.length && !lifecycle.balanced) throw refused(`position lifecycle unsupported: ${lifecycle.reason}`)
+  return { deals, complete: true, pages: 1, lifecycle }
 }

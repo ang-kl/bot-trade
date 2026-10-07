@@ -1,5 +1,23 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №11,890 · 2026-10-07; session: reversal-lifecycle-guard;
+codex-footprint: reversal-lifecycle-guard. Owner-confirmed manual GER40 reversal
+supersedes actor uncertainty. Reuse completed PR1233–1257/gates. Actual source
+probes and five regressions fail unchanged34d6f51: the broad reader can certify
+a mixed close/open reversal, and the exact reader can return complete:true
+despite rejecting multiple same-ID episodes in its lifecycle proof. Shared
+guard now requires actual filled/closed equality and one balanced nonempty
+lifecycle; empty/never-filled/open classifications and signed native costs hold.
+Eight real-helper/caller checks pass after correction; full local/exact CI,
+review inspection, merge and deployed verification remain pending at verified
+2026-10-07T11:27:54Z. No importer historical-lot/price overwrite correction,
+manual money/history repair, native source/rebuild, credential/broker/risk/account/
+strategy/profile/region/volume/staging or schedule action. Existing importer and
+native nominal-volume contract remains separately open; no production GER40
+net/volume attribution or whole acceptance row pass. Counts7verified/19active/
+6deferred and all owner exclusions remain. Session link/effort unavailable via
+this connector; no independent human review claimed. -->
+
 <!-- Codex · №11,791 · 2026-10-07; session: performance-essentials; codex-footprint: performance-essentials.
 Owner ordered essential Performance cards first and a metrics/sizing audit.
 Forward per-account results now lead capital and recorded management readings;
