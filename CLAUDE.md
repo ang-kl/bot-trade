@@ -2291,3 +2291,16 @@ for this security change has been recorded; no trading settings changed. -->
   Actual session link/effort metadata unavailable; no human independent
   review is claimed. Source and focused evidence live in
   /workspace/bot-trade-raw-precision-evidence-2026-10-05 when available.
+
+
+- 2026-10-07, Codex · №11,667 (codex-footprint: signals-ui-2026-10-07):
+  owner said continue after the Signals/storage explanation at №11,664.
+  Fresh main62276a2 retains Claude PR1245 and completed prior fixes.
+  Actual Trade-page fixture reproduces blocked scans labelled active and
+  shown as candidates' peers. Present candidate, blocked and exact linked
+  entry counts separately; hide blocked observations behind an explicit
+  read-only inspection control, preserve current-batch/account ownership,
+  refresh and one leading disclosure. No scan/history storage or trading
+  permission is changed. Local/exact-head gate, review, merge and deployed
+  identity remain pending at this source stamp; no acceptance closure.
+  Actual session link/effort metadata unavailable; no human review claimed.
