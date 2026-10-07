@@ -189,9 +189,34 @@ export function takeScanPrioritySymbols(db, ttlMs = SCAN_PRIORITY_TTL_MS) {
   } catch { return [] }
 }
 
+// Claude · № 11,760 07-Oct (ordered ¶11,758·C·1): what a trail-config union
+// IS, for the push cadence cap. POST /trail-config is a full replace, and
+// the sweep ran it every 2.5 s on demo ticks (six pushes in 35 s measured
+// 07-10 01:23Z) with the same set each time. The engine keeps its own peak
+// and its own (tighter) stop across a configure, so a re-push that only
+// carries a fresher currentSl or peakPrice changes nothing there; what does
+// change the engine's work is the SET (a position opened or closed), a
+// spec's distance, digits, direction, symbol, target or entry. Those are
+// the digest; currentSl and peakPrice are left out on purpose.
+export function trailSetDigest(specs) {
+  if (!Array.isArray(specs)) return ''
+  return specs
+    .map(s => [s.positionId, s.ctidTraderAccountId, s.symbolId, s.dir, s.trailDistance, s.digits, s.currentTp, s.entryPrice].map(v => (v == null ? '' : String(v))).join(':'))
+    .sort()
+    .join('|')
+}
+
 export function startGuardian(db, getCreds, deps = {}) {
   const maintMs = deps.maintMs ?? 30_000
   const cooldownMs = deps.cooldownMs ?? 2_500
+  // Claude · № 11,760 07-Oct: a side's union is pushed when it CHANGED (the
+  // digest above) or when trailPushMinMs has passed since the last accepted
+  // push (a bounded refresh of Node's stop and peak readings); otherwise the
+  // sweep still runs — the guards and the keeper act every pass — but the
+  // engine is not told the same set again. A refused push is retried on the
+  // next sweep regardless.
+  const trailPushMinMs = deps.trailPushMinMs ?? 60_000
+  const lastTrailPush = new Map() // side → { digest, at, withheld }
   // Claude · № 11,596·D·1: the backstop interval, and the first-attach delay
   // as a test seam (production keeps the 3 s it always had).
   const backstopMs = deps.backstopMs ?? 5 * 60_000
@@ -281,9 +306,18 @@ export function startGuardian(db, getCreds, deps = {}) {
           console.log(`[since-entry-trail] trail-config push withheld for the ${side} side: the ${entry.failed.join(', ')} pass failed; the engine keeps its previous set`)
           continue
         }
+        const digest = trailSetDigest(entry.specs)
+        const prev = lastTrailPush.get(side)
+        const pushAt = Date.now()
+        if (prev && prev.digest === digest && pushAt - prev.at < trailPushMinMs) {
+          prev.withheld++
+          continue // the engine already holds this set; nothing new to tell it
+        }
         let ok = false
         try { ok = !!(exec.pushTrailConfig && await exec.pushTrailConfig(entry.creds, entry.specs)) } catch { ok = false }
-        console.log(`[since-entry-trail] trail-config ${entry.specs.length} spec(s) pushed for the ${side} side (${ok ? 'accepted' : 'not accepted'})`)
+        const since = prev?.withheld ? `; ${prev.withheld} unchanged sweep(s) since the last push` : ''
+        if (ok) lastTrailPush.set(side, { digest, at: pushAt, withheld: 0 })
+        console.log(`[since-entry-trail] trail-config ${entry.specs.length} spec(s) pushed for the ${side} side (${ok ? 'accepted' : 'not accepted'}${since})`)
       }
       if (acted > 0) console.log(`[guardian] ${why} → ${acted} guard action(s) across ${accounts.length} account(s)`)
     } catch (err) {

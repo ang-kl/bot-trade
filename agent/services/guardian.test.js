@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
   significantMove, watchedSymbolIds, watchlistSymbolIds,
-  flagScanPriority, takeScanPrioritySymbols, startGuardian,
+  flagScanPriority, takeScanPrioritySymbols, startGuardian, trailSetDigest,
 } from './guardian.js'
 
 test('significantMove: percentage threshold, bad inputs never wake', () => {
@@ -102,7 +102,7 @@ async function until(pred, ms = 2000) {
   assert.ok(pred(), 'condition not reached in time')
 }
 
-function sweepFixture(t, { backstopMs, keeperThrowsFor = null, keeperIncompleteFor = null, symbolMap = { NATGAS: 2280 } } = {}) {
+function sweepFixture(t, { backstopMs, keeperThrowsFor = null, keeperIncompleteFor = null, symbolMap = { NATGAS: 2280 }, trailPushMinMs = 0, pushOk = () => true, specVersion = { n: 0 } } = {}) {
   const db = initDB(':memory:')
   t.after(() => db.close())
   setState(db, 'symbol_id_map', JSON.stringify(symbolMap))
@@ -116,7 +116,7 @@ function sweepFixture(t, { backstopMs, keeperThrowsFor = null, keeperIncompleteF
   const guards = [], keeper = [], pushes = []
   let onTick = null
   const stop = startGuardian(db, () => creds[1], {
-    maintMs: 5, cooldownMs: 0, firstAttachMs: 1, backstopMs,
+    maintMs: 5, cooldownMs: 0, firstAttachMs: 1, backstopMs, trailPushMinMs,
     streamSpots: async (...args) => { onTick = args[6]; return { close() {} } },
     accountRegistry: { getEnabledAccounts: () => [{ account_id: '3' }, { account_id: '1' }, { account_id: '2' }, { account_id: '4' }] },
     credsLib: { credsForRegisteredAccount: (_db, id) => creds[id] ?? null },
@@ -127,10 +127,10 @@ function sweepFixture(t, { backstopMs, keeperThrowsFor = null, keeperIncompleteF
         if (c.accountId === keeperThrowsFor) throw new Error(`broker down for …000${c.accountId}`)
         // Codex P1 on #1245: the real keeper never throws; it returns an incomplete list.
         if (c.accountId === keeperIncompleteFor) return { slMoves: 0, errors: ['NATGAS: price fetch failed'], trailSpecs: [], trailSpecsComplete: false }
-        return { slMoves: 0, trailSpecs: [{ positionId: Number(c.accountId) * 100, ctidTraderAccountId: Number(c.accountId) }] }
+        return { slMoves: 0, trailSpecs: [{ positionId: Number(c.accountId) * 100 + specVersion.n, ctidTraderAccountId: Number(c.accountId) }] }
       },
     },
-    exec: { pushTrailConfig: async (c, specs) => { pushes.push({ side: c.isLive ? 'live' : 'demo', account: c.accountId, specs }); return true } },
+    exec: { pushTrailConfig: async (c, specs) => { pushes.push({ side: c.isLive ? 'live' : 'demo', account: c.accountId, specs }); return pushOk(pushes.length) } },
   })
   t.after(stop)
   return { db, guards, keeper, pushes, tick: () => onTick, stop }
@@ -187,4 +187,52 @@ test('sweep: a keeper pass that RETURNS an incomplete spec list withholds its si
   await until(() => f.keeper.filter(k => k.id === '2').length >= 2, 1500)
   assert.ok(f.pushes.length >= 1, 'the live side still pushes')
   assert.ok(f.pushes.every(p => p.side === 'live'), `the demo side is withheld while …0002 returns an incomplete list: ${JSON.stringify(f.pushes.map(p => p.side))}`)
+})
+
+// ---- the push cadence cap (Claude · № 11,760 07-Oct, ordered ¶11,758·C·1):
+// the sweep runs every pass; the engine is told a side's union only when it
+// changed or when trailPushMinMs has passed. ----------------------------------
+
+test('trailSetDigest: the set, distance, digits, direction, symbol, target and entry count; currentSl and peakPrice do not; order does not', () => {
+  const a = { positionId: 1, ctidTraderAccountId: 9, symbolId: 2, dir: 1, trailDistance: 0.5, digits: 5, currentTp: 1.2, entryPrice: 1.0, currentSl: 0.9, peakPrice: 1.1 }
+  const b = { ...a, positionId: 2 }
+  assert.equal(trailSetDigest([a, b]), trailSetDigest([b, a]), 'order-independent')
+  assert.equal(trailSetDigest([{ ...a, currentSl: 0.95, peakPrice: 1.15 }]), trailSetDigest([a]), 'the engine keeps its own stop and peak: not part of the digest')
+  assert.notEqual(trailSetDigest([{ ...a, trailDistance: 0.6 }]), trailSetDigest([a]), 'a new distance is a new config')
+  assert.notEqual(trailSetDigest([a, b]), trailSetDigest([a]), 'a position leaving the set is a new config (full replace must drop it)')
+  assert.equal(trailSetDigest([]), '', 'the empty set has a digest too (an empty push clears the engine)')
+})
+
+test('push cadence: an unchanged union is pushed once within trailPushMinMs while the sweeps keep running', async t => {
+  const f = sweepFixture(t, { backstopMs: 20, trailPushMinMs: 10_000 })
+  await until(() => f.keeper.filter(k => k.id === '1').length >= 4, 2000)
+  assert.equal(f.pushes.filter(p => p.side === 'demo').length, 1, `one demo push for four sweeps: ${JSON.stringify(f.pushes.map(p => p.side))}`)
+  assert.equal(f.pushes.filter(p => p.side === 'live').length, 1)
+})
+
+test('push cadence: a changed union is pushed at once, inside the interval', async t => {
+  const specVersion = { n: 0 }
+  const f = sweepFixture(t, { backstopMs: 20, trailPushMinMs: 10_000, specVersion })
+  await until(() => f.keeper.filter(k => k.id === '1').length >= 2, 2000)
+  assert.equal(f.pushes.filter(p => p.side === 'demo').length, 1)
+  specVersion.n = 1 // a different position set on every account
+  await until(() => f.pushes.filter(p => p.side === 'demo').length >= 2, 2000)
+  const last = f.pushes.filter(p => p.side === 'demo').at(-1)
+  assert.deepEqual(last.specs.map(s => s.positionId), [101, 201], 'the new set went out')
+})
+
+test('push cadence: a refused push is retried on the next sweep, inside the interval', async t => {
+  // trailPushMinMs far away: only a RETRY can produce the refused side's second push.
+  const f = sweepFixture(t, { backstopMs: 20, trailPushMinMs: 10_000, pushOk: (n) => n !== 1 })
+  await until(() => f.pushes.length >= 3, 2000) // boot: 2 pushes (the first refused) → the refused side goes again on the next sweep
+  const first = f.pushes[0].side
+  assert.equal(f.pushes.filter(p => p.side === first).length, 2, `the refused ${first} push was retried: ${JSON.stringify(f.pushes.map(p => p.side))}`)
+  assert.equal(f.pushes.filter(p => p.side !== first).length, 1, 'the accepted side was not re-pushed')
+})
+
+test('push cadence: after trailPushMinMs the unchanged union is pushed again (a bounded refresh)', async t => {
+  const f = sweepFixture(t, { backstopMs: 20, trailPushMinMs: 150 })
+  await until(() => f.pushes.filter(p => p.side === 'demo').length >= 2, 2000)
+  const demo = f.pushes.filter(p => p.side === 'demo')
+  assert.ok(demo.length >= 2 && demo.length <= 4, `one refresh per interval, not per sweep: ${demo.length} demo pushes`)
 })
