@@ -37,7 +37,12 @@ struct Deal {
   long long dealId = 0;
   long long positionId = 0;
   long long symbolId = 0;
-  long long volume = 0;
+  long long volume = 0;           // sent quantity, never an executed-size fallback
+  // Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+  // Presence survives decoding: a missing actual fill is not sent volume/0.
+  std::optional<long long> filledVolume;
+  std::optional<long long> closedVolume;
+  std::optional<int> dealStatus;
   int tradeSide = 0;              // 1 BUY, 2 SELL
   double executionPrice = 0;
   long long executionTimestamp = 0;
@@ -45,6 +50,10 @@ struct Deal {
   double grossProfit = 0;
   double swap = 0;
   double commission = 0;
+  // The arithmetic stays native and signed; decoder witnesses distinguish a
+  // broker-reported zero from missing/malformed monetary fields.
+  bool commissionKnown = false;
+  bool closingMoneyKnown = false;
   double balance = 0;
 };
 

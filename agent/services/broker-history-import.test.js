@@ -1,3 +1,5 @@
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-fixtures.
+// Positive capture/repair fixtures explicitly represent validated executed lots.
 // node --test agent/services/broker-history-import.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -12,9 +14,9 @@ const NOW = Date.parse('2026-07-25T00:00:00Z')
 // closePositionDetail is what marks a CLOSING deal; opening deals have none.
 function closingDeal({ dealId, positionId, symbolId = 1, side = 2, volume = 10_000, ms, entry = 1.1, exit = 1.12, gross = 200, swap = -5, commission = -3 }) {
   return {
-    dealId, positionId, symbolId, tradeSide: side, volume, executionTimestamp: ms,
+    dealId, positionId, symbolId, tradeSide: side, volume, filledVolume: volume, dealStatus: 2, executionTimestamp: ms,
     executionPrice: exit,
-    closePositionDetail: { entryPrice: entry, grossProfit: gross, swap, commission, moneyDigits: 2 },
+    closePositionDetail: { closedVolume: volume, entryPrice: entry, grossProfit: gross, swap, commission, moneyDigits: 2 },
   }
 }
 function openingDeal({ dealId, positionId, symbolId = 1, ms, price = 1.1 }) {
@@ -173,8 +175,8 @@ test('imported fills with no local trade row join the cluster analysis', async (
     VALUES ('XAUUSD','BUY',0.1,'open',datetime('now','-20 minutes'),'700','autopilot','47790949')
   `).run()
   db.prepare(`
-    INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, opened_at, closed_at, net_pnl)
-    VALUES ('55','701','47790949','XAUUSD','BUY',0.1,datetime('now','-15 minutes'),datetime('now'),-42.5)
+    INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, opened_at, closed_at, net_pnl)
+    VALUES (1, '55','701','47790949','XAUUSD','BUY',0.1,datetime('now','-15 minutes'),datetime('now'),-42.5)
   `).run()
   const { worst } = findSameSymbolClusters(db)
   assert.equal(worst.count, 2)
@@ -193,8 +195,8 @@ test('a matched imported deal is not double-counted as its own leg', async () =>
   `).run()
   const tid = db.prepare("SELECT id FROM trades WHERE ctrader_position_id = '800'").get().id
   db.prepare(`
-    INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, opened_at, closed_at, net_pnl, matched_trade_id)
-    VALUES ('60','800','47790949','US500','BUY',0.1,datetime('now','-10 minutes'),datetime('now'),12.0, ?)
+    INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, opened_at, closed_at, net_pnl, matched_trade_id)
+    VALUES (1, '60','800','47790949','US500','BUY',0.1,datetime('now','-10 minutes'),datetime('now'),12.0, ?)
   `).run(tid)
   const { clusters } = findSameSymbolClusters(db)
   assert.equal(clusters.length, 0) // one real trade, not a pair
@@ -221,8 +223,8 @@ function seed(db, { id, entry, exit, status = 'closed' }) {
 }
 function deal(db, { dealId, tid, entry, close }) {
   db.prepare(
-    `INSERT INTO broker_deals (deal_id, position_id, symbol, side, entry_price, close_price, net_pnl, matched_trade_id)
-     VALUES (?, ?, 'EURX', 'BUY', ?, ?, -2535.41, ?)`,
+    `INSERT INTO broker_deals (volume_contract, deal_id, position_id, symbol, side, entry_price, close_price, net_pnl, matched_trade_id)
+     VALUES (1, ?, ?, 'EURX', 'BUY', ?, ?, -2535.41, ?)`,
   ).run(String(dealId), String(dealId), entry, close, tid)
 }
 
@@ -472,8 +474,8 @@ test('multi-deal entry: a lots-weighted entry and exit are written when every de
   const db = initDB(':memory:')
   seed(db, { id: 800, entry: 5.0, exit: 5.5 })
   const ins = db.prepare(
-    `INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, net_pnl, matched_trade_id)
-     VALUES (?, ?, 'EURX', 'BUY', ?, ?, ?, 1, 800)`,
+    `INSERT INTO broker_deals (volume_contract, deal_id, position_id, symbol, side, lots, entry_price, close_price, net_pnl, matched_trade_id)
+     VALUES (1, ?, ?, 'EURX', 'BUY', ?, ?, ?, 1, 800)`,
   )
   ins.run('11', '11', 0.1, 5.1, 5.5)
   ins.run('12', '12', 0.3, 5.3, 5.7)
@@ -490,8 +492,8 @@ test('multi-deal entry: ONE deal without lots keeps the whole trade skipped', ()
   const db = initDB(':memory:')
   seed(db, { id: 801, entry: 5.0, exit: 5.5 })
   const ins = db.prepare(
-    `INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, net_pnl, matched_trade_id)
-     VALUES (?, ?, 'EURX', 'BUY', ?, ?, ?, 1, 801)`,
+    `INSERT INTO broker_deals (volume_contract, deal_id, position_id, symbol, side, lots, entry_price, close_price, net_pnl, matched_trade_id)
+     VALUES (1, ?, ?, 'EURX', 'BUY', ?, ?, ?, 1, 801)`,
   )
   ins.run('21', '21', 0.1, 5.1, 5.5)
   ins.run('22', '22', null, 5.3, 5.7)
@@ -512,8 +514,8 @@ test('keeper truth: closed_at_ms and hold_duration_ms take the closing deal\'s t
   const brokerClose = Date.parse('2026-09-16T05:00:00.000Z')
   db.prepare(`INSERT INTO trades (id, symbol, side, entry_price, exit_price, status, volume, opened_at, closed_at_ms, hold_duration_ms)
               VALUES (77, 'DOW.US', 'SELL', 29.69, 29.49, 'closed', 12.57, ?, ?, ?)`).run(opened, brokerClose + 274_000, brokerClose + 274_000 - Date.parse('2026-09-16T01:00:00Z'))
-  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, closed_at, matched_trade_id)
-              VALUES ('9', '9', 'DOW.US', 'SELL', 12.5, 29.69, 29.49, ?, 77)`).run(new Date(brokerClose).toISOString())
+  db.prepare(`INSERT INTO broker_deals (volume_contract, deal_id, position_id, symbol, side, lots, entry_price, close_price, closed_at, matched_trade_id)
+              VALUES (1, '9', '9', 'DOW.US', 'SELL', 12.5, 29.69, 29.49, ?, 77)`).run(new Date(brokerClose).toISOString())
   const out = reconcileTradePricesToBroker(db)
   assert.equal(out.closeTimesCorrected, 1)
   assert.equal(out.volumesCorrected, 1)
@@ -530,9 +532,9 @@ test('keeper truth: a stamp within a second of the fill is left alone; a group m
   const db = initDB(':memory:')
   const close = Date.parse('2026-09-16T05:00:00.000Z')
   db.prepare(`INSERT INTO trades (id, symbol, side, entry_price, exit_price, status, volume, closed_at_ms) VALUES (1, 'X', 'BUY', 1, 2, 'closed', 3, ?)`).run(close + 400)
-  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, closed_at, matched_trade_id) VALUES ('a', 'a', 'X', 'BUY', 3, 1, 2, ?, 1)`).run(new Date(close).toISOString())
+  db.prepare(`INSERT INTO broker_deals (volume_contract, deal_id, position_id, symbol, side, lots, entry_price, close_price, closed_at, matched_trade_id) VALUES (1, 'a', 'a', 'X', 'BUY', 3, 1, 2, ?, 1)`).run(new Date(close).toISOString())
   db.prepare(`INSERT INTO trades (id, symbol, side, entry_price, exit_price, status, volume, closed_at_ms) VALUES (2, 'Y', 'BUY', 1, 2, 'closed', 5, ?)`).run(close + 60_000)
-  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, symbol, side, lots, entry_price, close_price, closed_at, matched_trade_id) VALUES ('b', 'b', 'Y', 'BUY', NULL, 1, 2, NULL, 2)`).run()
+  db.prepare(`INSERT INTO broker_deals (volume_contract, deal_id, position_id, symbol, side, lots, entry_price, close_price, closed_at, matched_trade_id) VALUES (1, 'b', 'b', 'Y', 'BUY', NULL, 1, 2, NULL, 2)`).run()
   const out = reconcileTradePricesToBroker(db)
   assert.equal(out.closeTimesCorrected, 0); assert.equal(out.volumesCorrected, 0)
   assert.equal(db.prepare('SELECT closed_at_ms FROM trades WHERE id = 1').get().closed_at_ms, close + 400)

@@ -1,3 +1,5 @@
+// Codex · №11,928 · 2026-10-07; codex-footprint: executed-volume-contract.
+// Complete-record fixtures explicitly certify their actual closing lots.
 // agent/services/tick-fire-ledger.test.js
 //
 // THE MEASURED DEFECT these tests pin (20-09-2026). A tick fill is owned by
@@ -136,8 +138,8 @@ test('END TO END: ring row → ledger → adoption → close → a position_hist
               hold_duration_ms = ?, gross_pnl = 50, net_pnl = 48, commission = -1, swap = -1, realised_rr = 2.5, close_reason = 'take_profit'
               WHERE id = ?`)
     .run(new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString(), CLOSE_MS, CLOSE_MS - OPEN_MS, tid)
-  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
-              VALUES ('d1', ?, ?, 'EURUSD', 'BUY', 0.01, 1.1000, 1.1050, ?, ?, 50, -1, -1, 48)`)
+  db.prepare(`INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
+              VALUES (1, 'd1', ?, ?, 'EURUSD', 'BUY', 0.01, 1.1000, 1.1050, ?, ?, 50, -1, -1, 48)`)
     .run(PID, ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
 
   const { record, missing } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
@@ -253,8 +255,8 @@ test('a HEALED misfiled row picks up risk_event_id from the intent the fire ledg
               hold_duration_ms = ?, gross_pnl = 50, net_pnl = 48, commission = -1, swap = -1, realised_rr = 2.5, close_reason = 'take_profit'
               WHERE id = ?`)
     .run(new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString(), CLOSE_MS, CLOSE_MS - OPEN_MS, tradeId)
-  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
-              VALUES ('d9', '7009', ?, 'EURUSD', 'BUY', 0.01, 1.1000, 1.1050, ?, ?, 50, -1, -1, 48)`)
+  db.prepare(`INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
+              VALUES (1, 'd9', '7009', ?, 'EURUSD', 'BUY', 0.01, 1.1000, 1.1050, ?, ?, 50, -1, -1, 48)`)
     .run(ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
   const { record, missing } = buildPositionRecord(db, { accountId: ACCT, positionId: '7009' })
   assert.deepEqual(missing, [])

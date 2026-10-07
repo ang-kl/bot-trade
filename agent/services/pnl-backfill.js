@@ -30,6 +30,7 @@ import { stampRealisedAudit } from './trade-consistency.js'
 import { DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
 import { pageDeals } from '../lib/deal-paging.js'
 import { verifiedPositionHistory, lifecycleBalance, FALSE_CLOSE_TOLERANCE_MS } from '../lib/position-deal-history.js'
+import { closingExecutedQuantity, VOLUME_BOUNDARY_KEY } from '../lib/deal-execution-volume.js'
 
 // One tolerance, shared with the receipt linker (broker-history-import.js).
 export { FALSE_CLOSE_TOLERANCE_MS }
@@ -604,7 +605,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     const m = (v) => (v == null ? 0 : v / scale)
     const gross = m(cpd.grossProfit)
     const net = gross + m(cpd.swap) + m(cpd.commission)
-    const agg = byPosition.get(positionId) || { net: 0, gross: 0, swap: 0, commission: 0, pxVol: 0, vol: 0, fee: 0 }
+    const agg = byPosition.get(positionId) || { net: 0, gross: 0, swap: 0, commission: 0, pxVol: 0, vol: 0, priceComplete: true, fee: 0 }
     agg.net += net
     agg.gross += gross
     // THE EXIT PRICE THE LEDGER NEVER RECORDED (go-live Phase 0, P0-1).
@@ -615,11 +616,12 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     // source that can settle them.
     {
       const px = Number(d.executionPrice)
-      const vol = Number(opts.positionId == null ? (d.volume ?? d.filledVolume ?? 0) : d.filledVolume)
-      if (Number.isFinite(px) && px > 0 && Number.isFinite(vol) && vol > 0) {
+      // Codex · №11,919 · 2026-10-07; codex-footprint: executed-volume-contract.
+      const vol = closingExecutedQuantity(d)
+      if (Number.isFinite(px) && px > 0 && vol != null) {
         agg.pxVol += px * vol
         agg.vol += vol
-      }
+      } else agg.priceComplete = false
     }
     // Forensics: keep the cost components separate too (Performance Ledger
     // shows cost-per-strategy; folding them into net loses that).
@@ -689,11 +691,16 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // `exit_price_suspect` is the other half, written by the magnitude check in
   // services/exit-price-suspects.js. Either flag now earns a repair, because
   // either is enough to know the recorded price is not the fill.
+  // Preserve existing financial history even when old deal IDs arrive later.
+  const volumeBoundary = db.prepare('SELECT value FROM agent_state WHERE key = ?').get(VOLUME_BOUNDARY_KEY)?.value
+  const safeBoundary = /^\d+$/.test(String(volumeBoundary)) && Number.isSafeInteger(Number(volumeBoundary))
+    ? Number(volumeBoundary) : Number.MAX_SAFE_INTEGER
   const repairExit = db.prepare(
     `UPDATE trades
         SET exit_price = ?
       WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
         AND status = 'closed'
+        AND id > ${safeBoundary}
         AND (pnl_price_mismatch = 1 OR exit_price_suspect = 1) ${scopeSql}`
   )
   // AND THE MISSING ONES. Separate statement, separate counter, because it is
@@ -716,7 +723,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     `UPDATE trades
         SET exit_price = ?
       WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
-        AND status = 'closed' AND exit_price IS NULL ${scopeSql}`
+        AND status = 'closed' AND exit_price IS NULL AND id > ${safeBoundary} ${scopeSql}`
   )
   // ONE ROW PER BROKER POSITION (V3 B1, PR-1(b)). The window update and the
   // no-account claim wrote EVERY unpriced closed row of a position with the
@@ -824,7 +831,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       // themselves. Re-stamp realised R and clear the flag from the repaired
       // row rather than assuming the repair worked — if the deal price still
       // disagrees with the money, that is a finding, not a success.
-      if (agg.vol > 0) {
+      if (agg.priceComplete && agg.vol > 0) {
         const vwap = agg.pxVol / agg.vol
         const rep = repairExit.run(vwap, positionId, ...scopeParams)
         // Fill the absent ones from the same volume-weighted deal price. Run

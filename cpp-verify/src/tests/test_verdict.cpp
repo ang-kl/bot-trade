@@ -27,10 +27,15 @@ Deal openDeal(long long pos, double price, double units, long long ts, double co
   d.positionId = pos;
   d.symbolId = 22396;
   d.volume = static_cast<long long>(units * kCenti);
+  // Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+  // Schema facts are explicit in fixtures, never production defaults.
+  d.filledVolume = d.volume;
+  d.dealStatus = 2;
   d.tradeSide = 1;
   d.executionPrice = price;
   d.executionTimestamp = ts;
   d.commission = commDollars * kCenti;
+  d.commissionKnown = true;
   return d;
 }
 
@@ -40,8 +45,10 @@ Deal closeDeal(long long pos, double price, double units, long long ts,
   d.dealId = ts + 1;
   d.tradeSide = 2;
   d.hasClose = true;
+  d.closedVolume = d.filledVolume;
   d.grossProfit = grossDollars * kCenti;
   d.swap = swapDollars * kCenti;
+  d.closingMoneyKnown = true;
   return d;
 }
 
@@ -169,6 +176,7 @@ void anOpeningDealOutsideTheWindowIsUnverified() {
   DealFetch f = complete({closeDeal(500, 1.2445, 10000, 2000, 100.0)});
   Verdict v = judge(matching(), f);
   check(v.state == State::Unverified, "a missing opening deal does not dispute");
+  check(v.sawClose && !v.sawOpen, "closing-detail observation survives the missing opening");
   check(v.reason.find("window") != std::string::npos, "and names the window");
 }
 
@@ -274,6 +282,7 @@ void aFractionalVolumeIsNotTruncatedIntoADispute() {
   DealFetch f = complete({openDeal(7, 100.0, 9.4, 1000, 0.0),
                           closeDeal(7, 103.0, 9.4, 2000, 28.2, 0.0, 0.0)});
   f.deals[0].symbolId = 1;
+  f.deals[1].symbolId = 1;
   Verdict v = judge(r, f);
   check(v.state == State::Verified, "9.4 units against 940 centi-units agrees: " + v.reason);
 }
@@ -407,6 +416,100 @@ void aNonStandardMoneyScaleIsHonoured() {
   check(v.state == State::Verified, "the broker's own scale is applied, not 2: " + v.reason);
 }
 
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+void actualFillsDriveUnequalPartialWeightsNotSentVolume() {
+  auto opening = openDeal(500, 1.0, 100, 1000, 0);
+  auto first = closeDeal(500, 1.1, 25, 2000, 10, 0, 0);
+  auto second = closeDeal(500, 1.2, 75, 3000, 20, 0, 0);
+  opening.volume = 20000;  // sent200 units; only100 units filled
+  first.volume = 10000; second.volume = 10000;
+  first.dealStatus = 3; second.dealStatus = 3;
+  auto rec = matching(); rec.entryPrice = 1.0; rec.exitPrice = 1.175;
+  rec.volume = 100; rec.netPnl = 30; rec.closedAtMs = 3000;
+  auto v = judge(rec, complete({opening, first, second}));
+  check(v.state == State::Verified, "unequal actual partial fills verify despite larger sent size: " + v.reason);
+  check(v.brokerVolume && *v.brokerVolume == 100, "opening volume is actual fill, not requested200");
+  check(v.brokerExitPrice && std::fabs(*v.brokerExitPrice - 1.175) < 1e-12,
+        "close weights use actual25/75, not equal requested100/100");
+}
+
+void unknownActualSizeCannotBorrowNominalSize() {
+  for (int which = 0; which < 5; ++which) {
+    auto f = matchingFetch();
+    if (which == 0) f.deals[0].filledVolume.reset();
+    if (which == 1) f.deals[1].closedVolume.reset();
+    if (which == 2) f.deals[1].filledVolume.reset();
+    if (which == 3) f.deals[0].filledVolume = 0;
+    if (which == 4) f.deals[1].closedVolume = -1;
+    auto v = judge(matching(), f);
+    check(v.state == State::Unverified, "unknown actual quantity never verifies case" + std::to_string(which));
+    check(v.disputes.empty() && !v.brokerVolume && !v.brokerNetPnl,
+          "unsupported actual quantity publishes no certified broker total");
+  }
+}
+
+void residualReversalAndRepeatedEpisodesAreUnsupported() {
+  auto f = matchingFetch(); f.deals[1].filledVolume = *f.deals[1].closedVolume * 2;
+  auto v = judge(matching(), f);
+  check(v.state == State::Unverified && v.disputes.empty() && !v.brokerNetPnl,
+        "mixed reversal cannot certify old leg while residual opens");
+  f = matchingFetch();
+  f.deals.push_back(openDeal(500, 1.3, 10000, 3000));
+  f.deals.push_back(closeDeal(500, 1.4, 10000, 4000, 100));
+  v = judge(matching(), f);
+  check(v.state == State::Unverified && !v.brokerVolume,
+        "another lifecycle under same ID is not one original trade");
+}
+
+void partialCloseCannotCertifyAStillOpenPosition() {
+  auto f = matchingFetch(); f.deals[1].filledVolume = 500000; f.deals[1].closedVolume = 500000;
+  auto v = judge(matching(), f);
+  check(v.state == State::Unverified && v.reason.find("still open") != std::string::npos,
+        "one closing deal is not proof of a whole close");
+  check(v.disputes.empty() && !v.brokerVolume && !v.brokerNetPnl,
+        "partial-only history publishes no whole-position totals");
+}
+
+void invalidIdentityStatusAndDuplicateDealsRefuseBeforeComparison() {
+  for (int which = 0; which < 8; ++which) {
+    auto f = matchingFetch();
+    if (which == 0) f.deals.push_back(f.deals.back());
+    if (which == 1) f.deals[1].symbolId++;
+    if (which == 2) f.deals[1].tradeSide = 1;
+    if (which == 3) f.deals[0].dealStatus.reset();
+    if (which == 4) f.deals[1].dealStatus = 4;
+    if (which == 5) f.deals[0].dealId = 0;
+    if (which == 6) f.deals[1].filledVolume = 2000000, f.deals[1].closedVolume = 2000000;
+    if (which == 7) f.deals[1].executionPrice = std::nan("");
+    auto v = judge(matching(), f);
+    check(v.state == State::Unverified && v.disputes.empty() && !v.brokerNetPnl,
+          "invalid history is unknown, not a fabricated dispute case" + std::to_string(which));
+  }
+}
+
+void missingCostsAndInvalidScaleStayUnknownButZeroIsPresent() {
+  for (int which = 0; which < 4; ++which) {
+    auto f = matchingFetch();
+    if (which == 0) f.deals[0].commissionKnown = false;
+    if (which == 1) f.deals[1].closingMoneyKnown = false;
+    if (which == 2) f.moneyDigits = -1;
+    if (which == 3) f.moneyDigits = 11;
+    auto v = judge(matching(), f);
+    check(v.state == State::Unverified && !v.brokerNetPnl,
+          "unknown costs/invalid scale do not become zero case" + std::to_string(which));
+  }
+}
+
+void multipleSameSideFillsRemainOneLifecycleInAnyInputOrder() {
+  auto first = openDeal(500, 1.0, 25, 1000, 0);
+  auto second = openDeal(500, 1.2, 75, 1500, 0);
+  auto closing = closeDeal(500, 1.3, 100, 2000, 40, 0, 0);
+  auto rec = matching(); rec.volume = 100; rec.entryPrice = 1.15;
+  rec.exitPrice = 1.3; rec.netPnl = 40;
+  check(judge(rec, complete({closing, second, first})).state == State::Verified,
+        "sorted multiple same-side actual fills preserve valid lifecycle");
+}
+
 int main() {
   aRecordThatAgreesWithTheBrokerIsVerified();
   anIncompleteFetchCanNeverVerifyAndNeverDisputes();
@@ -431,6 +534,13 @@ int main() {
   anUnreadableMoneyScaleIsNeverGuessed();
   anUnreadableMoneyScaleStillReportsRealDisputes();
   aNonStandardMoneyScaleIsHonoured();
+  actualFillsDriveUnequalPartialWeightsNotSentVolume();
+  unknownActualSizeCannotBorrowNominalSize();
+  residualReversalAndRepeatedEpisodesAreUnsupported();
+  partialCloseCannotCertifyAStillOpenPosition();
+  invalidIdentityStatusAndDuplicateDealsRefuseBeforeComparison();
+  missingCostsAndInvalidScaleStayUnknownButZeroIsPresent();
+  multipleSameSideFillsRemainOneLifecycleInAnyInputOrder();
 
   if (failures) { std::fprintf(stderr, "test_verdict: %d failure(s)\n", failures); return 1; }
   std::fprintf(stderr, "test_verdict: all passed\n");

@@ -15,6 +15,7 @@
 
 #include "fake_broker.hpp"
 #include "../verify_session.hpp"
+#include "../verdict.hpp"
 
 namespace {
 
@@ -39,6 +40,9 @@ jsn::Value deal(long long id, long long pos, long long ts, double price, bool cl
   d.set("positionId", static_cast<double>(pos));
   d.set("symbolId", 22396.0);
   d.set("volume", 10000.0);
+  // Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+  d.set("filledVolume", 10000.0);
+  d.set("dealStatus", 2.0);
   d.set("tradeSide", closing ? 2.0 : 1.0);
   d.set("executionPrice", price);
   d.set("executionTimestamp", static_cast<double>(ts));
@@ -48,6 +52,7 @@ jsn::Value deal(long long id, long long pos, long long ts, double price, bool cl
     c.set("grossProfit", 100.0);
     c.set("swap", 0.0);
     c.set("balance", 10100.0);
+    c.set("closedVolume", 10000.0);
     d.set("closePositionDetail", c);
   }
   return d;
@@ -165,6 +170,128 @@ void anEmptyWindowIsRefusedBeforeAnySocketTraffic() {
   check(broker.receivedCount() == before, "and costs the broker no request");
 }
 
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+void actualQuantitiesDecodeStrictlyWithoutSentFallback() {
+  FakeBroker broker([](FakeBroker& b, const jsn::Value& frame) {
+    if (handleAuth(b, frame)) return;
+    if (typeOf(frame) != kDealListReq) return;
+    jsn::Array rows;
+    const std::vector<jsn::Value> values{jsn::Value(700), jsn::Value(std::string("700")),
+      jsn::Value(), jsn::Value(true), jsn::Value(700.5), jsn::Value(std::string("700suffix")),
+      jsn::Value(std::string(" ")), jsn::Value(std::string("9223372036854775808")),
+      jsn::Value(9007199254740992.0), jsn::Value(0)};
+    for (size_t i = 0; i < values.size(); ++i) {
+      auto d = deal(static_cast<long long>(i + 1), 500, static_cast<long long>(1000 + i), 1.1, true);
+      d.set("filledVolume", values[i]);
+      d.set("dealStatus", i == 0 ? jsn::Value(std::string("FILLED")) : jsn::Value(std::string("PARTIALLY_FILLED")));
+      d.set("tradeSide", std::string("SELL"));
+      auto c = d.get("closePositionDetail"); c.set("closedVolume", values[i]);
+      d.set("closePositionDetail", c);
+      rows.push_back(d);
+    }
+    // Unknown status and money remain unknown, rather than inheriting enum0
+    // or a numeric-prefix/zero monetary default.
+    auto invalid = deal(100, 600, 1100, 1.2, true);
+    invalid.set("dealStatus", std::string("2suffix"));
+    invalid.set("commission", jsn::Value());
+    auto close = invalid.get("closePositionDetail"); close.set("grossProfit", std::string("100suffix"));
+    invalid.set("closePositionDetail", close); rows.push_back(invalid);
+    b.reply(frame, kDealListRes, dealPage(std::move(rows), false));
+  });
+  auto s = openSession(broker); check(s->connect(4242), "actual-volume decode session connects");
+  auto f = s->deals(4242, 500, 9000);
+  check(f.ok && f.complete && f.deals.size() == 11, "actual-volume page retained complete");
+  if (f.deals.size() != 11) return;
+  for (size_t i = 0; i < 2; ++i) {
+    check(f.deals[i].filledVolume == 700 && f.deals[i].closedVolume == 700,
+      "both exact JSON number/string actual quantities decode");
+    check(f.deals[i].volume == 10000 && f.deals[i].tradeSide == 2,
+      "sent quantity remains separate and side enum name decodes");
+    check(f.deals[i].dealStatus == static_cast<int>(i + 2), "executed enum names decode explicitly");
+  }
+  for (size_t i = 2; i < 9; ++i) {
+    check(!f.deals[i].filledVolume && !f.deals[i].closedVolume,
+      "absent/boolean/fraction/prefix/overflow actual quantity stays unknown " + std::to_string(i));
+  }
+  check(f.deals[9].filledVolume == 0 && f.deals[9].closedVolume == 0,
+    "a reported zero remains present for the judge to reject as a fill");
+  check(!f.deals[10].dealStatus && !f.deals[10].commissionKnown && !f.deals[10].closingMoneyKnown,
+    "malformed status and missing/prefix cost are not fabricated facts");
+}
+
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+void conflictingDuplicateReceiptsNeverCertifyTheFirstCopy() {
+  for (const bool acrossPages : {false, true}) {
+   for (const int change : {0, 1, 2, 3}) {
+    std::atomic<int> page{0};
+    FakeBroker broker([&](FakeBroker& b, const jsn::Value& frame) {
+      if (handleAuth(b, frame)) return;
+      if (typeOf(frame) != kDealListReq) return;
+      auto opening = deal(1, 500, 1000, 1.0, false);
+      auto closing = deal(2, 500, 2000, 1.1, true);
+      // jsn::Value copies share object storage: construct a separate wire
+      // receipt so changing the duplicate never mutates the original.
+      auto changed = deal(2, 500, 2000, 1.1, true);
+      if (change == 0) {
+        changed.set("filledVolume", 5000.0);
+        auto c = changed.get("closePositionDetail"); c.set("closedVolume", 5000.0);
+        changed.set("closePositionDetail", c);
+      } else if (change == 1) changed.set("positionId", 501.0);
+      else if (change == 2) changed.set("dealStatus", 3.0);
+      else changed.set("commission", false);
+      if (acrossPages) {
+        b.reply(frame, kDealListRes, page.fetch_add(1) == 0
+          ? dealPage({opening, closing}, true) : dealPage({changed}, false));
+      } else b.reply(frame, kDealListRes, dealPage({opening, closing, changed}, false));
+    });
+    auto s = openSession(broker); check(s->connect(4242), "conflicting duplicate session connects");
+    auto fetch = s->deals(4242, 500, 9000); fetch.moneyDigits = 2;
+    verify::KeeperRecord rec;
+    rec.positionId = 500; rec.symbolId = 22396; rec.tradeSide = 1;
+    rec.volume = 100; rec.lotSize = 100; rec.entryPrice = 1.0; rec.exitPrice = 1.1;
+    rec.netPnl = 0.98; rec.openedAtMs = 1000; rec.closedAtMs = 2000;
+    const auto v = verify::judge(rec, fetch);
+    const auto scope = std::string(acrossPages ? "overlap pages" : "same page") + " change=" + std::to_string(change);
+    check(!fetch.ok && !fetch.complete, std::string("conflicting receipt is an incomplete read: ") + scope);
+    check(fetch.error.find("conflicting duplicate deal") != std::string::npos,
+      std::string("conflicting receipt is named: ") + scope);
+    check(v.state == verify::State::Unverified && !v.brokerVolume && !v.brokerNetPnl,
+      std::string("actual session+judge cannot certify stale first duplicate: ") + scope);
+   }
+  }
+}
+
+void semanticallyIdenticalOverlapStillCertifies() {
+  std::atomic<int> page{0};
+  FakeBroker broker([&](FakeBroker& b, const jsn::Value& frame) {
+    if (handleAuth(b, frame)) return;
+    if (typeOf(frame) != kDealListReq) return;
+    if (page.fetch_add(1) == 0) {
+      b.reply(frame, kDealListRes, dealPage({deal(1, 500, 1000, 1.0, false), deal(2, 500, 2000, 1.1, true)}, true));
+      return;
+    }
+    auto repeated = deal(2, 500, 2000, 1.1, true);
+    repeated.set("dealId", "2"); repeated.set("positionId", "500"); repeated.set("symbolId", "22396");
+    repeated.set("volume", "10000"); repeated.set("filledVolume", "10000"); repeated.set("dealStatus", "FILLED");
+    repeated.set("tradeSide", "SELL"); repeated.set("executionPrice", "1.1");
+    repeated.set("executionTimestamp", "2000"); repeated.set("commission", "-1");
+    auto close = repeated.get("closePositionDetail");
+    close.set("closedVolume", "10000"); close.set("grossProfit", "100"); close.set("swap", "0");
+    repeated.set("closePositionDetail", close);
+    b.reply(frame, kDealListRes, dealPage({repeated}, false));
+  });
+  auto s = openSession(broker); check(s->connect(4242), "identical overlap session connects");
+  auto fetch = s->deals(4242, 500, 9000); fetch.moneyDigits = 2;
+  verify::KeeperRecord rec;
+  rec.positionId = 500; rec.symbolId = 22396; rec.tradeSide = 1;
+  rec.volume = 100; rec.lotSize = 100; rec.entryPrice = 1.0; rec.exitPrice = 1.1;
+  rec.netPnl = 0.98; rec.openedAtMs = 1000; rec.closedAtMs = 2000;
+  check(fetch.ok && fetch.complete && fetch.deals.size() == 2,
+    "equal broker int64 and enum encodings are deduped as one receipt");
+  check(verify::judge(rec, fetch).state == verify::State::Verified,
+    "unchanged complete lifecycle still verifies across an identical inclusive overlap");
+}
+
 } // namespace
 
 int main() {
@@ -172,6 +299,9 @@ int main() {
   aStalledWalkReportsIncompleteRatherThanLoopingOrLying();
   aBrokerErrorMidWalkIsUnknownNotEmpty();
   anEmptyWindowIsRefusedBeforeAnySocketTraffic();
+  actualQuantitiesDecodeStrictlyWithoutSentFallback();
+  conflictingDuplicateReceiptsNeverCertifyTheFirstCopy();
+  semanticallyIdenticalOverlapStillCertifies();
 
   if (failures) { std::fprintf(stderr, "test_deal_paging: %d failure(s)\n", failures); return 1; }
   std::fprintf(stderr, "test_deal_paging: all passed\n");

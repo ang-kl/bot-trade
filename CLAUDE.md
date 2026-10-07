@@ -2482,3 +2482,21 @@ Canary/hold, owner pauses/opt-out, momentum-book rules, one-call/account, deadli
 and single-flight protections remain. This does not establish the origin of
 GER40's observed trigger drift, a broker outcome, or whole acceptance. No TrailSpec
 ingest field changes: guardian digest contract remains unchanged.
+<!-- Codex · №11,923 · 2026-10-07; codex-footprint: executed-volume-contract.
+Owner11915/11916 continuation: prospective executed-volume correction on fresh
+22d6216f, reusing completed PR1233–1258 and gates. Actual adapter regressions
+reproduce nominal closing quantities/weights and automatic legacy rewrites.
+New broker receipts use validated filledVolume/closedVolume, preserving the
+requested quantity separately. Legacy broker rows remain untagged and retain
+their financial facts; a once-only DB trade-ID watermark prevents new price/
+volume correction from recalculating existing trade/history rows. Missing or
+mixed-reversal quantities remain unknown. No original GER40 row is repaired.
+Native read-only verifier contract4 uses actual quantities and requires one
+complete supported lifecycle; no guessed FX or cost allocation. Node/native
+versions stay equal. Shared transport and execution/account gateways unchanged.
+At this stamp217focusedNodechecks pass; native red-before29 assertions fail on
+unchanged judge, focused actual judge/loopback decoder green; full local/exact
+CI and merge/deployed verification pending, not claimed. No broker/credential/
+risk/account/profile/strategy/region/volume/staging/schedule operation.
+Acceptance stays7verified/19active/6owner-deferred, zero whole-row closures.
+-->
