@@ -1,5 +1,20 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №12,014 · 2026-10-08; session: executed-volume-provenance;
+codex-footprint: validated volume provenance pair. Owner ordered PR1259 P2
+follow-up after №12,010–12,011. Fresh main9c716b04 retains completed
+PR1233–1260/gates. Five actual importer/downstream-reader regressions fail
+unchanged main: incomplete rereads downgrade contract1, and an untagged
+writer can pair requested lots with the prior validated flag. Preserve
+stored executed lots and contract together when replacement proof is absent;
+unknown/legacy NULL receipts, identity rollback and native money stay intact.
+No production impact or financial-history repair established. Full local/
+exact-head CI, actual review inspection, merge and deployed verification
+remain required. No broker forcing, credentials, risk/account/strategy,
+registry, region/volume/staging or monitoring schedule changes. Whole-row
+acceptance stays7verified/19active/6deferred unless complete criteria pass.
+-->
+
 <!-- Codex · №11,968 · 2026-10-08; session: http-read-diagnostics;
 codex-footprint: opt-in read failure attribution. Owner authorises full gates,
 merge and shared native release, with HTTP_READ_DIAGNOSTICS=1 only on tick and
