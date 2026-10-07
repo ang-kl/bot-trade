@@ -1617,6 +1617,25 @@ Measurement history — each line is a real run of the script, not a claim:
   line made after this ledger. All lower bounds. The count is by replies, not
   by stamps. A later re-measure that reads below this line is missing these,
   not correcting them.
+- 2026-10-07 03:58 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 11,694`), the replies ran on by count through the #1248 report
+  `№ 11,694` (10:54 SGT), the next-things list `№ 11,704`, #1248 merged
+  0aca9fca (11:52 SGT, gate green on the merged tree, main had moved under
+  it by Codex's #1247) and the owner's four orders: ¶B·1 and ¶B·2 (the
+  TrailEngine variable on both gateways), ¶C·1 (the two silent demo tick
+  feeds) and ¶C·2. The Railway MCP has no variable delete, so
+  `TRAIL_TICK_ENABLED` was SET to the literal `true` on cpp-exec (03:54Z,
+  redeployed, "tick-level trail engine started") and then on cpp-acct
+  (03:57Z): the demo side read `enabled: true`, `lastPushRefusal: null`,
+  5 tracked across three demo accounts, and the Node log's first
+  `pushed for the demo side (accepted)` at 03:55:02Z — the first accepted
+  union since 02-10. Codex P1 on #1248 (the trade guard's identity symbol
+  from the shared map, not the account's snapshot) is what this PR
+  carries; mutation M7 red. The next stamped reply is at least
+  **`№ 11,713`** plus any unstamped line made after this ledger. All lower
+  bounds. The count is by replies, not by stamps. A later re-measure that
+  reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

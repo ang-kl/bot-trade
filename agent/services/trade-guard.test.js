@@ -187,7 +187,9 @@ test('ratchet: the guard\'s SL amend carries ratchetOnly and the position\'s ide
   }
   const depsWith = (amend, notices) => ({
     exec: {
-      reconcile: async () => ({ position: [{ positionId: 8, price: 1.1000, stopLoss: 1.0950, takeProfit: 1.1200 }] }),
+      // Codex P1 on #1248: the snapshot's own symbol id (77) differs from the
+      // shared map's (EURUSD: 1) — the amend must name the snapshot's.
+      reconcile: async () => ({ position: [{ positionId: 8, price: 1.1000, stopLoss: 1.0950, takeProfit: 1.1200, tradeData: { symbolId: 77 } }] }),
       closePosition: async () => ({}),
       amendPosition: amend,
     },
@@ -202,7 +204,7 @@ test('ratchet: the guard\'s SL amend carries ratchetOnly and the position\'s ide
   assert.equal(a.slMoves, 1, JSON.stringify(a))
   assert.equal(sent[0].ratchetOnly, true, 'the sidecar must read the broker stop before it sends')
   assert.equal(sent[0].expectedDirection, 1, 'a long: direction +1')
-  assert.equal(sent[0].expectedSymbolId, 1)
+  assert.equal(sent[0].expectedSymbolId, 77, 'the account-scoped snapshot\'s symbol id, not the shared map\'s (1)')
 
   const db2 = mk(), n2 = []
   const b = await runTradeGuards(db2, creds, depsWith(async () => ({ unchanged: true, protection: { stopLoss: 1.1010, takeProfit: 1.12 } }), n2))
