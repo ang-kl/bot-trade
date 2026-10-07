@@ -14,21 +14,9 @@ export default function PerformanceTargets({ report, accounts = [], selected, va
   const registry = new Map(accounts.map(r => [String(r.accountId), r]))
   const rows = [...(report.accounts || [])].sort((a, b) =>
     Number(String(b.accountId) === String(selected)) - Number(String(a.accountId) === String(selected)))
-  return (
-    <section id={expanded ? 'sec-goal-expanded' : variant === 'compact' ? 'sec-goal-mobile' : 'sec-goal'} style={{ color: 'var(--color-text)', fontSize: 'var(--fs-body)' }}>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
-        <strong>Performance targets · per account</strong>
-        <span>Win rate ≥ 75% · Profit factor ≥ 1.68</span>
-        {!expanded && <SectionTools id={variant === 'compact' ? 'targets-mobile' : 'targets'} title="Performance targets" data={report}
-          toText={() => JSON.stringify(report, null, 2)}
-          render={() => <PerformanceTargets report={report} accounts={accounts} selected={selected} expanded />} />}
-      </div>
-      <p>Assessment read: {report.at || 'time unavailable'} · completed SGT days only.</p>
-      <p>From 4 Oct 2026, 07:35 SGT. Latest 20 whole positions OR consecutive SGT days: win rate 3 days; profit factor 8 days.</p>
-      <p>Each completed day requires at least one eligible close and meets its own target. An empty day breaks the streak. Today is provisional. Reporting only.</p>
-      {report.unavailable && <p role="status">Evidence unavailable: {report.unavailable}</p>}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        {rows.map(row => {
+  // Codex · №11,791 · 2026-10-07; codex-footprint: performance-essentials.
+  // Reuse the same source readings in both layouts; no extra fetch or money sum.
+  const cards = rows.map(row => {
           const account = registry.get(String(row.accountId))
           const m = row.latest20
           const scope = deriveScopeState({ id: `targets.card.${row.accountId}`, mode: MODES.ACCOUNT, payload: { scope: row.scope }, selected })
@@ -46,8 +34,33 @@ export default function PerformanceTargets({ report, accounts = [], selected, va
               <p>Conversion fee recorded across complete forward positions: {row.currency || 'unverified unit'} {value(row.conversionFee)}. Net follows the existing broker gross + signed commission + signed swap convention.</p>
             </details>
           </article>
-        })}
+        })
+  const chosenIndex = rows.findIndex(row => String(row.accountId) === String(selected))
+  const chosen = chosenIndex >= 0 ? cards[chosenIndex] : null
+  const others = cards.filter((_, index) => index !== chosenIndex)
+  return (
+    <section id={expanded ? 'sec-goal-expanded' : variant === 'compact' ? 'sec-goal-mobile' : 'sec-goal'} style={{ color: 'var(--color-text)', fontSize: 'var(--fs-body)' }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+        <strong>Performance targets · per account</strong>
+        <span>Win rate ≥ 75% · Profit factor ≥ 1.68</span>
+        {!expanded && <SectionTools id={variant === 'compact' ? 'targets-mobile' : 'targets'} title="Performance targets" data={report}
+          toText={() => JSON.stringify(report, null, 2)}
+          render={() => <PerformanceTargets report={report} accounts={accounts} selected={selected} expanded />} />}
       </div>
+      <p>Assessment read: {report.at || 'time unavailable'} · completed SGT days only.</p>
+      <p>From 4 Oct 2026, 07:35 SGT. Latest 20 whole positions OR consecutive SGT days: win rate 3 days; profit factor 8 days.</p>
+      <p>Each completed day requires at least one eligible close and meets its own target. An empty day breaks the streak. Today is provisional. Reporting only.</p>
+      {report.unavailable && <p role="status">Evidence unavailable: {report.unavailable}</p>}
+      {variant === 'responsive' && !expanded ? <>
+        <div className="min-[700px]:hidden">
+          {chosen}
+          {others.length > 0 && <details style={{ marginTop: 8 }}>
+            <summary>{chosen ? others.length + ' other account' + (others.length === 1 ? '' : 's') : 'All ' + others.length + ' account results'}</summary>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>{others}</div>
+          </details>}
+        </div>
+        <div className="hidden min-[700px]:flex" style={{ flexWrap: 'wrap', gap: 8 }}>{cards}</div>
+      </> : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>{cards}</div>}
       <p>{report.coverageNote}</p>
     </section>
   )
