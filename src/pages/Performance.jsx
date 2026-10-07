@@ -1984,7 +1984,7 @@ export default function Performance() {
       </p>
 
       {/* Codex · №11,791 · 2026-10-07; codex-footprint: performance-essentials. Forward goals, capital and recorded management lead. */}
-      <Card id="sec-performance-goals" scope={acct}>
+      <Card id="sec-performance-goals" scope="all">
         <h2 className="t-h3">Forward results — progress toward trading goals</h2>
         <GoalTracker variant="responsive" refreshAt={populationReport?.asOfMs} />
       </Card>
