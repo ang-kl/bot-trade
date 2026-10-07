@@ -1,6 +1,19 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": [],
+  "locks": [
+    {
+      "locked_by": "codex-volume-provenance",
+      "session": "Codex · №12,012 · 2026-10-08",
+      "task": "PR1259 follow-up: preserve validated executed volume on incomplete reread",
+      "paths": [
+        "CLAUDE.md",
+        "agent/services/broker-history-import.js",
+        "agent/services/deal-execution-volume.test.js"
+      ],
+      "started_at": "2026-10-07T23:42:22Z",
+      "expires_at": "2026-10-08T02:42:22Z"
+    }
+  ],
   "notes": [
     {
       "from": "claude-builder",
