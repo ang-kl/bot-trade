@@ -8,14 +8,15 @@
       "pr": null,
       "since": "2026-10-07T06:18:00Z",
       "expires_at": "2026-10-07T10:18:00Z",
-      "last_serial": 11783,
+      "last_serial": 11789,
       "active_files": [
         "src/pages/Performance.jsx",
         "src/lib/performance-metrics.js",
         "src/lib/performance-metrics.test.js",
         "src/components/PerformanceMetrics.jsx",
         "src/components/performance-metrics.test.jsx",
-        "src/components/GoalTracker.jsx"
+        "src/components/GoalTracker.jsx",
+        "CLAUDE.md"
       ],
       "intent": "Essential forward targets ahead of diagnostics; truthful readable historical metrics and sizing source audit. Guardian/native files excluded."
     }
