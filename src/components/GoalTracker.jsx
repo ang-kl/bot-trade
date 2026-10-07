@@ -217,7 +217,7 @@ export function AccountRow({ row }) {
  *   the day's actual figures below the fold to answer a question you only ask
  *   once a day.
  */
-export default function GoalTracker({ variant = 'full' }) {
+export default function GoalTracker({ variant = 'full', refreshAt = null }) {
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -232,6 +232,10 @@ export default function GoalTracker({ variant = 'full' }) {
       .catch(e => { if (alive) setErr(e?.message || String(e)) })
     return () => { alive = false }
   }, [])
+  // Codex · №11,791 · 2026-10-07; codex-footprint: performance-essentials. Refresh
+  // alongside the existing active-page report; do not create another timer.
+  useEffect(() => { if (refreshAt != null) load() }, [refreshAt, load])
+
   // The tracker shows every account at once, so an account switch changes
   // nothing about WHAT is fetched — it is reloaded anyway so the highlighted
   // row and the numbers arrive from the same read.

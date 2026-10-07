@@ -1,5 +1,17 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №11,791 · 2026-10-07; session: performance-essentials; codex-footprint: performance-essentials.
+Owner ordered essential Performance cards first and a metrics/sizing audit.
+Forward per-account results now lead capital and recorded management readings;
+historical metrics explain currency/population gaps, non-wins and UTC days,
+retain undefined no-loss PF and display known zero drawdown. Goal reads reuse
+the active report refresh; phone scope remains explicit. Trading/risk/money
+writers unchanged. Handover read at pinned f9f0b6e; PR1254 preserved.
+Five old-page browser assertions failed; corrected page passed scoped browser
+checks. Final combined-source local/exact-head CI and deployed verification
+remain pending at 2026-10-07T06:36:42.354514+00:00. No whole acceptance row closed.
+-->
+
 <!-- FX startup correction 2026-10-06: owner ordered fix after №11,420.
 PR1237 released bounded first-cycle attribution at494c155; do not repeat
 its gate. Trace reported3.8s in legVetoDemand, not proof of the earlier47s

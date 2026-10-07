@@ -46,6 +46,8 @@ import SessionReview from '../components/SessionReview.jsx'
 import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
 import PerfAccountScope from '../components/PerfAccountScope.jsx'
 import GoalTracker from '../components/GoalTracker.jsx'
+import PerformanceMetrics from '../components/PerformanceMetrics.jsx'
+import { historicalMetricGroups } from '../lib/performance-metrics.js'
 import DecisionFeed from '../components/DecisionFeed.jsx'
 import SectionTools from '../components/common/SectionTools.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
@@ -1949,67 +1951,10 @@ export default function Performance() {
     id: String(a.account_id), name: `${a.is_live ? 'Live' : 'Demo'} ·${String(accountNumbers(a)).slice(-3)}`,
   })), strategyLabel), [populationReport, accounts])
 
-  // Owner (2026-07-25): "redo the All-time tiles & equity table from the
-  // ground up." It was nine loose boxes in a wrapping row — no grouping, no
-  // units, no way to tell which number answers which question, and a JSON
-  // copy that carried four of the nine. It is now a real <table> in three
-  // named groups (Outcome / Edge / Risk & shape), every row carrying the
-  // figure AND what it means, so the card explains itself and Card's
-  // tableToJson emits all of it automatically.
-  const tileGroups = tiles && (() => {
-    const n = tiles.n
-    const m2 = (v) => (v == null ? '—' : nf(2).format(v))
-    const span = tiles.firstMs && tiles.lastMs
-      ? `${new Date(tiles.firstMs).toISOString().slice(0, 10)} → ${new Date(tiles.lastMs).toISOString().slice(0, 10)}`
-      : '—'
-    return [
-      ['Outcome', [
-        ['Net P&L', signed(tiles.total), pnlTone(tiles.total), 'recorded account units after swap and commission; cross-account sums unavailable'],
-        ['Priced closes', String(n), '', `over ${tiles.tradingDays} day${tiles.tradingDays === 1 ? '' : 's'} with a close · ${span}`],
-        ['Win rate', `${tiles.winRate}%`, '', `${tiles.winCount} up · ${tiles.lossCount} down (a scratch counts as down)`],
-        ['Expectancy', `${m2(tiles.expectancy)} / trade`, pnlTone(tiles.total), 'net divided by trade count — what one more trade is worth on this record'],
-      ]],
-      ['Edge', [
-        ['Profit factor', tiles.pf != null ? nf(2).format(tiles.pf) : tiles.pfInfinite ? '∞' : '—', tiles.pf == null || tiles.pf >= 1 ? UP : DOWN, `gross win ${m2(tiles.grossWin)} ÷ gross loss ${m2(tiles.grossLoss)} · above 1.0 is profitable`],
-        ['Payoff ratio', tiles.payoff != null ? `${nf(2).format(tiles.payoff)} : 1` : '—', '', 'average win against average loss — the size edge, independent of win rate'],
-        ['Avg win', tiles.avgWin != null ? `+${m2(tiles.avgWin)}` : '—', UP, `across ${tiles.winCount} winner${tiles.winCount === 1 ? '' : 's'}`],
-        ['Avg loss', tiles.avgLoss != null ? `−${m2(tiles.avgLoss)}` : '—', DOWN, `across ${tiles.lossCount} loser${tiles.lossCount === 1 ? '' : 's'}`],
-      ]],
-      ['Risk & shape', [
-        ['Max drawdown', tiles.mdd > 0 ? `−${m2(tiles.mdd)}` : '—', DOWN, 'deepest fall from an equity peak, trade by trade in close order'],
-        ['Best / worst trade', `${m2(tiles.bestTrade)} / ${m2(tiles.worstTrade)}`, '', 'single largest gain and loss'],
-        ['Best / worst day', `${m2(tiles.bestDay)} / ${m2(tiles.worstDay)}`, '', `${tiles.greenDays} of ${tiles.tradingDays} days closed green`],
-        ['Longest streak', `${tiles.winStreak}W / ${tiles.lossStreak}L`, '', 'consecutive wins and losses in close order'],
-        ['Median hold', tiles.medHoldMin != null ? (tiles.medHoldMin >= 60 ? `${Math.floor(tiles.medHoldMin / 60)}h ${tiles.medHoldMin % 60}m` : `${tiles.medHoldMin}m`) : '—', '', tiles.medHoldMin != null ? 'half the trades were held less than this' : 'hold duration not recorded on these trades'],
-      ]],
-    ]
-  })()
-
-  const tilesRow = tiles && (
-    <Collapse id="Performance_1944" label="Metric Rows">
-    <table className="w-full text-left tabular-nums mb-2">
-      <thead>
-        <tr><th className="w-[150px]">Metric</th><th className="w-[128px]">All time</th><th>What it measures</th></tr>
-      </thead>
-      <tbody>
-        {tileGroups.map(([group, items]) => (
-          <Fragment key={group}>
-            <tr>
-              <td colSpan={3} className="py-0 text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-muted)] border-t border-[var(--glass-edge)]">{group}</td>
-            </tr>
-            {items.map(([label, value, tone, note]) => (
-              <tr key={label} className="border-t border-[var(--glass-edge)]">
-                <td className="py-0.5 px-2 text-(length:--fs-body) font-medium">{label}</td>
-                <td className={`py-0.5 px-2 text-(length:--fs-body) ${tone}`}>{value}</td>
-                <td className={`py-0.5 px-2 text-(length:--fs-body) ${SUB}`}>{note}</td>
-              </tr>
-            ))}
-          </Fragment>
-        ))}
-      </tbody>
-    </table>
-    </Collapse>
-  )
+  // Codex · №11,791 · 2026-10-07; codex-footprint: performance-essentials. Historical
+  // formatting preserves the server population and withholds incomparable money.
+  const tileGroups = tiles ? historicalMetricGroups(analytics) : null
+  const tilesRow = tiles && <PerformanceMetrics analytics={analytics} groups={tileGroups} />
 
   return (
     <div className="space-y-2">
@@ -2038,13 +1983,18 @@ export default function Performance() {
         {reportAge.text} · refreshes every minute while active{populationError ? ` · ${populationError}` : ''}. Live quote freshness is shown separately.
       </p>
 
+      {/* Codex · №11,791 · 2026-10-07; codex-footprint: performance-essentials. Forward goals, capital and recorded management lead. */}
+      <Card id="sec-performance-goals" scope={acct}>
+        <h2 className="t-h3">Forward results — progress toward trading goals</h2>
+        <GoalTracker variant="responsive" refreshAt={populationReport?.asOfMs} />
+      </Card>
       <Card id="sec-acct-balance" className="my-3 text-(length:--fs-body)" scope={acct} loading={!overview}>
         <h2 className="t-h3">Account balance, floating profit and equity</h2>
         <p>Today: midnight–now in {timeZone}. Broker day: 5pm New York for risk limits.</p>
         <CurrentAccountReadings report={overview} accountId={acct} history />
       </Card>
-      <BlockerReport key={`blockers:${acct}`} accountId={acct} />
       <MomentumTargets key={`momentum-targets:${acct}`} accountId={acct} />
+      <BlockerReport key={`blockers:${acct}`} accountId={acct} />
 
       <p style={{ fontSize: 'var(--fs-body)', color: P_SB }}>
         {populationReport ? `Portfolio coverage of recorded closes as of ${populationReport.generatedAt}. ${populationReport.coverage.unpricedN} closes without P&L; ${populationReport.coverage.unknownCloseTimeN} without a usable close time; ${populationReport.coverage.unattributedAccountN} without an account.` : 'Complete performance report unavailable; missing evidence is not zero activity.'}
@@ -2090,7 +2040,6 @@ export default function Performance() {
                 different shape: the selected account full width, everything
                 else behind a disclosure — a five-card grid here would push the
                 day's actual figures below the fold. */}
-            <GoalTracker variant="compact" />
             {/* "Why didn't it trade" belongs next to the day it is asked
                 about, on the phone as much as the desktop. */}
             <DecisionFeed variant="compact" />
@@ -2322,7 +2271,7 @@ export default function Performance() {
               tpSet={positionsAvailable ? positions.filter(p2 => p2.current_tp > 0).length : null}
             />
             <Card>
-              <h3 className="t-h3 mb-1.5">All-time tiles &amp; equity</h3>
+              <h3 className="t-h3 mb-1.5">Historical metrics &amp; closed-trade equity</h3>
               <AllTimeAccounts report={populationReport} overview={overview} accountId={acct} />
               {!tiles && <p className={`text-(length:--fs-body) mb-2 ${SUB}`}>{analytics && String(analytics.accountId ?? 'all') === acct ? `${analytics.closedTrades ?? analytics.trades} recorded closes; ${analytics.unpricedTrades ?? 0} without P&L.` : 'All-time analytics unavailable.'}</p>}
               {tilesRow}
@@ -2337,7 +2286,6 @@ export default function Performance() {
         {/* The go-live gate first, above the ledger it summarises: the owner is
             deciding whether 12 Aug is still real, and that answer should not be
             reached by scrolling. */}
-        <GoalTracker />
 
         {/* Accounts detail row — exact prototype cards: day P&L, balance +
             equity + live floating, TP/SL nett today, 30D forecast pace, and
@@ -2733,7 +2681,7 @@ export default function Performance() {
         <Card id="sec-tiles">
           <AllTimeAccounts report={populationReport} overview={overview} accountId={acct} />
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
-            <h3 className="t-h3">All-time tiles &amp; equity</h3>
+            <h3 className="t-h3">Historical metrics &amp; closed-trade equity</h3>
             {tiles && <span className={`text-(length:--fs-body) ${SUB}`}>{tiles.n} closed · {signed(tiles.total)}</span>}
             <SectionTools id="tiles" title="All-Time Tiles &amp; Equity card"
               data={tileGroups ? tileGroups.flatMap(([group, items]) => items.map(([metric, value, , note]) => ({ group, metric, value, measures: note }))) : []}
