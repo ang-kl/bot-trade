@@ -2434,3 +2434,18 @@ for this security change has been recorded; no trading settings changed. -->
   permission is changed. Local/exact-head gate, review, merge and deployed
   identity remain pending at this source stamp; no acceptance closure.
   Actual session link/effort metadata unavailable; no human review claimed.
+
+
+### Codex · №11,806 · 2026-10-07 — indexed opportunity sighting lookup
+
+codex-footprint: indexed-opportunity-lookback. Based on main264fd708, preserving
+PR1255 and the Claude handover. A production startup profile sampled49.892s in
+nextOpportunityKey; the public health client timed out and watchdog requests
+aborted in that startup window. A real-source SQLite fixture reproduced a
+full risk_events scan and temporary sort. Add the matching latest-sighting
+expression index after last_at migration; use equal-or-both-NULL IS binding.
+Account isolation, case folding, latest repeat sightings, opportunity gap and
+missing-column fallback remain; no financial rows, monetary thresholds, broker
+policy, scanner registration, selected account, credential or native change.
+Regression/local/exact-head CI and deployed profile verification pending.
+This is a reproduced query defect, not proof of every stall's sole cause.
