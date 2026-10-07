@@ -11,7 +11,9 @@
       "paths": [
         "agent/services/stop-policy-controller.js",
         "agent/services/stop-policy-controller.test.js",
-        "CLAUDE.md"
+        "CLAUDE.md",
+        "agent/lib/stop-policy.js",
+        "agent/lib/stop-policy.test.js"
       ],
       "task": "Reproduced fresh owned trigger contradiction suppressed by stale six-hour confirmation; preserve retry/refusal/owner/ratchet invariants."
     }
