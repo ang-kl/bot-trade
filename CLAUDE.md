@@ -1636,6 +1636,25 @@ Measurement history — each line is a real run of the script, not a claim:
   **`№ 11,713`** plus any unstamped line made after this ledger. All lower
   bounds. The count is by replies, not by stamps. A later re-measure that
   reads below this line is missing these, not correcting them.
+- 2026-10-07 04:50 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 11,713`), the replies ran on by count through the four-order report
+  `№ 11,724` (12:11 SGT: ¶B·1/¶B·2 live; ¶C·1 diagnosed — the registry
+  anchors 796 profiles on accounts the gateways do not stream from — and
+  the re-anchor payload built, 902→796, revision a8a740a9; the classifier
+  refused the compare-and-set flow after `SCANNER_BRIDGE_ENABLED=0` had
+  gone through), the owner's deletion of `TRAIL_TICK_ENABLED` on both
+  gateways read back `№ 11,728` (both sides `enabled: true`), the bridge
+  answer `№ 11,734` (set it back to 1, which the owner did), the refused
+  POST and the note to Codex `№ 11,736` (on `agent-locks` and #1249), and
+  #1249 merged a626227d (12:31 SGT) under the standing policy. Codex P1 on
+  #1249 (the guard's quote and pip metadata still read with the shared
+  map's id; the identity fix alone would let a wrong-instrument stop land
+  on a non-selected account) is what this PR carries; mutation M8 red. The
+  registry POST remains the owner's. The next stamped reply is at least
+  **`№ 11,746`** plus any unstamped line made after this ledger. All lower
+  bounds. The count is by replies, not by stamps. A later re-measure that
+  reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
