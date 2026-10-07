@@ -29,7 +29,8 @@
         "src/lib/performance-metrics.js",
         "src/lib/performance-metrics.test.js",
         "src/components/PerformanceMetrics.jsx",
-        "src/components/performance-metrics.test.jsx"
+        "src/components/performance-metrics.test.jsx",
+        "src/components/GoalTracker.jsx"
       ],
       "intent": "Essential forward targets ahead of diagnostics; truthful readable historical metrics and sizing source audit. Guardian/native files excluded."
     }
