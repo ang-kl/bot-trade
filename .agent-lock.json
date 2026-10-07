@@ -25,12 +25,13 @@
       "branch": "fix/guard-account-symbol-2026-10-07",
       "since": "2026-10-07T04:36:20Z",
       "expires_at": "2026-10-07T08:36:20.000Z",
-      "last_serial": 11733,
+      "last_serial": 11737,
       "active_files": [
         "agent/services/trade-guard.js",
         "agent/services/trade-guard.test.js",
         "agent/services/trade-guard-symbol-ownership.test.js",
-        "CLAUDE.md"
+        "CLAUDE.md",
+        "agent/services/closer-horizon-deferral.test.js"
       ],
       "intent": "Owner finish stop correction; PR1249 P1: use broker snapshot symbol for guard quote, pip and lot metadata, not only ratchet identity"
     }
