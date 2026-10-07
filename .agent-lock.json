@@ -5,8 +5,8 @@
       "locked_by": "codex-lifecycle-guard",
       "session": "reversal-aware-lifecycle-guard",
       "serial": 11887,
-      "started_at": "2026-10-07T11:20:00Z",
-      "expires_at": "2026-10-07T14:20:00Z",
+      "started_at": "2026-10-07T11:22:13Z",
+      "expires_at": "2026-10-07T14:22:13.000Z",
       "branch": "fix/reversal-lifecycle-guard-2026-10-07",
       "paths": [
         "agent/lib/position-deal-history.js",
