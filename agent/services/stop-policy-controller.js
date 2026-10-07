@@ -35,7 +35,8 @@
 //     failed evidence, so no new broker call starts after SOFT_DEADLINE_MS; what
 //     is left waits for the next pass.
 //   · A position is not re-asked for RECHECK_MS after an outcome (6 h), or
-//     RETRY_MS after an error: Spotware logged a read-back bug where
+//     RETRY_MS after an error or a present broker trigger contradicts a prior
+//     confirmed policy: Spotware logged a read-back bug where
 //     trailingStopLoss reads false when enabled, so "not confirmed" must not
 //     become "stamp again every minute".
 //   · Never stamps: a position with no broker stop (the naked-position guard's
@@ -48,7 +49,7 @@
 //   · No manual broker order is involved: this is the bot applying its own
 //     policy to its own protection, and the stop LEVEL never moves.
 // ---------------------------------------------------------------------------
-import { getStopPolicy, sideDirection, saveTrailingRegistry } from '../lib/stop-policy.js'
+import { getStopPolicy, sideDirection, saveTrailingRegistry, brokerTrigger, triggerValue } from '../lib/stop-policy.js'
 import { normPosId } from '../lib/pos-id.js'
 import { setState } from '../db.js'
 import { makeBookHeldCheck } from './book-held.js'
@@ -228,24 +229,41 @@ async function stopPolicyPass(db, baseCreds, deps = {}) {
       if (Number(row.keeper_opt_out) === 1) { skip('keeper_opt_out'); continue }
       const dir = sideDirection(row.side)
       if (!dir) { skip('unknown_side'); continue }
+      // Codex · №11,863 · 2026-10-07; codex-footprint: stop-policy-convergence.
+      // The ratchet identity comes only from THIS account's broker snapshot.
+      const rawSymbol = p.tradeData?.symbolId
+      const symbolId = (typeof rawSymbol === 'number' || (typeof rawSymbol === 'string' && rawSymbol.trim())) ? Number(rawSymbol) : NaN
+      if (!Number.isSafeInteger(symbolId) || symbolId <= 0) { skip('broker_symbol_unknown'); continue }
       const key = `${id}:${pid}`
       const prev = state.lastAsk.get(key)
-      const wait = prev ? (prev.outcome === 'error' ? RETRY_MS : RECHECK_MS) : 0
+      // A prior confirmation is a throttle, not authority over newer broker
+      // truth. Only a PRESENT valid contradictory trigger shortens its wait.
+      // Unknown fields and refused/unreadable outcomes keep their six hours;
+      // even a confirmed contradiction retains the existing five-minute retry.
+      const presentTrigger = brokerTrigger(p)
+      const contradiction = prev && (prev.outcome === 'stamped' || prev.outcome === 'compliant') && presentTrigger != null &&
+        presentTrigger !== triggerValue(policy)
+      const wait = prev ? (prev.outcome === 'error' || contradiction ? RETRY_MS : RECHECK_MS) : 0
       if (prev && now - prev.at < wait) { skip('recent'); continue }
-      eligible.push({ p, pid, row, dir, brokerSl, key, isBook })
+      eligible.push({ p, pid, row, dir, brokerSl, key, isBook, symbolId, contradiction, firstAsk: !prev })
     }
     if (!eligible.length) return null
     for (let i = 1; i < eligible.length; i++) skip('one_per_account')
     if (late()) { out.deadline = true; skip('deadline'); return null }
 
-    const { p, pid, row, dir, brokerSl, key, isBook } = eligible[0]
+    // A repeated confirmed-drift retry must not starve a new fill of its first
+    // stamp when the band runs at five-minute cadence. Other ordering is kept.
+    const chosen = eligible[0].contradiction ? (eligible.find(item => item.firstAsk) ?? eligible[0]) : eligible[0]
+    const { p, pid, row, dir, brokerSl, key, isBook, symbolId } = chosen
     let result = null
     let error = null
     try {
       result = await exec.amendPosition(creds, {
         positionId: p.positionId,
         policyOnly: true,
+        ratchetOnly: true,
         expectedDirection: dir,
+        expectedSymbolId: symbolId,
         stopContext: { side: row.side, entry: Number(row.entry_price) || null, book: isBook, stop: brokerSl },
       })
     } catch (err) { error = err }

@@ -2449,3 +2449,18 @@ missing-column fallback remain; no financial rows, monetary thresholds, broker
 policy, scanner registration, selected account, credential or native change.
 Regression/local/exact-head CI and deployed profile verification pending.
 This is a reproduced query defect, not proof of every stall's sole cause.
+
+## Codex · №11,864 · 2026-10-07 — stop-policy convergence
+
+codex-footprint: stop-policy-convergence; consolidated trading-critical closure.
+A current own-account broker trigger that contradicts a previously confirmed
+policy may retry after the existing five-minute RETRY_MS, instead of waiting
+six hours. Unknown trigger fields and refused/cooldown/mismatch/unreadable
+outcomes retain RECHECK_MS. Policy-only amends carry ratchetOnly, row direction
+and validated symbol identity from this account's reconcile; no Node stop/TP
+levels or selected-account symbol fallback. The shared brokerTrigger reader
+keeps malformed/boolean/blank fields unknown and recognises real enums.
+Canary/hold, owner pauses/opt-out, momentum-book rules, one-call/account, deadline
+and single-flight protections remain. This does not establish the origin of
+GER40's observed trigger drift, a broker outcome, or whole acceptance. No TrailSpec
+ingest field changes: guardian digest contract remains unchanged.

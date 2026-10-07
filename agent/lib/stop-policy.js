@@ -268,7 +268,12 @@ export function resetTrailingRegistry() { trailedPositions = new Map(); trailing
 /** The trigger method a verifier's position row reports (number), or null when the broker does not report one. */
 export function brokerTrigger(position) {
   const v = position?.stopLossTriggerMethod
-  return v == null ? null : Number(v)
+  // Codex · №11,864 · 2026-10-07; codex-footprint: stop-policy-convergence.
+  // A current trigger can justify a policy retry; coerced booleans/blanks and
+  // malformed enums cannot. Preserve unknown instead of inventing broker truth.
+  if (typeof v !== 'number' && !(typeof v === 'string' && v.trim())) return null
+  const name = parseTriggerMethod(v) ?? parseTriggerMethod(Number(v))
+  return name == null ? null : STOP_TRIGGER_METHODS[name]
 }
 
 /** The trailing flag a verifier's position row reports: true, false, or null when not reported. */
@@ -293,4 +298,3 @@ export function resetStopPolicyStats() {
   ring = []
   counts = freshCounts()
 }
-
