@@ -266,16 +266,44 @@ async function connectSidecarSession(creds, base, force) {
 // cpp mode only; BEST-EFFORT by contract: any failure returns false and the
 // keeper carries on — its own 3s ratchet remains the fallback. Never
 // throws, never blocks the keeper on a broken sidecar.
+// Claude · #1243 read-back, after № 11,609 (07-10-2026; claude-builder): a
+// refused /trail-config push is NAMED, not swallowed. Measured 06-10 once the
+// guardian pushed one union per side: every push to the demo gateway came
+// back "not accepted" and nothing said why — the catch below returned false
+// and the keeper carried on, as it had since the push was first wired, so a
+// gateway with TRAIL_TICK_ENABLED off looked exactly like one holding every
+// spec. Keyed by gateway base; logged when the reason changes or every ten
+// minutes; cleared by the next accepted push; read back on
+// GET /state/trail-status as `lastPushRefusal`.
+const trailConfigRefusals = new Map() // base → { at, reason, count, loggedAt }
+const TRAIL_REFUSAL_LOG_EVERY_MS = 10 * 60_000
+function noteTrailConfigRefusal(base, reason, now = Date.now()) {
+  const prev = trailConfigRefusals.get(base)
+  const entry = { at: new Date(now).toISOString(), reason, count: (prev?.count || 0) + 1, loggedAt: prev?.loggedAt ?? 0 }
+  if (prev?.reason !== reason || now - entry.loggedAt >= TRAIL_REFUSAL_LOG_EVERY_MS) {
+    console.log(`[exec] trail-config not accepted by ${base}: ${reason}${entry.count > 1 ? ` (${entry.count} refusals)` : ''}`)
+    entry.loggedAt = now
+  }
+  trailConfigRefusals.set(base, entry)
+}
+/** The last refused /trail-config push to this account's gateway, or null. */
+export function lastTrailConfigRefusal(creds) {
+  const e = trailConfigRefusals.get(execBaseFor(creds))
+  return e ? { at: e.at, reason: e.reason, count: e.count } : null
+}
+
 export async function pushTrailConfig(creds, positions, opts = {}) {
   if (execEngineMode() !== 'cpp') return false
+  let base = null
   try {
+    base = execBaseFor(creds)
     await ensureSidecarSession(creds)
     // The stop policy rides every push (02-10-2026): the TrailEngine sends its
     // own amends from C++ and must stamp the same trigger method / trailing
     // flag. /trail-config is full-replace, so an ABSENT block clears it — when
     // the policy is off the block is simply not sent.
     const stopPolicy = opts.stopPolicy === undefined ? trailConfigPolicy(getStopPolicy()) : opts.stopPolicy
-    const r = await sidecar(execBaseFor(creds), 'POST', '/trail-config', {
+    const r = await sidecar(base, 'POST', '/trail-config', {
       positions: Array.isArray(positions) ? positions : [],
       ...(stopPolicy ? { stopPolicy } : {}),
     })
@@ -284,9 +312,13 @@ export async function pushTrailConfig(creds, positions, opts = {}) {
     if (r && Number(r.rejected) > 0) {
       console.log(`[exec] trail-config: sidecar rejected ${r.rejected} spec(s) — those positions are NOT tick-trailed (keeper ratchet still covers them)`)
     }
+    trailConfigRefusals.delete(base)
     return true
-  } catch {
-    return false // sidecar down or TRAIL_TICK_ENABLED unset — keeper's own ratchet still runs
+  } catch (err) {
+    // sidecar down or TRAIL_TICK_ENABLED unset — keeper's own ratchet still
+    // runs; the reason is recorded and named (see noteTrailConfigRefusal).
+    if (base) noteTrailConfigRefusal(base, err?.message || String(err))
+    return false
   }
 }
 

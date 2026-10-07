@@ -102,10 +102,10 @@ async function until(pred, ms = 2000) {
   assert.ok(pred(), 'condition not reached in time')
 }
 
-function sweepFixture(t, { backstopMs, keeperThrowsFor = null } = {}) {
+function sweepFixture(t, { backstopMs, keeperThrowsFor = null, keeperIncompleteFor = null, symbolMap = { NATGAS: 2280 } } = {}) {
   const db = initDB(':memory:')
   t.after(() => db.close())
-  setState(db, 'symbol_id_map', JSON.stringify({ NATGAS: 2280 }))
+  setState(db, 'symbol_id_map', JSON.stringify(symbolMap))
   db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, status) VALUES ('NATGAS', 'BUY', 1, 'active')`).run()
   const creds = {
     1: { ready: true, accountId: '1', isLive: false },
@@ -125,6 +125,8 @@ function sweepFixture(t, { backstopMs, keeperThrowsFor = null } = {}) {
       runProfitKeeper: async (_db, c, d) => {
         keeper.push({ id: c.accountId, deferred: d?.deferTrailPush === true })
         if (c.accountId === keeperThrowsFor) throw new Error(`broker down for …000${c.accountId}`)
+        // Codex P1 on #1245: the real keeper never throws; it returns an incomplete list.
+        if (c.accountId === keeperIncompleteFor) return { slMoves: 0, errors: ['NATGAS: price fetch failed'], trailSpecs: [], trailSpecsComplete: false }
         return { slMoves: 0, trailSpecs: [{ positionId: Number(c.accountId) * 100, ctidTraderAccountId: Number(c.accountId) }] }
       },
     },
@@ -134,24 +136,24 @@ function sweepFixture(t, { backstopMs, keeperThrowsFor = null } = {}) {
   return { db, guards, keeper, pushes, tick: () => onTick, stop }
 }
 
-test('sweep: every enabled registered account on both sides, one trail-config union per side', async t => {
+test('sweep: every enabled registered account on both sides; a failed pass withholds its side\'s push, the other side still goes', async t => {
   // backstopMs huge → only the tick below can fire the sweep after the boot pass.
   const f = sweepFixture(t, { backstopMs: 10 * 60_000, keeperThrowsFor: '2' })
   await until(() => typeof f.tick() === 'function')
-  await until(() => f.pushes.length >= 2) // the boot backstop (lastSweepAt starts at 0)
+  await until(() => f.pushes.length >= 1) // the boot backstop (lastSweepAt starts at 0): the live side only
   await new Promise(resolve => setTimeout(resolve, 20)) // let the boot sweep release its single-flight
   const bootGuards = f.guards.length
   f.tick()({ symbolId: 2280, bid: 100, ask: 100 })
   f.tick()({ symbolId: 2280, bid: 101, ask: 101 }) // +1% → significant
-  await until(() => f.pushes.length >= 4)
+  await until(() => f.pushes.length >= 2)
   assert.deepEqual(f.guards.slice(bootGuards), ['1', '3', '2'], 'the stream account first, then the registry order; …0004 (not ready) skipped')
   assert.deepEqual(f.keeper.slice(bootGuards).map(k => k.id), ['1', '3', '2'])
   assert.ok(f.keeper.every(k => k.deferred), 'every keeper pass defers its push to the sweep')
-  const demo = f.pushes.slice(2).find(p => p.side === 'demo'), live = f.pushes.slice(2).find(p => p.side === 'live')
-  assert.deepEqual(demo.specs.map(s => s.positionId), [100], '…0002 threw: contributed nothing, blocked nothing')
-  assert.equal(demo.account, '1', 'the demo union rides the first demo credentials')
-  assert.deepEqual(live.specs.map(s => s.positionId), [300])
-  assert.equal(f.pushes.length, 4, 'one push per side per sweep, never one per account')
+  // Codex P1 on #1243: …0002 threw, so the demo union is INCOMPLETE and is
+  // withheld (a full replace without its specs would wipe its trails); the
+  // live side, complete, is pushed every sweep.
+  assert.ok(f.pushes.every(p => p.side === 'live'), `no demo push while a demo pass fails: ${JSON.stringify(f.pushes.map(p => p.side))}`)
+  assert.deepEqual(f.pushes.map(p => p.specs.map(s => s.positionId)), [[300], [300]], 'one live push per sweep (boot + tick), never one per account')
 })
 
 test('backstop: with something held, the sweep runs on its own at least every backstopMs', async t => {
@@ -167,5 +169,22 @@ test('backstop: beyond the boot pass, no sweep without a tick when backstopMs is
   assert.equal(f.keeper.length, 3, 'exactly the boot sweep (three accounts), nothing more')
   const demo = f.pushes.find(p => p.side === 'demo'), live = f.pushes.find(p => p.side === 'live')
   assert.deepEqual(demo.specs.map(s => s.positionId), [100, 200], 'the demo union carries BOTH demo accounts, not the last one to pass')
+  assert.equal(demo.account, '1', 'the demo union rides the first demo credentials')
   assert.deepEqual(live.specs.map(s => s.positionId), [300])
+})
+
+test('backstop: gated on active rows, not on the symbol map (Codex P1 on #1243)', async t => {
+  // No symbol id for the held symbol → no stream, no tick can ever fire; the
+  // position is still active, so the backstop must still sweep it.
+  const f = sweepFixture(t, { backstopMs: 20, symbolMap: {} })
+  await until(() => f.keeper.length >= 3, 1500)
+  assert.equal(f.tick(), null, 'no stream was opened (nothing to subscribe)')
+  assert.deepEqual(f.keeper.slice(0, 3).map(k => k.id), ['1', '3', '2'])
+})
+
+test('sweep: a keeper pass that RETURNS an incomplete spec list withholds its side\'s push, like one that throws (Codex P1 on #1245)', async t => {
+  const f = sweepFixture(t, { backstopMs: 20, keeperIncompleteFor: '2' })
+  await until(() => f.keeper.filter(k => k.id === '2').length >= 2, 1500)
+  assert.ok(f.pushes.length >= 1, 'the live side still pushes')
+  assert.ok(f.pushes.every(p => p.side === 'live'), `the demo side is withheld while …0002 returns an incomplete list: ${JSON.stringify(f.pushes.map(p => p.side))}`)
 })

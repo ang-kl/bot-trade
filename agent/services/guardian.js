@@ -125,6 +125,17 @@ export function watchedSymbolIds(db) {
   return ids.sort((a, b) => a.symbolId - b.symbolId)
 }
 
+/**
+ * Active monitored positions, whatever the symbol map knows (Codex P1 on
+ * #1243, Claude · after № 11,614): the backstop sweep is gated on THIS, not
+ * on `watchedSymbolIds`, which needs the global symbol map — an account-owned
+ * id, or a boot before ensureSymbolMap, leaves that map short, and a position
+ * with no stream is the one that needs the backstop most.
+ */
+export function activeRows(db) {
+  try { return Number(db.prepare(`SELECT COUNT(*) AS n FROM monitored_positions WHERE status = 'active'`).get()?.n || 0) } catch { return 0 }
+}
+
 /** Enabled watchlist symbols (autopilot's universe, falling back to the legacy
  * watchlist — same source loop.js's SCAN PHASE reads) with a known symbolId. */
 export function watchlistSymbolIds(db) {
@@ -251,12 +262,25 @@ export function startGuardian(db, getCreds, deps = {}) {
         if (n > 0) console.log(`[guardian] ${why} → ${tag}: ${n} guard action(s)`)
         if (g?.error || p?.error) console.error(`[guardian] ${tag} sweep error:`, g?.error || p?.error)
         const side = c.isLive ? 'live' : 'demo'
-        if (!bySide.has(side)) bySide.set(side, { creds: c, specs: [], built: false })
+        if (!bySide.has(side)) bySide.set(side, { creds: c, specs: [], built: false, failed: [] })
         const entry = bySide.get(side)
+        // Codex P1 on #1243 (Claude · after № 11,614): a pass that THREW
+        // contributed nothing, and a full replace without its specs would
+        // wipe that account's trails from the engine — the side's push is
+        // withheld this sweep and the engine keeps its previous set. A pass
+        // that returned early (keeper off, nothing held) contributed nothing
+        // legitimately and withholds nothing.
+        // Codex P1 on #1245: the keeper never throws — a pass whose spec list is
+        // incomplete (summary.trailSpecsComplete false) counts as failed too.
+        if (p?.error || p?.trailSpecsComplete === false) entry.failed.push(tag)
         if (Array.isArray(p?.trailSpecs)) { entry.built = true; entry.specs.push(...p.trailSpecs) }
       }
       for (const [side, entry] of bySide) {
         if (!entry.built) continue
+        if (entry.failed.length) {
+          console.log(`[since-entry-trail] trail-config push withheld for the ${side} side: the ${entry.failed.join(', ')} pass failed; the engine keeps its previous set`)
+          continue
+        }
         let ok = false
         try { ok = !!(exec.pushTrailConfig && await exec.pushTrailConfig(entry.creds, entry.specs)) } catch { ok = false }
         console.log(`[since-entry-trail] trail-config ${entry.specs.length} spec(s) pushed for the ${side} side (${ok ? 'accepted' : 'not accepted'})`)
@@ -357,7 +381,7 @@ export function startGuardian(db, getCreds, deps = {}) {
       // since-entry spec was not re-pushed until the next 0.05% move on a
       // held symbol. A sweep now runs at least every backstopMs while
       // anything is held, ticks or not.
-      if (held.length > 0 && Date.now() - lastSweepAt >= backstopMs) sweep(creds, 'backstop')
+      if (activeRows(db) > 0 && Date.now() - lastSweepAt >= backstopMs) sweep(creds, 'backstop')
     } catch (e) {
       err = e
       teardown() // rebuilt next tick

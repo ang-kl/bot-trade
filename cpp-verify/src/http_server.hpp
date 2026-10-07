@@ -57,6 +57,18 @@ public:
   // with its phases: the gateways' scanner transport timeouts were requests
   // the scanner held for 1.5 s with nothing inside it saying where.
   static constexpr long long kSlowRequestMs = 250;
+  // 07-10-2026 (Claude · № 11,609, F·1 of № 11,573; claude-builder): a slow
+  // request is information about the PEER as often as about this server —
+  // measured 06-10 on all three sidecars, the write phase was time blocked in
+  // send() on Node's read side and the read phase was Node's event loop
+  // stalling mid-request — so the line goes to stdout at kSlowRequestMs and
+  // reaches stderr, the Railway error panel, only past kVerySlowRequestMs
+  // (half of Node's 10 s abort). Before this every slow request was logged as
+  // an error and the panel was red for nothing, which hid the real ones.
+  static constexpr long long kVerySlowRequestMs = 5000;
+  static bool slowRequestIsError(long long readUs, long long handleUs, long long writeUs) {
+    return readUs + handleUs + writeUs >= kVerySlowRequestMs * 1000;
+  }
   using SlowRequestReporter = std::function<void(const std::string&)>;
   // Default: the shared stream header (stderr). Tests capture the line.
   void setSlowRequestReporter(SlowRequestReporter reporter) { slowReporter_ = std::move(reporter); }

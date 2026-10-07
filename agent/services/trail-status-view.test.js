@@ -23,6 +23,8 @@ function depsWith({ execMode = 'cpp', status = { enabled: true, positions: [] } 
     exec: {
       execEngineMode: () => execMode,
       getTrailStatus: async (creds) => { calls.push(creds.accountId); return status },
+      // The named refusal rides the view (Claude · #1243 read-back, after № 11,609).
+      lastTrailConfigRefusal: (creds) => creds.accountId === '777' ? { at: '2026-10-06T22:24:17.163Z', reason: 'TRAIL_TICK_ENABLED not set', count: 9 } : null,
     },
   }
 }
@@ -38,6 +40,7 @@ test('a registered account with credentials: the side, the mode and the engine\'
   assert.equal(out.body.enabled, true)
   assert.deepEqual(out.body.positions.map(p => p.positionId), [1722, 1724], 'the whole side, not one account')
   assert.deepEqual(deps.calls, ['777'])
+  assert.deepEqual(out.body.lastPushRefusal, { at: '2026-10-06T22:24:17.163Z', reason: 'TRAIL_TICK_ENABLED not set', count: 9 }, 'a refused push is named on the read-back')
 })
 
 test('not cpp: enabled:false without asking a gateway', async () => {

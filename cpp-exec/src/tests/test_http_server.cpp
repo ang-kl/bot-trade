@@ -41,6 +41,13 @@ std::string request(int family, int port, const std::string& target, const std::
 int main() {
   // The pure line: the bound is end to end, and the wording is fixed.
   assert(HttpServer::slowRequestLine("GET", "/fast", 200, 100000, 100000, 49999).empty());
+  // Claude · № 11,609 (F·1): a slow request is stdout; only one past
+  // kVerySlowRequestMs (5 s) is an error. The 1.53 s line below is NOT an
+  // error; 5 s exactly is; a microsecond under is not.
+  assert(!HttpServer::slowRequestIsError(1200, 1530400, 900));
+  assert(HttpServer::slowRequestIsError(0, 5000000, 0));
+  assert(HttpServer::slowRequestIsError(2000000, 2000000, 1000000));
+  assert(!HttpServer::slowRequestIsError(0, 4999999, 0));
   assert(HttpServer::slowRequestLine("POST", "/feed", 202, 1200, 1530400, 900)
          == "http: slow request POST /feed status 202 total 1532 ms (read 1, handle 1530, write 0)");
 
