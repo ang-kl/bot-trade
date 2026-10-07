@@ -1,0 +1,51 @@
+{
+  "preparedAt": "2026-10-07T04:03:21.435Z",
+  "sourceReadAt": "2026-10-07T04:01:09.298Z",
+  "previousRevision": "5bd5533f68380ce54cd87bb04d158da5e379af1d598312d4eaf6633471af676f",
+  "proposedRevision": "a8a740a9528ee7804e5ccca87357297f71d21f187fbd65004cc44053609f2d18",
+  "originalCount": 902,
+  "proposedCount": 796,
+  "droppedDeadTickAnchors": {
+    "43069009@live.ctraderapi.com": 53,
+    "46979908@demo.ctraderapi.com": 53
+  },
+  "timeframeMoved": {
+    "from": "46979908",
+    "to": "46130058",
+    "count": 690,
+    "symbolIdChanges": 0
+  },
+  "resultingPopulation": {
+    "cpp-scan-tick demo.ctraderapi.com 46130058": 53,
+    "cpp-scan-timeframe demo.ctraderapi.com 46130058": 690,
+    "cpp-scan-tick live.ctraderapi.com 42993489": 53
+  },
+  "observedTickFeeds": [
+    {
+      "accountId": "42993489",
+      "host": "live.ctraderapi.com",
+      "profileHash": "967c1defd6e78d09",
+      "observedAt": "2026-10-07T04:01:08.942Z"
+    },
+    {
+      "accountId": "46130058",
+      "host": "demo.ctraderapi.com",
+      "profileHash": "967c1defd6e78d09",
+      "observedAt": "2026-10-07T04:01:08.942Z"
+    }
+  ],
+  "nativeTimeframe": {
+    "observedAt": "2026-10-07T04:01:09.603Z",
+    "cells": {
+      "count": 0,
+      "capacity": 1024,
+      "stale": 0
+    },
+    "pending": 0
+  },
+  "roundTrip": "in_memory_registry_only",
+  "applied": false,
+  "orderAuthority": false,
+  "proposalSha256": "edd2c9d4069166ee1a0bef29865c6bb959b2e1e3dac7f3650149eae3dcac7dcb",
+  "rollbackSha256": "56f8f615bc70b8106f8bde0ccacf8b390e15656a3387a030a84159aaa9722861"
+}
