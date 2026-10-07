@@ -39,7 +39,7 @@
       "locked_by": "claude-builder",
       "session": "https://claude.ai/code/session_01C1hz86KuE5JKVq6W2KtUE2",
       "branch": "claude/handover-outstanding-file-1ktjs7",
-      "pr": "pending",
+      "pr": "#1250",
       "since": "2026-10-07T04:50Z",
       "expires_at": "2026-10-07T08:50Z",
       "last_serial": 11745,
