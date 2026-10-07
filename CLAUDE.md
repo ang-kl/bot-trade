@@ -553,7 +553,10 @@ and effort for each PR."*
   a comment, e.g. `// Claude · № 11,596·D·1 (ordered № 11,583·D·1;
   claude-builder)`. The session name is the footprint — it is what tells two
   agents building concurrently apart — and it is a name, not a model
-  identifier, so the no-model-in-code rule holds.
+  identifier, so the no-model-in-code rule holds. Owner, 07-10-2026 after
+  № 11,659: the comment carries the date too, `Claude · № 11,660 07-Oct`, so
+  Codex can see which area was modified and when; the lock file lives on
+  branch `agent-locks` (`.agent-lock.json`), approved the same day.
 
 ## PR merge policy (owner, 2026-07-22)
 
@@ -1577,6 +1580,21 @@ Measurement history — each line is a real run of the script, not a claim:
   **`№ 11,615`** plus any unstamped line made after this ledger. All lower
   bounds. The count is by replies, not by stamps. A later re-measure that
   reads below this line is missing these, not correcting them.
+- 2026-10-07 00:35 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above, the replies ran on by count
+  through the #1245 gate report `№ 11,623`, the owner's "merge when green",
+  Codex's P1 on #1245 (the keeper never throws: `trailSpecsComplete`), #1245
+  merged (62276a2c, 00:10Z) and read back: all six services up, and the
+  named refusal measured `TRAIL_TICK_ENABLED not set` on the demo gateway
+  (`№ 11,659`, 08:18 SGT). **Codex's stamps ran ahead again** (its #1244
+  commit reads № 11,656), so the ratchet took `№ 11,657` for the decisions
+  answer. The owner's answers: remove the gate (this PR: the TrailEngine on
+  by default, explicit false opts out), no live-account decision yet, the
+  `agent-locks` branch yes, fix the goal-tracker flake (this PR), EXEC_SECRET
+  explained. The next stamped reply is at least **`№ 11,661`** plus any
+  unstamped line made after this ledger. All lower bounds. The count is by
+  replies, not by stamps. A later re-measure that reads below this line is
+  missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

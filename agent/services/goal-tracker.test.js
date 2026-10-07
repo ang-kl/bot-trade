@@ -536,11 +536,15 @@ test('re-reading an UNCHANGED goal logs nothing', () => {
 //
 // The card now carries its OWN coverage so its dot can print the figure that
 // was missing: how many of these rows are actually this account's.
+// Claude · № 11,660 07-Oct (owner: "fix it"): the rows sit a minute in the
+// past because account-analytics admits a close only while closedAtMs < now
+// strictly; stamped at datetime('now') they straddled a second boundary on a
+// loaded CI runner and the card read 0 (CI on #1245, 06-10 22:50Z).
 test('each card reports what fraction of its rows belong to that account', () => {
   const db = initDB(':memory:')
   const ins = db.prepare(`
     INSERT INTO trades (account_id, symbol, side, status, net_pnl, closed_at, opened_at)
-    VALUES (?, 'EURUSD', 'BUY', 'closed', ?, datetime('now'), datetime('now'))
+    VALUES (?, 'EURUSD', 'BUY', 'closed', ?, datetime('now', '-1 minute'), datetime('now', '-1 minute'))
   `)
   ins.run('AAA', 10)      // AAA's own
   ins.run('AAA', -5)      // AAA's own
@@ -570,7 +574,7 @@ test('a fully-stamped account reads 100, and an empty one is not a failure', () 
   const db = initDB(':memory:')
   db.prepare(`
     INSERT INTO trades (account_id, symbol, side, status, net_pnl, closed_at, opened_at)
-    VALUES ('AAA', 'EURUSD', 'BUY', 'closed', 10, datetime('now'), datetime('now'))
+    VALUES ('AAA', 'EURUSD', 'BUY', 'closed', 10, datetime('now', '-1 minute'), datetime('now', '-1 minute'))
   `).run()
 
   const clean = goalTracker(db, { accountIds: ['AAA'] }).accounts[0]

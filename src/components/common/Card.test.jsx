@@ -203,3 +203,23 @@ it('the actual engine account blocker disclosure stays closed within its card', 
   expect(html).toContain('aria-expanded="false"')
   expect(html).not.toContain('remedy: check the sidecar')
 })
+
+// Claude · № 11,668 07-Oct (owner: "⇲ turns the card translucent and cannot
+// turn back"). The maximize overlay must be PORTALED to document.body: inside
+// the card it sits under .glass-panel, whose backdrop-filter makes the card
+// the containing block of a position:fixed child, so the "full-screen"
+// overlay covered only the card's own box and its ⇱ restore was clipped out
+// of reach. This repo has no DOM harness and the server renderer cannot
+// render a portal, so the wiring is pinned on the source with comments
+// stripped (a comment naming createPortal must not satisfy it).
+describe('maximize overlay escapes the card', () => {
+  it('MaxOverlay returns createPortal(..., document.body), in code and not in a comment', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('./Card.jsx', import.meta.url), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    const overlay = src.slice(src.indexOf('function MaxOverlay('))
+    expect(overlay).toMatch(/return createPortal\(/)
+    expect(overlay).toMatch(/document\.body,?\s*\)/)
+    expect(src).toMatch(/import \{ createPortal \} from 'react-dom'/)
+  })
+})
