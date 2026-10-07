@@ -136,11 +136,25 @@ async function tradeGuardsPass(db, creds, deps = {}) {
     const owned = scoped.owned
     if (owned.length === 0) return summary
 
+    // Codex P1 on #1249 (Claude · № 11,745 07-Oct): the symbol id a row's quote
+    // and pip metadata are read with comes from THIS account's reconcile
+    // snapshot first. The shared map (getSymbolMap) is the selected account's
+    // and symbol ids differ per account, so on a non-selected account it can
+    // name another instrument — and since #1249 the sidecar's identity check
+    // passes (the amend names the snapshot's id), so a stop computed from the
+    // wrong instrument's price would land. The map is only the fallback for a
+    // snapshot that carries no tradeData (a JS-transport reconcile).
     const map = getSymbolMap(db)
+    const symbolIdFor = (r) => {
+      const own = Number(live.get(String(r.position_id))?.tradeData?.symbolId)
+      if (own > 0) return own
+      const shared = map[String(r.symbol).toUpperCase()]
+      return shared != null ? shared : null
+    }
     const bySymbol = {}
     for (const r of owned) {
-      const id = map[String(r.symbol).toUpperCase()]
-      if (id != null) bySymbol[r.symbol] = id
+      const id = symbolIdFor(r)
+      if (id != null) bySymbol[String(r.position_id)] = id
     }
     const symbolIds = [...new Set(Object.values(bySymbol))]
     if (symbolIds.length === 0) return summary
@@ -158,7 +172,7 @@ async function tradeGuardsPass(db, creds, deps = {}) {
     )
 
     for (const r of owned) {
-      const symbolId = bySymbol[r.symbol]
+      const symbolId = bySymbol[String(r.position_id)]
       const price = symbolId != null ? prices[symbolId] : null
       if (price == null) continue
       summary.checked++

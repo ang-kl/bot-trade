@@ -193,10 +193,15 @@ test('ratchet: the guard\'s SL amend carries ratchetOnly and the position\'s ide
       closePosition: async () => ({}),
       amendPosition: amend,
     },
-    ws: { wsGetLastCloses: async () => ({ 1: 1.1025 }) },
-    sizing: { getVolumeMeta: async () => ({ pipPosition: 4, digits: 5, lotSize: 100000 }) },
+    // Codex P1 on #1249: the quote and the pip metadata are read with the
+    // snapshot's id (77) too, never the shared map's (1) — a price keyed only
+    // by the map's id must leave the row unpriced, not priced off another
+    // instrument.
+    ws: { wsGetLastCloses: async (_h, _c, _s, _t, _a, ids) => { asked.push(...ids); return { 77: 1.1025 } } },
+    sizing: { getVolumeMeta: async (_h, _c, _s, _t, _a, id) => { metaFor.push(id); return { pipPosition: 4, digits: 5, lotSize: 100000 } } },
     notify: (m) => notices.push(m),
   })
+  const asked = [], metaFor = []
   const creds = { accountId: '42', host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't' }
 
   const sent = [], n1 = []
@@ -205,6 +210,8 @@ test('ratchet: the guard\'s SL amend carries ratchetOnly and the position\'s ide
   assert.equal(sent[0].ratchetOnly, true, 'the sidecar must read the broker stop before it sends')
   assert.equal(sent[0].expectedDirection, 1, 'a long: direction +1')
   assert.equal(sent[0].expectedSymbolId, 77, 'the account-scoped snapshot\'s symbol id, not the shared map\'s (1)')
+  assert.deepEqual(asked, [77], 'the quote is read for the snapshot\'s id')
+  assert.deepEqual(metaFor, [77], 'the pip metadata is read for the snapshot\'s id')
 
   const db2 = mk(), n2 = []
   const b = await runTradeGuards(db2, creds, depsWith(async () => ({ unchanged: true, protection: { stopLoss: 1.1010, takeProfit: 1.12 } }), n2))
