@@ -1676,6 +1676,26 @@ Measurement history — each line is a real run of the script, not a claim:
   any unstamped line made after this ledger. All lower bounds. The count is
   by replies, not by stamps. A later re-measure that reads below this line
   is missing these, not correcting them.
+- 2026-10-07 06:12 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): the line above was WRITTEN at 05:52 UTC and stamped
+  "06:00" (a guessed time, the §2 failure; disclosed at № 11,768·C). From
+  it (next stamp at least `№ 11,762`), the replies ran on by count through
+  the ¶B·1/¶C·1 report `№ 11,768` (13:54 SGT: the registry POST refused
+  to the agent twice and not re-attempted; #1253 built; main merged in
+  after Codex's #1251 replaced the #1250 fallback with a refusal), #1253
+  merged f0d5764a (14:06 SGT) and read back (06:09:26Z: "accepted; 5
+  unchanged sweep(s) since the last push" — from every 4–8 s to about one
+  push a minute, the distance's ATR refresh being the change), the "merge
+  once green" and "what else" answers `№ 11,779`–`№ 11,782`. Codex P1 on
+  #1253 (a spec built before the keeper's own stop amend carries no stop;
+  the engine arms only on a push with a real stop; the digest withheld
+  that push for up to 60 s) is what this PR carries: whether a stop is
+  known joins the digest, its value still does not; mutation M12 red. The
+  registry still reads 5bd5533f / 902 — the POST is the owner's. The next
+  stamped reply is at least **`№ 11,784`** plus any unstamped line made
+  after this ledger. All lower bounds. The count is by replies, not by
+  stamps. A later re-measure that reads below this line is missing these,
+  not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

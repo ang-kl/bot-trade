@@ -197,7 +197,11 @@ test('trailSetDigest: the set, distance, digits, direction, symbol, target and e
   const a = { positionId: 1, ctidTraderAccountId: 9, symbolId: 2, dir: 1, trailDistance: 0.5, digits: 5, currentTp: 1.2, entryPrice: 1.0, currentSl: 0.9, peakPrice: 1.1 }
   const b = { ...a, positionId: 2 }
   assert.equal(trailSetDigest([a, b]), trailSetDigest([b, a]), 'order-independent')
-  assert.equal(trailSetDigest([{ ...a, currentSl: 0.95, peakPrice: 1.15 }]), trailSetDigest([a]), 'the engine keeps its own stop and peak: not part of the digest')
+  assert.equal(trailSetDigest([{ ...a, currentSl: 0.95, peakPrice: 1.15 }]), trailSetDigest([a]), 'the engine keeps its own stop and peak: their values are not part of the digest')
+  // Codex P1 on #1253: a stop becoming KNOWN is a new config — the engine
+  // only arms a position once a push carries a real currentSl.
+  assert.notEqual(trailSetDigest([{ ...a, currentSl: null }]), trailSetDigest([a]), 'no stop → stop known changes the digest, so the arming push is not withheld')
+  assert.equal(trailSetDigest([{ ...a, currentSl: null }]), trailSetDigest([{ ...a, currentSl: undefined }]), 'absent and null are the same unknown')
   assert.notEqual(trailSetDigest([{ ...a, trailDistance: 0.6 }]), trailSetDigest([a]), 'a new distance is a new config')
   assert.notEqual(trailSetDigest([a, b]), trailSetDigest([a]), 'a position leaving the set is a new config (full replace must drop it)')
   assert.equal(trailSetDigest([]), '', 'the empty set has a digest too (an empty push clears the engine)')

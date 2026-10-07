@@ -197,11 +197,16 @@ export function takeScanPrioritySymbols(db, ttlMs = SCAN_PRIORITY_TTL_MS) {
 // carries a fresher currentSl or peakPrice changes nothing there; what does
 // change the engine's work is the SET (a position opened or closed), a
 // spec's distance, digits, direction, symbol, target or entry. Those are
-// the digest; currentSl and peakPrice are left out on purpose.
+// the digest; the VALUES of currentSl and peakPrice are left out on purpose.
+// Codex P1 on #1253 (Claude · № 11,782 07-Oct): whether a stop is KNOWN is
+// in. A spec the keeper built before its own stop amend carries
+// currentSl null, and the engine refuses to trail a position whose stop it
+// does not know (trailDecide: !hasSl → 0); the next sweep's spec, with the
+// broker's new stop, is what arms it, so that spec must not be withheld.
 export function trailSetDigest(specs) {
   if (!Array.isArray(specs)) return ''
   return specs
-    .map(s => [s.positionId, s.ctidTraderAccountId, s.symbolId, s.dir, s.trailDistance, s.digits, s.currentTp, s.entryPrice].map(v => (v == null ? '' : String(v))).join(':'))
+    .map(s => [s.positionId, s.ctidTraderAccountId, s.symbolId, s.dir, s.trailDistance, s.digits, s.currentTp, s.entryPrice, Number(s.currentSl) > 0 ? 'sl' : 'nosl'].map(v => (v == null ? '' : String(v))).join(':'))
     .sort()
     .join('|')
 }
