@@ -25,7 +25,8 @@
         "cpp-verify/src/verdict.cpp",
         "cpp-verify/src/tests/test_verdict.cpp",
         "cpp-verify/src/tests/test_deal_paging.cpp",
-        "CLAUDE.md"
+        "CLAUDE.md",
+        "agent/services/position-capture-accounts.test.js"
       ],
       "purpose": "Prospective executed-volume contract; retain existing closed financial history. Verifier-only native changes, no execution/account gateway change."
     }
