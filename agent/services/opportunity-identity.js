@@ -146,6 +146,9 @@ export function nextOpportunityKey(db, proposal, {
   // attention, so it must read the newest SIGHTING, not the row's first one;
   // otherwise a setup refused every cycle would be re-keyed every gapMs and
   // the merge would split itself.
+  // Codex · №11,806 · 2026-10-07; codex-footprint: indexed-opportunity-lookback.
+  // IS retains the existing equal-or-both-NULL account scope and lets the
+  // newest-sighting expression index satisfy all keys and the ordering.
   try {
     previous = db.prepare(
       `SELECT opportunity_key, COALESCE(last_at, created_at) AS created_at
@@ -153,13 +156,12 @@ export function nextOpportunityKey(db, proposal, {
         WHERE opportunity_key IS NOT NULL
           AND UPPER(symbol) = ?
           AND UPPER(side) = ?
-          AND (account_id = ? OR (account_id IS NULL AND ? IS NULL))
+          AND account_id IS ?
         ORDER BY COALESCE(last_at, created_at) DESC
         LIMIT 1`
     ).get(
       norm(proposal?.symbol),
       norm(proposal?.side),
-      acct == null ? null : String(acct),
       acct == null ? null : String(acct),
     ) || null
   } catch {

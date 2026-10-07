@@ -1960,6 +1960,14 @@ export function initDB(dbPath) {
     if (!cols.has('last_at')) db.exec(`ALTER TABLE risk_events ADD COLUMN last_at TEXT`);
   }
 
+  // Codex · №11,806 · 2026-10-07; codex-footprint: indexed-opportunity-lookback.
+  // The hot reader folds symbol/side and orders by the latest repeat sighting.
+  // Raw-column/created-at indexes cannot serve that query. Build after last_at
+  // exists; retain legacy indexes and every audit row unchanged.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_risk_events_sighting_lookup
+    ON risk_events(UPPER(symbol), UPPER(side), account_id, COALESCE(last_at, created_at) DESC)
+    WHERE opportunity_key IS NOT NULL`);
+
   // §70.9 P&L RECONCILIATION EVIDENCE. The backfill's "we tried and gave up"
   // record lived in a module-level Map keyed by ACCOUNT — so it was forgotten
   // on every restart, and this service redeploys on every push to main. The

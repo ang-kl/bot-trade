@@ -205,3 +205,45 @@ test('BACKFILL leaves a row with an UNPARSEABLE timestamp unkeyed rather than gu
   assert.equal(r.keyed, 0)
   assert.equal(r.remaining, 2, 'reported as unkeyed, not folded into an opportunity it may not belong to')
 })
+
+// Codex · №11,806 · 2026-10-07; codex-footprint: indexed-opportunity-lookback.
+// Exercise the real reader and migrated schema; a hot risk read must not sort
+// or scan retained history, for either an owned account or a legacy NULL scope.
+test('newest opportunity sighting is indexed without a history scan or temporary sort', () => {
+  const db = fresh()
+  try {
+    for (const accountId of ['46130058', null]) {
+      let query, args
+      const actualReader = { prepare(sql) { return { get(...values) {
+        query = sql; args = values; return db.prepare(sql).get(...values)
+      } } } }
+      nextOpportunityKey(actualReader, { ...P, accountId }, { accountId, now: T0 })
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(...args).map(r => r.detail).join(' | ')
+      assert.match(plan, /SEARCH risk_events/, `account ${accountId}: ${plan}`)
+      assert.doesNotMatch(plan, /SCAN risk_events|USE TEMP B-TREE/, `account ${accountId}: ${plan}`)
+    }
+  } finally { db.close() }
+})
+
+test('indexed opportunity lookup preserves latest repeat, case folding and account/NULL isolation', () => {
+  const db = fresh()
+  try {
+    const ins = db.prepare(`INSERT INTO risk_events
+      (symbol, side, approved, account_id, created_at, last_at, opportunity_key)
+      VALUES (?, ?, 0, ?, ?, ?, ?)`)
+    for (const accountId of ['46130058', null]) {
+      const proposal = { ...P, accountId }
+      const first = nextOpportunityKey(db, proposal, { accountId, now: T0 })
+      ins.run('txt.us', 'sell', accountId, new Date(T0).toISOString(), new Date(T0 + 25 * 60_000).toISOString(), first.key)
+      const older = opportunityKey(proposal, accountId, T0 + 1000)
+      ins.run('TXT.US', 'SELL', accountId, new Date(T0 + 1000).toISOString(), null, older)
+      const current = nextOpportunityKey(db, proposal, { accountId, now: T0 + 40 * 60_000 })
+      assert.equal(current.isNew, false, 'a repeat sighting keeps the existing gap episode')
+      assert.equal(current.key, first.key)
+    }
+    const other = nextOpportunityKey(db, P, { accountId: '47790949', now: T0 + 40 * 60_000 })
+    assert.equal(other.isNew, true, 'another account cannot inherit an owned or NULL episode')
+    const expired = nextOpportunityKey(db, P, { accountId: P.accountId, now: T0 + 60 * 60_000 })
+    assert.equal(expired.isNew, true, 'the original 30-minute gap threshold remains')
+  } finally { db.close() }
+})
