@@ -1,5 +1,21 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №11,968 · 2026-10-08; session: http-read-diagnostics;
+codex-footprint: opt-in read failure attribution. Owner authorises full gates,
+merge and shared native release, with HTTP_READ_DIAGNOSTICS=1 only on tick and
+verifier. Default off; fixed phase/reason/saved errno, byte counts and socket
+endpoints only, rate-limited 1/s. No request contents, secret or token values.
+Preserve framing/authentication/caps/responses/timeouts and byte-identical shared
+HTTP sources in four projects. Five native services rebuild because execution
+and accounts share one source project; no trading policy change. Existing
+PR1233–1259 releases/gates remain complete. Production failure cause unproven;
+full local/exact-head CI, actual review inspection and deployed verification
+pending at 2026-10-07T22:11Z. No broker forcing, credentials, risk/account/strategy/
+registry/history/region/volume/staging or monitoring schedule operation.
+Acceptance stays 7 verified/19 active/6 deferred; zero new whole-row closures.
+-->
+
+
 <!-- Codex · №11,890 · 2026-10-07; session: reversal-lifecycle-guard;
 codex-footprint: reversal-lifecycle-guard. Owner-confirmed manual GER40 reversal
 supersedes actor uncertainty. Reuse completed PR1233–1257/gates. Actual source

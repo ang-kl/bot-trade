@@ -52,6 +52,13 @@ $(BIN): $(SRC) $(HDRS)
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $(SRC) -o $@ $(LDFLAGS) $(LDLIBS)
 
+# Codex · №11,968 · 2026-10-08; codex-footprint: reader fixture includes
+# the actual HTTP implementation to test saved errno and parser phase.
+# Do not link that translation unit twice; keep all header/source dependencies.
+bin/test_http_read_diagnostics: src/tests/test_http_read_diagnostics.cpp $(LIB_SRC) $(HDRS)
+	@mkdir -p bin
+	$(CXX) $(CXXFLAGS) $< $(filter-out src/http_server.cpp,$(LIB_SRC)) -o $@ $(LDFLAGS) $(LDLIBS)
+
 bin/%: src/tests/%.cpp $(LIB_SRC) $(HDRS)
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $< $(LIB_SRC) -o $@ $(LDFLAGS) $(LDLIBS)
