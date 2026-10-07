@@ -1,6 +1,21 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": [],
+  "locks": [
+    {
+      "locked_by": "codex-lifecycle-guard",
+      "session": "reversal-aware-lifecycle-guard",
+      "serial": 11887,
+      "started_at": "2026-10-07T11:20:00Z",
+      "expires_at": "2026-10-07T14:20:00Z",
+      "branch": "fix/reversal-lifecycle-guard-2026-10-07",
+      "paths": [
+        "agent/lib/position-deal-history.js",
+        "agent/lib/position-deal-history-lifecycle.test.js",
+        "CLAUDE.md"
+      ],
+      "reason": "Fail closed on residual reversal and repeated same-ID lifecycle; no existing financial-history edits, no importer volume overwrite, no native changes."
+    }
+  ],
   "notes": [
     {
       "from": "claude-builder",
