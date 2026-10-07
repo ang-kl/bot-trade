@@ -63,6 +63,8 @@ import { ledgerMoneyNote } from '../lib/partial-money.js'
 import { currencyLines, currencyLinesText, rollingSplits } from '../lib/currency-money.js'
 import { scopedPerformanceRows } from '../lib/performance-evidence.js'
 import { dataFeedCardScope, quoteReceiptNote } from '../lib/data-feed.js'
+import LiveMarketCard from '../components/LiveMarketCard.jsx'
+import { LIVE_MARKETS, liveMarketSymbols, liveMarketView, reportFreshness, useMarketWatchlist, useLiveMarketPage } from '../lib/performance-live-markets.js'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -324,13 +326,13 @@ function GradientFigure({ c }) {
   return (
     <span title={c.partialTitle || undefined} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', lineHeight: 1.15 }}>
       <span>{c.v}</span>
-      <span style={{ color: P_MU, whiteSpace: 'nowrap' }}>{c.partial}</span>
+      <span style={{ color: P_MU, whiteSpace: 'normal', overflowWrap: 'anywhere', maxWidth: '100%' }}>{c.partial}</span>
     </span>
   )
 }
 
 export function GradientBody({
-  grid, label, cols, rows, foot, groups = null, colW = 'minmax(52px,84px)',
+  grid, label, cols, rows, foot, groups = null, colW = 'minmax(104px,1fr)',
   subtotals = null, banded = false, smallHead = false,
   subtotalLabel = 'Subtotal', subtotalTitle = undefined,
 }) {
@@ -399,7 +401,7 @@ export function GradientBody({
   const headStyle = smallHead ? { fontSize: 'var(--fs-body)' } : undefined
   // Right-aligned, square-cornered, ledger-style — the number is the signal,
   // not the shape around it.
-  const cellStyle = { fontSize: GRAD_FONT, fontWeight: W_CELL, textAlign: 'right', paddingRight: 6, fontVariantNumeric: 'tabular-nums' }
+  const cellStyle = { minWidth: 0, overflowWrap: 'anywhere', fontSize: GRAD_FONT, fontWeight: W_CELL, textAlign: 'right', paddingRight: 6, fontVariantNumeric: 'tabular-nums' }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minHeight: 0 }}>
@@ -531,31 +533,35 @@ function FxBandsBody({ fxBands }) {
   )
 }
 
-function StratMxBody({ stratMx }) {
+export function StratMxBody({ stratMx }) {
+  // Codex · №11,740 · 2026-10-07; all eight markets, Net and Edge stay aligned.
+  const template = `minmax(170px,2fr) repeat(${MARKET_COLS.length},minmax(84px,1fr)) 110px 76px`
   return (
-    <>
-      <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '132px repeat(6,1fr) 76px 52px', gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 3 }}>
+    <div style={{ overflowX: 'auto', maxWidth: '100%' }}><div style={{ minWidth: 1100 }}>
+      <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: template, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 3 }}>
         <span>Strategy</span>
         {MARKET_COLS.map(m => <span key={m.key}>{m.label}</span>)}
         <span>Net</span><span>Edge</span>
       </div>
       {stratMx.length === 0 && <span style={{ fontSize: 'var(--fs-body)', color: P_MU, padding: '4px 0' }}>No closed trades with a strategy label in the last 30 days.</span>}
       {stratMx.map(s => (
-        <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '132px repeat(6,1fr) 76px 52px', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '3px 0', fontVariantNumeric: 'tabular-nums' }}>
+        <div key={s.name} style={{ display: 'grid', gridTemplateColumns: template, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '5px 0', fontVariantNumeric: 'tabular-nums' }}>
           <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{s.label}</span>
           {s.cells.map((c, ci) => <span key={ci} title={c.tip} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: c.col }}>{c.v}</span>)}
           <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: s.col }}>{s.net}</span>
           <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: s.edgeCol }}>{s.edge}</span>
         </div>
       ))}
-    </>
+    </div></div>
   )
 }
 
-function CryptoBody({ crypto }) {
+export function CryptoBody({ crypto }) {
   return (
     <>
       <p style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{crypto.feedNote}</p>
+      {/* Codex · №11,753 · 2026-10-07: preserve readable outcome columns on phones. */}
+      <div style={{ overflowX: 'auto', maxWidth: '100%' }}><div style={{ minWidth: 680 }}>
       <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
         <span>Symbol</span><span>Live price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
       </div>
@@ -568,6 +574,7 @@ function CryptoBody({ crypto }) {
           <span style={{ fontSize: 'var(--fs-body)', color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
         </div>
       ))}
+      </div></div>
     </>
   )
 }
@@ -1301,6 +1308,15 @@ export default function Performance() {
   const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
   const journalAvailable = agentConfigured() && !error && tradeScope === acct
   const positionsAvailable = agentConfigured() && !error && posScope.accountId === acct
+  const marketWatchlist = useMarketWatchlist(quoteAccount)
+  const marketSymbols = LIVE_MARKETS.map(panel => liveMarketSymbols(panel, marketWatchlist?.config, quoteAccount, positionsAvailable ? positions : []))
+  const stockPage = useLiveMarketPage(marketSymbols[0], quoteAccount)
+  const indexPage = useLiveMarketPage(marketSymbols[1], quoteAccount)
+  const commodityPage = useLiveMarketPage(marketSymbols[2], quoteAccount)
+  const otherPage = useLiveMarketPage(marketSymbols[3], quoteAccount)
+  const marketPages = [stockPage, indexPage, commodityPage, otherPage]
+  const liveMarkets = LIVE_MARKETS.map((panel, i) => liveMarketView(panel, marketPages[i], { report: populationReport, acct, quoteAccount, now: quoteNow, watchlist: marketWatchlist }))
+  const reportAge = reportFreshness(populationReport, quoteNow, populationError)
   // The Data-feed card's account-dependent props, checked against `acct` at
   // RENDER: an account switch keeps the previous account's feedReport and
   // riskFull in state until the new load finishes, so a check made only when
@@ -2005,7 +2021,7 @@ export default function Performance() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, letterSpacing: '-.02em', color: P_TX }}>bot-trade · Performance ledger</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-body)', fontWeight: 700, color: P_ACC, border: `1px solid ${P_ACC}`, borderRadius: 999, padding: '2px 8px' }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: P_ACC, animation: 'perf-pulse 1.6s infinite' }} />LIVE
+          {reportAge.state === 'current' ? 'REPORT CURRENT' : reportAge.state === 'unavailable' ? 'REPORT UNAVAILABLE' : 'REPORT STALE'}
         </span>
         {/* Owner (2026-07-30, iPhone screenshot): the session strip appeared
             TWICE on a phone — once here (no responsive guard) and once inside
@@ -2017,6 +2033,10 @@ export default function Performance() {
           <SessionClock />
         </span>
       </div>
+
+      <p role="status" data-performance-freshness={reportAge.state} className={`text-(length:--fs-body) ${SUB}`}>
+        {reportAge.text} · refreshes every minute while active{populationError ? ` · ${populationError}` : ''}. Live quote freshness is shown separately.
+      </p>
 
       <Card id="sec-acct-balance" className="my-3 text-(length:--fs-body)" scope={acct} loading={!overview}>
         <h2 className="t-h3">Account balance, floating profit and equity</h2>
@@ -2182,7 +2202,7 @@ export default function Performance() {
           <>
             {/* Crypto — account-scoped live quotes on mobile. */}
             <Card id="perf-mobile-crypto" bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 5 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</h3>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
                   {crypto.k.map(k2 => (
@@ -2192,21 +2212,10 @@ export default function Performance() {
                   ))}
                 </div>
               </div>
-              <p style={{ fontSize: 'var(--fs-body)', color: P_MU }}>{crypto.feedNote}</p>
-              <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
-                <span>Symbol</span><span>Price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
-              </div>
-              {crypto.rows.map(c2 => (
-                <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
-                  <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_ROWLABEL }}>{c2.sym}</span>
-                  <span title={c2.quoteNote} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: P_MU }}>{fmtPx(c2.price)}</span>
-                  <span title={c2.quoteNote} style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 5, color: P_MU }}>{c2.delta == null ? '—' : `${signed(c2.delta)}%`}</span>
-                  <span style={{ fontSize: 'var(--fs-body)', fontWeight: W_CELL, color: c2.col }}>{c2.pnl}</span>
-                  <span style={{ fontSize: 'var(--fs-body)', color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
-                </div>
-              ))}
+              <CryptoBody crypto={crypto} />
             </Card>
             {/* Forex bands — exact mobile panel. */}
+            {liveMarkets.map(market => <LiveMarketCard key={market.key} market={market} mobile />)}
             <Card id="perf-mobile-forex" bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 5 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px' }}>
               <h3 style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</h3>
               {fxBands.map(b => (
@@ -2544,7 +2553,7 @@ export default function Performance() {
               render={() => <SessionStatsBody stats={sessionStats} />} />
           </div>
           <p className={`text-(length:--fs-body) ${SUB}`} role="status">
-            {populationReport?.asOfMs ? `Report as of ${new Date(populationReport.asOfMs).toLocaleString()}` : 'Session report has not loaded.'}
+            {populationReport?.asOfMs ? `Report as of ${new Date(populationReport.asOfMs).toLocaleString()} · ${reportAge.text}` : 'Session report has not loaded.'}
             {populationError ? ` · Refresh failed: ${populationError}${populationReport ? ' · showing the last successful report' : ''}` : ''}
           </p>
           {populationReport ? <div className="mt-2"><SessionStatsBody stats={sessionStats} /></div> : <p className={SUB}>Session statistics unavailable.</p>}
@@ -2597,9 +2606,9 @@ export default function Performance() {
               <span style={{ fontSize: 'var(--fs-body)', color: P_SB }}>always shows all accounts + overall per currency · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance Gradient — Timeframe × Account table"
                 data={gradientData(gradients.tWide, gradients.wideCols, 'window', gradients.tWideSub, OVERLAP_LABEL)}
-                render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} subtotalLabel={OVERLAP_LABEL} subtotalTitle={OVERLAP_TITLE} banded smallHead colW="minmax(46px,72px)" foot={gradientFoot(gradients, 't')} />} />
+                render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} subtotalLabel={OVERLAP_LABEL} subtotalTitle={OVERLAP_TITLE} banded smallHead colW="minmax(104px,1fr)" foot={gradientFoot(gradients, 't')} />} />
             </div>
-            <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} subtotalLabel={OVERLAP_LABEL} subtotalTitle={OVERLAP_TITLE} banded smallHead colW="minmax(46px,72px)" foot={gradientFoot(gradients, 't')} />
+            <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} subtotalLabel={OVERLAP_LABEL} subtotalTitle={OVERLAP_TITLE} banded smallHead colW="minmax(104px,1fr)" foot={gradientFoot(gradients, 't')} />
           </Card>
           <Card id="sec-gradient-asset" copyTitle="Performance Gradient — Asset Class × Account table" data={gradientData(gradients.a, gradients.assetCols, 'asset', gradients.aSub, 'Subtotal')} bodyStyle={{ display: 'flex', flexDirection: 'column', gap: 2 }} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -2661,6 +2670,10 @@ export default function Performance() {
               <CryptoBody crypto={crypto} />
             </Card>
           </div>
+        </div>
+
+        <div className="perf-2col-even">
+          {liveMarkets.map(market => <LiveMarketCard key={market.key} market={market} />)}
         </div>
 
         {/* Winners & Laggards explained — exact prototype pair, real
