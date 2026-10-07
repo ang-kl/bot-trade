@@ -15,6 +15,23 @@
         "CLAUDE.md"
       ],
       "intent": "Codex P1 on #1253: stop-known joins the trail digest"
+    },
+    {
+      "locked_by": "codex-performance-metrics",
+      "session": "ChatGPT Performance essentials audit 2026-10-07",
+      "branch": "fix/performance-essentials-2026-10-07",
+      "pr": null,
+      "since": "2026-10-07T06:18:00Z",
+      "expires_at": "2026-10-07T10:18:00Z",
+      "last_serial": 11783,
+      "active_files": [
+        "src/pages/Performance.jsx",
+        "src/lib/performance-metrics.js",
+        "src/lib/performance-metrics.test.js",
+        "src/components/PerformanceMetrics.jsx",
+        "src/components/performance-metrics.test.jsx"
+      ],
+      "intent": "Essential forward targets ahead of diagnostics; truthful readable historical metrics and sizing source audit. Guardian/native files excluded."
     }
   ],
   "notes": [
