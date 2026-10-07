@@ -61,9 +61,9 @@ going red (CLAUDE.md failure mode #3).
 
 Source note: this inventory was derived in the isolated UI working copy based on the verified GitHub main `f3a0a8e02c98ead7ff1ed8f3a911d3b6c0e07a07`, with the pending UI edits applied. The HEAD stamp names that source base.
 
-<!-- Codex · №11,670 (codex-footprint: signals-ui-2026-10-07): generated from the pinned remote main62276a2 source plus candidate UI; local Git metadata unavailable. -->
+<!-- Codex · №11,670 (codex-footprint: signals-ui-2026-10-07): generated from the pinned remote maina1a2f67 source plus candidate UI; local Git metadata unavailable. -->
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `62276a2` · 119 action call sites · 99 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `a1a2f67` · 119 action call sites · 99 state routes read.
 
 Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 

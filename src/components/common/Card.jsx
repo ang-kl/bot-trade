@@ -48,6 +48,7 @@
 // ⇲ and ⧉ keep their existing faint/hover-only treatment; only the collapse
 // control is always fully visible now.
 import { Fragment, Children, cloneElement, isValidElement, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import CopyPopup from './CopyPopup.jsx'
 import { tableToJson as scrapeJson, tableToHtml, dataToHtml, textToJson, textToHtml } from '../../lib/copy-serialize.js'
 import { sectionKind, NAV_KIND_LEGEND } from '../../lib/nav-tree.js'
@@ -329,13 +330,21 @@ export default function Card({
 
 // Full-screen host for a maximized card. Kept outside Card's return for
 // clarity; Esc and the backdrop both restore.
+//
+// Claude · № 11,668 07-Oct (owner: "⇲ turns the card translucent and it
+// cannot turn back; check every page's card"): the overlay is PORTALED to
+// document.body. Rendered inside the card it sat inside .glass-panel, whose
+// backdrop-filter makes the card the containing block of a position:fixed
+// child, so the "full-screen" overlay covered only the card's own box (the
+// 55% dark backdrop read as a translucent card) and its ⇱ button was clipped
+// out of reach. CopyPopup (⧉) already portals the same way.
 function MaxOverlay({ title, onRestore, children }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onRestore() }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [onRestore])
-  return (
+  return createPortal(
     <div role="dialog" aria-modal="true" aria-label={title}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onRestore() }}
       style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(6,9,19,.55)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
@@ -350,6 +359,7 @@ function MaxOverlay({ title, onRestore, children }) {
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
