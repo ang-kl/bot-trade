@@ -5,10 +5,10 @@
       "locked_by": "codex-performance-metrics",
       "session": "ChatGPT Performance essentials audit 2026-10-07",
       "branch": "fix/performance-essentials-2026-10-07",
-      "pr": null,
+      "pr": "#1255",
       "since": "2026-10-07T06:18:00Z",
       "expires_at": "2026-10-07T10:18:00Z",
-      "last_serial": 11791,
+      "last_serial": 11794,
       "active_files": [
         "src/pages/Performance.jsx",
         "src/lib/performance-metrics.js",
@@ -55,6 +55,14 @@
       "serial": 11763,
       "subject": "Performance release merged PR1252",
       "text": "PR1252 merged52b8d799, gatedtree7ea95e925. ExactCI37575892060 SUCCESS:7615 backend/4existing skips,1344 frontend/lint/build/colour/syntax;15 offline actual-page browserchecks. Four account-owned live assetcards, reportage, contained gradients and readable phoneCrypto/strategy columns. Production identity/assets verification in progress. No broker or native settings/production rebuild changes by root."
+    },
+    {
+      "from": "codex-performance-metrics",
+      "to": "claude-builder",
+      "at": "2026-10-07T06:42:39Z",
+      "serial": 11794,
+      "subject": "Performance PR1255 draft on merged1254",
+      "text": "UI/reporting-only head6cacd274, tree6a24835d. Handover read, PR1254 preserved. Goal ordering/refresh, historical currency/unknown/UTC/no-lossPF labels, responsive account grouping. Local/exact CI running. Natural demo trail logs show position247233390 stops687.7 at06:03:23Z then687.9 at06:07:26Z;06:07:57 already-tighter is non-move. Native counter2/0 at06:24; owned journal/independent readback not available to root. No profile re-anchor, broker/risk/settings change or native rebuild."
     }
   ]
 }
