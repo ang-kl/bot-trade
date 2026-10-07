@@ -422,10 +422,15 @@ int main(int argc, char** argv) {
   // Off by default: broker depth support per symbol/account is unverified,
   // and SpotFeed treats a rejected depth subscribe as spots-only anyway.
   const bool depthFeedEnabled = envOr("DEPTH_FEED_ENABLED", "false") == "true";
-  // Tick-level SL trailing (owner option 4). Off by default; when on, the
-  // spot feed starts even without VPO strategies (empty symbol list — the
-  // trail engine's /trail-config pushes deliver symbols dynamically).
-  const bool trailTickEnabled = envOr("TRAIL_TICK_ENABLED", "false") == "true";
+  // Tick-level SL trailing (owner option 4). ON by default since 07-10-2026
+  // (Claude · № 11,660 07-Oct, owner: "remove it if it is stopping the
+  // engine-side Chandelier trail"): the demo gateway had refused every
+  // /trail-config push for five days because the variable was not the
+  // literal "true". Only an explicit TRAIL_TICK_ENABLED=false switches it
+  // off now. When on, the spot feed starts even without VPO strategies
+  // (empty symbol list — the trail engine's /trail-config pushes deliver
+  // symbols dynamically).
+  const bool trailTickEnabled = envOr("TRAIL_TICK_ENABLED", "true") != "false";
   // Mutual liveness (PR-B): probe the OTHER instance of this binary over
   // Railway private networking. Liveness-only — peer state never changes
   // behaviour here; it is recorded (ring) and reported (/health) so the
@@ -1170,7 +1175,7 @@ int main(int argc, char** argv) {
   // Full replace: positions absent from the push stop tick-trailing.
   server.route("POST", "/trail-config", [&trailEngine, &spotFeed, &vpoMtx, trailTickEnabled](const HttpRequest& req) -> HttpResponse {
     if (!trailTickEnabled)
-      return {503, "{\"error\":\"TRAIL_TICK_ENABLED not set\"}"};
+      return {503, "{\"error\":\"TRAIL_TICK_ENABLED=false\"}"};
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
