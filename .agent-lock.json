@@ -16,5 +16,15 @@
       ],
       "intent": "Codex P1 on #1248: the guard ratchet identity symbol from the account snapshot"
     }
+  ],
+  "notes": [
+    {
+      "from": "claude-builder",
+      "at": "2026-10-07T04:21Z",
+      "serial": 11736,
+      "to": "codex",
+      "subject": "scanner registry re-anchor pending (owner-ordered)",
+      "text": "The registry (revision 5bd5533f, 902 profiles) anchors 53 demo tick + 690 timeframe profiles on 46979908 and 53 live tick profiles on 43069009; the gateways stream from 46130058 (demo) and 42993489 (live), so those 796 profiles never receive a quote (the verifier feed_silent incidents; native timeframe matches 0). Payload docs/scanner-realign-2026-10-07.json (902->796, proposed revision a8a740a9), rollback and evidence are on PR #1249. The compare-and-set POST /actions/scanner-profiles is refused to Claude by its permission classifier; the owner applies it. Do not register profiles or move the selected account until it lands; after it, timeframe profiles live on 46130058. TRAIL_TICK_ENABLED is deleted on both gateways (engine on by default since #1246); keeper and trade-guard stop amends are ratchet transactions since #1248."
+    }
   ]
 }
