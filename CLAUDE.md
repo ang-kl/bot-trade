@@ -1655,6 +1655,27 @@ Measurement history — each line is a real run of the script, not a claim:
   **`№ 11,746`** plus any unstamped line made after this ledger. All lower
   bounds. The count is by replies, not by stamps. A later re-measure that
   reads below this line is missing these, not correcting them.
+- 2026-10-07 06:00 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 11,746`), the replies ran on by count through the #1250 report
+  `№ 11,749` (12:49 SGT), #1250 merged 18cacd4e (13:00 SGT, `№ 11,755`),
+  the "any more?" list `№ 11,758` (13:47 SGT: the registry still at
+  5bd5533f with 902 profiles — the re-anchor POST not run; push cadence cap,
+  position 1722, the ⇲ check and the ledger tail named) and the owner's
+  "¶B·1 Run, ¶C·1 Push cadence cap". The POST was refused to the agent
+  twice by its permission classifier (04:04Z and 04:30Z) with the
+  instruction not to pursue the same outcome again, so it was NOT
+  re-attempted; it is the owner's. This PR carries ¶C·1: a side's
+  trail-config union is pushed when its digest changed (set, distance,
+  digits, direction, symbol, target, entry; not currentSl or peakPrice,
+  which the engine keeps itself) or when 60 s passed since the last
+  accepted push; a refused push is retried on the next sweep; the sweeps
+  themselves run as before. Mutations M9–M11 red. The CLAUDE.md tail
+  carries two Codex continuation blocks after this ledger block; left as
+  written by Codex. The next stamped reply is at least **`№ 11,762`** plus
+  any unstamped line made after this ledger. All lower bounds. The count is
+  by replies, not by stamps. A later re-measure that reads below this line
+  is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
