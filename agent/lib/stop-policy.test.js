@@ -8,11 +8,21 @@ import assert from 'node:assert/strict'
 import {
   DEFAULT_STOP_POLICY, normaliseStopPolicy, setStopPolicy, getStopPolicy, loadStopPolicy,
   triggerValue, triggerWire, sideDirection, locksProfit, policyFields, applyStopPolicyToAmend,
-  trailConfigPolicy, POLICY_KEY, noteAmendOutcome, isTrailing, markTrailing, resetTrailingRegistry, loadTrailingRegistry, saveTrailingRegistry, stopTightened, TRAILING_KEY,
+  trailConfigPolicy, POLICY_KEY, noteAmendOutcome, isTrailing, markTrailing, resetTrailingRegistry, loadTrailingRegistry, saveTrailingRegistry, stopTightened, TRAILING_KEY, brokerTrigger,
 } from './stop-policy.js'
 
 test.beforeEach(() => setStopPolicy(null))
 test.after(() => setStopPolicy(null))
+
+// Codex · №11,864 · 2026-10-07; codex-footprint: stop-policy-convergence.
+test('broker trigger evidence accepts actual enums and keeps malformed or missing fields unknown', () => {
+  for (const raw of [undefined, null, false, true, '', '  ', 'bogus', 0, 5, 1.5, {}, []]) {
+    assert.equal(brokerTrigger({ stopLossTriggerMethod: raw }), null, `unknown ${String(raw)} is not a current broker trigger`)
+  }
+  for (const [raw, expected] of [[1, 1], [2, 2], [3, 3], [4, 4], ['2', 2], ['OPPOSITE', 2], ['trade', 1]]) {
+    assert.equal(brokerTrigger({ stopLossTriggerMethod: raw }), expected)
+  }
+})
 
 test('the default is the owner order: enabled, Opposite, trailing once profit is locked, numeric wire', () => {
   assert.deepEqual({ ...DEFAULT_STOP_POLICY }, { enabled: true, triggerMethod: 'OPPOSITE', trailing: 'on_lock', encoding: 'number' })

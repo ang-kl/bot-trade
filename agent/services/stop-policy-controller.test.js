@@ -33,7 +33,7 @@ function rig({ live = false } = {}) {
         db.prepare(`UPDATE monitored_positions SET paused = 1 WHERE trade_id = ?`).run(tradeId)
       }
     }
-    return { positionId: posId, stopLoss: sl, takeProfit: 110 }
+    return { positionId: posId, stopLoss: sl, takeProfit: 110, tradeData: { symbolId: Number(account) + 1000 } }
   }
   const broker = { '42': [], '43': [], '44': [] }
   const sent = []
@@ -290,4 +290,119 @@ test('a momentum-book row is paused BY DESIGN and is stamped (trigger only); an 
   assert.equal(r.sent.length, 1, 'only the book row was asked')
   assert.equal(r.sent[0].args.stopContext.book, true)
   assert.equal(p.skipped.paused, 1, 'the owner-paused row was skipped')
+})
+
+// Codex · №11,863 · 2026-10-07; codex-footprint: stop-policy-convergence.
+// Real controller + DB + policy; reconcile/amend are the explicit broker boundary.
+test('a fresh confirmed-trigger contradiction retries after five minutes, then compliant reads return to six-hour checks', async () => {
+  const r = rig()
+  const p = r.position('42')
+  p.stopLossTriggerMethod = 2
+  r.broker['42'] = [p]
+  await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW })
+  p.stopLossTriggerMethod = 1
+  await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW + RETRY_MS - 1 })
+  assert.equal(r.sent.length, 1, 'a contradiction does not remove retry pacing')
+  r.setAnswer(() => COMPLIANT)
+  const retried = await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW + 11 * 60_000 })
+  assert.equal(r.sent.length, 2, 'present broker trigger contradicts the earlier confirmation')
+  assert.equal(retried.compliant, 1)
+  assert.equal(retried.stamped, 0, 'unchanged is not a stamp or stop move')
+  const args = r.sent[1].args
+  assert.equal(args.ratchetOnly, true)
+  assert.equal(args.expectedDirection, 1)
+  assert.equal(args.expectedSymbolId, p.tradeData.symbolId, 'identity comes from this account reconcile')
+  assert.equal('stopLoss' in args, false, 'native reads the broker stop under its ratchet lock')
+  assert.equal('takeProfit' in args, false)
+  p.stopLossTriggerMethod = 2
+  const normal = await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW + 20 * 60_000 })
+  assert.equal(r.sent.length, 2)
+  assert.equal(normal.skipped.recent, 1)
+})
+
+test('a current desired-policy change is compared to current broker truth, not an old confirmation', async () => {
+  const r = rig()
+  const p = r.position('42')
+  p.stopLossTriggerMethod = 2
+  r.broker['42'] = [p]
+  await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW })
+  setStopPolicy({ triggerMethod: 'TRADE' })
+  await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW + RETRY_MS })
+  assert.equal(r.sent.length, 2, 'the new desired trigger contradicts the currently reported trigger')
+})
+
+test('missing or malformed broker trigger never shortens a confirmed outcome throttle', async () => {
+  for (const raw of [undefined, null, false, true, '', '  ', 'bogus', 0, 5]) {
+    resetStopPolicyController()
+    const r = rig()
+    const p = r.position('42')
+    r.broker['42'] = [p]
+    await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW })
+    p.stopLossTriggerMethod = raw
+    const next = await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW + 11 * 60_000 })
+    assert.equal(r.sent.length, 1, `unknown trigger ${String(raw)} is not a contradiction`)
+    assert.equal(next.skipped.recent, 1)
+  }
+})
+
+test('refused, cooldown, mismatch and unreadable answers retain six-hour suppression even when a trigger differs', async () => {
+  for (const answer of [
+    { policy: { refused: { errorCode: 'X' } } },
+    { policy: { skipped: 'cooldown' } },
+    { policy: { readback: 'mismatch' } },
+    { policy: { readback: 'unreadable' } },
+  ]) {
+    resetStopPolicyController()
+    const r = rig()
+    const p = r.position('42')
+    r.broker['42'] = [p]
+    await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW })
+    p.stopLossTriggerMethod = 1
+    r.setAnswer(() => answer)
+    await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW + 11 * 60_000 })
+    assert.equal(r.sent.length, 2)
+    const next = await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW + 17 * 60_000 })
+    assert.equal(r.sent.length, 2, 'a broker refusal/uncertainty is not retried as a confirmed contradiction')
+    assert.equal(next.skipped.recent, 1)
+  }
+})
+
+test('policy-only ratchets refuse missing or malformed own-snapshot symbol identity without a selected-account fallback', async () => {
+  for (const raw of [undefined, null, false, true, '', '  ', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    resetStopPolicyController()
+    const r = rig()
+    const p = r.position('42')
+    p.tradeData.symbolId = raw
+    r.broker['42'] = [p]
+    const result = await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW })
+    assert.equal(r.sent.length, 0, `invalid own broker symbol ${String(raw)} must not reach amend`)
+    assert.equal(result.skipped.broker_symbol_unknown, 1)
+  }
+})
+
+test('eligible demo/live policy ratchets use their own account snapshot symbols and preserve the SELL direction', async () => {
+  const r = rig({ live: true })
+  r.broker['42'] = [r.position('42')]
+  r.broker['44'] = [r.position('44', { side: 'SELL' })]
+  const deps = { exec: r.exec, nowMs: NOW, credsForSide: (isLive, accountId) => ({ ready: true, isLive, accountId }) }
+  await runStopPolicyPass(r.db, creds, deps)
+  await runStopPolicyPass(r.db, creds, { ...deps, nowMs: NOW + 1000 })
+  assert.deepEqual(r.sent.map(s => [s.account, s.args.expectedSymbolId, s.args.expectedDirection, s.args.ratchetOnly]), [
+    ['42', 1042, 1, true], ['44', 1044, -1, true],
+  ])
+})
+
+test('a repeatedly contradicted confirmed position cannot consume a new position\'s one-per-account slot', async () => {
+  const r = rig()
+  const first = r.position('42')
+  r.broker['42'] = [first]
+  await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW })
+  first.stopLossTriggerMethod = 1
+  const newlyFilled = r.position('42')
+  r.broker['42'].push(newlyFilled)
+  await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW + RETRY_MS })
+  assert.equal(r.sent.length, 2, 'still exactly one call for this account this pass')
+  assert.equal(r.sent[1].args.positionId, newlyFilled.positionId, 'the fresh position is stamped before retrying an old contradiction')
+  await runStopPolicyPass(r.db, creds, { exec: r.exec, nowMs: NOW + 2 * RETRY_MS })
+  assert.equal(r.sent[2].args.positionId, first.positionId, 'the contradiction is retried on the next eligible pass')
 })
