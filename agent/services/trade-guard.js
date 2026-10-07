@@ -14,7 +14,6 @@
 // TIGHTEN protection or take profit; they never widen risk.
 // ---------------------------------------------------------------------------
 
-import { getSymbolMap } from '../lib/ctrader-creds.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { measureAmend } from './protection-latency.js'
 import { recordPositionEvent } from './position-events.js'
@@ -136,27 +135,22 @@ async function tradeGuardsPass(db, creds, deps = {}) {
     const owned = scoped.owned
     if (owned.length === 0) return summary
 
-    // Codex P1 on #1249 (Claude · № 11,745 07-Oct): the symbol id a row's quote
-    // and pip metadata are read with comes from THIS account's reconcile
-    // snapshot first. The shared map (getSymbolMap) is the selected account's
-    // and symbol ids differ per account, so on a non-selected account it can
-    // name another instrument — and since #1249 the sidecar's identity check
-    // passes (the amend names the snapshot's id), so a stop computed from the
-    // wrong instrument's price would land. The map is only the fallback for a
-    // snapshot that carries no tradeData (a JS-transport reconcile).
-    const map = getSymbolMap(db)
-    const symbolIdFor = (r) => {
-      const own = Number(live.get(String(r.position_id))?.tradeData?.symbolId)
-      if (own > 0) return own
-      const shared = map[String(r.symbol).toUpperCase()]
-      return shared != null ? shared : null
-    }
-    const bySymbol = {}
+    // Codex · №11,737 · 2026-10-07; codex-footprint: guard-symbol-2026-10-07.
+    // Quote, pip/lot units and amend identity must name the SAME instrument
+    // from this account's broker snapshot. The shared selected-account map
+    // cannot safely supply any of them. Missing identity refuses this row.
+    const byPosition = new Map()
     for (const r of owned) {
-      const id = symbolIdFor(r)
-      if (id != null) bySymbol[String(r.position_id)] = id
+      const raw = live.get(String(r.position_id))?.tradeData?.symbolId
+      const id = (typeof raw === 'number' || (typeof raw === 'string' && raw.trim())) ? Number(raw) : NaN
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        summary.refused++
+        summary.errors.push(`${r.symbol} position ${r.position_id}: broker symbol identity missing or invalid; guard not touched`)
+        continue
+      }
+      byPosition.set(String(r.position_id), id)
     }
-    const symbolIds = [...new Set(Object.values(bySymbol))]
+    const symbolIds = [...new Set(byPosition.values())]
     if (symbolIds.length === 0) return summary
 
     const prices = await ws.wsGetLastCloses(
@@ -172,7 +166,7 @@ async function tradeGuardsPass(db, creds, deps = {}) {
     )
 
     for (const r of owned) {
-      const symbolId = bySymbol[String(r.position_id)]
+      const symbolId = byPosition.get(String(r.position_id))
       const price = symbolId != null ? prices[symbolId] : null
       if (price == null) continue
       summary.checked++
@@ -226,13 +220,7 @@ async function tradeGuardsPass(db, creds, deps = {}) {
             // every amend call for its stop/target intent.)
             ratchetOnly: true,
             expectedDirection: ['LONG', 'BUY'].includes(String(r.side || '').toUpperCase()) ? 1 : -1,
-            // Codex P1 on #1248 (Claude · № 11,712 07-Oct): the identity symbol
-            // comes from THIS account's reconcile snapshot, never the shared
-            // symbol map (valid only for the account that built it; symbol ids
-            // differ per account), or the sidecar's identity check would refuse
-            // every break-even and trailing move on such an account. Absent
-            // from the snapshot → omitted; the direction check still applies.
-            expectedSymbolId: Number(bp?.tradeData?.symbolId) > 0 ? Number(bp.tradeData.symbolId) : undefined,
+            expectedSymbolId: symbolId,
           }))
           // Claude · № 11,690 07-Oct: the broker's confirmed stop is what the row
           // records; `unchanged` (already at least as tight) is not a move.
