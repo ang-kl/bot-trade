@@ -8,6 +8,8 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstdlib>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -17,6 +19,12 @@
 
 static void logInfo(const std::string& msg) { sidecar_log::logInfo("[cpp-exec]", msg); }
 static void logError(const std::string& msg) { sidecar_log::logError("[cpp-exec]", msg); }
+
+// Codex · №11,968 · 2026-10-08; codex-footprint: exact opt-in, default off.
+static bool readDiagnosticsEnabled() {
+  const char* flag = std::getenv("HTTP_READ_DIAGNOSTICS");
+  return flag && std::strcmp(flag, "1") == 0;
+}
 
 HttpServer::HttpServer(int port, std::string bearerSecret)
     : port_(port), secret_(std::move(bearerSecret)) {}
@@ -72,6 +80,7 @@ bool HttpServer::run() {
     dualStack_.store(dual);
   }
   logInfo("http: listening on :" + std::to_string(boundPort_.load()) + (dual ? " (dual-stack)" : " (ipv4 only)"));
+  if (readDiagnosticsEnabled()) logInfo("http: read failure diagnostics enabled (metadata only, limit 1/s)");
   for (;;) {
     int cfd = ::accept(fd, nullptr, nullptr);
     if (cfd < 0) continue;
@@ -124,24 +133,69 @@ std::string queryParam(const std::string& query, const std::string& key, const s
   return dflt;
 }
 
-static bool readRequest(int fd, HttpRequest& req, bool& tooLarge) {
+// Codex · №11,968 · 2026-10-08; codex-footprint: opt-in read-failure
+// metadata. Preserve framing, authentication, caps, responses and deadlines.
+struct ReadFailure {
+  std::string phase, reason;
+  int socketErr = 0;
+  size_t headerBytes = 0, bodyBytes = 0;
+};
+
+struct ReadEndpoint { std::string address = "unknown"; unsigned port = 0; };
+static ReadEndpoint readEndpoint(int fd, bool remote) {
+  sockaddr_storage peer{}; socklen_t size = sizeof peer;
+  char addr[INET6_ADDRSTRLEN]{}; ReadEndpoint endpoint;
+  const int result = remote ? ::getpeername(fd, reinterpret_cast<sockaddr*>(&peer), &size)
+                            : ::getsockname(fd, reinterpret_cast<sockaddr*>(&peer), &size);
+  if (result == 0) {
+    if (peer.ss_family == AF_INET) {
+      const auto* p = reinterpret_cast<const sockaddr_in*>(&peer);
+      if (::inet_ntop(AF_INET, &p->sin_addr, addr, sizeof addr)) endpoint.address = addr;
+      endpoint.port = ntohs(p->sin_port);
+    } else if (peer.ss_family == AF_INET6) {
+      const auto* p = reinterpret_cast<const sockaddr_in6*>(&peer);
+      if (::inet_ntop(AF_INET6, &p->sin6_addr, addr, sizeof addr)) endpoint.address = addr;
+      endpoint.port = ntohs(p->sin6_port);
+    }
+  }
+  return endpoint;
+}
+static std::string incompleteReadLine(int fd, const ReadFailure& f, long long elapsedMs) {
+  const auto peer = readEndpoint(fd, true), local = readEndpoint(fd, false);
+  return "http: incomplete read peer=" + peer.address + " peer_port=" + std::to_string(peer.port)
+    + " local=" + local.address + " local_port=" + std::to_string(local.port)
+    + " phase=" + f.phase + " reason=" + f.reason + " errno=" + std::to_string(f.socketErr)
+    + " header_bytes=" + std::to_string(f.headerBytes) + " body_bytes=" + std::to_string(f.bodyBytes)
+    + " elapsed_ms=" + std::to_string(elapsedMs);
+}
+
+static bool readRequest(int fd, HttpRequest& req, bool& tooLarge, ReadFailure* failure = nullptr) {
+  const auto fail = [&](const char* phase, const char* reason, int socketErr = 0) {
+    if (failure) { failure->phase = phase; failure->reason = reason; failure->socketErr = socketErr; }
+    return false;
+  };
   std::string data;
   char tmp[8192];
   size_t headerEnd = std::string::npos;
   while (headerEnd == std::string::npos) {
     ssize_t n = ::recv(fd, tmp, sizeof tmp, 0);
-    if (n <= 0) return false;
+    if (n <= 0) {
+      const int saved = n < 0 ? errno : 0;
+      return fail("headers", n == 0 ? "eof" : (saved == EAGAIN || saved == EWOULDBLOCK) ? "timeout" : "recv_error", saved);
+    }
     data.append(tmp, static_cast<size_t>(n));
-    if (data.size() > 1 << 20) return false; // 1 MiB header cap
+    if (failure) failure->headerBytes = data.size();
+    if (data.size() > 1 << 20) return fail("headers", "header_cap"); // unchanged 1 MiB cap
     headerEnd = data.find("\r\n\r\n");
   }
+  if (failure) { failure->headerBytes = headerEnd + 4; failure->bodyBytes = data.size() - headerEnd - 4; }
 
   // Request line
   size_t lineEnd = data.find("\r\n");
   std::string line = data.substr(0, lineEnd);
   size_t sp1 = line.find(' ');
   size_t sp2 = line.find(' ', sp1 + 1);
-  if (sp1 == std::string::npos || sp2 == std::string::npos) return false;
+  if (sp1 == std::string::npos || sp2 == std::string::npos) return fail("request_line", "malformed");
   req.method = line.substr(0, sp1);
   req.path = line.substr(sp1 + 1, sp2 - sp1 - 1);
   size_t q = req.path.find('?');
@@ -174,12 +228,17 @@ static bool readRequest(int fd, HttpRequest& req, bool& tooLarge) {
   // payloads reach the route's 413, while bombs (declared 100MB) are refused
   // here WITHOUT buffering — handleClient answers 413 instead of a silent
   // close so callers get a real 4xx.
-  if (contentLen > 8u << 20) { tooLarge = true; return false; }
+  if (contentLen > 8u << 20) { tooLarge = true; return fail("body", "body_cap"); }
   std::string body = data.substr(headerEnd + 4);
+  if (failure) { failure->headerBytes = headerEnd + 4; failure->bodyBytes = body.size(); }
   while (body.size() < contentLen) {
     ssize_t n = ::recv(fd, tmp, sizeof tmp, 0);
-    if (n <= 0) return false;
+    if (n <= 0) {
+      const int saved = n < 0 ? errno : 0;
+      return fail("body", n == 0 ? "eof" : (saved == EAGAIN || saved == EWOULDBLOCK) ? "timeout" : "recv_error", saved);
+    }
     body.append(tmp, static_cast<size_t>(n));
+    if (failure) failure->bodyBytes = body.size();
   }
   body.resize(contentLen);
   req.body = std::move(body);
@@ -247,7 +306,19 @@ void HttpServer::handleClient(int fd) {
   } timing(*this);
   HttpRequest req;
   bool tooLarge = false;
-  if (!readRequest(fd, req, tooLarge)) {
+  const bool diagnoseRead = readDiagnosticsEnabled();
+  ReadFailure failure;
+  if (!readRequest(fd, req, tooLarge, diagnoseRead ? &failure : nullptr)) {
+    if (diagnoseRead) {
+      static std::mutex diagnosticGate; static Clock::time_point lastDiagnostic;
+      const auto at = Clock::now(); bool report = false;
+      { std::lock_guard lock(diagnosticGate);
+        if (lastDiagnostic == Clock::time_point{} || at - lastDiagnostic >= std::chrono::seconds(1)) {
+          lastDiagnostic = at; report = true;
+        }
+      }
+      if (report) logError(incompleteReadLine(fd, failure, elapsedUs(timing.t0, at) / 1000));
+    }
     // Best-effort 413 for oversized Content-Length (body not drained).
     if (tooLarge) writeResponse(fd, 413, "{\"error\":\"payload too large\"}");
     ::close(fd);
