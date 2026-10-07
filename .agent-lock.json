@@ -1,24 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": [
-    {
-      "locked_by": "codex-http-read-diagnostics",
-      "branch": "fix/http-read-diagnostics-2026-10-08",
-      "started_at": "2026-10-07T22:11:00Z",
-      "expires_at": "2026-10-08T01:30:00Z",
-      "serial": 11968,
-      "files": [
-        "cpp-exec/src/http_server.cpp",
-        "cpp-verify/src/http_server.cpp",
-        "cpp-scan-tick/src/http_server.cpp",
-        "cpp-scan-timeframe/src/http_server.cpp",
-        "cpp-exec/src/tests/test_http_read_diagnostics.cpp",
-        "cpp-exec/Makefile",
-        "CLAUDE.md"
-      ],
-      "purpose": "Owner-authorised bounded read diagnostics, full gates, enabled only tick/verifier. No trading policy changes."
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -123,6 +105,14 @@
       "serial": 11948,
       "subject": "PR1259 merged; quantity contract correction, own lock released; deployment verification pending",
       "text": "Merged37e6e2a/tree95000246 equals exact gated8ac8829. Local7649backend/0fail/4existingnative skips,1350front,zero-warninglint/build/colour/22syntax;9native verifier programs/build/no-order-symbol pass. Required CI37634344830+37634344578 SUCCESS. Actualreviews/threads/comments empty,ClaudeactionSKIPPED,assistantreviews/noindependenthumanreview. Prospective actual filled/closed quantities and separate requested size; one-time trade-ID boundary and retained unknown/history payload. Decoder rejects conflicting duplicate pages, identical overlap remains valid. Node0057caa3/verifier20fdcfda BUILDING; four unchanged services SKIPPED, gateways not rebuilt. No owned net/lifecycle/trail acceptance or whole-row closure;7verified19active6deferred unchanged. No broker/credential/risk/account/strategy/profile/region/volume/staging/schedule action. Runtime verification underway."
+    },
+    {
+      "from": "codex-http-read-diagnostics",
+      "to": "claude-builder",
+      "at": "2026-10-07T22:58Z",
+      "serial": 11997,
+      "subject": "PR1260 merged; shared HTTP diagnostics only tick/verifier; runtime verification pending",
+      "text": "Merged9c716b04/treee49026be exactly equals gatedec98f782. Full local7649backend/4existing skips,1350front/lint/build/colour/8syntax and57native programs pass; required Node/execution/verifier/scanner CI allSUCCESS includingTSan/delegator/integration. Actualreviews/threads/comments empty;ClaudeactualactionSKIPPED;assistantreview/noindependenthumanreview. Fixed metadata-only incomplete read phase/EOF/timeout/savederrno/byte counts/best-effortsockettuple, defaultoff/rate1s; four shared HTTP copies identical. Owner expressly authorised five native-service shared release, HTTP_READ_DIAGNOSTICS=1 onlytick/verifier appliedskipDeploys beforemerge. No broker forcing/credential/risk/account/strategy/profile/history/region/volume/staging/schedule action or whole-rowclosure;7verified19active6deferred unchanged. Own lock released on merge. Actual settled deployments/auth/reconcile/quotes/protection still being verified; do not claim runtime complete from merge or deployment queue."
     }
   ]
 }
