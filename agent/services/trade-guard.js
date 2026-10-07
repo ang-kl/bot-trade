@@ -212,7 +212,13 @@ async function tradeGuardsPass(db, creds, deps = {}) {
             // every amend call for its stop/target intent.)
             ratchetOnly: true,
             expectedDirection: ['LONG', 'BUY'].includes(String(r.side || '').toUpperCase()) ? 1 : -1,
-            expectedSymbolId: symbolId,
+            // Codex P1 on #1248 (Claude · № 11,712 07-Oct): the identity symbol
+            // comes from THIS account's reconcile snapshot, never the shared
+            // symbol map (valid only for the account that built it; symbol ids
+            // differ per account), or the sidecar's identity check would refuse
+            // every break-even and trailing move on such an account. Absent
+            // from the snapshot → omitted; the direction check still applies.
+            expectedSymbolId: Number(bp?.tradeData?.symbolId) > 0 ? Number(bp.tradeData.symbolId) : undefined,
           }))
           // Claude · № 11,690 07-Oct: the broker's confirmed stop is what the row
           // records; `unchanged` (already at least as tight) is not a move.
