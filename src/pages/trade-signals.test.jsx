@@ -55,6 +55,8 @@ describe('Trade signal eligibility presentation', () => {
   it('withholds stale rows and counts when the viewed account differs', () => {
     const html = render(report([row('EURUSD')]), '202')
     expect(html).toContain('Signals — awaiting account data')
+    expect(html).not.toContain('Account 101')
+    expect(html).toContain('Account 202')
     expect(html).not.toContain('EURUSD')
     expect(html).not.toContain('1 candidate')
   })

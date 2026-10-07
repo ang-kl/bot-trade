@@ -408,7 +408,7 @@ export function TradeSignalsCard({ report, accountId = 'all' }) {
     strategy: sc => strategyLabel(sc.strategy) || '',
   })
   return (
-    <Card id="sec-signals" scope={report?.accountId}>
+    <Card id="sec-signals" scope={accountId}>
       <h3 className="t-h3">
             {available ? `Signals — ${candidates.length} ${candidates.length === 1 ? 'candidate' : 'candidates'} · ${blocked.length} blocked ${blocked.length === 1 ? 'scan' : 'scans'} · ${recorded.length} recorded ${recorded.length === 1 ? 'entry' : 'entries'}${flatCount ? ` · ${flatCount} scanned flat` : ''}` : sameAccount && report?.error ? 'Signals — unavailable' : 'Signals — awaiting account data'}
       </h3>
