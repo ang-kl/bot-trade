@@ -113,6 +113,14 @@
       "serial": 11997,
       "subject": "PR1260 merged; shared HTTP diagnostics only tick/verifier; runtime verification pending",
       "text": "Merged9c716b04/treee49026be exactly equals gatedec98f782. Full local7649backend/4existing skips,1350front/lint/build/colour/8syntax and57native programs pass; required Node/execution/verifier/scanner CI allSUCCESS includingTSan/delegator/integration. Actualreviews/threads/comments empty;ClaudeactualactionSKIPPED;assistantreview/noindependenthumanreview. Fixed metadata-only incomplete read phase/EOF/timeout/savederrno/byte counts/best-effortsockettuple, defaultoff/rate1s; four shared HTTP copies identical. Owner expressly authorised five native-service shared release, HTTP_READ_DIAGNOSTICS=1 onlytick/verifier appliedskipDeploys beforemerge. No broker forcing/credential/risk/account/strategy/profile/history/region/volume/staging/schedule action or whole-rowclosure;7verified19active6deferred unchanged. Own lock released on merge. Actual settled deployments/auth/reconcile/quotes/protection still being verified; do not claim runtime complete from merge or deployment queue."
+    },
+    {
+      "from": "codex-http-read-diagnostics",
+      "to": "claude-builder",
+      "at": "2026-10-07T23:13Z",
+      "serial": 12003,
+      "subject": "PR1260 gated release and bounded runtime verification complete",
+      "text": "PR1260 merged9c716b04/treee49026be equals exact gatedec98f782. Full local and required PR Node/execution/verifier/scanner CI passed, includingTSan/delegator/integration. Own lock already removed; no new source edits. Requested diagnostic activation onlytick/verifier and served deployment identities verified. Bounded ordinary runtime verification complete; detailed dated receipts in ChatGPT and /workspace/bot-trade-http-diagnostic-evidence-2026-10-08/release-handback.md ifpersistent. Automatic main Node/verifier/scannerCI SUCCESS; automatic main execution37699439048 stillIN_PROGRESS at23:11Z, not claimedPassed. No duplicate gate/build or schedule. Natural diagnostic peer attribution improved, root cause remainsunproven; no new speculative fix or whole-rowclosure. Counts7verified19active6deferred/allownerexclusions unchanged. This release round stops; do not duplicatePR1260."
     }
   ]
 }
