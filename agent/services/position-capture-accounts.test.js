@@ -1,3 +1,4 @@
+// Codex · №11,921 · 2026-10-07; codex-footprint: executed-volume-fixtures.
 // V3 V1 — every account's closes captured and verified, and a silent account
 // can no longer read healthy.
 //
@@ -69,9 +70,9 @@ function seedComplete(db, { acct, pid, closeMs, symbol = 'EURUSD', withDeal = tr
   db.prepare(`INSERT INTO monitored_positions (account_id, trade_id, symbol, side, entry_price, current_sl, source, status, broker_volume_units)
               VALUES (?, ?, ?, 'long', 1.1, 1.098, 'autopilot', 'closed', 1000000)`).run(acct, t.lastInsertRowid, symbol)
   if (withDeal) {
-    db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price,
+    db.prepare(`INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price,
                                           opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
-                VALUES (?, ?, ?, ?, 'BUY', 10000, 1.1, 1.105, ?, ?, 50, -1, -1, 48)`)
+                VALUES (1, ?, ?, ?, ?, 'BUY', 10000, 1.1, 1.105, ?, ?, 50, -1, -1, 48)`)
       .run(`d-${acct}-${pid}`, pid, acct, symbol, iso(openMs), iso(closeMs))
   }
   return Number(t.lastInsertRowid)
@@ -231,7 +232,7 @@ test('the deal pull names another account\'s deals from THAT account\'s symbol l
   setState(db, 'symbol_id_map', JSON.stringify({ GOLD: 5 }))
   setState(db, `symbol_id_map:${B}`, JSON.stringify({ builtAt: iso(Date.now()), map: { EURUSD: 5 } }))
   const deal = { dealId: 1, positionId: 700, symbolId: 5, volume: 100000, tradeSide: 2, executionPrice: 1.105, executionTimestamp: closeMs,
-    closePositionDetail: { entryPrice: 1.1, grossProfit: 5000, swap: -100, commission: -100, moneyDigits: 2 } }
+    closePositionDetail: { closedVolume: 10000, entryPrice: 1.1, grossProfit: 5000, swap: -100, commission: -100, moneyDigits: 2 } }
   await refreshDealsFor(db, { accountId: B, positionId: '700', getDeals: async () => ({ deal: [deal], hasMore: false }) })
   assert.equal(db.prepare(`SELECT symbol FROM broker_deals WHERE deal_id = '1'`).get().symbol, 'EURUSD')
 })
@@ -686,13 +687,13 @@ test('W10: a capture\'s deal refresh never erases the lots or the name the impor
   const db = fixture()
   const closeMs = Date.parse('2026-09-20T12:00:00Z')
   seedComplete(db, { acct: L, pid: '710', closeMs, withDeal: false })
-  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price,
+  db.prepare(`INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price,
                                         opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
-              VALUES ('9710', '710', ?, 'EURUSD', 'BUY', 0.1, 1.1, 1.105, ?, ?, 50, -1, -1, 48)`)
+              VALUES (1, '9710', '710', ?, 'EURUSD', 'BUY', 0.1, 1.1, 1.105, ?, ?, 50, -1, -1, 48)`)
     .run(L, iso(closeMs - 4 * 3600_000), iso(closeMs))
   // L has no symbol list of its own: the capture's read names the deal '#5' and carries no lots.
-  const deal = { dealId: 9710, positionId: 710, symbolId: 5, volume: 10000, tradeSide: 2, executionPrice: 1.105, executionTimestamp: closeMs,
-    closePositionDetail: { entryPrice: 1.1, grossProfit: 5000, swap: -100, commission: -100, moneyDigits: 2 } }
+  const deal = { dealId: 9710, positionId: 710, symbolId: 5, volume: 10000, filledVolume: 10000, dealStatus: 2, tradeSide: 2, executionPrice: 1.105, executionTimestamp: closeMs,
+    closePositionDetail: { closedVolume: 10000, entryPrice: 1.1, grossProfit: 5000, swap: -100, commission: -100, moneyDigits: 2 } }
   await refreshDealsFor(db, { accountId: L, positionId: '710', getDeals: async () => ({ deal: [deal], hasMore: false }) })
   const row = () => ({ ...db.prepare(`SELECT symbol, lots, net_pnl FROM broker_deals WHERE deal_id = '9710'`).get() })
   assert.equal(row().lots, 0.1, 'the broker\'s lots are kept (W10) — before, the capture wrote NULL over them')

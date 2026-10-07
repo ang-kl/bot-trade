@@ -55,7 +55,10 @@ namespace verify {
  *       divided by 100 for every symbol and disputed NATGAS (lotSize
  *       1,000,000) and XPTUSD on the unit alone.
  */
-constexpr int kVerdictContractVersion = 3;
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+// 4: actual filled/closed volumes and one validated fully closed lifecycle;
+// missing quantity/cost evidence never borrows sent size or a default zero.
+constexpr int kVerdictContractVersion = 4;
 
 /**
  * What the keeper says about one closed position. Every field is OPTIONAL in

@@ -62,6 +62,64 @@ double asF64(const jsn::Value& v) {
   return 0;
 }
 
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+// Do not truncate fractions or accept stoll's numeric-prefix parsing. Numeric
+// JSON is a double, so only its exact safe-integer range is authoritative.
+std::optional<long long> strictInteger(const jsn::Value& v) {
+  if (v.isNumber()) {
+    const double n = v.asNumber();
+    if (std::isfinite(n) && std::floor(n) == n && std::fabs(n) <= 9007199254740991.0) {
+      return static_cast<long long>(n);
+    }
+  } else if (v.isString()) {
+    const auto& text = v.asString();
+    size_t first = !text.empty() && text[0] == '-' ? 1 : 0;
+    if (first == text.size() || !std::all_of(text.begin() + first, text.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+      return std::nullopt;
+    }
+    try {
+      const auto n = std::stoll(text);
+      if (n >= -9007199254740991LL && n <= 9007199254740991LL) return n;
+    } catch (...) { }
+  }
+  return std::nullopt;
+}
+
+std::optional<int> actualDealStatus(const jsn::Value& v) {
+  if (auto n = strictInteger(v); n && *n >= 1 && *n <= 7) return static_cast<int>(*n);
+  if (v.isString()) {
+    const auto& text = v.asString();
+    if (text == "FILLED") return 2;
+    if (text == "PARTIALLY_FILLED") return 3;
+    if (text == "REJECTED") return 4;
+    if (text == "INTERNALLY_REJECTED") return 5;
+    if (text == "ERROR") return 6;
+    if (text == "MISSED") return 7;
+  }
+  return std::nullopt;
+}
+
+int actualTradeSide(const jsn::Value& v) {
+  if (auto n = strictInteger(v); n && (*n == 1 || *n == 2)) return static_cast<int>(*n);
+  if (v.isString()) return v.asString() == "BUY" ? 1 : v.asString() == "SELL" ? 2 : 0;
+  return 0;
+}
+
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+// Inclusive pages may repeat an identical deal. A changed same-ID receipt
+// may be a legitimate live transition, but this walk is then inconsistent;
+// choosing the first copy would certify a quantity the later page contradicts.
+bool sameDealReceipt(const Deal& a, const Deal& b) {
+  return a.positionId == b.positionId && a.symbolId == b.symbolId
+    && a.volume == b.volume && a.filledVolume == b.filledVolume
+    && a.closedVolume == b.closedVolume && a.dealStatus == b.dealStatus
+    && a.tradeSide == b.tradeSide && a.executionPrice == b.executionPrice
+    && a.executionTimestamp == b.executionTimestamp && a.hasClose == b.hasClose
+    && a.commissionKnown == b.commissionKnown && a.commission == b.commission
+    && a.closingMoneyKnown == b.closingMoneyKnown
+    && a.grossProfit == b.grossProfit && a.swap == b.swap;
+}
+
 // 02-10-2026 stop-loss policy read-back: ProtoOAOrderTriggerMethod arrives as a
 // number 1..4 (or an enum name). Absent or malformed is null, never an error
 // and never "false": ProtoOAPosition.trailingStopLoss has had a read-back bug
@@ -207,7 +265,7 @@ bool VerifySession::connect(long long accountId) {
       const jsn::Value& tr = res->get("trader");
       if (tr.isObject()) {
         const jsn::Value& md = tr.get("moneyDigits");
-        if (md.isNumber()) moneyDigits_[accountId] = static_cast<int>(md.asNumber(2));
+        if (auto n = strictInteger(md); n && *n >= 0 && *n <= 10) moneyDigits_[accountId] = static_cast<int>(*n);
       }
     }
     if (moneyDigits_.find(accountId) == moneyDigits_.end()) {
@@ -294,9 +352,10 @@ DealFetch VerifySession::deals(long long accountId, long long fromMs, long long 
   // timestamps, and `hasMore` says another page exists. Advancing the cursor
   // to lastExecutionTimestamp + 1 would SKIP every deal sharing that
   // millisecond with the last one on the page — so the cursor lands ON that
-  // timestamp and the dealId set drops the overlap. Skipping is invisible;
-  // duplicates are not.
-  std::set<long long> seen;
+  // timestamp and the dealId map drops IDENTICAL overlap. Contradicting
+  // duplicate receipts make the entire walk incomplete instead of choosing
+  // whichever version arrived first.
+  std::map<long long, size_t> seen;
   long long cursor = fromMs;
 
   for (int page = 0; page < kMaxPages; ++page) {
@@ -322,7 +381,9 @@ DealFetch VerifySession::deals(long long accountId, long long fromMs, long long 
       deal.positionId = asI64(d.get("positionId"));
       deal.symbolId = asI64(d.get("symbolId"));
       deal.volume = asI64(d.get("volume"));
-      deal.tradeSide = static_cast<int>(asI64(d.get("tradeSide")));
+      deal.filledVolume = strictInteger(d.get("filledVolume"));
+      deal.dealStatus = actualDealStatus(d.get("dealStatus"));
+      deal.tradeSide = actualTradeSide(d.get("tradeSide"));
       deal.executionPrice = asF64(d.get("executionPrice"));
       deal.executionTimestamp = asI64(d.get("executionTimestamp"));
       // COMMISSION IS A TOP-LEVEL DEAL FIELD and is charged on the opening
@@ -330,18 +391,31 @@ DealFetch VerifySession::deals(long long accountId, long long fromMs, long long 
       // closePositionDetail — which also carries a commission — would drop
       // the entry side's charge and make every verified net P&L differ from
       // the broker's by exactly one leg's commission.
-      deal.commission = asF64(d.get("commission"));
+      const auto commission = strictInteger(d.get("commission"));
+      deal.commissionKnown = commission.has_value();
+      if (commission) deal.commission = static_cast<double>(*commission);
 
       const auto& close = d.get("closePositionDetail");
+      deal.hasClose = !close.isNull();
       if (close.isObject()) {
-        deal.hasClose = true;
-        deal.grossProfit = asF64(close.get("grossProfit"));
-        deal.swap = asF64(close.get("swap"));
+        deal.closedVolume = strictInteger(close.get("closedVolume"));
+        const auto gross = strictInteger(close.get("grossProfit"));
+        const auto swap = strictInteger(close.get("swap"));
+        deal.closingMoneyKnown = gross.has_value() && swap.has_value();
+        if (gross) deal.grossProfit = static_cast<double>(*gross);
+        if (swap) deal.swap = static_cast<double>(*swap);
         deal.balance = asF64(close.get("balance"));
       }
 
       maxTs = std::max(maxTs, deal.executionTimestamp);
-      if (seen.insert(deal.dealId).second) {
+      const auto prior = seen.find(deal.dealId);
+      if (prior != seen.end()) {
+        if (!sameDealReceipt(out.deals[prior->second], deal)) {
+          out.error = "conflicting duplicate deal " + std::to_string(deal.dealId);
+          return out; // ok/complete remain false; no money or volume verdict
+        }
+      } else {
+        seen.emplace(deal.dealId, out.deals.size());
         out.deals.push_back(deal);
         ++added;
       }

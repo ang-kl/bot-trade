@@ -40,7 +40,9 @@
  *       lotSize, sent with the request from the broker's declaration in the
  *       lot-size registry; without one the volume is uncompared.
  */
-export const VERDICT_CONTRACT_VERSION = 3
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+// 4 — actual filled/closed quantities and one complete supported lifecycle.
+export const VERDICT_CONTRACT_VERSION = 4
 
 /**
  * Is a stored verdict older than the rules now in force?

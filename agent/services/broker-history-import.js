@@ -34,6 +34,7 @@ import { brokerAmount, brokerVersion } from './deal-balances.js'
 import { normPosId } from '../lib/pos-id.js'
 import { FALSE_CLOSE_TOLERANCE_MS } from '../lib/position-deal-history.js'
 import { captureCloseDeals } from './broker-exit-attribution.js'
+import { closingExecutedQuantity, positiveBrokerQuantity, prospectiveVolumeTrade, EXECUTED_VOLUME_CONTRACT } from '../lib/deal-execution-volume.js'
 
 // Ledger timestamps come in both 'YYYY-MM-DD HH:MM:SS' (UTC) and ISO forms.
 const ledgerMs = v => {
@@ -121,7 +122,12 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
       account_id: accountId != null ? String(accountId) : null,
       symbol: meta.symbolName ? String(meta.symbolName).toUpperCase() : (d.symbolId != null ? `#${d.symbolId}` : null),
       side,
-      lots: meta.lotSize ? Math.round((d.volume / meta.lotSize) * 100) / 100 : null,
+      // Codex · №11,919 · 2026-10-07; codex-footprint: executed-volume-contract.
+      lots: closingExecutedQuantity(d) != null && positiveBrokerQuantity(meta.lotSize) != null
+        ? closingExecutedQuantity(d) / Number(meta.lotSize) : null,
+      requested_lots: positiveBrokerQuantity(d.volume) != null && positiveBrokerQuantity(meta.lotSize) != null
+        ? Number(d.volume) / Number(meta.lotSize) : null,
+      volume_contract: closingExecutedQuantity(d) != null ? EXECUTED_VOLUME_CONTRACT : 0,
       entry_price: cpd.entryPrice ?? null,
       close_price: d.executionPrice ?? null,
       opened_at: pid ? iso(openMsByPosition.get(pid) ?? null) : null,
@@ -219,11 +225,11 @@ export function persistDeals(db, rows) {
       OR (broker_deals.balance_source = 'broker_api' AND excluded.balance_source IS NOT 'broker_api')))`
   const up = db.prepare(`
     INSERT INTO broker_deals (
-      deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price,
+      deal_id, position_id, account_id, symbol, side, lots, requested_lots, volume_contract, entry_price, close_price,
       opened_at, closed_at, gross_pnl, swap, commission, net_pnl, matched_trade_id,
       balance, balance_version, balance_currency, balance_source
     ) VALUES (
-      @deal_id, @position_id, @account_id, @symbol, @side, @lots, @entry_price, @close_price,
+      @deal_id, @position_id, @account_id, @symbol, @side, @lots, @requested_lots, @volume_contract, @entry_price, @close_price,
       @opened_at, @closed_at, @gross_pnl, @swap, @commission, @net_pnl, @matched_trade_id,
       @balance, @balance_version, @balance_currency, @balance_source
     )
@@ -239,6 +245,9 @@ export function persistDeals(db, rows) {
                     THEN broker_deals.symbol ELSE excluded.symbol END,
       side = COALESCE(excluded.side, broker_deals.side),
       lots = COALESCE(excluded.lots, broker_deals.lots),
+      requested_lots = COALESCE(broker_deals.requested_lots, excluded.requested_lots),
+      volume_contract = CASE WHEN broker_deals.volume_contract IS NULL THEN NULL
+                            ELSE COALESCE(excluded.volume_contract, broker_deals.volume_contract) END,
       entry_price = COALESCE(excluded.entry_price, broker_deals.entry_price),
       close_price = COALESCE(excluded.close_price, broker_deals.close_price),
       -- Never overwrite a known open time with a NULL from a narrower window.
@@ -270,7 +279,15 @@ export function persistDeals(db, rows) {
     // that appears twice in one batch keeps what its first copy wrote.
     const stored = storedDealFields(db, rows)
     for (const r of rows) {
-      const merged = keepKnownDealFields(r, stored.get(String(r.deal_id)))
+      const prior = stored.get(String(r.deal_id))
+      // Codex · №11,928 · 2026-10-07; codex-footprint: executed-volume-contract.
+      // Broker-API receipts reject an ownership conflict; retained statement
+      // replays keep their existing unmatched/link-clearing semantics.
+      if (r.volume_contract != null && prior && ((prior.account_id != null && r.account_id != null && String(prior.account_id) !== String(r.account_id))
+        || (prior.position_id != null && r.position_id != null && normPosId(prior.position_id) !== normPosId(r.position_id)))) {
+        throw new Error('broker deal identity conflicts with retained receipt')
+      }
+      const merged = { requested_lots: null, volume_contract: null, ...keepKnownDealFields(r, stored.get(String(r.deal_id))) }
       up.run({ ...merged, matched_trade_id: localIdFor(r) })
       stored.set(String(r.deal_id), merged)
     }
@@ -413,7 +430,7 @@ export function reconcileTradePricesToBroker(db) {
   let deals = []
   try {
     deals = db.prepare(
-      `SELECT matched_trade_id AS tid, lots, entry_price, close_price, closed_at
+      `SELECT matched_trade_id AS tid, lots, volume_contract, entry_price, close_price, closed_at
          FROM broker_deals
         WHERE matched_trade_id IS NOT NULL`,
     ).all()
@@ -448,7 +465,7 @@ export function reconcileTradePricesToBroker(db) {
   // executionTimestamp and its lots are the truth; hold_duration_ms follows
   // the corrected close. Closed rows only, like the prices.
   const writeCloseMs = db.prepare(`UPDATE trades SET closed_at_ms = ?, hold_duration_ms = ? WHERE id = ?`)
-  const writeVolume = db.prepare(`UPDATE trades SET volume = ? WHERE id = ?`)
+  const writeVolume = db.prepare(`UPDATE trades SET requested_volume = COALESCE(requested_volume, volume), volume = ? WHERE id = ?`)
   const openedMsOf = (t) => {
     const raw = t.opened_at
     if (!raw) return null
@@ -520,6 +537,8 @@ export function reconcileTradePricesToBroker(db) {
       const t = read.get(tid)
       if (!t) continue
       if (t.status !== 'closed' && t.status !== 'rejected') continue // open rows: see header
+      // No newly arriving old deal can bypass the retained-trade boundary.
+      if (!prospectiveVolumeTrade(db, tid) || group.some(d => d.volume_contract !== EXECUTED_VOLUME_CONTRACT)) continue
       out.examined++
       let d = group[0]
       if (group.length > 1) {
@@ -638,6 +657,12 @@ const placeholderSymbol = (s) => s == null || String(s).trim() === '' || /^#/.te
 export function keepKnownDealFields(row, stored) {
   if (!stored) return row
   const out = { ...row }
+  // The new decoder may add receipts; it cannot recalculate retained history.
+  if (row.volume_contract != null && stored.volume_contract == null) {
+    for (const k of KEEP_KNOWN_DEAL_FIELDS) out[k] = stored[k]
+    out.volume_contract = null
+    return out
+  }
   for (const k of KEEP_KNOWN_DEAL_FIELDS) if (out[k] == null && stored[k] != null) out[k] = stored[k]
   if (placeholderSymbol(out.symbol) && !placeholderSymbol(stored.symbol)) out.symbol = stored.symbol
   return out
@@ -649,7 +674,7 @@ function storedDealFields(db, rows) {
   for (let i = 0; i < ids.length; i += 500) {
     const slice = ids.slice(i, i + 500)
     for (const s of db.prepare(
-      `SELECT deal_id, symbol, ${KEEP_KNOWN_DEAL_FIELDS.join(', ')} FROM broker_deals WHERE deal_id IN (${slice.map(() => '?').join(',')})`,
+      `SELECT deal_id, position_id, account_id, symbol, volume_contract, ${KEEP_KNOWN_DEAL_FIELDS.join(', ')} FROM broker_deals WHERE deal_id IN (${slice.map(() => '?').join(',')})`,
     ).all(...slice)) out.set(String(s.deal_id), s)
   }
   return out

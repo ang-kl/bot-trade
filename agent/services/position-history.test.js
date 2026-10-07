@@ -1,3 +1,5 @@
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-fixtures.
+// Positive capture/repair fixtures explicitly represent validated executed lots.
 // agent/services/position-history.test.js
 //
 // The rule under test throughout: COMPLETENESS IS A GATE. A record that is
@@ -64,9 +66,9 @@ function seedComplete(db, over = {}) {
   `).run(tid, ACCT)
 
   db.prepare(`
-    INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price,
+    INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, entry_price,
                               close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
-    VALUES ('d1', ?, ?, 'EURUSD', 'BUY', 10000, 1.1000, 1.1050, ?, ?, 50, -1, -1, 48)
+    VALUES (1, 'd1', ?, ?, 'EURUSD', 'BUY', 10000, 1.1000, 1.1050, ?, ?, 50, -1, -1, 48)
   `).run(PID, ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
 
   for (const [kind, from, to] of over.events || [['sl_moved', 1.0980, 1.1000], ['scale_out', 10000, 5000]]) {
@@ -412,8 +414,8 @@ test('keeper truth: a position closed in two parts records the SUM of the fills,
   seedComplete(db)
   db.prepare(`UPDATE broker_deals SET lots = 6000, close_price = 1.1040, gross_pnl = 24, net_pnl = 23, closed_at = ? WHERE deal_id = 'd1'`)
     .run(new Date(CLOSE_MS - 600_000).toISOString())
-  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
-              VALUES ('d2', ?, ?, 'EURUSD', 'BUY', 4000, 1.1000, 1.1065, ?, ?, 26, -1, -1, 24)`)
+  db.prepare(`INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
+              VALUES (1, 'd2', ?, ?, 'EURUSD', 'BUY', 4000, 1.1000, 1.1065, ?, ?, 26, -1, -1, 24)`)
     .run(PID, ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
   const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
   assert.equal(record.volume, 10000, 'lots summed across the parts')
@@ -425,8 +427,8 @@ test('keeper truth: a position closed in two parts records the SUM of the fills,
 test('keeper truth: a part with no lots makes the group\'s lots ABSENT, never a partial sum', () => {
   const db = fresh()
   seedComplete(db)
-  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, net_pnl)
-              VALUES ('d2', ?, ?, 'EURUSD', 'BUY', NULL, 1.1000, 1.1065, ?, ?, 24)`)
+  db.prepare(`INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, opened_at, closed_at, net_pnl)
+              VALUES (1, 'd2', ?, ?, 'EURUSD', 'BUY', NULL, 1.1000, 1.1065, ?, ?, 24)`)
     .run(PID, ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
   db.prepare(`UPDATE trades SET volume = 12.57 WHERE ctrader_position_id = ?`).run(PID)
   const { record, missing } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })

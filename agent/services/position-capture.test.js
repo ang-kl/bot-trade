@@ -1,3 +1,5 @@
+// Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-fixtures.
+// Positive capture/repair fixtures explicitly represent validated executed lots.
 // agent/services/position-capture.test.js — the close-triggered capture.
 //
 // The cases that matter are the ones where a plausible implementation would
@@ -39,9 +41,9 @@ function seedComplete(db) {
     VALUES (?, ?, 'EURUSD','BUY','vwap_trend',1.1,1.098,0.002)
   `).run(t.lastInsertRowid, ACCT)
   db.prepare(`
-    INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price,
+    INSERT INTO broker_deals (volume_contract, deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price,
                               opened_at, closed_at, gross_pnl, swap, commission, net_pnl)
-    VALUES ('d1', ?, ?, 'EURUSD','BUY',10000,1.1,1.105,?,?,50,-1,-1,48)
+    VALUES (1, 'd1', ?, ?, 'EURUSD','BUY',10000,1.1,1.105,?,?,50,-1,-1,48)
   `).run(PID, ACCT, new Date(OPEN_MS).toISOString(), new Date(CLOSE_MS).toISOString())
   return t.lastInsertRowid
 }

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <set>
 #include <sstream>
 
 #include "json.hpp"
@@ -80,32 +82,85 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
     return v;
   }
 
-  // In cTrader an OPENING deal carries no closePositionDetail and a CLOSING
-  // one does. That is the only signal needed here, and it is the broker's
-  // own: nothing is inferred from our side of the trade.
+  // Codex · №11,920 · 2026-10-07; codex-footprint: executed-volume-contract.
+  // Prove ONE closed lifecycle before publishing totals or findings. Sent
+  // volume is not a fill; a mixed reversal closes one leg and opens another.
+  std::sort(mine.begin(), mine.end(), [](const Deal* a, const Deal* b) {
+    return a->executionTimestamp != b->executionTimestamp
+      ? a->executionTimestamp < b->executionTimestamp : a->dealId < b->dealId;
+  });
   long long openVol = 0, closeVol = 0;
+  long long symbol = 0;
+  int side = 0;
+  bool fullyClosed = false;
+  std::set<long long> ids;
+  auto unsupported = [&](const std::string& reason) {
+    v.state = State::Unverified;
+    v.reason = reason;
+    return v;
+  };
+  for (const Deal* d : mine) {
+    if (d->dealId <= 0 || !ids.insert(d->dealId).second || d->symbolId <= 0
+      || (d->tradeSide != 1 && d->tradeSide != 2) || d->executionTimestamp < 0
+      || !std::isfinite(d->executionPrice) || d->executionPrice <= 0
+      || !d->dealStatus || (*d->dealStatus != 2 && *d->dealStatus != 3)) {
+      return unsupported("position deal identity, execution status or price unsupported");
+    }
+    if (fullyClosed) return unsupported("deals after the lifecycle closed");
+    if (!d->filledVolume || *d->filledVolume <= 0 || *d->filledVolume > 9007199254740991LL) {
+      return unsupported("actual filled volume unknown or outside exact numeric range");
+    }
+    if (d->hasClose) {
+      v.sawClose = true; // observed closing detail, even if its opening is outside the window
+      if (!d->closedVolume || *d->closedVolume <= 0 || *d->closedVolume != *d->filledVolume) {
+        return unsupported("closing actual volume unsupported (mixed reversal or missing fill)");
+      }
+      if (!v.sawOpen) return unsupported("the opening deal is outside the requested window — widen it");
+      if (d->symbolId != symbol || d->tradeSide == side) return unsupported("closing symbol or side contradicts opening");
+      if (*d->closedVolume > openVol - closeVol) return unsupported("closing volume exceeds retained opening volume");
+      closeVol += *d->closedVolume;
+      fullyClosed = closeVol == openVol;
+    } else {
+      if (v.sawOpen && (d->symbolId != symbol || d->tradeSide != side)) {
+        return unsupported("opening symbol or side changes within the lifecycle");
+      }
+      if (*d->filledVolume > 9007199254740991LL - openVol) {
+        return unsupported("actual position volume overflow");
+      }
+      symbol = d->symbolId; side = d->tradeSide;
+      v.sawOpen = true;
+      openVol += *d->filledVolume;
+    }
+  }
+  if (!v.sawClose || closeVol != openVol) {
+    return unsupported("the position is still open at the broker (actual opened volume "
+      + std::to_string(openVol) + ", closed volume " + std::to_string(closeVol) + ")");
+  }
+
   double openNotional = 0, closeNotional = 0;
   double gross = 0, swap = 0, commission = 0;
-  long long openedAt = 0, closedAt = 0;
+  long long openedAt = std::numeric_limits<long long>::max(), closedAt = 0;
+  bool moneyKnown = true;
 
   for (const Deal* d : mine) {
+    moneyKnown = moneyKnown && d->commissionKnown && std::isfinite(d->commission);
     commission += d->commission;
     if (d->hasClose) {
-      v.sawClose = true;
-      closeVol += d->volume;
-      closeNotional += d->executionPrice * static_cast<double>(d->volume);
+      moneyKnown = moneyKnown && d->closingMoneyKnown && std::isfinite(d->grossProfit) && std::isfinite(d->swap);
+      closeNotional += d->executionPrice * static_cast<double>(*d->closedVolume);
       gross += d->grossProfit;
       swap += d->swap;
       closedAt = std::max(closedAt, d->executionTimestamp);
     } else {
-      if (!v.sawOpen || d->executionTimestamp < openedAt) openedAt = d->executionTimestamp;
-      v.sawOpen = true;
-      openVol += d->volume;
-      openNotional += d->executionPrice * static_cast<double>(d->volume);
-      v.brokerSymbolId = d->symbolId;
-      v.brokerTradeSide = d->tradeSide;
+      openedAt = std::min(openedAt, d->executionTimestamp);
+      openNotional += d->executionPrice * static_cast<double>(*d->filledVolume);
     }
   }
+  if (!std::isfinite(openNotional) || !std::isfinite(closeNotional)) return unsupported("position price weighting overflow");
+  moneyKnown = moneyKnown && std::isfinite(gross + swap + commission);
+  const bool validMoneyScale = fetch.moneyDigits && *fetch.moneyDigits >= 0 && *fetch.moneyDigits <= 10;
+  v.brokerSymbolId = symbol;
+  v.brokerTradeSide = side;
 
   if (v.sawOpen && openVol > 0) {
     v.brokerEntryPrice = openNotional / static_cast<double>(openVol);
@@ -113,7 +168,7 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
     // through the symbol's own lotSize (contract 3). No lotSize, no lots:
     // a volume scaled by a guessed lot is the contract-2 defect again.
     v.brokerVolumeUnits = static_cast<double>(openVol) / kVolumeCentiUnits;
-    if (rec.lotSize && *rec.lotSize > 0) {
+    if (rec.lotSize && std::isfinite(*rec.lotSize) && *rec.lotSize > 0) {
       v.brokerVolume = static_cast<double>(openVol) / *rec.lotSize;
     }
     v.brokerOpenedAtMs = openedAt;
@@ -130,22 +185,9 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
     // the keeper's dollars disputed every record by exactly that factor.
     // When the scale could not be read, the sum is NOT converted at a guessed
     // rate — net_pnl is left out of the comparison and named in `uncompared`.
-    if (fetch.moneyDigits) {
+    if (validMoneyScale && moneyKnown) {
       v.brokerNetPnl = (gross + swap + commission) / std::pow(10.0, *fetch.moneyDigits);
     }
-  }
-
-  if (!v.sawClose) {
-    v.state = State::Unverified;
-    v.reason = "the position is still open at the broker (" +
-               std::to_string(v.dealCount) + " deal(s), none closing)";
-    return v;
-  }
-  if (!v.sawOpen) {
-    // Real, and not a dispute: the opening deal is older than the window.
-    v.state = State::Unverified;
-    v.reason = "the opening deal is outside the requested window — widen it";
-    return v;
   }
 
   compare(v.disputes, "symbol_id", rec.symbolId, v.brokerSymbolId, 0);
@@ -157,7 +199,7 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
   }
   compare(v.disputes, "entry_price", rec.entryPrice, v.brokerEntryPrice, tol.price);
   compare(v.disputes, "exit_price", rec.exitPrice, v.brokerExitPrice, tol.price);
-  if (fetch.moneyDigits) {
+  if (v.brokerNetPnl) {
     compare(v.disputes, "net_pnl", rec.netPnl, v.brokerNetPnl, tol.money);
   } else {
     v.uncompared.push_back("net_pnl");
@@ -177,7 +219,7 @@ Verdict judge(const KeeperRecord& rec, const DealFetch& fetch, Tolerance tol) {
         if (i) v.reason += ", ";
         v.reason += v.uncompared[i];
       }
-      v.reason += " (the broker's money scale could not be read)";
+      v.reason += " (broker money scale/cost evidence or lot size unavailable)";
       return v;
     }
     v.state = State::Verified;

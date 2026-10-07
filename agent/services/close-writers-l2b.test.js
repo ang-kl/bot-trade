@@ -1,3 +1,5 @@
+// Codex · №11,928 · 2026-10-07; codex-footprint: executed-volume-contract.
+// Positive API fixtures explicitly carry actual fill/close amounts and status.
 // node --test agent/services/close-writers-l2b.test.js
 //
 // V3 L2b — the close-side writer fixes of the lifecycle spec (§7): W10, W12,
@@ -32,8 +34,8 @@ const HOUR = 3_600_000
 
 function apiClosingDeal({ dealId, positionId, symbolId = 1, volume = 15_000_000, ms = NOW - HOUR, entry = 1.1, exit = 1.12, gross = 200, swap = -5, commission = -3 }) {
   return {
-    dealId, positionId, symbolId, tradeSide: 2, volume, executionTimestamp: ms, executionPrice: exit,
-    closePositionDetail: { entryPrice: entry, grossProfit: gross, swap, commission, moneyDigits: 2 },
+    dealId, positionId, symbolId, tradeSide: 2, volume, filledVolume: volume, dealStatus: 2, executionTimestamp: ms, executionPrice: exit,
+    closePositionDetail: { closedVolume: volume, entryPrice: entry, grossProfit: gross, swap, commission, moneyDigits: 2 },
   }
 }
 const NAMES_ONLY = { 1: { symbolName: 'EURUSD' } }  // what pnl-backfill / position-capture hand shapeDeals
@@ -68,7 +70,7 @@ test('W10: an API read with no lot size no longer blanks the statement\'s lots',
   persistDeals(db, shapeDeals([apiClosingDeal({ dealId: 316000001, positionId: 900 })], NAMES_ONLY, '47790949'))
   const row = db.prepare("SELECT lots, gross_pnl, symbol FROM broker_deals WHERE deal_id = '316000001'").get()
   assert.equal(row.lots, 1.5)
-  assert.equal(row.gross_pnl, 2, 'and the API\'s gross fills the statement\'s gap')
+  assert.equal(row.gross_pnl, null, 'the pre-contract statement receipt retains its dated unknown gross; an API reread cannot rewrite it')
   assert.equal(row.symbol, 'EURUSD')
 })
 

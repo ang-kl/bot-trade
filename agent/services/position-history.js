@@ -43,6 +43,7 @@ import {
   RECORD_CONTRACTS, PLAN_FIELDS, BROKER_FIELDS, UNPRICEABLE_VERDICTS, GOAL_SEMANTICS, planContractClass, directionReasonContractClass, utcMs,
 } from '../lib/record-contracts.js'
 import { EVIDENCE_RULES } from './position-lifecycle-evidence.js'
+import { prospectiveVolumeTrade } from '../lib/deal-execution-volume.js'
 
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null
@@ -216,9 +217,9 @@ export function buildPositionRecord(db, { accountId, positionId }) {
     try {
       const g = db.prepare(`
         SELECT COUNT(*) AS deals, MAX(symbol) AS symbol, MAX(side) AS side,
-               CASE WHEN COUNT(*) = COUNT(lots) THEN SUM(lots) END AS lots,
+               CASE WHEN COUNT(*) = COUNT(CASE WHEN volume_contract = 1 THEN lots END) THEN SUM(lots) END AS lots,
                MAX(entry_price) AS entry_price,
-               CASE WHEN COUNT(*) = COUNT(lots) AND COUNT(*) = COUNT(close_price) AND SUM(lots) > 0
+               CASE WHEN COUNT(*) = COUNT(CASE WHEN volume_contract = 1 THEN lots END) AND COUNT(*) = COUNT(close_price) AND SUM(lots) > 0
                     THEN SUM(close_price * lots) / SUM(lots)
                     WHEN COUNT(*) = 1 THEN MAX(close_price) END AS close_price,
                MIN(opened_at) AS opened_at, MAX(closed_at) AS closed_at,
@@ -262,10 +263,13 @@ export function buildPositionRecord(db, { accountId, positionId }) {
   // read, `volume` is absent, the record goes to the refused stream naming
   // it, and the capture queue re-asks once the deals arrive. The request is
   // kept beside it as `requested_volume` — a plan field, never compared.
-  const requestedVolume = num(trade?.volume)
-  const volume = num(deal?.lots) ?? mpLots ?? null
+  const requestedVolume = num(trade?.requested_volume) ?? num(trade?.volume)
+  // Codex · №11,919 · 2026-10-07; codex-footprint: executed-volume-contract.
+  // A late position snapshot can be the remaining partial, not the whole
+  // holding. Where closing deals exist, no snapshot may fill their volume gap.
+  const volume = num(deal?.lots) ?? (deal ? null : mpLots) ?? null
   sources.volume = num(deal?.lots) != null ? 'broker_deals'
-    : mpLots != null ? 'monitored_positions.broker_volume_units'
+    : !deal && mpLots != null ? 'monitored_positions.broker_volume_units'
       : requestedVolume != null ? `none — trades.volume ${requestedVolume} is the requested size, not the fill` : null
 
   const mgmt = managementFor(db, { accountId: acct, positionId: pid, tradeId: trade?.id ?? null })
@@ -603,6 +607,14 @@ export function capturePosition(db, { accountId, positionId }) {
   const acct = record.account_id
   const pid = record.ctrader_position_id
   if (acct == null || pid == null) return { ok: false, reason: 'no_identity', missing }
+  const retained = db.prepare('SELECT * FROM position_history WHERE account_id = ? AND ctrader_position_id = ?').get(acct, pid)
+  // A new read can refuse legacy quantities, but cannot delete or recalculate
+  // a retained historical record. Its dated verifier_version is preserved.
+  if (retained && !prospectiveVolumeTrade(db, retained.trade_id)) {
+    // A queued independent re-verification can still compare this frozen
+    // record under contract4; success here is capture reuse, not acceptance.
+    return { ok: true, retained: true, missing, stream: 'history', record: retained }
+  }
 
   if (missing.length) {
     db.prepare(`

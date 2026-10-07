@@ -1567,6 +1567,19 @@ export function initDB(dbPath) {
   for (const [name, type] of [['balance','REAL'], ['balance_version','INTEGER'], ['balance_currency','TEXT'], ['balance_source','TEXT']]) {
     if (!dealBalanceCols.has(name)) db.exec(`ALTER TABLE broker_deals ADD COLUMN ${name} ${type}`);
   }
+  // Codex · №11,919 · 2026-10-07; codex-footprint: executed-volume-contract.
+  // No legacy quantity is upgraded or recalculated. The boundary is stamped
+  // once, before ordinary writers, and survives every subsequent restart.
+  db.transaction(() => {
+    if (!db.prepare('PRAGMA table_info(trades)').all().some(c => c.name === 'requested_volume')) {
+      db.exec('ALTER TABLE trades ADD COLUMN requested_volume REAL');
+    }
+    for (const [name, type] of [['volume_contract','INTEGER'], ['requested_lots','REAL']]) {
+      if (!dealBalanceCols.has(name)) db.exec(`ALTER TABLE broker_deals ADD COLUMN ${name} ${type}`);
+    }
+    db.prepare(`INSERT OR IGNORE INTO agent_state(key,value)
+      SELECT 'executed_volume_contract_1_trade_boundary', CAST(COALESCE(MAX(id),0) AS TEXT) FROM trades`).run();
+  }).immediate();
   const cashflowBalanceCols = new Set(db.prepare('PRAGMA table_info(account_cashflows)').all().map(c => c.name));
   for (const [name, type] of [['balance','REAL'], ['balance_version','INTEGER'], ['balance_source','TEXT']]) {
     if (!cashflowBalanceCols.has(name)) db.exec(`ALTER TABLE account_cashflows ADD COLUMN ${name} ${type}`);
