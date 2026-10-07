@@ -898,3 +898,57 @@ test('trailSpecsComplete: true on a clean pass, false when a row\'s lookup fails
   assert.equal(out.trailSpecsComplete, false)
   assert.ok(out.errors.some(e => /broker meta unavailable/.test(e)))
 })
+
+// ---------------------------------------------------------------------------
+// Claude · № 11,690 07-Oct (Codex P1 on #1246): the keeper's stop amend is a
+// RATCHET transaction. Two writers amend the same stops — this keeper every
+// ~3 s and the sidecar's TrailEngine on every tick — from separate snapshots.
+// The keeper's `tighter()` was judged against this pass's broker read, so a
+// stop the engine moved in between would be WIDENED by the keeper's amend.
+// With `ratchetOnly` the sidecar re-reads the broker's stop under the
+// position's lock and answers `unchanged` instead of widening.
+// ---------------------------------------------------------------------------
+
+test('ratchet: the keeper\'s SL amend carries ratchetOnly and the position\'s identity (direction, symbol)', async () => {
+  const db = mkKeeperDb()
+  const deps = keeperDeps()
+  const sent = []
+  deps.exec.amendPosition = async (_c, args) => { sent.push(args); return { executionType: 'ORDER_REPLACED' } }
+  const out = await runProfitKeeper(db, CREDS, deps)
+  assert.equal(out.slMoves, 1, JSON.stringify(out))
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].ratchetOnly, true, 'the sidecar must read the broker stop before it sends')
+  assert.equal(sent[0].expectedDirection, -1, 'a short trails above: direction −1')
+  assert.equal(sent[0].expectedSymbolId, 1, 'the broker snapshot\'s symbol')
+  assert.equal(sent[0].takeProfit, 1.8, 'the target is still re-sent for the JS path')
+})
+
+test('ratchet: `unchanged` from the sidecar (the engine was already tighter) is not a move — no count, no notice, current_sl takes the broker\'s confirmed stop', async () => {
+  const db = mkKeeperDb()
+  const deps = keeperDeps()
+  const notices = []
+  deps.notify = (m) => notices.push(m)
+  // The keeper computed a lock at some level; the broker, read under the lock,
+  // already holds 2.600 (the TrailEngine's tick ratchet got there first).
+  deps.exec.amendPosition = async () => ({ unchanged: true, protection: { stopLoss: 2.6, takeProfit: 1.8, confirmation: 'already_tighter_snapshot' } })
+  const out = await runProfitKeeper(db, CREDS, deps)
+  assert.equal(out.slMoves, 0, JSON.stringify(out))
+  assert.equal(out.alreadyTighter, 1)
+  assert.equal(notices.filter(m => /ratcheted/.test(m)).length, 0, 'no "SL ratcheted" notice for a stop that did not move')
+  const row = db.prepare(`SELECT current_sl, last_check_action FROM monitored_positions WHERE trade_id = (SELECT id FROM trades WHERE ctrader_position_id = '9001')`).get()
+  assert.equal(row.current_sl, 2.6, 'the row records the broker\'s stop, not this pass\'s target')
+  assert.equal(row.last_check_action, 'profit_keeper_already_tighter')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM position_events WHERE kind = 'sl_moved'`).get().n, 0, 'no sl_moved event for a stop that did not move')
+})
+
+test('ratchet: an applied amend records the broker\'s CONFIRMED stop on the row, not the requested level, when they differ', async () => {
+  const db = mkKeeperDb()
+  const deps = keeperDeps()
+  deps.exec.amendPosition = async (_c, args) => ({ unchanged: false, protection: { stopLoss: args.stopLoss - 0.001, takeProfit: 1.8, confirmation: 'amend_readback' } })
+  const out = await runProfitKeeper(db, CREDS, deps)
+  assert.equal(out.slMoves, 1, JSON.stringify(out))
+  const row = db.prepare(`SELECT current_sl FROM monitored_positions WHERE trade_id = (SELECT id FROM trades WHERE ctrader_position_id = '9001')`).get()
+  const ev = db.prepare(`SELECT to_value FROM position_events WHERE kind = 'sl_moved' ORDER BY id DESC LIMIT 1`).get()
+  assert.equal(row.current_sl, ev.to_value, 'row and event agree')
+  assert.ok(row.current_sl > 0)
+})
