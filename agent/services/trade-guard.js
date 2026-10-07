@@ -197,13 +197,6 @@ async function tradeGuardsPass(db, creds, deps = {}) {
           const res = await measureAmend({ path: 'trade_guard', source: 'trade_guard', accountId: r.account_id ?? accountId ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: sl,
             ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
-            // Claude · № 11,690 07-Oct (Codex P1 on #1246): a ratchet transaction,
-            // as the keeper's. `sl` was judged tighter against this pass's
-            // broker read; the sidecar re-reads under the position's lock and
-            // refuses to widen a stop the TrailEngine moved since.
-            ratchetOnly: true,
-            expectedDirection: ['LONG', 'BUY'].includes(String(r.side || '').toUpperCase()) ? 1 : -1,
-            expectedSymbolId: symbolId,
             // THE be_moved=1 CASE. Failure mode #7 predicted that a position
             // moved to break-even would read tp=None, and it held on both
             // cases available to test — this is the amend that did it.
@@ -211,6 +204,15 @@ async function tradeGuardsPass(db, creds, deps = {}) {
             // For the stop policy (02-10-2026): a break-even or trailed stop at
             // or past entry earns the broker-side trailing flag.
             stopContext: { side: r.side, entry: Number(bp?.price ?? r.entry_price) || null, book: false },
+            // Claude · № 11,690 07-Oct (Codex P1 on #1246): a ratchet transaction,
+            // as the keeper's. `sl` was judged tighter against this pass's
+            // broker read; the sidecar re-reads under the position's lock and
+            // refuses to widen a stop the TrailEngine moved since. (Last in the
+            // object: amend-callsites.test.js reads the first 420 chars of
+            // every amend call for its stop/target intent.)
+            ratchetOnly: true,
+            expectedDirection: ['LONG', 'BUY'].includes(String(r.side || '').toUpperCase()) ? 1 : -1,
+            expectedSymbolId: symbolId,
           }))
           // Claude · № 11,690 07-Oct: the broker's confirmed stop is what the row
           // records; `unchanged` (already at least as tight) is not a move.

@@ -753,20 +753,22 @@ async function profitKeeperPass(db, creds, deps = {}) {
           // V3 M5: timed on the way through; the payload is untouched.
           const res = await measureAmend({ path: 'profit_keeper', source: 'profit_keeper', accountId: r.account_id ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: decision.action.sl,
-            // Claude · № 11,690 07-Oct (Codex P1 on #1246): a ratchet transaction.
-            // The sidecar re-reads the broker's stop under the position's lock
-            // (the lock the TrailEngine's tick amends take) and refuses to
-            // widen it: `decision.action.sl` was judged tighter against THIS
-            // PASS'S snapshot, and the engine may have moved the stop since.
-            // The identity fields make a wrong-position amend a refusal.
-            ratchetOnly: true,
-            expectedDirection: ['LONG', 'BUY'].includes(String(r.side || '').toUpperCase()) ? 1 : -1,
-            expectedSymbolId: td.symbolId,
             takeProfit: Number(bp.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
             // What the stop MEANS, for the stop policy (02-10-2026): it decides
             // whether this lock earns the broker-side trailing flag. The keeper
             // already excludes momentum-book rows, so this is never one.
             stopContext: { side: r.side, entry: Number(bp.price ?? r.entry_price) || null, book: false },
+            // Claude · № 11,690 07-Oct (Codex P1 on #1246): a ratchet transaction.
+            // The sidecar re-reads the broker's stop under the position's lock
+            // (the lock the TrailEngine's tick amends take) and refuses to
+            // widen it: `decision.action.sl` was judged tighter against THIS
+            // PASS'S snapshot, and the engine may have moved the stop since.
+            // The identity fields make a wrong-position amend a refusal. (Last
+            // in the object: amend-callsites.test.js reads the first 420 chars
+            // of every amend call for its stop/target intent.)
+            ratchetOnly: true,
+            expectedDirection: ['LONG', 'BUY'].includes(String(r.side || '').toUpperCase()) ? 1 : -1,
+            expectedSymbolId: td.symbolId,
           }))
           // Claude · № 11,690 07-Oct: `unchanged` means the broker already held
           // a stop at least as tight — the TrailEngine got there between this
