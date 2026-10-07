@@ -38,9 +38,10 @@ function fixture(t, path = ':memory:') {
         : { approved: true, adjusted_volume: 100, checks: { margin_required_usd: 98 } },
       persistRiskEvent, persistPostApprovalVeto },
     exec: { placeOrder: async (c, p) => {
+      // Codex · №11,673 (codex-footprint: signals-ui-2026-10-07): keep the simulated reservation on the fixture clock.
       const r = c.entryLedger.reserve({ symbolId: p.symbolId, symbol: p.symbolName, side: p.tradeSide,
         orderType: 'LIMIT', volume: p.volume, sl: p.relativeStopLoss, tp: p.relativeTakeProfit,
-        slUnits: 'relative_points', tpUnits: 'relative_points' })
+        slUnits: 'relative_points', tpUnits: 'relative_points', now })
       if (!r.ok) throw Error(r.reason)
       assert.ok(db.prepare('SELECT 1 FROM momentum_limit_intents WHERE intent_id=?').get(r.intentId), 'plan exists before transport')
       assert.equal(restingExposure(db, '11').length, 1, 'reservation already consumes capacity')
@@ -268,9 +269,9 @@ test('unknown send stays reserved across restart; delayed confirmed fill transfe
   assert.equal(readPartialOwnership(db, '11', 7, '33', 2), null, 'an origin label does not authorise a different lifecycle')
 })
 
-async function finalPartialFixture(t, status = 5, path = ':memory:') {
+async function finalPartialFixture(t, status = 5, path = ':memory:', placePatch = {}) {
   const f = fixture(t, path)
-  assert.equal((await f.place()).placed, true)
+  assert.equal((await f.place(placePatch)).placed, true)
   const stored = f.db.prepare('SELECT * FROM momentum_limit_intents').get()
   const proposal = JSON.parse(stored.proposal_json), p = proposal.plan
   f.db.prepare("UPDATE entry_intents SET state='FILLED',broker_position_id='33',resolution_source='event' WHERE id=?").run(stored.intent_id)
@@ -294,6 +295,18 @@ async function finalPartialFixture(t, status = 5, path = ':memory:') {
   return { ...f, stored, proposal, p, nowMs, position, limitFinalFill,
     bind: () => bindMomentumEntry(f.db, { accountId: '11', tradeId: 7, position, nowMs, limitFinalFill }) }
 }
+
+test('delayed partial-fill setup uses one clock and still rejects fills before reservation', async t => {
+  const f = await finalPartialFixture(t, 5, ':memory:', {
+    resolveSymbolId: async () => { await new Promise(resolve => setTimeout(resolve, 130)); return { id: '22' } },
+  })
+  const intent = f.db.prepare('SELECT created_at FROM entry_intents WHERE id=?').get(f.stored.intent_id)
+  assert.equal(Date.parse(intent.created_at), f.now, 'reservation shares the proposal, quote and fill fixture clock')
+  f.limitFinalFill.details.deal[0].executionTimestamp = f.now - 1
+  assert.throws(() => f.bind(), /final limit fill evidence/, 'a pre-reservation fill still fails the real evidence guard')
+  f.limitFinalFill.details.deal[0].executionTimestamp = f.now + 50
+  assert.equal(f.bind().state, 'BOUND')
+})
 
 test('a final partial entry enrolls TP1 and releases only its cancelled or expired remainder after counted ownership', async t => {
   for (const status of [4, 5]) {
