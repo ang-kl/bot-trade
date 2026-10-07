@@ -96,7 +96,7 @@ export function runTradeGuards(db, creds, deps = {}) {
 }
 
 async function tradeGuardsPass(db, creds, deps = {}) {
-  const summary = { checked: 0, slMoves: 0, partialCloses: 0, refused: 0, deferred: [], errors: [] }
+  const summary = { checked: 0, slMoves: 0, alreadyTighter: 0, partialCloses: 0, refused: 0, deferred: [], errors: [] }
   try {
     const accountId = authorisedAccountId(creds)
     const rows = db.prepare(
@@ -194,9 +194,16 @@ async function tradeGuardsPass(db, creds, deps = {}) {
         const sl = roundToDigits(acts.moveSlTo, meta.digits)
         try {
           // V3 M5: timed on the way through; the payload is untouched.
-          await measureAmend({ path: 'trade_guard', source: 'trade_guard', accountId: r.account_id ?? accountId ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
+          const res = await measureAmend({ path: 'trade_guard', source: 'trade_guard', accountId: r.account_id ?? accountId ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: sl,
             ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
+            // Claude · № 11,690 07-Oct (Codex P1 on #1246): a ratchet transaction,
+            // as the keeper's. `sl` was judged tighter against this pass's
+            // broker read; the sidecar re-reads under the position's lock and
+            // refuses to widen a stop the TrailEngine moved since.
+            ratchetOnly: true,
+            expectedDirection: ['LONG', 'BUY'].includes(String(r.side || '').toUpperCase()) ? 1 : -1,
+            expectedSymbolId: symbolId,
             // THE be_moved=1 CASE. Failure mode #7 predicted that a position
             // moved to break-even would read tp=None, and it held on both
             // cases available to test — this is the amend that did it.
@@ -205,9 +212,16 @@ async function tradeGuardsPass(db, creds, deps = {}) {
             // or past entry earns the broker-side trailing flag.
             stopContext: { side: r.side, entry: Number(bp?.price ?? r.entry_price) || null, book: false },
           }))
-          updSl.run(sl, acts.beMoved ? 1 : 0, acts.beMoved ? 'guard_break_even' : 'guard_trail', r.id)
-          summary.slMoves++
-          notify(`🛡 ${r.symbol}: SL moved to ${sl} (${acts.beMoved ? 'break-even' : 'trailing'})`)
+          // Claude · № 11,690 07-Oct: the broker's confirmed stop is what the row
+          // records; `unchanged` (already at least as tight) is not a move.
+          const landed = Number(res?.protection?.stopLoss) > 0 ? Number(res.protection.stopLoss) : sl
+          updSl.run(landed, acts.beMoved ? 1 : 0, res?.unchanged === true ? 'guard_already_tighter' : (acts.beMoved ? 'guard_break_even' : 'guard_trail'), r.id)
+          if (res?.unchanged === true) {
+            summary.alreadyTighter++
+          } else {
+            summary.slMoves++
+            notify(`🛡 ${r.symbol}: SL moved to ${landed} (${acts.beMoved ? 'break-even' : 'trailing'})`)
+          }
         } catch (err) {
           summary.errors.push(`${r.symbol} SL: ${err.message}`)
         }

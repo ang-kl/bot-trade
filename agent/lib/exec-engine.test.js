@@ -953,3 +953,25 @@ test('pushTrailConfig: a refused push is named, read back, and cleared by the ne
   assert.equal(await pushTrailConfig(CREDS, [{ positionId: 7 }]), true)
   assert.equal(lastTrailConfigRefusal(CREDS), null, 'an accepted push clears the refusal')
 })
+
+// Claude · № 11,690 07-Oct (Codex P1 on #1246): a ratchet amend has no JS
+// fallback. The sidecar's refusal below is the ONE kind the fallback rule
+// would otherwise retry over the WebSocket path (NOT_CONNECTED = provably not
+// sent), and the bogus host would then fail at the network — so a network
+// error here would mean the fallback ran, and the sidecar's own text means it
+// did not. The JS transport cannot read the broker stop before it sends, and a
+// stop sent blind is exactly the keeper/TrailEngine race this closes.
+test('ratchetOnly amend: POST /amend with the ratchet fields on the wire; a sidecar refusal is NOT retried over the JS transport', async () => {
+  const args = { positionId: 7, stopLoss: 1.1, takeProfit: 1.2, ratchetOnly: true, expectedDirection: 1, expectedSymbolId: 41 }
+  await amendPosition(CREDS, args)
+  assert.equal(requests[0].url, '/amend')
+  assert.deepEqual(JSON.parse(requests[0].body), { ...args, ctidTraderAccountId: 123, stopLossTriggerMethod: 2 })
+  requests.length = 0
+  nextResponse = { status: 503, body: JSON.stringify({ errorCode: 'NOT_CONNECTED', description: 'broker session down' }) }
+  await assert.rejects(amendPosition({ ...CREDS, host: '127.0.0.1' }, args), (err) => {
+    assert.match(err.message, /NOT_CONNECTED|broker session down/, `the sidecar's own refusal, not a fallback's network error: ${err.message}`)
+    assert.doesNotMatch(err.message, /ECONNREFUSED|ETIMEDOUT/)
+    return true
+  })
+  assert.equal(requests.filter(r => r.url === '/amend').length, 1, 'one sidecar attempt, nothing after it')
+})

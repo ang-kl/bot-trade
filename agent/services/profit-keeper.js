@@ -393,7 +393,7 @@ export function runProfitKeeper(db, creds, deps = {}) {
 }
 
 async function profitKeeperPass(db, creds, deps = {}) {
-  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, earlyTrimShadow: 0, managedSkipped: 0, bookSkipped: 0, deferred: [], errors: [] }
+  const summary = { checked: 0, slMoves: 0, alreadyTighter: 0, closes: 0, scaleOuts: 0, refused: 0, earlyTrimShadow: 0, managedSkipped: 0, bookSkipped: 0, deferred: [], errors: [] }
   try {
     const cfg = loadProfitKeeperConfig(db)
     if (!cfg.on) return summary
@@ -751,21 +751,42 @@ async function profitKeeperPass(db, creds, deps = {}) {
           // bp is this pass's broker snapshot, so this is what the broker
           // holds right now, not what the book believes it holds.
           // V3 M5: timed on the way through; the payload is untouched.
-          await measureAmend({ path: 'profit_keeper', source: 'profit_keeper', accountId: r.account_id ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
+          const res = await measureAmend({ path: 'profit_keeper', source: 'profit_keeper', accountId: r.account_id ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: decision.action.sl,
+            // Claude · № 11,690 07-Oct (Codex P1 on #1246): a ratchet transaction.
+            // The sidecar re-reads the broker's stop under the position's lock
+            // (the lock the TrailEngine's tick amends take) and refuses to
+            // widen it: `decision.action.sl` was judged tighter against THIS
+            // PASS'S snapshot, and the engine may have moved the stop since.
+            // The identity fields make a wrong-position amend a refusal.
+            ratchetOnly: true,
+            expectedDirection: ['LONG', 'BUY'].includes(String(r.side || '').toUpperCase()) ? 1 : -1,
+            expectedSymbolId: td.symbolId,
             takeProfit: Number(bp.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
             // What the stop MEANS, for the stop policy (02-10-2026): it decides
             // whether this lock earns the broker-side trailing flag. The keeper
             // already excludes momentum-book rows, so this is never one.
             stopContext: { side: r.side, entry: Number(bp.price ?? r.entry_price) || null, book: false },
           }))
-          updAct.run(decision.action.sl, 'profit_keeper_lock', r.id)
+          // Claude · № 11,690 07-Oct: `unchanged` means the broker already held
+          // a stop at least as tight — the TrailEngine got there between this
+          // pass's snapshot and its amend — so nothing moved: no count, no
+          // notice. Either way current_sl takes the broker's CONFIRMED stop,
+          // never this pass's target, so the row cannot read looser than the
+          // broker (the divergence Codex named).
+          const landed = Number(res?.protection?.stopLoss) > 0 ? Number(res.protection.stopLoss) : decision.action.sl
+          if (res?.unchanged === true) {
+            updAct.run(landed, 'profit_keeper_already_tighter', r.id)
+            summary.alreadyTighter++
+            continue
+          }
+          updAct.run(landed, 'profit_keeper_lock', r.id)
           summary.slMoves++
-          notify(`🔒 Profit Keeper: ${r.symbol} SL ratcheted to ${decision.action.sl}${decision.action.lockUsd != null ? ` (locks ~$${decision.action.lockUsd})` : ''}${decision.action.spike ? ' — spike detected, trail tightened' : ''}${decision.action.structure ? ' — trailing the last swing' : ''}`)
+          notify(`🔒 Profit Keeper: ${r.symbol} SL ratcheted to ${landed}${decision.action.lockUsd != null ? ` (locks ~$${decision.action.lockUsd})` : ''}${decision.action.spike ? ' — spike detected, trail tightened' : ''}${decision.action.structure ? ' — trailing the last swing' : ''}`)
           recordPositionEvent(db, {
             accountId: r.account_id, positionId: r.position_id, tradeId: r.trade_id,
             symbol: r.symbol, kind: 'sl_moved',
-            fromValue: bp.stopLoss ?? r.current_sl ?? null, toValue: decision.action.sl,
+            fromValue: bp.stopLoss ?? r.current_sl ?? null, toValue: landed,
             priceAt: price, reason: decision.action.spike ? 'spike_tighten'
               : decision.action.structure ? 'structure_ratchet' : 'chandelier_ratchet',
             source: 'profit_keeper',

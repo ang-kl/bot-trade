@@ -169,3 +169,47 @@ test('V3 M5: the guard\'s trailing stop move is timed in the amend-latency ring,
   assert.deepEqual([amends[0].path, amends[0].source, amends[0].positionId, amends[0].account, amends[0].outcome],
     ['trade_guard', 'trade_guard', '8', '…42', 'ok'])
 })
+
+// Claude · № 11,690 07-Oct (Codex P1 on #1246): the guard's stop move is a
+// ratchet transaction too — the same two-writer race as the keeper's.
+test('ratchet: the guard\'s SL amend carries ratchetOnly and the position\'s identity; `unchanged` from the sidecar is counted, not announced, and the row takes the broker\'s stop', async () => {
+  const { initDB, setState } = await import('../db.js')
+  const { runTradeGuards } = await import('./trade-guard.js')
+  const mk = () => {
+    const db = initDB(':memory:')
+    setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1 }))
+    const tradeId = db.prepare(`INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, account_id)
+       VALUES ('EURUSD', 'BUY', 1.1000, 0.02, '8', 'autopilot', 'open', datetime('now'), '42')`).run().lastInsertRowid
+    db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status, account_id, guard_json)
+       VALUES ('EURUSD', ?, 'long', 1.1000, 1.0950, 1.1200, 't', 1, 'autopilot', 'active', '42', ?)`)
+      .run(tradeId, JSON.stringify({ trailing: { on: true, distancePips: 5 } }))
+    return db
+  }
+  const depsWith = (amend, notices) => ({
+    exec: {
+      reconcile: async () => ({ position: [{ positionId: 8, price: 1.1000, stopLoss: 1.0950, takeProfit: 1.1200 }] }),
+      closePosition: async () => ({}),
+      amendPosition: amend,
+    },
+    ws: { wsGetLastCloses: async () => ({ 1: 1.1025 }) },
+    sizing: { getVolumeMeta: async () => ({ pipPosition: 4, digits: 5, lotSize: 100000 }) },
+    notify: (m) => notices.push(m),
+  })
+  const creds = { accountId: '42', host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't' }
+
+  const sent = [], n1 = []
+  const a = await runTradeGuards(mk(), creds, depsWith(async (_c, args) => { sent.push(args); return { executionType: 'ORDER_REPLACED' } }, n1))
+  assert.equal(a.slMoves, 1, JSON.stringify(a))
+  assert.equal(sent[0].ratchetOnly, true, 'the sidecar must read the broker stop before it sends')
+  assert.equal(sent[0].expectedDirection, 1, 'a long: direction +1')
+  assert.equal(sent[0].expectedSymbolId, 1)
+
+  const db2 = mk(), n2 = []
+  const b = await runTradeGuards(db2, creds, depsWith(async () => ({ unchanged: true, protection: { stopLoss: 1.1010, takeProfit: 1.12 } }), n2))
+  assert.equal(b.slMoves, 0, JSON.stringify(b))
+  assert.equal(b.alreadyTighter, 1)
+  assert.equal(n2.filter(m => /SL moved/.test(m)).length, 0, 'no "SL moved" notice for a stop that did not move')
+  const row = db2.prepare(`SELECT current_sl, last_check_action FROM monitored_positions WHERE account_id = '42'`).get()
+  assert.equal(row.current_sl, 1.101, 'the row records the broker\'s stop (the engine\'s), not this pass\'s target')
+  assert.equal(row.last_check_action, 'guard_already_tighter')
+})

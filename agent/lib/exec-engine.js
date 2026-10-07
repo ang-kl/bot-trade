@@ -1215,6 +1215,21 @@ export async function amendPosition(creds, args) {
       result = await sidecar(execBaseFor(creds), 'POST', '/amend', args)
       return result
     }
+    // Claude · № 11,690 07-Oct (Codex P1 on #1246): a RATCHET amend is the
+    // keeper's and the trade guard's stop move. The sidecar reads the broker's
+    // stop under the position's own lock before it sends — the same lock and
+    // the same read the TrailEngine's tick amends take — so a stop computed
+    // from a snapshot can never land behind a tighter one and widen it; the
+    // sidecar answers `unchanged: true` instead. The JS transport has no
+    // read-before-amend, so a ratchet amend is never retried over it: a stop
+    // sent blind after a sidecar failure IS the race this exists to close.
+    // In js mode there is no TrailEngine and no second writer, so the amend
+    // goes out as it always did (wsAmendPosition ignores the ratchet fields).
+    if (args.ratchetOnly === true && execEngineMode() === 'cpp') {
+      await ensureSidecarSession(creds)
+      result = await sidecar(execBaseFor(creds), 'POST', '/amend', args)
+      return result
+    }
     if (execEngineMode() === 'cpp') {
       result = await withFallback('amend',
         async () => { await ensureSidecarSession(creds); return sidecar(execBaseFor(creds), 'POST', '/amend', args) },

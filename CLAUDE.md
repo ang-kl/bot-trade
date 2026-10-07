@@ -1595,6 +1595,28 @@ Measurement history — each line is a real run of the script, not a claim:
   unstamped line made after this ledger. All lower bounds. The count is by
   replies, not by stamps. A later re-measure that reads below this line is
   missing these, not correcting them.
+- 2026-10-07 02:55 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the ledger line above (next stamp at least
+  `№ 11,661`), the replies ran on by count through #1246 (the TrailEngine on
+  by default, the goal-tracker test hardened, the Card ⇲ overlay portalled to
+  document.body; merged a1a2f679 on "merge when green", 01:18Z) and its
+  read-back **`№ 11,688`** (09:24 SGT): the demo gateway now refuses with
+  `TRAIL_TICK_ENABLED=false`, so the variable is SET to the literal `false`
+  on both gateways (Railway lists it on cpp-exec and cpp-acct; values
+  redacted here) and the engine is still off — a gateway config change,
+  ask-first under P7, not touched. The stamp "№ 11,670" was `№ 11,680` by
+  count and the merge commit's "reported № 11,671" is behind; recorded, not
+  carried. Codex P1 on #1246 (two stop writers, the keeper's amend sent
+  blind against its pass's snapshot) is what this PR carries: the keeper's
+  and the trade guard's stop amends are ratchet transactions on the sidecar
+  (`ratchetOnly`, direction and symbol identity; the broker's stop re-read
+  under the position's lock the TrailEngine's amends take; `unchanged` is
+  counted, not announced, and the row takes the broker's confirmed stop),
+  and a ratchet amend has no JS fallback. Six mutations, each red on a named
+  test. The next stamped reply is at least **`№ 11,694`** plus any unstamped
+  line made after this ledger. All lower bounds. The count is by replies, not
+  by stamps. A later re-measure that reads below this line is missing these,
+  not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
