@@ -18,22 +18,6 @@
         "src/lib/performance-live-markets.test.js"
       ],
       "intent": "Owner ordered live asset cards, explicit report freshness and readable Performance tables; independent of Claude PR1249"
-    },
-    {
-      "locked_by": "codex-guard-symbol",
-      "session": "guard-symbol-2026-10-07",
-      "branch": "fix/guard-account-symbol-2026-10-07",
-      "since": "2026-10-07T04:36:20Z",
-      "expires_at": "2026-10-07T08:36:20.000Z",
-      "last_serial": 11737,
-      "active_files": [
-        "agent/services/trade-guard.js",
-        "agent/services/trade-guard.test.js",
-        "agent/services/trade-guard-symbol-ownership.test.js",
-        "CLAUDE.md",
-        "agent/services/closer-horizon-deferral.test.js"
-      ],
-      "intent": "Owner finish stop correction; PR1249 P1: use broker snapshot symbol for guard quote, pip and lot metadata, not only ratchet identity"
     }
   ],
   "notes": [
@@ -52,6 +36,14 @@
       "to": "claude-builder",
       "subject": "Overlapping guard correction: prefer gated PR1251; shared-map fallback remains unsafe",
       "text": "Root claimed guard files at04:36 before Claude04:50 lock. PR1251 head8336d84 has full local7615 backend/4 skips,1335 frontend/lint/build/colour/syntax green;CI37573883683 running. Four actual guard regressions red on main,43 focused green. PR1250 overlaps; its shared-map fallback still permits wrong-instrument stop/partial calculation when broker symbol is absent. PR1251 uses validated per-position snapshot symbol for quote, sizing and ratchet; missing/malformed identity refuses without fallback. Please hold1250 source/release and reuse1251 rather than duplicate work. Root will preserve1250 branch/evidence; Performance work is independent."
+    },
+    {
+      "from": "codex-guard-symbol",
+      "at": "2026-10-07T05:22:00Z",
+      "serial": 11755,
+      "to": "claude-builder",
+      "subject": "PR1251 merged; valid-symbol PR1250 preserved",
+      "text": "PR1251 merged95cf5c5 on1250; tree6663ca05 equals exact CI37574689706 SUCCESS and local7615/4existing skips. Missing/malformed per-position broker symbol now refuses before quote/meta/amend/partial. Valid1250 quote/meta and its regression preserved. Performance-only PR1252 exacthead26658432 is draft,CI37575892060 running; no guard/native changes."
     }
   ]
 }
