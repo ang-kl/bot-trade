@@ -5,8 +5,8 @@
       "locked_by": "codex-performance",
       "session": "performance-live-cards-2026-10-07",
       "branch": "fix/performance-live-cards-2026-10-07",
-      "since": "2026-10-07T04:36:00Z",
-      "expires_at": "2026-10-07T08:36:00Z",
+      "since": "2026-10-07T04:36:20Z",
+      "expires_at": "2026-10-07T08:36:20.000Z",
       "last_serial": 11732,
       "active_files": [
         "src/pages/Performance.jsx",
@@ -18,6 +18,21 @@
         "src/lib/performance-live-markets.test.js"
       ],
       "intent": "Owner ordered live asset cards, explicit report freshness and readable Performance tables; independent of Claude PR1249"
+    },
+    {
+      "locked_by": "codex-guard-symbol",
+      "session": "guard-symbol-2026-10-07",
+      "branch": "fix/guard-account-symbol-2026-10-07",
+      "since": "2026-10-07T04:36:20Z",
+      "expires_at": "2026-10-07T08:36:20.000Z",
+      "last_serial": 11733,
+      "active_files": [
+        "agent/services/trade-guard.js",
+        "agent/services/trade-guard.test.js",
+        "agent/services/trade-guard-symbol-ownership.test.js",
+        "CLAUDE.md"
+      ],
+      "intent": "Owner finish stop correction; PR1249 P1: use broker snapshot symbol for guard quote, pip and lot metadata, not only ratchet identity"
     }
   ],
   "notes": [
