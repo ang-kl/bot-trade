@@ -1,5 +1,27 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №12,309 · 2026-10-09; codex-footprint: durable-hybrid-residual.
+Owner requires real capped-hybrid execution and complete durable records.
+Fresh main dbde7fc preserves Claude PR1272/1273/1274. PR1271 diagnostic is
+closed unmerged, retained on its branch; do not restore its older enrolment
+line. The error cited in Claude's attachment at15:44:41Z precedes the actual
+dbde7fc BOOT at15:45:11Z, so it cannot establish that PR1274 failed. Current
+owned pass/history evidence remains required; no guessed seven-day window.
+Actual manager/SQLite/broker-adapter regressions reproduce loss of the
+confirming residual snapshot, confirmation despite rejected evidence storage,
+and a stale read reporting CONFIRMED over a newer terminal row. Persist the
+actual observed identity/volume/SL/TP/clock alongside the matching partial
+receipt atomically with confirmation; return the stored verdict. Existing
+entry, SL predicates, TP, volume/trigger rules and broker calls are unchanged.
+Prospective storage only; no historical snapshot reconstruction. Full local,
+exact-head CI, actual reviews and deployed verification remain required.
+Native tick-profit execution has NOT been implemented or released; existing
+Node claim coordination must be preserved before any native partial close.
+No microsecond broker/fsync promise, real partial, profit improvement or whole
+acceptance pass is claimed. Counts7verified/19active/6deferred; unverified25.
+Session native-hybrid-2026-10-08, ChatGPT; evidence retained in workspace.
+-->
+
 <!-- Codex · №12,075 · 2026-10-08; session: confirmed-trail;
 codex-footprint: broker-confirmed movement has an owned journal consumer.
 After PR1262 merged as a75878df, its automated P1 review correctly identified
