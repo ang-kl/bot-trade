@@ -309,3 +309,58 @@ test('the enrolment deal read is bounded by its own clock, never ahead of it', a
   assert.equal(out.enrolled.length, 1)
   assert.deepEqual(bounds, [f.at], 'toTimestamp is the enrolment clock itself')
 })
+
+// Codex · №12,306 · 2026-10-08; codex-footprint: durable-hybrid-residual.
+test('confirmed hybrid retains its actual residual and protection readback across reopen and in the journal', async t => {
+  for (const side of ['BUY', 'SELL']) for (const live of [false, true]) {
+    const dir = mkdtempSync(join(tmpdir(), 'hybrid-residual-'))
+    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    const path = join(dir, 'agent.db'), f = scene(t, { side, live, path })
+    await f.pass()
+    f.db.close(); f.db = initDB(path)
+    const row = readPartialPlan(f.db, '42', 7)
+    assert.equal(row.state, 'CONFIRMED')
+    assert.deepEqual(row.evidence, {
+      source: 'partial_residual_readback', attemptedAtMs: AT, receiptDealId: '44', receiptOrderId: '66',
+      expectedIdentity: { provider: 'ctrader', host: f.host, accountId: '42', symbolId: '22' }, expectedVolume: 5000,
+      observation: { host: f.host, accountId: '42', symbolId: '22', positionId: '33', side,
+        entry: 100, volume: 5000, stopLoss: f.sl, takeProfit: f.tp, observedAtMs: AT, source: 'broker_reconcile' },
+    })
+    assert.deepEqual(JSON.parse(f.events()[0].detail_json).residualEvidence, row.evidence)
+    const saved = row.evidence
+    f.at += 61000; await f.pass()
+    assert.deepEqual(readPartialPlan(f.db, '42', 7).evidence, saved, 'repeat does not manufacture a newer read')
+    assert.equal(f.closes.length, 1); assert.equal(f.events().length, 1)
+  }
+})
+
+test('a failed residual write cannot claim confirmation or journal a partial; recovery only reads again', async t => {
+  const f = scene(t)
+  await enrolCappedHybrids(f.db, { credsFor: () => f.creds, now: () => f.at, transports: f.transports })
+  f.db.exec(`CREATE TRIGGER refuse_residual BEFORE UPDATE OF evidence_json ON momentum_partial_plans
+    WHEN NEW.state='CONFIRMED' BEGIN SELECT RAISE(ABORT, 'fixture storage unavailable'); END`)
+  await f.pass()
+  assert.equal(readPartialPlan(f.db, '42', 7).state, 'RECEIVED')
+  assert.equal(readPartialPlan(f.db, '42', 7).evidence, null)
+  assert.equal(f.events().length, 0); assert.equal(f.closes.length, 1)
+  f.db.exec('DROP TRIGGER refuse_residual')
+  f.at += 61000; await f.pass()
+  assert.equal(readPartialPlan(f.db, '42', 7).state, 'CONFIRMED')
+  assert.equal(readPartialPlan(f.db, '42', 7).evidence.observation.observedAtMs, f.at)
+  assert.equal(f.closes.length, 1); assert.equal(f.events().length, 1)
+})
+
+test('a late residual read cannot report confirmation over a newer terminal decision', async t => {
+  const f = scene(t), reconcile = f.transports.reconcile
+  await enrolCappedHybrids(f.db, { credsFor: () => f.creds, now: () => f.at, transports: f.transports })
+  f.transports.reconcile = async (...args) => {
+    const out = await reconcile(...args)
+    if (f.closes.length) f.db.prepare(`UPDATE momentum_partial_plans SET state='VOLUME_CHANGED',
+      reason='newer_owned_read',evidence_json='{"retained":"newer"}' WHERE account_id='42' AND trade_id=7`).run()
+    return out
+  }
+  const result = await runPartialPlan(f.db, f.creds, 7, f.adapter())
+  assert.equal(result.state, 'VOLUME_CHANGED')
+  assert.deepEqual(readPartialPlan(f.db, '42', 7).evidence, { retained: 'newer' })
+  assert.equal(f.closes.length, 1)
+})

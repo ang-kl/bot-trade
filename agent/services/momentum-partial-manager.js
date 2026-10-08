@@ -181,9 +181,28 @@ export async function runPartialPlan(db, creds, tradeId, deps) {
     let after
     try { after = await bounded(() => deps.readPosition(creds, row.position_id)) } catch { return { state: 'RECEIVED', reason: 'readback_unavailable' } }
     if (matches(after) && after.volume === p.runnerVolume) {
-      db.prepare("UPDATE momentum_partial_plans SET state='CONFIRMED',reason=NULL,resolved_at=? WHERE account_id=? AND trade_id=? AND state='RECEIVED'")
-        .run(deps.now(), accountId, tradeId)
-      return { state: 'CONFIRMED' }
+      // Codex · №12,306 · 2026-10-08; codex-footprint: durable-hybrid-residual.
+      // Store the actual read which just satisfied the existing predicates,
+      // atomically with its verdict. The plan identity is labelled separately;
+      // absent adapter fields are not invented from it. A later journal/restart
+      // can retain the observed volume, protection and clock, not just a flag.
+      const held = current()
+      if (held.state !== 'RECEIVED' || held.attempted_at !== attemptedAtMs) {
+        return { state: held.state, reason: held.reason }
+      }
+      const evidence = {
+        source: 'partial_residual_readback', attemptedAtMs,
+        receiptDealId: held.receipt?.dealId ?? null, receiptOrderId: held.receipt?.orderId ?? null,
+        expectedIdentity: row.identity, expectedVolume: p.runnerVolume,
+        observation: Object.fromEntries(['host', 'accountId', 'symbolId', 'positionId', 'side', 'entry',
+          'volume', 'stopLoss', 'takeProfit', 'observedAtMs', 'source']
+          .filter(key => after[key] !== undefined).map(key => [key, after[key]])),
+      }
+      db.prepare(`UPDATE momentum_partial_plans SET state='CONFIRMED',reason=NULL,evidence_json=?,resolved_at=?
+        WHERE account_id=? AND trade_id=? AND state='RECEIVED' AND attempted_at IS ? AND receipt_json IS ?`)
+        .run(JSON.stringify(evidence), deps.now(), accountId, tradeId, attemptedAtMs, held.receipt_json)
+      const stored = current()
+      return stored.state === 'CONFIRMED' ? { state: 'CONFIRMED' } : { state: stored.state, reason: stored.reason }
     }
     // The partial is proven, and then the rest of the position closed or
     // changed elsewhere (a stop, the runner target, a manual close). The
