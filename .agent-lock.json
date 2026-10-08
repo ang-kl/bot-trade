@@ -4,7 +4,7 @@
     {
       "locked_by": "codex-account-symbol",
       "branch": "fix/account-symbol-ownership-2026-10-08",
-      "started_at": "2026-10-08T07:59:00Z",
+      "started_at": "2026-10-08T07:56:00Z",
       "expires_at": "2026-10-08T11:59:00Z",
       "serial": 12171,
       "files": [
@@ -13,7 +13,16 @@
         "agent/lib/account-symbol-ownership.test.js",
         "agent/lib/symbol-id-resolve.test.js",
         "agent/services/tp-suggest.test.js",
-        "CLAUDE.md"
+        "CLAUDE.md",
+        "agent/index.js",
+        "agent/routes/actions.js",
+        "agent/loop.js",
+        "agent/services/telegram-control.js",
+        "agent/services/strategy-autopilot.js",
+        "agent/services/pending-signals.js",
+        "agent/routes/stream-prices-feed-latency.test.js",
+        "agent/services/telegram-control.test.js",
+        "agent/services/strategy-autopilot-yield.test.js"
       ],
       "purpose": "Account-owned symbol audit: TP snapshot, symbol-list helper/fallback regressions; no native or runtime-setting changes"
     }
