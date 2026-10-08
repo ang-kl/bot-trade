@@ -25,7 +25,8 @@
         "agent/services/momentum-partial-broker.js",
         "agent/services/momentum-partial-broker.test.js",
         "agent/lib/one-account-model.test.js",
-        "CLAUDE.md"
+        "CLAUDE.md",
+        "agent/test-support/hybrid-scene.js"
       ],
       "purpose": "Owner orders continue through gated native account-owned tick triggers for both live/demo, durable trigger/claim/fill/residual records. Entry and SL untouched. Existing Node durable close coordination retained, broker execution remains own native gateway; no forced events."
     }
