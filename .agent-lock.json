@@ -33,7 +33,9 @@
         "agent/services/position-lifecycle-evidence.test.js",
         "agent/services/native-trail-events.test.js",
         "agent/services/fast-monitor-sidecar-quotes.test.js",
-        "agent/services/pending-signals.test.js"
+        "agent/services/pending-signals.test.js",
+        "agent/stop-amend-rail.test.js",
+        "agent/stop-loss-integrated.test.js"
       ],
       "purpose": "Account-owned symbol audit: TP snapshot, symbol-list helper/fallback regressions; no native or runtime-setting changes"
     }
