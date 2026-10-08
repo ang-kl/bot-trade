@@ -101,3 +101,52 @@ test('a new close near TP cannot be labelled a TP before its closing order is re
   assert.equal(reclassifyBrokerCloses(db),0)
   assert.equal(db.prepare('SELECT close_reason FROM trades WHERE id=?').get(id).close_reason,GENERIC_BROKER_CLOSE)
 })
+
+// Claude · № 12,280 08-Oct (ordered "all three" after № 12,279; claude-builder).
+// Measured 08-10 on …0949: 9 of 13 closes in a week read "initiating actor or
+// rule not verified" while the closers' journals named the actor.
+const marketResponse = () => { const r = response(); r.order.orderType = 1; return r }
+async function verifiedReceipt(db, id, resp) {
+  db.prepare(`INSERT INTO broker_deals(deal_id,position_id,account_id,matched_trade_id,closed_at)
+    VALUES ('33','22','11',?,'2026-09-25 16:47:36')`).run(id)
+  captureCloseDeals(db, '11', resp().deal, 1000)
+  assert.equal((await collectCloseAttribution(db, { accountId: '11', now: 1000, getOrderDetails: async () => resp() })).state, 'verified')
+}
+const closedTrade = db => db.prepare(`INSERT INTO trades(symbol, side, account_id, ctrader_position_id, entry_price,
+  exit_price, status, close_reason) VALUES ('MSFT.US','BUY','11','22',493.16,518.16,'closed',?)`).run(GENERIC_BROKER_CLOSE).lastInsertRowid
+
+test('a verified MARKET receipt proves the fill; the journal names the actor; both are kept', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const id = closedTrade(db)
+  await verifiedReceipt(db, id, marketResponse)
+  assert.equal(attributeBrokerClose(db, { tradeId: id, accountId: '11', positionId: '22' }),
+    'market close filled at the broker - initiating actor or rule not verified', 'no journal: the receipt stands alone')
+  db.prepare(`INSERT INTO position_events(account_id, position_id, trade_id, symbol, kind, source, reason)
+    VALUES ('11', '22', ?, 'MSFT.US', 'close', 'profit_keeper', 'time cap')`).run(id)
+  assert.equal(attributeBrokerClose(db, { tradeId: id, accountId: '11', positionId: '22' }),
+    'profit_keeper: time cap (broker market close verified)')
+  // The reclassifier upgrades the stored market-close stamp the same way, once.
+  db.prepare('UPDATE trades SET close_reason = ? WHERE id = ?').run('market close filled at the broker - initiating actor or rule not verified', id)
+  assert.equal(reclassifyBrokerCloses(db), 1)
+  assert.equal(db.prepare('SELECT close_reason FROM trades WHERE id=?').get(id).close_reason, 'profit_keeper: time cap (broker market close verified)')
+  assert.equal(reclassifyBrokerCloses(db), 0)
+})
+
+test('a receipt that names the cause (SL/TP leg from the bracket) still wins over the journal', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const id = closedTrade(db)
+  await verifiedReceipt(db, id, response)
+  db.prepare(`INSERT INTO position_events(account_id, position_id, trade_id, symbol, kind, source, reason)
+    VALUES ('11', '22', ?, 'MSFT.US', 'close', 'profit_keeper', 'time cap')`).run(id)
+  assert.match(attributeBrokerClose(db, { tradeId: id, accountId: '11', positionId: '22' }), /^take profit hit.*inferred/)
+})
+
+test('a momentum-book exit request composes with a verified market receipt', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const id = closedTrade(db)
+  await verifiedReceipt(db, id, marketResponse)
+  db.prepare(`INSERT INTO momentum_book(trade_id, account_id, symbol, position_id, status, entered_at, note)
+    VALUES (?, '11', 'MSFT.US', '22', 'exit_sent', datetime('now'), 'rank exit')`).run(id)
+  assert.equal(attributeBrokerClose(db, { tradeId: id, accountId: '11', positionId: '22' }),
+    'momentum_book: rank exit (broker market close verified)')
+})

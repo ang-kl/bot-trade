@@ -10,6 +10,14 @@ export function replaceableCloseReason(reason) {
       && /(reclassified from the broker exit price|broker SL\/TP order filled)/.test(reason))
 }
 
+// Claude · № 12,280 08-Oct (ordered "all three" after № 12,279; claude-builder).
+// A verified MARKET closing order proves the fill, not the actor: cTrader's
+// order carries no initiator. The closers' own journals (position_events,
+// momentum_book exit_sent) are the only record of WHO sent it, so a receipt
+// that reads one of these must not pre-empt them in attributeBrokerClose.
+export const INITIATOR_UNKNOWN_RE = /initiating actor or rule not verified|exit cause not established/
+export function receiptInitiatorUnknown(reason) { return typeof reason === 'string' && INITIATOR_UNKNOWN_RE.test(reason) }
+
 export function classifyClosingOrder(response, expected) {
   const o = response?.order
   if (!same(response?.ctidTraderAccountId, expected.accountId)

@@ -7,7 +7,7 @@ import { lotsFromUnits } from '../lib/lot-size-registry.js'
 import { recordPositionEvent } from './position-events.js'
 import { isTrailing, stopTightened } from '../lib/stop-policy.js'
 import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
-import { brokerCloseReason, LEGACY_BOOK_STOP, replaceableCloseReason } from './broker-exit-attribution.js'
+import { brokerCloseReason, LEGACY_BOOK_STOP, receiptInitiatorUnknown, replaceableCloseReason } from './broker-exit-attribution.js'
 import { horizonForStrategy } from './trade-horizon.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
@@ -221,7 +221,24 @@ export function attributeBrokerClose(db, { positionId = null, tradeId = null, ac
   const pid = positionId != null ? normPosId(positionId) : null
   try {
     const receipt = brokerCloseReason(db, { accountId, positionId: pid, tradeId })
-    if (receipt) return receipt
+    // Claude · № 12,280 08-Oct (ordered "all three" after № 12,279; claude-builder).
+    // A receipt that names the cause (SL/TP leg inferred from the bracket) wins
+    // over the journals. A receipt that only proves a MARKET fill with the
+    // initiator unknown does not: measured 08-10 on …0949, 9 of 13 closes in a
+    // week read "initiating actor or rule not verified" while the keeper's and
+    // the book's own close requests sat in the journals unread. The journal
+    // names the actor and the receipt proves the fill; both are kept.
+    if (receipt && !receiptInitiatorUnknown(receipt)) return receipt
+    const ledger = ledgerCloseAttribution(db, { pid, tradeId, accountId })
+    if (ledger) return receipt ? `${ledger} (broker market close verified)` : ledger
+    return receipt || null
+  } catch { /* attribution is best-effort; the generic stamp stays */ }
+  return null
+}
+
+/** Who asked for the close, from the closers' own journals. null = nobody on record. */
+function ledgerCloseAttribution(db, { pid, tradeId, accountId }) {
+  try {
     if (pid != null || tradeId != null) {
       const ev = db.prepare(
         `SELECT source, reason, kind FROM position_events
@@ -1253,7 +1270,10 @@ export function reclassifyBrokerCloses(db) {
   const verifiedIds = new Set()
   for (const t of evidenceRows) {
     if (!replaceableCloseReason(t.close_reason)) continue // preserve explicit human/closer notes
-    const reason = brokerCloseReason(db, { accountId: t.account_id, positionId: t.ctrader_position_id, tradeId: t.id })
+    // Claude · № 12,280 08-Oct: the receipt-aware attribution, so a verified
+    // MARKET receipt with the initiator unknown composes with the journal
+    // instead of re-stamping "initiating actor or rule not verified".
+    const reason = attributeBrokerClose(db, { accountId: t.account_id, positionId: t.ctrader_position_id, tradeId: t.id })
       || (t.close_reason === LEGACY_BOOK_STOP ? 'broker close recorded - former trailing-stop attribution unsupported; awaiting order evidence' : null)
     if (!reason) continue
     verifiedIds.add(t.id)
