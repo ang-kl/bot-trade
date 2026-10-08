@@ -1,32 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": [
-    {
-      "agent": "codex-collection-retention",
-      "serial": 12046,
-      "started_at": "2026-10-08T01:28:00Z",
-      "expires_at": "2026-10-08T05:28:00Z",
-      "branch": "fix/collection-retention-2026-10-08",
-      "paths": [
-        "CLAUDE.md",
-        "agent/services/heartbeat.js",
-        "agent/services/cpp-events.test.js",
-        "agent/services/collection-retention.test.js",
-        "agent/services/profit-keeper.js",
-        "agent/services/profit-keeper.test.js",
-        "agent/services/position-events.js",
-        "agent/services/broker-history-recorder.js",
-        "agent/services/broker-history-recorder.test.js",
-        "agent/services/account-history.js",
-        "agent/services/refusal-ledger.js",
-        "agent/services/refusal-ledger.test.js",
-        "agent/services/workstream-ws05.js",
-        "agent/lib/stop-policy.js",
-        "agent/lib/stop-policy.test.js"
-      ],
-      "purpose": "Reproduce and correct retained-read cursor skips, stop observation journal acknowledgement, independent protection retention and paired refusal scoring; Node only, no broker/policy changes"
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
