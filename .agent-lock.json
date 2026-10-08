@@ -15,6 +15,19 @@
         "CLAUDE.md"
       ],
       "purpose": "Bounded read-only position-history boundary diagnosis; no diagnostic outcome used for trading"
+    },
+    {
+      "owner": "codex-hybrid-residual",
+      "session": "native-hybrid-2026-10-08",
+      "serial": 12306,
+      "started_at": "2026-10-08T15:55:00Z",
+      "expires_at": "2026-10-09T04:55:00Z",
+      "files": [
+        "agent/services/momentum-partial-manager.js",
+        "agent/services/momentum-partial-residual.test.js",
+        "CLAUDE.md"
+      ],
+      "purpose": "Persist actual confirmed residual readback with its partial receipt before status/journal; entry and stop rules unchanged. Existing own history lock CLAUDE overlap is same session."
     }
   ],
   "notes": [
