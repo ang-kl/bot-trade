@@ -2,6 +2,7 @@
 #include "../engine.hpp"
 #include "../trail_engine.hpp"
 #include "../protection_ratchet.hpp"
+#include "../decision_ring.hpp"
 #include <cassert>
 #include <future>
 
@@ -9,6 +10,10 @@ using namespace std::chrono_literals;
 
 struct BrokerState {
   double sl = 92, tp = 120;
+  // Codex · №12,072 · 2026-10-08; codex-footprint: confirmed-trail.
+  double entryPrice = 100, afterEntryPrice = 0;
+  long long afterSymbolId = 0;
+  int afterDir = 0;
   int dir = 1;
   std::atomic<int> amends{0};
   std::atomic<int> mode{0}; // 1 no reconcile reply, 2 corrupt post-amend TP
@@ -39,8 +44,11 @@ struct BrokerState {
       // cTrader encodes int64 identities as strings as well as numbers.
       auto p = *jsn::parse(R"({"ctidTraderAccountId":"4002","position":[{"positionId":"7","tradeData":{"symbolId":"41","tradeSide":"BUY"}}]})");
       jsn::Array rows = p.get("position").asArray();
-      auto td = rows[0].get("tradeData"); td.set("tradeSide", std::string(dir == 1 ? "BUY" : "SELL"));
+      const int readDir = amends > 0 && afterDir != 0 ? afterDir : dir;
+      auto td = rows[0].get("tradeData"); td.set("tradeSide", std::string(readDir == 1 ? "BUY" : "SELL"));
+      if (amends > 0 && afterSymbolId > 0) td.set("symbolId", afterSymbolId);
       rows[0].set("tradeData", td);
+      if (entryPrice > 0) rows[0].set("price", amends > 0 && afterEntryPrice > 0 ? afterEntryPrice : entryPrice);
       rows[0].set("stopLoss", sl);
       if (rTrigger > 0) rows[0].set("stopLossTriggerMethod", rTrigger.load());
       if (rTrailing >= 0) rows[0].set("trailingStopLoss", rTrailing == 1);
@@ -466,7 +474,104 @@ void tickWorkerCarriesPolicy(double entry, bool expectTrailing) {
     : R"({"ctidTraderAccountId":4002,"positionId":7,"stopLoss":95,"stopLossTriggerMethod":2,"takeProfit":120})"));
 }
 
-int main() {
+// Real read/amend/read and worker receipts, not a reconstruction of lastSl.
+void confirmedMovementTransactions() {
+  BrokerState state;
+  state.sl = 1.092345678912345; state.tp = 1.2; state.entryPrice = 1.100123456789012;
+  FakeBroker broker([&](auto& b, const auto& f) { state.handle(b, f); });
+  ExecEngine engine; connect(engine, broker);
+  const double before = state.sl, after = 1.095678912345678;
+  const auto moved = engine.amendPosition(intent(after));
+  assert(moved.ok && state.amends == 1);
+  const auto& proof = moved.body.get("protection").get("movement");
+  assert(proof.isObject() && proof.get("v").asNumber() == 1);
+  assert(proof.get("source").asString() == "broker_reconcile");
+  assert(proof.get("confirmation").asString() == "amend_readback");
+  assert(proof.get("stopMoved").isBool() && proof.get("stopMoved").asBool());
+  assert(proof.get("accountId").asNumber() == 4002 && proof.get("positionId").asNumber() == 7);
+  assert(proof.get("symbolId").asNumber() == 41 && proof.get("direction").asNumber() == 1);
+  assert(proof.get("entryPrice").asNumber() == state.entryPrice);
+  assert(proof.get("beforeStopLoss").asNumber() == before && proof.get("afterStopLoss").asNumber() == after);
+  assert(proof.get("beforeCheckedAtMs").asNumber() > 0);
+  assert(proof.get("afterCheckedAtMs").asNumber() >= proof.get("beforeCheckedAtMs").asNumber());
+  const auto roundTrip = *jsn::parse(jsn::dump(proof));
+  assert(roundTrip.get("beforeStopLoss").asNumber() == before && roundTrip.get("afterStopLoss").asNumber() == after);
+  auto noop = engine.amendPosition(intent(after));
+  assert(noop.ok && noop.body.get("unchanged").asBool());
+  assert(noop.body.get("protection").get("movement").get("stopMoved").isBool());
+  assert(!noop.body.get("protection").get("movement").get("stopMoved").asBool());
+  // A stale ratchet target may cause a policy stamp at the broker's own SL.
+  auto stamp = engine.amendPosition(policyIntent(before, R"({"stopLossTriggerMethod":2})"));
+  assert(stamp.ok && !stamp.body.get("unchanged").asBool());
+  assert(!stamp.body.get("protection").get("movement").get("stopMoved").asBool());
+  auto only = engine.amendPosition(policyOnlyIntent(R"({"stopLossTriggerMethod":3})"));
+  assert(only.ok && !only.body.get("protection").get("movement").get("stopMoved").asBool());
+  // Missing native entry cannot certify an episode, but does not block trading.
+  state.entryPrice = 0;
+  const auto unknown = engine.amendPosition(intent(after + .001));
+  assert(unknown.ok && unknown.body.get("protection").get("movement").get("entryPrice").isNull());
+  assert(!unknown.body.get("protection").get("movement").get("stopMoved").asBool());
+}
+
+void confirmedMovementIdentityBoundaries() {
+  for (int mode : {0, 1, 2}) {
+    BrokerState state;
+    if (mode == 0) state.afterEntryPrice = 101;
+    if (mode == 1) state.afterSymbolId = 42;
+    if (mode == 2) state.afterDir = -1;
+    FakeBroker broker([&](auto& b, const auto& f) { state.handle(b, f); });
+    ExecEngine engine; connect(engine, broker);
+    const auto r = engine.amendPosition(intent());
+    if (mode == 0) {
+      assert(r.ok); // provenance does not change existing ratchet acceptance
+      assert(!r.body.get("protection").get("movement").get("stopMoved").asBool());
+    } else {
+      assert(!r.ok && r.body.get("errorCode").asString() == "guard_ratchet_unconfirmed");
+      assert(r.body.get("protection").get("movement").isNull());
+    }
+  }
+}
+
+void confirmedTrailRingReceipt(int mode = 0) {
+  BrokerState state;
+  state.sl = 1.092345678912345; state.tp = 1.2; state.entryPrice = 1.100123456789012;
+  if (mode != 0) state.sl = 1.102; // actual broker stop already exceeds target
+  FakeBroker broker([&](auto& b, const auto& f) { state.handle(b, f); });
+  ExecEngine engine; connect(engine, broker);
+  DecisionRing ring;
+  TrailEngine trail; trail.setDecisionRing(&ring);
+  if (mode == 1) { StopPolicyCfg cfg; cfg.triggerWire = 2; trail.configurePolicy(cfg); }
+  TrailSpec s; s.accountId = 4002; s.symbolId = 41; s.dir = 1;
+  s.trailDist = .001; s.lastSl = 1.092345678912345; s.hasSl = true; s.digits = 9;
+  s.currentTp = state.tp; s.hasTp = true;
+  trail.configure({{7, s}}); trail.start(engine); trail.onTick(41, 1.101234567, 1.101334567);
+  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  while (ring.latestSeq() == 0 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(10ms);
+  trail.stop();
+  assert(trail.amendsOk() == (mode == 2 ? 0 : 1));
+  const auto rows = ring.since(0);
+  assert(rows.size() == 1 && rows[0].component == "trail");
+  assert(rows[0].kind == (mode == 2 ? "already_tighter" : "amend_ok"));
+  assert(rows[0].detail.find("pos=7 sl=") == 0 && rows[0].detail.size() <= 500);
+  const std::string marker = mode == 2 ? " already_tighter_snapshot proof=" : " amend_readback proof=";
+  const auto start = rows[0].detail.find(marker);
+  assert(start != std::string::npos);
+  const auto proof = jsn::parse(rows[0].detail.substr(start + marker.size()));
+  assert(proof && proof->get("stopMoved").isBool() && proof->get("stopMoved").asBool() == (mode == 0));
+  assert(proof->get("beforeStopLoss").asNumber() == (mode == 0 ? 1.092345678912345 : 1.102));
+  assert(proof->get("afterStopLoss").asNumber() == state.sl);
+  assert(proof->get("entryPrice").asNumber() == state.entryPrice);
+}
+
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "confirmed-movement") { confirmedMovementTransactions(); return 0; }
+  if (argc == 2 && std::string(argv[1]) == "confirmed-ring") { confirmedTrailRingReceipt(); return 0; }
+  confirmedMovementTransactions();
+  confirmedMovementIdentityBoundaries();
+  confirmedTrailRingReceipt();
+  confirmedTrailRingReceipt(1); // successful policy stamp is no level move
+  confirmedTrailRingReceipt(2); // unchanged broker snapshot is no move
   ratchetRebuildCarriesPolicy();
   policyNameEmittedVerbatimRequestedNormalised();
   noPolicyNoPolicyKeys();

@@ -137,10 +137,12 @@ export function managementFor(db, { accountId, positionId, tradeId }) {
     rows = db.prepare(`
       SELECT at, kind, from_value, to_value, r_at, price_at, reason, source
         FROM position_events
-       WHERE (position_id = ? AND (account_id = ? OR account_id IS NULL))
-          OR (? IS NOT NULL AND trade_id = ?)
-       ORDER BY id ASC
-    `).all(String(positionId), accountId == null ? null : String(accountId), tradeId ?? null, tradeId ?? null)
+       WHERE ((position_id = ? AND (account_id = ? OR account_id IS NULL))
+          OR (? IS NOT NULL AND trade_id = ?))
+         AND (source IS NOT 'cpp_trail_engine' OR (account_id = ? AND trade_id = ?))
+       ORDER BY julianday(at) ASC,id ASC
+    `).all(String(positionId), accountId == null ? null : String(accountId), tradeId ?? null, tradeId ?? null,
+      accountId == null ? null : String(accountId),tradeId ?? null)
   } catch { rows = [] }
 
   const count = (kind) => rows.filter(r => r.kind === kind).length

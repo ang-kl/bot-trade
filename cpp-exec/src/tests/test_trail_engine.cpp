@@ -2,6 +2,7 @@
 // — trailDecide and TrailEngine state, no WS/engine.
 #include <cassert>
 #include <cstdio>
+#include <limits>
 
 #include "../protection_ratchet.hpp"
 #include "../trail_engine.hpp"
@@ -239,6 +240,65 @@ void testPolicyReportedInStatus() {
   assert(!st.get("stopPolicy").get("trailingOnLock").asBool());
 }
 
+// Codex · №12,072 · 2026-10-08; codex-footprint: confirmed-trail.
+void testConfirmedMovementProof() {
+  BrokerProtection before;
+  const auto body = cfgWire(R"({"ctidTraderAccountId":"4002","position":[{"positionId":"7","price":1.100123456789012,"tradeData":{"symbolId":"41","tradeSide":"BUY"},"stopLoss":1.092345678912345,"takeProfit":1.2}]})");
+  assert(readBrokerProtection(body, 4002, 7, before).empty());
+  before.checkedAtMs = 1791426505000;
+  auto after = before; after.sl = 1.095678912345678; after.checkedAtMs += 1;
+  const auto moved = [&](const BrokerProtection& b, const BrokerProtection& a, bool unchanged = false, bool level = true) {
+    return confirmedMovementProof(b, a, unchanged, level).get("stopMoved").asBool();
+  };
+  assert(moved(before, after));
+  assert(!moved(before, after, true) && !moved(before, after, false, false));
+  auto equal = after; equal.sl = before.sl;
+  assert(!moved(before, equal));
+  equal.sl = before.sl - .001; assert(!moved(before, equal));
+  auto unknown = before; unknown.sl = 0; assert(!moved(unknown, after));
+  unknown.sl = std::numeric_limits<double>::quiet_NaN(); assert(!moved(unknown, after));
+  unknown = before; unknown.entryPrice = 0; assert(!moved(unknown, after));
+  auto mismatch = after; mismatch.entryPrice += .001; assert(!moved(before, mismatch));
+  mismatch = after; mismatch.accountId += 1; assert(!moved(before, mismatch));
+  mismatch = after; mismatch.positionId += 1; assert(!moved(before, mismatch));
+  mismatch = after; mismatch.symbolId += 1; assert(!moved(before, mismatch));
+  mismatch = after; mismatch.dir = -1; assert(!moved(before, mismatch));
+  mismatch = after; mismatch.checkedAtMs = before.checkedAtMs - 1; assert(!moved(before, mismatch));
+  unknown = before; unknown.checkedAtMs = 0; assert(!moved(unknown, after));
+  // Fast reads in one wall-clock millisecond are ordered, not invented gaps.
+  equal = after; equal.checkedAtMs = before.checkedAtMs; assert(moved(before, equal));
+  before.dir = after.dir = -1; before.sl = 1.11; after.sl = 1.105;
+  assert(moved(before, after));
+  after.sl = 1.115; assert(!moved(before, after));
+  // Only native position.price is entry evidence; configured/openPrice fields
+  // cannot supply an entry that was absent from this broker snapshot.
+  auto missing = cfgWire(R"({"ctidTraderAccountId":4002,"position":[{"positionId":7,"entryPrice":100,"tradeData":{"symbolId":41,"tradeSide":1,"openPrice":100},"stopLoss":92}]})");
+  BrokerProtection missingEntry;
+  assert(readBrokerProtection(missing, 4002, 7, missingEntry).empty() && missingEntry.entryPrice == 0);
+}
+
+void testTrailDecisionProofPrecisionAndBound() {
+  BrokerProtection before;
+  before.accountId = before.positionId = before.symbolId = 9007199254740991LL;
+  before.dir = 1; before.entryPrice = 1.100123456789012; before.sl = 1.092345678912345;
+  before.checkedAtMs = 1791426505000;
+  auto after = before; after.sl = 1.095678912345678; after.checkedAtMs += 1;
+  const auto protection = confirmedProtection(before, after, false, true).get("protection");
+  const auto detail = buildTrailDecisionDetail(before.positionId, protection);
+  assert(detail.find("pos=9007199254740991 sl=1.095679 amend_readback proof=") == 0 && detail.size() <= 500);
+  const auto proof = jsn::parse(detail.substr(detail.find(" proof=") + 7));
+  assert(proof && proof->get("stopMoved").asBool());
+  assert(proof->get("beforeStopLoss").asNumber() == before.sl && proof->get("afterStopLoss").asNumber() == after.sl);
+  assert(proof->get("entryPrice").asNumber() == before.entryPrice);
+  const auto legacy = confirmedProtection(after, false).get("protection");
+  assert(buildTrailDecisionDetail(7, legacy) == "pos=7 sl=1.095679 amend_readback");
+  // Exceptional numeric magnitudes still retain a complete legacy prefix,
+  // never a partially sliced JSON certificate under the collector's cap.
+  before.entryPrice = after.entryPrice = 1e308; before.sl = 8e307; after.sl = 9e307;
+  const auto large = buildTrailDecisionDetail(7, confirmedProtection(before, after, false, true).get("protection"));
+  assert(large.size() <= 500 && large.find(" proof=") == std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -254,6 +314,8 @@ int main() {
   testTrailAmendPayloadPolicy();
   testParseTrailStopPolicy();
   testPolicyReportedInStatus();
+  testConfirmedMovementProof();
+  testTrailDecisionProofPrecisionAndBound();
   std::puts("test_trail_engine: OK");
   return 0;
 }

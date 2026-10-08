@@ -1,5 +1,38 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №12,075 · 2026-10-08; session: confirmed-trail;
+codex-footprint: broker-confirmed movement has an owned journal consumer.
+After PR1262 merged as a75878df, its automated P1 review correctly identified
+that snapshot observations no longer supplied the trail_tightened readers.
+Do not restore fictitious moves: native amend_ok can be policy-only stamping.
+Carry actual before/after broker account/position/symbol/direction/entry/SL
+and read clocks in a bounded v1 movement proof; only strict level improvement
+in an existing read/amend/read transaction claims movement. Node retains the
+raw receipt and owned journal atomically, with source event time and retry on
+write failure. Unknown, proof-less, ambiguous or unbound identities stay raw;
+no historic move recovery or universal collector-completeness claim.
+Readers compare source clocks and account/trade ownership; late ingestion
+cannot reopen a later close or satisfy an earlier/foreign promise.
+Five actual Node-path and two native-path regressions fail unchanged source;
+four assistant-review episode/lifecycle/source-clock regressions fail the
+preceding candidate;
+153 focused Node checks passed before the final clock correction; the final
+12 receipt/reader regressions and both focused native programs pass.
+Full local/exact-head CI, actual review inspection, merge and deployed
+ordinary-runtime verification remain pending at 2026-10-08T03:09Z.
+Existing trading wire/ratchet acceptance, policies and retention are unchanged.
+No broker forcing, credentials, risk/account/strategy/profile/selected-account/
+history/region/volume/staging or monitoring-schedule action. Acceptance remains
+7verified/19active/6deferred until a complete group passes.
+The first full gate failed the routing vocabulary boundary and an unchanged
+idle-lag fixture (one probe; isolated11/11 passes, thresholds preserved).
+Keep mode/host matching in heartbeat via the existing registered-account
+router; the movement reader receives its bound account/host. The existing
+heartbeat exact-count allowance changes28 to31 for three routing references;
+no new module allowance or trading condition. 94 routing/receipt/heartbeat
+checks pass. Preserve the failed gate; refined exact source needs full gate.
+-->
+
 <!-- Codex · №12,049 · 2026-10-08; session: collection-retention;
 codex-footprint: preserve available observations without inventing actions.
 Owner requests investigation/correction of incomplete collectors across the

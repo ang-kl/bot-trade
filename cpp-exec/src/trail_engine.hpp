@@ -74,6 +74,11 @@ StopPolicyCfg parseTrailStopPolicy(const jsn::Value& v);
 
 jsn::Value buildTrailAmend(long long positionId, const TrailSpec& snap, const StopPolicyCfg& cfg);
 
+// Codex · №12,072 · 2026-10-08; codex-footprint: confirmed-trail.
+// Preserve the legacy prefix; include only complete movement JSON that fits
+// the Node collector's existing 500-byte detail limit.
+std::string buildTrailDecisionDetail(long long positionId, const jsn::Value& protection);
+
 // Pure ratchet decision, unit-tested without a feed or engine: advance the
 // peak from the exit-side price and return the rounded Chandelier target
 // when it improves the current stop by at least minStep (a tenth of the

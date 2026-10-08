@@ -95,11 +95,14 @@ export const SPEECH_ACTS = [
     source: 'position_events', match: "kind = 'trail_armed'",
     speech_act: 'commissive',
     doing: 'promising to tighten the stop as price moves favourably from here on',
-    successPredicate: (db, { positionId, sinceIso }) => {
+    successPredicate: (db, { positionId, sinceIso, accountId, tradeId }) => {
+      // Codex · №12,074 · 2026-10-08; codex-footprint: confirmed-trail.
+      const owned = accountId !== undefined && tradeId !== undefined
       const r = db.prepare(
         `SELECT COUNT(*) AS n FROM position_events
-          WHERE position_id = ? AND kind IN ('trail_tightened', 'sl_moved') AND at >= ?`
-      ).get(String(positionId), sinceIso)
+          WHERE position_id = ? AND kind IN ('trail_tightened', 'sl_moved')
+            AND julianday(at) >= julianday(?)${owned ? ' AND account_id IS ? AND trade_id IS ?' : ''}`
+      ).get(String(positionId), sinceIso, ...(owned ? [accountId == null ? null : String(accountId), tradeId] : []))
       return (r?.n || 0) > 0
     },
   },
@@ -213,7 +216,7 @@ function inspectBrokenCommissive(db, cfg, nowMs) {
     // AND the local trade id; monitored_positions carries trade_id — the one
     // key both sides share natively.
     rows = db.prepare(
-      `SELECT pe.position_id, pe.at, pe.account_id, pe.symbol, mp.mfe_r
+      `SELECT pe.position_id, pe.at, pe.account_id, pe.trade_id, pe.symbol, mp.mfe_r
          FROM position_events pe
          JOIN monitored_positions mp ON mp.trade_id = pe.trade_id
         WHERE pe.kind = 'trail_armed' AND mp.status = 'active' AND pe.trade_id IS NOT NULL
@@ -226,8 +229,9 @@ function inspectBrokenCommissive(db, cfg, nowMs) {
     try {
       kept = db.prepare(
         `SELECT COUNT(*) AS n FROM position_events
-          WHERE position_id = ? AND kind IN ('trail_tightened', 'sl_moved') AND at > ?`
-      ).get(r.position_id, r.at)?.n || 0
+          WHERE position_id = ? AND account_id IS ? AND trade_id IS ?
+            AND kind IN ('trail_tightened', 'sl_moved') AND julianday(at) > julianday(?)`
+      ).get(r.position_id, r.account_id, r.trade_id, r.at)?.n || 0
     } catch { kept = 0 }
     if (kept > 0) continue
     out.push({
@@ -241,7 +245,7 @@ function inspectBrokenCommissive(db, cfg, nowMs) {
       principle_params: { positionId: r.position_id, symbol: r.symbol },
       falsifier: {
         prediction: 'a tightening event for this position appears within 12h — which would mean the trail was merely slow, falsifying the broken-promise reading',
-        metric: { kind: 'position_event_exists', positionId: String(r.position_id), kinds: ['trail_tightened', 'sl_moved'], sinceMs: nowMs },
+        metric: { kind: 'position_event_exists', positionId: String(r.position_id), accountId: r.account_id, tradeId: r.trade_id, kinds: ['trail_tightened', 'sl_moved'], sinceMs: nowMs },
         deadlineMs: nowMs + 12 * 3_600_000,
       },
     })
@@ -438,10 +442,13 @@ export function evalFalsifierMetric(db, metric) {
         return !(at > Number(metric.sinceMs))
       }
       case 'position_event_exists': {
+        const owned = metric.accountId !== undefined && metric.tradeId !== undefined
         const r = db.prepare(
           `SELECT COUNT(*) AS n FROM position_events
-            WHERE position_id = ? AND kind IN (${metric.kinds.map(() => '?').join(',')}) AND at >= ?`
-        ).get(String(metric.positionId), ...metric.kinds, sinceIso)
+            WHERE position_id = ? AND kind IN (${metric.kinds.map(() => '?').join(',')})
+              AND julianday(at) >= julianday(?)${owned ? ' AND account_id IS ? AND trade_id IS ?' : ''}`
+        ).get(String(metric.positionId), ...metric.kinds, sinceIso,
+          ...(owned ? [metric.accountId == null ? null : String(metric.accountId), metric.tradeId] : []))
         // Tightening appeared → the trail was slow, not broken → FALSIFIED.
         return (r?.n || 0) === 0
       }
