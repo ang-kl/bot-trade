@@ -4,6 +4,15 @@
 // on a stop (02-10-2026). These pin the rules the chokepoint, the C++ sidecar
 // and the controller all lean on.
 import test from 'node:test'
+import { brokerPolicyObservation } from './stop-policy.js'
+
+// Codex · №12,055 · 2026-10-08; codex-footprint: collection-retention.
+test('retained broker policy facts keep false distinct from unknown and preserve omitted legacy fields', () => {
+  assert.deepEqual(brokerPolicyObservation({}),{})
+  assert.deepEqual(brokerPolicyObservation({stopLossTriggerMethod:2,trailingStopLoss:false}),{stopLossTriggerMethod:2,trailingStopLoss:false})
+  assert.deepEqual(brokerPolicyObservation({stopLossTriggerMethod:true,trailingStopLoss:'false'}),{stopLossTriggerMethod:null,trailingStopLoss:null})
+  assert.deepEqual(brokerPolicyObservation({stopLossTriggerMethod:null}),{stopLossTriggerMethod:null})
+})
 import assert from 'node:assert/strict'
 import {
   DEFAULT_STOP_POLICY, normaliseStopPolicy, setStopPolicy, getStopPolicy, loadStopPolicy,

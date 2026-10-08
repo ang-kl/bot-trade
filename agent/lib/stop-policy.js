@@ -281,6 +281,16 @@ export function brokerTrailing(position) {
   return typeof position?.trailingStopLoss === 'boolean' ? position.trailingStopLoss : null
 }
 
+// Codex · №12,055 · 2026-10-08; codex-footprint: collection-retention.
+// Read-only retention, never amend fields. Keep omitted legacy facts omitted
+// (unknown), and decode present facts through the canonical broker readers.
+export function brokerPolicyObservation(position) {
+  const out = {}
+  if (position && Object.hasOwn(position, 'stopLossTriggerMethod')) out.stopLossTriggerMethod = brokerTrigger(position)
+  if (position && Object.hasOwn(position, 'trailingStopLoss')) out.trailingStopLoss = brokerTrailing(position)
+  return out
+}
+
 /** Did the stop move to the SAFER side (up for a long, down for a short)? False on unknown input. */
 export function stopTightened(side, from, to) {
   const dir = sideDirection(side)

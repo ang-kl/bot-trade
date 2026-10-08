@@ -17,6 +17,11 @@ Full local/exact-head CI, actual review inspection, merge and deployed ordinary
 runtime verification required. No forced broker event, credentials, risk/account/
 strategy/profile/selected-account/region/volume/staging/schedule action. Whole
 acceptance remains7verified/19active/6deferred until complete criteria pass.
+The first full backend gate caught the new recorder naming policy fields outside
+their canonical module. Preserve that source boundary: read-only observation
+decoding now lives in stop-policy.js and reuses brokerTrigger/brokerTrailing;
+policy writers and thresholds stay unchanged. Initial failed gate retained;
+refined exact head requires the full gate before merge.
 -->
 
 <!-- Codex · №12,020 · 2026-10-08; session: executed-volume-provenance;

@@ -1,6 +1,7 @@
 import { accountMoney, recordAccountMoney } from './account-money.js'
 import { recordAccountHistory } from './account-history.js'
 import { observeBrokerReads } from '../lib/broker-read-observer.js'
+import { brokerPolicyObservation } from '../lib/stop-policy.js'
 
 const started = new WeakMap(), MAX_SKEW_MS = 60_000
 const id = value => /^[1-9]\d*$/.test(String(value)) ? String(value) : null
@@ -51,12 +52,9 @@ export function makeBrokerHistoryRecorder(db, { clock = Date.now } = {}) {
           const position = { positionId: id(p.positionId), symbolId: id(p.symbolId),
             stopLoss: typeof p.stopLoss === 'number' && Number.isFinite(p.stopLoss) && p.stopLoss > 0 ? p.stopLoss : null,
             takeProfit: typeof p.takeProfit === 'number' && Number.isFinite(p.takeProfit) && p.takeProfit > 0 ? p.takeProfit : null }
-          // Absent legacy policy fields remain unknown/absent. Expanding them
-          // to two NULL fields per position can exceed the existing size cap.
-          if (Object.hasOwn(p, 'stopLossTriggerMethod')) position.stopLossTriggerMethod =
-            Number.isInteger(p.stopLossTriggerMethod) && p.stopLossTriggerMethod >= 1 && p.stopLossTriggerMethod <= 4 ? p.stopLossTriggerMethod : null
-          if (Object.hasOwn(p, 'trailingStopLoss')) position.trailingStopLoss = typeof p.trailingStopLoss === 'boolean' ? p.trailingStopLoss : null
-          return position
+          // Omitted legacy policy facts stay unknown/absent; decoding remains
+          // owned by the policy module and does not build an amend payload.
+          return { ...position, ...brokerPolicyObservation(p) }
         })
         return recordAccountHistory(db, { ...common, source: 'independent_protection',
           currency: money.observation?.host === host ? money.observation.currency : null,
