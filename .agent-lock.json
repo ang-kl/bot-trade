@@ -6,7 +6,7 @@
       "branch": "fix/account-symbol-ownership-2026-10-08",
       "started_at": "2026-10-08T07:56:00Z",
       "expires_at": "2026-10-08T11:59:00Z",
-      "serial": 12181,
+      "serial": 12184,
       "files": [
         "agent/lib/ctrader-creds.js",
         "agent/services/tp-suggest.js",
@@ -35,7 +35,11 @@
         "agent/services/fast-monitor-sidecar-quotes.test.js",
         "agent/services/pending-signals.test.js",
         "agent/stop-amend-rail.test.js",
-        "agent/stop-loss-integrated.test.js"
+        "agent/stop-loss-integrated.test.js",
+        "agent/services/watchdog-calendar-refresh.test.js",
+        "agent/services/watchdog-contract.test.js",
+        "agent/services/watchdog-contract-entry-diagnostics.test.js",
+        "agent/services/watchdog-report-isolation.test.js"
       ],
       "purpose": "Account-owned symbol audit: TP snapshot, symbol-list helper/fallback regressions; no native or runtime-setting changes"
     }
