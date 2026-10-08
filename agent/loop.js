@@ -4373,6 +4373,10 @@ async function runLoop(db) {
               if (r.result) log(`P&L backfill [${r.accountId}] cross-side: ${r.result.backfilled} filled, ${r.result.scanned} deals read, ${r.result.gap} gaps before read; ${r.result.deferred ?? r.result.lifetimeSkipped ?? 0} unpriced position(s) without a whole lifecycle in the window, ${r.result.ambiguous || 0} ambiguous; conversion fee excluded from net ${r.result.conversionFeeExcluded ?? 0}`)
               else log(`P&L backfill [${r.accountId}] cross-side: ${r.skipped ? `skipped (${r.skipped})` : `failed — ${r.error}`}`)
               if (r.result?.positionHistory) log(`P&L position history [${r.accountId}]: ${JSON.stringify(r.result.positionHistory)}`)
+              // Claude · № 12,280 08-Oct: the close-attribution read is paced and silent;
+              // a close that stays "not yet verified" for a day was invisible here.
+              const att = r.result?.closeAttribution
+              if (att && !['no_candidate', 'not_due'].includes(att.state)) log(`Close attribution [${r.accountId}]: ${att.state}${att.reason ? ` (${att.reason})` : ''}${att.cause ? ` cause ${att.cause}` : ''}`)
             }
           } catch (err) {
             log(`Cross-side P&L recovery failed (non-fatal): ${err.message}`)
