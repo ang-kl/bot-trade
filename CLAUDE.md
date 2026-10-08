@@ -1,5 +1,29 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №12,049 · 2026-10-08; session: collection-retention;
+codex-footprint: preserve available observations without inventing actions.
+Owner requests investigation/correction of incomplete collectors across the
+19 active acceptance groups. Fresh main7b19c649 retains PR1233–1261 and gates.
+Nine actual-path regressions fail before correction: native response cursor
+race/legacy unseen tails, failed or falsely labelled stop journals, independent
+protection reads suppressed/overwritten, and refusal proposal/check splicing.
+Ack only durable native sequences; retry failed observation writes; snapshots
+are trail_observed, not trail_tightened; retain independent per-position stops
+with their own source/time; pair first refusal proposal/checks and latest reason.
+Node-only, prospective retention; no financial-history repair or recovery claim
+for overwritten/interior native-ring gaps. Existing bounded retention/polling,
+equity composition, ratchet/trading policy and owner scope remain intact.
+Full local/exact-head CI, actual review inspection, merge and deployed ordinary
+runtime verification required. No forced broker event, credentials, risk/account/
+strategy/profile/selected-account/region/volume/staging/schedule action. Whole
+acceptance remains7verified/19active/6deferred until complete criteria pass.
+The first full backend gate caught the new recorder naming policy fields outside
+their canonical module. Preserve that source boundary: read-only observation
+decoding now lives in stop-policy.js and reuses brokerTrigger/brokerTrailing;
+policy writers and thresholds stay unchanged. Initial failed gate retained;
+refined exact head requires the full gate before merge.
+-->
+
 <!-- Codex · №12,020 · 2026-10-08; session: executed-volume-provenance;
 codex-footprint: validated volume provenance pair. Owner ordered PR1259 P2
 follow-up after №12,010–12,011. Fresh main9c716b04 retains completed

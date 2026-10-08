@@ -10,9 +10,11 @@ const finite = n => typeof n === 'number' && Number.isFinite(n) ? n : null
 // Bounded observations of existing reads, not a new broker polling schedule.
 // One latest point per account/host/source/minute; never refresh its source age.
 export function recordAccountHistory(db, input) {
+  // Codex · №12,048 · 2026-10-08; codex-footprint: collection-retention.
+  // Independent protection snapshots use a separate existing bounded sink.
   const { accountId, host, source, receivedAt } = input
   if (!idOk(accountId) || !hostOk(host) || !Number.isSafeInteger(receivedAt)
-    || !['broker_trader', 'broker_snapshot', 'nightly_equity', 'broker_reconcile', 'broker_equity'].includes(source)) return false
+    || !['broker_trader', 'broker_snapshot', 'nightly_equity', 'broker_reconcile', 'broker_equity', 'independent_protection'].includes(source)) return false
   const currency = /^[A-Z]{3}$/.test(input.currency || '') ? input.currency : null
   const point = { accountId: String(accountId), host, source, receivedAt, currency,
     sourceTimestamp: null, balance: finite(input.balance), equity: finite(input.equity),

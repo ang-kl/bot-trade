@@ -1125,12 +1125,25 @@ async function repushRotatedToken(db, exec, side) {
 // bootId change is itself recorded as a synthetic `node/sidecar_restart` row
 // — a restart zeroes every in-memory counter, which the inspector must know.
 const CPP_DECISIONS_CURSOR_KEY = 'cpp_decisions_cursor_json'
+// Codex · №12,048 · 2026-10-08; codex-footprint: collection-retention.
+// Snapshot and latestSeq use separate native locks. Acknowledge only rows
+// actually retained, never an advertised sequence absent from the snapshot.
+const nativeSeq = value => typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+const retainedSeq = cur => Number.isSafeInteger(cur.lastSeq) && cur.lastSeq >= 0 ? cur.lastSeq : 0
+function durableAfter(db, table, side, cur, bootId) {
+  if (cur.bootId !== bootId) return 0
+  // Recover an incorrectly acknowledged tail only if it is still available
+  // from the native ring. No claim that overwritten/restarted history exists.
+  const max = db.prepare(`SELECT MAX(seq) AS seq FROM ${table} WHERE side=? AND boot_id=?`).get(side.name, cur.bootId)?.seq || 0
+  return Math.min(retainedSeq(cur), max)
+}
 async function pullDecisionsIntoDb(db, exec, side, health) {
   let cursors = {}
   try { cursors = JSON.parse(getState(db, CPP_DECISIONS_CURSOR_KEY) || '{}') } catch { cursors = {} }
   const cur = cursors[side.name] || { bootId: '', lastSeq: 0 }
+  const after = durableAfter(db, 'cpp_decisions', side, cur, health.bootId)
   const pulled = await exec.pullSidecarDecisions({
-    after: cur.bootId === health.bootId ? cur.lastSeq : 0,
+    after,
     bootId: cur.bootId,
     ...(side.base ? { base: side.base } : {}),
   })
@@ -1146,16 +1159,18 @@ async function pullDecisionsIntoDb(db, exec, side, health) {
     // log-watch.js matches this exact prefix (rule 'sidecar_restart').
     console.log(`[heartbeat] sidecar_restart: ${side.name} — previous boot ${cur.bootId}, new boot ${pulled.bootId}`)
   }
+  let lastSeq = cur.bootId === pulled.bootId ? after : 0
   for (const e of pulled.entries) {
-    if (!e || !Number.isFinite(Number(e.seq))) continue
+    if (!e || !nativeSeq(e.seq)) continue
     ins.run(side.name, pulled.bootId, Number(e.seq), Number(e.tsMs) || null,
             String(e.component || 'unknown'), String(e.kind || 'unknown'),
             e.accountId != null ? String(e.accountId) : null,
             Number.isFinite(Number(e.symbolId)) ? Number(e.symbolId) : null,
             e.code != null ? String(e.code).slice(0, 300) : null,
             e.detail != null ? String(e.detail).slice(0, 500) : null)
+    lastSeq = Math.max(lastSeq, e.seq)
   }
-  cursors[side.name] = { bootId: pulled.bootId, lastSeq: pulled.latestSeq }
+  cursors[side.name] = { bootId: pulled.bootId, lastSeq }
   setState(db, CPP_DECISIONS_CURSOR_KEY, JSON.stringify(cursors))
 }
 
@@ -1417,8 +1432,9 @@ export async function pullEventsIntoDb(db, exec, side, health) {
   let cursors = {}
   try { cursors = JSON.parse(getState(db, CPP_EVENTS_CURSOR_KEY) || '{}') } catch { cursors = {} }
   const cur = cursors[side.name] || { bootId: '', lastSeq: 0 }
+  const after = durableAfter(db, 'cpp_events', side, cur, health?.bootId)
   const pulled = await exec.pullSidecarEvents({
-    after: cur.bootId === health?.bootId ? cur.lastSeq : 0,
+    after,
     bootId: cur.bootId,
     ...(side.base ? { base: side.base } : {}),
   })
@@ -1429,8 +1445,9 @@ export async function pullEventsIntoDb(db, exec, side, health) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
   let inserted = 0
+  let lastSeq = cur.bootId === pulled.bootId ? after : 0
   for (const e of pulled.entries) {
-    if (!e || !Number.isFinite(Number(e.seq))) continue
+    if (!e || !nativeSeq(e.seq)) continue
     const r = ins.run(side.name, pulled.bootId, Number(e.seq), Number(e.tsMs) || null,
       e.clientMsgId ? String(e.clientMsgId) : null,
       Number.isFinite(Number(e.payloadType)) ? Number(e.payloadType) : null,
@@ -1443,8 +1460,9 @@ export async function pullEventsIntoDb(db, exec, side, health) {
       e.label ? String(e.label).slice(0, 200) : null,
       e.solicited ? 1 : 0)
     inserted += r.changes
+    lastSeq = Math.max(lastSeq, e.seq)
   }
-  cursors[side.name] = { bootId: pulled.bootId, lastSeq: pulled.latestSeq }
+  cursors[side.name] = { bootId: pulled.bootId, lastSeq }
   setState(db, CPP_EVENTS_CURSOR_KEY, JSON.stringify(cursors))
   return { inserted }
 }
