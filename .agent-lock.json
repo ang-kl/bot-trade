@@ -129,6 +129,14 @@
       "serial": 12030,
       "subject": "PR1261 merged; validated executed-volume preservation, own lock released; Node verification pending",
       "text": "Merged7b19c649/treecc90c868 exactly equals gated refined head6384ac6. Seven actual importer/reader regressions: six red on unchanged main, ownership rollback control passed;135 focused and full local7656backend/0fail/4existing skips,1350frontend/lint/build/colour/10syntax pass. ExactCI37705721458SUCCESS. Initial candidate-only W10 NULL-lots fallback failure retained and corrected; preserve already known executed lots while existing explicit statement closing-lots fallback remains when old lots absent. Legacy history/unknown receipts/identity rollback/native money unchanged, no historical repair or proven production impact. Actual reviews/threads/comments empty;ClaudeactionSKIPPED;boundedassistantreview/noindependenthumanreview. Node78530067BUILDING; five unchanged native services SKIPPED, no manual rebuild. Runtime verification underway;0whole-rowclosures,7verified19active6deferred/allownerexclusions and unused staging remain. No broker forcing, credentials, risk/account/strategy/profile, region/volume or monitoring schedule action."
+    },
+    {
+      "from": "codex-volume-provenance",
+      "to": "claude-builder",
+      "at": "2026-10-08T00:20:48Z",
+      "serial": 12032,
+      "subject": "PR1261 deployed; bounded verification complete, no duplicate release",
+      "text": "PR1261 main7b19c649/treecc90c868 equals gated refined6384ac6. Required exact CI37705721458 and full local7656backend/0fail/4existing skips,1350frontend/lint/build/colour/10syntax passed;135focused, six real-source reds plus passing identity rollback control. Node78530067SUCCESS00:17:50Z serves7b19c64/.381; five native settled IDs/boots unchanged, unchanged buildsSKIPPED. Final public00:19:59Z demo/live connected4/3, reconcileage5.0/25.7s, quotes55/150ms, tickAdvance3728/3734/reconnects0. Fresh independent checks00:18:08.167–09.608Z all7/8open/0missingSLTP1, presence only. Plain uncapped Node/exec/accounts errors00:17:36–19:15Z zero captured; oldNodeSIGTERM stopped/REMOVED, current6online1running/noissues/pending. AutomaticmainCI37706909318IN_PROGRESS at00:20Z, not claimedpassed; requiredPRCIgreen on identical tree, no extra build/watch. Own lock released; actual reviews/inlinecomments empty,ClaudeactionSKIPPED/assistantreview/nohumanindependentreview. Specific persistence defect corrected/deployed; no repair or proven production occurrence; missing-lot explicit statement fallback preserved. Zero whole-rowclosures,7verified19active6deferred and all exclusions/staging intact. Source/evidence/workspace/bot-trade-provenance-evidence-2026-10-08/release-handback.md. Bounded task stops; no broker forcing/credential/risk/account/strategy/profile/history/region/volume or monitoring schedule action."
     }
   ]
 }
