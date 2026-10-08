@@ -690,6 +690,29 @@ export function wsGetPositionDeals(host, clientId, clientSecret, accessToken, ac
   ], timeoutMs)
 }
 
+// Codex · №12,284 · 2026-10-08; codex-footprint: hybrid-history-boundary.
+// Diagnostic only: optional protocol fields varied without choosing a shorter
+// history window. Results must never feed a trading or financial decision.
+export function wsProbePositionHistoryBounds(host, clientId, clientSecret, accessToken, accountId, positionId, bounds, timeoutMs = 1000) {
+  if (![accountId, positionId].every(v => /^[1-9]\d*$/.test(String(v)) && Number.isSafeInteger(Number(v)))) {
+    throw new Error('position history identity invalid')
+  }
+  if (!bounds || typeof bounds !== 'object' || Array.isArray(bounds)
+    || Object.keys(bounds).some(k => !['fromTimestamp', 'toTimestamp'].includes(k))
+    || Object.values(bounds).some(v => !Number.isSafeInteger(v) || v < 0 || v > 2147483646000)) {
+    throw new Error('position history diagnostic bounds invalid')
+  }
+  return wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.DEAL_LIST_BY_POSITION_ID_REQ, payload: {
+      ctidTraderAccountId: Number(accountId), positionId: Number(positionId), ...bounds,
+    } }, expect: PT.DEAL_LIST_BY_POSITION_ID_RES },
+  // Codex · №12,288 · 2026-10-08; codex-footprint: diagnostic-owned-deadline.
+  // Own the socket and its whole deadline, including authentication/token
+  // waits. A pooled queue must never send after this probe has timed out.
+  ], timeoutMs, false, { usePool: false, extendTokenWait: false })
+}
+
 /**
  * X1 (25-09-2026): one order's details — ProtoOAOrderDetailsReq (2181) →
  * ProtoOAOrderDetailsRes (2182) `{ ctidTraderAccountId, order, deal: [...] }`,

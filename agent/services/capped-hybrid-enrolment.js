@@ -6,6 +6,7 @@ import { sameTicks, stopHeld } from './momentum-target-policy.js'
 import { registerPartialPlan, readPartialPlan } from './momentum-partial-manager.js'
 import { planCappedHybrid, readCappedHybridOwner } from './capped-hybrid-policy.js'
 import { getState, setState } from '../db.js'
+import { diagnoseHybridHistory } from './hybrid-history-diagnostic.js'
 
 const integer = n => Number.isSafeInteger(n) && n > 0
 const id = n => /^[1-9]\d*$/.test(String(n)) ? String(n) : null
@@ -36,6 +37,10 @@ export function openingReceipts(raw, owner, held, digits) {
 
 export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transports = {}, budgetMs = 12_000, maxCandidates = 8 } = {}) {
   const out = { examined: 0, enrolled: [], deferred: [], errors: [] }, started = now()
+  // Codex · №12,293 · 2026-10-08; codex-footprint: diagnostic-single-pass.
+  // Broker position ids are not unique across retained trade rows. Bound
+  // the experiment per invocation as well as durably across restarts.
+  let diagnosisConsidered = false
   // Old lightweight fixtures / unavailable schema are not new runtime facts.
   if (!['trades', 'monitored_positions', 'entry_intents', 'accounts'].every(n => table(db, n))) return out
   let candidates = db.prepare(`SELECT t.id,t.account_id,t.ctrader_position_id FROM trades t
@@ -79,7 +84,23 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
       const raw = await bounded(() => (transports.reconcile || wsReconcile)(...args, 4000, 0))
       const bp = partialPositionEvidence(raw, { ...context, nowMs: now() })
       if (!bp || bp.side !== owner.side || !sameTicks(bp.entry, owner.entry, digits)) { refuse('broker_position_unverified'); continue }
-      const history = await bounded(() => (transports.deals || wsGetPositionDeals)(...args, owner.positionId, now() + 2000, 4000))
+      const historyAt = now(), historyTo = historyAt + 2000
+      let history
+      try {
+        history = await bounded(() => (transports.deals || wsGetPositionDeals)(...args, owner.positionId, historyTo, 4000))
+      } catch (e) {
+        // This catch owns the exact history stage; symbols/reconcile failures
+        // cannot be mislabeled or trigger the diagnostic. No fallback enrolment.
+        if (!diagnosisConsidered && /INCORRECT_BOUNDARIES/.test(String(e?.message))) {
+          diagnosisConsidered = true
+          await diagnoseHybridHistory(db, {
+            args, positionId: owner.positionId, presentTimestamp: historyAt, toTimestamp: historyTo,
+            now, budgetMs: Math.min(4500, Math.max(0, budgetMs - (now() - started))),
+            ...(transports.probeHistory ? { read: transports.probeHistory } : {}),
+          })
+        }
+        throw e
+      }
       const openingDealIds = openingReceipts(history, owner, bp.volume, digits)
       const plan = planCappedHybrid({ side: owner.side, entry: owner.entry, initialRisk: owner.initialRisk,
         brokerTarget: bp.takeProfit, volume: bp.volume, minVolume: meta.minVolume, stepVolume: meta.stepVolume, digits, openingDealIds })

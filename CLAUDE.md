@@ -1,4 +1,26 @@
+<!-- Codex · №12,293 · 2026-10-08; codex-footprint: diagnostic-single-pass. A further actual P2 on the prior reviewed code reproduces two probes from duplicate trade rows for one account/position. Enrolment now calls the experiment at most once per invocation; real SQLite duplicate-position regression verifies it. The earlier green gate is retained, refined source needs its own required gate. -->
+<!-- Codex · №12,288 · 2026-10-08; codex-footprint: diagnostic-review-boundaries. PR1271 automated P2s reproduced before release: enforce direct transport whole deadline (no detached pooled call), reserve full 3s budget before durable claim, at most one variant per ordinary pass/four total for one owned position. Restart never retries an in-flight variant. No probe result used for trading/history. -->
 # Instructions for Claude — bot-trade
+
+<!-- Codex · №12,285 · 2026-10-08; codex-footprint: hybrid-history-boundary.
+The owner ordered the history rejection fixed and a durable native tick-profit
+controller. First isolate the broker constraint: a bounded diagnostic runs only
+after the exact capped-hybrid position-history call reports INCORRECT_BOUNDARIES.
+Its once-only claim and metadata persist before/after up to four read requests;
+optional protocol timestamps are varied without guessing a shorter history
+window. Timeout stops the experiment. No diagnostic response reaches enrolment,
+financial history or trading decisions. No credentials or remote descriptions
+are logged. Real database/enrolment regression fails unchanged main; wire tests
+cover actual read payloads with pooling enabled or disabled. Full local/exact-head CI, review,
+merge and deployed result remain required. The rejected boundary and hybrid
+profit outcome are not yet established. Entry, SL, TP, native code and settings
+remain unchanged in this diagnostic release. Native tick-profit work follows
+separately; no microsecond broker/storage guarantee or whole acceptance pass.
+Conversation: owner prompt after Codex12282; investigation/build12283–12285.
+Session: native-hybrid-2026-10-08, ChatGPT; no external session URL, hidden model
+effort or independent human review claimed. Counts7verified/19active/6deferred;
+unverified overlay25, owner exclusions and unused staging preserved.
+-->
 
 <!-- Codex · №12,075 · 2026-10-08; session: confirmed-trail;
 codex-footprint: broker-confirmed movement has an owned journal consumer.
