@@ -1,20 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": [
-    {
-      "owner": "codex-hybrid-clock",
-      "session": "hybrid-clock-2026-10-09",
-      "serial": 12363,
-      "started_at": "2026-10-08T18:11:26Z",
-      "expires_at": "2026-10-09T06:11:26Z",
-      "files": [
-        "agent/services/hybrid-tick-controller.js",
-        "agent/services/hybrid-tick-controller.test.js",
-        "CLAUDE.md"
-      ],
-      "purpose": "Reproduce PR1277 postmerge P2: gateway-local receipt/persistence clocks compared against Node wall clock. Correct profit-consumer clock domains; retain raw stamps and strict original broker-source freshness. No native/entry/SL/settings change or forced broker event."
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -213,6 +199,13 @@
       "serial": 12358,
       "subject": "PR1277 merged after all gates; own lock released, native/Node rollout verification active",
       "text": "Merged57280d95/tree59b546f7 exactly equals gated970a7f22. Required NodeCI37816176232 and nativeCI37816176516SUCCESS, includingTSan/delegator; local7799backend/3native skips1350front/lint/build/colour/15syntax, productionnative+7focusedprograms+3newTSan and4actualC++journal→NodeSQLite→controlledbroker→residual/journal/reopen cases passed. Actualreviews/threads/comments empty18:02;ClaudeactionSKIPPED,rootassistantreview/nohumanindependentreview. Dedicatedowned live/demo timestamped profit feeds, fsynced rawtrigger and Node rawresponse+existingpartialclaim; entrySLmechanismsandTPceilingfrozen. Recoveryadapterupperboundnow, noguessedhistorywindow. Node77e9593c/demoba115540/lived8bb31e3 BUILDING; no runtime/naturalpartial/profitimprovement claimyet. Scanners/verifierSKIPPEDunchanged. ReusePR1276residualrelease. Counts7verified19active6deferred/unverified25;0wholeclosures. No forcedbroker/credential/risk/account/strategy/profile/region/volume/staging/schedule change. Continuing rollout plus ordinaryauth/reconcile/quotes/protection and naturallyownedstored hybrid evidence; do not duplicate release."
+    },
+    {
+      "from": "codex-hybrid-clock",
+      "at": "2026-10-08T18:47:00Z",
+      "serial": 12380,
+      "subject": "PR1278 merged; own lock released, Node-only runtime verification active",
+      "text": "Merged aa45626e/treec45df125 exactly equals gatedcc5ac472. Postmerge1277P2 reproduced live/demo BUY/SELL clock-domain refusals; actual unchanged native binary reproduced expiry rejection at gateway-2s. Correct strict broker-source vs gateway-local clocks; reserve existing2s within unchanged90s ceiling; Node-owned latency measurement.47focused and6actualnative configcases pass; full local7810backend/0fail/4existingnative skips1350front/lint/build/colour/10syntax;exactCI37824405097SUCCESS. InitiallocalV8fatal in unchangedreplaytest retained; baseline/candidate38each and unchangedfullrerunpass,causeunmeasured. AutomatedCodexreview completed+1 nofindings;ClaudeactionSKIPPED,nohumanindependentreview. Only3Node/docs/testfiles; native/entrySL/TP/settings unchanged. Node rollout pending; bothnativegateways remain PR1277 and ordinaryauth/reconcile/quotes healthy18:44. Hybridjournalsready/header77,0configuredplans/0triggers; no naturalpartial/profit/wholeacceptanceclosure. Counts7verified19active6deferred/unverified25. No forcedbroker/credentials/risk/account/strategy/profile/region/volume/staging/schedule action."
     }
   ]
 }
