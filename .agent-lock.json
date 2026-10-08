@@ -24,8 +24,8 @@
       "expires_at": "2026-10-09T04:55:00Z",
       "files": [
         "agent/services/momentum-partial-manager.js",
-        "agent/services/momentum-partial-residual.test.js",
-        "CLAUDE.md"
+        "CLAUDE.md",
+        "agent/services/capped-hybrid.test.js"
       ],
       "purpose": "Persist actual confirmed residual readback with its partial receipt before status/journal; entry and stop rules unchanged. Existing own history lock CLAUDE overlap is same session."
     }
