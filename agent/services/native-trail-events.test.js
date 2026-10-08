@@ -3,13 +3,20 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
-import { probeOneSidecar } from './heartbeat.js'
+import { probeOneSidecar, execSidesToProbe } from './heartbeat.js'
 import { managementFor } from './position-history.js'
 import { currentManagementState, lastStateBeforeExit, recordPositionEvent } from './position-events.js'
 import { INSPECTIONS, SPEECH_ACTS, evalFalsifierMetric } from './log-inspector.js'
 import { recordNativeTrailDecision } from './native-trail-events.js'
 
 const NOW = Date.parse('2026-10-08T02:30:00Z')
+// Codex · №12,109 · 2026-10-08; codex-footprint: default-trail-binding.
+function sharedRoute(f, isLive = false) {
+  f.exec.execBaseFor = () => 'http://native.test'
+  Object.assign(f.side, execSidesToProbe(f.exec)[0])
+  setState(f.db, 'ctrader_account_id', '11')
+  setState(f.db, 'ctrader_is_live', isLive ? 'true' : 'false')
+}
 function anotherEpisode(f) {
   return f.db.prepare(`INSERT INTO trades(symbol,side,account_id,ctrader_position_id,status,opened_at,entry_price)
     VALUES ('TEST','BUY','11','77','closed','2026-10-08 01:00:00',10)`).run().lastInsertRowid
@@ -35,6 +42,72 @@ function fixture(t) {
     replace(patch){ entry={...entry,...patch} },
     run:()=>probeOneSidecar(db,exec,side,{now:new Date(NOW)})}
 }
+
+test('default collapsed route journals a registered demo movement once',async t=>{
+  const f=fixture(t);sharedRoute(f)
+  await f.run();await f.run()
+  const event=f.db.prepare("SELECT * FROM position_events WHERE kind='trail_tightened'").get()
+  assert.equal(managementFor(f.db,{accountId:11,positionId:77,tradeId:f.tradeId}).sl_moves,1)
+  assert.equal(event.account_id,'11')
+  assert.equal(JSON.parse(event.detail_json).host,'demo.ctraderapi.com')
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM cpp_decisions WHERE seq>0').get().n,1)
+})
+
+test('collapsed route binds another registered account on its primary host',async t=>{
+  const f=fixture(t);sharedRoute(f)
+  f.db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (?,?)').run('22',0)
+  setState(f.db,'ctrader_account_id','22')
+  await f.run()
+  const event=f.db.prepare("SELECT * FROM position_events WHERE kind='trail_tightened'").get()
+  assert.equal(event.account_id,'11')
+  assert.equal(JSON.parse(event.detail_json).host,'demo.ctraderapi.com')
+  assert.equal(managementFor(f.db,{accountId:11,positionId:77,tradeId:f.tradeId}).sl_moves,1)
+})
+
+test('default collapsed route also journals a registered live short movement',async t=>{
+  const f=fixture(t)
+  f.db.prepare('UPDATE accounts SET is_live=1').run()
+  f.db.prepare("UPDATE trades SET side='SELL'").run()
+  f.db.prepare("UPDATE monitored_positions SET side='short'").run()
+  sharedRoute(f,true)
+  f.replace({detail:'pos=77 sl=10.500000 amend_readback proof='+JSON.stringify({
+    ...f.proof,direction:-1,beforeStopLoss:11.5,afterStopLoss:10.5})})
+  await f.run()
+  const event=f.db.prepare("SELECT * FROM position_events WHERE kind='trail_tightened'").get()
+  assert.equal(managementFor(f.db,{accountId:11,positionId:77,tradeId:f.tradeId}).sl_moves,1)
+  assert.equal(JSON.parse(event.detail_json).host,'live.ctraderapi.com')
+})
+
+test('collapsed route leaves foreign-host, missing-primary and contradictory routing raw',async t=>{
+  for(const change of ['foreign','missing','contradictory']){
+    const f=fixture(t);sharedRoute(f)
+    if(change==='foreign'){
+      f.db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (?,?)').run('22',1)
+      setState(f.db,'ctrader_account_id','22');setState(f.db,'ctrader_is_live','true')
+    }
+    if(change==='missing')setState(f.db,'ctrader_account_id','999')
+    if(change==='contradictory')setState(f.db,'ctrader_is_live','true')
+    await f.run()
+    assert.equal(managementFor(f.db,{accountId:11,positionId:77,tradeId:f.tradeId}).sl_moves,0)
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM cpp_decisions WHERE seq>0').get().n,1)
+  }
+})
+
+test('collapsed routing requires the actual shared endpoint and the same native boot',async t=>{
+  for(const change of ['split','endpoint','boot','undefined']){
+    const f=fixture(t);sharedRoute(f)
+    if(change==='split'){
+      f.exec.EXEC_HOST_LIVE='live';f.exec.EXEC_HOST_DEMO='demo'
+      f.exec.execBaseFor=host=>'http://'+host+'.test'
+    }
+    if(change==='endpoint')f.side.base='http://foreign.test'
+    if(change==='boot')f.exec.pullSidecarDecisions=async()=>({bootId:'another-boot',latestSeq:1,entries:[f.entry]})
+    if(change==='undefined')f.side.isLive=undefined
+    await f.run()
+    assert.equal(managementFor(f.db,{accountId:11,positionId:77,tradeId:f.tradeId}).sl_moves,0)
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM cpp_decisions WHERE seq>0').get().n,1)
+  }
+})
 
 test('confirmed owned native movement reaches history, lifecycle and the armed-trail promise',async t=>{
   const f=fixture(t),{db,tradeId}=f

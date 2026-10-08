@@ -2592,3 +2592,14 @@ CI and merge/deployed verification pending, not claimed. No broker/credential/
 risk/account/profile/strategy/region/volume/staging/schedule operation.
 Acceptance stays7verified/19active/6owner-deferred, zero whole-row closures.
 -->
+
+
+## 2026-10-08 — Codex · №12,109: default native movement journal routing
+
+codex-footprint: default-trail-binding. Fresh base03fba5c (PR1263), tree d5114563. Automated review https://github.com/ang-kl/bot-trade/pull/1263#discussion_r4214373707 identified the documented collapsed-route gap after merge: execSidesToProbe returns isLive:null and the boolean-only journal binding leaves confirmed receipts raw. Current production uses separate live/demo routes; no production impact from this default-route gap is established.
+
+For the actual collapsed endpoint only, retain the existing current-route host when its primary account is registered, its registered host agrees with the current route assembler and the health/pull native boot agrees. A registered receipt account must share that host. Split routes retain their original side comparison. Unknown primary, conflicting host/mode, foreign endpoint, missing/contradictory side or mismatched boot stays raw. Existing account/symbol/direction/entry/episode/strict movement and atomic journal/cursor checks remain required; no selected-account move, credential/OAuth write, account activation or native/trading policy change.
+
+Two positive actual ingestion regressions fail unchanged main; fourteen controls pass. Five new cases cover demo/live-short/default secondary ownership and grouped mismatch controls. Final focused routing/receipt/heartbeat suite99/99 passes. Heartbeat remains the existing routing owner; its exact isLive reference allowance31->32 corresponds to the one collapsed-route discriminator, with no new module exception or relaxed audit. Required local/exact-head Node gates and fresh actual review precede release; no new native source gate/rebuild is needed for this Node-only follow-up. Prior PR1263 native/TSan/delegator gate remains completed on unchanged native hashes. No universal provenance, retrospective history reconstruction, full trailing/WR/PF acceptance or independent human review is claimed.
+
+Owner accounting stays7 verified/19 active/6 deferred; unverified overlay25=19+6,45 total; zero whole-group closures. All exclusions, unused staging, registry-owner boundary and disabled monitoring schedule are preserved. Dated release/deployment results are recorded append-only in the session receipts rather than inferred from this implementation note.

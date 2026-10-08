@@ -79,7 +79,8 @@ export const ALLOWLIST = Object.freeze({
   'agent/routes/state.js': { reason: 'health/roster views echo the side; risk display resolves the requested account snapshot/registry badge and calendar identity selects its registered broker host without a policy gate; the manual-order override resolves the account\'s creds', max: { is_live: 12, isLive: 6, live_str: 1, demo_str: 1 } },
   // Codex · №12,082 · 2026-10-08; codex-footprint: confirmed-trail.
   // Three additional routing tokens bind native journals to registered hosts.
-  'agent/services/heartbeat.js': { reason: 'sidecar side routing and registered native-journal host binding (plan §3.1: heartbeat.js); identical movement proof on every account', max: { is_live: 7, isLive: 31, live_str: 4, demo_str: 4 } },
+  // Codex · №12,109 · 2026-10-08; codex-footprint: default-trail-binding.
+  'agent/services/heartbeat.js': { reason: 'sidecar split/shared routing and registered native-journal host binding (plan §3.1: heartbeat.js); identical movement proof on every account', max: { is_live: 7, isLive: 32, live_str: 4, demo_str: 4 } },
   'agent/services/account-equity.js': { reason: 'cross-side equity sweep (plan §3.1)', max: { is_live: 3, isLive: 4 } },
   'agent/services/reconciler.js': { reason: 'position ids are issued per broker host: the cross-account adoption refusal compares the registered host of the two rows (the SELECT only); identical refusal rule on both hosts, no entry gate or broker write (02-10-2026)', max: { is_live: 2 } },
   'agent/services/cross-side-reconcile.js': { reason: 'route fresh ledger reads to the opposite account host; identical reconciliation and no broker writes', max: { is_live: 2, isLive: 2 } },

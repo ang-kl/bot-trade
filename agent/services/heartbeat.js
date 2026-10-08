@@ -1163,6 +1163,19 @@ async function pullDecisionsIntoDb(db, exec, side, health) {
   }
   // Codex · №12,073 · 2026-10-08; codex-footprint: confirmed-trail.
   // The confirmed journal and its raw native receipt commit together.
+  // Codex · №12,109 · 2026-10-08; codex-footprint: default-trail-binding.
+  // The collapsed deployment has no side label. Bind its registered primary
+  // host only on the actual shared endpoint and the health snapshot's boot.
+  let sharedHost = null
+  if (side.isLive === null && typeof exec.execBaseFor === 'function' &&
+      typeof pulled.bootId === 'string' && pulled.bootId && health.bootId === pulled.bootId) {
+    const routes = execSidesToProbe(exec)
+    if (routes.length === 1 && routes[0].name === side.name && routes[0].base === side.base) {
+      const route = await sideCreds(db, side)
+      const primary = credsForRegisteredAccount(db, route.accountId)
+      if (primary && primary.host === route.host) sharedHost = route.host
+    }
+  }
   const retain = db.transaction(e => {
     const result = ins.run(side.name, pulled.bootId, Number(e.seq), Number(e.tsMs) || null,
       String(e.component || 'unknown'), String(e.kind || 'unknown'),
@@ -1175,7 +1188,8 @@ async function pullDecisionsIntoDb(db, exec, side, health) {
       // Host identity stays in account routing, never in a movement policy.
       const account = e.component === 'trail' && e.kind === 'amend_ok'
         ? credsForRegisteredAccount(db,e.accountId) : null
-      const accountBinding = typeof side.isLive === 'boolean' && account && account.isLive === side.isLive
+      const accountBinding = account && (typeof side.isLive === 'boolean'
+        ? account.isLive === side.isLive : account.host === sharedHost)
         ? {accountId:String(account.accountId),host:account.host} : null
       recordNativeTrailDecision(db, { side, bootId: pulled.bootId, entry: e, accountBinding })
     }
