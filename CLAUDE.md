@@ -1,5 +1,27 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №12,365 · 2026-10-09; codex-footprint: hybrid-clock-2026-10-09.
+PR1277 merged57280d95/tree59b546f7 after required Node/native CI success,
+including TSan/delegator. Three changed services deployed; ordinary4/4demo
+and3/3liveauth recovered, reconciliation/quotes resumed. Both native journals
+ready but eligible hybrid configurations empty; no natural partial claimed.
+Postmerge automated P2 review r4222508669 reproduces four live/demo BUY/SELL
+fresh ticks refused solely because gateway-local receipt clocks lead Node.
+Keep original broker-source freshness strict; compare gateway receive/persist
+ordering and age within the gateway clock, retain raw stamps, and validate
+the same source/receive bounds as native ingestion. Use Node's retained local
+receipt time for Node receipt-to-result latency, not cross-host subtraction.
+Adjacent actual native configuration probe reproduces rejection when gateway
+lags Node: Node's90s expiry appears92s away. Reserve the existing2s clock
+budget within the native90s ceiling (88s published, unchanged30s refresh).
+No native, entry, SL, TP/partial quantity, risk or account-setting change.
+No historical rewrite or production occurrence asserted; full local/exact
+Node CI and actual review/deployment verification required for this fix.
+Reuse unchanged PR1277 native gates/binaries; no native production rebuild.
+Counts7verified/19active/6deferred;unverified25. Owner requires natural owned
+tick/receipt/fill/residual/journal proof; do not force a trade to obtain it.
+-->
+
 <!-- Codex · №12,327 · 2026-10-09; codex-footprint: native-hybrid-2026-10-08.
 Owner orders native tick-triggered capped hybrid for live AND demo accounts,
 with real retained execution evidence; entry and SL mechanisms remain frozen.
