@@ -399,15 +399,20 @@ function keeperPeakBasis(row, bp, accountId) {
   // sides still refuse. Number('BUY') must not disable valid protection.
   const brokerSide = td.tradeSide === 1 || td.tradeSide === '1' || td.tradeSide === 'BUY' ? 1
     : td.tradeSide === 2 || td.tradeSide === '2' || td.tradeSide === 'SELL' ? -1 : 0
+  const positiveNumber = raw => (typeof raw === 'number'
+    || (typeof raw === 'string' && /^[0-9]+(?:\.[0-9]+)?$/.test(raw)))
+    && Number.isFinite(Number(raw)) && Number(raw) > 0 ? Number(raw) : null
+  const symbolId = (typeof td.symbolId === 'number'
+    || (typeof td.symbolId === 'string' && /^[0-9]+$/.test(td.symbolId))) ? Number(td.symbolId) : null
   const basis = {
     version: 1, accountId: String(accountId), positionId: String(row.position_id),
-    symbolId: Number(td.symbolId), side, entry: Number(bp.price ?? row.entry_price),
-    volume: Number(td.volume),
+    symbolId, side, entry: positiveNumber(bp.price ?? row.entry_price),
+    volume: positiveNumber(td.volume),
   }
   if (!side || !Number.isSafeInteger(basis.symbolId) || basis.symbolId <= 0
       || !Number.isFinite(basis.entry) || basis.entry <= 0
       || !Number.isFinite(basis.volume) || basis.volume <= 0
-      || (td.tradeSide != null && brokerSide !== side)) return null
+      || (!brokerSide || brokerSide !== side)) return null
   let previous
   try { previous = JSON.parse(row.keeper_peak_state) } catch { /* unknown basis */ }
   const same = previous?.version === 1 && ['accountId', 'positionId', 'symbolId', 'side', 'entry']
@@ -620,6 +625,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     // for that side is withheld instead of wiping this account's trails.
     summary.trailSpecsComplete = true
     const brokerDigitsByPosition = new Map()
+    const invalidPeakRows = new Set()
 
     for (const { r, bp } of involved) {
       const td = bp.tradeData || {}
@@ -637,6 +643,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
 
       const peakBasis = keeperPeakBasis(r, bp, accountId)
       if (!peakBasis) {
+        invalidPeakRows.add(r.id)
         summary.errors.push(`${r.symbol}: keeper peak basis has missing or conflicting broker identity/quantity`)
         summary.trailSpecsComplete = false
         continue
@@ -644,7 +651,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
       const lots = td.volume && meta.lotSize ? td.volume / meta.lotSize : null
       const decision = decideProfitKeeper(cfg, {
         side: r.side,
-        entry: bp.price ?? r.entry_price,
+        entry: peakBasis.basis.entry,
         price,
         lots,
         unitsPerLot: meta.lotSize / 100,
@@ -859,7 +866,10 @@ async function profitKeeperPass(db, creds, deps = {}) {
     const already = new Set(trailSpecs.map(s => String(s.positionId)))
     for (const { r, bp } of involvedAll) {
       const td = bp.tradeData || {}
-      if (already.has(String(parseInt(r.position_id)))) continue
+      // Codex · №12,228 · 2026-10-08; codex-footprint: keeper-volume-peak.
+      // A refused keeper identity must not fall through to a since-entry
+      // native spec based on that same unproven ledger direction.
+      if (invalidPeakRows.has(r.id) || already.has(String(parseInt(r.position_id)))) continue
       const bars = fullBarsBySymbolId[td.symbolId]
       // A row the fence kept from the decision step has no digits yet (the
       // decision step is where getVolumeMeta ran); read them here, cached.

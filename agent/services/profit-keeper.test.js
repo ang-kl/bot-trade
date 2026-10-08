@@ -1194,3 +1194,58 @@ test('keeper accepts numeric-string broker enums and refuses conflicting or malf
     assert.ok(result.errors.length);assert.equal(result.slMoves,0);assert.equal(result.closes,0)
   }
 })
+
+// Codex · №12,228 · 2026-10-08; codex-footprint: keeper-volume-peak.
+for (const side of ['BUY','SELL']) {
+  test(`keeper ${side}: absent/null broker direction cannot record a proven peak or act`, async t => {
+    for (const missing of [null,undefined]) {
+      const f=peakVolumeFixture(t,{side})
+      f.deps.ws.wsGetTrendbarsBatch=async()=>({'1h':Array.from({length:50},()=>({h:101,l:99,c:100}))})
+      if (missing === undefined) delete f.snapshot.tradeData.tradeSide
+      else f.snapshot.tradeData.tradeSide=missing
+      const result=await runProfitKeeper(f.db,CREDS,f.deps)
+      assert.equal(result.slMoves,0);assert.equal(result.closes,0)
+      assert.equal(f.calls.amends.length,0);assert.equal(f.calls.closes.length,0)
+      assert.equal(f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state,null)
+      assert.equal(f.db.prepare('SELECT peak_profit_usd FROM monitored_positions').get().peak_profit_usd,null)
+      assert.equal(result.trailSpecsComplete,false)
+      assert.equal(result.trailSpecs.length,0,'refused identity cannot fall through to a native since-entry spec')
+    }
+  })
+}
+
+test('a retained good peak does not authorise a protective close with current broker direction missing', async t => {
+  const f=peakVolumeFixture(t)
+  await runProfitKeeper(f.db,CREDS,f.deps)
+  const before=f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state
+  delete f.snapshot.tradeData.tradeSide
+  f.snapshot.tradeData.volume=500;f.setPrice(104)
+  const result=await runProfitKeeper(f.db,CREDS,f.deps)
+  assert.equal(result.closes,0);assert.equal(result.slMoves,0)
+  assert.equal(f.calls.closes.length,0)
+  assert.equal(f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state,before)
+  assert.equal(result.trailSpecsComplete,false)
+})
+
+// Same identity/basis boundary: boolean wire fields are unknown, not 1.
+for (const field of ['symbolId','volume','entry']) {
+  test(`keeper cannot manufacture numeric ${field} provenance from a boolean broker field`, async t => {
+    const f=peakVolumeFixture(t)
+    if (field === 'entry') f.snapshot.price=true
+    else f.snapshot.tradeData[field]=true
+    if (field === 'symbolId') f.deps.ws.wsGetLastCloses=async()=>({true:110})
+    const result=await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(result.slMoves,0);assert.equal(result.closes,0)
+    assert.equal(f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state,null)
+  })
+}
+
+test('valid numeric-string broker quantities and entry retain numeric stop arithmetic', async t => {
+  const f=peakVolumeFixture(t)
+  f.snapshot.tradeData.symbolId='1';f.snapshot.tradeData.volume='1000';f.snapshot.price='100'
+  const first=await runProfitKeeper(f.db,CREDS,f.deps)
+  assert.equal(first.errors.length,0);assert.equal(first.closes,0);assert.equal(first.slMoves,1)
+  assert.equal(f.snapshot.stopLoss,105)
+  f.snapshot.tradeData.volume='500'
+  assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).closes,0)
+})
