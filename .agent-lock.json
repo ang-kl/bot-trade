@@ -26,7 +26,10 @@
         "agent/services/momentum-partial-broker.test.js",
         "agent/lib/one-account-model.test.js",
         "CLAUDE.md",
-        "agent/test-support/hybrid-scene.js"
+        "agent/test-support/hybrid-scene.js",
+        "cpp-exec/src/spot_feed.cpp",
+        "cpp-exec/src/spot_feed.hpp",
+        "cpp-exec/src/tests/test_hybrid_timestamp.cpp"
       ],
       "purpose": "Owner orders continue through gated native account-owned tick triggers for both live/demo, durable trigger/claim/fill/residual records. Entry and SL untouched. Existing Node durable close coordination retained, broker execution remains own native gateway; no forced events."
     }
@@ -215,6 +218,13 @@
       "serial": 12321,
       "subject": "PR1276 merged; completed locks released, native tick work active",
       "text": "PR1276 a5384a4/treecb340730 matches gated4d06196. Full local7785 backend/4 existing native skips1350front/lint/build/colour/10syntax,CI37806706220passed. Initial unchangedfast-monitorfailure retained;baseline/candidate31each+fullrerunpass. Reviews/threadsempty;Claudeactionskipped. Node1cabff5bBUILDING,5nativesunchanged. Ownresidual/historylocksreleased;PR1271closedunmerged. Handoff15:44errorwasbefore15:45dbdeboot;postbootboundaryquery0doesnotprovehistorysuccess,noguessedwindow. Ownerrequiresnativeaccount-ownedtickhybridforLIVEanddemo,realstorednaturalbrokerreceipts,entrySLfrozen. Isolatednativeworkunpublished; retainednativefilelock. No additionalClaude workrequested;no whole-rowclosure."
+    },
+    {
+      "from": "codex-native-hybrid",
+      "at": "2026-10-08T17:11:38Z",
+      "serial": 12331,
+      "subject": "Unpublished native candidate: timestamp subscription boundary refinement",
+      "text": "Actual SpotFeed does not request subscribeToSpotTimestamp; new hybrid requires source clocks. Add opt-in false-by-default only to dedicated profit feeds, controlled real WebSocket regression. Existing entry/trail feed behavior frozen. Published Git objects07aba7d/a02baf4 have NO branch/PR/merge/deploy yet; retained initial local Node gate on isolated unchanged source while native refinement tested separately. No forced broker events or account/settings change."
     }
   ]
 }
