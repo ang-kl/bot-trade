@@ -1166,3 +1166,31 @@ test('a confirmed keeper scale-out keeps its pre-close quantity basis until brok
   assert.equal(next.closes,0); assert.equal(next.scaleOuts,0)
   assert.equal(f.calls.closes.length,1,'no repeated partial or phantom full close')
 })
+
+// Codex · №12,223 · 2026-10-08; codex-footprint: keeper-volume-peak.
+// Actual automated P1 review #1268: broker enums have named forms too.
+for (const side of ['BUY','SELL']) {
+  test(`keeper accepts the broker's named ${side} enum and retains its partial-volume protection`, async t => {
+    const f=peakVolumeFixture(t,{side})
+    f.snapshot.tradeData.tradeSide=side
+    const first=await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(first.errors.length,0,JSON.stringify(first))
+    assert.equal(first.slMoves,1,'valid named broker side must be protected')
+    f.snapshot.tradeData.volume=500
+    assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).closes,0)
+    f.setPrice(side === 'BUY' ? 104 : 96)
+    assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).closes,1,'genuine breach must still be acted on')
+  })
+}
+
+test('keeper accepts numeric-string broker enums and refuses conflicting or malformed side values', async t => {
+  for (const [rowSide,brokerSide] of [['BUY','1'],['SELL','2']]) {
+    const f=peakVolumeFixture(t,{side:rowSide});f.snapshot.tradeData.tradeSide=brokerSide
+    assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).slMoves,1)
+  }
+  for (const brokerSide of ['SELL','2',true,false,'unknown','',0]) {
+    const f=peakVolumeFixture(t);f.snapshot.tradeData.tradeSide=brokerSide
+    const result=await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.ok(result.errors.length);assert.equal(result.slMoves,0);assert.equal(result.closes,0)
+  }
+})

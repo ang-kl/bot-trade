@@ -394,6 +394,11 @@ function keeperPeakBasis(row, bp, accountId) {
   const td = bp.tradeData || {}
   const side = ['LONG', 'BUY'].includes(String(row.side).toUpperCase()) ? 1
     : ['SHORT', 'SELL'].includes(String(row.side).toUpperCase()) ? -1 : null
+  // Codex · №12,223 · 2026-10-08; codex-footprint: keeper-volume-peak.
+  // Same supported broker enum forms as LossGuardian; unknown/conflicting
+  // sides still refuse. Number('BUY') must not disable valid protection.
+  const brokerSide = td.tradeSide === 1 || td.tradeSide === '1' || td.tradeSide === 'BUY' ? 1
+    : td.tradeSide === 2 || td.tradeSide === '2' || td.tradeSide === 'SELL' ? -1 : 0
   const basis = {
     version: 1, accountId: String(accountId), positionId: String(row.position_id),
     symbolId: Number(td.symbolId), side, entry: Number(bp.price ?? row.entry_price),
@@ -402,7 +407,7 @@ function keeperPeakBasis(row, bp, accountId) {
   if (!side || !Number.isSafeInteger(basis.symbolId) || basis.symbolId <= 0
       || !Number.isFinite(basis.entry) || basis.entry <= 0
       || !Number.isFinite(basis.volume) || basis.volume <= 0
-      || (td.tradeSide != null && Number(td.tradeSide) !== (side === 1 ? 1 : 2))) return null
+      || (td.tradeSide != null && brokerSide !== side)) return null
   let previous
   try { previous = JSON.parse(row.keeper_peak_state) } catch { /* unknown basis */ }
   const same = previous?.version === 1 && ['accountId', 'positionId', 'symbolId', 'side', 'entry']
