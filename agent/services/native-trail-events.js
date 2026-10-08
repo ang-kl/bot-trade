@@ -14,8 +14,8 @@ const utcMillis = raw => {
   return Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(s)?s:s+'Z')
 }
 
-export function recordNativeTrailDecision(db, { side, bootId, entry }) {
-  if (entry.component !== 'trail' || entry.kind !== 'amend_ok' || typeof side.isLive !== 'boolean'
+export function recordNativeTrailDecision(db, { side, bootId, entry, accountBinding }) {
+  if (entry.component !== 'trail' || entry.kind !== 'amend_ok' || !accountBinding
     || typeof bootId !== 'string' || !bootId || !positiveId(entry.seq) || !positiveId(entry.tsMs)) return false
   let proof
   try {
@@ -33,8 +33,7 @@ export function recordNativeTrailDecision(db, { side, bootId, entry }) {
     || (proof.afterStopLoss-proof.beforeStopLoss)*proof.direction <= 0
     || proof.beforeCheckedAtMs > proof.afterCheckedAtMs || proof.afterCheckedAtMs > entry.tsMs) return false
   const accountId=String(proof.accountId),positionId=String(proof.positionId)
-  const account=db.prepare('SELECT is_live FROM accounts WHERE account_id=?').get(accountId)
-  if (!account || account.is_live !== Number(side.isLive)) return false
+  if (accountBinding.accountId !== accountId || typeof accountBinding.host !== 'string' || !accountBinding.host) return false
   const rows=db.prepare(`SELECT mp.trade_id,mp.symbol,mp.side,mp.entry_price,
       t.side AS trade_side,t.entry_price AS trade_entry,t.opened_at,t.closed_at,t.status
     FROM monitored_positions mp JOIN trades t ON t.id=mp.trade_id
@@ -51,7 +50,7 @@ export function recordNativeTrailDecision(db, { side, bootId, entry }) {
   const recorded=recordPositionEvent(db,{accountId,positionId,tradeId:row.trade_id,symbol:row.symbol,
     kind:'trail_tightened',fromValue:proof.beforeStopLoss,toValue:proof.afterStopLoss,atMs:proof.afterCheckedAtMs,
     source:'cpp_trail_engine',detail:{nativeSide:side.name,nativeBootId:bootId,nativeSeq:entry.seq,
-      nativeAtMs:entry.tsMs,host:side.isLive?'live.ctraderapi.com':'demo.ctraderapi.com',movement:proof}})
+      nativeAtMs:entry.tsMs,host:accountBinding.host,movement:proof}})
   // The caller's transaction rolls the native row back too, retaining its
   // retryable source cursor. No acknowledgement of a failed journal write.
   if (!recorded) throw new Error('native_trail_journal_write_failed')

@@ -23,6 +23,7 @@
 
 import { getState, setState } from '../db.js'
 import { recordNativeTrailDecision } from './native-trail-events.js'
+import { credsForRegisteredAccount } from '../lib/ctrader-creds.js'
 import { createHash } from 'node:crypto'
 import { refusedKeyFor } from '../lib/token-refused.js'
 import { auditControllerEvent } from './phase-audit.js'
@@ -1169,7 +1170,15 @@ async function pullDecisionsIntoDb(db, exec, side, health) {
       Number.isFinite(Number(e.symbolId)) ? Number(e.symbolId) : null,
       e.code != null ? String(e.code).slice(0, 300) : null,
       e.detail != null ? String(e.detail).slice(0, 500) : null)
-    if (result.changes) recordNativeTrailDecision(db, { side, bootId: pulled.bootId, entry: e })
+    if (result.changes) {
+      // Codex · №12,082 · 2026-10-08; codex-footprint: confirmed-trail.
+      // Host identity stays in account routing, never in a movement policy.
+      const account = e.component === 'trail' && e.kind === 'amend_ok'
+        ? credsForRegisteredAccount(db,e.accountId) : null
+      const accountBinding = typeof side.isLive === 'boolean' && account && account.isLive === side.isLive
+        ? {accountId:String(account.accountId),host:account.host} : null
+      recordNativeTrailDecision(db, { side, bootId: pulled.bootId, entry: e, accountBinding })
+    }
   })
   let lastSeq = cur.bootId === pulled.bootId ? after : 0
   for (const e of pulled.entries) {

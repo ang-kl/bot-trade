@@ -17,13 +17,20 @@ Five actual Node-path and two native-path regressions fail unchanged source;
 four assistant-review episode/lifecycle/source-clock regressions fail the
 preceding candidate;
 153 focused Node checks passed before the final clock correction; the final
-11 receipt/reader regressions and both focused native programs pass.
+12 receipt/reader regressions and both focused native programs pass.
 Full local/exact-head CI, actual review inspection, merge and deployed
-ordinary-runtime verification remain pending at 2026-10-08T02:55Z.
+ordinary-runtime verification remain pending at 2026-10-08T03:09Z.
 Existing trading wire/ratchet acceptance, policies and retention are unchanged.
 No broker forcing, credentials, risk/account/strategy/profile/selected-account/
 history/region/volume/staging or monitoring-schedule action. Acceptance remains
 7verified/19active/6deferred until a complete group passes.
+The first full gate failed the routing vocabulary boundary and an unchanged
+idle-lag fixture (one probe; isolated11/11 passes, thresholds preserved).
+Keep mode/host matching in heartbeat via the existing registered-account
+router; the movement reader receives its bound account/host. The existing
+heartbeat exact-count allowance changes28 to31 for three routing references;
+no new module allowance or trading condition. 94 routing/receipt/heartbeat
+checks pass. Preserve the failed gate; refined exact source needs full gate.
 -->
 
 <!-- Codex · №12,049 · 2026-10-08; session: collection-retention;

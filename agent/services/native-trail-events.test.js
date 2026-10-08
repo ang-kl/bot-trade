@@ -109,7 +109,8 @@ test('owned reader predicates compare source times in SQLite and ISO forms',t=>{
 test('delayed logging cannot attach broker reads completed before this same-ID episode',t=>{
   const f=fixture(t)
   f.db.prepare("UPDATE trades SET opened_at='2026-10-08 02:29:59.500'").run()
-  assert.equal(recordNativeTrailDecision(f.db,{side:f.side,bootId:f.health.bootId,entry:f.entry}),false)
+  assert.equal(recordNativeTrailDecision(f.db,{side:f.side,bootId:f.health.bootId,entry:f.entry,
+    accountBinding:{accountId:'11',host:'demo.ctraderapi.com'}}),false)
   assert.equal(managementFor(f.db,{accountId:11,positionId:77,tradeId:f.tradeId}).sl_moves,0)
 })
 
@@ -126,6 +127,22 @@ test('ring logging after arming does not turn an earlier broker movement into a 
   await f.run()
   assert.equal(INSPECTIONS.find(x=>x.key==='broken_commissive').run(f.db,{commissiveGraceMin:5},NOW+10*60000).length,1)
   assert.equal(Date.parse(f.db.prepare("SELECT at FROM position_events WHERE kind='trail_tightened'").get().at+'Z'),f.proof.afterCheckedAtMs)
+})
+
+// Codex · №12,083 · 2026-10-08; codex-footprint: confirmed-trail.
+test('registered host routing uses the same movement proof for a live short position',async t=>{
+  const f=fixture(t)
+  f.db.prepare('UPDATE accounts SET is_live=1').run()
+  f.db.prepare("UPDATE trades SET side='SELL'").run()
+  f.db.prepare("UPDATE monitored_positions SET side='short'").run()
+  f.side.isLive=true;f.side.name='cpp_exec_live'
+  f.replace({detail:'pos=77 sl=10.500000 amend_readback proof='+JSON.stringify({
+    ...f.proof,direction:-1,beforeStopLoss:11.5,afterStopLoss:10.5})})
+  await f.run()
+  const event=f.db.prepare("SELECT * FROM position_events WHERE kind='trail_tightened'").get()
+  assert.equal(event.account_id,'11')
+  assert.equal(JSON.parse(event.detail_json).host,'live.ctraderapi.com')
+  assert.equal(managementFor(f.db,{accountId:11,positionId:77,tradeId:f.tradeId}).sl_moves,1)
 })
 
 test('foreign host, missing ownership and same-ID reversal cannot attach earlier native movement',async t=>{
