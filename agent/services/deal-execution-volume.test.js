@@ -54,6 +54,27 @@ test('a narrower reread keeps validated volume and the complete downstream posit
   } finally { db.close() }
 })
 
+// Codex · №12,020 · 2026-10-08; codex-footprint: known proof versus absent lot conversion.
+test('validated wire quantity stays unsized until a complete reread supplies declared lot metadata', () => {
+  const db = initDB(':memory:')
+  try {
+    receiptPosition(db)
+    const namesOnly = { 1: { symbolName: 'GER40' } }
+    persistDeals(db, shapeDeals([close(2)], namesOnly, '11'))
+    assert.deepEqual(db.prepare('SELECT lots,volume_contract FROM broker_deals').get(), { lots: null, volume_contract: 1 })
+    assert.ok(buildPositionRecord(db, { accountId: '11', positionId: '900' }).missing.includes('volume'))
+    const narrower = close(2)
+    delete narrower.filledVolume
+    persistDeals(db, shapeDeals([narrower], namesOnly, '11'))
+    assert.deepEqual(db.prepare('SELECT lots,volume_contract FROM broker_deals').get(), { lots: null, volume_contract: 1 })
+    assert.ok(buildPositionRecord(db, { accountId: '11', positionId: '900' }).missing.includes('volume'))
+    persistDeals(db, shapeDeals([close(2)], meta, '11'))
+    const after = buildPositionRecord(db, { accountId: '11', positionId: '900' })
+    assert.deepEqual(after.missing, [])
+    assert.equal(after.record.volume, 0.7)
+  } finally { db.close() }
+})
+
 test('malformed or individually missing executed fields cannot erase an earlier validated receipt', () => {
   const db = initDB(':memory:')
   try {

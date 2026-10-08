@@ -1,6 +1,6 @@
 # Instructions for Claude — bot-trade
 
-<!-- Codex · №12,014 · 2026-10-08; session: executed-volume-provenance;
+<!-- Codex · №12,020 · 2026-10-08; session: executed-volume-provenance;
 codex-footprint: validated volume provenance pair. Owner ordered PR1259 P2
 follow-up after №12,010–12,011. Fresh main9c716b04 retains completed
 PR1233–1260/gates. Five actual importer/downstream-reader regressions fail
@@ -8,6 +8,10 @@ unchanged main: incomplete rereads downgrade contract1, and an untagged
 writer can pair requested lots with the prior validated flag. Preserve
 stored executed lots and contract together when replacement proof is absent;
 unknown/legacy NULL receipts, identity rollback and native money stay intact.
+The first full gate exposed a candidate-only W10 compatibility failure when
+API executed units were known but converted lots were NULL. Retain the old
+explicit statement closing-lots fallback in that case; preserve already known
+executed lots. Initial failed gate retained; refined exact head needs full gate.
 No production impact or financial-history repair established. Full local/
 exact-head CI, actual review inspection, merge and deployed verification
 remain required. No broker forcing, credentials, risk/account/strategy,

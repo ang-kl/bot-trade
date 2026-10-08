@@ -664,11 +664,13 @@ export function keepKnownDealFields(row, stored) {
     return out
   }
   for (const k of KEEP_KNOWN_DEAL_FIELDS) if (out[k] == null && stored[k] != null) out[k] = stored[k]
-  // Codex · №12,014 · 2026-10-08; codex-footprint: validated volume provenance pair.
+  // Codex · №12,020 · 2026-10-08; codex-footprint: validated volume provenance pair.
   // A narrower API read or untagged writer has no replacement quantity proof.
   // Keep both the executed lots and their contract, including within a batch.
   if (stored.volume_contract === EXECUTED_VOLUME_CONTRACT && row.volume_contract !== EXECUTED_VOLUME_CONTRACT) {
-    out.lots = stored.lots
+    // Preserve a known quantity, not a NULL where conversion was unavailable.
+    // The existing explicit statement-closing-lots fallback remains available.
+    if (stored.lots != null) out.lots = stored.lots
     out.volume_contract = EXECUTED_VOLUME_CONTRACT
   }
   if (placeholderSymbol(out.symbol) && !placeholderSymbol(stored.symbol)) out.symbol = stored.symbol
