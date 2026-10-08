@@ -19,7 +19,8 @@
         "agent/services/broker-history-recorder.test.js",
         "agent/services/account-history.js",
         "agent/services/refusal-ledger.js",
-        "agent/services/refusal-ledger.test.js"
+        "agent/services/refusal-ledger.test.js",
+        "agent/services/workstream-ws05.js"
       ],
       "purpose": "Reproduce and correct retained-read cursor skips, stop observation journal acknowledgement, independent protection retention and paired refusal scoring; Node only, no broker/policy changes"
     }
