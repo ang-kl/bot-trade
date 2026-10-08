@@ -960,7 +960,8 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
       if (!needs || cooldown) {
         // Nothing to apply, or the symbol is cooling off after a refusal: a
         // stamp without its fields would be a pointless amend, so none is sent.
-        auto res = confirmedProtection(before, true);
+        // Codex · №12,072 · 2026-10-08; codex-footprint: confirmed-trail.
+        auto res = confirmedProtection(before, before, true, false);
         if (pol.any()) res = policyResult(res, false, policyReadback(pol, before), jsn::Value(nullptr));
         return {true, res, false};
       }
@@ -1029,7 +1030,9 @@ EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
       return errResult("guard_ratchet_unconfirmed", "broker read-back did not confirm SL and preserved TP", false);
     // The stop level is what is confirmed; a policy mismatch or an unreadable
     // field is REPORTED, never a failure (the trailing read-back may be absent).
-    r.body = confirmedProtection(after, false);
+    // The existing wire/read-back acceptance is unchanged. A policy-only
+    // stamp, including a tighter stop supplied by another writer, is no move.
+    r.body = confirmedProtection(before, after, false, !stamp && !policyOnly);
     if (pol.any()) r.body = policyResult(r.body, applied, policyReadback(pol, after), refused);
   } else if (!ratchet && r.ok && pol.any()) {
     r.body.set("policy", policyBlock(pol, applied, applied ? "unverified" : "none", refused, cooldown ? "cooldown" : ""));

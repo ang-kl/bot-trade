@@ -41,18 +41,39 @@ export const MANAGEMENT_STATES = Object.freeze(['opened', 'be_moved', 'scaled_ou
 /** Kinds that end a position — their state_to is `closed:<kind>`. */
 const TERMINAL_KINDS = new Set(['close', 'loss_cap_close', 'position_reversed'])
 
+// Codex · №12,076 · 2026-10-08; codex-footprint: confirmed-trail.
+// Source-time ingestion can arrive late. Fold existing stamped states without
+// rewriting history; a later lower-rank stamp cannot undo an earlier advance.
+function foldedState(rows) {
+  let result={state:'opened',rAtTransition:null}
+  for (const row of rows) {
+    if (result.state.startsWith('closed:')) break
+    const state=row.state_to
+    if (String(state).startsWith('closed:')
+      || (MANAGEMENT_STATES.includes(state)
+        && MANAGEMENT_STATES.indexOf(state)>=MANAGEMENT_STATES.indexOf(result.state))) {
+      result={state,rAtTransition:row.r_at??null}
+    }
+  }
+  return result
+}
+
 /**
  * The state a position is in NOW, read from its own journal: the latest
  * event's state_to, or `opened` when the journal is empty. Pure read.
  */
-export function currentManagementState(db, { tradeId = null, positionId = null } = {}) {
+export function currentManagementState(db, { tradeId = null, positionId = null, atMs = null } = {}) {
   try {
-    const row = tradeId != null
-      ? db.prepare(`SELECT state_to FROM position_events WHERE trade_id = ? AND state_to IS NOT NULL ORDER BY id DESC LIMIT 1`).get(Number(tradeId))
+    // Codex · №12,073 · 2026-10-08; codex-footprint: confirmed-trail.
+    // Native facts carry event time; late ingestion must not reopen a close.
+    const before = atMs != null ? ' AND julianday(at) <= julianday(?)' : ''
+    const times = atMs != null ? [new Date(atMs).toISOString()] : []
+    const rows = tradeId != null
+      ? db.prepare(`SELECT state_to FROM position_events WHERE trade_id = ? AND state_to IS NOT NULL${before} ORDER BY julianday(at) ASC,id ASC`).all(Number(tradeId),...times)
       : positionId != null
-        ? db.prepare(`SELECT state_to FROM position_events WHERE position_id = ? AND state_to IS NOT NULL ORDER BY id DESC LIMIT 1`).get(String(positionId))
-        : null
-    return row?.state_to || 'opened'
+        ? db.prepare(`SELECT state_to FROM position_events WHERE position_id = ? AND state_to IS NOT NULL${before} ORDER BY julianday(at) ASC,id ASC`).all(String(positionId),...times)
+        : []
+    return foldedState(rows).state
   } catch { return 'opened' }
 }
 
@@ -94,6 +115,7 @@ export function recordPositionEvent(db, {
   reason = null,
   source = null,
   detail = null,
+  atMs = null,
 }) {
   try {
     const acct = accountId != null
@@ -104,7 +126,7 @@ export function recordPositionEvent(db, {
     // states is still a row.
     let stateFrom = null, stateTo = null
     try {
-      stateFrom = currentManagementState(db, { tradeId, positionId })
+      stateFrom = currentManagementState(db, { tradeId, positionId, atMs })
       let entry = null, side = null
       if (tradeId != null) {
         const mp = db.prepare(`SELECT entry_price, side FROM monitored_positions WHERE trade_id = ? ORDER BY id DESC LIMIT 1`).get(Number(tradeId))
@@ -113,8 +135,8 @@ export function recordPositionEvent(db, {
       stateTo = nextManagementState(stateFrom, { kind, toValue, entry, side })
     } catch { stateFrom = null; stateTo = null }
     db.prepare(`
-      INSERT INTO position_events (account_id, position_id, trade_id, symbol, kind, from_value, to_value, r_at, price_at, reason, source, detail_json, state_from, state_to)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO position_events (account_id, position_id, trade_id, symbol, kind, from_value, to_value, r_at, price_at, reason, source, detail_json, state_from, state_to,at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,COALESCE(?,datetime('now')))
     `).run(
       acct,
       positionId != null ? String(positionId) : null,
@@ -129,6 +151,7 @@ export function recordPositionEvent(db, {
       source != null ? String(source) : null,
       detail != null ? JSON.stringify(detail).slice(0, 4000) : null,
       stateFrom, stateTo,
+      atMs == null ? null : new Date(atMs).toISOString().replace('T',' ').replace('Z',''),
     )
     // Codex · №12,048 · 2026-10-08; codex-footprint: collection-retention.
     // Acknowledge observations only after a durable write; still never throw.
@@ -143,12 +166,12 @@ export function recordPositionEvent(db, {
  */
 export function lastStateBeforeExit(db, tradeId) {
   try {
-    const row = db.prepare(
+    const rows = db.prepare(
       `SELECT state_to, r_at FROM position_events
         WHERE trade_id = ? AND state_to IS NOT NULL AND state_to NOT LIKE 'closed:%'
-        ORDER BY id DESC LIMIT 1`
-    ).get(Number(tradeId))
-    return { state: row?.state_to || 'opened', rAtTransition: row?.r_at ?? null }
+        ORDER BY julianday(at) ASC,id ASC`
+    ).all(Number(tradeId))
+    return foldedState(rows)
   } catch { return { state: 'opened', rAtTransition: null } }
 }
 

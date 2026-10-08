@@ -72,6 +72,17 @@ jsn::Value buildTrailAmend(long long positionId, const TrailSpec& snap, const St
   return payload;
 }
 
+// Codex · №12,072 · 2026-10-08; codex-footprint: confirmed-trail.
+std::string buildTrailDecisionDetail(long long positionId, const jsn::Value& protection) {
+  const auto prefix = "pos=" + std::to_string(positionId) +
+    " sl=" + std::to_string(protection.get("stopLoss").asNumber()) +
+    " " + protection.get("confirmation").asString();
+  const auto& movement = protection.get("movement");
+  if (!movement.isObject()) return prefix; // old/unknown outcomes stay proof-less
+  const auto detail = prefix + " proof=" + jsn::dump(movement);
+  return detail.size() <= 500 ? detail : prefix; // never retain a truncated certificate
+}
+
 StopPolicyCfg parseTrailStopPolicy(const jsn::Value& v) {
   StopPolicyCfg cfg;
   if (!v.isObject()) return cfg;
@@ -255,7 +266,7 @@ void TrailEngine::workerLoop(ExecEngine& engine) {
       }
       logInfo(std::string(unchanged ? "SL already tighter pos=" : "SL confirmed pos=") + std::to_string(posId) + " -> " + std::to_string(confirmedSl));
       if (ring_) ring_->log("trail", unchanged ? "already_tighter" : "amend_ok", snap.accountId, snap.symbolId, "",
-                            "pos=" + std::to_string(posId) + " sl=" + std::to_string(confirmedSl) + " " + protection.get("confirmation").asString());
+                            buildTrailDecisionDetail(posId, protection));
     } else {
       amendsFailed_.fetch_add(1);
       // Drop the pending target — the next tick recomputes from live state,

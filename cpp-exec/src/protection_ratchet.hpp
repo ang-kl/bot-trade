@@ -9,6 +9,10 @@ struct BrokerProtection {
   double sl = 0, tp = 0;
   int dir = 0;
   long long symbolId = 0;
+  // Codex · №12,072 · 2026-10-08; codex-footprint: confirmed-trail.
+  // Native read-back identity; absent/malformed entry stays unknown.
+  long long accountId = 0, positionId = 0;
+  double entryPrice = 0;
   long long readStartedAtMs = 0, checkedAtMs = 0, readDurationMs = 0;
   // 02-10-2026 stop-loss policy read-back. trigger 0 = absent; hasTrailing
   // false = absent. ProtoOAPosition.trailingStopLoss has had a read-back bug
@@ -141,6 +145,11 @@ inline std::string readBrokerProtection(const jsn::Value& body, long long accoun
   for (const auto& p : body.get("position").asArray()) {
     if (protectionId(p.get("positionId")) != position) continue;
     ++matches;
+    out.accountId = protectionId(body.get("ctidTraderAccountId"));
+    out.positionId = protectionId(p.get("positionId"));
+    const auto& entry = p.get("price");
+    out.entryPrice = entry.isNumber() && std::isfinite(entry.asNumber()) && entry.asNumber() > 0
+      ? entry.asNumber() : 0;
     const auto& td = p.get("tradeData");
     const auto& side = td.get("tradeSide");
     out.dir = protectionId(side) == 1 || side.asString() == "BUY" ? 1
@@ -181,5 +190,46 @@ inline jsn::Value confirmedProtection(const BrokerProtection& p, bool unchanged)
   protection.set("trailingStopLoss", p.hasTrailing ? jsn::Value(p.trailing) : jsn::Value(nullptr));
   result.set("protection", protection);
   result.set("unchanged", unchanged);
+  return result;
+}
+
+// Codex · №12,072 · 2026-10-08; codex-footprint: confirmed-trail.
+// Evidence only: a policy stamp may succeed without moving the level. Neither
+// a cached/configured stop nor an unknown position episode proves movement.
+inline jsn::Value confirmedMovementProof(const BrokerProtection& before,
+                                         const BrokerProtection& after,
+                                         bool unchanged, bool levelAmend) {
+  const auto knownPrice = [](double n) { return std::isfinite(n) && n > 0; };
+  const bool sameIdentity = before.accountId > 0 && before.positionId > 0 && before.symbolId > 0 &&
+    before.accountId == after.accountId && before.positionId == after.positionId &&
+    before.symbolId == after.symbolId && (before.dir == 1 || before.dir == -1) && before.dir == after.dir &&
+    knownPrice(before.entryPrice) && knownPrice(after.entryPrice) && before.entryPrice == after.entryPrice;
+  const bool orderedReads = before.checkedAtMs > 0 && after.checkedAtMs >= before.checkedAtMs;
+  const bool improved = knownPrice(before.sl) && knownPrice(after.sl) &&
+    (before.dir == 1 ? after.sl > before.sl : before.dir == -1 ? after.sl < before.sl : false);
+  jsn::Value proof{jsn::Object{}};
+  proof.set("v", 1);
+  proof.set("source", "broker_reconcile");
+  proof.set("confirmation", unchanged ? "already_tighter_snapshot" : "amend_readback");
+  proof.set("accountId", before.accountId > 0 ? jsn::Value(before.accountId) : jsn::Value(nullptr));
+  proof.set("positionId", before.positionId > 0 ? jsn::Value(before.positionId) : jsn::Value(nullptr));
+  proof.set("symbolId", before.symbolId > 0 ? jsn::Value(before.symbolId) : jsn::Value(nullptr));
+  proof.set("direction", before.dir == 1 || before.dir == -1 ? jsn::Value(before.dir) : jsn::Value(nullptr));
+  proof.set("entryPrice", knownPrice(before.entryPrice) ? jsn::Value(before.entryPrice) : jsn::Value(nullptr));
+  proof.set("beforeStopLoss", knownPrice(before.sl) ? jsn::Value(before.sl) : jsn::Value(nullptr));
+  proof.set("afterStopLoss", knownPrice(after.sl) ? jsn::Value(after.sl) : jsn::Value(nullptr));
+  proof.set("stopMoved", levelAmend && !unchanged && sameIdentity && orderedReads && improved);
+  proof.set("beforeCheckedAtMs", before.checkedAtMs > 0 ? jsn::Value(before.checkedAtMs) : jsn::Value(nullptr));
+  proof.set("afterCheckedAtMs", after.checkedAtMs > 0 ? jsn::Value(after.checkedAtMs) : jsn::Value(nullptr));
+  return proof;
+}
+
+inline jsn::Value confirmedProtection(const BrokerProtection& before,
+                                      const BrokerProtection& after,
+                                      bool unchanged, bool levelAmend) {
+  auto result = confirmedProtection(after, unchanged);
+  auto protection = result.get("protection");
+  protection.set("movement", confirmedMovementProof(before, after, unchanged, levelAmend));
+  result.set("protection", protection);
   return result;
 }

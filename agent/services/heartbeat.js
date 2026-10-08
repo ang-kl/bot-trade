@@ -22,6 +22,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { recordNativeTrailDecision } from './native-trail-events.js'
 import { createHash } from 'node:crypto'
 import { refusedKeyFor } from '../lib/token-refused.js'
 import { auditControllerEvent } from './phase-audit.js'
@@ -1159,15 +1160,21 @@ async function pullDecisionsIntoDb(db, exec, side, health) {
     // log-watch.js matches this exact prefix (rule 'sidecar_restart').
     console.log(`[heartbeat] sidecar_restart: ${side.name} — previous boot ${cur.bootId}, new boot ${pulled.bootId}`)
   }
+  // Codex · №12,073 · 2026-10-08; codex-footprint: confirmed-trail.
+  // The confirmed journal and its raw native receipt commit together.
+  const retain = db.transaction(e => {
+    const result = ins.run(side.name, pulled.bootId, Number(e.seq), Number(e.tsMs) || null,
+      String(e.component || 'unknown'), String(e.kind || 'unknown'),
+      e.accountId != null ? String(e.accountId) : null,
+      Number.isFinite(Number(e.symbolId)) ? Number(e.symbolId) : null,
+      e.code != null ? String(e.code).slice(0, 300) : null,
+      e.detail != null ? String(e.detail).slice(0, 500) : null)
+    if (result.changes) recordNativeTrailDecision(db, { side, bootId: pulled.bootId, entry: e })
+  })
   let lastSeq = cur.bootId === pulled.bootId ? after : 0
   for (const e of pulled.entries) {
     if (!e || !nativeSeq(e.seq)) continue
-    ins.run(side.name, pulled.bootId, Number(e.seq), Number(e.tsMs) || null,
-            String(e.component || 'unknown'), String(e.kind || 'unknown'),
-            e.accountId != null ? String(e.accountId) : null,
-            Number.isFinite(Number(e.symbolId)) ? Number(e.symbolId) : null,
-            e.code != null ? String(e.code).slice(0, 300) : null,
-            e.detail != null ? String(e.detail).slice(0, 500) : null)
+    retain(e)
     lastSeq = Math.max(lastSeq, e.seq)
   }
   cursors[side.name] = { bootId: pulled.bootId, lastSeq }
