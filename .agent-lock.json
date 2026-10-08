@@ -21,7 +21,8 @@
         "cpp-exec/src/trail_engine.cpp",
         "cpp-exec/src/trail_engine.hpp",
         "cpp-exec/src/tests/test_protection_ratchet.cpp",
-        "cpp-exec/src/tests/test_trail_engine.cpp"
+        "cpp-exec/src/tests/test_trail_engine.cpp",
+        "agent/lib/one-account-model.test.js"
       ],
       "purpose": "Correct PR1262 confirmed-native-amendment consumer gap with explicit level-change provenance and owned idempotent journal linkage; no trading policy/action changes"
     }
