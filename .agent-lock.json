@@ -6,7 +6,7 @@
       "branch": "fix/account-symbol-ownership-2026-10-08",
       "started_at": "2026-10-08T07:56:00Z",
       "expires_at": "2026-10-08T11:59:00Z",
-      "serial": 12171,
+      "serial": 12181,
       "files": [
         "agent/lib/ctrader-creds.js",
         "agent/services/tp-suggest.js",
@@ -22,7 +22,14 @@
         "agent/services/pending-signals.js",
         "agent/routes/stream-prices-feed-latency.test.js",
         "agent/services/telegram-control.test.js",
-        "agent/services/strategy-autopilot-yield.test.js"
+        "agent/services/strategy-autopilot-yield.test.js",
+        "agent/amend-latency-wiring.test.js",
+        "agent/routes/scanner-registration-body.test.js",
+        "agent/services/calendar-coverage.test.js",
+        "agent/services/closed-market-limits.test.js",
+        "agent/services/entry-hours.test.js",
+        "agent/services/cross-side-reconcile.test.js",
+        "agent/services/cross-side-pnl.test.js"
       ],
       "purpose": "Account-owned symbol audit: TP snapshot, symbol-list helper/fallback regressions; no native or runtime-setting changes"
     }
