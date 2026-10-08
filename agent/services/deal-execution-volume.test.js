@@ -15,6 +15,146 @@ const close = (id, filled = 70_000, closed = filled, price = 20) => ({
     entryPrice: 10, grossProfit: 200, swap: -5, commission: -3, moneyDigits: 2 },
 })
 
+// Codex · №12,013 · 2026-10-08; codex-footprint: immutable receipt reread provenance.
+// Real importer + downstream reader, with a complete account-owned position.
+function receiptPosition(db) {
+  const risk = db.prepare("INSERT INTO risk_events(symbol,side,approved,proposal_json) VALUES ('GER40','BUY',1,?)")
+    .run(JSON.stringify({ direction_reason: 'higher-timeframe uptrend, pullback into value' }))
+  db.prepare(`INSERT INTO trades(id,symbol,side,status,volume,entry_price,exit_price,sl_price,tp_price,
+    opened_at,closed_at,closed_at_ms,hold_duration_ms,close_reason,strategy,ctrader_position_id,
+    account_id,risk_event_id,origin,commission,swap,gross_pnl,net_pnl,realised_rr,conviction)
+    VALUES(1,'GER40','BUY','closed',1.4,10,20,9,23,?, ?,2010,1010,'take_profit','vwap_trend',
+      '900','11',?,'scan_dispatch',-0.03,-0.05,2,1.92,10,7)`)
+    .run(new Date(1000).toISOString(), new Date(2010).toISOString(), risk.lastInsertRowid)
+  db.exec(`INSERT INTO trade_plans(trade_id,account_id,symbol,side,strategy,family,timeframe,
+    planned_entry,planned_sl,planned_tp,planned_r,risk_dist,exit_rule)
+    VALUES(1,'11','GER40','BUY','vwap_trend','trend','H1',10,9,23,13,1,'trail_after_1r')`)
+}
+
+test('a narrower reread keeps validated volume and the complete downstream position', () => {
+  const db = initDB(':memory:')
+  try {
+    receiptPosition(db)
+    persistDeals(db, shapeDeals([close(2)], meta, '11'))
+    const before = buildPositionRecord(db, { accountId: '11', positionId: '900' })
+    assert.deepEqual(before.missing, [])
+    assert.equal(before.record.volume, 0.7)
+    const narrower = close(2)
+    delete narrower.filledVolume
+    delete narrower.closePositionDetail.closedVolume
+    assert.equal(shapeDeals([narrower], meta, '11')[0].volume_contract, 0)
+    persistDeals(db, shapeDeals([narrower], meta, '11'))
+    const after = buildPositionRecord(db, { accountId: '11', positionId: '900' })
+    assert.deepEqual(after, before)
+    assert.deepEqual(db.prepare('SELECT volume_contract,lots,requested_lots FROM broker_deals').get(),
+      { volume_contract: 1, lots: 0.7, requested_lots: 1.4 })
+    const capture = capturePosition(db, { accountId: '11', positionId: '900' })
+    assert.equal(capture.ok, true)
+    assert.equal(capture.stream, 'history')
+  } finally { db.close() }
+})
+
+// Codex · №12,020 · 2026-10-08; codex-footprint: known proof versus absent lot conversion.
+test('validated wire quantity stays unsized until a complete reread supplies declared lot metadata', () => {
+  const db = initDB(':memory:')
+  try {
+    receiptPosition(db)
+    const namesOnly = { 1: { symbolName: 'GER40' } }
+    persistDeals(db, shapeDeals([close(2)], namesOnly, '11'))
+    assert.deepEqual(db.prepare('SELECT lots,volume_contract FROM broker_deals').get(), { lots: null, volume_contract: 1 })
+    assert.ok(buildPositionRecord(db, { accountId: '11', positionId: '900' }).missing.includes('volume'))
+    const narrower = close(2)
+    delete narrower.filledVolume
+    persistDeals(db, shapeDeals([narrower], namesOnly, '11'))
+    assert.deepEqual(db.prepare('SELECT lots,volume_contract FROM broker_deals').get(), { lots: null, volume_contract: 1 })
+    assert.ok(buildPositionRecord(db, { accountId: '11', positionId: '900' }).missing.includes('volume'))
+    persistDeals(db, shapeDeals([close(2)], meta, '11'))
+    const after = buildPositionRecord(db, { accountId: '11', positionId: '900' })
+    assert.deepEqual(after.missing, [])
+    assert.equal(after.record.volume, 0.7)
+  } finally { db.close() }
+})
+
+test('malformed or individually missing executed fields cannot erase an earlier validated receipt', () => {
+  const db = initDB(':memory:')
+  try {
+    persistDeals(db, shapeDeals([close(2)], meta, '11'))
+    const expected = db.prepare('SELECT lots,volume_contract,gross_pnl,swap,commission,net_pnl FROM broker_deals').get()
+    for (const field of ['filledVolume', 'closedVolume']) {
+      for (const value of [undefined, null, '', ' ', false, true, 0, -1, 1.5, '7x', Number.MAX_SAFE_INTEGER + 1]) {
+        const narrower = close(2)
+        if (field === 'filledVolume') narrower[field] = value
+        else narrower.closePositionDetail[field] = value
+        const shaped = shapeDeals([narrower], meta, '11')
+        assert.equal(shaped[0].lots, null)
+        assert.equal(shaped[0].volume_contract, 0)
+        persistDeals(db, shaped)
+        assert.deepEqual(db.prepare('SELECT lots,volume_contract,gross_pnl,swap,commission,net_pnl FROM broker_deals').get(), expected)
+      }
+    }
+  } finally { db.close() }
+})
+
+test('partial closes keep the executed-weighted whole quantity after mixed complete and narrower rereads', () => {
+  const db = initDB(':memory:')
+  try {
+    receiptPosition(db)
+    const first = close(2, 30_000, 30_000, 20), last = close(3, 110_000, 110_000, 30)
+    persistDeals(db, shapeDeals([first, last], meta, '11'))
+    const before = buildPositionRecord(db, { accountId: '11', positionId: '900' })
+    assert.deepEqual(before.missing, [])
+    assert.ok(Math.abs(before.record.volume - 1.4) < 1e-12)
+    const narrower = structuredClone(last)
+    delete narrower.filledVolume
+    persistDeals(db, shapeDeals([first, narrower], meta, '11'))
+    assert.deepEqual(buildPositionRecord(db, { accountId: '11', positionId: '900' }), before)
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM broker_deals').get().n, 2)
+  } finally { db.close() }
+})
+
+test('same-batch rereads retain the strongest quantity proof without promoting unknown receipts', () => {
+  const db = initDB(':memory:')
+  try {
+    const narrower = close(2)
+    delete narrower.filledVolume
+    persistDeals(db, shapeDeals([narrower, close(2), narrower], meta, '11'))
+    assert.deepEqual(db.prepare('SELECT lots,volume_contract FROM broker_deals').get(), { lots: 0.7, volume_contract: 1 })
+    const unknown = close(3)
+    delete unknown.filledVolume
+    persistDeals(db, shapeDeals([unknown, unknown], meta, '11'))
+    assert.deepEqual(db.prepare("SELECT lots,volume_contract FROM broker_deals WHERE deal_id='3'").get(), { lots: null, volume_contract: 0 })
+    assert.ok(buildPositionRecord(db, { accountId: '11', positionId: '900' }).missing.includes('volume'))
+  } finally { db.close() }
+})
+
+test('an unvalidated reread cannot pair a new requested quantity with an old validated contract', () => {
+  const db = initDB(':memory:')
+  try {
+    persistDeals(db, shapeDeals([close(2)], meta, '11'))
+    const row = shapeDeals([close(2)], meta, '11')[0]
+    row.lots = row.requested_lots
+    row.volume_contract = null // an older/statement writer has no executed-quantity proof
+    persistDeals(db, [row])
+    assert.deepEqual(db.prepare('SELECT lots,volume_contract,requested_lots FROM broker_deals').get(),
+      { lots: 0.7, volume_contract: 1, requested_lots: 1.4 })
+  } finally { db.close() }
+})
+
+test('narrow rereads with a conflicting owner or position roll back every receipt in the batch', () => {
+  const db = initDB(':memory:')
+  try {
+    persistDeals(db, shapeDeals([close(2)], meta, '11'))
+    const before = db.prepare('SELECT * FROM broker_deals').all()
+    const narrower = close(2)
+    delete narrower.filledVolume
+    assert.throws(() => persistDeals(db, shapeDeals([close(3), narrower], meta, '22')), /identity conflicts/)
+    const other = structuredClone(narrower)
+    other.positionId = 901
+    assert.throws(() => persistDeals(db, shapeDeals([close(3), other], meta, '11')), /identity conflicts/)
+    assert.deepEqual(db.prepare('SELECT * FROM broker_deals').all(), before)
+  } finally { db.close() }
+})
+
 test('actual adapter uses closing quantity rather than requested quantity, retaining native costs', () => {
   const rows = shapeDeals([close(2), close(3)], meta, '11')
   assert.equal(rows.reduce((s, r) => s + r.lots, 0), 1.4)
