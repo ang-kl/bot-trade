@@ -1397,6 +1397,13 @@ async function start() {
     console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);
   });
 
+  // Codex · №12,322 · 2026-10-09; codex-footprint: native-hybrid-profit.
+  // Tick-trigger consumption is independent of the periodic scan controller.
+  try {
+    const { startHybridTickController } = await import("./services/hybrid-tick-controller.js");
+    startHybridTickController(db);
+  } catch (err) { console.warn("[agent] hybrid tick controller unavailable:", err.message); }
+
   // Start the main scan loop (non-blocking import so server boots even if
   // loop.js hasn't been created yet)
   try {

@@ -79,8 +79,8 @@ std::optional<jsn::Value> sendAndWait(CtraderWs& ws, int reqType, const jsn::Val
 SpotFeed::SpotFeed(std::string host, std::string clientId, std::string clientSecret,
                    std::string accessToken, long long accountId,
                    std::vector<long long> symbolIds, SpotTickCallback onTick,
-                   bool depthEnabled)
-    : host_(std::move(host)), accountId_(accountId),
+                   bool depthEnabled, bool timestamped)
+    : timestamped_(timestamped), host_(std::move(host)), accountId_(accountId),
       clientId_(std::move(clientId)), clientSecret_(std::move(clientSecret)),
       accessToken_(std::move(accessToken)),
       symbolIds_(std::move(symbolIds)), onTick_(std::move(onTick)),
@@ -161,7 +161,10 @@ void SpotFeed::drainPendingSubs() {
   sub.set("symbolId", jsn::Value(ids));
   jsn::Value frame{jsn::Object{}};
   frame.set("payloadType", kSubscribeSpotsReq);
-  frame.set("payload", sub);
+  // Codex · №12,331 · 2026-10-09; codex-footprint: dedicated profit source clocks.
+  auto spot = sub;
+  if (timestamped_) spot.set("subscribeToSpotTimestamp", true);
+  frame.set("payload", spot);
   ws_.sendText(jsn::dump(frame));
   if (depthEnabled_) {
     jsn::Value dframe{jsn::Object{}};
@@ -216,6 +219,7 @@ bool SpotFeed::connectAuthSubscribe() {
     jsn::Array ids;
     for (long long id : symbolIds_) ids.push_back(jsn::Value(static_cast<double>(id)));
     sub.set("symbolId", jsn::Value(ids));
+    if (timestamped_) sub.set("subscribeToSpotTimestamp", true);
     if (!sendAndWait(ws_, kSubscribeSpotsReq, sub, kSubscribeSpotsRes)) {
       logError("subscribe spots failed");
       ws_.close();

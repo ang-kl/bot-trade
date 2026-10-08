@@ -1,3 +1,4 @@
+#include "hybrid_feed.hpp"
 // cpp-exec/src/main.cpp
 //
 // Sidecar entrypoint: one engine thread (connect + auth + heartbeat + 30s
@@ -440,6 +441,10 @@ int main(int argc, char** argv) {
   peerProbe.start(envOr("PEER_URL", ""), &decisionRing);
 
   TrailEngine trailEngine;
+  // Codex · №12,322 · 2026-10-09; codex-footprint: native-hybrid-profit.
+  hybrid::TickEngine hybridProfit(envOr("HYBRID_PROFIT_PATH", "/data/hybrid-profit") + "/events.ndjson");
+  hybrid::FeedPool hybridFeeds(hybridProfit);
+  hybridProfit.start();
   trailEngine.setDecisionRing(&decisionRing);
   if (trailTickEnabled) {
     trailEngine.start(engine);
@@ -561,6 +566,7 @@ int main(int argc, char** argv) {
           std::to_string(kHeartbeatIdleSeconds) + " s)");
 
   HttpServer server(port, execSecret);
+  hybrid::registerRoutes(server, hybridProfit, hybridFeeds, pinnedHost);
   registerGatewayWatchdog(server, execSecret, [&]() {
     GatewayWorkView v; v.service = envOr("RAILWAY_SERVICE_NAME", "cpp-exec"); v.host = pinnedHost;
     v.now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -579,10 +585,11 @@ int main(int argc, char** argv) {
     return v;
   });
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim, &tickFirer, &tickUniverse](const HttpRequest& req) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret, &trailEngine, trailTickEnabled, &vpoDispatcher, &decisionRing, startedAtMs, &peerProbe, &pacer, &eventJournal, &tickRecorder, &tickShadow, &tickSignals, &tickSimMtx, &tickSim, &tickFirer, &tickUniverse, &hybridProfit](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
+    v.set("hybridProfit", hybridProfit.status());
     v.set("hasCredentials", engine.hasCredentials());
     long long at = engine.lastReconcileAtMs();
     v.set("lastReconcileAt", at > 0 ? jsn::Value(at) : jsn::Value(nullptr));

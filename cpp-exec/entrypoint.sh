@@ -16,6 +16,8 @@ prepare() {
     echo "[entrypoint] cannot prepare $dir (the recorder will report why)"
   fi
 }
+# Codex · №12,322 · 2026-10-09; codex-footprint: durable native tick triggers.
+prepare "${HYBRID_PROFIT_PATH:-/data/hybrid-profit}"
 prepare "$TICK_SPOOL_PATH"
 [ -n "$TELEMETRY_PATH" ] && prepare "$(dirname "$TELEMETRY_PATH")"
 exec runuser -u appuser -- /usr/local/bin/cpp-exec "$@"

@@ -4,7 +4,7 @@ import { wsReconcile, wsGetPositionDeals } from '../lib/ctrader-ws.js'
 import { closePosition } from '../lib/exec-engine.js'
 import { readPartialPlan } from './momentum-partial-manager.js'
 import { partialPositionEvidence, partialPositionPresence, partialQuoteEvidence, partialClosingEvidence,
-  partialAcceptedEvidence, partialDealHistoryEvidence, MAX_CLOCK_SKEW_MS } from './momentum-broker-evidence.js'
+  partialAcceptedEvidence, partialDealHistoryEvidence } from './momentum-broker-evidence.js'
 import { readMomentumTimedQuote } from './momentum-timed-quote.js'
 
 // A refusal raised before any byte of the close left this process. The
@@ -55,8 +55,11 @@ export function makeMomentumPartialBroker(db, { identity, tradeId }, transports 
     async readClosingDeals(supplied, requested) {
       if (requested !== positionId) throw Error('partial broker identity mismatch')
       const c = current(supplied)
+      // Codex · №12,325 · 2026-10-09; codex-footprint: actual history boundary.
+      // Request through now, as enrolment does. Receipt clock-skew tolerance
+      // is a validation rule, not authority to ask the broker for the future.
       const raw = await (transports.deals || wsGetPositionDeals)(c.host, c.clientId, c.clientSecret,
-        c.accessToken, c.accountId, positionId, now() + MAX_CLOCK_SKEW_MS, 4000)
+        c.accessToken, c.accountId, positionId, now(), 4000)
       return partialDealHistoryEvidence(raw, context())
     },
     async close(supplied, order, { attemptedAtMs } = {}) {
