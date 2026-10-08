@@ -6,9 +6,177 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { decideLossGuardian, loadLossGuardianConfig, DEFAULT_LOSS_GUARDIAN } from './loss-guardian.js'
+import { decideLossGuardian, loadLossGuardianConfig, DEFAULT_LOSS_GUARDIAN, runLossGuardian } from './loss-guardian.js'
 
 const CFG = { ...DEFAULT_LOSS_GUARDIAN }
+
+// Codex · №12,130 · 2026-10-08; codex-footprint: loss-guardian-ratchet.
+// Real pass/database; only the broker boundary is controlled. A tighter stop
+// arrives AFTER reconcile, before amend, as in the native ratchet transaction.
+async function nakedPass({ side = 'BUY', ledgerSide = side, symbolId = 73,
+  tradeSide = side === 'BUY' ? 1 : 2, accountId = '1', snapshotAccount,
+  competingStop = null, unchanged = false, failure = null, brokerTp = 110,
+  localTp = 111, duringAmendSl = null, policyStampOnly = false,
+  amendSymbolId = symbolId, amendSide = side } = {}) {
+  const db = initDB(':memory:')
+  const sent = [], notices = [], brokerWrites = [], quoteIds = [], metadataIds = []
+  let brokerStop = null
+  const price = side === 'BUY' ? 99 : 101
+  db.prepare(`INSERT INTO trades (symbol,side,ctrader_position_id,status,account_id)
+    VALUES ('OWN_SYMBOL',?,'9103','open',?)`).run(ledgerSide, accountId)
+  const tradeId = db.prepare(`SELECT id FROM trades WHERE ctrader_position_id='9103'`).get().id
+  db.prepare(`INSERT INTO monitored_positions
+    (symbol,side,entry_price,current_sl,current_tp,status,source,trade_id,account_id,last_check_action)
+    VALUES ('OWN_SYMBOL',?,100,NULL,?,'active','autopilot',?,?,'prior_check')`)
+    .run(ledgerSide, localTp, tradeId, accountId)
+  const bp = { positionId: 9103, price: 100, takeProfit: brokerTp,
+    tradeData: { symbolId, tradeSide, volume: 10000 } }
+  if (snapshotAccount !== undefined) bp.ctidTraderAccountId = snapshotAccount
+  const creds = { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId }
+  const out = await runLossGuardian(db, creds, {
+    exec: {
+      reconcile: async () => ({ position: [bp] }),
+      amendPosition: async (_creds, args) => {
+        sent.push(args)
+        if (duringAmendSl != null) db.prepare('UPDATE monitored_positions SET current_sl=? WHERE trade_id=?').run(duringAmendSl, tradeId)
+        brokerStop = competingStop
+        if (failure) throw new Error(failure)
+        if (args.ratchetOnly === true) {
+          const brokerDir = amendSide === 'BUY' ? 1 : -1
+          if (args.expectedSymbolId !== Number(amendSymbolId) || args.expectedDirection !== brokerDir) throw new Error('guard_ratchet_identity')
+          if (policyStampOnly) return { unchanged: false, protection: { stopLoss: brokerStop, takeProfit: brokerTp, movement: { stopMoved: false } } }
+          const tight = brokerStop != null && (side === 'BUY' ? brokerStop >= args.stopLoss : brokerStop <= args.stopLoss)
+          if (tight || unchanged) return { unchanged: true, protection: { stopLoss: brokerStop, takeProfit: brokerTp } }
+        } else if (unchanged) return { unchanged: true, protection: { stopLoss: brokerStop, takeProfit: brokerTp } }
+        brokerWrites.push(args.stopLoss)
+        brokerStop = args.stopLoss
+        return { unchanged: false, protection: { stopLoss: brokerStop, takeProfit: brokerTp } }
+      },
+    },
+    ws: {
+      wsGetLastCloses: async (_h,_c,_s,_t,_a,ids) => { quoteIds.push(...ids); return { [symbolId]: price } },
+      wsGetTrendbarsBatch: async () => ({}),
+    },
+    sizing: { getVolumeMeta: async (_h,_c,_s,_t,_a,id) => { metadataIds.push(id); return { lotSize: 10000, digits: 2 } } },
+    notify: msg => notices.push(msg),
+  })
+  const row = db.prepare('SELECT current_sl,current_tp,last_check_action,last_check_at FROM monitored_positions WHERE trade_id=?').get(tradeId)
+  const events = db.prepare("SELECT * FROM position_events WHERE source='loss_guardian'").all()
+  const actions = db.prepare("SELECT * FROM action_log WHERE path='/loss-guardian'").all()
+  db.close()
+  return { out, sent, notices, brokerWrites, brokerStop, row, events, actions, quoteIds, metadataIds }
+}
+
+for (const [side, competingStop] of [['BUY',99.5], ['SELL',100.5]]) {
+  test(`real guardian ${side}: intervening tighter broker stop cannot be widened or counted`, async () => {
+    const r = await nakedPass({ side, competingStop })
+    assert.equal(r.brokerStop, competingStop, 'ratchet must preserve the competing broker stop')
+    assert.deepEqual(r.brokerWrites, [])
+    assert.equal(r.out.stops, 0)
+    assert.equal(r.row.current_sl, null, 'no stale stop-value overwrite on unchanged')
+    assert.equal(r.row.last_check_action, 'prior_check')
+    assert.equal(r.row.last_check_at, null)
+    assert.deepEqual(r.events, [])
+    assert.deepEqual(r.notices, [])
+    assert.deepEqual(r.actions, [])
+  })
+  test(`real guardian ${side}: genuine naked stop is installed with own snapshot identity and TP retained`, async () => {
+    const r = await nakedPass({ side })
+    const sl = side === 'BUY' ? 98 : 102
+    assert.equal(r.out.stops, 1, JSON.stringify(r.out))
+    assert.equal(r.sent.length, 1)
+    assert.equal(r.sent[0].ratchetOnly, true)
+    assert.equal(r.sent[0].expectedDirection, side === 'BUY' ? 1 : -1)
+    assert.equal(r.sent[0].expectedSymbolId, 73)
+    assert.equal(r.sent[0].ctidTraderAccountId, '1')
+    assert.equal(r.sent[0].takeProfit, 110)
+    assert.deepEqual(r.quoteIds, [73])
+    assert.deepEqual(r.metadataIds, [73])
+    assert.equal(r.row.current_sl, sl)
+    assert.equal(r.row.current_tp, 111)
+    assert.equal(r.events.length, 1)
+    assert.equal(r.events[0].kind, 'sl_moved')
+    assert.equal(r.events[0].from_value, null)
+    assert.equal(r.events[0].to_value, sl)
+    assert.equal(r.notices.length, 1)
+  })
+}
+
+test('real guardian: unchanged response cannot overwrite a concurrently retained stop or create movement evidence', async () => {
+  const r = await nakedPass({ unchanged: true, competingStop: 99.5, duringAmendSl: 99.5 })
+  assert.equal(r.out.stops, 0)
+  assert.equal(r.row.current_sl, 99.5)
+  assert.equal(r.row.last_check_action, 'prior_check')
+  assert.deepEqual(r.events, [])
+  assert.deepEqual(r.notices, [])
+  assert.deepEqual(r.actions, [])
+})
+
+test('real guardian: accepted policy-only stamp on a competing stop is not a stop installation', async () => {
+  const r = await nakedPass({ competingStop: 99.5, policyStampOnly: true })
+  assert.equal(r.out.stops, 0)
+  assert.equal(r.row.current_sl, null)
+  assert.deepEqual(r.brokerWrites, [])
+  assert.deepEqual(r.events, [])
+  assert.deepEqual(r.notices, [])
+})
+
+for (const [label, opts] of [
+  ['missing symbol',{symbolId:null}], ['malformed symbol',{symbolId:true}],
+  ['fractional symbol',{symbolId:1.5}], ['coerced symbol',{symbolId:'0x49'}],
+  ['missing direction',{tradeSide:null}], ['malformed direction',{tradeSide:true}],
+  ['conflicting direction',{tradeSide:2}], ['missing ledger direction',{ledgerSide:''}],
+  ['conflicting account',{snapshotAccount:'2'}], ['missing account',{accountId:null}],
+]) {
+  test(`real guardian: ${label} refuses the naked amend without movement evidence`, async () => {
+    const r = await nakedPass(opts)
+    assert.equal(r.out.refused, 1, JSON.stringify(r.out))
+    assert.equal(r.out.stops, 0)
+    assert.deepEqual(r.sent, [])
+    assert.equal(r.row.current_sl, null)
+    assert.deepEqual(r.events, [])
+    assert.deepEqual(r.notices, [])
+  })
+}
+
+for (const failure of ['guard_ratchet_identity','broker_amend_rejected','transport_timeout']) {
+  test(`real guardian: ${failure} does not persist or count an unconfirmed stop`, async () => {
+    const r = await nakedPass({ failure })
+    assert.equal(r.out.stops, 0)
+    assert.match(r.out.errors.join(' '), new RegExp(failure))
+    assert.equal(r.row.current_sl, null)
+    assert.equal(r.row.last_check_action, 'prior_check')
+    assert.deepEqual(r.events, [])
+    assert.deepEqual(r.notices, [])
+  })
+}
+
+for (const [label, opts] of [['symbol',{amendSymbolId:74}],['direction',{amendSide:'SELL'}]]) {
+  test(`real guardian: broker ${label} changes after reconcile refuse the ratchet before a write`, async () => {
+    const r = await nakedPass(opts)
+    assert.equal(r.sent.length, 1)
+    assert.equal(r.out.stops, 0)
+    assert.match(r.out.errors.join(' '), /guard_ratchet_identity/)
+    assert.deepEqual(r.brokerWrites, [])
+    assert.equal(r.row.current_sl, null)
+    assert.deepEqual(r.events, [])
+  })
+}
+
+test('real guardian: existing ledger TP fallback remains when broker TP is absent', async () => {
+  const r = await nakedPass({ brokerTp: null })
+  assert.equal(r.out.stops, 1, JSON.stringify(r.out))
+  assert.equal(r.sent[0].takeProfit, 111)
+})
+
+for (const [side, ledgerSide, tradeSide] of [['BUY','long','BUY'],['SELL','short','SELL'],['BUY','BUY','1'],['SELL','SELL','2']]) {
+  test(`real guardian: ${ledgerSide}/${tradeSide} valid broker direction retains naked-stop protection`, async () => {
+    const r = await nakedPass({ side, ledgerSide, tradeSide })
+    assert.equal(r.out.stops, 1, JSON.stringify(r.out))
+    assert.equal(r.sent[0].expectedDirection, side === 'BUY' ? 1 : -1)
+    assert.equal(r.row.current_sl, side === 'BUY' ? 98 : 102)
+  })
+}
 
 test('defaults: on, scope all; saved values merge; explicit off wins', () => {
   const db = initDB(':memory:')
