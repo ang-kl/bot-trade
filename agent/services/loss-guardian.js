@@ -110,6 +110,23 @@ function atrFromBars(bars, period) {
   return sum / period
 }
 
+// Codex · №12,130 · 2026-10-08; codex-footprint: loss-guardian-ratchet.
+// No shared symbol map or guessed direction: this account's reconcile is the
+// authority. Refuse incomplete/contradictory identity before sizing an amend.
+function nakedStopIdentity(r, bp, accountId) {
+  const integer = raw => (typeof raw === 'number' || (typeof raw === 'string' && /^[0-9]+$/.test(raw)))
+    && Number.isSafeInteger(Number(raw)) && Number(raw) > 0 ? Number(raw) : null
+  const symbolId = integer(bp.tradeData?.symbolId)
+  const tradeSide = bp.tradeData?.tradeSide
+  const dir = tradeSide === 1 || tradeSide === '1' || tradeSide === 'BUY' ? 1
+    : tradeSide === 2 || tradeSide === '2' || tradeSide === 'SELL' ? -1 : 0
+  const side = String(r.side ?? '').trim().toUpperCase()
+  const rowDir = ['BUY','LONG'].includes(side) ? 1 : ['SELL','SHORT'].includes(side) ? -1 : 0
+  if (!integer(accountId) || !integer(r.position_id) || !symbolId || !dir || dir !== rowDir) return null
+  if (bp.ctidTraderAccountId != null && integer(bp.ctidTraderAccountId) !== integer(accountId)) return null
+  return { symbolId, dir }
+}
+
 /**
  * One guardian pass: broker-truth positions in scope → decide → act through
  * the exec engine. Never throws; returns a summary.
@@ -183,9 +200,21 @@ async function lossGuardianPass(db, creds, deps = {}) {
     if (scoped.foreign.length) {
       summary.errors.push(`${scoped.foreign.length} position(s) belong to another account and were not touched`)
     }
+    const stopIdentities = new Map()
     const involved = scoped.owned
       .map(r => ({ r, bp: live.get(String(r.position_id)) }))
       .filter(x => x.bp)
+      .filter(({ r, bp }) => {
+        if ((bp.stopLoss ?? r.current_sl) != null) return true
+        const identity = nakedStopIdentity(r, bp, accountId)
+        if (!identity) {
+          summary.refused++
+          summary.errors.push(`${r.symbol} position ${r.position_id}: broker stop identity missing or conflicting; naked stop not touched`)
+          return false
+        }
+        stopIdentities.set(String(r.position_id), identity)
+        return true
+      })
     const symbolIds = [...new Set(involved.map(x => x.bp.tradeData?.symbolId).filter(Boolean))]
     if (symbolIds.length === 0) return summary
     const prices = await ws.wsGetLastCloses(
@@ -236,7 +265,8 @@ async function lossGuardianPass(db, creds, deps = {}) {
       // THIS position's account decides: stop distance, fallback and time cap.
       const rowCfg = cfgFor(r.account_id)
       const decision = decideLossGuardian(rowCfg, {
-        side: r.side,
+        side: stopIdentities.has(String(r.position_id))
+          ? (stopIdentities.get(String(r.position_id)).dir === 1 ? 'BUY' : 'SELL') : r.side,
         entry: bp.price ?? r.entry_price,
         price,
         currentSl: bp.stopLoss ?? r.current_sl,
@@ -276,13 +306,30 @@ async function lossGuardianPass(db, creds, deps = {}) {
       }
       if (decision.action.sl != null) {
         try {
-          // V3 M5: timed on the way through; the payload is untouched.
-          await measureAmend({ path: 'loss_guardian', source: 'loss_guardian', accountId: r.account_id ?? accountId ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
+          // Codex · №12,130 · 2026-10-08; codex-footprint: loss-guardian-ratchet.
+          // Re-read under the native position lock: a stop installed since our
+          // reconcile must never be widened. Keep timing and target policy.
+          const identity = stopIdentities.get(String(r.position_id))
+          const result = await measureAmend({ path: 'loss_guardian', source: 'loss_guardian', accountId: r.account_id ?? accountId ?? creds?.accountId, positionId: r.position_id }, () => exec.amendPosition(creds, {
             positionId: parseInt(r.position_id), stopLoss: decision.action.sl,
             ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
+            ratchetOnly: true,
+            expectedDirection: identity.dir,
+            expectedSymbolId: identity.symbolId,
             // Putting a stop on a naked position must not cost it its target.
             takeProfit: Number(bp.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
           }))
+          // Codex · №12,140 · 2026-10-08; codex-footprint: loss-guardian-ratchet.
+          // Native tightening proof also says false for a FIRST stop: there
+          // was no positive before-stop. Preserve that genuine installation;
+          // a policy stamp on an existing stop still installs nothing.
+          const movement = result?.protection?.movement
+          const installedNaked = movement?.beforeStopLoss === null
+            && Number.isFinite(movement?.afterStopLoss) && movement.afterStopLoss > 0
+          if (result?.unchanged === true || (movement?.stopMoved === false && !installedNaked)) {
+            summary.deferred.push(`${r.symbol}: broker stop unchanged; no stop installed by this pass`)
+            continue
+          }
           updAct.run(decision.action.sl, 'loss_guardian_stop', r.id)
           summary.stops++
           notify(`🛟 Loss Guardian: ${r.symbol} had NO stop — protective SL set at ${decision.action.sl} (${decision.reason})`)
