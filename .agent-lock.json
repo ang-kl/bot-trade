@@ -11,7 +11,8 @@
         "agent/services/momentum-partial-manager.js",
         "agent/services/momentum-partial-ownership.js",
         "agent/services/momentum-partial-runtime.js",
-        "CLAUDE.md"
+        "CLAUDE.md",
+        "agent/lib/one-account-model.test.js"
       ],
       "started_at": "2026-10-08T12:52:00Z",
       "expires_at": "2026-10-08T17:52:00Z",
