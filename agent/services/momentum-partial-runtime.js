@@ -262,7 +262,14 @@ export function recordPartialScaleOuts(db) {
     const row = readPartialPlan(db, w.account_id, w.trade_id)
     if (!row || row.scale_out_event_id != null) continue
     if (!provenReceipt(row)) { pending.push({ accountId: w.account_id, tradeId: w.trade_id, why: 'receipt_not_a_proven_deal' }); continue }
-    if (row.plan.policy === CAPPED_HYBRID_POLICY && row.state !== 'CONFIRMED') {
+    // Codex · №12,260 · 2026-10-08; codex-footprint: capped-hybrid-review.
+    // A runner can hit its unchanged SL/TP before readback. Its separate
+    // closing deal does not invalidate our proven partial; keep both facts.
+    const terminalAfterPartial = ['CLOSED_EXTERNALLY', 'VOLUME_CHANGED'].includes(row.state)
+      && ['position_closed_after_partial', 'volume_changed_after_partial'].includes(row.reason)
+      && row.evidence?.source === 'broker_reconcile+deal_history'
+      && row.evidence.closingDealIds?.some(id => id && id !== row.receipt.dealId)
+    if (row.plan.policy === CAPPED_HYBRID_POLICY && row.state !== 'CONFIRMED' && !terminalAfterPartial) {
       pending.push({ accountId: w.account_id, tradeId: w.trade_id, why: 'hybrid_residual_not_confirmed' }); continue
     }
     const r = row.receipt, p = row.plan
@@ -282,13 +289,21 @@ export function recordPartialScaleOuts(db) {
           reason: `${p.policy === CAPPED_HYBRID_POLICY ? 'capped hybrid 50% at 2R' : 'momentum partial TP1'}: closed ${r.closedVolume} of ${p.volume} broker units at ${r.price} (trigger ${p.trigger})`,
           source: 'momentum_partial',
           detail: { dealId: r.dealId, orderId: r.orderId ?? null, volume: r.closedVolume, price: r.price,
-            executedAtMs: r.executedAtMs, receiptSource: r.source ?? null, planState: row.state, volumeUnit: 'broker_volume' },
+            executedAtMs: r.executedAtMs, receiptSource: r.source ?? null, planState: row.state, volumeUnit: 'broker_volume',
+            ...(p.policy === CAPPED_HYBRID_POLICY ? { residualEvidence: row.evidence ?? null } : {}) },
         })
         ev = find()
       }
       // recordPositionEvent never throws; an event that did not land leaves
       // the plan unmarked and the next pass tries again.
       if (!ev) return null
+      if (p.policy === CAPPED_HYBRID_POLICY) {
+        // Profit lifecycle only. Do not write entry, SL, TP or breakeven.
+        // This flag also prevents a second legacy partial after an owner
+        // later restores that policy. Atomic with the receipt's journal.
+        db.prepare('UPDATE monitored_positions SET scaled_out=1 WHERE trade_id=? AND account_id=?')
+          .run(w.trade_id, w.account_id)
+      }
       db.prepare('UPDATE momentum_partial_plans SET scale_out_event_id=? WHERE account_id=? AND trade_id=? AND scale_out_event_id IS NULL')
         .run(ev.id, w.account_id, w.trade_id)
       return ev.id

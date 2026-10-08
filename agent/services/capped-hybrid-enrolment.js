@@ -22,7 +22,10 @@ export function openingReceipts(raw, owner, held, digits) {
   const ids = []
   for (const d of deals) {
     if (!id(d.dealId) || id(d.orderId) !== owner.entryOrderId || id(d.symbolId) !== owner.symbolId
-      || ![2, 'FILLED'].includes(d.dealStatus) || !integer(d.filledVolume)
+      // Codex · №12,260 · 2026-10-08; codex-footprint: capped-hybrid-review.
+      // A FILLED entry may consist of several partially filled executions.
+      // The complete owned order/position total below remains mandatory.
+      || ![2, 3, 'FILLED', 'PARTIALLY_FILLED'].includes(d.dealStatus) || !integer(d.filledVolume)
       || !integer(d.volume) || d.filledVolume > d.volume || !(typeof d.executionPrice === 'number' && d.executionPrice > 0)
       || (d.tradeSide === 1 || d.tradeSide === 'BUY' ? 'BUY' : d.tradeSide === 2 || d.tradeSide === 'SELL' ? 'SELL' : null) !== owner.side) return null
     total += d.filledVolume; weighted += d.filledVolume * d.executionPrice; ids.push(id(d.dealId))

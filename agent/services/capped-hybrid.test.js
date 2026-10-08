@@ -13,8 +13,17 @@ import { readPartialPlan, runPartialPlan } from './momentum-partial-manager.js'
 import { makeMomentumPartialBroker } from './momentum-partial-broker.js'
 import { planMomentumTargets } from './momentum-target-policy.js'
 import { enrolCappedHybrids } from './capped-hybrid-enrolment.js'
+import { evaluatePosition } from './position-manager.js'
+import { applyManagedRules } from './managed-exit.js'
+import { rulesForSymbol } from './asset-controllers.js'
 
 const AT = 1791460800000
+test('a sub-tick risk cannot collapse the profit trigger to the entry price', () => {
+  for (const side of ['BUY', 'SELL']) {
+    assert.equal(planCappedHybrid({ side, entry: 100, initialRisk: 1e-10, brokerTarget: side === 'BUY' ? 140 : 60,
+      volume: 10000, minVolume: 100, stepVolume: 100, digits: 2, openingDealIds: ['1'] }).ok, false)
+  }
+})
 function scene(t, { side = 'BUY', live = false, volume = 10000, step = 100, path = ':memory:' } = {}) {
   const f = { db: initDB(path), at: AT, volume, step, closes: [], reads: [], side, reply: null,
     entry: 100, sl: side === 'BUY' ? 98 : 102, tp: side === 'BUY' ? 140 : 60,
@@ -82,11 +91,63 @@ test('real runtime: BUY/SELL on demo/live bank exact half once, with receipt and
     assert.equal(p.brokerTarget, f.tp); assert.deepEqual(f.closes, [{ positionId: '33', volume: 5000 }])
     assert.equal(f.volume, 5000); assert.equal(f.events().length, 1)
     assert.equal(f.events()[0].r_at, 2)
-    assert.deepEqual(f.db.prepare('SELECT * FROM monitored_positions WHERE id=8').get(), before, 'profit pass must not rewrite SL/entry/monitor flags')
+    assert.deepEqual(f.db.prepare('SELECT * FROM monitored_positions WHERE id=8').get(), { ...before, scaled_out: 1 }, 'only the proven partial flag changes; SL/TP/entry remain frozen')
     assert.equal(f.sl, before.current_sl); assert.equal(f.tp, before.current_tp)
     f.at += 61000; await f.pass()
     assert.equal(f.closes.length, 1); assert.equal(f.events().length, 1)
   }
+})
+
+// Codex · №12,259 · 2026-10-08; codex-footprint: capped-hybrid-review.
+test('a completed entry composed of partial-fill deals can enrol; incomplete totals still refuse', async t => {
+  for (const status of [3, 'PARTIALLY_FILLED']) for (const complete of [true, false]) {
+    const f = scene(t)
+    f.transports.deals = async () => ({ ctidTraderAccountId: '42', hasMore: false, deal: [
+      { ...f.opening, filledVolume: 4000, dealStatus: status },
+      { ...f.opening, dealId: '2', filledVolume: complete ? 6000 : 5000 },
+    ] })
+    const out = await f.pass()
+    assert.equal(out.cappedHybrid.enrolled.length, complete ? 1 : 0)
+    assert.equal(f.closes.length, complete ? 1 : 0)
+    if (complete) assert.equal(readPartialPlan(f.db, '42', 7).state, 'CONFIRMED')
+  }
+})
+
+test('a proven partial remains journaled when another deal closes or reduces its runner before readback', async t => {
+  for (const remaining of [0, 4000]) {
+    const f = scene(t), reconcile = f.transports.reconcile
+    f.transports.reconcile = async (...args) => f.volume === 0
+      ? { ctidTraderAccountId: '42', position: [] } : reconcile(...args)
+    f.transports.deals = async () => ({ ctidTraderAccountId: '42', hasMore: false, deal: [f.opening,
+      ...(f.closes.length ? [f.fill(5000).deal, { ...f.fill(5000 - remaining).deal, dealId: '45', orderId: '67' }] : []),
+    ] })
+    f.reply = () => { f.volume = remaining; return f.fill(5000) }
+    await f.pass()
+    const state = remaining ? 'VOLUME_CHANGED' : 'CLOSED_EXTERNALLY'
+    assert.equal(readPartialPlan(f.db, '42', 7).state, state)
+    assert.equal(f.events().length, 1)
+    const detail = JSON.parse(f.events()[0].detail_json)
+    assert.equal(detail.planState, state); assert.equal(detail.volume, 5000)
+    assert.equal(f.db.prepare('SELECT scaled_out FROM monitored_positions WHERE id=8').get().scaled_out, 1)
+    f.at += 61000; await f.pass()
+    assert.equal(f.events().length, 1); assert.equal(f.closes.length, 1)
+  }
+})
+
+test('confirmed hybrid latches the profit flag without altering managed SL decisions or enabling another legacy partial', async t => {
+  const f = scene(t), before = f.db.prepare('SELECT * FROM monitored_positions WHERE id=8').get()
+  const rules = applyManagedRules(f.db, '42', rulesForSymbol(f.db, 'EURUSD'), { strategy: 'ema_pullback', tradeId: 7 })
+  const ctx = { currentPrice: 120, now: new Date(AT), rules }
+  const stopBefore = evaluatePosition(before, ctx)
+  await f.pass()
+  const after = f.db.prepare('SELECT * FROM monitored_positions WHERE id=8').get()
+  assert.equal(after.scaled_out, 1)
+  assert.deepEqual(evaluatePosition(after, ctx), stopBefore, 'managed stop decision remains identical after profit-only flag')
+  // Existing evaluator, with its legacy partial window restored by an owner.
+  // Breakeven is already met in this controlled evaluator fixture.
+  const legacy = { currentPrice: 120, now: new Date(AT), rules: { bankTriggerR: 0, partialTriggerR: 2 } }
+  assert.equal(evaluatePosition({ ...before, be_moved: 1 }, legacy).action, 'PARTIAL_EXIT')
+  assert.notEqual(evaluatePosition({ ...after, be_moved: 1 }, legacy).action, 'PARTIAL_EXIT')
 })
 
 test('BUY uses bid and SELL uses ask: a spread-side touch below 2R cannot take a partial', async t => {

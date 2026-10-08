@@ -27,7 +27,8 @@ export function planCappedHybrid(input = {}) {
   const rawTrigger = entry + dir * 2 * initialRisk
   const trigger = (dir === 1 ? Math.ceil(rawTrigger * scale - 1e-7) : Math.floor(rawTrigger * scale + 1e-7)) / scale
   const originalStop = entry - dir * initialRisk
-  if (!positive(originalStop) || !positive(trigger) || dir * (brokerTarget - trigger) <= 0) return refuse('existing_tp_caps_before_runner')
+  if (!positive(originalStop) || !positive(trigger) || dir * (trigger - entry) <= 0
+    || dir * (brokerTarget - trigger) <= 0) return refuse('existing_tp_caps_before_runner')
   return { ok: true, policy: CAPPED_HYBRID_POLICY, mode: 'partial_runner', side, entry, initialRisk, originalStop,
     trigger, brokerTarget, volume, closeVolume: half, runnerVolume: half, closePercentage: 50,
     minVolume, stepVolume, digits, openingDealIds: [...openingDealIds], rBasis: 'recorded_initial_price_risk',
