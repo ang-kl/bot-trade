@@ -14,6 +14,7 @@ import { readPartialPlan, runPartialPlan } from './momentum-partial-manager.js'
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { makeMomentumPartialBroker } from './momentum-partial-broker.js'
 import { recordPartialScaleOuts } from './momentum-partial-runtime.js'
+import { MAX_CLOCK_SKEW_MS } from './momentum-broker-evidence.js'
 
 export const HYBRID_TICK_STATUS = 'hybrid_tick_controller_json'
 const hosts = [EXEC_HOST_LIVE, EXEC_HOST_DEMO]
@@ -37,7 +38,9 @@ export function hybridSpec(row, now = Date.now()) {
   const ref = { identity: row.identity, positionId: row.position_id, tradeId: row.trade_id, plan: row.plan }
   return { key: createHash('sha256').update(JSON.stringify(ref)).digest('hex'), host: row.identity.host,
     accountId: row.account_id, symbolId: row.identity.symbolId, positionId: row.position_id,
-    tradeId: row.trade_id, side: row.plan.side, trigger: row.plan.trigger, expiresAtMs: now + 90_000 }
+    // Reserve the existing 2s clock budget inside the native 90s ceiling:
+    // a gateway up to 2s behind Node must not see a >90s configuration.
+    tradeId: row.trade_id, side: row.plan.side, trigger: row.plan.trigger, expiresAtMs: now + 90_000 - MAX_CLOCK_SKEW_MS }
 }
 function owned(db, row) {
   const o = readPartialOwnership(db, row.account_id, row.trade_id, row.position_id, row.plan.digits, row.plan)
@@ -71,8 +74,19 @@ function eventShape(e) {
 }
 function nativeQuote(e, spec, now) {
   if (!eventShape(e) || ['host', 'key', 'accountId', 'symbolId', 'positionId', 'side', 'tradeId', 'trigger'].some(k => e[k] !== spec[k])) return null
-  const stamps = [e.bidAtMs, e.askAtMs, e.bidBrokerAtMs, e.askBrokerAtMs]
-  if (stamps.some(at => at > now || now - at > 5000) || e.persistedAtMs > now || e.persistedAtMs < e.receivedAtMs) return null
+  // Codex · №12,363 · 2026-10-09; codex-footprint: preserve clock domains.
+  // Source age retains the ordinary manager's strict broker-clock rule.
+  // Receive/persist stamps belong to the gateway, not this Node process:
+  // compare their order and queue age within that clock, never re-stamp a
+  // quote or erase the original foreign-clock evidence to make it fresh.
+  if ([e.bidBrokerAtMs, e.askBrokerAtMs].some(at => at > now || now - at > 5000)
+    || e.receivedAtMs < Math.max(e.bidAtMs, e.askAtMs)
+    || e.persistedAtMs < e.receivedAtMs || e.persistedAtMs - e.observedAtMs > 5000) return null
+  // Mirror the native input bounds: each actual source/receive pair was at
+  // most 5s old, or 2s ahead, at ingestion. Large unexplained clock gaps
+  // remain a refusal; gateway skew does not widen broker-source freshness.
+  if ([[e.bidAtMs, e.bidBrokerAtMs], [e.askAtMs, e.askBrokerAtMs]]
+    .some(([received, broker]) => received - broker > 5000 || broker - received > MAX_CLOCK_SKEW_MS)) return null
   if (spec.side === 'BUY' ? e.bid < spec.trigger : e.ask > spec.trigger) return null
   return { host: e.host, accountId: e.accountId, symbolId: e.symbolId, positionId: e.positionId,
     bid: e.bid, ask: e.ask, observedAtMs: e.brokerAtMs, receivedAtMs: e.receivedAtMs,
@@ -91,10 +105,11 @@ export async function processHybridTick(db, host, event, { now = Date.now,
   const held = get()
   if (held && held.raw_json !== encoded) throw Error('hybrid tick identity reused with different evidence')
   if (held?.completed_at != null) return parse(held.outcome_json)
+  const nodeReceivedAt = held?.received_at ?? now()
   if (!held) {
     if (db.prepare('SELECT COUNT(*) AS n FROM hybrid_tick_receipts').get().n >= 100000) throw Error('hybrid tick receipt capacity exceeded')
     db.prepare(`INSERT INTO hybrid_tick_receipts(host,event_id,account_id,trade_id,plan_key,raw_json,received_at)
-      VALUES(?,?,?,?,?,?,?)`).run(host, event.eventId, event.accountId, event.tradeId, event.key, encoded, now())
+      VALUES(?,?,?,?,?,?,?)`).run(host, event.eventId, event.accountId, event.tradeId, event.key, encoded, nodeReceivedAt)
   }
   let out
   const row = hasTable(db, 'momentum_partial_plans') && readPartialPlan(db, event.accountId, event.tradeId)
@@ -127,7 +142,7 @@ export async function processHybridTick(db, host, event, { now = Date.now,
   const finished = now()
   db.prepare('UPDATE hybrid_tick_receipts SET outcome_json=?,completed_at=? WHERE host=? AND event_id=? AND completed_at IS NULL')
     .run(JSON.stringify(out), finished, host, event.eventId)
-  log(`[hybrid-tick] ${host} account=${event.accountId} trade=${event.tradeId} event=${event.eventId} state=${out.state} reason=${out.reason || ''} triggerToResultMs=${finished - event.receivedAtMs}`)
+  log(`[hybrid-tick] ${host} account=${event.accountId} trade=${event.tradeId} event=${event.eventId} state=${out.state} reason=${out.reason || ''} nodeReceiptToResultMs=${finished - nodeReceivedAt}`)
   // Codex · №12,326 · 2026-10-09; codex-footprint: retained outcome readback.
   // Read the committed records. Log no credentials or guessed broker facts;
   // a confirmed state is paired with its actual stored receipt and residual.

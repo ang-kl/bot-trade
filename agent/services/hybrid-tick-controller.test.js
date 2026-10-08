@@ -103,6 +103,66 @@ test('closing-history request cannot ask beyond the current broker-read clock', 
   assert.deepEqual(bounds, [f.at])
 })
 
+// Codex · №12,363 · 2026-10-09; codex-footprint: preserve clock domains.
+// Broker-source stamps stay unchanged; only the gateway's wall clock moves.
+for (const live of [false, true]) for (const side of ['BUY', 'SELL']) for (const offset of [-1000, 1000]) {
+  test(`${live ? 'live' : 'demo'} ${side}: gateway offset ${offset}ms does not discard a fresh broker tick`, async t => {
+    const f = await prepare(t, { live, side }), event = { ...f.event }
+    for (const key of ['bidAtMs', 'askAtMs', 'receivedAtMs', 'observedAtMs', 'persistedAtMs']) event[key] += offset
+    const logs = []
+    const outcome = await processHybridTick(f.db, f.host, event,
+      { now: () => f.at, credsFor: () => f.creds, transports: f.transports, log: value => logs.push(value) })
+    assert.equal(outcome.state, 'CONFIRMED')
+    assert.match(logs.find(value => value.startsWith('[hybrid-tick] ')), /nodeReceiptToResultMs=0$/)
+    assert.equal(f.closes.length, 1)
+    const receipt = f.db.prepare('SELECT raw_json FROM hybrid_tick_receipts').get()
+    assert.deepEqual(JSON.parse(receipt.raw_json), event, 'retain actual foreign stamps, never rebase history')
+    assert.equal(readPartialPlan(f.db, '42', 7).evidence.observation.volume, 5000)
+    assert.equal(f.events().length, 1)
+  })
+}
+
+test('broker-source future/stale times and inconsistent gateway clocks cannot close', async t => {
+  for (const changed of [
+    { bidBrokerAtMs: 1791460800001, brokerAtMs: 1791460800000 },
+    { askBrokerAtMs: 1791460794999, brokerAtMs: 1791460794999 },
+    { receivedAtMs: 1791460799999 },
+    { persistedAtMs: 1791460799999 },
+    { persistedAtMs: 1791460805001 },
+  ]) {
+    const f = await prepare(t)
+    assert.equal(f.at, 1791460800000)
+    assert.equal((await f.tick({ ...f.event, ...changed })).state, 'REFUSED')
+    assert.equal(f.closes.length, 0)
+  }
+})
+
+test('a gateway/source clock gap beyond native bounds is not silently tolerated', async t => {
+  for (const offset of [-2001, 5001]) {
+    const f = await prepare(t), event = { ...f.event }
+    for (const key of ['bidAtMs', 'askAtMs', 'receivedAtMs', 'observedAtMs', 'persistedAtMs']) event[key] += offset
+    assert.equal((await f.tick(event)).state, 'REFUSED')
+    assert.equal(f.closes.length, 0)
+  }
+})
+
+test('a shifted gateway receipt cannot refresh a broker quote while position read waits', async t => {
+  const f = await prepare(t), event = { ...f.event }, reconcile = f.transports.reconcile
+  for (const key of ['bidAtMs', 'askAtMs', 'receivedAtMs', 'observedAtMs', 'persistedAtMs']) event[key] += 1000
+  f.transports.reconcile = async (...args) => { f.at += 5001; return reconcile(...args) }
+  assert.equal((await f.tick(event)).state, 'ARMED')
+  assert.equal(f.closes.length, 0)
+})
+
+test('published plan stays inside native expiry bounds across the existing 2s clock budget', async t => {
+  const f = await prepare(t)
+  for (const gatewayOffset of [-2000, 0, 2000]) {
+    const gatewayNow = f.at + gatewayOffset
+    assert.ok(f.spec.expiresAtMs > gatewayNow + 30000, 'covers the ordinary config refresh')
+    assert.ok(f.spec.expiresAtMs - gatewayNow <= 90000, 'satisfies the unchanged native maximum TTL')
+  }
+})
+
 test('both host consumers configure, process durable events, and acknowledge after the stored verdict', async t => {
   const f = await prepare(t, { live: true }), configurations = [], timers = [], logs = [], acknowledged = []
   let delivered = false
