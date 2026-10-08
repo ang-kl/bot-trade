@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // node --test agent/services/entry-hours.test.js
 //
 // V3 S-8 (Wave 3 row 3.2): holidays on the entry path, UNKNOWN never reads
@@ -408,7 +409,7 @@ test('N-1: the gate judges the id autoTrade places: the account\'s own list, not
   assert.equal(g.calendarReason, 'broker_holiday')
 })
 
-test('N-1: after a FAILED list read the global-map fallback is not judged: autoTrade\'s own read could place another id', async t => {
+test('N-1: a failed linked list read is refused; a later own read can establish the account ID', async t => {
   const db = disagreeingMaps(t)
   const g = await raceHung(resolveEntryMarketGate(db, { symbol: SYM, accountId: ACCT, host: HOST }, {
     nowMs: THU_0110_1000, credentials: CREDS, wsGetSymbolsList: async () => { throw new Error('cTrader WS timeout after 5000ms') } }))
@@ -418,7 +419,7 @@ test('N-1: after a FAILED list read the global-map fallback is not judged: autoT
   assert.equal(placed.id, 202)
   assert.equal(g.unknown, true, 'RED if the gate judged 101 (open) from the fallback while autoTrade can place 202 (holiday)')
   assert.equal(g.open, false)
-  assert.match(g.refresh, /^symbol_id_fallback: /)
+  assert.match(g.refresh, /^symbol_id: symbol_map_unverified:/)
 })
 
 test('N-1: when resolveSymbolId cannot read at all, its network-free answer is judged and no budget is spent', async t => {

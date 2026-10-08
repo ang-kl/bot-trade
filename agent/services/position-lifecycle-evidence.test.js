@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // node --test agent/services/position-lifecycle-evidence.test.js
 //
 // V3 B2 (P5b-2): broker lifecycle verdicts. Behaviour, on disposable SQLite,
@@ -169,7 +170,7 @@ test('a money row with no receipt: read once, receipts kept and linked, verdict 
 test('B2-m: the sweep\'s receipts store lots from the broker\'s declared lot size, as the other API deal writers do (L2b W10)', async t => {
   const db = fresh(t)
   const { rememberLotSize } = await import('../lib/lot-size-registry.js')
-  setState(db, `symbol_id_map:${DEMO}`, JSON.stringify({ builtAt: iso(NOW), map: { EURUSD: 10, XAUUSD: 11 } }))
+  setState(db, `symbol_id_map:${DEMO}`, JSON.stringify({ accountId: String(DEMO), builtAt: iso(NOW), map: { EURUSD: 10, XAUUSD: 11 } }))
   rememberLotSize(db, 'EURUSD', 100)
   trade(db, { pid: '701', net: 150 })
   const out = await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW, getPositionDeals: async () => hist(DEMO, [

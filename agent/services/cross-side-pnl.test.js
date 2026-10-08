@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -18,7 +19,7 @@ function fixture(t) {
   t.after(() => { db.close(); resetBackfillPacing() })
   for (const [id, live, enabled] of [['1', 0, 1], ['2', 1, 1], ['3', 1, 1], ['4', 1, 0]]) {
     db.prepare('INSERT INTO accounts (account_id, is_live, enabled, mode) VALUES (?, ?, ?, ?)').run(id, live, enabled, 'active')
-    setState(db, `symbol_id_map:${id}`, JSON.stringify({ map: { [live ? 'LIVE.US' : 'DEMO.US']: 10 }, builtAt: now }))
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ accountId: String(id), map: { [live ? 'LIVE.US' : 'DEMO.US']: 10 }, builtAt: now }))
   }
   setState(db, 'ctrader_account_id', '1')
   setState(db, 'ctrader_is_live', 'false')

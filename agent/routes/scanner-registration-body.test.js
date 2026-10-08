@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -57,7 +58,7 @@ test('the 796-profile draft (above the old 100 KB parser) registers through the 
   const db = initDB(':memory:'); t.after(() => db.close())
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES(11,0)').run()
   const symbols = Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`SYM${i}`, 100 + i]))
-  setState(db, 'symbol_id_map:11', JSON.stringify({ map: symbols }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ accountId: '11', map: symbols }))
   const cells = []
   for (const symbolId of Object.values(symbols)) for (const strategy of ['fib_confluence', 'rsi2_reversion', 'donchian_breakout'])
     for (const timeframe of ['5m', '30m', '1h', '4h', '1d']) cells.push({ source: 'cpp-scan-timeframe', strategy, timeframe, options: {}, configVersion: 'tf-v1',

@@ -1,3 +1,4 @@
+// Codex · №12,184 · 2026-10-08; codex-footprint: valid watchdog fixtures retain account-owned map stamps.
 // agent/services/watchdog-contract-entry-diagnostics.test.js — V3 C4
 // (SEQUENCE PR-4, WP-B B2 + WP-C PR-C1): what the tick receipt and the entry
 // diagnostics add to the Node watchdog contract must never fail it, empty it
@@ -39,7 +40,7 @@ test('the contract carries entry diagnostics for every registry account, complet
 test('a failing diagnostics read never fails or empties the contract; the entry_activity blocker names its own failure', t => {
   const db = fixture(t)
   position(db)
-  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ accountId: '11', builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
   recordMarketCalendar(db, { provider: 'ctrader', host: 'demo.ctraderapi.com', accountId: '11', symbolId: '7' },
     { symbolId: 7, scheduleTimeZone: 'UTC', schedule: [{ startSecond: 21 * 3600, endSecond: 5 * 86400 + 21 * 3600 }], holiday: [] }, { nowMs: now - 1000 })
   recordScannerWork(db, { creds: { provider: 'ctrader', host: 'demo.ctraderapi.com', accountId: '11', ready: true }, scopeAccounts: ['11'], symbolMap: { EURUSD: 7 },
@@ -104,7 +105,7 @@ test('realistic load: 7 dual accounts × 56 tick names plus the bar receipt stay
   const names = [...new Set([...tickNames, ...barNames])]
   for (const [n, id] of accounts.entries()) {
     const map = Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i]))
-    setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: new Date(now).toISOString(), map }))
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ accountId: String(id), builtAt: new Date(now).toISOString(), map }))
     for (const [i, s] of names.entries()) {
       recordMarketCalendar(db, { provider: 'ctrader', host: n % 2 ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', accountId: id, symbolId: String(map[s]) },
         { symbolId: map[s], ...schedules[i % schedules.length], holiday: [] }, { nowMs: now - 1000 })

@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // node --test agent/amend-latency-wiring.test.js
 //
 // V3 M5 (P1/P4-6) — the WIRING half of amend latency: the paths that have no
@@ -66,10 +67,10 @@ const db = (() => {
   setState(d, 'ctrader_account_id', '42')
   setState(d, 'ctrader_access_token', 'fixture')
   d.prepare(`INSERT INTO accounts (account_id, is_live, enabled, mode) VALUES ('42', 0, 1, 'active')`).run()
-  setState(d, 'symbol_id_map:42', JSON.stringify({ map: {}, builtAt: new Date().toISOString() }))
+  setState(d, 'symbol_id_map:42', JSON.stringify({ accountId: '42', map: {}, builtAt: new Date().toISOString() }))
   // Account 1: the fast monitor's account, with its own symbol list.
   d.prepare(`INSERT INTO accounts (account_id, is_live, enabled, mode) VALUES ('1', 0, 1, 'active')`).run()
-  setState(d, 'symbol_id_map:1', JSON.stringify({ map: { EURUSD: 1, GBPUSD: 2 }, builtAt: new Date().toISOString() }))
+  setState(d, 'symbol_id_map:1', JSON.stringify({ accountId: '1', map: { EURUSD: 1, GBPUSD: 2 }, builtAt: new Date().toISOString() }))
   return d
 })()
 const s = prepareStatements(db)

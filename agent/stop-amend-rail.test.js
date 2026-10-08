@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // node --test agent/stop-amend-rail.test.js
 //
 // The never-loosen rail and the stop policy at the executor (02-10-2026; owner:
@@ -57,7 +58,7 @@ const db = (() => {
   setState(d, 'ctrader_account_id', '42')
   setState(d, 'ctrader_access_token', 'fixture')
   d.prepare(`INSERT INTO accounts (account_id, is_live, enabled, mode) VALUES ('42', 0, 1, 'active')`).run()
-  setState(d, 'symbol_id_map:42', JSON.stringify({ map: {}, builtAt: new Date().toISOString() }))
+  setState(d, 'symbol_id_map:42', JSON.stringify({ accountId: '42', map: {}, builtAt: new Date().toISOString() }))
   return d
 })()
 const s = prepareStatements(db)

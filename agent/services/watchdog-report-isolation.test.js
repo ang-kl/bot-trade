@@ -1,3 +1,4 @@
+// Codex · №12,184 · 2026-10-08; codex-footprint: valid watchdog fixtures retain account-owned map stamps.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -18,7 +19,7 @@ function fixture(t) {
   t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (?,?)').run('11', 0)
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (?,?)').run('22', 1)
-  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ accountId: '11', builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
   const feed = { provider: 'ctrader', host, accountId: '11', symbolId: '7' }
   recordMarketCalendar(db, feed, { symbolId: 7, scheduleTimeZone: 'UTC',
     schedule: [{ startSecond: 21 * 3600, endSecond: 5 * 86400 + 21 * 3600 }], holiday: [] }, { nowMs: now - 1000 })

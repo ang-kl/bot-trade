@@ -1,3 +1,4 @@
+// Codex · №12,184 · 2026-10-08; codex-footprint: valid watchdog fixtures retain account-owned map stamps.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -11,7 +12,7 @@ function fixture(t) {
   const db = initDB(':memory:'); t.after(() => db.close())
   for (const account of ['11', '22']) {
     db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,0)').run(account)
-    setState(db, `symbol_id_map:${account}`, JSON.stringify({ builtAt: new Date(now).toISOString(), map: { ETHUSD: account === '11' ? 7 : 8 } }))
+    setState(db, `symbol_id_map:${account}`, JSON.stringify({ accountId: String(account), builtAt: new Date(now).toISOString(), map: { ETHUSD: account === '11' ? 7 : 8 } }))
     db.prepare("INSERT INTO monitored_positions (symbol,account_id,source,status) VALUES ('ETHUSD',?,'autopilot','active')").run(account)
   }
   setState(db, 'independent_watchdog_json', JSON.stringify({ readAt: new Date(now).toISOString(), status: { enabled: true } }))
@@ -173,8 +174,8 @@ const tickReceipt = (db, accounts, symbols, completedAt = now - 10_000) => setSt
 
 test('a fresh tick receipt demands each tick account\'s own calendar identity; a stale one demands nothing', t => {
   const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
-  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 1234 } }))
-  setState(db, 'symbol_id_map:22', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 99 } }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ accountId: '11', builtAt: new Date(now).toISOString(), map: { EURUSD: 1234 } }))
+  setState(db, 'symbol_id_map:22', JSON.stringify({ accountId: '22', builtAt: new Date(now).toISOString(), map: { EURUSD: 99 } }))
   tickReceipt(db, ['11', '22'], ['EURUSD'])
   const demand = watchdogCalendarDemand(db, now)
   assert.deepEqual(demand.identities.map(i => [i.accountId, i.symbolId]), [['11', '1234'], ['22', '99']], 'RED if the tick block is removed')
@@ -192,7 +193,7 @@ test('the identity cap truncates the tick demand symbol-major, so every tick acc
   const accounts = ['11', '22', '33']
   db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,1)').run('33')
   for (const [n, id] of accounts.entries()) {
-    setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: new Date(now).toISOString(), map: Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i])) }))
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ accountId: String(id), builtAt: new Date(now).toISOString(), map: Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i])) }))
   }
   tickReceipt(db, accounts, names)
   const demand = watchdogCalendarDemand(db, now)
@@ -227,7 +228,7 @@ test('with the identity cap already full, the tick demand stops and reads no tic
   const accounts = Array.from({ length: 40 }, (_, i) => String(500 + i))
   for (const id of accounts) {
     db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,0)').run(id)
-    setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 1, GBPUSD: 2 } }))
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ accountId: String(id), builtAt: new Date(now).toISOString(), map: { EURUSD: 1, GBPUSD: 2 } }))
   }
   tickReceipt(db, accounts, ['EURUSD', 'GBPUSD'])
   const { spy, keys } = countingStateReads(db)
@@ -242,7 +243,7 @@ test('a tick demand that exactly fills the cap is complete', t => {
   const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
   const names = Array.from({ length: 256 }, (_, i) => `SYM${i}`)
   for (const [n, id] of ['11', '22'].entries()) {
-    setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: new Date(now).toISOString(), map: Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i])) }))
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ accountId: String(id), builtAt: new Date(now).toISOString(), map: Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i])) }))
   }
   tickReceipt(db, ['11', '22'], names)
   const demand = watchdogCalendarDemand(db, now)
@@ -328,7 +329,7 @@ test('the bar-scan scope and the tick receipts are merged name by name: at the c
   const names = Array.from({ length: 300 }, (_, i) => `SYM${i}`)
   for (const id of ['33', '44']) db.prepare('INSERT INTO accounts (account_id,is_live) VALUES (?,0)').run(id)
   for (const [n, id] of ['11', '22', '33', '44'].entries()) {
-    setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: iso(now), map: Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i])) }))
+    setState(db, `symbol_id_map:${id}`, JSON.stringify({ accountId: String(id), builtAt: iso(now), map: Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i])) }))
   }
   // The bar scan on feed account 11 (300 legacy identities), scoped to 22 and 44.
   setState(db, 'legacy_scanner_work_json', JSON.stringify({ accountId: '11', host, completedAt: now - 1000, nextDue: now + 300_000,
@@ -344,8 +345,8 @@ test('the bar-scan scope and the tick receipts are merged name by name: at the c
 
 test('with only one scope source the order is unchanged: a tick receipt alone and a bar scan alone', t => {
   const db = fixture(t); db.prepare('DELETE FROM monitored_positions').run()
-  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: iso(now), map: { EURUSD: 1, GBPUSD: 2 } }))
-  setState(db, 'symbol_id_map:22', JSON.stringify({ builtAt: iso(now), map: { EURUSD: 11, GBPUSD: 12 } }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ accountId: '11', builtAt: iso(now), map: { EURUSD: 1, GBPUSD: 2 } }))
+  setState(db, 'symbol_id_map:22', JSON.stringify({ accountId: '22', builtAt: iso(now), map: { EURUSD: 11, GBPUSD: 12 } }))
   tickReceipt(db, ['11', '22'], ['EURUSD', 'GBPUSD'])
   assert.deepEqual(pairs(watchdogCalendarDemand(db, now).identities), ['11:1', '22:11', '11:2', '22:12'], 'symbol-major across the tick accounts, as C4 shipped it')
   setState(db, 'tick_entry_work_json', '{}')

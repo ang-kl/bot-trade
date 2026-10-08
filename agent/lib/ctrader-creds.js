@@ -4,7 +4,7 @@
 // routes/actions.js.
 // ---------------------------------------------------------------------------
 
-import { getState } from '../db.js'
+import { getState, setState } from '../db.js'
 import { ctraderEnv } from './ctrader-env.js'
 import { admitEntry } from '../services/entry-mode.js'
 import { reserveEntry, redeemPermit, markSent, resolveIntent } from '../services/entry-ledger.js'
@@ -187,39 +187,46 @@ export function bindEntryIntent(creds, { riskEventId = null, onReserved = null }
  * @param {import('better-sqlite3').Database} db
  * @returns {Record<string, number>}
  */
-export function getSymbolMap(db) {
+export function getSymbolMap(db, creds = null) {
+  // Codex · №12,171 · 2026-10-08; codex-footprint: selection is not map provenance.
+  const accountId = creds?.accountId ?? getState(db, 'ctrader_account_id')
+  if (accountId != null) return getAccountSymbolMap(db, accountId)?.map ?? {}
+  // Unlinked read-only/legacy fixtures. Broker callers pass their account.
   const json = getState(db, 'symbol_id_map')
   if (!json) return {}
   try { return JSON.parse(json) } catch { return {} }
 }
 
 /**
- * Like getSymbolMap, but self-healing: when the map is missing/empty and
- * credentials are ready, download the broker's light symbol list, persist
- * the map, and return it. Removes the "link account before anything else"
- * ordering requirement (a DB wipe or fresh boot no longer breaks charts,
- * backtests, or streams).
+ * The requested account's verified map, refreshed through its own broker
+ * request when missing/stale. The legacy selected-account mirror is never
+ * a source of account identity; it is updated only for the still-selected
+ * account after a successful owned read.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {ReturnType<typeof getCtraderCreds>} creds
  * @returns {Promise<Record<string, number>>}
  */
-export async function ensureSymbolMap(db, creds) {
-  const existing = getSymbolMap(db)
-  if (Object.keys(existing).length > 0) return existing
-  if (!creds?.ready) return existing
-  const { wsGetSymbolsList } = await import('./ctrader-ws.js')
-  const { host, clientId, clientSecret, accessToken, accountId } = creds
-  const data = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
-  const map = {}
-  for (const s of (data.symbol || [])) {
-    if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId
+export async function ensureSymbolMap(db, creds, deps = {}) {
+  // Codex · №12,171 · 2026-10-08; codex-footprint: bind list/cache to the requested account.
+  if (creds?.accountId == null) return {}
+  const own = getAccountSymbolMap(db, creds.accountId)
+  if (accountSymbolMapIsFresh(own, deps.now ?? Date.now())) {
+    mirrorSelectedMap(db, creds.accountId, own.map)
+    return own.map
   }
-  if (Object.keys(map).length > 0) {
-    const { setState } = await import('../db.js')
+  if (!creds.ready) return own?.map ?? {}
+  const map = await fetchAccountSymbolMap(db, creds, deps)
+  // This is a selected-account mirror only. An awaited read for another
+  // account, or one completing after selection changed, cannot replace it.
+  mirrorSelectedMap(db, creds.accountId, map)
+  return map
+}
+
+function mirrorSelectedMap(db, accountId, map) {
+  if (Object.keys(map).length > 0 && String(getState(db, 'ctrader_account_id')) === String(accountId)) {
     setState(db, 'symbol_id_map', JSON.stringify(map))
   }
-  return map
 }
 
 // ---------------------------------------------------------------------------
@@ -231,10 +238,9 @@ export async function ensureSymbolMap(db, creds) {
 // live account — and placed a live buy limit at 6.56. Every dispatch path now
 // resolves the id from the ACCOUNT's own symbol list, fetched from that
 // account and cached under `symbol_id_map:<accountId>`. The global map is
-// only ever used for the account it was built from (or when no primary is
-// recorded, which is the test fixture case). An id that cannot be verified
-// for the account is a refusal, never a fallback: a wrong instrument is worse
-// than no order.
+// retained only for unlinked legacy fixtures. A linked account whose own
+// list cannot be verified is refused instead of trusting selection as proof
+// of the global map's origin: a wrong instrument is worse than no order.
 // ---------------------------------------------------------------------------
 
 export const ACCOUNT_SYMBOL_MAP_TTL_MS = 24 * 3600_000
@@ -251,14 +257,15 @@ export function accountSymbolMapIsFresh(own, now = Date.now()) {
   return !!(own && own.builtAt && (now - Date.parse(own.builtAt)) < ACCOUNT_SYMBOL_MAP_TTL_MS)
 }
 
-/** The stored per-account map: { map, builtAt } or null when absent/corrupt. */
+/** A stored map stamped by its account's writer: { map, builtAt }, otherwise null. */
 export function getAccountSymbolMap(db, accountId) {
   if (accountId == null) return null
   const json = getState(db, accountSymbolMapKey(accountId))
   if (!json) return null
   try {
     const parsed = JSON.parse(json)
-    if (!parsed || typeof parsed.map !== 'object' || parsed.map == null) return null
+    if (!parsed || typeof parsed.map !== 'object' || parsed.map == null || Array.isArray(parsed.map)) return null
+    if (parsed.accountId == null || String(parsed.accountId) !== String(accountId)) return null
     return { map: parsed.map, builtAt: parsed.builtAt || null }
   } catch { return null }
 }
@@ -276,6 +283,7 @@ export function getAccountSymbolMap(db, accountId) {
  * already takes it) dates `builtAt`; absent, the wall clock, as before.
  */
 export async function fetchAccountSymbolMap(db, creds, deps = {}) {
+  if (creds?.accountId == null || String(creds.accountId).trim() === '') throw new Error('account_identity_missing')
   const list = deps.wsGetSymbolsList ?? (await import('./ctrader-ws.js')).wsGetSymbolsList
   const { host, clientId, clientSecret, accessToken, accountId } = creds
   const data = await list(host, clientId, clientSecret, accessToken, accountId, undefined, { perAccount: true })
@@ -328,6 +336,9 @@ export async function resolveSymbolId(db, creds, symbol, deps = {}) {
       } catch (e) { fetchErr = e?.message || String(e) }
     }
     if (own) return own.map[key] != null ? { id: own.map[key], source: 'account-stale' } : notListed('account-stale')
+    // A linked broker read that failed identity/availability verification
+    // cannot be downgraded into permission to use the unowned legacy mirror.
+    if (canFetch) return { id: null, source: 'unverified', reason: `symbol_map_unverified: no symbol list for ${short}${fetchErr ? ` (${fetchErr})` : ''} and no verified account cache` }
   }
   // The global map belongs to the account it was built from.
   const primary = getState(db, 'ctrader_account_id')

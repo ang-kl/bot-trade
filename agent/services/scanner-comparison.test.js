@@ -1,3 +1,4 @@
+// Codex · №12,188 · 2026-10-08; codex-footprint: scanner fixtures retain account-owned list provenance.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
@@ -11,8 +12,8 @@ function database(t, { symbols = 4, profiles = [] } = {}) {
   const db = initDB(':memory:'); t.after(() => db.close())
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (11,0)').run()
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (22,1)').run()
-  setState(db, 'symbol_id_map:11', JSON.stringify({ map: Object.fromEntries(Array.from({ length: symbols }, (_, i) => [`S${i}`, 1000 + i])) }))
-  setState(db, 'symbol_id_map:22', JSON.stringify({ map: { S0: 2000 } }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ accountId: '11', map: Object.fromEntries(Array.from({ length: symbols }, (_, i) => [`S${i}`, 1000 + i])) }))
+  setState(db, 'symbol_id_map:22', JSON.stringify({ accountId: '22', map: { S0: 2000 } }))
   setState(db, 'scanner_mirror_profiles_json', JSON.stringify(profiles))
   return db
 }

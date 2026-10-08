@@ -7,7 +7,7 @@ import { brokerReadAccount, brokerReadCache } from '../lib/broker-read-scope.js'
 import { Router } from 'express'
 import { getState, setState, sweepMonitoredPositionsForAccounts, accountsWithOpenPositions } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
-import { getCtraderCreds, getSymbolMap, ensureSymbolMap, bindEntryIntent } from '../lib/ctrader-creds.js'
+import { getCtraderCreds, getSymbolMap, getAccountSymbolMap, ensureSymbolMap, bindEntryIntent } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { recordTradePlan, recordPlanWriteFailure } from '../services/trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
@@ -3277,7 +3277,7 @@ export default function actionsRouter(db, deps = {}) {
       }
       const creds = getCtraderCreds(db)
       if (!creds.ready) return refuse(400, 'no_credentials: cTrader not configured', 'cTrader credentials not configured — link an account on Connect')
-      const map = getSymbolMap(db)
+      const map = getSymbolMap(db, creds)
       const symbolId = map[symbol]
       if (!symbolId) return refuse(400, `symbol_unknown: no symbolId for ${symbol}`, `symbolId unknown for ${symbol} — call POST /actions/symbol-map first`)
 
@@ -3799,7 +3799,7 @@ export default function actionsRouter(db, deps = {}) {
         return res.status(400).json({ error: 'cTrader credentials not configured — push via /actions/ctrader-config' })
       }
 
-      const scanResult = await runFibScan(ctraderCreds, getSymbolMap(db), symbols, {
+      const scanResult = await runFibScan(ctraderCreds, getSymbolMap(db, ctraderCreds), symbols, {
         hotThreshold: Number(req.body?.hotThreshold) || 6,
         rsiFilter: getState(db, 'fib_rsi_filter') === 'true' ? {} : null,
         vwapFilter: getState(db, 'fib_vwap_filter') === 'true' ? {} : null,
@@ -3856,11 +3856,11 @@ export default function actionsRouter(db, deps = {}) {
         return res.status(400).json({ error: 'Missing required field: symbol' })
       }
 
-      const symbolId = getSymbolMap(db)[symbol]
+      const ctraderCreds = getCtraderCreds(db)
+      const symbolId = getSymbolMap(db, ctraderCreds)[symbol]
       if (!symbolId) {
         return res.status(400).json({ error: `symbolId unknown for ${symbol} — call POST /actions/symbol-map` })
       }
-      const ctraderCreds = getCtraderCreds(db)
       if (!ctraderCreds.ready) {
         return res.status(400).json({ error: 'cTrader credentials not configured — push via /actions/ctrader-config' })
       }
@@ -5153,6 +5153,8 @@ export default function actionsRouter(db, deps = {}) {
         }
       }
 
+      // Codex · №12,171 · 2026-10-08; codex-footprint: retire the old mirror before selection changes.
+      if (String(previousAccountId) !== String(accountId)) setState(db, 'symbol_id_map', null)
       setState(db, 'ctrader_account_id', String(accountId))
       setState(db, 'ctrader_is_live', isLive ? 'true' : 'false')
       // THE ROSTER MIRRORS THE REGISTRY, IT DOES NOT OVERRULE IT (owner
@@ -5212,15 +5214,8 @@ export default function actionsRouter(db, deps = {}) {
       } catch (e) { console.warn('[actions/ctrader-select-account] registry sync failed (non-fatal):', e.message) }
 
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-      const { wsGetSymbolsList, wsGetTrader, traderBalance } = await import('../lib/ctrader-ws.js')
-      const data = await (deps.wsGetSymbolsList ?? wsGetSymbolsList)(host, clientId, clientSecret, accessToken, accountId)
-      const map = {}
-      for (const s of (data.symbol || [])) {
-        if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId
-      }
-      if (Object.keys(map).length > 0) {
-        setState(db, 'symbol_id_map', JSON.stringify(map))
-      }
+      const { wsGetTrader, traderBalance } = await import('../lib/ctrader-ws.js')
+      const map = await ensureSymbolMap(db, { ready: true, host, clientId, clientSecret, accessToken, accountId }, { wsGetSymbolsList: deps.wsGetSymbolsList })
 
       // Pull real balance + leverage from the broker so the risk manager is
       // equity-aware without manual entry (Tune's fields remain an override).
@@ -5470,6 +5465,7 @@ export default function actionsRouter(db, deps = {}) {
         // Backward compat: keep legacy single-account keys in sync with
         // the first autopilot account so old code paths don't break.
         if (ap.length > 0 && ap[0].accountId != null) {
+          if (String(previousAccountId) !== String(ap[0].accountId)) setState(db, 'symbol_id_map', null)
           setState(db, 'ctrader_account_id', String(ap[0].accountId))
           setState(db, 'ctrader_is_live', ap[0].isLive ? 'true' : 'false')
         }
@@ -6122,6 +6118,10 @@ export default function actionsRouter(db, deps = {}) {
       const upper = {}
       for (const [k, v] of Object.entries(map)) {
         upper[k.toUpperCase()] = v
+      }
+      const owned = getAccountSymbolMap(db, getState(db, 'ctrader_account_id'))?.map
+      if (!owned || Object.entries(upper).some(([name, id]) => owned[name] == null || String(owned[name]) !== String(id))) {
+        return res.status(409).json({ error: 'symbol_map_unverified: map must match the selected account broker list' })
       }
       setState(db, 'symbol_id_map', JSON.stringify(upper))
       console.log('[actions] symbol-map updated:', Object.keys(upper).length, 'symbols')

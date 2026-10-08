@@ -39,37 +39,39 @@ test('a non-primary account whose list cannot be fetched is REFUSED with symbol_
   const r = await resolveSymbolId(db, creds('200'), 'LLY.US', { wsGetSymbolsList: async () => { throw new Error('timeout') } })
   assert.equal(r.id, null)
   assert.equal(r.source, 'unverified')
-  assert.match(r.reason, /^symbol_map_unverified: no symbol list for …200 \(timeout\) and the global map belongs to …100/)
+  assert.match(r.reason, /^symbol_map_unverified: no symbol list for …200 \(timeout\) and no verified account cache/)
   // an empty list is the same refusal
   const e = await resolveSymbolId(db, creds('200'), 'LLY.US', { wsGetSymbolsList: async () => ({ symbol: [] }) })
   assert.equal(e.source, 'unverified')
 })
 
-test('the shared map serves the PRIMARY account (the one it was built from) and the no-primary fixture case', async () => {
+test('the unlinked legacy fixture reads its map; a linked primary refuses an unverified shared fallback', async () => {
   const db = initDB(':memory:')
   setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
   const noFetch = { wsGetSymbolsList: async () => { throw new Error('must not be called') } }
   // no primary recorded (tests): shared map, no fetch
   const a = await resolveSymbolId(db, { accountId: '42' }, 'US30', noFetch)
   assert.deepEqual(a, { id: 7, source: 'global' })
-  // primary recorded and matches: shared map after the fetch fails
+  // Selection is not proof of which account supplied the legacy map.
   setState(db, 'ctrader_account_id', '42')
   const b = await resolveSymbolId(db, creds('42'), 'US30', { wsGetSymbolsList: async () => { throw new Error('down') } })
-  assert.deepEqual(b, { id: 7, source: 'global' })
+  assert.equal(b.id, null)
+  assert.equal(b.source, 'unverified')
+  assert.match(b.reason, /down.*no verified account cache/)
   const c = await resolveSymbolId(db, creds('42'), 'NAS100', { wsGetSymbolsList: async () => { throw new Error('down') } })
   assert.equal(c.id, null)
-  assert.match(c.reason, /^symbol_id_unknown: NAS100 is not in symbol_id_map/)
+  assert.match(c.reason, /^symbol_map_unverified:/)
 })
 
 test('a stale stored list is refetched; when the refetch fails the stale list still serves (source account-stale)', async () => {
   const db = initDB(':memory:')
   setState(db, 'ctrader_account_id', '100')
   const old = new Date(Date.now() - ACCOUNT_SYMBOL_MAP_TTL_MS - 1000).toISOString()
-  setState(db, accountSymbolMapKey('200'), JSON.stringify({ builtAt: old, map: { 'LLY.US': 9001 } }))
+  setState(db, accountSymbolMapKey('200'), JSON.stringify({ accountId: '200', builtAt: old, map: { 'LLY.US': 9001 } }))
   const fresh = await resolveSymbolId(db, creds('200'), 'LLY.US', { wsGetSymbolsList: list([['LLY.US', 9009]]) })
   assert.deepEqual(fresh, { id: 9009, source: 'account' }, 'the refetched id wins')
   assert.notEqual(getAccountSymbolMap(db, '200').builtAt, old)
-  setState(db, accountSymbolMapKey('200'), JSON.stringify({ builtAt: old, map: { 'LLY.US': 9001 } }))
+  setState(db, accountSymbolMapKey('200'), JSON.stringify({ accountId: '200', builtAt: old, map: { 'LLY.US': 9001 } }))
   const stale = await resolveSymbolId(db, creds('200'), 'LLY.US', { wsGetSymbolsList: async () => { throw new Error('down') } })
   assert.deepEqual(stale, { id: 9001, source: 'account-stale' })
   assert.equal(getState(db, 'symbol_id_map'), null, 'nothing here ever wrote the shared map')
@@ -106,7 +108,7 @@ test("a symbol list that names another account is refused: nothing is written, a
   assert.match(r.reason, /account_identity_mismatch/)
   // A stored (stale) map of its own is kept and still serves, as before.
   const old = new Date(Date.now() - ACCOUNT_SYMBOL_MAP_TTL_MS - 1000).toISOString()
-  setState(db, accountSymbolMapKey('200'), JSON.stringify({ builtAt: old, map: { 'LLY.US': 9001 } }))
+  setState(db, accountSymbolMapKey('200'), JSON.stringify({ accountId: '200', builtAt: old, map: { 'LLY.US': 9001 } }))
   assert.deepEqual(await resolveSymbolId(db, creds('200'), 'LLY.US', foreign), { id: 9001, source: 'account-stale' })
   assert.equal(getAccountSymbolMap(db, '200').builtAt, old)
 })

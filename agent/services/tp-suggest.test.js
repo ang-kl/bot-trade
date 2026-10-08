@@ -11,7 +11,7 @@ import { makeTargetSuggester, makeTargetApplier, sideIsLong } from './tp-suggest
 
 const CREDS = { host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '1' }
 const finding = (o = {}) => ({ positionId: '555', symbol: 'ETHUSD', brokerSl: 1700, ...o })
-const brokerPos = (o = {}) => ({ positionId: '555', tradeData: { openPrice: 1800, tradeSide: 'BUY' }, ...o })
+const brokerPos = (o = {}) => ({ positionId: '555', tradeData: { symbolId: 41, openPrice: 1800, tradeSide: 'BUY' }, ...o })
 
 // A flat 15m series clustered near one price level yields an HVN node there.
 // Volume mass sits at ~1960 — above the long entry at 1800 AND far enough
@@ -447,8 +447,8 @@ test('an identity re-send is NOT journalled as a move', async () => {
 // inside out on precisely those positions.
 // ---------------------------------------------------------------------------
 
-const lockedLong = (o = {}) => ({ positionId: '555', tradeData: { openPrice: 100, tradeSide: 1 }, ...o })
-const lockedShort = (o = {}) => ({ positionId: '555', tradeData: { openPrice: 100, tradeSide: 2 }, ...o })
+const lockedLong = (o = {}) => ({ positionId: '555', tradeData: { symbolId: 1, openPrice: 100, tradeSide: 1 }, ...o })
+const lockedShort = (o = {}) => ({ positionId: '555', tradeData: { symbolId: 1, openPrice: 100, tradeSide: 2 }, ...o })
 
 test('THE INVERSION: a break-even-locked LONG gets no target below its stop', async () => {
   // entry 100, stop ratcheted to 110. The old code read this as a SHORT and
