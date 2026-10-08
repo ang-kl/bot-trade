@@ -1,3 +1,4 @@
+// Codex · №12,188 · 2026-10-08; codex-footprint: scanner fixtures retain account-owned list provenance.
 // agent/services/scanner-work-tick.test.js — V3 C4 (SEQUENCE PR-4, WP-B B2d):
 // entry_activity (and so cpp-verify's no_orders) for tick-only and dual
 // accounts, judged on the newest COMPLETE work receipt, whether or not the
@@ -20,8 +21,8 @@ function fixture(t, { disk = false } = {}) {
   t.after(() => db.close())
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (?,?)').run('11', 0)
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (?,?)').run('22', 1)
-  setState(db, 'symbol_id_map:11', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
-  setState(db, 'symbol_id_map:22', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 9 } }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ accountId: '11', builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
+  setState(db, 'symbol_id_map:22', JSON.stringify({ accountId: '22', builtAt: new Date(now).toISOString(), map: { EURUSD: 9 } }))
   recordMarketCalendar(db, { provider: 'ctrader', host: 'demo.ctraderapi.com', accountId: '11', symbolId: '7' }, { symbolId: 7, ...FX }, { nowMs: now - 1000 })
   recordMarketCalendar(db, { provider: 'ctrader', host: 'live.ctraderapi.com', accountId: '22', symbolId: '9' }, { symbolId: 9, ...FX }, { nowMs: now - 1000 })
   return db

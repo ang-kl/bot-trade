@@ -72,7 +72,7 @@ export function sideIsLong(tradeData) {
  * @param {object} db
  * @param {object} creds        getCtraderCreds(db) result
  * @param {Array}  positions    the pass's raw broker positions (tradeData intact)
- * @param {{fetchBars?: Function, symbolMap?: object, rrFloor?: number}} deps
+ * @param {{fetchBars?: Function, rrFloor?: number}} deps
  * @returns {(finding: {positionId, symbol, brokerSl}) => Promise<{tp:number, basis:string}|null>}
  */
 export function makeTargetSuggester(db, creds, positions, deps = {}) {
@@ -84,6 +84,7 @@ export function makeTargetSuggester(db, creds, positions, deps = {}) {
     try {
       const bp = byId.get(String(finding.positionId))
       if (!bp) return null
+      if (bp.ctidTraderAccountId != null && String(bp.ctidTraderAccountId) !== String(creds?.accountId)) return null
       const entry = Number(bp.tradeData?.openPrice ?? bp.price)
       const sl = Number(finding.brokerSl)
       if (!Number.isFinite(entry) || !Number.isFinite(sl) || entry === sl) return null
@@ -130,10 +131,12 @@ export function makeTargetSuggester(db, creds, positions, deps = {}) {
 
       let bars = []
       try {
-        const symbolMap = deps.symbolMap
-          ?? (await import('../lib/ctrader-creds.js')).getSymbolMap(db)
-        const symbolId = symbolMap?.[finding.symbol]
-        if (symbolId) {
+        // Codex · №12,171 · 2026-10-08; codex-footprint: price THIS snapshot's instrument.
+        // The floor still stands when structure is unavailable. Never fetch
+        // another account's instrument by borrowing a shared/name map.
+        const rawId = bp.tradeData?.symbolId
+        const symbolId = (typeof rawId === 'number' || (typeof rawId === 'string' && /^\d+$/.test(rawId))) ? Number(rawId) : null
+        if (Number.isSafeInteger(symbolId) && symbolId > 0 && creds?.accountId != null) {
           const fetchBars = deps.fetchBars
             ?? (await import('../lib/ctrader-ws.js')).wsGetTrendbarsBatch
           const byTf = await fetchBars(

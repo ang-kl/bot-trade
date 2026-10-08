@@ -1427,22 +1427,18 @@ async function start() {
   // Fire-and-forget: a failure here must never block boot.
   ;(async () => {
     try {
-      const { getCtraderCreds, getSymbolMap } = await import('./lib/ctrader-creds.js');
+      const { getCtraderCreds, getSymbolMap, ensureSymbolMap } = await import('./lib/ctrader-creds.js');
       const creds = getCtraderCreds(db);
       if (!creds.ready) return;
-      const haveMap = Object.keys(getSymbolMap(db)).length > 0;
+      const haveMap = Object.keys(getSymbolMap(db, creds)).length > 0;
       const haveBalance = getState(db, 'account_balance_usd') != null;
       if (haveMap && haveBalance) return;
 
-      const { wsGetSymbolsList, wsGetTrader, traderBalance } = await import('./lib/ctrader-ws.js');
+      const { wsGetTrader, traderBalance } = await import('./lib/ctrader-ws.js');
       if (!haveMap) {
-        const data = await wsGetSymbolsList(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId);
-        const map = {};
-        for (const s of (data.symbol || [])) {
-          if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId;
-        }
+        // Codex · №12,171 · 2026-10-08; codex-footprint: boot uses the account-bound list writer.
+        const map = await ensureSymbolMap(db, creds);
         if (Object.keys(map).length > 0) {
-          setState(db, 'symbol_id_map', JSON.stringify(map));
           console.log(`[boot] cTrader self-link: ${Object.keys(map).length} symbols mapped`);
         }
       }

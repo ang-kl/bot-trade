@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // node --test agent/services/closed-market-limits.test.js
 //
 // Resting limit orders for closed-market setups (Option A: replaces the
@@ -379,16 +380,22 @@ test("03-09-2026: the id is THIS ACCOUNT's — a non-primary account whose symbo
   const symbolDeps = { wsGetSymbolsList: async () => { throw new Error('timeout') } }
   const other = await placeClosedMarketLimit(db, { ...CREDS, accountId: '43' }, 'US30', SYNTH, { ...f, symbolDeps })
   assert.equal(other.skipped, 'symbol_unknown')
-  assert.match(other.reason, /^symbol_map_unverified: no symbol list for …43 \(timeout\) and the global map belongs to …42/)
+  assert.match(other.reason, /^symbol_map_unverified: no symbol list for …43 \(timeout\) and no verified account cache/)
   assert.equal(f.placed.length, 0, 'nothing reached the broker')
   // with the account's own list the order goes out on the account's id
   const own = { wsGetSymbolsList: async () => ({ symbol: [{ symbolName: 'US30', symbolId: 9007 }] }) }
   const ok = await placeClosedMarketLimit(db, { ...CREDS, accountId: '43' }, 'US30', SYNTH, { ...f, symbolDeps: own })
   assert.equal(ok.placed, true)
   assert.equal(f.placed[0].symbolId, 9007, 'the account-resolved id, not the shared map\'s 7')
-  // the primary keeps working from the shared map when its own fetch fails
+  // A primary selection is not proof that the old shared ID belongs to it.
   const primary = await placeClosedMarketLimit(db, CREDS, 'US30', SYNTH, { ...f, symbolDeps })
-  assert.equal(primary.placed, true)
+  assert.equal(primary.skipped, 'symbol_unknown')
+  assert.match(primary.reason, /^symbol_map_unverified:/)
+  assert.equal(f.placed.length, 1, 'the failed primary read places nothing')
+  // Its verified account cache preserves the valid no-fetch path.
+  setState(db, 'symbol_id_map:42', JSON.stringify({ accountId: '42', builtAt: new Date().toISOString(), map: { US30: 7 } }))
+  const verified = await placeClosedMarketLimit(db, CREDS, 'US30', SYNTH, { ...f, symbolDeps })
+  assert.equal(verified.placed, true)
   assert.equal(f.placed[1].symbolId, 7)
 })
 

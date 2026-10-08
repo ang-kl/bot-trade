@@ -68,7 +68,7 @@ export async function handleChartCommand(db, creds, args, deps = {}) {
   try {
     // --- symbol resolution (polite reply on unknown, never a throw) ---
     const getSymbolMap = deps.getSymbolMap ?? (await import('../lib/ctrader-creds.js')).getSymbolMap
-    const symbolId = getSymbolMap(db)[symbol]
+    const symbolId = getSymbolMap(db, creds)[symbol]
     if (!symbolId) return { ok: false, reply: `Sorry, I don't know the symbol "${symbol}". /status shows what's being watched.` }
 
     // --- bars (300, drop nothing here — annotate uses closed bars itself) ---

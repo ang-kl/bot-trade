@@ -4618,8 +4618,8 @@ async function runLoop(db) {
     // Deterministic 61.8% Fibonacci retracement fade scan — no LLM calls.
     // Needs cTrader trendbar access (symbol map + credentials); skip cleanly
     // if not configured yet.
-    const symbolMap = getSymbolMap(db)
     const ctraderCreds = getCtraderCreds(db)
+    const symbolMap = getSymbolMap(db, ctraderCreds)
 
     // Stage matrix (Tune → Pipeline): the SCAN column decides what gets
     // computed — wide by default, so every conviction is analysed. Filters
@@ -5152,7 +5152,7 @@ async function runLoop(db) {
           if (pendingCreds.ready) {
             const budgetMs = Math.max(10_000, Number(process.env.PENDING_PHASE_BUDGET_MS || 90_000))
             const startedAt = Date.now()
-            const work = managePendingOrders(db, pendingCreds, getSymbolMap(db), {
+            const work = managePendingOrders(db, pendingCreds, getSymbolMap(db, pendingCreds), {
               notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
             })
             pendingPhaseInFlight = true
@@ -5290,7 +5290,7 @@ async function runLoop(db) {
           let accountCurrencies = []
           try { const { accountDepositCurrencies } = await import('./services/account-currency.js'); accountCurrencies = [...accountDepositCurrencies(db)] } catch { accountCurrencies = [] }
           if (symbols.length || accountCurrencies.length) {
-            const symbolMap = getSymbolMap(db)
+            const symbolMap = getSymbolMap(db, creds)
             const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
             const r = await refreshFxLegs(db, {
               symbols, symbolMap, accountCurrencies,
@@ -5400,7 +5400,7 @@ async function runLoop(db) {
           // is genuinely empty.
           const { ensureSymbolMap } = await import('./lib/ctrader-creds.js')
           let symbolMap = {}
-          try { symbolMap = await ensureSymbolMap(db, creds) } catch { symbolMap = getSymbolMap(db) }
+          try { symbolMap = await ensureSymbolMap(db, creds) } catch { symbolMap = getSymbolMap(db, creds) }
           // #170, ROOT CAUSE (production, 2026-08-02): this read the raw
           // watchlist JSON and handed the parsed array straight to
           // refreshAtrHistory, which does `String(raw).toUpperCase()`. The

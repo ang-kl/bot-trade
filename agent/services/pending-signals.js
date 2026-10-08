@@ -90,7 +90,7 @@ export async function runPendingSignals(db, creds, deps = {}) {
   const dispatchSymbolSignal = deps.dispatchSymbolSignal ?? (await import('../loop.js')).dispatchSymbolSignal
   const prepareStatements = deps.prepareStatements ?? (await import('../loop.js')).prepareStatements
   const getSymbolMap = deps.getSymbolMap ?? (await import('../lib/ctrader-creds.js')).getSymbolMap
-  const symbolMap = getSymbolMap(db)
+  const symbolMap = getSymbolMap(db, creds)
   const s = prepareStatements(db)
 
   let watch = []

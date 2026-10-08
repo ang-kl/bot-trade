@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // node --test agent/services/fast-monitor-sidecar-quotes.test.js
 //
 // 19-09-2026: the fast monitor prices open positions from the sidecar's
@@ -128,9 +129,9 @@ test('sidecarSymbolIdFor (checker rounds 1+2): the lookup id is in the FEED ACCO
   const db = mkDb()
   const g = { EURUSD: 1, GBPUSD: 2 }
   // 333 (same side as the feed account 111) maps EURUSD → 2 — GBPUSD's id in 111's space
-  setState(db, accountSymbolMapKey('333'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 2, USDCAD: 9 } }))
+  setState(db, accountSymbolMapKey('333'), JSON.stringify({ accountId: '333', builtAt: new Date().toISOString(), map: { EURUSD: 2, USDCAD: 9 } }))
   // 444 agrees with 111 on EURUSD
-  setState(db, accountSymbolMapKey('444'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  setState(db, accountSymbolMapKey('444'), JSON.stringify({ accountId: '444', builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
   const cache = new Map()
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '111' }, g, '111', cache, '111'), 1, 'the feed account is the global map\'s account → the global map')
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'eurusd', account_id: null }, g, '111', cache, '111'), 1, 'no account → the feed space')
@@ -140,13 +141,13 @@ test('sidecarSymbolIdFor (checker rounds 1+2): the lookup id is in the FEED ACCO
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'GBPUSD', account_id: '444' }, g, '111', cache, '111'), null, 'no own id for the name → cannot confirm → not looked up')
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '555' }, g, '111', cache, '111'), null, 'no map on file → not looked up')
   // the feed account is NOT the global map's account: only its own map counts
-  setState(db, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
+  setState(db, accountSymbolMapKey('222'), JSON.stringify({ accountId: '222', builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'USDJPY', account_id: '222' }, g, '111', cache, '222'), 903)
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '222' }, g, '111', cache, '222'), null, 'the global map is never another feed account\'s space')
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'USDJPY', account_id: '666' }, g, '111', cache, '666'), null, 'a feed account with no map and not the global\'s account → no space at all')
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '111' }, g, '111', cache, null), null, 'no feed account reported → nothing')
   // R2-1c: the SELECTED account switched to 333 (the global map is now 333's) while the feed stays on 111
-  setState(db, accountSymbolMapKey('111'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 1, GBPUSD: 2 } }))
+  setState(db, accountSymbolMapKey('111'), JSON.stringify({ accountId: '111', builtAt: new Date().toISOString(), map: { EURUSD: 1, GBPUSD: 2 } }))
   const cache2 = new Map()
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '111' }, { EURUSD: 2 }, '333', cache2, '111'), 1, 'keyed in the FEED account\'s (111) space, not the selected account\'s')
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '333' }, { EURUSD: 2 }, '333', cache2, '111'), null, 'the selected account\'s own id (2, its global map) disagrees with the feed space (1) → broker')
@@ -158,7 +159,7 @@ test('CHECKER 1 (blocker): a same-name symbol with different ids on two same-sid
   // maps EURUSD → 2 in ITS space. The first cut priced 333's EURUSD from
   // GBPUSD's 1.2602 and logged a PARTIAL_EXIT on a fictitious +16R.
   const db = mkDb()
-  setState(db, accountSymbolMapKey('333'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 2 } }))
+  setState(db, accountSymbolMapKey('333'), JSON.stringify({ accountId: '333', builtAt: new Date().toISOString(), map: { EURUSD: 2 } }))
   addPos(db, 'EURUSD', '333', { sl: 1.2650 }) // a stop GBPUSD's price would touch and EURUSD's would not
   const d = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', nowMs: t, count: 2, quotes: [fresh(t, 1), fresh(t, 2, 1.2601, 1.2603)] }) })
   const out = await runFastMonitor(db, CREDS, d)
@@ -173,7 +174,7 @@ test('CHECKER 1 (blocker): a same-name symbol with different ids on two same-sid
 test('CHECKER 3: the per-side pulls are made concurrently, so two slow sidecars cost one timeout, not two', async () => {
   const db = mkDb()
   addPos(db, 'EURUSD', '111') // demo
-  setState(db, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
+  setState(db, accountSymbolMapKey('222'), JSON.stringify({ accountId: '222', builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
   addPos(db, 'USDJPY', '222') // live
   const d = deps({})
   const started = []
@@ -254,7 +255,7 @@ test('wiring pin: ONE sidecarQuotes call per side per tick (the whole table); an
   addPos(db, 'GBPUSD', '111')   // demo → global id 2
   addPos(db, 'USDJPY', '222')   // live, its own map → 903
   addPos(db, 'USDCAD', '111', { source: 'external' }) // observe-only, a symbol no other position carries (checker CHECKER 6 / NOTE 3)
-  setState(db, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
+  setState(db, accountSymbolMapKey('222'), JSON.stringify({ accountId: '222', builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
   const d = deps({ quotesBySide: null })
   let t = d.now()
   d.exec.sidecarQuotes = async (isLive, opts) => {
@@ -279,7 +280,7 @@ test('wiring pin: ONE sidecarQuotes call per side per tick (the whole table); an
   const db2 = mkDb()
   addPos(db2, 'EURUSD', '111')
   addPos(db2, 'USDJPY', '222')
-  setState(db2, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
+  setState(db2, accountSymbolMapKey('222'), JSON.stringify({ accountId: '222', builtAt: new Date().toISOString(), map: { USDJPY: 903 } }))
   const d2 = deps({})
   d2.exec.sidecarQuotes = async (isLive) => {
     d2.calls.sidecar.push({ isLive, ids: null })
@@ -301,7 +302,7 @@ test('wiring pin: ONE sidecarQuotes call per side per tick (the whole table); an
 
 test('R3-1a: the feed account IS the selected account and its own map (built later) differs from the global map — the own map is the space, the global map is no fallback', async () => {
   const db = mkDb()
-  setState(db, accountSymbolMapKey('111'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 5 } }))
+  setState(db, accountSymbolMapKey('111'), JSON.stringify({ accountId: '111', builtAt: new Date().toISOString(), map: { EURUSD: 5 } }))
   const g = { EURUSD: 1, GBPUSD: 2 }
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'EURUSD', account_id: '111' }, g, '111', new Map(), '111'), 5, 'the own map wins over the global map for the same account')
   assert.equal(sidecarSymbolIdFor(db, { symbol: 'GBPUSD', account_id: '111' }, g, '111', new Map(), '111'), null, 'the own map lacks it → no global fallback → broker')
@@ -311,7 +312,7 @@ test('R3-1a: the feed account IS the selected account and its own map (built lat
   assert.deepEqual((await runFastMonitor(db, CREDS, d)).quotes, { fromSidecar: 1, fromBroker: 0, stale: 0 })
   assert.deepEqual(d.calls.ws, [])
   const db2 = mkDb()
-  setState(db2, accountSymbolMapKey('111'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 5 } }))
+  setState(db2, accountSymbolMapKey('111'), JSON.stringify({ accountId: '111', builtAt: new Date().toISOString(), map: { EURUSD: 5 } }))
   addPos(db2, 'EURUSD', '111')
   const d2 = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', nowMs: t, count: 1, quotes: [fresh(t, 1)] }) })
   assert.deepEqual((await runFastMonitor(db2, CREDS, d2)).quotes, { fromSidecar: 0, fromBroker: 1, stale: 0 }, 'id 1 in the table is not id 5 in the own map')
@@ -332,7 +333,7 @@ test('R2-1c: the selected account switched to 333 while the demo feed stays on 1
   const db = mkDb()
   setState(db, 'ctrader_account_id', '333')
   setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 2 }))              // the global map now belongs to 333
-  setState(db, accountSymbolMapKey('111'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 1, GBPUSD: 2 } }))
+  setState(db, accountSymbolMapKey('111'), JSON.stringify({ accountId: '111', builtAt: new Date().toISOString(), map: { EURUSD: 1, GBPUSD: 2 } }))
   addPos(db, 'EURUSD', '111')                    // priced from quote 1 (111's space)
   addPos(db, 'EURUSD', '333', { sl: 1.2650 })    // 333's own id is 2 → disagrees → broker, never GBPUSD's 1.2602
   const d = deps({ quotesBody: (t) => ({ feed: 'up', generation: 1, accountId: '111', nowMs: t, count: 2, quotes: [fresh(t, 1), fresh(t, 2, 1.2601, 1.2603)] }) })
@@ -513,7 +514,7 @@ test('quotes carries `at` (ISO, the priced pass\'s own timestamp) and `checked`'
 
 test('P4 fallback routes each position to its own account and host and records actual evaluation completion', async () => {
   const db = mkDb()
-  setState(db, accountSymbolMapKey('222'), JSON.stringify({ builtAt: new Date().toISOString(), map: { EURUSD: 903 } }))
+  setState(db, accountSymbolMapKey('222'), JSON.stringify({ accountId: '222', builtAt: new Date().toISOString(), map: { EURUSD: 903 } }))
   addPos(db, 'EURUSD', '222')
   addPos(db, 'EURUSD', '111')
   const d = deps({ quotesBody: null })
@@ -647,7 +648,7 @@ test('P4 invalid or future quotes cannot complete a position check; missing map 
   let record = JSON.parse(getState(db, 'fast_monitor_position_work_json'))
   assert.equal(record.positions[0].state, 'symbol_unmapped')
   assert.equal(record.positions[0].lastCompletedAt, null)
-  setState(db, accountSymbolMapKey('222'), JSON.stringify({ map: { EURUSD: 903 } }))
+  setState(db, accountSymbolMapKey('222'), JSON.stringify({ accountId: '222', map: { EURUSD: 903 } }))
   d.ws.wsGetSpotOnce = async () => ({ bid: 2, ask: 1 })
   await runFastMonitor(db, CREDS, d)
   record = JSON.parse(getState(db, 'fast_monitor_position_work_json'))

@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // node --test agent/stop-loss-integrated.test.js
 //
 // The integrated stop-loss suite (02-10-2026, PR-3; owner: "Integrated testing
@@ -38,7 +39,7 @@ const db = (() => {
   setState(d, 'ctrader_account_id', ACCOUNT)
   setState(d, 'ctrader_access_token', 'fixture')
   d.prepare(`INSERT INTO accounts (account_id, is_live, enabled, mode) VALUES (?, 0, 1, 'active')`).run(ACCOUNT)
-  setState(d, `symbol_id_map:${ACCOUNT}`, JSON.stringify({ map: {}, builtAt: new Date().toISOString() }))
+  setState(d, `symbol_id_map:${ACCOUNT}`, JSON.stringify({ accountId: String(ACCOUNT), map: {}, builtAt: new Date().toISOString() }))
   return d
 })()
 const s = prepareStatements(db)

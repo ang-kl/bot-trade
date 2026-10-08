@@ -333,7 +333,7 @@ export async function evaluateAll(db, creds, deps) {
   // for every symbol somebody trades, not just the shared list's.
   try { watch = readTradableUnion(db).filter(w => w.enabled !== false).map(w => w.symbol) } catch { /* empty */ }
   const tfs = armedTimeframes(db, getState)
-  const map = getSymbolMap(db)
+  const map = getSymbolMap(db, creds)
 
   // Stage matrix "Back Test" column: the owner picks which strategies the
   // nightly sweep evaluates (all of them by default).

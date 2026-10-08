@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // node --test agent/services/calendar-coverage.test.js
 //
 // V3 K1 — calendar coverage per account, each calendar carried once.
@@ -96,7 +97,7 @@ const ecHoliday = tag => [{ holidayDate: 20703, isRecurring: false, scheduleTime
 const NAMES = Array.from({ length: 70 }, (_, i) => `SYM${i}`)
 function seedAccount(db, id, n, { names = NAMES, calendars = true } = {}) {
   const map = Object.fromEntries(names.map((s, i) => [s, 1000 * (n + 1) + i]))
-  setState(db, `symbol_id_map:${id}`, JSON.stringify({ builtAt: new Date(now - 3600_000).toISOString(), map }))
+  setState(db, `symbol_id_map:${id}`, JSON.stringify({ accountId: String(id), builtAt: new Date(now - 3600_000).toISOString(), map }))
   if (calendars) for (const [i, s] of names.entries()) {
     recordMarketCalendar(db, { host: hostOf(id), accountId: id, symbolId: String(map[s]) },
       { symbolId: map[s], ...SHAPES[i % SHAPES.length], holiday: ecHoliday(`${id}-${i % 2}`) }, { nowMs: now - 1000 })
@@ -154,8 +155,8 @@ test('over 512 identities the gateway feeds meet the cap first: every feed ident
 
 test('a scope account is demanded through its OWN map; a missing map or name is missing coverage, never an empty demand', t => {
   const db = database(t, ['46130058', '46979908', '43002148'])
-  setState(db, 'symbol_id_map:46130058', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7, GBPUSD: 8 } }))
-  setState(db, 'symbol_id_map:46979908', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 99 } }))
+  setState(db, 'symbol_id_map:46130058', JSON.stringify({ accountId: '46130058', builtAt: new Date(now).toISOString(), map: { EURUSD: 7, GBPUSD: 8 } }))
+  setState(db, 'symbol_id_map:46979908', JSON.stringify({ accountId: '46979908', builtAt: new Date(now).toISOString(), map: { EURUSD: 99 } }))
   barReceipt(db, '46130058', { EURUSD: 7, GBPUSD: 8 }, ['46130058', '46979908', '43002148'], ['EURUSD', 'GBPUSD'])
   const demand = watchdogCalendarDemand(db, now)
   assert.deepEqual(pairs(demand.identities), ['46130058:7', '46130058:8', '46979908:99'], 'RED if the scope loop is dropped: 46979908 gets nothing')
@@ -168,7 +169,7 @@ test('a scope account is demanded through its OWN map; a missing map or name is 
 
 test('paused and external held positions are demanded: ownership does not change market hours', t => {
   const db = database(t, ['46130058'])
-  setState(db, 'symbol_id_map:46130058', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7, 'KO.US': 21, XAUUSD: 41 } }))
+  setState(db, 'symbol_id_map:46130058', JSON.stringify({ accountId: '46130058', builtAt: new Date(now).toISOString(), map: { EURUSD: 7, 'KO.US': 21, XAUUSD: 41 } }))
   position(db, '46130058', 'EURUSD')
   position(db, '46130058', 'KO.US', { paused: 1 })
   position(db, '46130058', 'xauusd', { source: 'external' })
@@ -227,7 +228,7 @@ test('an identity beyond the export bound keeps its own calendar, in the verifie
   const feedIds = Array.from({ length: 220 }, (_, i) => String(90_000 + i))
   for (const [i, symbolId] of feedIds.entries()) recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId }, { symbolId: Number(symbolId), ...SHAPES[i % 9], holiday: ecHoliday(i) }, { nowMs: now - 1000 })
   feedHealth(db, 'cpp_exec_demo', '46130058', feedIds)
-  setState(db, 'symbol_id_map:46130058', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
+  setState(db, 'symbol_id_map:46130058', JSON.stringify({ accountId: '46130058', builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
   recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId: '7' }, { symbolId: 7, ...SHAPES[0], holiday: [] }, { nowMs: now - 1000 })
   position(db, '46130058', 'EURUSD')
   const out = nodeWatchdogContract(db, { now })
@@ -301,7 +302,7 @@ test('K1c: a demanded identity cut by the bound is counted on demanded, and the 
 
 test('K1c: an incomplete demand keeps the verdict false with nothing cut; a missing calendar is exported, not withCalendar', t => {
   const db = database(t, ['46130058', '43002148'])
-  setState(db, 'symbol_id_map:46130058', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7, GBPUSD: 8 } }))
+  setState(db, 'symbol_id_map:46130058', JSON.stringify({ accountId: '46130058', builtAt: new Date(now).toISOString(), map: { EURUSD: 7, GBPUSD: 8 } }))
   recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId: '7' }, { symbolId: 7, ...SHAPES[0], holiday: [] }, { nowMs: now - 1000 })
   position(db, '46130058', 'EURUSD')
   position(db, '46130058', 'GBPUSD') // demanded, no calendar recorded
@@ -342,7 +343,7 @@ test('K1c: a cache of more than 512 rows with malformed ones — watchdogCalenda
 
 test('K1c: at the contract size bound the emptied export reads nothing exported on both parts', t => {
   const db = database(t, ['46130058'])
-  setState(db, 'symbol_id_map:46130058', JSON.stringify({ builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
+  setState(db, 'symbol_id_map:46130058', JSON.stringify({ accountId: '46130058', builtAt: new Date(now).toISOString(), map: { EURUSD: 7 } }))
   recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId: '7' }, { symbolId: 7, ...SHAPES[0], holiday: [] }, { nowMs: now - 1000 })
   recordMarketCalendar(db, { host: DEMO, accountId: '46130058', symbolId: '9' }, { symbolId: 9, ...SHAPES[0], holiday: [] }, { nowMs: now - 1000 })
   for (let i = 0; i < 1500; i++) position(db, '46130058', 'EURUSD')
@@ -357,7 +358,7 @@ test('K1c: at the contract size bound the emptied export reads nothing exported 
 // ---- the coverage read ----
 function coverageFixture(t) {
   const db = database(t, ['46979908', '43002148'])
-  setState(db, 'symbol_id_map:46979908', JSON.stringify({ builtAt: new Date(now - 7200_000).toISOString(), map: { '0066.HK': 12095, EURUSD: 1, GBPUSD: 2 } }))
+  setState(db, 'symbol_id_map:46979908', JSON.stringify({ accountId: '46979908', builtAt: new Date(now - 7200_000).toISOString(), map: { '0066.HK': 12095, EURUSD: 1, GBPUSD: 2 } }))
   // HKEX National Day, Thu 01-10: the broker row with no bounds (the K3 case).
   recordMarketCalendar(db, { host: DEMO, accountId: '46979908', symbolId: '12095' }, { symbolId: 12095, ...SHAPES[7],
     holiday: [{ holidayDate: 20727, isRecurring: false, scheduleTimeZone: 'Asia/Hong_Kong', name: 'National Day' }] }, { nowMs: now - 1000 })
@@ -426,7 +427,7 @@ test('the coverage read: a missing map is missing, reasons are split, disagreeme
 // exercised here on a sent-but-invalid pair (startSecond 5 > endSecond 4).
 test('K1b: expired unreadable rows are counted per account and in total; the calendar they no longer block is exported', t => {
   const db = database(t, ['47790949'])
-  setState(db, 'symbol_id_map:47790949', JSON.stringify({ builtAt: new Date(now - 3600_000).toISOString(), map: { 'KO.US': 21, USDKRW: 10995 } }))
+  setState(db, 'symbol_id_map:47790949', JSON.stringify({ accountId: '47790949', builtAt: new Date(now - 3600_000).toISOString(), map: { 'KO.US': 21, USDKRW: 10995 } }))
   const closed = (holidayDate, name) => ({ holidayDate, isRecurring: false, scheduleTimeZone: 'Europe/Moscow', name, startSecond: 5, endSecond: 4 })
   // KO.US: US Labor Day and 01-07, both past → skipped; the calendar resolves.
   recordMarketCalendar(db, { host: LIVE, accountId: '47790949', symbolId: '21' }, { symbolId: 21, ...SHAPES[6],
@@ -455,7 +456,7 @@ test('K1b: expired unreadable rows are counted per account and in total; the cal
 // the meaning it was given.
 test('K3: 0/0 rows are evaluated as whole local days — never expired, never UNKNOWN — and listed as full_local_day', t => {
   const db = database(t, ['47790949'])
-  setState(db, 'symbol_id_map:47790949', JSON.stringify({ builtAt: new Date(now - 3600_000).toISOString(), map: { 'KO.US': 21, USDKRW: 10995 } }))
+  setState(db, 'symbol_id_map:47790949', JSON.stringify({ accountId: '47790949', builtAt: new Date(now - 3600_000).toISOString(), map: { 'KO.US': 21, USDKRW: 10995 } }))
   const zz = (holidayDate, name) => ({ holidayDate, isRecurring: false, scheduleTimeZone: 'Europe/Moscow', name, startSecond: 0, endSecond: 0 })
   // KO.US (24/7 shape): 07-09 past, and 25-09 — today in Moscow at 09:00 MSK — closed all local day.
   recordMarketCalendar(db, { host: LIVE, accountId: '47790949', symbolId: '21' }, { symbolId: 21, ...SHAPES[6],
@@ -491,7 +492,7 @@ function diskFixture() {
   const db = initDB(join(dir, 'fixture.db'))
   db.prepare('INSERT INTO accounts (account_id,is_live,enabled) VALUES (?,?,1)').run('46979908', 0)
   db.prepare('INSERT INTO accounts (account_id,is_live,enabled) VALUES (?,?,1)').run('43002148', 1)
-  setState(db, 'symbol_id_map:46979908', JSON.stringify({ builtAt: new Date().toISOString(), map: { '0066.HK': 12095 } }))
+  setState(db, 'symbol_id_map:46979908', JSON.stringify({ accountId: '46979908', builtAt: new Date().toISOString(), map: { '0066.HK': 12095 } }))
   // Observed at the fixed `now` (V3 K1b): recorded on the wall clock, the
   // 01-10 row would lie three UTC days behind its observation from 04-10 on,
   // be skipped, and this fixture would stop being the omitted-bounds case.

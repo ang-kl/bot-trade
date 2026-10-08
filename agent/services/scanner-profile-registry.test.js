@@ -1,3 +1,4 @@
+// Codex · №12,188 · 2026-10-08; codex-footprint: scanner fixtures retain account-owned list provenance.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
@@ -12,7 +13,7 @@ const profile = () => ({ source: 'cpp-scan-tick', feed, strategy: 'tick_momentum
 function fixture(t) {
   const db = initDB(':memory:'); t.after(() => db.close())
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES(11,0)').run()
-  setState(db, 'symbol_id_map:11', JSON.stringify({ map: { EURUSD: 7 } }))
+  setState(db, 'symbol_id_map:11', JSON.stringify({ accountId: '11', map: { EURUSD: 7 } }))
   return db
 }
 test('registration compares revisions, retains exact settings and audits without entry authority', t => {

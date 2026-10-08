@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // node --test agent/services/pending-signals.test.js
 //
 // A hot signal on a symbol whose OWN market is closed used to be vetoed and
@@ -15,6 +16,7 @@ const CREDS = { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', ac
 function mkDb() {
   const db = initDB(':memory:')
   setState(db, 'symbol_id_map', JSON.stringify({ NVDAUS: 1 }))
+  setState(db, 'symbol_id_map:1', JSON.stringify({ accountId: '1', builtAt: new Date().toISOString(), map: { NVDAUS: 1 } }))
   setState(db, 'autopilot_symbols_json', JSON.stringify([{ symbol: 'NVDAUS', enabled: true }]))
   return db
 }

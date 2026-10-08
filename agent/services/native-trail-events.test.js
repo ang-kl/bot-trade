@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // Codex · №12,073 · 2026-10-08; codex-footprint: confirmed-trail.
 // Actual native ingestion and public history/state readers, with HTTP alone substituted.
 import test from 'node:test'
@@ -24,7 +25,7 @@ function anotherEpisode(f) {
 function fixture(t) {
   const db = initDB(':memory:'); t.after(() => db.close())
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (?,?)').run('11',0)
-  setState(db,'symbol_id_map:11',JSON.stringify({map:{TEST:9},builtAt:new Date(NOW).toISOString()}))
+  setState(db,'symbol_id_map:11',JSON.stringify({ accountId: '11',map:{TEST:9},builtAt:new Date(NOW).toISOString()}))
   const tradeId = db.prepare(`INSERT INTO trades(symbol,side,account_id,ctrader_position_id,status,opened_at,entry_price)
     VALUES ('TEST','BUY','11','77','open','2026-10-08 02:00:00',10)`).run().lastInsertRowid
   db.prepare(`INSERT INTO monitored_positions(symbol,side,account_id,trade_id,entry_price,status,mfe_r)

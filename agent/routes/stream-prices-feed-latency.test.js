@@ -1,3 +1,4 @@
+// Codex · №12,183 · 2026-10-08; codex-footprint: fixtures retain account-owned writer provenance.
 // V3 WEB-9b (8,989-A rows 10 and 11): GET /actions/stream-prices asks the
 // broker for its spot timestamp, forwards it beside the AGENT's receipt time,
 // and records broker-stamp → receipt as the market-feed latency that
@@ -48,6 +49,7 @@ test('stream-prices subscribes timestamped, forwards the broker stamp beside the
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES(?,0)').run('46130058')
   setState(db, 'ctrader_access_token', 'test-token')
   setState(db, 'symbol_id_map', JSON.stringify({ BTCUSD: 101, ETHUSD: 102 }))
+  setState(db, 'symbol_id_map:46130058', JSON.stringify({ accountId: '46130058', builtAt: new Date().toISOString(), map: { BTCUSD: 101, ETHUSD: 102 } }))
 
   const subscriptions = []
   const streamSpots = async (host, _cid, _sec, _tok, accountId, ids, onTick, _onClose, options) => {
