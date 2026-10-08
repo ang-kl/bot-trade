@@ -1,5 +1,49 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №12,327 · 2026-10-09; codex-footprint: native-hybrid-2026-10-08.
+Owner orders native tick-triggered capped hybrid for live AND demo accounts,
+with real retained execution evidence; entry and SL mechanisms remain frozen.
+Account-owned native SpotFeeds detect the existing enrolled 50%-at-2-price-R
+trigger. Each side retains its own broker/receive clock and reconnect epoch;
+stale or missing source clocks refuse. A separate worker fsyncs the native
+trigger journal before delivery. The Node background consumer retains that
+raw trigger in SQLite and reuses the existing ARMED-to-SENDING close claim,
+account gateway, fill/residual state machine and scale-out journal. It also
+retains the raw close response. Existing broker SL and final TP stay intact.
+Node still arbitrates closes with protective/ordinary managers: this is NOT
+fully Node-independent execution or a microsecond broker/fsync guarantee.
+Local decision nanoseconds are measured separately from the full transaction.
+Both gateway binaries change; scanners/verifier sources do not. Existing
+volumes receive a separate /data/hybrid-profit/events.ndjson; no volume or
+region configuration changes. Storage failure/torn tail refuses new triggers;
+receipts are not deleted or reconstructed. Limits: 64 pending native events,
+64MiB native journal, 100000 retained Node triggers, then fail closed.
+The actual recovery adapter also reproduced a request upper bound now+2000;
+request through now as PR1274 enrolment does. Receipt clock tolerance and the
+position-history lower bound stay unchanged; no guessed history window or
+production causal claim. Reuse PR1276 residual correction and its gates.
+Meaningful native storage/account/freshness/thread tests and actual Node
+ledger/broker-boundary/restart tests precede full local/exact-head CI/review.
+No forced events, credentials/risk/account/strategy/profile/staging changes,
+profit-improvement promise, natural partial or whole acceptance pass claimed.
+Counts7verified/19active/6deferred; unverified25. Conversation refs: owner
+native live/demo hybrid request after№12,277; build/verification№12,315–12,327.
+Session native-hybrid-2026-10-08, ChatGPT; session URL/effort unavailable.
+-->
+
+<!-- Codex · №12,333 · 2026-10-09; codex-footprint: native-hybrid-2026-10-08.
+Before PR publication, actual SpotFeed wire inspection found source-clock
+subscription missing for the new profit reader. A controlled real WebSocket
+test fails on subscribeToSpotTimestamp absent. A false-by-default immutable
+option now requests timestamps on initial AND dynamic spot subscriptions,
+enabled only by dedicated profit feeds. Existing entry/trailing/recorder and
+depth subscription payloads remain unchanged. The test joins an actual broker
+frame through SpotFeed's raw tap into the durable native trigger. Initial Git
+objects07aba7d/a02baf4 were never a branch/PR/deployment; the final candidate
+must pass its native/TSan gate and exact-head CI. Unchanged Node source gates
+may be reused only with byte equality; no operational hybrid outcome claimed.
+-->
+
 <!-- Codex · №12,309 · 2026-10-09; codex-footprint: durable-hybrid-residual.
 Owner requires real capped-hybrid execution and complete durable records.
 Fresh main dbde7fc preserves Claude PR1272/1273/1274. PR1271 diagnostic is

@@ -64,7 +64,7 @@ public:
   SpotFeed(std::string host, std::string clientId, std::string clientSecret,
            std::string accessToken, long long accountId,
            std::vector<long long> symbolIds, SpotTickCallback onTick,
-           bool depthEnabled = false);
+           bool depthEnabled = false, bool timestamped = false);
 
   // Blocking: connect -> auth -> subscribe -> read frames -> onTick(), with
   // capped exponential backoff across drops. Runs until stop() is called.
@@ -164,6 +164,9 @@ public:
   void setHeartbeatIdleMsForTests(int ms) { heartbeatIdleMs_.store(ms); }
 
 private:
+  // Codex · №12,331 · 2026-10-09; codex-footprint: dedicated profit source clocks.
+  // Immutable opt-in; existing entry/trail/recorder subscriptions stay unchanged.
+  const bool timestamped_;
   // One connect+auth+subscribe+read cycle. Returns when the connection
   // drops or stop() fires; the caller (runLoop) decides whether to retry.
   void runOnce();
