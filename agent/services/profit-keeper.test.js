@@ -2,6 +2,8 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
+import { tempDir } from '../test-support/temp-dir.js'
 import { initDB, setState } from '../db.js'
 import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER, runProfitKeeper, clearAtrCache, readAtrCache, writeAtrCache, swingTrailLevel } from './profit-keeper.js'
 import { getVolumeMeta, _cache as volumeMetaCache } from '../lib/lot-sizing.js'
@@ -989,4 +991,295 @@ test('ratchet: an applied amend records the broker\'s CONFIRMED stop on the row,
   const ev = db.prepare(`SELECT to_value FROM position_events WHERE kind = 'sl_moved' ORDER BY id DESC LIMIT 1`).get()
   assert.equal(row.current_sl, ev.to_value, 'row and event agree')
   assert.ok(row.current_sl > 0)
+})
+
+// Codex · №12,209 · 2026-10-08; codex-footprint: keeper-volume-peak.
+// Real pass and SQLite; only the broker/network boundary is controlled.
+function peakVolumeFixture(t, { side = 'BUY', mode = 'adaptive', file = ':memory:' } = {}) {
+  clearAtrCache()
+  const db = initDB(file); t.after(() => { if (db.open) db.close() })
+  setState(db, 'profit_keeper_json', JSON.stringify({
+    ...DEFAULT_PROFIT_KEEPER, on: true, scope: 'external', mode,
+    armBalancePct: 0, structureTrailEnabled: false, spikeTightenEnabled: false,
+    scaleOutFrac: 0, armProfitUsd: 25,
+  }))
+  db.prepare("INSERT INTO trades (symbol,side,ctrader_position_id,status,account_id) VALUES ('XAUUSD',?,'9001','open','1')").run(side)
+  const tradeId = db.prepare('SELECT id FROM trades').get().id
+  db.prepare("INSERT INTO monitored_positions (symbol,side,entry_price,current_sl,current_tp,status,source,trade_id,account_id,initial_risk) VALUES ('XAUUSD',?,100,?,?,'active','external',?,'1',10)").run(side,side === 'BUY' ? 90 : 110,side === 'BUY' ? 150 : 50,tradeId)
+  const snapshot = { positionId: 9001, price: 100, stopLoss: side === 'BUY' ? 90 : 110, takeProfit: side === 'BUY' ? 150 : 50, tradeData: { symbolId: 1, volume: 1000, tradeSide: side === 'BUY' ? 1 : 2 } }
+  let price = side === 'BUY' ? 110 : 90
+  const calls = { closes: [], amends: [], specs: [] }
+  const deps = {
+    managedExit: { managedExitApplies: () => false },
+    exec: {
+      reconcile: async () => ({ position: [snapshot] }),
+      amendPosition: async (_creds, body) => { calls.amends.push(body); snapshot.stopLoss = body.stopLoss; return { position: { stopLoss: body.stopLoss } } },
+      closePosition: async (_creds, body) => { calls.closes.push(body); return {} },
+      pushTrailConfig: async (_creds, body) => { calls.specs.push(body); return true },
+    },
+    ws: { wsGetLastCloses: async () => ({ 1: price }), wsGetTrendbarsBatch: async () => ({ '1h': Array.from({length:16}, () => ({h:101,l:99,c:100})) }) },
+    sizing: { getVolumeMeta: async () => ({lotSize:100,digits:2,brokerDigits:2,minVolume:1}) },
+    notify: () => {},
+  }
+  return { db, deps, snapshot, calls, setPrice: v => { price = v } }
+}
+
+for (const mode of ['adaptive', 'fixed']) for (const side of ['BUY', 'SELL']) {
+  test(`keeper ${mode} ${side}: partial volume at unchanged price cannot manufacture a breach`, async t => {
+    const f = peakVolumeFixture(t, {side,mode})
+    const first = await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(first.closes,0)
+    assert.equal(first.slMoves,1)
+    const stop = f.snapshot.stopLoss
+    assert.equal(f.db.prepare('SELECT peak_profit_usd FROM monitored_positions').get().peak_profit_usd,100)
+    f.snapshot.tradeData.volume = 500
+    f.db.prepare('UPDATE monitored_positions SET scaled_out = 1').run()
+    const second = await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(second.errors.length,0,JSON.stringify(second))
+    assert.equal(second.closes,0,'partial volume is not a price retracement')
+    assert.equal(second.slMoves,0,'unchanged price must retain the stop')
+    assert.equal(f.snapshot.stopLoss,stop)
+    assert.equal(f.calls.closes.length,0)
+    assert.equal(f.db.prepare('SELECT peak_profit_usd FROM monitored_positions').get().peak_profit_usd,100,'retain the observed monetary high-water mark')
+  })
+}
+
+for (const side of ['BUY','SELL']) {
+  test(`keeper ${side}: repeated partials retain the real trail; a new extreme and genuine breach still act`, async t => {
+    const f = peakVolumeFixture(t,{side})
+    await runProfitKeeper(f.db,CREDS,f.deps)
+    for (const volume of [500,250]) {
+      f.snapshot.tradeData.volume = volume
+      const result = await runProfitKeeper(f.db,CREDS,f.deps)
+      assert.equal(result.closes,0)
+      assert.equal(result.slMoves,0)
+      assert.equal(f.calls.specs.at(-1)[0].peakPrice,side === 'BUY' ? 110 : 90)
+      assert.equal(f.calls.specs.at(-1)[0].trailDistance,5)
+      const state = JSON.parse(f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state)
+      assert.equal(state.volume,volume); assert.equal(state.peakUsd,volume / 10)
+    }
+    f.setPrice(side === 'BUY' ? 112 : 88)
+    assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).slMoves,1)
+    assert.equal(f.snapshot.stopLoss,side === 'BUY' ? 107 : 93)
+    const amend = f.calls.amends.at(-1)
+    assert.equal(amend.ratchetOnly,true); assert.equal(amend.expectedSymbolId,1)
+    assert.equal(amend.expectedDirection,side === 'BUY' ? 1 : -1)
+    assert.equal(amend.takeProfit,side === 'BUY' ? 150 : 50)
+    f.setPrice(side === 'BUY' ? 106 : 94)
+    assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).closes,1,'real price giveback still closes the remainder')
+    assert.equal(f.calls.closes.at(-1).volume,250)
+  })
+}
+
+test('keeper restart retains the proven peak/quantity basis across a partial close', async t => {
+  const file = join(tempDir('keeper-peak-'),'agent.db')
+  const f = peakVolumeFixture(t,{file})
+  await runProfitKeeper(f.db,CREDS,f.deps)
+  f.db.close()
+  const reopened = initDB(file); t.after(() => reopened.close())
+  f.snapshot.tradeData.volume = 500
+  f.setPrice(109)
+  const result = await runProfitKeeper(reopened,CREDS,f.deps)
+  assert.equal(result.closes,0); assert.equal(result.slMoves,0)
+  assert.equal(f.calls.specs.at(-1)[0].peakPrice,110,'restart must not forget the observed price extreme')
+  assert.equal(JSON.parse(reopened.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state).peakUsd,50)
+})
+
+test('legacy migration preserves money/history and never invents an unknown peak size', async t => {
+  const file = join(tempDir('keeper-legacy-'),'agent.db')
+  const f = peakVolumeFixture(t,{file})
+  f.db.prepare('UPDATE monitored_positions SET peak_profit_usd=200').run()
+  f.db.exec('ALTER TABLE monitored_positions DROP COLUMN keeper_peak_state')
+  f.db.close()
+  const migrated = initDB(file); t.after(() => migrated.close())
+  assert.equal(migrated.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state,null)
+  f.snapshot.tradeData.volume = 500
+  const result = await runProfitKeeper(migrated,CREDS,f.deps)
+  assert.equal(result.closes,0)
+  assert.equal(f.snapshot.stopLoss,105)
+  assert.equal(migrated.prepare('SELECT peak_profit_usd FROM monitored_positions').get().peak_profit_usd,200)
+  assert.equal(migrated.prepare('SELECT status FROM trades').get().status,'open')
+  assert.equal(JSON.parse(migrated.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state).peakUsd,50)
+})
+
+test('keeper rejects inherited, malformed and conflicting peak bases instead of guessing ownership', async t => {
+  const valid = {version:1,accountId:'1',positionId:'9001',symbolId:1,side:1,entry:100,volume:1000,peakUsd:1000}
+  for (const state of [null,'{invalid}',...[
+    {accountId:'2'}, {positionId:'9002'}, {symbolId:2}, {side:-1}, {entry:99},
+    {volume:0}, {volume:'500'}, {peakUsd:'1000'}, {peakUsd:-1}, {version:2},
+  ].map(patch => JSON.stringify({...valid,...patch}))]) {
+    const f = peakVolumeFixture(t)
+    f.db.prepare('UPDATE monitored_positions SET keeper_peak_state=?,peak_profit_usd=1000').run(state)
+    const result = await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(result.closes,0,`unproven basis ${state}`)
+    assert.equal(f.snapshot.stopLoss,105)
+    assert.equal(f.db.prepare('SELECT peak_profit_usd FROM monitored_positions').get().peak_profit_usd,1000)
+  }
+})
+
+test('newly added quantity and changed entry cannot inherit another quantity history', async t => {
+  for (const mutate of [f => { f.snapshot.tradeData.volume=2000 }, f => {f.snapshot.price=105}]) {
+    const f = peakVolumeFixture(t)
+    await runProfitKeeper(f.db,CREDS,f.deps)
+    f.setPrice(109); mutate(f)
+    const result = await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(result.closes,0)
+    assert.equal(result.slMoves,0,'existing tighter broker protection is retained')
+    const state = JSON.parse(f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state)
+    assert.equal(state.peakUsd,(109-f.snapshot.price)*f.snapshot.tradeData.volume/100)
+  }
+})
+
+test('unretained peak or invalid broker quantity/side cannot issue a keeper action', async t => {
+  for (const mutate of [
+    f => { const prepare=f.db.prepare.bind(f.db); f.db.prepare=sql => /SET peak_profit_usd = MAX/.test(sql) ? {run:()=>{throw new Error('peak write failed')}} : prepare(sql) },
+    f => { f.snapshot.tradeData.volume=0 },
+    f => { f.snapshot.tradeData.tradeSide=2 },
+  ]) {
+    const f=peakVolumeFixture(t); mutate(f)
+    const result=await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.ok(result.errors.length); assert.equal(result.trailSpecsComplete,false)
+    assert.equal(f.calls.amends.length,0); assert.equal(f.calls.closes.length,0)
+  }
+})
+
+for (const side of ['BUY','SELL']) {
+  test(`keeper fixed ${side}: real giveback after partial still closes only the current remainder`, async t => {
+    const f=peakVolumeFixture(t,{side,mode:'fixed'})
+    await runProfitKeeper(f.db,CREDS,f.deps)
+    f.snapshot.tradeData.volume=500
+    f.setPrice(side === 'BUY' ? 105 : 95)
+    assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).closes,1)
+    assert.equal(f.calls.closes.at(-1).volume,500)
+  })
+}
+
+test('a confirmed keeper scale-out keeps its pre-close quantity basis until broker readback', async t => {
+  const f=peakVolumeFixture(t)
+  const cfg=loadProfitKeeperConfig(f.db)
+  setState(f.db,'profit_keeper_json',JSON.stringify({...cfg,scaleOutFrac:0.5}))
+  const first=await runProfitKeeper(f.db,CREDS,f.deps)
+  assert.equal(first.scaleOuts,1); assert.equal(f.calls.closes[0].volume,500)
+  assert.equal(JSON.parse(f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state).volume,1000)
+  f.snapshot.tradeData.volume=500
+  const next=await runProfitKeeper(f.db,CREDS,f.deps)
+  assert.equal(next.closes,0); assert.equal(next.scaleOuts,0)
+  assert.equal(f.calls.closes.length,1,'no repeated partial or phantom full close')
+})
+
+// Codex · №12,223 · 2026-10-08; codex-footprint: keeper-volume-peak.
+// Actual automated P1 review #1268: broker enums have named forms too.
+for (const side of ['BUY','SELL']) {
+  test(`keeper accepts the broker's named ${side} enum and retains its partial-volume protection`, async t => {
+    const f=peakVolumeFixture(t,{side})
+    f.snapshot.tradeData.tradeSide=side
+    const first=await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(first.errors.length,0,JSON.stringify(first))
+    assert.equal(first.slMoves,1,'valid named broker side must be protected')
+    f.snapshot.tradeData.volume=500
+    assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).closes,0)
+    f.setPrice(side === 'BUY' ? 104 : 96)
+    assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).closes,1,'genuine breach must still be acted on')
+  })
+}
+
+test('keeper accepts numeric-string broker enums and refuses conflicting or malformed side values', async t => {
+  for (const [rowSide,brokerSide] of [['BUY','1'],['SELL','2']]) {
+    const f=peakVolumeFixture(t,{side:rowSide});f.snapshot.tradeData.tradeSide=brokerSide
+    assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).slMoves,1)
+  }
+  for (const brokerSide of ['SELL','2',true,false,'unknown','',0]) {
+    const f=peakVolumeFixture(t);f.snapshot.tradeData.tradeSide=brokerSide
+    const result=await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.ok(result.errors.length);assert.equal(result.slMoves,0);assert.equal(result.closes,0)
+  }
+})
+
+// Codex · №12,228 · 2026-10-08; codex-footprint: keeper-volume-peak.
+for (const side of ['BUY','SELL']) {
+  test(`keeper ${side}: absent/null broker direction cannot record a proven peak or act`, async t => {
+    for (const missing of [null,undefined]) {
+      const f=peakVolumeFixture(t,{side})
+      f.deps.ws.wsGetTrendbarsBatch=async()=>({'1h':Array.from({length:50},()=>({h:101,l:99,c:100}))})
+      if (missing === undefined) delete f.snapshot.tradeData.tradeSide
+      else f.snapshot.tradeData.tradeSide=missing
+      const result=await runProfitKeeper(f.db,CREDS,f.deps)
+      assert.equal(result.slMoves,0);assert.equal(result.closes,0)
+      assert.equal(f.calls.amends.length,0);assert.equal(f.calls.closes.length,0)
+      assert.equal(f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state,null)
+      assert.equal(f.db.prepare('SELECT peak_profit_usd FROM monitored_positions').get().peak_profit_usd,null)
+      assert.equal(result.trailSpecsComplete,false)
+      assert.equal(result.trailSpecs.length,0,'refused identity cannot fall through to a native since-entry spec')
+    }
+  })
+}
+
+test('a retained good peak does not authorise a protective close with current broker direction missing', async t => {
+  const f=peakVolumeFixture(t)
+  await runProfitKeeper(f.db,CREDS,f.deps)
+  const before=f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state
+  delete f.snapshot.tradeData.tradeSide
+  f.snapshot.tradeData.volume=500;f.setPrice(104)
+  const result=await runProfitKeeper(f.db,CREDS,f.deps)
+  assert.equal(result.closes,0);assert.equal(result.slMoves,0)
+  assert.equal(f.calls.closes.length,0)
+  assert.equal(f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state,before)
+  assert.equal(result.trailSpecsComplete,false)
+})
+
+// Same identity/basis boundary: boolean wire fields are unknown, not 1.
+for (const field of ['symbolId','volume','entry']) {
+  test(`keeper cannot manufacture numeric ${field} provenance from a boolean broker field`, async t => {
+    const f=peakVolumeFixture(t)
+    if (field === 'entry') f.snapshot.price=true
+    else f.snapshot.tradeData[field]=true
+    if (field === 'symbolId') f.deps.ws.wsGetLastCloses=async()=>({true:110})
+    const result=await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(result.slMoves,0);assert.equal(result.closes,0)
+    assert.equal(f.db.prepare('SELECT keeper_peak_state FROM monitored_positions').get().keeper_peak_state,null)
+  })
+}
+
+test('valid numeric-string broker quantities and entry retain numeric stop arithmetic', async t => {
+  const f=peakVolumeFixture(t)
+  f.snapshot.tradeData.symbolId='1';f.snapshot.tradeData.volume='1000';f.snapshot.price='100'
+  const first=await runProfitKeeper(f.db,CREDS,f.deps)
+  assert.equal(first.errors.length,0);assert.equal(first.closes,0);assert.equal(first.slMoves,1)
+  assert.equal(f.snapshot.stopLoss,105)
+  f.snapshot.tradeData.volume='500'
+  assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).closes,0)
+})
+
+// Codex · №12,232 · 2026-10-08; codex-footprint: keeper-volume-peak.
+// Actual third P1: quote/metadata early exits must not bypass identity.
+for (const managed of [false,true]) {
+  test(`quote-missing ${managed ? 'managed' : 'keeper'} row cannot generate native specs without verified direction`, async t => {
+    for (const brokerSide of [null,undefined,'SELL']) {
+      const f=peakVolumeFixture(t)
+      f.deps.managedExit.managedExitApplies=()=>managed
+      f.deps.ws.wsGetLastCloses=async()=>({})
+      f.deps.ws.wsGetTrendbarsBatch=async()=>({'1h':Array.from({length:50},()=>({h:101,l:99,c:100}))})
+      if (brokerSide === undefined) delete f.snapshot.tradeData.tradeSide
+      else f.snapshot.tradeData.tradeSide=brokerSide
+      const result=await runProfitKeeper(f.db,CREDS,f.deps)
+      assert.equal(result.trailSpecs?.length,0)
+      assert.equal(result.trailSpecsComplete,false)
+      assert.equal(f.calls.specs.length,0,'no unverified native configuration push')
+      assert.equal(f.calls.amends.length,0);assert.equal(f.calls.closes.length,0)
+    }
+  })
+}
+
+test('valid quote-missing broker identity keeps the existing since-entry native trail path', async t => {
+  for (const managed of [false,true]) {
+    const f=peakVolumeFixture(t)
+    f.deps.managedExit.managedExitApplies=()=>managed
+    f.deps.ws.wsGetLastCloses=async()=>({})
+    f.deps.ws.wsGetTrendbarsBatch=async()=>({'1h':Array.from({length:50},()=>({h:101,l:99,c:100}))})
+    const result=await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(result.trailSpecsComplete,true)
+    assert.equal(result.trailSpecs.length,1)
+    assert.equal(result.trailSpecs[0].source,'mae_chandelier_since_entry')
+    assert.equal(result.trailSpecs[0].dir,1)
+  }
 })

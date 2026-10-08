@@ -385,6 +385,46 @@ export function decideProfitKeeper(cfg, {
   return out
 }
 
+// Codex · №12,210 · 2026-10-08; codex-footprint: keeper-volume-peak.
+// A dollar peak belongs to the quantity that earned it. A smaller remainder
+// retains that per-unit peak, not the full position's dollars. Added volume
+// or a changed entry/identity starts a new basis; neither proves that the new
+// units experienced the old peak. Legacy peaks have no recoverable size basis.
+function keeperPeakBasis(row, bp, accountId) {
+  const td = bp.tradeData || {}
+  const side = ['LONG', 'BUY'].includes(String(row.side).toUpperCase()) ? 1
+    : ['SHORT', 'SELL'].includes(String(row.side).toUpperCase()) ? -1 : null
+  // Codex · №12,223 · 2026-10-08; codex-footprint: keeper-volume-peak.
+  // Same supported broker enum forms as LossGuardian; unknown/conflicting
+  // sides still refuse. Number('BUY') must not disable valid protection.
+  const brokerSide = td.tradeSide === 1 || td.tradeSide === '1' || td.tradeSide === 'BUY' ? 1
+    : td.tradeSide === 2 || td.tradeSide === '2' || td.tradeSide === 'SELL' ? -1 : 0
+  const positiveNumber = raw => (typeof raw === 'number'
+    || (typeof raw === 'string' && /^[0-9]+(?:\.[0-9]+)?$/.test(raw)))
+    && Number.isFinite(Number(raw)) && Number(raw) > 0 ? Number(raw) : null
+  const symbolId = (typeof td.symbolId === 'number'
+    || (typeof td.symbolId === 'string' && /^[0-9]+$/.test(td.symbolId))) ? Number(td.symbolId) : null
+  const basis = {
+    version: 1, accountId: String(accountId), positionId: String(row.position_id),
+    symbolId, side, entry: positiveNumber(bp.price ?? row.entry_price),
+    volume: positiveNumber(td.volume),
+  }
+  if (!side || !Number.isSafeInteger(basis.symbolId) || basis.symbolId <= 0
+      || !Number.isFinite(basis.entry) || basis.entry <= 0
+      || !Number.isFinite(basis.volume) || basis.volume <= 0
+      || (!brokerSide || brokerSide !== side)) return null
+  let previous
+  try { previous = JSON.parse(row.keeper_peak_state) } catch { /* unknown basis */ }
+  const same = previous?.version === 1 && ['accountId', 'positionId', 'symbolId', 'side', 'entry']
+    .every(key => previous[key] === basis[key])
+    && Number.isFinite(previous.volume) && previous.volume > 0
+    && Number.isFinite(previous.peakUsd) && previous.peakUsd >= 0
+  // Increasing volume cannot give newly added units a peak they never saw.
+  const peak = same && basis.volume <= previous.volume
+    ? previous.peakUsd * (basis.volume / previous.volume) : 0
+  return { basis, peak }
+}
+
 /**
  * One keeper pass: broker-truth positions in scope → decide → act through
  * the exec engine. Never throws; returns a summary.
@@ -410,7 +450,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
       ? "mp.source IS NULL OR mp.source IN ('autopilot', 'preopen', 'external', 'manual')"
       : "mp.source IN ('external', 'manual')"
     const rows = db.prepare(
-      `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp, mp.peak_profit_usd,
+      `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp, mp.peak_profit_usd, mp.keeper_peak_state,
               mp.scaled_out, mp.trade_id, mp.account_id, t.ctrader_position_id AS position_id,
               t.sl_price AS original_sl, mp.early_trimmed, mp.initial_risk
        FROM monitored_positions mp
@@ -489,9 +529,27 @@ async function profitKeeperPass(db, creds, deps = {}) {
     }
     // involvedAll: every owned row the broker holds (the spec set);
     // involved: the subset the managed fence left to this keeper (decisions).
+    const trailSpecs = []
+    summary.trailSpecs = trailSpecs
+    summary.trailSpecsComplete = true
+    const peakBases = new Map()
+    // Codex · №12,232 · 2026-10-08; codex-footprint: keeper-volume-peak.
+    // Validate every owned spec/decision row BEFORE quote/meta early exits.
+    // Managed rows can still emit since-entry specs, so they share this
+    // identity boundary even though their keeper decisions remain fenced.
     const involvedAll = scoped.owned
       .map(r => ({ r, bp: live.get(String(r.position_id)) }))
       .filter(x => x.bp)
+      .filter(({r,bp}) => {
+        const basis = keeperPeakBasis(r, bp, accountId)
+        if (!basis) {
+          summary.errors.push(`${r.symbol}: keeper peak basis has missing or conflicting broker identity/quantity`)
+          summary.trailSpecsComplete = false
+          return false
+        }
+        peakBases.set(r.id, basis)
+        return true
+      })
     const involved = involvedAll.filter(x => keptIds.has(x.r.id))
     const symbolIds = [...new Set(involvedAll.map(x => x.bp.tradeData?.symbolId).filter(Boolean))]
     if (symbolIds.length === 0) return summary
@@ -562,7 +620,8 @@ async function profitKeeperPass(db, creds, deps = {}) {
       }
     }
 
-    const updPeak = db.prepare('UPDATE monitored_positions SET peak_profit_usd = ? WHERE id = ?')
+    const updPeak = db.prepare(`UPDATE monitored_positions
+      SET peak_profit_usd = MAX(COALESCE(peak_profit_usd, 0), ?), keeper_peak_state = ? WHERE id = ?`)
     const updAct = db.prepare(
       `UPDATE monitored_positions
        SET current_sl = COALESCE(?, current_sl), last_check_action = ?, last_check_at = datetime('now')
@@ -570,19 +629,8 @@ async function profitKeeperPass(db, creds, deps = {}) {
     )
     const updScaled = db.prepare('UPDATE monitored_positions SET scaled_out = 1 WHERE id = ?')
 
-    // Option 4: trail specs for the sidecar's tick-level ratchet, collected
-    // as we decide. Pushed even when EMPTY — /trail-config is full-replace,
-    // so an empty push clears positions that closed or disarmed.
-    const trailSpecs = []
-    // Claude · № 11,596·D·1 (ordered № 11,583·D·1): this account's
-    // contribution travels on the summary, so a caller sweeping every account
-    // can merge the sides and push one union per gateway.
-    summary.trailSpecs = trailSpecs
-    // Codex P1 on #1245 (Claude · after № 11,623): the keeper never throws, so a
-    // caller merging sides needs a marker, not a rejection — false once any
-    // row's spec was dropped by a failure or the pass aborted, so the union
-    // for that side is withheld instead of wiping this account's trails.
-    summary.trailSpecsComplete = true
+    // Specs and completeness were initialized before identity filtering.
+    // The guardian merges this account's validated contribution per gateway.
     const brokerDigitsByPosition = new Map()
 
     for (const { r, bp } of involved) {
@@ -599,15 +647,16 @@ async function profitKeeperPass(db, creds, deps = {}) {
       // or replaced by a manufactured default from another snapshot.
       brokerDigitsByPosition.set(String(parseInt(r.position_id)), meta.brokerDigits)
 
+      const peakBasis = peakBases.get(r.id)
       const lots = td.volume && meta.lotSize ? td.volume / meta.lotSize : null
       const decision = decideProfitKeeper(cfg, {
         side: r.side,
-        entry: bp.price ?? r.entry_price,
+        entry: peakBasis.basis.entry,
         price,
         lots,
         unitsPerLot: meta.lotSize / 100,
         symbol: r.symbol,
-        peak: r.peak_profit_usd,
+        peak: peakBasis.peak,
         currentSl: bp.stopLoss ?? r.current_sl,
         digits: meta.digits,
         atr: atrBySymbolId[td.symbolId] ?? null,
@@ -656,7 +705,15 @@ async function profitKeeperPass(db, creds, deps = {}) {
         summary.errors.push(`early-trim shadow ${r.symbol}: ${err.message}`)
       }
 
-      if (decision.newPeak !== (r.peak_profit_usd || 0)) updPeak.run(decision.newPeak, r.id)
+      // Commit the current decision basis BEFORE any close/amend. A failed
+      // write aborts this pass without acting on an unretained peak. The old
+      // high-water mark remains observational; it is never a fallback basis.
+      if (decision.profitUsd != null && (decision.newPeak > 0 || r.keeper_peak_state != null)) {
+        const state = JSON.stringify({ ...peakBasis.basis, peakUsd: decision.newPeak })
+        if (state !== r.keeper_peak_state || decision.newPeak > (r.peak_profit_usd || 0)) {
+          updPeak.run(decision.newPeak, state, r.id)
+        }
+      }
       if (decision.trail && !decision.action?.close) {
         const s = String(r.side || '').toUpperCase()
         // The account is REQUIRED on a trail spec now, not best-effort.
@@ -809,6 +866,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     const already = new Set(trailSpecs.map(s => String(s.positionId)))
     for (const { r, bp } of involvedAll) {
       const td = bp.tradeData || {}
+      // involvedAll already passed the shared broker-identity boundary.
       if (already.has(String(parseInt(r.position_id)))) continue
       const bars = fullBarsBySymbolId[td.symbolId]
       // A row the fence kept from the decision step has no digits yet (the
