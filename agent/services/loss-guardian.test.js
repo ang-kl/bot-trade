@@ -44,13 +44,18 @@ async function nakedPass({ side = 'BUY', ledgerSide = side, symbolId = 73,
         if (args.ratchetOnly === true) {
           const brokerDir = amendSide === 'BUY' ? 1 : -1
           if (args.expectedSymbolId !== Number(amendSymbolId) || args.expectedDirection !== brokerDir) throw new Error('guard_ratchet_identity')
-          if (policyStampOnly) return { unchanged: false, protection: { stopLoss: brokerStop, takeProfit: brokerTp, movement: { stopMoved: false } } }
+          if (policyStampOnly) return { unchanged: false, protection: { stopLoss: brokerStop, takeProfit: brokerTp,
+            movement: { beforeStopLoss: brokerStop, afterStopLoss: brokerStop, stopMoved: false } } }
           const tight = brokerStop != null && (side === 'BUY' ? brokerStop >= args.stopLoss : brokerStop <= args.stopLoss)
           if (tight || unchanged) return { unchanged: true, protection: { stopLoss: brokerStop, takeProfit: brokerTp } }
         } else if (unchanged) return { unchanged: true, protection: { stopLoss: brokerStop, takeProfit: brokerTp } }
         brokerWrites.push(args.stopLoss)
         brokerStop = args.stopLoss
-        return { unchanged: false, protection: { stopLoss: brokerStop, takeProfit: brokerTp } }
+        // Codex · №12,140 · 2026-10-08; codex-footprint: loss-guardian-ratchet.
+        // confirmedMovementProof requires a positive before-stop for tightening;
+        // genuine native first installations therefore also have stopMoved:false.
+        return { unchanged: false, protection: { stopLoss: brokerStop, takeProfit: brokerTp,
+          movement: { beforeStopLoss: null, afterStopLoss: brokerStop, stopMoved: false } } }
       },
     },
     ws: {

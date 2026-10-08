@@ -319,9 +319,14 @@ async function lossGuardianPass(db, creds, deps = {}) {
             // Putting a stop on a naked position must not cost it its target.
             takeProfit: Number(bp.takeProfit) > 0 ? Number(bp.takeProfit) : (Number(r.current_tp) > 0 ? Number(r.current_tp) : null),
           }))
-          // A native policy-only stamp can return unchanged:false while its
-          // confirmed movement proof says the stop level did not move.
-          if (result?.unchanged === true || result?.protection?.movement?.stopMoved === false) {
+          // Codex · №12,140 · 2026-10-08; codex-footprint: loss-guardian-ratchet.
+          // Native tightening proof also says false for a FIRST stop: there
+          // was no positive before-stop. Preserve that genuine installation;
+          // a policy stamp on an existing stop still installs nothing.
+          const movement = result?.protection?.movement
+          const installedNaked = movement?.beforeStopLoss === null
+            && Number.isFinite(movement?.afterStopLoss) && movement.afterStopLoss > 0
+          if (result?.unchanged === true || (movement?.stopMoved === false && !installedNaked)) {
             summary.deferred.push(`${r.symbol}: broker stop unchanged; no stop installed by this pass`)
             continue
           }
