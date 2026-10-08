@@ -28,6 +28,34 @@
         "agent/services/capped-hybrid.test.js"
       ],
       "purpose": "Persist actual confirmed residual readback with its partial receipt before status/journal; entry and stop rules unchanged. Existing own history lock CLAUDE overlap is same session."
+    },
+    {
+      "owner": "codex-native-hybrid",
+      "session": "native-hybrid-2026-10-08",
+      "serial": 12315,
+      "started_at": "2026-10-08T16:23:00Z",
+      "expires_at": "2026-10-09T04:23:00Z",
+      "files": [
+        "cpp-exec/src/hybrid_tick.hpp",
+        "cpp-exec/src/hybrid_tick.cpp",
+        "cpp-exec/src/hybrid_feed.hpp",
+        "cpp-exec/src/hybrid_feed.cpp",
+        "cpp-exec/src/tests/test_hybrid_tick.cpp",
+        "cpp-exec/src/tests/test_hybrid_feed.cpp",
+        "cpp-exec/src/main.cpp",
+        "cpp-exec/entrypoint.sh",
+        "cpp-exec/Makefile",
+        "agent/services/hybrid-tick-controller.js",
+        "agent/services/hybrid-tick-controller.test.js",
+        "agent/lib/hybrid-tick-transport.js",
+        "agent/lib/hybrid-tick-transport.test.js",
+        "agent/index.js",
+        "agent/services/momentum-partial-broker.js",
+        "agent/services/momentum-partial-broker.test.js",
+        "agent/lib/one-account-model.test.js",
+        "CLAUDE.md"
+      ],
+      "purpose": "Owner orders continue through gated native account-owned tick triggers for both live/demo, durable trigger/claim/fill/residual records. Entry and SL untouched. Existing Node durable close coordination retained, broker execution remains own native gateway; no forced events."
     }
   ],
   "notes": [
