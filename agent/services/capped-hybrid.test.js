@@ -295,3 +295,17 @@ test('bounded enrolment advances past an unavailable first position on the next 
   assert.equal((await enrolCappedHybrids(f.db, options)).errors[0].tradeId, 8)
   assert.equal(f.closes.length, 0)
 })
+
+// Claude · № 12,280 08-Oct (A·1; ordered "all three" after № 12,279; claude-builder).
+// Measured 08-10 on the live gateway: a deal-list bound two seconds ahead of the
+// clock was refused with INCORRECT_BOUNDARIES on every pass for trade 1771.
+test('the enrolment deal read is bounded by its own clock, never ahead of it', async t => {
+  const f = scene(t, { live: true })
+  const bounds = []
+  const options = { credsFor: () => f.creds, now: () => f.at,
+    transports: { ...f.transports, deals: async (...args) => { bounds.push(args[6]); return f.transports.deals(...args) } } }
+  const out = await enrolCappedHybrids(f.db, options)
+  assert.equal(out.errors.length, 0)
+  assert.equal(out.enrolled.length, 1)
+  assert.deepEqual(bounds, [f.at], 'toTimestamp is the enrolment clock itself')
+})

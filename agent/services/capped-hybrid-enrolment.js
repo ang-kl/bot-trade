@@ -79,7 +79,13 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
       const raw = await bounded(() => (transports.reconcile || wsReconcile)(...args, 4000, 0))
       const bp = partialPositionEvidence(raw, { ...context, nowMs: now() })
       if (!bp || bp.side !== owner.side || !sameTicks(bp.entry, owner.entry, digits)) { refuse('broker_position_unverified'); continue }
-      const history = await bounded(() => (transports.deals || wsGetPositionDeals)(...args, owner.positionId, now() + 2000, 4000))
+      // Claude · № 12,280 08-Oct (A·1; ordered "all three" after № 12,279; claude-builder).
+      // The deal read's upper bound is the enrolment's own clock, never ahead of
+      // it: measured 08-10 from 13:48Z, the live gateway's broker answered the
+      // `now + 2 s` bound with INCORRECT_BOUNDARIES on every pass for trade 1771
+      // (0003.HK on …3489), and the controller read failing for the hour. The
+      // opening deal this read is after is minutes to days old; no skew is needed.
+      const history = await bounded(() => (transports.deals || wsGetPositionDeals)(...args, owner.positionId, now(), 4000))
       const openingDealIds = openingReceipts(history, owner, bp.volume, digits)
       const plan = planCappedHybrid({ side: owner.side, entry: owner.entry, initialRisk: owner.initialRisk,
         brokerTarget: bp.takeProfit, volume: bp.volume, minVolume: meta.minVolume, stepVolume: meta.stepVolume, digits, openingDealIds })
