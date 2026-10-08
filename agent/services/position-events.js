@@ -22,7 +22,7 @@ export const POSITION_EVENTS_RETENTION_DAYS = 90
 /**
  * Record one position amendment/lifecycle event.
  * `kind` is one of: sl_moved | tp_moved | scale_out | close | trail_armed
- * | trail_tightened | lot_trimmed | paused | resumed | authority_override
+ * | trail_tightened | trail_observed | lot_trimmed | paused | resumed | authority_override
  *
  * `authority_override` is the odd one out: it records an OBSERVATION rather
  * than an amendment. minute-review.js writes it when a lower-authority writer
@@ -130,7 +130,10 @@ export function recordPositionEvent(db, {
       detail != null ? JSON.stringify(detail).slice(0, 4000) : null,
       stateFrom, stateTo,
     )
-  } catch { /* the journal must never block trading */ }
+    // Codex · №12,048 · 2026-10-08; codex-footprint: collection-retention.
+    // Acknowledge observations only after a durable write; still never throw.
+    return true
+  } catch { return false /* the journal must never block trading */ }
 }
 
 /**

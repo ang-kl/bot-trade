@@ -175,18 +175,28 @@ export function stopForReplay(proposal, checks) {
 }
 
 export function pendingRefusals(db, { nowMs = Date.now(), limit = 50 } = {}) {
+  // Codex · №12,048 · 2026-10-08; codex-footprint: collection-retention.
+  // Independent MAX(JSON) values splice different attempts. Keep the first
+  // proposal/checks paired and take the actual latest stated reason.
   const rows = db.prepare(`
-    SELECT opportunity_key, symbol, side, account_id,
+    WITH grouped AS (SELECT opportunity_key,
            MIN(created_at) AS first_at, MAX(COALESCE(last_at, created_at)) AS last_at,
-           SUM(COALESCE(repeat_count, 1)) AS refusals,
-           MAX(veto_reason) AS reason, MAX(proposal_json) AS proposal_json,
-           MAX(checks_json) AS checks_json
+           SUM(COALESCE(repeat_count, 1)) AS refusals
       FROM risk_events
      WHERE approved = 0 AND opportunity_key IS NOT NULL AND COALESCE(symbol, '') <> ?
        AND opportunity_key NOT IN (SELECT opportunity_key FROM refusal_scores)
      GROUP BY opportunity_key
-     ORDER BY first_at ASC LIMIT ?
-  `).all(LEGACY_PORTFOLIO_SYMBOL, limit * 4)
+     ORDER BY first_at ASC LIMIT ?)
+    SELECT g.*, f.symbol, f.side, f.account_id, f.proposal_json, f.checks_json, l.veto_reason AS reason
+      FROM grouped g
+      JOIN risk_events f ON f.id = (SELECT id FROM risk_events
+        WHERE opportunity_key = g.opportunity_key AND approved = 0 AND COALESCE(symbol, '') <> ?
+        ORDER BY created_at ASC, id ASC LIMIT 1)
+      JOIN risk_events l ON l.id = (SELECT id FROM risk_events
+        WHERE opportunity_key = g.opportunity_key AND approved = 0 AND COALESCE(symbol, '') <> ?
+        ORDER BY COALESCE(last_at, created_at) DESC, id DESC LIMIT 1)
+     ORDER BY g.first_at ASC
+  `).all(LEGACY_PORTFOLIO_SYMBOL, limit * 4, LEGACY_PORTFOLIO_SYMBOL, LEGACY_PORTFOLIO_SYMBOL)
     .concat(evidenceShadowRefusals(db))
     .sort((a, b) => String(a.first_at).replace('T', ' ').localeCompare(String(b.first_at).replace('T', ' ')))
   const out = []

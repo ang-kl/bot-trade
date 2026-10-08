@@ -8,6 +8,43 @@ import { getVolumeMeta, _cache as volumeMetaCache } from '../lib/lot-sizing.js'
 
 const eventsFor = (db, positionId) => db.prepare('SELECT * FROM position_events WHERE position_id = ? ORDER BY id DESC').all(String(positionId))
 
+// Codex · №12,046 · 2026-10-08; codex-footprint: collection-retention.
+test('a configured stop is an observation, never a claimed native tightening', async t => {
+  clearAtrCache()
+  const db = mkKeeperDb(); t.after(() => db.close())
+  const deps = keeperDeps()
+  deps.exec.getTrailStatus = async () => ({enabled:true,positions:[{positionId:9001,accountId:1,symbolId:1,dir:-1,lastSl:2.7}]})
+  await runProfitKeeper(db, CREDS, deps)
+  assert.equal(eventsFor(db,'9001').filter(r => r.kind === 'trail_tightened').length,0)
+  assert.equal(eventsFor(db,'9001').filter(r => r.kind === 'trail_observed').length,1)
+})
+
+test('failed stop observation writes remain retryable on the next identical snapshot', async t => {
+  clearAtrCache()
+  const db = mkKeeperDb(); t.after(() => db.close())
+  const prepare = db.prepare.bind(db); let failed = false
+  db.prepare = sql => {
+    if (!failed && /INSERT INTO position_events/.test(sql)) { failed = true; throw new Error('fixture journal write failure') }
+    return prepare(sql)
+  }
+  const deps = keeperDeps()
+  deps.exec.getTrailStatus = async () => ({enabled:true,positions:[{positionId:9001,accountId:1,symbolId:1,dir:-1,lastSl:2.69}]})
+  await runProfitKeeper(db, CREDS, deps)
+  await runProfitKeeper(db, CREDS, deps)
+  assert.equal(failed,true)
+  assert.equal(eventsFor(db,'9001').filter(r => r.kind === 'trail_observed').length,1)
+})
+
+test('stop observations refuse account, symbol and direction mismatches against this broker snapshot', async t => {
+  for(const patch of [{accountId:2},{symbolId:99},{dir:1},{accountId:null}]) {
+    const db=mkKeeperDb();t.after(()=>db.close())
+    const deps=keeperDeps()
+    deps.exec.getTrailStatus=async()=>({enabled:true,positions:[{positionId:9001,accountId:1,symbolId:1,dir:-1,lastSl:2.7,...patch}]})
+    await runProfitKeeper(db,CREDS,deps)
+    assert.equal(eventsFor(db,'9001').length,0)
+  }
+})
+
 const CFG = { on: true, scope: 'external', armProfitUsd: 50, givebackPct: 40, takeProfitUsd: null }
 
 // The NatGas scenario: SELL 1 lot (unitsPerLot 100 → $100 per 1.00 move... use
@@ -458,26 +495,27 @@ test('runProfitKeeper pushes an EMPTY set when nothing is armed (clears stale tr
 
 // ---- P10: journal what the C++ TrailEngine actually ratcheted -------------
 
-test('runProfitKeeper journals a NEW trail-status SL as a position_event, and only once', async () => {
+test('runProfitKeeper records a new trail-status SL as an observation, and only once', async () => {
   const db = mkKeeperDb()
   const deps = keeperDeps()
   deps.exec.amendPosition = async () => ({})
   deps.exec.pushTrailConfig = async () => true
   deps.exec.getTrailStatus = async () => ({
     enabled: true,
-    positions: [{ positionId: 9001, symbolId: 1, lastSl: 2.7 }],
+    positions: [{ positionId: 9001, accountId: 1, symbolId: 1, dir: -1, lastSl: 2.7 }],
   })
   await runProfitKeeper(db, CREDS, deps)
   const rows = eventsFor(db, '9001')
-  const trailRows = rows.filter(r => r.kind === 'trail_tightened')
+  const trailRows = rows.filter(r => r.kind === 'trail_observed')
   assert.equal(trailRows.length, 1)
   assert.equal(trailRows[0].to_value, 2.7)
-  assert.equal(trailRows[0].source, 'cpp_trail_engine')
+  assert.equal(trailRows[0].source, 'cpp_trail_status')
+  assert.equal(trailRows[0].state_to, trailRows[0].state_from, 'a reading is not an action')
 
   // Second pass with the SAME lastSl — no new event (the diff must be a no-op).
   await runProfitKeeper(db, CREDS, deps)
   const rows2 = eventsFor(db, '9001')
-  assert.equal(rows2.filter(r => r.kind === 'trail_tightened').length, 1)
+  assert.equal(rows2.filter(r => r.kind === 'trail_observed').length, 1)
 })
 
 test('runProfitKeeper never throws when getTrailStatus is unavailable or disabled', async () => {
@@ -876,13 +914,13 @@ test('trail read-back: another account\'s position on the same gateway is left f
   deps.ws.wsGetLastCloses = async () => ({ 1: 2.30, 2: 50.5 })
   deps.exec.getTrailStatus = async () => ({
     enabled: true,
-    positions: [{ positionId: 9001, symbolId: 1, lastSl: 2.75 }, { positionId: 7777, symbolId: 2, lastSl: 49.5 }],
+    positions: [{ positionId: 9001, accountId: 1, symbolId: 1, dir: -1, lastSl: 2.75 }, { positionId: 7777, accountId: 2, symbolId: 2, dir: 1, lastSl: 49.5 }],
   })
   await runProfitKeeper(db, CREDS, deps) // account '1' owns 9001 (unstamped row) and not 7777
-  assert.equal(eventsFor(db, '9001').filter(r => r.kind === 'trail_tightened' && r.to_value === 2.75).length, 1)
-  assert.equal(eventsFor(db, '7777').filter(r => r.kind === 'trail_tightened').length, 0, 'not this account\'s row: not journaled by this pass')
+  assert.equal(eventsFor(db, '9001').filter(r => r.kind === 'trail_observed' && r.to_value === 2.75).length, 1)
+  assert.equal(eventsFor(db, '7777').filter(r => r.kind === 'trail_observed').length, 0, 'not this account\'s row: not journaled by this pass')
   await runProfitKeeper(db, { ...CREDS, accountId: '2' }, deps) // account '2' owns 7777
-  assert.equal(eventsFor(db, '7777').filter(r => r.kind === 'trail_tightened').length, 1, 'its own pass journals it; the first pass must not have consumed it')
+  assert.equal(eventsFor(db, '7777').filter(r => r.kind === 'trail_observed').length, 1, 'its own pass journals it; the first pass must not have consumed it')
 })
 
 // Codex P1 on #1245: the pass never throws, so its summary says whether the

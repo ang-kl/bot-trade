@@ -32,6 +32,36 @@ function backdate(db, at = T0) {
 // bars: [t,o,h,l,c,v]
 const bar = (t, o, h, l, c) => [t, o, h, l, c, 0]
 
+// Codex · №12,046 · 2026-10-08; codex-footprint: collection-retention.
+test('a changing refusal keeps first proposal and checks paired, with the actual latest reason', async t => {
+  const db = initDB(':memory:'); t.after(() => db.close())
+  const common = { symbol:'EURUSD', side:'BUY', strategy:'va_breakout', timeframe:'5m', accountId:'11' }
+  const a = persistRiskEvent(db, {...common,entry:100,sl:99,tp1:103},
+    {approved:false,veto_reason:'bad_rr 1.5<2',checks:{stop_floor:{from:99,to:98}}})
+  const b = persistRiskEvent(db, {...common,entry:101,sl:100,tp1:105},
+    {approved:false,veto_reason:'spread_too_wide',checks:{stop_floor:{from:100,to:97}}})
+  db.prepare('UPDATE risk_events SET created_at=?,last_at=NULL WHERE id=?').run(iso(T0),a)
+  db.prepare('UPDATE risk_events SET created_at=?,last_at=NULL WHERE id=?').run(iso(T0+60_000),b)
+  assert.equal(db.prepare('SELECT COUNT(DISTINCT opportunity_key) n FROM risk_events').get().n,1)
+  const [item] = pendingRefusals(db,{nowMs:T0+5*3600_000})
+  assert.deepEqual([item.entry,item.sl,item.slProposal,item.tp,item.reason],[100,98,99,103,'spread_too_wide'])
+  await scoreRefusedOpportunities(db,async()=>[bar(T0+5*60_000,100,105.1,100,105)],{nowMs:T0+5*3600_000})
+  const score = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(score.r_reached,1.5)
+})
+
+test('latest refusal reason follows time and ID rather than lexical order', t => {
+  const db=initDB(':memory:');t.after(()=>db.close())
+  const proposal={symbol:'EURUSD',side:'BUY',strategy:'va_breakout',timeframe:'5m',accountId:'11',entry:100,sl:99,tp1:103}
+  const a=persistRiskEvent(db,proposal,{approved:false,veto_reason:'z_first',checks:{stamp:'first'}})
+  const b=persistRiskEvent(db,{...proposal,entry:101},{approved:false,veto_reason:'a_last',checks:{stamp:'last'}})
+  db.prepare('UPDATE risk_events SET created_at=?,last_at=NULL WHERE id IN (?,?)').run(iso(T0),a,b)
+  const [it]=pendingRefusals(db,{nowMs:T0+5*3600_000})
+  assert.equal(it.reason,'a_last')
+  assert.equal(it.entry,100)
+  assert.equal(it.refusals,2)
+})
+
 test('horizon: 48 bars of the timeframe, floored at 4h, capped at 20 days; unknown reads as 1h', () => {
   assert.equal(horizonMinFor('5m'), 240)
   assert.equal(horizonMinFor('1h'), 2880)

@@ -35,15 +35,34 @@ export function makeBrokerHistoryRecorder(db, { clock = Date.now } = {}) {
       const rows = positions || [], ids = rows.map(p => id(p.positionId))
       if (rows.length > 512 || ids.some(p => !p) || new Set(ids).size !== rows.length
         || (protection && payload.openCount !== rows.length)) return false
-      if (state.reconcile?.at > at) return false
+      if (!protection && state.reconcile?.at > at) return false
       const exposure = rows.map(p => ({ positionId: id(p.positionId), symbolId: id(p.tradeData?.symbolId ?? p.symbolId),
         volume: amount(p.tradeData?.volume), side: p.tradeData?.tradeSide === 1 ? 'BUY' : p.tradeData?.tradeSide === 2 ? 'SELL' : null }))
       const evidence = { source: protection ? 'cpp_verify' : 'broker_reconcile', observedAt: new Date(at).toISOString(),
         missingSL: rows.filter(p => !(Number(p.stopLoss) > 0)).length,
         missingTP: rows.filter(p => !(Number(p.takeProfit) > 0)).length }
       if (protection && (evidence.missingSL !== payload.missingSl || evidence.missingTP !== payload.missingTp)) return false
-      state.reconcile = { at, ids, exposure, protection: evidence }
       const money = accountMoney(db, accountId, { now: at })
+      // Codex · №12,048 · 2026-10-08; codex-footprint: collection-retention.
+      // Independent reads have their own clock/source; preserve stop fields
+      // without overwriting direct exposure or composing equity from them.
+      if (protection) {
+        evidence.positions = rows.map(p => {
+          const position = { positionId: id(p.positionId), symbolId: id(p.symbolId),
+            stopLoss: typeof p.stopLoss === 'number' && Number.isFinite(p.stopLoss) && p.stopLoss > 0 ? p.stopLoss : null,
+            takeProfit: typeof p.takeProfit === 'number' && Number.isFinite(p.takeProfit) && p.takeProfit > 0 ? p.takeProfit : null }
+          // Absent legacy policy fields remain unknown/absent. Expanding them
+          // to two NULL fields per position can exceed the existing size cap.
+          if (Object.hasOwn(p, 'stopLossTriggerMethod')) position.stopLossTriggerMethod =
+            Number.isInteger(p.stopLossTriggerMethod) && p.stopLossTriggerMethod >= 1 && p.stopLossTriggerMethod <= 4 ? p.stopLossTriggerMethod : null
+          if (Object.hasOwn(p, 'trailingStopLoss')) position.trailingStopLoss = typeof p.trailingStopLoss === 'boolean' ? p.trailingStopLoss : null
+          return position
+        })
+        return recordAccountHistory(db, { ...common, source: 'independent_protection',
+          currency: money.observation?.host === host ? money.observation.currency : null,
+          openPositions: rows.length, exposureComplete: false, protection: evidence, balanceReceivedAt: null })
+      }
+      state.reconcile = { at, ids, exposure, protection: evidence }
       recordAccountHistory(db, { ...common, source: 'broker_reconcile',
         currency: money.observation?.host === host ? money.observation.currency : null,
         openPositions: rows.length, exposure, exposureComplete: exposure.every(p => p.symbolId && p.volume != null && p.side), protection: evidence,

@@ -51,10 +51,11 @@ import { protectiveExitDeferral } from './momentum-exit-coordination.js'
 
 // P10: last-seen broker SL per position, as reported by the C++ TrailEngine's
 // GET /trail-status (a full snapshot, not a delta stream). Diffed each pass
-// so a NEW ratchet becomes exactly one position_event — in-memory only, so a
-// process restart can at worst re-log one ratchet as if it were new, never
-// lose one silently.
-const lastSeenTrailSl = new Map()
+// A changed snapshot becomes an observation, not proof of a ratchet. A
+// restart can repeat a baseline observation, never a claimed amendment.
+// Codex · №12,048 · 2026-10-08; codex-footprint: collection-retention.
+// Cursors belong to a DB and an account/host, not just a position number.
+const lastSeenTrailSl = new WeakMap()
 
 export const DEFAULT_PROFIT_KEEPER = {
   on: true,               // manual positions are managed by default — disarm for hands-off
@@ -847,33 +848,37 @@ async function profitKeeperPass(db, creds, deps = {}) {
       } catch { summary.trailPushed = null }
     }
 
-    // P10: read back what the sidecar actually ratcheted to and journal any
-    // change since the last pass. Best-effort — getTrailStatus never throws
-    // (returns {enabled:false} on any failure) and a diff miss just means the
-    // next pass catches it.
+    // lastSl may be seeded by config or an unchanged/already-tighter read;
+    // retain the observation, but it alone proves no native amendment.
+    // Actual amend_ok decisions remain in cpp_decisions with native identity.
     try {
       if (exec.getTrailStatus) {
-        const byPositionId = new Map(involvedAll.map(x => [String(x.r.position_id), x.r]))
+        const byPositionId = new Map(involvedAll.map(x => [String(x.r.position_id), x]))
+        const seen = lastSeenTrailSl.get(db) || new Map()
+        lastSeenTrailSl.set(db, seen)
         const status = await exec.getTrailStatus(creds)
         if (status?.enabled && Array.isArray(status.positions)) {
           for (const p of status.positions) {
-            if (p?.positionId == null || !(p.lastSl > 0)) continue
+            if (p?.positionId == null || typeof p.lastSl !== 'number' || !Number.isFinite(p.lastSl) || !(p.lastSl > 0)) continue
             const key = String(p.positionId)
             // Codex P2 on #1243 (Claude · after № 11,614): /trail-status is the
             // whole gateway, every account's positions. The cursor is advanced
             // only for THIS pass's own rows; another account's position is
-            // journaled by its own pass, which would otherwise read "unchanged"
-            // and lose the trail_tightened event.
-            const r = byPositionId.get(key)
-            if (!r) continue
-            const prev = lastSeenTrailSl.get(key)
-            lastSeenTrailSl.set(key, p.lastSl)
+            // observed by its own pass without consuming another account's cursor.
+            const own = byPositionId.get(key)
+            if (!own || String(p.accountId) !== String(creds.accountId)
+              || p.symbolId !== own.bp.tradeData?.symbolId
+              || p.dir !== (own.bp.tradeData?.tradeSide === 1 ? 1 : own.bp.tradeData?.tradeSide === 2 ? -1 : 0)) continue
+            const r = own.r, cursorKey = `${creds.host}|${creds.accountId}|${key}`
+            const prev = seen.get(cursorKey)
             if (prev === p.lastSl) continue // unchanged since the last pass — nothing to journal
-            recordPositionEvent(db, {
-              accountId: r.account_id, positionId: key, tradeId: r.trade_id, symbol: r.symbol,
-              kind: 'trail_tightened', fromValue: prev, toValue: p.lastSl,
-              source: 'cpp_trail_engine',
+            const recorded = recordPositionEvent(db, {
+              accountId: creds.accountId, positionId: key, tradeId: r.trade_id, symbol: r.symbol,
+              kind: 'trail_observed', fromValue: prev, toValue: p.lastSl,
+              source: 'cpp_trail_status', detail: { host: creds.host, symbolId: p.symbolId, direction: p.dir,
+                protectionCheckedAtMs: Number.isSafeInteger(p.protectionCheckedAtMs) ? p.protectionCheckedAtMs : null },
             })
+            if (recorded) seen.set(cursorKey, p.lastSl)
           }
         }
       }

@@ -70,7 +70,8 @@ export const LAYERS = Object.freeze([
   {
     id: 'cpp_trail', label: 'Layer 1b — C++ trail engine', authority: 'tick_safety',
     speed: 'each tick, out of process', controller: 'cpp_exec',
-    note: 'The one management rule that already runs outside Node. Node reads its result back and journals trail_tightened.',
+    // Codex · №12,049 · 2026-10-08; codex-footprint: collection-retention.
+    note: 'The one management rule that already runs outside Node. Node retains stop observations; confirmed native amendments are recorded separately in cpp_decisions.',
   },
   {
     id: 'fast_manager', label: 'Layer 2 — fast manager (60s band)', authority: 'fast_manager',

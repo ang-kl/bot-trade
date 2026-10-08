@@ -29,6 +29,71 @@ const pos = (positionId = 7) => ({ positionId, tradeData: { symbolId: 9, volume:
 const rec = positions => ({ ctidTraderAccountId: 11, position: positions })
 const pnl = (positions = [{ positionId: 7, netUnrealizedPnL: 250, grossUnrealizedPnL: 300 }]) => ({ ctidTraderAccountId: 11, moneyDigits: 2, positionUnrealizedPnL: positions })
 
+// Codex · №12,046 · 2026-10-08; codex-footprint: collection-retention.
+test('a fresh independent read survives a newer direct reconcile and retains per-position stops', t => {
+  const f = fixture(t)
+  const snapshot = {accountId:'11', source:'broker_reconcile', ok:true, openCount:1, missingSl:0, missingTp:0,
+    positions:[{positionId:'7',symbolId:'9',stopLoss:100,takeProfit:110,stopLossTriggerMethod:2,trailingStopLoss:false}]}
+  f.time(T+1000); f.record(event('reconcile', rec([pos()]), T+1000))
+  assert.equal(f.record(event('protection', snapshot, T)), true)
+  const independent = f.read().points.find(p => p.source === 'independent_protection')
+  assert.ok(independent, 'direct reconcile must not suppress an independently dated checker read')
+  assert.equal(independent.receivedAt, T)
+  assert.deepEqual(independent.protection.positions, snapshot.positions)
+  f.record(event('reconcile', rec([pos()]), T+1000))
+  assert.equal(f.read().points.filter(p => p.source === 'independent_protection').length, 1)
+})
+
+test('independent protection and direct reconcile cannot overwrite each other in one minute', t => {
+  const f = fixture(t)
+  const snapshot = {accountId:'11', source:'broker_reconcile', ok:true, openCount:1, missingSl:0, missingTp:1,
+    positions:[{positionId:'7',symbolId:'9',stopLoss:100,takeProfit:null,stopLossTriggerMethod:null,trailingStopLoss:null}]}
+  f.record(event('protection', snapshot))
+  f.time(T+1); f.record(event('reconcile', rec([pos()]), T+1))
+  const independent = f.read().points.find(p => p.source === 'independent_protection')
+  assert.ok(independent)
+  assert.equal(independent.protection.positions[0].stopLossTriggerMethod, null)
+  assert.equal(independent.protection.positions[0].trailingStopLoss, null)
+  assert.equal(f.read().points.filter(p => p.source === 'broker_reconcile').length, 1)
+})
+
+test('a large valid independent snapshot retains its positions without duplicate exposure', t => {
+  const f = fixture(t)
+  const positions = Array.from({length:512},(_,i)=>({positionId:String(i+1),symbolId:'9',stopLoss:100,takeProfit:110,
+    stopLossTriggerMethod:2,trailingStopLoss:false}))
+  assert.equal(f.record(event('protection',{accountId:'11',source:'broker_reconcile',ok:true,
+    openCount:positions.length,missingSl:0,missingTp:0,positions})),true)
+  const point = f.read().points.find(p=>p.source==='independent_protection')
+  assert.equal(point.protection.positions.length,512)
+  assert.equal(point.exposureComplete,false)
+  assert.equal(point.exposure,null)
+})
+
+test('large legacy snapshots keep omitted policy fields unknown without exceeding the unchanged cap', t => {
+  const f=fixture(t)
+  const positions=Array.from({length:512},(_,i)=>({positionId:String(246000000+i),symbolId:'1234',
+    stopLoss:12345.6789,takeProfit:23456.789}))
+  const receipt=event('protection',{accountId:'11',source:'broker_reconcile',ok:true,openCount:512,missingSl:0,missingTp:0,positions})
+  assert.ok(JSON.stringify(receipt).length<64000)
+  assert.equal(f.record(receipt),true)
+  const point=f.read().points.find(p=>p.source==='independent_protection')
+  assert.deepEqual(point.protection.positions,positions)
+  assert.ok(!Object.hasOwn(point.protection.positions[0],'trailingStopLoss'))
+})
+
+test('independent snapshots cannot replace the direct reconcile used to compose native equity', t => {
+  const f = fixture(t)
+  f.record(event('trader', trader(10000)))
+  f.record(event('reconcile',rec([pos()])))
+  f.time(T+1)
+  f.record(event('protection',{accountId:'11',source:'broker_reconcile',ok:true,openCount:0,missingSl:0,missingTp:0,positions:[]},T+1))
+  f.record(event('pnl',pnl(),T+1))
+  const equity=f.read().points.find(p=>p.source==='broker_equity')
+  assert.equal(equity.equity,102.5)
+  assert.equal(equity.openPositions,1)
+  assert.equal(equity.exposure[0].volume,100)
+})
+
 test('background observations retain own native equity, exposure and actual protection without browser requests', t => {
   const f = fixture(t)
   f.record(event('trader', trader(10000)))
@@ -141,7 +206,7 @@ test('the real independent relay records protection for every registered account
         accountId,host:s.host,ok:true,source:'broker_reconcile',checkedAtMs:Date.now(),openCount:0,missingSl:0,missingTp:0,positions:[]})))})}
     }})
   await poll();await nextTurn()
-  const rows=f.db.prepare("SELECT account_id,observation_json FROM account_history WHERE source='broker_reconcile'").all()
+  const rows=f.db.prepare("SELECT account_id,observation_json FROM account_history WHERE source='independent_protection'").all()
   assert.deepEqual(rows.map(r=>r.account_id).sort(),['11','22'])
   assert.ok(rows.every(r=>JSON.parse(r.observation_json).protection.source==='cpp_verify'))
 })
