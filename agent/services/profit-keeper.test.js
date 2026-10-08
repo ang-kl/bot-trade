@@ -1249,3 +1249,37 @@ test('valid numeric-string broker quantities and entry retain numeric stop arith
   f.snapshot.tradeData.volume='500'
   assert.equal((await runProfitKeeper(f.db,CREDS,f.deps)).closes,0)
 })
+
+// Codex · №12,232 · 2026-10-08; codex-footprint: keeper-volume-peak.
+// Actual third P1: quote/metadata early exits must not bypass identity.
+for (const managed of [false,true]) {
+  test(`quote-missing ${managed ? 'managed' : 'keeper'} row cannot generate native specs without verified direction`, async t => {
+    for (const brokerSide of [null,undefined,'SELL']) {
+      const f=peakVolumeFixture(t)
+      f.deps.managedExit.managedExitApplies=()=>managed
+      f.deps.ws.wsGetLastCloses=async()=>({})
+      f.deps.ws.wsGetTrendbarsBatch=async()=>({'1h':Array.from({length:50},()=>({h:101,l:99,c:100}))})
+      if (brokerSide === undefined) delete f.snapshot.tradeData.tradeSide
+      else f.snapshot.tradeData.tradeSide=brokerSide
+      const result=await runProfitKeeper(f.db,CREDS,f.deps)
+      assert.equal(result.trailSpecs?.length,0)
+      assert.equal(result.trailSpecsComplete,false)
+      assert.equal(f.calls.specs.length,0,'no unverified native configuration push')
+      assert.equal(f.calls.amends.length,0);assert.equal(f.calls.closes.length,0)
+    }
+  })
+}
+
+test('valid quote-missing broker identity keeps the existing since-entry native trail path', async t => {
+  for (const managed of [false,true]) {
+    const f=peakVolumeFixture(t)
+    f.deps.managedExit.managedExitApplies=()=>managed
+    f.deps.ws.wsGetLastCloses=async()=>({})
+    f.deps.ws.wsGetTrendbarsBatch=async()=>({'1h':Array.from({length:50},()=>({h:101,l:99,c:100}))})
+    const result=await runProfitKeeper(f.db,CREDS,f.deps)
+    assert.equal(result.trailSpecsComplete,true)
+    assert.equal(result.trailSpecs.length,1)
+    assert.equal(result.trailSpecs[0].source,'mae_chandelier_since_entry')
+    assert.equal(result.trailSpecs[0].dir,1)
+  }
+})

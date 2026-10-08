@@ -529,9 +529,27 @@ async function profitKeeperPass(db, creds, deps = {}) {
     }
     // involvedAll: every owned row the broker holds (the spec set);
     // involved: the subset the managed fence left to this keeper (decisions).
+    const trailSpecs = []
+    summary.trailSpecs = trailSpecs
+    summary.trailSpecsComplete = true
+    const peakBases = new Map()
+    // Codex · №12,232 · 2026-10-08; codex-footprint: keeper-volume-peak.
+    // Validate every owned spec/decision row BEFORE quote/meta early exits.
+    // Managed rows can still emit since-entry specs, so they share this
+    // identity boundary even though their keeper decisions remain fenced.
     const involvedAll = scoped.owned
       .map(r => ({ r, bp: live.get(String(r.position_id)) }))
       .filter(x => x.bp)
+      .filter(({r,bp}) => {
+        const basis = keeperPeakBasis(r, bp, accountId)
+        if (!basis) {
+          summary.errors.push(`${r.symbol}: keeper peak basis has missing or conflicting broker identity/quantity`)
+          summary.trailSpecsComplete = false
+          return false
+        }
+        peakBases.set(r.id, basis)
+        return true
+      })
     const involved = involvedAll.filter(x => keptIds.has(x.r.id))
     const symbolIds = [...new Set(involvedAll.map(x => x.bp.tradeData?.symbolId).filter(Boolean))]
     if (symbolIds.length === 0) return summary
@@ -611,21 +629,9 @@ async function profitKeeperPass(db, creds, deps = {}) {
     )
     const updScaled = db.prepare('UPDATE monitored_positions SET scaled_out = 1 WHERE id = ?')
 
-    // Option 4: trail specs for the sidecar's tick-level ratchet, collected
-    // as we decide. Pushed even when EMPTY — /trail-config is full-replace,
-    // so an empty push clears positions that closed or disarmed.
-    const trailSpecs = []
-    // Claude · № 11,596·D·1 (ordered № 11,583·D·1): this account's
-    // contribution travels on the summary, so a caller sweeping every account
-    // can merge the sides and push one union per gateway.
-    summary.trailSpecs = trailSpecs
-    // Codex P1 on #1245 (Claude · after № 11,623): the keeper never throws, so a
-    // caller merging sides needs a marker, not a rejection — false once any
-    // row's spec was dropped by a failure or the pass aborted, so the union
-    // for that side is withheld instead of wiping this account's trails.
-    summary.trailSpecsComplete = true
+    // Specs and completeness were initialized before identity filtering.
+    // The guardian merges this account's validated contribution per gateway.
     const brokerDigitsByPosition = new Map()
-    const invalidPeakRows = new Set()
 
     for (const { r, bp } of involved) {
       const td = bp.tradeData || {}
@@ -641,13 +647,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
       // or replaced by a manufactured default from another snapshot.
       brokerDigitsByPosition.set(String(parseInt(r.position_id)), meta.brokerDigits)
 
-      const peakBasis = keeperPeakBasis(r, bp, accountId)
-      if (!peakBasis) {
-        invalidPeakRows.add(r.id)
-        summary.errors.push(`${r.symbol}: keeper peak basis has missing or conflicting broker identity/quantity`)
-        summary.trailSpecsComplete = false
-        continue
-      }
+      const peakBasis = peakBases.get(r.id)
       const lots = td.volume && meta.lotSize ? td.volume / meta.lotSize : null
       const decision = decideProfitKeeper(cfg, {
         side: r.side,
@@ -866,10 +866,8 @@ async function profitKeeperPass(db, creds, deps = {}) {
     const already = new Set(trailSpecs.map(s => String(s.positionId)))
     for (const { r, bp } of involvedAll) {
       const td = bp.tradeData || {}
-      // Codex · №12,228 · 2026-10-08; codex-footprint: keeper-volume-peak.
-      // A refused keeper identity must not fall through to a since-entry
-      // native spec based on that same unproven ledger direction.
-      if (invalidPeakRows.has(r.id) || already.has(String(parseInt(r.position_id)))) continue
+      // involvedAll already passed the shared broker-identity boundary.
+      if (already.has(String(parseInt(r.position_id)))) continue
       const bars = fullBarsBySymbolId[td.symbolId]
       // A row the fence kept from the decision step has no digits yet (the
       // decision step is where getVolumeMeta ran); read them here, cached.
