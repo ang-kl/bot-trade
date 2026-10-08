@@ -91,6 +91,9 @@ export const CONTROLLERS = {
   // due. autopilot_mode 'off' is dormant by design, with its reason.
   autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3, effect: { key: 'autopilot_last_run_ms', kind: 'ms', cadenceSec: autopilotRecordCadenceSec }, dormantWhen: autopilotDormantReason },
   hours_refresh:    { label: 'Market-hours refresh',   expectedSec: 86_400, factor: 2 },
+  // Claude · № 12,280 08-Oct (A·3): the broker roster refreshed from the loop
+  // every six hours; stale past twelve.
+  broker_roster:    { label: 'Broker roster (6h)',     expectedSec: 21_600, factor: 2 },
   // Daily per-account budget planner (§7,437·B·3, 08-09-2026): one account
   // rebuilt per loop cycle when its record is a day old, so the beat lands
   // several times a day; the record is what the gates read.
