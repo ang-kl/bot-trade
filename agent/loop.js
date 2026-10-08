@@ -5345,6 +5345,29 @@ async function runLoop(db) {
         await hbeat(db, 'hours_refresh', false, err.message)
       }
 
+      // Claude · № 12,280 08-Oct (A·3; ordered "all three" after № 12,279; claude-builder).
+      // The broker roster (which accounts the token can see) was written only by
+      // the Connect/Accounts pages, so every link light read "unknown — roster
+      // stale" whenever nobody had opened a page for a day. Refreshed here when
+      // older than six hours, through the same writer; paced on failure.
+      try {
+        if (!cycleOverBudget()) {
+          const { refreshBrokerRosterIfStale } = await import('./services/broker-roster-refresh.js')
+          const { ctraderEnv } = await import('./lib/ctrader-env.js')
+          const { wsGetAccountsByToken } = await import('./lib/ctrader-ws.js')
+          const r = await refreshBrokerRosterIfStale(db, { listAccounts: wsGetAccountsByToken,
+            accessToken: getState(db, 'ctrader_access_token') || ctraderEnv('accessToken'),
+            clientId: ctraderEnv('clientId'), clientSecret: ctraderEnv('clientSecret') })
+          if (r.state === 'refreshed') log(`Broker roster refreshed: ${r.count} account(s) listed by the token`)
+          else if (!['fresh', 'paced'].includes(r.state)) log(`Broker roster refresh: ${r.state}${r.error ? ` — ${r.error}` : ''}`)
+          if (['fresh', 'refreshed'].includes(r.state)) await hbeat(db, 'broker_roster')
+          else if (r.state !== 'paced') await hbeat(db, 'broker_roster', false, r.error || r.state)
+        }
+      } catch (err) {
+        log(`Broker roster refresh failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'broker_roster', false, err.message)
+      }
+
       // D6 — daily ATR baseline refresh (vol-gate spec §2: "recompute the
       // rolling window daily, not per-signal").
       //

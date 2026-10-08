@@ -1,6 +1,6 @@
 // Revision 3 section 13: presentation only. Keys and switch semantics stay put.
 export const CONTROLLER_GROUPS = [
-  { key: 'services', label: 'Services and market data', names: ['main_loop', 'cpp_exec', 'cpp_exec_demo', 'hours_refresh', 'fx_legs_refresh', 'atr_refresh'] },
+  { key: 'services', label: 'Services and market data', names: ['main_loop', 'cpp_exec', 'cpp_exec_demo', 'hours_refresh', 'broker_roster', 'fx_legs_refresh', 'atr_refresh'] },
   { key: 'scanning', label: 'Scanning and strategies', names: ['autopilot', 'pending_signals', 'edge_watchdog', 'fundable_universe', 'tick_feeder'] },
   { key: 'risk', label: 'Account risk and admission', names: ['adaptive_breaker', 'equity_stop', 'performance_breaker', 'weekend_loss_flag'] },
   { key: 'protection', label: 'Execution and position protection', names: ['fast_monitor', 'protection_band', 'order_monitor', 'trade_guards', 'profit_keeper', 'loss_guardian', 'stop_policy', 'guardian', 'weekend_bank', 'closed_market_sweep', 'momentum_partial', 'momentum_book'] },
