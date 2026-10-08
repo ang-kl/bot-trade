@@ -225,9 +225,13 @@ const TABLES = `
     -- Per-position trade-management rules (break-even / trailing / partial
     -- TPs) enforced by services/trade-guard.js each loop cycle.
     guard_json            TEXT,
-    -- Peak floating profit (USD) seen by the Profit Keeper — drives the
-    -- ratchet/giveback policy on manual/external positions.
+    -- Observed peak floating profit (USD). Retained as a high-water mark;
+    -- keeper_peak_state supplies the size basis for ratchet/giveback decisions.
     peak_profit_usd       REAL,
+    -- Codex · №12,210 · 2026-10-08; codex-footprint: keeper-volume-peak.
+    -- Decision peak + broker quantity/identity basis, separate from the
+    -- observed monetary high-water mark. NULL means no proven size basis.
+    keeper_peak_state     TEXT,
     -- Per-position override (owner spec): a human-opened position is in the
     -- Profit Keeper's scope by default (per the account-wide on/off + scope
     -- setting) — ticking this OFF excludes just this one position, same as
@@ -1472,6 +1476,7 @@ export function initDB(dbPath) {
     ['account_id',           'TEXT'],
     ['guard_json',           'TEXT'],
     ['peak_profit_usd',      'REAL'],
+    ['keeper_peak_state',    'TEXT'],
     // Tamper watch — last-seen broker truth for change detection (manual
     // reversals, volume edits, hand-moved SL/TP in the cTrader app).
     ['broker_volume_units',  'REAL'],
