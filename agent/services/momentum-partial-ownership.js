@@ -1,4 +1,5 @@
 import { sameTicks } from './momentum-target-policy.js'
+import { CAPPED_HYBRID_POLICY, readCappedHybridOwner } from './capped-hybrid-policy.js'
 
 // A pending-fill origin alone is not authority. Only the write-ahead limit
 // plan transferred from a FILLED entry ledger may use the partial manager.
@@ -20,7 +21,9 @@ function recordedLimitOwner(db, trade, accountId, positionId) {
 // Prices written by different producers (the trade's fill-anchored entry, the
 // book row, the monitor row) agree in ticks at the plan's digits, not bit for
 // bit; without the digits no price can be compared, so nothing is owned.
-export function readPartialOwnership(db, accountId, tradeId, positionId, digits) {
+export function readPartialOwnership(db, accountId, tradeId, positionId, digits, plan = null) {
+  // Codex · №12,252 · 2026-10-08; codex-footprint: capped-hybrid-profit.
+  if (plan?.policy === CAPPED_HYBRID_POLICY) return readCappedHybridOwner(db, accountId, tradeId, positionId, digits)
   const trade = db.prepare('SELECT * FROM trades WHERE id=? AND account_id=? AND ctrader_position_id=?')
     .get(tradeId, accountId, positionId)
   if (!trade || trade.status !== 'open' || trade.label_strategy !== 'tsmom_long'
@@ -45,7 +48,7 @@ export function readPartialOwnership(db, accountId, tradeId, positionId, digits)
  * plan's side, with the plan's entry and initial risk in ticks. */
 export function ownershipMatchesPlan(o, { accountId, tradeId, positionId, plan }) {
   return o?.accountId === accountId && o.tradeId === tradeId && o.positionId === positionId
-    && o.status === 'open' && o.owner === 'momentum_book' && o.guardActive === false
+    && o.status === 'open' && o.owner === (plan?.policy === CAPPED_HYBRID_POLICY ? 'managed_capped_hybrid' : 'momentum_book') && o.guardActive === false
     && (o.side === 'BUY' || o.side === 'SELL') && o.side === plan?.side
     && sameTicks(o.entry, plan.entry, plan.digits) && sameTicks(o.initialRisk, plan.initialRisk, plan.digits)
 }

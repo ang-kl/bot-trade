@@ -63,6 +63,7 @@ import { getState, setState } from '../db.js'
 import { markKey, markAgeMs } from './book-open-drawdown.js'
 import { readPartialPlan, runPartialPlan, addMissingColumns } from './momentum-partial-manager.js'
 import { recordPositionEvent } from './position-events.js'
+import { CAPPED_HYBRID_POLICY } from './capped-hybrid-policy.js'
 
 /** The pass record: when the pass last ran and what it did. */
 export const MOMENTUM_PARTIAL_PASS_KEY = 'momentum_partial_pass_json'
@@ -261,6 +262,9 @@ export function recordPartialScaleOuts(db) {
     const row = readPartialPlan(db, w.account_id, w.trade_id)
     if (!row || row.scale_out_event_id != null) continue
     if (!provenReceipt(row)) { pending.push({ accountId: w.account_id, tradeId: w.trade_id, why: 'receipt_not_a_proven_deal' }); continue }
+    if (row.plan.policy === CAPPED_HYBRID_POLICY && row.state !== 'CONFIRMED') {
+      pending.push({ accountId: w.account_id, tradeId: w.trade_id, why: 'hybrid_residual_not_confirmed' }); continue
+    }
     const r = row.receipt, p = row.plan
     const dir = p.side === 'BUY' ? 1 : -1
     const find = () => db.prepare(`SELECT id FROM position_events WHERE trade_id=? AND kind='scale_out' AND source='momentum_partial'
@@ -275,7 +279,7 @@ export function recordPartialScaleOuts(db) {
           symbol: trade?.symbol ?? `symbolId ${row.identity?.symbolId ?? 'unknown'}`,
           kind: 'scale_out', fromValue: p.volume, toValue: p.runnerVolume, priceAt: r.price,
           rAt: Number((dir * (r.price - p.entry) / p.initialRisk).toFixed(4)),
-          reason: `momentum partial TP1: closed ${r.closedVolume} of ${p.volume} broker units at ${r.price} (trigger ${p.trigger})`,
+          reason: `${p.policy === CAPPED_HYBRID_POLICY ? 'capped hybrid 50% at 2R' : 'momentum partial TP1'}: closed ${r.closedVolume} of ${p.volume} broker units at ${r.price} (trigger ${p.trigger})`,
           source: 'momentum_partial',
           detail: { dealId: r.dealId, orderId: r.orderId ?? null, volume: r.closedVolume, price: r.price,
             executedAtMs: r.executedAtMs, receiptSource: r.source ?? null, planState: row.state, volumeUnit: 'broker_volume' },
@@ -342,6 +346,15 @@ export async function runMomentumPartialPass(db, { credsFor = () => null, now: c
   }
 
   let rows = []
+  // Codex · №12,252 · 2026-10-08; codex-footprint: capped-hybrid-profit.
+  // This existing post-entry pass is the sole partial authority. No entry or
+  // stop evaluator changes; competing book/guard/override owners are excluded.
+  try {
+    const { enrolCappedHybrids } = await import('./capped-hybrid-enrolment.js')
+    summary.cappedHybrid = await enrolCappedHybrids(db, { credsFor, now, ...(deps.hybridEnrolment || {}) })
+    for (const p of summary.cappedHybrid.enrolled) log(`capped hybrid …${p.accountId.slice(-4)} trade ${p.tradeId}: 50% at ${p.trigger}; existing broker TP ${p.brokerTarget} retained`)
+    for (const e of summary.cappedHybrid.errors) fail(`capped_hybrid trade ${e.tradeId}`, e.reason)
+  } catch (e) { fail('capped_hybrid', e) }
   if (hasTable(db, 'momentum_partial_plans')) {
     try {
       rows = db.prepare(`SELECT account_id, trade_id, state FROM momentum_partial_plans

@@ -2,10 +2,13 @@ import { marketIdentity, marketIdentityKey } from '../lib/market-identity.js'
 import { planMomentumTargets, sameTicks, stopHeld } from './momentum-target-policy.js'
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { classifyCloseFailure, matchClosingDeal, closingDealsSince, TRANSPORT_HORIZON_MS, MAX_CLOCK_SKEW_MS } from './momentum-broker-evidence.js'
+import { CAPPED_HYBRID_POLICY, planCappedHybrid } from './capped-hybrid-policy.js'
 
 function validPlan(plan) {
   if (!plan || typeof plan !== 'object') return false
-  const calculated = planMomentumTargets(plan)
+  // Codex · №12,252 · 2026-10-08; codex-footprint: capped-hybrid-profit.
+  // A post-entry exit policy never relaxes the unchanged entry planner.
+  const calculated = plan.policy === CAPPED_HYBRID_POLICY ? planCappedHybrid(plan) : planMomentumTargets(plan)
   return calculated.ok && calculated.mode === 'partial_runner'
     && JSON.stringify(calculated) === JSON.stringify(plan)
 }
@@ -87,8 +90,9 @@ export async function runPartialPlan(db, creds, tradeId, deps) {
   const owned = () => {
     try {
       const o = deps.readOwnership ? deps.readOwnership(accountId, tradeId, row.position_id)
-        : readPartialOwnership(db, accountId, tradeId, row.position_id, row.plan.digits)
+        : readPartialOwnership(db, accountId, tradeId, row.position_id, row.plan.digits, row.plan)
       return ownershipMatchesPlan(o, { accountId, tradeId, positionId: row.position_id, plan: row.plan })
+        && (row.plan.policy !== CAPPED_HYBRID_POLICY || (o.symbolId === row.identity.symbolId && o.host === row.identity.host))
     } catch { return false }
   }
   // Ownership gates a send. Recovering an attempt, reading back a receipt and
