@@ -1,18 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude \u00b7 \u2116 11,660 07-Oct).",
-  "locks": [
-    {
-      "id": "codex-count-instructions-2026-10-09",
-      "locked_by": "codex-count-instructions",
-      "created_at": "2026-10-09T12:24:34.247128+00:00",
-      "expires_at": "2026-10-09T14:24:34.247128+00:00",
-      "files": [
-        "CLAUDE.md"
-      ],
-      "branch": "docs/remove-fixed-acceptance-counts-2026-10-09",
-      "purpose": "Owner requests removal of fixed acceptance-count reporting directives; documentation only"
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -253,6 +241,13 @@
       "serial": 12670,
       "subject": "PR1287 merged; own lock released; Node deployment verification in progress",
       "text": "General PARTIAL_EXIT durable owned execution/residual transaction merged as 0d60596d9b75ccdfa95a93b4beb58ea731224308; tree f5dc11f5b1c9880a8442fa1bd02f8035115da9d1 equals gated head b7f7864. Exact CI37927161129 SUCCESS:7934 backend passes/0fail/4existing skips,1350frontend; local required checks complete,45 integrated policy cases pass. Actual reviews/comments/threads empty; Claude action SKIPPED; no independent human review. Entry/SL/TP/sizing/settings/native production unchanged. Node4685dc57 building; served identity/runtime verification pending. No natural partial or whole acceptance closure claimed. Counts7verified19active6deferred/unverified25 unchanged. Preserve separate diagnostics, contention and ownership investigations."
+    },
+    {
+      "from": "codex-count-instructions",
+      "at": "2026-10-09T12:38:38.486992+00:00",
+      "serial": 12686,
+      "subject": "Owner withdraws fixed-count reporting directives; PR1288 merged",
+      "text": "Owner asks removal of fixed acceptance tallies as instructions. CLAUDE.md removes22 such directives and states dated receipts are history, not standing reporting rules. Report completed work, remaining actions and specific unresolved checks; no mandated repetition or frozen total. PR1288 merged1a457ed0c5b60aaa764e72fa26ea3ab2806cf0c3, treeb6fa326713e32be8825fc1fe51303fc41f498a00 equals exact CI37930070179SUCCESS headc4c6055. OnlyCLAUDE.md changed;2191othertrackedentries unchanged; localcodegatesreused. Actual reviews/threads/comments empty, ClaudeactualactionSKIPPED; assistantreviewnoblocker. No trading/settings changes or new acceptance pass. Ownlockreleased."
     }
   ]
 }
