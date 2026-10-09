@@ -3,6 +3,7 @@
 // Every monetary/position value is a dated stored observation, never refreshed here.
 import { readHybridVerdicts } from './diagnostic-readout.js'
 import { brokerPolicyObservation } from '../lib/stop-policy.js'
+import { readStoredInitialRisk } from './initial-risk-readout.js'
 const CAP = 64, PER_KIND = 8
 const scalar = x => typeof x === 'number' ? Number.isFinite(x) ? x : null
   : typeof x === 'boolean' ? x
@@ -44,6 +45,9 @@ export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
     verdicts:readHybridVerdicts(db),trades:[]}
   for(const owner of selected) {
     const record={owner:project(owner,['id','account_id','ctrader_position_id','symbol','side','status']),movements:[],volumeRefusals:[],protection:[]}
+    // Codex · №12,611 · 2026-10-09; codex-footprint: stored-initial-risk-evidence.
+    // Only explicit operator targets receive this additional local projection.
+    if(tradeIds.includes(owner.id)) record.initialRisk=readStoredInitialRisk(db,owner.id)
     if(!owner.account_id || !owner.ctrader_position_id) { record.unavailable='missing_owner'; out.trades.push(record); continue }
     for(const kind of ['trail_tightened','sl_moved','scale_out']) {
       const rows=db.prepare(`SELECT id,at,account_id,position_id,trade_id,symbol,kind,from_value,to_value,source,
@@ -114,7 +118,8 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
       const {trades,...metadata}=readTargetedEvidence(db,now(),tradeIds)
       emit('summary',metadata)
       for(const trade of trades) {
-        const {movements,...fields}=trade;emit('owned-position',fields)
+        const {movements,initialRisk,...fields}=trade;emit('owned-position',fields)
+        if(initialRisk) emit('initial-risk',{owner:trade.owner,...initialRisk})
         for(const group of movements) {
           const {rows,...bounds}=group;emit('movement-range',{owner:trade.owner,...bounds})
           for(const row of rows) emit('movement',{owner:trade.owner,row})

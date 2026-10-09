@@ -190,7 +190,23 @@ export function startHybridTickController(db, { transport = hybridTickTransport(
   setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   let stopped = false
   const timers = new Set(), status = { startedAt: now(), hosts: {} }
-  const save = () => setState(db, HYBRID_TICK_STATUS, JSON.stringify({ ...status, at: now() }))
+  // Codex · №12,611 · 2026-10-09; codex-footprint: hybrid-status-contention.
+  // Empty native polls used to commit this diagnostic key up to 80 times/s.
+  // Share one attempt/second across hosts, including failed attempts. The
+  // raw trigger, close claim, wire receipt and outcome writes above remain
+  // immediate. Coalesce both initial outcomes for up to one second; a slow
+  // peer cannot hold the healthy host's status indefinitely. A later
+  // successful snapshot retains each host's last failure.
+  const completedHosts = new Set()
+  let lastStatusAttempt = null
+  const save = () => {
+    const at = now()
+    if ((completedHosts.size !== hosts.length && at - status.startedAt < 1000)
+      || (lastStatusAttempt != null && at - lastStatusAttempt < 1000)) return
+    lastStatusAttempt = at
+    setState(db, HYBRID_TICK_STATUS, JSON.stringify({ ...status, at }))
+  }
+  const storageCode = error => /^SQLITE_[A-Z_]+$/.test(error?.code) ? error.code : null
   const later = (host, ms) => {
     if (stopped) return
     const timer = setTimer(() => { timers.delete(timer); void pass(host) }, ms)
@@ -199,12 +215,21 @@ export function startHybridTickController(db, { transport = hybridTickTransport(
   const pass = async host => {
     if (stopped) return
     const h = status.hosts[host] ||= { configuredAt: 0, processed: 0, errors: 0 }
-    let failed = false
+    let failed = false, stage = 'configuration_read', failedStorage = false
+    const failure = error => {
+      failed = true; h.errors++; h.error = String(error?.message || error).slice(0, 180)
+      const code = storageCode(error)
+      failedStorage ||= !!code
+      h.lastError = { at: now(), stage, storageCode: code }
+      if (h.errors === 1 || h.errors % 30 === 0)
+        log(`[hybrid-tick] ${host}: ${h.error} stage=${stage}${code ? ` storageCode=${code}` : ''}`)
+    }
     try {
       if (now() - h.configuredAt >= 30_000) {
         const configuration = {}
         const groups = hybridGroups(db, host, { now, credsFor, diagnostics: configuration })
         h.configuration = configuration
+        stage = 'configuration_push'
         await transport.configure(host, groups)
         const signature = JSON.stringify(groups.flatMap(g => g.plans.map(p => [p.accountId, p.positionId, p.key])))
         if (signature !== h.signature) log(`[hybrid-tick-config] ${JSON.stringify({ host,
@@ -213,20 +238,27 @@ export function startHybridTickController(db, { transport = hybridTickTransport(
         h.signature = signature
         h.configuredAt = now(); h.plans = groups.reduce((n, g) => n + g.plans.length, 0)
       }
+      stage = 'events_read'
       const batch = await transport.events(host)
       if (batch?.ready !== true || !Array.isArray(batch.events) || batch.events.length > 64) throw Error('hybrid native journal unavailable')
       for (const event of batch.events) {
         if (stopped) break
+        stage = 'event_process'
         await processHybridTick(db, host, event, { now, credsFor, transports, log })
         if (stopped) break
+        stage = 'event_acknowledge'
         await transport.acknowledge(host, event.eventId)
         h.processed++; h.configuredAt = 0
       }
-      h.error = null; h.lastReadAt = now(); save()
-    } catch (error) {
-      failed = true; h.errors++; h.error = String(error?.message || error).slice(0, 180)
-      try { save() } catch { /* no execution if the earlier journal write failed */ }
-      if (h.errors === 1 || h.errors % 30 === 0) log(`[hybrid-tick] ${host}: ${h.error}`)
+      h.error = null; h.lastReadAt = now()
+    } catch (error) { failure(error) }
+    completedHosts.add(host)
+    // A failed SQLite operation must not immediately busy-wait again just
+    // to describe that failure. Status is retried on a later normal pass;
+    // failed event receipts are never acknowledged by this path.
+    if (!stopped && !failedStorage) {
+      stage = 'status_write'
+      try { save() } catch (error) { failure(error) }
     }
     later(host, failed ? 5000 : 25)
   }
