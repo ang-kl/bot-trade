@@ -36,6 +36,27 @@ function errorCode(x) {
   if (/timeout|timed out|deadline/i.test(text)) return 'timeout_or_deadline'
   return 'unclassified_error_redacted'
 }
+// Codex · №12,692 · 2026-10-09; codex-footprint: retained-controller-failure.
+// Stored recovery metadata is not a fresh failure or a lock-holder diagnosis.
+// Closed vocabularies exclude arbitrary exception messages, SQL and secrets.
+const CONTROLLER_STAGES = new Set(['configuration_read', 'configuration_push', 'events_read',
+  'event_process', 'event_acknowledge', 'status_write'])
+const STORAGE_CODES = new Set(['SQLITE_ERROR', 'SQLITE_INTERNAL', 'SQLITE_PERM', 'SQLITE_ABORT',
+  'SQLITE_BUSY', 'SQLITE_BUSY_RECOVERY', 'SQLITE_BUSY_SNAPSHOT', 'SQLITE_BUSY_TIMEOUT',
+  'SQLITE_LOCKED', 'SQLITE_LOCKED_SHAREDCACHE', 'SQLITE_LOCKED_VTAB', 'SQLITE_NOMEM',
+  'SQLITE_READONLY', 'SQLITE_INTERRUPT', 'SQLITE_IOERR', 'SQLITE_CORRUPT', 'SQLITE_NOTFOUND',
+  'SQLITE_FULL', 'SQLITE_CANTOPEN', 'SQLITE_PROTOCOL', 'SQLITE_EMPTY', 'SQLITE_SCHEMA',
+  'SQLITE_TOOBIG', 'SQLITE_CONSTRAINT', 'SQLITE_MISMATCH', 'SQLITE_MISUSE', 'SQLITE_NOLFS',
+  'SQLITE_AUTH', 'SQLITE_FORMAT', 'SQLITE_RANGE', 'SQLITE_NOTADB'])
+function retainedFailure(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return {
+    at: Number.isSafeInteger(value.at) && value.at >= 0 ? value.at : null,
+    stage: CONTROLLER_STAGES.has(value.stage) ? value.stage : null,
+    storageCode: value.storageCode == null ? null : STORAGE_CODES.has(value.storageCode)
+      ? value.storageCode : 'unclassified_error_redacted',
+  }
+}
 function project(row, fields) {
   return Object.fromEntries(fields.map(k => [k, typeof row?.[k] === 'number' ? number(row[k])
     : typeof row?.[k] === 'boolean' ? row[k] : token(row?.[k])]))
@@ -69,6 +90,7 @@ export function readHybridVerdicts(db) {
       available: true, at: number(c?.at), startedAt: number(c?.startedAt),
       hosts: Object.entries(c?.hosts || {}).slice(0, 4).map(([host, h]) => ({ host: token(host),
         ...project(h, ['configuredAt', 'processed', 'errors', 'plans', 'lastReadAt']), error: errorCode(h.error),
+        lastError: retainedFailure(h.lastError),
         configuration: h.configuration == null ? null : {
           ...project(h.configuration, ['observedAtMs', 'considered', 'routedElsewhere', 'excludedTruncated', 'excludedOmitted', 'unavailableReason']),
           excluded: list(h.configuration.excluded, ['accountId', 'tradeId', 'positionId', 'stage', 'observedAtMs'], true),

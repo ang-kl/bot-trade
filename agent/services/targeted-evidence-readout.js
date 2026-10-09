@@ -29,20 +29,23 @@ export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
   // retrieves each movement kind without walking thousands of observations.
   const owners=db.prepare(`SELECT id,account_id,ctrader_position_id,symbol,side,status FROM trades
     WHERE status='open' ORDER BY closed_at DESC,id DESC LIMIT ?`).all(CAP+1)
-  const selected=[]
+  const selected=[],missingTargets=[]
   // Codex · №12,439 · 2026-10-09; codex-footprint: retained-movement-targets.
   // Explicit primary-key targets remain readable if they naturally close
   // while the release gates run. Never search all closed-position history.
-  for(const id of tradeIds) {
-    if(selected.some(r=>r.id===id)) continue
+  for(const id of new Set(tradeIds)) {
     const row=owners.slice(0,CAP).find(r=>r.id===id) || db.prepare('SELECT id,account_id,ctrader_position_id,symbol,side,status FROM trades WHERE id=?').get(id)
     if(row) selected.push(row)
+    // Codex · №12,692 · 2026-10-09; codex-footprint: explicit-missing-target.
+    // Preserve the result of this primary-key read; absence is not an owned
+    // position and must not disappear from the explicit operator request.
+    else missingTargets.push({status:'unverified',source:'stored_rows_only',tradeId:id,reason:'trade_missing'})
   }
   // Requested targets get the finite output budget before the open population.
   for(const row of owners.slice(0,CAP)) if(!selected.some(r=>r.id===row.id)) selected.push(row)
   const pass=stored(db,'momentum_partial_pass_json'), protection=stored(db,'independent_protection_json')
   const out={readAt:now,limits:{openTrades:CAP,totalTradesBound:CAP+tradeIds.length,rowsPerMovementKind:PER_KIND,ownerOrder:'closed_at_desc_id_desc',targetTradeIds:tradeIds},truncatedTrades:owners.length>CAP,
-    verdicts:readHybridVerdicts(db),trades:[]}
+    verdicts:readHybridVerdicts(db),missingTargets,trades:[]}
   for(const owner of selected) {
     const record={owner:project(owner,['id','account_id','ctrader_position_id','symbol','side','status']),movements:[],volumeRefusals:[],protection:[]}
     // Codex · №12,611 · 2026-10-09; codex-footprint: stored-initial-risk-evidence.
@@ -115,8 +118,11 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   const timer=setTimer(()=>{
     if(now()>=expires){emit('exit',{reason:'deadline_expired',dropped});return}
     try {
-      const {trades,...metadata}=readTargetedEvidence(db,now(),tradeIds)
-      emit('summary',metadata)
+      const {trades,missingTargets,...metadata}=readTargetedEvidence(db,now(),tradeIds)
+      emit('summary',{...metadata,missingTargetIds:missingTargets.map(row=>row.tradeId)})
+      // Requested missing records get their bounded verdict before population
+      // detail can consume the output budget. No account identity is invented.
+      for(const target of missingTargets) emit('initial-risk',{owner:null,...target})
       for(const trade of trades) {
         const {movements,initialRisk,...fields}=trade;emit('owned-position',fields)
         if(initialRisk) emit('initial-risk',{owner:trade.owner,...initialRisk})

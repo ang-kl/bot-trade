@@ -8,6 +8,24 @@ Distinguish engineering completion, operational outcomes and deferred work; clai
 only what the available evidence supports. This owner update supersedes earlier
 fixed-count reporting directives without changing trading policy or owner exclusions.
 
+<!-- Codex · №12,692 · 2026-10-09; codex-footprint: owned-diagnostic-readout. -->
+## Bounded diagnostic readout corrections — PR1286 follow-up
+
+The owner resumed the remaining gaps from the №12,674 handback. Three actual
+readout defects are reproduced through real SQLite and the private emitter:
+an owned linked intent can fall outside CAP4, an absent explicit trade target
+can disappear, and a recovered controller's retained failure is not projected.
+Keep the linked owned source inside the bounded window without duplication;
+emit missing-target unverified results before population detail; expose only
+allowlisted failure stage/code and a valid source timestamp. Unknown values
+remain explicit and redacted. No broker facts, original risk or successful
+outcomes are inferred. Durable opt-in claims, output caps and expiry remain.
+Entry, SL/TP, profit execution, controller polling/writes, account/settings and
+native code are unchanged. Contention attribution and account-ownership
+exposure remain separate investigations; this readout correction resolves
+neither cause. Use integrated actual-controller/database/readout coverage,
+required gates, actual review inspection and ordinary deployed verification.
+
 <!-- Codex · №12,637 · 2026-10-09; codex-footprint: verified-general-partial. -->
 ## General partial execution — actual receipt and durable recovery
 
