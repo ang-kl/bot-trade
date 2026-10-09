@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import { buildScannerAlignmentSnapshot } from './scanner-alignment-snapshot.js'
 import { scannerMirrorStatus } from './scanner-candidates.js'
 import { NATIVE_DEFAULT_STRATEGIES } from './scanner-profiles.js'
+import { registeredCalendarAccounts } from './watchdog-calendar-refresh.js'
 import { SCANNER_PROFILE_LIMIT, SCANNER_REGISTRATION_BYTES } from '../lib/scanner-bounds.js'
 
 const SOURCES = new Set(['cpp-scan-timeframe', 'cpp-scan-tick'])
@@ -75,12 +76,13 @@ export async function readScannerEvidence(db, { now = Date.now(), env = process.
     if (cells.length < LIMITS.cells) cells.push(c)
   }
   for (const g of [...groups.values()].slice(0, LIMITS.groups)) add('scanner-profile-group', g)
+  const registered = registeredCalendarAccounts(db)
   for (const a of snapshot.accounts.slice(0, LIMITS.accounts)) {
     const accountId = id(a.account_id), map = snapshot.maps[accountId]
     const shape = !!map?.map && typeof map.map === 'object' && !Array.isArray(map.map)
     const own = accountId && map?.accountId === accountId && shape
     const status = !map ? 'map_missing' : !shape ? 'map_invalid' : !own ? 'map_account_conflict' : 'stored_account_map'
-    add('scanner-account-map', { accountId, host: a.is_live === 1 ? 'live.ctraderapi.com' : a.is_live === 0 ? 'demo.ctraderapi.com' : null,
+    add('scanner-account-map', { accountId, host: host(registered.get(accountId)?.host),
       status, mapAccountId: id(map?.accountId), builtAt: iso(map?.builtAt), complete: bool(map?.complete), sourceCount: integer(map?.sourceCount) })
     if (own) {
       const wanted = new Set(cells.filter(c => c.accountId === accountId).map(c => c.symbolId)), symbols = new Map()

@@ -22,7 +22,7 @@ function scene(t, file = false) {
   const dir = file ? mkdtempSync(join(tmpdir(), 'scanner-evidence-')) : null
   const db = initDB(dir ? join(dir, 'agent.db') : ':memory:')
   t.after(() => { db.close(); if (dir) rmSync(dir, { recursive: true, force: true }) })
-  db.exec("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES('42',0,1,'active'),('43',0,1,'manage_only')")
+  db.exec("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES('42',0,1,'active'),('43',0,1,'manage_only'),('44',1,1,'active')")
   setState(db, 'ctrader_account_id', '42')
   for (const [accountId, symbolId] of [['42', 11], ['43', 22]]) setState(db, `symbol_id_map:${accountId}`, JSON.stringify({ accountId,
     builtAt: new Date(NOW - 1000).toISOString(), complete: true, sourceCount: 1, map: { EURUSD: symbolId }, secret: 'map-secret-never-logged' }))
@@ -51,6 +51,8 @@ test('actual registry, account maps, route readers and native boundary retain th
   const cell = out.records.find(r => r.kind === 'scanner-profile-cell').value
   assert.equal(cell.accountId, '43'); assert.equal(cell.symbolId, '22'); assert.deepEqual(cell.symbolNames, ['EURUSD'])
   assert.equal(cell.mappingStatus, 'stored_account_map')
+  assert.equal(out.records.find(r => r.kind === 'scanner-account-map' && r.value.accountId === '42').value.host, 'demo.ctraderapi.com')
+  assert.equal(out.records.find(r => r.kind === 'scanner-account-map' && r.value.accountId === '44').value.host, 'live.ctraderapi.com')
   assert.equal(out.records.find(r => r.kind === 'scanner-tick-feed').value.accountId, '42')
   assert.equal(getState(db, 'ctrader_account_id'), '42'); assert.equal(scannerProfileRegistry(db).revision, revision)
   assert.equal(db.prepare('SELECT total_changes() n').get().n, before)
@@ -62,12 +64,18 @@ test('actual registry, account maps, route readers and native boundary retain th
 test('foreign maps, stale missing feeds, unknown coverage and native failures remain explicit and never leak raw errors', async t => {
   const db = scene(t)
   setState(db, 'symbol_id_map:43', JSON.stringify({ accountId: '42', map: { WRONG: 22 } }))
-  const out = await readScannerEvidence(db, { now: NOW + 3600000, env: ENV, fetchImpl: async () => { throw Error('Authorization: Bearer fixture-secret-never-logged') } })
+  const out = await readScannerEvidence(db, { now: NOW + 3600000, env: ENV, fetchImpl: async () => {
+    // A registration disappears during the native read: the projection must
+    // retain unknown routing, never substitute the selected demo account.
+    db.prepare('DELETE FROM accounts WHERE account_id=?').run('44')
+    throw Error('Authorization: Bearer fixture-secret-never-logged')
+  } })
   assert.equal(out.summary.status, 'incomplete'); assert.equal(out.summary.nativeTimeframe, null)
   assert.ok(out.summary.missing.includes('timeframe_watchdog_unreadable'))
   assert.ok(out.summary.missing.includes('no_tick_feed_observed_in_five_minutes'))
   assert.ok(out.summary.missing.includes('timeframe_coverage_not_recorded'))
   assert.equal(out.records.find(r => r.kind === 'scanner-account-map' && r.value.accountId === '43').value.status, 'map_account_conflict')
+  assert.equal(out.records.find(r => r.kind === 'scanner-account-map' && r.value.accountId === '44').value.host, null)
   const cell = out.records.find(r => r.kind === 'scanner-profile-cell').value
   assert.equal(cell.mappingStatus, 'map_unavailable_or_foreign'); assert.deepEqual(cell.symbolNames, [])
   assert.doesNotMatch(JSON.stringify(out), /Authorization|fixture-secret|WRONG/)
