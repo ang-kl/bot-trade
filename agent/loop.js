@@ -31,10 +31,11 @@ import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithI
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
-import { placeOrder as placeOrderLive, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
+import { placeOrder as placeOrderLive, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile, execEngineMode } from './lib/exec-engine.js'
 import { sideDirection } from './lib/stop-policy.js'
 import { makeBookHeldCheck } from './services/book-held.js'
-import { getCtraderCreds, getSymbolMap, attachEntryFence, bindEntryIntent, withCtraderTokenSource } from './lib/ctrader-creds.js'
+import { getCtraderCreds, getSymbolMap, attachEntryFence, bindEntryIntent, withCtraderTokenSource, credsForRegisteredAccount } from './lib/ctrader-creds.js'
+import { readGuardPosition, sameGuardIdentity, guardId, guardReadback } from './lib/session-guard-identity.js'
 import { thenAlways } from './lib/then-always.js'
 import { managePendingOrders } from './services/pending-orders.js'
 import { isProducerRetired } from './lib/entry-producers.js'
@@ -2328,6 +2329,19 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
   const accessToken = getState(db, 'ctrader_access_token')
 
   const ctx = s.selectBrokerContext.get(pos.id) || {}
+  // Codex · №12,710 · 2026-10-09; codex-footprint: session-guard-owned-transaction.
+  // A guard quote may have awaited while its row changed. Refuse a changed
+  // episode; the selected account is never this scoped action's authority.
+  const guard = source === 'session_open_guard' && eval_.action === 'MOVE_SL' ? eval_.guardIdentity : null
+  let guardCreds = null
+  if (source === 'session_open_guard' && eval_.action === 'MOVE_SL') {
+    const current = readGuardPosition(db, pos.id)
+    guardCreds = current && credsForRegisteredAccount(db, current.identity.accountId)
+    if (!sameGuardIdentity(current?.identity, guard) || !guardId(guard?.symbolId)
+      || !guardCreds?.ready || guardCreds.host !== guard.host
+      || guardId(ctx.accountId) !== guard.accountId || guardId(ctx.positionId) !== guard.positionId)
+      return { skipped: true, reason: 'session_guard_identity_conflict' }
+  }
   const acct = resolveActionAccount(db, ctx.accountId ?? null)
   if (acct.source === 'unknown_account') {
     // The row names an account the registry does not know. Managing it on the
@@ -2345,7 +2359,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
     return { skipped: true, reason: 'no_ctrader_position_id' }
   }
 
-  const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+  const host = guardCreds?.host ?? (isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')
   const action = eval_.action
   // V3 M5: what the amend-latency ring records about an amend from here — no
   // credentials, no prices.
@@ -2383,6 +2397,8 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       // before — a possible rejection beats inventing a precision.
       const moveDigits = await symbolDigitsFor(db, { host, clientId, clientSecret, accessToken, accountId }, pos.symbol)
       const { stopLoss: sendSL, takeProfit: sendTp } = roundAmendPayload({ stopLoss: eval_.newSL, takeProfit: keepTp, digits: moveDigits })
+      if (guard && !sameGuardIdentity(readGuardPosition(db, pos.id)?.identity, guard))
+        return { skipped: true, reason: 'session_guard_identity_changed' }
       const res = await measureAmend(amendMeta('broker_action.move_sl'), () => execAmendPosition(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }), {
         positionId: ctx.positionId,
         stopLoss: sendSL,
@@ -2391,9 +2407,30 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         // is what it rejects — a TP-less row's stop move threw here (02-10-2026).
         takeProfit: sendTp ?? null,
         ...stopAmendExtras(db, pos, ctx, accountId),
+        ...(guard ? { ratchetOnly: true, expectedDirection: guard.direction, expectedSymbolId: guard.symbolId } : {}),
       }))
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }
+      if (guard) {
+        if (!sameGuardIdentity(readGuardPosition(db, pos.id)?.identity, guard))
+          return { unverified: true, reason: 'session_guard_identity_changed_after_amend' }
+        const held = guardReadback(guard, res, sendSL, execEngineMode())
+        if (held.kind === 'unverified') return { unverified: true, reason: 'session_guard_movement_unverified' }
+        // Row and journal commit together; a rejected journal cannot leave a
+        // fabricated successful move behind. Other MOVE_SL callers unchanged.
+        db.transaction(() => {
+          s.updatePositionSl.run(held.stopLoss, pos.id)
+          if (held.kind === 'moved' && !recordPositionEvent(db, {
+            accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
+            kind: 'sl_moved', fromValue: held.beforeStopLoss, toValue: held.stopLoss,
+            reason: eval_.reason, source, atMs: held.movement.afterCheckedAtMs,
+            detail: { host, movement: held.movement },
+          })) throw new Error('session_guard_journal_write_failed')
+        })()
+        return { moved: held.kind === 'moved', unchanged: held.kind === 'unchanged',
+          observed: held.kind === 'observed', protection: res.protection ?? null,
+          summary: held.kind === 'moved' ? `SL → ${held.stopLoss}` : `SL observed ${held.stopLoss}; no confirmed movement` }
+      }
       // Record what the BROKER holds: the sent value, rounded — unless the
       // sidecar read the live stop and found it already tighter (broker-side
       // trailing moved it), in which case that is the truth and nothing was

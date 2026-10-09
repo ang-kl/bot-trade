@@ -22,6 +22,8 @@
 import { getState } from '../db.js'
 import { SESSIONS } from '../lib/sessions.js'
 import { currentR } from './position-manager.js'
+import { credsForRegisteredAccount, resolveSymbolId } from '../lib/ctrader-creds.js'
+import { readGuardPosition, brokerGuardIdentity } from '../lib/session-guard-identity.js'
 
 export const DEFAULT_SESSION_OPEN_GUARD = { on: true, windowMin: 30, minR: 0.3 }
 
@@ -84,39 +86,56 @@ export async function runSessionOpenGuard(db, creds, deps = {}) {
 
   const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
   const loopMod = deps.loop ?? await import('../loop.js')
+  const exec = deps.exec ?? await import('../lib/exec-engine.js')
   const s = loopMod.prepareStatements(db)
-  const symbolMap = (() => { try { return JSON.parse(getState(db, 'symbol_id_map') || '{}') } catch { return {} } })()
+  const snapshots = new Map()
   const day = nowDate.toISOString().slice(0, 10)
 
   let locked = 0
-  for (const pos of positions) {
+  for (const candidate of positions) {
+    let pos = candidate
     try {
       const key = `${pos.id}|${sess.id}|${day}`
       if (acted.has(key)) continue
-      const symbolId = symbolMap[String(pos.symbol).toUpperCase()]
-      if (!symbolId) continue
-
-      const q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
-      const mid = q?.bid != null && q?.ask != null ? (q.bid + q.ask) / 2 : null
+      // Codex · №12,710 · 2026-10-09; codex-footprint: session-guard-owned-quote.
+      // Selection supplies no identity. Match the row/trade, own map and own
+      // broker position before pricing; one reconcile per account this pass.
+      const owned = readGuardPosition(db, pos.id)
+      if (!owned) continue
+      pos = owned.row
+      const rowCreds = credsForRegisteredAccount(db, owned.identity.accountId)
+      if (!rowCreds?.ready) continue
+      const resolved = await resolveSymbolId(db, rowCreds, pos.symbol, {
+        now: now(), ...(ws.wsGetSymbolsList ? { wsGetSymbolsList: ws.wsGetSymbolsList } : {}),
+      })
+      if (!resolved.id) continue
+      const accountKey = String(rowCreds.accountId)
+      if (!snapshots.has(accountKey)) snapshots.set(accountKey, Promise.resolve().then(() => exec.reconcile(rowCreds)))
+      const identity = brokerGuardIdentity(owned.identity, await snapshots.get(accountKey), resolved.id)
+      if (!identity) continue
+      identity.host = rowCreds.host
+      const q = await ws.wsGetSpotOnce(rowCreds.host, rowCreds.clientId, rowCreds.clientSecret, rowCreds.accessToken, rowCreds.accountId, identity.symbolId)
+      const mid = typeof q?.bid === 'number' && typeof q?.ask === 'number' && q.bid > 0 && q.ask >= q.bid
+        && Number.isFinite(q.bid) && Number.isFinite(q.ask) ? (q.bid + q.ask) / 2 : null
       if (mid == null) continue // symbol's own market closed / no feed
 
       // Below the profit threshold: DON'T mark acted — price can still climb
       // into the threshold later in the same window and deserve the lock.
-      const r = currentR(pos, mid)
+      const r = currentR({ ...pos, side: identity.direction === 1 ? 'long' : 'short' }, mid)
       if (r == null || r < cfg.minR) continue
 
       // Breakeven must TIGHTEN — for a long the new SL must sit above the
       // current one, for a short below. Never loosen a stop.
-      const long = pos.side === 'long' || pos.side === 'BUY'
+      const long = identity.direction === 1
       const newSL = pos.entry_price
       const tightens = pos.current_sl == null || (long ? newSL > pos.current_sl : newSL < pos.current_sl)
-      acted.add(key)
       if (!tightens) continue
 
       const reason = `session_open_guard: ${sess.label} opened ${sess.openedAgoMin}m ago at +${r.toFixed(2)}R — SL locked to breakeven`
-      const outcome = await loopMod.executeBrokerAction(db, s, pos, { action: 'MOVE_SL', newSL, reason }, 'session_open_guard')
-      if (!outcome.error) {
+      const outcome = await loopMod.executeBrokerAction(db, s, pos, { action: 'MOVE_SL', newSL, reason, guardIdentity: identity }, 'session_open_guard')
+      if (outcome?.moved === true) {
         s.updatePositionCheck.run('GUARD:BE', reason, new Date(now()).toISOString(), 'intact', pos.id)
+        acted.add(key)
         locked++
         console.log(`[session-open-guard] ${pos.symbol}: ${reason}`)
         try { deps.notify?.(`🛡 SESSION-OPEN GUARD: ${pos.symbol} +${r.toFixed(2)}R at ${sess.label} open — SL moved to breakeven ${newSL}.`) } catch { /* best effort */ }
