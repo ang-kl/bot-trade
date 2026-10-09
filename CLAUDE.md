@@ -1,3 +1,20 @@
+<!-- Codex · №12,587 · 2026-10-09; codex-footprint: manual-profit-hybrid -->
+## Owner-authorised manual capped hybrid — 9 October
+
+Human-opened/manual positions must not be silently ignored for profit taking.
+Profit-only authority is scoped to DEMO43097342 and LIVE42993489; entry, SL,
+source/origin/strategy and historical risk stamps remain unchanged. Preserve
+guard, pause, opt-out, book and competing-policy exclusions. A complete owned
+opening-order/deal receipt must supply its bracket with broker last-update time
+equal to its completed opening fill (no tolerance or immutable-history assumption).
+Never infer original risk from the current or first-adopted stop. Persist the raw proof and immutable
+half-at-2R plan atomically before the existing tick/ordinary partial manager can
+claim it. Existing broker TP must leave room beyond 2R and both halves must meet
+broker volume constraints. Missing/conflicting facts produce explicit refusals.
+No forced orders, amendments, credential/settings changes or native rebuilds.
+Integrated coverage and mandatory exact-head gates precede merge/deployment.
+Actual hybrid success still requires a natural trigger, fill, residual and journal.
+
 <!-- Codex · №12,474 · 2026-10-09; codex-footprint: owner-hk-universe -->
 ## Owner-approved HK-share exclusion and account-owned universe — 9 October
 

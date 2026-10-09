@@ -6,6 +6,7 @@ import { sameTicks, stopHeld } from './momentum-target-policy.js'
 import { registerPartialPlan, readPartialPlan } from './momentum-partial-manager.js'
 import { planCappedHybrid, readCappedHybridOwner, readCappedHybridVerdict } from './capped-hybrid-policy.js'
 import { getState, setState } from '../db.js'
+import { enrolManualHybrids } from './manual-hybrid-enrolment.js'
 
 const integer = n => Number.isSafeInteger(n) && n > 0
 const id = n => /^[1-9]\d*$/.test(String(n)) ? String(n) : null
@@ -134,6 +135,12 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
         closeVolume: plan.closeVolume, runnerVolume: plan.runnerVolume, brokerTarget: plan.brokerTarget })
     } catch (e) { out.errors.push({ tradeId: t.id, reason: String(e?.message || e).slice(0, 200) }) }
   }
+  // Codex · №12,587 · 2026-10-09; codex-footprint: manual-profit-hybrid.
+  // Share the existing read budget; human fills retain their original records.
+  const manual = await enrolManualHybrids(db, { credsFor, now, transports,
+    budgetMs: Math.max(0, budgetMs - (now() - started)), maxCandidates: Math.max(0, maxCandidates - out.examined) })
+  out.examined += manual.examined
+  for (const kind of ['enrolled', 'deferred', 'errors']) out[kind].push(...manual[kind])
   try {
     const observed = db.prepare("SELECT id,account_id,ctrader_position_id FROM trades WHERE status='open' ORDER BY id LIMIT ?").all(cap + 1)
     out.coverage = { limit: cap, openTradesSampled: Math.min(observed.length, cap), openTradesTruncated: observed.length > cap }
