@@ -204,30 +204,37 @@ export function matchingProfile(db, source, value, memo = null) {
 // The oracle runs in the isolated bridge worker, on exactly the quotes the
 // native worker completed (including its actual queue-gap reset). HTTP polling
 // is never counted as a scan. Bounded cursors make missing input explicit.
+// Codex · №12,751 · 2026-10-10; codex-footprint: bounded-comparison-commits.
+// Validate the complete native page before a collector commits any prefix.
+// The same contract remains enforced for direct atomic consume callers.
+export function validateComparisonPage(page) {
+  if (!/^[a-f0-9]{64}$/.test(page?.instanceId) || page.orderAuthority !== false
+    || !Number.isSafeInteger(page.latestCursor) || page.latestCursor < 0 || !Number.isSafeInteger(page.oldestCursor)
+    || page.oldestCursor < 1 || page.oldestCursor > page.latestCursor + 1
+    || typeof page.gap !== 'boolean'
+    || !Array.isArray(page.candidates) || page.candidates.length > 128) throw new Error('comparison_page_invalid')
+  let previous = 0
+  for (const row of page.candidates) {
+    if (!Number.isSafeInteger(row?.cursor) || row.cursor <= previous || row.cursor < page.oldestCursor || row.cursor > page.latestCursor) throw new Error('comparison_cursor_invalid')
+    previous = row.cursor
+  }
+}
 export class TickComparisonReader {
   constructor() { this.instance = null; this.after = 0; this.streams = new Map() }
-  consume(db, page, now = Date.now()) {
+  consume(db, page, now = Date.now(), memo = comparisonMemo()) {
     schema(db)
     const after = this.after, instance = this.instance
-    try { return db.transaction(() => this.consumePage(db, page, now)).immediate() }
+    try { return db.transaction(() => this.consumePage(db, page, now, memo)).immediate() }
     catch (error) { this.after = after; this.instance = instance; this.streams.clear(); throw error }
   }
-  consumePage(db, page, now) {
-    if (!/^[a-f0-9]{64}$/.test(page?.instanceId) || page.orderAuthority !== false
-      || !Number.isSafeInteger(page.latestCursor) || page.latestCursor < 0 || !Number.isSafeInteger(page.oldestCursor)
-      || page.oldestCursor < 1 || page.oldestCursor > page.latestCursor + 1
-      || typeof page.gap !== 'boolean'
-      || !Array.isArray(page.candidates) || page.candidates.length > 128) throw new Error('comparison_page_invalid')
-    const memo = comparisonMemo()
+  consumePage(db, page, now, memo = comparisonMemo()) {
+    validateComparisonPage(page)
     if (this.instance !== page.instanceId) { this.after = 0; this.streams.clear(); this.instance = page.instanceId }
     if (page.gap || this.after < page.oldestCursor - 1) {
       this.streams.clear()
       comparisonRecord(db, hash([page.instanceId, 'gap', page.oldestCursor]), 'cpp-scan-tick', 'input_gap', { after: this.after, oldest: page.oldestCursor }, now)
     }
-    let previous = 0
     for (const row of page.candidates) {
-      if (!Number.isSafeInteger(row.cursor) || row.cursor <= previous || row.cursor < page.oldestCursor || row.cursor > page.latestCursor) throw new Error('comparison_cursor_invalid')
-      previous = row.cursor
       if (row.cursor <= this.after) continue
       if (row.cursor !== Math.max(this.after + 1, page.oldestCursor)) {
         this.streams.clear()
