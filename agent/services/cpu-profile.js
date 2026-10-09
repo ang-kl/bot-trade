@@ -26,7 +26,8 @@ import inspector from 'node:inspector'
 // 5ms between samples. At the ~200s phases we are chasing that is ~40k samples,
 // which is bounded memory, and still 10,000 samples inside a single 53s block —
 // far more resolution than needed to name a hot frame.
-const SAMPLE_INTERVAL_US = Math.max(200, Number(process.env.CPU_PROFILE_INTERVAL_US) || 5000)
+// Read at phase start: index.js may load .env after importing this module.
+const sampleIntervalUs = () => Math.max(200, Number(process.env.CPU_PROFILE_INTERVAL_US) || 5000)
 
 let session = null
 let activePhase = null
@@ -251,7 +252,7 @@ export function startPhaseProfile(key) {
       session.connect()
       session.post('Profiler.enable')
     }
-    session.post('Profiler.setSamplingInterval', { interval: SAMPLE_INTERVAL_US })
+    session.post('Profiler.setSamplingInterval', { interval: sampleIntervalUs() })
     session.post('Profiler.start')
     activePhase = key
     return true
