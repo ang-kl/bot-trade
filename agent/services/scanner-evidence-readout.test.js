@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDB, setState, getState } from '../db.js'
@@ -11,6 +11,7 @@ import { scannerObserver } from './scanner-feed.js'
 import { scannerProfileRegistry, registerScannerProfiles } from './scanner-profile-registry.js'
 import { nativeProfileHash } from './scanner-profiles.js'
 import { comparisonRecord } from './scanner-comparison.js'
+import { DEFAULT_PARAMS, profileHash, profileHashFull } from '../lib/tick-strategy.js'
 
 const NOW = Date.parse('2026-10-10T00:30:00.000Z')
 const ENV = { SCANNER_TIMEFRAME_URL: 'http://timeframe.invalid', SCANNER_TIMEFRAME_SECRET: 'fixture-secret-never-logged' }
@@ -18,6 +19,8 @@ const watchdog = { observedAtMs: NOW - 2000, workComplete: true, work: [{ pendin
 const profile = (accountId = '43', symbolId = '22') => ({ source: 'cpp-scan-timeframe',
   feed: { provider: 'ctrader', host: 'demo.ctraderapi.com', accountId, symbolId }, strategy: 'fib_confluence',
   timeframe: '1h', configVersion: 'tf-v1', profileHash: nativeProfileHash('fib_confluence'), candidateTtlMs: 60000 })
+const tickProfile = () => ({ source: 'cpp-scan-tick', feed: { provider: 'ctrader', host: 'demo.ctraderapi.com', accountId: '42', symbolId: '11' },
+  strategy: 'tick_momentum_breakout', configVersion: 'tick-v1', profileHash: profileHash(DEFAULT_PARAMS), profile: { ...DEFAULT_PARAMS }, candidateTtlMs: 60000 })
 function scene(t, file = false) {
   const dir = file ? mkdtempSync(join(tmpdir(), 'scanner-evidence-')) : null
   const db = initDB(dir ? join(dir, 'agent.db') : ':memory:')
@@ -27,7 +30,7 @@ function scene(t, file = false) {
   for (const [accountId, symbolId] of [['42', 11], ['43', 22]]) setState(db, `symbol_id_map:${accountId}`, JSON.stringify({ accountId,
     builtAt: new Date(NOW - 1000).toISOString(), complete: true, sourceCount: 1, map: { EURUSD: symbolId }, secret: 'map-secret-never-logged' }))
   registerScannerProfiles(db, { expectedRevision: scannerProfileRegistry(db).revision, profiles: [profile()] }, { env: {} })
-  comparisonRecord(db, 'owned-feed', 'cpp-scan-tick', 'candidate', { feed: { accountId: '42', host: 'demo.ctraderapi.com', symbolId: '11' }, profileHash: 'a'.repeat(64) }, NOW - 1000)
+  comparisonRecord(db, 'owned-feed', 'cpp-scan-tick', 'candidate', { feed: { accountId: '42', host: 'demo.ctraderapi.com', symbolId: '11' }, profileHash: profileHash(DEFAULT_PARAMS) }, NOW - 1000)
   return db
 }
 
@@ -59,6 +62,72 @@ test('actual registry, account maps, route readers and native boundary retain th
   db.prepare = prepare
   assert.ok(plans.length && plans.every(rows => rows.some(p => p.detail.includes('SEARCH agent_state USING INDEX'))))
   assert.doesNotMatch(JSON.stringify(out), /fixture-secret|map-secret/)
+})
+
+// Codex · №12,751 · 2026-10-10; codex-footprint: scanner-hash-contract.
+test('actual registered tick16 and timeframe64 contracts survive cells and observed feeds without changing identity or storage', async t => {
+  const db = scene(t), profiles = [tickProfile(), profile()]
+  registerScannerProfiles(db, { expectedRevision: scannerProfileRegistry(db).revision, profiles }, { env: {} })
+  const before = db.prepare('SELECT total_changes() n').get().n, registry = scannerProfileRegistry(db)
+  const out = await readScannerEvidence(db, { now: NOW, env: {} })
+  assert.equal(out.summary.invalidProfiles, 0)
+  assert.equal(out.summary.registeredProfiles, 2); assert.equal(out.summary.groups, 2)
+  assert.equal(out.summary.revision, registry.revision); assert.equal(out.summary.revision.length, 64)
+  const cells = out.records.filter(r => r.kind === 'scanner-profile-cell').map(r => r.value)
+  assert.deepEqual(cells.map(c => [c.source, c.accountId, c.symbolId, c.profileHash]), [
+    ['cpp-scan-tick', '42', '11', profileHash(DEFAULT_PARAMS)],
+    ['cpp-scan-timeframe', '43', '22', nativeProfileHash('fib_confluence')],
+  ])
+  assert.ok(cells.every(c => c.configVersionHash.length === 64 && c.mappingStatus === 'stored_account_map'))
+  assert.equal(out.records.find(r => r.kind === 'scanner-tick-feed').value.profileHash, profileHash(DEFAULT_PARAMS))
+  assert.equal(db.prepare('SELECT total_changes() n').get().n, before)
+  assert.equal(scannerProfileRegistry(db).revision, registry.revision)
+})
+
+test('wrong-length or malformed profile hashes and unknown sources remain refused rather than accepted by a generic hash union', async t => {
+  const db = scene(t), tick = tickProfile(), tf = profile()
+  const invalid = [
+    { ...tick, profileHash: profileHashFull(DEFAULT_PARAMS) }, { ...tick, profileHash: tick.profileHash.slice(1) },
+    { ...tick, profileHash: tick.profileHash + '0' }, { ...tick, profileHash: 'g'.repeat(16) },
+    { ...tf, profileHash: profileHash(DEFAULT_PARAMS) }, { ...tf, profileHash: tf.profileHash.slice(1) },
+    { ...tf, profileHash: tf.profileHash + '0' }, { ...tf, profileHash: 'g'.repeat(64) },
+    { ...tick, source: 'unknown-scanner' }, { ...tf, strategy: 'arbitrary-user-text' },
+  ]
+  // Malformed retained state bypasses registration only in this corruption
+  // fixture. The production reader must refuse it without rewriting it.
+  setState(db, 'scanner_mirror_profiles_json', JSON.stringify([tick, tf, ...invalid]))
+  comparisonRecord(db, 'wrong-feed-hash', 'cpp-scan-tick', 'candidate', { feed: { accountId: '43', host: 'demo.ctraderapi.com', symbolId: '22' }, profileHash: profileHashFull(DEFAULT_PARAMS) }, NOW - 500)
+  const out = await readScannerEvidence(db, { now: NOW, env: {} })
+  assert.equal(out.summary.invalidProfiles, invalid.length)
+  assert.equal(out.records.filter(r => r.kind === 'scanner-profile-cell').length, 2)
+  assert.equal(out.records.find(r => r.kind === 'scanner-tick-feed' && r.value.accountId === '43').value.profileHash, null)
+  assert.ok(out.summary.missing.includes('invalid_profile_identity'))
+  assert.doesNotMatch(JSON.stringify(out), /unknown-scanner|arbitrary-user-text/)
+})
+
+test('retained real902-profile registry projects all five anchors while detail and account ownership stay bounded', async t => {
+  const db = scene(t), { profiles } = JSON.parse(readFileSync(new URL('../../docs/scanner-realign-rollback-2026-10-07.json', import.meta.url), 'utf8'))
+  const maps = new Map()
+  for (const p of profiles) {
+    if (!maps.has(p.feed.accountId)) maps.set(p.feed.accountId, {})
+    // Offline identity fixture only: these names are not broker symbol claims.
+    maps.get(p.feed.accountId)[`FIXTURE_${p.feed.symbolId}`] = Number(p.feed.symbolId)
+    db.prepare('INSERT OR IGNORE INTO accounts(account_id,is_live) VALUES(?,?)').run(p.feed.accountId, p.feed.host === 'live.ctraderapi.com' ? 1 : 0)
+  }
+  for (const [accountId, map] of maps) setState(db, `symbol_id_map:${accountId}`, JSON.stringify({ accountId, map }))
+  registerScannerProfiles(db, { expectedRevision: scannerProfileRegistry(db).revision, profiles }, { env: {} })
+  const before = db.prepare('SELECT total_changes() n').get().n
+  const out = await readScannerEvidence(db, { now: NOW, env: {} })
+  assert.equal(out.summary.revision, '5bd5533f68380ce54cd87bb04d158da5e379af1d598312d4eaf6633471af676f')
+  assert.equal(out.summary.registeredProfiles, 902); assert.equal(out.summary.invalidProfiles, 0)
+  const groups = out.records.filter(r => r.kind === 'scanner-profile-group').map(r => r.value)
+  assert.equal(groups.length, 5)
+  assert.equal(groups.filter(g => g.source === 'cpp-scan-tick').reduce((n, g) => n + g.profiles, 0), 212)
+  assert.equal(groups.find(g => g.source === 'cpp-scan-timeframe').profiles, 690)
+  assert.ok(out.summary.cellsIncluded <= 256); assert.equal(out.summary.profilesTruncated, true)
+  assert.ok(out.summary.outputBytes <= 98304)
+  assert.ok(out.records.filter(r => r.kind === 'scanner-profile-cell').every(r => r.value.mappingStatus === 'stored_account_map'))
+  assert.equal(db.prepare('SELECT total_changes() n').get().n, before)
 })
 
 test('foreign maps, stale missing feeds, unknown coverage and native failures remain explicit and never leak raw errors', async t => {

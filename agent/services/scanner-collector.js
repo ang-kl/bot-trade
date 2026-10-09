@@ -1,8 +1,13 @@
 import { setImmediate as yieldTurn } from 'node:timers/promises'
 import { pollScannerMirrors } from './scanner-candidates.js'
-import { TickComparisonReader, retainComparisons } from './scanner-comparison.js'
+import { TickComparisonReader, retainComparisons, comparisonMemo, validateComparisonPage } from './scanner-comparison.js'
 import { scannerRequest } from './scanner-feed.js'
 import { setState } from '../db.js'
+
+// Codex · №12,751 · 2026-10-10; codex-footprint: bounded-comparison-commits.
+// The captured 128-row transaction blocked a main state write throughout its
+// 572 ms busy interval. Release between pairs; no hardware-time guarantee.
+const COMPARISON_COMMIT_ROWS = 2
 
 // Runs only inside the separately enabled observation worker. Each round
 // services both candidate streams before a bounded tick-comparison drain.
@@ -14,7 +19,7 @@ export function createScannerCollector(db, deps = {}) {
   return async function collect() {
     if (running) return { skipped: 'in_flight', delayMs: 100 }
     running = true
-    const started = now(), out = { readAtMs: started, orderAuthority: false, tickPages: 0, tickRecords: 0, tickBacklog: false }
+    const started = now(), out = { readAtMs: started, orderAuthority: false, tickPages: 0, tickCommits: 0, tickRecords: 0, tickBacklog: false }
     try {
       if (lastRetention == null || started - lastRetention >= 60_000) { retainComparisons(db, started); lastRetention = started }
       out.mirrors = await mirrors({ env, now })
@@ -25,13 +30,24 @@ export function createScannerCollector(db, deps = {}) {
         for (let pages = 0; pages < 8 && (pages === 0 || now() - tickStarted < 1000); pages++) {
           let page = await request(env.SCANNER_TICK_URL, env.SCANNER_TICK_SECRET, `/comparisons?after=${tick.after}`)
           if (tick.instance && tick.instance !== page.instanceId) page = await request(env.SCANNER_TICK_URL, env.SCANNER_TICK_SECRET, '/comparisons?after=0')
-          const before = tick.after
-          tick.consume(db, page, now())
-          out.tickPages++; out.tickRecords += page.candidates.length
-          out.tickBacklog = tick.after < page.latestCursor
-          if (out.tickBacklog && (tick.after === before || !page.candidates.length)) throw new Error('comparison_cursor_no_progress')
+          validateComparisonPage(page)
+          const before = tick.instance === page.instanceId ? tick.after : 0
+          out.tickBacklog = before < page.latestCursor
+          const remaining = page.candidates.filter(row => row.cursor > before), memo = comparisonMemo()
+          // One bounded memo per native page: do not reparse the registry and
+          // account maps for every prefix. Never retain it for another fetch.
+          for (let offset = 0; offset < Math.max(1, remaining.length) && (offset === 0 || now() - tickStarted < 1000); offset += COMPARISON_COMMIT_ROWS) {
+            const prefix = { ...page, gap: offset === 0 && page.gap, candidates: remaining.slice(offset, offset + COMPARISON_COMMIT_ROWS) }
+            tick.consume(db, prefix, now(), memo)
+            if (offset === 0) out.tickPages++
+            out.tickCommits++; out.tickRecords += prefix.candidates.length
+            out.tickBacklog = tick.after < page.latestCursor
+            if (out.tickBacklog && (tick.after === before || !remaining.length)) throw new Error('comparison_cursor_no_progress')
+            if (out.tickBacklog) await (deps.yieldTurn ?? yieldTurn)()
+          }
+          // Budget exhaustion leaves the exact committed cursor. The next
+          // fetch resumes its suffix; nothing is dropped or marked consumed.
           if (!out.tickBacklog) break
-          await (deps.yieldTurn ?? yieldTurn)()
         }
       }
       const backlog = out.tickBacklog || out.mirrors.outcomes?.some(o => o.backlog)

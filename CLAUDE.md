@@ -1,4 +1,21 @@
 <!-- Codex · №12,675 · 2026-10-09; codex-footprint: current-work-reporting. -->
+<!-- Codex · №12,752 · 2026-10-10; codex-footprint: scanner-contention-correction. -->
+## Bounded batch continuation — demonstrated scanner writer
+
+The capped PR1291 capture identified a scanner comparison write reservation
+enclosing a main-connection SQLITE_BUSY. It does not establish the earlier
+watchdog incident's cause or separate disk work from scheduling time. Correct
+the observed page-wide write reservation with bounded commits, full-page
+validation before any commit, shared per-page identity memo, explicit backlog,
+and recovery from the last committed cursor. Preserve comparison ownership,
+gap records, replay identity and each committed portion's atomicity. No timeout
+increase, trading-policy change or native rebuild belongs to this correction.
+The readout also rejected legitimate 16-hex tick profile hashes; use each
+source's actual hash contract while retaining 64-hex registry revisions.
+Keep both failures and red-before/green-after integrated evidence. Finish the
+required release gates and one bounded verification; do not infer success for
+unrelated historical incidents, scanner parity or hybrid partial execution.
+
 <!-- Codex · №12,722 · 2026-10-10; codex-footprint: bounded-gap-batch. -->
 ## Bounded four-gap batch — observation and deterministic CI
 

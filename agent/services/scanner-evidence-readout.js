@@ -16,6 +16,11 @@ const id = v => typeof v === 'string' && /^[1-9]\d{0,18}$/.test(v) ? v : null
 const integer = v => Number.isSafeInteger(v) && v >= 0 ? v : null
 const bool = v => typeof v === 'boolean' ? v : null
 const hash = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v) ? v : null
+// Codex · №12,751 · 2026-10-10; codex-footprint: scanner-hash-contract.
+// Tick registry/feed identities use profileHash()'s 16-hex prefix. Native
+// timeframe profiles and registry/configuration digests retain full SHA256.
+const tickHash = v => typeof v === 'string' && /^[a-f0-9]{16}$/.test(v) ? v : null
+const profileHashFor = (s, v) => s === 'cpp-scan-tick' ? tickHash(v) : s === 'cpp-scan-timeframe' ? hash(v) : null
 const iso = v => typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(v) && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null
 const host = v => HOSTS.has(v) ? v : null
 const source = v => SOURCES.has(v) ? v : null
@@ -31,7 +36,7 @@ function missingReason(v) {
 function cellOf(p) {
   const cell = { source: source(p?.source), accountId: id(p?.feed?.accountId), host: host(p?.feed?.host), symbolId: id(p?.feed?.symbolId),
     timeframe: p?.timeframe == null ? null : typeof p.timeframe === 'string' && /^\d{1,4}(?:m|h|d|w|mo)$/.test(p.timeframe) ? p.timeframe : null,
-    strategy: strategy(p?.strategy), profileHash: hash(p?.profileHash),
+    strategy: strategy(p?.strategy), profileHash: profileHashFor(p?.source, p?.profileHash),
     configVersionHash: typeof p?.configVersion === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(p.configVersion)
       ? createHash('sha256').update(p.configVersion).digest('hex') : null }
   return cell.source && cell.accountId && cell.host && cell.symbolId && cell.strategy && cell.profileHash && cell.configVersionHash
@@ -97,7 +102,7 @@ export async function readScannerEvidence(db, { now = Date.now(), env = process.
     }
   }
   for (const f of snapshot.tickFeeds.slice(0, LIMITS.feeds)) add('scanner-tick-feed', { accountId: id(f.accountId), host: host(f.host),
-    profileHash: hash(f.profileHash), observedAt: iso(f.observedAt) })
+    profileHash: tickHash(f.profileHash), observedAt: iso(f.observedAt) })
   for (const s of (mirrors?.sources || []).slice(0, 8)) add('scanner-source', { source: source(s.source),
     observedAtMs: integer(s.observed_at_ms), cursor: integer(s.cursor), gaps: integer(s.gaps), rejected: integer(s.rejected), lastErrorPresent: !!s.last_error })
   for (const c of (mirrors?.candidates || []).slice(0, LIMITS.groups)) add('scanner-candidates', { source: source(c.source), accountId: id(c.account_id),
