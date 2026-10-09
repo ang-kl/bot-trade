@@ -935,6 +935,20 @@ export function wsGetSymbolById(host, clientId, clientSecret, accessToken, accou
  * broker's sub-classification under each class). Together with the light
  * symbol list these build the instrument tree: class → category → symbols.
  */
+// Codex · №12,473 · 2026-10-09; codex-footprint: bounded account-owned catalogue.
+// One isolated read session; no shared-host symbol cache, retries or OAuth
+// recovery. The total deadline includes auth and all three read requests.
+export async function wsGetAccountInstrumentCatalogue(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 15_000) {
+  const payload = { ctidTraderAccountId: Number(accountId) }
+  const rows = await wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.ASSET_CLASS_LIST_REQ, payload }, expect: PT.ASSET_CLASS_LIST_RES },
+    { send: { payloadType: PT.SYMBOL_CATEGORY_REQ, payload }, expect: PT.SYMBOL_CATEGORY_RES },
+    { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ...payload, includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
+  ], timeoutMs, true, { usePool: false, extendTokenWait: false })
+  return { assetClasses: rows.at(-3), categories: rows.at(-2), symbols: rows.at(-1) }
+}
+
 export function wsGetAssetClasses(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 20_000) {
   return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),

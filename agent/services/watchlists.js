@@ -17,6 +17,7 @@
 import { readFileSync } from 'node:fs'
 import { getState, setState } from '../db.js'
 import { getEnabledAccounts } from './account-registry.js'
+import { excludedInstrumentFilter } from '../lib/owner-instrument-policy.js'
 
 export const WATCHLIST_KEY = 'autopilot_symbols_json'
 export const LEGACY_KEY = 'watchlist_json'
@@ -50,12 +51,15 @@ export function normalizeItem(s) {
  * @param {string|number|null} accountId  null → the global list only
  */
 export function readWatchlist(db, accountId = null) {
+  // Codex · №12,472 · 2026-10-09; codex-footprint: exclude new-entry universe, never held positions.
+  const excluded = excludedInstrumentFilter(db, accountId)
+  const visible = rows => rows.map(normalizeItem).filter(i => !excluded(i.symbol))
   if (accountId != null && accountId !== '') {
     const own = parse(getState(db, acctWatchlistKey(String(accountId))))
-    if (own) return own.map(normalizeItem)
+    if (own) return visible(own)
   }
   const global = parse(getState(db, WATCHLIST_KEY)) || parse(getState(db, LEGACY_KEY))
-  return (global || []).map(normalizeItem)
+  return visible(global || [])
 }
 
 /** True when this account has its OWN list rather than inheriting the global one. */
@@ -71,7 +75,8 @@ export function hasOwnWatchlist(db, accountId) {
 export function writeWatchlist(db, accountId, items) {
   if (accountId == null || accountId === '') throw new Error('writeWatchlist needs an accountId')
   if (!Array.isArray(items)) throw new Error('writeWatchlist needs an array')
-  const clean = items.map(normalizeItem).filter(i => i.symbol)
+  const excluded = excludedInstrumentFilter(db, accountId)
+  const clean = items.map(normalizeItem).filter(i => i.symbol && !excluded(i.symbol))
   setState(db, acctWatchlistKey(String(accountId)), JSON.stringify(clean))
   return clean
 }

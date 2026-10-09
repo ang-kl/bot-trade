@@ -35,6 +35,7 @@
 // ---------------------------------------------------------------------------
 
 import { randomBytes } from 'node:crypto'
+import { ownerInstrumentVerdict } from '../lib/owner-instrument-policy.js'
 import { admitEntry, engineStatusFor } from './entry-mode.js'
 import { labelIntentId } from '../lib/trade-labels.js'
 import { producerBasis } from '../lib/entry-producers.js'
@@ -174,6 +175,15 @@ export function reserveStandingPermits(db, { accountId, producerId, basis = null
       // a side left out without a name is the PR-D trend withhold.
       const { key, symbol, symbolId, volume, sides = null, withheld = null } = e || {}
       if (!key || !symbol) continue
+      // Codex · №12,472 · 2026-10-09; codex-footprint: revoke excluded standing permits before reuse.
+      const policy = ownerInstrumentVerdict(db, { accountId: id, symbol, symbolId })
+      if (!policy.ok) {
+        for (const side of ['BUY', 'SELL']) {
+          for (const r of standing.all(id, producerId, String(key), side)) { release.run(policy.reason, iso(now), iso(now), r.id); out.released++ }
+          out.refused.push({ key, symbol, side, reason: policy.reason })
+        }
+        continue
+      }
       const usable = sizeRequired ? Number(volume) > 0 : (volume == null || Number(volume) > 0)
       const sameVolume = (r) => (volume == null ? r.volume == null : Number(r.volume) === Number(volume))
       for (const side of ['BUY', 'SELL']) {
@@ -273,6 +283,10 @@ export function reserveEntry(db, {
   if (id == null) return { ok: false, reason: 'no_account' }
   if (!side || !['BUY', 'SELL'].includes(String(side).toUpperCase())) return { ok: false, reason: `bad_side: ${side}` }
   if (symbolId == null && !symbol) return { ok: false, reason: 'no_symbol' }
+  // Codex · №12,472 · 2026-10-09; codex-footprint: every producer shares the owner exclusion.
+  const policy = ownerInstrumentVerdict(db, { accountId: id, symbol, symbolId })
+  if (!policy.ok) return policy
+  symbol = policy.symbol
   const sideU = String(side).toUpperCase()
   const tx = db.transaction(() => {
     // WP-A (25-09-2026): no 'bar' default. The fence derives the basis from
@@ -317,6 +331,12 @@ export function redeemPermit(db, permitId, { now = Date.now() } = {}) {
     const row = db.prepare('SELECT * FROM entry_intents WHERE permit_id = ?').get(String(permitId || ''))
     if (!row) return { ok: false, reason: 'permit_unknown' }
     if (row.state !== 'RESERVED') return { ok: false, reason: `permit_consumed: ${row.state}`, intent: row }
+    // Recheck retained, unsubmitted permits from before this owner instruction.
+    const policy = ownerInstrumentVerdict(db, { accountId: row.account_id, symbol: row.symbol, symbolId: row.symbol_id })
+    if (!policy.ok) {
+      db.prepare(`UPDATE entry_intents SET state = 'RELEASED', error_code = ?, resolution_source = 'owner_policy', resolved_at = ?, updated_at = ? WHERE id = ? AND state = 'RESERVED'`).run(policy.reason, iso(now), iso(now), row.id)
+      return { ...policy, intent: row }
+    }
     if (Date.parse(row.permit_expires_at) <= now) {
       db.prepare(`UPDATE entry_intents SET state = 'EXPIRED', resolution_source = 'timeout', resolved_at = ?, updated_at = ? WHERE id = ? AND state = 'RESERVED'`)
         .run(iso(now), iso(now), row.id)
