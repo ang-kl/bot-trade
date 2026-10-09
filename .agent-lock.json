@@ -1,6 +1,18 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude \u00b7 \u2116 11,660 07-Oct).",
-  "locks": [],
+  "locks": [
+    {
+      "id": "codex-count-instructions-2026-10-09",
+      "locked_by": "codex-count-instructions",
+      "created_at": "2026-10-09T12:24:34.247128+00:00",
+      "expires_at": "2026-10-09T14:24:34.247128+00:00",
+      "files": [
+        "CLAUDE.md"
+      ],
+      "branch": "docs/remove-fixed-acceptance-counts-2026-10-09",
+      "purpose": "Owner requests removal of fixed acceptance-count reporting directives; documentation only"
+    }
+  ],
   "notes": [
     {
       "from": "claude-builder",
