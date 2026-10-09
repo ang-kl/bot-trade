@@ -24,6 +24,76 @@ function targetIds(raw) {
   if(typeof raw !== 'string' || !/^[1-9]\d{0,14}(,[1-9]\d{0,14}){0,7}$/.test(raw)) return null
   return [...new Set(raw.split(',').map(Number))]
 }
+
+// Codex · №12,808 · 2026-10-10; codex-footprint: hybrid-verdict-only-read.
+// This scope reads only the two verdicts and primary-key owners of bounded
+// stored refusals. A position is never inferred from a matching account alone.
+const protocolId = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value) ? value
+  : Number.isSafeInteger(value) && value > 0 ? String(value) : null
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+function hybridVolume(value) {
+  const result = {}
+  for (const field of VOLUME_FIELDS) {
+    const v = value[field]
+    if (['accountId', 'positionId', 'symbolId'].includes(field)) result[field] = protocolId(v)
+    else if (field === 'source') result[field] = v === 'ordinary_enrolment_reads' ? v : null
+    else if (field === 'units') result[field] = v === 'ctrader_protocol_volume' ? v : null
+    else if (field === 'host') result[field] = ['demo.ctraderapi.com', 'live.ctraderapi.com'].includes(v) ? v : null
+    else if (field === 'side') result[field] = ['BUY', 'SELL'].includes(v) ? v : null
+    else if (field.endsWith('Valid')) result[field] = typeof v === 'boolean' ? v : null
+    else result[field] = typeof v === 'number' && Number.isFinite(v) ? v : null
+  }
+  return result
+}
+function readHybridEvidence(db, now) {
+  return db.transaction(() => {
+    const verdicts = readHybridVerdicts(db)
+    const pass = verdicts.momentum_partial_pass_json, deferred = pass.cappedHybrid?.deferred
+    const out = { readAt: now, scope: 'hybrid', verdicts, refusals: {
+      status: deferred?.rows ? 'observed' : 'unavailable', total: deferred?.total ?? null,
+      truncated: deferred?.truncated ?? false, limit: CAP, rows: [],
+    } }
+    // Do not read another state value or any owner when no refusal exists.
+    if (!deferred?.rows?.length) return out
+    const raw = stored(db, 'momentum_partial_pass_json')?.cappedHybrid?.deferred
+    if (!Array.isArray(raw) || raw.length !== deferred.total) throw Error('invalid_refusal_snapshot')
+    const owner = db.prepare('SELECT id,account_id,ctrader_position_id FROM trades WHERE id=?')
+    for (const [index, refusal] of raw.slice(0, CAP).entries()) {
+      const v = object(refusal?.volumeInputs) ? refusal.volumeInputs : null
+      const tradeId = Number.isSafeInteger(refusal?.tradeId) && refusal.tradeId > 0 ? refusal.tradeId : null
+      const accountId = protocolId(refusal?.accountId), suppliedPosition = refusal?.positionId
+      const positionId = protocolId(suppliedPosition ?? v?.positionId)
+      const row = { index, passAt: pass.at, reason: deferred.rows[index].reason,
+        tradeId, accountId, positionId, ownerStatus: 'refusal_identity_missing_or_invalid', owner: null,
+        inputStatus: refusal?.volumeInputs == null ? 'not_recorded' : v ? 'identity_unverified' : 'malformed', inputs: null }
+      const owned = tradeId === null ? null : owner.get(tradeId)
+      if (tradeId !== null && !owned) row.ownerStatus = 'trade_missing'
+      else if (owned && accountId && positionId) {
+        const ownAccount = protocolId(owned.account_id), ownPosition = protocolId(owned.ctrader_position_id)
+        if (!ownAccount || !ownPosition) row.ownerStatus = 'owner_identity_missing_or_invalid'
+        else if (accountId !== ownAccount || positionId !== ownPosition
+          || (suppliedPosition != null && protocolId(suppliedPosition) !== ownPosition)) row.ownerStatus = 'identity_conflict'
+        else {
+          row.ownerStatus = 'stored_owned_position'
+          row.owner = { tradeId: owned.id, accountId: ownAccount, positionId: ownPosition }
+          if (v) {
+            const inputAccount = protocolId(v.accountId), inputPosition = protocolId(v.positionId)
+            row.inputStatus = !inputAccount || !inputPosition ? 'identity_missing_or_invalid'
+              : inputAccount !== ownAccount || inputPosition !== ownPosition ? 'identity_conflict' : 'stored_owned_observation'
+            if (row.inputStatus === 'stored_owned_observation') {
+              row.inputs = hybridVolume(v)
+              row.invalidFields = VOLUME_FIELDS.filter(field => v[field] != null && row.inputs[field] === null)
+            }
+          }
+        }
+      }
+      if (row.ownerStatus === 'identity_conflict' && v) row.inputStatus = 'identity_conflict'
+      out.refusals.rows.push(row)
+    }
+    return out
+  }).deferred()
+}
+
 export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
   if(!Array.isArray(tradeIds)||tradeIds.length>8||tradeIds.some(n=>!Number.isSafeInteger(n)||n<=0)) throw Error('invalid_targets')
   // The existing status index narrows to open trades; the new trade/kind index
@@ -94,6 +164,10 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   setTimer=setTimeout,clearTimer=clearTimeout,fetchImpl=fetch}={}) {
   const tradeIds=targetIds(env.OWNED_EVIDENCE_TRADE_IDS)
   if(tradeIds===null)return null
+  // Codex · №12,808 · 2026-10-10; codex-footprint: hybrid-verdict-only-read.
+  const scope=env.OWNED_EVIDENCE_SCOPE,hybridOnly=scope==='hybrid'
+  if(scope!=null&&!hybridOnly)return null
+  if(hybridOnly&&(tradeIds.length||env.OWNED_EVIDENCE_SCANNER==='1'))return null
   const id=env.OWNED_EVIDENCE_RUN_ID,expires=Date.parse(env.OWNED_EVIDENCE_EXPIRES_AT||'')
   if(typeof id!=='string'|| !/^[a-zA-Z0-9_-]{8,64}$/.test(id)|| !Number.isFinite(expires)||expires<=now()||expires-now()>3600000) return null
   let bytes=0,dropped=0
@@ -112,13 +186,24 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   }
   try {
     if(db.prepare('INSERT OR IGNORE INTO agent_state(key,value) VALUES (?,?)')
-      .run(`owned_evidence:${id}`,JSON.stringify({at:now(),tradeIds})).changes!==1) return null
+      .run(`owned_evidence:${id}`,JSON.stringify({at:now(),tradeIds,...(hybridOnly?{scope}: {})})).changes!==1) return null
   } catch { emit('not-started',{reason:'durable_claim_failed'});return null }
   // A single delayed read gives ordinary enrolment a chance to persist inputs.
   // It never runs enrolment, submits an order, or repeats until a desired result.
+  let hybridReadStarted=false
   const timer=setTimer(()=>{
+    if(hybridOnly){if(hybridReadStarted)return;hybridReadStarted=true}
     if(now()>=expires){emit('exit',{reason:'deadline_expired',dropped});return}
     try {
+      if(hybridOnly){
+        const {verdicts,refusals,...metadata}=readHybridEvidence(db,now())
+        const {rows,...bounds}=refusals
+        emit('summary',{...metadata,refusals:bounds})
+        for(const [key,value] of Object.entries(verdicts))emit('stored-verdict',{key,readAt:metadata.readAt,...value})
+        for(const refusal of rows)emit('hybrid-refusal',refusal)
+        emit('exit',{at:now(),done:dropped===0,dropped,bytes,...(dropped?{reason:'output_incomplete'}:{})})
+        return
+      }
       const {trades,missingTargets,...metadata}=readTargetedEvidence(db,now(),tradeIds)
       emit('summary',{...metadata,missingTargetIds:missingTargets.map(row=>row.tradeId)})
       // Requested missing records get their bounded verdict before population
@@ -153,6 +238,6 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
     } catch { emit('exit',{at:now(),done:false,reason:'stored_read_failed',dropped}) }
   },180000)
   timer?.unref?.()
-  emit('scheduled',{at:now(),delayMs:180000,expires,brokerRequests:0,profiling:false,scannerRead:env.OWNED_EVIDENCE_SCANNER==='1',nativeReadLimit:env.OWNED_EVIDENCE_SCANNER==='1'?1:0})
+  emit('scheduled',{at:now(),delayMs:180000,expires,brokerRequests:0,profiling:false,scannerRead:env.OWNED_EVIDENCE_SCANNER==='1',nativeReadLimit:env.OWNED_EVIDENCE_SCANNER==='1'?1:0,...(hybridOnly?{scope}:{})})
   return ()=>clearTimer(timer)
 }

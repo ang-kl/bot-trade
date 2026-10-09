@@ -3,6 +3,7 @@ import { pollScannerMirrors } from './scanner-candidates.js'
 import { TickComparisonReader, retainComparisons, comparisonMemo, validateComparisonPage } from './scanner-comparison.js'
 import { scannerRequest } from './scanner-feed.js'
 import { setState } from '../db.js'
+import { withRetentionDiagnostic } from './contention-diagnostic.js'
 
 // Codex · №12,751 · 2026-10-10; codex-footprint: bounded-comparison-commits.
 // The captured 128-row transaction blocked a main state write throughout its
@@ -21,7 +22,10 @@ export function createScannerCollector(db, deps = {}) {
     running = true
     const started = now(), out = { readAtMs: started, orderAuthority: false, tickPages: 0, tickCommits: 0, tickRecords: 0, tickBacklog: false }
     try {
-      if (lastRetention == null || started - lastRetention >= 60_000) { retainComparisons(db, started); lastRetention = started }
+      if (lastRetention == null || started - lastRetention >= 60_000) {
+        // Codex · №12,809 · 2026-10-10; codex-footprint: retention-lifecycle-attribution.
+        withRetentionDiagnostic(db, () => retainComparisons(db, started)); lastRetention = started
+      }
       out.mirrors = await mirrors({ env, now })
       if (env.SCANNER_TICK_URL && env.SCANNER_TICK_SECRET) {
         // Candidate polling may use its own two-second HTTP deadlines. It

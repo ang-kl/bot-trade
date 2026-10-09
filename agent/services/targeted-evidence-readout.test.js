@@ -1,7 +1,10 @@
 // Codex · №12,435 · 2026-10-09; codex-footprint: targeted-owned-evidence.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
+import { join } from 'node:path'
 import { initDB, setState } from '../db.js'
+import { tempDir } from '../test-support/temp-dir.js'
 import { readTargetedEvidence, startTargetedEvidenceReadout } from './targeted-evidence-readout.js'
 const NOW=1791508672695
 function scene(t){
@@ -149,4 +152,188 @@ test('scanner callback failure and expiry finish once without raw exception text
   db.exec('DROP TABLE accounts');await callback()
   assert.equal(calls,1);assert.equal(logs.at(-1).value.scanner.reason,'scanner_read_failed')
   assert.doesNotMatch(JSON.stringify(logs),/no such table|secret/)
+})
+
+// Codex · №12,808 · 2026-10-10; codex-footprint: hybrid-verdict-only-read.
+function hybridScene(t, path=':memory:') {
+  const db=new Database(path);t.after(()=>db.close())
+  db.pragma('journal_mode=WAL')
+  // Deliberately no account, movement, risk, protection or scanner tables.
+  db.exec(`CREATE TABLE agent_state(key TEXT PRIMARY KEY,value TEXT);
+    CREATE TABLE trades(id INTEGER PRIMARY KEY,account_id TEXT,ctrader_position_id TEXT);
+    INSERT INTO trades VALUES(1,'42','33'),(2,'43','33'),(3,NULL,NULL)`)
+  return db
+}
+function hybridRun(db, suffix, extra={}) {
+  const logs=[],callbacks=[]
+  const options={env:{OWNED_EVIDENCE_SCOPE:'hybrid',OWNED_EVIDENCE_RUN_ID:`hybrid-only-${suffix}`,
+    OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()},now:()=>NOW,
+    log:line=>logs.push(JSON.parse(line)),setTimer:(callback,ms)=>{assert.equal(ms,180000);callbacks.push(callback)},clearTimer:()=>{},
+    fetchImpl:()=>{throw Error('unexpected_network_read')},...extra}
+  const stop=startTargetedEvidenceReadout(db,options)
+  return {logs,callbacks,options,stop}
+}
+function refusalInputs(extra={}) {
+  return {source:'ordinary_enrolment_reads',units:'ctrader_protocol_volume',host:'demo.ctraderapi.com',
+    accountId:'42',positionId:'33',symbolId:'22',side:'BUY',metadataReceivedAtMs:NOW-10,reconcileReceivedAtMs:NOW-5,
+    volume:300,halfVolume:150,minVolume:100,stepVolume:100,minVolumeValid:true,stepVolumeValid:true,...extra}
+}
+function saveRefusals(db, rows) {
+  setState(db,'momentum_partial_pass_json',JSON.stringify({at:'2026-10-09T01:00:00Z',ok:true,activePlans:0,
+    cappedHybrid:{examined:rows.length,enrolled:[],excluded:[],delegated:[],deferred:rows,errors:[]}}))
+  setState(db,'hybrid_tick_controller_json',JSON.stringify({at:NOW,hosts:{'demo.ctraderapi.com':{plans:0,errors:0,error:null}}}))
+}
+
+test('hybrid scope emits one query-only owned refusal snapshot without ancillary reads or writes',t=>{
+  const db=hybridScene(t)
+  saveRefusals(db,[{tradeId:1,accountId:'42',reason:'half_and_runner_not_representable',volumeInputs:refusalInputs()}])
+  const run=hybridRun(db,'once')
+  assert.equal(typeof run.stop,'function')
+  assert.equal(startTargetedEvidenceReadout(db,run.options),null)
+  assert.equal(run.callbacks.length,1)
+  const changes=db.prepare('SELECT total_changes() n').get().n,reads=[]
+  const prepare=db.prepare.bind(db)
+  db.prepare=sql=>{
+    const statement=prepare(sql),get=statement.get.bind(statement)
+    statement.get=(...args)=>{reads.push({sql,args});return get(...args)}
+    return statement
+  }
+  db.pragma('query_only=ON');run.callbacks[0]();run.callbacks[0]();db.prepare=prepare
+  assert.equal(db.prepare('SELECT total_changes() n').get().n,changes)
+  assert.deepEqual(run.logs.map(row=>row.kind),['scheduled','summary','stored-verdict','stored-verdict','hybrid-refusal','exit'])
+  const refusal=run.logs.find(row=>row.kind==='hybrid-refusal').value
+  assert.deepEqual(refusal.owner,{tradeId:1,accountId:'42',positionId:'33'})
+  assert.equal(refusal.inputStatus,'stored_owned_observation')
+  assert.equal(refusal.inputs.volume,300);assert.equal(refusal.inputs.halfVolume,150)
+  assert.equal(refusal.inputs.reconcileReceivedAtMs,NOW-5)
+  assert.deepEqual(refusal.invalidFields,[])
+  assert.equal(run.logs.at(-1).value.done,true);assert.equal(run.logs.at(-1).value.dropped,0)
+  assert.deepEqual(reads.filter(row=>row.sql.includes('FROM agent_state')).map(row=>row.args[0]),
+    ['momentum_partial_pass_json','hybrid_tick_controller_json','momentum_partial_pass_json'])
+  assert.equal(reads.filter(row=>row.sql.includes('FROM trades')).length,1)
+  assert.ok(reads.every(row=>/FROM (agent_state|trades)\b/.test(row.sql)))
+})
+
+test('hybrid refusal identities distinguish missing and conflicting owners without leaking foreign volume or arbitrary input fields',t=>{
+  const db=hybridScene(t),secret='private-token-must-not-appear'
+  const refusal=(extra={})=>({tradeId:1,accountId:'42',reason:'half_and_runner_not_representable',...extra})
+  saveRefusals(db,[
+    refusal({positionId:'33'}),
+    refusal({positionId:'33',volumeInputs:secret}),
+    refusal({volumeInputs:refusalInputs({source:secret,units:secret,host:secret,side:secret,symbolId:secret,
+      volume:secret,minVolumeValid:secret,accessToken:secret,nested:{secret}})}),
+    refusal({volumeInputs:refusalInputs({accountId:'43',volume:987654321})}),
+    refusal({positionId:'44',volumeInputs:refusalInputs({volume:987654322})}),
+    refusal({tradeId:999,volumeInputs:refusalInputs({volume:987654323})}),
+    refusal({accountId:null,volumeInputs:refusalInputs({volume:987654324})}),
+    refusal({tradeId:3,volumeInputs:refusalInputs({volume:987654325})}),
+    refusal({positionId:'33',volumeInputs:refusalInputs({accountId:null,volume:987654326})}),
+    refusal({tradeId:2,volumeInputs:refusalInputs({volume:987654327})}),
+    refusal({reason:`SQLITE_BUSY ${secret}`,positionId:'33'}),
+  ])
+  const run=hybridRun(db,'identity');db.pragma('query_only=ON');run.callbacks[0]()
+  const rows=run.logs.filter(row=>row.kind==='hybrid-refusal').map(row=>row.value)
+  assert.equal(rows[0].inputStatus,'not_recorded');assert.equal(rows[0].ownerStatus,'stored_owned_position')
+  assert.equal(rows[1].inputStatus,'malformed');assert.equal(rows[1].inputs,null)
+  assert.equal(rows[2].inputStatus,'stored_owned_observation');assert.equal(rows[2].inputs.volume,null)
+  assert.deepEqual(rows[2].invalidFields,['source','units','host','symbolId','side','volume','minVolumeValid'])
+  assert.equal(rows[3].inputStatus,'identity_conflict');assert.equal(rows[3].inputs,null)
+  assert.equal(rows[4].ownerStatus,'identity_conflict');assert.equal(rows[4].owner,null)
+  assert.equal(rows[5].ownerStatus,'trade_missing')
+  assert.equal(rows[6].ownerStatus,'refusal_identity_missing_or_invalid')
+  assert.equal(rows[7].ownerStatus,'owner_identity_missing_or_invalid')
+  assert.equal(rows[8].inputStatus,'identity_missing_or_invalid')
+  assert.equal(rows[9].ownerStatus,'identity_conflict')
+  assert.equal(rows[10].reason,'SQLITE_BUSY')
+  assert.doesNotMatch(JSON.stringify(run.logs),/private-token-must-not-appear|98765432[1-7]|accessToken|nested/)
+  assert.equal(run.logs.at(-1).value.done,true)
+})
+
+test('hybrid verdict absence and malformed stored inputs remain explicit, and empty refusals need no owner table',t=>{
+  const db=hybridScene(t)
+  db.exec('DROP TABLE trades')
+  let run=hybridRun(db,'absent');run.callbacks[0]()
+  assert.deepEqual(run.logs.filter(row=>row.kind==='stored-verdict').map(row=>row.value.reason),['missing','missing'])
+  assert.equal(run.logs.find(row=>row.kind==='summary').value.refusals.status,'unavailable')
+  saveRefusals(db,[])
+  run=hybridRun(db,'empty');run.callbacks[0]()
+  assert.equal(run.logs.find(row=>row.kind==='summary').value.refusals.total,0)
+  assert.equal(run.logs.at(-1).value.done,true)
+  setState(db,'momentum_partial_pass_json','{')
+  run=hybridRun(db,'invalid-json');run.callbacks[0]()
+  assert.equal(run.logs.find(row=>row.kind==='stored-verdict').value.reason,'invalid_json')
+  setState(db,'momentum_partial_pass_json',JSON.stringify({cappedHybrid:{deferred:'malformed-private-data'}}))
+  run=hybridRun(db,'invalid-list');run.callbacks[0]()
+  assert.equal(run.logs.find(row=>row.kind==='summary').value.refusals.status,'unavailable')
+  setState(db,'momentum_partial_pass_json',JSON.stringify({cappedHybrid:{deferred:[null]}}))
+  run=hybridRun(db,'null-row');run.callbacks[0]()
+  assert.equal(run.logs.at(-1).value.done,false);assert.equal(run.logs.at(-1).value.reason,'stored_read_failed')
+  assert.doesNotMatch(JSON.stringify(run.logs),/TypeError|Cannot read|malformed-private-data/)
+})
+
+test('invalid hybrid controls fail before claiming and expiry prevents every stored read',t=>{
+  const db=hybridScene(t)
+  for(const extra of [{OWNED_EVIDENCE_SCOPE:''},{OWNED_EVIDENCE_SCOPE:'HYBRID'},{OWNED_EVIDENCE_SCOPE:'other'},
+    {OWNED_EVIDENCE_SCANNER:'1'},{OWNED_EVIDENCE_TRADE_IDS:'1'}]){
+    const base={OWNED_EVIDENCE_SCOPE:'hybrid',OWNED_EVIDENCE_RUN_ID:'hybrid-invalid-mode',
+      OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
+    const run=hybridRun(db,'invalid',{env:{...base,...extra}})
+    assert.equal(run.stop,null);assert.equal(run.callbacks.length,0);assert.equal(run.logs.length,0)
+  }
+  assert.equal(db.prepare('SELECT count(*) n FROM agent_state').get().n,0)
+  let now=NOW
+  const run=hybridRun(db,'expired',{now:()=>now})
+  now=NOW+600001
+  db.exec('DROP TABLE agent_state;DROP TABLE trades')
+  run.callbacks[0]();run.callbacks[0]()
+  assert.equal(run.logs.length,2);assert.equal(run.logs.at(-1).value.reason,'deadline_expired')
+})
+
+test('hybrid snapshot keeps verdict and refusal owner consistent across a real concurrent WAL commit',t=>{
+  const db=hybridScene(t,join(tempDir('hybrid-read-snapshot-'),'ledger.db'))
+  saveRefusals(db,[{tradeId:1,accountId:'42',reason:'half_and_runner_not_representable',volumeInputs:refusalInputs()}])
+  const peer=new Database(db.name);t.after(()=>peer.close())
+  const run=hybridRun(db,'snapshot'),prepare=db.prepare.bind(db)
+  let changed=false
+  db.prepare=sql=>{
+    const statement=prepare(sql),get=statement.get.bind(statement)
+    statement.get=(...args)=>{
+      const result=get(...args)
+      if(!changed&&args[0]==='momentum_partial_pass_json'){
+        changed=true
+        peer.transaction(()=>{
+          peer.exec("UPDATE trades SET ctrader_position_id='44' WHERE id=1")
+          saveRefusals(peer,[])
+          setState(peer,'hybrid_tick_controller_json',JSON.stringify({at:NOW+100,hosts:{}}))
+        })()
+      }
+      return result
+    }
+    return statement
+  }
+  db.pragma('query_only=ON');run.callbacks[0]();db.prepare=prepare
+  assert.equal(changed,true)
+  assert.equal(run.logs.find(row=>row.kind==='hybrid-refusal').value.owner.positionId,'33')
+  assert.equal(run.logs.find(row=>row.kind==='stored-verdict'&&row.value.key==='hybrid_tick_controller_json').value.at,NOW)
+  assert.equal(JSON.parse(db.prepare("SELECT value FROM agent_state WHERE key='hybrid_tick_controller_json'").get().value).at,NOW+100)
+  assert.equal(db.prepare('SELECT ctrader_position_id FROM trades WHERE id=1').get().ctrader_position_id,'44')
+  assert.equal(run.logs.at(-1).value.done,true)
+})
+
+test('hybrid refusal joins are capped and an oversized required verdict cannot claim complete output',t=>{
+  const db=hybridScene(t)
+  saveRefusals(db,Array.from({length:70},()=>({tradeId:1,accountId:'42',reason:'half_and_runner_not_representable',volumeInputs:refusalInputs()})))
+  const run=hybridRun(db,'bounds');run.callbacks[0]()
+  assert.equal(run.logs.filter(row=>row.kind==='hybrid-refusal').length,64)
+  const bounds=run.logs.find(row=>row.kind==='summary').value.refusals
+  assert.equal(bounds.total,70);assert.equal(bounds.truncated,true)
+  assert.equal(run.logs.at(-1).value.done,true)
+  const row={accountId:'42',tradeId:1,positionId:'33',monitorId:1,stage:'ownership',observedAtMs:NOW,reason:'strategy_not_momentum'}
+  setState(db,'momentum_partial_pass_json',JSON.stringify({cappedHybrid:{deferred:[],excluded:Array(64).fill(row),delegated:Array(64).fill(row)}}))
+  const oversized=hybridRun(db,'output-cap');oversized.callbacks[0]()
+  assert.equal(oversized.logs.at(-1).value.done,false)
+  assert.equal(oversized.logs.at(-1).value.reason,'output_incomplete')
+  assert.ok(oversized.logs.at(-1).value.dropped>0)
+  assert.ok(oversized.logs.every(row=>Buffer.byteLength(JSON.stringify(row))<=16000))
+  assert.ok(oversized.logs.reduce((n,row)=>n+Buffer.byteLength(JSON.stringify(row)),0)<=256*1024)
 })

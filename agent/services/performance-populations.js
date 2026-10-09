@@ -1,4 +1,5 @@
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
+import { createLifecycleDiagnosticJob, forwardLifecycleDiagnostic, lifecycleDiagnosticEvent, startLifecycleWorkerDiagnostic } from './contention-diagnostic.js'
 import Database from 'better-sqlite3'
 import { accountAnalytics } from './account-analytics.js'
 import { ledgerWindows, classifyOutcome, plannedRr } from './perf-ledger.js'
@@ -268,9 +269,12 @@ function isolatedReport(db, kind, options = {}) {
   if (active.size >= capacity) return Promise.reject(new ReportUnavailableError(new Error(capacityError)))
   const job = new Promise((resolve, reject) => {
     let worker
+    // Codex · №12,809 · 2026-10-10; codex-footprint: retention-lifecycle-attribution.
+    const diagnosticJob = kind === 'order-lifecycle' ? createLifecycleDiagnosticJob(db) : null
     try {
-      worker = new Worker(new URL(import.meta.url), { workerData: { path: db.name, kind, options }, resourceLimits: { maxOldGenerationSizeMb: 128 } })
+      worker = new Worker(new URL(import.meta.url), { workerData: { path: db.name, kind, options, diagnosticJob }, resourceLimits: { maxOldGenerationSizeMb: 128 } })
     } catch (error) {
+      lifecycleDiagnosticEvent(diagnosticJob, 'parent_error')
       queueMicrotask(() => active.delete(key))
       reject(error)
       return
@@ -281,10 +285,16 @@ function isolatedReport(db, kind, options = {}) {
       settled = true; clearTimeout(timer); void worker.terminate()
       if (error) reject(error); else resolve(value)
     }
-    const timer = setTimeout(() => finish(new Error('performance_report_deadline')), reportDeadlineMs(kind))
-    worker.once('message', msg => finish(msg.ok ? null : new Error(msg.error), msg.report))
-    worker.once('error', error => finish(error))
+    const timer = setTimeout(() => { lifecycleDiagnosticEvent(diagnosticJob, 'deadline'); finish(new Error('performance_report_deadline')) }, reportDeadlineMs(kind))
+    worker.on('message', msg => {
+      if (diagnosticJob && typeof msg?.contentionDiagnostic === 'string') {
+        forwardLifecycleDiagnostic(diagnosticJob, msg.contentionDiagnostic); return
+      }
+      lifecycleDiagnosticEvent(diagnosticJob, 'parent_result'); finish(msg.ok ? null : new Error(msg.error), msg.report)
+    })
+    worker.once('error', error => { lifecycleDiagnosticEvent(diagnosticJob, 'parent_error'); finish(error) })
     worker.once('exit', () => {
+      lifecycleDiagnosticEvent(diagnosticJob, 'worker_exit')
       // A timed-out native SQLite call may not terminate immediately. Keep its
       // capacity slot until the worker actually exits, preventing retry storms
       // from starting unbounded workers against the protection database.
@@ -533,7 +543,7 @@ async function buildReport(db, kind, options, hooks = {}) {
   if (kind === 'order-lifecycle') {
     const { buildOrderLifecycle, RESPONSE_MAX_BYTES } = await import('./order-lifecycle.js')
     // One consistent snapshot across every rule's read, as node-watchdog does.
-    const report = db.transaction(() => buildOrderLifecycle(db, options))()
+    const report = db.transaction(() => buildOrderLifecycle(db, options, { onPhase: hooks.onPhase }))()
     // The main thread structured-clones and serialises this: bounded here,
     // before postMessage, far below the generic 8 MB bound.
     if (Buffer.byteLength(JSON.stringify(report)) > RESPONSE_MAX_BYTES) throw new Error('order_lifecycle_response_bound')
@@ -575,24 +585,32 @@ async function buildReport(db, kind, options, hooks = {}) {
   return buildPerformancePopulations(db, options)
 }
 if (!isMainThread && workerData?.path) {
-  let db
+  let db, diagnostic
+  const diagnosticJob = workerData.kind === 'order-lifecycle' ? workerData.diagnosticJob : null
+  const diagnosticLog = line => parentPort.postMessage({ contentionDiagnostic: line })
+  lifecycleDiagnosticEvent(diagnosticJob, 'worker_entry', diagnosticLog)
   try {
     db = new Database(workerData.path, { readonly: true, fileMustExist: true, timeout: workerData.busyTimeoutMs ?? 1000 })
+    diagnostic = startLifecycleWorkerDiagnostic(db, diagnosticJob, { log: diagnosticLog })
+    lifecycleDiagnosticEvent(diagnosticJob, 'database_open', diagnosticLog)
     // Keep this module synchronous on import. Specialized reports load their
     // larger registries lazily inside the worker; the promise is resolved here
     // without turning every importer into an async ESM module.
     const stopFlag = workerData.stopFlag
     const hooks = workerData.kind === 'storage'
       ? { onProgress: progress => parentPort.postMessage({ progress }), shouldStop: () => !!stopFlag && Atomics.load(stopFlag, 0) === 1 }
-      : {}
+      : { onPhase: value => diagnostic?.phase(value) }
     Promise.resolve(buildReport(db, workerData.kind, workerData.options, hooks))
       .then(report => {
         if (Buffer.byteLength(JSON.stringify(report)) > 8 * 1024 * 1024) throw new Error('performance_report_response_bound')
+        lifecycleDiagnosticEvent(diagnosticJob, 'result_ready', diagnosticLog)
+        diagnostic?.detach()
         parentPort.postMessage({ ok: true, report })
       })
-      .catch(e => parentPort.postMessage({ ok: false, error: e.message }))
-      .finally(() => db?.close())
+      .catch(e => { lifecycleDiagnosticEvent(diagnosticJob, 'worker_error', diagnosticLog); diagnostic?.detach(); parentPort.postMessage({ ok: false, error: e.message }) })
+      .finally(() => { diagnostic?.detach(); db?.close() })
   } catch (e) {
+    lifecycleDiagnosticEvent(diagnosticJob, 'worker_error', diagnosticLog); diagnostic?.detach()
     parentPort.postMessage({ ok: false, error: e.message })
     db?.close()
   }
