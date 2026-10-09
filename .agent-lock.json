@@ -15,7 +15,8 @@
         "agent/services/watchlists.js",
         "agent/services/watchlists.test.js",
         "agent/index.js",
-        "CLAUDE.md"
+        "CLAUDE.md",
+        "agent/services/calendar-coverage.test.js"
       ],
       "at": "2026-10-09T02:48:07.426375+00:00",
       "expires_at": "2026-10-09T07:48:07.426375+00:00",
