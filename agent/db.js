@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+// Codex · №12,434 · 2026-10-09; codex-footprint: reporting-query.
+import { ensureScannerReportingIndexes } from './lib/reporting-indexes.js';
 import { openJournal } from './lib/wal-open.js';
 import { maybeEmergencyReclaim } from './services/emergency-reclaim.js';
 import { resetReverifyAttempts } from './services/reverify-reset.js';
@@ -2035,6 +2037,9 @@ export function initDB(dbPath) {
   // After column upgrades, include these additive report indexes in the
   // recorded index phase so their first-build cost remains visible.
   ensurePhaseAuditIndexes(db);
+  ensureScannerReportingIndexes(db);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_scans_account_coverage ON scans(account_id);
+    CREATE INDEX IF NOT EXISTS idx_position_events_trade_kind ON position_events(trade_id,kind,id);`);
   timedPhase('indexes');
 
   // -------------------------------------------------------------------------

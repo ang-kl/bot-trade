@@ -155,15 +155,14 @@ export function scopeCoverage(db, { table, column = 'account_id', scope, extraWh
       return out
     }
     out.scoped = true
-    // The risk route has no additional coverage predicate. Its two disjoint
-    // sets already have compact indexes, but the OR aggregate cannot combine
-    // them and scans retained history instead. One statement keeps both
-    // counts on the same snapshot. Other tables/predicates keep one traversal:
-    // splitting an unindexed table would double its full-history scan.
-    const indexedRiskCounts = table === 'risk_events' && column === 'account_id' && !extraWhere && extraParams.length === 0
-    const r = indexedRiskCounts ? db.prepare(`
-      SELECT (SELECT COUNT(*) FROM risk_events WHERE account_id = ?) AS attributable,
-             (SELECT COUNT(*) FROM risk_events WHERE account_id IS NULL) AS unstamped
+    // Codex · №12,434 · 2026-10-09; codex-footprint: reporting-query.
+    // These two canonical tables have account-leading indexes. Count the
+    // disjoint account/NULL ranges in one snapshot, without visiting other
+    // accounts. Aliases and additional predicates retain the general query.
+    const indexedCounts = ['risk_events', 'scans'].includes(table) && column === 'account_id' && !extraWhere && extraParams.length === 0
+    const r = indexedCounts ? db.prepare(`
+      SELECT (SELECT COUNT(*) FROM ${table} WHERE account_id = ?) AS attributable,
+             (SELECT COUNT(*) FROM ${table} WHERE account_id IS NULL) AS unstamped
     `).get(String(scope.accountId)) : db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN ${column} = ? THEN 1 ELSE 0 END) AS attributable,
@@ -172,7 +171,7 @@ export function scopeCoverage(db, { table, column = 'account_id', scope, extraWh
     `).get(String(scope.accountId), ...extraParams, ...acct.params)
     out.attributable = Number(r?.attributable || 0)
     out.unstamped = Number(r?.unstamped || 0)
-    out.total = indexedRiskCounts ? out.attributable + out.unstamped : Number(r?.total || 0)
+    out.total = indexedCounts ? out.attributable + out.unstamped : Number(r?.total || 0)
     // No rows is a fact, not a gap. An account with no trades painted amber
     // would teach the operator to ignore amber, which costs the real ones.
     out.pct = out.total === 0 ? 100 : Math.round((out.attributable / out.total) * 1000) / 10

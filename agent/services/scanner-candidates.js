@@ -1,3 +1,5 @@
+// Codex · №12,434 · 2026-10-09; codex-footprint: reporting-query.
+import { ensureScannerReportingIndexes } from '../lib/reporting-indexes.js'
 import { getAccountSymbolMap } from '../lib/ctrader-creds.js'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
@@ -34,6 +36,7 @@ function schema(db) {
     outcome TEXT NOT NULL, reason TEXT, observed_at_ms INTEGER NOT NULL,
     PRIMARY KEY(source,instance_id,cursor));
     CREATE INDEX IF NOT EXISTS scanner_mirror_outcome_age ON scanner_mirror_outcomes(observed_at_ms);`)
+  ensureScannerReportingIndexes(db)
 }
 
 export function scannerCandidateId(c) {

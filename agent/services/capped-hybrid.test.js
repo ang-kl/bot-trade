@@ -364,3 +364,31 @@ test('a late residual read cannot report confirmation over a newer terminal deci
   assert.deepEqual(readPartialPlan(f.db, '42', 7).evidence, { retained: 'newer' })
   assert.equal(f.closes.length, 1)
 })
+
+// Codex · №12,435 · 2026-10-09; codex-footprint: owned-hybrid-refusal-inputs.
+test('ordinary refusal persists exact owned volume inputs without new broker calls, sizing or trade writes', async t => {
+  const f = scene(t, { live: true, volume: 300, step: 100 })
+  const before = f.db.prepare('SELECT * FROM trades WHERE id=7').get()
+  const monitors = f.db.prepare('SELECT * FROM monitored_positions').all()
+  await f.pass()
+  const saved = JSON.parse(f.db.prepare("SELECT value FROM agent_state WHERE key='momentum_partial_pass_json'").get().value)
+  assert.deepEqual(saved.cappedHybrid.deferred, [{ tradeId: 7, accountId: '42', reason: 'half_and_runner_not_representable',
+    volumeInputs: { source: 'ordinary_enrolment_reads', units: 'ctrader_protocol_volume', host: f.host, accountId: '42',
+      positionId: '33', symbolId: '22', side: 'BUY', metadataReceivedAtMs: AT, reconcileReceivedAtMs: AT,
+      volume: 300, halfVolume: 150, minVolume: 100, stepVolume: 100, minVolumeValid: true, stepVolumeValid: true } }])
+  assert.deepEqual(f.reads, ['symbols', 'position', 'deals'])
+  assert.deepEqual(f.closes, [])
+  assert.deepEqual(f.db.prepare('SELECT * FROM trades WHERE id=7').get(), before)
+  assert.deepEqual(f.db.prepare('SELECT * FROM monitored_positions').all(), monitors)
+  assert.equal(f.db.prepare("SELECT name FROM sqlite_master WHERE name='momentum_partial_plans'").get(), undefined)
+})
+test('malformed volume metadata is refused and never coerced or echoed into stored observations', async t => {
+  const f=scene(t)
+  f.transports.symbols=async()=>({ctidTraderAccountId:'42',symbol:[{symbolId:'22',digits:2,minVolume:'100',stepVolume:{secret:'must-not-leak'}}]})
+  const out=await enrolCappedHybrids(f.db,{credsFor:()=>f.creds,now:()=>f.at,transports:f.transports})
+  assert.equal(out.deferred[0].reason,'broker_volume_invalid')
+  assert.equal(out.deferred[0].volumeInputs.minVolume,null)
+  assert.equal(out.deferred[0].volumeInputs.stepVolumeValid,false)
+  assert.ok(!JSON.stringify(out).includes('must-not-leak'))
+  assert.equal(f.closes.length,0)
+})
