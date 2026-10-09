@@ -17,7 +17,8 @@
         "agent/services/capped-hybrid-policy.js",
         "agent/services/capped-hybrid-enrolment.js",
         "agent/services/diagnostic-readout.js",
-        "agent/services/manual-hybrid-integrated.test.js"
+        "agent/services/manual-hybrid-integrated.test.js",
+        "agent/config/manual-hybrid.json"
       ],
       "purpose": "Owner-authorised profit-only capped hybrid for manual/external positions on demo43097342/live42993489; preserve source/history/entry/SL and existing guard/opt-out/volume boundaries."
     }
