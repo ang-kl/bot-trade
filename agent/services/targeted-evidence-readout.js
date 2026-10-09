@@ -2,6 +2,7 @@
 // Private operator readout. No arbitrary SQL, broker call, profiler or action.
 // Every monetary/position value is a dated stored observation, never refreshed here.
 import { readHybridVerdicts } from './diagnostic-readout.js'
+import { brokerPolicyObservation } from '../lib/stop-policy.js'
 const CAP = 64, PER_KIND = 8
 const scalar = x => typeof x === 'number' ? Number.isFinite(x) ? x : null
   : typeof x === 'boolean' ? x
@@ -72,8 +73,8 @@ export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
       for(const p of (Array.isArray(account.positions)?account.positions:[]).slice(0,CAP)) {
         if(String(p.positionId)!==String(owner.ctrader_position_id)) continue
         record.protection.push({readAt:scalar(protection.readAt),...project(account,['accountId','host','checkedAtMs','ok']),
-          position:project(p,['positionId','symbolId','tradeSide','volume','price','entryPrice','stopLoss','takeProfit',
-            'stopLossTriggerMethod','trailingStopLoss'])})
+          position:{...project(p,['positionId','symbolId','tradeSide','volume','price','entryPrice','stopLoss','takeProfit']),
+            ...brokerPolicyObservation(p)}})
       }
     }
     out.trades.push(record)

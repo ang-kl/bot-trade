@@ -131,6 +131,16 @@ function snapshotCoverage(db, snap, extraWhere = '', extraParams = []) {
   return out
 }
 
+// Codex · №12,442 · 2026-10-09; codex-footprint: scan-report-order.
+// Account coverage has its own range index. Keep reporting lists on their
+// established time index so new coverage indexes cannot reorder tied scans
+// or require sorting every account-matching row before the LIMIT.
+function scanReportIndex(db, symbol = false) {
+  const name = symbol ? 'idx_scans_symbol_at' : 'idx_scans_at'
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?").get(name)
+    ? ` INDEXED BY ${name}` : ''
+}
+
 export default function stateRouter(db) {
   const router = Router()
   router.get('/momentum-targets', async (req, res) => {
@@ -510,7 +520,7 @@ export default function stateRouter(db) {
     const acct = scope?.explicit ? accountWhere(scope, 'account_id') : { where: '', params: [], active: false }
     const recentScans = db
       .prepare(
-        `SELECT * FROM scans${acct.active ? ` WHERE ${acct.where}` : ''}
+        `SELECT * FROM scans${scanReportIndex(db)}${acct.active ? ` WHERE ${acct.where}` : ''}
          ORDER BY scanned_at DESC LIMIT 50`
       )
       .all(...acct.params)
@@ -558,7 +568,7 @@ export default function stateRouter(db) {
     const acct = scope?.explicit ? accountWhere(scope, 'account_id') : { where: '', params: [], active: false }
     const rows = db
       .prepare(
-        `SELECT * FROM scans WHERE symbol = ?${acct.active ? ` AND ${acct.where}` : ''}
+        `SELECT * FROM scans${scanReportIndex(db, true)} WHERE symbol = ?${acct.active ? ` AND ${acct.where}` : ''}
          ORDER BY scanned_at DESC LIMIT 50`
       )
       .all(symbol, ...acct.params)
@@ -3719,7 +3729,7 @@ export default function stateRouter(db) {
         SELECT 'scan'     AS kind, id, symbol, scanned_at  AS at,
                bias       AS v1,  confidence AS v2,  thesis AS note,
                trade_grade AS extra, NULL AS ref
-        FROM scans${legWhere}
+        FROM scans${scanReportIndex(db)}${legWhere}
         UNION ALL
         SELECT 'analysis' AS kind, id, symbol, analyzed_at AS at,
                consensus_bias AS v1, overall_conviction AS v2, consensus_summary AS note,

@@ -1,3 +1,4 @@
+// Codex · №12,442 · 2026-10-09; codex-footprint: scan-report-order.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
@@ -31,6 +32,12 @@ async function readRoutes(db) {
       assert.notEqual(response.headers.get('x-cache'), 'hit')
       out[query] = await response.json()
     }
+    for (const path of ['scans/EURUSD', 'activity']) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/state/${path}?account=A`)
+      assert.equal(response.status, 200)
+      const data = await response.json()
+      out[path] = path === 'activity' ? data.activity.filter(row => row.kind === 'scan') : data.scans
+    }
     return out
   } finally {
     server.closeAllConnections()
@@ -47,12 +54,12 @@ test('scans coverage uses a compact covering index while the actual list keeps i
   db.prepare = sql => { coverageSql = sql; return prepare(sql) }
   assert.deepEqual(scopeCoverage(db, { table: 'scans', scope }),
     { total: 4, attributable: 2, unstamped: 2, pct: 50, scoped: true })
-  const plan = prepare(`EXPLAIN QUERY PLAN ${coverageSql}`).all('A', 'A')
-  assert.ok(plan.some(row => row.detail === `SCAN scans USING COVERING INDEX ${INDEX}`), JSON.stringify(plan))
-  // id leads the covering index deliberately. Leading with account_id would
-  // change the OR-NULL list plan and its existing tied-timestamp ordering.
+  const plan = prepare(`EXPLAIN QUERY PLAN ${coverageSql}`).all('A')
+  assert.equal(plan.filter(row => /SEARCH scans USING COVERING INDEX idx_scans_account_coverage/.test(row.detail)).length, 2, JSON.stringify(plan))
+  // The legacy covering index remains. Reports explicitly retain the time
+  // index now that coverage can seek directly through its own account index.
   assert.deepEqual(db.pragma(`index_info(${INDEX})`).map(row => row.name), ['id', 'account_id'])
-  const listSql = 'SELECT * FROM scans WHERE (account_id = ? OR account_id IS NULL) ORDER BY scanned_at DESC LIMIT 50'
+  const listSql = 'SELECT * FROM scans INDEXED BY idx_scans_at WHERE (account_id = ? OR account_id IS NULL) ORDER BY scanned_at DESC LIMIT 50'
   const listPlan = prepare(`EXPLAIN QUERY PLAN ${listSql}`).all('A')
   assert.ok(listPlan.some(row => row.detail.includes('USING INDEX idx_scans_at')), JSON.stringify(listPlan))
   assert.ok(listPlan.every(row => !row.detail.includes('TEMP B-TREE')), JSON.stringify(listPlan))
@@ -70,6 +77,9 @@ test('scans index upgrade retains full HTTP bodies, scope, tied rows, attributio
   const response = await readRoutes(db)
   assert.deepEqual(response['account=A'].recentScans.map(row => row.id), [5, 4, 2, 1])
   assert.deepEqual(response[''].recentScans.map(row => row.id), [6, 5, 4, 3, 2, 1])
+  assert.deepEqual(response['scans/EURUSD'].map(row => row.id), [5, 4, 2, 1])
+  // The original UNION feed keeps insertion order within a tied scan time.
+  assert.deepEqual(response.activity.map(row => row.id), [1, 2, 4, 5])
   db.close()
   for (let pass = 0; pass < 2; pass++) {
     db = initDB(path)

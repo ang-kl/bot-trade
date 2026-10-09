@@ -6,6 +6,9 @@ actual readers. Additive covering indexes remove payload-table reads/temp groupi
 account/NULL counts use separate index ranges in one SQL snapshot. Preserve exact
 report populations; the already-indexed comparison aggregate remains unchanged.
 This addresses demonstrated query work, not every watchdog, I/O wait or busy writer.
+The full gate caught the account index changing tied scan-list order. Reporting
+lists now retain their existing time indexes; actual old/new route bodies agree.
+Stored policy observations reuse the canonical reader; its vocabulary guard stays.
 Hybrid refusal records now retain the exact owned volume inputs already read by
 ordinary enrolment; sizing, eligibility and broker actions are unchanged.
 `OWNED_EVIDENCE_RUN_ID` plus an expiry within one hour enables one private, bounded,
