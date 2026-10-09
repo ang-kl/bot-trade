@@ -107,7 +107,8 @@ test('bad stock schedules/costs are explicit refusals, not guessed; proven indic
   assert.equal(stockMetadataVerdict({ ...detail, commission: '' }), 'commission_terms_unverified')
   assert.equal(stockMetadataVerdict({ ...detail, commission: undefined }), 'commission_terms_unverified')
   assert.equal(stockMetadataVerdict({ ...detail, commission: -1 }), 'commission_terms_unverified')
-  assert.equal(stockMetadataVerdict({ ...detail, scheduleTimeZone: 'Asia/Tokyo' }), 'utc8_schedule_unverified')
+  assert.equal(stockMetadataVerdict({ ...detail, scheduleTimeZone: 'invalid/clock' }), 'utc8_schedule_unverified')
+  assert.equal(stockMetadataVerdict({ ...detail, scheduleTimeZone: 'UTC', schedule: [{ startSecond: 90000, endSecond: 115200 }] }), null, 'Singapore cash hours may be expressed in the broker UTC clock')
   const db = fresh()
   try {
     const rows = await applyOwnerUniverse(db, { credentials, catalogue: async c => catalogue(c.accountId), details: async (c,s) => ({ ctidTraderAccountId: c.accountId, symbol: s.map(symbolId => ({ symbolId, ...detail, commission: undefined })) }) })

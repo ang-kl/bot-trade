@@ -11,7 +11,6 @@ export const receiptKey = id => `owner_universe_receipt:${OWNER_UNIVERSE_VERSION
 const parse = raw => { try { return JSON.parse(raw || 'null') } catch { return null } }
 const iso = now => new Date(now).toISOString()
 const STOCK_CAP = 24, ACCOUNT_CAP = 64
-const STOCK_ZONES = new Set(['Asia/Singapore', 'Asia/Kuala_Lumpur', 'Asia/Taipei', 'Asia/Shanghai', 'Asia/Chongqing'])
 function owned(response, accountId, field) {
   if (String(response?.ctidTraderAccountId || '') !== String(accountId) || !Array.isArray(response?.[field])) throw new Error(`catalogue_${field}_identity_or_shape`)
   return response[field]
@@ -48,7 +47,13 @@ export function classifyCatalogue(accountId, data) {
 }
 export function stockMetadataVerdict(detail) {
   const schedule = detail?.schedule
-  if (!STOCK_ZONES.has(detail?.scheduleTimeZone) || !Array.isArray(schedule) || !schedule.length || !schedule.every(x => Number.isInteger(x.startSecond) && Number.isInteger(x.endSecond) && x.startSecond >= 0 && x.endSecond <= 604800 && x.endSecond > x.startSecond)) return 'utc8_schedule_unverified'
+  // Codex · №12,481 · 2026-10-09; codex-footprint: exchange location is not broker schedule clock.
+  // UTC+8 markets were selected from the owned broker category above.
+  let validZone = false
+  if (typeof detail?.scheduleTimeZone === 'string' && detail.scheduleTimeZone) {
+    try { new Intl.DateTimeFormat('en', { timeZone: detail.scheduleTimeZone }); validZone = true } catch { /* invalid clock */ }
+  }
+  if (!validZone || !Array.isArray(schedule) || !schedule.length || !schedule.every(x => Number.isInteger(x.startSecond) && Number.isInteger(x.endSecond) && x.startSecond >= 0 && x.endSecond <= 604800 && x.endSecond > x.startSecond)) return 'utc8_schedule_unverified'
   // Protobuf int64 amounts may be JSON decimal strings; blank/null/bool is never zero.
   const amount = typeof detail.commission === 'number' || (typeof detail.commission === 'string' && /^\d+(?:\.\d+)?$/.test(detail.commission)) ? Number(detail.commission) : NaN
   const types = { USD_PER_MILLION_USD: 1, USD_PER_LOT: 2, PERCENTAGE_OF_VALUE: 3, QUOTE_CURRENCY_PER_LOT: 4 }
