@@ -444,7 +444,25 @@ export async function runMomentumPartialPass(db, { credsFor = () => null, now: c
   } catch (e) { fail('scale_out_record', e) }
   summary.durationMs = now() - startMs
   summary.errors = summary.errors.slice(0, 10)
-  try { setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify(summary)) } catch (e) { fail('record_write', e) }
+  let saved = false
+  try { setState(db, MOMENTUM_PARTIAL_PASS_KEY, JSON.stringify(summary)); saved = true } catch (e) { fail('record_write', e) }
+  // Codex · №12,559 · 2026-10-09; codex-footprint: hybrid-exclusion-verdicts.
+  // Emit changed, bounded private diagnostics only after the ordinary stored
+  // pass succeeds. An observation is neither a broker action nor an enrolment.
+  const list = (value, kind) => Array.isArray(value?.[kind]) ? value[kind] : []
+  const signature = value => JSON.stringify(['excluded', 'delegated', 'deferred'].map(kind =>
+    list(value, kind).map(r => [r?.accountId, r?.tradeId, r?.reason, r?.planState || null])))
+  if (saved && signature(summary.cappedHybrid) !== signature(prev?.cappedHybrid)) {
+    try {
+      const c = summary.cappedHybrid
+      log(`[hybrid-enrolment] ${JSON.stringify({ at: summary.at, stored: true, coverage: c?.coverage,
+        excludedTruncated: c?.excludedTruncated, delegatedTruncated: c?.delegatedTruncated,
+        rows: ['excluded', 'delegated', 'deferred'].flatMap(kind => (c?.[kind] || []).slice(0, 16)
+          .map(r => ({ kind, accountId: r.accountId, tradeId: r.tradeId, positionId: r.positionId,
+            monitorId: r.monitorId, reason: r.reason, planState: r.planState }))),
+        logOmitted: ['excluded', 'delegated', 'deferred'].reduce((n, k) => n + Math.max(0, (c?.[k]?.length || 0) - 16), 0) })}`)
+    } catch { /* Logging cannot alter an already completed management pass. */ }
+  }
   return summary
 }
 

@@ -2820,3 +2820,27 @@ Counts remain 7 verified / 19 active / 6 deferred; unverified overlay 25 unless
 a complete group passes. Conversation ref: owner "Check and code the six
 strategies approach"; implementation №12,516–12,520; session
 codex-six-strategy-lifecycle, ChatGPT (no external session URL available).
+<!-- Codex · №12,559 · 2026-10-09; codex-footprint: hybrid-exclusion-verdicts -->
+## Hybrid ownership and policy exclusion records — 9 October
+
+Owner requests resolution of silent hybrid skips. One canonical ownership
+verdict preserves the old action reader and every eligibility predicate.
+Retain explicit position/account/trade reasons for early exclusions, separate
+existing-plan delegation from refusal, and record gateway configuration
+omissions without labelling normal other-host routing a failure. A bounded
+open-trade observation follows the unchanged enrolment action query/budget;
+coverage and omitted records stay explicit. Ordinary pass/controller storage
+retains the explanations; authorised private readout preserves their vocabulary.
+Changed private-log summaries are emitted only after the pass was stored.
+These are observed policy decisions, not new broker reads or executed actions.
+
+NAS100's observed external monitor is not authority to relabel or adopt it.
+No entry, SL/TP, sizing, strategy/account/profile settings, original risk,
+financial history, native binaries or staging changes. Existing plans and
+broker calls retain their own state machine. Integrated real-database and
+controlled-broker validation, required full local/exact-head CI, actual review
+inspection and deployed ordinary runtime verification precede release closure.
+No natural hybrid execution or whole acceptance pass follows from diagnostics.
+Counts remain7 verified/19 active/6 deferred; unverified overlay25.
+Conversation ref: owner silent-exclusion request after№12,556; session
+codex-hybrid-exclusions, implementation№12,557–12,560.

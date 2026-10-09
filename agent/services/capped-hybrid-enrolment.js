@@ -4,7 +4,7 @@ import { wsReconcile, wsSymbolsByIds, wsGetPositionDeals } from '../lib/ctrader-
 import { partialPositionEvidence } from './momentum-broker-evidence.js'
 import { sameTicks, stopHeld } from './momentum-target-policy.js'
 import { registerPartialPlan, readPartialPlan } from './momentum-partial-manager.js'
-import { planCappedHybrid, readCappedHybridOwner } from './capped-hybrid-policy.js'
+import { planCappedHybrid, readCappedHybridOwner, readCappedHybridVerdict } from './capped-hybrid-policy.js'
 import { getState, setState } from '../db.js'
 
 const integer = n => Number.isSafeInteger(n) && n > 0
@@ -35,14 +35,32 @@ export function openingReceipts(raw, owner, held, digits) {
 }
 
 export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transports = {}, budgetMs = 12_000, maxCandidates = 8 } = {}) {
-  const out = { examined: 0, enrolled: [], deferred: [], errors: [] }, started = now()
+  // Codex · №12,559 · 2026-10-09; codex-footprint: hybrid-exclusion-verdicts.
+  // Explanations cannot grant ownership. Keep the action query/order/budget;
+  // inspect its excluded open rows separately, after the existing broker work.
+  const cap = 128
+  const out = { examined: 0, enrolled: [], deferred: [], errors: [], excluded: [], delegated: [],
+    excludedTruncated: false, delegatedTruncated: false, excludedOmitted: 0, delegatedOmitted: 0 }, started = now()
+  const record = (kind, t, reason, detail = {}) => {
+    if (out[kind].length >= cap) { out[`${kind}Truncated`] = true; out[`${kind}Omitted`]++; return }
+    out[kind].push({ accountId: t.account_id, tradeId: t.id, positionId: String(t.ctrader_position_id ?? ''),
+      stage: kind === 'delegated' ? 'existing_plan' : 'ownership', observedAtMs: now(), reason, ...detail })
+  }
+  const existingPlan = t => {
+    const held = table(db, 'momentum_partial_plans') && readPartialPlan(db, t.account_id, t.id)
+    if (held) record('delegated', t, 'existing_partial_plan', { planState: held.state })
+    return held
+  }
   // Old lightweight fixtures / unavailable schema are not new runtime facts.
-  if (!['trades', 'monitored_positions', 'entry_intents', 'accounts'].every(n => table(db, n))) return out
+  if (!['trades', 'monitored_positions', 'entry_intents', 'accounts'].every(n => table(db, n))) {
+    out.unavailableReason = 'schema_unavailable'; return out
+  }
   let candidates = db.prepare(`SELECT t.id,t.account_id,t.ctrader_position_id FROM trades t
     JOIN monitored_positions m ON m.trade_id=t.id
     WHERE t.status='open' AND t.origin='bot_market_dispatch' AND m.status='active' AND m.paused=0
       AND m.guard_json IS NULL AND m.scaled_out=0 AND m.bank_partial_at IS NULL
     ORDER BY t.id`).all()
+  const selected = new Set(candidates.map(t => t.id))
   const cursor = Number(getState(db, 'capped_hybrid_enrol_cursor')) || 0
   candidates = [...candidates.filter(t => t.id > cursor), ...candidates.filter(t => t.id <= cursor)]
   const bounded = async fn => {
@@ -52,11 +70,12 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
     })]) } finally { clearTimeout(timer) }
   }
   for (const t of candidates) {
-    if (table(db, 'momentum_partial_plans') && readPartialPlan(db, t.account_id, t.id)) continue
+    if (existingPlan(t)) continue
     // Five digits is only a preliminary ownership comparison, never broker
     // precision for a plan. The exact broker precision is required below.
-    let owner = readCappedHybridOwner(db, t.account_id, t.id, String(t.ctrader_position_id), 5)
-    if (!owner) continue
+    const verdict = readCappedHybridVerdict(db, t.account_id, t.id, String(t.ctrader_position_id), 5)
+    let owner = verdict.owner
+    if (!owner) { record('excluded', t, verdict.reason, { monitorId: verdict.monitorId }); continue }
     if (out.examined >= maxCandidates || now() - started >= budgetMs) { out.deferred.push({ tradeId: t.id, reason: 'enrolment_budget' }); continue }
     out.examined++
     // A persistently unavailable first position must not starve other accounts.
@@ -115,5 +134,14 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
         closeVolume: plan.closeVolume, runnerVolume: plan.runnerVolume, brokerTarget: plan.brokerTarget })
     } catch (e) { out.errors.push({ tradeId: t.id, reason: String(e?.message || e).slice(0, 200) }) }
   }
+  try {
+    const observed = db.prepare("SELECT id,account_id,ctrader_position_id FROM trades WHERE status='open' ORDER BY id LIMIT ?").all(cap + 1)
+    out.coverage = { limit: cap, openTradesSampled: Math.min(observed.length, cap), openTradesTruncated: observed.length > cap }
+    for (const t of observed.slice(0, cap)) {
+      if (selected.has(t.id) || existingPlan(t)) continue
+      const v = readCappedHybridVerdict(db, t.account_id, t.id, String(t.ctrader_position_id), 5)
+      record('excluded', t, v.reason || 'candidate_not_selected', { monitorId: v.monitorId })
+    }
+  } catch { out.diagnosticError = 'diagnostic_read_failed' }
   return out
 }
