@@ -35,13 +35,17 @@ export function readStoredInitialRisk(db, tradeId) {
 
   // Existing position/account index and primary key only. No symbol/time
   // search that can silently attach another trade's requested risk.
-  const rows=db.prepare(`SELECT ${INTENT_COLUMNS} FROM entry_intents
+  let rows=db.prepare(`SELECT ${INTENT_COLUMNS} FROM entry_intents
     WHERE broker_position_id=? AND account_id=? ORDER BY rowid LIMIT ?`).all(positionId,accountId,CAP+1)
   const conflicts=[]
   const linked=trade.intent_id == null ? null : db.prepare(`SELECT ${INTENT_COLUMNS} FROM entry_intents WHERE id=?`).get(trade.intent_id)
   const linkedStatus=trade.intent_id == null ? 'not_recorded' : !linked ? 'linked_intent_missing' : ownership(linked,trade) || 'owned_position_join'
   if(linked && linkedStatus !== 'owned_position_join') conflicts.push({source:'linked_intent',reason:linkedStatus})
-  if(linkedStatus === 'owned_position_join' && !rows.some(row=>row.id===linked.id)) rows.unshift(linked)
+  // Codex · №12,692 · 2026-10-09; codex-footprint: bounded-linked-intent.
+  // The CAP+1 sentinel can itself be the linked row. Keep that owned source
+  // inside the output window without duplicating it or dropping truncation.
+  if(linkedStatus === 'owned_position_join' && !rows.slice(0,CAP).some(row=>row.id===linked.id))
+    rows=[linked,...rows.filter(row=>row.id!==linked.id)]
   const accepted=[]
   for(const row of rows.slice(0,CAP)) {
     const reason=ownership(row,trade)
