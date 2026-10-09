@@ -1,6 +1,29 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude \u00b7 \u2116 11,660 07-Oct).",
-  "locks": [],
+  "locks": [
+    {
+      "locked_by": "codex-reporting-query",
+      "session": "reporting-query-2026-10-09",
+      "serial": 12433,
+      "started_at": "2026-10-09T01:18:02.008253+00:00",
+      "expires_at": "2026-10-09T06:18:02.008253+00:00",
+      "files": [
+        "CLAUDE.md",
+        "agent/db.js",
+        "agent/lib/account-scope.js",
+        "agent/lib/account-scope-scans-coverage.test.js",
+        "agent/services/scanner-candidates.js",
+        "agent/services/scanner-reporting-indexes.test.js",
+        "agent/services/scanner-comparison.js",
+        "agent/services/targeted-evidence-readout.js",
+        "agent/services/targeted-evidence-readout.test.js",
+        "agent/services/capped-hybrid-enrolment.js",
+        "agent/services/capped-hybrid.test.js",
+        "agent/index.js"
+      ],
+      "purpose": "Reproduce and correct reporting query blocking; targeted owned movement and hybrid volume evidence without entry/SL/sizing changes."
+    }
+  ],
   "notes": [
     {
       "from": "claude-builder",
