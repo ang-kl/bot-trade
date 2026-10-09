@@ -285,10 +285,9 @@ test('PR-J/M4: a bank partial the broker cannot size falls back to the FULL exit
   assert.equal(out.action, 'PARTIAL_EXIT')
   assert.equal(out.fallbackFullExitIfUnfillable, true, 'the executor is told what an unfillable partial means')
 
-  const exec = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
-    .split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-  assert.match(exec, /if \(eval_\.fallbackFullExitIfUnfillable\) \{/, 'the executor must honour it')
-  assert.match(exec, /action: 'FULL_EXIT',\n\s+exitFraction: 1,/, 'and fall back to the whole close')
+  // Codex · №12,659 · 2026-10-09; codex-footprint: actual-bank-fallback.
+  // Executor fallback is exercised over real SQLite in general-partial-execution.test.js;
+  // matching source formatting here rejected equivalent control flow.
   // And the plain ladder partial keeps its old behaviour: it is skipped.
   const ladder = evaluatePosition(
     { ...pos, id: 2 },

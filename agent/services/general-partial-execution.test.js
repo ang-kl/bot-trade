@@ -7,8 +7,11 @@ import vm from 'node:vm'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDir } from '../test-support/temp-dir.js'
-import { initDB, getState, setState } from '../db.js'
+import { initDB, getState, setState, closeTradeRow } from '../db.js'
 import * as loop from '../loop.js'
+import * as nullGuardModule from './null-exit-guard.js'
+import * as moneyModule from '../lib/deal-money.js'
+import { loadRiskConfig } from './risk.js'
 import * as creds from '../lib/ctrader-creds.js'
 import { assertReconcileIdentity } from './reconciler.js'
 import { recordPositionEvent } from './position-events.js'
@@ -26,6 +29,8 @@ const executor = segment('export async function executeBrokerAction(', '\n// D4 
   .replaceAll("await import('./lib/ctrader-creds.js')", 'credsModule')
   .replaceAll("await import('./lib/lot-sizing.js')", 'metaModule')
   .replaceAll("await import('./lib/ctrader-ws.js')", 'wsModule')
+  .replaceAll("await import('./services/null-exit-guard.js')", 'nullGuardModule')
+  .replaceAll("await import('./lib/deal-money.js')", 'moneyModule')
 const statements = segment('export function prepareStatements(', '\n  return stmts\n}') + '\n  return stmts\n}'
 const monitor = segment('export async function monitorOnePosition(', '\nexport const MONITOR_CONCURRENCY')
 const phase = segment('export async function runMonitorPhase(', '\n// D4b:')
@@ -50,10 +55,10 @@ function fixture(t, { short = false, account = '42' } = {}) {
     deal: { dealId: '7001', orderId: '8001', positionId: '9001', symbolId, tradeSide: short ? 1 : 2, dealStatus: 2,
       volume: quantity, filledVolume: quantity, executionPrice: short ? 1.08 : 1.12, executionTimestamp: Date.now(),
       closePositionDetail: { entryPrice: 1.1, closedVolume: quantity } } })
-  const context = vm.createContext({ ...loop, getState, setState, runGeneralPartial, recordEvaluationMetrics, pendingGeneralPartialPositions,
+  const context = vm.createContext({ ...loop, getState, setState, closeTradeRow, nullGuardModule, moneyModule, loadRiskConfig, runGeneralPartial, recordEvaluationMetrics, pendingGeneralPartialPositions,
     ctraderEnv: () => 'offline', withCtraderTokenSource: creds.withCtraderTokenSource, assertReconcileIdentity, recordPositionEvent,
     credsModule: { ...creds, credsForRegisteredAccount: () => ({ ready: true, host: account === '42' ? 'demo.ctraderapi.com' : 'live.ctraderapi.com', accountId: account }) },
-    metaModule: { getVolumeMeta: async () => ({ lotSize: 100000, minVolume: 100, stepVolume: 100, digits: 5, brokerDigits: 5 }) },
+    metaModule: { getVolumeMeta: async () => ({ lotSize: 100000, minVolume: 100, stepVolume: 100, digits: 5, brokerDigits: 5, ...state.meta }) },
     wsModule: { wsReconcile: async (_host, _id, _secret, _token, acct, timeout, retries) => {
       assert.equal(String(acct), account); assert.equal(timeout, 4000); assert.equal(retries, 0)
       return state.reconcile ? state.reconcile() : snapshot()
@@ -264,4 +269,24 @@ test('nonterminal partial-fill event remains unresolved without requesting anoth
   f.state.response = () => ({ ...f.fill(1000), executionType: 11 })
   assert.equal((await f.run()).pending, true); await f.run(); untouched(f)
   assert.equal(f.state.closes.length, 1)
+})
+
+// Codex · №12,659 · 2026-10-09; codex-footprint: actual-bank-fallback.
+test('unfillable bank partial takes its existing full-exit fallback; ladder remains skipped', async t => {
+  for (const bank of [false, true]) {
+    const f = fixture(t); f.state.volume = 1000; f.state.after = 0
+    f.state.meta = { minVolume: 1000, stepVolume: 1000 }
+    f.state.response = () => f.fill(1000)
+    const out = await f.run({ fallbackFullExitIfUnfillable: bank, metrics: { currentR: 2 },
+      updates: bank ? { bank_partial_at: new Date().toISOString(), scaled_out: 1, be_moved: 1 } : {} })
+    assert.equal(f.state.closes.length, bank ? 1 : 0, JSON.stringify(out))
+    if (bank) {
+      assert.equal(f.state.closes[0].volume, 1000)
+      assert.equal(out.closedRemotely, true)
+      assert.equal(f.read().trade.status, 'closed')
+      assert.equal(f.read().position.status, 'closed')
+    } else { assert.equal(out.skipped, true); assert.equal(f.read().trade.status, 'open') }
+    assert.equal(f.read().journal.length, 0, 'a whole fallback or skipped ladder is not a successful partial')
+    assert.equal(f.read().attempt ?? null, null, 'no partial close was submitted')
+  }
 })
