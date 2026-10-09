@@ -16,7 +16,9 @@
         "agent/services/watchlists.test.js",
         "agent/index.js",
         "CLAUDE.md",
-        "agent/services/calendar-coverage.test.js"
+        "agent/services/calendar-coverage.test.js",
+        "agent/services/native-trail-events.test.js",
+        "agent/services/order-writers-l2a.test.js"
       ],
       "at": "2026-10-09T02:48:07.426375+00:00",
       "expires_at": "2026-10-09T07:48:07.426375+00:00",
