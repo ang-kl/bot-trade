@@ -1,27 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude \u00b7 \u2116 11,660 07-Oct).",
-  "locks": [
-    {
-      "id": "codex-four-gap-2026-10-10",
-      "locked_by": "codex-bounded-gap-batch",
-      "branch": "fix/bounded-gap-capture-2026-10-10",
-      "files": [
-        "CLAUDE.md",
-        "agent/index.js",
-        "agent/services/contention-diagnostic.js",
-        "agent/services/contention-diagnostic.test.js",
-        "agent/services/scanner-bridge-worker.js",
-        "agent/services/targeted-evidence-readout.js",
-        "agent/services/targeted-evidence-readout.test.js",
-        "agent/services/scanner-evidence-readout.js",
-        "agent/services/scanner-evidence-readout.test.js",
-        "agent/services/decision-audit.test.js"
-      ],
-      "started_at": "2026-10-09T16:48:37.769602+00:00",
-      "expires_at": "2026-10-09T22:48:37.769602+00:00",
-      "purpose": "Owner ordered bounded contention capture, stored hybrid/scanner readout and deterministic CI assertion; trading policies unchanged."
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -279,6 +258,7 @@
     },
     "Codex \u00b7 \u211612,714 \u00b7 2026-10-10: session-guard ownership/confirmed-movement PR1290 merged as 24bf153fe02809424b7e062e58972c111af5e1e8; exact gated tree matches. Own lock released after merge. Node runtime verification is in progress. No other lock or operational setting changed.",
     "Codex \u00b7 \u211612,716 \u00b7 2026-10-10: PR1290 session-guard correction release complete. Merged 24bf153, required full local/exact-head CI passed, merged tree equals candidate, deployed Node identity and ordinary execution/reconciliation/advancing quotes/protection verified. Native deployments unchanged. No whole acceptance-group pass claimed. Contention causality and natural hybrid eligibility/outcomes remain separate. Receipt: /workspace/bot-trade-session-guard-evidence-2026-10-09/release-handback.md (if persistent).",
-    "Codex \u00b7 \u211612,721 \u00b7 2026-10-10: owner executes bounded four-gap prompt \u211612,719. Fresh main24bf153; correcting timestamp assertion and adding bounded main/worker causal capture plus current stored evidence reads. No registry/account/risk/native changes; historical counts are observations."
+    "Codex \u00b7 \u211612,721 \u00b7 2026-10-10: owner executes bounded four-gap prompt \u211612,719. Fresh main24bf153; correcting timestamp assertion and adding bounded main/worker causal capture plus current stored evidence reads. No registry/account/risk/native changes; historical counts are observations.",
+    "Codex \u00b7 \u211612,746 \u00b7 2026-10-10: PR1291 merged ae3ada00 after full local and exact-head Node/scanner CI passed; merged tree matches gated candidate. Bounded contention capture and scanner evidence projection added; timestamp collision assertion corrected. Own file claim released after merge. Node rollout/runtime capture pending; no acceptance closure inferred. Historical counts remain dated observations."
   ]
 }
