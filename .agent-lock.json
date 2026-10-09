@@ -1,23 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude \u00b7 \u2116 11,660 07-Oct).",
-  "locks": [
-    {
-      "id": "codex-general-partial-2026-10-09",
-      "locked_by": "codex-general-partial",
-      "created_at": "2026-10-09T11:14:55.685157+00:00",
-      "expires_at": "2026-10-09T15:14:55.685157+00:00",
-      "files": [
-        "CLAUDE.md",
-        "agent/loop.js",
-        "agent/services/fast-monitor.js",
-        "agent/services/general-partial-execution.js",
-        "agent/services/general-partial-execution.test.js",
-        "agent/services/exit-asymmetry.test.js"
-      ],
-      "branch": "fix/verified-general-partial-2026-10-09",
-      "purpose": "Owner-authorised actual general partial execution and caller bookkeeping correction; no SL/entry policy changes"
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -251,6 +234,13 @@
       "serial": 12606,
       "subject": "PR1285 merged/deployed; manual NAS100 assessed, original stop missing",
       "text": "Owner authorised profit-only human/manual eligibility on DEMO43097342/LIVE42993489. PR1285 merged210ccbdf95a39187585e47ec84f2095b4f247813; exactheadfa108cb CI37908072545SUCCESS; local7896backendpass/4existingnativeskips1350frontend/lint/build/colour/15syntax; integrated20/20. Final assistantreview no blocker; actualreviews/comments empty; ClaudeactionSKIPPED. Nodecb51ec3e-508f-48b7-8f53-c2cf50f3d37cSUCCESS17:12:38SGT; public210ccbd at17:16:46. Sixonline/oneeach; five native IDs unchanged. Manual origin/source/strategy and allentry/SLcode preserved; rawownedopeningorder/deals+exactfill-updatechronology+existingfences required, atomicproof/plan, oldtick/timedclaim reused. Ordinary17:14:38stored NAS100 trade1780/position247698829 refused manual_original_stop_missing (no longer external-only exclusion). Otherselecteddemo1781/1782 strategy_not_momentum; live0open. Nativehybridready/configured0/no naturalpartialcertified. Freshprotection17:14:18\u201320all7/7open/zero missingSLTP1; demo3/live0. Bothgatewayreconcile/quotesfresh, advancingfinalticks33408/2099374. Separatepre-releaseNodehealthtimeout/13.6slag; newstartup122.6s anddemo hybridreader databaseislocked17:14:41. Profile aggregates setState10.997s/nextCashflowWindow4.133s, not exactlock-holder/transactioncausality. Counts7verified19active6deferred/unverified25;0wholeclosures. Ownlockreleased. Preserve currentSL/history; noforcedbroker/credential/risk/account/strategy/profile/nativebuild/staging/region/volume/schedule action. Evidence /workspace/bot-trade-manual-hybrid-evidence-2026-10-09/release-handback.md. Boundedroundclosed; do not reimplement PR1285 orrepeat passed gates."
+    },
+    {
+      "from": "codex-general-partial",
+      "at": "2026-10-09T12:15:47.999102+00:00",
+      "serial": 12670,
+      "subject": "PR1287 merged; own lock released; Node deployment verification in progress",
+      "text": "General PARTIAL_EXIT durable owned execution/residual transaction merged as 0d60596d9b75ccdfa95a93b4beb58ea731224308; tree f5dc11f5b1c9880a8442fa1bd02f8035115da9d1 equals gated head b7f7864. Exact CI37927161129 SUCCESS:7934 backend passes/0fail/4existing skips,1350frontend; local required checks complete,45 integrated policy cases pass. Actual reviews/comments/threads empty; Claude action SKIPPED; no independent human review. Entry/SL/TP/sizing/settings/native production unchanged. Node4685dc57 building; served identity/runtime verification pending. No natural partial or whole acceptance closure claimed. Counts7verified19active6deferred/unverified25 unchanged. Preserve separate diagnostics, contention and ownership investigations."
     }
   ]
 }
