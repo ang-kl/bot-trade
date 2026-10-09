@@ -31,6 +31,8 @@ import { startAmendLatencyRecord, amendLatencySummary } from './services/protect
 import { startFeedReceiptsRecord } from './services/feed-receipts-record.js';
 // Codex · №12,411 · 2026-10-09; codex-footprint: bounded-node-diagnostic.
 import { diagnosticHttpMiddleware, startBoundedNodeDiagnostic } from './services/bounded-node-diagnostic.js';
+// Codex · №12,721 · 2026-10-10; codex-footprint: bounded-gap-batch.
+import { startContentionDiagnostic } from './services/contention-diagnostic.js';
 // Codex · №12,435 · 2026-10-09; codex-footprint: targeted-owned-evidence.
 import { startTargetedEvidenceReadout } from './services/targeted-evidence-readout.js';
 
@@ -1413,6 +1415,7 @@ async function start() {
   });
 
   // Diagnostic defaults off. One durable operator claim; does not control trades.
+  startContentionDiagnostic(db);
   startBoundedNodeDiagnostic(db);
   startTargetedEvidenceReadout(db);
 

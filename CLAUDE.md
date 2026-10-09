@@ -1,4 +1,21 @@
 <!-- Codex · №12,675 · 2026-10-09; codex-footprint: current-work-reporting. -->
+<!-- Codex · №12,722 · 2026-10-10; codex-footprint: bounded-gap-batch. -->
+## Bounded four-gap batch — observation and deterministic CI
+
+Owner orders fresh stored hybrid/scanner evidence and a capped main/worker
+SQLite capture, plus correction of the public-view test timestamp collision.
+Keep hybrid eligibility, original-risk requirements and all trading policy
+unchanged. Missing original risk is not repaired from a current stop. Registry
+alignment is read only; the old re-anchor payload is stale. Any registry change
+requires approval of its exact current diff. The contention capture records
+safe statement/connection identity and proven transaction boundaries, with
+explicit autocommit and uninstrumented-connection limits; it is not itself a
+causal correction. Use opt-in expiry, durable once-only claims and strict caps.
+Validate the exact public timestamp separately from the full nested leak check.
+Required integrated/local/exact-head gates and actual review inspection precede
+authorised merge; verify the Node rollout and one bounded capture/readout, then
+stop. Report each engineering result and unresolved dependency separately.
+
 ## Owner update — report current work, not fixed acceptance totals
 
 Report completed fixes, actual remaining actions and specific unresolved checks.
