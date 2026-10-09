@@ -1,3 +1,4 @@
+import { recordEvaluationMetrics } from './general-partial-execution.js'
 // ---------------------------------------------------------------------------
 // agent/services/fast-monitor.js — fast, volume-aware monitoring of OPEN
 // positions between the 5-minute main-loop cycles.
@@ -548,13 +549,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
         // trail basis, every evaluator — the 0016.HK lesson.
         atr: cachedAtrForSymbol(db, pos.symbol),
       })
-      s.updatePositionMetrics.run(
-        eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
-        eval_.updates.mae_r ?? pos.mae_r ?? 0,
-        eval_.updates.be_moved ?? pos.be_moved ?? 0,
-        eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
-        pos.id,
-      )
+      recordEvaluationMetrics(s, pos, eval_)
       touchedThisPass.add(pos.id)
       checked++
       if (receipt.cadenceMs == null) receipt.cadenceMs = cadenceMs

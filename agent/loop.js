@@ -1,3 +1,4 @@
+import { runGeneralPartial, recordEvaluationMetrics, pendingGeneralPartialPositions } from './services/general-partial-execution.js'
 // ---------------------------------------------------------------------------
 // agent/loop.js — Main 5-minute scan loop
 // ---------------------------------------------------------------------------
@@ -2424,7 +2425,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       const symbolId = resolved.id
       if (!symbolId) throw new Error(resolved.reason || `symbolId unknown for ${pos.symbol}`)
       const { getVolumeMeta } = await import('./lib/lot-sizing.js')
-      return getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId)
+      return { ...await getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId), symbolId }
     }
 
     // BROKER-TRUTH CLOSE VOLUME (production 2026-08-01, Railway log):
@@ -2543,71 +2544,34 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
     }
 
     if (action === 'PARTIAL_EXIT') {
-      const meta = await volumeMeta()
-      // Same broker-truth base as FULL_EXIT: a fraction of what the broker
-      // actually holds, not of our reconversion. Falls back to the computed
-      // figure only when the snapshot could not be read.
-      const snap = await brokerSnapshot()
-      const totalUnits = brokerPositionVolume(snap.positions, ctx.positionId)
-        ?? Math.round((ctx.volumeLots || 0) * meta.lotSize)
-      const fraction = eval_.exitFraction ?? 0.5
-      let closeUnits = Math.round(totalUnits * fraction)
-      if (meta.stepVolume) closeUnits = Math.floor(closeUnits / meta.stepVolume) * meta.stepVolume
-      const unfillable = totalUnits <= 0 || closeUnits <= 0
-        ? 'unknown_volume'
-        : (meta.minVolume != null && closeUnits < meta.minVolume ? 'partial_below_min_volume' : null)
-      if (unfillable) {
-        // A partial the broker would reject is normally skipped — the runner
-        // keeps its full size rather than erroring every tick.
-        //
-        // NOT for a decision that asked for a full exit and was only SPLIT for
-        // better exit shape (checker M4). PR-J's bank take is that case: a
-        // 1000-unit position with a 1000-unit step floors to 0, and before
-        // PR-J it would have been closed WHOLE at the trigger. Skipping it
-        // silently reintroduces the margin-hostage case the bank rule exists
-        // to prevent, on exactly the smallest positions. The decision says
-        // which it is; nothing else infers it.
-        if (eval_.fallbackFullExitIfUnfillable) {
-          return executeBrokerAction(db, s, pos, {
-            ...eval_,
-            action: 'FULL_EXIT',
-            exitFraction: 1,
-            newSL: null,
-            reason: `${eval_.reason} | ${unfillable} → full exit`,
-          }, source, timing)
-        }
-        return { skipped: true, reason: unfillable }
-      }
-
-      const closeRes = await execClosePosition(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }), {
-        positionId: ctx.positionId,
-        volume: closeUnits,
+      // Codex · №12,637 · 2026-10-09; codex-footprint: verified-general-partial.
+      const credentials = () => withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId })
+      const result = await runGeneralPartial(db, {
+        accountId, positionId: String(ctx.positionId), tradeId: pos.trade_id, monitorId: pos.id,
+        symbol: pos.symbol, side: pos.side, host, source, reason: eval_.reason,
+        fraction: eval_.exitFraction ?? 0.5, bankPartialAt: eval_.updates?.bank_partial_at,
+        recoverOnly: eval_.recoverOnly === true,
+      }, {
+        prepare: async () => ({ meta: await volumeMeta(), raw: await execReconcile(credentials()) }),
+        close: order => execClosePosition(credentials(), order),
+        reconcile: () => execReconcile(credentials()),
+        deals: async positionId => {
+          const { credsForRegisteredAccount } = await import('./lib/ctrader-creds.js')
+          const c = credsForRegisteredAccount(db, accountId)
+          if (!c.ready || c.host !== host || String(c.accountId) !== String(accountId)) throw Error('partial_recovery_identity_changed')
+          const { wsGetPositionDeals } = await import('./lib/ctrader-ws.js')
+          return wsGetPositionDeals(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, positionId, Date.now(), 4000)
+        },
       })
-      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
-      if (closeRes.alreadyClosed) {
-        if (pos.trade_id) closeTradeRow(db, pos.trade_id, { closeReason: 'already_closed' })
-        s.closePosition.run('closed', pos.id)
-        return { closedRemotely: true, summary: 'already_closed' }
+      if (result.unfillable && eval_.fallbackFullExitIfUnfillable) {
+        return executeBrokerAction(db, s, pos, { ...eval_, action: 'FULL_EXIT', exitFraction: 1,
+          newSL: null, reason: `${eval_.reason} | ${result.reason} → full exit` }, source, timing)
       }
-
-      // Persist the reduced lot count so the next monitor tick knows the
-      // runner size. cTrader returns the remaining position but we track
-      // lots not cTrader units on our side.
-      const remainingUnits = totalUnits - closeUnits
-      const remainingLots = remainingUnits / meta.lotSize
-      if (pos.trade_id) s.reduceTradeVolume.run(remainingLots, pos.trade_id)
-      // Re-baseline the tamper watch: this volume change is OURS, so the
-      // next reconcile must stamp fresh instead of flagging it as manual.
-      try {
-        db.prepare('UPDATE monitored_positions SET broker_volume_units = NULL WHERE id = ?').run(pos.id)
-      } catch { /* watch column optional */ }
-      recordPositionEvent(db, {
-        accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
-        kind: 'scale_out', toValue: closeUnits, reason: eval_.reason, source,
-      })
-
+      if (!result.partialConfirmed || result.skipped) return result
+      const { closedUnits: closeUnits, totalUnits, lotSize } = result
+      const fraction = closeUnits / totalUnits
       // Move SL for the runner leg (skip if newSL is null / same as current).
-      if (eval_.newSL != null && eval_.newSL !== pos.current_sl) {
+      if (!result.recovered && eval_.newSL != null && eval_.newSL !== pos.current_sl) {
         // THE RUNNER LEG KEEPS ITS TARGET. The MOVE_SL path above re-sends
         // current_tp; this one did not, and it fires immediately after every
         // partial — which the TP1-at-1R change (#738) made far more frequent.
@@ -2628,6 +2592,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         if (!amendRes.alreadyClosed) {
           // Same rule as MOVE_SL: store what the broker holds.
           s.updatePositionSl.run(heldStop(amendRes, runnerSend.stopLoss), pos.id)
+          if (eval_.updates?.be_moved) db.prepare('UPDATE monitored_positions SET be_moved=1 WHERE id=?').run(pos.id)
           if (amendRes.unchanged !== true) {
             recordPositionEvent(db, {
               accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
@@ -2637,7 +2602,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
           }
         }
       }
-      return { summary: partialExitSummary({ fraction, closeUnits, totalUnits, lotSize: meta.lotSize }) }
+      return { summary: partialExitSummary({ fraction, closeUnits, totalUnits, lotSize }), partialConfirmed: true }
     }
 
     return { skipped: true, reason: `unhandled_action:${action}` }
@@ -2713,13 +2678,7 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // which case the multiplier falls back to the position's own 1R distance.
   const eval_ = evaluatePosition(pos, { currentPrice, rules, atr: cachedAtrForSymbol(db, pos.symbol) })
   // Persist MFE/MAE and any flag flips every loop, regardless of action.
-  s.updatePositionMetrics.run(
-    eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
-    eval_.updates.mae_r ?? pos.mae_r ?? 0,
-    eval_.updates.be_moved ?? pos.be_moved ?? 0,
-    eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
-    pos.id
-  )
+  recordEvaluationMetrics(s, pos, eval_)
 
   // Deterministic rule fired — execute it at the broker (MOVE_SL /
   // PARTIAL_EXIT / FULL_EXIT) then persist what happened. The executor
@@ -2957,6 +2916,14 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
 export const MONITOR_CONCURRENCY = 4
 
 export async function runMonitorPhase(db, s, positions, currentPriceOf, client, skipLlm = () => false, { beforeBatch = null } = {}) {
+  // Codex · №12,637 · 2026-10-09; codex-footprint: partial-recovery-in-existing-pass.
+  // Read-only recovery for durable attempts; recoverOnly cannot submit a close
+  // or replay a runner-stop amendment. Closed rows are never reopened.
+  try {
+    for (const pos of pendingGeneralPartialPositions(db)) {
+      await executeBrokerAction(db, s, pos, { action: 'PARTIAL_EXIT', recoverOnly: true }, 'partial_recovery')
+    }
+  } catch (err) { log('General partial recovery deferred:', err.message) }
   for (let i = 0; i < positions.length; i += MONITOR_CONCURRENCY) {
     // Progress in the phase label — a stall here now reads "monitoring 22
     // positions (9-12)" instead of a frozen count (incident forensics).

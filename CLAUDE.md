@@ -1,3 +1,19 @@
+<!-- Codex · №12,637 · 2026-10-09; codex-footprint: verified-general-partial. -->
+## General partial execution — actual receipt and durable recovery
+
+Owner orders the general PARTIAL_EXIT correction, separate from capped hybrid.
+Persist the owned attempt before close; never infer executed quantity from the
+request. Confirm owned fill and broker residual before atomically changing lots,
+scaled-out/bank latch and scale-out journal. Uncertain attempts never blindly
+resend, including after restart. Both monitor callers defer partial latches until
+confirmation. Existing monitor pass recovers committed attempts without new
+orders or replaying runner stop amendments. Preserve entry/SL implementations,
+TP/fraction/sizing policy, account/owner/book fences and historical records.
+Integrated real caller/database/broker-boundary coverage plus required full local,
+exact-head CI and actual review inspection precede authorised merge/deployment.
+No unrelated diagnostic/watchdog correction, native rebuild or forced event.
+Counts7verified/19active/6deferred, unverified25 unchanged unless wholegroup passes.
+
 <!-- Codex · №12,611 · 2026-10-09; codex-footprint: hybrid-status-contention -->
 ## NAS100 initial-risk read and hybrid status contention
 
