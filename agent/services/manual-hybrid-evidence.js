@@ -3,6 +3,7 @@
 // current/adopted SL, a strategy label and a guessed entry intent are not inputs.
 import { marketIdentity } from '../lib/market-identity.js'
 import { priceTicks, sameTicks } from './momentum-target-policy.js'
+import { brokerPolicyObservation, brokerTrailing } from '../lib/stop-policy.js'
 
 const MAX_RAW_BYTES = 64 * 1024
 const object = value => value != null && typeof value === 'object' && !Array.isArray(value)
@@ -126,7 +127,9 @@ export function manualOpeningProof(history, orderDetails, context) {
   }
   if (![2, 'ORDER_STATUS_FILLED'].includes(order.orderStatus) || !openingTypes.has(order.orderType)
     || !optionalFalse(order.closingOrder) || !optionalFalse(order.isStopOut)
-    || !optionalFalse(order.trailingStopLoss)) return refuse('manual_opening_order_not_filled_entry')
+    || brokerTrailing(order) === true || Object.values(brokerPolicyObservation(order)).some(value => value == null)) {
+    return refuse('manual_opening_order_not_filled_entry')
+  }
   if (integer(order.executedVolume) !== c.volume || !integer(td.volume) || integer(td.volume) < c.volume) {
     return refuse('manual_opening_order_volume_conflict')
   }

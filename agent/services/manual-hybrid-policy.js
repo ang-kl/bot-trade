@@ -40,7 +40,7 @@ export function readManualHybridCandidate(db, t, positionId, digits) {
   if (!managedExitApplies(db, t.account_id)) return refuse('managed_exit_disabled')
   let keeper = {}
   try { keeper = JSON.parse(getState(db, 'profit_keeper_json') || '{}') || {} } catch { return refuse('manual_keeper_disabled') }
-  if (keeper.on != null && keeper.on !== true) return refuse('manual_keeper_disabled')
+  if (Object.hasOwn(keeper, 'on') && keeper.on !== true) return refuse('manual_keeper_disabled')
   const monitors = db.prepare("SELECT * FROM monitored_positions WHERE trade_id=? AND status='active'").all(t.id)
   if (!monitors.length) return refuse('active_monitor_missing')
   if (monitors.length !== 1) return refuse('active_monitor_ambiguous')

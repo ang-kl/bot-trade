@@ -179,6 +179,8 @@ test('manual scope and existing owner fences remain closed before broker reads',
     ['other demo account', { accountId: '47790949' }, () => {}],
     ['other live account', { accountId: '43069009', live: true }, () => {}],
     ['keeper opt-out', {}, f => f.db.prepare('UPDATE monitored_positions SET keeper_opt_out=1 WHERE id=8').run()],
+    ['keeper disabled', {}, f => setState(f.db, 'profit_keeper_json', JSON.stringify({ on: false }))],
+    ['keeper null', {}, f => setState(f.db, 'profit_keeper_json', JSON.stringify({ on: null }))],
     ['guarded', {}, f => f.db.prepare("UPDATE monitored_positions SET guard_json='{}' WHERE id=8").run()],
     ['paused', {}, f => f.db.prepare('UPDATE monitored_positions SET paused=1 WHERE id=8').run()],
     ['managed exits off', {}, f => setState(f.db, 'managed_exit_json', JSON.stringify({ on: false }))],
@@ -219,19 +221,25 @@ test('manual exact-half and existing TP limits are retained after original-risk 
 })
 
 test('manual authority changed during the broker read prevents the later claim', async t => {
-  const f = manualScene(t)
-  assert.equal((await f.enrol()).enrolled.length, 1)
-  const before = f.proof(), trade = f.trade(), event = f.trigger(), read = f.transports.reconcile
-  f.transports.reconcile = async (...args) => {
-    const result = await read(...args)
-    f.db.prepare('UPDATE monitored_positions SET keeper_opt_out=1 WHERE id=8').run()
-    return result
+  const cases = [
+    ['keeper opt-out', f => f.db.prepare('UPDATE monitored_positions SET keeper_opt_out=1 WHERE id=8').run()],
+    ['keeper null', f => setState(f.db, 'profit_keeper_json', JSON.stringify({ on: null }))],
+  ]
+  for (const [name, withdraw] of cases) {
+    const f = manualScene(t)
+    assert.equal((await f.enrol()).enrolled.length, 1, name)
+    const before = f.proof(), trade = f.trade(), event = f.trigger(), read = f.transports.reconcile
+    f.transports.reconcile = async (...args) => {
+      const result = await read(...args)
+      withdraw(f)
+      return result
+    }
+    await f.tick(event)
+    assert.equal(f.closes.length, 0, name); assert.equal(f.events().length, 0, name)
+    assert.notEqual(f.plan().state, 'SENDING', name); assert.equal(f.plan().attempted_at, null, name)
+    assert.deepEqual(f.proof(), before, name); assert.deepEqual(f.trade(), trade, name)
+    assert.equal(f.sl, f.monitor().current_sl, name); assert.equal(f.tp, f.monitor().current_tp, name)
   }
-  await f.tick(event)
-  assert.equal(f.closes.length, 0); assert.equal(f.events().length, 0)
-  assert.notEqual(f.plan().state, 'SENDING'); assert.equal(f.plan().attempted_at, null)
-  assert.deepEqual(f.proof(), before); assert.deepEqual(f.trade(), trade)
-  assert.equal(f.sl, f.monitor().current_sl); assert.equal(f.tp, f.monitor().current_tp)
 })
 
 test('manual authority storage failure prevents plan registration and every broker close', async t => {
