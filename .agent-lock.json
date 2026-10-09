@@ -1,22 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude \u00b7 \u2116 11,660 07-Oct).",
-  "locks": [
-    {
-      "id": "codex-diagnostic-readout-2026-10-09",
-      "locked_by": "codex-diagnostic-readout",
-      "created_at": "2026-10-09T13:47:44.005704+00:00",
-      "expires_at": "2026-10-09T16:47:44.005704+00:00",
-      "files": [
-        "CLAUDE.md",
-        "agent/services/initial-risk-readout.js",
-        "agent/services/targeted-evidence-readout.js",
-        "agent/services/diagnostic-readout.js",
-        "agent/services/diagnostic-boundary-integration.test.js"
-      ],
-      "branch": "fix/owned-diagnostic-readout-2026-10-09",
-      "purpose": "Three confirmed PR1286 bounded readout corrections; no controller, broker, entry or SL changes"
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -264,6 +248,13 @@
       "serial": 12686,
       "subject": "Owner withdraws fixed-count reporting directives; PR1288 merged",
       "text": "Owner asks removal of fixed acceptance tallies as instructions. CLAUDE.md removes22 such directives and states dated receipts are history, not standing reporting rules. Report completed work, remaining actions and specific unresolved checks; no mandated repetition or frozen total. PR1288 merged1a457ed0c5b60aaa764e72fa26ea3ab2806cf0c3, treeb6fa326713e32be8825fc1fe51303fc41f498a00 equals exact CI37930070179SUCCESS headc4c6055. OnlyCLAUDE.md changed;2191othertrackedentries unchanged; localcodegatesreused. Actual reviews/threads/comments empty, ClaudeactualactionSKIPPED; assistantreviewnoblocker. No trading/settings changes or new acceptance pass. Ownlockreleased."
+    },
+    {
+      "from": "codex-diagnostic-readout",
+      "at": "2026-10-09T14:10:23.143367+00:00",
+      "serial": 12703,
+      "subject": "PR1289 merged; file lock released",
+      "text": "Three bounded diagnostic projection corrections merged4427c8e after local and exact-head CI37940644792 passed. Runtime verification in progress. Session-guard ownership fixture reproduced contaminated quote decisions and skipped outcome stamped success; separate correction not included. No production incidence or lock-holder cause established. Historical acceptance totals are not directives."
     }
   ]
 }
