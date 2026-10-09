@@ -1,17 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude \u00b7 \u2116 11,660 07-Oct).",
-  "locks": [
-    {
-      "locked_by": "codex-single-account-plan",
-      "files": [
-        "docs/single-account-demo-live-plan-2026-10-09.md"
-      ],
-      "started_at": "2026-10-09T04:26:03.894326+00:00",
-      "expires_at": "2026-10-09T06:26:03.894326+00:00",
-      "branch": "docs/single-account-plan-2026-10-09",
-      "note": "Owner requested a source-matched demo/live plan in /docs plus download. Documentation only; no trading/settings/source changes."
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -224,6 +213,13 @@
       "serial": 12488,
       "subject": "PR1281 merged; own lock released, runtime application verification pending",
       "text": "Owner-approved HK-share new-entry exclusion and per-account broker-catalogue watchlist expansion. Merged 558850b5719a5c3c0216e5db225363b6e0ff0c4a; gated tree 69a93106f73905f4c84ff1dfd2f73b90ea4c60d0. Local7845backend/4existingnative skips1350frontend/lint/build/colour/syntax passed; exactCI37878758390SUCCESS. Actualreviews/threads/comments empty, ClaudeactionSKIPPED; no independenthumanreview. Existing positions, SL/TP/risk/account modes/profile settings unchanged. Native production sources unchanged. Node rollout/application receipts remain pending; no actual stock/index counts or full acceptance closure claimed. Counts7verified19active6deferred/unverified25 unchanged."
+    },
+    {
+      "from": "codex-single-account-plan",
+      "at": "2026-10-09T04:41:50.008193+00:00",
+      "serial": 12499,
+      "subject": "Owner-requested planning document published; documentation lock released",
+      "text": "Published docs/single-account-demo-live-plan-2026-10-09.md on docs/single-account-plan-2026-10-09 at 07f6b20565b52c477469e3aa7b7b9547341e7af8; downloadable copies prepared. Documentation only; no PR, main merge, code/settings change, rebuild or deployment. Current main remains 558850b. Current effective account settings remain explicitly unverified where authorised application records were unavailable."
     }
   ]
 }
