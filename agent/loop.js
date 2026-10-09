@@ -2568,6 +2568,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
           newSL: null, reason: `${eval_.reason} | ${result.reason} → full exit` }, source, timing)
       }
       if (!result.partialConfirmed || result.skipped) return result
+      if (result.recovered) return { skipped: true, partialConfirmed: true, reason: 'prior_partial_recovered' }
       const { closedUnits: closeUnits, totalUnits, lotSize } = result
       const fraction = closeUnits / totalUnits
       // Move SL for the runner leg (skip if newSL is null / same as current).

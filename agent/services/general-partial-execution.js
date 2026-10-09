@@ -3,6 +3,7 @@
 // resent. Receipt, residual, volume, latch and journal are separate from SL.
 import { partialClosingEvidence, partialAcceptedEvidence, partialPositionPresence,
   classifyCloseFailure, MAX_CLOCK_SKEW_MS } from './momentum-broker-evidence.js'
+import { sameTicks } from './momentum-target-policy.js'
 import { recordPositionEvent } from './position-events.js'
 
 const initialized = new WeakSet()
@@ -46,7 +47,7 @@ export function recordEvaluationMetrics(s, pos, evaluation) {
 }
 function ownedRows(db, x) {
   const row = db.prepare(`SELECT m.id,m.trade_id,m.account_id,m.symbol,m.side,m.status,m.source,
-    t.account_id trade_account,t.ctrader_position_id,t.symbol trade_symbol,t.side trade_side,t.status trade_status
+    m.scaled_out,m.bank_partial_at,t.account_id trade_account,t.ctrader_position_id,t.symbol trade_symbol,t.side trade_side,t.status trade_status
     FROM monitored_positions m JOIN trades t ON t.id=m.trade_id WHERE m.id=?`).get(x.monitorId)
   return row && row.trade_id === x.tradeId && id(row.account_id) === x.accountId && id(row.trade_account) === x.accountId
     && id(row.ctrader_position_id) === x.positionId && row.symbol === x.symbol && row.trade_symbol === x.symbol
@@ -63,14 +64,19 @@ export async function runGeneralPartial(db, input, deps) {
   if (attempt && (attempt.trade_id !== x.tradeId || attempt.monitor_id !== x.monitorId
     || attempt.plan.symbol !== x.symbol || attempt.plan.side !== x.side || attempt.plan.host !== x.host))
     return held('partial_attempt_identity_conflict')
-  if (attempt?.state === 'CONFIRMED') return { skipped: true, reason: 'partial_already_confirmed', partialConfirmed: true }
-  if (attempt && !pending.has(attempt.state) && attempt.state !== 'REJECTED') return held(attempt.reason || attempt.state)
+  // Ladder and bank are distinct existing policy actions; ambiguity blocks both.
+  const nextBank = input.bankPartialAt != null && attempt?.state === 'CONFIRMED' && attempt.plan.bankPartialAt == null
+  if (attempt?.state === 'CONFIRMED' && !nextBank) return { skipped: true, reason: 'partial_already_confirmed', partialConfirmed: true }
+  if (attempt && !nextBank && !pending.has(attempt.state) && attempt.state !== 'REJECTED') return held(attempt.reason || attempt.state)
   const now = deps.now || Date.now
-  if (!attempt || attempt.state === 'REJECTED') {
+  const recovery = !!attempt && pending.has(attempt.state)
+  const latched = owner => input.bankPartialAt != null ? owner.bank_partial_at != null : owner.scaled_out === 1
+  if (!attempt || attempt.state === 'REJECTED' || nextBank) {
     if (input.recoverOnly) return { skipped: true, reason: 'no_pending_partial' }
     const owner = ownedRows(db, x)
     if (!owner || owner.status !== 'active' || owner.trade_status !== 'open' || owner.source === 'external')
       return { skipped: true, reason: 'partial_owner_changed' }
+    if (latched(owner)) return { skipped: true, reason: 'partial_policy_already_latched' }
     const { raw, meta } = await deps.prepare()
     const symbolId = id(meta?.symbolId), identity = { accountId: x.accountId, host: x.host, symbolId }
     const before = partialPositionPresence(raw, { identity, positionId: x.positionId, nowMs: now() })
@@ -89,9 +95,9 @@ export async function runGeneralPartial(db, input, deps) {
       bankPartialAt: input.bankPartialAt ?? null }
     const claimed = db.transaction(() => {
       const prior = readGeneralPartial(db, x.accountId, x.positionId)
-      if ((prior?.id ?? null) !== (attempt?.id ?? null) || prior && prior.state !== 'REJECTED') return null
+      if ((prior?.id ?? null) !== (attempt?.id ?? null) || prior && prior.state !== 'REJECTED' && !(nextBank && prior.state === 'CONFIRMED' && prior.plan.bankPartialAt == null)) return null
       const fresh = ownedRows(db, x)
-      if (!fresh || fresh.status !== 'active' || fresh.trade_status !== 'open' || fresh.source === 'external') return null
+      if (!fresh || fresh.status !== 'active' || fresh.trade_status !== 'open' || fresh.source === 'external' || latched(fresh)) return null
       const at = now()
       const row = db.prepare(`INSERT INTO general_partial_attempts(account_id,position_id,trade_id,monitor_id,state,attempted_at,plan_json)
         VALUES(?,?,?,?,'SENDING',?,?)`).run(x.accountId,x.positionId,x.tradeId,x.monitorId,at,JSON.stringify(plan))
@@ -124,9 +130,26 @@ export async function runGeneralPartial(db, input, deps) {
     entry: p.before.entry, digits: p.digits, closeVolume, attemptedAtMs: attempt.attempted_at,
     nowMs: now(), maxAgeMs: 5000 })
   const decode = raw => {
-    const n = raw?.deal?.filledVolume
-    if (!integer(n) || n > p.requested) return null
-    return partialClosingEvidence(raw, context(n))
+    const d = raw?.deal, n = d?.filledVolume, close = d?.closePositionDetail
+    if (!integer(n) || n > p.requested || raw.error || raw.errorCode) return null
+    // Optional enclosing identities must not contradict the actual deal.
+    if (raw.position && id(raw.position.positionId) !== x.positionId
+      || raw.order && (raw.order.orderId != null && id(raw.order.orderId) !== id(d.orderId)
+        || raw.order.positionId != null && id(raw.order.positionId) !== x.positionId)) return null
+    const c = { ...context(n), attemptedAtMs: attempt.attempted_at - MAX_CLOCK_SKEW_MS, nowMs: now() + MAX_CLOCK_SKEW_MS }
+    const exact = partialClosingEvidence(raw, c)
+    if (exact) return exact
+    // A completed underfill may retain requested volume in d.volume. Validate
+    // that upper bound separately; never substitute it for executed quantity.
+    if (id(raw.ctidTraderAccountId) !== x.accountId || raw.alreadyClosed || ![3, 'ORDER_FILLED'].includes(raw.executionType)
+      || !id(d.dealId) || !id(d.orderId) || id(d.positionId) !== x.positionId || id(d.symbolId) !== p.identity.symbolId
+      || ![2, 'FILLED'].includes(d.dealStatus) || side(d.tradeSide) !== (p.side === 'BUY' ? 'SELL' : 'BUY')
+      || !integer(d.volume) || d.volume < n || d.volume > p.requested || close?.closedVolume !== n
+      || !(typeof d.executionPrice === 'number' && Number.isFinite(d.executionPrice) && d.executionPrice > 0)
+      || !sameTicks(close.entryPrice, p.before.entry, p.digits) || !Number.isSafeInteger(d.executionTimestamp)
+      || d.executionTimestamp < c.attemptedAtMs || d.executionTimestamp > c.nowMs) return null
+    return { ...p.identity, positionId: x.positionId, dealId: id(d.dealId), orderId: id(d.orderId),
+      closedVolume: n, price: d.executionPrice, executedAtMs: d.executionTimestamp }
   }
   let receipt = attempt.receipt || decode(attempt.raw)
   const accepted = partialAcceptedEvidence(attempt.raw, context(p.requested))
@@ -138,13 +161,7 @@ export async function runGeneralPartial(db, input, deps) {
       // More than one deal needs a complete aggregate contract, not an
       // arbitrary first match. It remains unresolved, without another send.
       if (matching.length === 1) {
-        const d = matching[0], at = d.executionTimestamp
-        if (Number.isSafeInteger(at) && at >= attempt.attempted_at - MAX_CLOCK_SKEW_MS && at <= now() + MAX_CLOCK_SKEW_MS) {
-          const c = context(d.filledVolume)
-          receipt = integer(d.filledVolume) && d.filledVolume <= p.requested
-            ? partialClosingEvidence({ ctidTraderAccountId: history.ctidTraderAccountId, executionType: 3, deal: d },
-              { ...c, attemptedAtMs: attempt.attempted_at - MAX_CLOCK_SKEW_MS, nowMs: now() + MAX_CLOCK_SKEW_MS }) : null
-        }
+        receipt = decode({ ctidTraderAccountId: history.ctidTraderAccountId, executionType: 3, deal: matching[0] })
       }
     }
   }
@@ -174,7 +191,7 @@ export async function runGeneralPartial(db, input, deps) {
     db.prepare("UPDATE general_partial_attempts SET state='CONFIRMED',residual_json=?,confirmed_at=?,reason=NULL WHERE id=? AND state='RECEIVED'")
       .run(JSON.stringify(residual), now(), attempt.id)
     return { partialConfirmed: true, closedUnits: receipt.closedVolume, totalUnits: p.before.volume,
-      remainingUnits: residual.volume, lotSize: p.lotSize, recovered: input.recoverOnly === true }
+      remainingUnits: residual.volume, lotSize: p.lotSize, recovered: recovery || input.recoverOnly === true }
   })()
   return result
 }

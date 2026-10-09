@@ -224,3 +224,41 @@ test('accepted order with multiple or foreign history receipts remains unresolve
   f.state.history = [{ ...f.fill().deal, positionId: '9002' }]
   await f.recover(); untouched(f); assert.equal(f.state.closes.length, 1)
 })
+
+test('completed underfill with requested deal.volume still commits only actual filledVolume', async t => {
+  const f = fixture(t); f.state.after = 9000
+  f.state.response = () => { const r = f.fill(1000); r.deal.volume = 5000; return r }
+  assert.equal((await f.run()).partialConfirmed, true)
+  assert.equal(f.read().trade.volume, 0.09); assert.equal(f.read().journal[0].to_value, 1000)
+})
+test('existing ladder partial then distinct bank partial both execute once', async t => {
+  const f = fixture(t); await f.run()
+  f.state.response = () => { const r = f.fill(2500); r.deal.dealId = '7002'; r.deal.orderId = '8002'; return r }
+  f.state.after = 2500
+  const bank = { updates: { bank_partial_at: new Date().toISOString(), scaled_out: 1, be_moved: 1 } }
+  assert.equal((await f.run(bank)).partialConfirmed, true)
+  assert.equal(f.read().trade.volume, 0.025); assert.equal(f.read().journal.length, 2)
+  assert.ok(f.read().position.bank_partial_at)
+  await f.run(bank); await f.run(); assert.equal(f.state.closes.length, 2)
+})
+test('recovering an earlier ladder fill cannot stamp or execute a later bank decision', async t => {
+  const f = fixture(t); f.state.after = 6000
+  await f.run(); f.state.volume = 5000
+  const bank = { updates: { bank_partial_at: new Date().toISOString(), scaled_out: 1, be_moved: 1 } }
+  const r = await f.run(bank)
+  assert.equal(r.reason, 'prior_partial_recovered'); assert.equal(r.skipped, true)
+  loop.stampExitMarks(f.s, f.pos(), { action: 'PARTIAL_EXIT', ...bank }, r)
+  assert.equal(f.read().position.bank_partial_at, null)
+  assert.equal(f.state.closes.length, 1); assert.equal(f.read().journal.length, 1)
+})
+test('conflicting enclosing identity is refused', async t => {
+  const f = fixture(t); f.state.response = () => ({ ...f.fill(), position: { positionId: 'foreign' } })
+  assert.equal((await f.run()).pending, true); untouched(f)
+})
+
+test('nonterminal partial-fill event remains unresolved without requesting another close', async t => {
+  const f = fixture(t); f.state.after = 9000
+  f.state.response = () => ({ ...f.fill(1000), executionType: 11 })
+  assert.equal((await f.run()).pending, true); await f.run(); untouched(f)
+  assert.equal(f.state.closes.length, 1)
+})
