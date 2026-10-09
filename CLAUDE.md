@@ -1,3 +1,13 @@
+<!-- Codex · №12,675 · 2026-10-09; codex-footprint: current-work-reporting. -->
+## Owner update — report current work, not fixed acceptance totals
+
+Report completed fixes, actual remaining actions and specific unresolved checks.
+Do not freeze acceptance counts or repeat a historical tally as required report text.
+Dated counts in old receipts are historical evidence, not standing instructions.
+Distinguish engineering completion, operational outcomes and deferred work; claim
+only what the available evidence supports. This owner update supersedes earlier
+fixed-count reporting directives without changing trading policy or owner exclusions.
+
 <!-- Codex · №12,637 · 2026-10-09; codex-footprint: verified-general-partial. -->
 ## General partial execution — actual receipt and durable recovery
 
@@ -12,7 +22,6 @@ TP/fraction/sizing policy, account/owner/book fences and historical records.
 Integrated real caller/database/broker-boundary coverage plus required full local,
 exact-head CI and actual review inspection precede authorised merge/deployment.
 No unrelated diagnostic/watchdog correction, native rebuild or forced event.
-Counts7verified/19active/6deferred, unverified25 unchanged unless wholegroup passes.
 
 <!-- Codex · №12,611 · 2026-10-09; codex-footprint: hybrid-status-contention -->
 // Codex · №12,648 · 2026-10-09; codex-footprint: partial-policy-review.
@@ -41,7 +50,7 @@ The production 17:14:41 lock and startup profile are real, but their exact holde
 and the cause of every stall remain unproven. No timeout/threshold/SL/entry or
 native source change. Integrated actual-controller/database coverage plus required
 full local/exact-head CI, actual review inspection and deployed verification precede
-release. Counts7verified/19active/6deferred;unverified25 remain unchanged.
+release.
 
 <!-- Codex · №12,587 · 2026-10-09; codex-footprint: manual-profit-hybrid -->
 ## Owner-authorised manual capped hybrid — 9 October
@@ -81,7 +90,7 @@ Unknown catalogues remain blocked; no automatic restart replay or monitor schedu
 No scanner-profile registration, credentials, account/risk/strategy settings, region,
 volume or staging changes; no native production rebuild. Full local/exact-head CI,
 actual review inspection and deployed receipt/protection checks precede closure.
-Counts7verified/19active/6deferred, unverified25 unless a complete group passes.
+
 Conversation ref: owner preview №12,469 and approval; implementation №12,470–12,474.
 
 <!-- Codex · №12,435 · 2026-10-09; codex-footprint: reporting-query -->
@@ -100,7 +109,7 @@ ordinary enrolment; sizing, eligibility and broker actions are unchanged.
 `OWNED_EVIDENCE_RUN_ID` plus an expiry within one hour enables one private, bounded,
 delayed stored read. Durable claim prevents replay; no broker request or profiling.
 Read movement kinds through owned trade indexes; absent proof remains unavailable.
-Counts remain 7 verified / 19 active / 6 deferred; unverified overlay 25.
+
 Conversation ref: owner request following №12,432; work №12,433–12,435.
 
 # Instructions for Claude — bot-trade
@@ -118,7 +127,7 @@ explicit. No public data route or secret extraction; no broker request/forcing.
 This is instrumentation, not a reproduced production-cause or trading fix.
 Entry/SL/TP/claims, risk/account/strategy/profile settings and native sources
 remain unchanged. Full local/exact-head Node CI/review precede authorised merge.
-Counts remain7verified/19active/6deferred;unverified25 until complete groups pass.
+
 -->
 
 <!-- Codex · №12,365 · 2026-10-09; codex-footprint: hybrid-clock-2026-10-09.
@@ -139,7 +148,7 @@ No native, entry, SL, TP/partial quantity, risk or account-setting change.
 No historical rewrite or production occurrence asserted; full local/exact
 Node CI and actual review/deployment verification required for this fix.
 Reuse unchanged PR1277 native gates/binaries; no native production rebuild.
-Counts7verified/19active/6deferred;unverified25. Owner requires natural owned
+Owner requires natural owned
 tick/receipt/fill/residual/journal proof; do not force a trade to obtain it.
 -->
 
@@ -169,7 +178,7 @@ Meaningful native storage/account/freshness/thread tests and actual Node
 ledger/broker-boundary/restart tests precede full local/exact-head CI/review.
 No forced events, credentials/risk/account/strategy/profile/staging changes,
 profit-improvement promise, natural partial or whole acceptance pass claimed.
-Counts7verified/19active/6deferred; unverified25. Conversation refs: owner
+Conversation refs: owner
 native live/demo hybrid request after№12,277; build/verification№12,315–12,327.
 Session native-hybrid-2026-10-08, ChatGPT; session URL/effort unavailable.
 -->
@@ -205,7 +214,7 @@ exact-head CI, actual reviews and deployed verification remain required.
 Native tick-profit execution has NOT been implemented or released; existing
 Node claim coordination must be preserved before any native partial close.
 No microsecond broker/fsync promise, real partial, profit improvement or whole
-acceptance pass is claimed. Counts7verified/19active/6deferred; unverified25.
+acceptance pass is claimed.
 Session native-hybrid-2026-10-08, ChatGPT; evidence retained in workspace.
 -->
 
@@ -231,8 +240,7 @@ Full local/exact-head CI, actual review inspection, merge and deployed
 ordinary-runtime verification remain pending at 2026-10-08T03:09Z.
 Existing trading wire/ratchet acceptance, policies and retention are unchanged.
 No broker forcing, credentials, risk/account/strategy/profile/selected-account/
-history/region/volume/staging or monitoring-schedule action. Acceptance remains
-7verified/19active/6deferred until a complete group passes.
+history/region/volume/staging or monitoring-schedule action.
 The first full gate failed the routing vocabulary boundary and an unchanged
 idle-lag fixture (one probe; isolated11/11 passes, thresholds preserved).
 Keep mode/host matching in heartbeat via the existing registered-account
@@ -257,8 +265,7 @@ for overwritten/interior native-ring gaps. Existing bounded retention/polling,
 equity composition, ratchet/trading policy and owner scope remain intact.
 Full local/exact-head CI, actual review inspection, merge and deployed ordinary
 runtime verification required. No forced broker event, credentials, risk/account/
-strategy/profile/selected-account/region/volume/staging/schedule action. Whole
-acceptance remains7verified/19active/6deferred until complete criteria pass.
+strategy/profile/selected-account/region/volume/staging/schedule action.
 The first full backend gate caught the new recorder naming policy fields outside
 their canonical module. Preserve that source boundary: read-only observation
 decoding now lives in stop-policy.js and reuses brokerTrigger/brokerTrailing;
@@ -281,8 +288,7 @@ executed lots. Initial failed gate retained; refined exact head needs full gate.
 No production impact or financial-history repair established. Full local/
 exact-head CI, actual review inspection, merge and deployed verification
 remain required. No broker forcing, credentials, risk/account/strategy,
-registry, region/volume/staging or monitoring schedule changes. Whole-row
-acceptance stays7verified/19active/6deferred unless complete criteria pass.
+registry, region/volume/staging or monitoring schedule changes.
 -->
 
 <!-- Codex · №11,968 · 2026-10-08; session: http-read-diagnostics;
@@ -297,7 +303,7 @@ PR1233–1259 releases/gates remain complete. Production failure cause unproven;
 full local/exact-head CI, actual review inspection and deployed verification
 pending at 2026-10-07T22:11Z. No broker forcing, credentials, risk/account/strategy/
 registry/history/region/volume/staging or monitoring schedule operation.
-Acceptance stays 7 verified/19 active/6 deferred; zero new whole-row closures.
+No whole-row closure was claimed in this dated note.
 -->
 
 
@@ -315,8 +321,7 @@ review inspection, merge and deployed verification remain pending at verified
 manual money/history repair, native source/rebuild, credential/broker/risk/account/
 strategy/profile/region/volume/staging or schedule action. Existing importer and
 native nominal-volume contract remains separately open; no production GER40
-net/volume attribution or whole acceptance row pass. Counts7verified/19active/
-6deferred and all owner exclusions remain. Session link/effort unavailable via
+net/volume attribution or whole acceptance row pass. All owner exclusions remain. Session link/effort unavailable via
 this connector; no independent human review claimed. -->
 
 <!-- Codex · №11,791 · 2026-10-07; session: performance-essentials; codex-footprint: performance-essentials.
@@ -369,8 +374,7 @@ bars remain unchanged; verified own-only losing accounts retain their own
 protection and dedupe when pooled money is unavailable. Other hand pins hold.
 No synthetic FX/history rewrite, manual strategy/risk/credential/order
 operation or native production rebuild. Full local/exact-head CI gates,
-merge and deployment remain pending at this source stamp. Keep7verified/
-25active/zero new whole-row closures and all latest owner exclusions.
+merge and deployment remain pending at this source stamp. Preserve all latest owner exclusions.
 Hourly watch remains disabled; unused staging untouched. Session link and
 measured effort unavailable; no independent human review claimed. -->
 
@@ -402,7 +406,7 @@ Actual-source offline probes reproduce stale queued token rollback and
 concurrent refresh response overwrites. A bounded correction is being
 prepared with required full local/exact-head CI gates and authorised
 auto-merge; no new production source release or incident-cause proof yet.
-Keep the25 active rows, withdrawals18/31, closed-review gaps17/32/39 and
+Preserve withdrawals18/31, closed-review gaps17/32/39 and
 historical archives11/24/37/41. No credential extraction/manual refresh,
 test orders, risk/account/activation/history/region/volume changes or
 native rebuild. Conversation ref: ordered after №11,243, investigation
@@ -2799,7 +2803,7 @@ At this stamp217focusedNodechecks pass; native red-before29 assertions fail on
 unchanged judge, focused actual judge/loopback decoder green; full local/exact
 CI and merge/deployed verification pending, not claimed. No broker/credential/
 risk/account/profile/strategy/region/volume/staging/schedule operation.
-Acceptance stays7verified/19active/6owner-deferred, zero whole-row closures.
+No whole-row closure was claimed in this dated note.
 -->
 
 
@@ -2811,7 +2815,7 @@ For the actual collapsed endpoint only, retain the existing current-route host w
 
 Two positive actual ingestion regressions fail unchanged main; fourteen controls pass. Five new cases cover demo/live-short/default secondary ownership and grouped mismatch controls. Final focused routing/receipt/heartbeat suite99/99 passes. Heartbeat remains the existing routing owner; its exact isLive reference allowance31->32 corresponds to the one collapsed-route discriminator, with no new module exception or relaxed audit. Required local/exact-head Node gates and fresh actual review precede release; no new native source gate/rebuild is needed for this Node-only follow-up. Prior PR1263 native/TSan/delegator gate remains completed on unchanged native hashes. No universal provenance, retrospective history reconstruction, full trailing/WR/PF acceptance or independent human review is claimed.
 
-Owner accounting stays7 verified/19 active/6 deferred; unverified overlay25=19+6,45 total; zero whole-group closures. All exclusions, unused staging, registry-owner boundary and disabled monitoring schedule are preserved. Dated release/deployment results are recorded append-only in the session receipts rather than inferred from this implementation note.
+No whole-group closure was claimed in this dated note. All exclusions, unused staging, registry-owner boundary and disabled monitoring schedule are preserved. Dated release/deployment results are recorded append-only in the session receipts rather than inferred from this implementation note.
 
 ## 2026-10-08 — Codex · №12,130: LossGuardian naked-stop ratchet
 
@@ -2819,7 +2823,7 @@ codex-footprint: loss-guardian-ratchet. Owner orders the narrowly scoped correct
 
 The naked-stop transaction carries ratchetOnly:true and expectedDirection/expectedSymbolId from this account's own broker snapshot. Missing/malformed account, position, symbol or direction and conflicting ledger/broker direction or explicit broker account refuse before action. Numeric and protobuf enum directions are accepted without guessing; normalised long/short ledger labels use the matching broker direction. Quote/sizing remain on the own snapshot symbol. Native ratchet re-reads under its existing position lock, preserves the fresh broker TP, and has no JS fallback in cpp mode. Existing TP payload, stop-policy augmentation, thresholds, owner overrides and momentum-book exemption are unchanged. Existing js-mode transport is unchanged; the atomic guarantee depends on the native cpp ratchet path, not a newly implemented WS transaction.
 
-Production occurrence and trading impact remain unproven. Required full local/exact-head CI, actual review inspection, authorised merge and deployed ordinary execution/reconciliation/advancing quotes/protection verification must complete before release closure. No unchanged native build, forced broker event, credential, risk/account/strategy/profile/selected-account/history/region/volume/staging change or monitoring schedule. Node lag/watchdog causality remains separate. Engineering closure is distinct from whole acceptance: retain7verified/19active/6deferred and unverified overlay25 unless an entire group passes. Conversation ref: owner LossGuardian prompt after№12,126–12,127; implementation/report№12,128–12,132; session loss-guardian-ratchet, ChatGPT (no external session URL or effort metadata available).
+Production occurrence and trading impact remain unproven. Required full local/exact-head CI, actual review inspection, authorised merge and deployed ordinary execution/reconciliation/advancing quotes/protection verification must complete before release closure. No unchanged native build, forced broker event, credential, risk/account/strategy/profile/selected-account/history/region/volume/staging change or monitoring schedule. Node lag/watchdog causality remains separate. Engineering completion and operational acceptance are reported separately. Conversation ref: owner LossGuardian prompt after№12,126–12,127; implementation/report№12,128–12,132; session loss-guardian-ratchet, ChatGPT (no external session URL or effort metadata available).
 
 Codex · №12,140 · 2026-10-08 — actual automated P1 review on PR1266 head044aa82 caught an introduced non-movement classification bug BEFORE merge. Native confirmedMovementProof requires a positive before-stop, so genuine first installation also returns stopMoved:false. The initial 7,718-backend/1,350-frontend full local gate and exact CI37736646422 passed but the simplified controlled response omitted that native field. An offline probe calls the unchanged actual native confirmedProtection helper for long/short first installations and policy-only stamps; no service rebuild or broker request. Actual-shape guardian/database regressions now reproduce the P1. The correction retains confirmed null-before/positive-after installations while unchanged and existing-stop policy-only outcomes remain non-movements. Initial gate/review/red receipts are preserved; refined source needs the full local and exact-head gate and fresh review inspection before merge. No released defect or production occurrence is claimed.
 
@@ -2829,10 +2833,10 @@ codex-footprint: account-symbol-ownership. Owner orders the current shared-map c
 
 TP structure now uses the positive integer symbol ID on THIS account's supplied broker-position snapshot; absent/malformed identity never borrows a name map. An explicitly foreign-account snapshot refuses. Existing direction, HVN/R:R-floor rules and TP amendment behavior remain unchanged. Account symbol readers require the writer's matching account stamp. Linked selected-account lookups use that owned list rather than assuming that selection proves the legacy mirror's origin. The self-heal reads perAccount:true through the existing owned writer; an awaited completion mirrors only the still-selected account. Selection/config changes retire the previous mirror; a manual map must match the selected account's verified broker list. Broker callers retaining an account snapshot pass it to the map getter. Existing unlinked legacy fixture reads are retained; they are not certified broker identity or production occurrence.
 
-No threshold, owner override, hand pin, book exemption, risk/account/strategy/profile activation, credential, forced broker event, financial-history, region/volume/staging or schedule change. LossGuardian's completed correction is preserved. Full local and exact-head CI, actual reviews, authorised merge and ordinary deployed execution/reconciliation/advancing quotes/protection must pass before engineering release closure. Current broker populations and complete acceptance remain unverified where authorised receipts are unavailable. Counts stay7verified/19active/6deferred; unverified overlay25. Remaining raw legacy-map readers and the one bounded watchdog case are recorded separately in local audit evidence. Conversation ref: owner account-owned symbol audit prompt after№12,166; audit/correction№12,167–12,172; session account-symbol-ownership, ChatGPT (no external session URL or effort metadata available).
+No threshold, owner override, hand pin, book exemption, risk/account/strategy/profile activation, credential, forced broker event, financial-history, region/volume/staging or schedule change. LossGuardian's completed correction is preserved. Full local and exact-head CI, actual reviews, authorised merge and ordinary deployed execution/reconciliation/advancing quotes/protection must pass before engineering release closure. Current broker populations and complete acceptance remain unverified where authorised receipts are unavailable. Remaining raw legacy-map readers and the one bounded watchdog case are recorded separately in local audit evidence. Conversation ref: owner account-owned symbol audit prompt after№12,166; audit/correction№12,167–12,172; session account-symbol-ownership, ChatGPT (no external session URL or effort metadata available).
 
 
-Codex · №12,212 · 2026-10-08 — keeper-volume-peak (owner ordered after №12,204–12,207). Fresh main fdffd1be retains PR1233–1267. Four real keeper/SQLite regressions reproduce a false full close after a half-volume readback at unchanged price, in adaptive/fixed long/short paths. The initial adaptive fixture accidentally exercised the no-ATR fixed fallback; its corrected fresh-main control reproduces both modes and all earlier receipts are retained. A separate durable keeper_peak_state records the owned position/symbol/side/entry, broker quantity and decision peak; a reduced quantity scales that peak before existing policy arithmetic. Increased quantity or changed identity/entry starts a current-observation basis. Legacy monetary peaks have no proven quantity: never guess or reconstruct it. peak_profit_usd remains the observed high-water mark; no realised money/history is rewritten. Persist the basis before actions, retain existing tighter broker stops/TP, thresholds, scopes, managed/book fences and ratchet contracts. No hybrid/exit policy activation or evaluation-goal choice. Full local/exact-head CI, actual reviews, merge and ordinary deployed identity/execution/reconciliation/quotes/protection must pass before engineering closure. Whole acceptance remains7verified/19active/6deferred, unverified overlay25 unless an entire group passes; production occurrence and owned natural partial outcome remain unverified. No credential/broker forcing, risk/account/strategy/profile/region/volume/staging/schedule change or unchanged native rebuild. Conversation ref: owner peak/partial-volume correction prompt after№12,207; implementation/reproduction№12,208–12,212; session keeper-volume-peak, ChatGPT (no external session URL or effort metadata available).
+Codex · №12,212 · 2026-10-08 — keeper-volume-peak (owner ordered after №12,204–12,207). Fresh main fdffd1be retains PR1233–1267. Four real keeper/SQLite regressions reproduce a false full close after a half-volume readback at unchanged price, in adaptive/fixed long/short paths. The initial adaptive fixture accidentally exercised the no-ATR fixed fallback; its corrected fresh-main control reproduces both modes and all earlier receipts are retained. A separate durable keeper_peak_state records the owned position/symbol/side/entry, broker quantity and decision peak; a reduced quantity scales that peak before existing policy arithmetic. Increased quantity or changed identity/entry starts a current-observation basis. Legacy monetary peaks have no proven quantity: never guess or reconstruct it. peak_profit_usd remains the observed high-water mark; no realised money/history is rewritten. Persist the basis before actions, retain existing tighter broker stops/TP, thresholds, scopes, managed/book fences and ratchet contracts. No hybrid/exit policy activation or evaluation-goal choice. Full local/exact-head CI, actual reviews, merge and ordinary deployed identity/execution/reconciliation/quotes/protection must pass before engineering closure. Production occurrence and owned natural partial outcome remain unverified. No credential/broker forcing, risk/account/strategy/profile/region/volume/staging/schedule change or unchanged native rebuild. Conversation ref: owner peak/partial-volume correction prompt after№12,207; implementation/reproduction№12,208–12,212; session keeper-volume-peak, ChatGPT (no external session URL or effort metadata available).
 
 Codex · №12,223 · 2026-10-08 — actual automated P1 review on PR1268 headbed0647 caught an introduced enum-compatibility refusal BEFORE merge. Broker tradeSide supports BUY/SELL as well as numeric1/2 and numeric strings; Number(BUY) rejected otherwise valid keeper positions. Initial full local7,743backend/4existing skips,1,350frontend/allgates and exactCI37764320524 passed but lacked named-side coverage. Two actual keeper/SQLite named-side regressions fail that candidate. Normalize the supported broker forms exactly as LossGuardian does; unknown/conflicting forms remain refused. Initial gate/review/red receipts remain immutable; refined source requires full local/exact-head CI and fresh actual review inspection before merge. No released defect or production occurrence claimed.
 
@@ -2878,8 +2882,7 @@ broker partial, residual and SQLite journal. Missing native fixture is a gate
 failure, never a passing skip. Synthetic integration is not a production trade
 or profit-improvement claim. Full local/exact-head CI and actual review results
 are required before merge; unchanged native service images need no rebuild.
-Counts remain 7 verified / 19 active / 6 deferred; unverified overlay 25 unless
-a complete group passes. Conversation ref: owner "Check and code the six
+Conversation ref: owner "Check and code the six
 strategies approach"; implementation №12,516–12,520; session
 codex-six-strategy-lifecycle, ChatGPT (no external session URL available).
 <!-- Codex · №12,559 · 2026-10-09; codex-footprint: hybrid-exclusion-verdicts -->
@@ -2903,6 +2906,6 @@ broker calls retain their own state machine. Integrated real-database and
 controlled-broker validation, required full local/exact-head CI, actual review
 inspection and deployed ordinary runtime verification precede release closure.
 No natural hybrid execution or whole acceptance pass follows from diagnostics.
-Counts remain7 verified/19 active/6 deferred; unverified overlay25.
+
 Conversation ref: owner silent-exclusion request after№12,556; session
 codex-hybrid-exclusions, implementation№12,557–12,560.
