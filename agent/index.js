@@ -31,6 +31,8 @@ import { startAmendLatencyRecord, amendLatencySummary } from './services/protect
 import { startFeedReceiptsRecord } from './services/feed-receipts-record.js';
 // Codex · №12,411 · 2026-10-09; codex-footprint: bounded-node-diagnostic.
 import { diagnosticHttpMiddleware, startBoundedNodeDiagnostic } from './services/bounded-node-diagnostic.js';
+// Codex · №12,435 · 2026-10-09; codex-footprint: targeted-owned-evidence.
+import { startTargetedEvidenceReadout } from './services/targeted-evidence-readout.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -1402,6 +1404,7 @@ async function start() {
 
   // Diagnostic defaults off. One durable operator claim; does not control trades.
   startBoundedNodeDiagnostic(db);
+  startTargetedEvidenceReadout(db);
 
   // Codex · №12,322 · 2026-10-09; codex-footprint: native-hybrid-profit.
   // Tick-trigger consumption is independent of the periodic scan controller.

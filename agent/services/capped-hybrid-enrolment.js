@@ -61,7 +61,8 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
     out.examined++
     // A persistently unavailable first position must not starve other accounts.
     setState(db, 'capped_hybrid_enrol_cursor', String(t.id))
-    const refuse = reason => out.deferred.push({ tradeId: t.id, accountId: t.account_id, reason })
+    const refuse = (reason, volumeInputs) => out.deferred.push({ tradeId: t.id, accountId: t.account_id, reason,
+      ...(volumeInputs ? { volumeInputs } : {}) })
     try {
       const c = credsFor(t.account_id)
       if (!c?.ready || String(c.accountId) !== owner.accountId || c.host !== owner.host) { refuse('own_credentials_unavailable'); continue }
@@ -70,7 +71,7 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
       if (id(metadata?.ctidTraderAccountId) !== owner.accountId) { refuse('symbol_account_unverified'); continue }
       const symbols = (metadata.symbol || []).filter(s => id(s.symbolId) === owner.symbolId)
       if (symbols.length !== 1) { refuse('symbol_metadata_unverified'); continue }
-      const meta = symbols[0], digits = meta.digits
+      const meta = symbols[0], digits = meta.digits, metadataReceivedAtMs = now()
       if (!Number.isInteger(digits) || digits < 0 || digits > 5) { refuse('broker_precision_required'); continue }
       owner = readCappedHybridOwner(db, t.account_id, t.id, String(t.ctrader_position_id), digits)
       if (!owner) { refuse('ownership_changed'); continue }
@@ -89,7 +90,20 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
       const openingDealIds = openingReceipts(history, owner, bp.volume, digits)
       const plan = planCappedHybrid({ side: owner.side, entry: owner.entry, initialRisk: owner.initialRisk,
         brokerTarget: bp.takeProfit, volume: bp.volume, minVolume: meta.minVolume, stepVolume: meta.stepVolume, digits, openingDealIds })
-      if (!plan.ok) { refuse(plan.reason); continue }
+      // Codex · №12,435 · 2026-10-09; codex-footprint: owned-hybrid-refusal-inputs.
+      // Observation only, persisted by the existing pass writer. These are the
+      // exact inputs already read for this account, not sizing recommendations.
+      // Malformed metadata remains invalid; never coerce it or log arbitrary values.
+      if (!plan.ok) {
+        const observedNumber = value => typeof value === 'number' && Number.isFinite(value) ? value : null
+        refuse(plan.reason, { source: 'ordinary_enrolment_reads', units: 'ctrader_protocol_volume',
+          host: owner.host, accountId: owner.accountId, positionId: owner.positionId, symbolId: owner.symbolId,
+          side: owner.side, metadataReceivedAtMs, reconcileReceivedAtMs: bp.observedAtMs,
+          volume: bp.volume, halfVolume: bp.volume / 2,
+          minVolume: observedNumber(meta.minVolume), stepVolume: observedNumber(meta.stepVolume),
+          minVolumeValid: integer(meta.minVolume), stepVolumeValid: integer(meta.stepVolume) })
+        continue
+      }
       if (!stopHeld(plan.side, bp.stopLoss, plan.originalStop, digits)) { refuse('broker_protection_unverified'); continue }
       const latest = readCappedHybridOwner(db, t.account_id, t.id, owner.positionId, digits)
       if (JSON.stringify(latest) !== JSON.stringify(owner)) { refuse('ownership_changed'); continue }

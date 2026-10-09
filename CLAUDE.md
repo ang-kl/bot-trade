@@ -1,3 +1,22 @@
+<!-- Codex · №12,435 · 2026-10-09; codex-footprint: reporting-query -->
+## Reporting-query correction and targeted stored evidence — 9 October 2026
+
+Captured main-thread scanner grouping and scans coverage were reproduced through
+actual readers. Additive covering indexes remove payload-table reads/temp grouping;
+account/NULL counts use separate index ranges in one SQL snapshot. Preserve exact
+report populations; the already-indexed comparison aggregate remains unchanged.
+This addresses demonstrated query work, not every watchdog, I/O wait or busy writer.
+The full gate caught the account index changing tied scan-list order. Reporting
+lists now retain their existing time indexes; actual old/new route bodies agree.
+Stored policy observations reuse the canonical reader; its vocabulary guard stays.
+Hybrid refusal records now retain the exact owned volume inputs already read by
+ordinary enrolment; sizing, eligibility and broker actions are unchanged.
+`OWNED_EVIDENCE_RUN_ID` plus an expiry within one hour enables one private, bounded,
+delayed stored read. Durable claim prevents replay; no broker request or profiling.
+Read movement kinds through owned trade indexes; absent proof remains unavailable.
+Counts remain 7 verified / 19 active / 6 deferred; unverified overlay 25.
+Conversation ref: owner request following №12,432; work №12,433–12,435.
+
 # Instructions for Claude — bot-trade
 
 <!-- Codex · №12,411 · 2026-10-09; codex-footprint: bounded-node-diagnostic.
