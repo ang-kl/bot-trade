@@ -142,6 +142,17 @@ test('both selections and same-host accounts use each account quote, snapshot an
     assert.equal(events(a)[0].source, 'session_open_guard')
     assert.equal(stored(b).current_sl, b.sl); assert.equal(events(b).length, 0)
     assert.equal((await f.run()).locked, 0); assert.equal(amends(f).length, 1, 'successful guard does not resend in the same session')
+    f.mid.set('200', side === 'SELL' ? 98 : 102)
+    assert.equal((await f.run()).locked, 1, 'owner B can reach the threshold later in the same session')
+    const second = amends(f)[1]
+    assert.equal(second.host, bothDemo ? 'guard-demo.invalid' : 'guard-live.invalid')
+    assert.equal(second.body.ctidTraderAccountId, 200); assert.equal(second.body.positionId, b.positionId)
+    assert.equal(second.body.expectedSymbolId, 22); assert.equal(second.body.ratchetOnly, true)
+    assert.equal(second.body.expectedDirection, side === 'SELL' ? -1 : 1)
+    assert.equal(second.body.takeProfit, b.tp)
+    assert.equal(stored(b).current_sl, 100); assert.equal(events(b).length, 1)
+    assert.equal(events(b)[0].account_id, '200'); assert.equal(events(b)[0].position_id, String(b.positionId))
+    assert.equal(f.notices.length, 2)
   }
 })
 
