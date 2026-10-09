@@ -403,7 +403,8 @@ test('the coverage read: a missing map is missing, reasons are split, disagreeme
     { dateIso: '2026-09-30', name: 'Maintenance', scheduleTimeZone: 'Europe/Bucharest', isRecurring: false, bounds: 'explicit', startSecond: 36000, endSecond: 46800, identities: 1, symbols: ['EURUSD'] },
     { dateIso: '2026-10-01', name: 'National Day', scheduleTimeZone: 'Asia/Hong_Kong', isRecurring: false, bounds: 'holiday_bounds_omitted', identities: 1, symbols: ['0066.HK'] },
   ], 'the omitted bounds stay absent')
-  assert.deepEqual(hk.watchlist, { source: 'own', total: 4, demanded: 2, notDemanded: 1, notDemandedWithStoredCalendar: 0, noSymbolId: 1, notDemandedSymbols: ['GBPUSD'] })
+  // Codex · №12,477 · 2026-10-09; codex-footprint: HK held calendar stays above, entry watchlist excludes it.
+  assert.deepEqual(hk.watchlist, { source: 'own', total: 3, demanded: 1, notDemanded: 1, notDemandedWithStoredCalendar: 0, noSymbolId: 1, notDemandedSymbols: ['GBPUSD'] })
   assert.equal(report.collector.latest, 'skip')
   assert.equal(report.collector.lastSkip.skipped, 'observation_disabled_or_stale')
   assert.equal(report.collector.receipt, null)
