@@ -112,3 +112,41 @@ test('explicit existing trade target survives a natural close without scanning c
   assert.equal(startTargetedEvidenceReadout(db,{env:{OWNED_EVIDENCE_TRADE_IDS:'1); DELETE FROM trades;'},setTimer:()=>{calls++}}),null)
   assert.equal(calls,0)
 })
+
+// Codex · №12,721 · 2026-10-10; codex-footprint: bounded-gap-batch.
+test('scanner opt-in uses the same durable one-shot claim after target evidence, and is dormant without the exact flag',async t=>{
+  const db=scene(t),logs=[];let callback,calls=0
+  const env={OWNED_EVIDENCE_RUN_ID:'scanner-once-1234',OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_SCANNER:'1',
+    OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString(),SCANNER_TIMEFRAME_URL:'http://scanner.invalid',SCANNER_TIMEFRAME_SECRET:'not-logged-secret'}
+  const options={env,now:()=>NOW,log:x=>logs.push(JSON.parse(x)),setTimer:cb=>{callback=cb},clearTimer:()=>{},
+    fetchImpl:async()=>{calls++;return new Response(JSON.stringify({observedAtMs:NOW,workComplete:true,work:[],cells:{count:0,capacity:1024,stale:0}}))}}
+  startTargetedEvidenceReadout(db,options);assert.equal(calls,0);await callback()
+  assert.equal(calls,1);assert.equal(logs[0].value.scannerRead,true)
+  const scannerIndex=logs.findIndex(x=>x.kind==='scanner-summary')
+  assert.ok(scannerIndex>logs.findIndex(x=>x.kind==='initial-risk'&&x.value.owner?.id===1))
+  assert.ok(scannerIndex<logs.findIndex(x=>x.kind==='owned-position'&&x.value.owner?.id===2))
+  assert.equal(logs.at(-1).kind,'exit');assert.equal(logs.at(-1).value.done,true)
+  assert.ok(logs.at(-1).value.scanner.emittedRecords>=1)
+  assert.equal(startTargetedEvidenceReadout(db,options),null);assert.equal(calls,1)
+  for(const value of [undefined,'0','true']){
+    startTargetedEvidenceReadout(db,{...options,env:{...env,OWNED_EVIDENCE_RUN_ID:`scanner-off-${value||'unset'}`,OWNED_EVIDENCE_SCANNER:value}})
+    await callback()
+  }
+  assert.equal(calls,1);assert.doesNotMatch(JSON.stringify(logs),/not-logged-secret/)
+})
+
+test('scanner callback failure and expiry finish once without raw exception text or extra native reads',async t=>{
+  const db=scene(t),logs=[];let callback,clock=NOW,calls=0
+  const env={OWNED_EVIDENCE_RUN_ID:'scanner-expiry-1234',OWNED_EVIDENCE_SCANNER:'1',OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+10000).toISOString(),
+    SCANNER_TIMEFRAME_URL:'http://scanner.invalid',SCANNER_TIMEFRAME_SECRET:'secret'}
+  const options={env,now:()=>clock,log:x=>logs.push(JSON.parse(x)),setTimer:cb=>{callback=cb},clearTimer:()=>{},
+    fetchImpl:async()=>{calls++;clock=NOW+10001;return new Response(JSON.stringify({observedAtMs:NOW,workComplete:true,work:[],cells:{count:0,capacity:1024}}))}}
+  startTargetedEvidenceReadout(db,options);await callback()
+  assert.equal(calls,1);assert.equal(logs.at(-1).value.reason,'deadline_expired')
+  assert.equal(logs.some(x=>x.kind==='scanner-summary'),false)
+  clock=NOW
+  startTargetedEvidenceReadout(db,{...options,env:{...env,OWNED_EVIDENCE_RUN_ID:'scanner-storage-1234'}})
+  db.exec('DROP TABLE accounts');await callback()
+  assert.equal(calls,1);assert.equal(logs.at(-1).value.scanner.reason,'scanner_read_failed')
+  assert.doesNotMatch(JSON.stringify(logs),/no such table|secret/)
+})

@@ -242,19 +242,55 @@ test('guardName keeps the identifier and discards everything after it', () => {
   assert.equal(guardName(null), '')
 })
 
-test('no price, size, order id or error text reaches the public projection', () => {
+test('no price, size, order id or error text reaches the public projection', (t) => {
   const db = initDB(':memory:')
-  gate(db, { approved: false, reason: 'pending_invalidated: close 1.0842 beyond SL 1.0870 — order 55123 cancelled' })
-  gate(db, { approved: false, reason: 'below_min_volume: 0.42 lots' })
-  gate(db, { approved: false, reason: 'sizing_failed: ECONNRESET at 10.0.0.4:443' })
-  skip(db, { stage: 'stage_matrix', reason: "strategy 'vwap_trend' is OFF at 1.0842" })
+  t.after(() => db.close())
+  // Codex · №12,721 · 2026-10-10; codex-footprint: bounded-gap-batch.
+  // CI matched "0.42" inside this generated ISO timestamp. Keep that exact
+  // collision: validate the timestamp independently, then scan ALL content.
+  // An extra public field or leaked nested value must still fail the check.
+  const at = '2026-10-09T14:14:20.428Z'
+  // The FX-day helper separately defaults to Date.now(); pin it too so the
+  // inserted refusals and audit remain in the same day on future test runs.
+  t.mock.method(Date, 'now', () => Date.parse(at))
+  const fixtureAt = '2026-10-09 14:13:00'
+  gate(db, { approved: false, reason: 'pending_invalidated: close 1.0842 beyond SL 1.0870 — order 55123 cancelled', at: fixtureAt })
+  gate(db, { approved: false, reason: 'below_min_volume: 0.42 lots', at: fixtureAt })
+  gate(db, { approved: false, reason: 'sizing_failed: ECONNRESET at 10.0.0.4:443', at: fixtureAt })
+  skip(db, { stage: 'stage_matrix', reason: "strategy 'vwap_trend' is OFF at 1.0842", at: fixtureAt })
 
-  const pub = JSON.stringify(publicPipelineView(auditDecisions(db)))
-  for (const leak of ['1.0842', '1.0870', '55123', '0.42', 'ECONNRESET', '10.0.0.4', 'lots']) {
-    assert.ok(!pub.includes(leak), `public view leaked "${leak}" — ${pub}`)
+  const leaks = ['1.0842', '1.0870', '55123', '0.42', 'ECONNRESET', '10.0.0.4', 'lots']
+  const publicKeys = [
+    'verdict', 'because', 'considered', 'reachedGate', 'approved', 'vetoed',
+    'trades', 'pending', 'landed', 'resolutions', 'silentDrops', 'topBlock',
+    'topVetoes', 'quietMinutes', 'at',
+  ].sort()
+  function assertSafeProjection(view) {
+    assert.deepEqual(Object.keys(view).sort(), publicKeys)
+    const { at: generatedAt, ...content } = view
+    assert.equal(generatedAt, at, 'at must be precisely the supplied clock, with no appended detail')
+    for (const veto of view.topVetoes) assert.deepEqual(Object.keys(veto).sort(), ['guard', 'n'])
+    const pub = JSON.stringify(content)
+    for (const leak of leaks) {
+      assert.ok(!pub.includes(leak), `public view leaked "${leak}" — ${pub}`)
+    }
   }
+  const v = publicPipelineView(auditDecisions(db, { now: new Date(at) }))
+  assert.equal(v.considered, 4, 'one upstream refusal and three gate refusals participate')
+  assert.equal(v.reachedGate, 3)
+  assert.equal(v.vetoed, 3)
+  assert.ok(JSON.stringify(v).includes('0.42'), 'the recorded timestamp collision remains exercised')
+  assertSafeProjection(v)
+
+  // Prove the narrow timestamp exception cannot hide an actual disclosure.
+  for (const leak of leaks) {
+    assert.throws(() => assertSafeProjection({ ...v, because: `${v.because} ${leak}` }), assert.AssertionError)
+    assert.throws(() => assertSafeProjection({ ...v, topVetoes: [...v.topVetoes, { guard: leak, n: 1 }] }), assert.AssertionError)
+  }
+  assert.throws(() => assertSafeProjection({ ...v, at: `${at} 0.42 lots` }), assert.AssertionError)
+  assert.throws(() => assertSafeProjection({ ...v, volume: 0.42 }), assert.AssertionError)
+
   // Still useful: the guard NAMES survive, which is the whole point.
-  const v = publicPipelineView(auditDecisions(db))
   const guards = v.topVetoes.map(x => x.guard)
   assert.ok(guards.includes('pending_invalidated'), `expected guard names, got ${JSON.stringify(v.topVetoes)}`)
   assert.equal(v.topBlock, 'stage_matrix:strategy')

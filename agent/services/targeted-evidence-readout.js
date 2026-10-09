@@ -4,6 +4,7 @@
 import { readHybridVerdicts } from './diagnostic-readout.js'
 import { brokerPolicyObservation } from '../lib/stop-policy.js'
 import { readStoredInitialRisk } from './initial-risk-readout.js'
+import { readScannerEvidence } from './scanner-evidence-readout.js'
 const CAP = 64, PER_KIND = 8
 const scalar = x => typeof x === 'number' ? Number.isFinite(x) ? x : null
   : typeof x === 'boolean' ? x
@@ -90,7 +91,7 @@ export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
 }
 
 export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log,now=Date.now,
-  setTimer=setTimeout,clearTimer=clearTimeout}={}) {
+  setTimer=setTimeout,clearTimer=clearTimeout,fetchImpl=fetch}={}) {
   const tradeIds=targetIds(env.OWNED_EVIDENCE_TRADE_IDS)
   if(tradeIds===null)return null
   const id=env.OWNED_EVIDENCE_RUN_ID,expires=Date.parse(env.OWNED_EVIDENCE_EXPIRES_AT||'')
@@ -105,9 +106,9 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
       // Codex · №12,437 · 2026-10-09; codex-footprint: bounded-evidence-review.
       // Reserve the terminal record even if detail output reaches its cap.
       const ceiling=kind==='exit'?256*1024:256*1024-2048
-      if(n>16000||bytes+n>ceiling){dropped++;return}
-      bytes+=n;log(line)
-    } catch { dropped++ }
+      if(n>16000||bytes+n>ceiling){dropped++;return false}
+      bytes+=n;log(line);return true
+    } catch { dropped++;return false }
   }
   try {
     if(db.prepare('INSERT OR IGNORE INTO agent_state(key,value) VALUES (?,?)')
@@ -123,7 +124,7 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
       // Requested missing records get their bounded verdict before population
       // detail can consume the output budget. No account identity is invented.
       for(const target of missingTargets) emit('initial-risk',{owner:null,...target})
-      for(const trade of trades) {
+      const emitTrade=trade=>{
         const {movements,initialRisk,...fields}=trade;emit('owned-position',fields)
         if(initialRisk) emit('initial-risk',{owner:trade.owner,...initialRisk})
         for(const group of movements) {
@@ -131,10 +132,27 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
           for(const row of rows) emit('movement',{owner:trade.owner,row})
         }
       }
-      emit('exit',{at:now(),done:true,dropped,bytes})
+      // Codex · №12,721 · 2026-10-10; codex-footprint: bounded-gap-batch.
+      // Requested ownership evidence keeps priority. Scanner reads are a
+      // separate opt-in, once-only projection before the remaining population.
+      const requested=trades.filter(t=>tradeIds.includes(t.owner.id)),remaining=trades.filter(t=>!tradeIds.includes(t.owner.id))
+      for(const trade of requested)emitTrade(trade)
+      const finish=scanner=>{for(const trade of remaining)emitTrade(trade);emit('exit',{at:now(),done:true,dropped,bytes,...(scanner?{scanner}:{})})}
+      if(env.OWNED_EVIDENCE_SCANNER!=='1'){finish();return}
+      if(now()>=expires){emit('exit',{at:now(),done:false,reason:'deadline_expired',dropped,bytes});return}
+      return readScannerEvidence(db,{now:now(),env,fetchImpl,expiresAtMs:expires,clock:now}).then(result=>{
+        if(now()>=expires){emit('exit',{at:now(),done:false,reason:'deadline_expired',dropped,bytes});return}
+        const scanner={status:result.summary.status,omittedRecords:result.summary.omittedRecords||0,emittedRecords:0,droppedRecords:0}
+        if(emit('scanner-summary',result.summary))scanner.emittedRecords++;else scanner.droppedRecords++
+        for(const row of result.records){if(emit(row.kind,row.value))scanner.emittedRecords++;else scanner.droppedRecords++}
+        finish(scanner)
+      }).catch(()=>{
+        emit('scanner-summary',{status:'unavailable',reason:'scanner_read_failed',orderAuthority:false})
+        finish({status:'unavailable',reason:'scanner_read_failed'})
+      })
     } catch { emit('exit',{at:now(),done:false,reason:'stored_read_failed',dropped}) }
   },180000)
   timer?.unref?.()
-  emit('scheduled',{at:now(),delayMs:180000,expires,brokerRequests:0,profiling:false})
+  emit('scheduled',{at:now(),delayMs:180000,expires,brokerRequests:0,profiling:false,scannerRead:env.OWNED_EVIDENCE_SCANNER==='1',nativeReadLimit:env.OWNED_EVIDENCE_SCANNER==='1'?1:0})
   return ()=>clearTimer(timer)
 }
