@@ -1,17 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude \u00b7 \u2116 11,660 07-Oct).",
-  "locks": [
-    {
-      "locked_by": "codex-single-account-screenshot",
-      "files": [
-        "docs/single-account-demo-live-plan-2026-10-09.md"
-      ],
-      "started_at": "2026-10-09T04:46:14.801141+00:00",
-      "expires_at": "2026-10-09T05:46:14.801141+00:00",
-      "branch": "docs/single-account-plan-2026-10-09",
-      "note": "Owner supplied missing account screenshot. Update planning document and downloadable copies only; no settings or code changes."
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -231,6 +220,13 @@
       "serial": 12499,
       "subject": "Owner-requested planning document published; documentation lock released",
       "text": "Published docs/single-account-demo-live-plan-2026-10-09.md on docs/single-account-plan-2026-10-09 at 07f6b20565b52c477469e3aa7b7b9547341e7af8; downloadable copies prepared. Documentation only; no PR, main merge, code/settings change, rebuild or deployment. Current main remains 558850b. Current effective account settings remain explicitly unverified where authorised application records were unavailable."
+    },
+    {
+      "from": "codex-single-account-screenshot",
+      "at": "2026-10-09T04:49:46.179004+00:00",
+      "serial": 12503,
+      "subject": "Owner account screenshot documented; own lock released",
+      "text": "Updated the existing single-account planning branch and downloadable copies with the supplied seven-account screenshot. Document-only publication, no PR/main merge, source/settings/broker changes or schedule. Screenshot shows live 42993489 active S/A/T on; recommended no-new-live-entry control recorded but not applied. Preserve other owner-configured accounts. Main remains 558850b."
     }
   ]
 }
