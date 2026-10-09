@@ -5,6 +5,8 @@
 
 **Engineering review cutoff: 15 October. Planned live decision: 19 October.**
 
+**Screenshot update — Codex · №12,502 · 9 October 2026:** the owner has now supplied the missing account picture; see §9. It shows live account **42993489 active with S/A/T on**, so the pictured setup does not yet enforce the planned demo-only new entries. This update supersedes the earlier “screenshot unavailable” limitation for the fields actually visible. It does not establish the picture's capture time or certify hidden risk settings.
+
 This is a settings and verification plan, not an instruction already applied. No trading code, account mode, risk limit, stop, order, credential, scanner profile or deployment was changed for this document.
 
 ## 1. Recommendation and verified baseline
@@ -161,3 +163,29 @@ All source links below are pinned to the inspected release, not a moving branch:
 > Invariants: No credentials, forced broker events, financial-history edits, stop/entry code changes, guessed IDs/FX, region/volume/staging change or monitoring schedule. Never enlarge a position merely to make the 50% partial representable. Preserve existing positions' protection and owner pins.
 >
 > Context and Close: Make the single demo a credible rehearsal of the planned small SGD live account. Stop when the configuration comparison and reviewable diff are delivered, or name the exact unavailable field. Settings application and any code change require the owner's subsequent explicit instruction.
+
+## 9. Owner screenshot addendum
+
+**Codex · №12,502 · 9 October 2026, 12:47 SGT** — source interpretation checked against unchanged main `558850b`. The owner supplied the picture after the original plan. Its capture time is not visible; this is an owner-provided UI observation, not a simultaneous broker read. The original dated runtime receipts remain intact.
+
+| Account | Displayed settings and holdings | Meaning for the plan |
+|---|---|---|
+| LIVE 1251247 / 42993489 | Balance $51.41; active; S on / A on / T on; 1 position; WL 258; linked, rec 2m | New-entry configuration is displayed on. This conflicts with reserving live entries until the 19 October decision. It does not prove a new live trade occurred. |
+| LIVE 1251442 / 43002148 | Balance $0; archived; S/A/T off; 0 positions; WL 60; unlinked, rec 6m; DISCONNECTED | Preserve the owner's archived/disconnected setup. The screenshot is not authority to reconnect it. |
+| LIVE 1252961 / 43069009 | Balance $0; manage_only; S/A/T off; 0 positions; WL 60; linked, rec 2m | Displayed as management-only, with new-entry permission off. Preserve. |
+| DEMO 5067353 / 43097342 | Balance $3,097.40; selected and active; S/A/T on; 0 positions; floating +$0.00; displayed equity $3,097; WL 258; linked, rec 2m | This is the intended demo account. If its owner-reported SGD currency remains correct, its displayed balance is above the proposed sub-SGD2,000 live capital; capital/margin parity is not yet achieved. |
+| DEMO 5203012 / 46130058 | Balance $30,009.96; active; S/A off / T on; 2 positions; WL 258; linked, rec 2m | Ordinary timeframe dispatch is blocked by S/A off. The account is still armed at the T/mode layer; existing positions require management. Preserve the owner-set switches pending a deliberate decision. |
+| DEMO 5268549 / 46979908 | Balance $697.67; active; S/A off / T on; 1 position; WL 260; linked, rec 2m | Same distinction: ordinary timeframe dispatch blocked, T remains on. Preserve existing position protection. |
+| DEMO 5306502 / 47790949 | Balance $42,945.59; active; S/A off / T on; 3 positions; WL 259; linked, rec 2m | Same distinction: ordinary timeframe dispatch blocked, T remains on. Preserve existing position protection. |
+
+**How to read the controls:** blue means the effective phase is on; red means off. A dot beside S/A/T marks a per-account override rather than inheritance. It is not a trade event or heartbeat. T means Autotrade; it does not mean tick trading. The highlight marks the selected account, not proof that every other account is unable to trade. The Disconnect button is an offered action, not a claim the row is disconnected; the archived row instead shows Reconnect and DISCONNECTED.
+
+`rec 2m` is the rounded age of the last reconciliation, not the configured scan interval or a guaranteed management deadline. The dollar prefix is generic in this component: balance comes from the broker trader response, but the picture itself does not label deposit currency or leverage. Keep the owner's SGD declaration for the target-account plan separate from currency verification. The shown W/L counts also do not replace certified forward whole-position WR/PF.
+
+**Recommended configuration decision:** to enforce no new live entries before 19 October, turn **T off on 42993489** through the existing per-account control. Current `setAccountArmed(false)` changes an active account to `manage_only` and keeps it connected for management of the displayed open position. Do not use Disconnect, close its position or change its stop merely to achieve demo-only entries. This recommendation has **not** been applied.
+
+For the three other active demo accounts, S/A off is a real ordinary-dispatch veto; it is not correct to call those switches meaningless. It is also not a universal all-engine disarm: the momentum-book controller's phase callback explicitly reads T. Its full entry path still has additional gates, and the screenshot does not prove that book or tick entry is active or that a new order passed. If the owner later wants an explicit account-wide no-new-entry policy for them, review T off / `manage_only` separately. Their current configuration is preserved as requested.
+
+The picture narrows the remaining check: current effective risk keys, deposit currency/FX, leverage/product margin, per-account entry modes, strategy pins and hybrid size eligibility are still not shown. No need to repeat the already supplied seven-account visual inventory. Current protection must be read independently; position counts alone do not establish SL/TP acceptance. No whole acceptance group is closed by this image.
+
+Source: [rendered switches, balances and reconciliation age](https://github.com/ang-kl/bot-trade/blob/558850b5719a5c3c0216e5db225363b6e0ff0c4a/src/components/AccountSwitcher.jsx); [per-account arm/mode transaction](https://github.com/ang-kl/bot-trade/blob/558850b5719a5c3c0216e5db225363b6e0ff0c4a/agent/services/account-arming.js#L68); [ordinary dispatch phase gate and separate book wiring](https://github.com/ang-kl/bot-trade/blob/558850b5719a5c3c0216e5db225363b6e0ff0c4a/agent/loop.js#L1929).
