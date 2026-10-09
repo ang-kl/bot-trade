@@ -19,7 +19,8 @@
         "agent/services/targeted-evidence-readout.test.js",
         "agent/services/capped-hybrid-enrolment.js",
         "agent/services/capped-hybrid.test.js",
-        "agent/index.js"
+        "agent/index.js",
+        "agent/lib/reporting-indexes.js"
       ],
       "purpose": "Reproduce and correct reporting query blocking; targeted owned movement and hybrid volume evidence without entry/SL/sizing changes."
     }
