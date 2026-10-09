@@ -195,6 +195,23 @@ Read movement kinds through owned trade indexes; absent proof remains unavailabl
 
 Conversation ref: owner request following №12,432; work №12,433–12,435.
 
+<!-- Codex · №12,809 · 2026-10-10; codex-footprint: retention-lifecycle-attribution. -->
+Bounded retention/report follow-up: the actual cap DELETE scans all retained
+source rows on an empty tail; replace only that predicate with ordered disjoint
+index ranges, preserving ages, caps, chunks and retained identities. PRE-03's
+repeated approval scan reproduces a real read-worker deadline; index its exact
+existing account/symbol/side/time predicate without changing verdicts, query
+populations or deadlines. Fixtures establish mechanisms, not the cause of an
+older production span. One opt-in 120-second/500-event/256-KiB shared capture
+joins retention, report phases and hashed SQL spans; unknown lock acquisition,
+wait/fsync and dropped/unregistered work remain explicit. One separately
+claimed hybrid-only stored snapshot uses existing safe projections and owner
+joins, no broker calls or policy changes. Do not repeat either capture merely
+because natural eligibility is absent. Engineering closure and any operational
+or acceptance outcome are reported separately, never frozen counts.
+Conversation ref: owner bounded follow-up pasted prompt, implementation
+№12,808–12,809; session codex-retention-followup (ChatGPT).
+
 # Instructions for Claude — bot-trade
 
 <!-- Codex · №12,411 · 2026-10-09; codex-footprint: bounded-node-diagnostic.

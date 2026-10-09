@@ -744,7 +744,10 @@ const helpersHash = () => createHash('sha256').update(Object.keys(JUDGE_HELPERS)
 // helpers@5 (03-10-2026): the context no longer reads independent_watchdog_json
 // (the cpp-verify delivery channel and its outbox are gone; STK-08@4 reads the
 // Telegram outbox only). No rule's own hash moved but STK-08's.
-const PINNED_HELPERS = { [`helpers@5`]: 'c9609377270566d5' }
+// Codex · №12,808 · 2026-10-10; codex-footprint: lifecycle-approval-index.
+// helpers@6 / PRE-03@2: indexed equivalent approval predicate and optional
+// private phase boundaries; all retained populations and verdicts preserved.
+const PINNED_HELPERS = { [`helpers@6`]: 'a3ec8866185709b0' }
 // STK-08@2 (STK-08v2): held_by_setting, and the digest reader and notify
 // loader it judges by are pinned in its hash. No other rule's hash moved.
 // STK-08@3 (V3 CV-2 fix round nit 3): cpp-verify's delivery mute is a holding
@@ -754,7 +757,7 @@ const PINNED_HELPERS = { [`helpers@5`]: 'c9609377270566d5' }
 // with cpp-verify's delivery channel; the rule reads the Telegram outbox only.
 // No other rule's hash moved.
 const PINNED = {
-  'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@2': '8310a4e233690cf5', 'PRE-03@1': 'bf01d978a6b93535', 'PRE-04@1': 'fa04e500d8a0ca47',
+  'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@2': '8310a4e233690cf5', 'PRE-03@2': 'fcbe76b2913542df', 'PRE-04@1': 'fa04e500d8a0ca47',
   'PRE-05@1': 'c7aeb7460046a6fc',
   'ORD-01@2': '6455e3a08b70c56b', 'ORD-02@1': '520f853e457966a7', 'ORD-03@1': 'c3efa49b62d76c7e', 'ORD-04@1': '0576f08d9e583115',
   'ORD-05@1': 'ff61f53fcc0a5c36', 'ORD-06@1': '75ca883642df5b6e', 'ORD-07@1': '48d7a24785139f8d', 'ORD-08@1': '70ab525d959eef60',

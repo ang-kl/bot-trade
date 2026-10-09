@@ -129,6 +129,52 @@ function dirOf(v) {
   if (s === 'SELL' || s === 'SHORT' || s === '-1') return -1
   return null
 }
+// Codex · №12,808 · 2026-10-10; codex-footprint: lifecycle-approval-index.
+// PRE-03 keeps its exact account/symbol/side/time predicate. Build once from
+// the same capped context population; a missing link must not rescan it all.
+const approvalKey = r => JSON.stringify([acctOf(r.account_id), upper(r.symbol), dirOf(r.side)])
+function indexApprovalTimes(approvals) {
+  const index = new Map()
+  for (const approval of approvals) {
+    const at = tsMs(approval.created_at)
+    if (at == null) continue
+    const key = approvalKey(approval)
+    let times = index.get(key)
+    if (!times) { times = []; index.set(key, times) }
+    times.push(at)
+  }
+  for (const times of index.values()) times.sort((a, b) => a - b)
+  return index
+}
+function hasRecentApproval(index, intent, at) {
+  const times = index.get(approvalKey(intent))
+  if (!times) return false
+  const from = at - 5 * MIN
+  let low = 0, high = times.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (times[middle] < from) low = middle + 1
+    else high = middle
+  }
+  return low < times.length && times[low] <= at
+}
+
+// A diagnostic observer cannot alter the report, including when it throws.
+// Only fixed context/rule boundaries cross this optional private callback.
+function withLifecyclePhase(onPhase, phase, work) {
+  const emit = (edge, ok) => {
+    try { onPhase?.({ ...phase, edge, ...(ok == null ? {} : { ok }) }) } catch { /* observation only */ }
+  }
+  emit('start')
+  try {
+    const result = work()
+    emit('end', true)
+    return result
+  } catch (error) {
+    emit('end', false)
+    throw error
+  }
+}
 const ours = label => { try { return isOurs(label || '') } catch { return false } }
 const intentTag = label => { try { return labelIntentId(label) } catch { return null } }
 const parseJson = s => { try { return typeof s === 'string' ? JSON.parse(s) : null } catch { return undefined } }
@@ -288,6 +334,7 @@ function loadContext(db, win) {
   ctx.captureState = new Map(read('capture').map(r => [idKey(acctOf(r.account_id), r.position_id), r.state]))
   ctx.riskById = new Map(read('riskForTrades').map(r => [r.id, r]))
   ctx.approvals = read('approvals', [win.lowSpace, win.lowSpace])
+  ctx.approvalTimes = indexApprovalTimes(ctx.approvals)
   const state = Object.fromEntries(read('state').map(r => [r.key, r.value]))
   ctx.selectedAccount = acctOf(state.ctrader_account_id)
   ctx.stuckResolverOn = state.stuck_resolver_enabled !== 'false'
@@ -421,7 +468,7 @@ export const RULES = Object.freeze([
     },
   },
   {
-    id: 'PRE-03', key: 'intent_incomplete', version: 1, stage: 'pre_order', severity: 'defect', fix: 'writer',
+    id: 'PRE-03', key: 'intent_incomplete', version: 2, stage: 'pre_order', severity: 'defect', fix: 'writer',
     cite: ['exec-engine.js:809', 'loop.js:693-696', 'exec-engine.js:811', 'reconciler.js:93-98', 'db.js:2113-2125'],
     noun: 'entry intent',
     sql: `SELECT id, account_id, symbol, symbol_id, side, order_type, volume, producer_id, basis, risk_event_id, created_at
@@ -437,9 +484,7 @@ export const RULES = Object.freeze([
         // account, symbol and side in the five minutes before the intent —
         // matched case-insensitively. With no symbol stored there is nothing to match.
         const at = tsMs(r.created_at)
-        const found = !blank(r.symbol) && at != null && ctx.approvals.some(a => acctOf(a.account_id) === acctOf(r.account_id)
-          && upper(a.symbol) === upper(r.symbol) && dirOf(a.side) === dirOf(r.side)
-          && (tsMs(a.created_at) ?? -Infinity) <= at && (tsMs(a.created_at) ?? -Infinity) >= at - 5 * MIN)
+        const found = !blank(r.symbol) && at != null && hasRecentApproval(ctx.approvalTimes, r, at)
         if (!found) missing.push('risk_event_id')
       }
       return missing.length ? { missing, detail: `${r.id} ${r.producer_id ?? '?'} symbol_id=${r.symbol_id ?? 'NULL'} ${r.side ?? ''}` } : null
@@ -1233,11 +1278,15 @@ export const RULES = Object.freeze([
  * relayed watchdog status. Nothing a rule says changed; the statement and
  * the loader did, so the number moves.
  */
-export const HELPERS_VERSION = 5
+// Codex · №12,808 · 2026-10-10; codex-footprint: lifecycle-approval-index.
+// v6 indexes PRE-03's unchanged approval predicate and permits bounded private
+// phase observation. Context SQL, populations, truncation and scope stay exact.
+export const HELPERS_VERSION = 6
 export const JUDGE_HELPERS = Object.freeze({
   tsMs, blank, num, acctOf, idKey, upper, dirOf, ours, intentTag, parseJson, directionReasonOf, sideProblems, riskScaleWrong,
   botTrade, proposalOf, fillOf, closeMsOf, tagEvidence, fillForPending, closedOlder, tradeInWindow, endedBy,
   loadContext, runRule, summarise, recordKeyOf, accountRegistered, isControllerRecord, stageCountPhrase,
+  approvalKey, indexApprovalTimes, hasRecentApproval, withLifecyclePhase,
   constants: `${ABSURD_RISK_FRACTION}|${GENERIC_CLOSE_RE}|${[...LIMIT_PRODUCERS]}|${TERMINAL_INTENT}|${CLEAN_BOT_ORIGINS}|${ACTION_LOG_WINDOW_IDS}` +
     `|${DEFAULT_POPULATION_LIMIT}|${REFUSAL_POPULATION_LIMIT}|${CONTEXT_LIMIT}|${WRITE_GRACE_MS}|${INFO_NAMES_MAX}|${PROTECTION_LOG_MUTE_MS}|${JSON.stringify(CONTEXT_SQL)}` +
     `|${CONTROLLER_RECORD_RE}|${CONTROLLERS_LINE}`,
@@ -1568,7 +1617,7 @@ function namedCloseRecords(db, results) {
  * the selected account, read on THIS connection). Throws RangeError on a bad
  * parameter.
  */
-export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, days = null, account = null, rule = null, limit = null, offset = 0, populationLimit = null, acceptanceStart = null } = {}) {
+export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, days = null, account = null, rule = null, limit = null, offset = 0, populationLimit = null, acceptanceStart = null } = {}, { onPhase = null } = {}) {
   const cfg = loadLifecycleConfig()
   if (acceptanceStart != null) {
     if (!Number.isFinite(Date.parse(acceptanceStart))) throw new RangeError('acceptanceStart must be an ISO date')
@@ -1584,20 +1633,21 @@ export function buildOrderLifecycle(db, { nowMs = Date.now(), sinceIso = null, d
   const sampleOffset = Math.floor(Number(offset) || 0)
   if (sampleOffset < 0) throw new RangeError('offset must be 0 or more')
 
-  const ctx = loadContext(db, win)
+  const ctx = withLifecyclePhase(onPhase, { phase: 'context' }, () => loadContext(db, win))
   const scope = requestedAccount(db, { query: { account: account == null || String(account).trim() === '' ? undefined : String(account) } })
   scope.all = scope.all || scope.accountId == null
   // STK-07's prediction needs the orphaned resting rows per account.
   win.orphanedPendingByAccount = new Map()
   const results = []
+  const run = r => withLifecyclePhase(onPhase, { phase: 'rule', ruleId: r.id, ruleVersion: r.version }, () => runRule(db, r, ctx, win, scope))
   for (const r of RULES) {
     if (r.id === 'STK-07') continue
-    results.push(runRule(db, r, ctx, win, scope))
+    results.push(run(r))
     if (r.id === 'STK-01') {
       for (const e of results[results.length - 1].entries) win.orphanedPendingByAccount.set(e.account, (win.orphanedPendingByAccount.get(e.account) || 0) + 1)
     }
   }
-  results.splice(RULES.findIndex(r => r.id === 'STK-07'), 0, runRule(db, RULES.find(r => r.id === 'STK-07'), ctx, win, scope))
+  results.splice(RULES.findIndex(r => r.id === 'STK-07'), 0, run(RULES.find(r => r.id === 'STK-07')))
 
   // N8 (spec §6 item 5): an explicit account that the registry does not know
   // and no record carries is not "nothing stuck" — every rule, the stuck ones

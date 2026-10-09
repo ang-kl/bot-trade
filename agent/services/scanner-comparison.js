@@ -63,11 +63,22 @@ export function retainComparisons(db, now = Date.now(), { cap = CAP, chunk = 200
   const first = db.prepare('SELECT MIN(source) source FROM scanner_comparisons')
   const next = db.prepare('SELECT MIN(source) source FROM scanner_comparisons WHERE source > ?')
   const edge = db.prepare('SELECT observed_ms at, rowid id FROM scanner_comparisons WHERE source=? ORDER BY observed_ms DESC,rowid DESC LIMIT 1 OFFSET ?')
-  const drop = db.prepare(`DELETE FROM scanner_comparisons WHERE rowid IN (SELECT rowid FROM scanner_comparisons
-    WHERE source=? AND (observed_ms<? OR (observed_ms=? AND rowid<?)) ORDER BY observed_ms,rowid LIMIT ?)`)
+  // Codex · №12,808 · 2026-10-10; codex-footprint: bounded-retention-range.
+  // Keep both parts of the edge as index ranges. The former OR scanned every
+  // retained row on the final empty DELETE while reserving the writer. A time
+  // bound alone still scans retained timestamp ties; the second range also
+  // bounds rowid. Ordering inside the compound query merges the two ranges
+  // without sorting the population and preserves the oldest-first chunks.
+  const drop = db.prepare(`DELETE FROM scanner_comparisons WHERE rowid IN (
+    SELECT rowid FROM (
+      SELECT rowid,observed_ms FROM scanner_comparisons WHERE source=? AND observed_ms<?
+      UNION ALL
+      SELECT rowid,observed_ms FROM scanner_comparisons WHERE source=? AND observed_ms=? AND rowid<?
+      ORDER BY observed_ms,rowid LIMIT ?
+    ))`)
   for (let source = first.get().source; source != null; source = next.get(source).source) {
     const kept = edge.get(source, cap - 1)
-    if (kept) while (drop.run(source, kept.at, kept.at, kept.id, chunk).changes === chunk) { /* next bounded chunk */ }
+    if (kept) while (drop.run(source, kept.at, source, kept.at, kept.id, chunk).changes === chunk) { /* next bounded chunk */ }
   }
 }
 export function recordReference(db, body, reference, now = Date.now()) {
