@@ -2,6 +2,8 @@
 // Operator-authorised private-log readout. Closed fields, finite populations,
 // no arbitrary SQL/state-key/credential accessor and no broker request.
 import { performanceTargets } from './performance-targets.js'
+// Codex · №12,418 · 2026-10-09; codex-footprint: reuse-stop-policy-observation.
+import { brokerPolicyObservation } from '../lib/stop-policy.js'
 const CAP = 64
 const token = x => typeof x === 'string' && (/^[a-zA-Z0-9_.:-]{1,100}$/.test(x)
   || /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/.test(x)) ? x : null
@@ -90,9 +92,9 @@ export function readTradingAssessment(db, now = Date.now()) {
       ...project(a, ['accountId', 'host', 'checkedAtMs', 'ok', 'openCount', 'missingSl', 'missingTp']),
       error: errorCode(state?.accountErrors?.[a.accountId] || state?.hostErrors?.[a.host] || a.error),
       truncatedPositions: (a.positions?.length || 0) > CAP,
-      positions: (Array.isArray(a.positions) ? a.positions : []).slice(0, CAP).map(p => project(p,
-        ['positionId', 'symbolId', 'tradeSide', 'volume', 'price', 'entryPrice', 'stopLoss', 'takeProfit',
-          'stopTriggerMethod', 'stopLossTriggerMethod', 'trailingStopLoss', 'trailingStop'])) })) }
+      positions: (Array.isArray(a.positions) ? a.positions : []).slice(0, CAP).map(p => ({ ...project(p,
+        ['positionId', 'symbolId', 'tradeSide', 'volume', 'price', 'entryPrice', 'stopLoss', 'takeProfit']),
+      ...brokerPolicyObservation(p) })) })) }
   let targets
   try {
     // Refuse a large population rather than launch an unbounded report in a
