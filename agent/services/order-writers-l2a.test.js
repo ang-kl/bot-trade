@@ -34,6 +34,8 @@ const tagged = (id) => `PRE|v1|MR|H|NY|1d|TR|${id}`
 function freshDb() {
   const db = initDB(':memory:')
   upsertAccount(db, { accountId: DEMO, isLive: false })
+  // Codex · №12,479 · 2026-10-09; codex-footprint: numeric-only orders carry this account's symbol provenance.
+  setState(db, `symbol_id_map:${DEMO}`, JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { 'DOW.US': 41, 'CAT.US': 42, US30: 7 } }))
   return db
 }
 /** A plan write that FAILS: the table refuses the insert (the W7 input). */

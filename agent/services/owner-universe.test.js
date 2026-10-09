@@ -34,6 +34,8 @@ test('classify only this broker account, exclude HK shares, retain HK indices an
   const data = catalogue(ids[0]), c = classifyCatalogue(ids[0], data)
   assert.deepEqual(c.indices.map(x => x.symbol), ['GER40','HK50','HSI.HK'])
   assert.deepEqual(c.excluded, ['9618.HK'])
+  assert.equal(c.available, 7); assert.equal(c.unclassified, 0)
+  assert.deepEqual(c.stockCategories, ['Hong Kong', 'Singapore', 'Japan'])
   assert.deepEqual(c.stockCandidates.map(x => x.symbol), ['D05.SG'])
   assert.throws(() => classifyCatalogue(ids[1], data), /identity_or_shape/)
   data.symbols.symbol.push({ ...data.symbols.symbol[0], symbolName: 'OTHER' })

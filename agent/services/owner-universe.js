@@ -20,7 +20,7 @@ export function classifyCatalogue(accountId, data) {
   const classes = new Map(owned(data.assetClasses, accountId, 'assetClass').map(x => [String(x.id), String(x.name || '')]))
   const categories = new Map(owned(data.categories, accountId, 'symbolCategory').map(x => [String(x.id), x]))
   const symbols = owned(data.symbols, accountId, 'symbol')
-  const out = { accountId: String(accountId), indices: [], excluded: [], stockCandidates: [], available: symbols.length }
+  const out = { accountId: String(accountId), indices: [], excluded: [], stockCandidates: [], available: symbols.length, unclassified: 0, stockCategories: [] }
   const names = new Set(), ids = new Set()
   for (const s of symbols) {
     const name = String(s.symbolName || '').trim().toUpperCase(), id = Number(s.symbolId)
@@ -28,8 +28,10 @@ export function classifyCatalogue(accountId, data) {
     names.add(name); ids.add(id)
     const cat = categories.get(String(s.symbolCategoryId)), ac = classes.get(String(cat?.assetClassId)) || ''
     const category = String(cat?.name || ''), label = `${ac} ${category}`
+    if (!ac) out.unclassified++
     const stock = /\b(stocks?|shares?|equities|equity)\b/i.test(ac)
     const index = /\b(indices|indexes|index)\b/i.test(ac) || (!stock && /\b(indices|indexes)\b/i.test(category))
+    if (stock && !out.stockCategories.includes(category)) out.stockCategories.push(category)
     const hk = /\.HK$/.test(name) || /hong[ -]?kong|\bHK\b/i.test(category)
     if (hk && !index) out.excluded.push(name)
     if (s.enabled === false) continue
@@ -133,7 +135,7 @@ export async function applyOwnerUniverse(db, { now = Date.now, catalogue = readC
         const before = readWatchlist(db, id)
         const have = new Set(before.map(x => x.symbol)), added = available.filter(x => !have.has(x.symbol))
         const next = writeWatchlist(db, id, [...before, ...added.map(s => ({ symbol: s.symbol, enabled: true, group: classified.indices.includes(s) ? 'Indices' : 'UTC+8 Stocks' }))])
-        Object.assign(rec, { state: 'applied', completedAt: iso(now()), inheritedBefore: inherited, added: added.map(s => s.symbol), indices: classified.indices.map(s => s.symbol), stocks: stocks.map(s => s.symbol), refusedStocks, stockCandidates: classified.stockCandidates.length, stockCandidatesBeyondCap: Math.max(0, classified.stockCandidates.length - STOCK_CAP), total: next.length, excluded: classified.excluded, disabledRetained: next.filter(x => x.enabled === false && available.some(s => s.symbol === x.symbol)).map(x => x.symbol) })
+        Object.assign(rec, { state: 'applied', completedAt: iso(now()), availableSymbolCount: classified.available, unclassifiedSymbolCount: classified.unclassified, stockCategories: classified.stockCategories, inheritedBefore: inherited, added: added.map(s => s.symbol), indices: classified.indices.map(s => s.symbol), stocks: stocks.map(s => s.symbol), refusedStocks, stockCandidates: classified.stockCandidates.length, stockCandidatesBeyondCap: Math.max(0, classified.stockCandidates.length - STOCK_CAP), total: next.length, excluded: classified.excluded, disabledRetained: next.filter(x => x.enabled === false && available.some(s => s.symbol === x.symbol)).map(x => x.symbol) })
         setState(db, key, JSON.stringify(rec))
       }).immediate()
     } catch (e) {
