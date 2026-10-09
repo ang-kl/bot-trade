@@ -2068,6 +2068,10 @@ export function initDB(dbPath) {
     sent_at   TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_tg_outbox_pending ON telegram_outbox(sent_at, id);
+  -- Codex · №12,834 · 2026-10-10; codex-footprint: report-query-bounds.
+  -- Digest status needs reason/time, never text. The existing newest-pending
+  -- window stays unchanged while this covering index avoids message pages.
+  CREATE INDEX IF NOT EXISTS idx_tg_outbox_pending_report ON telegram_outbox(sent_at, id, queued_at, reason);
   `);
 
   db.exec(`
