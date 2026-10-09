@@ -8,6 +8,22 @@ Distinguish engineering completion, operational outcomes and deferred work; clai
 only what the available evidence supports. This owner update supersedes earlier
 fixed-count reporting directives without changing trading policy or owner exclusions.
 
+<!-- Codex · №12,710 · 2026-10-09; codex-footprint: owned-session-open-guard. -->
+## Session-open guard — account ownership and confirmed movement
+
+The guard's shared selected-account quote and unconditional success handling
+are reproduced defects. Resolve each eligible row's registered account, owned
+symbol map and broker position before pricing. Recheck the episode at the amend
+boundary; send its broker symbol/direction with the existing native ratchet.
+Only matched broker movement evidence permits a movement journal, GUARD:BE
+checkpoint, successful count or notification. An unchanged readback may update
+held protection but is not a movement. Keep row and movement journal atomic.
+Preserve the original window, profit threshold, TP and eligibility policy;
+ordinary MOVE_SL callers and native services are unchanged. Integration covers
+real guard/executor/database paths with controlled broker transport. Production
+occurrence is not inferred from a source reproduction. Contention causality and
+natural hybrid eligibility remain separate.
+
 <!-- Codex · №12,692 · 2026-10-09; codex-footprint: owned-diagnostic-readout. -->
 ## Bounded diagnostic readout corrections — PR1286 follow-up
 

@@ -5,14 +5,26 @@
 // the +0.7R ladder hasn't reached it yet, and opens are where reversals hit
 // hardest (owner: XAUUSD +$218 → −$261 across a session open).
 
-import test, { beforeEach } from 'node:test'
+import test, { beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
+import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 import {
   sessionJustOpened, runSessionOpenGuard, loadSessionOpenGuardConfig, DEFAULT_SESSION_OPEN_GUARD,
   resetSessionOpenGuardMemory,
 } from './session-open-guard.js'
 
+// Codex · №12,710 · 2026-10-09; codex-footprint: owned-session-guard-policy-fixture.
+const env = { id: process.env.CTRADER_CLIENT_ID, secret: process.env.CTRADER_CLIENT_SECRET }
+process.env.CTRADER_CLIENT_ID = 'offline'
+process.env.CTRADER_CLIENT_SECRET = 'offline'
+const dbs = []
+after(() => {
+  for (const [key, value] of [['CTRADER_CLIENT_ID', env.id], ['CTRADER_CLIENT_SECRET', env.secret]]) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value
+  }
+  for (const db of dbs) db.close()
+})
 beforeEach(() => resetSessionOpenGuardMemory())
 
 const CREDS = { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }
@@ -22,11 +34,15 @@ const LONDON_OPEN_PLUS_10 = Date.UTC(2026, 6, 21, 8, 10)
 
 function mkDb({ sl = 1.0950, entry = 1.1000, beMoved = 0, source = 'autopilot' } = {}) {
   const db = initDB(':memory:')
-  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1 }))
+  dbs.push(db)
+  setState(db, 'ctrader_access_token', 'offline')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES('1',0,1,'active')").run()
+  setState(db, accountSymbolMapKey('1'), JSON.stringify({ accountId: '1', builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  db.prepare("INSERT INTO trades(id,symbol,side,entry_price,status,account_id,ctrader_position_id) VALUES(1,'EURUSD','BUY',?,'open','1','101')").run(entry)
   db.prepare(`
     INSERT INTO monitored_positions
-      (symbol, side, entry_price, current_sl, current_tp, initial_risk, be_moved, status, source, strategy, created_at)
-    VALUES ('EURUSD', 'BUY', ?, ?, 1.1200, 0.0050, ?, 'active', ?, 'fib_618_fade', datetime('now'))
+      (symbol, side, entry_price, current_sl, current_tp, initial_risk, be_moved, status, source, strategy, created_at, trade_id, account_id)
+    VALUES ('EURUSD', 'BUY', ?, ?, 1.1200, 0.0050, ?, 'active', ?, 'fib_618_fade', datetime('now'), 1, '1')
   `).run(entry, sl, beMoved, source)
   return db
 }
@@ -35,6 +51,8 @@ function mkDb({ sl = 1.0950, entry = 1.1000, beMoved = 0, source = 'autopilot' }
 // threshold, below the normal +0.7R breakeven ladder — the guard's zone.
 function deps({ mid = 1.1020, brokerCalls = [] } = {}) {
   return {
+    exec: { reconcile: async () => ({ ctidTraderAccountId: 1, position: [{ positionId: 101, price: 1.1,
+      stopLoss: 1.095, tradeData: { symbolId: 1, tradeSide: 1 } }] }) },
     ws: { wsGetSpotOnce: async () => ({ bid: mid - 0.0001, ask: mid + 0.0001 }) },
     loop: {
       prepareStatements: (db) => ({
@@ -45,7 +63,7 @@ function deps({ mid = 1.1020, brokerCalls = [] } = {}) {
       executeBrokerAction: async (db, s, pos, eval_) => {
         brokerCalls.push({ symbol: pos.symbol, ...eval_ })
         db.prepare(`UPDATE monitored_positions SET current_sl = ? WHERE id = ?`).run(eval_.newSL, pos.id)
-        return { summary: `SL → ${eval_.newSL}` }
+        return { moved: true, summary: `SL → ${eval_.newSL}` }
       },
     },
     now: () => LONDON_OPEN_PLUS_10,
