@@ -84,15 +84,17 @@ test('owner selection is an indexed bounded range and saturated output retains t
           stopMoved:true,accountId:42,positionId:100+id,symbolId:22,direction:1,entryPrice:100,beforeStopLoss:99,afterStopLoss:100,
           beforeCheckedAtMs:NOW-1000,afterCheckedAtMs:NOW}}))
   })()
+  db.exec("UPDATE trades SET status='closed' WHERE id=1")
   const prepare=db.prepare.bind(db);let ownersPlan
   db.prepare=sql=>{if(sql.includes("WHERE status='open' ORDER"))ownersPlan=prepare('EXPLAIN QUERY PLAN '+sql).all(65);return prepare(sql)}
-  startTargetedEvidenceReadout(db,{env:{OWNED_EVIDENCE_RUN_ID:'saturated-owned',OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()},
+  startTargetedEvidenceReadout(db,{env:{OWNED_EVIDENCE_RUN_ID:'saturated-owned',OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()},
     now:()=>NOW,log:x=>logs.push(x),setTimer:cb=>{callback=cb},clearTimer:()=>{}})
   callback();db.prepare=prepare
   assert.ok(ownersPlan.some(x=>/SEARCH trades USING INDEX idx_trades_status_closed/.test(x.detail)))
   assert.ok(ownersPlan.every(x=>!x.detail.includes('TEMP B-TREE')))
   const final=JSON.parse(logs.at(-1))
   assert.equal(final.kind,'exit');assert.equal(final.value.done,true);assert.ok(final.value.dropped>0)
+  assert.equal(JSON.parse(logs.find(x=>JSON.parse(x).kind==='owned-position')).value.owner.id,1, 'explicit closed target is emitted before detail saturation')
   assert.ok(logs.reduce((n,line)=>n+Buffer.byteLength(line),0)<=256*1024)
   assert.equal(JSON.parse(logs.find(x=>JSON.parse(x).kind==='summary')).value.truncatedTrades,true)
 })

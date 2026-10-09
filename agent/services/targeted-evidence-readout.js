@@ -27,17 +27,19 @@ export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
   // retrieves each movement kind without walking thousands of observations.
   const owners=db.prepare(`SELECT id,account_id,ctrader_position_id,symbol,side,status FROM trades
     WHERE status='open' ORDER BY closed_at DESC,id DESC LIMIT ?`).all(CAP+1)
-  const selected=owners.slice(0,CAP)
+  const selected=[]
   // Codex · №12,439 · 2026-10-09; codex-footprint: retained-movement-targets.
   // Explicit primary-key targets remain readable if they naturally close
   // while the release gates run. Never search all closed-position history.
   for(const id of tradeIds) {
     if(selected.some(r=>r.id===id)) continue
-    const row=db.prepare('SELECT id,account_id,ctrader_position_id,symbol,side,status FROM trades WHERE id=?').get(id)
+    const row=owners.slice(0,CAP).find(r=>r.id===id) || db.prepare('SELECT id,account_id,ctrader_position_id,symbol,side,status FROM trades WHERE id=?').get(id)
     if(row) selected.push(row)
   }
+  // Requested targets get the finite output budget before the open population.
+  for(const row of owners.slice(0,CAP)) if(!selected.some(r=>r.id===row.id)) selected.push(row)
   const pass=stored(db,'momentum_partial_pass_json'), protection=stored(db,'independent_protection_json')
-  const out={readAt:now,limits:{trades:CAP,rowsPerMovementKind:PER_KIND,ownerOrder:'closed_at_desc_id_desc',targetTradeIds:tradeIds},truncatedTrades:owners.length>CAP,
+  const out={readAt:now,limits:{openTrades:CAP,totalTradesBound:CAP+tradeIds.length,rowsPerMovementKind:PER_KIND,ownerOrder:'closed_at_desc_id_desc',targetTradeIds:tradeIds},truncatedTrades:owners.length>CAP,
     verdicts:readHybridVerdicts(db),trades:[]}
   for(const owner of selected) {
     const record={owner:project(owner,['id','account_id','ctrader_position_id','symbol','side','status']),movements:[],volumeRefusals:[],protection:[]}
