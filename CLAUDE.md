@@ -1,3 +1,27 @@
+<!-- Codex · №12,611 · 2026-10-09; codex-footprint: hybrid-status-contention -->
+## NAS100 initial-risk read and hybrid status contention
+
+Owner asks to establish NAS100’s trusted initial risk and identify the recorded
+SQLite contention. PR1285 is completed; its ordinary opening-order proof refused
+manual_original_stop_missing for demo43097342/trade1780/position247698829.
+No current/adopted stop is an original-risk substitute. Extend the existing
+explicit-target, expiring private stored readout with bounded source records;
+missing, foreign or ambiguous identity remains unverified. No broker request,
+financial-history repair, risk stamp or hybrid enrolment follows from a readout.
+
+Actual controller/file-SQLite reproduction confirms 82 empty-poll status writes
+in one simulated second and two consecutive busy waits on the same failed status
+UPSERT. Coalesce diagnostic snapshots across hosts at one-second attempt cadence;
+retain errors for the next successful snapshot without immediately repeating a
+failed SQLite write. Poll cadence and immediate trigger/claim/wire/result/journal
+persistence remain unchanged. Future failures name the controller operation and
+SQLite error code; neither identifies an unobserved competing lock holder.
+The production 17:14:41 lock and startup profile are real, but their exact holder
+and the cause of every stall remain unproven. No timeout/threshold/SL/entry or
+native source change. Integrated actual-controller/database coverage plus required
+full local/exact-head CI, actual review inspection and deployed verification precede
+release. Counts7verified/19active/6deferred;unverified25 remain unchanged.
+
 <!-- Codex · №12,587 · 2026-10-09; codex-footprint: manual-profit-hybrid -->
 ## Owner-authorised manual capped hybrid — 9 October
 
