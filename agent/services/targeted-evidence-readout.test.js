@@ -96,3 +96,17 @@ test('owner selection is an indexed bounded range and saturated output retains t
   assert.ok(logs.reduce((n,line)=>n+Buffer.byteLength(line),0)<=256*1024)
   assert.equal(JSON.parse(logs.find(x=>JSON.parse(x).kind==='summary')).value.truncatedTrades,true)
 })
+
+// Codex · №12,439 · 2026-10-09; codex-footprint: retained-movement-targets.
+test('explicit existing trade target survives a natural close without scanning closed history',t=>{
+  const db=scene(t)
+  db.exec("UPDATE trades SET status='closed' WHERE id=1; INSERT INTO position_events(trade_id,account_id,position_id,symbol,kind,from_value,to_value) VALUES(1,'42','33','EURUSD','sl_moved',1,2)")
+  assert.equal(readTargetedEvidence(db,NOW).trades.some(r=>r.owner.id===1),false)
+  const read=readTargetedEvidence(db,NOW,[1,1,999]),target=read.trades.find(r=>r.owner.id===1)
+  assert.equal(read.trades.filter(r=>r.owner.id===1).length,1)
+  assert.equal(target.owner.status,'closed');assert.equal(target.movements[1].rows[0].to_value,2)
+  assert.throws(()=>readTargetedEvidence(db,NOW,Array(9).fill(1)),/invalid_targets/)
+  let calls=0
+  assert.equal(startTargetedEvidenceReadout(db,{env:{OWNED_EVIDENCE_TRADE_IDS:'1); DELETE FROM trades;'},setTimer:()=>{calls++}}),null)
+  assert.equal(calls,0)
+})

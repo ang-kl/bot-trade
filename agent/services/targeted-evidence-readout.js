@@ -16,16 +16,31 @@ const MOVEMENT_FIELDS=['v','source','confirmation','stopMoved','accountId','posi
 const VOLUME_FIELDS=['source','units','host','accountId','positionId','symbolId','side','metadataReceivedAtMs',
   'reconcileReceivedAtMs','volume','halfVolume','minVolume','stepVolume','minVolumeValid','stepVolumeValid']
 
-export function readTargetedEvidence(db, now=Date.now()) {
+function targetIds(raw) {
+  if(raw == null || raw === '') return []
+  if(typeof raw !== 'string' || !/^[1-9]\d{0,14}(,[1-9]\d{0,14}){0,7}$/.test(raw)) return null
+  return [...new Set(raw.split(',').map(Number))]
+}
+export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
+  if(!Array.isArray(tradeIds)||tradeIds.length>8||tradeIds.some(n=>!Number.isSafeInteger(n)||n<=0)) throw Error('invalid_targets')
   // The existing status index narrows to open trades; the new trade/kind index
   // retrieves each movement kind without walking thousands of observations.
-  const owners=db.prepare(`SELECT id,account_id,ctrader_position_id,symbol,side FROM trades
+  const owners=db.prepare(`SELECT id,account_id,ctrader_position_id,symbol,side,status FROM trades
     WHERE status='open' ORDER BY closed_at DESC,id DESC LIMIT ?`).all(CAP+1)
+  const selected=owners.slice(0,CAP)
+  // Codex · №12,439 · 2026-10-09; codex-footprint: retained-movement-targets.
+  // Explicit primary-key targets remain readable if they naturally close
+  // while the release gates run. Never search all closed-position history.
+  for(const id of tradeIds) {
+    if(selected.some(r=>r.id===id)) continue
+    const row=db.prepare('SELECT id,account_id,ctrader_position_id,symbol,side,status FROM trades WHERE id=?').get(id)
+    if(row) selected.push(row)
+  }
   const pass=stored(db,'momentum_partial_pass_json'), protection=stored(db,'independent_protection_json')
-  const out={readAt:now,limits:{trades:CAP,rowsPerMovementKind:PER_KIND,ownerOrder:'closed_at_desc_id_desc'},truncatedTrades:owners.length>CAP,
+  const out={readAt:now,limits:{trades:CAP,rowsPerMovementKind:PER_KIND,ownerOrder:'closed_at_desc_id_desc',targetTradeIds:tradeIds},truncatedTrades:owners.length>CAP,
     verdicts:readHybridVerdicts(db),trades:[]}
-  for(const owner of owners.slice(0,CAP)) {
-    const record={owner:project(owner,['id','account_id','ctrader_position_id','symbol','side']),movements:[],volumeRefusals:[],protection:[]}
+  for(const owner of selected) {
+    const record={owner:project(owner,['id','account_id','ctrader_position_id','symbol','side','status']),movements:[],volumeRefusals:[],protection:[]}
     if(!owner.account_id || !owner.ctrader_position_id) { record.unavailable='missing_owner'; out.trades.push(record); continue }
     for(const kind of ['trail_tightened','sl_moved','scale_out']) {
       const rows=db.prepare(`SELECT id,at,account_id,position_id,trade_id,symbol,kind,from_value,to_value,source,
@@ -66,6 +81,8 @@ export function readTargetedEvidence(db, now=Date.now()) {
 
 export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log,now=Date.now,
   setTimer=setTimeout,clearTimer=clearTimeout}={}) {
+  const tradeIds=targetIds(env.OWNED_EVIDENCE_TRADE_IDS)
+  if(tradeIds===null)return null
   const id=env.OWNED_EVIDENCE_RUN_ID,expires=Date.parse(env.OWNED_EVIDENCE_EXPIRES_AT||'')
   if(typeof id!=='string'|| !/^[a-zA-Z0-9_-]{8,64}$/.test(id)|| !Number.isFinite(expires)||expires<=now()||expires-now()>3600000) return null
   let bytes=0,dropped=0
@@ -84,14 +101,14 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   }
   try {
     if(db.prepare('INSERT OR IGNORE INTO agent_state(key,value) VALUES (?,?)')
-      .run(`owned_evidence:${id}`,JSON.stringify({at:now()})).changes!==1) return null
+      .run(`owned_evidence:${id}`,JSON.stringify({at:now(),tradeIds})).changes!==1) return null
   } catch { emit('not-started',{reason:'durable_claim_failed'});return null }
   // A single delayed read gives ordinary enrolment a chance to persist inputs.
   // It never runs enrolment, submits an order, or repeats until a desired result.
   const timer=setTimer(()=>{
     if(now()>=expires){emit('exit',{reason:'deadline_expired',dropped});return}
     try {
-      const {trades,...metadata}=readTargetedEvidence(db,now())
+      const {trades,...metadata}=readTargetedEvidence(db,now(),tradeIds)
       emit('summary',metadata)
       for(const trade of trades) {
         const {movements,...fields}=trade;emit('owned-position',fields)
