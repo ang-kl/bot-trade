@@ -1,23 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude \u00b7 \u2116 11,660 07-Oct).",
-  "locks": [
-    {
-      "id": "codex-session-guard-2026-10-09",
-      "locked_by": "codex-session-guard",
-      "branch": "fix/session-guard-ownership-2026-10-09",
-      "files": [
-        "CLAUDE.md",
-        "agent/loop.js",
-        "agent/services/session-open-guard.js",
-        "agent/lib/session-guard-identity.js",
-        "agent/services/session-open-guard.test.js",
-        "agent/services/session-guard-ownership-integration.test.js"
-      ],
-      "started_at": "2026-10-09T15:31:05.175910+00:00",
-      "expires_at": "2026-10-09T18:31:05.175910+00:00",
-      "description": "Owner do gap: own-account session guard decisions and confirmed movement only; no policy/threshold/native changes"
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -272,6 +255,7 @@
       "serial": 12703,
       "subject": "PR1289 merged; file lock released",
       "text": "Three bounded diagnostic projection corrections merged4427c8e after local and exact-head CI37940644792 passed. Runtime verification in progress. Session-guard ownership fixture reproduced contaminated quote decisions and skipped outcome stamped success; separate correction not included. No production incidence or lock-holder cause established. Historical acceptance totals are not directives."
-    }
+    },
+    "Codex \u00b7 \u211612,714 \u00b7 2026-10-10: session-guard ownership/confirmed-movement PR1290 merged as 24bf153fe02809424b7e062e58972c111af5e1e8; exact gated tree matches. Own lock released after merge. Node runtime verification is in progress. No other lock or operational setting changed."
   ]
 }
