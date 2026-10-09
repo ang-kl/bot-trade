@@ -11,7 +11,8 @@
         "agent/loop.js",
         "agent/services/fast-monitor.js",
         "agent/services/general-partial-execution.js",
-        "agent/services/general-partial-execution.test.js"
+        "agent/services/general-partial-execution.test.js",
+        "agent/services/exit-asymmetry.test.js"
       ],
       "branch": "fix/verified-general-partial-2026-10-09",
       "purpose": "Owner-authorised actual general partial execution and caller bookkeeping correction; no SL/entry policy changes"
