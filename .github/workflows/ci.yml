@@ -22,6 +22,19 @@ jobs:
         run: cd agent && npm ci
       - name: Lint (zero errors, zero warnings)
         run: npx eslint . --max-warnings 0
+      # Codex · №12,519 · 2026-10-09; codex-footprint: six-strategy-lifecycle.
+      # Mandatory cross-language fixture: actual entry/ratchet/tick journal,
+      # controlled loopback broker only. This does not build a service image.
+      - name: Build integrated native lifecycle fixture
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q g++ libssl-dev libcurl4-openssl-dev
+          mkdir -p cpp-exec/bin
+          sources=()
+          for source in cpp-exec/src/*.cpp; do
+            if [[ "$source" != cpp-exec/src/main.cpp ]]; then sources+=("$source"); fi
+          done
+          g++ -std=c++20 -Wall -Wextra -pthread agent/test-support/strategy-lifecycle-native.cpp "${sources[@]}" -lssl -lcrypto -lcurl -o cpp-exec/bin/strategy-lifecycle-native
       - name: Agent test suite (node:test — risk, sizing, guards, keeper)
         run: node scripts/run-agent-tests.mjs
       - name: Frontend test suite (vitest)

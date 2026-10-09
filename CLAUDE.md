@@ -2784,3 +2784,39 @@ Codex · №12,232 · 2026-10-08 — third actual automated P1 on PR1268 head310
 Codex · №12,254 · 2026-10-08 — owner-selected capped hybrid (50% at 2 price-R, existing broker TP ceiling) uses a separate post-entry policy through the existing durable partial manager. Entry planner/gates, stop evaluators/policy/ratchets and native sources stay unchanged. Enrolment requires an account-owned filled intent, immutable recorded initial risk, complete opening-fill quantity, current protected broker position and exact representable halves. Book/guard/manual/paused/competing-profit owners retain their authority. Intent is committed before close; ambiguous outcomes never blindly resend; new hybrid success is journaled only after owned fill plus residual confirmation. Bounded enrolment rotates across unavailable positions. This avoids the independently reproduced legacy general PARTIAL_EXIT inference path; that broader path is not claimed repaired. No arbitrary structural/continuation thresholds, money guarantee, historical rewrite, account/risk/strategy/profile/staging/region/volume or monitoring-schedule change. Existing protective-close coordination is reused; broker SL stays active. Conversation ref: owner profit-taking request and capped-hybrid selection, №12,248–12,254. Release gates/review/deployment pending; no acceptance closure claimed.
 
 Codex · №12,260 · 2026-10-08 — actual automated PR1269 review found three P2 cases before merge. Real SQLite/pass/broker-boundary tests reproduce rejection of a complete multi-deal entry, lost partial journaling when the runner closes before readback, and an unset legacy scale-out latch. Accept FILLED/PARTIALLY_FILLED opening deals only with complete exact owned totals. Journal an owned proven partial with either confirmed residual or the manager's separate terminal closing-deal evidence; retain that terminal state rather than claiming an active runner. Atomically mark only scaled_out with the event; entry/SL/TP/breakeven stay untouched, and actual managed stop evaluation is unchanged. The exact broker-host routing allowlist is extended with explicit counts/reason; no policy distinction is added. A sub-tick recorded risk cannot yield a trigger equal to entry. Initial failed/interrupted gate and red tests are retained; final local/exact-head CI and review still required. No production outcome, profitability, whole acceptance or legacy general partial-path repair is claimed.
+## Codex · №12,519 · 2026-10-09 — six-strategy lifecycle
+
+Owner requested the six-strategy approach with one consolidated integrated
+validation phase after coding. Working set: `tick_momentum_breakout`,
+`donchian_breakout`, `va_breakout`, `ema_pullback`, `vwap_trend`,
+`rsi2_reversion`. Preserve each existing entry predicate: tick momentum is a
+native quote strategy; Donchian's completed-bar volume and VA's confirmation
+then pullback must not become unconfirmed crossings. EMA/VWAP/RSI2 retain
+their candle rules. No strategy, profile, account, risk or mode is activated.
+
+Native tick hybrid ownership needs more than a family label: its profile/intent
+label has no bar-strategy stamp; snapshot-first FILLED intents may lack the
+opening order ID; adoption can observe an already tightened broker stop.
+Retain a prospective, account/symbol/host/boot-owned fire/result proof with the
+actual opening order and immutable requested relative stop distance. Read that
+proof for hybrid initial price-R without rewriting labels, historical risk,
+money or the stop manager. Missing or conflicting evidence refuses. Do not add
+tick momentum to the bar registry and inadvertently disable its management.
+Complete executed opening fills, exact representable halves, existing TP
+ceiling and owner/management exclusions remain mandatory. RSI2 stays under its
+existing mean-reversion policy; a TP at/before 2R still refuses a capped runner.
+
+Tick permits must resolve the destination account's instrument before sizing.
+The current shared-feed firer cannot translate different IDs; a missing or
+conflicting owned ID is refused rather than relabelled. Existing SL ratchets,
+TP, policy thresholds, pins and held-position protection remain unchanged.
+The integrated fixture links actual native strategy/firer/execution, Node
+ledger/adoption, native tick ratchet and durable profit trigger, controlled
+broker partial, residual and SQLite journal. Missing native fixture is a gate
+failure, never a passing skip. Synthetic integration is not a production trade
+or profit-improvement claim. Full local/exact-head CI and actual review results
+are required before merge; unchanged native service images need no rebuild.
+Counts remain 7 verified / 19 active / 6 deferred; unverified overlay 25 unless
+a complete group passes. Conversation ref: owner "Check and code the six
+strategies approach"; implementation №12,516–12,520; session
+codex-six-strategy-lifecycle, ChatGPT (no external session URL available).
