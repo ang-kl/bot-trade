@@ -9,7 +9,7 @@ import { credsForRegisteredAccount } from '../lib/ctrader-creds.js'
 import { marketIdentity } from '../lib/market-identity.js'
 import { EXEC_HOST_LIVE, EXEC_HOST_DEMO, closePosition } from '../lib/exec-engine.js'
 import { hybridTickTransport } from '../lib/hybrid-tick-transport.js'
-import { CAPPED_HYBRID_POLICY, planCappedHybrid } from './capped-hybrid-policy.js'
+import { CAPPED_HYBRID_POLICY, planCappedHybrid, readCappedHybridVerdict } from './capped-hybrid-policy.js'
 import { readPartialPlan, runPartialPlan } from './momentum-partial-manager.js'
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { makeMomentumPartialBroker } from './momentum-partial-broker.js'
@@ -47,17 +47,44 @@ function owned(db, row) {
   return ownershipMatchesPlan(o, { accountId: row.account_id, tradeId: row.trade_id, positionId: row.position_id, plan: row.plan })
     && o.host === row.identity.host && o.symbolId === row.identity.symbolId
 }
-export function hybridGroups(db, host, { now = Date.now, credsFor = account => credsForRegisteredAccount(db, account) } = {}) {
-  if (!hosts.includes(host) || !hasTable(db, 'momentum_partial_plans')) return []
+export function hybridGroups(db, host, { now = Date.now, credsFor = account => credsForRegisteredAccount(db, account), diagnostics } = {}) {
+  // Codex · №12,559 · 2026-10-09; codex-footprint: hybrid-exclusion-verdicts.
+  // Only ARMED plans are candidates here. Other hosts are normal routing;
+  // completed/sending plans are lifecycle states, not refused tick executions.
+  if (diagnostics) Object.assign(diagnostics, { observedAtMs: now(), considered: 0, routedElsewhere: 0,
+    excluded: [], excludedTruncated: false, excludedOmitted: 0 })
+  if (!hosts.includes(host) || !hasTable(db, 'momentum_partial_plans')) {
+    if (diagnostics) diagnostics.unavailableReason = !hosts.includes(host) ? 'host_unavailable' : 'schema_unavailable'
+    return []
+  }
+  const exclude = (ref, row, reason) => {
+    if (!diagnostics) return
+    if (diagnostics.excluded.length >= 128) { diagnostics.excludedTruncated = true; diagnostics.excludedOmitted++; return }
+    diagnostics.excluded.push({ accountId: ref.account_id, tradeId: ref.trade_id, positionId: row?.position_id ?? null,
+      stage: 'configuration', observedAtMs: diagnostics.observedAtMs, reason })
+  }
   const groups = new Map()
   const rows = db.prepare("SELECT account_id,trade_id FROM momentum_partial_plans WHERE state='ARMED' ORDER BY account_id,trade_id").all()
   let count = 0
   for (const ref of rows) {
     const row = readPartialPlan(db, ref.account_id, ref.trade_id), spec = hybridSpec(row, now())
-    if (!spec || spec.host !== host || !owned(db, row)) continue
+    if (diagnostics) diagnostics.considered++
+    if (!spec) { exclude(ref, row, 'plan_invalid'); continue }
+    if (spec.host !== host) { if (diagnostics) diagnostics.routedElsewhere++; continue }
+    if (!owned(db, row)) {
+      if (!diagnostics) continue
+      // Reuse the same canonical predicates for the explanation; ownership
+      // remains decided by the existing action reader above.
+      let reason = 'plan_ownership_mismatch'
+      try { reason = readCappedHybridVerdict(db, row.account_id, row.trade_id, row.position_id, row.plan.digits).reason || reason }
+      catch { reason = 'diagnostic_read_failed' }
+      exclude(ref, row, reason); continue
+    }
     if (++count > 64) throw Error('hybrid configured-plan capacity exceeded')
     const creds = credsFor(spec.accountId)
-    if (!creds?.ready || creds.host !== host || String(creds.accountId) !== spec.accountId) continue
+    if (!creds?.ready || creds.host !== host || String(creds.accountId) !== spec.accountId) {
+      exclude(ref, row, 'own_credentials_unavailable'); continue
+    }
     if (!groups.has(spec.accountId)) groups.set(spec.accountId, { creds, plans: [] })
     groups.get(spec.accountId).plans.push(spec)
   }
@@ -175,7 +202,9 @@ export function startHybridTickController(db, { transport = hybridTickTransport(
     let failed = false
     try {
       if (now() - h.configuredAt >= 30_000) {
-        const groups = hybridGroups(db, host, { now, credsFor })
+        const configuration = {}
+        const groups = hybridGroups(db, host, { now, credsFor, diagnostics: configuration })
+        h.configuration = configuration
         await transport.configure(host, groups)
         const signature = JSON.stringify(groups.flatMap(g => g.plans.map(p => [p.accountId, p.positionId, p.key])))
         if (signature !== h.signature) log(`[hybrid-tick-config] ${JSON.stringify({ host,

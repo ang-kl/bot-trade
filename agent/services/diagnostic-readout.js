@@ -4,6 +4,8 @@
 import { performanceTargets } from './performance-targets.js'
 // Codex · №12,418 · 2026-10-09; codex-footprint: reuse-stop-policy-observation.
 import { brokerPolicyObservation } from '../lib/stop-policy.js'
+// Codex · №12,559 · 2026-10-09; codex-footprint: hybrid-exclusion-verdicts.
+import { HYBRID_OWNER_REASONS } from './capped-hybrid-policy.js'
 const CAP = 64
 const token = x => typeof x === 'string' && (/^[a-zA-Z0-9_.:-]{1,100}$/.test(x)
   || /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/.test(x)) ? x : null
@@ -11,7 +13,9 @@ const number = x => typeof x === 'number' && Number.isFinite(x) ? x : null
 const REASONS = new Set(['enrolment_budget', 'own_credentials_unavailable', 'symbol_account_unverified',
   'symbol_metadata_unverified', 'broker_precision_required', 'ownership_changed', 'broker_position_unverified',
   'recorded_risk_required', 'broker_volume_invalid', 'half_and_runner_not_representable', 'opening_receipts_required',
-  'existing_tp_caps_before_runner', 'broker_protection_unverified'])
+  'existing_tp_caps_before_runner', 'broker_protection_unverified', ...HYBRID_OWNER_REASONS,
+  'existing_partial_plan', 'candidate_not_selected', 'plan_invalid', 'plan_ownership_mismatch',
+  'diagnostic_read_failed', 'schema_unavailable', 'host_unavailable'])
 function errorCode(x) {
   if (x == null || x === '') return x ?? null
   const text = String(x)
@@ -43,13 +47,21 @@ export function readHybridVerdicts(db) {
       available: true, at: token(p?.at), ok: p?.ok === true, activePlans: number(p?.activePlans),
       cappedHybrid: p?.cappedHybrid == null ? null : { examined: number(p.cappedHybrid.examined),
         enrolled: list(p.cappedHybrid.enrolled, ['accountId', 'tradeId', 'positionId', 'trigger', 'closeVolume', 'runnerVolume', 'brokerTarget']),
+        excluded: list(p.cappedHybrid.excluded, ['accountId', 'tradeId', 'positionId', 'monitorId', 'stage', 'observedAtMs'], true),
+        delegated: list(p.cappedHybrid.delegated, ['accountId', 'tradeId', 'positionId', 'stage', 'observedAtMs', 'planState'], true),
+        ...project(p.cappedHybrid, ['excludedTruncated', 'delegatedTruncated', 'excludedOmitted', 'delegatedOmitted', 'unavailableReason', 'diagnosticError']),
+        coverage: p.cappedHybrid.coverage == null ? null : project(p.cappedHybrid.coverage, ['limit', 'openTradesSampled', 'openTradesTruncated']),
         deferred: list(p.cappedHybrid.deferred, ['accountId', 'tradeId'], true),
         errors: list(p.cappedHybrid.errors, ['accountId', 'tradeId'], true) },
     },
     hybrid_tick_controller_json: !controller.available ? controller : {
       available: true, at: number(c?.at), startedAt: number(c?.startedAt),
       hosts: Object.entries(c?.hosts || {}).slice(0, 4).map(([host, h]) => ({ host: token(host),
-        ...project(h, ['configuredAt', 'processed', 'errors', 'plans', 'lastReadAt']), error: errorCode(h.error) })),
+        ...project(h, ['configuredAt', 'processed', 'errors', 'plans', 'lastReadAt']), error: errorCode(h.error),
+        configuration: h.configuration == null ? null : {
+          ...project(h.configuration, ['observedAtMs', 'considered', 'routedElsewhere', 'excludedTruncated', 'excludedOmitted', 'unavailableReason']),
+          excluded: list(h.configuration.excluded, ['accountId', 'tradeId', 'positionId', 'stage', 'observedAtMs'], true),
+        } })),
       truncatedHosts: Object.keys(c?.hosts || {}).length > 4,
     },
   }
