@@ -1,0 +1,6 @@
+{
+  "version": "manual_capped_hybrid_2026_10_09_v1",
+  "accounts": ["43097342", "42993489"],
+  "authority": "Owner authorised human-opened positions; Codex · №12,587 · 2026-10-09; codex-footprint: manual-profit-hybrid",
+  "policy": "capped_hybrid_2r_half_v1"
+}

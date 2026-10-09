@@ -6,6 +6,7 @@ import { applyManagedRules, managedExitApplies } from './managed-exit.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { sameTicks } from './momentum-target-policy.js'
 import { readTickEntryProof } from './tick-entry-proof.js'
+import { isManualHybridTrade, readManualHybridVerdict, MANUAL_HYBRID_REASONS } from './manual-hybrid-policy.js'
 
 export const CAPPED_HYBRID_POLICY = 'capped_hybrid_2r_half_v1'
 const positive = n => typeof n === 'number' && Number.isFinite(n) && n > 0
@@ -43,6 +44,7 @@ export function planCappedHybrid(input = {}) {
 // The action reader and diagnostic reader share every predicate. A refusal
 // describes the stored classification, never how the human entered a trade.
 export const HYBRID_OWNER_REASONS = Object.freeze([
+  ...MANUAL_HYBRID_REASONS,
   'trade_identity_unverified', 'trade_not_open', 'trade_origin_not_bot', 'trade_risk_link_missing',
   'trade_intent_link_missing', 'trade_side_invalid', 'account_missing', 'account_mode_excluded',
   'managed_exit_disabled', 'tick_entry_proof_missing', 'strategy_not_momentum', 'strategy_label_mismatch',
@@ -63,6 +65,9 @@ export function readCappedHybridVerdict(db, accountId, tradeId, positionId, digi
     .get(tradeId, accountId, positionId)
   if (!t) return refuse('trade_identity_unverified')
   if (t.status !== 'open') return refuse('trade_not_open')
+  // Codex · №12,587 · 2026-10-09; codex-footprint: manual-profit-hybrid.
+  // Separate profit contract; the bot entry predicates below remain intact.
+  if (isManualHybridTrade(t)) return readManualHybridVerdict(db, t, positionId, digits)
   if (t.origin !== 'bot_market_dispatch') return refuse('trade_origin_not_bot')
   if (!(t.risk_event_id > 0)) return refuse('trade_risk_link_missing')
   if (!t.intent_id) return refuse('trade_intent_link_missing')

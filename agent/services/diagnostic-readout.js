@@ -14,6 +14,17 @@ const REASONS = new Set(['enrolment_budget', 'own_credentials_unavailable', 'sym
   'symbol_metadata_unverified', 'broker_precision_required', 'ownership_changed', 'broker_position_unverified',
   'recorded_risk_required', 'broker_volume_invalid', 'half_and_runner_not_representable', 'opening_receipts_required',
   'existing_tp_caps_before_runner', 'broker_protection_unverified', ...HYBRID_OWNER_REASONS,
+  // Codex · №12,587 · 2026-10-09; codex-footprint: manual-profit-hybrid.
+  'manual_entry_receipt_too_large', 'manual_entry_receipt_invalid', 'manual_opening_deals_missing',
+  'manual_opening_deal_identity_conflict', 'manual_opening_history_has_close', 'manual_opening_deal_unverified',
+  'manual_opening_deal_duplicate', 'manual_opening_volume_conflict', 'manual_opening_order_ambiguous',
+  'manual_opening_entry_conflict', 'manual_history_identity_unverified', 'manual_history_incomplete',
+  'manual_context_unverified', 'manual_order_details_unverified', 'manual_opening_order_identity_conflict',
+  'manual_opening_order_not_filled_entry', 'manual_opening_order_volume_conflict', 'manual_opening_order_price_conflict',
+  'manual_order_deals_conflict', 'manual_original_stop_missing', 'manual_original_stop_invalid', 'manual_original_stop_conflict',
+  'manual_opening_bracket_time_unverified',
+  'manual_enrolment_read_deadline', 'manual_candidate_unverified', 'manual_opening_order_unverified',
+  'manual_authority_already_recorded', 'manual_authority_unverified',
   'existing_partial_plan', 'candidate_not_selected', 'plan_invalid', 'plan_ownership_mismatch',
   'diagnostic_read_failed', 'schema_unavailable', 'host_unavailable'])
 function errorCode(x) {
