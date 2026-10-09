@@ -26,12 +26,62 @@ import inspector from 'node:inspector'
 // 5ms between samples. At the ~200s phases we are chasing that is ~40k samples,
 // which is bounded memory, and still 10,000 samples inside a single 53s block —
 // far more resolution than needed to name a hot frame.
-const SAMPLE_INTERVAL_US = Math.max(200, Number(process.env.CPU_PROFILE_INTERVAL_US) || 5000)
+// Read at phase start: index.js may load .env after importing this module.
+const sampleIntervalUs = () => Math.max(200, Number(process.env.CPU_PROFILE_INTERVAL_US) || 5000)
 
 let session = null
 let activePhase = null
 let startupAttempted = false
 let startupStop = null
+let diagnosticStop = null
+
+// Codex · №12,410 · 2026-10-09; codex-footprint: bounded-node-diagnostic.
+// Same inspector owner as ordinary profiles; phase boundaries cannot cut this
+// one-shot trace short. A blocked JS thread can delay the stop callback: report
+// actual duration rather than claiming a hard real-time 120-second stop.
+export function startDiagnosticProfile(onResult, { maxMs = 120_000 } = {}) {
+  if (activePhase || typeof onResult !== 'function') return null
+  let timer, stopped = false
+  const stop = () => {
+    if (stopped) return
+    stopped = true
+    clearTimeout(timer)
+    try {
+      session.post('Profiler.stop', (error, result) => {
+        diagnosticStop = null; activePhase = null
+        try { onResult(error ? null : result?.profile || null) } catch { /* diagnostic sink */ }
+      })
+    } catch { diagnosticStop = null; activePhase = null; try { onResult(null) } catch { /* sink */ } }
+  }
+  try {
+    if (!session) { session = new inspector.Session(); session.connect(); session.post('Profiler.enable') }
+    session.post('Profiler.setSamplingInterval', { interval: 10_000 })
+    session.post('Profiler.start')
+    activePhase = 'operator-bounded'; diagnosticStop = stop
+    timer = setTimeout(stop, Math.min(120_000, Math.max(1, Number(maxMs) || 120_000)))
+    timer.unref?.()
+    return stop
+  } catch { diagnosticStop = null; activePhase = null; return null }
+}
+
+export function diagnosticProfileTimeline(profile) {
+  if (!profile) return { available: false }
+  const samples = profile.samples || [], deltas = profile.timeDeltas || []
+  const windows = [], maxWindows = 120
+  let elapsed = 0, bucket = null, omittedSamples = 0
+  for (let i = 0; i < samples.length; i++) {
+    const delta = deltas[i]
+    if (!(delta > 0)) continue
+    const second = Math.floor(elapsed / 1e6)
+    elapsed += delta
+    if (second >= maxWindows) { omittedSamples++; continue }
+    if (!bucket || bucket.second !== second) { bucket = { second, samples: [], timeDeltas: [] }; windows.push(bucket) }
+    bucket.samples.push(samples[i]); bucket.timeDeltas.push(delta)
+  }
+  return { available: true, sampleIntervalUs: 10_000, totalMs: elapsed / 1000, samples: samples.length,
+    omittedSamples, windows: windows.map(b => ({ second: b.second,
+      ...summarizeProfile({ nodes: profile.nodes, samples: b.samples, timeDeltas: b.timeDeltas }, { topN: 4 }) })) }
+}
 
 /**
  * Sample the entire first cycle, including phase handoff writes and independent
@@ -122,7 +172,8 @@ export function summarizeProfile(profile, { phase = null, topN = 12 } = {}) {
       if (id == null || seen.has(id)) break
       seen.add(id)
       const f = byId.get(id)?.callFrame
-      if (!f?.url || f.url.includes('/node_modules/') || !f.url.includes('/agent/')) continue
+      if (!f?.url || f.url.includes('/node_modules/') || !f.url.includes('/agent/')
+        || f.url.endsWith('/services/diagnostic-sql.js')) continue
       return `${f.functionName || '(anonymous)'} @ ${shortUrl(f.url)}:${(f.lineNumber ?? -1) + 1}`
     }
     return null
@@ -201,7 +252,7 @@ export function startPhaseProfile(key) {
       session.connect()
       session.post('Profiler.enable')
     }
-    session.post('Profiler.setSamplingInterval', { interval: SAMPLE_INTERVAL_US })
+    session.post('Profiler.setSamplingInterval', { interval: sampleIntervalUs() })
     session.post('Profiler.start')
     activePhase = key
     return true
@@ -222,7 +273,7 @@ export function startPhaseProfile(key) {
 export function stopPhaseProfile(onResult) {
   // Phase boundaries must not end the continuous first-cycle trace. Its own
   // once-only stop clears this guard before using the shared stop operation.
-  if (startupStop) return false
+  if (startupStop || diagnosticStop) return false
   if (!activePhase || !session) return false
   const phase = activePhase
   activePhase = null
@@ -239,6 +290,7 @@ export function stopPhaseProfile(onResult) {
 
 /** Test seam — tear the session down so a fresh one can be built. */
 export function _resetForTests() {
+  diagnosticStop?.()
   startupStop?.()
   try { session?.disconnect() } catch { /* already gone */ }
   session = null

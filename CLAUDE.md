@@ -1,5 +1,21 @@
 # Instructions for Claude — bot-trade
 
+<!-- Codex · №12,411 · 2026-10-09; codex-footprint: bounded-node-diagnostic.
+Owner authorises application/storage reads and one bounded Node diagnostic.
+Opt-in run ID plus expiring UTC deadline; durable claim prevents restart replay.
+One target120s CPU/function, main-connection SQL, lag and HTTP capture; a blocked
+JS callback can overrun its timer and the actual duration must be reported.
+Temporary hooks preserve native returns/errors/transactions and are restored;
+SQL arguments/results/text and credentials are excluded. Details/output capped.
+Private Railway logs carry fixed stored hybrid verdict/account/position fields
+and existing read-only performance assessment, with unavailable/capped reads
+explicit. No public data route or secret extraction; no broker request/forcing.
+This is instrumentation, not a reproduced production-cause or trading fix.
+Entry/SL/TP/claims, risk/account/strategy/profile settings and native sources
+remain unchanged. Full local/exact-head Node CI/review precede authorised merge.
+Counts remain7verified/19active/6deferred;unverified25 until complete groups pass.
+-->
+
 <!-- Codex · №12,365 · 2026-10-09; codex-footprint: hybrid-clock-2026-10-09.
 PR1277 merged57280d95/tree59b546f7 after required Node/native CI success,
 including TSan/delegator. Three changed services deployed; ordinary4/4demo

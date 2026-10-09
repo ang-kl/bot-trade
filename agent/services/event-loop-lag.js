@@ -71,6 +71,10 @@ let stats = null
 let tap = null
 let lagPhase = 'boot'
 
+// Codex · №12,410 · 2026-10-09; codex-footprint: bounded-node-diagnostic.
+// Non-destructive label only; concurrent callbacks can cause an idle-phase stall.
+export function currentLagPhase() { return lagPhase }
+
 /** Index of the histogram bucket a lateness of `ms` falls in. Pure. */
 export function lagBucketIndex(ms, edges = LAG_BUCKET_EDGES_MS) {
   const v = Math.max(0, Number(ms) || 0)

@@ -5,6 +5,7 @@
 // deliberately planted, nothing it says about production is worth acting on.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import inspector from 'node:inspector'
 
 import {
   profileEnabledFor, startPhaseProfile, stopPhaseProfile, summarizeProfile, _resetForTests,
@@ -29,6 +30,27 @@ const withPhases = async (value, fn) => {
     _resetForTests()
   }
 }
+
+// Codex · №12,413 · 2026-10-09; codex-footprint: bounded-node-diagnostic.
+test('ordinary phase sampling honours configuration loaded after module import', async () => {
+  const prior = process.env.CPU_PROFILE_INTERVAL_US, post = inspector.Session.prototype.post, intervals = []
+  inspector.Session.prototype.post = function (method, ...args) {
+    if (method === 'Profiler.setSamplingInterval') intervals.push(args[0].interval)
+    return Reflect.apply(post, this, [method, ...args])
+  }
+  try {
+    process.env.CPU_PROFILE_INTERVAL_US = '17000'
+    await withPhases('monitor', async () => {
+      assert.equal(startPhaseProfile('monitor'), true)
+      await sleep(30)
+      await new Promise(resolve => stopPhaseProfile(resolve))
+    })
+    assert.deepEqual(intervals, [17000])
+  } finally {
+    inspector.Session.prototype.post = post
+    if (prior === undefined) delete process.env.CPU_PROFILE_INTERVAL_US; else process.env.CPU_PROFILE_INTERVAL_US = prior
+  }
+})
 
 test('unarmed by default — no phase profiles unless the operator asks', () => {
   const prev = process.env.CPU_PROFILE_PHASES

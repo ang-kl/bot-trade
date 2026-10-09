@@ -29,6 +29,8 @@ import { routeTimingMiddleware } from './services/route-timing.js';
 import { noteDbStartup, noteListening, noteHttpStatus, startRuntimeRecord, runtimeRecordSnapshot, latencyWindows, readBootRecords } from './services/runtime-record.js';
 import { startAmendLatencyRecord, amendLatencySummary } from './services/protection-latency.js';
 import { startFeedReceiptsRecord } from './services/feed-receipts-record.js';
+// Codex · №12,411 · 2026-10-09; codex-footprint: bounded-node-diagnostic.
+import { diagnosticHttpMiddleware, startBoundedNodeDiagnostic } from './services/bounded-node-diagnostic.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -633,6 +635,7 @@ const app = express();
 // Every body is parsed here with the 100 KB default EXCEPT the scanner profile
 // registration, whose 512 KiB parser is mounted after authMiddleware below:
 // an unauthenticated client must not be able to make Node parse half a MiB.
+app.use(diagnosticHttpMiddleware);
 app.use(jsonExceptScannerRegistration());
 app.use(
   cors({
@@ -1396,6 +1399,9 @@ async function start() {
     console.log(`[agent] cTrader access token: ${envAccessToken || getState(db, 'ctrader_access_token') ? 'set' : 'not set'}`);
     console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);
   });
+
+  // Diagnostic defaults off. One durable operator claim; does not control trades.
+  startBoundedNodeDiagnostic(db);
 
   // Codex · №12,322 · 2026-10-09; codex-footprint: native-hybrid-profit.
   // Tick-trigger consumption is independent of the periodic scan controller.
