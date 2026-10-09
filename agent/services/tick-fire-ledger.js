@@ -37,6 +37,8 @@
 // counted as unattributed instead of being filled in with a guess.
 import { getState, setState } from '../db.js'
 import { WIRE_UNIT } from './tick-permits.js'
+// Codex · №12,519 ·2026-10-09; codex-footprint:six-strategy-lifecycle.
+import { buildTickEntryProof, tickFireMatchesIntent } from './tick-entry-proof.js'
 
 export const TICK_FIRE_LEDGER_CURSOR_KEY = 'tick_fire_ledger_cursor_json'
 // THE COUNT OUTLIVES THE PASS (20-09-2026, checker round). A lost window
@@ -166,8 +168,23 @@ export function runTickFireLedger(db, { now = Date.now(), limit = MAX_ROWS } = {
      VALUES (?, ?, 1, NULL, NULL, ?, ?, ?)`
   )
   const link = db.prepare('UPDATE entry_intents SET risk_event_id = ? WHERE id = ? AND risk_event_id IS NULL')
+  // New provenance and its intent link are indivisible. Existing events are
+  // never upgraded: absence of the prospective contract stays unverified.
+  const write = db.transaction((row, intent, proposal, at) => {
+    const current = intentOf.get(intent.id)
+    if (current?.risk_event_id != null) return false
+    if (!tickFireMatchesIntent(row, current)) throw new Error('tick_intent_changed')
+    const proof = buildTickEntryProof(db, current, row)
+    const encoded = JSON.stringify({ ...proposal, ...(proof ? { tickEntryProof: proof } : {}) })
+    const info = insert.run(current.symbol ?? null, current.side, encoded, String(current.account_id), at)
+    if (link.run(info.lastInsertRowid, current.id).changes !== 1) throw new Error('tick_intent_link_failed')
+    return true
+  })
 
+  let last = null
   for (const r of rows) {
+    const before = last
+    last = r
     out.scanned++
     // A refusal or a broker rejection opened NO risk: no risk event, ever.
     if (r.kind !== 'fire_result' || String(r.code || '') !== 'ok') {
@@ -195,6 +212,7 @@ export function runTickFireLedger(db, { now = Date.now(), limit = MAX_ROWS } = {
     const entry = toPrice(d.entry), stop = toPrice(d.stop), target = toPrice(d.target), ref = toPrice(d.ref)
     const reason = reasonFor({ side, entry, stop, target, ref })
     if (!reason) { out.unattributed++; out.reasons.push('no_breakout_fact'); continue }
+    if (!tickFireMatchesIntent(r, it)) { out.unattributed++; out.reasons.push('intent_receipt_mismatch'); continue }
     const proposal = {
       direction_reason: reason,
       strategy: STRATEGY,
@@ -212,21 +230,24 @@ export function runTickFireLedger(db, { now = Date.now(), limit = MAX_ROWS } = {
     }
     const at = Number.isFinite(Number(r.ts_ms)) && Number(r.ts_ms) > 0 ? new Date(Number(r.ts_ms)).toISOString() : new Date(now).toISOString()
     try {
-      const info = insert.run(it.symbol ?? null, side, JSON.stringify(proposal), String(it.account_id), at)
-      const id = info?.lastInsertRowid ?? null
-      if (id != null) { link.run(id, String(intentId)); out.written++ }
-    } catch { out.unattributed++; out.reasons.push('write_failed') }
+      if (write.immediate(r, it, proposal, at)) out.written++
+      else out.skipped++
+    } catch {
+      out.unattributed++; out.reasons.push('write_failed')
+      // Retry this durable source row on the next pass after storage failure.
+      last = before
+      break
+    }
   }
 
-  const last = rows[rows.length - 1]
-  const next = { lastId: Number(last.id), bootId: String(last.boot_id || ''), seq: Number(last.seq) || 0 }
-  try { setState(db, TICK_FIRE_LEDGER_CURSOR_KEY, JSON.stringify(next)) } catch { /* state unwritable — re-read next pass */ }
+  const next = last ? { lastId: Number(last.id), bootId: String(last.boot_id || ''), seq: Number(last.seq) || 0 } : cur
+  if (last) try { setState(db, TICK_FIRE_LEDGER_CURSOR_KEY, JSON.stringify(next)) } catch { /* state unwritable — re-read next pass */ }
   out.cursor = next
   persist(db, out, now)
   if (out.written || out.unattributed) {
     // Account ids by last 4 (repo rule). One line per pass, only when it said
     // something: silence here would hide exactly the lost window this counts.
-    console.log(`[tick-fire-ledger] ${out.written} reason(s) written, ${out.skipped} already linked, ${out.unattributed} unattributed${out.reasons.length ? ` (${[...new Set(out.reasons)].join(', ')})` : ''}, cursor id ${next.lastId}`)
+    console.log(`[tick-fire-ledger] ${out.written} reason(s) written, ${out.skipped} already linked, ${out.unattributed} unattributed${out.reasons.length ? ` (${[...new Set(out.reasons)].join(', ')})` : ''}, cursor id ${next?.lastId ?? 0}`)
   }
   return out
 }

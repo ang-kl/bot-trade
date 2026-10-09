@@ -487,6 +487,16 @@ export async function runTickPermitFeeder(db, side, {
   }
   for (const accountId of accounts) {
     const refusedFrom = out.refused.length, before = tickPermits.length
+    // Codex · №12,521 · 2026-10-09; codex-footprint: six-strategy-lifecycle.
+    // A legacy collapsed route can enumerate both environments. It cannot
+    // borrow the primary account's host to issue another environment's order.
+    const registered = db.prepare('SELECT is_live FROM accounts WHERE account_id=?').get(accountId)
+    const ownedHost = registered?.is_live === 1 ? 'live.ctraderapi.com'
+      : registered?.is_live === 0 ? 'demo.ctraderapi.com' : null
+    if (!ownedHost || creds.host !== ownedHost) {
+      pauseAccount(accountId, 'tick_account_host_identity_conflict')
+      continue
+    }
     // C9 (WP-D gap 6): NO PERMIT CROSSES A GATEWAY BOOT. Standing rows bound
     // to another boot (or to none — rows from before C9) are the permits a
     // restarted gateway may already have spent in its previous life, its
@@ -559,11 +569,28 @@ export async function runTickPermitFeeder(db, side, {
     const profileHash = typeof rd?.profileHash === 'string' && rd.profileHash ? rd.profileHash : null
     const entries = []
     const sizing = new Map()
+    // Codex · №12,519 · 2026-10-09; codex-footprint: six-strategy-lifecycle.
+    // A feed symbol ID is not proof of the destination account's instrument.
+    // This firer cannot translate IDs: refuse a different/missing owned ID,
+    // rather than size a different instrument or relabel the feed's quotes.
+    const accountCreds = { ...creds, accountId: String(accountId) }
+    const resolveOwned = resolveSymbolId || (await import('../lib/ctrader-creds.js')).resolveSymbolId
     for (const [symbolId, symbol] of symbolById) {
       if (held.total >= maxOpen) { out.refused.push({ accountId: `…${accountId.slice(-4)}`, symbol, reason: `max_positions: ${held.total}/${maxOpen} open` }); continue }
       if (held.symbols.has(String(symbol).toUpperCase())) { out.refused.push({ accountId: `…${accountId.slice(-4)}`, symbol, reason: 'position_open: the account already holds this symbol' }); continue }
+      let ownedId = null
+      try {
+        const owned = await resolveOwned(db, accountCreds, symbol)
+        ownedId = Number(owned?.id ?? owned?.symbolId ?? owned)
+      } catch { /* unavailable owned catalogue: no new exposure */ }
+      if (!Number.isSafeInteger(ownedId) || ownedId <= 0 || ownedId !== Number(symbolId)) {
+        out.refused.push({ accountId: `…${accountId.slice(-4)}`, symbol,
+          reason: Number.isSafeInteger(ownedId) && ownedId > 0
+            ? 'tick_feed_symbol_identity_conflict' : 'tick_feed_symbol_identity_unverified' })
+        continue
+      }
       let meta = null
-      try { meta = await metaFor(creds, accountId, symbolId) } catch (err) { out.refused.push({ accountId: `…${accountId.slice(-4)}`, symbol, reason: `no_lot_size: ${err?.message || err}` }); continue }
+      try { meta = await metaFor(accountCreds, accountId, ownedId) } catch (err) { out.refused.push({ accountId: `…${accountId.slice(-4)}`, symbol, reason: `no_lot_size: ${err?.message || err}` }); continue }
       const { unitsPerLot: units } = unitsPerLot(db, symbol)
       const s = permitSizing({ risk, symbol, meta, rates, cfg, perLot: units })
       if (!s.ok) { out.refused.push({ accountId: `…${accountId.slice(-4)}`, symbol, reason: s.reason }); continue }

@@ -250,7 +250,10 @@ test('gap 4 (review blocker, two sides): the live pass reads the SAME generation
   await runTickPermitFeeder(db, demo, { ...d.o, grants: gen })
   assert.ok(d.pushes.at(-1).tickPermits.some(p => String(p.accountId) === A && p.side === 'BUY'), 'the demo pass pushed A')
   pos(db, X, 'EURUSD', 'BUY') // a bar fill between the two passes
-  const r = await runTickPermitFeeder(db, live, { ...d.o, grants: gen })
+  // Codex · №12,534 · 2026-10-09; codex-footprint: six-strategy-lifecycle.
+  // Exercise the cross-host shared cap with the live account's own route.
+  const r = await runTickPermitFeeder(db, live, { ...d.o, grants: gen,
+    creds: { ...creds, host: 'live.ctraderapi.com', accountId: L } })
   assert.ok(!d.pushes.at(-1).tickPermits.some(p => String(p.accountId) === L && p.side === 'BUY'), 'X + A already make 2: L gets nothing')
   assert.match(r.refused.find(x => x.side === 'BUY').reason, /^book_symbol_cap: 1 holder\(s\) appeared since generation/)
   // a fresh generation next cycle sees X and grants one place, to A (A's own standing row is not a holder)

@@ -52,6 +52,8 @@ export const PATTERNS = Object.freeze({
  * carry NONE of the tokens; a listed file may carry exactly the counts named.
  */
 export const ALLOWLIST = Object.freeze({
+  // Codex · №12,529 · 2026-10-09; codex-footprint: six-strategy-lifecycle.
+  'agent/services/tick-entry-proof.js': { reason: 'bind retained native entry evidence to the registered broker host and intent environment; identical ownership and profit rules on both hosts', max: { environment_cmp: 1 } },
   // Codex · №12,326 · 2026-10-09; codex-footprint: live/demo broker-boundary fixture.
   'agent/test-support/hybrid-scene.js': { reason: 'test-only real ledger fixture: seeds owned account and entry-intent routing for identical live/demo profit tests, never loaded by production', max: { is_live: 1, live_str: 1, demo_str: 1 } },
   // Codex · №12,260 · 2026-10-08; codex-footprint: capped-hybrid-review.
@@ -113,7 +115,7 @@ export const ALLOWLIST = Object.freeze({
   // M7 round 4's differential harness: main's fast-monitor.js frozen byte for byte (the same routing as the entry above), and the simulator that seeds the registry row and the creds' side it routes by.
   'agent/test-support/m7-baseline/fast-monitor.main-580308e.js': { reason: 'origin/main 580308e fast-monitor.js, frozen for the M7 differential harness: the same sidecar routing as agent/services/fast-monitor.js', max: { is_live: 2, isLive: 4 } },
   'agent/test-support/fast-monitor-sim.js': { reason: 'test-only simulator: seeds the accounts registry row and the creds side the monitor routes by; no gate', max: { is_live: 1, isLive: 1 } },
-  'agent/services/tick-permits.js': { reason: 'the side the feeder pushes to (plan §3.1); no environment strike since PR-B', max: { is_live: 1, isLive: 4 } },
+  'agent/services/tick-permits.js': { reason: 'select the feeder gateway and verify each destination account belongs to that host, including collapsed routes; identical permit policy on both hosts', max: { is_live: 4, isLive: 4 } },
   'agent/services/tick-readiness.js': { reason: 'sideFor (plan §3.1: tick-readiness.js:27) and registry ordering; the validation_stage check reads no environment', max: { is_live: 2, live_str: 1, environment_cmp: 1 } },
   'agent/services/tick-validation.js': { reason: 'which side\'s shadow signals to read (plan §3.1: tick-validation.js side)', max: { live_str: 1, environment_cmp: 1 } },
   'agent/services/tick-research-run.js': { reason: 'which sidecar\'s account maps the segments\' symbol ids for the replay\'s regime lookup (routing)', max: { live_str: 1, demo_str: 1 } },
