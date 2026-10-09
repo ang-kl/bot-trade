@@ -256,6 +256,7 @@
       "subject": "PR1289 merged; file lock released",
       "text": "Three bounded diagnostic projection corrections merged4427c8e after local and exact-head CI37940644792 passed. Runtime verification in progress. Session-guard ownership fixture reproduced contaminated quote decisions and skipped outcome stamped success; separate correction not included. No production incidence or lock-holder cause established. Historical acceptance totals are not directives."
     },
-    "Codex \u00b7 \u211612,714 \u00b7 2026-10-10: session-guard ownership/confirmed-movement PR1290 merged as 24bf153fe02809424b7e062e58972c111af5e1e8; exact gated tree matches. Own lock released after merge. Node runtime verification is in progress. No other lock or operational setting changed."
+    "Codex \u00b7 \u211612,714 \u00b7 2026-10-10: session-guard ownership/confirmed-movement PR1290 merged as 24bf153fe02809424b7e062e58972c111af5e1e8; exact gated tree matches. Own lock released after merge. Node runtime verification is in progress. No other lock or operational setting changed.",
+    "Codex \u00b7 \u211612,716 \u00b7 2026-10-10: PR1290 session-guard correction release complete. Merged 24bf153, required full local/exact-head CI passed, merged tree equals candidate, deployed Node identity and ordinary execution/reconciliation/advancing quotes/protection verified. Native deployments unchanged. No whole acceptance-group pass claimed. Contention causality and natural hybrid eligibility/outcomes remain separate. Receipt: /workspace/bot-trade-session-guard-evidence-2026-10-09/release-handback.md (if persistent)."
   ]
 }
