@@ -1,4 +1,19 @@
 <!-- Codex · №12,675 · 2026-10-09; codex-footprint: current-work-reporting. -->
+<!-- Codex · №12,784 · 2026-10-10; codex-footprint: committed-oracle-rollback. -->
+## Late PR1292 review — exact oracle rollback
+
+The automated review identified a reproduced recovery defect: after an earlier
+prefix commits its snapshot, a later storage failure retained its cursor but
+cleared its oracle. A suffix retry cannot recover that committed snapshot.
+Keep cursor, instance and oracle state as one checkpoint. Stage map membership,
+detach only touched oracle state, and publish it only after SQLite commits.
+Actual collector/database regressions must retain the checked-in BUY/SELL
+signals and exact economic state across insert/commit failures and resets.
+Preserve bounded commits, memo scope, ownership and successful gap semantics;
+do not change trading or native services. The separate retention statement
+spans and older watchdog cause remain unresolved. Inspect actual automated
+review after making the PR reviewable, before merging the gated correction.
+
 <!-- Codex · №12,752 · 2026-10-10; codex-footprint: scanner-contention-correction. -->
 ## Bounded batch continuation — demonstrated scanner writer
 

@@ -223,11 +223,17 @@ export class TickComparisonReader {
   constructor() { this.instance = null; this.after = 0; this.streams = new Map() }
   consume(db, page, now = Date.now(), memo = comparisonMemo()) {
     schema(db)
-    const after = this.after, instance = this.instance
-    try { return db.transaction(() => this.consumePage(db, page, now, memo)).immediate() }
-    catch (error) { this.after = after; this.instance = instance; this.streams.clear(); throw error }
+    // Codex · №12,784 · 2026-10-10; codex-footprint: committed-oracle-rollback.
+    // Cursor and oracle state are one committed checkpoint. A failed suffix
+    // cannot replay an earlier committed snapshot, so never clear that state.
+    // Copy membership before BEGIN and detach only streams actually advanced.
+    const committed = this.streams
+    const staged = Object.assign(Object.create(Object.getPrototypeOf(this)), this, { streams: new Map(committed) })
+    const result = db.transaction(() => staged.consumePage(db, page, now, memo, committed)).immediate()
+    this.after = staged.after; this.instance = staged.instance; this.streams = staged.streams
+    return result
   }
-  consumePage(db, page, now, memo = comparisonMemo()) {
+  consumePage(db, page, now, memo = comparisonMemo(), committed = null) {
     validateComparisonPage(page)
     if (this.instance !== page.instanceId) { this.after = 0; this.streams.clear(); this.instance = page.instanceId }
     if (page.gap || this.after < page.oldestCursor - 1) {
@@ -257,8 +263,14 @@ export class TickComparisonReader {
         const key = hash([row.feed, row.configVersion, row.profileHash])
         if (this.streams.has(key) && this.streams.get(key).epoch !== row.feedEpoch) this.streams.delete(key)
         if (!this.streams.has(key) && this.streams.size < 512) this.streams.set(key, { oracle: new TickMomentumOracle(row.profile), known: q.snapshot, last: 0, epoch: row.feedEpoch })
-        const stream = this.streams.get(key)
+        let stream = this.streams.get(key)
         if (stream && q.seq > stream.last) {
+          if (stream === committed?.get(key)) {
+            // The oracle's own state is cloneable data; retain its methods and
+            // detach every window/setup/counter before feed() can mutate it.
+            stream = { ...stream, oracle: Object.assign(Object.create(Object.getPrototypeOf(stream.oracle)), structuredClone(stream.oracle)) }
+            this.streams.set(key, stream)
+          }
           // A native reset recovers the economic state, while the gap record
           // remains in the retained population. Local setup counters are not
           // treated as cross-process economic identity.
