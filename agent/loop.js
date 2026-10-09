@@ -2545,20 +2545,31 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 
     if (action === 'PARTIAL_EXIT') {
       // Codex · №12,637 · 2026-10-09; codex-footprint: verified-general-partial.
-      const credentials = () => withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId })
+      const currentPartialCredentials = async () => {
+        const { credsForRegisteredAccount } = await import('./lib/ctrader-creds.js')
+        const c = credsForRegisteredAccount(db, accountId)
+        if (!c?.ready || c.host !== host || String(c.accountId) !== String(accountId))
+          throw Object.assign(Error('partial_broker_identity_changed'), { notSent: true })
+        return c
+      }
+      // Fresh broker response, not the gateway's cached /positions snapshot.
+      // Same bounded read as the verified partial adapter: 4 seconds, no retry.
+      const readPartialPosition = async () => {
+        const c = await currentPartialCredentials()
+        const { wsReconcile } = await import('./lib/ctrader-ws.js')
+        return wsReconcile(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, 4000, 0)
+      }
       const result = await runGeneralPartial(db, {
         accountId, positionId: String(ctx.positionId), tradeId: pos.trade_id, monitorId: pos.id,
         symbol: pos.symbol, side: pos.side, host, source, reason: eval_.reason,
         fraction: eval_.exitFraction ?? 0.5, bankPartialAt: eval_.updates?.bank_partial_at,
         recoverOnly: eval_.recoverOnly === true,
       }, {
-        prepare: async () => ({ meta: await volumeMeta(), raw: await execReconcile(credentials()) }),
-        close: order => execClosePosition(credentials(), order),
-        reconcile: () => execReconcile(credentials()),
+        prepare: async () => ({ meta: await volumeMeta(), raw: await readPartialPosition() }),
+        close: async order => execClosePosition(withCtraderTokenSource(db, await currentPartialCredentials()), order),
+        reconcile: readPartialPosition,
         deals: async positionId => {
-          const { credsForRegisteredAccount } = await import('./lib/ctrader-creds.js')
-          const c = credsForRegisteredAccount(db, accountId)
-          if (!c.ready || c.host !== host || String(c.accountId) !== String(accountId)) throw Error('partial_recovery_identity_changed')
+          const c = await currentPartialCredentials()
           const { wsGetPositionDeals } = await import('./lib/ctrader-ws.js')
           return wsGetPositionDeals(c.host, c.clientId, c.clientSecret, c.accessToken, c.accountId, positionId, Date.now(), 4000)
         },

@@ -1,6 +1,6 @@
 // Codex · №12,639 · 2026-10-09; codex-footprint: actual-partial-transaction-integration.
 // Execute the repository's real executor/monitor/statements over real SQLite.
-// Only broker transports, symbol metadata and the evaluator's policy input are controlled.
+// Broker transports, offline credential/metadata boundaries and evaluator policy inputs are controlled.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
@@ -54,7 +54,10 @@ function fixture(t, { short = false, account = '42' } = {}) {
     ctraderEnv: () => 'offline', withCtraderTokenSource: creds.withCtraderTokenSource, assertReconcileIdentity, recordPositionEvent,
     credsModule: { ...creds, credsForRegisteredAccount: () => ({ ready: true, host: account === '42' ? 'demo.ctraderapi.com' : 'live.ctraderapi.com', accountId: account }) },
     metaModule: { getVolumeMeta: async () => ({ lotSize: 100000, minVolume: 100, stepVolume: 100, digits: 5, brokerDigits: 5 }) },
-    wsModule: { wsGetPositionDeals: async () => ({ ctidTraderAccountId: Number(account), hasMore: false, deal: state.history }) },
+    wsModule: { wsReconcile: async (_host, _id, _secret, _token, acct, timeout, retries) => {
+      assert.equal(String(acct), account); assert.equal(timeout, 4000); assert.equal(retries, 0)
+      return state.reconcile ? state.reconcile() : snapshot()
+    }, wsGetPositionDeals: async () => ({ ctidTraderAccountId: Number(account), hasMore: false, deal: state.history }) },
     execReconcile: async () => state.reconcile ? state.reconcile() : snapshot(),
     execClosePosition: async (c, order) => {
       state.closes.push({ accountId: c.accountId, host: c.host, ...order })
