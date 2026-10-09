@@ -20,7 +20,9 @@
         "agent/services/capped-hybrid-enrolment.js",
         "agent/services/capped-hybrid.test.js",
         "agent/index.js",
-        "agent/lib/reporting-indexes.js"
+        "agent/lib/reporting-indexes.js",
+        "agent/routes/state.js",
+        "agent/lib/scans-scope-coverage.test.js"
       ],
       "purpose": "Reproduce and correct reporting query blocking; targeted owned movement and hybrid volume evidence without entry/SL/sizing changes."
     }
