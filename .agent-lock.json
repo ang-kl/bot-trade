@@ -16,7 +16,8 @@
         "agent/services/tick-permits.js",
         "agent/services/strategy-lifecycle-integrated.test.js",
         "agent/test-support/strategy-lifecycle-native.cpp",
-        ".github/workflows/ci.yml"
+        ".github/workflows/ci.yml",
+        "agent/lib/one-account-model.test.js"
       ],
       "purpose": "Owner-requested six strategy lifecycle audit/correction and integrated validation; preserve candle confirmations, stop/profit policies and account settings."
     }
