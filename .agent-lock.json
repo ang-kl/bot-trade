@@ -227,6 +227,13 @@
       "serial": 12503,
       "subject": "Owner account screenshot documented; own lock released",
       "text": "Updated the existing single-account planning branch and downloadable copies with the supplied seven-account screenshot. Document-only publication, no PR/main merge, source/settings/broker changes or schedule. Screenshot shows live 42993489 active S/A/T on; recommended no-new-live-entry control recorded but not applied. Preserve other owner-configured accounts. Main remains 558850b."
+    },
+    {
+      "from": "codex-manual-hybrid",
+      "at": "2026-10-09T09:19:19.521900+00:00",
+      "serial": 12606,
+      "subject": "PR1285 merged/deployed; manual NAS100 assessed, original stop missing",
+      "text": "Owner authorised profit-only human/manual eligibility on DEMO43097342/LIVE42993489. PR1285 merged210ccbdf95a39187585e47ec84f2095b4f247813; exactheadfa108cb CI37908072545SUCCESS; local7896backendpass/4existingnativeskips1350frontend/lint/build/colour/15syntax; integrated20/20. Final assistantreview no blocker; actualreviews/comments empty; ClaudeactionSKIPPED. Nodecb51ec3e-508f-48b7-8f53-c2cf50f3d37cSUCCESS17:12:38SGT; public210ccbd at17:16:46. Sixonline/oneeach; five native IDs unchanged. Manual origin/source/strategy and allentry/SLcode preserved; rawownedopeningorder/deals+exactfill-updatechronology+existingfences required, atomicproof/plan, oldtick/timedclaim reused. Ordinary17:14:38stored NAS100 trade1780/position247698829 refused manual_original_stop_missing (no longer external-only exclusion). Otherselecteddemo1781/1782 strategy_not_momentum; live0open. Nativehybridready/configured0/no naturalpartialcertified. Freshprotection17:14:18\u201320all7/7open/zero missingSLTP1; demo3/live0. Bothgatewayreconcile/quotesfresh, advancingfinalticks33408/2099374. Separatepre-releaseNodehealthtimeout/13.6slag; newstartup122.6s anddemo hybridreader databaseislocked17:14:41. Profile aggregates setState10.997s/nextCashflowWindow4.133s, not exactlock-holder/transactioncausality. Counts7verified19active6deferred/unverified25;0wholeclosures. Ownlockreleased. Preserve currentSL/history; noforcedbroker/credential/risk/account/strategy/profile/nativebuild/staging/region/volume/schedule action. Evidence /workspace/bot-trade-manual-hybrid-evidence-2026-10-09/release-handback.md. Boundedroundclosed; do not reimplement PR1285 orrepeat passed gates."
     }
   ]
 }
