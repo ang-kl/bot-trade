@@ -412,6 +412,9 @@ try {
   } catch (err) {
     console.error(`[boot] watchlist additions seed failed (non-fatal): ${err.message}`)
   }
+  // Codex · №12,473 · 2026-10-09; codex-footprint: owner HK exclusion before dispatch.
+  const { removeHkWatchlistRows } = await import('./services/owner-universe.js')
+  removeHkWatchlistRows(db, { log: m => console.log(m) })
   // PR-U: owner order 17-09-2026 "arm tsmom_long globally". The global list is
   // what an account trades when it carries no explicit cell of its own, and
   // tsmom_long is defaultOn:false — so this is the switch that decides whether
@@ -1358,6 +1361,13 @@ async function start() {
     // feed-latency window, seeded from the previous process and kept.
     startFeedReceiptsRecord(db);
     console.log(`[agent] listening on 0.0.0.0:${port}`);
+    // Catalogue work yields to ordinary startup. One durable, bounded run; no recurring schedule.
+    setTimeout(async () => {
+      try {
+        const { applyOwnerUniverse } = await import('./services/owner-universe.js')
+        await applyOwnerUniverse(db, { log: m => console.log(m) })
+      } catch { console.error('[owner-universe] bounded application failed; retained receipt requires inspection') }
+    }, 60_000).unref();
     console.log(`[agent] CORS origin: ${FRONTEND_URL || '*'}`);
     console.log(`[agent] DB path: ${DB_PATH || './agent.db'}`);
     // LLM provider (position-monitor fallback only): OpenAI is primary when

@@ -1,3 +1,27 @@
+<!-- Codex · №12,474 · 2026-10-09; codex-footprint: owner-hk-universe -->
+## Owner-approved HK-share exclusion and account-owned universe — 9 October
+
+Owner said stop HK shares, retain indices and broaden every account's index /
+UTC+8-stock watchlist, then approved the preview. This authorises this entry
+universe change; unrelated entry/SL/TP, sizing, modes and strategies stay intact.
+New and queued entry permits refuse HK shares, including standing permit reuse.
+Already accepted/ambiguous broker orders are reported; never cancelled or called
+absent without broker evidence. Held-position monitoring is independent of the
+watchlist and unchanged. No forced trade or protection amendment is performed.
+One delayed, durable, bounded application reads each registered account's own
+broker catalogue (no host-shared cache, retry or OAuth recovery). All available
+indices are appended; disabled instruments and existing overrides remain intact.
+Up to24 broker-classified UTC+8 stock candidates are checked for actual schedules
+and reported commission terms. Unknown facts refuse additions; no guessed aliases,
+exchange schedules, FX or fee improvement. Each account retains additions/refusals;
+creating an own list intentionally ends global inheritance and is reported.
+Unknown catalogues remain blocked; no automatic restart replay or monitor schedule.
+No scanner-profile registration, credentials, account/risk/strategy settings, region,
+volume or staging changes; no native production rebuild. Full local/exact-head CI,
+actual review inspection and deployed receipt/protection checks precede closure.
+Counts7verified/19active/6deferred, unverified25 unless a complete group passes.
+Conversation ref: owner preview №12,469 and approval; implementation №12,470–12,474.
+
 <!-- Codex · №12,435 · 2026-10-09; codex-footprint: reporting-query -->
 ## Reporting-query correction and targeted stored evidence — 9 October 2026
 

@@ -25,7 +25,8 @@ function anotherEpisode(f) {
 function fixture(t) {
   const db = initDB(':memory:'); t.after(() => db.close())
   db.prepare('INSERT INTO accounts(account_id,is_live) VALUES (?,?)').run('11',0)
-  setState(db,'symbol_id_map:11',JSON.stringify({ accountId: '11',map:{TEST:9},builtAt:new Date(NOW).toISOString()}))
+  // Codex · №12,479 · 2026-10-09; codex-footprint: this fixture's current map must not expire with wall time.
+  setState(db,'symbol_id_map:11',JSON.stringify({ accountId: '11',map:{TEST:9},builtAt:new Date().toISOString()}))
   const tradeId = db.prepare(`INSERT INTO trades(symbol,side,account_id,ctrader_position_id,status,opened_at,entry_price)
     VALUES ('TEST','BUY','11','77','open','2026-10-08 02:00:00',10)`).run().lastInsertRowid
   db.prepare(`INSERT INTO monitored_positions(symbol,side,account_id,trade_id,entry_price,status,mfe_r)
@@ -243,4 +244,13 @@ test('native source time before arming does not satisfy a later promise or reope
   f.db.prepare("UPDATE position_events SET at='2026-10-08 02:32:00' WHERE kind='close'").run()
   f.replace({seq:2});await f.run()
   assert.equal(currentManagementState(f.db,{tradeId:f.tradeId}),'closed:close')
+})
+
+// The fresh-map fixture does not weaken the production freshness refusal.
+test('an actually stale account map keeps native movement raw and uncredited', async t => {
+  const f = fixture(t)
+  setState(f.db, 'symbol_id_map:11', JSON.stringify({ accountId: '11', map: { TEST: 9 }, builtAt: new Date(Date.now() - 25 * 3600_000).toISOString() }))
+  await f.run()
+  assert.equal(managementFor(f.db, { accountId: 11, positionId: 77, tradeId: f.tradeId }).sl_moves, 0)
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM cpp_decisions WHERE seq > 0').get().n, 1)
 })
