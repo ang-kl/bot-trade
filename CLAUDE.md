@@ -3009,3 +3009,17 @@ No natural hybrid execution or whole acceptance pass follows from diagnostics.
 
 Conversation ref: owner silent-exclusion request after№12,556; session
 codex-hybrid-exclusions, implementation№12,557–12,560.
+Codex · №12,922 · 2026-10-10 — P5 PRE-02 complete-population optimisation.
+Fresh main555356c retains the withdrawn 11-versus-17 capped counterexample.
+The five-column legacy SQL and all rule fingerprints remain unchanged.
+An explicit opt-in covering index is ineligible for the original capped read;
+a bounded count uses it only to establish that every qualifying row fits.
+Counts at the cap retain the original query and plan, including exactly-at-cap
+truncation. Complete reads preserve the known original table/index row order,
+including stable sample ties; other plans retain the original read. Count and
+read share one snapshot. No history, reporting verdict,
+entry/SL/TP/sizing/settings/native/staging change. Integrated actual-reader
+parity across analysed/unanalysed plans, account/NULL/cap/error/concurrent-write
+cases plus full local/exact-head gates, actual reviews and deployed verification
+must pass before engineering closure. Synthetic timings are not production
+speedup. Historical acceptance counts remain observations, not directives.

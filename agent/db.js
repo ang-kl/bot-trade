@@ -512,6 +512,13 @@ const TABLES = `
   -- leads with reason_key, so a scored_at range was a full scan of a table
   -- measured at 35,395 rows / 13.6 MB on 25-09-2026).
   CREATE INDEX IF NOT EXISTS idx_refusal_scores_scored ON refusal_scores(scored_at, outcome, account_id);
+  -- Codex · №12,922 · 2026-10-10; codex-footprint: pre02-complete-population.
+  -- Explicit opt-in only: IS is reflexive even for NULL. The original capped
+  -- PRE-02 query cannot use this partial index, so its plan-selected prefix
+  -- stays unchanged. The report opts in only after proving the population fits.
+  CREATE INDEX IF NOT EXISTS idx_refusal_scores_pre02_complete
+    ON refusal_scores(scored_at, outcome, account_id, opportunity_key, symbol)
+    WHERE scored_at IS scored_at;
   -- UI-5 (RS-1): refusalCostReport now windows on first_at (the refusal
   -- time), not scored_at (when the background scorer got to it) — see
   -- refusal-ledger.js's own comment. Same shape as the scored_at index

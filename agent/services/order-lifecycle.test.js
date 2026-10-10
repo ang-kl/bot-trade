@@ -747,7 +747,9 @@ const helpersHash = () => createHash('sha256').update(Object.keys(JUDGE_HELPERS)
 // Codex · №12,808 · 2026-10-10; codex-footprint: lifecycle-approval-index.
 // helpers@6 / PRE-03@2: indexed equivalent approval predicate and optional
 // private phase boundaries; all retained populations and verdicts preserved.
-const PINNED_HELPERS = { [`helpers@6`]: 'a3ec8866185709b0' }
+// Codex · №12,922 · 2026-10-10; codex-footprint: pre02-complete-population.
+// helpers@7 keeps PRE-02@2's exact SQL/judge and changes only its selection-safe reader.
+const PINNED_HELPERS = { [`helpers@7`]: 'e67d6be2158ba3f2' }
 // STK-08@2 (STK-08v2): held_by_setting, and the digest reader and notify
 // loader it judges by are pinned in its hash. No other rule's hash moved.
 // STK-08@3 (V3 CV-2 fix round nit 3): cpp-verify's delivery mute is a holding
