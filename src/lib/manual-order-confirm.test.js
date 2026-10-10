@@ -51,9 +51,9 @@ describe('Trade.jsx wiring — the order pad asks with the destination-naming co
   const start = src.indexOf('const placeOrder = async')
   const body = src.slice(start, src.indexOf("agentPost('/actions/manual-order'", start))
 
-  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the pad now
-  // routes to the account the page shows; the confirm is fed by that SAME
-  // destination (padDestination) and the post carries it (manualOrderBody).
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the confirm is
+  // fed by the SAME destination as the post (padDestination → manualOrderBody);
+  // today that is the primary account (D2 ask-first, № 12,957).
   it('placeOrder confirms with manualOrderConfirmText fed by the pad destination, and posts that destination', () => {
     expect(start).toBeGreaterThan(0)
     expect(body).toMatch(/window\.confirm\(manualOrderConfirmText\(/)

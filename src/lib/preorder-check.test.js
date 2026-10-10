@@ -4,17 +4,24 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
-  scanCheckPath, manualCheckPath, manualOrderBody, padDestination, padInputs, checkKey, checkSummary,
+  scanCheckPath, manualCheckPath, manualOrderBody, padDestination, padInputs, checkKey, checkSummary, ROUTE_PAD_TO_VIEWED_ACCOUNT,
   createCheckRunner, verdictLine, preorderLines,
 } from './preorder-check.js'
 
 const order = { symbol: ' eurusd ', side: 'BUY', lots: '0.2', sl: '1.09', tp: '1.135' }
 const broker = { accountId: '46970949', traderLogin: '5123456' }
 
-describe('padDestination — the account the page shows, else the primary', () => {
-  it('routes to the viewed account when the page shows ONE account', () => {
-    expect(padDestination({ viewedAccountId: 46130058, broker })).toEqual({ routed: true, accountId: '46130058', traderLogin: null })
-    expect(padDestination({ viewedAccountId: '46970949', broker })).toEqual({ routed: true, accountId: '46970949', traderLogin: '5123456' })
+describe('padDestination — the primary today; the viewed account only behind the owner\'s switch (D2)', () => {
+  // Claude · № 12,957 10-Oct: routing the pad to the viewed account is ask-first
+  // (D2). The default must keep today's primary-account routing.
+  it('DEFAULT: never routes, even when the page shows ONE account', () => {
+    expect(ROUTE_PAD_TO_VIEWED_ACCOUNT).toBe(false)
+    expect(padDestination({ viewedAccountId: 46130058, broker })).toEqual({ routed: false, accountId: '46970949', traderLogin: '5123456' })
+    expect(manualOrderBody({ order, destination: padDestination({ viewedAccountId: 46130058, broker }) })).not.toHaveProperty('account')
+  })
+  it('with the switch on, routes to the viewed account when the page shows ONE account', () => {
+    expect(padDestination({ viewedAccountId: 46130058, broker, routeToViewed: true })).toEqual({ routed: true, accountId: '46130058', traderLogin: null })
+    expect(padDestination({ viewedAccountId: '46970949', broker, routeToViewed: true })).toEqual({ routed: true, accountId: '46970949', traderLogin: '5123456' })
   })
   it('keeps the primary (no account sent) in the portfolio view or with nothing selected', () => {
     for (const v of ['all', null, '']) {
@@ -24,9 +31,9 @@ describe('padDestination — the account the page shows, else the primary', () =
   })
 })
 
-describe('manualOrderBody — the pad SENDS the account it shows', () => {
+describe('manualOrderBody — the pad sends `account` only when routed', () => {
   it('carries `account` when routed', () => {
-    const body = manualOrderBody({ order, destination: padDestination({ viewedAccountId: 46130058, broker }) })
+    const body = manualOrderBody({ order, destination: padDestination({ viewedAccountId: 46130058, broker, routeToViewed: true }) })
     expect(body).toEqual({ symbol: 'EURUSD', side: 'BUY', lots: 0.2, sl: 1.09, tp: 1.135, account: '46130058' })
   })
   it('sends no `account` in the portfolio view — the route\'s primary, as before', () => {
@@ -38,7 +45,7 @@ describe('manualOrderBody — the pad SENDS the account it shows', () => {
 
 describe('the check asks exactly what the order would send', () => {
   it('manual: same fields, same account', () => {
-    const dest = padDestination({ viewedAccountId: 46130058, broker })
+    const dest = padDestination({ viewedAccountId: 46130058, broker, routeToViewed: true })
     expect(manualCheckPath({ order, destination: dest })).toBe('/state/preorder?account=46130058&symbol=EURUSD&side=BUY&lots=0.2&sl=1.09&tp=1.135')
     expect(manualCheckPath({ order: { ...order, lots: '', tp: '' }, destination: padDestination({ viewedAccountId: 'all', broker }) }))
       .toBe('/state/preorder?symbol=EURUSD&side=BUY&sl=1.09')
@@ -48,7 +55,7 @@ describe('the check asks exactly what the order would send', () => {
     expect(scanCheckPath({ scanId: 77, accountId: 'all' })).toBe('/state/preorder?scanId=77')
   })
   it('a check speaks for its inputs only: any changed field changes the key', () => {
-    const dest = padDestination({ viewedAccountId: 46130058, broker })
+    const dest = padDestination({ viewedAccountId: 46130058, broker, routeToViewed: true })
     const k = checkKey({ order, destination: dest })
     for (const change of [{ sl: '1.08' }, { tp: '1.14' }, { lots: '0.3' }, { side: 'SELL' }, { symbol: 'GBPUSD' }]) {
       expect(checkKey({ order: { ...order, ...change }, destination: dest })).not.toBe(k)

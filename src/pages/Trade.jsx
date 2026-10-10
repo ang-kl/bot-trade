@@ -748,10 +748,11 @@ export default function Trade() {
   const [order, setOrder] = useState({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
   const [orderResult, setOrderResult] = useState(null)
   const [placing, setPlacing] = useState(false)
-  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the pad sends
-  // its order to the account this page shows (one account) — the primary only
-  // in the portfolio view — and can ask the risk gate first (one dry run per
-  // tap, never polled). A check speaks for the inputs it was run on only.
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the pad can
+  // ask the risk gate first (one dry run per tap, never polled); a check speaks
+  // for the inputs it was run on only. Claude · № 12,957 10-Oct: the order
+  // still goes to the primary broker account — routing it to the account this
+  // page shows is the owner's call (D2, ask-first), off in padDestination.
   const padDest = padDestination({ viewedAccountId: viewedAccountId(), broker: health?.broker ?? null })
   const [padCheck, setPadCheck] = useState(null) // { key, busy, result }
   const padRunner = useRef(null)
@@ -959,7 +960,9 @@ export default function Trade() {
                   BUY/SELL selector. */}
               {/* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): where it goes, and Check before Send. */}
               <p className="w-full text-(length:--fs-body) text-[var(--color-text-sub)]">
-                Sends to {padDest.routed ? `account …${String(padDest.accountId).slice(-4)} (the account this page shows)` : 'the primary broker account (this page shows all accounts)'}
+                Sends to {padDest.routed
+                  ? `account …${String(padDest.accountId).slice(-4)} (the account this page shows)`
+                  : `the primary broker account${padDest.accountId != null ? ` …${String(padDest.accountId).slice(-4)}` : ''}${viewedAccountId() && viewedAccountId() !== 'all' && String(viewedAccountId()) !== String(padDest.accountId) ? ' — not the account this page shows' : ''}`}
               </p>
               <div className="flex w-full gap-1.5">
                 <Button size="sm" variant="outlined" disabled={placing || !!padCheckNow?.busy} onClick={runPadCheck} className="flex-1"

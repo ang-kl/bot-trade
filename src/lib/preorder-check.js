@@ -19,16 +19,22 @@ export function scanCheckPath({ scanId, accountId = null }) {
 }
 
 /**
- * Where the pad's order goes. The account the page is showing, when it shows
- * ONE account: the order is sent with that `account` and the confirm names
- * it. The portfolio view ('all') or no account at all keeps the route's old
- * behaviour — no `account`, the primary broker account — and the confirm
- * says "primary".
+ * Where the pad's order goes. TODAY: the primary broker account, as before —
+ * no `account` is sent and the confirm says "primary". Routing the pad to the
+ * account the page shows is the owner's call (decision D2,
+ * docs/plan-ui-and-strategy-review-2026-09-26.md:590 "ASK-FIRST if orders
+ * route to the viewed account"), so it stays off until the owner says so.
+ * `routeToViewed: true` is that switch: the account the page shows, when it
+ * shows ONE account, is sent as `account` and named by the confirm. The dry
+ * run always checks the account the order would actually reach.
+ * Claude · № 12,957 10-Oct (ordered № 12,954; D2 kept ask-first; claude-builder)
  *
- * @param {{viewedAccountId: string|number|null, broker: {accountId?: string|number|null, traderLogin?: string|number|null}|null}} p
+ * @param {{viewedAccountId: string|number|null, broker: {accountId?: string|number|null, traderLogin?: string|number|null}|null, routeToViewed?: boolean}} p
  */
-export function padDestination({ viewedAccountId, broker }) {
-  if (SINGLE(viewedAccountId)) {
+export const ROUTE_PAD_TO_VIEWED_ACCOUNT = false
+
+export function padDestination({ viewedAccountId, broker, routeToViewed = ROUTE_PAD_TO_VIEWED_ACCOUNT }) {
+  if (routeToViewed && SINGLE(viewedAccountId)) {
     const id = String(viewedAccountId)
     const login = broker?.accountId != null && String(broker.accountId) === id ? (broker.traderLogin ?? null) : null
     return { routed: true, accountId: id, traderLogin: login }
