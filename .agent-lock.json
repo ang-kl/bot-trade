@@ -11,7 +11,8 @@
       ],
       "started_at": "2026-10-10T11:12:11Z",
       "expires_at": "2026-10-10T13:12:11.000Z",
-      "purpose": "Owner-requested documentation PR: project context and shared serial/reference continuity."
+      "purpose": "Owner-requested documentation PR: project context and shared serial/reference continuity.",
+      "pr": 1303
     }
   ],
   "notes": [
@@ -317,6 +318,13 @@
       "text": "PR1297 merged6ade2f1; PR1298 merged1e8341b at gated8acc529/tree7baaf399 with exactCI38015928410 allSUCCESS, local8007 backend/four existing skips,1358 frontend/lint/build/colour/12syntax passed. Actual Codex review completed at8acc529 with no findings/thumbs-up; Claude action skipped, no human independent review. Current Risk payload/UI coordinated: currencyConflict withholds joined money and USD previews, retains both currency receipts and unchanged engine reading. Legacy loss-cap/ratchet dollar previews are withheld for non-USD/unknown units; configured rules/halt controls and all enforcement unchanged. 11 protected sourcefiles unchanged. Own lock removed after merge. Node runtime verification in progress; no deployed follow-up/whole acceptance/profit claim yet."
     },
     "Claude · № 12,955 · 2026-10-10 (claude-builder): owner approved steps 1-3 of the Trading view re-assessment plan (https://claude.ai/code/artifact/d3067492-5d51-46b2-a281-5c2374bbce4f). Building: (1) Scoreboard — last 20 per account + 30d, latest-20 block shows measured figures with broker-proof count, verdict unchanged; (2) phone load cuts — sidebar not mounted on phones, folded Desk cards stop polling, hourly-activity off the main thread, prices server cache, read-only broker refreshes stop emptying the GET cache; (3) Pre-order — read-only dry run of evaluateTrade (no persistRiskEvent, no write), shown on Trade signals and the manual pad, which names its account. No risk limit, gate, policy or native change. Files in lock claude-scoreboard-preorder-2026-10-10.",
-    "Claude · № 12,973 · 2026-10-10 (claude-builder): PR1301 merged 58196736 (squash) after full local gate (node 8,102/0 fail/3 skip, vitest 1,400, eslint, build, no-green, inventory) and exact-head CI green; deployed and read back (Scoreboard figures match the independent analysis; /state/preorder dry run wrote no risk_event in production). Lock released. For you: NEW GET /state/scoreboard (read worker, pool 'scoreboard'), GET /state/preorder (NO_CACHE; evaluateTrade only, no persistRiskEvent), /state/hourly-activity now on the read worker (pool 'hourly-activity'), /state/prices 30 s single-flight cache (agent/services/latest-prices-cache.js), state-cache per-path epochs (invalidateStatePaths) used by broker-history; broker-positions invalidates once per real round. performance-targets latest20 gains display-only `measured`. Manual pad still primary account: ROUTE_PAD_TO_VIEWED_ACCOUNT=false (D2 ask-first). preorder.js copies the loop / closed-market / manual-order proposal construction — if you change any of those, the equivalence tests in agent/services/preorder.test.js will tell you to mirror it."
+    "Claude · № 12,973 · 2026-10-10 (claude-builder): PR1301 merged 58196736 (squash) after full local gate (node 8,102/0 fail/3 skip, vitest 1,400, eslint, build, no-green, inventory) and exact-head CI green; deployed and read back (Scoreboard figures match the independent analysis; /state/preorder dry run wrote no risk_event in production). Lock released. For you: NEW GET /state/scoreboard (read worker, pool 'scoreboard'), GET /state/preorder (NO_CACHE; evaluateTrade only, no persistRiskEvent), /state/hourly-activity now on the read worker (pool 'hourly-activity'), /state/prices 30 s single-flight cache (agent/services/latest-prices-cache.js), state-cache per-path epochs (invalidateStatePaths) used by broker-history; broker-positions invalidates once per real round. performance-targets latest20 gains display-only `measured`. Manual pad still primary account: ROUTE_PAD_TO_VIEWED_ACCOUNT=false (D2 ask-first). preorder.js copies the loop / closed-market / manual-order proposal construction — if you change any of those, the equivalence tests in agent/services/preorder.test.js will tell you to mirror it.",
+    {
+      "from": "codex-project-context",
+      "at": "2026-10-10T11:14:23Z",
+      "serial": 13005,
+      "subject": "Owner-requested project-context documentation PR1303 created",
+      "text": "Draft PR1303 head de7cdcb7ec5ee14994e22f502c28acff9edd91ea adds only docs/project-context.md on main28cf20b. Shared serial/paragraph rules preserve current CLAUDE.md conventions; dated counts/observations are not instructions. Exact published content and documentation checks passed; no application gate, merge or deployment claim. Own file lock retained pending merge/expiry. Latest serial is a recorded lower bound, not a full-corpus measurement."
+    }
   ]
 }
