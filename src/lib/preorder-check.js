@@ -149,3 +149,8 @@ export function preorderLines(result) {
     ['Allowed by', allowed[s.allowedBy] || s.allowedBy || '—'],
   ]
 }
+
+// Claude · № 12,975 10-Oct (Codex P2 on #1301): a signal's check is keyed by the
+// SCAN identity (scanId, bias), so a newer scan of the same account/symbol/
+// strategy/timeframe never shows the previous scan's check under its row.
+export const sigKey = (sc) => JSON.stringify([sc.account_id, sc.symbol, sc.strategy, sc.timeframe, sc.scanId ?? null, sc.bias ?? null])
