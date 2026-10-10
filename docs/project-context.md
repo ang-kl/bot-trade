@@ -58,9 +58,15 @@ Follow [CLAUDE.md](../CLAUDE.md)'s serial and paragraph protocol:
   corpus cannot reset the sequence. State when using a recorded lower bound.
 - Dated lower bound at this file's creation: **Codex №13,005**. This is not a
   measured full-corpus total, and can become stale as either agent continues.
-- Stamp substantive replies with session/agent name, serial and verified SGT
-  time. For multiple points use sections `§N·A`, `§N·B`, and paragraphs
-  `¶A·1`, `¶A·2` within section A. Example: `Codex №13,005 §13,005·B ¶B·1`.
+- Prefix every substantive reply on its own line with
+  `№ N · DD-MM'YY HH:MM TZ`; identify the agent/session separately. Fetch
+  actual time before stamping. Choose timezone from the owner's current
+  instruction, otherwise the system zone, otherwise SGT. This owner's
+  current timezone is Asia/Singapore (SGT).
+- For multiple points use sections `§N·A`, `§N·B`, and paragraphs
+  `¶A·1`, `¶A·2` within section A. A complete stamp example is
+  `№ 13,005 · 10-10'26 19:12 SGT`, followed by `Codex · codex-project-context`.
+  A reference to a paragraph is `Codex №13,005 §13,005·B ¶B·1`, not a reply stamp.
 - Use dated comments where useful:
   `Codex · №N · YYYY-MM-DD; codex-footprint: purpose/session`.
   PRs and release receipts carry conversation references; never invent model,
