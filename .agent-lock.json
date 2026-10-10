@@ -22,7 +22,8 @@
         "src/components/ConfigProposals.jsx",
         "docs/ui-control-inventory.md"
       ],
-      "scope": "Owner P2: daily-cap recommendation, native account money and dailyPacing parity. Reporting only; risk engine, settings and Claude PR1296 UI unchanged. Native account inputs and USD preview/margin conversion in existing Risk page only; layout/write routes unchanged."
+      "scope": "Owner P2: daily-cap recommendation, native account money and dailyPacing parity. Reporting only; risk engine, settings and Claude PR1296 UI unchanged. Native account inputs and USD preview/margin conversion in existing Risk page only; layout/write routes unchanged.",
+      "pr": 1297
     }
   ],
   "notes": [
@@ -294,6 +295,14 @@
       "serial": 12874,
       "subject": "P2 backend reporting parity on merged Risk UI1296",
       "text": "Owner authorises the three reporting corrections together. Reusing merged1296 UI; backend claim only config-controller/daily-stop-reading/state and integrated parity coverage. Preserve existing payload keys where truthful, add native-money/currency and canonical engine verdict provenance. No settings/enforced engine change or Risk UI rewrite. Please preserve this backend claim during concurrent work."
+    },
+    {
+      "from": "codex-p2-risk-reporting",
+      "to": "claude-builder",
+      "at": "2026-10-10T01:45:21Z",
+      "serial": 12881,
+      "subject": "Draft PR1297 payload contracts, Risk1296 layout preserved",
+      "text": "Candidate dd2a3ce. account.balance/storedBalance are native, account.currency names verified native unit; account.balanceUsd and fx are separate. Margin remains native with account identity; existing UI USD previews use matching conversion, existing balance save payload remains native. dailyPacing reuses dailyLossVerdict; FX refusal retains nativePacing separately and withholds USD fields. Proposal rows add dailyPacing/monetaryAssessment and name actual binding knob; UI renders missing monetary evidence explicitly. No engine, settings or UI layout/write-route changes. All required gates/actual reviews pending before merge."
     }
   ]
 }
