@@ -94,7 +94,7 @@ export function NightlyRecord({ rec }) {
   return (
     <div className="sb-cell sb-daily">
       <span className="sb-sub">
-        Daily broker read of balance, float and equity, taken at the New York close (4:00 PM ET); rows before 11 Oct were taken at other times and show theirs.
+        Daily broker read of balance, float and equity, taken at the New York close (4:00 PM ET); rows before the 10 Oct close were taken at other times and show theirs.
         {rec?.change != null && <> First to last: <strong style={{ color: TX }}>{fmtMoney(rec.change, ccy)}</strong> · up {rec.up} · down {rec.down} · unchanged {rec.flat}.</>}
         {hidden > 0 && <> {hidden} earlier day{hidden === 1 ? '' : 's'} not shown: currency not recorded then.</>}
         {' '}A balance change includes deposits and withdrawals unless the row says it was checked.
