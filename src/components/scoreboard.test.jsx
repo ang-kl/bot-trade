@@ -24,7 +24,7 @@ const account = (id, currency, over = {}) => ({
 })
 const report = {
   at: '2026-10-10T08:01:00.000Z', account: 'all', days: 30, trades: 20,
-  accounts: [account('43097342', 'SGD'), account('42993489', 'USD'),
+  accounts: [account('43097342', 'SGD', { login: '5067353', isLive: false, leverage: 200, openNow: 3, closedToday: 2 }), account('42993489', 'USD', { login: '1251247', isLive: true }),
     { ...account('11112222', null), last20: { ...metrics({}), externalN: 0, rows: [], bot: metrics({}) },
       days30: { days: 30, ...metrics({}), externalN: 0, bot: metrics({}) }, lastCloseAt: null }],
   pooled: { days30: metrics({ n: 76 }), days30Bot: metrics({ n: 64, winRatePct: 43.75, expectancyR: 0.12 }) },
@@ -36,11 +36,13 @@ describe('Scoreboard view', () => {
     const html = renderToStaticMarkup(<ScoreboardView report={report} selected="42993489" />)
     for (const bad of ['NaN', 'undefined', 'null', 'Infinity']) expect(html).not.toContain(bad)
     expect(html).toContain('…7342'); expect(html).toContain('…3489'); expect(html).toContain('…2222')
-    expect(html).toContain('>SGD<'); expect(html).toContain('>USD<'); expect(html).toContain('currency unverified')
+    // Claude · № 12,990: the owner's account line — side · login · account · currency — and its facts.
+    expect(html).toContain('Demo · 5067353 · 43097342 · SGD'); expect(html).toContain('Live · 1251247 · 42993489 · USD')
+    expect(html).toContain('11112222 · currency unverified'); expect(html).toContain('1:200 · 3 open · 2 closed today · 30 closed')
     expect(html).toContain('SGD −69.70'); expect(html).toContain('USD −69.70')
     expect(html).toContain('45%'); expect(html).toContain('0.61'); expect(html).toContain('−0.12R')
-    expect(html).toContain('Win size ÷ loss size: <strong>0.75</strong>')
-    expect(html).toContain('30 days, bot only: 32 trades')
+    expect(html).toContain('Win ÷ loss <strong>0.75</strong>') // Claude · № 12,989: compact row wording
+    expect(html).toContain('30 days, bot only: </span>32 trades') // Claude · № 12,989
     expect(html).toContain('Last 20 trades')
     expect(html).toContain('No closed trades recorded.')
     expect(html).toContain('R pooled; no money total')
@@ -136,5 +138,17 @@ describe('Forward results card: measured latest-20 beside the unchanged verdict'
     expect(measured).toBeTruthy()
     const html = renderToStaticMarkup(<PerformanceTargets report={{ accounts: [{ ...row, latest20 }] }} selected="11" />)
     expect(html).not.toContain('Measured so far')
+  })
+})
+
+// Claude · № 12,989 10-Oct (owner: "too much white spacing, and have to scroll
+// down"): one compact row per account under ONE header row (hidden from screen
+// readers and, by CSS, on phones — each cell then carries its own label).
+describe('compact rows', () => {
+  it('one header row and one row per account', () => {
+    const html = renderToStaticMarkup(<ScoreboardView report={report} />)
+    expect((html.match(/class="sb-row sb-head" aria-hidden="true"/g) || []).length).toBe(1)
+    expect((html.match(/<article class="sb-row"/g) || []).length).toBe(report.accounts.length)
+    for (const h of ['Win rate', 'Profit factor', 'Expectancy', 'Win ÷ loss · net']) expect(html).toContain(h)
   })
 })

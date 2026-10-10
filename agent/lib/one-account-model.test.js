@@ -53,6 +53,8 @@ export const PATTERNS = Object.freeze({
  */
 export const ALLOWLIST = Object.freeze({
   // Codex · №12,952 · 2026-10-10; codex-footprint: account-evidence-routing-boundary.
+  // Claude · № 12,990 10-Oct: the Scoreboard report carries the registry's live/demo flag for its account line only.
+  'agent/services/scoreboard.js': { reason: 'read-only Scoreboard report: the registry live/demo flag passed through for the account line, no policy', max: { is_live: 1, isLive: 4 } },
   'agent/services/account-evidence-readout.js': { reason: 'read-only registry badge and memo of the canonical roster query; identical phase, money and risk readers for every account, with no host-conditioned policy', max: { is_live: 3 } },
   // Codex · №12,529 · 2026-10-09; codex-footprint: six-strategy-lifecycle.
   'agent/services/tick-entry-proof.js': { reason: 'bind retained native entry evidence to the registered broker host and intent environment; identical ownership and profit rules on both hosts', max: { environment_cmp: 1 } },
@@ -183,6 +185,9 @@ export const ALLOWLIST = Object.freeze({
   'src/pages/Risk.jsx': { reason: 'LIVE/DEMO/UNVERIFIED badge; unknown evidence is not labelled demo', max: { isLive: 2, demo_str: 1 } },
   // Claude · № 12,812 10-Oct: the Risk page's capital-safety rows carry the same display badge.
   'src/lib/risk-status.js': { reason: 'LIVE/DEMO display badge on the Risk page status rows', max: { is_live: 1, live_str: 1, demo_str: 1 } },
+  // Claude · № 12,990 10-Oct (owner: "where are the account details like Live · 1251247 · 42993489 · SGD"):
+  // the Scoreboard's account line — a read-only report field and the label helper that words it.
+  'src/lib/scoreboard-view.js': { reason: 'Live/Demo word on the Scoreboard account line, through accountLabel', max: { isLive: 3 } },
   'src/pages/Trade.jsx': { reason: 'LIVE/DEMO label on the broker session and in the validation-fill confirm text', max: { isLive: 3, demo_str: 2 } },
   'src/pages/Tune.jsx': { reason: 'LIVE/DEMO label on the account row', max: { isLive: 2, live_str: 1, demo_str: 1 } },
 })

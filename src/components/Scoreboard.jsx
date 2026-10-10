@@ -9,26 +9,25 @@
 // (GET /state/scoreboard), per account, in that account's own currency, and
 // leaves the forward verdict beneath it untouched.
 //
-// Built for 390px: three big figures, one ratio line, one strip of the last
-// 20 trades' R, one 30-day line, and the 20 rows behind a disclosure. Status
+// One compact row per account (Claude · № 12,989): a table on a wide screen,
+// a tight block on a phone; the 20 rows behind a disclosure. Status
 // never by colour alone: every figure carries its sign or its words, and the
 // strip's bars sit ABOVE or BELOW a zero line as well as being coloured.
 import { useEffect, useState } from 'react'
 import Card from './common/Card.jsx'
 import { selectedAccountId } from '../lib/selected-account.js'
-import { R_CLIP, finite, fmtPct, fmtR, fmtMoney, fmtPf, fmtPfR, fmtWhen, stripLabel, startScoreboardPolling } from '../lib/scoreboard-view.js'
+import { R_CLIP, finite, fmtPct, fmtR, fmtMoney, fmtPf, fmtPfR, fmtWhen, stripLabel, startScoreboardPolling, accountTitle, accountFacts } from '../lib/scoreboard-view.js'
 
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
 const UP = 'var(--color-up)', DN = 'var(--color-down)', BD = 'var(--color-border)'
-const BIG = 'calc(var(--fs-title) * 1.6)'
 
 /** The last 20 trades' R as bars about a zero line, oldest on the left. */
 export function RStrip({ rows }) {
   const list = [...rows].reverse()
-  const W = 200, Hh = 48, mid = Hh / 2, slot = W / Math.max(20, list.length), bar = Math.max(2, slot * 0.7), half = mid - 2
+  const W = 200, Hh = 30, mid = Hh / 2, slot = W / Math.max(20, list.length), bar = Math.max(2, slot * 0.7), half = mid - 2
   return (
     <svg viewBox={`0 0 ${W} ${Hh}`} width="100%" height={Hh} role="img" aria-label={stripLabel(rows)}
-      preserveAspectRatio="none" style={{ display: 'block', maxWidth: 360 }}>
+      preserveAspectRatio="none" style={{ display: 'block' }}>
       <line x1="0" x2={W} y1={mid} y2={mid} stroke={MU} strokeWidth="1" />
       {list.map((r, i) => {
         const x = i * slot + (slot - bar) / 2
@@ -41,12 +40,15 @@ export function RStrip({ rows }) {
   )
 }
 
-function Big({ label, value, sub }) {
+// Claude · № 12,989 10-Oct (owner: "too much white spacing, and have to scroll
+// down"): one compact ROW per account. Wide screens read it as a table under one
+// header row (index.css .sb-*); a phone stacks the same cells in a tight block.
+function Cell({ area, label, value, sub }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-      <span style={{ fontSize: 'var(--fs-body)', color: MU, textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</span>
-      <span style={{ fontSize: BIG, fontWeight: 800, color: TX, fontVariantNumeric: 'tabular-nums', lineHeight: 1.15 }}>{value}</span>
-      {sub && <span style={{ fontSize: 'var(--fs-body)', color: SB }}>{sub}</span>}
+    <div className={`sb-cell sb-${area}`}>
+      <span className="sb-cell-label">{label}</span>
+      <span className="sb-big">{value}</span>
+      {sub && <span className="sb-sub">{sub}</span>}
     </div>
   )
 }
@@ -54,53 +56,66 @@ function Big({ label, value, sub }) {
 const counts = m => `${m.wins}W · ${m.losses}L${m.zeros ? ` · ${m.zeros} flat` : ''}`
 
 function AccountScore({ a }) {
+  const [open, setOpen] = useState(false)
   const m = a.last20, d = a.days30?.bot
   const ccy = a.currency
+  const has = m.n > 0
+  const avg = `avg win ${fmtMoney(m.avgWin, ccy)} · avg loss ${finite(m.avgLoss) ? fmtMoney(-m.avgLoss, ccy) : '—'}`
   return (
-    <article aria-label={`Account ${a.label}`} style={{ borderTop: `1px solid ${BD}`, paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
-        <strong style={{ fontSize: 'var(--fs-h)', color: TX }}>{a.label}</strong>
-        <span style={{ fontSize: 'var(--fs-body)', color: SB }}>{ccy || 'currency unverified'}</span>
-        {!a.registered && <span style={{ fontSize: 'var(--fs-body)', color: MU }}>· not in the account registry</span>}
-        <span style={{ fontSize: 'var(--fs-body)', color: MU }}>· last {m.n} closed{m.externalN ? ` (${m.externalN} manual/external)` : ''}</span>
+    <article className="sb-row" aria-label={`Account ${a.label}`}>
+      <div className="sb-cell sb-acct">
+        {/* Claude · № 12,990 10-Oct: the owner's account line, leverage and trade counts. */}
+        <strong className="sb-name">{accountTitle(a)}</strong>
+        <span className="sb-sub">
+          {!a.registered && 'not in the account registry · '}{accountFacts(a)}{m.externalN ? ` · ${m.externalN} manual in last ${m.n}` : ''}
+        </span>
+        {m.rows.length > 0 && <button type="button" className="sb-toggle" aria-expanded={open} onClick={() => setOpen(o => !o)}>
+          {open ? '▾' : '▸'} Last {m.rows.length} trades
+        </button>}
       </div>
-      {m.n === 0 ? <p style={{ fontSize: 'var(--fs-body)', color: SB, margin: 0 }}>No closed trades recorded.</p> : <>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
-          <Big label="Win rate" value={fmtPct(m.winRatePct)} sub={counts(m)} />
-          <Big label="Profit factor" value={fmtPf(m.profitFactor, m)} sub={`in R: ${fmtPfR(m)}`} />
-          <Big label="Expectancy" value={fmtR(m.expectancyR)} sub={`${m.rScored} of ${m.n} with R`} />
+      {has ? <>
+        <Cell area="wr" label="Win rate" value={fmtPct(m.winRatePct)} sub={counts(m)} />
+        <Cell area="pf" label="Profit factor" value={fmtPf(m.profitFactor, m)} sub={`in R: ${fmtPfR(m)}`} />
+        <Cell area="exp" label="Expectancy" value={fmtR(m.expectancyR)} sub={`${m.rScored} of ${m.n} with R`} />
+        <div className="sb-cell sb-ratio" title={avg}>
+          <span>Win ÷ loss <strong>{finite(m.payoff) ? m.payoff.toFixed(2) : '—'}</strong></span>
+          <span>Net <strong>{fmtMoney(m.net, ccy)}</strong></span>
         </div>
-        <div style={{ fontSize: 'var(--fs-body)', color: TX }}>
-          Win size ÷ loss size: <strong>{finite(m.payoff) ? m.payoff.toFixed(2) : '—'}</strong>
-          {' '}({fmtMoney(m.avgWin, ccy)} ÷ {finite(m.avgLoss) ? fmtMoney(-m.avgLoss, ccy) : '—'}) · Net <strong>{fmtMoney(m.net, ccy)}</strong>
-        </div>
-        <RStrip rows={m.rows} />
-      </>}
-      {d && <div style={{ fontSize: 'var(--fs-body)', color: SB }}>
-        {a.days30.days} days, bot only: {d.n ? <>{d.n} trades · win {fmtPct(d.winRatePct)} · PF {fmtPf(d.profitFactor, d)} · {fmtR(d.expectancyR)} per trade · net {fmtMoney(d.net, ccy)}</> : 'no closed bot trades.'}
-      </div>}
-      {m.rows.length > 0 && <details>
-        <summary style={{ fontSize: 'var(--fs-body)', color: TX, cursor: 'pointer', minHeight: 32, display: 'flex', alignItems: 'center' }}>Last {m.rows.length} trades</summary>
-        <ol style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-          {m.rows.map(r => (
-            <li key={r.id} style={{ borderTop: `1px solid ${BD}`, padding: '4px 0', fontSize: 'var(--fs-body)', color: TX, minWidth: 0 }}>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'baseline' }}>
-                <strong>{r.symbol || '—'}</strong>
-                <span>{r.side || '—'}</span>
-                <span style={{ color: SB, overflowWrap: 'anywhere' }}>{r.strategy || 'no strategy'}</span>
-                {r.source && ['external', 'manual'].includes(String(r.source).toLowerCase()) && <span style={{ color: MU }}>({r.source})</span>}
-              </div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'baseline', fontVariantNumeric: 'tabular-nums' }}>
-                <span>{finite(r.realised_rr) ? fmtR(r.realised_rr) : 'R —'}</span>
-                <span>{fmtMoney(r.net_pnl, ccy)}</span>
-                <span style={{ color: SB, overflowWrap: 'anywhere' }}>{r.close_reason || 'no close reason'}</span>
-                <span style={{ color: MU }}>{fmtWhen(r.closed_at)}</span>
-              </div>
-            </li>
-          ))}
-        </ol>
-      </details>}
+        <div className="sb-cell sb-strip"><RStrip rows={m.rows} /></div>
+      </> : <p className="sb-cell sb-empty">No closed trades recorded.</p>}
+      <div className="sb-cell sb-d30">
+        {d && <span><span className="sb-d30-label">{a.days30.days} days, bot only: </span>{d.n ? <>{d.n} trades · win {fmtPct(d.winRatePct)} · PF {fmtPf(d.profitFactor, d)} · {fmtR(d.expectancyR)}/trade · net {fmtMoney(d.net, ccy)}</> : 'no closed bot trades.'}</span>}
+      </div>
+      {open && <ol className="sb-list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        {m.rows.map(r => (
+          <li key={r.id} style={{ borderTop: `1px solid ${BD}`, padding: '3px 0', fontSize: 'var(--fs-body)', color: TX, minWidth: 0, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline', fontVariantNumeric: 'tabular-nums' }}>
+            <strong>{r.symbol || '—'}</strong>
+            <span>{r.side || '—'}</span>
+            <span>{finite(r.realised_rr) ? fmtR(r.realised_rr) : 'R —'}</span>
+            <span>{fmtMoney(r.net_pnl, ccy)}</span>
+            <span style={{ color: SB, overflowWrap: 'anywhere' }}>{r.strategy || 'no strategy'}</span>
+            {r.source && ['external', 'manual'].includes(String(r.source).toLowerCase()) && <span style={{ color: MU }}>({r.source})</span>}
+            <span style={{ color: SB, overflowWrap: 'anywhere' }}>{r.close_reason || 'no close reason'}</span>
+            <span style={{ color: MU }}>{fmtWhen(r.closed_at)}</span>
+          </li>
+        ))}
+      </ol>}
     </article>
+  )
+}
+
+/** The column names, shown once above the rows on a wide screen (CSS hides it on a phone). */
+function HeadRow({ days }) {
+  return (
+    <div className="sb-row sb-head" aria-hidden="true">
+      <span className="sb-cell sb-acct">Account</span>
+      <span className="sb-cell sb-wr">Win rate</span>
+      <span className="sb-cell sb-pf">Profit factor</span>
+      <span className="sb-cell sb-exp">Expectancy</span>
+      <span className="sb-cell sb-ratio">Win ÷ loss · net</span>
+      <span className="sb-cell sb-strip">Last 20, R (old → new)</span>
+      <span className="sb-cell sb-d30">{days} days, bot only</span>
+    </div>
   )
 }
 
@@ -116,15 +131,14 @@ export function ScoreboardView({ report, error = null, selected = null }) {
     || (Date.parse(b.lastCloseAt || '') || 0) - (Date.parse(a.lastCloseAt || '') || 0))
   const p = report.pooled?.days30Bot
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+    <div className="sb-board">
       <p role="status" style={{ fontSize: 'var(--fs-body)', color: error ? DN : SB, margin: 0 }}>
-        {error ? `Last read failed (${error}); showing the read from ${fmtWhen(report.at)}.` : `Read ${fmtWhen(report.at)} · refreshes every minute while active.`}
-        {' '}Recorded ledger figures, each account in its own currency; money is never added across accounts.
+        {error ? `Last read failed (${error}); showing the read from ${fmtWhen(report.at)}.` : `Read ${fmtWhen(report.at)} · every minute.`}
+        {' '}Ledger figures; each account in its own currency, never added together.
+        {accounts.length > 1 && p && p.n > 0 && <> <span style={{ color: TX }}>All accounts, {report.days} days, bot only: {p.n} trades · win {fmtPct(p.winRatePct)} · {fmtR(p.expectancyR)} per trade (R pooled; no money total).</span></>}
       </p>
-      {accounts.length > 1 && p && p.n > 0 && <p style={{ fontSize: 'var(--fs-body)', color: TX, margin: 0 }}>
-        All accounts, {report.days} days, bot only: {p.n} trades · win {fmtPct(p.winRatePct)} · {fmtR(p.expectancyR)} per trade (R pooled; no money total).
-      </p>}
       {accounts.length === 0 && <p style={{ fontSize: 'var(--fs-body)', color: SB, margin: 0 }}>No accounts to show.</p>}
+      {accounts.length > 0 && <HeadRow days={report.days} />}
       {accounts.map(a => <AccountScore key={a.accountId} a={a} />)}
     </div>
   )

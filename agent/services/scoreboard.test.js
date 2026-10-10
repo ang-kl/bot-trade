@@ -145,6 +145,7 @@ test('readScoreboard: one indexed scan, bounded buffers, the goal tracker\'s cur
   assert.equal(a.currency, 'SGD', 'balanceUnit, the goal tracker balanceCurrency source')
   assert.equal(b.currency, null)
   assert.equal(a.last20.n, 20); assert.equal(a.days30.n, 30)
+  assert.equal(a.closedTotal, 300, 'Claude · № 12,990: the account line counts every close, not the bounded buffer'); assert.ok(a.closedN < 300)
   assert.equal(a.last20.bot.n, 20)
   assert.equal(b.last20.n, 1); assert.equal(b.last20.rScored, 0, 'suspect exit: no R')
   assert.deepEqual(out.excluded, { unpriced: 0, unstamped: 1, superseded: 1 })
@@ -157,4 +158,27 @@ test('readScoreboard: one indexed scan, bounded buffers, the goal tracker\'s cur
   assert.equal(scoped.account, '222')
   const none = readScoreboard(db, { account: '999', days: 30, now: NOW })
   assert.equal(none.accounts[0].last20.n, 0); assert.equal(none.accounts[0].registered, false)
+})
+
+// Claude · № 12,990 10-Oct (owner: "where are the account details like Live ·
+// 1251247 · 42993489 · SGD and the leverage and how many trade"): the account
+// line's facts — registry side and login, stored leverage, ledger open count,
+// closes today on the owner's (Singapore) calendar day. Display only.
+test('account facts: side, login, leverage, open now and closed today (SGT day)', () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id, broker_label, enabled, is_live, trader_login, mode) VALUES ('111','P',1,1,'1251247','active'), ('222','P',1,0,'5067353','manage_only')").run()
+  db.prepare("INSERT INTO agent_state(key, value) VALUES ('acct:111:account_leverage', '200'), ('acct:222:account_leverage', 'garbage')").run()
+  const ins = db.prepare(`INSERT INTO trades(symbol, side, status, account_id, net_pnl, realised_rr, closed_at_ms, source, close_reason) VALUES(?,?,?,?,?,?,?,?,?)`)
+  // NOW = 08:00Z = 16:00 SGT; the SGT day began at 16:00Z the day before.
+  ins.run('EURUSD', 'BUY', 'closed', '111', 1, 1, NOW - 2 * H, 'autopilot', 'tp')          // 14:00 SGT today
+  ins.run('EURUSD', 'BUY', 'closed', '111', 1, 1, NOW - 15 * H, 'autopilot', 'tp')         // 01:00 SGT today
+  ins.run('EURUSD', 'BUY', 'closed', '111', 1, 1, NOW - 17 * H, 'autopilot', 'tp')         // 23:00 SGT yesterday
+  ins.run('EURUSD', 'BUY', 'open', '111', null, null, null, 'autopilot', null)
+  ins.run('USDJPY', 'SELL', 'open', '111', null, null, null, 'manual', null)
+  const out = readScoreboard(db, { account: 'all', days: 30, now: NOW })
+  const a = out.accounts.find(x => x.accountId === '111'), b = out.accounts.find(x => x.accountId === '222')
+  assert.equal(a.isLive, true); assert.equal(a.login, '1251247'); assert.equal(a.leverage, 200); assert.equal(a.mode, 'active')
+  assert.equal(a.openNow, 2, 'open ledger rows, bot and manual alike'); assert.equal(a.closedToday, 2, 'SGT calendar day'); assert.equal(a.closedN, 3); assert.equal(a.closedTotal, 3)
+  assert.equal(b.isLive, false); assert.equal(b.leverage, null, 'a non-numeric stored leverage is not shown'); assert.equal(b.openNow, 0)
+  assert.equal(b.mode, 'manage_only')
 })
