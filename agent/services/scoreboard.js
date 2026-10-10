@@ -51,6 +51,7 @@ export const SCOREBOARD_TRADES = 20
 export const SCOREBOARD_DEFAULT_DAYS = 30
 export const SCOREBOARD_MAX_DAYS = 365
 const DAY = 86_400_000
+const SGT = 8 * 3_600_000
 const REASON_CHARS = 48
 
 /** Not this system's decision (see the header for where the rule comes from). */
@@ -174,6 +175,8 @@ const unitFree = m => ({ n: m.n, wins: m.wins, losses: m.losses, zeros: m.zeros,
 export function buildScoreboard(rows, { now = Date.now(), days = SCOREBOARD_DEFAULT_DAYS, account = 'all', accounts = [], excluded = {} } = {}) {
   const only = account == null || account === 'all' ? null : String(account)
   const from = now - days * DAY
+  // Claude · № 12,990: "today" is the owner's calendar day, Singapore time.
+  const sgtDayStart = now - ((now + SGT) % DAY)
   const dropped = { unpriced: 0, unstamped: 0, superseded: 0, ...excluded }
   const byAccount = new Map()
   const roster = new Map()
@@ -213,7 +216,16 @@ export function buildScoreboard(rows, { now = Date.now(), days = SCOREBOARD_DEFA
       currency,
       registered: reg ? reg.registered !== false : false,
       enabled: reg?.enabled ?? null,
+      // Claude · № 12,990 10-Oct: display facts for the account line (see readScoreboard).
+      isLive: typeof reg?.isLive === 'boolean' ? reg.isLive : null,
+      mode: reg?.mode ?? null,
+      leverage: typeof reg?.leverage === 'number' && reg.leverage > 0 ? reg.leverage : null,
+      openNow: Number.isInteger(reg?.openNow) ? reg.openNow : null,
+      closedToday: list.filter(r => { const t = timeOf(r); return t != null && t >= sgtDayStart && t <= now }).length,
       closedN: list.length,
+      // Every included close of the account (readScoreboard counts them during its scan);
+      // closedN above counts only the rows handed to this function.
+      closedTotal: Number.isInteger(reg?.closedTotal) ? reg.closedTotal : list.length,
       lastCloseAt: list.length && timeOf(list[0]) != null ? new Date(timeOf(list[0])).toISOString() : null,
       last20: {
         ...scoreMetrics(last),
@@ -272,12 +284,14 @@ export function readScoreboard(db, { account = 'all', days = SCOREBOARD_DEFAULT_
     FROM trades WHERE status = 'closed'${only ? ' AND account_id = ?' : ''}`
   const excluded = { unpriced: 0, unstamped: 0, superseded: 0 }
   const buffers = new Map() // account → { top: [], topBot: [], window: [] }
+  const totals = new Map() // account → every included close (the account line's all-time count)
   const trim = list => { list.sort(newestFirst); list.length = Math.min(list.length, SCOREBOARD_TRADES) }
   for (const r of db.prepare(sql).iterate(...(only ? [only] : []))) {
     const why = exclusionOf(r)
     if (why === 'not_closed') continue
     if (why) { excluded[why]++; continue }
     const id = accountOf(r)
+    totals.set(id, (totals.get(id) ?? 0) + 1) // Claude · № 12,990: every included close, not only the buffered ones
     let b = buffers.get(id)
     if (!b) { b = { top: [], topBot: [], window: [] }; buffers.set(id, b) }
     const t = timeOf(r)
@@ -297,11 +311,33 @@ export function readScoreboard(db, { account = 'all', days = SCOREBOARD_DEFAULT_
   const registered = new Map(registry.map(a => [String(a.account_id), a]))
   const ids = only ? [only]
     : [...new Set([...registry.filter(a => a.enabled === 1).map(a => String(a.account_id)), ...buffers.keys()])]
+  // Claude · № 12,990 10-Oct (owner: "where are the account details like Live ·
+  // 1251247 · 42993489 · SGD and the leverage and how many trade"): the
+  // registry's display facts, the stored leverage and the ledger's open count.
+  // Display only — nothing here gates anything (owner principle 1).
+  let openCounts = new Map()
+  try {
+    openCounts = new Map(db.prepare(`SELECT account_id, COUNT(*) AS n FROM trades WHERE status = 'open' AND account_id IS NOT NULL GROUP BY account_id`)
+      .all().map(r => [String(r.account_id), r.n]))
+  } catch { openCounts = new Map() }
+  // A plain SELECT, not db.js getState: that helper also prepares an UPSERT,
+  // and this reader runs on the report worker's read-only connection.
+  let leverageOf = () => null
+  try {
+    const q = db.prepare('SELECT value FROM agent_state WHERE key = ?')
+    leverageOf = id => { const v = Number(q.get(`acct:${id}:account_leverage`)?.value); return Number.isFinite(v) && v > 0 ? v : null }
+  } catch { leverageOf = () => null }
   const accounts = ids.map(id => {
     const reg = registered.get(id) || null
     let currency = null
     try { currency = balanceUnit(db, id).currency } catch { currency = null }
-    return { accountId: id, currency, registered: !!reg, enabled: reg ? reg.enabled === 1 : null, login: reg?.trader_login ?? null }
+    let leverage = null
+    try { leverage = leverageOf(id) } catch { leverage = null }
+    return {
+      accountId: id, currency, registered: !!reg, enabled: reg ? reg.enabled === 1 : null, login: reg?.trader_login ?? null,
+      isLive: reg ? reg.is_live === 1 : null, mode: reg?.mode ?? null, leverage, openNow: openCounts.get(id) ?? 0,
+      closedTotal: totals.get(id) ?? 0,
+    }
   })
   return buildScoreboard(rows, { now, days, account: only ?? 'all', accounts, excluded })
 }

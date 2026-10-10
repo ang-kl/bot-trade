@@ -6,6 +6,7 @@
 // components (react-refresh). Display only: nothing here computes a figure the
 // server did not send; it formats, labels and schedules the read.
 import { agentConfigured, agentGet, pageAsleep } from './agent-api.js'
+import { accountLabel, accountNumbers } from './scope-label.js'
 
 export const SCOREBOARD_POLL_MS = 60_000
 export const SCOREBOARD_PATH = '/state/scoreboard?account=all&days=30'
@@ -75,4 +76,30 @@ export function startScoreboardPolling({ onReport, onError }, {
     stopped = true; timers.clearTimeout(kick); timers.clearInterval(timer)
     target?.removeEventListener('visibilitychange', refresh); win?.removeEventListener('agent-wake', refresh)
   }
+}
+
+/**
+ * Claude · № 12,990 10-Oct (owner: "where are the account details like Live ·
+ * 1251247 · 42993489 · SGD and the leverage and how many trade"): the account
+ * line in the owner's own words. The Live/Demo word and the numbers come from
+ * the app's one account-label helper (scope-label.js), so every page names an
+ * account the same way. Display only.
+ */
+export function accountTitle(a) {
+  const row = { isLive: a?.isLive, traderLogin: a?.login, accountId: a?.accountId }
+  const side = a?.isLive == null ? null : (accountLabel(row) || '').split(' ')[0]
+  const numbers = accountNumbers(row) || a?.label || String(a?.accountId ?? '')
+  return [side, ...numbers.split(' · '), a?.currency || 'currency unverified'].filter(Boolean).join(' · ')
+}
+
+/** "1:200 · 3 open · 0 closed today · 249 closed" — what the dashboard holds for this account. */
+export function accountFacts(a) {
+  const parts = []
+  if (finite(a?.leverage)) parts.push(`1:${Math.round(a.leverage)}`)
+  if (Number.isInteger(a?.openNow)) parts.push(`${a.openNow} open`)
+  if (Number.isInteger(a?.closedToday)) parts.push(`${a.closedToday} closed today`)
+  const total = Number.isInteger(a?.closedTotal) ? a.closedTotal : a?.closedN
+  if (Number.isInteger(total)) parts.push(`${total} closed`)
+  if (a?.mode && a.mode !== 'active') parts.push(String(a.mode).replace(/_/g, ' '))
+  return parts.join(' · ')
 }

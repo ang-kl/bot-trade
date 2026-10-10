@@ -16,7 +16,7 @@
 import { useEffect, useState } from 'react'
 import Card from './common/Card.jsx'
 import { selectedAccountId } from '../lib/selected-account.js'
-import { R_CLIP, finite, fmtPct, fmtR, fmtMoney, fmtPf, fmtPfR, fmtWhen, stripLabel, startScoreboardPolling } from '../lib/scoreboard-view.js'
+import { R_CLIP, finite, fmtPct, fmtR, fmtMoney, fmtPf, fmtPfR, fmtWhen, stripLabel, startScoreboardPolling, accountTitle, accountFacts } from '../lib/scoreboard-view.js'
 
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
 const UP = 'var(--color-up)', DN = 'var(--color-down)', BD = 'var(--color-border)'
@@ -64,9 +64,10 @@ function AccountScore({ a }) {
   return (
     <article className="sb-row" aria-label={`Account ${a.label}`}>
       <div className="sb-cell sb-acct">
-        <span><strong className="sb-name">{a.label}</strong> <span className="sb-sub">{ccy || 'currency unverified'}</span></span>
+        {/* Claude · № 12,990 10-Oct: the owner's account line, leverage and trade counts. */}
+        <strong className="sb-name">{accountTitle(a)}</strong>
         <span className="sb-sub">
-          {!a.registered && 'not in the account registry · '}{m.n} closed{m.externalN ? ` · ${m.externalN} manual` : ''}
+          {!a.registered && 'not in the account registry · '}{accountFacts(a)}{m.externalN ? ` · ${m.externalN} manual in last ${m.n}` : ''}
         </span>
         {m.rows.length > 0 && <button type="button" className="sb-toggle" aria-expanded={open} onClick={() => setOpen(o => !o)}>
           {open ? '▾' : '▸'} Last {m.rows.length} trades

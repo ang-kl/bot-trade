@@ -24,7 +24,7 @@ const account = (id, currency, over = {}) => ({
 })
 const report = {
   at: '2026-10-10T08:01:00.000Z', account: 'all', days: 30, trades: 20,
-  accounts: [account('43097342', 'SGD'), account('42993489', 'USD'),
+  accounts: [account('43097342', 'SGD', { login: '5067353', isLive: false, leverage: 200, openNow: 3, closedToday: 2 }), account('42993489', 'USD', { login: '1251247', isLive: true }),
     { ...account('11112222', null), last20: { ...metrics({}), externalN: 0, rows: [], bot: metrics({}) },
       days30: { days: 30, ...metrics({}), externalN: 0, bot: metrics({}) }, lastCloseAt: null }],
   pooled: { days30: metrics({ n: 76 }), days30Bot: metrics({ n: 64, winRatePct: 43.75, expectancyR: 0.12 }) },
@@ -36,7 +36,9 @@ describe('Scoreboard view', () => {
     const html = renderToStaticMarkup(<ScoreboardView report={report} selected="42993489" />)
     for (const bad of ['NaN', 'undefined', 'null', 'Infinity']) expect(html).not.toContain(bad)
     expect(html).toContain('…7342'); expect(html).toContain('…3489'); expect(html).toContain('…2222')
-    expect(html).toContain('>SGD<'); expect(html).toContain('>USD<'); expect(html).toContain('currency unverified')
+    // Claude · № 12,990: the owner's account line — side · login · account · currency — and its facts.
+    expect(html).toContain('Demo · 5067353 · 43097342 · SGD'); expect(html).toContain('Live · 1251247 · 42993489 · USD')
+    expect(html).toContain('11112222 · currency unverified'); expect(html).toContain('1:200 · 3 open · 2 closed today · 30 closed')
     expect(html).toContain('SGD −69.70'); expect(html).toContain('USD −69.70')
     expect(html).toContain('45%'); expect(html).toContain('0.61'); expect(html).toContain('−0.12R')
     expect(html).toContain('Win ÷ loss <strong>0.75</strong>') // Claude · № 12,989: compact row wording
