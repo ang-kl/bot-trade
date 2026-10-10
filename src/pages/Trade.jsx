@@ -31,7 +31,7 @@ import { loadLatestPrices } from '../lib/latest-prices.js'
 import { manualOrderConfirmText } from '../lib/manual-order-confirm.js'
 // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the pre-order check.
 import PreorderResult from '../components/PreorderResult.jsx'
-import { scanCheckPath, manualCheckPath, manualOrderBody, padDestination, checkKey, checkSummary, createCheckRunner } from '../lib/preorder-check.js'
+import { scanCheckPath, manualCheckPath, manualOrderBody, padDestination, checkKey, checkSummary, createCheckRunner, sigKey } from '../lib/preorder-check.js'
 
 // Inline tab link used by the "Next:" guide line
 function NavTab({ to, children }) {
@@ -399,10 +399,7 @@ function OrderLogTable({ rows, marketHours = null, prices = {}, trades = [], lev
 // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): each row shows
 // the signal's own levels and a Check that asks the risk gate ONCE per tap
 // (GET /state/preorder, never polled) what it would do with this signal now.
-// Claude · № 12,975 10-Oct (Codex P2 on #1301): the key carries the SCAN
-// identity (scanId, bias), so a newer scan of the same account/symbol/strategy/
-// timeframe never shows the previous scan's check under its row.
-export const sigKey = (sc) => JSON.stringify([sc.account_id, sc.symbol, sc.strategy, sc.timeframe, sc.scanId ?? null, sc.bias ?? null])
+// Claude · № 12,975 10-Oct (Codex P2 on #1301): sigKey carries the scan identity — src/lib/preorder-check.js.
 function SignalLevels({ levels }) {
   if (!levels || levels.entry == null) return <span className="text-[var(--color-text-sub)]">—</span>
   return <span className="whitespace-nowrap">{fmt(levels.entry)} · {fmt(levels.sl)} · {fmt(levels.tp1)} · {levels.rr == null ? '—' : `${fmt(levels.rr, 2)}R`}</span>

@@ -1,7 +1,8 @@
 // Codex · №11,667 (codex-footprint: signals-ui-2026-10-07).
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { sigKey, TradeSignalsCard } from './Trade.jsx'
+import { TradeSignalsCard } from './Trade.jsx'
+import { sigKey } from '../lib/preorder-check.js'
 
 const row = (symbol, extra = {}) => ({
   symbol, account_id: '101', accountLabel: 'Demo 101', strategy: 'ema_pullback',
