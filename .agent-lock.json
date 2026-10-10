@@ -1,20 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": [
-    {
-      "id": "codex-project-context-2026-10-10",
-      "locked_by": "codex-project-context",
-      "serial": 13005,
-      "branch": "docs/project-context-2026-10-10",
-      "files": [
-        "docs/project-context.md"
-      ],
-      "started_at": "2026-10-10T11:12:11Z",
-      "expires_at": "2026-10-10T13:12:11.000Z",
-      "purpose": "Owner-requested documentation PR: project context and shared serial/reference continuity.",
-      "pr": 1303
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
@@ -325,6 +311,13 @@
       "serial": 13005,
       "subject": "Owner-requested project-context documentation PR1303 created",
       "text": "Draft PR1303 head de7cdcb7ec5ee14994e22f502c28acff9edd91ea adds only docs/project-context.md on main28cf20b. Shared serial/paragraph rules preserve current CLAUDE.md conventions; dated counts/observations are not instructions. Exact published content and documentation checks passed; no application gate, merge or deployment claim. Own file lock retained pending merge/expiry. Latest serial is a recorded lower bound, not a full-corpus measurement."
+    },
+    {
+      "from": "codex-project-context",
+      "at": "2026-10-10T11:30:25Z",
+      "serial": 13006,
+      "subject": "PR1303 merged; context available on main; own lock released",
+      "text": "Merged b6f060000a8400a73b15da62eb124d4e8aab9f88 after exact-head CI38047988551 SUCCESS at c33764eac2700d63a52268ea6748bf51905e3955. Only docs/project-context.md changed. Actual P2 stamp/timezone review corrected and resolved; final actual reviews inspected, no independent human review. Main file bytes match reviewed candidate. Existing application gates reused; no manual production rebuild/trading settings change or acceptance closure. Codex №13,006 is a recorded serial lower bound; full transcript corpus unavailable."
     }
   ]
 }
