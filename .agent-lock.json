@@ -19,7 +19,8 @@
         "agent/services/startup-sql-diagnostic.js",
         "agent/services/startup-sql-diagnostic.test.js",
         "agent/db.js",
-        "agent/db-startup-timing.test.js"
+        "agent/db-startup-timing.test.js",
+        "agent/lib/one-account-model.test.js"
       ],
       "purpose": "One consolidated PL-01 P1–P7 follow-up: reproduced corrections and bounded private evidence; trading invariants preserved."
     }
