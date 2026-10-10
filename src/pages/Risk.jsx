@@ -35,7 +35,7 @@ import { dailyCapState, describeBinding } from '../lib/daily-cap-state.js'
 import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 import { accountInputDraft, editAccountInput, accountInputPatch } from '../lib/account-input-draft.js'
 // Codex · №12,877 · 2026-10-10; codex-footprint: risk-reporting-parity.
-import { riskSizingBalance, riskMarginUsd } from '../lib/risk-reporting-money.js'
+import { riskSizingBalance, riskMarginUsd, riskProtectionBalance } from '../lib/risk-reporting-money.js'
 import { armScrollReveal } from '../lib/scroll-reveal.js'
 
 // W3C-style international number formatting (owner: "use w3 international
@@ -442,14 +442,19 @@ export default function Risk() {
   // while it is still the operator's decision to make, instead of after a save
   // has already left the account uncapped.
   const sizingBalance = riskSizingBalance(acct, data?.account)
+  // Codex · №12,890 · 2026-10-10; codex-footprint: risk-currency-review.
+  const protectionBalance = riskProtectionBalance(acct, data?.account)
+  const protectionUsdAvailable = protectionBalance != null
   const capState = dailyCapState(risk, sizingBalance)
-  const usdUnavailable = data?.account?.currency && data.account.currency !== 'USD' && sizingBalance == null
+  const usdUnavailable = data?.account?.currencyConflict || (data?.account?.currency && data.account.currency !== 'USD' && sizingBalance == null)
   if (usdUnavailable) {
     capState.capUsd = null
     capState.binding = null
     capState.uncapped = null
     capState.severity = 'warn'
-    capState.message = 'Account USD conversion is unavailable. Native money is still shown; the engine USD cap cannot be reported from this reading.'
+    capState.message = data?.account?.currencyConflict
+      ? 'Account currency evidence conflicts. Joined balances and draft USD previews are withheld; the saved engine reading remains separate.'
+      : 'Account USD conversion is unavailable. Native money is still shown; the engine USD cap cannot be reported from this reading.'
   }
   const capBinding = describeBinding(capState)
   // A campaign is armed only with ALL of percentage, starting equity and start
@@ -973,7 +978,8 @@ export default function Risk() {
                 hint="If a breach close fails (market closed, broker error), re-attempt after this long instead of hammering." recommend="10 minutes." />
               </Advanced>
               {(() => {
-                const balNow = Number(acct.balance) || null
+                if (!protectionUsdAvailable) return <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">Effective dollar cap unavailable: this legacy protection reads native amounts. Its configured rules remain unchanged.</div>
+                const balNow = protectionBalance
                 const pctCap = lossCap?.maxLossPctOfBalance != null && balNow ? balNow * lossCap.maxLossPctOfBalance / 100 : null
                 const eff = [lossCap?.maxLossUsd, pctCap].filter(v => v != null && v > 0)
                 return (
@@ -1016,7 +1022,7 @@ export default function Risk() {
                   </div>
                   <div className="text-[var(--color-text-sub)]">
                     Tripped {ratchetState.haltAt ? new Date(ratchetState.haltAt).toLocaleString() : 'earlier'}
-                    {ratchetState.haltFloor != null && <> at the protected floor ${fmt$(ratchetState.haltFloor)}</>}.
+                    {ratchetState.haltFloor != null && protectionUsdAvailable && <> at the protected floor ${fmt$(ratchetState.haltFloor)}</>}.
                     {ratchetState.keepOff
                       ? ' You chose "keep off", so it will not re-arm on its own.'
                       : ' It re-arms on its own once equity holds above the recovery line — until then, nothing enters.'}
@@ -1037,7 +1043,8 @@ export default function Risk() {
               )}
               {(() => {
                 const st = ratchetState
-                const balNow = Number(acct.balance) || null
+                if (!protectionUsdAvailable) return <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">Dollar staircase and example unavailable: this legacy protection reads native balance/equity, and retained staircase units are not certified USD. Its configured rules and halt state remain unchanged.</div>
+                const balNow = protectionBalance
                 const step = ratchet?.stepUsd > 0 ? ratchet.stepUsd : (balNow ? Math.min(500, Math.max(25, balNow * 0.01)) : null)
                 const steps = st && step > 0 ? Math.max(0, Math.floor((st.hwm - st.baseline) / step)) : 0
                 const floor = st && step > 0 && steps >= 1 ? st.baseline + (steps - 1) * step : null
@@ -1283,7 +1290,7 @@ export default function Risk() {
                 <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
                   {data?.account?.balanceSource === 'broker'
                     ? `Broker cache: ${data.account.currency || 'unit unverified'} ${data.account.balance}; observed ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}`
-                    : data?.account?.balanceSource === 'stored' ? 'stored account value — broker freshness is not verified' : 'account balance unavailable'}
+                    : data?.account?.balanceSource === 'stored' ? 'stored account value — broker freshness is not verified' : data?.account?.currencyConflict ? 'Broker-owned currency evidence conflicts — joined balance and USD previews withheld' : 'account balance unavailable'}
                 </div>
               </div>
               <Field label="Leverage (1:N)" value={acct.leverage} onChange={v => setAcctField('leverage', v)}

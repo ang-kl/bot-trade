@@ -1,11 +1,20 @@
 // Codex · №12,877 · 2026-10-10; codex-footprint: risk-reporting-parity.
 // Display conversion only. Editable/saved balance remains native money.
 function rate(account) {
+  if (account?.currencyConflict) return null
   if (account?.currency === 'USD') return 1
   const fx = account?.fx
   return account?.currency && fx?.currency === account.currency
     && fx.currencySource === 'broker_verified' && fx.conversion === 'fx_table'
     && Number.isFinite(fx.rate) && fx.rate > 0 ? fx.rate : null
+}
+
+// Codex · №12,890 · 2026-10-10; codex-footprint: risk-currency-review.
+// Legacy protection engines consume native balance/equity under USD-named
+// settings. Converting the preview would claim enforcement they do not have.
+// Leave those engines alone and withhold dollar previews for other units.
+export function riskProtectionBalance(draft, account) {
+  return account?.currency === 'USD' ? riskSizingBalance(draft, account) : null
 }
 
 export function riskSizingBalance(draft, account) {
