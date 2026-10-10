@@ -30,7 +30,8 @@
         "agent/services/scoreboard.js",
         "agent/services/scoreboard.test.js",
         "src/components/Scoreboard.jsx",
-        "src/components/scoreboard.test.jsx"
+        "src/components/scoreboard.test.jsx",
+        "src/lib/scoreboard-view.js"
       ],
       "reason": "Codex P2s on PR1305: split the daily line at a missing reading and at a host change; no first-to-last change across broker hosts. Display only."
     }
