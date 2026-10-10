@@ -1,23 +1,6 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": [
-    {
-      "id": "codex-pre02-2026-10-10",
-      "locked_by": "codex-pre02",
-      "branch": "perf/pre02-complete-population-2026-10-10",
-      "at": "2026-10-10T05:01:28.851718+00:00",
-      "expires_at": "2026-10-10T09:01:28.851718+00:00",
-      "serial": 12922,
-      "files": [
-        "CLAUDE.md",
-        "agent/db.js",
-        "agent/services/order-lifecycle.js",
-        "agent/services/order-lifecycle.test.js",
-        "agent/services/pre02-query-integration.test.js"
-      ],
-      "purpose": "P5 selection-preserving PRE-02 optimisation; complete population uses opt-in covering index, capped population retains original query and plan; no trading/settings changes."
-    }
-  ],
+  "locks": [],
   "notes": [
     {
       "from": "claude-builder",
