@@ -4416,14 +4416,18 @@ export default function stateRouter(db) {
         } catch { /* unavailable registry is not evidence of demo, live or currency */ }
       }
       const verifiedCurrency = nativeMoney.observation?.currency || null
+      // Codex · №12,890 · 2026-10-10; codex-footprint: risk-currency-review.
+      // Conflicting account-owned caches do not establish a common unit for
+      // the stored sizing scalar. Keep both receipts; withhold joined money.
+      const currencyConflict = !!(brokerSnapshot.currency && verifiedCurrency && brokerSnapshot.currency !== verifiedCurrency)
       const depositCurrency = brokerSnapshot.currency || verifiedCurrency || registeredAccount?.base_currency?.toUpperCase() || null
       const brokerBalance = finite(snap?.account?.health?.balance) ?? finite(snap?.account?.balance)
       // The legacy _usd scalar is native. A registry hint alone cannot prove
       // a non-USD scalar's unit; broker-owned currency evidence can.
-      const storedBalance = displayAccountId && (verifiedCurrency || !depositCurrency || depositCurrency === 'USD')
+      const storedBalance = !currencyConflict && displayAccountId && (verifiedCurrency || !depositCurrency || depositCurrency === 'USD')
         ? getAccountBalance(db, displayAccountId) : null
-      const displayBalance = brokerBalance ?? storedBalance
-      const displayCurrency = brokerBalance != null ? brokerSnapshot.currency : storedBalance != null ? verifiedCurrency : null
+      const displayBalance = currencyConflict ? null : brokerBalance ?? storedBalance
+      const displayCurrency = currencyConflict ? null : brokerBalance != null ? brokerSnapshot.currency : storedBalance != null ? verifiedCurrency : null
       const moneyContract = daily?.money
       const displayBalanceUsd = displayCurrency === 'USD' ? displayBalance
         : displayCurrency && displayCurrency === moneyContract?.currency && moneyContract?.currencySource === 'broker_verified'
@@ -4460,12 +4464,13 @@ export default function stateRouter(db) {
           // derived lot figure on the page wrong.
           balance: displayBalance,
           storedBalance,
-          balanceSource: brokerBalance != null ? 'broker' : storedBalance != null ? 'stored' : null,
+          balanceSource: currencyConflict ? null : brokerBalance != null ? 'broker' : storedBalance != null ? 'stored' : null,
           balanceFetchedAt: brokerBalance != null ? snap.fetchedAt : null,
           currency: displayCurrency,
           balanceUsd: displayBalanceUsd,
           fx: conversionView(moneyContract),
-          balanceUsdReason: displayBalanceUsd != null ? null : moneyContract?.refused || 'deposit_currency_unverified',
+          balanceUsdReason: currencyConflict ? 'currency_evidence_conflict' : displayBalanceUsd != null ? null : moneyContract?.refused || 'deposit_currency_unverified',
+          currencyConflict,
           moneyObservation: nativeMoney,
           engineBalanceNative: daily?.balanceNative ?? null,
           engineBalanceUsd: daily?.balance ?? null,

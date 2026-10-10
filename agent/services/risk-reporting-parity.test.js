@@ -13,6 +13,7 @@ import { invalidateStateCache } from '../lib/state-cache.js'
 import { riskSizingBalance, riskMarginUsd } from '../../src/lib/risk-reporting-money.js'
 import { accountInputDraft, editAccountInput, accountInputPatch } from '../../src/lib/account-input-draft.js'
 import { dailyCapState } from '../../src/lib/daily-cap-state.js'
+import * as reportingMoney from '../../src/lib/risk-reporting-money.js'
 
 const tiered = { dailyLossPct: 0.02, dailyLossLimit: 150, dailyLossFloorUsd: 400,
   dailyLossTierAtUsd: 10000, dailyLossTierSmallPct: 0.03, dailyLossTierLargePct: 0.04,
@@ -57,6 +58,47 @@ function state(db) {
     trades: db.prepare('SELECT * FROM trades ORDER BY id').all(),
     accounts: db.prepare('SELECT * FROM accounts ORDER BY account_id').all() }
 }
+
+// Codex · №12,890 · 2026-10-10; codex-footprint: risk-currency-review.
+for (const [storedCurrency, snapshotCurrency] of [['SGD', 'USD'], ['USD', 'SGD']]) {
+  test(`P2 review: conflicting ${storedCurrency}/${snapshotCurrency} broker-owned currencies cannot label an editable balance`, async t => {
+    const { db, read } = await fixture(t)
+    account(db, '43097342', storedCurrency, 3000); fx(db)
+    setState(db, 'acct:43097342:broker_snapshot_cache_json', JSON.stringify({ fetchedAt: new Date().toISOString(),
+      account: { accountId: '43097342', currency: snapshotCurrency, isLive: false,
+        health: { balance: 4000, usedMargin: 100, freeMargin: 3900, equity: 4000 } } }))
+    const before = state(db), now = Date.now(), enforced = engine(db, '43097342', now)
+    const r = await read('risk-full?account=43097342')
+    assert.equal(r.account.balance, null)
+    assert.equal(r.account.storedBalance, null)
+    assert.equal(r.account.currency, null)
+    assert.equal(r.account.balanceUsd, null)
+    assert.equal(r.account.balanceUsdReason, 'currency_evidence_conflict')
+    assert.equal(accountInputDraft(r.account).balance, null)
+    assert.equal(riskSizingBalance(editAccountInput(accountInputDraft(r.account), 'balance', 3000), r.account), null)
+    assert.equal(riskMarginUsd(r.margin, r.account), null)
+    assert.equal(r.account.moneyObservation.observation.currency, storedCurrency)
+    assert.equal(r.account.brokerSnapshot.currency, snapshotCurrency)
+    assert.deepEqual(engine(db, '43097342', now), enforced)
+    assert.deepEqual(state(db), before)
+  })
+}
+
+test('P2 review: native legacy protection amounts cannot become USD previews through FX; valid USD remains reportable', async t => {
+  const { db, read } = await fixture(t)
+  account(db, '43097342', 'SGD', 3000); account(db, '46130058', 'USD', 40000); fx(db)
+  const before = state(db)
+  assert.equal(typeof reportingMoney.riskProtectionBalance, 'function')
+  const sgd = await read('risk-full?account=43097342')
+  assert.equal(riskSizingBalance(accountInputDraft(sgd.account), sgd.account), 2400, 'engine sizing conversion is still valid')
+  assert.equal(reportingMoney.riskProtectionBalance(accountInputDraft(sgd.account), sgd.account), null,
+    'legacy loss-cap/ratchet read native amounts; conversion would misrepresent their unchanged enforcement')
+  const usd = await read('risk-full?account=46130058')
+  assert.equal(reportingMoney.riskProtectionBalance(accountInputDraft(usd.account), usd.account), 40000)
+  assert.equal(reportingMoney.riskProtectionBalance(accountInputDraft(sgd.account), usd.account), null)
+  assert.equal(reportingMoney.riskProtectionBalance(accountInputDraft(usd.account), { ...usd.account, currency: null }), null)
+  assert.deepEqual(state(db), before)
+})
 
 test('P2: actual configuration-proposal route uses the converted engine floor, not native balance × base pct', async t => {
   const { db, read } = await fixture(t)
