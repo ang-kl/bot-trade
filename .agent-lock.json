@@ -19,7 +19,8 @@
         "src/lib/risk-reporting-money.js",
         "agent/services/risk-reporting-ui-contract.test.js",
         "src/lib/daily-cap-state.js",
-        "src/components/ConfigProposals.jsx"
+        "src/components/ConfigProposals.jsx",
+        "docs/ui-control-inventory.md"
       ],
       "scope": "Owner P2: daily-cap recommendation, native account money and dailyPacing parity. Reporting only; risk engine, settings and Claude PR1296 UI unchanged. Native account inputs and USD preview/margin conversion in existing Risk page only; layout/write routes unchanged."
     }
