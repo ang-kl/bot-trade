@@ -124,3 +124,29 @@ test('a failed broker read invalidates nothing; every other successful write sti
   assert.equal(w.status, 200)
   assert.equal((await s.get('/state/config')).cache, 'miss', 'an ordinary write keeps the whole-cache rule')
 })
+
+// Claude · № 12,975 10-Oct (Codex P2 on #1301): index.js inserts an action_log
+// row for EVERY POST before the actions router runs, so even a coalesced
+// broker read (no broker round, no global invalidation) leaves a new audit row
+// that GET /state/action-log and /state/workspace-log must show at once.
+test('the exempt broker POSTs still refresh the two audit-log reads — nothing else', async t => {
+  const s = await server(t)
+  await s.post('/actions/broker-history', { accountId: '22', days: 7 }) // first, real round
+  for (const p of ['/state/action-log', '/state/workspace-log', '/state/config']) {
+    await s.get(p)
+    assert.equal((await s.get(p)).cache, 'hit', `${p} cached before the coalesced POST`)
+  }
+  const again = await s.post('/actions/broker-history', { accountId: '22', days: 7 })
+  assert.equal(again.status, 200)
+  assert.equal(s.rounds.history, 1, 'served from the shared slot: no broker round')
+  assert.equal((await s.get('/state/action-log')).cache, 'miss', 'the audit row index.js wrote is visible at once')
+  assert.equal((await s.get('/state/workspace-log')).cache, 'miss')
+  assert.equal((await s.get('/state/config')).cache, 'hit', 'an unrelated read is still not thrown away')
+  const pos = await s.post('/actions/broker-positions', { accountId: 'all' })
+  assert.equal(pos.status, 200)
+  await s.get('/state/action-log')
+  assert.equal((await s.get('/state/action-log')).cache, 'hit')
+  const pos2 = await s.post('/actions/broker-positions', { accountId: 'all' })
+  assert.equal(pos2.status, 200)
+  assert.equal((await s.get('/state/action-log')).cache, 'miss', 'a coalesced broker-positions POST refreshes the audit read too')
+})

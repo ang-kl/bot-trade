@@ -435,9 +435,16 @@ export default function actionsRouter(db, deps = {}) {
   // audit rows are KEPT (index.js): neither route is read-only, and GET
   // /state/action-log and /state/workspace-log serve every row.
   const OWN_INVALIDATION = new Set(['/broker-history', '/broker-positions'])
+  const AUDIT_LOG_PATHS = ['/action-log', '/workspace-log']
   router.use((req, res, next) => {
     if (req.method === 'GET') return next()
-    if (OWN_INVALIDATION.has(req.path)) return next()
+    // Claude · № 12,975 10-Oct (Codex P2 on #1301): index.js writes an
+    // action_log row for EVERY POST before this router runs, so these two
+    // still make the audit-log reads stale — drop exactly those paths.
+    if (OWN_INVALIDATION.has(req.path)) {
+      res.on('finish', () => { if (res.statusCode < 400) invalidateStatePaths(AUDIT_LOG_PATHS) })
+      return next()
+    }
     res.on('finish', () => { if (res.statusCode < 400) invalidateStateCache() })
     next()
   })

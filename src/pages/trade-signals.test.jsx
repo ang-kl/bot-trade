@@ -1,7 +1,7 @@
 // Codex · №11,667 (codex-footprint: signals-ui-2026-10-07).
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TradeSignalsCard } from './Trade.jsx'
+import { sigKey, TradeSignalsCard } from './Trade.jsx'
 
 const row = (symbol, extra = {}) => ({
   symbol, account_id: '101', accountLabel: 'Demo 101', strategy: 'ema_pullback',
@@ -90,5 +90,19 @@ describe('Trade signal eligibility presentation', () => {
     expect(html).toContain('Demo 101')
     expect(html).toContain('Demo 202')
     expect((html.match(/Candidate · no linked entry/g) || []).length).toBe(2)
+  })
+})
+
+// Claude · № 12,975 10-Oct (Codex P2 on #1301): a check speaks for ONE scan. A
+// newer scan of the same account/symbol/strategy/timeframe gets a new key, so
+// the previous scan's approval, size and risk never render under its row.
+describe('signal check key — the scan identity', () => {
+  const base = { account_id: '101', symbol: 'EURUSD', strategy: 'donchian_breakout', timeframe: '1h', scanId: 7, bias: 'long' }
+  it('changes when the scan changes (new scanId or flipped bias)', () => {
+    expect(sigKey({ ...base, scanId: 8 })).not.toBe(sigKey(base))
+    expect(sigKey({ ...base, bias: 'short' })).not.toBe(sigKey(base))
+  })
+  it('stays the same for the same scan across polls', () => {
+    expect(sigKey({ ...base })).toBe(sigKey(base))
   })
 })
