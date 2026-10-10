@@ -1990,7 +1990,7 @@ export default function Performance() {
           phone screens and the desktop ledger alike, so it is the first card
           at every width — one mount, one minute poll, not a copy per layout
           (the phone and desktop shells below are a CSS split that both mount). */}
-      <Scoreboard />
+      <Scoreboard overview={overview} /* Claude · № 13,024 10-Oct: balance, float and SL/TP from the poll above */ />
       {/* Codex · №11,791 · 2026-10-07; codex-footprint: performance-essentials. Forward goals, capital and recorded management lead. */}
       <Card id="sec-performance-goals" scope="all">
         <h2 className="t-h3">Forward results — progress toward trading goals</h2>

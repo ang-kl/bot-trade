@@ -103,3 +103,72 @@ export function accountFacts(a) {
   if (a?.mode && a.mode !== 'active') parts.push(String(a.mode).replace(/_/g, ' '))
   return parts.join(' · ')
 }
+
+// Claude · № 13,024 10-Oct (owner after № 13,017: "scoreboard doesn;t show
+// current balance, float, SL/TP. Is there a record in the storage of Bot-trade
+// the daily balance of account recorded so that we can check pattern").
+// Formatters for the balance cell, the open positions and the nightly line.
+// The figures are the server's: the account-overview reading the Performance
+// page already polls, and the scoreboard report's `nightly` block.
+
+/** An amount with no sign, grouped: "SGD 3,062.38". */
+export const fmtAmount = (v, currency) => finite(v)
+  ? `${currency ? `${currency} ` : ''}${v < 0 ? MINUS : ''}${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  : '—'
+/** A broker price as sent, without float noise: 1.2801400000000001 → "1.28014". */
+export const fmtPrice = v => finite(v) ? String(Number(v.toPrecision(10))) : '—'
+export const fmtLots = v => finite(v) ? String(Number(v.toPrecision(6))) : '—'
+
+// Claude · № 13,029 10-Oct (owner: "write your day's balance right at the New
+// York regular market close (4:00 PM ET)"): each day's row is named in New
+// York time, so a row read at the bell reads "Fri, Oct 09, 4:00 PM ET" in
+// every browser, and the weekday is the trading day it closes.
+const ET = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: '2-digit', hour: 'numeric', minute: '2-digit' })
+/** "Fri, Oct 09, 4:00 PM ET" — the weekday is what a pattern is read by. */
+export const fmtNight = iso => {
+  const t = Date.parse(iso || '')
+  if (!Number.isFinite(t)) return 'time unknown'
+  return `${ET.format(new Date(t))} ET`
+}
+
+/**
+ * Where a stop sits against the entry, in words: a BUY's stop above its entry
+ * (a SELL's below) is on the profit side. A comparison of two server figures,
+ * not a new figure. null when either is missing or the side is unknown.
+ */
+export function stopSide(p) {
+  if (!finite(p?.sl) || !finite(p?.entry)) return null
+  const side = String(p.side || '').toUpperCase()
+  if (side !== 'BUY' && side !== 'SELL') return null
+  if (p.sl === p.entry) return 'at entry'
+  return (side === 'BUY') === (p.sl > p.entry) ? 'in profit' : null
+}
+
+/** The balance cell's lines from one account-overview row (or its absence). */
+export function balanceView(live, loaded) {
+  if (!live) return { value: loaded ? '—' : '…', sub: loaded ? 'no broker reading for this account' : 'reading the broker cache' }
+  const ccy = live.currency
+  if (!finite(live.balance)) return { value: '—', sub: 'no fresh broker balance' }
+  const sub = finite(live.openPnl)
+    ? `float ${fmtMoney(live.openPnl, ccy)} · equity ${fmtAmount(live.equity, ccy)}`
+    : 'float not read yet'
+  return { value: fmtAmount(live.balance, ccy), sub }
+}
+
+/** The words under one night's balance change: whether deposits were checked. */
+export function flowWords(n) {
+  if (!n || n.balanceChange == null || !n.flows) return ''
+  if (n.flows.status === 'read') return finite(n.flows.external) && n.flows.external !== 0
+    ? `incl. deposits/withdrawals ${fmtMoney(n.flows.external, null)}` : 'no deposit or withdrawal'
+  if (n.flows.status === 'unclassified') return 'a broker entry is unclassified'
+  return 'deposits not checked'
+}
+
+const nightsWord = n => `${n} day${n === 1 ? '' : 's'}`
+/** The nightly line's aria-label: what it shows, by count. */
+export function nightlyLabel(rec) {
+  const pts = (rec?.nights || []).filter(n => finite(n.balance))
+  if (!pts.length) return 'No daily balance recorded in this account\'s currency.'
+  return `Daily balance, ${pts.length} reading${pts.length === 1 ? '' : 's'}, ${fmtAmount(pts[0].balance, rec.currency)} to ${fmtAmount(pts.at(-1).balance, rec.currency)}: `
+    + `up on ${nightsWord(rec.up)}, down on ${nightsWord(rec.down)}, unchanged on ${nightsWord(rec.flat)}.`
+}
