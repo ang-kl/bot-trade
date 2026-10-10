@@ -182,7 +182,10 @@ export async function runGeneralPartial(db, input, deps) {
       .run(residual.volume / p.lotSize, x.tradeId, x.accountId, x.positionId)
     db.prepare(`UPDATE monitored_positions SET scaled_out=1,broker_volume_units=?,
       bank_partial_at=COALESCE(bank_partial_at,?) WHERE id=? AND account_id=? AND trade_id=?`)
-      .run(residual.volume, p.bankPartialAt, x.monitorId, x.accountId, x.tradeId)
+      // Codex · №12,944 · 2026-10-10; codex-footprint: partial-reconcile-units.
+      // Receipt/residual quantities use protocol units ×100. The monitor's
+      // reconciliation baseline uses underlying units, as tradeData.volume/100.
+      .run(residual.volume / 100, p.bankPartialAt, x.monitorId, x.accountId, x.tradeId)
     const recorded = recordPositionEvent(db, { accountId: x.accountId, positionId: x.positionId,
       tradeId: x.tradeId, symbol: x.symbol, kind: 'scale_out', toValue: receipt.closedVolume,
       priceAt: receipt.price, reason: p.reason, source: p.source,

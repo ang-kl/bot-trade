@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+// Codex · №12,944 · 2026-10-10; codex-footprint: bounded-startup-sql.
+import { createStartupSqlDiagnostic } from './services/startup-sql-diagnostic.js';
 // Codex · №12,434 · 2026-10-09; codex-footprint: reporting-query.
 import { ensureScannerReportingIndexes } from './lib/reporting-indexes.js';
 import { openJournal } from './lib/wal-open.js';
@@ -1296,9 +1298,11 @@ const SEED_STATE = {
  * indexes, and seed default agent_state rows.
  *
  * @param {string} [dbPath] — file path; falls back to DB_PATH env or ./agent.db
+ * @param {object} [startupDiagnosticOptions] — private startup observation options
  * @returns {import('better-sqlite3').Database}
  */
-export function initDB(dbPath) {
+export function initDB(dbPath, startupDiagnosticOptions) {
+  const startupDiagnostic = createStartupSqlDiagnostic(startupDiagnosticOptions);
   const startupStart = performance.now();
   let phaseStart = startupStart;
   const startupPhases = [];
@@ -1306,9 +1310,17 @@ export function initDB(dbPath) {
     const end = performance.now();
     startupPhases.push({ name, ms: end - phaseStart });
     phaseStart = end;
+    if (startupDiagnostic) {
+      const next = ['open_and_journal', 'base_schema', 'legacy_repairs', 'column_migrations',
+        'indexes', 'history_schema', 'final_migrations_and_seed'][startupPhases.length];
+      startupDiagnostic.phase(next);
+    }
   };
   const resolvedPath = dbPath || process.env.DB_PATH || './agent.db';
-  const db = new Database(resolvedPath);
+  try {
+  const db = startupDiagnostic
+    ? startupDiagnostic.open(() => new Database(resolvedPath)) : new Database(resolvedPath);
+  startupDiagnostic?.attach(db);
 
   // Performance / concurrency pragmas.
   //
@@ -2531,6 +2543,12 @@ export function initDB(dbPath) {
   console.log(`[boot] database initialization: ${JSON.stringify(db.startupTiming)}`);
 
   return db;
+  } catch (err) {
+    startupDiagnostic?.stop('startup_error');
+    throw err;
+  } finally {
+    startupDiagnostic?.stop();
+  }
 }
 
 /**

@@ -1,7 +1,10 @@
 // Codex · №12,435 · 2026-10-09; codex-footprint: targeted-owned-evidence.
 // Private operator readout. No arbitrary SQL, broker call, profiler or action.
 // Every monetary/position value is a dated stored observation, never refreshed here.
-import { readHybridVerdicts } from './diagnostic-readout.js'
+import { readHybridVerdicts, readTradingAssessment } from './diagnostic-readout.js'
+// Codex · №12,944 · 2026-10-10; codex-footprint: consolidated-private-evidence.
+import { readLifecycleEvidence } from './lifecycle-evidence-readout.js'
+import { readAccountEvidence } from './account-evidence-readout.js'
 import { brokerPolicyObservation } from '../lib/stop-policy.js'
 import { readStoredInitialRisk } from './initial-risk-readout.js'
 import { readScannerEvidence } from './scanner-evidence-readout.js'
@@ -23,6 +26,14 @@ function targetIds(raw) {
   if(raw == null || raw === '') return []
   if(typeof raw !== 'string' || !/^[1-9]\d{0,14}(,[1-9]\d{0,14}){0,7}$/.test(raw)) return null
   return [...new Set(raw.split(',').map(Number))]
+}
+
+// Codex · №12,963 · 2026-10-10; codex-footprint: protocol-account-targets.
+// Broker identities are exact decimal strings, distinct from SQLite trade PKs.
+function targetProtocolIds(raw) {
+  if(raw == null || raw === '') return []
+  if(typeof raw !== 'string' || !/^[1-9]\d{0,19}(,[1-9]\d{0,19}){0,7}$/.test(raw)) return null
+  return [...new Set(raw.split(','))]
 }
 
 // Codex · №12,808 · 2026-10-10; codex-footprint: hybrid-verdict-only-read.
@@ -94,7 +105,7 @@ function readHybridEvidence(db, now) {
   }).deferred()
 }
 
-export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
+export function readTargetedEvidence(db, now=Date.now(), tradeIds=[], accountIds=null) {
   if(!Array.isArray(tradeIds)||tradeIds.length>8||tradeIds.some(n=>!Number.isSafeInteger(n)||n<=0)) throw Error('invalid_targets')
   // The existing status index narrows to open trades; the new trade/kind index
   // retrieves each movement kind without walking thousands of observations.
@@ -116,13 +127,16 @@ export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
   for(const row of owners.slice(0,CAP)) if(!selected.some(r=>r.id===row.id)) selected.push(row)
   const pass=stored(db,'momentum_partial_pass_json'), protection=stored(db,'independent_protection_json')
   const out={readAt:now,limits:{openTrades:CAP,totalTradesBound:CAP+tradeIds.length,rowsPerMovementKind:PER_KIND,ownerOrder:'closed_at_desc_id_desc',targetTradeIds:tradeIds},truncatedTrades:owners.length>CAP,
-    verdicts:readHybridVerdicts(db),missingTargets,trades:[]}
+    verdicts:readHybridVerdicts(db,{accountIds}),missingTargets,trades:[]}
   for(const owner of selected) {
     const record={owner:project(owner,['id','account_id','ctrader_position_id','symbol','side','status']),movements:[],volumeRefusals:[],protection:[]}
     // Codex · №12,611 · 2026-10-09; codex-footprint: stored-initial-risk-evidence.
     // Only explicit operator targets receive this additional local projection.
     if(tradeIds.includes(owner.id)) record.initialRisk=readStoredInitialRisk(db,owner.id)
-    if(!owner.account_id || !owner.ctrader_position_id) { record.unavailable='missing_owner'; out.trades.push(record); continue }
+    // Codex · №12,974 · 2026-10-10; codex-footprint: invalid-owner-join-refusal.
+    // Unknown protocol identities cannot become equal by both normalising to null.
+    const ownerAccount=protocolId(owner.account_id),ownerPosition=protocolId(owner.ctrader_position_id)
+    if(!ownerAccount || !ownerPosition) { record.unavailable='missing_or_invalid_owner'; out.trades.push(record); continue }
     for(const kind of ['trail_tightened','sl_moved','scale_out']) {
       const rows=db.prepare(`SELECT id,at,account_id,position_id,trade_id,symbol,kind,from_value,to_value,source,
         CASE WHEN length(detail_json)<=16000 THEN detail_json END detail_json
@@ -132,29 +146,37 @@ export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
         if(String(row.account_id)!==String(owner.account_id) || String(row.position_id)!==String(owner.ctrader_position_id)
           || row.symbol!==owner.symbol) { group.identityConflicts++; continue }
         let detail; try { detail=JSON.parse(row.detail_json) } catch { /* legacy/missing */ }
+        const movement=object(detail?.movement)?detail.movement:null
+        const movementAccount=protocolId(movement?.accountId),movementPosition=protocolId(movement?.positionId)
+        const movementStatus=!movement?'not_recorded':!movementAccount||!movementPosition?'identity_missing_or_invalid':
+          movementAccount!==ownerAccount||movementPosition!==ownerPosition?'identity_conflict':'stored_owned_observation'
         group.rows.push({...project(row,['id','at','account_id','position_id','trade_id','symbol','kind','from_value','to_value','source']),
           provenance:project(detail,['nativeSide','nativeBootId','nativeSeq','nativeAtMs','host']),
-          movement:detail?.movement ? project(detail.movement,MOVEMENT_FIELDS) : null})
+          movementStatus,movement:movementStatus==='stored_owned_observation'?project(movement,MOVEMENT_FIELDS):null})
       }
       record.movements.push(group)
     }
-    for(const refusal of (Array.isArray(pass?.cappedHybrid?.deferred)?pass.cappedHybrid.deferred:[]).slice(0,CAP)) {
-      if(refusal.tradeId!==owner.id || String(refusal.accountId)!==String(owner.account_id)) continue
+    const refusals=(Array.isArray(pass?.cappedHybrid?.deferred)?pass.cappedHybrid.deferred:[])
+      .filter(row=>row?.tradeId===owner.id&&protocolId(row.accountId)===ownerAccount)
+    record.volumeRefusalRange={total:refusals.length,limit:CAP,truncated:refusals.length>CAP}
+    for(const refusal of refusals.slice(0,CAP)) {
       const v=refusal.volumeInputs
       const owned=v && String(v.accountId)===String(owner.account_id) && String(v.positionId)===String(owner.ctrader_position_id)
       record.volumeRefusals.push({passAt:scalar(pass.at),reason:scalar(refusal.reason),
         inputStatus:owned?'stored_owned_observation':v?'identity_conflict':'not_recorded',
         inputs:owned?project(v,VOLUME_FIELDS):null})
     }
-    for(const account of (Array.isArray(protection?.accounts)?protection.accounts:[]).slice(0,CAP)) {
-      if(String(account.accountId)!==String(owner.account_id)) continue
-      for(const p of (Array.isArray(account.positions)?account.positions:[]).slice(0,CAP)) {
-        if(String(p.positionId)!==String(owner.ctrader_position_id)) continue
-        record.protection.push({readAt:scalar(protection.readAt),...project(account,['accountId','host','checkedAtMs','ok']),
-          position:{...project(p,['positionId','symbolId','tradeSide','volume','price','entryPrice','stopLoss','takeProfit']),
-            ...brokerPolicyObservation(p)}})
-      }
+    const protectionMatches=[]
+    for(const account of Array.isArray(protection?.accounts)?protection.accounts:[]) {
+      if(protocolId(account?.accountId)!==ownerAccount)continue
+      for(const p of Array.isArray(account?.positions)?account.positions:[])
+        if(protocolId(p?.positionId)===ownerPosition)protectionMatches.push({account,p})
     }
+    record.protectionRange={total:protectionMatches.length,limit:CAP,truncated:protectionMatches.length>CAP}
+    for(const {account,p} of protectionMatches.slice(0,CAP))record.protection.push({readAt:scalar(protection.readAt),
+      ...project(account,['accountId','host','checkedAtMs','ok']),
+      position:{...project(p,['positionId','symbolId','tradeSide','volume','price','entryPrice','stopLoss','takeProfit']),
+        ...brokerPolicyObservation(p)}})
     out.trades.push(record)
   }
   return out
@@ -165,9 +187,15 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   const tradeIds=targetIds(env.OWNED_EVIDENCE_TRADE_IDS)
   if(tradeIds===null)return null
   // Codex · №12,808 · 2026-10-10; codex-footprint: hybrid-verdict-only-read.
-  const scope=env.OWNED_EVIDENCE_SCOPE,hybridOnly=scope==='hybrid'
-  if(scope!=null&&!hybridOnly)return null
+  const scope=env.OWNED_EVIDENCE_SCOPE,hybridOnly=scope==='hybrid',consolidated=scope==='consolidated'
+  if(scope!=null&&!hybridOnly&&!consolidated)return null
   if(hybridOnly&&(tradeIds.length||env.OWNED_EVIDENCE_SCANNER==='1'))return null
+  const accountIds=targetProtocolIds(env.OWNED_EVIDENCE_ACCOUNT_IDS)
+  const dealText=env.OWNED_EVIDENCE_DEAL_IDS,dealIds=dealText==null||dealText===''?[]:
+    typeof dealText==='string'&&/^[1-9]\d{0,19}(,[1-9]\d{0,19}){0,63}$/.test(dealText)?[...new Set(dealText.split(','))]:null
+  const pendingAccount=protocolId(env.OWNED_EVIDENCE_PENDING_ACCOUNT)
+  if(consolidated&&(accountIds===null||dealIds===null||!tradeIds.length||env.OWNED_EVIDENCE_SCANNER==='1'
+    ||(env.OWNED_EVIDENCE_PENDING_ACCOUNT!=null&&!pendingAccount)))return null
   const id=env.OWNED_EVIDENCE_RUN_ID,expires=Date.parse(env.OWNED_EVIDENCE_EXPIRES_AT||'')
   if(typeof id!=='string'|| !/^[a-zA-Z0-9_-]{8,64}$/.test(id)|| !Number.isFinite(expires)||expires<=now()||expires-now()>3600000) return null
   let bytes=0,dropped=0
@@ -186,7 +214,7 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   }
   try {
     if(db.prepare('INSERT OR IGNORE INTO agent_state(key,value) VALUES (?,?)')
-      .run(`owned_evidence:${id}`,JSON.stringify({at:now(),tradeIds,...(hybridOnly?{scope}: {})})).changes!==1) return null
+      .run(`owned_evidence:${id}`,JSON.stringify({at:now(),tradeIds,...(hybridOnly||consolidated?{scope}: {})})).changes!==1) return null
   } catch { emit('not-started',{reason:'durable_claim_failed'});return null }
   // A single delayed read gives ordinary enrolment a chance to persist inputs.
   // It never runs enrolment, submits an order, or repeats until a desired result.
@@ -204,7 +232,9 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
         emit('exit',{at:now(),done:dropped===0,dropped,bytes,...(dropped?{reason:'output_incomplete'}:{})})
         return
       }
-      const {trades,missingTargets,...metadata}=readTargetedEvidence(db,now(),tradeIds)
+      // Codex · №12,972 · 2026-10-10; codex-footprint: requested-account-before-cap.
+      // Canonical verdict projection filters the retained population before its cap.
+      const {trades,missingTargets,...metadata}=readTargetedEvidence(db,now(),tradeIds,consolidated?accountIds:null)
       emit('summary',{...metadata,missingTargetIds:missingTargets.map(row=>row.tradeId)})
       // Requested missing records get their bounded verdict before population
       // detail can consume the output budget. No account identity is invented.
@@ -222,6 +252,40 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
       // separate opt-in, once-only projection before the remaining population.
       const requested=trades.filter(t=>tradeIds.includes(t.owner.id)),remaining=trades.filter(t=>!tradeIds.includes(t.owner.id))
       for(const trade of requested)emitTrade(trade)
+      // Explicit targets only; once per durable run. No broker refresh, action,
+      // arbitrary query, profile comparison or financial-history repair.
+      if(consolidated){
+        const lifecycle=readLifecycleEvidence(db,{tradeIds,dealIds,now:now()})
+        emit('lifecycle-summary',lifecycle.summary)
+        for(const record of lifecycle.records)emit(record.kind,record.value)
+        const {records:accountRecords,...accountSummary}=readAccountEvidence(db,{accountIds,
+          pendingTarget:pendingAccount?{accountId:pendingAccount,symbol:'SpotCrude'}:null,nowMs:now()})
+        for(const record of accountRecords)emit(record.kind,record.value)
+        emit('account-evidence-summary',accountSummary)
+        const assessment=readTradingAssessment(db,now())
+        const {accounts:goalAccounts,...targets}=assessment.targets
+        emit('performance-targets',targets)
+        const selectedAccounts=new Set(accountIds)
+        for(const account of goalAccounts||[])if(selectedAccounts.has(protocolId(account.accountId)))emit('performance-account',account)
+        const report=stored(db,'order_lifecycle_last_json')
+        const accountRows=Array.isArray(report?.accounts)?report.accounts
+          .filter(row=>object(row)&&selectedAccounts.has(protocolId(row.account))):null
+        const pre02=Array.isArray(report?.rules)?report.rules.slice(0,CAP).find(rule=>rule.id==='PRE-02'):null
+        emit('pre02-snapshot',{readAt:now(),source:'stored_snapshot_only',
+          status:pre02?'observed':'unavailable',
+          snapshot:project(report,['schemaVersion','rulesetVersion','at','acceptanceStart','windowDays']),
+          window:project(report?.window,['since','until']),
+          accountScope:accountRows?accountRows.slice(0,CAP).map(row=>project(row,['account','stage','new','legacy','notices'])):null,
+          accountRowsTotal:accountRows?.length??null,accountRowsTruncated:(accountRows?.length||0)>CAP,
+          accountRowsScope:'requested_accounts',ruleScope:'stored_global',
+          rule:pre02?project(pre02,['id','version','key','measurable','population','populationNew','violations',
+            'newViolations','legacyViolations','truncated','newestAt']):null,
+          readCostMs:null,incrementalWriteOverheadMs:null,
+          limitation:'Snapshot population and verdict; same-request timing and comparable pre-release write baseline are separate.'})
+        emit('exit',{at:now(),done:dropped===0,dropped,bytes,scope,
+          omittedOpenTrades:remaining.length,reason:dropped?'output_incomplete':undefined})
+        return
+      }
       const finish=scanner=>{for(const trade of remaining)emitTrade(trade);emit('exit',{at:now(),done:true,dropped,bytes,...(scanner?{scanner}:{})})}
       if(env.OWNED_EVIDENCE_SCANNER!=='1'){finish();return}
       if(now()>=expires){emit('exit',{at:now(),done:false,reason:'deadline_expired',dropped,bytes});return}

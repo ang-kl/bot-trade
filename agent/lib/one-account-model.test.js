@@ -52,6 +52,8 @@ export const PATTERNS = Object.freeze({
  * carry NONE of the tokens; a listed file may carry exactly the counts named.
  */
 export const ALLOWLIST = Object.freeze({
+  // Codex · №12,952 · 2026-10-10; codex-footprint: account-evidence-routing-boundary.
+  'agent/services/account-evidence-readout.js': { reason: 'read-only registry badge and memo of the canonical roster query; identical phase, money and risk readers for every account, with no host-conditioned policy', max: { is_live: 3 } },
   // Codex · №12,529 · 2026-10-09; codex-footprint: six-strategy-lifecycle.
   'agent/services/tick-entry-proof.js': { reason: 'bind retained native entry evidence to the registered broker host and intent environment; identical ownership and profit rules on both hosts', max: { environment_cmp: 1 } },
   // Codex · №12,326 · 2026-10-09; codex-footprint: live/demo broker-boundary fixture.

@@ -13,9 +13,10 @@ import * as nullGuardModule from './null-exit-guard.js'
 import * as moneyModule from '../lib/deal-money.js'
 import { loadRiskConfig } from './risk.js'
 import * as creds from '../lib/ctrader-creds.js'
-import { assertReconcileIdentity } from './reconciler.js'
+import { assertReconcileIdentity, reconcilePositions } from './reconciler.js'
 import { recordPositionEvent } from './position-events.js'
 import { runGeneralPartial, readGeneralPartial, recordEvaluationMetrics, pendingGeneralPartialPositions } from './general-partial-execution.js'
+import { readLifecycleEvidence } from './lifecycle-evidence-readout.js'
 import { runFastMonitor, _resetFastDecisionStateForTests } from './fast-monitor.js'
 import { evaluatePosition, DEFAULT_RULES } from './position-manager.js'
 
@@ -126,6 +127,60 @@ test('actual executor records an underfill and its confirmed residual, not reque
   assert.equal(f.state.closes[0].volume, 5000)
   assert.equal(f.read().trade.volume, 0.09); assert.equal(f.read().journal[0].to_value, 1000)
 })
+
+// Codex · №12,944 · 2026-10-10; codex-footprint: partial-reconcile-units.
+for (const opts of [{}, { short: true, account: '99' }]) {
+  for (const underfill of [false, true]) test(`actual ${opts.short ? 'live short' : 'demo long'} ${underfill ? 'underfilled' : 'half'} partial and unchanged reconciliation agree on monitor units`, async t => {
+    const f = fixture(t, opts)
+    const quantity = underfill ? 1000 : 5000
+    f.state.response = () => f.fill(quantity); f.state.after = 10000 - quantity
+    assert.equal((await f.run()).partialConfirmed, true)
+    const before = f.read(), baseline = f.state.after / 100
+    assert.equal(before.position.broker_volume_units, baseline)
+    assert.equal(before.attempt.receipt.closedVolume, quantity)
+    assert.equal(JSON.parse(before.attempt.residual_json).volume, f.state.after)
+    const detail = JSON.parse(before.journal[0].detail_json)
+    assert.equal(detail.receipt.closedVolume, quantity)
+    assert.equal(detail.residual.volume, f.state.after)
+    f.restart()
+    // Read actual executor-owned durable evidence after reopening SQLite.
+    const totalChanges = f.db.prepare('SELECT total_changes() n').get().n
+    const evidence = readLifecycleEvidence(f.db, { tradeIds: [before.trade.id] })
+    const partial = evidence.records.find(row => row.kind === 'general-partial').value
+    const journal = evidence.records.find(row => row.kind === 'lifecycle-journal' && row.value.row.kind === 'scale_out').value
+    assert.equal(partial.planStatus, 'stored_owned_record')
+    assert.equal(partial.rawStatus, 'stored_owned_record')
+    assert.equal(partial.receiptStatus, 'stored_owned_record')
+    assert.equal(partial.residualStatus, 'stored_owned_record')
+    assert.equal(partial.receipt.closedVolume, quantity)
+    assert.equal(partial.residual.volume, f.state.after)
+    assert.equal(partial.residual.side, opts.short ? 'SELL' : 'BUY')
+    assert.equal(partial.receipt.host, opts.short ? 'live.ctraderapi.com' : 'demo.ctraderapi.com')
+    assert.equal(journal.detail.receiptStatus, 'stored_owned_record')
+    assert.equal(journal.detail.residualStatus, 'stored_owned_record')
+    assert.equal(journal.detail.receipt.closedVolume, quantity)
+    assert.equal(journal.detail.residual.volume, f.state.after)
+    assert.equal(evidence.summary.identityConflicts, 0)
+    assert.equal(evidence.summary.writes, 0); assert.equal(evidence.summary.brokerRequests, 0)
+    assert.equal(f.db.prepare('SELECT total_changes() n').get().n, totalChanges)
+    const reconcile = () => reconcilePositions(f.db, f.snapshot().position, [],
+      (key, value) => setState(f.db, key, value), { accountId: opts.account ?? '42' })
+    const same = reconcile()
+    assert.deepEqual(same.manualChanges, [])
+    assert.equal(f.read().position.broker_volume_units, baseline)
+    assert.equal(f.db.prepare("SELECT count(*) n FROM position_events WHERE kind='volume_reduced'").get().n, 0)
+    assert.equal(f.read().position.current_sl, before.position.current_sl)
+    assert.equal(f.read().position.current_tp, before.position.current_tp)
+    assert.equal(f.read().trade.volume, before.trade.volume)
+    assert.equal(f.state.closes.length, 1); assert.equal(f.state.amends.length, 0)
+    // A later genuine reduction still produces the existing observation.
+    f.state.volume -= 100
+    const reduced = reconcile()
+    assert.equal(reduced.manualChanges.filter(x => x.kind === 'volume').length, 1)
+    const observed = f.db.prepare("SELECT from_value,to_value FROM position_events WHERE kind='volume_reduced'").get()
+    assert.equal(observed.from_value, baseline); assert.equal(observed.to_value, baseline - 1)
+  })
+}
 for (const [name, mutate] of [
   ['empty', () => ({})], ['malformed quantity', r => ({ ...r, deal: { ...r.deal, filledVolume: '5000' } })],
   ['missing quantity', r => ({ ...r, deal: { ...r.deal, filledVolume: undefined } })],
