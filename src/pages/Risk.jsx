@@ -34,6 +34,8 @@ import GlobalScopeNote from '../components/common/GlobalScopeNote.jsx'
 import { dailyCapState, describeBinding } from '../lib/daily-cap-state.js'
 import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 import { accountInputDraft, editAccountInput, accountInputPatch } from '../lib/account-input-draft.js'
+// Codex · №12,877 · 2026-10-10; codex-footprint: risk-reporting-parity.
+import { riskSizingBalance, riskMarginUsd } from '../lib/risk-reporting-money.js'
 import { armScrollReveal } from '../lib/scroll-reveal.js'
 
 // W3C-style international number formatting (owner: "use w3 international
@@ -439,7 +441,16 @@ export default function Risk() {
   // config rather than the saved one — so clearing a field warns immediately,
   // while it is still the operator's decision to make, instead of after a save
   // has already left the account uncapped.
-  const capState = dailyCapState(risk, Number(acct.balance) || null)
+  const sizingBalance = riskSizingBalance(acct, data?.account)
+  const capState = dailyCapState(risk, sizingBalance)
+  const usdUnavailable = data?.account?.currency && data.account.currency !== 'USD' && sizingBalance == null
+  if (usdUnavailable) {
+    capState.capUsd = null
+    capState.binding = null
+    capState.uncapped = null
+    capState.severity = 'warn'
+    capState.message = 'Account USD conversion is unavailable. Native money is still shown; the engine USD cap cannot be reported from this reading.'
+  }
   const capBinding = describeBinding(capState)
   // A campaign is armed only with ALL of percentage, starting equity and start
   // time — the same all-or-nothing rule the engine applies in
@@ -480,7 +491,7 @@ export default function Risk() {
   }, [saving])
 
   // ---- Worked examples, recomputed from what's ON SCREEN -----------------
-  const bal = Number(acct.balance) || 10000
+  const bal = sizingBalance ?? 10000 // explicitly illustrative when no USD conversion is available
   const entry = 1.1
   const slDist = entry * ((Number(risk.minSLDistancePct) || 0.15) / 100)
   const sl = entry - slDist
@@ -627,7 +638,7 @@ export default function Risk() {
           Every tile shows a dash when its inputs are missing; none of them
           fall back to a plausible number. */}
       {(() => {
-        const b = Number(acct.balance)
+        const b = sizingBalance
         const money = (v) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
         const usd = (frac) => {
           const f = Number(frac)
@@ -650,12 +661,12 @@ export default function Risk() {
           // in the reassessment summary.
           // Claude · № 12,812 10-Oct: with an account selected, the stop the
           // ENGINE enforces for it (account-overview) — the draft formula
-          // below leaves out the floor and the balance tiers.
+          // below uses the same floor/tier arithmetic for unsaved USD drafts.
           (() => {
             const v = riskScoped ? dailyStopView(overview?.accounts?.find(r => String(r.accountId) === String(riskAcct))?.dailyStop) : null
             return v?.capState === 'in_force' && v.cap != null
               ? ['Daily stop (engine)', `${v.capCcy || ''} ${Number(v.cap).toLocaleString(undefined, { maximumFractionDigits: 2 })}`.trim()]
-              : ['Daily stop-out', capState.capUsd != null ? money(capState.capUsd) : 'UNCAPPED']
+              : ['Daily stop-out', capState.capUsd != null ? money(capState.capUsd) : usdUnavailable ? 'USD unavailable' : 'UNCAPPED']
           })(),
           ['Worst case open', worst != null ? money(worst) : '—'],
         ]
@@ -1267,11 +1278,11 @@ export default function Risk() {
             <fieldset disabled={accountLoading || !!saving || !!switchingTo || loadedScope.current !== (riskAcct || 'all')}
               className="flex flex-wrap items-end gap-x-8 gap-y-2 min-w-0">
               <div>
-                <Field label="Stored balance (USD)" value={acct.balance} onChange={v => setAcctField('balance', v)}
+                <Field label={`Stored balance (${data?.account?.currency || 'unit unverified'})`} value={acct.balance} onChange={v => setAcctField('balance', v)}
                   hint="Sizing input for the named account. The next broker balance refresh can replace a manual value." />
                 <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
                   {data?.account?.balanceSource === 'broker'
-                    ? `Broker cache: USD ${data.account.balance}; observed ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}`
+                    ? `Broker cache: ${data.account.currency || 'unit unverified'} ${data.account.balance}; observed ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}`
                     : data?.account?.balanceSource === 'stored' ? 'stored account value — broker freshness is not verified' : 'account balance unavailable'}
                 </div>
               </div>
@@ -1296,7 +1307,7 @@ export default function Risk() {
               <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-2">
                 Broker evidence: {data.account.brokerSnapshot.reason.replaceAll('_', ' ')}.
                 {data.account.depositCurrency && <> Deposit currency: {data.account.depositCurrency}.</>}
-                {' '}Sizing fields use USD; unavailable broker margin is left blank.
+                {' '}Stored balance is native; USD previews require a valid conversion. Unavailable broker margin is left blank.
               </p>
             )}
           </Card>
@@ -1306,18 +1317,18 @@ export default function Risk() {
             <SectionTitle badge={<Badge tone="info">Sizing</Badge>}>Lot Calculation form</SectionTitle>
             {(() => {
               const mode = Number(risk.perTradeRiskUsd) > 0 ? 'absolute' : 'percent'
-              const bal = Number(acct.balance) || 0
-              const budget = mode === 'absolute' ? Number(risk.perTradeRiskUsd) : bal * (Number(risk.perTradeRiskPct) || 0)
-              const m = data?.margin
-              const cap = bal * (Number(risk.maxMarginUsagePct) || 0)
-              const headroom = m?.usedMargin != null ? cap - m.usedMargin : null
+              const bal = sizingBalance
+              const budget = mode === 'absolute' ? Number(risk.perTradeRiskUsd) : bal == null ? null : bal * (Number(risk.perTradeRiskPct) || 0)
+              const m = riskMarginUsd(data?.margin, data?.account)
+              const cap = bal == null ? null : bal * (Number(risk.maxMarginUsagePct) || 0)
+              const headroom = cap != null && m?.usedMargin != null ? cap - m.usedMargin : null
               return (
                 <div className="text-(length:--fs-body) space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-[var(--color-text-sub)]" title="Percentage: risk budget = balance × per-trade %. Absolute: a fixed $ amount (3-decimal precision) overrides the %.">Sizing mode</span>
                     <span role="radiogroup" aria-label="Sizing mode" className="flex gap-1">
                       <Pill radio on={mode === 'percent'} label="Percentage" onClick={() => setRisk(r => ({ ...r, perTradeRiskUsd: null }))} />
-                      <Pill radio on={mode === 'absolute'} label="Absolute $" onClick={() => setRisk(r => ({ ...r, perTradeRiskUsd: r.perTradeRiskUsd > 0 ? r.perTradeRiskUsd : Number((bal * (r.perTradeRiskPct || 0.05)).toFixed(3)) }))} />
+                      <Pill radio on={mode === 'absolute'} label="Absolute $" onClick={() => setRisk(r => ({ ...r, perTradeRiskUsd: r.perTradeRiskUsd > 0 ? r.perTradeRiskUsd : bal == null ? null : Number((bal * (r.perTradeRiskPct || 0.05)).toFixed(3)) }))} />
                     </span>
                   </div>
                   {mode === 'absolute' && (
@@ -1447,7 +1458,7 @@ export default function Risk() {
             <SectionTitle>Example Trade — Bot-Trade Live card</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} />
             <div className="text-(length:--fs-body) space-y-1 mt-2">
-              <div>Sample: EURUSD long at {entry.toFixed(4)}, balance {fmt$(bal, 0)} USD.</div>
+              <div>{sizingBalance == null ? 'Illustrative sample (account USD value unavailable):' : 'Sample:'} EURUSD long at {entry.toFixed(4)}, balance {fmt$(bal, 0)} USD.</div>
               <div>SL {sl.toFixed(4)} (min distance {Number(risk.minSLDistancePct) || 0.15}%) · TP {tp.toFixed(4)} ({Number(risk.minRR) || 1.5}R).</div>
               <div>Risk budget: <AnimatedNumber value={budget} className="font-semibold" />{budget < budgetBase ? ` (capped from ${fmt$(budgetBase)})` : ''} → <AnimatedNumber value={lots} className="font-semibold" /> lots at ~<AnimatedNumber value={usdPerLot} />/lot.</div>
               <div className="text-[var(--color-text-sub)]">

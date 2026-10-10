@@ -35,8 +35,9 @@
 // absence of advice is visible rather than looking like approval.
 // ---------------------------------------------------------------------------
 
-import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance } from './risk.js'
+import { loadRiskConfig, DEFAULT_RISK_CONFIG } from './risk.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
+import { readDailyRiskVerdict, dailyPacingReading } from './daily-stop-reading.js'
 
 /** Trades required before this controller will say anything about an account. */
 export const MIN_SAMPLE = 30
@@ -80,7 +81,7 @@ export function accountEconomics(db, accountId, { days = 30 } = {}) {
   let rows = []
   try {
     rows = db.prepare(`
-      SELECT net_pnl FROM trades
+      SELECT net_pnl, account_id FROM trades
        WHERE status = 'closed' AND net_pnl IS NOT NULL
          AND (account_id = ? OR account_id IS NULL)
          AND closed_at >= datetime('now', ?)
@@ -114,6 +115,29 @@ export function accountEconomics(db, accountId, { days = 30 } = {}) {
     // reporting that we cannot say.
     payoff: avgWin != null && avgLoss ? avgWin / avgLoss : null,
     profitFactor: losses.length && sum(losses) > 0 ? sum(wins) / sum(losses) : null,
+    unattributedTrades: rows.filter(r => r.account_id == null).length,
+  }
+}
+
+// Codex · №12,877 · 2026-10-10; codex-footprint: risk-reporting-parity.
+// Advice must name the knob actually binding, and must not issue a command
+// whose value another active cap would cancel. This never writes a setting.
+function capProposal(daily, targetUsd) {
+  const { config, balance, verdict: { pacing: p } } = daily
+  let setting = 'dailyLossPct', proposed = null
+  if (p.binding === 'floor') { setting = 'dailyLossFloorUsd'; proposed = targetUsd }
+  else if (p.binding === 'usd') {
+    setting = 'dailyLossLimit'
+    if (p.pctCapUsd == null || p.pctCapUsd >= targetUsd) proposed = targetUsd
+  } else if (p.tierPct != null) {
+    setting = balance < config.dailyLossTierAtUsd ? 'dailyLossTierSmallPct' : 'dailyLossTierLargePct'
+    proposed = targetUsd / balance
+  } else if (p.binding === 'pct' && balance > 0 && (p.usdInForce == null || p.usdInForce >= targetUsd)) proposed = targetUsd / balance
+  const pct = setting.endsWith('Pct')
+  return { setting, current: config[setting] ?? null,
+    proposed: proposed == null ? null : Math.round(proposed * (pct ? 1000 : 100)) / (pct ? 1000 : 100),
+    contract: { capUsd: p.capUsd, binding: p.binding, targetUsd, currency: 'USD',
+      fx: dailyPacingReading(daily).fx },
   }
 }
 
@@ -223,18 +247,15 @@ export const RULES = Object.freeze([
      * day on its first ordinary trade. Measured, not assumed: 4,717 vetoes in
      * one week from a $16.16 cap on ACCT-DEMO-1.
      */
-    evaluate({ econ, config, balance }) {
-      const pct = Number(config.dailyLossPct)
-      if (!Number.isFinite(pct) || !(pct > 0) || !(balance > 0)) return null
-      if (econ.avgLoss == null || !(econ.avgLoss > 0)) return null
-      const capUsd = balance * pct
+    evaluate({ monetaryEcon: econ, daily }) {
+      if (!econ || !daily || !(daily.verdict.pacing.capUsd > 0)) return null
+      if (!(econ.avgLoss > 0)) return null
+      const capUsd = daily.verdict.pacing.capUsd
       if (capUsd >= econ.avgLoss * 2) return null
       return {
-        setting: 'dailyLossPct',
-        current: pct,
-        proposed: Math.round((econ.avgLoss * 4 / balance) * 1000) / 1000,
+        ...capProposal(daily, econ.avgLoss * 4),
         severity: 'danger',
-        why: `The daily cap is ${capUsd.toFixed(2)} against an average loss of ${econ.avgLoss.toFixed(2)}. One ordinary losing trade stops the account for the day.`,
+        why: `The engine daily cap is USD ${capUsd.toFixed(2)} (${daily.verdict.pacing.binding}) against an average loss valued at USD ${econ.avgLoss.toFixed(2)} using the current account FX contract. One ordinary losing trade can spend this budget.`,
         expect: 'The cap becomes a brake on a bad day rather than on a normal one.',
       }
     },
@@ -263,11 +284,11 @@ export const RULES = Object.freeze([
      *      per-trade sizing is not honouring the risk it claims, and raising
      *      the cap would be treating the symptom.
      */
-    evaluate({ econ, config, balance }) {
-      const pct = Number(config.dailyLossPct)
+    evaluate({ monetaryEcon: econ, config, daily }) {
+      if (!econ || !daily || !(daily.verdict.pacing.capUsd > 0)) return null
+      const balance = daily.balance
       const perTrade = Number(config.perTradeRiskPct)
-      if (!Number.isFinite(pct) || !(pct > 0) || !(balance > 0)) return null
-      const capUsd = balance * pct
+      const capUsd = daily.verdict.pacing.capUsd
 
       // (2) first — it is the stronger finding, and raising the cap would be
       // the wrong response to it.
@@ -277,24 +298,22 @@ export const RULES = Object.freeze([
           current: Number.isFinite(perTrade) ? perTrade : null,
           proposed: null,
           severity: 'danger',
-          why: `A single trade lost ${econ.maxLoss.toFixed(2)} against a daily cap of ${capUsd.toFixed(2)}.`
-            + ' One trade spent more than the whole day\'s risk budget, so position sizing is not enforcing the'
-            + ' per-trade risk it claims. Raising the daily cap would hide this, not fix it.',
+          why: `A single trade lost ${econ.maxLoss.toFixed(2)} against a daily cap of ${capUsd.toFixed(2)} (USD, current account FX contract).`
+            + ' Compare that execution with its original settings and costs; this historical loss exceeds the CURRENT engine cap.'
+            + ' Raising the daily cap would hide this comparison, not explain it.',
           expect: 'Find why that trade was sized past its own stop before changing any cap.',
         }
       }
 
-      if (!Number.isFinite(perTrade) || !(perTrade > 0)) return null
-      const permitted = balance * perTrade
+      const permitted = config.perTradeRiskUsd > 0 ? Number(config.perTradeRiskUsd)
+        : Number.isFinite(perTrade) && perTrade > 0 && balance > 0 ? balance * perTrade : null
       if (!(permitted > 0)) return null
       const lossesAllowed = capUsd / permitted
       if (lossesAllowed >= MIN_LOSING_TRADES_PER_DAY) return null
       return {
-        setting: 'dailyLossPct',
-        current: pct,
-        proposed: Math.round(MIN_LOSING_TRADES_PER_DAY * perTrade * 1000) / 1000,
+        ...capProposal(daily, MIN_LOSING_TRADES_PER_DAY * permitted),
         severity: 'warn',
-        why: `The daily cap is ${capUsd.toFixed(2)} and one full-risk trade may lose ${permitted.toFixed(2)}`
+        why: `The engine daily cap is USD ${capUsd.toFixed(2)} (${daily.verdict.pacing.binding}) and one full-risk trade may lose USD ${permitted.toFixed(2)}`
           + ` — ${lossesAllowed.toFixed(1)} losing trades and the account stops for the day.`
           + ` At a ${econ.winRate != null ? (econ.winRate * 100).toFixed(1) : '?'}% win rate a run of`
           + ` ${MIN_LOSING_TRADES_PER_DAY} losses is ordinary, so this caps variance rather than risk.`,
@@ -309,9 +328,23 @@ export const RULES = Object.freeze([
  *
  * @returns {{ accountId, econ, sampleOk, proposals: [], skipped: string|null }}
  */
-export function proposeForAccount(db, accountId, { days = 30, minSample = MIN_SAMPLE, balance = null } = {}) {
+export function proposeForAccount(db, accountId, { days = 30, minSample = MIN_SAMPLE, balance } = {}) {
   const econ = accountEconomics(db, accountId, { days })
   const config = loadRiskConfig(db, accountId) || DEFAULT_RISK_CONFIG
+  let daily = null, dailyPacing = null, monetaryEcon = null
+  let monetaryAssessment = { status: 'unavailable', reason: 'engine_read_failed' }
+  try {
+    daily = readDailyRiskVerdict(db, accountId, balance === undefined ? {} : { balanceNative: balance })
+    dailyPacing = dailyPacingReading(daily)
+    const reason = dailyPacing.reason || (econ?.unattributedTrades ? 'unattributed_economics' : null)
+    monetaryAssessment = { status: reason ? 'unavailable' : 'comparable', reason, currency: 'USD',
+      nativeCurrency: daily.money.currency, fx: dailyPacing.fx,
+      basis: 'native historical economics valued at the current engine FX rate; not historical USD proceeds' }
+    if (!reason && econ) {
+      monetaryEcon = { ...econ }
+      for (const k of ['avgWin', 'avgLoss', 'maxLoss']) monetaryEcon[k] = econ[k] == null ? null : econ[k] * daily.money.rate
+    }
+  } catch { /* retain explicit unavailable monetary assessment */ }
 
   if (!econ || econ.trades < minSample) {
     // Reported, not dropped. An absent proposal must not look like approval —
@@ -319,6 +352,7 @@ export function proposeForAccount(db, accountId, { days = 30, minSample = MIN_SA
     return {
       accountId: String(accountId),
       econ,
+      dailyPacing, monetaryAssessment,
       sampleOk: false,
       proposals: [],
       skipped: `insufficient_sample: ${econ?.trades ?? 0} closed trades with realised P&L in ${days}d, need ${minSample}`,
@@ -328,10 +362,10 @@ export function proposeForAccount(db, accountId, { days = 30, minSample = MIN_SA
   const proposals = []
   for (const rule of RULES) {
     let p = null
-    try { p = rule.evaluate({ econ, config, balance }) } catch { p = null }
+    try { p = rule.evaluate({ econ, config, daily, monetaryEcon }) } catch { p = null }
     if (p) proposals.push({ rule: rule.key, ...p })
   }
-  return { accountId: String(accountId), econ, sampleOk: true, proposals, skipped: null }
+  return { accountId: String(accountId), econ, dailyPacing, monetaryAssessment, sampleOk: true, proposals, skipped: null }
 }
 
 /**
@@ -355,9 +389,7 @@ export function configProposals(db, { days = 30, minSample = MIN_SAMPLE } = {}) 
     // below sizes off the same number the cap itself uses. A controller that
     // computed its own balance could recommend a cap against a figure the cap
     // never sees.
-    let balance = null
-    try { balance = getAccountBalance(db, r.account_id) } catch { balance = null }
-    out.push(proposeForAccount(db, r.account_id, { days, minSample, balance }))
+    out.push(proposeForAccount(db, r.account_id, { days, minSample }))
   }
   out.sort((a, b) => b.proposals.length - a.proposals.length)
   return {

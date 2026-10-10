@@ -4393,11 +4393,21 @@ export default function stateRouter(db) {
       // display. Every account fact below must belong to that same identity;
       // the legacy global snapshot may belong to another account entirely.
       const displayAccountId = acct ?? (getState(db, 'ctrader_account_id') || null)
-      const { snapshot: snap, ...brokerSnapshot } = readAccountSnapshot(db, displayAccountId, {
-        // This page's sizing and stored balance fields are USD. A deposit-
-        // currency snapshot is not a USD conversion merely because it is fresh.
-        expectedCurrency: 'USD',
-      })
+      // Codex · №12,877 · 2026-10-10; codex-footprint: risk-reporting-parity.
+      // Native display money and the engine's USD input are distinct contracts.
+      const { readDailyRiskVerdict, dailyPacingReading } = await import('../services/daily-stop-reading.js')
+      const { accountMoney } = await import('../services/account-money.js')
+      const { usdFromNative, conversionView } = await import('../services/account-currency.js')
+      const nowMs = Date.now()
+      const snapshotRead = readAccountSnapshot(db, displayAccountId, { nowMs })
+      if (snapshotRead.snapshot && !snapshotRead.currency) {
+        snapshotRead.snapshot = null
+        snapshotRead.status = 'unavailable'
+        snapshotRead.reason = 'currency_unknown'
+      }
+      const { snapshot: snap, ...brokerSnapshot } = snapshotRead
+      const nativeMoney = accountMoney(db, displayAccountId, { now: nowMs })
+      const daily = displayAccountId ? readDailyRiskVerdict(db, displayAccountId, { nowMs }) : null
       const finite = v => typeof v === 'number' && Number.isFinite(v) ? v : null
       let registeredAccount = null
       if (displayAccountId) {
@@ -4405,13 +4415,19 @@ export default function stateRouter(db) {
           registeredAccount = db.prepare('SELECT is_live, base_currency FROM accounts WHERE account_id = ?').get(displayAccountId)
         } catch { /* unavailable registry is not evidence of demo, live or currency */ }
       }
-      const depositCurrency = brokerSnapshot.currency || registeredAccount?.base_currency?.toUpperCase() || null
+      const verifiedCurrency = nativeMoney.observation?.currency || null
+      const depositCurrency = brokerSnapshot.currency || verifiedCurrency || registeredAccount?.base_currency?.toUpperCase() || null
       const brokerBalance = finite(snap?.account?.health?.balance) ?? finite(snap?.account?.balance)
-      // Legacy refreshes can stamp native money into a key named _usd. Do not
-      // let that fallback undo a known deposit-currency mismatch.
-      const storedBalance = displayAccountId && (!depositCurrency || depositCurrency === 'USD')
+      // The legacy _usd scalar is native. A registry hint alone cannot prove
+      // a non-USD scalar's unit; broker-owned currency evidence can.
+      const storedBalance = displayAccountId && (verifiedCurrency || !depositCurrency || depositCurrency === 'USD')
         ? getAccountBalance(db, displayAccountId) : null
       const displayBalance = brokerBalance ?? storedBalance
+      const displayCurrency = brokerBalance != null ? brokerSnapshot.currency : storedBalance != null ? verifiedCurrency : null
+      const moneyContract = daily?.money
+      const displayBalanceUsd = displayCurrency === 'USD' ? displayBalance
+        : displayCurrency && displayCurrency === moneyContract?.currency && moneyContract?.currencySource === 'broker_verified'
+          ? usdFromNative(displayBalance, moneyContract) : null
       const scopedLeverage = displayAccountId ? Number(getState(db, `acct:${displayAccountId}:account_leverage`)) : NaN
       let accountIsLive = typeof snap?.account?.isLive === 'boolean' ? snap.account.isLive : null
       if (accountIsLive == null && (registeredAccount?.is_live === 0 || registeredAccount?.is_live === 1)) {
@@ -4446,7 +4462,13 @@ export default function stateRouter(db) {
           storedBalance,
           balanceSource: brokerBalance != null ? 'broker' : storedBalance != null ? 'stored' : null,
           balanceFetchedAt: brokerBalance != null ? snap.fetchedAt : null,
-          currency: displayBalance != null ? 'USD' : null,
+          currency: displayCurrency,
+          balanceUsd: displayBalanceUsd,
+          fx: conversionView(moneyContract),
+          balanceUsdReason: displayBalanceUsd != null ? null : moneyContract?.refused || 'deposit_currency_unverified',
+          moneyObservation: nativeMoney,
+          engineBalanceNative: daily?.balanceNative ?? null,
+          engineBalanceUsd: daily?.balance ?? null,
           depositCurrency,
           brokerSnapshot,
           leverage: Number.isFinite(scopedLeverage) && scopedLeverage > 0 ? scopedLeverage : null,
@@ -4463,47 +4485,15 @@ export default function stateRouter(db) {
         // it: the FX-day anchor is DST-aware (17:00 New York), so a browser
         // reimplementation would drift twice a year and disagree with the veto
         // line. Null when nothing is paced.
-        dailyPacing: await (async () => {
-          const { fxDayOpenMs, fxDayStartSql } = await import('../services/risk.js')
-          const { pacedDailyCap } = await import('../services/daily-loss-pacing.js')
-          const balance = displayBalance
-          // No balance no longer means nothing to report: the flat $ cap is a
-          // live check of its own now, and with the % check inapplicable it is
-          // the ONLY thing standing between the account and an uncapped day —
-          // exactly the state the Risk page has to be able to warn about.
-          const nowMs = Date.now()
-          const id = displayAccountId
-          let spent = 0
-          try {
-            const row = db.prepare(
-              `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
-                WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?
-                  AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
-            ).get(fxDayStartSql(nowMs), id, id)
-            spent = Math.max(0, -(row?.pnl || 0))
-          } catch { /* no trades table slice — report the allowance, not the spend */ }
-          const p = pacedDailyCap({
-            balance,
-            basePct: effective.dailyLossPct,
-            maxPct: null, // the paced ceiling was retired (Wave 4b); the day is the flat cap
-            absoluteFallback: effective.dailyLossLimit,
-            nowMs,
-            dayOpenMs: fxDayOpenMs(nowMs),
-            spentUsd: spent,
-            perTradeRiskUsd: effective.perTradeRiskUsd > 0
-              ? Number(effective.perTradeRiskUsd)
-              : (balance > 0 ? balance * effective.perTradeRiskPct : 0),
-          })
-          return { ...p, spentUsd: spent, accountId: id, balance }
-        })(),
+        dailyPacing: daily ? dailyPacingReading(daily) : null,
         guardian: {
           enabled: (getState(db, 'guardian') || 'true') !== 'false',
           movePct: Number(getState(db, 'guardian_move_pct')) || 0.05,
         },
         weekendBank: (getState(db, 'weekend_bank') || 'true') !== 'false',
         weekendLossFlag: (getState(db, 'weekend_loss_flag') || 'true') !== 'false',
-        // Display only the matching, fresh USD snapshot. Risk-gate/VPO
-        // migration is P2b; this read-only change does not alter admission.
+        // Matching, fresh native broker margin. Conversion is separate from
+        // the displayed account money; admission and VPO are unchanged.
         margin: (() => {
           const h = snap?.account?.health
           if (!h) return null

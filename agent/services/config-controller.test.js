@@ -9,6 +9,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, setState } from '../db.js'
+// Codex · №12,877 · 2026-10-10; codex-footprint: risk-reporting-parity.
+import { recordDepositCurrency, recordAccountMoney } from './account-money.js'
+import { readDailyRiskVerdict } from './daily-stop-reading.js'
 import {
   accountEconomics, requiredPayoff, proposeForAccount, configProposals,
   MIN_SAMPLE, TARGET_PF, RULES,
@@ -21,6 +24,8 @@ function fresh() {
   db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode)
               VALUES ('46130058','5203012',0,1,'active')`).run()
   setState(db, 'acct:46130058:account_balance_usd', '50000')
+  recordDepositCurrency(db, { accountId: '46130058', host: 'demo.ctraderapi.com', depositAssetId: '1', currency: 'USD' })
+  recordAccountMoney(db, { accountId: '46130058', host: 'demo.ctraderapi.com', trader: { depositAssetId: '1' }, balance: 50000 })
   return db
 }
 
@@ -33,7 +38,7 @@ function seed(db, { account = '46130058', wins = 32, losses = 61, avgWin = 489.5
 }
 
 const cfg = (db, account, patch) =>
-  setState(db, `acct:${account}:risk_config_json`, JSON.stringify(patch))
+  setState(db, `acct:${account}:risk_config_json`, JSON.stringify({ dailyLossLimit: null, dailyLossFloorUsd: null, dailyLossTierSmallPct: null, dailyLossTierLargePct: null, ...patch }))
 
 // ---------------------------------------------------------------------------
 
@@ -202,7 +207,7 @@ test('a daily cap smaller than one average loss is DANGER', () => {
   const p = proposeForAccount(db, '46130058', { balance: 50000 }).proposals.find(x => x.setting === 'dailyLossPct')
   assert.ok(p)
   assert.equal(p.severity, 'danger')
-  assert.match(p.why, /One ordinary losing trade stops the account for the day/)
+  assert.match(p.why, /One ordinary losing trade can spend this budget/)
   assert.ok(p.proposed > 0.001)
 })
 
@@ -331,7 +336,14 @@ test('an empty or malformed report is silent, never a throw', () => {
 // whole day's budget by itself.
 // ---------------------------------------------------------------------------
 
-const capRule = RULES.find(r => r.key === 'daily_cap_vs_permitted_risk')
+const capRule = { evaluate(input) {
+  const db = fresh()
+  cfg(db, '46130058', { dailyLossPct: null, perTradeRiskPct: null, ...input.config })
+  const daily = readDailyRiskVerdict(db, '46130058', { balanceNative: input.balance })
+  const result = RULES.find(r => r.key === 'daily_cap_vs_permitted_risk').evaluate({ ...input, daily, monetaryEcon: input.econ })
+  db.close()
+  return result
+} }
 const ECON = (over = {}) => ({ trades: 210, winRate: 0.3, avgWin: 385, avgLoss: 192, maxLoss: 400, ...over })
 
 test('a cap that allows fewer than five full-risk losses is flagged', () => {

@@ -19,6 +19,9 @@
 // being a second implementation of the arithmetic.
 // ---------------------------------------------------------------------------
 
+// Codex · №12,877 · 2026-10-10; codex-footprint: risk-reporting-parity.
+import { pacedDailyCap } from '../../agent/services/daily-loss-pacing.js'
+
 /** A field counts as ON when it holds a positive number. Empty, null and 0 are OFF. */
 const on = (v) => Number.isFinite(Number(v)) && Number(v) > 0
 
@@ -33,21 +36,21 @@ const on = (v) => Number.isFinite(Number(v)) && Number(v) > 0
  * }}
  */
 export function dailyCapState(cfg, balance) {
-  const pctOn = on(cfg?.dailyLossPct)
+  const p = pacedDailyCap({ balance, basePct: cfg?.dailyLossPct, absoluteFallback: cfg?.dailyLossLimit,
+    floorUsd: cfg?.dailyLossFloorUsd, tierAtUsd: cfg?.dailyLossTierAtUsd,
+    tierSmallPct: cfg?.dailyLossTierSmallPct, tierLargePct: cfg?.dailyLossTierLargePct,
+    nowMs: 0, dayOpenMs: 0 })
+  const pctOn = on(cfg?.dailyLossPct) || p.tierPct != null
   const flatOn = on(cfg?.dailyLossLimit)
   // A percentage of an unknown balance is not a limit. The field is still ON —
   // the owner set it and it will bind the moment a balance is read — but it
   // cannot produce a number now, and pretending otherwise is how a cap that
   // enforces nothing ends up displayed as if it did.
-  const pctCapUsd = pctOn && balance > 0 ? balance * Number(cfg.dailyLossPct) : null
-  const flatCapUsd = flatOn ? Math.abs(Number(cfg.dailyLossLimit)) : null
+  const pctCapUsd = p.pctCapUsd
+  const flatCapUsd = p.usdInForce
 
-  const live = [pctCapUsd, flatCapUsd].filter(v => v != null)
-  const capUsd = live.length ? Math.min(...live) : null
-  const binding = capUsd == null ? null
-    : pctCapUsd != null && flatCapUsd != null
-      ? (pctCapUsd === flatCapUsd ? 'both' : (pctCapUsd < flatCapUsd ? 'pct' : 'flat'))
-      : (pctCapUsd != null ? 'pct' : 'flat')
+  const capUsd = p.capUsd
+  const binding = p.binding === 'usd' ? 'flat' : p.binding
 
   let severity = 'none'
   let message = null
@@ -68,13 +71,15 @@ export function dailyCapState(cfg, balance) {
     message = 'The % cap is off. The flat $ cap holds at every balance, so the limit no longer scales with the account.'
   }
 
-  return { pctOn, flatOn, pctCapUsd, flatCapUsd, capUsd, binding, uncapped: capUsd == null, severity, message }
+  return { pctOn, flatOn, pctCapUsd, flatCapUsd, capUsd, binding, floorUsd: p.floorUsd,
+    tierPct: p.tierPct, uncapped: capUsd == null, severity, message }
 }
 
 /** One line naming which check binds, for the field group's footer. */
 export function describeBinding(s) {
   if (!s || s.capUsd == null) return null
   const m = (v) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+  if (s.binding === 'floor') return `The USD floor binds at ${m(s.capUsd)}.`
   if (s.binding === 'both') return `Both caps agree at ${m(s.capUsd)}.`
   if (s.binding === 'pct') {
     return s.flatCapUsd != null
