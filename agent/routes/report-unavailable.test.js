@@ -168,7 +168,11 @@ test('GET /prices answers the worker\'s price map on success', async t => {
   const { db, url } = await fixture(t)
   const res = await fetch(url('/prices'))
   assert.equal(res.status, 200)
-  assert.deepEqual(await res.json(), { prices: buildLatestPrices(db) })
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the kept
+  // read also says when it was taken (services/latest-prices-cache.js).
+  const { asOf, ...body } = await res.json()
+  assert.deepEqual(body, { prices: buildLatestPrices(db) })
+  assert.ok(Number.isFinite(Date.parse(asOf)), 'asOf is the time the kept read was taken')
 })
 
 test('GET /storage runs the dbstat walk and row counts on the report worker, not the management connection', async t => {

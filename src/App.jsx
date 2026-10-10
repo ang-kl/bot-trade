@@ -106,6 +106,8 @@ import SessionFooter from './components/SessionFooter.jsx'
 import AccountChrome from './components/AccountChrome.jsx'
 import { useBotChanges, BotChangesFooterButton, BotChangeHighlighter } from './components/BotChanges.jsx'
 import { useTheme } from './lib/theme.js'
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+import { useIsDesktop } from './lib/use-media-query.js'
 import { Toaster } from 'sonner'
 
 const THEME_CYCLE = { system: 'light', light: 'dark', dark: 'system' }
@@ -221,12 +223,105 @@ function navLinkClasses(isActive) {
   }`
 }
 
+
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+// The desktop sidebar, moved out of App unchanged so App can decline to MOUNT
+// it below the `lg` breakpoint. CSS already hid it there (`hidden lg:flex`),
+// but hidden is not unmounted: its pollers ran on every phone page, unseen
+// (measured 10-10, see lib/use-media-query.js). Nothing in it was reachable on
+// a phone before this change either; the phone keeps its own header (agent
+// health, LLM monitor, account), the More sheet (account chrome, bot changes,
+// session line, theme) and the down banner, all mounted as before.
+function DesktopSidebar({ botChanges, theme, setTheme }) {
+  return (
+    <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-[var(--sidebar-h)] lg:sticky lg:top-0 p-4">
+      <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-hidden">
+        <div className="shrink-0 flex items-baseline flex-wrap gap-x-2 gap-y-0.5 mb-3">
+          <span className="text-(length:--fs-wordmark) font-extrabold tracking-tight text-[var(--color-accent)]">bot-trade</span>
+          {/* The version tag is now the handle for agent health: the number
+              alone answered nothing, and whether the BROWSER and the AGENT
+              are on the same build is the question it was always adjacent
+              to. It also carries a status dot for the loop and the
+              controllers, so a stall is visible from every screen. */}
+          <AgentHealthPanel appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} />
+          <LlmMonitorStatus />
+        </div>
+        {/* Which account am I looking at? (owner 2026-07-29: "above the
+            OVERVIEW state the Account · {DEMO LOGIN-3} I am viewing now").
+            It sits ABOVE the first nav group because every number on every
+            page below belongs to this account — reading Performance without
+            knowing whose Performance it is has bitten before. */}
+        <div className="shrink-0"><ActiveAccountHeader /></div>
+        {/* S3 — ONE view picker, in the chrome, for every page below it.
+            It changes what you are LOOKING AT (?account= on every /state
+            read); the switch that moves what the bot TRADES stays on
+            Accounts behind its own confirmations. Viewing is not arming. */}
+        <div className="shrink-0"><ViewAccountPicker /></div>
+        <nav className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col gap-4" id="main-content">
+          {NAV_GROUPS.map(g => (
+            <div key={g.title}>
+              <div className="px-3 pb-1 text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{g.title}</div>
+              <div className="flex flex-col gap-0.5">
+                {g.items.map(t => (
+                  <NavLink key={t.to} to={t.to} viewTransition className={({ isActive }) => navLinkClasses(isActive)}>
+                    <span aria-hidden="true" className="text-(length:--fs-glyph-sm) leading-none">{t.icon}</span>{t.label}
+                  </NavLink>
+                ))}
+              </div>
+            </div>
+          ))}
+          {/* Owner 2026-08-01: the S.A.T. switch panel moved OFF the
+              sidebar onto the Accounts page (Setup group) — the sidebar
+              keeps only navigation + the active-account identity header. */}
+        </nav>
+        {/* THE SIDEBAR FOOTER (owner brief: "Move this control into the
+            bottom of the left navigation panel", "Keep the sidebar footer
+            visible while the main content scrolls", "Add a subtle top
+            divider", "Do not use large shadows").
+            It is a shrink-0 sibling of the scrolling <nav>, so the nav
+            scrolls independently and this stays put — no fixed positioning,
+            so it cannot overlap the strategy table the way the old
+            page-wide footer did. */}
+        <div className="shrink-0">
+          {/* Owner §5502·C: the account line sits at the TOP of the frame
+              chrome. It is the only thing here that changes minute to
+              minute, and the one an operator needs without navigating —
+              login, balance, armed state, and how close today is to the
+              equity stop. Everything below it is session and build state. */}
+          <div className="px-1 pb-1 overflow-x-auto">
+            <AccountChrome />
+          </div>
+          {/* Owner 02-08: the Bot Changes ledger sits ABOVE the session
+              line — what the bot changed on their behalf, and when. */}
+          <BotChangesFooterButton rows={botChanges} />
+          <SessionFooter appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} />
+          {/* The theme control is the one other piece of web-app chrome that
+              has to stay reachable. It sits beside the session line as an
+              icon-width compact rounded rectangle (never a capsule), so the
+              footer is still ONE visible line. */}
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
+              title={`Theme: ${theme} — click to cycle system / light / dark`}
+              aria-label={`Theme: ${theme}. Click to cycle system, light, dark.`}
+              className="compact-control button-normal text-(length:--fs-session)"
+            >{THEME_ICON[theme] || '◐'} {theme}</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
 export default function App() {
   // Bot change ledger — feeds the sidebar Bot Changes button and the yellow
   // section highlights (owner 02-08).
   const botChanges = useBotChanges()
   const appLocation = useLocation()
   const { theme, setTheme } = useTheme()
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  const isDesktop = useIsDesktop()
   // THERE IS NO PAGE-WIDE FOOTER ANY MORE (owner brief, instr/footer_issue.md:
   // "Replace the present large page-wide footer with a compact, single-line
   // session-status control … Do not create a second page-wide footer"). The
@@ -278,83 +373,9 @@ export default function App() {
           instead of meeting. --footer-h is measured live below (the footer
           wraps to two lines on narrow desktops, so a hardcoded number would
           be wrong on exactly the screens the owner uses). */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-[var(--sidebar-h)] lg:sticky lg:top-0 p-4">
-        <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-hidden">
-          <div className="shrink-0 flex items-baseline flex-wrap gap-x-2 gap-y-0.5 mb-3">
-            <span className="text-(length:--fs-wordmark) font-extrabold tracking-tight text-[var(--color-accent)]">bot-trade</span>
-            {/* The version tag is now the handle for agent health: the number
-                alone answered nothing, and whether the BROWSER and the AGENT
-                are on the same build is the question it was always adjacent
-                to. It also carries a status dot for the loop and the
-                controllers, so a stall is visible from every screen. */}
-            <AgentHealthPanel appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} />
-            <LlmMonitorStatus />
-          </div>
-          {/* Which account am I looking at? (owner 2026-07-29: "above the
-              OVERVIEW state the Account · {DEMO LOGIN-3} I am viewing now").
-              It sits ABOVE the first nav group because every number on every
-              page below belongs to this account — reading Performance without
-              knowing whose Performance it is has bitten before. */}
-          <div className="shrink-0"><ActiveAccountHeader /></div>
-          {/* S3 — ONE view picker, in the chrome, for every page below it.
-              It changes what you are LOOKING AT (?account= on every /state
-              read); the switch that moves what the bot TRADES stays on
-              Accounts behind its own confirmations. Viewing is not arming. */}
-          <div className="shrink-0"><ViewAccountPicker /></div>
-          <nav className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col gap-4" id="main-content">
-            {NAV_GROUPS.map(g => (
-              <div key={g.title}>
-                <div className="px-3 pb-1 text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{g.title}</div>
-                <div className="flex flex-col gap-0.5">
-                  {g.items.map(t => (
-                    <NavLink key={t.to} to={t.to} viewTransition className={({ isActive }) => navLinkClasses(isActive)}>
-                      <span aria-hidden="true" className="text-(length:--fs-glyph-sm) leading-none">{t.icon}</span>{t.label}
-                    </NavLink>
-                  ))}
-                </div>
-              </div>
-            ))}
-            {/* Owner 2026-08-01: the S.A.T. switch panel moved OFF the
-                sidebar onto the Accounts page (Setup group) — the sidebar
-                keeps only navigation + the active-account identity header. */}
-          </nav>
-          {/* THE SIDEBAR FOOTER (owner brief: "Move this control into the
-              bottom of the left navigation panel", "Keep the sidebar footer
-              visible while the main content scrolls", "Add a subtle top
-              divider", "Do not use large shadows").
-              It is a shrink-0 sibling of the scrolling <nav>, so the nav
-              scrolls independently and this stays put — no fixed positioning,
-              so it cannot overlap the strategy table the way the old
-              page-wide footer did. */}
-          <div className="shrink-0">
-            {/* Owner §5502·C: the account line sits at the TOP of the frame
-                chrome. It is the only thing here that changes minute to
-                minute, and the one an operator needs without navigating —
-                login, balance, armed state, and how close today is to the
-                equity stop. Everything below it is session and build state. */}
-            <div className="px-1 pb-1 overflow-x-auto">
-              <AccountChrome />
-            </div>
-            {/* Owner 02-08: the Bot Changes ledger sits ABOVE the session
-                line — what the bot changed on their behalf, and when. */}
-            <BotChangesFooterButton rows={botChanges} />
-            <SessionFooter appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} />
-            {/* The theme control is the one other piece of web-app chrome that
-                has to stay reachable. It sits beside the session line as an
-                icon-width compact rounded rectangle (never a capsule), so the
-                footer is still ONE visible line. */}
-            <div className="pt-1">
-              <button
-                type="button"
-                onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
-                title={`Theme: ${theme} — click to cycle system / light / dark`}
-                aria-label={`Theme: ${theme}. Click to cycle system, light, dark.`}
-                className="compact-control button-normal text-(length:--fs-session)"
-              >{THEME_ICON[theme] || '◐'} {theme}</button>
-            </div>
-          </div>
-        </div>
-      </aside>
+      {/* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): mounted
+          only at the desktop breakpoint — see DesktopSidebar above. */}
+      {isDesktop && <DesktopSidebar botChanges={botChanges} theme={theme} setTheme={setTheme} />}
 
       <div className="flex-1 min-w-0">
         {/* Top bar — mobile/tablet only */}

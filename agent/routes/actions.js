@@ -23,7 +23,7 @@ import { setPhaseFlag } from '../services/phase-audit.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard, execBaseFor } from '../lib/exec-engine.js'
 import { assertReconcileIdentity } from '../services/reconciler.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
-import { invalidateStateCache } from '../lib/state-cache.js'
+import { invalidateStateCache, invalidateStatePaths } from '../lib/state-cache.js'
 import { readAccountSnapshot } from '../services/account-snapshot.js'
 import { setStage, accountStageTallies, unpinTradeStageEverywhere } from '../services/stage-matrix.js'
 import { recordArmingChange } from '../services/arming-log.js'
@@ -418,8 +418,26 @@ export default function actionsRouter(db, deps = {}) {
   // the `const`, which is a temporal dead zone — the same failure that blanked
   // every page on 2026-07-29 (#489). Lint and tests did not see that one
   // either; booting the agent did.
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  // EXCEPT the two read-shaped broker POSTs, which invalidate from inside their
+  // own builders, exactly when they write (both are coalesced through
+  // brokerReadCache, so most POSTs are answered from the shared slot and write
+  // nothing at all):
+  //   /broker-history   writes ONLY acct:<id>:broker_history_cache_json, read
+  //                     only by GET /state/broker-cache -> that path alone.
+  //   /broker-positions writes account money, deposit currency, account_history
+  //                     and the snapshot caches, which many GET routes read ->
+  //                     the whole cache, but once per real broker round, not
+  //                     once per POST.
+  // Measured 10-10: the Desk posted /broker-history on every 5-second cycle,
+  // so each open Desk emptied the whole GET cache every five seconds and the
+  // next reads of every tab recomputed on the trading thread. Their action_log
+  // audit rows are KEPT (index.js): neither route is read-only, and GET
+  // /state/action-log and /state/workspace-log serve every row.
+  const OWN_INVALIDATION = new Set(['/broker-history', '/broker-positions'])
   router.use((req, res, next) => {
     if (req.method === 'GET') return next()
+    if (OWN_INVALIDATION.has(req.path)) return next()
     res.on('finish', () => { if (res.statusCode < 400) invalidateStateCache() })
     next()
   })
@@ -2320,7 +2338,12 @@ export default function actionsRouter(db, deps = {}) {
         ...(pull.complete ? {} : { incompleteReason: pull.reason }), fetchedAt: new Date().toISOString() }
       // Cache the latest history so the Desk can paint instantly next visit
       // (GET /state/broker-cache) while the live fetch refreshes behind.
-      try { setState(db, `acct:${accountId}:broker_history_cache_json`, JSON.stringify(payload)) } catch { /* cache is best-effort */ }
+      try {
+        setState(db, `acct:${accountId}:broker_history_cache_json`, JSON.stringify(payload))
+        // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the
+        // one GET route that reads what was just written (see OWN_INVALIDATION).
+        invalidateStatePaths(['/broker-cache'])
+      } catch { /* cache is best-effort */ }
       return payload
       })
       res.json(result)
@@ -4872,6 +4895,10 @@ export default function actionsRouter(db, deps = {}) {
             JSON.stringify({ account: a, fetchedAt }))
         }
       } catch { /* cache is best-effort */ }
+      // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): this round
+      // wrote money, currency, history and snapshot caches that many GET routes
+      // read — the whole cache, once per round (see OWN_INVALIDATION).
+      invalidateStateCache()
       return { ok: true, accounts: results, fetchedAt }
   })
   registerBrokerReadingsReader(db, () => readBrokerPositions(null, getState(db, 'ctrader_account_id')))

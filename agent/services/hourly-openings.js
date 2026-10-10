@@ -8,10 +8,17 @@ export const OPENINGS_MAX_CLOCK_SKEW_MS = 120_000
 // The population is all confirmed ledger trade rows, including still-open
 // trades and closes awaiting P&L. Rejected orders and unresolved intents did
 // not establish an opening. This is ledger evidence, not broker reconciliation.
-export function hourlyOpenings(db, scope, { to, nowMs = Date.now() }) {
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the window
+// check alone, so GET /state/hourly-activity can still answer 400 on the main
+// thread before it hands the read to a report worker. Same rule, same words.
+export function assertOpeningsTo(to, nowMs = Date.now()) {
   if (!Number.isSafeInteger(to) || to < 24 * HOUR || to > nowMs + OPENINGS_MAX_CLOCK_SKEW_MS) {
     throw new RangeError('to must be a UTC epoch millisecond no more than 2 minutes ahead')
   }
+}
+
+export function hourlyOpenings(db, scope, { to, nowMs = Date.now() }) {
+  assertOpeningsTo(to, nowMs)
   const from = to - 24 * HOUR
   const observedThrough = Math.min(to, nowMs)
   const account = accountWhere(scope)

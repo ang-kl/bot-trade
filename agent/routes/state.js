@@ -17,7 +17,7 @@ import { tierForBalance } from '../lib/contracts.js'
 import { describeLabel } from '../lib/trade-labels.js'
 import { originCoverage } from '../lib/trade-origin.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
-import { stateEpoch } from '../lib/state-cache.js'
+import { stateEpoch, statePathEpoch } from '../lib/state-cache.js'
 import { armedTimeframes } from '../lib/timeframes.js'
 import { requestedAccount, accountWhere, countUnattributed, scopeCoverage, scopeReport } from '../lib/account-scope.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
@@ -49,11 +49,14 @@ import { dailyStopReading } from '../services/daily-stop-reading.js'
 import { accountHistory } from '../services/account-history.js'
 import { CLASS_BASIS as LEDGER_CLASS_BASIS } from '../services/ledger-reconciliation.js'
 import { validateBlockerRequest } from '../services/blocker-report.js'
-import { hourlyOpenings } from '../services/hourly-openings.js'
-import { hourlyActivity } from '../services/hourly-activity.js'
+import { hourlyOpenings, assertOpeningsTo } from '../services/hourly-openings.js'
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): hourly-activity
+// runs on a report worker (readHourlyActivity, with assertOpeningsTo checked
+// here first); prices are kept 30 s.
+import { createLatestPricesReader } from '../services/latest-prices-cache.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, readScoreboardReport, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readStageMatrixStats, readHourlyActivity, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable, readScoreboardReport } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -266,7 +269,10 @@ export default function stateRouter(db) {
     // An entry from before the last write is not merely old, it is WRONG —
     // see lib/state-cache.js. Age alone let a save be followed by up to ten
     // seconds of the pre-save answer.
-    if (hit && hit.epoch === stateEpoch() && Date.now() - hit.at < STATE_CACHE_MS) {
+    // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the path
+    // epoch too — a write whose only reader is this path invalidates it alone
+    // (lib/state-cache.js invalidateStatePaths), the global epoch still all.
+    if (hit && hit.epoch === stateEpoch() && hit.pathEpoch === statePathEpoch(req.path) && Date.now() - hit.at < STATE_CACHE_MS) {
       res.setHeader('etag', hit.etag)
       res.setHeader('x-cache', 'hit')
       if (req.headers['if-none-match'] === hit.etag) return res.status(304).end()
@@ -285,7 +291,7 @@ export default function stateRouter(db) {
         // waiter answered from the same failure gets the same hint.
         const retryAfter = res.getHeader('retry-after')
         if (status < 400) {
-          respCache.set(key, { body, etag, at: Date.now(), epoch: stateEpoch() })
+          respCache.set(key, { body, etag, at: Date.now(), epoch: stateEpoch(), pathEpoch: statePathEpoch(req.path) })
           if (respCache.size > 300) { // bound: drop the oldest entry
             let oldK = null, oldAt = Infinity
             for (const [k, v] of respCache) if (v.at < oldAt) { oldAt = v.at; oldK = k }
@@ -3611,14 +3617,22 @@ export default function stateRouter(db) {
   })
 
   // Confirmed opening population, independent of closed-journal pagination.
-  router.get('/hourly-activity', (req, res) => {
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the same
+  // body as before, built on a report worker instead of the trading thread
+  // (~151 ms median there, measured 10-10). The window is still checked HERE
+  // first, so a bad `to` stays a 400 with the same words; every other failure
+  // (worker capacity included) stays the same 503 body.
+  router.get('/hourly-activity', async (req, res) => {
     const scope = requestedAccount(db, req)
     if (typeof req.query.account !== 'string' || !scope.explicit
       || (!scope.all && !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(scope.accountId))) {
       return res.status(400).json({ error: 'explicit registered account or all required' })
     }
     const to = typeof req.query.to === 'string' && /^\d{1,16}$/.test(req.query.to) ? Number(req.query.to) : NaN
-    try { return res.json(hourlyActivity(db, scope, { to })) }
+    try {
+      assertOpeningsTo(to)
+      return res.json(await readHourlyActivity(db, { scope, to }))
+    }
     catch (err) { return res.status(err instanceof RangeError ? 400 : 503).json({ error: err instanceof RangeError ? err.message : 'activity evidence unavailable' }) }
   })
 
@@ -5112,9 +5126,14 @@ export default function stateRouter(db) {
   // A worker failure used to answer 200 {prices:{}, error}: an empty map that
   // reads as "no prices", invisible to any status-class counter. It is an
   // explicit 503 now, and the Desk/Trade consumers say "unavailable".
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): one answer is
+  // kept 30 s and shared, builds are single-flight, and the reply says when it
+  // was read (`asOf`) — services/latest-prices-cache.js has the measurement and
+  // the TTL's justification. Shape unchanged otherwise: { prices }.
+  const latestPrices = createLatestPricesReader(db)
   router.get('/prices', async (_req, res) => {
     try {
-      res.json({ prices: await readLatestPrices(db) })
+      res.json(await latestPrices())
     } catch (e) {
       if (sendReportUnavailable(res, e, { message: 'Latest prices are temporarily unavailable. Please retry.', code: 'latest_prices_unavailable' })) return
       res.status(500).json({ error: e.message })

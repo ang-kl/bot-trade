@@ -51,7 +51,10 @@ export async function loadLatestPrices(get) {
   if (!body || typeof body.prices !== 'object' || body.prices == null || Array.isArray(body.prices)) {
     return { prices: {}, status: 'unavailable', reason: 'the reply carried no price map' }
   }
-  return { prices: body.prices, status: 'ok', reason: null }
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the server
+  // keeps one read for 30 s now and says when it was taken; carried through so
+  // a page can say how old the base tier is. Absent on an older agent.
+  return { prices: body.prices, status: 'ok', reason: null, ...(typeof body.asOf === 'string' ? { asOf: body.asOf } : {}) }
 }
 
 /** The sentence a page shows when the base tier is unavailable, else null. */

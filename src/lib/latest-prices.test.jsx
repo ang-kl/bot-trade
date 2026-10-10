@@ -32,6 +32,12 @@ describe('loadLatestPrices', () => {
     expect(asked).toEqual(['/state/prices'])
     expect(read).toEqual({ prices: { USDJPY: { price: 150.25 } }, status: 'ok', reason: null })
   })
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  it('carries the server\'s as-of time when the reply has one (the kept 30 s read)', async () => {
+    const read = await loadLatestPrices(async () => ({ prices: { USDJPY: { price: 150.25 } }, asOf: '2026-10-10T01:02:03.000Z' }))
+    expect(read.status).toBe('ok')
+    expect(read.asOf).toBe('2026-10-10T01:02:03.000Z')
+  })
 })
 
 // V3 M2b (M2 check nit 3): agentGet now throws with the reply attached
