@@ -29,6 +29,9 @@ import Collapse from '../components/common/Collapse.jsx'
 import LatestPricesNote from '../components/LatestPricesNote.jsx'
 import { loadLatestPrices } from '../lib/latest-prices.js'
 import { manualOrderConfirmText } from '../lib/manual-order-confirm.js'
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the pre-order check.
+import PreorderResult from '../components/PreorderResult.jsx'
+import { scanCheckPath, manualCheckPath, manualOrderBody, padDestination, checkKey, checkSummary, createCheckRunner } from '../lib/preorder-check.js'
 
 // Inline tab link used by the "Next:" guide line
 function NavTab({ to, children }) {
@@ -393,8 +396,28 @@ function OrderLogTable({ rows, marketHours = null, prices = {}, trades = [], lev
 
 // Codex · №11,667 (codex-footprint: signals-ui-2026-10-07).
 // Presentation only: a scan, entry candidate and linked trade are different facts.
-export function TradeSignalsCard({ report, accountId = 'all' }) {
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): each row shows
+// the signal's own levels and a Check that asks the risk gate ONCE per tap
+// (GET /state/preorder, never polled) what it would do with this signal now.
+const sigKey = (sc) => JSON.stringify([sc.account_id, sc.symbol, sc.strategy, sc.timeframe])
+function SignalLevels({ levels }) {
+  if (!levels || levels.entry == null) return <span className="text-[var(--color-text-sub)]">—</span>
+  return <span className="whitespace-nowrap">{fmt(levels.entry)} · {fmt(levels.sl)} · {fmt(levels.tp1)} · {levels.rr == null ? '—' : `${fmt(levels.rr, 2)}R`}</span>
+}
+
+export function TradeSignalsCard({ report, accountId = 'all', check = agentGet }) {
   const [showBlocked, setShowBlocked] = useState(false)
+  const [checks, setChecks] = useState({}) // sigKey → { busy, result }
+  const runners = useRef(new Map())
+  const runCheck = (sc) => {
+    const k = sigKey(sc)
+    if (!runners.current.has(k)) runners.current.set(k, createCheckRunner(check))
+    const runner = runners.current.get(k)
+    if (runner.busy()) return
+    setChecks(c => ({ ...c, [k]: { busy: true, result: c[k]?.result ?? null } }))
+    runner.run(scanCheckPath({ scanId: sc.scanId, accountId: sc.account_id }))
+      .then(result => setChecks(c => ({ ...c, [k]: { busy: false, result } })))
+  }
   const sameAccount = String(report?.accountId) === String(accountId)
   const available = sameAccount && !!report && !report.error
   const rows = available && Array.isArray(report.rows) ? report.rows : []
@@ -439,13 +462,17 @@ export function TradeSignalsCard({ report, accountId = 'all' }) {
                   <th aria-sort={sigSort.ariaSort('timeframe')} className="pr-3">{sigSort.sortBtn('timeframe', 'TF')}</th>
                   <th aria-sort={sigSort.ariaSort('confidence')} className="pr-3">{sigSort.sortBtn('confidence', 'Conviction')}</th>
                   <th aria-sort={sigSort.ariaSort('price')} className="pr-3">{sigSort.sortBtn('price', 'Price')}</th>
+                  {/* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the signal's levels and the one-tap check. */}
+                  <th className="pr-3" title="The signal's own entry · stop · target · reward:risk">Entry · stop · target · R:R</th>
+                  <th className="pr-3">Pre-order</th>
                   <th className="pr-3">Entry status</th>
                   <th>Thesis</th>
                 </tr>
               </thead>
               <tbody>
                 {sigSort.sorted.map(sc => (
-                  <tr key={JSON.stringify([sc.account_id, sc.symbol, sc.strategy, sc.timeframe])} className="border-t border-[var(--color-border)]">
+                  <Fragment key={sigKey(sc)}>
+                  <tr className="border-t border-[var(--color-border)]">
                     <td className="pr-3 whitespace-nowrap">{sc.accountLabel || sc.account_id}</td>
                     <td className="pr-3 py-1.5">{sc.symbol}</td>
                     <td className="pr-3 whitespace-nowrap">{strategyLabel(sc.strategy) || 'Fibonacci 61.8% Fade'}</td>
@@ -454,11 +481,27 @@ export function TradeSignalsCard({ report, accountId = 'all' }) {
                     <td className="pr-3">{sc.timeframe || '—'}</td>
                     <td className="pr-3">{fmt(sc.confidence, 0)}/10</td>
                     <td className="pr-3">{fmt(sc.price)}</td>
+                    <td className="pr-3"><SignalLevels levels={sc.levels} /></td>
+                    <td className="pr-3">{sc.scanId != null
+                      ? <Button size="sm" variant="outlined" disabled={!!checks[sigKey(sc)]?.busy} aria-controls={`preorder-${sc.scanId}-${sc.account_id}`}
+                          title="Ask the risk gate what it would do with this signal now — a dry run: nothing is recorded or sent"
+                          onClick={() => runCheck(sc)}>{checks[sigKey(sc)]?.busy ? 'Checking…' : 'Check'}</Button>
+                      : <span className="text-[var(--color-text-sub)]" title="This row has no stored scan id to check">—</span>}</td>
                     <td className="pr-3" title={sc.reason || undefined}>{sc.entry
                       ? `Trade ${sc.entry.tradeId} · ${sc.entry.status}${sc.entry.positionId ? ` · position ${sc.entry.positionId}` : ''}`
                       : sc.eligibility === 'candidate' ? 'Candidate · no linked entry' : `Scan only · ${sc.reason || 'entry eligibility unverified'}`}</td>
                     <td className="text-[var(--color-text-sub)]">{sc.thesis}</td>
                   </tr>
+                  {checks[sigKey(sc)] && (
+                    <tr>
+                      <td colSpan={11} className="pb-1.5">
+                        <div id={`preorder-${sc.scanId}-${sc.account_id}`} className="sticky left-0 max-w-[calc(100vw-48px)] sm:max-w-[560px]">
+                          <PreorderResult result={checks[sigKey(sc)].result} busy={checks[sigKey(sc)].busy} />
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -705,28 +748,43 @@ export default function Trade() {
   const [order, setOrder] = useState({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
   const [orderResult, setOrderResult] = useState(null)
   const [placing, setPlacing] = useState(false)
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the pad sends
+  // its order to the account this page shows (one account) — the primary only
+  // in the portfolio view — and can ask the risk gate first (one dry run per
+  // tap, never polled). A check speaks for the inputs it was run on only.
+  const padDest = padDestination({ viewedAccountId: viewedAccountId(), broker: health?.broker ?? null })
+  const [padCheck, setPadCheck] = useState(null) // { key, busy, result }
+  const padRunner = useRef(null)
+  if (!padRunner.current) padRunner.current = createCheckRunner(agentGet)
+  const padKey = checkKey({ order, destination: padDest })
+  const padCheckNow = padCheck && padCheck.key === padKey ? padCheck : null
+  const runPadCheck = () => {
+    if (!order.symbol.trim() || !order.sl) { setOrderResult({ ok: false, text: 'Symbol and Stop Loss are required' }); return }
+    if (padRunner.current.busy()) return
+    const key = padKey
+    setPadCheck({ key, busy: true, result: null })
+    padRunner.current.run(manualCheckPath({ order, destination: padDest }))
+      .then(result => setPadCheck(c => (c?.key === key ? { key, busy: false, result } : c)))
+  }
 
   const placeOrder = async () => {
     const sym = order.symbol.toUpperCase().trim()
     if (!sym || !order.sl) { setOrderResult({ ok: false, text: 'Symbol and Stop Loss are required' }); return }
-    // SAFE-0a: the confirm names the account the order will reach (the
-    // primary broker account — the route gets no `account`), and says so when
-    // that is not the account this page shows.
+    // SAFE-0a: the confirm names the account the order will reach — the
+    // account this page shows when it shows one (sent as `account`), else the
+    // primary broker account — and, after a check of these inputs, the size
+    // and money at risk.
     if (!window.confirm(manualOrderConfirmText({
       side: order.side, symbol: sym, sl: order.sl, tp: order.tp,
-      destination: health?.broker ? { accountId: health.broker.accountId, traderLogin: health.broker.traderLogin } : null,
-      viewedAccountId: account?.accountId ?? null,
+      destination: padDest.accountId != null ? { accountId: padDest.accountId, traderLogin: padDest.traderLogin } : null,
+      viewedAccountId: viewedAccountId(),
+      primary: !padDest.routed,
+      check: padCheckNow && !padCheckNow.busy ? checkSummary(padCheckNow.result) : null,
     }))) return
     setPlacing(true)
     setOrderResult(null)
     try {
-      const r = await agentPost('/actions/manual-order', {
-        symbol: sym,
-        side: order.side,
-        lots: order.lots ? Number(order.lots) : undefined,
-        sl: Number(order.sl),
-        tp: order.tp ? Number(order.tp) : undefined,
-      })
+      const r = await agentPost('/actions/manual-order', manualOrderBody({ order, destination: padDest }))
       if (r.vetoed) {
         // Owner 2026-07-31: a missing bracket leg is not a generic veto — say
         // WHICH symbol and WHICH leg, put the suggested price in the field, and
@@ -744,6 +802,7 @@ export default function Trade() {
       } else {
         setOrderResult({ ok: true, text: `${r.side} ${r.symbol} ${r.volume} lots @ ${r.executionPrice ?? 'market'}` })
         setOrder({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
+        setPadCheck(null) // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the check answered the order just sent
         await load()
       }
     } catch (e) {
@@ -862,7 +921,7 @@ export default function Trade() {
           above the button on demand instead of occupying a page section. */}
       <div className="fixed bottom-4 left-4 z-40">
         {orderOpen && (
-          <div className="glass-panel rounded-[12px] p-3 mb-2 w-[280px] shadow-xl">
+          <div className="glass-panel rounded-[12px] p-3 mb-2 w-[280px] max-h-[75vh] overflow-y-auto shadow-xl">
             <div className="flex items-center justify-between mb-2">
               <h2 className="t-h3">Manual Order form</h2>
               <IconButton size="sm" variant="ghost" label="Close order pad" onClick={() => setOrderOpen(false)}>✕</IconButton>
@@ -898,11 +957,23 @@ export default function Trade() {
                   flips by side — danger means destructive, not SHORT (contract
                   §1; SELL is not an error). Side stays in the label + the
                   BUY/SELL selector. */}
-              <Button size="sm" variant="accent" disabled={placing} onClick={placeOrder}
-                className="w-full" title="Same risk gate as the bot (sizing, R:R floor, cooldowns); then managed by the position monitor">
-                {placing ? 'Placing…' : `${order.side} ${order.symbol.toUpperCase() || '…'}`}
-              </Button>
+              {/* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): where it goes, and Check before Send. */}
+              <p className="w-full text-(length:--fs-body) text-[var(--color-text-sub)]">
+                Sends to {padDest.routed ? `account …${String(padDest.accountId).slice(-4)} (the account this page shows)` : 'the primary broker account (this page shows all accounts)'}
+              </p>
+              <div className="flex w-full gap-1.5">
+                <Button size="sm" variant="outlined" disabled={placing || !!padCheckNow?.busy} onClick={runPadCheck} className="flex-1"
+                  title="Ask the risk gate what it would do with these inputs now — a dry run: nothing is recorded or sent">
+                  {padCheckNow?.busy ? 'Checking…' : 'Check'}
+                </Button>
+                <Button size="sm" variant="accent" disabled={placing} onClick={placeOrder}
+                  className="flex-1" title="Same risk gate as the bot (sizing, R:R floor, cooldowns); then managed by the position monitor">
+                  {placing ? 'Placing…' : `${order.side} ${order.symbol.toUpperCase() || '…'}`}
+                </Button>
+              </div>
             </div>
+            {padCheckNow && <PreorderResult result={padCheckNow.result} busy={padCheckNow.busy} />}
+            {padCheck && !padCheckNow && <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">The inputs changed since the last check — check again to see this order's size and money at risk.</p>}
             {orderResult && (
               <div className={`mt-1.5 text-(length:--fs-body) font-semibold ${orderResult.ok ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`} role="status">
                 {orderResult.ok ? `Filled — ${orderResult.text}` : orderResult.text}

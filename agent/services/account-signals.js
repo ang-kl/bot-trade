@@ -29,6 +29,27 @@ export function accountSignals(db, snapshot, { accountId = 'all', lastScanAt = n
   const key = (sc, id) => JSON.stringify([String(id), sc.symbol, sc.strategy, sc.timeframe, sc.bias])
   const entries = new Map()
   for (const r of receipts) if (!entries.has(key(r, r.account_id))) entries.set(key(r, r.account_id), r)
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the batch's
+  // own scans rows — their ids are what GET /state/preorder?scanId= checks —
+  // matched as loop.js latestScanForSymbol matches them (symbol, strategy,
+  // timeframe, bias, this batch's scanned_at; the newest id wins), and each
+  // signal's own levels from the same snapshot the dispatcher reads.
+  const cell = (sc) => JSON.stringify([sc.symbol, sc.strategy ?? null, sc.timeframe ?? null, String(sc.bias || '').toLowerCase()])
+  const scanIds = new Map()
+  if (lastScanAt) {
+    try {
+      for (const r of db.prepare('SELECT id, symbol, strategy, timeframe, bias FROM scans WHERE scanned_at = ? ORDER BY id').all(lastScanAt)) scanIds.set(cell(r), r.id)
+    } catch { /* ids are an affordance; rows stay without them */ }
+  }
+  const levelsOf = (sc) => {
+    const sig = [snapshot?.signalsByStrategy?.[sc.symbol]?.[sc.strategy], snapshot?.signals?.[sc.symbol]]
+      .find(s => s && s.strategy === sc.strategy && (s.timeframe ?? null) === (sc.timeframe ?? null) && String(s.bias || '').toLowerCase() === String(sc.bias || '').toLowerCase())
+    if (!sig) return null
+    const n = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v))
+    const entry = n(sig.entry), sl = n(sig.sl), tp1 = n(sig.tp1)
+    const rr = n(sig.rr) ?? (entry != null && sl != null && tp1 != null && entry !== sl ? Math.round((Math.abs(tp1 - entry) / Math.abs(entry - sl)) * 100) / 100 : null)
+    return { entry, sl, tp1, tp2: n(sig.tp2), rr }
+  }
   const rows = []
   for (const a of accounts) {
     const id = String(a.account_id), phases = effectivePhases(db, id)
@@ -47,6 +68,7 @@ export function accountSignals(db, snapshot, { accountId = 'all', lastScanAt = n
       rows.push({ ...sc, account_id: id,
         accountLabel: `${a.is_live ? 'Live' : 'Demo'} ${a.trader_login || id} · ${id}`,
         eligibility: reason ? 'scan_only' : 'candidate', reason,
+        scanId: scanIds.get(cell(sc)) ?? null, levels: levelsOf(sc),
         entry: receipt ? { accountId: id, tradeId: receipt.trade_id, status: receipt.status,
           positionId: receipt.ctrader_position_id ?? null, at: receipt.opened_at } : null })
     }

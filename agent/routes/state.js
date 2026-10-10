@@ -242,7 +242,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/scanner-alignment-snapshot', '/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview', '/ledger-reconciliation-rows', '/position-history-missing'])
+  const NO_CACHE = new Set(['/scanner-alignment-snapshot', '/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview', '/ledger-reconciliation-rows', '/position-history-missing', '/preorder' /* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): a live dry run, never served from cache */])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -535,6 +535,39 @@ export default function stateRouter(db) {
       scoped: acct.active,
       scope: scopeReport(scope, scopeCoverage(db, { table: 'scans', scope })),
     })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/preorder — the risk gate's decision for a HYPOTHETICAL order.
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  //   ?scanId=<scans row id>[&account=<id>]                — a scanner signal
+  //   ?account=&symbol=&side=&lots=&sl=&tp=                — the manual pad
+  // Nothing is persisted and nothing is sent (services/preorder.js); the
+  // manual form reads the freshest 1m close, as /actions/manual-order does.
+  // Strict parameters, like /risk-full: a parameter this route does not
+  // understand is a 400, never a silently ignored one. Never cached (NO_CACHE).
+  // -----------------------------------------------------------------------
+  router.get('/preorder', async (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    try {
+      const { preorderCheck, PREORDER_SCAN_PARAMS, PREORDER_MANUAL_PARAMS } = await import('../services/preorder.js')
+      const { unknownQueryParams } = await import('../services/risk-effective.js')
+      const supported = req.query?.scanId != null ? PREORDER_SCAN_PARAMS : PREORDER_MANUAL_PARAMS
+      const unknown = unknownQueryParams(req.query, supported)
+      if (unknown.length) {
+        return res.status(400).json({
+          error: 'unsupported query parameter(s)', unsupported: unknown, supported: [...supported],
+          hint: 'Use ?scanId=<id>[&account=<id>] for a scanner signal, or ?account=&symbol=&side=&lots=&sl=&tp= for the manual pad.',
+        })
+      }
+      const repeated = Object.keys(req.query).filter(k => typeof req.query[k] !== 'string')
+      if (repeated.length) return res.status(400).json({ error: 'each query parameter may appear once', repeated })
+      const out = await preorderCheck(db, { ...req.query })
+      if (out.status) return res.status(out.status).json({ error: out.error })
+      res.json(out)
+    } catch (err) {
+      res.status(500).json({ error: String(err?.message || err).slice(0, 200) })
+    }
   })
 
   // -----------------------------------------------------------------------
