@@ -1,6 +1,32 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": [],
+  "locks": [
+    {
+      "id": "claude-scoreboard-preorder-2026-10-10",
+      "locked_by": "claude-builder",
+      "branch": "claude/handover-outstanding-file-1ktjs7",
+      "started_at": "2026-10-10T08:58:17.506582+00:00",
+      "expires_at": "2026-10-10T18:58:17.506582+00:00",
+      "files": [
+        "agent/services/performance-targets.js",
+        "agent/services/scoreboard.js",
+        "agent/services/preorder.js",
+        "agent/routes/state.js (new routes /state/scoreboard and /state/preorder; hourly-activity and prices read path)",
+        "agent/routes/actions.js (read-only broker-history/broker-positions cache invalidation only)",
+        "agent/services/performance-populations.js (hourly-activity worker kind)",
+        "src/App.jsx (sidebar mount on phones)",
+        "src/pages/Performance.jsx",
+        "src/pages/Desk.jsx",
+        "src/pages/Trade.jsx",
+        "src/components/PerformanceTargets.jsx",
+        "src/components/Scoreboard.jsx",
+        "src/components/PreOrder*.jsx",
+        "src/lib/manual-order-confirm.js",
+        "docs/ui-control-inventory.md"
+      ],
+      "reason": "owner № 12,954 plan steps 1-3 approved: Scoreboard, phone load cuts, Pre-order dry run (no risk-limit change)"
+    }
+  ],
   "notes": [
     {
       "from": "claude-builder",
@@ -302,6 +328,7 @@
       "serial": 12902,
       "subject": "P2 reporting PR1297 + late review correction PR1298 merged",
       "text": "PR1297 merged6ade2f1; PR1298 merged1e8341b at gated8acc529/tree7baaf399 with exactCI38015928410 allSUCCESS, local8007 backend/four existing skips,1358 frontend/lint/build/colour/12syntax passed. Actual Codex review completed at8acc529 with no findings/thumbs-up; Claude action skipped, no human independent review. Current Risk payload/UI coordinated: currencyConflict withholds joined money and USD previews, retains both currency receipts and unchanged engine reading. Legacy loss-cap/ratchet dollar previews are withheld for non-USD/unknown units; configured rules/halt controls and all enforcement unchanged. 11 protected sourcefiles unchanged. Own lock removed after merge. Node runtime verification in progress; no deployed follow-up/whole acceptance/profit claim yet."
-    }
+    },
+    "Claude · № 12,955 · 2026-10-10 (claude-builder): owner approved steps 1-3 of the Trading view re-assessment plan (https://claude.ai/code/artifact/d3067492-5d51-46b2-a281-5c2374bbce4f). Building: (1) Scoreboard — last 20 per account + 30d, latest-20 block shows measured figures with broker-proof count, verdict unchanged; (2) phone load cuts — sidebar not mounted on phones, folded Desk cards stop polling, hourly-activity off the main thread, prices server cache, read-only broker refreshes stop emptying the GET cache; (3) Pre-order — read-only dry run of evaluateTrade (no persistRiskEvent, no write), shown on Trade signals and the manual pad, which names its account. No risk limit, gate, policy or native change. Files in lock claude-scoreboard-preorder-2026-10-10."
   ]
 }
