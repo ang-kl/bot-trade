@@ -28,6 +28,14 @@ function targetIds(raw) {
   return [...new Set(raw.split(',').map(Number))]
 }
 
+// Codex · №12,963 · 2026-10-10; codex-footprint: protocol-account-targets.
+// Broker identities are exact decimal strings, distinct from SQLite trade PKs.
+function targetProtocolIds(raw) {
+  if(raw == null || raw === '') return []
+  if(typeof raw !== 'string' || !/^[1-9]\d{0,19}(,[1-9]\d{0,19}){0,7}$/.test(raw)) return null
+  return [...new Set(raw.split(','))]
+}
+
 // Codex · №12,808 · 2026-10-10; codex-footprint: hybrid-verdict-only-read.
 // This scope reads only the two verdicts and primary-key owners of bounded
 // stored refusals. A position is never inferred from a matching account alone.
@@ -171,7 +179,7 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   const scope=env.OWNED_EVIDENCE_SCOPE,hybridOnly=scope==='hybrid',consolidated=scope==='consolidated'
   if(scope!=null&&!hybridOnly&&!consolidated)return null
   if(hybridOnly&&(tradeIds.length||env.OWNED_EVIDENCE_SCANNER==='1'))return null
-  const accountIds=targetIds(env.OWNED_EVIDENCE_ACCOUNT_IDS)
+  const accountIds=targetProtocolIds(env.OWNED_EVIDENCE_ACCOUNT_IDS)
   const dealText=env.OWNED_EVIDENCE_DEAL_IDS,dealIds=dealText==null||dealText===''?[]:
     typeof dealText==='string'&&/^[1-9]\d{0,19}(,[1-9]\d{0,19}){0,63}$/.test(dealText)?[...new Set(dealText.split(','))]:null
   const pendingAccount=protocolId(env.OWNED_EVIDENCE_PENDING_ACCOUNT)

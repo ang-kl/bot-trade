@@ -46,12 +46,30 @@ test('consolidated private readout uses explicit targets once, preserves stored 
   assert.equal(logs.at(-1).value.scope,'consolidated')
   assert.ok(logs.reduce((sum,row)=>sum+Buffer.byteLength(JSON.stringify(row)),0)<=256*1024)
 })
+// Codex · №12,963 · 2026-10-10; codex-footprint: protocol-account-targets.
+test('consolidated capture retains long protocol account identities without rounding or merging',t=>{
+  const db=scene(t),logs=[];let callback
+  const ids=['9007199254740993','18446744073709551614','18446744073709551615','42']
+  const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:'long-account-1234',
+    OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_ACCOUNT_IDS:[...ids,ids[0]].join(','),
+    OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
+  assert.equal(typeof startTargetedEvidenceReadout(db,{env,now:()=>NOW,
+    log:line=>logs.push(JSON.parse(line)),setTimer:cb=>{callback=cb},clearTimer:()=>{}}),'function')
+  const before=db.prepare('SELECT total_changes() n').get().n
+  callback()
+  assert.deepEqual(logs.filter(row=>row.kind==='account-evidence').map(row=>row.value.accountId),ids)
+  assert.deepEqual(logs.find(row=>row.kind==='account-evidence-summary').value.accountIds,ids)
+  assert.equal(logs.at(-1).value.done,true)
+  assert.equal(db.prepare('SELECT total_changes() n').get().n,before)
+})
 test('consolidated capture refuses malformed operator identity and scanner expansion before a claim',t=>{
   const db=scene(t);let timers=0
   const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:'batch-refuse-1234',
     OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
   const before=db.prepare('SELECT total_changes() n').get().n
-  for(const extra of [{OWNED_EVIDENCE_ACCOUNT_IDS:'42; SELECT 1'}, {OWNED_EVIDENCE_DEAL_IDS:'0'},
+  for(const extra of [{OWNED_EVIDENCE_ACCOUNT_IDS:'42; SELECT 1'}, {OWNED_EVIDENCE_ACCOUNT_IDS:'012'},
+    {OWNED_EVIDENCE_ACCOUNT_IDS:'123456789012345678901'},
+    {OWNED_EVIDENCE_ACCOUNT_IDS:'1,2,3,4,5,6,7,8,9'}, {OWNED_EVIDENCE_DEAL_IDS:'0'},
     {OWNED_EVIDENCE_PENDING_ACCOUNT:'secret'}, {OWNED_EVIDENCE_SCANNER:'1'}, {OWNED_EVIDENCE_TRADE_IDS:''}])
     assert.equal(startTargetedEvidenceReadout(db,{env:{...env,...extra},now:()=>NOW,setTimer:()=>{timers++}}),null)
   assert.equal(timers,0)
