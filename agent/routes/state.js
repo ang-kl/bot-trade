@@ -17,13 +17,15 @@ import { tierForBalance } from '../lib/contracts.js'
 import { describeLabel } from '../lib/trade-labels.js'
 import { originCoverage } from '../lib/trade-origin.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
-import { stateEpoch } from '../lib/state-cache.js'
+import { stateEpoch, statePathEpoch } from '../lib/state-cache.js'
 import { armedTimeframes } from '../lib/timeframes.js'
 import { requestedAccount, accountWhere, countUnattributed, scopeCoverage, scopeReport } from '../lib/account-scope.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 import { balanceUnit } from '../services/balance-unit.js'
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+import { SCOREBOARD_DEFAULT_DAYS, SCOREBOARD_MAX_DAYS } from '../services/scoreboard.js'
 import { sizingBalanceUsd, conversionView, accountDepositCurrencies } from '../services/account-currency.js'
 import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, getStopPolicy, trailConfigPolicy, triggerValue, stopPolicyStats } from '../lib/stop-policy.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
@@ -47,11 +49,14 @@ import { dailyStopReading } from '../services/daily-stop-reading.js'
 import { accountHistory } from '../services/account-history.js'
 import { CLASS_BASIS as LEDGER_CLASS_BASIS } from '../services/ledger-reconciliation.js'
 import { validateBlockerRequest } from '../services/blocker-report.js'
-import { hourlyOpenings } from '../services/hourly-openings.js'
-import { hourlyActivity } from '../services/hourly-activity.js'
+import { hourlyOpenings, assertOpeningsTo } from '../services/hourly-openings.js'
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): hourly-activity
+// runs on a report worker (readHourlyActivity, with assertOpeningsTo checked
+// here first); prices are kept 30 s.
+import { createLatestPricesReader } from '../services/latest-prices-cache.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readStageMatrixStats, readHourlyActivity, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable, readScoreboardReport } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -240,7 +245,7 @@ export default function stateRouter(db) {
   // own test: after resetting the pacing the route still reported the previous
   // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
   // someone reads before writing off money data it is not.
-  const NO_CACHE = new Set(['/scanner-alignment-snapshot', '/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview', '/ledger-reconciliation-rows', '/position-history-missing'])
+  const NO_CACHE = new Set(['/scanner-alignment-snapshot', '/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan', '/market-calendar', '/calendar-coverage', '/watchdog', '/account-money', '/account-history', '/account-engineering', '/account-overview', '/ledger-reconciliation-rows', '/position-history-missing', '/preorder' /* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): a live dry run, never served from cache */])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -264,7 +269,10 @@ export default function stateRouter(db) {
     // An entry from before the last write is not merely old, it is WRONG —
     // see lib/state-cache.js. Age alone let a save be followed by up to ten
     // seconds of the pre-save answer.
-    if (hit && hit.epoch === stateEpoch() && Date.now() - hit.at < STATE_CACHE_MS) {
+    // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the path
+    // epoch too — a write whose only reader is this path invalidates it alone
+    // (lib/state-cache.js invalidateStatePaths), the global epoch still all.
+    if (hit && hit.epoch === stateEpoch() && hit.pathEpoch === statePathEpoch(req.path) && Date.now() - hit.at < STATE_CACHE_MS) {
       res.setHeader('etag', hit.etag)
       res.setHeader('x-cache', 'hit')
       if (req.headers['if-none-match'] === hit.etag) return res.status(304).end()
@@ -283,7 +291,7 @@ export default function stateRouter(db) {
         // waiter answered from the same failure gets the same hint.
         const retryAfter = res.getHeader('retry-after')
         if (status < 400) {
-          respCache.set(key, { body, etag, at: Date.now(), epoch: stateEpoch() })
+          respCache.set(key, { body, etag, at: Date.now(), epoch: stateEpoch(), pathEpoch: statePathEpoch(req.path) })
           if (respCache.size > 300) { // bound: drop the oldest entry
             let oldK = null, oldAt = Infinity
             for (const [k, v] of respCache) if (v.at < oldAt) { oldAt = v.at; oldK = k }
@@ -533,6 +541,39 @@ export default function stateRouter(db) {
       scoped: acct.active,
       scope: scopeReport(scope, scopeCoverage(db, { table: 'scans', scope })),
     })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/preorder — the risk gate's decision for a HYPOTHETICAL order.
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  //   ?scanId=<scans row id>[&account=<id>]                — a scanner signal
+  //   ?account=&symbol=&side=&lots=&sl=&tp=                — the manual pad
+  // Nothing is persisted and nothing is sent (services/preorder.js); the
+  // manual form reads the freshest 1m close, as /actions/manual-order does.
+  // Strict parameters, like /risk-full: a parameter this route does not
+  // understand is a 400, never a silently ignored one. Never cached (NO_CACHE).
+  // -----------------------------------------------------------------------
+  router.get('/preorder', async (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    try {
+      const { preorderCheck, PREORDER_SCAN_PARAMS, PREORDER_MANUAL_PARAMS } = await import('../services/preorder.js')
+      const { unknownQueryParams } = await import('../services/risk-effective.js')
+      const supported = req.query?.scanId != null ? PREORDER_SCAN_PARAMS : PREORDER_MANUAL_PARAMS
+      const unknown = unknownQueryParams(req.query, supported)
+      if (unknown.length) {
+        return res.status(400).json({
+          error: 'unsupported query parameter(s)', unsupported: unknown, supported: [...supported],
+          hint: 'Use ?scanId=<id>[&account=<id>] for a scanner signal, or ?account=&symbol=&side=&lots=&sl=&tp= for the manual pad.',
+        })
+      }
+      const repeated = Object.keys(req.query).filter(k => typeof req.query[k] !== 'string')
+      if (repeated.length) return res.status(400).json({ error: 'each query parameter may appear once', repeated })
+      const out = await preorderCheck(db, { ...req.query })
+      if (out.status) return res.status(out.status).json({ error: out.error })
+      res.json(out)
+    } catch (err) {
+      res.status(500).json({ error: String(err?.message || err).slice(0, 200) })
+    }
   })
 
   // -----------------------------------------------------------------------
@@ -2710,6 +2751,35 @@ export default function stateRouter(db) {
     }
   })
 
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  // GET /state/scoreboard?account=all|<id>&days=30 — the phone scoreboard:
+  // per account, the 20 newest recorded closes and the last `days` days (win
+  // rate, profit factor, expectancy in money and R, the bot's own closes
+  // apart from manual/external ones), each account's money in its own deposit
+  // currency, never summed across accounts. Read-only; the scan runs in the
+  // report worker (services/scoreboard.js says why). `days` is validated
+  // before any SQL: an integer 1–365, default 30. `account` follows the
+  // file's scope rule (requestedAccount): `all`, an id, or — when omitted —
+  // the selected account; no account selected at all reads every account.
+  router.get('/scoreboard', async (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    const days = req.query.days == null || req.query.days === '' ? SCOREBOARD_DEFAULT_DAYS : Number(req.query.days)
+    if (!Number.isInteger(days) || days < 1 || days > SCOREBOARD_MAX_DAYS) {
+      return res.status(400).json({ error: `days must be a whole number from 1 to ${SCOREBOARD_MAX_DAYS}`, code: 'scoreboard_invalid_days' })
+    }
+    const scope = requestedAccount(db, req)
+    const account = scope.all || scope.accountId == null ? 'all' : String(scope.accountId)
+    if (account !== 'all' && !/^[1-9]\d{0,19}$/.test(account)) {
+      return res.status(400).json({ error: 'account must be "all" or a numeric account id', code: 'scoreboard_invalid_account' })
+    }
+    try {
+      res.json(await readScoreboardReport(db, { account, days }))
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'The scoreboard is temporarily unavailable. Please retry.', code: 'scoreboard_unavailable' })) return
+      res.status(500).json({ error: 'The scoreboard failed.', code: 'scoreboard_failed' })
+    }
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/decisions — 3A decision provenance: recent controller
   // decisions (skips included), newest first. ?symbol= &stage= &limit=
@@ -3547,14 +3617,22 @@ export default function stateRouter(db) {
   })
 
   // Confirmed opening population, independent of closed-journal pagination.
-  router.get('/hourly-activity', (req, res) => {
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the same
+  // body as before, built on a report worker instead of the trading thread
+  // (~151 ms median there, measured 10-10). The window is still checked HERE
+  // first, so a bad `to` stays a 400 with the same words; every other failure
+  // (worker capacity included) stays the same 503 body.
+  router.get('/hourly-activity', async (req, res) => {
     const scope = requestedAccount(db, req)
     if (typeof req.query.account !== 'string' || !scope.explicit
       || (!scope.all && !db.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(scope.accountId))) {
       return res.status(400).json({ error: 'explicit registered account or all required' })
     }
     const to = typeof req.query.to === 'string' && /^\d{1,16}$/.test(req.query.to) ? Number(req.query.to) : NaN
-    try { return res.json(hourlyActivity(db, scope, { to })) }
+    try {
+      assertOpeningsTo(to)
+      return res.json(await readHourlyActivity(db, { scope, to }))
+    }
     catch (err) { return res.status(err instanceof RangeError ? 400 : 503).json({ error: err instanceof RangeError ? err.message : 'activity evidence unavailable' }) }
   })
 
@@ -5048,9 +5126,14 @@ export default function stateRouter(db) {
   // A worker failure used to answer 200 {prices:{}, error}: an empty map that
   // reads as "no prices", invisible to any status-class counter. It is an
   // explicit 503 now, and the Desk/Trade consumers say "unavailable".
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): one answer is
+  // kept 30 s and shared, builds are single-flight, and the reply says when it
+  // was read (`asOf`) — services/latest-prices-cache.js has the measurement and
+  // the TTL's justification. Shape unchanged otherwise: { prices }.
+  const latestPrices = createLatestPricesReader(db)
   router.get('/prices', async (_req, res) => {
     try {
-      res.json({ prices: await readLatestPrices(db) })
+      res.json(await latestPrices())
     } catch (e) {
       if (sendReportUnavailable(res, e, { message: 'Latest prices are temporarily unavailable. Please retry.', code: 'latest_prices_unavailable' })) return
       res.status(500).json({ error: e.message })

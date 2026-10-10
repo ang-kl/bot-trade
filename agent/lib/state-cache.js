@@ -34,3 +34,24 @@ export function invalidateStateCache() {
   epoch += 1
   return epoch
 }
+
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+// PER-PATH EPOCHS, for the one case the whole-cache rule above over-serves: a
+// read-shaped POST whose only write is a display cache that exactly ONE GET
+// route serves. POST /actions/broker-history writes nothing but
+// `acct:<id>:broker_history_cache_json`, which only GET /state/broker-cache
+// reads; the Desk posted it on every 5-second cycle, so every open Desk emptied
+// the WHOLE response cache every five seconds and each tab's next reads were
+// recomputed on the trading thread. That route now bumps only the path it
+// feeds. The global epoch still wins: an entry is served only when BOTH its
+// global and its path epoch are current. A path is the router-relative path
+// (`/broker-cache`), so every query string of it is invalidated together.
+const pathEpochs = new Map()
+
+/** Current epoch of one /state path (router-relative, e.g. '/broker-cache'). */
+export const statePathEpoch = (path) => pathEpochs.get(path) ?? 0
+
+/** Called after a write whose readers are exactly these /state paths. */
+export function invalidateStatePaths(paths) {
+  for (const p of paths) pathEpochs.set(p, statePathEpoch(p) + 1)
+}

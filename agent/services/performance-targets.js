@@ -32,6 +32,21 @@ function metrics(rows) {
     winRatePct: wins / rows.length * 100, profitFactor: grossLoss > 0 ? grossWin / grossLoss : null, grossWin, grossLoss }
 }
 
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+// DISPLAY ONLY. What the rows that DO carry a finite net show, beside the
+// verdict that withholds every figure until all 20 are broker-proven. Nothing
+// below reads this: status(), the streaks and the qualified flags still read
+// metrics() alone, so an incomplete sample stays 'unmeasurable'.
+function measured(rows) {
+  const priced = rows.filter(r => finite(r.netPnl))
+  const wins = priced.filter(r => r.netPnl > 0).length
+  const losses = priced.filter(r => r.netPnl < 0).length
+  const grossWin = priced.reduce((sum, r) => sum + Math.max(0, r.netPnl), 0)
+  const grossLoss = priced.reduce((sum, r) => sum - Math.min(0, r.netPnl), 0)
+  return { n: priced.length, wins, losses, winRatePct: priced.length ? wins / priced.length * 100 : null,
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null, grossWin, grossLoss }
+}
+
 function status(m, key, target, minimum) {
   if (m.pending) return 'unmeasurable'
   if (m.n < minimum) return 'insufficient_sample'
@@ -45,7 +60,9 @@ export function assessPerformanceTargets(records, { now = Date.now(), unavailabl
     .sort((a, b) => b.closedAtMs - a.closedAtMs || String(a.positionId).localeCompare(String(b.positionId)))
   const latest = rows.slice(0, PERFORMANCE_TARGETS.trades)
   const latest20 = { ...metrics(latest), positionIds: latest.map(r => r.positionId),
-    oldestAt: latest.length ? new Date(latest.at(-1).closedAtMs).toISOString() : null }
+    oldestAt: latest.length ? new Date(latest.at(-1).closedAtMs).toISOString() : null,
+    // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder) — display only, see measured().
+    measured: measured(latest) }
   const todayStart = dayStart(now)
   const days = Array.from({ length: PERFORMANCE_TARGETS.profitFactorDays }, (_, i) => {
     const from = todayStart - (i + 1) * DAY

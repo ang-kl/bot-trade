@@ -46,6 +46,8 @@ import SessionReview from '../components/SessionReview.jsx'
 import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
 import PerfAccountScope from '../components/PerfAccountScope.jsx'
 import GoalTracker from '../components/GoalTracker.jsx'
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+import Scoreboard from '../components/Scoreboard.jsx'
 import PerformanceMetrics from '../components/PerformanceMetrics.jsx'
 import { historicalMetricGroups } from '../lib/performance-metrics.js'
 import DecisionFeed from '../components/DecisionFeed.jsx'
@@ -1983,6 +1985,12 @@ export default function Performance() {
         {reportAge.text} · refreshes every minute while active{populationError ? ` · ${populationError}` : ''}. Live quote freshness is shown separately.
       </p>
 
+      {/* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder). The
+          scoreboard leads the page. It sits in the SHARED column, above the
+          phone screens and the desktop ledger alike, so it is the first card
+          at every width — one mount, one minute poll, not a copy per layout
+          (the phone and desktop shells below are a CSS split that both mount). */}
+      <Scoreboard />
       {/* Codex · №11,791 · 2026-10-07; codex-footprint: performance-essentials. Forward goals, capital and recorded management lead. */}
       <Card id="sec-performance-goals" scope="all">
         <h2 className="t-h3">Forward results — progress toward trading goals</h2>

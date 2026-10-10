@@ -23,6 +23,8 @@ export default function PerformanceTargets({ report, accounts = [], selected, va
           return <article key={row.accountId} style={{ border: '1px solid var(--color-border)', padding: 8, flex: '1 1 260px', minWidth: 0 }}>
             <strong>{account?.login ? `#${account.login} · ` : ''}{row.accountId} · {row.currency || 'currency unverified'}</strong> <ScopeDot scope={scope} />
             <p>{m.n}/20 recorded whole-position candidates · {m.eligible} complete · {m.pending} pending</p>
+            {/* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): display-only figures beside the unchanged verdict. */}
+            {m.measured && m.n > 0 && <p data-measured="latest20">Measured so far ({m.eligible} of {m.n} broker-proven): {m.measured.n ? <>win rate {value(m.measured.winRatePct, 1)}{m.measured.winRatePct == null ? '' : '%'} · {m.measured.wins}W / {m.measured.losses}L · PF {m.measured.profitFactor == null ? (m.measured.losses === 0 ? 'no losses' : '—') : value(m.measured.profitFactor, 2)}</> : 'no proven close yet'} · not the verdict below</p>}
             <div>Win rate: {value(m.winRatePct, 1)}{m.winRatePct == null ? '' : '%'} · {label[row.winRate.status]}</div>
             <div>Latest 20: {label[row.winRate.latest20Status]} · Days: {row.winRate.consecutiveDays}/3</div>
             <div>Profit factor: {value(m.profitFactor, 4)} · {label[row.profitFactor.status]}</div>

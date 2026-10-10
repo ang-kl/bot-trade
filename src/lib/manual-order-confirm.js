@@ -15,8 +15,16 @@
  *
  * Routing orders to the viewed account instead is the owner's call (plan D2);
  * this changes the words of the confirm only, not where the order goes.
+ *
+ * Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the owner's
+ * pre-order step now routes the pad to the account the page shows (Trade.jsx
+ * sends `account`, src/lib/preorder-check.js padDestination). Two additions:
+ * `primary` says so in words when the order still goes to the primary account
+ * (the portfolio view), and `check` — the pad's dry run, when one has run for
+ * these exact inputs — puts the size and money at risk into the question.
  */
 const last4 = (id) => `…${String(id).slice(-4)}`
+const amount = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })
 
 /**
  * @param {object} p
@@ -27,17 +35,23 @@ const last4 = (id) => `…${String(id).slice(-4)}`
  * @param {{accountId?: string|number|null, traderLogin?: string|number|null}|null} p.destination
  *   the primary broker account (/health broker.accountId / traderLogin)
  * @param {string|number|null} [p.viewedAccountId]  the account this page shows
+ * @param {boolean} [p.primary]  the order goes to the primary account (no `account` sent)
+ * @param {{volume:number, moneyAtRisk:number|null, currency:string|null}|null} [p.check]
+ *   the pad's dry run for these exact inputs, when one has run
  * @returns {string}
  */
-export function manualOrderConfirmText({ side, symbol, sl, tp, destination, viewedAccountId = null }) {
+export function manualOrderConfirmText({ side, symbol, sl, tp, destination, viewedAccountId = null, primary = false, check = null }) {
   const destId = destination?.accountId != null && String(destination.accountId) !== '' ? String(destination.accountId) : null
   const login = destination?.traderLogin != null && String(destination.traderLogin) !== '' ? String(destination.traderLogin) : null
   const where = destId
-    ? `account ${last4(destId)}${login ? ` (login ${login})` : ''}`
+    ? `${primary ? 'the primary broker account, ' : ''}account ${last4(destId)}${login ? ` (login ${login})` : ''}`
     : 'the primary broker account (its id is not reported to this page)'
   const viewed = viewedAccountId != null && String(viewedAccountId) !== '' && String(viewedAccountId) !== 'all' ? String(viewedAccountId) : null
   const mismatch = destId && viewed && viewed !== destId
     ? ` NOTE: this is NOT the account this page is showing (${last4(viewed)}).`
     : ''
-  return `Place a REAL ${side} market order on ${symbol} (SL ${sl}${tp ? `, TP ${tp}` : ''}) on ${where}?${mismatch}`
+  const sized = check && check.volume != null
+    ? ` Checked: size ${amount(check.volume)} lots, money at risk ${check.moneyAtRisk == null ? 'not known' : `${check.currency ? `${check.currency} ` : ''}${amount(check.moneyAtRisk)}`}.`
+    : ''
+  return `Place a REAL ${side} market order on ${symbol} (SL ${sl}${tp ? `, TP ${tp}` : ''}) on ${where}?${mismatch}${sized}`
 }

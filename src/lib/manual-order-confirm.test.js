@@ -51,10 +51,37 @@ describe('Trade.jsx wiring — the order pad asks with the destination-naming co
   const start = src.indexOf('const placeOrder = async')
   const body = src.slice(start, src.indexOf("agentPost('/actions/manual-order'", start))
 
-  it('placeOrder confirms with manualOrderConfirmText fed by the broker account', () => {
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the confirm is
+  // fed by the SAME destination as the post (padDestination → manualOrderBody);
+  // today that is the primary account (D2 ask-first, № 12,957).
+  it('placeOrder confirms with manualOrderConfirmText fed by the pad destination, and posts that destination', () => {
     expect(start).toBeGreaterThan(0)
     expect(body).toMatch(/window\.confirm\(manualOrderConfirmText\(/)
-    expect(body).toMatch(/accountId:\s*health\.broker\.accountId/)
+    expect(body).toMatch(/destination:\s*padDest\.accountId != null \? \{ accountId: padDest\.accountId/)
+    expect(body).toMatch(/primary:\s*!padDest\.routed/)
+    expect(body).toMatch(/check:\s*padCheckNow/)
     expect(body).not.toMatch(/window\.confirm\(`Place a REAL/)
+    expect(src).toMatch(/agentPost\('\/actions\/manual-order', manualOrderBody\(\{ order, destination: padDest \}\)\)/)
+    expect(src).toMatch(/const padDest = padDestination\(\{ viewedAccountId: viewedAccountId\(\), broker: health\?\.broker \?\? null \}\)/)
+  })
+})
+
+describe('manualOrderConfirmText — primary routing and the checked size (Claude · № 12,955)', () => {
+  it('names the primary account as primary when the order is not routed', () => {
+    const t = manualOrderConfirmText({ ...base, destination: { accountId: '46970949' }, viewedAccountId: 'all', primary: true })
+    expect(t).toBe('Place a REAL BUY market order on EURUSD (SL 1.0800, TP 1.0900) on the primary broker account, account …0949?')
+  })
+
+  it('states the size and money at risk when a check has run for these inputs', () => {
+    const t = manualOrderConfirmText({ ...base, destination: { accountId: '46970949' }, viewedAccountId: '46970949', check: { volume: 0.14, moneyAtRisk: 140, currency: 'USD' } })
+    expect(t).toBe('Place a REAL BUY market order on EURUSD (SL 1.0800, TP 1.0900) on account …0949? Checked: size 0.14 lots, money at risk USD 140.')
+    const unknown = manualOrderConfirmText({ ...base, destination: { accountId: '46970949' }, check: { volume: 0.2, moneyAtRisk: null, currency: 'USD' } })
+    expect(unknown).toContain('money at risk not known')
+  })
+
+  it('says nothing about size without a check — never a guessed figure', () => {
+    for (const check of [null, undefined, { volume: null, moneyAtRisk: 5 }]) {
+      expect(manualOrderConfirmText({ ...base, destination: { accountId: '46970949' }, check })).not.toContain('Checked:')
+    }
   })
 })

@@ -29,6 +29,8 @@ export const NAV_TREE = [
           // "Recorded entry blockers") had no section id, so neither showed
           // in this table of contents — one of §3's three named reasons the
           // owner's collapse control "feels missing".
+          // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+          { id: 'sec-scoreboard', label: 'Scoreboard', kind: 'C' },
           { id: 'sec-acct-balance', label: 'Account balance, floating profit and equity', kind: 'C' },
           { id: 'sec-blockers', label: 'Recorded entry blockers', kind: 'T' },
           { id: 'sec-goal', label: 'Go-Live Gate', kind: 'C' },

@@ -69,6 +69,20 @@ describe('Trade signal eligibility presentation', () => {
     expect(html).not.toContain('0 candidates')
   })
 
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the row's own
+  // levels and a Check that fetches only when tapped.
+  it('shows the signal\'s own entry · stop · target · R:R and a Check per row with a scan id', () => {
+    let fetched = 0
+    const html = renderToStaticMarkup(<TradeSignalsCard accountId="101" check={() => { fetched++; return Promise.resolve({}) }}
+      report={report([row('EURUSD', { scanId: 77, levels: { entry: 1.1, sl: 1.09, tp1: 1.135, rr: 3.5 } }), row('GBPUSD')])} />)
+    expect(html).toContain('Entry · stop · target · R:R')
+    expect(html).toContain('1.1 · 1.09 · 1.135 · 3.5R')
+    expect((html.match(/>Check</g) || []).length).toBe(1)
+    expect(html).toContain('aria-controls="preorder-77-101"')
+    expect(html).toContain('This row has no stored scan id to check')
+    expect(fetched).toBe(0) // rendering never asks the gate
+  })
+
   it('keeps each account-labelled row distinct in the all-account view', () => {
     const data = { ...report([row('EURUSD'), row('EURUSD', { account_id: '202', accountLabel: 'Demo 202' })]), accountId: 'all' }
     const html = render(data, 'all')

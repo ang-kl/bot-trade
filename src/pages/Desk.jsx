@@ -49,6 +49,10 @@ import Collapse from '../components/common/Collapse.jsx'
 // UI-6 (26-09 UI plan §2 RS-1, "Phase audit ... Move to Desk"): self-fetching,
 // so Desk's own load() carries nothing new for it.
 import { PhaseAuditSection } from './Reasons.jsx'
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+import { readCardOpen } from '../lib/card-open.js'
+import { useIsDesktop } from '../lib/use-media-query.js'
+import { createSectionGate, fetchOpenSections } from '../lib/desk-sections.js'
 
 const REFRESH_MS = 20_000
 const ACTIVE_REFRESH_MS = 5_000 // faster poll while a position/order is live — owner: "run in every 1/2 second and not in 5 minutes" (½s risks broker rate limits for no real edge on a 5m+ strategy; 5s keeps the page feeling live)
@@ -84,21 +88,36 @@ function clockSecs(iso) {
 // stays informative while collapsed. Open/closed persists per section.
 
 
-function Section({ id, title, summary, tag = null, defaultOpen = true, children }) {
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+// `onShownChange(id, shown)`: the page's section gate (lib/desk-sections.js) —
+// reported on mount, on every expand/collapse/maximize and, false, on
+// unmount, so a section's own routes are fetched only while it is on screen.
+// `mountWhenShown`: for content that fetches FOR ITSELF (the chart wall's
+// charts, the phase audit) — hiding it with display:none would leave its
+// pollers running, so it is not mounted while the section is closed.
+function Section({ id, title, summary, tag = null, defaultOpen = true, onShownChange = null, mountWhenShown = false, children }) {
   const KEY = `desk_open_${id}`
   const [open] = useState(() => {
     try { const v = localStorage.getItem(KEY); return v == null ? defaultOpen : v === '1' } catch { return defaultOpen }
   })
+  // The same first answer Card itself reads (card-open.js), so content gated
+  // on it never mounts for a frame inside a card that opens collapsed.
+  const [shown, setShown] = useState(() => readCardOpen(`sec-${id}`, open))
+  const report = useCallback((value) => {
+    setShown(value)
+    onShownChange?.(id, value)
+  }, [id, onShownChange])
+  useEffect(() => () => { onShownChange?.(id, false) }, [id, onShownChange])
 
   return (
-    <Card id={`sec-${id}`} defaultCollapsed={!open}>
+    <Card id={`sec-${id}`} defaultCollapsed={!open} onShownChange={report}>
       <div className="w-full flex items-center gap-1.5 text-left">
         <h2 className="t-h3">{title}</h2>
         {/* Owner: state the account beside the table, not only in the sidebar. */}
         {tag}
         {summary && <span className="ml-auto text-(length:--fs-body) text-[var(--color-text-sub)] truncate">{summary}</span>}
       </div>
-      <div className="mt-1.5">{children}</div>
+      <div className="mt-1.5">{mountWhenShown && !shown ? null : children}</div>
     </Card>
   )
 }
@@ -154,6 +173,11 @@ function RiskDecisionRow({ ev }) {
 
 export default function Desk() {
   const overview = useAccountOverview()
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the phone
+  // layout (below the app's 1024 px desktop breakpoint, lib/use-media-query.js)
+  // and whether its "Engine and diagnostics" section is open.
+  const isDesktop = useIsDesktop()
+  const [diagShown, setDiagShown] = useState(() => readCardOpen('sec-engine-diagnostics', false))
   const [health, setHealth] = useState(null)
   const [scans, setScans] = useState([])
   // Newest close per symbol across ALL cycles — the currency-conversion base.
@@ -251,23 +275,62 @@ export default function Desk() {
 
   const brokerViewGuard = useRef(null)
   if (!brokerViewGuard.current) brokerViewGuard.current = createBrokerViewGuard(viewedAccountId)
-  const load = useCallback(async () => {
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  // SECTION GATE. A section whose routes only it needs (lib/desk-sections.js
+  // maps each one from this file) is fetched only while it is on screen: at
+  // once when it opens (`onOpen` -> runLoad([id])), then on the page's own
+  // cycle, and not at all once it closes or unmounts. Core routes — what the
+  // always-visible status strip, positions, warnings and "At the broker" read
+  // — are unchanged.
+  const loadRef = useRef(null)
+  const sectionGate = useRef(null)
+  if (!sectionGate.current) sectionGate.current = createSectionGate({ onOpen: id => loadRef.current?.([id]) })
+  // The same open set as state, for the summaries a closed section shows.
+  const [openSections, setOpenSections] = useState(() => new Set())
+  const onSectionShown = useCallback((id, shown) => {
+    sectionGate.current.set(id, shown)
+    setOpenSections(prev => {
+      if (prev.has(id) === shown) return prev
+      const next = new Set(prev)
+      if (shown) next.add(id); else next.delete(id)
+      return next
+    })
+  }, [])
+  const [riskReadError, setRiskReadError] = useState('')
+  const runLoad = useCallback(async (only = null) => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
     const view = brokerViewGuard.current()
-    if (view.changed) { setBroker(null); setBrokerHistory(null); setBrokerErr(''); setPositions([]); setPositionsReadOk(false); setPositionsReadError(''); setPosScope({ accountId: view.id || null, legacyRows: 0, scope: null }) }
+    // A switched view resets the page, so a section-only call becomes a full one.
+    if (view.changed) { only = null; setBroker(null); setBrokerHistory(null); setBrokerErr(''); setPositions([]); setPositionsReadOk(false); setPositionsReadError(''); setPosScope({ accountId: view.id || null, legacyRows: 0, scope: null }) }
+    // Each open section's own routes, each painting as it lands. Failures keep
+    // the shape they had inside the old all-or-nothing batch: an unreadable
+    // optional read is null, broker history keeps its last good copy, and the
+    // risk read — which used to fail the whole batch — says so in its section.
+    for (const [id, pending] of fetchOpenSections(sectionGate.current, { get: agentGet, historyPost: body => agentPost('/actions/broker-history', body), historyDays, view }, only)) {
+      pending.then(value => {
+        if (!view.current()) return
+        if (id === 'controllers') { setHeartbeats(value?.controllers ?? null); setControllerRuntime(value?.runtime ?? null); setHeartbeatReadError('') }
+        else if (id === 'closed7d') { if (view.matches(value) && value?.ok) setBrokerHistory(value) } // keep prev on a bad refresh — no collapse
+        else if (id === 'risk') { setEvents(value?.rows || []); setRiskReadError('') }
+        else if (id === 'alphadecay') setAlphaDecay(value ?? null)
+        else if (id === 'order-ledger') setOrders(value || null)
+        else if (id === 'loss-review') setPostmortems(value || null)
+        else if (id === 'correlation') setCorrelation(value || null)
+        else if (id === 'pulse') setPulse(value || null)
+      }, err => {
+        if (!view.current()) return
+        if (id === 'controllers') { setHeartbeats(null); setControllerRuntime(null); setHeartbeatReadError(`Controller readings unverified: ${err.message}`) }
+        else if (id === 'risk') setRiskReadError(`Risk decisions unavailable: ${err.message}`)
+        else if (id === 'alphadecay') setAlphaDecay(null)
+        else if (id === 'order-ledger') setOrders(null)
+        else if (id === 'loss-review') setPostmortems(null)
+        else if (id === 'correlation') setCorrelation(null)
+        else if (id === 'pulse') setPulse(null)
+      })
+    }
+    if (only != null) return
     // Protection and position readings must paint even when analytics fail
     // or take longer. Every response still belongs to this viewing session.
-    agentGet('/state/heartbeats').then(hb => {
-      if (!view.current()) return
-      setHeartbeats(hb?.controllers ?? null)
-      setControllerRuntime(hb?.runtime ?? null)
-      setHeartbeatReadError('')
-    }).catch(err => {
-      if (!view.current()) return
-      setHeartbeats(null)
-      setControllerRuntime(null)
-      setHeartbeatReadError(`Controller readings unverified: ${err.message}`)
-    })
     agentGet('/state/positions').then(p => {
       if (!view.current()) return
       setPositions(p.rows || p.positions || [])
@@ -302,9 +365,6 @@ export default function Desk() {
       // snapshot made the Desk look current while showing Friday's data
       // (owner hit this Monday morning). The interval retries every cycle.
       .catch(e => { if (view.current()) setBrokerErr(`live broker refresh failed: ${e.message} — retrying`) })
-    if (view.single) agentPost('/actions/broker-history', { days: historyDays, accountId: view.id })
-      .then(bh => { if (view.current() && view.matches(bh) && bh?.ok) setBrokerHistory(bh) }) // keep prev on a bad refresh — no collapse
-      .catch(() => {})
     // Instant paint: the agent's cached snapshot (refreshed ~every 30s by
     // the monitor) fills the broker sections in milliseconds; the live
     // fetches above overwrite it the moment the WS answers. `prev ??` makes
@@ -319,18 +379,12 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, r, atf, c, ad, mh, ord, pms, corr, mp, dupe, wlf, px] = await Promise.all([
+      const [h, s, atf, c, mh, dupe, wlf, px] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
-        agentGet('/state/risk-events?limit=200'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/config').catch(() => null),
-        agentGet('/state/alpha-decay').catch(() => null),
         agentGet('/state/market-hours').catch(() => null),
-        agentGet('/state/orders').catch(() => null),
-        agentGet('/state/postmortems').catch(() => null),
-        agentGet('/state/correlation').catch(() => null),
-        agentGet('/state/market-pulse').catch(() => null),
         agentGet('/state/duplicate-trades').catch(() => null),
         agentGet('/state/weekend-loss-flags').catch(() => null),
         loadLatestPrices(agentGet),
@@ -345,20 +399,16 @@ export default function Desk() {
       // `key={symbol}` rows in lists keyed by symbol (Codex review).
       const rows = s.lastResults?.scans || []
       setScans(rows)
-      setEvents(r.rows || [])
       setArmed(atf)
       setConfig(c)
-      setAlphaDecay(ad)
       setMarketHours(mh?.hours || null)
-      setOrders(ord || null)
-      setPostmortems(pms || null)
-      setCorrelation(corr || null)
-      setPulse(mp || null)
       setDupeTrades(dupe || null)
       setWeekendFlags(wlf?.flags || [])
       setError('')
     } catch (e) { if (view.current()) setError(e.message) }
   }, [historyDays])
+  const load = useCallback(() => runLoad(null), [runLoad])
+  useEffect(() => { loadRef.current = runLoad }, [runLoad])
 
   const hasActivity = positions.length > 0 || (broker?.orders?.length || 0) > 0
   useEffect(() => {
@@ -492,120 +542,13 @@ export default function Desk() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [posSig, monitorByPid, positionsReadOk])
 
-  return (
-    <div className="space-y-2">
-      <SectionNavFab />
-      <SwitchingNote to={switchingTo} />
-      <Card id="sec-all-accounts" scope="all">
-        <h2 className="t-h3">All accounts · current positions</h2>
-        <CurrentAccountReadings report={overview} />
-        <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-(length:--fs-body)">
-          <thead><tr>{['Account', 'Instrument', 'Side', 'Lots', 'Entry', 'Stop loss', 'Take profit', 'Floating / currency'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
-          <tbody>{(overview?.accounts || []).flatMap(a => a.positions.map(p => <tr key={`${a.accountId}:${p.positionId}`} className="border-t border-[var(--color-border)]">
-            <td className="pr-3 py-2">{a.accountId}</td><td className="pr-3">{p.symbol}</td><td className="pr-3">{p.side}</td><td className="pr-3">{p.lots ?? '—'}</td>
-            <td className="pr-3">{p.entry ?? '—'}</td><td className="pr-3">{p.sl ?? '—'}</td><td className="pr-3">{p.tp ?? '—'}</td><td>{p.netPnl?.toFixed(2) ?? '—'} {a.currency}</td>
-          </tr>))}</tbody>
-        </table></div>
-        <p>Account-specific management controls remain below. These overview rows are read-only.</p>
-      </Card>
-      {error && <Card className="text-(length:--fs-body)">{error}</Card>}
-
-      {/* ---- Status strip — desk-style: dots + text, no pill clutter.
-           Pills are for controls; status is DATA, so it reads as a line. ---- */}
-      <Card>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-(length:--fs-body)">
-          {/* Tri-state, honestly: "no data yet" must never read as OFF — a
-              loading page and a disarmed bot are different facts. */}
-          <span className="font-semibold whitespace-nowrap">
-            {/* OFF is the red state tint, UNKNOWN stays muted — a disarmed bot
-                and a loading page must not share one grey (inventory D2), and
-                ON is the blue STATE colour, not the navigation accent. */}
-            <span aria-hidden="true" style={{ color: !health ? 'var(--color-text-sub)' : health.autotradeEnabled ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)' }}>● </span>
-            {!health ? 'Autotrade: no data yet' : health.autotradeEnabled ? 'Autotrade ON' : 'Autotrade OFF'}
-          </span>
-          {health?.pendingModeEnabled && (
-            <span
-              className="whitespace-nowrap text-[var(--color-warning-text)] font-semibold"
-              title="GLOBAL setting, not this account's: resting-limit-order mode is ON, so new signals place a resting limit order instead of a market order on EVERY account. Turn it off in Tune › Pipeline. (Until 05-08-2026 the strategy autopilot could silently re-arm this after you turned it off — it now mirrors its own matrix in both directions.)"
-            >⏳ pending armed <span className="font-normal text-[var(--color-text-sub)]">(all accounts)</span></span>
-          )}
-          <span className={`font-semibold whitespace-nowrap ${health?.broker?.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
-            {health?.broker?.isLive ? '⚠ LIVE' : 'DEMO'}
-          </span>
-          <span className="font-semibold whitespace-nowrap">${fmt(health?.broker?.balance, 2)}</span>
-          <span className="text-[var(--color-text-sub)] whitespace-nowrap">
-            micro-tuned: {armedChips.length || 0} combos ·{' '}
-            <Link to="/tune" className="text-[var(--color-accent)] underline underline-offset-2">Tune ›</Link>
-          </span>
-          {equityStopToday && <span className="text-[var(--color-down)] font-semibold">EQUITY STOP TRIPPED — auto-disarmed today</span>}
-          {health && !health.broker?.linked && (
-            <span className="text-[var(--color-warning-text)]">No account linked — re-link on Connect (keep DB_PATH on a Railway Volume)</span>
-          )}
-        </div>
-        {/* The bot's GOAL, one line, derived live from config. The armed
-            combo list lives behind a disclosure — useful on demand, not as
-            a 17-chip wall. */}
-        <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
-          <span className="font-semibold text-[var(--color-text)]">Goal:</span>{' '}
-          {(config?.autotrade_scope ?? 'all') === 'all'
-            ? <>full watchlist — {watch.length || '…'} symbols × armed strategies × any scanned TF</>
-            : <>the {armedChips.length} backtest-armed combos only (widen in Tune)</>}
-          {/* burn-in is fixed-only; auto signals are still risk-sized */}
-          {' '}· sizing {config?.burn_in?.on ? `risk-based (burn-in: fixed ${config?.burn_in?.lots ?? 0.01} lots)` : 'risk-based'}
-          {config?.burn_in?.on ? <> · pacing {config?.burn_in?.targetTrades ?? 200} trades/{config?.burn_in?.windowDays ?? 2}d</> : null}
-          {' '}· guardrails: risk gate · stage matrix · market hours · equity stop
-        </p>
-        {armedChips.length > 0 && (
-          <details className="mt-0.5 text-(length:--fs-body)">
-            <summary className="cursor-pointer text-[var(--color-text-sub)] select-none">armed combos ({armedChips.length})</summary>
-            <p className="mt-0.5 text-[var(--color-text-sub)] leading-relaxed">{armedChips.join(' · ')}</p>
-          </details>
-        )}
-      </Card>
-
-      {/* ---- P&L overview — the FIRST chart (owner: "first chart should be
-          oscillator chart of all active trade... line chart of all trades
-          (active) whether profit or loss"), ahead of the per-symbol grid
-          wall below. Collapsible like every other Desk section (owner:
-          "chart collapse unless i want to see then expand") — the summary
-          line stays live while collapsed so it still reads as active. ---- */}
-      <Section
-        id="openpnl"
-        title="Open trades — floating P&L"
-        tag={<>
-          <AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />
-          {/* S4 — the DB-tracked positions declare 'account'. The "At the
-              broker" table below is a different question and declares
-              separately: it is BROKER truth for one connection, so pooling it
-              under this dot would be the same conflation the plan is about. */}
-          <ScopeDot scope={openPnlScope} />
-        </>}
-        summary={(() => {
-          if (!broker) return 'UNVERIFIED - awaiting broker snapshot'
-          const openPositions = broker.positions || []
-          if (openPositions.length === 0) return 'flat'
-          const total = openPositions.reduce((s2, p) => {
-            const v = Number(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)
-            return s2 + (Number.isFinite(v) ? v : 0)
-          }, 0)
-          return `${openPositions.length} open · ${total >= 0 ? '+' : '−'}${Math.abs(total).toFixed(2)}`
-        })()}
-        defaultOpen={false}
-      >
-        <details className="mb-1.5 text-(length:--fs-body) text-[var(--color-text-sub)]">
-          <summary className="cursor-pointer select-none font-semibold">what do these gauges mean?</summary>
-          <p className="mt-1 leading-relaxed">
-            <strong>Attitude</strong> — the horizon tilts with this trade's P&amp;L (blue rises on profit, orange on loss); the fixed wings across the middle don't tilt — their length is the position's size (lots), and the tip shows an arrow when P&amp;L has moved consistently one way for the last minute or so, or a dot when it's choppy/flat.<br />
-            <strong>Activity</strong> — the needle reads how fast this trade's P&amp;L is moving right now: flat left (9 o'clock) = dormant, up toward 12 = profit accelerating, down toward 6 = loss accelerating. The number underneath is that rate in account currency per minute.
-          </p>
-        </details>
-        <div className="mb-1.5">
-          <Segmented label="Gauge wall grid size" value={pnlGridN} onChange={pickPnlGrid}
-            options={[1, 4, 8, 16].map(n => ({ value: n, label: String(n) }))} />
-        </div>
-        {broker ? <TradeGaugeWall positions={gaugePositions} gridN={pnlGridN} marketHours={marketHours} /> : <p>Broker positions not yet verified.</p>}
-      </Section>
-
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  // The engine/diagnostic sections, as values, so the SAME elements render
+  // in their desktop places and, below the desktop breakpoint, inside one
+  // collapsed "Engine and diagnostics" section that mounts them only while
+  // it is open (see the end of the page). Their markup is unchanged.
+  const chartWallSection = (
+    <>
       {/* ---- Chart wall — full width; per-symbol candlestick charts.
           Collapsible like every other Desk section (owner: "the charting
           in desk page should be able to expand/collapse") — open by default
@@ -613,6 +556,7 @@ export default function Desk() {
           it still says something useful collapsed. ---- */}
       <Section
         id="chartwall"
+        mountWhenShown
         title="Chart wall"
         summary={gridN === 1 ? (symbol || '—') : `${gridN}-chart wall`}
       >
@@ -685,168 +629,10 @@ export default function Desk() {
           {scans.length === 0 && <span className="text-[var(--color-text-sub)] py-1">No scan yet — the loop runs every {config?.loop_interval_min ?? 5} min.</span>}
         </div>
       </Section>
-
-      {/* ---- Detail sections — everything live, behind triangles ---- */}
-      <Section
-        id="broker"
-        title={`At the broker — positions (${broker?.positions?.length ?? '…'}) & set orders (${broker?.orders?.length ?? '…'})`}
-        summary={broker?.positions?.length ? `floating ${floating >= 0 ? '+' : ''}${fmt(floating, 2)}` : null}
-      >
-        {!broker && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Fetching the account snapshot…</p>}
-        {broker?._cachedAt && (
-          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
-        )}
-        {brokerErr && <p className="text-(length:--fs-body) text-[var(--color-warning-text)]">{brokerErr}</p>}
-        <LatestPricesNote read={pricesRead} />
-        {!positionsReadOk && <p role="status" className="text-(length:--fs-body) text-[var(--color-warning-text)]">{positionsReadError || 'Monitor records not yet verified for this account. Broker positions below remain visible.'}</p>}
-        {dbOnlyPositions.length > 0 && (
-          <p className="text-(length:--fs-body) text-[var(--color-warning-text)] mb-1">
-            ⚠ {dbOnlyPositions.length} position(s) marked active in the DB but not found at the broker: {' '}
-            {dbOnlyPositions.map(r => r.symbol).join(', ')} — the reconciler closes these automatically on its next pass.
-          </p>
-        )}
-        {(broker?.positions?.length ?? 0) > 0 && (
-          <StdTradeTable
-            rows={brokerPosRows}
-            countLabel="open positions"
-            marketHours={marketHours}
-            onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }}
-            panel={{ label: 'Manage', render: (row, close) => <PositionManager p={{ ...row.raw, accountId: row.raw.accountId ?? row.accountId ?? null }} onDone={() => { close(); load() }} /> }}
-          />
-        )}
-        {(broker?.orders?.length ?? 0) > 0 && (
-          <div className="mt-2">
-            <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">Pending (set) orders</div>
-            <StdTradeTable
-              rows={brokerOrderRowsM}
-              countLabel="pending orders"
-              marketHours={marketHours}
-              onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }}
-              panel={{ label: 'Manage', render: (row, close) => <OrderManager o={row.raw} onDone={() => { close(); load() }} /> }}
-            />
-          </div>
-        )}
-        {broker && brokerFlat && (
-          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Flat at the broker — no live positions or pending orders.</p>
-        )}
-      </Section>
-
-      {/* TP-less open positions — owner: "a few of the open trades didn't set
-          T/P that is dangerous." New market orders now require a Take Profit
-          (guard_no_target), but positions opened before that guard, or
-          adopted verbatim from a manual/foreign broker order, can still be
-          SL-only. Read-only warning — nothing is closed or amended automatically. */}
-      {(() => {
-        const naked = brokerPosRows.filter(r => r.tp == null && !(r.tps?.length))
-        if (naked.length === 0) return null
-        return (
-          <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
-            <p className="font-semibold text-[var(--color-warning-text)]">
-              ⚠ {naked.length} open position(s) have no Take Profit set — risk is capped by the stop, but nothing is locking in a target
-            </p>
-            <ul className="mt-1 space-y-0.5">
-              {naked.slice(0, 8).map(r => (
-                <li key={r.id} className="text-[var(--color-text-sub)]">
-                  {r.symbol} {r.side === 'BUY' ? 'Long' : 'Short'} · entry {r.entry} · SL {r.sl ?? '—'}{r.source?.text === 'MANUAL' ? ' (manual/foreign position)' : ''}
-                </li>
-              ))}
-            </ul>
-            {naked.length > 8 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{naked.length - 8} more.</p>}
-          </Card>
-        )
-      })()}
-
-      {/* Weekend loss flags — losing positions the pre-closure sweep flagged
-          (weekend-loss-flag.js) and deliberately left open: selling a loser
-          into a thin pre-close market locks the worst price. The flags come
-          from the sweep's own self-expiring markers, so this banner clears
-          itself once the closure passes — read-only, nothing auto-closes. */}
-      {weekendFlags.length > 0 && (
-        <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
-          <p className="font-semibold text-[var(--color-warning-text)]">
-            ⚠ {weekendFlags.length} losing position(s) flagged ahead of a long market closure — left open per policy, review before the close
-          </p>
-          <ul className="mt-1 space-y-0.5">
-            {weekendFlags.slice(0, 8).map(f => {
-              const stillOpen = brokerPosRows.some(r => r.id === `bp-${f.positionId}`)
-              return (
-                <li key={f.positionId} className="text-[var(--color-text-sub)]">
-                  {f.symbol} {f.side === 'SELL' ? 'Short' : 'Long'} · {f.movePct}% · entry {f.entry}{f.closureHrs ? ` · ${f.closureHrs}h closure` : ''}{stillOpen ? '' : ' (since closed)'}
-                </li>
-              )
-            })}
-          </ul>
-          {weekendFlags.length > 8 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{weekendFlags.length - 8} more.</p>}
-        </Card>
-      )}
-
-      {/* Durable SET-ORDER LEDGER — resting orders keep a lifecycle record even
-          after they fill/cancel (and even while switches are OFF), so there's
-          always a record of what was set and what became of it. */}
-      {/* Duplicate-trade audit — owner spotted 7 identical AUDUSD rows at
-          the same timestamp in the lessons panel (same symbol/side/entry/
-          exit/net_pnl to the cent, essentially impossible for independent
-          real fills). Read-only warning; nothing is deleted automatically. */}
-      {/* V3 B2: only groups the broker's receipts do not show as distinct
-          positions count, each extra row at its own money, and the money is
-          given per currency — never one "$" figure summed across SGD and USD
-          accounts (owner default 25-09). The server pools by the one rule
-          (poolByCurrency); an account with no recorded currency is shown in
-          its own units ("currency not read" when the read itself failed),
-          and a row with no account per broker position
-          (lib/duplicate-money.js). */}
-      {(dupeTrades?.totalExtraRows ?? 0) > 0 && (() => {
-        const counted = dupeTrades.groups.filter(g => g.classification !== 'broker_distinct')
-        const money = duplicateMoneyParts(dupeTrades).join(' · ')
-        return (
-          <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
-            <p className="font-semibold text-[var(--color-warning-text)]">
-              ⚠ {dupeTrades.totalExtraRows} likely-duplicate closed trade record(s) found — inflating P&amp;L/win-rate stats by {money || 'an amount not reported'}
-            </p>
-            <ul className="mt-1 space-y-0.5">
-              {counted.slice(0, 5).map((g, i) => (
-                <li key={i} className="text-[var(--color-text-sub)]">
-                  {g.symbol} {g.side} entry {g.entry_price} → exit {g.exit_price} · net {g.net_pnl} · ×{g.count}{g.classification === 'same_position' ? ' (same broker position id — confirmed duplicate)' : ' (not verified against broker deals)'}
-                </li>
-              ))}
-            </ul>
-            {counted.length > 5 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{counted.length - 5} more group(s).</p>}
-            {(dupeTrades.brokerDistinctRows ?? 0) > 0 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">{dupeTrades.brokerDistinctRows} identical-looking row(s) are distinct broker positions, each with its own closing deal — not counted.</p>}
-          </Card>
-        )
-      })()}
-
-      {/* Post-loss playback — the bot's homework after every losing trade:
-          what did the market DO next, and what does that teach per strategy. */}
-      <Section
-        id="loss-review"
-        title={`Trade lessons — losses & wins (${postmortems?.rows?.length ?? '…'})`}
-        summary={(() => {
-          const st = postmortems?.stats || []
-          if (!st.length) return null
-          const hunts = st.filter(s2 => s2.classification === 'stop_hunt').reduce((a, b) => a + b.n, 0)
-          const wrong = st.filter(s2 => s2.classification === 'thesis_wrong').reduce((a, b) => a + b.n, 0)
-          return `30d: ${hunts} stop-hunt · ${wrong} thesis-wrong`
-        })()}
-        defaultOpen={false}
-      >
-        {/* On-demand back-fill: sweep a big batch of unclassified closed
-            trades now instead of waiting for the loop's 6-per-cycle pace. */}
-        <div className="mb-2">
-          <Button size="sm" variant="ghost" disabled={sweepBusy} onClick={async () => {
-            setSweepBusy(true)
-            try {
-              const r = await agentPost('/actions/postmortem-sweep', { batch: 30 })
-              setSweepNote(`swept: ${r.classified ?? 0} classified, ${r.waiting ?? 0} waiting${(r.tunerActive || []).length ? ` · tuner active: ${r.tunerActive.join(', ')}` : ''}`)
-              load()
-            } catch (e) { setSweepNote(`sweep failed: ${e.message}`) }
-            setSweepBusy(false)
-          }}>{sweepBusy ? 'Sweeping…' : 'Sweep lessons now'}</Button>
-          {sweepNote && <span className="ml-2 text-(length:--fs-body) text-[var(--color-text-sub)]">{sweepNote}</span>}
-        </div>
-        <LossReview postmortems={postmortems} />
-      </Section>
-
+    </>
+  )
+  const pulseSection = (
+    <>
       {/* MARKET PULSE — trending / herding / defended, per symbol.
           Owner 05-08-2026: "Create an algo to understand movements and big
           moves that give more awareness to the symbol trading and pending to
@@ -854,6 +640,7 @@ export default function Desk() {
           doing to the symbols you hold and the ones about to be entered. */}
       <Section
         id="pulse"
+        onShownChange={onSectionShown}
         title="Market pulse — trend, herd, or a level being held"
         summary={pulse?.builtAt
           ? `${Object.keys(pulse.readings || {}).length} symbols · ${(pulse.sharp || []).length} sharp · ${(pulse.defended || []).length} held · ${(pulse.divergences || []).length} pair divergence(s)`
@@ -925,12 +712,16 @@ export default function Desk() {
           </div>
         )}
       </Section>
-
+    </>
+  )
+  const correlationSection = (
+    <>
       {/* Correlation-symbols controller — the cluster exposure the risk gate
           vetoes on, made visible (owner: "when are you going to use all the
           correlation-symbols controller"). */}
       <Section
         id="correlation"
+        onShownChange={onSectionShown}
         title="Correlation clusters — shared-bet exposure"
         summary={correlation ? `cap ±${correlation.maxClusterExposure} per cluster · ccy cap ±${correlation.maxCurrencyExposure}` : null}
         defaultOpen={false}
@@ -1031,99 +822,45 @@ export default function Desk() {
           </div>
         )}
       </Section>
-
+    </>
+  )
+  const orderLedgerSection = (
+    <>
       <Section
         id="order-ledger"
+        onShownChange={onSectionShown}
         title={`Set-order ledger — records (${orders ? `${orders.working?.length ?? 0} at broker · ${orders.queued?.length ?? 0} queued` : '…'})`}
         summary={orders?.recentlyGone?.length ? `${orders.recentlyGone.length} filled/cancelled in 24h` : null}
         defaultOpen={false}
       >
         <OrderLedger orders={orders} onChanged={load} />
       </Section>
-
-      <Section
-        id="closed7d"
-        title="Closed at the broker"
-        summary={(() => {
-          if (brokerHistory?.realized == null) return null
-          let s2 = `${brokerHistory.complete === false ? `INCOMPLETE walk (${brokerHistory.incompleteReason || 'cut short'}) — realised so far` : 'realised'} ${brokerHistory.realized >= 0 ? '+' : ''}${fmt(brokerHistory.realized, 2)} · ${brokerHistory.rows?.length ?? 0} deals`
-          // Best/worst contributor — the read a CTO wants before the rows.
-          const rows2 = (brokerHistory.rows || []).filter(d => d.netPnl != null)
-          if (rows2.length >= 2) {
-            const best = rows2.reduce((a, b) => (b.netPnl > a.netPnl ? b : a))
-            const worst = rows2.reduce((a, b) => (b.netPnl < a.netPnl ? b : a))
-            s2 += ` · best ${best.symbol} +${fmt(Math.abs(best.netPnl), 2)} · worst ${worst.symbol} −${fmt(Math.abs(worst.netPnl), 2)}`
-          }
-          return s2
-        })()}
-        defaultOpen={false}
-      >
-        {/* Window picker (owner: "should also include 30 days and 3+6
-            months") — switching re-fetches broker-history at that window. */}
-        <div className="mb-1.5">
-          <Segmented label="History window" value={historyDays} onChange={setHistoryDays}
-            options={[{ value: 7, label: '7d' }, { value: 30, label: '30d' }, { value: 90, label: '3mo' }, { value: 182, label: '6mo' }]} />
-        </div>
-        {!brokerHistory && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Choose one account to view broker history; that account’s history loads automatically.</p>}
-        {brokerHistory?._cachedAt && (
-          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
-        )}
-        {(brokerHistory?.rows?.length ?? 0) > 0 && (
-          <StdTradeTable wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} rows={brokerDealRows(brokerHistory.rows, { rates: rateMap })} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
-        )}
-        {brokerHistory && brokerHistory.rows?.length === 0 && (
-          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Nothing closed in the last {historyDays === 7 ? '7 days' : historyDays === 30 ? '30 days' : historyDays === 90 ? '3 months' : '6 months'}.</p>
-        )}
-        <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">Net includes swap + commission — same figures as cTrader's History tab, manual trades included.</p>
-      </Section>
-
-      <Section
-        id="risk"
-        title="Risk decisions"
-        summary={events.length ? `${events.filter(e => !e.approved).length} vetoes in last ${events.length}` : null}
-        defaultOpen={false}
-      >
-        <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">
-          Every signal the scanner considers trading passes through here.{' '}
-          <span className="font-semibold text-[var(--color-accent)]">OK</span> = the risk gate approved it (it still
-          has to clear broker sizing/spread checks after — OK is not the same as placed);{' '}
-          <span className="font-semibold text-[var(--color-warning-text)]">VETO</span> = risk math said no, with why.
-        </p>
-        {events.length === 0 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">None yet.</p>}
-        {/* Plain rows, trader words — status is text with colour, not a pill;
-            the raw machine code stays in the tooltip. Side/strategy/entry
-            from proposal_json so a row reads as a decision, not just a
-            symbol + cryptic code (owner: "meaningless to me"). */}
-        {/* Each row expands to the full criteria breakdown from checks_json —
-            side/strategy/entry from proposal_json (owner: "meaningless to me"),
-            and the complete multi-criteria evaluation on click (owner: "Risk
-            Decision is so superficial ... more than one criteria"). */}
-        <ul className="text-(length:--fs-body)">
-          {events.slice(0, 10).map(ev => (
-            <RiskDecisionRow key={ev.id} ev={ev} />
-          ))}
-        </ul>
-        <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
-          Full history on the <Link to="/trade" className="text-[var(--color-accent)] underline">Trade</Link> tab.
-        </p>
-      </Section>
-
+    </>
+  )
+  const engineeringCard = (
+    <>
       {/* Per-account engineering status (owner: "The desk page should display
           the underlying engineering status for each account you are trading or
           not trading"). Sits beside Controllers on purpose: that panel is
           health per CONTROLLER, this one is health per ACCOUNT. */}
       <AccountEngineering />
-
+    </>
+  )
+  const controllersSection = (
+    <>
       {/* Controllers — heartbeat reliability: every background controller's
           last beat, plus the C++ exec engine's probed liveness. A stalled
           controller is a positions-unmanaged incident, so it also alerts on
           Telegram; this panel is the always-on visual. */}
       <Section
         id="controllers"
+        onShownChange={onSectionShown}
         title="Controllers — services and completed work"
         summary={(() => {
           if (heartbeatReadError) return 'UNVERIFIED - refresh failed'
-          if (!heartbeats) return 'UNVERIFIED - awaiting reading'
+          // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): read only
+          // while open now, so a closed, never-read panel says exactly that.
+          if (!heartbeats) return openSections.has('controllers') ? 'UNVERIFIED - awaiting reading' : 'not read while closed — open to read'
           const bad = heartbeats.filter(c => c.status === 'stalled' || c.status === 'error').length
           const live = heartbeats.filter(c => c.status === 'ok' || c.status === 'warn').length
           return bad ? `${bad} STALLED/FAILING` : `${live} beating`
@@ -1140,12 +877,10 @@ export default function Desk() {
         <ControllerRuntime runtime={controllerRuntime} />
         <ControllerGroups controllers={heartbeats} />
       </Section>
-
-      {/* UI-7: the LLM spend card moved to the new AI page (pages/Ai.jsx) —
-          every AI-related surface now lives in one place, with its own nav
-          entry, rather than being one card among Desk's unrelated ones. See
-          components/LlmSpendCard.jsx for the moved content. */}
-
+    </>
+  )
+  const edgeSection = (
+    <>
       {/* Edge health — banded perspectives: the auto-bot's live edge,
           signal decay, the owner's backtest baseline, and the advisory/
           committed response list — every verdict evidential, every action
@@ -1153,6 +888,7 @@ export default function Desk() {
           explained by source. */}
       <Section
         id="alphadecay"
+        onShownChange={onSectionShown}
         title="Edge health"
         summary={(() => {
           if (!alphaDecay) return null
@@ -1336,6 +1072,391 @@ export default function Desk() {
           </>
         )}
       </Section>
+    </>
+  )
+  const phaseAuditSection = (
+    <>
+      {/* UI-6 (26-09 UI plan §2 RS-1, "Phase audit ... Move to Desk" — the
+          viewed account's phase switches against what the loop actually
+          did belong with the rest of this workspace's live state, not on
+          Reasons. Self-fetching (Reasons.jsx's PhaseAuditSection): Desk's
+          own load() needs no new endpoint, and the block keeps its own
+          401/500/scope state exactly as every other Reasons block does. */}
+      <Section id="phase-audit" title="Phase audit" mountWhenShown>
+        <PhaseAuditSection />
+      </Section>
+    </>
+  )
+
+  return (
+    <div className="space-y-2">
+      {/* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): on a
+          phone a diagnostic section is not in the page until "Engine and
+          diagnostics" is opened — the table of contents then lands there. */}
+      <SectionNavFab onSelect={isDesktop ? undefined : (sid) => (document.getElementById(sid) || document.getElementById('sec-engine-diagnostics'))?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
+      <SwitchingNote to={switchingTo} />
+      <Card id="sec-all-accounts" scope="all">
+        <h2 className="t-h3">All accounts · current positions</h2>
+        <CurrentAccountReadings report={overview} />
+        <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-(length:--fs-body)">
+          <thead><tr>{['Account', 'Instrument', 'Side', 'Lots', 'Entry', 'Stop loss', 'Take profit', 'Floating / currency'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
+          <tbody>{(overview?.accounts || []).flatMap(a => a.positions.map(p => <tr key={`${a.accountId}:${p.positionId}`} className="border-t border-[var(--color-border)]">
+            <td className="pr-3 py-2">{a.accountId}</td><td className="pr-3">{p.symbol}</td><td className="pr-3">{p.side}</td><td className="pr-3">{p.lots ?? '—'}</td>
+            <td className="pr-3">{p.entry ?? '—'}</td><td className="pr-3">{p.sl ?? '—'}</td><td className="pr-3">{p.tp ?? '—'}</td><td>{p.netPnl?.toFixed(2) ?? '—'} {a.currency}</td>
+          </tr>))}</tbody>
+        </table></div>
+        <p>Account-specific management controls remain below. These overview rows are read-only.</p>
+      </Card>
+      {error && <Card className="text-(length:--fs-body)">{error}</Card>}
+
+      {/* ---- Status strip — desk-style: dots + text, no pill clutter.
+           Pills are for controls; status is DATA, so it reads as a line. ---- */}
+      <Card>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-(length:--fs-body)">
+          {/* Tri-state, honestly: "no data yet" must never read as OFF — a
+              loading page and a disarmed bot are different facts. */}
+          <span className="font-semibold whitespace-nowrap">
+            {/* OFF is the red state tint, UNKNOWN stays muted — a disarmed bot
+                and a loading page must not share one grey (inventory D2), and
+                ON is the blue STATE colour, not the navigation accent. */}
+            <span aria-hidden="true" style={{ color: !health ? 'var(--color-text-sub)' : health.autotradeEnabled ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)' }}>● </span>
+            {!health ? 'Autotrade: no data yet' : health.autotradeEnabled ? 'Autotrade ON' : 'Autotrade OFF'}
+          </span>
+          {health?.pendingModeEnabled && (
+            <span
+              className="whitespace-nowrap text-[var(--color-warning-text)] font-semibold"
+              title="GLOBAL setting, not this account's: resting-limit-order mode is ON, so new signals place a resting limit order instead of a market order on EVERY account. Turn it off in Tune › Pipeline. (Until 05-08-2026 the strategy autopilot could silently re-arm this after you turned it off — it now mirrors its own matrix in both directions.)"
+            >⏳ pending armed <span className="font-normal text-[var(--color-text-sub)]">(all accounts)</span></span>
+          )}
+          <span className={`font-semibold whitespace-nowrap ${health?.broker?.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
+            {health?.broker?.isLive ? '⚠ LIVE' : 'DEMO'}
+          </span>
+          <span className="font-semibold whitespace-nowrap">${fmt(health?.broker?.balance, 2)}</span>
+          <span className="text-[var(--color-text-sub)] whitespace-nowrap">
+            micro-tuned: {armedChips.length || 0} combos ·{' '}
+            <Link to="/tune" className="text-[var(--color-accent)] underline underline-offset-2">Tune ›</Link>
+          </span>
+          {equityStopToday && <span className="text-[var(--color-down)] font-semibold">EQUITY STOP TRIPPED — auto-disarmed today</span>}
+          {health && !health.broker?.linked && (
+            <span className="text-[var(--color-warning-text)]">No account linked — re-link on Connect (keep DB_PATH on a Railway Volume)</span>
+          )}
+        </div>
+        {/* The bot's GOAL, one line, derived live from config. The armed
+            combo list lives behind a disclosure — useful on demand, not as
+            a 17-chip wall. */}
+        <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
+          <span className="font-semibold text-[var(--color-text)]">Goal:</span>{' '}
+          {(config?.autotrade_scope ?? 'all') === 'all'
+            ? <>full watchlist — {watch.length || '…'} symbols × armed strategies × any scanned TF</>
+            : <>the {armedChips.length} backtest-armed combos only (widen in Tune)</>}
+          {/* burn-in is fixed-only; auto signals are still risk-sized */}
+          {' '}· sizing {config?.burn_in?.on ? `risk-based (burn-in: fixed ${config?.burn_in?.lots ?? 0.01} lots)` : 'risk-based'}
+          {config?.burn_in?.on ? <> · pacing {config?.burn_in?.targetTrades ?? 200} trades/{config?.burn_in?.windowDays ?? 2}d</> : null}
+          {' '}· guardrails: risk gate · stage matrix · market hours · equity stop
+        </p>
+        {armedChips.length > 0 && (
+          <details className="mt-0.5 text-(length:--fs-body)">
+            <summary className="cursor-pointer text-[var(--color-text-sub)] select-none">armed combos ({armedChips.length})</summary>
+            <p className="mt-0.5 text-[var(--color-text-sub)] leading-relaxed">{armedChips.join(' · ')}</p>
+          </details>
+        )}
+      </Card>
+
+      {/* ---- P&L overview — the FIRST chart (owner: "first chart should be
+          oscillator chart of all active trade... line chart of all trades
+          (active) whether profit or loss"), ahead of the per-symbol grid
+          wall below. Collapsible like every other Desk section (owner:
+          "chart collapse unless i want to see then expand") — the summary
+          line stays live while collapsed so it still reads as active. ---- */}
+      <Section
+        id="openpnl"
+        title="Open trades — floating P&L"
+        tag={<>
+          <AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />
+          {/* S4 — the DB-tracked positions declare 'account'. The "At the
+              broker" table below is a different question and declares
+              separately: it is BROKER truth for one connection, so pooling it
+              under this dot would be the same conflation the plan is about. */}
+          <ScopeDot scope={openPnlScope} />
+        </>}
+        summary={(() => {
+          if (!broker) return 'UNVERIFIED - awaiting broker snapshot'
+          const openPositions = broker.positions || []
+          if (openPositions.length === 0) return 'flat'
+          const total = openPositions.reduce((s2, p) => {
+            const v = Number(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)
+            return s2 + (Number.isFinite(v) ? v : 0)
+          }, 0)
+          return `${openPositions.length} open · ${total >= 0 ? '+' : '−'}${Math.abs(total).toFixed(2)}`
+        })()}
+        defaultOpen={false}
+      >
+        <details className="mb-1.5 text-(length:--fs-body) text-[var(--color-text-sub)]">
+          <summary className="cursor-pointer select-none font-semibold">what do these gauges mean?</summary>
+          <p className="mt-1 leading-relaxed">
+            <strong>Attitude</strong> — the horizon tilts with this trade's P&amp;L (blue rises on profit, orange on loss); the fixed wings across the middle don't tilt — their length is the position's size (lots), and the tip shows an arrow when P&amp;L has moved consistently one way for the last minute or so, or a dot when it's choppy/flat.<br />
+            <strong>Activity</strong> — the needle reads how fast this trade's P&amp;L is moving right now: flat left (9 o'clock) = dormant, up toward 12 = profit accelerating, down toward 6 = loss accelerating. The number underneath is that rate in account currency per minute.
+          </p>
+        </details>
+        <div className="mb-1.5">
+          <Segmented label="Gauge wall grid size" value={pnlGridN} onChange={pickPnlGrid}
+            options={[1, 4, 8, 16].map(n => ({ value: n, label: String(n) }))} />
+        </div>
+        {broker ? <TradeGaugeWall positions={gaugePositions} gridN={pnlGridN} marketHours={marketHours} /> : <p>Broker positions not yet verified.</p>}
+      </Section>
+
+      {isDesktop && chartWallSection}
+
+      {/* ---- Detail sections — everything live, behind triangles ---- */}
+      <Section
+        id="broker"
+        title={`At the broker — positions (${broker?.positions?.length ?? '…'}) & set orders (${broker?.orders?.length ?? '…'})`}
+        summary={broker?.positions?.length ? `floating ${floating >= 0 ? '+' : ''}${fmt(floating, 2)}` : null}
+      >
+        {!broker && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Fetching the account snapshot…</p>}
+        {broker?._cachedAt && (
+          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
+        )}
+        {brokerErr && <p className="text-(length:--fs-body) text-[var(--color-warning-text)]">{brokerErr}</p>}
+        <LatestPricesNote read={pricesRead} />
+        {!positionsReadOk && <p role="status" className="text-(length:--fs-body) text-[var(--color-warning-text)]">{positionsReadError || 'Monitor records not yet verified for this account. Broker positions below remain visible.'}</p>}
+        {dbOnlyPositions.length > 0 && (
+          <p className="text-(length:--fs-body) text-[var(--color-warning-text)] mb-1">
+            ⚠ {dbOnlyPositions.length} position(s) marked active in the DB but not found at the broker: {' '}
+            {dbOnlyPositions.map(r => r.symbol).join(', ')} — the reconciler closes these automatically on its next pass.
+          </p>
+        )}
+        {(broker?.positions?.length ?? 0) > 0 && (
+          <StdTradeTable
+            rows={brokerPosRows}
+            countLabel="open positions"
+            marketHours={marketHours}
+            onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }}
+            panel={{ label: 'Manage', render: (row, close) => <PositionManager p={{ ...row.raw, accountId: row.raw.accountId ?? row.accountId ?? null }} onDone={() => { close(); load() }} /> }}
+          />
+        )}
+        {(broker?.orders?.length ?? 0) > 0 && (
+          <div className="mt-2">
+            <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">Pending (set) orders</div>
+            <StdTradeTable
+              rows={brokerOrderRowsM}
+              countLabel="pending orders"
+              marketHours={marketHours}
+              onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }}
+              panel={{ label: 'Manage', render: (row, close) => <OrderManager o={row.raw} onDone={() => { close(); load() }} /> }}
+            />
+          </div>
+        )}
+        {broker && brokerFlat && (
+          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Flat at the broker — no live positions or pending orders.</p>
+        )}
+      </Section>
+
+      {/* TP-less open positions — owner: "a few of the open trades didn't set
+          T/P that is dangerous." New market orders now require a Take Profit
+          (guard_no_target), but positions opened before that guard, or
+          adopted verbatim from a manual/foreign broker order, can still be
+          SL-only. Read-only warning — nothing is closed or amended automatically. */}
+      {(() => {
+        const naked = brokerPosRows.filter(r => r.tp == null && !(r.tps?.length))
+        if (naked.length === 0) return null
+        return (
+          <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
+            <p className="font-semibold text-[var(--color-warning-text)]">
+              ⚠ {naked.length} open position(s) have no Take Profit set — risk is capped by the stop, but nothing is locking in a target
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {naked.slice(0, 8).map(r => (
+                <li key={r.id} className="text-[var(--color-text-sub)]">
+                  {r.symbol} {r.side === 'BUY' ? 'Long' : 'Short'} · entry {r.entry} · SL {r.sl ?? '—'}{r.source?.text === 'MANUAL' ? ' (manual/foreign position)' : ''}
+                </li>
+              ))}
+            </ul>
+            {naked.length > 8 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{naked.length - 8} more.</p>}
+          </Card>
+        )
+      })()}
+
+      {/* Weekend loss flags — losing positions the pre-closure sweep flagged
+          (weekend-loss-flag.js) and deliberately left open: selling a loser
+          into a thin pre-close market locks the worst price. The flags come
+          from the sweep's own self-expiring markers, so this banner clears
+          itself once the closure passes — read-only, nothing auto-closes. */}
+      {weekendFlags.length > 0 && (
+        <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
+          <p className="font-semibold text-[var(--color-warning-text)]">
+            ⚠ {weekendFlags.length} losing position(s) flagged ahead of a long market closure — left open per policy, review before the close
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {weekendFlags.slice(0, 8).map(f => {
+              const stillOpen = brokerPosRows.some(r => r.id === `bp-${f.positionId}`)
+              return (
+                <li key={f.positionId} className="text-[var(--color-text-sub)]">
+                  {f.symbol} {f.side === 'SELL' ? 'Short' : 'Long'} · {f.movePct}% · entry {f.entry}{f.closureHrs ? ` · ${f.closureHrs}h closure` : ''}{stillOpen ? '' : ' (since closed)'}
+                </li>
+              )
+            })}
+          </ul>
+          {weekendFlags.length > 8 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{weekendFlags.length - 8} more.</p>}
+        </Card>
+      )}
+
+      {/* Durable SET-ORDER LEDGER — resting orders keep a lifecycle record even
+          after they fill/cancel (and even while switches are OFF), so there's
+          always a record of what was set and what became of it. */}
+      {/* Duplicate-trade audit — owner spotted 7 identical AUDUSD rows at
+          the same timestamp in the lessons panel (same symbol/side/entry/
+          exit/net_pnl to the cent, essentially impossible for independent
+          real fills). Read-only warning; nothing is deleted automatically. */}
+      {/* V3 B2: only groups the broker's receipts do not show as distinct
+          positions count, each extra row at its own money, and the money is
+          given per currency — never one "$" figure summed across SGD and USD
+          accounts (owner default 25-09). The server pools by the one rule
+          (poolByCurrency); an account with no recorded currency is shown in
+          its own units ("currency not read" when the read itself failed),
+          and a row with no account per broker position
+          (lib/duplicate-money.js). */}
+      {(dupeTrades?.totalExtraRows ?? 0) > 0 && (() => {
+        const counted = dupeTrades.groups.filter(g => g.classification !== 'broker_distinct')
+        const money = duplicateMoneyParts(dupeTrades).join(' · ')
+        return (
+          <Card className="text-(length:--fs-body) border-[var(--color-warning-text)]">
+            <p className="font-semibold text-[var(--color-warning-text)]">
+              ⚠ {dupeTrades.totalExtraRows} likely-duplicate closed trade record(s) found — inflating P&amp;L/win-rate stats by {money || 'an amount not reported'}
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {counted.slice(0, 5).map((g, i) => (
+                <li key={i} className="text-[var(--color-text-sub)]">
+                  {g.symbol} {g.side} entry {g.entry_price} → exit {g.exit_price} · net {g.net_pnl} · ×{g.count}{g.classification === 'same_position' ? ' (same broker position id — confirmed duplicate)' : ' (not verified against broker deals)'}
+                </li>
+              ))}
+            </ul>
+            {counted.length > 5 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">+{counted.length - 5} more group(s).</p>}
+            {(dupeTrades.brokerDistinctRows ?? 0) > 0 && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">{dupeTrades.brokerDistinctRows} identical-looking row(s) are distinct broker positions, each with its own closing deal — not counted.</p>}
+          </Card>
+        )
+      })()}
+
+      {/* Post-loss playback — the bot's homework after every losing trade:
+          what did the market DO next, and what does that teach per strategy. */}
+      <Section
+        id="loss-review"
+        onShownChange={onSectionShown}
+        title={`Trade lessons — losses & wins (${postmortems?.rows?.length ?? '…'})`}
+        summary={(() => {
+          const st = postmortems?.stats || []
+          if (!st.length) return null
+          const hunts = st.filter(s2 => s2.classification === 'stop_hunt').reduce((a, b) => a + b.n, 0)
+          const wrong = st.filter(s2 => s2.classification === 'thesis_wrong').reduce((a, b) => a + b.n, 0)
+          return `30d: ${hunts} stop-hunt · ${wrong} thesis-wrong`
+        })()}
+        defaultOpen={false}
+      >
+        {/* On-demand back-fill: sweep a big batch of unclassified closed
+            trades now instead of waiting for the loop's 6-per-cycle pace. */}
+        <div className="mb-2">
+          <Button size="sm" variant="ghost" disabled={sweepBusy} onClick={async () => {
+            setSweepBusy(true)
+            try {
+              const r = await agentPost('/actions/postmortem-sweep', { batch: 30 })
+              setSweepNote(`swept: ${r.classified ?? 0} classified, ${r.waiting ?? 0} waiting${(r.tunerActive || []).length ? ` · tuner active: ${r.tunerActive.join(', ')}` : ''}`)
+              load()
+            } catch (e) { setSweepNote(`sweep failed: ${e.message}`) }
+            setSweepBusy(false)
+          }}>{sweepBusy ? 'Sweeping…' : 'Sweep lessons now'}</Button>
+          {sweepNote && <span className="ml-2 text-(length:--fs-body) text-[var(--color-text-sub)]">{sweepNote}</span>}
+        </div>
+        <LossReview postmortems={postmortems} />
+      </Section>
+
+      {isDesktop && pulseSection}
+
+      {isDesktop && correlationSection}
+
+      {isDesktop && orderLedgerSection}
+
+      <Section
+        id="closed7d"
+        onShownChange={onSectionShown}
+        title="Closed at the broker"
+        summary={(() => {
+          if (brokerHistory?.realized == null) return null
+          let s2 = `${brokerHistory.complete === false ? `INCOMPLETE walk (${brokerHistory.incompleteReason || 'cut short'}) — realised so far` : 'realised'} ${brokerHistory.realized >= 0 ? '+' : ''}${fmt(brokerHistory.realized, 2)} · ${brokerHistory.rows?.length ?? 0} deals`
+          // Best/worst contributor — the read a CTO wants before the rows.
+          const rows2 = (brokerHistory.rows || []).filter(d => d.netPnl != null)
+          if (rows2.length >= 2) {
+            const best = rows2.reduce((a, b) => (b.netPnl > a.netPnl ? b : a))
+            const worst = rows2.reduce((a, b) => (b.netPnl < a.netPnl ? b : a))
+            s2 += ` · best ${best.symbol} +${fmt(Math.abs(best.netPnl), 2)} · worst ${worst.symbol} −${fmt(Math.abs(worst.netPnl), 2)}`
+          }
+          return s2
+        })()}
+        defaultOpen={false}
+      >
+        {/* Window picker (owner: "should also include 30 days and 3+6
+            months") — switching re-fetches broker-history at that window. */}
+        <div className="mb-1.5">
+          <Segmented label="History window" value={historyDays} onChange={setHistoryDays}
+            options={[{ value: 7, label: '7d' }, { value: 30, label: '30d' }, { value: 90, label: '3mo' }, { value: 182, label: '6mo' }]} />
+        </div>
+        {!brokerHistory && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Choose one account to view broker history; that account’s history loads automatically.</p>}
+        {brokerHistory?._cachedAt && (
+          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
+        )}
+        {(brokerHistory?.rows?.length ?? 0) > 0 && (
+          <StdTradeTable wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} rows={brokerDealRows(brokerHistory.rows, { rates: rateMap })} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
+        )}
+        {brokerHistory && brokerHistory.rows?.length === 0 && (
+          <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Nothing closed in the last {historyDays === 7 ? '7 days' : historyDays === 30 ? '30 days' : historyDays === 90 ? '3 months' : '6 months'}.</p>
+        )}
+        <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">Net includes swap + commission — same figures as cTrader's History tab, manual trades included.</p>
+      </Section>
+
+      <Section
+        id="risk"
+        onShownChange={onSectionShown}
+        title="Risk decisions"
+        summary={events.length ? `${events.filter(e => !e.approved).length} vetoes in last ${events.length}` : null}
+        defaultOpen={false}
+      >
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">
+          Every signal the scanner considers trading passes through here.{' '}
+          <span className="font-semibold text-[var(--color-accent)]">OK</span> = the risk gate approved it (it still
+          has to clear broker sizing/spread checks after — OK is not the same as placed);{' '}
+          <span className="font-semibold text-[var(--color-warning-text)]">VETO</span> = risk math said no, with why.
+        </p>
+        {/* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): this read
+            used to fail the whole page batch; it now says so here. */}
+        {riskReadError && <p role="status" className="text-(length:--fs-body) text-[var(--color-warning-text)]">{riskReadError}</p>}
+        {events.length === 0 && !riskReadError && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">None yet.</p>}
+        {/* Plain rows, trader words — status is text with colour, not a pill;
+            the raw machine code stays in the tooltip. Side/strategy/entry
+            from proposal_json so a row reads as a decision, not just a
+            symbol + cryptic code (owner: "meaningless to me"). */}
+        {/* Each row expands to the full criteria breakdown from checks_json —
+            side/strategy/entry from proposal_json (owner: "meaningless to me"),
+            and the complete multi-criteria evaluation on click (owner: "Risk
+            Decision is so superficial ... more than one criteria"). */}
+        <ul className="text-(length:--fs-body)">
+          {events.slice(0, 10).map(ev => (
+            <RiskDecisionRow key={ev.id} ev={ev} />
+          ))}
+        </ul>
+        <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
+          Full history on the <Link to="/trade" className="text-[var(--color-accent)] underline">Trade</Link> tab.
+        </p>
+      </Section>
+
+      {isDesktop && engineeringCard}
+
+      {isDesktop && controllersSection}
+
+      {/* UI-7: the LLM spend card moved to the new AI page (pages/Ai.jsx) —
+          every AI-related surface now lives in one place, with its own nav
+          entry, rather than being one card among Desk's unrelated ones. See
+          components/LlmSpendCard.jsx for the moved content. */}
+
+      {isDesktop && edgeSection}
 
       {/* Why no trades — only when genuinely flat; the product explains
           itself instead of looking dead. */}
@@ -1366,15 +1487,29 @@ export default function Desk() {
           in the desk to a page by its own") — /performance now leads the
           nav with the full timeframe × market × account ledger. */}
 
-      {/* UI-6 (26-09 UI plan §2 RS-1, "Phase audit ... Move to Desk" — the
-          viewed account's phase switches against what the loop actually
-          did belong with the rest of this workspace's live state, not on
-          Reasons. Self-fetching (Reasons.jsx's PhaseAuditSection): Desk's
-          own load() needs no new endpoint, and the block keeps its own
-          401/500/scope state exactly as every other Reasons block does. */}
-      <Section id="phase-audit" title="Phase audit">
-        <PhaseAuditSection />
-      </Section>
+      {isDesktop && phaseAuditSection}
+      {/* Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): below the
+          desktop breakpoint the engine/diagnostic sections live here, in one
+          collapsed section whose content is NOT MOUNTED until it is opened and
+          is unmounted again when it is closed — so a phone on Desk polls
+          positions, warnings and the broker, not the engine room. */}
+      {!isDesktop && (
+        <Card id="sec-engine-diagnostics" defaultCollapsed onShownChange={setDiagShown}>
+          <h2 className="t-h3">Engine and diagnostics</h2>
+          {diagShown && (
+            <div className="mt-1.5 space-y-2">
+              {chartWallSection}
+              {pulseSection}
+              {correlationSection}
+              {orderLedgerSection}
+              {engineeringCard}
+              {controllersSection}
+              {edgeSection}
+              {phaseAuditSection}
+            </div>
+          )}
+        </Card>
+      )}
     </div>
   )
 }

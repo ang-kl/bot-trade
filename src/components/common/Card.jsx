@@ -124,6 +124,12 @@ export default function Card({
   // again on every toggle; omitted, this changes nothing about Card's own
   // behaviour.
   onCollapsedChange = undefined,
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): whether the
+  // body is ON SCREEN — expanded, or maximized while collapsed (the overlay
+  // shows it either way). Called on mount and on every change. A Desk section
+  // whose routes only it needs fetches them while this is true and stops when
+  // it turns false; omitted, nothing changes.
+  onShownChange = undefined,
   ...rest
 }) {
   const ref = useRef(null)
@@ -155,6 +161,9 @@ export default function Card({
     return next
   })
   const [maximized, setMaximized] = useState(false)
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): one call per
+  // real transition of "on screen", same shape as onCollapsedChange above.
+  useEffect(() => { onShownChange?.(!collapsed || maximized) }, [collapsed, maximized]) // eslint-disable-line react-hooks/exhaustive-deps -- only real shown transitions matter, not onShownChange's identity
   // Derived once from the DOM after mount (callback ref, not an effect —
   // the anchor ids are static). kindProp bypasses the lookup entirely.
   const [kindFound, setKindFound] = useState(null)
