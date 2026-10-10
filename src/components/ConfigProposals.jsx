@@ -18,33 +18,54 @@ import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
 import { pct, num, commandFor } from '../lib/config-proposal-format.js'
+import { dailyStopView } from '../lib/daily-stop-display.js'
 
 const TONE = { danger: 'down', warn: 'warn', info: 'info' }
+const worst = (a) => Math.min(3, ...(a.proposals || []).map(p => ({ danger: 0, warn: 1, info: 2 })[p.severity] ?? 3))
 
 export function Proposal({ accountId, p }) {
+  // Claude · № 12,812 10-Oct (ordered № 12,810; claude-builder): a proposal
+  // with no value (proposed null — "investigate first") used to print a
+  // command that would SET the setting to null. Display only: no command is
+  // shown for it. The command for a real value sits in a closed panel.
+  const hasValue = p.proposed != null
   return (
-    <div className="border-t border-[var(--color-border)] py-1">
-      <div className="flex items-center gap-1.5 text-(length:--fs-body)">
+    <div className="border-t border-[var(--color-border)] py-2">
+      <div className="flex flex-wrap items-center gap-1.5 text-(length:--fs-body)">
         <Badge tone={TONE[p.severity] || 'info'}>{String(p.severity).toUpperCase()}</Badge>
         <span className="font-semibold">{p.setting}</span>
         <span className="text-[var(--color-text-sub)]">{String(p.current)} → </span>
-        <span className="font-semibold">{String(p.proposed)}</span>
+        <span className="font-semibold">{hasValue ? String(p.proposed) : 'no value proposed'}</span>
       </div>
-      <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">{p.why}</div>
-      <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
-        <span className="font-semibold">Expect:</span> {p.expect}
+      <div className="text-(length:--fs-body) mt-1 leading-relaxed">{p.why}</div>
+      <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-1">
+        <span className="font-semibold text-[var(--color-text)]">Expect:</span> {p.expect}
       </div>
-      <code className="block text-(length:--fs-body) mt-0.5 overflow-x-auto whitespace-pre">
-        {commandFor(accountId, p.setting, p.proposed)}
-      </code>
+      {hasValue ? (
+        <details className="mt-1">
+          <summary className="min-h-[44px] flex items-center text-(length:--fs-body) font-semibold text-[var(--color-text-sub)] cursor-pointer">Show the command (read-only)</summary>
+          <code className="block text-(length:--fs-body) mt-0.5 whitespace-pre-wrap break-all rounded-[8px] px-2 py-1.5 bg-[color-mix(in_srgb,var(--color-border)_45%,transparent)]">
+            {commandFor(accountId, p.setting, p.proposed)}
+          </code>
+        </details>
+      ) : (
+        <div className="text-(length:--fs-body) font-semibold mt-1" style={{ color: 'var(--color-down)' }}>
+          No value proposed, so no command: investigate first.
+        </div>
+      )}
     </div>
   )
 }
 
-export function AccountBlock({ a }) {
+const SEVERITY_ORDER = { danger: 0, warn: 1, info: 2 }
+
+export function AccountBlock({ a, stop = null }) {
   const e = a.econ || {}
+  // The engine's own daily stop for this account (account-overview), shown
+  // beside advice whose arithmetic may use a different cap. Display only.
+  const v = stop ? dailyStopView(stop) : null
   return (
-    <div className="mb-2">
+    <div className="mb-2 rounded-[12px] border border-[var(--glass-edge)] px-3 py-2">
       <div className="text-(length:--fs-body) font-semibold">{a.accountId}</div>
       <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
         {e.trades ?? 0} closed trades · win rate {pct(e.winRate)} · payoff {num(e.payoff)}× · profit factor {num(e.profitFactor)}
@@ -56,12 +77,18 @@ export function AccountBlock({ a }) {
       {!a.skipped && a.proposals.length === 0 && (
         <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">Nothing to propose against this record.</div>
       )}
-      {a.proposals.map(p => <Proposal key={p.rule} accountId={a.accountId} p={p} />)}
+      {v?.capState === 'in_force' && v.cap != null && a.proposals.length > 0 && (
+        <div className="text-(length:--fs-body) mt-1 rounded-[8px] px-2 py-1.5 text-[var(--color-warning-text)] bg-[var(--color-warning-bg)]">
+          Daily stop the engine enforces now: {v.capCcy} {v.cap.toFixed(2)}{v.explain ? ` — ${v.explain}` : ''}. Advice arithmetic below may use a different cap.
+        </div>
+      )}
+      {[...a.proposals].sort((x, y) => (SEVERITY_ORDER[x.severity] ?? 3) - (SEVERITY_ORDER[y.severity] ?? 3))
+        .map(p => <Proposal key={p.rule} accountId={a.accountId} p={p} />)}
     </div>
   )
 }
 
-export default function ConfigProposals() {
+export default function ConfigProposals({ overview = null }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
 
@@ -75,7 +102,7 @@ export default function ConfigProposals() {
 
   return (
     <Card id="sec-config-proposals" data-risk-card className="w3-hover-shadow">
-      <h2 className="t-h3">Settings vs the Record card</h2>
+      <h2 className="t-h3 text-[var(--color-accent)]">Advice from the record</h2>
       <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">
         What this desk&apos;s own closed trades say the settings should be. Read-only:
         nothing here changes a value, and the controller has no write path.
@@ -86,7 +113,11 @@ export default function ConfigProposals() {
       {data?.accounts?.length === 0 && (
         <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">No enabled demo accounts to assess.</div>
       )}
-      {(data?.accounts || []).map(a => <AccountBlock key={a.accountId} a={a} />)}
+      {/* Accounts with DANGER advice first, then WARN — the order a reader acts in. */}
+      {[...(data?.accounts || [])]
+        .sort((x, y) => worst(x) - worst(y))
+        .map(a => <AccountBlock key={a.accountId} a={a}
+          stop={overview?.accounts?.find(r => String(r.accountId) === String(a.accountId))?.dailyStop || null} />)}
     </Card>
   )
 }
