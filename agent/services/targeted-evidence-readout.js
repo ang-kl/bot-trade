@@ -42,6 +42,20 @@ function targetProtocolIds(raw) {
 const protocolId = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value) ? value
   : Number.isSafeInteger(value) && value > 0 ? String(value) : null
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+// Codex · №12,968 · 2026-10-10; codex-footprint: explicit-diagnostic-account-scope.
+// Stored aggregate counters stay global; account detail follows exact targets.
+function scopedHybridVerdicts(verdicts, accountIds) {
+  const selected=new Set(accountIds)
+  const list=value=>!object(value)?value:{...value,totalScope:'stored_global',rowsScope:'requested_accounts',
+    rows:Array.isArray(value.rows)?value.rows.filter(row=>selected.has(protocolId(row.accountId))):null}
+  const pass=verdicts.momentum_partial_pass_json,controller=verdicts.hybrid_tick_controller_json
+  return {
+    momentum_partial_pass_json:!object(pass?.cappedHybrid)?pass:{...pass,cappedHybrid:{...pass.cappedHybrid,
+      ...Object.fromEntries(['enrolled','excluded','delegated','deferred','errors'].map(key=>[key,list(pass.cappedHybrid[key])]))}},
+    hybrid_tick_controller_json:!Array.isArray(controller?.hosts)?controller:{...controller,hosts:controller.hosts.map(host=>({
+      ...host,configuration:!object(host.configuration)?host.configuration:{...host.configuration,excluded:list(host.configuration.excluded)}}))},
+  }
+}
 function hybridVolume(value) {
   const result = {}
   for (const field of VOLUME_FIELDS) {
@@ -143,9 +157,13 @@ export function readTargetedEvidence(db, now=Date.now(), tradeIds=[]) {
         if(String(row.account_id)!==String(owner.account_id) || String(row.position_id)!==String(owner.ctrader_position_id)
           || row.symbol!==owner.symbol) { group.identityConflicts++; continue }
         let detail; try { detail=JSON.parse(row.detail_json) } catch { /* legacy/missing */ }
+        const movement=object(detail?.movement)?detail.movement:null
+        const movementAccount=protocolId(movement?.accountId),movementPosition=protocolId(movement?.positionId)
+        const movementStatus=!movement?'not_recorded':!movementAccount||!movementPosition?'identity_missing_or_invalid':
+          movementAccount!==protocolId(owner.account_id)||movementPosition!==protocolId(owner.ctrader_position_id)?'identity_conflict':'stored_owned_observation'
         group.rows.push({...project(row,['id','at','account_id','position_id','trade_id','symbol','kind','from_value','to_value','source']),
           provenance:project(detail,['nativeSide','nativeBootId','nativeSeq','nativeAtMs','host']),
-          movement:detail?.movement ? project(detail.movement,MOVEMENT_FIELDS) : null})
+          movementStatus,movement:movementStatus==='stored_owned_observation'?project(movement,MOVEMENT_FIELDS):null})
       }
       record.movements.push(group)
     }
@@ -222,7 +240,8 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
         return
       }
       const {trades,missingTargets,...metadata}=readTargetedEvidence(db,now(),tradeIds)
-      emit('summary',{...metadata,missingTargetIds:missingTargets.map(row=>row.tradeId)})
+      emit('summary',{...metadata,...(consolidated?{verdicts:scopedHybridVerdicts(metadata.verdicts,accountIds)}:{}),
+        missingTargetIds:missingTargets.map(row=>row.tradeId)})
       // Requested missing records get their bounded verdict before population
       // detail can consume the output budget. No account identity is invented.
       for(const target of missingTargets) emit('initial-risk',{owner:null,...target})
@@ -252,14 +271,18 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
         const assessment=readTradingAssessment(db,now())
         const {accounts:goalAccounts,...targets}=assessment.targets
         emit('performance-targets',targets)
-        for(const account of goalAccounts||[])emit('performance-account',account)
+        const selectedAccounts=new Set(accountIds)
+        for(const account of goalAccounts||[])if(selectedAccounts.has(protocolId(account.accountId)))emit('performance-account',account)
         const report=stored(db,'order_lifecycle_last_json')
         const pre02=Array.isArray(report?.rules)?report.rules.slice(0,CAP).find(rule=>rule.id==='PRE-02'):null
         emit('pre02-snapshot',{readAt:now(),source:'stored_snapshot_only',
           status:pre02?'observed':'unavailable',
           snapshot:project(report,['schemaVersion','rulesetVersion','at','acceptanceStart','windowDays']),
           window:project(report?.window,['since','until']),
-          accountScope:report?.accounts??null,
+          accountScope:Array.isArray(report?.accounts)?report.accounts.slice(0,CAP)
+            .filter(row=>object(row)&&selectedAccounts.has(protocolId(row.account)))
+            .map(row=>project(row,['account','stage','new','legacy','notices'])):null,
+          accountRowsScope:'requested_accounts',ruleScope:'stored_global',
           rule:pre02?project(pre02,['id','version','key','measurable','population','populationNew','violations',
             'newViolations','legacyViolations','truncated','newestAt']):null,
           readCostMs:null,incrementalWriteOverheadMs:null,

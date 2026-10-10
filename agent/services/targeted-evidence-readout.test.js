@@ -14,7 +14,7 @@ test('consolidated private readout uses explicit targets once, preserves stored 
   db.exec("UPDATE trades SET status='closed' WHERE id=1")
   setState(db,'order_lifecycle_last_json',JSON.stringify(compactSnapshot({schemaVersion:1,rulesetVersion:7,
     generatedAt:'2026-10-10T01:00:00Z',acceptanceStart:'2026-10-03T23:35:00Z',windowDays:7,
-    window:{since:'2026-10-03T01:00:00Z',until:'2026-10-10T01:00:00Z'},accounts:[42],summary:{},
+    window:{since:'2026-10-03T01:00:00Z',until:'2026-10-10T01:00:00Z'},accounts:[{account:'42',stage:'pre_order',new:1,legacy:2,notices:0}],summary:{},
     stages:{pre_order:[{id:'PRE-02',version:2,measurable:true,population:42,newViolations:3,secret:'must-not-leak'}],
       order:[],close:[],stuck:[]}})))
   const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:'batch-owned-1234',
@@ -35,7 +35,7 @@ test('consolidated private readout uses explicit targets once, preserves stored 
   assert.equal(report.rule.population,42)
   assert.equal(report.snapshot.rulesetVersion,7)
   assert.deepEqual(report.window,{since:'2026-10-03T01:00:00Z',until:'2026-10-10T01:00:00Z'})
-  assert.deepEqual(report.accountScope,[42])
+  assert.deepEqual(report.accountScope,[{account:'42',stage:'pre_order',new:1,legacy:2,notices:0}])
   assert.equal(report.readCostMs,null)
   assert.equal(report.incrementalWriteOverheadMs,null)
   assert.doesNotMatch(JSON.stringify(logs),/must-not-leak/)
@@ -61,6 +61,63 @@ test('consolidated capture retains long protocol account identities without roun
   assert.deepEqual(logs.find(row=>row.kind==='account-evidence-summary').value.accountIds,ids)
   assert.equal(logs.at(-1).value.done,true)
   assert.equal(db.prepare('SELECT total_changes() n').get().n,before)
+})
+// Codex · №12,967 · 2026-10-10; codex-footprint: explicit-performance-scope.
+test('consolidated performance output includes only explicit account targets, including an empty selection',t=>{
+  const db=scene(t)
+  db.exec("INSERT INTO accounts(account_id) VALUES('42'),('43')")
+  for(const selected of ['42','']){
+    const logs=[];let callback
+    const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:`scope-account-${selected||'empty'}`,
+      OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_ACCOUNT_IDS:selected,
+      OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
+    assert.equal(typeof startTargetedEvidenceReadout(db,{env,now:()=>NOW,log:line=>logs.push(JSON.parse(line)),
+      setTimer:cb=>{callback=cb},clearTimer:()=>{}}),'function')
+    const before=db.prepare('SELECT total_changes() n').get().n
+    callback()
+    assert.deepEqual(logs.filter(row=>row.kind==='performance-account').map(row=>row.value.accountId),selected?['42']:[])
+    assert.equal(logs.at(-1).value.done,true)
+    assert.equal(db.prepare('SELECT total_changes() n').get().n,before)
+  }
+})
+test('consolidated verdict and PRE02 details preserve only explicit account scope',t=>{
+  const db=scene(t)
+  const own={accountId:'42',tradeId:1,positionId:'33',trigger:2},foreign={accountId:'43',tradeId:2,positionId:'33',trigger:999}
+  setState(db,'momentum_partial_pass_json',JSON.stringify({at:'2026-10-10T01:00:00Z',ok:true,cappedHybrid:{
+    enrolled:[own,foreign],excluded:[own,foreign],delegated:[own,foreign],deferred:[own,foreign],errors:[own,foreign]}}))
+  setState(db,'hybrid_tick_controller_json',JSON.stringify({at:NOW,hosts:{'demo.ctraderapi.com':{
+    configuration:{excluded:[own,foreign]}}}}))
+  const stages=[{account:'42',stage:'pre_order',new:1,legacy:0,notices:0},
+    {account:'43',stage:'pre_order',new:2,legacy:0,notices:0}]
+  setState(db,'order_lifecycle_last_json',JSON.stringify(compactSnapshot({schemaVersion:1,rulesetVersion:7,
+    generatedAt:'2026-10-10T01:00:00Z',accounts:stages,stages:{pre_order:[],order:[],close:[],stuck:[]}})))
+  for(const selected of ['42','']){
+    const logs=[];let callback
+    const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:`verdict-scope-${selected||'empty'}`,
+      OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_ACCOUNT_IDS:selected,
+      OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
+    startTargetedEvidenceReadout(db,{env,now:()=>NOW,log:line=>logs.push(JSON.parse(line)),setTimer:cb=>{callback=cb}})
+    callback()
+    const verdicts=logs.find(row=>row.kind==='summary').value.verdicts
+    for(const key of ['enrolled','excluded','delegated','deferred','errors']){
+      const list=verdicts.momentum_partial_pass_json.cappedHybrid[key]
+      assert.deepEqual(list.rows.map(row=>row.accountId),selected?['42']:[])
+      assert.equal(list.total,2,'stored global count must not be relabelled as the scoped population')
+      assert.equal(list.totalScope,'stored_global')
+    }
+    const excluded=verdicts.hybrid_tick_controller_json.hosts[0].configuration.excluded
+    assert.deepEqual(excluded.rows.map(row=>row.accountId),selected?['42']:[])
+    assert.deepEqual(logs.find(row=>row.kind==='pre02-snapshot').value.accountScope,selected?[stages[0]]:[])
+    assert.equal(logs.at(-1).value.done,true)
+  }
+})
+test('targeted movement with conflicting nested identity remains explicitly unverified',t=>{
+  const db=scene(t)
+  db.prepare('INSERT INTO position_events(trade_id,account_id,position_id,symbol,kind,detail_json) VALUES(?,?,?,?,?,?)')
+    .run(1,'42','33','EURUSD','sl_moved',JSON.stringify({movement:{accountId:'43',positionId:'99',afterStopLoss:9}}))
+  const row=readTargetedEvidence(db,NOW,[1]).trades[0].movements[1].rows[0]
+  assert.equal(row.movement,null)
+  assert.equal(row.movementStatus,'identity_conflict')
 })
 test('consolidated capture refuses malformed operator identity and scanner expansion before a claim',t=>{
   const db=scene(t);let timers=0
