@@ -3,7 +3,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { ScoreboardView, RStrip, OpenPositions, NightlyRecord, NightlyLine } from './Scoreboard.jsx'
-import { stripLabel, startScoreboardPolling, fmtPf, fmtPfR, fmtMoney, SCOREBOARD_PATH, SCOREBOARD_POLL_MS, fmtAmount, fmtPrice, stopSide, balanceView, flowWords, nightlyLabel } from '../lib/scoreboard-view.js'
+import { stripLabel, startScoreboardPolling, fmtPf, fmtPfR, fmtMoney, SCOREBOARD_PATH, SCOREBOARD_POLL_MS, fmtAmount, fmtPrice, stopSide, balanceView, flowWords, nightlyLabel, lineSegments } from '../lib/scoreboard-view.js'
 import PerformanceTargets from './PerformanceTargets.jsx'
 import { readFileSync } from 'node:fs'
 
@@ -250,5 +250,29 @@ describe('wide layout keeps every cell labelled for a screen reader', () => {
     expect(rule, 'the wide block styles the label').not.toBeNull()
     expect(rule[1]).not.toMatch(/display:\s*none/)
     expect(rule[1]).toMatch(/clip-path:\s*inset\(50%\)/)
+  })
+})
+
+// Claude · № 13,054 10-Oct (Codex P2 on #1305): a missing day is a break in
+// the line, and a change of broker host starts a new line.
+describe('daily line segments', () => {
+  const D = 'demo.ctraderapi.com', L = 'live.ctraderapi.com'
+  const days = [
+    { balance: 10, equity: 10, host: D }, { balance: null, equity: null, host: D }, { balance: 12, equity: 11, host: D },
+    { balance: 13, equity: null, host: D }, { balance: 20, equity: 20, host: L }, { balance: 21, equity: 21, host: L },
+  ]
+  it('splits at a missing reading and at a host change, per series', () => {
+    expect(lineSegments(days, 'balance')).toEqual([[0], [2, 3], [4, 5]])
+    expect(lineSegments(days, 'equity')).toEqual([[0], [2], [4, 5]])
+    expect(lineSegments([], 'balance')).toEqual([])
+  })
+  it('draws one polyline per segment, so the gap is visible', () => {
+    const html = renderToStaticMarkup(<NightlyLine rec={{ currency: 'SGD', up: 1, down: 0, flat: 0, mixedHosts: true, nights: days }} />)
+    expect(html.match(/<polyline/g)).toHaveLength(6)
+    expect(nightlyLabel({ currency: 'SGD', up: 1, down: 0, flat: 0, mixedHosts: true, nights: days }))
+      .toBe('Daily balance, 5 readings, from two broker hosts, not one series: up on 1 day, down on 0 days, unchanged on 0 days.')
+    const rec = renderToStaticMarkup(<NightlyRecord rec={{ ...nightly, change: null, mixedHosts: true }} />)
+    expect(rec).toContain('No first-to-last change: the readings come from two broker hosts.')
+    expect(rec).not.toContain('First to last:')
   })
 })

@@ -212,7 +212,14 @@ test('nightlyRecord: one unit only, changes between consecutive nights, a host c
   assert.equal(r.nights[4].error, 'balance: timeout')
   assert.deepEqual(r.nights.map(n => n.flows?.status ?? null), [null, 'read', 'read', null, null, null, 'read'], 'flows asked only where a change exists')
   assert.equal(seen.length, 3)
-  assert.equal(r.change, Number((3080 - 3116.38).toFixed(2)), 'first to last read balance')
+  // Claude · № 13,054 (Codex P2 on #1305): two hosts are not one series.
+  assert.equal(r.mixedHosts, true)
+  assert.equal(r.change, null, 'no first-to-last change across broker hosts')
+  assert.deepEqual(r.nights.map(n => n.host), ['demo.ctraderapi.com', 'demo.ctraderapi.com', 'demo.ctraderapi.com',
+    'live.ctraderapi.com', 'live.ctraderapi.com', 'live.ctraderapi.com', 'live.ctraderapi.com'])
+  const oneHost = nightlyRecord(rows.slice(1, 4), { currency: 'SGD' })
+  assert.equal(oneHost.mixedHosts, false)
+  assert.equal(oneHost.change, Number((3131.42 - 3116.38).toFixed(2)), 'first to last read balance on one host')
   assert.deepEqual([r.up, r.down, r.flat], [1, 1, 1])
 })
 

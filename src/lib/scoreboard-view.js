@@ -169,6 +169,25 @@ const nightsWord = n => `${n} day${n === 1 ? '' : 's'}`
 export function nightlyLabel(rec) {
   const pts = (rec?.nights || []).filter(n => finite(n.balance))
   if (!pts.length) return 'No daily balance recorded in this account\'s currency.'
-  return `Daily balance, ${pts.length} reading${pts.length === 1 ? '' : 's'}, ${fmtAmount(pts[0].balance, rec.currency)} to ${fmtAmount(pts.at(-1).balance, rec.currency)}: `
+  const span = rec.mixedHosts ? 'from two broker hosts, not one series' : `${fmtAmount(pts[0].balance, rec.currency)} to ${fmtAmount(pts.at(-1).balance, rec.currency)}`
+  return `Daily balance, ${pts.length} reading${pts.length === 1 ? '' : 's'}, ${span}: `
     + `up on ${nightsWord(rec.up)}, down on ${nightsWord(rec.down)}, unchanged on ${nightsWord(rec.flat)}.`
+}
+
+/**
+ * Claude · № 13,054 10-Oct (Codex P2 on #1305): the daily line in segments.
+ * A day with no reading of `key` ends a segment, and so does a change of
+ * broker host, so a missing day is a visible break and two hosts are never
+ * one line. Each segment lists the indexes of its readings, oldest first.
+ */
+export function lineSegments(nights, key) {
+  const out = []
+  let cur = null, host
+  ;(nights || []).forEach((n, i) => {
+    if (!finite(n?.[key])) { cur = null; return }
+    if (!cur || n.host !== host) { cur = []; out.push(cur) }
+    host = n.host
+    cur.push(i)
+  })
+  return out
 }
