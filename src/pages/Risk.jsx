@@ -11,6 +11,9 @@ import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import AccountSettingsScope from '../components/AccountSettingsScope.jsx'
 import RiskMatrix from '../components/RiskMatrix.jsx'
 import ConfigProposals from '../components/ConfigProposals.jsx'
+import RiskStatus from '../components/RiskStatus.jsx'
+import { overlaySplit, showRiskValue } from '../lib/risk-format.js'
+import { dailyStopView } from '../lib/daily-stop-display.js'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -22,6 +25,7 @@ import Field, { Unit, FIELD_W, DEFAULT_MARK } from '../components/common/Field.j
 import { ratchetExample, guardianExample } from '../lib/worked-examples.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
+import { accountLabel } from '../lib/scope-label.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { markDirty, clearDirty, anyDirty, sectionsToApply } from '../lib/form-dirty.js'
 import { ESSENTIALS, EVERYTHING, loadRiskMode, saveRiskMode, cardVisible } from '../lib/risk-view.js'
@@ -334,6 +338,24 @@ export default function Risk() {
   }, [riskAcct])
   useEffect(() => { load() }, [load])
 
+  // CAPITAL SAFETY NOW (Claude · № 12,812 10-Oct, ordered № 12,810): the
+  // engine's per-account readings, read-only, refreshed each minute. One read
+  // feeds the status card, the advice card's engine-stop note and the daily
+  // stop tile below.
+  const [overview, setOverview] = useState(null)
+  const [registry, setRegistry] = useState([])
+  const [statusError, setStatusError] = useState('')
+  const loadStatus = useCallback(() => {
+    if (!agentConfigured()) return
+    agentGet('/state/account-overview').then(d => { setOverview(d); setStatusError('') }).catch(e => setStatusError(e.message))
+    agentGet('/state/accounts').then(d => setRegistry(d?.accounts || [])).catch(() => {})
+  }, [])
+  useEffect(() => {
+    loadStatus()
+    const t = setInterval(loadStatus, 60_000)
+    return () => clearInterval(t)
+  }, [loadStatus])
+
   // UI-7 (checker BLOCKER 4, W1.4 fix round): Re-Risk's proposal rows now
   // link here as `/risk#risk-<key>` from the AI page instead of running a
   // same-page click handler (components/RiskReassess.jsx no longer mounts on
@@ -472,33 +494,49 @@ export default function Risk() {
   const volCapped = guard.maxOrderVolume > 0 && cppVolumeUnits > guard.maxOrderVolume
 
   return (
-    <div className="space-y-2" data-risk-dense>
+    <div className="space-y-2 risk-page" data-risk-dense>
       <SectionNavFab />
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="font-bold t-heading">Risk</h1>
-        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">every layer's limits in one place — changes apply to the live gate on save</span>
-        {/* HOW MUCH TO SHOW (owner 04-08-2026: "the RISK page becomes
-            complicated"). Essentials is the default; Everything is this page
-            unchanged. Nothing is removed by Essentials — advanced groups
-            collapse and reference cards defer, and anything holding a
-            non-default value says so on its collapsed header. */}
-        <span role="radiogroup" aria-label="How much to show" className="flex gap-1">
-          <Pill radio on={viewMode === ESSENTIALS} label="Essentials" onClick={() => chooseMode(ESSENTIALS)} />
-          <Pill radio on={viewMode === EVERYTHING} label="Everything" onClick={() => chooseMode(EVERYTHING)} />
-        </span>
-        {viewMode === ESSENTIALS && (
-          <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-            showing the settings that get changed and every layer that can stop a loss — nothing is disabled or hidden from the bot
+      {/* PAGE HEADER (Claude · № 12,812 10-Oct): title, save state and the
+          section jumps stay pinned while the page scrolls — on a phone the
+          old header wrapped over four lines before anything useful. */}
+      <div className="risk-head">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="font-bold t-heading">Risk</h1>
+          {saving
+            ? <Badge tone="info">saving {saving}…</Badge>
+            : anyDirty(dirty, SECTIONS)
+              ? <span className="risk-chip risk-chip-warn">unsaved changes</span>
+              : savedAt
+                ? <span className="risk-chip risk-chip-ok" aria-live="polite">✓ saved {savedAt.section} {savedAt.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                : <span className="risk-chip risk-chip-ok">all saved</span>}
+          <span role="radiogroup" aria-label="How much to show" className="flex gap-1 ml-auto">
+            <Pill radio on={viewMode === ESSENTIALS} label="Essentials" onClick={() => chooseMode(ESSENTIALS)} />
+            <Pill radio on={viewMode === EVERYTHING} label="Everything" onClick={() => chooseMode(EVERYTHING)} />
           </span>
-        )}
-        {saving && <Badge tone="info">saving {saving}…</Badge>}
+        </div>
+        <nav aria-label="Jump to section" className="risk-jumps">
+          <a href="#sec-status">Status</a>
+          <a href="#sec-config-proposals">Advice</a>
+          <a href="#sec-limits">Limits</a>
+          <a href="#sec-protection">Protection</a>
+          <a href="#sec-risk-matrix">Compare</a>
+          <a href="#sec-emergency" className="risk-jump-danger">Danger zone</a>
+        </nav>
       </div>
+      <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+        Every layer&apos;s limits in one place — a Save applies to the live gate from the next entry; switches marked <b>applies immediately</b> act when tapped.
+        {viewMode === ESSENTIALS && ' Essentials folds the advanced groups — nothing is disabled or hidden from the bot, and a folded group says what it holds.'}
+      </p>
       {savedAt && !saving && (
-        <div className="text-(length:--fs-body) text-[var(--color-text-sub)]" aria-live="polite">
-          ✓ Saved {savedAt.section} at {savedAt.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — the fields below were re-read from the agent after saving, so what you see is what it holds.
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+          The fields below were re-read from the agent after saving, so what you see is what it holds.
         </div>
       )}
       {error && <Card className="border-[var(--color-down)] text-(length:--fs-body)">{error}</Card>}
+
+      <RiskStatus overview={overview} registry={registry} error={statusError} scope={riskAcct || 'all'}
+        onPick={(id) => setRiskAcct(id)} />
+      <ConfigProposals overview={overview} />
 
       {/* ---- WHOSE LIMITS ARE THESE ---------------------------------------
           Owner 02-08-2026: "each sub-page doesn't tie to the account selected
@@ -508,8 +546,23 @@ export default function Risk() {
           necessarily the limits that account trades under, and there was no
           way to tell. Per-account overlays already existed server-side and
           nothing here could reach them. */}
-      <Card className="text-(length:--fs-body)">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      <Card id="sec-limits" className="text-(length:--fs-body)">
+        {/* PHONE / TABLET PICKER (Claude · № 12,812 10-Oct): the pill row
+            wrapped over four lines below 1024 px. A native picker carries
+            the same choices and calls the same setter; the pills stay for
+            desktop. */}
+        <label className="risk-scope-select">
+          <span className="font-semibold uppercase tracking-[.04em] text-[var(--color-text-sub)]">Editing</span>
+          <select value={riskAcct || 'all'} onChange={e => setRiskAcct(e.target.value)}>
+            <option value="all">Global settings</option>
+            {registry.map(a => (
+              <option key={a.account_id} value={String(a.account_id)}>
+                {accountLabel(a)}{a.enabled ? '' : ' (off)'}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="risk-scope-pills flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <AccountScopePills
             value={riskAcct}
             onChange={setRiskAcct}
@@ -531,22 +584,39 @@ export default function Risk() {
         <div className="mt-1.5">
           <ScopeMismatchNote scope={riskAcct} onUse={setRiskAcct} sharedLabel="the global risk config" />
         </div>
-        {riskScoped && (data?.risk?.overlayKeys?.length ?? 0) > 0 && (
-          <div className="mt-1.5 text-[var(--color-text-sub)]">
-            {/* Name them, with the global value they are standing on. "This
-                account differs" and "this differs from the DEFAULT" are two
-                different facts with two different fixes, and the page must not
-                blur them. */}
-            Overridden for this account:{' '}
-            {data.risk.overlayKeys.map((k, i) => (
-              <span key={k}>
-                {i > 0 && ' · '}
-                <span className="font-semibold text-[var(--color-text)]">{k}</span>
-                {' '}{String(data.risk.effective?.[k])} <span className="opacity-70">(global {String(data.risk.global?.[k])})</span>
-              </span>
-            ))}
-          </div>
-        )}
+        {riskScoped && (data?.risk?.overlayKeys?.length ?? 0) > 0 && (() => {
+          // Name them, with the global value they are standing on. "This
+          // account differs" and "this differs from the DEFAULT" are two
+          // different facts with two different fixes, and the page must not
+          // blur them. Claude · № 12,812 10-Oct: split into the keys that
+          // DIFFER from global and the ones pinned at the same value (both
+          // are overrides — neither follows a later global change), printed
+          // through the shared formatter instead of String(), which showed
+          // object-valued keys as "[object Object]".
+          const { differ, same } = overlaySplit(data.risk.overlayKeys, data.risk.effective, data.risk.global)
+          return (
+            <div id="sec-overrides" className="mt-2">
+              <div className="text-[var(--color-text-sub)]">
+                <b className="text-[var(--color-text)]">{data.risk.overlayKeys.length} pinned on this account</b> · {differ.length} differ from Global. Pinned settings do not follow a later change to Global.
+              </div>
+              {differ.map(k => (
+                <div key={k} className="risk-row">
+                  <span className="font-semibold">{k}</span>
+                  <span className="ml-auto font-bold text-[var(--color-accent)] tabular-nums">{showRiskValue(k, data.risk.effective?.[k])}</span>
+                  <span className="text-[var(--color-text-sub)] tabular-nums">Global {showRiskValue(k, data.risk.global?.[k])}</span>
+                </div>
+              ))}
+              {same.length > 0 && (
+                <details className="mt-1">
+                  <summary className="min-h-[44px] flex items-center font-semibold text-[var(--color-text-sub)] cursor-pointer">{same.length} more pinned at the same value as Global</summary>
+                  <div className="text-[var(--color-text-sub)] leading-relaxed">
+                    {same.map((k, i) => <span key={k}>{i > 0 && ' · '}<span className="text-[var(--color-text)]">{k}</span> {showRiskValue(k, data.risk.effective?.[k])}</span>)}
+                  </div>
+                </details>
+              )}
+            </div>
+          )
+        })()}
       </Card>
 
       {/* ---- Live impact strip (migrated from Tune > Risk, UI-6) ----------
@@ -578,7 +648,15 @@ export default function Risk() {
           // now and either can be off, so reading the % here would print a
           // limit the gate is not enforcing — the exact defect the owner found
           // in the reassessment summary.
-          ['Daily stop-out', capState.capUsd != null ? money(capState.capUsd) : 'UNCAPPED'],
+          // Claude · № 12,812 10-Oct: with an account selected, the stop the
+          // ENGINE enforces for it (account-overview) — the draft formula
+          // below leaves out the floor and the balance tiers.
+          (() => {
+            const v = riskScoped ? dailyStopView(overview?.accounts?.find(r => String(r.accountId) === String(riskAcct))?.dailyStop) : null
+            return v?.capState === 'in_force' && v.cap != null
+              ? ['Daily stop (engine)', `${v.capCcy || ''} ${Number(v.cap).toLocaleString(undefined, { maximumFractionDigits: 2 })}`.trim()]
+              : ['Daily stop-out', capState.capUsd != null ? money(capState.capUsd) : 'UNCAPPED']
+          })(),
           ['Worst case open', worst != null ? money(worst) : '—'],
         ]
         return (
@@ -593,287 +671,14 @@ export default function Risk() {
         )
       })()}
 
-      {/* The whole grid, global + per account, before the single-account
-          editors below. Owner 2026-08-04: the Account card became a summary
-          table because one account's numbers at a time could not answer
-          "which account runs tighter, and where". */}
-      <RiskMatrix />
-      {/* C-1 sits directly under the matrix: the matrix says what the settings
-          ARE, this says what the record thinks they should be. Reading them
-          apart was the whole reason minRR 1.5 survived a 34% win rate. */}
-      <ConfigProposals />
-
-      {/* Stored sizing inputs are edited for the named account, even when
-          the surrounding risk configuration is in the global view. */}
-      <Card id="sec-account" data-risk-card className="w3-hover-shadow">
-        <SectionTitle badge={data?.account?.isLive === true ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">{data?.account?.isLive === false ? 'DEMO' : 'UNVERIFIED'}</Badge>}>
-          Account sizing inputs
-        </SectionTitle>
-        <fieldset disabled={accountLoading || !!saving || !!switchingTo || loadedScope.current !== (riskAcct || 'all')}
-          className="flex flex-wrap items-end gap-x-8 gap-y-2 min-w-0">
-          <div>
-            <Field label="Stored balance (USD)" value={acct.balance} onChange={v => setAcctField('balance', v)}
-              hint="Sizing input for the named account. The next broker balance refresh can replace a manual value." />
-            <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
-              {data?.account?.balanceSource === 'broker'
-                ? `Broker cache: USD ${data.account.balance}; observed ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}`
-                : data?.account?.balanceSource === 'stored' ? 'stored account value — broker freshness is not verified' : 'account balance unavailable'}
-            </div>
-          </div>
-          <Field label="Leverage (1:N)" value={acct.leverage} onChange={v => setAcctField('leverage', v)}
-            hint="Used for margin-headroom checks for this account. Broker refresh replaces a manual value; use the account's actual leverage." />
-          <div className="text-(length:--fs-body)">
-            <span className="text-[var(--color-text-sub)]">Broker stop-out level </span>
-            <span className="font-semibold">{data?.account?.brokerStopOutPct ?? 50}%</span>
-            <span className="text-(length:--fs-body) text-[var(--color-text-sub)]"> margin level — broker-enforced liquidation, not editable</span>
-          </div>
-          <div className="text-(length:--fs-body)">
-            <span className="text-[var(--color-text-sub)]">Account </span>
-            <span className="font-semibold">{acct.accountId || '—'}</span>
-          </div>
-          <span data-save-pulse="account">
-            <Button size="sm" className={SAVE_BTN}
-              disabled={!dirty.account || !acct.accountId}
-              onClick={() => save('account', () => agentPost('/actions/balance', accountInputPatch(acct)))}>Save account</Button>
-          </span>
-        </fieldset>
-        {data?.account?.brokerSnapshot?.reason && (
-          <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-2">
-            Broker evidence: {data.account.brokerSnapshot.reason.replaceAll('_', ' ')}.
-            {data.account.depositCurrency && <> Deposit currency: {data.account.depositCurrency}.</>}
-            {' '}Sizing fields use USD; unavailable broker margin is left blank.
-          </p>
-        )}
-      </Card>
-
-      {/* ---- Position protection: the three layers that answer "you didn't
-           do anything to prevent the loss earlier" (GOOGL −$900). Ordered by
-           when they act: per-position floor → account staircase → naked-
-           position safety net. Each saves to its own route so a typo in one
-           card can't wipe another layer's config. ---- */}
-      <Card id="sec-protection" data-risk-card className="w3-hover-shadow">
-        <SectionTitle badge={<Badge tone="down">Protection</Badge>}>Position Protection — Loss Floors &amp; Profit Lock-In</SectionTitle>
-        {/* THREE FORMS, THREE SAVES — and until now no way to know that.
-            Owner, 04-08-2026: "where is the save button for Position
-            Protection". Each layer posts to its own route on purpose (a typo
-            in one cannot wipe another), but the heading read as ONE form, so
-            three Save buttons at the bottom of three columns were easy to miss
-            on a phone. This bar says so, and offers the single button the
-            heading implies. */}
-        {/* The loss cap now has a real per-account overlay; the other two do
-            not YET, and saying so is the whole point of this bar. */}
-        {riskScoped
-          ? <div className="glass-inset mb-2 rounded-[2px] px-2 py-1 text-(length:--fs-body) text-[var(--color-text-sub)]" style={{ borderLeft: '2px solid var(--color-accent)' }}>
-              <b className="text-[var(--color-text)]">Editing this account&apos;s overlay — all three layers.</b>{' '}
-              {data?.lossCap?.overlayKeys?.length > 0
-                ? `${data.lossCap.overlayKeys.length} field${data.lossCap.overlayKeys.length === 1 ? '' : 's'} pinned here; the rest follow the shared settings.`
-                : 'This account follows the shared settings — saving pins only the fields you changed.'}
-              {' '}The profit ratchet and Loss Guardian are scoped the same way — each shows what it has pinned on its own card.
-            </div>
-          : <GlobalScopeNote className="mb-2" what="The per-position loss cap, the profit ratchet and the Loss Guardian" />}
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-(length:--fs-body)">
-          <span className="text-[var(--color-text-sub)]">
-            Three independent layers. Each has its own <b className="text-[var(--color-text)]">Save</b> at the foot of its card — including the On/Off switch, which only takes effect once saved. Or save all three:
-          </span>
-          <Button
-            size="sm" className={SAVE_BTN} disabled={!anyDirty(dirty, PROTECTION_SECTIONS)}
-            onClick={() => save('protection-all', async () => {
-              // Sequential, not parallel: each route re-reads and rewrites its
-              // own state key, and a failure part-way must leave what it has
-              // already written intact rather than half-applied.
-              if (dirtyRef.current['loss-cap'] && lossCap) { await agentPost('/actions/loss-cap', riskScoped ? { ...lossCap, accountId: riskAcct } : lossCap); untouch('loss-cap') }
-              if (dirtyRef.current['ratchet'] && ratchet) { await agentPost('/actions/profit-ratchet', riskScoped ? { ...ratchet, accountId: riskAcct } : ratchet); untouch('ratchet') }
-              if (dirtyRef.current['loss-guardian'] && guardian2) { await agentPost('/actions/loss-guardian', riskScoped ? { ...guardian2, accountId: riskAcct } : guardian2); untouch('loss-guardian') }
-            })}
-          >
-            {saving === 'protection-all' ? 'Saving…' : 'Save all three layers'}
-          </Button>
-          {anyDirty(dirty, PROTECTION_SECTIONS) && (
-            <span className="font-semibold" style={{ color: 'var(--color-down)' }}>
-              Unsaved changes — nothing takes effect until you save.
-            </span>
-          )}
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
-
-          {/* Layer 1 — per-position loss cap (A1) */}
-          <div className="glass-inset rounded-[1px] p-2 space-y-2">
-            <div className="flex items-center justify-between text-(length:--fs-body)">
-              <span className="font-semibold" title="Checks every open position's floating P&L each minute against the tighter of the $ and % caps below. On breach it closes the position (or alerts, per Action).">Per-position loss cap</span>
-              {riskScoped && data?.lossCap?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.lossCap.overlayKeys.length} pinned</span>}
-              {dirty['loss-cap'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
-              <Pill on={!!lossCap?.on} label="On" offLabel="Off" onClick={() => setLossCap(c => ({ ...c, on: !c?.on }))} />
-            </div>
-            <Field label="Max loss per position" unit="$" value={lossCap?.maxLossUsd} onChange={v => setLossCap(c => ({ ...c, maxLossUsd: v }))}
-              placeholder="% only"
-              hint="Absolute dollar floor for ONE position's floating loss. The $900 GOOGL slide would have been cut at this number. Empty leaves only the % cap below." recommend="$500 — or whatever one trade is allowed to cost you." />
-            <Field label="Max loss, % of balance" unit="%" value={lossCap?.maxLossPctOfBalance} onChange={v => setLossCap(c => ({ ...c, maxLossPctOfBalance: v }))}
-              placeholder="$ only"
-              hint="Same floor as % of current balance; the TIGHTER of the two caps applies. 2% of $48,000 ≈ $960." recommend="2% of balance." />
-            <Advanced mode={viewMode} label="Loss-cap details" total={3}
-              changed={[lossCap?.scope === 'bot', lossCap?.action === 'alert', lossCap?.retryMinutes !== 10].filter(Boolean).length}
-              dirty={!!dirty['loss-cap']}>
-            <div className="flex items-center justify-between text-(length:--fs-body)">
-              <span className="text-[var(--color-text-sub)]" title="'all' watches every broker position including manual ones; 'bot' only the bot's own ledger positions.">Scope</span>
-              <span role="radiogroup" aria-label="Scope" className="flex gap-1">
-                <Pill radio on={lossCap?.scope !== 'bot'} label="All positions" onClick={() => setLossCap(c => ({ ...c, scope: 'all' }))} />
-                <Pill radio on={lossCap?.scope === 'bot'} label="Bot only" onClick={() => setLossCap(c => ({ ...c, scope: 'bot' }))} />
-              </span>
-            </div>
-            <div className="flex items-center justify-between text-(length:--fs-body)">
-              <span className="text-[var(--color-text-sub)]" title="'Close' flattens the breaching position at market; 'Alert' only sends Telegram and leaves it open.">Action on breach</span>
-              <span role="radiogroup" aria-label="Action on breach" className="flex gap-1">
-                <Pill radio on={lossCap?.action !== 'alert'} label="Close" onClick={() => setLossCap(c => ({ ...c, action: 'close' }))} />
-                <Pill radio on={lossCap?.action === 'alert'} label="Alert only" onClick={() => setLossCap(c => ({ ...c, action: 'alert' }))} />
-              </span>
-            </div>
-            <Field label="Retry after failed close" unit="min" value={lossCap?.retryMinutes} onChange={v => setLossCap(c => ({ ...c, retryMinutes: v }))}
-              hint="If a breach close fails (market closed, broker error), re-attempt after this long instead of hammering." recommend="10 minutes." />
-            </Advanced>
-            {(() => {
-              const balNow = Number(acct.balance) || null
-              const pctCap = lossCap?.maxLossPctOfBalance != null && balNow ? balNow * lossCap.maxLossPctOfBalance / 100 : null
-              const eff = [lossCap?.maxLossUsd, pctCap].filter(v => v != null && v > 0)
-              return (
-                <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
-                  Effective cap right now: <b className="text-[var(--color-text)]">{eff.length ? `$${fmt$(Math.min(...eff))}` : 'none — both caps empty'}</b>
-                </div>
-              )
-            })()}
-            <span data-save-pulse="loss-cap"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-cap', () => agentPost('/actions/loss-cap', riskScoped ? { ...lossCap, accountId: riskAcct } : lossCap))}>Save loss cap</Button></span>
-          </div>
-
-          {/* Layer 2 — profit ratchet staircase (A4) */}
-          <div className="glass-inset rounded-[1px] p-2 space-y-2">
-            <div className="flex items-center justify-between text-(length:--fs-body)">
-              <span className="font-semibold" title="Locks in gains on the way to the $100k goal: every full step of equity growth raises a protected floor one step behind the high-water mark. Falling back to the floor flattens bot positions and disarms autotrade — banked profit stays banked.">Profit ratchet (staircase)</span>
-              {riskScoped && data?.profitRatchet?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.profitRatchet.overlayKeys.length} pinned</span>}
-              {dirty['ratchet'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
-              <Pill on={!!ratchet?.on} label="On" offLabel="Off" onClick={() => setRatchet(c => ({ ...c, on: !c?.on }))} />
-            </div>
-            <Field label="Step size" unit="$" value={ratchet?.stepUsd} onChange={v => setRatchet(c => ({ ...c, stepUsd: v }))}
-              placeholder="auto"
-              hint="Equity growth per banked step. Empty = automatic: 1% of balance, clamped $25–$500 — scales itself as the account grows." recommend="auto (owner's '$500 min. / 1% min.' rule)." />
-            <div className="flex items-center justify-between text-(length:--fs-body)">
-              <span className="text-[var(--color-text-sub)]" title="'Flatten' closes the bot's positions AND disarms autotrade at the floor; 'Halt' only disarms, leaving positions to their own SL/TP.">At the floor</span>
-              <span role="radiogroup" aria-label="At the floor" className="flex gap-1">
-                <Pill radio on={ratchet?.floorAction !== 'halt'} label="Flatten" onClick={() => setRatchet(c => ({ ...c, floorAction: 'flatten' }))} />
-                <Pill radio on={ratchet?.floorAction === 'halt'} label="Halt only" onClick={() => setRatchet(c => ({ ...c, floorAction: 'halt' }))} />
-              </span>
-            </div>
-            {/* HALTED — the state the owner had no way to see or lift.
-                On 02-08 22:24 UTC account ACCT-DEMO-2 halted, and the only paths
-                out were a Telegram button on a message that had scrolled away
-                and "Reset staircase", which wipes EVERY account's banked
-                floor. A halt has to be visible where the ladder is, and
-                liftable for the one account it belongs to. */}
-            {ratchetState?.halt && (
-              <div className="glass-inset rounded-[1px] border border-[var(--color-down)] p-2 text-(length:--fs-body) space-y-1.5">
-                <div className="font-semibold" style={{ color: 'var(--color-down)' }}>
-                  ⛔ Ratchet halt — new entries blocked on this account
-                </div>
-                <div className="text-[var(--color-text-sub)]">
-                  Tripped {ratchetState.haltAt ? new Date(ratchetState.haltAt).toLocaleString() : 'earlier'}
-                  {ratchetState.haltFloor != null && <> at the protected floor ${fmt$(ratchetState.haltFloor)}</>}.
-                  {ratchetState.keepOff
-                    ? ' You chose "keep off", so it will not re-arm on its own.'
-                    : ' It re-arms on its own once equity holds above the recovery line — until then, nothing enters.'}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" className={SAVE_BTN} onClick={() => {
-                    save('ratchethold', () => agentPost('/actions/ratchet-account', { accountId: ratchetAcct, action: 'rearm' }).then(load))
-                  }}>Clear hold</Button>
-                  {/* Separate button, not a flag on the first: keeping the old
-                      ladder and starting a new one have different consequences,
-                      and a checkbox would hide that. */}
-                  <Button size="sm" variant="danger" onClick={() => {
-                    if (!window.confirm('Restart THIS account\'s staircase from its current equity? Its banked floor is forgotten; other accounts are untouched.')) return
-                    save('ratchethold', () => agentPost('/actions/ratchet-account', { accountId: ratchetAcct, action: 'rebaseline' }).then(load))
-                  }}>Clear + restart ladder</Button>
-                </div>
-              </div>
-            )}
-            {(() => {
-              const st = ratchetState
-              const balNow = Number(acct.balance) || null
-              const step = ratchet?.stepUsd > 0 ? ratchet.stepUsd : (balNow ? Math.min(500, Math.max(25, balNow * 0.01)) : null)
-              const steps = st && step > 0 ? Math.max(0, Math.floor((st.hwm - st.baseline) / step)) : 0
-              const floor = st && step > 0 && steps >= 1 ? st.baseline + (steps - 1) * step : null
-              return st ? (
-                <div className="glass-inset rounded-[1px] p-2 text-(length:--fs-body) space-y-0.5">
-                  <div className="font-semibold">Live staircase</div>
-                  <div className="grid grid-cols-2 gap-x-3">
-                    <span className="text-[var(--color-text-sub)]">Baseline</span><span className="text-right tabular-nums">${fmt$(st.baseline)}</span>
-                    <span className="text-[var(--color-text-sub)]">High-water mark</span><span className="text-right tabular-nums">${fmt$(st.hwm)}</span>
-                    <span className="text-[var(--color-text-sub)]">Steps banked</span><span className="text-right tabular-nums">{steps}</span>
-                    <span className="text-[var(--color-text-sub)]">Protected floor</span>
-                    <span className="text-right tabular-nums font-semibold">{floor != null ? `$${fmt$(floor)}` : 'not yet — needs 1 full step'}</span>
-                    {step > 0 && <>
-                      <span className="text-[var(--color-text-sub)]">Next step banks at</span>
-                      <span className="text-right tabular-nums">${fmt$(st.baseline + (steps + 1) * step)}</span>
-                    </>}
-                  </div>
-                </div>
-              ) : (
-                // No live staircase to show. THIS is where a worked example
-                // earns its place: once the ratchet has run, the real
-                // baseline/HWM/floor above beats any hypothetical.
-                <div className="text-(length:--fs-body) text-[var(--color-text-sub)] space-y-1">
-                  <div>No staircase state yet — it baselines at current equity on the ratchet's first pass after enabling.</div>
-                  <WorkedExample label="What that will look like"
-                    lines={ratchetExample({ balance: balNow, stepUsd: ratchet?.stepUsd })} />
-                </div>
-              )
-            })()}
-            <div className="flex items-center gap-2">
-              <span data-save-pulse="ratchet"><Button size="sm" className={SAVE_BTN} onClick={() => save('ratchet', () => agentPost('/actions/profit-ratchet', riskScoped ? { ...ratchet, accountId: riskAcct } : ratchet))}>Save ratchet</Button></span>
-              {/* Destructive (wipes banked floors) — danger, not ghost. */}
-              <Button size="sm" variant="danger" onClick={() => {
-                if (!window.confirm('Re-baseline the staircase at CURRENT equity? Banked floors are forgotten (use after a deposit/withdrawal).')) return
-                save('ratchet', () => agentPost('/actions/profit-ratchet', { ...ratchet, resetState: true }))
-              }}>Reset staircase</Button>
-            </div>
-          </div>
-
-          {/* Layer 3 — Loss Guardian: the safety net for naked positions */}
-          <div className="glass-inset rounded-[1px] p-2 space-y-2">
-            <div className="flex items-center justify-between text-(length:--fs-body)">
-              <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Loss Guardian</span>
-              {riskScoped && data?.lossGuardian?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.lossGuardian.overlayKeys.length} pinned</span>}
-              {dirty['loss-guardian'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
-              <Pill on={!!guardian2?.on} label="On" offLabel="Off" onClick={() => setGuardian2(c => ({ ...c, on: !c?.on }))} />
-            </div>
-            <Advanced mode={viewMode} label="Guardian details" total={3}
-              changed={[guardian2?.scope === 'external', guardian2?.fallbackAdversePct !== 0.02, guardian2?.maxHoldHours != null].filter(Boolean).length}
-              dirty={!!dirty['loss-guardian']}>
-            <div className="flex items-center justify-between text-(length:--fs-body)">
-              <span className="text-[var(--color-text-sub)]" title="'all' = any naked position, bot or manual; 'external' = only manual/external ones.">Scope</span>
-              <span role="radiogroup" aria-label="Scope" className="flex gap-1">
-                <Pill radio on={guardian2?.scope !== 'external'} label="All naked" onClick={() => setGuardian2(c => ({ ...c, scope: 'all' }))} />
-                <Pill radio on={guardian2?.scope === 'external'} label="External only" onClick={() => setGuardian2(c => ({ ...c, scope: 'external' }))} />
-              </span>
-            </div>
-            <Field label="Protective stop distance" unit="×ATR" value={guardian2?.maxAtrMult} onChange={v => setGuardian2(c => ({ ...c, maxAtrMult: v }))}
-              hint="Stop placed this many ATRs (1h, period 14) from entry — wide on purpose so mean-reversion room survives, but a runaway loser is still capped." recommend="3 × ATR." />
-            <Field label="Fallback cap (no ATR)" pct value={guardian2?.fallbackAdversePct} onChange={v => setGuardian2(c => ({ ...c, fallbackAdversePct: v }))}
-              hint="When ATR data is unavailable, cap the adverse move at this % of entry price instead." recommend="2% of entry price." />
-            <Field label="Max hold time" unit="h" value={guardian2?.maxHoldHours} onChange={v => setGuardian2(c => ({ ...c, maxHoldHours: v }))}
-              placeholder="off"
-              hint="Optional hard time cap: a position without its own time cap is closed after this many hours regardless of P&L." recommend="unset — let price levels decide, unless positions keep rotting for days." />
-            </Advanced>
-            {viewMode === EVERYTHING && <WorkedExample lines={guardianExample(guardian2 || {})} label="Worked example" />}
-            <span data-save-pulse="loss-guardian"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-guardian', () => agentPost('/actions/loss-guardian', riskScoped ? { ...guardian2, accountId: riskAcct } : guardian2))}>Save guardian</Button></span>
-          </div>
-        </div>
-      </Card>
-
       {/* A6: which settings this account PINS versus inherits, above the
           per-account forms it is about. Full width and outside the grid —
           inside it, it would take a column slot and read as a fourth form. */}
       {cardVisible('sec-scope', viewMode) && <Card id="sec-scope"><AccountSettingsScope /></Card>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[270px_1fr_270px] gap-3 items-start">
-        {/* ---- Account Risk Configuration (left) ---- */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+        {/* ---- Left column: day limits + position protection ---- */}
+        <div className="space-y-2 min-w-0">
         <Card id="sec-acct-risk" data-risk-card className="w3-hover-shadow">
           <SectionTitle>Account Risk Configuration form</SectionTitle>
           <div className="space-y-2">
@@ -1068,18 +873,233 @@ export default function Risk() {
             </Advanced>
             <div className="flex items-center gap-2">
               <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossLimit', 'dailyLossFloorUsd', 'dailyLossTierAtUsd', 'dailyLossTierSmallPct', 'dailyLossTierLargePct', 'equityStopPct', 'maxMarginUsagePct', 'maxPositionHeadroomShare', 'marginLevelFloorPct', 'derisk', 'blockedSymbols'])}>Save account risk</Button></span>
-              {/* Migrated from Tune > Risk (UI-6). This resets EVERY key in
-                  risk_config_json, not just this card's — it is the only
-                  control on the page with that reach, so it confirms first. */}
-              <Button size="sm" variant="ghost" onClick={() => {
-                if (!window.confirm('Reset the ENTIRE risk config to defaults? Every field on this page returns to its shipped value — sizing, caps, cooldowns, exposure limits. Your account balance and leverage are not touched.')) return
-                save('risk', () => agentPost('/actions/risk-config', { reset: true }))
-              }}>Reset to defaults</Button>
             </div>
           </div>
         </Card>
 
-        {/* ---- Middle column: Bot Trade + Cpp ---- */}
+        {/* ---- Position protection: the three layers that answer "you didn't
+             do anything to prevent the loss earlier" (GOOGL −$900). Ordered by
+             when they act: per-position floor → account staircase → naked-
+             position safety net. Each saves to its own route so a typo in one
+             card can't wipe another layer's config. ---- */}
+        <Card id="sec-protection" data-risk-card className="w3-hover-shadow">
+          <SectionTitle badge={<Badge tone="down">Protection</Badge>}>Position Protection — Loss Floors &amp; Profit Lock-In</SectionTitle>
+          {/* THREE FORMS, THREE SAVES — and until now no way to know that.
+              Owner, 04-08-2026: "where is the save button for Position
+              Protection". Each layer posts to its own route on purpose (a typo
+              in one cannot wipe another), but the heading read as ONE form, so
+              three Save buttons at the bottom of three columns were easy to miss
+              on a phone. This bar says so, and offers the single button the
+              heading implies. */}
+          {/* The loss cap now has a real per-account overlay; the other two do
+              not YET, and saying so is the whole point of this bar. */}
+          {riskScoped
+            ? <div className="glass-inset mb-2 rounded-[2px] px-2 py-1 text-(length:--fs-body) text-[var(--color-text-sub)]" style={{ borderLeft: '2px solid var(--color-accent)' }}>
+                <b className="text-[var(--color-text)]">Editing this account&apos;s overlay — all three layers.</b>{' '}
+                {data?.lossCap?.overlayKeys?.length > 0
+                  ? `${data.lossCap.overlayKeys.length} field${data.lossCap.overlayKeys.length === 1 ? '' : 's'} pinned here; the rest follow the shared settings.`
+                  : 'This account follows the shared settings — saving pins only the fields you changed.'}
+                {' '}The profit ratchet and Loss Guardian are scoped the same way — each shows what it has pinned on its own card.
+              </div>
+            : <GlobalScopeNote className="mb-2" what="The per-position loss cap, the profit ratchet and the Loss Guardian" />}
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-(length:--fs-body)">
+            <span className="text-[var(--color-text-sub)]">
+              Three independent layers. Each has its own <b className="text-[var(--color-text)]">Save</b> at the foot of its card — including the On/Off switch, which only takes effect once saved. Or save all three:
+            </span>
+            <Button
+              size="sm" className={SAVE_BTN} disabled={!anyDirty(dirty, PROTECTION_SECTIONS)}
+              onClick={() => save('protection-all', async () => {
+                // Sequential, not parallel: each route re-reads and rewrites its
+                // own state key, and a failure part-way must leave what it has
+                // already written intact rather than half-applied.
+                if (dirtyRef.current['loss-cap'] && lossCap) { await agentPost('/actions/loss-cap', riskScoped ? { ...lossCap, accountId: riskAcct } : lossCap); untouch('loss-cap') }
+                if (dirtyRef.current['ratchet'] && ratchet) { await agentPost('/actions/profit-ratchet', riskScoped ? { ...ratchet, accountId: riskAcct } : ratchet); untouch('ratchet') }
+                if (dirtyRef.current['loss-guardian'] && guardian2) { await agentPost('/actions/loss-guardian', riskScoped ? { ...guardian2, accountId: riskAcct } : guardian2); untouch('loss-guardian') }
+              })}
+            >
+              {saving === 'protection-all' ? 'Saving…' : 'Save all three layers'}
+            </Button>
+            {anyDirty(dirty, PROTECTION_SECTIONS) && (
+              <span className="font-semibold" style={{ color: 'var(--color-down)' }}>
+                Unsaved changes — nothing takes effect until you save.
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-1 gap-3 items-start">
+
+            {/* Layer 1 — per-position loss cap (A1) */}
+            <div className="glass-inset rounded-[1px] p-2 space-y-2">
+              <div className="flex items-center justify-between text-(length:--fs-body)">
+                <span className="font-semibold" title="Checks every open position's floating P&L each minute against the tighter of the $ and % caps below. On breach it closes the position (or alerts, per Action).">Per-position loss cap</span>
+                {riskScoped && data?.lossCap?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.lossCap.overlayKeys.length} pinned</span>}
+                {dirty['loss-cap'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
+                <Pill on={!!lossCap?.on} label="On" offLabel="Off" onClick={() => setLossCap(c => ({ ...c, on: !c?.on }))} />
+              </div>
+              <Field label="Max loss per position" unit="$" value={lossCap?.maxLossUsd} onChange={v => setLossCap(c => ({ ...c, maxLossUsd: v }))}
+                placeholder="% only"
+                hint="Absolute dollar floor for ONE position's floating loss. The $900 GOOGL slide would have been cut at this number. Empty leaves only the % cap below." recommend="$500 — or whatever one trade is allowed to cost you." />
+              <Field label="Max loss, % of balance" unit="%" value={lossCap?.maxLossPctOfBalance} onChange={v => setLossCap(c => ({ ...c, maxLossPctOfBalance: v }))}
+                placeholder="$ only"
+                hint="Same floor as % of current balance; the TIGHTER of the two caps applies. 2% of $48,000 ≈ $960." recommend="2% of balance." />
+              <Advanced mode={viewMode} label="Loss-cap details" total={3}
+                changed={[lossCap?.scope === 'bot', lossCap?.action === 'alert', lossCap?.retryMinutes !== 10].filter(Boolean).length}
+                dirty={!!dirty['loss-cap']}>
+              <div className="flex items-center justify-between text-(length:--fs-body)">
+                <span className="text-[var(--color-text-sub)]" title="'all' watches every broker position including manual ones; 'bot' only the bot's own ledger positions.">Scope</span>
+                <span role="radiogroup" aria-label="Scope" className="flex gap-1">
+                  <Pill radio on={lossCap?.scope !== 'bot'} label="All positions" onClick={() => setLossCap(c => ({ ...c, scope: 'all' }))} />
+                  <Pill radio on={lossCap?.scope === 'bot'} label="Bot only" onClick={() => setLossCap(c => ({ ...c, scope: 'bot' }))} />
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-(length:--fs-body)">
+                <span className="text-[var(--color-text-sub)]" title="'Close' flattens the breaching position at market; 'Alert' only sends Telegram and leaves it open.">Action on breach</span>
+                <span role="radiogroup" aria-label="Action on breach" className="flex gap-1">
+                  <Pill radio on={lossCap?.action !== 'alert'} label="Close" onClick={() => setLossCap(c => ({ ...c, action: 'close' }))} />
+                  <Pill radio on={lossCap?.action === 'alert'} label="Alert only" onClick={() => setLossCap(c => ({ ...c, action: 'alert' }))} />
+                </span>
+              </div>
+              <Field label="Retry after failed close" unit="min" value={lossCap?.retryMinutes} onChange={v => setLossCap(c => ({ ...c, retryMinutes: v }))}
+                hint="If a breach close fails (market closed, broker error), re-attempt after this long instead of hammering." recommend="10 minutes." />
+              </Advanced>
+              {(() => {
+                const balNow = Number(acct.balance) || null
+                const pctCap = lossCap?.maxLossPctOfBalance != null && balNow ? balNow * lossCap.maxLossPctOfBalance / 100 : null
+                const eff = [lossCap?.maxLossUsd, pctCap].filter(v => v != null && v > 0)
+                return (
+                  <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+                    Effective cap right now: <b className="text-[var(--color-text)]">{eff.length ? `$${fmt$(Math.min(...eff))}` : 'none — both caps empty'}</b>
+                  </div>
+                )
+              })()}
+              <span data-save-pulse="loss-cap"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-cap', () => agentPost('/actions/loss-cap', riskScoped ? { ...lossCap, accountId: riskAcct } : lossCap))}>Save loss cap</Button></span>
+            </div>
+
+            {/* Layer 2 — profit ratchet staircase (A4) */}
+            <div className="glass-inset rounded-[1px] p-2 space-y-2">
+              <div className="flex items-center justify-between text-(length:--fs-body)">
+                <span className="font-semibold" title="Locks in gains on the way to the $100k goal: every full step of equity growth raises a protected floor one step behind the high-water mark. Falling back to the floor flattens bot positions and disarms autotrade — banked profit stays banked.">Profit ratchet (staircase)</span>
+                {riskScoped && data?.profitRatchet?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.profitRatchet.overlayKeys.length} pinned</span>}
+                {dirty['ratchet'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
+                <Pill on={!!ratchet?.on} label="On" offLabel="Off" onClick={() => setRatchet(c => ({ ...c, on: !c?.on }))} />
+              </div>
+              <Field label="Step size" unit="$" value={ratchet?.stepUsd} onChange={v => setRatchet(c => ({ ...c, stepUsd: v }))}
+                placeholder="auto"
+                hint="Equity growth per banked step. Empty = automatic: 1% of balance, clamped $25–$500 — scales itself as the account grows." recommend="auto (owner's '$500 min. / 1% min.' rule)." />
+              <div className="flex items-center justify-between text-(length:--fs-body)">
+                <span className="text-[var(--color-text-sub)]" title="'Flatten' closes the bot's positions AND disarms autotrade at the floor; 'Halt' only disarms, leaving positions to their own SL/TP.">At the floor</span>
+                <span role="radiogroup" aria-label="At the floor" className="flex gap-1">
+                  <Pill radio on={ratchet?.floorAction !== 'halt'} label="Flatten" onClick={() => setRatchet(c => ({ ...c, floorAction: 'flatten' }))} />
+                  <Pill radio on={ratchet?.floorAction === 'halt'} label="Halt only" onClick={() => setRatchet(c => ({ ...c, floorAction: 'halt' }))} />
+                </span>
+              </div>
+              {/* HALTED — the state the owner had no way to see or lift.
+                  On 02-08 22:24 UTC account ACCT-DEMO-2 halted, and the only paths
+                  out were a Telegram button on a message that had scrolled away
+                  and "Reset staircase", which wipes EVERY account's banked
+                  floor. A halt has to be visible where the ladder is, and
+                  liftable for the one account it belongs to. */}
+              {ratchetState?.halt && (
+                <div className="glass-inset rounded-[1px] border border-[var(--color-down)] p-2 text-(length:--fs-body) space-y-1.5">
+                  <div className="font-semibold" style={{ color: 'var(--color-down)' }}>
+                    ⛔ Ratchet halt — new entries blocked on this account
+                  </div>
+                  <div className="text-[var(--color-text-sub)]">
+                    Tripped {ratchetState.haltAt ? new Date(ratchetState.haltAt).toLocaleString() : 'earlier'}
+                    {ratchetState.haltFloor != null && <> at the protected floor ${fmt$(ratchetState.haltFloor)}</>}.
+                    {ratchetState.keepOff
+                      ? ' You chose "keep off", so it will not re-arm on its own.'
+                      : ' It re-arms on its own once equity holds above the recovery line — until then, nothing enters.'}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" className={SAVE_BTN} onClick={() => {
+                      save('ratchethold', () => agentPost('/actions/ratchet-account', { accountId: ratchetAcct, action: 'rearm' }).then(load))
+                    }}>Clear hold</Button>
+                    {/* Separate button, not a flag on the first: keeping the old
+                        ladder and starting a new one have different consequences,
+                        and a checkbox would hide that. */}
+                    <Button size="sm" variant="danger" onClick={() => {
+                      if (!window.confirm('Restart THIS account\'s staircase from its current equity? Its banked floor is forgotten; other accounts are untouched.')) return
+                      save('ratchethold', () => agentPost('/actions/ratchet-account', { accountId: ratchetAcct, action: 'rebaseline' }).then(load))
+                    }}>Clear + restart ladder</Button>
+                  </div>
+                </div>
+              )}
+              {(() => {
+                const st = ratchetState
+                const balNow = Number(acct.balance) || null
+                const step = ratchet?.stepUsd > 0 ? ratchet.stepUsd : (balNow ? Math.min(500, Math.max(25, balNow * 0.01)) : null)
+                const steps = st && step > 0 ? Math.max(0, Math.floor((st.hwm - st.baseline) / step)) : 0
+                const floor = st && step > 0 && steps >= 1 ? st.baseline + (steps - 1) * step : null
+                return st ? (
+                  <div className="glass-inset rounded-[1px] p-2 text-(length:--fs-body) space-y-0.5">
+                    <div className="font-semibold">Live staircase</div>
+                    <div className="grid grid-cols-2 gap-x-3">
+                      <span className="text-[var(--color-text-sub)]">Baseline</span><span className="text-right tabular-nums">${fmt$(st.baseline)}</span>
+                      <span className="text-[var(--color-text-sub)]">High-water mark</span><span className="text-right tabular-nums">${fmt$(st.hwm)}</span>
+                      <span className="text-[var(--color-text-sub)]">Steps banked</span><span className="text-right tabular-nums">{steps}</span>
+                      <span className="text-[var(--color-text-sub)]">Protected floor</span>
+                      <span className="text-right tabular-nums font-semibold">{floor != null ? `$${fmt$(floor)}` : 'not yet — needs 1 full step'}</span>
+                      {step > 0 && <>
+                        <span className="text-[var(--color-text-sub)]">Next step banks at</span>
+                        <span className="text-right tabular-nums">${fmt$(st.baseline + (steps + 1) * step)}</span>
+                      </>}
+                    </div>
+                  </div>
+                ) : (
+                  // No live staircase to show. THIS is where a worked example
+                  // earns its place: once the ratchet has run, the real
+                  // baseline/HWM/floor above beats any hypothetical.
+                  <div className="text-(length:--fs-body) text-[var(--color-text-sub)] space-y-1">
+                    <div>No staircase state yet — it baselines at current equity on the ratchet's first pass after enabling.</div>
+                    <WorkedExample label="What that will look like"
+                      lines={ratchetExample({ balance: balNow, stepUsd: ratchet?.stepUsd })} />
+                  </div>
+                )
+              })()}
+              <div className="flex items-center gap-2">
+                <span data-save-pulse="ratchet"><Button size="sm" className={SAVE_BTN} onClick={() => save('ratchet', () => agentPost('/actions/profit-ratchet', riskScoped ? { ...ratchet, accountId: riskAcct } : ratchet))}>Save ratchet</Button></span>
+                {/* Destructive (wipes banked floors) — danger, not ghost. */}
+                <Button size="sm" variant="danger" onClick={() => {
+                  if (!window.confirm('Re-baseline the staircase at CURRENT equity? Banked floors are forgotten (use after a deposit/withdrawal).')) return
+                  save('ratchet', () => agentPost('/actions/profit-ratchet', { ...ratchet, resetState: true }))
+                }}>Reset staircase</Button>
+              </div>
+            </div>
+
+            {/* Layer 3 — Loss Guardian: the safety net for naked positions */}
+            <div className="glass-inset rounded-[1px] p-2 space-y-2">
+              <div className="flex items-center justify-between text-(length:--fs-body)">
+                <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Loss Guardian</span>
+                {riskScoped && data?.lossGuardian?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.lossGuardian.overlayKeys.length} pinned</span>}
+                {dirty['loss-guardian'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
+                <Pill on={!!guardian2?.on} label="On" offLabel="Off" onClick={() => setGuardian2(c => ({ ...c, on: !c?.on }))} />
+              </div>
+              <Advanced mode={viewMode} label="Guardian details" total={3}
+                changed={[guardian2?.scope === 'external', guardian2?.fallbackAdversePct !== 0.02, guardian2?.maxHoldHours != null].filter(Boolean).length}
+                dirty={!!dirty['loss-guardian']}>
+              <div className="flex items-center justify-between text-(length:--fs-body)">
+                <span className="text-[var(--color-text-sub)]" title="'all' = any naked position, bot or manual; 'external' = only manual/external ones.">Scope</span>
+                <span role="radiogroup" aria-label="Scope" className="flex gap-1">
+                  <Pill radio on={guardian2?.scope !== 'external'} label="All naked" onClick={() => setGuardian2(c => ({ ...c, scope: 'all' }))} />
+                  <Pill radio on={guardian2?.scope === 'external'} label="External only" onClick={() => setGuardian2(c => ({ ...c, scope: 'external' }))} />
+                </span>
+              </div>
+              <Field label="Protective stop distance" unit="×ATR" value={guardian2?.maxAtrMult} onChange={v => setGuardian2(c => ({ ...c, maxAtrMult: v }))}
+                hint="Stop placed this many ATRs (1h, period 14) from entry — wide on purpose so mean-reversion room survives, but a runaway loser is still capped." recommend="3 × ATR." />
+              <Field label="Fallback cap (no ATR)" pct value={guardian2?.fallbackAdversePct} onChange={v => setGuardian2(c => ({ ...c, fallbackAdversePct: v }))}
+                hint="When ATR data is unavailable, cap the adverse move at this % of entry price instead." recommend="2% of entry price." />
+              <Field label="Max hold time" unit="h" value={guardian2?.maxHoldHours} onChange={v => setGuardian2(c => ({ ...c, maxHoldHours: v }))}
+                placeholder="off"
+                hint="Optional hard time cap: a position without its own time cap is closed after this many hours regardless of P&L." recommend="unset — let price levels decide, unless positions keep rotting for days." />
+              </Advanced>
+              {viewMode === EVERYTHING && <WorkedExample lines={guardianExample(guardian2 || {})} label="Worked example" />}
+              <span data-save-pulse="loss-guardian"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-guardian', () => agentPost('/actions/loss-guardian', riskScoped ? { ...guardian2, accountId: riskAcct } : guardian2))}>Save guardian</Button></span>
+            </div>
+          </div>
+        </Card>
+        </div>
+
+        {/* ---- Right column: Bot Trade + account inputs + Cpp ---- */}
         {/* @container: the two field grids below key their column count off
             THIS column's own rendered width (md:/xl: would key off the whole
             page's viewport instead, which is fixed 270px narrower on each
@@ -1088,7 +1108,7 @@ export default function Risk() {
             3 fields, squeezing/wrapping them). @sm:/@xl: below track this
             container, so the field grid degrades gracefully regardless of
             browser zoom. */}
-        <div className="space-y-2 @container">
+        <div className="space-y-2 @container min-w-0">
           <Card id="sec-bot-risk" data-risk-card className="w3-hover-shadow">
             <SectionTitle>Bot Trade Risk Configuration form</SectionTitle>
             {/* Grouped (owner 2026-07-28: "SL is all over the place" — every
@@ -1211,7 +1231,7 @@ export default function Risk() {
                   <Field label="Guardian move" pct value={guardianPct} onChange={v => setGuardianPct(v ?? 0)}
                     hint="Tick move that wakes the guardian between sweeps." recommend="5%." />
                   <div className="flex items-center justify-between text-(length:--fs-body)">
-                    <span className="text-[var(--color-text-sub)]" title="Bank profitable positions before long market closures.">Weekend profit bank</span>
+                    <span className="text-[var(--color-text-sub)]" title="Bank profitable positions before long market closures.">Weekend profit bank <span className="risk-now">applies immediately</span></span>
                     <Pill commit="now" on={weekendBank} label="On" offLabel="Off" onClick={() => {
                       const next = !weekendBank
                       setWeekendBank(next)
@@ -1219,7 +1239,7 @@ export default function Risk() {
                     }} />
                   </div>
                   <div className="flex items-center justify-between text-(length:--fs-body)">
-                    <span className="text-[var(--color-text-sub)]" title="Flag (action_log + Telegram) losing positions before long market closures. Never closes them — same reasoning as leaving losers alone in the profit bank above.">Weekend loss flag</span>
+                    <span className="text-[var(--color-text-sub)]" title="Flag (action_log + Telegram) losing positions before long market closures. Never closes them — same reasoning as leaving losers alone in the profit bank above.">Weekend loss flag <span className="risk-now">applies immediately</span></span>
                     <Pill commit="now" on={weekendLossFlag} label="On" offLabel="Off" onClick={() => {
                       const next = !weekendLossFlag
                       setWeekendLossFlag(next)
@@ -1236,6 +1256,49 @@ export default function Risk() {
                 save('guardian', () => agentPost('/actions/guardian-move-pct', { pct: guardianPct }))
               }}>Save bot risk</Button></span>
             </div>
+          </Card>
+
+          {/* Stored sizing inputs are edited for the named account, even when
+              the surrounding risk configuration is in the global view. */}
+          <Card id="sec-account" data-risk-card className="w3-hover-shadow">
+            <SectionTitle badge={data?.account?.isLive === true ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">{data?.account?.isLive === false ? 'DEMO' : 'UNVERIFIED'}</Badge>}>
+              Account sizing inputs
+            </SectionTitle>
+            <fieldset disabled={accountLoading || !!saving || !!switchingTo || loadedScope.current !== (riskAcct || 'all')}
+              className="flex flex-wrap items-end gap-x-8 gap-y-2 min-w-0">
+              <div>
+                <Field label="Stored balance (USD)" value={acct.balance} onChange={v => setAcctField('balance', v)}
+                  hint="Sizing input for the named account. The next broker balance refresh can replace a manual value." />
+                <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
+                  {data?.account?.balanceSource === 'broker'
+                    ? `Broker cache: USD ${data.account.balance}; observed ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}`
+                    : data?.account?.balanceSource === 'stored' ? 'stored account value — broker freshness is not verified' : 'account balance unavailable'}
+                </div>
+              </div>
+              <Field label="Leverage (1:N)" value={acct.leverage} onChange={v => setAcctField('leverage', v)}
+                hint="Used for margin-headroom checks for this account. Broker refresh replaces a manual value; use the account's actual leverage." />
+              <div className="text-(length:--fs-body)">
+                <span className="text-[var(--color-text-sub)]">Broker stop-out level </span>
+                <span className="font-semibold">{data?.account?.brokerStopOutPct ?? 50}%</span>
+                <span className="text-(length:--fs-body) text-[var(--color-text-sub)]"> margin level — broker-enforced liquidation, not editable</span>
+              </div>
+              <div className="text-(length:--fs-body)">
+                <span className="text-[var(--color-text-sub)]">Account </span>
+                <span className="font-semibold">{acct.accountId || '—'}</span>
+              </div>
+              <span data-save-pulse="account">
+                <Button size="sm" className={SAVE_BTN}
+                  disabled={!dirty.account || !acct.accountId}
+                  onClick={() => save('account', () => agentPost('/actions/balance', accountInputPatch(acct)))}>Save account</Button>
+              </span>
+            </fieldset>
+            {data?.account?.brokerSnapshot?.reason && (
+              <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-2">
+                Broker evidence: {data.account.brokerSnapshot.reason.replaceAll('_', ' ')}.
+                {data.account.depositCurrency && <> Deposit currency: {data.account.depositCurrency}.</>}
+                {' '}Sizing fields use USD; unavailable broker margin is left blank.
+              </p>
+            )}
           </Card>
 
           {cardVisible('sec-sizing', viewMode) && (
@@ -1311,7 +1374,7 @@ export default function Risk() {
               <Field label="Max order volume" unit="×100" value={guard.maxOrderVolume} onChange={v => setGuard(g => ({ ...g, maxOrderVolume: v }))}
                 hint="Hard cap on a single order's cTrader volume. 0 = no cap." recommend="0 — no cap." />
               <div className="flex items-center justify-between text-(length:--fs-body)">
-                <span className="text-[var(--color-text-sub)]" title="Virtual Pending Order engine — feeder side. The sidecar's own VPO_ENABLED/VPO_SYMBOLS env must also be set.">VPO feeder</span>
+                <span className="text-[var(--color-text-sub)]" title="Virtual Pending Order engine — feeder side. The sidecar's own VPO_ENABLED/VPO_SYMBOLS env must also be set.">VPO feeder <span className="risk-now">applies immediately</span></span>
                 <Pill commit="now" on={vpoEnabled} label="On" offLabel="Off" onClick={() => {
                   const next = !vpoEnabled
                   setVpoEnabled(next)
@@ -1328,26 +1391,55 @@ export default function Risk() {
           </Card>
 
           )}
-          {/* NOT deferred, at any view size: a page that hides the panic
-              button to look tidier has optimised the wrong thing. */}
-          <Card id="sec-emergency" data-risk-card data-risk-reveal className="w3-hover-shadow">
-            {/* Section label = classification, not a P&L number (finding: down tone misuse). */}
-            <SectionTitle badge={<Badge tone="warning">Emergency</Badge>}>Close All Positions form</SectionTitle>
-            <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">
-              Closes every open position at the broker right now — bot-placed and manual alike. Halt (above) only blocks NEW orders; this ends existing ones. Irreversible.
-            </p>
-            <Button size="sm" variant="danger" disabled={closingAll} onClick={closeAll}>
-              {closingAll ? 'Closing…' : 'Close ALL positions'}
-            </Button>
-            {closeAllResult && (
-              <div className="mt-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
-                Closed {closeAllResult.closed?.length || 0}
-                {closeAllResult.failures?.length ? `, ${closeAllResult.failures.length} failed: ${closeAllResult.failures.map(f => `${f.symbol || f.positionId} (${f.error})`).join('; ')}` : ''}
-              </div>
-            )}
-          </Card>
         </div>
+      </div>
 
+      {/* COMPARE: the whole grid, global + per account. Owner 2026-08-04:
+          the Account card became a summary table because one account's
+          numbers at a time could not answer "which account runs tighter,
+          and where". Below the editors since 10-10 — on a phone the editors
+          and the status come first. */}
+      <RiskMatrix />
+
+      {/* DANGER ZONE (Claude · № 12,812 10-Oct): the two controls that reach
+          everything, together, at the foot of the page and NOT deferred at
+          any view size: a page that hides the panic button to look tidier has
+          optimised the wrong thing. Same handlers as before. */}
+      <Card id="sec-emergency" data-risk-card data-risk-reveal className="w3-hover-shadow">
+        {/* Section label = classification, not a P&L number (finding: down tone misuse). */}
+        <SectionTitle badge={<Badge tone="warning">Emergency</Badge>}>Danger zone</SectionTitle>
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">
+          Always on screen, in Essentials too. Each button asks you to confirm first.
+        </p>
+        <div className="risk-danger-actions">
+        <Button size="sm" variant="danger" disabled={closingAll} onClick={closeAll}>
+          {closingAll ? 'Closing…' : 'Close ALL positions'}
+        </Button>
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+          Closes every open position at the broker right now — bot-placed and manual alike. Halt (C++ guard) only blocks NEW orders; this ends existing ones. Irreversible.
+        </p>
+        {/* Migrated from Tune > Risk (UI-6), moved here from the day-limits
+            card 10-10. This resets EVERY key in risk_config_json, not just one
+            card's — it is the only control on the page with that reach, so it
+            confirms first. */}
+        <Button size="sm" variant="ghost" className="risk-danger-outline" onClick={() => {
+          if (!window.confirm('Reset the ENTIRE risk config to defaults? Every field on this page returns to its shipped value — sizing, caps, cooldowns, exposure limits. Your account balance and leverage are not touched.')) return
+          save('risk', () => agentPost('/actions/risk-config', { reset: true }))
+        }}>Reset ALL risk settings to defaults</Button>
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
+          The global config returns to shipped values. Balance and leverage are not touched.
+        </p>
+        </div>
+        {closeAllResult && (
+          <div className="mt-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
+            Closed {closeAllResult.closed?.length || 0}
+            {closeAllResult.failures?.length ? `, ${closeAllResult.failures.length} failed: ${closeAllResult.failures.map(f => `${f.symbol || f.positionId} (${f.error})`).join('; ')}` : ''}
+          </div>
+        )}
+      </Card>
+
+      {cardVisible('sec-example-live', viewMode) || cardVisible('sec-example-cpp', viewMode) ? (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
         {/* ---- Right column: worked examples ---- */}
         <div className="space-y-2">
           {cardVisible('sec-example-live', viewMode) && (
@@ -1382,6 +1474,18 @@ export default function Risk() {
           )}
         </div>
       </div>
+      ) : null}
+      {/* UNSAVED BAR (Claude · № 12,812 10-Oct): which forms hold edits that
+          have not been saved, pinned to the bottom of the screen with a jump
+          to each. Navigation only — every Save stays the section's own. */}
+      {anyDirty(dirty, SECTIONS) && (
+        <div className="risk-unsaved" role="status">
+          <span className="font-bold text-[var(--color-warning-text)]">Unsaved — nothing takes effect until you save:</span>
+          {[['risk', 'Risk limits', '#sec-acct-risk'], ['account', 'Account inputs', '#sec-account'], ['guard', 'C++ guard', '#sec-cpp'],
+            ['loss-cap', 'Loss cap', '#sec-protection'], ['ratchet', 'Profit ratchet', '#sec-protection'], ['loss-guardian', 'Loss Guardian', '#sec-protection']]
+            .filter(([k]) => dirty[k]).map(([k, label, href]) => <a key={k} href={href}>{label}</a>)}
+        </div>
+      )}
     </div>
   )
 }

@@ -1588,3 +1588,76 @@ details > summary::marker { content: ""; }
 details > summary::-webkit-details-marker { display: none; }
 details > summary::before { content: "▶︎"; display: inline-block; margin-right: 6px; }
 details[open] > summary::before { content: "▼"; }
+
+/* ===== Risk page, phone first (Claude · № 12,812 10-Oct, ordered № 12,810;
+   claude-builder). Layout and type only — every control, handler and route
+   on the page is unchanged. Below the 1280 px desk tier the page reads at
+   15 px with 44 px touch targets (Apple HIG 44 pt, WCAG 2.5.8); the desk
+   tier keeps the compact canon. ===== */
+.risk-head { display: flex; flex-direction: column; gap: 8px; }
+.risk-jumps { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.risk-jumps a {
+  flex-shrink: 0; display: inline-flex; align-items: center; min-height: 36px; padding: 0 14px;
+  border-radius: 999px; font-size: var(--fs-body); font-weight: 600; text-decoration: none;
+  color: var(--color-text); background: var(--color-surface); border: 1px solid var(--color-border);
+}
+.risk-jumps a.risk-jump-danger { color: var(--color-down); border-color: var(--color-error-border); background: var(--color-error-bg); }
+.risk-chip { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 10px; font-size: var(--fs-body); font-weight: 700; border: 1px solid; }
+.risk-chip-ok { color: var(--color-success-text); background: var(--color-success-bg); border-color: var(--color-success-border); }
+.risk-chip-warn { color: var(--color-warning-text); background: var(--color-warning-bg); border-color: var(--color-warning-border); }
+.risk-now { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 6px; font-weight: 700;
+  color: var(--color-warning-text); background: var(--color-warning-bg); }
+.risk-status-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+@media (min-width: 640px) { .risk-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1100px) { .risk-status-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.risk-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 44px; border-top: 1px solid var(--color-border); }
+.risk-scope-select { display: none; }
+.risk-matrix-table { border-collapse: separate; border-spacing: 0; }
+.risk-matrix-table th, .risk-matrix-table td { padding: 6px 8px; }
+/* A long object value (marginRates) wraps inside its cell instead of making
+   every column as wide as itself and pushing the numbers out of view. */
+.risk-matrix-table td { min-width: 64px; max-width: 130px; white-space: normal; overflow-wrap: anywhere; vertical-align: top; text-align: left; }
+.risk-matrix-table thead th:not(.risk-matrix-key) { text-align: left; }
+/* The Setting column is the one a reader scans; it stays put while the
+   account columns scroll, and it never breaks a key name letter by letter
+   (the app-wide `thead th` rule wraps anywhere, which is what crushed it). */
+.risk-matrix-table .risk-matrix-key {
+  position: sticky; left: 0; z-index: 2; background: var(--color-bg);
+  min-width: 150px; max-width: 220px; white-space: normal; overflow-wrap: normal; word-break: normal;
+}
+.risk-matrix-table thead .risk-matrix-key { background: var(--table-head-bg); }
+.risk-danger-actions { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.risk-danger-outline { color: var(--color-down) !important; border: 1.5px solid var(--color-down) !important; }
+.risk-unsaved {
+  position: sticky; bottom: 8px; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: 14px; font-size: var(--fs-body);
+  background: var(--glass-bg-strong, var(--color-surface)); border: 1px solid var(--color-warning-border);
+  box-shadow: var(--glass-shadow); transform: translateZ(0);
+}
+.risk-unsaved a { display: inline-flex; align-items: center; min-height: 36px; padding: 0 12px; border-radius: 999px;
+  font-weight: 700; text-decoration: none; color: var(--color-on-accent); background: var(--color-accent); }
+
+@media (max-width: 1279px) {
+  .risk-page {
+    --fs-body: 15px;
+    --fs-head: 16px;
+    --fs-h: 17px;
+    --fs-title: 19px;
+  }
+  .risk-page button, .risk-page input:not([type="checkbox"]), .risk-page select, .risk-page summary { min-height: 44px; }
+  .risk-page .risk-danger-actions > button { width: 100%; min-height: 48px; }
+}
+@media (max-width: 639px) {
+  /* Phone: the setting column takes at most ~40% of the box so the Global
+     value and the first accounts are visible before any swipe. */
+  .risk-matrix-table .risk-matrix-key { min-width: 112px; max-width: 136px; overflow-wrap: anywhere; }
+}
+@media (max-width: 1023px) {
+  .risk-scope-select { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .risk-scope-select select {
+    flex: 1; min-width: 0; font: inherit; font-weight: 700; color: var(--color-text);
+    background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 0 12px;
+  }
+  .risk-scope-pills > div:first-child { display: none; }
+  .risk-unsaved { bottom: calc(49px + env(safe-area-inset-bottom, 0px) + 8px); }
+}

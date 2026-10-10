@@ -179,6 +179,8 @@ export const ALLOWLIST = Object.freeze({
   'src/pages/Desk.jsx': { reason: 'LIVE/DEMO label on the broker session', max: { isLive: 2, demo_str: 1 } },
   'src/pages/Performance.jsx': { reason: 'Live/Demo labels in the account filters; `isLive` on the hourly row means the running window', max: { is_live: 5, isLive: 6, live_str: 4, demo_str: 4 } },
   'src/pages/Risk.jsx': { reason: 'LIVE/DEMO/UNVERIFIED badge; unknown evidence is not labelled demo', max: { isLive: 2, demo_str: 1 } },
+  // Claude · № 12,812 10-Oct: the Risk page's capital-safety rows carry the same display badge.
+  'src/lib/risk-status.js': { reason: 'LIVE/DEMO display badge on the Risk page status rows', max: { is_live: 1, live_str: 1, demo_str: 1 } },
   'src/pages/Trade.jsx': { reason: 'LIVE/DEMO label on the broker session and in the validation-fill confirm text', max: { isLive: 3, demo_str: 2 } },
   'src/pages/Tune.jsx': { reason: 'LIVE/DEMO label on the account row', max: { isLive: 2, live_str: 1, demo_str: 1 } },
 })

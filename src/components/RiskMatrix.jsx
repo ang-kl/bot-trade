@@ -28,27 +28,17 @@ import Badge from './common/Badge.jsx'
 import Collapse from './common/Collapse.jsx'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import { originOf } from '../lib/risk-origin.js'
+import { showRiskValue, sameRiskValue } from '../lib/risk-format.js'
 
 /** Local title — Risk.jsx's SectionTitle is defined inside that page, not shared. */
 function SectionTitle({ children }) {
   return <h3 className="w3-heading text-(length:--fs-h) font-semibold mb-1">{children}</h3>
 }
 
-/**
- * Compact display. Percent-shaped keys are stored as fractions. An
- * object-valued key (Wave 4b: derisk, newsGate, marginRates, …) renders its
- * fields on one line, each formatted by the same rule (`derisk.triggerPct`
- * is a percentage; `marginRates.stock` is a fraction shown as one).
- */
-const PCT_KEYS = /Pct$|FracOf|^marginRates\.|^commissionGate\.maxFracOfWin$/
-function show(key, v) {
-  if (v == null || v === '') return '—'
-  if (Array.isArray(v)) return v.length ? `${v.length} listed` : 'none'
-  if (typeof v === 'boolean') return v ? 'on' : 'off'
-  if (typeof v === 'object') return Object.entries(v).map(([f, x]) => `${f} ${show(`${key}.${f}`, x)}`).join(' · ')
-  if (typeof v === 'number' && PCT_KEYS.test(key)) return `${Number((v * 100).toFixed(4))}%`
-  return String(v)
-}
+// Display: the shared formatter (src/lib/risk-format.js). Claude · № 12,812
+// 10-Oct: one formatter for this table and the page's override list; it also
+// stops whole-percent keys printing ×100 (margin level floor 200% read 20000%).
+const show = showRiskValue
 
 const stamp = (iso) => {
   if (!iso) return null
@@ -67,7 +57,7 @@ function Cell({ k, values, overridden, globalOverridden, changed }) {
     ch ? `last changed ${stamp(ch.at)}${ch.by ? ` by ${ch.by}` : ''}` : null,
   ].filter(Boolean).join(' · ')
   return (
-    <td className="pr-3 py-0.5 whitespace-nowrap" title={title}>
+    <td className="px-2 py-1.5" title={title}>
       <span className={
         origin === 'account' ? 'font-semibold text-[var(--color-accent)]'
           : origin === 'global' ? '' : 'text-[var(--color-text-sub)]'
@@ -82,6 +72,9 @@ function Cell({ k, values, overridden, globalOverridden, changed }) {
 export default function RiskMatrix() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
+  // View filter only (Claude · № 12,812 10-Oct): hides rows whose value is the
+  // same on every account and the global config. Nothing is changed or saved.
+  const [onlyDiff, setOnlyDiff] = useState(false)
 
   const load = useCallback(() => {
     if (!agentConfigured()) return
@@ -100,6 +93,7 @@ export default function RiskMatrix() {
 
   const accounts = data.accounts || []
   const globalOverridden = data.global?.overridden || []
+  const differs = (k) => accounts.some(a => !sameRiskValue(a.values?.[k], data.global?.values?.[k]))
 
   return (
     <Card id="sec-risk-matrix" data-risk-card className="w3-hover-shadow">
@@ -110,6 +104,11 @@ export default function RiskMatrix() {
         plain = inherited from global · dimmed<span className="opacity-40">·</span> = built-in default.
         {accounts.length === 0 && ' No accounts in the registry yet — the global column is the whole picture.'}
       </div>
+      <label className="flex items-center gap-2 text-(length:--fs-body) min-h-[44px] cursor-pointer">
+        <input type="checkbox" checked={onlyDiff} onChange={e => setOnlyDiff(e.target.checked)} className="w-5 h-5 accent-[var(--color-accent)]" />
+        <span className="font-semibold">Only rows that differ between accounts</span>
+        <span className="text-[var(--color-text-sub)]">· swipe the table sideways; the setting column stays put</span>
+      </label>
 
       {/* A stored setting nothing reads is invisible in a table built from the
           groups — it has no row to appear in. Saying so here is the only place
@@ -128,17 +127,23 @@ export default function RiskMatrix() {
         </div>
       )}
 
-      {(data.groups || []).map(g => (
-        <div key={g.id} className="overflow-x-auto">
-          <Collapse id={`RiskMatrix_${g.id}`} label={g.label} defaultOpen={g.id === 'day'}>
-            <table className="w-full text-(length:--fs-body) tabular-nums">
+      {(data.groups || []).map(g => {
+        const keys = onlyDiff ? g.keys.filter(differs) : g.keys
+        return (
+        <div key={g.id}>
+          <Collapse id={`RiskMatrix_${g.id}`} label={onlyDiff ? `${g.label} · ${keys.length} of ${g.keys.length} differ` : g.label} defaultOpen={g.id === 'day'}>
+            {keys.length === 0 ? (
+              <div className="text-(length:--fs-body) text-[var(--color-text-sub)] py-1">Identical on every account and the global config.</div>
+            ) : (
+            <div className="risk-matrix-scroll overflow-x-auto rounded-[10px] border border-[var(--glass-edge)]">
+            <table className="risk-matrix-table text-(length:--fs-body) tabular-nums min-w-max w-full">
               <thead>
                 <tr className="text-left text-[var(--color-text-sub)]">
-                  <th className="pr-3 font-semibold">Setting</th>
-                  <th className="pr-3 font-semibold">Global</th>
+                  <th className="risk-matrix-key font-semibold">Setting</th>
+                  <th className="px-2 font-semibold whitespace-nowrap">Global</th>
                   {accounts.map(a => (
-                    <th key={a.accountId} className="pr-3 font-semibold whitespace-nowrap">
-                      {a.accountId}{' '}
+                    <th key={a.accountId} className="px-2 font-semibold whitespace-nowrap" title={a.accountId}>
+                      <span className="block">…{String(a.accountId).slice(-4)}</span>
                       {a.isLive ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">DEMO</Badge>}
                       {!a.enabled && <span className="ml-1 text-[var(--color-text-sub)]" title="disabled in the registry">off</span>}
                     </th>
@@ -146,15 +151,15 @@ export default function RiskMatrix() {
                 </tr>
               </thead>
               <tbody>
-                {g.keys.map(k => (
+                {keys.map(k => (
                   <tr key={k} className="border-t border-[var(--color-border)]">
-                    <td className="pr-3 py-0.5">
+                    <th scope="row" className="risk-matrix-key font-normal text-left">
                       {/* Same deep link as the proposal rows — one triangle
                           convention on this page, not two. */}
                       <a href={`#risk-${k}`} className="mr-1 text-[var(--color-text-sub)] hover:text-[var(--color-accent)]"
                          title={`Jump to ${k} below`}>▸</a>
                       {k}
-                    </td>
+                    </th>
                     <Cell k={k} values={data.global?.values} overridden={globalOverridden}
                           globalOverridden={globalOverridden} changed={data.global?.changed} />
                     {accounts.map(a => (
@@ -165,9 +170,12 @@ export default function RiskMatrix() {
                 ))}
               </tbody>
             </table>
+            </div>
+            )}
           </Collapse>
         </div>
-      ))}
+        )
+      })}
     </Card>
   )
 }

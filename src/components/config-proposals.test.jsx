@@ -63,6 +63,16 @@ describe('a proposal', () => {
   })
 })
 
+describe('a proposal with no value (Claude · № 12,812 10-Oct)', () => {
+  it('prints no command that would set the setting to null', () => {
+    const html = renderToStaticMarkup(<Proposal accountId="47790949" p={{ ...P, setting: 'perTradeRiskPct', current: 0.01, proposed: null }} />)
+    expect(html).not.toContain('/actions/risk-config')
+    expect(html).not.toContain('null')
+    expect(html).toContain('no value proposed')
+    expect(html.toLowerCase()).not.toContain('<button')
+  })
+})
+
 describe('the two kinds of silence stay apart', () => {
   it('a thin sample says so', () => {
     const html = renderToStaticMarkup(<AccountBlock a={{
