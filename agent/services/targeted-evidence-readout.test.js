@@ -8,6 +8,82 @@ import { tempDir } from '../test-support/temp-dir.js'
 import { readTargetedEvidence, startTargetedEvidenceReadout } from './targeted-evidence-readout.js'
 import { compactSnapshot } from './order-lifecycle.js'
 const NOW=1791508672695
+// Codex · №13,024 · 2026-10-10; codex-footprint: mandatory-summary-budget.
+test('consolidated emitter preserves essential account/performance/PRE02 summaries under real stored detail overflow',t=>{
+  const db=scene(t),logs=[];let callback
+  const trade=db.prepare("INSERT INTO trades(id,symbol,account_id,ctrader_position_id,status) VALUES(?,'EURUSD','42',?,'open')")
+  const event=db.prepare('INSERT INTO position_events(trade_id,account_id,position_id,symbol,kind,detail_json) VALUES(?,?,?,?,?,?)')
+  db.transaction(()=>{
+    for(let id=3;id<=8;id++)trade.run(id,String(100+id))
+    for(const id of [1,3,4,5,6,7,8])for(const kind of ['trail_tightened','sl_moved','scale_out'])for(let j=0;j<8;j++){
+      const positionId=id===1?33:100+id
+      event.run(id,'42',String(positionId),'EURUSD',kind,JSON.stringify({nativeSide:'demo',nativeBootId:'a'.repeat(100),nativeSeq:1000+j,
+        nativeAtMs:NOW,host:'demo.ctraderapi.com',movement:{v:1,source:'broker_reconcile',confirmation:'amend_readback',
+          stopMoved:true,accountId:42,positionId,symbolId:22,direction:1,entryPrice:100,beforeStopLoss:99,afterStopLoss:100,
+          beforeCheckedAtMs:NOW-1000,afterCheckedAtMs:NOW}}))
+    }
+  })()
+  const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:'essential-overflow',
+    OWNED_EVIDENCE_TRADE_IDS:'1,3,4,5,6,7,8',OWNED_EVIDENCE_ACCOUNT_IDS:'42',
+    OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
+  startTargetedEvidenceReadout(db,{env,now:()=>NOW,log:line=>logs.push(JSON.parse(line)),
+    setTimer:cb=>{callback=cb},clearTimer:()=>{}})
+  callback()
+  assert.ok(logs.some(row=>row.kind==='account-evidence-summary'),'essential account summary survives detail overflow')
+  assert.ok(logs.some(row=>row.kind==='performance-targets'),'performance coverage survives detail overflow')
+  assert.ok(logs.some(row=>row.kind==='pre02-snapshot'),'PRE02 snapshot survives detail overflow')
+  assert.ok(logs.some(row=>row.kind==='account-readiness-summary'))
+  assert.ok(logs.some(row=>row.kind==='performance-coverage'))
+  assert.equal(logs.at(-1).kind,'exit')
+  assert.ok(logs.at(-1).value.dropped>0,'fixture actually saturates the output budget')
+  assert.equal(logs.at(-1).value.done,false)
+  const packages=logs.at(-1).value.packages
+  assert.equal(packages.account.summaryEmitted,2)
+  assert.equal(packages.performance.summaryEmitted,2)
+  assert.equal(packages.pre02.summaryEmitted,1)
+  assert.equal(packages.account.sourceStatus,'unavailable','missing registry is never account readiness success')
+  assert.ok(Object.values(packages).some(p=>p.detailOmitted>0))
+  for(const p of Object.values(packages)){
+    assert.equal(p.summaryTotal,p.summaryEmitted+p.summaryOmitted)
+    assert.equal(p.detailTotal,p.detailEmitted+p.detailOmitted)
+  }
+  assert.deepEqual(logs.find(row=>row.kind==='account-readiness-summary').value.accountIds,['42'])
+  assert.deepEqual(logs.find(row=>row.kind==='performance-coverage').value.requestedAccountIds,['42'])
+  const length=logs.length;callback();assert.equal(logs.length,length,'same timer delivery cannot repeat the claimed run')
+  assert.ok(logs.every(row=>Buffer.byteLength(JSON.stringify(row))<=16000))
+  assert.ok(logs.reduce((n,row)=>n+Buffer.byteLength(JSON.stringify(row)),0)<=256*1024)
+})
+test('consolidated terminal marks unread account/financial packages when a stored read fails and redacts its exception',t=>{
+  const db=scene(t),logs=[];let callback
+  const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:'essential-read-failure',
+    OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_ACCOUNT_IDS:'42',
+    OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
+  startTargetedEvidenceReadout(db,{env,now:()=>NOW,log:line=>logs.push(JSON.parse(line)),
+    setTimer:cb=>{callback=cb},clearTimer:()=>{}})
+  const prepare=db.prepare.bind(db)
+  db.prepare=sql=>{if(sql.includes('SELECT account_id,length(CAST(params'))throw Error('private-read-failure-secret');return prepare(sql)}
+  callback();db.prepare=prepare
+  const terminal=logs.at(-1).value
+  assert.equal(terminal.done,false);assert.equal(terminal.reason,'stored_read_failed')
+  assert.equal(terminal.packages.account.sourceStatus,'not_read')
+  assert.equal(terminal.packages.performance.summaryEmitted,0)
+  assert.equal(terminal.packages.pre02.summaryEmitted,0)
+  assert.doesNotMatch(JSON.stringify(logs),/private-read-failure-secret/)
+})
+test('expired consolidated claim emits one truthful terminal without reading any package',t=>{
+  const db=scene(t),logs=[];let callback,now=NOW
+  const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:'essential-expired',
+    OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_ACCOUNT_IDS:'42',
+    OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+1000).toISOString()}
+  startTargetedEvidenceReadout(db,{env,now:()=>now,log:line=>logs.push(JSON.parse(line)),
+    setTimer:cb=>{callback=cb},clearTimer:()=>{}})
+  now+=1001;callback();callback()
+  assert.deepEqual(logs.map(row=>row.kind),['scheduled','exit'])
+  assert.equal(logs.at(-1).value.done,false)
+  for(const p of Object.values(logs.at(-1).value.packages)){
+    assert.equal(p.sourceStatus,'not_read');assert.equal(p.summaryEmitted,0);assert.equal(p.detailEmitted,0)
+  }
+})
 // Codex · №12,944 · 2026-10-10; codex-footprint: consolidated-private-evidence.
 test('consolidated private readout uses explicit targets once, preserves stored rows and reports bounds',t=>{
   const db=scene(t),logs=[];let callback,brokerCalls=0

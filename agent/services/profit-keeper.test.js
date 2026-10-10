@@ -305,7 +305,7 @@ test('adaptive without ATR data falls back to the fixed thresholds', () => {
 // ---- per-position opt-out (owner: "checkbox that allow/stop bot to
 // manage after open position") --------------------------------------------
 
-const CREDS = { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }
+const CREDS = { ready: true, host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }
 
 function mkKeeperDb({ keeperOptOut = 0 } = {}) {
   const db = initDB(':memory:')
@@ -1006,18 +1006,29 @@ function peakVolumeFixture(t, { side = 'BUY', mode = 'adaptive', file = ':memory
   db.prepare("INSERT INTO trades (symbol,side,ctrader_position_id,status,account_id) VALUES ('XAUUSD',?,'9001','open','1')").run(side)
   const tradeId = db.prepare('SELECT id FROM trades').get().id
   db.prepare("INSERT INTO monitored_positions (symbol,side,entry_price,current_sl,current_tp,status,source,trade_id,account_id,initial_risk) VALUES ('XAUUSD',?,100,?,?,'active','external',?,'1',10)").run(side,side === 'BUY' ? 90 : 110,side === 'BUY' ? 150 : 50,tradeId)
-  const snapshot = { positionId: 9001, price: 100, stopLoss: side === 'BUY' ? 90 : 110, takeProfit: side === 'BUY' ? 150 : 50, tradeData: { symbolId: 1, volume: 1000, tradeSide: side === 'BUY' ? 1 : 2 } }
+  const snapshot = { positionId: 9001, positionStatus: 1, price: 100, stopLoss: side === 'BUY' ? 90 : 110, takeProfit: side === 'BUY' ? 150 : 50, tradeData: { symbolId: 1, volume: 1000, tradeSide: side === 'BUY' ? 1 : 2 } }
   let price = side === 'BUY' ? 110 : 90
+  let closed = false
   const calls = { closes: [], amends: [], specs: [] }
   const deps = {
     managedExit: { managedExitApplies: () => false },
     exec: {
-      reconcile: async () => ({ position: [snapshot] }),
+      reconcile: async () => ({ position: closed ? [] : [snapshot] }),
       amendPosition: async (_creds, body) => { calls.amends.push(body); snapshot.stopLoss = body.stopLoss; return { position: { stopLoss: body.stopLoss } } },
-      closePosition: async (_creds, body) => { calls.closes.push(body); return {} },
+      // Codex · №13,030 · 2026-10-10; codex-footprint: confirmed-keeper-fixture.
+      // Existing successful-close controls now supply an actual broker fill
+      // and a fresh residual instead of treating an empty reply as success.
+      closePosition: async (_creds, body) => {
+        calls.closes.push(body); snapshot.tradeData.volume-=body.volume
+        closed = snapshot.tradeData.volume === 0
+        return { ctidTraderAccountId:1,executionType:3,deal:{dealId:7001,orderId:6001,positionId:9001,
+          symbolId:1,tradeSide:side==='BUY'?2:1,dealStatus:2,volume:body.volume,filledVolume:body.volume,
+          executionPrice:price,executionTimestamp:Date.now(),closePositionDetail:{closedVolume:body.volume,entryPrice:100}} }
+      },
       pushTrailConfig: async (_creds, body) => { calls.specs.push(body); return true },
     },
-    ws: { wsGetLastCloses: async () => ({ 1: price }), wsGetTrendbarsBatch: async () => ({ '1h': Array.from({length:16}, () => ({h:101,l:99,c:100})) }) },
+    ws: { wsGetLastCloses: async () => ({ 1: price }), wsGetTrendbarsBatch: async () => ({ '1h': Array.from({length:16}, () => ({h:101,l:99,c:100})) }),
+      wsReconcile:async()=>({ctidTraderAccountId:1,position:closed?[]:[snapshot]}) },
     sizing: { getVolumeMeta: async () => ({lotSize:100,digits:2,brokerDigits:2,minVolume:1}) },
     notify: () => {},
   }

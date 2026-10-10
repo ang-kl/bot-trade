@@ -198,8 +198,18 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
     ||(env.OWNED_EVIDENCE_PENDING_ACCOUNT!=null&&!pendingAccount)))return null
   const id=env.OWNED_EVIDENCE_RUN_ID,expires=Date.parse(env.OWNED_EVIDENCE_EXPIRES_AT||'')
   if(typeof id!=='string'|| !/^[a-zA-Z0-9_-]{8,64}$/.test(id)|| !Number.isFinite(expires)||expires<=now()||expires-now()>3600000) return null
-  let bytes=0,dropped=0
-  const emit=(kind,value)=>{
+  // Codex · №13,025 · 2026-10-10; codex-footprint: mandatory-summary-budget.
+  // Keep the original total/per-record caps. A fixed 64 KiB belongs to
+  // essential compact summaries and the terminal receipt, before detail.
+  const summaryReserve=64*1024,terminalReserve=2048
+  let bytes=0,dropped=0,summaryBytes=0,detailBytes=0
+  const packages=consolidated?Object.fromEntries(['targets','lifecycle','account','performance','pre02'].map(name=>[name,{
+    sourceStatus:'not_read',summaryTotal:0,summaryEmitted:0,summaryOmitted:0,
+    detailTotal:0,detailEmitted:0,detailOmitted:0}])):null
+  const emit=(kind,value,packageName=null,essential=false)=>{
+    const pkg=packages?.[packageName]
+    if(pkg)pkg[essential?'summaryTotal':'detailTotal']++
+    const omitted=()=>{dropped++;if(pkg)pkg[essential?'summaryOmitted':'detailOmitted']++;return false}
     try {
       const line=JSON.stringify({diagnostic:'owned-evidence-v1',runId:id,
         commit:/^[a-f0-9]{40}$/.test(env.RAILWAY_GIT_COMMIT_SHA||'')?env.RAILWAY_GIT_COMMIT_SHA:null,
@@ -207,10 +217,13 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
       const n=Buffer.byteLength(line)
       // Codex · №12,437 · 2026-10-09; codex-footprint: bounded-evidence-review.
       // Reserve the terminal record even if detail output reaches its cap.
-      const ceiling=kind==='exit'?256*1024:256*1024-2048
-      if(n>16000||bytes+n>ceiling){dropped++;return false}
-      bytes+=n;log(line);return true
-    } catch { dropped++;return false }
+      const ceiling=kind==='exit'?256*1024:256*1024-terminalReserve
+      if(n>16000||bytes+n>ceiling||consolidated&&kind!=='exit'&&
+        (essential?summaryBytes+n>summaryReserve-terminalReserve:detailBytes+n>256*1024-summaryReserve))return omitted()
+      bytes+=n
+      if(consolidated&&kind!=='exit'){if(essential)summaryBytes+=n;else detailBytes+=n}
+      log(line);if(pkg)pkg[essential?'summaryEmitted':'detailEmitted']++;return true
+    } catch { return omitted() }
   }
   try {
     if(db.prepare('INSERT OR IGNORE INTO agent_state(key,value) VALUES (?,?)')
@@ -218,10 +231,11 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   } catch { emit('not-started',{reason:'durable_claim_failed'});return null }
   // A single delayed read gives ordinary enrolment a chance to persist inputs.
   // It never runs enrolment, submits an order, or repeats until a desired result.
-  let hybridReadStarted=false
+  let readStarted=false
   const timer=setTimer(()=>{
-    if(hybridOnly){if(hybridReadStarted)return;hybridReadStarted=true}
-    if(now()>=expires){emit('exit',{reason:'deadline_expired',dropped});return}
+    if(readStarted)return
+    readStarted=true
+    if(now()>=expires){emit('exit',{reason:'deadline_expired',done:false,dropped,...(packages?{packages}:{})});return}
     try {
       if(hybridOnly){
         const {verdicts,refusals,...metadata}=readHybridEvidence(db,now())
@@ -235,42 +249,59 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
       // Codex · №12,972 · 2026-10-10; codex-footprint: requested-account-before-cap.
       // Canonical verdict projection filters the retained population before its cap.
       const {trades,missingTargets,...metadata}=readTargetedEvidence(db,now(),tradeIds,consolidated?accountIds:null)
-      emit('summary',{...metadata,missingTargetIds:missingTargets.map(row=>row.tradeId)})
+      if(packages)packages.targets.sourceStatus='stored_observations'
+      emit('summary',{...metadata,missingTargetIds:missingTargets.map(row=>row.tradeId)},'targets',consolidated)
       // Requested missing records get their bounded verdict before population
       // detail can consume the output budget. No account identity is invented.
-      for(const target of missingTargets) emit('initial-risk',{owner:null,...target})
+      if(!consolidated)for(const target of missingTargets) emit('initial-risk',{owner:null,...target})
       const emitTrade=trade=>{
-        const {movements,initialRisk,...fields}=trade;emit('owned-position',fields)
-        if(initialRisk) emit('initial-risk',{owner:trade.owner,...initialRisk})
+        const {movements,initialRisk,...fields}=trade;emit('owned-position',fields,'targets')
+        if(initialRisk) emit('initial-risk',{owner:trade.owner,...initialRisk},'targets')
         for(const group of movements) {
-          const {rows,...bounds}=group;emit('movement-range',{owner:trade.owner,...bounds})
-          for(const row of rows) emit('movement',{owner:trade.owner,row})
+          const {rows,...bounds}=group;emit('movement-range',{owner:trade.owner,...bounds},'targets')
+          for(const row of rows) emit('movement',{owner:trade.owner,row},'targets')
         }
       }
       // Codex · №12,721 · 2026-10-10; codex-footprint: bounded-gap-batch.
       // Requested ownership evidence keeps priority. Scanner reads are a
       // separate opt-in, once-only projection before the remaining population.
       const requested=trades.filter(t=>tradeIds.includes(t.owner.id)),remaining=trades.filter(t=>!tradeIds.includes(t.owner.id))
-      for(const trade of requested)emitTrade(trade)
+      if(!consolidated)for(const trade of requested)emitTrade(trade)
       // Explicit targets only; once per durable run. No broker refresh, action,
       // arbitrary query, profile comparison or financial-history repair.
       if(consolidated){
         const lifecycle=readLifecycleEvidence(db,{tradeIds,dealIds,now:now()})
-        emit('lifecycle-summary',lifecycle.summary)
-        for(const record of lifecycle.records)emit(record.kind,record.value)
+        packages.lifecycle.sourceStatus=lifecycle.summary.status
+        emit('lifecycle-summary',lifecycle.summary,'lifecycle',true)
         const {records:accountRecords,...accountSummary}=readAccountEvidence(db,{accountIds,
           pendingTarget:pendingAccount?{accountId:pendingAccount,symbol:'SpotCrude'}:null,nowMs:now()})
-        for(const record of accountRecords)emit(record.kind,record.value)
-        emit('account-evidence-summary',accountSummary)
+        const readiness=accountRecords.filter(row=>row.kind==='account-evidence').map(({value})=>({
+          ...project(value,['accountId','readAt','status','reason','currencyConflict']),
+          registry:project(value.registry,['enabled','mode','base_currency']),
+          money:project(value.money,['status','reason','ageMs','maxAgeMs']),
+          snapshot:project(value.snapshot,['status','reason','ageMs','positionsObserved','positionsTruncated']),
+          currentRisk:project(value.currentRisk,['status','reason']),
+          feasibility:project(value.feasibility,['status','reason'])}))
+        packages.account.sourceStatus=readiness.every(row=>row.status==='unavailable')&&readiness.length?'unavailable':'stored_observations'
+        emit('account-evidence-summary',accountSummary,'account',true)
+        emit('account-readiness-summary',{readAt:now(),accountIds,accounts:readiness,
+          claimsCurrentParity:false,source:'stored_observations_only'},'account',true)
         const assessment=readTradingAssessment(db,now())
         const {accounts:goalAccounts,...targets}=assessment.targets
-        emit('performance-targets',targets)
         const selectedAccounts=new Set(accountIds)
-        for(const account of goalAccounts||[])if(selectedAccounts.has(protocolId(account.accountId)))emit('performance-account',account)
+        const selectedGoals=(goalAccounts||[]).filter(account=>selectedAccounts.has(protocolId(account.accountId)))
+        const matched=selectedGoals.map(account=>protocolId(account.accountId))
+        packages.performance.sourceStatus=targets.available===false?'unavailable':'stored_observations'
+        emit('performance-coverage',{readAt:now(),status:packages.performance.sourceStatus,
+          reason:scalar(targets.reason),requestedAccountIds:accountIds,matchedAccountIds:matched,
+          missingAccountIds:accountIds.filter(account=>!matched.includes(account)),
+          financialCertification:false},'performance',true)
+        emit('performance-targets',targets,'performance',true)
         const report=stored(db,'order_lifecycle_last_json')
         const accountRows=Array.isArray(report?.accounts)?report.accounts
           .filter(row=>object(row)&&selectedAccounts.has(protocolId(row.account))):null
         const pre02=Array.isArray(report?.rules)?report.rules.slice(0,CAP).find(rule=>rule.id==='PRE-02'):null
+        packages.pre02.sourceStatus=pre02?'observed':'unavailable'
         emit('pre02-snapshot',{readAt:now(),source:'stored_snapshot_only',
           status:pre02?'observed':'unavailable',
           snapshot:project(report,['schemaVersion','rulesetVersion','at','acceptanceStart','windowDays']),
@@ -281,9 +312,17 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
           rule:pre02?project(pre02,['id','version','key','measurable','population','populationNew','violations',
             'newViolations','legacyViolations','truncated','newestAt']):null,
           readCostMs:null,incrementalWriteOverheadMs:null,
-          limitation:'Snapshot population and verdict; same-request timing and comparable pre-release write baseline are separate.'})
+          limitation:'Snapshot population and verdict; same-request timing and comparable pre-release write baseline are separate.'},'pre02',true)
+        if(now()>=expires){emit('exit',{at:now(),done:false,reason:'deadline_expired',dropped,bytes,scope,packages});return}
+        // Every essential package is now emitted or explicitly omitted. Only
+        // then can detailed target, lifecycle, account and financial rows run.
+        for(const target of missingTargets)emit('initial-risk',{owner:null,...target},'targets')
+        for(const trade of requested)emitTrade(trade)
+        for(const record of lifecycle.records)emit(record.kind,record.value,'lifecycle')
+        for(const record of accountRecords)emit(record.kind,record.value,'account')
+        for(const account of selectedGoals)emit('performance-account',account,'performance')
         emit('exit',{at:now(),done:dropped===0,dropped,bytes,scope,
-          omittedOpenTrades:remaining.length,reason:dropped?'output_incomplete':undefined})
+          packages,omittedOpenTrades:remaining.length,reason:dropped?'output_incomplete':undefined})
         return
       }
       const finish=scanner=>{for(const trade of remaining)emitTrade(trade);emit('exit',{at:now(),done:true,dropped,bytes,...(scanner?{scanner}:{})})}
@@ -299,7 +338,7 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
         emit('scanner-summary',{status:'unavailable',reason:'scanner_read_failed',orderAuthority:false})
         finish({status:'unavailable',reason:'scanner_read_failed'})
       })
-    } catch { emit('exit',{at:now(),done:false,reason:'stored_read_failed',dropped}) }
+    } catch { emit('exit',{at:now(),done:false,reason:'stored_read_failed',dropped,...(packages?{packages}:{})}) }
   },180000)
   timer?.unref?.()
   emit('scheduled',{at:now(),delayMs:180000,expires,brokerRequests:0,profiling:false,scannerRead:env.OWNED_EVIDENCE_SCANNER==='1',nativeReadLimit:env.OWNED_EVIDENCE_SCANNER==='1'?1:0,...(hybridOnly?{scope}:{})})

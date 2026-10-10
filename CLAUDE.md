@@ -1,3 +1,35 @@
+<!-- Codex · №13,036 · 2026-10-10; codex-footprint: keeper-evidence-receipts. -->
+## Keeper execution receipts and bounded evidence summaries
+
+The owner authorised cloud setup followed by the pasted two-mechanism
+correction. Real keeper/SQLite controls reproduced empty and acceptance-only
+partial/full-close false success, requested-quantity journalling on underfill,
+restart resubmission after ambiguity, and real collector summary starvation.
+The keeper now retains an account/position/trade-owned attempt before sending,
+proves actual fills and fresh residual/absence, and commits quantity, latch,
+journal and completion atomically. Uncertainty retains its claim; ordinary
+partial-path SL evaluation and external/manual eligibility remain intact,
+including unstamped legacy owners proven by a fresh account broker response.
+Closed monitors can recover retained full-close bookkeeping without a new
+decision. The consolidated collector reserves 64 KiB of its unchanged 256 KiB
+cap for summaries/terminal status and reports package reads and omissions.
+
+231 integrated controls pass at this source stamp. The first broad run retained
+an unchanged 109 ms latency failure under concurrent work and keeper
+coordination fixtures that provided no execution evidence; those fixtures now
+provide scoped fills/residuals with their policy assertions unchanged. Final
+isolated local/exact-head CI and actual review inspection precede the
+owner-authorised merge. Cloud network currently denies api.github.com; its
+allowlist addition is saved in the environment draft, awaiting settings review.
+No PR, merge, deployment, natural partial, profit improvement or whole
+acceptance closure is claimed. Keeper default scaleOutFrac=0, all entry/SL/TP
+policy, sizing, owner overrides, book exemptions and native services remain
+unchanged. Setup and red/green receipts are retained outside the checkout.
+
+Shared serial rebase: Codex №13,036 at 20:32 SGT on 10 October 2026; full
+transcript corpus unavailable. This is a recorded lower bound. Check newer
+main, owner handovers and agent-locks notes before choosing the next serial.
+
 <!-- Codex · №12,675 · 2026-10-09; codex-footprint: current-work-reporting. -->
 <!-- Codex · №12,784 · 2026-10-10; codex-footprint: committed-oracle-rollback. -->
 ## Late PR1292 review — exact oracle rollback

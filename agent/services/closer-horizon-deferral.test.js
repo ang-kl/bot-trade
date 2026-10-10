@@ -24,6 +24,23 @@ import { runTradeGuards } from './trade-guard.js'
 import { runWeekendBank } from './weekend-bank.js'
 
 const NOW = 1_800_000_000_000
+// Codex · №13,035 · 2026-10-10; codex-footprint: keeper-coordination-receipts.
+// Horizon policy assertions remain unchanged. A successful keeper control
+// proves a scoped execution and fresh residual instead of an empty answer.
+function keeperBroker(closed, positionId, symbolId) {
+  let volume=10000
+  const reconcile=async()=>({ctidTraderAccountId:1,position:volume?[{
+    positionId,positionStatus:1,price:2.8795,stopLoss:2.918,takeProfit:1.8,
+    tradeData:{symbolId,volume,tradeSide:2},
+  }]:[]})
+  return {reconcile,amendPosition:async()=>({}),closePosition:async(_c,args)=>{
+    closed.push(args);volume-=args.volume
+    return {ctidTraderAccountId:1,executionType:3,deal:{dealId:7001,orderId:6001,positionId,
+      symbolId,tradeSide:1,dealStatus:2,volume:args.volume,filledVolume:args.volume,
+      executionPrice:2.30,executionTimestamp:Date.now(),
+      closePositionDetail:{closedVolume:args.volume,entryPrice:2.8795}}}
+  }}
+}
 const plan = planMomentumTargets({ side: 'BUY', entry: 100, originalStop: 90, requiredRr: 3,
   costReservePrice: 0.4, digits: 2, volume: 10000, minVolume: 100, stepVolume: 100 })
 
@@ -57,15 +74,12 @@ const CASES = {
     },
     async run(db) {
       const closed = []
-      const out = await runProfitKeeper(db, { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }, {
+      const broker=keeperBroker(closed,9001,1)
+      const out = await runProfitKeeper(db, { ready: true, host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }, {
         now: NOW,
-        exec: {
-          reconcile: async () => ({ position: [{ positionId: 9001, price: 2.8795, stopLoss: 2.918, takeProfit: 1.8, tradeData: { symbolId: 1, volume: 10000, tradeSide: 2 } }] }),
-          closePosition: async (_c, args) => { closed.push(args) },
-          amendPosition: async () => ({}),
-        },
-        ws: { wsGetLastCloses: async () => ({ 1: 2.30 }), wsGetTrendbarsBatch: async () => ({}) },
-        sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3 }) },
+        exec: broker,
+        ws: { wsReconcile:broker.reconcile,wsGetLastCloses: async () => ({ 1: 2.30 }), wsGetTrendbarsBatch: async () => ({}) },
+        sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3,brokerDigits:3 }) },
         notify: () => {},
       })
       return { closed, out, deferred: out.deferred }
@@ -219,16 +233,13 @@ async function runScaleOut({ minVolume, plan: planState = null }) {
     VALUES ('NATGAS', 'short', 2.8795, 2.918, 1.8, 'active', 'external', ?)`).run(tradeId)
   if (planState) withPlan(db, { accountId: '1', positionId: 9201, state: planState, age: 1_000 })
   const closed = []
+  const broker=keeperBroker(closed,9201,77)
   const bars = Array.from({ length: 50 }, () => ({ h: 2.35, l: 2.30, c: 2.32 })) // constant true range 0.05
-  const out = await runProfitKeeper(db, { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }, {
+  const out = await runProfitKeeper(db, { ready: true, host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }, {
     now: NOW,
-    exec: {
-      reconcile: async () => ({ position: [{ positionId: 9201, price: 2.8795, stopLoss: 2.918, takeProfit: 1.8, tradeData: { symbolId: 77, volume: 10000, tradeSide: 2 } }] }),
-      closePosition: async (_c, args) => { closed.push(args) },
-      amendPosition: async () => ({}),
-    },
-    ws: { wsGetLastCloses: async () => ({ 77: 2.30 }), wsGetTrendbarsBatch: async () => ({ '1h': bars }) },
-    sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3, minVolume }) },
+    exec: broker,
+    ws: { wsReconcile:broker.reconcile,wsGetLastCloses: async () => ({ 77: 2.30 }), wsGetTrendbarsBatch: async () => ({ '1h': bars }) },
+    sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3,brokerDigits:3, minVolume }) },
     notify: () => {},
   })
   return { closed, out }

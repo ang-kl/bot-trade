@@ -48,6 +48,8 @@ import { sinceEntryTrailSpec } from './mae-chandelier-observe.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 import { measureAmend } from './protection-latency.js'
 import { protectiveExitDeferral } from './momentum-exit-coordination.js'
+// Codex · №13,025 · 2026-10-10; codex-footprint: keeper-owned-close-receipts.
+import { readKeeperClose, runKeeperClose, pendingKeeperClosedMonitorIds } from './keeper-close-receipts.js'
 
 // P10: last-seen broker SL per position, as reported by the C++ TrailEngine's
 // GET /trail-status (a full snapshot, not a delta stream). Diffed each pass
@@ -446,20 +448,21 @@ async function profitKeeperPass(db, creds, deps = {}) {
 
     const accountId = authorisedAccountId(creds)
     const bookHolds = makeBookHeldCheck(db, accountId)
+    const closedRecoveries = pendingKeeperClosedMonitorIds(db, accountId)
     const scopeSql = cfg.scope === 'all'
       ? "mp.source IS NULL OR mp.source IN ('autopilot', 'preopen', 'external', 'manual')"
       : "mp.source IN ('external', 'manual')"
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp, mp.peak_profit_usd, mp.keeper_peak_state,
-              mp.scaled_out, mp.trade_id, mp.account_id, t.ctrader_position_id AS position_id,
+              mp.scaled_out, mp.trade_id, mp.account_id, mp.status, t.ctrader_position_id AS position_id,
               t.sl_price AS original_sl, mp.early_trimmed, mp.initial_risk
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
-       WHERE mp.status = 'active' AND mp.guard_json IS NULL
+       WHERE (mp.status = 'active'${closedRecoveries.length ? ` OR (mp.status='closed' AND mp.id IN (${closedRecoveries.map(() => '?').join(',')}))` : ''}) AND mp.guard_json IS NULL
          AND (mp.keeper_opt_out IS NULL OR mp.keeper_opt_out != 1)
          AND t.ctrader_position_id IS NOT NULL AND (${scopeSql})
          AND ${accountFilterSql('mp.account_id')}`
-    ).all(accountId).filter(r => {
+    ).all(...closedRecoveries, accountId).filter(r => {
       // ONE HORIZON RULE (Wave 2 of the first-principles audit, 19-09-2026,
       // §K·6). A momentum-book row is trailed by the book's 3×ATR daily rule
       // and by nothing else: this keeper's 1h chandelier was a second stop
@@ -509,6 +512,23 @@ async function profitKeeperPass(db, creds, deps = {}) {
     const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
     const sizing = deps.sizing ?? await import('../lib/lot-sizing.js')
     const notify = deps.notify ?? (() => {})
+    const closeDeps = {
+      close: args => exec.closePosition(creds, args),
+      // Account-owned fresh broker response, not the gateway's cached snapshot.
+      reconcile: () => ws.wsReconcile(creds.host, creds.clientId, creds.clientSecret,
+        creds.accessToken, creds.accountId, 4000, 0),
+      deals: positionId => ws.wsGetPositionDeals(creds.host, creds.clientId, creds.clientSecret,
+        creds.accessToken, creds.accountId, positionId, Date.now(), 4000),
+    }
+    const closeInput = r => ({ accountId: r.account_id ?? accountId, positionId: r.position_id,
+      tradeId: r.trade_id, monitorId: r.id, symbol: r.symbol, side: r.side, host: creds.host })
+    const noteClose = (r, outcome) => {
+      if (outcome.pending) summary.deferred.push(`${r.symbol}: ${outcome.reason}`)
+      if (!outcome.committed) return
+      if (outcome.kind === 'close') summary.closes++
+      else summary.scaleOuts++
+      notify(`💰 Profit Keeper ${outcome.kind === 'close' ? 'closed' : 'banked'} ${r.symbol}: confirmed ${outcome.receipt.closedVolume} protocol units at ${outcome.receipt.price}`)
+    }
     // PER-ACCOUNT balance. This read had no accountId, so it resolved to the
     // SELECTED account while the row set spanned every account — arming
     // thresholds and the balance-percent floor were computed from the wrong
@@ -522,10 +542,26 @@ async function profitKeeperPass(db, creds, deps = {}) {
       if (p.positionId != null) live.set(String(p.positionId), p)
     }
 
-    const scoped = scopeToAccount(rows, { accountId, live })
+    const scoped = scopeToAccount(rows.filter(r => r.status === 'active'), { accountId, live })
     summary.refused = scoped.foreign.length
     if (scoped.foreign.length) {
       summary.errors.push(`${scoped.foreign.length} position(s) belong to another account and were not touched`)
+    }
+    // A successful full close is absent from the current position list.
+    // Its durable account/episode ownership can still reconcile its receipt.
+    const recoveredCloses = new Map()
+    for (const r of kept) {
+      if (r.account_id != null && String(r.account_id) !== String(accountId)) continue
+      try {
+        const attempt = readKeeperClose(db, accountId, r.position_id)
+        if (!attempt || !['SENDING', 'AMBIGUOUS', 'RECEIVED'].includes(attempt.state)) continue
+        const outcome = await runKeeperClose(db, { ...closeInput(r), recoverOnly: true }, closeDeps)
+        recoveredCloses.set(r.id, outcome)
+        noteClose(r, outcome)
+      } catch (err) {
+        recoveredCloses.set(r.id, { pending: true })
+        summary.errors.push(`${r.symbol} keeper receipt recovery: ${err.message}`)
+      }
     }
     // involvedAll: every owned row the broker holds (the spec set);
     // involved: the subset the managed fence left to this keeper (decisions).
@@ -627,7 +663,6 @@ async function profitKeeperPass(db, creds, deps = {}) {
        SET current_sl = COALESCE(?, current_sl), last_check_action = ?, last_check_at = datetime('now')
        WHERE id = ?`
     )
-    const updScaled = db.prepare('UPDATE monitored_positions SET scaled_out = 1 WHERE id = ?')
 
     // Specs and completeness were initialized before identity filtering.
     // The guardian merges this account's validated contribution per gateway.
@@ -772,34 +807,21 @@ async function profitKeeperPass(db, creds, deps = {}) {
       if (inFlight) summary.deferred.push(`${r.symbol}: ${decision.action.close ? 'close' : 'scale-out'} deferred — ${inFlight}`)
 
       if (decision.action.close) {
-        if (inFlight) continue
+        if (inFlight || recoveredCloses.get(r.id)?.pending) continue
         try {
-          await exec.closePosition(creds, { positionId: parseInt(r.position_id), volume: td.volume })
-          updAct.run(null, 'profit_keeper_close', r.id)
-          summary.closes++
-          notify(`💰 Profit Keeper closed ${r.symbol} (${r.side}) at ~${price}: ${decision.action.reason}`)
-          recordPositionEvent(db, {
-            accountId: r.account_id, positionId: r.position_id, tradeId: r.trade_id,
-            symbol: r.symbol, kind: 'close', priceAt: price,
-            reason: decision.action.reason, source: 'profit_keeper',
-          })
+          noteClose(r, await runKeeperClose(db, { ...closeInput(r), kind: 'close',
+            symbolId: td.symbolId, entry: peakBasis.basis.entry, beforeVolume: td.volume,
+            volume: td.volume, meta, reason: decision.action.reason }, closeDeps))
         } catch (err) { summary.errors.push(`${r.symbol} close: ${err.message}`) }
         continue
       }
-      if (decision.action.scaleOutFrac && !inFlight) {
+      if (decision.action.scaleOutFrac && !inFlight && !recoveredCloses.has(r.id)) {
         const vol = scaleVol
         if (scaleSendable) {
           try {
-            await exec.closePosition(creds, { positionId: parseInt(r.position_id), volume: vol })
-            updScaled.run(r.id)
-            updAct.run(null, 'profit_keeper_scaleout', r.id)
-            summary.scaleOuts++
-            notify(`💰 Profit Keeper banked ${Math.round(decision.action.scaleOutFrac * 100)}% of ${r.symbol} at ~${price} — the rest runs with the trail`)
-            recordPositionEvent(db, {
-              accountId: r.account_id, positionId: r.position_id, tradeId: r.trade_id,
-              symbol: r.symbol, kind: 'scale_out', toValue: vol, priceAt: price,
-              reason: `scaleOutFrac ${decision.action.scaleOutFrac}`, source: 'profit_keeper',
-            })
+            noteClose(r, await runKeeperClose(db, { ...closeInput(r), kind: 'scale_out',
+              symbolId: td.symbolId, entry: peakBasis.basis.entry, beforeVolume: td.volume,
+              volume: vol, meta, reason: `scaleOutFrac ${decision.action.scaleOutFrac}` }, closeDeps))
           } catch (err) { summary.errors.push(`${r.symbol} scale-out: ${err.message}`) }
         }
       }
