@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { ScoreboardView, RStrip, OpenPositions, NightlyRecord, NightlyLine } from './Scoreboard.jsx'
 import { stripLabel, startScoreboardPolling, fmtPf, fmtPfR, fmtMoney, SCOREBOARD_PATH, SCOREBOARD_POLL_MS, fmtAmount, fmtPrice, stopSide, balanceView, flowWords, nightlyLabel } from '../lib/scoreboard-view.js'
 import PerformanceTargets from './PerformanceTargets.jsx'
+import { readFileSync } from 'node:fs'
 
 const metrics = over => ({ n: 0, wins: 0, losses: 0, zeros: 0, winRatePct: null, grossWin: 0, grossLoss: 0, profitFactor: null,
   avgWin: null, avgLoss: null, payoff: null, net: null, expectancy: null, rScored: 0, expectancyR: null, profitFactorR: null, ...over })
@@ -233,5 +234,21 @@ describe('nightly balance record', () => {
     expect(html).toContain('role="img"')
     expect(nightlyLabel(nightly)).toBe('Daily balance, 3 readings, SGD 1,000.00 to SGD 1,490.00: up on 1 day, down on 1 day, unchanged on 0 days.')
     expect(renderToStaticMarkup(<NightlyLine rec={{ ...nightly, nights: [] }} />)).toBe('')
+  })
+})
+
+// Claude · № 13,035 10-Oct (Codex P2 on #1304): on a wide card the header row
+// is aria-hidden, so each value keeps its own label in the accessibility tree.
+describe('wide layout keeps every cell labelled for a screen reader', () => {
+  it('each figure is rendered with its label, and the wide CSS hides the label visually, never with display:none', () => {
+    const html = renderToStaticMarkup(<ScoreboardView report={report} overview={overview} />)
+    for (const label of ['Balance now', 'Win rate', 'Profit factor', 'Expectancy']) expect(html).toContain(`<span class="sb-cell-label">${label}</span>`)
+    expect(html).toContain('class="sb-row sb-head" aria-hidden="true"')
+    const css = readFileSync(new URL('../index.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    const wide = css.slice(css.indexOf('@container (min-width: 56rem)'))
+    const rule = wide.match(/\.sb-cell-label\s*\{([^}]*)\}/)
+    expect(rule, 'the wide block styles the label').not.toBeNull()
+    expect(rule[1]).not.toMatch(/display:\s*none/)
+    expect(rule[1]).toMatch(/clip-path:\s*inset\(50%\)/)
   })
 })

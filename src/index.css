@@ -1709,7 +1709,9 @@ details[open] > summary::before { content: "▼"; }
   }
   .sb-head { display: grid; border-top: none; padding: 0; grid-template-areas: "acct bal wr pf exp ratio strip"; }
   .sb-head .sb-cell { font-size: calc(var(--fs-body) * .82); color: var(--color-muted); text-transform: uppercase; letter-spacing: .04em; }
-  .sb-cell-label { display: none; }
+  /* Claude · № 13,035 (Codex P2 on #1304): the header row is aria-hidden, so
+     each cell keeps its label for screen readers, hidden only visually. */
+  .sb-cell-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
   .sb-acct { flex-direction: column; align-items: flex-start; align-self: start; }
   .sb-bal { flex-direction: column; gap: 0; }
   .sb-ratio { flex-direction: column; gap: 0; }
