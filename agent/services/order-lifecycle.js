@@ -123,6 +123,44 @@ const idKey = (acct, pid) => `${acct ?? ''}:${pid}`
 const tail = a => (a == null ? '(no account)' : `…${String(a).slice(-4)}`)
 const cut = (s, n = 160) => { const t = String(s ?? ''); return t.length > n ? t.slice(0, n - 1) + '…' : t }
 const upper = v => String(v ?? '').trim().toUpperCase()
+// Codex · №12,922 · 2026-10-10; codex-footprint: pre02-complete-population.
+// Keep the cap's original SQL and plan. Complete populations also retain that
+// plan's row order: NULL/collation-equivalent subjects can tie in sample sorts.
+const PRE02_LEGACY_SQL = `SELECT opportunity_key, account_id, symbol, outcome, scored_at FROM refusal_scores WHERE scored_at >= ? LIMIT ?`
+const PRE02_COMPLETE_SQL = `SELECT opportunity_key, account_id, symbol, outcome, scored_at
+  FROM refusal_scores INDEXED BY idx_refusal_scores_pre02_complete
+  WHERE scored_at >= ? AND scored_at IS scored_at`
+const PRE02_TABLE_SQL = `${PRE02_COMPLETE_SQL} ORDER BY rowid LIMIT ?`
+const PRE02_INDEX_SQL = `${PRE02_COMPLETE_SQL} ORDER BY scored_at, outcome, account_id, rowid LIMIT ?`
+const PRE02_COUNT_SQL = `SELECT count(*) AS n FROM (
+  SELECT 1 FROM refusal_scores INDEXED BY idx_refusal_scores_pre02_complete
+  WHERE scored_at >= ? AND scored_at IS scored_at LIMIT ?)`
+function readRulePopulation(db, rule, params) {
+  if (rule.id !== 'PRE-02' || rule.sql !== PRE02_LEGACY_SQL) return db.prepare(rule.sql).all(...params)
+  const read = () => {
+    let sql
+    try {
+      const n = db.prepare(PRE02_COUNT_SQL).get(...params).n
+      if (n < params.at(-1) && db.pragma('reverse_unordered_selects', { simple: true }) === 0) {
+        const plan = db.prepare('EXPLAIN QUERY PLAN ' + rule.sql).all(...params)
+        if (plan.length === 1 && plan[0].detail === 'SCAN refusal_scores') sql = PRE02_TABLE_SQL
+        else if (plan.length === 1 && plan[0].detail === 'SEARCH refusal_scores USING INDEX idx_refusal_scores_scored (scored_at>?)') {
+          const columns = db.pragma('index_xinfo(idx_refusal_scores_scored)')
+          const names = ['scored_at', 'outcome', 'account_id', null]
+          if (columns.length === names.length && columns.every((r, i) => r.name === names[i] && r.desc === 0 && r.coll === 'BINARY')) sql = PRE02_INDEX_SQL
+        }
+      }
+    }
+    catch { return db.prepare(rule.sql).all(...params) } // older/partial schema: preserve the original result or error
+    // Other/new plans have no proven row-order contract: retain the original.
+    if (!sql) return db.prepare(rule.sql).all(...params)
+    try { return db.prepare(sql).all(...params) }
+    catch { return db.prepare(rule.sql).all(...params) }
+  }
+  // The worker already has a read transaction. Direct readers need the same
+  // snapshot for the bounded count and population, including concurrent writes.
+  return db.inTransaction ? read() : db.transaction(read)()
+}
 function dirOf(v) {
   const s = upper(v)
   if (s === 'BUY' || s === 'LONG' || s === '1') return 1
@@ -459,7 +497,7 @@ export const RULES = Object.freeze([
     cite: ['refusal-ledger.js:163', 'refusal-ledger.js:216-229', 'refusal-ledger.js:245', 'goal-table.js:415-429'],
     noun: 'scored refusal row (by scored_at, refusal-ledger.js:245 — not refusals made in the window)',
     populationLimit: REFUSAL_POPULATION_LIMIT,
-    sql: `SELECT opportunity_key, account_id, symbol, outcome, scored_at FROM refusal_scores WHERE scored_at >= ? LIMIT ?`,
+    sql: PRE02_LEGACY_SQL,
     params: opened, when: r => tsMs(r.scored_at), subject: r => `refusal:${r.opportunity_key}`, account: acctCol,
     judge(r) {
       if (r.outcome === 'no_bars') return { class: 'no_bars', detail: `${r.symbol}: scorer found no bars in the refusal's window (refusal-ledger.js:228)` }
@@ -1281,15 +1319,18 @@ export const RULES = Object.freeze([
 // Codex · №12,808 · 2026-10-10; codex-footprint: lifecycle-approval-index.
 // v6 indexes PRE-03's unchanged approval predicate and permits bounded private
 // phase observation. Context SQL, populations, truncation and scope stay exact.
-export const HELPERS_VERSION = 6
+// Codex · №12,922 · 2026-10-10; codex-footprint: pre02-complete-population.
+// v7 changes only the PRE-02 read implementation; its SQL cap, population,
+// verdicts and samples stay equivalent. All rule fingerprints stay unchanged.
+export const HELPERS_VERSION = 7
 export const JUDGE_HELPERS = Object.freeze({
   tsMs, blank, num, acctOf, idKey, upper, dirOf, ours, intentTag, parseJson, directionReasonOf, sideProblems, riskScaleWrong,
   botTrade, proposalOf, fillOf, closeMsOf, tagEvidence, fillForPending, closedOlder, tradeInWindow, endedBy,
   loadContext, runRule, summarise, recordKeyOf, accountRegistered, isControllerRecord, stageCountPhrase,
-  approvalKey, indexApprovalTimes, hasRecentApproval, withLifecyclePhase,
+  approvalKey, indexApprovalTimes, hasRecentApproval, withLifecyclePhase, readRulePopulation,
   constants: `${ABSURD_RISK_FRACTION}|${GENERIC_CLOSE_RE}|${[...LIMIT_PRODUCERS]}|${TERMINAL_INTENT}|${CLEAN_BOT_ORIGINS}|${ACTION_LOG_WINDOW_IDS}` +
     `|${DEFAULT_POPULATION_LIMIT}|${REFUSAL_POPULATION_LIMIT}|${CONTEXT_LIMIT}|${WRITE_GRACE_MS}|${INFO_NAMES_MAX}|${PROTECTION_LOG_MUTE_MS}|${JSON.stringify(CONTEXT_SQL)}` +
-    `|${CONTROLLER_RECORD_RE}|${CONTROLLERS_LINE}`,
+    `|${CONTROLLER_RECORD_RE}|${CONTROLLERS_LINE}|${PRE02_LEGACY_SQL}|${PRE02_COMPLETE_SQL}|${PRE02_TABLE_SQL}|${PRE02_INDEX_SQL}|${PRE02_COUNT_SQL}`,
 })
 export const RULESET_VERSION = [...RULES.map(r => `${r.id}@${r.version}`), `helpers@${HELPERS_VERSION}`].join(',')
 
@@ -1403,7 +1444,7 @@ function runRule(db, rule, ctx, win, scope) {
   let rows
   const limit = Math.max(1, Math.min(win.populationLimit ?? Infinity, rule.populationLimit ?? DEFAULT_POPULATION_LIMIT))
   try {
-    rows = db.prepare(rule.sql).all(...rule.params(win), limit)
+    rows = readRulePopulation(db, rule, [...rule.params(win), limit])
     if (rows.length >= limit && !(rule.populationLimit === 1)) res.truncated = true
     // A rule's own row shaping (STK-08, STK-09, STK-11) failing is the rule
     // being unreadable — never the whole report failing, never a 0.
