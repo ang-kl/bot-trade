@@ -63,6 +63,42 @@ const finite = (v) => typeof v === 'number' && Number.isFinite(v)
 const round2 = (v) => (finite(v) ? Math.round(v * 100) / 100 : null)
 const usd = (v) => `USD ${Number(v).toFixed(2)}`
 
+// Codex · №12,877 · 2026-10-10; codex-footprint: risk-reporting-parity.
+// One read-only engine boundary for proposals, Risk and capital-safety cards.
+export function readDailyRiskVerdict(db, accountId, { nowMs = Date.now(), balanceNative = getAccountBalance(db, accountId) } = {}) {
+  const config = loadRiskConfig(db, accountId)
+  const money = sizingBalanceUsd(db, accountId, { balance: balanceNative, now: nowMs })
+  const balance = money.balanceUsd
+  const verdict = dailyLossVerdict(db, config, accountId, { balance, nowMs, money })
+  return { accountId: String(accountId), config, balanceNative, balance, money, verdict }
+}
+
+export function dailyPacingReading(reading) {
+  const { accountId, balanceNative, balance, money, verdict } = reading
+  const refused = money.conversion === 'refused'
+  const unverified = money.currencySource !== 'broker_verified'
+  const reason = refused ? FX_RATE_UNAVAILABLE : unverified ? 'deposit_currency_unverified' : null
+  const p = verdict.pacing
+  const projection = { ...p, spentUsd: Math.max(0, -verdict.todayPnl), accountId,
+    balance: refused ? balanceNative : balance, currency: refused ? money.currency : DAILY_STOP_CURRENCY }
+  const result = { ...projection, status: reason ? 'unverified' : p.uncapped ? 'uncapped' : 'in_force', reason,
+    balanceNative, fx: conversionView(money), dayStartSql: verdict.dayStartSql,
+    estimatedStopoutUsd: verdict.checks?.daily_pnl_estimated_stopout_usd ?? null,
+    engineBlock: verdict.block ? { guard: verdict.guard, reason: verdict.reason } : null,
+    source: 'dailyLossVerdict', currencyVerified: !unverified,
+    population: 'engine account slice, including unattributed closes and planned-risk estimates for unresolved stopouts' }
+  if (refused) {
+    // Legacy *Usd names inside the refused engine verdict contain native %
+    // figures. Retain that evidence separately; never label it a USD amount.
+    result.nativePacing = projection
+    for (const k of ['capUsd', 'pctCapUsd', 'usdCapUsd', 'usdInForce', 'floorUsd', 'remainingUsd', 'spentUsd', 'tradesLeft', 'balance']) result[k] = null
+    result.currency = DAILY_STOP_CURRENCY
+    result.status = 'unavailable'
+    result.uncapped = null
+  }
+  return result
+}
+
 /**
  * Why this cap, in words. `describeBinding` is the engine's own phrase for
  * 'pct', 'usd' and 'both'; it has no 'floor' branch (it would say "both caps
@@ -127,15 +163,11 @@ export function dailyStopReading(db, accountId, { nowMs = Date.now(), moneyCurre
   let balance, balanceNative, verdict, money = null, fx = null
   try {
     // The pre-gate's three calls, in its order (account-pregate.js).
-    const config = loadRiskConfig(db, acct)
     // C·1 PR-2: the same conversion the pre-gate and the gate apply. On a
     // converted account every figure below is USD, including the native
     // balance and P&L valued at the table's rate; a refused conversion is
     // the engine's own block and is reported as such, not as a USD cap.
-    balanceNative = getAccountBalance(db, acct)
-    money = sizingBalanceUsd(db, acct, { balance: balanceNative, now: nowMs })
-    balance = money.balanceUsd
-    verdict = dailyLossVerdict(db, config, acct, { balance, nowMs, money })
+    ;({ balanceNative, money, balance, verdict } = readDailyRiskVerdict(db, acct, { nowMs }))
     if (money.conversion !== 'identity') {
       fx = conversionView(money)
       if (money.conversion === 'fx_table') {

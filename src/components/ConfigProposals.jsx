@@ -64,6 +64,10 @@ export function AccountBlock({ a, stop = null }) {
   // The engine's own daily stop for this account (account-overview), shown
   // beside advice whose arithmetic may use a different cap. Display only.
   const v = stop ? dailyStopView(stop) : null
+  // Codex · №12,878 · 2026-10-10; codex-footprint: risk-reporting-parity.
+  const p = a.dailyPacing
+  const cap = p ? p.currencyVerified && p.status === 'in_force' ? p.capUsd : null : v?.cap
+  const currency = p?.currency || v?.capCcy
   return (
     <div className="mb-2 rounded-[12px] border border-[var(--glass-edge)] px-3 py-2">
       <div className="text-(length:--fs-body) font-semibold">{a.accountId}</div>
@@ -74,12 +78,18 @@ export function AccountBlock({ a, stop = null }) {
           too little data to have any are different facts, and folding them
           together would let a thin sample read as approval. */}
       {a.skipped && <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">No advice — {a.skipped}</div>}
+      {a.monetaryAssessment?.reason && (
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
+          Daily-cap money assessment unavailable: {a.monetaryAssessment.reason.replaceAll('_', ' ')}.
+        </div>
+      )}
       {!a.skipped && a.proposals.length === 0 && (
         <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">Nothing to propose against this record.</div>
       )}
-      {v?.capState === 'in_force' && v.cap != null && a.proposals.length > 0 && (
+      {cap != null && a.proposals.length > 0 && (
         <div className="text-(length:--fs-body) mt-1 rounded-[8px] px-2 py-1.5 text-[var(--color-warning-text)] bg-[var(--color-warning-bg)]">
-          Daily stop the engine enforces now: {v.capCcy} {v.cap.toFixed(2)}{v.explain ? ` — ${v.explain}` : ''}. Advice arithmetic below may use a different cap.
+          Daily stop the engine enforces now: {currency} {cap.toFixed(2)}{p?.binding ? ` — ${p.binding}` : v?.explain ? ` — ${v.explain}` : ''}.
+          {p ? ' Advice uses this engine reading.' : ' Engine reading from account overview.'}
         </div>
       )}
       {[...a.proposals].sort((x, y) => (SEVERITY_ORDER[x.severity] ?? 3) - (SEVERITY_ORDER[y.severity] ?? 3))
