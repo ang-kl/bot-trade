@@ -1,7 +1,10 @@
 // Codex · №12,435 · 2026-10-09; codex-footprint: targeted-owned-evidence.
 // Private operator readout. No arbitrary SQL, broker call, profiler or action.
 // Every monetary/position value is a dated stored observation, never refreshed here.
-import { readHybridVerdicts } from './diagnostic-readout.js'
+import { readHybridVerdicts, readTradingAssessment } from './diagnostic-readout.js'
+// Codex · №12,944 · 2026-10-10; codex-footprint: consolidated-private-evidence.
+import { readLifecycleEvidence } from './lifecycle-evidence-readout.js'
+import { readAccountEvidence } from './account-evidence-readout.js'
 import { brokerPolicyObservation } from '../lib/stop-policy.js'
 import { readStoredInitialRisk } from './initial-risk-readout.js'
 import { readScannerEvidence } from './scanner-evidence-readout.js'
@@ -165,9 +168,15 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   const tradeIds=targetIds(env.OWNED_EVIDENCE_TRADE_IDS)
   if(tradeIds===null)return null
   // Codex · №12,808 · 2026-10-10; codex-footprint: hybrid-verdict-only-read.
-  const scope=env.OWNED_EVIDENCE_SCOPE,hybridOnly=scope==='hybrid'
-  if(scope!=null&&!hybridOnly)return null
+  const scope=env.OWNED_EVIDENCE_SCOPE,hybridOnly=scope==='hybrid',consolidated=scope==='consolidated'
+  if(scope!=null&&!hybridOnly&&!consolidated)return null
   if(hybridOnly&&(tradeIds.length||env.OWNED_EVIDENCE_SCANNER==='1'))return null
+  const accountIds=targetIds(env.OWNED_EVIDENCE_ACCOUNT_IDS)
+  const dealText=env.OWNED_EVIDENCE_DEAL_IDS,dealIds=dealText==null||dealText===''?[]:
+    typeof dealText==='string'&&/^[1-9]\d{0,19}(,[1-9]\d{0,19}){0,63}$/.test(dealText)?[...new Set(dealText.split(','))]:null
+  const pendingAccount=protocolId(env.OWNED_EVIDENCE_PENDING_ACCOUNT)
+  if(consolidated&&(accountIds===null||dealIds===null||!tradeIds.length||env.OWNED_EVIDENCE_SCANNER==='1'
+    ||(env.OWNED_EVIDENCE_PENDING_ACCOUNT!=null&&!pendingAccount)))return null
   const id=env.OWNED_EVIDENCE_RUN_ID,expires=Date.parse(env.OWNED_EVIDENCE_EXPIRES_AT||'')
   if(typeof id!=='string'|| !/^[a-zA-Z0-9_-]{8,64}$/.test(id)|| !Number.isFinite(expires)||expires<=now()||expires-now()>3600000) return null
   let bytes=0,dropped=0
@@ -186,7 +195,7 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
   }
   try {
     if(db.prepare('INSERT OR IGNORE INTO agent_state(key,value) VALUES (?,?)')
-      .run(`owned_evidence:${id}`,JSON.stringify({at:now(),tradeIds,...(hybridOnly?{scope}: {})})).changes!==1) return null
+      .run(`owned_evidence:${id}`,JSON.stringify({at:now(),tradeIds,...(hybridOnly||consolidated?{scope}: {})})).changes!==1) return null
   } catch { emit('not-started',{reason:'durable_claim_failed'});return null }
   // A single delayed read gives ordinary enrolment a chance to persist inputs.
   // It never runs enrolment, submits an order, or repeats until a desired result.
@@ -222,6 +231,35 @@ export function startTargetedEvidenceReadout(db,{env=process.env,log=console.log
       // separate opt-in, once-only projection before the remaining population.
       const requested=trades.filter(t=>tradeIds.includes(t.owner.id)),remaining=trades.filter(t=>!tradeIds.includes(t.owner.id))
       for(const trade of requested)emitTrade(trade)
+      // Explicit targets only; once per durable run. No broker refresh, action,
+      // arbitrary query, profile comparison or financial-history repair.
+      if(consolidated){
+        const lifecycle=readLifecycleEvidence(db,{tradeIds,dealIds,now:now()})
+        emit('lifecycle-summary',lifecycle.summary)
+        for(const record of lifecycle.records)emit(record.kind,record.value)
+        const {records:accountRecords,...accountSummary}=readAccountEvidence(db,{accountIds,
+          pendingTarget:pendingAccount?{accountId:pendingAccount,symbol:'SpotCrude'}:null,nowMs:now()})
+        for(const record of accountRecords)emit(record.kind,record.value)
+        emit('account-evidence-summary',accountSummary)
+        const assessment=readTradingAssessment(db,now())
+        const {accounts:goalAccounts,...targets}=assessment.targets
+        emit('performance-targets',targets)
+        for(const account of goalAccounts||[])emit('performance-account',account)
+        const report=stored(db,'order_lifecycle_last_json')
+        const pre02=Array.isArray(report?.rules)?report.rules.slice(0,CAP).find(rule=>rule.id==='PRE-02'):null
+        emit('pre02-snapshot',{readAt:now(),source:'stored_snapshot_only',
+          status:pre02?'observed':'unavailable',
+          snapshot:project(report,['schemaVersion','rulesetVersion','at','acceptanceStart','windowDays']),
+          window:project(report?.window,['since','until']),
+          accountScope:report?.accounts??null,
+          rule:pre02?project(pre02,['id','version','key','measurable','population','populationNew','violations',
+            'newViolations','legacyViolations','truncated','newestAt']):null,
+          readCostMs:null,incrementalWriteOverheadMs:null,
+          limitation:'Snapshot population and verdict; same-request timing and comparable pre-release write baseline are separate.'})
+        emit('exit',{at:now(),done:dropped===0,dropped,bytes,scope,
+          omittedOpenTrades:remaining.length,reason:dropped?'output_incomplete':undefined})
+        return
+      }
       const finish=scanner=>{for(const trade of remaining)emitTrade(trade);emit('exit',{at:now(),done:true,dropped,bytes,...(scanner?{scanner}:{})})}
       if(env.OWNED_EVIDENCE_SCANNER!=='1'){finish();return}
       if(now()>=expires){emit('exit',{at:now(),done:false,reason:'deadline_expired',dropped,bytes});return}

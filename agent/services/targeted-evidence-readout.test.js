@@ -6,7 +6,57 @@ import { join } from 'node:path'
 import { initDB, setState } from '../db.js'
 import { tempDir } from '../test-support/temp-dir.js'
 import { readTargetedEvidence, startTargetedEvidenceReadout } from './targeted-evidence-readout.js'
+import { compactSnapshot } from './order-lifecycle.js'
 const NOW=1791508672695
+// Codex · №12,944 · 2026-10-10; codex-footprint: consolidated-private-evidence.
+test('consolidated private readout uses explicit targets once, preserves stored rows and reports bounds',t=>{
+  const db=scene(t),logs=[];let callback,brokerCalls=0
+  db.exec("UPDATE trades SET status='closed' WHERE id=1")
+  setState(db,'order_lifecycle_last_json',JSON.stringify(compactSnapshot({schemaVersion:1,rulesetVersion:7,
+    generatedAt:'2026-10-10T01:00:00Z',acceptanceStart:'2026-10-03T23:35:00Z',windowDays:7,
+    window:{since:'2026-10-03T01:00:00Z',until:'2026-10-10T01:00:00Z'},accounts:[42],summary:{},
+    stages:{pre_order:[{id:'PRE-02',version:2,measurable:true,population:42,newViolations:3,secret:'must-not-leak'}],
+      order:[],close:[],stuck:[]}})))
+  const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:'batch-owned-1234',
+    OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_ACCOUNT_IDS:'42',OWNED_EVIDENCE_DEAL_IDS:'7001',
+    OWNED_EVIDENCE_PENDING_ACCOUNT:'43',OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
+  const opts={env,now:()=>NOW,log:line=>logs.push(JSON.parse(line)),setTimer:cb=>{callback=cb},clearTimer:()=>{},
+    fetchImpl:()=>{brokerCalls++;throw Error('unexpected broker request')}}
+  assert.equal(typeof startTargetedEvidenceReadout(db,opts),'function')
+  const before=db.prepare('SELECT total_changes() n').get().n
+  callback()
+  assert.equal(db.prepare('SELECT total_changes() n').get().n,before,'capture is read-only after its durable claim')
+  assert.equal(startTargetedEvidenceReadout(db,opts),null,'restart cannot replay the same durable run')
+  assert.equal(brokerCalls,0)
+  assert.ok(logs.some(row=>row.kind==='lifecycle-summary'))
+  assert.ok(logs.some(row=>row.kind==='account-evidence-summary'))
+  assert.ok(logs.some(row=>row.kind==='performance-targets'))
+  const report=logs.find(row=>row.kind==='pre02-snapshot').value
+  assert.equal(report.rule.population,42)
+  assert.equal(report.snapshot.rulesetVersion,7)
+  assert.deepEqual(report.window,{since:'2026-10-03T01:00:00Z',until:'2026-10-10T01:00:00Z'})
+  assert.deepEqual(report.accountScope,[42])
+  assert.equal(report.readCostMs,null)
+  assert.equal(report.incrementalWriteOverheadMs,null)
+  assert.doesNotMatch(JSON.stringify(logs),/must-not-leak/)
+  assert.deepEqual(logs.filter(row=>row.kind==='owned-position').map(row=>row.value.owner.id),[1])
+  assert.equal(logs.at(-1).kind,'exit')
+  assert.equal(logs.at(-1).value.done,true)
+  assert.equal(logs.at(-1).value.omittedOpenTrades,1)
+  assert.equal(logs.at(-1).value.scope,'consolidated')
+  assert.ok(logs.reduce((sum,row)=>sum+Buffer.byteLength(JSON.stringify(row)),0)<=256*1024)
+})
+test('consolidated capture refuses malformed operator identity and scanner expansion before a claim',t=>{
+  const db=scene(t);let timers=0
+  const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:'batch-refuse-1234',
+    OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
+  const before=db.prepare('SELECT total_changes() n').get().n
+  for(const extra of [{OWNED_EVIDENCE_ACCOUNT_IDS:'42; SELECT 1'}, {OWNED_EVIDENCE_DEAL_IDS:'0'},
+    {OWNED_EVIDENCE_PENDING_ACCOUNT:'secret'}, {OWNED_EVIDENCE_SCANNER:'1'}, {OWNED_EVIDENCE_TRADE_IDS:''}])
+    assert.equal(startTargetedEvidenceReadout(db,{env:{...env,...extra},now:()=>NOW,setTimer:()=>{timers++}}),null)
+  assert.equal(timers,0)
+  assert.equal(db.prepare('SELECT total_changes() n').get().n,before)
+})
 function scene(t){
   const db=initDB(':memory:');t.after(()=>db.close())
   db.exec("INSERT INTO trades(id,symbol,account_id,ctrader_position_id,status) VALUES(1,'EURUSD','42','33','open'),(2,'EURUSD','43','33','open')")
