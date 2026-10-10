@@ -187,6 +187,36 @@ for(const cfg of [{scaleOutFrac:0},{on:false}])test(`keeper disabled/default con
   assert.equal(f.attempt(),null)
 })
 
+// Codex · №13,053 · 2026-10-10; codex-footprint: keeper-policy-independent-recovery.
+// A policy change controls future decisions, not bookkeeping for a sent fill.
+for (const full of [false, true]) for (const policy of ['disabled', 'scope', 'opt_out', 'guard', 'book', 'managed']) {
+  test(`retained keeper ${full ? 'close' : 'partial'} recovers after ${policy} policy change without sending again`, async t => {
+    const f = fixture(t, { full }); let reads = 0
+    if (policy === 'scope') {
+      f.db.prepare("UPDATE monitored_positions SET source='autopilot'").run()
+      setState(f.db, 'profit_keeper_json', JSON.stringify({ ...f.cfg, scope: 'all' }))
+    }
+    f.state.response = () => { f.state.volume = full ? 0 : 5000; return f.fill(full ? 10000 : 5000) }
+    f.state.reconcile = () => { const r = f.snapshot(); if (++reads > 1) r.ctidTraderAccountId = 2; return r }
+    await f.run()
+    assert.equal(f.attempt().state, 'RECEIVED'); assert.equal(f.events().length, 0)
+    if (policy === 'disabled') setState(f.db, 'profit_keeper_json', JSON.stringify({ ...f.cfg, on: false }))
+    if (policy === 'scope') setState(f.db, 'profit_keeper_json', JSON.stringify(f.cfg))
+    if (policy === 'opt_out') f.db.prepare('UPDATE monitored_positions SET keeper_opt_out=1').run()
+    if (policy === 'guard') f.db.prepare("UPDATE monitored_positions SET guard_json='{}'").run()
+    if (policy === 'book') f.db.prepare("INSERT INTO momentum_book(trade_id,account_id,symbol,position_id,status,note,entered_at) VALUES(1,'1','NATGAS','9001','open','test',datetime('now'))").run()
+    if (policy === 'managed') f.deps.managedExit.managedExitApplies = () => true
+    f.state.reconcile = null; f.restart()
+    const result = await f.run()
+    assert.equal(result[full ? 'closes' : 'scaleOuts'], 1, JSON.stringify(result))
+    assert.equal(f.attempt().state, 'CONFIRMED'); assert.equal(f.events().length, 1)
+    assert.equal(f.events()[0].to_value, full ? 10000 : 5000)
+    if (!full) { assert.equal(f.row().scaled_out, 1); assert.equal(f.db.prepare('SELECT volume FROM trades').get().volume, 0.5) }
+    await f.run()
+    assert.equal(f.state.calls.length, 1); assert.equal(f.events().length, 1)
+  })
+}
+
 test('independent SQLite deliveries race the durable claim and commit one owned fill',async t=>{
   const f=fixture(t),other=f.secondConnection()
   const input={accountId:'1',positionId:'9001',tradeId:1,monitorId:1,symbol:'NATGAS',side:'SELL',

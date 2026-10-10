@@ -36,17 +36,17 @@ export function readKeeperClose(db, accountId, positionId) {
   return unpack(db.prepare('SELECT * FROM keeper_close_attempts WHERE account_id=? AND position_id=? ORDER BY id DESC LIMIT 1')
     .get(String(accountId), String(positionId)))
 }
-// Ordinary reconciliation may close the monitor before a retained full-close
-// receipt can commit. These are bookkeeping candidates, never new decisions.
-export function pendingKeeperClosedMonitorIds(db, accountId) {
+// Codex · №13,053 · 2026-10-10; codex-footprint: keeper-policy-independent-recovery.
+// Enumerate retained deliveries independently of current decision policy.
+// Every candidate still crosses runKeeperClose's account/episode boundary;
+// recoverOnly cannot submit an order, even if the monitor is now excluded.
+export function pendingKeeperCloseRows(db, accountId) {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='keeper_close_attempts'").get()) return []
-  return db.prepare(`SELECT a.monitor_id,a.plan_json FROM keeper_close_attempts a
-    JOIN monitored_positions m ON m.id=a.monitor_id AND (m.account_id IS NULL OR m.account_id=a.account_id)
-    WHERE a.account_id=? AND m.status='closed' AND a.state IN ('SENDING','AMBIGUOUS','RECEIVED')`)
-    .all(String(accountId)).filter(row => {
-      try { return JSON.parse(row.plan_json).kind === 'close' && positiveInteger(row.monitor_id) }
-      catch { return false }
-    }).map(row => row.monitor_id)
+  return db.prepare(`SELECT m.id,m.trade_id,m.account_id,m.symbol,m.side,t.ctrader_position_id AS position_id
+    FROM keeper_close_attempts a JOIN monitored_positions m ON m.id=a.monitor_id AND m.trade_id=a.trade_id
+    JOIN trades t ON t.id=a.trade_id
+    WHERE a.account_id=? AND a.state IN ('SENDING','AMBIGUOUS','RECEIVED')`)
+    .all(String(accountId))
 }
 function owner(db, x) {
   const row = db.prepare(`SELECT m.id,m.trade_id,m.account_id,m.symbol,m.side,m.status,m.scaled_out,

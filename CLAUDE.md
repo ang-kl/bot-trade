@@ -10,23 +10,30 @@ proves actual fills and fresh residual/absence, and commits quantity, latch,
 journal and completion atomically. Uncertainty retains its claim; ordinary
 partial-path SL evaluation and external/manual eligibility remain intact,
 including unstamped legacy owners proven by a fresh account broker response.
+Retained receipt recovery precedes current enablement, scope, opt-out, guard,
+book and managed decision filters; disabled/excluded rows cannot submit again.
 Closed monitors can recover retained full-close bookkeeping without a new
 decision. The consolidated collector reserves 64 KiB of its unchanged 256 KiB
 cap for summaries/terminal status and reports package reads and omissions.
 
-231 integrated controls pass at this source stamp. The first broad run retained
+231 integrated controls passed before actual Codex review at c8a39f33 found
+policy-filtered recovery. Twelve keeper/SQLite restart regressions reproduce
+that blocker and pass after moving owned recoverOnly bookkeeping ahead of
+decision filters. The first broad run retained
 an unchanged 109 ms latency failure under concurrent work and keeper
 coordination fixtures that provided no execution evidence; those fixtures now
 provide scoped fills/residuals with their policy assertions unchanged. Final
 isolated local/exact-head CI and actual review inspection precede the
-owner-authorised merge. Cloud network currently denies api.github.com; its
-allowlist addition is saved in the environment draft, awaiting settings review.
-No PR, merge, deployment, natural partial, profit improvement or whole
+owner-authorised merge of the corrected head in PR1306. Earlier network403
+is superseded by successful GitHub/public health reads. The environment draft
+holds tested install/start instructions and exact domains, still unpublished.
+The owner selected Claude's existing authorised read access for the bounded
+postdeployment private verification. No merge, deployment, natural partial, profit improvement or whole
 acceptance closure is claimed. Keeper default scaleOutFrac=0, all entry/SL/TP
 policy, sizing, owner overrides, book exemptions and native services remain
 unchanged. Setup and red/green receipts are retained outside the checkout.
 
-Shared serial rebase: Codex №13,036 at 20:32 SGT on 10 October 2026; full
+Shared serial rebase: Codex №13,054 at 21:00 SGT on 10 October 2026; full
 transcript corpus unavailable. This is a recorded lower bound. Check newer
 main, owner handovers and agent-locks notes before choosing the next serial.
 
