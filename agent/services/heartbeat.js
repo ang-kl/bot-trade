@@ -200,7 +200,7 @@ export const CONTROLLERS = {
   cross_side_equity:   { label: 'Cross-side equity read',    tiedToLoop: true, loopMultiplier: 3, factor: 4 },
   // Wave 3 (19-09-2026): the nightly mark-to-market equity row per account,
   // once every 24 h on a persisted stamp. Stale only after two missed nights.
-  equity_snapshot:     { label: 'Nightly equity snapshot',    expectedSec: 24 * 3600, factor: 2 },
+  equity_snapshot:     { label: 'Daily equity snapshot (New York close)', expectedSec: 24 * 3600, factor: 2 },
   // Wave 5 (§K item 16): the daily Telegram report, once every 24 h on the
   // loop's persisted cursor; its record is the last text as posted.
   daily_report:        { label: 'Daily report (Telegram)',    expectedSec: 24 * 3600, factor: 2, effect: { key: 'daily_report_last_json', kind: 'json', maxAgeSec: 30 * 3600 } },

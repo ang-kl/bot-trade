@@ -84,7 +84,7 @@ under A·2's evidence, not carried.
 | A·3 vol-target sizing | PARTIAL: per-account vol target; affordability rebuilt per cycle | `momentum-account.js`, `fundable-universe.js` |
 | A·4 breadth | HOLDS | `agent/config/momentum-universe.json` |
 | A·5 / B·9 | HOLDS under §C | `strategy-pins.json` `_all` / `_trial` / `_off` |
-| A·6 judge at the cadence | HOLDS: nightly equity snapshot + `/state/equity-curve`; the checkpoint frozen on its date | Wave 3, `equity-snapshot.js` |
+| A·6 judge at the cadence | HOLDS: daily equity snapshot at the New York close, 4:00 PM ET (owner 10-10-2026; until then a rolling 24 h pass) + `/state/equity-curve` and the Scoreboard's daily record; the checkpoint frozen on its date | Wave 3, `equity-snapshot.js` (`lastNyCloseMs`, `startEquityCloseTicker`), `scoreboard.js nightlyRecord` |
 | A·7 costs and gaps | PARTIAL: min hold yes; no re-entry throttle | `book-hold-age.js` |
 | A·8 the machine reports itself | IN BUILD: `services/daily-report.js` (Wave 5) | audit §L |
 | B·1–B·9 | see `docs/owner-principles-plan-2026-09-11.md` §7 and the audit §F–§I | |

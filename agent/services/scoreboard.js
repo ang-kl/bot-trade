@@ -46,6 +46,7 @@
 import { closedAtMs } from '../shared/formulas.js'
 import { balanceUnit } from './balance-unit.js'
 import { listAccounts } from './account-registry.js'
+import { cashflowCoverage } from './account-history.js'
 
 export const SCOREBOARD_TRADES = 20
 export const SCOREBOARD_DEFAULT_DAYS = 30
@@ -53,6 +54,8 @@ export const SCOREBOARD_MAX_DAYS = 365
 const DAY = 86_400_000
 const SGT = 8 * 3_600_000
 const REASON_CHARS = 48
+/** Nightly balance rows shown per account (about a month of passes). */
+export const SCOREBOARD_NIGHTS = 31
 
 /** Not this system's decision (see the header for where the rule comes from). */
 export const EXTERNAL_SOURCES = Object.freeze(['external', 'manual'])
@@ -153,6 +156,75 @@ function listRow(r) {
   }
 }
 
+/**
+ * Claude · № 13,024 10-Oct (owner after № 13,017: "Is there a record in the
+ * storage of Bot-trade the daily balance of account recorded so that we can
+ * check pattern"). The record exists: `equity_snapshots`, one row per enabled
+ * account per nightly pass (equity-snapshot.js, since 18-09-2026): the
+ * broker's balance, its net open P&L, equity and the open count. This turns
+ * the newest rows into the night-by-night line the card shows. PURE.
+ *
+ * ONE UNIT. A night is shown only in the account's verified currency. Rows the
+ * pass wrote before it recorded a unit (currency NULL) or in another unit are
+ * counted, never drawn on the same line.
+ *
+ * A BALANCE CHANGE IS NOT A TRADING RESULT until the cash flows are known.
+ * `flowsOf(prev, night)` answers the external flows (deposits, withdrawals)
+ * inside the span from the cashflow ledger: { status: 'read', external } when
+ * its windows cover the span, 'unclassified' or 'unread' otherwise, with
+ * external null. A change across two broker hosts has no single unit: null.
+ *
+ * @param {object[]} rows equity_snapshots rows, any order
+ * @param {{currency?: string|null, flowsOf?: Function, limit?: number}} opts
+ */
+export function nightlyRecord(rows, { currency = null, flowsOf = () => null, limit = SCOREBOARD_NIGHTS } = {}) {
+  const all = [...(rows || [])].filter(r => Number.isFinite(Date.parse(r?.at ?? '')))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+  const ccy = typeof currency === 'string' && /^[A-Z]{3}$/.test(currency) ? currency : null
+  const unitUnrecorded = all.filter(r => r.currency == null).length
+  const otherUnit = ccy ? all.filter(r => r.currency != null && r.currency !== ccy).length : 0
+  const own = ccy ? all.filter(r => r.currency === ccy) : []
+  const kept = own.slice(-limit)
+  let prev = own.length > kept.length ? own[own.length - kept.length - 1] : null
+  const nights = []
+  for (const r of kept) {
+    const balance = finiteNumber(r.balance_usd)
+    const prevBalance = prev ? finiteNumber(prev.balance_usd) : null
+    const sameHost = prev != null && prev.broker_host === r.broker_host
+    const change = balance != null && prevBalance != null && sameHost ? round(balance - prevBalance, 2) : null
+    let flows = null
+    if (change != null) {
+      try { flows = flowsOf(prev, r) ?? null } catch { flows = null }
+    }
+    nights.push({
+      at: new Date(Date.parse(r.at)).toISOString(),
+      balance, openPnl: finiteNumber(r.open_pnl_usd), equity: finiteNumber(r.equity_usd),
+      openPositions: Number.isInteger(r.open_positions) ? r.open_positions : null,
+      error: r.error ? String(r.error).slice(0, 120) : null,
+      balanceChange: change,
+      flows: flows ? { status: flows.status, external: flows.status === 'read' ? round(finiteNumber(flows.external) ?? 0, 2) : null } : null,
+    })
+    prev = r
+  }
+  const valued = nights.filter(n => n.balance != null)
+  const steps = nights.map(n => n.balanceChange).filter(v => v != null)
+  return {
+    currency: ccy,
+    shown: nights.length,
+    unitUnrecorded,
+    otherUnit,
+    earlierOwn: own.length - kept.length,
+    firstAt: valued[0]?.at ?? null,
+    lastAt: valued.at(-1)?.at ?? null,
+    change: valued.length > 1 ? round(valued.at(-1).balance - valued[0].balance, 2) : null,
+    up: steps.filter(v => v > 0).length,
+    down: steps.filter(v => v < 0).length,
+    flat: steps.filter(v => v === 0).length,
+    // Oldest first: the order a line is drawn in.
+    nights,
+  }
+}
+
 const shortLabel = id => `…${String(id).slice(-4)}`
 /** Pooled figures carry no money: R and counts only. */
 const unitFree = m => ({ n: m.n, wins: m.wins, losses: m.losses, zeros: m.zeros, winRatePct: m.winRatePct,
@@ -226,6 +298,8 @@ export function buildScoreboard(rows, { now = Date.now(), days = SCOREBOARD_DEFA
       // Every included close of the account (readScoreboard counts them during its scan);
       // closedN above counts only the rows handed to this function.
       closedTotal: Number.isInteger(reg?.closedTotal) ? reg.closedTotal : list.length,
+      // Claude · № 13,024: the stored nightly balance line (nightlyRecord), when the reader had it.
+      nightly: reg?.nightly && Array.isArray(reg.nightly.nights) ? reg.nightly : null,
       lastCloseAt: list.length && timeOf(list[0]) != null ? new Date(timeOf(list[0])).toISOString() : null,
       last20: {
         ...scoreMetrics(last),
@@ -262,6 +336,7 @@ export function buildScoreboard(rows, { now = Date.now(), days = SCOREBOARD_DEFA
     botRule: "bot = source not in ('external', 'manual')",
     rRule: 'R counts only when realised_rr is finite and exit_price_suspect is not 1',
     note: 'Recorded ledger figures per account, in that account\'s deposit currency. Not the broker-proven forward assessment; reporting only.',
+    nightlyRule: 'nightly = equity_snapshots rows (one broker read per enabled account per nightly pass) in the account\'s verified currency; a balance change counts deposits and withdrawals unless flows.status is read',
   }
 }
 
@@ -327,16 +402,34 @@ export function readScoreboard(db, { account = 'all', days = SCOREBOARD_DEFAULT_
     const q = db.prepare('SELECT value FROM agent_state WHERE key = ?')
     leverageOf = id => { const v = Number(q.get(`acct:${id}:account_leverage`)?.value); return Number.isFinite(v) && v > 0 ? v : null }
   } catch { leverageOf = () => null }
+  // Claude · № 13,024 10-Oct: the nightly balance record (nightlyRecord). The
+  // newest rows by the (account_id, at) index; the cash-flow coverage of each
+  // span from the same ledger account-history.js reads. Read only.
+  let nightlyRows = () => []
+  try {
+    const q = db.prepare(`SELECT at, balance_usd, open_pnl_usd, equity_usd, open_positions, error, currency, broker_host
+      FROM equity_snapshots WHERE account_id = ? ORDER BY at DESC LIMIT ?`)
+    nightlyRows = id => q.all(id, SCOREBOARD_NIGHTS + 1)
+  } catch { nightlyRows = () => [] }
   const accounts = ids.map(id => {
     const reg = registered.get(id) || null
     let currency = null
     try { currency = balanceUnit(db, id).currency } catch { currency = null }
     let leverage = null
     try { leverage = leverageOf(id) } catch { leverage = null }
+    let nightly = null
+    try {
+      nightly = nightlyRecord(nightlyRows(id), { currency, flowsOf: (prev, night) => {
+        const c = cashflowCoverage(db, { accountId: id, host: night.broker_host, currency,
+          from: Date.parse(prev.at), to: Date.parse(night.at) })
+        return c.complete ? { status: 'read', external: c.externalNet }
+          : { status: c.reason === 'cashflow_classification_unknown' ? 'unclassified' : 'unread', external: null }
+      } })
+    } catch { nightly = null }
     return {
       accountId: id, currency, registered: !!reg, enabled: reg ? reg.enabled === 1 : null, login: reg?.trader_login ?? null,
       isLive: reg ? reg.is_live === 1 : null, mode: reg?.mode ?? null, leverage, openNow: openCounts.get(id) ?? 0,
-      closedTotal: totals.get(id) ?? 0,
+      closedTotal: totals.get(id) ?? 0, nightly,
     }
   })
   return buildScoreboard(rows, { now, days, account: only ?? 'all', accounts, excluded })

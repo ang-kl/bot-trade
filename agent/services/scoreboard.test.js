@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
 import { recordAccountMoney, recordDepositCurrency } from './account-money.js'
-import { buildScoreboard, readScoreboard, scoreMetrics, exclusionOf, EXTERNAL_SOURCES, SCOREBOARD_TRADES } from './scoreboard.js'
+import { buildScoreboard, readScoreboard, scoreMetrics, exclusionOf, nightlyRecord, EXTERNAL_SOURCES, SCOREBOARD_TRADES, SCOREBOARD_NIGHTS } from './scoreboard.js'
 
 const NOW = Date.parse('2026-10-10T08:00:00Z'), H = 3_600_000, DAY = 24 * H
 let seq = 0
@@ -181,4 +181,78 @@ test('account facts: side, login, leverage, open now and closed today (SGT day)'
   assert.equal(a.openNow, 2, 'open ledger rows, bot and manual alike'); assert.equal(a.closedToday, 2, 'SGT calendar day'); assert.equal(a.closedN, 3); assert.equal(a.closedTotal, 3)
   assert.equal(b.isLive, false); assert.equal(b.leverage, null, 'a non-numeric stored leverage is not shown'); assert.equal(b.openNow, 0)
   assert.equal(b.mode, 'manage_only')
+})
+
+// Claude · № 13,024 10-Oct (owner after № 13,017: "Is there a record in the
+// storage of Bot-trade the daily balance of account recorded so that we can
+// check pattern"): the nightly balance line from equity_snapshots.
+const night = (at, balance, over = {}) => ({ at, balance_usd: balance, open_pnl_usd: 0, equity_usd: balance, open_positions: 1,
+  error: null, currency: 'SGD', broker_host: 'demo.ctraderapi.com', ...over })
+
+test('nightlyRecord: one unit only, changes between consecutive nights, a host change has no change', () => {
+  const rows = [
+    night('2026-09-19T23:20:00Z', 1527.21, { currency: null }),      // written before the pass recorded a unit
+    night('2026-09-22T23:25:00Z', 3116.38),
+    night('2026-09-23T23:26:00Z', 3116.38),
+    night('2026-09-24T23:27:00Z', 3131.42),
+    night('2026-09-25T23:28:00Z', 3100.00, { broker_host: 'live.ctraderapi.com' }),   // another host after a read night
+    night('2026-09-26T23:29:00Z', null, { equity_usd: null, error: 'balance: timeout', broker_host: 'live.ctraderapi.com' }),
+    night('2026-09-27T23:30:00Z', 3090.00, { broker_host: 'live.ctraderapi.com' }),
+    night('2026-09-28T23:31:00Z', 3080.00, { broker_host: 'live.ctraderapi.com' }),
+    night('2026-09-29T23:31:00Z', 50, { currency: 'USD' }),
+  ]
+  const seen = []
+  const r = nightlyRecord(rows.slice().reverse(), { currency: 'SGD', flowsOf: (p, n) => { seen.push([p.at, n.at]); return { status: 'read', external: 0 } } })
+  assert.equal(r.currency, 'SGD')
+  assert.equal(r.shown, 7, 'only SGD nights are drawn')
+  assert.equal(r.unitUnrecorded, 1); assert.equal(r.otherUnit, 1)
+  assert.deepEqual(r.nights.map(n => n.at.slice(0, 10)), ['2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27', '2026-09-28'], 'oldest first')
+  assert.deepEqual(r.nights.map(n => n.balanceChange), [null, 0, 15.04, null, null, null, -10],
+    'first has no earlier own night; a host change (from a read night) and an unread balance on either side have none')
+  assert.equal(r.nights[4].error, 'balance: timeout')
+  assert.deepEqual(r.nights.map(n => n.flows?.status ?? null), [null, 'read', 'read', null, null, null, 'read'], 'flows asked only where a change exists')
+  assert.equal(seen.length, 3)
+  assert.equal(r.change, Number((3080 - 3116.38).toFixed(2)), 'first to last read balance')
+  assert.deepEqual([r.up, r.down, r.flat], [1, 1, 1])
+})
+
+test('nightlyRecord: an unverified currency shows nothing; the limit keeps the newest and the night before it for the first change', () => {
+  const rows = Array.from({ length: SCOREBOARD_NIGHTS + 5 }, (_, i) => night(new Date(Date.parse('2026-09-01T00:00:00Z') + i * DAY).toISOString(), 100 + i))
+  const r = nightlyRecord(rows, { currency: 'SGD' })
+  assert.equal(r.shown, SCOREBOARD_NIGHTS); assert.equal(r.earlierOwn, 5)
+  assert.equal(r.nights[0].balanceChange, 1, 'the first shown night compares with the one before it')
+  assert.equal(r.nights[0].flows, null, 'no flows reader: null, never "no deposits"')
+  const none = nightlyRecord(rows, { currency: null })
+  assert.equal(none.shown, 0); assert.equal(none.currency, null)
+  const flowsThrow = nightlyRecord(rows.slice(0, 3), { currency: 'SGD', flowsOf: () => { throw new Error('x') } })
+  assert.deepEqual(flowsThrow.nights.map(n => n.flows), [null, null, null])
+})
+
+test('readScoreboard: the nightly record per account, with deposits read from the cashflow ledger only where it covers the span', () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id, broker_label, enabled) VALUES ('111','P',1)").run()
+  const wall = Date.now()
+  recordDepositCurrency(db, { accountId: '111', host: 'demo.ctraderapi.com', depositAssetId: '7', currency: 'SGD', receivedAt: wall - 1000 })
+  recordAccountMoney(db, { accountId: '111', host: 'demo.ctraderapi.com', trader: { depositAssetId: '7', ctidTraderAccountId: 111 }, balance: 50, receivedAt: wall - 500 })
+  const ins = db.prepare(`INSERT INTO equity_snapshots(at, account_id, balance_usd, open_pnl_usd, equity_usd, open_positions, error, currency, broker_host)
+    VALUES (?,?,?,?,?,?,?,?,?)`)
+  const t0 = Date.parse('2026-10-05T23:54:00Z')
+  ins.run(new Date(t0).toISOString(), '111', 1000, 0, 1000, 0, null, 'SGD', 'demo.ctraderapi.com')
+  ins.run(new Date(t0 + DAY).toISOString(), '111', 1500, -5, 1495, 1, null, 'SGD', 'demo.ctraderapi.com')
+  ins.run(new Date(t0 + 2 * DAY).toISOString(), '111', 1490, 0, 1490, 0, null, 'SGD', 'demo.ctraderapi.com')
+  ins.run(new Date(t0 + 2 * DAY).toISOString(), '222', 9, 0, 9, 0, null, 'USD', 'demo.ctraderapi.com')
+  // The ledger covers the first span only, and holds a 500 deposit inside it.
+  db.prepare(`INSERT INTO account_cashflow_windows(account_id, host, currency, from_ms, to_ms, received_ms) VALUES ('111','demo.ctraderapi.com','SGD',?,?,?)`)
+    .run(t0 - DAY, t0 + DAY + 60_000, t0 + DAY + 60_000)
+  db.prepare(`INSERT INTO account_cashflows(account_id, host, event_id, at_ms, currency, delta, operation_type, kind, received_ms)
+    VALUES ('111','demo.ctraderapi.com','9001',?,'SGD',500,0,'external',?)`).run(t0 + 3600_000, t0 + DAY)
+  const out = readScoreboard(db, { account: 'all', days: 30, now: NOW })
+  const a = out.accounts.find(x => x.accountId === '111')
+  assert.equal(a.nightly.shown, 3)
+  assert.deepEqual(a.nightly.nights.map(n => n.balanceChange), [null, 500, -10])
+  assert.deepEqual(a.nightly.nights[1].flows, { status: 'read', external: 500 }, 'the +500 night was a deposit, not trading')
+  assert.deepEqual(a.nightly.nights[2].flows, { status: 'unread', external: null }, 'an uncovered span is unread, never zero')
+  assert.equal(a.nightly.nights[1].openPnl, -5); assert.equal(a.nightly.nights[1].equity, 1495); assert.equal(a.nightly.nights[1].openPositions, 1)
+  assert.ok(!out.accounts.some(x => x.accountId === '222'), 'a snapshot alone does not add an account to the board')
+  assert.match(out.nightlyRule, /deposits and withdrawals/)
 })

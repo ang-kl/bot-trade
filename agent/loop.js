@@ -4462,12 +4462,17 @@ async function runLoop(db) {
               x.swept > 0 && x.stamped === 0 ? `0/${x.swept} stamped` : null)
           } catch (err) { await hbeat(db, 'cross_side_equity', false, err?.message) /* equity is best-effort; never break the cycle */ }
           // Wave 3 (first-principles audit 19-09-2026 §K item 11): the
-          // NIGHTLY equity snapshot — balance + the broker's net unrealised
-          // P&L per enabled account on both sides, one row each, once every
-          // 24 h on a persisted stamp (equity_snapshot_last_at) so a
-          // restart resumes the schedule. Read-only against the broker,
-          // bounded, best-effort: the curve shows a null night, never a
-          // guessed one.
+          // DAILY equity snapshot — balance + the broker's net unrealised
+          // P&L per enabled account on both sides, one row each, on a
+          // persisted stamp (equity_snapshot_last_at) so a restart resumes
+          // the schedule. Read-only against the broker, bounded,
+          // best-effort: the curve shows a null day, never a guessed one.
+          // Claude · № 13,029 10-Oct (owner: "write your day's balance right
+          // at the New York regular market close (4:00 PM ET)"): due at
+          // 16:00 New York. Its own 30 s ticker (startEquityCloseTicker,
+          // started below) normally reads it first; this call is the
+          // fallback under the same rule, and the stamp-first write means
+          // the two never both read one close.
           try {
             const { equitySnapshotDue, runEquitySnapshot } = await import('./services/equity-snapshot.js')
             if (equitySnapshotDue(db)) {
@@ -7036,6 +7041,12 @@ export function startLoop(db) {
   import('./services/broker-readings.js')
     .then(m => m.startBrokerReadings(db))
     .catch(err => log('broker readings failed to start:', err.message))
+  // Claude · № 13,029 10-Oct (owner: the day's balance at the New York close,
+  // 4:00 PM ET): the daily equity snapshot's own 30 s ticker, so the read
+  // lands within half a minute of the bell, not at the loop's next third cycle.
+  import('./services/equity-snapshot.js')
+    .then(m => m.startEquityCloseTicker(db, getCtraderCreds, { log }))
+    .catch(err => log('equity close ticker failed to start:', err.message))
   // Per-minute review (§70.4) — §41's level 5, on its own ticker so it keeps
   // reviewing precisely when the loop or the fast monitor is the thing that
   // broke. Reads only: it reports when a lower-authority writer moved a stop
