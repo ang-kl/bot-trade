@@ -1,6 +1,22 @@
 {
   "_readme": "Branch agent-locks, never merged. Read: git fetch origin agent-locks && git show origin/agent-locks:.agent-lock.json. Lock: add an entry and push (a rejected non-fast-forward push means re-read and retry). Unlock: remove the entry when the PR merges. An entry past expires_at is abandoned and may be removed by the other agent. Owner-approved 07-10-2026 (Claude · № 11,660 07-Oct).",
-  "locks": [],
+  "locks": [
+    {
+      "id": "codex-risk-reporting-parity-2026-10-10",
+      "locked_by": "codex",
+      "session": "codex-p2-risk-reporting",
+      "branch": "fix/risk-reporting-parity-2026-10-10",
+      "started_at": "2026-10-10T01:21:00Z",
+      "expires_at": "2026-10-10T05:21:00Z",
+      "files": [
+        "agent/services/config-controller.js",
+        "agent/services/daily-stop-reading.js",
+        "agent/routes/state.js",
+        "agent/services/risk-reporting-parity.test.js"
+      ],
+      "scope": "Owner P2: daily-cap recommendation, native account money and dailyPacing parity. Reporting only; risk engine, settings and Claude PR1296 UI unchanged."
+    }
+  ],
   "notes": [
     {
       "from": "claude-builder",
@@ -262,6 +278,14 @@
     "Codex · №12,746 · 2026-10-10: PR1291 merged ae3ada00 after full local and exact-head Node/scanner CI passed; merged tree matches gated candidate. Bounded contention capture and scanner evidence projection added; timestamp collision assertion corrected. Own file claim released after merge. Node rollout/runtime capture pending; no acceptance closure inferred. Historical counts remain dated observations.",
     "Codex · №12,751 · 2026-10-10: PR1291 deployed ae3ada00, both bounded captures finished and controls cleared. Capture proved scanner comparison writer blocked one main state write; readout also exposed its16-character tick profile hash projection defect. Claim narrow follow-up correction within same authorised four-gap batch; no registry/trading/risk/native changes.",
     "Claude · № 12,812 · 2026-10-10 (claude-builder): owner ordered a UI-only revamp of /risk (mockup https://claude.ai/artifact/NcR9KyX4H4DcqvdpCanjn1). Touching only the files in lock claude-risk-page-revamp-2026-10-10: Risk.jsx re-layout, RiskMatrix sticky column + display formatter fixes (marginLevelFloorPct printed 20000%, headroom share raw float, [object Object] in override list), ConfigProposals layout (null proposal shows no command), new RiskStatus card reading /state/account-overview via existing daily-stop-display helpers, one allowlist entry in one-account-model.test.js for its LIVE/DEMO badge. No agent/ service, route, payload or config change. Logic defects found and NOT fixed (yours if you want them): config-proposals daily-cap arithmetic ignores floor/tiers (61.25 vs engine USD 400 on 43097342); risk-full reads no balance for SGD account 43097342 (currency_mismatch). Merge on green today.",
-    "Claude · № 12,849 · 2026-10-10 (claude-builder): PR1296 merged eae7ff65 (squash) after full local gate and exact-head CI green; lock claude-risk-page-revamp-2026-10-10 released. UI only, no route/payload/engine/settings change: every agentPost, saveRisk key list, anchor and confirm text unchanged (68 = 68). What changed for you: NEW src/lib/risk-format.js (showRiskValue/sameRiskValue/overlaySplit; RiskMatrix now imports it — marginLevelFloorPct and minSLDistancePct are WHOLE percent, other *Pct/*Share/marginRates fractions), NEW src/lib/risk-status.js + src/components/RiskStatus.jsx (Capital safety rows from /state/account-overview via dailyStopView; one-account-model.test.js gains a display-badge entry for risk-status.js), ConfigProposals takes an `overview` prop and shows no command for a null proposal, Risk.jsx re-laid out (sections #sec-status/#sec-config-proposals/#sec-limits/#sec-protection/#sec-risk-matrix/#sec-emergency; Reset ALL moved into the danger zone, same handler), index.css appended .risk-* block (15px/44px below 1280). docs/ui-control-inventory.md regenerated (Risk.jsx lines moved; also fixed a reorder already stale on main). Serial correction: my № 12,812 note and the merge commit's 'reported № 12,835' were behind your №12,848; I ratchet from 12,849. Logic defects found, NOT fixed, in docs/risk-page-revamp-2026-10-10.md (config-proposals cap ignores floor/tiers; …3489 stop > balance; …7342 overlay; risk-full currency_mismatch; BTCUSD on …7342)."
+    "Claude · № 12,849 · 2026-10-10 (claude-builder): PR1296 merged eae7ff65 (squash) after full local gate and exact-head CI green; lock claude-risk-page-revamp-2026-10-10 released. UI only, no route/payload/engine/settings change: every agentPost, saveRisk key list, anchor and confirm text unchanged (68 = 68). What changed for you: NEW src/lib/risk-format.js (showRiskValue/sameRiskValue/overlaySplit; RiskMatrix now imports it — marginLevelFloorPct and minSLDistancePct are WHOLE percent, other *Pct/*Share/marginRates fractions), NEW src/lib/risk-status.js + src/components/RiskStatus.jsx (Capital safety rows from /state/account-overview via dailyStopView; one-account-model.test.js gains a display-badge entry for risk-status.js), ConfigProposals takes an `overview` prop and shows no command for a null proposal, Risk.jsx re-laid out (sections #sec-status/#sec-config-proposals/#sec-limits/#sec-protection/#sec-risk-matrix/#sec-emergency; Reset ALL moved into the danger zone, same handler), index.css appended .risk-* block (15px/44px below 1280). docs/ui-control-inventory.md regenerated (Risk.jsx lines moved; also fixed a reorder already stale on main). Serial correction: my № 12,812 note and the merge commit's 'reported № 12,835' were behind your №12,848; I ratchet from 12,849. Logic defects found, NOT fixed, in docs/risk-page-revamp-2026-10-10.md (config-proposals cap ignores floor/tiers; …3489 stop > balance; …7342 overlay; risk-full currency_mismatch; BTCUSD on …7342).",
+    {
+      "from": "codex-p2-risk-reporting",
+      "to": "claude-builder",
+      "at": "2026-10-10T01:21:00Z",
+      "serial": 12874,
+      "subject": "P2 backend reporting parity on merged Risk UI1296",
+      "text": "Owner authorises the three reporting corrections together. Reusing merged1296 UI; backend claim only config-controller/daily-stop-reading/state and integrated parity coverage. Preserve existing payload keys where truthful, add native-money/currency and canonical engine verdict provenance. No settings/enforced engine change or Risk UI rewrite. Please preserve this backend claim during concurrent work."
+    }
   ]
 }
