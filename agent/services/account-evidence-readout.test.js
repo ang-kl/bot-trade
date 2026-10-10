@@ -171,3 +171,30 @@ test('owned order policy link cannot promote conflicting nested checks or propos
     assert.deepEqual(state(db),before)
   }
 })
+
+test('otherwise equal accounts on demo/live hosts retain identical phase and enforced-risk reporting rules',async t=>{
+  const db=fixture(t),now=Date.now()-100
+  account(db,demo,'SGD',3000,now);account(db,live,'SGD',3000,now)
+  setState(db,'fx_rates_json',JSON.stringify({USDSGD:{p:1.25,t:now}}))
+  setState(db,'scan_enabled','true');setState(db,'analyze_enabled','true');setState(db,'autotrade_enabled','true')
+  const close=db.prepare("INSERT INTO trades(symbol,side,status,net_pnl,account_id,closed_at) VALUES ('EURUSD','BUY','closed',-125,?,datetime('now'))")
+  close.run(demo);close.run(live)
+  const before=state(db),[a,b]=values(readAccountEvidence(db,{accountIds:[demo,live],nowMs:now+100}))
+  assert.equal(a.money.observation.host,'demo.ctraderapi.com')
+  assert.equal(b.money.observation.host,'live.ctraderapi.com')
+  assert.deepEqual(a.phases,b.phases)
+  assert.equal(a.phases.effective.autotrade,true)
+  assert.deepEqual(a.riskConfig,b.riskConfig)
+  assert.deepEqual(a.currentRisk.checks,b.currentRisk.checks)
+  const pacing=({accountId,...values})=>{assert.ok(accountId);return values}
+  assert.deepEqual(pacing(a.currentRisk.dailyPacing),pacing(b.currentRisk.dailyPacing))
+  assert.deepEqual(a.strategyGates,b.strategyGates)
+  const demoRoute=await route(db,'/risk-full',{account:demo}),liveRoute=await route(db,'/risk-full',{account:live})
+  const proposals=await route(db,'/config-proposals')
+  assert.deepEqual(demoRoute.risk.effective,liveRoute.risk.effective)
+  for(const key of ['capUsd','spentUsd','floorUsd','tierPct','binding']){
+    assert.equal(demoRoute.dailyPacing[key],liveRoute.dailyPacing[key])
+    for(const id of [demo,live])assert.equal(proposals.accounts.find(a=>a.accountId===id).dailyPacing[key],demoRoute.dailyPacing[key])
+  }
+  assert.deepEqual(state(db),before,'read-only host metadata cannot change settings, enforcement or history')
+})
