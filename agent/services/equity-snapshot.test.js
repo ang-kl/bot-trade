@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState, setState } from '../db.js'
 import {
-  EQUITY_SNAPSHOT_LAST_KEY, EQUITY_SNAPSHOT_INTERVAL_MS,
-  equitySnapshotDue, snapshotAccountEquity, runEquitySnapshot, equityCurve,
+  EQUITY_SNAPSHOT_LAST_KEY, EQUITY_SNAPSHOT_INTERVAL_MS, CLOSE_CATCH_UP_MS,
+  equitySnapshotDue, snapshotAccountEquity, runEquitySnapshot, equityCurve, lastNyCloseMs, startEquityCloseTicker,
 } from './equity-snapshot.js'
 
 const T0 = Date.parse('2026-09-19T21:00:00Z')
@@ -117,9 +117,98 @@ test('wiring pins: the loop runs the nightly pass on the due rule, the route ser
   assert.match(loop, /equitySnapshotDue\(db\)/)
   assert.match(loop, /runEquitySnapshot\(db, \{ clientId, clientSecret, accessToken \}\)/)
   assert.match(loop, /hbeat\(db, 'equity_snapshot'/)
+  // Claude · № 13,029: the close ticker is started with the process's own credentials.
+  assert.match(loop, /startEquityCloseTicker\(db, getCtraderCreds, \{ log \}\)/)
   const state = strip(readFileSync(new URL('../routes/state.js', import.meta.url), 'utf8'))
   assert.match(state, /router\.get\('\/equity-curve'/)
   assert.match(state, /router\.get\('\/family-edge'/)
   const hb = strip(readFileSync(new URL('./heartbeat.js', import.meta.url), 'utf8'))
   assert.match(hb, /equity_snapshot:\s*\{/)
+})
+
+// Claude · № 13,029 10-Oct (owner: "write your day's balance right at the New
+// York regular market close (4:00 PM ET)"): the pass is anchored to 16:00
+// America/New_York, DST from the tz database, with a bounded catch-up.
+const iso = ms => new Date(ms).toISOString()
+
+test('lastNyCloseMs: 4:00 PM New York, 20:00 UTC in summer time and 21:00 UTC in winter, across both DST changes', () => {
+  assert.equal(iso(lastNyCloseMs(Date.parse('2026-10-10T12:08:00Z'))), '2026-10-09T20:00:00.000Z', 'before today\'s close: yesterday\'s')
+  assert.equal(iso(lastNyCloseMs(Date.parse('2026-10-10T19:59:59Z'))), '2026-10-09T20:00:00.000Z')
+  assert.equal(iso(lastNyCloseMs(Date.parse('2026-10-10T20:00:00Z'))), '2026-10-10T20:00:00.000Z', 'on the bell: today\'s')
+  assert.equal(iso(lastNyCloseMs(Date.parse('2026-12-15T20:30:00Z'))), '2026-12-14T21:00:00.000Z', 'winter: 21:00 UTC')
+  assert.equal(iso(lastNyCloseMs(Date.parse('2026-12-15T21:00:00Z'))), '2026-12-15T21:00:00.000Z')
+  // Spring forward (Sunday 14-03-2027, 02:00 local) lies between Saturday's close and this instant.
+  assert.equal(iso(lastNyCloseMs(Date.parse('2027-03-14T07:00:00Z'))), '2027-03-13T21:00:00.000Z')
+  assert.equal(iso(lastNyCloseMs(Date.parse('2027-03-14T20:00:00Z'))), '2027-03-14T20:00:00.000Z')
+  // Fall back (Sunday 01-11-2026).
+  assert.equal(iso(lastNyCloseMs(Date.parse('2026-11-01T06:30:00Z'))), '2026-10-31T20:00:00.000Z')
+  assert.equal(iso(lastNyCloseMs(Date.parse('2026-11-01T21:00:00Z'))), '2026-11-01T21:00:00.000Z')
+})
+
+test('equitySnapshotDue: due once the close has passed and nothing ran since it; never outside the catch-up window', () => {
+  const db = initDB(':memory:')
+  const close = Date.parse('2026-10-10T20:00:00Z')
+  // Today's transition: the last rolling pass stamped 00:00 UTC (08:00 Singapore).
+  setState(db, EQUITY_SNAPSHOT_LAST_KEY, '2026-10-10T00:00:00.000Z')
+  assert.equal(equitySnapshotDue(db, Date.parse('2026-10-10T12:08:00Z')), false, 'the 00:00 UTC pass already followed yesterday\'s close')
+  assert.equal(equitySnapshotDue(db, close - 1000), false, 'not before the bell')
+  assert.equal(equitySnapshotDue(db, close), true, 'on the bell')
+  assert.equal(equitySnapshotDue(db, close + CLOSE_CATCH_UP_MS), true, 'caught up to the edge of the window')
+  assert.equal(equitySnapshotDue(db, close + CLOSE_CATCH_UP_MS + 1000), false, 'after it the day is a gap, not a late reading')
+  setState(db, EQUITY_SNAPSHOT_LAST_KEY, new Date(close + 5000).toISOString())
+  assert.equal(equitySnapshotDue(db, close + 60_000), false, 'one pass per close')
+  // Never run, unparseable or a future stamp: due inside the window only.
+  const fresh = initDB(':memory:')
+  assert.equal(equitySnapshotDue(fresh, close + 60_000), true)
+  assert.equal(equitySnapshotDue(fresh, close - 3 * 3600_000), false, 'a new database waits for the bell')
+  setState(fresh, EQUITY_SNAPSHOT_LAST_KEY, 'garbage')
+  assert.equal(equitySnapshotDue(fresh, close + 60_000), true)
+  setState(fresh, EQUITY_SNAPSHOT_LAST_KEY, new Date(close + 86_400_000).toISOString())
+  assert.equal(equitySnapshotDue(fresh, close + 60_000), true)
+})
+
+test('startEquityCloseTicker: one pass per close on the process credentials; no credentials, no pass and no stamp; inert when disarmed', async () => {
+  const db = dbWith([{ id: '46130058', isLive: false }])
+  const close = Date.parse('2026-10-10T20:00:00Z')
+  setState(db, EQUITY_SNAPSHOT_LAST_KEY, '2026-10-10T00:00:00.000Z')
+  let now = close - 30_000, creds = { clientId: 'c', clientSecret: 's', accessToken: 't', host: 'ignored' }
+  const runs = [], beats = [], logs = []
+  // The stamp lands only after an await here, so the single-flight lock, not the stamp, is what holds the second tick back.
+  const run = async (d, c, o) => { runs.push([c, o.now]); await new Promise(r => setTimeout(r, 5)); setState(d, EQUITY_SNAPSHOT_LAST_KEY, new Date(o.now).toISOString())
+    return { swept: 1, written: 1, failed: 0, results: [{ accountId: '46130058', equity: 1 }], skipped: [] } }
+  let ticks = 0
+  const stop = startEquityCloseTicker(db, () => creds, { env: {}, clock: () => now, run, log: m => logs.push(m),
+    beat: (_d, name, b) => beats.push([name, b.ok]), setInterval: () => { ticks++; return 1 }, clearInterval: () => {} })
+  assert.equal(ticks, 1)
+  assert.equal(await stop.tick(), null, 'before the bell')
+  now = close + 20_000
+  creds = { clientId: 'c', clientSecret: 's', accessToken: null }
+  assert.equal(await stop.tick(), null, 'no token: nothing read')
+  assert.equal(getState(db, EQUITY_SNAPSHOT_LAST_KEY), '2026-10-10T00:00:00.000Z', 'and the close is not used up')
+  creds = { clientId: 'c', clientSecret: 's', accessToken: 't' }
+  const [a, b] = await Promise.all([stop.tick(), stop.tick()])
+  assert.equal(runs.length, 1, 'two ticks at once read the close once')
+  assert.ok(a || b)
+  assert.deepEqual(runs[0], [{ clientId: 'c', clientSecret: 's', accessToken: 't' }, close + 20_000])
+  now = close + 50_000
+  assert.equal(await stop.tick(), null, 'stamped: not again')
+  assert.equal(runs.length, 1)
+  assert.deepEqual(beats, [['equity_snapshot', true]])
+  assert.match(logs[0], /New York close\): 1\/1/)
+  let started = 0
+  const inert = startEquityCloseTicker(db, () => creds, { env: { RAILWAY_ENVIRONMENT_NAME: 'staging' }, setInterval: () => { started++ } })
+  assert.equal(started, 0); assert.equal(typeof inert, 'function')
+})
+
+test('startEquityCloseTicker with the real pass: the row is written at the close and the stamp is the close tick', async () => {
+  const db = dbWith([{ id: '46130058', isLive: false }])
+  const close = Date.parse('2026-10-10T20:00:00Z')
+  setState(db, EQUITY_SNAPSHOT_LAST_KEY, '2026-10-10T00:00:00.000Z')
+  const ws = fakeWs({ balances: { 46130058: 30009.96 }, pnl: { 46130058: { 1: { net: 399.06 } } } })
+  const stop = startEquityCloseTicker(db, () => ({ clientId: 'c', clientSecret: 's', accessToken: 't' }), { env: {}, clock: () => close + 12_000,
+    run: (d, c, o) => runEquitySnapshot(d, c, { ...o, deps: { ws } }), log: () => {}, beat: () => {}, setInterval: () => 1, clearInterval: () => {} })
+  await stop.tick()
+  const row = db.prepare('SELECT at, balance_usd, equity_usd FROM equity_snapshots').get()
+  assert.deepEqual(row, { at: '2026-10-10T20:00:12.000Z', balance_usd: 30009.96, equity_usd: 30409.02 })
+  assert.equal(getState(db, EQUITY_SNAPSHOT_LAST_KEY), '2026-10-10T20:00:12.000Z')
 })

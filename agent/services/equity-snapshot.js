@@ -13,11 +13,21 @@
 // still written with `error` set: a missing night is a visible gap in the
 // curve, not an interpolated point.
 //
-// CADENCE. One pass every 24 h, persisted under `equity_snapshot_last_at`
-// with the housekeeping-due rule (never-run/unparseable/future all → run),
-// so a restart resumes the schedule instead of restarting it. The pass is
-// read-only against the broker and bounded by a deadline the way the
-// cross-side equity sweep is.
+// CADENCE. Claude · № 13,029 10-Oct (owner, 20:07 SGT: "write your day's
+// balance right at the New York regular market close (4:00 PM ET)"). One
+// pass a day at 16:00 America/New_York, DST from the tz database (20:00 UTC
+// in summer time, 21:00 UTC in winter). It used to be one pass every rolling
+// 24 h, which drifted a few minutes a day (07:20 to 08:00 Singapore in
+// September and October) and so belonged to no particular market moment.
+// The stamp `equity_snapshot_last_at` is persisted BEFORE the work, so a
+// restart neither repeats a close nor loses it: a close missed while the
+// process was down is caught up within CLOSE_CATCH_UP_MS, and after that the
+// day is a visible gap, never a reading taken hours late under its name.
+// Every calendar day is read, weekends too: crypto moves a balance then. The
+// pass is read-only against the broker and bounded by a deadline the way the
+// cross-side equity sweep is. Its own 30-second ticker (startEquityCloseTicker)
+// puts the read within half a minute of the bell; the loop's call stays as a
+// fallback under the same rule.
 //
 // ACCOUNTS. Every enabled account, each on its own host — reading what an
 // account is worth is not managing it (account-equity.js). The side is read
@@ -32,14 +42,55 @@ import { recordCashflowWindow } from './account-cashflows.js'
 import { getState, setState } from '../db.js'
 import { tokenRefusedAccounts } from '../lib/token-refused.js'
 import { hostForSide } from './account-equity.js'
-import { housekeepingDue } from './housekeeping-due.js'
+import { disarmReason } from '../lib/env-disarm.js'
 
 export const EQUITY_SNAPSHOT_LAST_KEY = 'equity_snapshot_last_at'
+/** The nominal spacing of two passes: one New York close to the next. */
 export const EQUITY_SNAPSHOT_INTERVAL_MS = 24 * 60 * 60 * 1000
+/** 4:00 PM, the New York regular-session close, in minutes past midnight. */
+export const NY_CLOSE_MINUTE = 16 * 60
+/** A close missed while the process was down is still read up to this long after it. */
+export const CLOSE_CATCH_UP_MS = 2 * 60 * 60 * 1000
+/** How often the ticker asks whether the close has passed. */
+export const CLOSE_TICK_MS = 30_000
 
-/** Is the nightly pass due? Same rule as housekeeping, 24 h interval. */
-export function equitySnapshotDue(db, nowMs = Date.now(), intervalMs = EQUITY_SNAPSHOT_INTERVAL_MS) {
-  return housekeepingDue(getState(db, EQUITY_SNAPSHOT_LAST_KEY), nowMs, intervalMs)
+const NY = 'America/New_York'
+const nyParts = new Intl.DateTimeFormat('en-US', { timeZone: NY, hourCycle: 'h23',
+  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+/** New York's offset from UTC at instant `t`, in ms (−4 h in summer time, −5 h in winter). */
+function nyOffsetMs(t) {
+  const p = Object.fromEntries(nyParts.formatToParts(new Date(t)).map(x => [x.type, x.value]))
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second)
+  return asUtc - Math.floor(t / 1000) * 1000
+}
+/** The UTC instant of New York wall-clock y-m-d at `minute` past midnight. */
+function nyInstant(y, m, d, minute) {
+  const guess = Date.UTC(y, m - 1, d, 0, minute)
+  // DST moves at 02:00 local, never near 16:00: one correction is exact.
+  return guess - nyOffsetMs(guess - nyOffsetMs(guess))
+}
+
+/** The most recent 4:00 PM New York instant at or before `nowMs`. */
+export function lastNyCloseMs(nowMs) {
+  const p = Object.fromEntries(nyParts.formatToParts(new Date(nowMs)).map(x => [x.type, x.value]))
+  const today = nyInstant(+p.year, +p.month, +p.day, NY_CLOSE_MINUTE)
+  if (today <= nowMs) return today
+  const y = new Date(Date.UTC(+p.year, +p.month - 1, +p.day) - 86_400_000)
+  return nyInstant(y.getUTCFullYear(), y.getUTCMonth() + 1, y.getUTCDate(), NY_CLOSE_MINUTE)
+}
+
+/**
+ * Is the day's pass due? Yes once the latest New York close has passed and
+ * no pass has run since it, within CLOSE_CATCH_UP_MS of that close. A stamp
+ * that is missing, unparseable or in the future counts as no pass (the
+ * housekeeping rule), but still only inside the window: never off the bell.
+ */
+export function equitySnapshotDue(db, nowMs = Date.now()) {
+  const close = lastNyCloseMs(nowMs)
+  if (nowMs - close > CLOSE_CATCH_UP_MS) return false
+  const last = Date.parse(getState(db, EQUITY_SNAPSHOT_LAST_KEY) ?? '')
+  if (!Number.isFinite(last) || last > nowMs) return true
+  return last < close
 }
 
 /**
@@ -154,6 +205,46 @@ export async function runEquitySnapshot(db, creds, { deps = {}, now = Date.now()
     }
     return out
   } finally { clearTimeout(timer) }
+}
+
+/**
+ * Claude · № 13,029 10-Oct: the close ticker. Every CLOSE_TICK_MS it asks
+ * equitySnapshotDue and, when the close has passed, runs the pass with the
+ * process's own credentials. One pass at a time; the stamp is written before
+ * the work, so the loop's fallback call and this one never both read a close.
+ * Inert in a disarmed (staging) environment. Returns a stop function.
+ * deps: { env, clock, setInterval, clearInterval, intervalMs, log, beat, run } for tests.
+ */
+export function startEquityCloseTicker(db, getCreds, deps = {}) {
+  if (disarmReason(deps.env)) return () => {}
+  const clock = deps.clock ?? Date.now, log = deps.log ?? (m => console.log(m))
+  const run = deps.run ?? runEquitySnapshot
+  let running = false
+  const tick = async () => {
+    if (running) return null
+    const now = clock()
+    if (!equitySnapshotDue(db, now)) return null
+    const c = getCreds(db)
+    if (!c?.clientId || !c?.clientSecret || !c?.accessToken) return null
+    running = true
+    try {
+      const snap = await run(db, { clientId: c.clientId, clientSecret: c.clientSecret, accessToken: c.accessToken }, { now })
+      const gaps = snap.results.filter(r => r.equity == null).map(r => `…${String(r.accountId).slice(-4)}: ${r.error ?? 'no equity'}`).join(' · ')
+      log(`Equity snapshot (New York close): ${snap.written}/${snap.swept} account(s) written` + (snap.failed ? ` — ${gaps}` : '')
+        + (snap.skipped?.length ? ` — skipped ${snap.skipped.length} (token refused)` : ''))
+      const ok = !(snap.swept > 0 && snap.written === 0)
+      try { (deps.beat ?? (await import('./heartbeat.js')).beat)(db, 'equity_snapshot', { ok, error: ok ? null : `0/${snap.swept} written` }) } catch { /* the record is the row */ }
+      return snap
+    } catch (err) {
+      try { (deps.beat ?? (await import('./heartbeat.js')).beat)(db, 'equity_snapshot', { ok: false, error: err?.message ?? String(err) }) } catch { /* best effort */ }
+      return null
+    } finally { running = false }
+  }
+  const timer = (deps.setInterval ?? setInterval)(() => { void tick().catch(() => {}) }, deps.intervalMs ?? CLOSE_TICK_MS)
+  timer?.unref?.()
+  const stop = () => { (deps.clearInterval ?? clearInterval)(timer) }
+  stop.tick = tick
+  return stop
 }
 
 /**
