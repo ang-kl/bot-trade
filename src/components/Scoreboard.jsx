@@ -17,7 +17,7 @@ import { useEffect, useState } from 'react'
 import Card from './common/Card.jsx'
 import { selectedAccountId } from '../lib/selected-account.js'
 import { R_CLIP, finite, fmtPct, fmtR, fmtMoney, fmtPf, fmtPfR, fmtWhen, stripLabel, startScoreboardPolling, accountTitle, accountFacts,
-  fmtAmount, fmtPrice, fmtLots, fmtNight, stopSide, balanceView, flowWords, nightlyLabel } from '../lib/scoreboard-view.js'
+  fmtAmount, fmtPrice, fmtLots, fmtNight, stopSide, balanceView, flowWords, nightlyLabel, lineSegments } from '../lib/scoreboard-view.js'
 
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
 const UP = 'var(--color-up)', DN = 'var(--color-down)', BD = 'var(--color-border)'
@@ -46,19 +46,26 @@ export function RStrip({ rows }) {
 // the daily balance of account recorded so that we can check pattern").
 /** The stored daily balance (solid) and equity (dashed), oldest on the left. */
 export function NightlyLine({ rec }) {
-  const pts = (rec?.nights || []).map((n, i) => ({ i, b: n.balance, e: n.equity }))
-  const vals = pts.flatMap(p => [p.b, p.e]).filter(finite)
+  const nights = rec?.nights || []
+  const vals = nights.flatMap(n => [n.balance, n.equity]).filter(finite)
   const W = 200, Hh = 40
   if (vals.length === 0) return null
   const lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1
-  const x = i => pts.length > 1 ? (i / (pts.length - 1)) * (W - 4) + 2 : W / 2
+  const x = i => nights.length > 1 ? (i / (nights.length - 1)) * (W - 4) + 2 : W / 2
   const y = v => Hh - 3 - ((v - lo) / span) * (Hh - 6)
-  const path = key => pts.filter(p => finite(p[key])).map(p => `${x(p.i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(' ')
+  // Claude · № 13,054 (Codex P2 on #1305): one polyline per unbroken run; a
+  // missing day or a host change is a gap, and a lone reading is a short tick.
+  const draw = (key, stroke, width, dash) => lineSegments(nights, key).map(seg => {
+    const pts = seg.length === 1 ? [[x(seg[0]) - 1, y(nights[seg[0]][key])], [x(seg[0]) + 1, y(nights[seg[0]][key])]]
+      : seg.map(i => [x(i), y(nights[i][key])])
+    return <polyline key={`${key}-${seg[0]}`} points={pts.map(([a, b]) => `${a.toFixed(1)},${b.toFixed(1)}`).join(' ')}
+      fill="none" stroke={stroke} strokeWidth={width} strokeDasharray={dash} vectorEffect="non-scaling-stroke" />
+  })
   return (
     <svg viewBox={`0 0 ${W} ${Hh}`} width="100%" height={Hh} role="img" aria-label={nightlyLabel(rec)}
       preserveAspectRatio="none" style={{ display: 'block', maxWidth: 520 }}>
-      <polyline points={path('e')} fill="none" stroke={SB} strokeWidth="1" strokeDasharray="3 2" vectorEffect="non-scaling-stroke" />
-      <polyline points={path('b')} fill="none" stroke={TX} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      {draw('equity', SB, 1, '3 2')}
+      {draw('balance', TX, 1.5, undefined)}
     </svg>
   )
 }
@@ -96,6 +103,7 @@ export function NightlyRecord({ rec }) {
       <span className="sb-sub">
         Daily broker read of balance, float and equity, taken at the New York close (4:00 PM ET); rows before the 10 Oct close were taken at other times and show theirs.
         {rec?.change != null && <> First to last: <strong style={{ color: TX }}>{fmtMoney(rec.change, ccy)}</strong> · up {rec.up} · down {rec.down} · unchanged {rec.flat}.</>}
+        {rec?.mixedHosts && <> No first-to-last change: the readings come from two broker hosts.</>}
         {hidden > 0 && <> {hidden} earlier day{hidden === 1 ? '' : 's'} not shown: currency not recorded then.</>}
         {' '}A balance change includes deposits and withdrawals unless the row says it was checked.
       </span>

@@ -198,6 +198,7 @@ export function nightlyRecord(rows, { currency = null, flowsOf = () => null, lim
     }
     nights.push({
       at: new Date(Date.parse(r.at)).toISOString(),
+      host: r.broker_host ?? null,
       balance, openPnl: finiteNumber(r.open_pnl_usd), equity: finiteNumber(r.equity_usd),
       openPositions: Number.isInteger(r.open_positions) ? r.open_positions : null,
       error: r.error ? String(r.error).slice(0, 120) : null,
@@ -208,6 +209,9 @@ export function nightlyRecord(rows, { currency = null, flowsOf = () => null, lim
   }
   const valued = nights.filter(n => n.balance != null)
   const steps = nights.map(n => n.balanceChange).filter(v => v != null)
+  // Claude · № 13,054 (Codex P2 on #1305): balances read on two broker hosts
+  // are not one series, so no first-to-last change is taken across them.
+  const mixedHosts = new Set(valued.map(n => n.host)).size > 1
   return {
     currency: ccy,
     shown: nights.length,
@@ -216,7 +220,8 @@ export function nightlyRecord(rows, { currency = null, flowsOf = () => null, lim
     earlierOwn: own.length - kept.length,
     firstAt: valued[0]?.at ?? null,
     lastAt: valued.at(-1)?.at ?? null,
-    change: valued.length > 1 ? round(valued.at(-1).balance - valued[0].balance, 2) : null,
+    mixedHosts,
+    change: valued.length > 1 && !mixedHosts ? round(valued.at(-1).balance - valued[0].balance, 2) : null,
     up: steps.filter(v => v > 0).length,
     down: steps.filter(v => v < 0).length,
     flat: steps.filter(v => v === 0).length,
