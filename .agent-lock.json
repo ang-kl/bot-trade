@@ -15,7 +15,8 @@
         "agent/services/targeted-evidence-readout.js",
         "agent/services/targeted-evidence-readout.test.js",
         "CLAUDE.md (bounded task receipt only)",
-        "agent/services/profit-keeper.test.js"
+        "agent/services/profit-keeper.test.js",
+        "agent/services/closer-horizon-deferral.test.js"
       ],
       "reason": "Owner-selected continuation: actual keeper close receipts and essential bounded collector summaries. No entry/SL/policy or native service changes."
     },
@@ -391,6 +392,13 @@
       "serial": 13033,
       "subject": "Keeper/evidence integrated correction green; cloud release access blocked",
       "text": "On main0e1dccbe: real keeper/SQLite red controls reproduce partial/full false success, underfill journalling and timeout restart replay; collector real overflow starves account/performance/PRE02. Candidate durable receipts/residual/atomic commits plus fixed summary reserve passes211 integrated tests and focused lint. Full final local gate running. No overlap with Claude Scoreboard/NY-close work. Cloud proxy denies GitHub API and sg-trade.up.railway.app; exact allowlist additions saved in environment draft for owner review. Git push remains available. No PR/CI/review/merge/deployment/natural execution claim. Highest own recorded serial13033; transcript unavailable, refresh higher notes."
+    },
+    {
+      "from": "codex-keeper-evidence",
+      "at": "2026-10-10T12:31:10.377340+00:00",
+      "serial": 13035,
+      "subject": "Coordination fixtures added to keeper receipt claim",
+      "text": "Full local gate exposed closer-horizon-deferral keeper fixtures treating empty close responses as success. Claiming that test file only to provide real scoped fill/residual while preserving every existing horizon assertion. Integrated212 checks include real broker-proven legacy null-account eligibility and restart recovery, after root candidate regression reproduced/corrected. Cloud API/runtime release dependency persists; actual network draft save now confirmed for api.github.com and sg-trade.up.railway.app."
     }
   ]
 }
