@@ -69,3 +69,67 @@ test('readout refuses oversized filtered populations and scans newest inserted r
     .some(r => /TEMP B-TREE/.test(r.detail)))
   db.close()
 })
+
+// Codex · №12,972 · 2026-10-10; codex-footprint: scoped-verdict-before-cap.
+function scopedFixture(t,rows) {
+  const db=new Database(':memory:');t.after(()=>db.close())
+  db.exec('CREATE TABLE agent_state(key TEXT PRIMARY KEY,value TEXT)')
+  const put=(key,value)=>db.prepare('INSERT INTO agent_state VALUES (?,?)').run(key,JSON.stringify(value))
+  put('momentum_partial_pass_json',{at:'2026-10-10T12:00:00Z',ok:true,cappedHybrid:{
+    enrolled:rows,excluded:rows,delegated:rows,deferred:rows,errors:rows}})
+  put('hybrid_tick_controller_json',{at:100,hosts:{'demo.ctraderapi.com':{configuration:{excluded:rows}}}})
+  return db
+}
+function scopedLists(result) {
+  const h=result.momentum_partial_pass_json.cappedHybrid
+  return [...['enrolled','excluded','delegated','deferred','errors'].map(key=>h[key]),
+    result.hybrid_tick_controller_json.hosts[0].configuration.excluded]
+}
+
+test('canonical scoped verdict filters foreign prefix before every64-row cap and retains requested tail',t=>{
+  const rows=[...Array.from({length:65},(_,i)=>({accountId:'99',tradeId:i+1,reason:'candidate_not_selected'})),
+    {accountId:'42',tradeId:66,reason:'half_and_runner_not_representable',accessToken:'DO_NOT_EMIT'}]
+  const db=scopedFixture(t,rows),before=db.prepare('SELECT total_changes() n').get().n
+  for(const list of scopedLists(readHybridVerdicts(db,{accountIds:['42']}))){
+    assert.equal(list.rows.length,1,'foreign prefix must not consume selected-account budget')
+    assert.equal(list.rows[0].accountId,'42');assert.equal(list.rows[0].tradeId,66)
+    assert.equal(list.total,66);assert.equal(list.totalScope,'stored_global')
+    assert.equal(list.scopeTotal,1);assert.equal(list.rowsScope,'requested_accounts')
+    assert.equal(list.truncated,false);assert.equal(list.rows.length,1)
+    assert.equal(list.rows[0].accountId,'42');assert.equal(list.rows[0].tradeId,66)
+  }
+  assert.equal(JSON.stringify(readHybridVerdicts(db,{accountIds:['42']})).includes('DO_NOT_EMIT'),false)
+  assert.equal(db.prepare('SELECT total_changes() n').get().n,before)
+})
+
+test('canonical scoped verdict caps selected population and distinguishes global from selected counts',t=>{
+  const rows=[...Array.from({length:5},(_,i)=>({accountId:'99',tradeId:i+1})),
+    ...Array.from({length:70},(_,i)=>({accountId:'42',tradeId:i+6,reason:'candidate_not_selected'}))]
+  const db=scopedFixture(t,rows)
+  for(const list of scopedLists(readHybridVerdicts(db,{accountIds:['42']}))){
+    assert.equal(list.rows.every(row=>row.accountId==='42'),true,'foreign rows must be removed before the cap')
+    assert.equal(list.total,75);assert.equal(list.scopeTotal,70)
+    assert.equal(list.truncated,true);assert.equal(list.rows.length,64)
+    assert.equal(list.rows[0].tradeId,6);assert.equal(list.rows.at(-1).tradeId,69)
+    assert.equal(list.rows.every(row=>row.accountId==='42'),true)
+  }
+  const original=readHybridVerdicts(db)
+  assert.deepEqual(readHybridVerdicts(db,{accountIds:null}),original)
+  for(const list of scopedLists(original)){
+    assert.equal(list.total,75);assert.equal(list.rows.length,64);assert.equal(list.truncated,true)
+    assert.equal(Object.hasOwn(list,'scopeTotal'),false);assert.equal(Object.hasOwn(list,'rowsScope'),false)
+  }
+})
+
+test('scoped verdict empty selection and20-digit protocol IDs retain exact identity without coercion',t=>{
+  const account='18446744073709551615',db=scopedFixture(t,[{accountId:account,tradeId:1},{accountId:'42',tradeId:2}])
+  for(const list of scopedLists(readHybridVerdicts(db,{accountIds:[]}))){
+    assert.deepEqual(list.rows,[],'an explicit empty scope must not return foreign records')
+    assert.equal(list.total,2);assert.equal(list.scopeTotal,0);assert.deepEqual(list.rows,[]);assert.equal(list.truncated,false)
+  }
+  for(const list of scopedLists(readHybridVerdicts(db,{accountIds:[account]}))){
+    assert.equal(list.scopeTotal,1);assert.equal(list.rows[0].accountId,account)
+  }
+  for(const accountIds of ['42',[42],['0'],['042'],['-1'],['1.1'],['1'.repeat(21)],Array(9).fill('42'),[true]])
+    assert.throws(()=>readHybridVerdicts(db,{accountIds}),/invalid_account_scope/)
+})

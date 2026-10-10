@@ -67,13 +67,23 @@ function stored(db, key) {
   if (typeof row.value !== 'string' || Buffer.byteLength(row.value) > 131072) return { available: false, reason: 'invalid_or_oversized' }
   try { return { available: true, value: JSON.parse(row.value) } } catch { return { available: false, reason: 'invalid_json' } }
 }
-export function readHybridVerdicts(db) {
+// Codex · №12,972 · 2026-10-10; codex-footprint: scoped-verdict-before-cap.
+// Filter the actual bounded stored lists before the selected output cap. Keep
+// global observed totals separate from scope totals; no new account is inferred.
+export function readHybridVerdicts(db, { accountIds = null } = {}) {
+  if(accountIds!==null&&(!Array.isArray(accountIds)||accountIds.length>8
+    ||accountIds.some(id=>typeof id!=='string'||!/^[1-9]\d{0,19}$/.test(id))))throw Error('invalid_account_scope')
+  const selectedAccounts=accountIds===null?null:new Set(accountIds)
   const pass = stored(db, 'momentum_partial_pass_json'), controller = stored(db, 'hybrid_tick_controller_json')
   const p = pass.value, c = controller.value
-  const list = (value, fields, reason = false) => ({ total: Array.isArray(value) ? value.length : null,
-    truncated: Array.isArray(value) && value.length > CAP,
-    rows: Array.isArray(value) ? value.slice(0, CAP).map(r => ({ ...project(r, fields),
-      ...(reason ? { reason: REASONS.has(r.reason) ? r.reason : errorCode(r.reason) } : {}) })) : null })
+  const list = (value, fields, reason = false) => {
+    const rows=Array.isArray(value)?selectedAccounts===null?value:value.filter(r=>selectedAccounts.has(r?.accountId)):null
+    return {total:Array.isArray(value)?value.length:null,
+      ...(selectedAccounts===null?{}:{totalScope:'stored_global',scopeTotal:rows?.length??null,rowsScope:'requested_accounts'}),
+      truncated:Array.isArray(rows)&&rows.length>CAP,
+      rows:Array.isArray(rows)?rows.slice(0,CAP).map(r=>({...project(r,fields),
+        ...(reason?{reason:REASONS.has(r.reason)?r.reason:errorCode(r.reason)}:{})})):null}
+  }
   return {
     momentum_partial_pass_json: !pass.available ? pass : {
       available: true, at: token(p?.at), ok: p?.ok === true, activePlans: number(p?.activePlans),

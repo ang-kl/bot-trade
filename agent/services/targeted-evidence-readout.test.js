@@ -111,6 +111,72 @@ test('consolidated verdict and PRE02 details preserve only explicit account scop
     assert.equal(logs.at(-1).value.done,true)
   }
 })
+// Codex · №12,972 · 2026-10-10; codex-footprint: requested-account-before-cap.
+test('consolidated capture selects requested hybrid and PRE02 rows beyond foreign cap prefixes',t=>{
+  const db=scene(t),logs=[];let callback
+  const foreign=Array.from({length:70},(_,i)=>({accountId:String(1000+i),tradeId:100+i,positionId:String(100+i)}))
+  const own={accountId:'42',tradeId:1,positionId:'33'}
+  setState(db,'momentum_partial_pass_json',JSON.stringify({cappedHybrid:{enrolled:[...foreign,own]}}))
+  setState(db,'hybrid_tick_controller_json',JSON.stringify({hosts:{'demo.ctraderapi.com':{configuration:{excluded:[...foreign,own]}}}}))
+  const ownStage={account:'42',stage:'pre_order',new:1,legacy:0,notices:0}
+  setState(db,'order_lifecycle_last_json',JSON.stringify(compactSnapshot({schemaVersion:1,rulesetVersion:7,
+    generatedAt:'2026-10-10T01:00:00Z',accounts:[...foreign.map(row=>({account:row.accountId,stage:'pre_order',new:1})),ownStage],
+    stages:{pre_order:[],order:[],close:[],stuck:[]}})))
+  const env={OWNED_EVIDENCE_SCOPE:'consolidated',OWNED_EVIDENCE_RUN_ID:'requested-after-cap',
+    OWNED_EVIDENCE_TRADE_IDS:'1',OWNED_EVIDENCE_ACCOUNT_IDS:'42',
+    OWNED_EVIDENCE_EXPIRES_AT:new Date(NOW+600000).toISOString()}
+  startTargetedEvidenceReadout(db,{env,now:()=>NOW,log:line=>logs.push(JSON.parse(line)),setTimer:cb=>{callback=cb}})
+  const before=db.prepare('SELECT total_changes() n').get().n
+  callback()
+  const verdicts=logs.find(row=>row.kind==='summary').value.verdicts
+  const enrolled=verdicts.momentum_partial_pass_json.cappedHybrid.enrolled
+  const excluded=verdicts.hybrid_tick_controller_json.hosts[0].configuration.excluded
+  assert.deepEqual({enrolled:enrolled.rows.map(row=>row.accountId),excluded:excluded.rows.map(row=>row.accountId),
+    accountScope:logs.find(row=>row.kind==='pre02-snapshot').value.accountScope},
+    {enrolled:['42'],excluded:['42'],accountScope:[ownStage]})
+  assert.equal(enrolled.total,71)
+  assert.equal(enrolled.scopeTotal,1)
+  assert.equal(enrolled.truncated,false)
+  assert.equal(logs.at(-1).value.done,true)
+  assert.equal(db.prepare('SELECT total_changes() n').get().n,before)
+})
+test('explicit owned refusal and protection evidence is selected before foreign prefix caps',t=>{
+  const db=scene(t)
+  const foreign=Array.from({length:70},()=>({tradeId:2,accountId:'43'}))
+  setState(db,'momentum_partial_pass_json',JSON.stringify({cappedHybrid:{deferred:[...foreign,
+    {tradeId:1,accountId:'42',reason:'half_and_runner_not_representable',
+      volumeInputs:{accountId:'42',positionId:'33',volume:10000,minVolume:1000,stepVolume:1000}}]}}))
+  setState(db,'independent_protection_json',JSON.stringify({accounts:[
+    ...Array.from({length:70},()=>({accountId:'43',positions:[{positionId:'33',stopLoss:999}]})),
+    {accountId:'42',positions:[...Array.from({length:70},(_,i)=>({positionId:String(100+i),stopLoss:999})),
+      {positionId:'33',stopLoss:1.25}]}]}))
+  const before=db.prepare('SELECT total_changes() n').get().n
+  const row=readTargetedEvidence(db,NOW,[1],['42']).trades[0]
+  assert.deepEqual({refusals:row.volumeRefusals.map(r=>r.inputs?.volume),protection:row.protection.map(p=>p.position.stopLoss)},
+    {refusals:[10000],protection:[1.25]})
+  assert.deepEqual(row.volumeRefusalRange,{total:1,limit:64,truncated:false})
+  assert.deepEqual(row.protectionRange,{total:1,limit:64,truncated:false})
+  assert.equal(db.prepare('SELECT total_changes() n').get().n,before)
+})
+// Codex · №12,974 · 2026-10-10; codex-footprint: invalid-owner-join-refusal.
+test('invalid stored owner identity cannot join invalid refusal or protection identities',t=>{
+  const db=scene(t)
+  for(const [account,position] of [['legacy','33'],['42','legacy'],['legacy','legacy']]) {
+    db.prepare('UPDATE trades SET account_id=?,ctrader_position_id=? WHERE id=1').run(account,position)
+    setState(db,'momentum_partial_pass_json',JSON.stringify({cappedHybrid:{deferred:[
+      {tradeId:1,accountId:account==='legacy'?'different-legacy':'42',reason:'foreign',volumeInputs:{volume:999}}]}}))
+    setState(db,'independent_protection_json',JSON.stringify({accounts:[{
+      accountId:account==='legacy'?'different-legacy':'42',positions:[{
+        positionId:position==='legacy'?'different-legacy':'33',stopLoss:999}]}]}))
+    const before=db.prepare('SELECT total_changes() n').get().n
+    const row=readTargetedEvidence(db,NOW,[1],['42']).trades[0]
+    assert.deepEqual(row.protection,[],'invalid IDs must never compare as a matching owner')
+    assert.deepEqual(row.volumeRefusals,[])
+    assert.deepEqual(row.movements,[])
+    assert.equal(row.unavailable,'missing_or_invalid_owner')
+    assert.equal(db.prepare('SELECT total_changes() n').get().n,before)
+  }
+})
 test('targeted movement with conflicting nested identity remains explicitly unverified',t=>{
   const db=scene(t)
   db.prepare('INSERT INTO position_events(trade_id,account_id,position_id,symbol,kind,detail_json) VALUES(?,?,?,?,?,?)')
