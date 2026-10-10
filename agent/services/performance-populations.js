@@ -169,6 +169,8 @@ const RETRY_AFTER_SEC = {
   watchdog_report_worker_capacity: 5,
   order_lifecycle_worker_capacity: 5,
   ledger_reconciliation_worker_capacity: 5,
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  scoreboard_worker_capacity: 5,
   performance_report_worker_exit: 15,
   performance_report_deadline: 30,
 }
@@ -204,6 +206,8 @@ const flights = new WeakMap()
 const watchdogFlights = new WeakMap()
 const lifecycleFlights = new WeakMap()
 const reconciliationFlights = new WeakMap()
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+const scoreboardFlights = new WeakMap()
 // kind → its own bounded pool. The watchdog is polled independently and must
 // not compete with slow dashboard reports. Each reserved slot is held until
 // the worker exits. The storage walk has its own single walk per database
@@ -224,6 +228,16 @@ const RESERVED_POOLS = {
   // P5b rows (03-10-2026): one class's rows on one account, the same
   // classification, the same slot — it reads the same tables at the same cost.
   'ledger-reconciliation-rows': { pool: reconciliationFlights, capacity: 1, error: 'ledger_reconciliation_worker_capacity' },
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  // The phone scoreboard polls once a minute from the TOP of the Performance
+  // page, which mounts the populations and analytics reports at the same
+  // moment. Its own pool means it can neither take one of the two shared
+  // dashboard slots nor be refused by them; identical requests share one job.
+  // Two slots, not one, for the order-lifecycle reason above: a slot is held
+  // until its worker EXITS, so with one slot a scoped read right after the
+  // all-accounts read was refused with a capacity 503 (measured 10-10: 10 of
+  // 10 back-to-back distinct reads refused with one slot, 0 of 10 with two).
+  scoreboard: { pool: scoreboardFlights, capacity: 2, error: 'scoreboard_worker_capacity' },
 }
 const SHARED_POOL = { pool: flights, capacity: 2, error: 'performance_report_worker_capacity' }
 // Production profiling measured the legacy prices/decision scans at up to
@@ -320,6 +334,10 @@ export function readNodeWatchdogContract(db, options) { return isolatedReport(db
 export function readBlockerReport(db, options) { return isolatedReport(db, 'blocker-report', options) }
 export function readAccountEngineering(db) { return isolatedReport(db, 'account-engineering') }
 export function readPostmortemReport(db, options) { return isolatedReport(db, 'postmortems', options) }
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+/** GET /state/scoreboard, off the event loop. Pass no `now`: the in-flight
+ * dedupe keys on the options (readBlockerReport's rule). */
+export function readScoreboardReport(db, options) { return isolatedReport(db, 'scoreboard', options) }
 // ---------------------------------------------------------------------------
 // GET /state/storage and POST /actions/storage-purge (V3 M2b, M2 check nit 9).
 //
@@ -562,6 +580,12 @@ async function buildReport(db, kind, options, hooks = {}) {
     const { buildCalendarCoverage } = await import('./calendar-coverage.js')
     // One snapshot across the demand, the export and every calendar read.
     return db.transaction(() => buildCalendarCoverage(db, options))()
+  }
+  if (kind === 'scoreboard') {
+    // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+    const { readScoreboard } = await import('./scoreboard.js')
+    // One snapshot across the trades scan and every account's currency read.
+    return db.transaction(() => readScoreboard(db, options))()
   }
   if (kind === 'cup-funnel') return cupHandleFunnel(db, options)
   if (kind === 'analytics') return accountAnalytics(db, { ...options, unstamped: 'exclude', reporting: true })

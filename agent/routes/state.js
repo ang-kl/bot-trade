@@ -24,6 +24,8 @@ import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 import { balanceUnit } from '../services/balance-unit.js'
+// Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+import { SCOREBOARD_DEFAULT_DAYS, SCOREBOARD_MAX_DAYS } from '../services/scoreboard.js'
 import { sizingBalanceUsd, conversionView, accountDepositCurrencies } from '../services/account-currency.js'
 import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, getStopPolicy, trailConfigPolicy, triggerValue, stopPolicyStats } from '../lib/stop-policy.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
@@ -51,7 +53,7 @@ import { hourlyOpenings } from '../services/hourly-openings.js'
 import { hourlyActivity } from '../services/hourly-activity.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readLatestPrices, readStageMatrixStats, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, readScoreboardReport, isReportUnavailable } from '../services/performance-populations.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -2707,6 +2709,35 @@ export default function stateRouter(db) {
       res.json(goalTracker(db, { days: Number.isFinite(days) && days > 0 ? days : null }))
     } catch (err) {
       res.status(500).json({ error: err.message })
+    }
+  })
+
+  // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
+  // GET /state/scoreboard?account=all|<id>&days=30 — the phone scoreboard:
+  // per account, the 20 newest recorded closes and the last `days` days (win
+  // rate, profit factor, expectancy in money and R, the bot's own closes
+  // apart from manual/external ones), each account's money in its own deposit
+  // currency, never summed across accounts. Read-only; the scan runs in the
+  // report worker (services/scoreboard.js says why). `days` is validated
+  // before any SQL: an integer 1–365, default 30. `account` follows the
+  // file's scope rule (requestedAccount): `all`, an id, or — when omitted —
+  // the selected account; no account selected at all reads every account.
+  router.get('/scoreboard', async (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    const days = req.query.days == null || req.query.days === '' ? SCOREBOARD_DEFAULT_DAYS : Number(req.query.days)
+    if (!Number.isInteger(days) || days < 1 || days > SCOREBOARD_MAX_DAYS) {
+      return res.status(400).json({ error: `days must be a whole number from 1 to ${SCOREBOARD_MAX_DAYS}`, code: 'scoreboard_invalid_days' })
+    }
+    const scope = requestedAccount(db, req)
+    const account = scope.all || scope.accountId == null ? 'all' : String(scope.accountId)
+    if (account !== 'all' && !/^[1-9]\d{0,19}$/.test(account)) {
+      return res.status(400).json({ error: 'account must be "all" or a numeric account id', code: 'scoreboard_invalid_account' })
+    }
+    try {
+      res.json(await readScoreboardReport(db, { account, days }))
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'The scoreboard is temporarily unavailable. Please retry.', code: 'scoreboard_unavailable' })) return
+      res.status(500).json({ error: 'The scoreboard failed.', code: 'scoreboard_failed' })
     }
   })
 

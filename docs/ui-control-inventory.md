@@ -63,7 +63,7 @@ Source note: this inventory was derived in the isolated UI working copy based on
 
 <!-- Codex · №11,670 (codex-footprint: signals-ui-2026-10-07): generated from the pinned remote maina1a2f67 source plus candidate UI; local Git metadata unavailable. -->
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `6ade2f1` · 119 action call sites · 99 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `38d0233f` · 119 action call sites · 100 state routes read.
 
 Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -266,6 +266,7 @@ Classes: WIRED 119 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | `/state/risk-matrix` | yes |
 | `/state/risk-reassess` | yes |
 | `/state/scans` | yes |
+| `/state/scoreboard` | yes |
 | `/state/sessions` | yes |
 | `/state/sizing-preview` | yes |
 | `/state/stage-matrix` | yes |
