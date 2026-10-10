@@ -1661,3 +1661,49 @@ details[open] > summary::before { content: "▼"; }
   .risk-scope-pills > div:first-child { display: none; }
   .risk-unsaved { bottom: calc(49px + env(safe-area-inset-bottom, 0px) + 8px); }
 }
+
+/* Scoreboard — Claude · № 12,989 10-Oct (owner: "too much white spacing, and
+   have to scroll down"). One compact row per account. A phone stacks the
+   cells in a tight block; from 900 px the rows read as a table under one
+   header row, so five accounts fit on one screen. */
+.sb-board { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sb-row {
+  display: grid; min-width: 0; gap: 2px 10px; align-items: center;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-areas: "acct acct acct" "wr pf exp" "ratio ratio ratio" "strip strip strip" "d30 d30 d30" "list list list";
+  border-top: 1px solid var(--color-border); padding: 6px 0 4px;
+}
+.sb-head { display: none; }
+.sb-cell { display: flex; flex-direction: column; min-width: 0; font-size: var(--fs-body); color: var(--color-text); line-height: 1.25; }
+.sb-acct { grid-area: acct; flex-direction: row; flex-wrap: wrap; gap: 0 8px; align-items: baseline; }
+.sb-wr { grid-area: wr; } .sb-pf { grid-area: pf; } .sb-exp { grid-area: exp; }
+.sb-ratio { grid-area: ratio; } .sb-strip { grid-area: strip; } .sb-d30 { grid-area: d30; color: var(--color-text-sub); }
+.sb-empty { grid-column: 1 / -1; grid-row: 2; margin: 0; color: var(--color-text-sub); }
+.sb-list { grid-area: list; }
+.sb-toggle { font-size: var(--fs-body); color: var(--color-accent); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; min-height: 24px; }
+/* phone: the three figures' small print and the 30-day line's long words go;
+   the header row is hidden, so each cell keeps its own label */
+.sb-wr .sb-sub, .sb-pf .sb-sub, .sb-exp .sb-sub { display: none; }
+.sb-acct .sb-toggle { margin-left: auto; }
+.sb-ratio { flex-direction: row; flex-wrap: wrap; gap: 0 12px; }
+.sb-name { font-size: var(--fs-h); }
+.sb-big { font-size: calc(var(--fs-title) * 1.2); font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.sb-sub { font-size: var(--fs-body); color: var(--color-text-sub); }
+.sb-cell-label { font-size: var(--fs-body); color: var(--color-muted); text-transform: uppercase; letter-spacing: .04em; }
+@media (min-width: 900px) {
+  .sb-row {
+    grid-template-columns: minmax(7rem, 1fr) minmax(5.5rem, .8fr) minmax(5.5rem, .8fr) minmax(5.5rem, .8fr) minmax(11rem, 1.6fr) minmax(8rem, 1.4fr) minmax(12rem, 2fr);
+    grid-template-areas: "acct wr pf exp ratio strip d30" "list list list list list list list";
+    padding: 4px 0 2px;
+  }
+  .sb-head { display: grid; border-top: none; padding: 0; }
+  .sb-head .sb-cell { font-size: var(--fs-body); color: var(--color-muted); text-transform: uppercase; letter-spacing: .04em; }
+  .sb-cell-label { display: none; }
+  .sb-acct { flex-direction: column; align-items: flex-start; }
+  .sb-ratio { flex-direction: column; gap: 0; }
+  .sb-acct .sb-toggle { margin-left: 0; min-height: 18px; }
+  .sb-wr .sb-sub, .sb-pf .sb-sub, .sb-exp .sb-sub { display: inline; }
+  .sb-d30-label { display: none; }
+  .sb-big { font-size: var(--fs-title); }
+  .sb-empty { grid-column: 2 / 7; grid-row: 1; }
+}

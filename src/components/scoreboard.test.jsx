@@ -39,8 +39,8 @@ describe('Scoreboard view', () => {
     expect(html).toContain('>SGD<'); expect(html).toContain('>USD<'); expect(html).toContain('currency unverified')
     expect(html).toContain('SGD −69.70'); expect(html).toContain('USD −69.70')
     expect(html).toContain('45%'); expect(html).toContain('0.61'); expect(html).toContain('−0.12R')
-    expect(html).toContain('Win size ÷ loss size: <strong>0.75</strong>')
-    expect(html).toContain('30 days, bot only: 32 trades')
+    expect(html).toContain('Win ÷ loss <strong>0.75</strong>') // Claude · № 12,989: compact row wording
+    expect(html).toContain('30 days, bot only: </span>32 trades') // Claude · № 12,989
     expect(html).toContain('Last 20 trades')
     expect(html).toContain('No closed trades recorded.')
     expect(html).toContain('R pooled; no money total')
@@ -136,5 +136,17 @@ describe('Forward results card: measured latest-20 beside the unchanged verdict'
     expect(measured).toBeTruthy()
     const html = renderToStaticMarkup(<PerformanceTargets report={{ accounts: [{ ...row, latest20 }] }} selected="11" />)
     expect(html).not.toContain('Measured so far')
+  })
+})
+
+// Claude · № 12,989 10-Oct (owner: "too much white spacing, and have to scroll
+// down"): one compact row per account under ONE header row (hidden from screen
+// readers and, by CSS, on phones — each cell then carries its own label).
+describe('compact rows', () => {
+  it('one header row and one row per account', () => {
+    const html = renderToStaticMarkup(<ScoreboardView report={report} />)
+    expect((html.match(/class="sb-row sb-head" aria-hidden="true"/g) || []).length).toBe(1)
+    expect((html.match(/<article class="sb-row"/g) || []).length).toBe(report.accounts.length)
+    for (const h of ['Win rate', 'Profit factor', 'Expectancy', 'Win ÷ loss · net']) expect(html).toContain(h)
   })
 })
