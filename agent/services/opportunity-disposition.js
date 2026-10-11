@@ -65,7 +65,7 @@ const isPostApprovalRefusal = (checksJson) =>
  */
 export function dispositionFor({
   approved, checksJson, landed = false, ageMin = 0, graceMin = DEFAULT_GRACE_MIN,
-  refusedAfter = false, supersededBy = false,
+  refusedAfter = false, supersededBy = false, rejectedOnly = false,
 }) {
   if (approved !== 1) return 'vetoed'
   if (isReceipt(checksJson)) return 'receipt'
@@ -80,6 +80,13 @@ export function dispositionFor({
   // and side inside the grace window after this approval is that approval's
   // refusal; a landed later approval on the same tuple is its successor.
   if (refusedAfter) return 'refused_post_approval'
+  // A WRITE-AHEAD ROW THE ROUTE MARKED 'rejected' IS NOT A LANDING (Codex P2
+  // on #1322; Claude · № 13,312 11-Oct). /actions/execute-trade writes its
+  // trade row before the send and marks it 'rejected' when nothing provably
+  // left (a guard_ refusal thrown at the send), then records the refusal
+  // itself — read just above. With no refusal on record the row keeps the
+  // reading it always had.
+  if (rejectedOnly) return 'ordered'
   if (supersededBy) return 'superseded'
   if (ageMin < graceMin) return null      // still in flight — not yet terminal
   return 'dropped'
@@ -109,8 +116,9 @@ export function sweepDispositions(db, {
     const graceDays = Math.max(0, Number(graceMin) || 0) / 1440
     rows = db.prepare(`
       SELECT r.id, r.approved, r.checks_json, r.created_at, r.disposition,
-             (SELECT COUNT(*) FROM trades t WHERE t.risk_event_id = r.id)
+             (SELECT COUNT(*) FROM trades t WHERE t.risk_event_id = r.id AND COALESCE(t.status, '') <> 'rejected')
              + (SELECT COUNT(*) FROM pending_orders p WHERE p.risk_event_id = r.id) AS landed,
+             (SELECT COUNT(*) FROM trades t WHERE t.risk_event_id = r.id AND t.status = 'rejected') AS rejected_rows,
              (SELECT COUNT(*) FROM risk_events x
                WHERE x.id > r.id AND x.approved = 0
                  AND x.checks_json LIKE '%"${POST_APPROVAL_FLAG}"%'
@@ -148,6 +156,7 @@ export function sweepDispositions(db, {
         graceMin,
         refusedAfter: (r.refused_after || 0) > 0,
         supersededBy: (r.superseded_by || 0) > 0,
+        rejectedOnly: (r.rejected_rows || 0) > 0,
       })
       if (d == null) { pending++; continue }
       if (d === r.disposition) continue

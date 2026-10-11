@@ -365,3 +365,15 @@ test('wiring: housekeeping runs the bounded revisit after the drain', () => {
   assert.ok(i > 0)
   assert.match(src.slice(i, i + 1500), /revisitDropped\(db, \{ days: 7 \}\)/)
 })
+
+// Codex P2 on #1322 (Claude · № 13,313 11-Oct): a trade row the route marked
+// 'rejected' (its write-ahead row, nothing provably sent) is not a landing.
+// With the route's own refusal on record the approval reads as refused after
+// approval; with none, it keeps the reading it always had.
+test('a rejected write-ahead row: refused after approval when the refusal is on record, ordered otherwise', () => {
+  const base = { approved: 1, checksJson: PLAIN, landed: false, ageMin: 999, rejectedOnly: true }
+  assert.equal(dispositionFor({ ...base, refusedAfter: true }), 'refused_post_approval')
+  assert.equal(dispositionFor(base), 'ordered', 'no refusal on record: never read as dropped')
+  assert.equal(dispositionFor({ ...base, rejectedOnly: false }), 'dropped', 'fixture check: without the row it would be dropped')
+  assert.equal(dispositionFor({ ...base, landed: true, refusedAfter: true }), 'ordered', 'a live landing still outranks a sibling refusal')
+})
