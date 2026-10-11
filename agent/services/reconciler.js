@@ -32,8 +32,9 @@ export function brokerVolumeToLots(bp, symbol, db = null, accountId = null) {
   if (units == null) return null
   if (db != null) {
     // № 13,175 (Codex P1 on #1318, round 9): this account's own lot record first.
-    const { lots } = lotsFromUnits(db, symbol, units, accountId)
+    const { lots, source } = lotsFromUnits(db, symbol, units, accountId)
     if (lots != null) return lots
+    if (source === 'foreign_unknown') return null // round 13: unknown, never another account's divisor nor a table guess
   }
   const perLot = contractSize(symbol) || 1
   return perLot > 0 ? units / perLot : units

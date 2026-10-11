@@ -360,6 +360,12 @@ export function lotsFromUnits(db, symbol, units, accountId = null) {
     if (!Number.isFinite(u)) return { lots: null, unitsPerLot: per, source: 'broker' }
     return { lots: per > 0 ? u / per : u, unitsPerLot: per, source: 'broker' }
   }
+  // Round 13: a shared lot another account stamped is not this account's —
+  // the count stays unknown rather than divided by another contract (and
+  // brokerVolumeToLots then returns null instead of a table guess).
+  if (cleanAccount(accountId) && entryOf(readMap(db), clean(symbol)) && !sharedUnlessForeign(db, symbol, accountId)) {
+    return { lots: null, unitsPerLot: null, source: 'foreign_unknown' }
+  }
   const { unitsPerLot: per, source } = unitsPerLot(db, symbol)
   // `Number(null)` is 0 and 0 is finite, so a missing volume would otherwise
   // convert to a confident ZERO LOTS — a position the risk stack would read as
@@ -472,8 +478,10 @@ export function withBrokerLotSizes(db, symMeta, accountId = null) {
  * @param {object} meta    getVolumeMeta's answer for THIS account
  * @returns {string|null}  a refusal reason, or null when the gate sized on this lot
  */
-export function reconcileLotRecord(db, symbol, accountId, meta, checks) {
-  try { rememberVolumeMeta(db, symbol, { ...meta, accountId }) } catch { /* bookkeeping never blocks */ }
+export function reconcileLotRecord(db, symbol, accountId, meta, checks, { shared = true } = {}) {
+  // Round 13: the loop's write (a pre-existing shared writer) keeps the shared
+  // slot; the pending and closed-market paths, new writers, pass shared:false.
+  try { rememberVolumeMeta(db, symbol, { ...meta, accountId }, { shared }) } catch { /* bookkeeping never blocks */ }
   const live = posNum(meta?.lotSize)
   const sizedOn = posNum(checks?.units_per_lot?.value)
   if (!live || !sizedOn) return null

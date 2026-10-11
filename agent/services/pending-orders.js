@@ -584,7 +584,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       priceDigits = meta.digits ?? 5
       // Claude · № 13,175 11-Oct (Codex P1 on #1318): record this account's
       // answer; refuse an order the gate sized on another account's lot.
-      const lotMismatch = reconcileLotRecord(db, symbol, creds.accountId, meta, riskResult.checks)
+      const lotMismatch = reconcileLotRecord(db, symbol, creds.accountId, meta, riskResult.checks, { shared: false })
       if (lotMismatch) {
         risk.persistPostApprovalVeto(db, proposal, lotMismatch)
         summary.skipped.push(`${symbol}: ${lotMismatch}`)

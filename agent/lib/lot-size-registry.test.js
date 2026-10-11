@@ -359,7 +359,13 @@ test('lotsFromUnits converts with the account\'s own record first, the shared on
   assert.equal(lotsFromUnits(db, 'BTCUSD', 2, 'B').lots, 2, 'B\'s position converts with B\'s own lot, not A\'s shared one')
   assert.equal(lotsFromUnits(db, 'BTCUSD', 200, 'A').lots, 2)
   assert.equal(lotsFromUnits(db, 'BTCUSD', 200).lots, 2, 'no account named: the shared entry, as before')
-  assert.equal(lotsFromUnits(db, 'BTCUSD', 200, 'C').lots, 2, 'an account with no record of its own: the shared entry, never the 100,000-unit table')
+  // round 13: an account with no record of its own never converts with a
+  // shared lot another account stamped — the count stays unknown
+  assert.deepEqual(lotsFromUnits(db, 'BTCUSD', 200, 'C'), { lots: null, unitsPerLot: null, source: 'foreign_unknown' })
+  assert.equal(brokerVolumeToLots({ tradeData: { volume: 200 } }, 'BTCUSD', db, 'C'), null, 'no table guess either')
+  // an unstamped legacy entry still converts for a named account
+  setState(db, LOT_SIZE_KEY, JSON.stringify({ ETHUSD: 100 }))
+  assert.equal(lotsFromUnits(db, 'ETHUSD', 3, 'C').lots, 3)
   const bp = { tradeData: { volume: 200 } } // broker cents of units → 2 units
   assert.equal(brokerVolumeToLots(bp, 'BTCUSD', db, 'B'), 2)
   assert.equal(brokerVolumeToLots(bp, 'BTCUSD', db, 'A'), 0.02)
@@ -385,4 +391,15 @@ test('an own-only write leaves the shared slot alone, and deal imports read the 
   assert.equal(withBrokerLotSizes(db, { 9: { symbolName: 'XRPUSD' } }, 'C')[9].lotSize, 1_000)
   assert.equal(rememberVolumeMeta(db, 'ETHUSD', { lotSize: 100 }, { shared: false }), false, 'own-only with no account writes nothing')
   assert.equal(lotRecordFor(db, 'ETHUSD'), null)
+})
+
+// Codex P1 on #1318, round 13: the pending and closed-market reconcile writes
+// are own-only; the loop's keeps the shared slot it always wrote.
+test('reconcileLotRecord writes the shared slot only when asked to', () => {
+  const db = fresh()
+  reconcileLotRecord(db, 'DOTUSD', 'A', { lotSize: 10_000 }, {}, { shared: false })
+  assert.equal(lotRecordFor(db, 'DOTUSD'), null)
+  assert.equal(lotRecordFor(db, 'DOTUSD', 'A').lotSize, 10_000)
+  reconcileLotRecord(db, 'DOTUSD', 'A', { lotSize: 10_000 }, {})
+  assert.equal(lotRecordFor(db, 'DOTUSD').lotSize, 10_000, 'the default (the loop) still writes the shared slot')
 })

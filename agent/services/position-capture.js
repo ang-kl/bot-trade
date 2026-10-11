@@ -45,7 +45,8 @@ import { unitsPerLot, rememberVolumeMeta, withBrokerLotSizes } from '../lib/lot-
  */
 export async function withBrokerLotSize (db, record, { lotSizeFor = null } = {}) {
   try {
-    const u = unitsPerLot(db, record?.symbol)
+    // № 13,175 (Codex P1 on #1318, round 13): the position's own account record first
+    const u = unitsPerLot(db, record?.symbol, record?.account_id ?? record?.accountId ?? null)
     if (Number(u.lotSize) > 0) return { ...record, lot_size: Number(u.lotSize) }
   } catch { /* no registry, no lot */ }
   // B6 (18-09-2026): a symbol the registry has never seen — the order path

@@ -253,7 +253,10 @@ export function buildPositionRecord(db, { accountId, positionId }) {
       ).get(trade?.id ?? -1)
       const units = num(mp?.units)
       if (units == null || !(units > 0)) return null
-      const per = unitsPerLot(db, str(trade?.symbol) ?? str(deal?.symbol)).unitsPerLot
+      // Claude · № 13,175 (Codex P1 on #1318, round 13): THIS account's own lot
+      // record first — the manual route records only the account's own — and
+      // never a shared lot another account stamped (unitsPerLot with an account).
+      const per = unitsPerLot(db, str(trade?.symbol) ?? str(deal?.symbol), accountId).unitsPerLot
       return per > 0 ? units / per : null
     } catch { return null }
   })()

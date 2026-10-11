@@ -492,7 +492,7 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     digits = meta.digits ?? 5
     // Claude · № 13,175 11-Oct (Codex P1 on #1318): record this account's
     // answer; refuse a resting order the gate sized on another account's lot.
-    const lotMismatch = reconcileLotRecord(db, symbol, creds.accountId, meta, riskResult.checks)
+    const lotMismatch = reconcileLotRecord(db, symbol, creds.accountId, meta, riskResult.checks, { shared: false })
     if (lotMismatch) {
       risk.persistPostApprovalVeto(db, proposal, lotMismatch)
       return { skipped: 'lot_record_mismatch', reason: lotMismatch }
