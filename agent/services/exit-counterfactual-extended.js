@@ -102,6 +102,13 @@ export function buildRules({ cfg, policy, preset, tpR, trailR, design, family })
   const seen = new Set(); return rules.filter(r => (seen.has(r.name) ? false : (seen.add(r.name), true)))
 }
 
+/** Which rules read today's live policy (a current-policy scenario) rather than a fixed rule. */
+export function scenarioOf(rule) {
+  return /^managed_approx|^hybrid_half_/.test(String(rule?.name || '')) ? 'current_policy' : 'fixed_rule'
+}
+/** The cost model every replay figure carries: declared, not modelled. */
+export const COST_MODEL = Object.freeze({ model: 'none', note: 'exits fill at the level on the bar that touches it; no spread, slippage, commission or swap; R is price-based against the chosen stop. The stored windows carry no bid/ask, so a spread model cannot be fitted from them.' })
+
 /** The strategy's own pre-stretch target for a row, from its risk event, shifted by the fill offset. */
 function designTargets(db, rows) {
   const ids = rows.map(r => r.risk_event_id).filter(v => v != null)
@@ -183,7 +190,22 @@ export function exitCounterfactualExtended(db, {
     return replayExit(e.bars, t, rule)
   }
   const specOf = rule => Object.fromEntries(Object.entries(rule).filter(([k]) => k !== 'name'))
-  const perRule = rules.map(rule => ({ rule: rule.name, spec: specOf(rule), ...summariseReplay(eligible.map(e => replayOne(e, rule))) }))
+  // Amendment area 4 (Claude · № 13,101): every rule is replayed over the same
+  // eligible rows; its headline figures are over the rows IT resolves
+  // (descriptive), and `common` is over the COMMON COHORT — the rows every
+  // compared rule resolves — so a comparison between rules never drops
+  // censored trades differently by variant. `scenario` says whether a rule
+  // is today's policy (read from the live loaders at request time) or a
+  // fixed rule; `cost` is declared, not modelled.
+  const results = rules.map(rule => ({ rule, out: eligible.map(e => replayOne(e, rule)) }))
+  const cohortIdx = eligible.map((_, i) => i).filter(i => results.every(r => r.out[i]?.ok))
+  const perRule = results.map(({ rule, out }) => ({
+    rule: rule.name, spec: specOf(rule), scenario: scenarioOf(rule), cost: COST_MODEL.model,
+    ...summariseReplay(out),
+    common: summariseReplay(cohortIdx.map(i => out[i])),
+    droppedFromCommon: out.length - cohortIdx.length,
+  }))
+  const cohort = { n: cohortIdx.length, of: eligible.length, rule: 'a trade is in the common cohort only when EVERY compared rule resolves it (no truncation, no ambiguity, no missing level); read `common` to compare rules, the headline figures to describe one', notResolvedByVariant: Object.fromEntries(results.map(({ rule, out }) => [rule.name, out.filter(o => !o?.ok).length])) }
 
   // Actual, over the same population: the ledger's realised_rr when the
   // initial stop is the basis (the postmortem's r_multiple divides by a
@@ -220,7 +242,9 @@ export function exitCounterfactualExtended(db, {
     const ordered = [...buckets.entries()].sort((a, b) => b[1].length - a[1].length)
     groups = { by: groupBy, values: {}, omitted: Math.max(0, ordered.length - MAX_GROUP_VALUES) }
     for (const [k, list] of ordered.slice(0, MAX_GROUP_VALUES)) {
-      groups.values[k] = { n: list.length, rules: Object.fromEntries(rules.map(rule => [rule.name, summariseReplay(list.map(e => replayOne(e, rule)))])) }
+      const outs = rules.map(rule => list.map(e => replayOne(e, rule)))
+      const idx = list.map((_, i) => i).filter(i => outs.every(o => o[i]?.ok))
+      groups.values[k] = { n: list.length, commonN: idx.length, rules: Object.fromEntries(rules.map((rule, r) => [rule.name, { ...summariseReplay(outs[r]), common: summariseReplay(idx.map(i => outs[r][i])) }])) }
     }
   }
 
@@ -236,7 +260,7 @@ export function exitCounterfactualExtended(db, {
     design: dz ? dz.coverage : null,
     gateTag: { ...gateTag, basis: 'regimeBlocks(strategy, bias, regime reading nearest before entry within 4h); groupBy=gateTag splits every rule by it' },
     considered: pop.considered, eligible: eligible.length, skipped: pop.skipped,
-    actual, rules: perRule, followThrough: follow, groups,
-    note: 'Bar replay only. Not replayable exactly: the tick-level Chandelier on the native TrailEngine, broker-side trailing once a stop locks profit, the hybrid tick trigger, partial fill prices. managed_approx approximates the live stack at bar close; compare its figures with `actual` on the same trades before reading any other rule against it. Ambiguous and truncated trades are excluded from every figure and counted beside it; follow-through is a bracket because a bar that hits the stop may also have set the high.',
+    actual, rules: perRule, cohort, costs: COST_MODEL, followThrough: follow, groups,
+    note: 'Bar replay only. Compare rules on `common` (the common cohort), never on the headline figures, whose denominators differ by rule. Costs: none modelled (see costs). Not replayable exactly: the tick-level Chandelier on the native TrailEngine, broker-side trailing once a stop locks profit, the hybrid tick trigger, partial fill prices. managed_approx approximates the live stack at bar close; compare its figures with `actual` on the same trades before reading any other rule against it. Ambiguous and truncated trades are excluded from every figure and counted beside it; follow-through is a bracket because a bar that hits the stop may also have set the high.',
   }
 }
