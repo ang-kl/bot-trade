@@ -165,10 +165,9 @@ export function rAudit(db, { strategy = R_AUDIT_DEFAULT_STRATEGY, days = R_AUDIT
 // recordRegimeBlock, one row per blocked cycle). The owner's question is
 // whether the QUIET rule ("trend-in-quiet") is refusing the squeeze that
 // Donchian / value-area breakouts are built to trade. This section counts;
-// it does not score, because the stored detail carries bias, side and entry
-// only — no stop, target or conviction — so a refused signal's outcome is
-// not replayable from the record. Capturing those forward touches the loop's
-// write path and waits for the owner's word (plan step 5, second half).
+// it does not score. Rows before W2 carry bias, side and entry only; W2
+// (Claude · № 13,356 12-Oct; claude-builder) records the stop, targets and
+// conviction forward (gate-skips.js), and `capture` says how many rows do.
 //
 // A block repeats every cycle while the regime holds, so `rows` is cycles,
 // not opportunities. `episodes` counts distinct (symbol, strategy, timeframe,
@@ -210,7 +209,7 @@ export function regimeBlocks(db, { strategy = null, days = REGIME_BLOCKS_DEFAULT
     bySymbol: topOf(bySymbol, REGIME_BLOCKS_TOP), symbolsOmitted: Math.max(0, Object.keys(bySymbol).length - REGIME_BLOCKS_TOP),
     byTimeframe, byBias,
     capture: { entryKnown, stopKnown, targetKnown, convictionKnown, scorable: Math.min(stopKnown, targetKnown) },
-    note: 'Read-only count of decision_log regime_block skips (gate-skips.js recordRegimeBlock, one row per blocked cycle). rows = cycles; episodes = distinct symbol·strategy·timeframe·kind per UTC day. The stored detail carries bias, side and entry only: stop, target and conviction are not recorded, so no refused signal is scored here (capture.scorable). Nothing here is a trading figure the gates read.',
+    note: 'Read-only count of decision_log regime_block skips (gate-skips.js recordRegimeBlock, one row per blocked cycle). rows = cycles; episodes = distinct symbol·strategy·timeframe·kind per UTC day. Rows written before W2 (12-10) carry bias, side and entry only; from W2 on, each row also carries the refused proposal stop, targets and conviction. capture counts how many rows carry each, and scorable is the rows with both a stop and a target. No refused signal is scored here. Nothing here is a trading figure the gates read.',
   }
 }
 

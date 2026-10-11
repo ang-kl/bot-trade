@@ -102,9 +102,10 @@ test('regime-blocks: counts the loop\'s regime_block skips by kind, strategy, sy
   assert.deepEqual(out.episodesByStrategyKind, { 'donchian_breakout · trend-in-quiet': 1, 'va_breakout · trend-in-quiet': 1, 'rsi_meanrev · fade-vs-trend': 2 })
   assert.deepEqual(out.bySymbol, { AAA: 4, BBB: 1, CCC: 1 }); assert.equal(out.symbolsOmitted, 0)
   assert.deepEqual(out.byBias, { long: 5, short: 1 }); assert.deepEqual(out.byTimeframe, { '1h': 3, '15m': 3 })
-  // The stored detail carries entry at most: nothing is scorable, and the report says so.
+  // These fixture signals carry entry at most: nothing is scorable, and the
+  // report says which rows can carry more (W2, Claude · № 13,356 12-Oct).
   assert.deepEqual(out.capture, { entryKnown: 4, stopKnown: 0, targetKnown: 0, convictionKnown: 0, scorable: 0 })
-  assert.match(out.note, /stop, target and conviction are not recorded/)
+  assert.match(out.note, /Rows written before W2 \(12-10\) carry bias, side and entry only/)
   // One strategy; and the window widened takes the old row in.
   assert.equal(regimeBlocks(db, { days: 30, strategy: 'rsi_meanrev' }).rows, 2)
   assert.equal(regimeBlocks(db, { days: 60 }).rows, 7)

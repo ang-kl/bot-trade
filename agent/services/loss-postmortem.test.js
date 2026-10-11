@@ -546,3 +546,128 @@ test('the window follows the INJECTED clock, not the real one', () => {
   // …and a wide enough window brings it back, so the row itself is fine.
   assert.equal(pendingLessons(db, { now: NOW + 30 * 86_400_000, windowDays: 60 }).rows.length, 1)
 })
+
+// ---------------------------------------------------------------------------
+// W1 (Claude · № 13,353 12-Oct; owner "W1 W2 W3 W4 W11",
+// docs/instruction-2026-10-12-decisions.md; claude-builder): R is measured
+// against the stop at ENTRY. The momentum book overwrites trades.sl_price with
+// every trail, so dividing by it measured R against a stop the book had
+// already moved. These tests seed exactly that shape.
+// ---------------------------------------------------------------------------
+import { initialRiskOf } from './loss-postmortem.js'
+
+test('initialRiskOf: the broker\'s first stop wins over the proposal, initial_risk and sl_price', () => {
+  const r = initialRiskOf({ entry_price: 100, broker_sl_initial: 94, proposal_sl: 95, initial_risk: 3, sl_price: 104, book_trailed: 1 })
+  assert.deepEqual(r, { risk: 6, source: 'broker_sl_initial' })
+})
+
+test('initialRiskOf: falls to the proposal stop, then the monitor\'s initial_risk', () => {
+  assert.deepEqual(initialRiskOf({ entry_price: 100, broker_sl_initial: null, proposal_sl: 95, initial_risk: 3, sl_price: 104, book_trailed: 1 }),
+    { risk: 5, source: 'proposal_sl' })
+  assert.deepEqual(initialRiskOf({ entry_price: 100, broker_sl_initial: null, proposal_sl: null, initial_risk: 3, sl_price: 104, book_trailed: 1 }),
+    { risk: 3, source: 'initial_risk' })
+})
+
+test('initialRiskOf: an unusable stop is skipped, never read as zero risk', () => {
+  // '' / 0 / non-numeric / equal to entry are not a stop.
+  for (const bad of ['', 0, 'abc', 100, -5]) {
+    assert.deepEqual(initialRiskOf({ entry_price: 100, broker_sl_initial: bad, proposal_sl: 96 }),
+      { risk: 4, source: 'proposal_sl' }, `broker_sl_initial=${JSON.stringify(bad)}`)
+  }
+  assert.deepEqual(initialRiskOf({ entry_price: 100, initial_risk: 0, sl_price: 98, book_trailed: 0 }),
+    { risk: 2, source: 'sl_price' })
+})
+
+test('initialRiskOf: sl_price counts only for a trade the book never trailed', () => {
+  assert.deepEqual(initialRiskOf({ entry_price: 100, sl_price: 98, book_trailed: 0 }), { risk: 2, source: 'sl_price' })
+  assert.deepEqual(initialRiskOf({ entry_price: 100, sl_price: 98, book_trailed: 1 }), { risk: null, source: null })
+})
+
+test('initialRiskOf: a short reads the distance the same way; no entry is no R', () => {
+  assert.deepEqual(initialRiskOf({ entry_price: 100, broker_sl_initial: 106 }), { risk: 6, source: 'broker_sl_initial' })
+  assert.deepEqual(initialRiskOf({ entry_price: null, broker_sl_initial: 94 }), { risk: null, source: null })
+  assert.deepEqual(initialRiskOf({}), { risk: null, source: null })
+})
+
+function seedBookTrade(db, { entry = 100, exit, sl, brokerSlInitial = null, riskEventId = null, pnl, hoursAgo = 26, book = true }) {
+  const id = db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, broker_sl_initial, risk_event_id,
+                        opened_at, closed_at, net_pnl, status, close_reason, label_strategy, label_timeframe, account_id)
+    VALUES ('US500', 'BUY', ?, ?, ?, ?, ?, datetime('now', ?), datetime('now', ?), ?, 'closed', 'sl', 'tsmom_long', '1h', '46130058')
+  `).run(entry, exit, sl, brokerSlInitial, riskEventId, `-${hoursAgo + 4} hours`, `-${hoursAgo} hours`, pnl).lastInsertRowid
+  if (book) {
+    db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, side, entry_price, stop, entered_at, status)
+                VALUES (?, '46130058', 'US500', 'long', ?, ?, datetime('now', '-40 hours'), 'closed')`).run(id, entry, sl)
+  }
+  return id
+}
+
+function holdingBars(closedMs, { h, l, c, after = { h, l, c } }) {
+  const out = []
+  for (let i = 0; i < 40; i++) {
+    const t = closedMs - (10 - i) * 3_600_000
+    const b = t > closedMs ? after : { h, l, c }
+    out.push({ t, o: 100, h: b.h, l: b.l, c: b.c, v: 5 })
+  }
+  return out
+}
+
+test('W1: a book-trailed WIN measures R against the stop at entry, not the trailed stop', async () => {
+  const db = initDB(':memory:')
+  // Entered at 100 with a 3×ATR stop at 94 (risk 6); the book trailed the
+  // stop to 104 and the trail closed it there. Banked 4 = 0.67R, not 1.0R.
+  seedBookTrade(db, { exit: 104, sl: 104, brokerSlInitial: 94, pnl: 40 })
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  const res = await runLossPostmortems(db, async () => holdingBars(closedMs, { h: 105, l: 99, c: 104 }))
+  assert.equal(res.classified, 1)
+  const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
+  assert.ok(Math.abs(pm.r_multiple - 4 / 6) < 1e-9, `r_multiple ${pm.r_multiple} should be 4/6`)
+  assert.equal(pm.classification, 'clean_win')
+  assert.match(pm.detail, /\+0\.67R of a \+0\.83R best/)
+  assert.equal(pm.sl_price, 104, 'the stop at close is still the recorded stop')
+})
+
+test('W1: a book-trailed LOSS measures R against the stop at entry', async () => {
+  const db = initDB(':memory:')
+  // Stop trailed from 94 to 97, still below entry; closed at 97 = −0.5R of the
+  // 6-point risk taken, not −1R of a 3-point "risk" the trail invented.
+  seedBookTrade(db, { exit: 97, sl: 97, brokerSlInitial: 94, pnl: -30, hoursAgo: 30 })
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  const res = await runLossPostmortems(db, async () =>
+    holdingBars(closedMs, { h: 101, l: 97, c: 98, after: { h: 101, l: 98, c: 100.5 } }))
+  assert.equal(res.classified, 1)
+  const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
+  assert.ok(Math.abs(pm.r_multiple - (-0.5)) < 1e-9, `r_multiple ${pm.r_multiple} should be -0.5`)
+})
+
+test('W1: the risk gate\'s proposal stop is used when the broker\'s first stop was not recorded', async () => {
+  const db = initDB(':memory:')
+  const reId = db.prepare(`INSERT INTO risk_events (symbol, side, approved, proposal_json) VALUES ('US500', 'BUY', 1, ?)`)
+    .run(JSON.stringify({ sl: 95, tp1: 115 })).lastInsertRowid
+  seedBookTrade(db, { exit: 103, sl: 103, riskEventId: reId, pnl: 30 })
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  await runLossPostmortems(db, async () => holdingBars(closedMs, { h: 104, l: 99.5, c: 103 }))
+  const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
+  assert.ok(Math.abs(pm.r_multiple - 3 / 5) < 1e-9, `r_multiple ${pm.r_multiple} should be 3/5`)
+})
+
+test('W1: a book-trailed trade with NO initial stop stores no R and says why', async () => {
+  const db = initDB(':memory:')
+  seedBookTrade(db, { exit: 104, sl: 104, pnl: 40 })
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  const res = await runLossPostmortems(db, async () => holdingBars(closedMs, { h: 105, l: 99, c: 104 }))
+  assert.equal(res.classified, 1)
+  const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
+  assert.equal(pm.r_multiple, null, 'no R from a trailed stop')
+  assert.equal(pm.classification, 'inconclusive', 'win quality is not scored on a trailed stop')
+  assert.match(pm.detail, /no initial stop on record — R not measured/)
+})
+
+test('W1: a trade outside the book keeps its recorded stop as the risk (unchanged behaviour)', async () => {
+  const db = initDB(':memory:')
+  seedBookTrade(db, { exit: 103, sl: 98, pnl: 30, book: false })
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  await runLossPostmortems(db, async () => holdingBars(closedMs, { h: 104, l: 99.5, c: 103 }))
+  const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
+  assert.ok(Math.abs(pm.r_multiple - 1.5) < 1e-9, `r_multiple ${pm.r_multiple} should be 1.5`)
+})
