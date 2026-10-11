@@ -243,7 +243,9 @@ test('missing credentials and missing data say "cannot check" with the reason �
 /** The manual route's proposal, written out independently of preorder.js (actions.js:6415-6427). */
 const routeProposal = ({ entry, sl, tp, lots, side = 'BUY', accountId = A }) => ({
   symbol: SYM, side, entry, sl: Number(sl), tp1: tp != null ? Number(tp) : null,
-  requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01, strategy: 'manual',
+  // Claude · № 13,128 11-Oct: the route sends the pad's validated registry
+  // key; with none given it is manual_order (MANUAL_ORDER_STRATEGY), as here.
+  requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01, strategy: 'manual_order',
   direction_reason: side === 'SELL' ? 'manual:operator_chose_short' : 'manual:operator_chose_long',
   conviction: null, source: 'manual', accountId,
 })

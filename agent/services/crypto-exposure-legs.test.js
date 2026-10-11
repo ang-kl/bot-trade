@@ -24,7 +24,16 @@ test('currencyLegs — a crypto CFD is one leg whatever its name length', () => 
 test('currencyLegs — FX and metals keep the base/quote split', () => {
   assert.deepEqual(currencyLegs('EURUSD', 'long'), { EUR: 1, USD: -1 })
   assert.deepEqual(currencyLegs('XAUUSD', 'short'), { XAU: -1, USD: 1 })
+  assert.deepEqual(currencyLegs('USDJPY', 'long'), { USD: 1, JPY: -1 })
+  assert.deepEqual(currencyLegs('EURGBP', 'short'), { EUR: -1, GBP: 1 })
   assert.deepEqual(currencyLegs('US30', 'long'), { US30: 1 })
+})
+
+test('currencyLegs — a six-letter symbol whose halves are not both currency codes is one leg (Codex P2 on #1317)', () => {
+  // broker crypto outside any name list, and commodity CFDs named like pairs
+  for (const s of ['ETCUSD', 'SUIUSD', 'TONUSD', 'APTUSD', 'XBRUSD', 'XTIUSD', 'XNGUSD']) {
+    assert.deepEqual(currencyLegs(s, 'long'), { [s]: 1 }, s)
+  }
 })
 
 test('exposure — crypto longs beside an FX long do not accumulate a USD leg', () => {

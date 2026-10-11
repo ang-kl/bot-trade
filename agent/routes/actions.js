@@ -11,7 +11,7 @@ import { getCtraderCreds, getSymbolMap, getAccountSymbolMap, ensureSymbolMap, bi
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { recordTradePlan, recordPlanWriteFailure } from '../services/trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
-import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent, mergeRiskConfig, migrateLegacyRiskKeys } from '../services/risk.js'
+import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent, mergeRiskConfig, migrateLegacyRiskKeys, effectiveRrFloor } from '../services/risk.js'
 import { noteRiskConfigChanges } from '../services/risk-config-history.js'
 import { wsGetTrendbarsBatch, wsGetSpotOnce, isAmbiguousSubmitError } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
@@ -6571,7 +6571,12 @@ export default function actionsRouter(db, deps = {}) {
         persistRiskEvent(db, proposal, { approved: false, veto_reason: err.message })
         const needsInput = describeBracketGap(err.message, {
           symbol, side, entry, sl: proposal.sl, tp: proposal.tp1, digits: volMeta.digits,
-          strategy, minRR: loadRiskConfig(db).minRR,   // Claude · № 13,126 11-Oct: the pad's key, as in the proposal
+          // Claude · № 13,128 11-Oct (Codex P2 on #1317): the advice is
+          // built on the floor the gate will actually demand of THIS account
+          // and strategy (effectiveRrFloor — the same functions the gate
+          // uses), not on the registry override alone, so an rsi2 pad order
+          // is never told 1R "would satisfy" a 3R gate.
+          strategy, minRR: loadRiskConfig(db).minRR, rrFloor: effectiveRrFloor(db, creds.accountId, strategy),
           // HVN-TP: the 15m bars fetched above — the advice computes the
           // volume-structure TP candidate on the trade's own timeframe.
           bars: hvnBars,

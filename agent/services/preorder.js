@@ -346,14 +346,16 @@ async function manualPreorder(db, input, deps) {
     return cannot(`could not fetch a current price for ${symbol} (${String(err?.message || err).slice(0, 160)})`)
   }
   if (entry == null) return cannot(`could not fetch a current price for ${symbol}`)
-  const { manualDirectionReason } = await import('../routes/actions.js')
-  // actions.js:6415-6427, field for field. The pad sends no directionReason.
+  const { manualDirectionReason, manualOrderStrategy } = await import('../routes/actions.js')
+  // actions.js manual-order proposal, field for field. The pad sends no
+  // directionReason. Claude · № 13,128 11-Oct: the strategy is the pad's
+  // validated registry key, as the route now sends it (manual_order when none).
   const proposal = {
     symbol, side, entry,
     sl: Number(sl),
     tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
     requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
-    strategy: 'manual',
+    strategy: manualOrderStrategy(input.strategy),
     direction_reason: manualDirectionReason(input.directionReason, side),
     conviction: null,
     source: 'manual',

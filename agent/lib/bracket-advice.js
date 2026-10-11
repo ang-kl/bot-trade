@@ -148,7 +148,16 @@ export function describeBracketGap(reason, ctx = {}) {
     // The R:R floor the risk gate would apply to THIS strategy — a suggestion
     // below it would be refused a second time, which is worse than no
     // suggestion at all.
-    const rrFloor = minRrFor(ctx.strategy, Number.isFinite(Number(ctx.minRR)) ? Number(ctx.minRR) : 1.5)
+    // Claude · № 13,128 11-Oct (Codex P2 on #1317; claude-builder): when the
+    // caller already asked the gate what it will demand of this account and
+    // strategy (`ctx.rrFloor`, from effectiveRrFloor), that figure wins over
+    // the registry override — a strategy override of 1R is a floor the gate
+    // raises to 3R unless the account has earned lower, and advice below the
+    // real floor is refused a second time.
+    const asked = Number(ctx.rrFloor)
+    const rrFloor = Number.isFinite(asked) && asked > 0
+      ? asked
+      : minRrFor(ctx.strategy, Number.isFinite(Number(ctx.minRR)) ? Number(ctx.minRR) : 1.5)
     const slDistance = Math.abs(entry - sl)
     // Direction from the stop, not from `side` alone: on an analysis execution
     // the side is derived from bias and the stop is the thing actually placed,

@@ -102,6 +102,14 @@ production earned-floor report (`GET /state/earned-floor`, 06:53Z):
    list only; `currencyLegs` returns one leg for it). FX, metals and the
    per-symbol limit are unchanged (mutation M1 red). The sizing table
    (`instrumentType`, `contractSize`) is deliberately not touched by this.
+   Codex's review of the first cut (P2) named broker crypto outside the
+   list; the split now applies only when BOTH halves are currency or metal
+   codes (`isCurrencyCode`), so ETCUSD, SUIUSD, TONUSD and XBRUSD-style
+   commodity CFDs are one leg too (mutation M3 red), and the name list is
+   the broker catalogue's own at this revision. Codex's second P2: the
+   pad's bracket-gap advice now takes the floor the gate will demand of
+   this account and strategy (`effectiveRrFloor`), so an rsi2 pad order is
+   never told 1R would satisfy a 3R gate (mutation M4 red).
 3. **Not a defect, stated for the record:** with the key passed, the gate
    would still refuse fib_confluence and vp_value at 2R on this account,
    because their prior expectancy is negative (fib_confluence shrunk

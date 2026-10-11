@@ -9,10 +9,21 @@
 // behaviour is pinned in services/crypto-exposure-legs.test.js.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isCryptoSymbol, instrumentType, contractSize, CRYPTO_BASES } from './contracts.js'
+import { isCryptoSymbol, isCurrencyCode, instrumentType, contractSize, CRYPTO_BASES, CURRENCY_CODES } from './contracts.js'
+
+test('isCurrencyCode — fiat and the four metals, nothing else (Codex P2 on #1317)', () => {
+  for (const c of ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'NZD', 'CAD', 'SGD', 'HKD', 'NOK', 'SEK', 'MXN', 'ZAR', 'TRY', 'CNH', 'XAU', 'XAG', 'XPT', 'XPD']) {
+    assert.equal(isCurrencyCode(c), true, c)
+  }
+  for (const c of ['BTC', 'ETH', 'ETC', 'SUI', 'TON', 'XBR', 'XTI', 'XNG', 'US3', '', null]) {
+    assert.equal(isCurrencyCode(c), false, String(c))
+  }
+  assert.equal(isCurrencyCode('usd'), true, 'case-insensitive')
+  assert.ok(Object.isFrozen(CURRENCY_CODES) && CURRENCY_CODES.includes('USD'))
+})
 
 test('isCryptoSymbol — every broker crypto CFD, 6 or 7 letters, against any fiat quote', () => {
-  for (const s of ['BTCUSD', 'ETHUSD', 'XRPUSD', 'SOLUSD', 'BNBUSD', 'ADAUSD', 'LTCUSD', 'DOGEUSD', 'AVAXUSD', 'LINKUSD', 'DOTUSD', 'BCHUSD', 'XLMUSD', 'UNIUSD', 'TRXUSD', 'MATICUSD', 'BTCEUR', 'ETHGBP', 'BTCAUD']) {
+  for (const s of ['BTCUSD', 'ETHUSD', 'XRPUSD', 'SOLUSD', 'BNBUSD', 'ADAUSD', 'LTCUSD', 'DOGEUSD', 'AVAXUSD', 'LINKUSD', 'DOTUSD', 'BCHUSD', 'XLMUSD', 'UNIUSD', 'TRXUSD', 'MATICUSD', 'BTCEUR', 'ETHGBP', 'BTCAUD', 'ETCUSD', 'SUIUSD', 'TONUSD', 'APTUSD', 'ARBUSD', 'HBARUSD', 'PAXGUSD']) {
     assert.equal(isCryptoSymbol(s), true, s)
   }
   assert.equal(isCryptoSymbol('btcusd'), true, 'case-insensitive')

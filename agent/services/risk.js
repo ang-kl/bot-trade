@@ -16,7 +16,7 @@
 import { getState } from '../db.js'
 import { readAccountSnapshot, RISK_MARGIN_SNAPSHOT_MAX_AGE_MS } from './account-snapshot.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
-import { usdLossPerLot, tierForBalance, notionalUsd, isCryptoSymbol } from '../lib/contracts.js'
+import { usdLossPerLot, tierForBalance, notionalUsd, isCryptoSymbol, isCurrencyCode } from '../lib/contracts.js'
 import { sizingBalance } from '../lib/sizing-balance.js'
 import { cooldownCounterfactual } from '../lib/cooldown-counterfactual.js'
 import { assetClassOf } from './strategy-asset-cross.js'
@@ -973,8 +973,12 @@ export function currencyLegs(symbol, side) {
   // a USD currency leg. The 6-letter split below made BTCUSD a short-USD leg
   // and DOGEUSD a single unit; see contracts.js isCryptoSymbol.
   if (isCryptoSymbol(sym)) return { [sym]: sign }
-  // FX pairs and metals vs USD — 6-char code, split 3+3
-  if (sym.length === 6 && /^[A-Z]{6}$/.test(sym)) {
+  // FX pairs and metals — 6-char code split 3+3 ONLY when both halves are
+  // currency or metal codes (Claude · № 13,128 11-Oct, Codex P2 on #1317:
+  // a broker crypto outside the name list — ETCUSD, SUIUSD, TONUSD — and a
+  // commodity CFD named like XBRUSD would otherwise still split into a USD
+  // leg). Anything else six letters long is one instrument.
+  if (sym.length === 6 && isCurrencyCode(sym.slice(0, 3)) && isCurrencyCode(sym.slice(3, 6))) {
     return { [sym.slice(0, 3)]: sign, [sym.slice(3, 6)]: -sign }
   }
   // Everything else (indices, commodities, single-name) — treat as one leg

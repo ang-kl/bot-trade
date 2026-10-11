@@ -90,7 +90,17 @@ const TYPE_BY_SYMBOL = {
 // index or a commodity quoted in USD; this list is what `isCryptoSymbol`
 // recognises. It is a name list only: instrumentType and contractSize are
 // unchanged by it (their table above still decides sizing).
-export const CRYPTO_BASES = Object.freeze(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'ADA', 'LTC', 'DOGE', 'AVAX', 'LINK', 'DOT', 'BCH', 'XLM', 'UNI', 'TRX', 'MATIC'])
+// Claude · № 13,128 11-Oct (Codex P2 on #1317): the bases are the ones the
+// broker's own catalogue lists as <BASE><FIAT> at this revision (read from
+// every registered account's symbol map, 11-10 07:0x UTC), not a hand-picked
+// subset. A broker crypto added later is still kept out of the FX split by
+// `isCurrencyCode` below, which is what currencyLegs relies on.
+export const CRYPTO_BASES = Object.freeze([
+  'BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'ADA', 'LTC', 'DOGE', 'AVAX', 'LINK', 'DOT', 'BCH', 'XLM', 'UNI', 'TRX', 'MATIC',
+  'AAV', 'APT', 'ARB', 'ATM', 'BNK', 'COMP', 'DASH', 'EOS', 'ETC', 'FET', 'FLO', 'FTM', 'GLMR', 'HBAR', 'HYPE', 'INJ',
+  'JUP', 'KSM', 'LUNA', 'MAN', 'NER', 'OND', 'PAXG', 'PEP', 'POL', 'RENDER', 'SAN', 'SHB', 'SON', 'SUI', 'TON', 'TRUMP',
+  'USC', 'WIF', 'XAUT', 'XTZ',
+])
 const CRYPTO_QUOTES = ['USD', 'EUR', 'GBP', 'AUD', 'JPY', 'CHF', 'CAD', 'USDT', 'USDC']
 const CRYPTO_RE = new RegExp(`^(${CRYPTO_BASES.join('|')})(${CRYPTO_QUOTES.join('|')})$`)
 
@@ -100,6 +110,26 @@ export function isCryptoSymbol(symbol) {
   if (!s) return false
   if (TYPE_BY_SYMBOL[s] === 'crypto') return true
   return CRYPTO_RE.test(s)
+}
+
+// The ISO-4217 currencies a CFD broker quotes FX in, plus the four metals
+// that trade as currency pairs. A 6-letter symbol is an FX pair only when
+// BOTH halves are on this list; anything else 6 letters long (ETCUSD,
+// SUIUSD, XBRUSD) is one instrument. Deliberately a positive list: a fiat
+// code missing here would lose its legs, which is the safer direction for a
+// guard that only ever counts legs to refuse, and the list covers every
+// currency this broker streams.
+export const CURRENCY_CODES = Object.freeze([
+  'USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'NZD', 'CAD', 'SGD', 'HKD', 'NOK', 'SEK', 'DKK', 'PLN', 'CZK', 'HUF', 'TRY',
+  'ZAR', 'MXN', 'CNH', 'CNY', 'THB', 'INR', 'ILS', 'RUB', 'BRL', 'KRW', 'TWD', 'IDR', 'PHP', 'MYR', 'SAR', 'AED', 'CLP',
+  'COP', 'PEN', 'RON', 'BGN', 'ISK', 'KWD', 'QAR', 'VND',
+  'XAU', 'XAG', 'XPT', 'XPD',
+])
+const CURRENCY_SET = new Set(CURRENCY_CODES)
+
+/** True for a 3-letter fiat or metal code the broker quotes pairs in. */
+export function isCurrencyCode(code) {
+  return CURRENCY_SET.has(String(code || '').toUpperCase().trim())
 }
 
 /**
