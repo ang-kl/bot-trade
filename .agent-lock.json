@@ -550,6 +550,11 @@
       "at": "2026-10-11T14:40Z",
       "by": "claude-builder",
       "note": "#1322 merged (117e0d80): actions.js execute-trade/manual-order write after-gate refusals with persistPostApprovalVeto; opportunity-disposition.js sweep no longer counts a 'rejected' write-ahead trade as landed. No protected path. Serial ratchet 13,319."
+    },
+    {
+      "at": "2026-10-11T15:00Z",
+      "by": "claude-builder",
+      "note": "#1323 merged (a99ab09e): decision-audit tradesOpened leaves a rejected write-ahead row to its post-approval refusal (paired with the latest gate approval before it). No protected path. Serial ratchet 13,335."
     }
   ]
 }
