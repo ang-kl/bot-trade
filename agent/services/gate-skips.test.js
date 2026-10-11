@@ -142,3 +142,14 @@ test('W2: the regime-blocks report counts the captured fields from rows the reco
   const out = regimeBlocks(db, { days: 30 })
   assert.deepEqual(out.capture, { entryKnown: 2, stopKnown: 1, targetKnown: 1, convictionKnown: 1, scorable: 1 })
 })
+
+test('W2 (Codex P2 on #1325): scorable counts rows that EACH carry a stop and a target; tp2 alone is a target', () => {
+  const db = initDB(':memory:')
+  // One stop-only row and one target-only row: neither is scorable.
+  recordRegimeBlock(db, { symbol: 'A', synth: { strategy: 'x', consensus_bias: 'long', sl: 97 }, reason: REASON })
+  recordRegimeBlock(db, { symbol: 'B', synth: { strategy: 'x', consensus_bias: 'long', tp1: 110 }, reason: REASON })
+  assert.deepEqual(regimeBlocks(db, { days: 30 }).capture, { entryKnown: 0, stopKnown: 1, targetKnown: 1, convictionKnown: 0, scorable: 0 })
+  // A stop with only tp2 is scorable.
+  recordRegimeBlock(db, { symbol: 'C', synth: { strategy: 'x', consensus_bias: 'long', sl: 97, tp2: 115 }, reason: REASON })
+  assert.deepEqual(regimeBlocks(db, { days: 30 }).capture, { entryKnown: 0, stopKnown: 2, targetKnown: 2, convictionKnown: 0, scorable: 1 })
+})

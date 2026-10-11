@@ -516,7 +516,10 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
            (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk,
            -- W1: the stop at ENTRY, for the R denominator (initialRiskOf).
            t.broker_sl_initial,
-           (SELECT json_extract(re.proposal_json, '$.sl') FROM risk_events re WHERE re.id = t.risk_event_id) AS proposal_sl,
+           -- json_valid first: one malformed proposal must not abort the sweep
+           -- (SQLite raises on json_extract of bad JSON); it reads as no stop.
+           (SELECT CASE WHEN json_valid(re.proposal_json) THEN json_extract(re.proposal_json, '$.sl') END
+              FROM risk_events re WHERE re.id = t.risk_event_id) AS proposal_sl,
            EXISTS (SELECT 1 FROM momentum_book b WHERE b.trade_id = t.id) AS book_trailed
     FROM trades t
     LEFT JOIN trade_postmortems pm ON pm.trade_id = t.id

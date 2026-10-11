@@ -186,16 +186,21 @@ export function regimeBlocks(db, { strategy = null, days = REGIME_BLOCKS_DEFAULT
     .all(...(strategy ? [sinceSec, strategy] : [sinceSec]))
   const byKind = {}, byStrategy = {}, byStrategyKind = {}, bySymbol = {}, byTimeframe = {}, byBias = {}, quietByStrategy = {}
   const episodeKeys = new Set(), episodesByStrategyKind = {}
-  let entryKnown = 0, stopKnown = 0, targetKnown = 0, convictionKnown = 0
+  let entryKnown = 0, stopKnown = 0, targetKnown = 0, convictionKnown = 0, scorable = 0
   for (const r of rows) {
     const kind = kindOf(r.reason), strat = r.strategy || '(none)'
     let d = null; try { d = JSON.parse(r.detail_json || 'null') } catch { d = null }
     bump(byKind, kind); bump(byStrategy, strat); bump(bySymbol, r.symbol || '(none)'); bump(byTimeframe, r.timeframe || '(none)'); bump(byBias, d?.bias ?? '(none)')
     bump(byStrategyKind, `${strat} · ${kind}`)
     if (kind === 'trend-in-quiet') bump(quietByStrategy, strat)
+    // Per row (Codex P2 on #1325): a row is scorable only when IT carries both
+    // a stop and a target; tp2 alone is a target.
+    const hasStop = d?.sl != null || d?.stop != null
+    const hasTarget = d?.tp1 != null || d?.tp2 != null || d?.tp != null
     if (d?.entry != null) entryKnown++
-    if (d?.sl != null || d?.stop != null) stopKnown++
-    if (d?.tp1 != null || d?.tp != null) targetKnown++
+    if (hasStop) stopKnown++
+    if (hasTarget) targetKnown++
+    if (hasStop && hasTarget) scorable++
     if (d?.conviction != null) convictionKnown++
     const day = String(r.created_at || '').slice(0, 10)
     const key = `${r.symbol}|${strat}|${r.timeframe}|${kind}|${day}`
@@ -208,7 +213,7 @@ export function regimeBlocks(db, { strategy = null, days = REGIME_BLOCKS_DEFAULT
     byKind, byStrategy, byStrategyKind, episodesByStrategyKind, quietByStrategy,
     bySymbol: topOf(bySymbol, REGIME_BLOCKS_TOP), symbolsOmitted: Math.max(0, Object.keys(bySymbol).length - REGIME_BLOCKS_TOP),
     byTimeframe, byBias,
-    capture: { entryKnown, stopKnown, targetKnown, convictionKnown, scorable: Math.min(stopKnown, targetKnown) },
+    capture: { entryKnown, stopKnown, targetKnown, convictionKnown, scorable },
     note: 'Read-only count of decision_log regime_block skips (gate-skips.js recordRegimeBlock, one row per blocked cycle). rows = cycles; episodes = distinct symbol·strategy·timeframe·kind per UTC day. Rows written before W2 (12-10) carry bias, side and entry only; from W2 on, each row also carries the refused proposal stop, targets and conviction. capture counts how many rows carry each, and scorable is the rows with both a stop and a target. No refused signal is scored here. Nothing here is a trading figure the gates read.',
   }
 }

@@ -671,3 +671,18 @@ test('W1: a trade outside the book keeps its recorded stop as the risk (unchange
   const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
   assert.ok(Math.abs(pm.r_multiple - 1.5) < 1e-9, `r_multiple ${pm.r_multiple} should be 1.5`)
 })
+
+test('W1 (Codex P2 on #1325): a malformed proposal does not abort the sweep; it reads as no stop', async () => {
+  const db = initDB(':memory:')
+  const bad = db.prepare(`INSERT INTO risk_events (symbol, side, approved, proposal_json) VALUES ('US500', 'BUY', 1, '{not json')`).run().lastInsertRowid
+  // The malformed one sorts first, with no other stop: it must get no R, and
+  // the trade after it (with its broker stop) must still be classified.
+  seedBookTrade(db, { exit: 104, sl: 104, riskEventId: bad, pnl: 40 })
+  seedBookTrade(db, { exit: 104, sl: 104, brokerSlInitial: 94, pnl: 40 })
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades ORDER BY id LIMIT 1`).get().closed_at)
+  const res = await runLossPostmortems(db, async () => holdingBars(closedMs, { h: 105, l: 99, c: 104 }))
+  assert.equal(res.classified, 2)
+  const rows = db.prepare(`SELECT trade_id, r_multiple, detail FROM trade_postmortems ORDER BY trade_id`).all()
+  assert.equal(rows[0].r_multiple, null); assert.match(rows[0].detail, /no initial stop on record/)
+  assert.ok(Math.abs(rows[1].r_multiple - 4 / 6) < 1e-9)
+})
