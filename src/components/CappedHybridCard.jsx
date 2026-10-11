@@ -26,7 +26,7 @@ export function CappedHybridReading({ status, error }) {
     {rows.length === 0
       ? <p>No open position in this view.</p>
       : <div className="overflow-x-auto"><table className="w-full text-left text-(length:--fs-body)">
-        <thead><tr>{['Position', 'Strategy', 'Half at 2R'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
+        <thead><tr>{['Position', 'Strategy', 'Capped hybrid verdict'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
         <tbody>{rows.map(p => <tr key={`${p.accountId}:${p.tradeId}`} className="border-t border-[var(--color-border)]" data-verdict={p.verdict}>
           <td className="pr-3 py-2 whitespace-nowrap">{p.symbol || 'symbol not recorded'} {p.side || ''} · …{String(p.accountId || '').slice(-4)} #{p.tradeId}</td>
           <td className="pr-3">{p.strategy || 'not recorded'}</td>
@@ -58,7 +58,7 @@ export default function CappedHybridCard({ accountId }) {
   }, [accountId])
   const valid = reading?.accountId === accountId
   return <Card id="sec-capped-hybrid" className="text-(length:--fs-body)" aria-label="Capped hybrid profit-taking" scope={accountId}>
-    <h2 className="t-h3 mb-2">Profit-taking: half at 2R (capped hybrid)</h2>
+    <h2 className="t-h3 mb-2">Profit-taking: capped hybrid (a share at its trigger, the runner held)</h2>
     <CappedHybridReading status={valid ? reading.status : null} error={valid ? reading.error : null} />
   </Card>
 }

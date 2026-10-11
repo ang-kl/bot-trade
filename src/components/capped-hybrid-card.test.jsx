@@ -22,7 +22,7 @@ test('W3 card: one line per open position, enrolled first, the verdict in plain 
   ])} />)
   expect((html.match(/<tr /g) || []).length).toBe(4)
   expect(html.indexOf('US500')).toBeLessThan(html.indexOf('NVDA.US'))
-  expect(html).toContain('Enrolled: closes 50 units (half) when price reaches 104.5; the runner keeps the broker stop and take-profit 110')
+  expect(html).toContain('Enrolled: closes 50 units (50%) when price reaches 104.5; the runner keeps the broker stop and take-profit 110')
   expect(html).toContain('Not eligible: not a trend, breakout or momentum strategy (mean reversion keeps its own +1R half)')
   expect(html).toContain('Not eligible: a momentum book position, paused here because the book&#x27;s own rules manage its exit')
   expect(html).toContain('Not eligible: a manual position on an account outside the manual hybrid scope')
@@ -43,6 +43,13 @@ test('W3 card: a failed pass is said, and an empty view is not called healthy', 
   const html = renderToStaticMarkup(<CappedHybridReading status={status([], { pass: { at: 'x', ageMs: 600_000, ok: false, activePlans: 0 } })} />)
   expect(html).toContain('(10 min ago), which reported a failure')
   expect(html).toContain('No open position in this view.')
+})
+
+test('W3 words: the share closed is the plan\'s own, never assumed to be half', () => {
+  expect(verdictLine(pos(1, 'enrolled', { trigger: 125, closeVolume: 4000, runnerVolume: 6000, brokerTarget: 140 })))
+    .toBe('Enrolled: closes 4000 units (40%) when price reaches 125; the runner keeps the broker stop and take-profit 140')
+  expect(verdictLine(pos(1, 'enrolled', { trigger: 125, closeVolume: null, runnerVolume: null, brokerTarget: 140 })))
+    .toContain('(a share)')
 })
 
 test('W3 words: each verdict kind, and an unknown code shown as itself, never another reason', () => {

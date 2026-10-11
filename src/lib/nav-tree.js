@@ -81,7 +81,7 @@ export const NAV_TREE = [
           { id: 'sec-status', label: 'Status', kind: 'C' },
           { id: 'sec-signals', label: 'Signals', kind: 'T' },
           { id: 'sec-positions', label: 'Open Positions', kind: 'T' },
-          { id: 'sec-capped-hybrid', label: 'Half at 2R', kind: 'T' },
+          { id: 'sec-capped-hybrid', label: 'Capped hybrid', kind: 'T' },
           { id: 'sec-broker', label: 'At the Broker', kind: 'T+F' },
           { id: 'sec-recent', label: 'Recent Trades', kind: 'T+F' },
           { id: 'sec-orderlog', label: 'Order Log', kind: 'T+F' },

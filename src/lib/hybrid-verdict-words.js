@@ -77,8 +77,13 @@ export function verdictLine(p) {
   if (!p) return 'Not available'
   const why = reasonWords(p.reason)
   switch (p.verdict) {
-    case 'enrolled':
-      return `Enrolled: closes ${p.closeVolume ?? '?'} units (half) when price reaches ${p.trigger ?? '?'}; the runner keeps the broker stop and take-profit ${p.brokerTarget ?? '?'}`
+    case 'enrolled': {
+      // The share closed is the plan's own (W10 makes it a setting): read it
+      // from the plan's two parts, never assume a half.
+      const close = Number(p.closeVolume), runner = Number(p.runnerVolume)
+      const share = close > 0 && runner > 0 ? `${Math.round((close / (close + runner)) * 100)}%` : 'a share'
+      return `Enrolled: closes ${p.closeVolume ?? '?'} units (${share}) when price reaches ${p.trigger ?? '?'}; the runner keeps the broker stop and take-profit ${p.brokerTarget ?? '?'}`
+    }
     case 'delegated':
       return `Left to its own partial plan${p.planState ? ` (${p.planState})` : ''}`
     case 'excluded':
