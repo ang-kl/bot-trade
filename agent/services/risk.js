@@ -2269,6 +2269,23 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   if (!Number.isFinite(entry) || !Number.isFinite(sl)) {
     return veto('missing_entry_or_sl', checks, proposal)
   }
+  // Claude · № 13,254 11-Oct (owner "You decide" on the stop-side finding of
+  // № 13,243; claude-builder). A stop on the wrong side of the entry is not a
+  // stop distance. Measured 11-10 10:46Z on 47790949: UNIUSD's weekly
+  // vwap_trend long carried a stop of 7.763 with the price at 7.507 (the
+  // signal was stale — price had already fallen through it); the gate read
+  // the absolute gap as a 0.256 stop and a 15.8R target and approved. A long
+  // whose stop is above the entry, or a short whose stop is below it, is
+  // refused by name. A stop AT the entry keeps its own refusal (sl_at_entry);
+  // a side the gate does not recognise is not judged here.
+  {
+    const sideKey = String(proposal.side ?? '').trim().toLowerCase()
+    const isLongSide = sideKey === 'long' || sideKey === 'buy'
+    const isShortSide = sideKey === 'short' || sideKey === 'sell'
+    if ((isLongSide && sl > entry) || (isShortSide && sl < entry)) {
+      return veto(`sl_wrong_side: ${isLongSide ? 'long' : 'short'} stop ${sl} is ${isLongSide ? 'above' : 'below'} the entry ${entry}`, checks, proposal)
+    }
+  }
   let slDistance = Math.abs(entry - sl)
   // BROKER TRUTH FOR "ONE LOT", when the order path has recorded it.
   // contracts.js's table is the fallback and is measurably wrong on 9
