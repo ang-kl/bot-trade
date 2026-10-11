@@ -133,3 +133,33 @@ be read per rule once #1311 and step 9 are live.
 
 Conversation ref: ordered № 13,093 · reported № 13,098. Session
 https://claude.ai/code/session_01C1hz86KuE5JKVq6W2KtUE2.
+
+## 7. Corrections after the #1311 deploy (Claude · № 13,102 · 11-10'26 10:40 SGT)
+
+Read from production at 02:37:35Z on commit 67f3227 (the Codex P1 fix on
+follow-through live), over the same 151 clean trades of the last 90 days,
+R against the broker's initial stop. The §4 follow-through line is
+superseded by this table; the rest of §4 stands with the amendment review's
+caveats (`docs/amendment-review-2026-10-11.md`).
+
+| Level | Reached for certain | Possibly reached (window ended first) |
+|---|---|---|
+| +1R | 32 of 151 (21.2%) | 107 (70.9%) |
+| +2R | 9 (6.0%) | 103 (68.2%) |
+| +3R | 4 (2.6%) | 103 (68.2%) |
+
+The earlier "3.3% for certain" at +1R was the defect the review caught
+(a window that ended before the stop but had already touched +1R was not
+counted); 21.2% is the corrected lower bound. The bracket stays wide because
+102 of 151 windows end before stop or target (§1).
+
+The trade-level regime-gate tag (step 9, B5c) reads: would_block 0,
+would_pass 45, unknown 106. "Unknown" means no regime reading for the symbol
+within four hours before entry — 106 of 151 trades. The regimes table is
+too sparse to tag most entries; this is a data-coverage fact for area 5,
+not a result.
+
+Fast monitor after the deploy: 0 skipped ticks, busy share 0.161 over the
+first ten minutes after restart (baseline 0.064 before it).
+
+Conversation ref: reported № 13,102.
