@@ -1,0 +1,378 @@
+{
+ "generatedFrom": "unmodified agent/scripts/backtest-fib.js at 52b23dbf",
+ "bars": 1500,
+ "cases": {
+  "fib_confluence": {
+   "trades": 52,
+   "stats": {
+    "arrPct": -45,
+    "sortinoAnnualized": -6.51,
+    "calmarRatio": -9.37,
+    "volAnnualizedPct": 14.15,
+    "trades": 52,
+    "wins": 15,
+    "losses": 37,
+    "winRatePct": 28.85,
+    "winRatePctRaw": 28.846153846153843,
+    "profitFactorRaw": 0.776099137582149,
+    "avgProfitPct": -0.05,
+    "expectancyPct": -0.05,
+    "totalProfitPct": -2.43,
+    "profitFactor": 0.78,
+    "sharpeAnnualized": -4.15,
+    "maxDrawdownPct": 4.81,
+    "avgDurationMin": 49.62,
+    "cvar95Pct": -0.41,
+    "mddP95Pct": 8.03,
+    "exits": {
+     "sl": 37,
+     "tp": 15,
+     "time_cap": 0
+    },
+    "slClamp": null
+   },
+   "firstTrades": [
+    {
+     "dir": 1,
+     "entry": 98.20285018191043,
+     "exit": 98.5443964112167,
+     "entryT": 1750036000000,
+     "exitT": 1750038700000,
+     "pnlPct": 0.32779665628195304,
+     "reason": "tp",
+     "volRegime": null
+    },
+    {
+     "dir": -1,
+     "entry": 98.0512087352288,
+     "exit": 98.3821098990768,
+     "entryT": 1750054000000,
+     "exitT": 1750054900000,
+     "pnlPct": -0.3574779037569456,
+     "reason": "sl",
+     "volRegime": null
+    },
+    {
+     "dir": -1,
+     "entry": 99.07883503913504,
+     "exit": 99.39200627172468,
+     "entryT": 1750069300000,
+     "exitT": 1750069300000,
+     "pnlPct": -0.3360828773026445,
+     "reason": "sl",
+     "volRegime": null
+    }
+   ]
+  },
+  "rsi_meanrev": {
+   "trades": 1,
+   "stats": {
+    "arrPct": null,
+    "sortinoAnnualized": null,
+    "calmarRatio": null,
+    "volAnnualizedPct": null,
+    "trades": 1,
+    "wins": 1,
+    "losses": 0,
+    "winRatePct": 100,
+    "winRatePctRaw": 100,
+    "profitFactorRaw": null,
+    "avgProfitPct": 0.23,
+    "expectancyPct": 0.23,
+    "totalProfitPct": 0.23,
+    "profitFactor": null,
+    "sharpeAnnualized": null,
+    "maxDrawdownPct": 0,
+    "avgDurationMin": 60,
+    "cvar95Pct": 0.23,
+    "mddP95Pct": 0,
+    "exits": {
+     "sl": 0,
+     "tp": 0,
+     "time_cap": 1
+    },
+    "slClamp": null
+   },
+   "firstTrades": [
+    {
+     "dir": -1,
+     "entry": 100.38278134397584,
+     "exit": 100.13491306087917,
+     "entryT": 1750113400000,
+     "exitT": 1750117000000,
+     "pnlPct": 0.22692310750716196,
+     "reason": "time_cap",
+     "volRegime": null
+    }
+   ]
+  },
+  "ema_pullback": {
+   "trades": 14,
+   "stats": {
+    "arrPct": 169.03,
+    "sortinoAnnualized": 17.13,
+    "calmarRatio": 186.93,
+    "volAnnualizedPct": 13.1,
+    "trades": 14,
+    "wins": 7,
+    "losses": 7,
+    "winRatePct": 50,
+    "winRatePctRaw": 50,
+    "profitFactorRaw": 2.152068814801425,
+    "avgProfitPct": 0.2,
+    "expectancyPct": 0.2,
+    "totalProfitPct": 2.87,
+    "profitFactor": 2.15,
+    "sharpeAnnualized": 7.63,
+    "maxDrawdownPct": 0.9,
+    "avgDurationMin": 154.29,
+    "cvar95Pct": -0.6,
+    "mddP95Pct": 2.38,
+    "exits": {
+     "sl": 7,
+     "tp": 7,
+     "time_cap": 0
+    },
+    "slClamp": {
+     "reporting": 14,
+     "widenedToFloor": 6,
+     "widenedToFloorPct": 42.86,
+     "minMult": 0.8,
+     "maxMult": 1.64,
+     "avgMult": 1.05
+    }
+   },
+   "firstTrades": [
+    {
+     "dir": 1,
+     "entry": 98.87969048285048,
+     "exit": 100.08629917414852,
+     "entryT": 1750442800000,
+     "exitT": 1750445500000,
+     "pnlPct": 1.200279599790329,
+     "reason": "tp",
+     "slAtrMult": 1.64,
+     "slWidenedToFloor": false,
+     "volRegime": null
+    },
+    {
+     "dir": 1,
+     "entry": 107.69559570916822,
+     "exit": 108.28007723779807,
+     "entryT": 1750531000000,
+     "exitT": 1750533700000,
+     "pnlPct": 0.5227162780251874,
+     "reason": "tp",
+     "slAtrMult": 0.88,
+     "slWidenedToFloor": false,
+     "volRegime": null
+    },
+    {
+     "dir": 1,
+     "entry": 108.49551170389121,
+     "exit": 108.226180175439,
+     "entryT": 1750549000000,
+     "exitT": 1750549000000,
+     "pnlPct": -0.26824209243538066,
+     "reason": "sl",
+     "slAtrMult": 0.8,
+     "slWidenedToFloor": true,
+     "volRegime": null
+    }
+   ]
+  },
+  "vwap_trend": {
+   "trades": 22,
+   "stats": {
+    "arrPct": 365.64,
+    "sortinoAnnualized": 22.09,
+    "calmarRatio": 265.81,
+    "volAnnualizedPct": 15.68,
+    "trades": 22,
+    "wins": 12,
+    "losses": 10,
+    "winRatePct": 54.55,
+    "winRatePctRaw": 54.54545454545454,
+    "profitFactorRaw": 2.4812316042310014,
+    "avgProfitPct": 0.29,
+    "expectancyPct": 0.29,
+    "totalProfitPct": 6.39,
+    "profitFactor": 2.48,
+    "sharpeAnnualized": 9.9,
+    "maxDrawdownPct": 1.38,
+    "avgDurationMin": 210.68,
+    "cvar95Pct": -0.67,
+    "mddP95Pct": 2.99,
+    "exits": {
+     "sl": 10,
+     "tp": 12,
+     "time_cap": 0
+    },
+    "slClamp": null
+   },
+   "firstTrades": [
+    {
+     "dir": -1,
+     "entry": 98.6519040901695,
+     "exit": 97.75608539803491,
+     "entryT": 1750031500000,
+     "exitT": 1750045000000,
+     "pnlPct": 0.888060214748404,
+     "reason": "tp",
+     "volRegime": null
+    },
+    {
+     "dir": 1,
+     "entry": 98.51062600383462,
+     "exit": 99.25614443266717,
+     "entryT": 1750081000000,
+     "exitT": 1750089100000,
+     "pnlPct": 0.7367898602162309,
+     "reason": "tp",
+     "volRegime": null
+    },
+    {
+     "dir": 1,
+     "entry": 100.30089144024538,
+     "exit": 100.9573046754675,
+     "entryT": 1750119700000,
+     "exitT": 1750126000000,
+     "pnlPct": 0.6344440690371914,
+     "reason": "tp",
+     "volRegime": null
+    }
+   ]
+  },
+  "donchian_breakout": {
+   "trades": 25,
+   "stats": {
+    "arrPct": 310397.34,
+    "sortinoAnnualized": 107.39,
+    "calmarRatio": 485076.76,
+    "volAnnualizedPct": 33.1,
+    "trades": 25,
+    "wins": 18,
+    "losses": 7,
+    "winRatePct": 72,
+    "winRatePctRaw": 72,
+    "profitFactorRaw": 9.187851824916573,
+    "avgProfitPct": 1.32,
+    "expectancyPct": 1.32,
+    "totalProfitPct": 33,
+    "profitFactor": 9.19,
+    "sharpeAnnualized": 24.62,
+    "maxDrawdownPct": 0.64,
+    "avgDurationMin": 411,
+    "cvar95Pct": -0.64,
+    "mddP95Pct": 2.31,
+    "exits": {
+     "sl": 7,
+     "tp": 17,
+     "time_cap": 0
+    },
+    "slClamp": null
+   },
+   "firstTrades": [
+    {
+     "dir": 1,
+     "entry": 99.53790896149857,
+     "exit": 98.99373091609618,
+     "entryT": 1750071100000,
+     "exitT": 1750073800000,
+     "pnlPct": -0.5667043170586182,
+     "reason": "sl",
+     "volRegime": null
+    },
+    {
+     "dir": -1,
+     "entry": 99.60365703764265,
+     "exit": 98.74800634359148,
+     "entryT": 1750191700000,
+     "exitT": 1750201600000,
+     "pnlPct": 0.8390555000684289,
+     "reason": "tp",
+     "volRegime": null
+    },
+    {
+     "dir": -1,
+     "entry": 95.77113830209427,
+     "exit": 92.86257792987529,
+     "entryT": 1750222300000,
+     "exitT": 1750243900000,
+     "pnlPct": 3.0169905002532302,
+     "reason": "tp",
+     "volRegime": null
+    }
+   ]
+  },
+  "rsi2_reversion": {
+   "trades": 0,
+   "stats": {
+    "trades": 0
+   },
+   "firstTrades": []
+  },
+  "va_breakout": {
+   "trades": 7,
+   "stats": {
+    "arrPct": -57.57,
+    "sortinoAnnualized": -7.79,
+    "calmarRatio": -10.86,
+    "volAnnualizedPct": 12.54,
+    "trades": 7,
+    "wins": 1,
+    "losses": 6,
+    "winRatePct": 14.29,
+    "winRatePctRaw": 14.285714285714285,
+    "profitFactorRaw": 0.3442299029077787,
+    "avgProfitPct": -0.5,
+    "expectancyPct": -0.5,
+    "totalProfitPct": -3.48,
+    "profitFactor": 0.34,
+    "sharpeAnnualized": -6.75,
+    "maxDrawdownPct": 5.3,
+    "avgDurationMin": 370.71,
+    "cvar95Pct": -1.03,
+    "mddP95Pct": 6.71,
+    "exits": {
+     "sl": 6,
+     "tp": 0,
+     "time_cap": 0
+    },
+    "slClamp": null
+   },
+   "firstTrades": [
+    {
+     "dir": -1,
+     "entry": 98.0512087352288,
+     "exit": 98.57166640813183,
+     "entryT": 1750054000000,
+     "exitT": 1750054900000,
+     "pnlPct": -0.5508018938434972,
+     "reason": "sl",
+     "volRegime": null
+    },
+    {
+     "dir": -1,
+     "entry": 88.56621983324852,
+     "exit": 89.40300322238426,
+     "entryT": 1750284400000,
+     "exitT": 1750318600000,
+     "pnlPct": -0.964811002108048,
+     "reason": "sl",
+     "volRegime": null
+    },
+    {
+     "dir": 1,
+     "entry": 103.52246450925855,
+     "exit": 102.55312082714379,
+     "entryT": 1750895500000,
+     "exitT": 1750901800000,
+     "pnlPct": -0.9563607084799214,
+     "reason": "sl",
+     "volRegime": null
+    }
+   ]
+  }
+ }
+}

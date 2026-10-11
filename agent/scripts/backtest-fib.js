@@ -102,6 +102,19 @@ export function runBacktest(bars, opts) {
   const minRr = minRrFor(opts.strategy, opts.minRr ?? MIN_RR)
 
   const touchMode = opts.entryMode === 'touch'
+  // Claude · № 13,095 11-Oct (ordered № 13,093; claude-builder) — plan step 7,
+  // ADDITIVE research options, each OFF by default so every existing caller
+  // is byte-identical (agent/scripts/backtest-fib-golden.test.js pins it):
+  //   computeWindow  bars handed to the strategy per decision (default: all
+  //                  bars so far, O(n²) over a long tick-bar series). A run
+  //                  records it; a strategy anchored further back than the
+  //                  window sees a different history, by the caller's choice.
+  //   tpR            a fixed-R target in place of the strategy's own tp1.
+  //   rStats         trades carry sl0/risk/r and the result carries rStats.
+  const computeWindow = Number.isInteger(opts.computeWindow) && opts.computeWindow > 0 ? opts.computeWindow : null
+  const fixedTpR = Number.isFinite(opts.tpR) && opts.tpR > 0 ? opts.tpR : null
+  const rStats = opts.rStats === true
+  const targetFor = (dir, entry, sl, tp) => (fixedTpR != null ? entry + dir * fixedTpR * Math.abs(entry - sl) : tp)
   // HVN-TP G4 sweep (instr/hvn-targeted-tp-spec.md §6). tpMode:
   //   'rrFloor'   (default) — the strategy's own tp1, byte-identical to today
   //   'hvn-edge'  — replace tp1 with the HVN near-edge target when one
@@ -197,6 +210,7 @@ export function runBacktest(bars, opts) {
       // D5 — the vol regime at entry, so an ON run can be sliced by regime
       // instead of only compared in aggregate.
       volRegime: pos.volRegime ?? null,
+      ...(rStats ? { sl0: pos.sl, risk: Math.abs(pos.entry - pos.sl), r: Math.abs(pos.entry - pos.sl) > 0 ? Math.round((pos.dir * (exitPrice - pos.entry) / Math.abs(pos.entry - pos.sl)) * 1000) / 1000 : null } : {}),
     })
     cooldownUntil = exitT + cooldownMs
     pos = null
@@ -239,7 +253,7 @@ export function runBacktest(bars, opts) {
     // (first registry entry = fib). Touch (resting-order) mode only applies
     // to pendingCapable strategies — others always enter at market.
     const strat = strategyByKey(opts.strategy) || STRATEGY_REGISTRY[0]
-    const signal = strat.compute(bars.slice(0, i + 1), timeframe, {
+    const signal = strat.compute(bars.slice(computeWindow ? Math.max(0, i + 1 - computeWindow) : 0, i + 1), timeframe, {
       rsiFilter: opts.rsiFilter || null,
       vwapFilter: opts.vwapFilter || null,
       fvgFilter: opts.fvgFilter || null,
@@ -301,7 +315,7 @@ export function runBacktest(bars, opts) {
         dir: dir0,
         level: signal.entry, // = level618 in pendingSetup mode
         sl: widenStop(dir0, signal.entry, signal.sl, verdict),
-        tp: tpFor(dir0, signal.entry, widenStop(dir0, signal.entry, signal.sl, verdict), signal.tp1, i),
+        tp: targetFor(dir0, signal.entry, widenStop(dir0, signal.entry, signal.sl, verdict), tpFor(dir0, signal.entry, widenStop(dir0, signal.entry, signal.sl, verdict), signal.tp1, i)),
         capMs,
         expireT: next.t + capMs,
         slAtrMult: signal.sl_atr_mult,
@@ -314,7 +328,7 @@ export function runBacktest(bars, opts) {
       dir: dir0,
       entry: next.o, // fill at next bar's open, not the signal close
       sl: widenStop(dir0, next.o, signal.sl, verdict),
-      tp: tpFor(dir0, next.o, widenStop(dir0, next.o, signal.sl, verdict), signal.tp1, i),
+      tp: targetFor(dir0, next.o, widenStop(dir0, next.o, signal.sl, verdict), tpFor(dir0, next.o, widenStop(dir0, next.o, signal.sl, verdict), signal.tp1, i)),
       entryT: next.t,
       capMs: signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 0,
       slAtrMult: signal.sl_atr_mult,
@@ -332,6 +346,39 @@ export function runBacktest(bars, opts) {
     trades,
     stats: computeStats(trades),
     ...(volGateOn ? { volGate: volStats } : {}),
+    ...(rStats ? { rStats: computeRStats(trades), research: { computeWindow, tpR: fixedTpR } } : {}),
+  }
+}
+
+/**
+ * Claude · № 13,095 11-Oct (plan step 7). The R-based figures a bar-form
+ * comparison is read on, over trades that carry `r` (opts.rStats). A trade
+ * without a usable stop distance is counted, not scored. The expectancy
+ * lower bound is mean − 1.96·sd/√n (the same bar tick-validation reads);
+ * tailShareR is the share of gross R-wins held by the top decile of wins,
+ * the "is the edge a few outliers" number.
+ */
+export function computeRStats(trades) {
+  const rs = trades.map(t => t.r).filter(r => Number.isFinite(r))
+  const n = rs.length
+  const round3 = x => Math.round(x * 1000) / 1000
+  if (n === 0) return { trades: trades.length, usable: 0 }
+  const wins = rs.filter(r => r > 0).sort((a, b) => b - a), losses = rs.filter(r => r < 0)
+  const grossWin = wins.reduce((s, r) => s + r, 0), grossLoss = Math.abs(losses.reduce((s, r) => s + r, 0))
+  const mean = rs.reduce((s, r) => s + r, 0) / n
+  const sd = Math.sqrt(rs.reduce((s, r) => s + (r - mean) ** 2, 0) / n)
+  let equity = 0, peak = 0, maxDd = 0
+  for (const r of rs) { equity += r; if (equity > peak) peak = equity; if (peak - equity > maxDd) maxDd = peak - equity }
+  const topDecile = wins.slice(0, Math.max(1, Math.ceil(wins.length / 10)))
+  return {
+    trades: trades.length, usable: n, wins: wins.length, losses: losses.length,
+    winRatePct: round3((wins.length / n) * 100),
+    profitFactorR: grossLoss > 0 ? round3(grossWin / grossLoss) : null,
+    expectancyR: round3(mean),
+    expectancyLowerR: round3(mean - 1.96 * sd / Math.sqrt(n)),
+    totalR: round3(rs.reduce((s, r) => s + r, 0)),
+    maxDrawdownR: round3(maxDd),
+    tailShareR: grossWin > 0 ? round3(topDecile.reduce((s, r) => s + r, 0) / grossWin) : null,
   }
 }
 
