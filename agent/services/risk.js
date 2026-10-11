@@ -721,17 +721,20 @@ export function effectiveRrFloor(db, accountId = null, strategy = null) {
  * the gate's own strict comparison. expectancyVerdict quotes `need` rounded
  * to the nearest hundredth for its message; a proposer that builds a target
  * at that quoted ratio can land a hair under minE (3 wins in 22 closes at
- * minE 0.15: quoted 7.43R, E(7.43) = 0.1495R, refused). rrNeededFor rounds
- * up and re-checks at the gate's rounding, so what this returns passes.
- * Pure: a thin sample or an unusable win rate leaves `floor` as it is.
+ * minE 0.15: quoted 7.43R, E(7.43) = 0.1495R, refused). The figure returned
+ * is verified with the gate's OWN comparison (expectancyVerdict on the raw
+ * expectancy) and raised a hundredth at a time until it clears — never a
+ * different rounding rule that could disagree with the gate either way. A
+ * quoted 3.00 hiding a raw 3.004 therefore returns 3.01, and a 25% win rate
+ * whose exact 3.6 the gate admits stays 3.6. Pure: a thin sample or an
+ * unusable win rate leaves `floor` as it is.
  */
 export function expectancyFloorFor(stats, floor, minE) {
   const ev = expectancyVerdict(stats, floor, { minE })
-  if (ev.need == null || !Number.isFinite(ev.W)) return floor
-  // Judged on the rounded-up ratio, not the quoted one: a quoted 3.00 can
-  // hide a raw 3.004, at which the gate refuses exactly 3R.
-  const needUp = rrNeededFor(ev.W, minE)
-  return needUp != null && needUp > floor ? needUp : floor
+  if (ev.need == null) return floor
+  let rr = Math.max(floor, ev.need)
+  for (let i = 0; i < 100 && !expectancyVerdict(stats, rr, { minE }).ok; i++) rr = Math.round((rr + 0.01) * 100) / 100
+  return rr
 }
 
 /**
