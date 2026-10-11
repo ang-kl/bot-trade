@@ -68,6 +68,21 @@ test('effectiveRrFloor is what the pad passes: never below HARD_MIN_RR on a fres
   assert.equal(adv.suggestion, 1.13)
 })
 
+// Codex P2 on #1317, round 8: the snapped price must still read at or above
+// the floor to a gate that judges the ratio at two decimals.
+test('a target that price precision rounds back under the floor is advanced a tick until the gate-visible ratio clears', () => {
+  const gateRatio = (tp, entry, sl) => Math.round((Math.abs(tp - entry) / Math.abs(entry - sl)) * 100) / 100
+  const adv = describeBracketGap('guard_no_target', { symbol: 'XYZ', side: 'BUY', entry: 100, sl: 99.7, digits: 2, strategy: 'vwap_trend', minRR: 3, rrFloor: 3.01 })
+  assert.equal(adv.suggestion, 100.91, '100.903 snaps to 100.90 (3.00R, under 3.01); one tick up reads 3.03R')
+  assert.ok(gateRatio(adv.suggestion, 100, 99.7) >= 3.01)
+  const short = describeBracketGap('guard_no_target', { symbol: 'XYZ', side: 'SELL', entry: 100, sl: 100.3, digits: 2, strategy: 'vwap_trend', minRR: 3, rrFloor: 3.01 })
+  assert.equal(short.suggestion, 99.09, 'the short side advances downward')
+  assert.ok(gateRatio(short.suggestion, 100, 100.3) >= 3.01)
+  // a target that already clears is left exactly where the floor puts it
+  const clean = describeBracketGap('guard_no_target', { ...ctx, strategy: 'vwap_trend', minRR: 3, rrFloor: 3 })
+  assert.equal(clean.suggestion, 1.13)
+})
+
 test('a malformed rrFloor is ignored, not trusted', () => {
   for (const bad of [0, -1, NaN, 'abc', null]) {
     const adv = describeBracketGap('guard_no_target', { ...ctx, strategy: 'rsi2_reversion', minRR: 3, rrFloor: bad })
