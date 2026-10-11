@@ -9,7 +9,7 @@ import { freshBrokerStamp } from './momentum-broker-evidence.js'
 // time never renews a broker quote, and scan prices are not position quotes.
 const HELD_QUOTE_MAX_AGE_MS = 5000
 
-function positionRecordedUpperBound(pos) {
+export function positionRecordedUpperBound(pos) {
   if (typeof pos.created_at !== 'string' || !pos.created_at.trim()) return NaN
   const text = pos.created_at.trim().replace(' ', 'T')
   const recorded = Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : `${text}Z`)
@@ -23,6 +23,30 @@ function positionRecordedUpperBound(pos) {
 }
 
 /** Fresh account-owned quotes for the main monitor, without map refreshes. */
+/**
+ * The row's own account credentials and THAT account's symbol id, or null.
+ * Absent or unreadable ownership yields nothing — never the primary account's
+ * map. Shared with paused-excursion.js so the bar fetch for a paused row
+ * resolves ownership by the same rule as the monitor's quote.
+ * Claude · № 13,281 11-Oct (extracted unchanged from refreshHeldPositionPrices; claude-builder)
+ */
+export function ownedSymbolTarget(db, pos, at) {
+  const accountId = pos?.account_id == null ? null : String(pos.account_id)
+  const symbol = String(pos?.symbol || '').toUpperCase()
+  if (!accountId || !symbol) return null
+  try {
+    const creds = credsForRegisteredAccount(db, accountId)
+    if (!creds?.ready) return null
+    const own = JSON.parse(getState(db, accountSymbolMapKey(accountId)) || 'null')
+    const built = Date.parse(own?.builtAt)
+    if (String(own?.accountId) !== accountId || !own?.map || typeof own.map !== 'object' || Array.isArray(own.map)
+      || !Number.isFinite(built) || built > at || !accountSymbolMapIsFresh(own, at)) return null
+    const symbolId = own.map[symbol]
+    if (!Number.isSafeInteger(Number(symbolId)) || Number(symbolId) <= 0) return null
+    return { accountId, symbol, creds, symbolId }
+  } catch { return null /* absent/unreadable ownership: no quote and no primary fallback */ }
+}
+
 export async function refreshHeldPositionPrices(db, positions, { readQuote = readMomentumTimedQuote, now = Date.now, concurrency = 4 } = {}) {
   const requests = new Map(), receipts = new Map()
   for (const pos of positions) {
@@ -31,18 +55,9 @@ export async function refreshHeldPositionPrices(db, positions, { readQuote = rea
     if (!accountId || !symbol) continue
     const key = `${accountId}|${symbol}`
     if (requests.has(key)) continue
-    try {
-      const creds = credsForRegisteredAccount(db, accountId)
-      if (!creds?.ready) continue
-      const own = JSON.parse(getState(db, accountSymbolMapKey(accountId)) || 'null')
-      const built = Date.parse(own?.builtAt)
-      const at = now()
-      if (String(own?.accountId) !== accountId || !own?.map || typeof own.map !== 'object' || Array.isArray(own.map)
-        || !Number.isFinite(built) || built > at || !accountSymbolMapIsFresh(own, at)) continue
-      const symbolId = own.map[symbol]
-      if (!Number.isSafeInteger(Number(symbolId)) || Number(symbolId) <= 0) continue
-      requests.set(key, { creds, symbolId, symbol })
-    } catch { /* absent/unreadable ownership: no quote and no primary fallback */ }
+    const target = ownedSymbolTarget(db, pos, now())
+    if (!target) continue
+    requests.set(key, { creds: target.creds, symbolId: target.symbolId, symbol })
   }
   const pending = [...requests.entries()]
   const width = Math.max(1, Math.min(4, Math.floor(Number(concurrency)) || 4))

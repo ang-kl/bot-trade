@@ -1548,6 +1548,10 @@ export function initDB(dbPath, startupDiagnosticOptions) {
     // only when the feature is switched from shadow to acting; the shadow pass
     // reads it and never sets it.
     ['early_trimmed',        'INTEGER DEFAULT 0'],
+    // Claude · № 13,281 11-Oct (owner "fill in the history from bars"; claude-builder)
+    // Once-per-row stamp of the bar backfill of mfe_r/mae_r on a PAUSED row
+    // (services/paused-excursion.js): what it covered and from which bars.
+    ['excursion_backfill_json', 'TEXT'],
   ];
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {

@@ -5795,6 +5795,19 @@ async function runLoop(db) {
       // record persists it on its own 30-second cadence).
       stampFirst('slowMonitor', { positions: activePositions.length })
 
+      // Claude · № 13,281 11-Oct (owner "record from now on and fill in the
+      // history from bars", ordered № 13,277·D·2; claude-builder)
+      // MAE/MFE on the rows the pass above skips — PAUSED rows, the momentum
+      // book's own positions among them. Numbers only, nothing decided or
+      // sent (services/paused-excursion.js). The bar history runs detached,
+      // so a slow broker never holds the loop; a failure is never fatal.
+      try {
+        const { recordPausedExcursions } = await import('./services/paused-excursion.js')
+        await recordPausedExcursions(db, { log })
+      } catch (err) {
+        log(`Paused-row MAE/MFE skipped (non-fatal): ${err.message}`)
+      }
+
       // ---------------------------------------------------------------------
       // 4a-bis. ADAPTIVE BREAKER — the machine response to a loss streak:
       // change strategy/filters via the stage matrix instead of pausing
