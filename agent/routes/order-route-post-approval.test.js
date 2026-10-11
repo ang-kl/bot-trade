@@ -28,7 +28,7 @@ import { _resetEntryHoursRefresh } from '../services/entry-hours.js'
 import { PT, _setWebSocketForTests } from '../lib/ctrader-ws.js'
 import { auditDecisions } from '../services/decision-audit.js'
 import { sweepDispositions } from '../services/opportunity-disposition.js'
-import { POST_APPROVAL_FLAG } from '../services/risk.js'
+import { POST_APPROVAL_FLAG, persistRiskEvent } from '../services/risk.js'
 import actionsRouter from './actions.js'
 
 const A = '4242'
@@ -165,6 +165,26 @@ test('execute-trade: a guard refusal thrown at the send, after the write-ahead r
   assert.equal(trade.status, 'rejected', 'the write-ahead row is marked rejected')
   const { approval } = assertAccounted(db, 'execute-trade (thrown at the send)')
   assert.equal(trade.risk_event_id, approval.id, 'and it is linked to the approval')
+})
+
+// Codex P2 on #1322 (second round): /health counted that rejected write-ahead
+// row as a landed trade AND its refusal as a resolution — one attempt
+// accounting for two approvals — so a genuine silent drop on the same day
+// was hidden. The rejected row now counts once, as its refusal.
+test('the health audit counts a refused write-ahead attempt once, so a real silent drop beside it still shows', async t => {
+  const db = fresh(); t.after(() => db.close())
+  setState(db, 'exec_guard_json', 'null')
+  const { post } = await serve(t, db)
+  const analysisId = db.prepare(`INSERT INTO analyses (symbol, consensus_bias, overall_conviction, synthesis, entry_price, sl_price, tp1_price, strategy, analyzed_at)
+    VALUES (?, 'long', 9, '{}', 1.1, 1.09, NULL, 'ema_pullback', ?)`).run(SYM, new Date().toISOString()).lastInsertRowid
+  const res = await post('execute-trade', { analysisId: Number(analysisId) })
+  assert.match(res.reason, /^guard_no_target: /)
+  assert.equal(auditDecisions(db, { accountId: A }).silentDrops, 0, 'the refused attempt alone is accounted for')
+  // a genuine silent drop: approved, nothing landed, nothing refused
+  persistRiskEvent(db, { symbol: 'GBPUSD', side: 'BUY', entry: 1.3, sl: 1.29, tp1: 1.34, accountId: A, strategy: 'ema_pullback' }, { approved: true, checks: {} })
+  const audit = auditDecisions(db, { accountId: A })
+  assert.equal(audit.silentDrops, 1, `the real drop is not hidden by the double count (${audit.because})`)
+  assert.equal(audit.verdict, 'silent_drop')
 })
 
 test('a refusal BEFORE the gate stays a plain veto: a typed lots below the broker minimum was never approved', async t => {

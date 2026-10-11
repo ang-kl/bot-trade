@@ -45,7 +45,8 @@
 // throws. An auditor that can break trading is worse than no auditor.
 // ---------------------------------------------------------------------------
 
-import { fxDayStartSql } from './risk.js'
+import { fxDayStartSql, POST_APPROVAL_FLAG } from './risk.js'
+import { DEFAULT_GRACE_MIN } from './opportunity-disposition.js'
 
 /** How long an open market may produce nothing before that is worth saying. */
 export const QUIET_ALERT_MIN = Math.max(15, Number(process.env.DECISION_AUDIT_QUIET_MIN) || 90)
@@ -239,10 +240,41 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     // `opened_at`, not `created_at` — trades has no created_at column, and a
     // query naming one would throw into the catch below and report every day
     // as idle.
+    //
+    // A WRITE-AHEAD ROW REFUSED AT THE SEND IS COUNTED ONCE (Codex P2 on #1322;
+    // Claude · № 13,323 11-Oct). /actions/execute-trade writes its trade row
+    // before the send, marks it 'rejected' when a guard_ refusal is thrown
+    // there, and records that refusal as a post-approval veto — which is
+    // counted below as a resolution. Counting the rejected row here as well
+    // made one attempt account for two approvals and could hide a real silent
+    // drop. Such a row is left to its refusal: a rejected row whose approval
+    // has a post-approval refusal on the same account, symbol and side inside
+    // the dispositions' grace window (opportunity-disposition.js, the same
+    // pairing), with no other gate approval on that tuple between the two —
+    // a later approval in between owns the refusal. Any other row counts as
+    // before.
+    const graceDays = DEFAULT_GRACE_MIN / 1440
     const tradesOpened = int(db.prepare(`
-      SELECT COUNT(*) AS n FROM trades
-       WHERE REPLACE(opened_at, 'T', ' ') >= ?${acctSql}
-    `).get(dayStart, ...acctArgs)?.n)
+      SELECT COUNT(*) AS n FROM trades t
+       WHERE REPLACE(t.opened_at, 'T', ' ') >= ?${acctSql.replace(/\baccount_id\b/g, 't.account_id')}
+         AND NOT (t.status = 'rejected' AND EXISTS (
+           SELECT 1 FROM risk_events a JOIN risk_events x
+             ON x.id > a.id AND x.approved = 0
+            AND x.checks_json LIKE '%"${POST_APPROVAL_FLAG}"%'
+            AND UPPER(x.symbol) = UPPER(a.symbol) AND UPPER(COALESCE(x.side, '')) = UPPER(COALESCE(a.side, ''))
+            AND COALESCE(x.account_id, '') = COALESCE(a.account_id, '')
+            AND julianday(x.created_at) <= julianday(a.created_at) + ?
+           WHERE a.id = t.risk_event_id AND a.approved = 1
+             -- the refusal belongs to the LATEST approval before it on the
+             -- tuple: a later approval in between owns it (Codex P2 on #1323)
+             AND NOT EXISTS (
+               SELECT 1 FROM risk_events y
+                WHERE y.id > a.id AND y.id < x.id AND y.approved = 1
+                  AND COALESCE(y.checks_json, '') NOT LIKE '%_placed":true%'
+                  AND COALESCE(y.checks_json, '') NOT LIKE '%_placed": true%'
+                  AND UPPER(y.symbol) = UPPER(a.symbol) AND UPPER(COALESCE(y.side, '')) = UPPER(COALESCE(a.side, ''))
+                  AND COALESCE(y.account_id, '') = COALESCE(a.account_id, ''))))
+    `).get(dayStart, ...acctArgs, graceDays)?.n)
 
     // THE SILENT DROP. The gate said yes N times and fewer than N trades
     // exist. Not proof on its own — an approval can legitimately become a
