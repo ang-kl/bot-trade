@@ -46,7 +46,7 @@ test('the gap vocabulary is the tick research loader\'s, and tsmom is excluded',
   assert.deepEqual([timeframeLabel(15_000), timeframeLabel(60_000), timeframeLabel(300_000), timeframeLabel(3_600_000)], ['15s', '1m', '5m', '1h'])
 })
 
-test('quotesFromSegment: normalised quotes per symbol; a continuity gap is a marker for every symbol, a recorder-only gap is counted and resets nothing', t => {
+test('quotesFromSegment: normalised quotes per symbol; every gap is a marker for every symbol; only a continuity gap resets the warm-up', t => {
   const dir = mkdtempSync(join(tmpdir(), 'bfr-core-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
   const [a] = writeSegments(dir, [{ start: T0, seconds: 120, withGap: { atSecond: 60, code: 3 } }]) // reconnect at +60 s
   const r = quotesFromSegment(a)
@@ -55,7 +55,8 @@ test('quotesFromSegment: normalised quotes per symbol; a continuity gap is a mar
   assert.equal(r.bySymbol.get(1)[0].bid, Math.round((100 + Math.sin(0) * 0.5) * P))
   const [b] = writeSegments(dir, [{ start: T0 + 200_000, seconds: 120, withGap: { atSecond: 60, code: 1 } }]) // queue_overflow
   const r2 = quotesFromSegment(b)
-  assert.equal(r2.gapsByReason.queue_overflow, 1); assert.equal(r2.warmupResets, 0); assert.equal(r2.bySymbol.get(1).filter(q => q.gapMarker).length, 0)
+  // A recorder-only gap resets no warm-up but IS a hole for the bars (Codex P1 on #1310).
+  assert.equal(r2.gapsByReason.queue_overflow, 1); assert.equal(r2.warmupResets, 0); assert.deepEqual(r2.bySymbol.get(1).filter(q => q.gapMarker).map(q => q.recorderOnly), [true])
   assert.equal(quotesFromSegment(b, { symbolIds: new Set([2]) }).bySymbol.size, 1)
 })
 

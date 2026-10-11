@@ -148,8 +148,11 @@ export function tickBars(quotes, { n, price = 'bid', maxSilenceMs = null, scale 
     if (!countsAsTick(q)) {
       dropped[dropReason(q)]++
       if (isGap(q)) {
-        // The bar in progress straddles a hole: invalid, closed where it stands.
-        if (cur) { cur.invalid = INVALID.GAP; finish(cur, lastTickMs ?? cur.t); cur = null }
+        // The bar in progress straddles a hole: invalid, closed where it
+        // stands. A hole between two COMPLETE bars (nothing in progress) is a
+        // zero-tick boundary marker, so the runs still split there (Codex P1
+        // on #1310: a consumer must never read across missing data).
+        if (cur) { cur.invalid = INVALID.GAP; finish(cur, lastTickMs ?? cur.t); cur = null } else all.push({ t: lastTickMs ?? (all.length ? all[all.length - 1].t : 0), invalid: INVALID.GAP, n: 0, boundary: true })
         lastTickMs = null
       }
       continue

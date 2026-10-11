@@ -200,8 +200,13 @@ export function exitCounterfactualExtended(db, {
     const ok = ex.filter(x => x.ok)
     follow = { n: eligible.length, measurable: ok.length, truncated: ok.filter(x => x.truncated).length, levels: {} }
     for (const k of ks) {
-      const low = ok.filter(x => x.peakRBeforeStopBar >= k && !x.truncated).length // reached for sure (truncated counted as not reached)
-      const high = ok.filter(x => x.peakRInclStopBar >= k || x.truncated).length // stop-bar extreme counted, truncated counted as reached
+      // Codex P1 on #1309 (Claude · № 13,098): a window that ends before the
+      // stop but already touched +kR reached it for certain — the touch came
+      // before any stop. So `low` counts every bar-before-stop peak at or
+      // past k, truncated or not; `high` adds the stop bar's own extreme and
+      // counts a truncated window as possibly reaching later.
+      const low = ok.filter(x => x.peakRBeforeStopBar >= k).length
+      const high = ok.filter(x => x.peakRInclStopBar >= k || x.truncated).length
       follow.levels[`+${k}R`] = { reachedLow: low, reachedHigh: high, shareLowPct: ok.length ? round(low / ok.length * 100, 1) : null, shareHighPct: ok.length ? round(high / ok.length * 100, 1) : null }
     }
   }

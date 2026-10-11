@@ -165,9 +165,12 @@ test('follow-through is a bracket: under the recorded stop the peak before the s
   assert.equal(rec.followThrough.measurable, 2); assert.equal(rec.followThrough.truncated, 0)
   assert.deepEqual(rec.followThrough.levels['+3R'], { reachedLow: 2, reachedHigh: 2, shareLowPct: 100, shareHighPct: 100 })
   const ini = exitCounterfactualExtended(db, { stop: 'initial', followThrough: true, followThroughR: [1, 2, 3], minSample: 1 })
-  // Initial stop never hit → truncated: "reached for sure" is 0, "possibly reached" is all.
+  // Initial stop never hit → truncated. The peak before the end (102.4 → 2.4R under risk 1) is a CERTAIN reach of +1R and +2R
+  // (it came before any stop); +3R is only "possibly later", so its low bound is 0 and its high bound is all.
   assert.equal(ini.followThrough.truncated, 2)
-  assert.deepEqual(ini.followThrough.levels['+1R'], { reachedLow: 0, reachedHigh: 2, shareLowPct: 0, shareHighPct: 100 })
+  assert.deepEqual(ini.followThrough.levels['+1R'], { reachedLow: 2, reachedHigh: 2, shareLowPct: 100, shareHighPct: 100 })
+  assert.deepEqual(ini.followThrough.levels['+2R'], { reachedLow: 2, reachedHigh: 2, shareLowPct: 100, shareHighPct: 100 })
+  assert.deepEqual(ini.followThrough.levels['+3R'], { reachedLow: 0, reachedHigh: 2, shareLowPct: 0, shareHighPct: 100 })
   assert.deepEqual(ini.sweeps.followThroughR, [1, 2, 3])
 })
 

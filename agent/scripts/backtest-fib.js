@@ -289,12 +289,15 @@ export function runBacktest(bars, opts) {
       if (!ok) { volStats.confirmationsTimedOut++; continue }
       // Skip the bars we waited through so the loop cannot re-enter on them.
       const entryBar = bars[i + need + 1]
+      const confirmSl = widenStop(dir0, entryBar.o, signal.sl, verdict)
       if (!entryBar) continue
       pos = {
         dir: dir0,
         entry: entryBar.o,
-        sl: widenStop(dir0, entryBar.o, signal.sl, verdict),
-        tp: tpFor(dir0, entryBar.o, widenStop(dir0, entryBar.o, signal.sl, verdict), signal.tp1, i + need),
+        sl: confirmSl,
+        // Codex P1 on #1310: the confirmation entry takes the fixed-R target
+        // too, else a volGate run mixes targets across its entries.
+        tp: targetFor(dir0, entryBar.o, confirmSl, tpFor(dir0, entryBar.o, widenStop(dir0, entryBar.o, signal.sl, verdict), signal.tp1, i + need)),
         entryT: entryBar.t,
         capMs: signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 0,
         slAtrMult: signal.sl_atr_mult,
@@ -311,11 +314,16 @@ export function runBacktest(bars, opts) {
       // Park a limit at the level instead of entering at market. TTL = the
       // signal's own time cap — a zone older than its trade horizon is stale.
       const capMs = signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 86_400_000
+      // Codex P2 on #1310: widenStop counts every call (volStats.stopsWidened),
+      // so the position's stop is computed as many times as before this
+      // option existed (twice: the sl field and tpFor's argument) and the
+      // fixed-R target reuses the first value.
+      const pendingSl = widenStop(dir0, signal.entry, signal.sl, verdict)
       pending = {
         dir: dir0,
         level: signal.entry, // = level618 in pendingSetup mode
-        sl: widenStop(dir0, signal.entry, signal.sl, verdict),
-        tp: targetFor(dir0, signal.entry, widenStop(dir0, signal.entry, signal.sl, verdict), tpFor(dir0, signal.entry, widenStop(dir0, signal.entry, signal.sl, verdict), signal.tp1, i)),
+        sl: pendingSl,
+        tp: targetFor(dir0, signal.entry, pendingSl, tpFor(dir0, signal.entry, widenStop(dir0, signal.entry, signal.sl, verdict), signal.tp1, i)),
         capMs,
         expireT: next.t + capMs,
         slAtrMult: signal.sl_atr_mult,
@@ -324,11 +332,12 @@ export function runBacktest(bars, opts) {
       }
       continue
     }
+    const marketSl = widenStop(dir0, next.o, signal.sl, verdict)
     pos = {
       dir: dir0,
       entry: next.o, // fill at next bar's open, not the signal close
-      sl: widenStop(dir0, next.o, signal.sl, verdict),
-      tp: targetFor(dir0, next.o, widenStop(dir0, next.o, signal.sl, verdict), tpFor(dir0, next.o, widenStop(dir0, next.o, signal.sl, verdict), signal.tp1, i)),
+      sl: marketSl,
+      tp: targetFor(dir0, next.o, marketSl, tpFor(dir0, next.o, widenStop(dir0, next.o, signal.sl, verdict), signal.tp1, i)),
       entryT: next.t,
       capMs: signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 0,
       slAtrMult: signal.sl_atr_mult,
@@ -346,7 +355,10 @@ export function runBacktest(bars, opts) {
     trades,
     stats: computeStats(trades),
     ...(volGateOn ? { volGate: volStats } : {}),
-    ...(rStats ? { rStats: computeRStats(trades), research: { computeWindow, tpR: fixedTpR } } : {}),
+    ...(rStats ? { rStats: computeRStats(trades) } : {}),
+    // Codex P2 on #1310: the provenance descriptor rides whenever ANY research
+    // option changed the run, not only with rStats.
+    ...(rStats || computeWindow != null || fixedTpR != null ? { research: { computeWindow, tpR: fixedTpR } } : {}),
   }
 }
 

@@ -38,10 +38,11 @@ export const RECORDER_ONLY_GAPS = new Set(['queue_overflow', 'reserve_pause'])
 
 /**
  * One segment file → the normalised quote list per symbol, the SAME shape
- * and gap semantics as tick-research-run.js loadSegments (a repeat carries
- * the last quote's sides and changed:false; a continuity-breaking gap is a
- * marker every builder treats as a hole; recorder-only gaps are counted
- * but do not reset). Kept here so the research core reaches no live door.
+ * as tick-research-run.js loadSegments (a repeat carries the last quote's
+ * sides and changed:false) with ONE difference: every gap, recorder-only
+ * included, is a marker the builders treat as a hole (bars are about data,
+ * not about whether the live strategy kept running); only continuity
+ * breaks count as warm-up resets. Kept here so the core reaches no live door.
  */
 export function quotesFromSegment(file, { symbolIds = null } = {}) {
   const buf = readFileSync(file)
@@ -53,7 +54,13 @@ export function quotesFromSegment(file, { symbolIds = null } = {}) {
     if (ev.gap) {
       gapsByReason[ev.reason] = (gapsByReason[ev.reason] || 0) + 1
       lastValid.clear()
-      if (!RECORDER_ONLY_GAPS.has(ev.reason)) { warmupResets++; for (const list of bySymbol.values()) list.push({ gapMarker: true }) }
+      // Every gap is a hole in the BAR data (Codex P1 on #1310: the tick
+      // research loader marks only continuity breaks because its strategy
+      // kept running through a recorder-only drop; a bar built over dropped
+      // quotes is still a bar over missing data). Warm-up resets keep the
+      // loader's rule: continuity breaks only.
+      if (!RECORDER_ONLY_GAPS.has(ev.reason)) warmupResets++
+      for (const list of bySymbol.values()) list.push({ gapMarker: true, reason: ev.reason, recorderOnly: RECORDER_ONLY_GAPS.has(ev.reason) })
       continue
     }
     if (ev.repeat) {

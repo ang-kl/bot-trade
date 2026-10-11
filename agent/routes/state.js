@@ -1887,15 +1887,23 @@ export default function stateRouter(db) {
         if (family && !/^[a-z_]{1,32}$/.test(family)) return res.status(400).json({ error: 'family must be a registry family', code: 'exit_counterfactual_invalid_family' })
         const list = v => (v == null || v === '' ? null : String(v).split(',').map(x => x.trim()).filter(Boolean))
         res.set('Cache-Control', 'no-store')
-        return res.json(await readExitCounterfactualExtended(db, {
-          days, minSample, stop, preset, groupBy, family,
-          tpR: list(req.query.tpR), trailR: list(req.query.trailR), followThroughR: list(req.query.followThroughR),
-          design: String(req.query.design || '') === '1', followThrough: String(req.query.followThrough || '') === '1',
-          cleanOnly: String(req.query.allOrigins || '') !== '1',
-          accountId: scope.all ? null : (scope.accountId ?? null),
-          strategy: req.query.strategy ? String(req.query.strategy) : null,
-          excludeStrategy: req.query.excludeStrategy ? String(req.query.excludeStrategy) : null,
-        }))
+        try {
+          return res.json(await readExitCounterfactualExtended(db, {
+            days, minSample, stop, preset, groupBy, family,
+            tpR: list(req.query.tpR), trailR: list(req.query.trailR), followThroughR: list(req.query.followThroughR),
+            design: String(req.query.design || '') === '1', followThrough: String(req.query.followThrough || '') === '1',
+            cleanOnly: String(req.query.allOrigins || '') !== '1',
+            accountId: scope.all ? null : (scope.accountId ?? null),
+            strategy: req.query.strategy ? String(req.query.strategy) : null,
+            excludeStrategy: req.query.excludeStrategy ? String(req.query.excludeStrategy) : null,
+          }))
+        } catch (error) {
+          // Codex P2 on #1309: a full pool, a timed-out worker or a failed read
+          // is "temporarily unavailable" (503 with a retry hint), never a 500
+          // carrying the driver's words.
+          if (sendReportUnavailable(res, error, { message: 'The exit counterfactual is temporarily unavailable. Please retry.', code: 'exit_counterfactual_unavailable' })) return
+          return res.status(500).json({ error: 'The exit counterfactual failed.', code: 'exit_counterfactual_failed' })
+        }
       }
       // ?trailR=0.5,0.75,1.5,2 — sweep extra trail distances over the same
       // population (bounded, validated; see parseTrailSweep).
