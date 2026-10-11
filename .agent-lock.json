@@ -555,6 +555,11 @@
       "at": "2026-10-11T15:00Z",
       "by": "claude-builder",
       "note": "#1323 merged (a99ab09e): decision-audit tradesOpened leaves a rejected write-ahead row to its post-approval refusal (paired with the latest gate approval before it). No protected path. Serial ratchet 13,335."
+    },
+    {
+      "at": "2026-10-11T21:50Z",
+      "by": "claude-builder",
+      "note": "#1324 merged (af578c7d): docs/instruction-2026-10-12-decisions.md, work items W1-W11 from \u2116 13,345; none started (each awaits the owner's ID approval). Serial ratchet 13,351."
     }
   ]
 }
