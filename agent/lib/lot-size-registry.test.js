@@ -348,3 +348,20 @@ test('ensureOwnLotRecord fetches this account\'s record once, persists it, and l
   assert.equal((await ensureOwnLotRecord(db, 'ETHUSD', 'A', async () => null)).reason, 'no_lot_size')
   assert.equal((await ensureOwnLotRecord(db, 'ETHUSD', null, fetchA)).reason, 'no_account')
 })
+
+// Codex P1 on #1318, round 9: converting an existing position reads the
+// position's own account record first; the shared entry stays the fallback.
+test('lotsFromUnits converts with the account\'s own record first, the shared one after', async () => {
+  const db = fresh()
+  const { brokerVolumeToLots } = await import('../services/reconciler.js')
+  rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, accountId: 'B' })          // B: 1 BTC a lot
+  rememberVolumeMeta(db, 'BTCUSD', { lotSize: 10_000, accountId: 'A' })       // A: 100 BTC a lot, written last (shared = A)
+  assert.equal(lotsFromUnits(db, 'BTCUSD', 2, 'B').lots, 2, 'B\'s position converts with B\'s own lot, not A\'s shared one')
+  assert.equal(lotsFromUnits(db, 'BTCUSD', 200, 'A').lots, 2)
+  assert.equal(lotsFromUnits(db, 'BTCUSD', 200).lots, 2, 'no account named: the shared entry, as before')
+  assert.equal(lotsFromUnits(db, 'BTCUSD', 200, 'C').lots, 2, 'an account with no record of its own: the shared entry, never the 100,000-unit table')
+  const bp = { tradeData: { volume: 200 } } // broker cents of units → 2 units
+  assert.equal(brokerVolumeToLots(bp, 'BTCUSD', db, 'B'), 2)
+  assert.equal(brokerVolumeToLots(bp, 'BTCUSD', db, 'A'), 0.02)
+  assert.equal(lotsFromUnits(db, 'BTCUSD', null, 'B').lots, null, 'absent volume stays absent')
+})

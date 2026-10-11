@@ -340,7 +340,21 @@ export function unitsPerLot(db, symbol, accountId = null) {
  * @param {number|null} units
  * @returns {{lots: number|null, unitsPerLot: number, source: 'broker'|'table'}}
  */
-export function lotsFromUnits(db, symbol, units) {
+export function lotsFromUnits(db, symbol, units, accountId = null) {
+  // Claude · № 13,175 (Codex P1 on #1318, round 9): converting a position
+  // that IS this account's reads this account's own record first. Unlike the
+  // gate's read, the shared entry stays the fallback whoever wrote it: an
+  // existing position must be converted, and the shared broker answer is a
+  // closer guess than the contract table (100,000 units for any six-letter
+  // crypto).
+  const own = ownEntry(db, symbol, accountId)
+  if (own) {
+    const per = own.lotSize / CENTS_PER_UNIT
+    if (units == null || units === '') return { lots: null, unitsPerLot: per, source: 'broker' }
+    const u = Number(units)
+    if (!Number.isFinite(u)) return { lots: null, unitsPerLot: per, source: 'broker' }
+    return { lots: per > 0 ? u / per : u, unitsPerLot: per, source: 'broker' }
+  }
   const { unitsPerLot: per, source } = unitsPerLot(db, symbol)
   // `Number(null)` is 0 and 0 is finite, so a missing volume would otherwise
   // convert to a confident ZERO LOTS — a position the risk stack would read as

@@ -6302,6 +6302,13 @@ export default function actionsRouter(db, deps = {}) {
       // This route places against the same `accountId` it read above, so
       // naming it here is what makes the gate and the order agree rather
       // than agreeing by coincidence.
+      // Claude · № 13,175 11-Oct (Codex P1 on #1318, round 9): this account's
+      // broker lot record before the gate, so it sizes in the broker's units
+      // and floors at the broker's own minimum (as /manual-order does); the
+      // same answer sends the order below.
+      const metaHost = (getState(db, 'ctrader_is_live') === 'true') ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+      const volMeta = await getVolumeMeta(metaHost, clientId, clientSecret, accessToken, accountId, symbolId)
+      rememberVolumeMeta(db, analysis.symbol.toUpperCase(), { ...volMeta, accountId })
       const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db, accountId))
       // §70.9 lineage (W8): the approval's row id rides onto the trade row
       // and the entry intent this order produces.
@@ -6316,9 +6323,8 @@ export default function actionsRouter(db, deps = {}) {
 
       const volLots = riskResult.adjusted_volume
       // Per-symbol volume (lotSize varies by asset class) — the hardcoded
-      // 10000/lot constant caused TRADING_BAD_VOLUME on every order.
-      const metaHost = (getState(db, 'ctrader_is_live') === 'true') ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-      const volMeta = await getVolumeMeta(metaHost, clientId, clientSecret, accessToken, accountId, symbolId)
+      // 10000/lot constant caused TRADING_BAD_VOLUME on every order. The
+      // record was fetched before the gate (№ 13,175).
       const sized = lotsToVolume(volLots, volMeta)
       if (sized.belowMin) {
         const reason = `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)`

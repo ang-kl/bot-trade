@@ -27,11 +27,12 @@ import { horizonForStrategy } from './trade-horizon.js'
 // lot-size-registry.js, now wins; the table remains the fallback for a symbol
 // the broker has never described to us. `db` is optional so every existing
 // caller keeps working — without it the behaviour is exactly as before.
-export function brokerVolumeToLots(bp, symbol, db = null) {
+export function brokerVolumeToLots(bp, symbol, db = null, accountId = null) {
   const units = bp?.tradeData?.volume ? bp.tradeData.volume / 100 : null
   if (units == null) return null
   if (db != null) {
-    const { lots } = lotsFromUnits(db, symbol, units)
+    // № 13,175 (Codex P1 on #1318, round 9): this account's own lot record first.
+    const { lots } = lotsFromUnits(db, symbol, units, accountId)
     if (lots != null) return lots
   }
   const perLot = contractSize(symbol) || 1
@@ -593,7 +594,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       // signature) and that differs from the true lots (i.e. contractSize > 1),
       // or when it's missing. A correctly-sized lots row is never touched.
       const healUnits = bp?.tradeData?.volume ? bp.tradeData.volume / 100 : null
-      const healLots = brokerVolumeToLots(bp, row.symbol, db)
+      const healLots = brokerVolumeToLots(bp, row.symbol, db, acct)
       if (row.trade_id && healLots != null && healLots > 0 && healUnits != null) {
         const cur = Number(row.tradeVolume)
         const looksLikeUnits = cur > 0 && Math.abs(cur - healUnits) <= Math.max(1e-9, healUnits * 0.01)
@@ -647,7 +648,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     const tp = bp.takeProfit ?? null
     const symbolName = bp.symbolName || `ID:${bp.tradeData?.symbolId || '?'}`
     // Store LOTS (not raw broker units) so the risk/keeper stack reads it right.
-    const volume = brokerVolumeToLots(bp, symbolName, db)
+    const volume = brokerVolumeToLots(bp, symbolName, db, acct)
     const initialRisk = (entry && sl) ? Math.abs(entry - sl) : null
 
     // DUPLICATE-ADOPTION GUARD: we only reach here because no ACTIVE monitored

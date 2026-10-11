@@ -132,6 +132,16 @@ test('every path that fetches the lot record after the gate reconciles it and re
   assert.match(loop, /await ensureOwnLotRecord\(db, symbol, accountId, async \(\) => \{[\s\S]{0,600}\}\)\s*\} catch \{\s*\}\s*const riskCfg = loadRiskConfig\(db, accountId\)\s*const riskResult = evaluateTrade\(db, proposal, riskCfg\)/)
   assert.match(pending, /await ensureOwnLotRecord\(db, symbol, creds\.accountId, \(\) => sizing\.getVolumeMeta\([^)]*\)\)\s*const riskResult = risk\.evaluateTrade\(db, proposal, riskCfg\)/)
   assert.match(closed, /await ensureOwnLotRecord\(db, symbol, creds\.accountId, \(\) => sizing\.getVolumeMeta\([^)]*\)\)\s*const riskResult = risk\.evaluateTrade\(db, proposal, riskCfg\)/)
+  // round 9: /actions/execute-trade fetches and records before its gate; the
+  // momentum limit entry records the lot its evidence read before its gate;
+  // the reconciler converts with the position account's own record
+  const actions = read('./actions.js')
+  assert.match(actions, /const volMeta = await getVolumeMeta\(metaHost, clientId, clientSecret, accessToken, accountId, symbolId\)\s*rememberVolumeMeta\(db, analysis\.symbol\.toUpperCase\(\), \{ \.\.\.volMeta, accountId \}\)\s*const riskResult = evaluateTrade\(db, proposal, loadRiskConfig\(db, accountId\)\)/)
+  const momentum = read('../services/momentum-limit-entry.js')
+  assert.match(momentum, /rememberVolumeMeta\(db, symbol, \{ \.\.\.ev0\.symbolMeta, accountId \}\)[\s\S]{0,1000}const preliminary = risk\.evaluateTrade\(db, proposal, config\)/)
+  const reconciler = read('../services/reconciler.js')
+  assert.match(reconciler, /brokerVolumeToLots\(bp, row\.symbol, db, acct\)/)
+  assert.match(reconciler, /brokerVolumeToLots\(bp, symbolName, db, acct\)/)
   // and the gate reads the proposal account's own record
   const riskSrc = read('../services/risk.js')
   assert.match(riskSrc, /unitsPerLotFromRegistry\(db, proposal\.symbol, acct\)/)
