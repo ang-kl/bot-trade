@@ -41,6 +41,18 @@ describe('manualOrderBody — the pad sends `account` only when routed', () => {
     expect(body).toEqual({ symbol: 'EURUSD', side: 'BUY', lots: undefined, sl: 1.09, tp: undefined })
     expect('account' in body).toBe(false)
   })
+  // Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3)
+  it('carries `strategy` in the body AND the check path when the order names one, and in neither when it does not', () => {
+    const dest = padDestination({ viewedAccountId: 46130058, broker, routeToViewed: true })
+    const withKey = { ...order, strategy: ' vwap_trend ' }
+    expect(manualOrderBody({ order: withKey, destination: dest }).strategy).toBe('vwap_trend')
+    expect(manualCheckPath({ order: withKey, destination: dest })).toBe('/state/preorder?account=46130058&symbol=EURUSD&side=BUY&lots=0.2&sl=1.09&tp=1.135&strategy=vwap_trend')
+    expect('strategy' in manualOrderBody({ order, destination: dest })).toBe(false)
+    expect(manualCheckPath({ order, destination: dest })).not.toContain('strategy')
+    expect('strategy' in manualOrderBody({ order: { ...order, strategy: '' }, destination: dest })).toBe(false)
+    // a check speaks for its strategy too
+    expect(checkKey({ order: withKey, destination: dest })).not.toBe(checkKey({ order, destination: dest }))
+  })
 })
 
 describe('the check asks exactly what the order would send', () => {

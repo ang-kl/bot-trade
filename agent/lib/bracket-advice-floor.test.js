@@ -10,9 +10,42 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { describeBracketGap } from './bracket-advice.js'
 import { initDB } from '../db.js'
-import { effectiveRrFloor, HARD_MIN_RR } from '../services/risk.js'
+import { effectiveRrFloor, lowestAdmittedRr, HARD_MIN_RR } from '../services/risk.js'
+import { setState } from '../db.js'
 
 const ctx = { symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0900, digits: 4 }
+
+function seeded() {
+  const db = initDB(':memory:')
+  const ACCT = '47790949'
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, '1', 0, 1, 'active')`).run(ACCT)
+  return { db, ACCT }
+}
+
+// Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3): the pad passes the
+// LOWEST ratio the gate admits, which reads the earned-floor side too.
+test('lowestAdmittedRr — no earned-floor evidence: the static floor', () => {
+  const { db, ACCT } = seeded()
+  assert.equal(lowestAdmittedRr(db, ACCT, 'vwap_trend'), HARD_MIN_RR)
+  assert.equal(lowestAdmittedRr(db, ACCT, 'rsi2_reversion'), HARD_MIN_RR)
+})
+
+test('lowestAdmittedRr — a strategy whose prior pays under the floor is admitted at its prefilter, and the advice follows', () => {
+  const { db, ACCT } = seeded()
+  // W' = 60% (no live closes): rrNeededFor = ceil((1 − 0.6 + 0.1) / 0.6) → 0.84, under every prefilter
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ vwap_trend: { winRatePct: 60, trades: 500, combos: 20 }, rsi2_reversion: { winRatePct: 60, trades: 500, combos: 20 } }))
+  assert.equal(lowestAdmittedRr(db, ACCT, 'vwap_trend'), 1.5, 'the registry prefilter, not the 0.84 the win rate alone would allow')
+  assert.equal(lowestAdmittedRr(db, ACCT, 'rsi2_reversion'), 1.0, 'rsi2 keeps its own 1R override as the prefilter')
+  const adv = describeBracketGap('guard_no_target', { ...ctx, strategy: 'vwap_trend', minRR: 3, rrFloor: lowestAdmittedRr(db, ACCT, 'vwap_trend') })
+  assert.equal(adv.suggestion, 1.115, '1.5R from 1.1000 against a 0.0100 stop')
+})
+
+test('lowestAdmittedRr — a prior that needs more than the static floor leaves the static floor', () => {
+  const { db, ACCT } = seeded()
+  // W' = 20%: rrNeededFor = (0.8 + 0.1) / 0.2 = 4.5 > 3
+  setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ fib_confluence: { winRatePct: 20, trades: 500, combos: 20 } }))
+  assert.equal(lowestAdmittedRr(db, ACCT, 'fib_confluence'), HARD_MIN_RR)
+})
 
 test('with the gate\'s floor supplied, the suggestion sits at that floor even for a strategy with a lower override', () => {
   const adv = describeBracketGap('guard_no_target', { ...ctx, strategy: 'rsi2_reversion', minRR: 3, rrFloor: 3 })

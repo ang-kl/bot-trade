@@ -55,7 +55,11 @@ import { wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
 
 /** The query parameters GET /state/preorder understands; anything else is a 400. */
 export const PREORDER_SCAN_PARAMS = Object.freeze(['scanId', 'account'])
-export const PREORDER_MANUAL_PARAMS = Object.freeze(['account', 'symbol', 'side', 'lots', 'sl', 'tp'])
+// Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3): `strategy` and
+// `directionReason` are the pad's own fields; the dry run builds the route's
+// proposal from them, so the endpoint must accept them or the precheck
+// judges a strategy order as manual_order while the real order is not.
+export const PREORDER_MANUAL_PARAMS = Object.freeze(['account', 'symbol', 'side', 'lots', 'sl', 'tp', 'strategy', 'directionReason'])
 
 /** expectedR is not invented: the exit policy (position-manager.js DEFAULT_RULES) holds no win probability to weigh its outcomes by. */
 export const EXPECTED_R_NOT_COMPUTED = Object.freeze({

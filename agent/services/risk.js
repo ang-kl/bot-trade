@@ -24,7 +24,7 @@ import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor, horizonJudgedKeys } from './strategies.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
-import { earnedFloorVerdict, earnedFloorStretch } from './earned-floor.js'
+import { earnedFloorVerdict, earnedFloorStretch, earnedFloorWinRate, rrNeededFor } from './earned-floor.js'
 import { campaignConfig, campaignStopVerdict } from './campaign-stop.js'
 import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN, DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS } from './unresolved-pnl.js'
 import { evaluateGlobalGuards } from './global-guards.js'
@@ -715,6 +715,31 @@ export function effectiveRrFloor(db, accountId = null, strategy = null) {
     } catch { /* the static floor stands */ }
   }
   return floor
+}
+
+/**
+ * Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3; claude-builder).
+ * The LOWEST R:R the gate will admit for THIS account and strategy right
+ * now. effectiveRrFloor only ever raises the static floor; the gate itself
+ * admits a proposal under it when the strategy's earned-floor side (its
+ * measured or prior-shrunk win rate) pays at that ratio — rrFloorVerdict
+ * consults earnedFloorVerdict for any rr at or above the strategy's
+ * prefilter. So the lowest admitted ratio is the earned side's own
+ * requirement (rrNeededFor over its win rate), floored at the prefilter,
+ * when that sits under the static floor; otherwise the static floor. Advice
+ * built on this is never refused a second time and never asks 3R of a
+ * strategy the gate would admit at 2R. Read-only.
+ */
+export function lowestAdmittedRr(db, accountId = null, strategy = null) {
+  const floor = effectiveRrFloor(db, accountId, strategy)
+  try {
+    const side = earnedFloorWinRate(db, { strategy, accountId })
+    if (!side.ok) return floor
+    const needed = rrNeededFor(side.W, side.minE)
+    if (needed == null) return floor
+    const lowest = Math.max(minRrFor(strategy, STRATEGY_PREFILTER_RR), needed)
+    return lowest < floor ? lowest : floor
+  } catch { return floor }
 }
 
 /**
