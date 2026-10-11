@@ -27,7 +27,7 @@ import { stopTriggerField } from '../lib/order-protection.js'
 import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
 import { isFullMomentumLimitFill } from './resting-exposure.js'
 import { isFinalMomentumLimitFill } from './momentum-limit-fill-evidence.js'
-import { reconcileLotRecord } from '../lib/lot-size-registry.js'
+import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
 
 export const DEFAULT_CLOSED_MARKET_LIMITS = {
   on: true, // owner: on by default — closed-market setups get locked in
@@ -465,6 +465,9 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     accountId: creds?.accountId ?? null,
   }
   const riskCfg = risk.loadRiskConfig(db, creds?.accountId ?? null)
+  // № 13,175 (Codex P2 on #1318, round 8): this account's own lot record
+  // before the gate, when it has none — once per account and symbol.
+  await ensureOwnLotRecord(db, symbol, creds.accountId, () => sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId))
   const riskResult = risk.evaluateTrade(db, proposal, riskCfg)
   const riskEventId = risk.persistRiskEvent(db, proposal, riskResult) // §70.9 lineage
   if (!riskResult.approved) return { skipped: 'risk_veto', reason: riskResult.veto_reason }

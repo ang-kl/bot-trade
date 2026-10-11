@@ -323,7 +323,11 @@ export function brokerLotStep(db, symbol, accountId = null) {
  */
 export function unitsPerLot(db, symbol, accountId = null) {
   const s = clean(symbol)
-  const lotSize = ownEntry(db, s, accountId)?.lotSize ?? entryOf(readMap(db), s)?.lotSize ?? null
+  // Codex P2 on #1318, round 8: never another account's lot either — a larger
+  // foreign contract refuses this account at the gate on every retry. The
+  // callers that gate before fetching (loop, pending, closed-market) now fetch
+  // the account's own record first when it has none (ensureOwnLotRecord).
+  const lotSize = ownEntry(db, s, accountId)?.lotSize ?? sharedUnlessForeign(db, s, accountId)?.lotSize ?? null
   if (lotSize) {
     return { unitsPerLot: lotSize / CENTS_PER_UNIT, source: 'broker', lotSize }
   }
@@ -451,4 +455,29 @@ export function reconcileLotRecord(db, symbol, accountId, meta, checks) {
   const liveUnits = live / CENTS_PER_UNIT
   if (Math.abs(liveUnits - sizedOn) <= 1e-9 * Math.max(liveUnits, sizedOn)) return null
   return `lot_record_mismatch: the gate sized ${clean(symbol)} at ${sizedOn} units/lot (${checks.units_per_lot.source}); the broker says ${liveUnits} for account ${accountId ?? '(selected)'} — record corrected, re-gated next pass`
+}
+
+/**
+ * Claude · № 13,175 11-Oct (Codex P2 on #1318, round 8; claude-builder).
+ * Before a gate that would otherwise size on a fallback, fetch THIS
+ * account's broker answer — once per account and symbol, ever: the record is
+ * persisted, so every later pass reads it without a broker call. A failed or
+ * empty fetch changes nothing and is retried on the next pass (no record was
+ * written), so a transient failure never becomes a permanent block.
+ *
+ * @param {() => Promise<object|null>} fetchMeta  getVolumeMeta for this account and symbol
+ * @returns {Promise<{fetched:boolean, reason:string|null}>}
+ */
+export async function ensureOwnLotRecord(db, symbol, accountId, fetchMeta) {
+  const a = cleanAccount(accountId)
+  if (!a || !clean(symbol)) return { fetched: false, reason: 'no_account' }
+  if (ownEntry(db, symbol, a)) return { fetched: false, reason: 'own_record' }
+  try {
+    const meta = await fetchMeta()
+    if (!meta || !posNum(meta.lotSize)) return { fetched: false, reason: 'no_lot_size' }
+    rememberVolumeMeta(db, symbol, { ...meta, accountId: a })
+    return { fetched: true, reason: null }
+  } catch (err) {
+    return { fetched: false, reason: `fetch_failed: ${String(err?.message || err).slice(0, 120)}` }
+  }
 }

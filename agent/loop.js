@@ -792,6 +792,23 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // positions would approve a duplicate every cycle.
     accountId,
   }
+  // Claude · № 13,175 11-Oct (Codex P2 on #1318, round 8; claude-builder):
+  // THIS account's broker lot record before the gate, when it has none. The
+  // gate otherwise sizes on a fallback that can refuse on every retry (a
+  // larger contract or higher minimum another account recorded, or the
+  // contract table), and the post-gate fetch that would correct it is never
+  // reached. Once per account and symbol: the record persists.
+  try {
+    const { ensureOwnLotRecord } = await import('./lib/lot-size-registry.js')
+    await ensureOwnLotRecord(db, symbol, accountId, async () => {
+      const preHost = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+      const rs = seam?.resolveSymbolId || (await import('./lib/ctrader-creds.js')).resolveSymbolId
+      const r = await rs(db, { host: preHost, clientId, clientSecret, accessToken, accountId, ready: true }, symbol)
+      if (!r?.id) return null
+      const gvm = seam?.getVolumeMeta || (await import('./lib/lot-sizing.js')).getVolumeMeta
+      return gvm(preHost, clientId, clientSecret, accessToken, accountId, r.id)
+    })
+  } catch { /* the gate runs on whatever is on record, as before */ }
   const riskCfg = loadRiskConfig(db, accountId)
   const riskResult = evaluateTrade(db, proposal, riskCfg)
   // §70.9: hold the approval's own row id so the trade it produces can name it.

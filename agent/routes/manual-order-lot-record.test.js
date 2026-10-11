@@ -128,6 +128,10 @@ test('every path that fetches the lot record after the gate reconciles it and re
   assert.match(pending, /const lotMismatch = reconcileLotRecord\(db, symbol, creds\.accountId, meta, riskResult\.checks\)\s*if \(lotMismatch\) \{\s*risk\.persistPostApprovalVeto\(db, proposal, lotMismatch\)/)
   const closed = read('../services/closed-market-limits.js')
   assert.match(closed, /const lotMismatch = reconcileLotRecord\(db, symbol, creds\.accountId, meta, riskResult\.checks\)\s*if \(lotMismatch\) \{\s*risk\.persistPostApprovalVeto\(db, proposal, lotMismatch\)/)
+  // round 8: the three paths fetch the account's own record before the gate
+  assert.match(loop, /await ensureOwnLotRecord\(db, symbol, accountId, async \(\) => \{[\s\S]{0,600}\}\)\s*\} catch \{\s*\}\s*const riskCfg = loadRiskConfig\(db, accountId\)\s*const riskResult = evaluateTrade\(db, proposal, riskCfg\)/)
+  assert.match(pending, /await ensureOwnLotRecord\(db, symbol, creds\.accountId, \(\) => sizing\.getVolumeMeta\([^)]*\)\)\s*const riskResult = risk\.evaluateTrade\(db, proposal, riskCfg\)/)
+  assert.match(closed, /await ensureOwnLotRecord\(db, symbol, creds\.accountId, \(\) => sizing\.getVolumeMeta\([^)]*\)\)\s*const riskResult = risk\.evaluateTrade\(db, proposal, riskCfg\)/)
   // and the gate reads the proposal account's own record
   const riskSrc = read('../services/risk.js')
   assert.match(riskSrc, /unitsPerLotFromRegistry\(db, proposal\.symbol, acct\)/)

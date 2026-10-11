@@ -22,7 +22,7 @@ import { getActiveSessions } from '../lib/sessions.js'
 import { normPosId } from '../lib/pos-id.js'
 import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
 import { horizonForStrategy } from './trade-horizon.js'
-import { reconcileLotRecord } from '../lib/lot-size-registry.js'
+import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -554,6 +554,9 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       // looking at a different book than the one the fill lands in.
       accountId: creds?.accountId ?? null,
     }
+    // № 13,175 (Codex P2 on #1318, round 8): this account's own lot record
+    // before the gate, when it has none — once per account and symbol.
+    await ensureOwnLotRecord(db, symbol, creds.accountId, () => sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId))
     const riskResult = risk.evaluateTrade(db, proposal, riskCfg)
     const riskEventId = risk.persistRiskEvent(db, proposal, riskResult) // §70.9 lineage
     if (!riskResult.approved) {
