@@ -26,10 +26,10 @@ test('barFormPlan: values from the config, overrides recorded, the baseline requ
   const p = barFormPlan({}).plan
   assert.deepEqual(p.cfg.timeBarsMs, cfg.timeBarsMs); assert.deepEqual(p.overridden, []); assert.equal(p.minSample, 30); assert.match(p.minSampleSource, /tick-validation/)
   assert.ok(p.forms.includes('time_60000ms')); assert.ok(!p.strategies.includes('tsmom_long'))
-  const o = barFormPlan({ timeBarsMs: [60000, 15000], maxSilenceMs: 1000, minSample: 5, symbolIds: ['1', 2, 'x', 2], strategies: ['rsi_meanrev'], side: 'demo', maxSegments: 2, note: 'n' }).plan
+  const o = barFormPlan({ timeBarsMs: [60000, 15000], maxSilenceMs: 1000, minSample: 5, symbolIds: ['1', 2, 'x', 2], strategies: ['rsi_meanrev'], side: 'cpp_exec_demo', maxSegments: 2, note: 'n' }, { knownSides: ['cpp_exec', 'cpp_exec_demo'] }).plan
   assert.deepEqual(o.cfg.timeBarsMs, [60000, 15000]); assert.deepEqual(o.overridden, ['timeBarsMs', 'maxSilenceMs']); assert.equal(o.minSample, 5); assert.equal(o.minSampleSource, 'request')
-  assert.deepEqual(o.symbolIds, [1, 2]); assert.deepEqual(o.strategies, ['rsi_meanrev']); assert.equal(o.side, 'demo'); assert.equal(o.maxSegments, 2)
-  for (const [body, code] of [[{ timeBarsMs: [15000] }, 'baseline_missing'], [{ symbolIds: ['x'] }, 'bad_symbol_ids'], [{ strategies: ['tsmom_long'] }, 'bad_strategies'], [{ segments: ['nope'] }, 'bad_segments'], [{ maxSegments: MAX_SEGMENT_NAMES + 1 }, 'bad_max_segments'], [{ minSample: 0 }, 'bad_min_sample'], [{ side: 'paper' }, 'bad_side']]) {
+  assert.deepEqual(o.symbolIds, [1, 2]); assert.deepEqual(o.strategies, ['rsi_meanrev']); assert.equal(o.side, 'cpp_exec_demo'); assert.equal(o.maxSegments, 2)
+  for (const [body, code] of [[{ timeBarsMs: [15000] }, 'baseline_missing'], [{ symbolIds: ['x'] }, 'bad_symbol_ids'], [{ strategies: ['tsmom_long'] }, 'bad_strategies'], [{ segments: ['nope'] }, 'bad_segments'], [{ maxSegments: MAX_SEGMENT_NAMES + 1 }, 'bad_max_segments'], [{ minSample: 0 }, 'bad_min_sample'], [{ side: 'paper' }, 'bad_side'], [{ side: 'demo' }, 'bad_side']]) {
     const r = barFormPlan(body); assert.equal(r.refuse?.body.error, code, JSON.stringify(body))
   }
   assert.equal(barFormPlan({}, { research: { source: 'unavailable', file: 'x', barForm: {} } }).refuse.body.error, 'research_config_unavailable')
@@ -38,7 +38,7 @@ test('barFormPlan: values from the config, overrides recorded, the baseline requ
 
 test('a dry run plans, lists and writes nothing; names resolve through the caller; the slot is free afterwards', async () => {
   const db = fresh()
-  const r = await startBarFormResearch(db, { dryRun: true, symbolIds: [1, 2, 3], side: 'demo', maxSegments: 2 }, deps())
+  const r = await startBarFormResearch(db, { dryRun: true, symbolIds: [1, 2, 3], side: 'cpp_exec_demo', maxSegments: 2 }, deps())
   assert.equal(r.status, 200); assert.equal(r.body.dryRun, true); assert.equal(r.body.segments, 2); assert.deepEqual(r.body.symbolNames, { 1: 'AAA', 2: 'BBB' }); assert.deepEqual(r.body.sides, ['cpp_exec_demo'])
   assert.equal(researchSlot(), null); assert.equal(barFormJobsView().running, null); assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bar_form_runs').get().n, 0)
   assert.equal((await startBarFormResearch(db, { segments: ['seg-0000000000009-000000.tks'] }, deps())).body.error, 'segments_not_listed')

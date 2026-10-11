@@ -42,7 +42,7 @@ const posInt = v => Number.isInteger(v) && v > 0
 const refuse = (status, error, where, extra = {}) => ({ status, body: { ok: false, error, where, ...extra } })
 
 /** The plan from a request body over the config: every value validated, overrides recorded, refusals named. */
-export function barFormPlan(body = {}, { research = loadResearchConfig(), thresholds = loadThresholds() } = {}) {
+export function barFormPlan(body = {}, { research = loadResearchConfig(), thresholds = loadThresholds(), knownSides = null } = {}) {
   const b = body && typeof body === 'object' ? body : {}
   const ov = withOverrides(research.barForm, b, {
     timeBarsMs: { list: true, max: 86_400_000, limit: 12, min: 999 }, tickBarsNominalMs: { list: true, max: 86_400_000, limit: 12, min: 999 },
@@ -62,8 +62,12 @@ export function barFormPlan(body = {}, { research = loadResearchConfig(), thresh
   if (!posInt(maxSegments) || maxSegments > MAX_SEGMENT_NAMES) return { refuse: refuse(400, 'bad_max_segments', `maxSegments must be a whole number from 1 to ${MAX_SEGMENT_NAMES}`) }
   const minSample = b.minSample == null ? (thresholds?.traded?.minTrades ?? 30) : Number(b.minSample)
   if (!posInt(minSample)) return { refuse: refuse(400, 'bad_min_sample', 'minSample must be a positive whole number') }
+  // Which gateway's segments: named by the sidecar SIDE the segment lister
+  // already uses (segmentSides().name), never by a demo/live word (owner
+  // principle 1: only routing reads the side, and this is routing by name).
+  const sideNames = Array.isArray(knownSides) ? knownSides.map(String) : segmentSides().map(s => s.name)
   const side = b.side == null ? null : String(b.side)
-  if (side != null && !['demo', 'live'].includes(side)) return { refuse: refuse(400, 'bad_side', 'side must be demo or live (which gateway\'s segments to read)') }
+  if (side != null && !sideNames.includes(side)) return { refuse: refuse(400, 'bad_side', `side must be one of the sidecar sides listed: ${sideNames.join(', ')}`) }
   const note = b.note == null ? null : String(b.note).slice(0, 500)
   // Plan step 9: the broker cross-check for up to three of the run's symbols
   // (their one-minute bars against the broker's M1 trendbars for the same
@@ -117,7 +121,8 @@ export function persistRun(db, j, { manifest, cells, summary }) {
  * the worker constructor and the sides.
  */
 export async function startBarFormResearch(db, body = {}, { actor = null, now = new Date(), listAll = listAllSides, sides = null, cacheDir = null, workerCtor = Worker, workerFile = WORKER_FILE, secret = process.env.EXEC_SECRET ?? '', research = undefined, thresholds = undefined, localFiles = null, resolveNames = null, fetchBrokerBars = null } = {}) {
-  const planned = barFormPlan(body, { ...(research ? { research } : {}), ...(thresholds ? { thresholds } : {}) })
+  const allSides = sides ?? segmentSides()
+  const planned = barFormPlan(body, { ...(research ? { research } : {}), ...(thresholds ? { thresholds } : {}), knownSides: allSides.map(s => s.name) })
   if (planned.refuse) return planned.refuse
   const plan = planned.plan
   if (jobs.current) return refuse(409, 'research_running', 'one research job runs at a time; poll GET /state/bar-form-research-job and post again when it is done', { runId: jobs.current.runId, startedAt: jobs.current.startedAt })
@@ -129,8 +134,7 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   // The segments: named, or the listed ones (oldest first) up to maxSegments; local files for tests.
   let names, sidesUsed, listed = null
   if (localFiles) { names = localFiles.slice(0, plan.maxSegments); sidesUsed = [] } else {
-    const allSides = sides ?? segmentSides()
-    sidesUsed = plan.side == null ? allSides : allSides.filter(s => (plan.side === 'live' ? s.name === 'cpp_exec' : s.name !== 'cpp_exec'))
+    sidesUsed = plan.side == null ? allSides : allSides.filter(s => s.name === plan.side)
     listed = await listAll({ sides: sidesUsed, secret })
     const available = listed.names || []
     if (!available.length) return refuse(409, 'no_segments', 'no sealed segment is listed by the sidecar(s) asked (see GET /state/tick-segments)', { sides: listed.sides })
