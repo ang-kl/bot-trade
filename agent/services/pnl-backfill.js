@@ -580,7 +580,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       // V3 L2b W10: the broker's own lot size from the registry, so the deal
       // stores its lots — never a guessed divisor (lot-size-registry.js).
       const { withBrokerLotSizes } = await import('../lib/lot-size-registry.js')
-      const shaped = shapeDeals(deals, withBrokerLotSizes(db, symMeta), acct)
+      const shaped = shapeDeals(deals, withBrokerLotSizes(db, symMeta, acct), acct)
       if (strictAccount && opts.isCurrent && !opts.isCurrent()) throw new Error('backfill deadline elapsed')
       dealsPersisted = persistDeals(db, shaped)?.seen || 0
     }

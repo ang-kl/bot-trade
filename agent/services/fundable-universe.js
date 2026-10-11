@@ -174,7 +174,7 @@ export async function buildFundableUniverse(db, { accountId, creds, deps = {}, n
         // account has actually traded. Recording here is what gives the risk
         // gate a true minimum for a name BEFORE its first order, instead of
         // after the first refusal.
-        if (meta) { try { rememberVolumeMeta(db, symbol, meta) } catch { /* learning must never fail a build */ } }
+        if (meta) { try { rememberVolumeMeta(db, symbol, { ...meta, accountId: creds?.accountId ?? null }) } catch { /* learning must never fail a build */ } }
         // The scan's last price first — no broker call — then a spot quote
         // only for a name the scan never priced.
         let price = deps.lastScanPrice ? deps.lastScanPrice(symbol) : lastScanPrice(db, symbol)

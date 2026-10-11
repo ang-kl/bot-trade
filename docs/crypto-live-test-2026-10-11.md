@@ -132,3 +132,64 @@ production earned-floor report (`GET /state/earned-floor`, 06:53Z):
    metadata before sizing.
 
 Conversation ref: ordered № 13,125 · reported № 13,126.
+
+## 6. The resend on the corrected gate (Claude · № 13,172 · 11-10'26 16:10 SGT)
+
+#1317 merged as b51ce2f9 and read back live at 08:07:50Z. The eight vetoed
+orders were resent at 08:10:36–08:10:58Z, one at a time, shorts first, with
+the same bodies as §2 (the strategies' own stops and targets, no lots given).
+
+| Order | Strategy | Verdict | Gate reason |
+|---|---|---|---|
+| BTCUSD SELL | fib_confluence | **placed** | position 247844220, trade 1788, 0.01 lots; entry 82,960.78, sl 98,748.8, tp 53,315.39 (1.88R) |
+| ETHUSD SELL | fib_confluence | refused | `bad_rr 1.44<3` — under the strategy's 1.5R prefilter, so the earned floor is not consulted |
+| SOLUSD SELL | fib_confluence | refused | `bad_rr 1.42<3` — same |
+| DOTUSD BUY | vwap_trend | refused | `below_min_volume: 0.01 lots < broker minimum (0.1 lots)` |
+| AVAXUSD BUY | vp_value | refused | same |
+| UNIUSD BUY | vwap_trend | refused | same |
+| BCHUSD BUY | fib_confluence | refused | `insufficient_equity min_lot=0.01 computed=0 risk_budget=$214.27 usd_per_lot=$4049170.29` |
+| XLMUSD BUY | fib_confluence | refused | `below_min_volume: 0.01 lots < broker minimum (0.1 lots)` |
+
+**What the #1317 fix did.** Every order carried its strategy to the gate; the
+exposure guard counted each crypto as one leg (no `overexposed_USD`); the
+earned floor read fib_confluence's measured record on this account (47.8%
+win rate over 67 closes, E 1.445R in BCH's checks) and admitted BTC at
+1.88R. ETH and SOL sit under the 1.5R prefilter that applies before any
+earned floor; the `<3` in their reason quotes the hard floor, not the bar
+they failed. That is §5 item 3 as predicted, with the fib_confluence prior
+now outranked by the account's own closes.
+
+**The five remaining refusals are one defect, §5 item 4 made concrete.** The
+lot-size registry (`agent/lib/lot-size-registry.js`) holds a broker record
+only for symbols the order path or the position capture has seen; the
+manual-order route fetched the broker's lot size and minimum AFTER the gate,
+to send the order. So on DOT, AVAX, UNI and XLM the gate floored at the
+assumed 0.01 lots and the route then found the broker's minimum is 0.1; on
+BCH the gate priced one lot from the contract table's FX default of 100,000
+units (40.49 stop × 100,000 = $4,049,170) and the budget bought zero. XRPUSD
+was placed in §2 at 0.1 lots only because its record already existed. **Fix
+(this PR):** the route fetches the broker's record first (cached per account
+and symbol) and writes it to the registry before the gate, so the gate sizes
+in broker units and floors at the broker's own minimum; the dry run
+(`/state/preorder`) stays read-only and now names the lot record it sized
+on (`lotRecord`), saying when the route will size differently. The gate
+(`risk.js`) and every management file are untouched. Red-then-green: the
+sequence pin fails on unchanged main; mutations M-A (record moved after the
+gate), M-B (record call removed) and M-C (dry run always claims the
+route's basis) each turn a named test red.
+
+**Read-back after the resend (08:11–08:14Z).** 47790949 balance 42,854.57,
+equity 42,845.40; open: UNH.US short, XRPUSD long, DOGEUSD long, BTCUSD
+short, all with stop and target. Stop-policy controller since 08:07:33Z:
+10 amends, 10 ratchet, 10 unchanged, 0 errors, readback confirmed 10/10;
+BTC's position had its Opposite trigger confirmed at 08:11:50Z. Fast
+monitor at 08:11:42Z: lastMs 12,125, skipped10m 62, skipShare10m 0.747,
+busyShare10m 0.826 — the ten minutes after the deploy restart, to be
+re-read before the next report. Effective limits on 47790949: maxOpenPositions
+10 (overlay), maxCurrencyExposure 1, minRR 3.
+
+**Not done, waiting on the owner:** the resend of DOT, AVAX, UNI, BCH and
+XLM after this fix is live; ETH and SOL cannot pass at their signals' own
+targets.
+
+Conversation ref: ordered № 13,171 · reported № 13,172.

@@ -52,6 +52,7 @@ import { tfMs, nextBarCloseMs } from '../lib/timeframes.js'
 import { getCtraderCreds, credsForRegisteredAccount, resolveSymbolId } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
+import { lotRecordFor, unitsPerLot as unitsPerLotFromRegistry, brokerMinLots } from '../lib/lot-size-registry.js'
 
 /** The query parameters GET /state/preorder understands; anything else is a 400. */
 export const PREORDER_SCAN_PARAMS = Object.freeze(['scanId', 'account'])
@@ -305,13 +306,17 @@ async function scanPreorder(db, input, deps) {
   const result = risk.evaluateTrade(db, proposal, config)                                            // loop.js:796
   return assemble(db, {
     kind: 'scan', route, accountId, proposal, result, config, upstream,
+    // № 13,175 (Codex P2 on #1318, round 11): the order path fetches this
+    // account's lot record before its gate when it has none; this read-only
+    // check says whether it sized on that record or on a fallback.
+    lotRecord: manualLotRecord(db, proposal.symbol, accountId, result, 'the order path'),
     signal: { scanId, source: found.source, scannedAt: row.scanned_at },
     strategyGate: 'evidence_gate',
     notChecked: [
       'armed scope and the roster-wide stage gate', 'style filter', 'block_next_trade', 'fundable universe',
       'account horizon', 'account phases', 'per-account stage gate', 'profit ratchet', 'sidecar roster',
       'per-symbol strategy gate', 'market hours (account calendar)', 'entry-mode fence at the execution boundary',
-      'symbol id and broker minimum volume after approval',
+      'symbol id resolution, and the account\'s live broker lot-record fetch before the gate when it has none (see lotRecord)',
       ...(route === 'htf_limit' ? ['resting-limit idempotency and pending-order cap'] : ['entry-drift and spread gates at send']),
     ],
   })
@@ -326,6 +331,55 @@ async function brokerEntry(creds, symbolId) {
   const bars = await wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m'], 5, 30_000, 0, { purpose: 'preorder' })
   const m1 = bars['1m'] || []
   return m1.length > 0 ? m1[m1.length - 1].c : null
+}
+
+/**
+ * Claude · № 13,172 11-Oct (ordered № 13,171; claude-builder). What one lot
+ * of this symbol is on file, and whether the route will size the same. The
+ * route records the SELECTED account's broker lot record before its gate
+ * (actions.js, rememberVolumeMeta); this dry run is read-only, so it reads
+ * the registry itself — not the gate's checks, which are empty when the
+ * gate refuses before sizing (Codex P2 on #1318) — and claims equivalence
+ * only for a record this account wrote (Codex P2: the map is keyed by
+ * symbol alone, so another account's record, or an unstamped one, is not
+ * provenance). Said here, not discovered.
+ */
+function manualLotRecord(db, symbol, accountId, result, via = 'POST /actions/manual-order') {
+  const c = result?.checks || {}
+  const consultedByGate = 'units_per_lot' in c
+  // № 13,175 (Codex P1 on #1318): the gate reads the account's OWN record
+  // first (lot-size-registry per-account records), then the shared one.
+  const acct = accountId != null ? String(accountId) : null
+  let own = null, shared = null, reg = null, min = null
+  try {
+    own = acct != null ? lotRecordFor(db, symbol, acct) : null
+    shared = lotRecordFor(db, symbol)
+    reg = unitsPerLotFromRegistry(db, symbol, acct)
+    min = brokerMinLots(db, symbol, acct)
+  } catch { own = null; shared = null }
+  const stored = reg?.source ?? null
+  const ownRecord = own != null || (shared != null && shared.accountId != null && acct != null && shared.accountId === acct)
+  const rec = own ?? shared
+  const gateClause = consultedByGate ? '' : ' (the gate refused before sizing; this is what it would have read)'
+  let note
+  if (rec == null) {
+    note = `no broker lot record on file for ${symbol}: this dry run sized on the contract table and the global minimum lot; ${via} records the broker's lot size and minimum for account ${acct ?? '(selected)'} before its gate, so its size or a min-lot refusal can differ — run the dry run again after the first order on this symbol${gateClause}`
+  } else if (ownRecord) {
+    note = `the gate sized ${symbol} in account ${acct}'s own recorded units and floored at its recorded minimum lot, as the route will${gateClause}`
+  } else {
+    const who = rec.accountId != null ? `by account ${rec.accountId}` : 'before records carried an account'
+    note = `the lot record on file for ${symbol} was written ${who}; ${via} refreshes it from account ${acct ?? '(selected)'}'s own broker answer before its gate, so its size or a min-lot refusal can differ${gateClause}`
+  }
+  return {
+    stored,
+    unitsPerLot: num(reg?.unitsPerLot),
+    brokerMinLots: num(min?.minLots),
+    recordAccount: rec?.accountId ?? null,
+    recordedAt: rec?.at ?? null,
+    consultedByGate,
+    sizedAsRoute: ownRecord,
+    note,
+  }
 }
 
 async function manualPreorder(db, input, deps) {
@@ -359,6 +413,7 @@ async function manualPreorder(db, input, deps) {
     sl: Number(sl),
     tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
     requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
+    ...(Number(lots) > 0 ? {} : { requestedVolumeDefault: true }), // № 13,175, as the route
     strategy: manualOrderStrategy(input.strategy),
     direction_reason: manualDirectionReason(input.directionReason, side),
     conviction: null,
@@ -367,11 +422,32 @@ async function manualPreorder(db, input, deps) {
   }
   const config = risk.loadRiskConfig(db, creds?.accountId ?? null)                                   // actions.js:6428
   const result = risk.evaluateTrade(db, proposal, config)
+  // Codex P1 on #1318: the route refuses a TYPED lots below the broker's
+  // minimum before its gate. Mirrored here from the record on file (the
+  // route reads the live answer); with no minimum on file nothing is claimed.
+  const explicitLots = Number(lots) > 0 ? Number(lots) : null
+  let upstream = []
+  // Codex P2 on #1318, round 5: only THIS account's record is the route's
+  // answer; another account's minimum, or an unstamped one, is not a block
+  // here (lotRecord already says the route can size differently).
+  try {
+    const acctId = creds?.accountId != null ? String(creds.accountId) : null
+    const ownRec = acctId != null ? lotRecordFor(db, symbol, acctId) : null
+    const sharedWriter = lotRecordFor(db, symbol)?.accountId
+    const mine = ownRec != null || (sharedWriter != null && sharedWriter === acctId)
+    const min = brokerMinLots(db, symbol, acctId)
+    if (mine && explicitLots != null && min.minLots != null && explicitLots < min.minLots) {
+      upstream = [{ stage: 'broker_min_lot', ok: false, reason: `below_min_volume: ${explicitLots} lots < broker minimum (${min.minLots} lots)` }]
+    }
+  } catch { upstream = [] }
   return assemble(db, {
     kind: 'manual', route: 'manual_market', accountId: creds?.accountId ?? null, proposal, result, config,
-    upstream: [], strategyGate: 'not_consulted',
+    upstream, strategyGate: 'not_consulted', lotRecord: manualLotRecord(db, symbol, creds?.accountId ?? null, result),
     entrySource: { kind: 'broker_1m_close', symbolId: String(resolved.id), symbolSource: resolved.source },
-    notChecked: ['broker minimum volume after approval (actions.js:6440-6446)', 'execution guard at send (actions.js:6475-6479)'],
+    // № 13,172 (Codex P2 on #1318, round 3): the route refreshes the selected
+    // account's broker lot record BEFORE its gate; this read-only dry run
+    // judges the record already on file (lotRecord says whose it is).
+    notChecked: ['the selected account\'s live broker lot-record refresh before the gate (the route fetches and records it; this dry run reads the stored record only — see lotRecord)', 'execution guard at send'],
   })
 }
 
@@ -379,7 +455,7 @@ async function manualPreorder(db, input, deps) {
 // the gate's figures, read from the gate
 // ---------------------------------------------------------------------------
 
-async function assemble(db, { kind, route, accountId, proposal, result, config, upstream, notChecked, strategyGate, signal = null, entrySource = null }) {
+async function assemble(db, { kind, route, accountId, proposal, result, config, upstream, notChecked, strategyGate, signal = null, entrySource = null, lotRecord = null }) {
   const c = result.checks || {}
   const label = await vetoLabeller()
   const blockedUpstream = upstream.find(u => !u.ok) || null
@@ -476,6 +552,8 @@ async function assemble(db, { kind, route, accountId, proposal, result, config, 
     },
     strategy: strategyRecord(db, { strategy: proposal.strategy, accountId, gate: strategyGate }),
     expectedR: EXPECTED_R_NOT_COMPUTED,
+    // what one lot was sized as, and whether the order path will size the same (№ 13,172 / 13,175)
+    ...(lotRecord ? { lotRecord } : {}),
     proposal,
     upstream,
     notChecked,

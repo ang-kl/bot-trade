@@ -112,12 +112,16 @@ test('both write sites feed the registry the FULL broker meta, not just the lot 
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
   const fundable = strip(readFileSync(new URL('./fundable-universe.js', import.meta.url), 'utf8'))
 
-  assert.match(loop, /rememberVolumeMeta\(db, symbol, meta\)/,
-    'the order path records the whole declaration, minimum included')
+  // № 13,175 (Codex P1 on #1318): the loop records THIS account's answer
+  // through reconcileLotRecord, which stores the whole declaration
+  assert.match(loop, /reconcileLotRecord\(db, symbol, accountId, meta, riskResult\.checks\)/,
+    'the order path records the whole declaration, minimum included, as this account\'s own')
   assert.doesNotMatch(loop, /rememberLotSize\(db, symbol, meta\.lotSize\)/,
     'and no longer records the lot size alone, which is what discarded the minimum')
-  assert.match(fundable, /rememberVolumeMeta\(db, symbol, meta\)/,
-    'the daily build teaches the registry the whole watchlist')
+  // № 13,172 (Codex P2 on #1318): the build stamps the record with the
+  // account whose broker answer it is
+  assert.match(fundable, /rememberVolumeMeta\(db, symbol, \{ \.\.\.meta, accountId: creds\?\.accountId \?\? null \}\)/,
+    'the daily build teaches the registry the whole watchlist, stamped with the account')
 })
 
 test('the gate judges against the broker minimum at every refusal that names a min lot', () => {
@@ -131,4 +135,24 @@ test('the gate judges against the broker minimum at every refusal that names a m
     'all three margin-shrink refusals read the broker minimum')
   assert.doesNotMatch(risk, /shrunk < config\.minLotSize/,
     'and none of them still reads the global assumption')
+})
+
+// Codex P1 on #1318, round 10 (Claude · № 13,175): an explicit cap below the
+// broker's known minimum is refused, not lifted to the minimum; a route's own
+// default (requestedVolumeDefault) still floors at it.
+test('an explicit lot cap below the broker minimum is refused; a route default floors at the minimum', () => {
+  const db = fresh()
+  rememberVolumeMeta(db, 'DOTUSD', { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000 }) // min 0.1 lot
+  const base = { symbol: 'DOTUSD', side: 'long', entry: 1.2, sl: 1.05, tp1: 1.65, strategy: 'manual_order', conviction: null, source: 'manual', accountId: MOM }
+  const capped = evaluateTrade(db, { ...base, requestedVolume: 0.01 })
+  assert.equal(capped.approved, false)
+  assert.equal(capped.veto_reason, 'below_min_volume: requested cap 0.01 lots < broker minimum (0.1 lots)')
+  const dflt = evaluateTrade(db, { ...base, requestedVolume: 0.01, requestedVolumeDefault: true })
+  assert.equal(dflt.approved, true, `veto: ${dflt.veto_reason}`)
+  assert.equal(dflt.adjusted_volume, 0.1, 'the default floors at the broker minimum, as before')
+  const atMin = evaluateTrade(db, { ...base, requestedVolume: 0.1 })
+  assert.equal(atMin.approved, true, `veto: ${atMin.veto_reason}`)
+  // with no broker minimum on record nothing is refused on an assumed one
+  const db2 = fresh()
+  assert.equal(evaluateTrade(db2, { ...base, requestedVolume: 0.01 }).veto_reason?.startsWith('below_min_volume') ?? false, false)
 })

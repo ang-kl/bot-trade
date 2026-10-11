@@ -957,9 +957,13 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
   let restingMargin = 0
   const restingUnpriced = []
   for (const p of restingExposure(db, scopedTo)) {
-    const estimate = p.reservedMarginUsd ?? ((p.volume > 0 && p.entry > 0 && p.symbol)
+    // № 13,175 (Codex P1 on #1318, round 14): a lot that is unknown for this
+    // account (only another account's on record) leaves the order unpriced,
+    // never priced on the contract table.
+    const perLot = p.volumeKind === 'units' ? 1 : (p.symbol ? unitsPerLotFromRegistry(db, p.symbol, scopedTo).unitsPerLot : null)
+    const estimate = p.reservedMarginUsd ?? ((p.volume > 0 && p.entry > 0 && p.symbol && perLot > 0)
       ? requiredMargin(p.symbol, p.volume, p.entry, leverage, rates,
-        p.volumeKind === 'units' ? 1 : unitsPerLotFromRegistry(db, p.symbol).unitsPerLot, marginRateFor(config, p.symbol)).marginRequired : null)
+        perLot, marginRateFor(config, p.symbol)).marginRequired : null)
     if (!Number.isFinite(estimate) || estimate < 0) restingUnpriced.push(p.orderId ?? p.intentId ?? p.symbol)
     else restingMargin += estimate
   }
@@ -2275,10 +2279,17 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // every guard reading the same wrong table and unable to object.
   let brokerPerLot = null
   try {
-    const reg = unitsPerLotFromRegistry(db, proposal.symbol)
+    const reg = unitsPerLotFromRegistry(db, proposal.symbol, acct) // № 13,175: this account's own record first
     if (reg.source === 'broker') brokerPerLot = reg.unitsPerLot
     checks.units_per_lot = { value: reg.unitsPerLot, source: reg.source }
   } catch { /* table pricing stands */ }
+  // № 13,175 (Codex P1 on #1318, round 14): this account's lot is unknown
+  // (only another account's is on record, and the pre-gate fetch did not
+  // land). Refuse by name rather than size on the contract table; the next
+  // pass fetches this account's record before the gate.
+  if (checks.units_per_lot?.source === 'foreign_unknown') {
+    return veto(`lot_record_unknown: ${proposal.symbol} — only another account's broker lot is on record for account ${acct ?? '(selected)'}`, checks, proposal)
+  }
   checks.sl_distance = slDistance
   if (slDistance === 0) {
     return veto('sl_at_entry', checks, proposal)
@@ -2412,12 +2423,21 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // daily fundable-universe build (lib/lot-size-registry.js). UNKNOWN IS NOT
   // A LICENCE: a symbol the broker has never described falls back to the
   // configured assumption and behaves exactly as it does today.
-  const bMin = brokerMinLots(db, proposal.symbol)
+  const bMin = brokerMinLots(db, proposal.symbol, acct) // № 13,175: this account's own minimum first
   const effMinLots = bMin.minLots ?? config.minLotSize
   if (bMin.source === 'broker') checks.broker_min_lots = effMinLots
 
   const reqVol = Number(proposal.requestedVolume)
   const hasCap = Number.isFinite(reqVol) && reqVol > 0
+  // Claude · № 13,175 11-Oct (Codex P1 on #1318, round 10; claude-builder):
+  // an EXPLICIT per-symbol cap (watchlist "Max lots", a typed pad lots) below
+  // the broker's known minimum is refused, never lifted to that minimum by
+  // the floor below — a cap is a ceiling the human set. A route's own
+  // default (requestedVolumeDefault: the pad or an analysis execution with
+  // nothing typed) is not a cap the human set and keeps flooring as before.
+  if (hasCap && proposal.requestedVolumeDefault !== true && bMin.source === 'broker' && reqVol < effMinLots) {
+    return veto(`below_min_volume: requested cap ${reqVol} lots < broker minimum (${effMinLots} lots)`, checks, proposal)
+  }
   let sizingFloor = hasCap ? reqVol : config.minLotSize
   let sizingNote = null
   // A balance the broker answered as 0 has no budget. Say so here, before

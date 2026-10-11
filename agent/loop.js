@@ -792,6 +792,25 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // positions would approve a duplicate every cycle.
     accountId,
   }
+  // Claude · № 13,175 11-Oct (Codex P2 on #1318, round 8; claude-builder):
+  // THIS account's broker lot record before the gate, when it has none. The
+  // gate otherwise sizes on a fallback that can refuse on every retry (a
+  // larger contract or higher minimum another account recorded, or the
+  // contract table), and the post-gate fetch that would correct it is never
+  // reached. Once per account and symbol: the record persists.
+  // The host the order's lot record is read from below, hoisted so this
+  // pre-gate read uses the same one (one routing read of the account side).
+  const hostForMeta = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+  try {
+    const { ensureOwnLotRecord } = await import('./lib/lot-size-registry.js')
+    await ensureOwnLotRecord(db, symbol, accountId, async () => {
+      const rs = seam?.resolveSymbolId || (await import('./lib/ctrader-creds.js')).resolveSymbolId
+      const r = await rs(db, { host: hostForMeta, clientId, clientSecret, accessToken, accountId, ready: true }, symbol)
+      if (!r?.id) return null
+      const gvm = seam?.getVolumeMeta || (await import('./lib/lot-sizing.js')).getVolumeMeta
+      return gvm(hostForMeta, clientId, clientSecret, accessToken, accountId, r.id)
+    })
+  } catch { /* the gate runs on whatever is on record, as before */ }
   const riskCfg = loadRiskConfig(db, accountId)
   const riskResult = evaluateTrade(db, proposal, riskCfg)
   // §70.9: hold the approval's own row id so the trade it produces can name it.
@@ -857,7 +876,6 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
 
   // Volume in the symbol's OWN units (lotSize is per-symbol; a hardcoded
   // per-lot constant sent every order ~1000× too small → TRADING_BAD_VOLUME).
-  const hostForMeta = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
   let sized
   let symbolDigits = 5 // price precision for relative SL/TP snapping below
   const { getVolumeMeta: volumeMetaLive, lotsToVolume, relativePoints } = await import('./lib/lot-sizing.js')
@@ -871,16 +889,26 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // table that returns 1 for every unlisted symbol. Recording it here is what
     // lets an ADOPTED position be converted with the same number the order was
     // placed with. See lib/lot-size-registry.js.
+    let lotMismatch = null
     try {
-      const { rememberVolumeMeta } = await import('./lib/lot-size-registry.js')
       // AND THE BROKER'S MINIMUM, which was fetched here on every order and
       // thrown away — the same fate this registry was built to end for the
       // lot size. Measured 17-09: the risk gate sized against a GLOBAL
       // assumed 0.01-lot minimum, approved, and this line then refused the
       // order because the symbol's real minimum was higher. Recording it is
       // what lets the gate refuse BEFORE it spends an approval.
-      rememberVolumeMeta(db, symbol, meta)
+      // Claude · № 13,175 11-Oct (Codex P1 on #1318; claude-builder): the
+      // record is THIS account's, and an order the gate sized on another
+      // account's lot is refused here rather than sent in this account's
+      // units; the next pass gates on the corrected record.
+      const { reconcileLotRecord } = await import('./lib/lot-size-registry.js')
+      lotMismatch = reconcileLotRecord(db, symbol, accountId, meta, riskResult.checks)
     } catch { /* non-fatal: sizing must never fail on bookkeeping */ }
+    if (lotMismatch) {
+      persistPostApprovalVeto(db, proposal, lotMismatch)
+      log(`RISK VETO ${symbol} ${side}: ${lotMismatch}`)
+      return null
+    }
     sized = lotsToVolume(volLots, meta)
     if (sized.belowMin) {
       const reason = `below_min_volume: ${volLots} lots (${sized.volume}) < broker minimum ${meta.minVolume} — balance too small for this symbol at the configured risk`

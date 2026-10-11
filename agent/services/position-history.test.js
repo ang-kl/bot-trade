@@ -742,3 +742,19 @@ test('a refused record for a position another account holds classes cross_accoun
   db.prepare(`DELETE FROM trades`).run()
   assert.equal(classifyRefusedRecord(db, { record: rec, missing: ['direction_reason'] }).class, 'live_gap')
 })
+
+// Codex P1 on #1318, round 13 (Claude · № 13,175): the live-position fallback
+// converts with THIS account's own lot record — the manual route records only
+// the account's own — not the contract table.
+test('keeper truth: the live-position fallback reads the position account\'s own lot record', async () => {
+  const db = fresh()
+  const { tradeId } = seedComplete(db)
+  db.prepare(`DELETE FROM broker_deals`).run()
+  db.prepare(`UPDATE trades SET volume = 3 WHERE id = ?`).run(tradeId)
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status, account_id, broker_volume_units)
+              VALUES ('EURUSD', ?, 'long', 1.1, 1.098, 1.106, 't', 0.002, 'autopilot', 'closed', ?, 300)`).run(tradeId, ACCT)
+  const { rememberVolumeMeta } = await import('../lib/lot-size-registry.js')
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 100, accountId: ACCT }, { shared: false }) // this account: 1 unit a lot, own record only
+  const { record } = buildPositionRecord(db, { accountId: ACCT, positionId: PID })
+  assert.equal(record.volume, 300, '300 units at this account\'s 1 unit a lot, not 0.003 at the table\'s 100,000')
+})

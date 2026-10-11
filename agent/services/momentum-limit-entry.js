@@ -7,6 +7,7 @@ import { loadClosedMarketLimitsConfig, buildLimitPayload } from './closed-market
 import { momentumPlanApplies } from './momentum-entry-switch.js'
 import { readEntryReference, readEntryEvidence, preGatePlan, finalPlan, loadMomentumCostSchedule } from './momentum-entry-producer.js'
 import { recordMomentumLimit } from './momentum-entry-contract.js'
+import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
 
 // T4 option (a), OD-15. This path is only for an OPEN market's HTF entry.
 // Closed markets, unlisted accounts and other producers retain their fences.
@@ -44,7 +45,14 @@ export async function placeMomentumLimit(db, creds, symbol, synth, opts = {}) {
     const schedule = opts.schedule ?? loadMomentumCostSchedule()
     const args = { symbol, side, limitEntry: Number(synth.entry), stopDistance: Math.abs(Number(synth.entry) - Number(synth.sl)),
       requiredRr, relativePoints, schedule, ...(opts.medianNights ? { medianNights: opts.medianNights } : {}) }
-    const pre = preGatePlan(db, { ...args, evidence: await evidence() })
+    const ev0 = await evidence()
+    // Claude · № 13,175 11-Oct (Codex P1 on #1318, round 9): the broker's lot
+    // record this evidence read for THIS account is recorded before the gate,
+    // so the gate sizes in its units, not on a table or another account's.
+    if (ev0?.symbolMeta && Number(ev0.symbolMeta.lotSize) > 0) {
+      try { rememberVolumeMeta(db, symbol, { ...ev0.symbolMeta, accountId }, { shared: false }) } catch { /* bookkeeping never blocks */ }
+    }
+    const pre = preGatePlan(db, { ...args, evidence: ev0 })
     if (!pre.ok) return refuse(pre.reason)
     proposal = { symbol, side, accountId, entry: pre.entry, sl: pre.stop, tp1: pre.trigger, tp2: pre.runnerTarget,
       strategy: synth.strategy, timeframe: synth.timeframe, conviction: synth.overall_conviction ?? null,

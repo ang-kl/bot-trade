@@ -45,7 +45,8 @@ import { unitsPerLot, rememberVolumeMeta, withBrokerLotSizes } from '../lib/lot-
  */
 export async function withBrokerLotSize (db, record, { lotSizeFor = null } = {}) {
   try {
-    const u = unitsPerLot(db, record?.symbol)
+    // № 13,175 (Codex P1 on #1318, round 13): the position's own account record first
+    const u = unitsPerLot(db, record?.symbol, record?.account_id ?? record?.accountId ?? null)
     if (Number(u.lotSize) > 0) return { ...record, lot_size: Number(u.lotSize) }
   } catch { /* no registry, no lot */ }
   // B6 (18-09-2026): a symbol the registry has never seen — the order path
@@ -58,7 +59,7 @@ export async function withBrokerLotSize (db, record, { lotSizeFor = null } = {})
     try {
       const meta = await lotSizeFor(record.symbol)
       if (meta && Number(meta.lotSize) > 0) {
-        try { rememberVolumeMeta(db, record.symbol, meta) } catch { /* learning must never fail a capture */ }
+        try { rememberVolumeMeta(db, record.symbol, { ...meta, accountId: record.account_id ?? record.accountId ?? null }) } catch { /* learning must never fail a capture */ }
         return { ...record, lot_size: Number(meta.lotSize), lot_size_source: 'broker_read' }
       }
     } catch { /* the broker read failed — no lot travels */ }
@@ -374,7 +375,7 @@ export async function refreshDealsFor(db, { accountId, positionId, getDeals, now
     const idMap = accountSymbolMap(db, accountId) // V3 V1: THIS account's names — ids are per environment
     for (const [name, id] of Object.entries(idMap)) symMeta[id] = { symbolName: name }
   } catch { symMeta = {} }
-  const persisted = persistDeals(db, shapeDeals(pull.deals, withBrokerLotSizes(db, symMeta), accountId)) // V3 L2b W10: lots stored
+  const persisted = persistDeals(db, shapeDeals(pull.deals, withBrokerLotSizes(db, symMeta, accountId), accountId)) // V3 L2b W10: lots stored; № 13,175 own lot first
   return { ok: pull.complete, complete: pull.complete, reason: pull.complete ? null : pull.reason, deals: pull.deals.length, persisted: persisted?.seen || 0 }
 }
 

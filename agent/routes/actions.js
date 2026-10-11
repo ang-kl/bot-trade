@@ -18,6 +18,7 @@ import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
+import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
 import { describeBracketGap } from '../lib/bracket-advice.js'
 import { setPhaseFlag } from '../services/phase-audit.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard, execBaseFor } from '../lib/exec-engine.js'
@@ -6297,10 +6298,17 @@ export default function actionsRouter(db, deps = {}) {
 
       // PR-AL: the analysis's own synthesis states why the side was chosen;
       // it rides into proposal_json instead of being dropped at execution.
-      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, direction_reason: synth.direction_reason ?? null, conviction: analysis.overall_conviction, source: 'execute_analysis', accountId }
+      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, ...(typeof wItem === 'object' && Number(wItem.maxVolume) > 0 ? {} : { requestedVolumeDefault: true }), strategy: analysis.strategy, direction_reason: synth.direction_reason ?? null, conviction: analysis.overall_conviction, source: 'execute_analysis', accountId }
       // This route places against the same `accountId` it read above, so
       // naming it here is what makes the gate and the order agree rather
       // than agreeing by coincidence.
+      // Claude · № 13,175 11-Oct (Codex P1 on #1318, round 9): this account's
+      // broker lot record before the gate, so it sizes in the broker's units
+      // and floors at the broker's own minimum (as /manual-order does); the
+      // same answer sends the order below.
+      const metaHost = (getState(db, 'ctrader_is_live') === 'true') ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+      const volMeta = await getVolumeMeta(metaHost, clientId, clientSecret, accessToken, accountId, symbolId)
+      rememberVolumeMeta(db, analysis.symbol.toUpperCase(), { ...volMeta, accountId }, { shared: false })
       const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db, accountId))
       // §70.9 lineage (W8): the approval's row id rides onto the trade row
       // and the entry intent this order produces.
@@ -6315,9 +6323,8 @@ export default function actionsRouter(db, deps = {}) {
 
       const volLots = riskResult.adjusted_volume
       // Per-symbol volume (lotSize varies by asset class) — the hardcoded
-      // 10000/lot constant caused TRADING_BAD_VOLUME on every order.
-      const metaHost = (getState(db, 'ctrader_is_live') === 'true') ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-      const volMeta = await getVolumeMeta(metaHost, clientId, clientSecret, accessToken, accountId, symbolId)
+      // 10000/lot constant caused TRADING_BAD_VOLUME on every order. The
+      // record was fetched before the gate (№ 13,175).
       const sized = lotsToVolume(volLots, volMeta)
       if (sized.belowMin) {
         const reason = `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)`
@@ -6489,11 +6496,31 @@ export default function actionsRouter(db, deps = {}) {
       const entry = m1.length > 0 ? m1[m1.length - 1].c : null
       if (entry == null) return res.status(502).json({ error: `Could not fetch a current price for ${symbol}` })
 
+      // Claude · № 13,172 11-Oct (ordered № 13,171 "resend the orders";
+      // claude-builder). THE BROKER'S OWN LOT RECORD, BEFORE THE GATE. The
+      // gate sizes in the units the lot-size registry holds for the symbol
+      // and floors at the broker minimum it holds (risk.js: unitsPerLot,
+      // brokerMinLots); for a symbol nobody has ordered or captured, the
+      // registry has nothing and the gate falls back to the contract table
+      // (100,000 units for any six-letter name) and the global 0.01 lots.
+      // This route fetched the broker's record only AFTER the gate, to send
+      // the order — measured 11-10 08:10Z on 47790949: DOT/AVAX/UNI/XLM
+      // approved at 0.01 lots and refused here at the broker's 0.1 minimum,
+      // BCHUSD refused as insufficient_equity with one lot priced at $4.05
+      // million. XRPUSD went through only because its record already
+      // existed. Fetch first (cached per account and symbol), record it, and
+      // the gate judges what the broker will actually accept. A record on
+      // file is never overwritten with nothing (rememberVolumeMeta).
+      const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+      rememberVolumeMeta(db, symbol, { ...volMeta, accountId: creds.accountId }, { shared: false })
+
       const proposal = {
         symbol, side, entry,
         sl: Number(sl),
         tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
         requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
+        // № 13,175: nothing typed → the route's default, not a cap the trader set
+        ...(Number(lots) > 0 ? {} : { requestedVolumeDefault: true }),
         // Claude · № 13,126 11-Oct (ordered № 13,125; claude-builder): the
         // proposal carries the pad's registry strategy, the same key the
         // label, the ledger row and the plan already carry. The literal
@@ -6510,6 +6537,19 @@ export default function actionsRouter(db, deps = {}) {
         conviction: null,
         source: 'manual',
         accountId: creds?.accountId ?? null,
+      }
+      // Codex P1 on #1318 (Claude · № 13,172 11-Oct): a `lots` the trader
+      // TYPED that is below the broker's minimum is refused here, as the
+      // transport refused it before the record reached the gate. The gate's
+      // floor at the recorded broker minimum (risk.js floorLots) is for the
+      // omitted-lots default above, never a lift of a cap a human entered:
+      // 0.01 DOT lots typed must not become a 0.1-lot order.
+      const explicitLots = Number(lots) > 0 ? Number(lots) : null
+      const brokerMinLotsLive = volMeta.minVolume > 0 && volMeta.lotSize > 0 ? volMeta.minVolume / volMeta.lotSize : null
+      if (explicitLots != null && brokerMinLotsLive != null && explicitLots < brokerMinLotsLive) {
+        const reason = `below_min_volume: ${explicitLots} lots < broker minimum (${brokerMinLotsLive} lots)`
+        persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+        return res.json({ ok: false, vetoed: true, reason })
       }
       const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db, creds?.accountId ?? null))
       // §70.9 lineage: the approval's row id rides onto the trade this order
@@ -6532,7 +6572,8 @@ export default function actionsRouter(db, deps = {}) {
       if (riskResult.target_override?.tp1 != null) proposal.tp1 = riskResult.target_override.tp1
 
       const volLots = riskResult.adjusted_volume
-      const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+      // The gate floored at the recorded broker minimum above; this stays as
+      // the transport's own backstop and should no longer fire.
       const sized = lotsToVolume(volLots, volMeta)
       if (sized.belowMin) {
         const reason = `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)`

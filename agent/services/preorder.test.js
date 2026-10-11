@@ -108,6 +108,12 @@ function fakeBroker(close = 1.1) {
           ctidTraderAccountId: m.payload?.ctidTraderAccountId, symbolId: m.payload?.symbolId, period: m.payload?.period,
           trendbar: [{ low: Math.round(close * 100_000) - 50, deltaOpen: 0, deltaHigh: 60, deltaClose: 50, utcTimestampInMinutes: minute - 1, volume: 1 }],
         }],
+        // № 13,172: the route reads the symbol's lot record BEFORE its gate
+        // (an FX-shaped answer: 100,000 units a lot, 0.01-lot minimum and step)
+        [PT.SYMBOL_BY_ID_REQ]: [PT.SYMBOL_BY_ID_RES, {
+          ctidTraderAccountId: m.payload?.ctidTraderAccountId,
+          symbol: [].concat(m.payload?.symbolId ?? []).map(id => ({ symbolId: id, lotSize: 10_000_000, minVolume: 100_000, maxVolume: 100_000_000_000, stepVolume: 100_000, digits: 5, pipPosition: 4 })),
+        }],
       }[m.payloadType]
       if (!answer) return
       setImmediate(() => this.emit('message', Buffer.from(JSON.stringify({ payloadType: answer[0], payload: answer[1], clientMsgId: m.clientMsgId }))))
@@ -240,6 +246,130 @@ test('missing credentials and missing data say "cannot check" with the reason �
   assert.match((await preorderCheck(db, { scanId: flat, account: A })).cannotCheck, /not a directional signal/)
 })
 
+// Claude · № 13,172 11-Oct: the route records the broker's lot record before
+// its gate; this read-only dry run cannot, so it says what is on file, whose
+// it is, and whether the route will size the same. Codex P2s on #1318: the
+// record is read from the registry (not from checks the gate never filled),
+// and equivalence is claimed only for the selected account's own record.
+test('manual: the dry run names the lot record on file, whose it is, and whether the route will size the same', async (t) => {
+  const db = fresh({ accounts: [A, B] }); t.after(() => db.close())
+  const input = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }
+  const check = (i = input) => withCreds(() => preorderCheck(db, i, { fetchEntry: async () => 1.1 }))
+  const bare = await check()
+  assert.equal(bare.ok, true, bare.cannotCheck || bare.error)
+  assert.equal(bare.lotRecord.stored, 'table')
+  assert.equal(bare.lotRecord.sizedAsRoute, false)
+  assert.equal(bare.lotRecord.brokerMinLots, null)
+  assert.equal(bare.lotRecord.recordAccount, null)
+  assert.equal(bare.lotRecord.consultedByGate, true, 'this proposal reached sizing')
+  assert.match(bare.lotRecord.note, /no broker lot record on file for EURUSD/)
+  assert.match(bare.lotRecord.note, new RegExp(`for account ${A} before its gate`))
+  const { rememberVolumeMeta } = await import('../lib/lot-size-registry.js')
+  // another account's record: on file, read by the gate, but not this account's provenance
+  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000, accountId: B })
+  const theirs = await check()
+  // rounds 8 and 14: another account's lot is not this account's, and not the table either — unknown
+  assert.equal(theirs.lotRecord.stored, 'foreign_unknown')
+  assert.equal(theirs.lotRecord.unitsPerLot, null)
+  assert.match(theirs.gate.vetoReason, /^lot_record_unknown: EURUSD/, 'the gate refuses by name rather than sizing on the table')
+  assert.equal(theirs.lotRecord.brokerMinLots, null, 'another account\'s minimum is never this account\'s (Codex P2, round 7)')
+  assert.equal(theirs.lotRecord.recordAccount, B)
+  assert.equal(theirs.lotRecord.sizedAsRoute, false, 'another account wrote it')
+  assert.match(theirs.lotRecord.note, new RegExp(`written by account ${B}; POST /actions/manual-order refreshes it from account ${A}`))
+  // the same values written by this account: the route's own basis
+  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000, accountId: A })
+  const own = await check()
+  assert.equal(own.lotRecord.recordAccount, A)
+  assert.equal(own.lotRecord.sizedAsRoute, true)
+  assert.match(own.lotRecord.note, new RegExp(`account ${A}'s own recorded units.*as the route will$`))
+  // a record from before the stamp existed is provenance unknown, not this account's
+  const { setState: set, getState: get } = await import('../db.js')
+  const { LOT_SIZE_KEY, LOT_SIZE_BY_ACCOUNT_KEY } = await import('../lib/lot-size-registry.js')
+  set(db, LOT_SIZE_BY_ACCOUNT_KEY, '{}') // no account's own record, only the shared legacy one
+  set(db, LOT_SIZE_KEY, JSON.stringify({ [SYM]: { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000 } }))
+  const legacy = await check()
+  assert.equal(legacy.lotRecord.stored, 'broker')
+  assert.equal(legacy.lotRecord.recordAccount, null)
+  assert.equal(legacy.lotRecord.sizedAsRoute, false)
+  assert.match(legacy.lotRecord.note, /written before records carried an account/)
+  assert.ok(get(db, LOT_SIZE_KEY), 'the dry run wrote nothing to the registry')
+  // the gate refusing BEFORE it reads the lot record (max_positions) does not erase the record on file
+  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000, accountId: A })
+  fillBook(db, 5)
+  const early = await check()
+  assert.equal(early.gate.approved, false)
+  assert.match(early.gate.vetoReason, /max_positions/)
+  assert.equal('units_per_lot' in early.checks, false, 'the gate never reached sizing')
+  assert.equal(early.lotRecord.stored, 'broker')
+  assert.equal(early.lotRecord.consultedByGate, false)
+  assert.equal(early.lotRecord.sizedAsRoute, true)
+  assert.match(early.lotRecord.note, /the gate refused before sizing; this is what it would have read/)
+  // Codex P2 on #1318, round 11: scan checks carry the same disclosure — the
+  // order path fetches the account's own record before its gate when it has none
+  const { id } = seedScan(db)
+  const scan = await withCreds(() => preorderCheck(db, { scanId: id, account: A }))
+  assert.equal(scan.lotRecord.recordAccount, A)
+  assert.equal(scan.lotRecord.sizedAsRoute, true)
+  set(db, LOT_SIZE_BY_ACCOUNT_KEY, '{}'); set(db, LOT_SIZE_KEY, '{}') // no record of A's own anywhere
+  const scanBare = await withCreds(() => preorderCheck(db, { scanId: id, account: A }))
+  assert.equal(scanBare.lotRecord.sizedAsRoute, false)
+  assert.match(scanBare.lotRecord.note, /the order path refreshes it from account 4242's own broker answer before its gate|the order path records the broker's lot size and minimum for account 4242 before its gate/)
+  assert.ok(scanBare.notChecked.some(x => /lot-record fetch before the gate/.test(x)))
+  assert.equal(scanBare.notChecked.some(x => /after approval/.test(x)), false)
+})
+
+// Codex P1 on #1318: recording the broker minimum before the gate must not
+// turn a typed 0.001-lot request into a 0.01-lot order. The route refuses it
+// before the gate; the dry run mirrors that from the record on file.
+test('manual: a TYPED lots below the broker minimum is refused by the route before the gate, and the dry run says the same once the record is on file', async (t) => {
+  const db = fresh(); t.after(() => db.close())
+  const broker = fakeBroker(1.1)
+  _setWebSocketForTests(broker.Socket); t.after(() => _setWebSocketForTests(null))
+  const srv = await serve(db); t.after(srv.close)
+  const post = (body) => withCreds(() => fetch(`${srv.base}/actions/manual-order`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }).then(r => r.json()))
+  const tiny = { account: A, symbol: SYM, side: 'BUY', lots: 0.001, sl: 1.09, tp: 1.135 }
+  const res = await post(tiny)
+  assert.equal(res.vetoed, true, JSON.stringify(res).slice(0, 300))
+  assert.equal(res.reason, 'below_min_volume: 0.001 lots < broker minimum (0.01 lots)')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM trades').get().n, 0, 'no order was sent')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM risk_events WHERE approved = 0').get().n, 1, 'the refusal is on the record')
+  // the route's fetch put the broker record on file for account A
+  const { lotRecordFor } = await import('../lib/lot-size-registry.js')
+  assert.equal(lotRecordFor(db, SYM, A)?.accountId, A, 'the route recorded A\'s own record')
+  assert.equal(lotRecordFor(db, SYM), null, 'and left the shared slot alone (Codex P1, round 11)')
+  // the dry run now reads the same refusal as its first block
+  const dry = await withCreds(() => preorderCheck(db, tiny, { fetchEntry: async () => 1.1 }))
+  assert.equal(dry.ok, true, dry.cannotCheck || dry.error)
+  assert.equal(dry.approved, false)
+  assert.deepEqual({ stage: dry.firstBlock.stage, reason: dry.firstBlock.reason }, { stage: 'broker_min_lot', reason: res.reason })
+  // lots OMITTED: the default is floored at the broker minimum, not refused
+  const omitted = await withCreds(() => preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }, { fetchEntry: async () => 1.1 }))
+  assert.equal(omitted.firstBlock?.stage === 'broker_min_lot', false)
+  assert.equal(omitted.gate.approved, true, omitted.gate.vetoReason)
+  assert.equal(omitted.gate.adjustedVolume >= 0.01, true)
+  // a typed lots AT the minimum passes this check
+  const atMin = await withCreds(() => preorderCheck(db, { ...tiny, lots: 0.01 }, { fetchEntry: async () => 1.1 }))
+  assert.equal(atMin.firstBlock?.stage === 'broker_min_lot', false)
+  // Codex P2 on #1318, round 5 / P1 round 6: another account's minimum is
+  // not this account's block, and this account's own record outranks it
+  const { rememberVolumeMeta, LOT_SIZE_BY_ACCOUNT_KEY } = await import('../lib/lot-size-registry.js')
+  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 1_000_000, stepVolume: 100_000, accountId: 'OTHER' }) // their minimum: 0.1 lots
+  const ownWins = await withCreds(() => preorderCheck(db, { ...tiny, lots: 0.05 }, { fetchEntry: async () => 1.1 }))
+  assert.equal(ownWins.firstBlock?.stage === 'broker_min_lot', false, 'A\'s own 0.01 minimum governs, not OTHER\'s 0.1')
+  assert.equal(ownWins.lotRecord.recordAccount, A)
+  assert.equal(ownWins.lotRecord.brokerMinLots, 0.01)
+  assert.equal(ownWins.lotRecord.sizedAsRoute, true)
+  // with no record of A's own, OTHER's shared minimum is reported but never blocks
+  const { setState: set } = await import('../db.js')
+  set(db, LOT_SIZE_BY_ACCOUNT_KEY, JSON.stringify({ OTHER: { [SYM]: { lotSize: 10_000_000, minVolume: 1_000_000, stepVolume: 100_000 } } }))
+  const theirs = await withCreds(() => preorderCheck(db, { ...tiny, lots: 0.05 }, { fetchEntry: async () => 1.1 }))
+  assert.equal(theirs.firstBlock?.stage === 'broker_min_lot', false, 'the route refreshes this account\'s own minimum and may permit 0.05')
+  assert.equal(theirs.lotRecord.sizedAsRoute, false)
+  assert.equal(theirs.lotRecord.recordAccount, 'OTHER')
+})
+
 // ---- 2. equivalence with the gate --------------------------------------------
 
 /** The manual route's proposal, written out independently of preorder.js (actions.js:6415-6427). */
@@ -247,7 +377,7 @@ const routeProposal = ({ entry, sl, tp, lots, side = 'BUY', accountId = A }) => 
   symbol: SYM, side, entry, sl: Number(sl), tp1: tp != null ? Number(tp) : null,
   // Claude · № 13,128 11-Oct: the route sends the pad's validated registry
   // key; with none given it is manual_order (MANUAL_ORDER_STRATEGY), as here.
-  requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01, strategy: 'manual_order',
+  requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01, ...(Number(lots) > 0 ? {} : { requestedVolumeDefault: true }), strategy: 'manual_order',
   direction_reason: side === 'SELL' ? 'manual:operator_chose_short' : 'manual:operator_chose_long',
   conviction: null, source: 'manual', accountId,
 })
