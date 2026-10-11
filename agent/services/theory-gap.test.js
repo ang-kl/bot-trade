@@ -60,7 +60,22 @@ test('rAudit: the population, the per-candidate figures, the postmortem-stop fla
   const t1 = out.rows.find(r => r.id === 1)
   assert.equal(t1.rUnder.broker_sl_initial, 1.2); assert.equal(t1.rUnder.postmortem_sl, 2.4); assert.equal(t1.postmortemR, 7)
   assert.equal(t1.stops.proposal_sl, 90.5); assert.equal(t1.ledgerRecomputed, 1.2, 'realisedRR divides by broker_sl_initial first')
-  assert.match(out.note, /postmortem divides by trades.sl_price AT POSTMORTEM TIME/)
+  assert.match(out.note, /postmortems written before W1 \(12-10\) divided by trades.sl_price AT POSTMORTEM TIME/)
+})
+
+test('rAudit (Codex P2 on #1325): a postmortem written by W1 divides by the risk at entry and is not flagged, though its stored stop is the trailed one', () => {
+  const db = fixture()
+  // Trade #3's postmortem as W1 writes it: the stop on the row is the stop at
+  // close (here the trailed 95), the R is against the initial risk (10):
+  // −|100 − 92| / 10 = −0.8.
+  db.prepare(`INSERT INTO trade_postmortems(trade_id, symbol, strategy, side, entry_price, exit_price, sl_price, net_pnl, r_multiple, classification)
+    VALUES (3,'CCC','tsmom_long','BUY',100,92,95,-40,-0.8,'thesis_wrong')`).run()
+  const out = rAudit(db, { strategy: 'tsmom_long', days: 365, now: NOW })
+  const t3 = out.rows.find(r => r.id === 3)
+  assert.equal(t3.stops.postmortem_sl, 95, 'the row keeps the stop at close')
+  assert.equal(t3.postmortemStopDiffersFromBrokerInitial, false, 'its denominator is the broker\'s first stop')
+  assert.equal(out.postmortemStopDiffersFromBrokerInitial, 2, 'only the two pre-W1 rows divided by a trailed stop')
+  assert.deepEqual(out.ledgerVsPostmortem, { agree: 1, disagree: 2, unscored: 0 }, 'and the corrected row agrees with the ledger')
 })
 
 test('theoryGapReport dispatches by section and refuses an unknown one; an empty population is a report, not an error', () => {

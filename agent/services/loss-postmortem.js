@@ -60,6 +60,18 @@ export const TIGHT_HOLD_BARS = 2
  * @param {number} closedAtMs epoch ms of the close
  * @returns {{ classification:string, detail:string }|null} null = wait for more bars
  */
+/**
+ * The distance a LOSS is classified against: the stop that was hit (its
+ * `sl_price`), else the entry-to-exit move. classifyLoss's "1R beyond the
+ * stop" uses it, so the loss lesson that quotes that distance must use it too
+ * (Codex P2 on #1325) — while r_multiple uses the risk at entry (W1).
+ */
+export function lossReferenceRisk(trade) {
+  const entry = Number(trade?.entry_price), exit = Number(trade?.exit_price)
+  const sl = trade?.sl_price != null ? Number(trade.sl_price) : null
+  return sl != null && Math.abs(entry - sl) > 0 ? Math.abs(entry - sl) : Math.abs(entry - exit)
+}
+
 export function classifyLoss(trade, bars, closedAtMs, opts = {}) {
   const aftermathBars = opts.aftermathBars ?? AFTERMATH_BARS
   const minAfterBars = opts.minAfterBars ?? MIN_AFTER_BARS
@@ -76,7 +88,7 @@ export function classifyLoss(trade, bars, closedAtMs, opts = {}) {
     return { classification: 'inconclusive', detail: 'Missing entry/exit price — cannot reconstruct the trade geometry.' }
   }
   const long = /^(buy|long)$/i.test(String(trade.side || ''))
-  const risk = sl != null && Math.abs(entry - sl) > 0 ? Math.abs(entry - sl) : Math.abs(entry - exit)
+  const risk = lossReferenceRisk(trade)
   if (!(risk > 0)) {
     return { classification: 'inconclusive', detail: 'Zero risk distance — geometry unusable.' }
   }
@@ -603,7 +615,9 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     const decay = alphaDecayFlag(db, { symbol: t.symbol, strategy: t.strategy || null, timeframe: tf })
     const lesson = lessonLine(verdict.classification, {
       strategy: t.strategy, maeR: verdict.maeR, mfeR: verdict.mfeR, realizedR: verdict.realizedR,
-      nBars: verdict.nBars, afterBars: verdict.afterBars, riskDist, holdBars,
+      // A loss lesson quotes the distance its classifier used (the stop that
+      // was hit); a win's quotes nothing from it (Codex P2 on #1325).
+      nBars: verdict.nBars, afterBars: verdict.afterBars, riskDist: isWin ? riskDist : lossReferenceRisk(t), holdBars,
     })
     const eq = entryQuality(t.confluence_count)
     db.prepare(`

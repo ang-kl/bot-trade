@@ -37,7 +37,7 @@ export const STOP_CANDIDATES = Object.freeze([
   { key: 'proposal_sl', label: 'the stop the risk gate evaluated (risk_events.proposal_json.sl)' },
   { key: 'planned_sl', label: 'the plan recorded at entry (trade_plans.planned_sl)' },
   { key: 'initial_risk', label: 'the monitor row\'s initial_risk distance (monitored_positions.initial_risk)' },
-  { key: 'postmortem_sl', label: 'the stop the postmortem divided by (trade_postmortems.sl_price, read at postmortem time)' },
+  { key: 'postmortem_sl', label: 'the stop on the postmortem row (trade_postmortems.sl_price, the stop at close); postmortems written before W1 (12-10) divided by it' },
   { key: 'current_sl', label: 'trades.sl_price now (overwritten by every book trail on momentum rows)' },
 ])
 
@@ -125,11 +125,18 @@ export function rAudit(db, { strategy = R_AUDIT_DEFAULT_STRATEGY, days = R_AUDIT
       const risk = r.under.broker_sl_initial?.risk
       if (risk > 0) fillWeightedR = round(((wClose - num(t.entry_price)) * (long(t.side) ? 1 : -1)) / risk)
     }
-    const bsl = num(t.broker_sl_initial), pm = num(t.postmortem_sl)
-    const pmDiff = bsl != null && pm != null && Math.abs(pm - bsl) > 1e-9
+    // What the postmortem ACTUALLY divided by, read from its own R (Codex P2
+    // on #1325): r_multiple = ±|entry − exit| / risk, so risk = |move| / |R|.
+    // Before W1 that was the stop on the row (trailed on book rows); from W1
+    // on it is the risk at entry. Flag a postmortem whose denominator is not
+    // the broker's first stop, not one whose stored stop differs from it.
+    const bsl = num(t.broker_sl_initial), pmR = num(t.postmortem_r)
+    const entryPx = num(t.entry_price), exitPx = num(t.exit_price)
+    const pmRisk = pmR != null && pmR !== 0 && entryPx != null && exitPx != null ? Math.abs(entryPx - exitPx) / Math.abs(pmR) : null
+    const bslRisk = bsl != null && entryPx != null ? Math.abs(entryPx - bsl) : null
+    const pmDiff = pmRisk != null && bslRisk != null && bslRisk > 0 && Math.abs(pmRisk - bslRisk) > 1e-6 * Math.max(1, bslRisk)
     if (pmDiff) pmDiffers++
     const ledger = Number(t.exit_price_suspect) === 1 ? null : num(t.realised_rr)
-    const pmR = num(t.postmortem_r)
     if (ledger == null || pmR == null) ledgerVsPm.unscored++
     else if (Math.abs(ledger - pmR) <= 0.005) ledgerVsPm.agree++
     else ledgerVsPm.disagree++
@@ -154,7 +161,7 @@ export function rAudit(db, { strategy = R_AUDIT_DEFAULT_STRATEGY, days = R_AUDIT
     postmortemStopDiffersFromBrokerInitial: pmDiffers,
     tradesWithPartialCloses: partials,
     rows,
-    note: 'Read-only. R = (exit − entry, signed by side) / |entry − candidate stop|. realised_rr (the ledger) divides by broker_sl_initial, else sl_price; the postmortem divides by trades.sl_price AT POSTMORTEM TIME, which the momentum book overwrites with every confirmed trail — so where postmortemStopDiffersFromBrokerInitial is true the postmortem R is measured against a trailed stop, not the risk taken at entry. fillWeightedR uses the lots-weighted close of every broker closing deal when a position closed in more than one leg. Nothing here is a trading figure the gates read.',
+    note: 'Read-only. R = (exit − entry, signed by side) / |entry − candidate stop|. realised_rr (the ledger) divides by broker_sl_initial, else sl_price; postmortems written before W1 (12-10) divided by trades.sl_price AT POSTMORTEM TIME, which the momentum book overwrites with every confirmed trail; from W1 on they divide by the risk at entry. postmortemStopDiffersFromBrokerInitial is read from the R each postmortem stored (its denominator = |exit − entry| / |r_multiple|): true where that denominator is not the first broker stop, i.e. the R was measured against a trailed stop. fillWeightedR uses the lots-weighted close of every broker closing deal when a position closed in more than one leg. Nothing here is a trading figure the gates read.',
   }
 }
 

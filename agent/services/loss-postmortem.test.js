@@ -554,7 +554,7 @@ test('the window follows the INJECTED clock, not the real one', () => {
 // every trail, so dividing by it measured R against a stop the book had
 // already moved. These tests seed exactly that shape.
 // ---------------------------------------------------------------------------
-import { initialRiskOf } from './loss-postmortem.js'
+import { initialRiskOf, lossReferenceRisk } from './loss-postmortem.js'
 
 test('initialRiskOf: the broker\'s first stop wins over the proposal, initial_risk and sl_price', () => {
   const r = initialRiskOf({ entry_price: 100, broker_sl_initial: 94, proposal_sl: 95, initial_risk: 3, sl_price: 104, book_trailed: 1 })
@@ -685,4 +685,27 @@ test('W1 (Codex P2 on #1325): a malformed proposal does not abort the sweep; it 
   const rows = db.prepare(`SELECT trade_id, r_multiple, detail FROM trade_postmortems ORDER BY trade_id`).all()
   assert.equal(rows[0].r_multiple, null); assert.match(rows[0].detail, /no initial stop on record/)
   assert.ok(Math.abs(rows[1].r_multiple - 4 / 6) < 1e-9)
+})
+
+test('W1 (Codex P2 on #1325): a loss lesson quotes the distance its classifier used, while R uses the risk at entry', async () => {
+  const db = initDB(':memory:')
+  // Stop trailed 94 → 97 and hit; the market then ran another 3 (the trailed
+  // stop's distance) below 97 — thesis_wrong by the classifier's 1R of 3, not 6.
+  seedBookTrade(db, { exit: 97, sl: 97, brokerSlInitial: 94, pnl: -30, hoursAgo: 30 })
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  await runLossPostmortems(db, async () => holdingBars(closedMs, { h: 101, l: 97, c: 98, after: { h: 96.5, l: 93.5, c: 93.8 } }))
+  const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
+  assert.equal(pm.classification, 'thesis_wrong')
+  assert.match(pm.lesson, /price ran ≥1R 3\.00000 past the stop/)
+  assert.ok(Math.abs(pm.r_multiple - (-0.5)) < 1e-9, 'R is still against the risk at entry (6)')
+})
+
+test('lossReferenceRisk: a loss is classified against the stop that was hit, not the slipped exit', () => {
+  // Stop 98 (risk 2) filled at 97.5: 1R beyond the stop is 96, which 95.8 crosses.
+  const t = { side: 'BUY', entry_price: 100, sl_price: 98, exit_price: 97.5 }
+  const closed = 1_000_000
+  const after = [1, 2, 3].map(i => ({ t: closed + i * 3_600_000, o: 97, h: 97.2, l: i === 3 ? 95.8 : 96.6, c: 96.8 }))
+  assert.equal(lossReferenceRisk(t), 2)
+  assert.equal(lossReferenceRisk({ ...t, sl_price: null }), 2.5, 'no stop: the entry-to-exit move')
+  assert.equal(classifyLoss(t, after, closed, { allowPartial: true }).classification, 'thesis_wrong')
 })
