@@ -20,15 +20,18 @@ function passSentence(status) {
 
 export function CappedHybridReading({ status, error }) {
   if (!status) return <p role="status">Capped hybrid status unavailable{error ? `: ${error}` : '.'}</p>
-  const rows = [...(status.positions || [])].sort((a, b) => ORDER.indexOf(a.verdict) - ORDER.indexOf(b.verdict) || a.tradeId - b.tradeId)
+  // One row per Open positions row (an active monitor); a monitor may have no
+  // linked trade, so the monitor id keys the row (Codex P2 on #1326 bb9e75a0).
+  const rows = [...(status.positions || [])].sort((a, b) => ORDER.indexOf(a.verdict) - ORDER.indexOf(b.verdict)
+    || (a.tradeId ?? 0) - (b.tradeId ?? 0) || (a.monitorId ?? 0) - (b.monitorId ?? 0))
   return <>
     <p>{passSentence(status)}</p>
     {rows.length === 0
       ? <p>No open position in this view.</p>
       : <div className="overflow-x-auto"><table className="w-full text-left text-(length:--fs-body)">
         <thead><tr>{['Position', 'Strategy', 'Capped hybrid verdict'].map(h => <th key={h} className="pr-3">{h}</th>)}</tr></thead>
-        <tbody>{rows.map(p => <tr key={`${p.accountId}:${p.tradeId}`} className="border-t border-[var(--color-border)]" data-verdict={p.verdict}>
-          <td className="pr-3 py-2 whitespace-nowrap">{p.symbol || 'symbol not recorded'} {p.side || ''} · …{String(p.accountId || '').slice(-4)} #{p.tradeId}</td>
+        <tbody>{rows.map(p => <tr key={p.monitorId != null ? `m${p.monitorId}` : `${p.accountId}:${p.tradeId}`} className="border-t border-[var(--color-border)]" data-verdict={p.verdict}>
+          <td className="pr-3 py-2 whitespace-nowrap">{p.symbol || 'symbol not recorded'} {p.side || ''} · …{String(p.accountId || '').slice(-4)} {p.tradeId != null ? `#${p.tradeId}` : 'no linked trade'}</td>
           <td className="pr-3">{p.strategy || 'not recorded'}</td>
           <td className="pr-3 max-w-md whitespace-normal">{verdictLine(p)}</td>
         </tr>)}</tbody>

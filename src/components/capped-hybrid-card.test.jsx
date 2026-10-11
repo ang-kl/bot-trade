@@ -63,3 +63,20 @@ test('W3 words: each verdict kind, and an unknown code shown as itself, never an
   expect(reasonWords(null)).toBe(null)
   expect(verdictLine(pos(1, 'weird'))).toBe('Unknown verdict: weird')
 })
+
+// Claude · № 13,413 12-Oct (Codex P2 on #1326 bb9e75a0; claude-builder)
+test('W3 card: a position with no linked open trade is a line of its own, named, never dropped or merged', () => {
+  const html = renderToStaticMarkup(<CappedHybridReading status={status([
+    pos(1, 'enrolled', { monitorId: 1, trigger: 104.5, closeVolume: 50, runnerVolume: 50, brokerTarget: 110 }),
+    pos(null, 'not_in_last_pass', { monitorId: 10, reason: 'no_linked_trade', symbol: 'USOIL' }),
+    pos(null, 'not_in_last_pass', { monitorId: 11, reason: 'no_linked_trade', symbol: 'UKOIL' }),
+    pos(9, 'not_in_last_pass', { monitorId: 12, reason: 'linked_trade_not_open', symbol: 'AAPL.US' }),
+  ])} />)
+  expect((html.match(/<tr /g) || []).length).toBe(4)
+  expect(html).toContain('USOIL BUY · …0949 no linked trade')
+  expect(html).toContain('UKOIL BUY · …0949 no linked trade')
+  expect((html.match(/Not examined by the hybrid, which examines open trades only: its position monitor is not linked to a trade/g) || []).length).toBe(2)
+  expect(html).toContain('Not examined by the hybrid, which examines open trades only: its linked trade is no longer marked open')
+  expect(verdictLine(pos(9, 'not_in_last_pass', { reason: 'linked_trade_missing' })))
+    .toBe('Not examined by the hybrid, which examines open trades only: its linked trade record is missing')
+})

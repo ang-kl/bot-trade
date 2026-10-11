@@ -11,9 +11,18 @@
 // open trades in scope, so each open position gets one line.
 //
 // Read-only: two agent_state reads (the stored pass and the tick controller)
-// and two table reads (open trades, momentum book links). No write, no broker
-// read. A missing or unreadable pass record makes every position "not
-// available" — never an empty, healthy-looking list.
+// and two table reads (the active position monitors with their linked trades,
+// momentum book links). No write, no broker read. A missing or unreadable pass
+// record makes every position "not available" — never an empty,
+// healthy-looking list.
+//
+// THE ROWS ARE THE OPEN POSITIONS TABLE'S ROWS (Codex P2 on #1326, bb9e75a0).
+// The card sits under that table, which lists ACTIVE monitors LEFT JOINed to
+// their trades (state.js GET /positions). Reading open trades instead dropped
+// a monitor with no linked trade, or whose trade is not marked open, so the
+// card could say "No open position in this view" under a table showing one.
+// Those rows are now listed and named; an open trade with no active monitor
+// is in neither.
 import { readHybridVerdicts } from './diagnostic-readout.js'
 import { accountWhere } from '../lib/account-scope.js'
 
@@ -39,12 +48,18 @@ export function cappedHybridStatus(db, { accountId = null, now = Date.now() } = 
   // trade id from the unscoped projection instead. Trade ids are unique.
   const globalPass = scope ? readHybridVerdicts(db, { accountIds: null }).momentum_partial_pass_json : pass
 
-  // The scoped-read convention (lib/account-scope.js accountWhere): a legacy
-  // row with no account is shown for every account, as the Open positions
-  // table beside the card shows it (Codex P2 on #1326).
-  const where = accountWhere(scope ? { accountId: scope[0], all: false } : { all: true })
-  const open = db.prepare(`SELECT id, account_id, ctrader_position_id, symbol, side, strategy FROM trades
-    WHERE status = 'open' ${where.active ? `AND ${where.where}` : ''} ORDER BY id LIMIT ?`)
+  // The Open positions table's own population and scope (state.js GET
+  // /positions): active monitors, scoped on the MONITOR's account with the
+  // legacy-NULL convention (lib/account-scope.js), in the table's order.
+  // Claude · № 13,413 12-Oct (Codex P2 on #1326 bb9e75a0; claude-builder)
+  const where = accountWhere(scope ? { accountId: scope[0], all: false } : { all: true }, 'mp.account_id')
+  const open = db.prepare(`SELECT mp.id AS monitor_id, mp.trade_id AS monitor_trade_id, mp.account_id AS monitor_account_id,
+      mp.symbol AS monitor_symbol, mp.side AS monitor_side, mp.strategy AS monitor_strategy,
+      t.id AS id, t.status AS trade_status, t.account_id AS account_id, t.ctrader_position_id AS ctrader_position_id,
+      t.symbol AS symbol, t.side AS side, t.strategy AS strategy
+    FROM monitored_positions mp LEFT JOIN trades t ON t.id = mp.trade_id
+    WHERE mp.status = 'active' ${where.active ? `AND ${where.where}` : ''}
+    ORDER BY mp.created_at DESC, mp.id DESC LIMIT ?`)
     .all(...where.params, CAPPED_HYBRID_STATUS_MAX_POSITIONS + 1)
   const positionsTruncated = open.length > CAPPED_HYBRID_STATUS_MAX_POSITIONS
   const trades = open.slice(0, CAPPED_HYBRID_STATUS_MAX_POSITIONS)
@@ -86,10 +101,19 @@ export function cappedHybridStatus(db, { accountId = null, now = Date.now() } = 
 
   const counts = {}
   const positions = trades.map(t => {
-    const base = { tradeId: t.id, accountId: t.account_id, positionId: t.ctrader_position_id == null ? null : String(t.ctrader_position_id),
-      symbol: t.symbol ?? null, side: t.side ?? null, strategy: t.strategy ?? null, book: booked.has(t.id) }
+    const linked = t.id != null
+    const base = { monitorId: t.monitor_id, tradeId: linked ? t.id : (t.monitor_trade_id ?? null),
+      accountId: t.monitor_account_id ?? t.account_id ?? null,
+      positionId: t.ctrader_position_id == null ? null : String(t.ctrader_position_id),
+      symbol: t.symbol ?? t.monitor_symbol ?? null, side: t.side ?? t.monitor_side ?? null,
+      strategy: t.strategy ?? t.monitor_strategy ?? null, book: linked && booked.has(t.id) }
     let out
     if (unavailable) out = { ...base, verdict: 'not_available', reason: unavailable }
+    // The hybrid examines open trades only, so these rows are never in its
+    // record; a verdict stored while a trade was open is not shown after it
+    // is no longer open (the hybrid cannot act on it).
+    else if (!linked) out = { ...base, verdict: 'not_in_last_pass', reason: t.monitor_trade_id == null ? 'no_linked_trade' : 'linked_trade_missing' }
+    else if (t.trade_status !== 'open') out = { ...base, verdict: 'not_in_last_pass', reason: 'linked_trade_not_open' }
     else {
       const hit = lookup(t)
       if (!hit) {
@@ -128,6 +152,6 @@ export function cappedHybridStatus(db, { accountId = null, now = Date.now() } = 
     // The redacted projection itself (scoped), for the operator who wants
     // every list, the tick controller's own exclusions and its pass age.
     verdicts,
-    note: 'Read-only. Each open trade in scope with the capped hybrid\'s verdict from its last stored pass (half at 2R; capped-hybrid-policy.js). Reasons are the allow-listed codes; error text is redacted. No broker read.',
+    note: 'Read-only. Each open position in scope (the Open positions table\'s rows: active monitors and their linked trades) with the capped hybrid\'s verdict from its last stored pass (capped-hybrid-policy.js). A position with no linked open trade is listed and named, since the hybrid examines open trades only. Reasons are the allow-listed codes; error text is redacted. No broker read.',
   }
 }

@@ -65,7 +65,13 @@ const REASON_WORDS = {
   hybrid_section_missing: 'the last pass recorded no hybrid section',
   schema_unavailable: 'the database tables it needs are missing',
   record_truncated: 'the stored record was cut at its size limit',
+  // A position the hybrid does not examine (it examines open trades only).
+  // Claude · № 13,413 12-Oct (Codex P2 on #1326 bb9e75a0; claude-builder)
+  no_linked_trade: 'its position monitor is not linked to a trade',
+  linked_trade_missing: 'its linked trade record is missing',
+  linked_trade_not_open: 'its linked trade is no longer marked open',
 }
+const NOT_EXAMINED = new Set(['no_linked_trade', 'linked_trade_missing', 'linked_trade_not_open'])
 
 export function reasonWords(code) {
   if (code == null || code === '') return null
@@ -95,9 +101,9 @@ export function verdictLine(p) {
     case 'error':
       return `The last check failed: ${why ?? 'no reason recorded'}; retried on the next pass`
     case 'not_in_last_pass':
-      return p.reason === 'record_truncated'
-        ? 'Not in the readable record: the stored record was cut at its size limit'
-        : 'Not in the last pass\'s record yet'
+      if (p.reason === 'record_truncated') return 'Not in the readable record: the stored record was cut at its size limit'
+      if (NOT_EXAMINED.has(p.reason)) return `Not examined by the hybrid, which examines open trades only: ${why}`
+      return 'Not in the last pass\'s record yet'
     case 'not_available':
       return `Not available: ${why ?? 'no pass record'}`
     default:
