@@ -31,6 +31,7 @@ import { loadLatestPrices } from '../lib/latest-prices.js'
 import { manualOrderConfirmText } from '../lib/manual-order-confirm.js'
 // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the pre-order check.
 import PreorderResult from '../components/PreorderResult.jsx'
+import CappedHybridCard from '../components/CappedHybridCard.jsx'
 import { scanCheckPath, manualCheckPath, manualOrderBody, padDestination, checkKey, checkSummary, createCheckRunner, sigKey } from '../lib/preorder-check.js'
 
 // Inline tab link used by the "Next:" guide line
@@ -917,6 +918,11 @@ export default function Trade() {
         <LatestPricesNote read={pricesRead} />
         {positions.length > 0 && <StdTradeTable wholeSection={true /* Codex · №11,601·R (ui-followup-2026-10-07) */} rows={openPositionRows(positions, priceMap, enrichById, account?.leverage)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
+
+      {/* W3 — Claude · № 13,369 12-Oct (ordered after № 13,350; claude-builder):
+          the capped hybrid's verdict for each open position, read-only. Same
+          account as the positions read above. */}
+      <CappedHybridCard key={`capped-hybrid:${posScope.accountId || viewedAccountId() || 'all'}`} accountId={posScope.accountId || viewedAccountId() || 'all'} />
 
       {/* Manual order — a FAB bottom-left (owner spec): the form floats
           above the button on demand instead of occupying a page section. */}

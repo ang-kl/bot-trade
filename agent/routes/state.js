@@ -160,6 +160,22 @@ export default function stateRouter(db) {
       res.status(503).json({ error: 'Momentum target status is temporarily unavailable.', code: 'momentum_target_status_unavailable' })
     }
   })
+  // W3 — Claude · № 13,368 12-Oct (ordered after № 13,350, owner "W1 W2 W3
+  // W4 W11"; docs/instruction-2026-10-12-decisions.md W3; claude-builder).
+  // The capped hybrid's verdict for every open position in scope, from its
+  // stored pass (the redacted readHybridVerdicts projection). Read-only: two
+  // agent_state reads and two small table reads, no write, no broker read.
+  router.get('/capped-hybrid', async (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    const scope = requestedAccount(db, req)
+    try {
+      const { cappedHybridStatus } = await import('../services/capped-hybrid-status.js')
+      res.json(cappedHybridStatus(db, { accountId: scope.all ? null : scope.accountId }))
+    } catch (error) {
+      if (error instanceof RangeError) return res.status(400).json({ error: error.message, code: 'capped_hybrid_invalid_account' })
+      res.status(503).json({ error: 'Capped hybrid status is temporarily unavailable.', code: 'capped_hybrid_status_unavailable' })
+    }
+  })
   // V3 C4 (WP-C PR-C1): the report runs in the isolated report worker, not on
   // the event loop the protection sweeps share. The request is validated here
   // first (no SQL); "account not registered" is a SQL read, so it comes back
