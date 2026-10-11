@@ -510,6 +510,25 @@ test('a rejected write-ahead row is left to its post-approval refusal; any other
   a = auditDecisions(db, { accountId: 'A1' })
   assert.equal(a.landed, 1)
 
+  // Codex P2 on #1323: a later approval's refusal is not the earlier
+  // rejected row's — the row still lands, the retry is resolved by its own
+  // refusal, and nothing reads as a silent drop
+  db = initDB(':memory:')
+  trade(db, 'EURUSD', 'rejected', approval(db, 'EURUSD', 1), 1); approval(db, 'EURUSD', 2); refusal(db, 'EURUSD', 3)
+  a = auditDecisions(db, { accountId: 'A1' })
+  assert.deepEqual([a.approved, a.landed, a.resolutions, a.silentDrops], [2, 1, 1, 0])
+
+  // a placement receipt in between is not a gate approval: it does not take
+  // the refusal away from the rejected row's approval
+  db = initDB(':memory:')
+  trade(db, 'EURUSD', 'rejected', approval(db, 'EURUSD', 1), 1)
+  db.prepare(`INSERT INTO risk_events (symbol, side, approved, checks_json, account_id, created_at)
+    VALUES ('EURUSD', 'BUY', 1, '{"order_placed":true}', 'A1', ?)`).run(at(2))
+  refusal(db, 'EURUSD', 3)
+  a = auditDecisions(db, { accountId: 'A1' })
+  assert.equal(a.tradesOpened, 0, 'the rejected row is left to its refusal')
+  assert.deepEqual([a.landed, a.resolutions, a.silentDrops], [1, 1, 0], 'the receipt is the one landing counted')
+
   // an OPEN trade is a landing whatever refusal sits beside it
   db = initDB(':memory:')
   trade(db, 'EURUSD', 'open', approval(db, 'EURUSD', 1), 1); refusal(db, 'EURUSD', 2)

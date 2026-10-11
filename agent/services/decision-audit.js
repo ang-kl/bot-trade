@@ -250,7 +250,9 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     // drop. Such a row is left to its refusal: a rejected row whose approval
     // has a post-approval refusal on the same account, symbol and side inside
     // the dispositions' grace window (opportunity-disposition.js, the same
-    // pairing). Any other row counts as before.
+    // pairing), with no other gate approval on that tuple between the two —
+    // a later approval in between owns the refusal. Any other row counts as
+    // before.
     const graceDays = DEFAULT_GRACE_MIN / 1440
     const tradesOpened = int(db.prepare(`
       SELECT COUNT(*) AS n FROM trades t
@@ -262,7 +264,16 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
             AND UPPER(x.symbol) = UPPER(a.symbol) AND UPPER(COALESCE(x.side, '')) = UPPER(COALESCE(a.side, ''))
             AND COALESCE(x.account_id, '') = COALESCE(a.account_id, '')
             AND julianday(x.created_at) <= julianday(a.created_at) + ?
-           WHERE a.id = t.risk_event_id AND a.approved = 1))
+           WHERE a.id = t.risk_event_id AND a.approved = 1
+             -- the refusal belongs to the LATEST approval before it on the
+             -- tuple: a later approval in between owns it (Codex P2 on #1323)
+             AND NOT EXISTS (
+               SELECT 1 FROM risk_events y
+                WHERE y.id > a.id AND y.id < x.id AND y.approved = 1
+                  AND COALESCE(y.checks_json, '') NOT LIKE '%_placed":true%'
+                  AND COALESCE(y.checks_json, '') NOT LIKE '%_placed": true%'
+                  AND UPPER(y.symbol) = UPPER(a.symbol) AND UPPER(COALESCE(y.side, '')) = UPPER(COALESCE(a.side, ''))
+                  AND COALESCE(y.account_id, '') = COALESCE(a.account_id, ''))))
     `).get(dayStart, ...acctArgs, graceDays)?.n)
 
     // THE SILENT DROP. The gate said yes N times and fewer than N trades
