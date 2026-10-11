@@ -1929,3 +1929,56 @@ test('wiring pin: the hours are asked BEFORE the owed close, and the default is 
   assert.match(src, /deps\.isSymbolOpen \? deps\.isSymbolOpen\(db, symbol, new Date\(now\)\) : exitMarketHours\(db, \{ symbol, accountId, now: new Date\(now\) \}\)[\s\S]{0,600}?if \(exitMayDefer\(hours\)\) \{[\s\S]{0,900}?continue[\s\S]{0,700}?const volume = await bookCloseVolume/)
   assert.ok(!/isSymbolOpenCached/.test(src), 'the book no longer reads the name-keyed schedule directly')
 })
+
+// ---------------------------------------------------------------------------
+// W11 — Claude · № 13,378 12-Oct (owner's yes naming loop.js and
+// momentum-book.js; claude-builder). On 12-10 XOM.US on …9908 (manage_only)
+// read "not reached: account not in this pass": the trail looked accounts up
+// in the ENTRY roster, which leaves manage_only out by design.
+// ---------------------------------------------------------------------------
+test('W11: a book row on a manage-only account is trailed when the caller names it as a managing account', async () => {
+  const { db, f, id } = await bookRowWithStop(90)
+  // DEMO is not in the entry roster (as …9908 is not), only in the managing one.
+  await runMomentumBook(db, { accounts: [], manageAccounts: [{ accountId: DEMO, isLive: false, autopilot: false }], credsFor, deps: f.deps, now: 2_000 })
+  const r = trailRow(db, id)
+  assert.equal(r.stop, 96.9, 'the ratchet moved the stop up')
+  assert.equal(f.calls.amend.length, 1, 'and amended at the broker')
+  assert.match(r.trail_note, /trailed 90 -> 96\.9/)
+})
+
+test('W11: the managing roster grants no entries and no rank exits', async () => {
+  const { db, f } = await bookRowWithStop(99)
+  shadowRow(db, { symbol: 'ETHUSD', action: 'enter', rank: 0.96, conviction: 9 })
+  const before = db.prepare(`SELECT COUNT(*) AS n FROM momentum_book`).get().n
+  const entered = f.calls.autoTrade.length, closed = f.calls.close.length   // the fixture's own opening entry
+  const r = await runMomentumBook(db, { accounts: [], manageAccounts: [{ accountId: DEMO, isLive: false, autopilot: false }], credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(f.calls.autoTrade.length, entered, 'no entry from the managing roster')
+  assert.equal(f.calls.close.length, closed, 'no exit from the managing roster')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM momentum_book`).get().n, before)
+  assert.equal(r.accounts, 0, 'the per-account entry/exit pass ran on no account')
+})
+
+test('W11: without a managing roster the old contract holds — the row says why it was not reached', async () => {
+  const { db, f, id } = await bookRowWithStop(90)
+  await runMomentumBook(db, { accounts: [], credsFor, deps: f.deps, now: 2_000 })
+  const r = trailRow(db, id)
+  assert.equal(r.stop, 90); assert.equal(f.calls.amend.length, 0)
+  assert.match(r.trail_note, /not reached: account not in this pass/)
+})
+
+test('W11: an account in both rosters is trailed once', async () => {
+  const { db, f, id } = await bookRowWithStop(90)
+  const acct = { accountId: DEMO, isLive: false }
+  await runMomentumBook(db, { accounts: [acct], manageAccounts: [{ ...acct, autopilot: false }], credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(trailRow(db, id).stop, 96.9)
+  assert.equal(f.calls.amend.length, 1, 'one amend, not two')
+})
+
+test('W11 wiring (comments stripped): the loop hands the book the registry\'s managing roster', () => {
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const call = src.slice(src.indexOf('const mb = await runMomentumBook(db, {'), src.indexOf('credsFor: (a) => getCtraderCreds(db, a),', src.indexOf('const mb = await runMomentumBook(db, {')))
+  assert.ok(call.length > 0, 'the book call is found')
+  assert.match(call, /accounts: getAutopilotAccounts\(db\)/, 'entries keep the autopilot roster')
+  assert.match(call, /manageAccounts: \(\(\) => \{ try \{ return registryManageAccounts\(db\) \}/, 'the trail gets the managing roster')
+})

@@ -240,6 +240,19 @@ export function backfillAccountIds(db) {
 }
 
 /**
+ * The accounts that may MANAGE what they hold: `active` and `manage_only`
+ * (and `paused`), by the same capability table the entry roster reads
+ * (account-capabilities.js). Shaped like registryAutopilotAccounts. For
+ * management passes only — never an entry roster.
+ * W11 — Claude · № 13,378 12-Oct (owner's yes 12-10; claude-builder).
+ */
+export function registryManageAccounts(db) {
+  return getEnabledAccounts(db)
+    .filter(a => capabilitiesFor(a.mode, { scanWhileManageOnly: a.params.scanWhileManageOnly !== false }).manage)
+    .map(a => ({ accountId: a.account_id, isLive: a.is_live === 1, autopilot: false }))
+}
+
+/**
  * The registry-backed answer to "which accounts does the loop trade?" —
  * shaped exactly like the legacy ctrader_account_roles_json entries
  * ({accountId, isLive, autopilot}) so loop.js can consume either source

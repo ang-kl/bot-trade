@@ -386,7 +386,7 @@ export function loadBookState(db) {
  *   mayTrade(accountId, symbol) → {ok, item}
  *   symbolMap → {SYMBOL: id}
  */
-export async function runMomentumBook(db, { accounts = [], credsFor = () => null, deps = {}, now = Date.now(), log = () => {}, entriesHeld = null } = {}) {
+export async function runMomentumBook(db, { accounts = [], manageAccounts = null, credsFor = () => null, deps = {}, now = Date.now(), log = () => {}, entriesHeld = null } = {}) {
   const cfg = loadMomentumBook(db)
   if (!cfg.enabled) return { ran: false, why: 'disabled' }
   const state = loadBookState(db)
@@ -1097,6 +1097,11 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
   // conditions with different remedies collapsed into one null.
   //
   // So: every branch below that ends this row's pass says what it decided.
+  // The trail's roster: the entry roster first, then every manage-capable
+  // account the caller names (W11). The trail walks ROWS and takes the first
+  // match, so an account in both is trailed once. Entries, rank exits and
+  // adoption keep `accounts`.
+  const trailAccounts = Array.isArray(manageAccounts) ? [...accounts, ...manageAccounts] : accounts
   const noteTrail = (id, note, atr = null) => {
     try {
       db.prepare(`UPDATE momentum_book SET trail_checked_at = ?, trail_note = ?, atr = COALESCE(?, atr) WHERE id = ?`)
@@ -1116,7 +1121,12 @@ export async function runMomentumBook(db, { accounts = [], credsFor = () => null
                                  WHERE b.status = 'open'`).all()) {
     const rowSide = row.side === 'short' ? 'short' : 'long'
     const mk = markKey(row.account_id, row.symbol)
-    const acct = accounts.find(a => String(a.accountId) === String(row.account_id))
+    // W11 (Claude · № 13,378 12-Oct, owner's yes naming this file and
+    // loop.js; claude-builder): the trail is MANAGEMENT, so it reaches every
+    // account that may manage (active and manage_only), not only the entry
+    // roster. On 12-10 XOM.US on …9908 (manage_only) read "not reached:
+    // account not in this pass" while the active accounts' rows were trailed.
+    const acct = trailAccounts.find(a => String(a.accountId) === String(row.account_id))
     const creds = acct ? credsFor(acct) : null
     const symbolId = creds && deps.symbolIdFor
       ? await deps.symbolIdFor(creds, row.symbol)

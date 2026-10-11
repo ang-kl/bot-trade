@@ -6112,8 +6112,14 @@ async function runLoop(db) {
         const { accountMayTrade } = await import('./services/watchlists.js')
         const bookCfg = (await import('./services/momentum-book.js')).loadMomentumBook(db)
         const { isFundable } = await import('./services/fundable-universe.js')
+        const { registryManageAccounts } = await import('./services/account-registry.js')
         const mb = await runMomentumBook(db, {
           accounts: getAutopilotAccounts(db),
+          // W11 — Claude · № 13,378 12-Oct (owner's yes naming loop.js and
+          // momentum-book.js; claude-builder): the book's TRAIL reaches every
+          // manage-capable account, manage_only included; entries keep the
+          // autopilot roster above.
+          manageAccounts: (() => { try { return registryManageAccounts(db) } catch { return null } })(),
           credsFor: (a) => getCtraderCreds(db, a),
           now: Date.now(),
           log,
