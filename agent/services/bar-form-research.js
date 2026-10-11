@@ -98,6 +98,8 @@ export function barFormPlan(body = {}, { research = loadResearchConfig(), thresh
   const crossCheck = b.crossCheck == null ? null : numberList(Array.isArray(b.crossCheck) ? b.crossCheck : b.crossCheck?.symbolIds, { max: 1e9, limit: CROSS_CHECK_MAX_SYMBOLS, min: 0 }).map(Number)
   if (b.crossCheck != null && !crossCheck?.length) return { refuse: refuse(400, 'bad_cross_check', `crossCheck must name 1 to ${CROSS_CHECK_MAX_SYMBOLS} symbol ids the run builds`) }
   if (crossCheck && symbolIds && crossCheck.some(id => !symbolIds.includes(id))) return { refuse: refuse(400, 'bad_cross_check', 'crossCheck symbols must be among symbolIds') }
+  // Codex P2 on #1314: the cross-check list cannot outnumber the symbol cap.
+  if (crossCheck && !symbolIds && crossCheck.length > (cfg.maxSymbolsPerRun ?? 12)) return { refuse: refuse(400, 'bad_cross_check', `crossCheck names ${crossCheck.length} symbols, over maxSymbolsPerRun ${cfg.maxSymbolsPerRun ?? 12}; name symbolIds or fewer cross-check symbols`) }
   return {
     plan: {
       cfg, overridden: ov.overridden, configFile: research.file, forms: formsFrom(cfg).map(f => f.form), symbolIds, strategies: strategiesFor(strategies).map(s => s.key),

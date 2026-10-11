@@ -163,7 +163,8 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
     if (!st) {
       const n = Number(id)
       const reservedPending = [...reserved].filter(r => !states.has(r) && !states.has(String(r))).length
-      if (symbolCap != null && !reserved.has(n) && states.size + reservedPending >= symbolCap) { omittedSymbols.add(n); return null }
+      // The cap binds reserved ids too (Codex P2 on #1314): a reserved id is admitted only while the cap has room.
+      if (symbolCap != null && (states.size >= symbolCap || (!reserved.has(n) && states.size + reservedPending >= symbolCap))) { omittedSymbols.add(n); return null }
       st = { time: new Map(timeMs.map(ms => [ms, seriesState()])), tick: new Map(nominal.map(ms => [ms, { ...seriesState(), n: null }])), calib: [], calibrated: false }; states.set(id, st)
     }
     return st
