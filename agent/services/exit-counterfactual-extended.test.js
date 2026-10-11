@@ -202,7 +202,15 @@ test('B5c gateTag: the gate\'s pure verdict on the regime reading nearest before
   assert.ok([...gateTagsFor(db, db.prepare('SELECT id, symbol, side, opened_at, strategy AS strategy_attr FROM trades').all()).values()].every(t => t.tag === 'would_pass'))
   db.prepare("UPDATE regimes SET computed_at = datetime(?, 'unixepoch')").run(Math.floor((t0 - 5 * 3_600_000) / 1000))
   const stale = exitCounterfactualExtended(db, { stop: 'initial', minSample: 1 })
-  assert.equal(stale.gateTag.unknown, 3)
+  assert.equal(stale.gateTag.unknown, 3); assert.equal(stale.gateTag.maxAgeMin, 240)
+  // The CONFIGURED gate age is what the tag reads (Codex P2 on #1311): a 30-minute bound makes a two-hour-old reading no reading; a 6-hour bound makes the five-hour-old one count.
+  db.prepare("UPDATE regimes SET computed_at = datetime(?, 'unixepoch')").run(Math.floor((t0 - 2 * 3_600_000) / 1000))
+  setState(db, 'regime_gate_json', JSON.stringify({ maxRegimeAgeMin: 30 }))
+  assert.equal(exitCounterfactualExtended(db, { stop: 'initial', minSample: 1 }).gateTag.unknown, 3)
+  db.prepare("UPDATE regimes SET computed_at = datetime(?, 'unixepoch')").run(Math.floor((t0 - 5 * 3_600_000) / 1000))
+  setState(db, 'regime_gate_json', JSON.stringify({ maxRegimeAgeMin: 360 }))
+  const wide = exitCounterfactualExtended(db, { stop: 'initial', minSample: 1 })
+  assert.equal(wide.gateTag.unknown, 0); assert.equal(wide.gateTag.maxAgeMin, 360)
 })
 
 test('amendment area 4: rules are compared on a common cohort (rows every rule resolves), each rule names its scenario and cost; groups carry the same', () => {

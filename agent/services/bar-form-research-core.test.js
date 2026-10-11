@@ -158,3 +158,21 @@ test('amendment area 1: the loop measures itself and stops on the first breach (
   // No limits: nothing measured against, nothing aborted.
   assert.equal((await processSegments({ names: files, destDir: dir, cfg: CFG })).manifest.breach, null)
 })
+
+test('a segment that opens with a gap marks every symbol already holding bars (Codex P1 on #1311), with the leading gap counted', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'bfr-core-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const a = writeSegments(dir, [{ start: T0, seconds: 300 }])[0]
+  // Segment B: a reconnect gap BEFORE its first quote, then quotes for symbol 1 only.
+  const parts = [encodeHeader({ environment: 'demo', generation: 1, startedMs: T0 + 300_000, feedId: 'test' }), gap(T0 + 300_000, 3, 5)]
+  for (let s2 = 0; s2 < 300; s2 += 2) parts.push(quote(T0 + 300_000 + s2 * 1000, 1000 + s2, 1, 100 + s2 * 0.001, 100.02 + s2 * 0.001))
+  const b = join(dir, 'seg-0000000000002-000000.tks'); writeFileSync(b, Buffer.concat(parts))
+  assert.equal(quotesFromSegment(b).leadingGaps, 1); assert.equal(quotesFromSegment(a).leadingGaps, 0)
+  const { series, manifest } = await processSegments({ names: [a, b], destDir: dir, cfg: { ...CFG, calibrationSegments: 1 } })
+  assert.equal(manifest.leadingGapSegments, 1)
+  // Symbol 1: no minute-bar run spans the boundary (the hole marks the open bar and the next).
+  const s1 = series.get(1).find(f => f.form === 'time_60000ms')
+  assert.equal(s1.runs.some(run => run.some(x => x.t < T0 + 300_000) && run.some(x => x.t >= T0 + 300_000)), false)
+  // The same gap without the leading-gap rule would have let the bar open at the end of A resume into B: the first bar of B is invalid.
+  const firstB = s1.all.find(x => x.t >= T0 + 300_000)
+  assert.ok(firstB == null || firstB.invalid === 'gap' || firstB.t > T0 + 300_000 + 60_000 || s1.excludedForCalibration > 0)
+})

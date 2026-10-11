@@ -86,3 +86,9 @@ test('tpR replaces the strategy target with a fixed-R one; computeWindow bounds 
   assert.equal(gateTp.volGate.stopsWidened, gateOff.volGate.stopsWidened)
   for (const t of gateTp.trades.filter(t => t.reason === 'tp')) assert.equal(t.r, 1)
 })
+
+test('a confirmation signal with no following bar does not throw (Codex P1 on #1311): the guard precedes the stop derivation', () => {
+  for (const n of [GOLDEN.bars - 1, GOLDEN.bars - 2, GOLDEN.bars - 3, 700, 701]) {
+    assert.doesNotThrow(() => runBacktest(B.slice(0, n), { ...OPTS, strategy: 'fib_confluence', volGate: true, tpR: 1 }))
+  }
+})

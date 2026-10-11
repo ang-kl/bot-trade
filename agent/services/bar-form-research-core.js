@@ -48,8 +48,8 @@ export function quotesFromSegment(file, { symbolIds = null } = {}) {
   const buf = readFileSync(file)
   const seg = readSegment(buf)
   const bySymbol = new Map(), lastValid = new Map(), gapsByReason = {}
-  let events = 0, warmupResets = 0, fromMs = null, toMs = null
-  if (!seg.header) return { bySymbol, events, gapsByReason, warmupResets, fromMs, toMs, torn: true, bytes: buf.length }
+  let events = 0, warmupResets = 0, fromMs = null, toMs = null, leadingGaps = 0
+  if (!seg.header) return { bySymbol, events, gapsByReason, warmupResets, fromMs, toMs, torn: true, bytes: buf.length, leadingGaps }
   for (const ev of toQuoteEvents(seg)) {
     if (ev.gap) {
       gapsByReason[ev.reason] = (gapsByReason[ev.reason] || 0) + 1
@@ -60,6 +60,10 @@ export function quotesFromSegment(file, { symbolIds = null } = {}) {
       // quotes is still a bar over missing data). Warm-up resets keep the
       // loader's rule: continuity breaks only.
       if (!RECORDER_ONLY_GAPS.has(ev.reason)) warmupResets++
+      // A gap before this segment's first quote reaches no list here (none
+      // exists yet); it is counted so the caller can mark the symbols it
+      // already holds bars for (Codex P1 on #1311).
+      if (bySymbol.size === 0) leadingGaps++
       for (const list of bySymbol.values()) list.push({ gapMarker: true, reason: ev.reason, recorderOnly: RECORDER_ONLY_GAPS.has(ev.reason) })
       continue
     }
@@ -79,7 +83,7 @@ export function quotesFromSegment(file, { symbolIds = null } = {}) {
     if (fromMs == null || ms < fromMs) fromMs = ms
     if (toMs == null || ms > toMs) toMs = ms
   }
-  return { bySymbol, events, gapsByReason, warmupResets, fromMs, toMs, torn: seg.truncated, bytes: buf.length }
+  return { bySymbol, events, gapsByReason, warmupResets, fromMs, toMs, torn: seg.truncated, bytes: buf.length, leadingGaps }
 }
 
 const round3 = n => (Number.isFinite(n) ? Math.round(n * 1000) / 1000 : null)
@@ -209,6 +213,16 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
       for (const [k, v] of Object.entries(seg.gapsByReason)) manifest.gapsByReason[k] = (manifest.gapsByReason[k] || 0) + v
       if (seg.fromMs != null && (manifest.fromMs == null || seg.fromMs < manifest.fromMs)) manifest.fromMs = seg.fromMs
       if (seg.toMs != null && (manifest.toMs == null || seg.toMs > manifest.toMs)) manifest.toMs = seg.toMs
+      // Leading gaps: every symbol state that already exists sees the hole
+      // first, whether or not this segment carries quotes for it (Codex P1 on #1311).
+      if (seg.leadingGaps > 0) {
+        manifest.leadingGapSegments = (manifest.leadingGapSegments || 0) + 1
+        const hole = [{ gapMarker: true, reason: 'leading', recorderOnly: false }]
+        for (const [, st] of states) {
+          for (const [ms, ts] of st.time) { const r = timeBars(hole, { barMs: ms, maxSilenceMs: cfg.maxSilenceMs ?? null, resume: ts.state }); ts.all.push(...r.bars.map(b => ({ ...b })), ...r.invalid.map(x => ({ t: x.t, invalid: x.reason, n: x.n }))); ts.state = r.state }
+          if (st.calibrated) feedTick(null, st, hole); else st.calib.push(...hole)
+        }
+      }
       for (const [id, quotes] of seg.bySymbol) {
         const st = stateFor(id)
         for (const [ms, ts] of st.time) {

@@ -20,7 +20,7 @@ class FakeWorker extends EventEmitter {
   constructor(file, { workerData }) { super(); this.file = file; this.workerData = workerData; FakeWorker.last = this }
   terminate() { this.emit('exit', 1) }
 }
-const listAll = async () => ({ names: ['seg-0000000000001-000000.tks', 'seg-0000000000002-000000.tks', 'seg-0000000000003-000000.tks'], recordsPerSegment: [10, 10, 10], segments: 3, reachable: 1, sides: [{ side: 'cpp_exec_demo', reachable: true }] })
+const listAll = async () => ({ names: ['seg-0000000000001-000000.tks', 'seg-0000000000002-000000.tks', 'seg-0000000000003-000000.tks'], recordsPerSegment: [10, 10, 10], segments: 3, reachable: 1, sides: [{ side: 'cpp_exec_demo', reachable: true, segments: 3 }, { side: 'cpp_exec', reachable: true, segments: 0 }] })
 const sides = [{ name: 'cpp_exec_demo', base: 'http://demo.test' }, { name: 'cpp_exec', base: 'http://live.test' }]
 const deps = (over = {}) => ({ listAll, sides, workerCtor: FakeWorker, cacheDir: '/tmp/bfr-test-cache', secret: 's', resolveNames: () => ({ accountId: '43097342', nameOf: id => ({ 1: 'AAA', 2: 'BBB' })[id] || null }), ...over })
 const settle = () => new Promise(r => setTimeout(r, 5)) // the completion crosses a promise (the broker cross-check) before finish
@@ -71,7 +71,7 @@ test('the worker lifecycle: workerData carries the stream and the evaluation inp
   assert.equal(r.status, 202); assert.match(r.body.poll, /bar-form-research-job/)
   const w = FakeWorker.last
   assert.deepEqual(w.workerData.stream.names, ['seg-0000000000001-000000.tks', 'seg-0000000000002-000000.tks', 'seg-0000000000003-000000.tks'])
-  assert.deepEqual(w.workerData.stream.sides.map(s => s.name), ['cpp_exec_demo', 'cpp_exec']); assert.equal(w.workerData.stream.secret, 's'); assert.deepEqual(w.workerData.stream.symbolIds, [1, 2])
+  assert.deepEqual(w.workerData.stream.sides.map(s => s.name), ['cpp_exec_demo'], 'one feed per run'); assert.equal(w.workerData.stream.secret, 's'); assert.deepEqual(w.workerData.stream.symbolIds, [1, 2])
   assert.equal(w.workerData.evaluate.minSample, 2); assert.deepEqual(w.workerData.evaluate.symbolNames, { 1: 'AAA', 2: 'BBB' }); assert.equal(w.workerData.evaluate.regimes.AAA.length, 1)
   assert.ok(w.workerData.abortFlag instanceof SharedArrayBuffer)
   w.emit('message', { progress: { done: 1, total: 3 } })
@@ -183,4 +183,15 @@ test('more cells than maxTransactionRows: the persisted set is cut to the limit 
   FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1 }, cells: [cell, { ...cell, strategy: 't' }], summary: { cells: 2, byVerdict: {} } }); await settle()
   const v = barFormResearchView(db, { runId: r.body.runId })
   assert.equal(v.cellsTotal, 1); assert.equal(v.run.manifest.receipt.breach.limit, 'maxTransactionRows'); assert.equal(barFormJob(r.body.runId).receipt.cellsTruncatedToLimit, true)
+})
+
+test('one side per run (Codex P1 on #1311): with no side named, the single serving side is used; two serving sides refuse side_required; a named side is used alone', async () => {
+  const db = fresh()
+  const both = async ({ sides: asked }) => ({ names: asked.map(s => `seg-000000000000${s.name === 'cpp_exec' ? 1 : 2}-000000.tks`), recordsPerSegment: asked.map(() => 10), segments: asked.length, reachable: asked.length, sides: asked.map(s => ({ side: s.name, reachable: true, segments: 1 })) })
+  const r = await startBarFormResearch(db, { dryRun: true }, deps({ listAll: both }))
+  assert.equal(r.status, 409); assert.equal(r.body.error, 'side_required'); assert.deepEqual(r.body.sides, ['cpp_exec_demo', 'cpp_exec'])
+  const named = await startBarFormResearch(db, { dryRun: true, side: 'cpp_exec' }, deps({ listAll: both }))
+  assert.equal(named.status, 200); assert.deepEqual(named.body.sides, ['cpp_exec']); assert.deepEqual(named.body.segmentNames, ['seg-0000000000001-000000.tks'])
+  const auto = await startBarFormResearch(db, { dryRun: true }, deps())
+  assert.equal(auto.status, 200); assert.deepEqual(auto.body.sides, ['cpp_exec_demo'])
 })

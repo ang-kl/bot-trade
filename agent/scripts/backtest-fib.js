@@ -289,8 +289,8 @@ export function runBacktest(bars, opts) {
       if (!ok) { volStats.confirmationsTimedOut++; continue }
       // Skip the bars we waited through so the loop cannot re-enter on them.
       const entryBar = bars[i + need + 1]
-      const confirmSl = widenStop(dir0, entryBar.o, signal.sl, verdict)
       if (!entryBar) continue
+      const confirmSl = widenStop(dir0, entryBar.o, signal.sl, verdict) // after the guard (Codex P1 on #1311)
       pos = {
         dir: dir0,
         entry: entryBar.o,

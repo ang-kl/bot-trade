@@ -157,10 +157,19 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   // The segments: named, or the listed ones (oldest first) up to maxSegments; local files for tests.
   let names, sidesUsed, listed = null
   if (localFiles) { names = localFiles.slice(0, plan.maxSegments); sidesUsed = [] } else {
-    sidesUsed = plan.side == null ? allSides : allSides.filter(s => s.name === plan.side)
+    // Codex P1 on #1311: ONE side per run. Two gateways are two feeds (their
+    // ids, quotes and segment clocks are not one stream), so their segments
+    // never share a builder state. With no `side` named, the run takes the
+    // single side that lists segments and refuses when more than one does.
+    const candidates = plan.side == null ? allSides : allSides.filter(s => s.name === plan.side)
+    listed = await listAll({ sides: candidates, secret })
+    const serving = (listed.sides || []).filter(x => x.reachable && x.segments > 0).map(x => x.side)
+    if (!serving.length) return refuse(409, 'no_segments', 'no sealed segment is listed by the sidecar(s) asked (see GET /state/tick-segments)', { sides: listed.sides })
+    if (serving.length > 1) return refuse(409, 'side_required', `more than one sidecar side lists segments (${serving.join(', ')}); name one with "side" — one run reads one feed`, { sides: serving })
+    sidesUsed = candidates.filter(s => s.name === serving[0])
     listed = await listAll({ sides: sidesUsed, secret })
     const available = listed.names || []
-    if (!available.length) return refuse(409, 'no_segments', 'no sealed segment is listed by the sidecar(s) asked (see GET /state/tick-segments)', { sides: listed.sides })
+    if (!available.length) return refuse(409, 'no_segments', 'no sealed segment is listed by the sidecar asked (see GET /state/tick-segments)', { sides: listed.sides })
     if (plan.segments) {
       const missing = plan.segments.filter(n => !available.includes(n))
       if (missing.length) return refuse(409, 'segments_not_listed', `${missing.length} named segment(s) are not listed: ${missing.join(', ')}`, { missing })

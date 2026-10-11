@@ -1158,9 +1158,17 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
     // The regime read yields, so the slot is claimed first (as the sync
     // claims it): a second POST meanwhile is refused, never doubled.
     syncLock = { jobId: `regimes-${randomUUID().slice(0, 8)}`, startedAt: new Date().toISOString(), what: 'regime-row read (the counter-trend filter\'s context)' }
+    // Codex P2 on #1311: the shared research slot is held through the await,
+    // so the bar-form door cannot start beside it; released just before the
+    // job takes the slot under its own id (same tick, no window between).
+    const regimeSlot = acquireResearchSlot('tick research regime read', syncLock.jobId)
+    if (!regimeSlot.ok) { syncLock = null; return { status: 409, body: { ok: false, error: 'research_running', jobId: regimeSlot.held.id, startedAt: regimeSlot.held.startedAt, where: `a ${regimeSlot.held.what} holds the research slot; post again when it is done` } } }
     try {
-      return startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir, ...(await offLoopContext(local.files)) })
+      const ctx = await offLoopContext(local.files)
+      releaseResearchSlot(syncLock.jobId)
+      return startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir, ...ctx })
     } finally {
+      releaseResearchSlot(syncLock?.jobId)
       syncLock = null
     }
   }
@@ -1172,6 +1180,8 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
   // segment (measured: 48 chunk requests where one pull is 24). `admit`
   // above is synchronous, so nothing has yielded yet at this point.
   syncLock = { jobId: `sync-${randomUUID().slice(0, 8)}`, startedAt: new Date().toISOString(), what: 'segment sync' }
+  const syncSlot = acquireResearchSlot('tick research segment sync', syncLock.jobId)
+  if (!syncSlot.ok) { syncLock = null; return { status: 409, body: { ok: false, error: 'research_running', jobId: syncSlot.held.id, startedAt: syncSlot.held.startedAt, where: `a ${syncSlot.held.what} holds the research slot; post again when it is done` } } }
   try {
     const { segmentCacheDir, syncInWorker, listAllSides } = await import('./tick-segments.js')
     const dest = cacheDir || segmentCacheDir()
@@ -1288,9 +1298,11 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
     // pull as a whole, and the operator wants the SEGMENTS, not the reports.
     const failedNames = [...new Set([...(pull.failed || []), ...(pull.sides || []).flatMap(x => x.failed || [])].map(f => f?.name).filter(Boolean))]
     const pre = counterTrendAsked ? await offLoopContext(after.files) : {}
+    releaseResearchSlot(syncLock.jobId)
     const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest, segmentsAvailable: listedCount, segmentsFailed: failedNames, ...pre })
     return { status: started.status, body: { ...started.body, sync: pull } }
   } finally {
+    releaseResearchSlot(syncLock?.jobId)
     syncLock = null
   }
 }

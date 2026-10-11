@@ -38,12 +38,13 @@ import { planCappedHybrid } from './capped-hybrid-policy.js'
 // Claude · № 13,096 11-Oct (plan step 9, B5c): the regime gate's PURE verdict,
 // applied to the regime recorded nearest BEFORE each entry. Read-only reach
 // into a protected module (agent/research-isolation.test.js names it).
-import { regimeBlocks } from './regime-gate.js'
+import { regimeBlocks, loadRegimeGateConfig, DEFAULT_MAX_REGIME_AGE_MIN } from './regime-gate.js'
 
 export const EXTENDED_OPTIONS = Object.freeze(['stop', 'tpR', 'design', 'family', 'preset', 'groupBy', 'followThrough', 'trailR'])
 export const PRESETS = Object.freeze(['meanrev', 'breakout', 'momentum', 'all'])
 export const GROUP_KEYS = Object.freeze(['strategy', 'timeframe', 'regime', 'family', 'gateTag'])
-export const GATE_TAG_MAX_AGE_MS = 4 * 3_600_000 // DEFAULT_MAX_REGIME_AGE_MIN of the gate (240 min), as a bound on how old a reading may be
+/** The gate's configured age bound (regime_gate_json.maxRegimeAgeMin over the gate's default) in ms: the tag describes the CONFIGURED gate (Codex P2 on #1311). */
+export function gateTagMaxAgeMs(db) { const cfg = loadRegimeGateConfig(db); const min = Number(cfg?.maxRegimeAgeMin); return (Number.isFinite(min) && min > 0 ? min : DEFAULT_MAX_REGIME_AGE_MIN) * 60_000 }
 export const MAX_GROUP_VALUES = 24
 
 const ms = s => { if (s == null) return null; const t = Date.parse(s); return Number.isFinite(t) ? t : null }
@@ -141,12 +142,13 @@ export function gateTagsFor(db, rows) {
   const symbols = [...new Set(rows.map(r => r.symbol).filter(Boolean))]
   const out = new Map()
   if (!symbols.length) return out
+  const maxAgeMs = gateTagMaxAgeMs(db)
   const sel = db.prepare(`SELECT regime, trend_direction, computed_at FROM regimes WHERE symbol = ? AND computed_at <= datetime(?, 'unixepoch') AND computed_at >= datetime(?, 'unixepoch') ORDER BY computed_at DESC LIMIT 1`)
   for (const r of rows) {
     const at = ms(r.opened_at)
     if (at == null || !r.symbol) { out.set(r.id, { tag: 'unknown', reason: 'no entry time or symbol' }); continue }
-    const row = sel.get(r.symbol, Math.floor(at / 1000), Math.floor((at - GATE_TAG_MAX_AGE_MS) / 1000))
-    if (!row) { out.set(r.id, { tag: 'unknown', reason: 'no regime reading within the gate\'s age bound before entry' }); continue }
+    const row = sel.get(r.symbol, Math.floor(at / 1000), Math.floor((at - maxAgeMs) / 1000))
+    if (!row) { out.set(r.id, { tag: 'unknown', reason: `no regime reading within the gate's age bound (${maxAgeMs / 60_000} min) before entry` }); continue }
     const bias = /^(sell|short)$/i.test(String(r.side || '')) ? 'short' : 'long'
     const v = regimeBlocks(r.strategy_attr, bias, row)
     out.set(r.id, { tag: v.block ? 'would_block' : 'would_pass', reason: v.reason ?? null, regime: row.regime, trendDirection: row.trend_direction ?? null })
@@ -258,7 +260,7 @@ export function exitCounterfactualExtended(db, {
     sweeps: { ...cfg, source: research.source, overridden: sweeps.overridden },
     management: { source: 'loadManagedExit (managed_exit_json over defaults) + mae-chandelier-observe + capped-hybrid-policy', trailR: policy.trailR, takeAtR: policy.takeAtR, takeAtRFamilies: policy.takeAtRFamilies, takeFractionAtR: policy.takeFractionAtR, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD }, hybridTriggerR: hybridTriggerR() },
     design: dz ? dz.coverage : null,
-    gateTag: { ...gateTag, basis: 'regimeBlocks(strategy, bias, regime reading nearest before entry within 4h); groupBy=gateTag splits every rule by it' },
+    gateTag: { ...gateTag, maxAgeMin: gateTagMaxAgeMs(db) / 60_000, basis: 'regimeBlocks(strategy, bias, regime reading nearest before entry within the configured regime-gate age bound); groupBy=gateTag splits every rule by it' },
     considered: pop.considered, eligible: eligible.length, skipped: pop.skipped,
     actual, rules: perRule, cohort, costs: COST_MODEL, followThrough: follow, groups,
     note: 'Bar replay only. Compare rules on `common` (the common cohort), never on the headline figures, whose denominators differ by rule. Costs: none modelled (see costs). Not replayable exactly: the tick-level Chandelier on the native TrailEngine, broker-side trailing once a stop locks profit, the hybrid tick trigger, partial fill prices. managed_approx approximates the live stack at bar close; compare its figures with `actual` on the same trades before reading any other rule against it. Ambiguous and truncated trades are excluded from every figure and counted beside it; follow-through is a bracket because a bar that hits the stop may also have set the high.',
