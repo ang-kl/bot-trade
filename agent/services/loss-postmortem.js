@@ -60,6 +60,18 @@ export const TIGHT_HOLD_BARS = 2
  * @param {number} closedAtMs epoch ms of the close
  * @returns {{ classification:string, detail:string }|null} null = wait for more bars
  */
+/**
+ * The distance a LOSS is classified against: the stop that was hit (its
+ * `sl_price`), else the entry-to-exit move. classifyLoss's "1R beyond the
+ * stop" uses it, so the loss lesson that quotes that distance must use it too
+ * (Codex P2 on #1325) — while r_multiple uses the risk at entry (W1).
+ */
+export function lossReferenceRisk(trade) {
+  const entry = Number(trade?.entry_price), exit = Number(trade?.exit_price)
+  const sl = trade?.sl_price != null ? Number(trade.sl_price) : null
+  return sl != null && Math.abs(entry - sl) > 0 ? Math.abs(entry - sl) : Math.abs(entry - exit)
+}
+
 export function classifyLoss(trade, bars, closedAtMs, opts = {}) {
   const aftermathBars = opts.aftermathBars ?? AFTERMATH_BARS
   const minAfterBars = opts.minAfterBars ?? MIN_AFTER_BARS
@@ -76,7 +88,7 @@ export function classifyLoss(trade, bars, closedAtMs, opts = {}) {
     return { classification: 'inconclusive', detail: 'Missing entry/exit price — cannot reconstruct the trade geometry.' }
   }
   const long = /^(buy|long)$/i.test(String(trade.side || ''))
-  const risk = sl != null && Math.abs(entry - sl) > 0 ? Math.abs(entry - sl) : Math.abs(entry - exit)
+  const risk = lossReferenceRisk(trade)
   if (!(risk > 0)) {
     return { classification: 'inconclusive', detail: 'Zero risk distance — geometry unusable.' }
   }
@@ -447,6 +459,46 @@ export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 5
 }
 
 /**
+ * The risk taken at ENTRY, for a postmortem's R (W1; Claude · № 13,353
+ * 12-Oct, owner "W1 W2 W3 W4 W11", docs/instruction-2026-10-12-decisions.md;
+ * claude-builder).
+ *
+ * WHY. The momentum book overwrites `trades.sl_price` with every trail
+ * (momentum-book.js), and the postmortem divided by it: 39 of 56 momentum
+ * postmortems measured R against a stop the book had already trailed, which
+ * read PF 1.45 where the risk taken at entry gives 0.60 (the r-audit,
+ * /state/theory-gap?section=r-audit). R is the risk at entry; a stop that
+ * ratcheted in later does not shrink it (trade-consistency.js realisedRR).
+ *
+ * Order: the stop the broker first held (`broker_sl_initial`), the stop the
+ * risk gate evaluated (the risk event's proposal), the monitor's recorded
+ * `initial_risk`, and only for a trade the book never trailed, `sl_price`.
+ * None of them: `{ risk: null }` — no R is written, never a trailed guess.
+ * Pure.
+ */
+export function initialRiskOf(t) {
+  const entry = Number(t?.entry_price)
+  if (!(Number.isFinite(entry) && entry > 0)) return { risk: null, source: null }
+  const fromStop = (v) => {
+    if (v == null || v === '') return null
+    const sl = Number(v)
+    const d = Number.isFinite(sl) && sl > 0 ? Math.abs(entry - sl) : NaN
+    return d > 0 ? d : null
+  }
+  for (const [source, v] of [['broker_sl_initial', t?.broker_sl_initial], ['proposal_sl', t?.proposal_sl]]) {
+    const risk = fromStop(v)
+    if (risk != null) return { risk, source }
+  }
+  const ir = t?.initial_risk == null ? NaN : Number(t.initial_risk)
+  if (Number.isFinite(ir) && ir > 0) return { risk: ir, source: 'initial_risk' }
+  if (!Number(t?.book_trailed)) {
+    const risk = fromStop(t?.sl_price)
+    if (risk != null) return { risk, source: 'sl_price' }
+  }
+  return { risk: null, source: null }
+}
+
+/**
  * Sweep: classify closed trades — LOSSES and WINS — that have no postmortem
  * yet, over a 90-day window (owner: "run one PR to learn all past and fill it
  * in" — the loop back-fills history automatically at maxPerCycle a tick).
@@ -473,7 +525,14 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
            t.confluence_tool_count, t.confluence_conflict_flagged, t.vol_gate_mode,
            ${strategyAttrSql('t.label_strategy', 't.strategy')} AS strategy,
            t.label_timeframe AS timeframe,
-           (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk
+           (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk,
+           -- W1: the stop at ENTRY, for the R denominator (initialRiskOf).
+           t.broker_sl_initial,
+           -- json_valid first: one malformed proposal must not abort the sweep
+           -- (SQLite raises on json_extract of bad JSON); it reads as no stop.
+           (SELECT CASE WHEN json_valid(re.proposal_json) THEN json_extract(re.proposal_json, '$.sl') END
+              FROM risk_events re WHERE re.id = t.risk_event_id) AS proposal_sl,
+           EXISTS (SELECT 1 FROM momentum_book b WHERE b.trade_id = t.id) AS book_trailed
     FROM trades t
     LEFT JOIN trade_postmortems pm ON pm.trade_id = t.id
     WHERE t.status = 'closed' AND pm.id IS NULL
@@ -521,8 +580,14 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     // than retrying forever; a fresh one waits for enough bars. Wins classify
     // immediately (they only need the holding-period bars).
     const stale = now - closedMs > 24 * 3_600_000
+    // W1: R is measured against the stop at ENTRY. A win's R-units come from
+    // the same initial risk (classifyWin reads its stop only for the risk);
+    // with none on record the win is inconclusive rather than scored on a
+    // trailed stop. A loss keeps the stop that was hit as its reference
+    // level, which is what "1R beyond the stop" is about.
+    const initial = initialRiskOf(t)
     const verdict = isWin
-      ? classifyWin(t, bars, openedMs, closedMs)
+      ? classifyWin({ ...t, sl_price: null, initial_risk: initial.risk }, bars, openedMs, closedMs)
       : classifyLoss(t, bars, closedMs, { allowPartial: stale })
     if (verdict === null) { waiting++; continue }
     // Honesty guard: a clipped fetch window (old trade > 400 bars) can hide
@@ -532,7 +597,8 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
       verdict.detail += ' (bar window clipped — early holding period not visible, MFE/MAE may be understated)'
     }
 
-    const riskDist = t.sl_price != null ? Math.abs(t.entry_price - t.sl_price) : (Number(t.initial_risk) > 0 ? Number(t.initial_risk) : null)
+    const riskDist = initial.risk
+    if (riskDist == null) verdict.detail += ' (no initial stop on record — R not measured)'
     const holdBars = Number.isFinite(openedMs) ? Math.max(0, Math.round((closedMs - openedMs) / ms)) : null
     const rMult = riskDist > 0 && t.exit_price != null && t.entry_price != null
       ? (isWin ? 1 : -1) * (Math.abs(t.entry_price - t.exit_price) / riskDist)
@@ -549,7 +615,9 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     const decay = alphaDecayFlag(db, { symbol: t.symbol, strategy: t.strategy || null, timeframe: tf })
     const lesson = lessonLine(verdict.classification, {
       strategy: t.strategy, maeR: verdict.maeR, mfeR: verdict.mfeR, realizedR: verdict.realizedR,
-      nBars: verdict.nBars, afterBars: verdict.afterBars, riskDist, holdBars,
+      // A loss lesson quotes the distance its classifier used (the stop that
+      // was hit); a win's quotes nothing from it (Codex P2 on #1325).
+      nBars: verdict.nBars, afterBars: verdict.afterBars, riskDist: isWin ? riskDist : lossReferenceRisk(t), holdBars,
     })
     const eq = entryQuality(t.confluence_count)
     db.prepare(`

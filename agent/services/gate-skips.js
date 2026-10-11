@@ -29,8 +29,21 @@ import { recordDecision } from './decision-log.js'
 export const REGIME_BLOCK_STAGE = 'regime_block'
 export const EVIDENCE_GATE_STAGE = 'evidence_gate'
 
-/** The regime gate refused this symbol's strategy/bias: one skip, no veto. */
+/**
+ * The regime gate refused this symbol's strategy/bias: one skip, no veto.
+ *
+ * W2 (Claude · № 13,356 12-Oct, ordered № 13,345 via
+ * docs/instruction-2026-10-12-decisions.md; claude-builder): the skip also
+ * carries the refused proposal's stop, targets and conviction, so a refusal
+ * can be scored later (theory-gap regime-blocks `capture`). They come from
+ * `synth` first, falling back to `signal`: the two carry the same values
+ * (fib-strategy.js synthesizeFibSignal) except when a watchlist direction
+ * override mirrored synth's stop and targets onto the other side (loop.js,
+ * before the regime gate) — and `side` here is synth's, so the geometry must
+ * be synth's too. A missing value is recorded as null, never guessed.
+ */
 export function recordRegimeBlock(db, { symbol, synth = {}, signal = null, reason, loopId = null }) {
+  const pick = (a, b) => a ?? b ?? null
   recordDecision(db, {
     symbol, timeframe: synth.timeframe ?? null, strategy: synth.strategy ?? null,
     stage: REGIME_BLOCK_STAGE, decision: 'skip', reason, loopId,
@@ -38,6 +51,10 @@ export function recordRegimeBlock(db, { symbol, synth = {}, signal = null, reaso
       bias: synth.consensus_bias ?? null,
       side: synth.consensus_bias === 'short' ? 'SELL' : 'BUY',
       entry: signal?.entry ?? synth.entry ?? null,
+      sl: pick(synth.sl, signal?.sl),
+      tp1: pick(synth.tp1, signal?.tp1),
+      tp2: pick(synth.tp2, signal?.tp2),
+      conviction: pick(synth.overall_conviction, signal?.conviction),
     },
   })
 }
