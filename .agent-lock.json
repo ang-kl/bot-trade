@@ -10,6 +10,7 @@
       "files": [
         "agent/config/research.json",
         "agent/db.js (two research tables only)",
+        "agent/lib/bar-crosscheck.js",
         "agent/lib/exit-replay.js",
         "agent/lib/exit-replay.js(+tests, additive)",
         "agent/lib/research-config.js(+test)",
@@ -22,19 +23,21 @@
         "agent/scripts/backtest-fib.js (research options only)",
         "agent/scripts/backtest-fib.js(additive opts + golden test)",
         "agent/services/bar-form-research*.js",
+        "agent/services/donchian-breakout.js (two additive exports only)",
         "agent/services/exit-counterfactual-extended.js",
         "agent/services/exit-counterfactual.js",
         "agent/services/exit-counterfactual.js(+test, additive)",
         "agent/services/performance-populations.js (new report kinds only)",
         "agent/services/performance-populations.js (research kinds only)",
         "agent/services/research-slot.js",
+        "agent/services/strategy-autopilot-research-options.test.js",
         "agent/services/theory-gap.js",
         "agent/services/theory-gap.js(+test)",
         "agent/services/tick-research-run.js (shared research slot only)",
         "scripts/check-protected-boundary.sh"
       ],
       "reason": "Owner-approved plan (№ 13,093): theory-gap measurements and tick-bar research. Protected boundary: NO change to managed-exit, stop-policy(+controller), profit-keeper/ratchet, mae-chandelier-observe, capped-hybrid-*, momentum-partial-*, momentum-book, hybrid-tick-*, manual-hybrid-*, native-trail-events, keeper-close-receipts, general-partial-execution, loss-guardian, weekend-bank, trade-guard, risk, earned-floor, regime(-gate), loop, scanner-feed, tick-permits, cpp-exec trail/ratchet/hybrid/tick sources, cpp-scan-timeframe scanner.cpp.",
-      "note": "PRs #1308, #1309, #1310 merged (research steps 1–7); #1311 open (step 8, the bar-form research job). Owner question on the account view (№ 13,096) pending their choice; no account change."
+      "note": "PRs #1308–#1311 merged (research steps 1–9, Codex fixes, three docs). #1312 open: amendment remediation R1–R5. Owner review instruction answered at № 13,100 (docs/amendment-review-2026-10-11.md)."
     }
   ],
   "notes": [
@@ -503,6 +506,12 @@
       "agent": "claude-builder",
       "serial": 13096,
       "text": "№ 13,096: #1309 (770892fe) and #1310 (005f9c07) merged; #1311 open (step 8). Account-view audit answered at № 13,096: UI not hardcoded; decision C·1/C·3 with the owner."
+    },
+    {
+      "at": "2026-10-11T02:37:00Z",
+      "agent": "claude-builder",
+      "serial": 13101,
+      "text": "№ 13,101: #1311 merged 67f32277; #1312 open (remediation R1–R5). Highest Codex stamp seen 13,082."
     }
   ]
 }
