@@ -26,6 +26,12 @@ test('a configured minRR with more than two decimals is answered rounded up on a
   // expectancy clause disabled (null is honoured by the merge): the final return rounds as well
   setState(db, 'risk_config_json', JSON.stringify({ minRR: 3.004, minExpectancyR: null }))
   assert.equal(effectiveRrFloor(db, 'A', 'burnin'), 3.01, 'with the expectancy clause off the configured floor is still answered as 3.01')
+  // Codex P2, round 7: a remainder too small for the 6-decimal round is still
+  // a floor the gate compares the two-decimal ratio against, raw
+  setState(db, 'risk_config_json', JSON.stringify({ minRR: 3.0000004, minExpectancyR: null }))
+  assert.equal(effectiveRrFloor(db, 'A', 'burnin'), 3.01, 'a hair above 3 is answered 3.01, which the gate admits against the raw 3.0000004')
+  setState(db, 'risk_config_json', JSON.stringify({ minRR: 3.6, minExpectancyR: null }))
+  assert.equal(effectiveRrFloor(db, 'A', 'burnin'), 3.6, 'an exact two-decimal floor is answered as itself')
   assert.equal(ceilRr(3.6000000000000005), 3.6)
   assert.equal(ceilRr(3.004), 3.01)
   assert.equal(ceilRr(4.2), 4.2)

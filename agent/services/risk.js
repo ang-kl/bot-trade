@@ -715,8 +715,14 @@ export function effectiveRrFloor(db, accountId = null, strategy = null) {
   // Codex P2 (round 6): on EVERY path — thin sample, expectancy off, a
   // configured minRR with more than two decimals — the answer is the
   // two-decimal ratio the gate will judge, never the raw 3.004 that reaches
-  // the gate as 3.00 and fails its own floor.
-  return ceilRr(floor)
+  // the gate as 3.00 and fails its own floor. Codex P2 (round 7): the gate
+  // compares that two-decimal ratio against the RAW configured floor, so a
+  // remainder too small for ceilRr's 6-decimal round (minRR 3.0000004) is
+  // still honoured: a candidate under the raw configured floor steps up.
+  const configured = Math.max(HARD_MIN_RR, Number.isFinite(requested) ? requested : 0)
+  let out = ceilRr(floor)
+  if (out < configured) out = Math.round((out + 0.01) * 100) / 100
+  return out
 }
 
 /** The smallest two-decimal ratio at or above `x`; a 6-decimal round first keeps an exact 3.6 at 3.60. */
