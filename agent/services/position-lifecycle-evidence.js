@@ -254,7 +254,7 @@ async function persistReceipts(db, response, accountId) {
     import('./broker-history-import.js'), import('../lib/ctrader-creds.js'), import('../lib/lot-size-registry.js')])
   const symMeta = {}
   try { for (const [name, id] of Object.entries(getAccountSymbolMap(db, accountId)?.map ?? {})) symMeta[id] = { symbolName: name } } catch { /* receipt without a name */ }
-  const shaped = shapeDeals((response.deal ?? []).filter(executedDeal), withBrokerLotSizes(db, symMeta), accountId)
+  const shaped = shapeDeals((response.deal ?? []).filter(executedDeal), withBrokerLotSizes(db, symMeta, accountId), accountId)
   return shaped.length ? persistDeals(db, shaped) : { seen: 0 }
 }
 

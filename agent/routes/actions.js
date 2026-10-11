@@ -6308,7 +6308,7 @@ export default function actionsRouter(db, deps = {}) {
       // same answer sends the order below.
       const metaHost = (getState(db, 'ctrader_is_live') === 'true') ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
       const volMeta = await getVolumeMeta(metaHost, clientId, clientSecret, accessToken, accountId, symbolId)
-      rememberVolumeMeta(db, analysis.symbol.toUpperCase(), { ...volMeta, accountId })
+      rememberVolumeMeta(db, analysis.symbol.toUpperCase(), { ...volMeta, accountId }, { shared: false })
       const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db, accountId))
       // §70.9 lineage (W8): the approval's row id rides onto the trade row
       // and the entry intent this order produces.
@@ -6512,7 +6512,7 @@ export default function actionsRouter(db, deps = {}) {
       // the gate judges what the broker will actually accept. A record on
       // file is never overwritten with nothing (rememberVolumeMeta).
       const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
-      rememberVolumeMeta(db, symbol, { ...volMeta, accountId: creds.accountId })
+      rememberVolumeMeta(db, symbol, { ...volMeta, accountId: creds.accountId }, { shared: false })
 
       const proposal = {
         symbol, side, entry,

@@ -12,7 +12,7 @@ import { contractSize } from './contracts.js'
 import {
   rememberLotSize, rememberVolumeMeta, brokerMinLots,
   unitsPerLot, lotsFromUnits, lotSizeParity,
-  LOT_SIZE_KEY, CENTS_PER_UNIT, lotRecordFor, LOT_SIZE_BY_ACCOUNT_KEY, reconcileLotRecord, brokerLotStep, ensureOwnLotRecord,
+  LOT_SIZE_KEY, CENTS_PER_UNIT, lotRecordFor, LOT_SIZE_BY_ACCOUNT_KEY, reconcileLotRecord, brokerLotStep, ensureOwnLotRecord, withBrokerLotSizes,
 } from './lot-size-registry.js'
 import { brokerVolumeToLots } from '../services/reconciler.js'
 
@@ -364,4 +364,20 @@ test('lotsFromUnits converts with the account\'s own record first, the shared on
   assert.equal(brokerVolumeToLots(bp, 'BTCUSD', db, 'B'), 2)
   assert.equal(brokerVolumeToLots(bp, 'BTCUSD', db, 'A'), 0.02)
   assert.equal(lotsFromUnits(db, 'BTCUSD', null, 'B').lots, null, 'absent volume stays absent')
+})
+
+// Codex P1 on #1318, round 11: writers this change added record the
+// account's own record only; deal imports divide by the account's own lot.
+test('an own-only write leaves the shared slot alone, and deal imports read the account\'s own lot first', () => {
+  const db = fresh()
+  rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, accountId: 'B' })                         // shared + B (a pre-existing writer)
+  assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 10_000, accountId: 'A' }, { shared: false }), true)
+  assert.equal(lotRecordFor(db, 'BTCUSD').lotSize, 100, 'the shared slot still holds B\'s answer')
+  assert.equal(lotRecordFor(db, 'BTCUSD', 'A').lotSize, 10_000)
+  const meta = () => ({ 7: { symbolName: 'BTCUSD' } })
+  assert.equal(withBrokerLotSizes(db, meta(), 'A')[7].lotSize, 10_000, 'A\'s deals divide by A\'s lot')
+  assert.equal(withBrokerLotSizes(db, meta(), 'B')[7].lotSize, 100)
+  assert.equal(withBrokerLotSizes(db, meta())[7].lotSize, 100, 'no account named: the shared slot, as before')
+  assert.equal(rememberVolumeMeta(db, 'ETHUSD', { lotSize: 100 }, { shared: false }), false, 'own-only with no account writes nothing')
+  assert.equal(lotRecordFor(db, 'ETHUSD'), null)
 })

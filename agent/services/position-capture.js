@@ -374,7 +374,7 @@ export async function refreshDealsFor(db, { accountId, positionId, getDeals, now
     const idMap = accountSymbolMap(db, accountId) // V3 V1: THIS account's names — ids are per environment
     for (const [name, id] of Object.entries(idMap)) symMeta[id] = { symbolName: name }
   } catch { symMeta = {} }
-  const persisted = persistDeals(db, shapeDeals(pull.deals, withBrokerLotSizes(db, symMeta), accountId)) // V3 L2b W10: lots stored
+  const persisted = persistDeals(db, shapeDeals(pull.deals, withBrokerLotSizes(db, symMeta, accountId), accountId)) // V3 L2b W10: lots stored; № 13,175 own lot first
   return { ok: pull.complete, complete: pull.complete, reason: pull.complete ? null : pull.reason, deals: pull.deals.length, persisted: persisted?.seen || 0 }
 }
 

@@ -306,13 +306,17 @@ async function scanPreorder(db, input, deps) {
   const result = risk.evaluateTrade(db, proposal, config)                                            // loop.js:796
   return assemble(db, {
     kind: 'scan', route, accountId, proposal, result, config, upstream,
+    // № 13,175 (Codex P2 on #1318, round 11): the order path fetches this
+    // account's lot record before its gate when it has none; this read-only
+    // check says whether it sized on that record or on a fallback.
+    lotRecord: manualLotRecord(db, proposal.symbol, accountId, result, 'the order path'),
     signal: { scanId, source: found.source, scannedAt: row.scanned_at },
     strategyGate: 'evidence_gate',
     notChecked: [
       'armed scope and the roster-wide stage gate', 'style filter', 'block_next_trade', 'fundable universe',
       'account horizon', 'account phases', 'per-account stage gate', 'profit ratchet', 'sidecar roster',
       'per-symbol strategy gate', 'market hours (account calendar)', 'entry-mode fence at the execution boundary',
-      'symbol id and broker minimum volume after approval',
+      'symbol id resolution, and the account\'s live broker lot-record fetch before the gate when it has none (see lotRecord)',
       ...(route === 'htf_limit' ? ['resting-limit idempotency and pending-order cap'] : ['entry-drift and spread gates at send']),
     ],
   })
@@ -340,7 +344,7 @@ async function brokerEntry(creds, symbolId) {
  * symbol alone, so another account's record, or an unstamped one, is not
  * provenance). Said here, not discovered.
  */
-function manualLotRecord(db, symbol, accountId, result) {
+function manualLotRecord(db, symbol, accountId, result, via = 'POST /actions/manual-order') {
   const c = result?.checks || {}
   const consultedByGate = 'units_per_lot' in c
   // № 13,175 (Codex P1 on #1318): the gate reads the account's OWN record
@@ -359,12 +363,12 @@ function manualLotRecord(db, symbol, accountId, result) {
   const gateClause = consultedByGate ? '' : ' (the gate refused before sizing; this is what it would have read)'
   let note
   if (rec == null) {
-    note = `no broker lot record on file for ${symbol}: this dry run sized on the contract table and the global minimum lot; POST /actions/manual-order records the broker's lot size and minimum for account ${acct ?? '(selected)'} before its gate, so its size or a min-lot refusal can differ — run the dry run again after the first order on this symbol${gateClause}`
+    note = `no broker lot record on file for ${symbol}: this dry run sized on the contract table and the global minimum lot; ${via} records the broker's lot size and minimum for account ${acct ?? '(selected)'} before its gate, so its size or a min-lot refusal can differ — run the dry run again after the first order on this symbol${gateClause}`
   } else if (ownRecord) {
     note = `the gate sized ${symbol} in account ${acct}'s own recorded units and floored at its recorded minimum lot, as the route will${gateClause}`
   } else {
     const who = rec.accountId != null ? `by account ${rec.accountId}` : 'before records carried an account'
-    note = `the lot record on file for ${symbol} was written ${who}; POST /actions/manual-order refreshes it from account ${acct ?? '(selected)'}'s own broker answer before its gate, so its size or a min-lot refusal can differ${gateClause}`
+    note = `the lot record on file for ${symbol} was written ${who}; ${via} refreshes it from account ${acct ?? '(selected)'}'s own broker answer before its gate, so its size or a min-lot refusal can differ${gateClause}`
   }
   return {
     stored,
@@ -548,7 +552,7 @@ async function assemble(db, { kind, route, accountId, proposal, result, config, 
     },
     strategy: strategyRecord(db, { strategy: proposal.strategy, accountId, gate: strategyGate }),
     expectedR: EXPECTED_R_NOT_COMPUTED,
-    // manual only: what one lot was sized as, and whether the route will size the same (№ 13,172)
+    // what one lot was sized as, and whether the order path will size the same (№ 13,172 / 13,175)
     ...(lotRecord ? { lotRecord } : {}),
     proposal,
     upstream,

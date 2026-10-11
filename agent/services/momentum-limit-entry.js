@@ -50,7 +50,7 @@ export async function placeMomentumLimit(db, creds, symbol, synth, opts = {}) {
     // record this evidence read for THIS account is recorded before the gate,
     // so the gate sizes in its units, not on a table or another account's.
     if (ev0?.symbolMeta && Number(ev0.symbolMeta.lotSize) > 0) {
-      try { rememberVolumeMeta(db, symbol, { ...ev0.symbolMeta, accountId }) } catch { /* bookkeeping never blocks */ }
+      try { rememberVolumeMeta(db, symbol, { ...ev0.symbolMeta, accountId }, { shared: false }) } catch { /* bookkeeping never blocks */ }
     }
     const pre = preGatePlan(db, { ...args, evidence: ev0 })
     if (!pre.ok) return refuse(pre.reason)

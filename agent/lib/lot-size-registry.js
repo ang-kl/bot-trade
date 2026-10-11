@@ -207,7 +207,7 @@ export function rememberLotSize(db, symbol, lotSize) {
  * @param {{lotSize?:number, minVolume?:number|null, stepVolume?:number|null}} meta
  * @returns {boolean} whether anything was stored
  */
-export function rememberVolumeMeta(db, symbol, meta = {}) {
+export function rememberVolumeMeta(db, symbol, meta = {}, { shared = true } = {}) {
   const s = clean(symbol)
   if (!s) return false
   const lotSize = posNum(meta?.lotSize)
@@ -218,6 +218,11 @@ export function rememberVolumeMeta(db, symbol, meta = {}) {
   // account's own record from another account's (lotRecordFor).
   const accountId = meta?.accountId != null && String(meta.accountId).trim() !== '' ? String(meta.accountId).trim() : null
   const ownChanged = accountId ? rememberOwn(db, s, accountId, { lotSize, minVolume, stepVolume }) : false
+  // Claude · № 13,175 (Codex P1 on #1318, round 11): writers added by this
+  // change (the manual and analysis routes, the momentum entry, the pre-gate
+  // fetch) record the account's OWN record only; the shared slot keeps
+  // exactly the writers it had (loop, daily fundable build, position capture).
+  if (shared === false) return accountId ? ownChanged : false
   try {
     const map = readMap(db)
     const prev = entryOf(map, s)
@@ -436,12 +441,14 @@ export function lotSizeParity(db, symbols = null) {
  * `symMeta` is `{ [symbolId]: { symbolName, lotSize? } }`. Mutated and
  * returned; an entry that already has a lot size is left as it is. Never throws.
  */
-export function withBrokerLotSizes(db, symMeta) {
+export function withBrokerLotSizes(db, symMeta, accountId = null) {
   let map = null
   try { map = readMap(db) } catch { map = null }
   for (const meta of Object.values(symMeta || {})) {
     if (!meta || posNum(meta.lotSize) || !clean(meta.symbolName)) continue
-    const lotSize = entryOf(map, clean(meta.symbolName))?.lotSize ?? null
+    // № 13,175 (Codex P1 on #1318, round 11): a deal import for an account
+    // divides by that account's own lot first, the shared one after.
+    const lotSize = ownEntry(db, meta.symbolName, accountId)?.lotSize ?? entryOf(map, clean(meta.symbolName))?.lotSize ?? null
     if (lotSize) meta.lotSize = lotSize
   }
   return symMeta
@@ -489,7 +496,7 @@ export async function ensureOwnLotRecord(db, symbol, accountId, fetchMeta) {
   try {
     const meta = await fetchMeta()
     if (!meta || !posNum(meta.lotSize)) return { fetched: false, reason: 'no_lot_size' }
-    rememberVolumeMeta(db, symbol, { ...meta, accountId: a })
+    rememberVolumeMeta(db, symbol, { ...meta, accountId: a }, { shared: false })
     return { fetched: true, reason: null }
   } catch (err) {
     return { fetched: false, reason: `fetch_failed: ${String(err?.message || err).slice(0, 120)}` }

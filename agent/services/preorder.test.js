@@ -302,10 +302,18 @@ test('manual: the dry run names the lot record on file, whose it is, and whether
   assert.equal(early.lotRecord.consultedByGate, false)
   assert.equal(early.lotRecord.sizedAsRoute, true)
   assert.match(early.lotRecord.note, /the gate refused before sizing; this is what it would have read/)
-  // scan checks carry no lot record field at all
+  // Codex P2 on #1318, round 11: scan checks carry the same disclosure — the
+  // order path fetches the account's own record before its gate when it has none
   const { id } = seedScan(db)
   const scan = await withCreds(() => preorderCheck(db, { scanId: id, account: A }))
-  assert.equal('lotRecord' in scan, false)
+  assert.equal(scan.lotRecord.recordAccount, A)
+  assert.equal(scan.lotRecord.sizedAsRoute, true)
+  set(db, LOT_SIZE_BY_ACCOUNT_KEY, '{}'); set(db, LOT_SIZE_KEY, '{}') // no record of A's own anywhere
+  const scanBare = await withCreds(() => preorderCheck(db, { scanId: id, account: A }))
+  assert.equal(scanBare.lotRecord.sizedAsRoute, false)
+  assert.match(scanBare.lotRecord.note, /the order path refreshes it from account 4242's own broker answer before its gate|the order path records the broker's lot size and minimum for account 4242 before its gate/)
+  assert.ok(scanBare.notChecked.some(x => /lot-record fetch before the gate/.test(x)))
+  assert.equal(scanBare.notChecked.some(x => /after approval/.test(x)), false)
 })
 
 // Codex P1 on #1318: recording the broker minimum before the gate must not
@@ -327,7 +335,8 @@ test('manual: a TYPED lots below the broker minimum is refused by the route befo
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM risk_events WHERE approved = 0').get().n, 1, 'the refusal is on the record')
   // the route's fetch put the broker record on file for account A
   const { lotRecordFor } = await import('../lib/lot-size-registry.js')
-  assert.equal(lotRecordFor(db, SYM).accountId, A)
+  assert.equal(lotRecordFor(db, SYM, A)?.accountId, A, 'the route recorded A\'s own record')
+  assert.equal(lotRecordFor(db, SYM), null, 'and left the shared slot alone (Codex P1, round 11)')
   // the dry run now reads the same refusal as its first block
   const dry = await withCreds(() => preorderCheck(db, tiny, { fetchEntry: async () => 1.1 }))
   assert.equal(dry.ok, true, dry.cannotCheck || dry.error)

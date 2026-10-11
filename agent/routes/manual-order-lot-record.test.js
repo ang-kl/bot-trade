@@ -75,7 +75,7 @@ test('the manual-order route fetches and records the broker lot record before th
   assert.ok(start > 0)
   const handler = src.slice(start, src.indexOf('router.post(', start + 10))
   const fetched = handler.indexOf('await getVolumeMeta(')
-  const recorded = handler.indexOf('rememberVolumeMeta(db, symbol, { ...volMeta, accountId: creds.accountId })')
+  const recorded = handler.indexOf('rememberVolumeMeta(db, symbol, { ...volMeta, accountId: creds.accountId }, { shared: false })')
   const gated = handler.indexOf('evaluateTrade(db, proposal')
   assert.ok(fetched > 0 && recorded > 0 && gated > 0, { fetched, recorded, gated })
   assert.ok(fetched < recorded && recorded < gated, `fetch ${fetched} → record ${recorded} → gate ${gated}`)
@@ -136,9 +136,9 @@ test('every path that fetches the lot record after the gate reconciles it and re
   // momentum limit entry records the lot its evidence read before its gate;
   // the reconciler converts with the position account's own record
   const actions = read('./actions.js')
-  assert.match(actions, /const volMeta = await getVolumeMeta\(metaHost, clientId, clientSecret, accessToken, accountId, symbolId\)\s*rememberVolumeMeta\(db, analysis\.symbol\.toUpperCase\(\), \{ \.\.\.volMeta, accountId \}\)\s*const riskResult = evaluateTrade\(db, proposal, loadRiskConfig\(db, accountId\)\)/)
+  assert.match(actions, /const volMeta = await getVolumeMeta\(metaHost, clientId, clientSecret, accessToken, accountId, symbolId\)\s*rememberVolumeMeta\(db, analysis\.symbol\.toUpperCase\(\), \{ \.\.\.volMeta, accountId \}, \{ shared: false \}\)\s*const riskResult = evaluateTrade\(db, proposal, loadRiskConfig\(db, accountId\)\)/)
   const momentum = read('../services/momentum-limit-entry.js')
-  assert.match(momentum, /rememberVolumeMeta\(db, symbol, \{ \.\.\.ev0\.symbolMeta, accountId \}\)[\s\S]{0,1000}const preliminary = risk\.evaluateTrade\(db, proposal, config\)/)
+  assert.match(momentum, /rememberVolumeMeta\(db, symbol, \{ \.\.\.ev0\.symbolMeta, accountId \}, \{ shared: false \}\)[\s\S]{0,1000}const preliminary = risk\.evaluateTrade\(db, proposal, config\)/)
   const reconciler = read('../services/reconciler.js')
   assert.match(reconciler, /brokerVolumeToLots\(bp, row\.symbol, db, acct\)/)
   assert.match(reconciler, /brokerVolumeToLots\(bp, symbolName, db, acct\)/)
