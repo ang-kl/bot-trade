@@ -1,0 +1,20 @@
+{
+  "_note": "Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder). The parameters of the RESEARCH programme (theory-gap readouts, bar-form research), kept here so none is a constant in code (owner principle 9: setups are not hardcoded). Every value is a research choice the owner can change without a code change, and each run records the values it used. NOTHING here is read by a live gate, an order path or trade management: agent/research-isolation.test.js pins that. Live management values used by the replays (the managed trail, the take-at-R and its fraction, the keeper, the hybrid trigger, the Chandelier) are read from their own live loaders and modules at run time, never restated here. The sample minimum below which a figure reads INSUFFICIENT is agent/config/tick-validation.json traded.minTrades, the owner's existing bar, not a value of this file. agent/lib/research-config.test.js pins that these values are READ FROM THIS FILE.",
+  "exitReplay": {
+    "_note": "Sweeps for the exit-counterfactual extensions (plan B1–B4). trailR: extra trail distances in R beside the built-in trail_1R; tpR: fixed-R targets replayed; followThroughR: the R levels whose reach-before-stop share is reported; chandelier: the since-entry Chandelier replayed as a bar-close approximation of the native TrailEngine spec — its multiplier and period are NOT set here, they are imported from agent/services/mae-chandelier-observe.js at run time; exitAtMeanPeriod: the SMA whose cross is the mean-reversion 'exit at the mean' rule.",
+    "trailR": [0.5, 0.75, 1, 1.5, 2],
+    "tpR": [1, 2, 3],
+    "followThroughR": [1, 2, 3],
+    "exitAtMeanPeriod": 20,
+    "maxDays": 365
+  },
+  "barForm": {
+    "_note": "The bar forms the bar-form research job builds from stored ticks and replays every registry strategy on (plan step 8). timeBarsMs: nominal durations of time bars built from ticks (60000 is the baseline that mirrors the broker's 1m trendbar); tickBarsNominalMs: N-tick bars whose N is chosen per symbol as the median changed-quote count per nominal bar; maxSilenceMs: an N-tick bar that spans a silence longer than this is invalid; pauseBetweenSegmentsMs: the pause between segment pulls so the gateway serving them is never flooded; smallRun: the first run on the owner's word (symbols × days) before any full window.",
+    "timeBarsMs": [15000, 30000, 60000, 300000],
+    "tickBarsNominalMs": [60000, 300000],
+    "maxSilenceMs": 900000,
+    "pauseBetweenSegmentsMs": 2000,
+    "maxSegmentsPerRun": 400,
+    "smallRun": { "symbols": 2, "days": 7 }
+  }
+}
