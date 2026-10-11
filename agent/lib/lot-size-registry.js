@@ -167,10 +167,16 @@ export function rememberVolumeMeta(db, symbol, meta = {}) {
     // protocol units means nothing without the divisor that turns it into lots.
     const nextLot = lotSize ?? prev?.lotSize ?? null
     if (!nextLot) return false
+    // A field the writer did not supply is kept from the record on file —
+    // unless the writer names a DIFFERENT account than the record's (Codex
+    // P2 on #1318, round 3): a minimum inherited across accounts would stamp
+    // one account's constraint as another's. Across accounts a missing
+    // field is missing, and the gate falls back to its own assumption.
+    const crossAccount = accountId != null && accountId !== prevAccount
     const next = {
       lotSize: nextLot,
-      minVolume: minVolume ?? prev?.minVolume ?? null,
-      stepVolume: stepVolume ?? prev?.stepVolume ?? null,
+      minVolume: minVolume ?? (crossAccount ? null : prev?.minVolume ?? null),
+      stepVolume: stepVolume ?? (crossAccount ? null : prev?.stepVolume ?? null),
     }
     // The stamp travels only when the writer named an account. A record on
     // file keeps its stamp when an unscoped writer confirms the SAME values

@@ -413,7 +413,10 @@ async function manualPreorder(db, input, deps) {
     kind: 'manual', route: 'manual_market', accountId: creds?.accountId ?? null, proposal, result, config,
     upstream: [], strategyGate: 'not_consulted', lotRecord: manualLotRecord(db, symbol, creds?.accountId ?? null, result),
     entrySource: { kind: 'broker_1m_close', symbolId: String(resolved.id), symbolSource: resolved.source },
-    notChecked: ['broker minimum volume after approval (actions.js:6440-6446)', 'execution guard at send (actions.js:6475-6479)'],
+    // № 13,172 (Codex P2 on #1318, round 3): the route refreshes the selected
+    // account's broker lot record BEFORE its gate; this read-only dry run
+    // judges the record already on file (lotRecord says whose it is).
+    notChecked: ['the selected account\'s live broker lot-record refresh before the gate (the route fetches and records it; this dry run reads the stored record only — see lotRecord)', 'execution guard at send'],
   })
 }
 

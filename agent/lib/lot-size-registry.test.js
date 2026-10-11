@@ -242,6 +242,15 @@ test('a record is stamped with the account that wrote it, and lotRecordFor repor
   // and a scoped writer stamps it again
   assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, minVolume: 10, stepVolume: 1, accountId: '47790949' }), true)
   assert.equal(lotRecordFor(db, 'BTCUSD').accountId, '47790949')
+  // Codex P2 on #1318, round 3: a DIFFERENT account's answer that omits a
+  // field does not inherit the previous account's minimum or step
+  assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, accountId: '43097342' }), true)
+  assert.deepEqual({ ...lotRecordFor(db, 'BTCUSD'), at: null }, { lotSize: 100, minVolume: null, stepVolume: null, accountId: '43097342', at: null })
+  assert.equal(brokerMinLots(db, 'BTCUSD').source, 'unknown', 'the gate falls back to its own assumption, not to another account\'s minimum')
+  // the SAME account's lot-size-only confirmation keeps its own minimum
+  rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, minVolume: 10, stepVolume: 1, accountId: '43097342' })
+  assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, accountId: '43097342' }), false)
+  assert.equal(brokerMinLots(db, 'BTCUSD').minLots, 0.1)
   // an unstamped record (every deployed database) reports no account
   rememberLotSize(db, '0003.HK', 6_000)
   assert.deepEqual(lotRecordFor(db, '0003.HK'), { lotSize: 6_000, minVolume: null, stepVolume: null, accountId: null, at: null })
