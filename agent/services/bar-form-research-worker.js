@@ -20,6 +20,7 @@ try {
     return { ok: false, error: last || 'no side reachable' }
   }
   const { series, manifest, crossCheckBars } = await processSegments({ ...stream, pull, abort, onProgress: p => parentPort.postMessage({ progress: p }) })
+  // limits ride in `stream.limits`; the loop above records observed values and the first breach in the manifest.
   const { cells, summary } = evaluateSeries({ series, ...workerData.evaluate })
   parentPort.postMessage({ ok: true, manifest, cells, summary, crossCheckBars })
 } catch (err) {

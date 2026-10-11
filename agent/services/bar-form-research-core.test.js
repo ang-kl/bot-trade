@@ -134,3 +134,23 @@ test('evaluateSeries: one cell per symbol × form × strategy; design floor refu
   const empty = evaluateSeries({ series: new Map([[9, [{ kind: 'time', ms: 60_000, form: 'time_60000ms', timeframe: '1m', all: [], runs: [], n: null }]]]), strategies: ['vwap_trend'], cfg: CFG, minSample: 3 })
   assert.equal(empty.cells[0].verdict, 'NO_BARS')
 })
+
+test('amendment area 1: the loop measures itself and stops on the first breach (memory, runtime, pull rate, temp bytes), recording observed values', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'bfr-core-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const files = writeSegments(dir, [{ start: T0, seconds: 120 }, { start: T0 + 120_000, seconds: 120 }, { start: T0 + 240_000, seconds: 120 }])
+  const limits = { workerMemoryMb: 1, maxRuntimeMs: 3_600_000, maxTempBytes: 1 << 30, maxPullsPerMinute: 30 }
+  const mem = await processSegments({ names: files, destDir: dir, cfg: CFG, limits, memoryRssBytes: () => 2 * 1024 * 1024 })
+  assert.equal(mem.manifest.aborted, true); assert.equal(mem.manifest.breach.limit, 'workerMemoryMb'); assert.equal(mem.manifest.breach.observed, 2); assert.equal(mem.manifest.processed, 0)
+  let clock = 1_000_000
+  const rt = await processSegments({ names: files, destDir: dir, cfg: CFG, limits: { ...limits, workerMemoryMb: 4096, maxRuntimeMs: 5 }, now: () => (clock += 10), memoryRssBytes: () => 1 })
+  assert.equal(rt.manifest.breach.limit, 'maxRuntimeMs'); assert.ok(rt.manifest.observed.runtimeMs >= 5)
+  // Pull rate: three pulls inside a minute against a limit of 2 → the third aborts, and its file is removed.
+  const src = files
+  const pull = async (name, destDir) => { const p = join(destDir, name.split('/').pop()); writeFileSync(p, segment(T0, 60).buf); return { ok: true, path: p } }
+  const pr = await processSegments({ names: src.map(f => 'seg-' + f.split('seg-').pop()), pull, destDir: dir, cfg: CFG, limits: { ...limits, workerMemoryMb: 4096, maxPullsPerMinute: 2 }, memoryRssBytes: () => 1 })
+  assert.equal(pr.manifest.breach.limit, 'maxPullsPerMinute'); assert.equal(pr.manifest.breach.observed, 3); assert.equal(pr.manifest.observed.maxPullsPerMinute, 3); assert.equal(pr.manifest.processed, 2)
+  const tb = await processSegments({ names: src.map(f => 'seg-' + f.split('seg-').pop()).slice(0, 1), pull, destDir: dir, cfg: CFG, limits: { ...limits, workerMemoryMb: 4096, maxTempBytes: 10 }, memoryRssBytes: () => 1 })
+  assert.equal(tb.manifest.breach.limit, 'maxTempBytes'); assert.ok(tb.manifest.observed.maxTempBytes > 10)
+  // No limits: nothing measured against, nothing aborted.
+  assert.equal((await processSegments({ names: files, destDir: dir, cfg: CFG })).manifest.breach, null)
+})

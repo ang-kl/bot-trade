@@ -123,14 +123,29 @@ function seriesState() { return { all: [], state: null } }
  * series per form plus the manifest. `abort()` is polled between segments.
  */
 export const CROSS_CHECK_MAX_BARS = 1440 // one day of minutes per symbol
-export async function processSegments({ names, pull = null, destDir, keepCache = false, symbolIds = null, cfg, abort = () => false, onProgress = null, crossCheckSymbolIds = null }) {
+/** The limits the loop checks itself (the rest are the service's): memory, runtime, temp bytes, pull rate. */
+export const WORKER_LIMIT_KEYS = Object.freeze(['workerMemoryMb', 'maxRuntimeMs', 'maxTempBytes', 'maxPullsPerMinute'])
+
+export async function processSegments({ names, pull = null, destDir, keepCache = false, symbolIds = null, cfg, abort = () => false, onProgress = null, crossCheckSymbolIds = null, limits = null, now = () => Date.now(), memoryRssBytes = () => process.memoryUsage().rss }) {
   const forms = formsFrom(cfg)
   const timeMs = forms.filter(f => f.kind === 'time').map(f => f.ms)
   const nominal = forms.filter(f => f.kind === 'tick').map(f => f.ms)
   const calibrationSegments = cfg.calibrationSegments ?? 2
   const want = symbolIds ? new Set([...symbolIds].map(Number)) : null
   const states = new Map() // symbolId → { time: Map, tick: Map, calib: [], calibrated }
-  const manifest = { segments: names.length, processed: 0, pulled: 0, local: 0, failed: [], bytes: 0, records: 0, gapsByReason: {}, warmupResets: 0, fromMs: null, toMs: null, symbols: [], calibration: {}, aborted: false, forms: forms.map(f => f.form), cfg }
+  const startedMs = now()
+  const observed = { maxRssBytes: 0, runtimeMs: 0, maxTempBytes: 0, maxPullsPerMinute: 0 }
+  const pullTimes = []
+  const manifest = { segments: names.length, processed: 0, pulled: 0, local: 0, failed: [], bytes: 0, records: 0, gapsByReason: {}, warmupResets: 0, fromMs: null, toMs: null, symbols: [], calibration: {}, aborted: false, breach: null, observed, limits: limits ?? null, forms: forms.map(f => f.form), cfg }
+  // Amendment area 1: the loop measures itself and stops on the first breach.
+  const breached = () => {
+    if (!limits) return null
+    const rss = memoryRssBytes(); if (rss > observed.maxRssBytes) observed.maxRssBytes = rss
+    observed.runtimeMs = now() - startedMs
+    if (limits.workerMemoryMb != null && rss > limits.workerMemoryMb * 1024 * 1024) return { limit: 'workerMemoryMb', declared: limits.workerMemoryMb, observed: Math.round(rss / 1024 / 1024) }
+    if (limits.maxRuntimeMs != null && observed.runtimeMs > limits.maxRuntimeMs) return { limit: 'maxRuntimeMs', declared: limits.maxRuntimeMs, observed: observed.runtimeMs }
+    return null
+  }
   const stateFor = id => {
     let st = states.get(id)
     if (!st) { st = { time: new Map(timeMs.map(ms => [ms, seriesState()])), tick: new Map(nominal.map(ms => [ms, { ...seriesState(), n: null }])), calib: [], calibrated: false }; states.set(id, st) }
@@ -161,6 +176,8 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
   let calibrated = false
   for (let i = 0; i < names.length; i++) {
     if (abort()) { manifest.aborted = true; break }
+    const b = breached()
+    if (b) { manifest.breach = { ...b, at: new Date(now()).toISOString(), segment: i }; manifest.aborted = true; break }
     const name = names[i]
     let file = null, pulled = false
     if (isAbsolute(name) && existsSync(name)) { file = name; manifest.local++ } else {
@@ -169,9 +186,15 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
       const r = pull ? await pull(name, destDir) : { ok: false, error: 'no pull function and not a local file' }
       if (!r?.ok) { manifest.failed.push({ name, error: r?.error || 'pull failed' }); continue }
       file = r.path ?? `${destDir}/${name}`; pulled = true; manifest.pulled++
+      const t = now(); pullTimes.push(t); while (pullTimes.length && t - pullTimes[0] > 60_000) pullTimes.shift()
+      if (pullTimes.length > observed.maxPullsPerMinute) observed.maxPullsPerMinute = pullTimes.length
+      if (limits?.maxPullsPerMinute != null && pullTimes.length > limits.maxPullsPerMinute) { manifest.breach = { limit: 'maxPullsPerMinute', declared: limits.maxPullsPerMinute, observed: pullTimes.length, at: new Date(t).toISOString(), segment: i }; manifest.aborted = true; if (!keepCache) { try { unlinkSync(file) } catch { /* gone */ } } break }
     }
     try {
-      manifest.bytes += statSync(file).size
+      const size = statSync(file).size
+      manifest.bytes += size
+      if (pulled && size > observed.maxTempBytes) observed.maxTempBytes = size
+      if (pulled && limits?.maxTempBytes != null && size > limits.maxTempBytes) { manifest.breach = { limit: 'maxTempBytes', declared: limits.maxTempBytes, observed: size, at: new Date(now()).toISOString(), segment: i }; manifest.aborted = true; break }
       const seg = quotesFromSegment(file, { symbolIds: want })
       if (seg.torn) manifest.torn = (manifest.torn || 0) + 1
       manifest.records += seg.events
@@ -199,6 +222,7 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
     if (pause > 0 && i < names.length - 1) await sleep(pause)
   }
   if (!calibrated) calibrate()
+  breached(); observed.runtimeMs = now() - startedMs
   // Series per symbol: the time series sorted (invalid markers in place), runs split.
   const series = new Map()
   for (const [id, st] of states) {

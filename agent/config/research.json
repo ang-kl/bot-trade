@@ -46,6 +46,20 @@
     "maxSymbolsPerRun": 12,
     "designFloorMs": {
       "rsi2_reversion": 3600000
+    },
+    "limits": {
+      "_note": "Amendment area 1 (Claude · № 13,101 11-Oct): the declared limits a bar-form run refuses to start without and aborts on when breached. BASELINE measured 11-10 10:2x SGT over the previous 24 h (Railway production): bot-trade CPU avg 0.11 / max 0.44 of 24 vCPU, memory avg 3.0 / max 5.85 of 24 GB, disk 6.03 GB; cpp-exec (the gateway serving segments) CPU max 0.14 vCPU, memory 48 MB; fast monitor skippedTicks 0, skipped10m 0, busyShare10m 0.064; heartbeats fresh (1–43 s). The values below are PROPOSED from that baseline and the services' own requirements, for the owner's confirmation: workerMemoryMb keeps the research worker under a tenth of the headroom the keeper has never used (24 GB limit, 5.85 GB peak); maxRuntimeMs bounds one run to an hour; maxTempBytes is three sealed segments (64 MiB each: one in flight, one being read, one margin); maxCells is the full configured matrix (12 symbols × 6 forms × 12 strategies); maxTransactionRows bounds the single persisting transaction; maxPullsPerMinute follows pauseBetweenSegmentsMs (2 s → 30); fastMonitor.maxSkippedTicksDelta 0 is the fast monitor's own requirement (a skipped tick is a missed management pass); fastMonitor.maxBusyShare10m 0.5 is eight times the observed 0.064 and is the one value here with no service-derived basis — owner to confirm or replace. A breach of any limit aborts the run and is recorded in the run's manifest.",
+      "workerMemoryMb": 2048,
+      "maxRuntimeMs": 3600000,
+      "maxTempBytes": 201326592,
+      "maxCells": 864,
+      "maxTransactionRows": 1000,
+      "maxPullsPerMinute": 30,
+      "fastMonitor": {
+        "maxSkippedTicksDelta": 0,
+        "maxBusyShare10m": 0.5
+      },
+      "pollMs": 30000
     }
   }
 }

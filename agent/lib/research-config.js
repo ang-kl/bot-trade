@@ -69,6 +69,22 @@ export function loadResearchConfig({ file = RESEARCH_CONFIG_FILE } = {}) {
       maxSymbolsPerRun: posInt(bf.maxSymbolsPerRun) ? bf.maxSymbolsPerRun : null,
       // { strategyKey: ms } — only positive integers survive; a garbage entry is dropped, never guessed.
       designFloorMs: Object.fromEntries(Object.entries(bf.designFloorMs && typeof bf.designFloorMs === 'object' ? bf.designFloorMs : {}).filter(([k, v]) => /^[a-z0-9_]{1,64}$/.test(k) && posInt(v))),
+      // Amendment area 1: the run's declared limits; a missing one is null and the job refuses to start.
+      limits: (() => {
+        const l = bf.limits && typeof bf.limits === 'object' ? bf.limits : {}
+        const fm = l.fastMonitor && typeof l.fastMonitor === 'object' ? l.fastMonitor : {}
+        return {
+          workerMemoryMb: posInt(l.workerMemoryMb) ? l.workerMemoryMb : null,
+          maxRuntimeMs: posInt(l.maxRuntimeMs) ? l.maxRuntimeMs : null,
+          maxTempBytes: posInt(l.maxTempBytes) ? l.maxTempBytes : null,
+          maxCells: posInt(l.maxCells) ? l.maxCells : null,
+          maxTransactionRows: posInt(l.maxTransactionRows) ? l.maxTransactionRows : null,
+          maxPullsPerMinute: posInt(l.maxPullsPerMinute) ? l.maxPullsPerMinute : null,
+          maxSkippedTicksDelta: Number.isInteger(fm.maxSkippedTicksDelta) && fm.maxSkippedTicksDelta >= 0 ? fm.maxSkippedTicksDelta : null,
+          maxBusyShare10m: finite(fm.maxBusyShare10m) && fm.maxBusyShare10m > 0 && fm.maxBusyShare10m <= 1 ? fm.maxBusyShare10m : null,
+          pollMs: posInt(l.pollMs) ? l.pollMs : null,
+        }
+      })(),
     },
   }
 }

@@ -15,7 +15,7 @@ test('the values are READ FROM THE FILE: a different file gives different values
   const c = loadResearchConfig({ file })
   assert.equal(c.source, 'file')
   assert.deepEqual(c.exitReplay, { trailR: [0.25, 7], tpR: [4], followThroughR: [1.5], exitAtMeanPeriod: 50, maxDays: 30 })
-  assert.deepEqual(c.barForm, { timeBarsMs: [5000], tickBarsNominalMs: [120000], maxSilenceMs: 1000, pauseBetweenSegmentsMs: 0, maxSegmentsPerRun: 3, smallRun: { symbols: 1, days: 2 }, calibrationSegments: 2, computeWindowBars: 50, maxSymbolsPerRun: 3, designFloorMs: { rsi2_reversion: 3600000 } }, 'garbage floor entries dropped, never guessed')
+  assert.deepEqual(c.barForm, { timeBarsMs: [5000], tickBarsNominalMs: [120000], maxSilenceMs: 1000, pauseBetweenSegmentsMs: 0, maxSegmentsPerRun: 3, smallRun: { symbols: 1, days: 2 }, calibrationSegments: 2, computeWindowBars: 50, maxSymbolsPerRun: 3, designFloorMs: { rsi2_reversion: 3600000 }, limits: { workerMemoryMb: null, maxRuntimeMs: null, maxTempBytes: null, maxCells: null, maxTransactionRows: null, maxPullsPerMinute: null, maxSkippedTicksDelta: null, maxBusyShare10m: null, pollMs: null } }, 'garbage floor entries dropped, never guessed; absent limits are null, never defaults')
   const none = loadResearchConfig({ file: join(dir, 'absent.json') })
   assert.equal(none.source, 'unavailable')
   assert.deepEqual(none.exitReplay, {}); assert.deepEqual(none.barForm, {})
