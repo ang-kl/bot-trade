@@ -253,7 +253,7 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   try {
     const w = new workerCtor(workerFile, { workerData: {
       abortFlag,
-      stream: { names, sides: sidesUsed, secret, destDir, keepCache: plan.keepCache, symbolIds: plan.symbolIds, cfg: plan.cfg, crossCheckSymbolIds: plan.crossCheck, limits: plan.limits },
+      stream: { names, sides: sidesUsed, secret, destDir, keepCache: plan.keepCache, symbolIds: plan.symbolIds, maxSymbols: plan.symbolIds ? plan.symbolIds.length : (plan.cfg.maxSymbolsPerRun ?? null), cfg: plan.cfg, crossCheckSymbolIds: plan.crossCheck, limits: plan.limits },
       evaluate: { symbolNames, strategies: plan.strategies, cfg: plan.cfg, minSample: plan.minSample, regimes, backtestOpts: Object.fromEntries(Object.entries(plan.backtestOpts).filter(([, v]) => v !== undefined)) },
     } })
     j.worker = w

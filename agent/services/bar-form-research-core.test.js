@@ -6,11 +6,11 @@
 // research loader, and the per-cell evaluation.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodeHeader, encodeRecord, FLAGS, KIND } from '../lib/tick-segment.js'
-import { processSegments, evaluateSeries, quotesFromSegment, splitRuns, regimeAt, formsFrom, timeframeLabel, strategiesFor, RECORDER_ONLY_GAPS, EXCLUDED_STRATEGIES } from './bar-form-research-core.js'
+import { processSegments, evaluateSeries, checkAfterEvaluation, quotesFromSegment, splitRuns, regimeAt, formsFrom, timeframeLabel, strategiesFor, RECORDER_ONLY_GAPS, EXCLUDED_STRATEGIES } from './bar-form-research-core.js'
 import { RECORDER_ONLY_GAPS as TICK_RESEARCH_RECORDER_ONLY_GAPS } from './tick-research-run.js'
 import { timeBars } from '../lib/tick-bars.js'
 
@@ -175,4 +175,31 @@ test('a segment that opens with a gap marks every symbol already holding bars (C
   // The same gap without the leading-gap rule would have let the bar open at the end of A resume into B: the first bar of B is invalid.
   const firstB = s1.all.find(x => x.t >= T0 + 300_000)
   assert.ok(firstB == null || firstB.invalid === 'gap' || firstB.t > T0 + 300_000 + 60_000 || s1.excludedForCalibration > 0)
+})
+
+test('Codex P1s on #1312: the symbol cap holds in the loop; a breach reached by the last segment is recorded; the retained cache is measured in aggregate under keepCache; the evaluation phase is checked', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'bfr-core-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const files = writeSegments(dir, [{ start: T0, seconds: 300 }, { start: T0 + 300_000, seconds: 300 }])
+  // Symbol cap: two symbols in the feed, one allowed → the second is omitted and counted, never built.
+  const capped = await processSegments({ names: files, destDir: dir, cfg: CFG, maxSymbols: 1 })
+  assert.deepEqual(capped.manifest.symbols, [1]); assert.equal(capped.manifest.symbolsOmitted, 1); assert.deepEqual(capped.manifest.symbolsOmittedSample, [2]); assert.equal(capped.series.size, 1)
+  // Final-segment breach: memory crosses the limit only on the check after the last segment.
+  let calls = 0
+  const late = await processSegments({ names: files, destDir: dir, cfg: CFG, limits: { workerMemoryMb: 1, maxRuntimeMs: 3_600_000, maxTempBytes: 1 << 30, maxPullsPerMinute: 30 }, memoryRssBytes: () => (++calls >= 3 ? 2 * 1024 * 1024 : 1) })
+  assert.equal(late.manifest.processed, 2, 'both segments processed before the breach was reached'); assert.equal(late.manifest.breach.limit, 'workerMemoryMb'); assert.equal(late.manifest.aborted, true)
+  // Aggregate cache: two pulled segments kept on disk exceed a limit each alone fits under.
+  const src = files.map(f => 'seg-' + f.split('seg-').pop())
+  const pull = async (name, destDir) => { const p = join(destDir, name); writeFileSync(p, segment(T0 + src.indexOf(name) * 300_000, 300).buf); return { ok: true, path: p } }
+  const one = statSync(join(dir, src[0].replace('seg-', 'seg-'))).size
+  const kept = await processSegments({ names: src, pull, destDir: dir, cfg: CFG, keepCache: true, limits: { workerMemoryMb: 4096, maxRuntimeMs: 3_600_000, maxTempBytes: Math.floor(one * 1.5), maxPullsPerMinute: 30 }, memoryRssBytes: () => 1 })
+  assert.equal(kept.manifest.breach.limit, 'maxTempBytes'); assert.ok(kept.manifest.breach.observed > one); assert.equal(kept.manifest.observed.cacheBytes, kept.manifest.breach.observed)
+  const streamed = await processSegments({ names: src, pull, destDir: dir, cfg: CFG, keepCache: false, limits: { workerMemoryMb: 4096, maxRuntimeMs: 3_600_000, maxTempBytes: Math.floor(one * 1.5), maxPullsPerMinute: 30 }, memoryRssBytes: () => 1 })
+  assert.equal(streamed.manifest.breach, null, 'streaming keeps one file on disk: under the same limit')
+  // Evaluation phase: a memory breach after evaluateSeries is a breach.
+  const m = { observed: { maxRssBytes: 0, runtimeMs: 0 }, breach: null, aborted: false }
+  checkAfterEvaluation(m, { limits: { workerMemoryMb: 1 }, startedMs: 0, now: () => 10, memoryRssBytes: () => 3 * 1024 * 1024 })
+  assert.equal(m.breach.limit, 'workerMemoryMb'); assert.equal(m.breach.phase, 'evaluation'); assert.equal(m.aborted, true)
+  const ok = { observed: { maxRssBytes: 0, runtimeMs: 0 }, breach: null, aborted: false }
+  checkAfterEvaluation(ok, { limits: { workerMemoryMb: 1, maxRuntimeMs: 100 }, startedMs: 0, now: () => 10, memoryRssBytes: () => 1 })
+  assert.equal(ok.breach, null)
 })
