@@ -56,7 +56,8 @@ import { hourlyOpenings, assertOpeningsTo } from '../services/hourly-openings.js
 import { createLatestPricesReader } from '../services/latest-prices-cache.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readStageMatrixStats, readHourlyActivity, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable, readScoreboardReport } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readStageMatrixStats, readHourlyActivity, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable, readScoreboardReport, readTheoryGap } from '../services/performance-populations.js'
+import { THEORY_GAP_SECTIONS, R_AUDIT_DEFAULT_STRATEGY, R_AUDIT_MAX_DAYS } from '../services/theory-gap.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -2761,6 +2762,30 @@ export default function stateRouter(db) {
   // before any SQL: an integer 1–365, default 30. `account` follows the
   // file's scope rule (requestedAccount): `all`, an id, or — when omitted —
   // the selected account; no account selected at all reads every account.
+  // Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder): research
+  // readouts, read-only, on the report worker. ?section=r-audit&strategy=
+  // tsmom_long&days=365 — R under every candidate initial stop per trade
+  // (services/theory-gap.js). Validated before any SQL; never cached.
+  router.get('/theory-gap', async (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    const section = String(req.query.section ?? '')
+    if (!THEORY_GAP_SECTIONS.includes(section)) {
+      return res.status(400).json({ error: `section must be one of ${THEORY_GAP_SECTIONS.join(', ')}`, code: 'theory_gap_invalid_section' })
+    }
+    const strategy = req.query.strategy == null || req.query.strategy === '' ? R_AUDIT_DEFAULT_STRATEGY : String(req.query.strategy)
+    if (!/^[a-z0-9_]{1,64}$/.test(strategy)) return res.status(400).json({ error: 'strategy must be a registry key', code: 'theory_gap_invalid_strategy' })
+    const days = req.query.days == null || req.query.days === '' ? R_AUDIT_MAX_DAYS : Number(req.query.days)
+    if (!Number.isInteger(days) || days < 1 || days > R_AUDIT_MAX_DAYS) {
+      return res.status(400).json({ error: `days must be a whole number from 1 to ${R_AUDIT_MAX_DAYS}`, code: 'theory_gap_invalid_days' })
+    }
+    try {
+      res.json(await readTheoryGap(db, { section, strategy, days }))
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'The theory-gap readout is temporarily unavailable. Please retry.', code: 'theory_gap_unavailable' })) return
+      res.status(500).json({ error: 'The theory-gap readout failed.', code: 'theory_gap_failed' })
+    }
+  })
+
   router.get('/scoreboard', async (req, res) => {
     res.set('Cache-Control', 'no-store')
     const days = req.query.days == null || req.query.days === '' ? SCOREBOARD_DEFAULT_DAYS : Number(req.query.days)
