@@ -9,7 +9,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { exitCounterfactualExtended, buildRules, managedApproxRule, hybridTriggerR, gateTagsFor, EXTENDED_OPTIONS, PRESETS, GROUP_KEYS } from './exit-counterfactual-extended.js'
+import { exitCounterfactualExtended, buildRules, managedApproxRule, hybridTriggerR, gateTagsFor, scenarioOf, COST_MODEL, EXTENDED_OPTIONS, PRESETS, GROUP_KEYS } from './exit-counterfactual-extended.js'
 import { loadManagedExit } from './managed-exit.js'
 import { setState } from '../db.js'
 import { loadResearchConfig } from '../lib/research-config.js'
@@ -202,5 +202,33 @@ test('B5c gateTag: the gate\'s pure verdict on the regime reading nearest before
   assert.ok([...gateTagsFor(db, db.prepare('SELECT id, symbol, side, opened_at, strategy AS strategy_attr FROM trades').all()).values()].every(t => t.tag === 'would_pass'))
   db.prepare("UPDATE regimes SET computed_at = datetime(?, 'unixepoch')").run(Math.floor((t0 - 5 * 3_600_000) / 1000))
   const stale = exitCounterfactualExtended(db, { stop: 'initial', minSample: 1 })
-  assert.equal(stale.gateTag.unknown, 3)
+  assert.equal(stale.gateTag.unknown, 3); assert.equal(stale.gateTag.maxAgeMin, 240)
+  // The CONFIGURED gate age is what the tag reads (Codex P2 on #1311): a 30-minute bound makes a two-hour-old reading no reading; a 6-hour bound makes the five-hour-old one count.
+  db.prepare("UPDATE regimes SET computed_at = datetime(?, 'unixepoch')").run(Math.floor((t0 - 2 * 3_600_000) / 1000))
+  setState(db, 'regime_gate_json', JSON.stringify({ maxRegimeAgeMin: 30 }))
+  assert.equal(exitCounterfactualExtended(db, { stop: 'initial', minSample: 1 }).gateTag.unknown, 3)
+  db.prepare("UPDATE regimes SET computed_at = datetime(?, 'unixepoch')").run(Math.floor((t0 - 5 * 3_600_000) / 1000))
+  setState(db, 'regime_gate_json', JSON.stringify({ maxRegimeAgeMin: 360 }))
+  const wide = exitCounterfactualExtended(db, { stop: 'initial', minSample: 1 })
+  assert.equal(wide.gateTag.unknown, 0); assert.equal(wide.gateTag.maxAgeMin, 360)
+})
+
+test('amendment area 4: rules are compared on a common cohort (rows every rule resolves), each rule names its scenario and cost; groups carry the same', () => {
+  const db = fresh(); seed(db, { n: 3 })
+  // Under the INITIAL stop the as-traded rule resolves nothing (truncated) while tp_2R resolves every row: the common cohort is empty, and the report says which rule dropped what.
+  const ini = exitCounterfactualExtended(db, { stop: 'initial', tpR: [2], minSample: 1 })
+  assert.equal(ini.cohort.n, 0); assert.equal(ini.cohort.of, 3); assert.equal(ini.cohort.notResolvedByVariant.as_traded, 3); assert.equal(ini.cohort.notResolvedByVariant.tp_2R, 0)
+  assert.equal(rule(ini, 'tp_2R').usable, 3, 'the headline figure still describes the rule'); assert.equal(rule(ini, 'tp_2R').common.usable, 0); assert.equal(rule(ini, 'tp_2R').droppedFromCommon, 3)
+  assert.match(ini.note, /common cohort/)
+  // Under the RECORDED stop every rule resolves every row: common cohort = all, common figures = headline figures.
+  const rec = exitCounterfactualExtended(db, { stop: 'recorded', tpR: [2], minSample: 1 })
+  assert.equal(rec.cohort.n, 3); assert.equal(rule(rec, 'as_traded').common.expectancyR, rule(rec, 'as_traded').expectancyR)
+  // Scenario and cost labels.
+  assert.equal(scenarioOf({ name: 'managed_approx' }), 'current_policy'); assert.equal(scenarioOf({ name: 'hybrid_half_2R_trail' }), 'current_policy'); assert.equal(scenarioOf({ name: 'tp_2R' }), 'fixed_rule')
+  const pre = exitCounterfactualExtended(db, { stop: 'recorded', preset: 'meanrev', minSample: 1 })
+  assert.equal(rule(pre, 'managed_approx').scenario, 'current_policy'); assert.equal(rule(pre, 'as_traded').scenario, 'fixed_rule'); assert.equal(rule(pre, 'as_traded').cost, 'none')
+  assert.deepEqual(pre.costs, COST_MODEL)
+  // Groups: the common cohort is per group.
+  const g = exitCounterfactualExtended(db, { stop: 'initial', tpR: [2], groupBy: 'strategy', minSample: 1 })
+  assert.equal(g.groups.values.rsi_meanrev.commonN, 0); assert.equal(g.groups.values.rsi_meanrev.rules.tp_2R.common.usable, 0); assert.equal(g.groups.values.rsi_meanrev.rules.tp_2R.usable, 3)
 })

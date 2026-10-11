@@ -48,8 +48,8 @@ export function quotesFromSegment(file, { symbolIds = null } = {}) {
   const buf = readFileSync(file)
   const seg = readSegment(buf)
   const bySymbol = new Map(), lastValid = new Map(), gapsByReason = {}
-  let events = 0, warmupResets = 0, fromMs = null, toMs = null
-  if (!seg.header) return { bySymbol, events, gapsByReason, warmupResets, fromMs, toMs, torn: true, bytes: buf.length }
+  let events = 0, warmupResets = 0, fromMs = null, toMs = null, leadingGaps = 0
+  if (!seg.header) return { bySymbol, events, gapsByReason, warmupResets, fromMs, toMs, torn: true, bytes: buf.length, leadingGaps }
   for (const ev of toQuoteEvents(seg)) {
     if (ev.gap) {
       gapsByReason[ev.reason] = (gapsByReason[ev.reason] || 0) + 1
@@ -60,6 +60,10 @@ export function quotesFromSegment(file, { symbolIds = null } = {}) {
       // quotes is still a bar over missing data). Warm-up resets keep the
       // loader's rule: continuity breaks only.
       if (!RECORDER_ONLY_GAPS.has(ev.reason)) warmupResets++
+      // A gap before this segment's first quote reaches no list here (none
+      // exists yet); it is counted so the caller can mark the symbols it
+      // already holds bars for (Codex P1 on #1311).
+      if (bySymbol.size === 0) leadingGaps++
       for (const list of bySymbol.values()) list.push({ gapMarker: true, reason: ev.reason, recorderOnly: RECORDER_ONLY_GAPS.has(ev.reason) })
       continue
     }
@@ -79,7 +83,7 @@ export function quotesFromSegment(file, { symbolIds = null } = {}) {
     if (fromMs == null || ms < fromMs) fromMs = ms
     if (toMs == null || ms > toMs) toMs = ms
   }
-  return { bySymbol, events, gapsByReason, warmupResets, fromMs, toMs, torn: seg.truncated, bytes: buf.length }
+  return { bySymbol, events, gapsByReason, warmupResets, fromMs, toMs, torn: seg.truncated, bytes: buf.length, leadingGaps }
 }
 
 const round3 = n => (Number.isFinite(n) ? Math.round(n * 1000) / 1000 : null)
@@ -123,14 +127,29 @@ function seriesState() { return { all: [], state: null } }
  * series per form plus the manifest. `abort()` is polled between segments.
  */
 export const CROSS_CHECK_MAX_BARS = 1440 // one day of minutes per symbol
-export async function processSegments({ names, pull = null, destDir, keepCache = false, symbolIds = null, cfg, abort = () => false, onProgress = null, crossCheckSymbolIds = null }) {
+/** The limits the loop checks itself (the rest are the service's): memory, runtime, temp bytes, pull rate. */
+export const WORKER_LIMIT_KEYS = Object.freeze(['workerMemoryMb', 'maxRuntimeMs', 'maxTempBytes', 'maxPullsPerMinute'])
+
+export async function processSegments({ names, pull = null, destDir, keepCache = false, symbolIds = null, cfg, abort = () => false, onProgress = null, crossCheckSymbolIds = null, limits = null, now = () => Date.now(), memoryRssBytes = () => process.memoryUsage().rss }) {
   const forms = formsFrom(cfg)
   const timeMs = forms.filter(f => f.kind === 'time').map(f => f.ms)
   const nominal = forms.filter(f => f.kind === 'tick').map(f => f.ms)
   const calibrationSegments = cfg.calibrationSegments ?? 2
   const want = symbolIds ? new Set([...symbolIds].map(Number)) : null
   const states = new Map() // symbolId → { time: Map, tick: Map, calib: [], calibrated }
-  const manifest = { segments: names.length, processed: 0, pulled: 0, local: 0, failed: [], bytes: 0, records: 0, gapsByReason: {}, warmupResets: 0, fromMs: null, toMs: null, symbols: [], calibration: {}, aborted: false, forms: forms.map(f => f.form), cfg }
+  const startedMs = now()
+  const observed = { maxRssBytes: 0, runtimeMs: 0, maxTempBytes: 0, maxPullsPerMinute: 0 }
+  const pullTimes = []
+  const manifest = { segments: names.length, processed: 0, pulled: 0, local: 0, failed: [], bytes: 0, records: 0, gapsByReason: {}, warmupResets: 0, fromMs: null, toMs: null, symbols: [], calibration: {}, aborted: false, breach: null, observed, limits: limits ?? null, forms: forms.map(f => f.form), cfg }
+  // Amendment area 1: the loop measures itself and stops on the first breach.
+  const breached = () => {
+    if (!limits) return null
+    const rss = memoryRssBytes(); if (rss > observed.maxRssBytes) observed.maxRssBytes = rss
+    observed.runtimeMs = now() - startedMs
+    if (limits.workerMemoryMb != null && rss > limits.workerMemoryMb * 1024 * 1024) return { limit: 'workerMemoryMb', declared: limits.workerMemoryMb, observed: Math.round(rss / 1024 / 1024) }
+    if (limits.maxRuntimeMs != null && observed.runtimeMs > limits.maxRuntimeMs) return { limit: 'maxRuntimeMs', declared: limits.maxRuntimeMs, observed: observed.runtimeMs }
+    return null
+  }
   const stateFor = id => {
     let st = states.get(id)
     if (!st) { st = { time: new Map(timeMs.map(ms => [ms, seriesState()])), tick: new Map(nominal.map(ms => [ms, { ...seriesState(), n: null }])), calib: [], calibrated: false }; states.set(id, st) }
@@ -145,22 +164,31 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
       ts.state = r.state
     }
   }
+  // Amendment area 2: N is calibrated on the leading segments ONLY, and those
+  // segments are excluded from every form's evaluated series (training data
+  // never evaluated; every form shares the same window). The cut is the end
+  // of the calibration prefix, recorded in the manifest.
+  let calibrationCutMs = null
   const calibrate = () => {
+    calibrationCutMs = manifest.toMs
+    manifest.calibrationCutMs = calibrationCutMs
+    manifest.calibrationSegmentsExcluded = manifest.processed
     for (const [id, st] of states) {
       if (st.calibrated) continue
       manifest.calibration[id] = {}
       for (const [ms, ts] of st.tick) {
         const nc = nominalTickCount(st.calib, { nominalMs: ms })
         ts.n = nc.n
-        manifest.calibration[id][ms] = { ...nc, basis: `median changed quotes per ${ms}ms bucket over the first ${manifest.processed} segment(s)` }
+        manifest.calibration[id][ms] = { ...nc, basis: `median changed quotes per ${ms}ms bucket over the first ${manifest.processed} segment(s); those segments are excluded from the evaluated series` }
       }
-      feedTick(id, st, st.calib)
       st.calib = []; st.calibrated = true
     }
   }
   let calibrated = false
   for (let i = 0; i < names.length; i++) {
     if (abort()) { manifest.aborted = true; break }
+    const b = breached()
+    if (b) { manifest.breach = { ...b, at: new Date(now()).toISOString(), segment: i }; manifest.aborted = true; break }
     const name = names[i]
     let file = null, pulled = false
     if (isAbsolute(name) && existsSync(name)) { file = name; manifest.local++ } else {
@@ -169,9 +197,15 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
       const r = pull ? await pull(name, destDir) : { ok: false, error: 'no pull function and not a local file' }
       if (!r?.ok) { manifest.failed.push({ name, error: r?.error || 'pull failed' }); continue }
       file = r.path ?? `${destDir}/${name}`; pulled = true; manifest.pulled++
+      const t = now(); pullTimes.push(t); while (pullTimes.length && t - pullTimes[0] > 60_000) pullTimes.shift()
+      if (pullTimes.length > observed.maxPullsPerMinute) observed.maxPullsPerMinute = pullTimes.length
+      if (limits?.maxPullsPerMinute != null && pullTimes.length > limits.maxPullsPerMinute) { manifest.breach = { limit: 'maxPullsPerMinute', declared: limits.maxPullsPerMinute, observed: pullTimes.length, at: new Date(t).toISOString(), segment: i }; manifest.aborted = true; if (!keepCache) { try { unlinkSync(file) } catch { /* gone */ } } break }
     }
     try {
-      manifest.bytes += statSync(file).size
+      const size = statSync(file).size
+      manifest.bytes += size
+      if (pulled && size > observed.maxTempBytes) observed.maxTempBytes = size
+      if (pulled && limits?.maxTempBytes != null && size > limits.maxTempBytes) { manifest.breach = { limit: 'maxTempBytes', declared: limits.maxTempBytes, observed: size, at: new Date(now()).toISOString(), segment: i }; manifest.aborted = true; break }
       const seg = quotesFromSegment(file, { symbolIds: want })
       if (seg.torn) manifest.torn = (manifest.torn || 0) + 1
       manifest.records += seg.events
@@ -179,6 +213,16 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
       for (const [k, v] of Object.entries(seg.gapsByReason)) manifest.gapsByReason[k] = (manifest.gapsByReason[k] || 0) + v
       if (seg.fromMs != null && (manifest.fromMs == null || seg.fromMs < manifest.fromMs)) manifest.fromMs = seg.fromMs
       if (seg.toMs != null && (manifest.toMs == null || seg.toMs > manifest.toMs)) manifest.toMs = seg.toMs
+      // Leading gaps: every symbol state that already exists sees the hole
+      // first, whether or not this segment carries quotes for it (Codex P1 on #1311).
+      if (seg.leadingGaps > 0) {
+        manifest.leadingGapSegments = (manifest.leadingGapSegments || 0) + 1
+        const hole = [{ gapMarker: true, reason: 'leading', recorderOnly: false }]
+        for (const [, st] of states) {
+          for (const [ms, ts] of st.time) { const r = timeBars(hole, { barMs: ms, maxSilenceMs: cfg.maxSilenceMs ?? null, resume: ts.state }); ts.all.push(...r.bars.map(b => ({ ...b })), ...r.invalid.map(x => ({ t: x.t, invalid: x.reason, n: x.n }))); ts.state = r.state }
+          if (st.calibrated) feedTick(null, st, hole); else st.calib.push(...hole)
+        }
+      }
       for (const [id, quotes] of seg.bySymbol) {
         const st = stateFor(id)
         for (const [ms, ts] of st.time) {
@@ -199,12 +243,19 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
     if (pause > 0 && i < names.length - 1) await sleep(pause)
   }
   if (!calibrated) calibrate()
+  breached(); observed.runtimeMs = now() - startedMs
   // Series per symbol: the time series sorted (invalid markers in place), runs split.
   const series = new Map()
+  const evaluated = all => (calibrationCutMs == null ? all : all.filter(b => b.t > calibrationCutMs))
   for (const [id, st] of states) {
     const list = []
-    for (const [ms, ts] of st.time) { ts.all.sort((a, b) => a.t - b.t); list.push({ kind: 'time', ms, form: `time_${ms}ms`, timeframe: timeframeLabel(ms), all: ts.all, runs: splitRuns(ts.all), n: null }) }
-    for (const [ms, ts] of st.tick) { list.push({ kind: 'tick', ms, form: `tick_approx_${ms}ms`, timeframe: timeframeLabel(ms), all: ts.all, runs: splitRuns(ts.all), n: ts.n }) }
+    for (const [ms, ts] of st.time) { ts.all.sort((a, b) => a.t - b.t); const ev = evaluated(ts.all); list.push({ kind: 'time', ms, form: `time_${ms}ms`, timeframe: timeframeLabel(ms), all: ev, runs: splitRuns(ev), n: null, excludedForCalibration: ts.all.length - ev.length }) }
+    // Fixed-N bars carry NO nominal time label: a strategy that parses the
+    // label would read nominal time as elapsed time. `tick` is unparseable;
+    // elapsed-time rules in the backtest (time caps) read the bars' own
+    // timestamps and stay correct; label-parsing floors are handled by
+    // designFloorMs (the form's nominal duration against the floor).
+    for (const [ms, ts] of st.tick) { const ev = evaluated(ts.all); list.push({ kind: 'tick', ms, form: `tick_approx_${ms}ms`, timeframe: 'tick', nominalTimeframe: timeframeLabel(ms), all: ev, runs: splitRuns(ev), n: ts.n, excludedForCalibration: ts.all.length - ev.length }) }
     series.set(id, list)
     manifest.symbols.push(Number(id))
   }
@@ -242,7 +293,7 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
     for (const f of forms) {
       const bars = f.all.filter(b => !b.invalid).length, invalidBars = f.all.length - bars
       for (const s of strats) {
-        const base = { symbolId: Number(id), symbol, strategy: s.key, family: s.family ?? null, form: f.form, kind: f.kind, ms: f.ms, timeframe: f.timeframe, nTicks: f.n ?? null, bars, runs: f.runs.length, invalidBars }
+        const base = { symbolId: Number(id), symbol, strategy: s.key, family: s.family ?? null, form: f.form, kind: f.kind, ms: f.ms, timeframe: f.timeframe, nominalTimeframe: f.nominalTimeframe ?? null, nTicks: f.n ?? null, bars, runs: f.runs.length, invalidBars, excludedForCalibration: f.excludedForCalibration ?? 0 }
         const floor = refusedByDesignFloor(f.ms, cfg.designFloorMs?.[s.key])
         if (floor?.refused) { cells.push({ ...base, verdict: 'REFUSED_DESIGN_FLOOR', trades: 0, note: floor.reason }); continue }
         if (bars === 0) { cells.push({ ...base, verdict: 'NO_BARS', trades: 0, note: 'no valid closed bar of this form for this symbol' }); continue }
@@ -267,7 +318,7 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
           byHalf: { first: computeRStats(trades.slice(0, mid)), second: computeRStats(trades.slice(mid)) },
           byRegime: Object.fromEntries(Object.entries(byRegime).map(([k, v]) => [k, computeRStats(v)])),
           mdeR: sd != null && rs.length >= 2 ? round3(2 * sd / Math.sqrt(rs.length)) : null,
-          note: [f.ms % 60_000 ? `timeframe label '${f.timeframe}' is sub-minute: a strategy that parses it reads no time cap` : null, f.kind === 'tick' ? 'v is bar speed (ticks/s), not a quote count; a strategy reading volume reads a different quantity' : null, trades.length < minSample ? `${trades.length} trade(s) under the ${minSample} floor` : null].filter(Boolean).join('; ') || null,
+          note: [f.kind === 'time' && f.ms % 60_000 ? `timeframe label '${f.timeframe}' is sub-minute: a strategy that parses it reads no time cap` : null, f.kind === 'tick' ? `label 'tick' (no nominal time handed to the strategy; nominal ${f.nominalTimeframe}); v is bar speed (ticks/s), not a quote count` : null, trades.length < minSample ? `${trades.length} trade(s) under the ${minSample} floor` : null].filter(Boolean).join('; ') || null,
         })
       }
     }

@@ -71,18 +71,22 @@ test('processSegments over local files: bars continue across segment boundaries,
   const s1 = series.get(1)
   const m1 = s1.find(f => f.form === 'time_60000ms')
   // 30 minutes of quotes: minute 0 partial, the last minute open → 28 closed valid bars, one invalid (partial), continuous across the two boundaries.
+  // The calibration prefix (segment 1 = minutes 0–9) is EXCLUDED from every evaluated series (amendment area 2):
+  // 30 minutes of quotes → minutes 10–28 closed (19 bars), minute 29 open; the partial first bucket is in the excluded prefix.
   const valid = m1.all.filter(b => !b.invalid)
-  assert.equal(valid.length, 28); assert.deepEqual(m1.all.filter(b => b.invalid).map(b => b.invalid), ['partial_first_bucket'])
+  assert.equal(manifest.calibrationSegmentsExcluded, 1); assert.equal(manifest.calibrationCutMs, T0 + 598_000)
+  assert.equal(valid.length, 19); assert.deepEqual(m1.all.filter(b => b.invalid), []); assert.equal(m1.excludedForCalibration, 10)
   assert.equal(m1.runs.length, 1, 'no hole at a segment boundary')
-  assert.equal(valid[0].v, 30, 'a minute holds 30 changed quotes of symbol 1')
-  // Against a one-shot build of the same quotes: identical bars (resume is lossless).
+  assert.equal(valid[0].t, T0 + 600_000); assert.equal(valid[0].v, 30, 'a minute holds 30 changed quotes of symbol 1')
+  // Against a one-shot build of the same quotes: identical bars after the cut (resume is lossless).
   const all = files.flatMap(f => [...quotesFromSegment(f).bySymbol.get(1)])
   const once = timeBars(all, { barMs: 60_000, maxSilenceMs: CFG.maxSilenceMs })
-  assert.deepEqual(valid.map(b => [b.t, b.o, b.h, b.l, b.c, b.v]), once.bars.map(b => [b.t, b.o, b.h, b.l, b.c, b.v]))
-  // Calibration: N from the first segment's median ticks per minute = 30; tick bars then ≈ 1 minute.
+  assert.deepEqual(valid.map(b => [b.t, b.o, b.h, b.l, b.c, b.v]), once.bars.filter(b => b.t > manifest.calibrationCutMs).map(b => [b.t, b.o, b.h, b.l, b.c, b.v]))
+  // Calibration: N from the first segment's median ticks per minute = 30; tick bars then ≈ 1 minute, and carry no nominal time label.
   const tk = s1.find(f => f.form === 'tick_approx_60000ms')
-  assert.equal(tk.n, 30); assert.equal(manifest.calibration[1][60_000].n, 30); assert.match(manifest.calibration[1][60_000].basis, /first 1 segment/)
-  assert.ok(tk.all.filter(b => !b.invalid).length >= 28)
+  assert.equal(tk.n, 30); assert.equal(manifest.calibration[1][60_000].n, 30); assert.match(manifest.calibration[1][60_000].basis, /first 1 segment\(s\); those segments are excluded/)
+  assert.equal(tk.timeframe, 'tick'); assert.equal(tk.nominalTimeframe, '1m'); assert.equal(tk.excludedForCalibration, 0, 'the prefix quotes never became tick bars')
+  assert.ok(tk.all.filter(b => !b.invalid).length >= 18 && tk.all.every(b => b.t > manifest.calibrationCutMs))
   // Symbol 2 ticks every 10 s: 6 per minute.
   assert.equal(series.get(2).find(f => f.form === 'tick_approx_60000ms').n, 6)
 })
@@ -119,11 +123,11 @@ test('evaluateSeries: one cell per symbol × form × strategy; design floor refu
   assert.equal(rsi15.verdict, 'REFUSED_DESIGN_FLOOR'); assert.match(rsi15.note, /refused by design floor/)
   assert.ok(cells.every(c => c.strategy !== 'rsi2_reversion' || c.verdict === 'REFUSED_DESIGN_FLOOR'), 'every form here is under rsi2\'s 1h floor')
   const d15 = cells.find(c => c.symbol === 'AAA' && c.strategy === 'donchian_breakout' && c.form === 'time_15000ms')
-  assert.ok(['OK', 'INSUFFICIENT'].includes(d15.verdict)); assert.ok(d15.bars > 400); assert.match(d15.note || '', /sub-minute|under the 3 floor|^$/)
+  assert.ok(['OK', 'INSUFFICIENT'].includes(d15.verdict)); assert.ok(d15.bars > 200 && d15.bars <= 240, 'the second hour only: the calibration hour is excluded'); assert.equal(d15.excludedForCalibration, 240); assert.match(d15.note || '', /sub-minute|under the 3 floor|^$/)
   assert.equal(typeof d15.rStats.usable, 'number'); assert.ok(d15.stats); assert.ok(d15.byHalf.first && d15.byHalf.second)
   assert.ok(Object.keys(d15.byRegime).every(k => ['ranging', 'unknown'].includes(k)))
   const tick = cells.find(c => c.symbol === 'BBB' && c.form === 'tick_approx_60000ms' && c.strategy === 'vwap_trend')
-  assert.match(tick.note || '', /bar speed/)
+  assert.match(tick.note || '', /label 'tick'.*nominal 1m.*bar speed/); assert.equal(tick.timeframe, 'tick'); assert.equal(tick.nominalTimeframe, '1m')
   assert.ok(summary.byVerdict.REFUSED_DESIGN_FLOOR === 6)
   assert.ok(Array.isArray(summary.leaderboard))
   // A floor above every cell's trades: every replayed cell reads INSUFFICIENT, never OK.
@@ -133,4 +137,42 @@ test('evaluateSeries: one cell per symbol × form × strategy; design floor refu
   // No bars at all for a symbol → NO_BARS, never a figure.
   const empty = evaluateSeries({ series: new Map([[9, [{ kind: 'time', ms: 60_000, form: 'time_60000ms', timeframe: '1m', all: [], runs: [], n: null }]]]), strategies: ['vwap_trend'], cfg: CFG, minSample: 3 })
   assert.equal(empty.cells[0].verdict, 'NO_BARS')
+})
+
+test('amendment area 1: the loop measures itself and stops on the first breach (memory, runtime, pull rate, temp bytes), recording observed values', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'bfr-core-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const files = writeSegments(dir, [{ start: T0, seconds: 120 }, { start: T0 + 120_000, seconds: 120 }, { start: T0 + 240_000, seconds: 120 }])
+  const limits = { workerMemoryMb: 1, maxRuntimeMs: 3_600_000, maxTempBytes: 1 << 30, maxPullsPerMinute: 30 }
+  const mem = await processSegments({ names: files, destDir: dir, cfg: CFG, limits, memoryRssBytes: () => 2 * 1024 * 1024 })
+  assert.equal(mem.manifest.aborted, true); assert.equal(mem.manifest.breach.limit, 'workerMemoryMb'); assert.equal(mem.manifest.breach.observed, 2); assert.equal(mem.manifest.processed, 0)
+  let clock = 1_000_000
+  const rt = await processSegments({ names: files, destDir: dir, cfg: CFG, limits: { ...limits, workerMemoryMb: 4096, maxRuntimeMs: 5 }, now: () => (clock += 10), memoryRssBytes: () => 1 })
+  assert.equal(rt.manifest.breach.limit, 'maxRuntimeMs'); assert.ok(rt.manifest.observed.runtimeMs >= 5)
+  // Pull rate: three pulls inside a minute against a limit of 2 → the third aborts, and its file is removed.
+  const src = files
+  const pull = async (name, destDir) => { const p = join(destDir, name.split('/').pop()); writeFileSync(p, segment(T0, 60).buf); return { ok: true, path: p } }
+  const pr = await processSegments({ names: src.map(f => 'seg-' + f.split('seg-').pop()), pull, destDir: dir, cfg: CFG, limits: { ...limits, workerMemoryMb: 4096, maxPullsPerMinute: 2 }, memoryRssBytes: () => 1 })
+  assert.equal(pr.manifest.breach.limit, 'maxPullsPerMinute'); assert.equal(pr.manifest.breach.observed, 3); assert.equal(pr.manifest.observed.maxPullsPerMinute, 3); assert.equal(pr.manifest.processed, 2)
+  const tb = await processSegments({ names: src.map(f => 'seg-' + f.split('seg-').pop()).slice(0, 1), pull, destDir: dir, cfg: CFG, limits: { ...limits, workerMemoryMb: 4096, maxTempBytes: 10 }, memoryRssBytes: () => 1 })
+  assert.equal(tb.manifest.breach.limit, 'maxTempBytes'); assert.ok(tb.manifest.observed.maxTempBytes > 10)
+  // No limits: nothing measured against, nothing aborted.
+  assert.equal((await processSegments({ names: files, destDir: dir, cfg: CFG })).manifest.breach, null)
+})
+
+test('a segment that opens with a gap marks every symbol already holding bars (Codex P1 on #1311), with the leading gap counted', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'bfr-core-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const a = writeSegments(dir, [{ start: T0, seconds: 300 }])[0]
+  // Segment B: a reconnect gap BEFORE its first quote, then quotes for symbol 1 only.
+  const parts = [encodeHeader({ environment: 'demo', generation: 1, startedMs: T0 + 300_000, feedId: 'test' }), gap(T0 + 300_000, 3, 5)]
+  for (let s2 = 0; s2 < 300; s2 += 2) parts.push(quote(T0 + 300_000 + s2 * 1000, 1000 + s2, 1, 100 + s2 * 0.001, 100.02 + s2 * 0.001))
+  const b = join(dir, 'seg-0000000000002-000000.tks'); writeFileSync(b, Buffer.concat(parts))
+  assert.equal(quotesFromSegment(b).leadingGaps, 1); assert.equal(quotesFromSegment(a).leadingGaps, 0)
+  const { series, manifest } = await processSegments({ names: [a, b], destDir: dir, cfg: { ...CFG, calibrationSegments: 1 } })
+  assert.equal(manifest.leadingGapSegments, 1)
+  // Symbol 1: no minute-bar run spans the boundary (the hole marks the open bar and the next).
+  const s1 = series.get(1).find(f => f.form === 'time_60000ms')
+  assert.equal(s1.runs.some(run => run.some(x => x.t < T0 + 300_000) && run.some(x => x.t >= T0 + 300_000)), false)
+  // The same gap without the leading-gap rule would have let the bar open at the end of A resume into B: the first bar of B is invalid.
+  const firstB = s1.all.find(x => x.t >= T0 + 300_000)
+  assert.ok(firstB == null || firstB.invalid === 'gap' || firstB.t > T0 + 300_000 + 60_000 || s1.excludedForCalibration > 0)
 })

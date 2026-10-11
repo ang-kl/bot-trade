@@ -7,7 +7,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { initDB } from '../db.js'
-import { barFormPlan, startBarFormResearch, abortBarFormResearch, barFormJobsView, barFormJob, barFormResearchView, persistRun, regimeRowsFor, _resetBarFormJobs, MAX_SEGMENT_NAMES } from './bar-form-research.js'
+import { barFormPlan, startBarFormResearch, abortBarFormResearch, barFormJobsView, barFormJob, barFormResearchView, persistRun, regimeRowsFor, fastMonitorReading, _resetBarFormJobs, MAX_SEGMENT_NAMES, FAST_MONITOR_PASS_KEY, LIMIT_KEYS } from './bar-form-research.js'
+import { PASS_RECORD_KEY } from './fast-monitor.js'
+import { setState } from '../db.js'
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { acquireResearchSlot, releaseResearchSlot, researchSlot } from './research-slot.js'
 import { loadResearchConfig } from '../lib/research-config.js'
 
@@ -15,7 +20,7 @@ class FakeWorker extends EventEmitter {
   constructor(file, { workerData }) { super(); this.file = file; this.workerData = workerData; FakeWorker.last = this }
   terminate() { this.emit('exit', 1) }
 }
-const listAll = async () => ({ names: ['seg-0000000000001-000000.tks', 'seg-0000000000002-000000.tks', 'seg-0000000000003-000000.tks'], recordsPerSegment: [10, 10, 10], segments: 3, reachable: 1, sides: [{ side: 'cpp_exec_demo', reachable: true }] })
+const listAll = async () => ({ names: ['seg-0000000000001-000000.tks', 'seg-0000000000002-000000.tks', 'seg-0000000000003-000000.tks'], recordsPerSegment: [10, 10, 10], segments: 3, reachable: 1, sides: [{ side: 'cpp_exec_demo', reachable: true, segments: 3 }, { side: 'cpp_exec', reachable: true, segments: 0 }] })
 const sides = [{ name: 'cpp_exec_demo', base: 'http://demo.test' }, { name: 'cpp_exec', base: 'http://live.test' }]
 const deps = (over = {}) => ({ listAll, sides, workerCtor: FakeWorker, cacheDir: '/tmp/bfr-test-cache', secret: 's', resolveNames: () => ({ accountId: '43097342', nameOf: id => ({ 1: 'AAA', 2: 'BBB' })[id] || null }), ...over })
 const settle = () => new Promise(r => setTimeout(r, 5)) // the completion crosses a promise (the broker cross-check) before finish
@@ -66,7 +71,7 @@ test('the worker lifecycle: workerData carries the stream and the evaluation inp
   assert.equal(r.status, 202); assert.match(r.body.poll, /bar-form-research-job/)
   const w = FakeWorker.last
   assert.deepEqual(w.workerData.stream.names, ['seg-0000000000001-000000.tks', 'seg-0000000000002-000000.tks', 'seg-0000000000003-000000.tks'])
-  assert.deepEqual(w.workerData.stream.sides.map(s => s.name), ['cpp_exec_demo', 'cpp_exec']); assert.equal(w.workerData.stream.secret, 's'); assert.deepEqual(w.workerData.stream.symbolIds, [1, 2])
+  assert.deepEqual(w.workerData.stream.sides.map(s => s.name), ['cpp_exec_demo'], 'one feed per run'); assert.equal(w.workerData.stream.secret, 's'); assert.deepEqual(w.workerData.stream.symbolIds, [1, 2])
   assert.equal(w.workerData.evaluate.minSample, 2); assert.deepEqual(w.workerData.evaluate.symbolNames, { 1: 'AAA', 2: 'BBB' }); assert.equal(w.workerData.evaluate.regimes.AAA.length, 1)
   assert.ok(w.workerData.abortFlag instanceof SharedArrayBuffer)
   w.emit('message', { progress: { done: 1, total: 3 } })
@@ -126,9 +131,67 @@ test('the broker cross-check: the run names up to three of its symbols; at the e
   const cc = v.run.manifest.crossCheck
   assert.equal(cc.accountId, '43097342'); assert.deepEqual(calls.map(c => [c.accountId, c.symbolId, c.count, c.endMs]), [['43097342', 1, 8, T + 3 * M], ['43097342', 2, 8, T + 3 * M]])
   assert.equal(cc.symbols[1].aligned, 3); assert.equal(cc.symbols[1].absDiff.c.max, 0.02); assert.equal(cc.symbols[1].symbol, 'AAA')
+  assert.deepEqual(cc.symbols[1].tolerances, loadResearchConfig().barForm.crossCheck); assert.equal(cc.symbols[1].closeWithinTolerance.tolerance, 0.0002); assert.equal(cc.symbols[1].donchian.rule.volX, 1.2); assert.equal(cc.symbols[1].donchian.comparable, 0, 'three minutes cannot hold a 20-bar window')
   assert.equal(cc.symbols[2].error, 'broker 503'); assert.equal(cc.symbols[2].ours, 3)
   // Without a fetch function the gap is named, and the run still completes.
   const r2 = await startBarFormResearch(db, { symbolIds: [1], crossCheck: [1], minSample: 1 }, deps())
   FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1 }, cells: [], summary: { cells: 0, byVerdict: {} }, crossCheckBars: { 1: ours } }); await settle()
   assert.match(barFormResearchView(db, { runId: r2.body.runId }).run.manifest.crossCheck.symbols[1].error, /no broker fetch available/)
+})
+
+const LIMITS = { workerMemoryMb: 2048, maxRuntimeMs: 3_600_000, maxTempBytes: 201_326_592, maxCells: 864, maxTransactionRows: 1000, maxPullsPerMinute: 30, maxSkippedTicksDelta: 0, maxBusyShare10m: 0.5, pollMs: 10 }
+const cfgWith = (over = {}) => { const r = loadResearchConfig(); return { ...r, barForm: { ...r.barForm, limits: { ...r.barForm.limits, ...over } } } }
+
+test('amendment area 1: no declared limit, no run; the cell matrix is bounded before anything is pulled; the pass-record key is the fast monitor\'s', () => {
+  assert.equal(FAST_MONITOR_PASS_KEY, PASS_RECORD_KEY)
+  const r = barFormPlan({}, { research: cfgWith({ maxRuntimeMs: null, maxBusyShare10m: null }) })
+  assert.equal(r.refuse.body.error, 'limits_missing'); assert.deepEqual(r.refuse.body.missing, ['maxRuntimeMs', 'maxBusyShare10m'])
+  assert.ok(barFormPlan({}).plan, 'the checked-in config declares every limit'); assert.deepEqual(Object.keys(barFormPlan({}).plan.limits).sort(), [...LIMIT_KEYS].sort())
+  const big = barFormPlan({}, { research: cfgWith({ maxCells: 10 }) })
+  assert.equal(big.refuse.body.error, 'too_many_cells'); assert.ok(big.refuse.body.cellBound > 10)
+  assert.ok(barFormPlan({ symbolIds: [1] }, { research: cfgWith({ maxCells: 100 }) }).plan.cellBound <= 100)
+})
+
+test('the run carries the fast-monitor receipt before and after, polls it during the run, aborts on a skipped tick, and sweeps leftover pulled segments', async () => {
+  const db = fresh()
+  const dir = mkdtempSync(join(tmpdir(), 'bfr-cache-'))
+  setState(db, FAST_MONITOR_PASS_KEY, JSON.stringify({ at: 'a', tick: { skippedTicks: 3, busyShare10m: 0.06, skipped10m: 0 } }))
+  assert.deepEqual(fastMonitorReading(db), { at: 'a', skippedTicks: 3, busyShare10m: 0.06, skipped10m: 0 })
+  const r = await startBarFormResearch(db, { symbolIds: [1] }, deps({ cacheDir: dir, research: cfgWith({ pollMs: 10 }) }))
+  assert.equal(r.status, 202)
+  assert.deepEqual(FakeWorker.last.workerData.stream.limits.maxSkippedTicksDelta, 0)
+  assert.equal(barFormJob(r.body.runId).receipt.before.skippedTicks, 3)
+  // A skipped tick during the run: the poll sets the abort flag and names the breach.
+  setState(db, FAST_MONITOR_PASS_KEY, JSON.stringify({ at: 'b', tick: { skippedTicks: 4, busyShare10m: 0.07 } }))
+  await new Promise(res => setTimeout(res, 40))
+  assert.equal(Atomics.load(new Int32Array(FakeWorker.last.workerData.abortFlag), 0), 1)
+  assert.equal(barFormJob(r.body.runId).receipt.breach.limit, 'maxSkippedTicksDelta')
+  // A leftover of THIS run's pulled segments in the cache is swept at the end; a stranger's file is not.
+  writeFileSync(join(dir, 'seg-0000000000002-000000.tks'), 'x'); writeFileSync(join(dir, 'other.bin'), 'y'); writeFileSync(join(dir, 'seg-0000000000009-000000.tks.123.abcd.part'), 'z')
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1, aborted: true, observed: { maxRssBytes: 1 } }, cells: [], summary: { cells: 0, byVerdict: {} } }); await settle()
+  const j = barFormJob(r.body.runId)
+  assert.equal(j.state, 'aborted'); assert.equal(j.receipt.after.skippedTicks, 4); assert.equal(j.receipt.sweptLeftovers, 2); assert.deepEqual(j.receipt.observed, { maxRssBytes: 1 })
+  assert.ok(!existsSync(join(dir, 'seg-0000000000002-000000.tks'))); assert.ok(existsSync(join(dir, 'other.bin')))
+  assert.equal(barFormResearchView(db).run.manifest.receipt.breach.limit, 'maxSkippedTicksDelta')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('more cells than maxTransactionRows: the persisted set is cut to the limit and the receipt says so', async () => {
+  const db = fresh()
+  const r = await startBarFormResearch(db, { symbolIds: [1] }, deps({ research: cfgWith({ maxTransactionRows: 1 }) }))
+  const cell = { symbolId: 1, symbol: 'AAA', strategy: 's', form: 'f', verdict: 'OK', trades: 1 }
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1 }, cells: [cell, { ...cell, strategy: 't' }], summary: { cells: 2, byVerdict: {} } }); await settle()
+  const v = barFormResearchView(db, { runId: r.body.runId })
+  assert.equal(v.cellsTotal, 1); assert.equal(v.run.manifest.receipt.breach.limit, 'maxTransactionRows'); assert.equal(barFormJob(r.body.runId).receipt.cellsTruncatedToLimit, true)
+})
+
+test('one side per run (Codex P1 on #1311): with no side named, the single serving side is used; two serving sides refuse side_required; a named side is used alone', async () => {
+  const db = fresh()
+  const both = async ({ sides: asked }) => ({ names: asked.map(s => `seg-000000000000${s.name === 'cpp_exec' ? 1 : 2}-000000.tks`), recordsPerSegment: asked.map(() => 10), segments: asked.length, reachable: asked.length, sides: asked.map(s => ({ side: s.name, reachable: true, segments: 1 })) })
+  const r = await startBarFormResearch(db, { dryRun: true }, deps({ listAll: both }))
+  assert.equal(r.status, 409); assert.equal(r.body.error, 'side_required'); assert.deepEqual(r.body.sides, ['cpp_exec_demo', 'cpp_exec'])
+  const named = await startBarFormResearch(db, { dryRun: true, side: 'cpp_exec' }, deps({ listAll: both }))
+  assert.equal(named.status, 200); assert.deepEqual(named.body.sides, ['cpp_exec']); assert.deepEqual(named.body.segmentNames, ['seg-0000000000001-000000.tks'])
+  const auto = await startBarFormResearch(db, { dryRun: true }, deps())
+  assert.equal(auto.status, 200); assert.deepEqual(auto.body.sides, ['cpp_exec_demo'])
 })

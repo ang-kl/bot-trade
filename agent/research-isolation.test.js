@@ -18,6 +18,7 @@
 // (between its PROTECTED markers), so the script and this test cannot drift.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { join, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -168,5 +169,21 @@ test('no protected module imports a research module, even through the allowed im
     const reach = graph(p)
     const hits = [...reach].filter(f => research.has(f))
     assert.deepEqual(hits, [], `${p} reaches research module(s): ${hits.join(', ')}`)
+  }
+})
+
+/**
+ * Amendment area 6 (remediation R5): the live modules the research graph
+ * REACHES by import must have no import-time effect — no timer, interval or
+ * immediate left armed by merely loading them. Each is imported in a fresh
+ * process and the active handles counted after the import settles.
+ */
+const REACHED_LIVE = ['agent/services/managed-exit.js', 'agent/services/mae-chandelier-observe.js', 'agent/services/capped-hybrid-policy.js', 'agent/services/regime.js', 'agent/services/regime-gate.js', 'agent/services/strategies.js', 'agent/services/donchian-breakout.js', 'agent/scripts/backtest-fib.js', 'agent/services/tick-segments.js']
+test('the live modules research reaches arm nothing at import time (timers, intervals, immediates)', () => {
+  for (const mod of REACHED_LIVE) {
+    const script = `const before = process._getActiveHandles().filter(h => h?.constructor?.name === 'Timeout').length; await import(${JSON.stringify('./' + mod)}); await new Promise(r => setTimeout(r, 20)); const after = process._getActiveHandles().filter(h => h?.constructor?.name === 'Timeout').length; console.log(JSON.stringify({ timers: Math.max(0, after - before) }))`
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: ROOT, encoding: 'utf8', timeout: 30_000 })
+    const { timers } = JSON.parse(out.trim().split('\n').pop())
+    assert.equal(timers, 0, `${mod} armed ${timers} timer(s) at import`)
   }
 })
