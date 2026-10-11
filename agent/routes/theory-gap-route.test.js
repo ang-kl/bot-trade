@@ -39,3 +39,16 @@ test('validation before any SQL: unknown section, bad strategy, bad days', async
     const res = await fetch(url(q)); assert.equal(res.status, 400, q); assert.equal((await res.json()).code, code)
   }
 })
+
+test('regime-blocks: no strategy means every strategy, default window 30 days; one strategy narrows it', async t => {
+  const { db, url } = await fixture(t)
+  const { recordRegimeBlock } = await import('../services/gate-skips.js')
+  recordRegimeBlock(db, { symbol: 'AAA', synth: { strategy: 'donchian_breakout', timeframe: '1h', consensus_bias: 'long' }, signal: null, reason: 'regime_block trend-in-quiet (donchian_breakout): x', loopId: 1 })
+  recordRegimeBlock(db, { symbol: 'BBB', synth: { strategy: 'rsi_meanrev', timeframe: '15m', consensus_bias: 'long' }, signal: null, reason: 'regime_block fade-vs-trend (rsi_meanrev): x', loopId: 2 })
+  const all = await (await fetch(url('?section=regime-blocks'))).json()
+  assert.equal(all.section, 'regime-blocks'); assert.equal(all.strategy, null); assert.equal(all.days, 30); assert.equal(all.rows, 2)
+  const one = await (await fetch(url('?section=regime-blocks&strategy=rsi_meanrev&days=7'))).json()
+  assert.equal(one.rows, 1); assert.equal(one.days, 7)
+  // r-audit keeps its tsmom default.
+  assert.equal((await (await fetch(url('?section=r-audit'))).json()).strategy, 'tsmom_long')
+})

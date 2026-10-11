@@ -58,7 +58,7 @@ import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
 import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readStageMatrixStats, readHourlyActivity, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable, readScoreboardReport, readTheoryGap, readExitCounterfactualExtended } from '../services/performance-populations.js'
 import { EXTENDED_OPTIONS as CF_EXTENDED_OPTIONS, PRESETS as CF_PRESETS, GROUP_KEYS as CF_GROUP_KEYS } from '../services/exit-counterfactual-extended.js'
-import { THEORY_GAP_SECTIONS, R_AUDIT_DEFAULT_STRATEGY, R_AUDIT_MAX_DAYS } from '../services/theory-gap.js'
+import { THEORY_GAP_SECTIONS, R_AUDIT_DEFAULT_STRATEGY, R_AUDIT_MAX_DAYS, REGIME_BLOCKS_DEFAULT_DAYS } from '../services/theory-gap.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
@@ -2803,9 +2803,11 @@ export default function stateRouter(db) {
     if (!THEORY_GAP_SECTIONS.includes(section)) {
       return res.status(400).json({ error: `section must be one of ${THEORY_GAP_SECTIONS.join(', ')}`, code: 'theory_gap_invalid_section' })
     }
-    const strategy = req.query.strategy == null || req.query.strategy === '' ? R_AUDIT_DEFAULT_STRATEGY : String(req.query.strategy)
-    if (!/^[a-z0-9_]{1,64}$/.test(strategy)) return res.status(400).json({ error: 'strategy must be a registry key', code: 'theory_gap_invalid_strategy' })
-    const days = req.query.days == null || req.query.days === '' ? R_AUDIT_MAX_DAYS : Number(req.query.days)
+    // r-audit is per strategy (tsmom by default); regime-blocks counts every
+    // strategy unless one is named (Claude · № 13,095 11-Oct; claude-builder).
+    const strategy = req.query.strategy == null || req.query.strategy === '' ? (section === 'r-audit' ? R_AUDIT_DEFAULT_STRATEGY : null) : String(req.query.strategy)
+    if (strategy != null && !/^[a-z0-9_]{1,64}$/.test(strategy)) return res.status(400).json({ error: 'strategy must be a registry key', code: 'theory_gap_invalid_strategy' })
+    const days = req.query.days == null || req.query.days === '' ? (section === 'r-audit' ? R_AUDIT_MAX_DAYS : REGIME_BLOCKS_DEFAULT_DAYS) : Number(req.query.days)
     if (!Number.isInteger(days) || days < 1 || days > R_AUDIT_MAX_DAYS) {
       return res.status(400).json({ error: `days must be a whole number from 1 to ${R_AUDIT_MAX_DAYS}`, code: 'theory_gap_invalid_days' })
     }
