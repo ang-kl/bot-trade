@@ -130,7 +130,7 @@ export const CROSS_CHECK_MAX_BARS = 1440 // one day of minutes per symbol
 /** The limits the loop checks itself (the rest are the service's): memory, runtime, temp bytes, pull rate. */
 export const WORKER_LIMIT_KEYS = Object.freeze(['workerMemoryMb', 'maxRuntimeMs', 'maxTempBytes', 'maxPullsPerMinute'])
 
-export async function processSegments({ names, pull = null, destDir, keepCache = false, symbolIds = null, cfg, abort = () => false, onProgress = null, crossCheckSymbolIds = null, limits = null, now = () => Date.now(), memoryRssBytes = () => process.memoryUsage().rss }) {
+export async function processSegments({ names, pull = null, destDir, keepCache = false, symbolIds = null, maxSymbols = null, cfg, abort = () => false, onProgress = null, crossCheckSymbolIds = null, limits = null, now = () => Date.now(), memoryRssBytes = () => process.memoryUsage().rss }) {
   const forms = formsFrom(cfg)
   const timeMs = forms.filter(f => f.kind === 'time').map(f => f.ms)
   const nominal = forms.filter(f => f.kind === 'tick').map(f => f.ms)
@@ -138,9 +138,11 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
   const want = symbolIds ? new Set([...symbolIds].map(Number)) : null
   const states = new Map() // symbolId → { time: Map, tick: Map, calib: [], calibrated }
   const startedMs = now()
-  const observed = { maxRssBytes: 0, runtimeMs: 0, maxTempBytes: 0, maxPullsPerMinute: 0 }
+  const observed = { maxRssBytes: 0, runtimeMs: 0, maxTempBytes: 0, maxPullsPerMinute: 0, cacheBytes: 0 }
+  const symbolCap = Number.isInteger(maxSymbols) && maxSymbols > 0 ? maxSymbols : null
   const pullTimes = []
-  const manifest = { segments: names.length, processed: 0, pulled: 0, local: 0, failed: [], bytes: 0, records: 0, gapsByReason: {}, warmupResets: 0, fromMs: null, toMs: null, symbols: [], calibration: {}, aborted: false, breach: null, observed, limits: limits ?? null, forms: forms.map(f => f.form), cfg }
+  const manifest = { startedMs, segments: names.length, processed: 0, pulled: 0, local: 0, failed: [], bytes: 0, records: 0, gapsByReason: {}, warmupResets: 0, fromMs: null, toMs: null, symbols: [], symbolsOmitted: 0, symbolCap, calibration: {}, aborted: false, breach: null, observed, limits: limits ?? null, forms: forms.map(f => f.form), cfg }
+  const omittedSymbols = new Set()
   // Amendment area 1: the loop measures itself and stops on the first breach.
   const breached = () => {
     if (!limits) return null
@@ -150,9 +152,15 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
     if (limits.maxRuntimeMs != null && observed.runtimeMs > limits.maxRuntimeMs) return { limit: 'maxRuntimeMs', declared: limits.maxRuntimeMs, observed: observed.runtimeMs }
     return null
   }
+  // Codex P1 on #1312: the symbol bound holds in the loop too. With no ids
+  // named, at most `maxSymbols` symbols (first seen, in feed order) get a
+  // state; the rest are counted as omitted, never silently built.
   const stateFor = id => {
     let st = states.get(id)
-    if (!st) { st = { time: new Map(timeMs.map(ms => [ms, seriesState()])), tick: new Map(nominal.map(ms => [ms, { ...seriesState(), n: null }])), calib: [], calibrated: false }; states.set(id, st) }
+    if (!st) {
+      if (symbolCap != null && states.size >= symbolCap) { omittedSymbols.add(Number(id)); return null }
+      st = { time: new Map(timeMs.map(ms => [ms, seriesState()])), tick: new Map(nominal.map(ms => [ms, { ...seriesState(), n: null }])), calib: [], calibrated: false }; states.set(id, st)
+    }
     return st
   }
   const feedTick = (id, st, quotes) => {
@@ -204,8 +212,11 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
     try {
       const size = statSync(file).size
       manifest.bytes += size
-      if (pulled && size > observed.maxTempBytes) observed.maxTempBytes = size
-      if (pulled && limits?.maxTempBytes != null && size > limits.maxTempBytes) { manifest.breach = { limit: 'maxTempBytes', declared: limits.maxTempBytes, observed: size, at: new Date(now()).toISOString(), segment: i }; manifest.aborted = true; break }
+      // Codex P1 on #1312: the temp footprint is the RETAINED cache — every
+      // pulled file still on disk (all of them under keepCache, the one in
+      // hand otherwise), not the largest single file.
+      if (pulled) { observed.cacheBytes = keepCache ? observed.cacheBytes + size : size; if (observed.cacheBytes > observed.maxTempBytes) observed.maxTempBytes = observed.cacheBytes }
+      if (pulled && limits?.maxTempBytes != null && observed.cacheBytes > limits.maxTempBytes) { manifest.breach = { limit: 'maxTempBytes', declared: limits.maxTempBytes, observed: observed.cacheBytes, at: new Date(now()).toISOString(), segment: i }; manifest.aborted = true; break }
       const seg = quotesFromSegment(file, { symbolIds: want })
       if (seg.torn) manifest.torn = (manifest.torn || 0) + 1
       manifest.records += seg.events
@@ -225,6 +236,7 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
       }
       for (const [id, quotes] of seg.bySymbol) {
         const st = stateFor(id)
+        if (!st) continue
         for (const [ms, ts] of st.time) {
           const r = timeBars(quotes, { barMs: ms, maxSilenceMs: cfg.maxSilenceMs ?? null, resume: ts.state })
           ts.all.push(...r.bars.map(b => ({ ...b })), ...r.invalid.map(x => ({ t: x.t, invalid: x.reason, n: x.n })))
@@ -243,7 +255,9 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
     if (pause > 0 && i < names.length - 1) await sleep(pause)
   }
   if (!calibrated) calibrate()
-  breached(); observed.runtimeMs = now() - startedMs
+  // Codex P1 on #1312: a breach reached by the last segment is a breach.
+  const late = breached(); observed.runtimeMs = now() - startedMs
+  if (late && !manifest.breach) { manifest.breach = { ...late, at: new Date(now()).toISOString(), segment: manifest.processed }; manifest.aborted = true }
   // Series per symbol: the time series sorted (invalid markers in place), runs split.
   const series = new Map()
   const evaluated = all => (calibrationCutMs == null ? all : all.filter(b => b.t > calibrationCutMs))
@@ -260,6 +274,8 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
     manifest.symbols.push(Number(id))
   }
   manifest.symbols.sort((a, b) => a - b)
+  manifest.symbolsOmitted = omittedSymbols.size
+  manifest.symbolsOmittedSample = [...omittedSymbols].slice(0, 20)
   // Plan step 9: the last day of OUR one-minute bars for the symbols the
   // cross-check names, so the main thread can set them beside the broker's.
   const crossCheckBars = {}
@@ -268,6 +284,19 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
     if (one) crossCheckBars[id] = one.all.filter(b => !b.invalid).slice(-CROSS_CHECK_MAX_BARS).map(b => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }))
   }
   return { series, manifest, crossCheckBars }
+}
+
+/** Codex P1 on #1312: the evaluation phase is measured too — runtime and memory against the same limits, after evaluateSeries. */
+export function checkAfterEvaluation(manifest, { limits = null, startedMs = null, now = () => Date.now(), memoryRssBytes = () => process.memoryUsage().rss } = {}) {
+  if (!limits || !manifest) return manifest
+  const rss = memoryRssBytes()
+  if (manifest.observed) { if (rss > manifest.observed.maxRssBytes) manifest.observed.maxRssBytes = rss; if (startedMs != null) manifest.observed.runtimeMs = now() - startedMs }
+  const runtimeMs = manifest.observed?.runtimeMs ?? null
+  let b = null
+  if (limits.workerMemoryMb != null && rss > limits.workerMemoryMb * 1024 * 1024) b = { limit: 'workerMemoryMb', declared: limits.workerMemoryMb, observed: Math.round(rss / 1024 / 1024), phase: 'evaluation' }
+  else if (limits.maxRuntimeMs != null && runtimeMs != null && runtimeMs > limits.maxRuntimeMs) b = { limit: 'maxRuntimeMs', declared: limits.maxRuntimeMs, observed: runtimeMs, phase: 'evaluation' }
+  if (b && !manifest.breach) { manifest.breach = { ...b, at: new Date(now()).toISOString() }; manifest.aborted = true }
+  return manifest
 }
 
 /** The regime recorded for a symbol at an entry time: the latest reading at or before it, within REGIME_MAX_AGE_MS. */

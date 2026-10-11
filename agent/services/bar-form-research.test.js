@@ -160,6 +160,7 @@ test('the run carries the fast-monitor receipt before and after, polls it during
   const r = await startBarFormResearch(db, { symbolIds: [1] }, deps({ cacheDir: dir, research: cfgWith({ pollMs: 10 }) }))
   assert.equal(r.status, 202)
   assert.deepEqual(FakeWorker.last.workerData.stream.limits.maxSkippedTicksDelta, 0)
+  assert.equal(FakeWorker.last.workerData.stream.maxSymbols, 1, 'the symbol cap rides to the worker (named ids: their count)')
   assert.equal(barFormJob(r.body.runId).receipt.before.skippedTicks, 3)
   // A skipped tick during the run: the poll sets the abort flag and names the breach.
   setState(db, FAST_MONITOR_PASS_KEY, JSON.stringify({ at: 'b', tick: { skippedTicks: 4, busyShare10m: 0.07 } }))
@@ -194,4 +195,11 @@ test('one side per run (Codex P1 on #1311): with no side named, the single servi
   assert.equal(named.status, 200); assert.deepEqual(named.body.sides, ['cpp_exec']); assert.deepEqual(named.body.segmentNames, ['seg-0000000000001-000000.tks'])
   const auto = await startBarFormResearch(db, { dryRun: true }, deps())
   assert.equal(auto.status, 200); assert.deepEqual(auto.body.sides, ['cpp_exec_demo'])
+})
+
+test('with no symbol ids the worker gets maxSymbolsPerRun as its cap (Codex P1 on #1312)', async () => {
+  const db = fresh()
+  const r = await startBarFormResearch(db, {}, deps())
+  assert.equal(r.status, 202); assert.equal(FakeWorker.last.workerData.stream.symbolIds, null); assert.equal(FakeWorker.last.workerData.stream.maxSymbols, loadResearchConfig().barForm.maxSymbolsPerRun)
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 0 }, cells: [], summary: { cells: 0, byVerdict: {} } }); await settle()
 })

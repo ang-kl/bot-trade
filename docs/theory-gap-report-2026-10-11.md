@@ -163,3 +163,33 @@ Fast monitor after the deploy: 0 skipped ticks, busy share 0.161 over the
 first ten minutes after restart (baseline 0.064 before it).
 
 Conversation ref: reported № 13,102.
+
+## 8. Common-cohort read after the #1312 deploy (Claude · № 13,105 · 11-10'26 11:06 SGT)
+
+Read at 03:05:21Z on commit f47ecb7, 90 days, R against the broker's
+initial stop, with the remediation's common cohort live: the rows EVERY
+compared rule resolves inside its stored window, 51 of 151.
+
+| Rule | Scenario | Headline (rows it resolves) | Common cohort (51) |
+|---|---|---|---|
+| as traded | fixed | 51 scored, PF 0.16, −0.81R | PF 0.16, −0.81R |
+| fixed +1R target | fixed | 76 scored, PF 0.73 | PF 0.16, −0.73R |
+| live stack approximated | current policy | 98 scored, PF 0.67 | PF 0.20, −0.49R |
+| exit at the 20-bar mean | fixed | 108 scored, PF 0.31 | PF 0.05, −0.53R |
+| Chandelier 3×ATR(22) | fixed | 88 scored, PF 0.43 | PF 0.23, −0.55R |
+
+The headline spread between rules (PF 0.16 to 0.73) collapses on the
+common cohort (0.05 to 0.23): the rules that looked better were mostly
+resolving MORE trades, not resolving the same trades better, and the
+common cohort is the subset that reached a stop or target inside a window
+that ends early for most winners. This is the amendment's area-4 point
+shown in numbers: on today's record no exit rule can be ranked, and the
+instrument (the stored window) is what has to change first (D0).
+
+Operational: the fast monitor read 0 skipped ticks and a busy share of
+0.529 in the ten minutes after the deploy restart (0.064 before it). The
+proposed research limit `maxBusyShare10m` 0.5 would therefore abort a run
+started inside a restart's first ten minutes; either the ceiling or a
+"no run within N minutes of a restart" rule is the owner's call.
+
+Conversation ref: reported № 13,105.

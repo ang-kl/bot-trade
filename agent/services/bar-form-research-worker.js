@@ -5,7 +5,7 @@
 // `workerData.abortFlag` is an Int32Array over a SharedArrayBuffer the main
 // thread sets to 1 on abort; the loop polls it between segments.
 import { parentPort, workerData } from 'node:worker_threads'
-import { processSegments, evaluateSeries } from './bar-form-research-core.js'
+import { processSegments, evaluateSeries, checkAfterEvaluation } from './bar-form-research-core.js'
 import { pullSegment } from './tick-segments.js'
 
 const flag = workerData.abortFlag ? new Int32Array(workerData.abortFlag) : null
@@ -22,6 +22,7 @@ try {
   const { series, manifest, crossCheckBars } = await processSegments({ ...stream, pull, abort, onProgress: p => parentPort.postMessage({ progress: p }) })
   // limits ride in `stream.limits`; the loop above records observed values and the first breach in the manifest.
   const { cells, summary } = evaluateSeries({ series, ...workerData.evaluate })
+  checkAfterEvaluation(manifest, { limits: stream.limits ?? null, startedMs: manifest.startedMs ?? null })
   parentPort.postMessage({ ok: true, manifest, cells, summary, crossCheckBars })
 } catch (err) {
   parentPort.postMessage({ ok: false, error: err?.message || String(err) })
