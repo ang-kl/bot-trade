@@ -247,25 +247,60 @@ test('missing credentials and missing data say "cannot check" with the reason �
 })
 
 // Claude · № 13,172 11-Oct: the route records the broker's lot record before
-// its gate; this read-only dry run cannot, so it says which basis it sized on.
-test('manual: the dry run names the lot record it sized on, and says when the route will size differently', async (t) => {
-  const db = fresh(); t.after(() => db.close())
+// its gate; this read-only dry run cannot, so it says what is on file, whose
+// it is, and whether the route will size the same. Codex P2s on #1318: the
+// record is read from the registry (not from checks the gate never filled),
+// and equivalence is claimed only for the selected account's own record.
+test('manual: the dry run names the lot record on file, whose it is, and whether the route will size the same', async (t) => {
+  const db = fresh({ accounts: [A, B] }); t.after(() => db.close())
   const input = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }
-  const bare = await withCreds(() => preorderCheck(db, input, { fetchEntry: async () => 1.1 }))
+  const check = (i = input) => withCreds(() => preorderCheck(db, i, { fetchEntry: async () => 1.1 }))
+  const bare = await check()
   assert.equal(bare.ok, true, bare.cannotCheck || bare.error)
   assert.equal(bare.lotRecord.stored, 'table')
   assert.equal(bare.lotRecord.sizedAsRoute, false)
   assert.equal(bare.lotRecord.brokerMinLots, null)
+  assert.equal(bare.lotRecord.recordAccount, null)
+  assert.equal(bare.lotRecord.consultedByGate, true, 'this proposal reached sizing')
   assert.match(bare.lotRecord.note, /no broker lot record on file for EURUSD/)
-  assert.match(bare.lotRecord.note, /records the broker's lot size and minimum before its gate/)
+  assert.match(bare.lotRecord.note, new RegExp(`for account ${A} before its gate`))
   const { rememberVolumeMeta } = await import('../lib/lot-size-registry.js')
-  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000 })
-  const known = await withCreds(() => preorderCheck(db, input, { fetchEntry: async () => 1.1 }))
-  assert.equal(known.lotRecord.stored, 'broker')
-  assert.equal(known.lotRecord.unitsPerLot, 100_000)
-  assert.equal(known.lotRecord.brokerMinLots, 0.01)
-  assert.equal(known.lotRecord.sizedAsRoute, true)
-  assert.match(known.lotRecord.note, /as the route will$/)
+  // another account's record: on file, read by the gate, but not this account's provenance
+  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000, accountId: B })
+  const theirs = await check()
+  assert.equal(theirs.lotRecord.stored, 'broker')
+  assert.equal(theirs.lotRecord.unitsPerLot, 100_000)
+  assert.equal(theirs.lotRecord.brokerMinLots, 0.01)
+  assert.equal(theirs.lotRecord.recordAccount, B)
+  assert.equal(theirs.lotRecord.sizedAsRoute, false, 'another account wrote it')
+  assert.match(theirs.lotRecord.note, new RegExp(`written by account ${B}; POST /actions/manual-order refreshes it from account ${A}`))
+  // the same values written by this account: the route's own basis
+  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000, accountId: A })
+  const own = await check()
+  assert.equal(own.lotRecord.recordAccount, A)
+  assert.equal(own.lotRecord.sizedAsRoute, true)
+  assert.match(own.lotRecord.note, new RegExp(`account ${A}'s own recorded units.*as the route will$`))
+  // a record from before the stamp existed is provenance unknown, not this account's
+  const { setState: set, getState: get } = await import('../db.js')
+  const { LOT_SIZE_KEY } = await import('../lib/lot-size-registry.js')
+  set(db, LOT_SIZE_KEY, JSON.stringify({ [SYM]: { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000 } }))
+  const legacy = await check()
+  assert.equal(legacy.lotRecord.stored, 'broker')
+  assert.equal(legacy.lotRecord.recordAccount, null)
+  assert.equal(legacy.lotRecord.sizedAsRoute, false)
+  assert.match(legacy.lotRecord.note, /written before records carried an account/)
+  assert.ok(get(db, LOT_SIZE_KEY), 'the dry run wrote nothing to the registry')
+  // the gate refusing BEFORE it reads the lot record (max_positions) does not erase the record on file
+  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000, accountId: A })
+  fillBook(db, 5)
+  const early = await check()
+  assert.equal(early.gate.approved, false)
+  assert.match(early.gate.vetoReason, /max_positions/)
+  assert.equal('units_per_lot' in early.checks, false, 'the gate never reached sizing')
+  assert.equal(early.lotRecord.stored, 'broker')
+  assert.equal(early.lotRecord.consultedByGate, false)
+  assert.equal(early.lotRecord.sizedAsRoute, true)
+  assert.match(early.lotRecord.note, /the gate refused before sizing; this is what it would have read/)
   // scan checks carry no lot record field at all
   const { id } = seedScan(db)
   const scan = await withCreds(() => preorderCheck(db, { scanId: id, account: A }))

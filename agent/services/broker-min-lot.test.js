@@ -116,8 +116,10 @@ test('both write sites feed the registry the FULL broker meta, not just the lot 
     'the order path records the whole declaration, minimum included')
   assert.doesNotMatch(loop, /rememberLotSize\(db, symbol, meta\.lotSize\)/,
     'and no longer records the lot size alone, which is what discarded the minimum')
-  assert.match(fundable, /rememberVolumeMeta\(db, symbol, meta\)/,
-    'the daily build teaches the registry the whole watchlist')
+  // № 13,172 (Codex P2 on #1318): the build stamps the record with the
+  // account whose broker answer it is
+  assert.match(fundable, /rememberVolumeMeta\(db, symbol, \{ \.\.\.meta, accountId: creds\?\.accountId \?\? null \}\)/,
+    'the daily build teaches the registry the whole watchlist, stamped with the account')
 })
 
 test('the gate judges against the broker minimum at every refusal that names a min lot', () => {

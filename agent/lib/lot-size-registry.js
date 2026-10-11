@@ -93,6 +93,28 @@ function entryOf(map, s) {
 }
 
 /**
+ * Claude · № 13,172 11-Oct (Codex P2 on #1318; claude-builder). The record
+ * as stored, WITH ITS PROVENANCE: which account's broker answer wrote it
+ * and when. The map is keyed by symbol alone, so a reader that needs to
+ * know whether the record on file is the selected account's own (the
+ * pre-order dry run, which cannot refresh it) asks here. A record written
+ * before the stamp existed, or by the legacy lot-size-only call, reports
+ * `accountId: null` — provenance unknown, never assumed.
+ *
+ * @returns {{lotSize:number, minVolume:number|null, stepVolume:number|null, accountId:string|null, at:string|null}|null}
+ */
+export function lotRecordFor(db, symbol) {
+  const s = clean(symbol)
+  const map = readMap(db)
+  const e = entryOf(map, s)
+  if (!e) return null
+  const raw = map[s]
+  const accountId = raw && typeof raw === 'object' && raw.accountId != null && String(raw.accountId).trim() !== '' ? String(raw.accountId) : null
+  const at = raw && typeof raw === 'object' && typeof raw.at === 'string' ? raw.at : null
+  return { ...e, accountId, at }
+}
+
+/**
  * Record what the broker says one lot of `symbol` is.
  *
  * Called from the order path, which is the only place that already holds the
@@ -133,9 +155,14 @@ export function rememberVolumeMeta(db, symbol, meta = {}) {
   const lotSize = posNum(meta?.lotSize)
   const minVolume = posNum(meta?.minVolume)
   const stepVolume = posNum(meta?.stepVolume)
+  // № 13,172: the account whose broker answer this is, when the writer knows
+  // it. Stamped alongside the values so a reader can tell the selected
+  // account's own record from another account's (lotRecordFor).
+  const accountId = meta?.accountId != null && String(meta.accountId).trim() !== '' ? String(meta.accountId).trim() : null
   try {
     const map = readMap(db)
     const prev = entryOf(map, s)
+    const prevAccount = lotRecordFor(db, s)?.accountId ?? null
     // A lot size is required to hold an entry at all: a minimum expressed in
     // protocol units means nothing without the divisor that turns it into lots.
     const nextLot = lotSize ?? prev?.lotSize ?? null
@@ -145,7 +172,11 @@ export function rememberVolumeMeta(db, symbol, meta = {}) {
       minVolume: minVolume ?? prev?.minVolume ?? null,
       stepVolume: stepVolume ?? prev?.stepVolume ?? null,
     }
-    if (prev && prev.lotSize === next.lotSize && prev.minVolume === next.minVolume && prev.stepVolume === next.stepVolume) {
+    // The stamp travels only when the writer named an account; a record on
+    // file keeps its stamp when a legacy lot-size-only call touches it.
+    const nextAccount = accountId ?? prevAccount
+    if (nextAccount) { next.accountId = nextAccount; next.at = new Date().toISOString() }
+    if (prev && prev.lotSize === next.lotSize && prev.minVolume === next.minVolume && prev.stepVolume === next.stepVolume && prevAccount === nextAccount) {
       return false                          // unchanged; skip the write
     }
     map[s] = next

@@ -58,7 +58,7 @@ export async function withBrokerLotSize (db, record, { lotSizeFor = null } = {})
     try {
       const meta = await lotSizeFor(record.symbol)
       if (meta && Number(meta.lotSize) > 0) {
-        try { rememberVolumeMeta(db, record.symbol, meta) } catch { /* learning must never fail a capture */ }
+        try { rememberVolumeMeta(db, record.symbol, { ...meta, accountId: record.account_id ?? record.accountId ?? null }) } catch { /* learning must never fail a capture */ }
         return { ...record, lot_size: Number(meta.lotSize), lot_size_source: 'broker_read' }
       }
     } catch { /* the broker read failed — no lot travels */ }

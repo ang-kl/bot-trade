@@ -12,7 +12,7 @@ import { contractSize } from './contracts.js'
 import {
   rememberLotSize, rememberVolumeMeta, brokerMinLots,
   unitsPerLot, lotsFromUnits, lotSizeParity,
-  LOT_SIZE_KEY, CENTS_PER_UNIT,
+  LOT_SIZE_KEY, CENTS_PER_UNIT, lotRecordFor,
 } from './lot-size-registry.js'
 import { brokerVolumeToLots } from '../services/reconciler.js'
 
@@ -211,4 +211,33 @@ test('brokerMinLots never invents a minimum for a symbol the broker never descri
   const m = brokerMinLots(db, 'NEVER.SEEN')
   assert.equal(m.minLots, null)
   assert.equal(m.source, 'unknown')
+})
+
+// Claude · № 13,172 11-Oct (Codex P2 on #1318): a record carries the account
+// whose broker answer it is, when the writer names one; the legacy
+// lot-size-only call neither adds nor removes a stamp.
+test('a record is stamped with the account that wrote it, and lotRecordFor reports it; unstamped records report null', () => {
+  const db = fresh()
+  assert.equal(lotRecordFor(db, 'BTCUSD'), null)
+  assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, minVolume: 1, stepVolume: 1, accountId: 47790949 }), true)
+  const rec = lotRecordFor(db, 'BTCUSD')
+  assert.equal(rec.accountId, '47790949')
+  assert.equal(rec.lotSize, 100)
+  assert.equal(rec.minVolume, 1)
+  assert.match(rec.at, /^\d{4}-\d{2}-\d{2}T/)
+  // the same values from the same account: unchanged, no write
+  assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, minVolume: 1, stepVolume: 1, accountId: '47790949' }), false)
+  // the same values confirmed by another account: the stamp moves
+  assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, minVolume: 1, stepVolume: 1, accountId: '43097342' }), true)
+  assert.equal(lotRecordFor(db, 'BTCUSD').accountId, '43097342')
+  // the legacy call keeps the stamp on file
+  assert.equal(rememberLotSize(db, 'BTCUSD', 100), false)
+  assert.equal(lotRecordFor(db, 'BTCUSD').accountId, '43097342')
+  // an unstamped record (every deployed database) reports no account
+  rememberLotSize(db, '0003.HK', 6_000)
+  assert.deepEqual(lotRecordFor(db, '0003.HK'), { lotSize: 6_000, minVolume: null, stepVolume: null, accountId: null, at: null })
+  assert.deepEqual(JSON.parse(getState(db, LOT_SIZE_KEY))['0003.HK'], { lotSize: 6_000, minVolume: null, stepVolume: null }, 'the stored shape without a stamp is unchanged')
+  // a blank account is no stamp
+  rememberVolumeMeta(db, 'ETHUSD', { lotSize: 100, minVolume: 1, stepVolume: 1, accountId: '  ' })
+  assert.equal(lotRecordFor(db, 'ETHUSD').accountId, null)
 })

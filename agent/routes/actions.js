@@ -6506,7 +6506,7 @@ export default function actionsRouter(db, deps = {}) {
       // the gate judges what the broker will actually accept. A record on
       // file is never overwritten with nothing (rememberVolumeMeta).
       const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
-      rememberVolumeMeta(db, symbol, volMeta)
+      rememberVolumeMeta(db, symbol, { ...volMeta, accountId: creds.accountId })
 
       const proposal = {
         symbol, side, entry,

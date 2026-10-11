@@ -75,9 +75,11 @@ test('the manual-order route fetches and records the broker lot record before th
   assert.ok(start > 0)
   const handler = src.slice(start, src.indexOf('router.post(', start + 10))
   const fetched = handler.indexOf('await getVolumeMeta(')
-  const recorded = handler.indexOf('rememberVolumeMeta(db, symbol, volMeta)')
+  const recorded = handler.indexOf('rememberVolumeMeta(db, symbol, { ...volMeta, accountId: creds.accountId })')
   const gated = handler.indexOf('evaluateTrade(db, proposal')
   assert.ok(fetched > 0 && recorded > 0 && gated > 0, { fetched, recorded, gated })
   assert.ok(fetched < recorded && recorded < gated, `fetch ${fetched} → record ${recorded} → gate ${gated}`)
+  // Codex P2 on #1318: the record is stamped with the account whose broker answer it is
+
   assert.equal(handler.split('await getVolumeMeta(').length - 1, 1, 'one fetch, reused for the order below')
 })

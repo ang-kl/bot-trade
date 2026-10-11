@@ -52,6 +52,7 @@ import { tfMs, nextBarCloseMs } from '../lib/timeframes.js'
 import { getCtraderCreds, credsForRegisteredAccount, resolveSymbolId } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
+import { lotRecordFor, unitsPerLot as unitsPerLotFromRegistry, brokerMinLots } from '../lib/lot-size-registry.js'
 
 /** The query parameters GET /state/preorder understands; anything else is a 400. */
 export const PREORDER_SCAN_PARAMS = Object.freeze(['scanId', 'account'])
@@ -329,25 +330,43 @@ async function brokerEntry(creds, symbolId) {
 }
 
 /**
- * Claude · № 13,172 11-Oct (ordered № 13,171; claude-builder). What the gate
- * sized ONE LOT as, and where that came from. The route records the broker's
- * lot size and minimum before its gate (actions.js, rememberVolumeMeta); this
- * dry run is read-only, so on a symbol with no record on file it sizes on
- * the contract table and the global minimum lot, and its size — or a
- * min-lot refusal — can differ from the route's. Said here, not discovered.
+ * Claude · № 13,172 11-Oct (ordered № 13,171; claude-builder). What one lot
+ * of this symbol is on file, and whether the route will size the same. The
+ * route records the SELECTED account's broker lot record before its gate
+ * (actions.js, rememberVolumeMeta); this dry run is read-only, so it reads
+ * the registry itself — not the gate's checks, which are empty when the
+ * gate refuses before sizing (Codex P2 on #1318) — and claims equivalence
+ * only for a record this account wrote (Codex P2: the map is keyed by
+ * symbol alone, so another account's record, or an unstamped one, is not
+ * provenance). Said here, not discovered.
  */
-function manualLotRecord(symbol, result) {
+function manualLotRecord(db, symbol, accountId, result) {
   const c = result?.checks || {}
-  const stored = c.units_per_lot?.source ?? null
-  const fromBroker = stored === 'broker'
+  const consultedByGate = 'units_per_lot' in c
+  let rec = null, reg = null, min = null
+  try { rec = lotRecordFor(db, symbol); reg = unitsPerLotFromRegistry(db, symbol); min = brokerMinLots(db, symbol) } catch { rec = null }
+  const stored = reg?.source ?? null
+  const acct = accountId != null ? String(accountId) : null
+  const ownRecord = rec != null && rec.accountId != null && acct != null && rec.accountId === acct
+  const gateClause = consultedByGate ? '' : ' (the gate refused before sizing; this is what it would have read)'
+  let note
+  if (rec == null) {
+    note = `no broker lot record on file for ${symbol}: this dry run sized on the contract table and the global minimum lot; POST /actions/manual-order records the broker's lot size and minimum for account ${acct ?? '(selected)'} before its gate, so its size or a min-lot refusal can differ — run the dry run again after the first order on this symbol${gateClause}`
+  } else if (ownRecord) {
+    note = `the gate sized ${symbol} in account ${acct}'s own recorded units and floored at its recorded minimum lot, as the route will${gateClause}`
+  } else {
+    const who = rec.accountId != null ? `by account ${rec.accountId}` : 'before records carried an account'
+    note = `the lot record on file for ${symbol} was written ${who}; POST /actions/manual-order refreshes it from account ${acct ?? '(selected)'}'s own broker answer before its gate, so its size or a min-lot refusal can differ${gateClause}`
+  }
   return {
     stored,
-    unitsPerLot: num(c.units_per_lot?.value),
-    brokerMinLots: num(c.broker_min_lots),
-    sizedAsRoute: fromBroker,
-    note: fromBroker
-      ? `the gate sized ${symbol} in the broker's recorded units and floored at its recorded minimum lot, as the route will`
-      : `no broker lot record on file for ${symbol}: this dry run sized on the contract table and the global minimum lot; POST /actions/manual-order records the broker's lot size and minimum before its gate, so its size or a min-lot refusal can differ — run the dry run again after the first order on this symbol`,
+    unitsPerLot: num(reg?.unitsPerLot),
+    brokerMinLots: num(min?.minLots),
+    recordAccount: rec?.accountId ?? null,
+    recordedAt: rec?.at ?? null,
+    consultedByGate,
+    sizedAsRoute: ownRecord,
+    note,
   }
 }
 
@@ -392,7 +411,7 @@ async function manualPreorder(db, input, deps) {
   const result = risk.evaluateTrade(db, proposal, config)
   return assemble(db, {
     kind: 'manual', route: 'manual_market', accountId: creds?.accountId ?? null, proposal, result, config,
-    upstream: [], strategyGate: 'not_consulted', lotRecord: manualLotRecord(symbol, result),
+    upstream: [], strategyGate: 'not_consulted', lotRecord: manualLotRecord(db, symbol, creds?.accountId ?? null, result),
     entrySource: { kind: 'broker_1m_close', symbolId: String(resolved.id), symbolSource: resolved.source },
     notChecked: ['broker minimum volume after approval (actions.js:6440-6446)', 'execution guard at send (actions.js:6475-6479)'],
   })
