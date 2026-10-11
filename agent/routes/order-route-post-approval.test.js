@@ -146,6 +146,27 @@ test('execute-trade: the same, for an order placed from an analysis', async t =>
   assertAccounted(db, 'execute-trade')
 })
 
+// Codex P2 on #1322: /actions/execute-trade writes its trade row BEFORE the
+// send and marks it 'rejected' when a guard_ refusal is thrown at the send.
+// That row must not read as an order that landed. Reachable: an analysis with
+// no TP passes the gate (R:R is judged only when tp1 is present) and the
+// bracket guard then throws guard_no_target.
+test('execute-trade: a guard refusal thrown at the send, after the write-ahead row, still reads as refused after approval', async t => {
+  const db = fresh(); t.after(() => db.close())
+  setState(db, 'exec_guard_json', 'null') // no kill switch: the send itself refuses
+  const { post, broker } = await serve(t, db)
+  const analysisId = db.prepare(`INSERT INTO analyses (symbol, consensus_bias, overall_conviction, synthesis, entry_price, sl_price, tp1_price, strategy, analyzed_at)
+    VALUES (?, 'long', 9, '{}', 1.1, 1.09, NULL, 'ema_pullback', ?)`).run(SYM, new Date().toISOString()).lastInsertRowid
+  const res = await post('execute-trade', { analysisId: Number(analysisId) })
+  assert.equal(res.vetoed, true, JSON.stringify(res).slice(0, 300))
+  assert.match(res.reason, /^guard_no_target: /)
+  assert.equal(broker.sent.includes(PT.NEW_ORDER_REQ), false, 'nothing was sent')
+  const trade = db.prepare('SELECT status, risk_event_id FROM trades').get()
+  assert.equal(trade.status, 'rejected', 'the write-ahead row is marked rejected')
+  const { approval } = assertAccounted(db, 'execute-trade (thrown at the send)')
+  assert.equal(trade.risk_event_id, approval.id, 'and it is linked to the approval')
+})
+
 test('a refusal BEFORE the gate stays a plain veto: a typed lots below the broker minimum was never approved', async t => {
   const db = fresh(); t.after(() => db.close())
   const { post } = await serve(t, db)
