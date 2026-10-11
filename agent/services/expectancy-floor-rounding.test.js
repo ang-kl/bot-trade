@@ -1,0 +1,42 @@
+// node --test agent/services/expectancy-floor-rounding.test.js
+//
+// Claude · № 13,141 11-Oct (Codex P2 on #1317, round 4; claude-builder).
+// effectiveRrFloor is what a proposer asks "what will the gate demand" (the
+// burn-in, the pad's bracket advice). It took expectancyVerdict's quoted
+// `need`, rounded to the NEAREST hundredth, while the gate compares
+// E = W·rr − (1 − W) > minE strictly on the raw value — so a target built at
+// the quoted ratio could land a hair under and be refused a second time.
+// expectancyFloorFor now rounds UP through rrNeededFor and re-checks at the
+// gate's own rounding. Red before (7.43), green after (7.44).
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { expectancyFloorFor, expectancyVerdict, HARD_MIN_RR } from './risk.js'
+
+const MIN_E = 0.15
+
+test('3 wins in 22 closes: the quoted 7.43R fails the gate, the floor returned is 7.44R and passes it', () => {
+  const stats = { trades: 22, winRate: 3 / 22 }
+  const quoted = expectancyVerdict(stats, HARD_MIN_RR, { minE: MIN_E }).need
+  assert.equal(quoted, 7.43, 'the verdict quotes the nearest-hundredth figure')
+  assert.equal(expectancyVerdict(stats, quoted, { minE: MIN_E }).ok, false, 'the gate refuses a target at the quoted ratio')
+  const floor = expectancyFloorFor(stats, HARD_MIN_RR, MIN_E)
+  assert.equal(floor, 7.44)
+  assert.equal(expectancyVerdict(stats, floor, { minE: MIN_E }).ok, true, 'the returned floor clears the gate\'s own comparison')
+})
+
+test('a quoted 3.00 that hides a raw 3.004 does not leave the static floor at exactly 3R', () => {
+  // (minE + 1 − W) / W = 3.004  ⇒  W = 1.15 / 4.004
+  const stats = { trades: 40, winRate: 1.15 / 4.004 }
+  assert.equal(expectancyVerdict(stats, HARD_MIN_RR, { minE: MIN_E }).need, 3, 'quoted as 3.00')
+  assert.equal(expectancyVerdict(stats, HARD_MIN_RR, { minE: MIN_E }).ok, false, 'yet the gate refuses exactly 3R')
+  const floor = expectancyFloorFor(stats, HARD_MIN_RR, MIN_E)
+  assert.equal(floor, 3.01)
+  assert.equal(expectancyVerdict(stats, floor, { minE: MIN_E }).ok, true)
+})
+
+test('a win rate that needs less than the static floor, or a thin sample, leaves the floor alone', () => {
+  assert.equal(expectancyFloorFor({ trades: 40, winRate: 0.6 }, HARD_MIN_RR, MIN_E), HARD_MIN_RR, '0.92R needed: the static floor stands')
+  assert.equal(expectancyFloorFor({ trades: 5, winRate: 0.1 }, HARD_MIN_RR, MIN_E), HARD_MIN_RR, 'thin sample fails open')
+  assert.equal(expectancyFloorFor({ trades: 40, winRate: 1 }, HARD_MIN_RR, MIN_E), HARD_MIN_RR, 'unusable win rate fails open')
+  assert.equal(expectancyFloorFor(null, HARD_MIN_RR, MIN_E), HARD_MIN_RR)
+})

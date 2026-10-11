@@ -709,12 +709,29 @@ export function effectiveRrFloor(db, accountId = null, strategy = null) {
   if (config.minExpectancyR != null && Number.isFinite(Number(config.minExpectancyR))) {
     try {
       const stats = accountEconomics(db, accountId, { days: 30 })
-      const ev = expectancyVerdict(stats, floor, { minE: Number(config.minExpectancyR) })
-      // `need` is what the measured win rate demands; rr-independent.
-      if (ev.need != null && ev.need > floor) floor = ev.need
+      floor = expectancyFloorFor(stats, floor, Number(config.minExpectancyR))
     } catch { /* the static floor stands */ }
   }
   return floor
+}
+
+/**
+ * Claude · № 13,141 11-Oct (Codex P2 on #1317, round 4; claude-builder).
+ * The floor the measured win rate demands, ROUNDED UP so the figure clears
+ * the gate's own strict comparison. expectancyVerdict quotes `need` rounded
+ * to the nearest hundredth for its message; a proposer that builds a target
+ * at that quoted ratio can land a hair under minE (3 wins in 22 closes at
+ * minE 0.15: quoted 7.43R, E(7.43) = 0.1495R, refused). rrNeededFor rounds
+ * up and re-checks at the gate's rounding, so what this returns passes.
+ * Pure: a thin sample or an unusable win rate leaves `floor` as it is.
+ */
+export function expectancyFloorFor(stats, floor, minE) {
+  const ev = expectancyVerdict(stats, floor, { minE })
+  if (ev.need == null || !Number.isFinite(ev.W)) return floor
+  // Judged on the rounded-up ratio, not the quoted one: a quoted 3.00 can
+  // hide a raw 3.004, at which the gate refuses exactly 3R.
+  const needUp = rrNeededFor(ev.W, minE)
+  return needUp != null && needUp > floor ? needUp : floor
 }
 
 /**
