@@ -14,27 +14,76 @@ const integer = n => Number.isSafeInteger(n) && n > 0
 const id = n => /^[1-9]\d*$/.test(String(n)) ? String(n) : null
 const table = (db, name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
 
+// W10 — Claude · № 13,390 12-Oct (owner's yes naming this file, 12-10 ~06:38
+// SGT; docs/instruction-2026-10-12-decisions.md W10; claude-builder). The
+// trigger (in R) and the fraction closed there are a STORED setting
+// (`capped_hybrid_json`), defaulting to today's 2R and 50%, ranges validated
+// (owner principle 9: no hardcoded policy). A plan CARRIES the values it was
+// made with: the partial manager and the tick controller re-compute a stored
+// plan from the plan itself and compare it exactly, so a later settings
+// change never invalidates a plan already armed. At the defaults the plan is
+// byte-identical to the pre-W10 plan (no new keys), so every plan armed
+// before W10 still validates.
+export const CAPPED_HYBRID_SETTINGS_KEY = 'capped_hybrid_json'
+export const CAPPED_HYBRID_DEFAULTS = Object.freeze({ triggerR: 2, closeFraction: 0.5 })
+export const CAPPED_HYBRID_RANGES = Object.freeze({ triggerR: Object.freeze([1, 5]), closeFraction: Object.freeze([0.1, 0.9]) })
+const inRange = (v, [lo, hi]) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi
+
+/** { ok, settings: {triggerR, closeFraction}, errors }. Missing fields take the defaults. */
+export function validateCappedHybridSettings(raw) {
+  const errors = []
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, settings: { ...CAPPED_HYBRID_DEFAULTS }, errors: ['not an object'] }
+  const settings = { ...CAPPED_HYBRID_DEFAULTS }
+  for (const k of Object.keys(CAPPED_HYBRID_DEFAULTS)) {
+    if (raw[k] === undefined) continue
+    if (!inRange(raw[k], CAPPED_HYBRID_RANGES[k])) errors.push(`${k} must be a number in [${CAPPED_HYBRID_RANGES[k].join(', ')}]`)
+    else settings[k] = raw[k]
+  }
+  return errors.length ? { ok: false, settings: { ...CAPPED_HYBRID_DEFAULTS }, errors } : { ok: true, settings, errors }
+}
+
+/** The effective settings: the stored ones when valid, else the defaults with
+ * the reason named (an unreadable store never becomes a different policy). */
+export function loadCappedHybridSettings(db) {
+  let row = null
+  try { row = db.prepare('SELECT value FROM agent_state WHERE key = ?').get(CAPPED_HYBRID_SETTINGS_KEY) } catch { row = null }
+  if (!row?.value) return { ...CAPPED_HYBRID_DEFAULTS, source: 'default', error: null }
+  let raw
+  try { raw = JSON.parse(row.value) } catch { return { ...CAPPED_HYBRID_DEFAULTS, source: 'default', error: 'stored setting is not JSON' } }
+  const v = validateCappedHybridSettings(raw)
+  return v.ok ? { ...v.settings, source: 'stored', error: null } : { ...CAPPED_HYBRID_DEFAULTS, source: 'default', error: v.errors.join('; ') }
+}
+
 export function planCappedHybrid(input = {}) {
   const { side, entry, initialRisk, brokerTarget, volume, minVolume, stepVolume, digits, openingDealIds } = input
   const refuse = reason => ({ ok: false, policy: CAPPED_HYBRID_POLICY, reason })
+  // W10: the plan's own values, or the defaults for a pre-W10 plan or input.
+  const triggerR = input.triggerR ?? CAPPED_HYBRID_DEFAULTS.triggerR
+  const closeFraction = input.closeFraction ?? CAPPED_HYBRID_DEFAULTS.closeFraction
+  if (!inRange(triggerR, CAPPED_HYBRID_RANGES.triggerR) || !inRange(closeFraction, CAPPED_HYBRID_RANGES.closeFraction)) return refuse('hybrid_settings_invalid')
   if (!['BUY', 'SELL'].includes(side) || ![entry, initialRisk, brokerTarget].every(positive)) return refuse('recorded_risk_required')
   if (!Number.isInteger(digits) || digits < 0 || digits > 5) return refuse('broker_precision_required')
   if (![volume, minVolume, stepVolume].every(integer) || volume % stepVolume !== 0) return refuse('broker_volume_invalid')
-  const half = volume / 2
-  // Exact half only: neither rounding to a token partial nor a full-close fallback.
-  if (!integer(half) || half < minVolume || half % stepVolume !== 0) return refuse('half_and_runner_not_representable')
+  // Exact parts only: neither rounding to a token partial nor a full-close
+  // fallback. At 0.5 this is the exact half, as before W10.
+  const exact = volume * closeFraction, closeVolume = Math.round(exact), runnerVolume = volume - closeVolume
+  if (Math.abs(exact - closeVolume) > 1e-9 * volume || !integer(closeVolume) || closeVolume < minVolume || closeVolume % stepVolume !== 0
+    || !integer(runnerVolume) || runnerVolume < minVolume || runnerVolume % stepVolume !== 0) return refuse('half_and_runner_not_representable')
   if (!Array.isArray(openingDealIds) || !openingDealIds.length || openingDealIds.some(d => typeof d !== 'string' || !id(d))
     || new Set(openingDealIds).size !== openingDealIds.length) return refuse('opening_receipts_required')
   const dir = side === 'BUY' ? 1 : -1, scale = 10 ** digits
-  const rawTrigger = entry + dir * 2 * initialRisk
+  const rawTrigger = entry + dir * triggerR * initialRisk
   const trigger = (dir === 1 ? Math.ceil(rawTrigger * scale - 1e-7) : Math.floor(rawTrigger * scale + 1e-7)) / scale
   const originalStop = entry - dir * initialRisk
   if (!positive(originalStop) || !positive(trigger) || dir * (trigger - entry) <= 0
     || dir * (brokerTarget - trigger) <= 0) return refuse('existing_tp_caps_before_runner')
+  const atDefaults = triggerR === CAPPED_HYBRID_DEFAULTS.triggerR && closeFraction === CAPPED_HYBRID_DEFAULTS.closeFraction
   return { ok: true, policy: CAPPED_HYBRID_POLICY, mode: 'partial_runner', side, entry, initialRisk, originalStop,
-    trigger, brokerTarget, volume, closeVolume: half, runnerVolume: half, closePercentage: 50,
+    trigger, brokerTarget, volume, closeVolume, runnerVolume, closePercentage: Math.round(closeFraction * 1e8) / 1e6,
     minVolume, stepVolume, digits, openingDealIds: [...openingDealIds], rBasis: 'recorded_initial_price_risk',
-    runner: 'existing_broker_sl_and_tp', profitability: 'unverified_after_costs' }
+    runner: 'existing_broker_sl_and_tp', profitability: 'unverified_after_costs',
+    // W10: a plan made off the defaults says so, and carries what it was made with.
+    ...(atDefaults ? {} : { triggerR, closeFraction }) }
 }
 
 /** Only ordinary, proven bot fills with no competing discretionary owner.

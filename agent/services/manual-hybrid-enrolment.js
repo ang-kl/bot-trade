@@ -5,10 +5,10 @@ import { wsReconcile, wsSymbolsByIds, wsGetPositionDeals, wsGetOrderDetails } fr
 import { getState, setState } from '../db.js'
 import { partialPositionEvidence } from './momentum-broker-evidence.js'
 import { sameTicks, stopHeld } from './momentum-target-policy.js'
-import { planCappedHybrid } from './capped-hybrid-policy.js'
+import { planCappedHybrid, loadCappedHybridSettings } from './capped-hybrid-policy.js'
 import { registerPartialPlan, readPartialPlan } from './momentum-partial-manager.js'
 import { manualOpeningOrderId, manualOpeningProof } from './manual-hybrid-evidence.js'
-import { MANUAL_HYBRID_CONFIG, isManualHybridTrade, readManualHybridCandidate,
+import { MANUAL_HYBRID_CONFIG, isManualHybridTrade, readManualHybridCandidate, manualHybridAccountIds,
   ensureManualHybridSchema, readManualHybridVerdict } from './manual-hybrid-policy.js'
 
 const CURSOR = 'manual_hybrid_enrol_cursor'
@@ -26,8 +26,15 @@ export async function enrolManualHybrids(db, { credsFor, now = Date.now, transpo
   const started = now()
   const budget = typeof budgetMs === 'number' && Number.isFinite(budgetMs) ? Math.max(0, Math.min(12_000, budgetMs)) : 0
   const maxReads = Number.isInteger(maxCandidates) ? Math.max(0, Math.min(8, maxCandidates)) : 0
-  const accounts = MANUAL_HYBRID_CONFIG.accounts
-  if (!accounts.length || !['trades', 'monitored_positions', 'accounts'].every(name => table(db, name))) return out
+  if (!['trades', 'monitored_positions', 'accounts'].every(name => table(db, name))) return out
+  // W9 — Claude · № 13,394 12-Oct (owner's "Okay W9" for this file; claude-builder):
+  // `_all` resolves to the enabled registry accounts here; the list itself is
+  // config/manual-hybrid.json, read by manual-hybrid-policy.js.
+  const accounts = manualHybridAccountIds(db)
+  if (!accounts.length) return out
+  // W10 — Claude · № 13,399 12-Oct (owner's yes for W9/W10 naming this file;
+  // claude-builder): the stored trigger/fraction, read once per pass.
+  const settings = loadCappedHybridSettings(db)
   const placeholders = accounts.map(() => '?').join(',')
   const cursor = Number(getState(db, CURSOR)) || 0
   const where = `status='open' AND account_id IN (${placeholders})
@@ -108,7 +115,7 @@ export async function enrolManualHybrids(db, { credsFor, now = Date.now, transpo
       const proof = { ...proved, digits }
       const plan = planCappedHybrid({ side: proof.side, entry: proof.entry, initialRisk: proof.initialRisk,
         brokerTarget: bp.takeProfit, volume: bp.volume, minVolume: meta.minVolume, stepVolume: meta.stepVolume,
-        digits, openingDealIds: proof.openingDealIds })
+        digits, openingDealIds: proof.openingDealIds, triggerR: settings.triggerR, closeFraction: settings.closeFraction })
       if (!plan.ok) {
         const observed = value => typeof value === 'number' && Number.isFinite(value) ? value : null
         defer(plan.reason, { source: 'ordinary_enrolment_reads', units: 'ctrader_protocol_volume',

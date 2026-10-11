@@ -392,3 +392,54 @@ test('malformed volume metadata is refused and never coerced or echoed into stor
   assert.ok(!JSON.stringify(out).includes('must-not-leak'))
   assert.equal(f.closes.length,0)
 })
+
+// ---------------------------------------------------------------------------
+// W10 — Claude · № 13,399 12-Oct (owner's yes naming capped-hybrid-policy.js
+// and capped-hybrid-enrolment.js; claude-builder). The stored setting reaches
+// a NEW plan through the real enrolment and pass; a plan armed before a
+// settings change keeps its own trigger and still executes.
+// ---------------------------------------------------------------------------
+test('W10: a stored 2.5R arms the next plan at 2.5R and nothing closes until 2.5R; then the stored share closes', async t => {
+  for (const side of ['BUY', 'SELL']) {
+    const f = scene(t, { side })
+    setState(f.db, 'capped_hybrid_json', JSON.stringify({ triggerR: 2.5, closeFraction: 0.4 }))
+    // Price at 2R (the old trigger): the new plan is armed and does not fire.
+    await f.pass()
+    const armed = readPartialPlan(f.db, '42', 7)
+    assert.equal(armed.state, 'ARMED', `${side}: armed, not fired at 2R`)
+    assert.deepEqual([armed.plan.trigger, armed.plan.triggerR, armed.plan.closeFraction, armed.plan.closeVolume, armed.plan.runnerVolume],
+      [side === 'BUY' ? 125 : 75, 2.5, 0.4, 4000, 6000])
+    assert.equal(f.closes.length, 0)
+    // Price reaches 2.5R: 40% closes once, confirmed.
+    if (side === 'BUY') { f.bid = 125; f.ask = 125.1 } else { f.bid = 74.9; f.ask = 75 }
+    f.at += 61000; await f.pass()
+    assert.equal(readPartialPlan(f.db, '42', 7).state, 'CONFIRMED')
+    assert.deepEqual(f.closes, [{ positionId: '33', volume: 4000 }]); assert.equal(f.volume, 6000)
+  }
+})
+
+test('W10: a plan armed at the defaults keeps its 2R trigger after the setting changes, and still executes', async t => {
+  const f = scene(t)
+  f.bid = 110; f.ask = 110.1
+  await f.pass()
+  const before = readPartialPlan(f.db, '42', 7)
+  assert.equal(before.state, 'ARMED'); assert.equal(before.plan.trigger, 120)
+  assert.equal(Object.hasOwn(before.plan, 'triggerR'), false, 'a default plan is byte-identical to a pre-W10 plan')
+  setState(f.db, 'capped_hybrid_json', JSON.stringify({ triggerR: 3, closeFraction: 0.3 }))
+  f.bid = 120; f.ask = 120.1; f.at += 61000
+  await f.pass()
+  const after = readPartialPlan(f.db, '42', 7)
+  assert.equal(after.state, 'CONFIRMED', 'the armed plan validated under the new setting and fired at its own 2R')
+  assert.deepEqual(after.plan, before.plan, 'the plan was not rewritten')
+  assert.deepEqual(f.closes, [{ positionId: '33', volume: 5000 }])
+})
+
+test('W10: with no stored setting the real pass arms exactly the pre-W10 plan', async t => {
+  const f = scene(t)
+  f.bid = 110; f.ask = 110.1
+  await f.pass()
+  const p = readPartialPlan(f.db, '42', 7).plan
+  const legacy = planCappedHybrid({ side: 'BUY', entry: 100, initialRisk: 10, brokerTarget: 140, volume: 10000, minVolume: 100, stepVolume: 100, digits: 2, openingDealIds: p.openingDealIds })
+  assert.equal(JSON.stringify(p), JSON.stringify(legacy))
+  assert.deepEqual([p.trigger, p.closeVolume, p.closePercentage], [120, 5000, 50])
+})

@@ -1,6 +1,9 @@
 {
   "version": "manual_capped_hybrid_2026_10_09_v1",
-  "accounts": ["43097342", "42993489"],
+  "accounts": [
+    "_all"
+  ],
   "authority": "Owner authorised human-opened positions; Codex · №12,587 · 2026-10-09; codex-footprint: manual-profit-hybrid",
-  "policy": "capped_hybrid_2r_half_v1"
+  "policy": "capped_hybrid_2r_half_v1",
+  "_note": "W9 (owner's yes, 12-10-2026; docs/instruction-2026-10-12-decisions.md W9): `_all` names every ENABLED registry account (owner principle 9: setups apply to every account). Explicit ids still work. Until 12-10 the list was [\"43097342\", \"42993489\"]. The evidence rules (manual-hybrid-policy.js, manual-hybrid-evidence.js) are unchanged, and so is `version`, so authorities already recorded keep validating."
 }
