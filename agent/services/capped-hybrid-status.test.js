@@ -150,6 +150,18 @@ test('W3: a record row under another account never answers for the trade', () =>
   }
 })
 
+test('W3 (Codex P2 on #1326): a legacy open trade with no account shows in every scoped view, as the positions table shows it', () => {
+  const db = initDB(':memory:'); seed(db)
+  db.prepare(`INSERT INTO trades (id, symbol, side, status, account_id, strategy, ctrader_position_id) VALUES (10, 'GER40', 'BUY', 'open', NULL, 'manual', '510')`).run()
+  const ch = pass().cappedHybrid
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: { ...ch,
+    excluded: [...ch.excluded, { accountId: null, tradeId: 10, positionId: '510', stage: 'ownership', reason: 'trade_identity_unverified' }] } })))
+  for (const accountId of [A, B, null]) {
+    const p = byId(cappedHybridStatus(db, { accountId, now: NOW }))
+    assert.deepEqual([p[10]?.verdict, p[10]?.reason, p[10]?.accountId], ['excluded', 'trade_identity_unverified', null], `scope ${accountId}`)
+  }
+})
+
 test('W3: read-only — no write statement is prepared', () => {
   const db = initDB(':memory:'); seed(db)
   setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))

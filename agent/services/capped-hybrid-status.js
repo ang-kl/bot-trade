@@ -15,6 +15,7 @@
 // read. A missing or unreadable pass record makes every position "not
 // available" — never an empty, healthy-looking list.
 import { readHybridVerdicts } from './diagnostic-readout.js'
+import { accountWhere } from '../lib/account-scope.js'
 
 const ACCOUNT = /^[1-9]\d{0,19}$/
 export const CAPPED_HYBRID_STATUS_MAX_POSITIONS = 200
@@ -38,9 +39,13 @@ export function cappedHybridStatus(db, { accountId = null, now = Date.now() } = 
   // trade id from the unscoped projection instead. Trade ids are unique.
   const globalPass = scope ? readHybridVerdicts(db, { accountIds: null }).momentum_partial_pass_json : pass
 
+  // The scoped-read convention (lib/account-scope.js accountWhere): a legacy
+  // row with no account is shown for every account, as the Open positions
+  // table beside the card shows it (Codex P2 on #1326).
+  const where = accountWhere(scope ? { accountId: scope[0], all: false } : { all: true })
   const open = db.prepare(`SELECT id, account_id, ctrader_position_id, symbol, side, strategy FROM trades
-    WHERE status = 'open' ${scope ? 'AND account_id = ?' : ''} ORDER BY id LIMIT ?`)
-    .all(...(scope ?? []), CAPPED_HYBRID_STATUS_MAX_POSITIONS + 1)
+    WHERE status = 'open' ${where.active ? `AND ${where.where}` : ''} ORDER BY id LIMIT ?`)
+    .all(...where.params, CAPPED_HYBRID_STATUS_MAX_POSITIONS + 1)
   const positionsTruncated = open.length > CAPPED_HYBRID_STATUS_MAX_POSITIONS
   const trades = open.slice(0, CAPPED_HYBRID_STATUS_MAX_POSITIONS)
   let booked = new Set()
