@@ -183,6 +183,9 @@ test('Codex P1s on #1312: the symbol cap holds in the loop; a breach reached by 
   // Symbol cap: two symbols in the feed, one allowed → the second is omitted and counted, never built.
   const capped = await processSegments({ names: files, destDir: dir, cfg: CFG, maxSymbols: 1 })
   assert.deepEqual(capped.manifest.symbols, [1]); assert.equal(capped.manifest.symbolsOmitted, 1); assert.deepEqual(capped.manifest.symbolsOmittedSample, [2]); assert.equal(capped.series.size, 1)
+  // A cross-check symbol is reserved under the cap (Codex P2 on #1313): with cap 1 and symbol 2 named, symbol 1 (seen first) is the one omitted.
+  const reservedRun = await processSegments({ names: files, destDir: dir, cfg: CFG, maxSymbols: 1, crossCheckSymbolIds: [2] })
+  assert.deepEqual(reservedRun.manifest.symbols, [2]); assert.deepEqual(reservedRun.manifest.symbolsOmittedSample, [1]); assert.ok(reservedRun.crossCheckBars[2]?.length > 0)
   // Final-segment breach: memory crosses the limit only on the check after the last segment.
   let calls = 0
   const late = await processSegments({ names: files, destDir: dir, cfg: CFG, limits: { workerMemoryMb: 1, maxRuntimeMs: 3_600_000, maxTempBytes: 1 << 30, maxPullsPerMinute: 30 }, memoryRssBytes: () => (++calls >= 3 ? 2 * 1024 * 1024 : 1) })

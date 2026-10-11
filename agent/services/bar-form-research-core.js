@@ -155,10 +155,15 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
   // Codex P1 on #1312: the symbol bound holds in the loop too. With no ids
   // named, at most `maxSymbols` symbols (first seen, in feed order) get a
   // state; the rest are counted as omitted, never silently built.
+  // Codex P2 on #1313: symbols the cross-check names are RESERVED under the
+  // cap — admitted whenever they appear; the rest fill what the cap leaves.
+  const reserved = new Set((crossCheckSymbolIds || []).map(Number))
   const stateFor = id => {
     let st = states.get(id)
     if (!st) {
-      if (symbolCap != null && states.size >= symbolCap) { omittedSymbols.add(Number(id)); return null }
+      const n = Number(id)
+      const reservedPending = [...reserved].filter(r => !states.has(r) && !states.has(String(r))).length
+      if (symbolCap != null && !reserved.has(n) && states.size + reservedPending >= symbolCap) { omittedSymbols.add(n); return null }
       st = { time: new Map(timeMs.map(ms => [ms, seriesState()])), tick: new Map(nominal.map(ms => [ms, { ...seriesState(), n: null }])), calib: [], calibrated: false }; states.set(id, st)
     }
     return st
