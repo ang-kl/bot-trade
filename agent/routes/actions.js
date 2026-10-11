@@ -11,7 +11,7 @@ import { getCtraderCreds, getSymbolMap, getAccountSymbolMap, ensureSymbolMap, bi
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { recordTradePlan, recordPlanWriteFailure } from '../services/trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
-import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent, mergeRiskConfig, migrateLegacyRiskKeys, lowestAdmittedRr } from '../services/risk.js'
+import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent, persistPostApprovalVeto, mergeRiskConfig, migrateLegacyRiskKeys, lowestAdmittedRr } from '../services/risk.js'
 import { noteRiskConfigChanges } from '../services/risk-config-history.js'
 import { wsGetTrendbarsBatch, wsGetSpotOnce, isAmbiguousSubmitError } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
@@ -6328,7 +6328,12 @@ export default function actionsRouter(db, deps = {}) {
       const sized = lotsToVolume(volLots, volMeta)
       if (sized.belowMin) {
         const reason = `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)`
-        persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+        // Claude · № 13,308 11-Oct (owner "yes, fix it", on № 13,304·C·1;
+        // claude-builder): every refusal after the gate approved is a
+        // POST-APPROVAL refusal, so /health and /state/dispositions tie it to
+        // its approval instead of counting a silent drop (11-10 08:10Z: DOT,
+        // AVAX, UNI and XLM read "went nowhere with nothing recorded").
+        persistPostApprovalVeto(db, proposal, reason)
         return res.json({ ok: false, vetoed: true, reason })
       }
       const volume = sized.volume
@@ -6376,7 +6381,7 @@ export default function actionsRouter(db, deps = {}) {
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
       const gv1 = validateExecGuard(orderPayload, getCtraderCreds(db).execGuard)
       if (!gv1.ok) {
-        persistRiskEvent(db, proposal, { approved: false, veto_reason: gv1.reason })
+        persistPostApprovalVeto(db, proposal, gv1.reason)
         return res.json({ ok: false, vetoed: true, reason: gv1.reason })
       }
       // W8: THE WRITE-AHEAD ROW, before the broker is called — account,
@@ -6406,7 +6411,7 @@ export default function actionsRouter(db, deps = {}) {
         // A guard_* refusal is a veto, not a server fault: record it against the
         // proposal and answer in the same shape as every other veto here.
         if (!/^guard_/.test(err.message)) throw err
-        persistRiskEvent(db, proposal, { approved: false, veto_reason: err.message })
+        persistPostApprovalVeto(db, proposal, err.message)
         // Owner 2026-07-31: name the symbol and the missing leg rather than
         // returning a bare guard_* string. `needsInput` tells the caller which
         // field to ask for; it is advice, never an automatic fill.
@@ -6577,7 +6582,12 @@ export default function actionsRouter(db, deps = {}) {
       const sized = lotsToVolume(volLots, volMeta)
       if (sized.belowMin) {
         const reason = `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)`
-        persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+        // Claude · № 13,308 11-Oct (owner "yes, fix it", on № 13,304·C·1;
+        // claude-builder): every refusal after the gate approved is a
+        // POST-APPROVAL refusal, so /health and /state/dispositions tie it to
+        // its approval instead of counting a silent drop (11-10 08:10Z: DOT,
+        // AVAX, UNI and XLM read "went nowhere with nothing recorded").
+        persistPostApprovalVeto(db, proposal, reason)
         return res.json({ ok: false, vetoed: true, reason })
       }
       const slDistance = Math.abs(entry - proposal.sl)
@@ -6610,7 +6620,7 @@ export default function actionsRouter(db, deps = {}) {
       // TP-less manual trade reached the broker despite guard_no_target.
       const gv2 = validateExecGuard(orderPayload, creds.execGuard)
       if (!gv2.ok) {
-        persistRiskEvent(db, proposal, { approved: false, veto_reason: gv2.reason })
+        persistPostApprovalVeto(db, proposal, gv2.reason)
         return res.json({ ok: false, vetoed: true, reason: gv2.reason })
       }
       let exec
@@ -6618,7 +6628,7 @@ export default function actionsRouter(db, deps = {}) {
         exec = await execPlaceOrder(creds, orderPayload)
       } catch (err) {
         if (!/^guard_/.test(err.message)) throw err
-        persistRiskEvent(db, proposal, { approved: false, veto_reason: err.message })
+        persistPostApprovalVeto(db, proposal, err.message)
         const needsInput = describeBracketGap(err.message, {
           symbol, side, entry, sl: proposal.sl, tp: proposal.tp1, digits: volMeta.digits,
           // Claude · № 13,128 11-Oct (Codex P2 on #1317): the advice is
