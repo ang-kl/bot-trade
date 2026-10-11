@@ -282,7 +282,8 @@ test('manual: the dry run names the lot record on file, whose it is, and whether
   assert.match(own.lotRecord.note, new RegExp(`account ${A}'s own recorded units.*as the route will$`))
   // a record from before the stamp existed is provenance unknown, not this account's
   const { setState: set, getState: get } = await import('../db.js')
-  const { LOT_SIZE_KEY } = await import('../lib/lot-size-registry.js')
+  const { LOT_SIZE_KEY, LOT_SIZE_BY_ACCOUNT_KEY } = await import('../lib/lot-size-registry.js')
+  set(db, LOT_SIZE_BY_ACCOUNT_KEY, '{}') // no account's own record, only the shared legacy one
   set(db, LOT_SIZE_KEY, JSON.stringify({ [SYM]: { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000 } }))
   const legacy = await check()
   assert.equal(legacy.lotRecord.stored, 'broker')
@@ -340,9 +341,18 @@ test('manual: a TYPED lots below the broker minimum is refused by the route befo
   // a typed lots AT the minimum passes this check
   const atMin = await withCreds(() => preorderCheck(db, { ...tiny, lots: 0.01 }, { fetchEntry: async () => 1.1 }))
   assert.equal(atMin.firstBlock?.stage === 'broker_min_lot', false)
-  // Codex P2 on #1318, round 5: another account's minimum is not this account's block
-  const { rememberVolumeMeta } = await import('../lib/lot-size-registry.js')
+  // Codex P2 on #1318, round 5 / P1 round 6: another account's minimum is
+  // not this account's block, and this account's own record outranks it
+  const { rememberVolumeMeta, LOT_SIZE_BY_ACCOUNT_KEY } = await import('../lib/lot-size-registry.js')
   rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 1_000_000, stepVolume: 100_000, accountId: 'OTHER' }) // their minimum: 0.1 lots
+  const ownWins = await withCreds(() => preorderCheck(db, { ...tiny, lots: 0.05 }, { fetchEntry: async () => 1.1 }))
+  assert.equal(ownWins.firstBlock?.stage === 'broker_min_lot', false, 'A\'s own 0.01 minimum governs, not OTHER\'s 0.1')
+  assert.equal(ownWins.lotRecord.recordAccount, A)
+  assert.equal(ownWins.lotRecord.brokerMinLots, 0.01)
+  assert.equal(ownWins.lotRecord.sizedAsRoute, true)
+  // with no record of A's own, OTHER's shared minimum is reported but never blocks
+  const { setState: set } = await import('../db.js')
+  set(db, LOT_SIZE_BY_ACCOUNT_KEY, JSON.stringify({ OTHER: { [SYM]: { lotSize: 10_000_000, minVolume: 1_000_000, stepVolume: 100_000 } } }))
   const theirs = await withCreds(() => preorderCheck(db, { ...tiny, lots: 0.05 }, { fetchEntry: async () => 1.1 }))
   assert.equal(theirs.firstBlock?.stage === 'broker_min_lot', false, 'the route refreshes this account\'s own minimum and may permit 0.05')
   assert.equal(theirs.lotRecord.sizedAsRoute, false)

@@ -959,7 +959,7 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
   for (const p of restingExposure(db, scopedTo)) {
     const estimate = p.reservedMarginUsd ?? ((p.volume > 0 && p.entry > 0 && p.symbol)
       ? requiredMargin(p.symbol, p.volume, p.entry, leverage, rates,
-        p.volumeKind === 'units' ? 1 : unitsPerLotFromRegistry(db, p.symbol).unitsPerLot, marginRateFor(config, p.symbol)).marginRequired : null)
+        p.volumeKind === 'units' ? 1 : unitsPerLotFromRegistry(db, p.symbol, scopedTo).unitsPerLot, marginRateFor(config, p.symbol)).marginRequired : null)
     if (!Number.isFinite(estimate) || estimate < 0) restingUnpriced.push(p.orderId ?? p.intentId ?? p.symbol)
     else restingMargin += estimate
   }
@@ -2275,7 +2275,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // every guard reading the same wrong table and unable to object.
   let brokerPerLot = null
   try {
-    const reg = unitsPerLotFromRegistry(db, proposal.symbol)
+    const reg = unitsPerLotFromRegistry(db, proposal.symbol, acct) // № 13,175: this account's own record first
     if (reg.source === 'broker') brokerPerLot = reg.unitsPerLot
     checks.units_per_lot = { value: reg.unitsPerLot, source: reg.source }
   } catch { /* table pricing stands */ }
@@ -2412,7 +2412,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // daily fundable-universe build (lib/lot-size-registry.js). UNKNOWN IS NOT
   // A LICENCE: a symbol the broker has never described falls back to the
   // configured assumption and behaves exactly as it does today.
-  const bMin = brokerMinLots(db, proposal.symbol)
+  const bMin = brokerMinLots(db, proposal.symbol, acct) // № 13,175: this account's own minimum first
   const effMinLots = bMin.minLots ?? config.minLotSize
   if (bMin.source === 'broker') checks.broker_min_lots = effMinLots
 

@@ -871,16 +871,26 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // table that returns 1 for every unlisted symbol. Recording it here is what
     // lets an ADOPTED position be converted with the same number the order was
     // placed with. See lib/lot-size-registry.js.
+    let lotMismatch = null
     try {
-      const { rememberVolumeMeta } = await import('./lib/lot-size-registry.js')
       // AND THE BROKER'S MINIMUM, which was fetched here on every order and
       // thrown away — the same fate this registry was built to end for the
       // lot size. Measured 17-09: the risk gate sized against a GLOBAL
       // assumed 0.01-lot minimum, approved, and this line then refused the
       // order because the symbol's real minimum was higher. Recording it is
       // what lets the gate refuse BEFORE it spends an approval.
-      rememberVolumeMeta(db, symbol, meta)
+      // Claude · № 13,175 11-Oct (Codex P1 on #1318; claude-builder): the
+      // record is THIS account's, and an order the gate sized on another
+      // account's lot is refused here rather than sent in this account's
+      // units; the next pass gates on the corrected record.
+      const { reconcileLotRecord } = await import('./lib/lot-size-registry.js')
+      lotMismatch = reconcileLotRecord(db, symbol, accountId, meta, riskResult.checks)
     } catch { /* non-fatal: sizing must never fail on bookkeeping */ }
+    if (lotMismatch) {
+      persistPostApprovalVeto(db, proposal, lotMismatch)
+      log(`RISK VETO ${symbol} ${side}: ${lotMismatch}`)
+      return null
+    }
     sized = lotsToVolume(volLots, meta)
     if (sized.belowMin) {
       const reason = `below_min_volume: ${volLots} lots (${sized.volume}) < broker minimum ${meta.minVolume} — balance too small for this symbol at the configured risk`

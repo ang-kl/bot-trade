@@ -87,3 +87,38 @@ test('the manual-order route fetches and records the broker lot record before th
   const refused = handler.indexOf('explicitLots < brokerMinLotsLive')
   assert.ok(recorded < refused && refused < gated, `record ${recorded} → explicit-lots refusal ${refused} → gate ${gated}`)
 })
+
+// Codex P1 on #1318 (Claude · № 13,175, ordered № 13,174): the gate for one
+// account never sizes on another account's lot record.
+test('the gate sizes each account on its own lot record, not on the last account that wrote the symbol', () => {
+  const db = fresh()
+  const OTHER = '43097342'
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, '2', 0, 1, 'active')`).run(OTHER)
+  setState(db, `acct:${OTHER}:account_balance_usd`, '42854.57')
+  rememberVolumeMeta(db, 'DOTUSD', { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000, accountId: ACCT })   // 100 DOT a lot
+  rememberVolumeMeta(db, 'DOTUSD', { lotSize: 100, minVolume: 1, stepVolume: 1, accountId: OTHER })            // 1 DOT a lot, written last
+  const mine = evaluateTrade(db, pad('DOTUSD', 1.2, 1.05, 1.65))
+  assert.equal(mine.checks.units_per_lot.value, 100, 'this account\'s own 100 units a lot, not the 1 the other account wrote last')
+  assert.equal(mine.checks.broker_min_lots, 0.1)
+  const theirs = evaluateTrade(db, { ...pad('DOTUSD', 1.2, 1.05, 1.65), accountId: OTHER })
+  assert.equal(theirs.checks.units_per_lot.value, 1)
+  assert.equal(theirs.checks.broker_min_lots, 0.01)
+})
+
+// The post-gate reconciliation must stay wired where the broker's answer is
+// fetched after the gate (CLAUDE.md failure mode #4: a repair nothing calls).
+test('every path that fetches the lot record after the gate reconciles it and refuses on a mismatch', () => {
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+  const read = (rel) => strip(readFileSync(new URL(rel, import.meta.url), 'utf8'))
+  const loop = read('../loop.js')
+  assert.match(loop, /lotMismatch = reconcileLotRecord\(db, symbol, accountId, meta, riskResult\.checks\)/)
+  assert.match(loop, /if \(lotMismatch\) \{\s*persistPostApprovalVeto\(db, proposal, lotMismatch\)[\s\S]{0,80}return null/)
+  const pending = read('../services/pending-orders.js')
+  assert.match(pending, /const lotMismatch = reconcileLotRecord\(db, symbol, creds\.accountId, meta, riskResult\.checks\)\s*if \(lotMismatch\) \{\s*risk\.persistPostApprovalVeto\(db, proposal, lotMismatch\)/)
+  const closed = read('../services/closed-market-limits.js')
+  assert.match(closed, /const lotMismatch = reconcileLotRecord\(db, symbol, creds\.accountId, meta, riskResult\.checks\)\s*if \(lotMismatch\) \{\s*risk\.persistPostApprovalVeto\(db, proposal, lotMismatch\)/)
+  // and the gate reads the proposal account's own record
+  const riskSrc = read('../services/risk.js')
+  assert.match(riskSrc, /unitsPerLotFromRegistry\(db, proposal\.symbol, acct\)/)
+  assert.match(riskSrc, /brokerMinLots\(db, proposal\.symbol, acct\)/)
+})

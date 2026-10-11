@@ -343,11 +343,19 @@ async function brokerEntry(creds, symbolId) {
 function manualLotRecord(db, symbol, accountId, result) {
   const c = result?.checks || {}
   const consultedByGate = 'units_per_lot' in c
-  let rec = null, reg = null, min = null
-  try { rec = lotRecordFor(db, symbol); reg = unitsPerLotFromRegistry(db, symbol); min = brokerMinLots(db, symbol) } catch { rec = null }
-  const stored = reg?.source ?? null
+  // № 13,175 (Codex P1 on #1318): the gate reads the account's OWN record
+  // first (lot-size-registry per-account records), then the shared one.
   const acct = accountId != null ? String(accountId) : null
-  const ownRecord = rec != null && rec.accountId != null && acct != null && rec.accountId === acct
+  let own = null, shared = null, reg = null, min = null
+  try {
+    own = acct != null ? lotRecordFor(db, symbol, acct) : null
+    shared = lotRecordFor(db, symbol)
+    reg = unitsPerLotFromRegistry(db, symbol, acct)
+    min = brokerMinLots(db, symbol, acct)
+  } catch { own = null; shared = null }
+  const stored = reg?.source ?? null
+  const ownRecord = own != null || (shared != null && shared.accountId != null && acct != null && shared.accountId === acct)
+  const rec = own ?? shared
   const gateClause = consultedByGate ? '' : ' (the gate refused before sizing; this is what it would have read)'
   let note
   if (rec == null) {
@@ -418,9 +426,11 @@ async function manualPreorder(db, input, deps) {
   // answer; another account's minimum, or an unstamped one, is not a block
   // here (lotRecord already says the route can size differently).
   try {
-    const own = lotRecordFor(db, symbol)?.accountId
-    const min = brokerMinLots(db, symbol)
-    const mine = own != null && creds?.accountId != null && own === String(creds.accountId)
+    const acctId = creds?.accountId != null ? String(creds.accountId) : null
+    const ownRec = acctId != null ? lotRecordFor(db, symbol, acctId) : null
+    const sharedWriter = lotRecordFor(db, symbol)?.accountId
+    const mine = ownRec != null || (sharedWriter != null && sharedWriter === acctId)
+    const min = brokerMinLots(db, symbol, acctId)
     if (mine && explicitLots != null && min.minLots != null && explicitLots < min.minLots) {
       upstream = [{ stage: 'broker_min_lot', ok: false, reason: `below_min_volume: ${explicitLots} lots < broker minimum (${min.minLots} lots)` }]
     }

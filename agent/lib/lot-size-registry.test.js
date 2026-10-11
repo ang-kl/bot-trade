@@ -12,7 +12,7 @@ import { contractSize } from './contracts.js'
 import {
   rememberLotSize, rememberVolumeMeta, brokerMinLots,
   unitsPerLot, lotsFromUnits, lotSizeParity,
-  LOT_SIZE_KEY, CENTS_PER_UNIT, lotRecordFor,
+  LOT_SIZE_KEY, CENTS_PER_UNIT, lotRecordFor, LOT_SIZE_BY_ACCOUNT_KEY, reconcileLotRecord, brokerLotStep,
 } from './lot-size-registry.js'
 import { brokerVolumeToLots } from '../services/reconciler.js'
 
@@ -258,4 +258,47 @@ test('a record is stamped with the account that wrote it, and lotRecordFor repor
   // a blank account is no stamp
   rememberVolumeMeta(db, 'ETHUSD', { lotSize: 100, minVolume: 1, stepVolume: 1, accountId: '  ' })
   assert.equal(lotRecordFor(db, 'ETHUSD').accountId, null)
+})
+
+// Claude · № 13,175 11-Oct (Codex P1 on #1318; ordered № 13,174): each
+// account's own broker answer is kept apart, and a reader that names an
+// account reads that account's record before the shared one.
+test('per-account records: a named account reads its own record first, never another account\'s', () => {
+  const db = fresh()
+  // account A: 1 lot = 100 units, min 0.1 lot; account B: 1 lot = 1 unit, min 0.01 lot
+  rememberVolumeMeta(db, 'DOTUSD', { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000, accountId: 'A' })
+  rememberVolumeMeta(db, 'DOTUSD', { lotSize: 100, minVolume: 1, stepVolume: 1, accountId: 'B' })
+  assert.equal(unitsPerLot(db, 'DOTUSD', 'A').unitsPerLot, 100)
+  assert.equal(unitsPerLot(db, 'DOTUSD', 'B').unitsPerLot, 1)
+  assert.equal(brokerMinLots(db, 'DOTUSD', 'A').minLots, 0.1)
+  assert.equal(brokerMinLots(db, 'DOTUSD', 'B').minLots, 0.01)
+  assert.equal(brokerLotStep(db, 'DOTUSD', 'A').stepLots, 0.1)
+  // the shared map holds the last writer (B), as it always did, for callers that name no account
+  assert.equal(unitsPerLot(db, 'DOTUSD').unitsPerLot, 1)
+  // an account with no record of its own falls back to the shared map
+  assert.equal(unitsPerLot(db, 'DOTUSD', 'C').unitsPerLot, 1)
+  assert.equal(lotRecordFor(db, 'DOTUSD', 'C'), null, 'no own record is reported as none, never as the shared one')
+  assert.deepEqual({ ...lotRecordFor(db, 'DOTUSD', 'A'), at: null }, { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000, accountId: 'A', at: null })
+  // a lot-size-only write for A keeps A's own minimum and does not borrow B's
+  rememberVolumeMeta(db, 'DOTUSD', { lotSize: 10_000, accountId: 'A' })
+  assert.equal(brokerMinLots(db, 'DOTUSD', 'A').minLots, 0.1)
+  const stored = JSON.parse(getState(db, LOT_SIZE_BY_ACCOUNT_KEY))
+  assert.deepEqual(Object.keys(stored).sort(), ['A', 'B'])
+})
+
+test('reconcileLotRecord: records this account\'s answer and names a gate that sized on a different lot', () => {
+  const db = fresh()
+  // the gate sized on the shared record, written by B (1 unit a lot)
+  const checks = { units_per_lot: { value: 1, source: 'broker' } }
+  const reason = reconcileLotRecord(db, 'DOTUSD', 'A', { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000 }, checks)
+  assert.match(reason, /^lot_record_mismatch: the gate sized DOTUSD at 1 units\/lot \(broker\); the broker says 100 for account A/)
+  assert.equal(unitsPerLot(db, 'DOTUSD', 'A').unitsPerLot, 100, 'the record is corrected for the next pass')
+  // the same lot: no refusal
+  assert.equal(reconcileLotRecord(db, 'DOTUSD', 'A', { lotSize: 10_000 }, { units_per_lot: { value: 100, source: 'broker' } }), null)
+  // a table-sized gate with a matching broker lot passes; a mismatching one is refused
+  assert.equal(reconcileLotRecord(db, 'EURUSD', 'A', { lotSize: 10_000_000 }, { units_per_lot: { value: 100_000, source: 'table' } }), null)
+  assert.match(reconcileLotRecord(db, 'BCHUSD', 'A', { lotSize: 100 }, { units_per_lot: { value: 100_000, source: 'table' } }), /sized BCHUSD at 100000 units\/lot \(table\); the broker says 1 for account A/)
+  // nothing to compare: no refusal, still recorded
+  assert.equal(reconcileLotRecord(db, 'XLMUSD', 'A', { lotSize: 10_000 }, {}), null)
+  assert.equal(unitsPerLot(db, 'XLMUSD', 'A').unitsPerLot, 100)
 })

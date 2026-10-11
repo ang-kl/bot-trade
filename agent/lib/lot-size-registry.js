@@ -47,6 +47,14 @@ import { contractSize } from './contracts.js'
 
 /** symbol → the broker's declared lotSize, in cTrader protocol units. */
 export const LOT_SIZE_KEY = 'broker_lot_size_json'
+// Claude · № 13,175 11-Oct (ordered № 13,174 "Fix it in this PR"; Codex P1
+// on #1318; claude-builder). EACH ACCOUNT'S OWN BROKER ANSWER, by account
+// then symbol. The symbol-keyed map above is shared by every account: the
+// daily fundable build, the loop and the manual route each write the answer
+// of whichever account they served, and the gate for another account then
+// sized on it. A reader that names an account reads that account's own
+// record first; the shared map is the fallback, as it was before.
+export const LOT_SIZE_BY_ACCOUNT_KEY = 'broker_lot_size_by_account_json'
 
 /**
  * cTrader expresses volume in CENTS of units, so protocol lotSize is
@@ -65,6 +73,28 @@ function readMap(db) {
 }
 
 const posNum = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null }
+
+const cleanAccount = (id) => (id != null && String(id).trim() !== '' ? String(id).trim() : null)
+
+function readAccountMap(db) {
+  try {
+    const raw = getState(db, LOT_SIZE_BY_ACCOUNT_KEY)
+    const obj = raw ? JSON.parse(raw) : {}
+    return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {}
+  } catch { return {} }
+}
+
+/** This account's own record for `symbol`, or null. Never another account's. */
+function ownEntry(db, symbol, accountId) {
+  const a = cleanAccount(accountId)
+  if (!a) return null
+  const byAcct = readAccountMap(db)[a]
+  if (!byAcct || typeof byAcct !== 'object') return null
+  const e = entryOf(byAcct, clean(symbol))
+  if (!e) return null
+  const at = typeof byAcct[clean(symbol)]?.at === 'string' ? byAcct[clean(symbol)].at : null
+  return { ...e, at }
+}
 
 /**
  * Normalise one stored entry.
@@ -103,15 +133,20 @@ function entryOf(map, s) {
  *
  * @returns {{lotSize:number, minVolume:number|null, stepVolume:number|null, accountId:string|null, at:string|null}|null}
  */
-export function lotRecordFor(db, symbol) {
+export function lotRecordFor(db, symbol, accountId = null) {
   const s = clean(symbol)
+  // № 13,175: naming an account reads that account's own record only.
+  if (accountId != null) {
+    const own = ownEntry(db, s, accountId)
+    return own ? { lotSize: own.lotSize, minVolume: own.minVolume, stepVolume: own.stepVolume, accountId: cleanAccount(accountId), at: own.at } : null
+  }
   const map = readMap(db)
   const e = entryOf(map, s)
   if (!e) return null
   const raw = map[s]
-  const accountId = raw && typeof raw === 'object' && raw.accountId != null && String(raw.accountId).trim() !== '' ? String(raw.accountId) : null
+  const writer = raw && typeof raw === 'object' && raw.accountId != null && String(raw.accountId).trim() !== '' ? String(raw.accountId) : null
   const at = raw && typeof raw === 'object' && typeof raw.at === 'string' ? raw.at : null
-  return { ...e, accountId, at }
+  return { ...e, accountId: writer, at }
 }
 
 /**
@@ -159,6 +194,7 @@ export function rememberVolumeMeta(db, symbol, meta = {}) {
   // it. Stamped alongside the values so a reader can tell the selected
   // account's own record from another account's (lotRecordFor).
   const accountId = meta?.accountId != null && String(meta.accountId).trim() !== '' ? String(meta.accountId).trim() : null
+  const ownChanged = accountId ? rememberOwn(db, s, accountId, { lotSize, minVolume, stepVolume }) : false
   try {
     const map = readMap(db)
     const prev = entryOf(map, s)
@@ -166,7 +202,7 @@ export function rememberVolumeMeta(db, symbol, meta = {}) {
     // A lot size is required to hold an entry at all: a minimum expressed in
     // protocol units means nothing without the divisor that turns it into lots.
     const nextLot = lotSize ?? prev?.lotSize ?? null
-    if (!nextLot) return false
+    if (!nextLot) return ownChanged
     // A field the writer did not supply is kept from the record on file —
     // unless the writer names a DIFFERENT account than the record's (Codex
     // P2 on #1318, round 3): a minimum inherited across accounts would stamp
@@ -188,10 +224,26 @@ export function rememberVolumeMeta(db, symbol, meta = {}) {
     const nextAccount = accountId ?? (sameValues ? prevAccount : null)
     if (nextAccount) { next.accountId = nextAccount; next.at = new Date().toISOString() }
     if (sameValues && prevAccount === nextAccount) {
-      return false                          // unchanged; skip the write
+      return ownChanged                     // shared map unchanged; skip its write
     }
     map[s] = next
     setState(db, LOT_SIZE_KEY, JSON.stringify(map))
+    return true
+  } catch { return false }
+}
+
+/** № 13,175: write `accountId`'s own record; missing fields inherit only from that same account's record. */
+function rememberOwn(db, s, accountId, { lotSize, minVolume, stepVolume }) {
+  try {
+    const all = readAccountMap(db)
+    const mine = all[accountId] && typeof all[accountId] === 'object' ? all[accountId] : {}
+    const prev = entryOf(mine, s)
+    const nextLot = lotSize ?? prev?.lotSize ?? null
+    if (!nextLot) return false
+    const next = { lotSize: nextLot, minVolume: minVolume ?? prev?.minVolume ?? null, stepVolume: stepVolume ?? prev?.stepVolume ?? null }
+    if (prev && prev.lotSize === next.lotSize && prev.minVolume === next.minVolume && prev.stepVolume === next.stepVolume) return false
+    all[accountId] = { ...mine, [s]: { ...next, at: new Date().toISOString() } }
+    setState(db, LOT_SIZE_BY_ACCOUNT_KEY, JSON.stringify(all))
     return true
   } catch { return false }
 }
@@ -206,8 +258,9 @@ export function rememberVolumeMeta(db, symbol, meta = {}) {
  *
  * @returns {{minLots:number|null, source:'broker'|'unknown', minVolume:number|null, lotSize:number|null}}
  */
-export function brokerMinLots(db, symbol) {
-  const e = entryOf(readMap(db), clean(symbol))
+export function brokerMinLots(db, symbol, accountId = null) {
+  // № 13,175: the named account's own record first, the shared map after.
+  const e = ownEntry(db, symbol, accountId) ?? entryOf(readMap(db), clean(symbol))
   if (!e || !e.minVolume) {
     return { minLots: null, source: 'unknown', minVolume: null, lotSize: e?.lotSize ?? null }
   }
@@ -227,8 +280,8 @@ export function brokerMinLots(db, symbol) {
  *
  * @returns {{stepLots:number|null, source:'broker'|'unknown', stepVolume:number|null, lotSize:number|null}}
  */
-export function brokerLotStep(db, symbol) {
-  const e = entryOf(readMap(db), clean(symbol))
+export function brokerLotStep(db, symbol, accountId = null) {
+  const e = ownEntry(db, symbol, accountId) ?? entryOf(readMap(db), clean(symbol))
   if (!e || !e.stepVolume) {
     return { stepLots: null, source: 'unknown', stepVolume: null, lotSize: e?.lotSize ?? null }
   }
@@ -244,9 +297,9 @@ export function brokerLotStep(db, symbol) {
  *   source 'table'  — contractSize(), which is a guess for anything unlisted
  *                     and returns 1 by default
  */
-export function unitsPerLot(db, symbol) {
+export function unitsPerLot(db, symbol, accountId = null) {
   const s = clean(symbol)
-  const lotSize = entryOf(readMap(db), s)?.lotSize ?? null
+  const lotSize = ownEntry(db, s, accountId)?.lotSize ?? entryOf(readMap(db), s)?.lotSize ?? null
   if (lotSize) {
     return { unitsPerLot: lotSize / CENTS_PER_UNIT, source: 'broker', lotSize }
   }
@@ -350,4 +403,28 @@ export function withBrokerLotSizes(db, symMeta) {
     if (lotSize) meta.lotSize = lotSize
   }
   return symMeta
+}
+
+/**
+ * Claude · № 13,175 11-Oct (Codex P1 on #1318; claude-builder). The gate
+ * sized this proposal before its caller fetched the broker's answer for the
+ * account it is about to trade (loop.js, pending-orders.js,
+ * closed-market-limits.js fetch after the gate). Record that answer as the
+ * account's own, and say whether the gate sized on a different lot: a gate
+ * that read another account's smaller contract would send a materially
+ * oversized order in this account's units. The caller refuses on a
+ * mismatch; the next pass reads the corrected record.
+ *
+ * @param {object} checks  the gate's checks (units_per_lot: {value, source})
+ * @param {object} meta    getVolumeMeta's answer for THIS account
+ * @returns {string|null}  a refusal reason, or null when the gate sized on this lot
+ */
+export function reconcileLotRecord(db, symbol, accountId, meta, checks) {
+  try { rememberVolumeMeta(db, symbol, { ...meta, accountId }) } catch { /* bookkeeping never blocks */ }
+  const live = posNum(meta?.lotSize)
+  const sizedOn = posNum(checks?.units_per_lot?.value)
+  if (!live || !sizedOn) return null
+  const liveUnits = live / CENTS_PER_UNIT
+  if (Math.abs(liveUnits - sizedOn) <= 1e-9 * Math.max(liveUnits, sizedOn)) return null
+  return `lot_record_mismatch: the gate sized ${clean(symbol)} at ${sizedOn} units/lot (${checks.units_per_lot.source}); the broker says ${liveUnits} for account ${accountId ?? '(selected)'} — record corrected, re-gated next pass`
 }

@@ -112,8 +112,10 @@ test('both write sites feed the registry the FULL broker meta, not just the lot 
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
   const fundable = strip(readFileSync(new URL('./fundable-universe.js', import.meta.url), 'utf8'))
 
-  assert.match(loop, /rememberVolumeMeta\(db, symbol, meta\)/,
-    'the order path records the whole declaration, minimum included')
+  // № 13,175 (Codex P1 on #1318): the loop records THIS account's answer
+  // through reconcileLotRecord, which stores the whole declaration
+  assert.match(loop, /reconcileLotRecord\(db, symbol, accountId, meta, riskResult\.checks\)/,
+    'the order path records the whole declaration, minimum included, as this account\'s own')
   assert.doesNotMatch(loop, /rememberLotSize\(db, symbol, meta\.lotSize\)/,
     'and no longer records the lot size alone, which is what discarded the minimum')
   // № 13,172 (Codex P2 on #1318): the build stamps the record with the
