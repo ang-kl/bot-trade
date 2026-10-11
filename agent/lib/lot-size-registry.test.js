@@ -277,7 +277,9 @@ test('per-account records: a named account reads its own record first, never ano
   assert.equal(unitsPerLot(db, 'DOTUSD').unitsPerLot, 1)
   // an account with no record of its own never reads another account's
   // stamped lot (Codex P2, round 8): it falls to the table until its own is fetched
-  assert.deepEqual(unitsPerLot(db, 'DOTUSD', 'C'), { unitsPerLot: contractSize('DOTUSD') || 1, source: 'table', lotSize: null })
+  // round 14: and not the table either — this account's lot is unknown
+  assert.deepEqual(unitsPerLot(db, 'DOTUSD', 'C'), { unitsPerLot: null, source: 'foreign_unknown', lotSize: null })
+  assert.equal(unitsPerLot(db, 'NEVERSEEN', 'C').source, 'table', 'nothing on record at all: the table, as before')
   assert.equal(lotRecordFor(db, 'DOTUSD', 'C'), null, 'no own record is reported as none, never as the shared one')
   assert.deepEqual({ ...lotRecordFor(db, 'DOTUSD', 'A'), at: null }, { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000, accountId: 'A', at: null })
   // a lot-size-only write for A keeps A's own minimum and does not borrow B's
@@ -316,7 +318,7 @@ test('a named account with no record of its own does not inherit another account
   assert.equal(brokerLotStep(db, 'DOTUSD', 'A').stepLots, null)
   assert.equal(brokerMinLots(db, 'DOTUSD', 'B').minLots, 0.1, 'B reads its own')
   assert.equal(brokerMinLots(db, 'DOTUSD').minLots, 0.1, 'a caller naming no account reads the shared map as before')
-  assert.equal(unitsPerLot(db, 'DOTUSD', 'A').source, 'table', 'nor another account\'s lot SIZE (round 8); the paths fetch their own before the gate')
+  assert.equal(unitsPerLot(db, 'DOTUSD', 'A').source, 'foreign_unknown', 'nor another account\'s lot SIZE (rounds 8, 14); the paths fetch their own before the gate')
   // an unstamped legacy entry (provenance unknown) still applies to a named account
   setState(db, LOT_SIZE_KEY, JSON.stringify({ XLMUSD: { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000 } }))
   assert.equal(brokerMinLots(db, 'XLMUSD', 'A').minLots, 0.1)
@@ -334,7 +336,7 @@ test('ensureOwnLotRecord fetches this account\'s record once, persists it, and l
   rememberVolumeMeta(db, 'BTCUSD', { lotSize: 10_000_000, minVolume: 100_000, accountId: 'B' }) // B: 100,000 units a lot
   let calls = 0
   const fetchA = async () => { calls++; return { lotSize: 100, minVolume: 1, stepVolume: 1 } }
-  assert.equal(unitsPerLot(db, 'BTCUSD', 'A').source, 'table', 'before: no own record, B\'s is not used')
+  assert.equal(unitsPerLot(db, 'BTCUSD', 'A').source, 'foreign_unknown', 'before: no own record, B\'s is not used and the lot is unknown')
   assert.deepEqual(await ensureOwnLotRecord(db, 'BTCUSD', 'A', fetchA), { fetched: true, reason: null })
   assert.equal(unitsPerLot(db, 'BTCUSD', 'A').unitsPerLot, 1, 'A sizes in its own 1 unit a lot')
   assert.equal(brokerMinLots(db, 'BTCUSD', 'A').minLots, 0.01)

@@ -112,8 +112,16 @@ test('the gate does not refuse an account on another account\'s higher minimum',
   // B (written last, the only record): 100 DOT a lot, min 1 lot
   rememberVolumeMeta(db, 'DOTUSD', { lotSize: 10_000, minVolume: 10_000, stepVolume: 1_000, accountId: '43097342' })
   const r = evaluateTrade(db, pad('DOTUSD', 1.2, 1.05, 1.65))
-  assert.equal(r.approved, true, `veto: ${r.veto_reason}`)
+  // round 14: with only another account's record on file this account's lot
+  // is unknown — refused by name, never on that account's minimum or the table
+  assert.equal(r.approved, false)
+  assert.match(r.veto_reason, /^lot_record_unknown: DOTUSD — only another account's broker lot is on record for account 47790949/)
   assert.equal(r.checks.broker_min_lots, undefined, 'no minimum claimed for this account')
+  // once this account's own record is on file (the pre-gate fetch), it sizes
+  rememberVolumeMeta(db, 'DOTUSD', { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000, accountId: ACCT }, { shared: false })
+  const own = evaluateTrade(db, pad('DOTUSD', 1.2, 1.05, 1.65))
+  assert.equal(own.approved, true, `veto: ${own.veto_reason}`)
+  assert.equal(own.checks.broker_min_lots, 0.1, 'its own minimum, not the other account\'s 1 lot')
 })
 
 // The post-gate reconciliation must stay wired where the broker's answer is
@@ -146,4 +154,23 @@ test('every path that fetches the lot record after the gate reconciles it and re
   const riskSrc = read('../services/risk.js')
   assert.match(riskSrc, /unitsPerLotFromRegistry\(db, proposal\.symbol, acct\)/)
   assert.match(riskSrc, /brokerMinLots\(db, proposal\.symbol, acct\)/)
+})
+
+// Codex P1 on #1318, round 14 (Claude · № 13,175): a resting order whose lot
+// is unknown for its account (only another account's record on file) is
+// counted UNPRICED by the margin pool, never priced on the contract table.
+test('margin: a resting order with only another account\'s lot on record is unpriced, not priced on the table', async () => {
+  const { portfolioMarginStatus, DEFAULT_RISK_CONFIG } = await import('../services/risk.js')
+  const db = fresh()
+  db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, account_id)
+              VALUES ('BCHUSD', '1h', '9001', 1, 405, 364.5, 526.5, 0.01, '2026-10-11T00:00:00Z', '2026-10-12T00:00:00Z', 'working', 'test', ?)`).run(ACCT)
+  rememberVolumeMeta(db, 'BCHUSD', { lotSize: 100, accountId: '43097342' }) // another account's 1 BCH a lot, shared slot
+  const unknown = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { accountId: ACCT, balance: 42854.57, leverage: 25 })
+  assert.deepEqual(unknown.restingUnpriced, ['9001'], 'unpriced, so it is not free capacity and not a 100,000-unit guess')
+  assert.equal(unknown.headroom, 0)
+  // with this account's own record the order is priced
+  rememberVolumeMeta(db, 'BCHUSD', { lotSize: 100, accountId: ACCT }, { shared: false })
+  const own = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { accountId: ACCT, balance: 42854.57, leverage: 25 })
+  assert.deepEqual(own.restingUnpriced, [])
+  assert.ok(own.restingMargin > 0 && own.restingMargin < 10, `0.01 BCH at 405 / 25 ≈ $0.16, got ${own.restingMargin}`)
 })

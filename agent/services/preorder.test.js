@@ -268,8 +268,10 @@ test('manual: the dry run names the lot record on file, whose it is, and whether
   // another account's record: on file, read by the gate, but not this account's provenance
   rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000, accountId: B })
   const theirs = await check()
-  assert.equal(theirs.lotRecord.stored, 'table', 'another account\'s lot is not this account\'s either (Codex P2, round 8)')
-  assert.equal(theirs.lotRecord.unitsPerLot, 100_000)
+  // rounds 8 and 14: another account's lot is not this account's, and not the table either — unknown
+  assert.equal(theirs.lotRecord.stored, 'foreign_unknown')
+  assert.equal(theirs.lotRecord.unitsPerLot, null)
+  assert.match(theirs.gate.vetoReason, /^lot_record_unknown: EURUSD/, 'the gate refuses by name rather than sizing on the table')
   assert.equal(theirs.lotRecord.brokerMinLots, null, 'another account\'s minimum is never this account\'s (Codex P2, round 7)')
   assert.equal(theirs.lotRecord.recordAccount, B)
   assert.equal(theirs.lotRecord.sizedAsRoute, false, 'another account wrote it')

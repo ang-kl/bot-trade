@@ -336,6 +336,14 @@ export function unitsPerLot(db, symbol, accountId = null) {
   if (lotSize) {
     return { unitsPerLot: lotSize / CENTS_PER_UNIT, source: 'broker', lotSize }
   }
+  // Codex P1 on #1318, round 14: when the only record is a shared lot another
+  // account stamped, this account's lot is UNKNOWN — not the contract table,
+  // which would price a 1-unit BCHUSD lot as 100,000 units. Consumers treat
+  // a null unitsPerLot as unpriced (the gate refuses by name, margin counts
+  // it unpriced, history leaves the volume absent).
+  if (cleanAccount(accountId) && entryOf(readMap(db), s)) {
+    return { unitsPerLot: null, source: 'foreign_unknown', lotSize: null }
+  }
   return { unitsPerLot: contractSize(s) || 1, source: 'table', lotSize: null }
 }
 
