@@ -1614,6 +1614,49 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // Claude · № 13,095 11-Oct (ordered № 13,093; claude-builder), plan step 8:
+  // the bar-form research job. Research only — the owner's word starts it
+  // (a small run first); 409 research_running while any research job runs;
+  // the result lands in bar_form_runs/bar_form_results at the end. Abort
+  // stops the worker between segments and records the partial run.
+  router.post('/bar-form-research', async (req, res) => {
+    try {
+      const { startBarFormResearch } = await import('../services/bar-form-research.js')
+      const { actorFromRequest } = await import('../lib/request-actor.js')
+      const who = actorFromRequest(req)
+      if (!who.ok) return res.status(who.status).json(who.body)
+      const { sideAccounts } = await import('../services/tick-shadow.js')
+      const { symbolNameResolver } = await import('../services/tick-shadow-accounts.js')
+      // The side's first account's symbol map names the recorded ids (the
+      // same resolution the tick research uses); read-only.
+      const resolveNames = (sideName) => { const accountId = sideAccounts(db, sideName)[0] ?? null; return { accountId, nameOf: symbolNameResolver(db, accountId) } }
+      // Plan step 9: the broker cross-check reads M1 trendbars with THAT
+      // account's credentials (the same fetch the postmortems use); read-only.
+      const fetchBrokerBars = async (accountId, symbolId, count, endMs) => {
+        const creds = credsForAccountId(db, accountId, { producerId: 'route_bar_form_research' })
+        if (!creds.ready) throw new Error('cTrader credentials not configured for the cross-check account')
+        const byTf = await wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m'], Math.min(1500, count), 30_000, endMs || 0)
+        return byTf['1m'] || []
+      }
+      const r = await startBarFormResearch(db, req.body && typeof req.body === 'object' ? req.body : {}, { actor: who.actor, resolveNames, fetchBrokerBars })
+      if (r.status === 202) console.log(`[actions] bar-form-research: run ${r.body.runId} started over ${r.body.segments} segment(s), forms ${r.body.forms.join(',')}`)
+      else if (r.status !== 200) console.log(`[actions] bar-form-research REFUSED ${r.body.error}: ${r.body.where || ''}`)
+      res.status(r.status).json(r.body)
+    } catch (err) {
+      console.error('[actions/bar-form-research] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+  router.post('/bar-form-research/abort', async (req, res) => {
+    try {
+      const { abortBarFormResearch } = await import('../services/bar-form-research.js')
+      const r = abortBarFormResearch(req.body?.runId ? String(req.body.runId) : null)
+      res.status(r.status).json(r.body)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // P3a: the symbol NAMES the recorder should carry (replace-all), resolved
   // per side to ids by the guard sync. Empty list = only what the feed
   // already carries (VPO symbols, the tick trail's open positions).

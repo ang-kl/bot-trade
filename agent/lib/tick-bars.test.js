@@ -97,6 +97,9 @@ test('tickBars: every n ticks close a bar; t is the first tick; v is speed in ti
   // A silence past the bound marks the bar that follows it.
   const s = tickBars([q(M0, 100000), q(M0 + 1000, 100100), q(M0 + 2_000_000, 100200), q(M0 + 2_001_000, 100300)], { n: 2, maxSilenceMs: 900_000 })
   assert.deepEqual(s.invalid.map(i => i.reason), [INVALID.SILENCE]); assert.equal(s.bars.length, 1)
+  // A gap arriving right AFTER a complete bar (nothing in progress) still breaks the run: a zero-tick boundary marker.
+  const between = tickBars([q(M0, 100000), q(M0 + 1000, 100100), { gapMarker: true }, q(M0 + 5000, 100200), q(M0 + 6000, 100300)], { n: 2 })
+  assert.equal(between.bars.length, 2); assert.deepEqual(between.invalid, [{ t: M0 + 1000, reason: INVALID.GAP, n: 0 }]); assert.deepEqual(between.segments.map(s => s.length), [1, 1])
   assert.throws(() => tickBars([], { n: 0 }), RangeError); assert.throws(() => timeBars([], { barMs: 0 }), RangeError)
 })
 

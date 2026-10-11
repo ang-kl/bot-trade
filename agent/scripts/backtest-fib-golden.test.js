@@ -77,4 +77,12 @@ test('tpR replaces the strategy target with a fixed-R one; computeWindow bounds 
   // A window wider than the whole series is the default history, so the result is the golden's.
   const wide = runBacktest(B, { ...OPTS, strategy: 'fib_confluence', computeWindow: 100_000 })
   assert.deepEqual(wide.stats, GOLDEN.cases.fib_confluence.stats)
+  assert.deepEqual(wide.research, { computeWindow: 100_000, tpR: null }, 'the descriptor rides whenever an option is on, rStats or not')
+  assert.equal(runBacktest(B, { ...OPTS, strategy: 'fib_confluence', tpR: 1 }).research?.tpR, 1)
+  // With the vol gate on, the stop-widening counter is what it was before the fixed-R option existed (two calls per widened entry),
+  // and a confirmation entry takes the fixed target too.
+  const gateOff = runBacktest(B, { ...OPTS, strategy: 'fib_confluence', volGate: true })
+  const gateTp = runBacktest(B, { ...OPTS, strategy: 'fib_confluence', volGate: true, tpR: 1, rStats: true })
+  assert.equal(gateTp.volGate.stopsWidened, gateOff.volGate.stopsWidened)
+  for (const t of gateTp.trades.filter(t => t.reason === 'tp')) assert.equal(t.r, 1)
 })

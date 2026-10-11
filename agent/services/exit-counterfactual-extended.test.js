@@ -9,7 +9,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
-import { exitCounterfactualExtended, buildRules, managedApproxRule, hybridTriggerR, EXTENDED_OPTIONS, PRESETS, GROUP_KEYS } from './exit-counterfactual-extended.js'
+import { exitCounterfactualExtended, buildRules, managedApproxRule, hybridTriggerR, gateTagsFor, EXTENDED_OPTIONS, PRESETS, GROUP_KEYS } from './exit-counterfactual-extended.js'
 import { loadManagedExit } from './managed-exit.js'
 import { setState } from '../db.js'
 import { loadResearchConfig } from '../lib/research-config.js'
@@ -46,7 +46,7 @@ const rule = (r, name) => r.rules.find(x => x.rule === name)
 test('exports: the route reads its option names, presets and group keys from here', () => {
   assert.ok(EXTENDED_OPTIONS.includes('stop') && EXTENDED_OPTIONS.includes('trailR'))
   assert.deepEqual([...PRESETS], ['meanrev', 'breakout', 'momentum', 'all'])
-  assert.deepEqual([...GROUP_KEYS], ['strategy', 'timeframe', 'regime', 'family'])
+  assert.deepEqual([...GROUP_KEYS], ['strategy', 'timeframe', 'regime', 'family', 'gateTag'])
 })
 
 test('stop=recorded replays against sl_price, stop=initial against broker_sl_initial — the same bars give different R and a different actual source', () => {
@@ -165,9 +165,12 @@ test('follow-through is a bracket: under the recorded stop the peak before the s
   assert.equal(rec.followThrough.measurable, 2); assert.equal(rec.followThrough.truncated, 0)
   assert.deepEqual(rec.followThrough.levels['+3R'], { reachedLow: 2, reachedHigh: 2, shareLowPct: 100, shareHighPct: 100 })
   const ini = exitCounterfactualExtended(db, { stop: 'initial', followThrough: true, followThroughR: [1, 2, 3], minSample: 1 })
-  // Initial stop never hit → truncated: "reached for sure" is 0, "possibly reached" is all.
+  // Initial stop never hit → truncated. The peak before the end (102.4 → 2.4R under risk 1) is a CERTAIN reach of +1R and +2R
+  // (it came before any stop); +3R is only "possibly later", so its low bound is 0 and its high bound is all.
   assert.equal(ini.followThrough.truncated, 2)
-  assert.deepEqual(ini.followThrough.levels['+1R'], { reachedLow: 0, reachedHigh: 2, shareLowPct: 0, shareHighPct: 100 })
+  assert.deepEqual(ini.followThrough.levels['+1R'], { reachedLow: 2, reachedHigh: 2, shareLowPct: 100, shareHighPct: 100 })
+  assert.deepEqual(ini.followThrough.levels['+2R'], { reachedLow: 2, reachedHigh: 2, shareLowPct: 100, shareHighPct: 100 })
+  assert.deepEqual(ini.followThrough.levels['+3R'], { reachedLow: 0, reachedHigh: 2, shareLowPct: 0, shareHighPct: 100 })
   assert.deepEqual(ini.sweeps.followThroughR, [1, 2, 3])
 })
 
@@ -176,4 +179,28 @@ test('below the sample floor the verdict is INSUFFICIENT, with the same populati
   const r = exitCounterfactualExtended(db, { stop: 'initial' })
   assert.equal(r.verdict, 'INSUFFICIENT'); assert.equal(r.considered, 5); assert.equal(r.eligible, 2); assert.equal(r.skipped.not_clean_origin, 3)
   assert.match(r.note, /Not replayable exactly/)
+})
+
+test('B5c gateTag: the gate\'s pure verdict on the regime reading nearest before entry; unknown without a reading; groupBy=gateTag splits the rules', () => {
+  const db = fresh()
+  seed(db, { n: 2, strategy: 'rsi_meanrev' })          // long fades
+  seed(db, { n: 1, strategy: 'donchian_breakout' })     // long breakout
+  // A trending-short reading 10 minutes before entry: a long fade is blocked (fade-vs-trend), a long breakout against the trend too (trend-vs-trend).
+  db.prepare("INSERT INTO regimes(symbol, regime, trend_direction, computed_at) VALUES ('JPN225', 'trending', 'short', datetime(?, 'unixepoch'))").run(Math.floor((t0 - 10 * MIN) / 1000))
+  const tags = gateTagsFor(db, db.prepare('SELECT id, symbol, side, opened_at, strategy AS strategy_attr FROM trades').all())
+  assert.deepEqual([...tags.values()].map(t => t.tag), ['would_block', 'would_block', 'would_block'])
+  assert.match(tags.get(1).reason, /fade-vs-trend/); assert.match(tags.get(3).reason, /trend-vs-trend/)
+  const r = exitCounterfactualExtended(db, { stop: 'initial', groupBy: 'gateTag', minSample: 1 })
+  assert.deepEqual({ would_block: r.gateTag.would_block, would_pass: r.gateTag.would_pass, unknown: r.gateTag.unknown }, { would_block: 3, would_pass: 0, unknown: 0 })
+  assert.deepEqual(Object.keys(r.groups.values), ['would_block'])
+  // A SHORT fade in the same short trend fades WITH the trend: the gate passes it (the bias is read from the side).
+  db.prepare("UPDATE trades SET side = 'SELL' WHERE id = 2").run()
+  assert.equal(gateTagsFor(db, db.prepare('SELECT id, symbol, side, opened_at, strategy AS strategy_attr FROM trades WHERE id = 2').all()).get(2).tag, 'would_pass')
+  db.prepare("UPDATE trades SET side = 'long' WHERE id = 2").run()
+  // A ranging reading instead: the fade passes, the breakout is QUIET-free too → would_pass; a reading older than 4h is no reading.
+  db.prepare("UPDATE regimes SET regime = 'ranging', trend_direction = NULL").run()
+  assert.ok([...gateTagsFor(db, db.prepare('SELECT id, symbol, side, opened_at, strategy AS strategy_attr FROM trades').all()).values()].every(t => t.tag === 'would_pass'))
+  db.prepare("UPDATE regimes SET computed_at = datetime(?, 'unixepoch')").run(Math.floor((t0 - 5 * 3_600_000) / 1000))
+  const stale = exitCounterfactualExtended(db, { stop: 'initial', minSample: 1 })
+  assert.equal(stale.gateTag.unknown, 3)
 })

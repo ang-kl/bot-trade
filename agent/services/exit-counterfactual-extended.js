@@ -35,10 +35,15 @@ import { loadManagedExit } from './managed-exit.js'
 import { familyOf } from './strategies.js'
 import { DEFAULT_ATR_MULT, DEFAULT_ATR_PERIOD } from './mae-chandelier-observe.js'
 import { planCappedHybrid } from './capped-hybrid-policy.js'
+// Claude · № 13,096 11-Oct (plan step 9, B5c): the regime gate's PURE verdict,
+// applied to the regime recorded nearest BEFORE each entry. Read-only reach
+// into a protected module (agent/research-isolation.test.js names it).
+import { regimeBlocks } from './regime-gate.js'
 
 export const EXTENDED_OPTIONS = Object.freeze(['stop', 'tpR', 'design', 'family', 'preset', 'groupBy', 'followThrough', 'trailR'])
 export const PRESETS = Object.freeze(['meanrev', 'breakout', 'momentum', 'all'])
-export const GROUP_KEYS = Object.freeze(['strategy', 'timeframe', 'regime', 'family'])
+export const GROUP_KEYS = Object.freeze(['strategy', 'timeframe', 'regime', 'family', 'gateTag'])
+export const GATE_TAG_MAX_AGE_MS = 4 * 3_600_000 // DEFAULT_MAX_REGIME_AGE_MIN of the gate (240 min), as a bound on how old a reading may be
 export const MAX_GROUP_VALUES = 24
 
 const ms = s => { if (s == null) return null; const t = Date.parse(s); return Number.isFinite(t) ? t : null }
@@ -120,6 +125,29 @@ function designTargets(db, rows) {
 }
 
 /**
+ * B5c: for every eligible row, what the regime gate WOULD have said at entry,
+ * from the regimes table reading nearest before the entry (within the gate's
+ * own age bound). 'unknown' when no reading is near enough or the strategy
+ * has no gate kind. Pure verdict (regimeBlocks), no gate state touched.
+ */
+export function gateTagsFor(db, rows) {
+  const symbols = [...new Set(rows.map(r => r.symbol).filter(Boolean))]
+  const out = new Map()
+  if (!symbols.length) return out
+  const sel = db.prepare(`SELECT regime, trend_direction, computed_at FROM regimes WHERE symbol = ? AND computed_at <= datetime(?, 'unixepoch') AND computed_at >= datetime(?, 'unixepoch') ORDER BY computed_at DESC LIMIT 1`)
+  for (const r of rows) {
+    const at = ms(r.opened_at)
+    if (at == null || !r.symbol) { out.set(r.id, { tag: 'unknown', reason: 'no entry time or symbol' }); continue }
+    const row = sel.get(r.symbol, Math.floor(at / 1000), Math.floor((at - GATE_TAG_MAX_AGE_MS) / 1000))
+    if (!row) { out.set(r.id, { tag: 'unknown', reason: 'no regime reading within the gate\'s age bound before entry' }); continue }
+    const bias = /^(sell|short)$/i.test(String(r.side || '')) ? 'short' : 'long'
+    const v = regimeBlocks(r.strategy_attr, bias, row)
+    out.set(r.id, { tag: v.block ? 'would_block' : 'would_pass', reason: v.reason ?? null, regime: row.regime, trendDirection: row.trend_direction ?? null })
+  }
+  return out
+}
+
+/**
  * The extended report. Options are the route's validated values; `now` only
  * for tests. Returns a shape that EXTENDS the legacy report's keys.
  */
@@ -138,6 +166,9 @@ export function exitCounterfactualExtended(db, {
   if (family) eligible = eligible.filter(({ row }) => familyOf(row.strategy_attr) === family)
   const rows = eligible.map(e => e.row)
   const dz = design ? designTargets(db, rows) : null
+  const tags = gateTagsFor(db, rows)
+  const gateTag = { would_block: 0, would_pass: 0, unknown: 0 }
+  for (const r of rows) gateTag[tags.get(r.id)?.tag ?? 'unknown']++
   const rules = buildRules({ cfg, policy, preset, tpR: tpR ? cfg.tpR : [], trailR: trailR ? cfg.trailR : [], design, family })
 
   const stopOf = row => (stop === 'initial' ? (num(row.broker_sl_initial) ?? num(row.sl_price)) : num(row.sl_price))
@@ -169,8 +200,13 @@ export function exitCounterfactualExtended(db, {
     const ok = ex.filter(x => x.ok)
     follow = { n: eligible.length, measurable: ok.length, truncated: ok.filter(x => x.truncated).length, levels: {} }
     for (const k of ks) {
-      const low = ok.filter(x => x.peakRBeforeStopBar >= k && !x.truncated).length // reached for sure (truncated counted as not reached)
-      const high = ok.filter(x => x.peakRInclStopBar >= k || x.truncated).length // stop-bar extreme counted, truncated counted as reached
+      // Codex P1 on #1309 (Claude · № 13,098): a window that ends before the
+      // stop but already touched +kR reached it for certain — the touch came
+      // before any stop. So `low` counts every bar-before-stop peak at or
+      // past k, truncated or not; `high` adds the stop bar's own extreme and
+      // counts a truncated window as possibly reaching later.
+      const low = ok.filter(x => x.peakRBeforeStopBar >= k).length
+      const high = ok.filter(x => x.peakRInclStopBar >= k || x.truncated).length
       follow.levels[`+${k}R`] = { reachedLow: low, reachedHigh: high, shareLowPct: ok.length ? round(low / ok.length * 100, 1) : null, shareHighPct: ok.length ? round(high / ok.length * 100, 1) : null }
     }
   }
@@ -178,7 +214,7 @@ export function exitCounterfactualExtended(db, {
   // Groups: the same rules per group value, bounded.
   let groups = null
   if (groupBy) {
-    const keyOf = row => groupBy === 'strategy' ? (row.strategy_attr || '(none)') : groupBy === 'timeframe' ? (row.label_timeframe || '(none)') : groupBy === 'regime' ? (row.label_regime || '(none)') : (familyOf(row.strategy_attr) || '(none)')
+    const keyOf = row => groupBy === 'strategy' ? (row.strategy_attr || '(none)') : groupBy === 'timeframe' ? (row.label_timeframe || '(none)') : groupBy === 'regime' ? (row.label_regime || '(none)') : groupBy === 'gateTag' ? (tags.get(row.id)?.tag ?? 'unknown') : (familyOf(row.strategy_attr) || '(none)')
     const buckets = new Map()
     for (const e of eligible) { const k = keyOf(e.row); (buckets.get(k) || buckets.set(k, []).get(k)).push(e) }
     const ordered = [...buckets.entries()].sort((a, b) => b[1].length - a[1].length)
@@ -198,6 +234,7 @@ export function exitCounterfactualExtended(db, {
     sweeps: { ...cfg, source: research.source, overridden: sweeps.overridden },
     management: { source: 'loadManagedExit (managed_exit_json over defaults) + mae-chandelier-observe + capped-hybrid-policy', trailR: policy.trailR, takeAtR: policy.takeAtR, takeAtRFamilies: policy.takeAtRFamilies, takeFractionAtR: policy.takeFractionAtR, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD }, hybridTriggerR: hybridTriggerR() },
     design: dz ? dz.coverage : null,
+    gateTag: { ...gateTag, basis: 'regimeBlocks(strategy, bias, regime reading nearest before entry within 4h); groupBy=gateTag splits every rule by it' },
     considered: pop.considered, eligible: eligible.length, skipped: pop.skipped,
     actual, rules: perRule, followThrough: follow, groups,
     note: 'Bar replay only. Not replayable exactly: the tick-level Chandelier on the native TrailEngine, broker-side trailing once a stop locks profit, the hybrid tick trigger, partial fill prices. managed_approx approximates the live stack at bar close; compare its figures with `actual` on the same trades before reading any other rule against it. Ambiguous and truncated trades are excluded from every figure and counted beside it; follow-through is a bracket because a bar that hits the stop may also have set the high.',
