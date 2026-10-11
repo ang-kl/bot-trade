@@ -270,7 +270,7 @@ test('manual: the dry run names the lot record on file, whose it is, and whether
   const theirs = await check()
   assert.equal(theirs.lotRecord.stored, 'broker')
   assert.equal(theirs.lotRecord.unitsPerLot, 100_000)
-  assert.equal(theirs.lotRecord.brokerMinLots, 0.01)
+  assert.equal(theirs.lotRecord.brokerMinLots, null, 'another account\'s minimum is never this account\'s (Codex P2, round 7)')
   assert.equal(theirs.lotRecord.recordAccount, B)
   assert.equal(theirs.lotRecord.sizedAsRoute, false, 'another account wrote it')
   assert.match(theirs.lotRecord.note, new RegExp(`written by account ${B}; POST /actions/manual-order refreshes it from account ${A}`))

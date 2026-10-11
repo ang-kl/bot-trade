@@ -84,6 +84,29 @@ function readAccountMap(db) {
   } catch { return {} }
 }
 
+/**
+ * Codex P2 on #1318 (Claude · № 13,175): the shared entry for a MINIMUM or a
+ * STEP when the named account has none of its own — unless another account
+ * stamped it. A minimum from another account that is HIGHER than this
+ * account's refuses at the gate before any post-gate fetch could correct it,
+ * on every retry; one that is lower is caught after the gate (below_min) and
+ * corrected by reconcileLotRecord. So another account's minimum is never
+ * used; an unstamped legacy entry (provenance unknown) still is, as before.
+ * Lot SIZE keeps the plain fallback: a wrong lot is refused after the gate
+ * by reconcileLotRecord, which records this account's answer.
+ */
+function sharedUnlessForeign(db, symbol, accountId) {
+  const map = readMap(db)
+  const s = clean(symbol)
+  const e = entryOf(map, s)
+  if (!e) return null
+  const a = cleanAccount(accountId)
+  if (!a) return e
+  const raw = map[s]
+  const writer = raw && typeof raw === 'object' ? cleanAccount(raw.accountId) : null
+  return writer != null && writer !== a ? null : e
+}
+
 /** This account's own record for `symbol`, or null. Never another account's. */
 function ownEntry(db, symbol, accountId) {
   const a = cleanAccount(accountId)
@@ -259,8 +282,9 @@ function rememberOwn(db, s, accountId, { lotSize, minVolume, stepVolume }) {
  * @returns {{minLots:number|null, source:'broker'|'unknown', minVolume:number|null, lotSize:number|null}}
  */
 export function brokerMinLots(db, symbol, accountId = null) {
-  // № 13,175: the named account's own record first, the shared map after.
-  const e = ownEntry(db, symbol, accountId) ?? entryOf(readMap(db), clean(symbol))
+  // № 13,175: the named account's own record first, the shared map after —
+  // never a shared minimum another account wrote (sharedUnlessForeign).
+  const e = ownEntry(db, symbol, accountId) ?? sharedUnlessForeign(db, symbol, accountId)
   if (!e || !e.minVolume) {
     return { minLots: null, source: 'unknown', minVolume: null, lotSize: e?.lotSize ?? null }
   }
@@ -281,7 +305,7 @@ export function brokerMinLots(db, symbol, accountId = null) {
  * @returns {{stepLots:number|null, source:'broker'|'unknown', stepVolume:number|null, lotSize:number|null}}
  */
 export function brokerLotStep(db, symbol, accountId = null) {
-  const e = ownEntry(db, symbol, accountId) ?? entryOf(readMap(db), clean(symbol))
+  const e = ownEntry(db, symbol, accountId) ?? sharedUnlessForeign(db, symbol, accountId)
   if (!e || !e.stepVolume) {
     return { stepLots: null, source: 'unknown', stepVolume: null, lotSize: e?.lotSize ?? null }
   }

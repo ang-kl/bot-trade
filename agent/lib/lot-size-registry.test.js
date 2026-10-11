@@ -302,3 +302,25 @@ test('reconcileLotRecord: records this account\'s answer and names a gate that s
   assert.equal(reconcileLotRecord(db, 'XLMUSD', 'A', { lotSize: 10_000 }, {}), null)
   assert.equal(unitsPerLot(db, 'XLMUSD', 'A').unitsPerLot, 100)
 })
+
+// Codex P2 on #1318, round 7: a HIGHER minimum written by another account
+// would refuse this account at the gate on every retry, before any post-gate
+// fetch could correct it. Another account's shared minimum is never used.
+test('a named account with no record of its own does not inherit another account\'s minimum or step; unstamped legacy entries still apply', () => {
+  const db = fresh()
+  rememberVolumeMeta(db, 'DOTUSD', { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000, accountId: 'B' }) // B: min 0.1
+  const a = brokerMinLots(db, 'DOTUSD', 'A')
+  assert.equal(a.minLots, null)
+  assert.equal(a.source, 'unknown', 'A falls back to the configured assumption; a too-low guess is caught after the gate')
+  assert.equal(brokerLotStep(db, 'DOTUSD', 'A').stepLots, null)
+  assert.equal(brokerMinLots(db, 'DOTUSD', 'B').minLots, 0.1, 'B reads its own')
+  assert.equal(brokerMinLots(db, 'DOTUSD').minLots, 0.1, 'a caller naming no account reads the shared map as before')
+  assert.equal(unitsPerLot(db, 'DOTUSD', 'A').unitsPerLot, 100, 'the lot SIZE keeps the shared fallback; a mismatch is refused after the gate')
+  // an unstamped legacy entry (provenance unknown) still applies to a named account
+  setState(db, LOT_SIZE_KEY, JSON.stringify({ XLMUSD: { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000 } }))
+  assert.equal(brokerMinLots(db, 'XLMUSD', 'A').minLots, 0.1)
+  // a shared entry stamped by the SAME account applies
+  setState(db, LOT_SIZE_BY_ACCOUNT_KEY, '{}')
+  setState(db, LOT_SIZE_KEY, JSON.stringify({ UNIUSD: { lotSize: 10_000, minVolume: 1_000, stepVolume: 1_000, accountId: 'A' } }))
+  assert.equal(brokerMinLots(db, 'UNIUSD', 'A').minLots, 0.1)
+})

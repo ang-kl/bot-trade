@@ -105,6 +105,17 @@ test('the gate sizes each account on its own lot record, not on the last account
   assert.equal(theirs.checks.broker_min_lots, 0.01)
 })
 
+// Codex P2 on #1318, round 7: the gate for an account with no record of its
+// own never sizes against another account's higher minimum.
+test('the gate does not refuse an account on another account\'s higher minimum', () => {
+  const db = fresh()
+  // B (written last, the only record): 100 DOT a lot, min 1 lot
+  rememberVolumeMeta(db, 'DOTUSD', { lotSize: 10_000, minVolume: 10_000, stepVolume: 1_000, accountId: '43097342' })
+  const r = evaluateTrade(db, pad('DOTUSD', 1.2, 1.05, 1.65))
+  assert.equal(r.approved, true, `veto: ${r.veto_reason}`)
+  assert.equal(r.checks.broker_min_lots, undefined, 'no minimum claimed for this account')
+})
+
 // The post-gate reconciliation must stay wired where the broker's answer is
 // fetched after the gate (CLAUDE.md failure mode #4: a repair nothing calls).
 test('every path that fetches the lot record after the gate reconciles it and refuses on a mismatch', () => {
