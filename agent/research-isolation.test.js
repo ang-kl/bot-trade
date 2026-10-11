@@ -50,6 +50,11 @@ const ALLOWED_IMPORTERS = new Set([
   'agent/routes/state.js',
   'agent/routes/actions.js',
   'agent/services/performance-populations.js',
+  // Report-only service reached from the route/worker. It reads the LIVE
+  // management loaders (managed-exit, mae-chandelier-observe, capped-hybrid)
+  // to build the "current management" approximation, so it cannot itself be
+  // a research module; it writes nothing and nothing live imports it.
+  'agent/services/exit-counterfactual-extended.js',
 ])
 
 export function protectedPaths() {

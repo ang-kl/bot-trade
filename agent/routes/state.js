@@ -56,7 +56,8 @@ import { hourlyOpenings, assertOpeningsTo } from '../services/hourly-openings.js
 import { createLatestPricesReader } from '../services/latest-prices-cache.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readStageMatrixStats, readHourlyActivity, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable, readScoreboardReport, readTheoryGap } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readStageMatrixStats, readHourlyActivity, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable, readScoreboardReport, readTheoryGap, readExitCounterfactualExtended } from '../services/performance-populations.js'
+import { EXTENDED_OPTIONS as CF_EXTENDED_OPTIONS, PRESETS as CF_PRESETS, GROUP_KEYS as CF_GROUP_KEYS } from '../services/exit-counterfactual-extended.js'
 import { THEORY_GAP_SECTIONS, R_AUDIT_DEFAULT_STRATEGY, R_AUDIT_MAX_DAYS } from '../services/theory-gap.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
@@ -1866,6 +1867,36 @@ export default function stateRouter(db) {
       const days = Math.min(365, Math.max(1, Number(req.query.days) || 30))
       const minSample = Math.max(1, Number(req.query.minSample) || undefined || 30)
       const scope = requestedAccount(db, req)
+      // Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder): the
+      // theory-gap extensions (plan B1–B4) run on the report worker and only
+      // when an extended option is named; a legacy query is answered below,
+      // unchanged. ?stop=initial ?tpR=1,2,3 ?trailR=0.5,0.75 ?design=1
+      // ?family=mean_reversion ?preset=meanrev|breakout|momentum|all
+      // ?groupBy=strategy|timeframe|regime|family ?followThrough=1 ?followThroughR=1,2,3
+      // `trailR` alone is the legacy sweep and stays on the legacy path, so a
+      // request that names only it is answered byte-identically to before.
+      const extendedAsked = CF_EXTENDED_OPTIONS.filter(k => k !== 'trailR').some(k => req.query[k] != null && req.query[k] !== '')
+      if (extendedAsked) {
+        const stop = req.query.stop == null || req.query.stop === '' ? 'recorded' : String(req.query.stop)
+        if (!['recorded', 'initial'].includes(stop)) return res.status(400).json({ error: 'stop must be recorded or initial', code: 'exit_counterfactual_invalid_stop' })
+        const preset = req.query.preset ? String(req.query.preset) : null
+        if (preset && !CF_PRESETS.includes(preset)) return res.status(400).json({ error: `preset must be one of ${CF_PRESETS.join(', ')}`, code: 'exit_counterfactual_invalid_preset' })
+        const groupBy = req.query.groupBy ? String(req.query.groupBy) : null
+        if (groupBy && !CF_GROUP_KEYS.includes(groupBy)) return res.status(400).json({ error: `groupBy must be one of ${CF_GROUP_KEYS.join(', ')}`, code: 'exit_counterfactual_invalid_group' })
+        const family = req.query.family ? String(req.query.family) : null
+        if (family && !/^[a-z_]{1,32}$/.test(family)) return res.status(400).json({ error: 'family must be a registry family', code: 'exit_counterfactual_invalid_family' })
+        const list = v => (v == null || v === '' ? null : String(v).split(',').map(x => x.trim()).filter(Boolean))
+        res.set('Cache-Control', 'no-store')
+        return res.json(await readExitCounterfactualExtended(db, {
+          days, minSample, stop, preset, groupBy, family,
+          tpR: list(req.query.tpR), trailR: list(req.query.trailR), followThroughR: list(req.query.followThroughR),
+          design: String(req.query.design || '') === '1', followThrough: String(req.query.followThrough || '') === '1',
+          cleanOnly: String(req.query.allOrigins || '') !== '1',
+          accountId: scope.all ? null : (scope.accountId ?? null),
+          strategy: req.query.strategy ? String(req.query.strategy) : null,
+          excludeStrategy: req.query.excludeStrategy ? String(req.query.excludeStrategy) : null,
+        }))
+      }
       // ?trailR=0.5,0.75,1.5,2 — sweep extra trail distances over the same
       // population (bounded, validated; see parseTrailSweep).
       const sweep = parseTrailSweep(req.query.trailR ? String(req.query.trailR) : '')

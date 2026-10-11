@@ -357,6 +357,8 @@ export function readHourlyActivity(db, options) { return isolatedReport(db, 'hou
  * (services/theory-gap.js); `{ section, strategy, days }` as the route
  * validated them. */
 export function readTheoryGap(db, options) { return isolatedReport(db, 'theory-gap', options) }
+/** GET /state/exit-counterfactual with any extended option, off the trading thread. */
+export function readExitCounterfactualExtended(db, options) { return isolatedReport(db, 'exit-counterfactual-extended', options) }
 // ---------------------------------------------------------------------------
 // GET /state/storage and POST /actions/storage-purge (V3 M2b, M2 check nit 9).
 //
@@ -607,6 +609,10 @@ async function buildReport(db, kind, options, hooks = {}) {
     const { buildCalendarCoverage } = await import('./calendar-coverage.js')
     // One snapshot across the demand, the export and every calendar read.
     return db.transaction(() => buildCalendarCoverage(db, options))()
+  }
+  if (kind === 'exit-counterfactual-extended') {
+    const { exitCounterfactualExtended } = await import('./exit-counterfactual-extended.js')
+    return db.transaction(() => exitCounterfactualExtended(db, options))()
   }
   if (kind === 'theory-gap') {
     // Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder): one read snapshot.

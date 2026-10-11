@@ -3,7 +3,7 @@
 // rules: partial at R, since-entry Chandelier, exit at the mean.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { replayExit, atrAt, smaAt } from './exit-replay.js'
+import { replayExit, atrAt, smaAt, favourableExcursion } from './exit-replay.js'
 import { wilderAtr } from '../services/mae-chandelier-observe.js'
 
 const MIN = 60_000, t0 = Date.parse('2026-08-03T20:00:00Z')
@@ -71,4 +71,21 @@ test('the since-entry Chandelier trails peak − mult·ATR, tighten-only, and it
   const short = replayExit(bars.slice(28), { ...LONG, sl: 98 }, { name: 'chandelier', chandelier: { mult: 3, period: 22 } })
   assert.equal(short.truncated, true)
   assert.equal(smaAt(bars, 2, 3), (100 + 100 + 100) / 3)
+})
+
+test('favourableExcursion: the peak is a bracket — before the stop bar, and with that bar\'s own extreme', () => {
+  const t0 = 1_700_000_000_000, MIN = 60_000
+  // Long 100, stop 99 (risk 1). Bar 0 peaks +1R; bar 1 spikes to +3R AND hits the stop.
+  const bars = [[t0, 100, 101, 99.5, 100.8, 0], [t0 + MIN, 100.8, 103, 98.9, 99.2, 0], [t0 + 2 * MIN, 99.2, 99.4, 99, 99.3, 0]]
+  const ex = favourableExcursion(bars, { side: 'long', entry: 100, sl: 99, openedAtMs: t0 })
+  assert.deepEqual(ex, { ok: true, stopped: true, truncated: false, barsUsed: 2, peakRBeforeStopBar: 1, peakRInclStopBar: 3 })
+  // No stop inside the window: truncated, with the peak so far on both sides.
+  const open = favourableExcursion(bars.slice(0, 1), { side: 'long', entry: 100, sl: 99 })
+  assert.deepEqual(open, { ok: true, stopped: false, truncated: true, barsUsed: 1, peakRBeforeStopBar: 1, peakRInclStopBar: 1 })
+  // A short mirrors it; bars before the open are context, not the trade.
+  // Short 100, stop 102.5 (risk 2.5): bar 0 reaches 99.5 (+0.2R); bar 1 reaches 98.9 (+0.44R) and hits the stop at 103.
+  const short = favourableExcursion([[t0 - MIN, 100, 105, 95, 100, 0], ...bars], { side: 'short', entry: 100, sl: 102.5, openedAtMs: t0 })
+  assert.equal(short.barsUsed, 2); assert.equal(short.peakRBeforeStopBar, 0.2); assert.equal(short.peakRInclStopBar, 0.44)
+  assert.equal(favourableExcursion(bars, { side: 'long', entry: 100, sl: 100 }).ok, false)
+  assert.equal(favourableExcursion([], { side: 'long', entry: 100, sl: 99 }).ok, false)
 })

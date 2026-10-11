@@ -279,6 +279,39 @@ export function replayExit(bars, trade, rule = {}) {
 }
 
 /**
+ * Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder). FOLLOW-THROUGH
+ * (plan B1): how far did price travel in the trade's favour before the stop,
+ * in R of the given stop, using only the stored window. A bar that touches
+ * the stop may also have set a new high: intrabar order unknown, so the peak
+ * is reported as a BRACKET — `peakRBeforeStopBar` (bars strictly before the
+ * stop bar) and `peakRInclStopBar` (that bar's own extreme included). A
+ * window that ends with no stop is `truncated` with the peak so far.
+ */
+export function favourableExcursion(bars, trade) {
+  const side = String(trade?.side || '').toLowerCase()
+  const long = side === 'long' || side === 'buy'
+  const entry = num(trade?.entry), sl = num(trade?.sl), openedAtMs = num(trade?.openedAtMs)
+  if (entry == null || sl == null) return { ok: false, reason: 'no entry or stop recorded' }
+  const risk = Math.abs(entry - sl)
+  if (!(risk > 0)) return { ok: false, reason: 'stop distance is zero — R is undefined' }
+  if (!Array.isArray(bars) || bars.length === 0) return { ok: false, reason: 'no bars stored' }
+  const rAt = p => (long ? p - entry : entry - p) / risk
+  const startMs = openedAtMs ?? num(toBarTuple(bars[0])[T])
+  let peak = 0, used = 0
+  for (const b of bars.map(toBarTuple)) {
+    const t = num(b[T]), hi = num(b[H]), lo = num(b[L])
+    if (startMs != null && t != null && t < startMs) continue
+    used++
+    const hitStop = long ? lo <= sl : hi >= sl
+    const barPeak = rAt(long ? hi : lo)
+    if (hitStop) return { ok: true, stopped: true, truncated: false, barsUsed: used, peakRBeforeStopBar: round3(peak), peakRInclStopBar: round3(Math.max(peak, barPeak)) }
+    if (barPeak > peak) peak = barPeak
+  }
+  return { ok: true, stopped: false, truncated: true, barsUsed: used, peakRBeforeStopBar: round3(peak), peakRInclStopBar: round3(peak) }
+}
+const round3 = n => Math.round(n * 1000) / 1000
+
+/**
  * Aggregate replayed outcomes into the figures a decision would be made on.
  *
  * Ambiguous and truncated trades are EXCLUDED from the statistics and counted
