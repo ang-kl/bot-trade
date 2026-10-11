@@ -193,3 +193,51 @@ XLM after this fix is live; ETH and SOL cannot pass at their signals' own
 targets.
 
 Conversation ref: ordered № 13,171 · reported № 13,172.
+
+## 7. The second resend, after #1318 (Claude · № 13,243 · 11-10'26 18:50 SGT)
+
+#1318 merged as 8ef60198 (each account sizes on its own broker lot record,
+fetched before the gate) and read back live at 10:46Z. DOTUSD, AVAXUSD,
+UNIUSD, BCHUSD and XLMUSD were resent at 10:46:42–10:46:56Z with the same
+bodies as §6.
+
+| Order | Strategy | Verdict | Size | Gate |
+|---|---|---|---|---|
+| DOTUSD BUY | vwap_trend | **placed**, position 247845391, trade 1789 | 0.1 lot (broker minimum) | 1.74R, admitted on the measured earned floor (60% over 30) |
+| AVAXUSD BUY | vp_value | **placed**, position 247845392, trade 1790 | 0.1 lot (broker minimum) | 2.22R, admitted on the prior-shrunk earned floor, half risk |
+| UNIUSD BUY | vwap_trend | **placed**, position 247845393, trade 1791 | 0.1 lot (broker minimum) | see the finding below |
+| BCHUSD BUY | fib_confluence | **placed**, position 247845394, trade 1792 | 0.01 lot (broker minimum) | 4.15R, units per lot from the broker (1) |
+| XLMUSD BUY | fib_confluence | refused `max_positions=10/10` | — | eight positions plus two working limit orders |
+
+The #1318 fix did what it was built to do: every order sized in broker
+units and floored at the broker's own minimum.
+
+**XLMUSD and the cap.** The gate counts open positions plus working
+orders. 47790949 holds eight positions and two working limit orders that
+were not placed by the bot (NatGas BUY limit 2.745 and SpotCrude BUY limit
+68.548, first seen 02-10). Raising the cap past 10 is the owner's call.
+
+**Finding — UNIUSD's stop was on the wrong side when the gate judged it.**
+The vwap_trend weekly signal's stop (7.763) was above UNI's price at the
+gate (7.507). The gate measures the stop as a distance and does not check
+its side, so it read a 0.256 stop and a 15.8R target and approved. The
+order sends the stop as a distance, so the broker placed it correctly below
+the fill (7.287). The signal was stale (price had already fallen through
+its stop); the gate should refuse a stop on the wrong side of the entry.
+Not changed here.
+
+**Observation — the trail engine took over three of the four stops within
+seconds.** The native TrailEngine's since-entry Chandelier (3 × ATR(22), the
+tighter stop wins) tightened DOTUSD 1.046 → 1.195, AVAXUSD 5.783 → 10.098
+and BCHUSD 236.34 → 271.94 (signal stop → engine stop at 10:49Z). UNIUSD
+was unchanged at the 7.287 the broker placed from the order's stop distance
+(its signal stop was stale, see above), already tighter than the engine's
+level. These monthly and weekly signals therefore trade on an intraday stop,
+so this test measures the management stack as much as the strategies (the
+plan's gap G2). The management code is unchanged.
+
+**Read-back.** All eight positions carry a broker stop and target; the
+stop-policy controller read 7 amends since the deploy with 7 confirmed and
+0 errors; the fast monitor read 0 skipped ticks and busy share 0.17.
+
+Conversation ref: ordered № 13,171 · reported № 13,243.
