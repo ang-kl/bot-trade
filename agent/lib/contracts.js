@@ -80,6 +80,28 @@ const TYPE_BY_SYMBOL = {
   LTCUSD: 'crypto', ADAUSD: 'crypto', DOGEUSD: 'crypto', BNBUSD: 'crypto',
 }
 
+// Claude · № 13,126 11-Oct (ordered № 13,125; claude-builder). The crypto
+// base assets the broker lists as <BASE><FIAT> CFDs. The exposure guard's
+// currency-leg split used a 6-letter heuristic, so BTCUSD/XRPUSD/BCHUSD/
+// DOTUSD/UNIUSD/XLMUSD read as an FX pair (a USD leg) while DOGEUSD/AVAXUSD/
+// LINKUSD read as a single unit — measured 11-10 on demo 47790949: two
+// crypto longs tripped `overexposed_USD` for every further 6-letter crypto
+// while a 7-letter one passed. A crypto CFD is its own instrument, like an
+// index or a commodity quoted in USD; this list is what `isCryptoSymbol`
+// recognises. It is a name list only: instrumentType and contractSize are
+// unchanged by it (their table above still decides sizing).
+export const CRYPTO_BASES = Object.freeze(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'ADA', 'LTC', 'DOGE', 'AVAX', 'LINK', 'DOT', 'BCH', 'XLM', 'UNI', 'TRX', 'MATIC'])
+const CRYPTO_QUOTES = ['USD', 'EUR', 'GBP', 'AUD', 'JPY', 'CHF', 'CAD', 'USDT', 'USDC']
+const CRYPTO_RE = new RegExp(`^(${CRYPTO_BASES.join('|')})(${CRYPTO_QUOTES.join('|')})$`)
+
+/** True for a crypto CFD named <BASE><FIAT> (BTCUSD, DOGEUSD, DOTUSD, BTCEUR); false for FX, metals, perps and dotted listings. */
+export function isCryptoSymbol(symbol) {
+  const s = String(symbol || '').toUpperCase().trim()
+  if (!s) return false
+  if (TYPE_BY_SYMBOL[s] === 'crypto') return true
+  return CRYPTO_RE.test(s)
+}
+
 /**
  * Classify a symbol: metal / energy / agri / index / crypto / equity
  * (broker ".US" suffix) / fx / fx (USD-base) / fx cross / other.

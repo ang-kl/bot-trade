@@ -16,7 +16,7 @@
 import { getState } from '../db.js'
 import { readAccountSnapshot, RISK_MARGIN_SNAPSHOT_MAX_AGE_MS } from './account-snapshot.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
-import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
+import { usdLossPerLot, tierForBalance, notionalUsd, isCryptoSymbol } from '../lib/contracts.js'
 import { sizingBalance } from '../lib/sizing-balance.js'
 import { cooldownCounterfactual } from '../lib/cooldown-counterfactual.js'
 import { assetClassOf } from './strategy-asset-cross.js'
@@ -968,6 +968,11 @@ export function currencyLegs(symbol, side) {
   const isLong = side === 'long' || side === 'BUY' || side === 'buy'
   const sign = isLong ? 1 : -1
 
+  // Claude · № 13,126 11-Oct (ordered № 13,125; claude-builder): a crypto
+  // CFD is one instrument, like an index or a commodity quoted in USD — not
+  // a USD currency leg. The 6-letter split below made BTCUSD a short-USD leg
+  // and DOGEUSD a single unit; see contracts.js isCryptoSymbol.
+  if (isCryptoSymbol(sym)) return { [sym]: sign }
   // FX pairs and metals vs USD — 6-char code, split 3+3
   if (sym.length === 6 && /^[A-Z]{6}$/.test(sym)) {
     return { [sym.slice(0, 3)]: sign, [sym.slice(3, 6)]: -sign }

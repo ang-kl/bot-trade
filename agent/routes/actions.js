@@ -6494,7 +6494,16 @@ export default function actionsRouter(db, deps = {}) {
         sl: Number(sl),
         tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
         requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
-        strategy: 'manual',
+        // Claude · № 13,126 11-Oct (ordered № 13,125; claude-builder): the
+        // proposal carries the pad's registry strategy, the same key the
+        // label, the ledger row and the plan already carry. The literal
+        // 'manual' here meant the gate judged every pad order as a strategy
+        // with no prior and no record, so the earned floor and the stretch
+        // (which bridge the registry's 2R designs to the 3.0 floor) could
+        // never apply to a pad order — measured 11-10: fib_confluence and
+        // vwap_trend orders refused `thin_sample 0<9` on an account whose
+        // priors read 12 strategies. With no key given it stays manual_order.
+        strategy,
         // PR-AL: the one entry path with no upstream signal to read a reason
         // from states its own — see manualDirectionReason.
         direction_reason: manualDirectionReason(rawDirectionReason, side),
@@ -6562,7 +6571,7 @@ export default function actionsRouter(db, deps = {}) {
         persistRiskEvent(db, proposal, { approved: false, veto_reason: err.message })
         const needsInput = describeBracketGap(err.message, {
           symbol, side, entry, sl: proposal.sl, tp: proposal.tp1, digits: volMeta.digits,
-          strategy: 'manual', minRR: loadRiskConfig(db).minRR,
+          strategy, minRR: loadRiskConfig(db).minRR,   // Claude · № 13,126 11-Oct: the pad's key, as in the proposal
           // HVN-TP: the 15m bars fetched above — the advice computes the
           // volume-structure TP candidate on the trade's own timeframe.
           bars: hvnBars,
