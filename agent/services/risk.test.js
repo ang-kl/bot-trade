@@ -465,7 +465,9 @@ test('net USD exposure over cap vetoes', () => {
   // 2 open shorts on USD crosses = net +2 USD. Proposing 3rd short = +3 USD.
   insertOpenPosition(db, 'EURUSD', 'short')  // -EUR +USD
   insertOpenPosition(db, 'GBPUSD', 'short')  // -GBP +USD
-  const res = evaluateTrade(db, goodProposal({ symbol: 'AUDUSD', side: 'short' }))
+  // A short carries its stop ABOVE the entry and its target below (№ 13,254:
+  // the gate refuses a stop on the wrong side before the exposure check).
+  const res = evaluateTrade(db, goodProposal({ symbol: 'AUDUSD', side: 'short', sl: 1.1030, tp1: 1.0895 }))
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /overexposed_USD/)
 })
