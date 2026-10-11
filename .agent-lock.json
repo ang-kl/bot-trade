@@ -545,6 +545,11 @@
       "at": "2026-10-11T13:46Z",
       "by": "claude-builder",
       "note": "#1321 merged (9ebdd215): paused-row MAE/MFE (services/paused-excursion.js, new column monitored_positions.excursion_backfill_json, held-prices.js exports ownedSymbolTarget). loop.js: one try/catch call after the monitor pass, on the owner's order. Metrics only. Serial ratchet 13,295."
+    },
+    {
+      "at": "2026-10-11T14:40Z",
+      "by": "claude-builder",
+      "note": "#1322 merged (117e0d80): actions.js execute-trade/manual-order write after-gate refusals with persistPostApprovalVeto; opportunity-disposition.js sweep no longer counts a 'rejected' write-ahead trade as landed. No protected path. Serial ratchet 13,319."
     }
   ]
 }
