@@ -798,15 +798,17 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // larger contract or higher minimum another account recorded, or the
   // contract table), and the post-gate fetch that would correct it is never
   // reached. Once per account and symbol: the record persists.
+  // The host the order's lot record is read from below, hoisted so this
+  // pre-gate read uses the same one (one routing read of the account side).
+  const hostForMeta = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
   try {
     const { ensureOwnLotRecord } = await import('./lib/lot-size-registry.js')
     await ensureOwnLotRecord(db, symbol, accountId, async () => {
-      const preHost = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
       const rs = seam?.resolveSymbolId || (await import('./lib/ctrader-creds.js')).resolveSymbolId
-      const r = await rs(db, { host: preHost, clientId, clientSecret, accessToken, accountId, ready: true }, symbol)
+      const r = await rs(db, { host: hostForMeta, clientId, clientSecret, accessToken, accountId, ready: true }, symbol)
       if (!r?.id) return null
       const gvm = seam?.getVolumeMeta || (await import('./lib/lot-sizing.js')).getVolumeMeta
-      return gvm(preHost, clientId, clientSecret, accessToken, accountId, r.id)
+      return gvm(hostForMeta, clientId, clientSecret, accessToken, accountId, r.id)
     })
   } catch { /* the gate runs on whatever is on record, as before */ }
   const riskCfg = loadRiskConfig(db, accountId)
@@ -874,7 +876,6 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
 
   // Volume in the symbol's OWN units (lotSize is per-symbol; a hardcoded
   // per-lot constant sent every order ~1000× too small → TRADING_BAD_VOLUME).
-  const hostForMeta = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
   let sized
   let symbolDigits = 5 // price precision for relative SL/TP snapping below
   const { getVolumeMeta: volumeMetaLive, lotsToVolume, relativePoints } = await import('./lib/lot-sizing.js')
