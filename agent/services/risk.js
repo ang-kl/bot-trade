@@ -2418,6 +2418,15 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
 
   const reqVol = Number(proposal.requestedVolume)
   const hasCap = Number.isFinite(reqVol) && reqVol > 0
+  // Claude · № 13,175 11-Oct (Codex P1 on #1318, round 10; claude-builder):
+  // an EXPLICIT per-symbol cap (watchlist "Max lots", a typed pad lots) below
+  // the broker's known minimum is refused, never lifted to that minimum by
+  // the floor below — a cap is a ceiling the human set. A route's own
+  // default (requestedVolumeDefault: the pad or an analysis execution with
+  // nothing typed) is not a cap the human set and keeps flooring as before.
+  if (hasCap && proposal.requestedVolumeDefault !== true && bMin.source === 'broker' && reqVol < effMinLots) {
+    return veto(`below_min_volume: requested cap ${reqVol} lots < broker minimum (${effMinLots} lots)`, checks, proposal)
+  }
   let sizingFloor = hasCap ? reqVol : config.minLotSize
   let sizingNote = null
   // A balance the broker answered as 0 has no budget. Say so here, before

@@ -32,7 +32,7 @@ function fresh() {
 // The pad's proposal with no lots given: the route caps at 0.01 and the gate
 // lifts that to the broker minimum it has on record (risk.js floorLots).
 const pad = (symbol, entry, sl, tp1) => ({
-  symbol, side: 'BUY', entry, sl, tp1, requestedVolume: 0.01,
+  symbol, side: 'BUY', entry, sl, tp1, requestedVolume: 0.01, requestedVolumeDefault: true, // nothing typed: the route's default (№ 13,175)
   strategy: 'manual_order', direction_reason: 'manual:operator_chose_long', conviction: null, source: 'manual', accountId: ACCT,
 })
 

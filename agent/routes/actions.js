@@ -6298,7 +6298,7 @@ export default function actionsRouter(db, deps = {}) {
 
       // PR-AL: the analysis's own synthesis states why the side was chosen;
       // it rides into proposal_json instead of being dropped at execution.
-      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, direction_reason: synth.direction_reason ?? null, conviction: analysis.overall_conviction, source: 'execute_analysis', accountId }
+      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, ...(typeof wItem === 'object' && Number(wItem.maxVolume) > 0 ? {} : { requestedVolumeDefault: true }), strategy: analysis.strategy, direction_reason: synth.direction_reason ?? null, conviction: analysis.overall_conviction, source: 'execute_analysis', accountId }
       // This route places against the same `accountId` it read above, so
       // naming it here is what makes the gate and the order agree rather
       // than agreeing by coincidence.
@@ -6519,6 +6519,8 @@ export default function actionsRouter(db, deps = {}) {
         sl: Number(sl),
         tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
         requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
+        // № 13,175: nothing typed → the route's default, not a cap the trader set
+        ...(Number(lots) > 0 ? {} : { requestedVolumeDefault: true }),
         // Claude · № 13,126 11-Oct (ordered № 13,125; claude-builder): the
         // proposal carries the pad's registry strategy, the same key the
         // label, the ledger row and the plan already carry. The literal
