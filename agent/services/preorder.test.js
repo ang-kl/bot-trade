@@ -26,7 +26,7 @@ import { evaluateTrade, loadRiskConfig } from './risk.js'
 import { PT, _setWebSocketForTests } from '../lib/ctrader-ws.js'
 import stateRouter from '../routes/state.js'
 import actionsRouter from '../routes/actions.js'
-import { preorderCheck, EXPECTED_R_NOT_COMPUTED } from './preorder.js'
+import { preorderCheck, EXPECTED_R_NOT_COMPUTED, PREORDER_MANUAL_PARAMS } from './preorder.js'
 
 const A = '4242', B = '4343'
 const SYM = 'EURUSD', SYM_ID = 1
@@ -194,8 +194,10 @@ test('unknown or repeated query parameters are a 400, never ignored; scan-only a
   assert.equal(bad1.status, 400); assert.deepEqual(bad1.body.unsupported, ['accountId'])
   const bad2 = await get(`?scanId=${id}&symbol=${SYM}`)
   assert.equal(bad2.status, 400, 'a manual field on a scan check is refused'); assert.deepEqual(bad2.body.unsupported, ['symbol'])
-  const bad3 = await get(`?symbol=${SYM}&side=BUY&sl=1.09&strategy=va_breakout`)
-  assert.equal(bad3.status, 400); assert.deepEqual(bad3.body.unsupported, ['strategy'])
+  // № 13,137: `strategy` is a manual field now (the pad's key); a scan-only
+  // field on a manual check is still refused
+  const bad3 = await get(`?symbol=${SYM}&side=BUY&sl=1.09&conviction=9`)
+  assert.equal(bad3.status, 400); assert.deepEqual(bad3.body.unsupported, ['conviction'])
   const bad4 = await get(`?scanId=${id}&scanId=${id}`)
   assert.equal(bad4.status, 400, 'a repeated parameter is refused')
   assert.equal((await get('?scanId=999999')).status, 404)
@@ -243,9 +245,27 @@ test('missing credentials and missing data say "cannot check" with the reason �
 /** The manual route's proposal, written out independently of preorder.js (actions.js:6415-6427). */
 const routeProposal = ({ entry, sl, tp, lots, side = 'BUY', accountId = A }) => ({
   symbol: SYM, side, entry, sl: Number(sl), tp1: tp != null ? Number(tp) : null,
-  requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01, strategy: 'manual',
+  // Claude · № 13,128 11-Oct: the route sends the pad's validated registry
+  // key; with none given it is manual_order (MANUAL_ORDER_STRATEGY), as here.
+  requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01, strategy: 'manual_order',
   direction_reason: side === 'SELL' ? 'manual:operator_chose_short' : 'manual:operator_chose_long',
   conviction: null, source: 'manual', accountId,
+})
+
+// Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3): the dry run judges
+// the same proposal the route will — a registry key on the input is the
+// proposal's strategy, anything else is manual_order, and the endpoint's
+// parameter list admits the field (a 400 there made the precheck judge a
+// strategy order as manual while the real order was not).
+test('manual: a registry strategy on the input is the proposal\'s strategy, and the endpoint accepts the parameter', async (t) => {
+  const db = fresh(); t.after(() => db.close())
+  const base = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135, lots: 0.2 }
+  const keyed = await withCreds(() => preorderCheck(db, { ...base, strategy: 'vwap_trend' }, { fetchEntry: async () => 1.1 }))
+  assert.equal(keyed.ok, true, keyed.cannotCheck || keyed.error)
+  assert.equal(keyed.proposal.strategy, 'vwap_trend')
+  const unknown = await withCreds(() => preorderCheck(db, { ...base, strategy: 'Not A Key' }, { fetchEntry: async () => 1.1 }))
+  assert.equal(unknown.proposal.strategy, 'manual_order')
+  assert.ok(PREORDER_MANUAL_PARAMS.includes('strategy') && PREORDER_MANUAL_PARAMS.includes('directionReason'))
 })
 
 const FIXTURES = [

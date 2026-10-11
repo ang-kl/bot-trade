@@ -16,7 +16,7 @@
 import { getState } from '../db.js'
 import { readAccountSnapshot, RISK_MARGIN_SNAPSHOT_MAX_AGE_MS } from './account-snapshot.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
-import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
+import { usdLossPerLot, tierForBalance, notionalUsd, isCryptoSymbol, isCurrencyCode } from '../lib/contracts.js'
 import { sizingBalance } from '../lib/sizing-balance.js'
 import { cooldownCounterfactual } from '../lib/cooldown-counterfactual.js'
 import { assetClassOf } from './strategy-asset-cross.js'
@@ -24,7 +24,7 @@ import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor, horizonJudgedKeys } from './strategies.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
-import { earnedFloorVerdict, earnedFloorStretch } from './earned-floor.js'
+import { earnedFloorVerdict, earnedFloorStretch, earnedFloorWinRate, rrNeededFor } from './earned-floor.js'
 import { campaignConfig, campaignStopVerdict } from './campaign-stop.js'
 import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN, DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS } from './unresolved-pnl.js'
 import { evaluateGlobalGuards } from './global-guards.js'
@@ -709,12 +709,76 @@ export function effectiveRrFloor(db, accountId = null, strategy = null) {
   if (config.minExpectancyR != null && Number.isFinite(Number(config.minExpectancyR))) {
     try {
       const stats = accountEconomics(db, accountId, { days: 30 })
-      const ev = expectancyVerdict(stats, floor, { minE: Number(config.minExpectancyR) })
-      // `need` is what the measured win rate demands; rr-independent.
-      if (ev.need != null && ev.need > floor) floor = ev.need
+      floor = expectancyFloorFor(stats, floor, Number(config.minExpectancyR))
     } catch { /* the static floor stands */ }
   }
-  return floor
+  // Codex P2 (round 6): on EVERY path — thin sample, expectancy off, a
+  // configured minRR with more than two decimals — the answer is the
+  // two-decimal ratio the gate will judge, never the raw 3.004 that reaches
+  // the gate as 3.00 and fails its own floor. Codex P2 (round 7): the gate
+  // compares that two-decimal ratio against the RAW configured floor, so a
+  // remainder too small for ceilRr's 6-decimal round (minRR 3.0000004) is
+  // still honoured: a candidate under the raw configured floor steps up.
+  const configured = Math.max(HARD_MIN_RR, Number.isFinite(requested) ? requested : 0)
+  let out = ceilRr(floor)
+  if (out < configured) out = Math.round((out + 0.01) * 100) / 100
+  return out
+}
+
+/** The smallest two-decimal ratio at or above `x`; a 6-decimal round first keeps an exact 3.6 at 3.60. */
+export function ceilRr(x) {
+  return Math.ceil(Math.round(Number(x) * 1e6) / 1e4) / 100
+}
+
+/**
+ * Claude · № 13,141 11-Oct (Codex P2 on #1317, round 4; claude-builder).
+ * The floor the measured win rate demands, ROUNDED UP so the figure clears
+ * the gate's own strict comparison. expectancyVerdict quotes `need` rounded
+ * to the nearest hundredth for its message; a proposer that builds a target
+ * at that quoted ratio can land a hair under minE (3 wins in 22 closes at
+ * minE 0.15: quoted 7.43R, E(7.43) = 0.1495R, refused). The figure returned
+ * is verified with the gate's OWN comparison (expectancyVerdict on the raw
+ * expectancy) and raised a hundredth at a time until it clears — never a
+ * different rounding rule that could disagree with the gate either way. A
+ * quoted 3.00 hiding a raw 3.004 therefore returns 3.01, and a 25% win rate
+ * whose exact 3.6 the gate admits stays 3.6. Pure: a thin sample or an
+ * unusable win rate leaves `floor` as it is.
+ */
+export function expectancyFloorFor(stats, floor, minE) {
+  const ev = expectancyVerdict(stats, floor, { minE })
+  if (ev.need == null) return ceilRr(floor)
+  // Codex P2 (round 5): the gate judges a proposal's ratio rounded to two
+  // decimals, so the figure handed back is the smallest two-decimal ratio
+  // at or above the floor that the gate's own comparison admits (ceilRr:
+  // an exact 3.6 that floating-point carries as 3.6000000000000005 is 3.60).
+  let rr = ceilRr(Math.max(floor, ev.need))
+  for (let i = 0; i < 100 && !expectancyVerdict(stats, rr, { minE }).ok; i++) rr = Math.round((rr + 0.01) * 100) / 100
+  return rr
+}
+
+/**
+ * Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3; claude-builder).
+ * The LOWEST R:R the gate will admit for THIS account and strategy right
+ * now. effectiveRrFloor only ever raises the static floor; the gate itself
+ * admits a proposal under it when the strategy's earned-floor side (its
+ * measured or prior-shrunk win rate) pays at that ratio — rrFloorVerdict
+ * consults earnedFloorVerdict for any rr at or above the strategy's
+ * prefilter. So the lowest admitted ratio is the earned side's own
+ * requirement (rrNeededFor over its win rate), floored at the prefilter,
+ * when that sits under the static floor; otherwise the static floor. Advice
+ * built on this is never refused a second time and never asks 3R of a
+ * strategy the gate would admit at 2R. Read-only.
+ */
+export function lowestAdmittedRr(db, accountId = null, strategy = null) {
+  const floor = effectiveRrFloor(db, accountId, strategy)
+  try {
+    const side = earnedFloorWinRate(db, { strategy, accountId })
+    if (!side.ok) return floor
+    const needed = rrNeededFor(side.W, side.minE)
+    if (needed == null) return floor
+    const lowest = Math.max(minRrFor(strategy, STRATEGY_PREFILTER_RR), needed)
+    return lowest < floor ? lowest : floor
+  } catch { return floor }
 }
 
 /**
@@ -968,8 +1032,17 @@ export function currencyLegs(symbol, side) {
   const isLong = side === 'long' || side === 'BUY' || side === 'buy'
   const sign = isLong ? 1 : -1
 
-  // FX pairs and metals vs USD — 6-char code, split 3+3
-  if (sym.length === 6 && /^[A-Z]{6}$/.test(sym)) {
+  // Claude · № 13,126 11-Oct (ordered № 13,125; claude-builder): a crypto
+  // CFD is one instrument, like an index or a commodity quoted in USD — not
+  // a USD currency leg. The 6-letter split below made BTCUSD a short-USD leg
+  // and DOGEUSD a single unit; see contracts.js isCryptoSymbol.
+  if (isCryptoSymbol(sym)) return { [sym]: sign }
+  // FX pairs and metals — 6-char code split 3+3 ONLY when both halves are
+  // currency or metal codes (Claude · № 13,128 11-Oct, Codex P2 on #1317:
+  // a broker crypto outside the name list — ETCUSD, SUIUSD, TONUSD — and a
+  // commodity CFD named like XBRUSD would otherwise still split into a USD
+  // leg). Anything else six letters long is one instrument.
+  if (sym.length === 6 && isCurrencyCode(sym.slice(0, 3)) && isCurrencyCode(sym.slice(3, 6))) {
     return { [sym.slice(0, 3)]: sign, [sym.slice(3, 6)]: -sign }
   }
   // Everything else (indices, commodities, single-name) — treat as one leg

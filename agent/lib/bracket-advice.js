@@ -114,12 +114,33 @@ function decimalsOf(n) {
  * enough, because a round entry like 1.2 would collapse a 1.215 suggestion to
  * 1.2 and hand back a target at the entry price.
  */
-function roundPrice(value, { digits, entry, sl }) {
-  if (!Number.isFinite(value)) return null
-  const d = Number.isInteger(digits) && digits >= 0
+function priceDigits({ digits, entry, sl }) {
+  return Number.isInteger(digits) && digits >= 0
     ? Math.min(digits, 8)
     : Math.max(decimalsOf(entry), Number.isFinite(sl) ? decimalsOf(sl) : 0)
-  return Number(value.toFixed(d))
+}
+
+function roundPrice(value, { digits, entry, sl }) {
+  if (!Number.isFinite(value)) return null
+  return Number(value.toFixed(priceDigits({ digits, entry, sl })))
+}
+
+/**
+ * Claude · № 13,163 11-Oct (Codex P2 on #1317, round 8; claude-builder).
+ * Snapping the target to the symbol's precision can round it back under the
+ * floor (entry 100, stop 99.7, 2 digits, floor 3.01: 100.903 → 100.90 reads
+ * 3.00R to the gate, which judges the ratio at two decimals). Advance the
+ * snapped price one tick at a time, in the trade's direction, until the
+ * gate-visible ratio clears the floor. Bounded; a non-finite input is
+ * returned as it came.
+ */
+function advanceToFloor(price, { entry, slDistance, rrFloor, long, digits }) {
+  if (!Number.isFinite(price) || !Number.isFinite(entry) || !(slDistance > 0) || !(rrFloor > 0)) return price
+  const tick = Math.pow(10, -digits)
+  const gateRatio = (p) => Math.round((Math.abs(p - entry) / slDistance) * 100) / 100
+  let p = price
+  for (let i = 0; i < 1000 && gateRatio(p) < rrFloor; i++) p = Number((long ? p + tick : p - tick).toFixed(digits))
+  return p
 }
 
 /**
@@ -148,14 +169,26 @@ export function describeBracketGap(reason, ctx = {}) {
     // The R:R floor the risk gate would apply to THIS strategy — a suggestion
     // below it would be refused a second time, which is worse than no
     // suggestion at all.
-    const rrFloor = minRrFor(ctx.strategy, Number.isFinite(Number(ctx.minRR)) ? Number(ctx.minRR) : 1.5)
+    // Claude · № 13,128 11-Oct (Codex P2 on #1317; claude-builder): when the
+    // caller already asked the gate what it will demand of this account and
+    // strategy (`ctx.rrFloor`, from effectiveRrFloor), that figure wins over
+    // the registry override — a strategy override of 1R is a floor the gate
+    // raises to 3R unless the account has earned lower, and advice below the
+    // real floor is refused a second time.
+    const asked = Number(ctx.rrFloor)
+    const rrFloor = Number.isFinite(asked) && asked > 0
+      ? asked
+      : minRrFor(ctx.strategy, Number.isFinite(Number(ctx.minRR)) ? Number(ctx.minRR) : 1.5)
     const slDistance = Math.abs(entry - sl)
     // Direction from the stop, not from `side` alone: on an analysis execution
     // the side is derived from bias and the stop is the thing actually placed,
     // so the stop is the more reliable statement of which way this trade faces.
     const long = Number.isFinite(sl) ? sl < entry : isLong
-    suggestion = roundPrice(long ? entry + rrFloor * slDistance : entry - rrFloor * slDistance,
-      { digits: ctx.digits, entry, sl })
+    const digits = priceDigits({ digits: ctx.digits, entry, sl })
+    suggestion = advanceToFloor(
+      roundPrice(long ? entry + rrFloor * slDistance : entry - rrFloor * slDistance, { digits: ctx.digits, entry, sl }),
+      { entry, slDistance, rrFloor, long, digits },
+    )
     suggestionBasis = `${rrFloor}R from entry ${entry} against the ${slDistance} stop distance — the minimum this strategy's R:R floor accepts`
 
     // HVN candidate (spec §3.2) — additive, offered ALONGSIDE the floor price,

@@ -11,7 +11,7 @@ import { getCtraderCreds, getSymbolMap, getAccountSymbolMap, ensureSymbolMap, bi
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { recordTradePlan, recordPlanWriteFailure } from '../services/trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
-import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent, mergeRiskConfig, migrateLegacyRiskKeys } from '../services/risk.js'
+import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent, mergeRiskConfig, migrateLegacyRiskKeys, lowestAdmittedRr } from '../services/risk.js'
 import { noteRiskConfigChanges } from '../services/risk-config-history.js'
 import { wsGetTrendbarsBatch, wsGetSpotOnce, isAmbiguousSubmitError } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
@@ -6494,7 +6494,16 @@ export default function actionsRouter(db, deps = {}) {
         sl: Number(sl),
         tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
         requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
-        strategy: 'manual',
+        // Claude · № 13,126 11-Oct (ordered № 13,125; claude-builder): the
+        // proposal carries the pad's registry strategy, the same key the
+        // label, the ledger row and the plan already carry. The literal
+        // 'manual' here meant the gate judged every pad order as a strategy
+        // with no prior and no record, so the earned floor and the stretch
+        // (which bridge the registry's 2R designs to the 3.0 floor) could
+        // never apply to a pad order — measured 11-10: fib_confluence and
+        // vwap_trend orders refused `thin_sample 0<9` on an account whose
+        // priors read 12 strategies. With no key given it stays manual_order.
+        strategy,
         // PR-AL: the one entry path with no upstream signal to read a reason
         // from states its own — see manualDirectionReason.
         direction_reason: manualDirectionReason(rawDirectionReason, side),
@@ -6512,6 +6521,15 @@ export default function actionsRouter(db, deps = {}) {
       }
       // WIDENED STOP (E·1): the order below reads proposal.sl.
       if (riskResult.stop_override?.sl != null) proposal.sl = riskResult.stop_override.sl
+      // STRETCHED TARGET (Claude · № 13,134 11-Oct, Codex P1 on #1317): now
+      // that the proposal carries its strategy, the earned floor can approve
+      // it on the condition that the target is stretched to the admitted
+      // R:R (riskResult.target_override, as loop.js:821 and
+      // pending-orders.js:564 apply it). The payload's tpDistance and the
+      // ledger write below both read proposal.tp1, so the override lands
+      // in both; without this the broker received the below-floor target
+      // the gate had only conditionally approved.
+      if (riskResult.target_override?.tp1 != null) proposal.tp1 = riskResult.target_override.tp1
 
       const volLots = riskResult.adjusted_volume
       const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
@@ -6562,7 +6580,14 @@ export default function actionsRouter(db, deps = {}) {
         persistRiskEvent(db, proposal, { approved: false, veto_reason: err.message })
         const needsInput = describeBracketGap(err.message, {
           symbol, side, entry, sl: proposal.sl, tp: proposal.tp1, digits: volMeta.digits,
-          strategy: 'manual', minRR: loadRiskConfig(db).minRR,
+          // Claude · № 13,128 11-Oct (Codex P2 on #1317): the advice is
+          // built on the ratio the gate will actually admit for THIS account
+          // and strategy, not on the registry override alone, so an rsi2 pad
+          // order is never told 1R "would satisfy" a 3R gate. № 13,137
+          // (Codex P2, round 3): lowestAdmittedRr, which also reads the
+          // earned-floor side, so a strategy the gate admits at 2R is not
+          // told 3R is its minimum either.
+          strategy, minRR: loadRiskConfig(db).minRR, rrFloor: lowestAdmittedRr(db, creds.accountId, strategy),
           // HVN-TP: the 15m bars fetched above — the advice computes the
           // volume-structure TP candidate on the trade's own timeframe.
           bars: hvnBars,

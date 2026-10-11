@@ -54,6 +54,11 @@ export function padInputs(order) {
     lots: order?.lots === '' || order?.lots == null ? null : Number(order.lots),
     sl: order?.sl === '' || order?.sl == null ? null : Number(order.sl),
     tp: order?.tp === '' || order?.tp == null ? null : Number(order.tp),
+    // Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3): a registry
+    // strategy key, when the order carries one, rides BOTH the check and the
+    // order so the dry run judges the same proposal the route will. The pad
+    // itself has no strategy field today; API callers and a future control do.
+    strategy: typeof order?.strategy === 'string' && order.strategy.trim() ? order.strategy.trim() : null,
   }
 }
 
@@ -66,6 +71,7 @@ export function manualOrderBody({ order, destination }) {
     lots: p.lots ? p.lots : undefined,
     sl: p.sl,
     tp: p.tp ? p.tp : undefined,
+    ...(p.strategy ? { strategy: p.strategy } : {}),
     ...(destination?.routed ? { account: String(destination.accountId) } : {}),
   }
 }
@@ -80,6 +86,7 @@ export function manualCheckPath({ order, destination }) {
   if (p.lots) q.set('lots', String(p.lots))
   if (p.sl != null) q.set('sl', String(p.sl))
   if (p.tp) q.set('tp', String(p.tp))
+  if (p.strategy) q.set('strategy', p.strategy)
   return `/state/preorder?${q.toString()}`
 }
 
