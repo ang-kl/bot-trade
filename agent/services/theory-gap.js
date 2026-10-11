@@ -21,7 +21,9 @@
 import { realisedRR } from './trade-consistency.js'
 import { closedAtMs } from '../shared/formulas.js'
 
-export const THEORY_GAP_SECTIONS = Object.freeze(['r-audit'])
+export const THEORY_GAP_SECTIONS = Object.freeze(['r-audit', 'regime-blocks'])
+export const REGIME_BLOCKS_DEFAULT_DAYS = 30
+export const REGIME_BLOCKS_TOP = 24
 export const R_AUDIT_DEFAULT_STRATEGY = 'tsmom_long'
 export const R_AUDIT_MAX_DAYS = 365
 
@@ -156,8 +158,65 @@ export function rAudit(db, { strategy = R_AUDIT_DEFAULT_STRATEGY, days = R_AUDIT
   }
 }
 
+// ---------------------------------------------------------------------------
+// SECTION 'regime-blocks' (plan step 5, B5a). Claude · № 13,095 11-Oct
+// (ordered № 13,093; claude-builder). What the regime gate REFUSED, counted
+// from the decision_log skips the loop already writes (gate-skips.js
+// recordRegimeBlock, one row per blocked cycle). The owner's question is
+// whether the QUIET rule ("trend-in-quiet") is refusing the squeeze that
+// Donchian / value-area breakouts are built to trade. This section counts;
+// it does not score, because the stored detail carries bias, side and entry
+// only — no stop, target or conviction — so a refused signal's outcome is
+// not replayable from the record. Capturing those forward touches the loop's
+// write path and waits for the owner's word (plan step 5, second half).
+//
+// A block repeats every cycle while the regime holds, so `rows` is cycles,
+// not opportunities. `episodes` counts distinct (symbol, strategy, timeframe,
+// kind) per UTC day — the nearest honest proxy for "signals refused".
+// ---------------------------------------------------------------------------
+const KIND_RE = /^regime_block (\S+)/
+const kindOf = reason => (String(reason ?? '').match(KIND_RE)?.[1] ?? 'unknown')
+const bump = (m, k, by = 1) => { m[k] = (m[k] || 0) + by }
+const topOf = (m, n) => Object.fromEntries(Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, n))
+
+export function regimeBlocks(db, { strategy = null, days = REGIME_BLOCKS_DEFAULT_DAYS, now = Date.now() } = {}) {
+  const span = Math.min(R_AUDIT_MAX_DAYS, Math.max(1, days))
+  const sinceSec = Math.floor((now - span * 86_400_000) / 1000)
+  const rows = db.prepare(`SELECT symbol, timeframe, strategy, reason, detail_json, created_at, loop_id
+    FROM decision_log WHERE stage = 'regime_block' AND created_at >= datetime(?, 'unixepoch') ${strategy ? 'AND strategy = ?' : ''} ORDER BY id`)
+    .all(...(strategy ? [sinceSec, strategy] : [sinceSec]))
+  const byKind = {}, byStrategy = {}, byStrategyKind = {}, bySymbol = {}, byTimeframe = {}, byBias = {}, quietByStrategy = {}
+  const episodeKeys = new Set(), episodesByStrategyKind = {}
+  let entryKnown = 0, stopKnown = 0, targetKnown = 0, convictionKnown = 0
+  for (const r of rows) {
+    const kind = kindOf(r.reason), strat = r.strategy || '(none)'
+    let d = null; try { d = JSON.parse(r.detail_json || 'null') } catch { d = null }
+    bump(byKind, kind); bump(byStrategy, strat); bump(bySymbol, r.symbol || '(none)'); bump(byTimeframe, r.timeframe || '(none)'); bump(byBias, d?.bias ?? '(none)')
+    bump(byStrategyKind, `${strat} · ${kind}`)
+    if (kind === 'trend-in-quiet') bump(quietByStrategy, strat)
+    if (d?.entry != null) entryKnown++
+    if (d?.sl != null || d?.stop != null) stopKnown++
+    if (d?.tp1 != null || d?.tp != null) targetKnown++
+    if (d?.conviction != null) convictionKnown++
+    const day = String(r.created_at || '').slice(0, 10)
+    const key = `${r.symbol}|${strat}|${r.timeframe}|${kind}|${day}`
+    if (!episodeKeys.has(key)) { episodeKeys.add(key); bump(episodesByStrategyKind, `${strat} · ${kind}`) }
+  }
+  return {
+    section: 'regime-blocks', at: new Date(now).toISOString(), strategy, days: span, since: new Date(sinceSec * 1000).toISOString(),
+    rows: rows.length,
+    episodes: episodeKeys.size,
+    byKind, byStrategy, byStrategyKind, episodesByStrategyKind, quietByStrategy,
+    bySymbol: topOf(bySymbol, REGIME_BLOCKS_TOP), symbolsOmitted: Math.max(0, Object.keys(bySymbol).length - REGIME_BLOCKS_TOP),
+    byTimeframe, byBias,
+    capture: { entryKnown, stopKnown, targetKnown, convictionKnown, scorable: Math.min(stopKnown, targetKnown) },
+    note: 'Read-only count of decision_log regime_block skips (gate-skips.js recordRegimeBlock, one row per blocked cycle). rows = cycles; episodes = distinct symbol·strategy·timeframe·kind per UTC day. The stored detail carries bias, side and entry only: stop, target and conviction are not recorded, so no refused signal is scored here (capture.scorable). Nothing here is a trading figure the gates read.',
+  }
+}
+
 /** The section dispatcher the report worker calls. */
 export function theoryGapReport(db, { section, ...options } = {}) {
-  if (section === 'r-audit') return rAudit(db, options)
+  if (section === 'r-audit') return rAudit(db, { ...options, strategy: options.strategy ?? R_AUDIT_DEFAULT_STRATEGY })
+  if (section === 'regime-blocks') return regimeBlocks(db, options)
   throw new RangeError(`unknown theory-gap section: ${section}`)
 }

@@ -70,3 +70,51 @@ test('theoryGapReport dispatches by section and refuses an unknown one; an empty
   assert.equal(none.trades, 0); assert.ok(none.candidates.every(c => c.n === 0 && c.available === 0))
   assert.throws(() => theoryGapReport(db, { section: 'nope' }), RangeError)
 })
+
+// --- regime-blocks (plan step 5, B5a) — Claude · № 13,095 11-Oct ---------
+import { recordRegimeBlock } from './gate-skips.js'
+import { regimeBlocks, REGIME_BLOCKS_TOP } from './theory-gap.js'
+
+function blocksFixture() {
+  const db = initDB(':memory:')
+  const quiet = s => `regime_block trend-in-quiet (${s}): no trend to ride, breakouts fake out`
+  const fade = s => `regime_block fade-vs-trend (${s}): long fade into a down-trending market`
+  // Three cycles of the same Donchian/AAA/1h block in one day = one episode; one VA block; two meanrev fades.
+  for (let i = 0; i < 3; i++) recordRegimeBlock(db, { symbol: 'AAA', synth: { strategy: 'donchian_breakout', timeframe: '1h', consensus_bias: 'long', entry: 101 }, signal: { entry: 101 }, reason: quiet('donchian_breakout'), loopId: i })
+  recordRegimeBlock(db, { symbol: 'BBB', synth: { strategy: 'va_breakout', timeframe: '15m', consensus_bias: 'short' }, signal: null, reason: quiet('va_breakout'), loopId: 3 })
+  recordRegimeBlock(db, { symbol: 'AAA', synth: { strategy: 'rsi_meanrev', timeframe: '15m', consensus_bias: 'long', entry: 100 }, signal: null, reason: fade('rsi_meanrev'), loopId: 4 })
+  recordRegimeBlock(db, { symbol: 'CCC', synth: { strategy: 'rsi_meanrev', timeframe: '15m', consensus_bias: 'long' }, signal: null, reason: fade('rsi_meanrev'), loopId: 5 })
+  // One old row outside the window, and one row of another stage that must not count.
+  recordRegimeBlock(db, { symbol: 'OLD', synth: { strategy: 'donchian_breakout', timeframe: '1h' }, signal: null, reason: quiet('donchian_breakout'), loopId: 6 })
+  db.prepare("UPDATE decision_log SET created_at = datetime('now', '-40 days') WHERE symbol = 'OLD'").run()
+  db.prepare("INSERT INTO decision_log(symbol, stage, decision, reason, strategy) VALUES ('AAA', 'evidence_gate', 'skip', 'evidence_gate: x', 'donchian_breakout')").run()
+  return db
+}
+
+test('regime-blocks: counts the loop\'s regime_block skips by kind, strategy, symbol and bias; episodes collapse repeated cycles; the window and the stage are respected', () => {
+  const db = blocksFixture()
+  const out = regimeBlocks(db, { days: 30 })
+  assert.equal(out.rows, 6, 'six cycles in the window; the 40-day-old row and the evidence_gate row are out')
+  assert.equal(out.episodes, 4, 'three Donchian cycles are one episode')
+  assert.deepEqual(out.byKind, { 'trend-in-quiet': 4, 'fade-vs-trend': 2 })
+  assert.deepEqual(out.quietByStrategy, { donchian_breakout: 3, va_breakout: 1 })
+  assert.deepEqual(out.byStrategyKind, { 'donchian_breakout · trend-in-quiet': 3, 'va_breakout · trend-in-quiet': 1, 'rsi_meanrev · fade-vs-trend': 2 })
+  assert.deepEqual(out.episodesByStrategyKind, { 'donchian_breakout · trend-in-quiet': 1, 'va_breakout · trend-in-quiet': 1, 'rsi_meanrev · fade-vs-trend': 2 })
+  assert.deepEqual(out.bySymbol, { AAA: 4, BBB: 1, CCC: 1 }); assert.equal(out.symbolsOmitted, 0)
+  assert.deepEqual(out.byBias, { long: 5, short: 1 }); assert.deepEqual(out.byTimeframe, { '1h': 3, '15m': 3 })
+  // The stored detail carries entry at most: nothing is scorable, and the report says so.
+  assert.deepEqual(out.capture, { entryKnown: 4, stopKnown: 0, targetKnown: 0, convictionKnown: 0, scorable: 0 })
+  assert.match(out.note, /stop, target and conviction are not recorded/)
+  // One strategy; and the window widened takes the old row in.
+  assert.equal(regimeBlocks(db, { days: 30, strategy: 'rsi_meanrev' }).rows, 2)
+  assert.equal(regimeBlocks(db, { days: 60 }).rows, 7)
+  assert.equal(theoryGapReport(db, { section: 'regime-blocks', strategy: null, days: 30 }).rows, 6)
+})
+
+test('regime-blocks: the symbol table is bounded and says how many it left out; a malformed reason is "unknown", never dropped', () => {
+  const db = initDB(':memory:')
+  for (let i = 0; i < REGIME_BLOCKS_TOP + 3; i++) recordRegimeBlock(db, { symbol: `S${String(i).padStart(2, '0')}`, synth: { strategy: 'vwap_trend', timeframe: '15m' }, signal: null, reason: i === 0 ? 'garbage' : 'regime_block trend-in-quiet (vwap_trend): x', loopId: i })
+  const out = regimeBlocks(db, { days: 7 })
+  assert.equal(Object.keys(out.bySymbol).length, REGIME_BLOCKS_TOP); assert.equal(out.symbolsOmitted, 3)
+  assert.equal(out.byKind.unknown, 1); assert.equal(out.rows, REGIME_BLOCKS_TOP + 3)
+})
