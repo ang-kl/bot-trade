@@ -37,7 +37,7 @@
         "scripts/check-protected-boundary.sh"
       ],
       "reason": "Owner-approved plan (№ 13,093): theory-gap measurements and tick-bar research. Protected boundary: NO change to managed-exit, stop-policy(+controller), profit-keeper/ratchet, mae-chandelier-observe, capped-hybrid-*, momentum-partial-*, momentum-book, hybrid-tick-*, manual-hybrid-*, native-trail-events, keeper-close-receipts, general-partial-execution, loss-guardian, weekend-bank, trade-guard, risk, earned-floor, regime(-gate), loop, scanner-feed, tick-permits, cpp-exec trail/ratchet/hybrid/tick sources, cpp-scan-timeframe scanner.cpp.",
-      "note": "PRs #1308–#1312 merged (research steps 1–9, Codex fixes, amendment remediation R1–R5, four docs). No PR open. Owner decisions pending: account view C·1/C·3, busy-share ceiling, D0, D1, the area-5 comparison design."
+      "note": "PRs #1308–#1313 merged. No PR open. Owner decisions pending: account view C·1/C·3, busy-share ceiling, D0, D1, the area-5 comparison design."
     }
   ],
   "notes": [
@@ -518,6 +518,12 @@
       "agent": "claude-builder",
       "serial": 13104,
       "text": "№ 13,104: #1312 merged f47ecb7a (amendment remediation R1–R5 + Codex findings on #1311). Branch restarted on main. Highest Codex stamp seen 13,082."
+    },
+    {
+      "at": "2026-10-11T03:21:15Z",
+      "agent": "claude-builder",
+      "serial": 13107,
+      "text": "№ 13,107: #1313 merged cbe9a718 (Codex findings on #1312 + report §8). Branch restarted on main."
     }
   ]
 }
