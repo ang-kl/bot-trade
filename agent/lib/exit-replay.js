@@ -93,6 +93,54 @@ export const DEFAULT_RULES = Object.freeze([
   { name: 'trail_1R', trailR: 1.0 },
 ])
 
+// ---------------------------------------------------------------------------
+// Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder). ADDITIVE rules
+// for the theory-gap measurements (plan B1–B4). A rule that names none of
+// these fields replays exactly as before: agent/lib/exit-replay-golden.test.js
+// pins every legacy rule's output byte-for-byte against a stored golden.
+//
+//   partialAtR / partialFraction — close `partialFraction` of the position at
+//     entry ± partialAtR·risk, armed at bar CLOSE like break-even (a bar that
+//     touches the level AND the stop resolves as the stop, never as a banked
+//     partial — the same intrabar honesty rule). The result's rMultiple is the
+//     blended R; `partial` names what was banked.
+//   chandelier { mult, period } — the since-entry Chandelier the native
+//     TrailEngine runs, approximated at bar close: stop = peak − mult·ATR
+//     (Wilder, `period`, over the bars seen so far, context bars included),
+//     tighten-only. The multiplier and period are NOT defaults here: the
+//     caller passes the live module's values (mae-chandelier-observe.js).
+//   exitAtMean { period } — the mean-reversion theory's exit: a close strictly
+//     beyond the SMA(period) of closes in the trade's favour → exit at that
+//     close (a close AT the mean is not yet across it).
+//   stop is `trade.sl` as before; a caller choosing another initial stop
+//     (the broker's first stop) passes it in `trade.sl`.
+//
+// What a bar replay still cannot see is unchanged: tick-level trail moves,
+// broker-side trailing, partial fill prices. These are approximations and
+// the counterfactual report says so beside every figure.
+// ---------------------------------------------------------------------------
+/** Wilder ATR over tuples up to and including index `i`; null below period+1 bars. */
+export function atrAt(bars, i, period) {
+  if (!(period > 0) || i < period) return null
+  const trs = []
+  for (let k = 1; k <= i; k++) {
+    const h = num(bars[k][H]), l = num(bars[k][L]), pc = num(bars[k - 1][C])
+    if (h == null || l == null || pc == null) return null
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)))
+  }
+  if (trs.length < period) return null
+  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period
+  for (let k = period; k < trs.length; k++) atr = (atr * (period - 1) + trs[k]) / period
+  return atr
+}
+/** Simple average of the last `period` closes ending at index `i`; null when short. */
+export function smaAt(bars, i, period) {
+  if (!(period > 0) || i < period - 1) return null
+  let sum = 0
+  for (let k = i - period + 1; k <= i; k++) { const c = num(bars[k][C]); if (c == null) return null; sum += c }
+  return sum / period
+}
+
 /**
  * Replay one closed trade under one exit rule.
  *
@@ -141,8 +189,25 @@ export function replayExit(bars, trade, rule = {}) {
   let stop = sl0
   let peakR = 0
   let used = 0
+  // Additive rules (see the header above): a partial banked at a level, the
+  // since-entry Chandelier, the exit at the mean. All decided at bar close.
+  const partialAtR = num(rule.partialAtR)
+  const partialFraction = partialAtR != null ? Math.min(1, Math.max(0, num(rule.partialFraction) ?? 0.5)) : 0
+  const chand = rule.chandelier && num(rule.chandelier.mult) > 0 && num(rule.chandelier.period) > 0 ? { mult: num(rule.chandelier.mult), period: Math.round(num(rule.chandelier.period)) } : null
+  const meanPeriod = rule.exitAtMean && num(rule.exitAtMean.period) > 0 ? Math.round(num(rule.exitAtMean.period)) : null
+  const tuples = bars.map(toBarTuple) // V3 L2b W13: {t,o,h,l,c} objects read as tuples
+  let partial = null // { r, fraction, atMs } once banked
+  let peakPrice = null
+  // A banked partial blends into the final R; `done` reads it.
+  const finish = (price, atMs, reason, barsUsed) => {
+    const d = done(price, atMs, reason, barsUsed)
+    if (!partial) return d
+    const blended = partial.fraction * partial.r + (1 - partial.fraction) * rAt(price)
+    return { ...d, rMultiple: Math.round(blended * 1000) / 1000, partial: { ...partial }, runnerR: d.rMultiple }
+  }
 
-  for (const b of bars.map(toBarTuple)) { // V3 L2b W13: {t,o,h,l,c} objects read as tuples
+  for (let i = 0; i < tuples.length; i++) {
+    const b = tuples[i]
     const t = num(b[T]), hi = num(b[H]), lo = num(b[L]), close = num(b[C])
     // Bars before entry are context in the stored window, not part of the trade.
     if (startMs != null && t != null && t < startMs) continue
@@ -158,13 +223,27 @@ export function replayExit(bars, trade, rule = {}) {
         reason: 'one bar touched both the stop and the target — intrabar order is not recorded, so the outcome is unknowable',
       }
     }
-    if (hitStop) return done(stop, t, stop === sl0 ? 'stop' : 'stop_moved', used)
-    if (hitTp) return done(tpFromRule, t, 'target', used)
+    if (hitStop) return finish(stop, t, stop === sl0 ? 'stop' : 'stop_moved', used)
+    if (hitTp) return finish(tpFromRule, t, 'target', used)
 
     // Excursion within this bar, used for break-even and trailing. Measured at
     // the FAVOURABLE extreme, which is the only excursion a bar can prove.
     const barPeakR = rAt(long ? hi : lo)
     if (barPeakR > peakR) peakR = barPeakR
+    const barPeakPrice = long ? hi : lo
+    if (peakPrice == null || (long ? barPeakPrice > peakPrice : barPeakPrice < peakPrice)) peakPrice = barPeakPrice
+
+    // A partial banked at its level, from THIS bar's close on (the level was
+    // touched inside the bar; the stop was not, or we would have returned).
+    if (partialAtR != null && partialFraction > 0 && !partial && peakR >= partialAtR) {
+      partial = { r: partialAtR, fraction: partialFraction, atMs: t }
+      if (partialFraction >= 1) return finish(long ? entry + partialAtR * risk : entry - partialAtR * risk, t, 'partial_full', used)
+    }
+    // The exit at the mean: this bar's close crossed the SMA in the trade's favour.
+    if (meanPeriod != null) {
+      const sma = smaAt(tuples, i, meanPeriod)
+      if (sma != null && close != null && (long ? close > sma : close < sma)) return finish(close, t, 'mean', used)
+    }
 
     // Break-even: applied only from the NEXT bar, because arming and being
     // stopped inside the same bar is the same intrabar-order problem above.
@@ -176,12 +255,20 @@ export function replayExit(bars, trade, rule = {}) {
       const trailed = long ? entry + (peakR - rule.trailR) * risk : entry - (peakR - rule.trailR) * risk
       if (long ? trailed > stop : trailed < stop) stop = trailed
     }
+    // Since-entry Chandelier: peak − mult·ATR, tighten-only, from the next bar.
+    if (chand) {
+      const atr = atrAt(tuples, i, chand.period)
+      if (atr != null && peakPrice != null) {
+        const ch = long ? peakPrice - chand.mult * atr : peakPrice + chand.mult * atr
+        if (long ? ch > stop : ch < stop) stop = ch
+      }
+    }
 
     // The clock, checked LAST: a bar that reached the target counts as a target
     // hit even if the cap also expires inside it. The cap closes at market, and
     // the market it closes at is this bar's close.
     if (capMs != null && startMs != null && t != null && t - startMs >= capMs) {
-      return done(close, t, 'time_cap', used)
+      return finish(close, t, 'time_cap', used)
     }
   }
 
