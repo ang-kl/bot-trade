@@ -27,6 +27,16 @@ test('currencyLegs — FX and metals keep the base/quote split', () => {
   assert.deepEqual(currencyLegs('USDJPY', 'long'), { USD: 1, JPY: -1 })
   assert.deepEqual(currencyLegs('EURGBP', 'short'), { EUR: -1, GBP: 1 })
   assert.deepEqual(currencyLegs('US30', 'long'), { US30: 1 })
+  // Codex P2 on #1317 (second round): exotic FX the catalogue lists keeps its legs
+  assert.deepEqual(currencyLegs('BWPUSD', 'long'), { BWP: 1, USD: -1 })
+  assert.deepEqual(currencyLegs('USDKES', 'short'), { USD: -1, KES: 1 })
+})
+
+test('currencyLegs — six-letter commodity names are one leg, not two invented currencies', () => {
+  // before the currency-code rule NATGAS split into NAT/GAS and COFFEE into COF/FEE
+  for (const s of ['NATGAS', 'COFFEE', 'COPPER', 'COTTON', 'CATTLE', 'NICKEL']) {
+    assert.deepEqual(currencyLegs(s, 'long'), { [s]: 1 }, s)
+  }
 })
 
 test('currencyLegs — a six-letter symbol whose halves are not both currency codes is one leg (Codex P2 on #1317)', () => {

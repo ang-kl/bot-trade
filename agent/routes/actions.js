@@ -6521,6 +6521,15 @@ export default function actionsRouter(db, deps = {}) {
       }
       // WIDENED STOP (E·1): the order below reads proposal.sl.
       if (riskResult.stop_override?.sl != null) proposal.sl = riskResult.stop_override.sl
+      // STRETCHED TARGET (Claude · № 13,134 11-Oct, Codex P1 on #1317): now
+      // that the proposal carries its strategy, the earned floor can approve
+      // it on the condition that the target is stretched to the admitted
+      // R:R (riskResult.target_override, as loop.js:821 and
+      // pending-orders.js:564 apply it). The payload's tpDistance and the
+      // ledger write below both read proposal.tp1, so the override lands
+      // in both; without this the broker received the below-floor target
+      // the gate had only conditionally approved.
+      if (riskResult.target_override?.tp1 != null) proposal.tp1 = riskResult.target_override.tp1
 
       const volLots = riskResult.adjusted_volume
       const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)

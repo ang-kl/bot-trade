@@ -39,6 +39,17 @@ test('the pad proposal carries the validated strategy key, never the literal man
   assert.ok(route.includes('const strategy = manualOrderStrategy(rawStrategy)'), 'the key is validated against the registry first')
 })
 
+test('the route applies the gate\'s stretched target to the proposal the payload and the ledger read (Codex P1 on #1317; comment-stripped pin)', () => {
+  const route = manualRoute()
+  const stop = route.indexOf('if (riskResult.stop_override?.sl != null) proposal.sl = riskResult.stop_override.sl')
+  const target = route.indexOf('if (riskResult.target_override?.tp1 != null) proposal.tp1 = riskResult.target_override.tp1')
+  assert.ok(stop > 0, 'the stop override is applied')
+  assert.ok(target > stop, 'the target override is applied right after it, before sizing and the payload')
+  const payload = route.indexOf('const tpDistance = proposal.tp1 != null')
+  const ledger = route.indexOf('tp: proposal.tp1, volLots')
+  assert.ok(payload > target && ledger > target, 'both the broker payload distance and the ledger write read proposal.tp1 after the override')
+})
+
 test('the gate reads the pad key: a registry strategy with a prior is judged on it, manual_order stays a thin sample', () => {
   const db = initDB(':memory:')
   const ACCT = '47790949'

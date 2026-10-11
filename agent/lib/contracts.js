@@ -123,6 +123,10 @@ export const CURRENCY_CODES = Object.freeze([
   'USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'NZD', 'CAD', 'SGD', 'HKD', 'NOK', 'SEK', 'DKK', 'PLN', 'CZK', 'HUF', 'TRY',
   'ZAR', 'MXN', 'CNH', 'CNY', 'THB', 'INR', 'ILS', 'RUB', 'BRL', 'KRW', 'TWD', 'IDR', 'PHP', 'MYR', 'SAR', 'AED', 'CLP',
   'COP', 'PEN', 'RON', 'BGN', 'ISK', 'KWD', 'QAR', 'VND',
+  // Codex P2 on #1317 (№ 13,134): the broker catalogue lists BWPUSD (the
+  // Botswana pula) as an FX pair; it keeps its legs. The same catalogue scan
+  // found USDKES, USDUGX and USDZMW.
+  'BWP', 'KES', 'UGX', 'ZMW',
   'XAU', 'XAG', 'XPT', 'XPD',
 ])
 const CURRENCY_SET = new Set(CURRENCY_CODES)

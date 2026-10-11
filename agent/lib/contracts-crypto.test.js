@@ -12,7 +12,8 @@ import assert from 'node:assert/strict'
 import { isCryptoSymbol, isCurrencyCode, instrumentType, contractSize, CRYPTO_BASES, CURRENCY_CODES } from './contracts.js'
 
 test('isCurrencyCode — fiat and the four metals, nothing else (Codex P2 on #1317)', () => {
-  for (const c of ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'NZD', 'CAD', 'SGD', 'HKD', 'NOK', 'SEK', 'MXN', 'ZAR', 'TRY', 'CNH', 'XAU', 'XAG', 'XPT', 'XPD']) {
+  // BWP, KES, UGX, ZMW: FX pairs the broker catalogue lists (Codex P2 on #1317, second round)
+  for (const c of ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'NZD', 'CAD', 'SGD', 'HKD', 'NOK', 'SEK', 'MXN', 'ZAR', 'TRY', 'CNH', 'BWP', 'KES', 'UGX', 'ZMW', 'XAU', 'XAG', 'XPT', 'XPD']) {
     assert.equal(isCurrencyCode(c), true, c)
   }
   for (const c of ['BTC', 'ETH', 'ETC', 'SUI', 'TON', 'XBR', 'XTI', 'XNG', 'US3', '', null]) {
