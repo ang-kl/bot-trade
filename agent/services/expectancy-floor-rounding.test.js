@@ -10,9 +10,26 @@
 // gate's own rounding. Red before (7.43), green after (7.44).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { expectancyFloorFor, expectancyVerdict, HARD_MIN_RR } from './risk.js'
+import { initDB, setState } from '../db.js'
+import { expectancyFloorFor, expectancyVerdict, effectiveRrFloor, ceilRr, HARD_MIN_RR } from './risk.js'
 
 const MIN_E = 0.15
+
+// Codex P2 on #1317, round 6: the configured floor itself is answered as the
+// two-decimal ratio the gate judges, on the thin-sample path too.
+test('a configured minRR with more than two decimals is answered rounded up on a fresh account (thin sample)', () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('A', '1', 0, 1, 'active')`).run()
+  setState(db, 'risk_config_json', JSON.stringify({ minRR: 3.004, minExpectancyR: 0.15 }))
+  assert.equal(effectiveRrFloor(db, 'A', 'burnin'), 3.01, 'a target built at 3.004 reaches the gate as 3.00 and fails the 3.004 floor; 3.01 does not')
+  assert.equal(expectancyFloorFor({ trades: 5, winRate: 0.1 }, 3.004, MIN_E), 3.01, 'the thin-sample early return rounds too')
+  // expectancy clause disabled (null is honoured by the merge): the final return rounds as well
+  setState(db, 'risk_config_json', JSON.stringify({ minRR: 3.004, minExpectancyR: null }))
+  assert.equal(effectiveRrFloor(db, 'A', 'burnin'), 3.01, 'with the expectancy clause off the configured floor is still answered as 3.01')
+  assert.equal(ceilRr(3.6000000000000005), 3.6)
+  assert.equal(ceilRr(3.004), 3.01)
+  assert.equal(ceilRr(4.2), 4.2)
+})
 
 test('3 wins in 22 closes: the quoted 7.43R fails the gate, the floor returned is 7.44R and passes it', () => {
   const stats = { trades: 22, winRate: 3 / 22 }

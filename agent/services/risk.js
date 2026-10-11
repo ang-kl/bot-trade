@@ -712,7 +712,16 @@ export function effectiveRrFloor(db, accountId = null, strategy = null) {
       floor = expectancyFloorFor(stats, floor, Number(config.minExpectancyR))
     } catch { /* the static floor stands */ }
   }
-  return floor
+  // Codex P2 (round 6): on EVERY path — thin sample, expectancy off, a
+  // configured minRR with more than two decimals — the answer is the
+  // two-decimal ratio the gate will judge, never the raw 3.004 that reaches
+  // the gate as 3.00 and fails its own floor.
+  return ceilRr(floor)
+}
+
+/** The smallest two-decimal ratio at or above `x`; a 6-decimal round first keeps an exact 3.6 at 3.60. */
+export function ceilRr(x) {
+  return Math.ceil(Math.round(Number(x) * 1e6) / 1e4) / 100
 }
 
 /**
@@ -731,13 +740,12 @@ export function effectiveRrFloor(db, accountId = null, strategy = null) {
  */
 export function expectancyFloorFor(stats, floor, minE) {
   const ev = expectancyVerdict(stats, floor, { minE })
-  if (ev.need == null) return floor
+  if (ev.need == null) return ceilRr(floor)
   // Codex P2 (round 5): the gate judges a proposal's ratio rounded to two
   // decimals, so the figure handed back is the smallest two-decimal ratio
-  // at or above the floor that the gate's own comparison admits. The ceil
-  // is taken after a 6-decimal round so an exact 3.6 that floating-point
-  // carries as 3.6000000000000005 is 3.60, not 3.61.
-  let rr = Math.ceil(Math.round(Math.max(floor, ev.need) * 1e6) / 1e4) / 100
+  // at or above the floor that the gate's own comparison admits (ceilRr:
+  // an exact 3.6 that floating-point carries as 3.6000000000000005 is 3.60).
+  let rr = ceilRr(Math.max(floor, ev.need))
   for (let i = 0; i < 100 && !expectancyVerdict(stats, rr, { minE }).ok; i++) rr = Math.round((rr + 0.01) * 100) / 100
   return rr
 }
