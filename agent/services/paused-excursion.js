@@ -17,8 +17,10 @@
 // order reads from this module.
 //   1. HISTORY, once per row: the broker's own bars since the row was
 //      recorded — 1m bars for the rest of the entry hour, 1h bars after —
-//      highs and lows in R. Stamped in `excursion_backfill_json` so it runs
-//      once, with what it covered.
+//      highs and lows in R. Stamped in `excursion_backfill_json` with what
+//      it covered. It runs once; a planned segment the broker answers with
+//      no bar leaves the stamp 'partial' and the row retried hourly, up to
+//      MAX_BACKFILL_ATTEMPTS answers.
 //   2. FROM NOW ON, every monitor pass: the same account-owned, broker-
 //      timestamped quote the monitor prices every other row with.
 // Both writes only ever WIDEN the record (MAX for MFE, MIN for MAE), and only
@@ -47,8 +49,10 @@ const MINUTE = 60_000
 const HOUR = 3_600_000
 /** The batch fetch caps a native period at 3,000 bars (ctrader-ws.js). */
 export const MAX_HOUR_BARS = 3000
-/** A failed or empty history fetch is retried at most this often per row. */
+/** A failed or incomplete history fetch is retried at most this often per row. */
 export const BACKFILL_RETRY_MS = HOUR
+/** Answers with a planned segment missing, before the partial stamp stands. */
+export const MAX_BACKFILL_ATTEMPTS = 3
 /** History fetches started per monitor pass; the rest wait for the next. */
 export const BACKFILL_PER_PASS = 2
 
@@ -124,6 +128,13 @@ export function backfillPlan(entryMs, nowMs) {
   return { entryMs, firstFullHour, minutes, hours }
 }
 
+/** No stamp yet, or a partial one still allowed another attempt. */
+export function backfillDue(pos) {
+  const raw = pos?.excursion_backfill_json
+  if (raw == null) return true
+  try { return JSON.parse(raw)?.final === false } catch { return false }
+}
+
 /** Paused rows still open — the rows the monitor's own pass skips. */
 export function pausedRows(db) {
   return db.prepare(
@@ -168,26 +179,40 @@ export async function backfillRow(db, pos, { fetchBars = fetchOwnedBars, now = D
   }
   const fromMinutes = plan.minutes ? excursionFromBars(pos, minuteBars, plan.minutes.fromMs) : null
   const fromHours = plan.hours ? excursionFromBars(pos, hourBars, plan.hours.fromMs) : null
-  if (!fromMinutes && !fromHours) return { id: pos.id, status: 'no_bars' }
+  // A planned segment the broker answered with no usable bar may hold the
+  // extreme (Codex P2 on #1321): it is named, the stamp says 'partial', and
+  // the row stays due until the segment answers or MAX_BACKFILL_ATTEMPTS is
+  // spent (a market shut for the rest of the entry hour never will).
+  const missing = [plan.minutes && !fromMinutes ? '1m' : null, plan.hours && !fromHours ? '1h' : null].filter(Boolean)
+  const previous = pos.excursion_backfill_json ?? null
+  let prior = null
+  try { prior = previous == null ? null : JSON.parse(previous) } catch { prior = null }
+  const attempts = (Number.isSafeInteger(prior?.attempts) ? prior.attempts : 0) + 1
+  const firsts = [fromMinutes?.firstBarMs, fromHours?.firstBarMs].filter(Number.isFinite)
   const mfeR = Math.max(fromMinutes?.mfeR ?? 0, fromHours?.mfeR ?? 0)
   const maeR = Math.min(fromMinutes?.maeR ?? 0, fromHours?.maeR ?? 0)
-  const firstBarMs = Math.min(...[fromMinutes?.firstBarMs, fromHours?.firstBarMs].filter(Number.isFinite))
   const record = {
     at: new Date(at).toISOString(),
     source: 'broker_bid_bars',
     from: new Date(entryMs).toISOString(),
-    firstBar: new Date(firstBarMs).toISOString(),
+    firstBar: firsts.length ? new Date(Math.min(...firsts)).toISOString() : null,
     minuteBars: fromMinutes?.bars ?? 0,
     hourBars: fromHours?.bars ?? 0,
     invalidBars: (fromMinutes?.invalidBars ?? 0) + (fromHours?.invalidBars ?? 0),
-    coverage: plan.hours?.capped ? 'partial' : 'full',
+    missing,
+    coverage: plan.hours?.capped || missing.length > 0 ? 'partial' : 'full',
+    attempts,
+    final: missing.length === 0 || attempts >= MAX_BACKFILL_ATTEMPTS,
     mfeR, maeR,
   }
+  // Compare-and-set on the stamp this pass read: a concurrent writer, an
+  // unpause or a close in between leaves the row untouched.
   const res = db.prepare(`UPDATE monitored_positions
     SET mfe_r = MAX(COALESCE(mfe_r, 0), ?), mae_r = MIN(COALESCE(mae_r, 0), ?), excursion_backfill_json = ?
-    WHERE id = ? AND status = 'active' AND COALESCE(paused, 0) = 1 AND excursion_backfill_json IS NULL`)
-    .run(mfeR, maeR, JSON.stringify(record), pos.id)
-  return { id: pos.id, status: res.changes === 1 ? 'filled' : 'row_changed', record }
+    WHERE id = ? AND status = 'active' AND COALESCE(paused, 0) = 1 AND excursion_backfill_json IS ?`)
+    .run(mfeR, maeR, JSON.stringify(record), pos.id, previous)
+  if (res.changes !== 1) return { id: pos.id, status: 'row_changed', record }
+  return { id: pos.id, status: record.final && missing.length === 0 ? 'filled' : (record.final ? 'partial_final' : 'partial_retry'), record }
 }
 
 /**
@@ -212,7 +237,7 @@ export async function recordPausedExcursions(db, {
   // 1. History — once per row, a bounded number per pass, never two runs at once.
   if (!backfillInFlight) {
     const at = now()
-    const due = list.filter(p => p.excursion_backfill_json == null
+    const due = list.filter(p => backfillDue(p)
       && !(at - (lastAttemptMs.get(p.id) ?? -Infinity) < BACKFILL_RETRY_MS)).slice(0, Math.max(0, perPass))
     if (due.length > 0) {
       for (const p of due) lastAttemptMs.set(p.id, at)
@@ -224,7 +249,7 @@ export async function recordPausedExcursions(db, {
             const r = await backfillRow(db, p, { fetchBars, now })
             results.push(r)
             if (r.status === 'filled') log(`MAE/MFE history for ${p.symbol} [row${p.id}] from ${r.record.minuteBars}×1m + ${r.record.hourBars}×1h bars: MFE ${r.record.mfeR.toFixed(2)}R, MAE ${r.record.maeR.toFixed(2)}R`)
-            else if (r.status !== 'row_changed') log(`MAE/MFE history for ${p.symbol} [row${p.id}] not filled: ${r.status}${r.error ? ` (${r.error})` : ''}`)
+            else if (r.status !== 'row_changed') log(`MAE/MFE history for ${p.symbol} [row${p.id}] ${r.record ? `partial (no bars for ${r.record.missing.join(', ')}; attempt ${r.record.attempts}${r.record.final ? ', final' : ''})` : `not filled: ${r.status}`}${r.error ? ` (${r.error})` : ''}`)
           } catch (err) {
             results.push({ id: p.id, status: 'error', error: String(err?.message || err) })
           }

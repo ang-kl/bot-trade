@@ -12,7 +12,7 @@ import { initDB, setState } from '../db.js'
 import { refreshHeldPositionPrices } from './held-prices.js'
 import {
   backfillPlan, excursionFromBars, recordPausedExcursions, resetPausedExcursionState,
-  rAtPrice, sideOf, BACKFILL_RETRY_MS, MAX_HOUR_BARS,
+  rAtPrice, sideOf, BACKFILL_RETRY_MS, MAX_BACKFILL_ATTEMPTS, MAX_HOUR_BARS,
 } from './paused-excursion.js'
 
 process.env.CTRADER_CLIENT_ID = 'fixture-app'
@@ -145,6 +145,66 @@ test('the record only ever widens: an existing deeper figure survives a shallowe
   await out.backfill
   assert.deepEqual([row(id).mfe_r, row(id).mae_r], [2.5, -0.9])
   assert.ok(row(id).excursion_backfill_json, 'the history is still stamped as done')
+})
+
+test('a planned segment answered with no bar is partial and retried, up to the attempt limit (Codex P2 on #1321)', async t => {
+  const { db, ids: [id], row } = fixture(t)
+  const calls = []
+  let minuteAnswer = []
+  const full = barsFor([])
+  const fetchBars = async (target, period, count, endMs) => {
+    calls.push(period)
+    return period === '1m' ? minuteAnswer : full(target, period, count, endMs)
+  }
+  let clock = NOW
+  const pass = async () => { const o = await recordPausedExcursions(db, { fetchBars, refreshPrices: async () => new Map(), now: () => clock }); return o.backfill ? (await o.backfill)[0] : null }
+
+  const first = await pass()
+  assert.equal(first.status, 'partial_retry')
+  let stamp = JSON.parse(row(id).excursion_backfill_json)
+  assert.deepEqual([stamp.missing, stamp.coverage, stamp.final, stamp.attempts], [['1m'], 'partial', false, 1],
+    'an empty entry hour is named, never labelled full')
+  assert.ok(Math.abs(row(id).mfe_r - 1) < 1e-9, 'the hours that did answer are recorded meanwhile')
+
+  clock += BACKFILL_RETRY_MS - 1
+  assert.equal(await pass(), null, 'not retried inside the interval')
+  clock += 1
+  minuteAnswer = [{ t: ENTRY_AT + 8_000, o: 376, h: 377, l: 330, c: 331 }]
+  const second = await pass()
+  assert.equal(second.status, 'filled', 'the segment answered on retry: complete')
+  stamp = JSON.parse(row(id).excursion_backfill_json)
+  assert.deepEqual([stamp.missing, stamp.coverage, stamp.final, stamp.attempts], [[], 'full', true, 2])
+  assert.ok(Math.abs(row(id).mfe_r - (376.46 - 330) / 28.15) < 1e-9, 'the retried minute low is now in the record')
+  clock += 2 * BACKFILL_RETRY_MS
+  assert.equal(await pass(), null, 'a complete stamp is never fetched again')
+})
+
+test('a segment that never answers stops being asked after the attempt limit', async t => {
+  const { db, ids: [id], row } = fixture(t)
+  let minuteCalls = 0
+  const full = barsFor([])
+  const fetchBars = async (target, period, count, endMs) => period === '1m' ? (minuteCalls++, []) : full(target, period, count, endMs)
+  let clock = NOW
+  for (let i = 0; i < MAX_BACKFILL_ATTEMPTS + 2; i++) {
+    const o = await recordPausedExcursions(db, { fetchBars, refreshPrices: async () => new Map(), now: () => clock })
+    await o.backfill
+    clock += BACKFILL_RETRY_MS
+  }
+  assert.equal(minuteCalls, MAX_BACKFILL_ATTEMPTS)
+  const stamp = JSON.parse(row(id).excursion_backfill_json)
+  assert.deepEqual([stamp.missing, stamp.coverage, stamp.final, stamp.attempts], [['1m'], 'partial', true, MAX_BACKFILL_ATTEMPTS])
+})
+
+test('a stamp written after this pass read the row is never overwritten (compare-and-set)', async t => {
+  const { db, ids: [id], row } = fixture(t)
+  const stale = db.prepare('SELECT * FROM monitored_positions WHERE id = ?').all(id)
+  const other = JSON.stringify({ final: true, coverage: 'full', attempts: 1, missing: [] })
+  db.prepare('UPDATE monitored_positions SET excursion_backfill_json = ? WHERE id = ?').run(other, id)
+  const out = await recordPausedExcursions(db, { rows: stale, fetchBars: barsFor([]), refreshPrices: async () => new Map(), now: () => NOW })
+  const [result] = await out.backfill
+  assert.equal(result.status, 'row_changed')
+  assert.equal(row(id).excursion_backfill_json, other)
+  assert.deepEqual([row(id).mfe_r, row(id).mae_r], [0, 0])
 })
 
 test('a failed fetch stamps nothing and retries only after the retry interval', async t => {
