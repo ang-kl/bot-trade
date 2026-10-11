@@ -34,6 +34,25 @@ test('a quoted 3.00 that hides a raw 3.004 does not leave the static floor at ex
   assert.equal(expectancyVerdict(stats, floor, { minE: MIN_E }).ok, true)
 })
 
+test('an exact 3.6 the gate admits stays 3.6 (floating-point carries it as 3.6000000000000005; burn-in pins it)', () => {
+  const stats = { trades: 24, winRate: 0.25 }
+  const floor = expectancyFloorFor(stats, HARD_MIN_RR, MIN_E)
+  assert.equal(floor, 3.6)
+  assert.equal(expectancyVerdict(stats, floor, { minE: MIN_E }).ok, true)
+})
+
+test('an owner floor with more than two decimals is answered with the two-decimal ratio the gate will actually see (Codex P2, round 5)', () => {
+  // the gate rounds a proposal's ratio to two decimals before judging it, so
+  // 3.004 would reach it as 3.00 and fail the floor itself
+  const stats = { trades: 40, winRate: 1.15 / 4.002 }
+  const floor = expectancyFloorFor(stats, 3.004, MIN_E)
+  assert.equal(floor, Math.round(floor * 100) / 100, 'two decimals')
+  assert.ok(floor >= 3.01, `at or above the next hundredth, got ${floor}`)
+  assert.equal(expectancyVerdict(stats, floor, { minE: MIN_E }).ok, true)
+  // no measured demand above an exact two-decimal floor: unchanged
+  assert.equal(expectancyFloorFor({ trades: 40, winRate: 0.6 }, 4.2, MIN_E), 4.2)
+})
+
 test('a win rate that needs less than the static floor, or a thin sample, leaves the floor alone', () => {
   assert.equal(expectancyFloorFor({ trades: 40, winRate: 0.6 }, HARD_MIN_RR, MIN_E), HARD_MIN_RR, '0.92R needed: the static floor stands')
   assert.equal(expectancyFloorFor({ trades: 5, winRate: 0.1 }, HARD_MIN_RR, MIN_E), HARD_MIN_RR, 'thin sample fails open')

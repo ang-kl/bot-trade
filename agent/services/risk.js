@@ -732,7 +732,12 @@ export function effectiveRrFloor(db, accountId = null, strategy = null) {
 export function expectancyFloorFor(stats, floor, minE) {
   const ev = expectancyVerdict(stats, floor, { minE })
   if (ev.need == null) return floor
-  let rr = Math.max(floor, ev.need)
+  // Codex P2 (round 5): the gate judges a proposal's ratio rounded to two
+  // decimals, so the figure handed back is the smallest two-decimal ratio
+  // at or above the floor that the gate's own comparison admits. The ceil
+  // is taken after a 6-decimal round so an exact 3.6 that floating-point
+  // carries as 3.6000000000000005 is 3.60, not 3.61.
+  let rr = Math.ceil(Math.round(Math.max(floor, ev.need) * 1e6) / 1e4) / 100
   for (let i = 0; i < 100 && !expectancyVerdict(stats, rr, { minE }).ok; i++) rr = Math.round((rr + 0.01) * 100) / 100
   return rr
 }
