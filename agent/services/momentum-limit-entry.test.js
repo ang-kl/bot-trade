@@ -96,6 +96,23 @@ test('closed/unknown market, unlisted account, stale evidence, wrong limit side 
   assert.equal(stale.sent.length, 0)
 })
 
+// W8 — Claude · № 13,383 12-Oct (owner "go W8"; claude-builder): under
+// `_all` the resting-limit path reads the registry — an account it does not
+// hold enabled cannot send; once enabled, the same request is placed.
+test('W8: under `_all` a resting momentum limit needs the account enabled in the registry', async t => {
+  const all = { loadSwitch: () => ({ market: true, accounts: ['_all'] }) }
+  const absent = fixture(t)
+  assert.deepEqual([(await absent.place(all)).reason, absent.sent.length], ['account_or_producer_not_enabled', 0])
+  const disabled = fixture(t)
+  disabled.db.prepare(`INSERT INTO accounts (account_id, enabled, mode) VALUES ('11', 0, 'archived')`).run()
+  assert.deepEqual([(await disabled.place(all)).reason, disabled.sent.length], ['account_or_producer_not_enabled', 0])
+  const enabled = fixture(t)
+  enabled.db.prepare(`INSERT INTO accounts (account_id, enabled, mode) VALUES ('11', 1, 'active')`).run()
+  const r = await enabled.place(all)
+  assert.equal(r.placed, true, r.reason)
+  assert.equal(enabled.sent.length, 1)
+})
+
 test('limit plans and reserved USD margin are identical on both registered account hosts', async t => {
   const plans = []
   for (const live of [false, true]) {

@@ -4,7 +4,7 @@ import { lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
 import { encodeLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { entryMarketGate, resolveEntryMarketGate } from './entry-hours.js'
 import { loadClosedMarketLimitsConfig, buildLimitPayload } from './closed-market-limits.js'
-import { momentumPlanApplies } from './momentum-entry-switch.js'
+import { momentumPlanApplies, registryEnabled } from './momentum-entry-switch.js'
 import { readEntryReference, readEntryEvidence, preGatePlan, finalPlan, loadMomentumCostSchedule } from './momentum-entry-producer.js'
 import { recordMomentumLimit } from './momentum-entry-contract.js'
 import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
@@ -21,7 +21,8 @@ export async function placeMomentumLimit(db, creds, symbol, synth, opts = {}) {
     if (proposal) risk.persistPostApprovalVeto(db, proposal, `momentum_limit_refused: ${reason}`)
     return { placed: false, skipped: 'momentum_limit_refused', reason }
   }
-  if (!momentumPlanApplies(producerId, { accountId, ...(opts.loadSwitch ? { load: opts.loadSwitch } : {}) })) return refuse('account_or_producer_not_enabled')
+  // W8 (Claude · № 13,382 12-Oct; claude-builder): `_all` reads the registry here.
+  if (!momentumPlanApplies(producerId, { accountId, isEnabled: registryEnabled(db), ...(opts.loadSwitch ? { load: opts.loadSwitch } : {}) })) return refuse('account_or_producer_not_enabled')
   if (!loadClosedMarketLimitsConfig(db).on) return refuse('off')
   if (opts.reason !== 'htf') return refuse('open_market_htf_only')
   if (!creds.entryLedger?.reserve) return refuse('entry_ledger_required')

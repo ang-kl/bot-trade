@@ -4,7 +4,7 @@ import { planMomentumTargets, shiftStopToFill, stopHeld, sameTicks, offPriceGrid
 import { readPartialOwnership, ownershipMatchesPlan } from './momentum-partial-ownership.js'
 import { registerPartialPlan } from './momentum-partial-manager.js'
 import { readMomentumPartialPass, partialPassFreshness, partialPassForAccount } from './momentum-partial-runtime.js'
-import { loadMomentumEntrySwitch, momentumAccountListed } from './momentum-entry-switch.js'
+import { loadMomentumEntrySwitch, momentumAccountListed, registryEnabled } from './momentum-entry-switch.js'
 import { finalMomentumLimitEvidence, isFinalMomentumLimitFill } from './momentum-limit-fill-evidence.js'
 
 const json = value => { try { return JSON.parse(value) } catch { return null } }
@@ -385,11 +385,15 @@ export function momentumTargetStatus(db, { accountId, all = false, limit = 50, n
   // B1 (T4 fix round): on only for the accounts the file names. A scoped read
   // of an unlisted account says so; `all` is on when any account is listed.
   const accounts = Array.isArray(entrySwitch.accounts) ? entrySwitch.accounts : []
-  const listed = all ? accounts.length > 0 : momentumAccountListed(entrySwitch, accountId)
+  // W8 (Claude · № 13,382 12-Oct; claude-builder): `_all` names every enabled
+  // registry account; a scoped read checks this account against the registry.
+  const listed = all ? accounts.length > 0 : momentumAccountListed(entrySwitch, accountId, { isEnabled: registryEnabled(db) })
   const enabledOf = () => entrySwitch.market === true && listed
   const offWhy = k => entrySwitch.market !== true
     ? `switched off (config/momentum-entries.json ${k} is not true${entrySwitch.error ? `; ${entrySwitch.error}` : ''}) — the owner's OD-1 turns it on in that file`
-    : `switched on, but ${all ? 'no account is' : `account ${accountId} is not`} in config/momentum-entries.json \`accounts\` — widening is an owner yes`
+    : accounts.includes('_all') && !all
+      ? `switched on for every enabled account (config/momentum-entries.json \`accounts\`: "_all"), but account ${accountId} is not enabled in the registry`
+      : `switched on, but ${all ? 'no account is' : `account ${accountId} is not`} in config/momentum-entries.json \`accounts\` — widening is an owner yes`
   const integrationGaps = [
     ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([, w]) => !w.wired).map(([k, w]) => `${k}: ${w.note}`),
     ...Object.entries(MOMENTUM_TARGET_PRODUCERS).filter(([k, w]) => w.wired && !enabledOf(k))

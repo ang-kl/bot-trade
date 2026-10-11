@@ -29,7 +29,7 @@ import { seedStrategyPinsFromConfig, armedTradeKeys } from './stage-matrix.js'
 import { seedGlobalStrategiesFromConfig } from './global-strategy-seed.js'
 import { validateOrderBracket, invalidateSidecarSession } from '../lib/exec-engine.js'
 import { relativePoints } from '../lib/lot-sizing.js'
-import { loadMomentumEntrySwitch, momentumPlanApplies, MOMENTUM_ENTRY_PRODUCERS } from './momentum-entry-switch.js'
+import { loadMomentumEntrySwitch, momentumPlanApplies, MOMENTUM_ENTRY_PRODUCERS, registryEnabled } from './momentum-entry-switch.js'
 import { swapCarryReserve, medianBookHoldingNights, gridStop, MOMENTUM_CLOSED_MARKET_REFUSAL,
   MOMENTUM_INTENT_AMBIGUOUS } from './momentum-entry-producer.js'
 import { readMomentumEntry } from './momentum-entry-contract.js'
@@ -57,15 +57,19 @@ const bookSynth = (over = {}) => ({ consensus_bias: 'long', direction_reason: 't
 // ---------------------------------------------------------------------------
 // The switch
 // ---------------------------------------------------------------------------
-test('the switch is ON as the repo declares it (owner OD-1, 27-09): both momentum producers take the T4 path, nothing else does', () => {
+test('the switch is ON as the repo declares it (owner OD-1, 27-09; W8 `_all`, 12-10): both momentum producers take the T4 path, nothing else does', () => {
   const sw = loadMomentumEntrySwitch()
   assert.equal(sw.market, true, 'config/momentum-entries.json carries the owner\'s OD-1: market entries on')
   assert.equal(sw.error, null, 'the shipped file is readable')
-  // B1: exactly the approved account (…0058, the tsmom_long trial account).
-  assert.deepEqual(sw.accounts, [TRIAL_ACCT])
+  // W8 (Claude · № 13,382 12-Oct; claude-builder): every enabled account,
+  // by the registry's `_all` token — no hardcoded list (principle 9).
+  assert.deepEqual(sw.accounts, ['_all'])
+  const enabled = new Set([TRIAL_ACCT, '46130949'])
+  const isEnabled = id => enabled.has(id)
   for (const p of MOMENTUM_ENTRY_PRODUCERS) {
-    assert.equal(momentumPlanApplies(p, { accountId: TRIAL_ACCT }), true, p)
-    assert.equal(momentumPlanApplies(p, { accountId: '46130949' }), false, `${p} on an unlisted account`)
+    assert.equal(momentumPlanApplies(p, { accountId: TRIAL_ACCT, isEnabled }), true, p)
+    assert.equal(momentumPlanApplies(p, { accountId: '46130949', isEnabled }), true, `${p} on another enabled account`)
+    assert.equal(momentumPlanApplies(p, { accountId: '43002148', isEnabled }), false, `${p} on a disabled account`)
     assert.equal(momentumPlanApplies(p), false, `${p} with no account`)
   }
   // No widening: the switch names exactly the two momentum producers; every
@@ -74,7 +78,7 @@ test('the switch is ON as the repo declares it (owner OD-1, 27-09): both momentu
   for (const p of ['scan_dispatch', 'pending_fib_orders', 'manual_assisted', undefined]) assert.equal(momentumPlanApplies(p, { accountId: TRIAL_ACCT }), false, String(p))
 })
 
-test('B1: a fresh database seeded with the shipped configs in boot order arms tsmom_long on every account, and only the listed account takes the momentum market path', () => {
+test('B1 → W8: a fresh database seeded with the shipped configs in boot order arms tsmom_long on every account, and every ENABLED account takes the momentum market path', () => {
   const db = initDB(':memory:')
   try {
     const ids = [TRIAL_ACCT, '46130949', '46139908', '46133489']
@@ -86,9 +90,12 @@ test('B1: a fresh database seeded with the shipped configs in boot order arms ts
     // The hazard the account list closes: the arm state alone arms every account.
     for (const id of ids) assert.equal(armedTradeKeys(db, getState, id).has('tsmom_long'), true, `tsmom_long armed on ${id} by the shipped seeds`)
     for (const id of ids) assert.equal(isMomentumAccount(db, id), true, `${id} runs the daily pass under _all`)
-    // The shipped switch: only the listed account takes the plan path.
+    // The shipped switch (W8, `_all`): every enabled account takes the plan
+    // path; a disabled one does not.
+    db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('43002148', '2148', 0, 0, 'archived')`).run()
+    const isEnabled = registryEnabled(db)
     for (const p of MOMENTUM_ENTRY_PRODUCERS) {
-      assert.deepEqual(ids.filter(id => momentumPlanApplies(p, { accountId: id })), [TRIAL_ACCT], p)
+      assert.deepEqual([...ids, '43002148'].filter(id => momentumPlanApplies(p, { accountId: id, isEnabled })), ids, p)
     }
   } finally { db.close() }
 })
@@ -98,11 +105,42 @@ test('the account list: only well-formed ids count; missing, empty or malformed 
   const at = (name, text) => { const f = join(dir, name); writeFileSync(f, text); return f }
   for (const [name, text] of [['none.json', '{"market":true}'], ['empty.json', '{"market":true,"accounts":[]}'],
     ['string.json', '{"market":true,"accounts":"46130058"}'], ['number.json', '{"market":true,"accounts":[46130058]}'],
-    ['alias.json', '{"market":true,"accounts":["_all"]}']]) {
+    ['alias.json', '{"market":true,"accounts":["all", "*", "_ALL"]}']]) {
     const load = () => loadMomentumEntrySwitch(at(name, text))
     assert.deepEqual(load().accounts, [], name)
     assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: TRIAL_ACCT, load }), false, name)
   }
+})
+
+test('W8: `_all` names every enabled registry account and no disabled or malformed one; explicit ids still work', () => {
+  const dir = tempDir('t4-all-')
+  const at = (name, text) => { const f = join(dir, name); writeFileSync(f, text); return f }
+  const db = initDB(':memory:')
+  try {
+    db.prepare(`INSERT INTO accounts (account_id, enabled, mode) VALUES ('47790949', 1, 'active'), ('46979908', 1, 'manage_only'), ('43002148', 0, 'archived')`).run()
+    const isEnabled = registryEnabled(db)
+    const all = () => loadMomentumEntrySwitch(at('all.json', '{"market":true,"accounts":["_all"]}'))
+    assert.deepEqual(all().accounts, ['_all'])
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '47790949', load: all, isEnabled }), true)
+    assert.equal(momentumPlanApplies('daily_momentum_account', { accountId: 46979908, load: all, isEnabled }), true, 'a numeric id reads as its string')
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '43002148', load: all, isEnabled }), false, 'disabled')
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '99999999', load: all, isEnabled }), false, 'unknown to the registry')
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: 'abc', load: all, isEnabled: () => true }), false, 'malformed id')
+    assert.equal(momentumPlanApplies('scan_dispatch', { accountId: '47790949', load: all, isEnabled }), false, 'not a momentum producer')
+    // Without a registry reader (the loop's call), `_all` trusts the caller's
+    // roster, which is the registry's enabled entry accounts.
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '47790949', load: all }), true)
+    // An explicit list still names exactly its ids; `_all` plus an id is `_all`.
+    const one = () => loadMomentumEntrySwitch(at('one.json', '{"market":true,"accounts":["46130058"]}'))
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '46130058', load: one, isEnabled }), true, 'listed, even though this registry does not hold it')
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '47790949', load: one, isEnabled }), false)
+    const mixed = () => loadMomentumEntrySwitch(at('mixed.json', '{"market":true,"accounts":["_all","46130058",7]}'))
+    assert.deepEqual(mixed().accounts, ['_all', '46130058'])
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '46979908', load: mixed, isEnabled }), true)
+    // Off is off, `_all` or not.
+    const off = () => loadMomentumEntrySwitch(at('off.json', '{"market":false,"accounts":["_all"]}'))
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '47790949', load: off, isEnabled }), false)
+  } finally { db.close() }
 })
 
 test('only the literal true turns the switch on; unreadable is off; non-momentum producers never take the path', () => {
@@ -280,9 +318,25 @@ test('SWITCH OFF: a momentum entry takes the pre-T4 path — no evidence read, n
   assert.ok(!s.vetoes().some(v => v.startsWith('momentum_')), 'no T4 refusal while off')
 })
 
-test('B1, SWITCH ON as shipped, an account NOT in the list takes the pre-T4 path — no evidence read, no intent, refused at the boundary', async t => {
+test('W8, SWITCH ON as shipped (`_all`): an entry on an enabled account other than …0058 carries the plan through the real dispatch', async t => {
+  // Red on the pre-W8 tree: the shipped list named …0058 only, so this
+  // enabled account's book entry went out with no target and was refused at
+  // the shared boundary (guard_no_target).
   const s = await scene(t)
   const shipped = loadMomentumEntrySwitch()
+  assert.deepEqual([shipped.market, shipped.accounts], [true, ['_all']])
+  assert.notEqual(ACCT, TRIAL_ACCT)
+  const out = await s.run(shipped)
+  assert.ok(out, `entered: ${JSON.stringify(s.vetoes())}`)
+  assert.equal(s.sent.length, 1)
+  assert.ok(s.sent[0].relativeTakeProfit > 0 && s.sent[0].relativeStopLoss > 0, 'the order carries the plan\'s bracket')
+  assert.ok(s.intents().length >= 1, 'a target intent is recorded')
+  assert.ok(!s.vetoes().some(v => /guard_no_target/.test(v)), JSON.stringify(s.vetoes()))
+})
+
+test('B1, SWITCH ON with an explicit list, an account NOT in the list takes the pre-T4 path — no evidence read, no intent, refused at the boundary', async t => {
+  const s = await scene(t)
+  const shipped = { market: true, accounts: [TRIAL_ACCT], error: null }
   assert.deepEqual([shipped.market, shipped.accounts.includes(ACCT)], [true, false], 'the scene account is not listed')
   assert.equal(await s.run(shipped) ?? null, null, 'no entry')
   assert.deepEqual(s.reads, { symbolsList: 0, assets: 0, symbolsById: 0, quote: 0, reconcile: 0 }, 'no momentum evidence read')

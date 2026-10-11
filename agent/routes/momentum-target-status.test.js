@@ -44,19 +44,27 @@ test('target status is read-only, explicit about absent plans, and requires an a
   assert.equal(out.body.pass.fresh, false)
   assert.match(out.body.pass.unavailable, /never run/)
   // V3 T4: the market producer is wired and switched ON by the repo's
-  // config (owner OD-1, 27-09) for the accounts the file names only (B1).
-  // Account 11 is not named, so its read says so; the limit producer is not
-  // wired, and the pass never ran: three gaps.
+  // config (owner OD-1, 27-09). W8 (Claude · № 13,382 12-Oct; claude-builder):
+  // the file names `_all`, every ENABLED registry account. Account 11 is not
+  // in the registry, so its read says so; the limit producer is not wired,
+  // and the pass never ran: three gaps.
   assert.deepEqual(Object.fromEntries(Object.entries(out.body.wiring).map(([k, w]) => [k, w.status])), { market: 'wired', limit: 'wired' })
   assert.deepEqual([out.body.wiring.market.enabled, out.body.wiring.market.switch], [false, 'off'])
-  assert.deepEqual(out.body.wiring.market.accounts, ['46130058'])
+  assert.deepEqual(out.body.wiring.market.accounts, ['_all'])
   assert.deepEqual([out.body.wiring.limit.enabled, out.body.wiring.limit.switch], [false, 'off'])
-  assert.ok(out.body.integrationGaps.some(g => /^market: wired, switched on, but account 11 is not in /.test(g)), JSON.stringify(out.body.integrationGaps))
+  assert.ok(out.body.integrationGaps.some(g => /^market: wired, switched on for every enabled account .* but account 11 is not enabled in the registry/.test(g)), JSON.stringify(out.body.integrationGaps))
   assert.equal(out.body.integrationGaps.length, 3)
-  // The listed account reads it on, with no market gap.
-  const listed = await get('?account=46130058')
-  assert.deepEqual([listed.body.wiring.market.enabled, listed.body.wiring.market.switch], [true, 'on'])
-  assert.ok(!listed.body.integrationGaps.some(g => /^market: /.test(g)), JSON.stringify(listed.body.integrationGaps))
+  // Every ENABLED account reads it on, with no market gap — not only …0058.
+  for (const id of ['46130058', '47790949', '46979908']) db.prepare(`INSERT INTO accounts (account_id, enabled, mode) VALUES (?, 1, 'active')`).run(id)
+  db.prepare(`INSERT INTO accounts (account_id, enabled, mode) VALUES ('43002148', 0, 'archived')`).run()
+  for (const id of ['46130058', '47790949', '46979908']) {
+    const listed = await get(`?account=${id}`)
+    assert.deepEqual([listed.body.wiring.market.enabled, listed.body.wiring.market.switch], [true, 'on'], id)
+    assert.ok(!listed.body.integrationGaps.some(g => /^market: /.test(g)), JSON.stringify(listed.body.integrationGaps))
+  }
+  // A disabled account does not.
+  const archived = await get('?account=43002148')
+  assert.deepEqual([archived.body.wiring.market.enabled, archived.body.wiring.market.switch], [false, 'off'])
   assert.ok(out.body.integrationGaps.some(g => /^limit: /.test(g)), JSON.stringify(out.body.integrationGaps))
   assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='momentum_target_intents'").get().n, 0)
 })
