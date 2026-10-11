@@ -90,6 +90,7 @@ export function replayablePopulation(db, { days = 30, cleanOnly = true, accountI
     SELECT t.id, t.symbol, t.side, t.entry_price, t.sl_price, t.tp_price,
            t.opened_at, t.closed_at, t.net_pnl, t.origin, t.account_id,
            ${attr} AS strategy_attr,
+           t.broker_sl_initial, t.realised_rr, t.exit_price_suspect, t.risk_event_id, t.label_timeframe, t.label_regime,
            pm.bars_json, pm.r_multiple AS actual_r, pm.classification
       FROM trades t
       JOIN trade_postmortems pm ON pm.trade_id = t.id

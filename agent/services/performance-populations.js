@@ -352,6 +352,13 @@ export function readScoreboardReport(db, options) { return isolatedReport(db, 's
  * /state/hourly-activity off the trading thread. `{ scope, to }` exactly as
  * the route resolved them; the builder is the unchanged hourlyActivity. */
 export function readHourlyActivity(db, options) { return isolatedReport(db, 'hourly-activity', options) }
+/** Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder): GET
+ * /state/theory-gap off the trading thread — read-only research readouts
+ * (services/theory-gap.js); `{ section, strategy, days }` as the route
+ * validated them. */
+export function readTheoryGap(db, options) { return isolatedReport(db, 'theory-gap', options) }
+/** GET /state/exit-counterfactual with any extended option, off the trading thread. */
+export function readExitCounterfactualExtended(db, options) { return isolatedReport(db, 'exit-counterfactual-extended', options) }
 // ---------------------------------------------------------------------------
 // GET /state/storage and POST /actions/storage-purge (V3 M2b, M2 check nit 9).
 //
@@ -602,6 +609,15 @@ async function buildReport(db, kind, options, hooks = {}) {
     const { buildCalendarCoverage } = await import('./calendar-coverage.js')
     // One snapshot across the demand, the export and every calendar read.
     return db.transaction(() => buildCalendarCoverage(db, options))()
+  }
+  if (kind === 'exit-counterfactual-extended') {
+    const { exitCounterfactualExtended } = await import('./exit-counterfactual-extended.js')
+    return db.transaction(() => exitCounterfactualExtended(db, options))()
+  }
+  if (kind === 'theory-gap') {
+    // Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder): one read snapshot.
+    const { theoryGapReport } = await import('./theory-gap.js')
+    return db.transaction(() => theoryGapReport(db, options))()
   }
   if (kind === 'scoreboard') {
     // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
