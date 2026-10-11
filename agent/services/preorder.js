@@ -328,6 +328,29 @@ async function brokerEntry(creds, symbolId) {
   return m1.length > 0 ? m1[m1.length - 1].c : null
 }
 
+/**
+ * Claude · № 13,172 11-Oct (ordered № 13,171; claude-builder). What the gate
+ * sized ONE LOT as, and where that came from. The route records the broker's
+ * lot size and minimum before its gate (actions.js, rememberVolumeMeta); this
+ * dry run is read-only, so on a symbol with no record on file it sizes on
+ * the contract table and the global minimum lot, and its size — or a
+ * min-lot refusal — can differ from the route's. Said here, not discovered.
+ */
+function manualLotRecord(symbol, result) {
+  const c = result?.checks || {}
+  const stored = c.units_per_lot?.source ?? null
+  const fromBroker = stored === 'broker'
+  return {
+    stored,
+    unitsPerLot: num(c.units_per_lot?.value),
+    brokerMinLots: num(c.broker_min_lots),
+    sizedAsRoute: fromBroker,
+    note: fromBroker
+      ? `the gate sized ${symbol} in the broker's recorded units and floored at its recorded minimum lot, as the route will`
+      : `no broker lot record on file for ${symbol}: this dry run sized on the contract table and the global minimum lot; POST /actions/manual-order records the broker's lot size and minimum before its gate, so its size or a min-lot refusal can differ — run the dry run again after the first order on this symbol`,
+  }
+}
+
 async function manualPreorder(db, input, deps) {
   // The route's own validation, in its order (actions.js:6376-6391).
   const symbol = String(input.symbol || '').toUpperCase().trim()
@@ -369,7 +392,7 @@ async function manualPreorder(db, input, deps) {
   const result = risk.evaluateTrade(db, proposal, config)
   return assemble(db, {
     kind: 'manual', route: 'manual_market', accountId: creds?.accountId ?? null, proposal, result, config,
-    upstream: [], strategyGate: 'not_consulted',
+    upstream: [], strategyGate: 'not_consulted', lotRecord: manualLotRecord(symbol, result),
     entrySource: { kind: 'broker_1m_close', symbolId: String(resolved.id), symbolSource: resolved.source },
     notChecked: ['broker minimum volume after approval (actions.js:6440-6446)', 'execution guard at send (actions.js:6475-6479)'],
   })
@@ -379,7 +402,7 @@ async function manualPreorder(db, input, deps) {
 // the gate's figures, read from the gate
 // ---------------------------------------------------------------------------
 
-async function assemble(db, { kind, route, accountId, proposal, result, config, upstream, notChecked, strategyGate, signal = null, entrySource = null }) {
+async function assemble(db, { kind, route, accountId, proposal, result, config, upstream, notChecked, strategyGate, signal = null, entrySource = null, lotRecord = null }) {
   const c = result.checks || {}
   const label = await vetoLabeller()
   const blockedUpstream = upstream.find(u => !u.ok) || null
@@ -476,6 +499,8 @@ async function assemble(db, { kind, route, accountId, proposal, result, config, 
     },
     strategy: strategyRecord(db, { strategy: proposal.strategy, accountId, gate: strategyGate }),
     expectedR: EXPECTED_R_NOT_COMPUTED,
+    // manual only: what one lot was sized as, and whether the route will size the same (№ 13,172)
+    ...(lotRecord ? { lotRecord } : {}),
     proposal,
     upstream,
     notChecked,

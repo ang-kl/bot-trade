@@ -18,6 +18,7 @@ import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
+import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
 import { describeBracketGap } from '../lib/bracket-advice.js'
 import { setPhaseFlag } from '../services/phase-audit.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard, execBaseFor } from '../lib/exec-engine.js'
@@ -6489,6 +6490,24 @@ export default function actionsRouter(db, deps = {}) {
       const entry = m1.length > 0 ? m1[m1.length - 1].c : null
       if (entry == null) return res.status(502).json({ error: `Could not fetch a current price for ${symbol}` })
 
+      // Claude · № 13,172 11-Oct (ordered № 13,171 "resend the orders";
+      // claude-builder). THE BROKER'S OWN LOT RECORD, BEFORE THE GATE. The
+      // gate sizes in the units the lot-size registry holds for the symbol
+      // and floors at the broker minimum it holds (risk.js: unitsPerLot,
+      // brokerMinLots); for a symbol nobody has ordered or captured, the
+      // registry has nothing and the gate falls back to the contract table
+      // (100,000 units for any six-letter name) and the global 0.01 lots.
+      // This route fetched the broker's record only AFTER the gate, to send
+      // the order — measured 11-10 08:10Z on 47790949: DOT/AVAX/UNI/XLM
+      // approved at 0.01 lots and refused here at the broker's 0.1 minimum,
+      // BCHUSD refused as insufficient_equity with one lot priced at $4.05
+      // million. XRPUSD went through only because its record already
+      // existed. Fetch first (cached per account and symbol), record it, and
+      // the gate judges what the broker will actually accept. A record on
+      // file is never overwritten with nothing (rememberVolumeMeta).
+      const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+      rememberVolumeMeta(db, symbol, volMeta)
+
       const proposal = {
         symbol, side, entry,
         sl: Number(sl),
@@ -6532,7 +6551,8 @@ export default function actionsRouter(db, deps = {}) {
       if (riskResult.target_override?.tp1 != null) proposal.tp1 = riskResult.target_override.tp1
 
       const volLots = riskResult.adjusted_volume
-      const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+      // The gate floored at the recorded broker minimum above; this stays as
+      // the transport's own backstop and should no longer fire.
       const sized = lotsToVolume(volLots, volMeta)
       if (sized.belowMin) {
         const reason = `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)`

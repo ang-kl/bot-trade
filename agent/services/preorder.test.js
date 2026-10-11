@@ -108,6 +108,12 @@ function fakeBroker(close = 1.1) {
           ctidTraderAccountId: m.payload?.ctidTraderAccountId, symbolId: m.payload?.symbolId, period: m.payload?.period,
           trendbar: [{ low: Math.round(close * 100_000) - 50, deltaOpen: 0, deltaHigh: 60, deltaClose: 50, utcTimestampInMinutes: minute - 1, volume: 1 }],
         }],
+        // № 13,172: the route reads the symbol's lot record BEFORE its gate
+        // (an FX-shaped answer: 100,000 units a lot, 0.01-lot minimum and step)
+        [PT.SYMBOL_BY_ID_REQ]: [PT.SYMBOL_BY_ID_RES, {
+          ctidTraderAccountId: m.payload?.ctidTraderAccountId,
+          symbol: [].concat(m.payload?.symbolId ?? []).map(id => ({ symbolId: id, lotSize: 10_000_000, minVolume: 100_000, maxVolume: 100_000_000_000, stepVolume: 100_000, digits: 5, pipPosition: 4 })),
+        }],
       }[m.payloadType]
       if (!answer) return
       setImmediate(() => this.emit('message', Buffer.from(JSON.stringify({ payloadType: answer[0], payload: answer[1], clientMsgId: m.clientMsgId }))))
@@ -238,6 +244,32 @@ test('missing credentials and missing data say "cannot check" with the reason �
   assert.match(gone.cannotCheck, /levels of scan \d+ are not retained/)
   const flat = Number(db.prepare("INSERT INTO scans (symbol, bias, confidence, timeframe, strategy, price, scanned_at) VALUES (?, 'skip', 0, NULL, NULL, 1.1, '2026-01-01T00:00:00.000Z')").run(SYM).lastInsertRowid)
   assert.match((await preorderCheck(db, { scanId: flat, account: A })).cannotCheck, /not a directional signal/)
+})
+
+// Claude · № 13,172 11-Oct: the route records the broker's lot record before
+// its gate; this read-only dry run cannot, so it says which basis it sized on.
+test('manual: the dry run names the lot record it sized on, and says when the route will size differently', async (t) => {
+  const db = fresh(); t.after(() => db.close())
+  const input = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }
+  const bare = await withCreds(() => preorderCheck(db, input, { fetchEntry: async () => 1.1 }))
+  assert.equal(bare.ok, true, bare.cannotCheck || bare.error)
+  assert.equal(bare.lotRecord.stored, 'table')
+  assert.equal(bare.lotRecord.sizedAsRoute, false)
+  assert.equal(bare.lotRecord.brokerMinLots, null)
+  assert.match(bare.lotRecord.note, /no broker lot record on file for EURUSD/)
+  assert.match(bare.lotRecord.note, /records the broker's lot size and minimum before its gate/)
+  const { rememberVolumeMeta } = await import('../lib/lot-size-registry.js')
+  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000 })
+  const known = await withCreds(() => preorderCheck(db, input, { fetchEntry: async () => 1.1 }))
+  assert.equal(known.lotRecord.stored, 'broker')
+  assert.equal(known.lotRecord.unitsPerLot, 100_000)
+  assert.equal(known.lotRecord.brokerMinLots, 0.01)
+  assert.equal(known.lotRecord.sizedAsRoute, true)
+  assert.match(known.lotRecord.note, /as the route will$/)
+  // scan checks carry no lot record field at all
+  const { id } = seedScan(db)
+  const scan = await withCreds(() => preorderCheck(db, { scanId: id, account: A }))
+  assert.equal('lotRecord' in scan, false)
 })
 
 // ---- 2. equivalence with the gate --------------------------------------------
