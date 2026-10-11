@@ -71,18 +71,22 @@ test('processSegments over local files: bars continue across segment boundaries,
   const s1 = series.get(1)
   const m1 = s1.find(f => f.form === 'time_60000ms')
   // 30 minutes of quotes: minute 0 partial, the last minute open → 28 closed valid bars, one invalid (partial), continuous across the two boundaries.
+  // The calibration prefix (segment 1 = minutes 0–9) is EXCLUDED from every evaluated series (amendment area 2):
+  // 30 minutes of quotes → minutes 10–28 closed (19 bars), minute 29 open; the partial first bucket is in the excluded prefix.
   const valid = m1.all.filter(b => !b.invalid)
-  assert.equal(valid.length, 28); assert.deepEqual(m1.all.filter(b => b.invalid).map(b => b.invalid), ['partial_first_bucket'])
+  assert.equal(manifest.calibrationSegmentsExcluded, 1); assert.equal(manifest.calibrationCutMs, T0 + 598_000)
+  assert.equal(valid.length, 19); assert.deepEqual(m1.all.filter(b => b.invalid), []); assert.equal(m1.excludedForCalibration, 10)
   assert.equal(m1.runs.length, 1, 'no hole at a segment boundary')
-  assert.equal(valid[0].v, 30, 'a minute holds 30 changed quotes of symbol 1')
-  // Against a one-shot build of the same quotes: identical bars (resume is lossless).
+  assert.equal(valid[0].t, T0 + 600_000); assert.equal(valid[0].v, 30, 'a minute holds 30 changed quotes of symbol 1')
+  // Against a one-shot build of the same quotes: identical bars after the cut (resume is lossless).
   const all = files.flatMap(f => [...quotesFromSegment(f).bySymbol.get(1)])
   const once = timeBars(all, { barMs: 60_000, maxSilenceMs: CFG.maxSilenceMs })
-  assert.deepEqual(valid.map(b => [b.t, b.o, b.h, b.l, b.c, b.v]), once.bars.map(b => [b.t, b.o, b.h, b.l, b.c, b.v]))
-  // Calibration: N from the first segment's median ticks per minute = 30; tick bars then ≈ 1 minute.
+  assert.deepEqual(valid.map(b => [b.t, b.o, b.h, b.l, b.c, b.v]), once.bars.filter(b => b.t > manifest.calibrationCutMs).map(b => [b.t, b.o, b.h, b.l, b.c, b.v]))
+  // Calibration: N from the first segment's median ticks per minute = 30; tick bars then ≈ 1 minute, and carry no nominal time label.
   const tk = s1.find(f => f.form === 'tick_approx_60000ms')
-  assert.equal(tk.n, 30); assert.equal(manifest.calibration[1][60_000].n, 30); assert.match(manifest.calibration[1][60_000].basis, /first 1 segment/)
-  assert.ok(tk.all.filter(b => !b.invalid).length >= 28)
+  assert.equal(tk.n, 30); assert.equal(manifest.calibration[1][60_000].n, 30); assert.match(manifest.calibration[1][60_000].basis, /first 1 segment\(s\); those segments are excluded/)
+  assert.equal(tk.timeframe, 'tick'); assert.equal(tk.nominalTimeframe, '1m'); assert.equal(tk.excludedForCalibration, 0, 'the prefix quotes never became tick bars')
+  assert.ok(tk.all.filter(b => !b.invalid).length >= 18 && tk.all.every(b => b.t > manifest.calibrationCutMs))
   // Symbol 2 ticks every 10 s: 6 per minute.
   assert.equal(series.get(2).find(f => f.form === 'tick_approx_60000ms').n, 6)
 })
@@ -119,11 +123,11 @@ test('evaluateSeries: one cell per symbol × form × strategy; design floor refu
   assert.equal(rsi15.verdict, 'REFUSED_DESIGN_FLOOR'); assert.match(rsi15.note, /refused by design floor/)
   assert.ok(cells.every(c => c.strategy !== 'rsi2_reversion' || c.verdict === 'REFUSED_DESIGN_FLOOR'), 'every form here is under rsi2\'s 1h floor')
   const d15 = cells.find(c => c.symbol === 'AAA' && c.strategy === 'donchian_breakout' && c.form === 'time_15000ms')
-  assert.ok(['OK', 'INSUFFICIENT'].includes(d15.verdict)); assert.ok(d15.bars > 400); assert.match(d15.note || '', /sub-minute|under the 3 floor|^$/)
+  assert.ok(['OK', 'INSUFFICIENT'].includes(d15.verdict)); assert.ok(d15.bars > 200 && d15.bars <= 240, 'the second hour only: the calibration hour is excluded'); assert.equal(d15.excludedForCalibration, 240); assert.match(d15.note || '', /sub-minute|under the 3 floor|^$/)
   assert.equal(typeof d15.rStats.usable, 'number'); assert.ok(d15.stats); assert.ok(d15.byHalf.first && d15.byHalf.second)
   assert.ok(Object.keys(d15.byRegime).every(k => ['ranging', 'unknown'].includes(k)))
   const tick = cells.find(c => c.symbol === 'BBB' && c.form === 'tick_approx_60000ms' && c.strategy === 'vwap_trend')
-  assert.match(tick.note || '', /bar speed/)
+  assert.match(tick.note || '', /label 'tick'.*nominal 1m.*bar speed/); assert.equal(tick.timeframe, 'tick'); assert.equal(tick.nominalTimeframe, '1m')
   assert.ok(summary.byVerdict.REFUSED_DESIGN_FLOOR === 6)
   assert.ok(Array.isArray(summary.leaderboard))
   // A floor above every cell's trades: every replayed cell reads INSUFFICIENT, never OK.

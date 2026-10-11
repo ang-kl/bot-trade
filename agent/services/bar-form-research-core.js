@@ -160,16 +160,23 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
       ts.state = r.state
     }
   }
+  // Amendment area 2: N is calibrated on the leading segments ONLY, and those
+  // segments are excluded from every form's evaluated series (training data
+  // never evaluated; every form shares the same window). The cut is the end
+  // of the calibration prefix, recorded in the manifest.
+  let calibrationCutMs = null
   const calibrate = () => {
+    calibrationCutMs = manifest.toMs
+    manifest.calibrationCutMs = calibrationCutMs
+    manifest.calibrationSegmentsExcluded = manifest.processed
     for (const [id, st] of states) {
       if (st.calibrated) continue
       manifest.calibration[id] = {}
       for (const [ms, ts] of st.tick) {
         const nc = nominalTickCount(st.calib, { nominalMs: ms })
         ts.n = nc.n
-        manifest.calibration[id][ms] = { ...nc, basis: `median changed quotes per ${ms}ms bucket over the first ${manifest.processed} segment(s)` }
+        manifest.calibration[id][ms] = { ...nc, basis: `median changed quotes per ${ms}ms bucket over the first ${manifest.processed} segment(s); those segments are excluded from the evaluated series` }
       }
-      feedTick(id, st, st.calib)
       st.calib = []; st.calibrated = true
     }
   }
@@ -225,10 +232,16 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
   breached(); observed.runtimeMs = now() - startedMs
   // Series per symbol: the time series sorted (invalid markers in place), runs split.
   const series = new Map()
+  const evaluated = all => (calibrationCutMs == null ? all : all.filter(b => b.t > calibrationCutMs))
   for (const [id, st] of states) {
     const list = []
-    for (const [ms, ts] of st.time) { ts.all.sort((a, b) => a.t - b.t); list.push({ kind: 'time', ms, form: `time_${ms}ms`, timeframe: timeframeLabel(ms), all: ts.all, runs: splitRuns(ts.all), n: null }) }
-    for (const [ms, ts] of st.tick) { list.push({ kind: 'tick', ms, form: `tick_approx_${ms}ms`, timeframe: timeframeLabel(ms), all: ts.all, runs: splitRuns(ts.all), n: ts.n }) }
+    for (const [ms, ts] of st.time) { ts.all.sort((a, b) => a.t - b.t); const ev = evaluated(ts.all); list.push({ kind: 'time', ms, form: `time_${ms}ms`, timeframe: timeframeLabel(ms), all: ev, runs: splitRuns(ev), n: null, excludedForCalibration: ts.all.length - ev.length }) }
+    // Fixed-N bars carry NO nominal time label: a strategy that parses the
+    // label would read nominal time as elapsed time. `tick` is unparseable;
+    // elapsed-time rules in the backtest (time caps) read the bars' own
+    // timestamps and stay correct; label-parsing floors are handled by
+    // designFloorMs (the form's nominal duration against the floor).
+    for (const [ms, ts] of st.tick) { const ev = evaluated(ts.all); list.push({ kind: 'tick', ms, form: `tick_approx_${ms}ms`, timeframe: 'tick', nominalTimeframe: timeframeLabel(ms), all: ev, runs: splitRuns(ev), n: ts.n, excludedForCalibration: ts.all.length - ev.length }) }
     series.set(id, list)
     manifest.symbols.push(Number(id))
   }
@@ -266,7 +279,7 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
     for (const f of forms) {
       const bars = f.all.filter(b => !b.invalid).length, invalidBars = f.all.length - bars
       for (const s of strats) {
-        const base = { symbolId: Number(id), symbol, strategy: s.key, family: s.family ?? null, form: f.form, kind: f.kind, ms: f.ms, timeframe: f.timeframe, nTicks: f.n ?? null, bars, runs: f.runs.length, invalidBars }
+        const base = { symbolId: Number(id), symbol, strategy: s.key, family: s.family ?? null, form: f.form, kind: f.kind, ms: f.ms, timeframe: f.timeframe, nominalTimeframe: f.nominalTimeframe ?? null, nTicks: f.n ?? null, bars, runs: f.runs.length, invalidBars, excludedForCalibration: f.excludedForCalibration ?? 0 }
         const floor = refusedByDesignFloor(f.ms, cfg.designFloorMs?.[s.key])
         if (floor?.refused) { cells.push({ ...base, verdict: 'REFUSED_DESIGN_FLOOR', trades: 0, note: floor.reason }); continue }
         if (bars === 0) { cells.push({ ...base, verdict: 'NO_BARS', trades: 0, note: 'no valid closed bar of this form for this symbol' }); continue }
@@ -291,7 +304,7 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
           byHalf: { first: computeRStats(trades.slice(0, mid)), second: computeRStats(trades.slice(mid)) },
           byRegime: Object.fromEntries(Object.entries(byRegime).map(([k, v]) => [k, computeRStats(v)])),
           mdeR: sd != null && rs.length >= 2 ? round3(2 * sd / Math.sqrt(rs.length)) : null,
-          note: [f.ms % 60_000 ? `timeframe label '${f.timeframe}' is sub-minute: a strategy that parses it reads no time cap` : null, f.kind === 'tick' ? 'v is bar speed (ticks/s), not a quote count; a strategy reading volume reads a different quantity' : null, trades.length < minSample ? `${trades.length} trade(s) under the ${minSample} floor` : null].filter(Boolean).join('; ') || null,
+          note: [f.kind === 'time' && f.ms % 60_000 ? `timeframe label '${f.timeframe}' is sub-minute: a strategy that parses it reads no time cap` : null, f.kind === 'tick' ? `label 'tick' (no nominal time handed to the strategy; nominal ${f.nominalTimeframe}); v is bar speed (ticks/s), not a quote count` : null, trades.length < minSample ? `${trades.length} trade(s) under the ${minSample} floor` : null].filter(Boolean).join('; ') || null,
         })
       }
     }
