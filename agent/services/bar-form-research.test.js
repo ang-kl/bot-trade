@@ -119,6 +119,7 @@ test('the broker cross-check: the run names up to three of its symbols; at the e
   const db = fresh()
   assert.equal(barFormPlan({ crossCheck: [1, 2, 3, 4] }).refuse, undefined, 'four names are bounded to three, not refused'); assert.deepEqual(barFormPlan({ crossCheck: [1, 2, 3, 4] }).plan.crossCheck, [1, 2, 3])
   assert.equal(barFormPlan({ crossCheck: ['x'] }).refuse.body.error, 'bad_cross_check'); assert.equal(barFormPlan({ symbolIds: [1], crossCheck: [2] }).refuse.body.error, 'bad_cross_check')
+  assert.equal(barFormPlan({ crossCheck: [1, 2] }, { research: cfgWith({}, { maxSymbolsPerRun: 1 }) }).refuse.body.error, 'bad_cross_check', 'a cross-check list over the symbol cap is refused (Codex P2 on #1314)')
   const M = 60_000, T = 1_760_000_040_000 - (1_760_000_040_000 % M)
   const ours = [0, 1, 2].map(i => ({ t: T + i * M, o: 100, h: 101, l: 99, c: 100.5, v: 30 }))
   const calls = []
@@ -140,7 +141,7 @@ test('the broker cross-check: the run names up to three of its symbols; at the e
 })
 
 const LIMITS = { workerMemoryMb: 2048, maxRuntimeMs: 3_600_000, maxTempBytes: 201_326_592, maxCells: 864, maxTransactionRows: 1000, maxPullsPerMinute: 30, maxSkippedTicksDelta: 0, maxBusyShare10m: 0.5, pollMs: 10 }
-const cfgWith = (over = {}) => { const r = loadResearchConfig(); return { ...r, barForm: { ...r.barForm, limits: { ...r.barForm.limits, ...over } } } }
+const cfgWith = (over = {}, bf = {}) => { const r = loadResearchConfig(); return { ...r, barForm: { ...r.barForm, ...bf, limits: { ...r.barForm.limits, ...over } } } }
 
 test('amendment area 1: no declared limit, no run; the cell matrix is bounded before anything is pulled; the pass-record key is the fast monitor\'s', () => {
   assert.equal(FAST_MONITOR_PASS_KEY, PASS_RECORD_KEY)
