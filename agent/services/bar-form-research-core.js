@@ -115,7 +115,8 @@ function seriesState() { return { all: [], state: null } }
  * paths of local files (read in place, never deleted). Returns per-symbol
  * series per form plus the manifest. `abort()` is polled between segments.
  */
-export async function processSegments({ names, pull = null, destDir, keepCache = false, symbolIds = null, cfg, abort = () => false, onProgress = null }) {
+export const CROSS_CHECK_MAX_BARS = 1440 // one day of minutes per symbol
+export async function processSegments({ names, pull = null, destDir, keepCache = false, symbolIds = null, cfg, abort = () => false, onProgress = null, crossCheckSymbolIds = null }) {
   const forms = formsFrom(cfg)
   const timeMs = forms.filter(f => f.kind === 'time').map(f => f.ms)
   const nominal = forms.filter(f => f.kind === 'tick').map(f => f.ms)
@@ -201,7 +202,14 @@ export async function processSegments({ names, pull = null, destDir, keepCache =
     manifest.symbols.push(Number(id))
   }
   manifest.symbols.sort((a, b) => a - b)
-  return { series, manifest }
+  // Plan step 9: the last day of OUR one-minute bars for the symbols the
+  // cross-check names, so the main thread can set them beside the broker's.
+  const crossCheckBars = {}
+  for (const id of crossCheckSymbolIds || []) {
+    const one = series.get(Number(id))?.find(f => f.kind === 'time' && f.ms === 60_000)
+    if (one) crossCheckBars[id] = one.all.filter(b => !b.invalid).slice(-CROSS_CHECK_MAX_BARS).map(b => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }))
+  }
+  return { series, manifest, crossCheckBars }
 }
 
 /** The regime recorded for a symbol at an entry time: the latest reading at or before it, within REGIME_MAX_AGE_MS. */

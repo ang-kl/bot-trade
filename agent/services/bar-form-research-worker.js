@@ -19,9 +19,9 @@ try {
     for (const side of sides) { const r = await pullSegment({ base: side.base, secret, timeoutMs }, name, destDir); if (r.ok) return r; last = r.error || 'pull failed' }
     return { ok: false, error: last || 'no side reachable' }
   }
-  const { series, manifest } = await processSegments({ ...stream, pull, abort, onProgress: p => parentPort.postMessage({ progress: p }) })
+  const { series, manifest, crossCheckBars } = await processSegments({ ...stream, pull, abort, onProgress: p => parentPort.postMessage({ progress: p }) })
   const { cells, summary } = evaluateSeries({ series, ...workerData.evaluate })
-  parentPort.postMessage({ ok: true, manifest, cells, summary })
+  parentPort.postMessage({ ok: true, manifest, cells, summary, crossCheckBars })
 } catch (err) {
   parentPort.postMessage({ ok: false, error: err?.message || String(err) })
 }

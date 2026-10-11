@@ -18,6 +18,7 @@ class FakeWorker extends EventEmitter {
 const listAll = async () => ({ names: ['seg-0000000000001-000000.tks', 'seg-0000000000002-000000.tks', 'seg-0000000000003-000000.tks'], recordsPerSegment: [10, 10, 10], segments: 3, reachable: 1, sides: [{ side: 'cpp_exec_demo', reachable: true }] })
 const sides = [{ name: 'cpp_exec_demo', base: 'http://demo.test' }, { name: 'cpp_exec', base: 'http://live.test' }]
 const deps = (over = {}) => ({ listAll, sides, workerCtor: FakeWorker, cacheDir: '/tmp/bfr-test-cache', secret: 's', resolveNames: () => ({ accountId: '43097342', nameOf: id => ({ 1: 'AAA', 2: 'BBB' })[id] || null }), ...over })
+const settle = () => new Promise(r => setTimeout(r, 5)) // the completion crosses a promise (the broker cross-check) before finish
 const fresh = () => { _resetBarFormJobs(); if (researchSlot()) releaseResearchSlot(researchSlot().id); return initDB(':memory:') }
 
 test('barFormPlan: values from the config, overrides recorded, the baseline required, bad inputs refused by name', () => {
@@ -54,7 +55,7 @@ test('one research job at a time: the tick research\'s slot refuses the bar-form
   assert.equal(a.status, 202); assert.equal(researchSlot().what, 'bar-form research'); assert.equal(researchSlot().id, a.body.runId)
   const b = await startBarFormResearch(db, {}, deps())
   assert.equal(b.status, 409); assert.equal(b.body.runId, a.body.runId)
-  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 0 }, cells: [], summary: { cells: 0, byVerdict: {} } })
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 0 }, cells: [], summary: { cells: 0, byVerdict: {} } }); await settle()
   assert.equal(researchSlot(), null)
 })
 
@@ -71,7 +72,7 @@ test('the worker lifecycle: workerData carries the stream and the evaluation inp
   w.emit('message', { progress: { done: 1, total: 3 } })
   assert.deepEqual(barFormJob(r.body.runId).progress, { done: 1, total: 3 }); assert.equal('worker' in barFormJob(r.body.runId), false)
   const cell = { symbolId: 1, symbol: 'AAA', strategy: 'vwap_trend', form: 'time_60000ms', bars: 100, runs: 1, invalidBars: 1, trades: 3, verdict: 'OK', stats: { trades: 3 }, rStats: { usable: 3, expectancyR: 0.2, expectancyLowerR: -0.1 }, byHalf: {}, byRegime: { ranging: { usable: 3 } }, mdeR: 0.5, note: null }
-  w.emit('message', { ok: true, manifest: { processed: 3, aborted: false }, cells: [cell], summary: { cells: 1, byVerdict: { OK: 1 }, leaderboard: [] } })
+  w.emit('message', { ok: true, manifest: { processed: 3, aborted: false }, cells: [cell], summary: { cells: 1, byVerdict: { OK: 1 }, leaderboard: [] } }); await settle()
   const j = barFormJob(r.body.runId)
   assert.equal(j.state, 'done'); assert.equal(j.result.cells, 1); assert.equal(barFormJobsView().running, null)
   const v = barFormResearchView(db)
@@ -88,13 +89,13 @@ test('abort sets the shared flag; an aborted worker result is recorded as aborte
   assert.equal(abortBarFormResearch('other').status, 404)
   const a = abortBarFormResearch(r.body.runId); assert.equal(a.status, 202)
   assert.equal(Atomics.load(new Int32Array(FakeWorker.last.workerData.abortFlag), 0), 1)
-  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1, aborted: true }, cells: [], summary: { cells: 0, byVerdict: {} } })
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1, aborted: true }, cells: [], summary: { cells: 0, byVerdict: {} } }); await settle()
   assert.equal(barFormJob(r.body.runId).state, 'aborted'); assert.equal(barFormResearchView(db).run.state, 'aborted')
   const f = await startBarFormResearch(db, { symbolIds: [1] }, deps())
-  FakeWorker.last.emit('message', { ok: false, error: 'boom' })
+  FakeWorker.last.emit('message', { ok: false, error: 'boom' }); await settle()
   assert.equal(barFormJob(f.body.runId).state, 'failed'); assert.equal(barFormJob(f.body.runId).error, 'boom'); assert.equal(researchSlot(), null)
   const e = await startBarFormResearch(db, { symbolIds: [1] }, deps())
-  FakeWorker.last.emit('exit', 2)
+  FakeWorker.last.emit('exit', 2); await settle()
   assert.equal(barFormJob(e.body.runId).state, 'failed'); assert.match(barFormJob(e.body.runId).error, /exited 2/)
 })
 
@@ -107,4 +108,27 @@ test('persistRun is one transaction; regimeRowsFor reads sorted rows per symbol 
   persistRun(db, j, { manifest: { m: 1 }, cells: [{ symbolId: 1, strategy: 's', form: 'f', verdict: 'OK', trades: 1 }, { symbolId: 2, strategy: 's', form: 'f', verdict: 'NO_BARS', trades: 0 }], summary: { cells: 2 } })
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bar_form_results').get().n, 2)
   assert.throws(() => persistRun(db, j, { manifest: {}, cells: [], summary: {} }), /UNIQUE/)
+})
+
+test('the broker cross-check: the run names up to three of its symbols; at the end their one-minute bars are set beside the broker\'s M1 bars through the route\'s fetch; a failed fetch is recorded, never fatal', async () => {
+  const db = fresh()
+  assert.equal(barFormPlan({ crossCheck: [1, 2, 3, 4] }).refuse, undefined, 'four names are bounded to three, not refused'); assert.deepEqual(barFormPlan({ crossCheck: [1, 2, 3, 4] }).plan.crossCheck, [1, 2, 3])
+  assert.equal(barFormPlan({ crossCheck: ['x'] }).refuse.body.error, 'bad_cross_check'); assert.equal(barFormPlan({ symbolIds: [1], crossCheck: [2] }).refuse.body.error, 'bad_cross_check')
+  const M = 60_000, T = 1_760_000_040_000 - (1_760_000_040_000 % M)
+  const ours = [0, 1, 2].map(i => ({ t: T + i * M, o: 100, h: 101, l: 99, c: 100.5, v: 30 }))
+  const calls = []
+  const fetchBrokerBars = async (accountId, symbolId, count, endMs) => { calls.push({ accountId, symbolId, count, endMs }); if (symbolId === 2) throw new Error('broker 503'); return ours.map(b => ({ ...b, c: 100.52, v: 31 })) }
+  const r = await startBarFormResearch(db, { symbolIds: [1, 2], crossCheck: [1, 2], minSample: 1 }, deps({ fetchBrokerBars }))
+  assert.equal(r.status, 202); assert.deepEqual(FakeWorker.last.workerData.stream.crossCheckSymbolIds, [1, 2])
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1, aborted: false }, cells: [], summary: { cells: 0, byVerdict: {} }, crossCheckBars: { 1: ours, 2: ours } }); await settle()
+  const v = barFormResearchView(db)
+  assert.equal(v.run.state, 'done')
+  const cc = v.run.manifest.crossCheck
+  assert.equal(cc.accountId, '43097342'); assert.deepEqual(calls.map(c => [c.accountId, c.symbolId, c.count, c.endMs]), [['43097342', 1, 8, T + 3 * M], ['43097342', 2, 8, T + 3 * M]])
+  assert.equal(cc.symbols[1].aligned, 3); assert.equal(cc.symbols[1].absDiff.c.max, 0.02); assert.equal(cc.symbols[1].symbol, 'AAA')
+  assert.equal(cc.symbols[2].error, 'broker 503'); assert.equal(cc.symbols[2].ours, 3)
+  // Without a fetch function the gap is named, and the run still completes.
+  const r2 = await startBarFormResearch(db, { symbolIds: [1], crossCheck: [1], minSample: 1 }, deps())
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1 }, cells: [], summary: { cells: 0, byVerdict: {} }, crossCheckBars: { 1: ours } }); await settle()
+  assert.match(barFormResearchView(db, { runId: r2.body.runId }).run.manifest.crossCheck.symbols[1].error, /no broker fetch available/)
 })

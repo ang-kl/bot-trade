@@ -1630,7 +1630,15 @@ export default function actionsRouter(db, deps = {}) {
       // The side's first account's symbol map names the recorded ids (the
       // same resolution the tick research uses); read-only.
       const resolveNames = (sideName) => { const accountId = sideAccounts(db, sideName)[0] ?? null; return { accountId, nameOf: symbolNameResolver(db, accountId) } }
-      const r = await startBarFormResearch(db, req.body && typeof req.body === 'object' ? req.body : {}, { actor: who.actor, resolveNames })
+      // Plan step 9: the broker cross-check reads M1 trendbars with THAT
+      // account's credentials (the same fetch the postmortems use); read-only.
+      const fetchBrokerBars = async (accountId, symbolId, count, endMs) => {
+        const creds = credsForAccountId(db, accountId, { producerId: 'route_bar_form_research' })
+        if (!creds.ready) throw new Error('cTrader credentials not configured for the cross-check account')
+        const byTf = await wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m'], Math.min(1500, count), 30_000, endMs || 0)
+        return byTf['1m'] || []
+      }
+      const r = await startBarFormResearch(db, req.body && typeof req.body === 'object' ? req.body : {}, { actor: who.actor, resolveNames, fetchBrokerBars })
       if (r.status === 202) console.log(`[actions] bar-form-research: run ${r.body.runId} started over ${r.body.segments} segment(s), forms ${r.body.forms.join(',')}`)
       else if (r.status !== 200) console.log(`[actions] bar-form-research REFUSED ${r.body.error}: ${r.body.where || ''}`)
       res.status(r.status).json(r.body)

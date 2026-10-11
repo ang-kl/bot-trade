@@ -23,6 +23,9 @@ import { loadResearchConfig, withOverrides, numberList } from '../lib/research-c
 import { acquireResearchSlot, releaseResearchSlot, researchSlot } from './research-slot.js'
 import { listAllSides, segmentCacheDir, segmentSides, SEGMENT_NAME_RE } from './tick-segments.js'
 import { formsFrom, strategiesFor, EXCLUDED_STRATEGIES } from './bar-form-research-core.js'
+import { crossCheckBars } from '../lib/bar-crosscheck.js'
+
+export const CROSS_CHECK_MAX_SYMBOLS = 3
 
 /** The owner's existing sample bar: agent/config/tick-validation.json traded.minTrades, read as a file (the validation module's graph is the live one). */
 export const THRESHOLDS_FILE = new URL('../config/tick-validation.json', import.meta.url)
@@ -62,10 +65,16 @@ export function barFormPlan(body = {}, { research = loadResearchConfig(), thresh
   const side = b.side == null ? null : String(b.side)
   if (side != null && !['demo', 'live'].includes(side)) return { refuse: refuse(400, 'bad_side', 'side must be demo or live (which gateway\'s segments to read)') }
   const note = b.note == null ? null : String(b.note).slice(0, 500)
+  // Plan step 9: the broker cross-check for up to three of the run's symbols
+  // (their one-minute bars against the broker's M1 trendbars for the same
+  // minutes). Only symbols the run builds; the fetch happens once, at the end.
+  const crossCheck = b.crossCheck == null ? null : numberList(Array.isArray(b.crossCheck) ? b.crossCheck : b.crossCheck?.symbolIds, { max: 1e9, limit: CROSS_CHECK_MAX_SYMBOLS, min: 0 }).map(Number)
+  if (b.crossCheck != null && !crossCheck?.length) return { refuse: refuse(400, 'bad_cross_check', `crossCheck must name 1 to ${CROSS_CHECK_MAX_SYMBOLS} symbol ids the run builds`) }
+  if (crossCheck && symbolIds && crossCheck.some(id => !symbolIds.includes(id))) return { refuse: refuse(400, 'bad_cross_check', 'crossCheck symbols must be among symbolIds') }
   return {
     plan: {
       cfg, overridden: ov.overridden, configFile: research.file, forms: formsFrom(cfg).map(f => f.form), symbolIds, strategies: strategiesFor(strategies).map(s => s.key),
-      segments, maxSegments, minSample, minSampleSource: b.minSample == null ? 'agent/config/tick-validation.json traded.minTrades' : 'request', side, keepCache: b.keepCache === true, dryRun: b.dryRun === true, note,
+      segments, maxSegments, minSample, minSampleSource: b.minSample == null ? 'agent/config/tick-validation.json traded.minTrades' : 'request', side, keepCache: b.keepCache === true, dryRun: b.dryRun === true, note, crossCheck,
       backtestOpts: { minConviction: b.minConviction == null ? undefined : Number(b.minConviction), minRr: b.minRr == null ? undefined : Number(b.minRr) },
     },
   }
@@ -107,7 +116,7 @@ export function persistRun(db, j, { manifest, cells, summary }) {
  * like the tick research door. `deps` lets tests inject the segment lister,
  * the worker constructor and the sides.
  */
-export async function startBarFormResearch(db, body = {}, { actor = null, now = new Date(), listAll = listAllSides, sides = null, cacheDir = null, workerCtor = Worker, workerFile = WORKER_FILE, secret = process.env.EXEC_SECRET ?? '', research = undefined, thresholds = undefined, localFiles = null, resolveNames = null } = {}) {
+export async function startBarFormResearch(db, body = {}, { actor = null, now = new Date(), listAll = listAllSides, sides = null, cacheDir = null, workerCtor = Worker, workerFile = WORKER_FILE, secret = process.env.EXEC_SECRET ?? '', research = undefined, thresholds = undefined, localFiles = null, resolveNames = null, fetchBrokerBars = null } = {}) {
   const planned = barFormPlan(body, { ...(research ? { research } : {}), ...(thresholds ? { thresholds } : {}) })
   if (planned.refuse) return planned.refuse
   const plan = planned.plan
@@ -147,6 +156,25 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   const abortFlag = new SharedArrayBuffer(4)
   j.abortFlag = abortFlag
   jobs.current = j
+  // Plan step 9: broker M1 bars for the cross-check symbols, fetched once at
+  // the end through the route's `fetchBrokerBars(accountId, symbolId, count,
+  // endMs)`; a fetch that fails is recorded, never retried, never fatal.
+  const crossCheckAgainstBroker = async (payload) => {
+    const want = plan.crossCheck || []
+    if (!want.length) return null
+    const out = { accountId, symbols: {}, note: 'our 1m bars (bid, receive-time buckets, v = changed quotes) against the broker\'s M1 trendbars for the same minutes; a difference is measured, not attributed' }
+    for (const id of want) {
+      const ours = payload?.crossCheckBars?.[id] || []
+      if (!ours.length) { out.symbols[id] = { error: 'no one-minute bar built for this symbol' }; continue }
+      if (!fetchBrokerBars || accountId == null) { out.symbols[id] = { error: 'no broker fetch available (no resolver account or no fetch function)', ours: ours.length }; continue }
+      try {
+        const endMs = ours[ours.length - 1].t + 60_000
+        const theirs = await fetchBrokerBars(accountId, Number(id), ours.length + 5, endMs)
+        out.symbols[id] = { symbol: symbolNames[id] ?? null, ...crossCheckBars(ours, theirs || []) }
+      } catch (err) { out.symbols[id] = { error: err?.message || String(err), ours: ours.length } }
+    }
+    return out
+  }
   const finish = (state, { payload = null, partial = false, error = null } = {}) => {
     j.state = state; j.finishedAt = new Date().toISOString(); if (error) j.error = error
     // The job record keeps a SUMMARY (the cells go to the table, not into memory).
@@ -159,16 +187,19 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   try {
     const w = new workerCtor(workerFile, { workerData: {
       abortFlag,
-      stream: { names, sides: sidesUsed, secret, destDir: cacheDir || segmentCacheDir(), keepCache: plan.keepCache, symbolIds: plan.symbolIds, cfg: plan.cfg },
+      stream: { names, sides: sidesUsed, secret, destDir: cacheDir || segmentCacheDir(), keepCache: plan.keepCache, symbolIds: plan.symbolIds, cfg: plan.cfg, crossCheckSymbolIds: plan.crossCheck },
       evaluate: { symbolNames, strategies: plan.strategies, cfg: plan.cfg, minSample: plan.minSample, regimes, backtestOpts: Object.fromEntries(Object.entries(plan.backtestOpts).filter(([, v]) => v !== undefined)) },
     } })
     j.worker = w
     w.on('message', m => {
       if (m?.progress) { j.progress = m.progress; return }
-      if (m?.ok) finish(m.manifest?.aborted ? 'aborted' : 'done', { payload: m, partial: !!m.manifest?.aborted }); else finish('failed', { error: m?.error || 'worker error' })
+      if (!m?.ok) return finish('failed', { error: m?.error || 'worker error' })
+      j.state = 'cross_checking'
+      crossCheckAgainstBroker(m).then(cc => { if (cc && m.manifest) m.manifest.crossCheck = cc }).catch(err => { if (m.manifest) m.manifest.crossCheck = { error: err?.message || String(err) } })
+        .finally(() => finish(m.manifest?.aborted ? 'aborted' : 'done', { payload: m, partial: !!m.manifest?.aborted }))
     })
     w.on('error', err => finish('failed', { error: err?.message || String(err) }))
-    w.on('exit', code => { if (jobs.current === j) finish('failed', { error: `worker exited ${code} before reporting` }) })
+    w.on('exit', code => { if (jobs.current === j && j.state === 'running') finish('failed', { error: `worker exited ${code} before reporting` }) })
   } catch (err) {
     finish('failed', { error: err?.message || String(err) })
     return refuse(500, 'worker_failed', err?.message || String(err))
