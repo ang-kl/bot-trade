@@ -472,3 +472,47 @@ test('a broken lineage query reports nothing rather than throwing', () => {
   db.exec('DROP TABLE pending_orders')
   assert.deepEqual(unlinkedApprovals(db, fxDayStartSql()), [])
 })
+
+// Codex P2 on #1322, second round (Claude · № 13,323 11-Oct): a write-ahead
+// trade row the route marked 'rejected', whose post-approval refusal is on
+// record, is counted once — as that refusal — never also as a landed trade.
+// Every other trade row counts exactly as before.
+test('a rejected write-ahead row is left to its post-approval refusal; any other row still lands', () => {
+  const at = (min) => insideDay(min)
+  const approval = (db, symbol, min) => Number(db.prepare(`INSERT INTO risk_events (symbol, side, approved, checks_json, account_id, created_at)
+    VALUES (?, 'BUY', 1, '{}', 'A1', ?)`).run(symbol, at(min)).lastInsertRowid)
+  const refusal = (db, symbol, min, flagged = true) => db.prepare(`INSERT INTO risk_events (symbol, side, approved, veto_reason, checks_json, account_id, created_at)
+    VALUES (?, 'BUY', 0, 'guard_no_target: x', ?, 'A1', ?)`).run(symbol, flagged ? '{"post_approval":true}' : '{}', at(min))
+  const trade = (db, symbol, status, riskEventId, min) => db.prepare(`INSERT INTO trades (symbol, side, status, opened_at, account_id, risk_event_id)
+    VALUES (?, 'buy', ?, ?, 'A1', ?)`).run(symbol, status, at(min), riskEventId)
+
+  // the route's case: rejected row + its refusal within the grace window
+  let db = initDB(':memory:')
+  trade(db, 'EURUSD', 'rejected', approval(db, 'EURUSD', 1), 1); refusal(db, 'EURUSD', 2)
+  let a = auditDecisions(db, { accountId: 'A1' })
+  assert.deepEqual([a.landed, a.resolutions, a.silentDrops], [0, 1, 0], 'counted once, as the refusal')
+
+  // a rejected row whose later veto is NOT a post-approval refusal still lands
+  db = initDB(':memory:')
+  trade(db, 'EURUSD', 'rejected', approval(db, 'EURUSD', 1), 1); refusal(db, 'EURUSD', 2, false)
+  a = auditDecisions(db, { accountId: 'A1' })
+  assert.deepEqual([a.landed, a.silentDrops], [1, 0])
+
+  // a refusal outside the grace window is not this row's
+  db = initDB(':memory:')
+  trade(db, 'EURUSD', 'rejected', approval(db, 'EURUSD', 1), 1); refusal(db, 'EURUSD', 40)
+  a = auditDecisions(db, { accountId: 'A1' })
+  assert.equal(a.landed, 1)
+
+  // a refusal recorded BEFORE the approval belongs to an earlier attempt
+  db = initDB(':memory:')
+  refusal(db, 'EURUSD', 0); trade(db, 'EURUSD', 'rejected', approval(db, 'EURUSD', 1), 1)
+  a = auditDecisions(db, { accountId: 'A1' })
+  assert.equal(a.landed, 1)
+
+  // an OPEN trade is a landing whatever refusal sits beside it
+  db = initDB(':memory:')
+  trade(db, 'EURUSD', 'open', approval(db, 'EURUSD', 1), 1); refusal(db, 'EURUSD', 2)
+  a = auditDecisions(db, { accountId: 'A1' })
+  assert.equal(a.landed, 1)
+})
