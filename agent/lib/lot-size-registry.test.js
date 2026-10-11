@@ -230,9 +230,18 @@ test('a record is stamped with the account that wrote it, and lotRecordFor repor
   // the same values confirmed by another account: the stamp moves
   assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, minVolume: 1, stepVolume: 1, accountId: '43097342' }), true)
   assert.equal(lotRecordFor(db, 'BTCUSD').accountId, '43097342')
-  // the legacy call keeps the stamp on file
+  // the legacy call keeps the stamp on file when it confirms the same values
   assert.equal(rememberLotSize(db, 'BTCUSD', 100), false)
   assert.equal(lotRecordFor(db, 'BTCUSD').accountId, '43097342')
+  // Codex P2 on #1318, round 2: an unscoped writer that REPLACES the values
+  // (loop.js, which names no account) clears the stamp — the record cannot
+  // say whose answer the new values are
+  assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, minVolume: 10, stepVolume: 1 }), true)
+  assert.deepEqual(lotRecordFor(db, 'BTCUSD'), { lotSize: 100, minVolume: 10, stepVolume: 1, accountId: null, at: null })
+  assert.equal('accountId' in JSON.parse(getState(db, LOT_SIZE_KEY)).BTCUSD, false, 'no stale stamp stored')
+  // and a scoped writer stamps it again
+  assert.equal(rememberVolumeMeta(db, 'BTCUSD', { lotSize: 100, minVolume: 10, stepVolume: 1, accountId: '47790949' }), true)
+  assert.equal(lotRecordFor(db, 'BTCUSD').accountId, '47790949')
   // an unstamped record (every deployed database) reports no account
   rememberLotSize(db, '0003.HK', 6_000)
   assert.deepEqual(lotRecordFor(db, '0003.HK'), { lotSize: 6_000, minVolume: null, stepVolume: null, accountId: null, at: null })

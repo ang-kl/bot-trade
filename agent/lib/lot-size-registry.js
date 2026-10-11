@@ -172,11 +172,16 @@ export function rememberVolumeMeta(db, symbol, meta = {}) {
       minVolume: minVolume ?? prev?.minVolume ?? null,
       stepVolume: stepVolume ?? prev?.stepVolume ?? null,
     }
-    // The stamp travels only when the writer named an account; a record on
-    // file keeps its stamp when a legacy lot-size-only call touches it.
-    const nextAccount = accountId ?? prevAccount
+    // The stamp travels only when the writer named an account. A record on
+    // file keeps its stamp when an unscoped writer confirms the SAME values
+    // (the legacy lot-size-only call); when an unscoped writer REPLACES the
+    // values, the stamp is cleared — the values are now some account's
+    // answer and the record cannot say whose (Codex P2 on #1318, round 2:
+    // loop.js writes without an account and is on the protected boundary).
+    const sameValues = prev != null && prev.lotSize === next.lotSize && prev.minVolume === next.minVolume && prev.stepVolume === next.stepVolume
+    const nextAccount = accountId ?? (sameValues ? prevAccount : null)
     if (nextAccount) { next.accountId = nextAccount; next.at = new Date().toISOString() }
-    if (prev && prev.lotSize === next.lotSize && prev.minVolume === next.minVolume && prev.stepVolume === next.stepVolume && prevAccount === nextAccount) {
+    if (sameValues && prevAccount === nextAccount) {
       return false                          // unchanged; skip the write
     }
     map[s] = next
