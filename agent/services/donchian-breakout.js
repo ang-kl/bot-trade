@@ -17,10 +17,14 @@ import { atr } from './fib-strategy.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
 
 const CHANNEL = 20              // Donchian lookback (prior bars, breakout bar excluded)
+export const DONCHIAN_CHANNEL = CHANNEL // Claude · № 13,101 11-Oct: read by the research cross-check, never retyped
 const MIN_BARS = 40             // channel + ATR warm-up headroom
 const MIN_RANGE_ATR = 2         // range height must be >= 2×ATR
 const MAX_OVERSHOOT_ATR = 1     // close at most 1×ATR beyond the band
 const VOL_X = 1.2               // breakout volume vs prior-20 average
+// Claude · № 13,101 11-Oct (amendment area 2): the research cross-check reads the
+// volume rule's two numbers from here, never retyped (agent/lib/bar-crosscheck.js).
+export const DONCHIAN_VOL_X = VOL_X
 const SL_ATR = 1.5
 // One definition, in strategies.js — see STRATEGY_PREFILTER_RR there for why
 // a local copy of this number is a bug and not a convenience.

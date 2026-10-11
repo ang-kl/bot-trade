@@ -60,6 +60,11 @@
         "maxBusyShare10m": 0.5
       },
       "pollMs": 30000
+    },
+    "crossCheck": {
+      "_note": "Amendment area 2: predeclared tolerances for the broker cross-check (our tick-built 1m bars against the broker's M1 trendbars). closeTolerancePoints: a close within this many broker points (1e-5 price units) counts as matching; ratioTolerance: our Donchian volume ratio (bar v over the prior-20 average) counts as agreeing with the broker's when the absolute difference is at most this; the gate decision (ratio ≥ the rule's 1.2, read from agent/services/donchian-breakout.js) is compared exactly. Residual differences are reported either way.",
+      "closeTolerancePoints": 20,
+      "ratioTolerance": 0.15
     }
   }
 }

@@ -12,6 +12,8 @@
 // receive-time bucketing is not the broker's clock, so parity is MEASURED,
 // never assumed. Research only.
 // ---------------------------------------------------------------------------
+import { DONCHIAN_VOL_X, DONCHIAN_CHANNEL } from '../services/donchian-breakout.js'
+
 const fin = v => typeof v === 'number' && Number.isFinite(v)
 const round = (n, d = 6) => (fin(n) ? Math.round(n * 10 ** d) / 10 ** d : null)
 const median = xs => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
@@ -47,5 +49,44 @@ export function crossCheckBars(ours, brokers, { tolerance = null } = {}) {
     closeWithinTolerance: tolerance != null && closeMatch.length ? { tolerance, n: closeMatch.length, sharePct: round(closeMatch.filter(Boolean).length / closeMatch.length * 100, 1) } : null,
     ...span(),
     note: 'Our bars: bid, receive-time buckets, v = changed quotes. Broker bars: cTrader M1 trendbars, v = "volume in ticks" (its tick definition undocumented). A difference is measured, not attributed; neither side is the reference.',
+  }
+}
+
+/**
+ * Amendment area 2: the Donchian volume rule on BOTH series over the aligned
+ * minutes — our changed-quote count against the broker's tick volume, each
+ * as the bar's v over the prior `channel` bars' average, and the gate's
+ * decision (ratio ≥ volX) on each side. Agreement is measured per minute;
+ * the ratio tolerance is predeclared (research.json), the decision compared
+ * exactly. A minute is comparable only when both series have the full
+ * prior window aligned.
+ */
+export function donchianVolumeAgreement(ours, brokers, { channel = DONCHIAN_CHANNEL, volX = DONCHIAN_VOL_X, ratioTolerance = null } = {}) {
+  const mine = new Map((ours || []).filter(b => fin(b?.t)).map(b => [b.t, b]))
+  const theirs = new Map((brokers || []).filter(b => fin(b?.t)).map(b => [b.t, b]))
+  const ts = [...theirs.keys()].filter(t => mine.has(t)).sort((a, b) => a - b)
+  const rows = []
+  for (let i = channel; i < ts.length; i++) {
+    const win = ts.slice(i - channel, i)
+    if (win.some((t, k) => k > 0 && t - win[k - 1] !== 60_000) || ts[i] - win[channel - 1] !== 60_000) continue // the window must be contiguous minutes
+    const myAvg = win.reduce((a, t) => a + (mine.get(t).v ?? 0), 0) / channel
+    const brAvg = win.reduce((a, t) => a + (theirs.get(t).v ?? 0), 0) / channel
+    const myRatio = myAvg > 0 ? (mine.get(ts[i]).v ?? 0) / myAvg : null
+    const brRatio = brAvg > 0 ? (theirs.get(ts[i]).v ?? 0) / brAvg : null
+    if (myRatio == null || brRatio == null) continue
+    rows.push({ t: ts[i], ours: round(myRatio, 4), broker: round(brRatio, 4), diff: round(myRatio - brRatio, 4), oursPass: myRatio >= volX, brokerPass: brRatio >= volX })
+  }
+  const agree = rows.filter(r => r.oursPass === r.brokerPass).length
+  const within = ratioTolerance == null ? null : rows.filter(r => Math.abs(r.diff) <= ratioTolerance).length
+  const diffs = rows.map(r => Math.abs(r.diff))
+  return {
+    rule: { channel, volX, source: 'agent/services/donchian-breakout.js' },
+    comparable: rows.length,
+    decisionAgree: agree, decisionAgreePct: rows.length ? round(agree / rows.length * 100, 1) : null,
+    oursPass: rows.filter(r => r.oursPass).length, brokerPass: rows.filter(r => r.brokerPass).length,
+    ratioAbsDiff: { median: round(median(diffs), 4), max: diffs.length ? round(Math.max(...diffs), 4) : null },
+    ratioWithinTolerance: ratioTolerance == null ? null : { tolerance: ratioTolerance, n: rows.length, sharePct: rows.length ? round(within / rows.length * 100, 1) : null },
+    disagreements: rows.filter(r => r.oursPass !== r.brokerPass).slice(0, 20),
+    note: 'parity is measured, not assumed: a constant multiplier cancels in the ratio, filtering or dropped events need not. Until decisionAgreePct is high over a declared window, the tick-built Donchian is a research variant, not the broker-bar strategy.',
   }
 }

@@ -69,6 +69,7 @@ export function loadResearchConfig({ file = RESEARCH_CONFIG_FILE } = {}) {
       maxSymbolsPerRun: posInt(bf.maxSymbolsPerRun) ? bf.maxSymbolsPerRun : null,
       // { strategyKey: ms } — only positive integers survive; a garbage entry is dropped, never guessed.
       designFloorMs: Object.fromEntries(Object.entries(bf.designFloorMs && typeof bf.designFloorMs === 'object' ? bf.designFloorMs : {}).filter(([k, v]) => /^[a-z0-9_]{1,64}$/.test(k) && posInt(v))),
+      crossCheck: { closeTolerancePoints: posInt(bf.crossCheck?.closeTolerancePoints) ? bf.crossCheck.closeTolerancePoints : null, ratioTolerance: finite(bf.crossCheck?.ratioTolerance) && bf.crossCheck.ratioTolerance >= 0 ? bf.crossCheck.ratioTolerance : null },
       // Amendment area 1: the run's declared limits; a missing one is null and the job refuses to start.
       limits: (() => {
         const l = bf.limits && typeof bf.limits === 'object' ? bf.limits : {}

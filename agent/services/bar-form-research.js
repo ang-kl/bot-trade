@@ -25,7 +25,7 @@ import { loadResearchConfig, withOverrides, numberList } from '../lib/research-c
 import { acquireResearchSlot, releaseResearchSlot, researchSlot } from './research-slot.js'
 import { listAllSides, segmentCacheDir, segmentSides, SEGMENT_NAME_RE } from './tick-segments.js'
 import { formsFrom, strategiesFor, EXCLUDED_STRATEGIES } from './bar-form-research-core.js'
-import { crossCheckBars } from '../lib/bar-crosscheck.js'
+import { crossCheckBars, donchianVolumeAgreement } from '../lib/bar-crosscheck.js'
 
 export const CROSS_CHECK_MAX_SYMBOLS = 3
 
@@ -218,7 +218,9 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
       try {
         const endMs = ours[ours.length - 1].t + 60_000
         const theirs = await fetchBrokerBars(accountId, Number(id), ours.length + 5, endMs)
-        out.symbols[id] = { symbol: symbolNames[id] ?? null, ...crossCheckBars(ours, theirs || []) }
+        const tol = plan.cfg.crossCheck || {}
+        const tolerance = tol.closeTolerancePoints != null ? tol.closeTolerancePoints / 100_000 : null
+        out.symbols[id] = { symbol: symbolNames[id] ?? null, tolerances: tol, ...crossCheckBars(ours, theirs || [], { tolerance }), donchian: donchianVolumeAgreement(ours, theirs || [], { ratioTolerance: tol.ratioTolerance ?? null }) }
       } catch (err) { out.symbols[id] = { error: err?.message || String(err), ours: ours.length } }
     }
     return out

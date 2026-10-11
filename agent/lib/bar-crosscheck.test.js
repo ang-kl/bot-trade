@@ -2,7 +2,8 @@
 // Claude · № 13,096 11-Oct (ordered № 13,093; claude-builder), plan step 9.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { crossCheckBars } from './bar-crosscheck.js'
+import { crossCheckBars, donchianVolumeAgreement } from './bar-crosscheck.js'
+import { DONCHIAN_VOL_X, DONCHIAN_CHANNEL } from '../services/donchian-breakout.js'
 
 const M = 60_000, T = 1_760_000_040_000 - (1_760_000_040_000 % M)
 const bar = (i, o, h, l, c, v) => ({ t: T + i * M, o, h, l, c, v })
@@ -25,4 +26,23 @@ test('empty inputs and no tolerance', () => {
   const r = crossCheckBars([], [])
   assert.equal(r.aligned, 0); assert.equal(r.absDiff.c.median, null); assert.equal(r.closeWithinTolerance, null); assert.equal(r.fromMs, null)
   assert.equal(crossCheckBars([bar(0, 1, 1, 1, 1, 0)], [bar(0, 1, 1, 1, 1, 0)]).volumeRatioOursOverBroker.n, 0, 'a zero broker volume gives no ratio')
+})
+
+test('donchianVolumeAgreement: the rule\'s numbers come from the strategy; ratios on both series over contiguous windows; decision agreement and tolerance share; a constant multiplier cancels, a dropped-event minute does not', () => {
+  assert.equal(DONCHIAN_VOL_X, 1.2); assert.equal(DONCHIAN_CHANNEL, 20)
+  const ours = [], broker = []
+  for (let i = 0; i < 30; i++) { const v = i === 25 ? 100 : 40; ours.push(bar(i, 100, 101, 99, 100, v)); broker.push(bar(i, 100, 101, 99, 100, v * 2)) } // broker counts twice as many: the ratio cancels
+  const r = donchianVolumeAgreement(ours, broker, { ratioTolerance: 0.15 })
+  assert.deepEqual(r.rule, { channel: 20, volX: 1.2, source: 'agent/services/donchian-breakout.js' })
+  assert.equal(r.comparable, 10, 'minutes 20..29 have a full contiguous prior window'); assert.equal(r.decisionAgreePct, 100); assert.equal(r.ratioAbsDiff.max, 0)
+  assert.equal(r.oursPass, 1); assert.equal(r.brokerPass, 1); assert.equal(r.ratioWithinTolerance.sharePct, 100)
+  // Our side dropped events in minute 25 (a recorder gap): the broker's gate fires, ours does not.
+  const dropped = ours.map(b => (b.t === T + 25 * M ? { ...b, v: 40 } : b))
+  const d = donchianVolumeAgreement(dropped, broker, { ratioTolerance: 0.15 })
+  assert.equal(d.decisionAgree, 9); assert.equal(d.disagreements.length, 1); assert.equal(d.disagreements[0].t, T + 25 * M); assert.equal(d.disagreements[0].brokerPass, true); assert.equal(d.disagreements[0].oursPass, false)
+  assert.ok(d.ratioWithinTolerance.sharePct < 100)
+  // A missing minute breaks the contiguous window: fewer comparable minutes, never a guessed one.
+  const gappy = ours.filter(b => b.t !== T + 3 * M)
+  assert.equal(donchianVolumeAgreement(gappy, broker).comparable, 6, 'only minutes 24–29 have twenty contiguous prior minutes once minute 3 is missing')
+  assert.equal(donchianVolumeAgreement([], []).comparable, 0)
 })

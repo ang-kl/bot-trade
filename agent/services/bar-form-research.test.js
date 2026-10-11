@@ -131,6 +131,7 @@ test('the broker cross-check: the run names up to three of its symbols; at the e
   const cc = v.run.manifest.crossCheck
   assert.equal(cc.accountId, '43097342'); assert.deepEqual(calls.map(c => [c.accountId, c.symbolId, c.count, c.endMs]), [['43097342', 1, 8, T + 3 * M], ['43097342', 2, 8, T + 3 * M]])
   assert.equal(cc.symbols[1].aligned, 3); assert.equal(cc.symbols[1].absDiff.c.max, 0.02); assert.equal(cc.symbols[1].symbol, 'AAA')
+  assert.deepEqual(cc.symbols[1].tolerances, loadResearchConfig().barForm.crossCheck); assert.equal(cc.symbols[1].closeWithinTolerance.tolerance, 0.0002); assert.equal(cc.symbols[1].donchian.rule.volX, 1.2); assert.equal(cc.symbols[1].donchian.comparable, 0, 'three minutes cannot hold a 20-bar window')
   assert.equal(cc.symbols[2].error, 'broker 503'); assert.equal(cc.symbols[2].ours, 3)
   // Without a fetch function the gap is named, and the run still completes.
   const r2 = await startBarFormResearch(db, { symbolIds: [1], crossCheck: [1], minSample: 1 }, deps())
