@@ -307,6 +307,41 @@ test('manual: the dry run names the lot record on file, whose it is, and whether
   assert.equal('lotRecord' in scan, false)
 })
 
+// Codex P1 on #1318: recording the broker minimum before the gate must not
+// turn a typed 0.001-lot request into a 0.01-lot order. The route refuses it
+// before the gate; the dry run mirrors that from the record on file.
+test('manual: a TYPED lots below the broker minimum is refused by the route before the gate, and the dry run says the same once the record is on file', async (t) => {
+  const db = fresh(); t.after(() => db.close())
+  const broker = fakeBroker(1.1)
+  _setWebSocketForTests(broker.Socket); t.after(() => _setWebSocketForTests(null))
+  const srv = await serve(db); t.after(srv.close)
+  const post = (body) => withCreds(() => fetch(`${srv.base}/actions/manual-order`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }).then(r => r.json()))
+  const tiny = { account: A, symbol: SYM, side: 'BUY', lots: 0.001, sl: 1.09, tp: 1.135 }
+  const res = await post(tiny)
+  assert.equal(res.vetoed, true, JSON.stringify(res).slice(0, 300))
+  assert.equal(res.reason, 'below_min_volume: 0.001 lots < broker minimum (0.01 lots)')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM trades').get().n, 0, 'no order was sent')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM risk_events WHERE approved = 0').get().n, 1, 'the refusal is on the record')
+  // the route's fetch put the broker record on file for account A
+  const { lotRecordFor } = await import('../lib/lot-size-registry.js')
+  assert.equal(lotRecordFor(db, SYM).accountId, A)
+  // the dry run now reads the same refusal as its first block
+  const dry = await withCreds(() => preorderCheck(db, tiny, { fetchEntry: async () => 1.1 }))
+  assert.equal(dry.ok, true, dry.cannotCheck || dry.error)
+  assert.equal(dry.approved, false)
+  assert.deepEqual({ stage: dry.firstBlock.stage, reason: dry.firstBlock.reason }, { stage: 'broker_min_lot', reason: res.reason })
+  // lots OMITTED: the default is floored at the broker minimum, not refused
+  const omitted = await withCreds(() => preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }, { fetchEntry: async () => 1.1 }))
+  assert.equal(omitted.firstBlock?.stage === 'broker_min_lot', false)
+  assert.equal(omitted.gate.approved, true, omitted.gate.vetoReason)
+  assert.equal(omitted.gate.adjustedVolume >= 0.01, true)
+  // a typed lots AT the minimum passes this check
+  const atMin = await withCreds(() => preorderCheck(db, { ...tiny, lots: 0.01 }, { fetchEntry: async () => 1.1 }))
+  assert.equal(atMin.firstBlock?.stage === 'broker_min_lot', false)
+})
+
 // ---- 2. equivalence with the gate --------------------------------------------
 
 /** The manual route's proposal, written out independently of preorder.js (actions.js:6415-6427). */

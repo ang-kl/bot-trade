@@ -6530,6 +6530,19 @@ export default function actionsRouter(db, deps = {}) {
         source: 'manual',
         accountId: creds?.accountId ?? null,
       }
+      // Codex P1 on #1318 (Claude · № 13,172 11-Oct): a `lots` the trader
+      // TYPED that is below the broker's minimum is refused here, as the
+      // transport refused it before the record reached the gate. The gate's
+      // floor at the recorded broker minimum (risk.js floorLots) is for the
+      // omitted-lots default above, never a lift of a cap a human entered:
+      // 0.01 DOT lots typed must not become a 0.1-lot order.
+      const explicitLots = Number(lots) > 0 ? Number(lots) : null
+      const brokerMinLotsLive = volMeta.minVolume > 0 && volMeta.lotSize > 0 ? volMeta.minVolume / volMeta.lotSize : null
+      if (explicitLots != null && brokerMinLotsLive != null && explicitLots < brokerMinLotsLive) {
+        const reason = `below_min_volume: ${explicitLots} lots < broker minimum (${brokerMinLotsLive} lots)`
+        persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+        return res.json({ ok: false, vetoed: true, reason })
+      }
       const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db, creds?.accountId ?? null))
       // §70.9 lineage: the approval's row id rides onto the trade this order
       // produces (PR-E) — the same thread /actions/execute-trade's sibling

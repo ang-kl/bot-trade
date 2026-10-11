@@ -82,4 +82,8 @@ test('the manual-order route fetches and records the broker lot record before th
   // Codex P2 on #1318: the record is stamped with the account whose broker answer it is
 
   assert.equal(handler.split('await getVolumeMeta(').length - 1, 1, 'one fetch, reused for the order below')
+  // Codex P1 on #1318: a TYPED lots below the broker minimum is refused
+  // between the record and the gate, so the gate's floor never lifts it
+  const refused = handler.indexOf('explicitLots < brokerMinLotsLive')
+  assert.ok(recorded < refused && refused < gated, `record ${recorded} → explicit-lots refusal ${refused} → gate ${gated}`)
 })

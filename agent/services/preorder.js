@@ -409,9 +409,20 @@ async function manualPreorder(db, input, deps) {
   }
   const config = risk.loadRiskConfig(db, creds?.accountId ?? null)                                   // actions.js:6428
   const result = risk.evaluateTrade(db, proposal, config)
+  // Codex P1 on #1318: the route refuses a TYPED lots below the broker's
+  // minimum before its gate. Mirrored here from the record on file (the
+  // route reads the live answer); with no minimum on file nothing is claimed.
+  const explicitLots = Number(lots) > 0 ? Number(lots) : null
+  let upstream = []
+  try {
+    const min = brokerMinLots(db, symbol)
+    if (explicitLots != null && min.minLots != null && explicitLots < min.minLots) {
+      upstream = [{ stage: 'broker_min_lot', ok: false, reason: `below_min_volume: ${explicitLots} lots < broker minimum (${min.minLots} lots)` }]
+    }
+  } catch { upstream = [] }
   return assemble(db, {
     kind: 'manual', route: 'manual_market', accountId: creds?.accountId ?? null, proposal, result, config,
-    upstream: [], strategyGate: 'not_consulted', lotRecord: manualLotRecord(db, symbol, creds?.accountId ?? null, result),
+    upstream, strategyGate: 'not_consulted', lotRecord: manualLotRecord(db, symbol, creds?.accountId ?? null, result),
     entrySource: { kind: 'broker_1m_close', symbolId: String(resolved.id), symbolSource: resolved.source },
     // № 13,172 (Codex P2 on #1318, round 3): the route refreshes the selected
     // account's broker lot record BEFORE its gate; this read-only dry run
