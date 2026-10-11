@@ -340,6 +340,13 @@ test('manual: a TYPED lots below the broker minimum is refused by the route befo
   // a typed lots AT the minimum passes this check
   const atMin = await withCreds(() => preorderCheck(db, { ...tiny, lots: 0.01 }, { fetchEntry: async () => 1.1 }))
   assert.equal(atMin.firstBlock?.stage === 'broker_min_lot', false)
+  // Codex P2 on #1318, round 5: another account's minimum is not this account's block
+  const { rememberVolumeMeta } = await import('../lib/lot-size-registry.js')
+  rememberVolumeMeta(db, SYM, { lotSize: 10_000_000, minVolume: 1_000_000, stepVolume: 100_000, accountId: 'OTHER' }) // their minimum: 0.1 lots
+  const theirs = await withCreds(() => preorderCheck(db, { ...tiny, lots: 0.05 }, { fetchEntry: async () => 1.1 }))
+  assert.equal(theirs.firstBlock?.stage === 'broker_min_lot', false, 'the route refreshes this account\'s own minimum and may permit 0.05')
+  assert.equal(theirs.lotRecord.sizedAsRoute, false)
+  assert.equal(theirs.lotRecord.recordAccount, 'OTHER')
 })
 
 // ---- 2. equivalence with the gate --------------------------------------------

@@ -414,9 +414,14 @@ async function manualPreorder(db, input, deps) {
   // route reads the live answer); with no minimum on file nothing is claimed.
   const explicitLots = Number(lots) > 0 ? Number(lots) : null
   let upstream = []
+  // Codex P2 on #1318, round 5: only THIS account's record is the route's
+  // answer; another account's minimum, or an unstamped one, is not a block
+  // here (lotRecord already says the route can size differently).
   try {
+    const own = lotRecordFor(db, symbol)?.accountId
     const min = brokerMinLots(db, symbol)
-    if (explicitLots != null && min.minLots != null && explicitLots < min.minLots) {
+    const mine = own != null && creds?.accountId != null && own === String(creds.accountId)
+    if (mine && explicitLots != null && min.minLots != null && explicitLots < min.minLots) {
       upstream = [{ stage: 'broker_min_lot', ok: false, reason: `below_min_volume: ${explicitLots} lots < broker minimum (${min.minLots} lots)` }]
     }
   } catch { upstream = [] }
