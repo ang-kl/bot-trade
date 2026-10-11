@@ -378,6 +378,11 @@ test('an own-only write leaves the shared slot alone, and deal imports read the 
   assert.equal(withBrokerLotSizes(db, meta(), 'A')[7].lotSize, 10_000, 'A\'s deals divide by A\'s lot')
   assert.equal(withBrokerLotSizes(db, meta(), 'B')[7].lotSize, 100)
   assert.equal(withBrokerLotSizes(db, meta())[7].lotSize, 100, 'no account named: the shared slot, as before')
+  // Codex P1 on #1318, round 12: an account with no record of its own never
+  // divides by a shared lot another account stamped — the lots stay unknown
+  assert.equal(withBrokerLotSizes(db, meta(), 'C')[7].lotSize, undefined, 'B stamped the shared slot; C\'s deals keep lots unknown')
+  setState(db, LOT_SIZE_KEY, JSON.stringify({ XRPUSD: 1_000 }))   // a legacy unstamped entry still applies
+  assert.equal(withBrokerLotSizes(db, { 9: { symbolName: 'XRPUSD' } }, 'C')[9].lotSize, 1_000)
   assert.equal(rememberVolumeMeta(db, 'ETHUSD', { lotSize: 100 }, { shared: false }), false, 'own-only with no account writes nothing')
   assert.equal(lotRecordFor(db, 'ETHUSD'), null)
 })

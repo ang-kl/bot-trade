@@ -448,7 +448,11 @@ export function withBrokerLotSizes(db, symMeta, accountId = null) {
     if (!meta || posNum(meta.lotSize) || !clean(meta.symbolName)) continue
     // № 13,175 (Codex P1 on #1318, round 11): a deal import for an account
     // divides by that account's own lot first, the shared one after.
-    const lotSize = ownEntry(db, meta.symbolName, accountId)?.lotSize ?? entryOf(map, clean(meta.symbolName))?.lotSize ?? null
+    // Round 12: with an account named, a shared lot another account stamped
+    // is not used — the deal's lots stay unknown (null) rather than divided
+    // by another account's contract.
+    const shared = cleanAccount(accountId) ? sharedUnlessForeign(db, meta.symbolName, accountId) : entryOf(map, clean(meta.symbolName))
+    const lotSize = ownEntry(db, meta.symbolName, accountId)?.lotSize ?? shared?.lotSize ?? null
     if (lotSize) meta.lotSize = lotSize
   }
   return symMeta
