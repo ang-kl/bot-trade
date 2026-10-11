@@ -412,8 +412,8 @@ async function manualPreorder(db, input, deps) {
     symbol, side, entry,
     sl: Number(sl),
     tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
-    requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
-    ...(Number(lots) > 0 ? {} : { requestedVolumeDefault: true }), // № 13,175, as the route
+    // Lot fix (Claude · № 13,396 12-Oct; claude-builder), as the route: nothing typed = no cap.
+    requestedVolume: Number(lots) > 0 ? Number(lots) : null,
     strategy: manualOrderStrategy(input.strategy),
     direction_reason: manualDirectionReason(input.directionReason, side),
     conviction: null,

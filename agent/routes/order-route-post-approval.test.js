@@ -215,3 +215,52 @@ test('wiring: after each route\'s gate, no refusal is written as a plain veto', 
     assert.ok((after.match(/persistPostApprovalVeto\(db, proposal, /g) || []).length >= 3, `${route}: size, guard and thrown-guard refusals`)
   }
 })
+
+// ---------------------------------------------------------------------------
+// Lot fix — Claude · № 13,396 12-Oct (owner "Go lot fix" after № 13,394;
+// claude-builder). An empty Lots box on the pad means "risk-based sizing" (the
+// pad's own label). The route sent 0.01 instead, which the gate read as a
+// ceiling: DOGEUSD on …0949, 11-10, went out at 0.01 lots against a
+// risk-based 18.91 ($0.23 at risk instead of $428). Through the real route,
+// the real gate and a stand-in broker (the kill switch stops the send, after
+// the gate has sized the order).
+// ---------------------------------------------------------------------------
+const approvalChecks = db => JSON.parse(db.prepare('SELECT checks_json FROM risk_events WHERE approved = 1 ORDER BY id LIMIT 1').get().checks_json)
+
+test('lot fix: a pad order with no lots is sized by the risk budget, not a hidden 0.01', async t => {
+  const db = fresh(); t.after(() => db.close())
+  const { post } = await serve(t, db)
+  const res = await post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 })
+  assert.match(res.reason, /^guard_halt: /, JSON.stringify(res).slice(0, 300))
+  const c = approvalChecks(db)
+  assert.ok(c.risk_based_volume > 0.01, `the budget buys ${c.risk_based_volume} lots`)
+  assert.equal(c.adjusted_volume, c.risk_based_volume, 'the order is the risk-based size, uncapped')
+  const proposal = JSON.parse(db.prepare('SELECT proposal_json FROM risk_events WHERE approved = 1').get().proposal_json)
+  assert.equal(proposal.requestedVolume, null, 'nothing typed, nothing capped')
+})
+
+test('lot fix: a typed lots is still the ceiling the trader set', async t => {
+  const db = fresh(); t.after(() => db.close())
+  const { post } = await serve(t, db)
+  await post('manual-order', { account: A, symbol: SYM, side: 'BUY', lots: 0.02, sl: 1.09, tp: 1.135 })
+  const c = approvalChecks(db)
+  assert.ok(c.risk_based_volume > 0.02)
+  assert.equal(c.adjusted_volume, 0.02)
+})
+
+test('lot fix: an analysis executed with no watchlist Max lots is sized by the risk budget; with one, capped there', async t => {
+  const db = fresh(); t.after(() => db.close())
+  setState(db, 'autopilot_symbols_json', JSON.stringify([{ symbol: SYM, enabled: true }]))   // no maxVolume
+  const { post } = await serve(t, db)
+  const insert = () => db.prepare(`INSERT INTO analyses (symbol, consensus_bias, overall_conviction, synthesis, entry_price, sl_price, tp1_price, strategy, analyzed_at)
+    VALUES (?, 'long', 9, '{}', 1.1, 1.09, 1.135, 'ema_pullback', ?)`).run(SYM, new Date().toISOString()).lastInsertRowid
+  await post('execute-trade', { analysisId: Number(insert()) })
+  let c = approvalChecks(db)
+  assert.ok(c.risk_based_volume > 0.01)
+  assert.equal(c.adjusted_volume, c.risk_based_volume, 'no Max lots: the risk-based size')
+  db.prepare('DELETE FROM risk_events').run()
+  setState(db, 'autopilot_symbols_json', JSON.stringify([{ symbol: SYM, enabled: true, maxVolume: 0.02 }]))
+  await post('execute-trade', { analysisId: Number(insert()) })
+  c = approvalChecks(db)
+  assert.equal(c.adjusted_volume, 0.02, 'the watchlist Max lots is the ceiling')
+})

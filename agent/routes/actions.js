@@ -6321,11 +6321,16 @@ export default function actionsRouter(db, deps = {}) {
       let symbols = []
       try { symbols = JSON.parse(symbolsJson) } catch { /* corrupt state — use empty list */ }
       const wItem = symbols.find(s => (typeof s === 'string' ? s : s.symbol) === analysis.symbol) || {}
-      const requestedVol = (typeof wItem === 'object' ? wItem.maxVolume : null) || 0.01
+      // Lot fix — Claude · № 13,396 12-Oct (owner "Go lot fix" after № 13,394;
+      // claude-builder): only the watchlist's Max lots caps the size. With none,
+      // the gate sizes by the risk budget (risk.js: requestedVolume absent =
+      // uncapped; owner 17-07: no hardcoded 0.01 squeezing a trade below its
+      // budget). This used to send 0.01, which the gate read as a ceiling.
+      const requestedVol = typeof wItem === 'object' && Number(wItem.maxVolume) > 0 ? Number(wItem.maxVolume) : null
 
       // PR-AL: the analysis's own synthesis states why the side was chosen;
       // it rides into proposal_json instead of being dropped at execution.
-      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, ...(typeof wItem === 'object' && Number(wItem.maxVolume) > 0 ? {} : { requestedVolumeDefault: true }), strategy: analysis.strategy, direction_reason: synth.direction_reason ?? null, conviction: analysis.overall_conviction, source: 'execute_analysis', accountId }
+      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, direction_reason: synth.direction_reason ?? null, conviction: analysis.overall_conviction, source: 'execute_analysis', accountId }
       // This route places against the same `accountId` it read above, so
       // naming it here is what makes the gate and the order agree rather
       // than agreeing by coincidence.
@@ -6550,9 +6555,13 @@ export default function actionsRouter(db, deps = {}) {
         symbol, side, entry,
         sl: Number(sl),
         tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
-        requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
-        // № 13,175: nothing typed → the route's default, not a cap the trader set
-        ...(Number(lots) > 0 ? {} : { requestedVolumeDefault: true }),
+        // Lot fix — Claude · № 13,396 12-Oct (owner "Go lot fix" after
+        // № 13,394; claude-builder): nothing typed sends NO cap, so the gate
+        // sizes by the risk budget as the pad promises ("Blank = risk-based
+        // sizing"). It used to send 0.01, which the gate read as a ceiling:
+        // DOGEUSD on …0949, 11-10, went out at 0.01 lots against a risk-based
+        // 18.91. A typed lots is still the ceiling the trader set.
+        requestedVolume: Number(lots) > 0 ? Number(lots) : null,
         // Claude · № 13,126 11-Oct (ordered № 13,125; claude-builder): the
         // proposal carries the pad's registry strategy, the same key the
         // label, the ledger row and the plan already carry. The literal

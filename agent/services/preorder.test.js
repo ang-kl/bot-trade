@@ -377,7 +377,8 @@ const routeProposal = ({ entry, sl, tp, lots, side = 'BUY', accountId = A }) => 
   symbol: SYM, side, entry, sl: Number(sl), tp1: tp != null ? Number(tp) : null,
   // Claude · № 13,128 11-Oct: the route sends the pad's validated registry
   // key; with none given it is manual_order (MANUAL_ORDER_STRATEGY), as here.
-  requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01, ...(Number(lots) > 0 ? {} : { requestedVolumeDefault: true }), strategy: 'manual_order',
+  // Lot fix (Claude · № 13,396 12-Oct; claude-builder): nothing typed sends no cap.
+  requestedVolume: Number(lots) > 0 ? Number(lots) : null, strategy: 'manual_order',
   direction_reason: side === 'SELL' ? 'manual:operator_chose_short' : 'manual:operator_chose_long',
   conviction: null, source: 'manual', accountId,
 })
@@ -407,7 +408,10 @@ const FIXTURES = [
     setup: (db) => setState(db, `acct:${A}:risk_config_json`, JSON.stringify({ maxMarginUsagePct: 0.0003 })),
     input: { sl: 1.09, tp: 1.135, lots: 0.2 }, expect: { approved: false, head: /^insufficient_margin share/ },
   },
-  { name: 'blank lots (the route caps at 0.01)', setup: () => {}, input: { sl: 1.09, tp: 1.135 }, expect: { approved: true, volume: 0.01 } },
+  // Lot fix (owner "Go lot fix", № 13,396): blank lots is sized by the risk
+  // budget, as the pad says — before the fix the route sent 0.01, which the
+  // gate read as a ceiling and this fixture expected.
+  { name: 'blank lots sizes by the risk budget (lot fix)', setup: () => {}, input: { sl: 1.09, tp: 1.135 }, expect: { approved: true, aboveLots: 0.01 } },
 ]
 
 for (const f of FIXTURES) {
@@ -428,6 +432,10 @@ for (const f of FIXTURES) {
       assert.equal(out.numbers.volume, direct.adjusted_volume)
       assert.equal(out.numbers.volumeBasis, 'approved')
       if (f.expect.volume != null) assert.equal(out.numbers.volume, f.expect.volume)
+      if (f.expect.aboveLots != null) {
+        assert.ok(out.numbers.volume > f.expect.aboveLots, `volume ${out.numbers.volume} is the risk-based size, not the old 0.01 default`)
+        assert.equal(out.numbers.volume, direct.checks.risk_based_volume, 'the risk-based size itself, uncapped')
+      }
     } else {
       assert.deepEqual([out.firstBlock.stage, out.firstBlock.reason], ['risk_gate', direct.veto_reason])
       assert.ok(out.firstBlock.label && out.firstBlock.label !== out.firstBlock.reason, 'a human label, not the machine code')
