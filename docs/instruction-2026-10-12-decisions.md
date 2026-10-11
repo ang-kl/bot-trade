@@ -1,0 +1,339 @@
+# Instruction — the decisions of № 13,345, built, deployed and proven live
+
+Claude · № 13,346 · 12-10'26 05:38 SGT · claude-builder. Written on the owner's
+order "create an instruction from № 13,345, knowing the fixes should work after
+implement live and tested". Source of every item: № 13,340·G, № 13,341·E,
+№ 13,344·A/B and the consolidated list in № 13,345. Facts below were read from
+production (commit a99ab09) and the code on 12-10 between 05:20 and 05:38 SGT.
+
+This document is an instruction, not an approval. **Each work item starts only
+after the owner approves its ID** (№ 13,345·D·1: "reply with the IDs you
+approve"). Held items are listed in §4 with what would reopen them.
+
+---
+
+## 1. Definition of done (applies to every item)
+
+An item is done only when it works **live** and the evidence says so. Green
+tests alone are not done.
+
+1. **Branch and PR.** One PR per item, or a group when §3 says so, on the
+   working branch, restarted on `origin/main` after every squash-merge. PR body:
+   what and why, the boundary output, the tests, `Conversation ref:` (ordered
+   and reported serials), `Effort:` read from `get_session`. No model name.
+   Changed lines carry `// Claude · № N DD-Mon (ordered № X; claude-builder)`.
+2. **Tests that can fail.** Every behaviour change gets a test that fails on
+   the unfixed code and passes on the fix. Show both. Prefer the real path:
+   real SQLite (`initDB(':memory:')`), the real route over HTTP, and a
+   stand-in broker socket (`_setWebSocketForTests`, as in
+   `agent/routes/order-route-post-approval.test.js`). A source pin, checked
+   on source with comments stripped, is for wiring only.
+3. **Mutation checks.** For each rule the item adds, assert that the target
+   text is present, mutate it, confirm it is gone, run the suite, then
+   restore from a saved copy (never `git checkout` on a dirty file). Every
+   mutation must be killed by a named test. Report the list.
+4. **Never mutate while the full gate runs.** Twice on 11-10 a gate had to be
+   stopped and re-run because a mutation loop edited files under it.
+5. **Full gate**, all green: `node --test agent/**/*.test.js`, `npx eslint .`,
+   `npx vitest run`, `npm run build`, `npm run check:no-green`,
+   `node scripts/ui-control-inventory.mjs --check`. Paste
+   `scripts/check-protected-boundary.sh` into the PR. A protected path changes
+   only with the owner's yes **naming that file**.
+6. **Review.** Request `@codex review`. Fix every finding with a failing-then-
+   passing test, reply on the thread, then resolve it. **Mark the PR ready
+   before merging and wait for the review that marking ready triggers.** On
+   #1322 that review found a real issue after the merge.
+7. **Merge** (squash) once CI is green, `mergeable_state` is clean and every
+   review thread is closed. Then unsubscribe, restart the branch and add a
+   note on `agent-locks`.
+8. **Deploy read-back (every item):**
+   - `/health` reports the merged commit;
+   - all `/state/heartbeats` controllers are ok, or any warning is explained
+     and seen to clear;
+   - every open position keeps a broker stop (`broker_sl`).
+9. **Live acceptance (per item, §2).** Run the item's own check in production
+   and report it as **Passed**, **Failed** or **Not verifiable until <time>**.
+   If it can only pass when a market opens or a trade happens, book a
+   check-in (`send_later`) and say so. Never report it as done before then.
+10. **Timing.**
+    - Deploys and research runs avoid the first hour after the Sydney (23:00
+      UTC), London and New York opens.
+    - Research never starts within 30 minutes of a restart: the bar-form job's
+      own 0.5 busy-share limit would abort it.
+    - A docs-only change rides with the next code PR, so it doesn't cause a
+      restart on its own.
+
+---
+
+## 2. Work items
+
+### W1 — D1: the postmortem measures R against the stop at entry
+
+- **Why.** `agent/services/loss-postmortem.js` (≈ line 535) divides by
+  `trades.sl_price`, which the momentum book overwrites with each trail. 39 of
+  56 momentum postmortems divided by a trailed stop. The r-audit
+  (`/state/theory-gap?section=r-audit`) shows PF 0.60 against the broker's
+  initial stop, where the reports say 1.45.
+- **Change.** Take the R denominator from the stop at entry, in this order:
+  `broker_sl_initial`, the risk event's proposal stop, then the monitor's
+  `initial_risk`. When none exists, record "no initial stop on record" and
+  write no R; never fall back to the trailed stop. Existing rows are left
+  as they are, unless the owner orders a re-score.
+- **Tests.** A momentum trade whose `sl_price` was trailed: the old code
+  scores the inflated R (red), the fix scores R against the initial stop
+  (green). A trade with no initial stop gets no R and a named reason.
+- **Live acceptance.** The next postmortem written for a trailed momentum
+  trade carries R against the initial stop. Compare it with the r-audit row
+  for the same trade; they must match. Until such a trade closes:
+  **Not verifiable**, with a check-in on the next momentum close.
+- **Trading effect.** None.
+
+### W2 — D2: regime-gate refusals record stop, target and conviction
+
+- **Why.** 385 trend-against-trend refusals in 30 days can't be scored,
+  because `recordRegimeBlock` (`agent/services/gate-skips.js:33`) stores only
+  bias, side and entry.
+- **Change.** `gate-skips.js` only. The caller (`loop.js:1765`) already
+  passes `synth` and `signal`. Add `sl`, `tp1`, `tp2` and conviction to
+  `detail`, taken from `signal ?? synth`. No change to `loop.js`, the
+  gate's decision or the stage. (This corrects № 13,345, which said it
+  touches the loop file.)
+- **Tests.** A regime block written through the real recorder carries the
+  four fields. A missing field is recorded as `null`, never guessed.
+- **Live acceptance.** After deploy, the newest `decision_log` rows at stage
+  `regime_block` carry the fields: read them through
+  `/state/theory-gap?section=regime-blocks` or the blocker report's records.
+  Before the first new refusal: **Not verifiable**.
+- **Trading effect.** None.
+
+### W3 — H1: a read-only capped-hybrid status card
+
+- **Why.** The hybrid runs every minute: 21,978 passes, 0 plans on 12-10.
+  But its decisions are readable only through a private diagnostic
+  (`readHybridVerdicts` in `agent/services/diagnostic-readout.js`).
+- **Change.**
+  - `GET /state/capped-hybrid`: the redacted view `readHybridVerdicts`
+    already builds (enrolled, excluded with the allow-listed reason,
+    delegated, deferred, errors, coverage, pass age), scoped by
+    `?account=`.
+  - A card on the positions page: one line per open position, showing
+    enrolled (trigger, half size), or excluded with the reason in plain
+    words.
+  - Read-only. No new write, and no broker read.
+- **Tests.** The route against a stored pass record (enrolled and excluded
+  rows), the redaction (no raw error text), and a missing record shown as
+  "not available" (never an empty healthy list). Add a vitest for the card,
+  and regenerate the UI inventory.
+- **Live acceptance.** The card lists all open positions with a verdict
+  matching the rules. Today's expected verdicts:
+  - …0949 crypto: manual, outside the manual scope;
+  - NVDA, JPYX: mean reversion;
+  - book positions: paused, the book's own rules.
+- **Trading effect.** None.
+
+### W4 — T2: tick switch policy set to automatic
+
+- **Why.** Owner principle 2: tick is switched on and off by a human **and
+  automatically by the bot**. Every account's policy is manual today.
+- **Change (operation, no code).**
+  `POST /actions/entry-mode-policy {accountId, policy:'auto', expectedRevision}`
+  for each **enabled** account (…0949, …7342, …0058, …9908, …3489). Read
+  `configRevision` from `/state/tick-readiness` first, and handle a 409 by
+  re-reading.
+- **Live acceptance.** `/state/tick-readiness` shows `auto` for each enabled
+  account. `requestedEntryMode` and `effectiveEntryMode` stay `TIME_BASED`.
+  `readyCount` stays 0. No entry-mode change happens until an account is
+  ready.
+- **Trading effect.** None until a profile passes validation (W6, then T4).
+
+### W5 — D0: longer stored history after each trade
+
+- **Why.** 102 of 151 clean trades (68%) run past the end of their stored
+  history before the stop or target is reached, so no exit rule can be
+  ranked.
+- **Change (operation).**
+  - Read `GET /state/aftermath-extend-preview` for the count, the bars and
+    the storage estimate, and report them.
+  - Then apply with `POST /actions/extend-aftermath` in bounded batches,
+    outside the market opens.
+  - Check `/data` usage before and after (it was 6.0 of 10 GB on 11-10 and
+    grows about 1 GB a week).
+- **Live acceptance.** `/state/exit-counterfactual` over the same 90 days:
+  the truncated share drops from 102 of 151, and the common cohort (51 of
+  151 on 11-10) grows. Report both numbers, and the `/data` delta.
+- **Trading effect.** None. It is a write to the postmortem store.
+
+### W6 — T1: tick research over every tick recorded since September
+
+- **Why.** Tick entries can switch on only after a profile passes the
+  owner's bar in `agent/config/tick-validation.json` (replay: 40 trades,
+  PF ≥ 1.3, max drawdown 8R, expectancy lower bound ≥ 0). The last research
+  (03-10) covered about 17 hours of live ticks, and nothing passed.
+- **Change (operation).**
+  - `POST /actions/tick-research` with `dryRun: true` first: list the
+    sealed segments on both sides (demo since 11-09, live since 27-09),
+    the trial count and the record count against `maxRecords`.
+  - Report the plan, then run it without `dryRun`, one job only, in the
+    research slot.
+  - Before, during and after: heartbeats, fast-monitor skipped ticks and
+    busy share, event-loop lag, broker stops, Railway CPU and memory for
+    bot-trade and the serving gateway. Afterwards the segment cache should
+    be empty.
+- **Live acceptance.**
+  - The job finishes, or is aborted with the reason named.
+  - Trials are imported to `/state/tick-research`, each with its replay
+    verdict.
+  - Protection is unchanged before and after.
+  - Report the best profile per symbol class against each threshold.
+  - A profile reaching REPLAY_PASSED goes to T4 (§4), which needs the owner.
+- **Trading effect.** None.
+
+### W7 — D4: the bar-form small run
+
+- **Why.** It is the only comparison of tick-built bars against time bars.
+  The dry run passed on 11-10 at 12:52 SGT; nothing has run since.
+- **Change (operation).**
+  - After W6, re-run the dry run first: segment names change as the spool
+    rolls.
+  - Then make the same request without `dryRun`: demo side; NATGAS
+    (10055) and AVGO.US (11668); 10 segments; cross-check [10055]. The
+    limits come from `agent/config/research.json`. The predeclared design is
+    in `docs/comparison-design-2026-10-11.md`.
+- **Live acceptance.**
+  - `/state/bar-form-research` shows the run, its cells and the
+    cross-check.
+  - The resource receipt (runtime, memory, pulls per minute, temporary
+    bytes) is within the declared limits, with before and after read-backs
+    as in W6.
+  - The results are reported as candidates, not conclusions (design §2.4).
+- **Trading effect.** None.
+
+### W8 — M1: the momentum TP1/TP2 plan on every account
+
+- **Why.**
+  - The book builds its orders with no target (`buildEntrySynth`, `tp1: null`),
+    so the order step refuses them unless the account is listed in
+    `agent/config/momentum-entries.json`.
+  - Only …0058 is listed. On the other four accounts momentum can't trade.
+  - The last momentum order opened on 30-09.
+- **Change.**
+  - Teach `loadMomentumEntrySwitch` (`agent/services/momentum-entry-switch.js`)
+    an `"_all"` token meaning every enabled registry account, matching
+    `momentum-account.json`. This is principle 9: no hardcoded account list.
+  - Then set `"accounts": ["_all"]`.
+  - A missing or malformed file still means off.
+  - The plan itself is unchanged (`risk_coverage_partial_v1`):
+    - TP1 = 3R + the cost reserve;
+    - about 25% is closed at TP1, sized so the trade nets about zero if the
+      rest is later stopped at the original stop;
+    - TP2 = TP1 + 1R, set as the broker take-profit;
+    - the runner trails on the book's 3×ATR stop.
+- **Tests.**
+  - `_all` covers every enabled account and leaves out disabled ones.
+  - An explicit list still works.
+  - Malformed means off.
+  - Through the real dispatch: a book entry on an account other than …0058
+    now carries the plan; on the old code it is refused for having no
+    target (red).
+- **Live acceptance.**
+  - `/state/momentum-targets?account=<id>` shows the switch on for every
+    enabled account.
+  - The next momentum entry anywhere records a plan (`recordedPlans` ≥ 1),
+    and the broker shows TP2 as the take-profit.
+  - When TP1 is reached, the partial executes with a confirmed fill and a
+    confirmed remaining position, recorded in one transaction.
+  - Each of these needs a natural entry or trigger: **Not verifiable** until
+    then, with a daily check-in after the 21:05 UTC pass.
+- **Review point (owner's).** After 30 momentum closes, report PF measured
+  against the stop at entry (W1). Recommend stopping if it stays under 1.0.
+- **Trading effect.** Yes: momentum entries resume on every enabled account,
+  under the existing regime gate, entry brake, 10% volatility sizing and
+  8-position cap.
+
+### W9 — H3: the manual-position hybrid on every account
+
+- **Why.** `agent/config/manual-hybrid.json` names only …7342 and …3489.
+  Owner principle 9: setups apply to every account.
+- **Change.** The same `"_all"` token for `accounts`, read by
+  `agent/services/manual-hybrid-policy.js`. The evidence rules are unchanged:
+  - a complete opening record;
+  - a recorded original stop, never inferred from the current stop;
+  - a broker take-profit beyond 2R;
+  - two halves the broker can execute.
+- **Tests.** A manual position on an account outside today's list:
+  `manual_account_not_authorised` on the old code (red), and judged on its
+  evidence on the new code (green). The NAS100-shaped refusal
+  (`manual_original_stop_missing`) still holds.
+- **Live acceptance.** The W3 card shows manual positions on every account
+  judged on evidence; no `manual_account_not_authorised` remains. A real
+  partial needs a natural 2R: **Not verifiable** until then.
+- **Trading effect.** Yes, but only on manual positions that meet the
+  evidence rules.
+
+### W10 — H2: the hybrid's 2R trigger and 50% fraction become stored settings
+
+- **Why.** Principle 9. Today `capped-hybrid-policy.js` fixes 2R and the
+  exact half in code.
+- **Change.**
+  - A stored setting (for example `capped_hybrid_json`), defaulting to 2R
+    and 50%, with ranges validated.
+  - The plan must **carry the values it was made with**: `validPlan`
+    re-computes the plan and compares it exactly, so changing a setting
+    later must not invalidate plans already armed.
+  - `capped-hybrid-policy.js` is protected. Start only on the owner's yes
+    naming this file.
+- **Tests.**
+  - A byte-identical check: with no stored setting, every plan and refusal
+    matches today's.
+  - A stored 2.5R produces a 2.5R trigger.
+  - A plan armed before a settings change still validates.
+- **Live acceptance.** After deploy, with no stored setting, the W3 card and
+  the pass record show the same verdicts as before the deploy.
+- **Trading effect.** None until someone changes a value.
+
+### W11 — the book's daily trail skipped XOM.US (no decision needed)
+
+- **Why.** On 12-10 `/state/momentum-book` showed XOM.US (…9908) with
+  "not reached: account not in this pass", while UNH, SHOP and MA were
+  checked.
+- **Change.** Find why …9908 was missing from the book's trail pass, and fix
+  it if it is a defect. The broker stop (157.45) is still held.
+- **Live acceptance.** The next book pass shows XOM checked (trailed or
+  declined with a reason).
+- **Trading effect.** The book's own stop is maintained, as designed.
+
+---
+
+## 3. Order
+
+| Phase | Items | Trading effect |
+|---|---|---|
+| A — now, no trading effect | W1, W2, W3, W4, W11 | None |
+| B — research and storage, one at a time | W5 (D0), then W6 (T1), then W7 (D4) | None |
+| C — changes to live trading | W8 (M1), W9 (H3), then W10 (H2) | Yes; each with its own live check |
+
+W3 comes before W9 and W10, so their acceptance can be read on the card.
+
+---
+
+## 4. Held, with what reopens each
+
+| ID | Held | Reopens when |
+|---|---|---|
+| D3 | Any exit or R:R-floor change | 30 days after W5, if an exit rule then ranks above the live stack on the common cohort |
+| H4 | Lock +1R at 2R when a position can't be halved | The same evidence as D3 |
+| T3 | Lowering the tick validation bar | Not proposed. The profile on the gateway measured PF 0.29–0.34 |
+| T4 | Deploying a passing tick profile to the gateways | W6 produces a REPLAY_PASSED profile. Pushing the registry was refused to the agent's session on 07-10, so this step may need the owner |
+| M2, M3 | Keep only …0058; hand book positions to the general profit-taking | Not recommended |
+
+---
+
+## 5. Reporting
+
+- Each item ends with a stamped reply giving:
+  - what was built;
+  - the PR and merge commit;
+  - the tests and mutations;
+  - the deploy read-back;
+  - the live check as **Passed**, **Failed** or **Not verifiable until <time>**, with the check-in that will settle it.
+- Nothing is reported as working before its live check passes.
