@@ -226,13 +226,15 @@ the fill (7.287). The signal was stale (price had already fallen through
 its stop); the gate should refuse a stop on the wrong side of the entry.
 Not changed here.
 
-**Observation — the trail engine takes over each stop within seconds.**
-Every new position's broker stop was tightened at once by the native
-TrailEngine's since-entry Chandelier (3 × ATR(22), the tighter stop wins):
-DOTUSD 1.046 → 1.195, AVAXUSD 5.783 → 10.098, BCHUSD 236.34 → 271.94,
-UNIUSD 7.287. These monthly and weekly signals therefore trade on an
-intraday stop, so this test measures the management stack as much as the
-strategies (the plan's gap G2). The management code is unchanged.
+**Observation — the trail engine took over three of the four stops within
+seconds.** The native TrailEngine's since-entry Chandelier (3 × ATR(22), the
+tighter stop wins) tightened DOTUSD 1.046 → 1.195, AVAXUSD 5.783 → 10.098
+and BCHUSD 236.34 → 271.94 (signal stop → engine stop at 10:49Z). UNIUSD
+was unchanged at the 7.287 the broker placed from the order's stop distance
+(its signal stop was stale, see above), already tighter than the engine's
+level. These monthly and weekly signals therefore trade on an intraday stop,
+so this test measures the management stack as much as the strategies (the
+plan's gap G2). The management code is unchanged.
 
 **Read-back.** All eight positions carry a broker stop and target; the
 stop-policy controller read 7 amends since the deploy with 7 confirmed and
