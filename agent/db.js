@@ -782,6 +782,44 @@ const TABLES = `
   );
   CREATE INDEX IF NOT EXISTS idx_tick_trials_profile ON tick_trials(profile_hash);
 
+  -- Claude · № 13,095 11-Oct (ordered № 13,093; claude-builder), plan step 8:
+  -- the bar-form research job's own two tables, apart from tick_trials.
+  -- Written once per run, in one short transaction at its end; read by
+  -- GET /state/bar-form-research. No live path reads them.
+  CREATE TABLE IF NOT EXISTS bar_form_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        TEXT NOT NULL UNIQUE,
+    at            TEXT NOT NULL DEFAULT (datetime('now')),
+    state         TEXT NOT NULL,              -- 'done' | 'aborted' | 'failed'
+    started_at    TEXT,
+    finished_at   TEXT,
+    actor         TEXT,
+    params_json   TEXT,                       -- the plan as run, with every value it used
+    manifest_json TEXT,                       -- segments, records, gaps, symbols, calibration
+    summary_json  TEXT,                       -- cells, verdict counts, the leaderboard
+    error         TEXT
+  );
+  CREATE TABLE IF NOT EXISTS bar_form_results (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id         TEXT NOT NULL,
+    symbol_id      INTEGER,
+    symbol         TEXT,
+    strategy       TEXT NOT NULL,
+    form           TEXT NOT NULL,
+    bars           INTEGER,
+    runs           INTEGER,                   -- valid bar runs replayed apart (split at invalid bars)
+    invalid_bars   INTEGER,
+    trades         INTEGER,
+    verdict        TEXT NOT NULL,             -- 'OK' | 'INSUFFICIENT' | 'REFUSED_DESIGN_FLOOR' | 'NO_BARS'
+    stats_json     TEXT,
+    r_stats_json   TEXT,
+    by_half_json   TEXT,
+    by_regime_json TEXT,
+    mde_r          REAL,
+    note           TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_bar_form_results_run ON bar_form_results(run_id);
+
   -- PR-Q1 (V3 P6/P7): every opening of a replay TEST block, whichever door it
   -- came through — a keeper job, an in-thread run, or an off-box import of a
   -- trial replayed with includeTest. A dry run cannot open it (refused), and

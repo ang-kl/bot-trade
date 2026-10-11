@@ -78,12 +78,16 @@ function finaliseSeries(all) {
  * before its first tick is unknown); the last, unclosed bucket is
  * returned as `open`, never as a bar.
  */
-export function timeBars(quotes, { barMs, price = 'bid', maxSilenceMs = null, scale = POINTS_PER_PRICE, label = null } = {}) {
+export function timeBars(quotes, { barMs, price = 'bid', maxSilenceMs = null, scale = POINTS_PER_PRICE, label = null, resume = null } = {}) {
   if (!Number.isInteger(barMs) || barMs <= 0) throw new RangeError('barMs must be a positive integer')
   const form = label ?? `time_${barMs}ms`
   const dropped = { gap: 0, one_sided: 0, snapshot: 0, crossed: 0, repeat: 0 }
   const all = []
-  let cur = null, lastTickMs = null, gapPending = false, firstSeen = true
+  // `resume` is the `state` of a previous call on the SAME stream (the
+  // bar-form job streams one segment at a time): the open bar continues,
+  // the first-bucket rule does not fire again, a gap seen at the end of the
+  // previous call still marks the next bar.
+  let cur = resume?.open ?? null, lastTickMs = resume?.lastTickMs ?? null, gapPending = resume?.gapPending ?? false, firstSeen = resume ? false : true
   const close = () => { if (cur) { all.push(cur); cur = null } }
   for (const q of Array.isArray(quotes) ? quotes : []) {
     if (!countsAsTick(q)) {
@@ -118,7 +122,7 @@ export function timeBars(quotes, { barMs, price = 'bid', maxSilenceMs = null, sc
   }
   const open = cur
   const out = finaliseSeries(all)
-  return { form, barMs, price, vSemantics: V_SEMANTICS.TIME, ...out, open, dropped }
+  return { form, barMs, price, vSemantics: V_SEMANTICS.TIME, ...out, open, dropped, state: { open: cur, lastTickMs, gapPending } }
 }
 
 /**
@@ -128,12 +132,12 @@ export function timeBars(quotes, { barMs, price = 'bid', maxSilenceMs = null, sc
  * after the gap. `nominalMs` is the time-bar size this count was chosen to
  * approximate (see nominalTickCount) and goes on the label only.
  */
-export function tickBars(quotes, { n, price = 'bid', maxSilenceMs = null, scale = POINTS_PER_PRICE, nominalMs = null, label = null } = {}) {
+export function tickBars(quotes, { n, price = 'bid', maxSilenceMs = null, scale = POINTS_PER_PRICE, nominalMs = null, label = null, resume = null } = {}) {
   if (!Number.isInteger(n) || n <= 0) throw new RangeError('n must be a positive integer')
   const form = label ?? (nominalMs ? `tick_${n}_approx_${nominalMs}ms` : `tick_${n}`)
   const dropped = { gap: 0, one_sided: 0, snapshot: 0, crossed: 0, repeat: 0 }
   const all = []
-  let cur = null, lastTickMs = null
+  let cur = resume?.open ?? null, lastTickMs = resume?.lastTickMs ?? null
   const finish = (b, lastMs) => {
     b.durMs = lastMs - b.t
     b.speed = b.durMs > 0 ? Math.round((b.n / (b.durMs / 1000)) * 1000) / 1000 : null
@@ -166,7 +170,7 @@ export function tickBars(quotes, { n, price = 'bid', maxSilenceMs = null, scale 
   }
   const open = cur
   const out = finaliseSeries(all)
-  return { form, nTicks: n, nominalMs, price, vSemantics: V_SEMANTICS.TICK, ...out, open, dropped }
+  return { form, nTicks: n, nominalMs, price, vSemantics: V_SEMANTICS.TICK, ...out, open, dropped, state: { open: cur, lastTickMs } }
 }
 
 /**

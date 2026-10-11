@@ -3226,6 +3226,31 @@ export default function stateRouter(db) {
   // PR-H: the research jobs POST /actions/tick-research started — the
   // running one and the last few, each with its result once done.
   // ?id=<jobId> answers that one job (404 when unknown).
+  // Claude · № 13,095 11-Oct (plan step 8): the bar-form research job's
+  // in-memory view and its persisted runs. Read-only; no-store.
+  router.get('/bar-form-research-job', async (req, res) => {
+    try {
+      const { barFormJob, barFormJobsView } = await import('../services/bar-form-research.js')
+      res.set('Cache-Control', 'no-store')
+      if (req.query.id) { const j = barFormJob(String(req.query.id)); return j ? res.json(j) : res.status(404).json({ error: 'no such run', code: 'bar_form_no_such_run' }) }
+      res.json(barFormJobsView())
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+  router.get('/bar-form-research', async (req, res) => {
+    try {
+      const { barFormResearchView } = await import('../services/bar-form-research.js')
+      res.set('Cache-Control', 'no-store')
+      const runId = req.query.runId ? String(req.query.runId) : null
+      if (runId && !/^[a-f0-9-]{1,36}$/.test(runId)) return res.status(400).json({ error: 'runId must be a run id', code: 'bar_form_invalid_run' })
+      const limit = req.query.limit == null ? 500 : Number(req.query.limit)
+      if (!Number.isInteger(limit) || limit < 1 || limit > 2000) return res.status(400).json({ error: 'limit must be a whole number from 1 to 2000', code: 'bar_form_invalid_limit' })
+      res.json(barFormResearchView(db, { runId, limit }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
   router.get('/tick-research-job', async (req, res) => {
     try {
       const { tickResearchJob, tickResearchJobsView } = await import('../services/tick-research-run.js')

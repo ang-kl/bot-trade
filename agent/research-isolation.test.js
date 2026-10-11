@@ -30,8 +30,7 @@ export const RESEARCH_MODULES = [
   'agent/lib/tick-bars.js',
   'agent/services/theory-gap.js',
   'agent/services/research-slot.js',
-  'agent/services/bar-form-research.js',
-  'agent/services/bar-form-research-worker.js',
+  'agent/services/bar-form-research-core.js',
 ].filter(p => existsSync(join(ROOT, p)))
 
 /** Order authority and state writers a research module must never reach. */
@@ -55,7 +54,25 @@ const ALLOWED_IMPORTERS = new Set([
   // to build the "current management" approximation, so it cannot itself be
   // a research module; it writes nothing and nothing live imports it.
   'agent/services/exit-counterfactual-extended.js',
+  // The research DOORS (Claude · № 13,095, plan step 8): the bar-form job's
+  // service and worker thread, and the tick research door that shares the
+  // research slot with it. They reach the sidecar segment client and the
+  // backtest (whose graph includes live readers); they hold no order
+  // authority of their own and call no state writer (pinned below).
+  'agent/services/bar-form-research.js',
+  'agent/services/bar-form-research-worker.js',
+  'agent/services/tick-research-run.js',
 ])
+
+/**
+ * Protected modules a research module may REACH by import for their pure,
+ * read-only functions (the backtest reads regime.js meanAtr /
+ * classifyVolFromBars and the regime gate's classifier). The boundary
+ * script still forbids CHANGING them; this only says reading them is not
+ * order authority.
+ */
+const READ_ONLY_PROTECTED = new Set(['agent/services/regime.js', 'agent/services/regime-gate.js'])
+const RESEARCH_DOORS = ['agent/services/bar-form-research.js', 'agent/services/bar-form-research-worker.js']
 
 export function protectedPaths() {
   const sh = readFileSync(join(ROOT, 'scripts/check-protected-boundary.sh'), 'utf8')
@@ -113,11 +130,20 @@ test('research modules exist (at least the config loader) and reach no protected
   const forbidden = new Set([...protectedPaths(), ...ORDER_AUTHORITY])
   for (const mod of RESEARCH_MODULES) {
     const reach = graph(mod)
-    const hits = [...reach].filter(f => forbidden.has(f))
+    const hits = [...reach].filter(f => forbidden.has(f) && !READ_ONLY_PROTECTED.has(f))
     assert.deepEqual(hits, [], `${mod} reaches protected/order-authority module(s): ${hits.join(', ')}`)
     const src = strip(readFileSync(join(ROOT, mod), 'utf8'))
     assert.ok(!/\bsetState\s*\(/.test(src), `${mod} calls setState`)
     assert.ok(!/\bsetAccountState\s*\(/.test(src), `${mod} calls setAccountState`)
+  }
+})
+
+test('the research doors call no state writer', () => {
+  for (const mod of RESEARCH_DOORS) {
+    const src = strip(readFileSync(join(ROOT, mod), 'utf8'))
+    assert.ok(!/\bsetState\s*\(/.test(src), `${mod} calls setState`)
+    assert.ok(!/\bsetAccountState\s*\(/.test(src), `${mod} calls setAccountState`)
+    assert.ok(!/\b(placeOrder|submitOrder|amendPosition|closePosition)\s*\(/.test(src), `${mod} calls an order function`)
   }
 })
 

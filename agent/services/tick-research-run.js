@@ -58,6 +58,7 @@ import { loadThresholds, replayChecks, shadowLiveFilters } from './tick-validati
 import { loadRepoSchedule, TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
 import { getState } from '../db.js'
 import { SEGMENT_NAME_RE } from './tick-segments.js'
+import { researchSlot, acquireResearchSlot, releaseResearchSlot } from './research-slot.js'
 import { loadTickEntryConfig } from './tick-permits.js'
 import { permittedSides } from './direction-policy.js'
 import { loadRegimeGateConfig, DEFAULT_MAX_REGIME_AGE_MIN } from './regime-gate.js'
@@ -989,11 +990,12 @@ export function tickResearchJob(id) {
   return publicJob(jobs.history.find(j => j.jobId === id)) || null
 }
 /** Tests only: forget every job. */
-export function _resetTickResearchJobs() { if (jobs.current?.worker) { try { jobs.current.worker.terminate() } catch { /* best effort */ } } jobs.current = null; jobs.history = []; syncLock = null }
+export function _resetTickResearchJobs() { if (jobs.current?.worker) { try { jobs.current.worker.terminate() } catch { /* best effort */ } } if (jobs.current) releaseResearchSlot(jobs.current.jobId); jobs.current = null; jobs.history = []; syncLock = null }
 
 function settle(j, patch) {
   Object.assign(j, patch, { finishedAt: new Date().toISOString() })
   if (jobs.current === j) jobs.current = null
+  releaseResearchSlot(j.jobId)
   jobs.history.unshift(j)
   if (jobs.history.length > JOB_HISTORY) jobs.history.length = JOB_HISTORY
 }
@@ -1008,6 +1010,13 @@ function settle(j, patch) {
 export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null, workerCtor = null, filterCtx: givenFilterCtx = null, trendContext: givenTrendContext = null } = {}) {
   if (jobs.current) {
     return { status: 409, body: { ok: false, error: 'research_running', jobId: jobs.current.jobId, startedAt: jobs.current.startedAt, where: 'one research job runs at a time; poll GET /state/tick-research-job?id=<jobId> and post again when it is done' } }
+  }
+  // Claude · № 13,095 11-Oct (plan step 8): the bar-form research job holds
+  // the shared research slot (research-slot.js); one research job at a time
+  // across both doors.
+  const heldSlot = researchSlot()
+  if (heldSlot) {
+    return { status: 409, body: { ok: false, error: 'research_running', jobId: heldSlot.id, startedAt: heldSlot.startedAt, where: `a ${heldSlot.what} holds the research slot; poll GET /state/bar-form-research-job and post again when it is done` } }
   }
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
@@ -1069,6 +1078,7 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   }
   j.worker = worker
   jobs.current = j
+  acquireResearchSlot('tick research replay', j.jobId) // the shared slot (research-slot.js); released in finishJob
   j.plan.includeTest = plan.includeTest
   j.origin = origin
   let settled = false

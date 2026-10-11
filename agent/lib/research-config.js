@@ -64,6 +64,11 @@ export function loadResearchConfig({ file = RESEARCH_CONFIG_FILE } = {}) {
       pauseBetweenSegmentsMs: finite(bf.pauseBetweenSegmentsMs) && bf.pauseBetweenSegmentsMs >= 0 ? bf.pauseBetweenSegmentsMs : null,
       maxSegmentsPerRun: posInt(bf.maxSegmentsPerRun) ? bf.maxSegmentsPerRun : null,
       smallRun: { symbols: posInt(bf.smallRun?.symbols) ? bf.smallRun.symbols : null, days: posInt(bf.smallRun?.days) ? bf.smallRun.days : null },
+      calibrationSegments: posInt(bf.calibrationSegments) ? bf.calibrationSegments : null,
+      computeWindowBars: posInt(bf.computeWindowBars) ? bf.computeWindowBars : null,
+      maxSymbolsPerRun: posInt(bf.maxSymbolsPerRun) ? bf.maxSymbolsPerRun : null,
+      // { strategyKey: ms } — only positive integers survive; a garbage entry is dropped, never guessed.
+      designFloorMs: Object.fromEntries(Object.entries(bf.designFloorMs && typeof bf.designFloorMs === 'object' ? bf.designFloorMs : {}).filter(([k, v]) => /^[a-z0-9_]{1,64}$/.test(k) && posInt(v))),
     },
   }
 }
