@@ -114,3 +114,107 @@ test('reopening the original resets the verdict spent on its false close: attemp
   const body = JSON.parse(audit[0].body)
   assert.equal(body.tradeId, 1489); assert.equal(body.attempts, 6); assert.equal(body.writtenOffReason, VERDICT); assert.match(body.note, /twin 1733 voided/)
 })
+
+// ---------------------------------------------------------------------------
+// Claude · № 13,764 12-Oct (owner "Fix route + these two"; claude-builder)
+//
+// MEASURED 12-10-2026 on demo 47790949 (stress run, #1334). Two manual orders
+// (#1797 BTCUSD, #1798 JPYX at 107.87 lots, the gate's figure; the broker took
+// its 100-lot maximum) were falsely closed by a reconcile and re-adopted as
+// NEW rows #1800/#1801. Adoption labels a MAN-labelled position `external`
+// (isOurs is false for MAN) and records the broker's volume. This route then
+// reopened the originals and moved the twins' monitor rows onto them — so the
+// reopened manual orders came back `external`, which the fast monitor and the
+// loop's per-account management only observe, and #1798 kept 107.87 lots.
+// The reopened trade's own source is who opened the position; the twin's
+// volume is what the broker holds. Through the real writer, the real
+// reconciler (false close, then adoption) and the real route.
+// ---------------------------------------------------------------------------
+import { recordManualOrderTrade } from './actions.js'
+import { reconcilePositions } from '../services/reconciler.js'
+
+const S = '47790949'
+const MAN = 'MAN|v1|VWAP|-|LDN|-|-'
+const brokerPos = (positionId, symbolName, volume) => ({
+  positionId, symbolName, price: 100, stopLoss: 99, takeProfit: 102,
+  tradeData: { positionId, symbolId: 1, tradeSide: 'BUY', openPrice: 100, volume, label: `${MAN}|i1zc4mryytjsu` },
+})
+
+function stressShape() {
+  const db = initDB(':memory:')
+  setState(db, 'device_sessions', JSON.stringify({ [TOKEN]: Date.now() + 86_400_000 }))
+  db.prepare("INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')").run(S, S)
+  setState(db, 'ctrader_account_id', '99999999')
+  const setAcct = (k, v) => setState(db, `acct:${S}:${k}`, v)
+  const place = (symbol, positionId, volLots) => recordManualOrderTrade(db, {
+    symbol, side: 'BUY', entryP: 100, entryEstimate: 100, sl: 99, tp: 102, volLots, positionId,
+    structuredLabel: MAN, accountId: S, strategy: 'vwap_trend',
+  })
+  const btc = place('BTCUSD', '247938233', 0.04)
+  const jpyx = place('JPYX', '247938246', 107.87)
+  // The false close: a snapshot that does not hold them, from a caller that does not pass its read time.
+  reconcilePositions(db, [], [], setAcct, { accountId: S })
+  // The next pass holds them: adopted as new rows with the broker's volume.
+  reconcilePositions(db, [brokerPos('247938233', 'BTCUSD', 4), brokerPos('247938246', 'JPYX', 1_000_000)], [], setAcct, { accountId: S, readAt: Date.now() })
+  const twinOf = (id) => db.prepare(`SELECT id, source, volume FROM trades WHERE ctrader_position_id = (SELECT ctrader_position_id FROM trades WHERE id = ?) AND id <> ?`).get(id, id)
+  return { db, btc, jpyx, twinOf }
+}
+const activeMon = (db, tradeId) => db.prepare(`SELECT source FROM monitored_positions WHERE trade_id = ? AND status = 'active'`).all(tradeId).map(r => r.source)
+const vol = (db, id) => db.prepare('SELECT volume FROM trades WHERE id = ?').get(id).volume
+function serveDb(db) {
+  const app = express()
+  app.use(express.json())
+  app.use('/actions', actionsRouter(db))
+  const server = app.listen(0)
+  return { server, base: `http://127.0.0.1:${server.address().port}` }
+}
+
+test('the stress-run shape: a reopened manual order keeps its own source and takes the broker volume the twin recorded', async t => {
+  const { db, btc, jpyx, twinOf } = stressShape()
+  // The production rows before the route: originals falsely closed, twins adopted external with the broker's volume.
+  assert.equal(db.prepare('SELECT status FROM trades WHERE id = ?').get(jpyx).status, 'closed')
+  assert.deepEqual([twinOf(btc).source, twinOf(btc).volume], ['external', 0.04])
+  assert.deepEqual([twinOf(jpyx).source, twinOf(jpyx).volume], ['external', 100])
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  const r = await post(base, { apply: true })
+  assert.deepEqual(r.result.reopened.map(x => x.originalTradeId).sort((a, b) => a - b), [btc, jpyx])
+  assert.deepEqual(r.result.errors, [])
+  // RED before: both came back 'external' (observe-only) and #1798 kept 107.87.
+  assert.deepEqual(activeMon(db, btc), ['manual'])
+  assert.deepEqual(activeMon(db, jpyx), ['manual'])
+  assert.equal(vol(db, jpyx), 100)
+  assert.equal(vol(db, btc), 0.04)
+  // The reopen's audit names what the management rows took.
+  const audit = db.prepare(`SELECT body FROM action_log WHERE method = 'REOPEN_FALSE_CLOSE'`).all().map(a => JSON.parse(a.body))
+  const j = audit.find(a => a.originalTradeId === jpyx)
+  assert.deepEqual([j.management.sourceFrom, j.management.sourceTo, j.management.volumeFrom, j.management.volumeTo], ['external', 'manual', 107.87, 100])
+  assert.deepEqual(r.plan.reopenedRepairs, [])
+})
+
+test('an earlier reopen left observe-only is repaired by the same route: dry run names it, apply writes it once, audited', async t => {
+  const { db, btc, jpyx } = stressShape()
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  await post(base, { apply: true })
+  // What the route wrote before this fix (production 10:22Z): the moved rows say 'external' and #1798 still 107.87.
+  db.prepare(`UPDATE monitored_positions SET source = 'external' WHERE trade_id IN (?, ?) AND status = 'active'`).run(btc, jpyx)
+  db.prepare('UPDATE trades SET volume = 107.87 WHERE id = ?').run(jpyx)
+  db.prepare(`DELETE FROM action_log WHERE method <> 'REOPEN_FALSE_CLOSE'`).run()
+  const dry = await post(base, {})
+  assert.equal(dry.dryRun, true)
+  assert.deepEqual(dry.plan.reopenedRepairs.map(x => [x.originalTradeId, x.sourceFrom, x.sourceTo, x.volumeFrom ?? null, x.volumeTo ?? null]),
+    [[btc, 'external', 'manual', null, null], [jpyx, 'external', 'manual', 107.87, 100]])
+  assert.deepEqual(activeMon(db, jpyx), ['external'], 'the dry run writes nothing')
+  const r = await post(base, { apply: true })
+  assert.deepEqual(r.result.repaired.sort((a, b) => a - b), [btc, jpyx])
+  assert.deepEqual(r.result.errors, [])
+  assert.deepEqual(activeMon(db, btc), ['manual'])
+  assert.deepEqual(activeMon(db, jpyx), ['manual'])
+  assert.equal(vol(db, jpyx), 100)
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM action_log WHERE method = 'REPAIR_REOPENED_PAIR'`).get().n, 2)
+  // Idempotent, and a reopened trade that has since closed is left alone.
+  const again = await post(base, {})
+  assert.deepEqual(again.plan.reopenedRepairs, [])
+  db.prepare(`UPDATE monitored_positions SET source = 'external' WHERE trade_id = ?`).run(jpyx)
+  db.prepare(`UPDATE trades SET status = 'closed', closed_at = datetime('now') WHERE id = ?`).run(jpyx)
+  assert.deepEqual((await post(base, {})).plan.reopenedRepairs, [])
+})
