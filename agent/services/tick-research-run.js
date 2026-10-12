@@ -345,6 +345,10 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
   const environments = new Set()
   const gapsByReason = {}
   const gaps = []
+  // W6 sides (Codex P2 on #1332; owner "Per side + parity"): the list is
+  // capped per side, so one side's gaps cannot crowd the other's out of it.
+  // A replay over one side has one side, so its list is capped as before.
+  const gapsCounted = new Map(), gapsListed = new Map() // environment → gaps
   let warmupResets = 0
   for (const f of files) {
     const buf = readFileSync(f)
@@ -370,7 +374,11 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
         // way, so a repeat after ANY gap is not given sides the dropped span
         // may have changed.
         gapsByReason[ev.reason] = (gapsByReason[ev.reason] || 0) + 1
-        if (gaps.length < GAP_LIST_MAX) gaps.push({ reason: ev.reason, recvMs: ev.recvMs, count: ev.count, ...(bothSides ? { environment: env } : {}) })
+        gapsCounted.set(env, (gapsCounted.get(env) || 0) + 1)
+        if ((gapsListed.get(env) || 0) < GAP_LIST_MAX) {
+          gaps.push({ reason: ev.reason, recvMs: ev.recvMs, count: ev.count, ...(bothSides ? { environment: env } : {}) })
+          gapsListed.set(env, (gapsListed.get(env) || 0) + 1)
+        }
         last.clear()
         if (!RECORDER_ONLY_GAPS.has(ev.reason)) { warmupResets++; sink.gapAll(ownSide) }
         continue
@@ -409,14 +417,17 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
   const manifestBase = {
     files: files.map(f => basename(f)), events, symbols: sink.symbols(), torn, fromMs: firstMs, toMs: lastMs, decoderVersion: FORMAT_VERSION,
     fileDigests, environments: [...environments].sort(),
-    gapsByReason, gaps, gapsTruncated: Object.values(gapsByReason).reduce((a, b) => a + b, 0) > gaps.length, warmupResets,
+    gapsByReason, gaps, gapsTruncated: Object.values(gapsByReason).reduce((a, b) => a + b, 0) > gaps.length,
+    // Over both sides, which side's list was cut (the parity report reads its own side's).
+    ...(bothSides ? { gapsTruncatedBySide: Object.fromEntries([...gapsCounted].map(([e, n]) => [e, n > (gapsListed.get(e) || 0)])) } : {}),
+    warmupResets,
   }
   return manifestBase
 }
 
 /** PR-Q1: gap reasons that drop only the recorder's queue (the live strategy kept every quote). */
 export const RECORDER_ONLY_GAPS = new Set(['queue_overflow', 'reserve_pause'])
-/** The manifest lists at most this many gaps with their times; `gapsByReason` counts all of them. */
+/** The manifest lists at most this many gaps per side with their times; `gapsByReason` counts all of them. */
 export const GAP_LIST_MAX = 200
 
 /** The replayer build that produced a trial: the deploy's commit, or null where the environment does not say. */
@@ -600,6 +611,13 @@ export function replayFilterContext(db) {
   return { entryCfg: loadTickEntryConfig(), gate: loadRegimeGateConfig(db) }
 }
 
+/**
+ * Which sidecar recorded a segment of each environment (routing: the header
+ * names the environment, the keeper's stores are kept per sidecar). The one
+ * table both the regime names and the cost classes are looked up through.
+ */
+const SIDE_OF_ENVIRONMENT = Object.freeze([['demo', 'cpp_exec_demo'], ['live', 'cpp_exec']])
+
 /** The segment's start from its name (seg-<13-digit ms>-…), or null. */
 function segmentStartMs(file) {
   const m = /^seg-(\d{13})-/.exec(basename(String(file)))
@@ -740,7 +758,7 @@ function trendContextFrame(db, { files = [], gate = loadRegimeGateConfig(db), no
   const names = tickSymbolNames(db)
   const nameSet = new Set(names)
   const sides = {}
-  for (const [env, side] of [['demo', 'cpp_exec_demo'], ['live', 'cpp_exec']]) {
+  for (const [env, side] of SIDE_OF_ENVIRONMENT) {
     const accountId = sideAccounts(db, side)[0] ?? null
     const nameOf = symbolNameResolver(db, accountId)
     const ids = new Set()
@@ -836,7 +854,7 @@ export function symbolTrend(ctx, manifestBase, symbolId, list, environment = nul
  * trial is charged by its own side's (classesFor). `symbolClass`, the union,
  * is kept for a map stored under no side's name.
  */
-export const ENVIRONMENT_BY_SIDE = Object.freeze({ cpp_exec_demo: 'demo', cpp_exec: 'live' })
+export const ENVIRONMENT_BY_SIDE = Object.freeze(Object.fromEntries(SIDE_OF_ENVIRONMENT.map(([env, side]) => [side, env])))
 export function replayCostContext(db) {
   const costSchedule = loadRepoSchedule()
   const symbolClass = {}

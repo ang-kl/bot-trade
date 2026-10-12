@@ -18,7 +18,7 @@ import { encodeHeader, encodeRecord, FLAGS, KIND } from '../lib/tick-segment.js'
 import { TICK_COST_MAP_KEY } from '../lib/tick-cost-schedule.js'
 import { loadSegments, replayFiles, replayNotice, researchPlan, replayCostContext, symbolTrend, stageAGrid, tickResearchAction } from './tick-research-run.js'
 import { createSpill, SPILL_ENTRY_BYTES } from './tick-replay-spill.js'
-import { trialParity, trialGaps } from './tick-replay-parity.js'
+import { trialParity, trialGaps, gapListCutAt, replayRecordOf, compareParity } from './tick-replay-parity.js'
 import { loadThresholds } from './tick-validation.js'
 
 const temporaryDirectories = new Set()
@@ -225,6 +225,62 @@ test('a stream skipped over the bound is named with its side', () => {
   assert.deepEqual(r.replay.symbolsNotReplayed, over)
   assert.deepEqual(r.trials.map(keyOf), counts.filter(c => c[1] <= bound).map(c => c[0]))
   assert.match(replayNotice(r.replay), new RegExp(`${over[0].environment}:${over[0].symbolId} \\(`))
+})
+
+// ---- Codex P2 on #1332 (owner "Per side + parity") --------------------------
+
+/** Demo with 250 recorder-only gaps, then live with 3, both on id 7. */
+function gapHeavySegments(dir, envs = ['demo', 'live']) {
+  let seq = 1
+  const files = []
+  for (const env of envs) {
+    const start = T0 + (env === 'live' ? 5 : 0)
+    const parts = [encodeHeader({ environment: env, generation: 1, startedMs: start, feedId: env })]
+    const gapsHere = env === 'demo' ? 250 : 3
+    for (let i = 0; i < 600; i++) {
+      const t = start + 10 + i * 100
+      const bid = (env === 'live' ? 200_000 : 100_000) + (i % 7)
+      parts.push(encodeRecord({ recvMs: t, seq: seq++, symbolId: 7, bid, ask: bid + 8, flags: QUOTE, kind: KIND.QUOTE, generation: 1 }))
+      if (i % 2 === 0 && i / 2 < gapsHere) parts.push(GAP(1, t + 60))
+    }
+    const name = `seg-${start}-000001.tks`
+    writeFileSync(join(dir, name), Buffer.concat(parts))
+    files.push(join(dir, name))
+  }
+  return files.sort()
+}
+
+test('Codex P2 on #1332: the gap list is capped per side, so one side cannot crowd the other out, and each side says whether its list was cut', () => {
+  const both = loadSegments(gapHeavySegments(mkdtempSync(join(tmpdir(), 'gapcap-both-')))).manifestBase
+  const listed = (env) => both.gaps.filter(g => g.environment === env).length
+  assert.equal(both.gapsByReason.queue_overflow, 253, 'every gap is counted')
+  assert.equal(listed('demo'), 200, 'demo listed up to its cap')
+  assert.equal(listed('live'), 3, 'and live\'s three are listed after it')
+  assert.deepEqual(both.gapsTruncatedBySide, { demo: true, live: false })
+  assert.equal(both.gapsTruncated, true)
+  // One side: the list and the manifest as before.
+  const one = loadSegments(gapHeavySegments(mkdtempSync(join(tmpdir(), 'gapcap-one-')), ['demo'])).manifestBase
+  assert.equal(one.gaps.length, 200)
+  assert.equal(one.gapsTruncated, true)
+  assert.ok(!('gapsTruncatedBySide' in one))
+})
+
+test('Codex P2 on #1332: past the last gap a cut list names, a mismatch reads not comparable (gap_list_truncated), on one side or both', () => {
+  // where each kind of manifest's list stops
+  const gaps = [{ reason: 'queue_overflow', recvMs: 3_000, count: 1, environment: 'demo' }, { reason: 'queue_overflow', recvMs: 4_000, count: 1, environment: 'demo' }, { reason: 'reconnect', recvMs: 7_000, count: 1, environment: 'live' }]
+  assert.equal(gapListCutAt({ gapsTruncated: true, gaps: [{ recvMs: 3_000 }, { recvMs: 4_000 }] }), 4_000, 'one side, cut')
+  assert.equal(gapListCutAt({ gapsTruncated: false, gaps: [{ recvMs: 3_000 }] }), null, 'one side, whole')
+  assert.equal(gapListCutAt({ environment: 'demo', gapsTruncated: true, gapsTruncatedBySide: { demo: true, live: false }, gaps }), 4_000, 'both sides: the demo trial\'s own list is cut')
+  assert.equal(gapListCutAt({ environment: 'live', gapsTruncated: true, gapsTruncatedBySide: { demo: true, live: false }, gaps }), null, 'the live trial\'s list is whole, whatever demo\'s was')
+  assert.equal(replayRecordOf({ fromMs: 1 }, { environment: 'demo', gapsTruncatedBySide: { demo: true }, gaps }).gapsUnlistedAfterMs, 4_000, 'the parity report is handed the cut')
+  // the verdict: a signal the sidecar does not have, in a window past the cut
+  const replay = (cut) => ({ fromMs: 1_000, toMs: 100_000, settledFromMs: 2_000, latencyMs: 250, truncated: false, signals: [{ seq: 10, recvMs: 5_000, side: 'BUY' }, { seq: 20, recvMs: 9_000, side: 'SELL' }], trades: [], gaps: [], gapsUnlistedAfterMs: cut })
+  const sidecar = { signals: [{ seq: 10, recvMs: 5_000, side: 'BUY' }], trades: [], health: { boots: [{ bootId: 'b1', lo: 1, hi: 50, n: 50 }], lostRestart: 0 } }
+  assert.equal(compareParity(replay(null), sidecar).parity, 'mismatch', 'a whole list: a real mismatch')
+  const cut = compareParity(replay(4_000), sidecar)
+  assert.equal(cut.parity, 'not_comparable')
+  assert.ok(cut.reasons.includes('gap_list_truncated'))
+  assert.equal(compareParity(replay(4_000), { ...sidecar, signals: replay(null).signals }).parity, 'ok', 'a match past the cut is still a match')
 })
 
 // ---- the two Codex P2s on #1330 ---------------------------------------------

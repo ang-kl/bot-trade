@@ -186,6 +186,10 @@ export function compareParity(replay, sidecar, { window = null, sim = { ok: true
   const gapsByReason = {}
   for (const g of gapsInWindow) gapsByReason[g.reason] = (gapsByReason[g.reason] || 0) + 1
   const dropped = gapsInWindow.some(g => RECORDER_ONLY_GAPS.has(g.reason))
+  // Codex P2 on #1332 (owner "Per side + parity"): past the last gap a CUT
+  // list names, a recorder drop cannot be ruled out, so a mismatch there is
+  // not scored as one. `gapsUnlistedAfterMs` is null when the list is whole.
+  const unlisted = replay.gapsUnlistedAfterMs != null && w.toMs > replay.gapsUnlistedAfterMs
 
   // Signals: the same quote (seq) and the same direction on both engines.
   const key = (x) => `${x.seq}|${x.side}`
@@ -230,7 +234,7 @@ export function compareParity(replay, sidecar, { window = null, sim = { ok: true
   let parity
   if (reasons.length) parity = 'not_comparable'
   else if (signals.verdict === 'mismatch' || trades.verdict === 'mismatch') {
-    if (dropped) { parity = 'not_comparable'; reasons.push('recorder_dropped_quotes') } else parity = 'mismatch'
+    if (dropped) { parity = 'not_comparable'; reasons.push('recorder_dropped_quotes') } else if (unlisted) { parity = 'not_comparable'; reasons.push('gap_list_truncated') } else parity = 'mismatch'
   } else if (trades.verdict === 'not_comparable') { parity = 'not_comparable'; reasons.push('sim_differs') }
   else parity = 'ok'
   return { parity, reasons, window: w, signals, trades, gapsByReason, seqGaps: lossy.seqGaps, boots: lossy.boots, note: parity === 'ok' || parity === 'mismatch' ? null : NOT_YET }
@@ -289,6 +293,25 @@ export function trialGaps(manifest) {
   return manifest?.environment ? gaps.filter(g => !g.environment || g.environment === manifest.environment) : gaps
 }
 
+/**
+ * When a trial's own gap list was cut at its cap (GAP_LIST_MAX per side), the
+ * time of the last gap it lists: past it, gaps are counted but not listed.
+ * Null when the list is whole. A one-side manifest says so in `gapsTruncated`;
+ * over both sides, `gapsTruncatedBySide` names the side.
+ */
+export function gapListCutAt(manifest) {
+  const env = manifest?.environment
+  const cut = env ? manifest?.gapsTruncatedBySide?.[env] === true : manifest?.gapsTruncated === true
+  if (!cut) return null
+  const own = trialGaps(manifest).map(g => Number(g.recvMs)).filter(Number.isFinite)
+  return own.length ? Math.max(...own) : -Infinity
+}
+
+/** The replay side of a parity comparison: the stored record, its own feed's gaps and where a cut list stops. */
+export function replayRecordOf(rec, manifest) {
+  return { ...rec, gaps: trialGaps(manifest), gapsUnlistedAfterMs: gapListCutAt(manifest) }
+}
+
 /** One stored trial against the sidecar, optionally inside an asked window and on an asked side. */
 export function trialParity(db, row, { side = null, fromMs = null, toMs = null, shadowSim = undefined, schedule = null } = {}) {
   const manifest = parse(row.manifest_json, {})
@@ -304,7 +327,7 @@ export function trialParity(db, row, { side = null, fromMs = null, toMs = null, 
   const useSide = side || sideFromData
   if (!useSide) return { ...base, parity: 'not_comparable', reasons: [envs.length > 1 ? 'mixed_environments' : 'side_unknown'], note: 'name the side (?side=cpp_exec_demo|cpp_exec): the manifest does not say which sidecar recorded it. ' + NOT_YET }
   if (side && sideFromData && side !== sideFromData) return { ...base, side: useSide, parity: 'not_comparable', reasons: ['side_differs_from_data'], dataSide: sideFromData, note: NOT_YET }
-  const replay = { ...rec, gaps: trialGaps(manifest) }
+  const replay = replayRecordOf(rec, manifest)
   const record = sidecarRecord(db, { side: useSide, profile: row.profile_hash, symbolId: base.symbolId, fromMs: rec.fromMs ?? 0, toMs: rec.toMs ?? 0 })
   const w = parityWindow(replay, record.trades, { fromMs, toMs })
   if (!w.ok) return { ...base, side: useSide, parity: 'not_comparable', reasons: [w.reason], window: w, note: NOT_YET }

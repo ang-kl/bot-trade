@@ -436,7 +436,11 @@ checked against the code (owner principle 5). Each later PR updates it.
   included (pinned in `tick-replay-sides.test.js`), except that its cost
   class is now its own side's: an id its side does not classify is no longer
   charged the other side's class, so its trial reads `costSource` none, which
-  the replay rung refuses.
+  the replay rung refuses. Codex (P2 on #1332; owner "Per side + parity"):
+  the manifest's 200-gap list is capped per side, each side says whether
+  its list was cut, and the parity report reads a mismatch past the last
+  gap a cut list names as not comparable (`gap_list_truncated`), on one
+  side or both: past that point a recorder drop cannot be ruled out.
 
 ### 6.4 Findings while building (decisions for the owner)
 
