@@ -340,7 +340,7 @@ W3 comes before W9 and W10, so their acceptance can be read on the card.
 
 ---
 
-## 6. Status, corrections and findings (kept current; Claude · № 13,401 12-Oct, updated № 13,463; claude-builder)
+## 6. Status, corrections and findings (kept current; Claude · № 13,401 12-Oct, updated № 13,489; claude-builder)
 
 This section records what happened to each item, so the document stays
 checked against the code (owner principle 5). Each later PR updates it.
@@ -355,6 +355,7 @@ checked against the code (owner principle 5). Each later PR updates it.
 | W9 | "yes to W9 … manual-hybrid-policy.js" and "Okay W9" | `manual-hybrid-policy.js`, `manual-hybrid-enrolment.js` |
 | W10 | "yes to … W10 … capped-hybrid-policy.js", then "yes to W10, capped-hybrid-enrolment.js" | `capped-hybrid-policy.js`, `capped-hybrid-enrolment.js` |
 | Lot fix (not in §2) | "Go lot fix" (after № 13,394) | none |
+| Hybrid audit text (Codex P2 on #1327) | "Yes, change it" (after № 13,483) | `momentum-partial-runtime.js` |
 
 ### 6.2 Item status
 
@@ -365,10 +366,10 @@ checked against the code (owner principle 5). Each later PR updates it.
 | W3 | `GET /state/capped-hybrid` + the Trade-page card, one line per Open positions row | #1326, merged 12-10 08:20 SGT | **Passed** 12-10 08:23 SGT: the card's rows equal the Open positions table for all accounts and for each of the five; 10 rows, each with a verdict and a reason |
 | W4 | `policy: auto` on all five enabled accounts | operation, no PR | **Passed** 12-10 06:13 SGT: auto, TIME_BASED, STABLE, readyCount 0 |
 | W11 | the book trail reaches manage-only accounts (`registryManageAccounts`); the summary counts them apart | #1326, merged 12-10 08:20 SGT | after the next book pass (21:05 UTC) |
-| W8 | `"_all"` in `momentum-entries.json` names every enabled account | this PR | `/state/momentum-targets` on every enabled account after deploy; the next momentum entry carries its plan |
-| W9 | `"_all"` in `manual-hybrid.json` | this PR | the W3 card shows no `manual_account_not_authorised` on an enabled account |
-| W10 | `capped_hybrid_json` (default 2R / 50%) read by both enrolments | this PR | with no stored setting, the card and the pass read as before |
-| Lot fix | an empty pad Lots box sends no cap | next PR | the next blank-lots pad order is risk-sized |
+| W8 | `"_all"` in `momentum-entries.json` names every enabled account; every caller checks the registry | #1327, merged 12-10 08:36 SGT | **Passed** 12-10 08:41 SGT: the plan is on (market and limit) on all five enabled accounts, and archived …2148 is off with the reason named. The next momentum entry carrying its plan is not verifiable until one opens |
+| W9 | `"_all"` in `manual-hybrid.json` | #1327 | **Passed** 12-10 08:40 SGT: no `manual_account_not_authorised` remains. The manual enrolment now examines the four …0949 pad positions and defers them on `monitor_entry_conflict` (§6.4) |
+| W10 | `capped_hybrid_json` (default 2R / 50%) read by both enrolments; exact or refused at any volume | #1327 | **Passed** 12-10 08:41 SGT: nothing stored, the setting reads the defaults, and the card's verdicts are unchanged |
+| Lot fix | an empty pad Lots box sends no cap | this PR | the next blank-lots pad order is risk-sized |
 | W5, W6, W7 | not started (phase B runs at least 30 min after the last deploy restart) | operations | — |
 
 ### 6.3 Corrections to §2 (what the text said vs what the code needed)
@@ -391,10 +392,11 @@ checked against the code (owner principle 5). Each later PR updates it.
   stopped on every account.
 - **W10.** §2 named `capped-hybrid-policy.js`. Both enrolments build the plan,
   so the stored setting is read there (`capped-hybrid-enrolment.js`,
-  `manual-hybrid-enrolment.js`). The partial manager's journal line in
-  `momentum-partial-runtime.js` (protected, not named) still reads
-  "capped hybrid 50% at 2R" whatever the plan carries; the plan itself and the
-  W3 card show the real values.
+  `manual-hybrid-enrolment.js`). The partial manager's journal and log lines
+  in `momentum-partial-runtime.js` read "capped hybrid 50% at 2R" whatever the
+  plan carried; after Codex's P2 on #1327 and the owner's yes they are the
+  plan's own, and a default plan's text is unchanged. The research replay's
+  "current policy" also follows the stored setting (Codex P1 on #1327).
 - **W3.** §2 said "one line per open position". The first build read open
   trades; the Open positions table it sits under reads active monitors. A
   monitor with no linked trade, or whose trade is no longer open, showed in
@@ -419,6 +421,11 @@ checked against the code (owner principle 5). Each later PR updates it.
 - **W3 read-back: the book positions read `trade_origin_not_bot`**, not
   `monitor_paused` as §2's expected verdicts said. Both exclude them; the
   origin is simply the first rule that applies. No change needed.
+- **The four …0949 pad positions defer on `monitor_entry_conflict`** (W9
+  read-back, 12-10 08:40 SGT). For each, the position monitor's entry and the
+  trade record's entry differ in ticks, so the manual hybrid will not act on
+  them until they agree. Which field is right has not been measured yet
+  (failure mode #6: find the disagreeing field against the broker first).
 
 ### 6.5 Held items (§4) — unchanged
 
