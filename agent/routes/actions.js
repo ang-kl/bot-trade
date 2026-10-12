@@ -2306,6 +2306,43 @@ export default function actionsRouter(db, deps = {}) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/commission-terms/refresh — read ONE account's commission
+  // terms from the broker's own symbol records and record them.
+  // Claude · № 13,794 13-Oct (task #44 step 1, owner "Each account's broker
+  // rate"; claude-builder). Body: { accountId, days? (default 30, max 190),
+  // symbols? }. The symbols read are the account's closing deals in the
+  // window plus any named, through the account's OWN symbol map. One broker
+  // read; it writes only `commission_terms:<accountId>`. No order, no
+  // setting, and the risk gate does not read the record (step 3 is separate).
+  // -----------------------------------------------------------------------
+  router.post('/commission-terms/refresh', async (req, res) => {
+    try {
+      const requestedId = req.body?.accountId != null ? String(req.body.accountId).trim() : ''
+      if (!requestedId) return res.status(400).json({ error: 'accountId is required' })
+      const registered = db.prepare('SELECT account_id FROM accounts WHERE account_id = ?').get(requestedId)
+      if (!registered) return res.status(404).json({ error: 'Requested account is not registered' })
+      const days = Math.min(190, Math.max(1, Math.floor(Number(req.body?.days) || 30)))
+      const extra = Array.isArray(req.body?.symbols) ? req.body.symbols.slice(0, 60) : []
+      const own = getAccountSymbolMap(db, requestedId)
+      if (!own) return res.status(409).json({ error: 'account_symbol_map_missing', accountId: requestedId })
+      const { symbolsToRead, storeCommissionTerms } = await import('../services/commission-terms.js')
+      const plan = symbolsToRead(db, requestedId, own.map, { days, extra })
+      if (!plan.ids.length) return res.json({ ok: true, accountId: requestedId, stored: 0, notListed: plan.notListed, overCap: plan.overCap })
+      const creds = credsForAccountId(db, requestedId)
+      if (!creds.ready || String(creds.accountId) !== requestedId) return res.status(400).json({ error: 'cTrader not connected for this account' })
+      const { wsSymbolsByIds } = deps.commissionTermsTransport ?? await import('../lib/ctrader-ws.js')
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const response = await wsSymbolsByIds(host, clientId, clientSecret, accessToken, accountId, plan.ids)
+      const out = storeCommissionTerms(db, requestedId, response, plan.namesById)
+      if (out.refused) return res.status(502).json({ error: out.refused, accountId: requestedId })
+      console.log(`[actions] commission-terms: account ${requestedId} ${out.stored} symbol(s) recorded`)
+      res.json({ ok: true, accountId: requestedId, requested: plan.ids.length, stored: out.stored, unnamed: out.unnamed, notListed: plan.notListed, overCap: plan.overCap })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/broker-history — the broker's own closed-trade record
   // (every closing deal, bot-placed or manual), with realised NET P&L
   // (gross + swap + commission) exactly as cTrader's History tab shows it.

@@ -3398,6 +3398,21 @@ export default function stateRouter(db) {
     }
   })
 
+  // Claude · № 13,794 13-Oct (task #44 step 1; claude-builder): one
+  // account's recorded commission terms against its own closing deals.
+  // Read only. ?account=<id> (required), ?days= (1..190, default 30).
+  router.get('/commission-terms', async (req, res) => {
+    try {
+      const accountId = req.query.account != null ? String(req.query.account).trim() : ''
+      if (!accountId) return res.status(400).json({ error: 'account is required' })
+      const { commissionTermsCheck } = await import('../services/commission-terms.js')
+      const days = Math.min(190, Math.max(1, Number(req.query.days) || 30))
+      res.json(commissionTermsCheck(db, accountId, { days }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // Wave 3 (first-principles audit 19-09-2026 §K item 11): the nightly
   // mark-to-market equity curve per account. ?account=<id> scopes to one;
   // ?days= (1..365, default 90).
