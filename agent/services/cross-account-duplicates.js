@@ -99,10 +99,15 @@ export function planCrossAccountDuplicates(db, { verifierState = null } = {}) {
 // order (#1798: 107.87 sent as the broker's 100-lot maximum). Not the twin's
 // volume: once reopened, the original is the live row and a partial close
 // sets its volume to what remains while the voided twin keeps the old figure
-// (Codex P1 on #1339; owner "Broker's last reading", № 13,767). No reading
-// → the volume is left as it is and `volumeUnread` says so. Returns null
-// when nothing would be written.
-function reopenFix(db, trade, monitor) {
+// (Codex P1 on #1339; owner "Broker's last reading", № 13,767). At the
+// reopen itself, a moved row adoption wrote moments ago has no reading yet
+// (the next pass writes it), but the twin is still the live row and its
+// volume is the broker's, read at adoption: `liveTwinVolume` (Codex P1 #2;
+// owner "Twin fallback at reopen", № 13,770). A repair never passes it — the
+// voided twin is history by then. No reading and no live twin → the volume
+// is left as it is and `volumeUnread` says so. Returns null when nothing
+// would be written.
+function reopenFix(db, trade, monitor, { liveTwinVolume = null } = {}) {
   const fix = {}
   if (monitor && trade?.source && monitor.source !== trade.source) {
     fix.sourceFrom = monitor.source
@@ -110,10 +115,14 @@ function reopenFix(db, trade, monitor) {
   }
   const units = monitor?.broker_volume_units
   const brokerLots = units == null ? null : brokerUnitsToLots(Number(units), trade?.symbol, db, trade?.account_id != null ? String(trade.account_id) : null)
-  if (Number.isFinite(brokerLots) && brokerLots > 0) {
-    if (!(Math.abs(Number(trade?.volume) - brokerLots) <= 1e-9)) {
+  const twinLots = Number(liveTwinVolume)
+  const [lots, by] = Number.isFinite(brokerLots) && brokerLots > 0 ? [brokerLots, 'broker_reading']
+    : liveTwinVolume != null && Number.isFinite(twinLots) && twinLots > 0 ? [twinLots, 'live_twin'] : [null, null]
+  if (lots != null) {
+    if (!(Math.abs(Number(trade?.volume) - lots) <= 1e-9)) {
       fix.volumeFrom = trade?.volume ?? null
-      fix.volumeTo = brokerLots
+      fix.volumeTo = lots
+      fix.volumeBy = by
     }
   } else if (Object.keys(fix).length) {
     fix.volumeUnread = true
@@ -196,9 +205,11 @@ export function applyCrossAccountDuplicates(db, plan, { at = new Date().toISOStr
         db.prepare(`UPDATE monitored_positions SET trade_id = ? WHERE trade_id = ?`).run(pr.originalTradeId, pr.twinTradeId)
         db.prepare(`UPDATE momentum_book SET trade_id = ? WHERE trade_id = ?`).run(pr.originalTradeId, pr.twinTradeId)
         // The moved rows take the original's own source, and the original the
-        // broker's last volume reading (reopenFix, № 13,764 / № 13,767).
+        // broker's last volume reading, or the still-live twin's volume when no
+        // pass has written one yet (reopenFix, № 13,764 / № 13,767 / № 13,770).
         const management = reopenFix(db, db.prepare('SELECT source, volume, symbol, account_id FROM trades WHERE id = ?').get(pr.originalTradeId),
-          activeMonitorOf(db, pr.originalTradeId))
+          activeMonitorOf(db, pr.originalTradeId),
+          { liveTwinVolume: db.prepare(`SELECT volume FROM trades WHERE id = ? AND status = 'open'`).get(pr.twinTradeId)?.volume ?? null })
         writeReopenFix(db, pr.originalTradeId, management)
         const reason = `duplicate_adoption: superseded by trade ${pr.originalTradeId} (reopened; this row was the 30-09 re-adoption)`
         db.prepare(`UPDATE trades SET status = ?, close_reason = ?, closed_at = COALESCE(closed_at, datetime('now')) WHERE id = ?`).run(VOID_STATUS, reason, pr.twinTradeId)

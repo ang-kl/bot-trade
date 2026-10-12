@@ -141,7 +141,7 @@ const brokerPos = (positionId, symbolName, volume) => ({
   tradeData: { positionId, symbolId: 1, tradeSide: 'BUY', openPrice: 100, volume, label: `${MAN}|i1zc4mryytjsu` },
 })
 
-function stressShape() {
+function stressShape({ settled = true } = {}) {
   const db = initDB(':memory:')
   setState(db, 'device_sessions', JSON.stringify({ [TOKEN]: Date.now() + 86_400_000 }))
   db.prepare("INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')").run(S, S)
@@ -162,7 +162,7 @@ function stressShape() {
   const held = [brokerPos('247938233', 'BTCUSD', 4), brokerPos('247938246', 'JPYX', 500_000)]
   reconcilePositions(db, held, [], setAcct, { accountId: S, readAt: Date.now() })
   // Later passes (every few minutes in production): the twins' monitor rows carry the broker's reading.
-  reconcilePositions(db, held, [], setAcct, { accountId: S, readAt: Date.now() })
+  if (settled) reconcilePositions(db, held, [], setAcct, { accountId: S, readAt: Date.now() })
   const twinOf = (id) => db.prepare(`SELECT id, source, volume FROM trades WHERE ctrader_position_id = (SELECT ctrader_position_id FROM trades WHERE id = ?) AND id <> ?`).get(id, id)
   return { db, btc, jpyx, twinOf, setAcct }
 }
@@ -194,7 +194,7 @@ test('the stress-run shape: a reopened manual order keeps its own source and tak
   // The reopen's audit names what the management rows took.
   const audit = db.prepare(`SELECT body FROM action_log WHERE method = 'REOPEN_FALSE_CLOSE'`).all().map(a => JSON.parse(a.body))
   const j = audit.find(a => a.originalTradeId === jpyx)
-  assert.deepEqual([j.management.sourceFrom, j.management.sourceTo, j.management.volumeFrom, j.management.volumeTo], ['external', 'manual', 107.87, 100])
+  assert.deepEqual([j.management.sourceFrom, j.management.sourceTo, j.management.volumeFrom, j.management.volumeTo, j.management.volumeBy], ['external', 'manual', 107.87, 100, 'broker_reading'])
   assert.deepEqual(r.plan.reopenedRepairs, [])
 })
 
@@ -264,4 +264,31 @@ test('with no broker reading on the monitor row the volume is left as it is and 
   await post(base, { apply: true })
   assert.equal(vol(db, jpyx), 107.87)
   assert.deepEqual(activeMon(db, jpyx), ['manual'])
+})
+
+// Codex P1 #2 on #1339 (owner: "Twin fallback at reopen"). Adoption writes the
+// monitor row without broker_volume_units; only the next reconcile pass fills
+// it. A reopen inside that window has no broker reading, but the twin is still
+// the live row and its volume is the broker's, read at adoption. At reopen
+// only — a repair of an earlier reopen never reads the voided twin.
+test('a reopen straight after the adoption, before any pass wrote the broker reading, takes the live twin\'s volume', async t => {
+  const { db, btc, jpyx } = stressShape({ settled: false })
+  assert.equal(db.prepare(`SELECT broker_volume_units FROM monitored_positions WHERE status = 'active' AND trade_id <> ? AND symbol = 'JPYX'`).get(jpyx).broker_volume_units, null, 'adoption writes no reading')
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  const r = await post(base, { apply: true })
+  assert.deepEqual(r.result.reopened.map(x => x.originalTradeId).sort((a, b) => a - b), [btc, jpyx])
+  assert.equal(vol(db, jpyx), 100, 'RED before: the pre-cap 107.87 stayed')
+  assert.deepEqual(activeMon(db, jpyx), ['manual'])
+  const j = db.prepare(`SELECT body FROM action_log WHERE method = 'REOPEN_FALSE_CLOSE'`).all().map(a => JSON.parse(a.body)).find(a => a.originalTradeId === jpyx)
+  assert.deepEqual([j.management.volumeTo, j.management.volumeBy, j.management.volumeUnread ?? null], [100, 'live_twin', null])
+})
+
+test('at reopen the broker\'s reading wins over the live twin\'s volume: a reduction made at the broker after the adoption', async t => {
+  const { db, jpyx, setAcct } = stressShape()
+  // 20 lots closed by hand at the broker: the next pass reads 80 lots; the twin's ledger figure is not the writer here.
+  reconcilePositions(db, [brokerPos('247938233', 'BTCUSD', 4), brokerPos('247938246', 'JPYX', 400_000)], [], setAcct, { accountId: S, readAt: Date.now() })
+  const twinVol = db.prepare(`SELECT volume FROM trades WHERE symbol = 'JPYX' AND status = 'open'`).get().volume
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  await post(base, { apply: true })
+  assert.equal(vol(db, jpyx), 80, `the broker's 80, not the twin's ${twinVol}`)
 })
