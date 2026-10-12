@@ -18,7 +18,7 @@ import { initDB, getState, setState } from '../db.js'
 import { recordDepositCurrency } from './account-money.js'
 import { upsertAccount } from './account-registry.js'
 import {
-  decodeCommissionTerms, modelledPerLotPerSideUsd, storeCommissionTerms, readCommissionTerms,
+  decodeCommissionTerms, modelledPerLotPerSideUsd, modelledSideUsd, storeCommissionTerms, readCommissionTerms,
   commissionTermsCheck, symbolsToRead, commissionTermsKey,
 } from './commission-terms.js'
 import actionsRouter from '../routes/actions.js'
@@ -184,6 +184,18 @@ test('check: the broker minimum per side (46979908 LLY.US and DOW.US deals, USD 
   assert.equal(eur.reason, 'min_commission_not_usd')
 })
 
+test('check: a QUOTE_CURRENCY minimum is in the quote currency, used only when that is USD', () => {
+  // Proto (ProtoOAMinCommissionType): QUOTE_CURRENCY = 2. The asset field
+  // defaults to "USD" when omitted, so it cannot name the currency here.
+  const base = { commissionType: 2, rate: 3.5, minCommission: 5 }
+  assert.equal(modelledSideUsd({ ...base, minCommissionType: 2, minCommissionAsset: 'USD' }, { symbol: 'GBPJPY', price: 190, lots: 0.01 }).reason, 'min_commission_quote_currency_not_usd')
+  assert.equal(modelledSideUsd({ ...base, minCommissionType: 2, minCommissionAsset: 'USD' }, { symbol: 'LLY.US', price: 1150, lots: 0.01 }).reason, 'min_commission_quote_currency_not_usd', 'a quote currency not read from the name is not assumed')
+  assert.equal(modelledSideUsd({ ...base, minCommissionType: 2, minCommissionAsset: 'USD' }, { symbol: 'AUDUSD', price: 0.7, lots: 0.01 }).usd, 5)
+  assert.equal(modelledSideUsd({ ...base, minCommissionType: 1, minCommissionAsset: 'USD' }, { symbol: 'GBPJPY', price: 190, lots: 0.01 }).usd, 5)
+  assert.equal(modelledSideUsd({ ...base, minCommissionType: null, minCommissionAsset: 'USD' }, { symbol: 'AUDUSD', price: 0.7, lots: 0.01 }).reason, 'min_commission_type_unknown')
+  assert.equal(modelledSideUsd({ ...base, minCommission: 0, minCommissionType: 2 }, { symbol: 'GBPJPY', price: 190, lots: 1 }).usd, 3.5, 'no minimum: nothing to read')
+})
+
 test('check: each side is priced at its own price — opening at entry, closing at close', () => {
   // Self-derived: a per-million rate on a pair that moved 0.70 -> 0.80. The
   // broker's own FX terms on these accounts are not known to be per-million
@@ -246,6 +258,12 @@ test('route: refresh reads this account through its own map and records; the che
   assert.equal((await request('/actions/commission-terms/refresh', { accountId: '47790949' })).status, 409, 'no own symbol map: nothing is read')
   // The shared map names a different id: it must not be used.
   setState(db, 'symbol_id_map', JSON.stringify({ AUDUSD: 555 }))
+  // A map past its 24-hour freshness is refused: nothing read, nothing written.
+  setState(db, 'symbol_id_map:47790949', JSON.stringify({ accountId: '47790949', builtAt: new Date(Date.now() - 25 * 3_600_000).toISOString(), map: { AUDUSD: 101, GBPUSD: 102 } }))
+  const stale = await request('/actions/commission-terms/refresh', { accountId: '47790949' })
+  assert.equal(stale.status, 409)
+  assert.equal(stale.data.error, 'account_symbol_map_stale')
+  assert.equal(calls.length, 0)
   setState(db, 'symbol_id_map:47790949', JSON.stringify({ accountId: '47790949', builtAt: new Date().toISOString(), map: { AUDUSD: 101, GBPUSD: 102 } }))
 
   const ok = await request('/actions/commission-terms/refresh', { accountId: '47790949' })

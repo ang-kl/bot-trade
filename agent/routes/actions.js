@@ -7,7 +7,7 @@ import { brokerReadAccount, brokerReadCache } from '../lib/broker-read-scope.js'
 import { Router } from 'express'
 import { getState, setState, sweepMonitoredPositionsForAccounts, accountsWithOpenPositions } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
-import { getCtraderCreds, getSymbolMap, getAccountSymbolMap, ensureSymbolMap, bindEntryIntent } from '../lib/ctrader-creds.js'
+import { getCtraderCreds, getSymbolMap, getAccountSymbolMap, accountSymbolMapIsFresh, ensureSymbolMap, bindEntryIntent } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { recordTradePlan, recordPlanWriteFailure } from '../services/trade-plans.js'
 import { normPosId } from '../lib/pos-id.js'
@@ -2325,6 +2325,11 @@ export default function actionsRouter(db, deps = {}) {
       const extra = Array.isArray(req.body?.symbols) ? req.body.symbols.slice(0, 60) : []
       const own = getAccountSymbolMap(db, requestedId)
       if (!own) return res.status(409).json({ error: 'account_symbol_map_missing', accountId: requestedId })
+      // Claude · № 13,810 13-Oct (Codex P2 on #1344, owner "Refuse when
+      // stale"; claude-builder): past the map's 24-hour freshness an id may
+      // name another instrument. Nothing is read or written; the normal
+      // paths refresh the map and this is retried after.
+      if (!accountSymbolMapIsFresh(own)) return res.status(409).json({ error: 'account_symbol_map_stale', accountId: requestedId, builtAt: own.builtAt })
       const { symbolsToRead, storeCommissionTerms } = await import('../services/commission-terms.js')
       const plan = symbolsToRead(db, requestedId, own.map, { days, extra })
       if (!plan.ids.length) return res.json({ ok: true, accountId: requestedId, stored: 0, notListed: plan.notListed, overCap: plan.overCap })

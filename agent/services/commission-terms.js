@@ -190,7 +190,18 @@ export function modelledSideUsd(terms, { symbol, price, lotUnits, lots }) {
   if (!(n > 0)) return { usd: null, reason: 'lots_unknown' }
   let usd = perLot.usd * n
   if (terms.minCommission != null && terms.minCommission > 0) {
-    if (terms.minCommissionAsset !== 'USD') return { usd: null, reason: 'min_commission_not_usd' }
+    // Claude · № 13,810 13-Oct (Codex P2 on #1344, owner "Decline unless
+    // quote is USD"; claude-builder): the proto's minCommissionType says
+    // which currency the minimum is in. QUOTE_CURRENCY is the pair's quote
+    // currency, whatever the asset field says (an omitted asset defaults to
+    // "USD"), so a GBPJPY minimum is in JPY. Used only when that is USD.
+    if (terms.minCommissionType === 2) {
+      if (pairOf(symbol)?.quote !== 'USD') return { usd: null, reason: 'min_commission_quote_currency_not_usd' }
+    } else if (terms.minCommissionType === 1) {
+      if (terms.minCommissionAsset !== 'USD') return { usd: null, reason: 'min_commission_not_usd' }
+    } else {
+      return { usd: null, reason: 'min_commission_type_unknown' }
+    }
     usd = Math.max(usd, terms.minCommission)
   }
   return { usd, reason: null }
