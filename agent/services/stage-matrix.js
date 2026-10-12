@@ -542,7 +542,7 @@ function writeCell(db, { getState, setState }, accountId, kind, key, stage, flag
  *
  * @returns {string[]} scopes changed: 'global' and/or account ids.
  */
-export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exemptHandPinned = false, ownVerdictScopes = [], onlyScopes = null, actor = 'unattributed', reason = null, evidence = null } = {}) {
+export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exemptHandPinned = false, ownVerdictScopes = [], onlyScopes = null, holdOwnerSwitch = false, actor = 'unattributed', reason = null, evidence = null } = {}) {
   const { getState } = io
   const changed = []
   const held = []
@@ -574,18 +574,35 @@ export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exempt
     // cell (the autopilot writes the global list, the breaker writes false),
     // so an explicit true on an account scope is the owner's word, whichever
     // environment the account is. The global list is never a pin.
-    if (exemptHandPinned && scope != null && !own.has(scope)) {
+    //
+    // THE OWNER'S SWITCH WINS (owner, 12-10-2026, № 13,718: "Your switch wins
+    // on …7342"), for a caller that asks (`holdOwnerSwitch`; the edge watchdog
+    // only). Measured on 43097342: the owner switched rsi2_reversion on
+    // through the route at 05:54:51Z on 09-10 and the watchdog wrote it false
+    // 17 s later on the account's own closes. A cell whose LAST setting write
+    // was the owner's route holds even against the account's own verdict. A
+    // seeded `_all` pin is not the owner's switch, so the checker's 11-09 rule
+    // still disarms those (`ownerSwitchOn` reads the arming ledger).
+    // Claude · № 13,721 12-Oct (ordered № 13,718; claude-builder)
+    if (exemptHandPinned && scope != null) {
+      const ownVerdict = own.has(scope)
       const cell = readJson(db, getState, acctMatrixKey(scope))?.strategy?.[key]?.trade
-      if (cell === true) {
+      const ownerSwitch = cell === true && ownVerdict && holdOwnerSwitch ? ownerSwitchOn(db, scope, key) : null
+      if (cell === true && (!ownVerdict || ownerSwitch)) {
         held.push(scope)
         // PR-S rule 2: a pin that outvoted a verdict is a DECISION, and "why
         // is this still armed" is the same question as "why is this off".
         // Recorded with the verdict it held against, so the owner can see
         // what their pin is costing rather than only that it exists.
+        const why = ownerSwitch
+          ? `HELD: the owner switched this strategy on for this account (${ownerSwitch.actor}, ${ownerSwitch.at})`
+          : 'HELD by the owner\'s pin on this account'
         recordArmingChange(db, {
           scope, kind: 'strategy', key, stage: 'trade', from: true, to: true, decision: 'held',
-          actor, reason: reason ? `${reason} — HELD by the owner's pin on this account` : 'held by the owner\'s pin on this account',
-          evidence: { ...(evidence || {}), heldBy: 'hand_pin', ownVerdictScope: false },
+          actor, reason: reason ? `${reason} — ${why}` : why.replace(/^HELD/, 'held'),
+          evidence: ownerSwitch
+            ? { ...(evidence || {}), heldBy: 'owner_switch', ownVerdictScope: true, switchedOn: ownerSwitch }
+            : { ...(evidence || {}), heldBy: 'hand_pin', ownVerdictScope: false },
         })
         continue
       }
@@ -595,6 +612,23 @@ export function disarmStrategyEverywhere(db, io, key, { neverZero = true, exempt
   }
   if (exemptHandPinned) changed.held = held
   return changed
+}
+
+/**
+ * The owner's switch on one account's trade cell, or null. The arming ledger
+ * (append-only, arming-log.js) names who last SET the cell; it is the owner's
+ * when that write set it true through the owner's route. Telegram's arm paths
+ * write only the global list, so an account cell has no other human writer.
+ * A cell no row explains is not the owner's switch (rule 3: never a guess).
+ * Claude · № 13,721 12-Oct (ordered № 13,718; claude-builder)
+ */
+export const OWNER_SWITCH_ACTORS = Object.freeze(['owner_route'])
+export function ownerSwitchOn(db, scope, key) {
+  const why = whyCell(db, { scope, kind: 'strategy', key, stage: 'trade', current: true })
+  const s = why.lastSet
+  // Only 'set' rows carry owner_route; a 'declared' row is boot_declaration's.
+  if (!s || s.to !== 'true' || !OWNER_SWITCH_ACTORS.includes(s.actor)) return null
+  return { actor: s.actor, at: s.at, rowId: s.id }
 }
 
 /**

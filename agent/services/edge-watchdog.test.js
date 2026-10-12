@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
 import { runEdgeWatchdog, strategyRollingEdge } from './edge-watchdog.js'
-import { setStage, armedTradeKeys } from './stage-matrix.js'
+import { setStage, armedTradeKeys, disarmStrategyEverywhere, ownerSwitchOn } from './stage-matrix.js'
 import { upsertAccount } from './account-registry.js'
 import { recordDepositCurrency } from './account-money.js'
 
@@ -271,4 +271,73 @@ test('Wave 1 (19-09-2026): a momentum-family strategy is judged at its horizon, 
   assert.equal(r.actions.length, 0)
   assert.equal(isArmed(db, 'tsmom_long'), true, 'the book is not disarmed on a sample it cannot have earned')
   assert.deepEqual(r.evaluated.find(e => e.strategy === 'tsmom_long'), { strategy: 'tsmom_long', skipped: 'judged_at_horizon' })
+})
+
+// Claude · № 13,721 12-Oct (owner "Your switch wins on …7342", № 13,718; claude-builder)
+test('the owner\'s switch wins: a cell the owner switched on through the route holds against that account\'s OWN no-edge record; a seeded pin still does not; the hold is recorded with the switch it kept', () => {
+  // Measured 09-10-2026 on 43097342 (arming log): the owner switched
+  // rsi2_reversion on through POST /actions/stage-matrix at 05:54:51Z and
+  // the watchdog wrote it false 17 s later on the account's own closes;
+  // donchian_breakout went the same way in 21 s. The owner's order (№ 13,718):
+  // the watchdog stops overriding a strategy the owner switched on.
+  const db = initDB(':memory:')
+  for (const id of ['111', '222']) db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')`).run(id, id)
+  arm(db, ['vwap_trend', 'rsi_meanrev'])
+  const io = { getState, setState }
+  setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '111', actor: 'owner_route', reason: 'POST /actions/stage-matrix' }, io)
+  setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '222', actor: 'boot_seed', reason: 'declared in agent/config/strategy-pins.json' }, io)
+  seedScoped(db, 'rsi_meanrev', '111', Array.from({ length: 16 }, () => -5))
+  seedScoped(db, 'rsi_meanrev', '222', Array.from({ length: 16 }, () => -5))
+  const r = runEdgeWatchdog(db, {})
+  assert.equal(r.actions.length, 1)
+  assert.deepEqual([...r.actions[0].ownVerdictScopes].sort(), ['111', '222'], 'both accounts carry their own no-edge record')
+  assert.deepEqual([...r.actions[0].scopes].sort(), ['222', 'global'], 'RED if the owner\'s switch on 111 is written false')
+  assert.deepEqual(r.actions[0].heldPinned, ['111'])
+  assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), true, 'the owner\'s switch stays on')
+  assert.equal(armedTradeKeys(db, getState, '222').has('rsi_meanrev'), false, 'a seeded pin still yields to the account\'s own record (checker, 11-09)')
+  const held = db.prepare("SELECT reason, evidence_json FROM arming_log WHERE scope='111' AND decision='held' ORDER BY id DESC LIMIT 1").get()
+  assert.ok(held, 'the hold is a recorded decision')
+  const ev = JSON.parse(held.evidence_json)
+  assert.equal(ev.heldBy, 'owner_switch')
+  assert.equal(ev.ownVerdictScope, true)
+  assert.equal(ev.switchedOn.actor, 'owner_route')
+  assert.match(held.reason, /owner switched/)
+
+  // The switch is judged by the LAST write that set the cell: an owner
+  // switch the watchdog already wrote false, then a seed re-arming it, is a
+  // seed's arm, not the owner's.
+  const db2 = initDB(':memory:')
+  db2.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','111',0,1,'active')`).run()
+  arm(db2, ['vwap_trend', 'rsi_meanrev'])
+  setStage(db2, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '111', actor: 'owner_route' }, io)
+  setStage(db2, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: false, accountId: '111', actor: 'edge_watchdog' }, io)
+  setStage(db2, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '111', actor: 'boot_seed' }, io)
+  seedScoped(db2, 'rsi_meanrev', '111', Array.from({ length: 16 }, () => -5))
+  const r2 = runEdgeWatchdog(db2, {})
+  assert.deepEqual([...r2.actions[0].scopes].sort(), ['111', 'global'])
+  assert.equal(armedTradeKeys(db2, getState, '111').has('rsi_meanrev'), false)
+  // …and the owner switching it on again makes it the owner's once more.
+  setStage(db2, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '111', actor: 'owner_route' }, io)
+  seedScoped(db2, 'rsi_meanrev', '111', [-5])
+  const r3 = runEdgeWatchdog(db2, {})
+  assert.deepEqual(r3.actions, [], 'nothing changed: the global list is already off and the owner\'s switch holds')
+  assert.equal(armedTradeKeys(db2, getState, '111').has('rsi_meanrev'), true)
+  // The owner switching a cell OFF is not a switch on, whatever wrote the
+  // cell afterwards without a row (rule 3: an unexplained cell is no one's).
+  setStage(db2, { kind: 'strategy', key: 'vp_value', stage: 'trade', on: true, accountId: '111', actor: 'owner_route' }, io)
+  assert.equal(ownerSwitchOn(db2, '111', 'vp_value').actor, 'owner_route')
+  setStage(db2, { kind: 'strategy', key: 'vp_value', stage: 'trade', on: false, accountId: '111', actor: 'owner_route' }, io)
+  assert.equal(ownerSwitchOn(db2, '111', 'vp_value'), null)
+  assert.equal(ownerSwitchOn(db2, '111', 'va_breakout'), null, 'a cell with no row is not the owner\'s switch')
+})
+
+test('the owner\'s switch is the WATCHDOG\'s rule only: the breaker and the helper\'s defaults still write an owner-switched cell false on the account\'s own record', () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('111','111',0,1,'active')`).run()
+  arm(db, ['vwap_trend', 'rsi_meanrev'])
+  const io = { getState, setState }
+  setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: true, accountId: '111', actor: 'owner_route' }, io)
+  const out = disarmStrategyEverywhere(db, io, 'rsi_meanrev', { exemptHandPinned: true, ownVerdictScopes: ['111'], actor: 'adaptive_breaker' })
+  assert.ok(out.includes('111'), 'RED if the hold reaches callers that did not ask for it')
+  assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), false)
 })

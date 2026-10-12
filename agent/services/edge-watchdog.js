@@ -216,9 +216,17 @@ export function runEdgeWatchdog(db, { notify } = {}) {
         // pooled verdict holds the pins, the account's own does not. With
         // `_all` pins on every account a pin that always held left the
         // watchdog unable to disarm anything.
+        //
+        // …AND EXCEPT A CELL THE OWNER SWITCHED ON (owner, 12-10-2026,
+        // № 13,718: "Your switch wins"): on 09-10 this watchdog wrote the
+        // owner's rsi2_reversion and donchian_breakout switches on 43097342
+        // false 17 s and 21 s after the route set them. A cell whose last
+        // setting write was the owner's route holds even against the
+        // account's own record; seeded pins still yield to it.
+        // Claude · № 13,721 12-Oct (ordered № 13,718; claude-builder)
         const ownVerdictScopes = accountId == null ? accountsWithOwnNoEdge(db, key, cfg) : [accountId]
         const scopes = disarmStrategyEverywhere(db, io, key, {
-          neverZero: false, exemptHandPinned: true, ownVerdictScopes,
+          neverZero: false, exemptHandPinned: true, ownVerdictScopes, holdOwnerSwitch: true,
           onlyScopes: accountId == null ? null : [accountId],
           // PR-S: the decay figures travel with the write, so a later reader
           // can see WHICH measurement retired the strategy rather than only
