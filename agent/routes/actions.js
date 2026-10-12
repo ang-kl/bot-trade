@@ -6512,9 +6512,14 @@ export default function actionsRouter(db, deps = {}) {
         // Owner 2026-07-31: name the symbol and the missing leg rather than
         // returning a bare guard_* string. `needsInput` tells the caller which
         // field to ask for; it is advice, never an automatic fill.
+        // The ratio the gate admits for this account, strategy and trade
+        // (Codex P2 on #1337, owner "Fix in this PR"): the registry override
+        // alone advised rsi2 a 1R target the gate refuses.
+        // Claude · № 13,742 12-Oct (claude-builder)
         const needsInput = describeBracketGap(err.message, {
           symbol: analysis.symbol, side, entry, sl, tp: tp1, digits: volMeta.digits,
           strategy: analysis.strategy, minRR: loadRiskConfig(db).minRR,
+          rrFloor: lowestAdmittedRr(db, accountId, analysis.strategy, { symbol: analysis.symbol, entry, sl }),
         })
         return res.json({ ok: false, vetoed: true, reason: err.message, ...(needsInput ? { needsInput } : {}) })
       }

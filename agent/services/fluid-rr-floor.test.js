@@ -220,10 +220,13 @@ test('the missing-target advice names the ratio the gate admits: breakeven with 
   assert.equal(lowestAdmittedRr(db, A, 'vwap_trend', { symbol: '0700.HK', entry: 100, sl: 99 }), 1.88)
 })
 
-test('wiring: the manual-order route passes the trade\'s symbol, entry and stop to the advice (comments stripped)', () => {
+test('wiring: both order routes pass the trade\'s symbol, entry and stop to the advice (comments stripped)', () => {
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   const src = strip(readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8'))
   const start = src.indexOf("router.post('/manual-order'")
   const route = src.slice(start, src.indexOf('\n  router.', start + 1))
-  assert.match(route, /lowestAdmittedRr\(db, creds\.accountId, strategy, \{ symbol, entry, sl: proposal\.sl \}\)/)
+  assert.match(route, /lowestAdmittedRr\(db, creds\.accountId, strategy, \{ symbol, entry, sl: proposal\.sl \}\)/)  // …and the execute-analysis route passes its own (Codex P2 on #1337; № 13,742).
+  const e0 = src.indexOf("router.post('/execute-trade'")
+  const exec = src.slice(e0, src.indexOf('\n  router.', e0 + 1))
+  assert.match(exec, /rrFloor: lowestAdmittedRr\(db, accountId, analysis\.strategy, \{ symbol: analysis\.symbol, entry, sl \}\)/)
 })

@@ -167,6 +167,22 @@ test('execute-trade: a guard refusal thrown at the send, after the write-ahead r
   assert.equal(trade.risk_event_id, approval.id, 'and it is linked to the approval')
 })
 
+// Codex P2 on #1337 (owner: "Fix in this PR"). The execute-analysis route's
+// missing-target advice never asked the gate's floor: an rsi2 analysis (its
+// registry override 1.0) was advised a 1R target that the gate refuses.
+// Claude · № 13,742 12-Oct (claude-builder)
+test('execute-trade: an analysis with no target is advised the ratio the gate admits, not the strategy\'s registry override', async t => {
+  const db = fresh(); t.after(() => db.close())
+  setState(db, 'exec_guard_json', 'null')
+  const { post } = await serve(t, db)
+  const analysisId = db.prepare(`INSERT INTO analyses (symbol, consensus_bias, overall_conviction, synthesis, entry_price, sl_price, tp1_price, strategy, analyzed_at)
+    VALUES (?, 'long', 9, '{}', 1.1, 1.09, NULL, 'rsi2_reversion', ?)`).run(SYM, new Date().toISOString()).lastInsertRowid
+  const res = await post('execute-trade', { analysisId: Number(analysisId) })
+  assert.match(res.reason, /^guard_no_target: /)
+  assert.ok(res.needsInput, JSON.stringify(res).slice(0, 300))
+  assert.match(res.needsInput.suggestionBasis ?? '', /^3R from entry/, `RED before: rsi2 was advised its 1R registry override (${res.needsInput.suggestionBasis})`)
+})
+
 // Codex P2 on #1322 (second round): /health counted that rejected write-ahead
 // row as a landed trade AND its refusal as a resolution — one attempt
 // accounting for two approvals — so a genuine silent drop on the same day
