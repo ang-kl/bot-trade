@@ -250,3 +250,26 @@ test('P1: with no price in the order answer, the fill is read from the position,
   assert.ok(Math.abs(row.sl_price - 1.094) < 1e-9, `stop from the fill: ${row.sl_price}`)
   assert.ok(Math.abs(row.tp_price - 1.139) < 1e-9, `target from the fill: ${row.tp_price}`)
 })
+
+// Codex P1 on c3b6cc49 (owner "Merge now, fix next", № 13,712): the fixed
+// trade plan keeps the gate's own levels, as loop.js records its plan
+// (synth.entry/sl/tp1); only the live trade and position rows take the
+// bracket from the fill. The anchoring had put the fill-anchored stop and
+// target into the plan beside the planned entry: a 1.10/1.09 plan filled at
+// 1.104 read as 1.10/1.094, risk 0.006 where the gate admitted 0.010.
+test('P1: the trade plan keeps the gate\'s levels and risk; only the live rows take the bracket from the fill', async t => {
+  const db = fresh({ halt: false })
+  t.after(() => db.close())
+  const { post } = await serve(t, db, { close: 1.1, fill: 1.104, acceptOnly: true })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, tp: 1.135 }) })
+  assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
+  const plan = db.prepare('SELECT planned_entry, planned_sl, planned_tp, risk_dist, planned_r FROM trade_plans').get()
+  assert.ok(plan, 'a plan was written')
+  assert.equal(plan.planned_entry, 1.1)
+  assert.equal(plan.planned_sl, 1.09, 'the gate\'s stop, not the fill-anchored 1.094')
+  assert.equal(plan.planned_tp, 1.135, 'the gate\'s target, not the fill-anchored 1.139')
+  assert.ok(Math.abs(plan.risk_dist - 0.01) < 1e-9, `the risk the gate admitted: ${plan.risk_dist}`)
+  assert.ok(Math.abs(plan.planned_r - 3.5) < 1e-6, `the planned R: ${plan.planned_r}`)
+  const pos = db.prepare('SELECT current_sl, current_tp FROM monitored_positions').get()
+  assert.ok(Math.abs(pos.current_sl - 1.094) < 1e-9 && Math.abs(pos.current_tp - 1.139) < 1e-9, `the live position keeps the fill's bracket: ${JSON.stringify(pos)}`)
+})
