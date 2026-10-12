@@ -64,7 +64,8 @@ function fixture(t, { short = false, account = '42' } = {}) {
       assert.equal(String(acct), account); assert.equal(timeout, 4000); assert.equal(retries, 0)
       return state.reconcile ? state.reconcile() : snapshot()
     }, wsGetPositionDeals: async () => ({ ctidTraderAccountId: Number(account), hasMore: false, deal: state.history }) },
-    execReconcile: async () => state.reconcile ? state.reconcile() : snapshot(),
+    // `state.cached`: the gateway's cached /positions answer, when a test needs it to differ from the live read.
+    execReconcile: async () => state.cached ? state.cached() : (state.reconcile ? state.reconcile() : snapshot()),
     execClosePosition: async (c, order) => {
       state.closes.push({ accountId: c.accountId, host: c.host, ...order })
       const r = state.response ? await state.response() : fill()
@@ -344,4 +345,41 @@ test('unfillable bank partial takes its existing full-exit fallback; ladder rema
     assert.equal(f.read().journal.length, 0, 'a whole fallback or skipped ladder is not a successful partial')
     assert.equal(f.read().attempt ?? null, null, 'no partial close was submitted')
   }
+})
+
+// Claude · № 13,757 12-Oct (demo stress run D1; owner "Yes, live read"; claude-builder).
+// The full exit's "already closed" branch read the gateway's CACHED snapshot
+// (execReconcile → the sidecar's ~30 s position cache) and, when the position
+// was missing from it, closed the ledger row WITHOUT sending a close — a
+// position opened after the cache refresh would be left open at the broker
+// with nothing managing it. A live read now confirms before the row is closed.
+test('full exit: a position missing only from the cached snapshot is closed at the broker, not written off as already closed', async t => {
+  const f = fixture(t)
+  f.state.cached = () => ({ ctidTraderAccountId: 42, position: [] }) // the cache predates the position
+  f.state.volume = 7000 // the broker holds 0.07 lots; the ledger's 0.1 would compute 10000
+  const out = await f.run({ action: 'FULL_EXIT', exitFraction: 1, reason: 'integrated full exit' })
+  assert.notEqual(out.summary, 'already_closed', `RED before: the cached snapshot wrote the row off (${JSON.stringify(out)})`)
+  assert.equal(f.state.closes.length, 1, 'a close reached the broker')
+  assert.equal(f.state.closes[0].volume, 7000, 'with the volume the LIVE read holds, not one computed from the ledger')
+})
+
+test('full exit: missing from both the cache and the live read → recorded as already closed, nothing sent', async t => {
+  const f = fixture(t)
+  f.state.cached = () => ({ ctidTraderAccountId: 42, position: [] })
+  f.state.reconcile = () => ({ ctidTraderAccountId: 42, position: [] })
+  const out = await f.run({ action: 'FULL_EXIT', exitFraction: 1, reason: 'integrated full exit' })
+  assert.equal(out.summary, 'already_closed')
+  assert.equal(f.state.closes.length, 0)
+  assert.equal(f.read().trade.status, 'closed')
+})
+
+test('full exit: the live read fails → the row stays open and nothing is sent this pass', async t => {
+  const f = fixture(t)
+  f.state.cached = () => ({ ctidTraderAccountId: 42, position: [] })
+  f.state.reconcile = () => { throw Error('socket closed') }
+  const out = await f.run({ action: 'FULL_EXIT', exitFraction: 1, reason: 'integrated full exit' })
+  assert.equal(out.skipped, true)
+  assert.match(out.reason, /already_closed_unconfirmed/)
+  assert.equal(f.state.closes.length, 0)
+  assert.equal(f.read().trade.status, 'open', 'RED before: the row was closed on the cache alone')
 })

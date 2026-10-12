@@ -21,6 +21,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import express from 'express'
 import { initDB, setState } from '../db.js'
+import { _seedVolumeMetaForTests, _cache as _volumeMetaCache } from '../lib/lot-sizing.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 import { recordMarketCalendar } from '../services/market-calendar.js'
 import { _resetEntryHoursRefresh } from '../services/entry-hours.js'
@@ -62,7 +63,7 @@ function fresh({ halt = true } = {}) {
  * a new order is recorded and refused at once (ORDER_ERROR_EVENT), so a test
  * can read the payload the route sent.
  */
-function fakeBroker(close, fill = null, acceptOnly = false) {
+function fakeBroker(close, fill = null, acceptOnly = false, maxVolume = 100_000_000_000) {
   const sent = [], orders = []
   class Socket extends EventEmitter {
     constructor() { super(); this.readyState = 1; setImmediate(() => this.emit('open')) }
@@ -89,7 +90,7 @@ function fakeBroker(close, fill = null, acceptOnly = false) {
         [PT.RECONCILE_REQ]: [PT.RECONCILE_RES, { ctidTraderAccountId: m.payload?.ctidTraderAccountId, position: fill == null ? [] : [{ positionId: 33, price: fill, tradeData: { symbolId: SYM_ID, tradeSide: 'BUY', volume: 1_000_000 } }], order: [] }],
         [PT.SYMBOL_BY_ID_REQ]: [PT.SYMBOL_BY_ID_RES, {
           ctidTraderAccountId: m.payload?.ctidTraderAccountId,
-          symbol: [].concat(m.payload?.symbolId ?? []).map(id => ({ symbolId: id, lotSize: 10_000_000, minVolume: 100_000, maxVolume: 100_000_000_000, stepVolume: 100_000, digits: 5, pipPosition: 4 })),
+          symbol: [].concat(m.payload?.symbolId ?? []).map(id => ({ symbolId: id, lotSize: 10_000_000, minVolume: 100_000, maxVolume, stepVolume: 100_000, digits: 5, pipPosition: 4 })),
         }],
       }[m.payloadType]
       if (answer) reply(answer[0], answer[1])
@@ -99,8 +100,8 @@ function fakeBroker(close, fill = null, acceptOnly = false) {
   return { Socket, sent, orders }
 }
 
-async function serve(t, db, { close = 1.1, fill = null, acceptOnly = false } = {}) {
-  const broker = fakeBroker(close, fill, acceptOnly)
+async function serve(t, db, { close = 1.1, fill = null, acceptOnly = false, maxVolume } = {}) {
+  const broker = fakeBroker(close, fill, acceptOnly, maxVolume)
   _setWebSocketForTests(broker.Socket); t.after(() => _setWebSocketForTests(null))
   const app = express(); app.use(express.json()); app.use('/actions', actionsRouter(db))
   const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)) })
@@ -277,3 +278,31 @@ test('P1: the trade plan keeps the gate\'s levels and risk; only the live rows t
   const pos = db.prepare('SELECT current_sl, current_tp FROM monitored_positions').get()
   assert.ok(Math.abs(pos.current_sl - 1.094) < 1e-9 && Math.abs(pos.current_tp - 1.139) < 1e-9, `the live position keeps the fill's bracket: ${JSON.stringify(pos)}`)
 })
+
+// Claude · № 13,757 12-Oct (demo stress run D2; owner "Send the cap, record it"; claude-builder).
+// Measured on 47790949: JPYX was sized at 107.87 lots, lotsToVolume capped the
+// order at the broker's 100-lot maximum, and the ledger recorded 107.87. Both
+// order routes now record what was SENT (stepped and capped), and say so.
+for (const route of ['execute-trade', 'manual-order']) {
+  test(`D2 (${route}): above the broker maximum the order goes at the cap and the row records the lots sent, not the lots asked`, async t => {
+    const db = fresh({ halt: false })
+    t.after(() => db.close())
+    // The broker record for this symbol, as getVolumeMeta caches it per account and symbol.
+    _seedVolumeMetaForTests(A, SYM_ID, { lotSize: 10_000_000, minVolume: 100_000, maxVolume: 200_000, stepVolume: 100_000, digits: 5, pipPosition: 4 })
+    t.after(() => _volumeMetaCache.delete(`${A}|${SYM_ID}`))
+    const { post, broker } = await serve(t, db, { fill: 1.1, maxVolume: 200_000 }) // 0.02 lots at lotSize 10,000,000
+    const res = route === 'execute-trade'
+      ? await post('execute-trade', { analysisId: analysis(db) })
+      : await post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135, strategy: 'ema_pullback' })
+    assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
+    assert.equal(broker.orders.length, 1)
+    assert.equal(broker.orders[0].volume, 200_000, 'the broker received the capped volume')
+    const row = db.prepare('SELECT volume FROM trades ORDER BY id DESC LIMIT 1').get()
+    assert.equal(row.volume, 0.02, `RED before: the row recorded the gate's ${row.volume} lots, not the 0.02 sent`)
+    assert.equal(res.volume, 0.02, 'the reply says what was sent')
+    assert.ok(res.requestedLots > 0.02, 'and what was asked')
+    assert.equal(res.volumeCapped, 'broker_max_volume')
+    const thesis = db.prepare('SELECT thesis FROM monitored_positions ORDER BY id DESC LIMIT 1').get()?.thesis
+    assert.match(String(thesis), /volume capped at the broker maximum \([\d.]+ → 0\.02 lots\)/, 'the cap is noted on the row')
+  })
+}

@@ -105,7 +105,7 @@ export function validationFillDirectionReason(rawSide) {
  */
 export function recordManualOrderTrade(db, {
   symbol, side, entryP, entryEstimate = null, sl, tp = null, volLots, positionId = null,
-  structuredLabel, accountId = null, strategy = MANUAL_ORDER_STRATEGY, riskEventId = null,
+  structuredLabel, accountId = null, strategy = MANUAL_ORDER_STRATEGY, riskEventId = null, note = null,
 } = {}) {
   const strat = String(strategy || '').trim() || MANUAL_ORDER_STRATEGY
   const acct = accountId != null ? String(accountId) : null
@@ -128,7 +128,7 @@ export function recordManualOrderTrade(db, {
         thesis, initial_risk, strategy, source, label_raw, account_id, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active')
     `).run(symbol, id, side, entryP, sl, tp,
-      'Manual order via UI', Math.abs(entryP - sl), strat, structuredLabel, acct)
+      note ? `Manual order via UI — ${note}` : 'Manual order via UI', Math.abs(entryP - sl), strat, structuredLabel, acct)
     return id
   })()
   // The plan is the order as entered: the price estimate the gate sized on,
@@ -6431,6 +6431,15 @@ export default function actionsRouter(db, deps = {}) {
         return res.json({ ok: false, vetoed: true, reason })
       }
       const volume = sized.volume
+      // WHAT REACHES THE BROKER is what the ledger records (demo stress run
+      // D2, 12-10-2026: JPYX sized at 107.87 lots, capped at the broker's
+      // 100-lot maximum by lotsToVolume, recorded as 107.87). lotsToVolume
+      // steps DOWN and caps at maxVolume; the risk taken is then below the
+      // budget, never above it. Claude · № 13,757 12-Oct (owner "Send the cap,
+      // record it"; claude-builder)
+      const sentLots = sized.lots
+      const capNote = sized.aboveMax ? `volume capped at the broker maximum (${volLots} → ${sentLots} lots)` : null
+      if (capNote) console.warn(`[actions] execute-trade ${analysis.symbol}: ${capNote}`)
       const slDistance = sl && entry ? Math.abs(entry - sl) : null
       const tpDistance = tp1 && entry ? Math.abs(tp1 - entry) : null
 
@@ -6485,7 +6494,7 @@ export default function actionsRouter(db, deps = {}) {
       // reserves carries the approval, and its id lands on this row the
       // moment it is reserved (bindEntryIntent), before anything is sent.
       const tradeId = writeAheadAnalysisTrade(db, {
-        symbol: analysis.symbol, side, entry, sl, tp: tp1, volLots, accountId, strategy: analysis.strategy || null, riskEventId,
+        symbol: analysis.symbol, side, entry, sl, tp: tp1, volLots: sentLots, accountId, strategy: analysis.strategy || null, riskEventId,
       })
       let entryIntentId = null
       let exec
@@ -6559,15 +6568,16 @@ export default function actionsRouter(db, deps = {}) {
       // the intent; tagLabelWithIntent keeps the untagged label when the tag
       // would not fit).
       settleAnalysisTrade(db, tradeId, {
-        symbol: analysis.symbol, side, entryP, entry, sl: slHeld, tp: tpHeld, planSl: sl, planTp: tp1, volLots, positionId,
+        symbol: analysis.symbol, side, entryP, entry, sl: slHeld, tp: tpHeld, planSl: sl, planTp: tp1, volLots: sentLots, positionId,
         label: entryIntentId ? tagLabelWithIntent(structuredLabel, entryIntentId) : structuredLabel,
         accountId, strategy: analysis.strategy || null, timeframe: analysis.timeframe || null,
-        thesis: analysis.consensus_summary || '', initialRisk,
+        thesis: [analysis.consensus_summary || '', capNote].filter(Boolean).join(' — '), initialRisk,
         invalidationTrigger: synth.invalidation_trigger || analysis.invalidation_trigger || null, timeCap,
       })
 
-      console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${volLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} riskEvent=${riskEventId ?? 'none'}`)
-      res.json({ ok: true, side, symbol: analysis.symbol, volume: volLots, executionPrice, positionId, tradeId, riskEventId })
+      console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${sentLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} riskEvent=${riskEventId ?? 'none'}`)
+      res.json({ ok: true, side, symbol: analysis.symbol, volume: sentLots, executionPrice, positionId, tradeId, riskEventId,
+        ...(sentLots !== volLots ? { requestedLots: volLots } : {}), ...(sized.aboveMax ? { volumeCapped: 'broker_max_volume' } : {}) })
     } catch (err) {
       console.error('[actions/execute-trade] error:', err.message)
       res.status(500).json({ error: err.message })
@@ -6720,6 +6730,15 @@ export default function actionsRouter(db, deps = {}) {
         persistPostApprovalVeto(db, proposal, reason)
         return res.json({ ok: false, vetoed: true, reason })
       }
+      // WHAT REACHES THE BROKER is what the ledger records (demo stress run
+      // D2, 12-10-2026: JPYX sized at 107.87 lots, capped at the broker's
+      // 100-lot maximum by lotsToVolume, recorded as 107.87). lotsToVolume
+      // steps DOWN and caps at maxVolume; the risk taken is then below the
+      // budget, never above it. Claude · № 13,757 12-Oct (owner "Send the cap,
+      // record it"; claude-builder)
+      const sentLots = sized.lots
+      const capNote = sized.aboveMax ? `volume capped at the broker maximum (${volLots} → ${sentLots} lots)` : null
+      if (capNote) console.warn(`[actions] manual-order ${symbol}: ${capNote}`)
       const slDistance = Math.abs(entry - proposal.sl)
       const tpDistance = proposal.tp1 != null ? Math.abs(proposal.tp1 - entry) : null
 
@@ -6781,12 +6800,13 @@ export default function actionsRouter(db, deps = {}) {
       const entryP = executionPrice ?? entry
 
       const tradeId = recordManualOrderTrade(db, {
-        symbol, side, entryP, entryEstimate: entry, sl: proposal.sl, tp: proposal.tp1, volLots, positionId,
-        structuredLabel, accountId: creds.accountId, strategy, riskEventId,
+        symbol, side, entryP, entryEstimate: entry, sl: proposal.sl, tp: proposal.tp1, volLots: sentLots, positionId,
+        structuredLabel, accountId: creds.accountId, strategy, riskEventId, note: capNote,
       })
 
-      console.log(`[actions] Manual UI order: ${side} ${symbol} vol=${volLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} strategy=${strategy} riskEvent=${riskEventId ?? 'none'}`)
-      res.json({ ok: true, side, symbol, volume: volLots, executionPrice, positionId, tradeId, strategy, riskEventId })
+      console.log(`[actions] Manual UI order: ${side} ${symbol} vol=${sentLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} strategy=${strategy} riskEvent=${riskEventId ?? 'none'}`)
+      res.json({ ok: true, side, symbol, volume: sentLots, executionPrice, positionId, tradeId, strategy, riskEventId,
+        ...(sentLots !== volLots ? { requestedLots: volLots } : {}), ...(sized.aboveMax ? { volumeCapped: 'broker_max_volume' } : {}) })
     } catch (err) {
       console.error('[actions/manual-order] error:', err.message)
       res.status(500).json({ error: err.message })

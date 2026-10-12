@@ -344,9 +344,44 @@ export function assertReconcileIdentity(reply, accountId, where = 'reconcile') {
   return identity
 }
 
+/**
+ * THE SNAPSHOT MAY PREDATE A ROW WRITTEN BEFORE THE READ (demo stress run,
+ * 12-10-2026, defect D1). On the native engine `execReconcile` is answered
+ * from the gateway's per-account position cache, refreshed by its own loop
+ * about every 30 s (cpp-exec engine.cpp reconcileOne / runLoop), so the
+ * request time is an UPPER bound on the snapshot's time, not a lower one.
+ * Measured on 47790949: trades opened at 09:21:15Z and 09:21:20Z were closed
+ * "at the broker" by the 09:21:25Z pass while the broker held both, then
+ * adopted back as new external rows three minutes later. A row opened within
+ * this bound of the read is never closed on that snapshot; it is reported as
+ * deferred and judged on a later pass. Heuristic (the gateway's 30 s idle plus
+ * its account sweep, with margin) until the gateway sends its snapshot time.
+ * Claude · № 13,757 12-Oct (owner "Age guard now, snapshot time next"; claude-builder)
+ */
+export const SNAPSHOT_AGE_BOUND_MS = 120_000
+
+/** SQLite 'YYYY-MM-DD HH:MM:SS' (UTC) or ISO → epoch ms; NaN when unreadable. */
+function utcMs(v) {
+  if (v == null) return NaN
+  const t = String(v).trim()
+  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(t) ? t.replace(' ', 'T') : `${t.replace(' ', 'T')}Z`
+  return Date.parse(iso)
+}
+
 export function reconcilePositions(db, brokerPositions, brokerOrders, setState, opts = {}) {
   const selected = getState(db, 'ctrader_account_id') || null
   const acct = opts.accountId != null ? String(opts.accountId) : selected
+  // D1 (see SNAPSHOT_AGE_BOUND_MS): with a known read time, a row opened
+  // within the bound before it is not judged closed on this snapshot. A
+  // caller that does not know its read time is judged exactly as before.
+  const readAtMs = opts.readAt == null ? NaN : (typeof opts.readAt === 'number' ? opts.readAt : Date.parse(opts.readAt))
+  const youngFromMs = Number.isFinite(readAtMs) ? readAtMs - SNAPSHOT_AGE_BOUND_MS - 1000 : null
+  const isYoung = (openedAt) => {
+    if (youngFromMs == null) return false
+    const ms = utcMs(openedAt)
+    return Number.isFinite(ms) && ms >= youngFromMs
+  }
+  const closeDeferred = []
   const includeNull = acct == null || acct === selected
   // SQL fragment + params scoping a table's rows to this pass's account.
   const scope = (col) => acct == null
@@ -362,7 +397,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   const knownRows = db.prepare(
     `SELECT mp.id, mp.symbol, mp.source, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
             mp.broker_volume_units, mp.broker_sl, mp.broker_tp, mp.trade_id, mp.be_moved,
-            t.ctrader_position_id, t.volume AS tradeVolume, t.broker_sl_initial
+            t.ctrader_position_id, t.volume AS tradeVolume, t.broker_sl_initial, t.opened_at AS tradeOpenedAt
      FROM monitored_positions mp
      LEFT JOIN trades t ON t.id = mp.trade_id
      WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL ${mpScope.sql}`
@@ -818,6 +853,10 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   const closedDetected = []
   for (const row of knownRows) {
     if (!brokerIds.has(normPosId(row.ctrader_position_id))) {
+      if (isYoung(row.tradeOpenedAt)) {
+        closeDeferred.push({ tradeId: row.trade_id, symbol: row.symbol, positionId: row.ctrader_position_id, openedAt: row.tradeOpenedAt, path: 'close' })
+        continue
+      }
       db.prepare(`UPDATE monitored_positions SET status = 'closed' WHERE id = ?`).run(row.id)
       // Say WHO closed it, or at least who didn't. The bot's own closers
       // (keeper, guardian, ratchet, loss cap, momentum book) close at the
@@ -945,7 +984,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
 
   const orphansClosed = []
   const openWithPosId = db.prepare(
-    `SELECT id, symbol, ctrader_position_id FROM trades
+    `SELECT id, symbol, ctrader_position_id, opened_at FROM trades
       WHERE status = 'open' AND ctrader_position_id IS NOT NULL ${tScope.sql}`
   ).all(...tScope.params)
   const closeOrphanMon = db.prepare(
@@ -953,6 +992,11 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   )
   for (const t of openWithPosId) {
     if (brokerIds.has(String(t.ctrader_position_id))) continue // still live at the broker
+    if (isYoung(t.opened_at)) {
+      // D1: the close loop above may already have deferred it; list it once.
+      if (!closeDeferred.some(x => x.tradeId === t.id)) closeDeferred.push({ tradeId: t.id, symbol: t.symbol, positionId: t.ctrader_position_id, openedAt: t.opened_at, path: 'orphan' })
+      continue
+    }
     closeTradeRow(db, t.id, { closeReason: 'stale reconcile: position not open at the broker (orphaned open row, never reconciled)' })
     closeOrphanMon.run(t.id)
     orphansClosed.push({ tradeId: t.id, symbol: t.symbol, positionId: t.ctrader_position_id })
@@ -1022,11 +1066,13 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // reconciles, so the write-time stamp above can land after a sidecar
   // restart that the snapshot itself predates. The tick feeder's restart hold
   // (tick-permits.js) needs "positions read after the new boot was first
-  // seen", so every caller passes `readAt` — the moment it ISSUED the request,
-  // a lower bound on the snapshot's time — and it is stamped here. A caller
-  // that does not know it stamps nothing: an unknown read time never lifts
-  // the hold.
-  const readAtMs = opts.readAt == null ? NaN : (typeof opts.readAt === 'number' ? opts.readAt : Date.parse(opts.readAt))
+  // seen", so every caller passes `readAt` — the moment it ISSUED the request
+  // — and it is stamped here. A caller that does not know it stamps nothing:
+  // an unknown read time never lifts the hold. CORRECTION (12-10-2026, D1):
+  // this comment called readAt "a lower bound on the snapshot's time". On the
+  // native engine the reply comes from the gateway's cache, so it is an UPPER
+  // bound; see SNAPSHOT_AGE_BOUND_MS. The tick hold's use of it is unchanged
+  // here and is named for the gateway's snapshot-time follow-up.
   if (acct != null && Number.isFinite(readAtMs)) { try { setAgentState(db, `acct:${acct}:last_reconcile_read_at`, new Date(readAtMs).toISOString()) } catch { /* state unwritable */ } }
 
   // Durable ledger of the broker's resting entry orders. These fill regardless
@@ -1054,7 +1100,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   try { setAgentState(db, RESYNC_WATCH_KEY, JSON.stringify(resyncWatch)) } catch { /* non-fatal */ }
 
   return {
-    newExternal, crossAccountRefused, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified, sourcesRepaired,
+    newExternal, crossAccountRefused, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, closeDeferred, ordersGone, relinked, dupsClosed, reclassified, sourcesRepaired,
     ...(dedupError ? { dedupError } : {}),
     ...(dupPnlError ? { dupPnlError } : {}),
   }
