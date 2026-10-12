@@ -2646,17 +2646,23 @@ export default function actionsRouter(db, deps = {}) {
   // POST /actions/extend-aftermath — the approved APPLY of the aftermath
   // top-up (owner 25-08-2026 "go for both", after the dry-run at
   // GET /state/aftermath-extend-preview reported 897 extendable rows).
-  // Body: { batch?: number } (default 100, max 300 — each row costs one
-  // candle fetch, throttled inside the service). Resumable: re-POST until
-  // `remaining` is 0; the candidate predicate is the progress tracker.
+  // Body: { batch?: number, from?: string } (batch default 100, max 300 —
+  // each row costs one candle fetch per window, throttled inside the
+  // service). Resumable: re-POST until `remaining` is 0; the candidate
+  // predicate is the progress tracker. A call that stopped on its budget
+  // returns `resumeFrom`; posting it back as `from` starts there (W5).
   // Writes bars_json ONLY — classifications stay as judged.
   router.post('/extend-aftermath', async (req, res) => {
     try {
+      const { applyAftermathExtension, parseCursor } = await import('../services/aftermath-extend-apply.js')
+      // Claude · № 13,571 12-Oct (W5; claude-builder): `from` is the
+      // `resumeFrom` an earlier call returned; anything else is refused.
+      const from = req.body?.from == null || req.body.from === '' ? null : String(req.body.from)
+      if (from != null && !parseCursor(from)) return res.status(400).json({ error: 'bad_from', where: 'from is the resumeFrom string an earlier call returned ("<closedMs>:<postmortemId>"); omit it to start at the newest row' })
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const batch = Math.min(300, Math.max(1, Number(req.body?.batch) || 100))
       const map = await ensureSymbolMap(db, creds)
-      const { applyAftermathExtension } = await import('../services/aftermath-extend-apply.js')
       const { wsGetTrendbarsBatch } = await import('../lib/ctrader-ws.js')
       const { host, clientId, clientSecret, accessToken, accountId } = creds
       const fetchBars = async (sym, tf, count, endTimeMs) => {
@@ -2665,8 +2671,8 @@ export default function actionsRouter(db, deps = {}) {
         const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, sid, [tf], count, 20_000, endTimeMs || 0)
         return byTf[tf] || []
       }
-      const out = await applyAftermathExtension(db, fetchBars, { maxRows: batch })
-      console.log(`[aftermath] extend applied: updated=${out.updated} barsAdded=${out.barsAdded} errors=${out.errors} remaining=${out.remaining}`)
+      const out = await applyAftermathExtension(db, fetchBars, { maxRows: batch, from })
+      console.log(`[aftermath] extend applied: updated=${out.updated} barsAdded=${out.barsAdded} noNewerBarsYet=${out.noNewerBarsYet} errors=${out.errors} remaining=${out.remaining}${out.resumeFrom ? ` resumeFrom=${out.resumeFrom}` : ''}`)
       res.json({ ok: true, ...out })
     } catch (err) {
       res.status(502).json({ error: err.message })

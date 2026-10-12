@@ -106,3 +106,138 @@ test('a fetch failure is counted and leaves the row untouched for a re-run', asy
   assert.equal(out.updated, 0)
   assert.deepEqual(db.prepare('SELECT bars_json FROM trade_postmortems').get(), before)
 })
+
+// ── Claude · № 13,571 12-Oct (W5; claude-builder) ───────────────────────────
+// Batch 2 of W5 (12-10) updated 0 rows and stopped on 25 errors. The fetch
+// window was fixed in clock time at close + (target + 2) bars; a market that
+// closes (weekends here) leaves fewer bars than that in the window, so after
+// one pass took them every later pass found nothing new and counted an error.
+import { WINDOW_SLOTS, MAX_WINDOWS, parseCursor } from './aftermath-extend-apply.js'
+import { tfMs } from '../lib/timeframes.js'
+
+const DAY = 24 * H
+/**
+ * A broker closed on Saturday and Sunday (UTC). Like the live fetch
+ * (ctrader-ws.js: fromTimestamp = end - (count + 5) bars), it answers with
+ * the last `count` bars it has inside that window.
+ */
+function weekdayBroker(calls = []) {
+  return async (_sym, tf, count, endMs) => {
+    calls.push({ tf, count, endMs })
+    const tfm = tfMs(tf)
+    const out = []
+    for (let t = Math.floor(endMs / tfm) * tfm; out.length < count && t >= endMs - (count + 5) * tfm; t -= tfm) {
+      const d = new Date(t).getUTCDay()
+      if (d !== 0 && d !== 6) out.push({ t, o: 100, h: 100.5, l: 99.5, c: 100, v: 1 })
+    }
+    return out.reverse()
+  }
+}
+const isOpen = (t) => { const d = new Date(t).getUTCDay(); return d !== 0 && d !== 6 }
+/** A row closed at `closedMs` (aligned to the bar) holding `afterBars` open-market bars after it. */
+function seedAt(db, { closedMs, tf = '1h', afterBars = 5, symbol = 'EURUSD' }) {
+  const tfm = tfMs(tf)
+  const bars = []
+  for (let t = closedMs - 2 * tfm; t <= closedMs; t += tfm) bars.push([t, 100, 100.5, 99.5, 100, 0])
+  for (let t = closedMs + tfm, n = 0; n < afterBars; t += tfm) if (isOpen(t)) { bars.push([t, 100, 100.5, 99.5, 100, 0]); n++ }
+  const info = db.prepare(
+    `INSERT INTO trades (symbol, side, status, entry_price, sl_price, opened_at, closed_at, net_pnl, account_id)
+     VALUES (?, 'long', 'closed', 100, 99, ?, ?, -1, '43097342')`
+  ).run(symbol, new Date(closedMs - 2 * H).toISOString(), new Date(closedMs).toISOString())
+  db.prepare(
+    `INSERT INTO trade_postmortems (trade_id, symbol, timeframe, side, entry_price, sl_price, classification, detail, bars_json)
+     VALUES (?, ?, ?, 'long', 100, 99, 'time_cap', 'as judged', ?)`
+  ).run(info.lastInsertRowid, symbol, tf, JSON.stringify(bars))
+}
+const storedAfter = (db, closedMs, id = 1) => JSON.parse(db.prepare('SELECT bars_json FROM trade_postmortems WHERE id = ?').get(id).bars_json).filter(b => b[0] > closedMs)
+const FRI_20 = Date.UTC(2026, 8, 4, 20) // Friday 4 Sep 2026, 20:00 UTC
+/** The open-market bars after `fromMs`, in order: what a complete stored aftermath holds. */
+const openBarsAfter = (fromMs, tfm, n) => { const out = []; for (let t = fromMs + tfm; out.length < n; t += tfm) if (isOpen(t)) out.push(t); return out }
+
+test('W5: a row closed before a weekend fills to its target across passes — the window starts at the row\'s last bar, not at a fixed clock end', async () => {
+  const db = initDB(':memory:')
+  seedAt(db, { closedMs: FRI_20, afterBars: 3 })
+  const now = FRI_20 + 30 * DAY
+  const calls = []
+  const first = await applyAftermathExtension(db, weekdayBroker(calls), { ...noSleep, now })
+  assert.equal(first.errors, 0); assert.equal(first.updated, 1)
+  const second = await applyAftermathExtension(db, weekdayBroker(calls), { ...noSleep, now })
+  assert.equal(second.errors, 0, 'RED on the clock window: the second pass found nothing new before close + 98 h and counted an error')
+  const after = storedAfter(db, FRI_20).map(b => b[0])
+  assert.deepEqual(after, openBarsAfter(FRI_20, H, REPLAY_AFTERMATH_BARS + 2), 'the capture convention: target + 2 open-market bars, contiguous, nothing skipped')
+  for (const c of calls) assert.ok(c.count <= WINDOW_SLOTS + 5, `each request stays at the broker's 400 (asked ${c.count})`)
+  assert.equal(second.alreadyFull + second.updated, 1)
+})
+
+test('W5: a one-minute row closed on Friday evening steps through the weekend and appends Monday\'s bars contiguously', async () => {
+  // and so does a broker that ignores the window's left edge and returns the last bars it has (all Friday's)
+  const db0 = initDB(':memory:')
+  const c0 = Date.UTC(2026, 8, 4, 23, 50)
+  seedAt(db0, { closedMs: c0, tf: '1m', afterBars: 2 })
+  const noLeftEdge = async (_sym, tf, count, endMs) => { const tfm = tfMs(tf); const out = []; for (let t = Math.floor(endMs / tfm) * tfm; out.length < count; t -= tfm) if (isOpen(t)) out.push({ t, o: 100, h: 100.5, l: 99.5, c: 100, v: 1 }); return out.reverse() }
+  const o0 = await applyAftermathExtension(db0, noLeftEdge, { ...noSleep, now: c0 + 20 * DAY })
+  assert.equal(o0.errors, 0); assert.equal(o0.updated, 1)
+  assert.deepEqual(storedAfter(db0, c0).map(b => b[0]), openBarsAfter(c0, MIN, REPLAY_AFTERMATH_BARS + 2))
+  const db = initDB(':memory:')
+  const closedMs = Date.UTC(2026, 8, 4, 23, 50) // Friday 23:50 UTC
+  seedAt(db, { closedMs, tf: '1m', afterBars: 2 })
+  const calls = []
+  const out = await applyAftermathExtension(db, weekdayBroker(calls), { ...noSleep, now: closedMs + 20 * DAY })
+  assert.equal(out.errors, 0, 'RED on the clock window: close + 98 minutes is all weekend, so nothing came back')
+  assert.equal(out.updated, 1)
+  assert.ok(calls.length > 1 && calls.length <= MAX_WINDOWS, `stepped ${calls.length} window(s)`)
+  assert.deepEqual(storedAfter(db, closedMs).map(b => b[0]), openBarsAfter(closedMs, MIN, REPLAY_AFTERMATH_BARS + 2))
+})
+
+test('W5: a row whose missing bars do not exist yet is "noNewerBarsYet", not an error, and does not use the error budget', async () => {
+  const db = initDB(':memory:')
+  // closed Thursday 20:00; now is the next Monday 23:30 — past close + 98 h
+  // of clock, but the broker holds only about 49 open-market hours since
+  const closedMs = Date.UTC(2026, 8, 3, 20)
+  seedAt(db, { closedMs, afterBars: 2 })
+  const now = Date.UTC(2026, 8, 7, 23, 30)
+  seedAt(db, { closedMs: Date.UTC(2026, 8, 3, 10), afterBars: 2, symbol: 'GBPUSD' })
+  const one = await applyAftermathExtension(db, weekdayBroker(), { ...noSleep, now })
+  assert.equal(one.updated, 2); assert.equal(one.errors, 0)
+  const later = await applyAftermathExtension(db, weekdayBroker(), { ...noSleep, now, maxErrors: 1 })
+  assert.equal(later.errors, 0, 'RED on the clock window: the broker has no newer bar, which is not a failure')
+  assert.equal(later.noNewerBarsYet, 2)
+  assert.equal(later.updated, 0); assert.equal(later.remaining, 0)
+})
+
+test('W5: a call stopped by its budget names where it stopped, and a call given that cursor starts there', async () => {
+  const db = initDB(':memory:')
+  const now = FRI_20 + 40 * DAY
+  for (let i = 0; i < 4; i++) seedAt(db, { closedMs: FRI_20 - i * DAY, afterBars: 2, symbol: `S${i}` })
+  // the two newest rows fail every pass (a dead symbol name)
+  const failing = (fetch) => async (sym, ...rest) => { if (sym === 'S0' || sym === 'S1') throw new Error('symbolId unknown'); return fetch(sym, ...rest) }
+  const first = await applyAftermathExtension(db, failing(weekdayBroker()), { ...noSleep, now, maxErrors: 2 })
+  assert.equal(first.errors, 2); assert.equal(first.updated, 0); assert.equal(first.remaining, 2)
+  assert.match(first.resumeFrom ?? '', /^\d+:\d+$/, 'RED before the cursor: the call said nothing about where it stopped')
+  const second = await applyAftermathExtension(db, failing(weekdayBroker()), { ...noSleep, now, maxErrors: 2, from: first.resumeFrom })
+  assert.equal(second.updated, 2, 'the rows behind the failing ones are reached'); assert.equal(second.errors, 0)
+  assert.equal(second.resumeFrom, null)
+  assert.deepEqual(parseCursor(first.resumeFrom), { closedMs: FRI_20 - 2 * DAY, pmId: 3 })
+  assert.equal(parseCursor('nope'), null); assert.equal(parseCursor(null), null)
+})
+
+test('W5: the stored aftermath stays contiguous whichever end of a full window the broker keeps', async () => {
+  // The live fetch asks for `count` bars over a window `count + 5` slots wide
+  // (ctrader-ws.js planWindowStartMs), so a fully open window can hold more
+  // bars than `count`. This broker keeps the EARLIEST `count` of them.
+  const earliestFirst = async (_sym, tf, count, endMs) => {
+    const tfm = tfMs(tf)
+    const out = []
+    for (let t = Math.floor((endMs - (count + 5) * tfm) / tfm) * tfm; t <= endMs && out.length < count; t += tfm) if (isOpen(t)) out.push({ t, o: 100, h: 100.5, l: 99.5, c: 100, v: 1 })
+    return out
+  }
+  const db = initDB(':memory:')
+  const closedMs = Date.UTC(2026, 8, 1, 2, 0) // Tuesday 02:00, a fully open stretch
+  seedAt(db, { closedMs, tf: '1m', afterBars: 1 })
+  // A 50-slot window (the live one is 395) so one window holds fewer bars
+  // than the row needs and the next window must pick up where the bars ended.
+  const out = await applyAftermathExtension(db, earliestFirst, { ...noSleep, now: closedMs + 20 * DAY, windowSlots: 50 })
+  assert.equal(out.errors, 0); assert.equal(out.updated, 1)
+  assert.ok(out.fetches >= 2, `fetched ${out.fetches} window(s)`)
+  assert.deepEqual(storedAfter(db, closedMs).map(b => b[0]), openBarsAfter(closedMs, MIN, REPLAY_AFTERMATH_BARS + 2), 'no bar skipped between windows')
+})
