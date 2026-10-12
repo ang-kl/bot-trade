@@ -62,7 +62,7 @@ function fresh({ halt = true } = {}) {
  * a new order is recorded and refused at once (ORDER_ERROR_EVENT), so a test
  * can read the payload the route sent.
  */
-function fakeBroker(close, fill = null) {
+function fakeBroker(close, fill = null, acceptOnly = false) {
   const sent = [], orders = []
   class Socket extends EventEmitter {
     constructor() { super(); this.readyState = 1; setImmediate(() => this.emit('open')) }
@@ -73,6 +73,8 @@ function fakeBroker(close, fill = null) {
       const reply = (type, payload) => setImmediate(() => this.emit('message', Buffer.from(JSON.stringify({ payloadType: type, payload, clientMsgId: m.clientMsgId }))))
       if (m.payloadType === PT.NEW_ORDER_REQ) {
         orders.push(m.payload)
+        // acceptOnly: the native gateway's first answer, ORDER_ACCEPTED, carries the position id and no price (fill-anchor.js).
+        if (fill != null && acceptOnly) return reply(PT.EXECUTION_EVENT, { ctidTraderAccountId: m.payload?.ctidTraderAccountId, executionType: 'ORDER_ACCEPTED', order: { orderId: 7 }, position: { positionId: 33 } })
         if (fill != null) return reply(PT.EXECUTION_EVENT, { ctidTraderAccountId: m.payload?.ctidTraderAccountId, executionType: 'ORDER_FILLED', order: { orderId: 7 }, deal: { dealId: 9, executionPrice: fill, positionId: 33 }, position: { positionId: 33, price: fill } })
         return reply(PT.ORDER_ERROR_EVENT, { errorCode: 'TEST_REFUSED', description: 'stand-in broker' })
       }
@@ -84,6 +86,7 @@ function fakeBroker(close, fill = null) {
           ctidTraderAccountId: m.payload?.ctidTraderAccountId, symbolId: m.payload?.symbolId, period: m.payload?.period,
           trendbar: close == null ? [] : [{ low: Math.round(close * 100_000) - 50, deltaOpen: 0, deltaHigh: 60, deltaClose: 50, utcTimestampInMinutes: minute - 1, volume: 1 }],
         }],
+        [PT.RECONCILE_REQ]: [PT.RECONCILE_RES, { ctidTraderAccountId: m.payload?.ctidTraderAccountId, position: fill == null ? [] : [{ positionId: 33, price: fill, tradeData: { symbolId: SYM_ID, tradeSide: 'BUY', volume: 1_000_000 } }], order: [] }],
         [PT.SYMBOL_BY_ID_REQ]: [PT.SYMBOL_BY_ID_RES, {
           ctidTraderAccountId: m.payload?.ctidTraderAccountId,
           symbol: [].concat(m.payload?.symbolId ?? []).map(id => ({ symbolId: id, lotSize: 10_000_000, minVolume: 100_000, maxVolume: 100_000_000_000, stepVolume: 100_000, digits: 5, pipPosition: 4 })),
@@ -96,8 +99,8 @@ function fakeBroker(close, fill = null) {
   return { Socket, sent, orders }
 }
 
-async function serve(t, db, { close = 1.1, fill = null } = {}) {
-  const broker = fakeBroker(close, fill)
+async function serve(t, db, { close = 1.1, fill = null, acceptOnly = false } = {}) {
+  const broker = fakeBroker(close, fill, acceptOnly)
   _setWebSocketForTests(broker.Socket); t.after(() => _setWebSocketForTests(null))
   const app = express(); app.use(express.json()); app.use('/actions', actionsRouter(db))
   const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)) })
@@ -229,4 +232,21 @@ test('P1: the trade row records the stop and target the broker placed from the f
   assert.equal(row.entry_price, 1.104)
   assert.ok(Math.abs(row.sl_price - 1.094) < 1e-9, `stop from the fill: ${row.sl_price}, not the analysis's 1.09`)
   assert.ok(Math.abs(row.tp_price - 1.139) < 1e-9, `target from the fill: ${row.tp_price}, not the analysis's 1.135`)
+})
+
+// Codex P1 on cebc5c26 (owner "Complete it"): through the native gateway a
+// market order's first answer is ORDER_ACCEPTED, with the position id and no
+// price, so the anchoring above saw no fill. The route now reads the position
+// from the broker for its fill, as loop.js does (confirmFill).
+test('P1: with no price in the order answer, the fill is read from the position, and the row is anchored to it', async t => {
+  const db = fresh({ halt: false })
+  t.after(() => db.close())
+  const { post } = await serve(t, db, { close: 1.1, fill: 1.104, acceptOnly: true })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, tp: 1.135 }) })
+  assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
+  assert.equal(res.executionPrice, 1.104, 'the fill read from the position')
+  const row = db.prepare('SELECT entry_price, sl_price, tp_price FROM trades').get()
+  assert.equal(row.entry_price, 1.104, 'the recorded entry is the fill, not the planned 1.1')
+  assert.ok(Math.abs(row.sl_price - 1.094) < 1e-9, `stop from the fill: ${row.sl_price}`)
+  assert.ok(Math.abs(row.tp_price - 1.139) < 1e-9, `target from the fill: ${row.tp_price}`)
 })

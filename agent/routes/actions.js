@@ -6516,8 +6516,18 @@ export default function actionsRouter(db, deps = {}) {
       }
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
 
-      const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
+      let executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
       const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
+      // Claude · № 13,707 12-Oct (Codex P1 on #1333; owner "Complete it";
+      // claude-builder): through the native gateway the first answer to a
+      // market order is ORDER_ACCEPTED — the position id, no price — so the
+      // fill is read from the position, as loop.js does (confirmFill, a live
+      // read). Not found: the planned entry stands, as before; never a guess.
+      if (executionPrice == null && positionId) {
+        const { confirmFill } = await import('../lib/fill-anchor.js')
+        const { wsReconcile } = await import('../lib/ctrader-ws.js')
+        executionPrice = await confirmFill(() => wsReconcile(host, clientId, clientSecret, accessToken, accountId), positionId)
+      }
 
       const entryP = executionPrice ?? entry
       // Claude · № 13,703 12-Oct (Codex P1 on #1333; owner "Anchor to the
