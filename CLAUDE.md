@@ -1058,6 +1058,11 @@ Every PR body carries a **Grounding** section with three parts:
    was found only afterwards.)
 3. **Live check.** After deploy, each claim is reported Passed, Failed or Not
    Verifiable. Not Verifiable stays an open item — it is not "done".
+   **Not Applicable** is allowed only when the PR makes no runtime claim
+   (documentation, tests or build tooling alone), and the reason is stated.
+   Any runtime claim in the same PR still takes Passed, Failed or Not
+   Verifiable. (Added on Codex's P2 on #1343, owner "Add N/A with reason",
+   13-10.)
 
 Numbers the system models — costs, sizes, excursions, risk — are checked
 against the broker's own figures, not against the code that computes them.
