@@ -577,6 +577,12 @@
       "by": "claude-builder",
       "serial": "№ 13,471",
       "note": "#1327 merged cafe5e04 (W8 momentum-entries.json _all with registryEnabled on every caller incl. loop.js momentumPlanApplies; W9 manual-hybrid.json _all; W10 capped_hybrid_json setting, exact-or-refused at float-error tolerance). Protected changed with owner's yes: agent/loop.js, capped-hybrid-policy.js, capped-hybrid-enrolment.js, manual-hybrid-policy.js, manual-hybrid-enrolment.js. Next from claude-builder: lot-fix PR (actions.js manual-order/execute-trade, preorder.js), then phase B operations W5/W6/W7 (aftermath extend, tick research, bar-form small run)."
+    },
+    {
+      "at": "2026-10-12T01:00Z",
+      "by": "claude-builder",
+      "serial": "№ 13,507",
+      "note": "#1328 merged dfd2ec79 (lot fix: blank Lots = risk-based sizing, supplied non-positive lots = 400 via agent/lib/order-lots.js, actions.js manual-order/execute-trade, preorder.js; #1327 follow-ups: momentum-partial-runtime.js hybrid audit text from the plan (protected, owner's yes), exit-counterfactual-extended.js replay reads capped_hybrid_json). Next from claude-builder: phase B operations W5/W6/W7 (aftermath extend, tick research, bar-form small run) at least 30 min after this deploy."
     }
   ]
 }
