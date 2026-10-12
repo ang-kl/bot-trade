@@ -28,7 +28,14 @@ import { horizonForStrategy } from './trade-horizon.js'
 // the broker has never described to us. `db` is optional so every existing
 // caller keeps working — without it the behaviour is exactly as before.
 export function brokerVolumeToLots(bp, symbol, db = null, accountId = null) {
-  const units = bp?.tradeData?.volume ? bp.tradeData.volume / 100 : null
+  return brokerUnitsToLots(bp?.tradeData?.volume ? bp.tradeData.volume / 100 : null, symbol, db, accountId)
+}
+
+// The same conversion from units already divided out of the broker's volume —
+// what `monitored_positions.broker_volume_units` holds after each pass. Used by
+// the duplicate route to read the broker's last volume for a reopened trade
+// (Claude · № 13,767 12-Oct, Codex P1 on #1339; claude-builder).
+export function brokerUnitsToLots(units, symbol, db = null, accountId = null) {
   if (units == null) return null
   if (db != null) {
     // № 13,175 (Codex P1 on #1318, round 9): this account's own lot record first.

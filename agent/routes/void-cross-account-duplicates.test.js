@@ -114,3 +114,181 @@ test('reopening the original resets the verdict spent on its false close: attemp
   const body = JSON.parse(audit[0].body)
   assert.equal(body.tradeId, 1489); assert.equal(body.attempts, 6); assert.equal(body.writtenOffReason, VERDICT); assert.match(body.note, /twin 1733 voided/)
 })
+
+// ---------------------------------------------------------------------------
+// Claude · № 13,764 12-Oct (owner "Fix route + these two"; claude-builder)
+//
+// MEASURED 12-10-2026 on demo 47790949 (stress run, #1334). Two manual orders
+// (#1797 BTCUSD, #1798 JPYX at 107.87 lots, the gate's figure; the broker took
+// its 100-lot maximum) were falsely closed by a reconcile and re-adopted as
+// NEW rows #1800/#1801. Adoption labels a MAN-labelled position `external`
+// (isOurs is false for MAN) and records the broker's volume. This route then
+// reopened the originals and moved the twins' monitor rows onto them — so the
+// reopened manual orders came back `external`, which the fast monitor and the
+// loop's per-account management only observe, and #1798 kept 107.87 lots.
+// The reopened trade's own source is who opened the position; the twin's
+// volume is what the broker holds. Through the real writer, the real
+// reconciler (false close, then adoption) and the real route.
+// ---------------------------------------------------------------------------
+import { recordManualOrderTrade } from './actions.js'
+import { reconcilePositions } from '../services/reconciler.js'
+import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
+
+const S = '47790949'
+const MAN = 'MAN|v1|VWAP|-|LDN|-|-'
+const brokerPos = (positionId, symbolName, volume) => ({
+  positionId, symbolName, price: 100, stopLoss: 99, takeProfit: 102,
+  tradeData: { positionId, symbolId: 1, tradeSide: 'BUY', openPrice: 100, volume, label: `${MAN}|i1zc4mryytjsu` },
+})
+
+function stressShape({ settled = true } = {}) {
+  const db = initDB(':memory:')
+  setState(db, 'device_sessions', JSON.stringify({ [TOKEN]: Date.now() + 86_400_000 }))
+  db.prepare("INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')").run(S, S)
+  setState(db, 'ctrader_account_id', '99999999')
+  // This account's own JPYX lot (50 units), unlike the contract table's 100: a
+  // volume read without the account would halve every figure below.
+  rememberVolumeMeta(db, 'JPYX', { lotSize: 5000, accountId: S }, { shared: false })
+  const setAcct = (k, v) => setState(db, `acct:${S}:${k}`, v)
+  const place = (symbol, positionId, volLots) => recordManualOrderTrade(db, {
+    symbol, side: 'BUY', entryP: 100, entryEstimate: 100, sl: 99, tp: 102, volLots, positionId,
+    structuredLabel: MAN, accountId: S, strategy: 'vwap_trend',
+  })
+  const btc = place('BTCUSD', '247938233', 0.04)
+  const jpyx = place('JPYX', '247938246', 107.87)
+  // The false close: a snapshot that does not hold them, from a caller that does not pass its read time.
+  reconcilePositions(db, [], [], setAcct, { accountId: S })
+  // The next pass holds them: adopted as new rows with the broker's volume.
+  const held = [brokerPos('247938233', 'BTCUSD', 4), brokerPos('247938246', 'JPYX', 500_000)]
+  reconcilePositions(db, held, [], setAcct, { accountId: S, readAt: Date.now() })
+  // Later passes (every few minutes in production): the twins' monitor rows carry the broker's reading.
+  if (settled) reconcilePositions(db, held, [], setAcct, { accountId: S, readAt: Date.now() })
+  const twinOf = (id) => db.prepare(`SELECT id, source, volume FROM trades WHERE ctrader_position_id = (SELECT ctrader_position_id FROM trades WHERE id = ?) AND id <> ?`).get(id, id)
+  return { db, btc, jpyx, twinOf, setAcct }
+}
+const activeMon = (db, tradeId) => db.prepare(`SELECT source FROM monitored_positions WHERE trade_id = ? AND status = 'active'`).all(tradeId).map(r => r.source)
+const vol = (db, id) => db.prepare('SELECT volume FROM trades WHERE id = ?').get(id).volume
+function serveDb(db) {
+  const app = express()
+  app.use(express.json())
+  app.use('/actions', actionsRouter(db))
+  const server = app.listen(0)
+  return { server, base: `http://127.0.0.1:${server.address().port}` }
+}
+
+test('the stress-run shape: a reopened manual order keeps its own source and takes the broker volume the twin recorded', async t => {
+  const { db, btc, jpyx, twinOf } = stressShape()
+  // The production rows before the route: originals falsely closed, twins adopted external with the broker's volume.
+  assert.equal(db.prepare('SELECT status FROM trades WHERE id = ?').get(jpyx).status, 'closed')
+  assert.deepEqual([twinOf(btc).source, twinOf(btc).volume], ['external', 0.04])
+  assert.deepEqual([twinOf(jpyx).source, twinOf(jpyx).volume], ['external', 100])
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  const r = await post(base, { apply: true })
+  assert.deepEqual(r.result.reopened.map(x => x.originalTradeId).sort((a, b) => a - b), [btc, jpyx])
+  assert.deepEqual(r.result.errors, [])
+  // RED before: both came back 'external' (observe-only) and #1798 kept 107.87.
+  assert.deepEqual(activeMon(db, btc), ['manual'])
+  assert.deepEqual(activeMon(db, jpyx), ['manual'])
+  assert.equal(vol(db, jpyx), 100)
+  assert.equal(vol(db, btc), 0.04)
+  // The reopen's audit names what the management rows took.
+  const audit = db.prepare(`SELECT body FROM action_log WHERE method = 'REOPEN_FALSE_CLOSE'`).all().map(a => JSON.parse(a.body))
+  const j = audit.find(a => a.originalTradeId === jpyx)
+  assert.deepEqual([j.management.sourceFrom, j.management.sourceTo, j.management.volumeFrom, j.management.volumeTo, j.management.volumeBy], ['external', 'manual', 107.87, 100, 'broker_reading'])
+  assert.deepEqual(r.plan.reopenedRepairs, [])
+})
+
+test('an earlier reopen left observe-only is repaired by the same route: dry run names it, apply writes it once, audited', async t => {
+  const { db, btc, jpyx } = stressShape()
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  await post(base, { apply: true })
+  // What the route wrote before this fix (production 10:22Z): the moved rows say 'external' and #1798 still 107.87.
+  db.prepare(`UPDATE monitored_positions SET source = 'external' WHERE trade_id IN (?, ?) AND status = 'active'`).run(btc, jpyx)
+  db.prepare('UPDATE trades SET volume = 107.87 WHERE id = ?').run(jpyx)
+  db.prepare(`DELETE FROM action_log WHERE method <> 'REOPEN_FALSE_CLOSE'`).run()
+  const dry = await post(base, {})
+  assert.equal(dry.dryRun, true)
+  assert.deepEqual(dry.plan.reopenedRepairs.map(x => [x.originalTradeId, x.sourceFrom, x.sourceTo, x.volumeFrom ?? null, x.volumeTo ?? null]),
+    [[btc, 'external', 'manual', null, null], [jpyx, 'external', 'manual', 107.87, 100]])
+  assert.deepEqual(activeMon(db, jpyx), ['external'], 'the dry run writes nothing')
+  const r = await post(base, { apply: true })
+  assert.deepEqual(r.result.repaired.sort((a, b) => a - b), [btc, jpyx])
+  assert.deepEqual(r.result.errors, [])
+  assert.deepEqual(activeMon(db, btc), ['manual'])
+  assert.deepEqual(activeMon(db, jpyx), ['manual'])
+  assert.equal(vol(db, jpyx), 100)
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM action_log WHERE method = 'REPAIR_REOPENED_PAIR'`).get().n, 2)
+  // Idempotent, and a reopened trade that has since closed is left alone.
+  const again = await post(base, {})
+  assert.deepEqual(again.plan.reopenedRepairs, [])
+  db.prepare(`UPDATE monitored_positions SET source = 'external' WHERE trade_id = ?`).run(jpyx)
+  db.prepare(`UPDATE trades SET status = 'closed', closed_at = datetime('now') WHERE id = ?`).run(jpyx)
+  assert.deepEqual((await post(base, {})).plan.reopenedRepairs, [])
+})
+
+// Codex P1 on #1339 (owner: "Broker's last reading"). After a reopen the
+// original is the live row: a partial close sets ITS volume to what remains,
+// and the voided twin keeps the volume from before. The repair must read what
+// the broker holds now (the moved monitor row's last reading), never write the
+// twin's old, larger figure over the residual.
+test('a partial close after the reopen: the repair takes the broker\'s last reading, never the twin\'s old volume', async t => {
+  const { db, jpyx, setAcct } = stressShape()
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  await post(base, { apply: true })
+  // The old route's result, then half of JPYX closed: the partial path writes the residual and clears the baseline; the next pass reads 50 lots.
+  db.prepare(`UPDATE monitored_positions SET source = 'external' WHERE trade_id = ? AND status = 'active'`).run(jpyx)
+  db.prepare('UPDATE trades SET volume = 50 WHERE id = ?').run(jpyx)
+  db.prepare(`UPDATE monitored_positions SET broker_volume_units = NULL WHERE trade_id = ? AND status = 'active'`).run(jpyx)
+  reconcilePositions(db, [brokerPos('247938233', 'BTCUSD', 4), brokerPos('247938246', 'JPYX', 250_000)], [], setAcct, { accountId: S, readAt: Date.now() })
+  const dry = await post(base, {})
+  const j = dry.plan.reopenedRepairs.find(x => x.originalTradeId === jpyx)
+  assert.deepEqual([j.sourceTo, j.volumeTo ?? null], ['manual', null], 'RED before: the twin\'s 100 lots were planned over the 50-lot residual')
+  await post(base, { apply: true })
+  assert.equal(vol(db, jpyx), 50)
+  assert.deepEqual(activeMon(db, jpyx), ['manual'])
+  // A recorded volume the broker does not hold is corrected to the broker's reading, not the twin's.
+  db.prepare('UPDATE trades SET volume = 107.87 WHERE id = ?').run(jpyx)
+  const dry2 = await post(base, {})
+  assert.deepEqual(dry2.plan.reopenedRepairs.map(x => [x.originalTradeId, x.volumeFrom, x.volumeTo]), [[jpyx, 107.87, 50]])
+})
+
+test('with no broker reading on the monitor row the volume is left as it is and said so; the source is still repaired', async t => {
+  const { db, jpyx } = stressShape()
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  await post(base, { apply: true })
+  db.prepare(`UPDATE monitored_positions SET source = 'external', broker_volume_units = NULL WHERE trade_id = ? AND status = 'active'`).run(jpyx)
+  db.prepare('UPDATE trades SET volume = 107.87 WHERE id = ?').run(jpyx)
+  const dry = await post(base, {})
+  const j = dry.plan.reopenedRepairs.find(x => x.originalTradeId === jpyx)
+  assert.deepEqual([j.sourceTo, j.volumeTo ?? null, j.volumeUnread], ['manual', null, true])
+  await post(base, { apply: true })
+  assert.equal(vol(db, jpyx), 107.87)
+  assert.deepEqual(activeMon(db, jpyx), ['manual'])
+})
+
+// Codex P1 #2 on #1339 (owner: "Twin fallback at reopen"). Adoption writes the
+// monitor row without broker_volume_units; only the next reconcile pass fills
+// it. A reopen inside that window has no broker reading, but the twin is still
+// the live row and its volume is the broker's, read at adoption. At reopen
+// only — a repair of an earlier reopen never reads the voided twin.
+test('a reopen straight after the adoption, before any pass wrote the broker reading, takes the live twin\'s volume', async t => {
+  const { db, btc, jpyx } = stressShape({ settled: false })
+  assert.equal(db.prepare(`SELECT broker_volume_units FROM monitored_positions WHERE status = 'active' AND trade_id <> ? AND symbol = 'JPYX'`).get(jpyx).broker_volume_units, null, 'adoption writes no reading')
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  const r = await post(base, { apply: true })
+  assert.deepEqual(r.result.reopened.map(x => x.originalTradeId).sort((a, b) => a - b), [btc, jpyx])
+  assert.equal(vol(db, jpyx), 100, 'RED before: the pre-cap 107.87 stayed')
+  assert.deepEqual(activeMon(db, jpyx), ['manual'])
+  const j = db.prepare(`SELECT body FROM action_log WHERE method = 'REOPEN_FALSE_CLOSE'`).all().map(a => JSON.parse(a.body)).find(a => a.originalTradeId === jpyx)
+  assert.deepEqual([j.management.volumeTo, j.management.volumeBy, j.management.volumeUnread ?? null], [100, 'live_twin', null])
+})
+
+test('at reopen the broker\'s reading wins over the live twin\'s volume: a reduction made at the broker after the adoption', async t => {
+  const { db, jpyx, setAcct } = stressShape()
+  // 20 lots closed by hand at the broker: the next pass reads 80 lots; the twin's ledger figure is not the writer here.
+  reconcilePositions(db, [brokerPos('247938233', 'BTCUSD', 4), brokerPos('247938246', 'JPYX', 400_000)], [], setAcct, { accountId: S, readAt: Date.now() })
+  const twinVol = db.prepare(`SELECT volume FROM trades WHERE symbol = 'JPYX' AND status = 'open'`).get().volume
+  const { server, base } = serveDb(db); t.after(() => server.close())
+  await post(base, { apply: true })
+  assert.equal(vol(db, jpyx), 80, `the broker's 80, not the twin's ${twinVol}`)
+})

@@ -27,6 +27,7 @@
 // close_reason ('cross_account_duplicate:' / 'duplicate_adoption:').
 import { normPosId } from '../lib/pos-id.js'
 import { resetPnlVerdict } from './pnl-verdict-supersede.js'
+import { brokerUnitsToLots } from './reconciler.js'
 
 export const VOID_STATUS = 'cancelled'
 const NO_DEAL = "(exit_price IS NULL AND net_pnl IS NULL AND gross_pnl IS NULL)"
@@ -81,7 +82,82 @@ export function planCrossAccountDuplicates(db, { verifierState = null } = {}) {
       }
     }
   }
-  return { phantoms, pairs, verifierAccounts: [...new Set([...held.values()])] }
+  return { phantoms, pairs, reopenedRepairs: planReopenedRepairs(db), verifierAccounts: [...new Set([...held.values()])] }
+}
+
+// THE REOPENED TRADE'S OWN MANAGEMENT (12-10-2026, № 13,764; owner "Fix route
+// + these two"). The twin's monitor row moves onto the reopened original, but
+// that row was written by the re-adoption, which labels a MAN-labelled
+// position `external` (isOurs is false for MAN) — observe-only for the fast
+// monitor and the loop's per-account management. Measured on demo 47790949:
+// manual orders #1797/#1798 came back `external` after this route reopened
+// them. The original's own `source` says who opened the position (every
+// writer gives a trade and its monitor row the same source). The volume is
+// the broker's LAST READING on the moved monitor row (`broker_volume_units`,
+// written every reconcile pass), converted as adoption converts it: the
+// original may carry the lots the gate sized before the broker capped the
+// order (#1798: 107.87 sent as the broker's 100-lot maximum). Not the twin's
+// volume: once reopened, the original is the live row and a partial close
+// sets its volume to what remains while the voided twin keeps the old figure
+// (Codex P1 on #1339; owner "Broker's last reading", № 13,767). At the
+// reopen itself, a moved row adoption wrote moments ago has no reading yet
+// (the next pass writes it), but the twin is still the live row and its
+// volume is the broker's, read at adoption: `liveTwinVolume` (Codex P1 #2;
+// owner "Twin fallback at reopen", № 13,770). A repair never passes it — the
+// voided twin is history by then. No reading and no live twin → the volume
+// is left as it is and `volumeUnread` says so. Returns null when nothing
+// would be written.
+function reopenFix(db, trade, monitor, { liveTwinVolume = null } = {}) {
+  const fix = {}
+  if (monitor && trade?.source && monitor.source !== trade.source) {
+    fix.sourceFrom = monitor.source
+    fix.sourceTo = trade.source
+  }
+  const units = monitor?.broker_volume_units
+  const brokerLots = units == null ? null : brokerUnitsToLots(Number(units), trade?.symbol, db, trade?.account_id != null ? String(trade.account_id) : null)
+  const twinLots = Number(liveTwinVolume)
+  const [lots, by] = Number.isFinite(brokerLots) && brokerLots > 0 ? [brokerLots, 'broker_reading']
+    : liveTwinVolume != null && Number.isFinite(twinLots) && twinLots > 0 ? [twinLots, 'live_twin'] : [null, null]
+  if (lots != null) {
+    if (!(Math.abs(Number(trade?.volume) - lots) <= 1e-9)) {
+      fix.volumeFrom = trade?.volume ?? null
+      fix.volumeTo = lots
+      fix.volumeBy = by
+    }
+  } else if (Object.keys(fix).length) {
+    fix.volumeUnread = true
+  }
+  return Object.keys(fix).length ? fix : null
+}
+
+function writeReopenFix(db, tradeId, fix) {
+  if (fix?.sourceTo != null) db.prepare(`UPDATE monitored_positions SET source = ? WHERE trade_id = ? AND status = 'active'`).run(fix.sourceTo, tradeId)
+  if (fix?.volumeTo != null) db.prepare('UPDATE trades SET volume = ? WHERE id = ?').run(fix.volumeTo, tradeId)
+}
+
+const activeMonitorOf = (db, tradeId) => db.prepare(`SELECT id, source, broker_volume_units FROM monitored_positions WHERE trade_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1`).get(tradeId)
+
+/**
+ * Reopens this route made before the fix above, found from its own audit
+ * (REOPEN_FALSE_CLOSE): an original still open whose management or volume
+ * differs from what reopenFix would write. Reads only.
+ */
+function planReopenedRepairs(db) {
+  const repairs = []
+  const seen = new Set()
+  for (const { body } of db.prepare(`SELECT body FROM action_log WHERE method = 'REOPEN_FALSE_CLOSE' ORDER BY id`).all()) {
+    let pr
+    try { pr = JSON.parse(body) } catch { continue }
+    const orig = Number(pr?.originalTradeId)
+    const twinId = Number(pr?.twinTradeId)
+    if (!(orig > 0) || !(twinId > 0) || seen.has(orig)) continue
+    seen.add(orig)
+    const t = db.prepare('SELECT id, account_id, symbol, source, volume, status FROM trades WHERE id = ?').get(orig)
+    if (!t || t.status !== 'open') continue
+    const fix = reopenFix(db, t, activeMonitorOf(db, orig))
+    if (fix) repairs.push({ originalTradeId: orig, twinTradeId: twinId, accountId: t.account_id != null ? String(t.account_id) : null, symbol: t.symbol, ...fix })
+  }
+  return repairs
 }
 
 function voidTrade(db, { tradeId, accountId, positionId, closeReason, at }) {
@@ -96,7 +172,7 @@ function voidTrade(db, { tradeId, accountId, positionId, closeReason, at }) {
  * every write is recorded in action_log. Returns what was written.
  */
 export function applyCrossAccountDuplicates(db, plan, { at = new Date().toISOString() } = {}) {
-  const out = { voided: [], reopened: [], errors: [] }
+  const out = { voided: [], reopened: [], repaired: [], errors: [] }
   const audit = db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
   for (const p of plan.phantoms || []) {
     try {
@@ -128,13 +204,29 @@ export function applyCrossAccountDuplicates(db, plan, { at = new Date().toISOStr
         db.prepare(`UPDATE momentum_book SET status = 'closed', exited_at = COALESCE(exited_at, ?), note = 'superseded: management relinked from the duplicate adoption' WHERE trade_id = ? AND status <> 'closed'`).run(at, pr.originalTradeId)
         db.prepare(`UPDATE monitored_positions SET trade_id = ? WHERE trade_id = ?`).run(pr.originalTradeId, pr.twinTradeId)
         db.prepare(`UPDATE momentum_book SET trade_id = ? WHERE trade_id = ?`).run(pr.originalTradeId, pr.twinTradeId)
+        // The moved rows take the original's own source, and the original the
+        // broker's last volume reading, or the still-live twin's volume when no
+        // pass has written one yet (reopenFix, № 13,764 / № 13,767 / № 13,770).
+        const management = reopenFix(db, db.prepare('SELECT source, volume, symbol, account_id FROM trades WHERE id = ?').get(pr.originalTradeId),
+          activeMonitorOf(db, pr.originalTradeId),
+          { liveTwinVolume: db.prepare(`SELECT volume FROM trades WHERE id = ? AND status = 'open'`).get(pr.twinTradeId)?.volume ?? null })
+        writeReopenFix(db, pr.originalTradeId, management)
         const reason = `duplicate_adoption: superseded by trade ${pr.originalTradeId} (reopened; this row was the 30-09 re-adoption)`
         db.prepare(`UPDATE trades SET status = ?, close_reason = ?, closed_at = COALESCE(closed_at, datetime('now')) WHERE id = ?`).run(VOID_STATUS, reason, pr.twinTradeId)
         db.prepare(`DELETE FROM position_history_incomplete WHERE account_id = ? AND ctrader_position_id IN (?, ?)`).run(pr.accountId, pr.positionId, `${pr.positionId}.0`)
-        audit.run('REOPEN_FALSE_CLOSE', '/actions/positions/void-cross-account-duplicates', JSON.stringify({ ...pr, at }).slice(0, 2000), pr.accountId)
+        audit.run('REOPEN_FALSE_CLOSE', '/actions/positions/void-cross-account-duplicates', JSON.stringify({ ...pr, at, management }).slice(0, 2000), pr.accountId)
       })()
       out.reopened.push({ originalTradeId: pr.originalTradeId, voidedTwin: pr.twinTradeId })
     } catch (err) { out.errors.push({ tradeId: pr.originalTradeId, error: String(err?.message || err) }) }
+  }
+  for (const rp of plan.reopenedRepairs || []) {
+    try {
+      db.transaction(() => {
+        writeReopenFix(db, rp.originalTradeId, rp)
+        audit.run('REPAIR_REOPENED_PAIR', '/actions/positions/void-cross-account-duplicates', JSON.stringify({ ...rp, at }).slice(0, 2000), rp.accountId)
+      })()
+      out.repaired.push(rp.originalTradeId)
+    } catch (err) { out.errors.push({ tradeId: rp.originalTradeId, error: String(err?.message || err) }) }
   }
   return out
 }

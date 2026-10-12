@@ -5107,7 +5107,10 @@ export default function actionsRouter(db, deps = {}) {
   // № 10,447: "remove duplicates"). Dry run by default: the reply is the plan
   // (phantom rows to void, false-close pairs to reopen) with the evidence for
   // each; `{ apply: true }` writes it, one transaction per item, every write
-  // in action_log. See services/cross-account-duplicates.js.
+  // in action_log. See services/cross-account-duplicates.js. Claude · № 13,764
+  // 12-Oct (owner "Fix route + these two"; claude-builder): a reopen's moved
+  // monitor row takes the original's own source and the original the twin's
+  // broker volume; `reopenedRepairs` names earlier reopens left otherwise.
   // -----------------------------------------------------------------------
   router.post('/positions/void-cross-account-duplicates', async (req, res) => {
     try {
@@ -5117,7 +5120,7 @@ export default function actionsRouter(db, deps = {}) {
       try { verifierState = JSON.parse(getState(db, 'independent_protection_json') || 'null') } catch { verifierState = null }
       const plan = planCrossAccountDuplicates(db, { verifierState })
       const result = apply ? applyCrossAccountDuplicates(db, plan) : null
-      console.log(`[actions] cross-account duplicates ${apply ? 'APPLIED' : 'dry run'} — ${plan.phantoms.length} phantom(s), ${plan.pairs.length} pair(s)${result ? `; voided ${result.voided.length}, reopened ${result.reopened.length}, errors ${result.errors.length}` : ' (nothing written)'}`)
+      console.log(`[actions] cross-account duplicates ${apply ? 'APPLIED' : 'dry run'} — ${plan.phantoms.length} phantom(s), ${plan.pairs.length} pair(s), ${plan.reopenedRepairs.length} earlier reopen(s) to repair${result ? `; voided ${result.voided.length}, reopened ${result.reopened.length}, repaired ${result.repaired.length}, errors ${result.errors.length}` : ' (nothing written)'}`)
       res.json({ ok: true, mode: apply ? 'apply' : 'dry_run', dryRun: !apply, plan, result })
     } catch (err) {
       console.error('[actions/positions/void-cross-account-duplicates] error:', err.message)
