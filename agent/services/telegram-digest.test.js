@@ -446,6 +446,47 @@ test('digestState: /notify off is read as OFF through the same loader, with the 
   assert.doesNotMatch(JSON.stringify(s), /private words/, 'no message text in the state')
 })
 
+// Claude · № 13,901 13-Oct (Codex P1 on #1345; owner "Delete them when turned on"; claude-builder)
+test('turning notify ON deletes the rows held while it was off — nothing from the off period is ever flushed', async () => {
+  const db = freshDB()
+  handleNotifyCommand(db, '/notify', 'off', AT_1400)
+  q(db, 'held while off one', 'scan', 'normal', 'notify_off')
+  q(db, 'held while off two', 'alert', 'urgent', 'notify_off')
+  q(db, 'held by the hourly digest', 'alert', 'normal', 'hourly_digest')
+  // Another knob changed while off removes nothing.
+  handleNotifyCommand(db, '/quiet', '23:00 07:00', AT_1400)
+  assert.equal(pendingMessages(db).length, 3)
+  const reply = handleNotifyCommand(db, '/notify', 'on', AT_1400)
+  assert.match(reply, /2 held while off deleted/)
+  assert.deepEqual(pendingMessages(db).map(r => r.reason), ['hourly_digest'])
+  const sent = []
+  const r = await flushDigest(db, { nowMs: AT_1400, send: async (t) => { sent.push(t) }, force: true })
+  assert.equal(r.sent, true)
+  assert.equal(r.count, 1)
+  assert.doesNotMatch(sent.join('\n'), /held while off/)
+  // Already on: nothing to delete, and a later row is not touched.
+  q(db, 'queued while on', 'alert', 'normal', 'notify_off')
+  assert.match(handleNotifyCommand(db, '/notify', 'on', AT_1400), /Notifications ON/)
+  assert.equal(pendingMessages(db).length, 1)
+})
+
+test('saveNotifyConfig: an off→on switch from any caller deletes the held notify_off rows, and reports how many', () => {
+  const db = freshDB()
+  saveNotifyConfig(db, { enabled: false })
+  q(db, 'a', 'scan', 'normal', 'notify_off')
+  q(db, 'b', 'scan', 'normal', 'quiet_hours')
+  q(db, 'c already sent', 'scan', 'normal', 'notify_off')
+  const sentId = db.prepare(`SELECT id FROM telegram_outbox WHERE text = 'c already sent'`).get().id
+  markSent(db, [sentId])
+  const cfg = saveNotifyConfig(db, { enabled: true })
+  assert.equal(cfg.enabled, true)
+  assert.equal(cfg.purgedHeld, 1)
+  assert.deepEqual(pendingMessages(db).map(r => r.reason), ['quiet_hours'])
+  // Only HELD rows go; a row already sent is history, left to the 8-hourly prune.
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM telegram_outbox WHERE id = ?').get(sentId).n, 1)
+  assert.equal(saveNotifyConfig(db, { mode: 'hourly' }).purgedHeld, 0)
+})
+
 test('digestState: an unreadable stored config is never reported as OFF', () => {
   for (const bad of ['{not json', '[1]', 'null']) {
     const db = freshDB()
