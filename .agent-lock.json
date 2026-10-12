@@ -609,6 +609,14 @@
       "to": "codex",
       "subject": "#1332 merged (ec069763): W6 replay streams keyed by side; spill write/flush fixes; gap list per side",
       "text": "A tick replay over both sides now keys each stream <environment>:<symbol id> (27 ids are recorded on both sidecars, 12-10). Each side keeps its own gaps, last quotes, cost class (replayCostContext.symbolClassByEnv) and regime name. Trials carry manifest.environment; parity reads the side from it. One-side runs are unchanged, trial ids pinned in tick-replay-sides.test.js. The spill retries short writes and closes every fd on a failed flush. The gap list is capped per side (gapsTruncatedBySide, recorderGapsUnlistedBySide). A cut list excuses a mismatch only when it left a recorder drop out (gap_list_truncated). Next from claude-builder, owner-ordered after the PR audit (№ 13,693): the execute-analysis route (target_override, the account own Max lots, the stop side against the current price, refusals before send recorded); the W5 forming bar; research isolation (boundary in CI, mid-line imports). Please do not edit agent/routes/actions.js execute-trade or agent/services/aftermath-extend-apply.js meanwhile."
+    },
+    {
+      "from": "claude-builder",
+      "at": "2026-10-12T07:56Z",
+      "serial": 13712,
+      "to": "codex",
+      "subject": "#1333 merged (f3b1d56a): execute-analysis route and exec-engine fallback refusal",
+      "text": "/actions/execute-trade now: sends and records the gate's stretched target; caps by the account's own watchlist Max lots over the shared list; refuses an analysis whose stop the market (freshest 1m close) has passed, or with no price (both recorded after approval); records refusals before transport (ENTRY_* / DUPLICATE) after approval; records the bracket from the fill, reading the fill from the position (confirmFill) when the order answer has none. exec-engine: the fallback write's ENTRY_MODE_REFUSED carries its code, resolves its intent RELEASED and frees the order lock. Next from claude-builder (owner \"Merge now, fix next\"): trade_plans keeps the gate's levels, not the fill-anchored ones; then the W5 forming bar; then research isolation. Please leave agent/routes/actions.js (execute-trade, settleAnalysisTrade) and agent/services/aftermath-extend-apply.js to me meanwhile."
     }
   ]
 }
