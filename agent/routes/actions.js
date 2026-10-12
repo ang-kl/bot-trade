@@ -196,6 +196,7 @@ export function failAnalysisTrade(db, tradeId, err) {
 export function settleAnalysisTrade(db, tradeId, {
   symbol, side, entryP, entry = null, sl, tp = null, volLots, positionId = null, label, accountId = null,
   strategy = null, timeframe = null, thesis = '', initialRisk = null, invalidationTrigger = null, timeCap = null,
+  planSl = sl, planTp = tp,
 } = {}) {
   const acct = accountId != null ? String(accountId) : null
   const parsed = parseLabel(label)
@@ -213,10 +214,13 @@ export function settleAnalysisTrade(db, tradeId, {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active')
     `).run(symbol, id, side, entryP, sl, tp, thesis || '', initialRisk, invalidationTrigger, timeCap, strategy || null, label, acct)
     // §7,437·B·4: a manual entry carries a plan too — the analysis's own levels.
+    // Claude · № 13,712 12-Oct (Codex P1 on #1333; owner "Merge now, fix
+    // next"; claude-builder): the GATE's levels with the planned entry, as
+    // loop.js records its plan; the rows above take the bracket from the fill.
     try {
       recordTradePlan(db, tradeId, {
         accountId: acct, symbol, side, strategy: strategy || null, timeframe: timeframe || null,
-        entry, sl, tp, timeCapAt: timeCap, source: 'manual_broker',
+        entry, sl: planSl, tp: planTp, timeCapAt: timeCap, source: 'manual_broker',
       })
     } catch (err) {
       recordPlanWriteFailure(db, { tradeId: id, accountId: acct, symbol, source: 'manual_broker', stage: 'execute_trade', error: err })
@@ -6550,7 +6554,7 @@ export default function actionsRouter(db, deps = {}) {
       // the intent; tagLabelWithIntent keeps the untagged label when the tag
       // would not fit).
       settleAnalysisTrade(db, tradeId, {
-        symbol: analysis.symbol, side, entryP, entry, sl: slHeld, tp: tpHeld, volLots, positionId,
+        symbol: analysis.symbol, side, entryP, entry, sl: slHeld, tp: tpHeld, planSl: sl, planTp: tp1, volLots, positionId,
         label: entryIntentId ? tagLabelWithIntent(structuredLabel, entryIntentId) : structuredLabel,
         accountId, strategy: analysis.strategy || null, timeframe: analysis.timeframe || null,
         thesis: analysis.consensus_summary || '', initialRisk,
