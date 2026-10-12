@@ -583,6 +583,12 @@
       "by": "claude-builder",
       "serial": "№ 13,507",
       "note": "#1328 merged dfd2ec79 (lot fix: blank Lots = risk-based sizing, supplied non-positive lots = 400 via agent/lib/order-lots.js, actions.js manual-order/execute-trade, preorder.js; #1327 follow-ups: momentum-partial-runtime.js hybrid audit text from the plan (protected, owner's yes), exit-counterfactual-extended.js replay reads capped_hybrid_json). Next from claude-builder: phase B operations W5/W6/W7 (aftermath extend, tick research, bar-form small run) at least 30 min after this deploy."
+    },
+    {
+      "at": "2026-10-12T01:15Z",
+      "by": "claude-builder",
+      "serial": "№ 13,530",
+      "note": "#1329 merged 0fe7a38c (src/lib/preorder-check.js: a typed Lots is sent as typed; only blank is omitted). Next from claude-builder: phase B operations W5/W6/W7, read-only reads and research-table writes only."
     }
   ]
 }
