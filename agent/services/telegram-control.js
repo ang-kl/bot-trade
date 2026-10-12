@@ -259,7 +259,7 @@ export function handleNotifyCommand(db, cmd, argsText, nowMs = Date.now()) {
     if (a0 === 'on' || a0 === 'off') {
       const cfg = d.saveNotifyConfig(db, { enabled: a0 === 'on' })
       return a0 === 'on'
-        ? `🔔 Notifications ON — ${d.describeConfig(cfg)}.\nNothing from the off period is delivered: while off, alerts are counted, not queued${cfg.purgedHeld ? `; ${cfg.purgedHeld} held while off deleted` : ''}.`
+        ? `🔔 Notifications ON — ${d.describeConfig(cfg)}.\nNothing from the off period is delivered: while off, alerts are counted, not queued${cfg.purgedHeld ? `; ${cfg.purgedHeld} held while off deleted` : ''}.${cfg.purgeError ? `\n⚠️ The held rows could not be deleted (${cfg.purgeError}); the 8-hourly prune removes them.` : ''}`
         : `🔕 Notifications OFF — alerts are NOT sent and NOT queued, only counted. /notify on resumes from then on.\nTrading is unaffected: this only changes when the bot talks. Use /pause to stop trading.`
     }
     const cfg = d.loadNotifyConfig(db)

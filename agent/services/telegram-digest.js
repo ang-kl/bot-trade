@@ -74,18 +74,30 @@ export function loadNotifyConfig(db) {
 // so rows held as `notify_off` from before the drop rule would go out in the
 // first digest after notify is switched back on. This is the only writer of
 // the setting, so an off→on switch deletes them here, in the same transaction
-// as the switch, whichever caller made it. `purgedHeld` says how many.
+// right after the switch, whichever caller made it. `purgedHeld` says how many.
+//
+// Claude · № 13,902 13-Oct (Codex P1 #2 on #1345; owner "Switch always
+// lands"; claude-builder). The switch is saved FIRST and on its own: a broken
+// outbox must not roll back /notify on, because with notify ON the router
+// sends directly when the outbox cannot be written, and with it OFF every
+// alert, urgent ones too, is dropped. A failed purge is reported in
+// `purgeError` and recorded as the digest's last error; the 8-hourly prune
+// still removes held notify_off rows.
 export function saveNotifyConfig(db, patch) {
   const before = loadNotifyConfig(db)
   const next = { ...before, ...patch }
+  setState(db, CONFIG_KEY, JSON.stringify(next))
   let purgedHeld = 0
-  db.transaction(() => {
-    setState(db, CONFIG_KEY, JSON.stringify(next))
-    if (before.enabled === false && next.enabled !== false) {
+  let purgeError = null
+  if (before.enabled === false && next.enabled !== false) {
+    try {
       purgedHeld = db.prepare(`DELETE FROM telegram_outbox WHERE sent_at IS NULL AND reason = 'notify_off'`).run().changes
+    } catch (err) {
+      purgeError = String(err?.message ?? err).slice(0, 200)
+      try { setState(db, LAST_ERROR_KEY, `${new Date().toISOString()} held notify_off rows not deleted: ${purgeError}`) } catch { /* status only */ }
     }
-  })()
-  return { ...loadNotifyConfig(db), purgedHeld }
+  }
+  return { ...loadNotifyConfig(db), purgedHeld, purgeError }
 }
 
 export const isHHMM = (s) => typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s)

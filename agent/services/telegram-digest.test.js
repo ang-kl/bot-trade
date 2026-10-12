@@ -487,6 +487,25 @@ test('saveNotifyConfig: an off→on switch from any caller deletes the held noti
   assert.equal(saveNotifyConfig(db, { mode: 'hourly' }).purgedHeld, 0)
 })
 
+// Claude · № 13,902 13-Oct (Codex P1 #2 on #1345; owner "Switch always lands"; claude-builder)
+test('a broken outbox never stops /notify on: the switch lands, the failed purge is reported and recorded', () => {
+  const db = freshDB()
+  handleNotifyCommand(db, '/notify', 'off', AT_1400)
+  db.exec('DROP TABLE telegram_outbox')
+  const reply = handleNotifyCommand(db, '/notify', 'on', AT_1400)
+  assert.equal(loadNotifyConfig(db).enabled, true, 'notify is ON although the purge failed')
+  assert.match(reply, /Notifications ON/)
+  assert.match(reply, /could not be deleted/)
+  assert.match(getState(db, 'tg_digest_last_error') || '', /held notify_off rows not deleted/)
+  // ON with a broken outbox: the router's existing fail-open sends.
+  attachNotifyDb(db)
+  try {
+    saveNotifyConfig(db, { mode: 'hourly' })
+    // A normal message takes the hourly queue, which cannot be written, so it is sent.
+    assert.deepEqual(routeOutbound('EURUSD scan result', { nowMs: AT_1400 }), { send: true, reason: 'queue_failed' })
+  } finally { attachNotifyDb(null) }
+})
+
 test('digestState: an unreadable stored config is never reported as OFF', () => {
   for (const bad of ['{not json', '[1]', 'null']) {
     const db = freshDB()
