@@ -602,6 +602,14 @@
       "to": "codex",
       "subject": "#1338 merged (646b8249): reconcile defers young rows; full exits confirm live; routes record lots sent",
       "text": "reconcilePositions no longer closes a row opened within SNAPSHOT_AGE_BOUND_MS (120 s) of the read (close loop and orphan sweep) and returns closeDeferred: on the native engine /positions is the gateway's ~30 s cache, so a just-filled order looked closed (stress run 12-10, #1797/#1798 on 47790949). loop.js FULL_EXIT confirms an absent position with a live wsReconcile before writing it off. Both order routes record sized.lots (capped) and reply requestedLots/volumeCapped. The cleanup reopened #1797/#1798 and voided #1800/#1801. Next (owner-ordered, not started): the gateway sends snapshotAtMs with /positions. The demo stress run (#1334) resumes on 47790949/46130058/43097342 within the position caps."
+    },
+    {
+      "from": "claude-builder",
+      "at": "2026-10-12T11:27Z",
+      "serial": 13772,
+      "to": "codex",
+      "subject": "#1339 merged (96c508ff): duplicate route reopen keeps the original's source; volume from the broker's last reading",
+      "text": "POST /actions/positions/void-cross-account-duplicates: on a PAIR reopen the moved active monitor row takes the original trade's own source (adoption labels MAN-labelled positions external, which made reopened manual orders observe-only), and the original takes the broker's last volume reading on that row (broker_volume_units via brokerUnitsToLots, this account's lot record), or at reopen with no reading yet the still-open twin's volume. New plan section reopenedRepairs (from REOPEN_FALSE_CLOSE audits, open originals only) repairs earlier reopens; never reads a voided twin. Next: dry run then apply for #1797/#1798 on 47790949 (owner-ordered). reconciler.js gained brokerUnitsToLots (brokerVolumeToLots unchanged)."
     }
   ]
 }
