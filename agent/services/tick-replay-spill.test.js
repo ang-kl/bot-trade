@@ -357,3 +357,26 @@ test('Codex P2 on #1330: a cache path that is a symlink out of the temporary dir
   assert.equal(isTemporaryCache(real, { tmpRoot: root }), true)
   assert.equal(isTemporaryCache(join(root, 'not-yet', 'tick-segments'), { tmpRoot: root }), true)
 })
+
+// Codex P1 on #1330 (review of 4e26751d): the spill directory was created
+// after the job's test opening was recorded and outside the guarded start, so
+// a temp directory that could not be created left the opening `opened` with
+// no worker ever started, and every retry was refused as a second opening.
+test('Codex P1 on #1330: a spill directory that cannot be created refuses the job with nothing started and the opening failed_unseen; a retry is accepted', async () => {
+  _resetTickResearchJobs()
+  const db = initDB(':memory:')
+  const dir = mkdtempSync(join(tmpdir(), 'spill-mkdtemp-'))
+  richSegments(dir, 600)
+  const notADir = join(mkdtempSync(join(tmpdir(), 'spill-file-root-')), 'a-file')
+  writeFileSync(notADir, 'x') // mkdtemp under a file fails (ENOTDIR), as a full or unwritable temp disk would
+  let r
+  assert.doesNotThrow(() => { r = startTickResearchJob(db, CONFIRM, { segmentsDir: dir, inMemoryMaxRecords: 0, spillRoot: notADir }) }, 'RED before the fix: the mkdtemp error escaped the guarded start')
+  assert.equal(r.status, 500); assert.equal(r.body.error, 'worker_start_failed')
+  assert.deepEqual(db.prepare('SELECT status FROM tick_test_openings').all(), [{ status: 'failed_unseen' }])
+  assert.equal(testOpeningsFor(db, CONFIRM.profileHash).consulted, false)
+  assert.equal(tickResearchJob(r.body.jobId ?? 'none'), null)
+  const again = startTickResearchJob(db, CONFIRM, { segmentsDir: dir, inMemoryMaxRecords: 0 })
+  assert.equal(again.status, 202, 'not refused as a second opening, and the job slot is free')
+  assert.equal((await waitSettled(again.body.jobId)).state, 'done')
+  _resetTickResearchJobs()
+})

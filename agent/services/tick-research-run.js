@@ -1253,13 +1253,18 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   // thread's to remove when the job settles, so a worker that is stopped
   // mid-run leaves nothing behind. The worker's heap is capped at
   // WORKER_HEAP_MB: past it Node stops the worker, never the process.
-  const spillDir = a.records > inMemoryMaxRecords ? mkdtempSync(join(spillRoot, 'tick-replay-')) : null
-  j.hooks = [
-    ...(spillDir ? [() => rmSync(spillDir, { recursive: true, force: true })] : []),
-    ...(typeof onSettled === 'function' ? [onSettled] : []),
-  ]
+  // Codex P1 on #1330: the directory is made inside the guarded start, so a
+  // temp disk that cannot take it settles the opening failed_unseen like any
+  // other start failure, instead of leaving it opened with nothing started.
+  j.hooks = typeof onSettled === 'function' ? [onSettled] : []
+  let spillDir = null
   let worker
   try {
+    if (a.records > inMemoryMaxRecords) {
+      spillDir = mkdtempSync(join(spillRoot, 'tick-replay-'))
+      const made = spillDir
+      j.hooks.unshift(() => rmSync(made, { recursive: true, force: true }))
+    }
     worker = new (workerCtor || Worker)(workerFile, { workerData: { files: a.files, plan, replay: th.replay, spillDir, inMemoryMaxRecords, maxSymbolEvents }, resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB } })
   } catch (err) {
     settleOpening({ status: 'failed_unseen' })
