@@ -26,9 +26,9 @@ import stateRouter from '../routes/state.js'
 
 const NOW = Date.parse('2026-10-13T00:00:00Z')
 
-function deal(db, { id, account, symbol, lots, entry, close = entry, commission, closedAt = '2026-10-12 10:00:00' }) {
-  db.prepare(`INSERT INTO broker_deals (deal_id, account_id, symbol, side, lots, entry_price, close_price, closed_at, commission)
-    VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, ?)`).run(id, account, symbol, lots, entry, close, closedAt, commission)
+function deal(db, { id, account, symbol, lots, entry, close = entry, commission, closedAt = '2026-10-12 10:00:00', position = `p-${id}` }) {
+  db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, closed_at, commission)
+    VALUES (?, ?, ?, ?, 'BUY', ?, ?, ?, ?, ?)`).run(id, position, account, symbol, lots, entry, close, closedAt, commission)
 }
 function usdDeposit(db, accountId, currency = 'USD') {
   assert.equal(recordDepositCurrency(db, { accountId, host: 'demo.ctraderapi.com', depositAssetId: '1', currency, receivedAt: NOW }), true)
@@ -182,6 +182,35 @@ test('check: the broker minimum per side (46979908 LLY.US and DOW.US deals, USD 
   const eur = commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols.find(s => s.symbol === 'LLY.US')
   assert.equal(eur.compared, false)
   assert.equal(eur.reason, 'min_commission_not_usd')
+})
+
+test('check: a binding minimum on a position closed in parts is not compared', () => {
+  // Self-derived arrangement of a per-trade minimum (help.ctrader.com
+  // ProtoOASymbol: minimum commission is per trade) against broker_deals'
+  // one-row-per-closing-deal shape.
+  const db = initDB(':memory:')
+  usdDeposit(db, '46979908')
+  const rec = { symbolId: 31, commissionType: 2, preciseTradingCommissionRate: 2_000_000, preciseMinCommission: 2_000_000, minCommissionAsset: 'USD', lotSize: 100 }
+  storeCommissionTerms(db, '46979908', { symbol: [rec, { ...rec, symbolId: 32 }] }, { 31: 'LLY.US', 32: 'JPM.US' }, { now: NOW })
+  // One position, two closing rows: the minimum binds on each.
+  deal(db, { id: 'a1', position: 'P1', account: '46979908', symbol: 'LLY.US', lots: 0.05, entry: 1150, close: 1152, commission: -0.03 })
+  deal(db, { id: 'a2', position: 'P1', account: '46979908', symbol: 'LLY.US', lots: 0.05, entry: 1150, close: 1154, commission: -0.03 })
+  // One position closed in parts where the minimum does not bind (100 lots at 0.02).
+  deal(db, { id: 'b1', position: 'P2', account: '46979908', symbol: 'JPM.US', lots: 100, entry: 300, close: 301, commission: -4 })
+  deal(db, { id: 'b2', position: 'P2', account: '46979908', symbol: 'JPM.US', lots: 100, entry: 300, close: 302, commission: -4 })
+  const r = commissionTermsCheck(db, '46979908', { days: 30, now: NOW })
+  const lly = r.symbols.find(s => s.symbol === 'LLY.US')
+  assert.equal(lly.compared, false)
+  assert.equal(lly.reason, 'min_commission_split_position')
+  const jpm = r.symbols.find(s => s.symbol === 'JPM.US')
+  assert.equal(jpm.compared, true, 'a minimum that does not bind changes nothing')
+  assert.equal(jpm.agrees, true)
+  // No position id: a binding minimum cannot be proven to be one trade.
+  const db2 = initDB(':memory:')
+  usdDeposit(db2, '46979908')
+  storeCommissionTerms(db2, '46979908', { symbol: [rec] }, { 31: 'LLY.US' }, { now: NOW })
+  deal(db2, { id: 'c1', position: null, account: '46979908', symbol: 'LLY.US', lots: 0.1, entry: 1150, close: 1153, commission: -0.04 })
+  assert.equal(commissionTermsCheck(db2, '46979908', { days: 30, now: NOW }).symbols[0].reason, 'min_commission_position_unknown')
 })
 
 test('check: a QUOTE_CURRENCY minimum is in the quote currency, used only when that is USD', () => {

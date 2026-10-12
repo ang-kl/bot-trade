@@ -202,9 +202,9 @@ export function modelledSideUsd(terms, { symbol, price, lotUnits, lots }) {
     } else {
       return { usd: null, reason: 'min_commission_type_unknown' }
     }
-    usd = Math.max(usd, terms.minCommission)
+    if (terms.minCommission > usd) return { usd: terms.minCommission, reason: null, minBinding: true }
   }
-  return { usd, reason: null }
+  return { usd, reason: null, minBinding: false }
 }
 
 /**
@@ -221,8 +221,18 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
   const terms = readCommissionTerms(db, id)
   const deposit = verifiedDepositCurrency(db, id)
   const since = new Date(now - days * 86_400_000).toISOString().replace('T', ' ').slice(0, 19)
-  const deals = db.prepare(`SELECT deal_id, symbol, lots, entry_price, close_price, commission, closed_at FROM broker_deals
+  const deals = db.prepare(`SELECT deal_id, position_id, symbol, lots, entry_price, close_price, commission, closed_at FROM broker_deals
     WHERE account_id = ? AND closed_at >= ? AND lots > 0 AND commission IS NOT NULL ORDER BY closed_at`).all(id, since)
+  // Claude · № 13,829 13-Oct (Codex P2 on #1344, ordered after № 13,828;
+  // owner "Decline when it binds"; claude-builder): the broker's minimum is
+  // per trade, and broker_deals keeps one row per CLOSING deal. A position
+  // closed in parts would have its opening minimum counted once per row, so
+  // a binding minimum on such a position is not compared. An opening filled
+  // in several deals is not visible in this table; that limit is stated.
+  const closingRows = new Map()
+  for (const r of db.prepare('SELECT position_id, COUNT(*) AS n FROM broker_deals WHERE account_id = ? AND position_id IS NOT NULL GROUP BY position_id').all(id)) {
+    closingRows.set(String(r.position_id), r.n)
+  }
   const bySymbol = new Map()
   for (const d of deals) {
     if (!bySymbol.has(d.symbol)) bySymbol.set(d.symbol, [])
@@ -236,13 +246,16 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
       const brokerDeal = Math.abs(Number(d.commission))
       const open = modelledSideUsd(t, { symbol, price: d.entry_price, lotUnits, lots: d.lots })
       const close = modelledSideUsd(t, { symbol, price: d.close_price, lotUnits, lots: d.lots })
-      const modelledDeal = open.usd != null && close.usd != null ? open.usd + close.usd : null
+      const binding = open.minBinding || close.minBinding
+      const rowsForPosition = d.position_id != null ? closingRows.get(String(d.position_id)) ?? 1 : null
+      const splitReason = !binding ? null : rowsForPosition == null ? 'min_commission_position_unknown' : rowsForPosition > 1 ? 'min_commission_split_position' : null
+      const modelledDeal = !splitReason && open.usd != null && close.usd != null ? open.usd + close.usd : null
       return {
         dealId: d.deal_id, lots: d.lots,
         brokerDeal: round(brokerDeal),
         brokerPerLotPerSide: round(brokerDeal / Number(d.lots) / CLOSING_DEAL_SIDES),
         modelledDealUsd: modelledDeal == null ? null : round(modelledDeal),
-        reason: open.reason ?? close.reason ?? null,
+        reason: open.reason ?? close.reason ?? splitReason ?? null,
       }
     })
     const brokerVals = perDeal.map(x => x.brokerPerLotPerSide)
