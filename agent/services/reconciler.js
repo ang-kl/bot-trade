@@ -513,7 +513,11 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       }
 
       if (row.side && bSide !== row.side) {
-        manualChanges.push({ kind: 'reversed', symbol: row.symbol, positionId: posId, from: row.side, to: bSide })
+        // The symbol id from THIS account's own snapshot: re-strategize reads the
+        // symbol's precision and quote by it (Claude · № 13,782 12-Oct, D3).
+        const ownSymbolId = Number(bp.tradeData?.symbolId)
+        manualChanges.push({ kind: 'reversed', symbol: row.symbol, positionId: posId, from: row.side, to: bSide,
+          symbolId: Number.isSafeInteger(ownSymbolId) && ownSymbolId > 0 ? ownSymbolId : null })
         updates.side = bSide
         updates.entry_price = bPrice ?? row.entry_price
         updates.current_sl = bSl

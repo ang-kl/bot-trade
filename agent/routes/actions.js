@@ -103,6 +103,18 @@ export function validationFillDirectionReason(rawSide) {
  * Exported so the write can be exercised without a broker; the route pin in
  * agent/routes/manual-order-plan.test.js holds the call site.
  */
+// Claude · № 13,782 12-Oct (demo stress run D3; owner "Writer +
+// re-strategize"; claude-builder): a monitor row holds the POSITION side,
+// long/short, as every other writer stores it (loop.js, adoption, the pending
+// fill); the order side BUY/SELL stays on the trade row. Both manual writers
+// stored 'BUY'/'SELL' here, so the next reconcile read 'BUY' against the
+// broker's 'long' as a REVERSAL: on 12-10 13:36Z #1806/#1807 on 43097342 were
+// announced "REVERSED" to the owner and re-strategized (the amends refused).
+function positionSide(side) {
+  const s = String(side ?? '').toUpperCase()
+  return s === 'BUY' || s === 'LONG' ? 'long' : s === 'SELL' || s === 'SHORT' ? 'short' : side
+}
+
 export function recordManualOrderTrade(db, {
   symbol, side, entryP, entryEstimate = null, sl, tp = null, volLots, positionId = null,
   structuredLabel, accountId = null, strategy = MANUAL_ORDER_STRATEGY, riskEventId = null, note = null,
@@ -127,7 +139,7 @@ export function recordManualOrderTrade(db, {
       INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
         thesis, initial_risk, strategy, source, label_raw, account_id, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active')
-    `).run(symbol, id, side, entryP, sl, tp,
+    `).run(symbol, id, positionSide(side), entryP, sl, tp,
       note ? `Manual order via UI — ${note}` : 'Manual order via UI', Math.abs(entryP - sl), strat, structuredLabel, acct)
     return id
   })()
@@ -212,7 +224,7 @@ export function settleAnalysisTrade(db, tradeId, {
       INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
         thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, account_id, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active')
-    `).run(symbol, id, side, entryP, sl, tp, thesis || '', initialRisk, invalidationTrigger, timeCap, strategy || null, label, acct)
+    `).run(symbol, id, positionSide(side), entryP, sl, tp, thesis || '', initialRisk, invalidationTrigger, timeCap, strategy || null, label, acct)
     // §7,437·B·4: a manual entry carries a plan too — the analysis's own levels.
     // Claude · № 13,712 12-Oct (Codex P1 on #1333; owner "Merge now, fix
     // next"; claude-builder): the GATE's levels with the planned entry, as
