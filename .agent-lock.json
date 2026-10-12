@@ -571,6 +571,12 @@
       "by": "claude-builder",
       "serial": "№ 13,444",
       "note": "#1326 merged dc7168f2 (W3 capped-hybrid card + GET /state/capped-hybrid, rows = the Open positions table's own; W11 book trail reaches manage-only accounts via registryManageAccounts, summary manageOnlyAccounts; one-account allowlist account-registry is_live 10 / isLive 14). Protected changed with owner's yes: agent/loop.js, agent/services/momentum-book.js. Next from claude-builder: W8+W9+W10 PR (momentum-entries.json/_all, manual-hybrid.json/_all, capped_hybrid_json setting; protected capped-hybrid-policy.js, capped-hybrid-enrolment.js, manual-hybrid-policy.js, manual-hybrid-enrolment.js with the owner's yes), then the lot-fix PR (actions.js manual-order/execute-trade, preorder.js)."
+    },
+    {
+      "at": "2026-10-12T00:37Z",
+      "by": "claude-builder",
+      "serial": "№ 13,471",
+      "note": "#1327 merged cafe5e04 (W8 momentum-entries.json _all with registryEnabled on every caller incl. loop.js momentumPlanApplies; W9 manual-hybrid.json _all; W10 capped_hybrid_json setting, exact-or-refused at float-error tolerance). Protected changed with owner's yes: agent/loop.js, capped-hybrid-policy.js, capped-hybrid-enrolment.js, manual-hybrid-policy.js, manual-hybrid-enrolment.js. Next from claude-builder: lot-fix PR (actions.js manual-order/execute-trade, preorder.js), then phase B operations W5/W6/W7 (aftermath extend, tick research, bar-form small run)."
     }
   ]
 }
