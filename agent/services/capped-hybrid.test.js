@@ -72,7 +72,8 @@ function scene(t, { side = 'BUY', live = false, volume = 10000, step = 100, path
     executionTimestamp: f.at, closePositionDetail: { entryPrice: 100, closedVolume: amount },
   } })
   f.adapter = () => makeMomentumPartialBroker(f.db, { identity: { host: f.host, accountId: '42', symbolId: '22' }, tradeId: 7 }, f.transports)
-  f.pass = () => runMomentumPartialPass(f.db, { credsFor: () => f.creds, now: () => f.at,
+  f.logs = []
+  f.pass = () => runMomentumPartialPass(f.db, { credsFor: () => f.creds, now: () => f.at, log: m => f.logs.push(String(m)),
     deps: { hybridEnrolment: { transports: f.transports }, adapterFor: () => f.adapter() } })
   f.events = () => f.db.prepare("SELECT * FROM position_events WHERE trade_id=7 AND kind='scale_out'").all()
   return f
@@ -415,6 +416,13 @@ test('W10: a stored 2.5R arms the next plan at 2.5R and nothing closes until 2.5
     f.at += 61000; await f.pass()
     assert.equal(readPartialPlan(f.db, '42', 7).state, 'CONFIRMED')
     assert.deepEqual(f.closes, [{ positionId: '33', volume: 4000 }]); assert.equal(f.volume, 6000)
+    // The audit text is the plan's own, not a fixed "50% at 2R" (Codex P2 on
+    // #1327; Claude · № 13,486 12-Oct, owner's yes after № 13,483 naming
+    // momentum-partial-runtime.js; claude-builder).
+    assert.ok(f.logs.some(l => l.includes(`trade 7: 40% at ${side === 'BUY' ? 125 : 75};`)), `${side}: ${JSON.stringify(f.logs)}`)
+    const ev = f.events()
+    assert.equal(ev.length, 1)
+    assert.match(ev[0].reason, /^capped hybrid 40% at 2\.5R: closed 4000 of 10000 broker units/, `${side}: ${ev[0].reason}`)
   }
 })
 
@@ -432,6 +440,9 @@ test('W10: a plan armed at the defaults keeps its 2R trigger after the setting c
   assert.equal(after.state, 'CONFIRMED', 'the armed plan validated under the new setting and fired at its own 2R')
   assert.deepEqual(after.plan, before.plan, 'the plan was not rewritten')
   assert.deepEqual(f.closes, [{ positionId: '33', volume: 5000 }])
+  // A default plan keeps the text it always had, whatever the setting now says.
+  assert.ok(f.logs.some(l => l.includes('trade 7: 50% at 120;')), JSON.stringify(f.logs))
+  assert.match(f.events()[0].reason, /^capped hybrid 50% at 2R: closed 5000 of 10000 broker units/)
 })
 
 test('W10: with no stored setting the real pass arms exactly the pre-W10 plan', async t => {
