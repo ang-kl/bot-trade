@@ -26,9 +26,9 @@ import stateRouter from '../routes/state.js'
 
 const NOW = Date.parse('2026-10-13T00:00:00Z')
 
-function deal(db, { id, account, symbol, lots, entry, commission, closedAt = '2026-10-12 10:00:00' }) {
-  db.prepare(`INSERT INTO broker_deals (deal_id, account_id, symbol, side, lots, entry_price, closed_at, commission)
-    VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?)`).run(id, account, symbol, lots, entry, closedAt, commission)
+function deal(db, { id, account, symbol, lots, entry, close = entry, commission, closedAt = '2026-10-12 10:00:00' }) {
+  db.prepare(`INSERT INTO broker_deals (deal_id, account_id, symbol, side, lots, entry_price, close_price, closed_at, commission)
+    VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, ?)`).run(id, account, symbol, lots, entry, close, closedAt, commission)
 }
 function usdDeposit(db, accountId, currency = 'USD') {
   assert.equal(recordDepositCurrency(db, { accountId, host: 'demo.ctraderapi.com', depositAssetId: '1', currency, receivedAt: NOW }), true)
@@ -95,8 +95,8 @@ test('store: only this account, only named symbols, earlier symbols kept', () =>
 test('check: the broker deals of 47790949 agree with $3.50 a lot a side, and not with $35 per million', () => {
   const db = initDB(':memory:')
   usdDeposit(db, '47790949')
-  deal(db, { id: '324398847', account: '47790949', symbol: 'AUDUSD', lots: 0.69, entry: 0.69718, commission: -4.84 })
-  deal(db, { id: '323632842', account: '47790949', symbol: 'GBPUSD', lots: 0.08, entry: 1.32757, commission: -0.56 })
+  deal(db, { id: '324398847', account: '47790949', symbol: 'AUDUSD', lots: 0.69, entry: 0.69718, close: 0.69566, commission: -4.84 })
+  deal(db, { id: '323632842', account: '47790949', symbol: 'GBPUSD', lots: 0.08, entry: 1.32757, close: 1.32448, commission: -0.56 })
   const names = { 101: 'AUDUSD', 102: 'GBPUSD' }
   const rec = s => ({ symbolId: s, commissionType: 2, preciseTradingCommissionRate: 350_000_000, lotSize: 10_000_000 })
   storeCommissionTerms(db, '47790949', { symbol: [rec(101), rec(102)] }, names, { now: NOW })
@@ -117,7 +117,7 @@ test('check: the broker deals of 47790949 agree with $3.50 a lot a side, and not
 test('check: a non-USD deposit shows both figures and does not compare; no terms says so', () => {
   const db = initDB(':memory:')
   usdDeposit(db, '43097342', 'SGD')
-  deal(db, { id: '324214333', account: '43097342', symbol: 'USDSGD', lots: 0.02, entry: 1.28014, commission: -0.18 })
+  deal(db, { id: '324214333', account: '43097342', symbol: 'USDSGD', lots: 0.02, entry: 1.28014, close: 1.27839, commission: -0.18 })
   storeCommissionTerms(db, '43097342', { symbol: [{ symbolId: 7, commissionType: 2, preciseTradingCommissionRate: 350_000_000 }] }, { 7: 'USDSGD' }, { now: NOW })
   const r = commissionTermsCheck(db, '43097342', { days: 30, now: NOW })
   const s = r.symbols[0]
@@ -129,7 +129,7 @@ test('check: a non-USD deposit shows both figures and does not compare; no terms
 
   const db2 = initDB(':memory:')
   usdDeposit(db2, '46130058')
-  deal(db2, { id: '321439415', account: '46130058', symbol: 'SGDJPY', lots: 0.12, entry: 124.004, commission: 0 })
+  deal(db2, { id: '321439415', account: '46130058', symbol: 'SGDJPY', lots: 0.12, entry: 124.004, close: 123.122, commission: 0 })
   const none = commissionTermsCheck(db2, '46130058', { days: 30, now: NOW })
   assert.equal(none.symbols[0].reason, 'terms_not_recorded')
   assert.equal(none.symbols[0].brokerPerLotPerSide.max, 0, 'this account was charged nothing on FX')
@@ -158,6 +158,43 @@ test('symbolsToRead: own map only, not-listed and over-cap are named', () => {
   const capped = symbolsToRead(db, '1', big, { extra: Object.keys(big), now: NOW })
   assert.equal(capped.ids.length, 60)
   assert.equal(capped.overCap.length, 10)
+})
+
+// Claude · № 13,797 13-Oct (Codex P2s on #1344; claude-builder).
+test('check: the broker minimum per side (46979908 LLY.US and DOW.US deals, USD deposit)', () => {
+  const db = initDB(':memory:')
+  usdDeposit(db, '46979908')
+  // Broker deals, 46979908: LLY.US 0.1 lots charged 0.04 (where $0.02 a
+  // share gives 0.004: the minimum applied on both sides); DOW.US 1.2 lots
+  // charged 0.04 (0.024 a side, rounded to the cent).
+  deal(db, { id: '322439606', account: '46979908', symbol: 'LLY.US', lots: 0.1, entry: 1150.77, close: 1153.04, commission: -0.04 })
+  deal(db, { id: '323718041', account: '46979908', symbol: 'DOW.US', lots: 1.2, entry: 28.4, close: 28.4, commission: -0.04 })
+  const rec = (s, min) => ({ symbolId: s, commissionType: 2, preciseTradingCommissionRate: 2_000_000, preciseMinCommission: min, minCommissionAsset: 'USD', lotSize: 100 })
+  const names = { 31: 'LLY.US', 32: 'DOW.US' }
+  storeCommissionTerms(db, '46979908', { symbol: [rec(31, 2_000_000), rec(32, 2_000_000)] }, names, { now: NOW })
+  const r = commissionTermsCheck(db, '46979908', { days: 30, now: NOW })
+  const lly = r.symbols.find(s => s.symbol === 'LLY.US')
+  assert.equal(lly.sample[0].modelledDealUsd, 0.04, 'the $0.02 minimum on each side')
+  assert.equal(lly.agrees, true)
+  assert.equal(r.symbols.find(s => s.symbol === 'DOW.US').agrees, true)
+  // A minimum stated in another currency declines the model, never converts.
+  storeCommissionTerms(db, '46979908', { symbol: [{ ...rec(31, 2_000_000), minCommissionAsset: 'EUR' }] }, names, { now: NOW })
+  const eur = commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols.find(s => s.symbol === 'LLY.US')
+  assert.equal(eur.compared, false)
+  assert.equal(eur.reason, 'min_commission_not_usd')
+})
+
+test('check: each side is priced at its own price — opening at entry, closing at close', () => {
+  // Self-derived: a per-million rate on a pair that moved 0.70 -> 0.80. The
+  // broker's own FX terms on these accounts are not known to be per-million
+  // (the live refresh reads them); this pins the arithmetic Codex named.
+  const db = initDB(':memory:')
+  usdDeposit(db, '47790949')
+  deal(db, { id: 'x1', account: '47790949', symbol: 'AUDUSD', lots: 1, entry: 0.70, close: 0.80, commission: -7.5 })
+  storeCommissionTerms(db, '47790949', { symbol: [{ symbolId: 101, commissionType: 1, preciseTradingCommissionRate: 5_000_000_000, lotSize: 10_000_000 }] }, { 101: 'AUDUSD' }, { now: NOW })
+  const s = commissionTermsCheck(db, '47790949', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.sample[0].modelledDealUsd, 7.5)   // 3.50 at 0.70 + 4.00 at 0.80
+  assert.equal(s.agrees, true)
 })
 
 async function serve(t, deps) {

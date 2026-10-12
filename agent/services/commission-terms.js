@@ -174,10 +174,34 @@ export function modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits }) {
 }
 
 /**
+ * The modelled commission for ONE side of a deal of `lots`, in USD: the
+ * per-lot charge at that side's price times the lots, raised to the broker's
+ * per-trade minimum. Claude · № 13,797 13-Oct (Codex P2 on #1344, owner
+ * "Apply it per side"; claude-builder): the minimum is applied only when it
+ * is stated in USD; one stated in another currency declines the model rather
+ * than convert at a guessed rate. Measured: V.US 1.3 lots on 43097342 was
+ * charged 0.06 where $0.02 a share gives 0.052 — the minimum applied.
+ */
+export function modelledSideUsd(terms, { symbol, price, lotUnits, lots }) {
+  const perLot = modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits })
+  if (perLot.usd == null) return perLot
+  const n = Number(lots)
+  if (!(n > 0)) return { usd: null, reason: 'lots_unknown' }
+  let usd = perLot.usd * n
+  if (terms.minCommission != null && terms.minCommission > 0) {
+    if (terms.minCommissionAsset !== 'USD') return { usd: null, reason: 'min_commission_not_usd' }
+    usd = Math.max(usd, terms.minCommission)
+  }
+  return { usd, reason: null }
+}
+
+/**
  * Compare the stored terms with this account's own closing deals. Read only.
- * Per symbol: the broker's charge per lot per side (|commission| / lots / 2,
- * in the deposit currency), and the terms' modelled charge at the deal's
- * entry price. They are compared only when the deposit currency is
+ * Per deal, in money: the broker's charge (|commission| of the closing deal,
+ * which covers both sides) against the terms' opening side at the entry
+ * price plus closing side at the close price (Claude · № 13,797, Codex P2 on
+ * #1344, owner "Price each side separately"). The per-lot-per-side figures
+ * are shown too. They are compared only when the deposit currency is
  * broker-verified USD; otherwise both are shown and `compared` is false.
  */
 export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now() } = {}) {
@@ -185,7 +209,7 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
   const terms = readCommissionTerms(db, id)
   const deposit = verifiedDepositCurrency(db, id)
   const since = new Date(now - days * 86_400_000).toISOString().replace('T', ' ').slice(0, 19)
-  const deals = db.prepare(`SELECT deal_id, symbol, lots, entry_price, commission, closed_at FROM broker_deals
+  const deals = db.prepare(`SELECT deal_id, symbol, lots, entry_price, close_price, commission, closed_at FROM broker_deals
     WHERE account_id = ? AND closed_at >= ? AND lots > 0 AND commission IS NOT NULL ORDER BY closed_at`).all(id, since)
   const bySymbol = new Map()
   for (const d of deals) {
@@ -197,26 +221,32 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
     const t = terms?.symbols?.[symbol] ?? null
     const lotUnits = t?.lotUnits ?? null
     const perDeal = rows.map(d => {
-      const broker = Math.abs(Number(d.commission)) / Number(d.lots) / CLOSING_DEAL_SIDES
-      const modelled = modelledPerLotPerSideUsd(t, { symbol, price: d.entry_price, lotUnits })
-      return { dealId: d.deal_id, lots: d.lots, brokerPerLotPerSide: round(broker), modelledUsd: modelled.usd == null ? null : round(modelled.usd), reason: modelled.reason }
+      const brokerDeal = Math.abs(Number(d.commission))
+      const open = modelledSideUsd(t, { symbol, price: d.entry_price, lotUnits, lots: d.lots })
+      const close = modelledSideUsd(t, { symbol, price: d.close_price, lotUnits, lots: d.lots })
+      const modelledDeal = open.usd != null && close.usd != null ? open.usd + close.usd : null
+      return {
+        dealId: d.deal_id, lots: d.lots,
+        brokerDeal: round(brokerDeal),
+        brokerPerLotPerSide: round(brokerDeal / Number(d.lots) / CLOSING_DEAL_SIDES),
+        modelledDealUsd: modelledDeal == null ? null : round(modelledDeal),
+        reason: open.reason ?? close.reason ?? null,
+      }
     })
     const brokerVals = perDeal.map(x => x.brokerPerLotPerSide)
-    const modelVals = perDeal.map(x => x.modelledUsd).filter(v => v != null)
-    const compared = deposit === 'USD' && modelVals.length === perDeal.length && perDeal.length > 0
+    const modelled = perDeal.filter(x => x.modelledDealUsd != null)
+    const compared = deposit === 'USD' && modelled.length === perDeal.length && perDeal.length > 0
     symbols.push({
       symbol,
       deals: rows.length,
       terms: t ? { commissionTypeName: t.commissionTypeName, rate: t.rate, minCommission: t.minCommission, minCommissionAsset: t.minCommissionAsset, at: t.at } : null,
       lotUnits,
       brokerPerLotPerSide: { min: round(Math.min(...brokerVals)), max: round(Math.max(...brokerVals)), currency: deposit },
-      modelledPerLotPerSideUsd: modelVals.length ? { min: round(Math.min(...modelVals)), max: round(Math.max(...modelVals)) } : null,
       compared,
-      // Broker charges round to the cent: a deal of 0.01 lots charged 0.08
-      // reads 4.00 a lot a side against a true 3.50. Agreement is judged
-      // within the cent on the deal's own size.
-      agrees: compared ? perDeal.every(x => Math.abs(x.brokerPerLotPerSide - x.modelledUsd) * x.lots * CLOSING_DEAL_SIDES <= 0.01 + 1e-9) : null,
-      reason: t == null ? 'terms_not_recorded' : deposit !== 'USD' ? `deposit_currency_${deposit ?? 'unverified'}` : modelVals.length !== perDeal.length ? perDeal.find(x => x.reason)?.reason ?? null : null,
+      // Broker charges round to the cent on each side, so a deal's two sides
+      // can differ from the model by up to a cent in all.
+      agrees: compared ? perDeal.every(x => Math.abs(x.brokerDeal - x.modelledDealUsd) <= 0.01 + 1e-9) : null,
+      reason: t == null ? 'terms_not_recorded' : deposit !== 'USD' ? `deposit_currency_${deposit ?? 'unverified'}` : modelled.length !== perDeal.length ? perDeal.find(x => x.reason)?.reason ?? null : null,
       sample: perDeal.slice(-5),
     })
   }
