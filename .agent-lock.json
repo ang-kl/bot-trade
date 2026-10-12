@@ -565,6 +565,12 @@
       "at": "2026-10-11T23:48:00Z",
       "by": "claude-builder",
       "note": "#1325 (W1+W2) merged as 943d9d8f on the owner's 'merge now'. Next on claude/handover-outstanding-file-1ktjs7: W3+W11 (+ instruction §6), then W8+W9+W10, then the lot fix. Protected files with owner yes: loop.js, momentum-book.js (W11); manual-hybrid-policy.js, manual-hybrid-enrolment.js, capped-hybrid-policy.js, capped-hybrid-enrolment.js (W9/W10). Serial ratchet 13,403."
+    },
+    {
+      "at": "2026-10-12T00:21Z",
+      "by": "claude-builder",
+      "serial": "№ 13,444",
+      "note": "#1326 merged dc7168f2 (W3 capped-hybrid card + GET /state/capped-hybrid, rows = the Open positions table's own; W11 book trail reaches manage-only accounts via registryManageAccounts, summary manageOnlyAccounts; one-account allowlist account-registry is_live 10 / isLive 14). Protected changed with owner's yes: agent/loop.js, agent/services/momentum-book.js. Next from claude-builder: W8+W9+W10 PR (momentum-entries.json/_all, manual-hybrid.json/_all, capped_hybrid_json setting; protected capped-hybrid-policy.js, capped-hybrid-enrolment.js, manual-hybrid-policy.js, manual-hybrid-enrolment.js with the owner's yes), then the lot-fix PR (actions.js manual-order/execute-trade, preorder.js)."
     }
   ]
 }
