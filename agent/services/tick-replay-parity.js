@@ -279,6 +279,16 @@ function trialRow(db, trialId) {
 }
 const parse = (t, f = null) => { if (t == null) return f; try { return JSON.parse(t) } catch { return f } }
 
+/**
+ * The gaps a trial's window is judged by: over both sides, its own side's
+ * (each listed gap names its side, W6 sides № 13,672); the other side's feed
+ * dropping nothing this one recorded. A one-side manifest's gaps are all its own.
+ */
+export function trialGaps(manifest) {
+  const gaps = Array.isArray(manifest?.gaps) ? manifest.gaps : []
+  return manifest?.environment ? gaps.filter(g => !g.environment || g.environment === manifest.environment) : gaps
+}
+
 /** One stored trial against the sidecar, optionally inside an asked window and on an asked side. */
 export function trialParity(db, row, { side = null, fromMs = null, toMs = null, shadowSim = undefined, schedule = null } = {}) {
   const manifest = parse(row.manifest_json, {})
@@ -288,11 +298,13 @@ export function trialParity(db, row, { side = null, fromMs = null, toMs = null, 
   const base = { trialId: row.trial_id, profileHash: row.profile_hash, symbolId: manifest.symbolId ?? null }
   if (!rec) return { ...base, parity: 'not_comparable', reasons: ['no_replay_record'], note: 'this trial was written before PR-Q1 and stores no signal or trade list to compare. ' + NOT_YET }
   const envs = Array.isArray(manifest.environments) ? manifest.environments : []
-  const sideFromData = envs.length === 1 ? SIDE_BY_ENVIRONMENT[envs[0]] || null : null
+  // W6 sides (Claude · № 13,672 12-Oct; claude-builder): a trial from a
+  // replay over both sides names its own side, so it is comparable too.
+  const sideFromData = manifest.environment ? SIDE_BY_ENVIRONMENT[manifest.environment] || null : envs.length === 1 ? SIDE_BY_ENVIRONMENT[envs[0]] || null : null
   const useSide = side || sideFromData
   if (!useSide) return { ...base, parity: 'not_comparable', reasons: [envs.length > 1 ? 'mixed_environments' : 'side_unknown'], note: 'name the side (?side=cpp_exec_demo|cpp_exec): the manifest does not say which sidecar recorded it. ' + NOT_YET }
   if (side && sideFromData && side !== sideFromData) return { ...base, side: useSide, parity: 'not_comparable', reasons: ['side_differs_from_data'], dataSide: sideFromData, note: NOT_YET }
-  const replay = { ...rec, gaps: manifest.gaps || [] }
+  const replay = { ...rec, gaps: trialGaps(manifest) }
   const record = sidecarRecord(db, { side: useSide, profile: row.profile_hash, symbolId: base.symbolId, fromMs: rec.fromMs ?? 0, toMs: rec.toMs ?? 0 })
   const w = parityWindow(replay, record.trades, { fromMs, toMs })
   if (!w.ok) return { ...base, side: useSide, parity: 'not_comparable', reasons: [w.reason], window: w, note: NOT_YET }

@@ -19,21 +19,24 @@
 // Entry layout (little-endian): recvMs f64 @0, bid f64 @8, ask f64 @16,
 // seq u32 @24, flags u8 @28, 3 bytes unused. A null side is a flag, never a
 // sentinel price.
-import { openSync, writeSync, closeSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { openSync, writeSync, closeSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const SPILL_ENTRY_BYTES = 32
 const CHUNK_ENTRIES = 2048 // 64 KiB per symbol buffered before a write
 const F = Object.freeze({ SNAPSHOT: 1, CROSSED: 2, CHANGED: 4, GAP: 8, BID_NULL: 16, ASK_NULL: 32 })
+/** The file calls the store makes; a test passes its own to make a write short or fail. */
+const FS_IO = Object.freeze({ openSync, writeSync, closeSync })
 
 /**
  * A spill store in `dir` (which must exist). Implements the walkSegments
  * sink: has / push / gapAll / symbols. Then `close()` once, `counts()` for
- * each symbol's stream length, and `read(id)` for a symbol's stream (its file
- * is deleted as it is read, so the disk drains as the replay advances).
+ * each stream's length, and `read(id)` for a stream (its file is deleted as
+ * it is read, so the disk drains as the replay advances). A stream is a
+ * symbol id, or `<environment>:<symbol id>` in a replay over both sides.
  */
-export function createSpill(dir, { maxEntries = Infinity } = {}) {
-  const streams = new Map() // symbolId → { file, fd, buf, used, count }
+export function createSpill(dir, { maxEntries = Infinity, io = FS_IO } = {}) {
+  const streams = new Map() // stream key → { file, fd, buf, used, count }
   let closed = false
   // Codex P2 on #1330 (owner: "Add a spill-byte cap"): every entry written,
   // across all symbols. A continuity gap writes one per symbol seen so far,
@@ -41,8 +44,19 @@ export function createSpill(dir, { maxEntries = Infinity } = {}) {
   // `maxEntries` the store refuses rather than fill the disk.
   let total = 0
 
+  // Claude · № 13,672 12-Oct (Codex P2 on #1330, owner "One PR, 3 items";
+  // claude-builder): writeSync may write fewer bytes than asked and says how
+  // many; the rest of the chunk is written until none is left. A call that
+  // writes nothing is an error, never a loop.
+  const writeAll = (fd, buf, len) => {
+    for (let off = 0; off < len;) {
+      const n = io.writeSync(fd, buf, off, len - off)
+      if (!(n > 0)) throw new Error(`the spill write made no progress (${n} of ${len - off} bytes)`)
+      off += n
+    }
+  }
   const flush = (st) => {
-    if (st.used) { writeSync(st.fd, st.buf, 0, st.used * SPILL_ENTRY_BYTES); st.used = 0 }
+    if (st.used) { writeAll(st.fd, st.buf, st.used * SPILL_ENTRY_BYTES); st.used = 0 }
   }
   const slot = (st) => {
     if (total >= maxEntries) throw spillBoundError(maxEntries)
@@ -75,20 +89,32 @@ export function createSpill(dir, { maxEntries = Infinity } = {}) {
       if (closed) throw new Error('spill is closed')
       let st = streams.get(id)
       if (!st) {
-        const file = join(dir, `sym-${id}.spill`)
-        st = { file, fd: openSync(file, 'w'), buf: Buffer.alloc(CHUNK_ENTRIES * SPILL_ENTRY_BYTES), used: 0, count: 0 }
+        // Named by its order, not its key: a key over both sides carries a colon.
+        const file = join(dir, `sym-${streams.size}.spill`)
+        st = { file, fd: io.openSync(file, 'w'), buf: Buffer.alloc(CHUNK_ENTRIES * SPILL_ENTRY_BYTES), used: 0, count: 0 }
         streams.set(id, st)
       }
       writeQuote(st, q)
     },
-    gapAll() { for (const st of streams.values()) writeGap(st) },
+    /** A gap marker on every stream so far, or on those `only(key)` accepts (one side's, in a replay over both). */
+    gapAll(only = null) { for (const [id, st] of streams) if (!only || only(id)) writeGap(st) },
     symbols: () => [...streams.keys()],
     counts: () => new Map([...streams].map(([id, st]) => [id, st.count])),
     entries: () => total,
+    // Claude · № 13,672 12-Oct (Codex P2 on #1330; claude-builder): a flush
+    // that fails (a full disk) used to leave the loop, so every later file
+    // stayed open. Every stream is flushed and closed whatever the one before
+    // it did, and the first error is thrown once all are closed.
     close() {
       if (closed) return
       closed = true
-      for (const st of streams.values()) { try { flush(st) } finally { closeSync(st.fd); st.fd = null; st.buf = null } }
+      let failed = null
+      for (const st of streams.values()) {
+        try { flush(st) } catch (err) { failed ??= err }
+        try { io.closeSync(st.fd) } catch (err) { failed ??= err }
+        st.fd = null; st.buf = null
+      }
+      if (failed) throw failed
     },
     /** One symbol's stream, as loadSegments builds it; the file is removed once read. */
     read(id) {
@@ -115,10 +141,14 @@ export function createSpill(dir, { maxEntries = Infinity } = {}) {
       }
       return list
     },
-    /** Remove every file this store wrote (idempotent). */
+    /**
+     * Remove every file this store wrote (idempotent). The files go even when
+     * the close fails: it has closed every one, and the caller that needs the
+     * error has it from its own close().
+     */
     remove() {
-      this.close()
-      for (const st of streams.values()) { if (existsSync(st.file)) rmSync(st.file, { force: true }) }
+      try { this.close() } catch { /* removed below either way */ }
+      for (const st of streams.values()) rmSync(st.file, { force: true })
     },
   }
 }
