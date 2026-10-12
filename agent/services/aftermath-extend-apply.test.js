@@ -112,7 +112,7 @@ test('a fetch failure is counted and leaves the row untouched for a re-run', asy
 // window was fixed in clock time at close + (target + 2) bars; a market that
 // closes (weekends here) leaves fewer bars than that in the window, so after
 // one pass took them every later pass found nothing new and counted an error.
-import { WINDOW_SLOTS, MAX_WINDOWS, parseCursor } from './aftermath-extend-apply.js'
+import { WINDOW_SLOTS, MAX_WINDOWS, parseCursor, FETCH_BUDGET } from './aftermath-extend-apply.js'
 import { tfMs } from '../lib/timeframes.js'
 
 const DAY = 24 * H
@@ -135,7 +135,7 @@ function weekdayBroker(calls = []) {
 }
 const isOpen = (t) => { const d = new Date(t).getUTCDay(); return d !== 0 && d !== 6 }
 /** A row closed at `closedMs` (aligned to the bar) holding `afterBars` open-market bars after it. */
-function seedAt(db, { closedMs, tf = '1h', afterBars = 5, symbol = 'EURUSD' }) {
+function seedAt(db, { closedMs, tf = '1h', afterBars = 5, symbol = 'EURUSD', closedAtText = null }) {
   const tfm = tfMs(tf)
   const bars = []
   for (let t = closedMs - 2 * tfm; t <= closedMs; t += tfm) bars.push([t, 100, 100.5, 99.5, 100, 0])
@@ -143,7 +143,7 @@ function seedAt(db, { closedMs, tf = '1h', afterBars = 5, symbol = 'EURUSD' }) {
   const info = db.prepare(
     `INSERT INTO trades (symbol, side, status, entry_price, sl_price, opened_at, closed_at, net_pnl, account_id)
      VALUES (?, 'long', 'closed', 100, 99, ?, ?, -1, '43097342')`
-  ).run(symbol, new Date(closedMs - 2 * H).toISOString(), new Date(closedMs).toISOString())
+  ).run(symbol, new Date(closedMs - 2 * H).toISOString(), closedAtText ?? new Date(closedMs).toISOString())
   db.prepare(
     `INSERT INTO trade_postmortems (trade_id, symbol, timeframe, side, entry_price, sl_price, classification, detail, bars_json)
      VALUES (?, ?, ?, 'long', 100, 99, 'time_cap', 'as judged', ?)`
@@ -240,4 +240,46 @@ test('W5: the stored aftermath stays contiguous whichever end of a full window t
   assert.equal(out.errors, 0); assert.equal(out.updated, 1)
   assert.ok(out.fetches >= 2, `fetched ${out.fetches} window(s)`)
   assert.deepEqual(storedAfter(db, closedMs).map(b => b[0]), openBarsAfter(closedMs, MIN, REPLAY_AFTERMATH_BARS + 2), 'no bar skipped between windows')
+})
+
+// Codex P1s on #1331 (review of 85bafb5b). Owner, after № 13,641: "Fix: sort
+// by parsed time" and "Add a per-call fetch budget".
+test('Codex P1 on #1331: rows are taken newest first by their parsed close time, so a cursor never skips a row stored in the other timestamp format', async () => {
+  const db = initDB(':memory:')
+  const day = Date.UTC(2026, 8, 1) // Tuesday
+  const at = (h) => day + h * H
+  const sqliteText = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
+  // the same day: two ISO-with-T rows and one space-format row closed LATER
+  seedAt(db, { closedMs: at(10), symbol: 'A_ISO' })
+  seedAt(db, { closedMs: at(9), symbol: 'B_ISO' })
+  seedAt(db, { closedMs: at(12), symbol: 'C_SPACE', closedAtText: sqliteText(at(12)) })
+  const now = day + 30 * DAY
+  const order = []
+  const broker = weekdayBroker()
+  const spy = async (sym, ...rest) => { order.push(sym); return broker(sym, ...rest) }
+  const first = await applyAftermathExtension(db, spy, { ...noSleep, now, maxRows: 1 })
+  assert.equal(first.updated, 1)
+  assert.deepEqual(order.slice(0, 1), ['C_SPACE'], 'RED before the fix: the raw text order put both ISO rows first')
+  const second = await applyAftermathExtension(db, spy, { ...noSleep, now, from: first.resumeFrom })
+  assert.equal(second.updated, 2)
+  for (const [id, sym] of [[1, 'A_ISO'], [2, 'B_ISO'], [3, 'C_SPACE']]) {
+    const closedMs = sym === 'A_ISO' ? at(10) : sym === 'B_ISO' ? at(9) : at(12)
+    assert.equal(storedAfter(db, closedMs, id).length, REPLAY_AFTERMATH_BARS + 2, `${sym} filled — none skipped by the cursor`)
+  }
+})
+
+test('Codex P1 on #1331: a call stops at its fetch budget and returns resumeFrom at the next row it has not started', async () => {
+  const db = initDB(':memory:')
+  const now = FRI_20 + 60 * DAY
+  // one-minute rows: 12 empty windows of 395 slots (~79 h) stop short of the present, as for a row beyond retention
+  for (let i = 0; i < 5; i++) seedAt(db, { closedMs: FRI_20 - i * DAY, tf: '1m', afterBars: 2, symbol: `OLD${i}` })
+  let fetches = 0
+  const noHistory = async () => { fetches++; return [] } // beyond the broker's retention: every window empty
+  const out = await applyAftermathExtension(db, noHistory, { ...noSleep, now, maxFetches: 20 })
+  assert.ok(out.fetches <= 20 + MAX_WINDOWS - 1, `fetched ${out.fetches} windows (RED before the budget: 5 rows × ${MAX_WINDOWS} = ${5 * MAX_WINDOWS})`)
+  assert.equal(fetches, out.fetches)
+  assert.match(out.resumeFrom ?? '', /^\d+:\d+$/, 'the call says where to resume')
+  assert.ok(out.remaining >= 1)
+  assert.equal(out.errors + out.remaining, 5, 'every row is either tried or left for the cursor')
+  assert.equal(FETCH_BUDGET, 100)
 })

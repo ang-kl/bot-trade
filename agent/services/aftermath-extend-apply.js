@@ -37,6 +37,16 @@ export const WINDOW_SLOTS = 395
  * 79 hours: a weekend on a one-minute chart.
  */
 export const MAX_WINDOWS = 12
+/**
+ * Codex P1 on #1331 (owner: "Add a per-call fetch budget"). Window fetches
+ * one call may make before it stops and returns `resumeFrom`. A row beyond
+ * the broker's retention comes back empty window after window (up to
+ * MAX_WINDOWS), so the error budget alone allowed 25 × 12 = 300 requests in
+ * one call: the shape that outlived Railway's edge timeout on 25-08. A row
+ * already started may finish its windows, so a call makes at most
+ * FETCH_BUDGET + MAX_WINDOWS − 1 fetches.
+ */
+export const FETCH_BUDGET = 100
 
 /** Wall-clock ceiling for slow timeframes (owner-approved variant). */
 export const SLOW_TF_CAP_MS = 7 * 24 * 3_600_000
@@ -63,6 +73,7 @@ export async function applyAftermathExtension(db, fetchBars, {
   sleep = (ms) => new Promise(r => setTimeout(r, ms)),
   from = null,
   windowSlots = WINDOW_SLOTS,
+  maxFetches = FETCH_BUDGET,
 } = {}) {
   // NEWEST FIRST, and an error budget — both learned from the first live
   // sweep (25-08-2026). Oldest-first put the permanently-unfetchable rows
@@ -78,14 +89,21 @@ export async function applyAftermathExtension(db, fetchBars, {
   // stops on its row or error budget says where (`resumeFrom`), and a call
   // given `from` starts there, so rows that fail every pass at the front of
   // the list cannot hold back the rows behind them.
+  // Codex P1 on #1331 (owner: "Fix: sort by parsed time"): ordered by the
+  // PARSED close time, the clock the cursor compares. The raw text sorts
+  // '2026-09-01T09:00Z' after '2026-09-01 12:00:00' (T > space), so a cursor
+  // taken inside the ISO-format rows of a day would skip that day's
+  // space-format rows. Production stored one format on 12-10 (1,733 of 1,733
+  // closed trades), so this guards the order rather than repairs it.
   const rows = db.prepare(`
     SELECT pm.id AS pmId, pm.trade_id AS tradeId, pm.symbol, pm.timeframe, pm.bars_json,
            t.closed_at
       FROM trade_postmortems pm
       JOIN trades t ON t.id = pm.trade_id
      WHERE t.status = 'closed' AND t.closed_at IS NOT NULL
-     ORDER BY t.closed_at DESC, pm.id DESC
   `).all()
+    .map(r => ({ ...r, closedMs: sqliteMs(r.closed_at) }))
+    .sort((a, b) => (Number.isFinite(b.closedMs) ? b.closedMs : -Infinity) - (Number.isFinite(a.closedMs) ? a.closedMs : -Infinity) || b.pmId - a.pmId)
   const cursor = parseCursor(from)
 
   const out = { examined: 0, updated: 0, barsAdded: 0, alreadyFull: 0, historyStillForming: 0, noNewerBarsYet: 0, noBars: 0, errors: 0, remaining: 0, fetches: 0, resumeFrom: null }
@@ -93,7 +111,7 @@ export async function applyAftermathExtension(db, fetchBars, {
 
   for (const r of rows) {
     const ms = tfMs(r.timeframe) || 3_600_000
-    const closedMs = sqliteMs(r.closed_at)
+    const closedMs = r.closedMs
     if (cursor && Number.isFinite(closedMs) && (closedMs > cursor.closedMs || (closedMs === cursor.closedMs && r.pmId > cursor.pmId))) continue
     out.examined++
     if (!Number.isFinite(closedMs)) { out.noBars++; continue }
@@ -107,7 +125,7 @@ export async function applyAftermathExtension(db, fetchBars, {
     if (afterBars >= target) { out.alreadyFull++; continue }
     if (now < closedMs + (target + 2) * ms) { out.historyStillForming++; continue }
 
-    if (out.updated >= maxRows || out.errors >= maxErrors) {
+    if (out.updated >= maxRows || out.errors >= maxErrors || out.fetches >= maxFetches) {
       if (!out.resumeFrom) out.resumeFrom = `${closedMs}:${r.pmId}`
       out.remaining++
       continue
