@@ -2515,6 +2515,19 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         return { ok: true, positions: rec.position || [] }
       } catch { return { ok: false, positions: [] } }
     }
+    // A LIVE broker read (demo stress run D1, 12-10-2026). On the native
+    // engine execReconcile is answered from the gateway's ~30 s position
+    // cache, so "missing from the snapshot" can mean "opened after the cache
+    // refreshed". Same bounded read as the partial path: 4 s, no retry.
+    // Claude · № 13,757 12-Oct (owner "Yes, live read"; claude-builder)
+    const liveExitSnapshot = async () => {
+      try {
+        const { wsReconcile } = await import('./lib/ctrader-ws.js')
+        const rec = await wsReconcile(host, clientId, clientSecret, accessToken, accountId, 4000, 0)
+        assertReconcileIdentity(rec, accountId, 'exit live check')
+        return { ok: true, positions: rec.position || [] }
+      } catch { return { ok: false, positions: [] } }
+    }
 
     if (action === 'FULL_EXIT') {
       // §5490 NULL-EXIT GUARD. Two questions before any close reaches the
@@ -2552,11 +2565,19 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       }
       const snap = await brokerSnapshot()
       if (snap.ok && !snap.positions.some(p => String(p?.positionId) === String(ctx.positionId))) {
-        // The broker no longer holds this position — closing "again" would
-        // only error forever. Record reality and stand down.
-        if (pos.trade_id) closeTradeRow(db, pos.trade_id, { closeReason: 'already_closed' })
-        s.closePosition.run('closed', pos.id)
-        return { closedRemotely: true, summary: 'already_closed' }
+        // Missing from the CACHED snapshot is not proof: confirm live before
+        // the row is written off (D1). Unconfirmed → the row stays open and the
+        // next pass asks again; held live → close what the broker holds.
+        const live = await liveExitSnapshot()
+        if (!live.ok) return { skipped: true, reason: 'already_closed_unconfirmed: the cached snapshot lacks the position and the live read failed' }
+        if (!live.positions.some(p => String(p?.positionId) === String(ctx.positionId))) {
+          // The broker no longer holds this position — closing "again" would
+          // only error forever. Record reality and stand down.
+          if (pos.trade_id) closeTradeRow(db, pos.trade_id, { closeReason: 'already_closed' })
+          s.closePosition.run('closed', pos.id)
+          return { closedRemotely: true, summary: 'already_closed' }
+        }
+        snap.positions = live.positions
       }
       let volumeUnits = brokerPositionVolume(snap.positions, ctx.positionId)
       // What the broker held just before this close — only from the snapshot.
@@ -4118,7 +4139,7 @@ async function runLoop(db) {
             log(`Weekend loss flag check failed: ${err.message}`)
             await hbeat(db, 'weekend_loss_flag', false, err.message)
           }
-          log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${(result.manualChanges || []).length} manual change(s), ${result.pendingOrders.length} pending orders`)
+          log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${(result.manualChanges || []).length} manual change(s), ${result.pendingOrders.length} pending orders${result.closeDeferred?.length ? `, ${result.closeDeferred.length} close(s) deferred (opened within the snapshot bound)` : ''}`)
 
           // EVERY CLOSE IS QUEUED FOR CAPTURE (owner, 17-09-2026). Not built
           // here: the broker's deal history does not carry the closing deal
@@ -4281,7 +4302,7 @@ async function runLoop(db) {
                 const r2 = reconcilePositions(db, pos2, ord2,
                   (k, v) => setAccountState(db, acc.account_id, k, v),
                   { accountId: acc.account_id, readAt: accReadAt })
-                log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)${r2.crossAccountRefused?.length ? `, ${r2.crossAccountRefused.length} CROSS-ACCOUNT REFUSED (${r2.crossAccountRefused.map(x => `${x.symbol} held by …${x.heldBy.slice(-4)}`).join(', ')})` : ''}`)
+                log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)${r2.closeDeferred?.length ? `, ${r2.closeDeferred.length} close(s) deferred (opened within the snapshot bound)` : ''}${r2.crossAccountRefused?.length ? `, ${r2.crossAccountRefused.length} CROSS-ACCOUNT REFUSED (${r2.crossAccountRefused.map(x => `${x.symbol} held by …${x.heldBy.slice(-4)}`).join(', ')})` : ''}`)
 
                 // V3 V1: this account's detected closes are queued for capture
                 // too (until 25-09-2026 only the selected account's were).
