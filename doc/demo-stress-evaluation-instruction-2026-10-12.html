@@ -1,0 +1,308 @@
+<!doctype html>
+<!-- Codex · №13,685 · 2026-10-12; codex-footprint: demo-stress-instruction-html. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Owner instruction prompt for Claude Code: demo stress evaluation across three accounts, with execution coverage, failure recovery and evidence requirements.">
+  <title>Demo stress evaluation · Claude Code instruction · bot-trade</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #fff;
+      --background: #f4f5f7;
+      --ink: #202b35;
+      --muted: #54616d;
+      --line: #d6dde5;
+      --accent: #245b90;
+      --tint: #edf3fa;
+      --notice: #fff6e7;
+      --notice-line: #dfbc78;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--background);
+      color: var(--ink);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.65;
+    }
+    main {
+      max-width: 1000px;
+      margin: 36px auto;
+      padding: clamp(24px, 5vw, 56px);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--accent);
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0 0 16px; font-size: clamp(1.9rem, 4.4vw, 2.8rem); line-height: 1.15; }
+    h2 { margin: 0 0 16px; font-size: 1.3rem; line-height: 1.35; }
+    p { margin: 0 0 16px; }
+    .meta { color: var(--muted); font-size: .9rem; }
+    .lead { font-size: 1.1rem; }
+    section { margin-top: 36px; padding-top: 28px; border-top: 1px solid var(--line); }
+    li { margin-bottom: 8px; }
+    ul, ol { padding-left: 24px; margin: 12px 0 20px; }
+    strong { font-weight: 650; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: .9em;
+      padding: 2px 5px;
+      background: var(--tint);
+      border-radius: 4px;
+      overflow-wrap: anywhere;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 24px 0;
+    }
+    .metric { border: 1px solid var(--line); border-radius: 8px; padding: 16px; background: var(--tint); }
+    .metric b { display: block; color: var(--accent); font-size: 1.8rem; line-height: 1.2; }
+    .metric span { color: var(--muted); font-size: .88rem; }
+    .notice { padding: 18px 20px; border-left: 4px solid var(--notice-line); background: var(--notice); }
+    .notice p:last-child { margin-bottom: 0; }
+    .table-wrap { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: 8px; }
+    table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: .94rem; }
+    caption { text-align: left; padding: 14px 16px; font-weight: 650; background: var(--tint); }
+    th, td { padding: 12px 16px; text-align: left; vertical-align: top; border-top: 1px solid var(--line); }
+    thead th { background: #f8faf8; }
+    tbody th { font-weight: 600; }
+    .count { text-align: right; font-variant-numeric: tabular-nums; }
+    tfoot { font-weight: 650; background: var(--tint); }
+    figure { margin: 24px 0; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: #fafbfc; }
+    svg { display: block; width: 100%; max-width: 740px; height: auto; margin: 0 auto; }
+    svg text { font-family: system-ui, sans-serif; fill: var(--ink); }
+    figcaption { margin-top: 14px; color: var(--muted); font-size: .9rem; }
+    .closing { margin-top: 24px; padding: 20px; background: var(--tint); border-radius: 8px; }
+    footer { margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
+    @media (max-width: 600px) {
+      main { margin: 0; border: 0; border-radius: 0; }
+      .summary { grid-template-columns: 1fr; }
+      .metric { display: flex; align-items: center; gap: 16px; }
+      .metric b { min-width: 58px; }
+      figure { padding: 10px; }
+    }
+    @media print {
+      body { background: #fff; font-size: 10.5pt; }
+      main { max-width: none; margin: 0; padding: 0; border: 0; }
+      h1 { font-size: 23pt; }
+      h2 { break-after: avoid; }
+      section { margin-top: 22px; padding-top: 18px; }
+      .table-wrap { overflow: visible; }
+      table { min-width: 0; font-size: 9.5pt; }
+      tr, figure, .notice, .metric { break-inside: avoid; }
+      thead { display: table-header-group; }
+      .summary { gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <article aria-labelledby="document-title">
+      <header>
+        <p class="eyebrow">bot-trade · instruction prompt for Claude Code</p>
+        <h1 id="document-title">Immediate demo stress evaluation</h1>
+        <p class="meta">Prepared 12 October 2026 · Asia/Singapore (SGT) · Owner-requested handoff</p>
+        <p class="lead">Start a stress evaluation across the <strong>three owner-specified demo accounts listed below</strong>. Target <strong>24 open positions per account, 72 total</strong>, within the existing account risk and margin limits.</p>
+        <p>The purpose is to exercise the recently completed PR work, expose failures, observe the bot’s recovery, and correct reproduced defects. Opening positions alone does not establish that every management feature works.</p>
+        <div class="summary" aria-label="Stress evaluation targets">
+          <div class="metric"><b>3</b><span>Verified demo accounts</span></div>
+          <div class="metric"><b>24</b><span>Target positions per account</span></div>
+          <div class="metric"><b>72</b><span>Total target positions</span></div>
+        </div>
+        <aside class="notice" aria-label="Execution scope">
+          <p><strong>Demo execution only.</strong> Resolve account identities and verify execution readiness before starting. Preserve live accounts, their positions, configuration and management. Use existing risk limits and supported execution paths.</p>
+        </aside>
+      </header>
+
+      <section aria-labelledby="scope">
+        <h2 id="scope">1. Establish the execution scope, then start immediately</h2>
+        <div class="table-wrap">
+          <table>
+            <caption>Owner-specified demo accounts · balances reported by the owner on 12 October 2026</caption>
+            <thead><tr><th scope="col">Environment</th><th scope="col">Broker login</th><th scope="col">Account ID</th><th scope="col">Currency</th><th scope="col" class="count">Reported balance</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">Demo</th><td>5067353</td><td><code>43097342</code></td><td>SGD</td><td class="count">3,057.16</td></tr>
+              <tr><th scope="row">Demo</th><td>5306502</td><td><code>47790949</code></td><td>USD</td><td class="count">42,847.81</td></tr>
+              <tr><th scope="row">Demo</th><td>5203012</td><td><code>46130058</code></td><td>USD</td><td class="count">30,009.96</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Use these exact account IDs. Verify each broker login, demo status, account currency and current balance against the existing registry and fresh broker account information. The balances above are owner-reported snapshots, not live observations or identity evidence. Keep SGD and USD accounting separate.</p>
+        <p><strong>Turn on Analysis for any of these three accounts where it is currently off.</strong> Use the existing supported account-scoped setting, retain the before/after state and verify the update by fresh readback. Leave Analysis unchanged where it is already on. This requested Analysis change does not authorize changing Auto-trade switches, risk limits or live-account settings.</p>
+        <p>Report the verified IDs, actual balances, Analysis states, enabled management policies and deployed commit. Then begin placing valid demo stress entries through the supported execution path without requesting another routine confirmation.</p>
+        <p>If an account identity or Analysis state cannot be verified, report the exact discrepancy and resolve it before that account’s entries. Never substitute another account.</p>
+        <p>Use strategy logic to construct <strong>test order setups</strong>. These are intentionally requested demo stress entries; label them accordingly and do not report them as naturally generated strategy signals.</p>
+        <p>Preserve live accounts, their positions, configuration and management. Read the current coordination notes before overlapping another agent’s work.</p>
+      </section>
+
+      <section aria-labelledby="coverage">
+        <h2 id="coverage">2. Build a coverage matrix</h2>
+        <p>Target this distribution on <strong>each account</strong>:</p>
+        <div class="table-wrap">
+          <table>
+            <caption>Primary coverage per demo account</caption>
+            <thead>
+              <tr><th scope="col">Primary test group</th><th scope="col" class="count">Positions</th><th scope="col">Main coverage</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row">Nearest eligible key-level TP</th><td class="count">4</td><td>Structural target selection, fill anchoring, applicable R:R constraints</td></tr>
+              <tr><th scope="row">Fixed reward:risk TP</th><td class="count">4</td><td>Initial-risk calculation, stop/target placement, resolved R:R policy</td></tr>
+              <tr><th scope="row">Hybrid take-profit</th><td class="count">4</td><td>Partial execution, residual position, retained protection, subsequent management</td></tr>
+              <tr><th scope="row">Momentum trading</th><td class="count">4</td><td>Supported momentum entry, book ownership, initial risk and exit management</td></tr>
+              <tr><th scope="row">Tick entries and exits</th><td class="count">4</td><td>Supported tick-triggered paths, timestamps, eligibility and exit receipts</td></tr>
+              <tr><th scope="row">Lot-management cases</th><td class="count">4</td><td>Valid minimum/step sizes, risk-based sizing, supplied lots and margin checks</td></tr>
+            </tbody>
+            <tfoot><tr><th scope="row">Total</th><td class="count">24</td><td>Repeat across the three verified demo accounts</td></tr></tfoot>
+          </table>
+        </div>
+        <p>Distribute supported instruments, directions and timeframes across these groups. Avoid making all positions equivalent exposures.</p>
+        <p>Overlay these checks wherever applicable:</p>
+        <ul>
+          <li>Strategy setup provenance and execution eligibility.</li>
+          <li>Tick-derived and timeframe bar inputs.</li>
+          <li>Market Causality Approach (MCA).</li>
+          <li>Maximum Adverse Excursion (MAE).</li>
+          <li>Maximum Favourable Excursion (MFE).</li>
+          <li>Chandelier protection and trailing.</li>
+          <li>Whole-position net results after costs.</li>
+        </ul>
+        <p>The same position may exercise several features. Record its primary group and secondary coverage.</p>
+        <p>Use currently supported paths and resolved policies. An unsupported bar form, disabled controller or legitimately rejected setup must be reported explicitly. Do not bypass a gate or enable a controller merely to complete the matrix.</p>
+      </section>
+
+      <section aria-labelledby="entries">
+        <h2 id="entries">3. Open the demo positions now</h2>
+        <p>Submit bounded waves of <strong>six positions per account</strong>, rotating across the three accounts until the target is reached. Observe execution and management between waves.</p>
+        <p>For every position:</p>
+        <ul>
+          <li>Calculate lots from that account’s applicable policy, actual instrument specifications and current margin.</li>
+          <li>Obtain broker-confirmed execution and reconcile actual quantity and fill price.</li>
+          <li>Verify the intended broker-side SL/TP.</li>
+          <li>Record the immutable initial-risk evidence separately from subsequent stop changes.</li>
+          <li>Confirm which bot controller owns and manages the position.</li>
+        </ul>
+        <p>Do not copy identical lot sizes across accounts with different balances or currencies. Use each account’s native-currency risk budget and the applicable instrument/currency conversions. Do not increase risk limits, remove protection or override account safeguards to reach 24 positions.</p>
+        <p>If existing limits prevent the target, report the achieved count and exact constraint. A correct rejection is a successful safeguard test, not a defect.</p>
+      </section>
+
+      <section aria-labelledby="failures">
+        <h2 id="failures">4. Exercise failure and recovery deliberately</h2>
+        <p>Use normal demo execution to observe real broker and controller behaviour.</p>
+        <p>Create deterministic faults through an <strong>isolated, account-scoped test harness or controlled transport boundary</strong>. Do not inject faults into a shared production database, broker feed or process where live accounts could be affected.</p>
+        <p>Cover:</p>
+        <ul>
+          <li>Rejected orders and invalid-size proposals.</li>
+          <li>Timeout or lost acknowledgement after broker acceptance.</li>
+          <li>Partial fills and underfills.</li>
+          <li>Duplicate responses and repeated reconciliation.</li>
+          <li>Delayed, stale or account-mismatched snapshots.</li>
+          <li>Interrupted execution and controller recovery.</li>
+          <li>SQLite busy/write failures and spill short writes in isolated tests.</li>
+          <li>Tick gaps, truncated gap lists and out-of-order events.</li>
+        </ul>
+        <p>Expected recovery includes:</p>
+        <ul>
+          <li>No duplicate order or close submission after an ambiguous response.</li>
+          <li>No success latch or journal entry based only on requested quantity.</li>
+          <li>Actual fills and residual quantities reconciled before completion.</li>
+          <li>Account isolation preserved.</li>
+          <li>Existing protection retained.</li>
+          <li>Recovery bookkeeping committed consistently and once.</li>
+        </ul>
+        <p>Separate <strong>injected failures</strong>, <strong>naturally observed failures</strong>, <strong>expected rejections</strong> and <strong>confirmed defects</strong>. Never fabricate broker execution evidence.</p>
+      </section>
+
+      <section aria-labelledby="receipts">
+        <h2 id="receipts">5. Verify each feature through receipts</h2>
+        <p>For TP methods, compare the intended target with the accepted broker target and actual exit.</p>
+        <p>For hybrid TP, prove the partial deal, executed quantity, remaining quantity, retained SL/TP and durable bookkeeping.</p>
+        <p>For lot management, verify requested versus accepted quantity, instrument rounding, risk and margin.</p>
+        <p>For momentum and tick paths, identify the actual triggering event, account, controller and resulting execution. A position opened through a generic manual path does not prove that a tick-entry path works.</p>
+        <p>For bar forms, verify timestamps, price side, event-count semantics, gaps and contiguous lookbacks. Separate research bar comparisons from actual broker execution.</p>
+        <p>For MCA, record the entry-time structural assessment and directional bias. Measure MAE and MFE from traceable market data against the original position risk.</p>
+        <p>Follow the illustrated sequence where applicable:</p>
+        <figure>
+          <svg viewBox="0 0 740 310" role="img" aria-labelledby="flow-title flow-description">
+            <title id="flow-title">MCA, Chandelier and excursion evaluation workflow</title>
+            <desc id="flow-description">MCA assesses structure and directional bias. Chandelier provides applicable ATR-based protection. MAE and MFE record adverse and favourable excursions. Evaluation follows without automatically changing the ATR multiplier.</desc>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#54616d"></path></marker>
+            </defs>
+            <g fill="#edf3fa" stroke="#94aac3" stroke-width="1.3">
+              <rect x="12" y="12" width="212" height="48" rx="6"></rect>
+              <rect x="12" y="88" width="212" height="48" rx="6"></rect>
+              <rect x="12" y="164" width="212" height="48" rx="6"></rect>
+              <rect x="12" y="240" width="212" height="48" rx="6"></rect>
+            </g>
+            <g stroke="#54616d" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+              <path d="M118 60 V85"></path><path d="M118 136 V161"></path><path d="M118 212 V237"></path>
+              <path d="M224 36 H263"></path><path d="M224 112 H263"></path><path d="M224 188 H263"></path><path d="M224 264 H263"></path>
+            </g>
+            <g font-size="16" font-weight="600" text-anchor="middle">
+              <text x="118" y="42">MCA assessment</text>
+              <text x="118" y="118">Chandelier protection</text>
+              <text x="118" y="194">MAE / MFE observation</text>
+              <text x="118" y="270">Evaluation</text>
+            </g>
+            <g font-size="15">
+              <text x="280" y="42">Market structure and directional bias</text>
+              <text x="280" y="118">Applicable ATR-based protection and trailing</text>
+              <text x="280" y="194">Trace adverse and favourable excursions</text>
+              <text x="280" y="270">Assess outcomes against original risk</text>
+            </g>
+          </svg>
+          <figcaption>MCA assessment → Chandelier protection → MAE/MFE observation → evaluation.</figcaption>
+        </figure>
+        <p>Do not automatically change the ATR multiplier because a stress trade loses. Parameter optimisation is a separate analysis.</p>
+      </section>
+
+      <section aria-labelledby="corrections">
+        <h2 id="corrections">6. Let the bot recover, then correct confirmed defects</h2>
+        <p>Observe the bot’s existing recovery first. Capture evidence before intervening.</p>
+        <p>For each confirmed defect:</p>
+        <ol>
+          <li>Identify the failing mechanism and affected commit/path.</li>
+          <li>Reproduce it through the real relevant controller/database boundary with controlled transport.</li>
+          <li>Implement the smallest correction.</li>
+          <li>Preserve account eligibility, risk policy, sizing rules and protection contracts.</li>
+          <li>Validate recovery, duplicate prevention and successful ordinary behaviour.</li>
+          <li>Run the applicable gates and inspect the actual <strong>GitHub Codex reviewer — <code>chatgpt-codex-connector[bot]</code></strong> findings.</li>
+        </ol>
+        <p>Do not weaken safeguards, suppress failures or alter strategy thresholds to obtain a passing result. Do not merge or deploy merely because this prompt requests stress testing; follow the owner’s existing release authorization.</p>
+      </section>
+
+      <section aria-labelledby="reporting">
+        <h2 id="reporting">7. Monitor and report</h2>
+        <p>During execution, monitor account-owned reconciliation, advancing quote timestamps, management progress, independent broker protection, resource pressure and SQLite contention.</p>
+        <p>If protection fails, account identity becomes uncertain, or existing operational limits are exceeded, stop submitting further stress entries and follow the existing recovery procedure. Preserve management of positions already open.</p>
+        <p>Deliver:</p>
+        <ul>
+          <li>Account IDs, broker logins, currencies, Analysis before/after states, deployed commit and execution window.</li>
+          <li>Requested, accepted, rejected, open and closed counts per account.</li>
+          <li>Coverage matrix with evidence links.</li>
+          <li>MAE, MFE, initial R and whole-position net results.</li>
+          <li>Failure, recovery and correction receipts.</li>
+          <li>Features actually exercised versus still unverified.</li>
+          <li>Proposed cleanup of remaining stress positions and any unresolved defects.</li>
+        </ul>
+        <p class="closing">Do not infer completion from order count, green CI, HTTP success or protection presence alone. <strong>Start the valid demo entries immediately after identity and execution checks, then report measured outcomes.</strong></p>
+      </section>
+      <footer>
+        <p>Instruction prompt for Claude Code · bot-trade · 12 October 2026 · Account IDs and current operational state must be resolved from fresh evidence.</p>
+      </footer>
+    </article>
+  </main>
+</body>
+</html>
