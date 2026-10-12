@@ -550,6 +550,43 @@ static void test_retry_after_defers_entries_and_reads_but_not_protection() {
   assert(third.ok && third.body.get("order").get("orderId").asNumber(0) == 65);
 }
 
+// Claude · № 13,774 12-Oct (demo stress run, D1 "snapshot time next";
+// claude-builder). Node reads POST /positions from this cache, refreshed by
+// the gateway's own loop about every 30 s, so a row Node wrote seconds before
+// its read can be missing from the reply and was closed "at the broker"
+// (#1797/#1798 on 47790949, 12-10). The cached snapshot carries the moment
+// its reconcile REQUEST was sent — the earliest instant the broker can have
+// built the answer — so Node judges young rows against that, not against its
+// own read time. Not the receipt time: a position opened between send and
+// receipt may be missing too.
+static void test_the_cached_snapshot_carries_the_time_its_request_was_sent() {
+  FakeBroker broker([](FakeBroker& b, const jsn::Value& f) {
+    if (typeOf(f) == pt::RECONCILE_REQ) {
+      jsn::Value p{jsn::Object{}};
+      p.set("ctidTraderAccountId", f.get("payload").get("ctidTraderAccountId"));
+      p.set("position", jsn::Value(jsn::Array{}));
+      b.replyAfter(400, f, pt::RECONCILE_RES, p);
+      return;
+    }
+    authAndReconcile(b, f);
+  });
+  ExecEngine e;
+  connectEngine(e, broker);
+  const long long before = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+  assert(e.reconcile().ok);
+  auto snap = jsn::parse(e.lastReconcileJson(4002));
+  assert(snap && snap->isObject());
+  const jsn::Value& at = snap->get("snapshotAtMs");
+  assert(at.isNumber());
+  const long long sentAt = static_cast<long long>(at.asNumber());
+  assert(sentAt >= before);
+  // The receipt is stamped ~400 ms later; the snapshot time is the send.
+  assert(e.lastReconcileAtMs(4002) - sentAt >= 350);
+  // The broker's own fields are untouched.
+  assert(snap->get("ctidTraderAccountId").asNumber(0) == 4002);
+  assert(snap->get("position").isArray());
+}
+
 int main() {
   test_unconnected_engine_paths_are_unchanged();
   test_connect_auth_reconcile_and_the_roster();
@@ -568,6 +605,7 @@ int main() {
   test_a_partial_fill_answers_the_request_and_the_final_fill_follows_in_the_journal();
   test_the_in_flight_cap_refuses_reads_and_entries_but_never_protection();
   test_retry_after_defers_entries_and_reads_but_not_protection();
+  test_the_cached_snapshot_carries_the_time_its_request_was_sent();
   std::puts("test_async_session: all passed");
   return 0;
 }

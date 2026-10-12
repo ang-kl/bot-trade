@@ -1061,10 +1061,18 @@ EngineResult ExecEngine::reconcileOne(long long accountId, int timeoutMs, Reques
   p.set("ctidTraderAccountId", accountId);
   // 10s: a hung reconcile no longer holds the order path (the request is a
   // future), but the loop's own cadence still wants a tight bound.
+  // Claude · № 13,774 12-Oct (D1 "snapshot time next"; claude-builder): the
+  // moment the request goes out is the earliest the broker can have built
+  // its answer. Node reads this cache seconds or tens of seconds later, so it
+  // judges a row opened just before its read against THIS time, not its own
+  // (#1797/#1798 on 47790949 were closed on a snapshot that predated them).
+  const long long sentAtMs = nowMs();
   auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, timeoutMs, cls);
   if (r.ok) {
+    jsn::Value snap = r.body;
+    if (snap.isObject()) snap.set("snapshotAtMs", static_cast<double>(sentAtMs));
     std::lock_guard sk(stateMtx_);
-    reconcileByAccount_[accountId] = {jsn::dump(r.body), nowMs()};
+    reconcileByAccount_[accountId] = {jsn::dump(snap), nowMs()};
   }
   return r;
 }

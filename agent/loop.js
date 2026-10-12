@@ -3603,7 +3603,7 @@ async function runLoop(db) {
             symbolName: symbolNameMap[o.tradeData?.symbolId] || null,
           }))
 
-          const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v), { readAt: reconcileReadAt })
+          const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v), { readAt: reconcileReadAt, snapshotAt: reconcileData.snapshotAtMs })
           setState(db, 'api_ctrader_last_ok', new Date().toISOString())
 
           // PROTECTION AUDIT (owner report 2026-07-29). Every other stop guard
@@ -4301,7 +4301,7 @@ async function runLoop(db) {
                 const ord2 = (rd.order || []).map(o => ({ ...o, symbolName: symbolNameMap[o.tradeData?.symbolId] || null }))
                 const r2 = reconcilePositions(db, pos2, ord2,
                   (k, v) => setAccountState(db, acc.account_id, k, v),
-                  { accountId: acc.account_id, readAt: accReadAt })
+                  { accountId: acc.account_id, readAt: accReadAt, snapshotAt: rd.snapshotAtMs })
                 log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)${r2.closeDeferred?.length ? `, ${r2.closeDeferred.length} close(s) deferred (opened within the snapshot bound)` : ''}${r2.crossAccountRefused?.length ? `, ${r2.crossAccountRefused.length} CROSS-ACCOUNT REFUSED (${r2.crossAccountRefused.map(x => `${x.symbol} held by …${x.heldBy.slice(-4)}`).join(', ')})` : ''}`)
 
                 // V3 V1: this account's detected closes are queued for capture
