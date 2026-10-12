@@ -1102,6 +1102,12 @@ export async function runMomentumBook(db, { accounts = [], manageAccounts = null
   // match, so an account in both is trailed once. Entries, rank exits and
   // adoption keep `accounts`.
   const trailAccounts = Array.isArray(manageAccounts) ? [...accounts, ...manageAccounts] : accounts
+  // Accounts the trail reached that the entry roster does not hold, counted
+  // apart: `summary.accounts` keeps meaning the per-account entry/exit pass,
+  // so a trail on …9908 alone read "1 trailed on 0 account(s)".
+  // Claude · № 13,436 12-Oct (Codex P2 on #1326 879fe2e1; claude-builder)
+  const entryIds = new Set(accounts.map(a => String(a.accountId)))
+  const manageOnlyReached = new Set()
   const noteTrail = (id, note, atr = null) => {
     try {
       db.prepare(`UPDATE momentum_book SET trail_checked_at = ?, trail_note = ?, atr = COALESCE(?, atr) WHERE id = ?`)
@@ -1127,6 +1133,9 @@ export async function runMomentumBook(db, { accounts = [], manageAccounts = null
     // roster. On 12-10 XOM.US on …9908 (manage_only) read "not reached:
     // account not in this pass" while the active accounts' rows were trailed.
     const acct = trailAccounts.find(a => String(a.accountId) === String(row.account_id))
+    if (acct && !entryIds.has(String(acct.accountId))) {
+      manageOnlyReached.add(String(acct.accountId)); summary.manageOnlyAccounts = manageOnlyReached.size
+    }
     const creds = acct ? credsFor(acct) : null
     const symbolId = creds && deps.symbolIdFor
       ? await deps.symbolIdFor(creds, row.symbol)
@@ -1319,7 +1328,8 @@ export function bookSummaryLogLine(summary, lastLine = null) {
   const last = lastLine ?? null
   if (!summary?.ran) return { line: null, last }
   const skipped = Array.isArray(summary.skipped) ? summary.skipped : []
-  const line = `momentum book: ${summary.entries} entered, ${summary.exits} exited, ${summary.trailed} trailed${summary.reclassified ? `, ${summary.reclassified} exit_sent row(s) reclassified closed` : ''} on ${summary.accounts} account(s)${skipped.length ? ` — ${skipped.slice(0, 4).join('; ')}` : ''}`
+  const manageOnly = Number(summary.manageOnlyAccounts) || 0
+  const line = `momentum book: ${summary.entries} entered, ${summary.exits} exited, ${summary.trailed} trailed${summary.reclassified ? `, ${summary.reclassified} exit_sent row(s) reclassified closed` : ''} on ${summary.accounts} account(s)${manageOnly ? ` + ${manageOnly} manage-only account(s) (trail only)` : ''}${skipped.length ? ` — ${skipped.slice(0, 4).join('; ')}` : ''}`
   const acted = (Number(summary.entries) || 0) + (Number(summary.exits) || 0) + (Number(summary.trailed) || 0) + (Number(summary.reclassified) || 0) > 0
   if (!acted && line === last) return { line: null, last }
   return { line, last: line }
@@ -1335,6 +1345,7 @@ export function writeMomentumBookPass(db, summary, now = Date.now()) {
     setState(db, MOMENTUM_BOOK_PASS_KEY, JSON.stringify({
       at: new Date(now).toISOString(),
       accounts: summary.accounts, considered: summary.considered ?? null,
+      manageOnlyAccounts: summary.manageOnlyAccounts || 0,
       entries: summary.entries, exits: summary.exits, trailed: summary.trailed,
       deferredClosed: summary.deferredClosed || 0, rankExitsDeferred: summary.rankExitsDeferred || 0,
       entriesHeld: summary.entriesHeld || null,
