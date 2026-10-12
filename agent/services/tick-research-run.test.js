@@ -196,7 +196,7 @@ test('M-1: the record cap refuses 413 too_many_records from file sizes alone, be
   writeFileSync(join(dir, 'seg-000001.tks'), fixtureSegment())
   const n = segmentRecordCount(listSegments(dir))
   assert.ok(n > 100 && n < 1000, `fixture records ${n}`)
-  assert.equal(MAX_RECORDS, 5_000_000)
+  assert.equal(MAX_RECORDS, 150_000_000, 'W6 (12-10): raised from 5,000,000; tick-replay-spill.test.js holds the streamed path')
   const r = tickResearchAction(db, { stageA: false, params: PARAMS, sim: SIM }, { segmentsDir: dir, maxRecords: n - 1 })
   assert.equal(r.status, 413); assert.equal(r.body.error, 'too_many_records'); assert.equal(r.body.records, n); assert.equal(r.body.maxRecords, n - 1); assert.match(r.body.where, /exceed the keeper's cap/)
   assert.equal(db.prepare('SELECT COUNT(*) AS c FROM tick_trials').get().c, 0)

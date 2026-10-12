@@ -24,8 +24,8 @@
 // record's CRC, and a segment that fails is deleted and reported. A chunk
 // that arrives corrupt must not become a trial.
 // ---------------------------------------------------------------------------
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, readdirSync, existsSync, openSync, writeSync, closeSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, readdirSync, existsSync, openSync, writeSync, closeSync, realpathSync } from 'node:fs'
+import { join, resolve, sep, dirname, basename } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
@@ -63,6 +63,52 @@ export function segmentCacheDir(env = process.env) {
   const research = String(env.TICK_SEGMENTS_DIR || '').trim()
   if (research) return research
   return join(tmpdir(), 'tick-segments')
+}
+
+/**
+ * Claude · № 13,571 12-Oct (W6, the instruction's "afterwards the segment
+ * cache should be empty"; claude-builder). Whether `dir` is inside the
+ * system temporary directory — the default cache, which the container
+ * discards anyway and the sidecar can refill at any time.
+ */
+export function isTemporaryCache(dir, { tmpRoot = tmpdir() } = {}) {
+  // Codex P2 on #1330: compared by REAL path. A lexical check let
+  // /tmp/cache-link pass when it is a symlink to a kept directory such as
+  // /data/tick-cache. A directory not created yet is judged by its nearest
+  // existing parent.
+  const d = realPathOf(String(dir || '')), t = realPathOf(tmpRoot)
+  return d.startsWith(t + sep)
+}
+
+function realPathOf(p) {
+  let cur = resolve(p)
+  const rest = []
+  for (;;) {
+    try { return join(realpathSync(cur), ...rest.reverse()) } catch { /* not there yet: try its parent */ }
+    const parent = dirname(cur)
+    if (parent === cur) return resolve(p)
+    rest.push(basename(cur))
+    cur = parent
+  }
+}
+
+/**
+ * Remove the sealed segments a sync left in a TEMPORARY cache. Only files
+ * named like a sealed segment are touched, and only under os.tmpdir(): a
+ * directory an operator set (TICK_SEGMENTS_DIR, a volume) is refused, never
+ * emptied by a research request.
+ */
+export function clearSegmentCache(dir, { tmpRoot = tmpdir() } = {}) {
+  if (!isTemporaryCache(dir, { tmpRoot })) return { ok: false, dir, error: 'not_temporary', removed: 0, bytes: 0 }
+  let removed = 0, bytes = 0
+  const failed = []
+  for (const f of existsSync(dir) ? readdirSync(dir) : []) {
+    if (!SEGMENT_NAME_RE.test(f)) continue
+    const p = join(dir, f)
+    try { bytes += statSync(p).size; rmSync(p, { force: true }); removed++ } catch (err) { failed.push({ name: f, error: err.message }) }
+  }
+  const remaining = existsSync(dir) ? readdirSync(dir).filter(f => SEGMENT_NAME_RE.test(f)).length : 0
+  return { ok: failed.length === 0 && remaining === 0, dir, removed, bytes, remaining, ...(failed.length ? { failed } : {}) }
 }
 
 /**
