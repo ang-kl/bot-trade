@@ -294,17 +294,36 @@ export function trialGaps(manifest) {
 }
 
 /**
- * When a trial's own gap list was cut at its cap (GAP_LIST_MAX per side), the
- * time of the last gap it lists: past it, gaps are counted but not listed.
- * Null when the list is whole. A one-side manifest says so in `gapsTruncated`;
- * over both sides, `gapsTruncatedBySide` names the side.
+ * When a trial's own gap list was cut at its cap (GAP_LIST_MAX per side) and
+ * the cut left out a recorder drop, the time of the last gap it lists: past
+ * it, a drop cannot be ruled out. Null when the list is whole, or when what it
+ * left out is continuity gaps only (reconnect, restart, switched_off), which
+ * never excuse a mismatch (Codex P2 on 87257bf6; owner "Narrow it"). A
+ * one-side manifest says so in `gapsTruncated` and its reason counts; over
+ * both sides, `gapsTruncatedBySide` and `recorderGapsUnlistedBySide` name the side.
  */
 export function gapListCutAt(manifest) {
   const env = manifest?.environment
   const cut = env ? manifest?.gapsTruncatedBySide?.[env] === true : manifest?.gapsTruncated === true
   if (!cut) return null
+  if (recorderDropsUnlisted(manifest, env) === 0) return null
   const own = trialGaps(manifest).map(g => Number(g.recvMs)).filter(Number.isFinite)
   return own.length ? Math.max(...own) : -Infinity
+}
+
+/**
+ * How many recorder drops a trial's cut list leaves out; null when the
+ * manifest cannot say (a both-sides manifest without the per-side count),
+ * which is read as a possible drop.
+ */
+function recorderDropsUnlisted(manifest, env) {
+  if (env) {
+    const n = manifest?.recorderGapsUnlistedBySide?.[env]
+    return Number.isFinite(n) ? n : null
+  }
+  const counted = [...RECORDER_ONLY_GAPS].reduce((a, r) => a + (Number(manifest?.gapsByReason?.[r]) || 0), 0)
+  const listed = (Array.isArray(manifest?.gaps) ? manifest.gaps : []).filter(g => RECORDER_ONLY_GAPS.has(g.reason)).length
+  return Math.max(0, counted - listed)
 }
 
 /** The replay side of a parity comparison: the stored record, its own feed's gaps and where a cut list stops. */

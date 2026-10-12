@@ -229,8 +229,8 @@ test('a stream skipped over the bound is named with its side', () => {
 
 // ---- Codex P2 on #1332 (owner "Per side + parity") --------------------------
 
-/** Demo with 250 recorder-only gaps, then live with 3, both on id 7. */
-function gapHeavySegments(dir, envs = ['demo', 'live']) {
+/** Demo with 250 gaps (recorder-only unless `demoReason` says otherwise), then live with 3 recorder-only, both on id 7. */
+function gapHeavySegments(dir, envs = ['demo', 'live'], demoReason = 1) {
   let seq = 1
   const files = []
   for (const env of envs) {
@@ -241,7 +241,7 @@ function gapHeavySegments(dir, envs = ['demo', 'live']) {
       const t = start + 10 + i * 100
       const bid = (env === 'live' ? 200_000 : 100_000) + (i % 7)
       parts.push(encodeRecord({ recvMs: t, seq: seq++, symbolId: 7, bid, ask: bid + 8, flags: QUOTE, kind: KIND.QUOTE, generation: 1 }))
-      if (i % 2 === 0 && i / 2 < gapsHere) parts.push(GAP(1, t + 60))
+      if (i % 2 === 0 && i / 2 < gapsHere) parts.push(GAP(env === 'demo' ? demoReason : 1, t + 60))
     }
     const name = `seg-${start}-000001.tks`
     writeFileSync(join(dir, name), Buffer.concat(parts))
@@ -257,6 +257,7 @@ test('Codex P2 on #1332: the gap list is capped per side, so one side cannot cro
   assert.equal(listed('demo'), 200, 'demo listed up to its cap')
   assert.equal(listed('live'), 3, 'and live\'s three are listed after it')
   assert.deepEqual(both.gapsTruncatedBySide, { demo: true, live: false })
+  assert.deepEqual(both.recorderGapsUnlistedBySide, { demo: 50, live: 0 }, 'how many recorder drops each side\'s list leaves out')
   assert.equal(both.gapsTruncated, true)
   // One side: the list and the manifest as before.
   const one = loadSegments(gapHeavySegments(mkdtempSync(join(tmpdir(), 'gapcap-one-')), ['demo'])).manifestBase
@@ -268,11 +269,25 @@ test('Codex P2 on #1332: the gap list is capped per side, so one side cannot cro
 test('Codex P2 on #1332: past the last gap a cut list names, a mismatch reads not comparable (gap_list_truncated), on one side or both', () => {
   // where each kind of manifest's list stops
   const gaps = [{ reason: 'queue_overflow', recvMs: 3_000, count: 1, environment: 'demo' }, { reason: 'queue_overflow', recvMs: 4_000, count: 1, environment: 'demo' }, { reason: 'reconnect', recvMs: 7_000, count: 1, environment: 'live' }]
-  assert.equal(gapListCutAt({ gapsTruncated: true, gaps: [{ recvMs: 3_000 }, { recvMs: 4_000 }] }), 4_000, 'one side, cut')
-  assert.equal(gapListCutAt({ gapsTruncated: false, gaps: [{ recvMs: 3_000 }] }), null, 'one side, whole')
-  assert.equal(gapListCutAt({ environment: 'demo', gapsTruncated: true, gapsTruncatedBySide: { demo: true, live: false }, gaps }), 4_000, 'both sides: the demo trial\'s own list is cut')
-  assert.equal(gapListCutAt({ environment: 'live', gapsTruncated: true, gapsTruncatedBySide: { demo: true, live: false }, gaps }), null, 'the live trial\'s list is whole, whatever demo\'s was')
-  assert.equal(replayRecordOf({ fromMs: 1 }, { environment: 'demo', gapsTruncatedBySide: { demo: true }, gaps }).gapsUnlistedAfterMs, 4_000, 'the parity report is handed the cut')
+  const oneSide = (reason) => ({ gapsTruncated: true, gapsByReason: { [reason]: 3 }, gaps: [{ reason, recvMs: 3_000 }, { reason, recvMs: 4_000 }] })
+  assert.equal(gapListCutAt(oneSide('queue_overflow')), 4_000, 'one side, cut, a recorder drop left out')
+  assert.equal(gapListCutAt({ gapsTruncated: false, gapsByReason: { queue_overflow: 1 }, gaps: [{ reason: 'queue_overflow', recvMs: 3_000 }] }), null, 'one side, whole')
+  const bySide = (env, unlisted) => ({ environment: env, gapsTruncated: true, gapsTruncatedBySide: { demo: true, live: false }, recorderGapsUnlistedBySide: { demo: unlisted, live: 0 }, gaps })
+  assert.equal(gapListCutAt(bySide('demo', 5)), 4_000, 'both sides: the demo trial\'s own list is cut and leaves recorder drops out')
+  assert.equal(gapListCutAt(bySide('live', 5)), null, 'the live trial\'s list is whole, whatever demo\'s was')
+  assert.equal(replayRecordOf({ fromMs: 1 }, bySide('demo', 5)).gapsUnlistedAfterMs, 4_000, 'the parity report is handed the cut')
+  // Codex P2 on 87257bf6 (owner "Narrow it"): a cut that leaves out only
+  // continuity gaps (reconnect, restart, switched_off) excuses nothing — those
+  // never excuse a mismatch — so the mismatch past it is still one.
+  assert.equal(gapListCutAt(oneSide('reconnect')), null, 'one side: only reconnects left out')
+  assert.equal(gapListCutAt({ gapsTruncated: true, gapsByReason: { queue_overflow: 2, reconnect: 250 }, gaps: [{ reason: 'queue_overflow', recvMs: 1_000 }, { reason: 'queue_overflow', recvMs: 2_000 }, { reason: 'reconnect', recvMs: 3_000 }] }), null, 'one side: every recorder drop is listed; the cut left out reconnects')
+  assert.equal(gapListCutAt(bySide('demo', 0)), null, 'both sides: no recorder drop left out of demo\'s list')
+  const reconnectsOnly = loadSegments(gapHeavySegments(mkdtempSync(join(tmpdir(), 'gapcap-reconnect-')), ['demo', 'live'], 3)).manifestBase
+  assert.deepEqual(reconnectsOnly.gapsTruncatedBySide, { demo: true, live: false })
+  assert.deepEqual(reconnectsOnly.recorderGapsUnlistedBySide, { demo: 0, live: 0 })
+  assert.equal(gapListCutAt({ ...reconnectsOnly, environment: 'demo' }), null, 'from a real manifest: demo\'s cut left out reconnects only')
+  assert.equal(gapListCutAt(loadSegments(gapHeavySegments(mkdtempSync(join(tmpdir(), 'gapcap-reconnect-one-')), ['demo'], 3)).manifestBase), null, 'and on one side, from the manifest\'s own reason counts')
+  assert.equal(typeof gapListCutAt(loadSegments(gapHeavySegments(mkdtempSync(join(tmpdir(), 'gapcap-overflow-one-')), ['demo'])).manifestBase), 'number', 'while a one-side cut that leaves recorder drops out is a cut')
   // the verdict: a signal the sidecar does not have, in a window past the cut
   const replay = (cut) => ({ fromMs: 1_000, toMs: 100_000, settledFromMs: 2_000, latencyMs: 250, truncated: false, signals: [{ seq: 10, recvMs: 5_000, side: 'BUY' }, { seq: 20, recvMs: 9_000, side: 'SELL' }], trades: [], gaps: [], gapsUnlistedAfterMs: cut })
   const sidecar = { signals: [{ seq: 10, recvMs: 5_000, side: 'BUY' }], trades: [], health: { boots: [{ bootId: 'b1', lo: 1, hi: 50, n: 50 }], lostRestart: 0 } }

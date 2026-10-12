@@ -349,6 +349,9 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
   // capped per side, so one side's gaps cannot crowd the other's out of it.
   // A replay over one side has one side, so its list is capped as before.
   const gapsCounted = new Map(), gapsListed = new Map() // environment → gaps
+  // ... and how many recorder drops each side's list leaves out: only those
+  // can excuse a parity mismatch (Codex P2 on 87257bf6; owner "Narrow it").
+  const recorderUnlisted = new Map() // environment → recorder-only gaps counted but not listed
   let warmupResets = 0
   for (const f of files) {
     const buf = readFileSync(f)
@@ -378,7 +381,7 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
         if ((gapsListed.get(env) || 0) < GAP_LIST_MAX) {
           gaps.push({ reason: ev.reason, recvMs: ev.recvMs, count: ev.count, ...(bothSides ? { environment: env } : {}) })
           gapsListed.set(env, (gapsListed.get(env) || 0) + 1)
-        }
+        } else if (RECORDER_ONLY_GAPS.has(ev.reason)) recorderUnlisted.set(env, (recorderUnlisted.get(env) || 0) + 1)
         last.clear()
         if (!RECORDER_ONLY_GAPS.has(ev.reason)) { warmupResets++; sink.gapAll(ownSide) }
         continue
@@ -419,7 +422,10 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
     fileDigests, environments: [...environments].sort(),
     gapsByReason, gaps, gapsTruncated: Object.values(gapsByReason).reduce((a, b) => a + b, 0) > gaps.length,
     // Over both sides, which side's list was cut (the parity report reads its own side's).
-    ...(bothSides ? { gapsTruncatedBySide: Object.fromEntries([...gapsCounted].map(([e, n]) => [e, n > (gapsListed.get(e) || 0)])) } : {}),
+    ...(bothSides ? {
+      gapsTruncatedBySide: Object.fromEntries([...gapsCounted].map(([e, n]) => [e, n > (gapsListed.get(e) || 0)])),
+      recorderGapsUnlistedBySide: Object.fromEntries([...gapsCounted].map(([e]) => [e, recorderUnlisted.get(e) || 0])),
+    } : {}),
     warmupResets,
   }
   return manifestBase
