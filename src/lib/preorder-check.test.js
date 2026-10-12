@@ -157,3 +157,26 @@ describe('reading a check back', () => {
     expect(checkSummary(null)).toBe(null)
   })
 })
+
+// Codex P1 on #1328 (post-merge) — Claude · № 13,519 12-Oct (claude-builder).
+// Only a BLANK Lots box means risk-based sizing; the route refuses any other
+// value that is not a positive number. The pad must therefore send what was
+// typed — a 0 dropped by a truthiness check reached the route as blank and
+// went out uncapped.
+describe('a supplied lots reaches the route as supplied; only blank is omitted', () => {
+  const dest = padDestination({ viewedAccountId: 46130058, broker, routeToViewed: true })
+  it('0, negative and non-numeric values are sent, in the body and in the check, for the route to refuse', () => {
+    for (const [typed, sent, q] of [['0', 0, 'lots=0'], [0, 0, 'lots=0'], ['-1', -1, 'lots=-1'], ['-0.5', -0.5, 'lots=-0.5'], ['abc', 'abc', 'lots=abc']]) {
+      const body = JSON.parse(JSON.stringify(manualOrderBody({ order: { ...order, lots: typed }, destination: dest })))
+      expect(body.lots, `typed ${JSON.stringify(typed)}`).toBe(sent)
+      expect(manualCheckPath({ order: { ...order, lots: typed }, destination: dest })).toContain(`&${q}&`)
+    }
+  })
+  it('blank — empty, spaces, null or missing — sends no lots at all', () => {
+    for (const typed of ['', '  ', null, undefined]) {
+      const body = manualOrderBody({ order: { ...order, lots: typed }, destination: dest })
+      expect('lots' in JSON.parse(JSON.stringify(body)), `typed ${JSON.stringify(typed)}`).toBe(false)
+      expect(manualCheckPath({ order: { ...order, lots: typed }, destination: dest })).not.toContain('lots=')
+    }
+  })
+})
