@@ -595,6 +595,12 @@
       "by": "claude-builder",
       "serial": "\u2116 13,638",
       "note": "#1330 merged 80d79f71: tick research streams one symbol at a time above 5M records (tick-replay-spill.js), MAX_RECORDS 150M, worker heap 4096 MB, POST /actions/tick-research/abort, clearCache. OPEN by owner decision: default request mixes live+demo (27 shared symbol ids) \u2014 do not run W6 until decided. Files: agent/services/tick-research-run.js, tick-replay-spill.js, tick-segments.js, scripts/tick-research.mjs."
+    },
+    {
+      "at": "2026-10-12T04:35Z",
+      "by": "claude-builder",
+      "serial": "\u2116 13,648",
+      "note": "#1331 merged 7feb4e49: aftermath top-up (W5) fetches forward from each row's last bar, noNewerBarsYet not an error, resumeFrom cursor + FETCH_BUDGET 100, rows by parsed close time. Next: resume W5 batches (operation). W6 still held for the owner's mixed-sides decision. Files: agent/services/aftermath-extend-apply.js, agent/routes/actions.js (extend-aftermath), docs/instruction-2026-10-12-decisions.md \u00a76."
     }
   ]
 }
