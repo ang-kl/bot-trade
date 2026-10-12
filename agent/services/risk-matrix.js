@@ -54,7 +54,7 @@ export const RISK_GROUPS = Object.freeze([
     'maxNotionalXBalance',
   ] },
   { id: 'quality', label: 'Entry quality', keys: [
-    'minRR', 'minExpectancyR', 'minSLDistancePct', 'minStopAtrMult', 'sharedSignalRiskSplit', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'htfLimitDispatch',
+    'minRR', 'fluidRisk', 'minExpectancyR', 'minSLDistancePct', 'minStopAtrMult', 'sharedSignalRiskSplit', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'htfLimitDispatch',
   ] },
   { id: 'exposure', label: 'Exposure', keys: [
     'maxOpenPositions', 'maxPositionsPerSymbol', 'maxAccountsPerSymbol', 'maxClusterExposure',

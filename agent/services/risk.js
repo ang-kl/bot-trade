@@ -48,6 +48,8 @@ import { accountEconomics } from './config-controller.js'
 import { unitsPerLot as unitsPerLotFromRegistry, brokerMinLots } from '../lib/lot-size-registry.js'
 import { isMomentumAccount, TSMOM_STRATEGY as MOMENTUM_STRATEGY } from './momentum-account.js'
 import { strategyVerdict } from './strategy-verdicts.js'
+import { evidenceRecord, loadEvidenceGate } from './evidence-gate.js'
+import { costClassOf, loadRepoSchedule, costsForClass, WIRE_PER_PRICE } from '../lib/tick-cost-schedule.js'
 // Leaf module (contracts + perf-ledger only) — no cycle back into risk.js.
 import { estimateStopoutLossUsd, countsAsStopout } from './stopout-estimate.js'
 import { hourlyAtrFor, stopFloor } from '../lib/stop-floor.js'
@@ -380,6 +382,22 @@ export const DEFAULT_RISK_CONFIG = {
                                    // veto only blocks NEW trades). null =
                                    // same threshold as dailyLossPct.
   minRR: 3.0,                      // TP must be ≥ minRR × SL distance. Floored by HARD_MIN_RR.
+  // FLUID R:R BELOW THE FLOOR (owner, 12-10-2026, after № 13,727: "Admit at
+  // breakeven with cost of commission included … sized by the same fluid
+  // formula + commission cost"). A setup under the floor above is admitted
+  // at its OWN target when R:R ≥ (1 − W + c) ÷ W — W the strategy's earned-
+  // floor win rate on the account, c its round-trip commission in R — and is
+  // sized at clamp(net PF in R ÷ goalPf, minScale, 1) ÷ (1 + c), pendingScale
+  // under minCloses R-scored closes. on:false restores the earned floor and
+  // its stretch exactly. See rrFloorVerdict.
+  // Claude · № 13,729 12-Oct (ordered after № 13,727; claude-builder)
+  fluidRisk: {
+    on: true,
+    goalPf: 1.5,                   // the evidence gate's and the verdicts' own full-size bar
+    minScale: 0.25,
+    minCloses: 15,                 // R-scored closes of the strategy on the account
+    pendingScale: 0.5,
+  },
   // Invariant 2's second clause: veto when E = W×rr − (1−W) ≤ this. Dynamic —
   // the required ratio follows the measured win rate. null = off.
   minExpectancyR: 0.15,
@@ -769,8 +787,21 @@ export function expectancyFloorFor(stats, floor, minE) {
  * built on this is never refused a second time and never asks 3R of a
  * strategy the gate would admit at 2R. Read-only.
  */
-export function lowestAdmittedRr(db, accountId = null, strategy = null) {
+export function lowestAdmittedRr(db, accountId = null, strategy = null, { symbol = null, entry = null, sl = null } = {}) {
   const floor = effectiveRrFloor(db, accountId, strategy)
+  // The fluid rule's breakeven with THIS trade's commission when it decides
+  // (Codex P2 on #1337, owner: "Fix in this PR"): advice under it is refused
+  // by the gate. Claude · № 13,738 12-Oct (claude-builder)
+  try {
+    if (fluidRiskConfig(loadRiskConfig(db, accountId).fluidRisk).on) {
+      const fside = earnedFloorWinRate(db, { strategy, accountId, ignoreOff: true })
+      const cost = fside.ok ? commissionInR(symbol, entry, sl) : null
+      if (fside.ok && cost) {
+        const lowest = Math.max(minRrFor(strategy, STRATEGY_PREFILTER_RR), breakevenNeed(fside.W, cost.c))
+        return lowest < floor ? lowest : floor
+      }
+    }
+  } catch { /* fall through to the earned floor's own bar */ }
   try {
     const side = earnedFloorWinRate(db, { strategy, accountId })
     if (!side.ok) return floor
@@ -1694,6 +1725,108 @@ export function correlationVerdict(db, openPositions, proposal, config, nowMs = 
   return { block: false, guard: 'correlated', reason: null, detail: null }
 }
 
+// The measured class commission schedule (agent/config/tick-shadow-sim.json
+// `costs`), read once. An unclassified symbol is charged the dearest class
+// (costsForClass's own rule), never the cheapest by accident.
+let COMMISSION_SCHEDULE = null
+const round4 = (n) => Math.round(n * 10000) / 10000
+
+/**
+ * Round-trip commission of one trade, in R: both sides of the class's
+ * measured commission (per-unit wire term plus the bps term at the entry
+ * price) over the stop distance. Size-free, as the schedule is: the FX
+ * per-lot fee is its bps equivalent and the US per-share minimum leg fee is
+ * not modelled (both stated in the schedule's own notes). Null without a
+ * usable price, stop or schedule — never a free trade by default.
+ * Claude · № 13,729 12-Oct (owner: breakeven "with cost of commission included"; claude-builder)
+ */
+export function commissionInR(symbol, entry, sl) {
+  const e = Number(entry), stop = Math.abs(Number(entry) - Number(sl))
+  if (!(e > 0) || !(stop > 0) || !Number.isFinite(stop)) return null
+  COMMISSION_SCHEDULE ??= loadRepoSchedule()
+  const row = costsForClass(COMMISSION_SCHEDULE, costClassOf(symbol))
+  if (row.source === 'none') return null
+  const perSide = row.commissionWirePerSide / WIRE_PER_PRICE + (row.commissionBpsPerSide / 10000) * e
+  return { c: round4((2 * perSide) / stop), class: row.class, source: row.source }
+}
+
+/**
+ * The fluid size of a trade admitted below the floor: the strategy's net
+ * profit factor in R on the account against the goal, between minScale and 1,
+ * pendingScale while it has fewer than minCloses R-scored closes; then
+ * divided by (1 + c) so a loser's commission sits inside the risk budget.
+ * Claude · № 13,729 12-Oct (owner: "sized by the same fluid formula + commission cost"; claude-builder)
+ */
+export function fluidRiskScale(record, c, cfg) {
+  const scored = Number(record?.rScored) || 0
+  const pf = record?.profitFactorR
+  let scale
+  if (scored < cfg.minCloses) scale = cfg.pendingScale
+  else if (pf == null) scale = 1 // no losing close yet: nothing to scale it down by
+  else scale = Math.min(1, Math.max(cfg.minScale, Number(pf) / cfg.goalPf))
+  return { scale: round4(scale), riskScale: round4(scale / (1 + (Number(c) || 0))), rScored: scored, profitFactorR: pf ?? null }
+}
+
+/**
+ * The breakeven ratio with commission, (1 − W + c) ÷ W, rounded UP to the
+ * cent the gate compares at; toFixed first so a float like
+ * 150.00000000000003 is 1.50R, not 1.51R.
+ */
+function breakevenNeed(W, c) {
+  return Math.ceil(Number((((1 - W + c) / W) * 100).toFixed(6))) / 100
+}
+
+/**
+ * The stored `fluidRisk` read safely: a blank or junk field takes its default
+ * (a blank goal PF would otherwise divide to Infinity — full size), and every
+ * number is clamped to a range that keeps the size between 0 and 1.
+ */
+export function fluidRiskConfig(raw) {
+  const d = DEFAULT_RISK_CONFIG.fluidRisk
+  const r = raw && typeof raw === 'object' ? raw : {}
+  const num = (v, dflt, lo, hi) => {
+    const n = v === null || v === '' || v === undefined ? NaN : Number(v)
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt
+  }
+  return {
+    on: r.on !== false,
+    goalPf: num(r.goalPf, d.goalPf, 0.5, 10),
+    minScale: num(r.minScale, d.minScale, 0.05, 1),
+    minCloses: Math.round(num(r.minCloses, d.minCloses, 1, 500)),
+    pendingScale: num(r.pendingScale, d.pendingScale, 0.05, 1),
+  }
+}
+
+/**
+ * The fluid rule's verdict for one setup under the static floor, or
+ * `{ decided: false }` when it cannot decide (switched off, no known win
+ * rate, no commission figure) — the earned floor then decides as before.
+ */
+function breakevenFloorVerdict(db, { strategy, rr, accountId, config, entry, sl, symbol }) {
+  const cfg = fluidRiskConfig(config?.fluidRisk)
+  if (!cfg.on) return { decided: false }
+  const side = earnedFloorWinRate(db, { strategy, accountId, ignoreOff: true })
+  if (!side.ok) return { decided: false }
+  const cost = commissionInR(symbol, entry, sl)
+  if (!cost) return { decided: false }
+  const W = side.W, c = cost.c
+  const need = breakevenNeed(W, c)
+  const figures = { rr, need, winRate: side.winRate, trades: side.via === 'prior' ? side.prior.liveTrades : side.trades,
+    via: side.via, commissionR: c, commissionClass: cost.class, ...(side.prior ? { prior: side.prior } : {}) }
+  if (rr < need) {
+    return { decided: true, ok: false, denied: `breakeven needs ${need}R at ${side.winRate}% win + commission ${c}R`,
+      reason: `bad_rr ${rr.toFixed(2)}<${need} (breakeven at ${side.winRate}% win + commission ${c}R)`, figures }
+  }
+  let record = null
+  try { record = evidenceRecord(db, { strategy, accountId, windowDays: loadEvidenceGate(db).windowDays }) } catch { record = null }
+  const fluid = fluidRiskScale(record, c, cfg)
+  return {
+    decided: true, ok: true,
+    earnedFloor: { ...figures, rule: 'breakeven_commission', e: round4(W * rr - (1 - W) - c), riskScale: fluid.riskScale,
+      fluid: { scale: fluid.scale, rScored: fluid.rScored, profitFactorR: fluid.profitFactorR, goalPf: cfg.goalPf } },
+  }
+}
+
 /**
  * THE R:R FLOOR, as the gate will apply it — one function for the gate and
  * the scan path's pre-filter (PR-C item 5).
@@ -1715,7 +1848,7 @@ export function correlationVerdict(db, openPositions, proposal, config, nowMs = 
  * (`stretchedFrom`/`tp1` present on a stretch); `checks` is what the gate
  * stamps on its row. Pure read — no logging, no rows.
  */
-export function rrFloorVerdict(db, { strategy, rr, accountId = null, config, entry, sl, tp1, side }) {
+export function rrFloorVerdict(db, { strategy, rr, accountId = null, config, entry, sl, tp1, side, symbol = null }) {
   const checks = {}
   const requested = minRrFor(strategy, config.minRR)
   const rrFloor = Math.max(HARD_MIN_RR, requested)
@@ -1723,6 +1856,22 @@ export function rrFloorVerdict(db, { strategy, rr, accountId = null, config, ent
   if (raised) checks.rr_floor_raised = { requested, enforced: rrFloor }
   let earnedFloor = null
   if (!(rr < rrFloor)) return { ok: true, rr, rrFloor, requested, raised, earnedFloor, checks, reason: null }
+  // THE FLUID RULE (owner, 12-10-2026): breakeven with commission, at the
+  // strategy's own target, sized fluidly. It decides whenever the win rate
+  // and the commission are both known; otherwise the earned floor below
+  // decides exactly as before. Claude · № 13,729 12-Oct (claude-builder)
+  const fluid = rr >= minRrFor(strategy, STRATEGY_PREFILTER_RR)
+    ? breakevenFloorVerdict(db, { strategy, rr, accountId, config, entry, sl, symbol })
+    : null
+  if (fluid?.decided) {
+    if (fluid.ok) {
+      earnedFloor = fluid.earnedFloor
+      checks.earned_floor = { ...fluid.earnedFloor }
+      return { ok: true, rr, rrFloor, requested, raised, earnedFloor, checks, reason: null }
+    }
+    checks.earned_floor_denied = fluid.denied
+    return { ok: false, rr, rrFloor, requested, raised, earnedFloor: null, checks, reason: fluid.reason }
+  }
   if (rr >= minRrFor(strategy, STRATEGY_PREFILTER_RR)) {
     const ef = earnedFloorVerdict(db, { strategy, rr, accountId })
     if (ef.ok) {
@@ -2357,7 +2506,7 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       // on R:R alone, and vice versa. See rrFloorVerdict.
       const rrV = rrFloorVerdict(db, {
         strategy: proposal.strategy, rr, accountId: acct, config,
-        entry, sl, tp1: proposal.tp1, side: proposal.side,
+        entry, sl, tp1: proposal.tp1, side: proposal.side, symbol: proposal.symbol,
       })
       Object.assign(checks, rrV.checks)
       if (rrV.earnedFloor) {
