@@ -501,3 +501,39 @@ whim."* From then on, every fix in this work:
 
 A review finding is a claim to trace, not an order. Each new Codex finding on
 #1330 was traced and brought to the owner before any code changed (§6.1).
+
+### 6.7 The PR audit of 10–12 Oct (№ 13,693) and the fixes it led to
+
+The owner asked which realistic changes in the PRs of 10–12 Oct would make
+the programme give a wrong answer, how the system would detect them, and with
+what evidence. Four agents reviewed the 43 merged PRs. For each change they
+applied a realistic mistake, checked that it had landed (the target text
+counted once before the edit and gone after), ran the test meant to catch it,
+and restored the file byte for byte.
+
+**What the tests caught.** About 90 mistakes were tried. A named test turned
+red on 81 of them.
+
+**What is wrong now** (owner: "Execute-analysis route (B1–B4)", "W5 forming
+bar (B5)", "Research isolation", then "Keep the three as chosen"):
+- **B1–B4, `/actions/execute-trade`.** It sent the analysis's own target where
+  the gate approved only a stretched one. It read only the shared watchlist's
+  Max lots, never the account's own. It judged the stop side against the
+  planned entry, never the price now. And a refusal before any transport was
+  thrown as a 500 with nothing recorded. Fixed in the PR that carries this
+  line.
+- **B5, the W5 top-up.** A fetch window that reaches "now" stores the bar
+  still forming and never replaces it. To fix before W5 resumes.
+- **Research isolation.**
+  - The protected-files check is not run in CI.
+  - A live module importing research code in the middle of a line is missed.
+  - Tick research could write live state.
+  - rsi2's floor is not pinned in the config.
+  - The spill is not tested at high prices.
+
+**Gaps that are not wrong today**, but nothing would catch them if a later
+change broke them. No fix is ordered.
+- the lot cache keyed per account (#1318);
+- the keeper's full close requiring the position to be gone (#1306);
+- the capped-hybrid card's close and runner sizes (#1326);
+- the `?stop=initial` fallback count (#1309).

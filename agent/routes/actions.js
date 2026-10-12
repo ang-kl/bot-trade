@@ -6316,7 +6316,7 @@ export default function actionsRouter(db, deps = {}) {
       }
       const entry = synth.entry ?? synth.entry_price ?? analysis.entry_price
       let sl = synth.sl ?? synth.sl_price ?? analysis.sl_price
-      const tp1 = synth.tp1 ?? synth.tp1_price ?? analysis.tp1_price
+      let tp1 = synth.tp1 ?? synth.tp1_price ?? analysis.tp1_price
       const bias = analysis.consensus_bias
       if (!bias || bias === 'skip' || bias === 'neutral') {
         return res.status(400).json({ error: `Cannot execute trade with bias "${bias}"` })
@@ -6343,7 +6343,14 @@ export default function actionsRouter(db, deps = {}) {
       const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]'
       let symbols = []
       try { symbols = JSON.parse(symbolsJson) } catch { /* corrupt state — use empty list */ }
-      const wItem = symbols.find(s => (typeof s === 'string' ? s : s.symbol) === analysis.symbol) || {}
+      const sharedItem = symbols.find(s => (typeof s === 'string' ? s : s.symbol) === analysis.symbol) || {}
+      // Claude · № 13,699 12-Oct (B2 of the PR audit № 13,693; owner "Keep the
+      // three as chosen"; claude-builder): the account's OWN row over the
+      // shared one, as the loop merges them (loop.js acctItem). This route read
+      // the shared list only, so an account's own Max lots never capped an
+      // analysis order: 0.14 lots went out against an own cap of 0.02.
+      const { accountMayTrade } = await import('../services/watchlists.js')
+      const wItem = { ...(typeof sharedItem === 'object' ? sharedItem : {}), ...(accountMayTrade(db, accountId, analysis.symbol).item || {}) }
       // Lot fix — Claude · № 13,396 12-Oct (owner "Go lot fix" after № 13,394;
       // claude-builder): only the watchlist's Max lots caps the size. With none,
       // the gate sizes by the risk budget (risk.js: requestedVolume absent =
@@ -6375,6 +6382,34 @@ export default function actionsRouter(db, deps = {}) {
       // WIDENED STOP (E·1): the gate floored the stop at the hourly-ATR
       // multiple and sized on it; the order below reads `sl`.
       if (riskResult.stop_override?.sl != null) sl = riskResult.stop_override.sl
+      // B1 (№ 13,699): the gate approved some setups only at a STRETCHED
+      // target that clears the R:R floor (target_override, as loop.js and
+      // /manual-order apply it). This route sent the analysis's own, shorter
+      // target: 1.2R went out where the gate approved 1.4R.
+      if (riskResult.target_override?.tp1 != null) { tp1 = riskResult.target_override.tp1; proposal.tp1 = tp1 }
+
+      // B3 (№ 13,699): the gate judged the stop against the analysis's PLANNED
+      // entry; the order is MARKET, at the price now. Read it as /manual-order
+      // does (the freshest 1m close) and refuse an analysis the market has
+      // already run through its stop: sent, its stop would sit on the wrong
+      // side of the fill. With no price, the side cannot be judged, so the
+      // order is refused rather than sent on the plan's word.
+      let market = null
+      try {
+        const bars = await wsGetTrendbarsBatch(metaHost, clientId, clientSecret, accessToken, accountId, symbolId, ['1m'], 2)
+        const m1 = bars?.['1m'] || []
+        market = m1.length ? Number(m1[m1.length - 1].c) : null
+      } catch { market = null }
+      if (!Number.isFinite(market)) {
+        const reason = `no_current_price: ${analysis.symbol} — the stop side cannot be judged against the market, so nothing is sent`
+        persistPostApprovalVeto(db, proposal, reason)
+        return res.json({ ok: false, vetoed: true, reason })
+      }
+      if (sl != null && Number.isFinite(Number(sl)) && (side === 'BUY' ? market <= Number(sl) : market >= Number(sl))) {
+        const reason = `sl_wrong_side_at_market: ${side} stop ${sl} is already ${side === 'BUY' ? 'at or above' : 'at or below'} the market ${market} (the analysis planned ${entry})`
+        persistPostApprovalVeto(db, proposal, reason)
+        return res.json({ ok: false, vetoed: true, reason })
+      }
 
       const volLots = riskResult.adjusted_volume
       // Per-symbol volume (lotSize varies by asset class) — the hardcoded
@@ -6464,8 +6499,11 @@ export default function actionsRouter(db, deps = {}) {
         // provably sent, 'unconfirmed' when a position may exist.
         try { failAnalysisTrade(db, tradeId, err) } catch { /* the answer below is the report */ }
         // A guard_* refusal is a veto, not a server fault: record it against the
-        // proposal and answer in the same shape as every other veto here.
-        if (!/^guard_/.test(err.message)) throw err
+        // proposal and answer in the same shape as every other veto here. B4
+        // (№ 13,699): so is a refusal before any transport (entry mode, ledger,
+        // permit, duplicate lock): nothing was sent, and it used to be thrown
+        // as a 500 with no refusal recorded, so the approval read "ordered".
+        if (!/^guard_/.test(err.message) && !UNSENT_CODES.includes(err?.code)) throw err
         persistPostApprovalVeto(db, proposal, err.message)
         // Owner 2026-07-31: name the symbol and the missing leg rather than
         // returning a bare guard_* string. `needsInput` tells the caller which
