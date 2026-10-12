@@ -1643,6 +1643,22 @@ export default function actionsRouter(db, deps = {}) {
     }
   })
 
+  // Claude · № 13,571 12-Oct (W6; claude-builder): stop the running tick
+  // replay with a named reason. 409 when none runs or the id is another job's.
+  router.post('/tick-research/abort', async (req, res) => {
+    try {
+      const { abortTickResearchJob } = await import('../services/tick-research-run.js')
+      const { actorFromRequest } = await import('../lib/request-actor.js')
+      const who = actorFromRequest(req)
+      if (!who.ok) return res.status(who.status).json(who.body)
+      const r = abortTickResearchJob({ jobId: req.body?.jobId ? String(req.body.jobId) : null, reason: req.body?.reason == null ? null : String(req.body.reason), actor: who.actor })
+      if (r.status === 202) console.log(`[actions] tick-research: job ${r.body.jobId} aborting (${r.body.reason})`)
+      res.status(r.status).json(r.body)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // Claude · № 13,095 11-Oct (ordered № 13,093; claude-builder), plan step 8:
   // the bar-form research job. Research only — the owner's word starts it
   // (a small run first); 409 research_running while any research job runs;

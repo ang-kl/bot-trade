@@ -46,8 +46,9 @@
 // every report — the 202, the polled job, the trial manifest — says which
 // segments were replayed and how many were left. Absent, nothing changes.
 // ---------------------------------------------------------------------------
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, basename } from 'node:path'
+import { tmpdir } from 'node:os'
 import { Worker } from 'node:worker_threads'
 import { randomUUID, createHash } from 'node:crypto'
 import { readSegment, toQuoteEvents, FORMAT_VERSION, HEADER_BYTES, RECORD_BYTES } from '../lib/tick-segment.js'
@@ -67,13 +68,45 @@ import { tickSymbolNames } from './exec-guard-sync.js'
 import { symbolNameResolver } from './tick-shadow-accounts.js'
 import { sideAccounts } from './tick-shadow.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
+import { createSpill, SPILL_ENTRY_BYTES } from './tick-replay-spill.js'
 
 export const SEGMENTS_ENV = 'TICK_SEGMENTS_DIR'
 export const NO_SEGMENTS_WHERE = 'the sealed segments are on the demo sidecar volume (cpp-exec, TICK_SPOOL_PATH); set TICK_SEGMENTS_DIR on the keeper to a directory holding seg-*.tks files, or run scripts/tick-research.mjs beside the spool and POST /actions/tick-trials'
 /** PR-I: the same refusal once the sidecar itself has been asked and had nothing. */
 export const NO_SEGMENTS_ANYWHERE = 'no sealed segment is reachable: TICK_SEGMENTS_DIR names none, and no sidecar side with a tick recorder served one on GET /tick-segments (see GET /state/tick-segments for what each side reports)'
-/** Records the keeper will replay in one job; above it the request is refused, never queued. */
-export const MAX_RECORDS = 5_000_000
+/**
+ * Records the keeper will replay in one job; above it the request is refused, never queued.
+ *
+ * Claude · № 13,571 12-Oct (W6, owner "Raise the cap (code change)";
+ * claude-builder). Was 5,000,000. On 12-10 both sidecars listed 55 sealed
+ * segments = 92,274,616 records (live 40,265,284; demo 52,009,332), so every
+ * W6 request was 413. Memory no longer bounds this number: above
+ * IN_MEMORY_MAX_RECORDS the replay streams one symbol at a time
+ * (tick-replay-spill.js). What it bounds now is the temporary disk — 40 bytes
+ * a record of pulled segments plus 32 a record of spill, about 10.8 GB at
+ * the cap, under the 100 GB a paid Railway service may hold in ephemeral
+ * storage — and the run time, which the sims dominate (measured 20.5 µs per
+ * event per stage-A grid point on a synthetic 1,677,000-record segment: the
+ * oracle's windows are O(rangeEvents) per event).
+ */
+export const MAX_RECORDS = 150_000_000
+/** The old cap: a job this size or smaller is still decoded in memory (about 104 heap bytes a record). */
+export const IN_MEMORY_MAX_RECORDS = 5_000_000
+/**
+ * A streamed job replays a symbol only if its stream (quotes, repeats and gap
+ * markers) is at most this long: 20,000,000 × ~104 bytes is about 2.1 GB of
+ * heap, inside WORKER_HEAP_MB. A longer one is named in the result's
+ * `replay.symbolsNotReplayed`, never replayed in part.
+ */
+export const MAX_SYMBOL_EVENTS = 20_000_000
+/**
+ * The research worker's heap ceiling. A worker over it is stopped by Node
+ * with ERR_WORKER_OUT_OF_MEMORY and the job fails with that error; the
+ * trading thread is not touched. Without it the worker inherited the
+ * process's own limit (8,240 MB measured on a 16 GB machine), so a large
+ * replay could grow until the container itself ran short.
+ */
+export const WORKER_HEAP_MB = 4096
 /** The stored note's cap (checker m-3: an unbounded body.note was stored whole). */
 export const NOTE_MAX = 500
 /**
@@ -185,6 +218,21 @@ export function segmentNamesFrom(body = {}) {
   return { value: names.sort() }
 }
 
+/**
+ * Claude · № 13,571 12-Oct (W6; claude-builder). `clearCache: true` empties
+ * the temporary segment cache once the job settles (done, failed or
+ * aborted). Absent or false keeps it, so a dry run followed by the real run
+ * pulls the segments once. Anything else is refused 400, never read as a
+ * boolean.
+ */
+export const BAD_CLEAR_CACHE_WHERE = 'clearCache must be true or false: true empties the temporary segment cache (under the system temp directory) once the job settles; omit it to keep the cache for the next run'
+export function clearCacheFrom(body = {}) {
+  const raw = body == null ? undefined : body.clearCache
+  if (raw == null || raw === false) return { value: false }
+  if (raw === true) return { value: true }
+  return { refuse: { status: 400, body: { ok: false, error: 'bad_clear_cache', clearCache: raw, where: BAD_CLEAR_CACHE_WHERE } } }
+}
+
 export function segmentsThatFit(recordsPerSegment, maxRecords) {
   let total = 0, n = 0
   for (const r of recordsPerSegment) { if (total + r > maxRecords) break; total += r; n++ }
@@ -219,6 +267,31 @@ export function listedRecordsPerSegment(listed) {
  */
 export function loadSegments(files, { onlySymbol = null } = {}) {
   const bySymbol = new Map()
+  const sink = {
+    has: (id) => bySymbol.has(id),
+    push: (id, q) => { const list = bySymbol.get(id) || []; list.push(q); bySymbol.set(id, list) },
+    gapAll: () => { for (const list of bySymbol.values()) list.push({ gapMarker: true }) },
+    symbols: () => [...bySymbol.keys()],
+  }
+  const manifestBase = walkSegments(files, sink, { onlySymbol })
+  for (const list of bySymbol.values()) for (const q of list) if (q.gapMarker) Object.assign(q, GAP_MARKER_QUOTE)
+  return { bySymbol, manifestBase }
+}
+
+/** What a continuity-gap marker becomes in a symbol's stream: a crossed quote the oracle re-warms on. */
+const GAP_MARKER_QUOTE = Object.freeze({ seq: 0, recvMs: 0, bid: 1, ask: 0, crossed: true, snapshot: false, changed: true })
+
+/**
+ * Claude · № 13,571 12-Oct (W6, owner "Raise the cap (code change)";
+ * claude-builder). The decode loop of `loadSegments`, with WHERE each quote
+ * goes left to a sink: the in-memory map above, or the spill files of
+ * `replayFiles` when a job is too large to hold (tick-replay-spill.js). One
+ * loop drives both, so the two paths read the same quotes in the same order
+ * by construction. The sink answers `has(id)`, takes `push(id, q)`, adds a
+ * gap marker to every stream so far on `gapAll()`, and lists `symbols()` in
+ * first-seen order.
+ */
+export function walkSegments(files, sink, { onlySymbol = null } = {}) {
   const lastValid = new Map() // symbolId → the last two-sided quote pushed
   let events = 0, torn = 0, firstMs = null, lastMs = null
   // PR-Q1: the dataset is pinned by content, not by name — a trial names the
@@ -250,7 +323,7 @@ export function loadSegments(files, { onlySymbol = null } = {}) {
         gapsByReason[ev.reason] = (gapsByReason[ev.reason] || 0) + 1
         if (gaps.length < GAP_LIST_MAX) gaps.push({ reason: ev.reason, recvMs: ev.recvMs, count: ev.count })
         lastValid.clear()
-        if (!RECORDER_ONLY_GAPS.has(ev.reason)) { warmupResets++; for (const list of bySymbol.values()) list.push({ gapMarker: true }) }
+        if (!RECORDER_ONLY_GAPS.has(ev.reason)) { warmupResets++; sink.gapAll() }
         continue
       }
       if (ev.repeat) {
@@ -262,13 +335,11 @@ export function loadSegments(files, { onlySymbol = null } = {}) {
         // measured PR-H on the planted fixture: 1 trade over the segment
         // path against 2 in memory. Now it carries the last quote's sides.
         const prev = lastValid.get(ev.symbolId)
-        const list = bySymbol.get(ev.symbolId)
-        if (list && prev) list.push({ seq: ev.seq, recvMs: ev.recvMs, bid: prev.bid, ask: prev.ask, snapshot: false, crossed: false, changed: false })
+        if (sink.has(ev.symbolId) && prev) sink.push(ev.symbolId, { seq: ev.seq, recvMs: ev.recvMs, bid: prev.bid, ask: prev.ask, snapshot: false, crossed: false, changed: false })
         continue
       }
       if (ev.invalid) continue
       if (onlySymbol != null && ev.symbolId !== onlySymbol) continue
-      const list = bySymbol.get(ev.symbolId) || []
       // PR-Q1: the recorder's receive time is a whole millisecond (u64 recvMs),
       // and the decoder carries it as recvMs × 1e6 ns — past 2^53, so the
       // division came back as 1757548800049.9998. The sidecar compares the
@@ -277,21 +348,19 @@ export function loadSegments(files, { onlySymbol = null } = {}) {
       // back to the integer the recorder wrote.
       const ms = Math.round(ev.recvMonoNs / 1e6)
       const q = { seq: ev.seq, recvMs: ms, bid: ev.bid, ask: ev.ask, snapshot: ev.quality.snapshot, crossed: ev.quality.crossed, changed: true }
-      list.push(q)
-      bySymbol.set(ev.symbolId, list)
+      sink.push(ev.symbolId, q)
       if (q.bid != null && q.ask != null) lastValid.set(ev.symbolId, q)
       events++
       if (firstMs == null || ms < firstMs) firstMs = ms
       if (lastMs == null || ms > lastMs) lastMs = ms
     }
   }
-  for (const list of bySymbol.values()) for (const q of list) if (q.gapMarker) Object.assign(q, { seq: 0, recvMs: 0, bid: 1, ask: 0, crossed: true, snapshot: false, changed: true })
   const manifestBase = {
-    files: files.map(f => basename(f)), events, symbols: [...bySymbol.keys()], torn, fromMs: firstMs, toMs: lastMs, decoderVersion: FORMAT_VERSION,
+    files: files.map(f => basename(f)), events, symbols: sink.symbols(), torn, fromMs: firstMs, toMs: lastMs, decoderVersion: FORMAT_VERSION,
     fileDigests, environments: [...environments].sort(),
     gapsByReason, gaps, gapsTruncated: Object.values(gapsByReason).reduce((a, b) => a + b, 0) > gaps.length, warmupResets,
   }
-  return { bySymbol, manifestBase }
+  return manifestBase
 }
 
 /** PR-Q1: gap reasons that drop only the recorder's queue (the live strategy kept every quote). */
@@ -315,9 +384,22 @@ export function simHash(sim) {
  * exposure, never summed). Plan §7: the test block is withheld unless
  * sim.includeTest is set — the owner's one confirmation run.
  */
-export function runTrials({ bySymbol, manifestBase }, { stageA = false, params = {}, sim = {}, symbolClass = null, trendContext = null } = {}) {
-  const grid = stageA ? stageAGrid() : [params]
-  const trials = []
+export function runTrials({ bySymbol, manifestBase }, opts = {}) {
+  return runTrialsOver(manifestBase, [...bySymbol.keys()], (id) => bySymbol.get(id), opts)
+}
+
+/**
+ * Claude · № 13,571 12-Oct (W6; claude-builder). `runTrials` over symbols
+ * whose streams are fetched one at a time by `listOf(symbolId)` — the map
+ * above, or the spill files of a streamed replay, where only ONE symbol's
+ * stream is in memory at a time. The sims run symbol by symbol and the trials
+ * come back grid point by grid point, symbols in first-seen order: the order
+ * `runTrials` always returned. Each sim reads only its own symbol's stream,
+ * so the order they run in changes nothing. A `listOf` that answers null
+ * skips that symbol (the replay names it, see replayFiles).
+ */
+export function runTrialsOver(manifestBase, symbolIds, listOf, { stageA = false, params = {}, sim = {}, symbolClass = null, trendContext = null } = {}) {
+  const grid = (stageA ? stageAGrid() : [params]).map(g => normalizeParams({ ...params, ...g }))
   // PR-Q3: the counter-trend reader per symbol, built once for every grid
   // point (the regime rows are the same input whatever the profile).
   const counterTrendOn = !!normalizeLiveFilters(sim.liveFilters)?.counterTrend
@@ -325,42 +407,44 @@ export function runTrials({ bySymbol, manifestBase }, { stageA = false, params =
   // replayer's own rule): with no regime context every signal would read "no
   // reading" and the trial would carry a counter-trend filter that saw nothing.
   if (counterTrendOn && !trendContext) throw new TypeError('sim.liveFilters.counterTrend is on but no regime context (replayTrendContext) was given: the veto could not be judged')
-  const trendBySymbol = new Map()
-  if (counterTrendOn) for (const [symbolId, list] of bySymbol) trendBySymbol.set(symbolId, symbolTrend(trendContext, manifestBase, symbolId, list))
-  for (const g of grid) {
-    const p = normalizeParams({ ...params, ...g })
-    for (const [symbolId, list] of bySymbol) {
-      // PR-L: the cost class for THIS symbol id, from the keeper's pushed map.
-      // When the id is NOT in the map the schedule is left off entirely rather
-      // than charging the dearest fallback: a research run must still produce
-      // a readable trial, and the trial then records costSource 'none', which
-      // replayChecks REFUSES. Charging the fallback instead made the cost
-      // screen reject every signal, so the run produced no trades at all and
-      // said nothing about why.
-      const cls = symbolClass && symbolClass[String(symbolId)]
-      const symSim = cls ? { ...sim, costClass: cls } : { ...sim, costs: null, costClass: null }
-      const trend = trendBySymbol.get(symbolId) || null
-      const r = simulate(list, p, symSim, trend ? { trendSidesAt: trend.sidesAt } : {})
-      // PR-Q1: provenance rides the manifest (and so the trial id): which
-      // bytes (fileDigests, from loadSegments), which replayer build, which
-      // fill rules by hash. A different build over the same bytes is a
-      // different trial, so a replayer fix is never masked by an older row.
-      const manifest = { ...manifestBase, symbolId, symbolEvents: list.length, replayerCommit: replayerCommit(), simHash: simHash(r.sim) }
-      // PR-Q3: the regime rows the counter-trend veto could read are an input
-      // like the segments, so they are pinned by content too (and the trial id
-      // with them). Only with the filter on: an unfiltered trial is unchanged.
-      if (trend) manifest.regimeInput = trend.manifest
-      // Withheld, the trial carries the SCOPED counters, never the whole
-      // run's (the cost/no-fill counts over the test period are test-period
-      // information too).
-      const d = r.summary.diagnostics
-      const rejected = r.summary.scope === 'all_blocks' ? r.rejected : { cost: d.costRejected, noFill: d.noFill, ...(d.vetoes ? { vetoed: vetoCounts(d.vetoes) } : {}) }
-      const trial = { strategyId: r.strategyId, strategyVersion: r.strategyVersion, profileHash: r.profileHash, params: r.params, sim: r.sim, manifest, summary: r.summary, blocks: r.blocks, rejected, parity: { ...r.parity, symbolId } }
-      trial.trialId = trialIdFor(trial)
-      trials.push(trial)
-    }
+  const byGrid = grid.map(() => [])
+  for (const symbolId of symbolIds) {
+    const list = listOf(symbolId)
+    if (list == null) continue
+    const trend = counterTrendOn ? symbolTrend(trendContext, manifestBase, symbolId, list) : null
+    grid.forEach((p, gi) => byGrid[gi].push(trialFor(manifestBase, symbolId, list, p, sim, symbolClass, trend)))
   }
-  return trials
+  return byGrid.flat()
+}
+
+function trialFor(manifestBase, symbolId, list, p, sim, symbolClass, trend) {
+  // PR-L: the cost class for THIS symbol id, from the keeper's pushed map.
+  // When the id is NOT in the map the schedule is left off entirely rather
+  // than charging the dearest fallback: a research run must still produce
+  // a readable trial, and the trial then records costSource 'none', which
+  // replayChecks REFUSES. Charging the fallback instead made the cost
+  // screen reject every signal, so the run produced no trades at all and
+  // said nothing about why.
+  const cls = symbolClass && symbolClass[String(symbolId)]
+  const symSim = cls ? { ...sim, costClass: cls } : { ...sim, costs: null, costClass: null }
+  const r = simulate(list, p, symSim, trend ? { trendSidesAt: trend.sidesAt } : {})
+  // PR-Q1: provenance rides the manifest (and so the trial id): which
+  // bytes (fileDigests, from loadSegments), which replayer build, which
+  // fill rules by hash. A different build over the same bytes is a
+  // different trial, so a replayer fix is never masked by an older row.
+  const manifest = { ...manifestBase, symbolId, symbolEvents: list.length, replayerCommit: replayerCommit(), simHash: simHash(r.sim) }
+  // PR-Q3: the regime rows the counter-trend veto could read are an input
+  // like the segments, so they are pinned by content too (and the trial id
+  // with them). Only with the filter on: an unfiltered trial is unchanged.
+  if (trend) manifest.regimeInput = trend.manifest
+  // Withheld, the trial carries the SCOPED counters, never the whole
+  // run's (the cost/no-fill counts over the test period are test-period
+  // information too).
+  const d = r.summary.diagnostics
+  const rejected = r.summary.scope === 'all_blocks' ? r.rejected : { cost: d.costRejected, noFill: d.noFill, ...(d.vetoes ? { vetoed: vetoCounts(d.vetoes) } : {}) }
+  const trial = { strategyId: r.strategyId, strategyVersion: r.strategyVersion, profileHash: r.profileHash, params: r.params, sim: r.sim, manifest, summary: r.summary, blocks: r.blocks, rejected, parity: { ...r.parity, symbolId } }
+  trial.trialId = trialIdFor(trial)
+  return trial
 }
 
 const vetoCounts = (v) => Object.fromEntries(LIVE_FILTER_NAMES.map(k => [k, Number(v?.[k]) || 0]))
@@ -811,9 +895,48 @@ export function openingRefusal(db, plan) {
  * to no valid quote event. Runs in the worker for the route, in-thread for
  * the script and `tickResearchAction`.
  */
-export function replayFiles(files, plan, replayThresholds) {
-  const loaded = loadSegments(files, { onlySymbol: plan.onlySymbol })
-  if (!loaded.manifestBase.events) return null
+export function replayFiles(files, plan, replayThresholds, { spillDir = null, inMemoryMaxRecords = IN_MEMORY_MAX_RECORDS, maxSymbolEvents = MAX_SYMBOL_EVENTS } = {}) {
+  // Claude · № 13,571 12-Oct (W6; claude-builder): a job up to
+  // IN_MEMORY_MAX_RECORDS (the old cap, 5,000,000) is decoded in memory as
+  // before. Above it the quotes are spilled per symbol to `spillDir` and
+  // replayed one symbol at a time (tick-replay-spill.js), so the heap holds
+  // one symbol's stream, not the whole spool. Both paths read through
+  // walkSegments and give the same trials and trial ids.
+  const records = segmentRecordCount(files)
+  let source
+  let spill = null
+  let ownDir = null
+  if (records <= inMemoryMaxRecords) {
+    const loaded = loadSegments(files, { onlySymbol: plan.onlySymbol })
+    source = { manifestBase: loaded.manifestBase, symbolIds: [...loaded.bySymbol.keys()], listOf: (id) => loaded.bySymbol.get(id), replay: { mode: 'in_memory', records } }
+  } else {
+    const dir = spillDir || (ownDir = mkdtempSync(join(tmpdir(), 'tick-replay-')))
+    spill = createSpill(dir)
+    let manifestBase
+    try { manifestBase = walkSegments(files, spill, { onlySymbol: plan.onlySymbol }) } finally { spill.close() }
+    const counts = spill.counts()
+    // A symbol whose stream alone is over the bound is not replayed, and the
+    // result says so by id and size — never a silent subset. Its trial would
+    // have needed more heap than the worker is given (WORKER_HEAP_MB).
+    const over = [...counts].filter(([, n]) => n > maxSymbolEvents).map(([symbolId, streamEvents]) => ({ symbolId, streamEvents }))
+    const skip = new Set(over.map(o => o.symbolId))
+    source = {
+      manifestBase,
+      symbolIds: manifestBase.symbols,
+      listOf: (id) => (skip.has(id) ? null : spill.read(id)),
+      replay: { mode: 'streamed', records, spillEntryBytes: SPILL_ENTRY_BYTES, largestSymbolEvents: Math.max(0, ...counts.values()), maxSymbolEvents, symbolsNotReplayed: over },
+    }
+  }
+  try {
+    return replaySource(source, plan, replayThresholds, files)
+  } finally {
+    if (spill) { try { spill.remove() } catch { /* best effort: the job's settle removes the directory too */ } }
+    if (ownDir) rmSync(ownDir, { recursive: true, force: true })
+  }
+}
+
+function replaySource({ manifestBase, symbolIds, listOf, replay }, plan, replayThresholds, files) {
+  if (!manifestBase.events) return null
   // Checker, 20-09-2026: the manifest named the files replayed and nothing
   // else, so a bounded run and an unbounded run over a two-segment spool
   // persisted identically — `maxSegments`, `segmentsAvailable` and
@@ -825,13 +948,13 @@ export function replayFiles(files, plan, replayThresholds) {
   // bound was SET: an unbounded run saw everything, and adding null fields
   // would re-key every existing trial.
   if (plan.maxSegments != null) {
-    Object.assign(loaded.manifestBase, {
+    Object.assign(manifestBase, {
       maxSegments: plan.maxSegments,
       segmentsAvailable: plan.segmentsAvailable ?? files.length,
       segmentsDropped: plan.segmentsDropped ?? 0,
     })
   }
-  const trials = runTrials(loaded, { stageA: plan.stageA, params: plan.params, sim: plan.sim, symbolClass: plan.symbolClass, trendContext: plan.trendContext ?? null })
+  const trials = runTrialsOver(manifestBase, symbolIds, listOf, { stageA: plan.stageA, params: plan.params, sim: plan.sim, symbolClass: plan.symbolClass, trendContext: plan.trendContext ?? null })
   // Fix round (checker N3): agent/config/tick-shadow-sim.json is read ONCE
   // per replay, not once per trial — its liveFilters block (only when a trial
   // carries one; undefined otherwise, so replayChecks never looks) and the
@@ -839,7 +962,7 @@ export function replayFiles(files, plan, replayThresholds) {
   // what replayChecks would have read itself, so every verdict is unchanged.
   const schedule = loadRepoSchedule()
   const shadowFilters = trials.some(t => t.sim?.liveFilters != null) ? shadowLiveFilters() : undefined
-  return { manifest: loaded.manifestBase, trials: trials.map(t => ({ trial: t, verdict: replayChecks(t, replayThresholds, { schedule, shadowFilters }) })) }
+  return { manifest: manifestBase, replay, trials: trials.map(t => ({ trial: t, verdict: replayChecks(t, replayThresholds, { schedule, shadowFilters }) })) }
 }
 
 /** The main-thread half: import (unless dry) and shape the reply. */
@@ -852,6 +975,8 @@ function finish(db, plan, replayed, replayThresholds, dir, importTrial, admitted
   })
   return {
     ok: true, dryRun: plan.dryRun, stageA: plan.stageA, includeTest: plan.includeTest === true, segmentsDir: dir, manifest: replayed.manifest, thresholds: replayThresholds,
+    // W6: how the replay held the quotes (in memory, or streamed one symbol at a time) and any symbol it could not replay.
+    ...(replayed.replay ? { replay: replayed.replay } : {}),
     origin,
     // PR-EX: every report of the run says how much of the spool it saw. The
     // manifest already names the FILES replayed (loadSegments, `files`); these
@@ -977,7 +1102,7 @@ let syncLock = null
 
 function publicJob(j) {
   if (!j) return null
-  const { worker, db, importTrial, ...rest } = j // eslint-disable-line no-unused-vars
+  const { worker, db, importTrial, hooks, ...rest } = j // eslint-disable-line no-unused-vars
   return rest
 }
 
@@ -989,11 +1114,38 @@ export function tickResearchJob(id) {
   if (jobs.current && jobs.current.jobId === id) return publicJob(jobs.current)
   return publicJob(jobs.history.find(j => j.jobId === id)) || null
 }
+/**
+ * Claude · № 13,571 12-Oct (W6, the instruction's "finishes, or is aborted
+ * with the reason named"; claude-builder). Stops the running replay: the
+ * worker is terminated, the job settles `aborted` with the reason and the
+ * caller, nothing is imported, and its spill directory is removed. A stored
+ * test-block opening settles `failed_unseen`, as for any worker that ends
+ * before reporting. A segment sync in front of a job is network I/O that ends
+ * on its own; it is not abortable here.
+ */
+export function abortTickResearchJob({ jobId = null, reason = null, actor = null } = {}) {
+  const j = jobs.current
+  if (!j) return { status: 409, body: { ok: false, error: 'no_job_running', where: 'no tick research replay is running (a segment sync in front of a job is not abortable; it ends on its own)' } }
+  if (jobId != null && j.jobId !== jobId) return { status: 409, body: { ok: false, error: 'job_id_mismatch', running: j.jobId, asked: jobId, where: `the running replay is ${j.jobId}, not ${jobId}` } }
+  const why = typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, NOTE_MAX) : 'no reason given'
+  if (!j.abort) j.abort = { at: new Date().toISOString(), reason: why, actor: actor ?? null }
+  try { j.worker?.terminate() } catch { /* the exit handler settles it either way */ }
+  return { status: 202, body: { ok: true, jobId: j.jobId, state: 'aborting', reason: j.abort.reason, poll: `/state/tick-research-job?id=${j.jobId}` } }
+}
+
 /** Tests only: forget every job. */
 export function _resetTickResearchJobs() { if (jobs.current?.worker) { try { jobs.current.worker.terminate() } catch { /* best effort */ } } if (jobs.current) releaseResearchSlot(jobs.current.jobId); jobs.current = null; jobs.history = []; syncLock = null }
 
 function settle(j, patch) {
   Object.assign(j, patch, { finishedAt: new Date().toISOString() })
+  // Claude · № 13,571 12-Oct (W6; claude-builder): what the job leaves on
+  // disk is removed when it settles, however it settles — done, failed,
+  // out of heap or aborted (a terminated worker runs no `finally`).
+  if (j.hooks) {
+    const hooks = j.hooks
+    delete j.hooks
+    for (const h of hooks) { try { h(j) } catch (err) { (j.cleanupErrors ||= []).push(String(err?.message || err)) } }
+  }
   if (jobs.current === j) jobs.current = null
   releaseResearchSlot(j.jobId)
   jobs.history.unshift(j)
@@ -1007,7 +1159,7 @@ function settle(j, patch) {
  * in-thread action returns) is on GET /state/tick-research-job?id=… once
  * `state` is `done`; the trials are in tick_trials by then.
  */
-export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null, workerCtor = null, filterCtx: givenFilterCtx = null, trendContext: givenTrendContext = null } = {}) {
+export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null, workerCtor = null, filterCtx: givenFilterCtx = null, trendContext: givenTrendContext = null, onSettled = null, spillRoot = tmpdir(), inMemoryMaxRecords = IN_MEMORY_MAX_RECORDS } = {}) {
   if (jobs.current) {
     return { status: 409, body: { ok: false, error: 'research_running', jobId: jobs.current.jobId, startedAt: jobs.current.startedAt, where: 'one research job runs at a time; poll GET /state/tick-research-job?id=<jobId> and post again when it is done' } }
   }
@@ -1069,11 +1221,23 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
     j.opening = { id: opening.id, profileHash: plan.declaredProfile, holdout: HOLDOUT_UNDECLARED }
   }
   const settleOpening = (patch) => { if (opening) { try { settleTestOpening(db, opening.id, patch) } catch { /* the row stays 'opened' — the conservative reading */ } } }
+  // Claude · № 13,571 12-Oct (W6; claude-builder): a job over
+  // IN_MEMORY_MAX_RECORDS spills each symbol's quotes here (32 bytes a
+  // record) and replays one symbol at a time; the directory is the main
+  // thread's to remove when the job settles, so a worker that is stopped
+  // mid-run leaves nothing behind. The worker's heap is capped at
+  // WORKER_HEAP_MB: past it Node stops the worker, never the process.
+  const spillDir = a.records > inMemoryMaxRecords ? mkdtempSync(join(spillRoot, 'tick-replay-')) : null
+  j.hooks = [
+    ...(spillDir ? [() => rmSync(spillDir, { recursive: true, force: true })] : []),
+    ...(typeof onSettled === 'function' ? [onSettled] : []),
+  ]
   let worker
   try {
-    worker = new (workerCtor || Worker)(workerFile, { workerData: { files: a.files, plan, replay: th.replay } })
+    worker = new (workerCtor || Worker)(workerFile, { workerData: { files: a.files, plan, replay: th.replay, spillDir, inMemoryMaxRecords }, resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB } })
   } catch (err) {
     settleOpening({ status: 'failed_unseen' })
+    for (const h of j.hooks) { try { h(j) } catch { /* best effort */ } }
     return { status: 500, body: { ok: false, error: 'worker_start_failed', detail: err.message } }
   }
   j.worker = worker
@@ -1095,8 +1259,15 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
       settle(j, { state: 'failed', error: `import failed: ${err.message}` })
     }
   })
-  worker.on('error', (err) => { if (settled) return; settled = true; settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'failed', error: err.message }) })
-  worker.on('exit', (code) => { if (settled) return; settled = true; settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'failed', error: `worker exited with code ${code} before reporting` }) })
+  worker.on('error', (err) => { if (settled) return; settled = true; settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'failed', error: err.message, ...(err?.code ? { errorCode: err.code } : {}) }) })
+  worker.on('exit', (code) => {
+    if (settled) return
+    settled = true
+    settleOpening({ status: 'failed_unseen' })
+    // Claude · № 13,571 12-Oct (W6): an abort ends the worker; the job says it was aborted, by whom and why.
+    if (j.abort) settle(j, { state: 'aborted', error: `aborted: ${j.abort.reason}` })
+    else settle(j, { state: 'failed', error: `worker exited with code ${code} before reporting` })
+  })
   return { status: 202, body: { ok: true, jobId: j.jobId, state: 'running', startedAt: j.startedAt, segmentsDir: a.dir, segments: a.files.length, records: a.records, maxSegments: plan.maxSegments, segmentsNamed: plan.segments, segmentsAvailable: a.segmentsAvailable, segmentsDropped: a.segmentsDropped, ...failedNote, dryRun: plan.dryRun, stageA: plan.stageA, includeTest: plan.includeTest, ...(j.opening ? { opening: j.opening } : {}), origin, noteTruncated: plan.noteTruncated, poll: `/state/tick-research-job?id=${j.jobId}`, note: 'the replay runs in a worker thread; the result and the imported trial ids are on the poll URL once state is done' } }
 }
 
@@ -1138,6 +1309,8 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
   const named = segmentNamesFrom(body)
   if (named.refuse) return named.refuse
   const names = named.value
+  const clearing = clearCacheFrom(body)
+  if (clearing.refuse) return clearing.refuse
   // PR-Q1: an includeTest request that will be refused is refused before a
   // byte is listed or pulled — the same two rules the job itself applies.
   const itRefused = includeTestRefusal(body) || blocksRefusal(body) || liveFiltersRefusal(body)
@@ -1154,6 +1327,8 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
   }
   const local = admit(segmentsDir, { maxRecords, maxSegments, names })
   if (!local.refuse) {
+    // Read from an operator's directory, not the sync's cache: nothing here is a cache to empty.
+    if (clearing.value) return { status: 400, body: { ok: false, error: 'clear_cache_not_a_cache', segmentsDir: local.dir, where: `the segments were read from ${local.dir} (TICK_SEGMENTS_DIR), an operator's directory; clearCache empties only the temporary cache a sync fills` } }
     if (!counterTrendAsked) return startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir })
     // The regime read yields, so the slot is claimed first (as the sync
     // claims it): a second POST meanwhile is refused, never doubled.
@@ -1183,8 +1358,12 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
   const syncSlot = acquireResearchSlot('tick research segment sync', syncLock.jobId)
   if (!syncSlot.ok) { syncLock = null; return { status: 409, body: { ok: false, error: 'research_running', jobId: syncSlot.held.id, startedAt: syncSlot.held.startedAt, where: `a ${syncSlot.held.what} holds the research slot; post again when it is done` } } }
   try {
-    const { segmentCacheDir, syncInWorker, listAllSides } = await import('./tick-segments.js')
+    const { segmentCacheDir, syncInWorker, listAllSides, isTemporaryCache, clearSegmentCache } = await import('./tick-segments.js')
     const dest = cacheDir || segmentCacheDir()
+    if (clearing.value && !isTemporaryCache(dest)) {
+      return { status: 400, body: { ok: false, error: 'clear_cache_not_temporary', segmentsDir: dest, where: `the segment cache ${dest} is not under the system temp directory (TICK_SEGMENTS_CACHE_DIR or TICK_SEGMENTS_DIR names it), so it may be kept on purpose; clearCache empties only a temporary cache — nothing was pulled` } }
+    }
+    const onSettled = clearing.value ? (j) => { j.cacheCleared = clearSegmentCache(dest) } : null
     // PRE-FLIGHT (checker M-1). The record cap is checked against what the
     // sides LIST, before a byte moves. Pulling first and refusing afterwards
     // moved up to 2 GiB to disk for a request that was always going to be
@@ -1299,7 +1478,7 @@ export async function startTickResearchJobWithSync(db, body = {}, opts = {}) {
     const failedNames = [...new Set([...(pull.failed || []), ...(pull.sides || []).flatMap(x => x.failed || [])].map(f => f?.name).filter(Boolean))]
     const pre = counterTrendAsked ? await offLoopContext(after.files) : {}
     releaseResearchSlot(syncLock.jobId)
-    const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest, segmentsAvailable: listedCount, segmentsFailed: failedNames, ...pre })
+    const started = startTickResearchJob(db, body, { ...rest, maxRecords, segmentsDir: dest, segmentsAvailable: listedCount, segmentsFailed: failedNames, ...pre, onSettled })
     return { status: started.status, body: { ...started.body, sync: pull } }
   } finally {
     releaseResearchSlot(syncLock?.jobId)

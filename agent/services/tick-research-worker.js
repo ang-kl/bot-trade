@@ -8,7 +8,7 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { replayFiles } from './tick-research-run.js'
 
 try {
-  const replayed = replayFiles(workerData.files, workerData.plan, workerData.replay)
+  const replayed = replayFiles(workerData.files, workerData.plan, workerData.replay, { spillDir: workerData.spillDir ?? null, ...(workerData.inMemoryMaxRecords != null ? { inMemoryMaxRecords: workerData.inMemoryMaxRecords } : {}) })
   parentPort.postMessage({ ok: true, replayed })
 } catch (err) {
   parentPort.postMessage({ ok: false, error: err?.message || String(err) })

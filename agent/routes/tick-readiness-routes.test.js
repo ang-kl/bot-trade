@@ -170,6 +170,33 @@ test('PR-H checker M-1: while a research job over a large segment runs, GET /hea
   } finally { if (saved != null) process.env.TICK_SEGMENTS_DIR = saved; else delete process.env.TICK_SEGMENTS_DIR; s.close() }
 })
 
+// Claude · № 13,571 12-Oct (W6; claude-builder): the abort door, through
+// the real route and the real worker.
+test('W6: POST /actions/tick-research/abort stops a running replay with the reason named; with none running it is 409', async () => {
+  _resetTickResearchJobs()
+  const s = await server()
+  const saved = process.env.TICK_SEGMENTS_DIR
+  try {
+    const post = (path, b) => fetch(s.url(path), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) })
+    const none = await post('/actions/tick-research/abort', { reason: 'nothing to stop' })
+    assert.equal(none.status, 409); assert.equal((await none.json()).error, 'no_job_running')
+    const dir = mkdtempSync(join(tmpdir(), 'tick-seg-route-abort-'))
+    writeFileSync(join(dir, 'seg-000001.tks'), syntheticSegment(300_000))
+    process.env.TICK_SEGMENTS_DIR = dir
+    const first = await post('/actions/tick-research', { stageA: true, sim: { latencyMs: 60, minTargetToCost: 1 } })
+    assert.equal(first.status, 202)
+    const { jobId } = await first.json()
+    const ab = await post('/actions/tick-research/abort', { jobId, reason: 'gateway CPU high' })
+    assert.equal(ab.status, 202, 'RED if the stage-A replay finished before the abort: the fixture is too small')
+    assert.equal((await ab.json()).state, 'aborting')
+    let job = null
+    for (let i = 0; i < 400; i++) { job = await fetch(s.url(`/state/tick-research-job?id=${jobId}`)).then(r => r.json()); if (job.state !== 'running') break; await new Promise(r => setTimeout(r, 25)) }
+    assert.equal(job.state, 'aborted', JSON.stringify(job).slice(0, 300))
+    assert.equal(job.error, 'aborted: gateway CPU high')
+    assert.equal(s.db.prepare('SELECT COUNT(*) AS n FROM tick_trials').get().n, 0, 'an aborted replay imports nothing')
+  } finally { if (saved != null) process.env.TICK_SEGMENTS_DIR = saved; else delete process.env.TICK_SEGMENTS_DIR; s.close(); _resetTickResearchJobs() }
+})
+
 // ---------------------------------------------------------------------------
 // PR-I checker B-1. The M-1 test above proves the event loop stays free while
 // the JOB runs. It starts sampling AFTER the job has started, so it never

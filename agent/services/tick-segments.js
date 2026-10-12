@@ -66,6 +66,36 @@ export function segmentCacheDir(env = process.env) {
 }
 
 /**
+ * Claude · № 13,571 12-Oct (W6, the instruction's "afterwards the segment
+ * cache should be empty"; claude-builder). Whether `dir` is inside the
+ * system temporary directory — the default cache, which the container
+ * discards anyway and the sidecar can refill at any time.
+ */
+export function isTemporaryCache(dir) {
+  const d = resolve(String(dir || '')), t = resolve(tmpdir())
+  return d.startsWith(t + sep)
+}
+
+/**
+ * Remove the sealed segments a sync left in a TEMPORARY cache. Only files
+ * named like a sealed segment are touched, and only under os.tmpdir(): a
+ * directory an operator set (TICK_SEGMENTS_DIR, a volume) is refused, never
+ * emptied by a research request.
+ */
+export function clearSegmentCache(dir) {
+  if (!isTemporaryCache(dir)) return { ok: false, dir, error: 'not_temporary', removed: 0, bytes: 0 }
+  let removed = 0, bytes = 0
+  const failed = []
+  for (const f of existsSync(dir) ? readdirSync(dir) : []) {
+    if (!SEGMENT_NAME_RE.test(f)) continue
+    const p = join(dir, f)
+    try { bytes += statSync(p).size; rmSync(p, { force: true }); removed++ } catch (err) { failed.push({ name: f, error: err.message }) }
+  }
+  const remaining = existsSync(dir) ? readdirSync(dir).filter(f => SEGMENT_NAME_RE.test(f)).length : 0
+  return { ok: failed.length === 0 && remaining === 0, dir, removed, bytes, remaining, ...(failed.length ? { failed } : {}) }
+}
+
+/**
  * V3 R1: whether this keeper's segment cache outlives a Node redeploy, so a
  * reader of GET /state/tick-segments never takes `cached` for a second kept
  * copy. The default (<os.tmpdir()>/tick-segments) goes with the container:

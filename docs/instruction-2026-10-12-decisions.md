@@ -340,7 +340,7 @@ W3 comes before W9 and W10, so their acceptance can be read on the card.
 
 ---
 
-## 6. Status, corrections and findings (kept current; Claude · № 13,401 12-Oct, updated № 13,489; claude-builder)
+## 6. Status, corrections and findings (kept current; Claude · № 13,401 12-Oct, updated № 13,489 and № 13,571; claude-builder)
 
 This section records what happened to each item, so the document stays
 checked against the code (owner principle 5). Each later PR updates it.
@@ -356,6 +356,7 @@ checked against the code (owner principle 5). Each later PR updates it.
 | W10 | "yes to … W10 … capped-hybrid-policy.js", then "yes to W10, capped-hybrid-enrolment.js" | `capped-hybrid-policy.js`, `capped-hybrid-enrolment.js` |
 | Lot fix (not in §2) | "Go lot fix" (after № 13,394) | none |
 | Hybrid audit text (Codex P2 on #1327) | "Yes, change it" (after № 13,483) | `momentum-partial-runtime.js` |
+| W6 code (not in §2) | "Raise the cap (code change)" (after the W6 dry run's 413) | none |
 
 ### 6.2 Item status
 
@@ -370,7 +371,9 @@ checked against the code (owner principle 5). Each later PR updates it.
 | W9 | `"_all"` in `manual-hybrid.json` | #1327 | **Passed** 12-10 08:40 SGT: no `manual_account_not_authorised` remains. The manual enrolment now examines the four …0949 pad positions and defers them on `monitor_entry_conflict` (§6.4) |
 | W10 | `capped_hybrid_json` (default 2R / 50%) read by both enrolments; exact or refused at any volume | #1327 | **Passed** 12-10 08:41 SGT: nothing stored, the setting reads the defaults, and the card's verdicts are unchanged |
 | Lot fix | an empty pad Lots box sends no cap | this PR | the next blank-lots pad order is risk-sized |
-| W5, W6, W7 | not started (phase B runs at least 30 min after the last deploy restart) | operations | — |
+| W5 | batch 1 applied 12-10; batch 2 stalled (0 updated, 25 errors) | operation; the fetch-window fix is the next PR | after batch 1: truncated 99 → 71 of 152, common cohort 51 → 79 of 152, `/data` +3 MB |
+| W6 | the dry run answered 413: 92,274,616 records (live 40,265,284; demo 52,009,332; 55 segments) against the 5,000,000 cap. The replay now streams one symbol at a time above 5,000,000 records; cap 150,000,000; worker heap 4,096 MB; abort and `clearCache` | this PR | the dry run again, then the run (§6.4: about 6 hours for both sides) |
+| W7 | not started (after W6) | operation | — |
 
 ### 6.3 Corrections to §2 (what the text said vs what the code needed)
 
@@ -405,6 +408,18 @@ checked against the code (owner principle 5). Each later PR updates it.
   cannot examine.
 - **W11.** §2 said "no decision needed"; the fix needed `loop.js` and
   `momentum-book.js`, both protected, so it waited for the owner's yes.
+- **W6.** §2 assumed one job could replay every tick since September. The
+  keeper refused any job over 5,000,000 records, and the dry run counted
+  92,274,616. Raising the number alone was not safe: the replay held about
+  104 bytes of heap per record (measured on a full 64 MiB segment), so the
+  whole spool needed about 9.6 GB in a worker of the trading process. The
+  replay now spills each symbol's quotes to a temporary file (32 bytes a
+  record) and replays one symbol at a time; over four segments its peak RSS
+  was 1,016 MB against 1,979 MB in memory, and it stays flat as segments are
+  added. The trials are the same, trial ids included. The worker's heap is
+  capped at 4,096 MB, so an overflow stops the worker, not the process.
+  `POST /actions/tick-research/abort` stops a run with a named reason, and
+  `clearCache: true` empties the temporary segment cache when the job ends.
 
 ### 6.4 Findings while building (decisions for the owner)
 
@@ -426,6 +441,16 @@ checked against the code (owner principle 5). Each later PR updates it.
   trade record's entry differ in ticks, so the manual hybrid will not act on
   them until they agree. Which field is right has not been measured yet
   (failure mode #6: find the disagreeing field against the broker first).
+
+- **W6 takes hours, and one job mixes the two sides.** The replay costs
+  about 20.5 µs per quote per stage-A grid point (measured on a synthetic
+  segment; the oracle's windows are O(rangeEvents) per quote). Twelve grid
+  points over 92,274,616 records is about 6.3 hours of one core: about 2.7 h
+  for the live side and 3.5 h for the demo side. A Node redeploy during the
+  run loses it. Both sides land in one cache and one job; a symbol id that
+  exists on both sides would interleave the two feeds out of time order.
+  Running each side as its own job (`segments` naming that side's sealed
+  segments, at most 64) avoids that. Which way to run it is the owner's call.
 
 ### 6.5 Held items (§4) — unchanged
 
