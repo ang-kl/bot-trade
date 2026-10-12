@@ -315,3 +315,45 @@ test('Codex P1 on #1330: the in-thread action answers 413 symbol_over_bound and 
   assert.deepEqual(db.prepare('SELECT status FROM tick_test_openings').all(), [{ status: 'failed_unseen' }])
   assert.equal(tickResearchAction(db, CONFIRM, { segmentsDir: dir }).status, 200, 'the confirmation can still be run')
 })
+
+// Codex P2 on #1330 (1 of 2): a result already queued when the abort lands.
+test('Codex P2 on #1330: a result the worker posted just before the abort is discarded — the job is aborted and imports nothing', async () => {
+  _resetTickResearchJobs()
+  const db = initDB(':memory:')
+  const dir = mkdtempSync(join(tmpdir(), 'spill-abort-race-'))
+  const files = richSegments(dir, 600)
+  const body = { stageA: false, params: PLAN.params, sim: { latencyMs: 60, minTargetToCost: 1 } }
+  const replayed = replayFiles(files, { ...PLAN, includeTest: false, sim: body.sim }, loadThresholds().replay)
+  assert.ok(replayed.trials.length > 0)
+  // terminate() delivers the queued result first, then the exit — the order Node may use.
+  const Racing = class extends EventEmitter {
+    terminate() { setImmediate(() => { this.emit('message', { ok: true, replayed }); this.emit('exit', 1) }); return Promise.resolve(1) }
+  }
+  const s = startTickResearchJob(db, body, { segmentsDir: dir, workerCtor: Racing })
+  assert.equal(s.status, 202)
+  assert.equal(abortTickResearchJob({ jobId: s.body.jobId, reason: 'owner stop' }).status, 202)
+  const j = await waitSettled(s.body.jobId)
+  assert.equal(j.state, 'aborted', 'RED before the fix: the queued result was imported and the job read done')
+  assert.equal(j.error, 'aborted: owner stop')
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM tick_trials').get().c, 0)
+  _resetTickResearchJobs()
+})
+
+// Codex P2 on #1330 (2 of 2): a symlink inside the temp directory to a kept directory.
+test('Codex P2 on #1330: a cache path that is a symlink out of the temporary directory is not temporary, and nothing behind it is removed', async () => {
+  const { symlinkSync } = await import('node:fs')
+  const root = mkdtempSync(join(tmpdir(), 'spill-tmproot-'))   // stands in for os.tmpdir()
+  const kept = mkdtempSync(join(tmpdir(), 'spill-kept-'))      // a directory outside that root
+  writeFileSync(join(kept, 'seg-1757548800000-000001.tks'), Buffer.alloc(64))
+  const link = join(root, 'cache-link')
+  symlinkSync(kept, link)
+  assert.equal(isTemporaryCache(link, { tmpRoot: root }), false, 'RED before the fix: the lexical check read the link as temporary')
+  assert.equal(isTemporaryCache(join(link, 'sub'), { tmpRoot: root }), false, 'a not-yet-created child of the link is judged by its real parent')
+  const r = clearSegmentCache(link, { tmpRoot: root })
+  assert.equal(r.ok, false); assert.equal(r.error, 'not_temporary')
+  assert.deepEqual(readdirSync(kept), ['seg-1757548800000-000001.tks'], 'the kept directory is untouched')
+  // a real directory inside the root, and one not created yet, are temporary
+  const real = mkdtempSync(join(root, 'cache-'))
+  assert.equal(isTemporaryCache(real, { tmpRoot: root }), true)
+  assert.equal(isTemporaryCache(join(root, 'not-yet', 'tick-segments'), { tmpRoot: root }), true)
+})

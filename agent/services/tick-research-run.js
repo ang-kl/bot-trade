@@ -1276,6 +1276,10 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
     if (settled) return
     settled = true
     try {
+      // Codex P2 on #1330: a result the worker posted just before an abort
+      // reached it is still in the queue when terminate() runs. An accepted
+      // abort imports nothing: the result is discarded, seen by no one.
+      if (j.abort) { settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'aborted', error: `aborted: ${j.abort.reason}` }); return }
       if (!msg || !msg.ok) { settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'failed', error: msg?.error || 'worker returned no result', ...(msg?.code ? { errorCode: msg.code } : {}), ...(msg?.symbolsOverBound ? { symbolsOverBound: msg.symbolsOverBound } : {}) }); return }
       if (!msg.replayed) { settleOpening({ status: 'no_data' }); settle(j, { state: 'failed', error: 'no_segments', result: { ok: false, error: 'no_segments', where: `${a.files.length} segment file(s) at ${a.dir} decoded to no valid quote event`, segmentsDir: a.dir, segments: a.files.length } }); return }
       settleOpening({ status: 'opened', trialIds: msg.replayed.trials.map(t => t.trial.trialId) })

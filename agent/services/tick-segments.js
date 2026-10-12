@@ -24,8 +24,8 @@
 // record's CRC, and a segment that fails is deleted and reported. A chunk
 // that arrives corrupt must not become a trial.
 // ---------------------------------------------------------------------------
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, readdirSync, existsSync, openSync, writeSync, closeSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, readdirSync, existsSync, openSync, writeSync, closeSync, realpathSync } from 'node:fs'
+import { join, resolve, sep, dirname, basename } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
@@ -71,9 +71,25 @@ export function segmentCacheDir(env = process.env) {
  * system temporary directory — the default cache, which the container
  * discards anyway and the sidecar can refill at any time.
  */
-export function isTemporaryCache(dir) {
-  const d = resolve(String(dir || '')), t = resolve(tmpdir())
+export function isTemporaryCache(dir, { tmpRoot = tmpdir() } = {}) {
+  // Codex P2 on #1330: compared by REAL path. A lexical check let
+  // /tmp/cache-link pass when it is a symlink to a kept directory such as
+  // /data/tick-cache. A directory not created yet is judged by its nearest
+  // existing parent.
+  const d = realPathOf(String(dir || '')), t = realPathOf(tmpRoot)
   return d.startsWith(t + sep)
+}
+
+function realPathOf(p) {
+  let cur = resolve(p)
+  const rest = []
+  for (;;) {
+    try { return join(realpathSync(cur), ...rest.reverse()) } catch { /* not there yet: try its parent */ }
+    const parent = dirname(cur)
+    if (parent === cur) return resolve(p)
+    rest.push(basename(cur))
+    cur = parent
+  }
 }
 
 /**
@@ -82,8 +98,8 @@ export function isTemporaryCache(dir) {
  * directory an operator set (TICK_SEGMENTS_DIR, a volume) is refused, never
  * emptied by a research request.
  */
-export function clearSegmentCache(dir) {
-  if (!isTemporaryCache(dir)) return { ok: false, dir, error: 'not_temporary', removed: 0, bytes: 0 }
+export function clearSegmentCache(dir, { tmpRoot = tmpdir() } = {}) {
+  if (!isTemporaryCache(dir, { tmpRoot })) return { ok: false, dir, error: 'not_temporary', removed: 0, bytes: 0 }
   let removed = 0, bytes = 0
   const failed = []
   for (const f of existsSync(dir) ? readdirSync(dir) : []) {
