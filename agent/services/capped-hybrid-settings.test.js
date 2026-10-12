@@ -289,6 +289,20 @@ test('W10: a stored fraction closes that share, exactly representable or refused
   assert.equal(planCappedHybrid({ ...base, volume: 1000, minVolume: 200, stepVolume: 100, closeFraction: 0.9 }).reason, 'half_and_runner_not_representable')
 })
 
+// Claude · № 13,467 12-Oct (Codex P2 on #1327 98d141f8; claude-builder)
+test('W10 (Codex P2 on #1327): a share that is fractional by more than float error is refused at any volume, never rounded', () => {
+  const base = GOLDEN[0].input
+  // 1e8 units in steps of 1000: 0.1000000005 asks for 10000000.05 — refused, not rounded to 10000000.
+  assert.equal(planCappedHybrid({ ...base, volume: 100000000, minVolume: 1000, stepVolume: 1000, closeFraction: 0.1000000005 }).reason, 'half_and_runner_not_representable')
+  assert.equal(planCappedHybrid({ ...base, volume: 10000000000, minVolume: 1000, stepVolume: 1000, closeFraction: 0.70000000001 }).reason, 'half_and_runner_not_representable')
+  // Float noise on an exact share is not a fraction: 0.3, 0.7 and 0.9 of large volumes are exact plans.
+  // 700 x 0.7 and 1400 x 0.35 compute as 489.99999999999994: one ulp under 490.
+  for (const [volume, f, close] of [[100000000, 0.3, 30000000], [99999900, 0.3, 29999970], [123456700, 0.9, 111111030], [10000000000, 0.7, 7000000000], [10000, 0.3, 3000], [700, 0.7, 490], [1400, 0.35, 490]]) {
+    const p = planCappedHybrid({ ...base, volume, minVolume: 10, stepVolume: 10, closeFraction: f })
+    assert.deepEqual([p.ok, p.closeVolume, p.runnerVolume], [true, close, volume - close], `${volume} x ${f}`)
+  }
+})
+
 test('W10: a plan armed before a settings change still validates; its own values, not the current setting, decide', () => {
   const armed = planCappedHybrid({ ...GOLDEN[0].input, triggerR: 2.5, closeFraction: 0.4 })
   assert.equal(armed.ok, true)

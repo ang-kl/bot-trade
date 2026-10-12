@@ -65,9 +65,12 @@ export function planCappedHybrid(input = {}) {
   if (!Number.isInteger(digits) || digits < 0 || digits > 5) return refuse('broker_precision_required')
   if (![volume, minVolume, stepVolume].every(integer) || volume % stepVolume !== 0) return refuse('broker_volume_invalid')
   // Exact parts only: neither rounding to a token partial nor a full-close
-  // fallback. At 0.5 this is the exact half, as before W10.
+  // fallback. At 0.5 this is the exact half, as before W10. The tolerance is
+  // float error on the product (a few ulps), not a share of the volume: at
+  // 1e8 units a relative 1e-9 would round 10000000.05 to 10000000 (Codex P2
+  // on #1327; Claude · № 13,467 12-Oct; claude-builder).
   const exact = volume * closeFraction, closeVolume = Math.round(exact), runnerVolume = volume - closeVolume
-  if (Math.abs(exact - closeVolume) > 1e-9 * volume || !integer(closeVolume) || closeVolume < minVolume || closeVolume % stepVolume !== 0
+  if (Math.abs(exact - closeVolume) > 4 * Number.EPSILON * Math.max(1, Math.abs(exact)) || !integer(closeVolume) || closeVolume < minVolume || closeVolume % stepVolume !== 0
     || !integer(runnerVolume) || runnerVolume < minVolume || runnerVolume % stepVolume !== 0) return refuse('half_and_runner_not_representable')
   if (!Array.isArray(openingDealIds) || !openingDealIds.length || openingDealIds.some(d => typeof d !== 'string' || !id(d))
     || new Set(openingDealIds).size !== openingDealIds.length) return refuse('opening_receipts_required')
