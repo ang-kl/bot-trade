@@ -228,10 +228,21 @@ export async function postDailyReport(db, { now = Date.now(), send = null, queue
   try {
     const r = await buildDailyReport(db, { now })
     out.chars = r.chars; out.truncated = r.truncated
-    const q = queue ?? (await import('./telegram-digest.js')).queueMessage
+    const digest = await import('./telegram-digest.js')
+    // Claude · № 13,878 13-Oct (owner "Stop queuing while off"; claude-builder):
+    // with notify OFF the report is neither queued nor sent directly: it is
+    // counted as dropped, and still kept under DAILY_REPORT_TEXT_KEY.
+    let off = false
+    try { off = digest.loadNotifyConfig(db).enabled === false } catch { off = false }
+    const q = queue ?? digest.queueMessage
     let queued = false
-    try { queued = q(db, { text: r.text, kind: 'daily_report', priority: 'normal', reason: 'daily report' }) === true } catch { queued = false }
-    if (queued) out.delivery = 'queued'
+    if (off) {
+      digest.recordDropped(db, { priority: 'normal', kind: 'daily_report', nowMs: now })
+      out.delivery = 'not_sent_notify_off'
+    } else {
+      try { queued = q(db, { text: r.text, kind: 'daily_report', priority: 'normal', reason: 'daily report' }) === true } catch { queued = false }
+    }
+    if (off) { /* counted above; nothing is delivered while notify is off */ } else if (queued) out.delivery = 'queued'
     else {
       const s = send ?? (await import('./telegram.js')).sendMessage
       await s(r.text, { plain: true })

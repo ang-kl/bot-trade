@@ -32,6 +32,11 @@ import { getState, setState } from '../db.js'
 
 export const CONFIG_KEY = 'telegram_notify_json'
 export const LAST_FLUSH_KEY = 'tg_digest_last_flush_ms'
+// Claude · № 13,878 13-Oct (ordered after № 13,873, owner "Stop queuing while off"; claude-builder).
+// While notify is OFF a message is not sent and not queued: it is counted
+// here. 84,587 rows had been held since 22-08 (624 MB, never sent, never
+// pruned: outbox-prune.js removed only sent rows).
+export const DROPPED_KEY = 'telegram_dropped_json'
 export const LAST_ERROR_KEY = 'tg_digest_last_error'
 const DEFAULT_TZ = 'Asia/Singapore'
 
@@ -137,7 +142,10 @@ export function routeDecision(cfg, { text, priority, nowMs }) {
     // OFF means off, including for urgent — a master mute that quietly keeps
     // sending some messages is not a mute, and the owner would have no way to
     // tell which class was still getting through.
-    return { action: 'queue', reason: 'notify_off', priority: p }
+    // Claude · № 13,878 13-Oct (owner "Stop queuing while off"): dropped and
+    // counted, not queued. Switching back on delivers nothing from the off
+    // period.
+    return { action: 'drop', reason: 'notify_off', priority: p }
   }
   const quiet = inQuietHours(nowMs, cfg.quiet, cfg.tz)
   if (p === 'urgent' && cfg.urgentBypass) {
@@ -146,6 +154,39 @@ export function routeDecision(cfg, { text, priority, nowMs }) {
   if (quiet) return { action: 'queue', reason: 'quiet_hours', priority: p }
   if (cfg.mode === 'hourly') return { action: 'queue', reason: 'hourly_digest', priority: p }
   return { action: 'send', reason: 'live', priority: p }
+}
+
+/**
+ * Count one message not sent because notify is OFF. The count runs from
+ * `since` (the first drop recorded) and says which priorities were dropped.
+ * Never throws; returns false when the count could not be written.
+ */
+export function recordDropped(db, { priority = 'normal', kind = 'alert', nowMs = Date.now() } = {}) {
+  try {
+    let prev = null
+    try { prev = JSON.parse(getState(db, DROPPED_KEY) || 'null') } catch { prev = null }
+    const ok = prev != null && typeof prev === 'object' && !Array.isArray(prev)
+    const n = k => (ok && Number.isSafeInteger(prev[k]) ? prev[k] : 0)
+    const at = new Date(nowMs).toISOString()
+    const next = {
+      since: ok && typeof prev.since === 'string' ? prev.since : at,
+      count: n('count') + 1,
+      urgent: n('urgent') + (priority === 'urgent' ? 1 : 0),
+      normal: n('normal') + (priority === 'urgent' ? 0 : 1),
+      lastAt: at,
+      lastKind: String(kind),
+    }
+    setState(db, DROPPED_KEY, JSON.stringify(next))
+    return true
+  } catch { return false }
+}
+
+/** The drop count, or null when none was recorded. */
+export function droppedState(db) {
+  try {
+    const d = JSON.parse(getState(db, DROPPED_KEY) || 'null')
+    return d != null && typeof d === 'object' && !Array.isArray(d) ? d : null
+  } catch { return null }
 }
 
 /** Append to the outbox. Returns false when the write failed (caller sends). */
@@ -331,6 +372,10 @@ export function routeOutbound(text, opts = {}) {
     const nowMs = opts.nowMs ?? Date.now()
     const d = routeDecision(cfg, { text, priority: opts.priority, nowMs })
     if (d.action === 'send') return { send: true, reason: d.reason }
+    if (d.action === 'drop') {
+      recordDropped(db, { priority: d.priority, kind: opts.kind ?? 'alert', nowMs })
+      return { send: false, reason: d.reason, dropped: true }
+    }
     const queued = queueMessage(db, {
       text, kind: opts.kind ?? 'alert', priority: d.priority, reason: d.reason,
     })
@@ -410,12 +455,14 @@ export function digestState(db, { nowMs = Date.now() } = {}) {
       over, of: count, complete: over === count, window: 'newest pending rows first',
     },
     lastFlushAt, lastError,
+    // While OFF nothing is queued; this is what was not sent, and since when.
+    dropped: droppedState(db),
   }
 }
 
 /** One-line human summary of the current settings, for /status and /notify. */
 export function describeConfig(cfg) {
-  const parts = [cfg.enabled ? 'notify ON' : 'notify OFF (queued, not dropped)']
+  const parts = [cfg.enabled ? 'notify ON' : 'notify OFF (not sent, not queued: counted only)']
   parts.push(cfg.mode === 'hourly' ? 'hourly digest' : 'live')
   parts.push(cfg.quiet ? `quiet ${cfg.quiet.start}–${cfg.quiet.end} SGT` : 'no quiet hours')
   if (cfg.quiet && cfg.urgentBypass) parts.push('urgent still wakes you')

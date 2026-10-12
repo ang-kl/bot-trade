@@ -758,6 +758,9 @@ const PINNED_HELPERS = { [`helpers@7`]: 'e67d6be2158ba3f2' }
 // STK-08@4 (owner 03-10-2026, "remove all three"): the watchdog kind is gone
 // with cpp-verify's delivery channel; the rule reads the Telegram outbox only.
 // No other rule's hash moved.
+// STK-08@5 (Claude · № 13,878 13-Oct, owner "Stop queuing while off"): while
+// notify is OFF nothing is queued (counted in telegram_dropped_json); the held
+// text says so with the drop count. No other rule's hash moved.
 const PINNED = {
   'PRE-01@1': 'ef8952cc321a0a03', 'PRE-02@2': '8310a4e233690cf5', 'PRE-03@2': 'fcbe76b2913542df', 'PRE-04@1': 'fa04e500d8a0ca47',
   'PRE-05@1': 'c7aeb7460046a6fc',
@@ -768,7 +771,7 @@ const PINNED = {
   'CLS-05@1': '2cca97ff9080477d', 'CLS-06@1': 'a4bb8873fe57a5f1', 'CLS-07@1': '77e677b6b8b4b901', 'CLS-08@1': '540f253a1c1c8eab',
   'CLS-09@1': '9985d3c5b7b5b9cf',
   'STK-01@2': '969001ee6208e6c7', 'STK-02@1': '995fd7c14286ef8e', 'STK-03@2': '92e5e73e8c8494e9', 'STK-04@2': '30b119a04d39ebc5',
-  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@4': '24df6bf9be213e33',
+  'STK-05@1': 'fd6653d6850b9006', 'STK-06@2': '71140bf5e2dfef4e', 'STK-07@3': 'a5a2b92ecb68e9e5', 'STK-08@5': '16904bc8184046e2',
   'STK-09@2': '29a95b3d182e245c', 'STK-10@1': '60a7854f87507cb9', 'STK-11@2': '53ce6e2a623913f6', 'STK-12@1': '20bc6106e975e370',
 }
 test('ruleset pin: every rule\'s sql + judge is pinned to its version', () => {
@@ -1108,6 +1111,17 @@ const OLD_WATCHDOG_STATUS = {
   delivery: { muted: true, open: false, soakActive: false, unmuteRefusal: 'stale_backlog', staleBacklog: { count: 512, olderThanMs: 3_600_000 } },
 }
 
+test('STK-08 v5 telegram OFF: the held text names how many messages were dropped and since when', () => {
+  // Claude · № 13,878 13-Oct (owner "Stop queuing while off").
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: false, mode: 'live', quiet: null, urgentBypass: true, tz: 'Asia/Singapore' }))
+  setState(db, 'telegram_dropped_json', JSON.stringify({ since: '2026-10-13T00:00:00.000Z', count: 42, urgent: 2, normal: 40, lastAt: '2026-10-13T01:00:00.000Z', lastKind: 'scan' }))
+  outboxRow(db)
+  const r = ruleOf(build(db), 'STK-08')
+  assert.equal(r.classes.held_by_setting, 1)
+  assert.match(r.info.held_by_setting[0], /new messages are not queued, only counted — 42 since 2026-10-13T00:00;/)
+})
+
 test('STK-08 v2 telegram OFF by setting: held_by_setting, named with the setting, count, oldest and reasons — not in the stuck headline', () => {
   const db = initDB(':memory:')
   setState(db, 'telegram_notify_json', JSON.stringify({ enabled: false, mode: 'live', quiet: null, urgentBypass: true, tz: 'Asia/Singapore' }))
@@ -1118,7 +1132,7 @@ test('STK-08 v2 telegram OFF by setting: held_by_setting, named with the setting
   assert.equal(getState(db, 'telegram_notify_json').includes('"enabled":false'), true)
   const report = build(db)
   const r = ruleOf(report, 'STK-08')
-  assert.equal(r.version, 4) // v4 (03-10-2026) removed the cpp-verify watchdog kind; the Telegram half is v2's
+  assert.equal(r.version, 5) // v4 (03-10-2026) removed the cpp-verify watchdog kind; v5 (13-10-2026) stopped queuing while notify is OFF
   assert.equal(r.violations, 0, 'held by a setting is not a stuck violation')
   assert.equal(r.classes.held_by_setting, 1)
   assert.equal(r.info.held_by_setting.length, 1)
@@ -1127,6 +1141,9 @@ test('STK-08 v2 telegram OFF by setting: held_by_setting, named with the setting
   assert.match(info, /reasons over the 3 pending row\(s\): notify_off 2 \(oldest 2026-08-22T10:39\), quiet_hours 1 \(oldest 2026-09-25T10:00\); the oldest row's reason notify_off/)
   assert.match(info, /last flush never recorded/)
   assert.doesNotMatch(info, /SECRET-TEXT/, 'no message text')
+  // v5 (13-10, owner "Stop queuing while off"): the text says nothing new is
+  // queued while OFF; with nothing counted yet it names no count.
+  assert.match(info, /notify OFF: new messages are not queued, only counted; the rows still here predate that and the 8-hourly prune removes them/)
   assert.match(r.note, /^held by a setting, not stuck \(not in the stuck count\) — telegram: 3 unsent/)
   assert.equal(report.summary.stuck.new, 0, 'the stuck headline excludes it')
   assert.match(report.rules.find(x => x.id === 'STK-08').note, /held by the setting telegram_notify_json enabled=false/, 'visible on the flat rules the Reasons page renders')
@@ -1196,7 +1213,7 @@ test('STK-08 v4: the cpp-verify watchdog outbox is not a row — the old relayed
   setState(db, 'telegram_notify_json', JSON.stringify({ enabled: true, mode: 'live' }))
   setState(db, 'independent_watchdog_json', JSON.stringify({ status: OLD_WATCHDOG_STATUS, readAt: iso(NOW), error: null }))
   const r = one(db, 'STK-08')
-  assert.equal(r.version, 4)
+  assert.equal(r.version, 5)
   assert.equal(r.violations, 0)
   assert.equal(r.classes.held_by_setting, undefined)
   assert.deepEqual(r.sample.filter(x => x.subject === 'outbox:watchdog'), [])

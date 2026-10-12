@@ -5,7 +5,7 @@ import { initDB, getState, setState } from '../db.js'
 import {
   CONFIG_KEY, LAST_FLUSH_KEY, HOUR_MS, TG_TEXT_MAX,
   loadNotifyConfig, saveNotifyConfig, isHHMM, minutesOfDay, inQuietHours,
-  classifyPriority, routeDecision, queueMessage, pendingMessages, summarise,
+  classifyPriority, routeDecision, queueMessage, pendingMessages, summarise, droppedState,
   markSent, flushDecision, flushDigest, attachNotifyDb, routeOutbound,
   describeConfig, digestState,
 } from './telegram-digest.js'
@@ -115,7 +115,8 @@ test('hourly mode queues outside quiet hours too — that is the point of it', (
 test('notify off holds URGENT too — a mute that leaks is not a mute', () => {
   const cfg = { ...loadNotifyConfig(freshDB()), enabled: false }
   const r = routeDecision(cfg, { text: '🔴 CIRCUIT BREAKER', nowMs: AT_1400 })
-  assert.equal(r.action, 'queue')
+  // Owner 13-10 ("Stop queuing while off"): dropped and counted, not queued.
+  assert.equal(r.action, 'drop')
   assert.equal(r.reason, 'notify_off')
 })
 
@@ -156,15 +157,37 @@ test('routeOutbound queues to the outbox and reports not-send', () => {
 })
 
 test('a failed queue write falls back to sending rather than losing the alert', () => {
+  // Claude · № 13,878 13-Oct: a queue is now written only while notify is ON
+  // (hourly digest or quiet hours), so the fallback is exercised there.
+  const db = freshDB()
+  saveNotifyConfig(db, { enabled: true, mode: 'hourly' })
+  attachNotifyDb(db)
+  try {
+    db.exec('DROP TABLE telegram_outbox')
+    const r = routeOutbound('an alert with nowhere to go', { nowMs: AT_1400 })
+    assert.equal(r.send, true)
+    assert.equal(r.reason, 'queue_failed')
+  } finally { attachNotifyDb(null) }
+})
+
+test('notify OFF sends nothing, even with a broken outbox, and counts what it did not send', () => {
+  // Claude · № 13,878 13-Oct (owner "Stop queuing while off"): before, OFF plus
+  // a failed queue write SENT the message; a mute that leaks is not a mute.
   const db = freshDB()
   saveNotifyConfig(db, { enabled: false })
   attachNotifyDb(db)
   try {
     db.exec('DROP TABLE telegram_outbox')
-    const r = routeOutbound('an alert with nowhere to go')
-    assert.equal(r.send, true)
-    assert.equal(r.reason, 'queue_failed')
+    assert.deepEqual(routeOutbound('an alert while muted', { nowMs: AT_1400 }), { send: false, reason: 'notify_off', dropped: true })
+    assert.deepEqual(routeOutbound('another alert while muted', { nowMs: AT_1400 + 500 }), { send: false, reason: 'notify_off', dropped: true })
+    assert.deepEqual(routeOutbound('🚨 margin call while muted', { nowMs: AT_1400 + 1000 }), { send: false, reason: 'notify_off', dropped: true })
   } finally { attachNotifyDb(null) }
+  const d = droppedState(db)
+  assert.equal(d.count, 3)
+  assert.equal(d.urgent, 1)
+  assert.equal(d.normal, 2)
+  assert.equal(d.since, new Date(AT_1400).toISOString())
+  assert.equal(d.lastAt, new Date(AT_1400 + 1000).toISOString())
 })
 
 // ---------------------------------------------------------------------------
@@ -379,7 +402,7 @@ test('/notify off says plainly that trading is unaffected', () => {
   // quiet, so the bot is stopped". The reply has to close it.
   const db = freshDB()
   const reply = handleNotifyCommand(db, '/notify', 'off', AT_1400)
-  assert.match(reply, /QUEUED, not dropped/)
+  assert.match(reply, /NOT sent and NOT queued, only counted/)
   assert.match(reply, /Trading is unaffected/)
   assert.match(reply, /\/pause/)
 })
@@ -402,18 +425,22 @@ test('digestState: /notify off is read as OFF through the same loader, with the 
   handleNotifyCommand(db, '/notify', 'off', AT_1400)
   attachNotifyDb(db)
   try {
-    assert.deepEqual(routeOutbound('EURUSD scan result, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off' })
-    assert.deepEqual(routeOutbound('🚨 margin call, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off' })
+    // Owner 13-10 ("Stop queuing while off"): dropped and counted, not queued.
+    assert.deepEqual(routeOutbound('EURUSD scan result, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off', dropped: true })
+    assert.deepEqual(routeOutbound('🚨 margin call, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off', dropped: true })
   } finally { attachNotifyDb(null) }
+  // A row held from before the change is still read and named.
+  q(db, 'held from before the change', 'scan', 'normal', 'notify_off')
   const s = digestState(db, { nowMs: AT_1400 })
   assert.equal(s.enabled, false)
   assert.equal(s.configReadable, true)
   assert.equal(s.configStored, true)
-  assert.equal(s.pending.count, 2)
+  assert.equal(s.pending.count, 1)
   assert.equal(s.pending.oldestReason, 'notify_off')
   assert.equal(typeof s.pending.oldestQueuedAt, 'string')
-  assert.deepEqual(s.reasons.rows.map(r => [r.reason, r.count]), [['notify_off', 2]])
+  assert.deepEqual(s.reasons.rows.map(r => [r.reason, r.count]), [['notify_off', 1]])
   assert.equal(s.reasons.complete, true)
+  assert.deepEqual({ count: s.dropped.count, urgent: s.dropped.urgent, normal: s.dropped.normal }, { count: 2, urgent: 1, normal: 1 })
   assert.equal(s.lastFlushAt, null)
   assert.equal(s.lastError, null)
   assert.doesNotMatch(JSON.stringify(s), /private words/, 'no message text in the state')

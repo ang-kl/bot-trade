@@ -1094,7 +1094,13 @@ export const RULES = Object.freeze([
     // says so. The digest state is read by telegram-digest.js digestState —
     // the reader GET /state/telegram-digest serves — pinned here with the
     // loader it uses.
-    id: 'STK-08', key: 'outbox_backlog', version: 4, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
+    // v5 (Claude · № 13,878 13-Oct, owner "Stop queuing while off"): while
+    // notify is OFF nothing is queued any more (telegram-digest.js
+    // routeDecision 'drop', counted in telegram_dropped_json), and the
+    // 8-hourly prune removes rows held by notify_off at any age. Rows still
+    // unsent with notify OFF predate that and are named as such, with the
+    // drop count.
+    id: 'STK-08', key: 'outbox_backlog', version: 5, stage: 'stuck', severity: 'defect', fix: 'reporting', current: true,
     cite: ['db.js:1984-1993', 'telegram-digest.js:136-141', 'telegram-digest.js:257', 'watchdog_state.cpp:325-330'],
     noun: 'outbox',
     sql: `SELECT id, queued_at, (SELECT COUNT(*) FROM telegram_outbox WHERE sent_at IS NULL) AS n FROM telegram_outbox
@@ -1119,7 +1125,7 @@ export const RULES = Object.freeze([
       const flush = `; last flush ${d.lastFlushAt ?? 'never recorded'}${d.lastError ? `; last flush error: ${cut(d.lastError, 120)}` : ''}`
       if (d.configReadable && d.enabled === false) {
         return { violation: false, class: 'held_by_setting',
-          info: `telegram: ${base} — held by the setting ${d.configKey} enabled=false (notify OFF: queued, not dropped; nothing is flushed while it is off)${reasons}${flush}` }
+          info: `telegram: ${base} — held by the setting ${d.configKey} enabled=false (notify OFF: new messages are not queued, only counted${d.dropped ? ` — ${d.dropped.count} since ${String(d.dropped.since).slice(0, 16)}` : ''}; the rows still here predate that and the 8-hourly prune removes them)${reasons}${flush}` }
       }
       return {
         missing: ['delivery'], class: 'telegram', since: iso(oldest),
