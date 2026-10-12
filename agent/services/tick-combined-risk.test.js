@@ -533,8 +533,9 @@ test('N5 wiring: cross-side-reconcile stamps the time it REQUESTED the snapshot 
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
   const i = loop.indexOf('const reconcileReadAt = Date.now()')
   assert.ok(i > 0 && i < loop.indexOf('const reconcileData = await execReconcile(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId }))'), 'the selected pass takes the time BEFORE the request')
-  assert.ok(loop.includes('reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v), { readAt: reconcileReadAt })'))
+  // № 13,774 (owner "snapshot time next"): both passes also hand on the gateway's snapshot time from the reply.
+  assert.ok(loop.includes('reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v), { readAt: reconcileReadAt, snapshotAt: reconcileData.snapshotAtMs })'))
   const j = loop.indexOf('const accReadAt = Date.now()')
   assert.ok(j > 0 && j < loop.indexOf('const rd = await execReconcile(withCtraderTokenSource(db, { host, clientId, clientSecret, accessToken, accountId: acc.account_id }))'), 'the per-account pass too')
-  assert.ok(/\{ accountId: acc\.account_id, readAt: accReadAt \}/.test(loop))
+  assert.ok(/\{ accountId: acc\.account_id, readAt: accReadAt, snapshotAt: rd\.snapshotAtMs \}/.test(loop))
 })

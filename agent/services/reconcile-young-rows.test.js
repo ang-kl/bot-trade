@@ -107,3 +107,73 @@ test('a caller that does not know its read time is unchanged: the row is judged 
   assert.equal(r.closedDetected.length, 1)
   assert.equal(status(db, id).trade.status, 'closed')
 })
+
+// Claude · № 13,774 12-Oct (owner "snapshot time next"; claude-builder). The
+// gateway now stamps its cached snapshot with the moment its reconcile request
+// was sent (`snapshotAtMs`), and loop.js passes it as `snapshotAt`. A row is
+// young when it was opened at or after that moment (less a few seconds for
+// opened_at's whole-second resolution and the two clocks), however old the
+// cache is — and a row opened well before a FRESH snapshot is judged at once,
+// not held for the 120 s bound. Without a valid snapshot time the bound stays.
+const sqlTime = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
+const openedAt = (db, id, ms) => db.prepare('UPDATE trades SET opened_at = ? WHERE id = ?').run(sqlTime(ms), id)
+
+test('a frozen cache: a row opened after the snapshot was taken is deferred, even past the 120 s bound', () => {
+  const db = fresh()
+  const now = Date.now()
+  const id = place(db, { symbol: 'BTCUSD', positionId: '4004' })
+  openedAt(db, id, now - 200_000) // after the snapshot (300 s old), before the read
+  const r = reconcilePositions(db, [], [], setAcct(db), { accountId: A, readAt: now, snapshotAt: now - 300_000 })
+  assert.deepEqual(r.closedDetected, [], 'RED before: past the 120 s bound it was closed on a snapshot that predates it')
+  assert.deepEqual(r.closeDeferred.map(x => x.positionId), ['4004'])
+  assert.equal(status(db, id).trade.status, 'open')
+})
+
+test('a fresh snapshot: a row opened well before it and absent from it is closed at once, not held for the bound', () => {
+  const db = fresh()
+  const now = Date.now()
+  const id = place(db, { symbol: 'BTCUSD', positionId: '5005' })
+  openedAt(db, id, now - 60_000)
+  const r = reconcilePositions(db, [], [], setAcct(db), { accountId: A, readAt: now, snapshotAt: now - 2_000 })
+  assert.equal(r.closedDetected.length, 1, 'RED before: the 120 s bound held a genuine close for two minutes')
+  assert.deepEqual(r.closeDeferred, [])
+  assert.equal(status(db, id).trade.status, 'closed')
+})
+
+test('a row opened in the same second the request went out is deferred (whole-second opened_at)', () => {
+  const db = fresh()
+  const now = Date.now()
+  const sentAt = Math.floor((now - 10_000) / 1000) * 1000 + 300 // ….300
+  const id = place(db, { symbol: 'JPYX', positionId: '6006' })
+  openedAt(db, id, sentAt + 400) // ….700, stored as ….000: 300 ms BEFORE sentAt on the row
+  const r = reconcilePositions(db, [], [], setAcct(db), { accountId: A, readAt: now, snapshotAt: sentAt })
+  assert.deepEqual(r.closedDetected, [])
+  assert.deepEqual(r.closeDeferred.map(x => x.positionId), ['6006'])
+})
+
+test('an absent or invalid snapshot time keeps the 120 s bound exactly', () => {
+  for (const snapshotAt of [undefined, null, '', 0, -5, 'abc', NaN, Infinity, true, 1, '1', '1e13', {}]) {
+    const db = fresh()
+    const now = Date.now()
+    const young = place(db, { symbol: 'BTCUSD', positionId: '7007' })
+    openedAt(db, young, now - 60_000)
+    const old = place(db, { symbol: 'JPYX', positionId: '7008' })
+    openedAt(db, old, now - SNAPSHOT_AGE_BOUND_MS - 5_000)
+    const r = reconcilePositions(db, [], [], setAcct(db), { accountId: A, readAt: now, snapshotAt })
+    assert.deepEqual(r.closeDeferred.map(x => x.positionId), ['7007'], `snapshotAt ${String(snapshotAt)}`)
+    assert.equal(status(db, old).trade.status, 'closed', `snapshotAt ${String(snapshotAt)}`)
+  }
+})
+
+test('a snapshot time later than the read cannot be true: the 120 s bound applies, so a row opened just before the read is not judged on it', () => {
+  const db = fresh()
+  const now = Date.now()
+  const young = place(db, { symbol: 'BTCUSD', positionId: '8008' })
+  openedAt(db, young, now - 30_000)
+  const old = place(db, { symbol: 'JPYX', positionId: '8009' })
+  openedAt(db, old, now - SNAPSHOT_AGE_BOUND_MS - 5_000)
+  const r = reconcilePositions(db, [], [], setAcct(db), { accountId: A, readAt: now, snapshotAt: now + 60_000 })
+  assert.deepEqual(r.closeDeferred.map(x => x.positionId), ['8008'], 'a future snapshot time would have closed it')
+  assert.equal(status(db, young).trade.status, 'open')
+  assert.equal(status(db, old).trade.status, 'closed')
+})

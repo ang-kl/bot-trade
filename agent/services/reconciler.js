@@ -367,6 +367,28 @@ export function assertReconcileIdentity(reply, accountId, where = 'reconcile') {
  */
 export const SNAPSHOT_AGE_BOUND_MS = 120_000
 
+/**
+ * THE GATEWAY'S SNAPSHOT TIME (12-10-2026, the owner's "snapshot time next").
+ * The cached snapshot now carries `snapshotAtMs`: the moment the gateway SENT
+ * its reconcile request, the earliest the broker can have built the answer.
+ * loop.js passes it as `snapshotAt`. With it, a row opened at or after that
+ * moment (less this margin) is young however old the cache is — a cache frozen
+ * by broker refusals included, which the 120 s bound let through — and a row
+ * opened before it is judged on the snapshot at once instead of being held
+ * for the bound. The margin covers opened_at's whole-second resolution and
+ * the two containers' clocks. Without a plausible snapshot time (absent, not
+ * a number, before 2020, or later than the read) the bound above applies
+ * exactly as before.
+ * Claude · № 13,774 12-Oct (claude-builder)
+ */
+export const SNAPSHOT_CLOCK_MARGIN_MS = 5_000
+const PLAUSIBLE_SNAPSHOT_MS = 1_600_000_000_000
+
+function snapshotTimeMs(v) {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
+  return Number.isFinite(n) && n > PLAUSIBLE_SNAPSHOT_MS ? n : null
+}
+
 /** SQLite 'YYYY-MM-DD HH:MM:SS' (UTC) or ISO → epoch ms; NaN when unreadable. */
 function utcMs(v) {
   if (v == null) return NaN
@@ -381,8 +403,16 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // D1 (see SNAPSHOT_AGE_BOUND_MS): with a known read time, a row opened
   // within the bound before it is not judged closed on this snapshot. A
   // caller that does not know its read time is judged exactly as before.
+  // With the gateway's snapshot time (SNAPSHOT_CLOCK_MARGIN_MS), a row is
+  // young from that moment instead. A snapshot time later than the read
+  // (beyond the margin) cannot be true — the clocks disagree — so the bound
+  // applies: trusting it would judge a row opened just before the read on a
+  // snapshot that may predate it, the very close D1 was.
   const readAtMs = opts.readAt == null ? NaN : (typeof opts.readAt === 'number' ? opts.readAt : Date.parse(opts.readAt))
-  const youngFromMs = Number.isFinite(readAtMs) ? readAtMs - SNAPSHOT_AGE_BOUND_MS - 1000 : null
+  const sent = snapshotTimeMs(opts.snapshotAt)
+  const snapMs = sent != null && !(Number.isFinite(readAtMs) && sent > readAtMs + SNAPSHOT_CLOCK_MARGIN_MS) ? sent : null
+  const youngFromMs = snapMs != null ? snapMs - SNAPSHOT_CLOCK_MARGIN_MS
+    : Number.isFinite(readAtMs) ? readAtMs - SNAPSHOT_AGE_BOUND_MS - 1000 : null
   const isYoung = (openedAt) => {
     if (youngFromMs == null) return false
     const ms = utcMs(openedAt)
