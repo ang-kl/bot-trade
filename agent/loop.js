@@ -18,7 +18,7 @@ import { horizonForStrategy } from './services/trade-horizon.js'
 import { recordTradePlan, recordPlanWriteFailure } from './services/trade-plans.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, accountMarginPool, scanRates, effectiveRrFloor } from './services/risk.js'
-import { momentumPlanApplies } from './services/momentum-entry-switch.js'
+import { momentumPlanApplies, registryEnabled } from './services/momentum-entry-switch.js'
 import { journalMarginPoolState } from './services/margin-pool-journal.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
 import { sendScanAlert } from './services/telegram.js'
@@ -500,7 +500,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // Off, or for an unlisted account, this is false and
   // nothing below changes: a momentum proposal still carries no target and
   // the shared execution boundary refuses it, exactly as before T4.
-  const momentumPlanOn = momentumPlanApplies(producerId, { accountId, ...(seam?.entrySwitch ? { load: () => seam.entrySwitch } : {}) })
+  // W8 `_all` reaches registry-enabled accounts only: the registry is read
+  // here, not inferred from the roster that called (Codex P1 on #1327;
+  // Claude · № 13,459 12-Oct, owner's yes naming loop.js; claude-builder).
+  const momentumPlanOn = momentumPlanApplies(producerId, { accountId, isEnabled: registryEnabled(db), ...(seam?.entrySwitch ? { load: () => seam.entrySwitch } : {}) })
   // One refusal record for the T4 path's named refusals: the proposal as it
   // stands, refused, in the risk ledger and the decision log.
   const refuseMomentumEntry = async (reason, stage = 'momentum_entry') => {

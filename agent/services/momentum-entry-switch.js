@@ -37,11 +37,12 @@ const ACCOUNT_ID = /^[1-9]\d*$/
 // docs/instruction-2026-10-12-decisions.md W8; claude-builder). `"_all"` in
 // `accounts` names every ENABLED registry account — the token
 // config/momentum-account.json already uses (principle 9: no hardcoded
-// account list). This leaf module has no database, so a caller that has one
-// passes `isEnabled` (registryEnabled below). The two momentum producers reach
-// the check only from the book's per-account pass, whose roster is the
-// registry's enabled accounts that may enter (registryAutopilotAccounts via
-// getAutopilotAccounts), so their call (loop.js autoTrade) needs none.
+// account list). This leaf module has no database, so every caller passes
+// `isEnabled` (registryEnabled below); without one `_all` names no account.
+// The caller's roster is not proof: getAutopilotAccounts falls back to the
+// legacy roles list when the registry has no account that may enter, or
+// cannot be read (Codex P1 on #1327; Claude · № 13,459 12-Oct, owner's yes
+// naming loop.js; claude-builder).
 export const ALL_ENABLED_ACCOUNTS = '_all'
 
 /** An `isEnabled` reader over the account registry: enabled = 1. */
@@ -65,14 +66,14 @@ export function loadMomentumEntrySwitch(file = MOMENTUM_ENTRIES_FILE) {
 }
 
 /** Is this account named in the switch's declared account list — by id, or
- * by `_all` when it is a well-formed id the registry has enabled (`isEnabled`
- * given) or the caller's roster already is (no `isEnabled`; see above)? */
+ * by `_all` when it is a well-formed id the registry has enabled? `_all` with
+ * no `isEnabled` reader names no account (fail closed; see above). */
 export function momentumAccountListed(sw, accountId, { isEnabled = null } = {}) {
   if (!Array.isArray(sw?.accounts) || accountId == null) return false
   const id = String(accountId)
   if (sw.accounts.includes(id)) return true
   if (!sw.accounts.includes(ALL_ENABLED_ACCOUNTS) || !ACCOUNT_ID.test(id)) return false
-  return typeof isEnabled === 'function' ? isEnabled(id) === true : true
+  return typeof isEnabled === 'function' && isEnabled(id) === true
 }
 
 /** Does the T4 plan path apply to this producer's entry on this account?

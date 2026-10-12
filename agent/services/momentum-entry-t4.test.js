@@ -19,7 +19,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { tempDir } from '../test-support/temp-dir.js'
 import { startFakeBroker } from '../test-support/fake-broker.js'
@@ -127,9 +127,12 @@ test('W8: `_all` names every enabled registry account and no disabled or malform
     assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '99999999', load: all, isEnabled }), false, 'unknown to the registry')
     assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: 'abc', load: all, isEnabled: () => true }), false, 'malformed id')
     assert.equal(momentumPlanApplies('scan_dispatch', { accountId: '47790949', load: all, isEnabled }), false, 'not a momentum producer')
-    // Without a registry reader (the loop's call), `_all` trusts the caller's
-    // roster, which is the registry's enabled entry accounts.
-    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '47790949', load: all }), true)
+    // Without a registry reader `_all` names no account: fail closed. The
+    // caller's roster is not proof — getAutopilotAccounts can fall back to the
+    // legacy roles list (Codex P1 on #1327; Claude · № 13,459 12-Oct, owner's
+    // yes naming loop.js; claude-builder).
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '47790949', load: all }), false, 'no registry reader')
+    assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '47790949', load: all, isEnabled: 'yes' }), false, 'a reader that is not a function')
     // An explicit list still names exactly its ids; `_all` plus an id is `_all`.
     const one = () => loadMomentumEntrySwitch(at('one.json', '{"market":true,"accounts":["46130058"]}'))
     assert.equal(momentumPlanApplies('cross_sectional_book', { accountId: '46130058', load: one, isEnabled }), true, 'listed, even though this registry does not hold it')
@@ -332,6 +335,28 @@ test('W8, SWITCH ON as shipped (`_all`): an entry on an enabled account other th
   assert.ok(s.sent[0].relativeTakeProfit > 0 && s.sent[0].relativeStopLoss > 0, 'the order carries the plan\'s bracket')
   assert.ok(s.intents().length >= 1, 'a target intent is recorded')
   assert.ok(!s.vetoes().some(v => /guard_no_target/.test(v)), JSON.stringify(s.vetoes()))
+})
+
+// Codex P1 on #1327 — Claude · № 13,459 12-Oct (owner's yes naming loop.js; claude-builder).
+test('W8 (Codex P1 on #1327): with `_all` shipped, an account the registry has DISABLED takes the pre-T4 path through the real dispatch — no plan, no evidence read, refused at the boundary', async t => {
+  const s = await scene(t)
+  s.db().prepare('UPDATE accounts SET enabled = 0 WHERE account_id = ?').run(ACCT)
+  const shipped = loadMomentumEntrySwitch()
+  assert.deepEqual([shipped.market, shipped.accounts], [true, ['_all']])
+  assert.equal(await s.run(shipped) ?? null, null, 'no entry')
+  assert.deepEqual(s.reads, { symbolsList: 0, assets: 0, symbolsById: 0, quote: 0, reconcile: 0 }, 'no momentum evidence read')
+  assert.equal(s.intents().length, 0, 'no target intent recorded')
+  assert.equal(s.broker.positions(ACCT).length, 0, 'nothing opened at the broker')
+  assert.equal(s.sent.length, 1, 'the order reached the shared boundary as before T4')
+  assert.equal(s.sent[0].relativeTakeProfit, undefined, 'without a target')
+  assert.ok(s.vetoes().some(v => /guard_no_target/.test(v)), JSON.stringify(s.vetoes()))
+})
+
+test('W8 wiring (comments stripped): the loop\'s momentum-plan check reads the registry, not the caller\'s roster', () => {
+  const src = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(src, /const momentumPlanOn = momentumPlanApplies\(producerId, \{ accountId, isEnabled: registryEnabled\(db\)/)
+  assert.match(src, /import \{ momentumPlanApplies, registryEnabled \} from '\.\/services\/momentum-entry-switch\.js'/)
 })
 
 test('B1, SWITCH ON with an explicit list, an account NOT in the list takes the pre-T4 path — no evidence read, no intent, refused at the boundary', async t => {
