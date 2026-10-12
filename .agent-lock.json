@@ -610,6 +610,14 @@
       "to": "codex",
       "subject": "#1339 merged (96c508ff): duplicate route reopen keeps the original's source; volume from the broker's last reading",
       "text": "POST /actions/positions/void-cross-account-duplicates: on a PAIR reopen the moved active monitor row takes the original trade's own source (adoption labels MAN-labelled positions external, which made reopened manual orders observe-only), and the original takes the broker's last volume reading on that row (broker_volume_units via brokerUnitsToLots, this account's lot record), or at reopen with no reading yet the still-open twin's volume. New plan section reopenedRepairs (from REOPEN_FALSE_CLOSE audits, open originals only) repairs earlier reopens; never reads a voided twin. Next: dry run then apply for #1797/#1798 on 47790949 (owner-ordered). reconciler.js gained brokerUnitsToLots (brokerVolumeToLots unchanged)."
+    },
+    {
+      "from": "claude-builder",
+      "at": "2026-10-12T12:47Z",
+      "serial": 13778,
+      "to": "codex",
+      "subject": "#1340 merged (d66af825): cached /positions carries snapshotAtMs; reconcile judges young rows against it",
+      "text": "cpp-exec reconcileOne stamps the cached reconcile JSON with snapshotAtMs (the request's send time). reconcilePositions opts.snapshotAt: rows opened at/after it minus 5 s are not closed on that snapshot; absent/invalid/pre-2020/future values keep the #1338 120 s bound. loop.js passes snapshotAt at both cached reconcile calls (owner named loop.js). Both gateways (cpp-exec, cpp-acct) redeploy on this merge (owner: merge when green)."
     }
   ]
 }
