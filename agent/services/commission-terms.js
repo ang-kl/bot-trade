@@ -296,7 +296,11 @@ function round(v) { return Number.isFinite(v) ? Math.round(v * 10_000) / 10_000 
 export function symbolsToRead(db, accountId, ownMap, { days = 30, extra = [], now = Date.now() } = {}) {
   const since = new Date(now - days * 86_400_000).toISOString().replace('T', ' ').slice(0, 19)
   const fromDeals = db.prepare('SELECT DISTINCT symbol FROM broker_deals WHERE account_id = ? AND closed_at >= ? AND symbol IS NOT NULL').all(String(accountId), since).map(r => r.symbol)
-  const wanted = [...new Set([...fromDeals, ...extra.map(s => String(s).trim()).filter(Boolean)])].sort()
+  // Claude · № 13,856 13-Oct (Codex P2 on #1344, ordered after № 13,855; owner "Upper-case requested
+  // names"; claude-builder): account symbol maps are keyed by the upper-cased
+  // broker name (ctrader-creds.js fetchAccountSymbolMap), so a typed name is
+  // upper-cased before it is looked up.
+  const wanted = [...new Set([...fromDeals, ...extra.map(s => String(s).trim().toUpperCase()).filter(Boolean)])].sort()
   const ids = [], namesById = {}, notListed = [], overCap = []
   for (const name of wanted) {
     const sid = ownMap?.[name]

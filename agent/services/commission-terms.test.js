@@ -151,7 +151,7 @@ test('symbolsToRead: own map only, not-listed and over-cap are named', () => {
   const db = initDB(':memory:')
   deal(db, { id: 'a', account: '47790949', symbol: 'AUDUSD', lots: 1, entry: 0.7, commission: -7 })
   deal(db, { id: 'b', account: '47790949', symbol: 'ZZZ', lots: 1, entry: 1, commission: 0 })
-  const r = symbolsToRead(db, '47790949', { AUDUSD: 101, GBPUSD: 102 }, { days: 30, extra: ['GBPUSD'], now: NOW })
+  const r = symbolsToRead(db, '47790949', { AUDUSD: 101, GBPUSD: 102 }, { days: 30, extra: [' gbpUsd '], now: NOW })
   assert.deepEqual(r.ids, [101, 102])
   assert.deepEqual(r.notListed, ['ZZZ'])
   const big = Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`S${String(i).padStart(2, '0')}`, i + 1]))
