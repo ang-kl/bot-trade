@@ -211,3 +211,47 @@ test('view: stored backtest baseline surfaces, reality-gap advisory fires on liv
   assert.equal(v.backtest.combos.length, 1)
   assert.ok(v.advisories.some(a => /Reality gap/.test(a.text)))
 })
+
+// Claude · № 13,901 13-Oct (owner: "Why are the strategies in edge health card
+// in Desk page show off while Tune page strategies show switched on?"; "Yes,
+// per account"; claude-builder). Production 13-10: the global list had
+// rsi_meanrev off while every account had its own cell on, and rsi_meanrev
+// opened 12 bot trades in the week; the card showed OFF beside them.
+test('armed: one account in scope reads that account\'s own Auto Trade cells, not the global list', async () => {
+  const { setState } = await import('../db.js')
+  const { acctMatrixKey } = await import('./stage-matrix.js')
+  const db = initDB(':memory:')
+  for (const id of ['111', '222']) db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')`).run(id, id)
+  setState(db, 'enabled_strategies_json', JSON.stringify(['cup_handle', 'vwap_trend']))
+  setState(db, acctMatrixKey('111'), JSON.stringify({ strategy: { rsi_meanrev: { trade: true }, vwap_trend: { trade: false } } }))
+  const v = alphaDecayView(db, { window: 10, scope: { accountId: '111', all: false, explicit: true } })
+  const row = (k) => v.strategies.find(s => s.strategy === k)
+  assert.equal(v.armedScope, 'account 111')
+  assert.equal(row('rsi_meanrev').armed, true, 'the account\'s own cell is on')
+  assert.equal(row('vwap_trend').armed, false, 'the account\'s own cell is off, whatever the global says')
+  assert.equal(row('cup_handle').armed, true, 'an untouched cell follows the global')
+  assert.equal(row('vp_value').armed, false)
+  assert.deepEqual(row('rsi_meanrev').armedOn, { on: 1, of: 1 })
+})
+
+test('armed: with every account in scope, a strategy is armed where any enabled account has it on, counted n of N', async () => {
+  const { setState } = await import('../db.js')
+  const { acctMatrixKey } = await import('./stage-matrix.js')
+  const db = initDB(':memory:')
+  for (const id of ['111', '222']) db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')`).run(id, id)
+  db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES ('333', '333', 0, 0, 'active')`).run()
+  setState(db, 'enabled_strategies_json', JSON.stringify(['cup_handle', 'ema_pullback']))
+  setState(db, acctMatrixKey('111'), JSON.stringify({ strategy: { rsi_meanrev: { trade: true } } }))
+  setState(db, acctMatrixKey('222'), JSON.stringify({ strategy: { cup_handle: { trade: false } } }))
+  // A disabled account's cell is not counted.
+  setState(db, acctMatrixKey('333'), JSON.stringify({ strategy: { vp_value: { trade: true } } }))
+  const v = alphaDecayView(db, { window: 10, scope: { accountId: null, all: true, explicit: true } })
+  const row = (k) => v.strategies.find(s => s.strategy === k)
+  assert.equal(v.armedScope, 'all enabled accounts')
+  assert.equal(row('rsi_meanrev').armed, true)
+  assert.deepEqual(row('rsi_meanrev').armedOn, { on: 1, of: 2 })
+  assert.deepEqual(row('cup_handle').armedOn, { on: 1, of: 2 })
+  assert.deepEqual(row('ema_pullback').armedOn, { on: 2, of: 2 }, 'both accounts follow the global cell')
+  assert.equal(row('vp_value').armed, false)
+  assert.deepEqual(row('vp_value').armedOn, { on: 0, of: 2 })
+})

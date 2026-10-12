@@ -20,6 +20,7 @@
 import { getState } from '../db.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from './strategies.js'
+import { armedTradeKeys } from './stage-matrix.js'
 import { STRATEGY_KIND } from './regime-gate.js'
 import { accountWhere } from '../lib/account-scope.js'
 
@@ -95,6 +96,37 @@ export function streakOf(trades) {
   return { kind: sign ? 'win' : 'loss', n }
 }
 
+/**
+ * Which strategies are trade-armed for the scope Edge health is showing.
+ * - one account: that account's own Auto Trade & Open cells over the global;
+ * - every account: armed where at least one enabled account has the cell on,
+ *   with `counts[key] = { on, of }` over the enabled accounts;
+ * - no enabled account registered: the global default list, named as such.
+ */
+export function armedByScope(db, scope) {
+  const counts = {}
+  if (scope && !scope.all && scope.accountId != null) {
+    const keys = armedTradeKeys(db, getState, String(scope.accountId))
+    for (const k of keys) counts[k] = { on: 1, of: 1 }
+    return { keys, counts, scope: `account ${scope.accountId}` }
+  }
+  let ids = []
+  try { ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { ids = [] }
+  if (ids.length === 0) {
+    return { keys: new Set(enabledStrategies(db, getState).map(s => s.key)), counts, scope: 'global default' }
+  }
+  const keys = new Set()
+  for (const s of STRATEGY_REGISTRY) counts[s.key] = { on: 0, of: ids.length }
+  for (const id of ids) {
+    for (const k of armedTradeKeys(db, getState, id)) {
+      if (!counts[k]) continue
+      counts[k].on++
+      keys.add(k)
+    }
+  }
+  return { keys, counts, scope: 'all enabled accounts' }
+}
+
 /** Full dashboard payload from the DB. */
 // S1 batch 8. `scope` is optional and unscoped by default. Alpha decay asks
 // "is this strategy still working" — pooled across accounts it answers for a
@@ -130,7 +162,16 @@ export function alphaDecayView(db, { window = 30, scope = null } = {}) {
   // you don't include all strategy and justify") — even ones that have never
   // traded, so the roster is complete and each row justifies itself with
   // armed state, net P&L and win rate, not just a per-trade expectancy.
-  const armed = new Set(enabledStrategies(db, getState).map(s => s.key))
+  // Claude · № 13,901 13-Oct (owner: "Why are the strategies in edge health
+  // card in Desk page show off while Tune page strategies show switched on?";
+  // "Yes, per account"; claude-builder). ARMED used to read the GLOBAL default
+  // list while the P&L beside it was scoped to an account, and every account
+  // pins its own Auto Trade & Open cells, so OFF showed beside strategies that
+  // were trading. It now reads the cell the order loop's per-account gate
+  // reads (tradeStageGate → loadStageMatrix): one account's own cell, or with
+  // every account in scope, how many enabled accounts have it on.
+  const armedView = armedByScope(db, scope)
+  const armed = armedView.keys
   const nameOf = Object.fromEntries(STRATEGY_REGISTRY.map(s => [s.key, s.name]))
   const registeredKeys = STRATEGY_REGISTRY.map(s => s.key)
   const allKeys = [...new Set([...registeredKeys, ...Object.keys(byStrat)])]
@@ -143,6 +184,7 @@ export function alphaDecayView(db, { window = 30, scope = null } = {}) {
         name: strategy === 'unlabelled' ? 'Manual / external' : (nameOf[strategy] || strategy),
         kind: STRATEGY_KIND[strategy] || (strategy === 'unlabelled' ? 'manual' : 'other'),
         armed: armed.has(strategy),
+        armedOn: armedView.counts[strategy] ?? { on: armed.has(strategy) ? 1 : 0, of: 1 },
         registered: registeredKeys.includes(strategy),
         netPnl: decayed.total.totalPnl,   // total realized $ — the number the owner is bleeding
         winRate: decayed.total.winRate,    // 0..1
@@ -253,6 +295,7 @@ export function alphaDecayView(db, { window = 30, scope = null } = {}) {
 
   return {
     window,
+    armedScope: armedView.scope,
     total_closed: trades.length,
     strategies,
     unlabelled: byStrat.unlabelled
