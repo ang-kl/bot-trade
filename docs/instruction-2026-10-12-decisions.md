@@ -340,7 +340,7 @@ W3 comes before W9 and W10, so their acceptance can be read on the card.
 
 ---
 
-## 6. Status, corrections and findings (kept current; Claude · № 13,401 12-Oct, updated № 13,489 and № 13,571; claude-builder)
+## 6. Status, corrections and findings (kept current; Claude · № 13,401 12-Oct, updated № 13,489, № 13,571 and № 13,638; claude-builder)
 
 This section records what happened to each item, so the document stays
 checked against the code (owner principle 5). Each later PR updates it.
@@ -357,6 +357,8 @@ checked against the code (owner principle 5). Each later PR updates it.
 | Lot fix (not in §2) | "Go lot fix" (after № 13,394) | none |
 | Hybrid audit text (Codex P2 on #1327) | "Yes, change it" (after № 13,483) | `momentum-partial-runtime.js` |
 | W6 code (not in §2) | "Raise the cap (code change)" (after the W6 dry run's 413) | none |
+| #1330's Codex findings | "Fix in #1330 now" (spill directory; CLI output), "Add a spill-byte cap", "Record it on the trials" (12-10, № 13,615–13,635) | none |
+| Mixing live and demo in one W6 job (Codex P1 on #1330) | "Merge now, decide later" (after № 13,637): not decided; W6 does not run until it is | none |
 
 ### 6.2 Item status
 
@@ -371,8 +373,8 @@ checked against the code (owner principle 5). Each later PR updates it.
 | W9 | `"_all"` in `manual-hybrid.json` | #1327 | **Passed** 12-10 08:40 SGT: no `manual_account_not_authorised` remains. The manual enrolment now examines the four …0949 pad positions and defers them on `monitor_entry_conflict` (§6.4) |
 | W10 | `capped_hybrid_json` (default 2R / 50%) read by both enrolments; exact or refused at any volume | #1327 | **Passed** 12-10 08:41 SGT: nothing stored, the setting reads the defaults, and the card's verdicts are unchanged |
 | Lot fix | an empty pad Lots box sends no cap | this PR | the next blank-lots pad order is risk-sized |
-| W5 | batch 1 applied 12-10; batch 2 stalled (0 updated, 25 errors) | operation; the fetch-window fix is the next PR | after batch 1: truncated 99 → 71 of 152, common cohort 51 → 79 of 152, `/data` +3 MB |
-| W6 | the dry run answered 413: 92,274,616 records (live 40,265,284; demo 52,009,332; 55 segments) against the 5,000,000 cap. The replay now streams one symbol at a time above 5,000,000 records; cap 150,000,000; worker heap 4,096 MB; abort and `clearCache` | this PR | the dry run again, then the run (§6.4: about 6 hours for both sides) |
+| W5 | batch 1 applied 12-10; batch 2 stalled (0 updated, 25 errors). The fetch window now starts at each row's last bar and steps forward; "no newer bars yet" is not an error; a stopped call returns `resumeFrom` | this PR (code); then the batches (operation) | after batch 1: truncated 99 → 71 of 152, common cohort 51 → 79 of 152, `/data` +3 MB |
+| W6 | the dry run answered 413: 92,274,616 records (live 40,265,284; demo 52,009,332; 55 segments) against the 5,000,000 cap. The replay streams one symbol at a time above 5,000,000 records; cap 150,000,000; worker heap 4,096 MB; abort and `clearCache` | #1330, merged 12-10 11:52 SGT (80d79f71) | **Passed** 12-10 12:03 SGT: `maxRecords` 150,000,000 live; 44 controllers ok/retired/idle; 10/10 positions with a broker stop. The run waits for the mixed-sides decision (§6.4) |
 | W7 | not started (after W6) | operation | — |
 
 ### 6.3 Corrections to §2 (what the text said vs what the code needed)
@@ -447,11 +449,28 @@ checked against the code (owner principle 5). Each later PR updates it.
   segment; the oracle's windows are O(rangeEvents) per quote). Twelve grid
   points over 92,274,616 records is about 6.3 hours of one core: about 2.7 h
   for the live side and 3.5 h for the demo side. A Node redeploy during the
-  run loses it. Both sides land in one cache and one job; a symbol id that
-  exists on both sides would interleave the two feeds out of time order.
-  Running each side as its own job (`segments` naming that side's sealed
-  segments, at most 64) avoids that. Which way to run it is the owner's call.
+  run loses it. Both sides land in one cache and one job, and a symbol id
+  that exists on both sides interleaves the two feeds out of time order.
+  **Measured 12-10 12:00 SGT** (`/state/tick-recorder`, per-symbol counters):
+  54 ids recorded live, 61 demo, **27 on both**. Codex raised the same point
+  on #1330. Options: refuse a job that mixes the sides (W6 then runs one side
+  at a time, naming its segments: 24 live, 31 demo, at most 64 per request),
+  or key each stream by side and symbol id. Open: the owner chose to merge
+  #1330 and decide this separately, and W6 does not run until it is decided.
 
 ### 6.5 Held items (§4) — unchanged
 
 D3, H4, T3, T4, M2 and M3 stay held as §4 says.
+
+### 6.6 Working rule (owner, 12-10, about 10:07 SGT)
+
+*"Merge when green. Don't fix on 'fly by the seat of your pants' and on a
+whim."* From then on, every fix in this work:
+
+1. names the failure and its evidence first (a reproduction or a measurement);
+2. traces the real path;
+3. writes a test that is red before the change;
+4. then changes the code.
+
+A review finding is a claim to trace, not an order. Each new Codex finding on
+#1330 was traced and brought to the owner before any code changed (§6.1).
