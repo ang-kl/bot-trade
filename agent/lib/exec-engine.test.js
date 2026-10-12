@@ -975,3 +975,22 @@ test('ratchetOnly amend: POST /amend with the ratchet fields on the wire; a side
   })
   assert.equal(requests.filter(r => r.url === '/amend').length, 1, 'one sidecar attempt, nothing after it')
 })
+
+// Claude · № 13,701 12-Oct (Codex P2 on #1333; owner "Give it its code";
+// claude-builder). The JS fallback re-reads the entry-mode fence immediately
+// before its write. A refusal there sends nothing, exactly like the
+// primary-path refusal, so it carries the same code: callers that tell an
+// unsent refusal from a possible send by code (UNSENT_CODES, failAnalysisTrade)
+// otherwise read it as a server fault, and the approval as "ordered".
+test('a fallback write refused by the re-read entry-mode fence carries code ENTRY_MODE_REFUSED, and nothing is sent over the JS transport', async () => {
+  nextResponse = { status: 503, body: JSON.stringify({ errorCode: 'NOT_CONNECTED', description: 'broker session down' }) }
+  let asks = 0
+  const creds = { ...CREDS, host: '127.0.0.1', entryAdmission: async () => (++asks === 1 ? { ok: true } : { ok: false, reason: 'entry_mode STOPPED' }) }
+  const payload = { ctidTraderAccountId: 123, symbolId: 1, orderType: 'MARKET', tradeSide: 'BUY', volume: 100000, relativeStopLoss: 1000, relativeTakeProfit: 3000 }
+  await assert.rejects(placeOrder(creds, payload), (err) => {
+    assert.match(err.message, /^ENTRY_MODE_REFUSED: entry_mode STOPPED \(re-checked before the fallback write\)/, err.message)
+    assert.equal(err.code, 'ENTRY_MODE_REFUSED')
+    return true
+  })
+  assert.equal(asks, 2, 'the fence was read before the sidecar and again before the fallback write')
+})

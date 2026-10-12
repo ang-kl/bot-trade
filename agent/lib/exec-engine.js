@@ -1047,7 +1047,10 @@ export async function placeOrder(creds, orderPayload) {
           // the sidecar attempt was failing.
           if (typeof creds.entryAdmission === 'function') {
             const again = await creds.entryAdmission()
-            if (again && again.ok === false) throw new Error(`ENTRY_MODE_REFUSED: ${again.reason} (re-checked before the fallback write)`)
+            // Claude · № 13,701 12-Oct (Codex P2 on #1333; owner "Give it its
+            // code"; claude-builder): the same code as the primary-path
+            // refusal, so callers read it as unsent (it is), not a fault.
+            if (again && again.ok === false) throw Object.assign(new Error(`ENTRY_MODE_REFUSED: ${again.reason} (re-checked before the fallback write)`), { code: 'ENTRY_MODE_REFUSED' })
           }
           const m = await ws()
           return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, wire)
