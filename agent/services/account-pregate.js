@@ -194,7 +194,7 @@ export function proposalPregate(db, accountId, proposal, { cycle = null, account
       const rr = Math.round((Math.abs(tp1 - entry) / Math.abs(entry - sl)) * 100) / 100
       const rrV = rrFloorVerdict(db, {
         strategy: proposal.strategy, rr, accountId: acct, config: cfg,
-        entry, sl, tp1, side: proposal.side,
+        entry, sl, tp1, side: proposal.side, symbol: proposal.symbol,
       })
       if (!rrV.ok) return skip(RR_PREFILTER_STAGE, rrV.reason, { rr, rrFloor: rrV.rrFloor, requested: rrV.requested, ...rrV.checks })
     }

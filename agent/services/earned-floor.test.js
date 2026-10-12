@@ -148,6 +148,11 @@ function armBalance(db, accountId, usd) {
 
 test('gate admits an earned-floor proposal on demo, stamps checks, halves the size', () => {
   const db = withAccounts(initDB(':memory:'))
+  // The earned floor as it stood before the fluid rule — still reachable with
+  // fluidRisk.on false (owner, 12-10-2026). The fluid rule that replaced it on
+  // the default path is pinned in fluid-rr-floor.test.js.
+  // Claude · № 13,729 12-Oct (claude-builder)
+  setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { on: false } }))
   seedRecord(db, 'vwap_trend', 20, 70)
   armBalance(db, DEMO, 10_000)
 
@@ -225,6 +230,11 @@ test('gate still vetoes: a live account with NO record of its own (thin, not its
 // ---------------------------------------------------------------------------
 test('stage-2 config: a measured LIVE account admits at full risk; the defaults refuse it on its thin sample (PR-B: never on its environment)', () => {
   const db = withAccounts(initDB(':memory:'))
+  // The earned floor as it stood before the fluid rule — still reachable with
+  // fluidRisk.on false (owner, 12-10-2026). The fluid rule that replaced it on
+  // the default path is pinned in fluid-rr-floor.test.js.
+  // Claude · № 13,729 12-Oct (claude-builder)
+  setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { on: false } }))
   seedRecord(db, 'vwap_trend', 12, 60, { accountId: LIVE }) // 12 closes at 60% W on the LIVE account — under the default 15 sample
   armBalance(db, LIVE, 10_000)
 
@@ -470,6 +480,11 @@ test('prior admit: a FRESH scope shrinks from the pooled record until it has a c
 
 test('gate: a prior admit approves a sub-3R demo proposal at half risk and stamps via:prior; the report splits it out', () => {
   const db = withAccounts(initDB(':memory:'))
+  // The earned floor as it stood before the fluid rule — still reachable with
+  // fluidRisk.on false (owner, 12-10-2026). The fluid rule that replaced it on
+  // the default path is pinned in fluid-rr-floor.test.js.
+  // Claude · № 13,729 12-Oct (claude-builder)
+  setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { on: false } }))
   setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ vwap_trend: { winRatePct: 60, trades: 5855, combos: 144 } }))
   armBalance(db, DEMO, 10_000)
   armBalance(db, LIVE, 10_000)
@@ -605,6 +620,11 @@ test('stretch: 48% prior at a 1.2R proposal → target moved to 1.40R (E 0.152) 
 
 test('gate: a 1.2R rsi2 proposal on demo with a 48% prior is ADMITTED at a 1.40R target — target_override carries the new tp1, checks say stretchedFrom', () => {
   const db = withAccounts(initDB(':memory:'))
+  // The earned floor as it stood before the fluid rule — still reachable with
+  // fluidRisk.on false (owner, 12-10-2026). The fluid rule that replaced it on
+  // the default path is pinned in fluid-rr-floor.test.js.
+  // Claude · № 13,729 12-Oct (claude-builder)
+  setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { on: false } }))
   setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ rsi2_reversion: { winRatePct: 48, trades: 900, combos: 40 } }))
   armBalance(db, DEMO, 10_000)
   // long: entry 1.1000, sl 1.0970 (30 pips), tp1 1.1036 (1.2R)
@@ -639,6 +659,11 @@ test('gate: a 1.2R rsi2 proposal on demo with a 48% prior is ADMITTED at a 1.40R
 
 test('gate: the stretch is a door only for a known win rate — no record, live scope, over the cap, or stretch off all veto bad_rr as before', () => {
   const db = withAccounts(initDB(':memory:'))
+  // The earned floor as it stood before the fluid rule — still reachable with
+  // fluidRisk.on false (owner, 12-10-2026). The fluid rule that replaced it on
+  // the default path is pinned in fluid-rr-floor.test.js.
+  // Claude · № 13,729 12-Oct (claude-builder)
+  setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { on: false } }))
   armBalance(db, DEMO, 10_000); armBalance(db, LIVE, 10_000)
   const prop = { symbol: 'EURUSD', side: 'long', entry: 1.1, sl: 1.097, tp1: 1.1036, requestedVolume: null, strategy: 'rsi2_reversion', conviction: 8, accountId: DEMO }
   // No prior, no closes → thin sample → bad_rr, and the stretch denial names it.

@@ -141,6 +141,10 @@ function assertRefusedAfterApproval(db, label, reasonRe) {
 test('B1: an analysis the gate approved only at a stretched target is sent with that target, and the ledger records it', async t => {
   const db = fresh({ halt: false })
   t.after(() => db.close())
+  // A stretch happens only on the earned floor, which the fluid rule replaced
+  // on the default path (owner, 12-10-2026); with fluidRisk.on false the
+  // stretch, and this wiring, are still live. Claude · № 13,729 12-Oct (claude-builder)
+  setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { on: false } }))
   // The prior earned-floor.test.js uses for a stretched admit: rsi2's 1.2R design reaches 1.4R.
   setState(db, 'autopilot_strategy_prior_json', JSON.stringify({ rsi2_reversion: { winRatePct: 48, trades: 900, combos: 40 } }))
   const { post, broker } = await serve(t, db)
