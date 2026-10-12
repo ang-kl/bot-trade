@@ -945,6 +945,12 @@ export function replayFiles(files, plan, replayThresholds, { spillDir = null, in
       if (ownDir) rmSync(ownDir, { recursive: true, force: true })
       throw replayRefusal(over, maxSymbolEvents)
     }
+    // Codex P1 on #1330 (review of 0049e8a8; owner: "Record it on the
+    // trials"): the skip rides every trial's manifest, so a stored row says
+    // what its run left out after the job record is gone (as maxSegments'
+    // bound does). Only when something was skipped: a run that skipped
+    // nothing keys the same trial ids as the in-memory path.
+    if (over.length) Object.assign(manifestBase, { maxSymbolEvents, symbolsNotReplayed: over })
     const skip = new Set(over.map(o => o.symbolId))
     source = {
       manifestBase,

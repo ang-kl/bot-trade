@@ -128,7 +128,26 @@ test('a symbol whose stream is over the bound is named and not replayed; the oth
   assert.deepEqual(str.replay.symbolsNotReplayed, big.map(id => ({ symbolId: id, streamEvents: counts.get(id) })))
   assert.equal(str.replay.maxSymbolEvents, bound)
   assert.deepEqual(str.trials.map(t => t.trial.manifest.symbolId), mem.trials.map(t => t.trial.manifest.symbolId).filter(id => !big.includes(id)))
-  assert.deepEqual(str.trials, mem.trials.filter(t => !big.includes(t.trial.manifest.symbolId)), 'the replayed symbols are the in-memory trials')
+  // Codex P1 on #1330 (review of 0049e8a8; owner: "Record it on the trials"):
+  // every trial of a run that skipped a symbol says so on its own manifest, so
+  // the stored row says it, not only the transient job. Otherwise each replayed
+  // symbol's trial is the in-memory one: same summary, blocks and parity.
+  const want = mem.trials.filter(t => !big.includes(t.trial.manifest.symbolId))
+  for (const [i, t] of str.trials.entries()) {
+    assert.deepEqual(t.trial.manifest.symbolsNotReplayed, big.map(id => ({ symbolId: id, streamEvents: counts.get(id) })), 'RED before the fix: the skip lived only on the job')
+    assert.equal(t.trial.manifest.maxSymbolEvents, bound)
+    const { symbolsNotReplayed, maxSymbolEvents, ...rest } = t.trial.manifest // eslint-disable-line no-unused-vars
+    assert.deepEqual(rest, want[i].trial.manifest)
+    for (const k of ['summary', 'blocks', 'parity', 'params', 'sim', 'profileHash']) assert.deepEqual(t.trial[k], want[i].trial[k], k)
+    assert.notEqual(t.trial.trialId, want[i].trial.trialId, 'a run that left a symbol out is not the same evidence as one that did not')
+  }
+  // and stored: the row in tick_trials carries it after an import
+  const db = initDB(':memory:')
+  const r = tickResearchAction(db, { stageA: false, params: PLAN.params, sim: { latencyMs: 60, minTargetToCost: 1 } }, { segmentsDir: dir, replayOptions: { inMemoryMaxRecords: 0, maxSymbolEvents: bound } })
+  assert.equal(r.status, 200, JSON.stringify(r.body).slice(0, 300))
+  const rows = db.prepare('SELECT manifest_json FROM tick_trials').all().map(x => JSON.parse(x.manifest_json))
+  assert.ok(rows.length > 0)
+  for (const m of rows) assert.deepEqual(m.symbolsNotReplayed?.map(o => o.symbolId), big)
   assert.equal(MAX_SYMBOL_EVENTS, 20_000_000)
 })
 
