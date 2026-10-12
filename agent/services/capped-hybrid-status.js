@@ -27,7 +27,6 @@ import { readHybridVerdicts } from './diagnostic-readout.js'
 import { accountWhere } from '../lib/account-scope.js'
 
 const ACCOUNT = /^[1-9]\d{0,19}$/
-export const CAPPED_HYBRID_STATUS_MAX_POSITIONS = 200
 // Precedence when a trade shows in more than one list. It does: a manual
 // trade the manual enrolment acted on (enrolled, deferred or an error) is
 // ALSO swept by the pass's observation loop, which records every open trade
@@ -53,16 +52,16 @@ export function cappedHybridStatus(db, { accountId = null, now = Date.now() } = 
   // legacy-NULL convention (lib/account-scope.js), in the table's order.
   // Claude · № 13,413 12-Oct (Codex P2 on #1326 bb9e75a0; claude-builder)
   const where = accountWhere(scope ? { accountId: scope[0], all: false } : { all: true }, 'mp.account_id')
-  const open = db.prepare(`SELECT mp.id AS monitor_id, mp.trade_id AS monitor_trade_id, mp.account_id AS monitor_account_id,
+  const trades = db.prepare(`SELECT mp.id AS monitor_id, mp.trade_id AS monitor_trade_id, mp.account_id AS monitor_account_id,
       mp.symbol AS monitor_symbol, mp.side AS monitor_side, mp.strategy AS monitor_strategy,
       t.id AS id, t.status AS trade_status, t.account_id AS account_id, t.ctrader_position_id AS ctrader_position_id,
       t.symbol AS symbol, t.side AS side, t.strategy AS strategy
     FROM monitored_positions mp LEFT JOIN trades t ON t.id = mp.trade_id
     WHERE mp.status = 'active' ${where.active ? `AND ${where.where}` : ''}
-    ORDER BY mp.created_at DESC, mp.id DESC LIMIT ?`)
-    .all(...where.params, CAPPED_HYBRID_STATUS_MAX_POSITIONS + 1)
-  const positionsTruncated = open.length > CAPPED_HYBRID_STATUS_MAX_POSITIONS
-  const trades = open.slice(0, CAPPED_HYBRID_STATUS_MAX_POSITIONS)
+    ORDER BY mp.created_at DESC, mp.id DESC`)
+    // No cap: the table has none, and a cut row would have no verdict.
+    // Claude · № 13,440 12-Oct (Codex P2 on #1326 3ad12c09; claude-builder)
+    .all(...where.params)
   let booked = new Set()
   try {
     booked = new Set(db.prepare("SELECT DISTINCT trade_id FROM momentum_book WHERE trade_id IS NOT NULL").all().map(r => r.trade_id))
@@ -155,7 +154,6 @@ export function cappedHybridStatus(db, { accountId = null, now = Date.now() } = 
     } : null,
     counts,
     positions,
-    positionsTruncated,
     // The redacted projection itself (scoped), for the operator who wants
     // every list, the tick controller's own exclusions and its pass age.
     verdicts,

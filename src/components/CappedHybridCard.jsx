@@ -36,7 +36,6 @@ export function CappedHybridReading({ status, error }) {
           <td className="pr-3 max-w-md whitespace-normal">{verdictLine(p)}</td>
         </tr>)}</tbody>
       </table></div>}
-    {status.positionsTruncated && <p>Showing the first {rows.length} open positions.</p>}
   </>
 }
 

@@ -10,7 +10,7 @@ const pos = (tradeId, verdict, extra = {}) => ({ tradeId, accountId: '47790949',
 const status = (positions, over = {}) => ({
   accountId: '47790949', available: true, unavailableReason: null,
   pass: { at: '2026-10-12T05:00:00.000Z', ageMs: 45_000, ok: true, activePlans: 1, examined: 2 },
-  counts: {}, positions, positionsTruncated: false, ...over,
+  counts: {}, positions, ...over,
 })
 
 test('W3 card: one line per open position, enrolled first, the verdict in plain words', () => {

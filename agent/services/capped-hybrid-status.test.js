@@ -232,6 +232,18 @@ test('W3 route (Codex P2 on bb9e75a0): the card\'s rows are exactly /state/posit
   }
 })
 
+// Claude · № 13,440 12-Oct (Codex P2 on #1326 3ad12c09; claude-builder)
+test('W3 (Codex P2 on 3ad12c09): every row the positions table shows gets a verdict, however many — no cap the table does not have', () => {
+  const db = initDB(':memory:'); seed(db)
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))
+  const mon = db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, status, account_id) VALUES (?, NULL, 'BUY', 'active', ?)`)
+  for (let i = 0; i < 250; i++) mon.run(`S${i}`, A)
+  const s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  assert.equal(s.positions.length, 7 + 250, 'the seven linked positions and all 250 unlinked ones')
+  assert.equal(new Set(s.positions.map(p => p.monitorId)).size, 257)
+  assert.ok(!('positionsTruncated' in s), 'nothing is cut, so nothing claims to be')
+})
+
 test('W3: read-only — no write statement is prepared', () => {
   const db = initDB(':memory:'); seed(db)
   setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))
