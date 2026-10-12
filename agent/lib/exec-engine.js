@@ -972,6 +972,11 @@ function settleIntent(creds, intentId, result, err, orderType = 'MARKET') {
     const clientMsgId = /"clientMsgId"\s*:\s*"([^"]+)"/.exec(text)?.[1] ?? null
     if (isDefiniteRejection(err)) L.resolve(intentId, { state: 'REJECTED', errorCode: code, source: 'response' })
     else if (/\brate_limited\b/.test(text)) L.resolve(intentId, { state: 'RELEASED', errorCode: code, source: 'response' }) // the pacer refused it before any write
+    // Claude · № 13,703 12-Oct (Codex P1 on #1333; owner "Release it";
+    // claude-builder): the fence re-read before the JS fallback write refused
+    // it, after the sidecar attested it did not send — never sent. UNKNOWN
+    // would stay open and block the next entry on this account/symbol/side.
+    else if (err?.code === 'ENTRY_MODE_REFUSED') L.resolve(intentId, { state: 'RELEASED', errorCode: code, source: 'response' })
     else if (isAmbiguousOrderOutcome(err)) L.resolve(intentId, { state: 'UNKNOWN', errorCode: code, clientMsgId, source: 'response' })
     else L.resolve(intentId, { state: 'RELEASED', errorCode: code, source: 'response' }) // provably never submitted
   } catch { /* the ledger must never mask the order's own outcome */ }
@@ -1074,7 +1079,7 @@ export async function placeOrder(creds, orderPayload) {
     // lost EXECUTION_EVENT — would re-arm the storm against a position that
     // may well be live, which is the expensive direction. So anything that is
     // not provably a rejection keeps the lock for its full 60 seconds.
-    if (isDefiniteRejection(err)) releaseOrderLock(lock.key)
+    if (isDefiniteRejection(err) || err?.code === 'ENTRY_MODE_REFUSED') releaseOrderLock(lock.key)
     throw err
   }
 }

@@ -6520,7 +6520,16 @@ export default function actionsRouter(db, deps = {}) {
       const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
 
       const entryP = executionPrice ?? entry
-      const initialRisk = (entryP && sl) ? Math.abs(entryP - sl) : null
+      // Claude · № 13,703 12-Oct (Codex P1 on #1333; owner "Anchor to the
+      // fill"; claude-builder): THE BRACKET THE POSITION HAS. The order sent
+      // its stop and target as distances, so the broker placed them from the
+      // fill; the row kept the analysis's absolute levels, and a later restore
+      // from the row would move the broker's bracket. Recorded from the fill,
+      // as loop.js does (anchorBracketToFill); with no fill, the plan stands.
+      const { anchorBracketToFill } = await import('../lib/fill-anchor.js')
+      const anchored = anchorBracketToFill({ side, proposalEntry: entry, fill: executionPrice, sl, tp1 })
+      const slHeld = anchored.sl ?? sl, tpHeld = anchored.tp1 ?? tp1
+      const initialRisk = (entryP && slHeld) ? Math.abs(entryP - slHeld) : null
       let timeCap = null
       if (synth.time_cap_minutes && Number.isFinite(synth.time_cap_minutes)) {
         timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
@@ -6531,7 +6540,7 @@ export default function actionsRouter(db, deps = {}) {
       // the intent; tagLabelWithIntent keeps the untagged label when the tag
       // would not fit).
       settleAnalysisTrade(db, tradeId, {
-        symbol: analysis.symbol, side, entryP, entry, sl, tp: tp1, volLots, positionId,
+        symbol: analysis.symbol, side, entryP, entry, sl: slHeld, tp: tpHeld, volLots, positionId,
         label: entryIntentId ? tagLabelWithIntent(structuredLabel, entryIntentId) : structuredLabel,
         accountId, strategy: analysis.strategy || null, timeframe: analysis.timeframe || null,
         thesis: analysis.consensus_summary || '', initialRisk,

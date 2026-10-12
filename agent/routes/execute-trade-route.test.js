@@ -62,7 +62,7 @@ function fresh({ halt = true } = {}) {
  * a new order is recorded and refused at once (ORDER_ERROR_EVENT), so a test
  * can read the payload the route sent.
  */
-function fakeBroker(close) {
+function fakeBroker(close, fill = null) {
   const sent = [], orders = []
   class Socket extends EventEmitter {
     constructor() { super(); this.readyState = 1; setImmediate(() => this.emit('open')) }
@@ -71,7 +71,11 @@ function fakeBroker(close) {
       if (m.payloadType === PT.HEARTBEAT) return
       sent.push(m.payloadType)
       const reply = (type, payload) => setImmediate(() => this.emit('message', Buffer.from(JSON.stringify({ payloadType: type, payload, clientMsgId: m.clientMsgId }))))
-      if (m.payloadType === PT.NEW_ORDER_REQ) { orders.push(m.payload); return reply(PT.ORDER_ERROR_EVENT, { errorCode: 'TEST_REFUSED', description: 'stand-in broker' }) }
+      if (m.payloadType === PT.NEW_ORDER_REQ) {
+        orders.push(m.payload)
+        if (fill != null) return reply(PT.EXECUTION_EVENT, { ctidTraderAccountId: m.payload?.ctidTraderAccountId, executionType: 'ORDER_FILLED', order: { orderId: 7 }, deal: { dealId: 9, executionPrice: fill, positionId: 33 }, position: { positionId: 33, price: fill } })
+        return reply(PT.ORDER_ERROR_EVENT, { errorCode: 'TEST_REFUSED', description: 'stand-in broker' })
+      }
       const minute = Math.floor(Date.now() / 60_000)
       const answer = {
         [PT.APP_AUTH_REQ]: [PT.APP_AUTH_RES, {}],
@@ -92,8 +96,8 @@ function fakeBroker(close) {
   return { Socket, sent, orders }
 }
 
-async function serve(t, db, { close = 1.1 } = {}) {
-  const broker = fakeBroker(close)
+async function serve(t, db, { close = 1.1, fill = null } = {}) {
+  const broker = fakeBroker(close, fill)
   _setWebSocketForTests(broker.Socket); t.after(() => _setWebSocketForTests(null))
   const app = express(); app.use(express.json()); app.use('/actions', actionsRouter(db))
   const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)) })
@@ -206,4 +210,23 @@ test('B4: a refusal before any transport (an open intent on the ledger) is recor
   assert.equal(broker.orders.length, 0, 'nothing was sent')
   assert.equal(db.prepare('SELECT status FROM trades').get().status, 'rejected', 'the write-ahead row is marked rejected')
   assertRefusedAfterApproval(db, 'ledger', /^ENTRY_LEDGER_REFUSED: /)
+})
+
+// Claude · № 13,703 12-Oct (Codex P1 on #1333; owner "Anchor to the fill";
+// claude-builder). The order carries its stop and target as DISTANCES, so the
+// broker places them from the fill; the trade row kept the analysis's absolute
+// prices, and a later restore from the row would move the broker's bracket.
+// The row now holds the bracket the position has (loop.js anchorBracketToFill).
+test('P1: the trade row records the stop and target the broker placed from the fill, not the analysis\'s absolute levels', async t => {
+  const db = fresh({ halt: false })
+  t.after(() => db.close())
+  const { post, broker } = await serve(t, db, { close: 1.1, fill: 1.104 })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, tp: 1.135 }) })
+  assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
+  const o = broker.orders[0]
+  assert.equal(o.relativeStopLoss, 1000); assert.equal(o.relativeTakeProfit, 3500)
+  const row = db.prepare('SELECT entry_price, sl_price, tp_price FROM trades').get()
+  assert.equal(row.entry_price, 1.104)
+  assert.ok(Math.abs(row.sl_price - 1.094) < 1e-9, `stop from the fill: ${row.sl_price}, not the analysis's 1.09`)
+  assert.ok(Math.abs(row.tp_price - 1.139) < 1e-9, `target from the fill: ${row.tp_price}, not the analysis's 1.135`)
 })

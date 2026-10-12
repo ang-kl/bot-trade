@@ -994,3 +994,21 @@ test('a fallback write refused by the re-read entry-mode fence carries code ENTR
   })
   assert.equal(asks, 2, 'the fence was read before the sidecar and again before the fallback write')
 })
+
+// Claude · № 13,703 12-Oct (Codex P1 on #1333; owner "Release it";
+// claude-builder). The same refusal sends nothing, so it is settled as one:
+// the intent RELEASED (not UNKNOWN, which stays open and blocks the next
+// entry on this account, symbol and side) and the duplicate lock freed.
+test('a fallback write refused by the re-read fence releases its intent and the order lock: nothing was sent', async () => {
+  const fx = fakeLedger()
+  nextResponse = { status: 503, body: JSON.stringify({ errorCode: 'NOT_CONNECTED', description: 'broker session down' }) }
+  let asks = 0
+  const creds = { ...CREDS, host: '127.0.0.1', producerId: 'scan_dispatch', entryLedger: fx.ledger, entryAdmission: async () => (++asks === 1 ? { ok: true } : { ok: false, reason: 'entry_mode STOPPED' }) }
+  await assert.rejects(placeOrder(creds, { ...ORDER, symbolId: 69 }), (err) => err.code === 'ENTRY_MODE_REFUSED')
+  assert.deepEqual(fx.calls.resolved.map(r => r.state), ['RELEASED'], 'settled as never sent, not UNKNOWN')
+  // the lock was released: the same order goes out at once instead of DUPLICATE_ORDER_DISPATCH_BLOCKED
+  nextResponse = { status: 200, body: '{"position":{"positionId":3}}' }
+  const ok = fakeLedger()
+  const out = await placeOrder({ ...CREDS, host: '127.0.0.1', producerId: 'scan_dispatch', entryLedger: ok.ledger, entryAdmission: async () => ({ ok: true }) }, { ...ORDER, symbolId: 69 })
+  assert.equal(out.position.positionId, 3)
+})
