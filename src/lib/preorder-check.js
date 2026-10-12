@@ -51,7 +51,13 @@ export function padInputs(order) {
   return {
     symbol: String(order?.symbol || '').toUpperCase().trim(),
     side: String(order?.side || '').toUpperCase(),
-    lots: order?.lots === '' || order?.lots == null ? null : Number(order.lots),
+    // Only a BLANK Lots box means risk-based sizing; anything typed is sent as
+    // typed (a number, or the raw text when it is not one) for the route to
+    // judge — it refuses a lots that is not a positive number. A 0 dropped
+    // here reached the route as blank and went out uncapped (Codex P1 on
+    // #1328 — Claude · № 13,519 12-Oct; claude-builder).
+    lots: order?.lots == null || String(order.lots).trim() === '' ? null
+      : (Number.isFinite(Number(order.lots)) ? Number(order.lots) : String(order.lots).trim()),
     sl: order?.sl === '' || order?.sl == null ? null : Number(order.sl),
     tp: order?.tp === '' || order?.tp == null ? null : Number(order.tp),
     // Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3): a registry
@@ -68,7 +74,7 @@ export function manualOrderBody({ order, destination }) {
   return {
     symbol: p.symbol,
     side: p.side,
-    lots: p.lots ? p.lots : undefined,
+    lots: p.lots != null ? p.lots : undefined,
     sl: p.sl,
     tp: p.tp ? p.tp : undefined,
     ...(p.strategy ? { strategy: p.strategy } : {}),
@@ -83,7 +89,7 @@ export function manualCheckPath({ order, destination }) {
   if (destination?.routed) q.set('account', String(destination.accountId))
   q.set('symbol', p.symbol)
   q.set('side', p.side)
-  if (p.lots) q.set('lots', String(p.lots))
+  if (p.lots != null) q.set('lots', String(p.lots))
   if (p.sl != null) q.set('sl', String(p.sl))
   if (p.tp) q.set('tp', String(p.tp))
   if (p.strategy) q.set('strategy', p.strategy)
