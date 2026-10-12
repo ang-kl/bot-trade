@@ -80,3 +80,9 @@ test('W3 card: a position with no linked open trade is a line of its own, named,
   expect(verdictLine(pos(9, 'not_in_last_pass', { reason: 'linked_trade_missing' })))
     .toBe('Not examined by the hybrid, which examines open trades only: its linked trade record is missing')
 })
+
+// Claude · № 13,428 12-Oct (Codex P2 on #1326 e0bdac7d; claude-builder)
+test('W3 words: an unreadable hybrid section is said in words, not as a code', () => {
+  expect(verdictLine(pos(1, 'not_available', { reason: 'hybrid_section_unreadable' })))
+    .toBe('Not available: the last pass\'s hybrid section could not be read')
+})

@@ -116,6 +116,26 @@ test('W3: a missing or unreadable pass record is "not available" on every positi
   assert.equal(s.unavailableReason, 'schema_unavailable'); assert.ok(s.positions.every(p => p.verdict === 'not_available'))
 })
 
+// Claude · № 13,428 12-Oct (Codex P2 on #1326 e0bdac7d; claude-builder)
+test('W3 (Codex P2 on e0bdac7d): a hybrid section in the wrong shape is "not available", never an available pass with every position "not in the last pass"', () => {
+  const db = initDB(':memory:'); seed(db)
+  const ch = pass().cappedHybrid
+  for (const [label, section] of [['empty object', {}], ['a string', 'x'], ['an array', []],
+    ['one list not an array', { ...ch, excluded: 'oops' }], ['one list missing', { ...ch, deferred: undefined }]]) {
+    setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: section })))
+    for (const accountId of [A, null]) {
+      const s = cappedHybridStatus(db, { accountId, now: NOW })
+      assert.equal(s.available, false, `${label}, scope ${accountId}`)
+      assert.equal(s.unavailableReason, 'hybrid_section_unreadable', label)
+      assert.ok(s.positions.length > 0 && s.positions.every(p => p.verdict === 'not_available' && p.reason === 'hybrid_section_unreadable'), label)
+    }
+  }
+  // A well-formed pass that examined nothing is available: every list is an array.
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: { examined: 0, enrolled: [], excluded: [], delegated: [], deferred: [], errors: [] } })))
+  const s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  assert.equal(s.available, true); assert.ok(s.positions.every(p => p.verdict === 'not_in_last_pass'))
+})
+
 test('W3: a position missing from a truncated record says so, not "not yet"', () => {
   const db = initDB(':memory:'); seed(db)
   const ch = pass().cappedHybrid

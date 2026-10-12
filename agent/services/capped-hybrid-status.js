@@ -69,9 +69,16 @@ export function cappedHybridStatus(db, { accountId = null, now = Date.now() } = 
   } catch { /* no book table: no position is a book position */ }
 
   const hybrid = pass?.available === true ? pass.cappedHybrid : null
+  // Every pass writes all five verdict lists as arrays (capped-hybrid-
+  // enrolment.js `out`); the projection reads a list that is not an array as
+  // `rows: null`. A section in any other shape (`{}`, a string, a list that is
+  // not an array) cannot say where a position stands, so it is unavailable,
+  // never an available pass with every position "not in the last pass".
+  // Claude · № 13,428 12-Oct (Codex P2 on #1326 e0bdac7d; claude-builder)
   const unavailable = pass?.available !== true ? (pass?.reason || 'missing')
     : hybrid == null ? 'hybrid_section_missing'
-      : hybrid.unavailableReason || null
+      : hybrid.unavailableReason
+        || (LISTS.some(([list]) => !Array.isArray(hybrid[list]?.rows)) ? 'hybrid_section_unreadable' : null)
 
   // `account|trade` → { verdict, row }, in precedence order: the scoped lists
   // first (filtered before the projection's cap), then the unscoped ones for

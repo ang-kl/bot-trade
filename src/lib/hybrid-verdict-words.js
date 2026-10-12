@@ -63,6 +63,7 @@ const REASON_WORDS = {
   invalid_json: 'the stored pass could not be read',
   invalid_or_oversized: 'the stored pass could not be read',
   hybrid_section_missing: 'the last pass recorded no hybrid section',
+  hybrid_section_unreadable: 'the last pass\'s hybrid section could not be read',
   schema_unavailable: 'the database tables it needs are missing',
   record_truncated: 'the stored record was cut at its size limit',
   // A position the hybrid does not examine (it examines open trades only).
