@@ -101,11 +101,15 @@ export function loadEarnedFloor(db) {
  *            trades:number, riskScale:number|null, via:'measured'|'prior'|null,
  *            prior?:object, minE:number}}
  */
-export function earnedFloorWinRate(db, { strategy, accountId }) {
+export function earnedFloorWinRate(db, { strategy, accountId, ignoreOff = false }) {
   const cfg = loadEarnedFloor(db)
   const no = (reason, extra = {}) =>
     ({ ok: false, reason, W: null, winRate: null, trades: 0, riskScale: null, via: null, minE: cfg.minE, ...extra })
-  if (!cfg.on) return no('off')
+  // `ignoreOff`: the fluid R:R rule (risk.js) reads this estimator on its own
+  // switch, so the earned floor's `on` governs only the earned floor's own
+  // admissions (owner, 12-10-2026, Codex P2 on #1337: "Decouple").
+  // Claude · № 13,738 12-Oct (claude-builder)
+  if (!cfg.on && !ignoreOff) return no('off')
   if (!strategy) return no('unlabelled_proposal')
 
   // Registry check UNCONDITIONAL, fail-closed (managed-exit precedent — and

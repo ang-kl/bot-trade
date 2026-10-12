@@ -19,7 +19,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { evaluateTrade, rrFloorVerdict, loadRiskConfig, commissionInR, fluidRiskScale, fluidRiskConfig } from './risk.js'
+import { readFileSync } from 'node:fs'
+import { evaluateTrade, rrFloorVerdict, loadRiskConfig, commissionInR, fluidRiskScale, fluidRiskConfig, lowestAdmittedRr } from './risk.js'
 
 const A = '111'
 
@@ -186,4 +187,43 @@ test('the stored settings are read safely: a blank or junk field takes its defau
   setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { goalPf: '' } }))
   const v = verdict(db, { symbol: 'US500', rr: 1.6, entry: 100, sl: 99, tp1: 101.6 })
   assert.equal(v.earnedFloor.riskScale, 0.6667)
+})
+
+// Claude · № 13,738 12-Oct (Codex P2 on #1337, owner: "Decouple"; claude-builder)
+test('the breakeven rule reads its win rate even with the earned floor switched off; the earned floor\'s own path stays off', () => {
+  const db = db0()
+  seed(db, 'vwap_trend', 20, 40)
+  setState(db, 'earned_floor_json', JSON.stringify({ on: false }))
+  const v = verdict(db, { symbol: 'US500', rr: 1.6, entry: 100, sl: 99, tp1: 101.6 })
+  assert.equal(v.ok, true, `RED before the decoupling: the earned floor's off switch silenced the breakeven rule (${v.reason})`)
+  assert.equal(v.earnedFloor.rule, 'breakeven_commission')
+  // Both off: nothing below the floor, as the earned floor's switch always meant.
+  setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { on: false } }))
+  const off = verdict(db, { symbol: 'US500', rr: 1.6, entry: 100, sl: 99, tp1: 101.6 })
+  assert.equal(off.ok, false)
+  assert.match(off.reason, /^bad_rr 1\.60<3/)
+  assert.equal(off.checks.earned_floor_denied, 'off')
+})
+
+// Claude · № 13,738 12-Oct (Codex P2 on #1337, owner: "Fix in this PR"; claude-builder)
+test('the missing-target advice names the ratio the gate admits: breakeven with this trade\'s commission, the legacy bar only when the rule is off', () => {
+  const db = db0()
+  seed(db, 'vwap_trend', 20, 40)
+  assert.equal(lowestAdmittedRr(db, A, 'vwap_trend', { symbol: '0700.HK', entry: 100, sl: 99 }), 2.25,
+    'RED before: the legacy 0.15R bar advised 1.88R, which the gate refuses on this HK setup')
+  assert.equal(lowestAdmittedRr(db, A, 'vwap_trend', { symbol: 'US500', entry: 5000, sl: 4990 }), 1.5)
+  // Never under the strategy's own pre-filter.
+  const hi = db0(); seed(hi, 'vwap_trend', 20, 80)
+  assert.equal(lowestAdmittedRr(hi, A, 'vwap_trend', { symbol: 'US500', entry: 5000, sl: 4990 }), 1.5)
+  // Rule off: the earned floor's own bar, as before.
+  setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { on: false } }))
+  assert.equal(lowestAdmittedRr(db, A, 'vwap_trend', { symbol: '0700.HK', entry: 100, sl: 99 }), 1.88)
+})
+
+test('wiring: the manual-order route passes the trade\'s symbol, entry and stop to the advice (comments stripped)', () => {
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const src = strip(readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8'))
+  const start = src.indexOf("router.post('/manual-order'")
+  const route = src.slice(start, src.indexOf('\n  router.', start + 1))
+  assert.match(route, /lowestAdmittedRr\(db, creds\.accountId, strategy, \{ symbol, entry, sl: proposal\.sl \}\)/)
 })

@@ -6763,7 +6763,7 @@ export default function actionsRouter(db, deps = {}) {
           // (Codex P2, round 3): lowestAdmittedRr, which also reads the
           // earned-floor side, so a strategy the gate admits at 2R is not
           // told 3R is its minimum either.
-          strategy, minRR: loadRiskConfig(db).minRR, rrFloor: lowestAdmittedRr(db, creds.accountId, strategy),
+          strategy, minRR: loadRiskConfig(db).minRR, rrFloor: lowestAdmittedRr(db, creds.accountId, strategy, { symbol, entry, sl: proposal.sl }),
           // HVN-TP: the 15m bars fetched above — the advice computes the
           // volume-structure TP candidate on the trade's own timeframe.
           bars: hvnBars,

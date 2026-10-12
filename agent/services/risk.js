@@ -787,8 +787,21 @@ export function expectancyFloorFor(stats, floor, minE) {
  * built on this is never refused a second time and never asks 3R of a
  * strategy the gate would admit at 2R. Read-only.
  */
-export function lowestAdmittedRr(db, accountId = null, strategy = null) {
+export function lowestAdmittedRr(db, accountId = null, strategy = null, { symbol = null, entry = null, sl = null } = {}) {
   const floor = effectiveRrFloor(db, accountId, strategy)
+  // The fluid rule's breakeven with THIS trade's commission when it decides
+  // (Codex P2 on #1337, owner: "Fix in this PR"): advice under it is refused
+  // by the gate. Claude · № 13,738 12-Oct (claude-builder)
+  try {
+    if (fluidRiskConfig(loadRiskConfig(db, accountId).fluidRisk).on) {
+      const fside = earnedFloorWinRate(db, { strategy, accountId, ignoreOff: true })
+      const cost = fside.ok ? commissionInR(symbol, entry, sl) : null
+      if (fside.ok && cost) {
+        const lowest = Math.max(minRrFor(strategy, STRATEGY_PREFILTER_RR), breakevenNeed(fside.W, cost.c))
+        return lowest < floor ? lowest : floor
+      }
+    }
+  } catch { /* fall through to the earned floor's own bar */ }
   try {
     const side = earnedFloorWinRate(db, { strategy, accountId })
     if (!side.ok) return floor
@@ -1755,6 +1768,15 @@ export function fluidRiskScale(record, c, cfg) {
 }
 
 /**
+ * The breakeven ratio with commission, (1 − W + c) ÷ W, rounded UP to the
+ * cent the gate compares at; toFixed first so a float like
+ * 150.00000000000003 is 1.50R, not 1.51R.
+ */
+function breakevenNeed(W, c) {
+  return Math.ceil(Number((((1 - W + c) / W) * 100).toFixed(6))) / 100
+}
+
+/**
  * The stored `fluidRisk` read safely: a blank or junk field takes its default
  * (a blank goal PF would otherwise divide to Infinity — full size), and every
  * number is clamped to a range that keeps the size between 0 and 1.
@@ -1783,14 +1805,12 @@ export function fluidRiskConfig(raw) {
 function breakevenFloorVerdict(db, { strategy, rr, accountId, config, entry, sl, symbol }) {
   const cfg = fluidRiskConfig(config?.fluidRisk)
   if (!cfg.on) return { decided: false }
-  const side = earnedFloorWinRate(db, { strategy, accountId })
+  const side = earnedFloorWinRate(db, { strategy, accountId, ignoreOff: true })
   if (!side.ok) return { decided: false }
   const cost = commissionInR(symbol, entry, sl)
   if (!cost) return { decided: false }
   const W = side.W, c = cost.c
-  // Rounded UP to the cent the gate compares at; toFixed first so a float
-  // like 150.00000000000003 is 1.50R, not 1.51R.
-  const need = Math.ceil(Number((((1 - W + c) / W) * 100).toFixed(6))) / 100
+  const need = breakevenNeed(W, c)
   const figures = { rr, need, winRate: side.winRate, trades: side.via === 'prior' ? side.prior.liveTrades : side.trades,
     via: side.via, commissionR: c, commissionClass: cost.class, ...(side.prior ? { prior: side.prior } : {}) }
   if (rr < need) {
