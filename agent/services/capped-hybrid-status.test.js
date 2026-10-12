@@ -1,0 +1,281 @@
+// node --test agent/services/capped-hybrid-status.test.js
+// W3 — Claude · № 13,362 12-Oct (ordered after № 13,350, owner "W1 W2 W3 W4
+// W11"; claude-builder). GET /state/capped-hybrid joins the hybrid pass's
+// stored verdicts (the redacted readHybridVerdicts projection) to the open
+// trades in scope. Real SQLite, the real route over HTTP.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import express from 'express'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { initDB, setState } from '../db.js'
+import stateRouter from '../routes/state.js'
+import { cappedHybridStatus } from './capped-hybrid-status.js'
+
+const A = '43097342', B = '46130058'
+const SECRET = 'wsReconcile failed: token sk-live-abc123 at 10.0.0.7'
+const AT = '2026-10-12T05:00:00.000Z', NOW = Date.parse(AT) + 45_000
+
+function pass(over = {}) {
+  return {
+    at: AT, ok: true, activePlans: 1,
+    cappedHybrid: {
+      examined: 2,
+      enrolled: [{ accountId: A, tradeId: 1, positionId: '501', trigger: 104.5, closeVolume: 50, runnerVolume: 50, brokerTarget: 110 }],
+      excluded: [
+        { accountId: A, tradeId: 2, positionId: '502', monitorId: 12, stage: 'ownership', observedAtMs: NOW - 5000, reason: 'strategy_not_momentum' },
+        { accountId: A, tradeId: 3, positionId: '503', monitorId: 13, stage: 'ownership', observedAtMs: NOW - 5000, reason: 'monitor_paused' },
+        { accountId: B, tradeId: 4, positionId: '504', monitorId: 14, stage: 'ownership', observedAtMs: NOW - 5000, reason: 'manual_account_not_authorised' },
+      ],
+      delegated: [{ accountId: A, tradeId: 8, positionId: '508', stage: 'existing_plan', observedAtMs: NOW - 5000, reason: 'existing_partial_plan', planState: 'ARMED' }],
+      // Enrolment records budget deferrals and errors by trade only.
+      deferred: [{ tradeId: 5, reason: 'enrolment_budget' }],
+      errors: [{ tradeId: 6, reason: SECRET }],
+      excludedTruncated: false, delegatedTruncated: false, excludedOmitted: 0, delegatedOmitted: 0,
+      coverage: { limit: 128, openTradesSampled: 7, openTradesTruncated: false },
+    },
+    ...over,
+  }
+}
+
+function seed(db) {
+  const ins = db.prepare(`INSERT INTO trades (id, symbol, side, status, account_id, strategy, ctrader_position_id) VALUES (?, ?, ?, 'open', ?, ?, ?)`)
+  ins.run(1, 'US500', 'BUY', A, 'donchian_breakout', '501')
+  ins.run(2, 'NVDA.US', 'BUY', A, 'rsi_meanrev', '502')
+  ins.run(3, 'XOM.US', 'BUY', A, 'tsmom_long', '503')
+  ins.run(4, 'BTCUSD', 'SELL', B, 'manual', '504')
+  ins.run(5, 'GER40', 'SELL', A, 'vwap_trend', '505')
+  ins.run(6, 'JP225', 'BUY', A, 'ema_pullback', '506')
+  ins.run(7, 'UK100', 'BUY', A, 'va_breakout', '507')
+  ins.run(8, 'ETHUSD', 'BUY', A, 'tsmom_long', '508')
+  db.prepare(`INSERT INTO trades (id, symbol, side, status, account_id, strategy, ctrader_position_id) VALUES (9, 'AAPL.US', 'BUY', 'closed', ?, 'vwap_trend', '509')`).run(A)
+  db.prepare(`INSERT INTO momentum_book (trade_id, account_id, symbol, side, entry_price, stop, entered_at, status) VALUES (3, ?, 'XOM.US', 'long', 100, 94, datetime('now'), 'open')`).run(A)
+  // The Open positions table's population: one active monitor per open trade
+  // (monitor id = trade id here); the closed trade's monitor is closed.
+  const mon = db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, status, account_id) VALUES (?, ?, ?, ?, ?)`)
+  for (const t of db.prepare('SELECT id, symbol, side, status, account_id FROM trades ORDER BY id').all()) {
+    mon.run(t.symbol, t.id, t.side, t.status === 'open' ? 'active' : 'closed', t.account_id)
+  }
+}
+
+const byId = s => Object.fromEntries(s.positions.map(p => [p.tradeId, p]))
+
+test('W3: one verdict per open trade in scope, joined from the stored pass', () => {
+  const db = initDB(':memory:'); seed(db)
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))
+  const s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  assert.equal(s.accountId, A); assert.equal(s.available, true); assert.equal(s.unavailableReason, null)
+  assert.deepEqual(s.positions.map(p => p.tradeId).sort((a, b) => a - b), [1, 2, 3, 5, 6, 7, 8], 'open positions of this account only; the closed trade and the other account are out')
+  const p = byId(s)
+  assert.deepEqual([p[1].verdict, p[1].trigger, p[1].closeVolume, p[1].runnerVolume, p[1].brokerTarget], ['enrolled', 104.5, 50, 50, 110])
+  assert.deepEqual([p[2].verdict, p[2].reason, p[2].symbol, p[2].strategy], ['excluded', 'strategy_not_momentum', 'NVDA.US', 'rsi_meanrev'])
+  assert.deepEqual([p[3].verdict, p[3].reason, p[3].book], ['excluded', 'monitor_paused', true])
+  assert.equal(p[2].book, false)
+  assert.deepEqual([p[5].verdict, p[5].reason], ['deferred', 'enrolment_budget'], 'an accountless deferral is matched by trade id')
+  assert.deepEqual([p[6].verdict, p[6].reason], ['error', 'unclassified_error_redacted'])
+  assert.deepEqual([p[7].verdict, p[7].reason], ['not_in_last_pass', null])
+  assert.deepEqual([p[8].verdict, p[8].planState], ['delegated', 'ARMED'])
+  assert.deepEqual(s.counts, { enrolled: 1, excluded: 2, deferred: 1, error: 1, not_in_last_pass: 1, delegated: 1 })
+  assert.deepEqual([s.pass.at, s.pass.ageMs, s.pass.ok, s.pass.activePlans, s.pass.examined], [AT, 45_000, true, 1, 2])
+})
+
+test('W3: no raw error text anywhere in the reply (redaction)', () => {
+  const db = initDB(':memory:'); seed(db)
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))
+  for (const accountId of [A, null]) {
+    const text = JSON.stringify(cappedHybridStatus(db, { accountId, now: NOW }))
+    for (const leak of ['sk-live', 'abc123', '10.0.0.7', 'wsReconcile']) assert.ok(!text.includes(leak), `${leak} leaked`)
+  }
+})
+
+test('W3: every account when none is named, the other account\'s manual position included', () => {
+  const db = initDB(':memory:'); seed(db)
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))
+  const s = cappedHybridStatus(db, { now: NOW })
+  assert.equal(s.accountId, 'all')
+  assert.deepEqual(s.positions.map(p => p.tradeId).sort((a, b) => a - b), [1, 2, 3, 4, 5, 6, 7, 8])
+  assert.deepEqual([byId(s)[4].verdict, byId(s)[4].reason], ['excluded', 'manual_account_not_authorised'])
+})
+
+test('W3: a missing or unreadable pass record is "not available" on every position, never an empty healthy list', () => {
+  const db = initDB(':memory:'); seed(db)
+  let s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  assert.equal(s.available, false); assert.equal(s.unavailableReason, 'missing'); assert.equal(s.pass, null)
+  assert.equal(s.positions.length, 7, 'every open position is still listed')
+  assert.ok(s.positions.every(p => p.verdict === 'not_available' && p.reason === 'missing'))
+  assert.deepEqual(s.counts, { not_available: 7 })
+  setState(db, 'momentum_partial_pass_json', '{not json')
+  s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  assert.equal(s.unavailableReason, 'invalid_json'); assert.ok(s.positions.every(p => p.verdict === 'not_available'))
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: null })))
+  s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  assert.equal(s.unavailableReason, 'hybrid_section_missing'); assert.ok(s.positions.every(p => p.verdict === 'not_available'))
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: { ...pass().cappedHybrid, unavailableReason: 'schema_unavailable' } })))
+  s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  assert.equal(s.unavailableReason, 'schema_unavailable'); assert.ok(s.positions.every(p => p.verdict === 'not_available'))
+})
+
+// Claude · № 13,428 12-Oct (Codex P2 on #1326 e0bdac7d; claude-builder)
+test('W3 (Codex P2 on e0bdac7d): a hybrid section in the wrong shape is "not available", never an available pass with every position "not in the last pass"', () => {
+  const db = initDB(':memory:'); seed(db)
+  const ch = pass().cappedHybrid
+  for (const [label, section] of [['empty object', {}], ['a string', 'x'], ['an array', []],
+    ['one list not an array', { ...ch, excluded: 'oops' }], ['one list missing', { ...ch, deferred: undefined }]]) {
+    setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: section })))
+    for (const accountId of [A, null]) {
+      const s = cappedHybridStatus(db, { accountId, now: NOW })
+      assert.equal(s.available, false, `${label}, scope ${accountId}`)
+      assert.equal(s.unavailableReason, 'hybrid_section_unreadable', label)
+      assert.ok(s.positions.length > 0 && s.positions.every(p => p.verdict === 'not_available' && p.reason === 'hybrid_section_unreadable'), label)
+    }
+  }
+  // A well-formed pass that examined nothing is available: every list is an array.
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: { examined: 0, enrolled: [], excluded: [], delegated: [], deferred: [], errors: [] } })))
+  const s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  assert.equal(s.available, true); assert.ok(s.positions.every(p => p.verdict === 'not_in_last_pass'))
+})
+
+test('W3: a position missing from a truncated record says so, not "not yet"', () => {
+  const db = initDB(':memory:'); seed(db)
+  const ch = pass().cappedHybrid
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: { ...ch, coverage: { ...ch.coverage, openTradesTruncated: true } } })))
+  assert.deepEqual([byId(cappedHybridStatus(db, { accountId: A, now: NOW }))[7].verdict, byId(cappedHybridStatus(db, { accountId: A, now: NOW }))[7].reason], ['not_in_last_pass', 'record_truncated'])
+})
+
+test('W3: the enrolment\'s own outcome beats the observation sweep\'s "excluded" for the same trade', () => {
+  // A manual trade the manual enrolment acted on is ALSO swept by the pass's
+  // observation loop, which records it as excluded (capped-hybrid-enrolment.js).
+  const db = initDB(':memory:'); seed(db)
+  const ch = pass().cappedHybrid
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: { ...ch,
+    enrolled: [...ch.enrolled, { accountId: A, tradeId: 7, positionId: '507', trigger: 120, closeVolume: 10, runnerVolume: 10, brokerTarget: 130 },
+      // Trade 6 also has an accountless error row: the stronger own-account row wins.
+      { accountId: A, tradeId: 6, positionId: '506', trigger: 33, closeVolume: 2, runnerVolume: 2, brokerTarget: 40 }],
+    deferred: [...ch.deferred, { accountId: A, tradeId: 2, reason: 'manual_original_stop_missing' }],
+    excluded: [...ch.excluded,
+      { accountId: A, tradeId: 7, positionId: '507', stage: 'ownership', reason: 'candidate_not_selected' },
+      { accountId: A, tradeId: 5, positionId: '505', stage: 'ownership', reason: 'candidate_not_selected' }],
+  } })))
+  const p = byId(cappedHybridStatus(db, { accountId: A, now: NOW }))
+  assert.deepEqual([p[7].verdict, p[7].trigger], ['enrolled', 120])
+  assert.deepEqual([p[2].verdict, p[2].reason], ['deferred', 'manual_original_stop_missing'])
+  assert.deepEqual([p[5].verdict, p[5].reason], ['deferred', 'enrolment_budget'], 'an accountless deferral still beats an own-account observation')
+  assert.deepEqual([p[6].verdict, p[6].trigger], ['enrolled', 33], 'an own-account enrolment beats an accountless error')
+})
+
+test('W3: a record row under another account never answers for the trade', () => {
+  // Trade 7 is account A's now; a stale record lists it under B.
+  const db = initDB(':memory:'); seed(db)
+  const ch = pass().cappedHybrid
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: { ...ch,
+    excluded: [...ch.excluded, { accountId: B, tradeId: 7, positionId: '507', stage: 'ownership', reason: 'momentum_book_owned' }] } })))
+  for (const accountId of [A, null]) {
+    const p = byId(cappedHybridStatus(db, { accountId, now: NOW }))
+    assert.deepEqual([p[7].verdict, p[7].reason], ['not_in_last_pass', null], `scope ${accountId}`)
+  }
+})
+
+test('W3 (Codex P2 on #1326): a legacy open trade with no account shows in every scoped view, as the positions table shows it', () => {
+  const db = initDB(':memory:'); seed(db)
+  db.prepare(`INSERT INTO trades (id, symbol, side, status, account_id, strategy, ctrader_position_id) VALUES (10, 'GER40', 'BUY', 'open', NULL, 'manual', '510')`).run()
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, status, account_id) VALUES ('GER40', 10, 'BUY', 'active', NULL)`).run()
+  const ch = pass().cappedHybrid
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: { ...ch,
+    excluded: [...ch.excluded, { accountId: null, tradeId: 10, positionId: '510', stage: 'ownership', reason: 'trade_identity_unverified' }] } })))
+  for (const accountId of [A, B, null]) {
+    const p = byId(cappedHybridStatus(db, { accountId, now: NOW }))
+    assert.deepEqual([p[10]?.verdict, p[10]?.reason, p[10]?.accountId], ['excluded', 'trade_identity_unverified', null], `scope ${accountId}`)
+  }
+})
+
+test('W3 (Codex P2 on bb9e75a0): the card lists the Open positions table\'s own rows — a monitor with no linked trade, or whose trade is not open, is shown and named', () => {
+  const db = initDB(':memory:'); seed(db)
+  // Monitor 10: no linked trade. Monitor 11: linked to the closed trade 9,
+  // which the stored pass still lists as enrolled (stale). Monitor 12: linked
+  // to a trade row that does not exist. Trade 13: open, no active monitor —
+  // the positions table does not show it, so neither does the card.
+  const mon = db.prepare(`INSERT INTO monitored_positions (id, symbol, trade_id, side, status, account_id) VALUES (?, ?, ?, ?, 'active', ?)`)
+  mon.run(10, 'USOIL', null, 'BUY', A)
+  mon.run(11, 'AAPL.US', 9, 'BUY', A)
+  db.pragma('foreign_keys = OFF'); mon.run(12, 'SPX500', 999, 'SELL', A)
+  db.prepare(`INSERT INTO trades (id, symbol, side, status, account_id, strategy, ctrader_position_id) VALUES (13, 'NAS100', 'BUY', 'open', ?, 'manual', '513')`).run(A)
+  const ch = pass().cappedHybrid
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass({ cappedHybrid: { ...ch,
+    enrolled: [...ch.enrolled, { accountId: A, tradeId: 9, positionId: '509', trigger: 200, closeVolume: 5, runnerVolume: 5, brokerTarget: 210 }] } })))
+  const s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  const byMon = Object.fromEntries(s.positions.map(p => [p.monitorId, p]))
+  assert.deepEqual(Object.keys(byMon).map(Number).sort((a, b) => a - b), [1, 2, 3, 5, 6, 7, 8, 10, 11, 12], 'one line per active monitor of the account')
+  assert.deepEqual([byMon[10].verdict, byMon[10].reason, byMon[10].tradeId, byMon[10].symbol], ['not_in_last_pass', 'no_linked_trade', null, 'USOIL'])
+  assert.deepEqual([byMon[11].verdict, byMon[11].reason, byMon[11].tradeId], ['not_in_last_pass', 'linked_trade_not_open', 9], 'a stale verdict for a trade no longer open is not shown')
+  assert.deepEqual([byMon[12].verdict, byMon[12].reason, byMon[12].tradeId, byMon[12].symbol], ['not_in_last_pass', 'linked_trade_missing', 999, 'SPX500'])
+  assert.ok(!s.positions.some(p => p.tradeId === 13), 'an open trade with no active monitor is not in the table, so not on the card')
+  assert.equal(byMon[1].verdict, 'enrolled', 'linked open trades keep their verdict')
+  assert.equal(s.counts.not_in_last_pass, 4)
+  // With no pass record, every row is still listed, not dropped.
+  setState(db, 'momentum_partial_pass_json', '')
+  assert.equal(cappedHybridStatus(db, { accountId: A, now: NOW }).positions.length, 10)
+})
+
+test('W3 route (Codex P2 on bb9e75a0): the card\'s rows are exactly /state/positions\'s rows, scoped and unscoped', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'capped-hybrid-parity-')), db = initDB(join(dir, 'agent.db'))
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+  seed(db); setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))
+  const mon = db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, status, account_id) VALUES (?, ?, ?, 'active', ?)`)
+  mon.run('USOIL', null, 'BUY', A); mon.run('AAPL.US', 9, 'BUY', A); mon.run('GER40', null, 'SELL', null); mon.run('ETHUSD', null, 'SELL', B)
+  db.prepare(`INSERT INTO trades (id, symbol, side, status, account_id, strategy, ctrader_position_id) VALUES (13, 'NAS100', 'BUY', 'open', ?, 'manual', '513')`).run(A)
+  const url = await server(t, db)
+  for (const q of [`?account=${A}`, `?account=${B}`, '?account=all']) {
+    const card = await (await fetch(url(q))).json()
+    const table = await (await fetch(url(q).replace('/capped-hybrid', '/positions'))).json()
+    assert.deepEqual(card.positions.map(p => p.monitorId).sort((a, b) => a - b), table.positions.map(p => p.id).sort((a, b) => a - b), q)
+  }
+})
+
+// Claude · № 13,440 12-Oct (Codex P2 on #1326 3ad12c09; claude-builder)
+test('W3 (Codex P2 on 3ad12c09): every row the positions table shows gets a verdict, however many — no cap the table does not have', () => {
+  const db = initDB(':memory:'); seed(db)
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))
+  const mon = db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, status, account_id) VALUES (?, NULL, 'BUY', 'active', ?)`)
+  for (let i = 0; i < 250; i++) mon.run(`S${i}`, A)
+  const s = cappedHybridStatus(db, { accountId: A, now: NOW })
+  assert.equal(s.positions.length, 7 + 250, 'the seven linked positions and all 250 unlinked ones')
+  assert.equal(new Set(s.positions.map(p => p.monitorId)).size, 257)
+  assert.ok(!('positionsTruncated' in s), 'nothing is cut, so nothing claims to be')
+})
+
+test('W3: read-only — no write statement is prepared', () => {
+  const db = initDB(':memory:'); seed(db)
+  setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))
+  const prepare = db.prepare
+  db.prepare = sql => { if (/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i.test(sql)) throw Error(`write: ${sql}`); return prepare.call(db, sql) }
+  try { cappedHybridStatus(db, { accountId: A, now: NOW }); cappedHybridStatus(db, { now: NOW }) } finally { db.prepare = prepare }
+})
+
+test('W3: an invalid account is refused before any read', () => {
+  const db = initDB(':memory:')
+  for (const bad of ['abc', '0123', '1; DROP TABLE trades', '']) assert.throws(() => cappedHybridStatus(db, { accountId: bad }), RangeError, bad)
+})
+
+async function server(t, db) {
+  const app = express(); app.use('/state', stateRouter(db))
+  const s = await new Promise(resolve => { const x = app.listen(0, '127.0.0.1', () => resolve(x)) })
+  t.after(async () => { s.closeAllConnections(); await new Promise(r => s.close(r)) })
+  return p => `http://127.0.0.1:${s.address().port}/state/capped-hybrid${p}`
+}
+
+test('W3 route: GET /state/capped-hybrid scopes by ?account=, no-store; a bad account is a 400', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'capped-hybrid-route-')), db = initDB(join(dir, 'agent.db'))
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+  seed(db); setState(db, 'momentum_partial_pass_json', JSON.stringify(pass()))
+  const url = await server(t, db)
+  let res = await fetch(url(`?account=${A}`))
+  assert.equal(res.status, 200); assert.equal(res.headers.get('cache-control'), 'no-store')
+  let j = await res.json()
+  assert.equal(j.accountId, A); assert.equal(j.positions.length, 7)
+  assert.equal(j.verdicts.momentum_partial_pass_json.available, true, 'the redacted projection rides along')
+  j = await (await fetch(url('?account=all'))).json()
+  assert.equal(j.accountId, 'all'); assert.equal(j.positions.length, 8)
+  res = await fetch(url('?account=abc'))
+  assert.equal(res.status, 400); assert.equal((await res.json()).code, 'capped_hybrid_invalid_account')
+})

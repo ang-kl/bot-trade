@@ -130,7 +130,10 @@ export const ALLOWLIST = Object.freeze({
   'agent/services/momentum-account.js': { reason: 'passes the account\'s side to autoTrade for its creds', max: { isLive: 2 } },
   'agent/services/momentum-book.js': { reason: 'passes the account\'s side to autoTrade for its creds', max: { isLive: 2 } },
   // ---- registry plumbing: the column is written and echoed, never gated on ---
-  'agent/services/account-registry.js': { reason: 'writes/echoes the is_live column; selection routing', max: { is_live: 9, isLive: 13 } },
+  // Claude · № 13,423 12-Oct (W11, #1326; claude-builder): +1 each for
+  // registryManageAccounts, whose rows carry the side getCtraderCreds routes
+  // the book's trail amend by — the same shape as the entry roster.
+  'agent/services/account-registry.js': { reason: 'writes/echoes the is_live column; selection routing; the managing roster carries the side its creds route by', max: { is_live: 10, isLive: 14 } },
   'agent/services/account-capabilities.js': { reason: 'echoes isLive on capability/violation rows for display', max: { is_live: 5, isLive: 3 } },
   'agent/services/broker-roster.js': { reason: 'echoes isLive on the roster view', max: { is_live: 1, isLive: 1 } },
   'agent/services/trail-status-view.js': { reason: 'echoes the side the credentials route to on the TrailEngine read-back (display; Claude · № 11,596·D·1); no policy gate', max: { isLive: 1, live_str: 1, demo_str: 1 } },

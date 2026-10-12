@@ -15,6 +15,7 @@ import {
   listAccounts,
   getEnabledAccounts,
   registryAutopilotAccounts,
+  registryManageAccounts,
   backfillAccountIds,
   setAccountEnabled,
 } from './account-registry.js'
@@ -252,4 +253,25 @@ test('discovering a LIVE account does not make it the selected one', () => {
 
   assert.equal(getState(db, 'ctrader_account_id'), '46130058')
   assert.equal(db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get('1251247').enabled, 0)
+})
+
+// W11 — Claude · № 13,378 12-Oct (owner's yes 12-10; claude-builder): the
+// management roster is every account that may manage what it holds. The
+// entry roster is unchanged: manage_only still never enters.
+test('registryManageAccounts: active, manage_only and paused manage; archived, registered and disabled do not', () => {
+  const db = fresh()
+  const ins = db.prepare(`INSERT INTO accounts (account_id, is_live, enabled, mode, params) VALUES (?, ?, ?, ?, ?)`)
+  ins.run('47790949', 0, 1, 'active', '{}')
+  ins.run('46979908', 0, 1, 'manage_only', '{}')
+  ins.run('42993489', 1, 1, 'paused', '{}')
+  ins.run('43002148', 0, 0, 'archived', '{}')
+  ins.run('43069009', 0, 0, 'registered', '{}')
+  ins.run('11111111', 0, 0, 'active', '{}')                 // disabled row
+  ins.run('22222222', 0, 1, 'active', '{"autopilot":false}') // autopilot off still manages
+  const ids = registryManageAccounts(db).map(a => a.accountId).sort()
+  assert.deepEqual(ids, ['22222222', '42993489', '46979908', '47790949'])
+  assert.deepEqual(registryManageAccounts(db).find(a => a.accountId === '42993489'), { accountId: '42993489', isLive: true, autopilot: false })
+  // The ENTRY roster still leaves manage_only and paused out.
+  assert.ok(!registryAutopilotAccounts(db).some(a => a.accountId === '46979908'))
+  assert.ok(!registryAutopilotAccounts(db).some(a => a.accountId === '42993489'))
 })
