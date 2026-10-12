@@ -1032,6 +1032,39 @@ and effort for each PR."*
   Codex can see which area was modified and when; the lock file lives on
   branch `agent-locks` (`.agent-lock.json`), approved the same day.
 
+## Grounding beyond the author's own assumptions (owner, 2026-10-13) — standing rule, owner-confirmed
+
+Owner, 13-10-2026 (before № 13,789): *"The circular failure to avoid is: AI
+proposes the requirements, writes the procedure around those requirements,
+generates tests from the same assumptions, and then declares the result
+complete. That can establish internal consistency while leaving the original
+omissions untouched. AI-written tests can still be valuable, but their
+expected outcomes and coverage need grounding beyond the document they are
+testing."* Made a standing rule on the owner's "Add it to CLAUDE.md" the
+same night (after № 13,789). Applies to every agent working here.
+
+Every PR body carries a **Grounding** section with three parts:
+
+1. **Source of each expected outcome.** Cite where the expected value comes
+   from outside the change itself: a production log, row or broker deal, a
+   broker message or specification, or the owner's words. A test whose
+   expected value comes only from the author's own design is labelled
+   *self-derived* — it proves consistency, not correctness.
+2. **Population covered.** Enumerate the real set the change touches BEFORE
+   fixing: every code path that writes the column, every strategy, symbol
+   class and account the rule reaches. A fix scoped to the incident's path
+   says what it leaves out. (12-10: the lots-recorded fix covered the two
+   manual routes; the bot's own order path in `loop.js` kept the defect, and
+   was found only afterwards.)
+3. **Live check.** After deploy, each claim is reported Passed, Failed or Not
+   Verifiable. Not Verifiable stays an open item — it is not "done".
+
+Numbers the system models — costs, sizes, excursions, risk — are checked
+against the broker's own figures, not against the code that computes them.
+(12-10: the breakeven rule's commission was tested against the repo's own
+schedule; the broker charged $4.84 on an AUDUSD deal the schedule prices at
+$3.36.)
+
 ## PR merge policy (owner, 2026-07-22)
 
 Auto-merge is standing approval, not a one-off: once a PR's full gate is
@@ -2170,6 +2203,19 @@ Measurement history — each line is a real run of the script, not a claim:
   after this ledger. All lower bounds. The count is by replies, not by
   stamps. A later re-measure that reads below this line is missing these,
   not correcting them.
+- 2026-10-12 20:12 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): continued from Codex's recorded №13,054 and the
+  replies since; this session's last stamps run through the demo stress
+  run (#1334 instruction) and its defects: #1338 (D1 age guard, D2 lots
+  sent), #1339 (duplicate-route reopen), #1340 (gateway snapshot time,
+  both gateways redeployed), #1341 (D3 manual monitor side, re-strategize
+  digits/stop side). Two replies in this run were the bare text "No
+  response requested." (№ 13,780, № 13,785) where the work should have
+  continued; both are counted and were disclosed. The owner's grounding
+  rule above was answered after № 13,789. The next stamped reply is at
+  least **`№ 13,790`** plus any unstamped line made after this ledger.
+  The count is by replies, not by stamps. A later re-measure that reads
+  below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
