@@ -34,7 +34,7 @@ import { loadResearchConfig, withOverrides } from '../lib/research-config.js'
 import { loadManagedExit } from './managed-exit.js'
 import { familyOf } from './strategies.js'
 import { DEFAULT_ATR_MULT, DEFAULT_ATR_PERIOD } from './mae-chandelier-observe.js'
-import { planCappedHybrid } from './capped-hybrid-policy.js'
+import { planCappedHybrid, loadCappedHybridSettings, CAPPED_HYBRID_DEFAULTS } from './capped-hybrid-policy.js'
 // Claude · № 13,096 11-Oct (plan step 9, B5c): the regime gate's PURE verdict,
 // applied to the regime recorded nearest BEFORE each entry. Read-only reach
 // into a protected module (agent/research-isolation.test.js names it).
@@ -51,24 +51,29 @@ const ms = s => { if (s == null) return null; const t = Date.parse(s); return Nu
 const num = v => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null))
 const round = (n, d = 3) => (Number.isFinite(n) ? Math.round(n * 10 ** d) / 10 ** d : null)
 
-/** The hybrid's trigger in R, read from the live policy by planning a unit position. */
-export function hybridTriggerR() {
-  const plan = planCappedHybrid({ side: 'BUY', entry: 100, initialRisk: 1, brokerTarget: 1000, volume: 200, minVolume: 100, stepVolume: 100, digits: 2, openingDealIds: ['1'] })
+/** The hybrid's trigger in R, read from the live policy by planning a unit
+ * position — under the stored setting (capped_hybrid_json) when a database is
+ * given, the defaults otherwise. Codex P1 on #1327 — Claude · № 13,488 12-Oct
+ * (claude-builder): the "current policy" replay must be the policy in force. */
+export function hybridTriggerR(db = null) {
+  const { triggerR } = db ? loadCappedHybridSettings(db) : CAPPED_HYBRID_DEFAULTS
+  const plan = planCappedHybrid({ side: 'BUY', entry: 100, initialRisk: 1, brokerTarget: 1000, volume: 200, minVolume: 100, stepVolume: 100, digits: 2, openingDealIds: ['1'], triggerR })
   return plan.ok ? round((plan.trigger - plan.entry) / plan.initialRisk) : null
 }
 
 /** The live management, as a bar-close approximation, per family. */
-export function managedApproxRule(policy, family, { hybridR }) {
+export function managedApproxRule(policy, family, { hybridR, hybridFraction = CAPPED_HYBRID_DEFAULTS.closeFraction }) {
   const take = policy.takeAtR > 0 && policy.takeAtRFamilies.includes(family)
   const rule = { name: 'managed_approx', trailR: policy.trailR, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD } }
   if (take) { rule.partialAtR = policy.takeAtR; rule.partialFraction = policy.takeFractionAtR }
-  else if (hybridR != null && ['trend', 'breakout', 'momentum'].includes(family)) { rule.partialAtR = hybridR; rule.partialFraction = 0.5 }
+  else if (hybridR != null && ['trend', 'breakout', 'momentum'].includes(family)) { rule.partialAtR = hybridR; rule.partialFraction = hybridFraction }
   return rule
 }
 
 /** Build the rule set for a request. Rules with `tpSource` are resolved per trade. */
-export function buildRules({ cfg, policy, preset, tpR, trailR, design, family }) {
-  const hybridR = hybridTriggerR()
+export function buildRules({ cfg, policy, preset, tpR, trailR, design, family, hybrid = null }) {
+  const hybridR = hybrid?.triggerR ?? hybridTriggerR()
+  const hybridFraction = hybrid?.closeFraction ?? CAPPED_HYBRID_DEFAULTS.closeFraction
   const base = [...DEFAULT_RULES]
   const rules = [...base]
   for (const v of trailR) if (!rules.some(r => r.trailR === v)) rules.push({ name: `trail_${v}R`, trailR: v })
@@ -85,14 +90,17 @@ export function buildRules({ cfg, policy, preset, tpR, trailR, design, family })
   const presets = preset === 'all' ? ['meanrev', 'breakout', 'momentum'] : (preset ? [preset] : [])
   for (const p of presets) {
     if (p === 'meanrev') {
-      rules.push({ ...managedApproxRule(policy, 'mean_reversion', { hybridR }), name: 'managed_approx' })
+      rules.push({ ...managedApproxRule(policy, 'mean_reversion', { hybridR, hybridFraction }), name: 'managed_approx' })
       rules.push({ name: `exit_at_mean_${cfg.exitAtMeanPeriod}`, exitAtMean: { period: cfg.exitAtMeanPeriod } })
       rules.push({ name: `exit_at_mean_${cfg.exitAtMeanPeriod}_be`, exitAtMean: { period: cfg.exitAtMeanPeriod }, breakevenAtR: 1 })
     }
     if (p === 'breakout') {
-      rules.push({ ...managedApproxRule(policy, fam && fam !== 'mean_reversion' ? fam : 'breakout', { hybridR }), name: 'managed_approx_breakout' })
+      rules.push({ ...managedApproxRule(policy, fam && fam !== 'mean_reversion' ? fam : 'breakout', { hybridR, hybridFraction }), name: 'managed_approx_breakout' })
       rules.push({ name: `chandelier_${DEFAULT_ATR_MULT}x${DEFAULT_ATR_PERIOD}`, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD } })
-      if (hybridR != null) rules.push({ name: `hybrid_half_${hybridR}R_trail`, partialAtR: hybridR, partialFraction: 0.5, trailR: policy.trailR })
+      // The live hybrid plus the trail: the stored share, named by it (Codex P1
+      // on #1328; Claude · № 13,496 12-Oct; claude-builder). At the default
+      // the name is unchanged.
+      if (hybridR != null) rules.push({ name: hybridFraction === 0.5 ? `hybrid_half_${hybridR}R_trail` : `hybrid_${round(hybridFraction * 100, 1)}pct_${hybridR}R_trail`, partialAtR: hybridR, partialFraction: hybridFraction, trailR: policy.trailR })
     }
     if (p === 'momentum') {
       rules.push({ name: `chandelier_${DEFAULT_ATR_MULT}x${DEFAULT_ATR_PERIOD}_only`, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD } })
@@ -105,7 +113,7 @@ export function buildRules({ cfg, policy, preset, tpR, trailR, design, family })
 
 /** Which rules read today's live policy (a current-policy scenario) rather than a fixed rule. */
 export function scenarioOf(rule) {
-  return /^managed_approx|^hybrid_half_/.test(String(rule?.name || '')) ? 'current_policy' : 'fixed_rule'
+  return /^managed_approx|^hybrid_(half|[0-9.]+pct)_/.test(String(rule?.name || '')) ? 'current_policy' : 'fixed_rule'
 }
 /** The cost model every replay figure carries: declared, not modelled. */
 export const COST_MODEL = Object.freeze({ model: 'none', note: 'exits fill at the level on the bar that touches it; no spread, slippage, commission or swap; R is price-based against the chosen stop. The stored windows carry no bid/ask, so a spread model cannot be fitted from them.' })
@@ -178,7 +186,9 @@ export function exitCounterfactualExtended(db, {
   const tags = gateTagsFor(db, rows)
   const gateTag = { would_block: 0, would_pass: 0, unknown: 0 }
   for (const r of rows) gateTag[tags.get(r.id)?.tag ?? 'unknown']++
-  const rules = buildRules({ cfg, policy, preset, tpR: tpR ? cfg.tpR : [], trailR: trailR ? cfg.trailR : [], design, family })
+  const hybridSetting = loadCappedHybridSettings(db)
+  const hybrid = { triggerR: hybridTriggerR(db), closeFraction: hybridSetting.closeFraction }
+  const rules = buildRules({ cfg, policy, preset, tpR: tpR ? cfg.tpR : [], trailR: trailR ? cfg.trailR : [], design, family, hybrid })
 
   const stopOf = row => (stop === 'initial' ? (num(row.broker_sl_initial) ?? num(row.sl_price)) : num(row.sl_price))
   const tradeFor = (row, rule) => {
@@ -258,7 +268,7 @@ export function exitCounterfactualExtended(db, {
     stop: { basis: stop === 'initial' ? 'broker_sl_initial, else sl_price' : 'sl_price (as recorded)' },
     actualSource,
     sweeps: { ...cfg, source: research.source, overridden: sweeps.overridden },
-    management: { source: 'loadManagedExit (managed_exit_json over defaults) + mae-chandelier-observe + capped-hybrid-policy', trailR: policy.trailR, takeAtR: policy.takeAtR, takeAtRFamilies: policy.takeAtRFamilies, takeFractionAtR: policy.takeFractionAtR, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD }, hybridTriggerR: hybridTriggerR() },
+    management: { source: 'loadManagedExit (managed_exit_json over defaults) + mae-chandelier-observe + capped-hybrid-policy', trailR: policy.trailR, takeAtR: policy.takeAtR, takeAtRFamilies: policy.takeAtRFamilies, takeFractionAtR: policy.takeFractionAtR, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD }, hybridTriggerR: hybrid.triggerR, hybridCloseFraction: hybrid.closeFraction, hybridSource: hybridSetting.source },
     design: dz ? dz.coverage : null,
     gateTag: { ...gateTag, maxAgeMin: gateTagMaxAgeMs(db) / 60_000, basis: 'regimeBlocks(strategy, bias, regime reading nearest before entry within the configured regime-gate age bound); groupBy=gateTag splits every rule by it' },
     considered: pop.considered, eligible: eligible.length, skipped: pop.skipped,

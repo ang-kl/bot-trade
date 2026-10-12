@@ -53,6 +53,7 @@ import { getCtraderCreds, credsForRegisteredAccount, resolveSymbolId } from '../
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
 import { lotRecordFor, unitsPerLot as unitsPerLotFromRegistry, brokerMinLots } from '../lib/lot-size-registry.js'
+import { lotsBlankOrPositive } from '../lib/order-lots.js'
 
 /** The query parameters GET /state/preorder understands; anything else is a 400. */
 export const PREORDER_SCAN_PARAMS = Object.freeze(['scanId', 'account'])
@@ -390,6 +391,8 @@ async function manualPreorder(db, input, deps) {
   if (!symbol) return bad(400, 'symbol required')
   if (side !== 'BUY' && side !== 'SELL') return bad(400, "side must be 'BUY' or 'SELL'")
   if (sl == null || sl === '' || !Number.isFinite(Number(sl))) return bad(400, 'sl (stop-loss price) required — no manual orders without a stop')
+  // The route's lots check (Codex P1 on #1328; Claude · № 13,496 12-Oct; claude-builder).
+  if (!lotsBlankOrPositive(lots)) return bad(400, 'lots must be a positive number, or blank for risk-based sizing')
   if (account != null && account !== '' && !registered(db, account)) return bad(400, `account ${String(account)} is not in the registry`)
   const creds = account != null && account !== '' ? credsForRegisteredAccount(db, account) : getCtraderCreds(db)
   if (!creds?.ready) return cannot('cTrader credentials not configured')
@@ -412,8 +415,8 @@ async function manualPreorder(db, input, deps) {
     symbol, side, entry,
     sl: Number(sl),
     tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
-    requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
-    ...(Number(lots) > 0 ? {} : { requestedVolumeDefault: true }), // № 13,175, as the route
+    // Lot fix (Claude · № 13,396 12-Oct; claude-builder), as the route: nothing typed = no cap.
+    requestedVolume: Number(lots) > 0 ? Number(lots) : null,
     strategy: manualOrderStrategy(input.strategy),
     direction_reason: manualDirectionReason(input.directionReason, side),
     conviction: null,

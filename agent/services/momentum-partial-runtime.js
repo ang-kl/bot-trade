@@ -286,7 +286,7 @@ export function recordPartialScaleOuts(db) {
           symbol: trade?.symbol ?? `symbolId ${row.identity?.symbolId ?? 'unknown'}`,
           kind: 'scale_out', fromValue: p.volume, toValue: p.runnerVolume, priceAt: r.price,
           rAt: Number((dir * (r.price - p.entry) / p.initialRisk).toFixed(4)),
-          reason: `${p.policy === CAPPED_HYBRID_POLICY ? 'capped hybrid 50% at 2R' : 'momentum partial TP1'}: closed ${r.closedVolume} of ${p.volume} broker units at ${r.price} (trigger ${p.trigger})`,
+          reason: `${p.policy === CAPPED_HYBRID_POLICY ? hybridLabel(p) : 'momentum partial TP1'}: closed ${r.closedVolume} of ${p.volume} broker units at ${r.price} (trigger ${p.trigger})`,
           source: 'momentum_partial',
           detail: { dealId: r.dealId, orderId: r.orderId ?? null, volume: r.closedVolume, price: r.price,
             executedAtMs: r.executedAtMs, receiptSource: r.source ?? null, planState: row.state, volumeUnit: 'broker_volume',
@@ -329,6 +329,20 @@ async function defaultAdapterFor(db, ref) {
  * @param {{ credsFor: (accountId: string) => object|null, now?: () => number,
  *   log?: (line: string) => void, deps?: { adapterFor?: Function, config?: object } }} options
  */
+// The audit text is the armed plan's own (W10 makes the trigger and the share
+// a setting): a default plan reads "capped hybrid 50% at 2R" as it always
+// has. Codex P2 on #1327 — Claude · № 13,486 12-Oct (owner's yes after
+// № 13,483 naming this file; claude-builder).
+function hybridShare(p) {
+  const close = Number(p?.closeVolume), runner = Number(p?.runnerVolume)
+  return close > 0 && runner > 0 ? `${Math.round((close / (close + runner)) * 1000) / 10}%` : 'a share'
+}
+function hybridLabel(p) {
+  const pct = Number.isFinite(Number(p?.closePercentage)) ? Number(p.closePercentage) : null
+  const r = p?.triggerR ?? 2
+  return `capped hybrid ${pct != null ? `${pct}%` : hybridShare(p)} at ${r}R`
+}
+
 export async function runMomentumPartialPass(db, { credsFor = () => null, now: clock = Date.now, log = () => {}, deps = {} } = {}) {
   const now = typeof clock === 'function' ? clock : () => clock
   const config = { ...PARTIAL_PASS_DEFAULTS, ...(deps.config || {}) }
@@ -367,7 +381,7 @@ export async function runMomentumPartialPass(db, { credsFor = () => null, now: c
   try {
     const { enrolCappedHybrids } = await import('./capped-hybrid-enrolment.js')
     summary.cappedHybrid = await enrolCappedHybrids(db, { credsFor, now, ...(deps.hybridEnrolment || {}) })
-    for (const p of summary.cappedHybrid.enrolled) log(`capped hybrid …${p.accountId.slice(-4)} trade ${p.tradeId}: 50% at ${p.trigger}; existing broker TP ${p.brokerTarget} retained`)
+    for (const p of summary.cappedHybrid.enrolled) log(`capped hybrid …${p.accountId.slice(-4)} trade ${p.tradeId}: ${hybridShare(p)} at ${p.trigger}; existing broker TP ${p.brokerTarget} retained`)
     for (const e of summary.cappedHybrid.errors) fail(`capped_hybrid trade ${e.tradeId}`, e.reason)
   } catch (e) { fail('capped_hybrid', e) }
   if (hasTable(db, 'momentum_partial_plans')) {

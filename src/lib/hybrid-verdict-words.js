@@ -53,6 +53,9 @@ const REASON_WORDS = {
   symbol_account_unverified: 'the broker\'s symbol read was for another account',
   symbol_metadata_unverified: 'the broker\'s symbol read was incomplete',
   ownership_changed: 'its record changed during the check',
+  // Seen live on 12-10 after W9 (four …0949 pad positions). Claude · № 13,488
+  // 12-Oct (claude-builder).
+  monitor_entry_conflict: 'its position monitor and its trade record disagree on the entry price',
   enrolment_budget: 'the pass reached its time budget first',
   candidate_not_selected: 'the pass did not select it',
   // Errors (redacted to a code by the agent)

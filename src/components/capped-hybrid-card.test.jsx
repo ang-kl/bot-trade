@@ -86,3 +86,10 @@ test('W3 words: an unreadable hybrid section is said in words, not as a code', (
   expect(verdictLine(pos(1, 'not_available', { reason: 'hybrid_section_unreadable' })))
     .toBe('Not available: the last pass\'s hybrid section could not be read')
 })
+
+// Claude · № 13,488 12-Oct (claude-builder): the reason the manual hybrid
+// gave the four …0949 pad positions on its first pass after W9.
+test('W3 words: a monitor/trade entry disagreement is said in words', () => {
+  expect(verdictLine(pos(1, 'deferred', { reason: 'monitor_entry_conflict' })))
+    .toBe('Waiting: its position monitor and its trade record disagree on the entry price; checked again on a later pass')
+})
