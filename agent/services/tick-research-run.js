@@ -46,12 +46,12 @@
 // every report — the 202, the polled job, the trial manifest — says which
 // segments were replayed and how many were left. Absent, nothing changes.
 // ---------------------------------------------------------------------------
-import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync, openSync, readSync, closeSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Worker } from 'node:worker_threads'
 import { randomUUID, createHash } from 'node:crypto'
-import { readSegment, toQuoteEvents, FORMAT_VERSION, HEADER_BYTES, RECORD_BYTES } from '../lib/tick-segment.js'
+import { readSegment, decodeHeader, toQuoteEvents, FORMAT_VERSION, HEADER_BYTES, RECORD_BYTES } from '../lib/tick-segment.js'
 import { simulate, normalizeLiveFilters, LIVE_FILTER_NAMES, LIVE_FILTER_MODELS, GATEWAY_LIVE_FILTERS } from '../lib/tick-replay-sim.js'
 import { normalizeParams, profileHashFull } from '../lib/tick-strategy.js'
 import { trialIdFor, importTickTrial, testOpeningsFor, recordTestOpening, settleTestOpening, HOLDOUT_UNDECLARED, RESEARCH_BLOCKS } from './tick-research.js'
@@ -279,7 +279,7 @@ export function loadSegments(files, { onlySymbol = null } = {}) {
   const sink = {
     has: (id) => bySymbol.has(id),
     push: (id, q) => { const list = bySymbol.get(id) || []; list.push(q); bySymbol.set(id, list) },
-    gapAll: () => { for (const list of bySymbol.values()) list.push({ gapMarker: true }) },
+    gapAll: (only = null) => { for (const [id, list] of bySymbol) if (!only || only(id)) list.push({ gapMarker: true }) },
     symbols: () => [...bySymbol.keys()],
   }
   const manifestBase = walkSegments(files, sink, { onlySymbol })
@@ -291,17 +291,52 @@ export function loadSegments(files, { onlySymbol = null } = {}) {
 const GAP_MARKER_QUOTE = Object.freeze({ seq: 0, recvMs: 0, bid: 1, ask: 0, crossed: true, snapshot: false, changed: true })
 
 /**
+ * Claude · № 13,672 12-Oct (W6 sides, owner "Key streams by side";
+ * claude-builder). A stream's key in a replay over BOTH sides is
+ * `<environment>:<symbol id>`: an id names a different instrument per side
+ * (27 ids are recorded on both, measured 12-10), so the two feeds of one id
+ * are two streams. A replay over one side keys by the id alone, as before, so
+ * its streams, manifests and trial ids are unchanged.
+ */
+export function streamKey(environment, symbolId, bothSides) {
+  return bothSides ? `${environment}:${symbolId}` : symbolId
+}
+/** A stream key back to its symbol id and, over both sides, its environment (null otherwise). */
+export function parseStreamKey(key) {
+  if (typeof key !== 'string') return { symbolId: key, environment: null }
+  const i = key.indexOf(':')
+  return i < 0 ? { symbolId: Number(key), environment: null } : { symbolId: Number(key.slice(i + 1)), environment: key.slice(0, i) }
+}
+
+/** A segment's environment from its header alone, or null when the header does not decode. */
+function headerEnvironment(file) {
+  let fd = null
+  try {
+    fd = openSync(file, 'r')
+    const head = Buffer.alloc(HEADER_BYTES)
+    return readSync(fd, head, 0, HEADER_BYTES, 0) === HEADER_BYTES ? decodeHeader(head)?.environment ?? null : null
+  } catch { return null } finally { if (fd != null) closeSync(fd) }
+}
+
+/**
  * Claude · № 13,571 12-Oct (W6, owner "Raise the cap (code change)";
  * claude-builder). The decode loop of `loadSegments`, with WHERE each quote
  * goes left to a sink: the in-memory map above, or the spill files of
  * `replayFiles` when a job is too large to hold (tick-replay-spill.js). One
  * loop drives both, so the two paths read the same quotes in the same order
- * by construction. The sink answers `has(id)`, takes `push(id, q)`, adds a
- * gap marker to every stream so far on `gapAll()`, and lists `symbols()` in
- * first-seen order.
+ * by construction. The sink answers `has(key)`, takes `push(key, q)`, adds a
+ * gap marker to every stream so far, or to those `only(key)` accepts, on
+ * `gapAll(only)`, and lists `symbols()` in first-seen order.
+ *
+ * W6 sides (№ 13,672): the headers are read first, and when the files hold
+ * both sides each stream is keyed by side (streamKey). A continuity gap then
+ * re-warms only its own side's streams and forgets only its own side's last
+ * quotes, and each listed gap names its side; the other side's feed did not
+ * break.
  */
 export function walkSegments(files, sink, { onlySymbol = null } = {}) {
-  const lastValid = new Map() // symbolId → the last two-sided quote pushed
+  const bothSides = new Set(files.map(headerEnvironment).filter(e => e != null)).size > 1
+  const lastValid = new Map() // environment → (stream key → the last two-sided quote pushed)
   let events = 0, torn = 0, firstMs = null, lastMs = null
   // PR-Q1: the dataset is pinned by content, not by name — a trial names the
   // bytes it replayed, so a segment rewritten or rotated under the same name
@@ -310,14 +345,26 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
   const environments = new Set()
   const gapsByReason = {}
   const gaps = []
+  // W6 sides (Codex P2 on #1332; owner "Per side + parity"): the list is
+  // capped per side, so one side's gaps cannot crowd the other's out of it.
+  // A replay over one side has one side, so its list is capped as before.
+  const gapsCounted = new Map(), gapsListed = new Map() // environment → gaps
+  // ... and how many recorder drops each side's list leaves out: only those
+  // can excuse a parity mismatch (Codex P2 on 87257bf6; owner "Narrow it").
+  const recorderUnlisted = new Map() // environment → recorder-only gaps counted but not listed
   let warmupResets = 0
   for (const f of files) {
     const buf = readFileSync(f)
     fileDigests.push({ name: basename(f), bytes: buf.length, sha256: createHash('sha256').update(buf).digest('hex') })
     const seg = readSegment(buf)
     if (!seg.header) continue
-    environments.add(seg.header.environment)
+    const env = seg.header.environment
+    environments.add(env)
     if (seg.truncated) torn++
+    const keyOf = (id) => streamKey(env, id, bothSides)
+    if (!lastValid.has(env)) lastValid.set(env, new Map())
+    const last = lastValid.get(env)
+    const ownSide = bothSides ? (key) => key.startsWith(`${env}:`) : null
     for (const ev of toQuoteEvents(seg)) {
       if (ev.gap) {
         // PR-Q1: split by reason. queue_overflow and reserve_pause drop only
@@ -330,9 +377,13 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
         // way, so a repeat after ANY gap is not given sides the dropped span
         // may have changed.
         gapsByReason[ev.reason] = (gapsByReason[ev.reason] || 0) + 1
-        if (gaps.length < GAP_LIST_MAX) gaps.push({ reason: ev.reason, recvMs: ev.recvMs, count: ev.count })
-        lastValid.clear()
-        if (!RECORDER_ONLY_GAPS.has(ev.reason)) { warmupResets++; sink.gapAll() }
+        gapsCounted.set(env, (gapsCounted.get(env) || 0) + 1)
+        if ((gapsListed.get(env) || 0) < GAP_LIST_MAX) {
+          gaps.push({ reason: ev.reason, recvMs: ev.recvMs, count: ev.count, ...(bothSides ? { environment: env } : {}) })
+          gapsListed.set(env, (gapsListed.get(env) || 0) + 1)
+        } else if (RECORDER_ONLY_GAPS.has(ev.reason)) recorderUnlisted.set(env, (recorderUnlisted.get(env) || 0) + 1)
+        last.clear()
+        if (!RECORDER_ONLY_GAPS.has(ev.reason)) { warmupResets++; sink.gapAll(ownSide) }
         continue
       }
       if (ev.repeat) {
@@ -343,8 +394,9 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
         // on (tick-strategy.js: the null check precedes the repeat check) —
         // measured PR-H on the planted fixture: 1 trade over the segment
         // path against 2 in memory. Now it carries the last quote's sides.
-        const prev = lastValid.get(ev.symbolId)
-        if (sink.has(ev.symbolId) && prev) sink.push(ev.symbolId, { seq: ev.seq, recvMs: ev.recvMs, bid: prev.bid, ask: prev.ask, snapshot: false, crossed: false, changed: false })
+        const key = keyOf(ev.symbolId)
+        const prev = last.get(key)
+        if (sink.has(key) && prev) sink.push(key, { seq: ev.seq, recvMs: ev.recvMs, bid: prev.bid, ask: prev.ask, snapshot: false, crossed: false, changed: false })
         continue
       }
       if (ev.invalid) continue
@@ -357,8 +409,9 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
       // back to the integer the recorder wrote.
       const ms = Math.round(ev.recvMonoNs / 1e6)
       const q = { seq: ev.seq, recvMs: ms, bid: ev.bid, ask: ev.ask, snapshot: ev.quality.snapshot, crossed: ev.quality.crossed, changed: true }
-      sink.push(ev.symbolId, q)
-      if (q.bid != null && q.ask != null) lastValid.set(ev.symbolId, q)
+      const key = keyOf(ev.symbolId)
+      sink.push(key, q)
+      if (q.bid != null && q.ask != null) last.set(key, q)
       events++
       if (firstMs == null || ms < firstMs) firstMs = ms
       if (lastMs == null || ms > lastMs) lastMs = ms
@@ -367,14 +420,20 @@ export function walkSegments(files, sink, { onlySymbol = null } = {}) {
   const manifestBase = {
     files: files.map(f => basename(f)), events, symbols: sink.symbols(), torn, fromMs: firstMs, toMs: lastMs, decoderVersion: FORMAT_VERSION,
     fileDigests, environments: [...environments].sort(),
-    gapsByReason, gaps, gapsTruncated: Object.values(gapsByReason).reduce((a, b) => a + b, 0) > gaps.length, warmupResets,
+    gapsByReason, gaps, gapsTruncated: Object.values(gapsByReason).reduce((a, b) => a + b, 0) > gaps.length,
+    // Over both sides, which side's list was cut (the parity report reads its own side's).
+    ...(bothSides ? {
+      gapsTruncatedBySide: Object.fromEntries([...gapsCounted].map(([e, n]) => [e, n > (gapsListed.get(e) || 0)])),
+      recorderGapsUnlistedBySide: Object.fromEntries([...gapsCounted].map(([e]) => [e, recorderUnlisted.get(e) || 0])),
+    } : {}),
+    warmupResets,
   }
   return manifestBase
 }
 
 /** PR-Q1: gap reasons that drop only the recorder's queue (the live strategy kept every quote). */
 export const RECORDER_ONLY_GAPS = new Set(['queue_overflow', 'reserve_pause'])
-/** The manifest lists at most this many gaps with their times; `gapsByReason` counts all of them. */
+/** The manifest lists at most this many gaps per side with their times; `gapsByReason` counts all of them. */
 export const GAP_LIST_MAX = 200
 
 /** The replayer build that produced a trial: the deploy's commit, or null where the environment does not say. */
@@ -407,7 +466,7 @@ export function runTrials({ bySymbol, manifestBase }, opts = {}) {
  * so the order they run in changes nothing. A `listOf` that answers null
  * skips that symbol (the replay names it, see replayFiles).
  */
-export function runTrialsOver(manifestBase, symbolIds, listOf, { stageA = false, params = {}, sim = {}, symbolClass = null, trendContext = null } = {}) {
+export function runTrialsOver(manifestBase, symbolIds, listOf, { stageA = false, params = {}, sim = {}, symbolClass = null, symbolClassByEnv = null, trendContext = null } = {}) {
   const grid = (stageA ? stageAGrid() : [params]).map(g => normalizeParams({ ...params, ...g }))
   // PR-Q3: the counter-trend reader per symbol, built once for every grid
   // point (the regime rows are the same input whatever the profile).
@@ -417,16 +476,36 @@ export function runTrialsOver(manifestBase, symbolIds, listOf, { stageA = false,
   // reading" and the trial would carry a counter-trend filter that saw nothing.
   if (counterTrendOn && !trendContext) throw new TypeError('sim.liveFilters.counterTrend is on but no regime context (replayTrendContext) was given: the veto could not be judged')
   const byGrid = grid.map(() => [])
-  for (const symbolId of symbolIds) {
-    const list = listOf(symbolId)
+  for (const key of symbolIds) {
+    const list = listOf(key)
     if (list == null) continue
-    const trend = counterTrendOn ? symbolTrend(trendContext, manifestBase, symbolId, list) : null
-    grid.forEach((p, gi) => byGrid[gi].push(trialFor(manifestBase, symbolId, list, p, sim, symbolClass, trend)))
+    // W6 sides (№ 13,672): over both sides the key names the stream's side,
+    // and its regime name and cost class are read from that side alone.
+    const stream = parseStreamKey(key)
+    const trend = counterTrendOn ? symbolTrend(trendContext, manifestBase, stream.symbolId, list, stream.environment) : null
+    const classes = classesFor(stream.environment ?? onlyEnvironment(manifestBase), symbolClass, symbolClassByEnv)
+    grid.forEach((p, gi) => byGrid[gi].push(trialFor(manifestBase, stream, list, p, sim, classes, trend)))
   }
   return byGrid.flat()
 }
 
-function trialFor(manifestBase, symbolId, list, p, sim, symbolClass, trend) {
+/** The one environment a replay's files carry, or null over both sides or none. */
+const onlyEnvironment = (manifestBase) => (manifestBase?.environments?.length === 1 ? manifestBase.environments[0] : null)
+
+/**
+ * Claude · № 13,672 12-Oct (W6 sides; claude-builder). The id → class map a
+ * stream is charged by: its own side's, when the stored map is kept per side
+ * (it is: exec-guard-sync stores it under each side's name); the union only
+ * for a map stored under no side's name (a single-route deployment). An id
+ * its own side does not classify is not charged the other side's class: it is
+ * a different instrument there.
+ */
+function classesFor(environment, symbolClass, symbolClassByEnv) {
+  if (environment && symbolClassByEnv && Object.keys(symbolClassByEnv).length) return symbolClassByEnv[environment] || {}
+  return symbolClass
+}
+
+function trialFor(manifestBase, { symbolId, environment }, list, p, sim, symbolClass, trend) {
   // PR-L: the cost class for THIS symbol id, from the keeper's pushed map.
   // When the id is NOT in the map the schedule is left off entirely rather
   // than charging the dearest fallback: a research run must still produce
@@ -441,7 +520,8 @@ function trialFor(manifestBase, symbolId, list, p, sim, symbolClass, trend) {
   // bytes (fileDigests, from loadSegments), which replayer build, which
   // fill rules by hash. A different build over the same bytes is a
   // different trial, so a replayer fix is never masked by an older row.
-  const manifest = { ...manifestBase, symbolId, symbolEvents: list.length, replayerCommit: replayerCommit(), simHash: simHash(r.sim) }
+  // W6 sides: `environment` only over both sides, so a one-side trial keys as before.
+  const manifest = { ...manifestBase, symbolId, ...(environment ? { environment } : {}), symbolEvents: list.length, replayerCommit: replayerCommit(), simHash: simHash(r.sim) }
   // PR-Q3: the regime rows the counter-trend veto could read are an input
   // like the segments, so they are pinned by content too (and the trial id
   // with them). Only with the filter on: an unfiltered trial is unchanged.
@@ -536,6 +616,13 @@ function gateAgeBound(gate) {
 export function replayFilterContext(db) {
   return { entryCfg: loadTickEntryConfig(), gate: loadRegimeGateConfig(db) }
 }
+
+/**
+ * Which sidecar recorded a segment of each environment (routing: the header
+ * names the environment, the keeper's stores are kept per sidecar). The one
+ * table both the regime names and the cost classes are looked up through.
+ */
+const SIDE_OF_ENVIRONMENT = Object.freeze([['demo', 'cpp_exec_demo'], ['live', 'cpp_exec']])
 
 /** The segment's start from its name (seg-<13-digit ms>-…), or null. */
 function segmentStartMs(file) {
@@ -677,7 +764,7 @@ function trendContextFrame(db, { files = [], gate = loadRegimeGateConfig(db), no
   const names = tickSymbolNames(db)
   const nameSet = new Set(names)
   const sides = {}
-  for (const [env, side] of [['demo', 'cpp_exec_demo'], ['live', 'cpp_exec']]) {
+  for (const [env, side] of SIDE_OF_ENVIRONMENT) {
     const accountId = sideAccounts(db, side)[0] ?? null
     const nameOf = symbolNameResolver(db, accountId)
     const ids = new Set()
@@ -704,12 +791,14 @@ const sqlStamp = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 1
  * (pinned by digest on the manifest), and `sidesAt(ms)` — permittedSides over
  * the reading as of that moment, null when there is none.
  */
-export function symbolTrend(ctx, manifestBase, symbolId, list) {
+export function symbolTrend(ctx, manifestBase, symbolId, list, environment = null) {
   const envs = manifestBase?.environments || []
   const id = String(symbolId)
   let name = null
   if (ctx?.sides) {
-    if (envs.length === 1) name = ctx.sides[envs[0]]?.[id] ?? null
+    // W6 sides (№ 13,672): a stream keyed by side reads its own side's name.
+    if (environment) name = ctx.sides[environment]?.[id] ?? null
+    else if (envs.length === 1) name = ctx.sides[envs[0]]?.[id] ?? null
     else {
       // Mixed or unknown environments: a name both sides agree on, or the one
       // side that carries the id (the recorder admits only its own universe).
@@ -760,26 +849,35 @@ export function symbolTrend(ctx, manifestBase, symbolId, list) {
 
 /**
  * PR-L: the cost schedule a replay trial should be charged, and the symbol
- * id → class map to charge it by. The schedule is the repo's; the map is the
- * union of what the keeper last pushed per side (a segment's symbol ids are
- * that side's ids, and the two sides do not collide in practice — where they
- * would, the first side's class wins and the trial records which class it
- * used, so the choice is auditable rather than hidden).
+ * id → class map to charge it by. The schedule is the repo's; the map is what
+ * the keeper last pushed per side.
+ *
+ * Claude · № 13,672 12-Oct (W6 sides; claude-builder): the comment here said
+ * the two sides "do not collide in practice"; on 12-10, 27 symbol ids were
+ * recorded on both, and the union charged a live id the demo side's class
+ * whenever the stored map listed demo first. `symbolClassByEnv` keeps each
+ * side's map apart (demo / live, as a segment header names them) and a
+ * trial is charged by its own side's (classesFor). `symbolClass`, the union,
+ * is kept for a map stored under no side's name.
  */
+export const ENVIRONMENT_BY_SIDE = Object.freeze(Object.fromEntries(SIDE_OF_ENVIRONMENT.map(([env, side]) => [side, env])))
 export function replayCostContext(db) {
   const costSchedule = loadRepoSchedule()
   const symbolClass = {}
+  const symbolClassByEnv = {}
   try {
     const stored = JSON.parse(getState(db, TICK_COST_MAP_KEY) || '{}') || {}
-    for (const side of Object.values(stored)) {
+    for (const [sideName, side] of Object.entries(stored)) {
+      const env = ENVIRONMENT_BY_SIDE[sideName]
+      if (env && side?.symbolClass && typeof side.symbolClass === 'object') symbolClassByEnv[env] = { ...side.symbolClass }
       for (const [id, cls] of Object.entries(side?.symbolClass || {})) if (!symbolClass[id]) symbolClass[id] = cls
     }
   } catch { /* no map pushed yet — every trial then reads costSource 'fallback' and cannot pass */ }
-  return { costSchedule, symbolClass }
+  return { costSchedule, symbolClass, symbolClassByEnv }
 }
 
 /** The request body, normalised once (shared by the in-thread action and the job). */
-export function researchPlan(body = {}, { costSchedule = null, symbolClass = null, entryCfg = null, gate = null } = {}) {
+export function researchPlan(body = {}, { costSchedule = null, symbolClass = null, symbolClassByEnv = null, entryCfg = null, gate = null } = {}) {
   const sim = { ...plain(body.sim) }
   // PR-Q3: the body's switches become the stamped block, every value from the
   // permits' config and the regime gate (the doors refuse any other shape
@@ -832,6 +930,7 @@ export function researchPlan(body = {}, { costSchedule = null, symbolClass = nul
     sim,
     onlySymbol: body.symbol != null && Number.isFinite(Number(body.symbol)) ? Number(body.symbol) : null,
     symbolClass: symbolClassMap,
+    symbolClassByEnv: symbolClassByEnv && typeof symbolClassByEnv === 'object' ? symbolClassByEnv : null,
     note: rawNote == null ? null : rawNote.slice(0, NOTE_MAX),
     noteTruncated,
   }
@@ -904,7 +1003,7 @@ export function openingRefusal(db, plan) {
  * to no valid quote event. Runs in the worker for the route, in-thread for
  * the script and `tickResearchAction`.
  */
-export function replayFiles(files, plan, replayThresholds, { spillDir = null, inMemoryMaxRecords = IN_MEMORY_MAX_RECORDS, maxSymbolEvents = MAX_SYMBOL_EVENTS, maxSpillEntries = MAX_SPILL_ENTRIES } = {}) {
+export function replayFiles(files, plan, replayThresholds, { spillDir = null, inMemoryMaxRecords = IN_MEMORY_MAX_RECORDS, maxSymbolEvents = MAX_SYMBOL_EVENTS, maxSpillEntries = MAX_SPILL_ENTRIES, spillIo = undefined } = {}) {
   // Claude · № 13,571 12-Oct (W6; claude-builder): a job up to
   // IN_MEMORY_MAX_RECORDS (the old cap, 5,000,000) is decoded in memory as
   // before. Above it the quotes are spilled per symbol to `spillDir` and
@@ -920,21 +1019,29 @@ export function replayFiles(files, plan, replayThresholds, { spillDir = null, in
     source = { manifestBase: loaded.manifestBase, symbolIds: [...loaded.bySymbol.keys()], listOf: (id) => loaded.bySymbol.get(id), replay: { mode: 'in_memory', records } }
   } else {
     const dir = spillDir || (ownDir = mkdtempSync(join(tmpdir(), 'tick-replay-')))
-    spill = createSpill(dir, { maxEntries: maxSpillEntries })
+    spill = createSpill(dir, { maxEntries: maxSpillEntries, io: spillIo })
     let manifestBase
     try {
       manifestBase = walkSegments(files, spill, { onlySymbol: plan.onlySymbol })
+      spill.close()
     } catch (err) {
-      // A refusal mid-decode (the spill cap) leaves nothing behind.
+      // A refusal mid-decode (the spill cap) or a write that failed (a full
+      // disk, Codex P2 on #1330: the close's last flush included) leaves
+      // nothing behind; the error is the caller's.
       spill.remove()
       if (ownDir) rmSync(ownDir, { recursive: true, force: true })
       throw err
-    } finally { spill.close() }
+    }
     const counts = spill.counts()
     // A symbol whose stream alone is over the bound is not replayed, and the
     // result says so by id and size — never a silent subset. Its trial would
-    // have needed more heap than the worker is given (WORKER_HEAP_MB).
-    const over = [...counts].filter(([, n]) => n > maxSymbolEvents).map(([symbolId, streamEvents]) => ({ symbolId, streamEvents }))
+    // have needed more heap than the worker is given (WORKER_HEAP_MB). Over
+    // both sides the entry names the stream's side as well (W6 sides).
+    const overKeys = [...counts].filter(([, n]) => n > maxSymbolEvents)
+    const over = overKeys.map(([key, streamEvents]) => {
+      const { symbolId, environment } = parseStreamKey(key)
+      return environment ? { symbolId, environment, streamEvents } : { symbolId, streamEvents }
+    })
     // Codex P1 on #1330: a confirmation run (includeTest) opens the profile's
     // one-time test block. Skipping a symbol there would spend that opening on
     // a partial result, so the run is refused here — after the decode, before
@@ -951,7 +1058,7 @@ export function replayFiles(files, plan, replayThresholds, { spillDir = null, in
     // bound does). Only when something was skipped: a run that skipped
     // nothing keys the same trial ids as the in-memory path.
     if (over.length) Object.assign(manifestBase, { maxSymbolEvents, symbolsNotReplayed: over })
-    const skip = new Set(over.map(o => o.symbolId))
+    const skip = new Set(overKeys.map(([key]) => key))
     source = {
       manifestBase,
       symbolIds: manifestBase.symbols,
@@ -975,13 +1082,13 @@ export function replayFiles(files, plan, replayThresholds, { spillDir = null, in
 export function replayNotice(replay) {
   const over = replay?.symbolsNotReplayed || []
   if (!over.length) return null
-  return `NOT REPLAYED: ${over.length} symbol(s) over the ${Number(replay.maxSymbolEvents).toLocaleString('en-US')}-event stream bound: ${over.map(o => `${o.symbolId} (${Number(o.streamEvents).toLocaleString('en-US')})`).join(', ')}; their trials are absent from this output`
+  return `NOT REPLAYED: ${over.length} symbol(s) over the ${Number(replay.maxSymbolEvents).toLocaleString('en-US')}-event stream bound: ${over.map(o => `${o.environment ? `${o.environment}:` : ''}${o.symbolId} (${Number(o.streamEvents).toLocaleString('en-US')})`).join(', ')}; their trials are absent from this output`
 }
 
 /** The refusal of a confirmation run with a symbol over the stream bound; `code` names it to the job and the route. */
 export const SYMBOL_OVER_BOUND = 'symbol_over_bound'
 function replayRefusal(over, maxSymbolEvents) {
-  const err = new Error(`a confirmation run (includeTest) must replay every symbol in full, and ${over.map(o => `symbol ${o.symbolId} (${o.streamEvents.toLocaleString('en-US')} stream events)`).join(', ')} ${over.length === 1 ? 'is' : 'are'} over the ${maxSymbolEvents.toLocaleString('en-US')} a worker replays; nothing was simulated and the test block was not read. Name fewer segments (segments) to bound the stream`)
+  const err = new Error(`a confirmation run (includeTest) must replay every symbol in full, and ${over.map(o => `symbol ${o.environment ? `${o.environment}:` : ''}${o.symbolId} (${o.streamEvents.toLocaleString('en-US')} stream events)`).join(', ')} ${over.length === 1 ? 'is' : 'are'} over the ${maxSymbolEvents.toLocaleString('en-US')} a worker replays; nothing was simulated and the test block was not read. Name fewer segments (segments) to bound the stream`)
   err.code = SYMBOL_OVER_BOUND
   err.symbolsOverBound = over
   return err
@@ -1006,7 +1113,7 @@ function replaySource({ manifestBase, symbolIds, listOf, replay }, plan, replayT
       segmentsDropped: plan.segmentsDropped ?? 0,
     })
   }
-  const trials = runTrialsOver(manifestBase, symbolIds, listOf, { stageA: plan.stageA, params: plan.params, sim: plan.sim, symbolClass: plan.symbolClass, trendContext: plan.trendContext ?? null })
+  const trials = runTrialsOver(manifestBase, symbolIds, listOf, { stageA: plan.stageA, params: plan.params, sim: plan.sim, symbolClass: plan.symbolClass, symbolClassByEnv: plan.symbolClassByEnv ?? null, trendContext: plan.trendContext ?? null })
   // Fix round (checker N3): agent/config/tick-shadow-sim.json is read ONCE
   // per replay, not once per trial — its liveFilters block (only when a trial
   // carries one; undefined otherwise, so replayChecks never looks) and the
@@ -1023,7 +1130,7 @@ function finish(db, plan, replayed, replayThresholds, dir, importTrial, admitted
   const noteText = plan.note ?? ((plan.stageA ? 'stage-A grid via POST /actions/tick-research' : 'POST /actions/tick-research') + bound)
   const out = replayed.trials.map(({ trial: t, verdict }) => {
     const imported = plan.dryRun ? { ok: true, trialId: t.trialId, inserted: false } : importTrial(db, t, { note: noteText, origin })
-    return { trialId: imported.trialId ?? t.trialId, inserted: !plan.dryRun && imported.inserted === true, imported: !plan.dryRun && imported.ok === true, ...(imported.existingOrigin ? { existingOrigin: imported.existingOrigin } : {}), symbolId: t.manifest.symbolId, profileHash: t.profileHash, params: t.params, summary: t.summary, blocks: t.blocks, replay: verdict }
+    return { trialId: imported.trialId ?? t.trialId, inserted: !plan.dryRun && imported.inserted === true, imported: !plan.dryRun && imported.ok === true, ...(imported.existingOrigin ? { existingOrigin: imported.existingOrigin } : {}), symbolId: t.manifest.symbolId, ...(t.manifest.environment ? { environment: t.manifest.environment } : {}), profileHash: t.profileHash, params: t.params, summary: t.summary, blocks: t.blocks, replay: verdict }
   })
   return {
     ok: true, dryRun: plan.dryRun, stageA: plan.stageA, includeTest: plan.includeTest === true, segmentsDir: dir, manifest: replayed.manifest, thresholds: replayThresholds,
