@@ -20,7 +20,7 @@
 // paths cannot drift on what "a subset" means. It is the route's answer to a
 // spool over the keeper's record cap; here it is simply a smaller run.
 import { writeFileSync } from 'node:fs'
-import { listSegments, replayFiles, researchPlan, maxSegmentsFrom, includeTestRefusal, blocksRefusal, liveFiltersRefusal } from '../agent/services/tick-research-run.js'
+import { listSegments, replayFiles, researchPlan, maxSegmentsFrom, includeTestRefusal, blocksRefusal, liveFiltersRefusal, replayNotice } from '../agent/services/tick-research-run.js'
 import { loadThresholds } from '../agent/services/tick-validation.js'
 import { loadRepoSchedule } from '../agent/lib/tick-cost-schedule.js'
 
@@ -98,5 +98,10 @@ plan.segmentsDropped = available.length - files.length
 const replayed = replayFiles(files, plan, loadThresholds().replay)
 if (!replayed) { console.error(`the ${files.length} segment file(s) at ${target} decoded to no valid quote event`); process.exit(2) }
 const trials = replayed.trials.map(t => t.trial)
-const out = JSON.stringify({ generatedAt: new Date().toISOString(), stageA, trials }, null, 1)
+// Codex P1 on #1330 (W6): the output carries how the replay held the quotes and
+// any symbol it could not replay, and says so on stderr, so a file missing a
+// symbol never reads as complete. POST /actions/tick-trials reads `trials` only.
+const notice = replayNotice(replayed.replay)
+if (notice) console.error(notice)
+const out = JSON.stringify({ generatedAt: new Date().toISOString(), stageA, replay: replayed.replay, trials }, null, 1)
 if (outFile) { writeFileSync(outFile, out + '\n'); console.error(`${trials.length} trial(s) written to ${outFile}`) } else process.stdout.write(out + '\n')

@@ -6,7 +6,7 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync as makeTempDir, rmSync, writeFileSync, readdirSync, existsSync, mkdirSync, copyFileSync } from 'node:fs'
+import { mkdtempSync as makeTempDir, rmSync, writeFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDB } from '../db.js'
@@ -379,4 +379,54 @@ test('Codex P1 on #1330: a spill directory that cannot be created refuses the jo
   assert.equal(again.status, 202, 'not refused as a second opening, and the job slot is free')
   assert.equal((await waitSettled(again.body.jobId)).state, 'done')
   _resetTickResearchJobs()
+})
+
+// Codex P1 on #1330 (review of 743c2d80): the beside-the-spool script wrote
+// only `trials`, so a streamed run that skipped a symbol over the stream bound
+// produced a file that read as complete. Owner: "Fix in #1330 now".
+import { replayNotice } from './tick-research-run.js'
+import { execFileSync } from 'node:child_process'
+
+test('Codex P1 on #1330: the script\'s JSON carries the replay record, and a skipped symbol is named on stderr', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'spill-cli-'))
+  richSegments(dir, 600)
+  const script = new URL('../../scripts/tick-research.mjs', import.meta.url).pathname
+  const out = JSON.parse(execFileSync(process.execPath, [script, dir, '--params', JSON.stringify(PLAN.params), '--sim', JSON.stringify({ latencyMs: 60, minTargetToCost: 1 })], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
+  assert.equal(out.replay?.mode, 'in_memory', 'RED before the fix: the output had trials only')
+  assert.ok(out.replay.records > 0)
+  // the notice the script prints, from a streamed replay that skipped symbols
+  const r = replayFiles(listSegmentsOf(dir), PLAN, loadThresholds().replay, { inMemoryMaxRecords: 0, maxSymbolEvents: 10 })
+  const line = replayNotice(r.replay)
+  assert.match(line, /^NOT REPLAYED: 3 symbol\(s\) over the 10-event stream bound: 11 \(\d[\d,]*\), 12 \(\d[\d,]*\), 13 \(\d[\d,]*\); their trials are absent from this output$/)
+  assert.equal(replayNotice(out.replay), null); assert.equal(replayNotice(null), null)
+  const script2 = readFileSync(new URL('../../scripts/tick-research.mjs', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '')
+  assert.match(script2, /replayNotice\(replayed\.replay\)/, 'the script prints the notice it is given')
+})
+const listSegmentsOf = (dir) => readdirSync(dir).filter(f => f.endsWith('.tks')).sort().map(f => join(dir, f))
+
+// Codex P2 on #1330 (review of 743c2d80): each continuity gap writes one
+// spill entry per symbol seen so far, so a gap-heavy spool can need more spill
+// than its record count. Owner: "Add a spill-byte cap".
+import { SPILL_OVER_BOUND, MAX_SPILL_ENTRIES } from './tick-research-run.js'
+
+test('Codex P2 on #1330: the spill refuses past its entry cap — nothing simulated, the spill removed, the opening left to retry', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'spill-cap-'))
+  const files = richSegments(dir) // full size: its continuity gaps sit at quotes 1,500 and 3,000
+  const total = [...loadSegments(files).bySymbol.values()].reduce((n, l) => n + l.length, 0)
+  const markers = [...loadSegments(files).bySymbol.values()].reduce((n, l) => n + l.filter(q => q.gapMarker).length, 0)
+  assert.ok(markers > 0, 'the fixture carries broadcast gap entries')
+  const spillDir = mkdtempSync(join(tmpdir(), 'spill-cap-run-'))
+  assert.throws(
+    () => replayFiles(files, PLAN, loadThresholds().replay, { inMemoryMaxRecords: 0, maxSpillEntries: total - 1, spillDir }),
+    (err) => err.code === SPILL_OVER_BOUND && /bound of [\d,]+ entries/.test(err.message),
+    'RED before the cap: the spill grew past it',
+  )
+  assert.deepEqual(readdirSync(spillDir), [], 'what was spilled before the refusal is removed')
+  assert.ok(replayFiles(files, PLAN, loadThresholds().replay, { inMemoryMaxRecords: 0, maxSpillEntries: total }).trials.length > 0, 'at the cap: replayed')
+  // the in-thread door answers 413 and a confirmation's opening stays retryable
+  const db = initDB(':memory:')
+  const r = tickResearchAction(db, CONFIRM, { segmentsDir: dir, replayOptions: { inMemoryMaxRecords: 0, maxSpillEntries: total - 1 } })
+  assert.equal(r.status, 413); assert.equal(r.body.error, SPILL_OVER_BOUND)
+  assert.deepEqual(db.prepare('SELECT status FROM tick_test_openings').all(), [{ status: 'failed_unseen' }])
+  assert.equal(MAX_SPILL_ENTRIES, MAX_RECORDS, 'the cap is the spill budget MAX_RECORDS states: 32 bytes an entry')
 })

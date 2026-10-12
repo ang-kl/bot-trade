@@ -68,7 +68,8 @@ import { tickSymbolNames } from './exec-guard-sync.js'
 import { symbolNameResolver } from './tick-shadow-accounts.js'
 import { sideAccounts } from './tick-shadow.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
-import { createSpill, SPILL_ENTRY_BYTES } from './tick-replay-spill.js'
+import { createSpill, SPILL_ENTRY_BYTES, SPILL_OVER_BOUND } from './tick-replay-spill.js'
+export { SPILL_OVER_BOUND }
 
 export const SEGMENTS_ENV = 'TICK_SEGMENTS_DIR'
 export const NO_SEGMENTS_WHERE = 'the sealed segments are on the demo sidecar volume (cpp-exec, TICK_SPOOL_PATH); set TICK_SEGMENTS_DIR on the keeper to a directory holding seg-*.tks files, or run scripts/tick-research.mjs beside the spool and POST /actions/tick-trials'
@@ -99,6 +100,14 @@ export const IN_MEMORY_MAX_RECORDS = 5_000_000
  * `replay.symbolsNotReplayed`, never replayed in part.
  */
 export const MAX_SYMBOL_EVENTS = 20_000_000
+/**
+ * Codex P2 on #1330 (owner: "Add a spill-byte cap"). Entries a streamed job
+ * may spill, across all symbols: MAX_RECORDS × 32 bytes = 4.8 GB, the spill
+ * budget MAX_RECORDS above states. Records alone cannot exceed it, but each
+ * continuity gap adds one entry per symbol seen so far; past the cap the job
+ * is refused (`spill_over_bound`), never left to fill the disk.
+ */
+export const MAX_SPILL_ENTRIES = MAX_RECORDS
 /**
  * The research worker's heap ceiling. A worker over it is stopped by Node
  * with ERR_WORKER_OUT_OF_MEMORY and the job fails with that error; the
@@ -895,7 +904,7 @@ export function openingRefusal(db, plan) {
  * to no valid quote event. Runs in the worker for the route, in-thread for
  * the script and `tickResearchAction`.
  */
-export function replayFiles(files, plan, replayThresholds, { spillDir = null, inMemoryMaxRecords = IN_MEMORY_MAX_RECORDS, maxSymbolEvents = MAX_SYMBOL_EVENTS } = {}) {
+export function replayFiles(files, plan, replayThresholds, { spillDir = null, inMemoryMaxRecords = IN_MEMORY_MAX_RECORDS, maxSymbolEvents = MAX_SYMBOL_EVENTS, maxSpillEntries = MAX_SPILL_ENTRIES } = {}) {
   // Claude · № 13,571 12-Oct (W6; claude-builder): a job up to
   // IN_MEMORY_MAX_RECORDS (the old cap, 5,000,000) is decoded in memory as
   // before. Above it the quotes are spilled per symbol to `spillDir` and
@@ -911,9 +920,16 @@ export function replayFiles(files, plan, replayThresholds, { spillDir = null, in
     source = { manifestBase: loaded.manifestBase, symbolIds: [...loaded.bySymbol.keys()], listOf: (id) => loaded.bySymbol.get(id), replay: { mode: 'in_memory', records } }
   } else {
     const dir = spillDir || (ownDir = mkdtempSync(join(tmpdir(), 'tick-replay-')))
-    spill = createSpill(dir)
+    spill = createSpill(dir, { maxEntries: maxSpillEntries })
     let manifestBase
-    try { manifestBase = walkSegments(files, spill, { onlySymbol: plan.onlySymbol }) } finally { spill.close() }
+    try {
+      manifestBase = walkSegments(files, spill, { onlySymbol: plan.onlySymbol })
+    } catch (err) {
+      // A refusal mid-decode (the spill cap) leaves nothing behind.
+      spill.remove()
+      if (ownDir) rmSync(ownDir, { recursive: true, force: true })
+      throw err
+    } finally { spill.close() }
     const counts = spill.counts()
     // A symbol whose stream alone is over the bound is not replayed, and the
     // result says so by id and size — never a silent subset. Its trial would
@@ -943,6 +959,17 @@ export function replayFiles(files, plan, replayThresholds, { spillDir = null, in
     if (spill) { try { spill.remove() } catch { /* best effort: the job's settle removes the directory too */ } }
     if (ownDir) rmSync(ownDir, { recursive: true, force: true })
   }
+}
+
+/**
+ * Codex P1 on #1330 (owner: "Fix in #1330 now"): the line the beside-the-spool
+ * script prints when a streamed replay skipped a symbol, so its output can
+ * never read as complete; null when nothing was skipped.
+ */
+export function replayNotice(replay) {
+  const over = replay?.symbolsNotReplayed || []
+  if (!over.length) return null
+  return `NOT REPLAYED: ${over.length} symbol(s) over the ${Number(replay.maxSymbolEvents).toLocaleString('en-US')}-event stream bound: ${over.map(o => `${o.symbolId} (${Number(o.streamEvents).toLocaleString('en-US')})`).join(', ')}; their trials are absent from this output`
 }
 
 /** The refusal of a confirmation run with a symbol over the stream bound; `code` names it to the job and the route. */
@@ -1098,9 +1125,9 @@ export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SE
   try {
     replayed = replayFiles(a.files, plan, th.replay, replayOptions)
   } catch (err) {
-    if (err?.code !== SYMBOL_OVER_BOUND) throw err
+    if (err?.code !== SYMBOL_OVER_BOUND && err?.code !== SPILL_OVER_BOUND) throw err
     if (opening) settleTestOpening(db, opening.id, { status: 'failed_unseen' })
-    return { status: 413, body: { ok: false, error: SYMBOL_OVER_BOUND, symbolsOverBound: err.symbolsOverBound, where: err.message } }
+    return { status: 413, body: { ok: false, error: err.code, ...(err.symbolsOverBound ? { symbolsOverBound: err.symbolsOverBound } : {}), where: err.message } }
   }
   if (!replayed) {
     if (opening) settleTestOpening(db, opening.id, { status: 'no_data' })

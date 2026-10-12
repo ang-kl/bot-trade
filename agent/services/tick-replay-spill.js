@@ -32,14 +32,21 @@ const F = Object.freeze({ SNAPSHOT: 1, CROSSED: 2, CHANGED: 4, GAP: 8, BID_NULL:
  * each symbol's stream length, and `read(id)` for a symbol's stream (its file
  * is deleted as it is read, so the disk drains as the replay advances).
  */
-export function createSpill(dir) {
+export function createSpill(dir, { maxEntries = Infinity } = {}) {
   const streams = new Map() // symbolId → { file, fd, buf, used, count }
   let closed = false
+  // Codex P2 on #1330 (owner: "Add a spill-byte cap"): every entry written,
+  // across all symbols. A continuity gap writes one per symbol seen so far,
+  // so a gap-heavy spool can need more entries than it has records; past
+  // `maxEntries` the store refuses rather than fill the disk.
+  let total = 0
 
   const flush = (st) => {
     if (st.used) { writeSync(st.fd, st.buf, 0, st.used * SPILL_ENTRY_BYTES); st.used = 0 }
   }
   const slot = (st) => {
+    if (total >= maxEntries) throw spillBoundError(maxEntries)
+    total++
     if (st.used === CHUNK_ENTRIES) flush(st)
     const off = st.used * SPILL_ENTRY_BYTES
     st.used++
@@ -77,6 +84,7 @@ export function createSpill(dir) {
     gapAll() { for (const st of streams.values()) writeGap(st) },
     symbols: () => [...streams.keys()],
     counts: () => new Map([...streams].map(([id, st]) => [id, st.count])),
+    entries: () => total,
     close() {
       if (closed) return
       closed = true
@@ -113,4 +121,12 @@ export function createSpill(dir) {
       for (const st of streams.values()) { if (existsSync(st.file)) rmSync(st.file, { force: true }) }
     },
   }
+}
+
+/** The refusal past the entry cap; `code` names it to the job and the route. */
+export const SPILL_OVER_BOUND = 'spill_over_bound'
+function spillBoundError(maxEntries) {
+  const err = new Error(`the spill reached its bound of ${maxEntries.toLocaleString('en-US')} entries (${(maxEntries * SPILL_ENTRY_BYTES).toLocaleString('en-US')} bytes) before the decode finished; each continuity gap adds one entry per symbol seen so far, so this spool needs more than its record count. Nothing was simulated and the test block was not read. Name fewer segments (segments) to bound it`)
+  err.code = SPILL_OVER_BOUND
+  return err
 }
