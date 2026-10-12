@@ -919,6 +919,16 @@ export function replayFiles(files, plan, replayThresholds, { spillDir = null, in
     // result says so by id and size — never a silent subset. Its trial would
     // have needed more heap than the worker is given (WORKER_HEAP_MB).
     const over = [...counts].filter(([, n]) => n > maxSymbolEvents).map(([symbolId, streamEvents]) => ({ symbolId, streamEvents }))
+    // Codex P1 on #1330: a confirmation run (includeTest) opens the profile's
+    // one-time test block. Skipping a symbol there would spend that opening on
+    // a partial result, so the run is refused here — after the decode, before
+    // any sim has read the test block — and its opening is settled
+    // failed_unseen by the caller, which leaves it to retry.
+    if (over.length && plan.includeTest) {
+      spill.remove()
+      if (ownDir) rmSync(ownDir, { recursive: true, force: true })
+      throw replayRefusal(over, maxSymbolEvents)
+    }
     const skip = new Set(over.map(o => o.symbolId))
     source = {
       manifestBase,
@@ -933,6 +943,15 @@ export function replayFiles(files, plan, replayThresholds, { spillDir = null, in
     if (spill) { try { spill.remove() } catch { /* best effort: the job's settle removes the directory too */ } }
     if (ownDir) rmSync(ownDir, { recursive: true, force: true })
   }
+}
+
+/** The refusal of a confirmation run with a symbol over the stream bound; `code` names it to the job and the route. */
+export const SYMBOL_OVER_BOUND = 'symbol_over_bound'
+function replayRefusal(over, maxSymbolEvents) {
+  const err = new Error(`a confirmation run (includeTest) must replay every symbol in full, and ${over.map(o => `symbol ${o.symbolId} (${o.streamEvents.toLocaleString('en-US')} stream events)`).join(', ')} ${over.length === 1 ? 'is' : 'are'} over the ${maxSymbolEvents.toLocaleString('en-US')} a worker replays; nothing was simulated and the test block was not read. Name fewer segments (segments) to bound the stream`)
+  err.code = SYMBOL_OVER_BOUND
+  err.symbolsOverBound = over
+  return err
 }
 
 function replaySource({ manifestBase, symbolIds, listOf, replay }, plan, replayThresholds, files) {
@@ -1054,7 +1073,7 @@ function admit(segmentsDir, { maxRecords = MAX_RECORDS, maxSegments = null, name
  * POST /actions/tick-validation), and imports unless dryRun. Used by tests
  * and small runs; the route uses startTickResearchJob.
  */
-export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, segmentsAvailable = null, actor = null } = {}) {
+export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, segmentsAvailable = null, actor = null, replayOptions = {} } = {}) {
   const bounded = maxSegmentsFrom(body)
   if (bounded.refuse) return bounded.refuse
   const named = segmentNamesFrom(body)
@@ -1075,7 +1094,14 @@ export function tickResearchAction(db, body = {}, { segmentsDir = process.env[SE
   // PR-Q1: the opening is written BEFORE the replay reads the test block, so
   // a replay that throws half-way is still on the ledger as an opening.
   const opening = plan.includeTest ? recordTestOpening(db, { profileHash: plan.declaredProfile, channel: 'keeper_inline', actor, detail: { files: a.files.map(f => basename(f)), onlySymbol: plan.onlySymbol } }) : null
-  const replayed = replayFiles(a.files, plan, th.replay)
+  let replayed
+  try {
+    replayed = replayFiles(a.files, plan, th.replay, replayOptions)
+  } catch (err) {
+    if (err?.code !== SYMBOL_OVER_BOUND) throw err
+    if (opening) settleTestOpening(db, opening.id, { status: 'failed_unseen' })
+    return { status: 413, body: { ok: false, error: SYMBOL_OVER_BOUND, symbolsOverBound: err.symbolsOverBound, where: err.message } }
+  }
   if (!replayed) {
     if (opening) settleTestOpening(db, opening.id, { status: 'no_data' })
     return { status: 409, body: { ok: false, error: 'no_segments', where: `${a.files.length} segment file(s) at ${a.dir} decoded to no valid quote event`, segmentsDir: a.dir, segments: a.files.length } }
@@ -1159,7 +1185,7 @@ function settle(j, patch) {
  * in-thread action returns) is on GET /state/tick-research-job?id=… once
  * `state` is `done`; the trials are in tick_trials by then.
  */
-export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null, workerCtor = null, filterCtx: givenFilterCtx = null, trendContext: givenTrendContext = null, onSettled = null, spillRoot = tmpdir(), inMemoryMaxRecords = IN_MEMORY_MAX_RECORDS } = {}) {
+export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[SEGMENTS_ENV], thresholds = null, importTrial = importTickTrial, maxRecords = MAX_RECORDS, workerFile = WORKER_FILE, now = new Date(), segmentsAvailable = null, segmentsFailed = [], actor = null, workerCtor = null, filterCtx: givenFilterCtx = null, trendContext: givenTrendContext = null, onSettled = null, spillRoot = tmpdir(), inMemoryMaxRecords = IN_MEMORY_MAX_RECORDS, maxSymbolEvents = MAX_SYMBOL_EVENTS } = {}) {
   if (jobs.current) {
     return { status: 409, body: { ok: false, error: 'research_running', jobId: jobs.current.jobId, startedAt: jobs.current.startedAt, where: 'one research job runs at a time; poll GET /state/tick-research-job?id=<jobId> and post again when it is done' } }
   }
@@ -1234,7 +1260,7 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
   ]
   let worker
   try {
-    worker = new (workerCtor || Worker)(workerFile, { workerData: { files: a.files, plan, replay: th.replay, spillDir, inMemoryMaxRecords }, resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB } })
+    worker = new (workerCtor || Worker)(workerFile, { workerData: { files: a.files, plan, replay: th.replay, spillDir, inMemoryMaxRecords, maxSymbolEvents }, resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB } })
   } catch (err) {
     settleOpening({ status: 'failed_unseen' })
     for (const h of j.hooks) { try { h(j) } catch { /* best effort */ } }
@@ -1250,7 +1276,7 @@ export function startTickResearchJob(db, body = {}, { segmentsDir = process.env[
     if (settled) return
     settled = true
     try {
-      if (!msg || !msg.ok) { settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'failed', error: msg?.error || 'worker returned no result' }); return }
+      if (!msg || !msg.ok) { settleOpening({ status: 'failed_unseen' }); settle(j, { state: 'failed', error: msg?.error || 'worker returned no result', ...(msg?.code ? { errorCode: msg.code } : {}), ...(msg?.symbolsOverBound ? { symbolsOverBound: msg.symbolsOverBound } : {}) }); return }
       if (!msg.replayed) { settleOpening({ status: 'no_data' }); settle(j, { state: 'failed', error: 'no_segments', result: { ok: false, error: 'no_segments', where: `${a.files.length} segment file(s) at ${a.dir} decoded to no valid quote event`, segmentsDir: a.dir, segments: a.files.length } }); return }
       settleOpening({ status: 'opened', trialIds: msg.replayed.trials.map(t => t.trial.trialId) })
       const result = finish(db, plan, msg.replayed, th.replay, a.dir, importTrial, a, origin)

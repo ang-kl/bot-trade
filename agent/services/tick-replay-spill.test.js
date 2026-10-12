@@ -261,3 +261,57 @@ test('clearSegmentCache touches only a temporary directory and only sealed-segme
   assert.deepEqual({ ok: c.ok, removed: c.removed, bytes: c.bytes, remaining: c.remaining }, { ok: true, removed: 1, bytes: 100, remaining: 0 })
   assert.deepEqual(readdirSync(d), ['seg-x.tks'])
 })
+
+// Codex P1 on #1330: a confirmation run (includeTest) opens the profile's
+// one-time test block. A streamed run that skipped a symbol over the bound
+// spent that opening on a partial result, and every retry was refused as a
+// second opening.
+import { tickResearchAction, SYMBOL_OVER_BOUND } from './tick-research-run.js'
+import { testOpeningsFor } from './tick-research.js'
+import { profileHash, normalizeParams } from '../lib/tick-strategy.js'
+
+const CONFIRM_PARAMS = { rangeEvents: 64, momentumEvents: 16, maxSpread: 200 }
+const CONFIRM = { includeTest: true, params: CONFIRM_PARAMS, sim: { latencyMs: 60, minTargetToCost: 1 }, profileHash: profileHash(normalizeParams(CONFIRM_PARAMS)) }
+
+test('Codex P1 on #1330: a streamed confirmation run with a symbol over the bound is refused before any sim — nothing simulated, the spill removed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'spill-confirm-'))
+  const files = richSegments(dir, 600)
+  const spillDir = mkdtempSync(join(tmpdir(), 'spill-confirm-run-'))
+  assert.throws(
+    () => replayFiles(files, { ...PLAN, includeTest: true }, loadThresholds().replay, { inMemoryMaxRecords: 0, maxSymbolEvents: 10, spillDir }),
+    (err) => err.code === SYMBOL_OVER_BOUND && err.symbolsOverBound.length === 3 && /test block was not read/.test(err.message),
+  )
+  assert.deepEqual(readdirSync(spillDir), [])
+  // a research run (no includeTest) still names and skips
+  const r = replayFiles(files, PLAN, loadThresholds().replay, { inMemoryMaxRecords: 0, maxSymbolEvents: 10 })
+  assert.equal(r.trials.length, 0); assert.equal(r.replay.symbolsNotReplayed.length, 3)
+})
+
+test('Codex P1 on #1330: the job settles failed with the code, its opening failed_unseen, and the confirmation can be run again', async () => {
+  _resetTickResearchJobs()
+  const db = initDB(':memory:')
+  const dir = mkdtempSync(join(tmpdir(), 'spill-confirm-job-'))
+  richSegments(dir, 600)
+  const s = startTickResearchJob(db, CONFIRM, { segmentsDir: dir, inMemoryMaxRecords: 0, maxSymbolEvents: 10 })
+  assert.equal(s.status, 202, JSON.stringify(s.body).slice(0, 300))
+  const j = await waitSettled(s.body.jobId)
+  assert.equal(j.state, 'failed'); assert.equal(j.errorCode, SYMBOL_OVER_BOUND); assert.equal(j.symbolsOverBound.length, 3)
+  assert.deepEqual(db.prepare('SELECT status FROM tick_test_openings').all(), [{ status: 'failed_unseen' }], 'RED before the fix: settled opened with no trials')
+  assert.equal(testOpeningsFor(db, CONFIRM.profileHash).consulted, false)
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM tick_trials').get().c, 0)
+  const again = startTickResearchJob(db, CONFIRM, { segmentsDir: dir, inMemoryMaxRecords: 0 })
+  assert.equal(again.status, 202, 'not refused as a second opening')
+  const j2 = await waitSettled(again.body.jobId)
+  assert.equal(j2.state, 'done', JSON.stringify(j2).slice(0, 300))
+  _resetTickResearchJobs()
+})
+
+test('Codex P1 on #1330: the in-thread action answers 413 symbol_over_bound and leaves the opening unconsumed', () => {
+  const db = initDB(':memory:')
+  const dir = mkdtempSync(join(tmpdir(), 'spill-confirm-inline-'))
+  richSegments(dir, 600)
+  const r = tickResearchAction(db, CONFIRM, { segmentsDir: dir, replayOptions: { inMemoryMaxRecords: 0, maxSymbolEvents: 10 } })
+  assert.equal(r.status, 413); assert.equal(r.body.error, SYMBOL_OVER_BOUND); assert.equal(r.body.symbolsOverBound.length, 3)
+  assert.deepEqual(db.prepare('SELECT status FROM tick_test_openings').all(), [{ status: 'failed_unseen' }])
+  assert.equal(tickResearchAction(db, CONFIRM, { segmentsDir: dir }).status, 200, 'the confirmation can still be run')
+})
