@@ -340,7 +340,7 @@ W3 comes before W9 and W10, so their acceptance can be read on the card.
 
 ---
 
-## 6. Status, corrections and findings (kept current; Claude · № 13,401 12-Oct; claude-builder)
+## 6. Status, corrections and findings (kept current; Claude · № 13,401 12-Oct, updated № 13,463; claude-builder)
 
 This section records what happened to each item, so the document stays
 checked against the code (owner principle 5). Each later PR updates it.
@@ -351,7 +351,7 @@ checked against the code (owner principle 5). Each later PR updates it.
 |---|---|---|
 | W1, W2, W3, W4, W11 | "W1 W2 W3 W4 W11" (after № 13,350) | W11: `agent/loop.js`, `agent/services/momentum-book.js` (06:16) |
 | W5, W6, W7 | "go B" (after № 13,381) | none |
-| W8 | "go W8" (after № 13,381) | none (no protected file changed) |
+| W8 | "go W8" (after № 13,381); "go W8 W9 W10 merge when green" (after № 13,449) | `agent/loop.js`, for the Codex P1 fix on #1327 (yes after № 13,458) |
 | W9 | "yes to W9 … manual-hybrid-policy.js" and "Okay W9" | `manual-hybrid-policy.js`, `manual-hybrid-enrolment.js` |
 | W10 | "yes to … W10 … capped-hybrid-policy.js", then "yes to W10, capped-hybrid-enrolment.js" | `capped-hybrid-policy.js`, `capped-hybrid-enrolment.js` |
 | Lot fix (not in §2) | "Go lot fix" (after № 13,394) | none |
@@ -360,13 +360,16 @@ checked against the code (owner principle 5). Each later PR updates it.
 
 | Item | Built | PR | Live check |
 |---|---|---|---|
-| W1 | `initialRiskOf` (broker first stop → proposal stop → monitor `initial_risk` → `sl_price` only for a trade the book never trailed) | #1325 | Not verifiable until the next momentum-book close |
-| W2 | `recordRegimeBlock` stores `sl`, `tp1`, `tp2`, `conviction` | #1325 | Not verifiable until the next regime refusal after deploy |
-| W3 | `GET /state/capped-hybrid` + the Trade-page card | this PR | after deploy |
+| W1 | `initialRiskOf` (broker first stop → proposal stop → monitor `initial_risk` → `sl_price` only for a trade the book never trailed) | #1325, merged 12-10 07:48 SGT | Not verifiable until the next momentum-book close (check-in 05:20 SGT 13-10) |
+| W2 | `recordRegimeBlock` stores `sl`, `tp1`, `tp2`, `conviction` | #1325 | **Passed** 12-10 07:52 SGT: the first refusal after deploy has stop, target and conviction (`scorable` 1) |
+| W3 | `GET /state/capped-hybrid` + the Trade-page card, one line per Open positions row | #1326, merged 12-10 08:20 SGT | **Passed** 12-10 08:23 SGT: the card's rows equal the Open positions table for all accounts and for each of the five; 10 rows, each with a verdict and a reason |
 | W4 | `policy: auto` on all five enabled accounts | operation, no PR | **Passed** 12-10 06:13 SGT: auto, TIME_BASED, STABLE, readyCount 0 |
-| W11 | the book trail reaches manage-only accounts (`registryManageAccounts`) | this PR | after the next book pass |
-| W8, W9, W10, lot fix | built and committed locally | next PRs | — |
-| W5, W6, W7 | not started (phase B runs after the last deploy restart) | operations | — |
+| W11 | the book trail reaches manage-only accounts (`registryManageAccounts`); the summary counts them apart | #1326, merged 12-10 08:20 SGT | after the next book pass (21:05 UTC) |
+| W8 | `"_all"` in `momentum-entries.json` names every enabled account | this PR | `/state/momentum-targets` on every enabled account after deploy; the next momentum entry carries its plan |
+| W9 | `"_all"` in `manual-hybrid.json` | this PR | the W3 card shows no `manual_account_not_authorised` on an enabled account |
+| W10 | `capped_hybrid_json` (default 2R / 50%) read by both enrolments | this PR | with no stored setting, the card and the pass read as before |
+| Lot fix | an empty pad Lots box sends no cap | next PR | the next blank-lots pad order is risk-sized |
+| W5, W6, W7 | not started (phase B runs at least 30 min after the last deploy restart) | operations | — |
 
 ### 6.3 Corrections to §2 (what the text said vs what the code needed)
 
@@ -376,10 +379,12 @@ checked against the code (owner principle 5). Each later PR updates it.
   synth's. Taking the signal's values first would store a long's stop on a
   SELL row.
 - **W8.** §2 named only `momentum-entry-switch.js`. `_all` needs the registry,
-  which that leaf module has no handle on; the callers that hold the database
-  (resting limits, the status route) pass `isEnabled`, and the market path in
-  `loop.js` (protected, not changed for W8) relies on the book's own roster,
-  which is the registry's enabled entry accounts.
+  which that leaf module has no handle on, so every caller passes `isEnabled`
+  (`registryEnabled`): the resting limits, the status route and the market
+  path in `loop.js`. With no reader, `_all` names no account. The first build
+  let the market path trust the caller's roster; Codex (P1 on #1327) showed
+  the roster can fall back to the legacy roles list, so `loop.js` changed too,
+  with the owner's yes naming it.
 - **W9.** §2 named `manual-hybrid-policy.js`. The manual enrolment
   (`manual-hybrid-enrolment.js`) selects trades with `account_id IN (list)`,
   so `_all` also needed that file; without it the manual hybrid would have
@@ -390,6 +395,12 @@ checked against the code (owner principle 5). Each later PR updates it.
   `momentum-partial-runtime.js` (protected, not named) still reads
   "capped hybrid 50% at 2R" whatever the plan carries; the plan itself and the
   W3 card show the real values.
+- **W3.** §2 said "one line per open position". The first build read open
+  trades; the Open positions table it sits under reads active monitors. A
+  monitor with no linked trade, or whose trade is no longer open, showed in
+  the table and not on the card (Codex P2 on #1326, twice). The card now reads
+  the table's rows and scope, with no row cap, and names a row the hybrid
+  cannot examine.
 - **W11.** §2 said "no decision needed"; the fix needed `loop.js` and
   `momentum-book.js`, both protected, so it waited for the owner's yes.
 
@@ -405,6 +416,9 @@ checked against the code (owner principle 5). Each later PR updates it.
   tsmom trades in 365 days). A marker would be written in `momentum-book.js`.
 - **The pad's empty Lots box sent a hidden 0.01 cap** (the DOGEUSD question,
   № 13,394). Fixed by the lot fix.
+- **W3 read-back: the book positions read `trade_origin_not_bot`**, not
+  `monitor_paused` as §2's expected verdicts said. Both exclude them; the
+  origin is simply the first rule that applies. No change needed.
 
 ### 6.5 Held items (§4) — unchanged
 

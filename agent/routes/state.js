@@ -150,6 +150,18 @@ function scanReportIndex(db, symbol = false) {
 
 export default function stateRouter(db) {
   const router = Router()
+  // W10 — Claude · № 13,391 12-Oct (claude-builder): the capped hybrid's
+  // effective settings (stored or the defaults, with any reason the store was
+  // not used). Read-only.
+  router.get('/capped-hybrid-settings', async (_req, res) => {
+    res.set('Cache-Control', 'no-store')
+    try {
+      const { loadCappedHybridSettings, CAPPED_HYBRID_DEFAULTS, CAPPED_HYBRID_RANGES } = await import('../services/capped-hybrid-policy.js')
+      res.json({ effective: loadCappedHybridSettings(db), defaults: CAPPED_HYBRID_DEFAULTS, ranges: CAPPED_HYBRID_RANGES })
+    } catch {
+      res.status(503).json({ error: 'Capped hybrid settings are temporarily unavailable.', code: 'capped_hybrid_settings_unavailable' })
+    }
+  })
   router.get('/momentum-targets', async (req, res) => {
     res.set('Cache-Control', 'no-store')
     try {

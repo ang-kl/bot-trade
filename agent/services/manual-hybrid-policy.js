@@ -12,6 +12,31 @@ const config = JSON.parse(readFileSync(new URL('../config/manual-hybrid.json', i
 export const MANUAL_HYBRID_CONFIG = Object.freeze({ ...config, accounts: Object.freeze([...config.accounts]) })
 const table = (db, name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
 const id = value => /^[1-9]\d*$/.test(String(value)) ? String(value) : null
+
+// W9 — Claude · № 13,391 12-Oct (owner's yes naming this file, 12-10 ~06:38
+// SGT; docs/instruction-2026-10-12-decisions.md W9; claude-builder). `"_all"`
+// in config/manual-hybrid.json `accounts` names every ENABLED registry account
+// (owner principle 9: setups apply to every account). Explicit ids still name
+// themselves. The evidence rules below are unchanged. The authority version
+// is unchanged too, so authorities already recorded keep validating.
+export const MANUAL_HYBRID_ALL_ACCOUNTS = '_all'
+/** The accounts the manual hybrid covers now: explicit ids, plus every enabled
+ * registry account under `_all`. Registry order, no duplicates. */
+export function manualHybridAccountIds(db, accounts = MANUAL_HYBRID_CONFIG.accounts) {
+  const explicit = accounts.filter(a => a !== MANUAL_HYBRID_ALL_ACCOUNTS && id(a))
+  if (!accounts.includes(MANUAL_HYBRID_ALL_ACCOUNTS)) return [...new Set(explicit)]
+  let enabled = []
+  try { enabled = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)).filter(id) } catch { enabled = [] }
+  return [...new Set([...explicit, ...enabled])]
+}
+/** Is this account covered by the manual hybrid's account list? */
+export function manualHybridAccountAuthorised(db, accountId, accounts = MANUAL_HYBRID_CONFIG.accounts) {
+  const a = id(accountId)
+  if (!a) return false
+  if (accounts.includes(a)) return true
+  if (!accounts.includes(MANUAL_HYBRID_ALL_ACCOUNTS)) return false
+  try { return !!db.prepare('SELECT 1 FROM accounts WHERE account_id = ? AND enabled = 1').get(a) } catch { return false }
+}
 export const MANUAL_HYBRID_REASONS = Object.freeze([
   'manual_account_not_authorised', 'manual_trade_origin_unverified', 'manual_keeper_disabled',
   'manual_keeper_opt_out', 'manual_symbol_map_unverified', 'manual_opening_proof_required',
@@ -30,7 +55,7 @@ export function readManualHybridCandidate(db, t, positionId, digits) {
   let monitorId = null
   const refuse = reason => ({ candidate: null, reason, monitorId })
   if (!t || !id(positionId) || String(t.ctrader_position_id) !== positionId || !id(t.account_id)) return refuse('trade_identity_unverified')
-  if (!MANUAL_HYBRID_CONFIG.accounts.includes(t.account_id)) return refuse('manual_account_not_authorised')
+  if (!manualHybridAccountAuthorised(db, t.account_id)) return refuse('manual_account_not_authorised')
   if (!isManualHybridTrade(t)) return refuse('manual_trade_origin_unverified')
   if (t.status !== 'open') return refuse('trade_not_open')
   if (!['BUY', 'SELL'].includes(t.side)) return refuse('trade_side_invalid')

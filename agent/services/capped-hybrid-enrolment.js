@@ -4,7 +4,7 @@ import { wsReconcile, wsSymbolsByIds, wsGetPositionDeals } from '../lib/ctrader-
 import { partialPositionEvidence } from './momentum-broker-evidence.js'
 import { sameTicks, stopHeld } from './momentum-target-policy.js'
 import { registerPartialPlan, readPartialPlan } from './momentum-partial-manager.js'
-import { planCappedHybrid, readCappedHybridOwner, readCappedHybridVerdict } from './capped-hybrid-policy.js'
+import { planCappedHybrid, readCappedHybridOwner, readCappedHybridVerdict, loadCappedHybridSettings } from './capped-hybrid-policy.js'
 import { getState, setState } from '../db.js'
 import { enrolManualHybrids } from './manual-hybrid-enrolment.js'
 
@@ -56,6 +56,10 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
   if (!['trades', 'monitored_positions', 'entry_intents', 'accounts'].every(n => table(db, n))) {
     out.unavailableReason = 'schema_unavailable'; return out
   }
+  // W10 — Claude · № 13,399 12-Oct (owner's yes naming this file; claude-builder):
+  // the stored trigger/fraction, read once per pass. A new plan carries them;
+  // a plan already armed keeps its own (capped-hybrid-policy.js).
+  const settings = loadCappedHybridSettings(db)
   let candidates = db.prepare(`SELECT t.id,t.account_id,t.ctrader_position_id FROM trades t
     JOIN monitored_positions m ON m.trade_id=t.id
     WHERE t.status='open' AND t.origin='bot_market_dispatch' AND m.status='active' AND m.paused=0
@@ -109,7 +113,8 @@ export async function enrolCappedHybrids(db, { credsFor, now = Date.now, transpo
       const history = await bounded(() => (transports.deals || wsGetPositionDeals)(...args, owner.positionId, now(), 4000))
       const openingDealIds = openingReceipts(history, owner, bp.volume, digits)
       const plan = planCappedHybrid({ side: owner.side, entry: owner.entry, initialRisk: owner.initialRisk,
-        brokerTarget: bp.takeProfit, volume: bp.volume, minVolume: meta.minVolume, stepVolume: meta.stepVolume, digits, openingDealIds })
+        brokerTarget: bp.takeProfit, volume: bp.volume, minVolume: meta.minVolume, stepVolume: meta.stepVolume, digits, openingDealIds,
+        triggerR: settings.triggerR, closeFraction: settings.closeFraction })
       // Codex · №12,435 · 2026-10-09; codex-footprint: owned-hybrid-refusal-inputs.
       // Observation only, persisted by the existing pass writer. These are the
       // exact inputs already read for this account, not sizing recommendations.

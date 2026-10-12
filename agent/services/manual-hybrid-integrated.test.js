@@ -176,8 +176,10 @@ test('unowned, incomplete or riskless broker opening evidence cannot create manu
 
 test('manual scope and existing owner fences remain closed before broker reads', async t => {
   const cases = [
-    ['other demo account', { accountId: '47790949' }, () => {}],
-    ['other live account', { accountId: '43069009', live: true }, () => {}],
+    // W9 (Claude · № 13,394 12-Oct; claude-builder): `_all` covers every
+    // ENABLED account; an archived or disabled one stays closed.
+    ['archived account', { accountId: '43069009', live: true }, f => f.db.prepare("UPDATE accounts SET enabled=0, mode='archived' WHERE account_id=?").run(f.accountId)],
+    ['disabled account', { accountId: '47790949' }, f => f.db.prepare('UPDATE accounts SET enabled=0 WHERE account_id=?').run(f.accountId)],
     ['keeper opt-out', {}, f => f.db.prepare('UPDATE monitored_positions SET keeper_opt_out=1 WHERE id=8').run()],
     ['keeper disabled', {}, f => setState(f.db, 'profit_keeper_json', JSON.stringify({ on: false }))],
     ['keeper null', {}, f => setState(f.db, 'profit_keeper_json', JSON.stringify({ on: null }))],
@@ -202,7 +204,35 @@ test('manual scope and existing owner fences remain closed before broker reads',
     assert.equal(result.cappedHybrid.enrolled.length, 0, name)
     assert.equal(f.closes.length, 0, name); assert.deepEqual(f.reads, [], name)
     assert.equal(f.plan(), null, name); unchanged(f, trade, monitor)
+    // W9: an account `_all` does not cover is named as such in the pass record.
+    if (/account$/.test(name)) {
+      assert.ok(result.cappedHybrid.excluded.some(r => r.tradeId === 7 && r.reason === 'manual_account_not_authorised'), `${name}: ${JSON.stringify(result.cappedHybrid.excluded)}`)
+    }
   }
+})
+
+// W9 — Claude · № 13,394 12-Oct (owner's yes; docs/instruction-2026-10-12-decisions.md
+// W9; claude-builder). A manual position on an account outside the pre-W9 list
+// (…7342 and …3489): refused as manual_account_not_authorised on the old code,
+// judged on its evidence now — the same evidence rules, unchanged.
+test('W9: a manual position on …0949 is judged on its evidence and enrolled, through the real pass', async t => {
+  const f = manualScene(t, { accountId: '47790949' }), trade = f.trade(), monitor = f.monitor()
+  const pass = await f.pass()
+  assert.equal(pass.cappedHybrid.enrolled.length, 1, JSON.stringify(pass.cappedHybrid))
+  assert.ok(![...pass.cappedHybrid.excluded, ...pass.cappedHybrid.deferred].some(r => r.reason === 'manual_account_not_authorised'))
+  assert.equal(f.plan().state, 'ARMED'); assert.equal(f.plan().plan.initialRisk, 10)
+  assert.equal(f.proof().account_id, '47790949')
+  unchanged(f, trade, monitor)
+})
+
+test('W9: on …0949 the NAS100-shaped refusal still holds — no original stop on the opening order, no authority', async t => {
+  const f = manualScene(t, { accountId: '47790949' }), trade = f.trade(), monitor = f.monitor()
+  delete f.details.order.relativeStopLoss
+  const report = (await f.pass()).cappedHybrid
+  assert.equal(report.enrolled.length, 0)
+  assert.ok(report.deferred.some(r => r.tradeId === 7 && r.reason === 'manual_original_stop_missing'), JSON.stringify(report.deferred))
+  assert.equal(f.plan(), null); assert.ok(!f.proof())
+  unchanged(f, trade, monitor)
 })
 
 test('manual exact-half and existing TP limits are retained after original-risk verification', async t => {
@@ -256,4 +286,14 @@ test('manual authority storage failure prevents plan registration and every brok
   assert.ok(f.reads.includes('orderDetails'), 'reach the durable proof boundary using actual controlled broker evidence')
   assert.ok(!f.proof()); assert.equal(f.plan(), null); assert.equal(f.closes.length, 0); assert.equal(f.events().length, 0)
   unchanged(f, trade, monitor)
+})
+
+// W10 — Claude · № 13,399 12-Oct (claude-builder): the stored setting reaches
+// a manual plan through the real manual enrolment too.
+test('W10: a stored 2.5R arms a manual plan at 2.5R, carrying its values', async t => {
+  const f = manualScene(t)
+  setState(f.db, 'capped_hybrid_json', JSON.stringify({ triggerR: 2.5 }))
+  await f.pass()
+  const p = f.plan().plan
+  assert.deepEqual([f.plan().state, p.trigger, p.triggerR, p.closeFraction, p.closeVolume], ['ARMED', 125, 2.5, 0.5, 5000])
 })

@@ -1507,6 +1507,33 @@ export default function actionsRouter(db, deps = {}) {
   // readiness pass (entry-mode-auto.js, actor auto:readiness) promote and
   // demote the account's entry mode; `manual` keeps the switch human-only.
   // Changes no mode and no epoch; a stale revision is refused (409).
+  // W10 — Claude · № 13,391 12-Oct (owner's yes for W10; claude-builder).
+  // The capped hybrid's trigger (R) and closed fraction, stored in
+  // `capped_hybrid_json` and validated against the policy's own ranges. A plan
+  // already armed carries its own values and is not touched. `{reset: true}`
+  // removes the stored setting (the defaults, 2R and 50%, apply again).
+  router.post('/capped-hybrid-settings', async (req, res) => {
+    try {
+      const { validateCappedHybridSettings, loadCappedHybridSettings, CAPPED_HYBRID_SETTINGS_KEY } = await import('../services/capped-hybrid-policy.js')
+      if (req.body?.reset === true) {
+        db.prepare('DELETE FROM agent_state WHERE key = ?').run(CAPPED_HYBRID_SETTINGS_KEY)
+        return res.json({ ok: true, effective: loadCappedHybridSettings(db) })
+      }
+      const patch = {}
+      for (const k of ['triggerR', 'closeFraction']) if (req.body?.[k] !== undefined) patch[k] = req.body[k]
+      if (!Object.keys(patch).length) return res.status(400).json({ error: 'name triggerR and/or closeFraction, or reset: true', code: 'capped_hybrid_settings_empty' })
+      // Merge onto what is STORED (recurring failure #5), then validate the whole.
+      const current = loadCappedHybridSettings(db)
+      const v = validateCappedHybridSettings({ triggerR: current.triggerR, closeFraction: current.closeFraction, ...patch })
+      if (!v.ok) return res.status(400).json({ error: v.errors.join('; '), code: 'capped_hybrid_settings_invalid' })
+      setState(db, CAPPED_HYBRID_SETTINGS_KEY, JSON.stringify(v.settings))
+      console.log(`[actions] capped-hybrid-settings → trigger ${v.settings.triggerR}R, close ${v.settings.closeFraction * 100}%`)
+      res.json({ ok: true, effective: loadCappedHybridSettings(db) })
+    } catch (error) {
+      res.status(500).json({ error: error.message })
+    }
+  })
+
   router.post('/entry-mode-policy', async (req, res) => {
     try {
       const { requestEntryModePolicy } = await import('../services/entry-mode.js')
