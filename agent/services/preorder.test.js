@@ -373,6 +373,34 @@ test('manual: a TYPED lots below the broker minimum is refused by the route befo
 // ---- 2. equivalence with the gate --------------------------------------------
 
 /** The manual route's proposal, written out independently of preorder.js (actions.js:6415-6427). */
+// Codex P1 on #1328 — Claude · № 13,496 12-Oct (claude-builder).
+test('lot fix: a lots that is SUPPLIED but not a positive number is a 400 at the route and in the dry run — only a blank lots means risk-based sizing', async (t) => {
+  const db = fresh(); t.after(() => db.close())
+  const broker = fakeBroker(1.1)
+  _setWebSocketForTests(broker.Socket); t.after(() => _setWebSocketForTests(null))
+  const srv = await serve(db); t.after(srv.close)
+  const post = (body) => withCreds(() => fetch(`${srv.base}/actions/manual-order`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }).then(async r => ({ status: r.status, body: await r.json() })))
+  const base = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }
+  for (const lots of [0, -1, 'abc', '0', '-0.5', true, 'NaN', 'Infinity', [0.1]]) {
+    const res = await post({ ...base, lots })
+    assert.equal(res.status, 400, `route, lots ${JSON.stringify(lots)}: ${JSON.stringify(res.body).slice(0, 200)}`)
+    assert.match(res.body.error, /lots must be a positive number/)
+    const dry = await withCreds(() => preorderCheck(db, { ...base, lots }, { fetchEntry: async () => 1.1 }))
+    assert.deepEqual([dry.ok, dry.status], [false, 400], `dry run, lots ${JSON.stringify(lots)}`)
+    assert.match(dry.error, /lots must be a positive number/)
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM risk_events').get().n, 0, 'refused before the gate: nothing judged')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM trades').get().n, 0, 'nothing sent')
+  // Blank — omitted, null, empty or spaces — is risk-based sizing, not a 400.
+  for (const lots of [undefined, null, '', '  ']) {
+    const dry = await withCreds(() => preorderCheck(db, { ...base, ...(lots === undefined ? {} : { lots }) }, { fetchEntry: async () => 1.1 }))
+    assert.equal(dry.ok, true, `blank ${JSON.stringify(lots)}: ${dry.error || dry.cannotCheck}`)
+    assert.equal(dry.proposal?.requestedVolume ?? null, null)
+  }
+})
+
 const routeProposal = ({ entry, sl, tp, lots, side = 'BUY', accountId = A }) => ({
   symbol: SYM, side, entry, sl: Number(sl), tp1: tp != null ? Number(tp) : null,
   // Claude · № 13,128 11-Oct: the route sends the pad's validated registry

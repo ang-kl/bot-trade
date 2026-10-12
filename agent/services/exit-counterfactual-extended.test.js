@@ -135,6 +135,14 @@ test('the current-policy replay follows the stored hybrid setting (capped_hybrid
   const r = exitCounterfactualExtended(db, { stop: 'initial', preset: 'breakout', minSample: 1 })
   assert.deepEqual([r.management.hybridTriggerR, r.management.hybridCloseFraction, r.management.hybridSource], [3, 0.4, 'stored'])
   assert.deepEqual([rule(r, 'managed_approx_breakout').spec.partialAtR, rule(r, 'managed_approx_breakout').spec.partialFraction], [3, 0.4])
+  // Every current-policy rule carries the stored share, and is named by it
+  // (Codex P1 on #1328; Claude · № 13,496 12-Oct; claude-builder).
+  const hy = rule(r, 'hybrid_40pct_3R_trail')
+  assert.ok(hy, r.rules.map(x => x.rule).join(','))
+  assert.deepEqual([hy.spec.partialAtR, hy.spec.partialFraction, hy.scenario], [3, 0.4, 'current_policy'])
+  assert.ok(!r.rules.some(x => /^hybrid_half_/.test(x.rule)), 'no "half" rule when the share is not a half')
+  assert.ok(r.rules.filter(x => x.scenario === 'current_policy').every(x => x.spec.partialFraction == null || x.spec.partialFraction === 0.4 || x.rule === 'managed_approx'),
+    'no current-policy rule carries a share other than the stored one')
   // An invalid stored setting is the live defaults, said so.
   setState(db, 'capped_hybrid_json', JSON.stringify({ triggerR: 9 }))
   const d = exitCounterfactualExtended(db, { stop: 'initial', preset: 'breakout', minSample: 1 })

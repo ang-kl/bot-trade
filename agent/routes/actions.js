@@ -42,6 +42,7 @@ import { clearErrorLog } from '../services/error-log.js'
 import { desiredGuardFor } from '../services/exec-guard-sync.js'
 import { isAmbiguousOrderOutcome } from '../lib/exec-fallback.js'
 import { registerBrokerReadingsReader } from '../services/broker-readings.js'
+import { lotsBlankOrPositive } from '../lib/order-lots.js'
 
 /** PR-E: the strategy a manual order carries when the trader names none. */
 export const MANUAL_ORDER_STRATEGY = 'manual_order'
@@ -6502,6 +6503,11 @@ export default function actionsRouter(db, deps = {}) {
       if (!symbol) return res.status(400).json({ error: 'symbol required' })
       if (side !== 'BUY' && side !== 'SELL') return res.status(400).json({ error: "side must be 'BUY' or 'SELL'" })
       if (sl == null || !Number.isFinite(Number(sl))) return res.status(400).json({ error: 'sl (stop-loss price) required — no manual orders without a stop' })
+      // Only a BLANK lots means risk-based sizing (the lot fix); a supplied
+      // lots that is not a positive number is refused here, never read as
+      // blank — 0, -1 or 'abc' would otherwise send an uncapped order.
+      // Codex P1 on #1328 — Claude · № 13,496 12-Oct (claude-builder).
+      if (!lotsBlankOrPositive(lots)) return res.status(400).json({ error: 'lots must be a positive number, or blank for risk-based sizing' })
 
       // `account` (03-09-2026): the order goes to the NAMED account, else the
       // primary as before. An unknown id is refused rather than silently

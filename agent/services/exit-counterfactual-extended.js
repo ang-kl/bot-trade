@@ -97,7 +97,10 @@ export function buildRules({ cfg, policy, preset, tpR, trailR, design, family, h
     if (p === 'breakout') {
       rules.push({ ...managedApproxRule(policy, fam && fam !== 'mean_reversion' ? fam : 'breakout', { hybridR, hybridFraction }), name: 'managed_approx_breakout' })
       rules.push({ name: `chandelier_${DEFAULT_ATR_MULT}x${DEFAULT_ATR_PERIOD}`, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD } })
-      if (hybridR != null) rules.push({ name: `hybrid_half_${hybridR}R_trail`, partialAtR: hybridR, partialFraction: 0.5, trailR: policy.trailR })
+      // The live hybrid plus the trail: the stored share, named by it (Codex P1
+      // on #1328; Claude · № 13,496 12-Oct; claude-builder). At the default
+      // the name is unchanged.
+      if (hybridR != null) rules.push({ name: hybridFraction === 0.5 ? `hybrid_half_${hybridR}R_trail` : `hybrid_${round(hybridFraction * 100, 1)}pct_${hybridR}R_trail`, partialAtR: hybridR, partialFraction: hybridFraction, trailR: policy.trailR })
     }
     if (p === 'momentum') {
       rules.push({ name: `chandelier_${DEFAULT_ATR_MULT}x${DEFAULT_ATR_PERIOD}_only`, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD } })
@@ -110,7 +113,7 @@ export function buildRules({ cfg, policy, preset, tpR, trailR, design, family, h
 
 /** Which rules read today's live policy (a current-policy scenario) rather than a fixed rule. */
 export function scenarioOf(rule) {
-  return /^managed_approx|^hybrid_half_/.test(String(rule?.name || '')) ? 'current_policy' : 'fixed_rule'
+  return /^managed_approx|^hybrid_(half|[0-9.]+pct)_/.test(String(rule?.name || '')) ? 'current_policy' : 'fixed_rule'
 }
 /** The cost model every replay figure carries: declared, not modelled. */
 export const COST_MODEL = Object.freeze({ model: 'none', note: 'exits fill at the level on the bar that touches it; no spread, slippage, commission or swap; R is price-based against the chosen stop. The stored windows carry no bid/ask, so a spread model cannot be fitted from them.' })
