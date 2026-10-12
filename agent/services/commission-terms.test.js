@@ -160,7 +160,7 @@ test('symbolsToRead: own map only, not-listed and over-cap are named', () => {
   assert.equal(capped.overCap.length, 10)
 })
 
-// Claude · № 13,797 13-Oct (Codex P2s on #1344; claude-builder).
+// Claude · № 13,807 13-Oct (Codex P2s on #1344, ordered after № 13,799; claude-builder).
 test('check: the broker minimum per side (46979908 LLY.US and DOW.US deals, USD deposit)', () => {
   const db = initDB(':memory:')
   usdDeposit(db, '46979908')

@@ -176,11 +176,12 @@ export function modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits }) {
 /**
  * The modelled commission for ONE side of a deal of `lots`, in USD: the
  * per-lot charge at that side's price times the lots, raised to the broker's
- * per-trade minimum. Claude · № 13,797 13-Oct (Codex P2 on #1344, owner
- * "Apply it per side"; claude-builder): the minimum is applied only when it
- * is stated in USD; one stated in another currency declines the model rather
- * than convert at a guessed rate. Measured: V.US 1.3 lots on 43097342 was
- * charged 0.06 where $0.02 a share gives 0.052 — the minimum applied.
+ * per-trade minimum. Claude · № 13,807 13-Oct (Codex P2 on #1344, ordered
+ * after № 13,799; owner "Apply it per side"; claude-builder): the minimum is
+ * applied only when it is stated in USD; one stated in another currency
+ * declines the model rather than convert at a guessed rate. Measured on
+ * 46979908 (USD deposit): LLY.US 0.1 lots was charged 0.04 where $0.02 a
+ * share gives 0.004 — a ~$0.02 per-side minimum applied.
  */
 export function modelledSideUsd(terms, { symbol, price, lotUnits, lots }) {
   const perLot = modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits })
@@ -199,7 +200,7 @@ export function modelledSideUsd(terms, { symbol, price, lotUnits, lots }) {
  * Compare the stored terms with this account's own closing deals. Read only.
  * Per deal, in money: the broker's charge (|commission| of the closing deal,
  * which covers both sides) against the terms' opening side at the entry
- * price plus closing side at the close price (Claude · № 13,797, Codex P2 on
+ * price plus closing side at the close price (Claude · № 13,807, Codex P2 on
  * #1344, owner "Price each side separately"). The per-lot-per-side figures
  * are shown too. They are compared only when the deposit currency is
  * broker-verified USD; otherwise both are shown and `compared` is false.
