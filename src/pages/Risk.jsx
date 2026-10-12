@@ -1192,6 +1192,21 @@ export default function Risk() {
                     hint="When one signal fans out to N accounts: 'equal' gives each account 1/N of its per-trade budget on it; 'off' lets every account risk its full budget on the same setup." recommend="equal." />
                   <Field label={`Min R:R${mark('minRR')}`} anchor="minRR" applied={appliedKeys.has('minRR')} unit="×SL" value={risk.minRR} onChange={v => setRisk(r => ({ ...r, minRR: v }))}
                     hint="TP must sit at least this multiple of the SL distance from entry — the take-profit rule." recommend="1.5 — TP at least 1.5× the SL distance." />
+                  {/* ONE object key, `fluidRisk` (owner, 12-10-2026): below Min R:R a
+                      setup trades at its own target when it breaks even after
+                      commission at its strategy's win rate, sized by its net PF in
+                      R against the goal. Claude · № 13,730 12-Oct (claude-builder) */}
+                  <Toggle id="risk-fluidRisk" label={`Breakeven floor below Min R:R${mark('fluidRisk')}`}
+                    on={sub('fluidRisk', 'on') !== false} onClick={() => setSub('fluidRisk', 'on', sub('fluidRisk', 'on') === false)}
+                    title="On: a setup under Min R:R is admitted at its own target when R:R ≥ (1 − win rate + commission in R) ÷ win rate. Off: the earned floor and its target stretch, as before." />
+                  <Field label="Fluid size: goal PF" value={sub('fluidRisk', 'goalPf')} onChange={v => setSub('fluidRisk', 'goalPf', v)}
+                    hint="A breakeven admit risks (its strategy's net profit factor in R on this account ÷ this goal) of the per-trade budget, between the minimum below and 1, then ÷ (1 + commission in R)." recommend="1.5 — the bar the evidence gate and the strategy verdicts use for full size." />
+                  <Field label="Fluid size: minimum" unit="× budget" value={sub('fluidRisk', 'minScale')} onChange={v => setSub('fluidRisk', 'minScale', v)}
+                    hint="The smallest share of the per-trade budget a breakeven admit is sized at." recommend="0.25." />
+                  <Field label="Fluid size: closes before judging" unit="closes" value={sub('fluidRisk', 'minCloses')} onChange={v => setSub('fluidRisk', 'minCloses', v)}
+                    hint="Closes in R the strategy needs on this account before its profit factor sizes it; until then it trades at the pending share below." recommend="15." />
+                  <Field label="Fluid size: pending" unit="× budget" value={sub('fluidRisk', 'pendingScale')} onChange={v => setSub('fluidRisk', 'pendingScale', v)}
+                    hint="Share of the per-trade budget while the strategy has fewer closes than above." recommend="0.5." />
                   <Field label={`Max spread / SL${mark('maxSpreadFracOfSL')}`} anchor="maxSpreadFracOfSL" pct value={risk.maxSpreadFracOfSL} onChange={v => setRisk(r => ({ ...r, maxSpreadFracOfSL: v }))}
                     hint="Veto when the live spread exceeds this fraction of the SL distance." recommend="25% of the SL distance." />
                   <Field label={`Max entry drift / SL${mark('maxEntryDriftFracOfSL')}`} anchor="maxEntryDriftFracOfSL" pct value={risk.maxEntryDriftFracOfSL} onChange={v => setRisk(r => ({ ...r, maxEntryDriftFracOfSL: v }))}
@@ -1270,7 +1285,7 @@ export default function Risk() {
             </div>
             <div className="mt-3">
               <span data-save-pulse="risk"><Button size="sm" onClick={() => {
-                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxNotionalXBalance', 'marginRates', 'minLotSize', 'minRR', 'minExpectancyR', 'minSLDistancePct', 'minStopAtrMult', 'sharedSignalRiskSplit', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'htfLimitDispatch', 'maxOpenPositions', 'allowCrossAccountHedge', 'maxPositionsPerSymbol', 'maxAccountsPerSymbol', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'kellyVeto'])
+                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxNotionalXBalance', 'marginRates', 'minLotSize', 'minRR', 'fluidRisk', 'minExpectancyR', 'minSLDistancePct', 'minStopAtrMult', 'sharedSignalRiskSplit', 'maxSpreadFracOfSL', 'maxEntryDriftFracOfSL', 'htfLimitDispatch', 'maxOpenPositions', 'allowCrossAccountHedge', 'maxPositionsPerSymbol', 'maxAccountsPerSymbol', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'kellyVeto'])
                 save('guardian', () => agentPost('/actions/guardian-move-pct', { pct: guardianPct }))
               }}>Save bot risk</Button></span>
             </div>

@@ -1755,13 +1755,34 @@ export function fluidRiskScale(record, c, cfg) {
 }
 
 /**
+ * The stored `fluidRisk` read safely: a blank or junk field takes its default
+ * (a blank goal PF would otherwise divide to Infinity — full size), and every
+ * number is clamped to a range that keeps the size between 0 and 1.
+ */
+export function fluidRiskConfig(raw) {
+  const d = DEFAULT_RISK_CONFIG.fluidRisk
+  const r = raw && typeof raw === 'object' ? raw : {}
+  const num = (v, dflt, lo, hi) => {
+    const n = v === null || v === '' || v === undefined ? NaN : Number(v)
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt
+  }
+  return {
+    on: r.on !== false,
+    goalPf: num(r.goalPf, d.goalPf, 0.5, 10),
+    minScale: num(r.minScale, d.minScale, 0.05, 1),
+    minCloses: Math.round(num(r.minCloses, d.minCloses, 1, 500)),
+    pendingScale: num(r.pendingScale, d.pendingScale, 0.05, 1),
+  }
+}
+
+/**
  * The fluid rule's verdict for one setup under the static floor, or
  * `{ decided: false }` when it cannot decide (switched off, no known win
  * rate, no commission figure) — the earned floor then decides as before.
  */
 function breakevenFloorVerdict(db, { strategy, rr, accountId, config, entry, sl, symbol }) {
-  const cfg = config?.fluidRisk
-  if (!cfg || cfg.on === false) return { decided: false }
+  const cfg = fluidRiskConfig(config?.fluidRisk)
+  if (!cfg.on) return { decided: false }
   const side = earnedFloorWinRate(db, { strategy, accountId })
   if (!side.ok) return { decided: false }
   const cost = commissionInR(symbol, entry, sl)

@@ -19,7 +19,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { evaluateTrade, rrFloorVerdict, loadRiskConfig, commissionInR, fluidRiskScale } from './risk.js'
+import { evaluateTrade, rrFloorVerdict, loadRiskConfig, commissionInR, fluidRiskScale, fluidRiskConfig } from './risk.js'
 
 const A = '111'
 
@@ -170,4 +170,20 @@ test('the scan path\'s pre-filter asks the same rule with the same symbol: an in
   assert.equal(hk.ok, false)
   assert.equal(hk.stage, RR_PREFILTER_STAGE)
   assert.match(hk.reason, /^bad_rr 2\.00<2\.25 \(breakeven at 40% win \+ commission 0\.3R\)/)
+})
+
+test('the stored settings are read safely: a blank or junk field takes its default, numbers are clamped', () => {
+  // A blank goal PF from the Risk page would divide to Infinity and size at full.
+  assert.deepEqual(fluidRiskConfig({ goalPf: '', minScale: 'x', minCloses: null, pendingScale: 7 }),
+    { on: true, goalPf: 1.5, minScale: 0.25, minCloses: 15, pendingScale: 1 })
+  assert.equal(fluidRiskConfig({ goalPf: '1.3' }).goalPf, 1.3, 'a typed number string is a number')
+  assert.equal(fluidRiskConfig({ goalPf: 0 }).goalPf, 0.5)
+  assert.equal(fluidRiskConfig({ on: false }).on, false)
+  assert.equal(fluidRiskConfig(null).on, true)
+  // Through the gate: a blank goal sizes by the default 1.5, not at full.
+  const db = db0()
+  seed(db, 'vwap_trend', 20, 40)
+  setState(db, 'risk_config_json', JSON.stringify({ fluidRisk: { goalPf: '' } }))
+  const v = verdict(db, { symbol: 'US500', rr: 1.6, entry: 100, sl: 99, tp1: 101.6 })
+  assert.equal(v.earnedFloor.riskScale, 0.6667)
 })

@@ -26,8 +26,13 @@ const RETIRED_4B = [
   'symbolCooldownMinutes',
 ]
 
-test('DEFAULT_RISK_CONFIG has exactly 42 keys; a re-introduced key turns this red', () => {
-  assert.equal(Object.keys(DEFAULT_RISK_CONFIG).length, 42, Object.keys(DEFAULT_RISK_CONFIG).join(','))
+// 43 since 12-10-2026: one object key added, `fluidRisk` (the owner's
+// breakeven-with-commission floor and fluid size below 3R). Wave 4b's 42 is
+// pinned in the arithmetic of the next test. Claude · № 13,730 12-Oct
+// (Codex P1 on #1337; claude-builder)
+test('DEFAULT_RISK_CONFIG has exactly 43 keys; a re-introduced key turns this red', () => {
+  assert.equal(Object.keys(DEFAULT_RISK_CONFIG).length, 43, Object.keys(DEFAULT_RISK_CONFIG).join(','))
+  assert.equal('fluidRisk' in DEFAULT_RISK_CONFIG, true, 'the one key added after Wave 4b')
   for (const k of RETIRED_4B) assert.equal(k in DEFAULT_RISK_CONFIG, false, `${k} is retired but still a default`)
   assert.deepEqual(ungroupedKeys(), [])
 })
