@@ -50,8 +50,11 @@ test('reversal → fresh SL/TP amended at the broker and persisted, momentum ver
   const db = initDB(':memory:')
   seed(db, { side: 'long' }) // owner reversed TO long; market is rising → aligned
   const amends = []
-  const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'short', to: 'long' }, {
+  // D3 (№ 13,782): a reversal carries the account's own symbol id; the amend reads its digits and the quote.
+  const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'short', to: 'long', symbolId: 41 }, {
     fetchBars: async () => risingBars,
+    getMeta: async () => ({ brokerDigits: 2 }),
+    getQuote: async () => ({ bid: 139.4, ask: 139.6 }),
     amend: async (_c, args) => { amends.push(args); return { ok: true } },
   })
   assert.equal(out.did, 'recalibrated')
@@ -131,8 +134,8 @@ test('scoped reversal preserves the other account, and manual level moves still 
   const a = seed(db, { accountId: '11', side: 'short', sl: 101, tp: 98 })
   const b = seed(db, { accountId: '22', side: 'long' })
   const amends = []
-  const deps = { fetchBars: async () => risingBars, amend: async (creds, args) => { amends.push({ creds, args }) } }
-  const change = { kind: 'reversed', positionId: '42' }
+  const deps = { fetchBars: async () => risingBars, getMeta: async () => ({ brokerDigits: 2 }), getQuote: async () => ({ bid: 139.4, ask: 139.6 }), amend: async (creds, args) => { amends.push({ creds, args }) } }
+  const change = { kind: 'reversed', positionId: '42', symbolId: 41 } // D3 (№ 13,782): the account's own symbol id
   const out = await restrategizeAfterTamper(db, { accountId: '22' }, change, deps)
   assert.equal(out.did, 'recalibrated')
   assert.equal(amends.length, 1)
@@ -185,19 +188,100 @@ test('one uncontradicted account stamp identifies a legacy linked row without cl
 test('V3 M5: the recalibration amend is timed in the amend-latency ring; a thrown amend is recorded and still reported', async () => {
   const { _resetAmendLatencyForTests, _amendLatencyStateForTests } = await import('./protection-latency.js')
   _resetAmendLatencyForTests()
-  const change = { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'short', to: 'long' }
+  const change = { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'short', to: 'long', symbolId: 41 } // D3 (№ 13,782)
+  const quoted = { getMeta: async () => ({ brokerDigits: 2 }), getQuote: async () => ({ bid: 139.4, ask: 139.6 }) }
   const db = initDB(':memory:')
   seed(db, { side: 'long' })
   const ok = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, change, {
-    fetchBars: async () => risingBars, amend: async () => ({ ok: true }),
+    fetchBars: async () => risingBars, amend: async () => ({ ok: true }), ...quoted,
   })
   assert.equal(ok.did, 'recalibrated')
   const db2 = initDB(':memory:')
   seed(db2, { side: 'long' })
   const bad = await restrategizeAfterTamper(db2, { host: 'h', accountId: '11' }, change, {
-    fetchBars: async () => risingBars, amend: async () => { throw new Error('amend timed out after 15000 ms') },
+    fetchBars: async () => risingBars, amend: async () => { throw new Error('amend timed out after 15000 ms') }, ...quoted,
   })
   assert.equal(bad.did, 'error', 'the caller still sees the failure')
   const got = _amendLatencyStateForTests().amends.map(e => [e.path, e.source, e.positionId, e.account, e.outcome])
   assert.deepEqual(got, [['restrategize', 'restrategize', '42', '…11', 'ok'], ['restrategize', 'restrategize', '42', '…11', 'timeout']])
+})
+
+// Claude · № 13,782 12-Oct (demo stress run, defect D3; owner "Writer +
+// re-strategize"; claude-builder). MEASURED 12-10-2026 13:36Z on 43097342:
+// the amend for GER40 was refused "Order protection = 25221.41403 has more
+// digits than symbol allows. Allowed 1 digits", and for DOW.US "New SL for
+// BUY position should be <= current BID price. current BID: 28.14, SL:
+// 28.20788". The levels were rounded to five places and set from the last 1h
+// close, never checked against the current price. The amend now takes the
+// symbol's own digits (this account's broker record, by the symbol id the
+// reversed position carries) and the current quote, and refuses a stop on the
+// wrong side of it — the broker would refuse it anyway, and a refusal is not
+// a recalibration.
+const market = (over = {}) => ({
+  fetchBars: async () => risingBars, // last close 139.5, ATR ≈ 1.5
+  getMeta: async () => ({ brokerDigits: 1 }),
+  getQuote: async () => ({ bid: 139.4, ask: 139.6 }),
+  ...over,
+})
+const reversedTo = (to, over = {}) => ({ kind: 'reversed', symbol: 'GER40', positionId: '42', from: to === 'long' ? 'short' : 'long', to, symbolId: 10006, ...over })
+const decimals = (v) => (String(v).split('.')[1] || '').length
+
+test('D3: the reversal amend is rounded to the symbol\'s digits, and the row stores what was sent', async () => {
+  const db = initDB(':memory:')
+  seed(db, { side: 'long' })
+  const amends = []
+  const metaFor = []
+  // GER40-like bars: the 1×ATR stop and the target land on many decimals, as on 12-10.
+  const gerBars = Array.from({ length: 40 }, (_, i) => { const c = 25000 + i * 1.23457; return { o: c - 1.23457, h: c + 40.11111, l: c - 38.50292, c, v: 10 } })
+  const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, reversedTo('long'), market({
+    fetchBars: async () => gerBars,
+    getQuote: async () => ({ bid: 25048.1, ask: 25049.3 }),
+    getMeta: async (symbolId) => { metaFor.push(symbolId); return { brokerDigits: 1 } },
+    amend: async (_c, args) => { amends.push(args); return { ok: true } },
+  }))
+  assert.equal(out.did, 'recalibrated')
+  assert.equal(amends.length, 1)
+  assert.ok(decimals(amends[0].stopLoss) <= 1 && decimals(amends[0].takeProfit) <= 1, `RED before: sent ${amends[0].stopLoss} / ${amends[0].takeProfit}`)
+  assert.deepEqual(metaFor, [10006], 'the precision is read for the symbol this account holds the position under')
+  const row = db.prepare('SELECT current_sl, current_tp, broker_sl, broker_tp FROM monitored_positions').get()
+  assert.deepEqual([row.current_sl, row.current_tp, row.broker_sl, row.broker_tp], [amends[0].stopLoss, amends[0].takeProfit, amends[0].stopLoss, amends[0].takeProfit])
+})
+
+test('D3: a stop on the wrong side of the current price is refused before the broker sees it (long below the bid, short above the ask)', async () => {
+  // The recalibrated stop is 138.0 for a long and 141.0 for a short (last close 139.5, ATR 1.5).
+  // The last two quotes straddle it: the side the position closes at decides, not the other one.
+  for (const [to, quote] of [['long', { bid: 137.0, ask: 137.2 }], ['short', { bid: 140.8, ask: 141.0 }],
+    ['long', { bid: 137.95, ask: 138.05 }], ['short', { bid: 140.95, ask: 141.05 }]]) {
+    const db = initDB(':memory:')
+    seed(db, { side: to, sl: to === 'long' ? 99 : 101 })
+    const before = db.prepare('SELECT current_sl, current_tp, thesis FROM monitored_positions').get()
+    const amends = []
+    const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, reversedTo(to), market({
+      getQuote: async () => quote, amend: async (_c, args) => { amends.push(args) },
+    }))
+    assert.equal(amends.length, 0, `RED before: the ${to} stop ${out.sl ?? out.proposed?.sl} went to the broker against ${JSON.stringify(quote)}`)
+    assert.equal(out.did, 'verified_only')
+    assert.equal(out.reason, 'stop_wrong_side')
+    assert.deepEqual(db.prepare('SELECT current_sl, current_tp, thesis FROM monitored_positions').get(), before, 'nothing is written')
+    assert.match(summarize(out), /wrong side of the current price/)
+  }
+})
+
+test('D3: no symbol id, no verified digits or no current quote → no amend, and the reason is said', async () => {
+  for (const [label, change, deps, reason] of [
+    ['no symbol id', reversedTo('long', { symbolId: undefined }), {}, 'symbol_identity_unknown'],
+    ['digits absent', reversedTo('long'), { getMeta: async () => ({ brokerDigits: undefined }) }, 'digits_unverified'],
+    ['digits junk', reversedTo('long'), { getMeta: async () => ({ brokerDigits: 2.5 }) }, 'digits_unverified'],
+    ['meta read fails', reversedTo('long'), { getMeta: async () => { throw new Error('ws closed') } }, 'digits_unverified'],
+    ['no quote', reversedTo('long'), { getQuote: async () => null }, 'no_current_quote'],
+    ['one-sided quote', reversedTo('long'), { getQuote: async () => ({ bid: 139.4 }) }, 'no_current_quote'],
+  ]) {
+    const db = initDB(':memory:')
+    seed(db, { side: 'long' })
+    const amends = []
+    const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, change, market({ ...deps, amend: async (_c, a) => { amends.push(a) } }))
+    assert.equal(amends.length, 0, label)
+    assert.deepEqual([out.did, out.reason], ['verified_only', reason], label)
+    assert.ok(summarize(out).length > 0, label)
+  }
 })
