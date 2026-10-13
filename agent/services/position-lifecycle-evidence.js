@@ -331,6 +331,13 @@ const PID_SQL = col => `CAST(CAST(${col} AS INTEGER) AS TEXT)`
 // A final verdict counts as final only under the current rules (N3).
 const NOT_RECENT = pidExpr => `NOT EXISTS (SELECT 1 FROM position_lifecycle_evidence e WHERE e.account_id = @acct AND e.position_id = ${pidExpr}
       AND ((e.final = 1 AND e.rules = @rules) OR MAX(julianday(e.read_at), COALESCE(julianday(e.last_error_at), 0)) > julianday(@since)))`
+// Claude · № 14,461 14-Oct (owner: "fix the follow-ups C·1 and C·2";
+// claude-builder). A verdict is final about a lifecycle, not about an open
+// position's opening fills: an open broker position can take more opening deals
+// after any verdict (a complete empty answer included), so the 'filled' class
+// keeps only the 15-minute pacing while the ledger row is open.
+const NOT_READ_RECENTLY = pidExpr => `NOT EXISTS (SELECT 1 FROM position_lifecycle_evidence e WHERE e.account_id = @acct AND e.position_id = ${pidExpr}
+      AND MAX(julianday(e.read_at), COALESCE(julianday(e.last_error_at), 0)) > julianday(@since))`
 
 /** The next position of one class for this account, or null. */
 export function sweepCandidate(db, accountId, cls, { now = Date.now() } = {}) {
@@ -363,7 +370,7 @@ export function sweepCandidate(db, accountId, cls, { now = Date.now() } = {}) {
     // deal fill (no lot size) must not starve the others.
     return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
       WHERE t.account_id = @acct AND t.status = 'open' AND CAST(t.ctrader_position_id AS INTEGER) > 0
-        AND ${NOT_RECENT(PID_SQL('t.ctrader_position_id'))}
+        AND ${NOT_READ_RECENTLY(PID_SQL('t.ctrader_position_id'))}
       ORDER BY COALESCE((SELECT MAX(julianday(e.read_at), COALESCE(julianday(e.last_error_at), 0)) FROM position_lifecycle_evidence e
           WHERE e.account_id = @acct AND e.position_id = ${PID_SQL('t.ctrader_position_id')}), 0) ASC,
         (COALESCE(t.filled_volume_source, '') = 'broker_opening_deals') ASC,

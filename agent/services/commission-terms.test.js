@@ -393,6 +393,8 @@ test('NASA-4 follow-up: quote-currency-per-lot terms are priced through each sid
   assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.agrees, true)
   const d = s.sample[0]
   assert.equal(d.modelledDealDeposit, 4.1055)
+  // № 14,461 (C·2): on a USD deposit the USD model is the same converted figure.
+  assert.equal(d.modelledDealUsd, 4.1055)
   assert.equal(d.quoteToDeposit.closeSource, 'broker_quote_to_deposit')
   assert.ok(Math.abs(d.quoteToDeposit.closeDerivedOverStated - 1) < 0.001, 'the derivation agrees with the broker\'s own close rate')
 })

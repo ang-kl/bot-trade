@@ -279,7 +279,10 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
         dealId: d.deal_id, lots: d.lots,
         brokerDeal: round(brokerDeal),
         brokerPerLotPerSide: round(brokerDeal / Number(d.lots) / CLOSING_DEAL_SIDES),
-        modelledDealUsd: modelledDeal == null ? null : round(modelledDeal),
+        // Claude · № 14,461 14-Oct (owner: "fix the follow-ups C·1 and C·2";
+        // claude-builder): on a USD deposit the converted quote-currency figure
+        // IS the USD model, so the field the verdict reads and this one agree.
+        modelledDealUsd: quote?.deposit != null && deposit === 'USD' ? round(quote.deposit) : modelledDeal == null ? null : round(modelledDeal),
         modelledDealDeposit: modelledDeposit == null ? null : round(modelledDeposit),
         ...(quote ? { quoteToDeposit: quote.rates } : {}),
         depositPerUsd: { open: round(openRate), close: round(closeRate), source: deposit === 'USD' ? 'usd_deposit' : 'broker_deal_rate' },
