@@ -63,10 +63,11 @@ test('/position-close resolves the position\'s account when the body names none,
 
 test('the sheet posts carry the account on every position route (comment-stripped source pin)', () => {
   const src = strip(readFileSync(new URL('../../src/components/PositionManager.jsx', import.meta.url), 'utf8'))
-  const posts = src.match(/agentPost\('\/actions\/position-(protect|guard|double|reverse|close)', /g) || []
-  // Codex P1 on #1354 (owner: "Both"): the partial close's preview is the seventh post.
+  const posts = src.match(/agentPost\('\/actions\/position-(protect|guard|double|reverse|close|close-preview)', /g) || []
+  // Codex P1 on #1354 (owner: "Both"; P2 "Own read route"): the partial close's
+  // preview (/position-close-preview) is the seventh post.
   assert.equal(posts.length, 7, 'seven position posts in the sheet (the close preview included)')
-  const wrapped = src.match(/agentPost\('\/actions\/position-(protect|guard|double|reverse|close)', withAcct\(/g) || []
+  const wrapped = src.match(/agentPost\('\/actions\/position-(protect|guard|double|reverse|close|close-preview)', withAcct\(/g) || []
   assert.equal(wrapped.length, 7, 'every one goes through withAcct')
   assert.match(src, /const withAcct = body => \(\{ \.\.\.body, \.\.\.\(acct != null \? \{ account: String\(acct\) \} : \{\}\) \}\)/)
 })

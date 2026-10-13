@@ -99,6 +99,7 @@ const READ_ONLY_POSTS = new Set([
   '/actions/ctrader-accounts',
   '/actions/balance',
   '/actions/position-guard-get',
+  '/actions/position-close-preview', // Codex P2 on #1354: sends nothing; the close itself stays money-moving
   '/actions/chart',
 ])
 

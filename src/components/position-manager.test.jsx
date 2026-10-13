@@ -51,7 +51,7 @@ describe('PositionManager partial close', () => {
     // Codex P1 #2: the whole close runs inside the single-flight lock, busy from the start.
     expect(src).toMatch(/onClick=\{\(\) => closeOnce\.current\(async \(\) => \{\s*setBusy\(true\)/)
     expect(src).toMatch(/\} finally \{ setBusy\(false\) \}/)
-    expect(src).toMatch(/const reply = await agentPost\('\/actions\/position-close', withAcct\(\{ \.\.\.body, preview: true \}\)\)/)
+    expect(src).toMatch(/const reply = await agentPost\('\/actions\/position-close-preview', withAcct\(body\)\)/)
   })
 })
 

@@ -289,7 +289,7 @@ export default function PositionManager({ p, onDone, initialTab = 'Modify' }) {
               setBusy(true)
               try {
                 const flow = await closeFlow({ input: closeLots, heldLots: p.lots, heldText: fmt(p.lots, 2), symbol: p.symbol, side: p.side, positionId: p.positionId,
-                  preview: async body => { const reply = await agentPost('/actions/position-close', withAcct({ ...body, preview: true })); return reply }, confirm: text => window.confirm(text) })
+                  preview: async body => { const reply = await agentPost('/actions/position-close-preview', withAcct(body)); return reply }, confirm: text => window.confirm(text) })
                 if (flow.error) { setMsg(`Error: ${flow.error}`); return }
                 if (flow.cancelled) return
                 await run(() => agentPost('/actions/position-close', withAcct(flow.body)), flow.body.lots != null ? 'Part of the position closed' : 'Position closed')

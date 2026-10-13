@@ -14,9 +14,9 @@ describe('closeRequest — the sheet\'s Close with an optional lots field', () =
     expect(closeRequest('2', 4.7)).toEqual({ lots: 2, partial: true, error: null })
     expect(closeRequest('0.35', 4.7).lots).toBe(0.35)
   })
-  it('a figure at or above the held lots is the whole position', () => {
-    expect(closeRequest('4.7', 4.7)).toEqual({ lots: null, partial: false, error: null })
-    expect(closeRequest('9', 4.7).partial).toBe(false)
+  it('a figure at or above the shown lots is labelled whole, but the figure is KEPT (Codex P1 #3: the shown lots can be stale)', () => {
+    expect(closeRequest('4.7', 4.7)).toEqual({ lots: 4.7, partial: false, error: null })
+    expect(closeRequest('9', 4.7)).toEqual({ lots: 9, partial: false, error: null })
   })
   it('zero, negative or non-numeric input is refused with a reason, never sent', () => {
     for (const v of ['0', '-1', 'abc', '1e', 'NaN']) {
@@ -89,5 +89,28 @@ describe('singleFlight (the Close lock)', () => {
     expect(await once(async () => ({ cancelled: true }))).toEqual({ cancelled: true })
     await expect(once(async () => { throw new Error('preview refused') })).rejects.toThrow('preview refused')
     expect(await once(async () => 'b')).toBe('b')
+  })
+})
+
+// Codex P1 #3 on #1354 (owner: "Always send the typed lots"): the sheet showed
+// 1 lot, the position grew to 2 at the broker, the owner typed 1 — the close
+// must carry 1, never "close all".
+describe('closeFlow with a stale held size', () => {
+  const stale = { heldLots: 1, heldText: '1.00', symbol: 'NAS100', side: 'BUY', positionId: '77' }
+  it('typed 1 against a shown 1 on a position grown to 2: previewed with the figure, 1 lot sent', async () => {
+    const calls = []
+    const preview = async body => { calls.push(body); return { ok: true, preview: true, lots: 1, partial: true } } // the route's fresh read: 2 held
+    const texts = []
+    const r = await closeFlow({ ...stale, input: '1', preview, confirm: t => { texts.push(t); return true } })
+    expect(calls).toEqual([{ positionId: '77', lots: 1 }])
+    expect(r).toEqual({ body: { positionId: '77', lots: 1 } })
+    expect(texts[0]).toMatch(/Close NAS100 BUY 1 of 1\.00 lots/)
+  })
+  it('a typed figure that reaches the fresh position still rides the request (the route closes min(figure, held))', async () => {
+    const preview = async () => ({ ok: true, preview: true, lots: 1, partial: false })
+    const texts = []
+    const r = await closeFlow({ ...stale, input: '1', preview, confirm: t => { texts.push(t); return true } })
+    expect(r).toEqual({ body: { positionId: '77', lots: 1 } })
+    expect(texts[0]).toMatch(/whole position/)
   })
 })
