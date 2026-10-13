@@ -391,6 +391,7 @@ test('full exit: the live read fails → the row stays open and nothing is sent 
 // source already on record (the opening deals) is not replaced.
 for (const opts of [{}, { short: true, account: '99' }]) test(`NASA-3: ${opts.short ? 'live short' : 'demo long'} partial keeps the filled lots apart from the residual`, async t => {
   const f = fixture(t, opts)
+  f.db.prepare("UPDATE trades SET origin='bot_market_dispatch'").run() // № 14,346: a lifecycle that began here
   assert.equal((await f.run()).partialConfirmed, true)
   const row = f.read().trade
   assert.equal(row.volume, 0.05)

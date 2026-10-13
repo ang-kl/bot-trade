@@ -22,9 +22,9 @@ import { reconcilePositions } from './reconciler.js'
 import { reconcileTradePricesToBroker } from './broker-history-import.js'
 
 const DEMO = '43097342', LIVE = '42993489'
-function trade(db, { account = DEMO, pid = '5001', status = 'open', volume = 0.2, symbol = 'EURUSD' } = {}) {
-  return Number(db.prepare(`INSERT INTO trades(symbol,side,entry_price,volume,status,ctrader_position_id,account_id,opened_at)
-    VALUES (?, 'BUY', 1.1, ?, ?, ?, ?, datetime('now'))`).run(symbol, volume, status, pid, account).lastInsertRowid)
+function trade(db, { account = DEMO, pid = '5001', status = 'open', volume = 0.2, symbol = 'EURUSD', origin = 'bot_market_dispatch' } = {}) {
+  return Number(db.prepare(`INSERT INTO trades(symbol,side,entry_price,volume,status,ctrader_position_id,account_id,opened_at,origin)
+    VALUES (?, 'BUY', 1.1, ?, ?, ?, ?, datetime('now'), ?)`).run(symbol, volume, status, pid, account, origin).lastInsertRowid)
 }
 const filled = (db, id) => db.prepare('SELECT filled_volume AS v, filled_volume_source AS s FROM trades WHERE id=?').get(id)
 
@@ -172,4 +172,37 @@ test('a reversed position: no fill from its deals, and the side flip clears the 
   reconcilePositions(db, [{ positionId: 5001, price: 1.1, stopLoss: 1.12, takeProfit: 1.05,
     tradeData: { symbolId: 1, symbolName: 'EURUSD', tradeSide: 'SELL', volume: 1_000_000, label: 'AP|v1|RSIM' } }], [], (k, v) => setState(db, k, v), { accountId: DEMO })
   assert.deepEqual(filled(db, id), { v: null, s: null })
+})
+
+// Claude · № 14,346 13-Oct (Codex P2 follow-ups from #1359; claude-builder).
+// (1) The broker-position fallbacks stand for the fill only where the lifecycle
+// began here; an adopted position may have been reduced before adoption with
+// nothing on record. Its own deals still do. (2) A close and an add between two
+// passes can leave the net lower: any volume change clears the fill on record.
+test('an adopted position takes no broker-position fallback; its own deals still record the fill', () => {
+  const db = initDB(':memory:')
+  for (const origin of ['reconciler_adopted', 'external_system', 'unknown', null]) {
+    const pid = String(6000 + ['reconciler_adopted', 'external_system', 'unknown', null].indexOf(origin))
+    const id = trade(db, { pid, origin })
+    for (const source of ['broker_position_first_seen', 'broker_position_before_first_partial']) {
+      assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: pid, lots: 0.2, source }), 0, `${origin} ${source}`)
+    }
+    assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: pid, lots: 0.2, source: 'broker_opening_deals' }), 1)
+    assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' })
+  }
+})
+
+test('any broker volume change the reconciler sees clears the recorded fill', () => {
+  for (const next of [3_000_000, 2_000_000 - 500_000]) {
+    const db = initDB(':memory:')
+    setState(db, 'ctrader_account_id', DEMO)
+    rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+    const id = trade(db, { volume: 0.2 })
+    db.prepare(`INSERT INTO monitored_positions(symbol,trade_id,side,entry_price,current_sl,current_tp,initial_risk,source,status,account_id,broker_volume_units)
+      VALUES ('EURUSD', ?, 'long', 1.1, 1.09, 1.13, 0.01, 'autopilot', 'active', ?, 20000)`).run(id, DEMO)
+    stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.2, source: 'broker_opening_deals' })
+    reconcilePositions(db, [{ positionId: 5001, price: 1.1, stopLoss: 1.09, takeProfit: 1.13,
+      tradeData: { symbolId: 1, symbolName: 'EURUSD', tradeSide: 'BUY', volume: next, label: 'AP|v1|RSIM' } }], [], (k, v) => setState(db, k, v), { accountId: DEMO })
+    assert.deepEqual(filled(db, id), { v: null, s: null }, `${next > 2_000_000 ? 'more' : 'less'} volume: read the deals again`)
+  }
 })
