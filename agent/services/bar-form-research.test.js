@@ -10,7 +10,7 @@ import { initDB } from '../db.js'
 import { monitorVerdict, barFormPlan, startBarFormResearch, abortBarFormResearch, barFormJobsView, barFormJob, barFormResearchView, persistRun, regimeRowsFor, fastMonitorReading, _resetBarFormJobs, MAX_SEGMENT_NAMES, FAST_MONITOR_PASS_KEY, LIMIT_KEYS } from './bar-form-research.js'
 import { PASS_RECORD_KEY } from './fast-monitor.js'
 import { setState } from '../db.js'
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { acquireResearchSlot, releaseResearchSlot, researchSlot } from './research-slot.js'
@@ -31,6 +31,9 @@ const fresh = () => { _resetBarFormJobs(); if (researchSlot()) releaseResearchSl
 test('barFormPlan: values from the config, overrides recorded, the baseline required, bad inputs refused by name', () => {
   const cfg = loadResearchConfig().barForm
   const p = barFormPlan({}).plan
+  // № 14,524 (NASA-6): the confirm block is judged by the owner's replay bar, read from tick-validation.json.
+  assert.deepEqual(p.replayThresholds, JSON.parse(readFileSync(new URL('../config/tick-validation.json', import.meta.url), 'utf8')).replay)
+  assert.equal(p.cfg.validation.trainFraction, 0.7)
   assert.deepEqual(p.cfg.timeBarsMs, cfg.timeBarsMs); assert.deepEqual(p.overridden, []); assert.equal(p.minSample, 30); assert.match(p.minSampleSource, /tick-validation/)
   assert.ok(p.forms.includes('time_60000ms')); assert.ok(!p.strategies.includes('tsmom_long'))
   const o = barFormPlan({ timeBarsMs: [60000, 15000], maxSilenceMs: 1000, minSample: 5, symbolIds: ['1', 2, 'x', 2], strategies: ['rsi_meanrev'], side: 'cpp_exec_demo', maxSegments: 2, note: 'n' }, { knownSides: ['cpp_exec', 'cpp_exec_demo'] }).plan
@@ -115,6 +118,24 @@ test('persistRun is one transaction; regimeRowsFor reads sorted rows per symbol 
   persistRun(db, j, { manifest: { m: 1 }, cells: [{ symbolId: 1, strategy: 's', form: 'f', verdict: 'OK', trades: 1 }, { symbolId: 2, strategy: 's', form: 'f', verdict: 'NO_BARS', trades: 0 }], summary: { cells: 2 } })
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM bar_form_results').get().n, 2)
   assert.throws(() => persistRun(db, j, { manifest: {}, cells: [], summary: {} }), /UNIQUE/)
+})
+
+test('Codex P2 on #1365: every cell\'s train / confirm split is stored and read back, not only the selected rows; an older table gains the column', () => {
+  const db = fresh()
+  const split = { rBasis: 'net_of_cost', train: { usable: 40, expectancyLowerR: 0.2 }, confirm: { usable: 12, expectancyLowerR: -0.1 }, straddling: 3 }
+  const j = { runId: 'r-split', state: 'done', startedAt: 'a', finishedAt: 'b', actor: null, plan: {}, error: null }
+  persistRun(db, j, { manifest: {}, cells: [{ symbolId: 1, strategy: 's', form: 'f', verdict: 'OK', trades: 55, split }, { symbolId: 2, strategy: 's', form: 'f', verdict: 'NO_BARS', trades: 0 }], summary: { cells: 2 } })
+  const v = barFormResearchView(db, { runId: 'r-split' })
+  assert.deepEqual(v.cells.map(c => c.split), [split, null])
+  const dir = mkdtempSync(join(tmpdir(), 'bfr-mig-')); const path = join(dir, 'old.db')
+  try {
+    const old = initDB(path)
+    const cols = d => new Set(d.prepare('PRAGMA table_info(bar_form_results)').all().map(c => c.name))
+    old.exec('ALTER TABLE bar_form_results DROP COLUMN split_json')
+    assert.ok(!cols(old).has('split_json'), 'the table as it stands in production before this change'); old.close()
+    const again = initDB(path)
+    assert.ok(cols(again).has('split_json'), 'start-up adds the column'); again.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('the broker cross-check: the run names up to three of its symbols; at the end their one-minute bars are set beside the broker\'s M1 bars through the route\'s fetch; a failed fetch is recorded, never fatal', async () => {

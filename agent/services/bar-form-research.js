@@ -134,6 +134,8 @@ export function barFormPlan(body = {}, { research = loadResearchConfig(), thresh
   return {
     plan: {
       cfg, overridden: ov.overridden, configFile: research.file, forms: formsFrom(cfg).map(f => f.form), symbolIds, strategies: strategiesFor(strategies).map(s => s.key),
+      // № 14,524 (NASA-6): the confirm block is judged by the owner's replay bar.
+      replayThresholds: thresholds?.replay ?? null,
       segments, maxSegments, minSample, minSampleSource: b.minSample == null ? 'agent/config/tick-validation.json traded.minTrades' : 'request', side, keepCache: b.keepCache === true, dryRun: b.dryRun === true, note, crossCheck, limits, cellBound,
       backtestOpts: { minConviction: b.minConviction == null ? undefined : Number(b.minConviction), minRr: b.minRr == null ? undefined : Number(b.minRr) },
     },
@@ -162,11 +164,11 @@ export function regimeRowsFor(db, symbolNames, { fromMs, toMs }) {
 
 /** Persist one finished run: the run row and every cell, one transaction. */
 export function persistRun(db, j, { manifest, cells, summary }) {
-  const ins = db.prepare(`INSERT INTO bar_form_results(run_id, symbol_id, symbol, strategy, form, bars, runs, invalid_bars, trades, verdict, stats_json, r_stats_json, by_half_json, by_regime_json, mde_r, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  const ins = db.prepare(`INSERT INTO bar_form_results(run_id, symbol_id, symbol, strategy, form, bars, runs, invalid_bars, trades, verdict, stats_json, r_stats_json, by_half_json, by_regime_json, mde_r, note, split_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
   db.transaction(() => {
     db.prepare(`INSERT INTO bar_form_runs(run_id, state, started_at, finished_at, actor, params_json, manifest_json, summary_json, error) VALUES (?,?,?,?,?,?,?,?,?)`)
       .run(j.runId, j.state, j.startedAt, j.finishedAt, j.actor, JSON.stringify(j.plan), JSON.stringify(manifest), JSON.stringify(summary), j.error)
-    for (const c of cells) ins.run(j.runId, c.symbolId, c.symbol, c.strategy, c.form, c.bars, c.runs, c.invalidBars, c.trades, c.verdict, JSON.stringify(c.stats ?? null), JSON.stringify(c.rStats ?? null), JSON.stringify(c.byHalf ?? null), JSON.stringify(c.byRegime ?? null), c.mdeR ?? null, c.note)
+    for (const c of cells) ins.run(j.runId, c.symbolId, c.symbol, c.strategy, c.form, c.bars, c.runs, c.invalidBars, c.trades, c.verdict, JSON.stringify(c.stats ?? null), JSON.stringify(c.rStats ?? null), JSON.stringify(c.byHalf ?? null), JSON.stringify(c.byRegime ?? null), c.mdeR ?? null, c.note, c.split ? JSON.stringify(c.split) : null)
   })()
 }
 
@@ -312,7 +314,7 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
     const w = new workerCtor(workerFile, { workerData: {
       abortFlag,
       stream: { names, sides: sidesUsed, secret, destDir, keepCache: plan.keepCache, symbolIds: plan.symbolIds, maxSymbols: plan.symbolIds ? plan.symbolIds.length : (plan.cfg.maxSymbolsPerRun ?? null), cfg: plan.cfg, crossCheckSymbolIds: plan.crossCheck, limits: plan.limits },
-      evaluate: { symbolNames, strategies: plan.strategies, cfg: plan.cfg, minSample: plan.minSample, regimes, backtestOpts: Object.fromEntries(Object.entries(plan.backtestOpts).filter(([, v]) => v !== undefined)) },
+      evaluate: { symbolNames, strategies: plan.strategies, cfg: plan.cfg, minSample: plan.minSample, regimes, replayThresholds: plan.replayThresholds, backtestOpts: Object.fromEntries(Object.entries(plan.backtestOpts).filter(([, v]) => v !== undefined)) },
     } })
     j.worker = w
     w.on('message', m => {
@@ -347,7 +349,7 @@ export function barFormResearchView(db, { runId = null, limit = 500 } = {}) {
   if (!run) return { at: new Date().toISOString(), run: null, cells: [], runs, note: 'no bar-form research run recorded' }
   const parse = s => { try { return JSON.parse(s) } catch { return null } }
   const cells = db.prepare('SELECT * FROM bar_form_results WHERE run_id = ? ORDER BY id LIMIT ?').all(run.run_id, Math.max(1, Math.min(2000, limit)))
-    .map(c => ({ symbolId: c.symbol_id, symbol: c.symbol, strategy: c.strategy, form: c.form, bars: c.bars, runs: c.runs, invalidBars: c.invalid_bars, trades: c.trades, verdict: c.verdict, stats: parse(c.stats_json), rStats: parse(c.r_stats_json), byHalf: parse(c.by_half_json), byRegime: parse(c.by_regime_json), mdeR: c.mde_r, note: c.note }))
+    .map(c => ({ symbolId: c.symbol_id, symbol: c.symbol, strategy: c.strategy, form: c.form, bars: c.bars, runs: c.runs, invalidBars: c.invalid_bars, trades: c.trades, verdict: c.verdict, stats: parse(c.stats_json), rStats: parse(c.r_stats_json), byHalf: parse(c.by_half_json), byRegime: parse(c.by_regime_json), mdeR: c.mde_r, note: c.note, split: parse(c.split_json) }))
   const total = db.prepare('SELECT COUNT(*) AS n FROM bar_form_results WHERE run_id = ?').get(run.run_id).n
   return { at: new Date().toISOString(), run: { runId: run.run_id, at: run.at, state: run.state, startedAt: run.started_at, finishedAt: run.finished_at, actor: run.actor, params: parse(run.params_json), manifest: parse(run.manifest_json), summary: parse(run.summary_json), error: run.error }, cells, cellsTotal: total, cellsTruncated: total > cells.length, runs }
 }

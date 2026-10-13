@@ -2247,6 +2247,21 @@ Measurement history — each line is a real run of the script, not a claim:
   ledger. Lower bounds: a compaction in this run may hold replies the file
   did not keep. The count is by replies, not by stamps. A later re-measure
   that reads below this line is missing these, not correcting them.
+- 2026-10-13 22:24 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the line above (next stamp at least `№ 14,418`),
+  the replies ran on by count through #1360 merged (9575b503), #1361 (the
+  NASA-4 quote-currency follow-up, three Codex rounds, 6f62434b), the exit
+  summary `№ 14,459`, the W1/W8 live checks `№ 14,469`, #1362 (follow-ups
+  C·1/C·2, ed5040b0), #1364 (C·3–C·5, three Codex rounds, f94cc286), the
+  plan-backlog and invariants report `№ 14,521` (the owner's workflow
+  document v1.0 of 06:09 SGT 14-10 adopted there: scoped branches, no force
+  push, `APPROVE MERGE AND DEPLOY #n` per PR) and the NASA-5/6 start. The
+  transcript here counts 190 text replies after `№ 14,341`, so the last
+  reply before this ledger is at least **`№ 14,531`** and the next stamped
+  reply is at least **`№ 14,532`** plus any unstamped line made after this
+  ledger. Lower bounds. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting
+  them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
