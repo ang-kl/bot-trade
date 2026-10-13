@@ -150,3 +150,26 @@ test('an added opening fill clears the recorded fill; a later complete deal read
   assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.5, source: 'broker_position_first_seen' }), 0)
   assert.deepEqual(filled(db, id), { v: 0.35, s: 'broker_opening_deals' })
 })
+
+// Claude · № 14,345 13-Oct (Codex P2s round 3 on #1359; claude-builder). A netted
+// reversal keeps the position id: no fill is derived from the mixed history,
+// and the reconciler's side flip clears the fill on record.
+test('a reversed position: no fill from its deals, and the side flip clears the recorded fill', () => {
+  const deal = (id, side, filled, closed = null) => ({ dealId: id, positionId: 5001, dealStatus: 2, tradeSide: side, filledVolume: filled,
+    ...(closed != null ? { closePositionDetail: { closedVolume: closed } } : {}) })
+  assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 3000, 2000)] }, '5001', 1000).reason, 'position_reversed',
+    'one deal closes 2,000 and opens 1,000 the other way')
+  assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 2000, 2000), deal(3, 2, 1000)] }, '5001', 1000).reason, 'position_reversed',
+    'opening deals on both sides')
+  assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 1000, 1000)] }, '5001', 1000).lots, 2, 'a plain partial close is no reversal')
+  const db = initDB(':memory:')
+  setState(db, 'ctrader_account_id', DEMO)
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const id = trade(db, { volume: 0.2 })
+  db.prepare(`INSERT INTO monitored_positions(symbol,trade_id,side,entry_price,current_sl,current_tp,initial_risk,source,status,account_id,broker_volume_units)
+    VALUES ('EURUSD', ?, 'long', 1.1, 1.09, 1.13, 0.01, 'autopilot', 'active', ?, 20000)`).run(id, DEMO)
+  stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.2, source: 'broker_opening_deals' })
+  reconcilePositions(db, [{ positionId: 5001, price: 1.1, stopLoss: 1.12, takeProfit: 1.05,
+    tradeData: { symbolId: 1, symbolName: 'EURUSD', tradeSide: 'SELL', volume: 1_000_000, label: 'AP|v1|RSIM' } }], [], (k, v) => setState(db, k, v), { accountId: DEMO })
+  assert.deepEqual(filled(db, id), { v: null, s: null })
+})

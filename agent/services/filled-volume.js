@@ -76,7 +76,16 @@ export function openingDealsFilledLots(response, positionId, lotSize) {
   const pid = pidOf(positionId)
   if (!pid || response?.hasMore !== false || !Array.isArray(response?.deal)) return { lots: null, reason: 'history_incomplete' }
   if (!(Number.isSafeInteger(Number(lotSize)) && Number(lotSize) > 0)) return { lots: null, reason: 'lot_size_unknown' }
-  const opening = response.deal.filter(d => ownPositionDeal(d, pid) && executedDeal(d) && !d.closePositionDetail)
+  const own = response.deal.filter(d => ownPositionDeal(d, pid) && executedDeal(d))
+  // Claude · № 14,345 13-Oct (Codex P2s round 3 on #1359; claude-builder). A
+  // netted reversal keeps the position id: one deal closes the old leg and
+  // opens the other (it fills more than it closes), or opening deals stand on
+  // both sides. The sum of opening deals then mixes two legs; no fill is
+  // derived from such a history (declined, never reconstructed).
+  const side = d => (d.tradeSide === 1 || d.tradeSide === 'BUY' ? 'BUY' : d.tradeSide === 2 || d.tradeSide === 'SELL' ? 'SELL' : null)
+  const opening = own.filter(d => !d.closePositionDetail)
+  if (own.some(d => d.closePositionDetail && Number(d.filledVolume) !== Number(d.closePositionDetail.closedVolume))
+    || new Set(opening.map(side)).size > 1) return { lots: null, reason: 'position_reversed' }
   if (!opening.length) return { lots: null, reason: 'opening_not_retained' }
   let total = 0
   for (const d of opening) {

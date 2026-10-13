@@ -564,6 +564,10 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
         updates.entry_price = bPrice
       }
 
+      if (row.side && bSide !== row.side && row.trade_id != null) {
+        // № 14,345 (Codex P2 round 3 on #1359): a reversed leg is not the fill on record.
+        clearFilledVolume(db, { accountId: acct, positionId: posId, tradeId: row.trade_id })
+      }
       if (row.side && bSide !== row.side) {
         // The symbol id from THIS account's own snapshot: re-strategize reads the
         // symbol's precision and quote by it (Claude · № 13,782 12-Oct, D3).
