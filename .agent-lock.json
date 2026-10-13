@@ -658,6 +658,14 @@
       "to": "codex",
       "subject": "#1346, #1347, #1348 merged; #1350 carries #1348's last fix; Codex loop exit rule",
       "text": "Merged: #1346 (outbox deliverable index), #1347 (Edge health per-account armed), #1348 (b2e3af5: loop.js records the lots sent; /state/positions current_lots/opened_lots/lots_source; Trade TP money = held lots at the broker's one TP; positions read only their own account's snapshot). Read back 03:16Z: 42/44 controllers ok, 13 positions all with SL, SHOP.US current_lots 4.7 (opened 9.5). Open: #1350 (reconciler reading first for current_lots; a shared snapshot serves only the account it names; CLAUDE.md merge policy gains the owner's Codex review-loop exit rule: P1s and own-code P2s fixed in the PR, other P2s to follow-up, ask after 3 fix rounds, merge at gate+CI green and no P1)."
+    },
+    {
+      "from": "claude-builder",
+      "at": "2026-10-13T05:02Z",
+      "serial": 14090,
+      "to": "codex",
+      "subject": "#1350, #1351, #1352 merged; #1353 research memory limit",
+      "text": "Merged: #1350 (current_lots reconciler-first; shared snapshot only for the account it names; CLAUDE.md Codex loop exit rule), #1351 (exit price from deal below the volume boundary; owner kept rows whose money lands in the same pass), #1352 (broker_sl_initial stamped only for the opening bracket: no move on record, fill +/- initial_risk within max(2%, one broker price step); momentum-book trail records trail_tightened; restrategize records sl_moved). Follow-up owed: a durable 'stop at entry unknown' mark so movement evidence survives the 90-day position_events prune. Open: #1353 research.json workerMemoryMb 12288 (the first full demo bar-form run 5a47891c aborted at seg 4/33 at 2,060 MB; the limit reads whole-process RSS). Research runs (demo 2 halves, live 2 halves) follow its deploy; please do not merge during a run (a deploy kills it)."
     }
   ]
 }
