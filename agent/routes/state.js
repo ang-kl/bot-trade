@@ -912,22 +912,33 @@ export default function stateRouter(db) {
     let unitsToLots = null
     try { unitsToLots = (await import('../services/reconciler.js')).brokerUnitsToLots } catch { unitsToLots = null }
     const enriched = rows.map(r => {
+      const src = (r.account_id != null ? snapById.get(String(r.account_id)) : null) ?? globalSnap
+      const sp = r.ctrader_position_id != null ? src.positions.get(String(r.ctrader_position_id)) : null
+      // Claude · № 13,991 13-Oct (owner: Codex P2 #4 "Snapshot first, reconciler next"; claude-builder).
+      // The account's cached broker snapshot carries this position's lots as the
+      // broker reported them (a partial close after the last reconcile shows
+      // there first); the reconciler's reading is the fallback.
       let current_lots = null
-      try {
-        if (unitsToLots && r.broker_volume_units != null && Number(r.broker_volume_units) > 0) {
-          const l = unitsToLots(Number(r.broker_volume_units), r.symbol, db, r.account_id ?? null)
-          current_lots = Number.isFinite(l) && l > 0 ? Math.round(l * 1e8) / 1e8 : null
-        }
-      } catch { current_lots = null }
+      let lots_source = 'opened_record'
+      const snapLots = typeof sp?.lots === 'number' ? sp.lots : NaN
+      if (Number.isFinite(snapLots) && snapLots > 0) {
+        current_lots = Math.round(snapLots * 1e8) / 1e8
+        lots_source = 'broker_snapshot'
+      } else {
+        try {
+          if (unitsToLots && r.broker_volume_units != null && Number(r.broker_volume_units) > 0) {
+            const l = unitsToLots(Number(r.broker_volume_units), r.symbol, db, r.account_id ?? null)
+            if (Number.isFinite(l) && l > 0) { current_lots = Math.round(l * 1e8) / 1e8; lots_source = 'broker_reconcile' }
+          }
+        } catch { current_lots = null }
+      }
       let market_open = null, market_source = null
       try {
         if (isOpenFn) { const o = isOpenFn(db, r.symbol); market_open = !!o.open; market_source = o.source || null }
       } catch { market_open = null }
-      const src = (r.account_id != null ? snapById.get(String(r.account_id)) : null) ?? globalSnap
-      const sp = r.ctrader_position_id != null ? src.positions.get(String(r.ctrader_position_id)) : null
       return {
         ...r, market_open, market_source,
-        current_lots, opened_lots: r.volume ?? null, lots_source: current_lots != null ? 'broker' : 'opened_record',
+        current_lots, opened_lots: r.volume ?? null, lots_source,
         live_pnl: sp?.pnl ?? sp?.netPnl ?? null,
         live_pnl_at: sp ? src.at : null,
         // Owner (open-trade tables): current price + latest daily OHLCV.

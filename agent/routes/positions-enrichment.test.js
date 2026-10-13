@@ -153,8 +153,56 @@ test('each row carries the broker\'s current lots beside the opened volume, and 
     assert.equal(rows.EURUSD.current_lots, 0.5, 'the broker holds 50,000 units: half a lot')
     assert.equal(rows.EURUSD.opened_lots, 1)
     assert.equal(rows.EURUSD.volume, 1, 'volume stays the opened volume the TP ladder splits')
-    assert.equal(rows.EURUSD.lots_source, 'broker')
+    assert.equal(rows.EURUSD.lots_source, 'broker_reconcile')
     assert.equal(rows.NZDUSD.current_lots, null, 'no broker reading yet: not known, never the opened figure')
     assert.equal(rows.NZDUSD.lots_source, 'opened_record')
+  } finally { s.close(); s.db.close() }
+})
+
+// Claude · № 13,991 13-Oct (owner: Codex P2 #4 on #1348 "Snapshot first, reconciler next"; claude-builder).
+// Source: /actions/broker-positions caches each account's snapshot with the
+// broker's lots per position (actions.js `lots: toLots(td.volume, meta)`); a
+// partial close after the last reconcile shows there first.
+test('current lots: the account snapshot first, the reconciler reading next', async () => {
+  const s = await server()
+  try {
+    const ins = (sym, ctid, units) => {
+      const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume) VALUES (?, 'buy', 'open', '46130058', ?, 9.5)`).run(sym, ctid).lastInsertRowid
+      s.db.prepare(`INSERT INTO monitored_positions (trade_id, symbol, side, status, account_id, entry_price, current_sl, current_tp, broker_volume_units)
+        VALUES (?, ?, 'buy', 'active', '46130058', 1.1, 1.0, 1.3, ?)`).run(t, sym, units)
+    }
+    ins('SHOP.US', '501', null)       // not reconciled yet
+    ins('EURUSD', '502', 950000)      // reconciler read 9.5 lots; the broker since closed half
+    ins('GBPUSD', '503', 50000)       // not in the snapshot
+    setState(s.db, 'acct:46130058:broker_snapshot_cache_json', snapshot([
+      { positionId: 501, lots: 4.7 }, { positionId: 502, lots: 4.75 },
+    ]))
+    const rows = bySymbol(await positions(s))
+    assert.equal(rows['SHOP.US'].current_lots, 4.7)
+    assert.equal(rows['SHOP.US'].lots_source, 'broker_snapshot')
+    assert.equal(rows.EURUSD.current_lots, 4.75, 'the snapshot is newer than the reconciler reading')
+    assert.equal(rows.EURUSD.lots_source, 'broker_snapshot')
+    assert.equal(rows.GBPUSD.current_lots, 0.5)
+    assert.equal(rows.GBPUSD.lots_source, 'broker_reconcile')
+    assert.equal(rows.EURUSD.opened_lots, 9.5)
+  } finally { s.close(); s.db.close() }
+})
+
+test('a snapshot with no usable lots falls through to the reconciler reading', async () => {
+  const s = await server()
+  try {
+    const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume) VALUES ('EURUSD', 'buy', 'open', '46130058', '601', 1)`).run().lastInsertRowid
+    s.db.prepare(`INSERT INTO monitored_positions (trade_id, symbol, side, status, account_id, entry_price, current_sl, current_tp, broker_volume_units)
+      VALUES (?, 'EURUSD', 'buy', 'active', '46130058', 1.1, 1.0, 1.3, 50000)`).run(t)
+    // Each pass reads its own URL: the route's response cache is keyed by URL.
+    for (const [i, lots] of [null, true, '4.7', 0, -1].entries()) {
+      setState(s.db, 'acct:46130058:broker_snapshot_cache_json', snapshot([{ positionId: 601, lots }]))
+      const rows = bySymbol(await fetch(s.url(`/state/positions?account=all&pass=${i}`)).then(r => r.json()))
+      assert.equal(rows.EURUSD.current_lots, 0.5, `snapshot lots ${JSON.stringify(lots)} is not a reading`)
+      assert.equal(rows.EURUSD.lots_source, 'broker_reconcile')
+    }
+    setState(s.db, 'acct:46130058:broker_snapshot_cache_json', snapshot([{ positionId: 601, lots: 0.25 }]))
+    const live = bySymbol(await fetch(s.url('/state/positions?account=all&pass=live')).then(r => r.json()))
+    assert.equal(live.EURUSD.current_lots, 0.25, 'control: a real snapshot reading is used on this same path')
   } finally { s.close(); s.db.close() }
 })
