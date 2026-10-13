@@ -10,7 +10,8 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync, readFileSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodeHeader, encodeRecord, FLAGS, KIND } from '../lib/tick-segment.js'
-import { processSegments, evaluateSeries, checkAfterEvaluation, quotesFromSegment, splitRuns, regimeAt, formsFrom, timeframeLabel, strategiesFor, RECORDER_ONLY_GAPS, EXCLUDED_STRATEGIES, chronologicalCutoff, trainConfirmSelection, splitTrades } from './bar-form-research-core.js'
+import { processSegments, evaluateSeries, checkAfterEvaluation, quotesFromSegment, splitRuns, regimeAt, formsFrom, timeframeLabel, strategiesFor, RECORDER_ONLY_GAPS, EXCLUDED_STRATEGIES, chronologicalCutoff, trainConfirmSelection, splitTrades, netRTrades } from './bar-form-research-core.js'
+import { computeRStats } from '../scripts/backtest-fib.js'
 import { RECORDER_ONLY_GAPS as TICK_RESEARCH_RECORDER_ONLY_GAPS } from './tick-research-run.js'
 import { timeBars } from '../lib/tick-bars.js'
 
@@ -264,6 +265,29 @@ test('NASA-6: selection reads the train block only; the confirm block is judged 
   assert.equal(trainConfirmSelection(cells, { cutoffMs: null, minSample: 30 }).state, 'not_split')
 })
 
+test('Codex P1 on #1365: train and confirm are judged on R after the backtest cost; a gross-only edge is not confirmed', () => {
+  // entry 100, stop 99 (risk 1), exit 100.1: gross R 0.1, gross 0.1 %; a 0.02 % round trip leaves 0.08 % = 0.08 R.
+  const t = { entry: 100, risk: 1, r: 0.1, pnlPct: 0.1 - 0.02, entryT: 0, exitT: 1 }
+  assert.equal(netRTrades([t])[0].r, 0.08)
+  assert.equal(netRTrades([{ ...t, risk: 0 }])[0].r, null, 'no risk, no R')
+  // Twenty trades that win 0.05 R gross and lose 0.10 R net of a 0.15 % cost each: gross PF unbounded, net all losers.
+  const thin = Array.from({ length: 20 }, () => ({ entry: 100, risk: 1, r: 0.05, pnlPct: 0.05 - 0.15 }))
+  assert.equal(computeRStats(thin).losses, 0, 'gross reads every trade as a winner')
+  const net = computeRStats(netRTrades(thin))
+  assert.equal(net.wins, 0); assert.equal(net.expectancyR, -0.1)
+  const v = trainConfirmSelection([cell('thin', computeRStats(netRTrades(thin)), net)], { cutoffMs: 1, minSample: 1, thresholds: REPLAY })
+  assert.equal(v.rBasis, 'net_of_cost'); assert.equal(v.rows[0].verdict, 'NOT_CONFIRMED')
+})
+
+test('Codex P2 on #1365: a confirm block with no losing trade and a positive gain passes the profit factor (unbounded), a flat one does not', () => {
+  const perfect = stats(15, 0.4, { profitFactorR: null, wins: 15, losses: 0, maxDrawdownR: 0 })
+  const v = trainConfirmSelection([cell('perfect', stats(40, 0.3), perfect)], { cutoffMs: 1, minSample: 30, thresholds: REPLAY })
+  assert.equal(v.rows[0].verdict, 'CONFIRMED'); assert.equal(v.rows[0].confirm.profitFactorUnbounded, true)
+  const flat = stats(15, 0, { profitFactorR: null, wins: 0, losses: 0, maxDrawdownR: 0 })
+  const f = trainConfirmSelection([cell('flat', stats(40, 0.3), flat)], { cutoffMs: 1, minSample: 30, thresholds: REPLAY })
+  assert.equal(f.rows[0].verdict, 'NOT_CONFIRMED'); assert.deepEqual(f.rows[0].reasons, ['profit factor n/a under 1.3'])
+})
+
 test('NASA-6: evaluateSeries splits every replayed cell at one cutoff — train closes before it, confirm opens at or after it, the rest counted', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'bfr-core-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
   const files = writeSegments(dir, [{ start: T0, seconds: 3600 }, { start: T0 + 3_600_000, seconds: 3600 }, { start: T0 + 7_200_000, seconds: 3600 }])
@@ -278,6 +302,17 @@ test('NASA-6: evaluateSeries splits every replayed cell at one cutoff — train 
     assert.equal((c.split.train.trades ?? 0) + (c.split.confirm.trades ?? 0) + c.split.straddling, c.trades, `${c.strategy} ${c.form}: the three blocks partition the trades`)
   }
   assert.equal(summary.validation.state, 'split'); assert.equal(summary.validation.cutoffMs, cutoff)
+  assert.ok(replayed.every(c => c.split.rBasis === 'net_of_cost'))
+  // The real path takes the cost: the same run at a 1 % round trip reads strictly less total R in every block with trades.
+  const costly = evaluateSeries({ series, symbolNames: { 1: 'AAA', 2: 'BBB' }, strategies: ['donchian_breakout', 'vwap_trend'], cfg, minSample: 1, backtestOpts: { minConviction: 0, minRr: 1, costPct: 1 }, replayThresholds: REPLAY })
+  const key = c => `${c.symbol}|${c.strategy}|${c.form}`
+  const cheap = new Map(cells.map(c => [key(c), c]))
+  let compared = 0
+  for (const c of costly.cells.filter(x => x.split)) for (const b of ['train', 'confirm']) {
+    if (!(c.split[b].usable > 0)) continue
+    assert.ok(c.split[b].totalR < cheap.get(key(c)).split[b].totalR, `${key(c)} ${b}: cost lowers net R`); compared++
+  }
+  assert.ok(compared > 0, 'at least one block with trades was compared')
   assert.equal(summary.leaderboardWindow, 'in_sample_full_window')
   const unsplit = evaluateSeries({ series, symbolNames: { 1: 'AAA', 2: 'BBB' }, strategies: ['vwap_trend'], cfg: CFG, minSample: 1, backtestOpts: { minConviction: 0, minRr: 1 } })
   assert.equal(unsplit.summary.validation.state, 'not_split'); assert.ok(unsplit.cells.every(c => !c.split))

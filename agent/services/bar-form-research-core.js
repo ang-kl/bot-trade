@@ -353,7 +353,9 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
         const byRegime = {}
         for (const t of trades) { const k = regimeAt(regimeRows, t.entryT); (byRegime[k] ||= []).push(t) }
         const blocks = splitTrades(trades, cutoffMs)
-        const split = blocks && { train: computeRStats(blocks.train), confirm: computeRStats(blocks.confirm), straddling: blocks.straddling }
+        // Codex P1 on #1365: the split is judged against the owner's replay bar, whose evidence is net R,
+        // so train and confirm read R after the backtest's cost (the full-window rStats above stay gross, unchanged).
+        const split = blocks && { rBasis: 'net_of_cost', train: computeRStats(netRTrades(blocks.train)), confirm: computeRStats(netRTrades(blocks.confirm)), straddling: blocks.straddling }
         const rs = trades.map(t => t.r).filter(Number.isFinite)
         const mean = rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : null
         const sd = rs.length > 1 ? Math.sqrt(rs.reduce((a, r) => a + (r - mean) ** 2, 0) / rs.length) : null
@@ -382,6 +384,19 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
  * (a trade with no exit time cannot be shown to have closed, so it is not
  * train); CONFIRM opened at or after it; the rest span it and are counted.
  */
+/**
+ * Claude · № 14,558 14-Oct (Codex P1 on #1365; claude-builder). Each trade's
+ * R after the round-trip cost runBacktest already took from pnlPct: the net
+ * price move is pnlPct% of entry, so net R = pnlPct·entry / (100·risk). A
+ * trade without a usable risk or pnlPct keeps no R (computeRStats skips it).
+ */
+export function netRTrades(trades) {
+  return trades.map(t => {
+    const ok = Number.isFinite(t.pnlPct) && Number.isFinite(t.entry) && Number.isFinite(t.risk) && t.risk > 0
+    return { ...t, r: ok ? Math.round((t.pnlPct * t.entry / (100 * t.risk)) * 1000) / 1000 : null }
+  })
+}
+
 export function splitTrades(trades, cutoffMs) {
   if (cutoffMs == null) return null
   const train = trades.filter(t => Number.isFinite(t.exitT) && t.exitT < cutoffMs)
@@ -422,7 +437,9 @@ export function trainConfirmSelection(cells, { cutoffMs, trainFraction, minSampl
     if (!thresholds) return { verdict: 'THRESHOLDS_UNSET', reasons: ['agent/config/tick-validation.json replay thresholds were not supplied'] }
     const reasons = []
     if ((cf.usable ?? 0) < thresholds.minTestTrades) return { verdict: 'CONFIRM_INSUFFICIENT', reasons: [`${cf.usable ?? 0} confirm trade(s) under ${thresholds.minTestTrades}`] }
-    if (!(cf.profitFactorR >= thresholds.minProfitFactor)) reasons.push(`profit factor ${cf.profitFactorR ?? 'n/a'} under ${thresholds.minProfitFactor}`)
+    // Codex P2 on #1365: no losing trade and a positive gain is an unbounded profit factor (the tick replay's Infinity), a pass.
+    const pfUnbounded = cf.profitFactorR == null && (cf.losses ?? 0) === 0 && (cf.wins ?? 0) > 0
+    if (!pfUnbounded && !(cf.profitFactorR >= thresholds.minProfitFactor)) reasons.push(`profit factor ${cf.profitFactorR ?? 'n/a'} under ${thresholds.minProfitFactor}`)
     if (!(cf.maxDrawdownR <= thresholds.maxDrawdownR)) reasons.push(`max drawdown ${cf.maxDrawdownR}R over ${thresholds.maxDrawdownR}R`)
     if (!(cf.expectancyLowerR >= thresholds.minExpectancyLowerR)) reasons.push(`expectancy lower bound ${cf.expectancyLowerR}R under ${thresholds.minExpectancyLowerR}R`)
     return { verdict: reasons.length ? 'NOT_CONFIRMED' : 'CONFIRMED', reasons }
@@ -430,11 +447,12 @@ export function trainConfirmSelection(cells, { cutoffMs, trainFraction, minSampl
   const rows = selected.map(c => ({ symbol: c.symbol ?? c.symbolId, strategy: c.strategy, form: c.form,
     train: { trades: c.split.train.usable, expectancyR: c.split.train.expectancyR, expectancyLowerR: c.split.train.expectancyLowerR, profitFactorR: c.split.train.profitFactorR },
     confirm: { trades: c.split.confirm.usable ?? 0, expectancyR: c.split.confirm.expectancyR ?? null, expectancyLowerR: c.split.confirm.expectancyLowerR ?? null,
-      profitFactorR: c.split.confirm.profitFactorR ?? null, maxDrawdownR: c.split.confirm.maxDrawdownR ?? null },
+      profitFactorR: c.split.confirm.profitFactorR ?? null, profitFactorUnbounded: c.split.confirm.profitFactorR == null && (c.split.confirm.losses ?? 0) === 0 && (c.split.confirm.wins ?? 0) > 0,
+      maxDrawdownR: c.split.confirm.maxDrawdownR ?? null },
     straddling: c.split.straddling, ...judge(c.split.confirm) }))
   return {
     state: 'split', cutoffMs, cutoff: new Date(cutoffMs).toISOString(), trainFraction, selectedOn: 'train',
-    variantsTested: tested.length, candidates: candidates.length, selected: rows.length,
+    rBasis: 'net_of_cost', variantsTested: tested.length, candidates: candidates.length, selected: rows.length,
     confirmed: rows.filter(r => r.verdict === 'CONFIRMED').length, thresholds, thresholdsSource: thresholds ? 'agent/config/tick-validation.json replay' : null,
     rows,
     uncertainty: 'expectancyLowerR is mean − 1.96·sd/√n, a normal approximation that assumes independent trades; trades of one cell can be dependent, so it is optimistic. mdeR is 2·sd/√n, an approximation, not a power design. Selecting the best of variantsTested candidates overstates the winner on train; only the confirm figures speak for a selected cell, and they are in R, not money.',
