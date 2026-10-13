@@ -55,6 +55,24 @@ export function moduleImports(src, file = '<source>', { loaders = [], specProps 
   const fnNow = () => fnStack.length ? fnStack[fnStack.length - 1] : null
   const routeNow = () => routeStack.length ? routeStack[routeStack.length - 1] : null
   const note = (kind, node) => unresolved.push({ kind, line: node.loc.start.line, fn: fnStack.length ? fnStack[fnStack.length - 1] : null, text: src.slice(node.start, node.end).slice(0, 120) })
+  // Codex P2 on #1355: `const load = createRequire(import.meta.url)` makes
+  // `load` a require. A first pass collects every name bound to a
+  // createRequire(...) call, so calls on it are read like require().
+  const requireNames = new Set(['require'])
+  const collect = (node) => {
+    if (!node || typeof node.type !== 'string') return
+    if (node.type === 'VariableDeclarator' && node.id?.type === 'Identifier' && node.init?.type === 'CallExpression') {
+      const c = node.init.callee
+      if ((c.type === 'Identifier' && c.name === 'createRequire') || (c.type === 'MemberExpression' && !c.computed && c.property.name === 'createRequire')) requireNames.add(node.id.name)
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'loc' || key === 'start' || key === 'end') continue
+      const v = node[key]
+      if (Array.isArray(v)) { for (const c of v) if (c && typeof c.type === 'string') collect(c) }
+      else if (v && typeof v.type === 'string') collect(v)
+    }
+  }
+  collect(ast)
   const visit = (node) => {
     if (!node || typeof node.type !== 'string') return
     switch (node.type) {
@@ -70,11 +88,11 @@ export function moduleImports(src, file = '<source>', { loaders = [], specProps 
         break
       }
       case 'CallExpression':
-        if (node.callee.type === 'Identifier' && node.callee.name === 'require') {
+        if (node.callee.type === 'Identifier' && requireNames.has(node.callee.name)) {
           // Codex P2 on #1355: a require() is a site like import(): at load
           // when at module top level, at run time inside a function.
           const s = fixed(node.arguments[0])
-          if (s != null) { specs.push(s); sites.push({ spec: s, kind: fnStack.length ? 'dynamic' : 'static', via: 'require', fn: fnNow(), route: routeNow(), line: node.loc.start.line }) } else note('require()', node)
+          if (s != null) { specs.push(s); sites.push({ spec: s, kind: fnStack.length ? 'dynamic' : 'static', via: 'require', fn: fnNow(), route: routeNow(), line: node.loc.start.line }) } else note(`${node.callee.name}()`, node)
         } else if (node.callee.type === 'Identifier' && loaders.includes(node.callee.name)) {
           const s = fixed(node.arguments[0])
           if (s != null) { specs.push(s); declared.push(s) } else note(`${node.callee.name}()`, node)

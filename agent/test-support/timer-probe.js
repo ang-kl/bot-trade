@@ -70,6 +70,17 @@ for (const name of ['setTimeout', 'setImmediate']) {
     return it
   }
 }
+// Codex P2 on #1355: scheduler.wait (node:timers/promises) arms a timer too;
+// pending until its promise settles.
+if (timersPromises.scheduler?.wait) {
+  const sch = timersPromises.scheduler, orig = sch.wait.bind(sch)
+  sch.wait = (...args) => {
+    const id = ++seq; live.set(id, { kind: 'promises.scheduler.wait', h: true })
+    const p = orig(...args)
+    p.then(() => live.delete(id), () => live.delete(id))
+    return p
+  }
+}
 syncBuiltinESMExports()
 globalThis.__probeLive = live
 `

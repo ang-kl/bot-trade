@@ -351,6 +351,7 @@ test('the timer probe detects every timer a module leaves armed, on each runtime
       two: ['setInterval(() => {}, 1e6); setTimeout(() => {}, 1e6)', 2],
       // Codex P2 on #1355: a one-shot that re-arms itself through refresh()
       refreshed: ['const t = setTimeout(() => t.refresh(), 1); t.unref()', 1],
+      schedulerWait: ["import { scheduler } from 'node:timers/promises'\nscheduler.wait(1e6, { ref: false })", 1],
       // Codex P2 on #1355: the promise API
       promisesTimeout: ["import { setTimeout as st } from 'node:timers/promises'\nst(1e6, undefined, { ref: false })", 1],
       promisesDefault: ["import tp from 'node:timers/promises'\ntp.setTimeout(1e6, undefined, { ref: false })", 1],
@@ -361,6 +362,7 @@ test('the timer probe detects every timer a module leaves armed, on each runtime
       cleared: ['const i = setInterval(() => {}, 1e6); clearInterval(i)', 0],
       immediateRan: ['setImmediate(() => {})', 0],
       promisesSettled: ["import { setTimeout as st } from 'node:timers/promises'\nawait st(1)", 0],
+      schedulerWaited: ["import { scheduler } from 'node:timers/promises'\nawait scheduler.wait(1)", 0],
       promisesIntervalClosed: ["import { setInterval as si } from 'node:timers/promises'\nconst it = si(1e6); await it.return()", 0],
     }
     for (const [name, [src]] of Object.entries(fx)) writeFileSync(join(dir, `${name}.mjs`), src + '\n')
@@ -401,4 +403,21 @@ const early = require('./x.js')`
   assert.ok(!RUNTIME_DOORS.some(d => doorKey(d) === keys[1]), 'the /sneak route is not a declared door')
   const req = sites.filter(x => x.via === 'require')
   assert.deepEqual(req.map(x => [x.spec, x.kind, x.fn]), [['../services/theory-gap.js', 'dynamic', 'late'], ['./x.js', 'static', null]])
+})
+
+// Codex P2 on #1355: a require made by createRequire under another name is a require.
+test('a name bound to createRequire(...) is read like require()', () => {
+  const src = `import { createRequire } from 'node:module'
+import * as mod from 'node:module'
+const load = createRequire(import.meta.url)
+const load2 = mod.createRequire(import.meta.url)
+export function a() { return load('../services/theory-gap.js') }
+export function b() { return load2('../services/bar-form-research.js') }
+export function c(p) { return load(p) }
+const other = (x) => x
+other('./not-an-import.js')`
+  const r = moduleImports(src, 'agent/services/x.js')
+  assert.deepEqual(r.sites.filter(x => x.via === 'require').map(x => [x.spec, x.fn]), [['../services/theory-gap.js', 'a'], ['../services/bar-form-research.js', 'b']])
+  assert.deepEqual(r.unresolved.map(u => [u.kind, u.fn]), [['load()', 'c']])
+  assert.ok(!r.specs.includes('./not-an-import.js'))
 })
