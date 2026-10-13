@@ -155,7 +155,8 @@ test('the P&L timestamp comes from the SAME cache the number did', async () => {
 test('each row carries the broker\'s current lots beside the opened volume, and says which it is', async () => {
   const s = await server()
   try {
-    const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume) VALUES ('EURUSD', 'buy', 'open', '46130058', '240732790', 1)`).run().lastInsertRowid
+    // origin: an order this system sent (NASA-3, № 14,343: only those read as sent lots).
+    const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume, origin) VALUES ('EURUSD', 'buy', 'open', '46130058', '240732790', 1, 'bot_market_dispatch')`).run().lastInsertRowid
     s.db.prepare(`INSERT INTO monitored_positions (trade_id, symbol, side, status, account_id, entry_price, current_sl, current_tp, broker_volume_units)
       VALUES (?, 'EURUSD', 'buy', 'active', '46130058', 1.1, 1.0, 1.3, 50000)`).run(t)
     openPosition(s.db, { symbol: 'NZDUSD', accountId: '46130058', ctid: '1' })
@@ -177,7 +178,7 @@ test('current lots: the reconciler reading first, the account snapshot when ther
   const s = await server()
   try {
     const ins = (sym, ctid, units) => {
-      const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume) VALUES (?, 'buy', 'open', '46130058', ?, 9.5)`).run(sym, ctid).lastInsertRowid
+      const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume, origin) VALUES (?, 'buy', 'open', '46130058', ?, 9.5, 'bot_market_dispatch')`).run(sym, ctid).lastInsertRowid
       s.db.prepare(`INSERT INTO monitored_positions (trade_id, symbol, side, status, account_id, entry_price, current_sl, current_tp, broker_volume_units)
         VALUES (?, ?, 'buy', 'active', '46130058', 1.1, 1.0, 1.3, ?)`).run(t, sym, units)
     }
@@ -282,5 +283,33 @@ test('an unnamed shared snapshot enriches no attributed account without a cache 
     assert.equal(rows.GBPAUD.current_lots, null)
     assert.equal(rows.AUDCAD.live_pnl, null)
     assert.equal(rows.AUDCAD.current_lots, null)
+  } finally { s.close(); s.db.close() }
+})
+
+// Claude · № 14,292 13-Oct (owner: NASA-3, Opened lots "Sent lots, labelled";
+// claude-builder). Source: docs/nasa-baseline-2026-10-13.md B2 — opened_lots
+// read trades.volume, which a keeper or general partial rewrites to the
+// residual. Opened lots is now the broker-recorded fill, else the lots sent
+// while no reduction is on record, else unknown; each says which.
+test('opened lots: the recorded fill, the sent lots labelled, never the residual after a partial', async () => {
+  const s = await server()
+  try {
+    const row = (symbol, ctid, volume, filled = null, source = null, scaled = 0, origin = 'bot_market_dispatch') => {
+      const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume, filled_volume, filled_volume_source, origin)
+        VALUES (?, 'buy', 'open', '42993489', ?, ?, ?, ?, ?)`).run(symbol, ctid, volume, filled, source, origin).lastInsertRowid
+      s.db.prepare(`INSERT INTO monitored_positions (trade_id, symbol, side, status, account_id, entry_price, current_sl, current_tp, scaled_out)
+        VALUES (?, ?, 'buy', 'active', '42993489', 1.1, 1.0, 1.3, ?)`).run(t, symbol, scaled)
+    }
+    row('EURUSD', '11', 0.1, 0.2, 'broker_opening_deals', 1)
+    row('GBPUSD', '12', 0.3)
+    row('AUDUSD', '13', 0.05, null, null, 1)
+    row('NZDUSD', '14', 0.4, null, null, 0, 'reconciler_adopted')
+    const rows = bySymbol(await positions(s))
+    assert.deepEqual([rows.EURUSD.opened_lots, rows.EURUSD.opened_lots_source], [0.2, 'broker_opening_deals'])
+    assert.deepEqual([rows.GBPUSD.opened_lots, rows.GBPUSD.opened_lots_source], [0.3, 'sent_order'])
+    assert.deepEqual([rows.AUDUSD.opened_lots, rows.AUDUSD.opened_lots_source], [null, 'unknown_after_partial'],
+      'the 0.05 left after a partial is not what was opened')
+    assert.deepEqual([rows.NZDUSD.opened_lots, rows.NZDUSD.opened_lots_source], [null, 'unknown'],
+      'an adopted row\'s volume is the broker\'s, not an order this system sent (Codex P2 on #1359)')
   } finally { s.close(); s.db.close() }
 })

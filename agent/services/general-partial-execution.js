@@ -5,6 +5,7 @@ import { partialClosingEvidence, partialAcceptedEvidence, partialPositionPresenc
   classifyCloseFailure, MAX_CLOCK_SKEW_MS } from './momentum-broker-evidence.js'
 import { sameTicks } from './momentum-target-policy.js'
 import { recordPositionEvent } from './position-events.js'
+import { stampFilledVolume, noReductionOnRecord } from './filled-volume.js'
 
 const initialized = new WeakSet()
 const id = x => /^(?:[1-9]\d*)$/.test(String(x ?? '')) ? String(x) : null
@@ -178,6 +179,14 @@ export async function runGeneralPartial(db, input, deps) {
     const current = readGeneralPartial(db, x.accountId, x.positionId), owner = ownedRows(db, x)
     if (current?.id !== attempt.id || current.state !== 'RECEIVED') return held('partial_confirmation_changed')
     if (!owner || owner.status !== 'active' || owner.trade_status !== 'open') return held('partial_owner_changed')
+    // Claude · № 14,292 13-Oct (owner: NASA-3, naming this file; claude-builder).
+    // As in keeper-close-receipts.js: the broker-confirmed pre-partial volume is
+    // the filled quantity when no reduction is on record yet; labelled, and
+    // never over the position's own opening deals.
+    if (noReductionOnRecord(db, { accountId: x.accountId, positionId: x.positionId, tradeId: x.tradeId, monitoredId: x.monitorId })) {
+      stampFilledVolume(db, { accountId: x.accountId, positionId: x.positionId, tradeId: x.tradeId,
+        lots: p.before.volume / p.lotSize, source: 'broker_position_before_first_partial' })
+    }
     db.prepare('UPDATE trades SET volume=? WHERE id=? AND account_id=? AND ctrader_position_id=?')
       .run(residual.volume / p.lotSize, x.tradeId, x.accountId, x.positionId)
     db.prepare(`UPDATE monitored_positions SET scaled_out=1,broker_volume_units=?,

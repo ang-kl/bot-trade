@@ -383,3 +383,25 @@ test('full exit: the live read fails → the row stays open and nothing is sent 
   assert.equal(f.state.closes.length, 0)
   assert.equal(f.read().trade.status, 'open', 'RED before: the row was closed on the cache alone')
 })
+
+// Claude · № 14,292 13-Oct (owner: NASA-3, naming general-partial-execution.js;
+// claude-builder). Before the first reduction on record, the broker-confirmed
+// pre-partial volume (10,000 cents at a 100,000-cent lot = 0.1) is the fill:
+// kept in its own column while trades.volume becomes the residual. A better
+// source already on record (the opening deals) is not replaced.
+for (const opts of [{}, { short: true, account: '99' }]) test(`NASA-3: ${opts.short ? 'live short' : 'demo long'} partial keeps the filled lots apart from the residual`, async t => {
+  const f = fixture(t, opts)
+  assert.equal((await f.run()).partialConfirmed, true)
+  const row = f.read().trade
+  assert.equal(row.volume, 0.05)
+  assert.equal(row.filled_volume, 0.1); assert.equal(row.filled_volume_source, 'broker_position_before_first_partial')
+  const g = fixture(t, opts)
+  g.db.prepare("UPDATE trades SET filled_volume=0.1, filled_volume_source='broker_opening_deals'").run()
+  await g.run()
+  assert.equal(g.read().trade.filled_volume_source, 'broker_opening_deals')
+  const h = fixture(t, opts)
+  recordPositionEvent(h.db, { accountId: opts.account ?? '42', positionId: '9001', tradeId: h.read().trade.id, symbol: 'EURUSD',
+    kind: 'volume_reduced', fromValue: 200, toValue: 100, source: 'test' })
+  await h.run()
+  assert.equal(h.read().trade.filled_volume, null, 'after an earlier reduction the pre-partial volume is not the fill')
+})

@@ -1651,6 +1651,12 @@ export function initDB(dbPath, startupDiagnosticOptions) {
     if (!db.prepare('PRAGMA table_info(trades)').all().some(c => c.name === 'requested_volume')) {
       db.exec('ALTER TABLE trades ADD COLUMN requested_volume REAL');
     }
+    // Claude · № 14,292 13-Oct (owner: NASA-3; claude-builder): the filled
+    // opening lots from broker evidence, and which evidence (filled-volume.js).
+    // NULL = not known yet; never copied from the order request.
+    for (const [name, type] of [['filled_volume','REAL'], ['filled_volume_source','TEXT']]) {
+      if (!db.prepare('PRAGMA table_info(trades)').all().some(c => c.name === name)) db.exec(`ALTER TABLE trades ADD COLUMN ${name} ${type}`);
+    }
     for (const [name, type] of [['volume_contract','INTEGER'], ['requested_lots','REAL']]) {
       if (!dealBalanceCols.has(name)) db.exec(`ALTER TABLE broker_deals ADD COLUMN ${name} ${type}`);
     }

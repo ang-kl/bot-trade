@@ -9,6 +9,7 @@ import { isTrailing, stopTightened } from '../lib/stop-policy.js'
 import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
 import { brokerCloseReason, LEGACY_BOOK_STOP, receiptInitiatorUnknown, replaceableCloseReason } from './broker-exit-attribution.js'
 import { horizonForStrategy } from './trade-horizon.js'
+import { stampFilledVolume, noReductionOnRecord, clearFilledVolume } from './filled-volume.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -563,6 +564,10 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
         updates.entry_price = bPrice
       }
 
+      if (row.side && bSide !== row.side && row.trade_id != null) {
+        // № 14,345 (Codex P2 round 3 on #1359): a reversed leg is not the fill on record.
+        clearFilledVolume(db, { accountId: acct, positionId: posId, tradeId: row.trade_id })
+      }
       if (row.side && bSide !== row.side) {
         // The symbol id from THIS account's own snapshot: re-strategize reads the
         // symbol's precision and quote by it (Claude · № 13,782 12-Oct, D3).
@@ -575,8 +580,23 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
         updates.current_tp = bTp
         updates.thesis_note = `MANUAL REVERSAL detected at broker (${row.side}→${bSide}) — monitor now manages the new direction on technicals`
       }
+      // Claude · № 14,292 13-Oct (owner: NASA-3, filled lots "Both"; claude-builder).
+      // The position's first sighting with no reduction on record: its broker
+      // volume is the fill, labelled as this weaker source. The position's own
+      // deals (lifecycle sweep) replace it when read.
+      if (row.broker_volume_units == null && bVol != null && row.trade_id != null
+        && noReductionOnRecord(db, { accountId: acct, positionId: posId, tradeId: row.trade_id, monitoredId: row.id })) {
+        const firstLots = brokerVolumeToLots(bp, row.symbol, db, acct)
+        if (firstLots > 0) stampFilledVolume(db, { accountId: acct, positionId: posId, tradeId: row.trade_id, lots: firstLots, source: 'broker_position_first_seen' })
+      }
       if (row.broker_volume_units != null && bVol != null && differs(bVol, row.broker_volume_units)) {
         manualChanges.push({ kind: 'volume', symbol: row.symbol, positionId: posId, from: row.broker_volume_units, to: bVol })
+        // Claude · № 14,344 13-Oct (Codex P2 round 2 on #1359; claude-builder):
+        // more volume than before is an added opening fill — the recorded fill
+        // no longer covers it, so it is cleared and read again from the deals.
+        if (Number(bVol) > Number(row.broker_volume_units) && row.trade_id != null) {
+          clearFilledVolume(db, { accountId: acct, positionId: posId, tradeId: row.trade_id })
+        }
         // A VOLUME THAT FELL IS A PARTIAL CLOSE (V3 B1 checker blocker).
         // loop.js PARTIAL_EXIT nulls this baseline first, so a fall seen here
         // was made by hand in cTrader or by a partial writer that does not
