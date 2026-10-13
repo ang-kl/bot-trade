@@ -1,6 +1,7 @@
 // node --test agent/services/telegram-digest.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { initDB, getState, setState } from '../db.js'
 import {
   CONFIG_KEY, LAST_FLUSH_KEY, HOUR_MS, TG_TEXT_MAX,
@@ -569,4 +570,27 @@ test('digestState: an unreadable outbox throws — a caller reports it, never a 
   const db = freshDB()
   db.exec('DROP TABLE telegram_outbox')
   assert.throws(() => digestState(db), /no such table: telegram_outbox/)
+})
+
+// Claude · № 13,923 13-Oct (Codex P1 #4 on #1346; owner "Partial index"; claude-builder).
+// With rows held as notify_off excluded, (sent_at, id) cannot skip them: on
+// production's ~85,000 held rows every flush and every status count would
+// walk the whole quarantine. The delivery queue reads a partial index that
+// holds only deliverable rows.
+test('the delivery queue reads a partial index of deliverable rows, never walking the held ones', () => {
+  const db = freshDB()
+  const src = readFileSync(new URL('./telegram-digest.js', import.meta.url), 'utf8')
+  const sql = /SELECT id, queued_at, kind, priority, text, reason FROM telegram_outbox[^`]*/.exec(src)?.[0]
+  assert.ok(sql, 'the delivery-queue query is in telegram-digest.js')
+  const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(500).map(r => r.detail).join(' | ')
+  assert.match(plan, /USING INDEX idx_tg_outbox_deliverable\b/, `RED before: ${plan}`)
+  assert.doesNotMatch(plan, /TEMP B-TREE/, 'ordered by the index itself')
+  // And the index itself leaves the held rows out, or the walk is merely moved.
+  const def = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'idx_tg_outbox_deliverable'").get()?.sql || ''
+  assert.match(def, /WHERE\s+sent_at IS NULL AND reason IS NOT 'notify_off'/)
+  // The index holds only the deliverable rows.
+  q(db, 'held', 'scan', 'normal', 'notify_off')
+  q(db, 'hourly', 'scan', 'normal', 'hourly_digest')
+  db.prepare(`INSERT INTO telegram_outbox (kind, priority, text, reason) VALUES ('alert', 'normal', 'legacy', NULL)`).run()
+  assert.deepEqual(pendingMessages(db).map(r => r.text), ['hourly', 'legacy'])
 })

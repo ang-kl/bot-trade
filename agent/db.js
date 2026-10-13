@@ -2133,6 +2133,13 @@ export function initDB(dbPath, startupDiagnosticOptions) {
   -- Digest status needs reason/time, never text. The existing newest-pending
   -- window stays unchanged while this covering index avoids message pages.
   CREATE INDEX IF NOT EXISTS idx_tg_outbox_pending_report ON telegram_outbox(sent_at, id, queued_at, reason);
+  -- Claude · № 13,923 13-Oct (Codex P1 #4 on #1346; owner "Partial index";
+  -- claude-builder). The delivery queue (telegram-digest.js pendingMessages)
+  -- excludes rows held as notify_off; (sent_at, id) cannot skip them, so a
+  -- flush walked every held row (~85,000 on 13-10). This index holds only
+  -- deliverable rows, and its WHERE is the query's own, so the planner uses it.
+  CREATE INDEX IF NOT EXISTS idx_tg_outbox_deliverable ON telegram_outbox(id)
+    WHERE sent_at IS NULL AND reason IS NOT 'notify_off';
   `);
 
   db.exec(`

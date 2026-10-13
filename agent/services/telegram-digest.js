@@ -238,7 +238,10 @@ export function queueMessage(db, { text, kind = 'alert', priority = 'normal', re
 export function pendingMessages(db, limit = 500) {
   try {
     return db.prepare(
-      `SELECT id, queued_at, kind, priority, text, reason FROM telegram_outbox
+      // INDEXED BY: the planner otherwise takes (sent_at, id) and walks every
+      // held row; the partial index holds only deliverable ones (db.js,
+      // Codex P1 #4 on #1346; Claude · № 13,923).
+      `SELECT id, queued_at, kind, priority, text, reason FROM telegram_outbox INDEXED BY idx_tg_outbox_deliverable
         WHERE sent_at IS NULL AND reason IS NOT 'notify_off' ORDER BY id ASC LIMIT ?`,
     ).all(limit)
   } catch { return [] }
