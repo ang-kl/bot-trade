@@ -1242,6 +1242,18 @@ export async function runMomentumBook(db, { accounts = [], manageAccounts = null
             db.prepare(`UPDATE trades SET sl_price = ? WHERE id = ?`).run(stop, row.trade_id)
             db.prepare(`UPDATE monitored_positions SET current_sl = ?, current_tp = ? WHERE trade_id = ?`).run(stop, tp, row.trade_id)
           }
+          // Claude · № 14,047 13-Oct (owner: Codex P1 on #1352, "Book trail
+          // writes an event"; claude-builder). trades.sl_price is overwritten
+          // above, so a stop the book moved must leave movement evidence: the
+          // reconciler's stop-at-entry stamp refuses a position with a recorded
+          // move, and would otherwise read this trailed stop as the bracket.
+          if (stop !== Number(row.stop) && (row.position_id || row.trade_id)) {
+            recordPositionEvent(db, {
+              accountId: row.account_id, positionId: row.position_id || null, tradeId: row.trade_id, symbol: row.symbol,
+              kind: 'trail_tightened', fromValue: Number(row.stop) > 0 ? Number(row.stop) : null, toValue: stop,
+              reason: `book trail ${cfg.stopAtr}xATR ${atr}`, source: 'momentum_book',
+            })
+          }
         })()
         noteTrail(row.id, `${result.unchanged ? 'broker already tighter' : 'trailed'} ${row.stop} -> ${stop} on ${cfg.stopAtr}xATR ${atr}${tp == null ? '; TP1 still missing, decision required' : ''}`, atr)
         if (!result.unchanged) summary.trailed++
