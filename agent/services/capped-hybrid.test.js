@@ -454,3 +454,38 @@ test('W10: with no stored setting the real pass arms exactly the pre-W10 plan', 
   assert.equal(JSON.stringify(p), JSON.stringify(legacy))
   assert.deepEqual([p.trigger, p.closeVolume, p.closePercentage], [120, 5000, 50])
 })
+
+// Claude · № 14,253 13-Oct (owner: "Yes, fix 5", "Both capped files", "The broker
+// fill", "Add manual-hybrid-policy.js"; claude-builder). The trade row can keep
+// the planned entry while the monitor holds the broker's fill (#1335). The 2R
+// trigger counts from the fill; the broker position and the opening deals must
+// prove it. Initial risk stays the recorded risk.
+test('fix 5: a planned entry that differs from the fill enrols on the fill; the trigger is fill + 2 × initial risk', async t => {
+  for (const side of ['BUY', 'SELL']) {
+    const f = scene(t, { side })
+    f.db.prepare('UPDATE trades SET entry_price=? WHERE id=7').run(side === 'BUY' ? 100.5 : 99.5)
+    const verdict = readCappedHybridOwner(f.db, '42', 7, '33', 2)
+    assert.equal(verdict?.entry, 100, 'the owner carries the fill, not the planned entry')
+    assert.equal(verdict?.initialRisk, 10)
+    const out = await f.pass()
+    assert.equal(out.cappedHybrid.enrolled.length, 1, JSON.stringify(out.cappedHybrid))
+    const p = readPartialPlan(f.db, '42', 7).plan
+    assert.equal(p.entry, 100); assert.equal(p.trigger, side === 'BUY' ? 120 : 80)
+    assert.equal(p.initialRisk, 10); assert.equal(p.originalStop, side === 'BUY' ? 90 : 110)
+    assert.equal(f.db.prepare('SELECT entry_price FROM trades WHERE id=7').get().entry_price, side === 'BUY' ? 100.5 : 99.5,
+      'the trade keeps its planned entry')
+  }
+})
+
+test('fix 5: a monitor entry the broker position or the opening deals do not hold is refused', async t => {
+  const f = scene(t)
+  f.db.prepare('UPDATE monitored_positions SET entry_price=101 WHERE id=8').run()
+  let out = await f.pass()
+  assert.equal(out.cappedHybrid.enrolled.length, 0); assert.equal(f.closes.length, 0)
+  assert.equal(out.cappedHybrid.deferred[0].reason, 'broker_position_unverified')
+  const g = scene(t)
+  g.opening.executionPrice = 100.4
+  out = await g.pass()
+  assert.equal(out.cappedHybrid.enrolled.length, 0); assert.equal(g.closes.length, 0)
+  assert.equal(out.cappedHybrid.deferred[0].reason, 'opening_receipts_required', JSON.stringify(out.cappedHybrid))
+})

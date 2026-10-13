@@ -51,7 +51,7 @@ export function ensureManualHybridSchema(db) {
     authority_version TEXT NOT NULL, monitor_id INTEGER NOT NULL, proof_json TEXT NOT NULL,
     created_at INTEGER NOT NULL, PRIMARY KEY(account_id,trade_id))`)
 }
-export function readManualHybridCandidate(db, t, positionId, digits) {
+export function readManualHybridCandidate(db, t, positionId) {
   let monitorId = null
   const refuse = reason => ({ candidate: null, reason, monitorId })
   if (!t || !id(positionId) || String(t.ctrader_position_id) !== positionId || !id(t.account_id)) return refuse('trade_identity_unverified')
@@ -78,7 +78,11 @@ export function readManualHybridCandidate(db, t, positionId, digits) {
   if (m.scaled_out) return refuse('monitor_already_scaled')
   if (m.bank_partial_at != null) return refuse('monitor_bank_owned')
   if (m.side !== (t.side === 'BUY' ? 'long' : 'short')) return refuse('monitor_side_conflict')
-  if (!sameTicks(m.entry_price, t.entry_price, digits)) return refuse('monitor_entry_conflict')
+  // Claude · № 14,253 13-Oct (owner: "Add manual-hybrid-policy.js", "The broker
+  // fill"; claude-builder). As in capped-hybrid-policy.js: the candidate's entry
+  // is the monitor's fill; the enrolment proves it against the broker position
+  // and the opening order before any authority is written.
+  if (!(typeof m.entry_price === 'number' && Number.isFinite(m.entry_price) && m.entry_price > 0)) return refuse('monitor_entry_conflict')
   if (db.prepare('SELECT 1 FROM momentum_book WHERE trade_id=? LIMIT 1').get(t.id)) return refuse('momentum_book_owned')
   if (db.prepare("SELECT 1 FROM position_events WHERE trade_id=? AND kind IN ('scale_out','lot_trimmed','authority_override','position_reversed') LIMIT 1").get(t.id)) return refuse('prior_position_override')
   for (const name of ['momentum_target_intents', 'momentum_limit_intents']) {
@@ -90,7 +94,7 @@ export function readManualHybridCandidate(db, t, positionId, digits) {
   if (!symbolId) return refuse('manual_symbol_map_unverified')
   const host = credsForRegisteredAccount(db, t.account_id)?.host
   if (!host) return refuse('entry_host_conflict')
-  return { candidate: { accountId: t.account_id, tradeId: t.id, positionId, entry: t.entry_price,
+  return { candidate: { accountId: t.account_id, tradeId: t.id, positionId, entry: m.entry_price,
     side: t.side, symbol: t.symbol, strategy: t.strategy, symbolId, host, monitoredId: m.id }, reason: null, monitorId }
 }
 export function readManualHybridVerdict(db, t, positionId, digits) {
