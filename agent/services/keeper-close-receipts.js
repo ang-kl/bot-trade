@@ -6,6 +6,7 @@ import { partialClosingEvidence, partialAcceptedEvidence, partialPositionPresenc
   classifyCloseFailure, MAX_CLOCK_SKEW_MS } from './momentum-broker-evidence.js'
 import { sameTicks } from './momentum-target-policy.js'
 import { recordPositionEvent } from './position-events.js'
+import { stampFilledVolume, noReductionOnRecord } from './filled-volume.js'
 
 const id = value => typeof value === 'number' && (!Number.isSafeInteger(value) || value <= 0) ? null
   : /^(?:[1-9]\d{0,19})$/.test(String(value ?? '')) ? String(value) : null
@@ -206,6 +207,15 @@ export async function runKeeperClose(db, input, deps) {
     if (!currentOwner || (p.kind === 'close' ? !['active','closed'].includes(currentOwner.status)
       : currentOwner.status !== 'active' || currentOwner.trade_status !== 'open')) return held('keeper_owner_changed')
     if (p.kind === 'scale_out') {
+      // Claude · № 14,292 13-Oct (owner: NASA-3, naming this file; claude-builder).
+      // Before the first reduction on record, the broker-confirmed volume this
+      // partial read (p.before) is the filled quantity: kept in its own column,
+      // labelled, before trades.volume becomes the residual. Better evidence
+      // (the position's own opening deals) is never replaced by it.
+      if (noReductionOnRecord(db, { accountId: p.accountId, positionId: p.positionId, tradeId: p.tradeId, monitoredId: p.monitorId })) {
+        stampFilledVolume(db, { accountId: p.accountId, positionId: p.positionId, tradeId: p.tradeId,
+          lots: p.before.volume / p.lotSize, source: 'broker_position_before_first_partial' })
+      }
       if (db.prepare('UPDATE trades SET volume=? WHERE id=? AND (account_id IS NULL OR account_id=?) AND ctrader_position_id=?')
         .run(residual.volume / p.lotSize, p.tradeId, p.accountId, p.positionId).changes !== 1) throw Error('keeper_trade_write_failed')
       if (db.prepare(`UPDATE monitored_positions SET scaled_out=1,broker_volume_units=?,

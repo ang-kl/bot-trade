@@ -18,10 +18,10 @@ established from what is readable here).
 
 | # | Finding | State | Evidence (this baseline) |
 |---|---|---|---|
-| A | Account commission collected, not used by the gate | **Open — integration is an owner decision** | `commission-terms.js` is read/record only; `/state/commission-terms` notes "The risk gate does not read these terms yet." Live check, 30 days: 47790949 29 symbols agree / 0 disagree / 15 not compared; 46130058 27 / 0 / 12; 46979908 22 / 0 / 7; **43097342 and 42993489 (SGD deposit) 0 compared** (`deposit_currency_SGD`). Not-compared reasons: quote currency not USD (13), base-currency USD price unknown (19), terms not recorded (1), minimum commission on a split position (1). |
+| A | Account commission collected, not used by the gate | **Read-only check extended (#1358, NASA-4); gate use is an owner decision** | `commission-terms.js` is read/record only; `/state/commission-terms` notes "The risk gate does not read these terms yet." Live check, 30 days: 47790949 29 symbols agree / 0 disagree / 15 not compared; 46130058 27 / 0 / 12; 46979908 22 / 0 / 7; **43097342 and 42993489 (SGD deposit) 0 compared** (`deposit_currency_SGD`). Not-compared reasons: quote currency not USD (13), base-currency USD price unknown (19), terms not recorded (1), minimum commission on a split position (1). |
 | B1 | Ordinary bot entry records the gate's lots, not the lots sent | **Fixed** (#1348 b2e3af5, #1350 1d2d7c7) | `loop.js` sets `volLots = sized.lots` before the intent insert; the gate's figure is kept as `requested_volume` only when it differs. |
-| B2 | Filled vs residual not distinguishable on an open row | **Open** | `trades.volume` is rewritten to the residual by the keeper scale-out (`keeper-close-receipts.js:209`), the general partial (`general-partial-execution.js:181`) and re-strategize volume changes (`restrategize.js:105`). `/state/positions` `opened_lots` reads `trades.volume` (`routes/state.js:956`), so after a bot partial it shows the residual. No column holds the filled opening quantity. |
-| B3 | `requested_volume` has two meanings | **Open** | Entry writes it only when gate ≠ sent (loop.js). Broker history import writes `requested_volume = COALESCE(requested_volume, volume)` before overwriting `volume` with the closing deals' lots (`broker-history-import.js:468`): for a scaled-out row that "requested" value is the residual, not any request. `position-history.js:270` already treats it as a plan field never compared — the population is only mislabelled, not mis-scored. |
+| B2 | Filled vs residual not distinguishable on an open row | **Fixed in the NASA-3 PR** (`trades.filled_volume` + source; opened_lots labelled) | `trades.volume` is rewritten to the residual by the keeper scale-out (`keeper-close-receipts.js:209`), the general partial (`general-partial-execution.js:181`) and re-strategize volume changes (`restrategize.js:105`). `/state/positions` `opened_lots` reads `trades.volume` (`routes/state.js:956`), so after a bot partial it shows the residual. No column holds the filled opening quantity. |
+| B3 | `requested_volume` has two meanings | **Fixed in the NASA-3 PR** (the residual is no longer copied after a reduction) | Entry writes it only when gate ≠ sent (loop.js). Broker history import writes `requested_volume = COALESCE(requested_volume, volume)` before overwriting `volume` with the closing deals' lots (`broker-history-import.js:468`): for a scaled-out row that "requested" value is the residual, not any request. `position-history.js:270` already treats it as a plan field never compared — the population is only mislabelled, not mis-scored. |
 | B4 | Other writers of `trades.volume` | **Inventoried; see §2** | 6 INSERT sites, 9 UPDATE sites. |
 | C1 | Import guard misses inline `await import(...)` and the second import on a line | **Pending existing PR (NASA-2)** | Confirmed on Node 22.22.2 with the exact regex. The parser that replaces it also found what the regex hid: `strategies.js` loads 8 strategy modules through `import(path)`, and `loop.js` reaches research code at run time through `performance-populations.js` `buildReport` and the research route handlers (load time: none). |
 | C2 | Timer check blind to an interval | **Pending existing PR (NASA-2)** | Measured on Node 22.22.2 and Node 20.20.2 (`/opt/node20`): `_getActiveHandles` reads 0 for ref'd, unref'd and immediate; `getActiveResourcesInfo` misses unref'd timers. The replacement probe catches all six violating fixtures on both runtimes. |
@@ -145,3 +145,21 @@ demo accounts **43097342, 47790949, 46130058**:
 | B1 | yes | production read 13-10: 5 positions, lots from reconcile | Not Verifiable |
 | B2/B3 | no | no | — |
 | C/D | NASA-2 PR: violating fixtures detected, 9 mutations red | Node 22 + Node 20 probe runs in this container; CI runs Node 22 | — |
+
+## 6. Progress (13-10 evening)
+
+Claude · № 14,322 13-Oct (claude-builder).
+
+| Step | PR | State |
+|---|---|---|
+| NASA-2 research instruments | #1355 | merged 13-10 |
+| Audit fix 4, MAE/MFE exit side | #1356 | merged 13-10, read back: columns fill on open markets |
+| Audit fix 5, hybrid trigger from the broker fill | #1357 | merged 13-10, read back: DOW.US #1806 no longer `monitor_entry_conflict` |
+| NASA-4 commission, per-deal broker rates | #1358 | see the PR; live check: new closing deals carry rates, USD accounts read ratio 1 |
+| NASA-3 quantity contract | NASA-3 PR | filled lots from the position's own deals (sweep), closing deals, pre-partial broker volume, first sighting; opened lots labelled |
+| NASA-5 fault matrix | — | not started (owner's word) |
+| NASA-6 strategy validation | — | not started (owner's word) |
+
+Sent lots after `trades.volume` is rewritten: bot rows keep them on
+`entry_intents.volume`; manual-route rows have no separate record (left out of
+NASA-3, stated).

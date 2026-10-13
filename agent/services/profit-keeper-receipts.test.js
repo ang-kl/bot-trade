@@ -331,3 +331,15 @@ for(const failure of ['not_sent','rejected','already_closed'])test(`keeper failu
   assert.equal(f.state.calls.length,failure==='already_closed'?1:2)
   assert.equal(f.events().length,failure==='already_closed'?0:1)
 })
+
+// Claude · № 14,292 13-Oct (owner: NASA-3, naming keeper-close-receipts.js;
+// claude-builder). The keeper's first scale-out records the broker-confirmed
+// pre-partial volume (10,000 cents at a 10,000-cent lot = 1 lot) as the fill,
+// apart from the residual it writes to trades.volume.
+test('NASA-3: keeper scale-out keeps the filled lots apart from the residual', async t => {
+  const f = fixture(t)
+  f.state.response = () => { f.state.volume = 8000; return f.fill(2000) }
+  assert.equal((await f.run()).scaleOuts, 1)
+  const row = f.db.prepare('SELECT volume, filled_volume, filled_volume_source FROM trades').get()
+  assert.deepEqual(row, { volume: 0.8, filled_volume: 1, filled_volume_source: 'broker_position_before_first_partial' })
+})

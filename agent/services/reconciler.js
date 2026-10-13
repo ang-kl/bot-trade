@@ -9,6 +9,7 @@ import { isTrailing, stopTightened } from '../lib/stop-policy.js'
 import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
 import { brokerCloseReason, LEGACY_BOOK_STOP, receiptInitiatorUnknown, replaceableCloseReason } from './broker-exit-attribution.js'
 import { horizonForStrategy } from './trade-horizon.js'
+import { stampFilledVolume, noReductionOnRecord } from './filled-volume.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -574,6 +575,15 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
         updates.current_sl = bSl
         updates.current_tp = bTp
         updates.thesis_note = `MANUAL REVERSAL detected at broker (${row.side}→${bSide}) — monitor now manages the new direction on technicals`
+      }
+      // Claude · № 14,292 13-Oct (owner: NASA-3, filled lots "Both"; claude-builder).
+      // The position's first sighting with no reduction on record: its broker
+      // volume is the fill, labelled as this weaker source. The position's own
+      // deals (lifecycle sweep) replace it when read.
+      if (row.broker_volume_units == null && bVol != null && row.trade_id != null
+        && noReductionOnRecord(db, { accountId: acct, positionId: posId, tradeId: row.trade_id, monitoredId: row.id })) {
+        const firstLots = brokerVolumeToLots(bp, row.symbol, db, acct)
+        if (firstLots > 0) stampFilledVolume(db, { accountId: acct, positionId: posId, tradeId: row.trade_id, lots: firstLots, source: 'broker_position_first_seen' })
       }
       if (row.broker_volume_units != null && bVol != null && differs(bVol, row.broker_volume_units)) {
         manualChanges.push({ kind: 'volume', symbol: row.symbol, positionId: posId, from: row.broker_volume_units, to: bVol })

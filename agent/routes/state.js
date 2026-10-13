@@ -61,6 +61,7 @@ import { EXTENDED_OPTIONS as CF_EXTENDED_OPTIONS, PRESETS as CF_PRESETS, GROUP_K
 import { THEORY_GAP_SECTIONS, R_AUDIT_DEFAULT_STRATEGY, R_AUDIT_MAX_DAYS, REGIME_BLOCKS_DEFAULT_DAYS } from '../services/theory-gap.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
 import { reportLedger } from '../shared/performance-populations.js'
+import { openedLotsFor, noReductionOnRecord } from '../services/filled-volume.js'
 // V3 C4: the blocker report's request refusals, recognised by message when
 // they come back from the report worker (the worker loses the RangeError type).
 const BLOCKER_REQUEST_ERRORS = new Set(['account not registered', 'explicit account or all required', 'invalid reporting window or page'])
@@ -851,7 +852,7 @@ export default function stateRouter(db) {
     // have 'P&L, To TP/SL'").
     const rows = db
       .prepare(
-        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at, t.ctrader_position_id AS ctrader_position_id, t.horizon AS horizon, a.tp2_price AS tp2_price
+        `SELECT mp.*, t.volume AS volume, t.filled_volume AS filled_volume, t.filled_volume_source AS filled_volume_source, t.opened_at AS opened_at, t.ctrader_position_id AS ctrader_position_id, t.horizon AS horizon, a.tp2_price AS tp2_price
          FROM monitored_positions mp
          LEFT JOIN trades t ON t.id = mp.trade_id
          LEFT JOIN analyses a ON a.id = t.analysis_id
@@ -953,7 +954,15 @@ export default function stateRouter(db) {
       } catch { market_open = null }
       return {
         ...r, market_open, market_source,
-        current_lots, opened_lots: r.volume ?? null, lots_source,
+        current_lots, lots_source,
+        // Claude · № 14,292 13-Oct (owner: NASA-3, Opened lots "Sent lots,
+        // labelled"; claude-builder): the broker-recorded fill when known, else
+        // the lots sent while no reduction is on record ('sent_order'), else
+        // unknown after a partial — never the residual trades.volume holds then.
+        ...(() => { const o = openedLotsFor({ filledVolume: r.filled_volume, filledSource: r.filled_volume_source, volume: r.volume,
+          reduced: Number(r.scaled_out) === 1 || r.bank_partial_at != null || Number(r.early_trimmed) === 1
+            || !noReductionOnRecord(db, { accountId: r.account_id, positionId: r.ctrader_position_id, tradeId: r.trade_id }) })
+        return { opened_lots: o.lots, opened_lots_source: o.source } })(),
         live_pnl: sp?.pnl ?? sp?.netPnl ?? null,
         live_pnl_at: sp ? src.at : null,
         // Owner (open-trade tables): current price + latest daily OHLCV.

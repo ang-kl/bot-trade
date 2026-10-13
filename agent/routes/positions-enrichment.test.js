@@ -284,3 +284,28 @@ test('an unnamed shared snapshot enriches no attributed account without a cache 
     assert.equal(rows.AUDCAD.current_lots, null)
   } finally { s.close(); s.db.close() }
 })
+
+// Claude · № 14,292 13-Oct (owner: NASA-3, Opened lots "Sent lots, labelled";
+// claude-builder). Source: docs/nasa-baseline-2026-10-13.md B2 — opened_lots
+// read trades.volume, which a keeper or general partial rewrites to the
+// residual. Opened lots is now the broker-recorded fill, else the lots sent
+// while no reduction is on record, else unknown; each says which.
+test('opened lots: the recorded fill, the sent lots labelled, never the residual after a partial', async () => {
+  const s = await server()
+  try {
+    const row = (symbol, ctid, volume, filled = null, source = null, scaled = 0) => {
+      const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume, filled_volume, filled_volume_source)
+        VALUES (?, 'buy', 'open', '42993489', ?, ?, ?, ?)`).run(symbol, ctid, volume, filled, source).lastInsertRowid
+      s.db.prepare(`INSERT INTO monitored_positions (trade_id, symbol, side, status, account_id, entry_price, current_sl, current_tp, scaled_out)
+        VALUES (?, ?, 'buy', 'active', '42993489', 1.1, 1.0, 1.3, ?)`).run(t, symbol, scaled)
+    }
+    row('EURUSD', '11', 0.1, 0.2, 'broker_opening_deals', 1)
+    row('GBPUSD', '12', 0.3)
+    row('AUDUSD', '13', 0.05, null, null, 1)
+    const rows = bySymbol(await positions(s))
+    assert.deepEqual([rows.EURUSD.opened_lots, rows.EURUSD.opened_lots_source], [0.2, 'broker_opening_deals'])
+    assert.deepEqual([rows.GBPUSD.opened_lots, rows.GBPUSD.opened_lots_source], [0.3, 'sent_order'])
+    assert.deepEqual([rows.AUDUSD.opened_lots, rows.AUDUSD.opened_lots_source], [null, 'unknown_after_partial'],
+      'the 0.05 left after a partial is not what was opened')
+  } finally { s.close(); s.db.close() }
+})

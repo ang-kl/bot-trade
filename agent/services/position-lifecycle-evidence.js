@@ -259,6 +259,24 @@ async function persistReceipts(db, response, accountId) {
 }
 
 /**
+ * The filled opening lots from a validated position history (№ 14,292): the
+ * sum of its executed opening deals, divided by THIS account's own declared lot
+ * size for the symbol (withBrokerLotSizes; no guessed divisor). Written for
+ * this account's rows of the position only, as the best source.
+ */
+async function stampFilledFromHistory(db, response, accountId, positionId) {
+  const [{ openingDealsFilledLots, stampFilledVolume }, { getAccountSymbolMap }, { withBrokerLotSizes }] = await Promise.all([
+    import('./filled-volume.js'), import('../lib/ctrader-creds.js'), import('../lib/lot-size-registry.js')])
+  const symbolId = (response.deal ?? []).find(d => !d?.closePositionDetail && d?.symbolId != null)?.symbolId
+  const symMeta = {}
+  try { for (const [name, id] of Object.entries(getAccountSymbolMap(db, accountId)?.map ?? {})) symMeta[id] = { symbolName: name } } catch { /* no name, no lot size */ }
+  const lotSize = symbolId == null ? null : withBrokerLotSizes(db, symMeta, accountId)[symbolId]?.lotSize ?? null
+  const { lots, reason } = openingDealsFilledLots(response, positionId, lotSize)
+  if (lots == null) return { lots: null, reason }
+  return { lots, written: stampFilledVolume(db, { accountId, positionId, lots, source: 'broker_opening_deals' }) }
+}
+
+/**
  * The old-position reader's own read, turned into a verdict (the account
  * pass taps its getPositionDeals). Classified AFTER the reader wrote, so a
  * row it filled reads as the lifecycle it now carries: `filled`, or
@@ -295,7 +313,10 @@ export function recordReaderEvidence(db, { accountId, host = null, capture, outc
 // Unpriced rows are not here: they belong to the old-position reader, whose
 // reads the account pass records as verdicts too.
 // ---------------------------------------------------------------------------
-export const SWEEP_CLASSES = Object.freeze(['receipt', 'differs', 'no_account'])
+// Claude · № 14,292 13-Oct (owner: NASA-3, filled lots "Both"; claude-builder):
+// 'filled' reads an open position whose filled opening lots are not yet known
+// from its own deals (filled-volume.js). Same pacing as every class.
+export const SWEEP_CLASSES = Object.freeze(['receipt', 'differs', 'no_account', 'filled'])
 /**
  * The rows with no account that are probed — and exactly the rows the
  * reconciliation report lists (ledger-reconciliation.js), so the report's
@@ -328,6 +349,13 @@ export function sweepCandidate(db, accountId, cls, { now = Date.now() } = {}) {
       SELECT l.id, l.pid FROM l JOIN b ON b.pid = l.pid
       WHERE ABS(l.ledger - b.broker) > ${MONEY_TOLERANCE + 0.001} AND ${NOT_RECENT('l.pid')}
       ORDER BY l.id DESC LIMIT 1`).get(params) ?? null
+  }
+  if (cls === 'filled') {
+    return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
+      WHERE t.account_id = @acct AND t.status = 'open' AND CAST(t.ctrader_position_id AS INTEGER) > 0
+        AND COALESCE(t.filled_volume_source, '') <> 'broker_opening_deals'
+        AND ${NOT_RECENT(PID_SQL('t.ctrader_position_id'))}
+      ORDER BY t.id DESC LIMIT 1`).get(params) ?? null
   }
   if (cls === 'no_account') {
     return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
@@ -387,14 +415,15 @@ export async function sweepLifecycleEvidence(db, creds, { now = Date.now(), isCu
   const classified = error
     ? { verdict: 'unreadable', final: false, reason: error.message || String(error) }
     : classifyPositionHistory(response, { accountId, positionId, now, ledgerRows })
-  let receipts = null
+  let receipts = null, filled = null
   if (classified.persistable) {
     try { receipts = (await persistReceipts(db, response, accountId))?.seen ?? 0 } catch (e) { receipts = `skipped: ${e.message}` }
+    try { filled = await stampFilledFromHistory(db, response, accountId, positionId) } catch (e) { filled = { reason: `skipped: ${e.message}` } }
   }
   const verdict = recordLifecycleEvidence(db, { accountId, positionId, host, classified, now, ledgerRows,
     source: cls === 'no_account' ? 'no_account_probe' : `evidence_sweep:${cls}`,
     tradeIds: cls === 'no_account' ? noAccountRows.map(r => Number(r.id)) : ledgerRows.map(r => Number(r.id)) })
-  const out = { state: 'read', class: cls, positionId, tradeId: picked.id, verdict, ...(receipts != null ? { receipts } : {}) }
+  const out = { state: 'read', class: cls, positionId, tradeId: picked.id, verdict, ...(receipts != null ? { receipts } : {}), ...(filled ? { filled } : {}) }
   setState(db, key, JSON.stringify({ lastReadAt: now, next: (idx + 1) % SWEEP_CLASSES.length, ...out, completedAt: Date.now() }))
   return out
 }
