@@ -94,6 +94,12 @@ function buildEnrichMap(positions) {
 // this DB-only row never had — ccy, margin, bid/ask, commission, swap —
 // matching the richness Desk's "At the broker" table already shows (owner:
 // "why you didn't include" the same columns here).
+// Claude · № 13,904 13-Oct (owner: audit fix "1 Lots from broker"; claude-builder).
+// The lots held NOW are the broker's (current_lots); `volume` is what was
+// opened and stays the TP ladder's total. A row with no broker reading yet
+// falls back to the opened figure.
+const heldLots = (p) => p.current_lots ?? p.volume ?? null
+
 function openPositionRows(positions, prices = {}, enrichById = {}, leverage = null) {
   return positions.map(p => {
     const src = p.source || 'autopilot'
@@ -115,14 +121,17 @@ function openPositionRows(positions, prices = {}, enrichById = {}, leverage = nu
     const slTruth = enr.slNetImpact ?? enr.slGrossImpact ?? null
     const tpTruth = enr.tpNetImpact ?? enr.tpGrossImpact ?? null
     const money = (slTruth != null && tpTruth != null) ? { slMoney: null, tpMoney: null } : bracketMoney({
-      symbol: p.symbol, side: p.side, qty: p.volume, entry: p.entry_price,
-      sl: p.current_sl, tp: p.current_tp, tps, ref: current, rates: prices,
+      symbol: p.symbol, side: p.side, qty: heldLots(p), entry: p.entry_price,
+      // Claude · № 13,987 13-Oct (owner: Codex P2s on #1348, "Held lots at broker TP"; claude-builder).
+      // The broker holds ONE take-profit (current_tp): the lots held now close
+      // there. The TP1/TP2 ladder is display only; tp2 is never at the broker.
+      sl: p.current_sl, tp: p.current_tp, ref: current, rates: prices,
     })
     // Broker truth first; the notional ÷ leverage estimate only fills the gap
     // when the live enrichment hasn't landed (or the position is untracked).
     const marginTruth = enr.usedMargin ?? null
     const marginEst = marginTruth == null
-      ? estimateMargin({ symbol: p.symbol, qty: p.volume, price: p.entry_price, leverage, rates: prices })
+      ? estimateMargin({ symbol: p.symbol, qty: heldLots(p), price: p.entry_price, leverage, rates: prices })
       : null
     return {
       pnl: enr.netPnl ?? enr.estNetPnl ?? null,
@@ -135,7 +144,7 @@ function openPositionRows(positions, prices = {}, enrichById = {}, leverage = nu
       result: { text: 'OPEN', tone: 'info' },
       source: { text: ATTEMPT_SOURCE[src] || String(src).toUpperCase(), tone: src === 'validation_fill' ? 'special' : 'neutral' },
       side: String(p.side || '').toUpperCase() || null,
-      qty: p.volume,
+      qty: heldLots(p),
       entry: p.entry_price,
       sl: p.current_sl,
       tp: p.current_tp,
@@ -179,12 +188,12 @@ function externalPositionRows(positions, prices = {}, enrichById = {}, leverage 
     const slTruth = enr.slNetImpact ?? enr.slGrossImpact ?? null
     const tpTruth = enr.tpNetImpact ?? enr.tpGrossImpact ?? null
     const money = (slTruth != null && tpTruth != null) ? { slMoney: null, tpMoney: null } : bracketMoney({
-      symbol: p.symbol, side: p.side, qty: p.volume, entry: p.entry_price,
+      symbol: p.symbol, side: p.side, qty: heldLots(p), entry: p.entry_price,
       sl: p.current_sl, tp: p.current_tp, ref: current, rates: prices,
     })
     const marginTruth = enr.usedMargin ?? null
     const marginEst = marginTruth == null
-      ? estimateMargin({ symbol: p.symbol, qty: p.volume, price: p.entry_price, leverage, rates: prices })
+      ? estimateMargin({ symbol: p.symbol, qty: heldLots(p), price: p.entry_price, leverage, rates: prices })
       : null
     return {
       pnl: enr.netPnl ?? enr.estNetPnl ?? null,
@@ -197,7 +206,7 @@ function externalPositionRows(positions, prices = {}, enrichById = {}, leverage 
       result: { text: 'OPEN', tone: 'info' },
       source: { text: 'EXTERNAL', tone: 'neutral' },
       side: String(p.side || '').toUpperCase() || null,
-      qty: p.volume ?? null,
+      qty: heldLots(p),
       entry: p.entry_price,
       sl: p.current_sl ?? null,
       tp: p.current_tp ?? null,

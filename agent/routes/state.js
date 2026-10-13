@@ -884,35 +884,70 @@ export default function stateRouter(db) {
     const readSnap = (key) => {
       const positions = new Map()
       let at = null
+      let present = false
+      let accountId = null
       try {
         const snap = JSON.parse(getState(db, key) || 'null')
+        if (snap && typeof snap === 'object') present = true
         at = snap?.fetchedAt ?? null
+        accountId = snap?.account?.accountId == null ? null : String(snap.account.accountId)
         for (const p of snap?.account?.positions || []) {
           if (p?.positionId != null) positions.set(String(p.positionId), p)
         }
       } catch { /* an unreadable cache enriches nothing; it never throws the list away */ }
-      return { positions, at }
+      return { positions, at, present, accountId }
     }
     globalSnap = readSnap('broker_snapshot_cache_json')
+    const noSnap = { positions: new Map(), at: null }
     for (const id of new Set(rows.map(r => (r.account_id == null ? null : String(r.account_id))))) {
       if (id == null) continue
       const s = readSnap(`acct:${id}:broker_snapshot_cache_json`)
-      // Fall back per account, not once globally: an account with no cache of
-      // its own is better served by the shared one than by nothing, and an
-      // account WITH one must never be read from another account's.
-      snapById.set(id, s.positions.size ? s : globalSnap)
+      // Claude · № 13,996 13-Oct (owner: Codex P2 #5 "Own snapshot for lots AND P&L"; claude-builder).
+      // An account's OWN snapshot is authoritative even when it holds no
+      // positions: position ids repeat across the demo and live servers, so the
+      // shared snapshot (the SELECTED account's) is never this row's evidence.
+      // With no cache of its own, the shared one stands in only when it names
+      // this account (or names none: a cache written before it carried one).
+      const sharedIsOwn = globalSnap.accountId == null || globalSnap.accountId === id
+      snapById.set(id, s.present ? s : (sharedIsOwn ? globalSnap : noSnap))
     }
     let isOpenFn = null
     try { isOpenFn = (await import('../services/symbol-hours.js')).isSymbolOpenCached } catch { isOpenFn = null }
+    // Claude · № 13,904 13-Oct (owner: audit fix "1 Lots from broker"; claude-builder).
+    // `volume` is the trade's OPENED volume (the TP ladder splits it). The lots
+    // the broker holds NOW come from the reconciler's last reading of this
+    // position (broker_volume_units), through this account's own lot record;
+    // unknown stays null, never the opened figure.
+    let unitsToLots = null
+    try { unitsToLots = (await import('../services/reconciler.js')).brokerUnitsToLots } catch { unitsToLots = null }
     const enriched = rows.map(r => {
+      const src = (r.account_id != null ? snapById.get(String(r.account_id)) : null) ?? globalSnap
+      const sp = r.ctrader_position_id != null ? src.positions.get(String(r.ctrader_position_id)) : null
+      // Claude · № 13,991 13-Oct (owner: Codex P2 #4 "Snapshot first, reconciler next"; claude-builder).
+      // The account's cached broker snapshot carries this position's lots as the
+      // broker reported them (a partial close after the last reconcile shows
+      // there first); the reconciler's reading is the fallback.
+      let current_lots = null
+      let lots_source = 'opened_record'
+      const snapLots = typeof sp?.lots === 'number' ? sp.lots : NaN
+      if (Number.isFinite(snapLots) && snapLots > 0) {
+        current_lots = Math.round(snapLots * 1e8) / 1e8
+        lots_source = 'broker_snapshot'
+      } else {
+        try {
+          if (unitsToLots && r.broker_volume_units != null && Number(r.broker_volume_units) > 0) {
+            const l = unitsToLots(Number(r.broker_volume_units), r.symbol, db, r.account_id ?? null)
+            if (Number.isFinite(l) && l > 0) { current_lots = Math.round(l * 1e8) / 1e8; lots_source = 'broker_reconcile' }
+          }
+        } catch { current_lots = null }
+      }
       let market_open = null, market_source = null
       try {
         if (isOpenFn) { const o = isOpenFn(db, r.symbol); market_open = !!o.open; market_source = o.source || null }
       } catch { market_open = null }
-      const src = (r.account_id != null ? snapById.get(String(r.account_id)) : null) ?? globalSnap
-      const sp = r.ctrader_position_id != null ? src.positions.get(String(r.ctrader_position_id)) : null
       return {
         ...r, market_open, market_source,
+        current_lots, opened_lots: r.volume ?? null, lots_source,
         live_pnl: sp?.pnl ?? sp?.netPnl ?? null,
         live_pnl_at: sp ? src.at : null,
         // Owner (open-trade tables): current price + latest daily OHLCV.

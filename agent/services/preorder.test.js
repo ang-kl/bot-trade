@@ -601,3 +601,36 @@ test('manual: the proposal and veto are the ones the real POST /actions/manual-o
   assert.equal(res.reason, dry.gate.vetoReason)
   assert.deepEqual(firstProposal(db), JSON.parse(JSON.stringify(dry.proposal)), 'the dry run built the route\'s proposal from the same 1m close')
 })
+
+// Claude · № 13,904 13-Oct (owner: audit fix "1 Lots from broker"; claude-builder).
+// Production 13-10: NAS100 #1816 recorded 0.53 lots while the broker filled
+// 0.5; LLY.US 0.39 vs 0.3; JPM.US 2.68 vs 2.6. The bot's order path sent the
+// broker's stepped volume and recorded the gate's unrounded figure.
+test('the bot\'s market order records the lots it SENT (stepped to the broker), and the gate\'s figure as requested_volume', async (t) => {
+  const db = fresh(); t.after(() => db.close())
+  const { sig } = seedScan(db)
+  const { autoTrade } = await import('../loop.js')
+  const { synthesizeFibSignal } = await import('./fib-strategy.js')
+  const synth = synthesizeFibSignal(SYM, sig, 8).synthesis
+  const LOT = 10_000_000, STEP = 1_000_000 // 0.1-lot steps
+  const sent = []
+  const out = await withCreds(() => autoTrade(db, SYM, synth, { symbol: SYM, enabled: true, maxVolume: 0.37 }, { accountId: A, isLive: false }, {
+    sharedAccounts: 1,
+    testTransport: {
+      resolveSymbolId: async () => ({ id: SYM_ID }),
+      getVolumeMeta: async () => ({ digits: 5, lotSize: LOT, stepVolume: STEP, minVolume: STEP, maxVolume: 100 * LOT }),
+      wsGetSpotOnce: async () => ({ bid: 1.0999, ask: 1.1001 }),
+      execPlaceOrder: async (_c, payload) => { sent.push(payload); return { deal: { executionPrice: 1.1, positionId: 9001 }, position: { positionId: 9001, price: 1.1 } } },
+      skipForensics: true,
+    },
+  }))
+  assert.equal(sent.length, 1, `the order was sent (${JSON.stringify(out)})`)
+  const sentLots = sent[0].volume / LOT
+  const row = db.prepare("SELECT volume, requested_volume FROM trades WHERE ctrader_position_id = '9001'").get()
+  assert.ok(row, 'the trade row exists')
+  assert.notEqual(row.requested_volume, null, 'the gate\'s figure is kept')
+  assert.ok(Math.abs(sentLots * 10 - Math.round(sentLots * 10)) < 1e-9, 'the broker received a 0.1-lot multiple')
+  assert.notEqual(row.requested_volume, sentLots, `the fixture must make the gate's ${row.requested_volume} differ from the ${sentLots} sent`)
+  assert.equal(row.volume, sentLots, `RED before: the row recorded the gate's ${row.volume}, not the ${sentLots} sent`)
+  assert.equal(out?.volume, sentLots, 'the return says what was sent')
+})
