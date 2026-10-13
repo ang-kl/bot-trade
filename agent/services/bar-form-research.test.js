@@ -120,6 +120,24 @@ test('persistRun is one transaction; regimeRowsFor reads sorted rows per symbol 
   assert.throws(() => persistRun(db, j, { manifest: {}, cells: [], summary: {} }), /UNIQUE/)
 })
 
+test('Codex P2 on #1365: every cell\'s train / confirm split is stored and read back, not only the selected rows; an older table gains the column', () => {
+  const db = fresh()
+  const split = { rBasis: 'net_of_cost', train: { usable: 40, expectancyLowerR: 0.2 }, confirm: { usable: 12, expectancyLowerR: -0.1 }, straddling: 3 }
+  const j = { runId: 'r-split', state: 'done', startedAt: 'a', finishedAt: 'b', actor: null, plan: {}, error: null }
+  persistRun(db, j, { manifest: {}, cells: [{ symbolId: 1, strategy: 's', form: 'f', verdict: 'OK', trades: 55, split }, { symbolId: 2, strategy: 's', form: 'f', verdict: 'NO_BARS', trades: 0 }], summary: { cells: 2 } })
+  const v = barFormResearchView(db, { runId: 'r-split' })
+  assert.deepEqual(v.cells.map(c => c.split), [split, null])
+  const dir = mkdtempSync(join(tmpdir(), 'bfr-mig-')); const path = join(dir, 'old.db')
+  try {
+    const old = initDB(path)
+    const cols = d => new Set(d.prepare('PRAGMA table_info(bar_form_results)').all().map(c => c.name))
+    old.exec('ALTER TABLE bar_form_results DROP COLUMN split_json')
+    assert.ok(!cols(old).has('split_json'), 'the table as it stands in production before this change'); old.close()
+    const again = initDB(path)
+    assert.ok(cols(again).has('split_json'), 'start-up adds the column'); again.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('the broker cross-check: the run names up to three of its symbols; at the end their one-minute bars are set beside the broker\'s M1 bars through the route\'s fetch; a failed fetch is recorded, never fatal', async () => {
   const db = fresh()
   assert.equal(barFormPlan({ crossCheck: [1, 2, 3, 4] }).refuse, undefined, 'four names are bounded to three, not refused'); assert.deepEqual(barFormPlan({ crossCheck: [1, 2, 3, 4] }).plan.crossCheck, [1, 2, 3])

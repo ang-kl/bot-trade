@@ -816,7 +816,8 @@ const TABLES = `
     by_half_json   TEXT,
     by_regime_json TEXT,
     mde_r          REAL,
-    note           TEXT
+    note           TEXT,
+    split_json     TEXT                       -- NASA-6: train / confirm R stats (net of cost) at the run's cutoff
   );
   CREATE INDEX IF NOT EXISTS idx_bar_form_results_run ON bar_form_results(run_id);
 
@@ -1622,6 +1623,12 @@ export function initDB(dbPath, startupDiagnosticOptions) {
   for (const [col, type] of [['sl_proposal', 'REAL'], ['stop_unit', 'TEXT']]) {
     if (!rsColNames.has(col)) db.exec(`ALTER TABLE refusal_scores ADD COLUMN ${col} ${type}`);
   }
+
+  // Claude · № 14,558 14-Oct (Codex P2 on #1365; claude-builder): every
+  // cell's train / confirm statistics are stored, not only the selected top-N
+  // in the summary, so the training ranking can be audited from a stored run.
+  const bfrCols = new Set(db.prepare('PRAGMA table_info(bar_form_results)').all().map(c => c.name));
+  if (!bfrCols.has('split_json')) db.exec('ALTER TABLE bar_form_results ADD COLUMN split_json TEXT');
 
   const equityHistoryCols = new Set(db.prepare('PRAGMA table_info(equity_snapshots)').all().map(c => c.name));
   for (const [name, type] of [['currency','TEXT'], ['broker_host','TEXT'], ['balance_received_at','TEXT'], ['pnl_received_at','TEXT']]) {
