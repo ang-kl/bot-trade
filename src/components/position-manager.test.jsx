@@ -48,6 +48,9 @@ describe('PositionManager partial close', () => {
     expect(src).toMatch(/const flow = await closeFlow\(\{ input: closeLots, heldLots: p\.lots/)
     expect(src).toMatch(/agentPost\('\/actions\/position-close', withAcct\(flow\.body\)\)/)
     expect(src).toMatch(/if \(flow\.error\) \{ setMsg/)
+    // Codex P1 #2: the whole close runs inside the single-flight lock, busy from the start.
+    expect(src).toMatch(/onClick=\{\(\) => closeOnce\.current\(async \(\) => \{\s*setBusy\(true\)/)
+    expect(src).toMatch(/\} finally \{ setBusy\(false\) \}/)
     expect(src).toMatch(/const reply = await agentPost\('\/actions\/position-close', withAcct\(\{ \.\.\.body, preview: true \}\)\)/)
   })
 })

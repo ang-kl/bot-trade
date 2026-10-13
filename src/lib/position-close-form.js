@@ -33,3 +33,20 @@ export async function closeFlow({ input, heldLots, heldText, symbol, side, posit
   const note = pv.lots !== req.lots ? `\n\n${req.lots} is not on the symbol's volume step: ${pv.lots} will close.` : ''
   return confirm(`Close ${symbol} ${side} ${pv.lots} of ${heldText} lots at market?${note}`) ? { body: { positionId, lots: pv.lots } } : { cancelled: true }
 }
+
+/**
+ * Codex P1 #2 on #1354 (owner: "Lock from preview to done"): the Close was
+ * unlocked while its preview was in flight, so a second tap could raise a
+ * second confirm and send a second real close. A single-flight guard: while
+ * one call runs, another returns { skipped: true } without running; the lock
+ * is released when the call finishes, is cancelled or throws. Held in a ref,
+ * not React state, because two taps in one tick both read state as unlocked.
+ */
+export function singleFlight() {
+  let inFlight = false
+  return async (fn) => {
+    if (inFlight) return { skipped: true }
+    inFlight = true
+    try { return await fn() } finally { inFlight = false }
+  }
+}

@@ -3,7 +3,7 @@
 // `lots` and closes min(lots, held) (actions.js); the sheet sent none, so its
 // Close was always the whole position. An empty field keeps that behaviour.
 import { describe, it, expect } from 'vitest'
-import { closeRequest, closeFlow } from './position-close-form.js'
+import { closeRequest, closeFlow, singleFlight } from './position-close-form.js'
 
 describe('closeRequest — the sheet\'s Close with an optional lots field', () => {
   it('empty field: the whole position, no lots sent', () => {
@@ -62,5 +62,32 @@ describe('closeFlow', () => {
     expect(await closeFlow({ ...base, input: '', preview: whole.preview, confirm: () => true })).toEqual({ body: { positionId: '55' } })
     expect(whole.calls).toEqual([])
     expect(calls.length).toBe(1)
+  })
+})
+
+// Codex P1 #2 on #1354 (owner: "Lock from preview to done").
+describe('singleFlight (the Close lock)', () => {
+  it('two overlapping taps on a slow preview send ONE close', async () => {
+    const once = singleFlight()
+    let release; const slow = new Promise(r => { release = r })
+    const sent = []
+    const tap = () => once(async () => {
+      const flow = await closeFlow({ input: '1', heldLots: 4.7, heldText: '4.70', symbol: 'EURUSD', side: 'BUY', positionId: '55',
+        preview: async () => { await slow; return { ok: true, preview: true, lots: 1, partial: true } }, confirm: () => true })
+      if (flow.body) sent.push(flow.body)
+      return flow
+    })
+    const first = tap(), second = tap()
+    expect(await second).toEqual({ skipped: true })
+    release()
+    await first
+    expect(sent).toEqual([{ positionId: '55', lots: 1 }])
+  })
+  it('the lock is released after a finish, a cancel and a throw', async () => {
+    const once = singleFlight()
+    expect(await once(async () => 'a')).toBe('a')
+    expect(await once(async () => ({ cancelled: true }))).toEqual({ cancelled: true })
+    await expect(once(async () => { throw new Error('preview refused') })).rejects.toThrow('preview refused')
+    expect(await once(async () => 'b')).toBe('b')
   })
 })

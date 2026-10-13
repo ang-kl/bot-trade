@@ -63,7 +63,7 @@ Source note: this inventory was derived in the isolated UI working copy based on
 
 <!-- Codex · №11,670 (codex-footprint: signals-ui-2026-10-07): generated from the pinned remote maina1a2f67 source plus candidate UI; local Git metadata unavailable. -->
 <!-- generated:start -->
-Derived by `node scripts/ui-control-inventory.mjs` at HEAD `58a32ed1` · 120 action call sites · 102 state routes read.
+Derived by `node scripts/ui-control-inventory.mjs` at HEAD `39721864` · 120 action call sites · 102 state routes read.
 
 Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in DECORATIVE_ALLOWLIST, one reason each).
 
@@ -87,14 +87,14 @@ Classes: WIRED 120 · HALF 0 · DECORATIVE 0 · ALLOWED 0 (named exceptions in D
 | 16 | `src/components/OrderLedger.jsx:115` | veto | `/actions/queued-veto` | `risk_config_json` ✓, via setState(db, …), executes | reload (heuristic) | WIRED |
 | 17 | `src/components/OrderManager.jsx:39` | cancel | `/actions/order-cancel` | executes | reload (heuristic) | WIRED |
 | 18 | `src/components/PositionChart.jsx:217` | (inline) | `/actions/chart` | executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 19 | `src/components/PositionManager.jsx:138` | (inline) | `/actions/position-guard-get` | read over POST — the reply is the value | the reply itself (heuristic) | WIRED |
-| 20 | `src/components/PositionManager.jsx:181` | applyProtectionNow | `/actions/position-protect` | executes | reload (heuristic) | WIRED |
-| 21 | `src/components/PositionManager.jsx:183` | applyProtectionNow | `/actions/position-protect` | executes | reload (heuristic) | WIRED |
-| 22 | `src/components/PositionManager.jsx:193` | (inline) | `/actions/position-guard` | executes | reload (heuristic) | WIRED |
-| 23 | `src/components/PositionManager.jsx:258` | Reverse | `/actions/position-double` | via recordPositionEvent(db, …), executes | reload (heuristic) | WIRED |
-| 24 | `src/components/PositionManager.jsx:261` | (inline) | `/actions/position-reverse` | via recordPositionEvent(db, …), executes | reload (heuristic) | WIRED |
-| 25 | `src/components/PositionManager.jsx:286` | Lots to close | `/actions/position-close` | via recordPositionEvent(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
-| 26 | `src/components/PositionManager.jsx:289` | (inline) | `/actions/position-close` | via recordPositionEvent(db, …), executes | reload (heuristic) | WIRED |
+| 19 | `src/components/PositionManager.jsx:141` | (inline) | `/actions/position-guard-get` | read over POST — the reply is the value | the reply itself (heuristic) | WIRED |
+| 20 | `src/components/PositionManager.jsx:184` | applyProtectionNow | `/actions/position-protect` | executes | reload (heuristic) | WIRED |
+| 21 | `src/components/PositionManager.jsx:186` | applyProtectionNow | `/actions/position-protect` | executes | reload (heuristic) | WIRED |
+| 22 | `src/components/PositionManager.jsx:196` | (inline) | `/actions/position-guard` | executes | reload (heuristic) | WIRED |
+| 23 | `src/components/PositionManager.jsx:261` | Reverse | `/actions/position-double` | via recordPositionEvent(db, …), executes | reload (heuristic) | WIRED |
+| 24 | `src/components/PositionManager.jsx:264` | (inline) | `/actions/position-reverse` | via recordPositionEvent(db, …), executes | reload (heuristic) | WIRED |
+| 25 | `src/components/PositionManager.jsx:292` | (inline) | `/actions/position-close` | via recordPositionEvent(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
+| 26 | `src/components/PositionManager.jsx:295` | (inline) | `/actions/position-close` | via recordPositionEvent(db, …), executes | reload (heuristic) | WIRED |
 | 27 | `src/components/RiskReassess.jsx:140` | appliedKeysStr | `/actions/risk-config` | `risk_config_json` ✓, dynamic key(s) — per-account/overlay write, via setState(db, …) | reload (heuristic) | WIRED |
 | 28 | `src/components/RiskReassess.jsx:152` | run | `/actions/risk-reassess` | via runReassessment(db, …), executes | the reply — route returns the effective value (heuristic) | WIRED |
 | 29 | `src/components/RiskReassess.jsx:178` | (inline) | `/actions/risk-reassess-apply` | `risk_config_json` ✓, via setState(db, …), markApplied(db, …), executes | reload (heuristic) | WIRED |
