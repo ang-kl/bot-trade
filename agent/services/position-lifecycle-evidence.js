@@ -358,13 +358,15 @@ export function sweepCandidate(db, accountId, cls, { now = Date.now() } = {}) {
     // those with no fill from their deals come first.
     // № 14,349 (Codex P2 round 2 on #1360): least recently read first, so a
     // long list of open positions is read round-robin rather than the same
-    // newest ones each window; never-read positions before any read one.
+    // newest ones each window; never-read positions before any read one. The
+    // source bucket only breaks ties (round 3): positions that can never get a
+    // deal fill (no lot size) must not starve the others.
     return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
       WHERE t.account_id = @acct AND t.status = 'open' AND CAST(t.ctrader_position_id AS INTEGER) > 0
         AND ${NOT_RECENT(PID_SQL('t.ctrader_position_id'))}
-      ORDER BY (COALESCE(t.filled_volume_source, '') = 'broker_opening_deals') ASC,
-        COALESCE((SELECT MAX(julianday(e.read_at), COALESCE(julianday(e.last_error_at), 0)) FROM position_lifecycle_evidence e
+      ORDER BY COALESCE((SELECT MAX(julianday(e.read_at), COALESCE(julianday(e.last_error_at), 0)) FROM position_lifecycle_evidence e
           WHERE e.account_id = @acct AND e.position_id = ${PID_SQL('t.ctrader_position_id')}), 0) ASC,
+        (COALESCE(t.filled_volume_source, '') = 'broker_opening_deals') ASC,
         t.id DESC LIMIT 1`).get(params) ?? null
   }
   if (cls === 'no_account') {

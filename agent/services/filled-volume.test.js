@@ -252,3 +252,24 @@ test('the filled sweep reads the least recently read open position first', async
   assert.deepEqual(order.slice(3, 6).sort(), ['7001', '7002', '7003'], JSON.stringify(order))
   assert.equal(ids.length, 3)
 })
+
+// № 14,350 (Codex P2 round 3 on #1360): a position that can never get a deal
+// fill (no declared lot size) does not starve one that has a deal fill.
+test('an unstampable position does not starve a deal-stamped one', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1, XAUUSD: 2 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  trade(db, { pid: '8001', symbol: 'EURUSD' })
+  trade(db, { pid: '8002', symbol: 'XAUUSD' }) // no lot size: never stampable
+  const answer = pid => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: [{ dealId: Number(pid), orderId: 1, positionId: Number(pid),
+    symbolId: pid === '8001' ? 1 : 2, tradeSide: 1, dealStatus: 2, volume: 2_000_000, filledVolume: 2_000_000, executionPrice: 1.1,
+    executionTimestamp: Date.parse('2026-10-13T10:00:00Z') }] })
+  const t0 = Date.parse('2026-10-13T12:00:00Z'), order = []
+  for (let k = 0; order.length < 4 && k < 40; k++) {
+    const out = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0 + k * 31 * 60_000, getPositionDeals: async pid => answer(pid) })
+    if (out.class === 'filled') order.push(out.positionId)
+  }
+  assert.equal(order.filter(p => p === '8001').length, 2, JSON.stringify(order))
+  assert.equal(order.filter(p => p === '8002').length, 2, JSON.stringify(order))
+})
