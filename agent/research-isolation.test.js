@@ -227,14 +227,21 @@ test('no protected module LOADS a research module, even through the allowed impo
 // routes. Every function-level import that ENTERS research code must be one
 // of these; a new one anywhere fails here.
 export const RUNTIME_DOORS = [
-  { from: 'agent/services/performance-populations.js', fn: 'buildReport', to: 'agent/services/theory-gap.js' },
-  { from: 'agent/services/performance-populations.js', fn: 'buildReport', to: 'agent/services/exit-counterfactual-extended.js' },
-  { from: 'agent/routes/actions.js', fn: '<anonymous>', to: 'agent/services/tick-research-run.js' },
-  { from: 'agent/routes/actions.js', fn: '<anonymous>', to: 'agent/services/bar-form-research.js' },
+  { from: 'agent/services/performance-populations.js', fn: 'buildReport', route: null, to: 'agent/services/theory-gap.js' },
+  { from: 'agent/services/performance-populations.js', fn: 'buildReport', route: null, to: 'agent/services/exit-counterfactual-extended.js' },
+  // Codex P2 on #1355: each route callback is its own door (route named), so a
+  // second route importing the same module is a second, undeclared entrance.
+  { from: 'agent/routes/actions.js', fn: '<anonymous>', route: 'POST /tick-research', to: 'agent/services/tick-research-run.js' },
+  { from: 'agent/routes/actions.js', fn: '<anonymous>', route: 'POST /tick-research/abort', to: 'agent/services/tick-research-run.js' },
+  { from: 'agent/routes/actions.js', fn: '<anonymous>', route: 'POST /bar-form-research', to: 'agent/services/bar-form-research.js' },
+  { from: 'agent/routes/actions.js', fn: '<anonymous>', route: 'POST /bar-form-research/abort', to: 'agent/services/bar-form-research.js' },
   // the GET read routes for the same two jobs (status and results)
-  { from: 'agent/routes/state.js', fn: '<anonymous>', to: 'agent/services/tick-research-run.js' },
-  { from: 'agent/routes/state.js', fn: '<anonymous>', to: 'agent/services/bar-form-research.js' },
+  { from: 'agent/routes/state.js', fn: '<anonymous>', route: 'GET /bar-form-research-job', to: 'agent/services/bar-form-research.js' },
+  { from: 'agent/routes/state.js', fn: '<anonymous>', route: 'GET /bar-form-research', to: 'agent/services/bar-form-research.js' },
+  { from: 'agent/routes/state.js', fn: '<anonymous>', route: 'GET /tick-research-job', to: 'agent/services/tick-research-run.js' },
 ]
+// One door per site: file, function, Express route (for route callbacks) and target.
+export const doorKey = d => `${d.from} ${d.fn}()${d.route ? ` [${d.route}]` : ''} → ${d.to}`
 test('every run-time import that enters research code is a declared door, and each door still exists', () => {
   const entering = new Set([...RESEARCH_MODULES, ...RESEARCH_DOORS, 'agent/services/tick-research-run.js', 'agent/services/exit-counterfactual-extended.js'])
   const found = []
@@ -244,13 +251,12 @@ test('every run-time import that enters research code is a declared door, and ea
     for (const site of scan(abs).sites) {
       if (site.kind !== 'dynamic' || !site.spec.startsWith('.')) continue
       const to = relative(ROOT, resolve(dirname(abs), site.spec))
-      if (entering.has(to)) found.push({ from: rel, fn: site.fn, to })
+      if (entering.has(to)) found.push({ from: rel, fn: site.fn, route: site.route ?? null, to, line: site.line })
     }
   }
-  const key = d => `${d.from} ${d.fn}() → ${d.to}`
-  const undeclared = [...new Set(found.filter(f => !RUNTIME_DOORS.some(d => key(d) === key(f))).map(key))]
+  const undeclared = found.filter(f => !RUNTIME_DOORS.some(d => doorKey(d) === doorKey(f))).map(f => `${doorKey(f)} (line ${f.line})`)
   assert.deepEqual(undeclared, [], 'a function-level import entering research code must be a declared door')
-  for (const d of RUNTIME_DOORS) assert.ok(found.some(f => key(f) === key(d)), `declared door no longer exists: ${key(d)}`)
+  for (const d of RUNTIME_DOORS) assert.equal(found.filter(f => doorKey(f) === doorKey(d)).length, 1, `declared door must match exactly one site: ${doorKey(d)}`)
   // The worker door runs off the trading thread for a file database: isolatedReport
   // hands buildReport to a Worker on this same file (source check, comments
   // stripped — the thread choice has no injection point).
@@ -343,6 +349,8 @@ test('the timer probe detects every timer a module leaves armed, on each runtime
       timersNamed: ["import { setInterval as si } from 'node:timers'\nsi(() => {}, 1e6).unref()", 1],
       timersDefault: ["import t from 'node:timers'\nt.setTimeout(() => {}, 1e6).unref()", 1],
       two: ['setInterval(() => {}, 1e6); setTimeout(() => {}, 1e6)', 2],
+      // Codex P2 on #1355: a one-shot that re-arms itself through refresh()
+      refreshed: ['const t = setTimeout(() => t.refresh(), 1); t.unref()', 1],
       // Codex P2 on #1355: the promise API
       promisesTimeout: ["import { setTimeout as st } from 'node:timers/promises'\nst(1e6, undefined, { ref: false })", 1],
       promisesDefault: ["import tp from 'node:timers/promises'\ntp.setTimeout(1e6, undefined, { ref: false })", 1],
@@ -375,4 +383,22 @@ test('a declared file excuses only its declared site: a second import(variable) 
   const excused = unresolved.filter(u => declaredSite(rel, u)), caught = unresolved.filter(u => !declaredSite(rel, u))
   assert.equal(excused.length, 1)
   assert.deepEqual(caught.map(u => [u.fn, u.text]), [['sneak', 'import(p)']])
+})
+
+// Codex P2 on #1355: two route callbacks importing the same research module are
+// two sites; a require() inside a function is a run-time site like import().
+test('the scanner gives each route callback its own site, and records require() as a site', () => {
+  const src = `
+router.post('/bar-form-research', async (req, res) => { const m = await import('../services/bar-form-research.js'); res.json(m) })
+router.post('/sneak', async (req, res) => { const m = await import('../services/bar-form-research.js'); res.json(m) })
+export function late() { return require('../services/theory-gap.js') }
+const early = require('./x.js')`
+  const { sites } = moduleImports(src, 'agent/routes/actions.js')
+  const routes = sites.filter(x => x.spec === '../services/bar-form-research.js').map(x => x.route)
+  assert.deepEqual(routes, ['POST /bar-form-research', 'POST /sneak'])
+  const keys = routes.map(route => doorKey({ from: 'agent/routes/actions.js', fn: '<anonymous>', route, to: 'agent/services/bar-form-research.js' }))
+  assert.equal(new Set(keys).size, 2, 'two routes, two door keys')
+  assert.ok(!RUNTIME_DOORS.some(d => doorKey(d) === keys[1]), 'the /sneak route is not a declared door')
+  const req = sites.filter(x => x.via === 'require')
+  assert.deepEqual(req.map(x => [x.spec, x.kind, x.fn]), [['../services/theory-gap.js', 'dynamic', 'late'], ['./x.js', 'static', null]])
 })

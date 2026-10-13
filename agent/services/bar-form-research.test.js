@@ -142,7 +142,7 @@ test('the broker cross-check: the run names up to three of its symbols; at the e
   assert.match(barFormResearchView(db, { runId: r2.body.runId }).run.manifest.crossCheck.symbols[1].error, /no broker fetch available/)
 })
 
-const LIMITS = { workerMemoryMb: 2048, maxRuntimeMs: 3_600_000, maxTempBytes: 201_326_592, maxCells: 864, maxTransactionRows: 1000, maxPullsPerMinute: 30, maxSkippedTicksDelta: 0, maxBusyShare10m: 0.5, pollMs: 10 }
+const LIMITS = { workerMemoryMb: 2048, maxRuntimeMs: 3_600_000, maxTempBytes: 201_326_592, maxCells: 864, maxTransactionRows: 1000, maxPullsPerMinute: 30, maxSkippedTicksDelta: 0, maxBusyShare10m: 0.5, maxReadingAgeMs: 240_000, maxReadingAheadMs: 5_000, pollMs: 10 }
 const cfgWith = (over = {}, bf = {}) => { const r = loadResearchConfig(); return { ...r, barForm: { ...r.barForm, ...bf, limits: { ...r.barForm.limits, ...over } } } }
 
 test('amendment area 1: no declared limit, no run; the cell matrix is bounded before anything is pulled; the pass-record key is the fast monitor\'s', () => {
@@ -224,10 +224,14 @@ test('monitorVerdict names each unknown: absent, unreadable time, stale, missing
   assert.equal(monitorVerdict({ ...ok, at: '2026-10-13T05:56:00Z' }, now, max).ok, true, 'exactly 240 s is accepted')
   assert.equal(monitorVerdict({ ...ok, skippedTicks: null }, now, max).reason, 'monitor_field_unavailable')
   assert.equal(monitorVerdict({ ...ok, busyShare10m: null }, now, max).reason, 'monitor_field_unavailable')
+  // Codex P2 on #1355: dated ahead of the clock beyond the skew → refused; within it → accepted.
+  assert.equal(monitorVerdict({ ...ok, at: '2026-10-13T06:00:06Z' }, now, max, 5_000).reason, 'monitor_time_ahead')
+  assert.equal(monitorVerdict({ ...ok, at: '2026-10-13T06:00:05Z' }, now, max, 5_000).ok, true)
+  assert.equal(monitorVerdict({ ...ok, at: '2027-10-13T06:00:00Z' }, now, max, 5_000).reason, 'monitor_time_ahead', 'a year ahead is not fresh')
 })
 
 test('finding D: a run refuses to start without a fresh complete reading; a dry run is not refused; the checked-in limit is the heartbeat registry\'s', async () => {
-  const cases = [[null, 'monitor_unavailable'], [reading({ at: 'x' }), 'monitor_time_unreadable'], [reading({ at: new Date(Date.now() - 241_000).toISOString() }), 'monitor_stale'], [reading({}, { skippedTicks: null }), 'monitor_field_unavailable']]
+  const cases = [[null, 'monitor_unavailable'], [reading({ at: 'x' }), 'monitor_time_unreadable'], [reading({ at: new Date(Date.now() + 3_600_000).toISOString() }), 'monitor_time_ahead'], [reading({ at: new Date(Date.now() - 241_000).toISOString() }), 'monitor_stale'], [reading({}, { skippedTicks: null }), 'monitor_field_unavailable']]
   for (const [rec, code] of cases) {
     const db = fresh()
     if (rec == null) db.prepare('DELETE FROM agent_state WHERE key = ?').run(FAST_MONITOR_PASS_KEY); else setState(db, FAST_MONITOR_PASS_KEY, rec)

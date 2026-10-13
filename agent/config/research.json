@@ -59,6 +59,8 @@
         "maxSkippedTicksDelta": 0,
         "maxBusyShare10m": 0.5,
         "maxReadingAgeMs": 240000,
+        "maxReadingAheadMs": 5000,
+        "_maxReadingAheadMsNote": "Claude · 13-Oct (Codex P2 on #1355): how far ahead of this process's clock a fast-monitor reading may be dated and still count. The reading is written by the same Node process (fast-monitor.js), so its clock is ours; 5 s covers a write landing between our clock read and the record's stamp. Further ahead is refused as monitor_time_ahead — a corrupt or clock-corrected record, never fresh evidence.",
         "_maxReadingAgeMsNote": "Claude · № 14,078+ 13-Oct (NASA finding D): the oldest fast-monitor reading a run accepts. 240 s is the freshness the heartbeat registry already declares for this same record (agent/services/heartbeat.js protection_band effect fast_monitor_pass_json maxAgeSec 240: the band writes every 60 s, the tick path every 5 s). Older, absent or incomplete readings refuse the start or abort the run as unknown."
       },
       "pollMs": 30000

@@ -32,7 +32,11 @@ const wrap = (name, oneShot) => {
     const run = typeof cb === 'function' ? function (...a) { if (oneShot) live.delete(id); return cb.apply(this, a) } : cb
     const h = orig.call(this, run, ...rest)
     live.set(id, { kind: name, h })
-    if (h && typeof h === 'object') h.__probeId = id
+    if (h && typeof h === 'object') {
+      h.__probeId = id
+      // Codex P2 on #1355: a fired one-shot re-armed by refresh() is pending again.
+      if (typeof h.refresh === 'function') { const refresh = h.refresh.bind(h); h.refresh = () => { live.set(id, { kind: name, h }); return refresh() } }
+    }
     return h
   }
   globalThis[name] = timers[name] = f

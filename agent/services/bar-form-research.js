@@ -40,7 +40,7 @@ export const MAX_SEGMENT_NAMES = 400
 export const JOB_WHAT = 'bar-form research'
 /** The fast monitor's pass record (services/fast-monitor.js PASS_RECORD_KEY; the test pins the two equal): skipped ticks and busy share, read before, during and after a run. */
 export const FAST_MONITOR_PASS_KEY = 'fast_monitor_pass_json'
-export const LIMIT_KEYS = Object.freeze(['workerMemoryMb', 'maxRuntimeMs', 'maxTempBytes', 'maxCells', 'maxTransactionRows', 'maxPullsPerMinute', 'maxSkippedTicksDelta', 'maxBusyShare10m', 'maxReadingAgeMs', 'pollMs'])
+export const LIMIT_KEYS = Object.freeze(['workerMemoryMb', 'maxRuntimeMs', 'maxTempBytes', 'maxCells', 'maxTransactionRows', 'maxPullsPerMinute', 'maxSkippedTicksDelta', 'maxBusyShare10m', 'maxReadingAgeMs', 'maxReadingAheadMs', 'pollMs'])
 
 /** The fast monitor's current figures, or null when the record is absent/unreadable. */
 export function fastMonitorReading(db) {
@@ -66,13 +66,18 @@ export function fastMonitorReading(db) {
  *   monitor_unavailable      no pass record (absent or unreadable)
  *   monitor_time_unreadable  the record carries no parseable `at`
  *   monitor_stale            the record is older than maxReadingAgeMs
+ *   monitor_time_ahead       the record is dated more than maxReadingAheadMs ahead of the clock
  *   monitor_field_unavailable skippedTicks or busyShare10m is not a number
  */
-export function monitorVerdict(reading, nowMs, maxReadingAgeMs) {
+export function monitorVerdict(reading, nowMs, maxReadingAgeMs, maxReadingAheadMs = 0) {
   if (!reading) return { ok: false, reason: 'monitor_unavailable', readingAt: null, ageMs: null }
   const atMs = typeof reading.at === 'string' ? Date.parse(reading.at) : NaN
   if (!Number.isFinite(atMs)) return { ok: false, reason: 'monitor_time_unreadable', readingAt: reading.at ?? null, ageMs: null }
   const ageMs = nowMs - atMs
+  // Codex P2 on #1355: a reading dated ahead of the clock (clock correction, a
+  // corrupt record) has a negative age and would read as fresh for as long as
+  // the offset lasts; beyond the declared skew it is refused.
+  if (ageMs < -maxReadingAheadMs) return { ok: false, reason: 'monitor_time_ahead', readingAt: reading.at, ageMs }
   if (!(ageMs <= maxReadingAgeMs)) return { ok: false, reason: 'monitor_stale', readingAt: reading.at, ageMs }
   if (reading.skippedTicks == null || reading.busyShare10m == null) return { ok: false, reason: 'monitor_field_unavailable', readingAt: reading.at, ageMs }
   return { ok: true, reason: null, readingAt: reading.at, ageMs }
@@ -215,7 +220,7 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   // its baseline is what every later reading is compared against.
   const startReading = plan.dryRun ? null : fastMonitorReading(db)
   if (!plan.dryRun) {
-    const v = monitorVerdict(startReading, clock(), plan.limits.maxReadingAgeMs)
+    const v = monitorVerdict(startReading, clock(), plan.limits.maxReadingAgeMs, plan.limits.maxReadingAheadMs)
     if (!v.ok) return refuse(409, v.reason, `the fast monitor's reading is required before a run (${v.reason}); the run's limits cannot be checked without it`, { readingAt: v.readingAt, ageMs: v.ageMs, maxReadingAgeMs: plan.limits.maxReadingAgeMs })
   }
   const runId = randomUUID().slice(0, 12)
@@ -237,7 +242,7 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   // the last poll must not let the run end 'done'). An absent, stale or
   // incomplete reading is UNKNOWN, and unknown is a breach — never "within limits".
   const judge = (r, nowMs) => {
-    const v = monitorVerdict(r, nowMs, plan.limits.maxReadingAgeMs)
+    const v = monitorVerdict(r, nowMs, plan.limits.maxReadingAgeMs, plan.limits.maxReadingAheadMs)
     const at = new Date(nowMs).toISOString()
     if (!v.ok) return { v, breach: { limit: v.reason, declared: plan.limits.maxReadingAgeMs, observed: v.ageMs, readingAt: v.readingAt, at } }
     const before = j.receipt.before

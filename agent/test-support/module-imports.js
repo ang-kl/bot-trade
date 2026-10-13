@@ -47,6 +47,13 @@ export function moduleImports(src, file = '<source>', { loaders = [], specProps 
   }
   const specs = [], unresolved = [], declared = [], sites = []
   const fnStack = []
+  // Codex P2 on #1355: an anonymous route callback has no function name, so a
+  // run-time import also records the Express route it sits in
+  // (router.post('/path', …)) — two entrances into the same module from two
+  // routes are two sites, not one.
+  const routeStack = []
+  const fnNow = () => fnStack.length ? fnStack[fnStack.length - 1] : null
+  const routeNow = () => routeStack.length ? routeStack[routeStack.length - 1] : null
   const note = (kind, node) => unresolved.push({ kind, line: node.loc.start.line, fn: fnStack.length ? fnStack[fnStack.length - 1] : null, text: src.slice(node.start, node.end).slice(0, 120) })
   const visit = (node) => {
     if (!node || typeof node.type !== 'string') return
@@ -59,13 +66,15 @@ export function moduleImports(src, file = '<source>', { loaders = [], specProps 
         break
       case 'ImportExpression': {
         const s = fixed(node.source)
-        if (s != null) { specs.push(s); sites.push({ spec: s, kind: 'dynamic', fn: fnStack.length ? fnStack[fnStack.length - 1] : null, line: node.loc.start.line }) } else note('import()', node)
+        if (s != null) { specs.push(s); sites.push({ spec: s, kind: 'dynamic', fn: fnNow(), route: routeNow(), line: node.loc.start.line }) } else note('import()', node)
         break
       }
       case 'CallExpression':
         if (node.callee.type === 'Identifier' && node.callee.name === 'require') {
+          // Codex P2 on #1355: a require() is a site like import(): at load
+          // when at module top level, at run time inside a function.
           const s = fixed(node.arguments[0])
-          if (s != null) specs.push(s); else note('require()', node)
+          if (s != null) { specs.push(s); sites.push({ spec: s, kind: fnStack.length ? 'dynamic' : 'static', via: 'require', fn: fnNow(), route: routeNow(), line: node.loc.start.line }) } else note('require()', node)
         } else if (node.callee.type === 'Identifier' && loaders.includes(node.callee.name)) {
           const s = fixed(node.arguments[0])
           if (s != null) { specs.push(s); declared.push(s) } else note(`${node.callee.name}()`, node)
@@ -80,6 +89,9 @@ export function moduleImports(src, file = '<source>', { loaders = [], specProps 
     }
     const isFn = /^(FunctionDeclaration|FunctionExpression|ArrowFunctionExpression)$/.test(node.type)
     if (isFn) fnStack.push(node.id?.name ?? '<anonymous>')
+    const route = node.type === 'CallExpression' && node.callee.type === 'MemberExpression' && !node.callee.computed
+      && /^(get|post|put|patch|delete|all|use)$/.test(node.callee.property.name) ? fixed(node.arguments[0]) : null
+    if (route != null) routeStack.push(`${node.callee.property.name.toUpperCase()} ${route}`)
     for (const key of Object.keys(node)) {
       if (key === 'loc' || key === 'start' || key === 'end') continue
       const v = node[key]
@@ -87,6 +99,7 @@ export function moduleImports(src, file = '<source>', { loaders = [], specProps 
       else if (v && typeof v.type === 'string') visit(v)
     }
     if (isFn) fnStack.pop()
+    if (route != null) routeStack.pop()
   }
   visit(ast)
   return { specs, unresolved, declared, sites }
