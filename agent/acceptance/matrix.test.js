@@ -25,31 +25,69 @@ const matrix = JSON.parse(readFileSync(new URL('./matrix.json', import.meta.url)
 // covered cell could slide back to a gap unseen. Every change edits this.
 const GAP_COUNT = 41
 
-// Claude · № 14,558 14-Oct (Codex P2 on #1366; claude-builder). The titles a
+// Claude · № 14,558 14-Oct (Codex P2s on #1366; claude-builder). The titles a
 // test file DECLARES, read from its syntax tree (acorn, as module-imports.js
 // does): a call to test(...) or it(...), or a subtest t.test(...), whose title
 // is a fixed string. A commented-out declaration, a title inside a string and
 // test.skip / test.todo are not declarations, so a receipt that no longer runs
-// turns this red. A file that does not parse throws (named).
+// turns this red. A parameterised title (`F1 ${name}: …` inside
+// `for (const [name, c] of Object.entries(CASES))`) is EXPANDED, one title per
+// case the file's own table holds, so a receipt names its case and removing
+// that case from the table turns this red; a placeholder this cannot resolve
+// declares nothing. A file that does not parse throws (named).
+const MAX_EXPANSION = 1000
 function declaredTitles(src, file = 'source') {
   let ast
   try { ast = acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true, allowAwaitOutsideFunction: true }) } catch (e) { throw new Error(`${file} does not parse: ${e.message}`) }
-  const titles = new Set()
-  // A parameterised title (`F1 ${name}: …`, run once per name) is cited by its template text as written.
-  const title = n => n?.type === 'Literal' && typeof n.value === 'string' ? n.value
-    : n?.type === 'TemplateLiteral' ? (n.expressions.length === 0 ? n.quasis[0].value.cooked : src.slice(n.start + 1, n.end - 1)) : null
+  const consts = new Map()
+  for (const n of ast.body) {
+    const d = n.type === 'ExportNamedDeclaration' ? n.declaration : n
+    if (d?.type === 'VariableDeclaration' && d.kind === 'const') for (const v of d.declarations) if (v.id.type === 'Identifier' && v.init) consts.set(v.id.name, v.init)
+  }
+  const lit = n => n?.type === 'Literal' && (typeof n.value === 'string' || typeof n.value === 'number') ? String(n.value) : null
+  const deref = n => n?.type === 'Identifier' && consts.has(n.name) ? consts.get(n.name) : n
+  const keysOf = o => o?.type === 'ObjectExpression' && o.properties.every(p => p.type === 'Property' && !p.computed)
+    ? o.properties.map(p => p.key.type === 'Identifier' ? p.key.name : lit(p.key)) : null
+  const itemsOf = a => a?.type === 'ArrayExpression' && a.elements.every(e => lit(e) != null) ? a.elements.map(lit) : null
+  // The names a for-of binds and the values each takes, or null when not resolvable.
+  const loopBinding = f => {
+    const left = f.left.type === 'VariableDeclaration' ? f.left.declarations[0].id : null
+    const r = f.right
+    const objectCall = r.type === 'CallExpression' && r.callee.type === 'MemberExpression' && r.callee.object.name === 'Object' && ['entries', 'keys'].includes(r.callee.property.name)
+    const values = objectCall ? keysOf(deref(r.arguments[0])) : itemsOf(deref(r))
+    if (!values || !left) return null
+    if (left.type === 'Identifier' && !(objectCall && r.callee.property.name === 'entries')) return [left.name, values]
+    if (left.type === 'ArrayPattern' && objectCall && r.callee.property.name === 'entries' && left.elements[0]?.type === 'Identifier') return [left.elements[0].name, values]
+    return null
+  }
+  const titlesOf = (n, scope) => {
+    if (n?.type === 'Literal' && typeof n.value === 'string') return [n.value]
+    if (n?.type !== 'TemplateLiteral') return []
+    let out = [n.quasis[0].value.cooked]
+    for (let i = 0; i < n.expressions.length; i++) {
+      const e = n.expressions[i]
+      const vals = e.type === 'Identifier' && scope.has(e.name) ? scope.get(e.name) : lit(deref(e)) != null ? [lit(deref(e))] : null
+      if (!vals) return []
+      out = out.flatMap(t => vals.map(v => t + v + n.quasis[i + 1].value.cooked))
+      if (out.length > MAX_EXPANSION) return []
+    }
+    return out
+  }
   const isDecl = c => (c.type === 'Identifier' && (c.name === 'test' || c.name === 'it')) ||
     (c.type === 'MemberExpression' && !c.computed && c.property.name === 'test' && c.object.type === 'Identifier' && c.object.name !== 'test' && c.object.name !== 'it')
-  const walk = n => {
+  const titles = new Set()
+  const walk = (n, scope) => {
     if (!n || typeof n.type !== 'string') return
-    if (n.type === 'CallExpression' && isDecl(n.callee)) { const t = title(n.arguments[0]); if (t != null) titles.add(t) }
+    if (n.type === 'CallExpression' && isDecl(n.callee)) for (const t of titlesOf(n.arguments[0], scope)) titles.add(t)
+    let inner = scope
+    if (n.type === 'ForOfStatement') { const b = loopBinding(n); if (b) inner = new Map([...scope, b]) }
     for (const k of Object.keys(n)) {
       if (k === 'type' || k === 'start' || k === 'end') continue
       const v = n[k]
-      if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') walk(v)
+      if (Array.isArray(v)) v.forEach(x => walk(x, inner)); else if (v && typeof v === 'object') walk(v, inner)
     }
   }
-  walk(ast)
+  walk(ast, new Map())
   return titles
 }
 const titlesByFile = new Map()
@@ -96,7 +134,10 @@ test('NASA-5 matrix: the receipt check can fail — an absent, commented-out, sk
     "import test from 'node:test'",
     "test('it\\'s here', () => {})",
     "test(`template`, () => {})",
-    "for (const name of ['a']) test(`each ${name} runs`, () => {})",
+    "const CASES = { 'first case': {}, second: {} }",
+    "for (const [name, c] of Object.entries(CASES)) test(`each ${name} runs`, () => {})",
+    "for (const n of ['x', 'y']) test(`item ${n}`, () => {})",
+    "test(`unresolved ${somethingElse}`, () => {})",
     "test('outer', async t => { await t.test('a subtest', () => {}) })",
     "// test('commented out', () => {})",
     "/* test('block commented', () => {}) */",
@@ -104,6 +145,6 @@ test('NASA-5 matrix: the receipt check can fail — an absent, commented-out, sk
     "test.skip('skipped', () => {})",
     "test.todo('todo')",
   ].join('\n'))
-  assert.deepEqual([...t].sort(), ["a subtest", 'each ${name} runs', "it's here", 'outer', 'template'])
+  assert.deepEqual([...t].sort(), ["a subtest", 'each first case runs', 'each second runs', "it's here", 'item x', 'item y', 'outer', 'template'])
   assert.throws(() => declaredTitles('test(', 'broken.test.js'), /broken\.test\.js does not parse/)
 })

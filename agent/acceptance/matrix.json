@@ -853,7 +853,7 @@
       "receipts": [
         {
           "file": "agent/services/closer-horizon-deferral.test.js",
-          "title": "F1 ${name}: a partial or rank close in flight defers this pass, and says why; the beat is not failed by it"
+          "title": "F1 profit keeper (close at takeProfitUsd): a partial or rank close in flight defers this pass, and says why; the beat is not failed by it"
         }
       ]
     },
@@ -922,7 +922,7 @@
       "receipts": [
         {
           "file": "agent/services/closer-horizon-deferral.test.js",
-          "title": "F1 ${name}: another account's plan on the same position number does not defer"
+          "title": "F1 profit keeper (close at takeProfitUsd): another account's plan on the same position number does not defer"
         }
       ]
     },
@@ -933,7 +933,7 @@
       "receipts": [
         {
           "file": "agent/services/closer-horizon-deferral.test.js",
-          "title": "F1 ${name}: a partial or rank close in flight defers this pass, and says why; the beat is not failed by it"
+          "title": "F1 weekend bank (pre-closure bank): a partial or rank close in flight defers this pass, and says why; the beat is not failed by it"
         }
       ]
     },
