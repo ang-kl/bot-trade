@@ -922,6 +922,15 @@ export default function Desk() {
               }}>{labelBackfillBusy ? 'Recovering…' : 'Recover strategy labels'}</Button>
               {labelBackfillNote && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{labelBackfillNote}</span>}
             </div>
+            {/* Claude · № 13,901 13-Oct (owner: "Are they in sync?"; claude-builder).
+                Status is the same Auto Trade & Open switch the order loop
+                checks for each account, and the card says which scope. */}
+            {alphaDecay.armedScope && (
+              <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">
+                Status is the <strong>Auto Trade &amp; Open</strong> switch in Tune for{' '}
+                <strong>{alphaDecay.armedScope === 'all enabled accounts' ? 'all enabled accounts (on in n of N)' : alphaDecay.armedScope === 'global default' ? 'the global default' : alphaDecay.armedScope}</strong>.
+              </p>
+            )}
             {(alphaDecay.strategies?.length ?? 0) === 0 && (
               <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No closed trades yet — decay is measured from live results; <Link to="/tune" className="text-[var(--color-accent)] underline">arm burn-in in Tune</Link> to build the sample fastest.</p>
             )}
@@ -963,7 +972,11 @@ export default function Desk() {
                           <td className="py-1 pr-3">
                             {un
                               ? <span className="text-[var(--color-text-sub)]">manual</span>
-                              : <Badge tone={s2.armed ? 'on' : 'off'}>{s2.armed ? 'ARMED' : 'OFF'}</Badge>}
+                              : s2.registered === false
+                                ? <span className="text-[var(--color-text-sub)]" title="No Auto Trade switch governs this strategy">n/a</span>
+                              : alphaDecay.armedScope === 'all enabled accounts' && s2.armedOn
+                                ? <Badge tone={s2.armed ? 'on' : 'off'}>{`ON ${s2.armedOn.on}/${s2.armedOn.of}`}</Badge>
+                                : <Badge tone={s2.armed ? 'on' : 'off'}>{s2.armed ? 'ARMED' : 'OFF'}</Badge>}
                           </td>
                           <td className={`py-1 pr-3 text-right ${!traded ? 'text-[var(--color-text-sub)]' : s2.netPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                             {traded ? `${s2.netPnl >= 0 ? '+' : '−'}$${Math.abs(s2.netPnl).toFixed(2)}` : '—'}
