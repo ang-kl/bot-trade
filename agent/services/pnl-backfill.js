@@ -719,11 +719,20 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   //
   // Filling a NULL from broker truth is the opposite of inventing. What we
   // still refuse to do is OVERWRITE a price that is present and unflagged.
+  //
+  // Claude · № 13,904 13-Oct (owner: audit fix "2 Exit price from deal";
+  // claude-builder). Below the executed-volume boundary a row that already
+  // HOLDS its money gets its empty exit too: four such rows on 13-10 (#1769,
+  // #1771, #1773, #1687) had the broker's net and no price, so no realised R.
+  // Only a NULL is filled; the price is weighted by executed closing
+  // quantity (closingExecutedQuantity), so it does not depend on the row's
+  // retained volume, and money, volume and present prices are never touched.
   const fillMissingExit = db.prepare(
     `UPDATE trades
         SET exit_price = ?
       WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
-        AND status = 'closed' AND exit_price IS NULL AND id > ${safeBoundary} ${scopeSql}`
+        AND status = 'closed' AND exit_price IS NULL
+        AND (id > ${safeBoundary} OR net_pnl IS NOT NULL) ${scopeSql}`
   )
   // ONE ROW PER BROKER POSITION (V3 B1, PR-1(b)). The window update and the
   // no-account claim wrote EVERY unpriced closed row of a position with the

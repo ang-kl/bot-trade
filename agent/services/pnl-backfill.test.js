@@ -982,3 +982,30 @@ test('B1: a window pass (no positionId, nothing on the broker) leaves a written-
   assert.equal(db.prepare('SELECT pnl_attempts FROM trades WHERE id = ?').get(ordinaryId).pnl_attempts, 4,
     'ordinary: the broad window sweep still charges it, exactly as before B1')
 })
+
+// Claude · № 13,904 13-Oct (owner: audit fix "2 Exit price from deal"; claude-builder).
+// Production 13-10: four closed trades below the executed-volume boundary
+// (#1769 JPYX, #1771 0003.HK, #1773 JPN225, #1687 ETHUSD) carry the broker's
+// money and no exit price, though their closing deals are on file with one;
+// they have no realised R. The fill was limited to rows above the boundary.
+test('a row below the volume boundary that HAS its money gets its empty exit price from the broker; its money, volume and present prices are untouched', async () => {
+  const db = initDB(':memory:')
+  db.prepare(
+    `INSERT INTO trades (id, symbol, side, status, ctrader_position_id, entry_price, exit_price, sl_price, volume, net_pnl, closed_at)
+     VALUES (50, 'JPYX', 'BUY', 'closed', '323802649', 689.4, NULL, 688.0, 9.54, 9.1, datetime('now','-1 day'))`
+  ).run()
+  db.prepare(
+    `INSERT INTO trades (id, symbol, side, status, ctrader_position_id, entry_price, exit_price, volume, net_pnl, closed_at)
+     VALUES (51, 'EURUSD', 'BUY', 'closed', '9104', 100, 101, 1, 50, datetime('now','-1 day'))`
+  ).run()
+  db.prepare(`INSERT OR REPLACE INTO agent_state (key, value) VALUES ('executed_volume_contract_1_trade_boundary', '100')`).run()
+  const r = await backfillClosedPnl(db, {}, { getDeals: dealsApi([pricedDeal(323802649, 910, 691.1, 9), pricedDeal(9104, 5000, 150, 1)]), now: NOW })
+  assert.equal(r.exitsFilled, 1, 'RED before: rows at or below the boundary were never filled')
+  const row = db.prepare('SELECT exit_price, net_pnl, volume, entry_price, realised_rr FROM trades WHERE id = 50').get()
+  assert.equal(row.exit_price, 691.1, 'the broker\'s closing price')
+  assert.equal(row.net_pnl, 9.1, 'money untouched')
+  assert.equal(row.volume, 9.54, 'retained volume untouched')
+  assert.equal(row.entry_price, 689.4)
+  assert.ok(Number.isFinite(row.realised_rr), 'the R is stamped now that the exit is known')
+  assert.equal(db.prepare('SELECT exit_price FROM trades WHERE id = 51').get().exit_price, 101, 'a present price below the boundary is never overwritten')
+})
