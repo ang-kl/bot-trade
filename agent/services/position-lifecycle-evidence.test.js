@@ -432,3 +432,43 @@ test('with nothing for the old reader, the pass runs one sweep step; the next pa
   await backfillAccountPnl(db, passCreds, { ...deps, clock: () => NOW + 10_000 })
   assert.equal(reads(), 1)
 })
+
+// Claude · № 14,475 14-Oct (owner: "fix the remaining follow-ups"; C·4;
+// claude-builder). A deal stored before rate capture (#1358) has no rates and
+// its position, receipted and agreeing, is in no other class. The 'rates'
+// class reads it once from its full history, which stores the broker's rates
+// (spotware ProtoOADeal marginRate / baseToUsdConversionRate) and marks the
+// rows; it is not read again. A position whose final verdict stores no
+// receipt is never picked: re-reading it cannot supply a rate. Figures
+// self-derived.
+test('C·4: a deal stored without rates is read once for them, and only once', async t => {
+  const db = fresh(t)
+  trade(db, { pid: '760', net: 1.5 })
+  const deal = db.prepare(`INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, side, lots, entry_price, close_price, closed_at, commission, net_pnl)
+    VALUES (?, ?, ?, 'EURUSD', 'BUY', 1, 1.1, 1.2, ?, -0.02, 1.5)`)
+  deal.run('7602', '760', DEMO, iso(NOW - 29 * DAY).replace('T', ' ').slice(0, 19))
+  // A second position whose final verdict stored no receipt.
+  trade(db, { pid: '761', net: 1.5 })
+  deal.run('7612', '761', DEMO, iso(NOW - 29 * DAY).replace('T', ' ').slice(0, 19))
+  db.prepare(`INSERT INTO position_lifecycle_evidence (account_id, position_id, verdict, final, rules, read_at)
+    VALUES (?, '761', 'permanently_unsupported', 1, ?, ?)`).run(DEMO, EVIDENCE_RULES, iso(NOW - 2 * DAY))
+  const reads = []
+  const rated = hist(DEMO, [od(7601, 760, NOW - 30 * DAY, 100, { marginRate: 1.17, baseToUsdConversionRate: 1.17 }),
+    cd(7602, 760, NOW - 29 * DAY, 100, 150, { marginRate: 1.18, baseToUsdConversionRate: 1.18,
+      closePositionDetail: { grossProfit: 150, swap: 0, commission: -2, moneyDigits: 2, closedVolume: 100, entryPrice: 1.1, quoteToDepositConversionRate: 1 } })])
+  const out = await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW, getPositionDeals: async pid => { reads.push(pid); return rated } })
+  assert.deepEqual([out.state, out.class, out.positionId], ['read', 'rates', '760'], JSON.stringify(out))
+  const row = db.prepare('SELECT open_margin_rate, open_base_usd_rate, close_margin_rate, close_base_usd_rate, rates_read_at FROM broker_deals WHERE deal_id = ?').get('7602')
+  assert.deepEqual([row.open_margin_rate, row.open_base_usd_rate, row.close_margin_rate, row.close_base_usd_rate], [1.17, 1.17, 1.18, 1.18])
+  assert.ok(row.rates_read_at, 'marked as read from the full history')
+  const again = await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW + EVIDENCE_RETRY_MS + MIN, getPositionDeals: async pid => { reads.push(pid); return rated } })
+  assert.equal(again.state, 'no_candidate', JSON.stringify(again))
+  assert.deepEqual(reads, ['760'], 'read once; 761 never')
+  // № 14,495 (Codex P2 on #1364): a position with no local trade row is read too.
+  deal.run('7702', '770', DEMO, iso(NOW - 28 * DAY).replace('T', ' ').slice(0, 19))
+  const broker = await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW + 2 * EVIDENCE_RETRY_MS, getPositionDeals: async pid => { reads.push(pid); return hist(DEMO, [
+    od(7701, 770, NOW - 30 * DAY, 100, { marginRate: 1.17, baseToUsdConversionRate: 1.17 }),
+    cd(7702, 770, NOW - 28 * DAY, 100, 150, { marginRate: 1.18, baseToUsdConversionRate: 1.18 })]) } })
+  assert.deepEqual([broker.class, broker.positionId], ['rates', '770'], JSON.stringify(broker))
+  assert.equal(db.prepare('SELECT close_base_usd_rate FROM broker_deals WHERE deal_id = ?').get('7702').close_base_usd_rate, 1.18)
+})

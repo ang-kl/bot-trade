@@ -264,7 +264,18 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
       // marginRate (Base/Deposit) ÷ baseToUsdConversionRate (Base/USD) =
       // deposit per USD at the deal. A USD deposit needs none (1).
       const openRate = depositPerUsd(deposit, d.open_margin_rate, d.open_base_usd_rate)
-      const closeRate = depositPerUsd(deposit, d.close_margin_rate, d.close_base_usd_rate)
+      // Claude · № 14,475 14-Oct (owner: "fix the remaining follow-ups"; C·3,
+      // Codex's marginRate point on #1361; claude-builder). At the close the
+      // broker states rates at the deal's execution (spotware ProtoOADeal
+      // baseToUsdConversionRate, ProtoOAClosePositionDetail
+      // quoteToDepositConversionRate): deposit per USD = (deposit per quote) ÷
+      // (USD per quote = Base/USD ÷ price). That replaces marginRate there. The
+      // opening deal carries no execution-time deposit rate, so the open side
+      // keeps marginRate, and the close side measures how far marginRate's
+      // route sits from the execution-time one (marginOverExecution).
+      const closeExec = deposit != null && deposit !== 'USD' ? depositPerUsdAtExecution(d) : null
+      const closeMargin = depositPerUsd(deposit, d.close_margin_rate, d.close_base_usd_rate)
+      const closeRate = closeExec ?? closeMargin
       const rateReason = deposit != null && deposit !== 'USD' && (openRate == null || closeRate == null) ? 'deposit_rate_not_reported' : null
       let modelledDeposit = modelledDeal == null || rateReason ? null : open.usd * openRate + close.usd * closeRate
       // Claude · № 14,347 13-Oct (Codex P2 follow-up from #1358; claude-builder).
@@ -285,7 +296,9 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
         modelledDealUsd: quote?.deposit != null && deposit === 'USD' ? round(quote.deposit) : modelledDeal == null ? null : round(modelledDeal),
         modelledDealDeposit: modelledDeposit == null ? null : round(modelledDeposit),
         ...(quote ? { quoteToDeposit: quote.rates } : {}),
-        depositPerUsd: { open: round(openRate), close: round(closeRate), source: deposit === 'USD' ? 'usd_deposit' : 'broker_deal_rate' },
+        depositPerUsd: { open: round(openRate), close: round(closeRate), source: deposit === 'USD' ? 'usd_deposit' : 'broker_deal_rate',
+          ...(deposit != null && deposit !== 'USD' ? { openSource: 'margin_rate', closeSource: closeExec != null ? 'execution_rates' : 'margin_rate',
+            marginOverExecution: closeExec != null && closeMargin != null ? round(closeMargin / closeExec) : null } : {}) },
         // On a USD deposit the broker's own ratio must read 1: a check of how
         // the two rate fields are read, against the broker's deals.
         usdDepositRatio: deposit === 'USD' ? ratioOrNull(d.open_margin_rate, d.open_base_usd_rate, d.close_margin_rate, d.close_base_usd_rate) : null,
@@ -376,6 +389,11 @@ function quoteCurrencyDeposit(t, d, { deposit = null, openUsd = null, closeUsd =
     openSide = Math.max(openSide, minOpen); closeSide = Math.max(closeSide, minClose)
   }
   return out(openSide + closeSide, null, rates)
+}
+/** № 14,475 (C·3): deposit per USD at the closing deal's execution, or null when the broker stated no rate for it. */
+function depositPerUsdAtExecution(d) {
+  const quoteDeposit = rate(d.quote_deposit_rate), baseUsd = rate(d.close_base_usd_rate), price = rate(d.close_price)
+  return quoteDeposit != null && baseUsd != null && price != null ? quoteDeposit / (baseUsd / price) : null
 }
 function depositPerUsd(deposit, marginRate, baseUsdRate) {
   if (deposit === 'USD') return 1

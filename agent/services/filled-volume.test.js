@@ -154,14 +154,26 @@ test('an added opening fill clears the recorded fill; a later complete deal read
 // Claude · № 14,345 13-Oct (Codex P2s round 3 on #1359; claude-builder). A netted
 // reversal keeps the position id: no fill is derived from the mixed history,
 // and the reconciler's side flip clears the fill on record.
-test('a reversed position: no fill from its deals, and the side flip clears the recorded fill', () => {
+test('a reversed position: the new leg\'s fill from its deals, and the side flip clears the recorded fill', () => {
   const deal = (id, side, filled, closed = null) => ({ dealId: id, positionId: 5001, dealStatus: 2, tradeSide: side, filledVolume: filled,
     ...(closed != null ? { closePositionDetail: { closedVolume: closed } } : {}) })
-  assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 3000, 2000)] }, '5001', 1000).reason, 'position_reversed',
-    'one deal closes 2,000 and opens 1,000 the other way')
+  // № 14,475 (owner: "fix the remaining follow-ups"): the reversing deal's
+  // excess opens the new leg; the fill is the leg the position holds now.
+  assert.deepEqual(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 3000, 2000)] }, '5001', 1000), { lots: 1, reason: null },
+    'one deal closes 2,000 and opens 1,000 the other way: the new leg opened 1 lot')
   assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 2000, 2000), deal(3, 2, 1000)] }, '5001', 1000).reason, 'position_reversed',
     'opening deals on both sides')
   assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 1000, 1000)] }, '5001', 1000).lots, 2, 'a plain partial close is no reversal')
+  // Later opening deals on the new side add to the new leg, in execution order
+  // (the timestamps, not the order the answer lists them in); a partial close
+  // of the new leg does not reduce what it opened.
+  const at = (d, t) => ({ ...d, executionTimestamp: Date.parse('2026-10-13T10:00:00Z') + t * 60_000 })
+  assert.deepEqual(openingDealsFilledLots({ hasMore: false, deal: [at(deal(4, 2, 500), 4), at(deal(3, 1, 300, 300), 3), at(deal(2, 2, 3000, 2000), 2), at(deal(1, 1, 2000), 1)] }, '5001', 1000),
+    { lots: 1.5, reason: null }, 'leg 2 opened 1,000 by the reversal and 500 later; the 300 partial close does not count')
+  assert.equal(openingDealsFilledLots({ hasMore: false, deal: [at(deal(1, 1, 2000), 1), deal(2, 2, 3000, 2000)] }, '5001', 1000).reason, 'deal_order_unknown',
+    'a deal without an execution time leaves the order unknown')
+  assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 1000, 2000)] }, '5001', 1000).reason, 'position_reversed',
+    'a deal that closes more than it fills is not evidence')
   const db = initDB(':memory:')
   setState(db, 'ctrader_account_id', DEMO)
   rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
@@ -257,6 +269,42 @@ test('a final verdict on an open position does not stop the filled re-read', asy
   }
   assert.equal(later.class, 'filled', JSON.stringify(later))
   assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' })
+})
+
+// № 14,500 (Codex P2 round 2 on #1364; claude-builder). A reversed open
+// position: the money lifecycle refuses the history (a deal fills more than it
+// closes), and the sweep still stamps the new leg's fill from it.
+test('the sweep stamps a reversed open position\'s new leg though the money lifecycle refuses it', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const id = trade(db, { volume: 0.1 })
+  const t = Date.parse('2026-10-13T10:00:00Z')
+  const out = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: Date.parse('2026-10-13T12:00:00Z'),
+    getPositionDeals: async () => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: [
+      { dealId: 11, orderId: 21, positionId: 5001, symbolId: 1, tradeSide: 1, dealStatus: 2, volume: 2_000_000, filledVolume: 2_000_000, executionPrice: 1.1, executionTimestamp: t },
+      { dealId: 12, orderId: 22, positionId: 5001, symbolId: 1, tradeSide: 2, dealStatus: 2, volume: 3_000_000, filledVolume: 3_000_000, executionPrice: 1.11,
+        executionTimestamp: t + 60_000, closePositionDetail: { entryPrice: 1.1, grossProfit: 200, swap: 0, commission: 0, moneyDigits: 2, closedVolume: 2_000_000 } }] }) })
+  assert.equal(out.class, 'filled', JSON.stringify(out))
+  assert.equal(out.verdict.verdict ?? out.verdict, 'permanently_unsupported', 'the arrangement holds: the money lifecycle refuses it')
+  assert.deepEqual(filled(db, id), { v: 0.1, s: 'broker_opening_deals' }, 'the reversing deal opened 1,000,000 cents: 0.1 lots')
+})
+
+// № 14,505 (Codex P2 round 3 on #1364; claude-builder): an answer naming
+// another account is another account's position; nothing is stamped from it.
+test('the sweep never stamps a fill from an answer naming another account', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const id = trade(db, { volume: 0.2 })
+  const out = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: Date.parse('2026-10-13T12:00:00Z'),
+    getPositionDeals: async () => ({ ctidTraderAccountId: Number(LIVE), hasMore: false, deal: [
+      { dealId: 11, orderId: 21, positionId: 5001, symbolId: 1, tradeSide: 1, dealStatus: 2, volume: 9_000_000, filledVolume: 9_000_000, executionPrice: 1.1,
+        executionTimestamp: Date.parse('2026-10-13T10:00:00Z') }] }) })
+  assert.equal(out.class, 'filled')
+  assert.deepEqual(filled(db, id), { v: null, s: null })
 })
 
 // № 14,349 (Codex P2 round 2 on #1360; claude-builder): with more open

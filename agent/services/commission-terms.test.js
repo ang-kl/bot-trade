@@ -340,10 +340,29 @@ test('NASA-4: an SGD deposit is compared through each side\'s own broker rate (4
   const d = s.sample[0]
   assert.equal(d.modelledDealUsd, 0.14)
   assert.equal(d.modelledDealDeposit, 0.1791, '0.07 × 1.28014 + 0.07 × 1.27839')
-  assert.deepEqual(d.depositPerUsd, { open: 1.2801, close: 1.2784, source: 'broker_deal_rate' })
+  assert.deepEqual(d.depositPerUsd, { open: 1.2801, close: 1.2784, source: 'broker_deal_rate', openSource: 'margin_rate', closeSource: 'margin_rate', marginOverExecution: null })
   // Charged as if in USD (0.14) would disagree: the conversion is measured.
   db.prepare("UPDATE broker_deals SET commission=-0.14 WHERE deal_id='324214333'").run()
   assert.equal(commissionTermsCheck(db, '43097342', { days: 30, now: NOW }).symbols[0].agrees, false)
+})
+
+// Claude · № 14,475 14-Oct (owner: "fix the remaining follow-ups"; C·3;
+// claude-builder). The same USDSGD deal with the close side's execution-time
+// rates (spotware ProtoOAClosePositionDetail.quoteToDepositConversionRate: SGD
+// per SGD = 1; baseToUsdConversionRate: USD per USD = 1) and a slipped
+// marginRate (1.2800, not the 1.27839 fill): the close side uses the
+// execution-time route, 1 ÷ (1 ÷ 1.27839), and reports how far marginRate sat
+// from it. Self-derived figures on the real deal's prices.
+test('C·3: on an SGD deposit the close side uses the execution-time rates, not marginRate', () => {
+  const db = initDB(':memory:')
+  usdDeposit(db, '43097342', 'SGD')
+  deal(db, { id: '324214333', account: '43097342', symbol: 'USDSGD', lots: 0.02, entry: 1.28014, close: 1.27839, commission: -0.18 })
+  rates(db, '324214333', { openMargin: 1.28014, openBaseUsd: 1, closeMargin: 1.28, closeBaseUsd: 1 })
+  db.prepare("UPDATE broker_deals SET quote_deposit_rate = 1 WHERE deal_id = '324214333'").run()
+  storeCommissionTerms(db, '43097342', { symbol: [{ symbolId: 7, commissionType: 2, preciseTradingCommissionRate: 350_000_000 }] }, { 7: 'USDSGD' }, { now: NOW })
+  const d = commissionTermsCheck(db, '43097342', { days: 30, now: NOW }).symbols[0].sample[0]
+  assert.equal(d.modelledDealDeposit, 0.1791, '0.07 × 1.28014 + 0.07 × 1.27839; marginRate would give 0.1792')
+  assert.deepEqual(d.depositPerUsd, { open: 1.2801, close: 1.2784, source: 'broker_deal_rate', openSource: 'margin_rate', closeSource: 'execution_rates', marginOverExecution: 1.0013 })
 })
 
 test('NASA-4: one side without a broker rate is not compared and says so', () => {
