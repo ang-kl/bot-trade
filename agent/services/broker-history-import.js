@@ -210,7 +210,12 @@ function dealRates(close, open) {
     close_margin_rate: brokerRate(close?.marginRate),
     close_base_usd_rate: brokerRate(close?.baseToUsdConversionRate),
     quote_deposit_rate: brokerRate(cpd?.quoteToDepositConversionRate),
-    pnl_conversion_fee: brokerAmount(cpd?.pnlConversionFee, cpd?.moneyDigits),
+    // Claude · № 14,495 14-Oct (Codex P2 on #1364; claude-builder): protobuf
+    // JSON drops a zero, so an omitted fee on a closing deal with a valid
+    // money scale is a measured zero — the convention swap and commission
+    // already follow (deal-money.js, lifecycleBalance). An invalid one stays NULL.
+    pnl_conversion_fee: cpd && cpd.pnlConversionFee == null && Number.isInteger(cpd.moneyDigits) && cpd.moneyDigits >= 0 && cpd.moneyDigits <= 10
+      ? 0 : brokerAmount(cpd?.pnlConversionFee, cpd?.moneyDigits),
   }
 }
 export const DEAL_RATE_FIELDS = Object.freeze(['open_margin_rate', 'open_base_usd_rate', 'close_margin_rate',

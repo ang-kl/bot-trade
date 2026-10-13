@@ -559,6 +559,13 @@ test('NASA-4: closing rows carry each side\'s broker rates; a re-read without th
     quoteToDepositConversionRate: true, pnlConversionFee: 'x' } }], { 1: { symbolName: 'USDSGD', lotSize: 100000 } }, '43097342')
   assert.deepEqual([narrow.open_margin_rate, narrow.open_base_usd_rate, narrow.close_margin_rate, narrow.close_base_usd_rate, narrow.quote_deposit_rate, narrow.pnl_conversion_fee],
     [null, null, null, null, null, null], 'an absent opening deal and invalid values are NULL, never coerced')
+  // № 14,495 (Codex P2 on #1364): protobuf JSON drops a zero fee; with a valid
+  // money scale the omission is a measured zero, not an unread value.
+  const { pnlConversionFee: _omitted, ...noFee } = closing.closePositionDetail
+  const [zero] = shapeDeals([opening, { ...closing, closePositionDetail: noFee }], { 1: { symbolName: 'USDSGD', lotSize: 100000 } }, '43097342')
+  assert.equal(zero.pnl_conversion_fee, 0)
+  const [noScale] = shapeDeals([opening, { ...closing, closePositionDetail: { ...noFee, moneyDigits: undefined } }], { 1: { symbolName: 'USDSGD', lotSize: 100000 } }, '43097342')
+  assert.equal(noScale.pnl_conversion_fee, null, 'no money scale: not measured')
   const db = initDB(':memory:')
   persistDeals(db, [row])
   persistDeals(db, [narrow])

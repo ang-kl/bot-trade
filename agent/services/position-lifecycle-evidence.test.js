@@ -464,4 +464,11 @@ test('C·4: a deal stored without rates is read once for them, and only once', a
   const again = await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW + EVIDENCE_RETRY_MS + MIN, getPositionDeals: async pid => { reads.push(pid); return rated } })
   assert.equal(again.state, 'no_candidate', JSON.stringify(again))
   assert.deepEqual(reads, ['760'], 'read once; 761 never')
+  // № 14,495 (Codex P2 on #1364): a position with no local trade row is read too.
+  deal.run('7702', '770', DEMO, iso(NOW - 28 * DAY).replace('T', ' ').slice(0, 19))
+  const broker = await sweepLifecycleEvidence(db, creds(DEMO), { now: NOW + 2 * EVIDENCE_RETRY_MS, getPositionDeals: async pid => { reads.push(pid); return hist(DEMO, [
+    od(7701, 770, NOW - 30 * DAY, 100, { marginRate: 1.17, baseToUsdConversionRate: 1.17 }),
+    cd(7702, 770, NOW - 28 * DAY, 100, 150, { marginRate: 1.18, baseToUsdConversionRate: 1.18 })]) } })
+  assert.deepEqual([broker.class, broker.positionId], ['rates', '770'], JSON.stringify(broker))
+  assert.equal(db.prepare('SELECT close_base_usd_rate FROM broker_deals WHERE deal_id = ?').get('7702').close_base_usd_rate, 1.18)
 })

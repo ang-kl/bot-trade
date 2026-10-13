@@ -393,17 +393,17 @@ export function sweepCandidate(db, accountId, cls, { now = Date.now() } = {}) {
         t.id DESC LIMIT 1`).get(params) ?? null
   }
   if (cls === 'rates') {
+    // № 14,495 (Codex P2 on #1364): candidates come from the stored deals, so a
+    // position with no local trade row (a manual or lost fill) is read too.
     const window = new Date(now - RATES_WINDOW_DAYS * 86_400_000).toISOString().replace('T', ' ').slice(0, 19)
-    return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
-      WHERE t.account_id = @acct AND t.status = 'closed' AND CAST(t.ctrader_position_id AS INTEGER) > 0
-        AND EXISTS (SELECT 1 FROM broker_deals b WHERE b.account_id = @acct AND b.position_id = ${PID_SQL('t.ctrader_position_id')}
-          AND b.closed_at >= @window AND b.commission IS NOT NULL
-          AND (b.open_margin_rate IS NULL OR b.open_base_usd_rate IS NULL OR b.close_margin_rate IS NULL OR b.close_base_usd_rate IS NULL)
-          AND b.rates_read_at IS NULL)
-        AND NOT EXISTS (SELECT 1 FROM position_lifecycle_evidence e WHERE e.account_id = @acct AND e.position_id = ${PID_SQL('t.ctrader_position_id')}
+    return db.prepare(`SELECT MAX(b.matched_trade_id) AS id, ${PID_SQL('b.position_id')} AS pid FROM broker_deals b
+      WHERE b.account_id = @acct AND CAST(b.position_id AS INTEGER) > 0 AND b.closed_at >= @window AND b.commission IS NOT NULL
+        AND (b.open_margin_rate IS NULL OR b.open_base_usd_rate IS NULL OR b.close_margin_rate IS NULL OR b.close_base_usd_rate IS NULL)
+        AND b.rates_read_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM position_lifecycle_evidence e WHERE e.account_id = @acct AND e.position_id = ${PID_SQL('b.position_id')}
           AND e.final = 1 AND e.rules = @rules AND e.verdict IN (${NO_RECEIPT_FINALS.map(v => `'${v}'`).join(', ')}))
-        AND ${NOT_READ_RECENTLY(PID_SQL('t.ctrader_position_id'))}
-      ORDER BY t.id DESC LIMIT 1`).get({ ...params, window }) ?? null
+        AND ${NOT_READ_RECENTLY(PID_SQL('b.position_id'))}
+      GROUP BY 2 ORDER BY MAX(b.closed_at) DESC LIMIT 1`).get({ ...params, window }) ?? null
   }
   if (cls === 'no_account') {
     return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
