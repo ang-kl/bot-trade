@@ -351,11 +351,15 @@ export function sweepCandidate(db, accountId, cls, { now = Date.now() } = {}) {
       ORDER BY l.id DESC LIMIT 1`).get(params) ?? null
   }
   if (cls === 'filled') {
+    // № 14,348 (Codex P2 on #1360; claude-builder): a close and an equal add
+    // between two passes leave the net volume unchanged, so no volume delta
+    // can be relied on. Every open position is re-read here on the sweep's own
+    // cadence (at most once per position per 15 minutes, paced per account);
+    // those with no fill from their deals come first.
     return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
       WHERE t.account_id = @acct AND t.status = 'open' AND CAST(t.ctrader_position_id AS INTEGER) > 0
-        AND COALESCE(t.filled_volume_source, '') <> 'broker_opening_deals'
         AND ${NOT_RECENT(PID_SQL('t.ctrader_position_id'))}
-      ORDER BY t.id DESC LIMIT 1`).get(params) ?? null
+      ORDER BY (COALESCE(t.filled_volume_source, '') = 'broker_opening_deals') ASC, t.id DESC LIMIT 1`).get(params) ?? null
   }
   if (cls === 'no_account') {
     return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t

@@ -89,8 +89,8 @@ test('sweep: an open position with no recorded fill is read from its own deals a
     assert.deepEqual(reads, ['5001'], JSON.stringify(out))
     assert.equal(out.class, 'filled')
     assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' }, 'the deals say 0.2 lots filled, not the 0.25 sent')
-    // Once known from the deals, the position is no longer a candidate.
-    const again = await sweepLifecycleEvidence(db, { accountId: acct, host: 'h' }, { now: Date.now() + 3_600_000, getPositionDeals: async () => { throw Error('not read') } })
+    // Read again only after the retry interval (№ 14,348), never sooner.
+    const again = await sweepLifecycleEvidence(db, { accountId: acct, host: 'h' }, { now: Date.now() + 60_000, getPositionDeals: async () => { throw Error('not read') } })
     assert.notEqual(again.class, 'filled')
   }
 })
@@ -205,4 +205,28 @@ test('any broker volume change the reconciler sees clears the recorded fill', ()
       tradeData: { symbolId: 1, symbolName: 'EURUSD', tradeSide: 'BUY', volume: next, label: 'AP|v1|RSIM' } }], [], (k, v) => setState(db, k, v), { accountId: DEMO })
     assert.deepEqual(filled(db, id), { v: null, s: null }, `${next > 2_000_000 ? 'more' : 'less'} volume: read the deals again`)
   }
+})
+
+// № 14,348 (Codex P2 on #1360; claude-builder): a close and an equal-sized add
+// leave the net unchanged; the sweep re-reads open positions anyway (once per
+// 15 minutes each) and the later complete read replaces the earlier fill.
+test('an open position with a fill from its deals is read again after the retry interval', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const id = trade(db, { volume: 0.2 })
+  const answer = deals => async () => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: deals.map((v, i) => ({
+    dealId: 11 + i, orderId: 21 + i, positionId: 5001, symbolId: 1, tradeSide: 1, dealStatus: 2, volume: v, filledVolume: v,
+    executionPrice: 1.1, executionTimestamp: Date.parse('2026-10-13T10:00:00Z') + i * 60_000 })) })
+  const t0 = Date.parse('2026-10-13T12:00:00Z')
+  const first = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0, getPositionDeals: answer([2_000_000]) })
+  assert.equal(first.class, 'filled'); assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' })
+  // A close of 0.1 and an add of 0.1 later: the deals now hold two openings summing 0.3.
+  let later = null
+  for (let k = 1; k <= 4 && later?.class !== 'filled'; k++) {
+    later = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0 + 16 * 60_000 + k * 31_000, getPositionDeals: answer([2_000_000, 1_000_000]) })
+  }
+  assert.equal(later.class, 'filled', JSON.stringify(later))
+  assert.deepEqual(filled(db, id), { v: 0.3, s: 'broker_opening_deals' })
 })
