@@ -884,23 +884,32 @@ export default function stateRouter(db) {
     const readSnap = (key) => {
       const positions = new Map()
       let at = null
+      let present = false
+      let accountId = null
       try {
         const snap = JSON.parse(getState(db, key) || 'null')
+        if (snap && typeof snap === 'object') present = true
         at = snap?.fetchedAt ?? null
+        accountId = snap?.account?.accountId == null ? null : String(snap.account.accountId)
         for (const p of snap?.account?.positions || []) {
           if (p?.positionId != null) positions.set(String(p.positionId), p)
         }
       } catch { /* an unreadable cache enriches nothing; it never throws the list away */ }
-      return { positions, at }
+      return { positions, at, present, accountId }
     }
     globalSnap = readSnap('broker_snapshot_cache_json')
+    const noSnap = { positions: new Map(), at: null }
     for (const id of new Set(rows.map(r => (r.account_id == null ? null : String(r.account_id))))) {
       if (id == null) continue
       const s = readSnap(`acct:${id}:broker_snapshot_cache_json`)
-      // Fall back per account, not once globally: an account with no cache of
-      // its own is better served by the shared one than by nothing, and an
-      // account WITH one must never be read from another account's.
-      snapById.set(id, s.positions.size ? s : globalSnap)
+      // Claude · № 13,996 13-Oct (owner: Codex P2 #5 "Own snapshot for lots AND P&L"; claude-builder).
+      // An account's OWN snapshot is authoritative even when it holds no
+      // positions: position ids repeat across the demo and live servers, so the
+      // shared snapshot (the SELECTED account's) is never this row's evidence.
+      // With no cache of its own, the shared one stands in only when it names
+      // this account (or names none: a cache written before it carried one).
+      const sharedIsOwn = globalSnap.accountId == null || globalSnap.accountId === id
+      snapById.set(id, s.present ? s : (sharedIsOwn ? globalSnap : noSnap))
     }
     let isOpenFn = null
     try { isOpenFn = (await import('../services/symbol-hours.js')).isSymbolOpenCached } catch { isOpenFn = null }
