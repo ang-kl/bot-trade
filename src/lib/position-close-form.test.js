@@ -114,3 +114,16 @@ describe('closeFlow with a stale held size', () => {
     expect(texts[0]).toMatch(/whole position/)
   })
 })
+
+// Codex round 4 on #1354 (owner: "4th round, then merge"): the sheet closed
+// while the preview was in flight — no confirm, nothing sent.
+describe('closeFlow after the sheet is dismissed', () => {
+  it('a preview that returns after dismissal asks nothing and sends nothing', async () => {
+    let isOpen = true
+    const preview = async () => { isOpen = false; return { ok: true, preview: true, lots: 1, partial: true } } // dismissed meanwhile
+    let asked = false
+    const r = await closeFlow({ heldLots: 4.7, heldText: '4.70', symbol: 'EURUSD', side: 'BUY', positionId: '55', input: '1', preview, confirm: () => { asked = true; return true }, open: () => isOpen })
+    expect(r).toEqual({ cancelled: true, dismissed: true })
+    expect(asked).toBe(false)
+  })
+})

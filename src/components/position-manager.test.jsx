@@ -51,6 +51,10 @@ describe('PositionManager partial close', () => {
     // Codex P1 #2: the whole close runs inside the single-flight lock, busy from the start.
     expect(src).toMatch(/onClick=\{\(\) => closeOnce\.current\(async \(\) => \{\s*setBusy\(true\)/)
     expect(src).toMatch(/\} finally \{ setBusy\(false\) \}/)
+    // Codex round 4: the flow is told whether the sheet is still open, and the send re-checks it.
+    expect(src).toMatch(/open: \(\) => sheetOpen\.current \}\)/)
+    expect(src).toMatch(/if \(flow\.cancelled \|\| !sheetOpen\.current\) return/)
+    expect(src).toMatch(/return \(\) => \{ sheetOpen\.current = false \}/)
     expect(src).toMatch(/const reply = await agentPost\('\/actions\/position-close-preview', withAcct\(body\)\)/)
   })
 })

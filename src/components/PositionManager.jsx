@@ -107,6 +107,9 @@ export default function PositionManager({ p, onDone, initialTab = 'Modify' }) {
   // Codex P1 #2 on #1354: one close at a time, from the preview to the reply.
   const closeOnce = useRef(null)
   if (!closeOnce.current) closeOnce.current = singleFlight()
+  // Codex round 4: a preview that returns after the sheet closed must not confirm or send.
+  const sheetOpen = useRef(true)
+  useEffect(() => { sheetOpen.current = true; return () => { sheetOpen.current = false } }, [])
   // Claude · № 14,050 13-Oct (owner: "build the partial close lots field"; claude-builder).
   const [closeLots, setCloseLots] = useState('')
   const dir = sideDir(p.side) ?? 1
@@ -289,9 +292,9 @@ export default function PositionManager({ p, onDone, initialTab = 'Modify' }) {
               setBusy(true)
               try {
                 const flow = await closeFlow({ input: closeLots, heldLots: p.lots, heldText: fmt(p.lots, 2), symbol: p.symbol, side: p.side, positionId: p.positionId,
-                  preview: async body => { const reply = await agentPost('/actions/position-close-preview', withAcct(body)); return reply }, confirm: text => window.confirm(text) })
+                  preview: async body => { const reply = await agentPost('/actions/position-close-preview', withAcct(body)); return reply }, confirm: text => window.confirm(text), open: () => sheetOpen.current })
                 if (flow.error) { setMsg(`Error: ${flow.error}`); return }
-                if (flow.cancelled) return
+                if (flow.cancelled || !sheetOpen.current) return
                 await run(() => agentPost('/actions/position-close', withAcct(flow.body)), flow.body.lots != null ? 'Part of the position closed' : 'Position closed')
               } finally { setBusy(false) }
             })}>

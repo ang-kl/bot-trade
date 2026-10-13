@@ -26,12 +26,16 @@ export function closeRequest(input, heldLots) {
  *   preview(body) → POST /actions/position-close-preview; its reply (throws on a refusal)
  *   confirm(text) → boolean
  */
-export async function closeFlow({ input, heldLots, heldText, symbol, side, positionId, preview, confirm }) {
+// Codex round 4 on #1354 (owner: "4th round, then merge"): `open()` says the
+// sheet is still showing this position. A preview can return after the sheet
+// was dismissed; the flow then stops — no confirm, nothing sent.
+export async function closeFlow({ input, heldLots, heldText, symbol, side, positionId, preview, confirm, open = () => true }) {
   const req = closeRequest(input, heldLots)
   if (req.error) return { error: req.error }
   if (req.lots == null) return confirm(`Close ${symbol} ${side} ${heldText} lots at market?`) ? { body: { positionId } } : { cancelled: true }
   let pv
   try { pv = await preview({ positionId, lots: req.lots }) } catch (err) { return { error: err?.message || String(err) } }
+  if (!open()) return { cancelled: true, dismissed: true }
   if (!pv?.ok || !pv.preview) return { error: pv?.error || 'the close preview did not answer' }
   // The fresh position is no larger than the figure: the whole of it closes, and
   // the figure still rides the request so a position that grew meanwhile is
