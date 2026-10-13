@@ -87,6 +87,18 @@ export function heldPositionPrice(pos, receipts, { now = Date.now } = {}) {
   // The shared timestamped reader returns cTrader's integer price points.
   return (q.bid + q.ask) / (2 * 100000)
 }
+
+// Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side"; claude-builder).
+// The same validated quote at the position's exit side (bid for a long, ask
+// for a short), for MAE/MFE only; null wherever heldPositionPrice is null.
+export function heldPositionExitPrice(pos, receipts, opts = {}) {
+  if (heldPositionPrice(pos, receipts, opts) == null) return null
+  const q = receipts.get(`${String(pos.account_id)}|${String(pos.symbol || '').toUpperCase()}`).quote
+  const s = String(pos.side || '').toLowerCase()
+  if (s === 'long' || s === 'buy') return q.bid / 100000
+  if (s === 'short' || s === 'sell') return q.ask / 100000
+  return null
+}
 // agent/services/held-prices.js — cheap current-price refresh for OPEN
 // positions, decoupled from the heavy new-setup scan.
 //

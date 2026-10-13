@@ -203,3 +203,16 @@ test('V3 M1: the first-protection stamps are wired where the protection runs, an
   assert.ok(close < end, 'the loop end is recorded with the cycle\'s own phase breakdown')
   assert.ok(code.includes('noteLoopEnd({ startedAtMs: start, ms: Date.now() - start, phaseMs: erroredPhaseMs, ok: false })'), 'a cycle that died is still recorded')
 })
+
+// Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side"; claude-builder).
+// runLoop has no injection point; runMonitorPhase's forwarding is tested in
+// services/excursion-exit-side.test.js. This pins that the main loop hands it
+// the exit-side price — without it the slow monitor's mid readings would go on
+// mixing into the same MAE/MFE (failure mode #4).
+test('the slow monitor phase is given the exit-side price for MAE/MFE', () => {
+  const code = loopCode()
+  const call = at(code, 'await runMonitorPhase(db, s, activePositions')
+  const end = code.indexOf('\n      })', call)
+  assert.ok(end > call, 'the call closes')
+  assert.match(code.slice(call, end), /excursionPriceOf: pos => heldPositionExitPrice\(pos, heldPrices\)/)
+})

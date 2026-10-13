@@ -25,7 +25,7 @@ import { recordEvaluationMetrics } from './general-partial-execution.js'
 
 import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
-import { evaluatePosition } from './position-manager.js'
+import { evaluatePosition, exitSidePrice } from './position-manager.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
 import { cachedAtrForSymbol } from './profit-keeper.js'
@@ -543,6 +543,8 @@ export async function runFastMonitor(db, creds, deps = {}) {
       // slow loop would have applied 30s later. One ruleset, every evaluator.
       const eval_ = evaluatePosition(pos, {
         currentPrice: mid,
+        // Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side"; claude-builder): MAE/MFE at the price the position closes at.
+        excursionPrice: exitSidePrice(pos.side, q?.bid, q?.ask),
         // §5: the trade id is what reaches the horizon stored on the row (§4-D).
         rules: applyManagedRules(db, pos.account_id, rulesForSymbol(db, pos.symbol), { strategy: pos.strategy, tradeId: pos.trade_id }),
         // Same cached ATR the slow monitor reads (PR-J). One ruleset, one
