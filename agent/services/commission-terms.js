@@ -273,7 +273,7 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
       // broker's quoteToDepositConversionRate, at the open marginRate ÷ the
       // entry price (Base/Deposit ÷ Quote/Base = Deposit per Quote).
       const quote = t?.commissionType === 4 && open.reason === 'quote_currency_not_usd' && close.reason === 'quote_currency_not_usd'
-        ? quoteCurrencyDeposit(t, d, { openUsd: openRate, closeUsd: closeRate, rowsForPosition }) : null
+        ? quoteCurrencyDeposit(t, d, { deposit, openUsd: openRate, closeUsd: closeRate, rowsForPosition }) : null
       if (quote) modelledDeposit = quote.deposit
       return {
         dealId: d.deal_id, lots: d.lots,
@@ -323,23 +323,26 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
 function round(v) { return Number.isFinite(v) ? Math.round(v * 10_000) / 10_000 : null }
 function rate(v) { const n = typeof v === 'number' ? v : NaN; return Number.isFinite(n) && n > 0 ? n : null }
 /** № 14,347: a QUOTE_CCY_PER_LOT charge in the deposit currency, or the reason not. */
-function quoteCurrencyDeposit(t, d, { openUsd = null, closeUsd = null, rowsForPosition = null } = {}) {
+function quoteCurrencyDeposit(t, d, { deposit = null, openUsd = null, closeUsd = null, rowsForPosition = null } = {}) {
   const out = (deposit, reason, rates = null) => ({ deposit, reason, rates })
   if (t.rate == null) return out(null, 'rate_not_stated')
   const lots = Number(d.lots)
   if (!(lots > 0)) return out(null, 'lots_unknown')
   // Claude · № 14,442 13-Oct (Codex P2 round 2 on #1361; claude-builder). Each
   // rate from the instant of its own deal's execution (spotware ProtoOADeal):
-  // baseToUsdConversionRate ÷ that deal's price is USD per quote; times the
-  // side's deposit-per-USD (1 on a USD deposit; on any other deposit #1358's
-  // conversion, the only deposit rate an opening deal carries). marginRate is
-  // not divided by an execution price. The close side uses the broker's own
+  // baseToUsdConversionRate ÷ that deal's price is USD per quote, the deposit
+  // rate on a USD deposit. The close side uses the broker's own
   // quoteToDepositConversionRate where stated.
+  // Claude · № 14,446 13-Oct (Codex P2 round 3 on #1361; claude-builder): on
+  // any other deposit the only deposit rate an opening deal carries is
+  // marginRate, whose instant is not documented as the execution, so the
+  // comparison is declined rather than rebuilt from it.
+  if (deposit !== 'USD') return out(null, 'quote_deposit_rate_not_execution_time')
   const entry = rate(d.entry_price), close = rate(d.close_price)
   const quoteUsd = (baseUsd, price) => rate(baseUsd) != null && price != null ? rate(baseUsd) / price : null
-  const open = quoteUsd(d.open_base_usd_rate, entry) != null && rate(openUsd) != null ? quoteUsd(d.open_base_usd_rate, entry) * openUsd : null
+  const open = quoteUsd(d.open_base_usd_rate, entry)
   const closeStated = rate(d.quote_deposit_rate)
-  const closeDerived = quoteUsd(d.close_base_usd_rate, close) != null && rate(closeUsd) != null ? quoteUsd(d.close_base_usd_rate, close) * closeUsd : null
+  const closeDerived = quoteUsd(d.close_base_usd_rate, close)
   const shut = closeStated ?? closeDerived
   const rates = { open: round(open), close: round(shut), closeSource: closeStated != null ? 'broker_quote_to_deposit' : 'base_usd_rate_over_price',
     // The two readings of one rate at the close, as a check of the open-side method.

@@ -421,17 +421,15 @@ test('NASA-4 follow-up: quote rates come from each deal\'s execution-time rate, 
   // 1.5 × 1.17/0.85 + 1.5 × 1.17/0.86 = 2.06471 + 2.04070; marginRate ÷ price would give 4.1577.
   assert.equal(t.sample[0].modelledDealDeposit, 4.1054)
 })
-test('NASA-4 follow-up: on an SGD deposit the quote rate takes each side\'s deposit-per-USD', () => {
-  // marginRate 1.5093 EUR/SGD ÷ Base/USD 1.17 = 1.29 SGD per USD. Open: 1.17/0.85 × 1.29
-  // = 1.775647 SGD per GBP; close stated 1.755. 1.5 × (1.775647 + 1.755) = 5.296. Self-derived.
+// Claude · № 14,446 13-Oct (Codex P2 round 3 on #1361; claude-builder). On an
+// SGD deposit the opening deal's only deposit rate is marginRate, whose
+// instant is not documented as the execution: declined, never rebuilt from it.
+test('NASA-4 follow-up: on a non-USD deposit quote-currency terms are declined, not rebuilt from marginRate', () => {
   const a = initDB(':memory:'); usdDeposit(a, '46979908', 'SGD')
   quoteDeal(a, { openMargin: 1.5093, closeMargin: 1.5093, quoteRate: 1.755 })
-  a.prepare(`UPDATE broker_deals SET commission = -5.30 WHERE deal_id = 'q1'`).run()
   storeCommissionTerms(a, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
   const s = commissionTermsCheck(a, '46979908', { days: 30, now: NOW }).symbols[0]
-  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.agrees, true)
-  assert.equal(s.sample[0].modelledDealDeposit, 5.296)
-  assert.ok(Math.abs(s.sample[0].quoteToDeposit.closeDerivedOverStated - 1) < 0.001)
+  assert.equal(s.compared, false); assert.equal(s.reason, 'quote_deposit_rate_not_execution_time')
 })
 
 // Claude · № 14,434 13-Oct (Codex P2 on #1361; claude-builder). The minimum
