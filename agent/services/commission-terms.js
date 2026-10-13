@@ -142,7 +142,7 @@ function pairOf(symbol) {
  * the broker's terms. Null with a reason when a conversion the terms need is
  * not known here: never a guessed rate.
  */
-export function modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits }) {
+export function modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits, baseUsdRate = null }) {
   if (!terms || terms.commissionType == null) return { usd: null, reason: 'terms_unknown' }
   if (terms.rate == null) return { usd: null, reason: 'rate_not_stated' }
   const pair = pairOf(symbol)
@@ -153,8 +153,11 @@ export function modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits }) {
     case 2: usd = terms.rate; break
     case 1: {
       if (!(units > 0)) return { usd: null, reason: 'lot_units_unknown' }
-      // Notional in USD needs the base currency's USD price.
-      const baseUsd = pair?.base === 'USD' ? 1 : pair?.quote === 'USD' && p > 0 ? p : null
+      // Notional in USD needs the base currency's USD price. Claude · № 14,270
+      // 13-Oct (owner: NASA-4 "A"; claude-builder): where the pair does not
+      // give it, the deal's own baseToUsdConversionRate (broker-stated at the
+      // deal) does; never a guessed rate.
+      const baseUsd = pair?.base === 'USD' ? 1 : pair?.quote === 'USD' && p > 0 ? p : rate(baseUsdRate)
       if (baseUsd == null) return { usd: null, reason: 'base_currency_usd_price_unknown' }
       usd = terms.rate * units * baseUsd / 1e6
       break
@@ -164,6 +167,11 @@ export function modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits }) {
       usd = terms.rate
       break
     case 3:
+      if (pair?.quote !== 'USD' && rate(baseUsdRate) != null && units > 0) {
+        // Value in USD = units × the deal's own Base/USD rate (№ 14,270).
+        usd = terms.rate / 100 * units * rate(baseUsdRate)
+        break
+      }
       if (!(units > 0) || !(p > 0)) return { usd: null, reason: 'lot_units_or_price_unknown' }
       if (pair?.quote !== 'USD') return { usd: null, reason: 'quote_currency_not_usd' }
       usd = terms.rate / 100 * units * p
@@ -183,8 +191,8 @@ export function modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits }) {
  * 46979908 (USD deposit): LLY.US 0.1 lots was charged 0.04 where $0.02 a
  * share gives 0.004 — a ~$0.02 per-side minimum applied.
  */
-export function modelledSideUsd(terms, { symbol, price, lotUnits, lots }) {
-  const perLot = modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits })
+export function modelledSideUsd(terms, { symbol, price, lotUnits, lots, baseUsdRate = null }) {
+  const perLot = modelledPerLotPerSideUsd(terms, { symbol, price, lotUnits, baseUsdRate })
   if (perLot.usd == null) return perLot
   const n = Number(lots)
   if (!(n > 0)) return { usd: null, reason: 'lots_unknown' }
@@ -221,7 +229,8 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
   const terms = readCommissionTerms(db, id)
   const deposit = verifiedDepositCurrency(db, id)
   const since = new Date(now - days * 86_400_000).toISOString().replace('T', ' ').slice(0, 19)
-  const deals = db.prepare(`SELECT deal_id, position_id, symbol, lots, entry_price, close_price, commission, closed_at FROM broker_deals
+  const deals = db.prepare(`SELECT deal_id, position_id, symbol, lots, entry_price, close_price, commission, closed_at,
+      open_margin_rate, open_base_usd_rate, close_margin_rate, close_base_usd_rate FROM broker_deals
     WHERE account_id = ? AND closed_at >= ? AND lots > 0 AND commission IS NOT NULL ORDER BY closed_at`).all(id, since)
   // Claude · № 13,829 13-Oct (Codex P2 on #1344, ordered after № 13,828;
   // owner "Decline when it binds"; claude-builder): the broker's minimum is
@@ -244,23 +253,37 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
     const lotUnits = t?.lotUnits ?? null
     const perDeal = rows.map(d => {
       const brokerDeal = Math.abs(Number(d.commission))
-      const open = modelledSideUsd(t, { symbol, price: d.entry_price, lotUnits, lots: d.lots })
-      const close = modelledSideUsd(t, { symbol, price: d.close_price, lotUnits, lots: d.lots })
+      const open = modelledSideUsd(t, { symbol, price: d.entry_price, lotUnits, lots: d.lots, baseUsdRate: d.open_base_usd_rate })
+      const close = modelledSideUsd(t, { symbol, price: d.close_price, lotUnits, lots: d.lots, baseUsdRate: d.close_base_usd_rate })
       const binding = open.minBinding || close.minBinding
       const rowsForPosition = d.position_id != null ? closingRows.get(String(d.position_id)) ?? 1 : null
       const splitReason = !binding ? null : rowsForPosition == null ? 'min_commission_position_unknown' : rowsForPosition > 1 ? 'min_commission_split_position' : null
       const modelledDeal = !splitReason && open.usd != null && close.usd != null ? open.usd + close.usd : null
+      // Claude · № 14,270 13-Oct (owner: NASA-4 "A"; claude-builder). Each
+      // side in the deposit currency at that side's own broker rate:
+      // marginRate (Base/Deposit) ÷ baseToUsdConversionRate (Base/USD) =
+      // deposit per USD at the deal. A USD deposit needs none (1).
+      const openRate = depositPerUsd(deposit, d.open_margin_rate, d.open_base_usd_rate)
+      const closeRate = depositPerUsd(deposit, d.close_margin_rate, d.close_base_usd_rate)
+      const rateReason = deposit != null && deposit !== 'USD' && (openRate == null || closeRate == null) ? 'deposit_rate_not_reported' : null
+      const modelledDeposit = modelledDeal == null || rateReason ? null : open.usd * openRate + close.usd * closeRate
       return {
         dealId: d.deal_id, lots: d.lots,
         brokerDeal: round(brokerDeal),
         brokerPerLotPerSide: round(brokerDeal / Number(d.lots) / CLOSING_DEAL_SIDES),
         modelledDealUsd: modelledDeal == null ? null : round(modelledDeal),
-        reason: open.reason ?? close.reason ?? splitReason ?? null,
+        modelledDealDeposit: modelledDeposit == null ? null : round(modelledDeposit),
+        depositPerUsd: { open: round(openRate), close: round(closeRate), source: deposit === 'USD' ? 'usd_deposit' : 'broker_deal_rate' },
+        // On a USD deposit the broker's own ratio must read 1: a check of how
+        // the two rate fields are read, against the broker's deals.
+        usdDepositRatio: deposit === 'USD' ? ratioOrNull(d.open_margin_rate, d.open_base_usd_rate, d.close_margin_rate, d.close_base_usd_rate) : null,
+        reason: open.reason ?? close.reason ?? splitReason ?? rateReason ?? null,
       }
     })
     const brokerVals = perDeal.map(x => x.brokerPerLotPerSide)
-    const modelled = perDeal.filter(x => x.modelledDealUsd != null)
-    const compared = deposit === 'USD' && modelled.length === perDeal.length && perDeal.length > 0
+    const modelled = perDeal.filter(x => x.modelledDealDeposit != null)
+    const compared = deposit != null && modelled.length === perDeal.length && perDeal.length > 0
+    const ratios = perDeal.flatMap(x => x.usdDepositRatio ?? [])
     symbols.push({
       symbol,
       deals: rows.length,
@@ -270,8 +293,9 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
       compared,
       // Broker charges round to the cent on each side, so a deal's two sides
       // can differ from the model by up to a cent in all.
-      agrees: compared ? perDeal.every(x => Math.abs(x.brokerDeal - x.modelledDealUsd) <= 0.01 + 1e-9) : null,
-      reason: t == null ? 'terms_not_recorded' : deposit !== 'USD' ? `deposit_currency_${deposit ?? 'unverified'}` : modelled.length !== perDeal.length ? perDeal.find(x => x.reason)?.reason ?? null : null,
+      agrees: compared ? perDeal.every(x => Math.abs(x.brokerDeal - x.modelledDealDeposit) <= 0.01 + 1e-9) : null,
+      reason: t == null ? 'terms_not_recorded' : deposit == null ? 'deposit_currency_unverified' : modelled.length !== perDeal.length ? perDeal.find(x => x.reason)?.reason ?? null : null,
+      usdDepositRatio: ratios.length ? { n: ratios.length, maxAbsDiffFrom1: round(Math.max(...ratios.map(v => Math.abs(v - 1)))) } : null,
       sample: perDeal.slice(-5),
     })
   }
@@ -288,6 +312,17 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
 }
 
 function round(v) { return Number.isFinite(v) ? Math.round(v * 10_000) / 10_000 : null }
+function rate(v) { const n = typeof v === 'number' ? v : NaN; return Number.isFinite(n) && n > 0 ? n : null }
+function depositPerUsd(deposit, marginRate, baseUsdRate) {
+  if (deposit === 'USD') return 1
+  const m = rate(marginRate), b = rate(baseUsdRate)
+  return m != null && b != null ? m / b : null
+}
+function ratioOrNull(...pairs) {
+  const out = []
+  for (let i = 0; i < pairs.length; i += 2) { const m = rate(pairs[i]), b = rate(pairs[i + 1]); if (m != null && b != null) out.push(m / b) }
+  return out
+}
 
 /**
  * The symbols to read for one account: its closing deals in the window,

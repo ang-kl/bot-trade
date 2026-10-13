@@ -89,12 +89,13 @@ export async function fetchDealsPaged(getDeals, fromMs, toMs, opts) {
 export function shapeDeals(deals, symMeta = {}, accountId = null) {
   // Earliest execution per position = its open, when we can see it.
   const openMsByPosition = new Map()
+  const openDealByPosition = new Map()
   for (const d of deals) {
     if (d.closePositionDetail) continue
     const pid = d.positionId != null ? String(d.positionId) : null
     if (!pid || d.executionTimestamp == null) continue
     const prev = openMsByPosition.get(pid)
-    if (prev == null || d.executionTimestamp < prev) openMsByPosition.set(pid, d.executionTimestamp)
+    if (prev == null || d.executionTimestamp < prev) { openMsByPosition.set(pid, d.executionTimestamp); openDealByPosition.set(pid, d) }
   }
 
   const rows = []
@@ -140,16 +141,41 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
       balance_version: balance == null ? null : brokerVersion(cpd.balanceVersion),
       balance_currency: null,             // the deal's money is in the account's deposit currency
       balance_source: 'broker_api',
+      ...dealRates(d, pid ? openDealByPosition.get(pid) : null),
     })
   }
   return rows
 }
 
+// Claude · № 14,270 13-Oct (owner: NASA-4 "A", capture the broker's per-deal
+// conversion rate; claude-builder). The rates the broker states on each deal
+// at its execution (spotware OpenApiModelMessages.proto): ProtoOADeal
+// marginRate (Base/Deposit) and baseToUsdConversionRate (Base/USD), and on the
+// closing deal ProtoOAClosePositionDetail quoteToDepositConversionRate and
+// pnlConversionFee. The opening side's come from the position's earliest
+// opening deal, the same deal that gives opened_at; NULL when it is outside
+// the read or the broker sent none. A rate is a positive finite number or NULL.
+const brokerRate = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null)
+function dealRates(close, open) {
+  const cpd = close?.closePositionDetail
+  return {
+    open_margin_rate: brokerRate(open?.marginRate),
+    open_base_usd_rate: brokerRate(open?.baseToUsdConversionRate),
+    close_margin_rate: brokerRate(close?.marginRate),
+    close_base_usd_rate: brokerRate(close?.baseToUsdConversionRate),
+    quote_deposit_rate: brokerRate(cpd?.quoteToDepositConversionRate),
+    pnl_conversion_fee: brokerAmount(cpd?.pnlConversionFee, cpd?.moneyDigits),
+  }
+}
+export const DEAL_RATE_FIELDS = Object.freeze(['open_margin_rate', 'open_base_usd_rate', 'close_margin_rate',
+  'close_base_usd_rate', 'quote_deposit_rate', 'pnl_conversion_fee'])
+
 // V3 WEB-8: a row from a caller that does not read balances (tests, older
 // shapes) carries none of these fields. It is written with all four NULL, so
 // it neither sets nor clears a stored balance (the balance rule in persistDeals).
 const withBalanceFields = (r) => ({ ...r, balance: r.balance ?? null, balance_version: r.balance_version ?? null,
-  balance_currency: r.balance_currency ?? null, balance_source: r.balance_source ?? null })
+  balance_currency: r.balance_currency ?? null, balance_source: r.balance_source ?? null,
+  ...Object.fromEntries(DEAL_RATE_FIELDS.map(k => [k, r[k] ?? null])) })
 
 /** Upsert shaped rows, linking only an unambiguous account+position identity. */
 export function persistDeals(db, rows) {
@@ -227,11 +253,13 @@ export function persistDeals(db, rows) {
     INSERT INTO broker_deals (
       deal_id, position_id, account_id, symbol, side, lots, requested_lots, volume_contract, entry_price, close_price,
       opened_at, closed_at, gross_pnl, swap, commission, net_pnl, matched_trade_id,
-      balance, balance_version, balance_currency, balance_source
+      balance, balance_version, balance_currency, balance_source,
+      open_margin_rate, open_base_usd_rate, close_margin_rate, close_base_usd_rate, quote_deposit_rate, pnl_conversion_fee
     ) VALUES (
       @deal_id, @position_id, @account_id, @symbol, @side, @lots, @requested_lots, @volume_contract, @entry_price, @close_price,
       @opened_at, @closed_at, @gross_pnl, @swap, @commission, @net_pnl, @matched_trade_id,
-      @balance, @balance_version, @balance_currency, @balance_source
+      @balance, @balance_version, @balance_currency, @balance_source,
+      @open_margin_rate, @open_base_usd_rate, @close_margin_rate, @close_base_usd_rate, @quote_deposit_rate, @pnl_conversion_fee
     )
     ON CONFLICT(deal_id) DO UPDATE SET
       -- V3 B1 (PR-1(g), LIFECYCLE-SPEC W10 / CLS-06): a re-read that LACKS a
@@ -262,6 +290,14 @@ export function persistDeals(db, rows) {
       -- price reconciler to keep using an arbitrary local trade.
       matched_trade_id = excluded.matched_trade_id,
       imported_at = datetime('now'),
+      -- A re-read that carries no rate (statement rows, a narrower window
+      -- without the opening deal) keeps the stored one; the broker's is kept.
+      open_margin_rate = COALESCE(excluded.open_margin_rate, broker_deals.open_margin_rate),
+      open_base_usd_rate = COALESCE(excluded.open_base_usd_rate, broker_deals.open_base_usd_rate),
+      close_margin_rate = COALESCE(excluded.close_margin_rate, broker_deals.close_margin_rate),
+      close_base_usd_rate = COALESCE(excluded.close_base_usd_rate, broker_deals.close_base_usd_rate),
+      quote_deposit_rate = COALESCE(excluded.quote_deposit_rate, broker_deals.quote_deposit_rate),
+      pnl_conversion_fee = COALESCE(excluded.pnl_conversion_fee, broker_deals.pnl_conversion_fee),
       balance = CASE WHEN ${keepStoredBalance} THEN broker_deals.balance ELSE excluded.balance END,
       balance_version = CASE WHEN ${keepStoredBalance} THEN broker_deals.balance_version
         WHEN excluded.balance IS NULL THEN broker_deals.balance_version ELSE excluded.balance_version END,

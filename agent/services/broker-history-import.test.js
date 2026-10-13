@@ -540,3 +540,30 @@ test('keeper truth: a stamp within a second of the fill is left alone; a group m
   assert.equal(db.prepare('SELECT closed_at_ms FROM trades WHERE id = 1').get().closed_at_ms, close + 400)
   assert.equal(db.prepare('SELECT closed_at_ms, volume FROM trades WHERE id = 2').get().volume, 5)
 })
+
+// Claude · № 14,270 13-Oct (owner: NASA-4 "A"; claude-builder). The per-deal
+// rates are the fields the broker states (spotware OpenApiModelMessages.proto:
+// ProtoOADeal 13/15, ProtoOAClosePositionDetail 6/10); values self-derived.
+test('NASA-4: closing rows carry each side\'s broker rates; a re-read without them keeps them', () => {
+  const T = Date.parse('2026-10-12T10:00:00Z')
+  const opening = { dealId: 70, positionId: 990, symbolId: 1, tradeSide: 1, volume: 2000, filledVolume: 2000, executionPrice: 1.28014,
+    executionTimestamp: T - 3_600_000, dealStatus: 2, marginRate: 1.28014, baseToUsdConversionRate: 1 }
+  const closing = { dealId: 71, positionId: 990, symbolId: 1, tradeSide: 2, volume: 2000, filledVolume: 2000, executionPrice: 1.27839,
+    executionTimestamp: T, dealStatus: 2, marginRate: 1.27839, baseToUsdConversionRate: 1,
+    closePositionDetail: { entryPrice: 1.28014, grossProfit: -350, swap: 0, commission: -18, balance: 1000000, moneyDigits: 2,
+      closedVolume: 2000, quoteToDepositConversionRate: 1, pnlConversionFee: '-3' } }
+  const [row] = shapeDeals([opening, closing], { 1: { symbolName: 'USDSGD', lotSize: 100000 } }, '43097342')
+  assert.deepEqual([row.open_margin_rate, row.open_base_usd_rate, row.close_margin_rate, row.close_base_usd_rate, row.quote_deposit_rate, row.pnl_conversion_fee],
+    [1.28014, 1, 1.27839, 1, 1, -0.03])
+  const [narrow] = shapeDeals([{ ...closing, marginRate: 0, baseToUsdConversionRate: '1', closePositionDetail: { ...closing.closePositionDetail,
+    quoteToDepositConversionRate: true, pnlConversionFee: 'x' } }], { 1: { symbolName: 'USDSGD', lotSize: 100000 } }, '43097342')
+  assert.deepEqual([narrow.open_margin_rate, narrow.open_base_usd_rate, narrow.close_margin_rate, narrow.close_base_usd_rate, narrow.quote_deposit_rate, narrow.pnl_conversion_fee],
+    [null, null, null, null, null, null], 'an absent opening deal and invalid values are NULL, never coerced')
+  const db = initDB(':memory:')
+  persistDeals(db, [row])
+  persistDeals(db, [narrow])
+  const stored = db.prepare('SELECT * FROM broker_deals WHERE deal_id=?').get('71')
+  assert.deepEqual([stored.open_margin_rate, stored.close_margin_rate, stored.quote_deposit_rate, stored.pnl_conversion_fee], [1.28014, 1.27839, 1, -0.03])
+  persistDeals(db, [{ ...row, close_margin_rate: 1.3 }])
+  assert.equal(db.prepare('SELECT close_margin_rate FROM broker_deals WHERE deal_id=?').get('71').close_margin_rate, 1.3, 'a carried value refreshes')
+})
