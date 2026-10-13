@@ -908,7 +908,11 @@ export default function stateRouter(db) {
       // shared snapshot (the SELECTED account's) is never this row's evidence.
       // With no cache of its own, the shared one stands in only when it names
       // this account (or names none: a cache written before it carried one).
-      const sharedIsOwn = globalSnap.accountId == null || globalSnap.accountId === id
+      // Claude · № 14,009 13-Oct (owner: Codex P2 #7 "strict"; claude-builder).
+      // An unnamed (legacy) shared cache is no account's evidence: unnamed, it
+      // would serve every account lacking its own cache. Unattributed rows
+      // still read it below; they have no account to prefer.
+      const sharedIsOwn = globalSnap.accountId != null && globalSnap.accountId === id
       snapById.set(id, s.present ? s : (sharedIsOwn ? globalSnap : noSnap))
     }
     let isOpenFn = null
@@ -923,23 +927,25 @@ export default function stateRouter(db) {
     const enriched = rows.map(r => {
       const src = (r.account_id != null ? snapById.get(String(r.account_id)) : null) ?? globalSnap
       const sp = r.ctrader_position_id != null ? src.positions.get(String(r.ctrader_position_id)) : null
-      // Claude · № 13,991 13-Oct (owner: Codex P2 #4 "Snapshot first, reconciler next"; claude-builder).
-      // The account's cached broker snapshot carries this position's lots as the
-      // broker reported them (a partial close after the last reconcile shows
-      // there first); the reconciler's reading is the fallback.
+      // Claude · № 13,991 13-Oct (owner: Codex P2 #4; claude-builder), revised
+      // № 14,009 (owner: Codex P2 #6, "by freshness; if the reconciler stamps no
+      // time, reconciler first"). broker_volume_units carries no reading time,
+      // and /actions/broker-positions keeps its last good cache when a later
+      // fetch fails, so the snapshot is not known to be the newer reading: the
+      // reconciler's reading wins when present, the account's own snapshot
+      // fills a row the reconciler has not read yet.
       let current_lots = null
       let lots_source = 'opened_record'
+      try {
+        if (unitsToLots && r.broker_volume_units != null && Number(r.broker_volume_units) > 0) {
+          const l = unitsToLots(Number(r.broker_volume_units), r.symbol, db, r.account_id ?? null)
+          if (Number.isFinite(l) && l > 0) { current_lots = Math.round(l * 1e8) / 1e8; lots_source = 'broker_reconcile' }
+        }
+      } catch { current_lots = null }
       const snapLots = typeof sp?.lots === 'number' ? sp.lots : NaN
-      if (Number.isFinite(snapLots) && snapLots > 0) {
+      if (current_lots == null && Number.isFinite(snapLots) && snapLots > 0) {
         current_lots = Math.round(snapLots * 1e8) / 1e8
         lots_source = 'broker_snapshot'
-      } else {
-        try {
-          if (unitsToLots && r.broker_volume_units != null && Number(r.broker_volume_units) > 0) {
-            const l = unitsToLots(Number(r.broker_volume_units), r.symbol, db, r.account_id ?? null)
-            if (Number.isFinite(l) && l > 0) { current_lots = Math.round(l * 1e8) / 1e8; lots_source = 'broker_reconcile' }
-          }
-        } catch { current_lots = null }
       }
       let market_open = null, market_source = null
       try {

@@ -1087,6 +1087,19 @@ When all of the above hold: mark the PR ready (undraft it), squash-merge,
 unsubscribe from its PR activity, and clear any armed check-in wakeup for
 it — same cleanup as before, just without waiting on the user's word.
 
+**Codex review loop — exit condition (owner, 13-10-2026, № 14,008·C, answered
+after № 14,008).** A re-requested `@codex review` on every push had no exit:
+#1348 ran six rounds and seven P2s, each true, two of them introduced by the
+previous round's fix. The rule:
+- a Codex **P1** is fixed in the PR;
+- a **P2 in code the PR itself added** is fixed in the PR;
+- a **P2 on older behaviour or a neighbouring path** becomes a follow-up item
+  put to the owner, not a change to the PR;
+- after **three fix rounds** on one PR, stop and ask the owner before a fourth;
+- the PR merges when the full gate and CI are green and the last Codex round
+  raised no P1.
+Each Codex finding still goes to the owner before any code change.
+
 Still stop and ask first for anything NOT covered by "the gate is green" —
 e.g. a change to risk limits, account credentials, live-vs-demo mode,
 or anything the owner flags as needing manual review in the PR body.
