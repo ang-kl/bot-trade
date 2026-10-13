@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState } from '../db.js'
 import { markTrailing, resetTrailingRegistry } from '../lib/stop-policy.js'
-import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, undoIntentUpgrades, attributeBrokerClose, GENERIC_BROKER_CLOSE } from './reconciler.js'
+import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, undoIntentUpgrades, attributeBrokerClose, GENERIC_BROKER_CLOSE, brokerPriceStep } from './reconciler.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -1013,7 +1013,10 @@ test('the first broker stop observed is stamped on the trade once, and never aft
   const setState = mkSetState(db)
   const tradeId = seedKnownPosition(db, { symbol: 'XAUUSD', positionId: '42' })
   // First pass: the broker holds the stop re-anchored to the fill (98.7, not our 99).
-  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', stopLoss: 98.7, takeProfit: 110 })], [], setState)
+  // Claude · № 14,064 13-Oct: the fill is 99.7, so the re-anchored bracket is
+  // 99.7 − initial_risk 1 = 98.7 (production 13-10: unmoved broker stops sit at
+  // fill ± initial_risk within 0.5%; the old fixture's fill of 100 contradicted it).
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', openPrice: 99.7, stopLoss: 98.7, takeProfit: 110 })], [], setState)
   const sl = () => db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(tradeId).broker_sl_initial
   assert.equal(sl(), 98.7)
   // The stop trails; the initial record does not follow it.
@@ -1578,11 +1581,14 @@ test('trailing: broker_sl_initial is not stamped from a trailed position', () =>
   seedKnownPosition(db, { positionId: '54' })
   resetTrailingRegistry()
   markTrailing('777', '54')
-  reconcilePositions(db, [makeBrokerPosition({ positionId: '54', symbolName: 'XAUUSD', stopLoss: 101, takeProfit: 110 })], [], setState)
+  // Claude · № 14,064 13-Oct: the stop is the opening bracket (fill 100 −
+  // initial_risk 1 = 99), so the trailing registry alone decides the first
+  // pass; the old 101 on a long was a moved stop, which #1352 refuses.
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '54', symbolName: 'XAUUSD', stopLoss: 99, takeProfit: 110 })], [], setState)
   assert.equal(db.prepare(`SELECT broker_sl_initial FROM trades`).get().broker_sl_initial, null)
   resetTrailingRegistry()
-  reconcilePositions(db, [makeBrokerPosition({ positionId: '54', symbolName: 'XAUUSD', stopLoss: 101, takeProfit: 110 })], [], setState)
-  assert.equal(db.prepare(`SELECT broker_sl_initial FROM trades`).get().broker_sl_initial, 101, 'control: an untrailed position is stamped as before')
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '54', symbolName: 'XAUUSD', stopLoss: 99, takeProfit: 110 })], [], setState)
+  assert.equal(db.prepare(`SELECT broker_sl_initial FROM trades`).get().broker_sl_initial, 99, 'control: an untrailed position is stamped as before')
 })
 
 test('trailing: a move that tightens the broker stop but is LOOSER than the stored stop is still a manual change', () => {
@@ -1593,4 +1599,103 @@ test('trailing: a move that tightens the broker stop but is LOOSER than the stor
   const r = reconcilePositions(db, bp(101), [], setState)
   assert.equal(r.manualChanges.length, 1, 'the stored stop is the floor: a trail may not loosen it')
   resetTrailingRegistry()
+})
+
+// Claude · № 13,923 13-Oct (owner: audit fix 3 "Fix the stamp"; claude-builder).
+// Production: NAS100 #1775 on 47790949 opened at 00:04:07 UTC 08-10 SELL from
+// 31205.8 with the planned stop 31533.86 (328 points). At 00:04:27 the
+// gateway's trail engine moved it to 31385.9 (log "[trail] SL confirmed
+// pos=247461610 -> 31385.9"), and the reconciler then stamped 31385.9 as the
+// stop at entry. A trailed stop is not the risk taken at entry.
+function seedPlannedShort(db, positionId) {
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, sl_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES ('NAS100', 'SELL', 31205.8, 31533.860714285714, 0.25, ?, 'autopilot', 'open', datetime('now'))`
+  ).run(positionId).lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status)
+     VALUES ('NAS100', ?, 'short', 31205.8, 31533.860714285714, 30500, 'test', 328.06, 'autopilot', 'active')`
+  ).run(tradeId)
+  return tradeId
+}
+
+test('a broker stop the trail already moved is never stamped as the stop at entry; the opening bracket is', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const moved = seedPlannedShort(db, '247461610')
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '247461610', symbolName: 'NAS100', tradeSide: 'SELL', openPrice: 31205.8, stopLoss: 31385.9, takeProfit: 30500 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(moved).broker_sl_initial, null,
+    'RED before: 31385.9 (the trailed stop) was stamped')
+  // Control: the broker's opening bracket, fill + the 328-point distance sent, snapped.
+  const held = seedPlannedShort(db, '247461611')
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '247461611', symbolName: 'NAS100', tradeSide: 'SELL', openPrice: 31205.8, stopLoss: 31533.9, takeProfit: 30500 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(held).broker_sl_initial, 31533.9)
+})
+
+test('a position with a recorded stop move is never stamped from the broker', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = seedPlannedShort(db, '247461612')
+  db.prepare(`INSERT INTO position_events (position_id, trade_id, symbol, kind, from_value, to_value, source)
+    VALUES ('247461612', ?, 'NAS100', 'trail_tightened', 31533.9, 31530.0, 'cpp_trail_engine')`).run(tradeId)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '247461612', symbolName: 'NAS100', tradeSide: 'SELL', openPrice: 31205.8, stopLoss: 31530.0, takeProfit: 30500 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(tradeId).broker_sl_initial, null)
+})
+
+// Claude · № 14,064 13-Oct (owner: Codex P2 on #1352, "Also check initial_risk"; claude-builder).
+// Source: momentum-book.js overwrites trades.sl_price with each trail, and
+// position_events are pruned after 90 days, so a long-held book row can carry
+// a trailed sl_price and no move on record. initial_risk (the sized distance;
+// rewritten only by a human re-strategize) is the bracket's basis when known.
+test('with the move pruned and sl_price overwritten, initial_risk still keeps a trailed stop out of the stamp', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = seedPlannedShort(db, '247461613')
+  db.prepare(`UPDATE trades SET sl_price = 31385.9 WHERE id = ?`).run(tradeId) // the book's overwrite; no event survives
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '247461613', symbolName: 'NAS100', tradeSide: 'SELL', openPrice: 31205.8, stopLoss: 31385.9, takeProfit: 30500 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(tradeId).broker_sl_initial, null,
+    'RED before: the overwritten sl_price made the trailed stop look like the bracket')
+  // Control: the opening bracket (fill + 328.06) is still stamped on the same footing.
+  const held = seedPlannedShort(db, '247461614')
+  db.prepare(`UPDATE trades SET sl_price = 31385.9 WHERE id = ?`).run(held)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '247461614', symbolName: 'NAS100', tradeSide: 'SELL', openPrice: 31205.8, stopLoss: 31533.9, takeProfit: 30500 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(held).broker_sl_initial, 31533.9)
+})
+
+// Claude · № 14,083 13-Oct (owner: Codex P2 #4 on #1352, "Fix it in #1352"; claude-builder).
+// Source: the order path sends relativePoints(slDistance, digits) — the distance
+// rounded to the symbol's price step, never below one step (lot-sizing.js) —
+// while initial_risk keeps the unrounded distance. On a 2-decimal symbol a
+// 0.024 stop is sent as 0.02, so the genuine bracket sits 0.004 from
+// fill − initial_risk, far outside 2% of 0.024. The tolerance now admits one
+// price step read from the broker's own prices.
+function seedSmallLong(db, positionId, initialRisk) {
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, sl_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES ('XYZ.US', 'BUY', 50.13, 50.106, 1, ?, 'autopilot', 'open', datetime('now'))`
+  ).run(positionId).lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status)
+     VALUES ('XYZ.US', ?, 'long', 50.13, 50.106, 51.0, 'test', ?, 'autopilot', 'active')`
+  ).run(tradeId, initialRisk)
+  return tradeId
+}
+
+test('a bracket rounded to the broker price step is still the opening bracket; a stop moved beyond a step is not', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const snapped = seedSmallLong(db, '901', 0.024)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '901', symbolName: 'XYZ.US', openPrice: 50.13, stopLoss: 50.11, takeProfit: 51 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(snapped).broker_sl_initial, 50.11,
+    'RED before: 0.004 off fill − initial_risk is one step of rounding, not a move')
+  const moved = seedSmallLong(db, '902', 0.024)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '902', symbolName: 'XYZ.US', openPrice: 50.13, stopLoss: 50.14, takeProfit: 51 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(moved).broker_sl_initial, null, 'a stop moved several steps is refused')
+})
+
+test('brokerPriceStep reads the precision from the broker\'s own prices', () => {
+  assert.equal(brokerPriceStep(50.13, 50.11), 0.01)
+  assert.ok(Math.abs(brokerPriceStep(25214, 25283.6) - 0.1) < 1e-12, 'a whole-number price does not hide the step another price shows')
+  assert.ok(Math.abs(brokerPriceStep(1.3298000000000001, 1.32092) - 0.00001) < 1e-15, 'float noise past 10 decimals is ignored')
+  assert.equal(brokerPriceStep(null, 0, NaN), 0, 'no price, no step')
 })

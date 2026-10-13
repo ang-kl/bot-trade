@@ -1009,3 +1009,23 @@ test('a row below the volume boundary that HAS its money gets its empty exit pri
   assert.ok(Number.isFinite(row.realised_rr), 'the R is stamped now that the exit is known')
   assert.equal(db.prepare('SELECT exit_price FROM trades WHERE id = 51').get().exit_price, 101, 'a present price below the boundary is never overwritten')
 })
+
+// Claude · № 14,019 13-Oct (owner: Codex P2 on #1351, "Also rows whose money lands now"; claude-builder).
+// The money fill runs before the exit fill in the same pass, so a row below the
+// boundary with NO money gets its money and then its exit from the same
+// complete closing-deal set. The owner chose to keep that: both come from the
+// broker's own deals for that position.
+test('a row below the volume boundary whose money lands in this pass also gets its exit from the same deals', async () => {
+  const db = initDB(':memory:')
+  db.prepare(
+    `INSERT INTO trades (id, symbol, side, status, ctrader_position_id, entry_price, exit_price, sl_price, volume, net_pnl, closed_at)
+     VALUES (60, 'JPN225', 'BUY', 'closed', '323802777', 38000, NULL, 37900, 1, NULL, datetime('now','-1 day'))`
+  ).run()
+  db.prepare(`INSERT OR REPLACE INTO agent_state (key, value) VALUES ('executed_volume_contract_1_trade_boundary', '100')`).run()
+  const r = await backfillClosedPnl(db, {}, { getDeals: dealsApi([pricedDeal(323802777, 12000, 38150, 1)]), now: NOW })
+  const row = db.prepare('SELECT exit_price, net_pnl, volume FROM trades WHERE id = 60').get()
+  assert.equal(row.net_pnl, 120, 'the money from the broker deal')
+  assert.equal(row.exit_price, 38150, 'and the exit from the same deal')
+  assert.equal(row.volume, 1, 'retained volume untouched')
+  assert.equal(r.exitsFilled, 1)
+})

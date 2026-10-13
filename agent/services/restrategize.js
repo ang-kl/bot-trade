@@ -39,6 +39,7 @@ import { loadRiskConfig, getAccountBalance, scanRates } from './risk.js'
 import { usdLossPerLot } from '../lib/contracts.js'
 import { measureAmend } from './protection-latency.js'
 import { roundToDigits } from './trade-guard.js'
+import { recordPositionEvent } from './position-events.js'
 
 const r5 = (v) => Math.round(v * 100000) / 100000
 const positiveInt = (v) => { const n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : null }
@@ -187,6 +188,15 @@ export async function restrategizeAfterTamper(db, creds, change, deps = {}) {
          thesis = COALESCE(thesis, '') || ' | SL/TP recalibrated for the reversed direction (1×ATR stop, ' || ? || 'R target)'
        WHERE id = ?`
     ).run(sl, tp, levels.slDist, sl, tp, String(riskCfg.minRR ?? 1.5), mp.id)
+    // Claude · № 14,074 13-Oct (owner: Codex P2 on #1352, "Re-strategize
+    // writes an event"; claude-builder). The stop and initial_risk were just
+    // rewritten: leave movement evidence, so the reconciler's stop-at-entry
+    // stamp refuses this position instead of reading the re-plan as the bracket.
+    recordPositionEvent(db, {
+      accountId, positionId: mp.position_id, tradeId: mp.trade_id, symbol: mp.symbol,
+      kind: 'sl_moved', fromValue: Number(mp.current_sl) > 0 ? Number(mp.current_sl) : null, toValue: sl,
+      reason: `re-strategized after ${change.kind}`, source: 'restrategize',
+    })
 
     const audit = auditRisk({ symbol: mp.symbol, side: mp.side, entry: mp.entry_price, sl, tp, lots: mp.lots, balance, riskCfg, rates })
     return { did: 'recalibrated', aligned, sl, tp, ...audit }

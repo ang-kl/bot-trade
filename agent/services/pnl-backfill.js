@@ -727,6 +727,10 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // Only a NULL is filled; the price is weighted by executed closing
   // quantity (closingExecutedQuantity), so it does not depend on the row's
   // retained volume, and money, volume and present prices are never touched.
+  // Claude · № 14,019 13-Oct (owner: Codex P2 on #1351, "Also rows whose money
+  // lands now"): `upd` runs first in the same pass, so a row below the
+  // boundary whose money lands from this complete deal set gets its exit from
+  // the same deals too; the owner chose that population.
   const fillMissingExit = db.prepare(
     `UPDATE trades
         SET exit_price = ?

@@ -27,6 +27,56 @@ import { horizonForStrategy } from './trade-horizon.js'
 // lot-size-registry.js, now wins; the table remains the fallback for a symbol
 // the broker has never described to us. `db` is optional so every existing
 // caller keeps working — without it the behaviour is exactly as before.
+// Is `stop` the broker's OPENING bracket for this row, or a stop that has
+// already moved? See the broker_sl_initial stamp below (Claude · № 13,923).
+// The broker's price step, read from its own prices (fill, stop, target):
+// each is quoted at the symbol's precision, so the most decimals among them
+// is the precision. Claude · № 14,083 13-Oct (owner: Codex P2 #4 on #1352).
+export function brokerPriceStep(...prices) {
+  let dp = -1
+  for (const p of prices) {
+    const n = Number(p)
+    if (!Number.isFinite(n) || n <= 0) continue
+    const t = n.toFixed(10).replace(/0+$/, '')
+    const d = t.includes('.') ? t.length - t.indexOf('.') - 1 : 0
+    if (d > dp) dp = d
+  }
+  return dp < 0 ? 0 : 10 ** -dp
+}
+
+export function openingBracketStop(db, row, posId, stop, bp) {
+  try {
+    const moved = db.prepare(`SELECT 1 FROM position_events WHERE trade_id = ?
+      AND kind IN ('sl_moved', 'trail_tightened') LIMIT 1`).get(row.trade_id)
+    if (moved) return false
+  } catch { return false }
+  const planned = Number(row.tradeSlPrice)
+  const entry = Number(row.entry_price)
+  const fill = Number(bp?.tradeData?.openPrice ?? bp?.price ?? entry)
+  // Claude · № 14,064 13-Oct (owner: Codex P2 on #1352, "Also check
+  // initial_risk"; claude-builder). The sized distance comes first: the
+  // momentum book overwrites trades.sl_price with each trail, and the move
+  // that would refuse it above is pruned from position_events after 90 days.
+  // initial_risk is rewritten only by a human re-strategize.
+  const sized = Number(row.initialRisk)
+  const side = String(row.side ?? '').toLowerCase()
+  const sideDir = side === 'short' || side === 'sell' ? 1 : side === 'long' || side === 'buy' ? -1 : 0
+  // The order sends the distance rounded to the broker's price step and never
+  // below one step (lot-sizing.js relativePoints), while initial_risk keeps the
+  // unrounded distance: a genuine bracket can sit up to one step away.
+  const step = brokerPriceStep(fill, stop, bp?.takeProfit)
+  const tol = (d) => Math.max(d * 0.02, step * (1 + 1e-9))
+  if (sized > 0 && sideDir !== 0) {
+    if (!(fill > 0)) return false
+    return Math.abs(stop - (fill + sideDir * sized)) <= tol(sized)
+  }
+  if (!(planned > 0)) return true // no plan on record: the first stop seen is all there is
+  const dist = Math.abs(entry - planned)
+  if (!(dist > 0) || !(fill > 0)) return false
+  const dir = planned > entry ? 1 : -1
+  return Math.abs(stop - (fill + dir * dist)) <= tol(dist)
+}
+
 export function brokerVolumeToLots(bp, symbol, db = null, accountId = null) {
   return brokerUnitsToLots(bp?.tradeData?.volume ? bp.tradeData.volume / 100 : null, symbol, db, accountId)
 }
@@ -434,7 +484,8 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   const knownRows = db.prepare(
     `SELECT mp.id, mp.symbol, mp.source, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
             mp.broker_volume_units, mp.broker_sl, mp.broker_tp, mp.trade_id, mp.be_moved,
-            t.ctrader_position_id, t.volume AS tradeVolume, t.broker_sl_initial, t.opened_at AS tradeOpenedAt
+            t.ctrader_position_id, t.volume AS tradeVolume, t.broker_sl_initial, t.opened_at AS tradeOpenedAt,
+            t.sl_price AS tradeSlPrice, mp.initial_risk AS initialRisk
      FROM monitored_positions mp
      LEFT JOIN trades t ON t.id = mp.trade_id
      WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL ${mpScope.sql}`
@@ -657,7 +708,19 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       // actually existed differed on 5 of 5 day-one trades and realised R
       // read up to 2R off. Stamped ONCE, and only before any break-even move
       // — a trailed stop is not the risk taken at entry.
-      if (row.trade_id && row.broker_sl_initial == null && Number(bSl) > 0 && !row.be_moved && !isTrailing(acct, posId)) {
+      //
+      // Claude · № 13,923 13-Oct (owner: audit fix 3 "Fix the stamp";
+      // claude-builder). NOR AFTER THE TRAIL ENGINE. NAS100 #1775 (08-10):
+      // the gateway's since-entry trail moved the stop 20 s after the fill
+      // (31533.9 → 31385.9), before this pass saw it, and 31385.9 was stamped
+      // as the stop at entry. So the first stop seen is stamped only when (a)
+      // no stop move is on record for the position, and (b) where the trade
+      // has a planned stop, the broker's stop is the opening bracket: the
+      // broker's fill ∓ the planned distance, within 2% of that distance (the
+      // re-anchor to the fill and the price snap stay inside it; a trail move
+      // does not). Otherwise it stays NULL: unknown, never a moved stop.
+      if (row.trade_id && row.broker_sl_initial == null && Number(bSl) > 0 && !row.be_moved && !isTrailing(acct, posId)
+        && openingBracketStop(db, row, posId, Number(bSl), bp)) {
         try {
           db.prepare(`UPDATE trades SET broker_sl_initial = ? WHERE id = ? AND broker_sl_initial IS NULL`).run(Number(bSl), row.trade_id)
         } catch { /* a forensics column must never fail the reconcile */ }

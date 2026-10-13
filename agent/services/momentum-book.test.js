@@ -2002,3 +2002,36 @@ test('W11 wiring (comments stripped): the loop hands the book the registry\'s ma
   assert.match(call, /accounts: getAutopilotAccounts\(db\)/, 'entries keep the autopilot roster')
   assert.match(call, /manageAccounts: \(\(\) => \{ try \{ return registryManageAccounts\(db\) \}/, 'the trail gets the managing roster')
 })
+
+// Claude · № 14,047 13-Oct (owner: Codex P1 on #1352, "Book trail writes an event"; claude-builder).
+// Source: momentum-book.js overwrites trades.sl_price with every confirmed
+// trail and wrote no position event, so the reconciler's stop-at-entry check
+// (#1352) saw the trailed stop equal to the "planned" stop and could stamp it
+// as broker_sl_initial. A confirmed trail that moves the stop now leaves a
+// trail_tightened event; a pass that does not move it leaves none.
+test('a confirmed book trail that moves the stop records a trail_tightened event; a pass that does not move it records none', async () => {
+  const db = fresh()
+  setState(db, MOMENTUM_BOOK_CONFIG_KEY, JSON.stringify(EVERY_PASS))
+  setStage(db, { kind: 'strategy', key: TSMOM_STRATEGY, stage: 'trade', on: true, accountId: DEMO }, { getState, setState })
+  shadowRow(db, { symbol: 'BTCUSD', action: 'enter' })
+  const f = fakes()
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 1_000 })
+  const before = db.prepare(`SELECT stop, trade_id, position_id FROM momentum_book`).get()
+  const trailEvents = () => db.prepare(`SELECT trade_id, position_id, kind, from_value, to_value, source FROM position_events WHERE kind = 'trail_tightened'`).all()
+  assert.equal(trailEvents().length, 0)
+  f.deps.bars = async () => f.bars.map(b => ({ ...b, h: b.h + 10, l: b.l + 10, c: b.c + 10 }))
+  const r = await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 2_000 })
+  assert.equal(r.trailed, 1)
+  const after = db.prepare(`SELECT stop FROM momentum_book`).get().stop
+  const ev = trailEvents()
+  assert.equal(ev.length, 1, 'RED before: the book trail moved trades.sl_price and journalled nothing')
+  assert.equal(ev[0].trade_id, before.trade_id)
+  assert.equal(ev[0].position_id, String(before.position_id))
+  assert.equal(ev[0].from_value, before.stop)
+  assert.equal(ev[0].to_value, after)
+  assert.equal(ev[0].source, 'momentum_book')
+  // Price falls back: no move, no event.
+  f.deps.bars = async () => f.bars
+  await runMomentumBook(db, { accounts, credsFor, deps: f.deps, now: 3_000 })
+  assert.equal(trailEvents().length, 1)
+})

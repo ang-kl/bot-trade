@@ -285,3 +285,24 @@ test('D3: no symbol id, no verified digits or no current quote → no amend, and
     assert.ok(summarize(out).length > 0, label)
   }
 })
+
+// Claude · № 14,074 13-Oct (owner: Codex P2 on #1352, "Re-strategize writes an event"; claude-builder).
+// Source: restrategize.js rewrites current_sl, initial_risk and broker_sl after
+// a tamper with no position event, so the reconciler's stop-at-entry check
+// (#1352) could match the re-planned stop against the rewritten initial_risk
+// and stamp it as broker_sl_initial. The rewrite now records an sl_moved event.
+test('a re-strategized stop records an sl_moved event (old stop to the amended stop)', async () => {
+  const db = initDB(':memory:')
+  const tradeId = seed(db, { side: 'long', sl: 99 })
+  const amends = []
+  const out = await restrategizeAfterTamper(db, { host: 'h', accountId: '11' }, { kind: 'reversed', symbol: 'XAUUSD', positionId: '42', from: 'short', to: 'long', symbolId: 41 }, {
+    fetchBars: async () => risingBars,
+    getMeta: async () => ({ brokerDigits: 2 }),
+    getQuote: async () => ({ bid: 139.4, ask: 139.6 }),
+    amend: async (_c, args) => { amends.push(args); return { ok: true } },
+  })
+  assert.equal(out.did, 'recalibrated')
+  const ev = db.prepare(`SELECT trade_id, position_id, account_id, kind, from_value, to_value, source FROM position_events WHERE kind = 'sl_moved'`).all()
+  assert.equal(ev.length, 1, 'RED before: the re-plan rewrote the stop and initial_risk with no movement evidence')
+  assert.deepEqual(ev[0], { trade_id: tradeId, position_id: '42', account_id: '11', kind: 'sl_moved', from_value: 99, to_value: amends[0].stopLoss, source: 'restrategize' })
+})
