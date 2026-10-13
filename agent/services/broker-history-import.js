@@ -108,22 +108,39 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
   // is visible for the position, and its fill covers everything the visible
   // closing deals closed. Anything else records no opening rate (NULL), and
   // the upsert never replaces an opening rate already stored.
-  const openersByPosition = new Map(), closedByPosition = new Map()
+  //
+  // Claude · № 14,342 13-Oct (Codex P2 on #1358 round 3; claude-builder):
+  // covering the visible close is not proof — a lone add-on can cover a
+  // smaller partial close. The broker's own proof is the position's entry
+  // price, which every closing deal states (closePositionDetail.entryPrice):
+  // a lone opener whose execution price is that entry price filled the whole
+  // position's entry; an add-on at another price does not (the entry is then
+  // the average of both fills). So each visible closing deal must name an
+  // entry equal to the lone opener's execution price. Left open, and stated:
+  // an add-on at exactly the original's price cannot be told apart here.
+  const openersByPosition = new Map(), closedByPosition = new Map(), entriesByPosition = new Map()
   for (const d of deals) {
     const pid = d.positionId != null ? String(d.positionId) : null
     if (!pid) continue
     if (d.closePositionDetail) {
       const q = closingExecutedQuantity(d)
       closedByPosition.set(pid, (closedByPosition.get(pid) ?? 0) + (q ?? Infinity))
+      entriesByPosition.set(pid, [...(entriesByPosition.get(pid) ?? []), d.closePositionDetail.entryPrice])
       continue
     }
     if (!executedDeal(d) || !(Number(d.filledVolume) > 0) || d.executionTimestamp == null) continue
     openersByPosition.set(pid, [...(openersByPosition.get(pid) ?? []), d])
   }
+  const samePrice = (a, b) => typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && a > 0
+    && Math.abs(a - b) <= Math.max(1e-12, Math.abs(a) * 1e-9)
   const openDealByPosition = new Map()
   for (const [pid, openers] of openersByPosition) {
     if (openers.length !== 1) continue
-    if (Number(openers[0].filledVolume) >= (closedByPosition.get(pid) ?? 0)) openDealByPosition.set(pid, openers[0])
+    const [o] = openers, entries = entriesByPosition.get(pid) ?? []
+    // (Rows are only made for closing deals, so a row's position always has
+    // at least one stated entry to check.)
+    if (Number(o.filledVolume) >= (closedByPosition.get(pid) ?? 0)
+      && entries.every(e => samePrice(e, o.executionPrice))) openDealByPosition.set(pid, o)
   }
 
   const rows = []

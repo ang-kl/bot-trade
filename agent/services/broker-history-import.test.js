@@ -618,3 +618,23 @@ test('NASA-4: an add-on fill never stands in for the opener; a stored opening ra
   const stored = db.prepare('SELECT open_margin_rate, open_base_usd_rate FROM broker_deals WHERE deal_id=?').get('84')
   assert.deepEqual([stored.open_margin_rate, stored.open_base_usd_rate], [1.28, 1], 'a later read never replaces a stored opening rate')
 })
+
+// Claude · № 14,342 13-Oct (Codex P2 on #1358 round 3; claude-builder). Codex's
+// sequence: original 2,000 outside the read, add-on 2,000 inside, partial close
+// 1,000 inside. The closing deal states the position's entry (the average of
+// both fills); the add-on's price is not it, so its rates are not recorded.
+test('NASA-4: a lone add-on before a smaller partial close is not the opener; the position entry decides', () => {
+  const T = Date.parse('2026-10-12T10:00:00Z')
+  const meta = { 1: { symbolName: 'USDSGD', lotSize: 100000 } }
+  const open = (id, ms, filled, px) => ({ dealId: id, positionId: 993, symbolId: 1, tradeSide: 1, volume: filled, filledVolume: filled,
+    executionPrice: px, executionTimestamp: ms, dealStatus: 2, marginRate: px, baseToUsdConversionRate: 1 })
+  const close = (id, closed, entry) => ({ dealId: id, positionId: 993, symbolId: 1, tradeSide: 2, volume: closed, filledVolume: closed,
+    executionPrice: 1.3, executionTimestamp: T, dealStatus: 2, marginRate: 1.3, baseToUsdConversionRate: 1,
+    closePositionDetail: { entryPrice: entry, grossProfit: 0, swap: 0, commission: -9, balance: 1000000, moneyDigits: 2, closedVolume: closed } })
+  const [addOnOnly] = shapeDeals([open(90, T - 3_600_000, 2000, 1.31), close(91, 1000, 1.295)], meta, '43097342')
+  assert.equal(addOnOnly.open_margin_rate, null, 'entry 1.295 is the average; the add-on at 1.31 is not the opener')
+  const [opener] = shapeDeals([open(92, T - 3_600_000, 2000, 1.28), close(93, 1000, 1.28)], meta, '43097342')
+  assert.equal(opener.open_margin_rate, 1.28, 'the lone opener at the position entry is proven')
+  const [noEntry] = shapeDeals([open(94, T - 3_600_000, 2000, 1.28), close(95, 1000, undefined)], meta, '43097342')
+  assert.equal(noEntry.open_margin_rate, null, 'no stated entry, no proof')
+})
