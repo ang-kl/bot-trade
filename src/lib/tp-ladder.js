@@ -41,3 +41,21 @@ export function tpLadder(tp1, tp2, totalLots, { scaledOut = false } = {}) {
     { n: 2, price: t2, lots: l2 },
   ]
 }
+
+// Claude · № 13,980 13-Oct (owner: Codex P2 on #1348 "TP money from held lots"; claude-builder).
+// The display ladder stays on the opened lots; the MONEY at the targets is what
+// the lots held now would earn. When the broker's held lots differ from the
+// opened lots, a level already taken (done) earns nothing more, and the held
+// lots go to the levels still open: all of them to a single open level, split
+// the same way tpLadder splits when two are open.
+export function heldMoneyLadder(tps, heldLots, openedLots) {
+  if (!tps) return tps
+  const held = Number(heldLots)
+  const opened = Number(openedLots)
+  if (heldLots == null || !Number.isFinite(held) || held <= 0) return tps
+  if (openedLots != null && Number.isFinite(opened) && Math.abs(held - opened) < 1e-9) return tps
+  const open = tps.filter(t => !t.done)
+  if (open.length === 2) return tpLadder(open[0].price, open[1].price, held)
+  const level = open[0] ?? tps[tps.length - 1]
+  return [{ ...level, lots: held }]
+}

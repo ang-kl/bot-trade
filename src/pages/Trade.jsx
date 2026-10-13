@@ -17,7 +17,7 @@ import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import ScopeDot from '../components/common/ScopeDot.jsx'
 import { useAccountScope, MODES } from '../lib/use-account-scope.js'
-import { tpLadder } from '../lib/tp-ladder.js'
+import { tpLadder, heldMoneyLadder } from '../lib/tp-ladder.js'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import { toMs, priceDp, brokerOrderRows, bracketMoney, estimateMargin } from '../lib/std-trade-rows.js'
@@ -122,7 +122,9 @@ function openPositionRows(positions, prices = {}, enrichById = {}, leverage = nu
     const tpTruth = enr.tpNetImpact ?? enr.tpGrossImpact ?? null
     const money = (slTruth != null && tpTruth != null) ? { slMoney: null, tpMoney: null } : bracketMoney({
       symbol: p.symbol, side: p.side, qty: heldLots(p), entry: p.entry_price,
-      sl: p.current_sl, tp: p.current_tp, tps, ref: current, rates: prices,
+      // Claude · № 13,980 13-Oct (owner: Codex P2 on #1348; claude-builder).
+      // The money at the targets is on the lots held now, not the opened ladder.
+      sl: p.current_sl, tp: p.current_tp, tps: heldMoneyLadder(tps, p.current_lots, p.volume), ref: current, rates: prices,
     })
     // Broker truth first; the notional ÷ leverage estimate only fills the gap
     // when the live enrichment hasn't landed (or the position is untracked).
