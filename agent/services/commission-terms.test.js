@@ -397,12 +397,44 @@ test('NASA-4 follow-up: quote-currency-per-lot terms are priced through each sid
   assert.ok(Math.abs(d.quoteToDeposit.closeDerivedOverStated - 1) < 0.001, 'the derivation agrees with the broker\'s own close rate')
 })
 
-test('NASA-4 follow-up: quote-currency terms without a broker rate, or with a minimum, are not compared', () => {
+test('NASA-4 follow-up: quote-currency terms without a broker rate are not compared', () => {
   const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a, { openMargin: null })
   storeCommissionTerms(a, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
   assert.equal(commissionTermsCheck(a, '46979908', { days: 30, now: NOW }).symbols[0].reason, 'quote_deposit_rate_not_reported')
+})
+
+// Claude · № 14,434 13-Oct (Codex P2 on #1361; claude-builder). The minimum
+// in its own currency (spotware ProtoOAMinCommissionType): QUOTE_CURRENCY at
+// each side's quote rate, CURRENCY in USD at each side's deposit-per-USD rate.
+// Same deal as above: GBP 1.5 a side, 1.37647 and 1.3605 USD per GBP. Self-derived.
+function quoteTerms(db, min) {
+  storeCommissionTerms(db, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000, ...min }] }, { 9: 'EURGBP' }, { now: NOW })
+  return commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols[0]
+}
+test('NASA-4 follow-up: a QUOTE_CURRENCY minimum on quote-currency terms takes the same side rates', () => {
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a)
+  const s = quoteTerms(a, { preciseMinCommission: 100_000_000, minCommissionType: 'QUOTE_CURRENCY' })
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.sample[0].modelledDealDeposit, 4.1055, 'GBP 1 does not bind on GBP 1.5')
+  // GBP 4 binds on both sides: 4 × 1.37647 + 4 × 1.3605 = 10.9479.
   const b = initDB(':memory:'); usdDeposit(b, '46979908'); quoteDeal(b)
-  storeCommissionTerms(b, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000, preciseMinCommission: 100_000_000, minCommissionType: 'QUOTE_CURRENCY' }] }, { 9: 'EURGBP' }, { now: NOW })
-  const s = commissionTermsCheck(b, '46979908', { days: 30, now: NOW }).symbols[0]
-  assert.equal(s.compared, false); assert.equal(s.reason, 'min_commission_quote_currency_not_usd')
+  b.prepare(`UPDATE broker_deals SET commission = -10.95 WHERE deal_id = 'q1'`).run()
+  const t = quoteTerms(b, { preciseMinCommission: 400_000_000, minCommissionType: 'QUOTE_CURRENCY' })
+  assert.equal(t.compared, true, JSON.stringify(t)); assert.equal(t.agrees, true); assert.equal(t.sample[0].modelledDealDeposit, 10.9479)
+})
+test('NASA-4 follow-up: a USD minimum on quote-currency terms is used; another currency is not', () => {
+  // USD 3 binds on both sides of a USD deposit: 3 + 3.
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a)
+  a.prepare(`UPDATE broker_deals SET commission = -6 WHERE deal_id = 'q1'`).run()
+  const s = quoteTerms(a, { preciseMinCommission: 300_000_000, minCommissionType: 'CURRENCY', minCommissionAsset: 'USD' })
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.agrees, true); assert.equal(s.sample[0].modelledDealDeposit, 6)
+  const b = initDB(':memory:'); usdDeposit(b, '46979908'); quoteDeal(b)
+  const t = quoteTerms(b, { preciseMinCommission: 300_000_000, minCommissionType: 'CURRENCY', minCommissionAsset: 'EUR' })
+  assert.equal(t.compared, false); assert.equal(t.reason, 'min_commission_not_usd')
+})
+test('NASA-4 follow-up: a binding minimum on quote-currency terms of a position closed in parts is not compared', () => {
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a)
+  deal(a, { id: 'q2', position: 'p-q1', account: '46979908', symbol: 'EURGBP', lots: 0.5, entry: 0.85, close: 0.86, commission: -6 })
+  a.prepare(`UPDATE broker_deals SET open_margin_rate=1.17, open_base_usd_rate=1.17, close_margin_rate=1.17, close_base_usd_rate=1.17, quote_deposit_rate=1.3605 WHERE deal_id='q2'`).run()
+  const s = quoteTerms(a, { preciseMinCommission: 300_000_000, minCommissionType: 'CURRENCY', minCommissionAsset: 'USD' })
+  assert.equal(s.compared, false); assert.equal(s.reason, 'min_commission_split_position')
 })
