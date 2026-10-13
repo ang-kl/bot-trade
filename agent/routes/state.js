@@ -852,7 +852,7 @@ export default function stateRouter(db) {
     // have 'P&L, To TP/SL'").
     const rows = db
       .prepare(
-        `SELECT mp.*, t.volume AS volume, t.filled_volume AS filled_volume, t.filled_volume_source AS filled_volume_source, t.opened_at AS opened_at, t.ctrader_position_id AS ctrader_position_id, t.horizon AS horizon, a.tp2_price AS tp2_price
+        `SELECT mp.*, t.volume AS volume, t.filled_volume AS filled_volume, t.filled_volume_source AS filled_volume_source, t.origin AS trade_origin, t.opened_at AS opened_at, t.ctrader_position_id AS ctrader_position_id, t.horizon AS horizon, a.tp2_price AS tp2_price
          FROM monitored_positions mp
          LEFT JOIN trades t ON t.id = mp.trade_id
          LEFT JOIN analyses a ON a.id = t.analysis_id
@@ -959,7 +959,7 @@ export default function stateRouter(db) {
         // labelled"; claude-builder): the broker-recorded fill when known, else
         // the lots sent while no reduction is on record ('sent_order'), else
         // unknown after a partial — never the residual trades.volume holds then.
-        ...(() => { const o = openedLotsFor({ filledVolume: r.filled_volume, filledSource: r.filled_volume_source, volume: r.volume,
+        ...(() => { const o = openedLotsFor({ filledVolume: r.filled_volume, filledSource: r.filled_volume_source, volume: r.volume, origin: r.trade_origin,
           reduced: Number(r.scaled_out) === 1 || r.bank_partial_at != null || Number(r.early_trimmed) === 1
             || !noReductionOnRecord(db, { accountId: r.account_id, positionId: r.ctrader_position_id, tradeId: r.trade_id }) })
         return { opened_lots: o.lots, opened_lots_source: o.source } })(),

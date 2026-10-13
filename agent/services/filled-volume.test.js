@@ -60,9 +60,15 @@ test('opening deals: executed opening deals of this position only, a complete an
 
 test('opened lots: the recorded fill, else the sent lots while no reduction, else unknown — never the residual', () => {
   assert.deepEqual(openedLotsFor({ filledVolume: 0.2, filledSource: 'broker_opening_deals', volume: 0.1, reduced: true }), { lots: 0.2, source: 'broker_opening_deals' })
-  assert.deepEqual(openedLotsFor({ filledVolume: null, filledSource: null, volume: 0.2, reduced: false }), { lots: 0.2, source: 'sent_order' })
+  assert.deepEqual(openedLotsFor({ filledVolume: null, filledSource: null, volume: 0.2, reduced: false, origin: 'bot_market_dispatch' }), { lots: 0.2, source: 'sent_order' })
+  assert.deepEqual(openedLotsFor({ filledVolume: null, filledSource: null, volume: 0.2, reduced: false, origin: 'manual_broker' }), { lots: 0.2, source: 'sent_order' })
+  // Codex P2 on #1359 (№ 14,343): an adopted row's volume is the broker's, not an order sent.
+  for (const origin of ['reconciler_adopted', 'external_system', 'unknown', null]) {
+    assert.deepEqual(openedLotsFor({ filledVolume: null, filledSource: null, volume: 0.2, reduced: false, origin }), { lots: null, source: 'unknown' })
+  }
   assert.deepEqual(openedLotsFor({ filledVolume: null, filledSource: null, volume: 0.1, reduced: true }), { lots: null, source: 'unknown_after_partial' })
-  assert.deepEqual(openedLotsFor({ filledVolume: 0.2, filledSource: 'guess', volume: 0.2, reduced: false }), { lots: 0.2, source: 'sent_order' })
+  assert.deepEqual(openedLotsFor({ filledVolume: 0.2, filledSource: 'guess', volume: 0.2, reduced: false, origin: 'bot_pending_fill' }), { lots: 0.2, source: 'sent_order' })
+  assert.deepEqual(openedLotsFor({ filledVolume: 0.2, filledSource: 'broker_closing_deals', volume: 0.1, reduced: true }), { lots: null, source: 'unknown_after_partial' }, 'no longer a source')
 })
 
 test('sweep: an open position with no recorded fill is read from its own deals and stamped on THIS account (demo and live)', async () => {
@@ -104,7 +110,7 @@ test('reconciler: the first sighting with no reduction on record stamps the brok
   }
 })
 
-test('history import: a scaled row\'s residual is not kept as requested_volume; the closing deals are its fill', () => {
+test('history import: a scaled row\'s residual is not kept as requested_volume; closing deals are not recorded as the fill', () => {
   for (const scaled of [false, true]) {
     const db = initDB(':memory:')
     const id = trade(db, { status: 'closed', volume: scaled ? 0.1 : 0.25 })
@@ -116,6 +122,8 @@ test('history import: a scaled row\'s residual is not kept as requested_volume; 
     const row = db.prepare('SELECT volume, requested_volume FROM trades WHERE id=?').get(id)
     assert.equal(row.volume, 0.2)
     assert.equal(row.requested_volume, scaled ? null : 0.25, scaled ? 'the residual 0.1 is no request' : 'the lots sent (0.25, filled 0.2) are kept')
-    assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_closing_deals' })
+    // Codex P2 on #1359 (№ 14,343): a history read can hold only the later
+    // closes of a position, so their sum is not proven to be the fill.
+    assert.deepEqual(filled(db, id), { v: null, s: null })
   }
 })

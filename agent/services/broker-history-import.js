@@ -31,7 +31,7 @@ import { stampRealisedAudit } from './trade-consistency.js'
 import { pageDeals } from '../lib/deal-paging.js'
 import { brokerDealLinkIdentities } from './broker-deal-link-identity.js'
 import { brokerAmount, brokerVersion } from './deal-balances.js'
-import { stampFilledVolume, noReductionOnRecord } from './filled-volume.js'
+import { noReductionOnRecord } from './filled-volume.js'
 import { normPosId } from '../lib/pos-id.js'
 import { FALSE_CLOSE_TOLERANCE_MS, executedDeal } from '../lib/position-deal-history.js'
 import { captureCloseDeals } from './broker-exit-attribution.js'
@@ -552,8 +552,9 @@ export function reconcileTradePricesToBroker(db) {
   // keeps the gate's lots (the entry writes it when they differ from the sent
   // lots). The pre-overwrite volume is those lots only while no reduction is on
   // record; after a partial it is a residual, which is no request (B3) — so it
-  // is then not copied. The closing deals' lots are also this closed row's
-  // filled quantity, recorded with that source (filled-volume.js).
+  // is then not copied. (The closing deals here are not proven to be the whole
+  // lifecycle — an earlier close can predate the window — so they are not
+  // recorded as the fill: Codex P2 on #1359, № 14,343.)
   const writeVolume = db.prepare(`UPDATE trades SET requested_volume = COALESCE(requested_volume, ?), volume = ? WHERE id = ?`)
   const openedMsOf = (t) => {
     const raw = t.opened_at
@@ -666,9 +667,7 @@ export function reconcileTradePricesToBroker(db) {
         writeVolume.run(sentStill ? t.volume : null, lots, tid)
         out.volumesCorrected++
       }
-      if (lots != null && t.status === 'closed' && t.account_id != null) {
-        stampFilledVolume(db, { accountId: t.account_id, positionId: t.ctrader_position_id, tradeId: tid, lots, source: 'broker_closing_deals' })
-      }
+
       if (same(entry, t.entry_price) && same(exit, t.exit_price)) { out.unchanged++; continue }
       write.run(entry, exit, tid)
       out.corrected++

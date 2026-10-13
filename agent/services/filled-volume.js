@@ -12,7 +12,6 @@
 // Sources, best first. A better source replaces a worse one; never the reverse.
 //   broker_opening_deals  the position's own deal list (complete, hasMore false):
 //                         the sum of its executed opening deals' filledVolume
-//   broker_closing_deals  a closed row: the sum of its closing deals' lots
 //   broker_position_before_first_partial
 //                         the broker-confirmed volume a keeper/general partial
 //                         read just before the first reduction on record
@@ -24,8 +23,13 @@ import { executedDeal, ownPositionDeal } from '../lib/position-deal-history.js'
 import { openedVolumeOnRecord } from '../lib/deal-money.js'
 
 export const FILLED_SOURCES = Object.freeze([
-  'broker_opening_deals', 'broker_closing_deals', 'broker_position_before_first_partial', 'broker_position_first_seen',
+  'broker_opening_deals', 'broker_position_before_first_partial', 'broker_position_first_seen',
 ])
+// Claude · № 14,343 13-Oct (Codex P2s on #1359; claude-builder). A closed row's
+// closing deals are not a source: a history read can hold only the later
+// closes of a position. And trades.volume is "the lots sent" only for an order
+// this system sent; an adopted or external row's volume is the broker's.
+export const SENT_ORIGINS = Object.freeze(['bot_market_dispatch', 'bot_pending_fill', 'manual_broker'])
 const rankSql = col => `CASE ${col} ${FILLED_SOURCES.map((s, i) => `WHEN '${s}' THEN ${i}`).join(' ')} ELSE ${FILLED_SOURCES.length} END`
 const positiveLots = v => typeof v === 'number' && Number.isFinite(v) && v > 0
 const pidOf = v => (/^[1-9]\d*(\.0+)?$/.test(String(v ?? '')) ? String(v).replace(/\.0+$/, '') : null)
@@ -76,10 +80,11 @@ export function noReductionOnRecord(db, { accountId, positionId, tradeId = null,
  * Opened lots for a reader: the recorded fill, else the lots sent while no
  * reduction is on record (labelled), else unknown. Never the residual.
  */
-export function openedLotsFor({ filledVolume, filledSource, volume, reduced }) {
+export function openedLotsFor({ filledVolume, filledSource, volume, reduced, origin }) {
   if (positiveLots(Number(filledVolume)) && FILLED_SOURCES.includes(filledSource)) {
     return { lots: Number(filledVolume), source: filledSource }
   }
   if (reduced) return { lots: null, source: 'unknown_after_partial' }
+  if (!SENT_ORIGINS.includes(origin)) return { lots: null, source: 'unknown' }
   return positiveLots(Number(volume)) ? { lots: Number(volume), source: 'sent_order' } : { lots: null, source: 'unknown' }
 }
