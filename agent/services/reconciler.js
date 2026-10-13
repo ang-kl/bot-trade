@@ -29,6 +29,21 @@ import { horizonForStrategy } from './trade-horizon.js'
 // caller keeps working — without it the behaviour is exactly as before.
 // Is `stop` the broker's OPENING bracket for this row, or a stop that has
 // already moved? See the broker_sl_initial stamp below (Claude · № 13,923).
+// The broker's price step, read from its own prices (fill, stop, target):
+// each is quoted at the symbol's precision, so the most decimals among them
+// is the precision. Claude · № 14,083 13-Oct (owner: Codex P2 #4 on #1352).
+export function brokerPriceStep(...prices) {
+  let dp = -1
+  for (const p of prices) {
+    const n = Number(p)
+    if (!Number.isFinite(n) || n <= 0) continue
+    const t = n.toFixed(10).replace(/0+$/, '')
+    const d = t.includes('.') ? t.length - t.indexOf('.') - 1 : 0
+    if (d > dp) dp = d
+  }
+  return dp < 0 ? 0 : 10 ** -dp
+}
+
 export function openingBracketStop(db, row, posId, stop, bp) {
   try {
     const moved = db.prepare(`SELECT 1 FROM position_events WHERE trade_id = ?
@@ -46,15 +61,20 @@ export function openingBracketStop(db, row, posId, stop, bp) {
   const sized = Number(row.initialRisk)
   const side = String(row.side ?? '').toLowerCase()
   const sideDir = side === 'short' || side === 'sell' ? 1 : side === 'long' || side === 'buy' ? -1 : 0
+  // The order sends the distance rounded to the broker's price step and never
+  // below one step (lot-sizing.js relativePoints), while initial_risk keeps the
+  // unrounded distance: a genuine bracket can sit up to one step away.
+  const step = brokerPriceStep(fill, stop, bp?.takeProfit)
+  const tol = (d) => Math.max(d * 0.02, step * (1 + 1e-9))
   if (sized > 0 && sideDir !== 0) {
     if (!(fill > 0)) return false
-    return Math.abs(stop - (fill + sideDir * sized)) <= sized * 0.02
+    return Math.abs(stop - (fill + sideDir * sized)) <= tol(sized)
   }
   if (!(planned > 0)) return true // no plan on record: the first stop seen is all there is
   const dist = Math.abs(entry - planned)
   if (!(dist > 0) || !(fill > 0)) return false
   const dir = planned > entry ? 1 : -1
-  return Math.abs(stop - (fill + dir * dist)) <= dist * 0.02
+  return Math.abs(stop - (fill + dir * dist)) <= tol(dist)
 }
 
 export function brokerVolumeToLots(bp, symbol, db = null, accountId = null) {

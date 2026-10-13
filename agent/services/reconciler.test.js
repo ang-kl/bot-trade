@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, getState } from '../db.js'
 import { markTrailing, resetTrailingRegistry } from '../lib/stop-policy.js'
-import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, undoIntentUpgrades, attributeBrokerClose, GENERIC_BROKER_CLOSE } from './reconciler.js'
+import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses, decodeRawBrokerOrder, repairMisfiledOwnPositions, undoIntentUpgrades, attributeBrokerClose, GENERIC_BROKER_CLOSE, brokerPriceStep } from './reconciler.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -1660,4 +1660,42 @@ test('with the move pruned and sl_price overwritten, initial_risk still keeps a 
   db.prepare(`UPDATE trades SET sl_price = 31385.9 WHERE id = ?`).run(held)
   reconcilePositions(db, [makeBrokerPosition({ positionId: '247461614', symbolName: 'NAS100', tradeSide: 'SELL', openPrice: 31205.8, stopLoss: 31533.9, takeProfit: 30500 })], [], setState)
   assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(held).broker_sl_initial, 31533.9)
+})
+
+// Claude · № 14,083 13-Oct (owner: Codex P2 #4 on #1352, "Fix it in #1352"; claude-builder).
+// Source: the order path sends relativePoints(slDistance, digits) — the distance
+// rounded to the symbol's price step, never below one step (lot-sizing.js) —
+// while initial_risk keeps the unrounded distance. On a 2-decimal symbol a
+// 0.024 stop is sent as 0.02, so the genuine bracket sits 0.004 from
+// fill − initial_risk, far outside 2% of 0.024. The tolerance now admits one
+// price step read from the broker's own prices.
+function seedSmallLong(db, positionId, initialRisk) {
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, sl_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES ('XYZ.US', 'BUY', 50.13, 50.106, 1, ?, 'autopilot', 'open', datetime('now'))`
+  ).run(positionId).lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status)
+     VALUES ('XYZ.US', ?, 'long', 50.13, 50.106, 51.0, 'test', ?, 'autopilot', 'active')`
+  ).run(tradeId, initialRisk)
+  return tradeId
+}
+
+test('a bracket rounded to the broker price step is still the opening bracket; a stop moved beyond a step is not', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const snapped = seedSmallLong(db, '901', 0.024)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '901', symbolName: 'XYZ.US', openPrice: 50.13, stopLoss: 50.11, takeProfit: 51 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(snapped).broker_sl_initial, 50.11,
+    'RED before: 0.004 off fill − initial_risk is one step of rounding, not a move')
+  const moved = seedSmallLong(db, '902', 0.024)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '902', symbolName: 'XYZ.US', openPrice: 50.13, stopLoss: 50.14, takeProfit: 51 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(moved).broker_sl_initial, null, 'a stop moved several steps is refused')
+})
+
+test('brokerPriceStep reads the precision from the broker\'s own prices', () => {
+  assert.equal(brokerPriceStep(50.13, 50.11), 0.01)
+  assert.ok(Math.abs(brokerPriceStep(25214, 25283.6) - 0.1) < 1e-12, 'a whole-number price does not hide the step another price shows')
+  assert.ok(Math.abs(brokerPriceStep(1.3298000000000001, 1.32092) - 0.00001) < 1e-15, 'float noise past 10 decimals is ignored')
+  assert.equal(brokerPriceStep(null, 0, NaN), 0, 'no price, no step')
 })
