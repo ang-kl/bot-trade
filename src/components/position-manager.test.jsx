@@ -32,6 +32,33 @@ describe('PositionManager sheet', () => {
   })
 })
 
+// Claude · № 14,050 13-Oct (owner: "build the partial close lots field"; claude-builder).
+describe('PositionManager partial close', () => {
+  it('renders a lots-to-close field, empty by default, naming the whole position', () => {
+    const html = renderToStaticMarkup(<PositionManager p={p} onDone={() => {}} />)
+    expect(html).toMatch(/data-close-lots/)
+    expect(html).toMatch(/empty = all 0\.50/)
+    expect(html).toMatch(/>Close \(1\.1050\)/)
+  })
+  it('the Close goes through closeFlow and posts its body (wiring pin, comments stripped)', () => {
+    const src = readFileSync(new URL('./PositionManager.jsx', import.meta.url), 'utf8')
+      .replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    // Codex P1 on #1354: the sheet goes through closeFlow (preview → confirm the
+    // stepped figure → send it); the flow itself is tested in position-close-form.test.js.
+    expect(src).toMatch(/const flow = await closeFlow\(\{ input: closeLots, heldLots: p\.lots/)
+    expect(src).toMatch(/agentPost\('\/actions\/position-close', withAcct\(flow\.body\)\)/)
+    expect(src).toMatch(/if \(flow\.error\) \{ setMsg/)
+    // Codex P1 #2: the whole close runs inside the single-flight lock, busy from the start.
+    expect(src).toMatch(/onClick=\{\(\) => closeOnce\.current\(async \(\) => \{\s*setBusy\(true\)/)
+    expect(src).toMatch(/\} finally \{ setBusy\(false\) \}/)
+    // Codex round 4: the flow is told whether the sheet is still open, and the send re-checks it.
+    expect(src).toMatch(/open: \(\) => sheetOpen\.current \}\)/)
+    expect(src).toMatch(/if \(flow\.cancelled \|\| !sheetOpen\.current\) return/)
+    expect(src).toMatch(/return \(\) => \{ sheetOpen\.current = false \}/)
+    expect(src).toMatch(/const reply = await agentPost\('\/actions\/position-close-preview', withAcct\(body\)\)/)
+  })
+})
+
 describe('OrderManager sheet', () => {
   it('has no disabled Modify button; Cancel order is the action', () => {
     const html = renderToStaticMarkup(<OrderManager o={{ orderId: '9', symbol: 'GBPUSD', side: 'SELL', lots: 0.1, limitPrice: 1.3, sl: 1.31, tp: 1.28 }} onDone={() => {}} />)

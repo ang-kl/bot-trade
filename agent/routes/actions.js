@@ -18,6 +18,7 @@ import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
+import { partialCloseVolume } from '../lib/partial-close-volume.js'
 import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
 import { describeBracketGap } from '../lib/bracket-advice.js'
 import { setPhaseFlag } from '../services/phase-audit.js'
@@ -2821,9 +2822,19 @@ export default function actionsRouter(db, deps = {}) {
 
   // POST /actions/position-close — close ONE position, fully or partially.
   // Body: { positionId, lots? } (omit lots → full close).
-  router.post('/position-close', async (req, res) => {
+  // Codex P1 on #1354 (owner: "Both"): POST /actions/position-close-preview
+  // answers the lots a close WOULD send (stepped to the symbol's step) and
+  // sends nothing, so the sheet confirms the figure that executes. Codex P2
+  // (owner: "Own read route"): it is its own path so the client treats it as a
+  // read (timeout, abort) while the real close stays a money-moving request.
+  // One handler serves both; the preview route marks the request server-side
+  // (`req.closePreview`, which no client can set).
+  let positionCloseHandler = null
+  router.post('/position-close', positionCloseHandler = async (req, res) => {
+    const preview = req.closePreview === true
     try {
       const { positionId, lots } = req.body || {}
+      if (!preview && req.body?.preview != null) return res.status(400).json({ error: 'preview is POST /actions/position-close-preview; this route closes' })
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
       // `account` (03-09-2026): close on the NAMED account. PR-F checker M1:
       // with no account in the body this used to fall back to the PRIMARY
@@ -2843,8 +2854,15 @@ export default function actionsRouter(db, deps = {}) {
       let volume = pos.tradeData?.volume
       if (Number(lots) > 0) {
         const meta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, pos.tradeData?.symbolId)
-        volume = Math.min(volume, Math.round(Number(lots) * meta.lotSize))
+        // Claude · № 14,050 13-Oct (owner: "build the partial close lots field";
+        // claude-builder): stepped down to the symbol's volume step, refused
+        // below its minimum, before any broker call.
+        const sized = partialCloseVolume({ positionVolume: volume, lots, meta, strict: !preview })
+        if (sized.error) return res.status(400).json({ error: sized.error })
+        if (preview) return res.json({ ok: true, preview: true, positionId, lots: sized.lots, volume: sized.volume, partial: sized.partial, accountId: creds.accountId })
+        volume = sized.volume
       }
+      if (preview) return res.json({ ok: true, preview: true, positionId, lots: null, volume, partial: false, accountId: creds.accountId })
       const exec = await execClosePosition(creds, { positionId: parseInt(positionId), volume })
       const partial = volume < (pos.tradeData?.volume ?? volume)
       const local = db.prepare(
@@ -2860,6 +2878,17 @@ export default function actionsRouter(db, deps = {}) {
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
+  })
+  // The preview answers on its own path: the shared handler's reply is
+  // captured and sent from here, so this route's own body is what it replies.
+  router.post('/position-close-preview', async (req, res) => {
+    req.closePreview = true
+    const reply = await new Promise(resolve => positionCloseHandler(req, {
+      status: code => ({ json: body => resolve({ code, body }) }),
+      json: body => resolve({ code: 200, body }),
+    }))
+    if (reply.code === 200) return res.json(reply.body)
+    res.status(reply.code).json(reply.body)
   })
 
   // POST /actions/close-all — emergency mass-close: close EVERY open

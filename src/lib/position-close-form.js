@@ -1,0 +1,63 @@
+// Claude · № 14,050 13-Oct (owner: "build the partial close lots field"; claude-builder).
+// The position sheet's Close with an optional lots field. Empty = the whole
+// position (the route closes all of it with no `lots`). A figure below the
+// held lots is a partial close; at or above, the whole position. Bad input is
+// refused here with a reason and never sent.
+export function closeRequest(input, heldLots) {
+  const raw = String(input ?? '').trim()
+  if (raw === '') return { lots: null, partial: false, error: null }
+  const lots = /^\d*\.?\d+$/.test(raw) ? Number(raw) : NaN
+  if (!Number.isFinite(lots) || lots <= 0) return { lots: null, partial: false, error: 'lots to close must be a positive number' }
+  // Codex P1 #3 on #1354 (owner: "Always send the typed lots"): a typed figure
+  // is always sent as a figure. The held lots shown can be stale (a netted
+  // position can grow), so `partial` here is only the button's label; the
+  // route's fresh broker read decides partial or whole. Only an empty field
+  // closes the whole position.
+  const held = Number(heldLots)
+  return { lots, partial: !(Number.isFinite(held) && held > 0 && lots >= held), error: null }
+}
+
+/**
+ * Codex P1 on #1354 (owner: "Both"): the sheet's close, as a flow with its
+ * effects injected. A partial asks the route for a PREVIEW first (the lots
+ * stepped to the symbol's step, nothing sent), confirms THAT figure — saying
+ * so when it differs from what was typed — and sends exactly it. Returns
+ * { body } to post, or { error } / { cancelled: true }.
+ *   preview(body) → POST /actions/position-close-preview; its reply (throws on a refusal)
+ *   confirm(text) → boolean
+ */
+// Codex round 4 on #1354 (owner: "4th round, then merge"): `open()` says the
+// sheet is still showing this position. A preview can return after the sheet
+// was dismissed; the flow then stops — no confirm, nothing sent.
+export async function closeFlow({ input, heldLots, heldText, symbol, side, positionId, preview, confirm, open = () => true }) {
+  const req = closeRequest(input, heldLots)
+  if (req.error) return { error: req.error }
+  if (req.lots == null) return confirm(`Close ${symbol} ${side} ${heldText} lots at market?`) ? { body: { positionId } } : { cancelled: true }
+  let pv
+  try { pv = await preview({ positionId, lots: req.lots }) } catch (err) { return { error: err?.message || String(err) } }
+  if (!open()) return { cancelled: true, dismissed: true }
+  if (!pv?.ok || !pv.preview) return { error: pv?.error || 'the close preview did not answer' }
+  // The fresh position is no larger than the figure: the whole of it closes, and
+  // the figure still rides the request so a position that grew meanwhile is
+  // never closed beyond it.
+  if (!pv.partial) return confirm(`Close ${symbol} ${side} the whole position at market? (${req.lots} lots reach it)`) ? { body: { positionId, lots: req.lots } } : { cancelled: true }
+  const note = pv.lots !== req.lots ? `\n\n${req.lots} is not on the symbol's volume step: ${pv.lots} will close.` : ''
+  return confirm(`Close ${symbol} ${side} ${pv.lots} of ${heldText} lots at market?${note}`) ? { body: { positionId, lots: pv.lots } } : { cancelled: true }
+}
+
+/**
+ * Codex P1 #2 on #1354 (owner: "Lock from preview to done"): the Close was
+ * unlocked while its preview was in flight, so a second tap could raise a
+ * second confirm and send a second real close. A single-flight guard: while
+ * one call runs, another returns { skipped: true } without running; the lock
+ * is released when the call finishes, is cancelled or throws. Held in a ref,
+ * not React state, because two taps in one tick both read state as unlocked.
+ */
+export function singleFlight() {
+  let inFlight = false
+  return async (fn) => {
+    if (inFlight) return { skipped: true }
+    inFlight = true
+    try { return await fn() } finally { inFlight = false }
+  }
+}

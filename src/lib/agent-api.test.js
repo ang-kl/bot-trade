@@ -89,3 +89,25 @@ test('agentPost (characterisation, pre-WP-A behaviour): a 400 refusal throws the
     vi.doUnmock('sonner')
   }
 })
+
+// Claude · 13-Oct (Codex P2 on #1354, owner: "Own read route"; claude-builder).
+// The partial-close preview sends nothing, so it is a read: it carries an
+// abort signal (the 45 s read timeout) and a stalled preview cannot hold the
+// sheet's Close locked. The real close stays money-moving: no abort, so a slow
+// close is never reported as "nothing was changed".
+test('the close preview is bounded like a read; the real close is not', async () => {
+  vi.stubEnv('VITE_AGENT_SECRET_READ', 'read-only-value')
+  const fetchStub = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetchStub)
+  vi.doMock('sonner', () => ({ toast: { error: () => {} } }))
+  try {
+    const { agentPost } = await import('./agent-api.js')
+    await agentPost('/actions/position-close-preview', { positionId: '55', lots: 1 })
+    await agentPost('/actions/position-close', { positionId: '55', lots: 1 })
+    expect(fetchStub.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal)
+    expect(fetchStub.mock.calls[1][1].signal).toBeUndefined()
+  } finally {
+    vi.unstubAllGlobals()
+    vi.doUnmock('sonner')
+  }
+})

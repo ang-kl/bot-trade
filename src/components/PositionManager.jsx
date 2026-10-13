@@ -21,6 +21,7 @@ import { agentPost } from '../lib/agent-api.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { sideDir } from '../lib/side.js'
 import { EMPTY_GUARD_FORM, guardFormState, guardApplyBlocker } from '../lib/position-guard-form.js'
+import { closeRequest, closeFlow, singleFlight } from '../lib/position-close-form.js'
 
 // Purpose-named tabs (owner: "how do I change with such window layout" — the
 // old Modify/Protect labels didn't say WHERE to change size vs the stop/target).
@@ -103,6 +104,14 @@ export default function PositionManager({ p, onDone, initialTab = 'Modify' }) {
   const tabRefs = useRef([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  // Codex P1 #2 on #1354: one close at a time, from the preview to the reply.
+  const closeOnce = useRef(null)
+  if (!closeOnce.current) closeOnce.current = singleFlight()
+  // Codex round 4: a preview that returns after the sheet closed must not confirm or send.
+  const sheetOpen = useRef(true)
+  useEffect(() => { sheetOpen.current = true; return () => { sheetOpen.current = false } }, [])
+  // Claude · № 14,050 13-Oct (owner: "build the partial close lots field"; claude-builder).
+  const [closeLots, setCloseLots] = useState('')
   const dir = sideDir(p.side) ?? 1
   // PR-F checker M1: every post names the position's account when the row
   // knows it; the routes fall back to the position's own record otherwise
@@ -259,11 +268,37 @@ export default function PositionManager({ p, onDone, initialTab = 'Modify' }) {
           </div>
           <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
+          {/* Claude · № 14,050 13-Oct (owner: "build the partial close lots field";
+              claude-builder). Empty = the whole position, as before; a figure
+              below the held lots closes that many (the route steps it to the
+              symbol's volume step and refuses below its minimum). */}
+          <label className="flex items-center justify-between text-(length:--fs-body) mb-1.5">
+            <span>Lots to close <span className="text-[var(--color-text-sub)]">(empty = all {fmt(p.lots, 2)})</span></span>
+            <input
+              data-close-lots
+              className="w-24 text-right text-(length:--fs-body) bg-transparent border border-[var(--color-border)] rounded-[var(--radius-control)] px-1.5 py-0.5"
+              value={closeLots}
+              onChange={e => setCloseLots(e.target.value)}
+              inputMode="decimal"
+              placeholder="all"
+              aria-label="Lots to close"
+            />
+          </label>
           <button type="button" disabled={busy}
             className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-(length:--fs-h) font-bold cursor-pointer disabled:opacity-50"
-            onClick={() => window.confirm(`Close ${p.symbol} ${p.side} ${fmt(p.lots, 2)} lots at market?`) &&
-              run(() => agentPost('/actions/position-close', withAcct({ positionId: p.positionId })), 'Position closed')}>
-            Close ({fmt(p.currentPrice, p.digits ?? 5)})
+            onClick={() => closeOnce.current(async () => {
+              // Codex P1 on #1354 (owner: "Both"): preview → confirm the stepped figure → send it.
+              // Codex P1 #2 (owner: "Lock from preview to done"): locked for the whole of it.
+              setBusy(true)
+              try {
+                const flow = await closeFlow({ input: closeLots, heldLots: p.lots, heldText: fmt(p.lots, 2), symbol: p.symbol, side: p.side, positionId: p.positionId,
+                  preview: async body => { const reply = await agentPost('/actions/position-close-preview', withAcct(body)); return reply }, confirm: text => window.confirm(text), open: () => sheetOpen.current })
+                if (flow.error) { setMsg(`Error: ${flow.error}`); return }
+                if (flow.cancelled || !sheetOpen.current) return
+                await run(() => agentPost('/actions/position-close', withAcct(flow.body)), flow.body.lots != null ? 'Part of the position closed' : 'Position closed')
+              } finally { setBusy(false) }
+            })}>
+            {closeRequest(closeLots, p.lots).partial ? 'Close part' : 'Close'} ({fmt(p.currentPrice, p.digits ?? 5)})
           </button>
           <div className="text-center text-(length:--fs-body) mt-1.5">
             Net P&L: <span className={(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote ?? 0) >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{money(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)}</span>
