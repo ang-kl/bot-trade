@@ -225,12 +225,21 @@ export function queueMessage(db, { text, kind = 'alert', priority = 'normal', re
   } catch { return false }
 }
 
-/** Pending (unsent) outbox rows, oldest first. */
+/**
+ * Pending (unsent) outbox rows waiting to be DELIVERED, oldest first.
+ *
+ * Claude · № 13,904 13-Oct (Codex P1 #3 on #1345; owner "Flush skips
+ * notify_off rows"; claude-builder). A row held as `notify_off` is never
+ * delivered: turning notify on deletes those rows, and when that delete
+ * fails they stay here unsent until the 8-hourly prune removes them. Every
+ * flush and every "queued" count reads this, so none of them can send or
+ * count one. GET /state/telegram-digest still reports them as held.
+ */
 export function pendingMessages(db, limit = 500) {
   try {
     return db.prepare(
       `SELECT id, queued_at, kind, priority, text, reason FROM telegram_outbox
-        WHERE sent_at IS NULL ORDER BY id ASC LIMIT ?`,
+        WHERE sent_at IS NULL AND reason IS NOT 'notify_off' ORDER BY id ASC LIMIT ?`,
     ).all(limit)
   } catch { return [] }
 }

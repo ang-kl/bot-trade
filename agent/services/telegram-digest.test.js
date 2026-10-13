@@ -268,18 +268,24 @@ test('nothing queued means nothing sent', () => {
   assert.equal(flushDecision(db, loadNotifyConfig(db), AT_1400).flush, false)
 })
 
-test('notify off holds the queue closed — /notify on or /digest now releases it', async () => {
+// Was "/notify on or /digest now releases it". Changed 13-10 on the owner's
+// "Stop queuing while off" and "Flush skips notify_off rows" (Codex P1 #3 on
+// #1345): nothing held while notify was off is ever delivered, forced or not.
+test('notify off holds the queue closed — nothing held as notify_off is released, not even by /digest now', async () => {
   const db = freshDB()
   const cfg = saveNotifyConfig(db, { enabled: false })
   q(db, 'held while muted', 'scan', 'normal', 'notify_off')
+  q(db, 'held for the hourly digest', 'scan', 'normal', 'hourly_digest')
   assert.equal(flushDecision(db, cfg, AT_1400).flush, false)
   assert.equal(flushDecision(db, cfg, AT_1400).reason, 'notify_off')
 
   const sent = []
   const forced = await flushDigest(db, { nowMs: AT_1400, send: async (t) => sent.push(t), force: true })
   assert.equal(forced.sent, true)
-  assert.equal(sent.length, 1)
-  assert.match(sent[0], /held while muted/)
+  assert.equal(forced.count, 1)
+  assert.doesNotMatch(sent.join('\n'), /held while muted/)
+  assert.match(sent.join('\n'), /held for the hourly digest/)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM telegram_outbox WHERE reason = 'notify_off' AND sent_at IS NULL`).get().n, 1, 'left for the prune, never sent')
 })
 
 test('flushDigest sends once, marks the rows, and stamps the clock', async () => {
@@ -455,7 +461,7 @@ test('turning notify ON deletes the rows held while it was off — nothing from 
   q(db, 'held by the hourly digest', 'alert', 'normal', 'hourly_digest')
   // Another knob changed while off removes nothing.
   handleNotifyCommand(db, '/quiet', '23:00 07:00', AT_1400)
-  assert.equal(pendingMessages(db).length, 3)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM telegram_outbox WHERE sent_at IS NULL').get().n, 3)
   const reply = handleNotifyCommand(db, '/notify', 'on', AT_1400)
   assert.match(reply, /2 held while off deleted/)
   assert.deepEqual(pendingMessages(db).map(r => r.reason), ['hourly_digest'])
@@ -467,7 +473,7 @@ test('turning notify ON deletes the rows held while it was off — nothing from 
   // Already on: nothing to delete, and a later row is not touched.
   q(db, 'queued while on', 'alert', 'normal', 'notify_off')
   assert.match(handleNotifyCommand(db, '/notify', 'on', AT_1400), /Notifications ON/)
-  assert.equal(pendingMessages(db).length, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM telegram_outbox WHERE sent_at IS NULL').get().n, 1)
 })
 
 test('saveNotifyConfig: an off→on switch from any caller deletes the held notify_off rows, and reports how many', () => {
@@ -504,6 +510,29 @@ test('a broken outbox never stops /notify on: the switch lands, the failed purge
     // A normal message takes the hourly queue, which cannot be written, so it is sent.
     assert.deepEqual(routeOutbound('EURUSD scan result', { nowMs: AT_1400 }), { send: true, reason: 'queue_failed' })
   } finally { attachNotifyDb(null) }
+})
+
+// Claude · № 13,904 13-Oct (Codex P1 #3 on #1345; owner "Flush skips notify_off rows"; claude-builder)
+test('a failed purge with a readable outbox still delivers nothing from the off period', async () => {
+  const db = freshDB()
+  handleNotifyCommand(db, '/notify', 'off', AT_1400)
+  q(db, 'held while off', 'alert', 'urgent', 'notify_off')
+  q(db, 'held by the hourly digest', 'alert', 'normal', 'hourly_digest')
+  db.exec(`CREATE TRIGGER block_delete BEFORE DELETE ON telegram_outbox BEGIN SELECT RAISE(ABORT, 'delete blocked'); END`)
+  const reply = handleNotifyCommand(db, '/notify', 'on', AT_1400)
+  assert.equal(loadNotifyConfig(db).enabled, true)
+  assert.match(reply, /could not be deleted/)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM telegram_outbox WHERE reason = 'notify_off' AND sent_at IS NULL`).get().n, 1, 'the delete really failed')
+  assert.deepEqual(pendingMessages(db).map(r => r.reason), ['hourly_digest'])
+  const sent = []
+  const r = await flushDigest(db, { nowMs: AT_1400, send: async (t) => { sent.push(t) }, force: true })
+  assert.equal(r.count, 1)
+  assert.doesNotMatch(sent.join('\n'), /held while off/)
+  // The unforced path reads the same queue.
+  assert.equal(flushDecision(db, loadNotifyConfig(db), AT_1400).rows.length, 0)
+  // A legacy row with no reason recorded is still delivered.
+  db.prepare(`INSERT INTO telegram_outbox (kind, priority, text, reason) VALUES ('alert', 'normal', 'legacy', NULL)`).run()
+  assert.deepEqual(pendingMessages(db).map(r => r.text), ['legacy'])
 })
 
 test('digestState: an unreadable stored config is never reported as OFF', () => {
