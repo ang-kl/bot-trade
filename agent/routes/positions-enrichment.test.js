@@ -93,8 +93,12 @@ test('an account with no cache of its own still falls back to the shared one', a
   const s = await server()
   try {
     openPosition(s.db, { symbol: 'GBPAUD', accountId: '47790949', ctid: '234873274' })
-    setState(s.db, 'broker_snapshot_cache_json',
-      snapshot([{ positionId: '234873274', pnl: 41.97, currentPrice: 1.91436 }]))
+    // Claude · № 14,009 13-Oct (owner: Codex P2 #7 "Fix #7 strict"): the shared
+    // cache stands in only when it NAMES this account; an unnamed one does not.
+    setState(s.db, 'broker_snapshot_cache_json', JSON.stringify({
+      account: { accountId: 47790949, positions: [{ positionId: '234873274', pnl: 41.97, currentPrice: 1.91436 }] },
+      fetchedAt: '2026-08-04T07:00:00.000Z',
+    }))
 
     const rows = bySymbol(await positions(s))
     assert.equal(rows.GBPAUD.live_pnl, 41.97)
@@ -169,7 +173,7 @@ test('each row carries the broker\'s current lots beside the opened volume, and 
 // Source: /actions/broker-positions caches each account's snapshot with the
 // broker's lots per position (actions.js `lots: toLots(td.volume, meta)`); a
 // partial close after the last reconcile shows there first.
-test('current lots: the account snapshot first, the reconciler reading next', async () => {
+test('current lots: the reconciler reading first, the account snapshot when there is none', async () => {
   const s = await server()
   try {
     const ins = (sym, ctid, units) => {
@@ -186,30 +190,36 @@ test('current lots: the account snapshot first, the reconciler reading next', as
     const rows = bySymbol(await positions(s))
     assert.equal(rows['SHOP.US'].current_lots, 4.7)
     assert.equal(rows['SHOP.US'].lots_source, 'broker_snapshot')
-    assert.equal(rows.EURUSD.current_lots, 4.75, 'the snapshot is newer than the reconciler reading')
-    assert.equal(rows.EURUSD.lots_source, 'broker_snapshot')
+    // Claude · № 14,009 13-Oct (owner: Codex P2 #6, "by freshness; if the
+    // reconciler stamps no time, reconciler first"): broker_volume_units carries
+    // no reading time, so a cached snapshot (kept when a later fetch fails) is
+    // not known to be newer; the reconciler's reading wins when present.
+    assert.equal(rows.EURUSD.current_lots, 9.5, 'the reconciler reading wins: the snapshot\'s age is unknown against it')
+    assert.equal(rows.EURUSD.lots_source, 'broker_reconcile')
     assert.equal(rows.GBPUSD.current_lots, 0.5)
     assert.equal(rows.GBPUSD.lots_source, 'broker_reconcile')
     assert.equal(rows.EURUSD.opened_lots, 9.5)
   } finally { s.close(); s.db.close() }
 })
 
-test('a snapshot with no usable lots falls through to the reconciler reading', async () => {
+test('a snapshot with no usable lots is not a reading', async () => {
   const s = await server()
   try {
+    // No reconciler reading yet, so the snapshot is the only source consulted.
     const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume) VALUES ('EURUSD', 'buy', 'open', '46130058', '601', 1)`).run().lastInsertRowid
     s.db.prepare(`INSERT INTO monitored_positions (trade_id, symbol, side, status, account_id, entry_price, current_sl, current_tp, broker_volume_units)
-      VALUES (?, 'EURUSD', 'buy', 'active', '46130058', 1.1, 1.0, 1.3, 50000)`).run(t)
+      VALUES (?, 'EURUSD', 'buy', 'active', '46130058', 1.1, 1.0, 1.3, NULL)`).run(t)
     // Each pass reads its own URL: the route's response cache is keyed by URL.
     for (const [i, lots] of [null, true, '4.7', 0, -1].entries()) {
       setState(s.db, 'acct:46130058:broker_snapshot_cache_json', snapshot([{ positionId: 601, lots }]))
       const rows = bySymbol(await fetch(s.url(`/state/positions?account=all&pass=${i}`)).then(r => r.json()))
-      assert.equal(rows.EURUSD.current_lots, 0.5, `snapshot lots ${JSON.stringify(lots)} is not a reading`)
-      assert.equal(rows.EURUSD.lots_source, 'broker_reconcile')
+      assert.equal(rows.EURUSD.current_lots, null, `snapshot lots ${JSON.stringify(lots)} is not a reading`)
+      assert.equal(rows.EURUSD.lots_source, 'opened_record')
     }
     setState(s.db, 'acct:46130058:broker_snapshot_cache_json', snapshot([{ positionId: 601, lots: 0.25 }]))
     const live = bySymbol(await fetch(s.url('/state/positions?account=all&pass=live')).then(r => r.json()))
     assert.equal(live.EURUSD.current_lots, 0.25, 'control: a real snapshot reading is used on this same path')
+    assert.equal(live.EURUSD.lots_source, 'broker_snapshot')
   } finally { s.close(); s.db.close() }
 })
 
@@ -256,5 +266,21 @@ test('with no cache of its own, the shared snapshot is used only when it is this
     assert.equal(rows.GBPAUD.current_lots, null)
     assert.equal(rows.AUDCAD.live_pnl, 6, 'the shared snapshot is this account\'s own')
     assert.equal(rows.AUDCAD.current_lots, 2)
+  } finally { s.close(); s.db.close() }
+})
+
+test('an unnamed shared snapshot enriches no attributed account without a cache of its own', async () => {
+  const s = await server()
+  try {
+    openPosition(s.db, { symbol: 'GBPAUD', accountId: '47790949', ctid: '991' })
+    openPosition(s.db, { symbol: 'AUDCAD', accountId: '46130058', ctid: '992' })
+    setState(s.db, 'broker_snapshot_cache_json', snapshot([
+      { positionId: 991, lots: 3, pnl: 5 }, { positionId: 992, lots: 2, pnl: 6 },
+    ]))
+    const rows = bySymbol(await positions(s))
+    assert.equal(rows.GBPAUD.live_pnl, null)
+    assert.equal(rows.GBPAUD.current_lots, null)
+    assert.equal(rows.AUDCAD.live_pnl, null)
+    assert.equal(rows.AUDCAD.current_lots, null)
   } finally { s.close(); s.db.close() }
 })
