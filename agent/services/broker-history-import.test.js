@@ -592,3 +592,29 @@ test('NASA-4: a non-executed deal on the position never supplies the opening rat
     assert.equal(r.open_margin_rate, null, `status ${status}`)
   }
 })
+
+// Claude · № 14,323 13-Oct (Codex P2 on #1358 round 2; claude-builder). A
+// position added to later has two executed opening deals; a read that misses
+// the original would take the add-on as the opener. The opening rates are
+// recorded only for a proven opener, and a stored one is never replaced.
+test('NASA-4: an add-on fill never stands in for the opener; a stored opening rate is kept', () => {
+  const T = Date.parse('2026-10-12T10:00:00Z')
+  const meta = { 1: { symbolName: 'USDSGD', lotSize: 100000 } }
+  const deal = (id, ms, filled, rate, close = null) => ({ dealId: id, positionId: 992, symbolId: 1, tradeSide: close ? 2 : 1, volume: filled,
+    filledVolume: filled, executionPrice: rate, executionTimestamp: ms, dealStatus: 2, marginRate: rate, baseToUsdConversionRate: 1,
+    ...(close ? { closePositionDetail: { entryPrice: 1.28, grossProfit: 0, swap: 0, commission: -18, balance: 1000000, moneyDigits: 2, closedVolume: filled } } : {}) })
+  const original = deal(80, T - 7_200_000, 2000, 1.28), addOn = deal(81, T - 3_600_000, 2000, 1.31), closing = deal(82, T, 4000, 1.30, true)
+  const [both] = shapeDeals([original, addOn, closing], meta, '43097342')
+  assert.equal(both.open_margin_rate, null, 'two openers: neither is proven to be the one the rates belong to')
+  const [partial] = shapeDeals([original, addOn, deal(85, T, 2000, 1.30, true)], meta, '43097342')
+  assert.equal(partial.open_margin_rate, null, 'two openers, a partial close each could cover: still not proven')
+  const [narrow] = shapeDeals([addOn, closing], meta, '43097342')
+  assert.equal(narrow.open_margin_rate, null, 'the add-on alone does not cover the 4,000 closed: not the opener')
+  const [single] = shapeDeals([deal(83, T - 3_600_000, 4000, 1.28), deal(84, T, 4000, 1.30, true)], meta, '43097342')
+  assert.equal(single.open_margin_rate, 1.28, 'one opener covering the close is proven')
+  const db = initDB(':memory:')
+  persistDeals(db, [single])
+  persistDeals(db, [{ ...single, open_margin_rate: 1.31, open_base_usd_rate: 2 }])
+  const stored = db.prepare('SELECT open_margin_rate, open_base_usd_rate FROM broker_deals WHERE deal_id=?').get('84')
+  assert.deepEqual([stored.open_margin_rate, stored.open_base_usd_rate], [1.28, 1], 'a later read never replaces a stored opening rate')
+})

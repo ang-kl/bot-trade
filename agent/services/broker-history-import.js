@@ -100,13 +100,30 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
   // claude-builder): the opening side's RATES come only from an executed
   // opening deal that filled something — a rejected or errored order on the
   // same position is no fill and its rates are no evidence.
-  const openDealByPosition = new Map()
+  //
+  // Claude · № 14,323 13-Oct (Codex P2 on #1358 round 2; claude-builder): and
+  // only when that deal is PROVEN to be the position's opener. A read that
+  // misses the original fill of a position added to later would otherwise take
+  // the add-on as the opener. Proven here = exactly one executed opening deal
+  // is visible for the position, and its fill covers everything the visible
+  // closing deals closed. Anything else records no opening rate (NULL), and
+  // the upsert never replaces an opening rate already stored.
+  const openersByPosition = new Map(), closedByPosition = new Map()
   for (const d of deals) {
-    if (d.closePositionDetail || !executedDeal(d) || !(Number(d.filledVolume) > 0)) continue
     const pid = d.positionId != null ? String(d.positionId) : null
-    if (!pid || d.executionTimestamp == null) continue
-    const prev = openDealByPosition.get(pid)
-    if (prev == null || d.executionTimestamp < prev.executionTimestamp) openDealByPosition.set(pid, d)
+    if (!pid) continue
+    if (d.closePositionDetail) {
+      const q = closingExecutedQuantity(d)
+      closedByPosition.set(pid, (closedByPosition.get(pid) ?? 0) + (q ?? Infinity))
+      continue
+    }
+    if (!executedDeal(d) || !(Number(d.filledVolume) > 0) || d.executionTimestamp == null) continue
+    openersByPosition.set(pid, [...(openersByPosition.get(pid) ?? []), d])
+  }
+  const openDealByPosition = new Map()
+  for (const [pid, openers] of openersByPosition) {
+    if (openers.length !== 1) continue
+    if (Number(openers[0].filledVolume) >= (closedByPosition.get(pid) ?? 0)) openDealByPosition.set(pid, openers[0])
   }
 
   const rows = []
@@ -303,8 +320,9 @@ export function persistDeals(db, rows) {
       imported_at = datetime('now'),
       -- A re-read that carries no rate (statement rows, a narrower window
       -- without the opening deal) keeps the stored one; the broker's is kept.
-      open_margin_rate = COALESCE(excluded.open_margin_rate, broker_deals.open_margin_rate),
-      open_base_usd_rate = COALESCE(excluded.open_base_usd_rate, broker_deals.open_base_usd_rate),
+      -- An opening rate once stored is never replaced (№ 14,323).
+      open_margin_rate = COALESCE(broker_deals.open_margin_rate, excluded.open_margin_rate),
+      open_base_usd_rate = COALESCE(broker_deals.open_base_usd_rate, excluded.open_base_usd_rate),
       close_margin_rate = COALESCE(excluded.close_margin_rate, broker_deals.close_margin_rate),
       close_base_usd_rate = COALESCE(excluded.close_base_usd_rate, broker_deals.close_base_usd_rate),
       quote_deposit_rate = COALESCE(excluded.quote_deposit_rate, broker_deals.quote_deposit_rate),
