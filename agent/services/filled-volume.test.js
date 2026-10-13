@@ -36,7 +36,7 @@ test('stamp: a better source replaces a worse one, never the reverse; rejected r
   assert.equal(filled(db, other).v, null, 'the same position id on another account is another position')
   assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.19, source: 'broker_opening_deals' }), 1)
   assert.deepEqual(filled(db, id), { v: 0.19, s: 'broker_opening_deals' })
-  for (const source of FILLED_SOURCES) {
+  for (const source of FILLED_SOURCES.filter(x => x !== 'broker_opening_deals')) {
     assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.5, source }), 0, `${source} never replaces the deals`)
   }
   assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: '5002', lots: 0.1, source: 'broker_opening_deals' }), 0)
@@ -126,4 +126,27 @@ test('history import: a scaled row\'s residual is not kept as requested_volume; 
     // closes of a position, so their sum is not proven to be the fill.
     assert.deepEqual(filled(db, id), { v: null, s: null })
   }
+})
+
+// Claude · № 14,344 13-Oct (Codex P2 round 2 on #1359; claude-builder). A
+// position added to after its deals were read: the reconciler sees more volume
+// and clears the recorded fill; the next complete deal read records the new sum.
+test('an added opening fill clears the recorded fill; a later complete deal read replaces it', () => {
+  const db = initDB(':memory:')
+  setState(db, 'ctrader_account_id', DEMO)
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const id = trade(db, { volume: 0.2 })
+  db.prepare(`INSERT INTO monitored_positions(symbol,trade_id,side,entry_price,current_sl,current_tp,initial_risk,source,status,account_id,broker_volume_units)
+    VALUES ('EURUSD', ?, 'long', 1.1, 1.09, 1.13, 0.01, 'autopilot', 'active', ?, 20000)`).run(id, DEMO)
+  stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.2, source: 'broker_opening_deals' })
+  const pos = volume => [{ positionId: 5001, price: 1.1, stopLoss: 1.09, takeProfit: 1.13,
+    tradeData: { symbolId: 1, symbolName: 'EURUSD', tradeSide: 'BUY', volume, label: 'AP|v1|RSIM' } }]
+  reconcilePositions(db, pos(2_000_000), [], (k, v) => setState(db, k, v), { accountId: DEMO })
+  assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' }, 'unchanged volume keeps the fill')
+  reconcilePositions(db, pos(3_000_000), [], (k, v) => setState(db, k, v), { accountId: DEMO })
+  assert.deepEqual(filled(db, id), { v: null, s: null }, 'more volume: the old fill no longer covers it')
+  assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.3, source: 'broker_opening_deals' }), 1)
+  assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.35, source: 'broker_opening_deals' }), 1, 'a later complete read replaces an earlier one')
+  assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.5, source: 'broker_position_first_seen' }), 0)
+  assert.deepEqual(filled(db, id), { v: 0.35, s: 'broker_opening_deals' })
 })

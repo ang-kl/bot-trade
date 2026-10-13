@@ -42,11 +42,29 @@ export function stampFilledVolume(db, { accountId, positionId, tradeId = null, l
   const pid = pidOf(positionId), rank = FILLED_SOURCES.indexOf(source)
   if (!pid || accountId == null || rank < 0 || !positiveLots(lots)) return 0
   const value = Math.round(lots * 1e8) / 1e8
+  // Claude · № 14,344 13-Oct (Codex P2 round 2 on #1359; claude-builder): a
+  // later complete deal read supersedes an earlier one (an opening deal added
+  // since); every other source still needs a strictly better rank.
+  const allowEqual = source === 'broker_opening_deals' ? 1 : 0
   return db.prepare(`UPDATE trades SET filled_volume = ?, filled_volume_source = ?
     WHERE account_id = ? AND ctrader_position_id IN (?, ?) AND (? IS NULL OR id = ?)
       AND status NOT IN ('rejected', 'cancelled')
-      AND ${rankSql('filled_volume_source')} > ?`)
-    .run(value, source, String(accountId), pid, `${pid}.0`, tradeId, tradeId, rank).changes
+      AND (${rankSql('filled_volume_source')} > ? OR (? = 1 AND ${rankSql('filled_volume_source')} = ?))`)
+    .run(value, source, String(accountId), pid, `${pid}.0`, tradeId, tradeId, rank, allowEqual, rank).changes
+}
+
+/**
+ * The broker holds more than the position held before: an opening fill was
+ * added. The recorded fill is no longer the whole of it, so it is cleared and
+ * the position becomes a sweep candidate again (№ 14,344). Unknown until read,
+ * never the old figure presented as current.
+ */
+export function clearFilledVolume(db, { accountId, positionId, tradeId = null }) {
+  const pid = pidOf(positionId)
+  if (!pid || accountId == null) return 0
+  return db.prepare(`UPDATE trades SET filled_volume = NULL, filled_volume_source = NULL
+    WHERE account_id = ? AND ctrader_position_id IN (?, ?) AND (? IS NULL OR id = ?) AND filled_volume_source IS NOT NULL`)
+    .run(String(accountId), pid, `${pid}.0`, tradeId, tradeId).changes
 }
 
 /**

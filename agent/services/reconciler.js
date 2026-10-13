@@ -9,7 +9,7 @@ import { isTrailing, stopTightened } from '../lib/stop-policy.js'
 import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
 import { brokerCloseReason, LEGACY_BOOK_STOP, receiptInitiatorUnknown, replaceableCloseReason } from './broker-exit-attribution.js'
 import { horizonForStrategy } from './trade-horizon.js'
-import { stampFilledVolume, noReductionOnRecord } from './filled-volume.js'
+import { stampFilledVolume, noReductionOnRecord, clearFilledVolume } from './filled-volume.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -587,6 +587,12 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       }
       if (row.broker_volume_units != null && bVol != null && differs(bVol, row.broker_volume_units)) {
         manualChanges.push({ kind: 'volume', symbol: row.symbol, positionId: posId, from: row.broker_volume_units, to: bVol })
+        // Claude · № 14,344 13-Oct (Codex P2 round 2 on #1359; claude-builder):
+        // more volume than before is an added opening fill — the recorded fill
+        // no longer covers it, so it is cleared and read again from the deals.
+        if (Number(bVol) > Number(row.broker_volume_units) && row.trade_id != null) {
+          clearFilledVolume(db, { accountId: acct, positionId: posId, tradeId: row.trade_id })
+        }
         // A VOLUME THAT FELL IS A PARTIAL CLOSE (V3 B1 checker blocker).
         // loop.js PARTIAL_EXIT nulls this baseline first, so a fall seen here
         // was made by hand in cTrader or by a partial writer that does not
