@@ -269,17 +269,21 @@ test('wiring: the main loop runs it after the monitor pass, and never lets it fa
   assert.match(src.slice(call, call + 200), /\}\s*catch \(err\) \{/)
 })
 
-// Codex P2 on #1356 (owner: "Fix in this PR"): the paused live-quote writer
-// reads the exit side, like the two monitors. A short at entry 376.46 (risk
-// 28.15) quoted 376.00 / 376.50: at the ask (its exit) it is 0.04 against
-// (-0.0014R); at the mid (376.25) it would read 0.21 in favour (+0.0075R).
-test('the live-quote pass reads a paused short at the ask, not the mid', async t => {
+// Codex rounds 1–2 on #1356 (owner: "Fix in this PR", then "Separate
+// columns"): a paused short at entry 376.46 (risk 28.15) quoted 376.00 /
+// 376.50. mfe_r/mae_r stay on the mid (376.25: +0.0075R, the managed trail's
+// input, unchanged); the exit side (the ask, 376.50: -0.0014R) goes to
+// mfe_exit_r/mae_exit_r.
+test('the live-quote pass keeps mfe_r on the mid and records the exit side (the ask for a short) in its own columns', async t => {
   const { db, ids: [id], row } = fixture(t, { rows: [{ side: 'short' }] })
   const spread = (db, rows, o) => refreshHeldPositionPrices(db, rows, { ...o, readQuote: async (creds, symbolId) => ({
     ctidTraderAccountId: Number(creds.accountId), symbolId: Number(symbolId), bid: 37_600_000, ask: 37_650_000, timestamp: NOW }) })
   const out = await recordPausedExcursions(db, { fetchBars: barsFor([]), refreshPrices: spread, now: () => NOW, perPass: 0 }) // the live pass alone
   assert.equal(out.backfillStarted, 0)
   assert.equal(out.live, 1)
-  assert.equal(row(id).mfe_r, 0, 'no favourable excursion at the ask')
-  assert.ok(row(id).mae_r < 0 && row(id).mae_r > -0.002, `adverse at the ask: ${row(id).mae_r}`)
+  assert.ok(row(id).mfe_r > 0.007 && row(id).mfe_r < 0.008, `mid unchanged: ${row(id).mfe_r}`)
+  assert.equal(row(id).mae_r, 0)
+  assert.equal(row(id).mfe_exit_r, 0, 'no favourable excursion at the ask')
+  assert.ok(row(id).mae_exit_r < 0 && row(id).mae_exit_r > -0.002, `adverse at the ask: ${row(id).mae_exit_r}`)
+  assert.equal(row(id).exit_excursion_from, new Date(NOW).toISOString())
 })

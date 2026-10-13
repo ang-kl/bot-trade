@@ -98,8 +98,9 @@ export const DEFAULT_RULES = Object.freeze({
  */
 // Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side"; claude-builder).
 // The price a position can actually be closed at: the bid for a long, the ask
-// for a short. MAE/MFE are measured there; decisions keep the mid. Null when
-// the side or either quote is unknown.
+// for a short. Null when the side or either quote is unknown. Used only for
+// the exit-side excursion columns (exit-excursion.js); decisions and
+// mfe_r/mae_r keep the caller's price.
 export function exitSidePrice(side, bid, ask) {
   const b = Number(bid), a = Number(ask)
   if (bid == null || ask == null || !(b > 0) || !(a > 0)) return null
@@ -221,11 +222,8 @@ export function evaluatePosition(pos, ctx) {
   const r = currentR(pos, price)
   const prevMfe = pos.mfe_r ?? 0
   const prevMae = pos.mae_r ?? 0
-  // MAE/MFE at the exit side when the caller has it (exitSidePrice); the
-  // decision R above stays on the price the caller decides with.
-  const xr = Number(ctx.excursionPrice) > 0 ? currentR(pos, Number(ctx.excursionPrice)) : r
-  const newMfe = xr != null ? Math.max(prevMfe, xr) : prevMfe
-  const newMae = xr != null ? Math.min(prevMae, xr) : prevMae
+  const newMfe = r != null ? Math.max(prevMfe, r) : prevMfe
+  const newMae = r != null ? Math.min(prevMae, r) : prevMae
 
   const updates = {
     mfe_r: newMfe,

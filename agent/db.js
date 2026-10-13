@@ -1552,6 +1552,15 @@ export function initDB(dbPath, startupDiagnosticOptions) {
     // Once-per-row stamp of the bar backfill of mfe_r/mae_r on a PAUSED row
     // (services/paused-excursion.js): what it covered and from which bars.
     ['excursion_backfill_json', 'TEXT'],
+    // Claude · 13-Oct (owner: audit fix "4 MAE/MFE exit side"; Codex round 2 on
+    // #1356 answered "Separate columns"): the excursion measured at the price
+    // the position closes at (bid for a long, ask for a short). mfe_r/mae_r stay
+    // on the mid — they feed the managed trail — so the exit-side figures live
+    // here, for reports and audits only. A row open before these columns
+    // existed is tracked from exit_excursion_from on, not from its entry.
+    ['mfe_exit_r',           'REAL'],
+    ['mae_exit_r',           'REAL'],
+    ['exit_excursion_from',  'TEXT'],
   ];
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {

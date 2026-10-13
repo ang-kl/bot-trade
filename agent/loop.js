@@ -2786,10 +2786,16 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   // profit keeper's in-memory cache — a read, never a fetch — and is null
   // whenever the keeper has not computed one for this symbol this bar, in
   // which case the multiplier falls back to the position's own 1R distance.
-  // Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side"; claude-builder): excursionPrice (the exit side) feeds MAE/MFE only.
-  const eval_ = evaluatePosition(pos, { currentPrice, excursionPrice, rules, atr: cachedAtrForSymbol(db, pos.symbol) })
+  const eval_ = evaluatePosition(pos, { currentPrice, rules, atr: cachedAtrForSymbol(db, pos.symbol) })
   // Persist MFE/MAE and any flag flips every loop, regardless of action.
   recordEvaluationMetrics(s, pos, eval_)
+  // Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side", "Yes, touch loop.js";
+  // Codex round 2 on #1356 answered "Separate columns"; claude-builder): the
+  // excursion at the exit side, in its own columns; mfe_r/mae_r stay on the mid.
+  if (excursionPrice != null) {
+    const { recordExitExcursion } = await import('./services/exit-excursion.js')
+    recordExitExcursion(db, pos, excursionPrice)
+  }
 
   // Deterministic rule fired — execute it at the broker (MOVE_SL /
   // PARTIAL_EXIT / FULL_EXIT) then persist what happened. The executor

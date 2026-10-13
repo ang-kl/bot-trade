@@ -207,9 +207,9 @@ test('V3 M1: the first-protection stamps are wired where the protection runs, an
 // Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side"; claude-builder).
 // runLoop has no injection point; runMonitorPhase's forwarding is tested in
 // services/excursion-exit-side.test.js. This pins that the main loop hands it
-// the exit-side price — without it the slow monitor's mid readings would go on
-// mixing into the same MAE/MFE (failure mode #4).
-test('the slow monitor phase is given the exit-side price for MAE/MFE', () => {
+// the exit-side price for mfe_exit_r/mae_exit_r — without it the slow monitor
+// would record no exit-side excursion at all (failure mode #4).
+test('the slow monitor phase is given the exit-side price for the exit-side excursion columns', () => {
   const code = loopCode()
   const call = at(code, 'await runMonitorPhase(db, s, activePositions')
   const end = code.indexOf('\n      })', call)
