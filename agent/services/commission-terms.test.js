@@ -382,7 +382,7 @@ test('NASA-4: a cross is priced from the deal\'s own Base/USD rate; a USD deposi
 function quoteDeal(db, extra = {}) {
   deal(db, { id: 'q1', account: '46979908', symbol: 'EURGBP', lots: 0.5, entry: 0.85, close: 0.86, commission: -4.11 })
   db.prepare(`UPDATE broker_deals SET open_margin_rate=?, open_base_usd_rate=?, close_margin_rate=?, close_base_usd_rate=?, quote_deposit_rate=? WHERE deal_id='q1'`)
-    .run('openMargin' in extra ? extra.openMargin : 1.17, 1.17, extra.closeMargin ?? 1.17, 1.17, 'quoteRate' in extra ? extra.quoteRate : 1.3605)
+    .run('openMargin' in extra ? extra.openMargin : 1.17, 'openBaseUsd' in extra ? extra.openBaseUsd : 1.17, extra.closeMargin ?? 1.17, extra.closeBaseUsd ?? 1.17, 'quoteRate' in extra ? extra.quoteRate : 1.3605)
 }
 test('NASA-4 follow-up: quote-currency-per-lot terms are priced through each side\'s broker rate', () => {
   const db = initDB(':memory:')
@@ -398,9 +398,40 @@ test('NASA-4 follow-up: quote-currency-per-lot terms are priced through each sid
 })
 
 test('NASA-4 follow-up: quote-currency terms without a broker rate are not compared', () => {
-  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a, { openMargin: null })
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a, { openBaseUsd: null })
   storeCommissionTerms(a, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
   assert.equal(commissionTermsCheck(a, '46979908', { days: 30, now: NOW }).symbols[0].reason, 'quote_deposit_rate_not_reported')
+})
+
+// Claude · № 14,442 13-Oct (Codex P2 round 2 on #1361; claude-builder). A
+// slipped order: marginRate (1.20) is not the execution-time Base/USD rate
+// (1.17). The quote rate comes from the execution instant (spotware
+// ProtoOADeal.baseToUsdConversionRate "on the time of deal execution"), so the
+// figure is the same 4.1055; marginRate ÷ price would give 4.1584.
+test('NASA-4 follow-up: quote rates come from each deal\'s execution-time rate, not marginRate ÷ price', () => {
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a, { openMargin: 1.20 })
+  storeCommissionTerms(a, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  const s = commissionTermsCheck(a, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.sample[0].modelledDealDeposit, 4.1055)
+  // No stated close rate: the close side from the closing deal's own Base/USD rate (1.17 / 0.86).
+  const b = initDB(':memory:'); usdDeposit(b, '46979908'); quoteDeal(b, { quoteRate: null, closeMargin: 1.20 })
+  storeCommissionTerms(b, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  const t = commissionTermsCheck(b, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(t.sample[0].quoteToDeposit.closeSource, 'base_usd_rate_over_price')
+  // 1.5 × 1.17/0.85 + 1.5 × 1.17/0.86 = 2.06471 + 2.04070; marginRate ÷ price would give 4.1577.
+  assert.equal(t.sample[0].modelledDealDeposit, 4.1054)
+})
+test('NASA-4 follow-up: on an SGD deposit the quote rate takes each side\'s deposit-per-USD', () => {
+  // marginRate 1.5093 EUR/SGD ÷ Base/USD 1.17 = 1.29 SGD per USD. Open: 1.17/0.85 × 1.29
+  // = 1.775647 SGD per GBP; close stated 1.755. 1.5 × (1.775647 + 1.755) = 5.296. Self-derived.
+  const a = initDB(':memory:'); usdDeposit(a, '46979908', 'SGD')
+  quoteDeal(a, { openMargin: 1.5093, closeMargin: 1.5093, quoteRate: 1.755 })
+  a.prepare(`UPDATE broker_deals SET commission = -5.30 WHERE deal_id = 'q1'`).run()
+  storeCommissionTerms(a, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  const s = commissionTermsCheck(a, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.agrees, true)
+  assert.equal(s.sample[0].modelledDealDeposit, 5.296)
+  assert.ok(Math.abs(s.sample[0].quoteToDeposit.closeDerivedOverStated - 1) < 0.001)
 })
 
 // Claude · № 14,434 13-Oct (Codex P2 on #1361; claude-builder). The minimum

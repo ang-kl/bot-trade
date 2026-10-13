@@ -328,13 +328,21 @@ function quoteCurrencyDeposit(t, d, { openUsd = null, closeUsd = null, rowsForPo
   if (t.rate == null) return out(null, 'rate_not_stated')
   const lots = Number(d.lots)
   if (!(lots > 0)) return out(null, 'lots_unknown')
+  // Claude · № 14,442 13-Oct (Codex P2 round 2 on #1361; claude-builder). Each
+  // rate from the instant of its own deal's execution (spotware ProtoOADeal):
+  // baseToUsdConversionRate ÷ that deal's price is USD per quote; times the
+  // side's deposit-per-USD (1 on a USD deposit; on any other deposit #1358's
+  // conversion, the only deposit rate an opening deal carries). marginRate is
+  // not divided by an execution price. The close side uses the broker's own
+  // quoteToDepositConversionRate where stated.
   const entry = rate(d.entry_price), close = rate(d.close_price)
-  const open = rate(d.open_margin_rate) != null && entry != null ? rate(d.open_margin_rate) / entry : null
+  const quoteUsd = (baseUsd, price) => rate(baseUsd) != null && price != null ? rate(baseUsd) / price : null
+  const open = quoteUsd(d.open_base_usd_rate, entry) != null && rate(openUsd) != null ? quoteUsd(d.open_base_usd_rate, entry) * openUsd : null
   const closeStated = rate(d.quote_deposit_rate)
-  const closeDerived = rate(d.close_margin_rate) != null && close != null ? rate(d.close_margin_rate) / close : null
+  const closeDerived = quoteUsd(d.close_base_usd_rate, close) != null && rate(closeUsd) != null ? quoteUsd(d.close_base_usd_rate, close) * closeUsd : null
   const shut = closeStated ?? closeDerived
-  const rates = { open: round(open), close: round(shut), closeSource: closeStated != null ? 'broker_quote_to_deposit' : 'margin_rate_over_price',
-    // The two broker readings of one rate at the close, as a check of the open-side derivation.
+  const rates = { open: round(open), close: round(shut), closeSource: closeStated != null ? 'broker_quote_to_deposit' : 'base_usd_rate_over_price',
+    // The two readings of one rate at the close, as a check of the open-side method.
     closeDerivedOverStated: closeStated != null && closeDerived != null ? round(closeDerived / closeStated) : null }
   if (open == null || shut == null) return out(null, 'quote_deposit_rate_not_reported', rates)
   let openSide = t.rate * lots * open, closeSide = t.rate * lots * shut
