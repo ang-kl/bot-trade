@@ -2234,6 +2234,19 @@ Measurement history — each line is a real run of the script, not a claim:
   least **`№ 13,790`** plus any unstamped line made after this ledger.
   The count is by replies, not by stamps. A later re-measure that reads
   below this line is missing these, not correcting them.
+- 2026-10-13 13:46 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from `№ 13,790` the replies ran on through the NASA
+  programme and fix 5: #1357 (hybrid anchors on the broker fill), #1358
+  (NASA-4 commission terms from each side's broker rate), #1359 and #1360
+  (NASA-3 filled opening lots kept apart from the residual), each merged
+  and read back. The last stamp was `№ 14,341` (20:29 SGT); the transcript
+  captures 76 text replies after it, all unstamped status lines while #1360
+  ran three Codex fix rounds and merged (9575b503), so the last reply
+  before this ledger is at least **`№ 14,417`** and the next stamped reply
+  is at least **`№ 14,418`** plus any unstamped line made after this
+  ledger. Lower bounds: a compaction in this run may hold replies the file
+  did not keep. The count is by replies, not by stamps. A later re-measure
+  that reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
