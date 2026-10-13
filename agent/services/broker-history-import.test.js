@@ -567,3 +567,28 @@ test('NASA-4: closing rows carry each side\'s broker rates; a re-read without th
   persistDeals(db, [{ ...row, close_margin_rate: 1.3 }])
   assert.equal(db.prepare('SELECT close_margin_rate FROM broker_deals WHERE deal_id=?').get('71').close_margin_rate, 1.3, 'a carried value refreshes')
 })
+
+// Claude · № 14,318 13-Oct (Codex P2 on #1358, owner "Fix in this PR";
+// claude-builder). A rejected or errored order on the same position is no
+// fill: the opening side's rates come only from an executed opening deal with a
+// positive filledVolume (spotware ProtoOADealStatus: FILLED 2, PARTIALLY_FILLED
+// 3; REJECTED 4, INTERNALLY_REJECTED 5, ERROR 6, MISSED 7).
+test('NASA-4: a non-executed deal on the position never supplies the opening rates', () => {
+  const T = Date.parse('2026-10-12T10:00:00Z')
+  const meta = { 1: { symbolName: 'USDSGD', lotSize: 100000 } }
+  const rejected = { dealId: 69, positionId: 991, symbolId: 1, tradeSide: 1, volume: 2000, filledVolume: 0, executionPrice: 1.5,
+    executionTimestamp: T - 7_200_000, dealStatus: 4, marginRate: 9.99, baseToUsdConversionRate: 9.99 }
+  const opening = { dealId: 70, positionId: 991, symbolId: 1, tradeSide: 1, volume: 2000, filledVolume: 2000, executionPrice: 1.28014,
+    executionTimestamp: T - 3_600_000, dealStatus: 2, marginRate: 1.28014, baseToUsdConversionRate: 1 }
+  const closing = { dealId: 71, positionId: 991, symbolId: 1, tradeSide: 2, volume: 2000, filledVolume: 2000, executionPrice: 1.27839,
+    executionTimestamp: T, dealStatus: 2, marginRate: 1.27839, baseToUsdConversionRate: 1,
+    closePositionDetail: { entryPrice: 1.28014, grossProfit: -350, swap: 0, commission: -18, balance: 1000000, moneyDigits: 2, closedVolume: 2000 } }
+  const [both] = shapeDeals([rejected, opening, closing], meta, '43097342')
+  assert.deepEqual([both.open_margin_rate, both.open_base_usd_rate], [1.28014, 1], 'the executed opening deal, not the earlier rejected one')
+  const [onlyRejected] = shapeDeals([rejected, closing], meta, '43097342')
+  assert.deepEqual([onlyRejected.open_margin_rate, onlyRejected.open_base_usd_rate], [null, null])
+  for (const status of [5, 6, 7, 'REJECTED']) {
+    const [r] = shapeDeals([{ ...rejected, dealStatus: status, filledVolume: 2000 }, closing], meta, '43097342')
+    assert.equal(r.open_margin_rate, null, `status ${status}`)
+  }
+})

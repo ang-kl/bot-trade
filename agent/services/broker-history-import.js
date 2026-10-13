@@ -32,7 +32,7 @@ import { pageDeals } from '../lib/deal-paging.js'
 import { brokerDealLinkIdentities } from './broker-deal-link-identity.js'
 import { brokerAmount, brokerVersion } from './deal-balances.js'
 import { normPosId } from '../lib/pos-id.js'
-import { FALSE_CLOSE_TOLERANCE_MS } from '../lib/position-deal-history.js'
+import { FALSE_CLOSE_TOLERANCE_MS, executedDeal } from '../lib/position-deal-history.js'
 import { captureCloseDeals } from './broker-exit-attribution.js'
 import { closingExecutedQuantity, positiveBrokerQuantity, prospectiveVolumeTrade, EXECUTED_VOLUME_CONTRACT } from '../lib/deal-execution-volume.js'
 
@@ -89,13 +89,24 @@ export async function fetchDealsPaged(getDeals, fromMs, toMs, opts) {
 export function shapeDeals(deals, symMeta = {}, accountId = null) {
   // Earliest execution per position = its open, when we can see it.
   const openMsByPosition = new Map()
-  const openDealByPosition = new Map()
   for (const d of deals) {
     if (d.closePositionDetail) continue
     const pid = d.positionId != null ? String(d.positionId) : null
     if (!pid || d.executionTimestamp == null) continue
     const prev = openMsByPosition.get(pid)
-    if (prev == null || d.executionTimestamp < prev) { openMsByPosition.set(pid, d.executionTimestamp); openDealByPosition.set(pid, d) }
+    if (prev == null || d.executionTimestamp < prev) openMsByPosition.set(pid, d.executionTimestamp)
+  }
+  // Claude · № 14,318 13-Oct (Codex P2 on #1358, owner "Fix in this PR";
+  // claude-builder): the opening side's RATES come only from an executed
+  // opening deal that filled something — a rejected or errored order on the
+  // same position is no fill and its rates are no evidence.
+  const openDealByPosition = new Map()
+  for (const d of deals) {
+    if (d.closePositionDetail || !executedDeal(d) || !(Number(d.filledVolume) > 0)) continue
+    const pid = d.positionId != null ? String(d.positionId) : null
+    if (!pid || d.executionTimestamp == null) continue
+    const prev = openDealByPosition.get(pid)
+    if (prev == null || d.executionTimestamp < prev.executionTimestamp) openDealByPosition.set(pid, d)
   }
 
   const rows = []
