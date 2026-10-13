@@ -1,0 +1,1035 @@
+{
+  "_note": "Claude · № 14,533 14-Oct (owner: \"start NASA-5 and NASA-6\"; NASA assessment §3 priority 2: an operational acceptance matrix covering accounts, symbol classes, order/exit forms and adverse event sequences; claude-builder). Each cell is an (order/exit form × adverse event). covered: its receipts are existing tests that drive the real code path under that event (file + exact test title; agent/acceptance/matrix.test.js fails if a receipt no longer exists). gap: no such test was found by the 14-10 inventory; gaps are the work list of the next NASA-5 batches, never silently closed. not_applicable: the event cannot occur for that form, with the reason. This matrix is about deterministic fault receipts (implementation verified); operations validated (bounded demo runs) and financial evidence are separate states and are not claimed here.",
+  "events": [
+    "delayed",
+    "missing",
+    "duplicate",
+    "underfill",
+    "stale_snapshot",
+    "restart",
+    "storage_failure",
+    "foreign_identity"
+  ],
+  "forms": [
+    "market_entry",
+    "pending_fill",
+    "manual_order",
+    "execute_analysis",
+    "momentum_book",
+    "tick_entry",
+    "adoption_reopen",
+    "partial_close",
+    "stop_loss",
+    "take_profit",
+    "keeper_full_close",
+    "weekend_bank",
+    "time_cap"
+  ],
+  "cells": [
+    {
+      "form": "market_entry",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/lib/exec-engine.test.js",
+          "title": "placeOrder with a ledger: a definite rejection settles REJECTED, an unanswered send settles UNKNOWN — never FILLED, never released"
+        },
+        {
+          "file": "agent/submission-ambiguity.test.js",
+          "title": "THE 0066.HK BUG: a sidecar timeout is ambiguous, and the WS predicate cannot see it"
+        }
+      ]
+    },
+    {
+      "form": "market_entry",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/entry-ledger.test.js",
+          "title": "reconcile resolves from the sidecar ring too: order_reject → REJECTED, order_result with a position → FILLED; an intent nothing names stays open"
+        },
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "orphan sweep: an open trade still awaiting a fill (no position id) is untouched"
+        }
+      ]
+    },
+    {
+      "form": "market_entry",
+      "event": "duplicate",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/lib/exec-engine.test.js",
+          "title": "2.6.3 — 20 concurrent identical dispatches: 1 order, 19 DUPLICATE_ORDER_DISPATCH_BLOCKED"
+        },
+        {
+          "file": "agent/submission-ambiguity.test.js",
+          "title": "the intent row is PROMOTED in place, never duplicated"
+        }
+      ]
+    },
+    {
+      "form": "market_entry",
+      "event": "underfill",
+      "state": "not_applicable",
+      "reason": "an entry underfill is booked from the opening deals (filled-volume, NASA-3); the entry path itself sends once and records what it sent"
+    },
+    {
+      "form": "market_entry",
+      "event": "stale_snapshot",
+      "state": "gap"
+    },
+    {
+      "form": "market_entry",
+      "event": "restart",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/entry-ledger.test.js",
+          "title": "an ambiguous send is UNKNOWN: it survives a reopen of the database and blocks a resend on the same key until evidence resolves it"
+        }
+      ]
+    },
+    {
+      "form": "market_entry",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "market_entry",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/submission-ambiguity.test.js",
+          "title": "the block is scoped to the same symbol, side and account"
+        }
+      ]
+    },
+    {
+      "form": "pending_fill",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/pending-orders.test.js",
+          "title": "a fill AFTER the order deadline is not born already expired"
+        }
+      ]
+    },
+    {
+      "form": "pending_fill",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/pending-orders.test.js",
+          "title": "marks a vanished order EXPIRED when no matching position exists"
+        },
+        {
+          "file": "agent/services/pending-orders.test.js",
+          "title": "marks a vanished order FILLED and mirrors trades + monitored_positions"
+        }
+      ]
+    },
+    {
+      "form": "pending_fill",
+      "event": "duplicate",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/pending-orders.test.js",
+          "title": "one working order per symbol — duplicate setups are deduped"
+        }
+      ]
+    },
+    {
+      "form": "pending_fill",
+      "event": "underfill",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/lib/order-answer.test.js",
+          "title": "a resting order is FILLED only when the answer says it filled: ORDER_FILLED, ORDER_PARTIAL_FILL (by name or number), or a deal"
+        }
+      ]
+    },
+    {
+      "form": "pending_fill",
+      "event": "stale_snapshot",
+      "state": "gap"
+    },
+    {
+      "form": "pending_fill",
+      "event": "restart",
+      "state": "gap"
+    },
+    {
+      "form": "pending_fill",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "pending_fill",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/pending-orders.test.js",
+          "title": "ANOTHER account's resting order is neither written off nor cancelled"
+        }
+      ]
+    },
+    {
+      "form": "manual_order",
+      "event": "delayed",
+      "state": "gap"
+    },
+    {
+      "form": "manual_order",
+      "event": "missing",
+      "state": "gap"
+    },
+    {
+      "form": "manual_order",
+      "event": "duplicate",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/routes/void-cross-account-duplicates.test.js",
+          "title": "the stress-run shape: a reopened manual order keeps its own source and takes the broker volume the twin recorded"
+        }
+      ]
+    },
+    {
+      "form": "manual_order",
+      "event": "underfill",
+      "state": "gap"
+    },
+    {
+      "form": "manual_order",
+      "event": "stale_snapshot",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/reconcile-young-rows.test.js",
+          "title": "a row written seconds before the read is not closed on a snapshot that does not hold it yet — reported as deferred"
+        },
+        {
+          "file": "agent/services/reconcile-young-rows.test.js",
+          "title": "a frozen cache: a row opened after the snapshot was taken is deferred, even past the 120 s bound"
+        }
+      ]
+    },
+    {
+      "form": "manual_order",
+      "event": "restart",
+      "state": "gap"
+    },
+    {
+      "form": "manual_order",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "manual_order",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/routes/reconcile-identity-routes.test.js",
+          "title": "position-double: a foreign reply places no order"
+        }
+      ]
+    },
+    {
+      "form": "execute_analysis",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/order-writers-l2a.test.js",
+          "title": "W8: a failed send is marked by OUTCOME — refusals before any transport are rejected, anything that may have reached the broker is unconfirmed"
+        }
+      ]
+    },
+    {
+      "form": "execute_analysis",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/routes/execute-trade-route.test.js",
+          "title": "P1: with no price in the order answer, the fill is read from the position, and the row is anchored to it"
+        }
+      ]
+    },
+    {
+      "form": "execute_analysis",
+      "event": "duplicate",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/order-writers-l2a.test.js",
+          "title": "W8: /execute-trade writes ahead — account, strategy and approval id on the first write — then promotes the SAME row"
+        }
+      ]
+    },
+    {
+      "form": "execute_analysis",
+      "event": "underfill",
+      "state": "gap"
+    },
+    {
+      "form": "execute_analysis",
+      "event": "stale_snapshot",
+      "state": "gap"
+    },
+    {
+      "form": "execute_analysis",
+      "event": "restart",
+      "state": "gap"
+    },
+    {
+      "form": "execute_analysis",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "execute_analysis",
+      "event": "foreign_identity",
+      "state": "gap"
+    },
+    {
+      "form": "momentum_book",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-rank-exit.test.js",
+          "title": "a timeout is durable, and a late original receipt recovers without another close"
+        },
+        {
+          "file": "agent/services/momentum-limit-entry.test.js",
+          "title": "unknown send stays reserved across restart; delayed confirmed fill transfers once and binds from fresh broker evidence"
+        }
+      ]
+    },
+    {
+      "form": "momentum_book",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-limit-entry.test.js",
+          "title": "a partial limit fill keeps its slot and margin when the broker order snapshot is absent"
+        }
+      ]
+    },
+    {
+      "form": "momentum_book",
+      "event": "duplicate",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-rank-exit.test.js",
+          "title": "rank reservation wins before its read awaits; a simultaneous partial sends nothing"
+        }
+      ]
+    },
+    {
+      "form": "momentum_book",
+      "event": "underfill",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-limit-entry.test.js",
+          "title": "delayed partial-fill setup uses one clock and still rejects fills before reservation"
+        }
+      ]
+    },
+    {
+      "form": "momentum_book",
+      "event": "stale_snapshot",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-limit-entry.test.js",
+          "title": "closed/unknown market, unlisted account, stale evidence, wrong limit side and missing ledger cannot send"
+        },
+        {
+          "file": "agent/services/momentum-entry-contract.test.js",
+          "title": "stale pre-submit prices and fractional broker units cannot become a durable entry plan"
+        }
+      ]
+    },
+    {
+      "form": "momentum_book",
+      "event": "restart",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-limit-entry.test.js",
+          "title": "final partial enrollment survives a restart with the same immutable plan and no recreated reservation"
+        },
+        {
+          "file": "agent/services/momentum-entry-contract.test.js",
+          "title": "a file-backed restart preserves the prepared intent and the enrolled plan without duplicate handover"
+        }
+      ]
+    },
+    {
+      "form": "momentum_book",
+      "event": "storage_failure",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-limit-entry.test.js",
+          "title": "mandatory plan write failure rolls back the permit and reservation and prevents transport"
+        },
+        {
+          "file": "agent/services/momentum-entry-contract.test.js",
+          "title": "book handover and enrollment commit together, and a failure rolls both back"
+        }
+      ]
+    },
+    {
+      "form": "momentum_book",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-rank-exit.test.js",
+          "title": "foreign filled receipt stays ambiguous through disk restore and cannot resend"
+        },
+        {
+          "file": "agent/services/momentum-limit-entry.test.js",
+          "title": "a later fill cannot reinterpret manual, ambiguous or differently owned local exposure"
+        }
+      ]
+    },
+    {
+      "form": "tick_entry",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/tick-permits.test.js",
+          "title": "RACE CHECKER: a TIMEOUT rung as order_reject settles UNKNOWN, keeps the key blocked, and the feeder issues no new permit for it; a RELEASED standing row the ring names is reopened"
+        }
+      ]
+    },
+    {
+      "form": "tick_entry",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/tick-permits.test.js",
+          "title": "the sidecar's tick label carries the intent in the 8th field, so a position the ring never settled is reconciled by its label"
+        }
+      ]
+    },
+    {
+      "form": "tick_entry",
+      "event": "duplicate",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/tick-fire-ledger.test.js",
+          "title": "an accepted tick fire writes ONE approved risk event whose reason states what moved, links the intent, and never writes it twice"
+        }
+      ]
+    },
+    {
+      "form": "tick_entry",
+      "event": "underfill",
+      "state": "gap"
+    },
+    {
+      "form": "tick_entry",
+      "event": "stale_snapshot",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/tick-combined-risk.test.js",
+          "title": "N5: a reconcile whose snapshot was REQUESTED before the new boot was first seen does not lift the hold, even though it was written after; one requested after does"
+        }
+      ]
+    },
+    {
+      "form": "tick_entry",
+      "event": "restart",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/tick-combined-risk.test.js",
+          "title": "gap 6: after a gateway restart the account pauses until a reconcile of THAT account — the old boot's rows held RESERVED, not re-pushed; then they go and fresh ids are pushed, bound to the new boot"
+        }
+      ]
+    },
+    {
+      "form": "tick_entry",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "tick_entry",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "tick fill NEGATIVE: a tick label whose intent belongs to a DIFFERENT account stays external"
+        }
+      ]
+    },
+    {
+      "form": "adoption_reopen",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-book.test.js",
+          "title": "an open tsmom_long trade with no book row (a resting limit that filled later) is adopted once, keeper paused; an exited row is not re-adopted"
+        }
+      ]
+    },
+    {
+      "form": "adoption_reopen",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "orphan sweep: an open trade whose position is gone at the broker (no monitored row) is closed"
+        }
+      ]
+    },
+    {
+      "form": "adoption_reopen",
+      "event": "duplicate",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "re-adoption guard: a broker position with an existing open trade is RE-LINKED, not duplicated"
+        },
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "dedup sweep: duplicate open trades sharing a posId are collapsed to the newest"
+        }
+      ]
+    },
+    {
+      "form": "adoption_reopen",
+      "event": "underfill",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/profit-keeper-receipts.test.js",
+          "title": "NASA-3: keeper scale-out on an adopted position records no fill from the broker volume"
+        }
+      ]
+    },
+    {
+      "form": "adoption_reopen",
+      "event": "stale_snapshot",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "convergence: a standing disagreement is adopted on the SECOND sighting"
+        }
+      ]
+    },
+    {
+      "form": "adoption_reopen",
+      "event": "restart",
+      "state": "gap"
+    },
+    {
+      "form": "adoption_reopen",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "adoption_reopen",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "a position another account holds OPEN is not adopted — refused, counted, audited"
+        },
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "contamination: account B empty snapshot never closes account A positions"
+        }
+      ]
+    },
+    {
+      "form": "partial_close",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "ambiguous transport outcome stays pending without another close"
+        },
+        {
+          "file": "agent/services/profit-keeper-receipts.test.js",
+          "title": "actual keeper retains an ambiguous timeout across restart without duplicate submission"
+        },
+        {
+          "file": "agent/services/capped-hybrid.test.js",
+          "title": "late fill is retained after timeout and requires residual recovery, never a second close"
+        },
+        {
+          "file": "agent/services/momentum-close-recovery.test.js",
+          "title": "a close landing late, at 35 s, is never declared NOT_EXECUTED"
+        }
+      ]
+    },
+    {
+      "form": "partial_close",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "real ordinary monitor does not pre-stamp partial flags or report a missing receipt as success"
+        },
+        {
+          "file": "agent/services/capped-hybrid.test.js",
+          "title": "missing/foreign/underfilled close receipts do not journal success or resend"
+        }
+      ]
+    },
+    {
+      "form": "partial_close",
+      "event": "duplicate",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "concurrent actual callers acquire only one durable close claim"
+        },
+        {
+          "file": "agent/services/profit-keeper-receipts.test.js",
+          "title": "independent SQLite deliveries race the durable claim and commit one owned fill"
+        },
+        {
+          "file": "agent/services/hybrid-tick-controller.test.js",
+          "title": "ordinary manager racing the native tick shares one durable close claim"
+        }
+      ]
+    },
+    {
+      "form": "partial_close",
+      "event": "underfill",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "actual executor records an underfill and its confirmed residual, not requested units"
+        },
+        {
+          "file": "agent/services/profit-keeper-receipts.test.js",
+          "title": "actual keeper commits an underfill quantity and owned residual rather than the request"
+        }
+      ]
+    },
+    {
+      "form": "partial_close",
+      "event": "stale_snapshot",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/momentum-partial-runtime.test.js",
+          "title": "a stale mark, a missing mark or a closed ledger row forces an authoritative read"
+        },
+        {
+          "file": "agent/services/hybrid-tick-controller.test.js",
+          "title": "broker-source future/stale times and inconsistent gateway clocks cannot close"
+        }
+      ]
+    },
+    {
+      "form": "partial_close",
+      "event": "restart",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "journal failure rolls back lots and latches; stored receipt recovers after restart"
+        },
+        {
+          "file": "agent/services/momentum-close-recovery.test.js",
+          "title": "a restart in SENDING (database closed and reopened, a new adapter) with a matching deal confirms without a close"
+        },
+        {
+          "file": "agent/services/capped-hybrid.test.js",
+          "title": "ambiguous claim survives SQLite reopen without duplicate close or invented scale-out"
+        }
+      ]
+    },
+    {
+      "form": "partial_close",
+      "event": "storage_failure",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "claim storage failure prevents the broker call"
+        },
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "raw-response persistence failure leaves durable sending claim across restart"
+        },
+        {
+          "file": "agent/services/hybrid-status-contention.test.js",
+          "title": "a real competing WAL writer causes one status attempt, retains its code/stage, then recovers without losing the refusal"
+        }
+      ]
+    },
+    {
+      "form": "partial_close",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "actual executor refuses conflicting broker basis before sending"
+        },
+        {
+          "file": "agent/services/profit-keeper-receipts.test.js",
+          "title": "conflicting identity inside a fresh residual cannot latch the profit execution"
+        },
+        {
+          "file": "agent/services/momentum-partial-manager.test.js",
+          "title": "wrong-account receipt or wrong residual cannot be stamped confirmed"
+        }
+      ]
+    },
+    {
+      "form": "stop_loss",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/book-stop-amend.test.js",
+          "title": "a pending broker read times out and its late answer cannot trigger an amendment"
+        },
+        {
+          "file": "agent/services/broker-exit-attribution.test.js",
+          "title": "late or failed order reads remain pending and a retry is paced"
+        }
+      ]
+    },
+    {
+      "form": "stop_loss",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "reclassify: no exit price yet — row left for a later pass"
+        }
+      ]
+    },
+    {
+      "form": "stop_loss",
+      "event": "duplicate",
+      "state": "gap"
+    },
+    {
+      "form": "stop_loss",
+      "event": "underfill",
+      "state": "not_applicable",
+      "reason": "a broker-side stop closes at the broker; no order is sent by the bot to under-fill"
+    },
+    {
+      "form": "stop_loss",
+      "event": "stale_snapshot",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/session-guard-ownership-integration.test.js",
+          "title": "foreign, missing, duplicate and conflicting broker snapshots refuse; a later valid read may retry"
+        }
+      ]
+    },
+    {
+      "form": "stop_loss",
+      "event": "restart",
+      "state": "gap"
+    },
+    {
+      "form": "stop_loss",
+      "event": "storage_failure",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/session-guard-ownership-integration.test.js",
+          "title": "a real SQLite journal failure rolls the stop mirror back and cannot announce a successful guard"
+        }
+      ]
+    },
+    {
+      "form": "stop_loss",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/broker-exit-attribution.test.js",
+          "title": "wrong account, position, symbol, order, side, volume, timestamp, entry or rejected deal cannot supply attribution"
+        },
+        {
+          "file": "agent/services/session-guard-ownership-integration.test.js",
+          "title": "closed, error, empty, policy-only, malformed and foreign responses cannot manufacture a stop movement"
+        }
+      ]
+    },
+    {
+      "form": "take_profit",
+      "event": "delayed",
+      "state": "gap"
+    },
+    {
+      "form": "take_profit",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/broker-exit-attribution.test.js",
+          "title": "a new close near TP cannot be labelled a TP before its closing order is read"
+        }
+      ]
+    },
+    {
+      "form": "take_profit",
+      "event": "duplicate",
+      "state": "gap"
+    },
+    {
+      "form": "take_profit",
+      "event": "underfill",
+      "state": "not_applicable",
+      "reason": "a broker-side TP closes at the broker; no order is sent by the bot to under-fill"
+    },
+    {
+      "form": "take_profit",
+      "event": "stale_snapshot",
+      "state": "gap"
+    },
+    {
+      "form": "take_profit",
+      "event": "restart",
+      "state": "gap"
+    },
+    {
+      "form": "take_profit",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "take_profit",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/broker-exit-attribution.test.js",
+          "title": "a position-id collision does not borrow another account close event"
+        }
+      ]
+    },
+    {
+      "form": "keeper_full_close",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/closer-horizon-deferral.test.js",
+          "title": "F1 ${name}: a partial or rank close in flight defers this pass, and says why; the beat is not failed by it"
+        }
+      ]
+    },
+    {
+      "form": "keeper_full_close",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "full exit: a position missing only from the cached snapshot is closed at the broker, not written off as already closed"
+        },
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "full exit: missing from both the cache and the live read → recorded as already closed, nothing sent"
+        }
+      ]
+    },
+    {
+      "form": "keeper_full_close",
+      "event": "duplicate",
+      "state": "gap"
+    },
+    {
+      "form": "keeper_full_close",
+      "event": "underfill",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/profit-keeper-receipts.test.js",
+          "title": "keeper full-close underfill stays unresolved instead of stamping a whole close or resubmitting"
+        }
+      ]
+    },
+    {
+      "form": "keeper_full_close",
+      "event": "stale_snapshot",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/profit-keeper-receipts.test.js",
+          "title": "actual keeper full close requires a completed fill and fresh account-owned absence"
+        }
+      ]
+    },
+    {
+      "form": "keeper_full_close",
+      "event": "restart",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/profit-keeper-receipts.test.js",
+          "title": "a retained full-close receipt recovers after ordinary reconciliation closes its monitor"
+        }
+      ]
+    },
+    {
+      "form": "keeper_full_close",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "keeper_full_close",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/closer-horizon-deferral.test.js",
+          "title": "F1 ${name}: another account's plan on the same position number does not defer"
+        }
+      ]
+    },
+    {
+      "form": "weekend_bank",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/closer-horizon-deferral.test.js",
+          "title": "F1 ${name}: a partial or rank close in flight defers this pass, and says why; the beat is not failed by it"
+        }
+      ]
+    },
+    {
+      "form": "weekend_bank",
+      "event": "missing",
+      "state": "gap"
+    },
+    {
+      "form": "weekend_bank",
+      "event": "duplicate",
+      "state": "gap"
+    },
+    {
+      "form": "weekend_bank",
+      "event": "underfill",
+      "state": "gap"
+    },
+    {
+      "form": "weekend_bank",
+      "event": "stale_snapshot",
+      "state": "gap"
+    },
+    {
+      "form": "weekend_bank",
+      "event": "restart",
+      "state": "gap"
+    },
+    {
+      "form": "weekend_bank",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "weekend_bank",
+      "event": "foreign_identity",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "book exemption is per account — another account's book row does not shield this position"
+        }
+      ]
+    },
+    {
+      "form": "time_cap",
+      "event": "delayed",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/pending-orders.test.js",
+          "title": "a fill AFTER the order deadline is not born already expired"
+        }
+      ]
+    },
+    {
+      "form": "time_cap",
+      "event": "missing",
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "full exit: the live read fails → the row stays open and nothing is sent this pass"
+        }
+      ]
+    },
+    {
+      "form": "time_cap",
+      "event": "duplicate",
+      "state": "gap"
+    },
+    {
+      "form": "time_cap",
+      "event": "underfill",
+      "state": "gap"
+    },
+    {
+      "form": "time_cap",
+      "event": "stale_snapshot",
+      "state": "gap"
+    },
+    {
+      "form": "time_cap",
+      "event": "restart",
+      "state": "gap"
+    },
+    {
+      "form": "time_cap",
+      "event": "storage_failure",
+      "state": "gap"
+    },
+    {
+      "form": "time_cap",
+      "event": "foreign_identity",
+      "state": "gap"
+    }
+  ]
+}

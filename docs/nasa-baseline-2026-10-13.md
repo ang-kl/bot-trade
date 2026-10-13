@@ -157,8 +157,8 @@ Claude · № 14,322 13-Oct (claude-builder).
 | Audit fix 5, hybrid trigger from the broker fill | #1357 | merged 13-10, read back: DOW.US #1806 no longer `monitor_entry_conflict` |
 | NASA-4 commission, per-deal broker rates | #1358 | see the PR; live check: new closing deals carry rates, USD accounts read ratio 1 |
 | NASA-3 quantity contract | NASA-3 PR | filled lots from the position's own deals (sweep), closing deals, pre-partial broker volume, first sighting; opened lots labelled |
-| NASA-5 fault matrix | — | not started (owner's word) |
-| NASA-6 strategy validation | — | not started (owner's word) |
+| NASA-5 fault matrix | batch 1: `agent/acceptance/matrix.json` + its test | started 14-10 on the owner's word ("start NASA-5 and NASA-6"); 13 order/exit forms × 8 adverse events: 61 covered by named real-path tests, 40 gaps (the next batches' work list), 3 not applicable. Bounded demo validation and any live-account order stay ask-first. |
+| NASA-6 strategy validation | batch 1: train/confirm split in bar-form research | started 14-10; selection on train only, confirm judged by the owner's replay bar (tick-validation.json replay). A research run stays on the owner's word. |
 
 Sent lots after `trades.volume` is rewritten: bot rows keep them on
 `entry_intents.volume`; manual-route rows have no separate record (left out of
