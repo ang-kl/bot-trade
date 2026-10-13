@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>bot-trade · NASA programme PR audit · 13 October 2026</title>
+<meta name="description" content="Dated audit of PR1348–1358 against the NASA assessment: alignment, scope drift, qualification gaps and validation evidence.">
+<style>
+:root{color-scheme:light;--ink:#17283b;--muted:#53657a;--line:#d9e1e9;--accent:#234f91;--paper:#fff;--bg:#f1f4f8}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.toolbar{background:#17283b;color:#fff;padding:17px max(24px,calc((100vw - 1120px)/2));display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}
+.brand{font-size:13px;font-weight:750;letter-spacing:.09em;text-transform:uppercase}.actions{display:flex;gap:10px;flex-wrap:wrap}.actions a,.actions button{font:inherit;font-size:13px;padding:7px 13px;background:#fff;color:#17283b;border:1px solid #fff;border-radius:6px;text-decoration:none;cursor:pointer}
+.shell{max-width:1120px;margin:32px auto;padding:0 24px}main{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:38px 46px;box-shadow:0 5px 20px #17283b08}
+h1{font-size:clamp(27px,4vw,38px);line-height:1.22;letter-spacing:-.025em;margin:0 0 22px;max-width:900px}h2{font-size:24px;line-height:1.3;margin:36px 0 15px;scroll-margin-top:18px}p{margin:0 0 16px}a{color:var(--accent);text-underline-offset:3px;overflow-wrap:anywhere}a:focus-visible,button:focus-visible{outline:3px solid #a86612;outline-offset:3px}
+blockquote{margin:22px 0;padding:20px 23px;border-left:4px solid #a86612;border-radius:0 6px 6px 0;background:#fff7e9;font-size:14px}blockquote p:last-child{margin:0}
+.toc{display:flex;flex-wrap:wrap;gap:8px 18px;border-bottom:1px solid var(--line);padding:0 0 22px;margin-bottom:30px;font-size:13px}.toc a{text-decoration:none}
+ul,ol{padding-left:25px;margin:15px 0 22px}li{padding-left:3px;margin:8px 0}.table-scroll{overflow-x:auto;max-width:100%;margin:22px 0 28px;border:1px solid var(--line);border-radius:8px}table{border-collapse:collapse;width:100%;min-width:650px;font-size:14px;line-height:1.55}th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:#eaf0f8;color:#263e5b;font-weight:750}tbody tr:nth-child(even){background:#f8fafc}tbody tr:last-child td{border-bottom:0}
+code{font: .88em/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;background:#edf1f6;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}pre{overflow-x:auto;background:#17283b;color:#f1f4f8;padding:18px 20px;border-radius:8px;font-size:14px;line-height:1.65}pre code{background:transparent;padding:0;overflow-wrap:normal}.footer{font-size:12px;color:var(--muted);padding:22px 0 28px}
+@media(max-width:640px){.shell{padding:0 12px;margin:18px auto}main{padding:24px 18px}h2{font-size:21px}.toolbar{padding:14px 20px}blockquote{padding:16px}table{font-size:13px}th,td{padding:12px}}
+@media print{body{background:#fff;font-size:10pt}.toolbar,.toc,.footer{display:none}.shell{margin:0;padding:0;max-width:none}main{border:0;box-shadow:none;padding:0}h1{font-size:24pt}h2{font-size:16pt;break-after:avoid}.table-scroll{overflow:visible;border-radius:0;break-inside:auto}table{min-width:0;font-size:9pt}th,td{padding:8px}pre{white-space:pre-wrap}a{color:inherit}blockquote{break-inside:avoid} @page{size:A4;margin:18mm}}
+</style></head><body>
+<header class="toolbar"><div class="brand">bot-trade / engineering evidence</div><div class="actions">
+<a href="data:text/markdown;charset=utf-8;base64,IyBOQVNBIHByb2dyYW1tZSBQUiBhdWRpdCDigJQgMTMgT2N0b2JlciAyMDI2Cgo+ICoqQXJjaGl2ZWQgYXVkaXQg4oCUIGN1dG9mZiAxMyBPY3RvYmVyIDIwMjYsIDIwOjIwIFNHVC4qKiBDb252ZXJzYXRpb24gcmVmZXJlbmNlOiBDb2RleCDihJYxNCwyOTIuIEF1ZGl0ZWQgbWFpbjogYDg0OTM1NTZmYTBiNGIwOWMxMDY3NjNjMDRjMTRmNjUzZTBkMGQ1NmRgLiBFeHBvcnRlZCAxNCBPY3RvYmVyIDIwMjYsIDA1OjIwIFNHVC4KPgo+IEFsbCBmaW5kaW5ncyBhbmQgUFIgc3RhdGVzIGJlbG93IHJlZmVyIHRvIHRoYXQgYXVkaXQgY3V0b2ZmLiBOZXdlciBjaGFuZ2VzLCBpbmNsdWRpbmcgUFJzICMxMzU44oCTIzEzNjEsIGV4aXN0IGF0IGV4cG9ydCBtYWluIGA2ZjYyNDM0YmMxYmRjMjcxMzk3MTk3NTUzNDYwNWRiYTAyNzBmNGE3YCBhbmQgd2VyZSBub3QgcmVhc3Nlc3NlZCBmb3IgdGhpcyBmaWxlIGRlbGl2ZXJ5LiBUaGlzIGlzIHRoZSBkb3dubG9hZGFibGUgdmVyc2lvbiBvZiB0aGUgcHJldmlvdXMgYXVkaXQsIG5vdCBhIG5ldyBhc3Nlc3NtZW50IG9mIHRvZGF5J3MgY29kZS4KCiMjIENvbmNsdXNpb24KClRoZSBjaGFuZ2VzIG1vc3RseSBzZXJ2ZSBjb25jcmV0ZSBwcm9ibGVtcyBhbmQgZG9jdW1lbnRlZCBvd25lciByZXF1ZXN0cy4gVGhlIGltcGxlbWVudGF0aW9uIGRlbW9uc3RyYXRlcyBzdWJzdGFudGlhbCB1bmRlcnN0YW5kaW5nIG9mIHRoZSBOQVNBIGFzc2Vzc21lbnQsIGJ1dCBhY2NlcHRhbmNlIGV2aWRlbmNlIHN0aWxsIGZhbGxzIHNob3J0IG9mIHRoZSBwcm9ncmFtbWUncyBvYmplY3RpdmVzLiBUaGUgY2xlYXJlc3QgZHJpZnQgaXMgZnJvbSBkZW1vbnN0cmF0ZWQgY29ycmVjdG5lc3MgdG93YXJkIHBhc3Npbmcgc2VsZWN0ZWQgZml4dHVyZXMsIHJlcnVubmluZyBhbiB1bmV4cGxhaW5lZCBmYWlsdXJlLCBhbmQgZGVzY3JpYmluZyBpbmNvbXBsZXRlIGluc3RydW1lbnRzIGFzIHF1YWxpZmllZC4gUGxhbm5lZCBsYXRlciBzdGVwcyBiZWluZyB1bmZpbmlzaGVkIGlzIG5vdCwgYnkgaXRzZWxmLCBzY29wZSBkcmlmdC4KClRoaXMgYXNzZXNzbWVudCBhdWRpdHMgY2hhbmdlcyBhbmQgZXZpZGVuY2U7IGl0IGNhbm5vdCBlc3RhYmxpc2ggdGhlIGF1dGhvcidzIGludGVybmFsIHVuZGVyc3RhbmRpbmcgb3IgaW5kZXBlbmRlbnRseSBhdXRoZW50aWNhdGUgZXZlcnkgb3duZXIgaW5zdHJ1Y3Rpb24gcXVvdGVkIGluIFBSIGJvZGllcy4KCiMjIEJvdW5kYXJ5IGFuZCBzb3VyY2VzCgpUaGUgZXhhY3QgY29udmVyc2F0aW9uIGluc3RydWN0aW9uIOKEliAxMyw5MzAgaXMgdW5hdmFpbGFibGUgaW4gdGhlIHJlcG9zaXRvcnksIFBSIHJlY29yZHMgYW5kIGNvb3JkaW5hdGlvbiBub3Rlcy4gQW4gb3B0aW9uYWwgY2xhcmlmaWNhdGlvbiB3YXMgcmVxdWVzdGVkLiBVbnRpbCB0aGF0IHRleHQgaXMgYXZhaWxhYmxlLCB0aGUgY29tcGFyaXNvbiB1c2VzIHRoZSBwdWJsaXNoZWQgYXNzZXNzbWVudCBhbmQgY29tbWl0dGVkIE5BU0EgcHJvZ3JhbW1lIGJhc2VsaW5lOgoKLSBbUHVibGlzaGVkIE5BU0EgYXNzZXNzbWVudF0oaHR0cHM6Ly9naXRodWIuY29tL2FuZy1rbC9ib3QtdHJhZGUvYmxvYi84NDkzNTU2ZmEwYjRiMDljMTA2NzYzYzA0YzE0ZjY1M2UwZDBkNTZkL2RvYy9ib3QtdHJhZGUtTkFTQS1hc3Nlc3NtZW50LTIwMjYtMTAtMTMubWQpLCBwdWJsaXNoZWQgYnkgUFIxMzQ5LCBjb252ZXJzYXRpb24gcmVmIOKEljEzLDkyNy4KLSBbQ29tbWl0dGVkIE5BU0EgcHJvZ3JhbW1lIGJhc2VsaW5lXShodHRwczovL2dpdGh1Yi5jb20vYW5nLWtsL2JvdC10cmFkZS9ibG9iLzg0OTM1NTZmYTBiNGIwOWMxMDY3NjNjMDRjMTRmNjUzZTBkMGQ1NmQvZG9jcy9uYXNhLWJhc2VsaW5lLTIwMjYtMTAtMTMubWQpLCBjb21taXR0ZWQgaW4gUFIxMzU1LCBwcm9ncmFtbWUgcmVmIGFmdGVyIOKEljE0LDA3NyAvIOKEljE0LDA3OCsuCi0gTWFpbiBpbnNwZWN0ZWQgYXQgdGhlIGF1ZGl0IGN1dG9mZjogYDg0OTM1NTZmYTBiNGIwOWMxMDY3NjNjMDRjMTRmNjUzZTBkMGQ1NmRgIChQUjEzNTcpLgotIEFkamFjZW50IGRlbGl2ZXJ5IGNvaG9ydDogUFIxMzQ44oCTMTM1OCBpbmNsdXNpdmUsIGFsbCBlbGV2ZW4gUFIgYm9kaWVzLCBhY3R1YWwgZGlmZnMvZmlsZSBpbnZlbnRvcmllcywgcmV2aWV3cywgaW5saW5lIGZpbmRpbmdzLCBjb21tZW50cyBhbmQgY2hlY2sgbWV0YWRhdGEuIFBSMTM0OCBzdGFydGVkIGJlZm9yZSBwdWJsaWNhdGlvbiBidXQgbWVyZ2VkIGFmdGVyd2FyZHM7IGl0IGlzIGNvbnRleHQsIG5vdCBhIHByb3ZlbiBOQVNBIHByb2dyYW1tZSBleGVjdXRpb24gc3RlcC4KLSBUZW4gbWVyZ2VkIFBSczogbmluZSBhcHBsaWNhdGlvbi9yZXNlYXJjaCBjaGFuZ2VzIGFuZCBvbmUgZG9jdW1lbnQtcHVibGljYXRpb24gUFIuIFBSMTM1OCB3YXMgb3BlbiBhdCB0aGUgYXVkaXQgY3V0b2ZmIGF0IGhlYWQgYDg3NjZmZjUzOWVmMWJlNDg2NjQ1MjU4N2UwMTM3ZDk4NjJlMDA3MzJgIG9uIHRoZSAxMyBPY3RvYmVyIGF1ZGl0IHJlZnJlc2guIFRoZSBleHBsaWNpdCBwb3N0LWJhc2VsaW5lIGNvaG9ydCBjb25zaXN0cyBvZiBmb3VyIG1lcmdlZCBQUnMgKDEzNTTigJMxMzU3KSBhbmQgb25lIG9wZW4gUFIgKDEzNTgpOyBvbmx5IDEzNTUgYW5kIDEzNTggZXhwbGljaXRseSBpZGVudGlmeSB0aGVtc2VsdmVzIGFzIE5BU0EgaW1wbGVtZW50YXRpb24gc3RlcHMuCgpUaGVyZSBhcmUgNjYgY2hhbmdlZC1maWxlIHJlY29yZHMsIGNvdW50aW5nIHRoZSBzYW1lIGZpbGUgYWdhaW4gd2hlbiBhbm90aGVyIFBSIGNoYW5nZXMgaXQuIFJldmlldyBtZXRhZGF0YSBjb250YWlucyAzNSBsYWJlbGxlZCBwcmlvcml0eSBmaW5kaW5ncyBhY3Jvc3MgYWxsIHJldmlldyByb3VuZHMsIGluY2x1ZGluZyB0aGUgb3BlbiBQUjogNSBQMSBhbmQgMzAgUDIuIEZvdXIgZmluZGluZ3MgYXJyaXZlZCBhZnRlciBtZXJnaW5nICgxMzUyOiBvbmUgUDI7IDEzNTM6IG9uZSBQMTsgMTM1NTogdHdvIFAyKS4gVGhlc2UgYXJlIHJldmlldyBmaW5kaW5ncywgbm90IGEgY291bnQgb2YgaW5kZXBlbmRlbnRseSBvYnNlcnZlZCBwcm9kdWN0aW9uIGluY2lkZW50cy4KCiMjIFBSLWJ5LVBSIGFzc2Vzc21lbnQKCnwgUFIgfCBBbGlnbm1lbnQgYW5kIGxlZ2l0aW1hY3kgfCBBY2NlcHRhbmNlIGxpbWl0IHwKfC0tLXwtLS18LS0tfAp8IFsxMzQ4XShodHRwczovL2dpdGh1Yi5jb20vYW5nLWtsL2JvdC10cmFkZS9wdWxsLzEzNDgpIC8gWzEzNTBdKGh0dHBzOi8vZ2l0aHViLmNvbS9hbmcta2wvYm90LXRyYWRlL3B1bGwvMTM1MCkgfCBBY3R1YWwgc3VibWl0dGVkIGxvdHMgYW5kIGFjY291bnQtb3duZWQgY3VycmVudCBob2xkaW5ncyBhcmUgZGlyZWN0bHkgYWxpZ25lZCB3aXRoIHRoZSBzaGFyZWQgcXVhbnRpdHkgY29udHJhY3QuIEZvbGxvdy11cHMgY29ycmVjdGVkIGZvcmVpZ24vdW5uYW1lZCBzbmFwc2hvdHMgYW5kIHRoZSByZWFkaW5nIHByZWZlcmVuY2UuIHwgYG9wZW5lZF9sb3RzYCBzdGlsbCByZWFkcyBtdXRhYmxlIGB0cmFkZXMudm9sdW1lYC4gVGhpcyBpcyBhbiBleHBsaWNpdGx5IGludmVudG9yaWVkIE5BU0EtMyBnYXAsIG5vdCBhbiBpbW11dGFibGUgb3BlbmluZyBxdWFudGl0eS4gfAp8IFsxMzQ5XShodHRwczovL2dpdGh1Yi5jb20vYW5nLWtsL2JvdC10cmFkZS9wdWxsLzEzNDkpIHwgTGVnaXRpbWF0ZSBvd25lci1yZXF1ZXN0ZWQgZGVsaXZlcnkgb2YgdGhlIGFzc2Vzc21lbnQuIHwgRG9jdW1lbnRhdGlvbiBwdWJsaWNhdGlvbiBzdXBwbGllcyBubyBvcGVyYXRpb25hbCBxdWFsaWZpY2F0aW9uIG9yIHByb2ZpdGFiaWxpdHkgZXZpZGVuY2UuIHwKfCBbMTM1MV0oaHR0cHM6Ly9naXRodWIuY29tL2FuZy1rbC9ib3QtdHJhZGUvcHVsbC8xMzUxKSB8IEZpbGxpbmcgbWlzc2luZyBleGl0cyBmcm9tIGJyb2tlciBjbG9zaW5nIGRlYWxzIGltcHJvdmVzIGVjb25vbWljIG1lYXN1cmVtZW50IHdoaWxlIHByZXNlcnZpbmcgcmV0YWluZWQgbW9uZXkgYW5kIHF1YW50aXR5LiBPd25lci1hcHByb3ZlZCB3aWRlbmluZyBpbmNsdWRlcyByb3dzIHdob3NlIG1vbmV5IGxhbmRzIGluIHRoZSBzYW1lIHBhc3MuIHwgQSBjb3JyZWN0IGV4aXQgcHJpY2UgYWxvbmUgZG9lcyBub3QgcHJvdmUgdGhlIGluaXRpYWwtcmlzayBkZW5vbWluYXRvciBvciBhIGZpbmFuY2lhbCBpbXByb3ZlbWVudC4gfAp8IFsxMzUyXShodHRwczovL2dpdGh1Yi5jb20vYW5nLWtsL2JvdC10cmFkZS9wdWxsLzEzNTIpIHwgUmVqZWN0aW5nIG1vdmVkIHN0b3BzIGFzIG9wZW5pbmcgc3RvcHMgYW5kIGpvdXJuYWxsaW5nIGJvb2svcmUtc3RyYXRlZ3kgbW92ZW1lbnRzIGFyZSBsZWdpdGltYXRlIHJlY29yZC1pbnRlZ3JpdHkgY29ycmVjdGlvbnMuIHwgQSBsYXRlIFAyIGlkZW50aWZpZXMgYSB2YWxpZCB0cmFuc21pdHRlZCBicmFja2V0IGJlaW5nIHJlamVjdGVkIGFmdGVyIGEgZmlsbCByZS1hbmNob3IuIFRoZSBndWFyZCBzdGlsbCBpbmZlcnMgcHJpY2UgcHJlY2lzaW9uIGZyb20gbnVtZXJpY2FsIHByaWNlcy4gT3JpZ2luYWwgYnJva2VyIGZhY3RzIHJlbWFpbiBpbmNvbXBsZXRlLiB8CnwgWzEzNTNdKGh0dHBzOi8vZ2l0aHViLmNvbS9hbmcta2wvYm90LXRyYWRlL3B1bGwvMTM1MykgfCBSYWlzaW5nIHRoZSBSU1MgdGhyZXNob2xkIGlzIGEgZG9jdW1lbnRlZCBvd25lciBjaG9pY2UgcmVzcG9uZGluZyB0byBhbiBvYnNlcnZlZCBhYm9ydC4gfCBBIHRocmVzaG9sZCBjaGFuZ2UgaXMgbWl0aWdhdGlvbi4gVGhlIGJhci1mb3JtIHdvcmtlciBzdGlsbCBoYXMgbm8gYHJlc291cmNlTGltaXRzYDsgd29ya2VyIGhlYXAsIHdob2xlLXByb2Nlc3MgUlNTIGFuZCBjb250YWluZXIgaGVhZHJvb20gaGF2ZSBub3QgYmVlbiBqb2ludGx5IHF1YWxpZmllZC4gQSBwb3N0LW1lcmdlIFAxIGZsYWdzIHRoaXMuIE5vIE9PTSB3YXMgZm9yY2VkIG9yIG9ic2VydmVkIGluIHRoaXMgYXVkaXQuIHwKfCBbMTM1NF0oaHR0cHM6Ly9naXRodWIuY29tL2FuZy1rbC9ib3QtdHJhZGUvcHVsbC8xMzU0KSB8IE93bmVyLXJlcXVlc3RlZCBtYW51YWwgcGFydGlhbC1jbG9zZSBmZWF0dXJlIHdpdGggdXNlZnVsIHN0ZXAgdmFsaWRhdGlvbiwgcHJldmlldywgc2luZ2xlLWZsaWdodCBhbmQgZGlzbWlzc2FsIHNhZmVndWFyZHMuIFJlbGF0ZWQgdG8gb3JkZXItZm9ybSBjb3ZlcmFnZSwgYnV0IG5vdCBhIHJlcGxhY2VtZW50IGZvciBOQVNBLTMvNS4gfCBPcGVyYXRpb25hbCBwYXJ0aWFsLWNsb3NlIHZlcmlmaWNhdGlvbiByZW1haW5zIHVubGlua2VkIGluIHRoZSBpbnNwZWN0ZWQgUFIgcmVjb3Jkcy4gVGhyZWUgZWFybHkgUDEgZmluZGluZ3Mgd2VyZSBjb3JyZWN0ZWQgYmVmb3JlIG1lcmdlLiBUaGUgdXNlci1mYWNpbmcgbG9jayBhbG9uZSBpcyBub3QgZHVyYWJsZSByZXRyeS9yZXN0YXJ0IHF1YWxpZmljYXRpb24uIHwKfCBbMTM1NV0oaHR0cHM6Ly9naXRodWIuY29tL2FuZy1rbC9ib3QtdHJhZGUvcHVsbC8xMzU1KSB8IFN0cm9uZyBkaXJlY3QgYWxpZ25tZW50OiBiYXNlbGluZSBpbnZlbnRvcnksIHBhcnNlci1iYXNlZCBpbXBvcnQgZ3JhcGgsIHRpbWVyIGluc3RydW1lbnRhdGlvbiwgYW5kIGZyZXNoL2NvbXBsZXRlIGhlYWx0aCBldmlkZW5jZSBhdCByZXNlYXJjaCBzdGFydCwgZHVyaW5nIHBvbGxpbmcgYW5kIGF0IGNvbXBsZXRpb24uIHwgVHdvIGxhdGUgZmluYWwtaGVhZCBpbnN0cnVtZW50IGRlZmVjdHMgYXJlIHJlcHJvZHVjZWQgYmVsb3cuIFRpY2sgcmVzZWFyY2ggaXMgZXhwbGljaXRseSBsZWZ0IG91dC4gSW5zdHJ1bWVudCBxdWFsaWZpY2F0aW9uIHJlbWFpbnMgcGFydGlhbC4gfAp8IFsxMzU2XShodHRwczovL2dpdGh1Yi5jb20vYW5nLWtsL2JvdC10cmFkZS9wdWxsLzEzNTYpIHwgQ29ycmVjdCBleGl0LXNpZGUgbWVhc3VyZW1lbnRzIGluIHNlcGFyYXRlIGNvbHVtbnMgcHJlc2VydmUgZXhpc3RpbmcgdHJhaWxpbmcgZGVjaXNpb25zLiBQYXVzZWQtcm93IGNvdmVyYWdlIGFuZCBjb21wYXJlLWFuZC1zZXQgbGlmZWN5Y2xlIGd1YXJkcyB3ZXJlIGNvcnJlY3RlZCBkdXJpbmcgcmV2aWV3LiB8IFJlcG9ydC9wb3N0bW9ydGVtIHJlYWRlcnMgaGF2ZSBub3QgYWRvcHRlZCB0aGUgbmV3IGZpZWxkcy4gVGhlIGZpcnN0IGRlc2lnbiBtaXNzZWQgYSB3cml0ZXIgYW5kIGEgZG93bnN0cmVhbSBzdG9wIGlucHV0LiBBbiB1bmV4cGxhaW5lZCBDSSBmYWlsdXJlIHdhcyBjYWxsZWQgYSBmbGFrZSBhZnRlciBhIHBhc3NpbmcgcmVydW4uIHwKfCBbMTM1N10oaHR0cHM6Ly9naXRodWIuY29tL2FuZy1rbC9ib3QtdHJhZGUvcHVsbC8xMzU3KSB8IExlZ2l0aW1hdGUgcGxhbm5lZC1lbnRyeSB2ZXJzdXMgYWN0dWFsLWZpbGwgY29ycmVjdGlvbjogdGhlIGh5YnJpZCB0cmlnZ2VyIHVzZXMgdGhlIGJyb2tlci1wcm92ZW4gZmlsbCBhbmQgcmV0YWlucyBleGlzdGluZyBpbml0aWFsLXJpc2sgYW5kIFNML1RQIHBvbGljaWVzLiB8IFRoaXMgY2hhbmdlcyBlbGlnaWJpbGl0eS90aW1pbmcgY29ycmVjdGx5OyBpdHMgZmluYW5jaWFsIGVmZmVjdCByZW1haW5zIHVucHJvdmVuLiBBbiBleHBsaWNpdCBjbGVhbiBmaW5hbC1oZWFkIENvZGV4IHJldmlldyBleGlzdHMgYmVmb3JlIG1lcmdlLiB8CnwgWzEzNThdKGh0dHBzOi8vZ2l0aHViLmNvbS9hbmcta2wvYm90LXRyYWRlL3B1bGwvMTM1OCkgfCBPcGVuIE5BU0EtNCBQUiBjYXB0dXJpbmcgYnJva2VyIGNvbnZlcnNpb24gcmF0ZXMgZm9yIGFjY291bnQtc3BlY2lmaWMgY29tbWlzc2lvbiBjb21wYXJpc29uOyBwcmVzZXJ2aW5nIHVua25vd24gcmF0ZXMgYW5kIGF2b2lkaW5nIHBvb2xlZCBjdXJyZW5jaWVzIGFyZSBhbGlnbmVkLiB8IEdhdGUgaW50ZWdyYXRpb24gaW50ZW50aW9uYWxseSByZW1haW5zIGFuIG93bmVyIGRlY2lzaW9uLiBOb24tVVNEIHF1b3RlL21pbmltdW0tZmVlIGNhc2VzIGFuZCBydW50aW1lIHJlY2VpcHRzIHJlbWFpbiBpbmNvbXBsZXRlLiBUaGUgY3VycmVudCByZXZpZXcgZmxhZ3Mgc2VsZWN0aW5nIGEgbm9uLWV4ZWN1dGVkIGRlYWwgYXMgYW4gb3BlbmVyOyB0aGlzIGlzIGFuIG9wZW4tUFIgZmluZGluZywgbm90IGEgbWVyZ2VkIGRlZmVjdC4gfAoKIyMgSW5kZXBlbmRlbnRseSByZXByb2R1Y2VkIGluc3RydW1lbnQgZ2FwcwoKVGhlIGF1ZGl0IHJ1bnMgdGhlIHVuY2hhbmdlZCBoZWxwZXJzIGZyb20gbWFpbiBvbiBOb2RlIDIyLjIzLjMsIHdpdGggbm8gYXBwbGljYXRpb24gc3RhcnR1cCBvciBicm9rZXIgYWNjZXNzLiBOb3JtYWxpemVkIG9ic2VydmF0aW9ucyBmcm9tIHRoZSByZXRhaW5lZCBgaW5zdHJ1bWVudC1wcm9iZXMuanNvbmAgcmVjZWlwdCBhcHBlYXIgaW4gdGhlIGFwcGVuZGl4IGJlbG93LiBUaGUgb3JpZ2luYWwgcHJvYmUgc2NyaXB0IGFuZCBmdWxsIGxvZ3MgcmVtYWluIGluIHRoZSBhdWRpdCB3b3Jrc3BhY2UuCgoxLiAqKkhpZGRlbiBkZXBlbmRlbmN5OioqIGBpbXBvcnQgeyBjcmVhdGVSZXF1aXJlIGFzIG1ha2VSZXF1aXJlIH0gZnJvbSAnbm9kZTptb2R1bGUnOyBjb25zdCBsb2FkID0gbWFrZVJlcXVpcmUoaW1wb3J0Lm1ldGEudXJsKTsgbG9hZCgnLi9leGVjLWVuZ2luZS5qcycpYCBwcm9kdWNlcyBuZWl0aGVyIHRoZSB0YXJnZXQgZGVwZW5kZW5jeSBub3IgYW4gdW5yZXNvbHZlZC1zaXRlIHdhcm5pbmcuIElubGluZSBpbXBvcnRzIGFuZCB0aGUgdW5hbGlhc2VkIGZhY3RvcnkgY29udHJvbHMgYXJlIGRldGVjdGVkLiBUaGlzIHJlcHJvZHVjZXMgW3RoZSBsYXRlIGFsaWFzIGZpbmRpbmddKGh0dHBzOi8vZ2l0aHViLmNvbS9hbmcta2wvYm90LXRyYWRlL3B1bGwvMTM1NSNkaXNjdXNzaW9uX3I0MjU3MzYwNjUxKS4KMi4gKipGYWxzZSB0aW1lciBmYWlsdXJlOioqIGFuIHVudXNlZCBgbm9kZTp0aW1lcnMvcHJvbWlzZXMuc2V0SW50ZXJ2YWwoKWAgaXRlcmF0b3IgcmVwb3J0cyBvbmUgY3JlYXRlZCB0aW1lciBhbHRob3VnaCBpdCBoYXMgbm90IGFybWVkIG9uZS4gQW4gYWJvcnRlZCBpdGVyYXRvciBhbHNvIHJlbWFpbnMgY291bnRlZC4gSW5kZXBlbmRlbnQgTm9kZSByZXNvdXJjZSByZWFkcyBzaG93IHplcm8gdGltZXIgcmVzb3VyY2VzIGZvciB0aGVzZSBjbGVhbiBjYXNlczsgdGhlIGFybWVkIGludGVydmFsIGNvbnRyb2wgaXMgZGV0ZWN0ZWQuIFRoaXMgcmVwcm9kdWNlcyBbdGhlIGxhdGUgcHJvbWlzZS1pbnRlcnZhbCBmaW5kaW5nXShodHRwczovL2dpdGh1Yi5jb20vYW5nLWtsL2JvdC10cmFkZS9wdWxsLzEzNTUjZGlzY3Vzc2lvbl9yNDI1NzM2MDY0MSkuIFRoZSBleGlzdGluZyBmaXh0dXJlIGl0c2VsZiBleHBlY3RzIHRoZSB1bnVzZWQgaXRlcmF0b3IgdG8gY291bnQgYXMgYSB2aW9sYXRpb24sIHNvIGludGVybmFsIGNvbnNpc3RlbmN5IHBhc3NlcyBkZXNwaXRlIHRoZSBzZW1hbnRpYyBlcnJvci4KClRoZSBleGlzdGluZyBxdWFsaWZpY2F0aW9uIHRlc3QgY292ZXJzIG9ubHkgcnVudGltZSBiaW5hcmllcyBwcmVzZW50IGF0IGl0cyBmaXhlZCBwYXRocy4gTWlzc2luZyBOb2RlIDIwIGlzIGZpbHRlcmVkIG91dCByYXRoZXIgdGhhbiBlc3RhYmxpc2hpbmcgdGhhdCBwcm9kdWN0aW9uLXJ1bnRpbWUgcXVhbGlmaWNhdGlvbiByYW4uIENsYXVkZSdzIFBSIGJvZHkgcmVwb3J0cyBwcmlvciBOb2RlIDIwLjIwLjIgYW5kIE5vZGUgMjIuMjIuMiBydW5zOyB0aGlzIGF1ZGl0IGluZGVwZW5kZW50bHkgZXhlY3V0ZXMgb25seSBOb2RlIDIyLjIzLjMuCgojIyBSZXZpZXcgYW5kIGZhaWx1cmUtZXZpZGVuY2UgY29uY2VybnMKCkV2ZXJ5IGluc3BlY3RlZCBmaW5hbC1oZWFkIEdpdEh1YiBgcmV2aWV3YCBqb2IgaXMgZ3JlZW4sIGJ1dCBldmVyeSBhY3R1YWwgYGFudGhyb3BpY3MvY2xhdWRlLWNvZGUtYWN0aW9uYCBzdGVwIGlzIHNraXBwZWQuIFRoZXkgY2Fubm90IGJlIGNvdW50ZWQgYXMgZWxldmVuIGNvbXBsZXRlZCBDbGF1ZGUgcmV2aWV3cy4gVGhlIHNlcGFyYXRlIEdpdEh1YiBDb2RleCBib3QgZGlkIGNvbmR1Y3QgcmV2aWV3cyBhbmQgZm91bmQgcmVhbCBvbWlzc2lvbnM7IHRoZSB0d28gdG9vbHMnIGV2aWRlbmNlIG11c3QgcmVtYWluIGRpc3RpbmN0LgoKUFIxMzU2J3MgW2F1dGhvciBjb21tZW50XShodHRwczovL2dpdGh1Yi5jb20vYW5nLWtsL2JvdC10cmFkZS9wdWxsLzEzNTYjaXNzdWVjb21tZW50LTYxNDQ3NjM1MDcpIHJlY29yZHMgYW4gYWdlbnQtc3VpdGUgZmFpbHVyZSBhdCBmaW5hbCBoZWFkIGA2ZWIwMjhmNWAsIG5vIHJlYWRhYmxlIGZhaWxpbmctdGVzdCBsb2csIGEgbG9jYWwgcGFzcyBhbmQgb25lIHBhc3NpbmcgcmVydW4uIEFjdGlvbnMgam9iIG1ldGFkYXRhIGNvbmZpcm1zIHRoZSBmaXJzdCBhZ2VudC1zdWl0ZSBmYWlsdXJlLiBBdmFpbGFibGUgYW5ub3RhdGlvbnMgc2F5IG9ubHkgZXhpdCBjb2RlIDEuIEEgcmVydW4gZXN0YWJsaXNoZXMgYSBsYXRlciBwYXNzLCBub3QgdGhlIGNhdXNlIG9mIHRoZSBlYXJsaWVyIGZhaWx1cmUuIENhbGxpbmcgdGhpcyBhIHByb3ZlbiBmbGFrZSBleGNlZWRzIHRoZSBldmlkZW5jZS4KClJlcGVhdGVkIHJldmlldyByb3VuZHMgYWxzbyBjb3JyZWN0ZWQgZXJyb3JzIGNyZWF0ZWQgYnkgdGhlIGVhcmxpZXIgaW1wbGVtZW50YXRpb246IHNuYXBzaG90IGZyZXNobmVzcy9hY2NvdW50IGF0dHJpYnV0aW9uLCBtYW51YWwtY2xvc2UgY29uY3VycmVuY3ksIGltcG9ydC1kb29yIGlkZW50aXR5LCBhbmQgTUFFL01GRSBkb3duc3RyZWFtIHVzZS4gUmV2aWV3IGlzIHVzZWZ1bCwgYnV0IHJlcXVpcmVtZW50cy9wb3B1bGF0aW9uIGFuYWx5c2lzIHN0aWxsIHJlbGllcyB0b28gaGVhdmlseSBvbiBkaXNjb3ZlcmluZyBvbWlzc2lvbnMgYWZ0ZXIgY29kaW5nLgoKIyMgUHJvZ3JhbW1lIGNvbXBsZXRpb24gYW5kIGRyaWZ0CgotICoqTkFTQS0yIGluc3RydW1lbnRzOioqIHN1YnN0YW50aWFsbHkgaW1wbGVtZW50ZWQsIHBhcnRpYWxseSBxdWFsaWZpZWQsIHdpdGggc3BlY2lmaWMgcmVwcm9kdWNpYmxlIHJlbWFpbmluZyBkZWZlY3RzLiBSZXNlYXJjaCByZWZ1c2FsL2Fib3J0IG9wZXJhdGlvbmFsIGNsYWltcyByZW1haW4gd2l0aG91dCBsaW5rZWQgZGVwbG95ZWQtcnVuIGNsb3N1cmUgaW4gdGhlIGluc3BlY3RlZCByZWNvcmRzLgotICoqTkFTQS0zIHF1YW50aXR5IGNvbnRyYWN0OioqIHN0aWxsIG9wZW4gaW4gdGhpcyBjb2hvcnQuIEtlZXBlci9nZW5lcmFsIHBhcnRpYWwvcmUtc3RyYXRlZ3kgb3ZlcndyaXRlIGB0cmFkZXMudm9sdW1lYDsgYC9zdGF0ZS9wb3NpdGlvbnNgIGxhYmVscyBpdCBgb3BlbmVkX2xvdHNgLiBUaGUgYmFzZWxpbmUgcmVjb3JkcyBvd25lciBuYW1pbmcgb2YgcHJvdGVjdGVkIGZpbGVzIGFzIGEgcHJlcmVxdWlzaXRlLiBUaGlzIGRlcGVuZGVuY3kgc2hvdWxkIGJlIHRyYWNrZWQsIG5vdCB0cmVhdGVkIGFzIGFuIGlnbm9yZWQgaW5zdHJ1Y3Rpb24gb3Igc2lsZW50bHkgc2F0aXNmaWVkIGJ5IGN1cnJlbnQtbG90cyBVSSB3b3JrLgotICoqTkFTQS00IGNvc3RzOioqIHByb2dyZXNzaW5nIHRocm91Z2ggYSByZWFkLW9ubHksIG9wZW4gUFIuIERlbGliZXJhdGVseSBsZWF2aW5nIGFkbWlzc2lvbiB1bmNoYW5nZWQgZm9sbG93cyB0aGUgZG9jdW1lbnRlZCBwbGFuOyBpdCBpcyBub3QgdW5hdXRob3JpemVkIGF2b2lkYW5jZSBvZiBpbnRlZ3JhdGlvbi4KLSAqKk5BU0EtNSBmYXVsdCBtYXRyaXg6Kiogbm8gZnVsbCBkZXBsb3ltZW50LW1hdGNoZWQgbWF0cml4IGFuZCBjbG9zdXJlIHJlY2VpcHQgZm91bmQgaW4gdGhpcyBjb2hvcnQuIEV4aXN0aW5nIGZvY3VzZWQgZmFpbHVyZSB0ZXN0cyBhcmUgdXNlZnVsIGJ1dCBkbyBub3QgcHJvdmUgdGhlIHdob2xlIG9wZXJhdGlvbmFsIGVudmVsb3BlLgotICoqTkFTQS02IGZpbmFuY2lhbCB2YWxpZGF0aW9uOioqIG5vIG5ldyBhY2NvdW50LXNwZWNpZmljLCBhZnRlci1jb3N0LCBoZWxkLW91dC9mb3J3YXJkIFBGIG9yIHdpbi1yYXRlIGltcHJvdmVtZW50IGRlbW9uc3RyYXRlZCBieSB0aGVzZSBQUnMuIE1lYXN1cmVtZW50IGNoYW5nZXMgYW5kIGNvcnJlY3RlZCB0cmlnZ2VycyBzdXBwb3J0IGV2YWx1YXRpb247IHRoZXkgZG8gbm90IGVzdGFibGlzaCB0aGUgZXhpc3RpbmcgUEYxLjY4L1dSNzUgZ29hbHMuCgpBdXRob3JpemVkIGZlYXR1cmUgd29yayBhbG9uZ3NpZGUgdGhlc2Ugc3RlcHMgaXMgYSBwcmlvcml0eSBkaXZlcnNpb24sIG5vdCBhdXRvbWF0aWNhbGx5IHNjb3BlIGRyaWZ0LiBUaGUgZGVtb25zdHJhdGVkIGRyaWZ0IGlzIGluIGFjY2VwdGFuY2UgY2xhaW1zIGFuZCBmYWlsdXJlIGRpYWdub3Npcy4gV2hldGhlciBzZXF1ZW5jaW5nIHZpb2xhdGVzIOKEljEzLDkzMCBzcGVjaWZpY2FsbHkgcmVxdWlyZXMgdGhhdCBvcmlnaW5hbCBpbnN0cnVjdGlvbi4KCiMjIFJlY29tbWVuZGVkIG5leHQgd29yawoKMS4gQ29ycmVjdCBhbmQgcmVxdWFsaWZ5IGJvdGggaW5zdHJ1bWVudCBmYWxzaWZpZXJzLCByZXRhaW5pbmcgY29udHJvbHMgb24gc3VwcG9ydGVkIHJ1bnRpbWVzLgoyLiBEaWFnbm9zZSBvciBleHBsaWNpdGx5IHJldGFpbiB0aGUgdW5leHBsYWluZWQgQ0kgZmFpbHVyZTsga2VlcCBhY3R1YWwgcmV2aWV3ZXIgY29tcGxldGlvbiBzZXBhcmF0ZSBmcm9tIGEgc2tpcHBlZCBncmVlbiBqb2IuCjMuIENsb3NlIHRoZSBkaXN0aW5jdCBwcm9wb3NlZC9zZW50L2ZpbGxlZC9yZXNpZHVhbCBxdWFudGl0eSBjb250cmFjdCBhbmQgdHJhbnNtaXQtYnJhY2tldCBwcm92ZW5hbmNlIGFjcm9zcyB0aGUgaW52ZW50b3JpZWQgcG9wdWxhdGlvbiwgd2l0aGluIG93bmVyLWF1dGhvcml6ZWQgc2NvcGUuCjQuIEZpbmlzaCBhY2NvdW50LWNvc3QgY29tcGFyaXNvbnMgd2l0aCByZWFsIGJyb2tlciByZWNlaXB0cyBiZWZvcmUgcmVxdWVzdGluZyBhbnkgY29uY3JldGUgYWRtaXNzaW9uLXBvbGljeSBpbnRlZ3JhdGlvbi4KNS4gQ29tcGxldGUgdGhlIGRlY2xhcmVkIGZhdWx0L3JlY292ZXJ5IG1hdHJpeCBhbmQgdGhlIGZpbmFuY2lhbCB2YWxpZGF0aW9uIGFzIHNlcGFyYXRlIGV2aWRlbmNlIHBhY2thZ2VzLgoKRWFjaCByZXF1aXJlbWVudCBuZWVkcyBpbXBsZW1lbnRhdGlvbiwgb3BlcmF0aW9uYWwgYW5kIGZpbmFuY2lhbCBzdGF0ZXMgd2hlcmUgYXBwbGljYWJsZSwgZXhhY3QgY29tbWl0L2NvbmZpZ3VyYXRpb24vcG9wdWxhdGlvbiwgYW5kIGEgbmFtZWQgdW5yZXNvbHZlZCBkZXBlbmRlbmN5LiBEbyBub3QgaW5mZXIgY29tcGxldGlvbiBmcm9tIGEgUFIgY291bnQsIHN1aXRlIHNpemUsIG9yIGRlc2NyaXB0aXZlIGRvY3VtZW50LgoKIyMgVmFsaWRhdGlvbiBhbmQgbGltaXRzCgpOaW5lIHNlbGVjdGVkIGV4aXN0aW5nIHRlc3QgZmlsZXMgcmFuIGFnYWluc3QgaXNvbGF0ZWQgY3VycmVudC1tYWluIHNvdXJjZTogKioxMTAgcGFzc2VkLCAwIGZhaWxlZCwgMCBza2lwcGVkKiosIE5vZGUgMjIuMjMuMy4gVGhleSBjb3ZlciByZXNlYXJjaCBpc29sYXRpb24vY29uZmlndXJhdGlvbi9tb25pdG9yaW5nLCBleGl0LXNpZGUgZXhjdXJzaW9ucyBhbmQgcGF1c2VkIGxpZmVjeWNsZSByYWNlcywgbWFudWFsIHBhcnRpYWwtY2xvc2Ugc2l6aW5nL3JvdXRlcyBhbmQgY2FwcGVkL21hbnVhbCBoeWJyaWQgcGF0aHMuIExvZzogYGZvY3VzZWQtdGVzdHMubG9nYC4KCkluc3RhbGxlZCBhZ2VudCBkZXBlbmRlbmN5IGxvY2sgaGFzaGVzIG1hdGNoIHRoZSBhdWRpdGVkIHNuYXBzaG90OyBpbnN0YWxsZWQgYWNvcm4gOC4xNi4wIG1hdGNoZXMgaXRzIGRlY2xhcmVkIHZlcnNpb24uIFRlbXBvcmFyeSBmaXh0dXJlcyBhbmQgbG9jYWwgZGVwZW5kZW5jeSBsaW5rcyByZXNpZGUgb3V0c2lkZSB0aGUgYXBwbGljYXRpb24gY2hlY2tvdXQuIE5vIGNvZGUgY2hhbmdlLCBhcHBsaWNhdGlvbiBidWlsZCwgcHJvZHVjdGlvbiBmYXVsdCBpbmplY3Rpb24sIG9yZGVyLCBhY2NvdW50LXNldHRpbmcgY2hhbmdlLCBvciBmcmVzaCBwcml2YXRlIGJyb2tlci9QRi9XUiByZWNhcHR1cmUgb2NjdXJyZWQuIEZ1bGwgQ0kgdG90YWxzIGFyZSByZXBvc2l0b3J5LXJlcG9ydGVkIGFuZCBqb2Itc3RhdHVzIGluc3BlY3RlZCwgbm90IGluZGVwZW5kZW50bHkgcmVydW4gYnkgdGhpcyBhdWRpdC4gQWJzZW5jZSBvZiBhIGxpbmtlZCBydW50aW1lIHJlY2VpcHQgbWVhbnMgdW52ZXJpZmllZCBpbiB0aGUgcmV2aWV3ZWQgZXZpZGVuY2UsIG5vdCBwcm9vZiB0aGF0IG5vYm9keSBwZXJmb3JtZWQgdGhlIGNoZWNrIHByaXZhdGVseS4KCgojIyBBcHBlbmRpeCDigJQgcmV0YWluZWQgcHJvYmUgb2JzZXJ2YXRpb25zCgpVbmNoYW5nZWQgaW5zdHJ1bWVudCBoZWxwZXJzIHdlcmUgZXhlY3V0ZWQgb24gTm9kZSAyMi4yMy4zIGFnYWluc3QgYXVkaXQgY29tbWl0IGA4NDkzNTU2ZmAuIFRoZXNlIGFyZSBpc29sYXRlZCBjb250cm9scywgbm90IG9ic2VydmVkIHByb2R1Y3Rpb24gaW5jaWRlbnRzLgoKfCBQcm9iZSB8IEV4cGVjdGVkIHwgT2JzZXJ2ZWQgfAp8LS0tfC0tLXwtLS18CnwgSW5saW5lIGR5bmFtaWMgaW1wb3J0IHwgRGVwZW5kZW5jeSBkaXNjb3ZlcmVkIHwgRGlzY292ZXJlZCB8CnwgVW5hbGlhc2VkIGBjcmVhdGVSZXF1aXJlYCB8IERlcGVuZGVuY3kgZGlzY292ZXJlZCB8IERpc2NvdmVyZWQgfAp8IEFsaWFzZWQgYGNyZWF0ZVJlcXVpcmVgIGZhY3RvcnkgfCBEZXBlbmRlbmN5IGRpc2NvdmVyZWQgb3IgZXhwbGljaXRseSB1bnJlc29sdmVkIHwgVGFyZ2V0IGFic2VudDsgdW5yZXNvbHZlZCBsaXN0IGVtcHR5IHwKfCBDbGVhbiBtb2R1bGUgfCBaZXJvIGNyZWF0ZWQgdGltZXJzIHwgWmVybyB8CnwgQXJtZWQgdW5yZWYnZCBpbnRlcnZhbCB8IE9uZSBjcmVhdGVkIHRpbWVyIHwgT25lIHwKfCBVbnVzZWQgcHJvbWlzZS1pbnRlcnZhbCBpdGVyYXRvciB8IFplcm8gcGVuZGluZyB0aW1lcnMgfCBPbmUgcmVwb3J0ZWQ7IGluZGVwZW5kZW50IHRpbWVyLXJlc291cmNlIHJlYWRpbmcgemVybyB8CnwgQWJvcnRlZCBwcm9taXNlLWludGVydmFsIGl0ZXJhdG9yIHwgWmVybyBwZW5kaW5nIHRpbWVycyB8IE9uZSByZXBvcnRlZDsgaW5kZXBlbmRlbnQgdGltZXItcmVzb3VyY2UgcmVhZGluZyB6ZXJvIHwKClRoZSBmb2N1c2VkIGV4aXN0aW5nLXN1aXRlIHJlY2VpcHQgY29tcGxldGVkIHdpdGg6CgpgYGB0ZXh0CnRlc3RzICAgICAgIDExMApwYXNzICAgICAgICAxMTAKZmFpbCAgICAgICAgICAwCmNhbmNlbGxlZCAgICAgMApza2lwcGVkICAgICAgIDAKdG9kbyAgICAgICAgICAwCnJ1bnRpbWUgICAgIE5vZGUgMjIuMjMuMwpgYGAKClRoZSBuaW5lIHNlbGVjdGVkIGZpbGVzIGNvdmVyZWQgcmVzZWFyY2ggaXNvbGF0aW9uL2NvbmZpZ3VyYXRpb24vbW9uaXRvcmluZywgZXhpdC1zaWRlIGFuZCBwYXVzZWQgZXhjdXJzaW9ucywgcGFydGlhbC1jbG9zZSBzaXppbmcvcm91dGVzLCBhbmQgY2FwcGVkL21hbnVhbCBoeWJyaWQgYmVoYXZpb3IuIEZ1bGwgYXBwbGljYXRpb24vbmF0aXZlL2Zyb250ZW5kIGdhdGVzIHdlcmUgbm90IGluZGVwZW5kZW50bHkgcmVydW4gZm9yIHRoYXQgYXVkaXQuCg==" download="bot-trade-NASA-PR-audit-2026-10-13.md">Download Markdown</a><button type="button" onclick="window.print()">Print / save PDF</button>
+</div></header><div class="shell"><main><nav class="toc" aria-label="Report contents"><a href="#conclusion">Conclusion</a><a href="#boundary-and-sources">Boundary and sources</a><a href="#pr-by-pr-assessment">PR-by-PR assessment</a><a href="#independently-reproduced-instrument-gaps">Independently reproduced instrument gaps</a><a href="#review-and-failure-evidence-concerns">Review and failure-evidence concerns</a><a href="#programme-completion-and-drift">Programme completion and drift</a><a href="#recommended-next-work">Recommended next work</a><a href="#validation-and-limits">Validation and limits</a><a href="#appendix--retained-probe-observations">Appendix — retained probe observations</a></nav><section id="nasa-programme-pr-audit--13-october-2026" class="level1">
+<h1>NASA programme PR audit — 13 October 2026</h1>
+<blockquote>
+<p><strong>Archived audit — cutoff 13 October 2026, 20:20 SGT.</strong>
+Conversation reference: Codex №14,292. Audited main:
+<code>8493556fa0b4b09c106763c04c14f653e0d0d56d</code>. Exported 14
+October 2026, 05:20 SGT.</p>
+<p>All findings and PR states below refer to that audit cutoff. Newer
+changes, including PRs #1358–#1361, exist at export main
+<code>6f62434bc1bdc2713971975534605dba0270f4a7</code> and were not
+reassessed for this file delivery. This is the downloadable version of
+the previous audit, not a new assessment of today's code.</p>
+</blockquote>
+<section id="conclusion" class="level2">
+<h2>Conclusion</h2>
+<p>The changes mostly serve concrete problems and documented owner
+requests. The implementation demonstrates substantial understanding of
+the NASA assessment, but acceptance evidence still falls short of the
+programme's objectives. The clearest drift is from demonstrated
+correctness toward passing selected fixtures, rerunning an unexplained
+failure, and describing incomplete instruments as qualified. Planned
+later steps being unfinished is not, by itself, scope drift.</p>
+<p>This assessment audits changes and evidence; it cannot establish the
+author's internal understanding or independently authenticate every
+owner instruction quoted in PR bodies.</p>
+</section>
+<section id="boundary-and-sources" class="level2">
+<h2>Boundary and sources</h2>
+<p>The exact conversation instruction № 13,930 is unavailable in the
+repository, PR records and coordination notes. An optional clarification
+was requested. Until that text is available, the comparison uses the
+published assessment and committed NASA programme baseline:</p>
+<ul>
+<li><a
+href="https://github.com/ang-kl/bot-trade/blob/8493556fa0b4b09c106763c04c14f653e0d0d56d/doc/bot-trade-NASA-assessment-2026-10-13.md">Published
+NASA assessment</a>, published by PR1349, conversation ref №13,927.</li>
+<li><a
+href="https://github.com/ang-kl/bot-trade/blob/8493556fa0b4b09c106763c04c14f653e0d0d56d/docs/nasa-baseline-2026-10-13.md">Committed
+NASA programme baseline</a>, committed in PR1355, programme ref after
+№14,077 / №14,078+.</li>
+<li>Main inspected at the audit cutoff:
+<code>8493556fa0b4b09c106763c04c14f653e0d0d56d</code> (PR1357).</li>
+<li>Adjacent delivery cohort: PR1348–1358 inclusive, all eleven PR
+bodies, actual diffs/file inventories, reviews, inline findings,
+comments and check metadata. PR1348 started before publication but
+merged afterwards; it is context, not a proven NASA programme execution
+step.</li>
+<li>Ten merged PRs: nine application/research changes and one
+document-publication PR. PR1358 was open at the audit cutoff at head
+<code>8766ff539ef1be4866452587e0137d9862e00732</code> on the 13 October
+audit refresh. The explicit post-baseline cohort consists of four merged
+PRs (1354–1357) and one open PR (1358); only 1355 and 1358 explicitly
+identify themselves as NASA implementation steps.</li>
+</ul>
+<p>There are 66 changed-file records, counting the same file again when
+another PR changes it. Review metadata contains 35 labelled priority
+findings across all review rounds, including the open PR: 5 P1 and 30
+P2. Four findings arrived after merging (1352: one P2; 1353: one P1;
+1355: two P2). These are review findings, not a count of independently
+observed production incidents.</p>
+</section>
+<section id="pr-by-pr-assessment" class="level2">
+<h2>PR-by-PR assessment</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr class="header">
+<th>PR</th>
+<th>Alignment and legitimacy</th>
+<th>Acceptance limit</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><a href="https://github.com/ang-kl/bot-trade/pull/1348">1348</a> /
+<a href="https://github.com/ang-kl/bot-trade/pull/1350">1350</a></td>
+<td>Actual submitted lots and account-owned current holdings are
+directly aligned with the shared quantity contract. Follow-ups corrected
+foreign/unnamed snapshots and the reading preference.</td>
+<td><code>opened_lots</code> still reads mutable
+<code>trades.volume</code>. This is an explicitly inventoried NASA-3
+gap, not an immutable opening quantity.</td>
+</tr>
+<tr class="even">
+<td><a
+href="https://github.com/ang-kl/bot-trade/pull/1349">1349</a></td>
+<td>Legitimate owner-requested delivery of the assessment.</td>
+<td>Documentation publication supplies no operational qualification or
+profitability evidence.</td>
+</tr>
+<tr class="odd">
+<td><a
+href="https://github.com/ang-kl/bot-trade/pull/1351">1351</a></td>
+<td>Filling missing exits from broker closing deals improves economic
+measurement while preserving retained money and quantity. Owner-approved
+widening includes rows whose money lands in the same pass.</td>
+<td>A correct exit price alone does not prove the initial-risk
+denominator or a financial improvement.</td>
+</tr>
+<tr class="even">
+<td><a
+href="https://github.com/ang-kl/bot-trade/pull/1352">1352</a></td>
+<td>Rejecting moved stops as opening stops and journalling
+book/re-strategy movements are legitimate record-integrity
+corrections.</td>
+<td>A late P2 identifies a valid transmitted bracket being rejected
+after a fill re-anchor. The guard still infers price precision from
+numerical prices. Original broker facts remain incomplete.</td>
+</tr>
+<tr class="odd">
+<td><a
+href="https://github.com/ang-kl/bot-trade/pull/1353">1353</a></td>
+<td>Raising the RSS threshold is a documented owner choice responding to
+an observed abort.</td>
+<td>A threshold change is mitigation. The bar-form worker still has no
+<code>resourceLimits</code>; worker heap, whole-process RSS and
+container headroom have not been jointly qualified. A post-merge P1
+flags this. No OOM was forced or observed in this audit.</td>
+</tr>
+<tr class="even">
+<td><a
+href="https://github.com/ang-kl/bot-trade/pull/1354">1354</a></td>
+<td>Owner-requested manual partial-close feature with useful step
+validation, preview, single-flight and dismissal safeguards. Related to
+order-form coverage, but not a replacement for NASA-3/5.</td>
+<td>Operational partial-close verification remains unlinked in the
+inspected PR records. Three early P1 findings were corrected before
+merge. The user-facing lock alone is not durable retry/restart
+qualification.</td>
+</tr>
+<tr class="odd">
+<td><a
+href="https://github.com/ang-kl/bot-trade/pull/1355">1355</a></td>
+<td>Strong direct alignment: baseline inventory, parser-based import
+graph, timer instrumentation, and fresh/complete health evidence at
+research start, during polling and at completion.</td>
+<td>Two late final-head instrument defects are reproduced below. Tick
+research is explicitly left out. Instrument qualification remains
+partial.</td>
+</tr>
+<tr class="even">
+<td><a
+href="https://github.com/ang-kl/bot-trade/pull/1356">1356</a></td>
+<td>Correct exit-side measurements in separate columns preserve existing
+trailing decisions. Paused-row coverage and compare-and-set lifecycle
+guards were corrected during review.</td>
+<td>Report/postmortem readers have not adopted the new fields. The first
+design missed a writer and a downstream stop input. An unexplained CI
+failure was called a flake after a passing rerun.</td>
+</tr>
+<tr class="odd">
+<td><a
+href="https://github.com/ang-kl/bot-trade/pull/1357">1357</a></td>
+<td>Legitimate planned-entry versus actual-fill correction: the hybrid
+trigger uses the broker-proven fill and retains existing initial-risk
+and SL/TP policies.</td>
+<td>This changes eligibility/timing correctly; its financial effect
+remains unproven. An explicit clean final-head Codex review exists
+before merge.</td>
+</tr>
+<tr class="even">
+<td><a
+href="https://github.com/ang-kl/bot-trade/pull/1358">1358</a></td>
+<td>Open NASA-4 PR capturing broker conversion rates for
+account-specific commission comparison; preserving unknown rates and
+avoiding pooled currencies are aligned.</td>
+<td>Gate integration intentionally remains an owner decision. Non-USD
+quote/minimum-fee cases and runtime receipts remain incomplete. The
+current review flags selecting a non-executed deal as an opener; this is
+an open-PR finding, not a merged defect.</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+<section id="independently-reproduced-instrument-gaps" class="level2">
+<h2>Independently reproduced instrument gaps</h2>
+<p>The audit runs the unchanged helpers from main on Node 22.23.3, with
+no application startup or broker access. Normalized observations from
+the retained <code>instrument-probes.json</code> receipt appear in the
+appendix below. The original probe script and full logs remain in the
+audit workspace.</p>
+<ol type="1">
+<li><strong>Hidden dependency:</strong>
+<code>import { createRequire as makeRequire } from 'node:module'; const load = makeRequire(import.meta.url); load('./exec-engine.js')</code>
+produces neither the target dependency nor an unresolved-site warning.
+Inline imports and the unaliased factory controls are detected. This
+reproduces <a
+href="https://github.com/ang-kl/bot-trade/pull/1355#discussion_r4257360651">the
+late alias finding</a>.</li>
+<li><strong>False timer failure:</strong> an unused
+<code>node:timers/promises.setInterval()</code> iterator reports one
+created timer although it has not armed one. An aborted iterator also
+remains counted. Independent Node resource reads show zero timer
+resources for these clean cases; the armed interval control is detected.
+This reproduces <a
+href="https://github.com/ang-kl/bot-trade/pull/1355#discussion_r4257360641">the
+late promise-interval finding</a>. The existing fixture itself expects
+the unused iterator to count as a violation, so internal consistency
+passes despite the semantic error.</li>
+</ol>
+<p>The existing qualification test covers only runtime binaries present
+at its fixed paths. Missing Node 20 is filtered out rather than
+establishing that production-runtime qualification ran. Claude's PR body
+reports prior Node 20.20.2 and Node 22.22.2 runs; this audit
+independently executes only Node 22.23.3.</p>
+</section>
+<section id="review-and-failure-evidence-concerns" class="level2">
+<h2>Review and failure-evidence concerns</h2>
+<p>Every inspected final-head GitHub <code>review</code> job is green,
+but every actual <code>anthropics/claude-code-action</code> step is
+skipped. They cannot be counted as eleven completed Claude reviews. The
+separate GitHub Codex bot did conduct reviews and found real omissions;
+the two tools' evidence must remain distinct.</p>
+<p>PR1356's <a
+href="https://github.com/ang-kl/bot-trade/pull/1356#issuecomment-6144763507">author
+comment</a> records an agent-suite failure at final head
+<code>6eb028f5</code>, no readable failing-test log, a local pass and
+one passing rerun. Actions job metadata confirms the first agent-suite
+failure. Available annotations say only exit code 1. A rerun establishes
+a later pass, not the cause of the earlier failure. Calling this a
+proven flake exceeds the evidence.</p>
+<p>Repeated review rounds also corrected errors created by the earlier
+implementation: snapshot freshness/account attribution, manual-close
+concurrency, import-door identity, and MAE/MFE downstream use. Review is
+useful, but requirements/population analysis still relies too heavily on
+discovering omissions after coding.</p>
+</section>
+<section id="programme-completion-and-drift" class="level2">
+<h2>Programme completion and drift</h2>
+<ul>
+<li><strong>NASA-2 instruments:</strong> substantially implemented,
+partially qualified, with specific reproducible remaining defects.
+Research refusal/abort operational claims remain without linked
+deployed-run closure in the inspected records.</li>
+<li><strong>NASA-3 quantity contract:</strong> still open in this
+cohort. Keeper/general partial/re-strategy overwrite
+<code>trades.volume</code>; <code>/state/positions</code> labels it
+<code>opened_lots</code>. The baseline records owner naming of protected
+files as a prerequisite. This dependency should be tracked, not treated
+as an ignored instruction or silently satisfied by current-lots UI
+work.</li>
+<li><strong>NASA-4 costs:</strong> progressing through a read-only, open
+PR. Deliberately leaving admission unchanged follows the documented
+plan; it is not unauthorized avoidance of integration.</li>
+<li><strong>NASA-5 fault matrix:</strong> no full deployment-matched
+matrix and closure receipt found in this cohort. Existing focused
+failure tests are useful but do not prove the whole operational
+envelope.</li>
+<li><strong>NASA-6 financial validation:</strong> no new
+account-specific, after-cost, held-out/forward PF or win-rate
+improvement demonstrated by these PRs. Measurement changes and corrected
+triggers support evaluation; they do not establish the existing
+PF1.68/WR75 goals.</li>
+</ul>
+<p>Authorized feature work alongside these steps is a priority
+diversion, not automatically scope drift. The demonstrated drift is in
+acceptance claims and failure diagnosis. Whether sequencing violates
+№13,930 specifically requires that original instruction.</p>
+</section>
+<section id="recommended-next-work" class="level2">
+<h2>Recommended next work</h2>
+<ol type="1">
+<li>Correct and requalify both instrument falsifiers, retaining controls
+on supported runtimes.</li>
+<li>Diagnose or explicitly retain the unexplained CI failure; keep
+actual reviewer completion separate from a skipped green job.</li>
+<li>Close the distinct proposed/sent/filled/residual quantity contract
+and transmit-bracket provenance across the inventoried population,
+within owner-authorized scope.</li>
+<li>Finish account-cost comparisons with real broker receipts before
+requesting any concrete admission-policy integration.</li>
+<li>Complete the declared fault/recovery matrix and the financial
+validation as separate evidence packages.</li>
+</ol>
+<p>Each requirement needs implementation, operational and financial
+states where applicable, exact commit/configuration/population, and a
+named unresolved dependency. Do not infer completion from a PR count,
+suite size, or descriptive document.</p>
+</section>
+<section id="validation-and-limits" class="level2">
+<h2>Validation and limits</h2>
+<p>Nine selected existing test files ran against isolated current-main
+source: <strong>110 passed, 0 failed, 0 skipped</strong>, Node 22.23.3.
+They cover research isolation/configuration/monitoring, exit-side
+excursions and paused lifecycle races, manual partial-close
+sizing/routes and capped/manual hybrid paths. Log:
+<code>focused-tests.log</code>.</p>
+<p>Installed agent dependency lock hashes match the audited snapshot;
+installed acorn 8.16.0 matches its declared version. Temporary fixtures
+and local dependency links reside outside the application checkout. No
+code change, application build, production fault injection, order,
+account-setting change, or fresh private broker/PF/WR recapture
+occurred. Full CI totals are repository-reported and job-status
+inspected, not independently rerun by this audit. Absence of a linked
+runtime receipt means unverified in the reviewed evidence, not proof
+that nobody performed the check privately.</p>
+</section>
+<section id="appendix--retained-probe-observations" class="level2">
+<h2>Appendix — retained probe observations</h2>
+<p>Unchanged instrument helpers were executed on Node 22.23.3 against
+audit commit <code>8493556f</code>. These are isolated controls, not
+observed production incidents.</p>
+<div class="table-scroll"><table>
+<thead>
+<tr class="header">
+<th>Probe</th>
+<th>Expected</th>
+<th>Observed</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Inline dynamic import</td>
+<td>Dependency discovered</td>
+<td>Discovered</td>
+</tr>
+<tr class="even">
+<td>Unaliased <code>createRequire</code></td>
+<td>Dependency discovered</td>
+<td>Discovered</td>
+</tr>
+<tr class="odd">
+<td>Aliased <code>createRequire</code> factory</td>
+<td>Dependency discovered or explicitly unresolved</td>
+<td>Target absent; unresolved list empty</td>
+</tr>
+<tr class="even">
+<td>Clean module</td>
+<td>Zero created timers</td>
+<td>Zero</td>
+</tr>
+<tr class="odd">
+<td>Armed unref'd interval</td>
+<td>One created timer</td>
+<td>One</td>
+</tr>
+<tr class="even">
+<td>Unused promise-interval iterator</td>
+<td>Zero pending timers</td>
+<td>One reported; independent timer-resource reading zero</td>
+</tr>
+<tr class="odd">
+<td>Aborted promise-interval iterator</td>
+<td>Zero pending timers</td>
+<td>One reported; independent timer-resource reading zero</td>
+</tr>
+</tbody>
+</table></div>
+<p>The focused existing-suite receipt completed with:</p>
+<pre class="text"><code>tests       110
+pass        110
+fail          0
+cancelled     0
+skipped       0
+todo          0
+runtime     Node 22.23.3</code></pre>
+<p>The nine selected files covered research
+isolation/configuration/monitoring, exit-side and paused excursions,
+partial-close sizing/routes, and capped/manual hybrid behavior. Full
+application/native/frontend gates were not independently rerun for that
+audit.</p>
+</section>
+</section>
+</main>
+<footer class="footer">Audit cutoff: 13 October 2026, 20:20 SGT · Exported 14 October 2026, 05:20 SGT · Standalone HTML; no remote assets required.</footer>
+</div></body></html>
