@@ -21,7 +21,7 @@ import { agentPost } from '../lib/agent-api.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { sideDir } from '../lib/side.js'
 import { EMPTY_GUARD_FORM, guardFormState, guardApplyBlocker } from '../lib/position-guard-form.js'
-import { closeRequest } from '../lib/position-close-form.js'
+import { closeRequest, closeFlow } from '../lib/position-close-form.js'
 
 // Purpose-named tabs (owner: "how do I change with such window layout" — the
 // old Modify/Protect labels didn't say WHERE to change size vs the stop/target).
@@ -280,13 +280,13 @@ export default function PositionManager({ p, onDone, initialTab = 'Modify' }) {
           </label>
           <button type="button" disabled={busy}
             className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-(length:--fs-h) font-bold cursor-pointer disabled:opacity-50"
-            onClick={() => {
-              const req = closeRequest(closeLots, p.lots)
-              if (req.error) { setMsg(`Error: ${req.error}`); return }
-              const what = req.partial ? `${fmt(req.lots, 2)} of ${fmt(p.lots, 2)} lots` : `${fmt(p.lots, 2)} lots`
-              if (!window.confirm(`Close ${p.symbol} ${p.side} ${what} at market?`)) return
-              run(() => agentPost('/actions/position-close', withAcct(req.partial ? { positionId: p.positionId, lots: req.lots } : { positionId: p.positionId })),
-                req.partial ? 'Part of the position closed' : 'Position closed')
+            onClick={async () => {
+              // Codex P1 on #1354 (owner: "Both"): preview → confirm the stepped figure → send it.
+              const flow = await closeFlow({ input: closeLots, heldLots: p.lots, heldText: fmt(p.lots, 2), symbol: p.symbol, side: p.side, positionId: p.positionId,
+                preview: async body => { const reply = await agentPost('/actions/position-close', withAcct({ ...body, preview: true })); return reply }, confirm: text => window.confirm(text) })
+              if (flow.error) { setMsg(`Error: ${flow.error}`); return }
+              if (flow.cancelled) return
+              run(() => agentPost('/actions/position-close', withAcct(flow.body)), flow.body.lots != null ? 'Part of the position closed' : 'Position closed')
             }}>
             {closeRequest(closeLots, p.lots).partial ? 'Close part' : 'Close'} ({fmt(p.currentPrice, p.digits ?? 5)})
           </button>

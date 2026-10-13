@@ -2825,6 +2825,10 @@ export default function actionsRouter(db, deps = {}) {
   router.post('/position-close', async (req, res) => {
     try {
       const { positionId, lots } = req.body || {}
+      // Codex P1 on #1354 (owner: "Both"): `preview: true` answers the lots a
+      // close WOULD send (stepped to the symbol's step) and sends nothing, so
+      // the sheet confirms the figure that executes.
+      const preview = req.body?.preview === true
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
       // `account` (03-09-2026): close on the NAMED account. PR-F checker M1:
       // with no account in the body this used to fall back to the PRIMARY
@@ -2847,10 +2851,12 @@ export default function actionsRouter(db, deps = {}) {
         // Claude · № 14,050 13-Oct (owner: "build the partial close lots field";
         // claude-builder): stepped down to the symbol's volume step, refused
         // below its minimum, before any broker call.
-        const sized = partialCloseVolume({ positionVolume: volume, lots, meta })
+        const sized = partialCloseVolume({ positionVolume: volume, lots, meta, strict: !preview })
         if (sized.error) return res.status(400).json({ error: sized.error })
+        if (preview) return res.json({ ok: true, preview: true, positionId, lots: sized.lots, volume: sized.volume, partial: sized.partial, accountId: creds.accountId })
         volume = sized.volume
       }
+      if (preview) return res.json({ ok: true, preview: true, positionId, lots: null, volume, partial: false, accountId: creds.accountId })
       const exec = await execClosePosition(creds, { positionId: parseInt(positionId), volume })
       const partial = volume < (pos.tradeData?.volume ?? volume)
       const local = db.prepare(

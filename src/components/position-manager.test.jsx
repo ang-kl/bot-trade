@@ -40,12 +40,15 @@ describe('PositionManager partial close', () => {
     expect(html).toMatch(/empty = all 0\.50/)
     expect(html).toMatch(/>Close \(1\.1050\)/)
   })
-  it('the Close posts the parsed lots only on a partial (wiring pin, comments stripped)', () => {
+  it('the Close goes through closeFlow and posts its body (wiring pin, comments stripped)', () => {
     const src = readFileSync(new URL('./PositionManager.jsx', import.meta.url), 'utf8')
       .replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-    expect(src).toMatch(/const req = closeRequest\(closeLots, p\.lots\)/)
-    expect(src).toMatch(/req\.partial \? \{ positionId: p\.positionId, lots: req\.lots \} : \{ positionId: p\.positionId \}/)
-    expect(src).toMatch(/if \(req\.error\) \{ setMsg/)
+    // Codex P1 on #1354: the sheet goes through closeFlow (preview → confirm the
+    // stepped figure → send it); the flow itself is tested in position-close-form.test.js.
+    expect(src).toMatch(/const flow = await closeFlow\(\{ input: closeLots, heldLots: p\.lots/)
+    expect(src).toMatch(/agentPost\('\/actions\/position-close', withAcct\(flow\.body\)\)/)
+    expect(src).toMatch(/if \(flow\.error\) \{ setMsg/)
+    expect(src).toMatch(/const reply = await agentPost\('\/actions\/position-close', withAcct\(\{ \.\.\.body, preview: true \}\)\)/)
   })
 })
 
