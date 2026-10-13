@@ -48,12 +48,18 @@ export function tpLadder(tp1, tp2, totalLots, { scaledOut = false } = {}) {
 // opened lots, a level already taken (done) earns nothing more, and the held
 // lots go to the levels still open: all of them to a single open level, split
 // the same way tpLadder splits when two are open.
+// Claude · № 13,983 13-Oct (owner: Codex P2 #2 "Drop taken levels first"; claude-builder).
+// A taken level is dropped BEFORE the equal-lots shortcut: the bot's own
+// scale-out rewrites trades.volume to the residual, so held == recorded there
+// while TP1 is already done. With no broker reading, the recorded lots stand in.
 export function heldMoneyLadder(tps, heldLots, openedLots) {
   if (!tps) return tps
-  const held = Number(heldLots)
+  const lots = heldLots ?? openedLots
+  const held = Number(lots)
+  if (lots == null || !Number.isFinite(held) || held <= 0) return tps
+  const anyDone = tps.some(t => t.done)
   const opened = Number(openedLots)
-  if (heldLots == null || !Number.isFinite(held) || held <= 0) return tps
-  if (openedLots != null && Number.isFinite(opened) && Math.abs(held - opened) < 1e-9) return tps
+  if (!anyDone && openedLots != null && Number.isFinite(opened) && Math.abs(held - opened) < 1e-9) return tps
   const open = tps.filter(t => !t.done)
   if (open.length === 2) return tpLadder(open[0].price, open[1].price, held)
   const level = open[0] ?? tps[tps.length - 1]

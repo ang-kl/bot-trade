@@ -75,6 +75,15 @@ describe('heldMoneyLadder', () => {
     expect(heldMoneyLadder(tps, 4.75, 9.5)).toEqual([{ n: 2, price: 130, lots: 4.75 }])
   })
 
+  // Claude · № 13,983 13-Oct (owner: Codex P2 #2 on #1348 "Drop taken levels first"; claude-builder).
+  // Source: general-partial-execution.js and keeper-close-receipts.js rewrite
+  // trades.volume to the residual and set scaled_out=1, so held == recorded.
+  it('bot scale-out (held == recorded, TP1 done): only the runner at TP2 counts', () => {
+    const tps = tpLadder(120, 130, 4.75, { scaledOut: true })
+    expect(heldMoneyLadder(tps, 4.75, 4.75)).toEqual([{ n: 2, price: 130, lots: 4.75 }])
+    expect(heldMoneyLadder(tps, null, 4.75)).toEqual([{ n: 2, price: 130, lots: 4.75 }])
+  })
+
   it('no ladder stays no ladder', () => {
     expect(heldMoneyLadder(null, 4.7, 9.5)).toBeNull()
   })
