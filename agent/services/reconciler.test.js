@@ -1594,3 +1594,44 @@ test('trailing: a move that tightens the broker stop but is LOOSER than the stor
   assert.equal(r.manualChanges.length, 1, 'the stored stop is the floor: a trail may not loosen it')
   resetTrailingRegistry()
 })
+
+// Claude · № 13,923 13-Oct (owner: audit fix 3 "Fix the stamp"; claude-builder).
+// Production: NAS100 #1775 on 47790949 opened at 00:04:07 UTC 08-10 SELL from
+// 31205.8 with the planned stop 31533.86 (328 points). At 00:04:27 the
+// gateway's trail engine moved it to 31385.9 (log "[trail] SL confirmed
+// pos=247461610 -> 31385.9"), and the reconciler then stamped 31385.9 as the
+// stop at entry. A trailed stop is not the risk taken at entry.
+function seedPlannedShort(db, positionId) {
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, sl_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES ('NAS100', 'SELL', 31205.8, 31533.860714285714, 0.25, ?, 'autopilot', 'open', datetime('now'))`
+  ).run(positionId).lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, source, status)
+     VALUES ('NAS100', ?, 'short', 31205.8, 31533.860714285714, 30500, 'test', 328.06, 'autopilot', 'active')`
+  ).run(tradeId)
+  return tradeId
+}
+
+test('a broker stop the trail already moved is never stamped as the stop at entry; the opening bracket is', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const moved = seedPlannedShort(db, '247461610')
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '247461610', symbolName: 'NAS100', tradeSide: 'SELL', openPrice: 31205.8, stopLoss: 31385.9, takeProfit: 30500 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(moved).broker_sl_initial, null,
+    'RED before: 31385.9 (the trailed stop) was stamped')
+  // Control: the broker's opening bracket, fill + the 328-point distance sent, snapped.
+  const held = seedPlannedShort(db, '247461611')
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '247461611', symbolName: 'NAS100', tradeSide: 'SELL', openPrice: 31205.8, stopLoss: 31533.9, takeProfit: 30500 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(held).broker_sl_initial, 31533.9)
+})
+
+test('a position with a recorded stop move is never stamped from the broker', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = seedPlannedShort(db, '247461612')
+  db.prepare(`INSERT INTO position_events (position_id, trade_id, symbol, kind, from_value, to_value, source)
+    VALUES ('247461612', ?, 'NAS100', 'trail_tightened', 31533.9, 31530.0, 'cpp_trail_engine')`).run(tradeId)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '247461612', symbolName: 'NAS100', tradeSide: 'SELL', openPrice: 31205.8, stopLoss: 31530.0, takeProfit: 30500 })], [], setState)
+  assert.equal(db.prepare('SELECT broker_sl_initial FROM trades WHERE id = ?').get(tradeId).broker_sl_initial, null)
+})
