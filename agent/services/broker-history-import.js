@@ -32,7 +32,7 @@ import { pageDeals } from '../lib/deal-paging.js'
 import { brokerDealLinkIdentities } from './broker-deal-link-identity.js'
 import { brokerAmount, brokerVersion } from './deal-balances.js'
 import { normPosId } from '../lib/pos-id.js'
-import { FALSE_CLOSE_TOLERANCE_MS } from '../lib/position-deal-history.js'
+import { FALSE_CLOSE_TOLERANCE_MS, executedDeal } from '../lib/position-deal-history.js'
 import { captureCloseDeals } from './broker-exit-attribution.js'
 import { closingExecutedQuantity, positiveBrokerQuantity, prospectiveVolumeTrade, EXECUTED_VOLUME_CONTRACT } from '../lib/deal-execution-volume.js'
 
@@ -96,6 +96,52 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
     const prev = openMsByPosition.get(pid)
     if (prev == null || d.executionTimestamp < prev) openMsByPosition.set(pid, d.executionTimestamp)
   }
+  // Claude · № 14,318 13-Oct (Codex P2 on #1358, owner "Fix in this PR";
+  // claude-builder): the opening side's RATES come only from an executed
+  // opening deal that filled something — a rejected or errored order on the
+  // same position is no fill and its rates are no evidence.
+  //
+  // Claude · № 14,323 13-Oct (Codex P2 on #1358 round 2; claude-builder): and
+  // only when that deal is PROVEN to be the position's opener. A read that
+  // misses the original fill of a position added to later would otherwise take
+  // the add-on as the opener. Proven here = exactly one executed opening deal
+  // is visible for the position, and its fill covers everything the visible
+  // closing deals closed. Anything else records no opening rate (NULL), and
+  // the upsert never replaces an opening rate already stored.
+  //
+  // Claude · № 14,342 13-Oct (Codex P2 on #1358 round 3; claude-builder):
+  // covering the visible close is not proof — a lone add-on can cover a
+  // smaller partial close. The broker's own proof is the position's entry
+  // price, which every closing deal states (closePositionDetail.entryPrice):
+  // a lone opener whose execution price is that entry price filled the whole
+  // position's entry; an add-on at another price does not (the entry is then
+  // the average of both fills). So each visible closing deal must name an
+  // entry equal to the lone opener's execution price. Left open, and stated:
+  // an add-on at exactly the original's price cannot be told apart here.
+  const openersByPosition = new Map(), closedByPosition = new Map(), entriesByPosition = new Map()
+  for (const d of deals) {
+    const pid = d.positionId != null ? String(d.positionId) : null
+    if (!pid) continue
+    if (d.closePositionDetail) {
+      const q = closingExecutedQuantity(d)
+      closedByPosition.set(pid, (closedByPosition.get(pid) ?? 0) + (q ?? Infinity))
+      entriesByPosition.set(pid, [...(entriesByPosition.get(pid) ?? []), d.closePositionDetail.entryPrice])
+      continue
+    }
+    if (!executedDeal(d) || !(Number(d.filledVolume) > 0) || d.executionTimestamp == null) continue
+    openersByPosition.set(pid, [...(openersByPosition.get(pid) ?? []), d])
+  }
+  const samePrice = (a, b) => typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && a > 0
+    && Math.abs(a - b) <= Math.max(1e-12, Math.abs(a) * 1e-9)
+  const openDealByPosition = new Map()
+  for (const [pid, openers] of openersByPosition) {
+    if (openers.length !== 1) continue
+    const [o] = openers, entries = entriesByPosition.get(pid) ?? []
+    // (Rows are only made for closing deals, so a row's position always has
+    // at least one stated entry to check.)
+    if (Number(o.filledVolume) >= (closedByPosition.get(pid) ?? 0)
+      && entries.every(e => samePrice(e, o.executionPrice))) openDealByPosition.set(pid, o)
+  }
 
   const rows = []
   for (const d of deals) {
@@ -140,16 +186,41 @@ export function shapeDeals(deals, symMeta = {}, accountId = null) {
       balance_version: balance == null ? null : brokerVersion(cpd.balanceVersion),
       balance_currency: null,             // the deal's money is in the account's deposit currency
       balance_source: 'broker_api',
+      ...dealRates(d, pid ? openDealByPosition.get(pid) : null),
     })
   }
   return rows
 }
 
+// Claude · № 14,270 13-Oct (owner: NASA-4 "A", capture the broker's per-deal
+// conversion rate; claude-builder). The rates the broker states on each deal
+// at its execution (spotware OpenApiModelMessages.proto): ProtoOADeal
+// marginRate (Base/Deposit) and baseToUsdConversionRate (Base/USD), and on the
+// closing deal ProtoOAClosePositionDetail quoteToDepositConversionRate and
+// pnlConversionFee. The opening side's come from the position's earliest
+// opening deal, the same deal that gives opened_at; NULL when it is outside
+// the read or the broker sent none. A rate is a positive finite number or NULL.
+const brokerRate = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null)
+function dealRates(close, open) {
+  const cpd = close?.closePositionDetail
+  return {
+    open_margin_rate: brokerRate(open?.marginRate),
+    open_base_usd_rate: brokerRate(open?.baseToUsdConversionRate),
+    close_margin_rate: brokerRate(close?.marginRate),
+    close_base_usd_rate: brokerRate(close?.baseToUsdConversionRate),
+    quote_deposit_rate: brokerRate(cpd?.quoteToDepositConversionRate),
+    pnl_conversion_fee: brokerAmount(cpd?.pnlConversionFee, cpd?.moneyDigits),
+  }
+}
+export const DEAL_RATE_FIELDS = Object.freeze(['open_margin_rate', 'open_base_usd_rate', 'close_margin_rate',
+  'close_base_usd_rate', 'quote_deposit_rate', 'pnl_conversion_fee'])
+
 // V3 WEB-8: a row from a caller that does not read balances (tests, older
 // shapes) carries none of these fields. It is written with all four NULL, so
 // it neither sets nor clears a stored balance (the balance rule in persistDeals).
 const withBalanceFields = (r) => ({ ...r, balance: r.balance ?? null, balance_version: r.balance_version ?? null,
-  balance_currency: r.balance_currency ?? null, balance_source: r.balance_source ?? null })
+  balance_currency: r.balance_currency ?? null, balance_source: r.balance_source ?? null,
+  ...Object.fromEntries(DEAL_RATE_FIELDS.map(k => [k, r[k] ?? null])) })
 
 /** Upsert shaped rows, linking only an unambiguous account+position identity. */
 export function persistDeals(db, rows) {
@@ -227,11 +298,13 @@ export function persistDeals(db, rows) {
     INSERT INTO broker_deals (
       deal_id, position_id, account_id, symbol, side, lots, requested_lots, volume_contract, entry_price, close_price,
       opened_at, closed_at, gross_pnl, swap, commission, net_pnl, matched_trade_id,
-      balance, balance_version, balance_currency, balance_source
+      balance, balance_version, balance_currency, balance_source,
+      open_margin_rate, open_base_usd_rate, close_margin_rate, close_base_usd_rate, quote_deposit_rate, pnl_conversion_fee
     ) VALUES (
       @deal_id, @position_id, @account_id, @symbol, @side, @lots, @requested_lots, @volume_contract, @entry_price, @close_price,
       @opened_at, @closed_at, @gross_pnl, @swap, @commission, @net_pnl, @matched_trade_id,
-      @balance, @balance_version, @balance_currency, @balance_source
+      @balance, @balance_version, @balance_currency, @balance_source,
+      @open_margin_rate, @open_base_usd_rate, @close_margin_rate, @close_base_usd_rate, @quote_deposit_rate, @pnl_conversion_fee
     )
     ON CONFLICT(deal_id) DO UPDATE SET
       -- V3 B1 (PR-1(g), LIFECYCLE-SPEC W10 / CLS-06): a re-read that LACKS a
@@ -262,6 +335,15 @@ export function persistDeals(db, rows) {
       -- price reconciler to keep using an arbitrary local trade.
       matched_trade_id = excluded.matched_trade_id,
       imported_at = datetime('now'),
+      -- A re-read that carries no rate (statement rows, a narrower window
+      -- without the opening deal) keeps the stored one; the broker's is kept.
+      -- An opening rate once stored is never replaced (№ 14,323).
+      open_margin_rate = COALESCE(broker_deals.open_margin_rate, excluded.open_margin_rate),
+      open_base_usd_rate = COALESCE(broker_deals.open_base_usd_rate, excluded.open_base_usd_rate),
+      close_margin_rate = COALESCE(excluded.close_margin_rate, broker_deals.close_margin_rate),
+      close_base_usd_rate = COALESCE(excluded.close_base_usd_rate, broker_deals.close_base_usd_rate),
+      quote_deposit_rate = COALESCE(excluded.quote_deposit_rate, broker_deals.quote_deposit_rate),
+      pnl_conversion_fee = COALESCE(excluded.pnl_conversion_fee, broker_deals.pnl_conversion_fee),
       balance = CASE WHEN ${keepStoredBalance} THEN broker_deals.balance ELSE excluded.balance END,
       balance_version = CASE WHEN ${keepStoredBalance} THEN broker_deals.balance_version
         WHEN excluded.balance IS NULL THEN broker_deals.balance_version ELSE excluded.balance_version END,

@@ -540,3 +540,101 @@ test('keeper truth: a stamp within a second of the fill is left alone; a group m
   assert.equal(db.prepare('SELECT closed_at_ms FROM trades WHERE id = 1').get().closed_at_ms, close + 400)
   assert.equal(db.prepare('SELECT closed_at_ms, volume FROM trades WHERE id = 2').get().volume, 5)
 })
+
+// Claude · № 14,270 13-Oct (owner: NASA-4 "A"; claude-builder). The per-deal
+// rates are the fields the broker states (spotware OpenApiModelMessages.proto:
+// ProtoOADeal 13/15, ProtoOAClosePositionDetail 6/10); values self-derived.
+test('NASA-4: closing rows carry each side\'s broker rates; a re-read without them keeps them', () => {
+  const T = Date.parse('2026-10-12T10:00:00Z')
+  const opening = { dealId: 70, positionId: 990, symbolId: 1, tradeSide: 1, volume: 2000, filledVolume: 2000, executionPrice: 1.28014,
+    executionTimestamp: T - 3_600_000, dealStatus: 2, marginRate: 1.28014, baseToUsdConversionRate: 1 }
+  const closing = { dealId: 71, positionId: 990, symbolId: 1, tradeSide: 2, volume: 2000, filledVolume: 2000, executionPrice: 1.27839,
+    executionTimestamp: T, dealStatus: 2, marginRate: 1.27839, baseToUsdConversionRate: 1,
+    closePositionDetail: { entryPrice: 1.28014, grossProfit: -350, swap: 0, commission: -18, balance: 1000000, moneyDigits: 2,
+      closedVolume: 2000, quoteToDepositConversionRate: 1, pnlConversionFee: '-3' } }
+  const [row] = shapeDeals([opening, closing], { 1: { symbolName: 'USDSGD', lotSize: 100000 } }, '43097342')
+  assert.deepEqual([row.open_margin_rate, row.open_base_usd_rate, row.close_margin_rate, row.close_base_usd_rate, row.quote_deposit_rate, row.pnl_conversion_fee],
+    [1.28014, 1, 1.27839, 1, 1, -0.03])
+  const [narrow] = shapeDeals([{ ...closing, marginRate: 0, baseToUsdConversionRate: '1', closePositionDetail: { ...closing.closePositionDetail,
+    quoteToDepositConversionRate: true, pnlConversionFee: 'x' } }], { 1: { symbolName: 'USDSGD', lotSize: 100000 } }, '43097342')
+  assert.deepEqual([narrow.open_margin_rate, narrow.open_base_usd_rate, narrow.close_margin_rate, narrow.close_base_usd_rate, narrow.quote_deposit_rate, narrow.pnl_conversion_fee],
+    [null, null, null, null, null, null], 'an absent opening deal and invalid values are NULL, never coerced')
+  const db = initDB(':memory:')
+  persistDeals(db, [row])
+  persistDeals(db, [narrow])
+  const stored = db.prepare('SELECT * FROM broker_deals WHERE deal_id=?').get('71')
+  assert.deepEqual([stored.open_margin_rate, stored.close_margin_rate, stored.quote_deposit_rate, stored.pnl_conversion_fee], [1.28014, 1.27839, 1, -0.03])
+  persistDeals(db, [{ ...row, close_margin_rate: 1.3 }])
+  assert.equal(db.prepare('SELECT close_margin_rate FROM broker_deals WHERE deal_id=?').get('71').close_margin_rate, 1.3, 'a carried value refreshes')
+})
+
+// Claude · № 14,318 13-Oct (Codex P2 on #1358, owner "Fix in this PR";
+// claude-builder). A rejected or errored order on the same position is no
+// fill: the opening side's rates come only from an executed opening deal with a
+// positive filledVolume (spotware ProtoOADealStatus: FILLED 2, PARTIALLY_FILLED
+// 3; REJECTED 4, INTERNALLY_REJECTED 5, ERROR 6, MISSED 7).
+test('NASA-4: a non-executed deal on the position never supplies the opening rates', () => {
+  const T = Date.parse('2026-10-12T10:00:00Z')
+  const meta = { 1: { symbolName: 'USDSGD', lotSize: 100000 } }
+  const rejected = { dealId: 69, positionId: 991, symbolId: 1, tradeSide: 1, volume: 2000, filledVolume: 0, executionPrice: 1.5,
+    executionTimestamp: T - 7_200_000, dealStatus: 4, marginRate: 9.99, baseToUsdConversionRate: 9.99 }
+  const opening = { dealId: 70, positionId: 991, symbolId: 1, tradeSide: 1, volume: 2000, filledVolume: 2000, executionPrice: 1.28014,
+    executionTimestamp: T - 3_600_000, dealStatus: 2, marginRate: 1.28014, baseToUsdConversionRate: 1 }
+  const closing = { dealId: 71, positionId: 991, symbolId: 1, tradeSide: 2, volume: 2000, filledVolume: 2000, executionPrice: 1.27839,
+    executionTimestamp: T, dealStatus: 2, marginRate: 1.27839, baseToUsdConversionRate: 1,
+    closePositionDetail: { entryPrice: 1.28014, grossProfit: -350, swap: 0, commission: -18, balance: 1000000, moneyDigits: 2, closedVolume: 2000 } }
+  const [both] = shapeDeals([rejected, opening, closing], meta, '43097342')
+  assert.deepEqual([both.open_margin_rate, both.open_base_usd_rate], [1.28014, 1], 'the executed opening deal, not the earlier rejected one')
+  const [onlyRejected] = shapeDeals([rejected, closing], meta, '43097342')
+  assert.deepEqual([onlyRejected.open_margin_rate, onlyRejected.open_base_usd_rate], [null, null])
+  for (const status of [5, 6, 7, 'REJECTED']) {
+    const [r] = shapeDeals([{ ...rejected, dealStatus: status, filledVolume: 2000 }, closing], meta, '43097342')
+    assert.equal(r.open_margin_rate, null, `status ${status}`)
+  }
+})
+
+// Claude · № 14,323 13-Oct (Codex P2 on #1358 round 2; claude-builder). A
+// position added to later has two executed opening deals; a read that misses
+// the original would take the add-on as the opener. The opening rates are
+// recorded only for a proven opener, and a stored one is never replaced.
+test('NASA-4: an add-on fill never stands in for the opener; a stored opening rate is kept', () => {
+  const T = Date.parse('2026-10-12T10:00:00Z')
+  const meta = { 1: { symbolName: 'USDSGD', lotSize: 100000 } }
+  const deal = (id, ms, filled, rate, close = null) => ({ dealId: id, positionId: 992, symbolId: 1, tradeSide: close ? 2 : 1, volume: filled,
+    filledVolume: filled, executionPrice: rate, executionTimestamp: ms, dealStatus: 2, marginRate: rate, baseToUsdConversionRate: 1,
+    ...(close ? { closePositionDetail: { entryPrice: 1.28, grossProfit: 0, swap: 0, commission: -18, balance: 1000000, moneyDigits: 2, closedVolume: filled } } : {}) })
+  const original = deal(80, T - 7_200_000, 2000, 1.28), addOn = deal(81, T - 3_600_000, 2000, 1.31), closing = deal(82, T, 4000, 1.30, true)
+  const [both] = shapeDeals([original, addOn, closing], meta, '43097342')
+  assert.equal(both.open_margin_rate, null, 'two openers: neither is proven to be the one the rates belong to')
+  const [partial] = shapeDeals([original, addOn, deal(85, T, 2000, 1.30, true)], meta, '43097342')
+  assert.equal(partial.open_margin_rate, null, 'two openers, a partial close each could cover: still not proven')
+  const [narrow] = shapeDeals([addOn, closing], meta, '43097342')
+  assert.equal(narrow.open_margin_rate, null, 'the add-on alone does not cover the 4,000 closed: not the opener')
+  const [single] = shapeDeals([deal(83, T - 3_600_000, 4000, 1.28), deal(84, T, 4000, 1.30, true)], meta, '43097342')
+  assert.equal(single.open_margin_rate, 1.28, 'one opener covering the close is proven')
+  const db = initDB(':memory:')
+  persistDeals(db, [single])
+  persistDeals(db, [{ ...single, open_margin_rate: 1.31, open_base_usd_rate: 2 }])
+  const stored = db.prepare('SELECT open_margin_rate, open_base_usd_rate FROM broker_deals WHERE deal_id=?').get('84')
+  assert.deepEqual([stored.open_margin_rate, stored.open_base_usd_rate], [1.28, 1], 'a later read never replaces a stored opening rate')
+})
+
+// Claude · № 14,342 13-Oct (Codex P2 on #1358 round 3; claude-builder). Codex's
+// sequence: original 2,000 outside the read, add-on 2,000 inside, partial close
+// 1,000 inside. The closing deal states the position's entry (the average of
+// both fills); the add-on's price is not it, so its rates are not recorded.
+test('NASA-4: a lone add-on before a smaller partial close is not the opener; the position entry decides', () => {
+  const T = Date.parse('2026-10-12T10:00:00Z')
+  const meta = { 1: { symbolName: 'USDSGD', lotSize: 100000 } }
+  const open = (id, ms, filled, px) => ({ dealId: id, positionId: 993, symbolId: 1, tradeSide: 1, volume: filled, filledVolume: filled,
+    executionPrice: px, executionTimestamp: ms, dealStatus: 2, marginRate: px, baseToUsdConversionRate: 1 })
+  const close = (id, closed, entry) => ({ dealId: id, positionId: 993, symbolId: 1, tradeSide: 2, volume: closed, filledVolume: closed,
+    executionPrice: 1.3, executionTimestamp: T, dealStatus: 2, marginRate: 1.3, baseToUsdConversionRate: 1,
+    closePositionDetail: { entryPrice: entry, grossProfit: 0, swap: 0, commission: -9, balance: 1000000, moneyDigits: 2, closedVolume: closed } })
+  const [addOnOnly] = shapeDeals([open(90, T - 3_600_000, 2000, 1.31), close(91, 1000, 1.295)], meta, '43097342')
+  assert.equal(addOnOnly.open_margin_rate, null, 'entry 1.295 is the average; the add-on at 1.31 is not the opener')
+  const [opener] = shapeDeals([open(92, T - 3_600_000, 2000, 1.28), close(93, 1000, 1.28)], meta, '43097342')
+  assert.equal(opener.open_margin_rate, 1.28, 'the lone opener at the position entry is proven')
+  const [noEntry] = shapeDeals([open(94, T - 3_600_000, 2000, 1.28), close(95, 1000, undefined)], meta, '43097342')
+  assert.equal(noEntry.open_margin_rate, null, 'no stated entry, no proof')
+})

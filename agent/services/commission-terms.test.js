@@ -123,7 +123,9 @@ test('check: a non-USD deposit shows both figures and does not compare; no terms
   const s = r.symbols[0]
   assert.equal(s.compared, false)
   assert.equal(s.agrees, null)
-  assert.equal(s.reason, 'deposit_currency_SGD')
+  // Claude · № 14,270 13-Oct (NASA-4 "A"): without the deal's own rates the
+  // reason names what is missing, not only the currency.
+  assert.equal(s.reason, 'deposit_rate_not_reported')
   assert.equal(s.brokerPerLotPerSide.currency, 'SGD')
   assert.equal(s.brokerPerLotPerSide.max, 4.5)
 
@@ -310,4 +312,62 @@ test('route: refresh reads this account through its own map and records; the che
   assert.equal(foreign.status, 502)
   assert.equal(foreign.data.error, 'response_names_another_account')
   assert.deepEqual(Object.keys(readCommissionTerms(db, '47790949').symbols), ['AUDUSD'])
+})
+
+// Claude · № 14,270 13-Oct (owner: NASA-4 "A", capture the broker's per-deal
+// conversion rate; claude-builder). Grounding: deal 324214333 on 43097342 (SGD
+// deposit), USDSGD 0.02 lots, entry 1.28014, close 1.27839, charged SGD 0.18
+// (broker_deals, 12-10). Terms $3.50 a lot a side (measured on 47790949). For
+// USDSGD the base is USD, so the broker's marginRate (Base/Deposit) is the
+// USD/SGD rate at each deal, and baseToUsdConversionRate is 1. The rates on
+// this deal are set to its own prices: that the broker reports exactly these
+// is NOT known here (self-derived); the live read after deploy says.
+function rates(db, id, r) {
+  db.prepare(`UPDATE broker_deals SET open_margin_rate=?, open_base_usd_rate=?, close_margin_rate=?, close_base_usd_rate=? WHERE deal_id=?`)
+    .run(r.openMargin ?? null, r.openBaseUsd ?? null, r.closeMargin ?? null, r.closeBaseUsd ?? null, id)
+}
+
+test('NASA-4: an SGD deposit is compared through each side\'s own broker rate (43097342 USDSGD 324214333)', () => {
+  const db = initDB(':memory:')
+  usdDeposit(db, '43097342', 'SGD')
+  deal(db, { id: '324214333', account: '43097342', symbol: 'USDSGD', lots: 0.02, entry: 1.28014, close: 1.27839, commission: -0.18 })
+  rates(db, '324214333', { openMargin: 1.28014, openBaseUsd: 1, closeMargin: 1.27839, closeBaseUsd: 1 })
+  storeCommissionTerms(db, '43097342', { symbol: [{ symbolId: 7, commissionType: 2, preciseTradingCommissionRate: 350_000_000 }] }, { 7: 'USDSGD' }, { now: NOW })
+  const s = commissionTermsCheck(db, '43097342', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, true, JSON.stringify(s))
+  assert.equal(s.agrees, true)
+  assert.equal(s.reason, null)
+  const d = s.sample[0]
+  assert.equal(d.modelledDealUsd, 0.14)
+  assert.equal(d.modelledDealDeposit, 0.1791, '0.07 × 1.28014 + 0.07 × 1.27839')
+  assert.deepEqual(d.depositPerUsd, { open: 1.2801, close: 1.2784, source: 'broker_deal_rate' })
+  // Charged as if in USD (0.14) would disagree: the conversion is measured.
+  db.prepare("UPDATE broker_deals SET commission=-0.14 WHERE deal_id='324214333'").run()
+  assert.equal(commissionTermsCheck(db, '43097342', { days: 30, now: NOW }).symbols[0].agrees, false)
+})
+
+test('NASA-4: one side without a broker rate is not compared and says so', () => {
+  const db = initDB(':memory:')
+  usdDeposit(db, '42993489', 'SGD')
+  deal(db, { id: '1', account: '42993489', symbol: 'USDSGD', lots: 0.02, entry: 1.28, close: 1.28, commission: -0.18 })
+  rates(db, '1', { closeMargin: 1.28, closeBaseUsd: 1 })
+  storeCommissionTerms(db, '42993489', { symbol: [{ symbolId: 7, commissionType: 2, preciseTradingCommissionRate: 350_000_000 }] }, { 7: 'USDSGD' }, { now: NOW })
+  const s = commissionTermsCheck(db, '42993489', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, false); assert.equal(s.agrees, null); assert.equal(s.reason, 'deposit_rate_not_reported')
+})
+
+test('NASA-4: a cross is priced from the deal\'s own Base/USD rate; a USD deposit reads ratio 1', () => {
+  const db = initDB(':memory:')
+  usdDeposit(db, '46979908')
+  // EURGBP, $35 per million: 0.1 lots = 10,000 EUR = 11,700 USD at 1.17 → $0.4095 a side.
+  deal(db, { id: '9', account: '46979908', symbol: 'EURGBP', lots: 0.1, entry: 0.8558, close: 0.8560, commission: -0.82 })
+  rates(db, '9', { openMargin: 1.17, openBaseUsd: 1.17, closeMargin: 1.17, closeBaseUsd: 1.17 })
+  storeCommissionTerms(db, '46979908', { symbol: [{ symbolId: 8, commissionType: 1, preciseTradingCommissionRate: 3_500_000_000, lotSize: 10_000_000 }] }, { 8: 'EURGBP' }, { now: NOW })
+  const s = commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.agrees, true)
+  assert.equal(s.sample[0].modelledDealUsd, 0.819)
+  assert.deepEqual(s.usdDepositRatio, { n: 2, maxAbsDiffFrom1: 0 })
+  // Without the deal's rate the cross is still not guessed.
+  rates(db, '9', {})
+  assert.equal(commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols[0].reason, 'base_currency_usd_price_unknown')
 })

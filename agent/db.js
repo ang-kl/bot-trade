@@ -1654,6 +1654,12 @@ export function initDB(dbPath, startupDiagnosticOptions) {
     for (const [name, type] of [['volume_contract','INTEGER'], ['requested_lots','REAL']]) {
       if (!dealBalanceCols.has(name)) db.exec(`ALTER TABLE broker_deals ADD COLUMN ${name} ${type}`);
     }
+    // Claude · № 14,270 13-Oct (owner: NASA-4 "A"; claude-builder): the broker's
+    // own per-deal rates (broker-history-import.js dealRates). NULL = not stated.
+    for (const name of ['open_margin_rate', 'open_base_usd_rate', 'close_margin_rate', 'close_base_usd_rate',
+      'quote_deposit_rate', 'pnl_conversion_fee']) {
+      if (!dealBalanceCols.has(name)) db.exec(`ALTER TABLE broker_deals ADD COLUMN ${name} REAL`);
+    }
     db.prepare(`INSERT OR IGNORE INTO agent_state(key,value)
       SELECT 'executed_volume_contract_1_trade_boundary', CAST(COALESCE(MAX(id),0) AS TEXT) FROM trades`).run();
   }).immediate();
