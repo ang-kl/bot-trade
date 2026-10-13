@@ -291,6 +291,22 @@ test('the sweep stamps a reversed open position\'s new leg though the money life
   assert.deepEqual(filled(db, id), { v: 0.1, s: 'broker_opening_deals' }, 'the reversing deal opened 1,000,000 cents: 0.1 lots')
 })
 
+// № 14,505 (Codex P2 round 3 on #1364; claude-builder): an answer naming
+// another account is another account's position; nothing is stamped from it.
+test('the sweep never stamps a fill from an answer naming another account', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const id = trade(db, { volume: 0.2 })
+  const out = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: Date.parse('2026-10-13T12:00:00Z'),
+    getPositionDeals: async () => ({ ctidTraderAccountId: Number(LIVE), hasMore: false, deal: [
+      { dealId: 11, orderId: 21, positionId: 5001, symbolId: 1, tradeSide: 1, dealStatus: 2, volume: 9_000_000, filledVolume: 9_000_000, executionPrice: 1.1,
+        executionTimestamp: Date.parse('2026-10-13T10:00:00Z') }] }) })
+  assert.equal(out.class, 'filled')
+  assert.deepEqual(filled(db, id), { v: null, s: null })
+})
+
 // № 14,349 (Codex P2 round 2 on #1360; claude-builder): with more open
 // positions than reads per window, the least recently read goes first, so every
 // position is reached rather than the newest ones over and over.

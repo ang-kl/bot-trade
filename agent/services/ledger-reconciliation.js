@@ -273,8 +273,10 @@ function accountSection(db, accountId, { enabled, currency, currencyEvidence, no
   // one treatment on every path (V3 B1, position-deal-history.js) — so what
   // that leaves out is measured here, in the account's currency. A deal
   // stored before the capture has no fee on record and is counted apart.
+  // Every deal on the account counts, positionless statement rows included
+  // (№ 14,505, Codex P2 round 3 on #1364).
   const fee = db.prepare(`SELECT COUNT(*) AS deals, COUNT(pnl_conversion_fee) AS read, SUM(pnl_conversion_fee <> 0) AS nonzero,
-      ROUND(SUM(pnl_conversion_fee), 2) AS total FROM broker_deals WHERE account_id = ? AND position_id IS NOT NULL`).get(accountId)
+      ROUND(SUM(pnl_conversion_fee), 2) AS total FROM broker_deals WHERE account_id = ?`).get(accountId)
   const conversionFee = { total: Number(fee.read) ? r2(Number(fee.total)) : null, dealsRead: Number(fee.read), dealsWithFee: Number(fee.nonzero ?? 0),
     dealsNotRead: Number(fee.deals) - Number(fee.read), currency: currency ?? null, inNet: false }
   return {

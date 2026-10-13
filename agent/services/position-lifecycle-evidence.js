@@ -472,7 +472,10 @@ export async function sweepLifecycleEvidence(db, creds, { now = Date.now(), isCu
   // integer volumes: openingDealsFilledLots), so they are read on any answer —
   // a reversed position's history is refused as money (a deal that fills more
   // than it closes) yet still states its new leg's fills.
-  if (!error && response) {
+  // № 14,505 (Codex P2 round 3 on #1364): only an answer that names THIS
+  // account, as the classifier requires (an overlapping position id on another
+  // account is another position), and carries no broker error.
+  if (!error && response && String(response.ctidTraderAccountId) === accountId && !response.error && !response.errorCode) {
     try { filled = await stampFilledFromHistory(db, response, accountId, positionId) } catch (e) { filled = { reason: `skipped: ${e.message}` } }
   }
   const verdict = recordLifecycleEvidence(db, { accountId, positionId, host, classified, now, ledgerRows,

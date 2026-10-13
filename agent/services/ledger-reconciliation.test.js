@@ -255,8 +255,10 @@ test('C·5b: the conversion fee left out of net is measured per account', t => {
   const db = build(initDB(':memory:')); t.after(() => db.close())
   db.prepare("UPDATE broker_deals SET pnl_conversion_fee = -0.37 WHERE deal_id = '1041'").run()
   db.prepare("UPDATE broker_deals SET pnl_conversion_fee = 0 WHERE deal_id = '1051'").run()
+  // № 14,505: a statement row has no position id and still belongs to the account.
+  db.prepare("INSERT INTO broker_deals (deal_id, position_id, account_id, symbol, net_pnl, closed_at, pnl_conversion_fee) VALUES ('stmt1', NULL, ?, 'EURUSD', 1, '2026-09-20 10:00:00', -0.05)").run(USD)
   const usd = buildLedgerReconciliation(db).accounts.find(a => a.accountId === USD)
-  assert.deepEqual(usd.conversionFee, { total: -0.37, dealsRead: 2, dealsWithFee: 1, dealsNotRead: 3, currency: 'USD', inNet: false })
+  assert.deepEqual(usd.conversionFee, { total: -0.42, dealsRead: 3, dealsWithFee: 2, dealsNotRead: 3, currency: 'USD', inNet: false })
   // Net is untouched: the class money is what it was.
   assert.equal(usd.classes.agrees_on_receipts.brokerNet, 5)
   const sgd = buildLedgerReconciliation(db).accounts.find(a => a.accountId === SGD1)
