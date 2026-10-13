@@ -10,6 +10,7 @@ import { initDB, setState } from '../db.js'
 import { tempDir } from '../test-support/temp-dir.js'
 import { accountSymbolMapKey } from '../lib/ctrader-creds.js'
 import { enrolCappedHybrids } from './capped-hybrid-enrolment.js'
+import { readCappedHybridVerdict } from './capped-hybrid-policy.js'
 import { runMomentumPartialPass, readMomentumPartialPass } from './momentum-partial-runtime.js'
 import { readPartialPlan } from './momentum-partial-manager.js'
 import { makeMomentumPartialBroker } from './momentum-partial-broker.js'
@@ -296,4 +297,43 @@ test('W10: a stored 2.5R arms a manual plan at 2.5R, carrying its values', async
   await f.pass()
   const p = f.plan().plan
   assert.deepEqual([f.plan().state, p.trigger, p.triggerR, p.closeFraction, p.closeVolume], ['ARMED', 125, 2.5, 0.5, 5000])
+})
+
+// Claude · № 14,253 13-Oct (owner: "Yes, fix 5", "The broker fill", "Add
+// manual-hybrid-policy.js"; claude-builder). DOW.US #1806 (43097342, 13-10):
+// the execute-analysis route keeps the planned entry on the trade (#1335) and
+// the fill on the monitor, so the manual reader refused it on
+// monitor_entry_conflict. The 2R trigger now counts from the fill, which the
+// broker position and the opening order must prove; the risk is the order's.
+for (const side of ['BUY', 'SELL']) test(`fix 5 manual ${side}: a planned entry that differs from the fill enrols on the fill`, async t => {
+  const f = manualScene(t, { side })
+  f.db.prepare('UPDATE trades SET entry_price=? WHERE id=7').run(side === 'BUY' ? 100.4 : 99.6)
+  const trade = f.trade(), monitor = f.monitor()
+  const out = await f.enrol()
+  assert.equal(out.enrolled.length, 1, JSON.stringify(out))
+  assert.equal(f.plan().plan.entry, 100); assert.equal(f.plan().plan.initialRisk, 10)
+  assert.equal(f.plan().plan.trigger, side === 'BUY' ? 120 : 80)
+  assert.equal(JSON.parse(f.proof().proof_json).entry, 100)
+  unchanged(f, trade, monitor)
+  // The pass re-derives the owner from the monitor's fill and keeps the plan.
+  f.bid = side === 'BUY' ? 110 : 90.1; f.ask = side === 'BUY' ? 110.1 : 90.2
+  await f.pass()
+  assert.equal(f.plan().state, 'ARMED'); assert.equal(f.closes.length, 0)
+})
+
+test('fix 5 manual: a monitor entry the broker position does not hold is refused; a moved monitor entry voids the authority', async t => {
+  const f = manualScene(t)
+  f.db.prepare('UPDATE monitored_positions SET entry_price=101 WHERE id=8').run()
+  const out = await f.enrol()
+  assert.equal(out.enrolled.length, 0); assert.equal(out.deferred[0].reason, 'broker_position_unverified')
+  assert.ok(!f.proof()); assert.equal(f.closes.length, 0)
+  const g = manualScene(t)
+  assert.equal((await g.enrol()).enrolled.length, 1)
+  g.db.prepare('UPDATE monitored_positions SET entry_price=100.5 WHERE id=8').run()
+  assert.equal(readCappedHybridVerdict(g.db, g.accountId, 7, '33', 2).reason, 'manual_opening_proof_conflict')
+  const event = g.trigger()
+  const ticked = await g.tick(event)
+  await g.pass()
+  assert.equal(g.closes.length, 0, JSON.stringify(ticked)); assert.equal(g.events().length, 0)
+  assert.notEqual(g.plan().state, 'CONFIRMED')
 })

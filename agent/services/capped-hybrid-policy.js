@@ -4,7 +4,6 @@
 import { familyOf } from './strategies.js'
 import { applyManagedRules, managedExitApplies } from './managed-exit.js'
 import { rulesForSymbol } from './asset-controllers.js'
-import { sameTicks } from './momentum-target-policy.js'
 import { readTickEntryProof } from './tick-entry-proof.js'
 import { isManualHybridTrade, readManualHybridVerdict, MANUAL_HYBRID_REASONS } from './manual-hybrid-policy.js'
 
@@ -161,7 +160,11 @@ export function readCappedHybridVerdict(db, accountId, tradeId, positionId, digi
   if (m.bank_partial_at != null) return refuse('monitor_bank_owned')
   if (m.side !== (t.side === 'BUY' ? 'long' : 'short')) return refuse('monitor_side_conflict')
   if (!positive(tick?.initialRisk ?? m.initial_risk)) return refuse('initial_risk_missing')
-  if (!sameTicks(m.entry_price, t.entry_price, digits)) return refuse('monitor_entry_conflict')
+  // Claude · № 14,253 13-Oct (owner: "Yes, fix 5", "The broker fill"; claude-builder).
+  // The 2R trigger counts from the fill the monitor holds, not the trade row's
+  // entry (which can be the planned one, #1335). The enrolment proves this
+  // entry against the broker position and the opening deals before any plan.
+  if (!positive(m.entry_price)) return refuse('monitor_entry_conflict')
   if (db.prepare('SELECT 1 FROM momentum_book WHERE trade_id=? LIMIT 1').get(tradeId)) return refuse('momentum_book_owned')
   if (db.prepare("SELECT 1 FROM position_events WHERE trade_id=? AND kind IN ('scale_out','lot_trimmed','authority_override','position_reversed') LIMIT 1").get(tradeId)) return refuse('prior_position_override')
   for (const name of ['momentum_target_intents', 'momentum_limit_intents']) {
@@ -169,7 +172,7 @@ export function readCappedHybridVerdict(db, accountId, tradeId, positionId, digi
   }
   const rules = applyManagedRules(db, accountId, rulesForSymbol(db, t.symbol), { strategy: t.strategy, tradeId })
   if (rules.bankTriggerR !== 0 || rules.partialTriggerR !== Infinity) return refuse('competing_profit_policy')
-  const owner = { accountId, tradeId, positionId, entry: t.entry_price, initialRisk: tick?.initialRisk ?? m.initial_risk, side: t.side,
+  const owner = { accountId, tradeId, positionId, entry: m.entry_price, initialRisk: tick?.initialRisk ?? m.initial_risk, side: t.side,
     status: 'open', owner: 'managed_capped_hybrid', guardActive: false, symbol: t.symbol, strategy: t.strategy,
     symbolId: id(i.symbol_id), entryOrderId: tick?.entryOrderId || id(i.broker_order_id), intentId: t.intent_id, monitoredId: m.id,
     host: a.is_live ? 'live.ctraderapi.com' : 'demo.ctraderapi.com' }
