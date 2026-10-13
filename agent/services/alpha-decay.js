@@ -184,7 +184,10 @@ export function alphaDecayView(db, { window = 30, scope = null } = {}) {
         name: strategy === 'unlabelled' ? 'Manual / external' : (nameOf[strategy] || strategy),
         kind: STRATEGY_KIND[strategy] || (strategy === 'unlabelled' ? 'manual' : 'other'),
         armed: armed.has(strategy),
-        armedOn: armedView.counts[strategy] ?? { on: armed.has(strategy) ? 1 : 0, of: 1 },
+        // Codex P2 on #1347 (owner "Show n/a"): a strategy with no Auto Trade
+        // cell (outside the registry, e.g. tick_momentum_breakout) has no
+        // armed state; null, never a made-up count.
+        armedOn: armedView.counts[strategy] ?? (registeredKeys.includes(strategy) ? { on: armed.has(strategy) ? 1 : 0, of: 1 } : null),
         registered: registeredKeys.includes(strategy),
         netPnl: decayed.total.totalPnl,   // total realized $ — the number the owner is bleeding
         winRate: decayed.total.winRate,    // 0..1

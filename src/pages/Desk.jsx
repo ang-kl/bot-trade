@@ -972,6 +972,8 @@ export default function Desk() {
                           <td className="py-1 pr-3">
                             {un
                               ? <span className="text-[var(--color-text-sub)]">manual</span>
+                              : s2.registered === false
+                                ? <span className="text-[var(--color-text-sub)]" title="No Auto Trade switch governs this strategy">n/a</span>
                               : alphaDecay.armedScope === 'all enabled accounts' && s2.armedOn
                                 ? <Badge tone={s2.armed ? 'on' : 'off'}>{`ON ${s2.armedOn.on}/${s2.armedOn.of}`}</Badge>
                                 : <Badge tone={s2.armed ? 'on' : 'off'}>{s2.armed ? 'ARMED' : 'OFF'}</Badge>}

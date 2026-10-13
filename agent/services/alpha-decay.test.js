@@ -255,3 +255,21 @@ test('armed: with every account in scope, a strategy is armed where any enabled 
   assert.equal(row('vp_value').armed, false)
   assert.deepEqual(row('vp_value').armedOn, { on: 0, of: 2 })
 })
+
+// Claude · № 13,923 13-Oct (Codex P2 on #1347; owner "Show n/a"; claude-builder).
+// tick_momentum_breakout is not in the strategy registry and has no Auto
+// Trade cell, but its closes carry its name. With every account in scope it
+// read "ON 0/1" whatever the number of accounts; its armed state does not apply.
+test('armed: a strategy with no Auto Trade cell reports its armed state as not applicable', async () => {
+  const db = initDB(':memory:')
+  for (const id of ['111', '222']) db.prepare(`INSERT INTO accounts (account_id, trader_login, is_live, enabled, mode) VALUES (?, ?, 0, 1, 'active')`).run(id, id)
+  db.prepare(`INSERT INTO trades (symbol, net_pnl, status, label_strategy, closed_at, account_id) VALUES ('EURUSD', 5, 'closed', 'tick_momentum_breakout', '2026-10-12 10:00:00', '111')`).run()
+  for (const scope of [{ accountId: null, all: true, explicit: true }, { accountId: '111', all: false, explicit: true }]) {
+    const v = alphaDecayView(db, { window: 10, scope })
+    const row = v.strategies.find(s => s.strategy === 'tick_momentum_breakout')
+    assert.ok(row, 'the strategy has a row')
+    assert.equal(row.registered, false)
+    assert.equal(row.armedOn, null, `RED before: ${JSON.stringify(row.armedOn)} (${v.armedScope})`)
+    assert.equal(row.armed, false)
+  }
+})
