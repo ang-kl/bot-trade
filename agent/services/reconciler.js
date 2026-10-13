@@ -594,7 +594,10 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
         // Claude · № 14,344 13-Oct (Codex P2 round 2 on #1359; claude-builder):
         // more volume than before is an added opening fill — the recorded fill
         // no longer covers it, so it is cleared and read again from the deals.
-        if (Number(bVol) > Number(row.broker_volume_units) && row.trade_id != null) {
+        // № 14,346 (Codex P2 follow-up): a close and an add between two passes
+        // can leave the net unchanged or lower, so ANY change the reconciler
+        // did not make itself clears it; the deals then say what was opened.
+        if (row.trade_id != null) {
           clearFilledVolume(db, { accountId: acct, positionId: posId, tradeId: row.trade_id })
         }
         // A VOLUME THAT FELL IS A PARTIAL CLOSE (V3 B1 checker blocker).

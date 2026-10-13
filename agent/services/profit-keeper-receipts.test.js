@@ -338,8 +338,19 @@ for(const failure of ['not_sent','rejected','already_closed'])test(`keeper failu
 // apart from the residual it writes to trades.volume.
 test('NASA-3: keeper scale-out keeps the filled lots apart from the residual', async t => {
   const f = fixture(t)
+  f.db.prepare("UPDATE trades SET origin='manual_broker'").run() // № 14,346: a lifecycle that began here
   f.state.response = () => { f.state.volume = 8000; return f.fill(2000) }
   assert.equal((await f.run()).scaleOuts, 1)
   const row = f.db.prepare('SELECT volume, filled_volume, filled_volume_source FROM trades').get()
   assert.deepEqual(row, { volume: 0.8, filled_volume: 1, filled_volume_source: 'broker_position_before_first_partial' })
+})
+
+// № 14,346 (Codex P2 follow-up from #1359): an adopted position's pre-partial
+// volume is not proven to be its fill (it may have been reduced before adoption).
+test('NASA-3: keeper scale-out on an adopted position records no fill from the broker volume', async t => {
+  const f = fixture(t)
+  f.db.prepare("UPDATE trades SET origin='reconciler_adopted'").run()
+  f.state.response = () => { f.state.volume = 8000; return f.fill(2000) }
+  assert.equal((await f.run()).scaleOuts, 1)
+  assert.deepEqual(f.db.prepare('SELECT volume, filled_volume, filled_volume_source FROM trades').get(), { volume: 0.8, filled_volume: null, filled_volume_source: null })
 })

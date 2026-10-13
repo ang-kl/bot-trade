@@ -46,11 +46,17 @@ export function stampFilledVolume(db, { accountId, positionId, tradeId = null, l
   // later complete deal read supersedes an earlier one (an opening deal added
   // since); every other source still needs a strictly better rank.
   const allowEqual = source === 'broker_opening_deals' ? 1 : 0
+  // Claude · № 14,346 13-Oct (Codex P2 follow-up from #1359; claude-builder).
+  // The broker-position fallbacks equal the fill only for a lifecycle that
+  // began here: an adopted position may have been reduced before adoption
+  // with nothing on record. Only the position's own deals stand for those.
+  const needsSentOrigin = source === 'broker_opening_deals' ? 0 : 1
   return db.prepare(`UPDATE trades SET filled_volume = ?, filled_volume_source = ?
     WHERE account_id = ? AND ctrader_position_id IN (?, ?) AND (? IS NULL OR id = ?)
       AND status NOT IN ('rejected', 'cancelled')
+      AND (? = 0 OR origin IN (${SENT_ORIGINS.map(o => `'${o}'`).join(', ')}))
       AND (${rankSql('filled_volume_source')} > ? OR (? = 1 AND ${rankSql('filled_volume_source')} = ?))`)
-    .run(value, source, String(accountId), pid, `${pid}.0`, tradeId, tradeId, rank, allowEqual, rank).changes
+    .run(value, source, String(accountId), pid, `${pid}.0`, tradeId, tradeId, needsSentOrigin, rank, allowEqual, rank).changes
 }
 
 /**

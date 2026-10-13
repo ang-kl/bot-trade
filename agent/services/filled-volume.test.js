@@ -22,9 +22,9 @@ import { reconcilePositions } from './reconciler.js'
 import { reconcileTradePricesToBroker } from './broker-history-import.js'
 
 const DEMO = '43097342', LIVE = '42993489'
-function trade(db, { account = DEMO, pid = '5001', status = 'open', volume = 0.2, symbol = 'EURUSD' } = {}) {
-  return Number(db.prepare(`INSERT INTO trades(symbol,side,entry_price,volume,status,ctrader_position_id,account_id,opened_at)
-    VALUES (?, 'BUY', 1.1, ?, ?, ?, ?, datetime('now'))`).run(symbol, volume, status, pid, account).lastInsertRowid)
+function trade(db, { account = DEMO, pid = '5001', status = 'open', volume = 0.2, symbol = 'EURUSD', origin = 'bot_market_dispatch' } = {}) {
+  return Number(db.prepare(`INSERT INTO trades(symbol,side,entry_price,volume,status,ctrader_position_id,account_id,opened_at,origin)
+    VALUES (?, 'BUY', 1.1, ?, ?, ?, ?, datetime('now'), ?)`).run(symbol, volume, status, pid, account, origin).lastInsertRowid)
 }
 const filled = (db, id) => db.prepare('SELECT filled_volume AS v, filled_volume_source AS s FROM trades WHERE id=?').get(id)
 
@@ -89,8 +89,8 @@ test('sweep: an open position with no recorded fill is read from its own deals a
     assert.deepEqual(reads, ['5001'], JSON.stringify(out))
     assert.equal(out.class, 'filled')
     assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' }, 'the deals say 0.2 lots filled, not the 0.25 sent')
-    // Once known from the deals, the position is no longer a candidate.
-    const again = await sweepLifecycleEvidence(db, { accountId: acct, host: 'h' }, { now: Date.now() + 3_600_000, getPositionDeals: async () => { throw Error('not read') } })
+    // Read again only after the retry interval (№ 14,348), never sooner.
+    const again = await sweepLifecycleEvidence(db, { accountId: acct, host: 'h' }, { now: Date.now() + 60_000, getPositionDeals: async () => { throw Error('not read') } })
     assert.notEqual(again.class, 'filled')
   }
 })
@@ -172,4 +172,104 @@ test('a reversed position: no fill from its deals, and the side flip clears the 
   reconcilePositions(db, [{ positionId: 5001, price: 1.1, stopLoss: 1.12, takeProfit: 1.05,
     tradeData: { symbolId: 1, symbolName: 'EURUSD', tradeSide: 'SELL', volume: 1_000_000, label: 'AP|v1|RSIM' } }], [], (k, v) => setState(db, k, v), { accountId: DEMO })
   assert.deepEqual(filled(db, id), { v: null, s: null })
+})
+
+// Claude · № 14,346 13-Oct (Codex P2 follow-ups from #1359; claude-builder).
+// (1) The broker-position fallbacks stand for the fill only where the lifecycle
+// began here; an adopted position may have been reduced before adoption with
+// nothing on record. Its own deals still do. (2) A close and an add between two
+// passes can leave the net lower: any volume change clears the fill on record.
+test('an adopted position takes no broker-position fallback; its own deals still record the fill', () => {
+  const db = initDB(':memory:')
+  for (const origin of ['reconciler_adopted', 'external_system', 'unknown', null]) {
+    const pid = String(6000 + ['reconciler_adopted', 'external_system', 'unknown', null].indexOf(origin))
+    const id = trade(db, { pid, origin })
+    for (const source of ['broker_position_first_seen', 'broker_position_before_first_partial']) {
+      assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: pid, lots: 0.2, source }), 0, `${origin} ${source}`)
+    }
+    assert.equal(stampFilledVolume(db, { accountId: DEMO, positionId: pid, lots: 0.2, source: 'broker_opening_deals' }), 1)
+    assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' })
+  }
+})
+
+test('any broker volume change the reconciler sees clears the recorded fill', () => {
+  for (const next of [3_000_000, 2_000_000 - 500_000]) {
+    const db = initDB(':memory:')
+    setState(db, 'ctrader_account_id', DEMO)
+    rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+    const id = trade(db, { volume: 0.2 })
+    db.prepare(`INSERT INTO monitored_positions(symbol,trade_id,side,entry_price,current_sl,current_tp,initial_risk,source,status,account_id,broker_volume_units)
+      VALUES ('EURUSD', ?, 'long', 1.1, 1.09, 1.13, 0.01, 'autopilot', 'active', ?, 20000)`).run(id, DEMO)
+    stampFilledVolume(db, { accountId: DEMO, positionId: '5001', lots: 0.2, source: 'broker_opening_deals' })
+    reconcilePositions(db, [{ positionId: 5001, price: 1.1, stopLoss: 1.09, takeProfit: 1.13,
+      tradeData: { symbolId: 1, symbolName: 'EURUSD', tradeSide: 'BUY', volume: next, label: 'AP|v1|RSIM' } }], [], (k, v) => setState(db, k, v), { accountId: DEMO })
+    assert.deepEqual(filled(db, id), { v: null, s: null }, `${next > 2_000_000 ? 'more' : 'less'} volume: read the deals again`)
+  }
+})
+
+// № 14,348 (Codex P2 on #1360; claude-builder): a close and an equal-sized add
+// leave the net unchanged; the sweep re-reads open positions anyway (once per
+// 15 minutes each) and the later complete read replaces the earlier fill.
+test('an open position with a fill from its deals is read again after the retry interval', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const id = trade(db, { volume: 0.2 })
+  const answer = deals => async () => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: deals.map((v, i) => ({
+    dealId: 11 + i, orderId: 21 + i, positionId: 5001, symbolId: 1, tradeSide: 1, dealStatus: 2, volume: v, filledVolume: v,
+    executionPrice: 1.1, executionTimestamp: Date.parse('2026-10-13T10:00:00Z') + i * 60_000 })) })
+  const t0 = Date.parse('2026-10-13T12:00:00Z')
+  const first = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0, getPositionDeals: answer([2_000_000]) })
+  assert.equal(first.class, 'filled'); assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' })
+  // A close of 0.1 and an add of 0.1 later: the deals now hold two openings summing 0.3.
+  let later = null
+  for (let k = 1; k <= 4 && later?.class !== 'filled'; k++) {
+    later = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0 + 16 * 60_000 + k * 31_000, getPositionDeals: answer([2_000_000, 1_000_000]) })
+  }
+  assert.equal(later.class, 'filled', JSON.stringify(later))
+  assert.deepEqual(filled(db, id), { v: 0.3, s: 'broker_opening_deals' })
+})
+
+// № 14,349 (Codex P2 round 2 on #1360; claude-builder): with more open
+// positions than reads per window, the least recently read goes first, so every
+// position is reached rather than the newest ones over and over.
+test('the filled sweep reads the least recently read open position first', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const ids = ['7001', '7002', '7003'].map(pid => trade(db, { pid }))
+  for (const pid of ['7001', '7002', '7003']) stampFilledVolume(db, { accountId: DEMO, positionId: pid, lots: 0.2, source: 'broker_opening_deals' })
+  const answer = pid => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: [{ dealId: Number(pid), orderId: 1, positionId: Number(pid), symbolId: 1,
+    tradeSide: 1, dealStatus: 2, volume: 2_000_000, filledVolume: 2_000_000, executionPrice: 1.1, executionTimestamp: Date.parse('2026-10-13T10:00:00Z') }] })
+  const t0 = Date.parse('2026-10-13T12:00:00Z'), order = []
+  for (let k = 0; order.length < 6 && k < 40; k++) {
+    const out = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0 + k * 31 * 60_000, getPositionDeals: async pid => answer(pid) })
+    if (out.class === 'filled') order.push(out.positionId)
+  }
+  assert.deepEqual(order.slice(0, 3).sort(), ['7001', '7002', '7003'], 'each is read once before any is read twice')
+  assert.deepEqual(order.slice(3, 6).sort(), ['7001', '7002', '7003'], JSON.stringify(order))
+  assert.equal(ids.length, 3)
+})
+
+// № 14,350 (Codex P2 round 3 on #1360): a position that can never get a deal
+// fill (no declared lot size) does not starve one that has a deal fill.
+test('an unstampable position does not starve a deal-stamped one', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1, XAUUSD: 2 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  trade(db, { pid: '8001', symbol: 'EURUSD' })
+  trade(db, { pid: '8002', symbol: 'XAUUSD' }) // no lot size: never stampable
+  const answer = pid => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: [{ dealId: Number(pid), orderId: 1, positionId: Number(pid),
+    symbolId: pid === '8001' ? 1 : 2, tradeSide: 1, dealStatus: 2, volume: 2_000_000, filledVolume: 2_000_000, executionPrice: 1.1,
+    executionTimestamp: Date.parse('2026-10-13T10:00:00Z') }] })
+  const t0 = Date.parse('2026-10-13T12:00:00Z'), order = []
+  for (let k = 0; order.length < 4 && k < 40; k++) {
+    const out = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0 + k * 31 * 60_000, getPositionDeals: async pid => answer(pid) })
+    if (out.class === 'filled') order.push(out.positionId)
+  }
+  assert.equal(order.filter(p => p === '8001').length, 2, JSON.stringify(order))
+  assert.equal(order.filter(p => p === '8002').length, 2, JSON.stringify(order))
 })
