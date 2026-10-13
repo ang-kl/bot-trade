@@ -371,3 +371,38 @@ test('NASA-4: a cross is priced from the deal\'s own Base/USD rate; a USD deposi
   rates(db, '9', {})
   assert.equal(commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols[0].reason, 'base_currency_usd_price_unknown')
 })
+
+// Claude · № 14,347 13-Oct (Codex P2 follow-up from #1358; claude-builder).
+// QUOTE_CCY_PER_LOT (spotware ProtoOACommissionType 4) on a non-USD quote:
+// GBP 3 a lot a side on EURGBP, 0.5 lots, a USD deposit. Open side: marginRate
+// 1.17 (EUR/USD) ÷ entry 0.85 = 1.37647 USD per GBP; close side: the broker's
+// quoteToDepositConversionRate 1.3605. Figures self-derived; the check that
+// the open-side derivation reads the fields right is closeDerivedOverStated
+// (close marginRate ÷ close price against the broker's own close rate) ≈ 1.
+function quoteDeal(db, extra = {}) {
+  deal(db, { id: 'q1', account: '46979908', symbol: 'EURGBP', lots: 0.5, entry: 0.85, close: 0.86, commission: -4.11 })
+  db.prepare(`UPDATE broker_deals SET open_margin_rate=?, open_base_usd_rate=?, close_margin_rate=?, close_base_usd_rate=?, quote_deposit_rate=? WHERE deal_id='q1'`)
+    .run('openMargin' in extra ? extra.openMargin : 1.17, 1.17, extra.closeMargin ?? 1.17, 1.17, 'quoteRate' in extra ? extra.quoteRate : 1.3605)
+}
+test('NASA-4 follow-up: quote-currency-per-lot terms are priced through each side\'s broker rate', () => {
+  const db = initDB(':memory:')
+  usdDeposit(db, '46979908')
+  quoteDeal(db)
+  storeCommissionTerms(db, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  const s = commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.agrees, true)
+  const d = s.sample[0]
+  assert.equal(d.modelledDealDeposit, 4.1055)
+  assert.equal(d.quoteToDeposit.closeSource, 'broker_quote_to_deposit')
+  assert.ok(Math.abs(d.quoteToDeposit.closeDerivedOverStated - 1) < 0.001, 'the derivation agrees with the broker\'s own close rate')
+})
+
+test('NASA-4 follow-up: quote-currency terms without a broker rate, or with a minimum, are not compared', () => {
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a, { openMargin: null })
+  storeCommissionTerms(a, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  assert.equal(commissionTermsCheck(a, '46979908', { days: 30, now: NOW }).symbols[0].reason, 'quote_deposit_rate_not_reported')
+  const b = initDB(':memory:'); usdDeposit(b, '46979908'); quoteDeal(b)
+  storeCommissionTerms(b, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000, preciseMinCommission: 100_000_000, minCommissionType: 'QUOTE_CURRENCY' }] }, { 9: 'EURGBP' }, { now: NOW })
+  const s = commissionTermsCheck(b, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, false); assert.equal(s.reason, 'min_commission_quote_currency_not_usd')
+})
