@@ -231,6 +231,34 @@ test('an open position with a fill from its deals is read again after the retry 
   assert.deepEqual(filled(db, id), { v: 0.3, s: 'broker_opening_deals' })
 })
 
+// Claude · № 14,461 14-Oct (owner: "fix the follow-ups C·1 and C·2"; Codex P2
+// recorded on #1360; claude-builder). A complete empty answer stores a final
+// verdict (empty_at_broker); the open broker position then takes its opening
+// deals. Finality must not stop the filled class reading it again.
+test('a final verdict on an open position does not stop the filled re-read', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const id = trade(db, { volume: 0.2 })
+  const t0 = Date.parse('2026-10-13T12:00:00Z')
+  const first = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0,
+    getPositionDeals: async () => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: [] }) })
+  assert.equal(first.class, 'filled')
+  const stored = db.prepare('SELECT verdict, final FROM position_lifecycle_evidence WHERE account_id=? AND position_id=?').get(DEMO, '5001')
+  assert.deepEqual(stored, { verdict: 'empty_at_broker', final: 1 }, 'the arrangement holds: a final verdict on an open position')
+  const answer = async () => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: [{ dealId: 11, orderId: 21, positionId: 5001, symbolId: 1,
+    tradeSide: 1, dealStatus: 2, volume: 2_000_000, filledVolume: 2_000_000, executionPrice: 1.1, executionTimestamp: Date.parse('2026-10-13T11:59:00Z') }] })
+  const soon = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0 + 5 * 60_000, getPositionDeals: answer })
+  assert.notEqual(soon.class, 'filled', 'still paced: never read again inside 15 minutes')
+  let later = null
+  for (let k = 1; k <= 4 && later?.class !== 'filled'; k++) {
+    later = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0 + 16 * 60_000 + k * 31_000, getPositionDeals: answer })
+  }
+  assert.equal(later.class, 'filled', JSON.stringify(later))
+  assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' })
+})
+
 // № 14,349 (Codex P2 round 2 on #1360; claude-builder): with more open
 // positions than reads per window, the least recently read goes first, so every
 // position is reached rather than the newest ones over and over.
