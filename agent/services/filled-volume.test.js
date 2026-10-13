@@ -271,6 +271,26 @@ test('a final verdict on an open position does not stop the filled re-read', asy
   assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_opening_deals' })
 })
 
+// № 14,500 (Codex P2 round 2 on #1364; claude-builder). A reversed open
+// position: the money lifecycle refuses the history (a deal fills more than it
+// closes), and the sweep still stamps the new leg's fill from it.
+test('the sweep stamps a reversed open position\'s new leg though the money lifecycle refuses it', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const id = trade(db, { volume: 0.1 })
+  const t = Date.parse('2026-10-13T10:00:00Z')
+  const out = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: Date.parse('2026-10-13T12:00:00Z'),
+    getPositionDeals: async () => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: [
+      { dealId: 11, orderId: 21, positionId: 5001, symbolId: 1, tradeSide: 1, dealStatus: 2, volume: 2_000_000, filledVolume: 2_000_000, executionPrice: 1.1, executionTimestamp: t },
+      { dealId: 12, orderId: 22, positionId: 5001, symbolId: 1, tradeSide: 2, dealStatus: 2, volume: 3_000_000, filledVolume: 3_000_000, executionPrice: 1.11,
+        executionTimestamp: t + 60_000, closePositionDetail: { entryPrice: 1.1, grossProfit: 200, swap: 0, commission: 0, moneyDigits: 2, closedVolume: 2_000_000 } }] }) })
+  assert.equal(out.class, 'filled', JSON.stringify(out))
+  assert.equal(out.verdict.verdict ?? out.verdict, 'permanently_unsupported', 'the arrangement holds: the money lifecycle refuses it')
+  assert.deepEqual(filled(db, id), { v: 0.1, s: 'broker_opening_deals' }, 'the reversing deal opened 1,000,000 cents: 0.1 lots')
+})
+
 // № 14,349 (Codex P2 round 2 on #1360; claude-builder): with more open
 // positions than reads per window, the least recently read goes first, so every
 // position is reached rather than the newest ones over and over.

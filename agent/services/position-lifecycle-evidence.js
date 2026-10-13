@@ -466,6 +466,13 @@ export async function sweepLifecycleEvidence(db, creds, { now = Date.now(), isCu
   let receipts = null, filled = null
   if (classified.persistable) {
     try { receipts = (await persistReceipts(db, response, accountId))?.seen ?? 0 } catch (e) { receipts = `skipped: ${e.message}` }
+  }
+  // № 14,500 (Codex P2 round 2 on #1364; claude-builder): the opening fills
+  // carry their own proof (a complete answer, this position's executed deals,
+  // integer volumes: openingDealsFilledLots), so they are read on any answer —
+  // a reversed position's history is refused as money (a deal that fills more
+  // than it closes) yet still states its new leg's fills.
+  if (!error && response) {
     try { filled = await stampFilledFromHistory(db, response, accountId, positionId) } catch (e) { filled = { reason: `skipped: ${e.message}` } }
   }
   const verdict = recordLifecycleEvidence(db, { accountId, positionId, host, classified, now, ledgerRows,
