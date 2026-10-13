@@ -43,7 +43,7 @@
 // instead of from zero.
 // ---------------------------------------------------------------------------
 
-import { heldPositionPrice, ownedSymbolTarget, positionRecordedUpperBound, refreshHeldPositionPrices } from './held-prices.js'
+import { heldPositionExitPrice, ownedSymbolTarget, positionRecordedUpperBound, refreshHeldPositionPrices } from './held-prices.js'
 
 const MINUTE = 60_000
 const HOUR = 3_600_000
@@ -224,7 +224,11 @@ export async function backfillRow(db, pos, { fetchBars = fetchOwnedBars, now = D
 export async function recordPausedExcursions(db, {
   rows = null,
   refreshPrices = refreshHeldPositionPrices,
-  priceOf = heldPositionPrice,
+  // Claude · 13-Oct (Codex P2 on #1356, owner "Fix in this PR"; claude-builder):
+  // the exit side (bid for a long, ask for a short), like the two monitors.
+  // The mid would let a paused short record an overstated MFE that the
+  // widen-only column then keeps, and the managed trail could read it later.
+  priceOf = heldPositionExitPrice,
   fetchBars = fetchOwnedBars,
   now = Date.now,
   perPass = BACKFILL_PER_PASS,
