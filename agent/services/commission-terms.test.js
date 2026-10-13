@@ -371,3 +371,99 @@ test('NASA-4: a cross is priced from the deal\'s own Base/USD rate; a USD deposi
   rates(db, '9', {})
   assert.equal(commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols[0].reason, 'base_currency_usd_price_unknown')
 })
+
+// Claude · № 14,347 13-Oct (Codex P2 follow-up from #1358; claude-builder).
+// QUOTE_CCY_PER_LOT (spotware ProtoOACommissionType 4) on a non-USD quote:
+// GBP 3 a lot a side on EURGBP, 0.5 lots, a USD deposit. Open side: marginRate
+// 1.17 (EUR/USD) ÷ entry 0.85 = 1.37647 USD per GBP; close side: the broker's
+// quoteToDepositConversionRate 1.3605. Figures self-derived; the check that
+// the open-side derivation reads the fields right is closeDerivedOverStated
+// (close marginRate ÷ close price against the broker's own close rate) ≈ 1.
+function quoteDeal(db, extra = {}) {
+  deal(db, { id: 'q1', account: '46979908', symbol: 'EURGBP', lots: 0.5, entry: 0.85, close: 0.86, commission: -4.11 })
+  db.prepare(`UPDATE broker_deals SET open_margin_rate=?, open_base_usd_rate=?, close_margin_rate=?, close_base_usd_rate=?, quote_deposit_rate=? WHERE deal_id='q1'`)
+    .run('openMargin' in extra ? extra.openMargin : 1.17, 'openBaseUsd' in extra ? extra.openBaseUsd : 1.17, extra.closeMargin ?? 1.17, extra.closeBaseUsd ?? 1.17, 'quoteRate' in extra ? extra.quoteRate : 1.3605)
+}
+test('NASA-4 follow-up: quote-currency-per-lot terms are priced through each side\'s broker rate', () => {
+  const db = initDB(':memory:')
+  usdDeposit(db, '46979908')
+  quoteDeal(db)
+  storeCommissionTerms(db, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  const s = commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.agrees, true)
+  const d = s.sample[0]
+  assert.equal(d.modelledDealDeposit, 4.1055)
+  assert.equal(d.quoteToDeposit.closeSource, 'broker_quote_to_deposit')
+  assert.ok(Math.abs(d.quoteToDeposit.closeDerivedOverStated - 1) < 0.001, 'the derivation agrees with the broker\'s own close rate')
+})
+
+test('NASA-4 follow-up: quote-currency terms without a broker rate are not compared', () => {
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a, { openBaseUsd: null })
+  storeCommissionTerms(a, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  assert.equal(commissionTermsCheck(a, '46979908', { days: 30, now: NOW }).symbols[0].reason, 'quote_deposit_rate_not_reported')
+})
+
+// Claude · № 14,442 13-Oct (Codex P2 round 2 on #1361; claude-builder). A
+// slipped order: marginRate (1.20) is not the execution-time Base/USD rate
+// (1.17). The quote rate comes from the execution instant (spotware
+// ProtoOADeal.baseToUsdConversionRate "on the time of deal execution"), so the
+// figure is the same 4.1055; marginRate ÷ price would give 4.1584.
+test('NASA-4 follow-up: quote rates come from each deal\'s execution-time rate, not marginRate ÷ price', () => {
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a, { openMargin: 1.20 })
+  storeCommissionTerms(a, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  const s = commissionTermsCheck(a, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.sample[0].modelledDealDeposit, 4.1055)
+  // No stated close rate: the close side from the closing deal's own Base/USD rate (1.17 / 0.86).
+  const b = initDB(':memory:'); usdDeposit(b, '46979908'); quoteDeal(b, { quoteRate: null, closeMargin: 1.20 })
+  storeCommissionTerms(b, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  const t = commissionTermsCheck(b, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(t.sample[0].quoteToDeposit.closeSource, 'base_usd_rate_over_price')
+  // 1.5 × 1.17/0.85 + 1.5 × 1.17/0.86 = 2.06471 + 2.04070; marginRate ÷ price would give 4.1577.
+  assert.equal(t.sample[0].modelledDealDeposit, 4.1054)
+})
+// Claude · № 14,446 13-Oct (Codex P2 round 3 on #1361; claude-builder). On an
+// SGD deposit the opening deal's only deposit rate is marginRate, whose
+// instant is not documented as the execution: declined, never rebuilt from it.
+test('NASA-4 follow-up: on a non-USD deposit quote-currency terms are declined, not rebuilt from marginRate', () => {
+  const a = initDB(':memory:'); usdDeposit(a, '46979908', 'SGD')
+  quoteDeal(a, { openMargin: 1.5093, closeMargin: 1.5093, quoteRate: 1.755 })
+  storeCommissionTerms(a, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000 }] }, { 9: 'EURGBP' }, { now: NOW })
+  const s = commissionTermsCheck(a, '46979908', { days: 30, now: NOW }).symbols[0]
+  assert.equal(s.compared, false); assert.equal(s.reason, 'quote_deposit_rate_not_execution_time')
+})
+
+// Claude · № 14,434 13-Oct (Codex P2 on #1361; claude-builder). The minimum
+// in its own currency (spotware ProtoOAMinCommissionType): QUOTE_CURRENCY at
+// each side's quote rate, CURRENCY in USD at each side's deposit-per-USD rate.
+// Same deal as above: GBP 1.5 a side, 1.37647 and 1.3605 USD per GBP. Self-derived.
+function quoteTerms(db, min) {
+  storeCommissionTerms(db, '46979908', { symbol: [{ symbolId: 9, commissionType: 4, preciseTradingCommissionRate: 300_000_000, ...min }] }, { 9: 'EURGBP' }, { now: NOW })
+  return commissionTermsCheck(db, '46979908', { days: 30, now: NOW }).symbols[0]
+}
+test('NASA-4 follow-up: a QUOTE_CURRENCY minimum on quote-currency terms takes the same side rates', () => {
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a)
+  const s = quoteTerms(a, { preciseMinCommission: 100_000_000, minCommissionType: 'QUOTE_CURRENCY' })
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.sample[0].modelledDealDeposit, 4.1055, 'GBP 1 does not bind on GBP 1.5')
+  // GBP 4 binds on both sides: 4 × 1.37647 + 4 × 1.3605 = 10.9479.
+  const b = initDB(':memory:'); usdDeposit(b, '46979908'); quoteDeal(b)
+  b.prepare(`UPDATE broker_deals SET commission = -10.95 WHERE deal_id = 'q1'`).run()
+  const t = quoteTerms(b, { preciseMinCommission: 400_000_000, minCommissionType: 'QUOTE_CURRENCY' })
+  assert.equal(t.compared, true, JSON.stringify(t)); assert.equal(t.agrees, true); assert.equal(t.sample[0].modelledDealDeposit, 10.9479)
+})
+test('NASA-4 follow-up: a USD minimum on quote-currency terms is used; another currency is not', () => {
+  // USD 3 binds on both sides of a USD deposit: 3 + 3.
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a)
+  a.prepare(`UPDATE broker_deals SET commission = -6 WHERE deal_id = 'q1'`).run()
+  const s = quoteTerms(a, { preciseMinCommission: 300_000_000, minCommissionType: 'CURRENCY', minCommissionAsset: 'USD' })
+  assert.equal(s.compared, true, JSON.stringify(s)); assert.equal(s.agrees, true); assert.equal(s.sample[0].modelledDealDeposit, 6)
+  const b = initDB(':memory:'); usdDeposit(b, '46979908'); quoteDeal(b)
+  const t = quoteTerms(b, { preciseMinCommission: 300_000_000, minCommissionType: 'CURRENCY', minCommissionAsset: 'EUR' })
+  assert.equal(t.compared, false); assert.equal(t.reason, 'min_commission_not_usd')
+})
+test('NASA-4 follow-up: a binding minimum on quote-currency terms of a position closed in parts is not compared', () => {
+  const a = initDB(':memory:'); usdDeposit(a, '46979908'); quoteDeal(a)
+  deal(a, { id: 'q2', position: 'p-q1', account: '46979908', symbol: 'EURGBP', lots: 0.5, entry: 0.85, close: 0.86, commission: -6 })
+  a.prepare(`UPDATE broker_deals SET open_margin_rate=1.17, open_base_usd_rate=1.17, close_margin_rate=1.17, close_base_usd_rate=1.17, quote_deposit_rate=1.3605 WHERE deal_id='q2'`).run()
+  const s = quoteTerms(a, { preciseMinCommission: 300_000_000, minCommissionType: 'CURRENCY', minCommissionAsset: 'USD' })
+  assert.equal(s.compared, false); assert.equal(s.reason, 'min_commission_split_position')
+})

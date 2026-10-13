@@ -230,7 +230,7 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
   const deposit = verifiedDepositCurrency(db, id)
   const since = new Date(now - days * 86_400_000).toISOString().replace('T', ' ').slice(0, 19)
   const deals = db.prepare(`SELECT deal_id, position_id, symbol, lots, entry_price, close_price, commission, closed_at,
-      open_margin_rate, open_base_usd_rate, close_margin_rate, close_base_usd_rate FROM broker_deals
+      open_margin_rate, open_base_usd_rate, close_margin_rate, close_base_usd_rate, quote_deposit_rate FROM broker_deals
     WHERE account_id = ? AND closed_at >= ? AND lots > 0 AND commission IS NOT NULL ORDER BY closed_at`).all(id, since)
   // Claude · № 13,829 13-Oct (Codex P2 on #1344, ordered after № 13,828;
   // owner "Decline when it binds"; claude-builder): the broker's minimum is
@@ -266,18 +266,27 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
       const openRate = depositPerUsd(deposit, d.open_margin_rate, d.open_base_usd_rate)
       const closeRate = depositPerUsd(deposit, d.close_margin_rate, d.close_base_usd_rate)
       const rateReason = deposit != null && deposit !== 'USD' && (openRate == null || closeRate == null) ? 'deposit_rate_not_reported' : null
-      const modelledDeposit = modelledDeal == null || rateReason ? null : open.usd * openRate + close.usd * closeRate
+      let modelledDeposit = modelledDeal == null || rateReason ? null : open.usd * openRate + close.usd * closeRate
+      // Claude · № 14,347 13-Oct (Codex P2 follow-up from #1358; claude-builder).
+      // QUOTE_CCY_PER_LOT on a non-USD quote: the charge is in the quote
+      // currency, converted at each side's own broker rate — at the close the
+      // broker's quoteToDepositConversionRate, at the open marginRate ÷ the
+      // entry price (Base/Deposit ÷ Quote/Base = Deposit per Quote).
+      const quote = t?.commissionType === 4 && open.reason === 'quote_currency_not_usd' && close.reason === 'quote_currency_not_usd'
+        ? quoteCurrencyDeposit(t, d, { deposit, openUsd: openRate, closeUsd: closeRate, rowsForPosition }) : null
+      if (quote) modelledDeposit = quote.deposit
       return {
         dealId: d.deal_id, lots: d.lots,
         brokerDeal: round(brokerDeal),
         brokerPerLotPerSide: round(brokerDeal / Number(d.lots) / CLOSING_DEAL_SIDES),
         modelledDealUsd: modelledDeal == null ? null : round(modelledDeal),
         modelledDealDeposit: modelledDeposit == null ? null : round(modelledDeposit),
+        ...(quote ? { quoteToDeposit: quote.rates } : {}),
         depositPerUsd: { open: round(openRate), close: round(closeRate), source: deposit === 'USD' ? 'usd_deposit' : 'broker_deal_rate' },
         // On a USD deposit the broker's own ratio must read 1: a check of how
         // the two rate fields are read, against the broker's deals.
         usdDepositRatio: deposit === 'USD' ? ratioOrNull(d.open_margin_rate, d.open_base_usd_rate, d.close_margin_rate, d.close_base_usd_rate) : null,
-        reason: open.reason ?? close.reason ?? splitReason ?? rateReason ?? null,
+        reason: quote ? quote.reason : (open.reason ?? close.reason ?? splitReason ?? rateReason ?? null),
       }
     })
     const brokerVals = perDeal.map(x => x.brokerPerLotPerSide)
@@ -313,6 +322,58 @@ export function commissionTermsCheck(db, accountId, { days = 30, now = Date.now(
 
 function round(v) { return Number.isFinite(v) ? Math.round(v * 10_000) / 10_000 : null }
 function rate(v) { const n = typeof v === 'number' ? v : NaN; return Number.isFinite(n) && n > 0 ? n : null }
+/** № 14,347: a QUOTE_CCY_PER_LOT charge in the deposit currency, or the reason not. */
+function quoteCurrencyDeposit(t, d, { deposit = null, openUsd = null, closeUsd = null, rowsForPosition = null } = {}) {
+  const out = (deposit, reason, rates = null) => ({ deposit, reason, rates })
+  if (t.rate == null) return out(null, 'rate_not_stated')
+  const lots = Number(d.lots)
+  if (!(lots > 0)) return out(null, 'lots_unknown')
+  // Claude · № 14,442 13-Oct (Codex P2 round 2 on #1361; claude-builder). Each
+  // rate from the instant of its own deal's execution (spotware ProtoOADeal):
+  // baseToUsdConversionRate ÷ that deal's price is USD per quote, the deposit
+  // rate on a USD deposit. The close side uses the broker's own
+  // quoteToDepositConversionRate where stated.
+  // Claude · № 14,446 13-Oct (Codex P2 round 3 on #1361; claude-builder): on
+  // any other deposit the only deposit rate an opening deal carries is
+  // marginRate, whose instant is not documented as the execution, so the
+  // comparison is declined rather than rebuilt from it.
+  if (deposit !== 'USD') return out(null, 'quote_deposit_rate_not_execution_time')
+  const entry = rate(d.entry_price), close = rate(d.close_price)
+  const quoteUsd = (baseUsd, price) => rate(baseUsd) != null && price != null ? rate(baseUsd) / price : null
+  const open = quoteUsd(d.open_base_usd_rate, entry)
+  const closeStated = rate(d.quote_deposit_rate)
+  const closeDerived = quoteUsd(d.close_base_usd_rate, close)
+  const shut = closeStated ?? closeDerived
+  const rates = { open: round(open), close: round(shut), closeSource: closeStated != null ? 'broker_quote_to_deposit' : 'base_usd_rate_over_price',
+    // The two readings of one rate at the close, as a check of the open-side method.
+    closeDerivedOverStated: closeStated != null && closeDerived != null ? round(closeDerived / closeStated) : null }
+  if (open == null || shut == null) return out(null, 'quote_deposit_rate_not_reported', rates)
+  let openSide = t.rate * lots * open, closeSide = t.rate * lots * shut
+  // Claude · № 14,434 13-Oct (Codex P2 on #1361; claude-builder). The per-trade
+  // minimum is applied per side in its own currency (spotware
+  // ProtoOAMinCommissionType): QUOTE_CURRENCY is the charge's own currency and
+  // takes the same side rate; CURRENCY in USD takes that side's deposit-per-USD
+  // rate. Any other currency declines rather than convert at a guessed rate,
+  // and a binding minimum on a position closed in parts is not compared.
+  if (t.minCommission != null && t.minCommission > 0) {
+    let minOpen, minClose
+    if (t.minCommissionType === 2) {
+      minOpen = t.minCommission * open; minClose = t.minCommission * shut
+    } else if (t.minCommissionType === 1) {
+      if (t.minCommissionAsset !== 'USD') return out(null, 'min_commission_not_usd', rates)
+      if (rate(openUsd) == null || rate(closeUsd) == null) return out(null, 'deposit_rate_not_reported', rates)
+      minOpen = t.minCommission * openUsd; minClose = t.minCommission * closeUsd
+    } else {
+      return out(null, 'min_commission_type_unknown', rates)
+    }
+    const binding = minOpen > openSide || minClose > closeSide
+    if (binding && rowsForPosition !== 1) {
+      return out(null, rowsForPosition == null ? 'min_commission_position_unknown' : 'min_commission_split_position', rates)
+    }
+    openSide = Math.max(openSide, minOpen); closeSide = Math.max(closeSide, minClose)
+  }
+  return out(openSide + closeSide, null, rates)
+}
 function depositPerUsd(deposit, marginRate, baseUsdRate) {
   if (deposit === 'USD') return 1
   const m = rate(marginRate), b = rate(baseUsdRate)
