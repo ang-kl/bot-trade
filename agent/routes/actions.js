@@ -18,6 +18,7 @@ import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
+import { partialCloseVolume } from '../lib/partial-close-volume.js'
 import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
 import { describeBracketGap } from '../lib/bracket-advice.js'
 import { setPhaseFlag } from '../services/phase-audit.js'
@@ -2843,7 +2844,12 @@ export default function actionsRouter(db, deps = {}) {
       let volume = pos.tradeData?.volume
       if (Number(lots) > 0) {
         const meta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, pos.tradeData?.symbolId)
-        volume = Math.min(volume, Math.round(Number(lots) * meta.lotSize))
+        // Claude · № 14,050 13-Oct (owner: "build the partial close lots field";
+        // claude-builder): stepped down to the symbol's volume step, refused
+        // below its minimum, before any broker call.
+        const sized = partialCloseVolume({ positionVolume: volume, lots, meta })
+        if (sized.error) return res.status(400).json({ error: sized.error })
+        volume = sized.volume
       }
       const exec = await execClosePosition(creds, { positionId: parseInt(positionId), volume })
       const partial = volume < (pos.tradeData?.volume ?? volume)

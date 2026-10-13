@@ -32,6 +32,23 @@ describe('PositionManager sheet', () => {
   })
 })
 
+// Claude · № 14,050 13-Oct (owner: "build the partial close lots field"; claude-builder).
+describe('PositionManager partial close', () => {
+  it('renders a lots-to-close field, empty by default, naming the whole position', () => {
+    const html = renderToStaticMarkup(<PositionManager p={p} onDone={() => {}} />)
+    expect(html).toMatch(/data-close-lots/)
+    expect(html).toMatch(/empty = all 0\.50/)
+    expect(html).toMatch(/>Close \(1\.1050\)/)
+  })
+  it('the Close posts the parsed lots only on a partial (wiring pin, comments stripped)', () => {
+    const src = readFileSync(new URL('./PositionManager.jsx', import.meta.url), 'utf8')
+      .replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    expect(src).toMatch(/const req = closeRequest\(closeLots, p\.lots\)/)
+    expect(src).toMatch(/req\.partial \? \{ positionId: p\.positionId, lots: req\.lots \} : \{ positionId: p\.positionId \}/)
+    expect(src).toMatch(/if \(req\.error\) \{ setMsg/)
+  })
+})
+
 describe('OrderManager sheet', () => {
   it('has no disabled Modify button; Cancel order is the action', () => {
     const html = renderToStaticMarkup(<OrderManager o={{ orderId: '9', symbol: 'GBPUSD', side: 'SELL', lots: 0.1, limitPrice: 1.3, sl: 1.31, tp: 1.28 }} onDone={() => {}} />)

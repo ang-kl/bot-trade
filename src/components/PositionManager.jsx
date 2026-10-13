@@ -21,6 +21,7 @@ import { agentPost } from '../lib/agent-api.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { sideDir } from '../lib/side.js'
 import { EMPTY_GUARD_FORM, guardFormState, guardApplyBlocker } from '../lib/position-guard-form.js'
+import { closeRequest } from '../lib/position-close-form.js'
 
 // Purpose-named tabs (owner: "how do I change with such window layout" — the
 // old Modify/Protect labels didn't say WHERE to change size vs the stop/target).
@@ -103,6 +104,8 @@ export default function PositionManager({ p, onDone, initialTab = 'Modify' }) {
   const tabRefs = useRef([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  // Claude · № 14,050 13-Oct (owner: "build the partial close lots field"; claude-builder).
+  const [closeLots, setCloseLots] = useState('')
   const dir = sideDir(p.side) ?? 1
   // PR-F checker M1: every post names the position's account when the row
   // knows it; the routes fall back to the position's own record otherwise
@@ -259,11 +262,33 @@ export default function PositionManager({ p, onDone, initialTab = 'Modify' }) {
           </div>
           <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
+          {/* Claude · № 14,050 13-Oct (owner: "build the partial close lots field";
+              claude-builder). Empty = the whole position, as before; a figure
+              below the held lots closes that many (the route steps it to the
+              symbol's volume step and refuses below its minimum). */}
+          <label className="flex items-center justify-between text-(length:--fs-body) mb-1.5">
+            <span>Lots to close <span className="text-[var(--color-text-sub)]">(empty = all {fmt(p.lots, 2)})</span></span>
+            <input
+              data-close-lots
+              className="w-24 text-right text-(length:--fs-body) bg-transparent border border-[var(--color-border)] rounded-[var(--radius-control)] px-1.5 py-0.5"
+              value={closeLots}
+              onChange={e => setCloseLots(e.target.value)}
+              inputMode="decimal"
+              placeholder="all"
+              aria-label="Lots to close"
+            />
+          </label>
           <button type="button" disabled={busy}
             className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-(length:--fs-h) font-bold cursor-pointer disabled:opacity-50"
-            onClick={() => window.confirm(`Close ${p.symbol} ${p.side} ${fmt(p.lots, 2)} lots at market?`) &&
-              run(() => agentPost('/actions/position-close', withAcct({ positionId: p.positionId })), 'Position closed')}>
-            Close ({fmt(p.currentPrice, p.digits ?? 5)})
+            onClick={() => {
+              const req = closeRequest(closeLots, p.lots)
+              if (req.error) { setMsg(`Error: ${req.error}`); return }
+              const what = req.partial ? `${fmt(req.lots, 2)} of ${fmt(p.lots, 2)} lots` : `${fmt(p.lots, 2)} lots`
+              if (!window.confirm(`Close ${p.symbol} ${p.side} ${what} at market?`)) return
+              run(() => agentPost('/actions/position-close', withAcct(req.partial ? { positionId: p.positionId, lots: req.lots } : { positionId: p.positionId })),
+                req.partial ? 'Part of the position closed' : 'Position closed')
+            }}>
+            {closeRequest(closeLots, p.lots).partial ? 'Close part' : 'Close'} ({fmt(p.currentPrice, p.digits ?? 5)})
           </button>
           <div className="text-center text-(length:--fs-body) mt-1.5">
             Net P&L: <span className={(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote ?? 0) >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{money(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)}</span>
