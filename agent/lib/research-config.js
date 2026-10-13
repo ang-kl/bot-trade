@@ -83,6 +83,8 @@ export function loadResearchConfig({ file = RESEARCH_CONFIG_FILE } = {}) {
           maxPullsPerMinute: posInt(l.maxPullsPerMinute) ? l.maxPullsPerMinute : null,
           maxSkippedTicksDelta: Number.isInteger(fm.maxSkippedTicksDelta) && fm.maxSkippedTicksDelta >= 0 ? fm.maxSkippedTicksDelta : null,
           maxBusyShare10m: finite(fm.maxBusyShare10m) && fm.maxBusyShare10m > 0 && fm.maxBusyShare10m <= 1 ? fm.maxBusyShare10m : null,
+          maxReadingAgeMs: posInt(fm.maxReadingAgeMs) ? fm.maxReadingAgeMs : null,
+          maxReadingAheadMs: Number.isInteger(fm.maxReadingAheadMs) && fm.maxReadingAheadMs >= 0 ? fm.maxReadingAheadMs : null,
           pollMs: posInt(l.pollMs) ? l.pollMs : null,
         }
       })(),
