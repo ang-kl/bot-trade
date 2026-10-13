@@ -74,8 +74,7 @@
     {
       "form": "market_entry",
       "event": "underfill",
-      "state": "not_applicable",
-      "reason": "an entry underfill is booked from the opening deals (filled-volume, NASA-3); the entry path itself sends once and records what it sent"
+      "state": "gap"
     },
     {
       "form": "market_entry",
