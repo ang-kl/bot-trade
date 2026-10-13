@@ -268,3 +268,48 @@ test('wiring: the main loop runs it after the monitor pass, and never lets it fa
   assert.match(window, /try\s*\{\s*const \{ recordPausedExcursions \} = await import\('\.\/services\/paused-excursion\.js'\)/)
   assert.match(src.slice(call, call + 200), /\}\s*catch \(err\) \{/)
 })
+
+// Codex rounds 1–2 on #1356 (owner: "Fix in this PR", then "Separate
+// columns"): a paused short at entry 376.46 (risk 28.15) quoted 376.00 /
+// 376.50. mfe_r/mae_r stay on the mid (376.25: +0.0075R, the managed trail's
+// input, unchanged); the exit side (the ask, 376.50: -0.0014R) goes to
+// mfe_exit_r/mae_exit_r.
+test('the live-quote pass keeps mfe_r on the mid and records the exit side (the ask for a short) in its own columns', async t => {
+  const { db, ids: [id], row } = fixture(t, { rows: [{ side: 'short' }] })
+  const spread = (db, rows, o) => refreshHeldPositionPrices(db, rows, { ...o, readQuote: async (creds, symbolId) => ({
+    ctidTraderAccountId: Number(creds.accountId), symbolId: Number(symbolId), bid: 37_600_000, ask: 37_650_000, timestamp: NOW }) })
+  const out = await recordPausedExcursions(db, { fetchBars: barsFor([]), refreshPrices: spread, now: () => NOW, perPass: 0 }) // the live pass alone
+  assert.equal(out.backfillStarted, 0)
+  assert.equal(out.live, 1)
+  assert.ok(row(id).mfe_r > 0.007 && row(id).mfe_r < 0.008, `mid unchanged: ${row(id).mfe_r}`)
+  assert.equal(row(id).mae_r, 0)
+  assert.equal(row(id).mfe_exit_r, 0, 'no favourable excursion at the ask')
+  assert.ok(row(id).mae_exit_r < 0 && row(id).mae_exit_r > -0.002, `adverse at the ask: ${row(id).mae_exit_r}`)
+  assert.equal(row(id).exit_excursion_from, new Date(NOW).toISOString())
+})
+
+// Codex P2 on #1356 (owner: "Guard every write"): a paused row closed while
+// the quote refresh is in flight gets neither column written.
+test('a paused row closed during the quote refresh is not widened in either column', async t => {
+  const { db, ids: [id], row } = fixture(t, { rows: [{ side: 'short' }] })
+  const closeThenQuote = async (db2, rows, o) => {
+    db.prepare("UPDATE monitored_positions SET status = 'closed' WHERE id = ?").run(id)
+    return refreshHeldPositionPrices(db2, rows, { ...o, readQuote: async (creds, symbolId) => ({
+      ctidTraderAccountId: Number(creds.accountId), symbolId: Number(symbolId), bid: 37_600_000, ask: 37_650_000, timestamp: NOW }) })
+  }
+  const out = await recordPausedExcursions(db, { fetchBars: barsFor([]), refreshPrices: closeThenQuote, now: () => NOW, perPass: 0 })
+  assert.equal(out.live, 0)
+  assert.deepEqual([row(id).mfe_r, row(id).mfe_exit_r, row(id).mae_exit_r, row(id).exit_excursion_from], [0, null, null, null])
+})
+
+test('a paused row unpaused during the quote refresh is left to the monitors: neither column written by the paused pass', async t => {
+  const { db, ids: [id], row } = fixture(t, { rows: [{ side: 'short' }] })
+  const unpauseThenQuote = async (db2, rows, o) => {
+    db.prepare('UPDATE monitored_positions SET paused = 0 WHERE id = ?').run(id)
+    return refreshHeldPositionPrices(db2, rows, { ...o, readQuote: async (creds, symbolId) => ({
+      ctidTraderAccountId: Number(creds.accountId), symbolId: Number(symbolId), bid: 37_600_000, ask: 37_650_000, timestamp: NOW }) })
+  }
+  const out = await recordPausedExcursions(db, { fetchBars: barsFor([]), refreshPrices: unpauseThenQuote, now: () => NOW, perPass: 0 })
+  assert.equal(out.live, 0)
+  assert.deepEqual([row(id).mfe_exit_r, row(id).mae_exit_r, row(id).exit_excursion_from], [null, null, null])
+})

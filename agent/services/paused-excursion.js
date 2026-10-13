@@ -43,7 +43,8 @@
 // instead of from zero.
 // ---------------------------------------------------------------------------
 
-import { heldPositionPrice, ownedSymbolTarget, positionRecordedUpperBound, refreshHeldPositionPrices } from './held-prices.js'
+import { heldPositionPrice, heldPositionExitPrice, ownedSymbolTarget, positionRecordedUpperBound, refreshHeldPositionPrices } from './held-prices.js'
+import { recordExitExcursion } from './exit-excursion.js'
 
 const MINUTE = 60_000
 const HOUR = 3_600_000
@@ -225,6 +226,11 @@ export async function recordPausedExcursions(db, {
   rows = null,
   refreshPrices = refreshHeldPositionPrices,
   priceOf = heldPositionPrice,
+  // Claude · 13-Oct (Codex round 1 on #1356, "Fix in this PR"; round 2,
+  // "Separate columns"; claude-builder): the exit side (bid for a long, ask
+  // for a short) is recorded in mfe_exit_r/mae_exit_r beside mfe_r/mae_r,
+  // which stay on the mid like the two monitors'.
+  exitPriceOf = heldPositionExitPrice,
   fetchBars = fetchOwnedBars,
   now = Date.now,
   perPass = BACKFILL_PER_PASS,
@@ -265,6 +271,7 @@ export async function recordPausedExcursions(db, {
   try { receipts = await refreshPrices(db, list, { now }) } catch (err) { log(`Paused-row quotes failed (non-fatal): ${err.message}`) }
   const widen = widenStmt(db)
   for (const p of list) {
+    recordExitExcursion(db, p, exitPriceOf(p, receipts, { now }), { now: now(), paused: true })
     const r = rAtPrice(p, priceOf(p, receipts, { now }))
     if (r == null || !Number.isFinite(r)) continue
     if (widen.run(Math.max(0, r), Math.min(0, r), p.id).changes === 1) out.live++

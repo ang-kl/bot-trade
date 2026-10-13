@@ -25,7 +25,8 @@ import { recordEvaluationMetrics } from './general-partial-execution.js'
 
 import { getState, setState } from '../db.js'
 import { recordDecision } from './decision-log.js'
-import { evaluatePosition } from './position-manager.js'
+import { evaluatePosition, exitSidePrice } from './position-manager.js'
+import { recordExitExcursion } from './exit-excursion.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { applyManagedRules } from './managed-exit.js'
 import { cachedAtrForSymbol } from './profit-keeper.js'
@@ -550,6 +551,10 @@ export async function runFastMonitor(db, creds, deps = {}) {
         atr: cachedAtrForSymbol(db, pos.symbol),
       })
       recordEvaluationMetrics(s, pos, eval_)
+      // Claude · 13-Oct (owner: audit fix "4 MAE/MFE exit side"; Codex round 2
+      // on #1356 answered "Separate columns"): the excursion at the price the
+      // position closes at, in its own columns; mfe_r/mae_r above stay on the mid.
+      recordExitExcursion(db, pos, exitSidePrice(pos.side, q?.bid, q?.ask), { now: now() })
       touchedThisPass.add(pos.id)
       checked++
       if (receipt.cadenceMs == null) receipt.cadenceMs = cadenceMs

@@ -96,6 +96,20 @@ export const DEFAULT_RULES = Object.freeze({
  * @param {number} currentPrice
  * @returns {number|null}
  */
+// Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side"; claude-builder).
+// The price a position can actually be closed at: the bid for a long, the ask
+// for a short. Null when the side or either quote is unknown. Used only for
+// the exit-side excursion columns (exit-excursion.js); decisions and
+// mfe_r/mae_r keep the caller's price.
+export function exitSidePrice(side, bid, ask) {
+  const b = Number(bid), a = Number(ask)
+  if (bid == null || ask == null || !(b > 0) || !(a > 0)) return null
+  const s = String(side || '').toLowerCase()
+  if (s === 'long' || s === 'buy') return b
+  if (s === 'short' || s === 'sell') return a
+  return null
+}
+
 export function currentR(pos, currentPrice) {
   if (!pos.initial_risk || !pos.entry_price || currentPrice == null) return null
   const dir = pos.side === 'short' || pos.side === 'SELL' ? -1 : 1

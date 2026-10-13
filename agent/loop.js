@@ -2772,7 +2772,7 @@ export function posTag(pos) {
   return `${pos?.symbol} [${acct} row${pos?.id} ${trade}]`
 }
 
-export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false) {
+export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false, excursionPrice = null) {
   // Managed-exit trail (owner "c1" 25-08-2026; ONE SIMPLE SYSTEM 28-08-2026:
   // "proceed as plan", win-rate goal > 69%): on managed accounts the
   // peak-based trail is the ONLY exit-timing rule — the sweep measured
@@ -2789,6 +2789,13 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
   const eval_ = evaluatePosition(pos, { currentPrice, rules, atr: cachedAtrForSymbol(db, pos.symbol) })
   // Persist MFE/MAE and any flag flips every loop, regardless of action.
   recordEvaluationMetrics(s, pos, eval_)
+  // Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side", "Yes, touch loop.js";
+  // Codex round 2 on #1356 answered "Separate columns"; claude-builder): the
+  // excursion at the exit side, in its own columns; mfe_r/mae_r stay on the mid.
+  if (excursionPrice != null) {
+    const { recordExitExcursion } = await import('./services/exit-excursion.js')
+    recordExitExcursion(db, pos, excursionPrice)
+  }
 
   // Deterministic rule fired — execute it at the broker (MOVE_SL /
   // PARTIAL_EXIT / FULL_EXIT) then persist what happened. The executor
@@ -3025,7 +3032,7 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
 // per-position LLM calls (see monitorOnePosition's header comment).
 export const MONITOR_CONCURRENCY = 4
 
-export async function runMonitorPhase(db, s, positions, currentPriceOf, client, skipLlm = () => false, { beforeBatch = null } = {}) {
+export async function runMonitorPhase(db, s, positions, currentPriceOf, client, skipLlm = () => false, { beforeBatch = null, excursionPriceOf = null } = {}) {
   // Codex · №12,637 · 2026-10-09; codex-footprint: partial-recovery-in-existing-pass.
   // Read-only recovery for durable attempts; recoverOnly cannot submit a close
   // or replay a runner-stop amendment. Closed rows are never reopened.
@@ -3043,7 +3050,7 @@ export async function runMonitorPhase(db, s, positions, currentPriceOf, client, 
     // work must not age later positions' quotes out of their freshness limit.
     if (beforeBatch) await beforeBatch(chunk)
     await Promise.all(chunk.map(pos =>
-      monitorOnePosition(db, s, pos, currentPriceOf(pos), client, skipLlm).catch(err => {
+      monitorOnePosition(db, s, pos, currentPriceOf(pos), client, skipLlm, excursionPriceOf ? excursionPriceOf(pos) : null).catch(err => {
         log(`Monitor check failed for ${pos.symbol}:`, err.message)
       })
     ))
@@ -5810,7 +5817,7 @@ async function runLoop(db) {
       // so monitoring can't crowd out hunting). Prices belong to each account,
       // are broker-timestamped and must postdate the position record. An old
       // scan or another account's quote cannot seed this position's MFE/MAE.
-      const { refreshHeldPositionPrices, heldPositionPrice } = await import('./services/held-prices.js')
+      const { refreshHeldPositionPrices, heldPositionPrice, heldPositionExitPrice } = await import('./services/held-prices.js')
       let heldPrices = new Map()
       // D4: bounded-concurrency, not one-position-at-a-time — see
       // monitorOnePosition/runMonitorPhase above (docs/d4-loop-block-fix-plan.md).
@@ -5823,6 +5830,8 @@ async function runLoop(db) {
             log(`Held-price refresh failed (non-fatal): ${err.message}`)
           }
         },
+        // Claude · № 13,923 13-Oct (owner: audit fix "4 MAE/MFE exit side", "Yes, touch loop.js"; claude-builder).
+        excursionPriceOf: pos => heldPositionExitPrice(pos, heldPrices),
       })
       // V3 M1: the first slow-monitor pass after boot (memory only; the boot
       // record persists it on its own 30-second cadence).
