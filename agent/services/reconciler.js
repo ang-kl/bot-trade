@@ -36,9 +36,21 @@ export function openingBracketStop(db, row, posId, stop, bp) {
     if (moved) return false
   } catch { return false }
   const planned = Number(row.tradeSlPrice)
-  if (!(planned > 0)) return true // no plan on record: the first stop seen is all there is
   const entry = Number(row.entry_price)
   const fill = Number(bp?.tradeData?.openPrice ?? bp?.price ?? entry)
+  // Claude · № 14,064 13-Oct (owner: Codex P2 on #1352, "Also check
+  // initial_risk"; claude-builder). The sized distance comes first: the
+  // momentum book overwrites trades.sl_price with each trail, and the move
+  // that would refuse it above is pruned from position_events after 90 days.
+  // initial_risk is rewritten only by a human re-strategize.
+  const sized = Number(row.initialRisk)
+  const side = String(row.side ?? '').toLowerCase()
+  const sideDir = side === 'short' || side === 'sell' ? 1 : side === 'long' || side === 'buy' ? -1 : 0
+  if (sized > 0 && sideDir !== 0) {
+    if (!(fill > 0)) return false
+    return Math.abs(stop - (fill + sideDir * sized)) <= sized * 0.02
+  }
+  if (!(planned > 0)) return true // no plan on record: the first stop seen is all there is
   const dist = Math.abs(entry - planned)
   if (!(dist > 0) || !(fill > 0)) return false
   const dir = planned > entry ? 1 : -1
@@ -453,7 +465,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
     `SELECT mp.id, mp.symbol, mp.source, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
             mp.broker_volume_units, mp.broker_sl, mp.broker_tp, mp.trade_id, mp.be_moved,
             t.ctrader_position_id, t.volume AS tradeVolume, t.broker_sl_initial, t.opened_at AS tradeOpenedAt,
-            t.sl_price AS tradeSlPrice
+            t.sl_price AS tradeSlPrice, mp.initial_risk AS initialRisk
      FROM monitored_positions mp
      LEFT JOIN trades t ON t.id = mp.trade_id
      WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL ${mpScope.sql}`
