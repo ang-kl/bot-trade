@@ -904,7 +904,21 @@ export default function stateRouter(db) {
     }
     let isOpenFn = null
     try { isOpenFn = (await import('../services/symbol-hours.js')).isSymbolOpenCached } catch { isOpenFn = null }
+    // Claude · № 13,904 13-Oct (owner: audit fix "1 Lots from broker"; claude-builder).
+    // `volume` is the trade's OPENED volume (the TP ladder splits it). The lots
+    // the broker holds NOW come from the reconciler's last reading of this
+    // position (broker_volume_units), through this account's own lot record;
+    // unknown stays null, never the opened figure.
+    let unitsToLots = null
+    try { unitsToLots = (await import('../services/reconciler.js')).brokerUnitsToLots } catch { unitsToLots = null }
     const enriched = rows.map(r => {
+      let current_lots = null
+      try {
+        if (unitsToLots && r.broker_volume_units != null && Number(r.broker_volume_units) > 0) {
+          const l = unitsToLots(Number(r.broker_volume_units), r.symbol, db, r.account_id ?? null)
+          current_lots = Number.isFinite(l) && l > 0 ? Math.round(l * 1e8) / 1e8 : null
+        }
+      } catch { current_lots = null }
       let market_open = null, market_source = null
       try {
         if (isOpenFn) { const o = isOpenFn(db, r.symbol); market_open = !!o.open; market_source = o.source || null }
@@ -913,6 +927,7 @@ export default function stateRouter(db) {
       const sp = r.ctrader_position_id != null ? src.positions.get(String(r.ctrader_position_id)) : null
       return {
         ...r, market_open, market_source,
+        current_lots, opened_lots: r.volume ?? null, lots_source: current_lots != null ? 'broker' : 'opened_record',
         live_pnl: sp?.pnl ?? sp?.netPnl ?? null,
         live_pnl_at: sp ? src.at : null,
         // Owner (open-trade tables): current price + latest daily OHLCV.

@@ -137,3 +137,24 @@ test('the P&L timestamp comes from the SAME cache the number did', async () => {
   assert.equal(bySymbol(await positions(s)).EURNOK.live_pnl_at, '2026-08-04T07:30:00.000Z')
   s.close()
 })
+
+// Claude · № 13,904 13-Oct (owner: audit fix "1 Lots from broker"; claude-builder).
+// Production 13-10: SHOP.US on 46130058 opened 9.5 lots; the broker closed 4.8
+// at 19:46 UTC and holds 4.7, but the row read 9.5 — `volume` is the trade's
+// opened volume. The broker's current lots now ride beside it.
+test('each row carries the broker\'s current lots beside the opened volume, and says which it is', async () => {
+  const s = await server()
+  try {
+    const t = s.db.prepare(`INSERT INTO trades (symbol, side, status, account_id, ctrader_position_id, volume) VALUES ('EURUSD', 'buy', 'open', '46130058', '240732790', 1)`).run().lastInsertRowid
+    s.db.prepare(`INSERT INTO monitored_positions (trade_id, symbol, side, status, account_id, entry_price, current_sl, current_tp, broker_volume_units)
+      VALUES (?, 'EURUSD', 'buy', 'active', '46130058', 1.1, 1.0, 1.3, 50000)`).run(t)
+    openPosition(s.db, { symbol: 'NZDUSD', accountId: '46130058', ctid: '1' })
+    const rows = bySymbol(await positions(s))
+    assert.equal(rows.EURUSD.current_lots, 0.5, 'the broker holds 50,000 units: half a lot')
+    assert.equal(rows.EURUSD.opened_lots, 1)
+    assert.equal(rows.EURUSD.volume, 1, 'volume stays the opened volume the TP ladder splits')
+    assert.equal(rows.EURUSD.lots_source, 'broker')
+    assert.equal(rows.NZDUSD.current_lots, null, 'no broker reading yet: not known, never the opened figure')
+    assert.equal(rows.NZDUSD.lots_source, 'opened_record')
+  } finally { s.close(); s.db.close() }
+})

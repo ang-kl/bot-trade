@@ -926,6 +926,14 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     return null
   }
   const volume = sized.volume
+  // Claude · № 13,904 13-Oct (owner: audit fix "1 Lots from broker"; claude-builder).
+  // RECORD WHAT IS SENT. The order carries `volume`, the gate's lots stepped
+  // down to the broker's step and capped at its maximum; the ledger recorded
+  // the gate's unrounded figure (13-10: NAS100 0.53 recorded, 0.5 sent and
+  // filled). From here every record of this order is the lots sent, and the
+  // gate's figure is kept as requested_volume when the two differ.
+  const requestedLots = volLots
+  volLots = sized.lots
 
   const slDistance = synth.sl && synth.entry ? Math.abs(synth.entry - synth.sl) : null
   const tpDistance = synth.tp1 && synth.entry ? Math.abs(synth.tp1 - synth.entry) : null
@@ -1148,14 +1156,15 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // linked, so a scan bias can be scored against its outcome — 3,935
     // auto-trade predictions in 25 h had no outcome link before this.
     const insertIntent = () => db.prepare(`
-      INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume,
+      INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, requested_volume,
                           opened_at, status, strategy, account_id, source, risk_event_id,
                           origin, origin_source, proposal_entry_price, analysis_id, horizon)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade', ?,
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade', ?,
               'bot_market_dispatch', 'write', ?, ?, ?)
     `).run(
       symbol, side, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
-      volLots, synth.strategy || null, String(accountId), riskEventId ?? null,
+      volLots, Math.abs(Number(requestedLots) - Number(volLots)) > 1e-9 ? requestedLots : null,
+      synth.strategy || null, String(accountId), riskEventId ?? null,
       Number.isFinite(Number(synth.entry)) ? Number(synth.entry) : null,
       Number.isFinite(Number(synth.analysisId)) ? Number(synth.analysisId) : null,
       // §4-D: the horizon is set HERE, at entry, from the strategy family.
