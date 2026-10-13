@@ -5,7 +5,7 @@ import { initDB, getState, setState } from '../db.js'
 import {
   CONFIG_KEY, LAST_FLUSH_KEY, HOUR_MS, TG_TEXT_MAX,
   loadNotifyConfig, saveNotifyConfig, isHHMM, minutesOfDay, inQuietHours,
-  classifyPriority, routeDecision, queueMessage, pendingMessages, summarise,
+  classifyPriority, routeDecision, queueMessage, pendingMessages, summarise, droppedState,
   markSent, flushDecision, flushDigest, attachNotifyDb, routeOutbound,
   describeConfig, digestState,
 } from './telegram-digest.js'
@@ -115,7 +115,8 @@ test('hourly mode queues outside quiet hours too — that is the point of it', (
 test('notify off holds URGENT too — a mute that leaks is not a mute', () => {
   const cfg = { ...loadNotifyConfig(freshDB()), enabled: false }
   const r = routeDecision(cfg, { text: '🔴 CIRCUIT BREAKER', nowMs: AT_1400 })
-  assert.equal(r.action, 'queue')
+  // Owner 13-10 ("Stop queuing while off"): dropped and counted, not queued.
+  assert.equal(r.action, 'drop')
   assert.equal(r.reason, 'notify_off')
 })
 
@@ -156,15 +157,37 @@ test('routeOutbound queues to the outbox and reports not-send', () => {
 })
 
 test('a failed queue write falls back to sending rather than losing the alert', () => {
+  // Claude · № 13,878 13-Oct: a queue is now written only while notify is ON
+  // (hourly digest or quiet hours), so the fallback is exercised there.
+  const db = freshDB()
+  saveNotifyConfig(db, { enabled: true, mode: 'hourly' })
+  attachNotifyDb(db)
+  try {
+    db.exec('DROP TABLE telegram_outbox')
+    const r = routeOutbound('an alert with nowhere to go', { nowMs: AT_1400 })
+    assert.equal(r.send, true)
+    assert.equal(r.reason, 'queue_failed')
+  } finally { attachNotifyDb(null) }
+})
+
+test('notify OFF sends nothing, even with a broken outbox, and counts what it did not send', () => {
+  // Claude · № 13,878 13-Oct (owner "Stop queuing while off"): before, OFF plus
+  // a failed queue write SENT the message; a mute that leaks is not a mute.
   const db = freshDB()
   saveNotifyConfig(db, { enabled: false })
   attachNotifyDb(db)
   try {
     db.exec('DROP TABLE telegram_outbox')
-    const r = routeOutbound('an alert with nowhere to go')
-    assert.equal(r.send, true)
-    assert.equal(r.reason, 'queue_failed')
+    assert.deepEqual(routeOutbound('an alert while muted', { nowMs: AT_1400 }), { send: false, reason: 'notify_off', dropped: true })
+    assert.deepEqual(routeOutbound('another alert while muted', { nowMs: AT_1400 + 500 }), { send: false, reason: 'notify_off', dropped: true })
+    assert.deepEqual(routeOutbound('🚨 margin call while muted', { nowMs: AT_1400 + 1000 }), { send: false, reason: 'notify_off', dropped: true })
   } finally { attachNotifyDb(null) }
+  const d = droppedState(db)
+  assert.equal(d.count, 3)
+  assert.equal(d.urgent, 1)
+  assert.equal(d.normal, 2)
+  assert.equal(d.since, new Date(AT_1400).toISOString())
+  assert.equal(d.lastAt, new Date(AT_1400 + 1000).toISOString())
 })
 
 // ---------------------------------------------------------------------------
@@ -379,7 +402,7 @@ test('/notify off says plainly that trading is unaffected', () => {
   // quiet, so the bot is stopped". The reply has to close it.
   const db = freshDB()
   const reply = handleNotifyCommand(db, '/notify', 'off', AT_1400)
-  assert.match(reply, /QUEUED, not dropped/)
+  assert.match(reply, /NOT sent and NOT queued, only counted/)
   assert.match(reply, /Trading is unaffected/)
   assert.match(reply, /\/pause/)
 })
@@ -402,21 +425,85 @@ test('digestState: /notify off is read as OFF through the same loader, with the 
   handleNotifyCommand(db, '/notify', 'off', AT_1400)
   attachNotifyDb(db)
   try {
-    assert.deepEqual(routeOutbound('EURUSD scan result, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off' })
-    assert.deepEqual(routeOutbound('🚨 margin call, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off' })
+    // Owner 13-10 ("Stop queuing while off"): dropped and counted, not queued.
+    assert.deepEqual(routeOutbound('EURUSD scan result, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off', dropped: true })
+    assert.deepEqual(routeOutbound('🚨 margin call, private words', { nowMs: AT_1400 }), { send: false, reason: 'notify_off', dropped: true })
   } finally { attachNotifyDb(null) }
+  // A row held from before the change is still read and named.
+  q(db, 'held from before the change', 'scan', 'normal', 'notify_off')
   const s = digestState(db, { nowMs: AT_1400 })
   assert.equal(s.enabled, false)
   assert.equal(s.configReadable, true)
   assert.equal(s.configStored, true)
-  assert.equal(s.pending.count, 2)
+  assert.equal(s.pending.count, 1)
   assert.equal(s.pending.oldestReason, 'notify_off')
   assert.equal(typeof s.pending.oldestQueuedAt, 'string')
-  assert.deepEqual(s.reasons.rows.map(r => [r.reason, r.count]), [['notify_off', 2]])
+  assert.deepEqual(s.reasons.rows.map(r => [r.reason, r.count]), [['notify_off', 1]])
   assert.equal(s.reasons.complete, true)
+  assert.deepEqual({ count: s.dropped.count, urgent: s.dropped.urgent, normal: s.dropped.normal }, { count: 2, urgent: 1, normal: 1 })
   assert.equal(s.lastFlushAt, null)
   assert.equal(s.lastError, null)
   assert.doesNotMatch(JSON.stringify(s), /private words/, 'no message text in the state')
+})
+
+// Claude · № 13,901 13-Oct (Codex P1 on #1345; owner "Delete them when turned on"; claude-builder)
+test('turning notify ON deletes the rows held while it was off — nothing from the off period is ever flushed', async () => {
+  const db = freshDB()
+  handleNotifyCommand(db, '/notify', 'off', AT_1400)
+  q(db, 'held while off one', 'scan', 'normal', 'notify_off')
+  q(db, 'held while off two', 'alert', 'urgent', 'notify_off')
+  q(db, 'held by the hourly digest', 'alert', 'normal', 'hourly_digest')
+  // Another knob changed while off removes nothing.
+  handleNotifyCommand(db, '/quiet', '23:00 07:00', AT_1400)
+  assert.equal(pendingMessages(db).length, 3)
+  const reply = handleNotifyCommand(db, '/notify', 'on', AT_1400)
+  assert.match(reply, /2 held while off deleted/)
+  assert.deepEqual(pendingMessages(db).map(r => r.reason), ['hourly_digest'])
+  const sent = []
+  const r = await flushDigest(db, { nowMs: AT_1400, send: async (t) => { sent.push(t) }, force: true })
+  assert.equal(r.sent, true)
+  assert.equal(r.count, 1)
+  assert.doesNotMatch(sent.join('\n'), /held while off/)
+  // Already on: nothing to delete, and a later row is not touched.
+  q(db, 'queued while on', 'alert', 'normal', 'notify_off')
+  assert.match(handleNotifyCommand(db, '/notify', 'on', AT_1400), /Notifications ON/)
+  assert.equal(pendingMessages(db).length, 1)
+})
+
+test('saveNotifyConfig: an off→on switch from any caller deletes the held notify_off rows, and reports how many', () => {
+  const db = freshDB()
+  saveNotifyConfig(db, { enabled: false })
+  q(db, 'a', 'scan', 'normal', 'notify_off')
+  q(db, 'b', 'scan', 'normal', 'quiet_hours')
+  q(db, 'c already sent', 'scan', 'normal', 'notify_off')
+  const sentId = db.prepare(`SELECT id FROM telegram_outbox WHERE text = 'c already sent'`).get().id
+  markSent(db, [sentId])
+  const cfg = saveNotifyConfig(db, { enabled: true })
+  assert.equal(cfg.enabled, true)
+  assert.equal(cfg.purgedHeld, 1)
+  assert.deepEqual(pendingMessages(db).map(r => r.reason), ['quiet_hours'])
+  // Only HELD rows go; a row already sent is history, left to the 8-hourly prune.
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM telegram_outbox WHERE id = ?').get(sentId).n, 1)
+  assert.equal(saveNotifyConfig(db, { mode: 'hourly' }).purgedHeld, 0)
+})
+
+// Claude · № 13,902 13-Oct (Codex P1 #2 on #1345; owner "Switch always lands"; claude-builder)
+test('a broken outbox never stops /notify on: the switch lands, the failed purge is reported and recorded', () => {
+  const db = freshDB()
+  handleNotifyCommand(db, '/notify', 'off', AT_1400)
+  db.exec('DROP TABLE telegram_outbox')
+  const reply = handleNotifyCommand(db, '/notify', 'on', AT_1400)
+  assert.equal(loadNotifyConfig(db).enabled, true, 'notify is ON although the purge failed')
+  assert.match(reply, /Notifications ON/)
+  assert.match(reply, /could not be deleted/)
+  assert.match(getState(db, 'tg_digest_last_error') || '', /held notify_off rows not deleted/)
+  // ON with a broken outbox: the router's existing fail-open sends.
+  attachNotifyDb(db)
+  try {
+    saveNotifyConfig(db, { mode: 'hourly' })
+    // A normal message takes the hourly queue, which cannot be written, so it is sent.
+    assert.deepEqual(routeOutbound('EURUSD scan result', { nowMs: AT_1400 }), { send: true, reason: 'queue_failed' })
+  } finally { attachNotifyDb(null) }
 })
 
 test('digestState: an unreadable stored config is never reported as OFF', () => {

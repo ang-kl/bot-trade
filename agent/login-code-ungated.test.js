@@ -24,14 +24,16 @@ import { routeDecision } from './services/telegram-digest.js'
 
 // The hazard, proved against the real router ---------------------------------
 
-test('THE GATE WOULD HAVE SWALLOWED IT — notify off queues even urgent', () => {
+test('THE GATE WOULD HAVE SWALLOWED IT — notify off holds back even urgent', () => {
   // This is why marking the code `priority: 'urgent'` would NOT have been a
   // fix: notify_off is checked before the urgent bypass (telegram-digest.js:139).
   // Nothing short of leaving the gate entirely gets the code out.
   const off = { enabled: false, mode: 'live', quiet: null, urgentBypass: true }
   for (const priority of ['urgent', 'normal', undefined]) {
     const d = routeDecision(off, { text: '🔑 bot-trade login code: *123456*', priority, nowMs: Date.now() })
-    assert.equal(d.action, 'queue', `priority ${priority} still queues`)
+    // Owner 13-10 ("Stop queuing while off"): now dropped, not queued — the
+    // code is still swallowed, which is why the login code leaves the gate.
+    assert.equal(d.action, 'drop', `priority ${priority} is still held back`)
     assert.equal(d.reason, 'notify_off')
   }
 })

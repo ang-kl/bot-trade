@@ -89,7 +89,7 @@ export async function sendScanAlert(scans, deskNote, session, opts = {}) {
   // digest, which is correct: a one-tap Chart button on an hour-old scan is a
   // button for a level that has moved.
   const routed = await gate(text, { ...opts, kind: 'scan' })
-  if (!routed.send) return { ok: true, queued: true, reason: routed.reason, messageId: null }
+  if (!routed.send) return { ok: true, queued: !routed.dropped, dropped: routed.dropped === true, reason: routed.reason, messageId: null }
   const msg = await tgPost(botToken, 'sendMessage', {
     chat_id: chatId,
     text,
@@ -128,7 +128,9 @@ function versionFooter(plain = false) {
 // rather than at the ~78 call sites that alert the owner, because routing 78
 // call sites means 78 chances to miss one — and the one missed is the 03:00
 // buzz that proves the feature does not work. Deferred messages are written to
-// the telegram_outbox and summarised by the hourly flush; nothing is dropped.
+// the telegram_outbox and summarised by the hourly flush. While notify is OFF
+// a message is not sent and not queued, only counted (Claude · № 13,878
+// 13-Oct, owner "Stop queuing while off"; telegram-digest.js recordDropped).
 //
 // Defaults are "behave exactly as before" and every uncertainty (no db, bad
 // config, failed queue write) resolves toward SENDING. See telegram-digest.js.
@@ -141,7 +143,7 @@ async function gate(text, opts) {
 
 export async function sendMessage(text, opts = {}) {
   const routed = await gate(text, opts)
-  if (!routed.send) return { ok: true, queued: true, reason: routed.reason, messageId: null }
+  if (!routed.send) return { ok: true, queued: !routed.dropped, dropped: routed.dropped === true, reason: routed.reason, messageId: null }
   return sendMessageRaw(text, opts)
 }
 

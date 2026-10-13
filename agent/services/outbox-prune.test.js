@@ -31,14 +31,16 @@ function actualStep(db, { date = Clock, activity = { at: date.now() } } = {}) {
 
 function freshDB() {
   const db = new Database(':memory:')
-  db.exec('CREATE TABLE telegram_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, queued_at TEXT, sent_at TEXT); CREATE INDEX idx_tg_outbox_pending ON telegram_outbox(sent_at, id)')
+  // Claude · № 13,878 13-Oct: the production table has `reason` (db.js
+  // telegram_outbox), which the prune now reads for notify_off rows.
+  db.exec('CREATE TABLE telegram_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, queued_at TEXT, sent_at TEXT, reason TEXT); CREATE INDEX idx_tg_outbox_pending ON telegram_outbox(sent_at, id)')
   return db
 }
 const old = '2026-08-01T00:00:00.000Z'
 const recent = '2026-10-05T00:00:00.000Z'
-function add(db, queuedAt, sentAt, n = 1) {
-  const stmt = db.prepare('INSERT INTO telegram_outbox (queued_at, sent_at) VALUES (?, ?)')
-  db.transaction(() => { for (let i = 0; i < n; i++) stmt.run(queuedAt, sentAt) })()
+function add(db, queuedAt, sentAt, n = 1, reason = null) {
+  const stmt = db.prepare('INSERT INTO telegram_outbox (queued_at, sent_at, reason) VALUES (?, ?, ?)')
+  db.transaction(() => { for (let i = 0; i < n; i++) stmt.run(queuedAt, sentAt, reason) })()
 }
 const expired = db => db.prepare('SELECT count(*) n FROM telegram_outbox WHERE sent_at IS NOT NULL AND queued_at < ?').get(cutoff).n
 
@@ -116,19 +118,27 @@ test('ready callbacks also run before a sparse expiry beyond recent/pending rows
     await pass
     assert.equal(beforeDrain, 1, 'bounded inspected rows must yield even when none of the first rows expire')
     assert.equal(expired(db), 0)
-    assert.equal(db.prepare('SELECT count(*) n FROM telegram_outbox').get().n, 500)
+    // Owner 13-10 ("Stop queuing while off"): unsent rows older than 14 days
+    // are removed too, so only the 250 recent rows remain (was 500).
+    assert.equal(db.prepare('SELECT count(*) n FROM telegram_outbox').get().n, 250)
   } finally { db.close() }
 })
 
-test('same 14-day predicate preserves pending, boundary, recent, future and unknown timestamps', async () => {
+// Claude · № 13,878 13-Oct (owner "Stop queuing while off"): an unsent row
+// older than 14 days now goes (it was kept), and an unsent notify_off row goes
+// at any age. Recent unsent rows deferred by quiet hours or the hourly digest,
+// the boundary, future and unknown timestamps are kept as before.
+test('14-day predicate: old rows go sent or not, notify_off rows go at any age; recent deferred, boundary, future and unknown timestamps stay', async () => {
   const db = freshDB()
   try {
     add(db, old, old, 401)
-    for (const [queuedAt, sentAt] of [[old, null], [cutoff, old], [recent, recent], ['2026-11-01T00:00:00.000Z', old], [null, old]]) add(db, queuedAt, sentAt)
-    const kept = db.prepare('SELECT id, queued_at, sent_at FROM telegram_outbox WHERE id > 401 ORDER BY id').all()
+    add(db, old, null)                                   // old unsent: now due
+    add(db, recent, null, 1, 'notify_off')               // held by notify OFF: due at any age
+    for (const [queuedAt, sentAt, reason] of [[cutoff, old, null], [recent, recent, null], [recent, null, 'quiet_hours'], [recent, null, 'hourly_digest'], ['2026-11-01T00:00:00.000Z', old, null], [null, old, null]]) add(db, queuedAt, sentAt, 1, reason)
+    const kept = db.prepare('SELECT id, queued_at, sent_at, reason FROM telegram_outbox WHERE id > 403 ORDER BY id').all()
     const result = await runHousekeepingSteps([{ name: 'prune-outbox', run: actualStep(db) }])
-    assert.equal(result.results['prune-outbox'].changes, 401)
-    assert.deepEqual(db.prepare('SELECT id, queued_at, sent_at FROM telegram_outbox ORDER BY id').all(), kept)
+    assert.equal(result.results['prune-outbox'].changes, 403)
+    assert.deepEqual(db.prepare('SELECT id, queued_at, sent_at, reason FROM telegram_outbox ORDER BY id').all(), kept)
   } finally { db.close() }
 })
 
@@ -152,7 +162,9 @@ test('primary-key gaps and imported zero/negative ids retain the original deleti
   try {
     const insert = db.prepare('INSERT INTO telegram_outbox (id, queued_at, sent_at) VALUES (?, ?, ?)')
     for (const id of [-3, 0, 10, 5000]) insert.run(id, old, old)
-    insert.run(200, old, null)
+    // A row that is not due survives the gaps: a recent unsent one (an old
+    // unsent row is due since 13-10, owner "Stop queuing while off").
+    insert.run(200, recent, null)
     const result = await runHousekeepingSteps([{ name: 'prune-outbox', run: actualStep(db) }])
     assert.equal(result.results['prune-outbox'].changes, 4)
     assert.deepEqual(db.prepare('SELECT id FROM telegram_outbox').all(), [{ id: 200 }])

@@ -162,6 +162,22 @@ test('postDailyReport STAMPS BEFORE THE WORK, queues through the outbox with kin
   assert.equal(dailyReportDue(db, NOW + 60_000), false, 'not due again for 24 h')
 })
 
+test('postDailyReport with notify OFF neither queues nor sends: it counts the drop and still keeps the text', async () => {
+  // Claude · № 13,878 13-Oct (owner "Stop queuing while off"; claude-builder).
+  const db = initDB(':memory:')
+  setState(db, 'telegram_notify_json', JSON.stringify({ enabled: false, mode: 'live', quiet: null, urgentBypass: true, tz: 'Asia/Singapore' }))
+  const r = await postDailyReport(db, {
+    now: NOW,
+    queue: () => { throw new Error('nothing is queued while notify is off') },
+    send: async () => { throw new Error('nothing is sent while notify is off') },
+  })
+  assert.equal(r.ok, true); assert.equal(r.delivery, 'not_sent_notify_off')
+  const dropped = JSON.parse(getState(db, 'telegram_dropped_json'))
+  assert.equal(dropped.count, 1); assert.equal(dropped.lastKind, 'daily_report')
+  const last = JSON.parse(getState(db, DAILY_REPORT_TEXT_KEY))
+  assert.equal(last.delivery, 'not_sent_notify_off'); assert.match(last.text, /^Daily report — /)
+})
+
 test('postDailyReport falls back to the direct send when the outbox write fails, and a failing build still leaves the stamp (retried tomorrow, not every cycle)', async () => {
   const db = initDB(':memory:')
   const sent = []
