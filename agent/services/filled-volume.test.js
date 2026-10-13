@@ -230,3 +230,25 @@ test('an open position with a fill from its deals is read again after the retry 
   assert.equal(later.class, 'filled', JSON.stringify(later))
   assert.deepEqual(filled(db, id), { v: 0.3, s: 'broker_opening_deals' })
 })
+
+// № 14,349 (Codex P2 round 2 on #1360; claude-builder): with more open
+// positions than reads per window, the least recently read goes first, so every
+// position is reached rather than the newest ones over and over.
+test('the filled sweep reads the least recently read open position first', async () => {
+  const db = initDB(':memory:')
+  db.prepare("INSERT INTO accounts(account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(DEMO)
+  setState(db, accountSymbolMapKey(DEMO), JSON.stringify({ accountId: DEMO, builtAt: new Date().toISOString(), map: { EURUSD: 1 } }))
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const ids = ['7001', '7002', '7003'].map(pid => trade(db, { pid }))
+  for (const pid of ['7001', '7002', '7003']) stampFilledVolume(db, { accountId: DEMO, positionId: pid, lots: 0.2, source: 'broker_opening_deals' })
+  const answer = pid => ({ ctidTraderAccountId: Number(DEMO), hasMore: false, deal: [{ dealId: Number(pid), orderId: 1, positionId: Number(pid), symbolId: 1,
+    tradeSide: 1, dealStatus: 2, volume: 2_000_000, filledVolume: 2_000_000, executionPrice: 1.1, executionTimestamp: Date.parse('2026-10-13T10:00:00Z') }] })
+  const t0 = Date.parse('2026-10-13T12:00:00Z'), order = []
+  for (let k = 0; order.length < 6 && k < 40; k++) {
+    const out = await sweepLifecycleEvidence(db, { accountId: DEMO, host: 'h' }, { now: t0 + k * 31 * 60_000, getPositionDeals: async pid => answer(pid) })
+    if (out.class === 'filled') order.push(out.positionId)
+  }
+  assert.deepEqual(order.slice(0, 3).sort(), ['7001', '7002', '7003'], 'each is read once before any is read twice')
+  assert.deepEqual(order.slice(3, 6).sort(), ['7001', '7002', '7003'], JSON.stringify(order))
+  assert.equal(ids.length, 3)
+})
