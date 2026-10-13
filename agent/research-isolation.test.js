@@ -93,9 +93,17 @@ const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$
 // import the parser cannot resolve must be DECLARED below (the loader or
 // table that carries its literal targets); any other unresolved site fails
 // the test that follows, instead of being assumed harmless.
+// Codex P2 on #1355 (owner: "Per-site declaration"): a declaration excuses
+// ONE unresolved site, by the function it sits in and its text — not the
+// whole file. Another import(variable) in the same file still fails.
 export const DECLARED_RESOLUTIONS = {
-  'agent/services/strategies.js': { loaders: ['loadCompute'] },
-  'agent/services/fast-monitor.js': { specProps: ['mod'] },
+  'agent/services/strategies.js': { loaders: ['loadCompute'], site: { fn: 'loadCompute', text: 'import(path)' } },
+  'agent/services/fast-monitor.js': { specProps: ['mod'], site: { fn: 'runProtectionBand', text: 'import(job.mod)' } },
+}
+// Is this unresolved site the one its file's declaration names?
+export const declaredSite = (rel, u) => {
+  const d = DECLARED_RESOLUTIONS[rel]
+  return !!d?.site && u.fn === d.site.fn && u.text === d.site.text
 }
 const scanCache = new Map()
 function scan(file) {
@@ -304,12 +312,13 @@ test('every dynamic import under agent/ resolves to a literal or is declared, an
   for (const abs of walk(join(ROOT, 'agent'))) {
     const rel = relative(ROOT, abs)
     const { unresolved } = scan(abs)
-    if (unresolved.length && !DECLARED_RESOLUTIONS[rel]) undeclared.push(...unresolved.map(u => `${rel}:${u.line} ${u.text}`))
+    undeclared.push(...unresolved.filter(u => !declaredSite(rel, u)).map(u => `${rel}:${u.line} ${u.fn ?? '<top>'}() ${u.text}`))
   }
   assert.deepEqual(undeclared, [], 'an import whose target is not a fixed string must be declared in DECLARED_RESOLUTIONS')
   for (const [rel, how] of Object.entries(DECLARED_RESOLUTIONS)) {
-    const { declared } = scan(join(ROOT, rel))
+    const { declared, unresolved } = scan(join(ROOT, rel))
     assert.ok(declared.length > 0, `${rel}: the declared ${JSON.stringify(how)} finds no literal target — the declaration is stale`)
+    assert.equal(unresolved.filter(u => declaredSite(rel, u)).length, 1, `${rel}: the declared site ${JSON.stringify(how.site)} is not exactly one unresolved import — the declaration is stale`)
   }
   // strategies.js's eight loaded modules are now in the research graph.
   const reach = graph('agent/services/strategies.js')
@@ -334,11 +343,17 @@ test('the timer probe detects every timer a module leaves armed, on each runtime
       timersNamed: ["import { setInterval as si } from 'node:timers'\nsi(() => {}, 1e6).unref()", 1],
       timersDefault: ["import t from 'node:timers'\nt.setTimeout(() => {}, 1e6).unref()", 1],
       two: ['setInterval(() => {}, 1e6); setTimeout(() => {}, 1e6)', 2],
+      // Codex P2 on #1355: the promise API
+      promisesTimeout: ["import { setTimeout as st } from 'node:timers/promises'\nst(1e6, undefined, { ref: false })", 1],
+      promisesDefault: ["import tp from 'node:timers/promises'\ntp.setTimeout(1e6, undefined, { ref: false })", 1],
+      promisesInterval: ["import { setInterval as si } from 'node:timers/promises'\nexport const it = si(1e6, undefined, { ref: false })", 1],
       // clean
       plain: ['export const x = 1', 0],
       firedOnce: ['setTimeout(() => {}, 0)', 0],
       cleared: ['const i = setInterval(() => {}, 1e6); clearInterval(i)', 0],
       immediateRan: ['setImmediate(() => {})', 0],
+      promisesSettled: ["import { setTimeout as st } from 'node:timers/promises'\nawait st(1)", 0],
+      promisesIntervalClosed: ["import { setInterval as si } from 'node:timers/promises'\nconst it = si(1e6); await it.return()", 0],
     }
     for (const [name, [src]] of Object.entries(fx)) writeFileSync(join(dir, `${name}.mjs`), src + '\n')
     assert.ok(PROBE_RUNTIMES.length >= 1)
@@ -349,4 +364,15 @@ test('the timer probe detects every timer a module leaves armed, on each runtime
       }
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// Codex P2 on #1355: the declaration names one site; a second import(variable)
+// in a declared file is not excused.
+test('a declared file excuses only its declared site: a second import(variable) there is caught', () => {
+  const rel = 'agent/services/strategies.js'
+  const src = readFileSync(join(ROOT, rel), 'utf8') + '\nexport async function sneak(p) { return import(p) }\n'
+  const { unresolved } = moduleImports(src, rel, DECLARED_RESOLUTIONS[rel])
+  const excused = unresolved.filter(u => declaredSite(rel, u)), caught = unresolved.filter(u => !declaredSite(rel, u))
+  assert.equal(excused.length, 1)
+  assert.deepEqual(caught.map(u => [u.fn, u.text]), [['sneak', 'import(p)']])
 })

@@ -12,8 +12,8 @@
 // but not the unref'd interval.
 //
 // So the probe counts at the source: in a fresh process it wraps
-// setTimeout / setInterval / setImmediate (the globals AND node:timers, whose
-// ESM bindings are re-synced) before the import, and reports every timer the
+// setTimeout / setInterval / setImmediate (the globals, node:timers and
+// node:timers/promises, whose ESM bindings are re-synced) before the import, and reports every timer the
 // module created that is still pending after a settle — cleared timers and
 // one-shots that already fired are not counted. getActiveResourcesInfo()'s
 // delta is reported beside it as a second, independent reading.
@@ -22,6 +22,7 @@ import { pathToFileURL } from 'node:url'
 
 const PRELOAD = `
 import timers from 'node:timers'
+import timersPromises from 'node:timers/promises'
 import { syncBuiltinESMExports } from 'node:module'
 const live = new Map(); let seq = 0
 const wrap = (name, oneShot) => {
@@ -42,6 +43,29 @@ const unwrap = (name) => {
 }
 wrap('setTimeout', true); wrap('setInterval', false); wrap('setImmediate', true)
 unwrap('clearTimeout'); unwrap('clearInterval'); unwrap('clearImmediate')
+// Codex P2 on #1355: the promise API (node:timers/promises) arms timers that
+// bypass the wrappers above, and an unref'd one is absent from
+// getActiveResourcesInfo(). setTimeout / setImmediate stay pending until their
+// promise settles; setInterval's iterator until it is closed (return()).
+for (const name of ['setTimeout', 'setImmediate']) {
+  const orig = timersPromises[name]
+  timersPromises[name] = function (...args) {
+    const id = ++seq; live.set(id, { kind: 'promises.' + name, h: true })
+    const p = orig.apply(this, args)
+    p.then(() => live.delete(id), () => live.delete(id))
+    return p
+  }
+}
+{
+  const orig = timersPromises.setInterval
+  timersPromises.setInterval = function (...args) {
+    const id = ++seq; live.set(id, { kind: 'promises.setInterval', h: true })
+    const it = orig.apply(this, args)
+    const ret = it.return?.bind(it)
+    it.return = (...a) => { live.delete(id); return ret ? ret(...a) : Promise.resolve({ done: true, value: undefined }) }
+    return it
+  }
+}
 syncBuiltinESMExports()
 globalThis.__probeLive = live
 `

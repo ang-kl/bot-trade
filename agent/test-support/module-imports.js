@@ -47,7 +47,7 @@ export function moduleImports(src, file = '<source>', { loaders = [], specProps 
   }
   const specs = [], unresolved = [], declared = [], sites = []
   const fnStack = []
-  const note = (kind, node) => unresolved.push({ kind, line: node.loc.start.line, text: src.slice(node.start, node.end).slice(0, 120) })
+  const note = (kind, node) => unresolved.push({ kind, line: node.loc.start.line, fn: fnStack.length ? fnStack[fnStack.length - 1] : null, text: src.slice(node.start, node.end).slice(0, 120) })
   const visit = (node) => {
     if (!node || typeof node.type !== 'string') return
     switch (node.type) {

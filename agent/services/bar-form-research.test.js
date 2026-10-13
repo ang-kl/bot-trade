@@ -263,3 +263,29 @@ test('finding D: during a run, a reading that disappears, goes stale or loses a 
     FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1, aborted: !!code }, cells: [], summary: { cells: 0, byVerdict: {} } }); await settle()
   }
 })
+
+// Codex P2 on #1355 (owner: "Check at finish"): a reading that goes bad after
+// the last poll is judged at the end; the run is not saved 'done'.
+test('finding D at the finish: a reading removed after the last poll ends the run aborted, the breach named at the finish', async () => {
+  const db = fresh()
+  const r = await startBarFormResearch(db, { symbolIds: [1] }, deps({ research: cfgWith({ pollMs: 3_600_000 }) })) // no poll fires during the test
+  assert.equal(r.status, 202)
+  db.prepare('DELETE FROM agent_state WHERE key = ?').run(FAST_MONITOR_PASS_KEY)
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1 }, cells: [], summary: { cells: 0, byVerdict: {} } }); await settle()
+  const j = barFormJob(r.body.runId)
+  assert.equal(j.state, 'aborted')
+  assert.equal(j.receipt.breach.limit, 'monitor_unavailable'); assert.equal(j.receipt.breach.atFinish, true)
+  assert.equal(barFormResearchView(db, { runId: r.body.runId }).run.state, 'aborted')
+})
+
+test('finding D at the finish: a fresh, within-limit final reading leaves a completed run done; a skipped tick at the end does not', async () => {
+  const db = fresh()
+  const ok = await startBarFormResearch(db, { symbolIds: [1] }, deps({ research: cfgWith({ pollMs: 3_600_000 }) }))
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1 }, cells: [], summary: { cells: 0, byVerdict: {} } }); await settle()
+  assert.equal(barFormJob(ok.body.runId).state, 'done'); assert.equal(barFormJob(ok.body.runId).receipt.breach, null)
+  const db2 = fresh()
+  const bad = await startBarFormResearch(db2, { symbolIds: [1] }, deps({ research: cfgWith({ pollMs: 3_600_000 }) }))
+  setState(db2, FAST_MONITOR_PASS_KEY, reading({}, { skippedTicks: 1 }))
+  FakeWorker.last.emit('message', { ok: true, manifest: { processed: 1 }, cells: [], summary: { cells: 0, byVerdict: {} } }); await settle()
+  assert.equal(barFormJob(bad.body.runId).state, 'aborted'); assert.equal(barFormJob(bad.body.runId).receipt.breach.limit, 'maxSkippedTicksDelta')
+})

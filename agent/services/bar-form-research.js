@@ -232,17 +232,25 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   j.receipt = { before: startReading, during: [], after: null, breach: null, limits: plan.limits }
   const destDir = cacheDir || segmentCacheDir()
   const requestAbort = (why) => { Atomics.store(new Int32Array(abortFlag), 0, 1); j.abortRequestedAt = j.abortRequestedAt || new Date().toISOString(); j.receipt.breach = j.receipt.breach || why }
+  // Finding D: one judgement of a reading against the run's limits, used by
+  // the poll AND at the end (Codex P2 on #1355: a reading that went bad after
+  // the last poll must not let the run end 'done'). An absent, stale or
+  // incomplete reading is UNKNOWN, and unknown is a breach — never "within limits".
+  const judge = (r, nowMs) => {
+    const v = monitorVerdict(r, nowMs, plan.limits.maxReadingAgeMs)
+    const at = new Date(nowMs).toISOString()
+    if (!v.ok) return { v, breach: { limit: v.reason, declared: plan.limits.maxReadingAgeMs, observed: v.ageMs, readingAt: v.readingAt, at } }
+    const before = j.receipt.before
+    if (r.skippedTicks - before.skippedTicks > plan.limits.maxSkippedTicksDelta) return { v, breach: { limit: 'maxSkippedTicksDelta', declared: plan.limits.maxSkippedTicksDelta, observed: r.skippedTicks - before.skippedTicks, at } }
+    if (r.busyShare10m > plan.limits.maxBusyShare10m) return { v, breach: { limit: 'maxBusyShare10m', declared: plan.limits.maxBusyShare10m, observed: r.busyShare10m, at } }
+    return { v, breach: null }
+  }
   const poll = setInterval(() => {
     const r = fastMonitorReading(db)
     const nowMs = clock()
-    // Finding D: an absent, stale or incomplete reading is UNKNOWN, and unknown
-    // stops the run — it is never counted as "within limits".
-    const v = monitorVerdict(r, nowMs, plan.limits.maxReadingAgeMs)
+    const { v, breach } = judge(r, nowMs)
     j.receipt.during.push({ at: new Date(nowMs).toISOString(), readingAt: v.readingAt, ageMs: v.ageMs, skippedTicks: r?.skippedTicks ?? null, busyShare10m: r?.busyShare10m ?? null, ...(v.ok ? {} : { unknown: v.reason }) }); if (j.receipt.during.length > 240) j.receipt.during.shift()
-    if (!v.ok) return requestAbort({ limit: v.reason, declared: plan.limits.maxReadingAgeMs, observed: v.ageMs, readingAt: v.readingAt, at: new Date(nowMs).toISOString() })
-    const before = j.receipt.before
-    if (r.skippedTicks - before.skippedTicks > plan.limits.maxSkippedTicksDelta) requestAbort({ limit: 'maxSkippedTicksDelta', declared: plan.limits.maxSkippedTicksDelta, observed: r.skippedTicks - before.skippedTicks, at: new Date().toISOString() })
-    if (r.busyShare10m > plan.limits.maxBusyShare10m) requestAbort({ limit: 'maxBusyShare10m', declared: plan.limits.maxBusyShare10m, observed: r.busyShare10m, at: new Date().toISOString() })
+    if (breach) requestAbort(breach)
   }, plan.limits.pollMs)
   poll.unref?.()
   const sweep = () => {
@@ -276,9 +284,14 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   }
   const finish = (state, { payload = null, partial = false, error = null } = {}) => {
     clearInterval(poll)
-    j.state = state; j.finishedAt = new Date().toISOString(); if (error) j.error = error
+    j.finishedAt = new Date().toISOString(); if (error) j.error = error
     j.receipt.after = fastMonitorReading(db)
     if (!j.receipt.breach && payload?.manifest?.breach) j.receipt.breach = payload.manifest.breach
+    // Codex P2 on #1355: the final reading is judged too, and a run with any
+    // recorded breach (from the poll, the worker or this last reading — the
+    // poll keeps running through cross_checking) never ends 'done'.
+    if (state !== 'failed') { const end = judge(j.receipt.after, clock()); if (end.breach && !j.receipt.breach) j.receipt.breach = { ...end.breach, atFinish: true } }
+    j.state = state === 'done' && j.receipt.breach ? 'aborted' : state
     j.receipt.observed = payload?.manifest?.observed ?? null
     if (!plan.keepCache) j.receipt.sweptLeftovers = sweep()
     if (payload?.cells && plan.limits.maxTransactionRows != null && payload.cells.length > plan.limits.maxTransactionRows) { j.receipt.breach = j.receipt.breach || { limit: 'maxTransactionRows', declared: plan.limits.maxTransactionRows, observed: payload.cells.length }; payload.cells = payload.cells.slice(0, plan.limits.maxTransactionRows); j.receipt.cellsTruncatedToLimit = true }
