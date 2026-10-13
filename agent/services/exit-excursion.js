@@ -13,8 +13,16 @@
 // cover from then on, not from entry.
 import { currentR } from './position-manager.js'
 
-/** Widen the row's exit-side excursion with the R at `exitPrice`. Returns true when a row was written. */
-export function recordExitExcursion(db, pos, exitPrice, { now = Date.now() } = {}) {
+/**
+ * Widen the row's exit-side excursion with the R at `exitPrice`. Returns true
+ * when a row was written. Codex P2 on #1356 (owner: "Guard every write"): a
+ * quote can be read before a row closes and written after, so the write is a
+ * compare-and-set — only while the row is still active, and with
+ * `paused: true` (the paused-row pass) only while it is still paused, the same
+ * condition as that pass's own mid write. A quote observed after the holding
+ * period can never widen a closed row.
+ */
+export function recordExitExcursion(db, pos, exitPrice, { now = Date.now(), paused = false } = {}) {
   const p = Number(exitPrice)
   if (!(p > 0) || pos?.id == null) return false
   const r = currentR(pos, p)
@@ -22,5 +30,5 @@ export function recordExitExcursion(db, pos, exitPrice, { now = Date.now() } = {
   return db.prepare(`UPDATE monitored_positions
     SET mfe_exit_r = MAX(COALESCE(mfe_exit_r, 0), ?), mae_exit_r = MIN(COALESCE(mae_exit_r, 0), ?),
         exit_excursion_from = COALESCE(exit_excursion_from, ?)
-    WHERE id = ?`).run(Math.max(0, r), Math.min(0, r), new Date(now).toISOString(), pos.id).changes === 1
+    WHERE id = ? AND status = 'active'${paused ? ' AND COALESCE(paused, 0) = 1' : ''}`).run(Math.max(0, r), Math.min(0, r), new Date(now).toISOString(), pos.id).changes === 1
 }

@@ -271,7 +271,7 @@ export async function recordPausedExcursions(db, {
   try { receipts = await refreshPrices(db, list, { now }) } catch (err) { log(`Paused-row quotes failed (non-fatal): ${err.message}`) }
   const widen = widenStmt(db)
   for (const p of list) {
-    recordExitExcursion(db, p, exitPriceOf(p, receipts, { now }), { now: now() })
+    recordExitExcursion(db, p, exitPriceOf(p, receipts, { now }), { now: now(), paused: true })
     const r = rAtPrice(p, priceOf(p, receipts, { now }))
     if (r == null || !Number.isFinite(r)) continue
     if (widen.run(Math.max(0, r), Math.min(0, r), p.id).changes === 1) out.live++

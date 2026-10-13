@@ -103,3 +103,22 @@ test('heldPositionExitPrice: the same validated quote as heldPositionPrice, at t
   near(heldPositionExitPrice({ ...pos, side: 'short' }, receipts, { now }), 1.1007, 'the ask for a short')
   assert.equal(heldPositionExitPrice({ ...pos, account_id: '8' }, receipts, { now }), null, 'an unvalidated quote is null, as for the mid')
 })
+
+// Codex P2 on #1356 (owner: "Guard every write"): a quote read before a row
+// closed (or was unpaused) and written after must not widen it.
+test('recordExitExcursion writes only to an active row, and with paused only to a still-paused one', () => {
+  const db = initDB(':memory:')
+  const ins = db.prepare(`INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, initial_risk, status, source, paused)
+    VALUES ('SYM', 'long', 100, 99, 1, ?, 'external', ?)`)
+  const closed = ins.run('closed', 0).lastInsertRowid
+  const unpaused = ins.run('active', 0).lastInsertRowid
+  const paused = ins.run('active', 1).lastInsertRowid
+  const pos = id => ({ id, side: 'long', entry_price: 100, initial_risk: 1 })
+  const exit = id => db.prepare('SELECT mfe_exit_r, exit_excursion_from FROM monitored_positions WHERE id = ?').get(id)
+  assert.equal(recordExitExcursion(db, pos(closed), 100.5), false)
+  assert.deepEqual(exit(closed), { mfe_exit_r: null, exit_excursion_from: null }, 'a closed row is never widened')
+  assert.equal(recordExitExcursion(db, pos(unpaused), 100.5, { paused: true }), false, 'the paused pass skips a row unpaused meanwhile')
+  assert.equal(exit(unpaused).mfe_exit_r, null)
+  assert.equal(recordExitExcursion(db, pos(unpaused), 100.5), true, 'a monitor (not the paused pass) writes an active row')
+  assert.equal(recordExitExcursion(db, pos(paused), 100.5, { paused: true }), true)
+})
