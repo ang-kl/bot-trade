@@ -57,7 +57,9 @@
       "maxPullsPerMinute": 30,
       "fastMonitor": {
         "maxSkippedTicksDelta": 0,
-        "maxBusyShare10m": 0.5
+        "maxBusyShare10m": 0.5,
+        "maxReadingAgeMs": 240000,
+        "_maxReadingAgeMsNote": "Claude · № 14,078+ 13-Oct (NASA finding D): the oldest fast-monitor reading a run accepts. 240 s is the freshness the heartbeat registry already declares for this same record (agent/services/heartbeat.js protection_band effect fast_monitor_pass_json maxAgeSec 240: the band writes every 60 s, the tick path every 5 s). Older, absent or incomplete readings refuse the start or abort the run as unknown."
       },
       "pollMs": 30000
     },

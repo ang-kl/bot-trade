@@ -40,7 +40,7 @@ export const MAX_SEGMENT_NAMES = 400
 export const JOB_WHAT = 'bar-form research'
 /** The fast monitor's pass record (services/fast-monitor.js PASS_RECORD_KEY; the test pins the two equal): skipped ticks and busy share, read before, during and after a run. */
 export const FAST_MONITOR_PASS_KEY = 'fast_monitor_pass_json'
-export const LIMIT_KEYS = Object.freeze(['workerMemoryMb', 'maxRuntimeMs', 'maxTempBytes', 'maxCells', 'maxTransactionRows', 'maxPullsPerMinute', 'maxSkippedTicksDelta', 'maxBusyShare10m', 'pollMs'])
+export const LIMIT_KEYS = Object.freeze(['workerMemoryMb', 'maxRuntimeMs', 'maxTempBytes', 'maxCells', 'maxTransactionRows', 'maxPullsPerMinute', 'maxSkippedTicksDelta', 'maxBusyShare10m', 'maxReadingAgeMs', 'pollMs'])
 
 /** The fast monitor's current figures, or null when the record is absent/unreadable. */
 export function fastMonitorReading(db) {
@@ -48,8 +48,34 @@ export function fastMonitorReading(db) {
     const r = JSON.parse(getState(db, FAST_MONITOR_PASS_KEY) || 'null')
     const t = r?.tick
     if (!t) return null
-    return { at: r.at ?? null, skippedTicks: Number.isFinite(Number(t.skippedTicks)) ? Number(t.skippedTicks) : null, busyShare10m: Number.isFinite(Number(t.busyShare10m)) ? Number(t.busyShare10m) : null, skipped10m: Number.isFinite(Number(t.skipped10m)) ? Number(t.skipped10m) : null }
+    // Finding D: Number(null) is 0, so an absent figure used to read as "no
+    // skipped ticks". Only a number (or a numeric string) is a figure.
+    const fig = v => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v)) ? Number(v) : null
+    return { at: r.at ?? null, skippedTicks: fig(t.skippedTicks), busyShare10m: fig(t.busyShare10m), skipped10m: fig(t.skipped10m) }
   } catch { return null }
+}
+
+/**
+ * Claude · № 14,078+ 13-Oct (owner: NASA programme step 4, "research blocked
+ * without the required health evidence"; claude-builder). Finding D of
+ * doc/bot-trade-NASA-assessment-2026-10-13.md: a missing reading was skipped,
+ * a missing baseline switched the skipped-tick comparison off, and the
+ * reading's own time was never compared with now — so absent or stale
+ * telemetry read as "no breach". This verdict makes each of those a named
+ * failure. Pure: `reading` is fastMonitorReading()'s shape, `nowMs` the clock.
+ *   monitor_unavailable      no pass record (absent or unreadable)
+ *   monitor_time_unreadable  the record carries no parseable `at`
+ *   monitor_stale            the record is older than maxReadingAgeMs
+ *   monitor_field_unavailable skippedTicks or busyShare10m is not a number
+ */
+export function monitorVerdict(reading, nowMs, maxReadingAgeMs) {
+  if (!reading) return { ok: false, reason: 'monitor_unavailable', readingAt: null, ageMs: null }
+  const atMs = typeof reading.at === 'string' ? Date.parse(reading.at) : NaN
+  if (!Number.isFinite(atMs)) return { ok: false, reason: 'monitor_time_unreadable', readingAt: reading.at ?? null, ageMs: null }
+  const ageMs = nowMs - atMs
+  if (!(ageMs <= maxReadingAgeMs)) return { ok: false, reason: 'monitor_stale', readingAt: reading.at, ageMs }
+  if (reading.skippedTicks == null || reading.busyShare10m == null) return { ok: false, reason: 'monitor_field_unavailable', readingAt: reading.at, ageMs }
+  return { ok: true, reason: null, readingAt: reading.at, ageMs }
 }
 
 const jobs = { current: null, history: [] }
@@ -145,7 +171,7 @@ export function persistRun(db, j, { manifest, cells, summary }) {
  * like the tick research door. `deps` lets tests inject the segment lister,
  * the worker constructor and the sides.
  */
-export async function startBarFormResearch(db, body = {}, { actor = null, now = new Date(), listAll = listAllSides, sides = null, cacheDir = null, workerCtor = Worker, workerFile = WORKER_FILE, secret = process.env.EXEC_SECRET ?? '', research = undefined, thresholds = undefined, localFiles = null, resolveNames = null, fetchBrokerBars = null } = {}) {
+export async function startBarFormResearch(db, body = {}, { actor = null, now = new Date(), listAll = listAllSides, sides = null, cacheDir = null, workerCtor = Worker, workerFile = WORKER_FILE, secret = process.env.EXEC_SECRET ?? '', research = undefined, thresholds = undefined, localFiles = null, resolveNames = null, fetchBrokerBars = null, clock = () => Date.now() } = {}) {
   const allSides = sides ?? segmentSides()
   const planned = barFormPlan(body, { ...(research ? { research } : {}), ...(thresholds ? { thresholds } : {}), knownSides: allSides.map(s => s.name) })
   if (planned.refuse) return planned.refuse
@@ -185,6 +211,13 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   const accountId = resolved?.accountId ?? null
   const symbolNames = {}
   for (const id of plan.symbolIds || []) { const n = resolved?.nameOf?.(String(id)); if (n) symbolNames[id] = String(n).toUpperCase() }
+  // Finding D: a real run starts only on a fresh, complete monitor reading —
+  // its baseline is what every later reading is compared against.
+  const startReading = plan.dryRun ? null : fastMonitorReading(db)
+  if (!plan.dryRun) {
+    const v = monitorVerdict(startReading, clock(), plan.limits.maxReadingAgeMs)
+    if (!v.ok) return refuse(409, v.reason, `the fast monitor's reading is required before a run (${v.reason}); the run's limits cannot be checked without it`, { readingAt: v.readingAt, ageMs: v.ageMs, maxReadingAgeMs: plan.limits.maxReadingAgeMs })
+  }
   const runId = randomUUID().slice(0, 12)
   const take = acquireResearchSlot(JOB_WHAT, runId, now)
   if (!take.ok) return refuse(409, 'research_running', `a ${take.held.what} holds the research slot`, take.held)
@@ -196,15 +229,20 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
   // Amendment area 1: the operational receipt — the fast monitor's figures
   // before the run, polled during it (a breach sets the abort flag), and
   // read again after; the leftover sweep on every end path.
-  j.receipt = { before: fastMonitorReading(db), during: [], after: null, breach: null, limits: plan.limits }
+  j.receipt = { before: startReading, during: [], after: null, breach: null, limits: plan.limits }
   const destDir = cacheDir || segmentCacheDir()
   const requestAbort = (why) => { Atomics.store(new Int32Array(abortFlag), 0, 1); j.abortRequestedAt = j.abortRequestedAt || new Date().toISOString(); j.receipt.breach = j.receipt.breach || why }
   const poll = setInterval(() => {
-    const r = fastMonitorReading(db); if (!r) return
-    j.receipt.during.push({ at: new Date().toISOString(), skippedTicks: r.skippedTicks, busyShare10m: r.busyShare10m }); if (j.receipt.during.length > 240) j.receipt.during.shift()
+    const r = fastMonitorReading(db)
+    const nowMs = clock()
+    // Finding D: an absent, stale or incomplete reading is UNKNOWN, and unknown
+    // stops the run — it is never counted as "within limits".
+    const v = monitorVerdict(r, nowMs, plan.limits.maxReadingAgeMs)
+    j.receipt.during.push({ at: new Date(nowMs).toISOString(), readingAt: v.readingAt, ageMs: v.ageMs, skippedTicks: r?.skippedTicks ?? null, busyShare10m: r?.busyShare10m ?? null, ...(v.ok ? {} : { unknown: v.reason }) }); if (j.receipt.during.length > 240) j.receipt.during.shift()
+    if (!v.ok) return requestAbort({ limit: v.reason, declared: plan.limits.maxReadingAgeMs, observed: v.ageMs, readingAt: v.readingAt, at: new Date(nowMs).toISOString() })
     const before = j.receipt.before
-    if (before?.skippedTicks != null && r.skippedTicks != null && r.skippedTicks - before.skippedTicks > plan.limits.maxSkippedTicksDelta) requestAbort({ limit: 'maxSkippedTicksDelta', declared: plan.limits.maxSkippedTicksDelta, observed: r.skippedTicks - before.skippedTicks, at: new Date().toISOString() })
-    if (r.busyShare10m != null && r.busyShare10m > plan.limits.maxBusyShare10m) requestAbort({ limit: 'maxBusyShare10m', declared: plan.limits.maxBusyShare10m, observed: r.busyShare10m, at: new Date().toISOString() })
+    if (r.skippedTicks - before.skippedTicks > plan.limits.maxSkippedTicksDelta) requestAbort({ limit: 'maxSkippedTicksDelta', declared: plan.limits.maxSkippedTicksDelta, observed: r.skippedTicks - before.skippedTicks, at: new Date().toISOString() })
+    if (r.busyShare10m > plan.limits.maxBusyShare10m) requestAbort({ limit: 'maxBusyShare10m', declared: plan.limits.maxBusyShare10m, observed: r.busyShare10m, at: new Date().toISOString() })
   }, plan.limits.pollMs)
   poll.unref?.()
   const sweep = () => {
