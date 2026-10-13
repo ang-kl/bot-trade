@@ -20,10 +20,10 @@ import * as acorn from 'acorn'
 
 const ROOT = new URL('../../', import.meta.url)
 const matrix = JSON.parse(readFileSync(new URL('./matrix.json', import.meta.url), 'utf8'))
-// The 14-10 inventory found 41 gaps. Pinned EXACTLY (Codex P2 on #1366): a
+// The 14-10 inventory found 43 gaps. Pinned EXACTLY (Codex P2 on #1366): a
 // ceiling leaves spare room once a gap is filled and forgotten here, so a
 // covered cell could slide back to a gap unseen. Every change edits this.
-const GAP_COUNT = 41
+const GAP_COUNT = 43
 
 // Claude · № 14,558 14-Oct (Codex P2s on #1366; claude-builder). The titles a
 // test file DECLARES, read from its syntax tree (acorn, as module-imports.js
@@ -75,19 +75,31 @@ function declaredTitles(src, file = 'source') {
   }
   const isDecl = c => (c.type === 'Identifier' && (c.name === 'test' || c.name === 'it')) ||
     (c.type === 'MemberExpression' && !c.computed && c.property.name === 'test' && c.object.type === 'Identifier' && c.object.name !== 'test' && c.object.name !== 'it')
+  // Codex P2 on #1366 (round 3): a test that node:test will not run declares
+  // nothing, and neither does anything nested under it — test.skip / it.skip /
+  // describe.skip / .todo, or an options object whose skip / todo is anything
+  // but a literal false (a conditional skip cannot be shown to run).
+  const SUITES = new Set(['test', 'it', 'describe', 'suite'])
+  const offOption = o => o?.type === 'ObjectExpression' && o.properties.some(p => p.type === 'Property' && !p.computed &&
+    ['skip', 'todo'].includes(p.key.type === 'Identifier' ? p.key.name : p.key.value) && !(p.value.type === 'Literal' && p.value.value === false))
+  const disables = n => n.type === 'CallExpression' && (
+    (n.callee.type === 'MemberExpression' && !n.callee.computed && ['skip', 'todo'].includes(n.callee.property.name) &&
+      ((n.callee.object.type === 'Identifier' && SUITES.has(n.callee.object.name)) || (n.callee.object.type === 'MemberExpression' && n.callee.object.property.name === 'test'))) ||
+    ((isDecl(n.callee) || (n.callee.type === 'Identifier' && SUITES.has(n.callee.name))) && n.arguments.slice(1).some(offOption)))
   const titles = new Set()
-  const walk = (n, scope) => {
+  const walk = (n, scope, off) => {
     if (!n || typeof n.type !== 'string') return
-    if (n.type === 'CallExpression' && isDecl(n.callee)) for (const t of titlesOf(n.arguments[0], scope)) titles.add(t)
+    const offHere = off || disables(n)
+    if (!offHere && n.type === 'CallExpression' && isDecl(n.callee)) for (const t of titlesOf(n.arguments[0], scope)) titles.add(t)
     let inner = scope
     if (n.type === 'ForOfStatement') { const b = loopBinding(n); if (b) inner = new Map([...scope, b]) }
     for (const k of Object.keys(n)) {
       if (k === 'type' || k === 'start' || k === 'end') continue
       const v = n[k]
-      if (Array.isArray(v)) v.forEach(x => walk(x, inner)); else if (v && typeof v === 'object') walk(v, inner)
+      if (Array.isArray(v)) v.forEach(x => walk(x, inner, offHere)); else if (v && typeof v === 'object') walk(v, inner, offHere)
     }
   }
-  walk(ast, new Map())
+  walk(ast, new Map(), false)
   return titles
 }
 const titlesByFile = new Map()
@@ -127,7 +139,7 @@ test('NASA-5 matrix: gaps carry no receipt and never grow; not-applicable cells 
   for (const c of matrix.cells.filter(x => x.state === 'not_applicable')) assert.ok(typeof c.reason === 'string' && c.reason.length > 20, `${c.form}×${c.event} needs its reason`)
 })
 
-test('NASA-5 matrix: the receipt check can fail — an absent, commented-out, skipped or string-only title is caught', () => {
+test('NASA-5 matrix: the receipt check can fail — an absent, commented-out, skipped (by name, by option or by a skipped parent) or string-only title is caught', () => {
   assert.equal(declares('agent/services/reconciler.test.js', 'orphan sweep: an open trade whose position is gone at the broker (no monitored row) is closed'), true)
   assert.equal(declares('agent/services/reconciler.test.js', 'orphan sweep: an open trade whose position is gone at the broker (no monitored row) is closed!'), false)
   const t = declaredTitles([
@@ -138,6 +150,15 @@ test('NASA-5 matrix: the receipt check can fail — an absent, commented-out, sk
     "for (const [name, c] of Object.entries(CASES)) test(`each ${name} runs`, () => {})",
     "for (const n of ['x', 'y']) test(`item ${n}`, () => {})",
     "test(`unresolved ${somethingElse}`, () => {})",
+    "test('skip option', { skip: true }, () => {})",
+    "test('skip reason', { skip: 'no native build' }, () => {})",
+    "test('conditional skip', { skip: !process.env.X }, () => {})",
+    "test('runs with skip false', { skip: false }, () => {})",
+    "test('todo option', { todo: true }, () => {})",
+    "test.skip('skipped parent', async t => { await t.test('child of a skipped parent', () => {}) })",
+    "test('parent with skip', { skip: true }, async t => { await t.test('child of a skip option', () => {}) })",
+    "describe.skip('suite', () => { it('inside a skipped suite', () => {}) })",
+    "describe('live suite', () => { it('inside a live suite', () => {}) })",
     "test('outer', async t => { await t.test('a subtest', () => {}) })",
     "// test('commented out', () => {})",
     "/* test('block commented', () => {}) */",
@@ -145,6 +166,6 @@ test('NASA-5 matrix: the receipt check can fail — an absent, commented-out, sk
     "test.skip('skipped', () => {})",
     "test.todo('todo')",
   ].join('\n'))
-  assert.deepEqual([...t].sort(), ["a subtest", 'each first case runs', 'each second runs', "it's here", 'item x', 'item y', 'outer', 'template'])
+  assert.deepEqual([...t].sort(), ["a subtest", 'each first case runs', 'each second runs', 'inside a live suite', "it's here", 'item x', 'item y', 'outer', 'runs with skip false', 'template'])
   assert.throws(() => declaredTitles('test(', 'broken.test.js'), /broken\.test\.js does not parse/)
 })

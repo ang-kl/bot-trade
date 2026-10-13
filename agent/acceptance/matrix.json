@@ -148,13 +148,7 @@
     {
       "form": "pending_fill",
       "event": "underfill",
-      "state": "covered",
-      "receipts": [
-        {
-          "file": "agent/lib/order-answer.test.js",
-          "title": "a resting order is FILLED only when the answer says it filled: ORDER_FILLED, ORDER_PARTIAL_FILL (by name or number), or a deal"
-        }
-      ]
+      "state": "gap"
     },
     {
       "form": "pending_fill",
@@ -526,13 +520,7 @@
     {
       "form": "adoption_reopen",
       "event": "underfill",
-      "state": "covered",
-      "receipts": [
-        {
-          "file": "agent/services/profit-keeper-receipts.test.js",
-          "title": "NASA-3: keeper scale-out on an adopted position records no fill from the broker volume"
-        }
-      ]
+      "state": "gap"
     },
     {
       "form": "adoption_reopen",
