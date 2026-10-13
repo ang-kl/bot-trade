@@ -154,14 +154,26 @@ test('an added opening fill clears the recorded fill; a later complete deal read
 // Claude · № 14,345 13-Oct (Codex P2s round 3 on #1359; claude-builder). A netted
 // reversal keeps the position id: no fill is derived from the mixed history,
 // and the reconciler's side flip clears the fill on record.
-test('a reversed position: no fill from its deals, and the side flip clears the recorded fill', () => {
+test('a reversed position: the new leg\'s fill from its deals, and the side flip clears the recorded fill', () => {
   const deal = (id, side, filled, closed = null) => ({ dealId: id, positionId: 5001, dealStatus: 2, tradeSide: side, filledVolume: filled,
     ...(closed != null ? { closePositionDetail: { closedVolume: closed } } : {}) })
-  assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 3000, 2000)] }, '5001', 1000).reason, 'position_reversed',
-    'one deal closes 2,000 and opens 1,000 the other way')
+  // № 14,475 (owner: "fix the remaining follow-ups"): the reversing deal's
+  // excess opens the new leg; the fill is the leg the position holds now.
+  assert.deepEqual(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 3000, 2000)] }, '5001', 1000), { lots: 1, reason: null },
+    'one deal closes 2,000 and opens 1,000 the other way: the new leg opened 1 lot')
   assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 2000, 2000), deal(3, 2, 1000)] }, '5001', 1000).reason, 'position_reversed',
     'opening deals on both sides')
   assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 1000, 1000)] }, '5001', 1000).lots, 2, 'a plain partial close is no reversal')
+  // Later opening deals on the new side add to the new leg, in execution order
+  // (the timestamps, not the order the answer lists them in); a partial close
+  // of the new leg does not reduce what it opened.
+  const at = (d, t) => ({ ...d, executionTimestamp: Date.parse('2026-10-13T10:00:00Z') + t * 60_000 })
+  assert.deepEqual(openingDealsFilledLots({ hasMore: false, deal: [at(deal(4, 2, 500), 4), at(deal(3, 1, 300, 300), 3), at(deal(2, 2, 3000, 2000), 2), at(deal(1, 1, 2000), 1)] }, '5001', 1000),
+    { lots: 1.5, reason: null }, 'leg 2 opened 1,000 by the reversal and 500 later; the 300 partial close does not count')
+  assert.equal(openingDealsFilledLots({ hasMore: false, deal: [at(deal(1, 1, 2000), 1), deal(2, 2, 3000, 2000)] }, '5001', 1000).reason, 'deal_order_unknown',
+    'a deal without an execution time leaves the order unknown')
+  assert.equal(openingDealsFilledLots({ hasMore: false, deal: [deal(1, 1, 2000), deal(2, 2, 1000, 2000)] }, '5001', 1000).reason, 'position_reversed',
+    'a deal that closes more than it fills is not evidence')
   const db = initDB(':memory:')
   setState(db, 'ctrader_account_id', DEMO)
   rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })

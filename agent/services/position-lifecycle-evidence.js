@@ -255,7 +255,14 @@ async function persistReceipts(db, response, accountId) {
   const symMeta = {}
   try { for (const [name, id] of Object.entries(getAccountSymbolMap(db, accountId)?.map ?? {})) symMeta[id] = { symbolName: name } } catch { /* receipt without a name */ }
   const shaped = shapeDeals((response.deal ?? []).filter(executedDeal), withBrokerLotSizes(db, symMeta, accountId), accountId)
-  return shaped.length ? persistDeals(db, shaped) : { seen: 0 }
+  if (!shaped.length) return { seen: 0 }
+  const out = persistDeals(db, shaped)
+  // № 14,475 (C·4): the whole history was read, opening deal included, so the
+  // rows now hold every rate the broker reports; the 'rates' class is done.
+  const pids = [...new Set(shaped.map(r => String(r.position_id)))]
+  const mark = db.prepare("UPDATE broker_deals SET rates_read_at = datetime('now') WHERE account_id = ? AND position_id = ?")
+  for (const pid of pids) mark.run(String(accountId), pid)
+  return out
 }
 
 /**
@@ -316,7 +323,16 @@ export function recordReaderEvidence(db, { accountId, host = null, capture, outc
 // Claude · № 14,292 13-Oct (owner: NASA-3, filled lots "Both"; claude-builder):
 // 'filled' reads an open position whose filled opening lots are not yet known
 // from its own deals (filled-volume.js). Same pacing as every class.
-export const SWEEP_CLASSES = Object.freeze(['receipt', 'differs', 'no_account', 'filled'])
+// Claude · № 14,475 14-Oct (owner: "fix the remaining follow-ups"; C·4;
+// claude-builder): 'rates' reads, once, a closed position whose stored deals
+// in the commission window lack the broker's rates and were never stored by a
+// full position-history read (broker_deals.rates_read_at; rates are captured
+// only since #1358), so the commission check can price them through them.
+export const SWEEP_CLASSES = Object.freeze(['receipt', 'differs', 'no_account', 'filled', 'rates'])
+/** The commission check's window (commission-terms.js commissionTermsCheck default). */
+export const RATES_WINDOW_DAYS = 30
+/** Final verdicts whose history stores no receipt: re-reading cannot supply a rate. */
+const NO_RECEIPT_FINALS = ['permanently_unsupported', 'empty_at_broker', 'never_filled', 'opening_not_retained']
 /**
  * The rows with no account that are probed — and exactly the rows the
  * reconciliation report lists (ledger-reconciliation.js), so the report's
@@ -375,6 +391,19 @@ export function sweepCandidate(db, accountId, cls, { now = Date.now() } = {}) {
           WHERE e.account_id = @acct AND e.position_id = ${PID_SQL('t.ctrader_position_id')}), 0) ASC,
         (COALESCE(t.filled_volume_source, '') = 'broker_opening_deals') ASC,
         t.id DESC LIMIT 1`).get(params) ?? null
+  }
+  if (cls === 'rates') {
+    const window = new Date(now - RATES_WINDOW_DAYS * 86_400_000).toISOString().replace('T', ' ').slice(0, 19)
+    return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t
+      WHERE t.account_id = @acct AND t.status = 'closed' AND CAST(t.ctrader_position_id AS INTEGER) > 0
+        AND EXISTS (SELECT 1 FROM broker_deals b WHERE b.account_id = @acct AND b.position_id = ${PID_SQL('t.ctrader_position_id')}
+          AND b.closed_at >= @window AND b.commission IS NOT NULL
+          AND (b.open_margin_rate IS NULL OR b.open_base_usd_rate IS NULL OR b.close_margin_rate IS NULL OR b.close_base_usd_rate IS NULL)
+          AND b.rates_read_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM position_lifecycle_evidence e WHERE e.account_id = @acct AND e.position_id = ${PID_SQL('t.ctrader_position_id')}
+          AND e.final = 1 AND e.rules = @rules AND e.verdict IN (${NO_RECEIPT_FINALS.map(v => `'${v}'`).join(', ')}))
+        AND ${NOT_READ_RECENTLY(PID_SQL('t.ctrader_position_id'))}
+      ORDER BY t.id DESC LIMIT 1`).get({ ...params, window }) ?? null
   }
   if (cls === 'no_account') {
     return db.prepare(`SELECT t.id, ${PID_SQL('t.ctrader_position_id')} AS pid FROM trades t

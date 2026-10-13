@@ -83,25 +83,40 @@ export function openingDealsFilledLots(response, positionId, lotSize) {
   if (!pid || response?.hasMore !== false || !Array.isArray(response?.deal)) return { lots: null, reason: 'history_incomplete' }
   if (!(Number.isSafeInteger(Number(lotSize)) && Number(lotSize) > 0)) return { lots: null, reason: 'lot_size_unknown' }
   const own = response.deal.filter(d => ownPositionDeal(d, pid) && executedDeal(d))
-  // Claude · № 14,345 13-Oct (Codex P2s round 3 on #1359; claude-builder). A
-  // netted reversal keeps the position id: one deal closes the old leg and
-  // opens the other (it fills more than it closes), or opening deals stand on
-  // both sides. The sum of opening deals then mixes two legs; no fill is
-  // derived from such a history (declined, never reconstructed).
+  // Claude · № 14,475 14-Oct (owner: "fix the remaining follow-ups"; was
+  // declined at № 14,345; claude-builder). A netted reversal keeps the
+  // position id: the deal that reverses it fills more than it closes, and that
+  // excess opens the new leg on the deal's own side (spotware ProtoOADeal:
+  // filledVolume, closePositionDetail.closedVolume, both in cents). The deals
+  // are walked in execution order; the filled lots are those of the leg the
+  // position holds now — the excess plus the opening deals after it. An
+  // opening deal on the other side with no reversing deal is not a history
+  // netting produces, and stays declined.
   const side = d => (d.tradeSide === 1 || d.tradeSide === 'BUY' ? 'BUY' : d.tradeSide === 2 || d.tradeSide === 'SELL' ? 'SELL' : null)
-  const opening = own.filter(d => !d.closePositionDetail)
-  if (own.some(d => d.closePositionDetail && Number(d.filledVolume) !== Number(d.closePositionDetail.closedVolume))
-    || new Set(opening.map(side)).size > 1) return { lots: null, reason: 'position_reversed' }
-  if (!opening.length) return { lots: null, reason: 'opening_not_retained' }
-  let total = 0
-  for (const d of opening) {
-    const v = Number(d.filledVolume)
-    if (!(typeof d.filledVolume === 'number' || /^\d+$/.test(String(d.filledVolume))) || !Number.isSafeInteger(v) || v <= 0) {
-      return { lots: null, reason: 'opening_volume_unverified' }
+  const cents = v => (typeof v === 'number' || /^\d+$/.test(String(v ?? ''))) && Number.isSafeInteger(Number(v)) && Number(v) > 0 ? Number(v) : null
+  const ts = d => (Number.isSafeInteger(Number(d.executionTimestamp)) && Number(d.executionTimestamp) > 0 ? Number(d.executionTimestamp) : null)
+  const timed = own.filter(d => ts(d) != null).length
+  if (timed !== 0 && timed !== own.length) return { lots: null, reason: 'deal_order_unknown' }
+  const ordered = [...own].sort((a, b) => (ts(a) ?? 0) - (ts(b) ?? 0) || Number(a.dealId) - Number(b.dealId))
+  let legSide = null, opened = 0
+  for (const d of ordered) {
+    const v = cents(d.filledVolume)
+    if (v == null) return { lots: null, reason: 'opening_volume_unverified' }
+    if (d.closePositionDetail) {
+      const closed = cents(d.closePositionDetail.closedVolume)
+      if (closed == null || closed > v) return { lots: null, reason: 'position_reversed' }
+      if (v > closed) {
+        if (side(d) == null) return { lots: null, reason: 'position_reversed' }
+        legSide = side(d); opened = v - closed
+      }
+    } else {
+      if (side(d) == null && legSide != null) return { lots: null, reason: 'position_reversed' }
+      if (legSide != null && side(d) !== legSide) return { lots: null, reason: 'position_reversed' }
+      legSide = side(d) ?? legSide; opened += v
     }
-    total += v
   }
-  return { lots: total / Number(lotSize), reason: null }
+  if (!opened) return { lots: null, reason: 'opening_not_retained' }
+  return { lots: opened / Number(lotSize), reason: null }
 }
 
 /** No partial close or reduction on record for this position (deal-money's rule). */

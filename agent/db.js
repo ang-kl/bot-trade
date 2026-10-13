@@ -1666,6 +1666,11 @@ export function initDB(dbPath, startupDiagnosticOptions) {
       'quote_deposit_rate', 'pnl_conversion_fee']) {
       if (!dealBalanceCols.has(name)) db.exec(`ALTER TABLE broker_deals ADD COLUMN ${name} REAL`);
     }
+    // Claude · № 14,475 14-Oct (owner: "fix the remaining follow-ups"; C·4;
+    // claude-builder): when a full position-history read last stored this
+    // deal's position (position-lifecycle-evidence.js persistReceipts), so
+    // every rate the broker reports for it is on the row. NULL = never read so.
+    if (!dealBalanceCols.has('rates_read_at')) db.exec('ALTER TABLE broker_deals ADD COLUMN rates_read_at TEXT');
     db.prepare(`INSERT OR IGNORE INTO agent_state(key,value)
       SELECT 'executed_volume_contract_1_trade_boundary', CAST(COALESCE(MAX(id),0) AS TEXT) FROM trades`).run();
   }).immediate();

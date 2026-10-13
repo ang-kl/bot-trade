@@ -246,3 +246,19 @@ test('B2-m checker N1: the duplicates block says it covers the last 90 days, whi
   assert.deepEqual([usd.duplicates.windowDays, usd.duplicates.groups, usd.duplicates.extraRows, usd.duplicates.extraNet], [90, 1, 1, -5],
     'the 120-day-old pair is outside the audit window, and the block says so')
 })
+
+// Claude · № 14,475 14-Oct (owner: "fix the remaining follow-ups"; C·5b;
+// claude-builder). pnlConversionFee is not part of net (V3 B1); what it leaves
+// out is measured per account in that account's currency, deals stored before
+// the capture counted apart. Self-derived figures.
+test('C·5b: the conversion fee left out of net is measured per account', t => {
+  const db = build(initDB(':memory:')); t.after(() => db.close())
+  db.prepare("UPDATE broker_deals SET pnl_conversion_fee = -0.37 WHERE deal_id = '1041'").run()
+  db.prepare("UPDATE broker_deals SET pnl_conversion_fee = 0 WHERE deal_id = '1051'").run()
+  const usd = buildLedgerReconciliation(db).accounts.find(a => a.accountId === USD)
+  assert.deepEqual(usd.conversionFee, { total: -0.37, dealsRead: 2, dealsWithFee: 1, dealsNotRead: 3, currency: 'USD', inNet: false })
+  // Net is untouched: the class money is what it was.
+  assert.equal(usd.classes.agrees_on_receipts.brokerNet, 5)
+  const sgd = buildLedgerReconciliation(db).accounts.find(a => a.accountId === SGD1)
+  assert.deepEqual(sgd.conversionFee, { total: null, dealsRead: 0, dealsWithFee: 0, dealsNotRead: 0, currency: 'SGD', inNet: false })
+})
