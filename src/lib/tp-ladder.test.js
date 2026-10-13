@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tpLadder, heldMoneyLadder } from './tp-ladder.js'
+import { tpLadder } from './tp-ladder.js'
 
 describe('tpLadder', () => {
   it('returns null with no TP at all', () => {
@@ -44,47 +44,5 @@ describe('tpLadder', () => {
 
   it('identical tp1/tp2 is one level, not a fake ladder', () => {
     expect(tpLadder(1.095, 1.095, 0.04)).toEqual([{ n: 1, price: 1.095, lots: 0.04, done: false }])
-  })
-})
-
-// Claude · № 13,980 13-Oct (owner: Codex P2 on #1348 "TP money from held lots"; claude-builder).
-// Source of the expected values: SHOP.US, opened 9.5 lots, broker holds 4.7
-// after a partial close (audit № 13,904). The money at the target is what the
-// lots still held would earn there, not the lots that were opened.
-describe('heldMoneyLadder', () => {
-  it('no partial close: the display ladder is the money ladder', () => {
-    const tps = tpLadder(1.1, 1.2, 0.04)
-    expect(heldMoneyLadder(tps, 0.04, 0.04)).toBe(tps)
-    expect(heldMoneyLadder(tps, null, 0.04)).toBe(tps)
-  })
-
-  it('single target, partially closed: the held lots go to the target', () => {
-    const tps = tpLadder(120, null, 9.5)
-    expect(heldMoneyLadder(tps, 4.7, 9.5)).toEqual([{ n: 1, price: 120, lots: 4.7, done: false }])
-  })
-
-  it('two targets, not scaled out: the held lots are split across both', () => {
-    const tps = tpLadder(120, 130, 9.5)
-    const m = heldMoneyLadder(tps, 4.7, 9.5)
-    expect(m.map(t => t.price)).toEqual([120, 130])
-    expect(m[0].lots + m[1].lots).toBeCloseTo(4.7, 10)
-  })
-
-  it('scaled out at TP1: all held lots ride to TP2, TP1 earns nothing more', () => {
-    const tps = tpLadder(120, 130, 9.5, { scaledOut: true })
-    expect(heldMoneyLadder(tps, 4.75, 9.5)).toEqual([{ n: 2, price: 130, lots: 4.75 }])
-  })
-
-  // Claude · № 13,983 13-Oct (owner: Codex P2 #2 on #1348 "Drop taken levels first"; claude-builder).
-  // Source: general-partial-execution.js and keeper-close-receipts.js rewrite
-  // trades.volume to the residual and set scaled_out=1, so held == recorded.
-  it('bot scale-out (held == recorded, TP1 done): only the runner at TP2 counts', () => {
-    const tps = tpLadder(120, 130, 4.75, { scaledOut: true })
-    expect(heldMoneyLadder(tps, 4.75, 4.75)).toEqual([{ n: 2, price: 130, lots: 4.75 }])
-    expect(heldMoneyLadder(tps, null, 4.75)).toEqual([{ n: 2, price: 130, lots: 4.75 }])
-  })
-
-  it('no ladder stays no ladder', () => {
-    expect(heldMoneyLadder(null, 4.7, 9.5)).toBeNull()
   })
 })

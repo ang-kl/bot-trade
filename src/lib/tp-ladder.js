@@ -41,27 +41,3 @@ export function tpLadder(tp1, tp2, totalLots, { scaledOut = false } = {}) {
     { n: 2, price: t2, lots: l2 },
   ]
 }
-
-// Claude · № 13,980 13-Oct (owner: Codex P2 on #1348 "TP money from held lots"; claude-builder).
-// The display ladder stays on the opened lots; the MONEY at the targets is what
-// the lots held now would earn. When the broker's held lots differ from the
-// opened lots, a level already taken (done) earns nothing more, and the held
-// lots go to the levels still open: all of them to a single open level, split
-// the same way tpLadder splits when two are open.
-// Claude · № 13,983 13-Oct (owner: Codex P2 #2 "Drop taken levels first"; claude-builder).
-// A taken level is dropped BEFORE the equal-lots shortcut: the bot's own
-// scale-out rewrites trades.volume to the residual, so held == recorded there
-// while TP1 is already done. With no broker reading, the recorded lots stand in.
-export function heldMoneyLadder(tps, heldLots, openedLots) {
-  if (!tps) return tps
-  const lots = heldLots ?? openedLots
-  const held = Number(lots)
-  if (lots == null || !Number.isFinite(held) || held <= 0) return tps
-  const anyDone = tps.some(t => t.done)
-  const opened = Number(openedLots)
-  if (!anyDone && openedLots != null && Number.isFinite(opened) && Math.abs(held - opened) < 1e-9) return tps
-  const open = tps.filter(t => !t.done)
-  if (open.length === 2) return tpLadder(open[0].price, open[1].price, held)
-  const level = open[0] ?? tps[tps.length - 1]
-  return [{ ...level, lots: held }]
-}
