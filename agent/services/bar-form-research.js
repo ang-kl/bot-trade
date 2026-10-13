@@ -134,6 +134,8 @@ export function barFormPlan(body = {}, { research = loadResearchConfig(), thresh
   return {
     plan: {
       cfg, overridden: ov.overridden, configFile: research.file, forms: formsFrom(cfg).map(f => f.form), symbolIds, strategies: strategiesFor(strategies).map(s => s.key),
+      // № 14,524 (NASA-6): the confirm block is judged by the owner's replay bar.
+      replayThresholds: thresholds?.replay ?? null,
       segments, maxSegments, minSample, minSampleSource: b.minSample == null ? 'agent/config/tick-validation.json traded.minTrades' : 'request', side, keepCache: b.keepCache === true, dryRun: b.dryRun === true, note, crossCheck, limits, cellBound,
       backtestOpts: { minConviction: b.minConviction == null ? undefined : Number(b.minConviction), minRr: b.minRr == null ? undefined : Number(b.minRr) },
     },
@@ -312,7 +314,7 @@ export async function startBarFormResearch(db, body = {}, { actor = null, now = 
     const w = new workerCtor(workerFile, { workerData: {
       abortFlag,
       stream: { names, sides: sidesUsed, secret, destDir, keepCache: plan.keepCache, symbolIds: plan.symbolIds, maxSymbols: plan.symbolIds ? plan.symbolIds.length : (plan.cfg.maxSymbolsPerRun ?? null), cfg: plan.cfg, crossCheckSymbolIds: plan.crossCheck, limits: plan.limits },
-      evaluate: { symbolNames, strategies: plan.strategies, cfg: plan.cfg, minSample: plan.minSample, regimes, backtestOpts: Object.fromEntries(Object.entries(plan.backtestOpts).filter(([, v]) => v !== undefined)) },
+      evaluate: { symbolNames, strategies: plan.strategies, cfg: plan.cfg, minSample: plan.minSample, regimes, replayThresholds: plan.replayThresholds, backtestOpts: Object.fromEntries(Object.entries(plan.backtestOpts).filter(([, v]) => v !== undefined)) },
     } })
     j.worker = w
     w.on('message', m => {

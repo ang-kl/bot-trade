@@ -6,11 +6,11 @@
 // research loader, and the per-cell evaluation.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodeHeader, encodeRecord, FLAGS, KIND } from '../lib/tick-segment.js'
-import { processSegments, evaluateSeries, checkAfterEvaluation, quotesFromSegment, splitRuns, regimeAt, formsFrom, timeframeLabel, strategiesFor, RECORDER_ONLY_GAPS, EXCLUDED_STRATEGIES } from './bar-form-research-core.js'
+import { processSegments, evaluateSeries, checkAfterEvaluation, quotesFromSegment, splitRuns, regimeAt, formsFrom, timeframeLabel, strategiesFor, RECORDER_ONLY_GAPS, EXCLUDED_STRATEGIES, chronologicalCutoff, trainConfirmSelection, splitTrades } from './bar-form-research-core.js'
 import { RECORDER_ONLY_GAPS as TICK_RESEARCH_RECORDER_ONLY_GAPS } from './tick-research-run.js'
 import { timeBars } from '../lib/tick-bars.js'
 
@@ -208,4 +208,77 @@ test('Codex P1s on #1312: the symbol cap holds in the loop; a breach reached by 
   const ok = { observed: { maxRssBytes: 0, runtimeMs: 0 }, breach: null, aborted: false }
   checkAfterEvaluation(ok, { limits: { workerMemoryMb: 1, maxRuntimeMs: 100 }, startedMs: 0, now: () => 10, memoryRssBytes: () => 1 })
   assert.equal(ok.breach, null)
+})
+
+// Claude · № 14,524 14-Oct (owner: "start NASA-5 and NASA-6"; NASA assessment
+// §3 / §6.8: select on training data, confirm on untouched chronological data;
+// claude-builder). The thresholds are the owner's replay bar
+// (agent/config/tick-validation.json replay, read below, not restated); the
+// cell figures are self-derived fixtures.
+const REPLAY = JSON.parse(readFileSync(new URL('../config/tick-validation.json', import.meta.url), 'utf8')).replay
+const stats = (usable, expectancyLowerR, extra = {}) => ({ usable, trades: usable, expectancyR: expectancyLowerR + 0.1, expectancyLowerR, profitFactorR: 1.5, maxDrawdownR: 3, ...extra })
+const cell = (strategy, train, confirm, straddling = 0) => ({ symbol: 'AAA', strategy, form: 'time_60000ms', split: { train, confirm, straddling } })
+
+test('NASA-6: the cutoff is a share of the valid-bar time span; invalid bars and a missing fraction give none', () => {
+  const series = new Map([[1, [{ all: [{ t: 0 }, { t: 400, invalid: 'gap' }, { t: 1000 }] }]], [2, [{ all: [{ t: 200 }, { t: 5000, invalid: 'gap' }] }]]])
+  assert.equal(chronologicalCutoff(series, 0.7), 700)
+  for (const bad of [null, 0, 1, 1.5, -0.1, 'x']) assert.equal(chronologicalCutoff(series, bad), null, String(bad))
+  assert.equal(chronologicalCutoff(new Map(), 0.7), null)
+})
+
+test('NASA-6: a trade is TRAIN only when it closed before the cutoff, CONFIRM when it opened at or after it, else counted as spanning', () => {
+  const tr = (entryT, exitT) => ({ entryT, exitT, r: 1 })
+  const s = splitTrades([tr(100, 900), tr(200, 1000), tr(950, 1500), tr(1000, 1200), tr(1100, undefined), tr(300, undefined)], 1000)
+  assert.deepEqual(s.train.map(t => t.entryT), [100], 'exit 1000 is not before the cutoff')
+  assert.deepEqual(s.confirm.map(t => t.entryT), [1000, 1100], 'opened at or after the cutoff')
+  assert.equal(s.straddling, 3, '200→1000 and 950→1500 span it; an open trade before it is neither')
+  assert.equal(splitTrades([tr(1, 2)], null), null)
+})
+
+test('NASA-6: selection reads the train block only; the confirm block is judged by the owner\'s replay bar', () => {
+  assert.equal(REPLAY.minTestTrades, 10); assert.equal(REPLAY.minProfitFactor, 1.3)
+  const cells = [
+    cell('best_on_train', stats(40, 0.30), stats(15, 0.05)),
+    cell('second_on_train', stats(40, 0.20), stats(15, -0.10, { profitFactorR: 1.1 })),
+    // The best confirm figures of all, but a weak train: it must not be selected over the others.
+    cell('best_on_confirm', stats(40, 0.01), stats(30, 0.90, { profitFactorR: 3 })),
+    cell('thin_confirm', stats(40, 0.15), stats(4, 0.50)),
+    cell('too_few_train', stats(10, 0.99), stats(40, 0.99)),
+    { symbol: 'AAA', strategy: 'unsplit', form: 'time_60000ms' },
+  ]
+  const v = trainConfirmSelection(cells, { cutoffMs: 1_000, trainFraction: 0.7, minSample: 30, top: 3, thresholds: REPLAY })
+  assert.equal(v.state, 'split'); assert.equal(v.selectedOn, 'train')
+  assert.deepEqual(v.rows.map(r => r.strategy), ['best_on_train', 'second_on_train', 'thin_confirm'], 'ranked by the train lower bound; the confirm block never ranks')
+  assert.equal(v.variantsTested, 5, 'every split cell is a variant tested'); assert.equal(v.candidates, 4, 'under minSample train trades is no candidate')
+  const by = Object.fromEntries(v.rows.map(r => [r.strategy, r]))
+  assert.equal(by.best_on_train.verdict, 'CONFIRMED')
+  assert.equal(by.second_on_train.verdict, 'NOT_CONFIRMED')
+  assert.deepEqual(by.second_on_train.reasons, ['profit factor 1.1 under 1.3', 'expectancy lower bound -0.1R under 0R'])
+  assert.equal(by.thin_confirm.verdict, 'CONFIRM_INSUFFICIENT')
+  assert.equal(v.confirmed, 1); assert.equal(v.thresholdsSource, 'agent/config/tick-validation.json replay')
+  assert.match(v.uncertainty, /normal approximation/); assert.match(v.uncertainty, /not a power design/)
+  // Changing only confirm figures never changes what is selected.
+  const shuffled = cells.map(c => c.split ? { ...c, split: { ...c.split, confirm: stats(50, -1) } } : c)
+  assert.deepEqual(trainConfirmSelection(shuffled, { cutoffMs: 1_000, minSample: 30, top: 3, thresholds: REPLAY }).rows.map(r => r.strategy), ['best_on_train', 'second_on_train', 'thin_confirm'])
+  assert.equal(trainConfirmSelection(cells, { cutoffMs: 1_000, minSample: 30, top: 3 }).rows[0].verdict, 'THRESHOLDS_UNSET')
+  assert.equal(trainConfirmSelection(cells, { cutoffMs: null, minSample: 30 }).state, 'not_split')
+})
+
+test('NASA-6: evaluateSeries splits every replayed cell at one cutoff — train closes before it, confirm opens at or after it, the rest counted', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'bfr-core-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const files = writeSegments(dir, [{ start: T0, seconds: 3600 }, { start: T0 + 3_600_000, seconds: 3600 }, { start: T0 + 7_200_000, seconds: 3600 }])
+  const { series } = await processSegments({ names: files, destDir: dir, cfg: CFG })
+  const cfg = { ...CFG, validation: { trainFraction: 0.5, selectTop: 5 } }
+  const { cells, summary } = evaluateSeries({ series, symbolNames: { 1: 'AAA', 2: 'BBB' }, strategies: ['donchian_breakout', 'vwap_trend'], cfg, minSample: 1, backtestOpts: { minConviction: 0, minRr: 1 }, replayThresholds: REPLAY })
+  const cutoff = chronologicalCutoff(series, 0.5)
+  assert.ok(Number.isFinite(cutoff))
+  const replayed = cells.filter(c => c.verdict === 'OK' || c.verdict === 'INSUFFICIENT')
+  assert.ok(replayed.length > 0 && replayed.every(c => c.split), 'every replayed cell carries its split')
+  for (const c of replayed) {
+    assert.equal((c.split.train.trades ?? 0) + (c.split.confirm.trades ?? 0) + c.split.straddling, c.trades, `${c.strategy} ${c.form}: the three blocks partition the trades`)
+  }
+  assert.equal(summary.validation.state, 'split'); assert.equal(summary.validation.cutoffMs, cutoff)
+  assert.equal(summary.leaderboardWindow, 'in_sample_full_window')
+  const unsplit = evaluateSeries({ series, symbolNames: { 1: 'AAA', 2: 'BBB' }, strategies: ['vwap_trend'], cfg: CFG, minSample: 1, backtestOpts: { minConviction: 0, minRr: 1 } })
+  assert.equal(unsplit.summary.validation.state, 'not_split'); assert.ok(unsplit.cells.every(c => !c.split))
 })

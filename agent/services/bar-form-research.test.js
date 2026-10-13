@@ -10,7 +10,7 @@ import { initDB } from '../db.js'
 import { monitorVerdict, barFormPlan, startBarFormResearch, abortBarFormResearch, barFormJobsView, barFormJob, barFormResearchView, persistRun, regimeRowsFor, fastMonitorReading, _resetBarFormJobs, MAX_SEGMENT_NAMES, FAST_MONITOR_PASS_KEY, LIMIT_KEYS } from './bar-form-research.js'
 import { PASS_RECORD_KEY } from './fast-monitor.js'
 import { setState } from '../db.js'
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { acquireResearchSlot, releaseResearchSlot, researchSlot } from './research-slot.js'
@@ -31,6 +31,9 @@ const fresh = () => { _resetBarFormJobs(); if (researchSlot()) releaseResearchSl
 test('barFormPlan: values from the config, overrides recorded, the baseline required, bad inputs refused by name', () => {
   const cfg = loadResearchConfig().barForm
   const p = barFormPlan({}).plan
+  // № 14,524 (NASA-6): the confirm block is judged by the owner's replay bar, read from tick-validation.json.
+  assert.deepEqual(p.replayThresholds, JSON.parse(readFileSync(new URL('../config/tick-validation.json', import.meta.url), 'utf8')).replay)
+  assert.equal(p.cfg.validation.trainFraction, 0.7)
   assert.deepEqual(p.cfg.timeBarsMs, cfg.timeBarsMs); assert.deepEqual(p.overridden, []); assert.equal(p.minSample, 30); assert.match(p.minSampleSource, /tick-validation/)
   assert.ok(p.forms.includes('time_60000ms')); assert.ok(!p.strategies.includes('tsmom_long'))
   const o = barFormPlan({ timeBarsMs: [60000, 15000], maxSilenceMs: 1000, minSample: 5, symbolIds: ['1', 2, 'x', 2], strategies: ['rsi_meanrev'], side: 'cpp_exec_demo', maxSegments: 2, note: 'n' }, { knownSides: ['cpp_exec', 'cpp_exec_demo'] }).plan

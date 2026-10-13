@@ -69,6 +69,11 @@
       "_note": "Amendment area 2: predeclared tolerances for the broker cross-check (our tick-built 1m bars against the broker's M1 trendbars). closeTolerancePoints: a close within this many broker points (1e-5 price units) counts as matching; ratioTolerance: our Donchian volume ratio (bar v over the prior-20 average) counts as agreeing with the broker's when the absolute difference is at most this; the gate decision (ratio ≥ the rule's 1.2, read from agent/services/donchian-breakout.js) is compared exactly. Residual differences are reported either way.",
       "closeTolerancePoints": 20,
       "ratioTolerance": 0.15
+    },
+    "validation": {
+      "_note": "Claude · № 14,524 14-Oct (owner: \"start NASA-5 and NASA-6\"; NASA assessment §3: select on training data, confirm on untouched chronological data). trainFraction: the share of the run's valid-bar time span used to SELECT (rank) cells; the rest is the untouched CONFIRM block, judged by agent/config/tick-validation.json replay (the owner's bar, not restated here). A trade spanning the cutoff is in neither block and counted. selectTop: how many train-ranked cells are carried to confirmation. 0.7 is a research choice (self-derived, not an owner value): it leaves 30% of a 2–4 week window, a few days, for confirmation. Remove the block or set trainFraction outside (0, 1) and a run reports 'not_split'.",
+      "trainFraction": 0.7,
+      "selectTop": 20
     }
   }
 }

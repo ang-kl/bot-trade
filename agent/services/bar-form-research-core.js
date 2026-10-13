@@ -319,9 +319,17 @@ export function regimeAt(rows, ms) {
  * (symbol, form, strategy); each run of valid bars is replayed apart and
  * the trades are pooled. Returns the cells and a summary.
  */
-export function evaluateSeries({ series, symbolNames = {}, strategies = null, cfg, minSample, regimes = {}, backtestOpts = {} }) {
+export function evaluateSeries({ series, symbolNames = {}, strategies = null, cfg, minSample, regimes = {}, backtestOpts = {}, replayThresholds = null }) {
   const strats = strategiesFor(strategies)
   const cells = []
+  // Claude · № 14,524 14-Oct (owner: "start NASA-5 and NASA-6"; NASA §6.8,
+  // assessment §3 "select on training data, confirm on untouched
+  // chronological data"; claude-builder). One chronological cutoff over the
+  // whole run: a trade that opens and closes before it is TRAIN, one that
+  // opens at or after it is CONFIRM, one that spans it is in neither
+  // (counted). Selection reads only train; the confirm figures are reported
+  // for what was selected and never feed the ranking.
+  const cutoffMs = chronologicalCutoff(series, cfg.validation?.trainFraction)
   for (const [id, forms] of series) {
     const symbol = symbolNames[id] || symbolNames[String(id)] || null
     const regimeRows = symbol ? (regimes[symbol] || []) : []
@@ -344,6 +352,8 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
         const mid = Math.floor(trades.length / 2)
         const byRegime = {}
         for (const t of trades) { const k = regimeAt(regimeRows, t.entryT); (byRegime[k] ||= []).push(t) }
+        const blocks = splitTrades(trades, cutoffMs)
+        const split = blocks && { train: computeRStats(blocks.train), confirm: computeRStats(blocks.confirm), straddling: blocks.straddling }
         const rs = trades.map(t => t.r).filter(Number.isFinite)
         const mean = rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : null
         const sd = rs.length > 1 ? Math.sqrt(rs.reduce((a, r) => a + (r - mean) ** 2, 0) / rs.length) : null
@@ -353,6 +363,7 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
           byHalf: { first: computeRStats(trades.slice(0, mid)), second: computeRStats(trades.slice(mid)) },
           byRegime: Object.fromEntries(Object.entries(byRegime).map(([k, v]) => [k, computeRStats(v)])),
           mdeR: sd != null && rs.length >= 2 ? round3(2 * sd / Math.sqrt(rs.length)) : null,
+          ...(split ? { split } : {}),
           note: [f.kind === 'time' && f.ms % 60_000 ? `timeframe label '${f.timeframe}' is sub-minute: a strategy that parses it reads no time cap` : null, f.kind === 'tick' ? `label 'tick' (no nominal time handed to the strategy; nominal ${f.nominalTimeframe}); v is bar speed (ticks/s), not a quote count` : null, trades.length < minSample ? `${trades.length} trade(s) under the ${minSample} floor` : null].filter(Boolean).join('; ') || null,
         })
       }
@@ -362,5 +373,70 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
   for (const c of cells) byVerdict[c.verdict] = (byVerdict[c.verdict] || 0) + 1
   const leaderboard = cells.filter(c => c.verdict === 'OK' && Number.isFinite(c.rStats?.expectancyLowerR)).sort((a, b) => b.rStats.expectancyLowerR - a.rStats.expectancyLowerR).slice(0, 20)
     .map(c => ({ symbol: c.symbol ?? c.symbolId, strategy: c.strategy, form: c.form, trades: c.trades, expectancyR: c.rStats.expectancyR, expectancyLowerR: c.rStats.expectancyLowerR, profitFactorR: c.rStats.profitFactorR, mdeR: c.mdeR }))
-  return { cells, summary: { cells: cells.length, byVerdict, leaderboard, minSample, strategies: strats.map(s => s.key) } }
+  return { cells, summary: { cells: cells.length, byVerdict, leaderboard, leaderboardWindow: 'in_sample_full_window', minSample, strategies: strats.map(s => s.key),
+    validation: trainConfirmSelection(cells, { cutoffMs, trainFraction: cfg.validation?.trainFraction ?? null, minSample, top: cfg.validation?.selectTop ?? 20, thresholds: replayThresholds }) } }
+}
+
+/**
+ * № 14,524 (NASA-6): one cell's trades at the cutoff. TRAIN closed before it
+ * (a trade with no exit time cannot be shown to have closed, so it is not
+ * train); CONFIRM opened at or after it; the rest span it and are counted.
+ */
+export function splitTrades(trades, cutoffMs) {
+  if (cutoffMs == null) return null
+  const train = trades.filter(t => Number.isFinite(t.exitT) && t.exitT < cutoffMs)
+  const confirm = trades.filter(t => Number.isFinite(t.entryT) && t.entryT >= cutoffMs)
+  return { train, confirm, straddling: trades.length - train.length - confirm.length }
+}
+
+/**
+ * № 14,524 (NASA-6): the chronological cutoff at `trainFraction` of the run's
+ * valid-bar time span (earliest to latest valid bar over every symbol and
+ * form), or null when no fraction is declared or there are no bars.
+ */
+export function chronologicalCutoff(series, trainFraction) {
+  const f = Number(trainFraction)
+  if (!(f > 0 && f < 1)) return null
+  let lo = Infinity, hi = -Infinity
+  for (const [, forms] of series ?? []) {
+    for (const form of forms) for (const b of form.all ?? []) if (!b.invalid && Number.isFinite(b.t)) { if (b.t < lo) lo = b.t; if (b.t > hi) hi = b.t }
+  }
+  return Number.isFinite(lo) && hi > lo ? Math.floor(lo + f * (hi - lo)) : null
+}
+
+/**
+ * № 14,524 (NASA-6): select on train, confirm on the untouched remainder.
+ * Candidates are cells with at least `minSample` train trades, ranked by the
+ * train expectancy lower bound; the top `top` are the selection. Each is then
+ * judged on its CONFIRM trades against the owner's replay thresholds
+ * (agent/config/tick-validation.json replay: minTestTrades, minProfitFactor,
+ * maxDrawdownR, minExpectancyLowerR — the bar the tick replay already judges
+ * its out-of-sample TEST block by). Every candidate counts as a variant tested.
+ */
+export function trainConfirmSelection(cells, { cutoffMs, trainFraction, minSample, top = 20, thresholds = null } = {}) {
+  if (cutoffMs == null) return { state: 'not_split', reason: 'agent/config/research.json barForm.validation.trainFraction is not set (0 < f < 1)' }
+  const tested = cells.filter(c => c.split)
+  const candidates = tested.filter(c => (c.split.train.usable ?? 0) >= minSample && Number.isFinite(c.split.train.expectancyLowerR))
+  const selected = [...candidates].sort((a, b) => b.split.train.expectancyLowerR - a.split.train.expectancyLowerR).slice(0, top)
+  const judge = cf => {
+    if (!thresholds) return { verdict: 'THRESHOLDS_UNSET', reasons: ['agent/config/tick-validation.json replay thresholds were not supplied'] }
+    const reasons = []
+    if ((cf.usable ?? 0) < thresholds.minTestTrades) return { verdict: 'CONFIRM_INSUFFICIENT', reasons: [`${cf.usable ?? 0} confirm trade(s) under ${thresholds.minTestTrades}`] }
+    if (!(cf.profitFactorR >= thresholds.minProfitFactor)) reasons.push(`profit factor ${cf.profitFactorR ?? 'n/a'} under ${thresholds.minProfitFactor}`)
+    if (!(cf.maxDrawdownR <= thresholds.maxDrawdownR)) reasons.push(`max drawdown ${cf.maxDrawdownR}R over ${thresholds.maxDrawdownR}R`)
+    if (!(cf.expectancyLowerR >= thresholds.minExpectancyLowerR)) reasons.push(`expectancy lower bound ${cf.expectancyLowerR}R under ${thresholds.minExpectancyLowerR}R`)
+    return { verdict: reasons.length ? 'NOT_CONFIRMED' : 'CONFIRMED', reasons }
+  }
+  const rows = selected.map(c => ({ symbol: c.symbol ?? c.symbolId, strategy: c.strategy, form: c.form,
+    train: { trades: c.split.train.usable, expectancyR: c.split.train.expectancyR, expectancyLowerR: c.split.train.expectancyLowerR, profitFactorR: c.split.train.profitFactorR },
+    confirm: { trades: c.split.confirm.usable ?? 0, expectancyR: c.split.confirm.expectancyR ?? null, expectancyLowerR: c.split.confirm.expectancyLowerR ?? null,
+      profitFactorR: c.split.confirm.profitFactorR ?? null, maxDrawdownR: c.split.confirm.maxDrawdownR ?? null },
+    straddling: c.split.straddling, ...judge(c.split.confirm) }))
+  return {
+    state: 'split', cutoffMs, cutoff: new Date(cutoffMs).toISOString(), trainFraction, selectedOn: 'train',
+    variantsTested: tested.length, candidates: candidates.length, selected: rows.length,
+    confirmed: rows.filter(r => r.verdict === 'CONFIRMED').length, thresholds, thresholdsSource: thresholds ? 'agent/config/tick-validation.json replay' : null,
+    rows,
+    uncertainty: 'expectancyLowerR is mean − 1.96·sd/√n, a normal approximation that assumes independent trades; trades of one cell can be dependent, so it is optimistic. mdeR is 2·sd/√n, an approximation, not a power design. Selecting the best of variantsTested candidates overstates the winner on train; only the confirm figures speak for a selected cell, and they are in R, not money.',
+  }
 }

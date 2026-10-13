@@ -70,6 +70,11 @@ export function loadResearchConfig({ file = RESEARCH_CONFIG_FILE } = {}) {
       // { strategyKey: ms } — only positive integers survive; a garbage entry is dropped, never guessed.
       designFloorMs: Object.fromEntries(Object.entries(bf.designFloorMs && typeof bf.designFloorMs === 'object' ? bf.designFloorMs : {}).filter(([k, v]) => /^[a-z0-9_]{1,64}$/.test(k) && posInt(v))),
       crossCheck: { closeTolerancePoints: posInt(bf.crossCheck?.closeTolerancePoints) ? bf.crossCheck.closeTolerancePoints : null, ratioTolerance: finite(bf.crossCheck?.ratioTolerance) && bf.crossCheck.ratioTolerance >= 0 ? bf.crossCheck.ratioTolerance : null },
+      // Claude · № 14,524 14-Oct (owner: "start NASA-5 and NASA-6"; claude-builder):
+      // the chronological train/confirm split (bar-form-research-core.js
+      // trainConfirmSelection). A fraction outside (0, 1) is null: no split, said so.
+      validation: { trainFraction: finite(bf.validation?.trainFraction) && bf.validation.trainFraction > 0 && bf.validation.trainFraction < 1 ? bf.validation.trainFraction : null,
+        selectTop: posInt(bf.validation?.selectTop) ? bf.validation.selectTop : null },
       // Amendment area 1: the run's declared limits; a missing one is null and the job refuses to start.
       limits: (() => {
         const l = bf.limits && typeof bf.limits === 'object' ? bf.limits : {}
