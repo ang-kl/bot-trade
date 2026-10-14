@@ -11,6 +11,7 @@ import { managePendingOrders, persistFilledTrade } from './pending-orders.js'
 import { reconcilePositions } from './reconciler.js'
 import { encodeLabel, tagLabelWithIntent, LABEL_VERSION } from '../lib/trade-labels.js'
 import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
+import { lotsToVolume } from '../lib/lot-sizing.js'
 
 // ---------------------------------------------------------------------------
 // A RETIRED PRODUCER IS REFUSED AT THE FENCE (20-09-2026, owner: "retire the
@@ -783,4 +784,37 @@ test('a fill whose label carries the intent tag (not the marker) is found by the
   const t = db.prepare(`SELECT * FROM trades`).get()
   assert.equal(t.ctrader_position_id, '42')
   assert.equal(t.volume, 0.25, 'lots sent')
+})
+
+// Claude · № 14,706 14-Oct (owner: "Fix both in a small follow-up PR", Codex
+// P2s on #1371; claude-builder). Expected outcomes: persistFilledTrade's own
+// deadline rule (fillTimeCapAt, counted from the broker's open time), and the
+// NASA-3 contract that the row records the lots SENT (lot-sizing.js snaps the
+// approved lots to the broker's volume step before sending).
+test('a linked adopted fill takes the strategy\'s holding deadline from the broker\'s open time', async () => {
+  const db = partialFillDb()
+  db.prepare(`UPDATE pending_orders SET time_cap_minutes = 240`).run()
+  const openedMs = Date.parse('2026-10-14T10:00:00Z')
+  const pos = units => pfPos(units).map(p => ({ ...p, tradeData: { ...p.tradeData, openTimestamp: openedMs } }))
+  reconcilePositions(db, pos(1_000_000), [{ orderId: 888 }], (k, v) => setState(db, k, v), { accountId: PF_ACCT })
+  assert.equal(db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE status = 'active'`).get().time_cap_at, null, 'the adopted monitor row carries no deadline')
+  const fx = makeDeps({ reconcile: { order: [], position: pos(2_500_000) } })
+  const res = await managePendingOrders(db, { ...CREDS, accountId: PF_ACCT }, SYMBOL_MAP, fx.deps)
+  assert.equal(res.filled, 1)
+  assert.equal(db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE status = 'active'`).get().time_cap_at,
+    new Date(openedMs + 240 * 60_000).toISOString())
+})
+
+test('the resting row records the lots sent after the broker\'s volume-step snap, not the approved figure', async () => {
+  const db = freshDb()
+  const fx = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  fx.deps.risk.evaluateTrade = () => ({ approved: true, adjusted_volume: 0.017 })
+  fx.deps.sizing = {
+    getVolumeMeta: async () => ({ lotSize: 10_000_000, minVolume: 100_000, stepVolume: 100_000 }),
+    lotsToVolume,
+  }
+  const res = await managePendingOrders(db, CREDS, SYMBOL_MAP, fx.deps)
+  assert.equal(res.placed, 1)
+  assert.equal(fx.calls.placed[0].volume, 100_000, '0.017 lots snapped to the 0.01-lot step')
+  assert.equal(db.prepare(`SELECT volume FROM pending_orders`).get().volume, 0.01, 'the row holds what was sent')
 })
