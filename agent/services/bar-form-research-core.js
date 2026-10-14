@@ -27,6 +27,7 @@ import { readSegment, toQuoteEvents } from '../lib/tick-segment.js'
 import { timeBars, tickBars, nominalTickCount, refusedByDesignFloor } from '../lib/tick-bars.js'
 import { runBacktest, computeRStats, computeStats } from '../scripts/backtest-fib.js'
 import { STRATEGY_REGISTRY } from './strategies.js'
+import { expectancyLowerR as bootstrapLowerR } from '../lib/tick-replay-sim.js'
 
 export const VERDICTS = Object.freeze(['OK', 'INSUFFICIENT', 'REFUSED_DESIGN_FLOOR', 'NO_BARS'])
 /** The backtest's own warm-up (backtest-fib.js WARMUP_BARS) plus one: a run shorter than minBars + this cannot decide once. */
@@ -355,7 +356,7 @@ export function evaluateSeries({ series, symbolNames = {}, strategies = null, cf
         const blocks = splitTrades(trades, cutoffMs)
         // Codex P1 on #1365: the split is judged against the owner's replay bar, whose evidence is net R,
         // so train and confirm read R after the backtest's cost (the full-window rStats above stay gross, unchanged).
-        const split = blocks && { rBasis: 'net_of_cost', train: computeRStats(netRTrades(blocks.train)), confirm: computeRStats(netRTrades(blocks.confirm)), straddling: blocks.straddling }
+        const split = blocks && { rBasis: 'net_of_cost', train: blockStats(blocks.train), confirm: blockStats(blocks.confirm), straddling: blocks.straddling }
         const rs = trades.map(t => t.r).filter(Number.isFinite)
         const mean = rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : null
         const sd = rs.length > 1 ? Math.sqrt(rs.reduce((a, r) => a + (r - mean) ** 2, 0) / rs.length) : null
@@ -395,6 +396,18 @@ export function netRTrades(trades) {
     const ok = Number.isFinite(t.pnlPct) && Number.isFinite(t.entry) && Number.isFinite(t.risk) && t.risk > 0
     return { ...t, r: ok ? Math.round((t.pnlPct * t.entry / (100 * t.risk)) * 1000) / 1000 : null }
   })
+}
+
+/**
+ * Claude · № 14,586 14-Oct (owner "go" on NASA-6 batch 2, Codex P2 on #1365;
+ * claude-builder). A split block's net-R stats plus bootstrapLowerR: the
+ * replay's own statistic (lib/tick-replay-sim.js expectancyLowerR, seeded
+ * bootstrap 5th percentile of mean R), the one tick-validation.json
+ * replay.minExpectancyLowerR is defined on.
+ */
+export function blockStats(trades) {
+  const net = netRTrades(trades)
+  return { ...computeRStats(net), bootstrapLowerR: bootstrapLowerR(net.map(t => t.r)) }
 }
 
 export function splitTrades(trades, cutoffMs) {
@@ -441,20 +454,21 @@ export function trainConfirmSelection(cells, { cutoffMs, trainFraction, minSampl
     const pfUnbounded = cf.profitFactorR == null && (cf.losses ?? 0) === 0 && (cf.wins ?? 0) > 0
     if (!pfUnbounded && !(cf.profitFactorR >= thresholds.minProfitFactor)) reasons.push(`profit factor ${cf.profitFactorR ?? 'n/a'} under ${thresholds.minProfitFactor}`)
     if (!(cf.maxDrawdownR <= thresholds.maxDrawdownR)) reasons.push(`max drawdown ${cf.maxDrawdownR}R over ${thresholds.maxDrawdownR}R`)
-    if (!(cf.expectancyLowerR >= thresholds.minExpectancyLowerR)) reasons.push(`expectancy lower bound ${cf.expectancyLowerR}R under ${thresholds.minExpectancyLowerR}R`)
+    // The threshold is defined on the replay's bootstrap bound, not the normal approximation (Codex P2 on #1365).
+    if (!(cf.bootstrapLowerR >= thresholds.minExpectancyLowerR)) reasons.push(`bootstrap expectancy lower bound ${cf.bootstrapLowerR ?? 'n/a'}R under ${thresholds.minExpectancyLowerR}R`)
     return { verdict: reasons.length ? 'NOT_CONFIRMED' : 'CONFIRMED', reasons }
   }
   const rows = selected.map(c => ({ symbol: c.symbol ?? c.symbolId, strategy: c.strategy, form: c.form,
     train: { trades: c.split.train.usable, expectancyR: c.split.train.expectancyR, expectancyLowerR: c.split.train.expectancyLowerR, profitFactorR: c.split.train.profitFactorR },
     confirm: { trades: c.split.confirm.usable ?? 0, expectancyR: c.split.confirm.expectancyR ?? null, expectancyLowerR: c.split.confirm.expectancyLowerR ?? null,
       profitFactorR: c.split.confirm.profitFactorR ?? null, profitFactorUnbounded: c.split.confirm.profitFactorR == null && (c.split.confirm.losses ?? 0) === 0 && (c.split.confirm.wins ?? 0) > 0,
-      maxDrawdownR: c.split.confirm.maxDrawdownR ?? null },
+      maxDrawdownR: c.split.confirm.maxDrawdownR ?? null, bootstrapLowerR: c.split.confirm.bootstrapLowerR ?? null },
     straddling: c.split.straddling, ...judge(c.split.confirm) }))
   return {
     state: 'split', cutoffMs, cutoff: new Date(cutoffMs).toISOString(), trainFraction, selectedOn: 'train',
     rBasis: 'net_of_cost', variantsTested: tested.length, candidates: candidates.length, selected: rows.length,
     confirmed: rows.filter(r => r.verdict === 'CONFIRMED').length, thresholds, thresholdsSource: thresholds ? 'agent/config/tick-validation.json replay' : null,
     rows,
-    uncertainty: 'expectancyLowerR is mean − 1.96·sd/√n, a normal approximation that assumes independent trades; trades of one cell can be dependent, so it is optimistic. mdeR is 2·sd/√n, an approximation, not a power design. Selecting the best of variantsTested candidates overstates the winner on train; only the confirm figures speak for a selected cell, and they are in R, not money.',
+    uncertainty: 'The confirm verdict reads bootstrapLowerR, the replay\'s seeded bootstrap 5th percentile of mean R (the statistic tick-validation.json replay.minExpectancyLowerR is defined on); it resamples trades independently, so dependent trades make it optimistic. expectancyLowerR (mean − 1.96·sd/√n, a normal approximation) ranks train and is reported beside it. mdeR is 2·sd/√n, an approximation, not a power design. Selecting the best of variantsTested candidates overstates the winner on train; only the confirm figures speak for a selected cell, and they are in R, not money.',
   }
 }
