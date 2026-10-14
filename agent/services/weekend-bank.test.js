@@ -391,3 +391,17 @@ test('weekend bank: a claim taken for a position that is not banked this pass is
   await runWeekendBank(db, CREDS, [POSV(907, 100)], { deps: volDeps(sent), now: later(60_000) })
   assert.deepEqual(sent, [{ positionId: 907, volume: 100 }], 'the unbanked pass held nothing')
 })
+
+test('weekend bank: a hold that expires while earlier positions are processed is seen as expired in the same pass', async () => {
+  const db = bankDb(); const sent = []
+  let t = FRI_2030.getTime()
+  const clocked = (deps) => ({ ...deps, clock: () => t })
+  // Pass 1 at t0 closes 908; its hold runs to t0 + RECHECK_MS.
+  await runWeekendBank(db, CREDS, [POSV(908, 100)], { deps: clocked(volDeps(sent)), now: FRI_2030 })
+  // Pass 2 starts just before the hold expires; the quote for the first
+  // position (909) takes long enough for 908's hold to expire meanwhile.
+  t = FRI_2030.getTime() + RECHECK_MS - 1_000
+  const slow = clocked({ ...volDeps(sent), wsGetSpotOnce: async () => { t += 5_000; return { bid: 370, ask: 370.1 } } })
+  await runWeekendBank(db, CREDS, [POSV(909, 100), POSV(908, 40)], { deps: slow, now: FRI_2030 })
+  assert.deepEqual(sent, [{ positionId: 908, volume: 100 }, { positionId: 909, volume: 100 }, { positionId: 908, volume: 40 }], '908 is re-checked by the clock at its turn, not the pass start')
+})

@@ -229,13 +229,18 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
     // The clock at each write: the injected `now` in tests, the real clock in
     // production — a long position list must not age the hold before it is
     // written (Codex P2 on #1370).
-    const clock = () => (now ? nowMs : Date.now())
+    // Read per position, not once per pass (Codex P2 round 4 on #1370): the
+    // pass awaits a quote and a close for each earlier position, and a hold
+    // that expires meanwhile must be seen as expired. deps.clock is the test
+    // seam; the injected `now` stays fixed for the market-hours reading.
+    const clock = () => (deps?.clock ? deps.clock() : now ? nowMs : Date.now())
     let retry = false
     const prevRaw = getState(db, key)
     try {
       const prev = JSON.parse(prevRaw || 'null')
-      if (prev && nowMs < prev.until) {
-        if (nowMs < (prev.recheckAt ?? 0)) continue
+      const t = clock()
+      if (prev && t < prev.until) {
+        if (t < (prev.recheckAt ?? 0)) continue
         retry = true
       }
     } catch { /* fresh */ }
