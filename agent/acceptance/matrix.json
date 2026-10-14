@@ -1055,13 +1055,7 @@
     {
       "form": "time_cap",
       "event": "stale_snapshot",
-      "state": "covered",
-      "receipts": [
-        {
-          "file": "agent/services/general-partial-execution.test.js",
-          "title": "full exit: a position missing only from the cached snapshot is closed at the broker, not written off as already closed"
-        }
-      ]
+      "state": "gap"
     },
     {
       "form": "time_cap",
