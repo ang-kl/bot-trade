@@ -16,7 +16,8 @@ import { noteRiskConfigChanges } from '../services/risk-config-history.js'
 import { wsGetTrendbarsBatch, wsGetSpotOnce, isAmbiguousSubmitError } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from '../lib/trade-labels.js'
-import { noPremise, premiseFor, premiseTrigger } from '../lib/premise.js'
+import { noPremise, premiseFor, premiseTrigger, premiseAtFill } from '../lib/premise.js'
+import { anchorBracketToFill } from '../lib/fill-anchor.js' // № 14,758: the manual order's fill-anchored stop
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
 import { partialCloseVolume } from '../lib/partial-close-volume.js'
@@ -6678,7 +6679,8 @@ export default function actionsRouter(db, deps = {}) {
         label: entryIntentId ? tagLabelWithIntent(structuredLabel, entryIntentId) : structuredLabel,
         accountId, strategy: analysis.strategy || null, timeframe: analysis.timeframe || null,
         thesis: [analysis.consensus_summary || '', capNote].filter(Boolean).join(' — '), initialRisk,
-        invalidationTrigger: synth.invalidation_trigger || analysis.invalidation_trigger || null, timeCap,
+        // № 14,758 (Codex round 2 on #1374): same fill re-check as the auto path.
+        invalidationTrigger: premiseAtFill({ trigger: synth.invalidation_trigger || analysis.invalidation_trigger || noPremise('analysis'), bias: side === 'BUY' ? 'long' : 'short', fill: entryP, sl: slHeld }), timeCap,
       })
 
       console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${sentLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} riskEvent=${riskEventId ?? 'none'}`)
@@ -6915,7 +6917,10 @@ export default function actionsRouter(db, deps = {}) {
       const tradeId = recordManualOrderTrade(db, {
         symbol, side, entryP, entryEstimate: entry, sl: proposal.sl, tp: proposal.tp1, volLots: sentLots, positionId,
         structuredLabel, accountId: creds.accountId, strategy, riskEventId, note: capNote,
-        invalidationTrigger: premiseTrigger(premise),
+        // № 14,758 (Codex round 2 on #1374): the broker anchors the relative stop
+        // to the FILL; re-check the premise against the fill and that stop.
+        invalidationTrigger: premiseAtFill({ trigger: premiseTrigger(premise), bias: side === 'BUY' ? 'long' : 'short', fill: entryP,
+          sl: anchorBracketToFill({ side, proposalEntry: entry, fill: executionPrice, sl: proposal.sl, tp1: proposal.tp1 }).sl }),
       })
 
       console.log(`[actions] Manual UI order: ${side} ${symbol} vol=${sentLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} strategy=${strategy} riskEvent=${riskEventId ?? 'none'}`)

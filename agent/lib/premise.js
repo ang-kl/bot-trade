@@ -74,3 +74,25 @@ export function premiseFields({ bias, entry, sl, level }) {
   const p = premiseFor({ bias, entry, sl, level })
   return { invalidation: p, invalidation_reason: p ? null : 'outside_stop' }
 }
+
+/**
+ * Claude · № 14,758 15-Oct (Codex round 2 on #1374, two P1s; owner: fix in
+ * the PR). The premise is frozen at the signal, but a market order fills
+ * elsewhere and the bracket is re-anchored to the fill. Re-check the band at
+ * the fill: the premise stands only while it is still strictly between the
+ * fill-anchored stop and the fill. A crossed premise would close the trade on
+ * the next tick; a stop past the premise would fire first. Either is recorded
+ * as `unreadable:fill_outside_band` — the trade is kept, the broker stop
+ * governs — never fired, never silent. An unreadable trigger passes through.
+ */
+export function premiseAtFill({ trigger, bias, fill, sl }) {
+  if (!isReadablePremise(trigger)) return trigger || unreadablePremise('unknown')
+  const m = String(trigger).trim().match(/^price\s*([<>])\s*([\d.]+)\s*$/i)
+  const level = Number(m[2])
+  const side = m[1] === '<' ? 'long' : 'short'
+  if (bias && bias !== side) return unreadablePremise('fill_outside_band')
+  if (fill == null || fill === '' || sl == null || sl === '') return trigger // no fill known: the frozen premise stands
+  const f = Number(fill), s = Number(sl)
+  if (!Number.isFinite(f) || !Number.isFinite(s)) return trigger
+  return premiseFor({ bias: side, entry: f, sl: s, level }) ? trigger : unreadablePremise('fill_outside_band')
+}

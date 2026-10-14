@@ -4,7 +4,7 @@
 // that a premise sits between the stop and the entry (§ 14,740·A).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { premiseFor, premiseTrigger, premiseTriggerForSignal, unreadablePremise, noPremise, isReadablePremise } from './premise.js'
+import { premiseFor, premiseTrigger, premiseTriggerForSignal, unreadablePremise, noPremise, isReadablePremise, premiseAtFill } from './premise.js'
 import { _internal } from '../services/position-manager.js'
 
 test('a premise inside the stop becomes a trigger the monitor parses; outside it is dropped with a reason', () => {
@@ -37,4 +37,33 @@ test('absent premises are recorded as reasons the monitor never acts on', () => 
   assert.equal(premiseTriggerForSignal({ strategy: 'vwap_trend', invalidation: null, invalidation_reason: 'outside_stop' }), 'unreadable:outside_stop')
   assert.equal(premiseTriggerForSignal({ strategy: 'vwap_trend' }), 'unreadable:vwap_trend')
   assert.equal(premiseTriggerForSignal(null), 'unreadable:no_signal')
+})
+
+// Claude · № 14,758 15-Oct (Codex round 2 on #1374: the fill moves, the bracket
+// re-anchors; the frozen premise must still sit inside the fill-anchored band).
+test('premiseAtFill keeps a premise still inside the fill-anchored band, and records one the fill crossed or the stop passed', () => {
+  // long, premise 1.095; signal entry 1.1, stop 1.09 (band 1.09 < 1.095 < 1.1)
+  assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'long', fill: 1.1002, sl: 1.0902 }), 'price<1.095', 'a small slip keeps it')
+  assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'long', fill: 1.0949, sl: 1.0849 }), 'unreadable:fill_outside_band', 'the fill crossed the premise')
+  assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'long', fill: 1.106, sl: 1.096 }), 'unreadable:fill_outside_band', 'the anchored stop passed the premise')
+  // short mirror
+  assert.equal(premiseAtFill({ trigger: 'price>1.105', bias: 'short', fill: 1.0998, sl: 1.1098 }), 'price>1.105')
+  assert.equal(premiseAtFill({ trigger: 'price>1.105', bias: 'short', fill: 1.1051, sl: 1.1151 }), 'unreadable:fill_outside_band')
+  // a side mismatch is never a premise; unreadable passes through; no fill known → the frozen premise stands
+  assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'short', fill: 1.1, sl: 1.11 }), 'unreadable:fill_outside_band')
+  assert.equal(premiseAtFill({ trigger: 'none_manual', bias: 'long', fill: 1.1, sl: 1.09 }), 'none_manual')
+  assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'long', fill: null, sl: 1.09 }), 'price<1.095')
+  assert.equal(premiseAtFill({ trigger: null, bias: 'long', fill: 1.1, sl: 1.09 }), 'unreadable:unknown')
+})
+
+// The wiring: every market-fill writer re-checks at the fill (CLAUDE.md
+// failure mode #4 — a repair nothing calls). Comments stripped before matching.
+test('the auto fill, the manual order and the execute-trade writers all re-check the premise at the fill', async () => {
+  const { readFileSync } = await import('node:fs')
+  const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  const actions = strip(readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8'))
+  assert.match(loop, /premiseAtFill\(\{ trigger: synth\.invalidation_trigger[^\n]*fill: entryP, sl: slP \}\)/)
+  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: premiseTrigger\(premise\)[^\n]*fill: entryP,\s*\n\s*sl: anchorBracketToFill\(/)
+  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: synth\.invalidation_trigger \|\| analysis\.invalidation_trigger[^\n]*fill: entryP, sl: slHeld \}\)/)
 })

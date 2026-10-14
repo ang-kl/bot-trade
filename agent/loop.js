@@ -28,7 +28,7 @@ import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } fr
 import { runWithClosedMarketHold } from './lib/closed-market-hold.js'
 import { exitMarketHours } from './services/exit-hours.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from './lib/trade-labels.js'
-import { noPremise } from './lib/premise.js'
+import { noPremise, premiseAtFill } from './lib/premise.js'
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
@@ -1438,7 +1438,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         synth.synthesis || '',
         initialRisk,
         // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder): never null/undefined — a readable premise, or the reason there is none.
-        synth.invalidation_trigger || noPremise(synth.source || 'signal'),
+        // № 14,758 (Codex round 2 on #1374): re-checked at the FILL against the
+        // fill-anchored stop — a premise the fill crossed, or that the anchored
+        // stop passed, is recorded as outside the band, never fired.
+        premiseAtFill({ trigger: synth.invalidation_trigger || noPremise(synth.source || 'signal'), bias: side === 'BUY' ? 'long' : 'short', fill: entryP, sl: slP }),
         timeCap,
         synth.strategy || null,
         parsedLabel.source,
