@@ -153,7 +153,13 @@
     {
       "form": "pending_fill",
       "event": "stale_snapshot",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/order-writers-l2a.test.js",
+          "title": "W9: a fill the broker book never showed as working is filled, not expired — and evidence on another account or the opposite side is refused"
+        }
+      ]
     },
     {
       "form": "pending_fill",
@@ -163,7 +169,13 @@
     {
       "form": "pending_fill",
       "event": "storage_failure",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/order-writers-l2a.test.js",
+          "title": "W7: the closed-market sweep RECORDS a plan it failed to write, and still settles the fill"
+        }
+      ]
     },
     {
       "form": "pending_fill",
@@ -279,7 +291,13 @@
     {
       "form": "execute_analysis",
       "event": "stale_snapshot",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/routes/execute-trade-route.test.js",
+          "title": "B3: an analysis the market has already run through its stop is refused after the gate, recorded, and nothing is sent — long and short"
+        }
+      ]
     },
     {
       "form": "execute_analysis",
@@ -541,7 +559,13 @@
     {
       "form": "adoption_reopen",
       "event": "storage_failure",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/reconciler.test.js",
+          "title": "a dedup sweep that throws reports dedupError instead of an empty success"
+        }
+      ]
     },
     {
       "form": "adoption_reopen",
@@ -731,7 +755,13 @@
     {
       "form": "stop_loss",
       "event": "duplicate",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/stop-policy-controller.test.js",
+          "title": "single flight: a second pass started while one is still running joins it and stamps nothing beside it"
+        }
+      ]
     },
     {
       "form": "stop_loss",
@@ -784,7 +814,13 @@
     {
       "form": "take_profit",
       "event": "delayed",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/protection-audit-path.test.js",
+          "title": "a timed-out target amend stays locked while the next sweep rechecks other accounts"
+        }
+      ]
     },
     {
       "form": "take_profit",
@@ -800,7 +836,13 @@
     {
       "form": "take_profit",
       "event": "duplicate",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/target-restore.test.js",
+          "title": "THE SAME POSITION IS NOT RETRIED EVERY SWEEP"
+        }
+      ]
     },
     {
       "form": "take_profit",
@@ -811,7 +853,13 @@
     {
       "form": "take_profit",
       "event": "stale_snapshot",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/tp-suggest.test.js",
+          "title": "a target that appeared in the meantime is not overwritten"
+        }
+      ]
     },
     {
       "form": "take_profit",
@@ -901,7 +949,13 @@
     {
       "form": "keeper_full_close",
       "event": "storage_failure",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/profit-keeper-receipts.test.js",
+          "title": "a retained full-close receipt recovers after ordinary reconciliation closes its monitor"
+        }
+      ]
     },
     {
       "form": "keeper_full_close",
@@ -1001,7 +1055,13 @@
     {
       "form": "time_cap",
       "event": "stale_snapshot",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/general-partial-execution.test.js",
+          "title": "full exit: a position missing only from the cached snapshot is closed at the broker, not written off as already closed"
+        }
+      ]
     },
     {
       "form": "time_cap",
@@ -1016,7 +1076,13 @@
     {
       "form": "time_cap",
       "event": "foreign_identity",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/closer-horizon-deferral.test.js",
+          "title": "F1 loss guardian (maxHoldHours backstop): another account's plan on the same position number does not defer"
+        }
+      ]
     }
   ]
 }
