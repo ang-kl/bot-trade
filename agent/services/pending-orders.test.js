@@ -818,3 +818,18 @@ test('the resting row records the lots sent after the broker\'s volume-step snap
   assert.equal(fx.calls.placed[0].volume, 100_000, '0.017 lots snapped to the 0.01-lot step')
   assert.equal(db.prepare(`SELECT volume FROM pending_orders`).get().volume, 0.01, 'the row holds what was sent')
 })
+
+// Claude · № 14,716 15-Oct (owner: "fix it", Codex P2 on #1372; claude-builder).
+// The reconcile shape the reconciler supports with the id only under tradeData.
+test('the held position is found when its id sits only under tradeData, so the deadline counts from the broker\'s open time', async () => {
+  const db = partialFillDb()
+  db.prepare(`UPDATE pending_orders SET time_cap_minutes = 240`).run()
+  const openedMs = Date.parse('2026-10-14T10:00:00Z')
+  const pos = units => pfPos(units).map(({ positionId, ...p }) => ({ ...p, tradeData: { ...p.tradeData, positionId, openTimestamp: openedMs } }))
+  reconcilePositions(db, pfPos(1_000_000), [{ orderId: 888 }], (k, v) => setState(db, k, v), { accountId: PF_ACCT })
+  const fx = makeDeps({ reconcile: { order: [], position: pos(2_500_000) } })
+  const res = await managePendingOrders(db, { ...CREDS, accountId: PF_ACCT }, SYMBOL_MAP, fx.deps)
+  assert.equal(res.filled, 1)
+  assert.equal(db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE status = 'active'`).get().time_cap_at,
+    new Date(openedMs + 240 * 60_000).toISOString())
+})

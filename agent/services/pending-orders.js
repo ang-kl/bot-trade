@@ -390,8 +390,11 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     // intent on this account IS its fill — linked, never persisted twice.
     const linked = row.intent_id ? findLimitFill(db, row) : { trade: null }
     if (linked.trade && (acctKey == null || linked.trade.account_id == null || String(linked.trade.account_id) === acctKey)) {
-      const heldPos = linked.trade.ctrader_position_id != null
-        ? brokerPositions.find(p => p.positionId != null && String(p.positionId) === String(linked.trade.ctrader_position_id).replace(/\.0+$/, '')) ?? null
+      // № 14,716 (Codex P2 on #1372): the id may sit at the top level or only
+      // under tradeData (the reconciler reads both); one spelling via normPosId.
+      const heldId = normPosId(linked.trade.ctrader_position_id)
+      const heldPos = heldId != null
+        ? brokerPositions.find(p => normPosId(posField(p, 'positionId')) === heldId) ?? null
         : null
       linkAdoptedFill(db, row, linked.trade, heldPos)
       if (linked.trade.ctrader_position_id != null) adoptedIds.add(String(linked.trade.ctrader_position_id))
