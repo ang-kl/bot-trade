@@ -1869,6 +1869,12 @@ export function initDB(dbPath, startupDiagnosticOptions) {
   if (!poColNames.has('time_cap_minutes')) {
     db.exec("ALTER TABLE pending_orders ADD COLUMN time_cap_minutes INTEGER");
   }
+  // Claude · № 14,757 15-Oct (Codex P1 on #1374; owner: fix in the PR): the
+  // signal's premise (`price<X`/`price>X`, lib/premise.js) rides the resting
+  // row so the fill carries it — the fill used to stamp none_pending_fill.
+  if (!poColNames.has('invalidation_trigger')) {
+    db.exec("ALTER TABLE pending_orders ADD COLUMN invalidation_trigger TEXT");
+  }
 
   // Inverted Cup & Handle (owner-directed 2026-07-22): diagnostics rows now
   // come from either direction — tag which one so they don't read as

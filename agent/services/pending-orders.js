@@ -24,7 +24,7 @@ import { recordTradePlan, recordPlanWriteFailure, exitRuleFor } from './trade-pl
 import { horizonForStrategy } from './trade-horizon.js'
 import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
 import { findLimitFill } from './closed-market-limits.js'
-import { noPremise } from '../lib/premise.js'
+import { noPremise, premiseTriggerForSignal } from '../lib/premise.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -289,7 +289,9 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
       row.tp ?? null,
       `Pending fib 61.8% limit filled at broker (order ${row.order_id})`,
       initialRisk,
-      noPremise('pending_fill'), // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder)
+      // Claude · № 14,757 15-Oct (Codex P1 on #1374): the premise the resting
+      // row was placed with; a legacy row without one says so.
+      row.invalidation_trigger || noPremise('pending_fill'),
       timeCapAt,
       strategy,
       parsedLabel.source,
@@ -749,8 +751,8 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       // resting order cannot be scoped by anything downstream, and the reads
       // that must scope it silently widen to every account instead.
       db.prepare(`
-        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id, time_cap_minutes, strategy, intent_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?, ?, ?)
+        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id, time_cap_minutes, strategy, intent_id, invalidation_trigger)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?, ?, ?, ?)
       `).run(
         symbol,
         timeframe || null,
@@ -773,6 +775,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         // (persistFilledTrade) instead of assuming the literal.
         signal.strategy || proposal.strategy || 'fib_618_fade',
         placedIntentId,
+        premiseTriggerForSignal(signal), // № 14,757: the premise rides the resting row
       )
       try {
         const { recordSubmitted } = await import('./opportunity-disposition.js')

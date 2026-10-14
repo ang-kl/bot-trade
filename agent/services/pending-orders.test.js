@@ -837,3 +837,32 @@ test('the held position is found when its id sits only under tradeData, so the d
   assert.equal(db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE status = 'active'`).get().time_cap_at,
     new Date(openedMs + 240 * 60_000).toISOString())
 })
+
+// Claude · № 14,757 15-Oct (Codex P1 on #1374; owner: fix in the PR; claude-builder).
+// The signal's premise rides the resting row and reaches the fill; a legacy row
+// without one is recorded as none_pending_fill, never undefined.
+test('a placed setup stores its premise on the resting row, and the fill carries it to the monitored row', async () => {
+  const db = freshDb()
+  const fx = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: { ...SIGNAL, invalidation: { op: '<', price: 1.097 } } }] })
+  const res = await managePendingOrders(db, CREDS, SYMBOL_MAP, fx.deps)
+  assert.equal(res.placed, 1)
+  const row = db.prepare(`SELECT * FROM pending_orders`).get()
+  assert.equal(row.invalidation_trigger, 'price<1.097')
+  // the order fills: the premise is on the monitored row
+  const fill = makeDeps({ reconcile: { order: [], position: [{ positionId: 77, price: 1.0999, tradeData: { symbolId: 1, tradeSide: 'BUY', label: 'ap|v1|fib_618_fade|high|LDN|4h|-|pending-fib' } }] } })
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, fill.deps)
+  assert.equal(db.prepare(`SELECT invalidation_trigger FROM monitored_positions`).get().invalidation_trigger, 'price<1.097')
+})
+
+test('a legacy resting row with no premise fills as none_pending_fill; a signal with none records the reason', async () => {
+  const db = freshDb()
+  db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, status)
+              VALUES ('EURUSD','4h','888',1,1.1,1.095,1.11,0.02,'working')`).run()
+  const { deps } = makeDeps({ reconcile: { order: [], position: [{ positionId: 42, price: 1.0999, tradeData: { symbolId: 1, tradeSide: 'BUY', label: 'ap|v1|fib_618_fade|high|LDN|4h|-|pending-fib' } }] } })
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  assert.equal(db.prepare(`SELECT invalidation_trigger FROM monitored_positions`).get().invalidation_trigger, 'none_pending_fill')
+  const db2 = freshDb()
+  const fx = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  await managePendingOrders(db2, CREDS, SYMBOL_MAP, fx.deps)
+  assert.equal(db2.prepare(`SELECT invalidation_trigger FROM pending_orders`).get().invalidation_trigger, 'unreadable:fib_618_fade')
+})
