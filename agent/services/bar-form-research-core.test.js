@@ -10,8 +10,9 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync, readFileSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodeHeader, encodeRecord, FLAGS, KIND } from '../lib/tick-segment.js'
-import { processSegments, evaluateSeries, checkAfterEvaluation, quotesFromSegment, splitRuns, regimeAt, formsFrom, timeframeLabel, strategiesFor, RECORDER_ONLY_GAPS, EXCLUDED_STRATEGIES, chronologicalCutoff, trainConfirmSelection, splitTrades, netRTrades } from './bar-form-research-core.js'
+import { processSegments, evaluateSeries, checkAfterEvaluation, quotesFromSegment, splitRuns, regimeAt, formsFrom, timeframeLabel, strategiesFor, RECORDER_ONLY_GAPS, EXCLUDED_STRATEGIES, chronologicalCutoff, trainConfirmSelection, splitTrades, netRTrades, blockStats } from './bar-form-research-core.js'
 import { computeRStats } from '../scripts/backtest-fib.js'
+import { expectancyLowerR } from '../lib/tick-replay-sim.js'
 import { RECORDER_ONLY_GAPS as TICK_RESEARCH_RECORDER_ONLY_GAPS } from './tick-research-run.js'
 import { timeBars } from '../lib/tick-bars.js'
 
@@ -217,7 +218,7 @@ test('Codex P1s on #1312: the symbol cap holds in the loop; a breach reached by 
 // (agent/config/tick-validation.json replay, read below, not restated); the
 // cell figures are self-derived fixtures.
 const REPLAY = JSON.parse(readFileSync(new URL('../config/tick-validation.json', import.meta.url), 'utf8')).replay
-const stats = (usable, expectancyLowerR, extra = {}) => ({ usable, trades: usable, expectancyR: expectancyLowerR + 0.1, expectancyLowerR, profitFactorR: 1.5, maxDrawdownR: 3, ...extra })
+const stats = (usable, expectancyLowerR, extra = {}) => ({ usable, trades: usable, expectancyR: expectancyLowerR + 0.1, expectancyLowerR, bootstrapLowerR: expectancyLowerR, profitFactorR: 1.5, maxDrawdownR: 3, ...extra })
 const cell = (strategy, train, confirm, straddling = 0) => ({ symbol: 'AAA', strategy, form: 'time_60000ms', split: { train, confirm, straddling } })
 
 test('NASA-6: the cutoff is a share of the valid-bar time span; invalid bars and a missing fraction give none', () => {
@@ -254,7 +255,7 @@ test('NASA-6: selection reads the train block only; the confirm block is judged 
   const by = Object.fromEntries(v.rows.map(r => [r.strategy, r]))
   assert.equal(by.best_on_train.verdict, 'CONFIRMED')
   assert.equal(by.second_on_train.verdict, 'NOT_CONFIRMED')
-  assert.deepEqual(by.second_on_train.reasons, ['profit factor 1.1 under 1.3', 'expectancy lower bound -0.1R under 0R'])
+  assert.deepEqual(by.second_on_train.reasons, ['profit factor 1.1 under 1.3', 'bootstrap expectancy lower bound -0.1R under 0R'])
   assert.equal(by.thin_confirm.verdict, 'CONFIRM_INSUFFICIENT')
   assert.equal(v.confirmed, 1); assert.equal(v.thresholdsSource, 'agent/config/tick-validation.json replay')
   assert.match(v.uncertainty, /normal approximation/); assert.match(v.uncertainty, /not a power design/)
@@ -286,6 +287,19 @@ test('Codex P2 on #1365: a confirm block with no losing trade and a positive gai
   const flat = stats(15, 0, { profitFactorR: null, wins: 0, losses: 0, maxDrawdownR: 0 })
   const f = trainConfirmSelection([cell('flat', stats(40, 0.3), flat)], { cutoffMs: 1, minSample: 30, thresholds: REPLAY })
   assert.equal(f.rows[0].verdict, 'NOT_CONFIRMED'); assert.deepEqual(f.rows[0].reasons, ['profit factor n/a under 1.3'])
+})
+
+test('NASA-6 batch 2: the confirm block is judged on the replay\'s bootstrap lower bound, not the normal approximation', () => {
+  // 24 wins of +0.4R and one loss of -3R, net of cost (entry 100, risk 1, so net R = pnlPct): PF 3.2, drawdown 3R.
+  // The normal bound reads +0.003R (a pass); the replay's bootstrap reads -0.008R (a fail). Values measured with both functions.
+  const trades = [...Array(24).fill(0.4), -3].map((r, i) => ({ entry: 100, risk: 1, r, pnlPct: r, entryT: i, exitT: i + 1 }))
+  const cf = blockStats(trades)
+  assert.equal(cf.expectancyLowerR, 0.003); assert.equal(cf.bootstrapLowerR, -0.008)
+  assert.equal(cf.bootstrapLowerR, expectancyLowerR(trades.map(t => t.r)), 'the same function and seed the tick replay uses')
+  const v = trainConfirmSelection([cell('skewed', stats(40, 0.3), cf)], { cutoffMs: 1, minSample: 30, thresholds: REPLAY })
+  assert.equal(v.rows[0].verdict, 'NOT_CONFIRMED'); assert.deepEqual(v.rows[0].reasons, ['bootstrap expectancy lower bound -0.008R under 0R'])
+  assert.equal(v.rows[0].confirm.bootstrapLowerR, -0.008)
+  assert.match(v.uncertainty, /bootstrap 5th percentile/)
 })
 
 test('NASA-6: evaluateSeries splits every replayed cell at one cutoff — train closes before it, confirm opens at or after it, the rest counted', async t => {
