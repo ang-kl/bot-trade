@@ -15,7 +15,11 @@
 // operational or financial outcome. Those are separate acceptance states.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { join, relative } from 'node:path'
+import { tmpdir } from 'node:os'
 import * as acorn from 'acorn'
 
 const ROOT = new URL('../../', import.meta.url)
@@ -168,4 +172,66 @@ test('NASA-5 matrix: the receipt check can fail — an absent, commented-out, sk
   ].join('\n'))
   assert.deepEqual([...t].sort(), ["a subtest", 'each first case runs', 'each second runs', 'inside a live suite', "it's here", 'item x', 'item y', 'outer', 'runs with skip false', 'template'])
   assert.throws(() => declaredTitles('test(', 'broken.test.js'), /broken\.test\.js does not parse/)
+})
+
+// Claude · № 14,590 14-Oct (owner "next work": NASA-5 batch 2, the follow-up the
+// owner chose on #1366; claude-builder). Reading the source cannot prove a
+// receipt RUNS: `if (false) test(...)`, a conditional skip or t.skip() in the
+// body all still read as declared. So the receipt files are run once under
+// agent/test-support/passed-tests-reporter.mjs, which prints only tests that
+// passed and actually ran, and every receipt must be among them by file and
+// title (a parameterised title arrives from the runner already expanded).
+const ROOT_PATH = fileURLToPath(ROOT)
+const REPORTER = fileURLToPath(new URL('../test-support/passed-tests-reporter.mjs', import.meta.url))
+// The child must run as its own top-level runner: inside node --test the
+// parent sets NODE_TEST_CONTEXT, and a child that inherits it reports to the
+// parent instead of through this reporter (it printed nothing, so every
+// receipt read as not run).
+const childEnv = () => { const env = { ...process.env }; delete env.NODE_TEST_CONTEXT; return env }
+function passedByFile(files, cwd = ROOT_PATH) {
+  let out
+  try {
+    out = execFileSync(process.execPath, ['--test', `--test-reporter=${REPORTER}`, ...files], { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: childEnv() })
+  } catch (e) {
+    // A failing receipt file still reports what passed; its failures are the
+    // full suite's to name. Anything else (no output at all) is a real error.
+    if (typeof e.stdout !== 'string' || e.stdout === '') throw e
+    out = e.stdout
+  }
+  const ran = new Map()
+  for (const line of out.split('\n')) {
+    if (!line.startsWith('{')) continue
+    const { file, name } = JSON.parse(line)
+    const key = file ? relative(cwd, file).split('\\').join('/') : null
+    if (!ran.has(key)) ran.set(key, new Set())
+    ran.get(key).add(name)
+  }
+  return ran
+}
+
+test('NASA-5 matrix: every receipt ran and passed in the test runner (not skipped, not todo, not dead code)', () => {
+  const receipts = matrix.cells.filter(c => c.state === 'covered').flatMap(c => c.receipts.map(r => ({ cell: `${c.form}×${c.event}`, ...r })))
+  const files = [...new Set(receipts.map(r => r.file))]
+  const ran = passedByFile(files)
+  const notRun = receipts.filter(r => !ran.get(r.file)?.has(r.title)).map(r => `${r.cell}: ${r.file} "${r.title}" did not run and pass`)
+  assert.deepEqual(notRun, [])
+})
+
+test('NASA-5 matrix: the run check can fail — dead code, a skip option, a runtime skip and a todo are not "ran"', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'receipt-ran-'))
+  try {
+    writeFileSync(join(dir, 'probe.test.mjs'), [
+      "import test from 'node:test'",
+      "test('runs', () => {})",
+      "if (false) test('dead code', () => {})",
+      "test('skip option', { skip: true }, () => {})",
+      "test('runtime skip', t => { t.skip('off') })",
+      "test('todo option', { todo: true }, () => {})",
+      "test('fails', () => { throw new Error('red') })",
+      "test('parent', async t => { await t.test('child', () => {}) })",
+      "for (const n of ['a', 'b']) test(`each ${n}`, () => {})",
+    ].join('\n'))
+    const ran = passedByFile(['probe.test.mjs'], dir)
+    assert.deepEqual([...ran.get('probe.test.mjs')].sort(), ['child', 'each a', 'each b', 'parent', 'runs'])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
