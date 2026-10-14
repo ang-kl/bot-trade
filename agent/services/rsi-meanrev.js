@@ -34,6 +34,7 @@
 // constant is the first thing to re-measure, not the RSI thresholds.
 import { atr, rsi } from './fib-strategy.js'
 import { parseTimeframe } from '../lib/timeframes.js'
+import { premiseFields } from '../lib/premise.js'
 
 const RSI_PERIOD = 14
 const TROUGH_LOOKBACK = 10 // bars scanned for the washout extreme
@@ -190,6 +191,8 @@ export function computeRsiMeanrev(bars, timeframe, opts = {}) {
     rr,
     timeframe,
     time_cap_minutes: timeCap,
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): the washout extreme itself (the stop pads it by 0.25 ATR).
+    ...premiseFields({ bias, entry, sl, level: bias === 'long' ? Math.min(...window5.map(b => b.l)) : Math.max(...window5.map(b => b.h)) }),
     strategy: 'rsi_meanrev',
     thesis: bias === 'long'
       ? `RSI washed out below 30 and turned back up, and ${TREND_LOOKBACK} bars before this bar price was already above its 50-bar average — buying the dip back to the 20-bar mean (RSI ${round2(rsiPrev)} → ${round2(rsiNow)}).`

@@ -28,6 +28,7 @@ import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } fr
 import { runWithClosedMarketHold } from './lib/closed-market-hold.js'
 import { exitMarketHours } from './services/exit-hours.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from './lib/trade-labels.js'
+import { noPremise } from './lib/premise.js'
 import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
@@ -1436,7 +1437,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         tpP,
         synth.synthesis || '',
         initialRisk,
-        synth.invalidation_trigger || null,
+        // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder): never null/undefined — a readable premise, or the reason there is none.
+        synth.invalidation_trigger || noPremise(synth.source || 'signal'),
         timeCap,
         synth.strategy || null,
         parsedLabel.source,
@@ -1590,7 +1592,7 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     strategy: synth.strategy || null,
     risk_note: synth.risk_note || null,
     minion_reports: JSON.stringify(result.reports || []),
-    invalidation_trigger: synth.invalidation_trigger || null,
+    invalidation_trigger: synth.invalidation_trigger || noPremise(synth.source || 'signal'),
     time_cap_minutes: synth.time_cap_minutes ?? null,
     analyzed_at: new Date().toISOString(),
     scan_id: scanId,

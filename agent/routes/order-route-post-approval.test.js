@@ -126,7 +126,7 @@ function assertAccounted(db, label) {
 test('manual-order: a refusal after the gate approved is recorded as a post-approval refusal, not a silent drop', async t => {
   const db = fresh(); t.after(() => db.close())
   const { post, broker } = await serve(t, db)
-  const res = await post('manual-order', { account: A, symbol: SYM, side: 'BUY', lots: 0.01, sl: 1.09, tp: 1.135 })
+  const res = await post('manual-order', { account: A, symbol: SYM, side: 'BUY', lots: 0.01, sl: 1.09, invalidation: 1.095, tp: 1.135 })
   assert.equal(res.vetoed, true, JSON.stringify(res).slice(0, 300))
   assert.match(res.reason, /^guard_halt: /)
   assert.equal(broker.sent.includes(PT.NEW_ORDER_REQ), false, 'nothing was sent')
@@ -206,7 +206,7 @@ test('the health audit counts a refused write-ahead attempt once, so a real sile
 test('a refusal BEFORE the gate stays a plain veto: a typed lots below the broker minimum was never approved', async t => {
   const db = fresh(); t.after(() => db.close())
   const { post } = await serve(t, db)
-  const res = await post('manual-order', { account: A, symbol: SYM, side: 'BUY', lots: 0.001, sl: 1.09, tp: 1.135 })
+  const res = await post('manual-order', { account: A, symbol: SYM, side: 'BUY', lots: 0.001, sl: 1.09, invalidation: 1.095, tp: 1.135 })
   assert.equal(res.reason, 'below_min_volume: 0.001 lots < broker minimum (0.01 lots)')
   const all = rows(db)
   assert.equal(all.length, 1)
@@ -246,7 +246,7 @@ const approvalChecks = db => JSON.parse(db.prepare('SELECT checks_json FROM risk
 test('lot fix: a pad order with no lots is sized by the risk budget, not a hidden 0.01', async t => {
   const db = fresh(); t.after(() => db.close())
   const { post } = await serve(t, db)
-  const res = await post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 })
+  const res = await post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135 })
   assert.match(res.reason, /^guard_halt: /, JSON.stringify(res).slice(0, 300))
   const c = approvalChecks(db)
   assert.ok(c.risk_based_volume > 0.01, `the budget buys ${c.risk_based_volume} lots`)
@@ -258,7 +258,7 @@ test('lot fix: a pad order with no lots is sized by the risk budget, not a hidde
 test('lot fix: a typed lots is still the ceiling the trader set', async t => {
   const db = fresh(); t.after(() => db.close())
   const { post } = await serve(t, db)
-  await post('manual-order', { account: A, symbol: SYM, side: 'BUY', lots: 0.02, sl: 1.09, tp: 1.135 })
+  await post('manual-order', { account: A, symbol: SYM, side: 'BUY', lots: 0.02, sl: 1.09, invalidation: 1.095, tp: 1.135 })
   const c = approvalChecks(db)
   assert.ok(c.risk_based_volume > 0.02)
   assert.equal(c.adjusted_volume, 0.02)
@@ -279,4 +279,20 @@ test('lot fix: an analysis executed with no watchlist Max lots is sized by the r
   await post('execute-trade', { analysisId: Number(insert()) })
   c = approvalChecks(db)
   assert.equal(c.adjusted_volume, 0.02, 'the watchlist Max lots is the ceiling')
+})
+
+// Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; owner choice § 14,744:
+// the pad requires a premise; claude-builder). Expected outcomes: the route's
+// own 400 contract for the stop (the premise is required the same way) and the
+// trader's rule that a premise sits between the stop and the entry (§ 14,740·A).
+test('manual-order: the premise price is required, must be a price, and must sit between the stop and the entry', async t => {
+  const db = fresh(); t.after(() => db.close())
+  setState(db, 'exec_guard_json', JSON.stringify({ halt: false }))
+  const { post } = await serve(t, db)
+  const base = { account: A, symbol: SYM, side: 'BUY', lots: 0.01, sl: 1.09, tp: 1.135 }
+  assert.match((await post('manual-order', base)).error, /invalidation .*required/)
+  assert.match((await post('manual-order', { ...base, invalidation: 'abc' })).error, /positive price/)
+  assert.match((await post('manual-order', { ...base, invalidation: 1.085 })).error, /must sit between the stop \(1\.09\) and the entry/, 'beyond the stop')
+  assert.match((await post('manual-order', { ...base, invalidation: 1.12 })).error, /must sit between/, 'on the profit side')
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM trades').get().c, 0, 'nothing written on a refused premise')
 })

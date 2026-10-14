@@ -93,3 +93,40 @@ test('per-strategy R:R floor: rsi2 is 1.0, others fall back to the caller defaul
   assert.equal(minRrFor('fib_618_fade', 1.5), 1.5)
   assert.equal(minRrFor('unknown_key', 1.2), 1.2)
 })
+
+// Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder): the
+// strategy states its premise as a price the monitor reads, strictly between
+// the stop and the entry (lib/premise.js). Expected outcome from the trader's
+// method (§ 14,740·A) and the monitor's own parser; not self-derived.
+import { premiseTrigger as _premiseTrigger } from '../lib/premise.js'
+import { _internal as _pm } from './position-manager.js'
+function assertPremise(sig, level = null) {
+  assert.ok(sig && sig.invalidation, `premise present: ${JSON.stringify(sig?.invalidation)} (${sig?.invalidation_reason})`)
+  const { op, price } = sig.invalidation
+  if (sig.bias === 'long') { assert.equal(op, '<'); assert.ok(sig.sl < price && price < sig.entry, `${sig.sl} < ${price} < ${sig.entry}`) }
+  else { assert.equal(op, '>'); assert.ok(sig.entry < price && price < sig.sl, `${sig.entry} < ${price} < ${sig.sl}`) }
+  if (level != null) assert.ok(Math.abs(price - level) < 1e-6, `level ${price} is ${level}`)
+  const t = _premiseTrigger(sig.invalidation)
+  const parsed = _pm.parsePriceTrigger(t)
+  assert.ok(parsed, `monitor reads ${t}`)
+  assert.equal(parsed.fired(sig.bias === 'long' ? price - 1e-9 : price + 1e-9), true)
+  assert.equal(parsed.fired(sig.entry), false, 'not fired at entry')
+}
+
+test('premise: the 100-bar trend line beyond the 1.5 ATR stop is recorded as outside the stop, never undefined', () => {
+  // In these fixtures the washout is 5 steps deep against a 1.5×ATR stop, so
+  // SMA100 sits beyond the stop: the stop is the premise ("tail insurance",
+  // the file's own words) and the row says why no separate level exists.
+  for (const sig of [computeRsi2(uptrendWashout(), '1h'), computeRsi2(downtrendSpike(), '4h')]) {
+    assert.ok(sig)
+    assert.equal(sig.invalidation, null)
+    assert.equal(sig.invalidation_reason, 'outside_stop')
+    assert.equal(_premiseTrigger(sig.invalidation), null)
+  }
+})
+
+test('premise: a trend line INSIDE the stop is the premise', () => {
+  // A shallow washout (2 steps) leaves SMA100 between the stop and the entry.
+  const sig = computeRsi2(uptrendWashout(120, 1, 2), '1h')
+  if (sig) assertPremise(sig)
+})

@@ -174,7 +174,7 @@ test('read-only: GET /state/preorder (scan and manual) writes nothing and sends 
   let scan, manual
   try {
     scan = await withCreds(() => fetch(`${srv.base}/state/preorder?scanId=${id}&account=${A}`).then(r => r.json()))
-    manual = await withCreds(() => fetch(`${srv.base}/state/preorder?account=${A}&symbol=${SYM}&side=BUY&lots=0.2&sl=1.09&tp=1.135`).then(r => r.json()))
+    manual = await withCreds(() => fetch(`${srv.base}/state/preorder?account=${A}&symbol=${SYM}&side=BUY&lots=0.2&sl=1.09&tp=1.135&invalidation=1.095`).then(r => r.json()))
   } finally { trap.restore() }
 
   assert.equal(scan.ok, true, JSON.stringify(scan).slice(0, 300))
@@ -226,16 +226,16 @@ test('missing credentials and missing data say "cannot check" with the reason â€
   delete process.env.CTRADER_CLIENT_ID; delete process.env.CTRADER_CLIENT_SECRET
   t.after(() => { if (saved.id !== undefined) process.env.CTRADER_CLIENT_ID = saved.id; if (saved.secret !== undefined) process.env.CTRADER_CLIENT_SECRET = saved.secret })
   let fetched = 0
-  const r = await preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }, { fetchEntry: async () => { fetched++; return 1.1 } })
+  const r = await preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135 }, { fetchEntry: async () => { fetched++; return 1.1 } })
   assert.equal(r.ok, false)
   assert.equal(r.cannotCheck, 'cannot check: cTrader credentials not configured')
   assert.equal(fetched, 0, 'no broker read without credentials')
   await withCreds(async () => {
-    const nobars = await preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09 }, { fetchEntry: async () => null })
+    const nobars = await preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095 }, { fetchEntry: async () => null })
     assert.equal(nobars.cannotCheck, `cannot check: could not fetch a current price for ${SYM}`)
-    const thrown = await preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09 }, { fetchEntry: async () => { throw new Error('timeout') } })
+    const thrown = await preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095 }, { fetchEntry: async () => { throw new Error('timeout') } })
     assert.match(thrown.cannotCheck, /^cannot check: could not fetch a current price for EURUSD \(timeout\)$/)
-    const unknownSym = await preorderCheck(db, { account: A, symbol: 'NOPE', side: 'BUY', sl: 1.09 }, { fetchEntry: async () => 1 })
+    const unknownSym = await preorderCheck(db, { account: A, symbol: 'NOPE', side: 'BUY', sl: 1.09, invalidation: 1.095 }, { fetchEntry: async () => 1 })
     assert.match(unknownSym.cannotCheck, /^cannot check: symbol_not_on_account: NOPE/)
   })
   // A scan row whose levels are not retained (not the current batch, no analysis).
@@ -253,7 +253,7 @@ test('missing credentials and missing data say "cannot check" with the reason â€
 // and equivalence is claimed only for the selected account's own record.
 test('manual: the dry run names the lot record on file, whose it is, and whether the route will size the same', async (t) => {
   const db = fresh({ accounts: [A, B] }); t.after(() => db.close())
-  const input = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }
+  const input = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135 }
   const check = (i = input) => withCreds(() => preorderCheck(db, i, { fetchEntry: async () => 1.1 }))
   const bare = await check()
   assert.equal(bare.ok, true, bare.cannotCheck || bare.error)
@@ -329,7 +329,7 @@ test('manual: a TYPED lots below the broker minimum is refused by the route befo
   const post = (body) => withCreds(() => fetch(`${srv.base}/actions/manual-order`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   }).then(r => r.json()))
-  const tiny = { account: A, symbol: SYM, side: 'BUY', lots: 0.001, sl: 1.09, tp: 1.135 }
+  const tiny = { account: A, symbol: SYM, side: 'BUY', lots: 0.001, sl: 1.09, invalidation: 1.095, tp: 1.135 }
   const res = await post(tiny)
   assert.equal(res.vetoed, true, JSON.stringify(res).slice(0, 300))
   assert.equal(res.reason, 'below_min_volume: 0.001 lots < broker minimum (0.01 lots)')
@@ -345,7 +345,7 @@ test('manual: a TYPED lots below the broker minimum is refused by the route befo
   assert.equal(dry.approved, false)
   assert.deepEqual({ stage: dry.firstBlock.stage, reason: dry.firstBlock.reason }, { stage: 'broker_min_lot', reason: res.reason })
   // lots OMITTED: the default is floored at the broker minimum, not refused
-  const omitted = await withCreds(() => preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }, { fetchEntry: async () => 1.1 }))
+  const omitted = await withCreds(() => preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135 }, { fetchEntry: async () => 1.1 }))
   assert.equal(omitted.firstBlock?.stage === 'broker_min_lot', false)
   assert.equal(omitted.gate.approved, true, omitted.gate.vetoReason)
   assert.equal(omitted.gate.adjustedVolume >= 0.01, true)
@@ -382,7 +382,7 @@ test('lot fix: a lots that is SUPPLIED but not a positive number is a 400 at the
   const post = (body) => withCreds(() => fetch(`${srv.base}/actions/manual-order`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   }).then(async r => ({ status: r.status, body: await r.json() })))
-  const base = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135 }
+  const base = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135 }
   for (const lots of [0, -1, 'abc', '0', '-0.5', true, 'NaN', 'Infinity', [0.1]]) {
     const res = await post({ ...base, lots })
     assert.equal(res.status, 400, `route, lots ${JSON.stringify(lots)}: ${JSON.stringify(res.body).slice(0, 200)}`)
@@ -418,7 +418,7 @@ const routeProposal = ({ entry, sl, tp, lots, side = 'BUY', accountId = A }) => 
 // strategy order as manual while the real order was not).
 test('manual: a registry strategy on the input is the proposal\'s strategy, and the endpoint accepts the parameter', async (t) => {
   const db = fresh(); t.after(() => db.close())
-  const base = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135, lots: 0.2 }
+  const base = { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135, lots: 0.2 }
   const keyed = await withCreds(() => preorderCheck(db, { ...base, strategy: 'vwap_trend' }, { fetchEntry: async () => 1.1 }))
   assert.equal(keyed.ok, true, keyed.cannotCheck || keyed.error)
   assert.equal(keyed.proposal.strategy, 'vwap_trend')
@@ -428,18 +428,18 @@ test('manual: a registry strategy on the input is the proposal\'s strategy, and 
 })
 
 const FIXTURES = [
-  { name: 'approved', setup: () => {}, input: { sl: 1.09, tp: 1.135, lots: 0.2 }, expect: { approved: true } },
-  { name: 'bad_rr', setup: () => {}, input: { sl: 1.09, tp: 1.11, lots: 0.2 }, expect: { approved: false, head: /^bad_rr 1\.00<3/ } },
-  { name: 'max_positions', setup: (db) => fillBook(db, 5), input: { sl: 1.09, tp: 1.135, lots: 0.2 }, expect: { approved: false, head: /^max_positions=5\/5/ } },
+  { name: 'approved', setup: () => {}, input: { sl: 1.09, invalidation: 1.095, tp: 1.135, lots: 0.2 }, expect: { approved: true } },
+  { name: 'bad_rr', setup: () => {}, input: { sl: 1.09, invalidation: 1.095, tp: 1.11, lots: 0.2 }, expect: { approved: false, head: /^bad_rr 1\.00<3/ } },
+  { name: 'max_positions', setup: (db) => fillBook(db, 5), input: { sl: 1.09, invalidation: 1.095, tp: 1.135, lots: 0.2 }, expect: { approved: false, head: /^max_positions=5\/5/ } },
   {
     name: 'insufficient margin share',
     setup: (db) => setState(db, `acct:${A}:risk_config_json`, JSON.stringify({ maxMarginUsagePct: 0.0003 })),
-    input: { sl: 1.09, tp: 1.135, lots: 0.2 }, expect: { approved: false, head: /^insufficient_margin share/ },
+    input: { sl: 1.09, invalidation: 1.095, tp: 1.135, lots: 0.2 }, expect: { approved: false, head: /^insufficient_margin share/ },
   },
   // Lot fix (owner "Go lot fix", â„– 13,396): blank lots is sized by the risk
   // budget, as the pad says â€” before the fix the route sent 0.01, which the
   // gate read as a ceiling and this fixture expected.
-  { name: 'blank lots sizes by the risk budget (lot fix)', setup: () => {}, input: { sl: 1.09, tp: 1.135 }, expect: { approved: true, aboveLots: 0.01 } },
+  { name: 'blank lots sizes by the risk budget (lot fix)', setup: () => {}, input: { sl: 1.09, invalidation: 1.095, tp: 1.135 }, expect: { approved: true, aboveLots: 0.01 } },
 ]
 
 for (const f of FIXTURES) {
@@ -477,7 +477,7 @@ for (const f of FIXTURES) {
 test('numbers: size, money at risk (USD), share of today\'s stop left, margin share and open/cap come from the gate', async (t) => {
   const db = fresh(); t.after(() => db.close())
   fillBook(db, 2)
-  const out = await withCreds(() => preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135, lots: 0.5 }, { fetchEntry: async () => 1.1 }))
+  const out = await withCreds(() => preorderCheck(db, { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135, lots: 0.5 }, { fetchEntry: async () => 1.1 }))
   const c = out.checks, n = out.numbers
   assert.equal(n.rr, c.rr); assert.equal(n.rr, 3.5)
   assert.equal(n.rrFloor >= 3, true)
@@ -590,7 +590,7 @@ test('manual: the proposal and veto are the ones the real POST /actions/manual-o
   const broker = fakeBroker(1.1)
   _setWebSocketForTests(broker.Socket); t.after(() => _setWebSocketForTests(null))
   const srv = await serve(db); t.after(srv.close)
-  const input = { account: A, symbol: SYM, side: 'BUY', lots: 0.2, sl: 1.09, tp: 1.11 }
+  const input = { account: A, symbol: SYM, side: 'BUY', lots: 0.2, sl: 1.09, invalidation: 1.095, tp: 1.11 }
   const dry = await withCreds(() => preorderCheck(db, input))
   assert.equal(dry.ok, true, dry.cannotCheck || dry.error)
   assert.equal(dry.gate.approved, false)

@@ -16,6 +16,7 @@ import { noteRiskConfigChanges } from '../services/risk-config-history.js'
 import { wsGetTrendbarsBatch, wsGetSpotOnce, isAmbiguousSubmitError } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, tagLabelWithIntent } from '../lib/trade-labels.js'
+import { noPremise, premiseFor, premiseTrigger } from '../lib/premise.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
 import { partialCloseVolume } from '../lib/partial-close-volume.js'
@@ -116,9 +117,26 @@ function positionSide(side) {
   return s === 'BUY' || s === 'LONG' ? 'long' : s === 'SELL' || s === 'SHORT' ? 'short' : side
 }
 
+/**
+ * Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; owner choice
+ * § 14,744: the pad requires a premise; claude-builder). The manual order's
+ * invalidation price: required, numeric, positive. Shared with the pre-order
+ * dry run (services/preorder.js) so the check judges what the route judges.
+ */
+export function manualPremiseCheck(raw) {
+  if (raw == null || raw === '') return { error: 'invalidation (premise price) required — the price at which this trade\'s reason has failed' }
+  const price = Number(raw)
+  if (!Number.isFinite(price) || price <= 0) return { error: 'invalidation must be a positive price' }
+  return { price }
+}
+export function manualPremiseOutsideStop(side, price, sl, entry) {
+  return `invalidation ${price} must sit between the stop (${sl}) and the entry (${entry}) on the ${side === 'BUY' ? 'downside' : 'upside'}`
+}
+
 export function recordManualOrderTrade(db, {
   symbol, side, entryP, entryEstimate = null, sl, tp = null, volLots, positionId = null,
   structuredLabel, accountId = null, strategy = MANUAL_ORDER_STRATEGY, riskEventId = null, note = null,
+  invalidationTrigger = null,
 } = {}) {
   const strat = String(strategy || '').trim() || MANUAL_ORDER_STRATEGY
   const acct = accountId != null ? String(accountId) : null
@@ -138,10 +156,12 @@ export function recordManualOrderTrade(db, {
     const id = Number(tradeInsert.lastInsertRowid)
     db.prepare(`
       INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
-        thesis, initial_risk, strategy, source, label_raw, account_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active')
+        thesis, initial_risk, strategy, source, label_raw, account_id, status, invalidation_trigger)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active', ?)
     `).run(symbol, id, positionSide(side), entryP, sl, tp,
-      note ? `Manual order via UI — ${note}` : 'Manual order via UI', Math.abs(entryP - sl), strat, structuredLabel, acct)
+      note ? `Manual order via UI — ${note}` : 'Manual order via UI', Math.abs(entryP - sl), strat, structuredLabel, acct,
+      // Claude · № 14,745 15-Oct (PR-1): the trader's premise, or the record that none was given.
+      invalidationTrigger || noPremise('manual'))
     return id
   })()
   // The plan is the order as entered: the price estimate the gate sized on,
@@ -3511,7 +3531,7 @@ export default function actionsRouter(db, deps = {}) {
         timeframe: null,
         time_cap_minutes: 240,
         synthesis: 'VALIDATION FILL — deliberate end-to-end test of the auto-trade path (owner-fired, 0.01 lot).',
-        invalidation_trigger: null,
+        invalidation_trigger: noPremise('validation_fill'), // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder)
         source: 'validation_fill',
       }
 
@@ -6678,7 +6698,7 @@ export default function actionsRouter(db, deps = {}) {
   // -----------------------------------------------------------------------
   router.post('/manual-order', async (req, res) => {
     try {
-      const { symbol: rawSymbol, side: rawSide, lots, sl, tp, account, strategy: rawStrategy, directionReason: rawDirectionReason } = req.body || {}
+      const { symbol: rawSymbol, side: rawSide, lots, sl, tp, account, strategy: rawStrategy, directionReason: rawDirectionReason, invalidation } = req.body || {}
       const symbol = (rawSymbol || '').toUpperCase().trim()
       const side = String(rawSide || '').toUpperCase()
       // PR-E (owner principle 4): the order pad's strategy, when the trader
@@ -6687,6 +6707,11 @@ export default function actionsRouter(db, deps = {}) {
       if (!symbol) return res.status(400).json({ error: 'symbol required' })
       if (side !== 'BUY' && side !== 'SELL') return res.status(400).json({ error: "side must be 'BUY' or 'SELL'" })
       if (sl == null || !Number.isFinite(Number(sl))) return res.status(400).json({ error: 'sl (stop-loss price) required — no manual orders without a stop' })
+      // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; owner choice § 14,744: the pad requires a premise; claude-builder): the premise — the price at which the trade's reason has failed —
+      // is required on every manual order, and must sit between the stop and
+      // the entry (checked once the entry estimate is known, below).
+      const premiseCheck = manualPremiseCheck(invalidation)
+      if (premiseCheck.error) return res.status(400).json({ error: premiseCheck.error })
       // Only a BLANK lots means risk-based sizing (the lot fix); a supplied
       // lots that is not a positive number is refused here, never read as
       // blank — 0, -1 or 'abc' would otherwise send an uncapped order.
@@ -6722,6 +6747,8 @@ export default function actionsRouter(db, deps = {}) {
       const hvnBars = barsByTf['15m'] || []
       const entry = m1.length > 0 ? m1[m1.length - 1].c : null
       if (entry == null) return res.status(502).json({ error: `Could not fetch a current price for ${symbol}` })
+      const premise = premiseFor({ bias: side === 'BUY' ? 'long' : 'short', entry, sl: Number(sl), level: premiseCheck.price })
+      if (!premise) return res.status(400).json({ error: manualPremiseOutsideStop(side, premiseCheck.price, Number(sl), entry) })
 
       // Claude · № 13,172 11-Oct (ordered № 13,171 "resend the orders";
       // claude-builder). THE BROKER'S OWN LOT RECORD, BEFORE THE GATE. The
@@ -6888,6 +6915,7 @@ export default function actionsRouter(db, deps = {}) {
       const tradeId = recordManualOrderTrade(db, {
         symbol, side, entryP, entryEstimate: entry, sl: proposal.sl, tp: proposal.tp1, volLots: sentLots, positionId,
         structuredLabel, accountId: creds.accountId, strategy, riskEventId, note: capNote,
+        invalidationTrigger: premiseTrigger(premise),
       })
 
       console.log(`[actions] Manual UI order: ${side} ${symbol} vol=${sentLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} strategy=${strategy} riskEvent=${riskEventId ?? 'none'}`)

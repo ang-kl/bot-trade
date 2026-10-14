@@ -62,6 +62,7 @@ test('pendingSetup yields a resting-order signal at the 61.8% level where normal
   assert.equal(pending.strategy, 'fib_618_fade')
   assert.ok(pending.sl < pending.swingA, 'long SL sits below the swing origin')
   assert.equal(pending.tp1, pending.swingB)
+  assertPremise(pending, pending.swingA) // № 14,745: the swing origin is the premise
 })
 
 test('pendingSetup still rejects an invalidated leg', () => {
@@ -90,3 +91,18 @@ test('scanPendingSetups is a no-op on an empty or TF-less matrix', async () => {
     { setups: [], lastClose: {}, errors: [] },
   )
 })
+
+// Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder): premise assertions (see lib/premise.js).
+import { premiseTrigger as _premiseTrigger } from '../lib/premise.js'
+import { _internal as _pm } from './position-manager.js'
+function assertPremise(sig, level = null) {
+  assert.ok(sig && sig.invalidation, `premise present: ${JSON.stringify(sig?.invalidation)} (${sig?.invalidation_reason})`)
+  const { op, price } = sig.invalidation
+  if (sig.bias === 'long') { assert.equal(op, '<'); assert.ok(sig.sl < price && price < sig.entry, `${sig.sl} < ${price} < ${sig.entry}`) }
+  else { assert.equal(op, '>'); assert.ok(sig.entry < price && price < sig.sl, `${sig.entry} < ${price} < ${sig.sl}`) }
+  if (level != null) assert.ok(Math.abs(price - level) < 1e-6, `level ${price} is ${level}`)
+  const parsed = _pm.parsePriceTrigger(_premiseTrigger(sig.invalidation))
+  assert.ok(parsed, 'monitor reads it')
+  assert.equal(parsed.fired(sig.bias === 'long' ? price - 1e-9 : price + 1e-9), true)
+  assert.equal(parsed.fired(sig.entry), false, 'not fired at entry')
+}

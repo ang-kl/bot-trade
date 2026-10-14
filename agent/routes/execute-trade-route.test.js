@@ -229,7 +229,7 @@ test('P1: the trade row records the stop and target the broker placed from the f
   const db = fresh({ halt: false })
   t.after(() => db.close())
   const { post, broker } = await serve(t, db, { close: 1.1, fill: 1.104 })
-  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, tp: 1.135 }) })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
   assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
   const o = broker.orders[0]
   assert.equal(o.relativeStopLoss, 1000); assert.equal(o.relativeTakeProfit, 3500)
@@ -247,7 +247,7 @@ test('P1: with no price in the order answer, the fill is read from the position,
   const db = fresh({ halt: false })
   t.after(() => db.close())
   const { post } = await serve(t, db, { close: 1.1, fill: 1.104, acceptOnly: true })
-  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, tp: 1.135 }) })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
   assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
   assert.equal(res.executionPrice, 1.104, 'the fill read from the position')
   const row = db.prepare('SELECT entry_price, sl_price, tp_price FROM trades').get()
@@ -266,7 +266,7 @@ test('P1: the trade plan keeps the gate\'s levels and risk; only the live rows t
   const db = fresh({ halt: false })
   t.after(() => db.close())
   const { post } = await serve(t, db, { close: 1.1, fill: 1.104, acceptOnly: true })
-  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, tp: 1.135 }) })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
   assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
   const plan = db.prepare('SELECT planned_entry, planned_sl, planned_tp, risk_dist, planned_r FROM trade_plans').get()
   assert.ok(plan, 'a plan was written')
@@ -293,7 +293,7 @@ for (const route of ['execute-trade', 'manual-order']) {
     const { post, broker } = await serve(t, db, { fill: 1.1, maxVolume: 200_000 }) // 0.02 lots at lotSize 10,000,000
     const res = route === 'execute-trade'
       ? await post('execute-trade', { analysisId: analysis(db) })
-      : await post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135, strategy: 'ema_pullback' })
+      : await post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135, strategy: 'ema_pullback' })
     assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
     assert.equal(broker.orders.length, 1)
     assert.equal(broker.orders[0].volume, 200_000, 'the broker received the capped volume')

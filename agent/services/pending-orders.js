@@ -24,6 +24,7 @@ import { recordTradePlan, recordPlanWriteFailure, exitRuleFor } from './trade-pl
 import { horizonForStrategy } from './trade-horizon.js'
 import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
 import { findLimitFill } from './closed-market-limits.js'
+import { noPremise } from '../lib/premise.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -288,7 +289,7 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
       row.tp ?? null,
       `Pending fib 61.8% limit filled at broker (order ${row.order_id})`,
       initialRisk,
-      null,
+      noPremise('pending_fill'), // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder)
       timeCapAt,
       strategy,
       parsedLabel.source,

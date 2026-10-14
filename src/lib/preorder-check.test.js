@@ -8,7 +8,8 @@ import {
   createCheckRunner, verdictLine, preorderLines,
 } from './preorder-check.js'
 
-const order = { symbol: ' eurusd ', side: 'BUY', lots: '0.2', sl: '1.09', tp: '1.135' }
+// Claude · № 14,745 15-Oct (PR-1; owner: the pad requires a premise): `invalidation` rides the body and the check path.
+const order = { symbol: ' eurusd ', side: 'BUY', lots: '0.2', sl: '1.09', tp: '1.135', invalidation: '1.095' }
 const broker = { accountId: '46970949', traderLogin: '5123456' }
 
 describe('padDestination — the primary today; the viewed account only behind the owner\'s switch (D2)', () => {
@@ -34,11 +35,11 @@ describe('padDestination — the primary today; the viewed account only behind t
 describe('manualOrderBody — the pad sends `account` only when routed', () => {
   it('carries `account` when routed', () => {
     const body = manualOrderBody({ order, destination: padDestination({ viewedAccountId: 46130058, broker, routeToViewed: true }) })
-    expect(body).toEqual({ symbol: 'EURUSD', side: 'BUY', lots: 0.2, sl: 1.09, tp: 1.135, account: '46130058' })
+    expect(body).toEqual({ symbol: 'EURUSD', side: 'BUY', lots: 0.2, sl: 1.09, tp: 1.135, invalidation: 1.095, account: '46130058' })
   })
   it('sends no `account` in the portfolio view — the route\'s primary, as before', () => {
     const body = manualOrderBody({ order: { ...order, lots: '', tp: '' }, destination: padDestination({ viewedAccountId: 'all', broker }) })
-    expect(body).toEqual({ symbol: 'EURUSD', side: 'BUY', lots: undefined, sl: 1.09, tp: undefined })
+    expect(body).toEqual({ symbol: 'EURUSD', side: 'BUY', lots: undefined, sl: 1.09, tp: undefined, invalidation: 1.095 })
     expect('account' in body).toBe(false)
   })
   // Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3)
@@ -46,7 +47,7 @@ describe('manualOrderBody — the pad sends `account` only when routed', () => {
     const dest = padDestination({ viewedAccountId: 46130058, broker, routeToViewed: true })
     const withKey = { ...order, strategy: ' vwap_trend ' }
     expect(manualOrderBody({ order: withKey, destination: dest }).strategy).toBe('vwap_trend')
-    expect(manualCheckPath({ order: withKey, destination: dest })).toBe('/state/preorder?account=46130058&symbol=EURUSD&side=BUY&lots=0.2&sl=1.09&tp=1.135&strategy=vwap_trend')
+    expect(manualCheckPath({ order: withKey, destination: dest })).toBe('/state/preorder?account=46130058&symbol=EURUSD&side=BUY&lots=0.2&sl=1.09&tp=1.135&invalidation=1.095&strategy=vwap_trend')
     expect('strategy' in manualOrderBody({ order, destination: dest })).toBe(false)
     expect(manualCheckPath({ order, destination: dest })).not.toContain('strategy')
     expect('strategy' in manualOrderBody({ order: { ...order, strategy: '' }, destination: dest })).toBe(false)
@@ -58,9 +59,9 @@ describe('manualOrderBody — the pad sends `account` only when routed', () => {
 describe('the check asks exactly what the order would send', () => {
   it('manual: same fields, same account', () => {
     const dest = padDestination({ viewedAccountId: 46130058, broker, routeToViewed: true })
-    expect(manualCheckPath({ order, destination: dest })).toBe('/state/preorder?account=46130058&symbol=EURUSD&side=BUY&lots=0.2&sl=1.09&tp=1.135')
+    expect(manualCheckPath({ order, destination: dest })).toBe('/state/preorder?account=46130058&symbol=EURUSD&side=BUY&lots=0.2&sl=1.09&tp=1.135&invalidation=1.095')
     expect(manualCheckPath({ order: { ...order, lots: '', tp: '' }, destination: padDestination({ viewedAccountId: 'all', broker }) }))
-      .toBe('/state/preorder?symbol=EURUSD&side=BUY&sl=1.09')
+      .toBe('/state/preorder?symbol=EURUSD&side=BUY&sl=1.09&invalidation=1.095')
   })
   it('scan: the row\'s scan id and its own account', () => {
     expect(scanCheckPath({ scanId: 77, accountId: '101' })).toBe('/state/preorder?scanId=77&account=101')

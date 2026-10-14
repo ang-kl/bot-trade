@@ -49,6 +49,7 @@
 
 import { atr, rsi } from './fib-strategy.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
+import { premiseFields } from '../lib/premise.js'
 
 const MIN_BARS = 450          // see the EMA200 seed-decay note above
 const ATR_PERIOD = 14
@@ -228,6 +229,9 @@ export function computeEmaPullback(bars, timeframe, opts = {}) {
     tp1,
     tp2,
     conviction,
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): the EMA20 line the dip
+    // closed back across; EMA50 is the trend gate and sits beyond the stop.
+    ...premiseFields({ bias, entry, sl, level: ema20 }),
     rr,
     timeframe,
     time_cap_minutes:

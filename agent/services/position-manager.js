@@ -388,7 +388,9 @@ export function evaluatePosition(pos, ctx) {
   if (priceTrigger && priceTrigger.fired(price)) {
     return {
       action: 'FULL_EXIT',
-      reason: `invalidation_trigger: ${priceTrigger.label}`,
+      // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder): the trader's
+      // Question 2 — the premise failed; closed before the stop, never widened.
+      reason: `premise_invalidated:${priceTrigger.label} (invalidation_trigger)`,
       newSL: null,
       exitFraction: 1,
       updates,

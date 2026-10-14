@@ -66,9 +66,25 @@ test('computeFibConfluence: FIRES on a stacked multi-grid confluence zone', () =
   assert.ok(sig.conviction >= 6)
   assert.ok(sig.rr >= 1.5)
   if (sig.bias === 'long') assert.ok(sig.sl < sig.entry); else assert.ok(sig.sl > sig.entry)
+  assertPremise(sig) // № 14,745: the zone's far edge, inside the stop
 })
 
 test('computeFibConfluence: is registered and armable via the registry', async () => {
   const { STRATEGY_KEYS } = await import('./strategies.js')
   assert.ok(STRATEGY_KEYS.includes('fib_confluence'), 'fib_confluence in the registry')
 })
+
+// Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder): premise assertions (see lib/premise.js).
+import { premiseTrigger as _premiseTrigger } from '../lib/premise.js'
+import { _internal as _pm } from './position-manager.js'
+function assertPremise(sig, level = null) {
+  assert.ok(sig && sig.invalidation, `premise present: ${JSON.stringify(sig?.invalidation)} (${sig?.invalidation_reason})`)
+  const { op, price } = sig.invalidation
+  if (sig.bias === 'long') { assert.equal(op, '<'); assert.ok(sig.sl < price && price < sig.entry, `${sig.sl} < ${price} < ${sig.entry}`) }
+  else { assert.equal(op, '>'); assert.ok(sig.entry < price && price < sig.sl, `${sig.entry} < ${price} < ${sig.sl}`) }
+  if (level != null) assert.ok(Math.abs(price - level) < 1e-6, `level ${price} is ${level}`)
+  const parsed = _pm.parsePriceTrigger(_premiseTrigger(sig.invalidation))
+  assert.ok(parsed, 'monitor reads it')
+  assert.equal(parsed.fired(sig.bias === 'long' ? price - 1e-9 : price + 1e-9), true)
+  assert.equal(parsed.fired(sig.entry), false, 'not fired at entry')
+}

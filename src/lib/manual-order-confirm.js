@@ -40,7 +40,7 @@ const amount = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigit
  *   the pad's dry run for these exact inputs, when one has run
  * @returns {string}
  */
-export function manualOrderConfirmText({ side, symbol, sl, tp, destination, viewedAccountId = null, primary = false, check = null }) {
+export function manualOrderConfirmText({ side, symbol, sl, tp, invalidation = null, destination, viewedAccountId = null, primary = false, check = null }) {
   const destId = destination?.accountId != null && String(destination.accountId) !== '' ? String(destination.accountId) : null
   const login = destination?.traderLogin != null && String(destination.traderLogin) !== '' ? String(destination.traderLogin) : null
   const where = destId
@@ -53,5 +53,7 @@ export function manualOrderConfirmText({ side, symbol, sl, tp, destination, view
   const sized = check && check.volume != null
     ? ` Checked: size ${amount(check.volume)} lots, money at risk ${check.moneyAtRisk == null ? 'not known' : `${check.currency ? `${check.currency} ` : ''}${amount(check.moneyAtRisk)}`}.`
     : ''
-  return `Place a REAL ${side} market order on ${symbol} (SL ${sl}${tp ? `, TP ${tp}` : ''}) on ${where}?${mismatch}${sized}`
+  // Claude · № 14,745 15-Oct (PR-1): the premise rides the confirm beside the stop.
+  const premise = invalidation != null && String(invalidation) !== '' ? `, invalidation ${invalidation}` : ''
+  return `Place a REAL ${side} market order on ${symbol} (SL ${sl}${tp ? `, TP ${tp}` : ''}${premise}) on ${where}?${mismatch}${sized}`
 }

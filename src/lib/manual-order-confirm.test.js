@@ -85,3 +85,11 @@ describe('manualOrderConfirmText — primary routing and the checked size (Claud
     }
   })
 })
+
+// Claude · № 14,745 15-Oct (PR-1; owner choice § 14,744: the pad requires a premise).
+describe('the premise rides the confirm', () => {
+  it('names the invalidation price beside the stop, and nothing when none is given', () => {
+    expect(manualOrderConfirmText({ ...base, invalidation: '1.0850', destination: { accountId: '46970949' } })).toContain('SL 1.0800, TP 1.0900, invalidation 1.0850')
+    expect(manualOrderConfirmText({ ...base, destination: { accountId: '46970949' } })).not.toContain('invalidation')
+  })
+})

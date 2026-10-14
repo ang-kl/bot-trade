@@ -54,6 +54,7 @@ import { ctraderEnv } from '../lib/ctrader-env.js'
 import { wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
 import { lotRecordFor, unitsPerLot as unitsPerLotFromRegistry, brokerMinLots } from '../lib/lot-size-registry.js'
 import { lotsBlankOrPositive } from '../lib/order-lots.js'
+import { premiseFor } from '../lib/premise.js'
 
 /** The query parameters GET /state/preorder understands; anything else is a 400. */
 export const PREORDER_SCAN_PARAMS = Object.freeze(['scanId', 'account'])
@@ -61,7 +62,8 @@ export const PREORDER_SCAN_PARAMS = Object.freeze(['scanId', 'account'])
 // `directionReason` are the pad's own fields; the dry run builds the route's
 // proposal from them, so the endpoint must accept them or the precheck
 // judges a strategy order as manual_order while the real order is not.
-export const PREORDER_MANUAL_PARAMS = Object.freeze(['account', 'symbol', 'side', 'lots', 'sl', 'tp', 'strategy', 'directionReason'])
+// Claude · № 14,745 15-Oct (PR-1): `invalidation` is the pad's premise price; the dry run checks it as the route does.
+export const PREORDER_MANUAL_PARAMS = Object.freeze(['account', 'symbol', 'side', 'lots', 'sl', 'tp', 'strategy', 'directionReason', 'invalidation'])
 
 /** expectedR is not invented: the exit policy (position-manager.js DEFAULT_RULES) holds no win probability to weigh its outcomes by. */
 export const EXPECTED_R_NOT_COMPUTED = Object.freeze({
@@ -391,6 +393,10 @@ async function manualPreorder(db, input, deps) {
   if (!symbol) return bad(400, 'symbol required')
   if (side !== 'BUY' && side !== 'SELL') return bad(400, "side must be 'BUY' or 'SELL'")
   if (sl == null || sl === '' || !Number.isFinite(Number(sl))) return bad(400, 'sl (stop-loss price) required — no manual orders without a stop')
+  // Claude · № 14,745 15-Oct (PR-1): the route's premise check, same helper.
+  const { manualPremiseCheck, manualPremiseOutsideStop } = await import('../routes/actions.js')
+  const premiseCheck = manualPremiseCheck(input.invalidation)
+  if (premiseCheck.error) return bad(400, premiseCheck.error)
   // The route's lots check (Codex P1 on #1328; Claude · № 13,496 12-Oct; claude-builder).
   if (!lotsBlankOrPositive(lots)) return bad(400, 'lots must be a positive number, or blank for risk-based sizing')
   if (account != null && account !== '' && !registered(db, account)) return bad(400, `account ${String(account)} is not in the registry`)
@@ -407,6 +413,9 @@ async function manualPreorder(db, input, deps) {
     return cannot(`could not fetch a current price for ${symbol} (${String(err?.message || err).slice(0, 160)})`)
   }
   if (entry == null) return cannot(`could not fetch a current price for ${symbol}`)
+  if (!premiseFor({ bias: side === 'BUY' ? 'long' : 'short', entry, sl: Number(sl), level: premiseCheck.price })) {
+    return bad(400, manualPremiseOutsideStop(side, premiseCheck.price, Number(sl), entry))
+  }
   const { manualDirectionReason, manualOrderStrategy } = await import('../routes/actions.js')
   // actions.js manual-order proposal, field for field. The pad sends no
   // directionReason. Claude · № 13,128 11-Oct: the strategy is the pad's

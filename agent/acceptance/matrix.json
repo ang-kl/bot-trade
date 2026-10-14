@@ -747,6 +747,14 @@
       "state": "covered",
       "receipts": [
         {
+          "file": "agent/services/premise-writers.test.js",
+          "title": "the monitor closes on the premise before the stop, with an attributable reason; an explained absence never fires"
+        },
+        {
+          "file": "agent/services/premise-writers.test.js",
+          "title": "no writer widens a stop on a losing position: every MOVE_SL the monitor returns is tighter than the stop it holds"
+        },
+        {
           "file": "agent/services/reconciler.test.js",
           "title": "reclassify: no exit price yet — row left for a later pass"
         }

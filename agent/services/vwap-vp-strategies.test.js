@@ -45,6 +45,7 @@ test('computeVwapTrend: an uptrend pullback that closes back above VWAP signals 
 
   const sig = computeVwapTrend(bars, '1h')
   assert.ok(sig, 'expected a signal')
+  assertPremise(sig) // № 14,745: the VWAP line the pullback held
   assert.equal(sig.bias, 'long')
   assert.equal(sig.strategy, 'vwap_trend')
   assert.ok(sig.sl < sig.entry, 'long SL below entry')
@@ -82,6 +83,7 @@ test('computeVpValue: a reaction off the value-area low fades up toward the POC'
     assert.ok(sig.tp1 > sig.entry, 'long TP (POC) above entry')
     assert.ok(sig.sl < sig.entry, 'long SL below entry')
     assert.ok(sig.rr >= 1.5)
+    assertPremise(sig) // № 14,745: the value-area low the fade stands on
   }
 })
 
@@ -145,3 +147,18 @@ test('vp_value fails OPEN when the structure cannot be computed (single-session 
   // returns null, and the strategy behaves exactly as before the gate.
   assert.ok(computeVpValue(vpValueFadeBars(600_000), '1h'))
 })
+
+// Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder): premise assertions (see lib/premise.js).
+import { premiseTrigger as _premiseTrigger } from '../lib/premise.js'
+import { _internal as _pm } from './position-manager.js'
+function assertPremise(sig, level = null) {
+  assert.ok(sig && sig.invalidation, `premise present: ${JSON.stringify(sig?.invalidation)} (${sig?.invalidation_reason})`)
+  const { op, price } = sig.invalidation
+  if (sig.bias === 'long') { assert.equal(op, '<'); assert.ok(sig.sl < price && price < sig.entry, `${sig.sl} < ${price} < ${sig.entry}`) }
+  else { assert.equal(op, '>'); assert.ok(sig.entry < price && price < sig.sl, `${sig.entry} < ${price} < ${sig.sl}`) }
+  if (level != null) assert.ok(Math.abs(price - level) < 1e-6, `level ${price} is ${level}`)
+  const parsed = _pm.parsePriceTrigger(_premiseTrigger(sig.invalidation))
+  assert.ok(parsed, 'monitor reads it')
+  assert.equal(parsed.fired(sig.bias === 'long' ? price - 1e-9 : price + 1e-9), true)
+  assert.equal(parsed.fired(sig.entry), false, 'not fired at entry')
+}

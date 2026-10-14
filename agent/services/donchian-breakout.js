@@ -15,6 +15,7 @@
 
 import { atr } from './fib-strategy.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
+import { premiseFields } from '../lib/premise.js'
 
 const CHANNEL = 20              // Donchian lookback (prior bars, breakout bar excluded)
 export const DONCHIAN_CHANNEL = CHANNEL // Claude · № 13,101 11-Oct: read by the research cross-check, never retyped
@@ -90,6 +91,8 @@ export function computeDonchianBreakout(bars, timeframe) {
     conviction,
     rr,
     timeframe,
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): back inside the range it broke.
+    ...premiseFields({ bias, entry, sl, level: bias === 'long' ? hi : lo }),
     time_cap_minutes: null,
     strategy: 'donchian_breakout',
     thesis: `Price closed ${bias === 'long' ? 'above' : 'below'} the 20-bar range `

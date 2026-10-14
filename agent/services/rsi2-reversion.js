@@ -29,6 +29,7 @@
 import { atr, rsi } from './fib-strategy.js'
 import { sma } from './cup-handle.js'
 import { parseTimeframe } from '../lib/timeframes.js'
+import { premiseFields } from '../lib/premise.js'
 
 const TREND_PERIOD = 100   // longer-term trend filter (Connors uses 200 on daily)
 const RSI_PERIOD = 2
@@ -104,6 +105,8 @@ export function computeRsi2(bars, timeframe) {
     rr,
     timeframe,
     time_cap_minutes: timeCap,
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): the trend line the washout must hold above/below.
+    ...premiseFields({ bias, entry, sl, level: trend }),
     strategy: 'rsi2_reversion',
     thesis: bias === 'long'
       ? `RSI(2) washed out to ${round2(r)} while price holds above its ${TREND_PERIOD}-bar trend — buying a high-probability bounce, ${TP_RR}R target, ${SL_ATR}×ATR stop as tail insurance.`
