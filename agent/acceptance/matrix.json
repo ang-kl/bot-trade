@@ -976,17 +976,43 @@
     {
       "form": "weekend_bank",
       "event": "missing",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × missing: a close whose answer is lost is re-checked — gone from the snapshot, nothing is sent; still there, it is closed again"
+        },
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × missing (timeout): a close whose reply is lost throws, yet the hold is already written — a call inside the interval sends nothing; after it, a position still there is closed again"
+        }
+      ]
     },
     {
       "form": "weekend_bank",
       "event": "duplicate",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × duplicate: a second call inside the recheck interval (a restart or another caller) sends no second close"
+        },
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × duplicate (concurrent): two overlapping calls both reading the quote send one close — the claim is taken before the first await"
+        }
+      ]
     },
     {
       "form": "weekend_bank",
       "event": "underfill",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × underfill: a close that left a residual is closed again at the residual volume on a later pass in the window"
+        }
+      ]
     },
     {
       "form": "weekend_bank",
@@ -1028,13 +1054,7 @@
     {
       "form": "time_cap",
       "event": "missing",
-      "state": "covered",
-      "receipts": [
-        {
-          "file": "agent/services/general-partial-execution.test.js",
-          "title": "full exit: the live read fails → the row stays open and nothing is sent this pass"
-        }
-      ]
+      "state": "gap"
     },
     {
       "form": "time_cap",

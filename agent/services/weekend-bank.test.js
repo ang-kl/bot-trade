@@ -322,3 +322,95 @@ test('NO ACCOUNT, NO EXEMPTION: an absent accountId must not exempt everything',
   await runWeekendBank(db, noAccount, [POS(1414)], { deps: fakeDeps(closed), now: FRI_2030 })
   assert.deepEqual(closed, [1414], 'sweep normally rather than exempting the whole book')
 })
+
+// Claude · № 14,597 14-Oct (owner "Fix all"; NASA-5 weekend_bank × underfill /
+// duplicate / missing; claude-builder). A sent close holds the position only
+// for RECHECK_MS; a later pass inside the window that still sees it closes its
+// CURRENT volume, and a position gone from the snapshot is not touched.
+import { RECHECK_MS } from './weekend-bank.js'
+const later = (ms) => new Date(FRI_2030.getTime() + ms)
+const POSV = (positionId, volume) => ({ ...POS(positionId), tradeData: { ...POS(positionId).tradeData, volume } })
+function volDeps(sent, answer = undefined) {
+  return {
+    closePosition: async (_creds, { positionId, volume }) => { sent.push({ positionId, volume }); return answer },
+    wsGetSpotOnce: async () => ({ bid: 370, ask: 370.1 }),
+  }
+}
+
+test('weekend bank × underfill: a close that left a residual is closed again at the residual volume on a later pass in the window', async () => {
+  const db = bankDb(); const sent = []
+  await runWeekendBank(db, CREDS, [POSV(901, 100)], { deps: volDeps(sent), now: FRI_2030 })
+  // The broker filled only part: the next snapshot still holds 40 of the 100.
+  const r = await runWeekendBank(db, CREDS, [POSV(901, 40)], { deps: volDeps(sent), now: later(RECHECK_MS + 60_000) })
+  assert.deepEqual(sent, [{ positionId: 901, volume: 100 }, { positionId: 901, volume: 40 }], 'the residual is closed at its own volume, not the first request')
+  assert.equal(r.banked[0].retry, true); assert.equal(r.banked[0].volume, 40)
+})
+
+test('weekend bank × duplicate: a second call inside the recheck interval (a restart or another caller) sends no second close', async () => {
+  const db = bankDb(); const sent = []
+  await runWeekendBank(db, CREDS, [POSV(902, 100)], { deps: volDeps(sent), now: FRI_2030 })
+  const r = await runWeekendBank(db, CREDS, [POSV(902, 100)], { deps: volDeps(sent), now: later(60_000) })
+  assert.equal(sent.length, 1, 'one close inside the interval, whatever the snapshot shows')
+  assert.equal(r.banked.length, 0)
+})
+
+test('weekend bank × missing: a close whose answer is lost is re-checked — gone from the snapshot, nothing is sent; still there, it is closed again', async () => {
+  const db = bankDb(); const sent = []
+  await runWeekendBank(db, CREDS, [POSV(903, 100), POSV(904, 100)], { deps: volDeps(sent, undefined), now: FRI_2030 })
+  assert.equal(sent.length, 2)
+  // 903 really closed (absent from the next snapshot); 904's close never landed.
+  await runWeekendBank(db, CREDS, [POSV(904, 100)], { deps: volDeps(sent), now: later(RECHECK_MS + 60_000) })
+  assert.deepEqual(sent.slice(2), [{ positionId: 904, volume: 100 }], 'only the position still at the broker is closed again')
+})
+
+test('weekend bank × missing (timeout): a close whose reply is lost throws, yet the hold is already written — a call inside the interval sends nothing; after it, a position still there is closed again', async () => {
+  const db = bankDb(); const sent = []
+  const timingOut = { ...volDeps(sent), closePosition: async (_c, { positionId, volume }) => { sent.push({ positionId, volume }); throw new Error('timeout waiting for the execution event') } }
+  await runWeekendBank(db, CREDS, [POSV(905, 100)], { deps: timingOut, now: FRI_2030 })
+  await runWeekendBank(db, CREDS, [POSV(905, 100)], { deps: volDeps(sent), now: later(60_000) })
+  assert.equal(sent.length, 1, 'the lost reply does not free an immediate resend')
+  await runWeekendBank(db, CREDS, [POSV(905, 100)], { deps: volDeps(sent), now: later(RECHECK_MS + 60_000) })
+  assert.deepEqual(sent.slice(1), [{ positionId: 905, volume: 100 }])
+})
+
+test('weekend bank × duplicate (concurrent): two overlapping calls both reading the quote send one close — the claim is taken before the first await', async () => {
+  const db = bankDb(); const sent = []
+  let release; const gate = new Promise(r => { release = r })
+  const slowQuote = { ...volDeps(sent), wsGetSpotOnce: async () => { await gate; return { bid: 370, ask: 370.1 } } }
+  const a = runWeekendBank(db, CREDS, [POSV(906, 100)], { deps: slowQuote, now: FRI_2030 })
+  const b = runWeekendBank(db, CREDS, [POSV(906, 100)], { deps: slowQuote, now: FRI_2030 })
+  release(); await Promise.all([a, b])
+  assert.deepEqual(sent, [{ positionId: 906, volume: 100 }])
+})
+
+test('weekend bank: a claim taken for a position that is not banked this pass is released — a later pass still banks it', async () => {
+  const db = bankDb(); const sent = []
+  const losing = { ...volDeps(sent), wsGetSpotOnce: async () => ({ bid: 350, ask: 350.1 }) } // below entry 362.43: not banked
+  await runWeekendBank(db, CREDS, [POSV(907, 100)], { deps: losing, now: FRI_2030 })
+  assert.equal(sent.length, 0)
+  await runWeekendBank(db, CREDS, [POSV(907, 100)], { deps: volDeps(sent), now: later(60_000) })
+  assert.deepEqual(sent, [{ positionId: 907, volume: 100 }], 'the unbanked pass held nothing')
+})
+
+test('weekend bank: a hold that expires while earlier positions are processed is seen as expired in the same pass', async () => {
+  const db = bankDb(); const sent = []
+  let t = FRI_2030.getTime()
+  const clocked = (deps) => ({ ...deps, clock: () => t })
+  // Pass 1 at t0 closes 908; its hold runs to t0 + RECHECK_MS.
+  await runWeekendBank(db, CREDS, [POSV(908, 100)], { deps: clocked(volDeps(sent)), now: FRI_2030 })
+  // Pass 2 starts just before the hold expires; the quote for the first
+  // position (909) takes long enough for 908's hold to expire meanwhile.
+  t = FRI_2030.getTime() + RECHECK_MS - 1_000
+  const slow = clocked({ ...volDeps(sent), wsGetSpotOnce: async () => { t += 5_000; return { bid: 370, ask: 370.1 } } })
+  await runWeekendBank(db, CREDS, [POSV(909, 100), POSV(908, 40)], { deps: slow, now: FRI_2030 })
+  assert.deepEqual(sent, [{ positionId: 908, volume: 100 }, { positionId: 909, volume: 100 }, { positionId: 908, volume: 40 }], '908 is re-checked by the clock at its turn, not the pass start')
+})
+
+test('weekend bank: a claim the database refuses skips that position only — nothing is sent for it, the rest of the pass goes on', async () => {
+  const db = bankDb(); const sent = []
+  db.exec(`CREATE TRIGGER wb_claim_fail BEFORE INSERT ON agent_state WHEN NEW.key = 'wb_done_910' BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+  db.exec(`CREATE TRIGGER wb_claim_fail_u BEFORE UPDATE ON agent_state WHEN NEW.key = 'wb_done_910' BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+  const r = await runWeekendBank(db, CREDS, [POSV(910, 100), POSV(911, 100)], { deps: volDeps(sent), now: FRI_2030 })
+  assert.deepEqual(sent, [{ positionId: 911, volume: 100 }], 'no close without a hold; the next position is still banked')
+  assert.equal(r.deferred.length, 1); assert.match(r.deferred[0].reason, /^claim_write_failed: database is locked/)
+})

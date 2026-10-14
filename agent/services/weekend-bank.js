@@ -163,6 +163,16 @@ export { bookHeldPositionIds } from './book-held.js'
  * `deps` and `now` exist for tests: production resolves the exec engine and
  * the spot feed itself.
  */
+/**
+ * How long a sent close holds a position before another call that still sees
+ * it closes again (№ 14,597). Scheduled passes are already further apart
+ * (the reconcile block runs every 3rd loop, loop_interval_min ≥ 1, so ≥ 3 min
+ * and normally ~15): each of them re-checks by design. The hold is against a
+ * repeat call sooner than that — a restart, or a second caller — sending the
+ * same close twice before the broker's answer is known (Codex P2 on #1370).
+ */
+export const RECHECK_MS = 3 * 60_000
+
 export async function runWeekendBank(db, creds, positions, { windowMin = 75, minClosureHrs = 12, deps = null, now = null } = {}) {
   if ((getState(db, 'weekend_bank') || 'true') === 'false') return { skipped: 'off', banked: [], exempt: [], deferred: [] }
   const banked = []
@@ -205,11 +215,48 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
 
     // One-shot per position per closure — the marker clears once the market
     // has reopened (closure passed), so next weekend re-arms automatically.
+    // Claude · № 14,597 14-Oct (owner "Fix all", naming weekend-bank.js; NASA-5
+    // weekend_bank × underfill / missing / duplicate; claude-builder). A sent
+    // close is not a closed position: the close can fill only part of the
+    // volume, or its answer can be lost. The marker used to hold the position
+    // for the whole closure the moment the close was SENT, so a residual rode
+    // through the gap untouched. Now a send holds it only for RECHECK_MS; a
+    // later pass inside the window that still sees it in this account's
+    // snapshot closes its current volume. A position no longer in the
+    // snapshot is simply not visited. A marker from before this change (no
+    // recheckAt) holds nothing, for the same reason.
     const key = `wb_done_${p.positionId}`
+    // The clock at each write: the injected `now` in tests, the real clock in
+    // production — a long position list must not age the hold before it is
+    // written (Codex P2 on #1370).
+    // Read per position, not once per pass (Codex P2 round 4 on #1370): the
+    // pass awaits a quote and a close for each earlier position, and a hold
+    // that expires meanwhile must be seen as expired. deps.clock is the test
+    // seam; the injected `now` stays fixed for the market-hours reading.
+    const clock = () => (deps?.clock ? deps.clock() : now ? nowMs : Date.now())
+    let retry = false
+    const prevRaw = getState(db, key)
     try {
-      const prev = JSON.parse(getState(db, key) || 'null')
-      if (prev && Date.now() < prev.until) continue
+      const prev = JSON.parse(prevRaw || 'null')
+      const t = clock()
+      if (prev && t < prev.until) {
+        if (t < (prev.recheckAt ?? 0)) continue
+        retry = true
+      }
     } catch { /* fresh */ }
+    // CLAIMED BEFORE THE FIRST await (Codex P2 on #1370): the read above and
+    // this write run with no await between them, so a second caller in this
+    // process sees the claim and skips. Released below if no close is sent.
+    const hold = () => JSON.stringify({ until: clock() + (info.closes_in_sec + info.closure_sec) * 1000, recheckAt: clock() + RECHECK_MS, sentVolume: td.volume ?? null })
+    // A claim the database refuses (locked, full, read-only) skips THIS
+    // position — nothing is sent without a hold — and the pass goes on to the
+    // rest (Codex P2 round 5 on #1370); the skip is reported as deferred.
+    try { setState(db, key, hold()) } catch (err) {
+      deferred.push({ symbol, positionId: p.positionId, reason: `claim_write_failed: ${err.message}` })
+      continue
+    }
+    let sent = false
+    const release = () => { if (!sent) { try { setState(db, key, prevRaw ?? 'null') } catch { /* the hold lapses at recheckAt */ } } }
 
     let price = null
     try {
@@ -217,18 +264,23 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
       const side = td.tradeSide === 2 || td.tradeSide === 'SELL' ? 'SELL' : 'BUY'
       price = side === 'SELL' ? q?.ask : q?.bid // the price a close would get
       const gapProne = isGapProne(symbol, gapCfg)
-      if (!shouldBank({ open: true, closesInSec: info.closes_in_sec, closureSec: info.closure_sec, side, entry: p.price, price, windowMin, minClosureHrs, gapProne })) continue
+      if (!shouldBank({ open: true, closesInSec: info.closes_in_sec, closureSec: info.closure_sec, side, entry: p.price, price, windowMin, minClosureHrs, gapProne })) { release(); continue }
 
       // V3 F1: the T2 rule (momentum-exit-coordination.js) — a partial or
       // rank close claimed within the transport horizon defers this close for
       // this pass only; past the horizon, or with no plan, it closes as before.
       const inFlight = protectiveExitDeferral(db, { accountId: creds?.accountId, positionId: p.positionId, nowMs })
-      if (inFlight) { deferred.push({ symbol, positionId: p.positionId, reason: inFlight }); continue }
+      if (inFlight) { release(); deferred.push({ symbol, positionId: p.positionId, reason: inFlight }); continue }
 
+      // The hold is written BEFORE the send (Codex P2 on #1370): a reply lost
+      // after the broker took the request surfaces as a timeout that throws,
+      // and a hold written only after success would leave a restart or a
+      // second caller free to send the same close at once.
+      setState(db, key, hold())
+      sent = true
       await closePosition(creds, { positionId: parseInt(p.positionId), volume: td.volume })
-      setState(db, key, JSON.stringify({ until: Date.now() + (info.closes_in_sec + info.closure_sec) * 1000 }))
       const movePct = Math.round(((price - p.price) * (side === 'SELL' ? -1 : 1) / p.price) * 10000) / 100
-      banked.push({ symbol, positionId: p.positionId, side, movePct, gapProne })
+      banked.push({ symbol, positionId: p.positionId, side, movePct, gapProne, ...(retry ? { retry: true, volume: td.volume ?? null } : {}) })
       try {
         const { sendMessage } = await import('./telegram.js')
         const hrs = Math.round(info.closure_sec / 3600)
@@ -240,6 +292,7 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
           : `💰 WEEKEND BANK: closed ${symbol} ${side} (position ${p.positionId}) at ${price} — +${movePct}% move banked before the market closes for ${hrs}h. Holding profit through a long closure risks the reopen gap.`)
       } catch { /* non-fatal */ }
     } catch (err) {
+      release() // a failure before the send (the quote read) frees the claim; after it, the hold stays
       // A failed close must be LOUD — the whole point is acting while the
       // owner sleeps.
       try {
