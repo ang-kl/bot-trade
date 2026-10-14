@@ -248,9 +248,15 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
     // this write run with no await between them, so a second caller in this
     // process sees the claim and skips. Released below if no close is sent.
     const hold = () => JSON.stringify({ until: clock() + (info.closes_in_sec + info.closure_sec) * 1000, recheckAt: clock() + RECHECK_MS, sentVolume: td.volume ?? null })
-    setState(db, key, hold())
+    // A claim the database refuses (locked, full, read-only) skips THIS
+    // position — nothing is sent without a hold — and the pass goes on to the
+    // rest (Codex P2 round 5 on #1370); the skip is reported as deferred.
+    try { setState(db, key, hold()) } catch (err) {
+      deferred.push({ symbol, positionId: p.positionId, reason: `claim_write_failed: ${err.message}` })
+      continue
+    }
     let sent = false
-    const release = () => { if (!sent) setState(db, key, prevRaw ?? 'null') }
+    const release = () => { if (!sent) { try { setState(db, key, prevRaw ?? 'null') } catch { /* the hold lapses at recheckAt */ } } }
 
     let price = null
     try {

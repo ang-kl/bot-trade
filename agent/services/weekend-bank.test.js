@@ -405,3 +405,12 @@ test('weekend bank: a hold that expires while earlier positions are processed is
   await runWeekendBank(db, CREDS, [POSV(909, 100), POSV(908, 40)], { deps: slow, now: FRI_2030 })
   assert.deepEqual(sent, [{ positionId: 908, volume: 100 }, { positionId: 909, volume: 100 }, { positionId: 908, volume: 40 }], '908 is re-checked by the clock at its turn, not the pass start')
 })
+
+test('weekend bank: a claim the database refuses skips that position only — nothing is sent for it, the rest of the pass goes on', async () => {
+  const db = bankDb(); const sent = []
+  db.exec(`CREATE TRIGGER wb_claim_fail BEFORE INSERT ON agent_state WHEN NEW.key = 'wb_done_910' BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+  db.exec(`CREATE TRIGGER wb_claim_fail_u BEFORE UPDATE ON agent_state WHEN NEW.key = 'wb_done_910' BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+  const r = await runWeekendBank(db, CREDS, [POSV(910, 100), POSV(911, 100)], { deps: volDeps(sent), now: FRI_2030 })
+  assert.deepEqual(sent, [{ positionId: 911, volume: 100 }], 'no close without a hold; the next position is still banked')
+  assert.equal(r.deferred.length, 1); assert.match(r.deferred[0].reason, /^claim_write_failed: database is locked/)
+})
