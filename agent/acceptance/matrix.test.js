@@ -24,10 +24,10 @@ import * as acorn from 'acorn'
 
 const ROOT = new URL('../../', import.meta.url)
 const matrix = JSON.parse(readFileSync(new URL('./matrix.json', import.meta.url), 'utf8'))
-// The 14-10 inventory found 43 gaps. Pinned EXACTLY (Codex P2 on #1366): a
+// The 14-10 inventory found 43 gaps; batch 3 (14-10) cited 9 existing real-path tests, leaving 34. Pinned EXACTLY (Codex P2 on #1366): a
 // ceiling leaves spare room once a gap is filled and forgotten here, so a
 // covered cell could slide back to a gap unseen. Every change edits this.
-const GAP_COUNT = 43
+const GAP_COUNT = 34
 
 // Claude · № 14,558 14-Oct (Codex P2s on #1366; claude-builder). The titles a
 // test file DECLARES, read from its syntax tree (acorn, as module-imports.js
