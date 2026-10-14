@@ -803,6 +803,10 @@ test('a linked adopted fill takes the strategy\'s holding deadline from the brok
   assert.equal(res.filled, 1)
   assert.equal(db.prepare(`SELECT time_cap_at FROM monitored_positions WHERE status = 'active'`).get().time_cap_at,
     new Date(openedMs + 240 * 60_000).toISOString())
+  // № 14,717 (Codex P2 round 2 on #1372): the adoption-time plan takes the hold.
+  const plan = db.prepare(`SELECT planned_hold_min, exit_rule FROM trade_plans`).get()
+  assert.equal(plan.planned_hold_min, 240)
+  assert.equal(plan.exit_rule, 'time_cap_240m')
 })
 
 test('the resting row records the lots sent after the broker\'s volume-step snap, not the approved figure', async () => {

@@ -20,7 +20,7 @@ import { tradePrice } from './alert-format.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, labelIntentId } from '../lib/trade-labels.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { normPosId } from '../lib/pos-id.js'
-import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
+import { recordTradePlan, recordPlanWriteFailure, exitRuleFor } from './trade-plans.js'
 import { horizonForStrategy } from './trade-horizon.js'
 import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
 import { findLimitFill } from './closed-market-limits.js'
@@ -179,6 +179,16 @@ export function linkAdoptedFill(db, row, trade, pos = null) {
     if (timeCapAt) {
       db.prepare(`UPDATE monitored_positions SET time_cap_at = ? WHERE trade_id = ? AND status = 'active' AND time_cap_at IS NULL`)
         .run(timeCapAt, Number(trade.id))
+      // № 14,717 (owner: "fix it", Codex P2 round 2 on #1372): the plan the
+      // reconciler recorded at adoption has no hold, so a time-cap close would
+      // be scored against a stop/target plan. The hold and its exit rule, as
+      // persistFilledTrade records them; a plan that already has a hold is kept.
+      const holdMin = Math.round((Date.parse(timeCapAt) - fillMs) / 60_000)
+      if (holdMin > 0) {
+        const rule = exitRuleFor(db, { strategy: row.strategy || null, source: 'bot_pending_fill', accountId: row.account_id ?? null, timeCapMin: holdMin })
+        db.prepare(`UPDATE trade_plans SET planned_hold_min = ?, exit_rule = ? WHERE trade_id = ? AND planned_hold_min IS NULL`)
+          .run(holdMin, rule, Number(trade.id))
+      }
     }
   } catch { /* the deadline is management metadata; the next pass is unchanged without it */ }
 }
