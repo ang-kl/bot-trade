@@ -981,6 +981,10 @@
         {
           "file": "agent/services/weekend-bank.test.js",
           "title": "weekend bank × missing: a close whose answer is lost is re-checked — gone from the snapshot, nothing is sent; still there, it is closed again"
+        },
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × missing (timeout): a close whose reply is lost throws, yet the hold is already written — a call inside the interval sends nothing; after it, a position still there is closed again"
         }
       ]
     },
@@ -991,7 +995,7 @@
       "receipts": [
         {
           "file": "agent/services/weekend-bank.test.js",
-          "title": "weekend bank × duplicate: a second pass inside the recheck interval sends no second close"
+          "title": "weekend bank × duplicate: a second call inside the recheck interval (a restart or another caller) sends no second close"
         }
       ]
     },

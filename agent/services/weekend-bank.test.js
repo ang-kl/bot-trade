@@ -346,7 +346,7 @@ test('weekend bank × underfill: a close that left a residual is closed again at
   assert.equal(r.banked[0].retry, true); assert.equal(r.banked[0].volume, 40)
 })
 
-test('weekend bank × duplicate: a second pass inside the recheck interval sends no second close', async () => {
+test('weekend bank × duplicate: a second call inside the recheck interval (a restart or another caller) sends no second close', async () => {
   const db = bankDb(); const sent = []
   await runWeekendBank(db, CREDS, [POSV(902, 100)], { deps: volDeps(sent), now: FRI_2030 })
   const r = await runWeekendBank(db, CREDS, [POSV(902, 100)], { deps: volDeps(sent), now: later(60_000) })
@@ -361,4 +361,14 @@ test('weekend bank × missing: a close whose answer is lost is re-checked — go
   // 903 really closed (absent from the next snapshot); 904's close never landed.
   await runWeekendBank(db, CREDS, [POSV(904, 100)], { deps: volDeps(sent), now: later(RECHECK_MS + 60_000) })
   assert.deepEqual(sent.slice(2), [{ positionId: 904, volume: 100 }], 'only the position still at the broker is closed again')
+})
+
+test('weekend bank × missing (timeout): a close whose reply is lost throws, yet the hold is already written — a call inside the interval sends nothing; after it, a position still there is closed again', async () => {
+  const db = bankDb(); const sent = []
+  const timingOut = { ...volDeps(sent), closePosition: async (_c, { positionId, volume }) => { sent.push({ positionId, volume }); throw new Error('timeout waiting for the execution event') } }
+  await runWeekendBank(db, CREDS, [POSV(905, 100)], { deps: timingOut, now: FRI_2030 })
+  await runWeekendBank(db, CREDS, [POSV(905, 100)], { deps: volDeps(sent), now: later(60_000) })
+  assert.equal(sent.length, 1, 'the lost reply does not free an immediate resend')
+  await runWeekendBank(db, CREDS, [POSV(905, 100)], { deps: volDeps(sent), now: later(RECHECK_MS + 60_000) })
+  assert.deepEqual(sent.slice(1), [{ positionId: 905, volume: 100 }])
 })

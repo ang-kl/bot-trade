@@ -163,7 +163,14 @@ export { bookHeldPositionIds } from './book-held.js'
  * `deps` and `now` exist for tests: production resolves the exec engine and
  * the spot feed itself.
  */
-/** How long a sent close holds a position before a pass that still sees it closes again (№ 14,597). Longer than one loop pass, so the snapshot that re-sees it is newer than the send. */
+/**
+ * How long a sent close holds a position before another call that still sees
+ * it closes again (№ 14,597). Scheduled passes are already further apart
+ * (the reconcile block runs every 3rd loop, loop_interval_min ≥ 1, so ≥ 3 min
+ * and normally ~15): each of them re-checks by design. The hold is against a
+ * repeat call sooner than that — a restart, or a second caller — sending the
+ * same close twice before the broker's answer is known (Codex P2 on #1370).
+ */
 export const RECHECK_MS = 3 * 60_000
 
 export async function runWeekendBank(db, creds, positions, { windowMin = 75, minClosureHrs = 12, deps = null, now = null } = {}) {
@@ -242,8 +249,12 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
       const inFlight = protectiveExitDeferral(db, { accountId: creds?.accountId, positionId: p.positionId, nowMs })
       if (inFlight) { deferred.push({ symbol, positionId: p.positionId, reason: inFlight }); continue }
 
-      await closePosition(creds, { positionId: parseInt(p.positionId), volume: td.volume })
+      // The hold is written BEFORE the send (Codex P2 on #1370): a reply lost
+      // after the broker took the request surfaces as a timeout that throws,
+      // and a hold written only after success would leave a restart or a
+      // second caller free to send the same close at once.
       setState(db, key, JSON.stringify({ until: nowMs + (info.closes_in_sec + info.closure_sec) * 1000, recheckAt: nowMs + RECHECK_MS, sentVolume: td.volume ?? null }))
+      await closePosition(creds, { positionId: parseInt(p.positionId), volume: td.volume })
       const movePct = Math.round(((price - p.price) * (side === 'SELL' ? -1 : 1) / p.price) * 10000) / 100
       banked.push({ symbol, positionId: p.positionId, side, movePct, gapProne, ...(retry ? { retry: true, volume: td.volume ?? null } : {}) })
       try {
