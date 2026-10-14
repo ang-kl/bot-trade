@@ -20,6 +20,7 @@ import { stampFilledVolume, openingDealsFilledLots, openedLotsFor, FILLED_SOURCE
 import { sweepLifecycleEvidence } from './position-lifecycle-evidence.js'
 import { reconcilePositions } from './reconciler.js'
 import { reconcileTradePricesToBroker } from './broker-history-import.js'
+import { persistFilledTrade } from './pending-orders.js'
 
 const DEMO = '43097342', LIVE = '42993489'
 function trade(db, { account = DEMO, pid = '5001', status = 'open', volume = 0.2, symbol = 'EURUSD', origin = 'bot_market_dispatch' } = {}) {
@@ -348,4 +349,24 @@ test('an unstampable position does not starve a deal-stamped one', async () => {
   }
   assert.equal(order.filter(p => p === '8001').length, 2, JSON.stringify(order))
   assert.equal(order.filter(p => p === '8002').length, 2, JSON.stringify(order))
+})
+
+// Claude · № 14,597 14-Oct (owner "Fix all"; NASA-5 pending_fill × underfill;
+// claude-builder). A resting limit that fills only part: the real fill writer
+// (persistFilledTrade, the pending sweep's) keeps the lots SENT on
+// trades.volume by contract, and the reconciler's first sighting of the broker
+// position records what actually filled — never the request.
+test('pending fill × underfill: a resting limit filled 0.2 of 0.25 lots is recorded as 0.2 filled, the 0.25 kept as sent', () => {
+  const db = initDB(':memory:')
+  setState(db, 'ctrader_account_id', DEMO)
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })
+  const broker = { positionId: 5002, price: 1.1, stopLoss: 1.09, takeProfit: 1.13,
+    tradeData: { symbolId: 1, symbolName: 'EURUSD', tradeSide: 'BUY', volume: 2_000_000, label: 'AP|v1|PEND' } }
+  const id = persistFilledTrade(db, { symbol: 'EURUSD', dir: 1, level: 1.1, sl: 1.09, tp: 1.13, volume: 0.25, order_id: '88', strategy: 'fib_618_fade', timeframe: '1h' }, broker, DEMO)
+  const row = () => db.prepare('SELECT volume, origin FROM trades WHERE id = ?').get(id)
+  assert.deepEqual(row(), { volume: 0.25, origin: 'bot_pending_fill' }, 'the lots sent, labelled by origin')
+  assert.deepEqual(filled(db, id), { v: null, s: null }, 'unknown until the broker is read, never the request')
+  reconcilePositions(db, [broker], [], (k, v) => setState(db, k, v), { accountId: DEMO })
+  assert.deepEqual(filled(db, id), { v: 0.2, s: 'broker_position_first_seen' }, 'the broker position says 0.2 filled')
+  assert.equal(openedLotsFor({ filledVolume: 0.2, filledSource: 'broker_position_first_seen', volume: 0.25, origin: 'bot_pending_fill' }).lots, 0.2)
 })

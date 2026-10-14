@@ -163,6 +163,9 @@ export { bookHeldPositionIds } from './book-held.js'
  * `deps` and `now` exist for tests: production resolves the exec engine and
  * the spot feed itself.
  */
+/** How long a sent close holds a position before a pass that still sees it closes again (№ 14,597). Longer than one loop pass, so the snapshot that re-sees it is newer than the send. */
+export const RECHECK_MS = 3 * 60_000
+
 export async function runWeekendBank(db, creds, positions, { windowMin = 75, minClosureHrs = 12, deps = null, now = null } = {}) {
   if ((getState(db, 'weekend_bank') || 'true') === 'false') return { skipped: 'off', banked: [], exempt: [], deferred: [] }
   const banked = []
@@ -205,10 +208,24 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
 
     // One-shot per position per closure — the marker clears once the market
     // has reopened (closure passed), so next weekend re-arms automatically.
+    // Claude · № 14,597 14-Oct (owner "Fix all", naming weekend-bank.js; NASA-5
+    // weekend_bank × underfill / missing / duplicate; claude-builder). A sent
+    // close is not a closed position: the close can fill only part of the
+    // volume, or its answer can be lost. The marker used to hold the position
+    // for the whole closure the moment the close was SENT, so a residual rode
+    // through the gap untouched. Now a send holds it only for RECHECK_MS; a
+    // later pass inside the window that still sees it in this account's
+    // snapshot closes its current volume. A position no longer in the
+    // snapshot is simply not visited. A marker from before this change (no
+    // recheckAt) holds nothing, for the same reason.
     const key = `wb_done_${p.positionId}`
+    let retry = false
     try {
       const prev = JSON.parse(getState(db, key) || 'null')
-      if (prev && Date.now() < prev.until) continue
+      if (prev && nowMs < prev.until) {
+        if (nowMs < (prev.recheckAt ?? 0)) continue
+        retry = true
+      }
     } catch { /* fresh */ }
 
     let price = null
@@ -226,9 +243,9 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
       if (inFlight) { deferred.push({ symbol, positionId: p.positionId, reason: inFlight }); continue }
 
       await closePosition(creds, { positionId: parseInt(p.positionId), volume: td.volume })
-      setState(db, key, JSON.stringify({ until: Date.now() + (info.closes_in_sec + info.closure_sec) * 1000 }))
+      setState(db, key, JSON.stringify({ until: nowMs + (info.closes_in_sec + info.closure_sec) * 1000, recheckAt: nowMs + RECHECK_MS, sentVolume: td.volume ?? null }))
       const movePct = Math.round(((price - p.price) * (side === 'SELL' ? -1 : 1) / p.price) * 10000) / 100
-      banked.push({ symbol, positionId: p.positionId, side, movePct, gapProne })
+      banked.push({ symbol, positionId: p.positionId, side, movePct, gapProne, ...(retry ? { retry: true, volume: td.volume ?? null } : {}) })
       try {
         const { sendMessage } = await import('./telegram.js')
         const hrs = Math.round(info.closure_sec / 3600)

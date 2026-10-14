@@ -148,7 +148,13 @@
     {
       "form": "pending_fill",
       "event": "underfill",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/filled-volume.test.js",
+          "title": "pending fill × underfill: a resting limit filled 0.2 of 0.25 lots is recorded as 0.2 filled, the 0.25 kept as sent"
+        }
+      ]
     },
     {
       "form": "pending_fill",
@@ -976,17 +982,35 @@
     {
       "form": "weekend_bank",
       "event": "missing",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × missing: a close whose answer is lost is re-checked — gone from the snapshot, nothing is sent; still there, it is closed again"
+        }
+      ]
     },
     {
       "form": "weekend_bank",
       "event": "duplicate",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × duplicate: a second pass inside the recheck interval sends no second close"
+        }
+      ]
     },
     {
       "form": "weekend_bank",
       "event": "underfill",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × underfill: a close that left a residual is closed again at the residual volume on a later pass in the window"
+        }
+      ]
     },
     {
       "form": "weekend_bank",
@@ -1028,13 +1052,7 @@
     {
       "form": "time_cap",
       "event": "missing",
-      "state": "covered",
-      "receipts": [
-        {
-          "file": "agent/services/general-partial-execution.test.js",
-          "title": "full exit: the live read fails → the row stays open and nothing is sent this pass"
-        }
-      ]
+      "state": "gap"
     },
     {
       "form": "time_cap",

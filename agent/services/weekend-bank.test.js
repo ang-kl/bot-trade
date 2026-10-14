@@ -322,3 +322,43 @@ test('NO ACCOUNT, NO EXEMPTION: an absent accountId must not exempt everything',
   await runWeekendBank(db, noAccount, [POS(1414)], { deps: fakeDeps(closed), now: FRI_2030 })
   assert.deepEqual(closed, [1414], 'sweep normally rather than exempting the whole book')
 })
+
+// Claude · № 14,597 14-Oct (owner "Fix all"; NASA-5 weekend_bank × underfill /
+// duplicate / missing; claude-builder). A sent close holds the position only
+// for RECHECK_MS; a later pass inside the window that still sees it closes its
+// CURRENT volume, and a position gone from the snapshot is not touched.
+import { RECHECK_MS } from './weekend-bank.js'
+const later = (ms) => new Date(FRI_2030.getTime() + ms)
+const POSV = (positionId, volume) => ({ ...POS(positionId), tradeData: { ...POS(positionId).tradeData, volume } })
+function volDeps(sent, answer = undefined) {
+  return {
+    closePosition: async (_creds, { positionId, volume }) => { sent.push({ positionId, volume }); return answer },
+    wsGetSpotOnce: async () => ({ bid: 370, ask: 370.1 }),
+  }
+}
+
+test('weekend bank × underfill: a close that left a residual is closed again at the residual volume on a later pass in the window', async () => {
+  const db = bankDb(); const sent = []
+  await runWeekendBank(db, CREDS, [POSV(901, 100)], { deps: volDeps(sent), now: FRI_2030 })
+  // The broker filled only part: the next snapshot still holds 40 of the 100.
+  const r = await runWeekendBank(db, CREDS, [POSV(901, 40)], { deps: volDeps(sent), now: later(RECHECK_MS + 60_000) })
+  assert.deepEqual(sent, [{ positionId: 901, volume: 100 }, { positionId: 901, volume: 40 }], 'the residual is closed at its own volume, not the first request')
+  assert.equal(r.banked[0].retry, true); assert.equal(r.banked[0].volume, 40)
+})
+
+test('weekend bank × duplicate: a second pass inside the recheck interval sends no second close', async () => {
+  const db = bankDb(); const sent = []
+  await runWeekendBank(db, CREDS, [POSV(902, 100)], { deps: volDeps(sent), now: FRI_2030 })
+  const r = await runWeekendBank(db, CREDS, [POSV(902, 100)], { deps: volDeps(sent), now: later(60_000) })
+  assert.equal(sent.length, 1, 'one close inside the interval, whatever the snapshot shows')
+  assert.equal(r.banked.length, 0)
+})
+
+test('weekend bank × missing: a close whose answer is lost is re-checked — gone from the snapshot, nothing is sent; still there, it is closed again', async () => {
+  const db = bankDb(); const sent = []
+  await runWeekendBank(db, CREDS, [POSV(903, 100), POSV(904, 100)], { deps: volDeps(sent, undefined), now: FRI_2030 })
+  assert.equal(sent.length, 2)
+  // 903 really closed (absent from the next snapshot); 904's close never landed.
+  await runWeekendBank(db, CREDS, [POSV(904, 100)], { deps: volDeps(sent), now: later(RECHECK_MS + 60_000) })
+  assert.deepEqual(sent.slice(2), [{ positionId: 904, volume: 100 }], 'only the position still at the broker is closed again')
+})
