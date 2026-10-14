@@ -20,7 +20,7 @@ import { tradePrice } from './alert-format.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION, labelIntentId } from '../lib/trade-labels.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { normPosId } from '../lib/pos-id.js'
-import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
+import { recordTradePlan, recordPlanWriteFailure, exitRuleFor } from './trade-plans.js'
 import { horizonForStrategy } from './trade-horizon.js'
 import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
 import { findLimitFill } from './closed-market-limits.js'
@@ -153,7 +153,7 @@ export function fillTimeCapAt(row, fillMs) {
  * was adopted (a part fill), and the filled lots come from broker evidence
  * (filled-volume.js), never from this row. Never throws.
  */
-export function linkAdoptedFill(db, row, trade) {
+export function linkAdoptedFill(db, row, trade, pos = null) {
   try {
     db.prepare(`UPDATE trades SET
         risk_event_id = COALESCE(risk_event_id, ?),
@@ -165,6 +165,32 @@ export function linkAdoptedFill(db, row, trade) {
       WHERE id = ?`).run(row.risk_event_id ?? null, row.strategy || null, row.intent_id ?? null,
       Number(row.volume) > 0 ? Number(row.volume) : null, Number(trade.id))
   } catch { /* lineage is provenance, never a reason to fail the sweep */ }
+  // Claude · № 14,706 14-Oct (owner: "Fix both in a small follow-up PR",
+  // Codex P2 on #1371; claude-builder). The strategy's holding deadline, as
+  // persistFilledTrade gives a fill it writes itself: the reconciler's
+  // adopted monitor row carries none. Counted from the broker's open time
+  // when this pass holds the position, else the trade row's opened_at; a
+  // deadline already on the row is kept.
+  try {
+    const openedMs = Number(pos != null ? posField(pos, 'openTimestamp') : NaN)
+    const rowOpenedMs = Date.parse(String(db.prepare(`SELECT opened_at FROM trades WHERE id = ?`).get(Number(trade.id))?.opened_at ?? '').replace(' ', 'T') + 'Z')
+    const fillMs = Number.isFinite(openedMs) && openedMs > 0 ? openedMs : rowOpenedMs
+    const timeCapAt = fillTimeCapAt(row, fillMs)
+    if (timeCapAt) {
+      db.prepare(`UPDATE monitored_positions SET time_cap_at = ? WHERE trade_id = ? AND status = 'active' AND time_cap_at IS NULL`)
+        .run(timeCapAt, Number(trade.id))
+      // № 14,717 (owner: "fix it", Codex P2 round 2 on #1372): the plan the
+      // reconciler recorded at adoption has no hold, so a time-cap close would
+      // be scored against a stop/target plan. The hold and its exit rule, as
+      // persistFilledTrade records them; a plan that already has a hold is kept.
+      const holdMin = Math.round((Date.parse(timeCapAt) - fillMs) / 60_000)
+      if (holdMin > 0) {
+        const rule = exitRuleFor(db, { strategy: row.strategy || null, source: 'bot_pending_fill', accountId: row.account_id ?? null, timeCapMin: holdMin })
+        db.prepare(`UPDATE trade_plans SET planned_hold_min = ?, exit_rule = ? WHERE trade_id = ? AND planned_hold_min IS NULL`)
+          .run(holdMin, rule, Number(trade.id))
+      }
+    }
+  } catch { /* the deadline is management metadata; the next pass is unchanged without it */ }
 }
 
 /**
@@ -374,7 +400,13 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     // intent on this account IS its fill — linked, never persisted twice.
     const linked = row.intent_id ? findLimitFill(db, row) : { trade: null }
     if (linked.trade && (acctKey == null || linked.trade.account_id == null || String(linked.trade.account_id) === acctKey)) {
-      linkAdoptedFill(db, row, linked.trade)
+      // № 14,716 (Codex P2 on #1372): the id may sit at the top level or only
+      // under tradeData (the reconciler reads both); one spelling via normPosId.
+      const heldId = normPosId(linked.trade.ctrader_position_id)
+      const heldPos = heldId != null
+        ? brokerPositions.find(p => normPosId(posField(p, 'positionId')) === heldId) ?? null
+        : null
+      linkAdoptedFill(db, row, linked.trade, heldPos)
       if (linked.trade.ctrader_position_id != null) adoptedIds.add(String(linked.trade.ctrader_position_id))
       updateStatus.run('filled', `filled: position ${linked.trade.ctrader_position_id} (adopted by reconcile, linked by intent ${linked.intentId})`, row.id)
       notify(`✅ pending FILLED: ${row.symbol} ${row.timeframe} @ level ${row.level} — position ${linked.trade.ctrader_position_id}`)
@@ -726,7 +758,11 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         signal.entry ?? null,
         signal.sl ?? null,
         signal.tp1 ?? null,
-        volLots,
+        // № 14,706 (Codex P2 on #1371): the LOTS SENT — lotsToVolume snaps
+        // to the broker's volume step (and caps at its maximum), so the
+        // approved figure may not be what went out. persistFilledTrade and
+        // linkAdoptedFill both read this as the lots sent (NASA-3).
+        Number.isFinite(sized?.lots) && sized.lots > 0 ? Math.round(sized.lots * 1e8) / 1e8 : volLots,
         new Date(expiresAtMs).toISOString(),
         'pending-fib',
         riskEventId ?? null,
