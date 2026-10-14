@@ -559,13 +559,7 @@
     {
       "form": "adoption_reopen",
       "event": "storage_failure",
-      "state": "covered",
-      "receipts": [
-        {
-          "file": "agent/services/reconciler.test.js",
-          "title": "a dedup sweep that throws reports dedupError instead of an empty success"
-        }
-      ]
+      "state": "gap"
     },
     {
       "form": "adoption_reopen",
