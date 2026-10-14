@@ -148,7 +148,13 @@
     {
       "form": "pending_fill",
       "event": "underfill",
-      "state": "gap"
+      "state": "covered",
+      "receipts": [
+        {
+          "file": "agent/services/pending-orders.test.js",
+          "title": "underfill: a part-filled order whose remainder still works is tracked by the reconcile, then filled (not expired) when the order finishes, with the lots sent kept"
+        }
+      ]
     },
     {
       "form": "pending_fill",

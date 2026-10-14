@@ -27,7 +27,7 @@ const matrix = JSON.parse(readFileSync(new URL('./matrix.json', import.meta.url)
 // The 14-10 inventory found 43 gaps; batch 3 (14-10) cited 9 existing real-path tests, leaving 34; batch 4 added 3 new receipts (weekend bank fixed) and reopened time_cap × missing, leaving 32. Pinned EXACTLY (Codex P2 on #1366): a
 // ceiling leaves spare room once a gap is filled and forgotten here, so a
 // covered cell could slide back to a gap unseen. Every change edits this.
-const GAP_COUNT = 32
+const GAP_COUNT = 31
 
 // Claude · № 14,558 14-Oct (Codex P2s on #1366; claude-builder). The titles a
 // test file DECLARES, read from its syntax tree (acorn, as module-imports.js

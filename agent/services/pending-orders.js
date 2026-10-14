@@ -23,6 +23,7 @@ import { normPosId } from '../lib/pos-id.js'
 import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
 import { horizonForStrategy } from './trade-horizon.js'
 import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
+import { findLimitFill } from './closed-market-limits.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -142,6 +143,28 @@ export function fillTimeCapAt(row, fillMs) {
   }
   if (holdMin == null || !Number.isFinite(holdMin) || holdMin <= 0) return null
   return new Date(fillMs + holdMin * 60_000).toISOString()
+}
+
+/**
+ * № 14,687 (NASA-5 pending_fill × underfill): a fill the reconciler adopted
+ * while the order still worked, linked to its resting row. Lineage only where
+ * the row says nothing better (COALESCE), and the LOTS SENT kept as
+ * requested_volume — the adopted row's volume is what the broker held when it
+ * was adopted (a part fill), and the filled lots come from broker evidence
+ * (filled-volume.js), never from this row. Never throws.
+ */
+export function linkAdoptedFill(db, row, trade) {
+  try {
+    db.prepare(`UPDATE trades SET
+        risk_event_id = COALESCE(risk_event_id, ?),
+        strategy = COALESCE(strategy, ?),
+        intent_id = COALESCE(intent_id, ?),
+        requested_volume = COALESCE(requested_volume, ?),
+        origin_source = CASE WHEN origin IS NULL OR origin IN ('reconciler_adopted', 'unknown') THEN 'limit_link' ELSE origin_source END,
+        origin = CASE WHEN origin IS NULL OR origin IN ('reconciler_adopted', 'unknown') THEN 'bot_pending_fill' ELSE origin END
+      WHERE id = ?`).run(row.risk_event_id ?? null, row.strategy || null, row.intent_id ?? null,
+      Number(row.volume) > 0 ? Number(row.volume) : null, Number(trade.id))
+  } catch { /* lineage is provenance, never a reason to fail the sweep */ }
 }
 
 /**
@@ -340,6 +363,25 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
   // manual trades and earlier fills can never be ingested.
   for (const row of working) {
     if (row.order_id && brokerOrderIds.has(String(row.order_id))) continue
+    // Claude · № 14,687 14-Oct (owner: "Fix all", NASA-5 pending_fill ×
+    // underfill; claude-builder). A PARTLY filled order's position is open at
+    // the broker while the order still works, and the reconciler (which runs
+    // before this phase) adopts it and stamps it from its intent. When the
+    // order then finishes, that position is already held by a trade row, so
+    // the marker match below (which skips adopted positions) found nothing and
+    // the row was written off as expired. The intent links the two (the same
+    // evidence the closed-market sweep reads): a trade carrying this row's
+    // intent on this account IS its fill — linked, never persisted twice.
+    const linked = row.intent_id ? findLimitFill(db, row) : { trade: null }
+    if (linked.trade && (acctKey == null || linked.trade.account_id == null || String(linked.trade.account_id) === acctKey)) {
+      linkAdoptedFill(db, row, linked.trade)
+      if (linked.trade.ctrader_position_id != null) adoptedIds.add(String(linked.trade.ctrader_position_id))
+      updateStatus.run('filled', `filled: position ${linked.trade.ctrader_position_id} (adopted by reconcile, linked by intent ${linked.intentId})`, row.id)
+      notify(`✅ pending FILLED: ${row.symbol} ${row.timeframe} @ level ${row.level} — position ${linked.trade.ctrader_position_id}`)
+      summary.filled++
+      log(`${row.symbol} ${row.timeframe}: order ${row.order_id} filled → position ${linked.trade.ctrader_position_id} (trade ${linked.trade.id}, linked by intent)`)
+      continue
+    }
     const symbolId = symbolMap[row.symbol]
     const pos = brokerPositions.find(p => {
       const label = String(posField(p, 'label') || posField(p, 'comment') || '')
@@ -349,7 +391,11 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       // KNOWN opposite side; the marker+symbol+unadopted gates still hold.
       const sideMatch = bSide == null ||
         (row.dir >= 0 ? (bSide === 'BUY' || bSide === 1) : (bSide === 'SELL' || bSide === 2))
-      return label.includes(PENDING_MARKER) &&
+      // № 14,687: exec-engine tags the sent label with its intent as the 8th
+      // field, which REPLACES the `pending-fib` marker placed there — so a
+      // position's label carries the row's intent tag, not the marker.
+      const ownedByRow = label.includes(PENDING_MARKER) || (row.intent_id != null && labelIntentId(label) === String(row.intent_id))
+      return ownedByRow &&
         symbolId != null && Number(sid) === Number(symbolId) &&
         sideMatch &&
         p.positionId != null && !adoptedIds.has(String(p.positionId))

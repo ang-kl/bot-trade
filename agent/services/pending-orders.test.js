@@ -8,6 +8,9 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { admitEntry } from './entry-mode.js'
 import { managePendingOrders, persistFilledTrade } from './pending-orders.js'
+import { reconcilePositions } from './reconciler.js'
+import { encodeLabel, tagLabelWithIntent, LABEL_VERSION } from '../lib/trade-labels.js'
+import { rememberVolumeMeta } from '../lib/lot-size-registry.js'
 
 // ---------------------------------------------------------------------------
 // A RETIRED PRODUCER IS REFUSED AT THE FENCE (20-09-2026, owner: "retire the
@@ -716,4 +719,68 @@ test('the injected fence is a test fixture, not a hole: through the REAL fence n
   assert.equal(calls.placed.length, 0, 'the fence refused before the broker was called')
   assert.ok(res.skipped.some(s => /producer_retired: pending_fib_orders/.test(s)), `skipped names the retirement: ${JSON.stringify(res.skipped)}`)
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM pending_orders`).get().n, 0)
+})
+
+// Claude · № 14,687 14-Oct (owner: "Fix all", NASA-5 pending_fill × underfill;
+// claude-builder). The label as production sends it: the placement's
+// `…|pending-fib` label, then exec-engine's intent tag, which REPLACES the
+// 8th field (tagLabelWithIntent). Expected outcomes from the NASA-3 quantity
+// contract (owner, 13-10): lots sent kept, filled lots from broker evidence;
+// and an order that produced a position is filled, not expired.
+const PF_ACCT = '123'
+const PF_INTENT = 'iabc123def'
+function partialFillDb() {
+  const db = freshDb()
+  setState(db, 'ctrader_account_id', PF_ACCT)
+  rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: PF_ACCT }, { shared: false })
+  db.prepare(`INSERT INTO entry_intents (id, account_id, environment, symbol, symbol_id, side, order_type, volume, sl, tp, producer_id, basis, mode_epoch, permit_id, permit_expires_at, state)
+    VALUES (?, ?, 'demo', 'EURUSD', 1, 'BUY', 'LIMIT', 0.25, 1.095, 1.11, 'pending_fib_orders', 'bar', 1, 'p1', '2099-01-01', 'ACCEPTED')`).run(PF_INTENT, PF_ACCT)
+  db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, status, note, account_id, intent_id)
+    VALUES ('EURUSD','4h','888',1,1.1,1.095,1.11,0.25,'working','pending-fib',?,?)`).run(PF_ACCT, PF_INTENT)
+  return db
+}
+const PF_LABEL = tagLabelWithIntent(`${encodeLabel({ source: 'autopilot', version: LABEL_VERSION, strategy: 'fib_618_fade', conviction: 'high', session: 'London', timeframe: '4h' })}|pending-fib`, PF_INTENT)
+const pfPos = units => [{ positionId: 42, symbolName: 'EURUSD', price: 1.1, stopLoss: 1.095, takeProfit: 1.11,
+  tradeData: { symbolId: 1, tradeSide: 'BUY', volume: units, label: PF_LABEL } }]
+
+test('underfill: a part-filled order whose remainder still works is tracked by the reconcile, then filled (not expired) when the order finishes, with the lots sent kept', async () => {
+  assert.ok(!PF_LABEL.includes('pending-fib') && PF_LABEL.endsWith(`|${PF_INTENT}`), 'the sent label carries the intent tag in place of the marker')
+  const db = partialFillDb()
+  const recon = (units, orders) => reconcilePositions(db, pfPos(units), orders, (k, v) => setState(db, k, v), { accountId: PF_ACCT })
+  // 0.1 of 0.25 filled; the order still works for the rest.
+  recon(1_000_000, [{ orderId: 888 }])
+  let fx = makeDeps({ reconcile: { order: [{ orderId: 888 }], position: pfPos(1_000_000) } })
+  let res = await managePendingOrders(db, { ...CREDS, accountId: PF_ACCT }, SYMBOL_MAP, fx.deps)
+  assert.equal(res.filled, 0)
+  assert.equal(db.prepare(`SELECT status FROM pending_orders`).get().status, 'working')
+  const open = db.prepare(`SELECT * FROM trades`).all()
+  assert.equal(open.length, 1, 'the part fill is a tracked trade while the order works')
+  assert.equal(open[0].origin, 'bot_pending_fill')
+  assert.equal(db.prepare(`SELECT COUNT(*) c FROM monitored_positions WHERE trade_id = ? AND status = 'active'`).get(open[0].id).c, 1, 'and it is managed')
+  // The remainder fills; the order is gone.
+  recon(2_500_000, [])
+  fx = makeDeps({ reconcile: { order: [], position: pfPos(2_500_000) } })
+  res = await managePendingOrders(db, { ...CREDS, accountId: PF_ACCT }, SYMBOL_MAP, fx.deps)
+  assert.equal(res.filled, 1)
+  assert.equal(res.expired, 0)
+  const po = db.prepare(`SELECT status, note FROM pending_orders`).get()
+  assert.equal(po.status, 'filled')
+  assert.match(po.note, /position 42/)
+  const rows = db.prepare(`SELECT * FROM trades`).all()
+  assert.equal(rows.length, 1, 'linked, never persisted twice')
+  assert.equal(rows[0].requested_volume, 0.25, 'the lots sent')
+  assert.equal(rows[0].filled_volume, 0.25, 'the filled lots, from the broker position')
+  assert.equal(rows[0].intent_id, PF_INTENT)
+})
+
+test('a fill whose label carries the intent tag (not the marker) is found by the sweep, not written off as expired', async () => {
+  const db = partialFillDb()
+  const fx = makeDeps({ reconcile: { order: [], position: pfPos(2_500_000) } })
+  const res = await managePendingOrders(db, { ...CREDS, accountId: PF_ACCT }, SYMBOL_MAP, fx.deps)
+  assert.equal(res.filled, 1)
+  assert.equal(res.expired, 0)
+  assert.equal(db.prepare(`SELECT status FROM pending_orders`).get().status, 'filled')
+  const t = db.prepare(`SELECT * FROM trades`).get()
+  assert.equal(t.ctrader_position_id, '42')
+  assert.equal(t.volume, 0.25, 'lots sent')
 })
