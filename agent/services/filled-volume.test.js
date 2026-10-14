@@ -351,12 +351,12 @@ test('an unstampable position does not starve a deal-stamped one', async () => {
   assert.equal(order.filter(p => p === '8002').length, 2, JSON.stringify(order))
 })
 
-// Claude · № 14,597 14-Oct (owner "Fix all"; NASA-5 pending_fill × underfill;
-// claude-builder). A resting limit that fills only part: the real fill writer
-// (persistFilledTrade, the pending sweep's) keeps the lots SENT on
-// trades.volume by contract, and the reconciler's first sighting of the broker
-// position records what actually filled — never the request.
-test('pending fill × underfill: a resting limit filled 0.2 of 0.25 lots is recorded as 0.2 filled, the 0.25 kept as sent', () => {
+// Claude · № 14,597 14-Oct (owner "Fix all"; claude-builder). The pending
+// fill writer keeps the lots SENT on trades.volume by contract, and the
+// reconciler's first sighting of the broker position records what filled.
+// NOT the pending_fill × underfill receipt (Codex P2 on #1370): a limit whose
+// remainder is still working never reaches this writer — that path is a gap.
+test('pending fill writer + reconciler: a fill row written for 0.25 lots sent whose position holds 0.2 records 0.2 filled, the 0.25 kept as sent', () => {
   const db = initDB(':memory:')
   setState(db, 'ctrader_account_id', DEMO)
   rememberVolumeMeta(db, 'EURUSD', { lotSize: 10_000_000, accountId: DEMO }, { shared: false })

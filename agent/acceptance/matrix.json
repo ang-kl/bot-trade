@@ -148,13 +148,7 @@
     {
       "form": "pending_fill",
       "event": "underfill",
-      "state": "covered",
-      "receipts": [
-        {
-          "file": "agent/services/filled-volume.test.js",
-          "title": "pending fill × underfill: a resting limit filled 0.2 of 0.25 lots is recorded as 0.2 filled, the 0.25 kept as sent"
-        }
-      ]
+      "state": "gap"
     },
     {
       "form": "pending_fill",
