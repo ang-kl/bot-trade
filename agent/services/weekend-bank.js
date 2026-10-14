@@ -226,14 +226,26 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
     // snapshot is simply not visited. A marker from before this change (no
     // recheckAt) holds nothing, for the same reason.
     const key = `wb_done_${p.positionId}`
+    // The clock at each write: the injected `now` in tests, the real clock in
+    // production — a long position list must not age the hold before it is
+    // written (Codex P2 on #1370).
+    const clock = () => (now ? nowMs : Date.now())
     let retry = false
+    const prevRaw = getState(db, key)
     try {
-      const prev = JSON.parse(getState(db, key) || 'null')
+      const prev = JSON.parse(prevRaw || 'null')
       if (prev && nowMs < prev.until) {
         if (nowMs < (prev.recheckAt ?? 0)) continue
         retry = true
       }
     } catch { /* fresh */ }
+    // CLAIMED BEFORE THE FIRST await (Codex P2 on #1370): the read above and
+    // this write run with no await between them, so a second caller in this
+    // process sees the claim and skips. Released below if no close is sent.
+    const hold = () => JSON.stringify({ until: clock() + (info.closes_in_sec + info.closure_sec) * 1000, recheckAt: clock() + RECHECK_MS, sentVolume: td.volume ?? null })
+    setState(db, key, hold())
+    let sent = false
+    const release = () => { if (!sent) setState(db, key, prevRaw ?? 'null') }
 
     let price = null
     try {
@@ -241,19 +253,20 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
       const side = td.tradeSide === 2 || td.tradeSide === 'SELL' ? 'SELL' : 'BUY'
       price = side === 'SELL' ? q?.ask : q?.bid // the price a close would get
       const gapProne = isGapProne(symbol, gapCfg)
-      if (!shouldBank({ open: true, closesInSec: info.closes_in_sec, closureSec: info.closure_sec, side, entry: p.price, price, windowMin, minClosureHrs, gapProne })) continue
+      if (!shouldBank({ open: true, closesInSec: info.closes_in_sec, closureSec: info.closure_sec, side, entry: p.price, price, windowMin, minClosureHrs, gapProne })) { release(); continue }
 
       // V3 F1: the T2 rule (momentum-exit-coordination.js) — a partial or
       // rank close claimed within the transport horizon defers this close for
       // this pass only; past the horizon, or with no plan, it closes as before.
       const inFlight = protectiveExitDeferral(db, { accountId: creds?.accountId, positionId: p.positionId, nowMs })
-      if (inFlight) { deferred.push({ symbol, positionId: p.positionId, reason: inFlight }); continue }
+      if (inFlight) { release(); deferred.push({ symbol, positionId: p.positionId, reason: inFlight }); continue }
 
       // The hold is written BEFORE the send (Codex P2 on #1370): a reply lost
       // after the broker took the request surfaces as a timeout that throws,
       // and a hold written only after success would leave a restart or a
       // second caller free to send the same close at once.
-      setState(db, key, JSON.stringify({ until: nowMs + (info.closes_in_sec + info.closure_sec) * 1000, recheckAt: nowMs + RECHECK_MS, sentVolume: td.volume ?? null }))
+      setState(db, key, hold())
+      sent = true
       await closePosition(creds, { positionId: parseInt(p.positionId), volume: td.volume })
       const movePct = Math.round(((price - p.price) * (side === 'SELL' ? -1 : 1) / p.price) * 10000) / 100
       banked.push({ symbol, positionId: p.positionId, side, movePct, gapProne, ...(retry ? { retry: true, volume: td.volume ?? null } : {}) })
@@ -268,6 +281,7 @@ export async function runWeekendBank(db, creds, positions, { windowMin = 75, min
           : `💰 WEEKEND BANK: closed ${symbol} ${side} (position ${p.positionId}) at ${price} — +${movePct}% move banked before the market closes for ${hrs}h. Holding profit through a long closure risks the reopen gap.`)
       } catch { /* non-fatal */ }
     } catch (err) {
+      release() // a failure before the send (the quote read) frees the claim; after it, the hold stays
       // A failed close must be LOUD — the whole point is acting while the
       // owner sleeps.
       try {

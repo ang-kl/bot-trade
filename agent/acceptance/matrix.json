@@ -996,6 +996,10 @@
         {
           "file": "agent/services/weekend-bank.test.js",
           "title": "weekend bank × duplicate: a second call inside the recheck interval (a restart or another caller) sends no second close"
+        },
+        {
+          "file": "agent/services/weekend-bank.test.js",
+          "title": "weekend bank × duplicate (concurrent): two overlapping calls both reading the quote send one close — the claim is taken before the first await"
         }
       ]
     },

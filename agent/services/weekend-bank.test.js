@@ -372,3 +372,22 @@ test('weekend bank × missing (timeout): a close whose reply is lost throws, yet
   await runWeekendBank(db, CREDS, [POSV(905, 100)], { deps: volDeps(sent), now: later(RECHECK_MS + 60_000) })
   assert.deepEqual(sent.slice(1), [{ positionId: 905, volume: 100 }])
 })
+
+test('weekend bank × duplicate (concurrent): two overlapping calls both reading the quote send one close — the claim is taken before the first await', async () => {
+  const db = bankDb(); const sent = []
+  let release; const gate = new Promise(r => { release = r })
+  const slowQuote = { ...volDeps(sent), wsGetSpotOnce: async () => { await gate; return { bid: 370, ask: 370.1 } } }
+  const a = runWeekendBank(db, CREDS, [POSV(906, 100)], { deps: slowQuote, now: FRI_2030 })
+  const b = runWeekendBank(db, CREDS, [POSV(906, 100)], { deps: slowQuote, now: FRI_2030 })
+  release(); await Promise.all([a, b])
+  assert.deepEqual(sent, [{ positionId: 906, volume: 100 }])
+})
+
+test('weekend bank: a claim taken for a position that is not banked this pass is released — a later pass still banks it', async () => {
+  const db = bankDb(); const sent = []
+  const losing = { ...volDeps(sent), wsGetSpotOnce: async () => ({ bid: 350, ask: 350.1 }) } // below entry 362.43: not banked
+  await runWeekendBank(db, CREDS, [POSV(907, 100)], { deps: losing, now: FRI_2030 })
+  assert.equal(sent.length, 0)
+  await runWeekendBank(db, CREDS, [POSV(907, 100)], { deps: volDeps(sent), now: later(60_000) })
+  assert.deepEqual(sent, [{ positionId: 907, volume: 100 }], 'the unbanked pass held nothing')
+})
