@@ -90,7 +90,16 @@ done
 
 # Working tree AND index against the merge base with $BASE: a change that is
 # committed, staged or unstaged all count.
-changed="$(git diff --name-only "$(git merge-base "$BASE" HEAD)" -- "${PROTECTED[@]}" 2>/dev/null)"
+# Claude · № 15,001 15-Oct (owner: "#36 research isolation — CI step only when research files change" after № 14,989; claude-builder): the merge base is computed on its own and checked. A shallow clone
+# (CI's default fetch-depth 1) has none; the old form sent that error to
+# /dev/null and diffed against an empty ref — OK whatever had changed, a guard
+# whose trigger never fires (CLAUDE.md failure mode #3).
+mb="$(git merge-base "$BASE" HEAD 2>/dev/null)"
+if [[ -z "$mb" ]]; then
+  echo "protected-boundary: no merge base between $BASE and HEAD (shallow clone? check out with fetch-depth: 0)" >&2
+  exit 2
+fi
+changed="$(git diff --name-only "$mb" -- "${PROTECTED[@]}")"
 if [[ -n "$changed" ]]; then
   echo "protected-boundary: FAIL — protected path(s) differ from $BASE:"
   echo "$changed" | sed 's/^/  /'

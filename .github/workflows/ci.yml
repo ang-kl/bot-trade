@@ -47,3 +47,22 @@ jobs:
           for f in agent/index.js agent/loop.js agent/routes/actions.js agent/routes/state.js agent/lib/ctrader-ws.js agent/lib/ctrader-auth.js agent/services/fib-strategy.js agent/services/risk.js; do
             node --check "$f"
           done
+
+  # Claude · № 15,001 15-Oct (#36 research isolation; claude-builder). The live
+  # trade-management boundary (scripts/check-protected-boundary.sh) runs on
+  # EVERY pull request: Codex P1 on #1380 (owner: "run the boundary job on
+  # every PR") — a hand-kept list of research paths skipped the script when a
+  # research dependency such as lib/tick-replay-sim.js changed beside a
+  # protected file, and the research import graph (210 modules, db.js among
+  # them) would fire on almost every PR anyway. A full-history checkout: the
+  # script diffs against the merge base with the base branch and refuses
+  # (exit 2) when a shallow clone has none.
+  protected-boundary:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Protected boundary
+        run: bash scripts/check-protected-boundary.sh "origin/${{ github.base_ref }}"

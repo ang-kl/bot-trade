@@ -21,6 +21,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { moduleImports } from './test-support/module-imports.js'
+import * as acorn from 'acorn'
 import { probeImportTimers } from './test-support/timer-probe.js'
 import { join, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -75,7 +76,9 @@ const ALLOWED_IMPORTERS = new Set([
  * order authority.
  */
 const READ_ONLY_PROTECTED = new Set(['agent/services/regime.js', 'agent/services/regime-gate.js'])
-const RESEARCH_DOORS = ['agent/services/bar-form-research.js', 'agent/services/bar-form-research-worker.js']
+// Claude · № 15,001 15-Oct (owner: "#36 research isolation — CI step only when research files change" after № 14,989; claude-builder): the tick research door and its worker thread are doors too.
+const RESEARCH_DOORS = ['agent/services/bar-form-research.js', 'agent/services/bar-form-research-worker.js',
+  'agent/services/tick-research-run.js', 'agent/services/tick-research-worker.js']
 
 export function protectedPaths() {
   const sh = readFileSync(join(ROOT, 'scripts/check-protected-boundary.sh'), 'utf8')
@@ -179,7 +182,150 @@ test('the research doors call no state writer', () => {
     assert.ok(!/\bsetState\s*\(/.test(src), `${mod} calls setState`)
     assert.ok(!/\bsetAccountState\s*\(/.test(src), `${mod} calls setAccountState`)
     assert.ok(!/\b(placeOrder|submitOrder|amendPosition|closePosition)\s*\(/.test(src), `${mod} calls an order function`)
+    // № 15,001 (#36): the writers a door could reach by name — the engine
+    // status writer, the validation importer and the exec-guard sync.
+    assert.ok(!/\b(writeEngineStatus|importTickValidation|syncExecGuard)\s*\(/.test(src), `${mod} calls a state-writing function`)
   }
+})
+
+// ── Claude · № 15,001 15-Oct (owner: "#36 research isolation — CI step only when research files change" after № 14,989; claude-builder) ──
+// The door test above reads a door's OWN source; a door's writes could sit
+// in a module it imports (tick-validation.js's importTickValidation writes
+// setAccountState; exec-guard-sync.js's syncExecGuard writes setState). So
+// each door's imports from a WRITER module (one whose source calls setState /
+// setAccountState / writeEngineStatus) or a protected / order-authority
+// module are read from the syntax tree and must be exactly these read-only
+// names — no default or namespace import — and each name's own body, and
+// the same-module functions it calls, call no writer.
+const WRITER_RE = /\b(setState|setAccountState|writeEngineStatus)\s*\(/
+export const DOOR_READ_IMPORTS = {
+  'agent/services/tick-research-run.js': {
+    'agent/services/tick-validation.js': ['loadThresholds', 'replayChecks', 'shadowLiveFilters'],
+    'agent/db.js': ['getState'],
+    'agent/services/tick-permits.js': ['loadTickEntryConfig'],
+    'agent/services/exec-guard-sync.js': ['tickSymbolNames'],
+    'agent/lib/ctrader-creds.js': ['accountSymbolMapKey'],
+    'agent/services/regime-gate.js': ['loadRegimeGateConfig', 'DEFAULT_MAX_REGIME_AGE_MIN'],
+  },
+  'agent/services/bar-form-research.js': { 'agent/db.js': ['getState'] },
+  'agent/services/bar-form-research-worker.js': {},
+  'agent/services/tick-research-worker.js': {},
+}
+const parse = (src) => acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true })
+/** A file's static import declarations: target spec and the names bound ('default', '*' or the imported name). */
+export function importDeclarations(src) {
+  return parse(src).body.filter(n => n.type === 'ImportDeclaration').map(n => ({
+    spec: n.source.value,
+    names: n.specifiers.map(s => s.type === 'ImportSpecifier' ? (s.imported.name ?? s.imported.value) : s.type === 'ImportDefaultSpecifier' ? 'default' : '*'),
+  }))
+}
+/** Top-level declarations of a module by name → their source slice (exported or not). */
+function topLevel(src) {
+  const out = new Map()
+  for (const n of parse(src).body) {
+    const d = n.type === 'ExportNamedDeclaration' ? n.declaration : n
+    if (!d) continue
+    if (d.type === 'FunctionDeclaration' && d.id) out.set(d.id.name, src.slice(d.start, d.end))
+    if (d.type === 'VariableDeclaration') for (const v of d.declarations) if (v.id?.type === 'Identifier') out.set(v.id.name, src.slice(v.start, v.end))
+  }
+  return out
+}
+/** Names whose body — or the body of any same-module declaration it calls — calls a writer. */
+function writingNames(src, names) {
+  const decls = topLevel(src)
+  const bad = []
+  for (const name of names) {
+    if (!decls.has(name)) { bad.push(`${name} (not declared at top level)`); continue }
+    const seen = new Set(); const stack = [name]
+    while (stack.length) {
+      const n = stack.pop(); if (seen.has(n)) continue; seen.add(n)
+      const body = strip(decls.get(n) || '')
+      if (WRITER_RE.test(body)) { bad.push(`${name} (via ${n})`); break }
+      for (const [other] of decls) if (other !== n && new RegExp(`\\b${other}\\s*\\(`).test(body)) stack.push(other)
+    }
+  }
+  return bad
+}
+/**
+ * The violations of the rule for one door: [{ target, reason }]. `rootDir`
+ * lets the synthetic controls below run on a temporary tree.
+ */
+export function doorImportViolations(doorRel, allow, { rootDir = ROOT, forbidden = new Set() } = {}) {
+  const abs = join(rootDir, doorRel)
+  const out = []
+  for (const imp of importDeclarations(readFileSync(abs, 'utf8'))) {
+    if (!imp.spec.startsWith('.')) continue
+    const target = relative(rootDir, resolve(dirname(abs), imp.spec))
+    const tAbs = join(rootDir, target)
+    if (!existsSync(tAbs)) { out.push({ target, reason: 'target missing' }); continue }
+    const tSrc = readFileSync(tAbs, 'utf8')
+    const writer = WRITER_RE.test(strip(tSrc))
+    if (!writer && !forbidden.has(target)) continue
+    const allowed = allow[target] || []
+    for (const name of imp.names) {
+      if (name === 'default' || name === '*') { out.push({ target, reason: `${name === '*' ? 'namespace' : 'default'} import from a ${writer ? 'writer' : 'protected'} module` }); continue }
+      if (!allowed.includes(name)) out.push({ target, reason: `${name} is not an allowlisted read-only import` })
+    }
+    for (const w of writingNames(tSrc, allowed.filter(n => imp.names.includes(n)))) out.push({ target, reason: `${w} calls a writer` })
+  }
+  // a dynamic import from a door must not target a writer or protected module
+  for (const site of moduleImports(readFileSync(abs, 'utf8'), doorRel).sites) {
+    if (site.kind !== 'dynamic' || !site.spec.startsWith('.')) continue
+    const target = relative(rootDir, resolve(dirname(abs), site.spec))
+    const tAbs = join(rootDir, target)
+    if (existsSync(tAbs) && (forbidden.has(target) || WRITER_RE.test(strip(readFileSync(tAbs, 'utf8'))))) out.push({ target, reason: `dynamic import of a writer/protected module in ${site.fn || 'top level'}` })
+  }
+  return out
+}
+
+test('a research door imports only allowlisted read-only names from state-writing or protected modules, and each such name writes nothing', () => {
+  const forbidden = new Set([...protectedPaths(), ...ORDER_AUTHORITY])
+  for (const door of RESEARCH_DOORS) {
+    assert.ok(door in DOOR_READ_IMPORTS, `${door} has no allowlist entry`)
+    const v = doorImportViolations(door, DOOR_READ_IMPORTS[door], { forbidden })
+    assert.deepEqual(v, [], `${door}: ${v.map(x => `${x.target}: ${x.reason}`).join('; ')}`)
+  }
+  // every allowlisted name is really imported (an allowlist that outlives its import is drift)
+  for (const [door, byTarget] of Object.entries(DOOR_READ_IMPORTS)) {
+    const imports = importDeclarations(readFileSync(join(ROOT, door), 'utf8'))
+    for (const [target, names] of Object.entries(byTarget)) {
+      const got = imports.filter(i => i.spec.startsWith('.') && relative(ROOT, resolve(dirname(join(ROOT, door)), i.spec)) === target).flatMap(i => i.names)
+      for (const n of names) assert.ok(got.includes(n), `${door} no longer imports ${n} from ${target}`)
+    }
+  }
+  // Positive controls on a synthetic tree: the checker flags what it is for.
+  const dir = mkdtempSync(join(tmpdir(), 'door-ctl-'))
+  try {
+    writeFileSync(join(dir, 'w.js'), `export function importTickValidation(db) { setAccountState(db, 'a', 'k', 'v') }\nexport function pure() { return 1 }\nexport function viaHelper() { return helper() }\nfunction helper() { setState(null, 'k', 'v') }\n`)
+    writeFileSync(join(dir, 'd1.js'), `import { importTickValidation } from './w.js'\n`)
+    writeFileSync(join(dir, 'd2.js'), `import * as tv from './w.js'\n`)
+    writeFileSync(join(dir, 'd3.js'), `import { pure } from './w.js'\n`)
+    writeFileSync(join(dir, 'd4.js'), `import { viaHelper } from './w.js'\n`)
+    writeFileSync(join(dir, 'd5.js'), `export async function f() { return import('./w.js') }\n`)
+    const run = (door, allow) => doorImportViolations(door, allow, { rootDir: dir }).map(v => v.reason)
+    assert.deepEqual(run('d1.js', {}), ['importTickValidation is not an allowlisted read-only import'])
+    assert.deepEqual(run('d1.js', { 'w.js': ['importTickValidation'] }), ['importTickValidation (via importTickValidation) calls a writer'], 'allowlisting a writer does not pass it')
+    assert.deepEqual(run('d2.js', {}), ['namespace import from a writer module'])
+    assert.deepEqual(run('d3.js', { 'w.js': ['pure'] }), [], 'a pure function from a writer module, allowlisted, passes')
+    assert.deepEqual(run('d4.js', { 'w.js': ['viaHelper'] }), ['viaHelper (via helper) calls a writer'], 'a write through a same-module helper is seen')
+    assert.deepEqual(run('d5.js', {}), ['dynamic import of a writer/protected module in f'])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the CI boundary job runs the script on every pull request, on a full-history checkout, and the script refuses a missing merge base', () => {
+  // Codex P1 on #1380 (owner: "run the boundary job on every PR"): a
+  // hand-kept research-path gate skipped the script when a research
+  // dependency changed beside a protected file; the job is unconditional.
+  const yml = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')
+  const job = yml.split('protected-boundary:')[1] ?? ''
+  assert.ok(job, 'ci.yml defines the protected-boundary job')
+  assert.match(job, /if: github\.event_name == 'pull_request'/)
+  assert.match(job, /fetch-depth: 0/, 'the boundary job checks out full history (the script refuses a shallow clone)')
+  assert.match(job, /run: bash scripts\/check-protected-boundary\.sh "origin\/\$\{\{ github\.base_ref \}\}"/)
+  assert.doesNotMatch(job, /steps\.\w+\.outputs\.touched|RESEARCH-PATHS/, 'no research-file gate in front of the script')
+  // the script itself refuses when there is no merge base, instead of reading OK
+  const sh = readFileSync(join(ROOT, 'scripts/check-protected-boundary.sh'), 'utf8')
+  assert.match(sh, /mb="\$\(git merge-base "\$BASE" HEAD 2>\/dev\/null\)"\nif \[\[ -z "\$mb" \]\]; then\n[^\n]*\n {2}exit 2\nfi\nchanged="\$\(git diff --name-only "\$mb" -- "\$\{PROTECTED\[@\]\}"\)"/, 'the merge base is computed, checked, and the diff runs against it with no silenced error')
 })
 
 test('no live module imports a research module (routes, the report worker and scripts are the only readers)', () => {

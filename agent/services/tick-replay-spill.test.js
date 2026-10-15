@@ -30,7 +30,7 @@ const GAP = (reason, recvMs) => encodeRecord({ recvMs, seq: 0, symbolId: 0, bid:
  * quotes, a continuity gap (reconnect, 3) and a recorder-only gap
  * (queue_overflow, 1) — a trend on symbol 11 so the oracle trades.
  */
-function richSegments(dir, n = 6000) {
+function richSegments(dir, n = 6000, base = 100_000, encoded = null) {
   const names = []
   let seq = 1
   for (let s = 0; s < 2; s++) {
@@ -39,7 +39,7 @@ function richSegments(dir, n = 6000) {
       const t = T0 + s * 1e7 + i * 100
       const sym = [11, 11, 12, 13][i % 4]
       const drift = sym === 11 ? Math.floor(i / 3) * 3 : 0
-      const bid = 100_000 + drift + Math.round(Math.sin(i / (sym === 12 ? 40 : 90)) * 400) + (i % 5)
+      const bid = base + drift + Math.round(Math.sin(i / (sym === 12 ? 40 : 90)) * 400) + (i % 5)
       const ask = bid + 8 + (i % 3)
       let flags = QUOTE
       let b = bid, a = ask
@@ -47,6 +47,7 @@ function richSegments(dir, n = 6000) {
       if (i % 1499 === 7) flags |= FLAGS.SNAPSHOT
       if (i % 1777 === 9) { flags |= FLAGS.CROSSED; b = ask + 2; a = ask }
       parts.push(encodeRecord({ recvMs: t, seq: seq++, symbolId: sym, bid: b, ask: a, flags, kind: KIND.QUOTE, generation: 1 }))
+      if (encoded) encoded.push({ sym, bid: b, ask: a ?? null })
       if (i % 11 === 0) parts.push(encodeRecord({ recvMs: t + 50, seq: seq++, symbolId: sym, flags: FLAGS.REPEAT, generation: 1 }))
       if (i === 1500 + s) parts.push(GAP(3, t + 60))
       if (i === 3000) parts.push(GAP(1, t + 60))
@@ -448,4 +449,37 @@ test('Codex P2 on #1330: the spill refuses past its entry cap — nothing simula
   assert.equal(r.status, 413); assert.equal(r.body.error, SPILL_OVER_BOUND)
   assert.deepEqual(db.prepare('SELECT status FROM tick_test_openings').all(), [{ status: 'failed_unseen' }])
   assert.equal(MAX_SPILL_ENTRIES, MAX_RECORDS, 'the cap is the spill budget MAX_RECORDS states: 32 bytes an entry')
+})
+
+// ── Claude · № 15,001 15-Oct (owner: "#36 research isolation — CI step only when research files change" after № 14,989; claude-builder) ──
+// The spill writes prices as float64 and reads them bit-exact; the lossy
+// step would be a price above 2^53. Expected outcome: at a BTC-class level
+// (8 × 10^9 in 10^-5 points) every quote the spill hands back carries the
+// integer that was encoded, and the stream equals the in-memory build.
+test('at 8e9 (BTC-class prices) the spill hands back the encoded integers and equals the in-memory build', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'spill-high-'))
+  const encoded = []
+  const files = richSegments(dir, 3000, 8_000_000_000, encoded)
+  const mem = loadSegments(files)
+  const spillDir = mkdtempSync(join(tmpdir(), 'spill-high-store-'))
+  const spill = createSpill(spillDir)
+  const base = walkSegments(files, spill)
+  spill.close()
+  assert.deepEqual(base, mem.manifestBase)
+  let maxBid = 0
+  for (const id of spill.symbols()) {
+    const got = spill.read(id)
+    assert.equal(JSON.stringify(got), JSON.stringify(mem.bySymbol.get(id)), `symbol ${id}`)
+    const quotes = got.filter(q => !q.gapMarker && q.changed !== false)
+    const want = encoded.filter(e => e.sym === id)
+    assert.equal(quotes.length, want.length, `symbol ${id}: one entry per encoded quote`)
+    quotes.forEach((q, i) => {
+      assert.equal(q.bid, want[i].bid, `symbol ${id} quote ${i} bid`)
+      assert.equal(q.ask, want[i].ask, `symbol ${id} quote ${i} ask`)
+      assert.ok(Number.isSafeInteger(q.bid) && (q.ask == null || Number.isSafeInteger(q.ask)))
+      maxBid = Math.max(maxBid, q.bid)
+    })
+  }
+  assert.ok(maxBid >= 8_000_000_000, `the fixture reached the BTC-class level (max bid ${maxBid})`)
+  assert.deepEqual(readdirSync(spillDir), [])
 })

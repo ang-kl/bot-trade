@@ -2,7 +2,7 @@
 // Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder)
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDir } from '../test-support/temp-dir.js'
 import { loadResearchConfig, withOverrides, numberList, RESEARCH_CONFIG_FILE } from './research-config.js'
@@ -46,4 +46,15 @@ test('withOverrides applies validated request values over the file and names wha
   assert.deepEqual(r.overridden, ['trailR', 'exitAtMeanPeriod'])
   const none = withOverrides(base, {}, spec)
   assert.deepEqual(none.value, base); assert.deepEqual(none.overridden, [])
+})
+
+// ── Claude · № 15,001 15-Oct (owner: "#36 research isolation — CI step only when research files change" after № 14,989; claude-builder) ──
+// The checked-in design floor for rsi2_reversion mirrors the strategy's own
+// MIN_TF_MIN (rsi2-reversion.js, not exported). Expected outcome: the
+// strategy's source, so a change there that forgets research.json fails here.
+test('the rsi2 design floor in research.json is the strategy\'s own MIN_TF_MIN', () => {
+  const src = readFileSync(new URL('../services/rsi2-reversion.js', import.meta.url), 'utf8')
+  const m = /^const MIN_TF_MIN = (\d+)$/m.exec(src)
+  assert.ok(m, 'rsi2-reversion.js declares MIN_TF_MIN')
+  assert.equal(loadResearchConfig().barForm.designFloorMs.rsi2_reversion, Number(m[1]) * 60_000)
 })
