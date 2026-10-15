@@ -100,11 +100,35 @@ if [[ -z "$mb" ]]; then
   exit 2
 fi
 changed="$(git diff --name-only "$mb" -- "${PROTECTED[@]}")"
-if [[ -n "$changed" ]]; then
+# Claude · № 15,074 16-Oct (owner on #1381: "Merge on test+review green; add a marker in a
+# follow-up"; claude-builder). An owner-authorised change to a protected path
+# names that path, one line per path, in the PR body (CI passes it in
+# PROTECTED_AUTHORISED) or, locally, in HEAD's commit message:
+#   Protected-change-authorised: agent/loop.js (owner, § 15,032·C)
+# A differing path that is named is reported as AUTHORISED and does not fail;
+# a differing path that is not named still fails. The marker DOCUMENTS the
+# authorisation — anyone can write the line — it does not prove who gave it;
+# the PR body and the conversation reference it carries are the record.
+authorised_src="${PROTECTED_AUTHORISED-}"
+if [[ -z "$authorised_src" ]]; then authorised_src="$(git log -1 --format=%B HEAD 2>/dev/null)"; fi
+authorised="$(printf '%s\n' "$authorised_src" | sed -nE 's/^[[:space:]]*Protected-change-authorised:[[:space:]]*([^[:space:]()]+).*$/\1/p')"
+unauthorised=""; allowed=""
+while IFS= read -r p; do
+  [[ -z "$p" ]] && continue
+  if printf '%s\n' "$authorised" | grep -qxF -- "$p"; then allowed+="$p"$'\n'; else unauthorised+="$p"$'\n'; fi
+done <<< "$changed"
+if [[ -n "$unauthorised" ]]; then
   echo "protected-boundary: FAIL — protected path(s) differ from $BASE:"
-  echo "$changed" | sed 's/^/  /'
+  printf '%s' "$unauthorised" | sed 's/^/  /'
+  [[ -n "$allowed" ]] && { echo "protected-boundary: authorised by marker (Protected-change-authorised):"; printf '%s' "$allowed" | sed 's/^/  /'; }
   exit 1
 fi
 note=""; [[ "$missing" -gt 0 ]] && note=", $missing missing in base"
+if [[ -n "$allowed" ]]; then
+  echo "protected-boundary: OK — protected path(s) differ from $BASE under an owner-authorisation marker:"
+  printf '%s' "$allowed" | sed 's/^/  /'
+  echo "protected-boundary: every other protected path identical to $BASE (base $(git rev-parse --short "$BASE"))$note"
+  exit 0
+fi
 echo "protected-boundary: OK — ${#PROTECTED[@]} protected path(s) identical to $BASE (base $(git rev-parse --short "$BASE"))$note"
 exit 0

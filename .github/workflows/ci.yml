@@ -65,4 +65,8 @@ jobs:
         with:
           fetch-depth: 0
       - name: Protected boundary
+        # The PR body reaches the script as an environment variable, never
+        # interpolated into the shell line: a body is free text.
+        env:
+          PROTECTED_AUTHORISED: ${{ github.event.pull_request.body }}
         run: bash scripts/check-protected-boundary.sh "origin/${{ github.base_ref }}"
