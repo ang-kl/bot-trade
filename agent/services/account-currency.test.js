@@ -20,6 +20,7 @@ import {
 } from './account-currency.js'
 import { evaluateTrade, DEFAULT_RISK_CONFIG, dailyLossVerdict, accountMarginPool, portfolioMarginStatus, drawdownDeriskFactor, riskBudgetUsd } from './risk.js'
 import { accountPregateVerdict, resetAccountPregate } from './account-pregate.js'
+import { clampToFxDay } from '../test-support/fx-day.js'
 import { journalMarginPoolState, resetMarginPoolJournal } from './margin-pool-journal.js'
 import { dailyStopReading } from './daily-stop-reading.js'
 import { requiredQuoteCurrencies, refreshFxLegs, fxLegReport } from './fx-legs.js'
@@ -58,9 +59,13 @@ const proposal = (accountId, over = {}) => ({
   symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0970, tp1: 1.1105,
   requestedVolume: 0.1, strategy: 'vwap_trend', timeframe: '1h', source: 'auto_signal', accountId, ...over,
 })
+// Claude · № 15,07x 16-Oct (follow-up #70; claude-builder): "5 minutes ago" is
+// YESTERDAY between 21:00 and 21:05 UTC (the FX day opens at 21:00 UTC), and
+// the cap sums today — the PR-D gate run of 16-10 05:0x SGT failed this test
+// for that reason alone. clampToFxDay keeps the row inside the current day.
 const closedToday = (db, account, netPnl) => db.prepare(`
   INSERT INTO trades (symbol, side, entry_price, exit_price, volume, status, opened_at, closed_at, net_pnl, account_id)
-  VALUES ('GBPUSD', 'BUY', 100, 99, 0.1, 'closed', datetime('now', '-2 hours'), datetime('now', '-5 minutes'), ?, ?)`).run(netPnl, account)
+  VALUES ('GBPUSD', 'BUY', 100, 99, 0.1, 'closed', datetime('now', '-2 hours'), ?, ?, ?)`).run(clampToFxDay(5), netPnl, account)
 const snapshot = (db, accountId, usedMargin, currency) => setState(db, `acct:${accountId}:broker_snapshot_cache_json`, JSON.stringify({
   fetchedAt: new Date().toISOString(), account: { accountId, currency, health: { usedMargin, marginLevelPct: 900 } },
 }))

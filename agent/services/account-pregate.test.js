@@ -10,6 +10,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { initDB, setState } from '../db.js'
+import { clampToFxDay } from '../test-support/fx-day.js'
 import { evaluateTrade, DEFAULT_RISK_CONFIG, openPositionsForAccount, rrFloorVerdict, HARD_MIN_RR } from './risk.js'
 import {
   accountPregate, accountPregateVerdict, proposalPregate, resetAccountPregate, invalidateAccountPregate,
@@ -42,11 +43,14 @@ function openPositionOn(db, account, symbol) {
   `).run(symbol, tradeId, account)
 }
 
+// Claude · № 15,07x 16-Oct (follow-up #70; claude-builder): the row stays inside
+// the current FX day (21:00 UTC open) — see test-support/fx-day.js; between
+// 21:00 and 21:05 UTC "5 minutes ago" was yesterday and the cap read nothing.
 function closedToday(db, account, netPnl, minutesAgo = 5) {
   db.prepare(`
     INSERT INTO trades (symbol, side, entry_price, exit_price, volume, status, opened_at, closed_at, net_pnl, account_id)
-    VALUES ('GBPUSD', 'BUY', 100, 99, 0.1, 'closed', datetime('now', '-2 hours'), datetime('now', ?), ?, ?)
-  `).run(`-${minutesAgo} minutes`, netPnl, account)
+    VALUES ('GBPUSD', 'BUY', 100, 99, 0.1, 'closed', datetime('now', '-2 hours'), ?, ?, ?)
+  `).run(clampToFxDay(minutesAgo), netPnl, account)
 }
 
 // EURUSD: a pair the fresh DB can price (usd_per_lot known), so a clean
