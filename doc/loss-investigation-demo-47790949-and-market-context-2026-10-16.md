@@ -99,6 +99,8 @@ The later screenshots favour GER40 and both US30 buys (recovered after the exits
 | Correlation matrix (correlation-matrix.js) | Pearson of 1h log returns, 60 lookback, threshold 0.7, maxCorrelated 2, maxAgeMin 90 | global creds; symbols = held (all accounts) + scans of 6 h, `.slice(0,24)` in SQLite row order (loop.js:6386-6397, matrix :233) | `builtAt` wall clock; returns paired by **array tail** (:64-67), `logReturns` drops `bar.t` (:54-61); null pair stored as **0** (:90) | ~30 min; current + previous only | yes (the only live relationship) | `correlationVerdict` (risk.js:1705; callers :2567 and account-pregate.js:189) — veto on ≥ 2 held correlated positions; cluster conviction (curated clusters only in effect: `loadStoredMatrix` returns `{symbols, m}` with `m` a symbol→symbol map, while `matrixGroups` reads `m.matrix` as an array — cluster-conviction.js:74-77, correlation-matrix.js:82/247, loop.js:4995 passes the stored object through unchanged — so the live matrix yields no groups; an existing integration gap, F11) and pulse herds (no age check); `/state/correlation` display; shifts (:194) display only | vetoes only |
 | Regimes (regime.js) | ADX/ATR regime, trend direction | global creds; scanned ∪ momentum ∪ tick names | `computed_at` ingestion; no timeframe column; raw cached bars incl. forming; `atr_14`/`adx_14` never written | ~30 min; 30 d | none | `checkRegimeGate` (loop, preorder, momentum paths); `permittedSides` → tick permits; labels | vetoes, side vetoes |
 | Sessions / hours | broker weekly schedule + tz; per-account calendar with holidays | name-keyed (global) / per account | DST-correct schedule; `nextOpenInfo` wall-clock projection (DST transition one hour off: Codex P2 on #1382, booked) | ~daily refresh | — | entry gates; closed-market routing; exit-hours (book); momentum-account uses the weekly-only reader | routing |
+| Economic calendar (news-calendar.js) | scheduled currency events with impact, time | global cache | event time from the feed; ingestion time of the cache | cached; refreshed by its job | — | the optional news-window entry gate (risk.js:2078, default off; applied to every `evaluateTrade` entry incl. the momentum book); display | vetoes only when on |
+| Tick-activity measurement (tick-activity.js, #1382) | ticks per complete minute per streamed symbol, `median20`, `relActivity`, `movePct1m` | the guardian's spot stream (the enabled watchlist; one feed per side) | tick arrival time; completed-minute buckets | 60-minute in-process ring; `tick_activity_json` snapshot every 60 s | not retained past the ring; reset on process start | `GET /state/tick-activity` display only; no scan or entry consumer yet | none |
 | FX rates | scan price per symbol | global | ingestion time | each scan; 26 h | — | sizing only | sizing vetoes |
 | News calendar (ForexFactory) | scheduled events by currency/impact | global HTTP | event time from feed | 6 h TTL | — | `risk.js:2078-2092` veto only if `newsGate.on` (default **false**); cockpit | none by default |
 | Index / commodity / USDX benchmarks | **none computed** (contracts/taxonomy only) | — | — | — | — | — | — |
@@ -118,6 +120,10 @@ The later screenshots favour GER40 and both US30 buys (recovered after the exits
 | Correlation shifts, pulse `checks.pulse`: no decision consumer; pending paths do not consume pulse despite the module header | missing consumer |
 | Cluster conviction and pulse herds read the matrix with no age check | stale input |
 | Cluster conviction's live groups: the stored matrix's `m` map is read as a `matrix` array, so no live group ever forms; only curated clusters act | missing consumer (shape mismatch) |
+| Pulse herds vote on raw direction inside |corr|-built groups; inverse co-movement reads as disagreement (F12) | missing relationship (signed orientation) |
+| Pulse envelope time hides the matrix's and the constituent bars' ages (F13) | stale input |
+| Alpha-decay pooled across accounts and policy versions; cool-off scoped per account (F14) | stale input / label pooling |
+| Tick-activity: 60-minute in-process ring, one-minute persisted snapshot; `median20` reads 0 for the first 20 complete minutes after every process start or (re)subscription (observed 0 at 06:44Z after the c277bb0 boot and again at 07:46Z after the f8d7460 boot) | insufficient history / startup gap |
 | Tick path: no correlation, news, pulse or market-hours gate (the momentum book's entries pass `evaluateTrade` via `autoTrade` and carry the scan path's checks) | missing consumer |
 | Fib pending invalidation reads the raw cache (possibly forming) keyed by symbol, not the row's timeframe | stale input |
 | Resting limits (all three paths): no post-placement context revalidation beyond level/SL, expiry, pause | missing consumer |
@@ -146,6 +152,9 @@ Price-regime-only sources: scans, mirror, tick feed, regimes, pulse, correlation
 | F9 | Protection-band budget overruns (loss guardian 5 s; 14–16 Oct heartbeat warning) and, separately, tick-pass overlap skips | two observability deficiencies on two independent tickers; the tick's is the one that could carry an execution consequence (F1, not established) | each ticker inside its cadence; per-position receipts retained | the guardian's sweep exceeds the band's 5 s budget; the tick pass exceeds its 3 s cadence and skips firings; neither retains per-position receipts beyond the latest pass | pre-existing | high | high | see F1 |
 | F10 | Main-loop monitor phase 187 s at 22:11Z 16 Oct (loop 213 s, a trendbar request in flight) | observability (recorded, recovered) | 60 s loop | long broker read inside the monitor phase | current | high | medium | 0 |
 | F11 | Cluster conviction never forms a live-matrix group: the stored payload carries `m` (a map) and `matrixGroups` reads `matrix` (an array); only the curated clusters act | integration gap (existing) | live groups from the matrix when `useLiveMatrix` is on / none | shape mismatch between the writer (correlation-matrix.js:247) and the reader (cluster-conviction.js:74-77); loop.js:4995 passes the stored object through unchanged | pre-existing | high (source); runtime impact unverified | low–medium | none attributable |
+| F12 | Pulse herds admit inverse members by |corr| but vote on raw up/down: an inverse pair moving normally scores `dir 0, agreement 0.5, moving false`; the same pair moving the same raw way scores `agreement 1, moving true` (herdAgreement 0.6) | input/interpretation contract (existing; advisory today) | factor-relative direction / raw direction | `herdsOf` uses |corr| ≥ threshold; `herdPulse` counts signs of `dir` (market-pulse.js:275-347); reproduced offline (§15.2, probe 2) | pre-existing | high (source); no incident attributed | low today (advisory), high if made active unresolved | none attributable |
+| F13 | A fresh pulse envelope can carry a stale matrix: `computeAndStorePulse` loads whatever matrix is stored and stamps the pulse `builtAt` now; `pulseFor` ages only that stamp (maxAgeMin 120) | stale-input contract (existing; advisory today) | consumer refuses stale constituents / consumer sees only the envelope time | market-pulse.js:480, :429 | pre-existing | high (source); no incident attributed | low today, high if made active unresolved | none attributable |
+| F14 | The alpha-decay flag pools the last five postmortems per symbol/strategy/timeframe across accounts and policy versions, while the cool-off that consumes it is scoped per account | label/pooling contract (existing; the cool-off acts on entries) | account-and-version-consistent evidence / mixed pool | `alphaDecayFlag` (loss-postmortem.js:294) has no account/version filter; `computeDecayKeys` (lessons-tuner.js:111) filters by account afterwards | pre-existing | high (source); whether a cool-off has rested on another account's outcomes is Not Verifiable from stored data without the join | medium | none attributable |
 
 Losses that were valid protection: JPN225, JPYX, US30 #1827 (broker stops), COST.US, US30 #1889 (premise closes), NAS100 (premise close as built). Defects proven: none to the standard of a reproduced test; F1 is unresolved: the retained receipts would settle whether an evaluation was due before the stop, and they are not kept. Policy changes with supporting evidence: a minimum premise distance (F2; two cases: NAS100 and the earlier …0949 NAS100 #1890 note at № 14,953), a session-aware time cap for cash-session instruments (F3), per-position receipts retained for a window (F9). Unproven: that any stop was "wrong" (recovery after an exit is not proof), any fundamental cause for the 15 Oct GER40 and US30 moves (no timestamped evidence feed), any cross-market relationship for the incident symbols (no runtime matrix retained).
 
@@ -227,6 +236,9 @@ Missing evidence or feeds, named: retained fast-monitor per-position receipts (a
 6. Stale feed plus worker restart plus conflicting keeper/context proposals: broker stops unchanged, the loss cap still acts, the residual gap (a tick permit issued before a late withdrawal) measured (criterion 6).
 7. The calibration join reproduces whole-position net to the statement, keeps ambiguous labels, refuses any assessment generated after the decision time (criterion 7).
 8. Economic acceptance only on the frozen out-of-sample comparison with uncertainty, tails, false alarms, turnover and missed winners reported (criterion 8).
+9. The matrix builder fed `A=[0,0,0,0]` keeps A's pairs `unknown` (today it stores 0, §15 probe 1); an inverse pair at −0.95 both trending in their own directions reads as a herd moving together under the signed contract (today `dir 0, agreement 0.5, moving false`, §15 probe 2), and the raw-direction vote is never an active gate (criterion 9).
+10. A pulse built from a matrix older than its own `maxAgeMin`, or from constituent bars older than their period, is refused by the consumer, and the decision record names the matrix generation, the oldest constituent event time and the degraded action taken (criterion 10).
+11. A tick-activity reading taken inside the first 20 complete minutes after a process start or a stream (re)subscription is marked `unwarmed` and cannot raise an entry's confidence; a silent minute on a subscribed, connected stream is distinguished from a minute with no subscription or a disconnected feed; the retained history is stated (today: a 60-minute in-process ring and a one-minute persisted snapshot, no longer series) before any calibration sample is claimed (criterion 11).
 
 ## 12. Ranked backlog (corrections first, then design)
 
@@ -238,6 +250,9 @@ Missing evidence or feeds, named: retained fast-monitor per-position receipts (a
 | 4 | One monitor row per broker position; every stop change journalled with a writer | reconciler.js adoption; native-trail-events.js | row identity; event journal | F5 (JPYX) | manual order then reconciler import | one row; a `trail_tightened` event with its source |
 | 5 | Event-time alignment, unknown ≠ 0, per-pair quality in the matrix | correlation-matrix.js:54-94 | matrix payload gains n, ess, unknown | F7 | disjoint-session pair; missing bar | criterion 2 |
 | 5a | Cluster conviction reads the stored matrix in its own shape (adapt the `m` map to the `matrix` array the reader expects, or make the reader accept the map); curated clusters unchanged | cluster-conviction.js:74-77; loop.js:4995 | none | F11 | a two-symbol live matrix at 0.9 forms one live group | criterion 5 |
+| 5b | Signed orientation for inverse links: herd membership keeps the sign of each member's correlation to the herd's anchor, and `herdPulse` scores agreement on the factor-relative direction (`dir × sign`), with unknown or cycle-inconsistent signs recorded as `orientation: unknown` and excluded from the vote; the raw vote is never an active gate | market-pulse.js:275-347 (`herdsOf`, `herdPulse`), the pulse consumers | pulse payload gains per-member sign and orientation quality | F12 (probe 2) | an A/B pair at −0.95 with A up and B down reads as a herd moving together; a pair whose sign chain is inconsistent reads unknown | criterion 9 |
+| 5c | Pulse envelope freshness: the stored pulse carries the matrix's `builtAt` and the oldest constituent bar time; `pulseFor` refuses when either exceeds its own age limit, not only when the pulse's `builtAt` is old | market-pulse.js:480 (`computeAndStorePulse`), :429 (`pulseFor`) | pulse payload gains `matrixBuiltAt`, `oldestBarT` | F13 | a fresh pulse over a 3-hour-old matrix is refused with the reason naming the matrix age | criterion 10 |
+| 12a | Decay pooling audit: `alphaDecayFlag` pools the last five postmortems by symbol/strategy/timeframe with no account or policy-version filter, and `computeDecayKeys` then scopes the cool-off by account — a cool-off can therefore rest on another account's or an earlier policy version's outcomes; the audit states the intended pooling and, if the owner confirms per-account/per-version pooling, adds those filters to the flag | loss-postmortem.js:294 (`alphaDecayFlag`), lessons-tuner.js:111 (`computeDecayKeys`, `isDecayed`) | postmortem rows carry policy version | F14 | five postmortems from two accounts for one key: the flag's pool and the cool-off's scope agree | criterion 7 |
 | 6 | Tiered universe, coverage accounting, scheduler | loop.js:6386-6404; new context-scheduler.js | `context_coverage_json` | F7/F8 | 40 symbols, 3 accounts | criterion 1 |
 | 7 | Instrument-context registry from the broker catalogue | new instrument-context-registry.js; instrument-tree.js:11 | versioned mapping with provenance | F8 | unmapped symbol | criterion 1 |
 | 8 | Assessment schema, policy function, `evaluateTrade` check replacing the advisory stamp | risk.js:1996-2013; new context-policy.js | `context_assessments`, `checks_json` | F8 | criterion-3 pair | criterion 3 |
@@ -249,6 +264,14 @@ Missing evidence or feeds, named: retained fast-monitor per-position receipts (a
 Items 1–4 are corrections with incident evidence; 5–12 are the design. None is a root-cause fix for the account's net result, which is dominated by valid stop fills on the owner's stress-test positions.
 
 ## 13. Sequence and activation (proposed, not authorised)
+
+Revision 2 of the instruction (#1386) fixes the order of work by dependency; the report's items map onto it as follows. Nothing in steps 4–5 is authorised to be built by this report.
+
+1. **Reconstruct incidents and verify protections** — §3 (done to the limit of retained evidence); the unresolved private evidence is named precisely: the fast-monitor tick's per-position receipts for 06:57–07:00Z on 15 Oct (F1), the JPYX stop writer (F5), the SpotCrude order's protection-on-fill path (F6, read, not amended). No controller proposal stands in for those causes.
+2. **Establish trustworthy inputs and labels** — the contracts in §15: alignment (F7), unknown ≠ 0 (probe 1), signed orientation for inverse links (probe 2, F12), dependency freshness through the pulse envelope (F13), activity coverage and warm-up (criterion 11), intrabar ambiguity (§3.6, §10). What #1382 and #1385 do and do not address is stated in §15.3, including the `bars_verified_at` states actually stored.
+3. **Map existing coverage and decision consumers** — §4 with the five-level lifecycle column added in §15.4 (displayed / recorded / consulted / decision-capable / verified action); existing controls (concentration veto, curated clusters, news gate, regime gate, premise exits) kept apart from proposed ones.
+4. **Design dynamic coverage and active policy** — §6–§9, with the signed-orientation contract (§15.5) and the paired examples (§15.6) added; account-owned reservations, controller precedence and verified actions as in §8.
+5. **Define validation and future activation** — §10–§11 (criteria 1–11), the fault matrix in §9, bounded activation and rollback as proposed below; a comparison phase supports validation and does not replace functioning proactive decisions.
 
 (1) Establish incident causes and input correctness: items 1–4 and the retained receipts; (2) dynamic coverage and reliable snapshots: items 5–7, compute-only on demo; (3) active policy consumption and arbitration: items 8–11 on one demo account with outcomes limited to ALLOW/DEFER/REFUSE, then pending cancel and HOLD/TIGHTEN/PARTIAL, then FULL_EXIT and tick binding; (4) economics and fault scenarios: §10–§11; (5) bounded activation per phase behind `context_policy_json.enabled_accounts`, kill via the exec-guard halt, rollback = flag off with assessments kept as immutable records and no stop, order or reservation altered. A comparison phase supports validation; the target is functioning proactive decisions. Live accounts are out of scope. Nothing is activated by this report.
 
@@ -266,3 +289,71 @@ Completion of this investigation is not implementation, activation or improved t
 
 Conversation ref: owner instruction document and "read the .MD attached, supported by the logs as of today 6 AM SGT" (after № 15,080) · reported № 15,08x
 Session: https://claude.ai/code/session_01C1hz86KuE5JKVq6W2KtUE2
+
+## 15. Revision-2 reconciliation (instruction #1386, merged 06:58 SGT 16 Oct)
+
+The owner's redraft supersedes the first instruction and adds requirements this report had not answered. Each is reconciled here against source at `f8d7460` and the production reads of this morning; nothing is built.
+
+### 15.1 What the redraft adds
+
+| Requirement (rev 2) | Where answered |
+|---|---|
+| Fix the order: reconstruction → inputs/labels → coverage → design → validation; no controller proposal in place of a missing cause | §13 restated in that order; F1 reclassified (§3.3) rather than carried as a cause |
+| Reproduce the two offline probes before specifying consumers | §15.2 |
+| Inspect `bars_verified_at` states and stored contents; do not infer corrected labels from repaired bars | §15.3 |
+| Lifecycle level per path: displayed / recorded / consulted / decision-capable / verified action | §15.4 |
+| Signed orientation for inverse links; raw group vote never a universal gate | §15.5, F12, backlog 5b, criterion 9 |
+| Dependency versions and constituent event times in the context schema | §15.5, F13, backlog 5c, criterion 10 |
+| Decay/history pooling audit across accounts, versions, horizons, regimes | F14, backlog 12a |
+| Economic calendar and tick-activity in the inventory; warm-up, gaps, retention | §4.1 rows, §4.2 rows, criterion 11 |
+| Paired examples per active rule, including a preserved valid hold | §15.6 |
+| Closed benchmark still relevant with its observation age explicit | §15.4 note |
+| Distinguish regime, sector rotation and fundamentally explained shift | §7 already; restated in §15.5 |
+
+### 15.2 The two probes, reproduced with the actual functions
+
+Run offline from the checked-out source (no database, no broker, no application import beyond the two pure modules):
+
+1. `pearson([0,0,0,0], [0.01,−0.01,0.02,−0.02])` → `null`; `buildCorrelationMatrix({A, B}).m.A.B` → `0`. Undefined correlation is stored as measured zero (F7; backlog 5).
+2. `herdsOf({symbols:[A,B], m:{A:{B:−0.95}, B:{A:−0.95}}}, 0.7)` → `[[A, B]]` (membership by |corr|). `herdPulse([A,B], {A:{dir:+1, trending}, B:{dir:−1, trending}})` → `{dir: 0, agreement: 0.5, moving: false}`; with `B.dir = +1` → `{dir: 1, agreement: 1, moving: true}` at `herdAgreement 0.6`. An inverse pair moving as its relationship predicts is scored as a herd doing nothing (F12). Today this reading is advisory (`checks.pulse`, never read back), so no incident is attributed to it; the contract must be resolved before any consumer is built.
+
+### 15.3 What #1382 and #1385 do and do not address
+
+- `bars_verified_at` has three states, read from the writer (aftermath-extend-apply.js): `NULL` (never re-read, or a forming stored bar was just dropped and the row reads short), an ISO time (the newest stored bar was re-read closed and the stored copy replaced or confirmed), or `unavailable:<time>` (a window passed the newest stored bar without returning it; one fetch spent, the row then skipped like a verified one). A non-null stamp therefore does not by itself mean verified; the prefix says which. The one batch run this morning as #1382's live check read `verified 88, unavailable 0, barsReplaced 99, barsDropped 0, errors 0` over 1,487 examined rows with 1,306 remaining; the `unavailable` count on the remaining rows is not yet known.
+- The repair changes `bars_json` only. `classification`, `detail`, entry and stop columns are untouched by design; the capture-time verdict still reads the full broker reply including a forming bar when the capture runs within 99 bars of the close. Repaired bars do not imply corrected labels (§10 calibration).
+- #1382's scan rule changes which symbols are scanned (open now or opening within 2 h; unknown schedules kept), not which symbols receive relationship coverage: the matrix universe is still held positions plus recent scans, so a closed benchmark drops out of the scan set but may still be the relevant context for an open position. The design in §6 keeps mandatory context independent of the scan set and records each context member's last observation age.
+- #1382's tick-activity measurement is measurement only; its ring and snapshot are described in §4.1; the scan-priority step 2 that would consume it is not built and no threshold has been proposed.
+- #1385 changed test fixtures only.
+
+### 15.4 Lifecycle level of each context source today
+
+| Context | Displayed | Recorded on the decision | Consulted by a decision | Can change a decision | Followed by a verified broker action |
+|---|---|---|---|---|---|
+| Correlation matrix (live) | yes (`/state/correlation`) | yes (`checks.correlation`) | yes (`correlationVerdict`, scan + momentum paths via `evaluateTrade`; the pre-filter) | yes — veto on ≥ 2 held correlated positions | no action; a veto is a non-order |
+| Curated clusters | yes | yes | yes (cluster conviction, `correlationVerdict`) | yes — veto / observe (`enforce` off: observe only) | no |
+| Live matrix inside cluster conviction | — | — | no (F11, shape mismatch) | no | no |
+| Market pulse | yes (`/state/market-pulse`) | yes (`checks.pulse`) | no (never read back) | no | no |
+| Correlation shifts | yes | no | no | no | no |
+| Regimes | yes | yes (`regime_*` checks) | yes (`checkRegimeGate`; `permittedSides` → tick permits) | yes — veto / side veto | no |
+| Economic calendar | yes | yes (`checks.news_window` when on) | yes when `newsGate.on` (default off) | yes when on — veto | no |
+| Broker schedule / sessions | yes | yes (`closed_market_skip` log line; routing) | yes (scan set, closed-market routing, exit hours) | yes — routing, scan membership | resting LIMIT placement is a verified order |
+| Tick-activity | yes (`/state/tick-activity`) | no | no | no | no |
+| Premise (per position) | yes (cockpit) | yes (`invalidation_trigger`) | yes (position manager, fast-monitor tick) | yes — FULL_EXIT | yes — the close is a broker order with a receipt |
+
+Note: "consulted" here means a code path reads the value while deciding; "can change a decision" means a different value yields a different outcome with the reason recorded. Only the premise reaches a verified broker action; every market-context source stops at a veto or a display.
+
+### 15.5 Signed orientation and dependency freshness (additions to §6–§8)
+
+- **Orientation.** A relationship is stored as `(a, b, ρ, n, quality)`; a group is a connected component over |ρ| ≥ threshold, and each member carries `sign` = the product of signs along the path from the anchor. If two paths give different signs, the member's orientation is `unknown` and it is excluded from the vote and from any factor exposure estimate. Factor-relative direction of a member = `dir × sign`; the herd's agreement is computed on that. Trade exposure to the factor = Σ (monetary exposure × sign × ρ) over held members, reported beside the ticker count the concentration veto uses today. A connected component is not evidence that every pair shares the relationship: the pair-level ρ and n are kept and the group label is derived, never the other way round.
+- **Freshness.** The context assessment lists `dependencies: [{name, version, builtAt, oldestEventT}]` for the matrix, the pulse, the regime read and the bars behind each; the assessment's own `generatedAt` never stands in for them. A consumer refuses when any decision-critical dependency is older than its own limit and records `degraded: {dependency, age, action}`.
+- **Labels.** Regime (price-derived), sector rotation (relative strength across verified sector mappings) and fundamentally explained shift (a timestamped event from a feed that carries it) are three fields, each with its own evidence reference; none is inferred from another.
+
+### 15.6 Paired examples for the active rules (proposed contracts, no thresholds set)
+
+1. **Entry, same setup, different context.** Two EMA-pullback longs on the same symbol with identical bars and stop. Case A: the symbol's sector benchmark is `trending` up with coverage complete → `allow`. Case B: the benchmark is `breaking` down with a fresh assessment and the symbol's residual is flat → `defer until the benchmark reading changes or the setup expires`, reason and assessment id recorded. Preserved valid entry: Case C, the benchmark is `unknown` (no verified mapping) → `allow` at the ordinary gates with `context_unmapped` recorded; missing evidence is not an adverse reading.
+2. **Working pending order.** Two identical resting LIMITs. Case A: the context is unchanged → kept. Case B: a material shift invalidates the premise (benchmark broke the level the setup depends on) → one verified cancel; a fill that lands during the cancel is adopted and protected. Preserved: Case C, a sub-hysteresis fluctuation → nothing, across ten refreshes.
+3. **Open position.** Two identical longs, both above their premise. Case A: the context turns adverse but the premise holds and the position is in profit → `tighten protection` only if the tighten-only movers agree; never a widen. Case B: the premise is breached → the premise exit fires regardless of context (safety first). Preserved valid hold: Case C, the context reads `unknown` or `stale` → hold; no invented liquidation.
+
+### 15.7 What this addendum does not change
+
+The verdict (§1), the reconciliation (§3), the ranked corrections 1–4 and the design remain as merged; this section adds F12–F14, backlog 5b/5c/12a, criteria 9–11 and the lifecycle table. No code, configuration, watchlist, risk, order or stop was changed. The probes ran offline; the production reads were GET only.
