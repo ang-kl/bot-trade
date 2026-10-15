@@ -30,8 +30,8 @@ test('sinceEntryTrailSpec: 3 × ATR behind a peak seeded at the entry; missing d
   assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100, bars, digits: undefined }), null)
   assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100, bars: [], digits: 5 }), null)
   assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 0, bars, digits: 5 }), null)
-  // № 14,822 (PR-2): a spec is built only for a position that has shown profit (mfeR > 0 here)
-  const spec = sinceEntryTrailSpec({ positionId: '1', accountId: '2', symbolId: 3, side: 'LONG', entry: 100, bars, digits: 5, currentSl: 90, mfeR: 0.1 })
+  // № 14,933 (owner § 14,932·B·1 (a)): a spec is built only once the exit-side peak has reached +0.5R
+  const spec = sinceEntryTrailSpec({ positionId: '1', accountId: '2', symbolId: 3, side: 'LONG', entry: 100, bars, digits: 5, currentSl: 90, mfeR: 0.5 })
   assert.equal(spec.positionId, 1)
   assert.equal(spec.ctidTraderAccountId, 2)
   assert.equal(spec.dir, 1)
@@ -42,12 +42,12 @@ test('sinceEntryTrailSpec: 3 × ATR behind a peak seeded at the entry; missing d
   assert.equal(spec.currentTp, null)
   assert.ok(Math.abs(spec.trailDistance - DEFAULT_ATR_MULT * wilderAtr(bars, DEFAULT_ATR_PERIOD)) < 1e-12)
   assert.equal(spec.source, 'mae_chandelier_since_entry')
-  assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'SELL', entry: 100, bars, digits: 5, mfeR: 0.1 }).dir, -1)
-  assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'short', entry: 100, bars, digits: 5, price: 99.9 }).dir, -1)
+  assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'SELL', entry: 100, bars, digits: 5, mfeR: 0.5 }).dir, -1)
+  assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'short', entry: 100, bars, digits: 5, mfeR: '0.7' }).dir, -1)
 })
 
 test('the observer is gone: the module exports only the ATR and the trail spec', () => {
-  assert.deepEqual(Object.keys(mod).sort(), ['DEFAULT_ATR_MULT', 'DEFAULT_ATR_PERIOD', 'hasShownProfit', 'sinceEntryTrailSpec', 'wilderAtr'])
+  assert.deepEqual(Object.keys(mod).sort(), ['DEFAULT_ATR_MULT', 'DEFAULT_ATR_PERIOD', 'SINCE_ENTRY_MIN_PEAK_R', 'hasShownProfit', 'sinceEntryTrailSpec', 'wilderAtr'])
   for (const gone of ['observePosition', 'decideAdjust', 'recordObserve', 'recordAmendReceipt', 'maeChandelierView', 'storeBars', 'cachedBars', 'noteMid', 'freshMid', 'OBSERVE_STATE_KEY', 'startMaeChandelierObserve']) {
     assert.equal(gone in mod, false, `${gone} was removed with the observer on 03-10-2026`)
   }
@@ -55,7 +55,7 @@ test('the observer is gone: the module exports only the ATR and the trail spec',
 
 test('since-entry precision: absent or invalid metadata cannot become whole-price rounding', () => {
   const input = { positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100,
-    bars: barsFrom(Array.from({ length: 30 }, () => 100)), currentSl: 90, currentTp: 120, mfeR: 0.1 }
+    bars: barsFrom(Array.from({ length: 30 }, () => 100)), currentSl: 90, currentTp: 120, mfeR: 0.5 }
   for (const digits of [null, '', ' ', false, true, -1, 2.5, NaN, Infinity]) {
     assert.equal(sinceEntryTrailSpec({ ...input, digits }), null, `invalid precision ${String(digits)} must omit the spec`)
   }
@@ -78,19 +78,39 @@ test('PR-2: no since-entry spec until the position has shown profit — GBPUSD #
   assert.equal(sinceEntryTrailSpec({ ...gbp, price: 1.32095 }), null, '+7 s: the close sits at the fill (short, not below it) → no spec')
   assert.equal(sinceEntryTrailSpec({ ...gbp, price: 1.32092 }), null, 'at the fill exactly is not profit')
   assert.equal(sinceEntryTrailSpec({ ...gbp }), null, 'no close and no recorded peak → nothing is pushed')
-  const armedGbp = sinceEntryTrailSpec({ ...gbp, price: 1.3205 })
-  assert.ok(armedGbp, 'once the close is below the fill the spec is built')
+  const armedGbp = sinceEntryTrailSpec({ ...gbp, mfeR: 0.5 })
+  assert.ok(armedGbp, 'once the exit-side peak has reached +0.5R the spec is built')
   assert.ok(Math.abs(armedGbp.trailDistance - 3 * wilderAtr(gbp.bars, DEFAULT_ATR_PERIOD)) < 1e-12, 'the distance is unchanged')
   assert.equal(armedGbp.peakPrice, 1.32092, 'the peak is still seeded at the entry')
   const jpy = { positionId: 248422337, accountId: 46130058, symbolId: 4, side: 'SELL', entry: 158.366, digits: 3, currentSl: 158.866, currentTp: 157,
     bars: Array.from({ length: 30 }, () => ({ h: 158.45, l: 158.35, c: 158.4 })) }
   assert.equal(sinceEntryTrailSpec({ ...jpy, price: 158.37 }), null, '+35 s: not in profit → no spec')
-  assert.ok(sinceEntryTrailSpec({ ...jpy, price: 158.37, mfeR: 0.05 }), 'a recorded peak past the fill qualifies even when the close has come back')
-  // long mirror, and unknown values are not profit
+  // unknown values are not profit
   const lng = { positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100, digits: 5, bars: Array.from({ length: 30 }, () => ({ h: 101, l: 99, c: 100 })) }
-  assert.equal(sinceEntryTrailSpec({ ...lng, price: 99.5 }), null)
-  assert.ok(sinceEntryTrailSpec({ ...lng, price: 100.5 }))
   assert.equal(sinceEntryTrailSpec({ ...lng, price: 'x', mfeR: 'y' }), null)
   assert.equal(sinceEntryTrailSpec({ ...lng, mfeR: 0 }), null)
   assert.equal(sinceEntryTrailSpec({ ...lng, mfeR: -0.3 }), null)
+  assert.equal(sinceEntryTrailSpec({ ...lng, mfeR: true }), null, 'a boolean is not a peak')
+  assert.equal(sinceEntryTrailSpec({ ...lng, mfeR: '' }), null, 'a blank is not a peak')
+})
+
+// Claude · № 14,933 15-Oct (owner § 14,932·B·1 "(a) Switch it on only from
+// +0.5R"; claude-builder). Expected outcomes from the owner's words and the
+// two production positions of 15-10 that the "any profit" rule armed: USDJPY
+// #1881 (…0949, long, fill 157.92, exit-side peak +0.0147R; the engine moved
+// the stop from the 150.21 sent to 157.41) and BTCUSD #1880 (…0058, short,
+// fill 80,843.42, peak +0.036R; 84,601 → 82,523), read from /state/positions
+// and /state/trail-status at 07:58Z. Neither reaches +0.5R, so neither arms.
+test('+0.5R: the since-entry trail arms only from an exit-side peak of +0.5R — USDJPY #1881 and BTCUSD #1880 reproduced', () => {
+  const bars = Array.from({ length: 30 }, () => ({ h: 158.2, l: 157.9, c: 158 }))
+  const jpy = { positionId: 248609286, accountId: 47790949, symbolId: 4, side: 'BUY', entry: 157.92, digits: 3, currentSl: 150.207, bars }
+  assert.equal(sinceEntryTrailSpec({ ...jpy, mfeR: 0.014650724776540783 }), null, '#1881: +0.0147R peak does not arm')
+  assert.equal(sinceEntryTrailSpec({ ...jpy, mfeR: 0.014650724776540783, price: 157.98 }), null, 'a close in profit below +0.5R does not arm on its own')
+  const btc = { positionId: 248609283, accountId: 46130058, symbolId: 1, side: 'SELL', entry: 80843.42, digits: 2, currentSl: 84600.7,
+    bars: Array.from({ length: 30 }, () => ({ h: 81200, l: 80600, c: 80900 })) }
+  assert.equal(sinceEntryTrailSpec({ ...btc, mfeR: 0.0360739169697282 }), null, '#1880: +0.036R peak does not arm')
+  assert.equal(sinceEntryTrailSpec({ ...jpy, mfeR: 0.4999 }), null, 'just below the threshold')
+  assert.ok(sinceEntryTrailSpec({ ...jpy, mfeR: 0.5 }), 'at +0.5R it arms')
+  assert.ok(sinceEntryTrailSpec({ ...btc, mfeR: 1.2 }), 'and stays armed above it')
+  assert.equal(mod.SINCE_ENTRY_MIN_PEAK_R, 0.5)
 })
