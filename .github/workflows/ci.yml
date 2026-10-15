@@ -47,3 +47,30 @@ jobs:
           for f in agent/index.js agent/loop.js agent/routes/actions.js agent/routes/state.js agent/lib/ctrader-ws.js agent/lib/ctrader-auth.js agent/services/fib-strategy.js agent/services/risk.js; do
             node --check "$f"
           done
+
+  # Claude · № 15,001 15-Oct (owner: "#36 research isolation — CI step only when research files change" after № 14,989; claude-builder). The live trade-management boundary
+  # (scripts/check-protected-boundary.sh) runs on a PR that touches research
+  # files — the owner's choice over a label, which would fail open when
+  # forgotten. A full-history checkout: the script diffs against the merge
+  # base with the base branch and refuses (exit 2) when a shallow clone has
+  # none. agent/research-isolation.test.js pins the path list between the
+  # markers against the research module and door lists, so a new research
+  # file cannot slip past this gate unnamed.
+  protected-boundary:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Does this PR touch research files?
+        id: research
+        run: |
+          mb="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+          # RESEARCH-PATHS-BEGIN
+          re='^(agent/config/research\.json|agent/lib/(research-config|tick-bars|bar-crosscheck)\.js|agent/services/(theory-gap|research-slot|bar-form-research(-core|-worker)?|exit-counterfactual-extended|tick-research(-run|-worker)?|tick-replay-spill)\.js|scripts/tick-research\.mjs)$'
+          # RESEARCH-PATHS-END
+          if git diff --name-only "$mb" HEAD | grep -Eq "$re"; then echo "touched=true" >> "$GITHUB_OUTPUT"; else echo "touched=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Protected boundary (research PRs)
+        if: steps.research.outputs.touched == 'true'
+        run: bash scripts/check-protected-boundary.sh "origin/${{ github.base_ref }}"

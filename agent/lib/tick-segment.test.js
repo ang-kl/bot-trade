@@ -60,3 +60,27 @@ test('the format constants are the C++ header\'s', () => {
   assert.match(cpp, /put32\(out \+ 36, crc32\(out, 36\)\)/)
   assert.match(cpp, /put32\(out \+ 60, crc32\(out, 60\)\)/)
 })
+
+// ── Claude · № 15,001 15-Oct (owner: "#36 research isolation — CI step only when research files change" after № 14,989; claude-builder) ──
+// Prices are int64 in the file and Number on the way out (tick-segment.js
+// toQuoteEvents: Number(r.bid)). Expected outcome: exact up to 2^53 − 1
+// (Number.MAX_SAFE_INTEGER, the language's own limit); a BTC-class quote in
+// 10^-5 points is about 8 × 10^9, far below it. Above 2^53 the conversion is
+// lossy and is NOT refused today — booked as a follow-up, not claimed here.
+test('high prices round-trip exactly: 8e9 and the largest safe integer', () => {
+  const H = FLAGS.BID_PRESENT | FLAGS.ASK_PRESENT | FLAGS.SNAPSHOT
+  const big = BigInt(Number.MAX_SAFE_INTEGER)
+  const recs = [
+    { recvMs: 1757548800000, seq: 1, symbolId: 5, bid: 8_000_000_000n, ask: 8_000_000_150n, flags: H, generation: 1 },
+    { recvMs: 1757548800001, seq: 2, symbolId: 5, bid: big - 1n, ask: big, flags: H, generation: 1 },
+  ]
+  const seg = readSegment(segment(recs))
+  assert.equal(seg.truncated, false); assert.equal(seg.records.length, 2)
+  assert.equal(seg.records[0].bid, 8_000_000_000n); assert.equal(seg.records[0].ask, 8_000_000_150n)
+  assert.equal(seg.records[1].bid, big - 1n); assert.equal(seg.records[1].ask, big)
+  const evs = toQuoteEvents(seg, { symbolNames: { 5: 'BTCUSD' } })
+  for (const ev of evs) assert.equal(ev.invalid, undefined, JSON.stringify(ev.errors))
+  assert.equal(evs[0].bid, 8_000_000_000); assert.equal(evs[0].ask, 8_000_000_150)
+  assert.equal(evs[1].bid, Number.MAX_SAFE_INTEGER - 1); assert.equal(evs[1].ask, Number.MAX_SAFE_INTEGER)
+  for (const ev of evs) assert.ok(Number.isSafeInteger(ev.bid) && Number.isSafeInteger(ev.ask))
+})
