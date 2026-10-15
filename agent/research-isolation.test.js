@@ -572,9 +572,10 @@ other('./not-an-import.js')`
 // Expected outcomes: the script's own exit-code contract (0 identical or
 // authorised, 1 differing, 2 no base); the marker form is self-derived.
 test('the boundary script passes a differing protected path only when the PR body names it in a Protected-change-authorised line', async () => {
-  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync } = await import('node:fs')
+  const { mkdirSync, writeFileSync, copyFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { execFileSync, spawnSync } = await import('node:child_process')
+  const { mkdtempSync } = await import('./test-support/temp-dir.js') // removed at exit: the gate's TMPDIR hygiene check
   const dir = mkdtempSync(join(tmpdir(), 'boundary-'))
   const git = (...a) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' }).toString()
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
@@ -601,8 +602,10 @@ test('the boundary script passes a differing protected path only when the PR bod
   assert.equal(fromCommit.status, 0, fromCommit.stdout + fromCommit.stderr)
 })
 
-test('the CI boundary job hands the PR body to the script as an environment variable, not a shell interpolation', () => {
+test('the CI boundary job hands the PR body to the script as an environment variable, not a shell interpolation, and runs when the body is edited', () => {
   const yml = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')
+  // Codex P1 on #1383: a marker added to the body after the push must re-run the job; a removed one must un-green it
+  assert.match(yml, /on:\n {2}pull_request:\n(?: {4}#[^\n]*\n)* {4}types: \[opened, synchronize, reopened, edited\]\n/)
   const job = yml.slice(yml.indexOf('  protected-boundary:'))
   assert.match(job, /env:\n {10}PROTECTED_AUTHORISED: \$\{\{ github\.event\.pull_request\.body \}\}\n {8}run: bash scripts\/check-protected-boundary\.sh "origin\/\$\{\{ github\.base_ref \}\}"/)
 })
