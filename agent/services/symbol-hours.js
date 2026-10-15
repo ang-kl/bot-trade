@@ -242,25 +242,28 @@ export function nextOpenInfo(db, symbol, now = new Date()) {
   let schedule = []
   try { schedule = JSON.parse(row?.schedule_json || '[]') } catch { schedule = [] }
   const tz = row?.tz || 'UTC'
-  const sow = secondsIntoWeek(now, tz)
-  let best = null
-  let bestStart = null
-  for (const iv of schedule) {
-    const a = Number(iv.startSecond ?? iv.start)
-    if (!Number.isFinite(a)) continue
-    const delta = ((a - sow) % WEEK_SECONDS_TOTAL + WEEK_SECONDS_TOTAL) % WEEK_SECONDS_TOTAL
-    if (delta > 0 && (best == null || delta < best)) { best = delta; bestStart = a }
-  }
   // Claude · № 15,08x 16-Oct (Codex P2 on #1382, owner: "book as a
   // follow-up"; claude-builder): the interval start is a WALL-CLOCK
   // second-into-week in the schedule's zone. Adding the wall-clock delta
   // to the epoch is one hour off whenever a DST transition in that zone
   // falls between `now` and the boundary (Fri noon New York → Mon 09:30
-  // projected 14:30Z instead of 13:30Z across the March change), so the
+  // projected 14:30Z instead of 13:30Z across the March change), so each
   // boundary is projected as a local instant and then converted.
+  // Codex round 2 on #1388: choosing the start by the smallest wall-clock
+  // delta and projecting only that one is wrong inside a fall-back
+  // repeated hour (starts at 01:30 and 02:00, now 01:50 EDT: 02:00 has
+  // the smaller wall delta but the repeated 01:30 comes first by the
+  // clock), so EVERY start is projected and the earliest epoch wins.
+  let best = null
+  for (const iv of schedule) {
+    const a = Number(iv.startSecond ?? iv.start)
+    if (!Number.isFinite(a)) continue
+    const t = epochOfNextWeekSecond(now, tz, a)
+    if (best == null || t < best) best = t
+  }
   return {
     open: false,
-    next_open_at: best != null ? new Date(epochOfNextWeekSecond(now, tz, bestStart)).toISOString() : null,
+    next_open_at: best != null ? new Date(best).toISOString() : null,
     source: 'broker',
   }
 }

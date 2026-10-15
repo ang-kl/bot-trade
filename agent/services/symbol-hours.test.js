@@ -252,3 +252,24 @@ test('nextOpenInfo: an interval starting inside the fall-back repeated hour open
   const early = nextOpenInfo(db, 'REPEAT', new Date(Date.UTC(2026, 10, 1, 5, 20, 0)))
   assert.equal(early.next_open_at, '2026-11-01T05:30:00.000Z')
 })
+
+test('nextOpenInfo: with several starts, the earliest PROJECTED instant wins, not the smallest wall-clock delta (Codex round 2 on #1388)', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  // Sunday 01:30–01:45 and 02:00–03:00 New York. At 05:50Z on 2026-11-01
+  // (01:50 EDT) the 02:00 start is 10 wall-clock minutes away and the 01:30
+  // start a week — but the clock falls back at 06:00Z, so 01:30 EST comes
+  // round at 06:30Z and 02:00 EST only at 07:00Z.
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('TWOSTARTS', 11, ?, 'America/New_York')`)
+    .run(JSON.stringify([
+      { start: 1 * HOUR + 30 * 60, end: 1 * HOUR + 45 * 60 },
+      { start: 2 * HOUR, end: 3 * HOUR },
+    ]))
+  const read = nextOpenInfo(db, 'TWOSTARTS', new Date(Date.UTC(2026, 10, 1, 5, 50, 0)))
+  assert.equal(read.open, false)
+  assert.equal(read.next_open_at, '2026-11-01T06:30:00.000Z')
+  // Outside the repeated hour the two selections agree: Monday 2026-07-13
+  // 00:00Z (Sunday 20:00 EDT) → the next start is Sunday 2026-07-19 01:30 EDT = 05:30Z.
+  const plain = nextOpenInfo(db, 'TWOSTARTS', new Date(Date.UTC(2026, 6, 13, 0, 0, 0)))
+  assert.equal(plain.next_open_at, '2026-07-19T05:30:00.000Z')
+})
