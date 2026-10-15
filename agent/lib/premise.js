@@ -102,3 +102,20 @@ export function premiseAtFill({ trigger, bias, fill, sl }) {
   if (!Number.isFinite(f) || !Number.isFinite(s)) return unreadablePremise('fill_unknown')
   return premiseFor({ bias: side, entry: f, sl: s, level }) ? trigger : unreadablePremise('fill_outside_band')
 }
+
+/**
+ * Claude · № 15,001 15-Oct (owner: "1–3 together (#65 + #60a + #60b)" after № 14,989; claude-builder).
+ * The stop the broker holds after a resting limit fills: the row's stop
+ * DISTANCE, anchored to the fill. buildLimitPayload sends the stop as a
+ * distance (relativeStopLoss = |entry − sl|, closed-market-limits.js), so a
+ * fill away from the level moves the stop by the same amount. Lives here —
+ * not in pending-orders.js, where it was private — because closed-market-
+ * limits.js needs it too and pending-orders.js imports FROM that module
+ * (findLimitFill); this file imports nothing, so no cycle.
+ */
+export function pendingFillStop(row, fill) {
+  const level = Number(row?.level), sl = Number(row?.sl), f = Number(fill)
+  if (!Number.isFinite(level) || !Number.isFinite(sl)) return null
+  if (!Number.isFinite(f) || f <= 0) return sl
+  return f - (Number(row?.dir) < 0 ? -1 : 1) * Math.abs(level - sl)
+}

@@ -4,7 +4,7 @@
 // that a premise sits between the stop and the entry (§ 14,740·A).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { premiseFor, premiseTrigger, premiseTriggerForSignal, unreadablePremise, noPremise, isReadablePremise, premiseAtFill } from './premise.js'
+import { premiseFor, premiseTrigger, premiseTriggerForSignal, unreadablePremise, noPremise, isReadablePremise, premiseAtFill, pendingFillStop } from './premise.js'
 import { _internal } from '../services/position-manager.js'
 
 test('a premise inside the stop becomes a trigger the monitor parses; outside it is dropped with a reason', () => {
@@ -76,4 +76,18 @@ test('the auto fill, the manual order and the execute-trade writers all re-check
   assert.doesNotMatch(loop, /premiseAtFill\(\{[^\n]*fill: entryP/)
   // the manual order recovers its fill from the position before the premise is judged (round 5)
   assert.equal((actions.match(/confirmFill\(\(\) => wsReconcile\(/g) || []).length, 2, 'execute-trade and manual-order both confirm the fill')
+  // Claude · № 15,001 15-Oct (owner: "1–3 together (#65 + #60a + #60b)" after № 14,989; claude-builder): #65 — the closed-market sweep hands the helper the FILL the trade
+  // row holds and the row's stop anchored to it; one helper, in this module.
+  const cml = strip(readFileSync(new URL('../services/closed-market-limits.js', import.meta.url), 'utf8'))
+  const pend = strip(readFileSync(new URL('../services/pending-orders.js', import.meta.url), 'utf8'))
+  assert.match(cml, /premiseAtFill\(\{ trigger: row\.invalidation_trigger, bias, fill, sl: pendingFillStop\(row, fill\) \}\)/, 'the closed-market sweep re-checks at the fill')
+  assert.match(pend, /premiseAtFill\(\{ trigger: row\.invalidation_trigger, bias, fill, sl: pendingFillStop\(row, fill\) \}\)/, 'the pending-fib link re-checks at the fill')
+  assert.doesNotMatch(pend, /function pendingFillStop/, 'one helper, in lib/premise.js')
+})
+
+test('pendingFillStop: the row\'s stop distance, anchored to the fill (buildLimitPayload sends the stop as a distance)', () => {
+  assert.equal(pendingFillStop({ dir: 1, level: 100, sl: 98 }, 99.5), 97.5)
+  assert.equal(Number(pendingFillStop({ dir: -1, level: 29.84, sl: 30.1 }, 29.9).toFixed(5)), 30.16)
+  assert.equal(pendingFillStop({ dir: 1, level: 100, sl: 98 }, null), 98, 'no fill: the row\'s stop')
+  assert.equal(pendingFillStop({ dir: 1, sl: 98 }, 99.5), null, 'no level: nothing to anchor')
 })

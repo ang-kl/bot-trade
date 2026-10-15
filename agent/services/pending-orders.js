@@ -24,7 +24,7 @@ import { recordTradePlan, recordPlanWriteFailure, exitRuleFor } from './trade-pl
 import { horizonForStrategy } from './trade-horizon.js'
 import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
 import { findLimitFill } from './closed-market-limits.js'
-import { noPremise, premiseTriggerForSignal, premiseAtFill } from '../lib/premise.js'
+import { noPremise, premiseTriggerForSignal, premiseAtFill, pendingFillStop } from '../lib/premise.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -174,9 +174,14 @@ export function linkAdoptedFill(db, row, trade, pos = null) {
   // deadline already on the row is kept.
   try {
     const openedMs = Number(pos != null ? posField(pos, 'openTimestamp') : NaN)
-    const rowOpenedMs = Date.parse(String(db.prepare(`SELECT opened_at FROM trades WHERE id = ?`).get(Number(trade.id))?.opened_at ?? '').replace(' ', 'T') + 'Z')
+    const tr = db.prepare(`SELECT opened_at, status FROM trades WHERE id = ?`).get(Number(trade.id))
+    const rowOpenedMs = Date.parse(String(tr?.opened_at ?? '').replace(' ', 'T') + 'Z')
     const fillMs = Number.isFinite(openedMs) && openedMs > 0 ? openedMs : rowOpenedMs
-    const timeCapAt = fillTimeCapAt(row, fillMs)
+    // Claude · № 15,001 15-Oct (owner: "1–3 together (#65 + #60a + #60b)" after № 14,989; claude-builder): #60a. findLimitFill links a trade that already CLOSED
+    // (closed-market-limits.js accepts 'closed'); a holding deadline and a
+    // hold written then would be hindsight on a finished trade (reconciler.js:
+    // "never in hindsight on a closed row"). Open trades only.
+    const timeCapAt = String(tr?.status || '') === 'open' ? fillTimeCapAt(row, fillMs) : null
     if (timeCapAt) {
       db.prepare(`UPDATE monitored_positions SET time_cap_at = ? WHERE trade_id = ? AND status = 'active' AND time_cap_at IS NULL`)
         .run(timeCapAt, Number(trade.id))
@@ -187,7 +192,9 @@ export function linkAdoptedFill(db, row, trade, pos = null) {
       const holdMin = Math.round((Date.parse(timeCapAt) - fillMs) / 60_000)
       if (holdMin > 0) {
         const rule = exitRuleFor(db, { strategy: row.strategy || null, source: 'bot_pending_fill', accountId: row.account_id ?? null, timeCapMin: holdMin })
-        db.prepare(`UPDATE trade_plans SET planned_hold_min = ?, exit_rule = ? WHERE trade_id = ? AND planned_hold_min IS NULL`)
+        // #60a (same stamp): a plan scoreClosedPlans has already scored is a
+        // record; its hold and rule are never rewritten after the fact.
+        db.prepare(`UPDATE trade_plans SET planned_hold_min = ?, exit_rule = ? WHERE trade_id = ? AND planned_hold_min IS NULL AND scored_at IS NULL`)
           .run(holdMin, rule, Number(trade.id))
       }
     }
@@ -198,21 +205,16 @@ export function linkAdoptedFill(db, row, trade, pos = null) {
   try {
     if (row.invalidation_trigger) {
       const t = db.prepare(`SELECT entry_price, side FROM trades WHERE id = ?`).get(Number(trade.id))
-      const fill = Number(t?.entry_price)
+      // № 15,001 (#65): Number(null) is 0, not NaN — a NULL entry_price must
+      // read as NO fill (unreadable:fill_unknown), never as a price of zero.
+      const raw = t?.entry_price
+      const fill = raw == null || raw === '' || !(Number(raw) > 0) ? null : Number(raw)
       const bias = Number(row.dir) < 0 ? 'short' : 'long'
-      const trigger = premiseAtFill({ trigger: row.invalidation_trigger, bias, fill: Number.isFinite(fill) ? fill : null, sl: pendingFillStop(row, fill) })
+      const trigger = premiseAtFill({ trigger: row.invalidation_trigger, bias, fill, sl: pendingFillStop(row, fill) })
       db.prepare(`UPDATE monitored_positions SET invalidation_trigger = ? WHERE trade_id = ? AND status = 'active' AND (invalidation_trigger IS NULL OR invalidation_trigger LIKE 'none_%')`)
         .run(trigger, Number(trade.id))
     }
   } catch { /* the premise is management metadata; the row keeps none_adopted */ }
-}
-
-/** The stop the broker holds after a limit fills: the row's distance, anchored to the fill. */
-function pendingFillStop(row, fill) {
-  const level = Number(row?.level), sl = Number(row?.sl), f = Number(fill)
-  if (!Number.isFinite(level) || !Number.isFinite(sl)) return null
-  if (!Number.isFinite(f) || f <= 0) return sl
-  return f - (Number(row.dir) < 0 ? -1 : 1) * Math.abs(level - sl)
 }
 
 /**

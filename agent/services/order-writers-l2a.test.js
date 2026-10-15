@@ -17,7 +17,7 @@ import { placeOrder, _resetOrderLocks } from '../lib/exec-engine.js'
 import { reserveEntry, reconcileIntents } from './entry-ledger.js'
 import { fillEvidence } from './intent-corrections.js'
 import { placeClosedMarketLimit, reconcileStaleClosedMarketLimits, findLimitFill } from './closed-market-limits.js'
-import { stampAdoptedFromIntent, INTENT_APPROVAL_WINDOW_SQL } from './reconciler.js'
+import { stampAdoptedFromIntent, INTENT_APPROVAL_WINDOW_SQL, reconcilePositions } from './reconciler.js'
 import { persistFilledTrade } from './pending-orders.js'
 import { PLAN_WRITE_FAILED_PATH, recordPlanWriteFailure } from './trade-plans.js'
 import { writeAheadAnalysisTrade, failAnalysisTrade, settleAnalysisTrade, validationFillDirectionReason } from '../routes/actions.js'
@@ -248,7 +248,7 @@ test('W9: an origin a more direct writer recorded is never rewritten by the link
 // resting row's status, the trade's lineage). These tests hold the seam: one
 // writer per record, the same evidence read the same way on both.
 const ACCEPTED_ANSWER = '{"executionType":"ORDER_ACCEPTED","position":{"positionId":241267454},"order":{"orderId":360473873}}'
-async function placeRestingThroughEngine(db) {
+async function placeRestingThroughEngine(db, synthOver = {}) {
   setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
   let sent = null
   onOrder = (body) => { sent = body; return { status: 200, body: ACCEPTED_ANSWER } }
@@ -257,7 +257,7 @@ async function placeRestingThroughEngine(db) {
   const creds = attachEntryFence(db, { ...BASE_CREDS }, { producerId: 'daily_momentum_account' })
   // No `exec` injected: the REAL exec-engine.placeOrder runs its ledger
   // protocol and settles the intent from the stub sidecar's answer.
-  const r = await placeClosedMarketLimit(db, creds, 'US30', { consensus_bias: 'long', entry: 100, sl: 98, tp1: 104, strategy: 'tsmom_long', timeframe: '1d', direction_reason: 'tsmom:long_top_band' },
+  const r = await placeClosedMarketLimit(db, creds, 'US30', { consensus_bias: 'long', entry: 100, sl: 98, tp1: 104, strategy: 'tsmom_long', timeframe: '1d', direction_reason: 'tsmom:long_top_band', ...synthOver },
     { producerId: 'daily_momentum_account', risk, sizing, now: Date.parse('2026-09-25T12:00:00Z') })
   assert.equal(r.placed, true, JSON.stringify(r))
   const row = db.prepare(`SELECT * FROM pending_orders WHERE symbol = 'US30'`).get()
@@ -525,4 +525,27 @@ test('L2a × X1 follow-up: the sweep never expires a resting row whose intent th
     assert.equal(db.prepare(`SELECT state FROM entry_intents WHERE id = ?`).get(id).state, 'FILLED', 'the sweep never writes the intent')
   }
   assert.deepEqual(counts(db), before, 'nothing deleted, nothing added')
+})
+
+// ── Claude · № 15,001 15-Oct (owner: "1–3 together (#65 + #60a + #60b)" after № 14,989; claude-builder) ──
+// #65 end to end, through the REAL exec engine, the REAL reconciler's adoption
+// and the REAL sweep: the premise placed with the resting order reaches the
+// position the fill became, re-checked at the fill the reconciler recorded.
+test('#65: a resting limit placed through the real engine carries its premise; the reconciler adopts the fill as none_adopted; the sweep moves the premise onto the position, re-checked at the fill', async () => {
+  const db = freshDb()
+  const { row, intent } = await placeRestingThroughEngine(db, { invalidation_trigger: 'price<99' })
+  assert.equal(row.invalidation_trigger, 'price<99', 'the row carries the signal\'s premise')
+  // The fill: the pre-created position appears with the intent-tagged label;
+  // the reconciler adopts it and says nothing about the premise.
+  reconcilePositions(db, [{ positionId: 241267454, symbolName: 'US30', price: 99.9, stopLoss: 97.9, takeProfit: 103.9,
+    tradeData: { symbolId: 7, tradeSide: 'BUY', volume: 1000, label: tagged(intent.id) } }], [], (k, v) => setState(db, k, v), { accountId: DEMO })
+  const trade = db.prepare(`SELECT id, entry_price FROM trades WHERE symbol = 'US30'`).get()
+  assert.ok(trade, 'the reconciler adopted the position')
+  assert.equal(trade.entry_price, 99.9)
+  const mp = () => db.prepare(`SELECT invalidation_trigger FROM monitored_positions WHERE trade_id = ? AND status = 'active'`).get(trade.id)
+  assert.equal(mp()?.invalidation_trigger, 'none_adopted', 'adoption records an explained absence')
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status, account_id) VALUES ('360473873', 'US30', 'gone', ?)`).run(DEMO)
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-09-26T12:00:00Z') })
+  assert.equal(r.filled, 1)
+  assert.equal(mp().invalidation_trigger, 'price<99', 'the premise, inside the fill-anchored band (97.9 < 99 < 99.9), is armed on the position')
 })
