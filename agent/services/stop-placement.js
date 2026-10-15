@@ -161,6 +161,9 @@ export function reviewRow(t) {
       exitKind,
       slippageR: round(slippageR),
     },
+    // № 14,956 (Codex P2 on #1377; owner "Fix both"): the unrounded ratio
+    // decides the bucket; only the returned row is rounded.
+    stopAtrExact: stopAtr,
   }
 }
 
@@ -191,9 +194,10 @@ export function bucketStats(rows) {
   }
 }
 
-function bucketed(rows) {
+/** Items are `{ row, stopAtrExact }`; the exact ratio picks the bucket (№ 14,956). */
+function bucketed(items) {
   const keys = [...STOP_ATR_BUCKETS.map(b => b.key), 'no_atr']
-  return keys.map(key => ({ bucket: key, ...bucketStats(rows.filter(r => stopAtrBucket(r.stopAtr) === key)) }))
+  return keys.map(key => ({ bucket: key, ...bucketStats(items.filter(i => stopAtrBucket(i.stopAtrExact) === key).map(i => i.row)) }))
 }
 
 /**
@@ -224,17 +228,19 @@ export function stopPlacementReport(db, { account = 'all', days = STOP_PLACEMENT
     LEFT JOIN monitored_positions mp ON mp.id = (SELECT MAX(id) FROM monitored_positions WHERE trade_id = t.id)
     WHERE t.status = 'closed'
       AND t.origin IN (${origins})
-      ${scoped ? 'AND t.account_id = ?' : ''}
+      ${scoped ? 'AND (t.account_id = ? OR t.account_id IS NULL)' : ''}
       AND COALESCE(t.closed_at_ms, CAST(strftime('%s', t.closed_at) AS INTEGER) * 1000) >= ?
     ORDER BY t.id DESC`).all(...CLEAN_BOT_ORIGINS, ...(scoped ? [account] : []), cutoffMs)
   const excluded = {}
-  const rows = []
+  const items = []
   for (const t of raw) {
     const checks = parseJson(t.checks_json)
     const r = reviewRow({ ...t, checks, stop_floor: checks?.stop_floor })
     if (r.excluded) { excluded[r.excluded] = (excluded[r.excluded] || 0) + 1; continue }
-    rows.push(r.row)
+    items.push(r)
   }
+  const rows = items.map(i => i.row)
+  const unattributed = rows.filter(r => r.accountId == null).length
   const strategies = [...new Set(rows.map(r => r.strategy ?? 'unknown'))].sort()
   return {
     report: 'stop-placement',
@@ -242,6 +248,9 @@ export function stopPlacementReport(db, { account = 'all', days = STOP_PLACEMENT
     days,
     method: {
       population: `closed trades with origin ${CLEAN_BOT_ORIGINS.join(' / ')}, closed in the last ${days} days`,
+      // № 14,956 (Codex P2 on #1377; owner "include unattributed trades"):
+      // the account-scope convention (lib/account-scope.js accountWhere).
+      accountScope: 'a named account also reads trades with no account recorded (counted in population.unattributed); account=all reads every trade',
       stopAtEntry: 'broker_sl_initial → the risk gate\'s floored stop → the proposal\'s stop → the monitor\'s initial risk → sl_price (never for a book-trailed trade)',
       atr: '1h ATR the risk gate recorded at approval (risk_events.checks_json.stop_floor.atr1h); none recorded → bucket no_atr',
       outcomeR: '(exit − entry) × direction ÷ stop at entry',
@@ -251,11 +260,11 @@ export function stopPlacementReport(db, { account = 'all', days = STOP_PLACEMENT
       slippage: 'stop exits only: past the last stop the broker was known to hold, in R',
       sample: `a bucket with fewer than ${STOP_PLACEMENT_MIN_SAMPLE} scored trades reads INSUFFICIENT`,
     },
-    population: { considered: raw.length, included: rows.length, excluded },
-    buckets: bucketed(rows),
+    population: { considered: raw.length, included: rows.length, unattributed, excluded },
+    buckets: bucketed(items),
     byStrategy: strategies.map(strategy => {
-      const own = rows.filter(r => (r.strategy ?? 'unknown') === strategy)
-      return { strategy, ...bucketStats(own), buckets: bucketed(own) }
+      const own = items.filter(i => (i.row.strategy ?? 'unknown') === strategy)
+      return { strategy, ...bucketStats(own.map(i => i.row)), buckets: bucketed(own) }
     }),
     rows: rows.slice(0, STOP_PLACEMENT_ROW_CAP),
     rowsTruncated: rows.length > STOP_PLACEMENT_ROW_CAP,

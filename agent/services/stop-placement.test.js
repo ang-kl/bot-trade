@@ -41,7 +41,7 @@ function mkDb() {
       re.run(reRow, o.symbol ?? 'AAA', JSON.stringify({ stop_floor }), JSON.stringify({ sl: o.proposalSl ?? null, timeframe: o.tfProposal ?? null }))
     }
     trade.run({
-      id, symbol: o.symbol ?? 'AAA', side: o.side ?? 'BUY', account: o.account ?? '111', strategy: o.strategy ?? 'vwap_trend',
+      id, symbol: o.symbol ?? 'AAA', side: o.side ?? 'BUY', account: 'account' in o ? o.account : '111', strategy: o.strategy ?? 'vwap_trend',
       origin: o.origin ?? 'bot_market_dispatch', entry: o.entry ?? 100, exit: o.exit ?? 90, sl: o.sl ?? null, bsi: o.bsi ?? null,
       gross: o.gross ?? null, net: o.net ?? null, mismatch: o.mismatch ?? null, suspect: o.suspect ?? null,
       closedAt: o.closedAt ?? NOW - DAY, re: reRow, reason: o.reason ?? 'stop loss hit', tf: o.tf ?? null,
@@ -99,6 +99,20 @@ test('buckets by stop/ATR: <0.75, 0.75–1, a stop floored to exactly 1 ATR read
   assert.deepEqual(r.buckets.map(b => [b.bucket, b.n]), [['<0.75', 1], ['0.75-1', 1], ['1-1.5', 2], ['>1.5', 1], ['no_atr', 1]])
 })
 
+// № 14,956 (Codex P2 on #1377; owner "Fix both"): the exact ratio picks the
+// bucket; the row shows it rounded. Codex's examples: 0.74996 and 1.50004.
+test('the unrounded stop/ATR ratio picks the bucket; only the returned row is rounded', () => {
+  const { db, add } = mkDb()
+  add({ id: 1, entry: 100, exit: 92, bsi: 92.5004, atr: 10, gross: -8, net: -8 })   // 0.74996 ATR
+  add({ id: 2, entry: 100, exit: 84, bsi: 84.9996, atr: 10, gross: -16, net: -16 }) // 1.50004 ATR
+  const r = stopPlacementReport(db, { now: NOW })
+  const byId = Object.fromEntries(r.rows.map(x => [x.id, x]))
+  assert.equal(byId[1].stopAtr, 0.75, 'shown rounded')
+  assert.equal(byId[2].stopAtr, 1.5, 'shown rounded')
+  const n = Object.fromEntries(r.buckets.map(b => [b.bucket, b.n]))
+  assert.deepEqual([n['<0.75'], n['0.75-1'], n['1-1.5'], n['>1.5']], [1, 0, 0, 1], 'bucketed on 0.74996 and 1.50004, not on their rounding')
+})
+
 test('the stop at entry: broker_sl_initial → floored stop → proposal → initial risk → sl_price (never book-trailed)', () => {
   const base = { entry_price: 100, side: 'BUY' }
   assert.deepEqual(stopAtEntryOf({ ...base, broker_sl_initial: 92, stop_floor: { to: 90 }, proposal_sl: 95, initial_risk: 7, sl_price: 99 }), { stop: 92, risk: 8, source: 'broker_sl_initial' })
@@ -122,12 +136,18 @@ test('population: bot origins only, closed in the window, on the account asked; 
   add({ id: 5, bsi: 90, atr: 10, gross: -10, net: -10, reason: 'duplicate_adoption: superseded by trade 1' })
   add({ id: 6, bsi: 90, atr: 10, gross: -10, net: -10, suspect: 1 })
   add({ id: 7, atr: 10, gross: -10, net: -10 }) // no stop anywhere
+  // № 14,956 (Codex P2 on #1377; owner "include unattributed trades"): a legacy
+  // bot trade with no account recorded reads under every named account too
+  // (lib/account-scope.js accountWhere), and is counted as unattributed.
+  add({ id: 8, bsi: 90, atr: 10, gross: -10, net: -10, account: null })
   const all = stopPlacementReport(db, { account: 'all', days: 30, now: NOW })
-  assert.deepEqual(all.rows.map(r => r.id).sort(), [1, 2])
-  assert.deepEqual(all.population, { considered: 5, included: 2, excluded: { superseded: 1, exit_price_suspect: 1, no_stop_at_entry: 1 } })
+  assert.deepEqual(all.rows.map(r => r.id).sort(), [1, 2, 8])
+  assert.deepEqual(all.population, { considered: 6, included: 3, unattributed: 1, excluded: { superseded: 1, exit_price_suspect: 1, no_stop_at_entry: 1 } })
   const one = stopPlacementReport(db, { account: '222', days: 30, now: NOW })
-  assert.deepEqual(one.rows.map(r => r.id), [2])
-  assert.equal(stopPlacementReport(db, { account: 'all', days: 60, now: NOW }).rows.length, 3, 'a wider window reaches the 40-day close')
+  assert.deepEqual(one.rows.map(r => r.id).sort(), [2, 8])
+  assert.equal(one.population.unattributed, 1)
+  assert.equal(one.rows.find(r => r.id === 8).accountId, null)
+  assert.equal(stopPlacementReport(db, { account: 'all', days: 60, now: NOW }).rows.length, 4, 'a wider window reaches the 40-day close')
 })
 
 test('net R: costs scale with the money one R was worth; withheld when money and price disagree in sign', () => {
