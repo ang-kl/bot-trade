@@ -27,7 +27,7 @@
 // hiccup must never stall the loop.
 // ---------------------------------------------------------------------------
 
-import { tfMs } from '../lib/timeframes.js'
+import { tfMs, barCloseMs } from '../lib/timeframes.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { isSymbolMarketOpen } from '../lib/sessions.js'
 
@@ -614,7 +614,8 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     // with its partial high/low/close/volume and no reader ever re-read it.
     // Closed bars only: open plus one bar-length has passed. The verdict
     // above still reads the full reply, as before.
-    const replay = bars.filter(b => b.t >= fromMs && b.t <= toMs && b.t + ms <= now)
+    // Codex round 2 on #1379: a synthesised bar closes with its LAST constituent (barCloseMs), not at t + ms.
+    const replay = bars.filter(b => b.t >= fromMs && b.t <= toMs && barCloseMs(b, ms) <= now)
     // Flat controller-consumable lesson fields (owner spec). Decay is read
     // over the PRIOR same-key history, before this row lands.
     const result = classifyResult(t)
