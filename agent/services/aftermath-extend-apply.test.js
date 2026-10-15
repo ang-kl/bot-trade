@@ -510,3 +510,28 @@ test('round 4 P1: a legacy stored aggregate whose fresh copy is still forming is
   assert.equal(out.verified, 0); assert.equal(out.unavailable, 0)
   assert.equal(closedAt(db), null, 'not stamped: the row reads short and is read again once the bar has closed')
 })
+
+test('round 1 on #1382 P1: a legacy aggregate opened before the capture and spanning a closure is the capture-time bar, and is re-read before any stamp', async () => {
+  const { aggregateBars } = await import('../lib/timeframes.js')
+  const db = initDB(':memory:')
+  const closedMs = Date.UTC(2026, 7, 28, 0)
+  seedAt(db, { closedMs, tf: '8h', afterBars: 15 })
+  // captured Monday 01:00 inside the Friday 20:00 aggregate (whose Monday half was forming); later passes appended Monday's closed bars
+  const fri20 = Date.UTC(2026, 8, 4, 20)
+  const bars = [...storedAll(db), [Date.UTC(2026, 8, 4, 12), 100, 100.5, 99.5, 100, 2], [fri20, 100, 100.1, 99.9, 100, 1],
+    [Date.UTC(2026, 8, 7, 4), 100, 100.5, 99.5, 100, 2], [Date.UTC(2026, 8, 7, 12), 100, 100.5, 99.5, 100, 2], [Date.UTC(2026, 8, 7, 20), 100, 100.5, 99.5, 100, 2]]
+  db.prepare(`UPDATE trade_postmortems SET bars_json = ?, created_at = '2026-09-07 01:00:30' WHERE id = 1`).run(JSON.stringify(bars))
+  const now = Date.UTC(2026, 8, 8, 12)                              // Tuesday noon: everything above is closed
+  // the broker's 8h aggregates as the client synthesises them from 4h bars, end-anchored at the request
+  // (aggregateBars pairs by position, so the fixture names the pairs: Friday 20:00 + Monday 00:00 is one)
+  const pairs = [[Date.UTC(2026, 8, 4, 12), Date.UTC(2026, 8, 4, 16)], [Date.UTC(2026, 8, 4, 20), Date.UTC(2026, 8, 7, 0)],
+    [Date.UTC(2026, 8, 7, 4), Date.UTC(2026, 8, 7, 8)], [Date.UTC(2026, 8, 7, 12), Date.UTC(2026, 8, 7, 16)],
+    [Date.UTC(2026, 8, 7, 20), Date.UTC(2026, 8, 8, 0)], [Date.UTC(2026, 8, 8, 4), Date.UTC(2026, 8, 8, 8)]]
+  const base = pairs.flat().map(t => ({ t, o: 100, h: 100.5, l: 99.5, c: 100, v: 1 }))
+  const broker = async (_s, _tf, count, endMs) => aggregateBars(base.filter(b => b.t <= endMs), 2).slice(-count)
+  const out = await applyAftermathExtension(db, broker, { ...noSleep, now })
+  assert.equal(out.errors, 0)
+  const got = storedAll(db).find(b => b[0] === fri20)
+  assert.deepEqual(got, [fri20, 100, 100.5, 99.5, 100, 2], 'RED before: created_at fell outside t + 8h, tC was null, and the partial aggregate was never re-read')
+  assert.ok(out.barsReplaced >= 1)
+})

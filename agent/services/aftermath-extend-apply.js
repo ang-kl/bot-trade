@@ -192,8 +192,16 @@ export async function applyAftermathExtension(db, fetchBars, {
     const have = new Map(bars.map(b => [Number(b?.[0]), b]))
     const tN = bars.reduce((m, b) => Math.max(m, Number(b?.[0]) || 0), 0)
     const createdMs = sqliteMs(r.created_at)
-    const tC = needsVerify && Number.isFinite(createdMs)
-      ? (bars.map(b => Number(b?.[0])).find(t => t <= createdMs && createdMs < t + ms) ?? null) : null
+    // № 15,074 16-Oct (Codex P1 on #1382, owner: "Fix both"): the capture-time
+    // bar is the NEWEST stored bar opened at or before created_at. A stored
+    // array carries no tLast, so its span cannot be read as `t + ms`: a legacy
+    // 8h aggregate opened Friday 20:00 with a Monday 00:00 half held a Monday
+    // 01:00 capture, and `createdMs < t + ms` (Saturday 04:00) missed it —
+    // once later passes had appended bars the row was stamped verified with
+    // that partial aggregate never re-read.
+    const tsAtOrBefore = needsVerify && Number.isFinite(createdMs)
+      ? bars.map(b => Number(b?.[0])).filter(t => Number.isFinite(t) && t <= createdMs) : []
+    const tC = tsAtOrBefore.length ? Math.max(...tsAtOrBefore) : null
     const from = tC != null ? Math.min(tC, tN) : tN
     let start = from
     let first = true

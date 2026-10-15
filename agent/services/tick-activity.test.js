@@ -114,3 +114,33 @@ test('through the real guardian: a tick on the stub stream is counted, and the m
   assert.ok(row, 'the maintenance pass flushed a snapshot carrying the ticked symbol (by id; names come from the tradable-union watchlist the fixture does not register)')
   assert.equal(row.ticksLastMin, 0, 'at flush time the ticks sit in the forming minute, so the last COMPLETE minute reads 0 — never a guessed count')
 })
+
+// ── № 15,074 16-Oct (Codex P2 on #1382, owner: "Fix both in #1382"; claude-builder) ──
+test('through the real guardian: spike_scan_priority=false stops the FLAG, not the stream — the enabled watchlist is still subscribed and counted', async t => {
+  __resetActivity()
+  const db = initDB(':memory:')
+  t.after(() => db.close())
+  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 41 }))
+  setState(db, 'autopilot_symbols_json', JSON.stringify([{ symbol: 'EURUSD', enabled: true }]))
+  setState(db, 'spike_scan_priority', 'false')
+  let onTick = null, ids = null
+  const stop = startGuardian(db, () => ({ ready: true, accountId: '1', isLive: false }), {
+    maintMs: 5, cooldownMs: 0, firstAttachMs: 1, backstopMs: 1e9, activityFlushMs: 0,
+    streamSpots: async (...args) => { ids = args[5]; onTick = args[6]; return { close() {} } },
+    accountRegistry: { getEnabledAccounts: () => [] },
+    tradeGuard: { runTradeGuards: async () => ({ slMoves: 0 }) },
+    profitKeeper: { runProfitKeeper: async () => ({ slMoves: 0, trailSpecs: [] }) },
+    exec: { pushTrailConfig: async () => true },
+  })
+  t.after(stop)
+  const deadline = Date.now() + 2000
+  while (!onTick && Date.now() < deadline) await new Promise(r => setTimeout(r, 5))
+  assert.ok(onTick, 'the stream attached')
+  assert.deepEqual(ids, [41], 'RED before: with the flag off the stream held only held positions, so the measurement saw nothing')
+  const now = Date.now()
+  onTick({ symbolId: 41, bid: 1.1, ask: 1.1002 })
+  onTick({ symbolId: 41, bid: 1.2, ask: 1.2002 }) // a 9% jump: a spike by any threshold
+  const ring = activitySnapshot({ now: Math.floor(now / MIN) * MIN + MIN + 1 })
+  assert.equal(ring.symbols.find(s => s.symbolId === 41)?.ticksLastMin, 2, 'ticks counted')
+  assert.equal(getState(db, 'scan_priority_symbols_json'), null, 'the flag stays off: no scan priority written')
+})

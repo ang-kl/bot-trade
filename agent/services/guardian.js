@@ -42,8 +42,12 @@
 // a spike on a flat symbol doesn't run a guard sweep (nothing to guard) —
 // it flags the symbol via scan_priority_symbols_json so the next SCAN phase
 // bumps it to the front of the rotation instead of waiting. Toggle:
-// agent_state `spike_scan_priority` ('true' default; 'false' reverts to
-// held-only subscription, the pre-2026-07-26 behaviour).
+// agent_state `spike_scan_priority` ('true' default; 'false' stops the
+// FLAGGING). Claude · № 15,074 16-Oct (Codex P2 on #1382, owner: "Fix both"):
+// the subscription itself always covers the enabled watchlist — the tick-
+// activity measurement reads this stream, and a flag that is off must not
+// silently empty a 24-hour measurement. Before 16-10 'false' also narrowed
+// the stream to held symbols.
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
@@ -232,6 +236,7 @@ export function startGuardian(db, getCreds, deps = {}) {
   let lastEval = new Map()    // symbolId → price at last guard evaluation
   let lastEvalAt = new Map()  // symbolId → ms, watchlist-only spike timing
   let heldIds = new Set()     // symbolIds with an open position — guard sweep vs spike-flag branch
+  let spikeFlagOn = true      // agent_state spike_scan_priority, read each maintenance pass; gates the FLAG, not the stream
   let symbolById = new Map()  // symbolId → symbol string, for flagging
   let sweeping = false
   let lastSweepAt = 0
@@ -374,7 +379,7 @@ export function startGuardian(db, getCreds, deps = {}) {
     const now = Date.now()
     const prevPrice = lastEval.get(tick.symbolId)
     const prevAt = lastEvalAt.get(tick.symbolId)
-    if (prevPrice != null && prevAt != null && isSpikeMove(prevPrice, prevAt, price, now, SPIKE_PCT_PER_MIN)) {
+    if (spikeFlagOn && prevPrice != null && prevAt != null && isSpikeMove(prevPrice, prevAt, price, now, SPIKE_PCT_PER_MIN)) {
       const sym = symbolById.get(tick.symbolId)
       if (sym) queueScanPriority(db, sym, now)
     }
@@ -389,8 +394,10 @@ export function startGuardian(db, getCreds, deps = {}) {
       const enabled = (getState(db, 'guardian') || 'true') !== 'false'
       if (!creds?.ready || !enabled) { teardown(); return }
       const held = watchedSymbolIds(db)
-      const spikePriorityOn = (getState(db, 'spike_scan_priority') || 'true') !== 'false'
-      const watchlist = spikePriorityOn ? watchlistSymbolIds(db) : []
+      spikeFlagOn = (getState(db, 'spike_scan_priority') || 'true') !== 'false'
+      // № 15,074 (Codex P2 on #1382): the enabled watchlist is streamed whether
+      // or not spike flagging is on; the flag gates queueScanPriority above.
+      const watchlist = watchlistSymbolIds(db)
       const combined = new Map()
       for (const w of held) combined.set(w.symbolId, w)
       for (const w of watchlist) if (!combined.has(w.symbolId)) combined.set(w.symbolId, w)
