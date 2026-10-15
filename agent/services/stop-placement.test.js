@@ -150,6 +150,20 @@ test('population: bot origins only, closed in the window, on the account asked; 
   assert.equal(stopPlacementReport(db, { account: 'all', days: 60, now: NOW }).rows.length, 4, 'a wider window reaches the 40-day close')
 })
 
+// № 14,957 (Codex P2 round 2 on #1377; owner "Fix it"): through the whole
+// report, a trade whose only stop record is the monitor's initial risk (no
+// broker stop, no risk event) is reviewed from it, not dropped. A book-trailed
+// trade with no other record still reads no_stop_at_entry.
+test('the report reaches the monitor\'s initial risk when no other stop record exists', () => {
+  const { db, add } = mkDb()
+  add({ id: 1, entry: 100, exit: 95, gross: -5, net: -5, mp: { ir: 10, mae: -0.5, mfe: 0.1 } })
+  const r = stopPlacementReport(db, { now: NOW })
+  assert.equal(r.population.included, 1, JSON.stringify(r.population))
+  assert.equal(r.rows[0].stopSource, 'initial_risk')
+  assert.equal(r.rows[0].outcomeR, -0.5)
+  assert.equal(r.rows[0].stopAtr, null, 'no risk event, no ATR')
+})
+
 test('net R: costs scale with the money one R was worth; withheld when money and price disagree in sign', () => {
   const ok = reviewRow({ id: 1, side: 'SELL', entry_price: 100, exit_price: 96, broker_sl_initial: 104, gross_pnl: 40, net_pnl: 36 })
   assert.equal(ok.row.outcomeR, 1); assert.equal(ok.row.netR, 0.9)

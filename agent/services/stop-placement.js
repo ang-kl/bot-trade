@@ -235,7 +235,9 @@ export function stopPlacementReport(db, { account = 'all', days = STOP_PLACEMENT
   const items = []
   for (const t of raw) {
     const checks = parseJson(t.checks_json)
-    const r = reviewRow({ ...t, checks, stop_floor: checks?.stop_floor })
+    // № 14,957 (Codex P2 round 2 on #1377; owner "Fix it"): the monitor's
+    // initial risk reaches stopAtEntryOf under the name it reads.
+    const r = reviewRow({ ...t, initial_risk: t.mp_initial_risk, checks, stop_floor: checks?.stop_floor })
     if (r.excluded) { excluded[r.excluded] = (excluded[r.excluded] || 0) + 1; continue }
     items.push(r)
   }
