@@ -65,5 +65,6 @@ test('the auto fill, the manual order and the execute-trade writers all re-check
   const actions = strip(readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8'))
   assert.match(loop, /premiseAtFill\(\{ trigger: synth\.invalidation_trigger[^\n]*fill: entryP, sl: slP \}\)/)
   assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: premiseTrigger\(premise\)[^\n]*fill: entryP,\s*\n\s*sl: anchorBracketToFill\(/)
-  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: synth\.invalidation_trigger \|\| analysis\.invalidation_trigger[^\n]*fill: entryP, sl: slHeld \}\)/)
+  // № 14,775 (Codex round 4): with no fill recovered the market read for the stop-side check stands in, never the planned entry
+  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: synth\.invalidation_trigger \|\| analysis\.invalidation_trigger[^\n]*\n\s*fill: executionPrice \?\? market, sl: executionPrice != null \? slHeld : anchorBracketToFill\(\{ side, proposalEntry: entry, fill: market, sl, tp1 \}\)\.sl \}\)/)
 })

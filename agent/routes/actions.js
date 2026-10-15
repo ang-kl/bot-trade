@@ -6680,7 +6680,13 @@ export default function actionsRouter(db, deps = {}) {
         accountId, strategy: analysis.strategy || null, timeframe: analysis.timeframe || null,
         thesis: [analysis.consensus_summary || '', capNote].filter(Boolean).join(' — '), initialRisk,
         // № 14,758 (Codex round 2 on #1374): same fill re-check as the auto path.
-        invalidationTrigger: premiseAtFill({ trigger: synth.invalidation_trigger || analysis.invalidation_trigger || noPremise('analysis'), bias: side === 'BUY' ? 'long' : 'short', fill: entryP, sl: slHeld }), timeCap,
+        // Claude · № 14,775 15-Oct (Codex round 4 on #1374, P1; owner "Fix round
+        // 4, then merge"; claude-builder): with no fill recovered, the planned
+        // entry is stale — the market read above (the stop-side check) is the
+        // best estimate of where the order filled, and the stop is anchored
+        // from it as the broker anchors its distance from the fill.
+        invalidationTrigger: premiseAtFill({ trigger: synth.invalidation_trigger || analysis.invalidation_trigger || noPremise('analysis'), bias: side === 'BUY' ? 'long' : 'short',
+          fill: executionPrice ?? market, sl: executionPrice != null ? slHeld : anchorBracketToFill({ side, proposalEntry: entry, fill: market, sl, tp1 }).sl }), timeCap,
       })
 
       console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${sentLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} riskEvent=${riskEventId ?? 'none'}`)

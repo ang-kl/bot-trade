@@ -63,7 +63,7 @@ function fresh({ halt = true } = {}) {
  * a new order is recorded and refused at once (ORDER_ERROR_EVENT), so a test
  * can read the payload the route sent.
  */
-function fakeBroker(close, fill = null, acceptOnly = false, maxVolume = 100_000_000_000) {
+function fakeBroker(close, fill = null, acceptOnly = false, maxVolume = 100_000_000_000, reconcileEmpty = false) {
   const sent = [], orders = []
   class Socket extends EventEmitter {
     constructor() { super(); this.readyState = 1; setImmediate(() => this.emit('open')) }
@@ -87,7 +87,7 @@ function fakeBroker(close, fill = null, acceptOnly = false, maxVolume = 100_000_
           ctidTraderAccountId: m.payload?.ctidTraderAccountId, symbolId: m.payload?.symbolId, period: m.payload?.period,
           trendbar: close == null ? [] : [{ low: Math.round(close * 100_000) - 50, deltaOpen: 0, deltaHigh: 60, deltaClose: 50, utcTimestampInMinutes: minute - 1, volume: 1 }],
         }],
-        [PT.RECONCILE_REQ]: [PT.RECONCILE_RES, { ctidTraderAccountId: m.payload?.ctidTraderAccountId, position: fill == null ? [] : [{ positionId: 33, price: fill, tradeData: { symbolId: SYM_ID, tradeSide: 'BUY', volume: 1_000_000 } }], order: [] }],
+        [PT.RECONCILE_REQ]: [PT.RECONCILE_RES, { ctidTraderAccountId: m.payload?.ctidTraderAccountId, position: (fill == null || reconcileEmpty) ? [] : [{ positionId: 33, price: fill, tradeData: { symbolId: SYM_ID, tradeSide: 'BUY', volume: 1_000_000 } }], order: [] }],
         [PT.SYMBOL_BY_ID_REQ]: [PT.SYMBOL_BY_ID_RES, {
           ctidTraderAccountId: m.payload?.ctidTraderAccountId,
           symbol: [].concat(m.payload?.symbolId ?? []).map(id => ({ symbolId: id, lotSize: 10_000_000, minVolume: 100_000, maxVolume, stepVolume: 100_000, digits: 5, pipPosition: 4 })),
@@ -100,8 +100,8 @@ function fakeBroker(close, fill = null, acceptOnly = false, maxVolume = 100_000_
   return { Socket, sent, orders }
 }
 
-async function serve(t, db, { close = 1.1, fill = null, acceptOnly = false, maxVolume } = {}) {
-  const broker = fakeBroker(close, fill, acceptOnly, maxVolume)
+async function serve(t, db, { close = 1.1, fill = null, acceptOnly = false, maxVolume, reconcileEmpty = false } = {}) {
+  const broker = fakeBroker(close, fill, acceptOnly, maxVolume, reconcileEmpty)
   _setWebSocketForTests(broker.Socket); t.after(() => _setWebSocketForTests(null))
   const app = express(); app.use(express.json()); app.use('/actions', actionsRouter(db))
   const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)) })
@@ -118,9 +118,10 @@ async function serve(t, db, { close = 1.1, fill = null, acceptOnly = false, maxV
   return { post, broker }
 }
 
-const analysis = (db, { bias = 'long', entry = 1.1, sl = 1.09, tp = 1.135, strategy = 'ema_pullback' } = {}) =>
-  Number(db.prepare(`INSERT INTO analyses (symbol, consensus_bias, overall_conviction, synthesis, entry_price, sl_price, tp1_price, strategy, analyzed_at)
-    VALUES (?, ?, 9, '{}', ?, ?, ?, ?, ?)`).run(SYM, bias, entry, sl, tp, strategy, new Date().toISOString()).lastInsertRowid)
+// `invalidation`: the analysis's premise, stored as the monitor reads it (№ 14,775).
+const analysis = (db, { bias = 'long', entry = 1.1, sl = 1.09, tp = 1.135, strategy = 'ema_pullback', invalidation = null } = {}) =>
+  Number(db.prepare(`INSERT INTO analyses (symbol, consensus_bias, overall_conviction, synthesis, entry_price, sl_price, tp1_price, strategy, analyzed_at, invalidation_trigger)
+    VALUES (?, ?, 9, '{}', ?, ?, ?, ?, ?, ?)`).run(SYM, bias, entry, sl, tp, strategy, new Date().toISOString(), invalidation == null ? null : `price${bias === 'long' ? '<' : '>'}${invalidation}`).lastInsertRowid)
 const approval = db => db.prepare('SELECT id, checks_json FROM risk_events WHERE approved = 1 ORDER BY id LIMIT 1').get()
 const flagged = r => new RegExp(`"${POST_APPROVAL_FLAG}"\\s*:\\s*true`).test(String(r.checks_json || ''))
 
@@ -277,6 +278,33 @@ test('P1: the trade plan keeps the gate\'s levels and risk; only the live rows t
   assert.ok(Math.abs(plan.planned_r - 3.5) < 1e-6, `the planned R: ${plan.planned_r}`)
   const pos = db.prepare('SELECT current_sl, current_tp FROM monitored_positions').get()
   assert.ok(Math.abs(pos.current_sl - 1.094) < 1e-9 && Math.abs(pos.current_tp - 1.139) < 1e-9, `the live position keeps the fill's bracket: ${JSON.stringify(pos)}`)
+})
+
+// Claude · № 14,775 15-Oct (Codex round 4 on #1374, P1; owner "Fix round 4,
+// then merge"; claude-builder). ORDER_ACCEPTED with no price and the position
+// not yet readable: the fill is unknown, the planned entry is stale. The
+// premise is then judged against the market the route already read for the
+// stop-side check — a premise the market has crossed is recorded, not armed
+// (the monitor would close the fresh position on its next tick); one the
+// market still sits above stands.
+test('P1: with no fill recovered, the premise is checked against the current market, not the planned entry', async t => {
+  for (const [close, expected] of [[1.094, 'unreadable:fill_outside_band'], [1.1, 'price<1.095']]) {
+    const db = fresh({ halt: false })
+    t.after(() => db.close())
+    const { post } = await serve(t, db, { close, fill: 1.104, acceptOnly: true, reconcileEmpty: true })
+    const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
+    assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
+    assert.equal(res.executionPrice, null, 'no fill was recovered')
+    const row = db.prepare('SELECT invalidation_trigger FROM monitored_positions').get()
+    assert.equal(row.invalidation_trigger, expected, `market ${close}`)
+  }
+  // control: the fill recovered from the position (1.104) is what is judged, not the market
+  const db = fresh({ halt: false })
+  t.after(() => db.close())
+  const { post } = await serve(t, db, { close: 1.094, fill: 1.104, acceptOnly: true })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
+  assert.equal(res.executionPrice, 1.104)
+  assert.equal(db.prepare('SELECT invalidation_trigger FROM monitored_positions').get().invalidation_trigger, 'price<1.095', 'the fill, not the 1.094 market, judges it')
 })
 
 // Claude · № 13,757 12-Oct (demo stress run D2; owner "Send the cap, record it"; claude-builder).
