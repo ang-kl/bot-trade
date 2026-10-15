@@ -41,8 +41,21 @@ export function wilderAtr(bars, period = DEFAULT_ATR_PERIOD) {
  * behind the peak, the peak seeded at the entry. Null when the ATR or the
  * digits are missing, so the keeper drops the row rather than push a spec
  * the sidecar cannot round.
+ *
+ * Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2; owner choice after
+ * № 14,822: "peak above entry OR close in profit now"; claude-builder).
+ * ONLY ONCE THE POSITION HAS SHOWN PROFIT. Measured 14-10 (§ 14,716): GBPUSD
+ * #1817 and USDJPY #1846 had their fresh stops tightened by this spec 7 s
+ * and 35 s after entry — the peak is seeded at the entry, so wherever 3×ATR
+ * sits inside the strategy's stop the engine ratchets at once, before the
+ * trade has shown anything. The spec is now withheld until the position has
+ * been in profit on the exit side: the monitor's peak (`mfeR` > 0, kept
+ * every loop and fast tick) or the keeper's latest close beyond the fill in
+ * the trade's direction. Neither known → no spec (nothing pushed, the plan
+ * stop stands). The distance, the peak seed and the engine are unchanged.
  */
-export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits } = {}) {
+export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits, price, mfeR } = {}) {
+  if (!hasShownProfit({ side, entry, price, mfeR })) return null
   const atr = wilderAtr(bars, DEFAULT_ATR_PERIOD)
   // Number(null), Number('') and Number(false) are zero, but they are not
   // broker precision. Preserve a genuine zero-digit instrument only.
@@ -66,4 +79,19 @@ export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, ent
     entryPrice: peak,
     source: 'mae_chandelier_since_entry',
   }
+}
+
+/**
+ * № 14,822: has the position shown profit on the exit side? `mfeR` is the
+ * monitor's recorded peak in R (> 0 once price has been past the fill in the
+ * trade's direction); `price` is the latest close. Unknown values are not
+ * profit.
+ */
+export function hasShownProfit({ side, entry, price, mfeR } = {}) {
+  if (Number(mfeR) > 0) return true
+  const e = Number(entry), p = Number(price)
+  if (!(e > 0) || !(p > 0)) return false
+  const s = String(side || '').toUpperCase()
+  const short = s === 'SHORT' || s === 'SELL'
+  return short ? p < e : p > e
 }

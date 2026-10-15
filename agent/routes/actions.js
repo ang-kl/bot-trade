@@ -137,7 +137,7 @@ export function manualPremiseOutsideStop(side, price, sl, entry) {
 export function recordManualOrderTrade(db, {
   symbol, side, entryP, entryEstimate = null, sl, tp = null, volLots, positionId = null,
   structuredLabel, accountId = null, strategy = MANUAL_ORDER_STRATEGY, riskEventId = null, note = null,
-  invalidationTrigger = null,
+  invalidationTrigger = null, brokerSlInitial = null,
 } = {}) {
   const strat = String(strategy || '').trim() || MANUAL_ORDER_STRATEGY
   const acct = accountId != null ? String(accountId) : null
@@ -146,14 +146,16 @@ export function recordManualOrderTrade(db, {
     const tradeInsert = db.prepare(`
       INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
         ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status,
-        origin, origin_source, account_id, strategy, risk_event_id, horizon)
+        origin, origin_source, account_id, strategy, risk_event_id, horizon, broker_sl_initial)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open',
-              'manual_broker', 'write', ?, ?, ?, ?)
+              'manual_broker', 'write', ?, ?, ?, ?, ?)
     `).run(symbol, side, entryP, sl, tp, volLots, positionId, structuredLabel,
       parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session,
       acct, strat, riskEventId != null ? Number(riskEventId) : null,
       // §4-D: the horizon at entry, from the strategy family ('manual' is intraday).
-      horizonForStrategy(strat))
+      horizonForStrategy(strat),
+      // № 14,822 (PR-2 step 3): the stop sent with the order, anchored to a known fill; else NULL for the reconciler.
+      Number(brokerSlInitial) > 0 ? Number(brokerSlInitial) : null)
     const id = Number(tradeInsert.lastInsertRowid)
     db.prepare(`
       INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
@@ -230,7 +232,7 @@ export function failAnalysisTrade(db, tradeId, err) {
 export function settleAnalysisTrade(db, tradeId, {
   symbol, side, entryP, entry = null, sl, tp = null, volLots, positionId = null, label, accountId = null,
   strategy = null, timeframe = null, thesis = '', initialRisk = null, invalidationTrigger = null, timeCap = null,
-  planSl = sl, planTp = tp,
+  planSl = sl, planTp = tp, brokerSlInitial = null,
 } = {}) {
   const acct = accountId != null ? String(accountId) : null
   const parsed = parseLabel(label)
@@ -239,9 +241,12 @@ export function settleAnalysisTrade(db, tradeId, {
     db.prepare(`
       UPDATE trades SET entry_price = ?, sl_price = ?, tp_price = ?, volume = ?, opened_at = datetime('now'), status = 'open',
         ctrader_position_id = ?, label_raw = ?, label_strategy = ?, label_conviction = ?, label_session = ?,
-        account_id = COALESCE(account_id, ?), strategy = COALESCE(strategy, ?)
+        account_id = COALESCE(account_id, ?), strategy = COALESCE(strategy, ?),
+        broker_sl_initial = COALESCE(?, broker_sl_initial)
       WHERE id = ?
-    `).run(entryP, sl, tp, volLots, positionId, label, parsed?.strategy, parsed?.conviction, parsed?.session, acct, strategy || null, id)
+    `).run(entryP, sl, tp, volLots, positionId, label, parsed?.strategy, parsed?.conviction, parsed?.session, acct, strategy || null,
+      // № 14,822 (PR-2 step 3): the stop sent with the order, anchored to a known fill; else NULL for the reconciler.
+      Number(brokerSlInitial) > 0 ? Number(brokerSlInitial) : null, id)
     db.prepare(`
       INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
         thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, account_id, status)
@@ -6684,6 +6689,8 @@ export default function actionsRouter(db, deps = {}) {
         // nothing — a fill not recovered leaves it unarmed (fill_unknown); the
         // ledger's entryP fallback to the plan is unchanged.
         invalidationTrigger: premiseAtFill({ trigger: synth.invalidation_trigger || analysis.invalidation_trigger || noPremise('analysis'), bias: side === 'BUY' ? 'long' : 'short', fill: executionPrice, sl: slHeld }), timeCap,
+        // № 14,822 (PR-2 step 3): the stop sent with the order, anchored to the recovered fill.
+        brokerSlInitial: executionPrice != null ? slHeld : null,
       })
 
       console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${sentLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} riskEvent=${riskEventId ?? 'none'}`)
@@ -6928,14 +6935,16 @@ export default function actionsRouter(db, deps = {}) {
       }
       const entryP = executionPrice ?? entry
 
+      // № 14,758 (Codex round 2 on #1374): the broker anchors the relative stop
+      // to the FILL; the premise and (№ 14,822, PR-2) the initial-stop record
+      // read that anchored stop. With no fill known it is the plan's, unused.
+      const anchoredSl = anchorBracketToFill({ side, proposalEntry: entry, fill: executionPrice, sl: proposal.sl, tp1: proposal.tp1 }).sl
       const tradeId = recordManualOrderTrade(db, {
         symbol, side, entryP, entryEstimate: entry, sl: proposal.sl, tp: proposal.tp1, volLots: sentLots, positionId,
         structuredLabel, accountId: creds.accountId, strategy, riskEventId, note: capNote,
-        // № 14,758 (Codex round 2 on #1374): the broker anchors the relative stop
-        // to the FILL; re-check the premise against the fill and that stop.
         // № 14,793 (Codex round 5): the fill or nothing — never the 1m-close estimate.
-        invalidationTrigger: premiseAtFill({ trigger: premiseTrigger(premise), bias: side === 'BUY' ? 'long' : 'short', fill: executionPrice,
-          sl: anchorBracketToFill({ side, proposalEntry: entry, fill: executionPrice, sl: proposal.sl, tp1: proposal.tp1 }).sl }),
+        invalidationTrigger: premiseAtFill({ trigger: premiseTrigger(premise), bias: side === 'BUY' ? 'long' : 'short', fill: executionPrice, sl: anchoredSl }),
+        brokerSlInitial: executionPrice != null ? anchoredSl : null,
       })
 
       console.log(`[actions] Manual UI order: ${side} ${symbol} vol=${sentLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} strategy=${strategy} riskEvent=${riskEventId ?? 'none'}`)

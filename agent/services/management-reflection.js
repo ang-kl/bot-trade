@@ -41,8 +41,15 @@
 /** How close an exit must sit to a stop to count as having been taken at it. */
 const STOP_TOUCH_TOLERANCE = 0.0015   // 0.15% of price
 
-/** Stop-moving rules. A tp_moved does not close anything, so it cannot cause an exit. */
-const STOP_MOVE = 'sl_moved'
+/**
+ * Stop-moving rules. A tp_moved does not close anything, so it cannot cause an exit.
+ * Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2 step 3; claude-builder):
+ * the native trail engine's amends are journalled as `trail_tightened`
+ * (native-trail-events.js, momentum-book.js) and were not counted — USDJPY
+ * #1846 read `stopMoves 0` with the original stop as its final one while the
+ * engine had moved it 158.866 → 158.71. Both kinds are stop moves.
+ */
+const STOP_MOVE_KINDS = new Set(['sl_moved', 'trail_tightened'])
 
 const num = (v) => (v == null ? null : (Number.isFinite(Number(v)) ? Number(v) : null))
 
@@ -73,7 +80,7 @@ export function tradeManagementOutcome(db, trade) {
   } catch { return null }
   if (!events.length) return null
 
-  const moves = events.filter(e => e.kind === STOP_MOVE)
+  const moves = events.filter(e => STOP_MOVE_KINDS.has(e.kind))
   const closes = events.filter(e => e.kind === 'close')
 
   // The stop the trade STARTED with: the from_value of the first move, which is

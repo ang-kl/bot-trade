@@ -770,6 +770,8 @@ for (const managedOn of [true, false]) {
     setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
     db.exec('ALTER TABLE monitored_positions ADD COLUMN digits INTEGER')
     db.exec('UPDATE monitored_positions SET digits = 3')
+    // № 14,822 (PR-2): the close below sits AT the fill; the row has a recorded peak so the spec is still eligible
+    db.exec('UPDATE monitored_positions SET mfe_r = 0.2')
     const before = db.prepare('SELECT * FROM monitored_positions').all()
     const deps = keeperDeps()
     deps.ws.wsGetLastCloses = async () => ({ 1: 2.8795 }) // no keeper action or original trail
@@ -1287,10 +1289,53 @@ test('valid quote-missing broker identity keeps the existing since-entry native 
     f.deps.managedExit.managedExitApplies=()=>managed
     f.deps.ws.wsGetLastCloses=async()=>({})
     f.deps.ws.wsGetTrendbarsBatch=async()=>({'1h':Array.from({length:50},()=>({h:101,l:99,c:100}))})
+    // № 14,822 (PR-2): a missing quote is not profit; the row's recorded peak is what keeps this position eligible
+    f.db.prepare('UPDATE monitored_positions SET mfe_r = 0.2').run()
     const result=await runProfitKeeper(f.db,CREDS,f.deps)
     assert.equal(result.trailSpecsComplete,true)
     assert.equal(result.trailSpecs.length,1)
     assert.equal(result.trailSpecs[0].source,'mae_chandelier_since_entry')
     assert.equal(result.trailSpecs[0].dir,1)
   }
+})
+
+// Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2; the keeper's call
+// site authorised after № 14,822; claude-builder). Through the real keeper:
+// a position whose close sits at its fill and whose row has no recorded peak
+// gets NO since-entry spec (nothing pushed, no amend, no close); the same
+// position with a close in profit, or with a recorded peak, does.
+test('PR-2 through the real keeper: the since-entry spec is withheld until the position has shown profit', async (t) => {
+  clearAtrCache()
+  t.after(clearAtrCache)
+  const bars = Array.from({ length: 40 }, () => ({ h: 2.95, l: 2.90, c: 2.92 }))
+  const run = async ({ close, mfeR }) => {
+    const db = mkManagedKeeperDb({ managedOn: true })
+    t.after(() => db.close())
+    setState(db, 'profit_keeper_json', JSON.stringify({ on: true, scope: 'external', mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22, armProfitUsd: 50, givebackPct: 40 }))
+    if (mfeR != null) db.prepare('UPDATE monitored_positions SET mfe_r = ?').run(mfeR)
+    let pushed = null
+    const deps = keeperDeps()
+    deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': bars })
+    deps.ws.wsGetLastCloses = async () => ({ 1: close })
+    deps.exec.amendPosition = async () => { throw new Error('must not amend') }
+    deps.exec.closePosition = async () => { throw new Error('must not close') }
+    deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+    const out = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+    return { out, pushed }
+  }
+  // the short NATGAS row filled at 2.8795: a close at the fill, no peak on record → nothing
+  const flat = await run({ close: 2.8795 })
+  assert.deepEqual([flat.out.trailSpecs.length, flat.out.trailPushed, flat.out.slMoves, flat.out.closes], [0, 0, 0, 0], JSON.stringify(flat.out))
+  assert.ok(flat.pushed == null || flat.pushed.length === 0, `nothing pushed: ${JSON.stringify(flat.pushed)}`)
+  // a close above the fill on a short is a loss → still nothing
+  const losing = await run({ close: 2.9 })
+  assert.equal(losing.out.trailSpecs.length, 0)
+  // in profit now → the spec, unchanged distance
+  const profit = await run({ close: 2.87 })
+  assert.equal(profit.out.trailSpecs.length, 1)
+  assert.equal(profit.pushed[0].source, 'mae_chandelier_since_entry')
+  assert.ok(Math.abs(profit.pushed[0].trailDistance - 0.15) < 1e-9, '3 × ATR, unchanged')
+  // a recorded peak past the fill qualifies even with the close back at the fill
+  const peaked = await run({ close: 2.8795, mfeR: 0.3 })
+  assert.equal(peaked.out.trailSpecs.length, 1)
 })

@@ -1419,8 +1419,13 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         String(accountId),
         slippagePrice, entrySpread, entryLatencyMs,
         // The stop as the broker holds it at the fill, when the ACK carries
-        // it; otherwise the reconciler stamps the first stop it observes.
-        Number(exec?.position?.stopLoss) > 0 ? Number(exec.position.stopLoss) : null,
+        // it. Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2 step 3;
+        // claude-builder): else the stop this order SENT, anchored to the
+        // recovered fill (slP) — never a later amendment (GBPUSD #1817 held
+        // the trail's 1.32381 as its "initial" stop). With no fill known the
+        // column stays NULL for the reconciler's opening-bracket stamp.
+        Number(exec?.position?.stopLoss) > 0 ? Number(exec.position.stopLoss)
+          : (executionPrice != null && Number(slP) > 0 ? Number(slP) : null),
         intentId,
       )
       const tradeId = intentId

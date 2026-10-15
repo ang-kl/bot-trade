@@ -23,7 +23,8 @@ test('the intent row carries proposal_entry_price and analysis_id; the fill stam
   assert.match(intent, /Number\.isFinite\(Number\(synth\.analysisId\)\) \? Number\(synth\.analysisId\) : null/)
   assert.match(src, /synth\.analysisId = Number\(analysisIns\?\.lastInsertRowid\) \|\| null/, 'the analysis id is carried on the synthesis')
   assert.match(src, /broker_sl_initial = COALESCE\(\?, broker_sl_initial\)/)
-  assert.match(src, /Number\(exec\?\.position\?\.stopLoss\) > 0 \? Number\(exec\.position\.stopLoss\) : null/)
+  // № 14,822 (PR-2 step 3): the ACK's stop, else the fill-anchored stop the order sent when the fill is known, else NULL
+  assert.match(src, /Number\(exec\?\.position\?\.stopLoss\) > 0 \? Number\(exec\.position\.stopLoss\)\s*\n\s*: \(executionPrice != null && Number\(slP\) > 0 \? Number\(slP\) : null\)/)
 })
 
 test('the columns exist on a fresh database and on an upgraded one', () => {

@@ -350,12 +350,21 @@ test('premise (round 5): the auto writer arms a premise only against a fill reco
     const s = await scene(t)
     assert.ok(await s.run(loadMomentumEntrySwitch(), synth()), `entered: ${JSON.stringify(s.vetoes())}`)
     assert.equal(trigger(s), 'price<97', 'fill recovered: the premise inside the band stands')
+    // Claude · № 14,822 15-Oct (PR-2 step 3): broker_sl_initial is the stop the order SENT, anchored to the fill the
+    // broker reported — the stop the fake broker placed from relativeStopLoss, to its price grid.
+    const pos = s.broker.positions(ACCT)[0]
+    const t2 = s.db().prepare('SELECT entry_price, broker_sl_initial FROM trades ORDER BY id DESC LIMIT 1').get()
+    assert.equal(t2.entry_price, pos.price, 'the ledger holds the recovered fill')
+    assert.ok(Number(t2.broker_sl_initial) > 0 && Math.abs(t2.broker_sl_initial - pos.stopLoss) <= 0.01 + 1e-9,
+      `broker_sl_initial ${t2.broker_sl_initial} is the stop the broker holds from the order (${pos.stopLoss})`)
   }
   {
     const s = await scene(t)
     s.reconcileEmpty = true
     assert.ok(await s.run(loadMomentumEntrySwitch(), synth()), `entered: ${JSON.stringify(s.vetoes())}`)
     assert.equal(trigger(s), 'unreadable:fill_unknown', 'no fill recovered: not armed')
+    assert.equal(s.db().prepare('SELECT broker_sl_initial FROM trades ORDER BY id DESC LIMIT 1').get().broker_sl_initial, null,
+      'no fill known: the column waits for the reconciler\'s opening-bracket stamp, never a plan guess')
   }
 })
 

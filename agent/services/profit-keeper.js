@@ -491,7 +491,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp, mp.peak_profit_usd, mp.keeper_peak_state,
               mp.scaled_out, mp.trade_id, mp.account_id, mp.status, t.ctrader_position_id AS position_id,
-              t.sl_price AS original_sl, mp.early_trimmed, mp.initial_risk
+              t.sl_price AS original_sl, mp.early_trimmed, mp.initial_risk, mp.mfe_r
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
@@ -909,6 +909,11 @@ async function profitKeeperPass(db, creds, deps = {}) {
         currentSl: bp.stopLoss ?? r.current_sl ?? null,
         currentTp: bp.takeProfit ?? r.current_tp ?? null,
         digits: brokerDigitsByPosition.get(String(parseInt(r.position_id))),
+        // Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2, this line
+        // authorised after № 14,822; claude-builder): the spec is withheld
+        // until the position has shown profit — the monitor's peak or the
+        // close already fetched above against the fill.
+        price: prices[td.symbolId], mfeR: r.mfe_r,
       })
       if (!spec) continue
       trailSpecs.push(spec)

@@ -228,3 +228,21 @@ test('a broken query reports ok:false, never an empty scoreboard', () => {
   assert.equal(s.ok, false)
   assert.deepEqual(s.writers, [])
 })
+
+// Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2 step 3; claude-builder).
+// Expected outcome from USDJPY #1846 (14-10, § 14,716): the engine moved the
+// stop 158.866 → 158.71 (journalled `trail_tightened`, source cpp_trail_engine)
+// and the trade closed at 158.731 on it; the record read `stopMoves 0`,
+// `finalStop 158.866`, exit "other". A trail_tightened is a stop move.
+test('PR-2: the native trail engine\'s trail_tightened amend counts as a stop move and attributes the exit', () => {
+  const db = initDB(':memory:')
+  const id = mkTrade(db, { side: 'sell', entry: 158.366, sl: 158.866, exit: 158.731, pnl: -11.5 })
+  recordPositionEvent(db, { tradeId: id, symbol: 'USDJPY', kind: 'trail_tightened', source: 'cpp_trail_engine', fromValue: 158.866, toValue: 158.71 })
+  const o = tradeManagementOutcome(db, db.prepare('SELECT * FROM trades WHERE id = ?').get(id))
+  assert.equal(o.stopMoves, 1)
+  assert.equal(o.originalStop, 158.866, 'R is measured from the stop before the engine moved it')
+  assert.equal(o.finalStop, 158.71)
+  assert.equal(o.exitCause, 'managed_stop')
+  assert.equal(o.causedBy, 'cpp_trail_engine')
+  assert.ok(Math.abs(o.realisedR - (-0.73)) < 1e-9, `−0.73R as the ledger says: ${o.realisedR}`)
+})
