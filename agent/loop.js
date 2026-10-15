@@ -1441,7 +1441,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         // № 14,758 (Codex round 2 on #1374): re-checked at the FILL against the
         // fill-anchored stop — a premise the fill crossed, or that the anchored
         // stop passed, is recorded as outside the band, never fired.
-        premiseAtFill({ trigger: synth.invalidation_trigger || noPremise(synth.source || 'signal'), bias: side === 'BUY' ? 'long' : 'short', fill: entryP, sl: slP }),
+        // № 14,793 (Codex round 5, one rule): the fill or nothing — entryP/slP fall back to the plan for the ledger, never for arming the premise.
+        premiseAtFill({ trigger: synth.invalidation_trigger || noPremise(synth.source || 'signal'), bias: side === 'BUY' ? 'long' : 'short', fill: executionPrice, sl: executionPrice != null ? slP : null }),
         timeCap,
         synth.strategy || null,
         parsedLabel.source,

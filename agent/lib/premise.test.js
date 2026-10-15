@@ -52,7 +52,10 @@ test('premiseAtFill keeps a premise still inside the fill-anchored band, and rec
   // a side mismatch is never a premise; unreadable passes through; no fill known → the frozen premise stands
   assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'short', fill: 1.1, sl: 1.11 }), 'unreadable:fill_outside_band')
   assert.equal(premiseAtFill({ trigger: 'none_manual', bias: 'long', fill: 1.1, sl: 1.09 }), 'none_manual')
-  assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'long', fill: null, sl: 1.09 }), 'price<1.095')
+  // № 14,793 (Codex round 5, one rule): no fill known → not armed, never the frozen premise
+  assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'long', fill: null, sl: 1.09 }), 'unreadable:fill_unknown')
+  assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'long', fill: 1.1, sl: null }), 'unreadable:fill_unknown')
+  assert.equal(premiseAtFill({ trigger: 'price<1.095', bias: 'long', fill: 'abc', sl: 1.09 }), 'unreadable:fill_unknown')
   assert.equal(premiseAtFill({ trigger: null, bias: 'long', fill: 1.1, sl: 1.09 }), 'unreadable:unknown')
 })
 
@@ -63,8 +66,12 @@ test('the auto fill, the manual order and the execute-trade writers all re-check
   const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
   const actions = strip(readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8'))
-  assert.match(loop, /premiseAtFill\(\{ trigger: synth\.invalidation_trigger[^\n]*fill: entryP, sl: slP \}\)/)
-  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: premiseTrigger\(premise\)[^\n]*fill: entryP,\s*\n\s*sl: anchorBracketToFill\(/)
-  // № 14,775 (Codex round 4): with no fill recovered the market read for the stop-side check stands in, never the planned entry
-  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: synth\.invalidation_trigger \|\| analysis\.invalidation_trigger[^\n]*\n\s*fill: executionPrice \?\? market, sl: executionPrice != null \? slHeld : anchorBracketToFill\(\{ side, proposalEntry: entry, fill: market, sl, tp1 \}\)\.sl \}\)/)
+  // № 14,793 (Codex round 5, one rule): every writer hands the helper the FILL (executionPrice) — never entryP, never a market estimate
+  assert.match(loop, /premiseAtFill\(\{ trigger: synth\.invalidation_trigger[^\n]*fill: executionPrice, sl: executionPrice != null \? slP : null \}\)/)
+  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: premiseTrigger\(premise\)[^\n]*fill: executionPrice,\s*\n\s*sl: anchorBracketToFill\(\{ side, proposalEntry: entry, fill: executionPrice,/)
+  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: synth\.invalidation_trigger \|\| analysis\.invalidation_trigger[^\n]*fill: executionPrice, sl: slHeld \}\)/)
+  assert.doesNotMatch(actions, /premiseAtFill\(\{[^\n]*fill: entryP/)
+  assert.doesNotMatch(loop, /premiseAtFill\(\{[^\n]*fill: entryP/)
+  // the manual order recovers its fill from the position before the premise is judged (round 5)
+  assert.equal((actions.match(/confirmFill\(\(\) => wsReconcile\(/g) || []).length, 2, 'execute-trade and manual-order both confirm the fill')
 })

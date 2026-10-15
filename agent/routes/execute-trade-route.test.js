@@ -280,32 +280,38 @@ test('P1: the trade plan keeps the gate\'s levels and risk; only the live rows t
   assert.ok(Math.abs(pos.current_sl - 1.094) < 1e-9 && Math.abs(pos.current_tp - 1.139) < 1e-9, `the live position keeps the fill's bracket: ${JSON.stringify(pos)}`)
 })
 
-// Claude · № 14,775 15-Oct (Codex round 4 on #1374, P1; owner "Fix round 4,
-// then merge"; claude-builder). ORDER_ACCEPTED with no price and the position
-// not yet readable: the fill is unknown, the planned entry is stale. The
-// premise is then judged against the market the route already read for the
-// stop-side check — a premise the market has crossed is recorded, not armed
-// (the monitor would close the fresh position on its next tick); one the
-// market still sits above stands.
-test('P1: with no fill recovered, the premise is checked against the current market, not the planned entry', async t => {
-  for (const [close, expected] of [[1.094, 'unreadable:fill_outside_band'], [1.1, 'price<1.095']]) {
+// Claude · № 14,793 15-Oct (Codex rounds 4–5 on #1374; owner "one rule, then
+// merge"; claude-builder). ORDER_ACCEPTED with no price and the position not
+// yet readable: the fill is unknown. A premise is armed only against a known
+// fill — neither the planned entry nor the market estimate stands in — so
+// the row reads `unreadable:fill_unknown` whatever the market shows; the
+// broker stop governs. A recovered fill is what is judged.
+for (const route of ['execute-trade', 'manual-order']) {
+  const place = (post, db) => route === 'execute-trade'
+    ? post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
+    : post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135, strategy: 'ema_pullback' })
+  // the manual route judges the typed premise against its entry estimate (the 1m close) before sending, so a close below 1.095 is a 400 there, not a fill case
+  test(`P1 (${route}): with no fill recovered the premise is not armed; a fill read from the position is what is judged`, async t => {
+    for (const close of route === 'execute-trade' ? [1.094, 1.1] : [1.1]) {
+      const db = fresh({ halt: false })
+      t.after(() => db.close())
+      const { post } = await serve(t, db, { close, fill: 1.104, acceptOnly: true, reconcileEmpty: true })
+      const res = await place(post, db)
+      assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
+      assert.equal(res.executionPrice, null, 'no fill was recovered')
+      assert.equal(db.prepare('SELECT invalidation_trigger FROM monitored_positions').get().invalidation_trigger, 'unreadable:fill_unknown', `market ${close}`)
+    }
+    // the fill recovered from the position (1.104; the market reads 1.094) is what is judged: premise 1.095 sits inside 1.094..1.104
     const db = fresh({ halt: false })
     t.after(() => db.close())
-    const { post } = await serve(t, db, { close, fill: 1.104, acceptOnly: true, reconcileEmpty: true })
-    const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
+    const { post } = await serve(t, db, { close: route === 'execute-trade' ? 1.094 : 1.1, fill: 1.104, acceptOnly: true })
+    const res = await place(post, db)
     assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
-    assert.equal(res.executionPrice, null, 'no fill was recovered')
-    const row = db.prepare('SELECT invalidation_trigger FROM monitored_positions').get()
-    assert.equal(row.invalidation_trigger, expected, `market ${close}`)
-  }
-  // control: the fill recovered from the position (1.104) is what is judged, not the market
-  const db = fresh({ halt: false })
-  t.after(() => db.close())
-  const { post } = await serve(t, db, { close: 1.094, fill: 1.104, acceptOnly: true })
-  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
-  assert.equal(res.executionPrice, 1.104)
-  assert.equal(db.prepare('SELECT invalidation_trigger FROM monitored_positions').get().invalidation_trigger, 'price<1.095', 'the fill, not the 1.094 market, judges it')
-})
+    assert.equal(res.executionPrice, 1.104, 'the fill read from the position')
+    assert.equal(db.prepare('SELECT invalidation_trigger FROM monitored_positions').get().invalidation_trigger, 'price<1.095')
+    if (route === 'manual-order') assert.equal(db.prepare('SELECT entry_price FROM trades').get().entry_price, 1.104, 'the manual ledger takes the recovered fill too')
+  })
+}
 
 // Claude · № 13,757 12-Oct (demo stress run D2; owner "Send the cap, record it"; claude-builder).
 // Measured on 47790949: JPYX was sized at 107.87 lots, lotsToVolume capped the

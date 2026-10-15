@@ -83,7 +83,8 @@ export function premiseFields({ bias, entry, sl, level }) {
  * fill-anchored stop and the fill. A crossed premise would close the trade on
  * the next tick; a stop past the premise would fire first. Either is recorded
  * as `unreadable:fill_outside_band` — the trade is kept, the broker stop
- * governs — never fired, never silent. An unreadable trigger passes through.
+ * governs — never fired, never silent. An unreadable trigger passes through;
+ * with no fill known the premise is not armed (`unreadable:fill_unknown`).
  */
 export function premiseAtFill({ trigger, bias, fill, sl }) {
   if (!isReadablePremise(trigger)) return trigger || unreadablePremise('unknown')
@@ -91,8 +92,13 @@ export function premiseAtFill({ trigger, bias, fill, sl }) {
   const level = Number(m[2])
   const side = m[1] === '<' ? 'long' : 'short'
   if (bias && bias !== side) return unreadablePremise('fill_outside_band')
-  if (fill == null || fill === '' || sl == null || sl === '') return trigger // no fill known: the frozen premise stands
+  // Claude · № 14,793 15-Oct (Codex round 5 on #1374, two P1s; owner "one
+  // rule, then merge"; claude-builder): a premise is armed only against a
+  // KNOWN fill. Rounds 2–4 judged it at whatever stood in for the fill (the
+  // planned entry, then a market estimate) and each round found one more
+  // writer whose stand-in could sit past the real fill. No fill: not armed.
+  if (fill == null || fill === '' || sl == null || sl === '') return unreadablePremise('fill_unknown')
   const f = Number(fill), s = Number(sl)
-  if (!Number.isFinite(f) || !Number.isFinite(s)) return trigger
+  if (!Number.isFinite(f) || !Number.isFinite(s)) return unreadablePremise('fill_unknown')
   return premiseFor({ bias: side, entry: f, sl: s, level }) ? trigger : unreadablePremise('fill_outside_band')
 }

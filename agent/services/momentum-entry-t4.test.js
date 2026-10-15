@@ -259,7 +259,7 @@ async function scene(t, { open = true } = {}) {
       pipPosition: 2, swapLong: -1.5, swapShort: -1, swapCalculationType: 0 }] })),
     // Spot events stamped on the wall clock the contract's freshness reads.
     quote: count('quote', async (c, symbolId) => ({ ...broker.spot(c.accountId, symbolId), timestamp: Date.now() })),
-    reconcile: count('reconcile', async (c) => broker.reconcile(c.accountId)),
+    reconcile: count('reconcile', async (c) => s.reconcileEmpty ? { position: [], order: [] } : broker.reconcile(c.accountId)),
   }
   // A switch given without an account list names the scene's account (B1:
   // the switch applies only to listed accounts); a test that passes its own
@@ -283,7 +283,7 @@ async function scene(t, { open = true } = {}) {
     resolveSymbolId: async () => ({ id: String(SID), source: 'test' }),
     getVolumeMeta: async () => ({ lotSize: 100, minVolume: 1, stepVolume: 1, digits: 2 }),
     wsGetSpotOnce: async () => ({ bid: 99.9, ask: 100 }),
-    wsReconcile: async () => broker.reconcile(ACCT),
+    wsReconcile: async () => s.reconcileEmpty ? { position: [], order: [] } : broker.reconcile(ACCT),
     // The shared execution boundary's own guard, then the fake broker's fill.
     execPlaceOrder: async (_creds, payload) => {
       s.sent.push(payload)
@@ -335,6 +335,28 @@ test('W8, SWITCH ON as shipped (`_all`): an entry on an enabled account other th
   assert.ok(s.sent[0].relativeTakeProfit > 0 && s.sent[0].relativeStopLoss > 0, 'the order carries the plan\'s bracket')
   assert.ok(s.intents().length >= 1, 'a target intent is recorded')
   assert.ok(!s.vetoes().some(v => /guard_no_target/.test(v)), JSON.stringify(s.vetoes()))
+})
+
+// Claude · № 14,793 15-Oct (Codex round 5 on #1374, P1 on loop.js; owner "one
+// rule, then merge"; claude-builder). The auto writer, end to end: the
+// gateway answers ORDER_ACCEPTED (no price); the fill is read from the
+// position. Recovered → the premise is judged at that fill; not recovered →
+// the premise is not armed (`unreadable:fill_unknown`), never judged at the
+// plan's entry/stop the ledger falls back to.
+test('premise (round 5): the auto writer arms a premise only against a fill recovered from the position', async t => {
+  const trigger = (s) => s.db().prepare('SELECT invalidation_trigger FROM monitored_positions ORDER BY id DESC LIMIT 1').get()?.invalidation_trigger
+  const synth = () => bookSynth({ invalidation_trigger: 'price<97' })
+  {
+    const s = await scene(t)
+    assert.ok(await s.run(loadMomentumEntrySwitch(), synth()), `entered: ${JSON.stringify(s.vetoes())}`)
+    assert.equal(trigger(s), 'price<97', 'fill recovered: the premise inside the band stands')
+  }
+  {
+    const s = await scene(t)
+    s.reconcileEmpty = true
+    assert.ok(await s.run(loadMomentumEntrySwitch(), synth()), `entered: ${JSON.stringify(s.vetoes())}`)
+    assert.equal(trigger(s), 'unreadable:fill_unknown', 'no fill recovered: not armed')
+  }
 })
 
 // Codex P1 on #1327 — Claude · № 13,459 12-Oct (owner's yes naming loop.js; claude-builder).

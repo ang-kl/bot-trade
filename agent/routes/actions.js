@@ -6680,13 +6680,10 @@ export default function actionsRouter(db, deps = {}) {
         accountId, strategy: analysis.strategy || null, timeframe: analysis.timeframe || null,
         thesis: [analysis.consensus_summary || '', capNote].filter(Boolean).join(' — '), initialRisk,
         // № 14,758 (Codex round 2 on #1374): same fill re-check as the auto path.
-        // Claude · № 14,775 15-Oct (Codex round 4 on #1374, P1; owner "Fix round
-        // 4, then merge"; claude-builder): with no fill recovered, the planned
-        // entry is stale — the market read above (the stop-side check) is the
-        // best estimate of where the order filled, and the stop is anchored
-        // from it as the broker anchors its distance from the fill.
-        invalidationTrigger: premiseAtFill({ trigger: synth.invalidation_trigger || analysis.invalidation_trigger || noPremise('analysis'), bias: side === 'BUY' ? 'long' : 'short',
-          fill: executionPrice ?? market, sl: executionPrice != null ? slHeld : anchorBracketToFill({ side, proposalEntry: entry, fill: market, sl, tp1 }).sl }), timeCap,
+        // № 14,793 (Codex round 5, one rule): the premise sees the FILL or
+        // nothing — a fill not recovered leaves it unarmed (fill_unknown); the
+        // ledger's entryP fallback to the plan is unchanged.
+        invalidationTrigger: premiseAtFill({ trigger: synth.invalidation_trigger || analysis.invalidation_trigger || noPremise('analysis'), bias: side === 'BUY' ? 'long' : 'short', fill: executionPrice, sl: slHeld }), timeCap,
       })
 
       console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${sentLots} @ ${executionPrice || 'mkt'} tradeId=${tradeId} riskEvent=${riskEventId ?? 'none'}`)
@@ -6916,8 +6913,19 @@ export default function actionsRouter(db, deps = {}) {
         return res.json({ ok: false, vetoed: true, reason: err.message, ...(needsInput ? { needsInput } : {}) })
       }
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
-      const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
+      let executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
       const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
+      // Claude · № 14,793 15-Oct (Codex round 5 on #1374, P1; owner "one rule,
+      // then merge"; claude-builder): through the native gateway the first
+      // answer is ORDER_ACCEPTED — position id, no price. Read the fill from
+      // the position as execute-trade and loop.js do (confirmFill, a live
+      // read); not found, the entry estimate stands for the ledger and the
+      // premise is not armed.
+      if (executionPrice == null && positionId) {
+        const { confirmFill } = await import('../lib/fill-anchor.js')
+        const { wsReconcile } = await import('../lib/ctrader-ws.js')
+        executionPrice = await confirmFill(() => wsReconcile(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId), positionId)
+      }
       const entryP = executionPrice ?? entry
 
       const tradeId = recordManualOrderTrade(db, {
@@ -6925,7 +6933,8 @@ export default function actionsRouter(db, deps = {}) {
         structuredLabel, accountId: creds.accountId, strategy, riskEventId, note: capNote,
         // № 14,758 (Codex round 2 on #1374): the broker anchors the relative stop
         // to the FILL; re-check the premise against the fill and that stop.
-        invalidationTrigger: premiseAtFill({ trigger: premiseTrigger(premise), bias: side === 'BUY' ? 'long' : 'short', fill: entryP,
+        // № 14,793 (Codex round 5): the fill or nothing — never the 1m-close estimate.
+        invalidationTrigger: premiseAtFill({ trigger: premiseTrigger(premise), bias: side === 'BUY' ? 'long' : 'short', fill: executionPrice,
           sl: anchorBracketToFill({ side, proposalEntry: entry, fill: executionPrice, sl: proposal.sl, tp1: proposal.tp1 }).sl }),
       })
 
