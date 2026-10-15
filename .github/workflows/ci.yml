@@ -48,14 +48,15 @@ jobs:
             node --check "$f"
           done
 
-  # Claude · № 15,001 15-Oct (owner: "#36 research isolation — CI step only when research files change" after № 14,989; claude-builder). The live trade-management boundary
-  # (scripts/check-protected-boundary.sh) runs on a PR that touches research
-  # files — the owner's choice over a label, which would fail open when
-  # forgotten. A full-history checkout: the script diffs against the merge
-  # base with the base branch and refuses (exit 2) when a shallow clone has
-  # none. agent/research-isolation.test.js pins the path list between the
-  # markers against the research module and door lists, so a new research
-  # file cannot slip past this gate unnamed.
+  # Claude · № 15,001 15-Oct (#36 research isolation; claude-builder). The live
+  # trade-management boundary (scripts/check-protected-boundary.sh) runs on
+  # EVERY pull request: Codex P1 on #1380 (owner: "run the boundary job on
+  # every PR") — a hand-kept list of research paths skipped the script when a
+  # research dependency such as lib/tick-replay-sim.js changed beside a
+  # protected file, and the research import graph (210 modules, db.js among
+  # them) would fire on almost every PR anyway. A full-history checkout: the
+  # script diffs against the merge base with the base branch and refuses
+  # (exit 2) when a shallow clone has none.
   protected-boundary:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -63,14 +64,5 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Does this PR touch research files?
-        id: research
-        run: |
-          mb="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
-          # RESEARCH-PATHS-BEGIN
-          re='^(agent/config/research\.json|agent/lib/(research-config|tick-bars|bar-crosscheck)\.js|agent/services/(theory-gap|research-slot|bar-form-research(-core|-worker)?|exit-counterfactual-extended|tick-research(-run|-worker)?|tick-replay-spill)\.js|scripts/tick-research\.mjs)$'
-          # RESEARCH-PATHS-END
-          if git diff --name-only "$mb" HEAD | grep -Eq "$re"; then echo "touched=true" >> "$GITHUB_OUTPUT"; else echo "touched=false" >> "$GITHUB_OUTPUT"; fi
-      - name: Protected boundary (research PRs)
-        if: steps.research.outputs.touched == 'true'
+      - name: Protected boundary
         run: bash scripts/check-protected-boundary.sh "origin/${{ github.base_ref }}"

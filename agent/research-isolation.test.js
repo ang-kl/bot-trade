@@ -312,24 +312,17 @@ test('a research door imports only allowlisted read-only names from state-writin
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('the CI research gate names every research module, door and research file, and runs the boundary script on a full-history checkout', () => {
+test('the CI boundary job runs the script on every pull request, on a full-history checkout, and the script refuses a missing merge base', () => {
+  // Codex P1 on #1380 (owner: "run the boundary job on every PR"): a
+  // hand-kept research-path gate skipped the script when a research
+  // dependency changed beside a protected file; the job is unconditional.
   const yml = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')
-  const block = yml.split('# RESEARCH-PATHS-BEGIN')[1]?.split('# RESEARCH-PATHS-END')[0] ?? ''
-  const m = /re='([^']+)'/.exec(block)
-  assert.ok(m, 'ci.yml carries the research-paths regex between its markers')
-  const re = new RegExp(m[1])
-  const must = [...RESEARCH_MODULES, ...RESEARCH_DOORS, 'agent/config/research.json', 'agent/services/tick-research.js',
-    'agent/services/tick-replay-spill.js', 'agent/services/exit-counterfactual-extended.js', 'agent/lib/bar-crosscheck.js', 'scripts/tick-research.mjs']
-  for (const p of must) {
-    assert.ok(existsSync(join(ROOT, p)), `${p} exists`)
-    assert.ok(re.test(p), `the CI research gate does not name ${p}`)
-  }
-  for (const p of ['agent/loop.js', 'agent/services/risk.js', 'agent/services/closed-market-limits.js']) assert.ok(!re.test(p), `${p} is not a research file`)
   const job = yml.split('protected-boundary:')[1] ?? ''
-  assert.match(job, /fetch-depth: 0/, 'the boundary job checks out full history (the script refuses a shallow clone)')
+  assert.ok(job, 'ci.yml defines the protected-boundary job')
   assert.match(job, /if: github\.event_name == 'pull_request'/)
-  assert.match(job, /if: steps\.research\.outputs\.touched == 'true'/, 'the script runs only on a research PR')
-  assert.match(job, /bash scripts\/check-protected-boundary\.sh "origin\/\$\{\{ github\.base_ref \}\}"/)
+  assert.match(job, /fetch-depth: 0/, 'the boundary job checks out full history (the script refuses a shallow clone)')
+  assert.match(job, /run: bash scripts\/check-protected-boundary\.sh "origin\/\$\{\{ github\.base_ref \}\}"/)
+  assert.doesNotMatch(job, /steps\.\w+\.outputs\.touched|RESEARCH-PATHS/, 'no research-file gate in front of the script')
   // the script itself refuses when there is no merge base, instead of reading OK
   const sh = readFileSync(join(ROOT, 'scripts/check-protected-boundary.sh'), 'utf8')
   assert.match(sh, /mb="\$\(git merge-base "\$BASE" HEAD 2>\/dev\/null\)"\nif \[\[ -z "\$mb" \]\]; then\n[^\n]*\n {2}exit 2\nfi\nchanged="\$\(git diff --name-only "\$mb" -- "\$\{PROTECTED\[@\]\}"\)"/, 'the merge base is computed, checked, and the diff runs against it with no silenced error')
