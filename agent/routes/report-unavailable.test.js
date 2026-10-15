@@ -75,6 +75,8 @@ const ROUTES = [
   { path: '/account-engineering', code: 'account_engineering_unavailable', message: 'Account status is temporarily unavailable. Please retry.' },
   { path: '/performance-populations', code: 'performance_populations_unavailable', message: 'Performance populations are temporarily unavailable. Please retry.' },
   { path: `/blocker-report?account=11&from=${from}&to=${to}`, code: 'blocker_report_unavailable', message: 'The blocker report is temporarily unavailable. Please retry.' },
+  // Claude · № 14,945 15-Oct (owner order § 14,741·A PR-3; claude-builder)
+  { path: '/stop-placement?account=11', code: 'stop_placement_unavailable', message: 'The stop-placement review is temporarily unavailable. Please retry.' },
 ]
 
 for (const route of ROUTES) {

@@ -357,6 +357,10 @@ export function readHourlyActivity(db, options) { return isolatedReport(db, 'hou
  * (services/theory-gap.js); `{ section, strategy, days }` as the route
  * validated them. */
 export function readTheoryGap(db, options) { return isolatedReport(db, 'theory-gap', options) }
+/** Claude · № 14,945 15-Oct (owner order § 14,741·A PR-3; claude-builder): GET
+ * /state/stop-placement off the trading thread; `{ account, days }` as the
+ * route validated them. Pass no `now` (readBlockerReport's rule). */
+export function readStopPlacement(db, options) { return isolatedReport(db, 'stop-placement', options) }
 /** GET /state/exit-counterfactual with any extended option, off the trading thread. */
 export function readExitCounterfactualExtended(db, options) { return isolatedReport(db, 'exit-counterfactual-extended', options) }
 // ---------------------------------------------------------------------------
@@ -618,6 +622,11 @@ async function buildReport(db, kind, options, hooks = {}) {
     // Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder): one read snapshot.
     const { theoryGapReport } = await import('./theory-gap.js')
     return db.transaction(() => theoryGapReport(db, options))()
+  }
+  if (kind === 'stop-placement') {
+    // Claude · № 14,945 15-Oct (owner order § 14,741·A PR-3; claude-builder): one read snapshot.
+    const { stopPlacementReport } = await import('./stop-placement.js')
+    return db.transaction(() => stopPlacementReport(db, options))()
   }
   if (kind === 'scoreboard') {
     // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)

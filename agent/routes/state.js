@@ -26,6 +26,7 @@ import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 import { balanceUnit } from '../services/balance-unit.js'
 // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder)
 import { SCOREBOARD_DEFAULT_DAYS, SCOREBOARD_MAX_DAYS } from '../services/scoreboard.js'
+import { STOP_PLACEMENT_DEFAULT_DAYS, STOP_PLACEMENT_MAX_DAYS } from '../services/stop-placement.js'
 import { sizingBalanceUsd, conversionView, accountDepositCurrencies } from '../services/account-currency.js'
 import { POLICY_KEY as STOP_POLICY_KEY, DEFAULT_STOP_POLICY, getStopPolicy, trailConfigPolicy, triggerValue, stopPolicyStats } from '../lib/stop-policy.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
@@ -56,7 +57,7 @@ import { hourlyOpenings, assertOpeningsTo } from '../services/hourly-openings.js
 import { createLatestPricesReader } from '../services/latest-prices-cache.js'
 import { readMarketCalendar } from '../services/market-calendar.js'
 import { marketIdentity } from '../lib/market-identity.js'
-import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readStageMatrixStats, readHourlyActivity, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable, readScoreboardReport, readTheoryGap, readExitCounterfactualExtended } from '../services/performance-populations.js'
+import { readPerformancePopulations, readPerformanceAnalytics, readCupHandleFunnel, readDecisionsDaily, readStageMatrixStats, readHourlyActivity, readNodeWatchdogContract, readBlockerReport, readAccountEngineering, readPostmortemReport, readStorageReport, readOrderLifecycle, readLedgerReconciliation, readLedgerReconciliationRows, readCalendarCoverage, isReportUnavailable, readScoreboardReport, readTheoryGap, readExitCounterfactualExtended, readStopPlacement } from '../services/performance-populations.js'
 import { EXTENDED_OPTIONS as CF_EXTENDED_OPTIONS, PRESETS as CF_PRESETS, GROUP_KEYS as CF_GROUP_KEYS } from '../services/exit-counterfactual-extended.js'
 import { THEORY_GAP_SECTIONS, R_AUDIT_DEFAULT_STRATEGY, R_AUDIT_MAX_DAYS, REGIME_BLOCKS_DEFAULT_DAYS } from '../services/theory-gap.js'
 import { normaliseLifecycleOptions, SNAPSHOT_KEY as ORDER_LIFECYCLE_SNAPSHOT_KEY } from '../services/order-lifecycle.js'
@@ -2921,6 +2922,32 @@ export default function stateRouter(db) {
     } catch (error) {
       if (sendReportUnavailable(res, error, { message: 'The scoreboard is temporarily unavailable. Please retry.', code: 'scoreboard_unavailable' })) return
       res.status(500).json({ error: 'The scoreboard failed.', code: 'scoreboard_failed' })
+    }
+  })
+
+  // Claude · № 14,945 15-Oct (owner order § 14,741·A PR-3, "PR-3 Merge when
+  // Green" § 14,932·C·1; claude-builder). GET /state/stop-placement?days=30
+  // &account=<id|all>: where the bot's stops sat in 1h ATRs at approval and
+  // what followed, per closed bot trade and per stop/ATR bucket
+  // (services/stop-placement.js). Read-only, validated before any SQL, read in
+  // the report worker; days capped at 90 (risk_events, the only record of the
+  // ATR at approval, are kept 90 days).
+  router.get('/stop-placement', async (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    const days = req.query.days == null || req.query.days === '' ? STOP_PLACEMENT_DEFAULT_DAYS : Number(req.query.days)
+    if (!Number.isInteger(days) || days < 1 || days > STOP_PLACEMENT_MAX_DAYS) {
+      return res.status(400).json({ error: `days must be a whole number from 1 to ${STOP_PLACEMENT_MAX_DAYS}`, code: 'stop_placement_invalid_days' })
+    }
+    const scope = requestedAccount(db, req)
+    const account = scope.all || scope.accountId == null ? 'all' : String(scope.accountId)
+    if (account !== 'all' && !/^[1-9]\d{0,19}$/.test(account)) {
+      return res.status(400).json({ error: 'account must be "all" or a numeric account id', code: 'stop_placement_invalid_account' })
+    }
+    try {
+      res.json(await readStopPlacement(db, { account, days }))
+    } catch (error) {
+      if (sendReportUnavailable(res, error, { message: 'The stop-placement review is temporarily unavailable. Please retry.', code: 'stop_placement_unavailable' })) return
+      res.status(500).json({ error: 'The stop-placement review failed.', code: 'stop_placement_failed' })
     }
   })
 
