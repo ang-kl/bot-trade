@@ -742,3 +742,26 @@ test('#35: the capture stores closed bars only — a forming last bar in the bro
   assert.equal(stored[stored.length - 1], forming - 3_600_000, 'the newest stored bar is the last closed one')
   assert.equal(pm.bars_verified_at, new Date(now).toISOString(), 'stamped: read against the clock rule')
 })
+
+// ── № 15,036 15-Oct (Codex round 2 on #1379; claude-builder) ──
+test('#35 round 3: a synthesised 8h aggregate whose last 4h constituent is still forming is not stored, although its open + 8h has passed', async () => {
+  const { aggregateBars } = await import('../lib/timeframes.js')
+  const db = initDB(':memory:')
+  const H = 3_600_000
+  // the trade closed Friday 4 Sep 2026 16:00; 8h bars are synthesised from 4h
+  const closedMs = Date.UTC(2026, 8, 4, 16)
+  const nowMs = Date.UTC(2026, 8, 7, 1)      // Monday 01:00: the 00:00 4h bar is forming
+  db.prepare(`INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, volume, opened_at, closed_at, net_pnl, status, close_reason, label_strategy, label_timeframe)
+    VALUES ('EURUSD', 'BUY', 100, 98, 98, 0.1, ?, ?, -50, 'closed', 'sl', 'fib_618_fade', '8h')`).run(new Date(closedMs - 8 * H).toISOString(), new Date(closedMs).toISOString())
+  const base = [] // 4h bars: Thu 00:00 … Fri 20:00, then Mon 00:00 (forming)
+  for (let t = Date.UTC(2026, 8, 3, 0); t <= Date.UTC(2026, 8, 4, 20); t += 4 * H) base.push({ t, o: 99, h: t > closedMs ? 101 : 99.5, l: t > closedMs ? 99 : 98.4, c: t > closedMs ? 100.5 : 99, v: 10 })
+  base.push({ t: Date.UTC(2026, 8, 7, 0), o: 100, h: 100.2, l: 99.9, c: 100.1, v: 3 })
+  const bars = aggregateBars(base, 2)
+  const last = bars[bars.length - 1]
+  assert.equal(last.t, Date.UTC(2026, 8, 4, 20)); assert.equal(last.tLast, Date.UTC(2026, 8, 7, 0))
+  assert.ok(last.t + 8 * H <= nowMs, 'the fixed-duration test would call it closed')
+  const res = await runLossPostmortems(db, async () => bars, { now: nowMs })
+  assert.equal(res.classified, 1)
+  const stored = JSON.parse(db.prepare('SELECT bars_json FROM trade_postmortems').get().bars_json).map(b => b[0])
+  assert.ok(!stored.includes(last.t), 'RED before: the aggregate with a forming Monday constituent was stored')
+})

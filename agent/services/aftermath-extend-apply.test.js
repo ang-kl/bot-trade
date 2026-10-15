@@ -429,3 +429,42 @@ test('P2: a verification-only row consumes the row budget — batch 1 is one row
   const second = await applyAftermathExtension(db, weekdayBroker(calls), { ...noSleep, now, maxRows: 5, from: first.resumeFrom })
   assert.equal(second.verified, 2); assert.equal(second.remaining, 0); assert.equal(calls.length, 3)
 })
+
+// ── № 15,036 15-Oct (Codex round 2 on #1379; claude-builder) ──
+test('round 3: a full 1m row captured on Friday is verified on Monday — the verification steps windows until the newest stored bar is reached', async () => {
+  const db = initDB(':memory:')
+  const closedMs = Date.UTC(2026, 8, 4, 18)                        // Friday 18:00
+  seedAt(db, { closedMs, tf: '1m', afterBars: REPLAY_AFTERMATH_BARS + 2 })
+  // the row was extended on Monday: its newest bar is Monday 02:00; the capture-time bar is Friday 18:20
+  const bars = storedAll(db).map(b => [b[0], 100, 100.5, 99.5, 100, 1])
+  const tN = Date.UTC(2026, 8, 7, 2); bars.push([tN, 100, 100.5, 99.5, 100, 1])
+  const k = bars.findIndex(b => b[0] === Date.UTC(2026, 8, 4, 18, 20)); bars[k] = [bars[k][0], 100, 100.1, 99.9, 100, 0]
+  db.prepare(`UPDATE trade_postmortems SET bars_json = ?, created_at = '2026-09-04 18:20:30' WHERE id = 1`).run(JSON.stringify(bars))
+  const calls = []
+  const out = await applyAftermathExtension(db, weekdayBroker(calls), { ...noSleep, now: Date.UTC(2026, 8, 8, 0) })
+  assert.equal(out.unavailable, 0, 'RED before: one 395-minute window from Friday could not reach Monday, and the row was marked unavailable')
+  assert.equal(out.verified, 1); assert.equal(out.barsReplaced, 1); assert.equal(out.errors, 0)
+  assert.ok(calls.length > 1 && calls.length <= MAX_WINDOWS, `stepped ${calls.length} window(s) to reach the newest bar`)
+  assert.deepEqual(storedAll(db)[k], [Date.UTC(2026, 8, 4, 18, 20), 100, 100.5, 99.5, 100, 1])
+  assert.match(closedAt(db), /^\d{4}-/, 'stamped verified, not unavailable')
+})
+
+test('round 3: a synthesised 8h aggregate whose last constituent is forming is not appended by the extension', async () => {
+  const { aggregateBars } = await import('../lib/timeframes.js')
+  const db = initDB(':memory:')
+  // Friday 28 Aug 00:00 on an 8h chart, 15 after-bars stored (through Thu 3 Sep): past the 7-day
+  // history gate, and the four aggregates the broker adds after that fit inside what the row needs
+  const closedMs = Date.UTC(2026, 7, 28, 0)
+  seedAt(db, { closedMs, tf: '8h', afterBars: 15 })
+  const now = Date.UTC(2026, 8, 7, 1)                               // Monday 01:00: Monday 00:00 4h bar forming
+  const broker = async (_s, _tf, count, endMs) => {                 // 8h synthesised from 4h, as the client does
+    const base = []
+    for (let t = Math.floor(endMs / (4 * H)) * 4 * H; base.length < count * 2 + 2; t -= 4 * H) if (isOpen(t) || t === Date.UTC(2026, 8, 7, 0)) base.unshift({ t, o: 100, h: 100.5, l: 99.5, c: 100, v: 1 })
+    return aggregateBars(base, 2).slice(-count)
+  }
+  const out = await applyAftermathExtension(db, broker, { ...noSleep, now })
+  assert.equal(out.errors, 0); assert.equal(out.updated, 1)
+  const ts = storedAll(db).map(b => b[0])
+  assert.ok(ts.includes(Date.UTC(2026, 8, 4, 12)), 'the closed Friday 12:00 aggregate was appended')
+  assert.ok(!ts.includes(Date.UTC(2026, 8, 4, 20)), 'RED before: the Friday 20:00 aggregate (whose Monday half is forming) was stored at Monday 01:00')
+})

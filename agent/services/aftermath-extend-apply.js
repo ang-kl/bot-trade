@@ -19,7 +19,7 @@
 // progress.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { tfMs } from '../lib/timeframes.js'
+import { tfMs, barCloseMs } from '../lib/timeframes.js'
 import { REPLAY_AFTERMATH_BARS, sqliteMs } from './loss-postmortem.js'
 
 /**
@@ -144,7 +144,11 @@ export async function applyAftermathExtension(db, fetchBars, {
     // The one-shot: bars_verified_at. A full row is re-read ONCE (the owner's
     // "repair on the next run"), then skipped as before, so the repair cannot
     // re-fire on every call and eat the fetch budget.
+    // № 15,036 15-Oct (Codex round 2 on #1379, owner: "Fix both in round 3"; claude-builder): a fetched bar closes per barCloseMs (a synthesised aggregate
+    // with its LAST constituent); a stored bar, which carries no tLast,
+    // at t + ms.
     const closedBar = (t) => Number.isFinite(t) && t + ms <= now
+    const closedFresh = (b) => Number.isFinite(b?.t) && barCloseMs(b, ms) <= now
     const forming = bars.filter(b => !Array.isArray(b) || !closedBar(Number(b[0])))
     if (forming.length) {
       bars = bars.filter(b => !forming.includes(b))
@@ -193,7 +197,12 @@ export async function applyAftermathExtension(db, fetchBars, {
     let failed = false
     let reachedNow = false
     let sawNewest = false // the newest stored bar came back: the re-read happened
-    for (let w = 0; w < MAX_WINDOWS && (first || add.length < needed); w++) {
+    let passedNewest = false // a window reached the newest stored bar's time
+    // № 15,036 15-Oct (Codex round 2 on #1379, owner: "Fix both in round 3"; claude-builder): a verifying row keeps stepping windows until the newest stored
+    // bar is reached (a 1m row captured on Friday and verified on Monday
+    // needs several), bounded by MAX_WINDOWS; it is "unavailable" only once
+    // a window has passed that bar without returning it.
+    for (let w = 0; w < MAX_WINDOWS && (first || add.length < needed || (needsVerify && !sawNewest && !passedNewest)); w++) {
       const endMs = Math.min(now, start + windowSlots * ms)
       if (endMs <= start) { reachedNow = true; break }
       const count = Math.ceil((endMs - start) / ms) + 5
@@ -206,7 +215,7 @@ export async function applyAftermathExtension(db, fetchBars, {
       // The first window is inclusive of its start (the bar re-read); later
       // windows are strictly after the last bar that came back, as before.
       const got = fresh
-        .filter(b => b && Number.isFinite(b.t) && (first ? b.t >= start : b.t > start) && b.t <= endMs && closedBar(b.t))
+        .filter(b => b && Number.isFinite(b.t) && (first ? b.t >= start : b.t > start) && b.t <= endMs && closedFresh(b))
         .sort((x, y) => x.t - y.t)
       for (const b of got) {
         const bar = [b.t, b.o, b.h, b.l, b.c, b.v ?? null]
@@ -215,6 +224,7 @@ export async function applyAftermathExtension(db, fetchBars, {
         else { have.set(b.t, bar); add.push(bar) }
       }
       first = false
+      if (endMs >= tN) passedNewest = true
       if (endMs >= now) { reachedNow = true; break }
       // The next window starts at the last bar that came back, not at this
       // window's end: the request spans a few slots more than `count`, so a
@@ -247,7 +257,7 @@ export async function applyAftermathExtension(db, fetchBars, {
     // stamped as verified: it records `unavailable:<time>` instead, one
     // fetch and then skipped like a verified row, but the value says the
     // broker had nothing, never that the bars were checked.
-    const stampValue = sawNewest ? verifiedAt : (needsVerify && needed === 0 && !add.length ? `unavailable:${verifiedAt}` : null)
+    const stampValue = sawNewest ? verifiedAt : (needsVerify && needed === 0 && !add.length && passedNewest ? `unavailable:${verifiedAt}` : null)
     if (changed) {
       const merged = [...byT.values()].sort((a, b) => a[0] - b[0])
       if (sawNewest) updBoth.run(JSON.stringify(merged), verifiedAt, r.pmId)

@@ -74,3 +74,16 @@ test('nextBarCloseMs: the forming bar\'s close — epoch-aligned intraday/daily,
   assert.equal(nextBarCloseMs('junk', wed), null)
   assert.equal(nextBarCloseMs('1d', NaN), null)
 })
+
+// ── № 15,036 15-Oct (Codex round 2 on #1379; claude-builder) ──
+test('barCloseMs: an aggregate closes with its LAST constituent; a native or stored bar at open + period', async () => {
+  const { barCloseMs } = await import('./timeframes.js')
+  const H = 3_600_000
+  const fri20 = Date.UTC(2026, 8, 4, 20), mon0 = Date.UTC(2026, 8, 7, 0)
+  const [agg] = aggregateBars([{ t: fri20, o: 1, h: 2, l: 0.5, c: 1.5, v: 1 }, { t: mon0, o: 1, h: 2, l: 0.5, c: 1.5, v: 1 }], 2) // an 8h from two 4h bars
+  assert.equal(agg.t, fri20); assert.equal(agg.tLast, mon0)
+  assert.equal(barCloseMs(agg, 8 * H), mon0 + 4 * H, 'closed when the Monday 00:00 4h bar closes, not at Friday 20:00 + 8h')
+  assert.ok(barCloseMs(agg, 8 * H) > Date.UTC(2026, 8, 7, 1), 'RED before: at Monday 01:00 the fixed-duration test called it closed')
+  assert.equal(barCloseMs({ t: fri20 }, 4 * H), fri20 + 4 * H, 'a native bar')
+  assert.equal(barCloseMs([fri20, 1, 2, 0.5, 1.5, 1], 8 * H), fri20 + 8 * H, 'a stored bar carries no tLast')
+})
