@@ -53,12 +53,20 @@ export function wilderAtr(bars, period = DEFAULT_ATR_PERIOD) {
  * every loop and fast tick) or the keeper's latest close beyond the fill in
  * the trade's direction. Neither known → no spec (nothing pushed, the plan
  * stop stands). The distance, the peak seed and the engine are unchanged.
+ *
+ * Claude · № 14,933 15-Oct (owner § 14,932·B·1 "(a) Switch it on only from
+ * +0.5R"; claude-builder). "Any profit" armed the engine on a +0.015R peak
+ * (USDJPY #1881, 15-10: stop 150.21 → 157.41 on a 157.92 fill) and a +0.036R
+ * peak (BTCUSD #1880: 84,601 → 82,523). The spec is now withheld until the
+ * position's EXIT-SIDE PEAK (`mfeR`, mfe_exit_r — the keeper passes it only
+ * when the row's side and entry are the broker position's) has reached
+ * SINCE_ENTRY_MIN_PEAK_R. A close in profit no longer arms on its own: below
+ * +0.5R it is not the owner's threshold, and at +0.5R the monitor's peak
+ * (every loop and fast tick) already says so. Once reached it keeps
+ * qualifying, since the peak never falls.
  */
-export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits, price, mfeR, profitSide, profitEntry } = {}) {
-  // № 14,836 (Codex round 1 on #1375): the caller may name the broker's own
-  // side and entry for the profit judgement; the spec's dir and peak seed
-  // stay on side/entry as before.
-  if (!hasShownProfit({ side: profitSide ?? side, entry: profitEntry ?? entry, price, mfeR })) return null
+export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits, mfeR } = {}) {
+  if (!hasShownProfit({ mfeR })) return null
   const atr = wilderAtr(bars, DEFAULT_ATR_PERIOD)
   // Number(null), Number('') and Number(false) are zero, but they are not
   // broker precision. Preserve a genuine zero-digit instrument only.
@@ -84,17 +92,16 @@ export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, ent
   }
 }
 
+/** № 14,933 (owner § 14,932·B·1 (a)): the exit-side peak, in R, from which the since-entry trail arms. */
+export const SINCE_ENTRY_MIN_PEAK_R = 0.5
+
 /**
- * № 14,822: has the position shown profit on the exit side? `mfeR` is the
- * monitor's recorded peak in R (> 0 once price has been past the fill in the
- * trade's direction); `price` is the latest close. Unknown values are not
- * profit.
+ * № 14,822 / № 14,933: has the position's exit-side peak reached
+ * SINCE_ENTRY_MIN_PEAK_R? `mfeR` is the monitor's recorded exit-side peak in
+ * R. Unknown values — null, blank, a boolean — are not profit.
  */
-export function hasShownProfit({ side, entry, price, mfeR } = {}) {
-  if (Number(mfeR) > 0) return true
-  const e = Number(entry), p = Number(price)
-  if (!(e > 0) || !(p > 0)) return false
-  const s = String(side || '').toUpperCase()
-  const short = s === 'SHORT' || s === 'SELL'
-  return short ? p < e : p > e
+export function hasShownProfit({ mfeR } = {}) {
+  const m = typeof mfeR === 'number' ? mfeR
+    : typeof mfeR === 'string' && mfeR.trim() !== '' ? Number(mfeR) : NaN
+  return Number.isFinite(m) && m >= SINCE_ENTRY_MIN_PEAK_R
 }
