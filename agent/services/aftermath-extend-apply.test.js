@@ -468,3 +468,45 @@ test('round 3: a synthesised 8h aggregate whose last constituent is forming is n
   assert.ok(ts.includes(Date.UTC(2026, 8, 4, 12)), 'the closed Friday 12:00 aggregate was appended')
   assert.ok(!ts.includes(Date.UTC(2026, 8, 4, 20)), 'RED before: the Friday 20:00 aggregate (whose Monday half is forming) was stored at Monday 01:00')
 })
+
+// ── № 15,05x 16-Oct (Codex round 3 on #1379, owner: "Round 4: fix all three, then merge when green"; claude-builder) ──
+test('round 4 P1: the newest stored bar reached in a LATER window is replaced, not only marked seen', async () => {
+  const db = initDB(':memory:')
+  const closedMs = Date.UTC(2026, 8, 4, 18)                        // Friday 18:00
+  seedAt(db, { closedMs, tf: '1m', afterBars: REPLAY_AFTERMATH_BARS + 2 })
+  const bars = storedAll(db).map(b => [b[0], 100, 100.5, 99.5, 100, 1])
+  const tN = Date.UTC(2026, 8, 7, 2)                                // extended on Monday; the newest copy was stored forming
+  bars.push([tN, 100, 100.1, 99.9, 100, 0])
+  const k = bars.findIndex(b => b[0] === Date.UTC(2026, 8, 4, 18, 20)); bars[k] = [bars[k][0], 100, 100.1, 99.9, 100, 0]
+  db.prepare(`UPDATE trade_postmortems SET bars_json = ?, created_at = '2026-09-04 18:20:30' WHERE id = 1`).run(JSON.stringify(bars))
+  const calls = []
+  const out = await applyAftermathExtension(db, weekdayBroker(calls), { ...noSleep, now: Date.UTC(2026, 8, 8, 0) })
+  assert.equal(out.verified, 1); assert.equal(out.errors, 0)
+  assert.ok(calls.length > 1, `the newest bar sits ${calls.length} windows past the capture-time bar`)
+  assert.equal(out.barsReplaced, 2, 'RED before: only the first window replaced; the newest bar was marked seen and kept its partial values')
+  assert.deepEqual(storedAll(db).find(b => b[0] === tN), [tN, 100, 100.5, 99.5, 100, 1])
+  assert.match(closedAt(db), /^\d{4}-/)
+})
+
+test('round 4 P1: a legacy stored aggregate whose fresh copy is still forming is dropped, and the row is not stamped', async () => {
+  const { aggregateBars } = await import('../lib/timeframes.js')
+  const db = initDB(':memory:')
+  const closedMs = Date.UTC(2026, 7, 28, 0)
+  seedAt(db, { closedMs, tf: '8h', afterBars: 15 })
+  // an earlier pass (before #35) stored the Friday 20:00 aggregate — Friday 20:00 + Monday 00:00 halves — with partial values
+  const fri20 = Date.UTC(2026, 8, 4, 20)
+  const bars = [...storedAll(db), [Date.UTC(2026, 8, 4, 12), 100, 100.5, 99.5, 100, 2], [fri20, 100, 100.2, 99.8, 100, 1]]
+  db.prepare('UPDATE trade_postmortems SET bars_json = ? WHERE id = 1').run(JSON.stringify(bars))
+  const now = Date.UTC(2026, 8, 7, 1)                               // Monday 01:00: Friday 20:00 + 8h has passed, the Monday half is forming
+  const broker = async (_s, _tf, count, endMs) => {
+    const base = []
+    for (let t = Math.floor(endMs / (4 * H)) * 4 * H; base.length < count * 2 + 2; t -= 4 * H) if (isOpen(t) || t === Date.UTC(2026, 8, 7, 0)) base.unshift({ t, o: 100, h: 100.5, l: 99.5, c: 100, v: 1 })
+    return aggregateBars(base, 2).slice(-count)
+  }
+  const out = await applyAftermathExtension(db, broker, { ...noSleep, now })
+  assert.equal(out.errors, 0)
+  assert.equal(out.barsDropped, 1, 'RED before: the stored array has no tLast, so t + 8h called it closed and the partial values stayed')
+  assert.ok(!storedAll(db).map(b => b[0]).includes(fri20), 'the forming aggregate is gone from the row')
+  assert.equal(out.verified, 0); assert.equal(out.unavailable, 0)
+  assert.equal(closedAt(db), null, 'not stamped: the row reads short and is read again once the bar has closed')
+})

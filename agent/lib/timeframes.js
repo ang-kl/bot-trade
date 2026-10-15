@@ -229,10 +229,23 @@ export function aggregateBars(bars, factor) {
 export function barCloseMs(bar, ms) {
   const t = Array.isArray(bar) ? Number(bar[0]) : Number(bar?.t)
   const tLast = Array.isArray(bar) ? null : bar?.tLast
+  const MONTH = NATIVE_TF_MS['1mo']
   if (tLast != null && Number.isFinite(Number(tLast))) {
     const plan = fetchPlan(ms)
     const baseMs = plan ? ms / plan.factor : ms
-    return Number(tLast) + baseMs
+    return baseMs === MONTH ? addUtcMonths(Number(tLast), 1) : Number(tLast) + baseMs
   }
+  // № 15,05x 16-Oct (Codex round 3 P2 on #1379, owner: "Round 4"): a monthly bar closes at the
+  // next CALENDAR month (nextBarCloseMs models '1mo' the same way), not 30
+  // days on: March 1 + 30 d called a bar closed on the 31st while it was
+  // still forming; February's was withheld past its close. A stored
+  // multi-month array (2mo = 2 × 1mo, no tLast) closes that many months on.
+  if (ms >= MONTH && ms % MONTH === 0) return addUtcMonths(t, ms / MONTH)
   return t + ms
+}
+
+/** `t` moved `n` calendar months forward in UTC, keeping day and time. */
+function addUtcMonths(t, n) {
+  const d = new Date(t)
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds())
 }

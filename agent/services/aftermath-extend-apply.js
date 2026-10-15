@@ -147,9 +147,13 @@ export async function applyAftermathExtension(db, fetchBars, {
     // № 15,036 15-Oct (Codex round 2 on #1379, owner: "Fix both in round 3"; claude-builder): a fetched bar closes per barCloseMs (a synthesised aggregate
     // with its LAST constituent); a stored bar, which carries no tLast,
     // at t + ms.
-    const closedBar = (t) => Number.isFinite(t) && t + ms <= now
+    // № 15,05x 16-Oct (Codex round 3 on #1379, owner: "Round 4: fix all three"; claude-builder): a stored
+    // array closes per barCloseMs too (calendar months); a stored aggregate
+    // carries no tLast, so one spanning a closure is caught by its fresh
+    // copy below (`dropT`), not here.
+    const closedBar = (b) => Array.isArray(b) && Number.isFinite(Number(b[0])) && barCloseMs(b, ms) <= now
     const closedFresh = (b) => Number.isFinite(b?.t) && barCloseMs(b, ms) <= now
-    const forming = bars.filter(b => !Array.isArray(b) || !closedBar(Number(b[0])))
+    const forming = bars.filter(b => !closedBar(b))
     if (forming.length) {
       bars = bars.filter(b => !forming.includes(b))
       out.barsDropped += forming.length
@@ -198,6 +202,13 @@ export async function applyAftermathExtension(db, fetchBars, {
     let reachedNow = false
     let sawNewest = false // the newest stored bar came back: the re-read happened
     let passedNewest = false // a window reached the newest stored bar's time
+    // № 15,05x 16-Oct (Codex round 3 P1 on #1379, owner: "Round 4"): a STORED bar whose fresh copy is
+    // still forming (a legacy aggregate whose last constituent has not closed:
+    // the stored array has no tLast, so only the re-fetch can tell) is dropped
+    // from the row and the row is not stamped — it reads short and is read
+    // again once the bar has closed.
+    const stored = new Set(bars.map(b => Number(b?.[0])))
+    const dropT = new Set()
     // № 15,036 15-Oct (Codex round 2 on #1379, owner: "Fix both in round 3"; claude-builder): a verifying row keeps stepping windows until the newest stored
     // bar is reached (a 1m row captured on Friday and verified on Monday
     // needs several), bounded by MAX_WINDOWS; it is "unavailable" only once
@@ -214,13 +225,17 @@ export async function applyAftermathExtension(db, fetchBars, {
       finally { if (throttleMs > 0) await sleep(throttleMs) }
       // The first window is inclusive of its start (the bar re-read); later
       // windows are strictly after the last bar that came back, as before.
-      const got = fresh
-        .filter(b => b && Number.isFinite(b.t) && (first ? b.t >= start : b.t > start) && b.t <= endMs && closedFresh(b))
-        .sort((x, y) => x.t - y.t)
+      const inWindow = fresh.filter(b => b && Number.isFinite(b.t) && (first ? b.t >= start : b.t > start) && b.t <= endMs)
+      for (const b of inWindow) if (stored.has(b.t) && !closedFresh(b)) dropT.add(b.t)
+      const got = inWindow.filter(closedFresh).sort((x, y) => x.t - y.t)
       for (const b of got) {
         const bar = [b.t, b.o, b.h, b.l, b.c, b.v ?? null]
         if (b.t === tN) sawNewest = true
-        if (have.has(b.t)) { if (first) repl.push(bar) }
+        // № 15,05x 16-Oct (Codex round 3 P1 on #1379, owner: "Round 4"): a stored bar reached in ANY
+        // window is replaced by its fresh copy — the newest bar of a 1m row
+        // captured on Friday and extended on Monday sits several windows
+        // past the capture-time bar, and was marked seen without being replaced.
+        if (have.has(b.t)) repl.push(bar)
         else { have.set(b.t, bar); add.push(bar) }
       }
       first = false
@@ -251,16 +266,19 @@ export async function applyAftermathExtension(db, fetchBars, {
     let changed = false
     for (const b of repl) { if (!sameBar(byT.get(b[0]), b)) { byT.set(b[0], b); changed = true; out.barsReplaced++ } }
     for (const b of add) { byT.set(b[0], b); changed = true }
+    for (const t of dropT) { if (byT.delete(t)) { changed = true; out.barsDropped++ } }
     // № 15,001 Codex P1 on #1379 (owner: "Fix both"): the stamp says the
     // newest stored bar was re-read. A row beyond the broker's retention
     // answers with nothing — `needed` 0, nothing replaced — and must not be
     // stamped as verified: it records `unavailable:<time>` instead, one
     // fetch and then skipped like a verified row, but the value says the
     // broker had nothing, never that the bars were checked.
-    const stampValue = sawNewest ? verifiedAt : (needsVerify && needed === 0 && !add.length && passedNewest ? `unavailable:${verifiedAt}` : null)
+    // A row that just dropped a forming stored bar is neither verified nor
+    // unavailable: its newest bar is not closed yet.
+    const stampValue = dropT.size ? null : sawNewest ? verifiedAt : (needsVerify && needed === 0 && !add.length && passedNewest ? `unavailable:${verifiedAt}` : null)
     if (changed) {
       const merged = [...byT.values()].sort((a, b) => a[0] - b[0])
-      if (sawNewest) updBoth.run(JSON.stringify(merged), verifiedAt, r.pmId)
+      if (stampValue === verifiedAt) updBoth.run(JSON.stringify(merged), verifiedAt, r.pmId)
       else updBars.run(JSON.stringify(merged), r.pmId)
       out.updated++
       out.barsAdded += add.length
@@ -269,7 +287,7 @@ export async function applyAftermathExtension(db, fetchBars, {
       stamp.run(stampValue, r.pmId)
       out.rowsWorked++
     }
-    if (needsVerify && sawNewest) out.verified++
+    if (needsVerify && stampValue === verifiedAt) out.verified++
     else if (needsVerify && stampValue) out.unavailable++
   }
   out.examinedTotal = rows.length
