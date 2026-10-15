@@ -28,6 +28,7 @@ import { recordTradePlan, recordPlanWriteFailure } from './trade-plans.js'
 import { isFullMomentumLimitFill } from './resting-exposure.js'
 import { isFinalMomentumLimitFill } from './momentum-limit-fill-evidence.js'
 import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
+import { premiseAtFill, pendingFillStop, isReadablePremise } from '../lib/premise.js'
 
 export const DEFAULT_CLOSED_MARKET_LIMITS = {
   on: true, // owner: on by default — closed-market setups get locked in
@@ -177,6 +178,27 @@ function stampLimitFill(db, row, trade, intentId) {
       WHERE id = ?`).run(row.risk_event_id ?? null, row.strategy || null, intentId, t)
     db.prepare(`UPDATE monitored_positions SET strategy = COALESCE(strategy, ?) WHERE trade_id = ?`).run(row.strategy || null, t)
   } catch { /* lineage is provenance, never a reason to fail the sweep */ }
+  // Claude · № 15,001 15-Oct (owner: "1–3 together (#65 + #60a + #60b)" after № 14,989; claude-builder): #65 (Codex round 6 P1 on #1374). The reconciler's adopted row
+  // carries none_adopted; the resting row's premise replaces it, re-checked
+  // at the fill the trade row holds against the fill-anchored stop — the
+  // same re-check linkAdoptedFill makes for the pending-fib path. No fill
+  // on the row (entry_price NULL) reads unreadable:fill_unknown: not armed,
+  // never silent. A row placed without a premise leaves none_adopted as it is.
+  try {
+    if (row.invalidation_trigger) {
+      // Number(null) is 0, not NaN: a NULL entry_price must read as NO fill.
+      const raw = db.prepare(`SELECT entry_price FROM trades WHERE id = ?`).get(t)?.entry_price
+      const fill = raw == null || raw === '' || !(Number(raw) > 0) ? null : Number(raw)
+      const bias = Number(row.dir) < 0 ? 'short' : 'long'
+      const trigger = premiseAtFill({ trigger: row.invalidation_trigger, bias, fill, sl: pendingFillStop(row, fill) })
+      db.prepare(`UPDATE monitored_positions SET invalidation_trigger = ? WHERE trade_id = ? AND status = 'active' AND (invalidation_trigger IS NULL OR invalidation_trigger LIKE 'none_%')`)
+        .run(trigger, t)
+    }
+  } catch { /* the premise is management metadata; the row keeps none_adopted */ }
+  // #60a (same stamp): findLimitFill links a trade that already CLOSED. A
+  // plan written then is hindsight on a finished trade (reconciler.js: "never
+  // in hindsight on a closed row"); lineage above still stands.
+  if (String(trade.status || '') !== 'open') return
   // THE PLAN, on the same moment (§7,437·B·4; measured 08-09-2026 21:32 SGT:
   // four MSFT.US limits filled at the US open and the reconciler adopted them
   // with no plan). The pending row IS the plan: level, stop, target,
@@ -561,14 +583,29 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     // book and retired it as "gone", and why the idempotency read above then
     // found nothing working and placed a replacement. Thirteen times on
     // DOW.US, 04-08-2026, 10:41 to 12:03.
+    // Claude · № 15,001 15-Oct (owner: "1–3 together (#65 + #60a + #60b)" after № 14,989; claude-builder): #65 — the signal's premise rides the resting row so the fill
+    // sweep can re-check it (stampLimitFill). Only the two machine forms are
+    // stored: `price<X`/`price>X` and `unreadable:<why>`. The momentum book's
+    // synth carries free text here (its own rank exit) and premiseAtFill
+    // passes any non-readable string through unchanged, so free text would
+    // land on the monitored row; a none_* or absent trigger stores NULL and
+    // the fill keeps none_adopted — an explained absence either way.
+    const rawPremise = synth.invalidation_trigger
+    const rowPremise = isReadablePremise(rawPremise) || /^unreadable:/.test(String(rawPremise ?? '')) ? String(rawPremise) : null
+    // #60b (same stamp; Codex P2 on #1371 via #1372's model, pending-orders.js):
+    // the row records the LOTS SENT — the gate's lots after the broker's
+    // volume-step snap — not the gate's unsnapped figure; the order itself
+    // already went out as sized.volume. A sizer that reports no lots keeps
+    // the gate's figure.
+    const lotsSent = Number.isFinite(sized?.lots) && sized.lots > 0 ? Math.round(sized.lots * 1e8) / 1e8 : volLots
     db.prepare(`
-      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, strategy, risk_event_id, account_id, intent_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed', ?, ?, ?, ?)
+      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, strategy, risk_event_id, account_id, intent_id, invalidation_trigger)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed', ?, ?, ?, ?, ?)
     `).run(
       symbol, synth.timeframe || null, orderId != null ? String(orderId) : null,
       side === 'BUY' ? 1 : -1, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
-      volLots, new Date(expiresAtMs).toISOString(), synth.strategy || null, riskEventId ?? null,
-      acctKey, placedIntentId,
+      lotsSent, new Date(expiresAtMs).toISOString(), synth.strategy || null, riskEventId ?? null,
+      acctKey, placedIntentId, rowPremise,
     )
     try {
       const { recordSubmitted } = await import('./opportunity-disposition.js')

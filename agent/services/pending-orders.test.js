@@ -889,3 +889,37 @@ test('a limit that gap-fills beyond its premise records the premise as outside t
   await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
   assert.equal(db.prepare(`SELECT invalidation_trigger FROM monitored_positions`).get().invalidation_trigger, 'unreadable:fill_outside_band')
 })
+
+// ── Claude · № 15,001 15-Oct (owner: "1–3 together (#65 + #60a + #60b)" after № 14,989; claude-builder) ──
+// #60a: the hold and deadline a linked adopted fill takes are management
+// metadata for an OPEN trade whose plan is still unscored. Expected outcomes:
+// scoreClosedPlans' population (trade-plans.js: scored_at NULL) and the
+// reconciler's rule that nothing is written in hindsight on a closed row.
+// Case (a) scores the plan while the trade is still open — artificial, to
+// isolate the SQL guard; self-derived.
+test('#60a: a scored plan is never rewritten, and a trade already closed gets no hold or deadline', async () => {
+  const openedMs = Date.parse('2026-10-14T10:00:00Z')
+  const pos = units => pfPos(units).map(p => ({ ...p, tradeData: { ...p.tradeData, openTimestamp: openedMs } }))
+  // (a) the plan was scored; the fill is linked afterwards
+  const db = partialFillDb()
+  db.prepare(`UPDATE pending_orders SET time_cap_minutes = 240`).run()
+  reconcilePositions(db, pos(1_000_000), [{ orderId: 888 }], (k, v) => setState(db, k, v), { accountId: PF_ACCT })
+  assert.ok(db.prepare(`SELECT 1 FROM trade_plans`).get(), 'the adoption wrote the plan (no hold)')
+  db.prepare(`UPDATE trade_plans SET scored_at = '2026-10-14T12:00:00Z'`).run()
+  let fx = makeDeps({ reconcile: { order: [], position: pos(2_500_000) } })
+  let res = await managePendingOrders(db, { ...CREDS, accountId: PF_ACCT }, SYMBOL_MAP, fx.deps)
+  assert.equal(res.filled, 1)
+  const plan = db.prepare(`SELECT planned_hold_min, exit_rule, scored_at FROM trade_plans`).get()
+  assert.deepEqual(plan, { planned_hold_min: null, exit_rule: 'stop_target', scored_at: '2026-10-14T12:00:00Z' }, 'a scored plan keeps its record: the adoption-time rule, no hold')
+  // (b) the trade closed before the sweep linked it: no hold, no deadline
+  const db2 = partialFillDb()
+  db2.prepare(`UPDATE pending_orders SET time_cap_minutes = 240`).run()
+  reconcilePositions(db2, pos(1_000_000), [{ orderId: 888 }], (k, v) => setState(db2, k, v), { accountId: PF_ACCT })
+  db2.prepare(`UPDATE trades SET status = 'closed', closed_at = '2026-10-14T13:00:00Z'`).run()
+  db2.prepare(`UPDATE monitored_positions SET status = 'closed'`).run()
+  fx = makeDeps({ reconcile: { order: [], position: [] } })
+  res = await managePendingOrders(db2, { ...CREDS, accountId: PF_ACCT }, SYMBOL_MAP, fx.deps)
+  assert.equal(res.filled, 1, 'linked by its intent although the position is gone')
+  assert.equal(db2.prepare(`SELECT planned_hold_min FROM trade_plans`).get().planned_hold_min, null, 'no hold in hindsight')
+  assert.equal(db2.prepare(`SELECT time_cap_at FROM monitored_positions`).get().time_cap_at, null, 'no deadline on a finished trade')
+})

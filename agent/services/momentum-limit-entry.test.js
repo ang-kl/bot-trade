@@ -677,3 +677,21 @@ test('R4: the trend reading at evaluation rides into the momentum limit proposal
   assert.ok(seen.length >= 1)
   for (const p of seen) assert.deepEqual([p.trend_at_evaluation?.regime, p.trend_at_evaluation?.trend_direction, p.trend_at_evaluation?.stale], ['trending', 'long', false])
 })
+
+// ── Claude · № 15,001 15-Oct (owner: "1–3 together (#65 + #60a + #60b)" after № 14,989; claude-builder) ──
+// #65 regression guard for the T4 momentum path: it writes no premise by
+// design (the book's own rank exit), so its row stays NULL and its adopted
+// fill keeps none_adopted — never the book's free text.
+test('#65: a momentum resting row carries no premise and its adopted fill keeps none_adopted', async t => {
+  const f = fixture(t)
+  assert.equal((await f.place()).placed, true)
+  const stored = f.db.prepare('SELECT * FROM momentum_limit_intents').get()
+  assert.equal(f.db.prepare('SELECT invalidation_trigger FROM pending_orders').get().invalidation_trigger, null)
+  f.db.prepare("UPDATE entry_intents SET state='FILLED',broker_position_id='33',resolution_source='event' WHERE id=?").run(stored.intent_id)
+  f.db.prepare(`INSERT INTO trades(id,account_id,symbol,side,status,ctrader_position_id,origin,entry_price,sl_price,tp_price,volume,label_strategy,intent_id)
+    VALUES(7,'11','ETHUSD','BUY','open','33','reconciler_adopted',98,88,140,100,'tsmom_long',?)`).run(stored.intent_id)
+  f.db.prepare(`INSERT INTO monitored_positions(symbol,trade_id,side,entry_price,initial_risk,current_sl,current_tp,account_id,strategy,status,invalidation_trigger)
+    VALUES('ETHUSD',7,'long',98,10,88,140,'11','tsmom_long','active','none_adopted')`).run()
+  assert.equal(reconcileStaleClosedMarketLimits(f.db).filled, 1)
+  assert.equal(f.db.prepare('SELECT invalidation_trigger FROM monitored_positions WHERE trade_id=7').get().invalidation_trigger, 'none_adopted')
+})

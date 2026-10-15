@@ -13,6 +13,8 @@ import {
   placeClosedMarketLimit, reconcileStaleClosedMarketLimits,
 
 } from './closed-market-limits.js'
+import { lotsToVolume } from '../lib/lot-sizing.js'
+import { PLAN_WRITE_FAILED_PATH } from './trade-plans.js'
 
 
 const CREDS = { host: 'demo', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '42' }
@@ -466,4 +468,83 @@ test('R4: the trend reading at evaluation rides into the proposal; null when the
   await placeClosedMarketLimit(db2, CREDS, 'US30', SYNTH, f2)
   assert.ok(seen2.length >= 1)
   for (const p of seen2) assert.equal(p.trend_at_evaluation, null)
+})
+
+// ── Claude · № 15,001 15-Oct (owner: "1–3 together (#65 + #60a + #60b)" after № 14,989; claude-builder) ──
+// #65 (Codex round 6 P1 on #1374, deferred by the owner): every resting entry
+// on this path read none_adopted after its fill. Expected outcomes: the
+// lib/premise.js contract (#1374 rounds 2/5 — a premise is armed only against
+// a KNOWN fill, inside the fill-anchored band) and the production closes of
+// 15-10 (US30 #1889, NAS100 #1890) that show what a `price<X` row does.
+test('#65: the resting row stores the premise in the form the fill re-check reads; free text and none_* store NULL', async () => {
+  const FREE = 'rank leaves the top 40% of the universe, or the trailing stop' // momentum-book.js:323, verbatim
+  for (const [given, stored] of [['price<99', 'price<99'], ['unreadable:outside_stop', 'unreadable:outside_stop'], [FREE, null], ['none_burnin', null], [undefined, null]]) {
+    const db = initDB(':memory:')
+    setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
+    const r = await placeClosedMarketLimit(db, CREDS, 'US30', { ...SYNTH, invalidation_trigger: given }, fakes())
+    assert.equal(r.placed, true, JSON.stringify(r))
+    assert.equal(db.prepare(`SELECT invalidation_trigger FROM pending_orders WHERE symbol = 'US30'`).get().invalidation_trigger, stored, `given ${given}`)
+  }
+})
+
+// #60b (Codex P2 on #1371 via #1372's model): the row records the LOTS SENT.
+// Expected outcome: lot-sizing.js snaps the approved lots to the broker's
+// volume step before sending; 0.0155 lots on a 1,000-unit step of a 100,000
+// lot is 1,000 units = 0.01 lots (self-derived from that rule).
+test('#60b: the resting row records the lots sent after the broker volume-step snap, not the gate\'s figure', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'symbol_id_map', JSON.stringify({ US30: 7 }))
+  const f = fakes()
+  f.risk.evaluateTrade = () => ({ approved: true, adjusted_volume: 0.0155 })
+  f.sizing = { getVolumeMeta: async () => ({ digits: 5, lotSize: 100000, minVolume: 1000, stepVolume: 1000 }), lotsToVolume, relativePoints: f.sizing.relativePoints }
+  const r = await placeClosedMarketLimit(db, CREDS, 'US30', SYNTH, f)
+  assert.equal(r.placed, true, JSON.stringify(r))
+  assert.equal(f.placed[0].volume, 1000, 'the order went out snapped to the step')
+  assert.equal(db.prepare(`SELECT volume FROM pending_orders WHERE symbol = 'US30'`).get().volume, 0.01, 'the row records what was sent')
+})
+
+// #60a: findLimitFill links a trade that already CLOSED (the sweep accepts
+// 'closed'); a plan written then is hindsight (reconciler.js, B4c: "never in
+// hindsight on a closed row"). Lineage still stands; the plan is skipped, not
+// failed.
+test('#60a: the sweep links a fill that already closed, stamps its lineage and writes it NO plan', () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, intent_id)
+    VALUES ('AMZN.US', '1d', '502', -1, 250, 253, 240, 1, '2026-07-21T00:00:00Z', '2026-07-28T00:00:00Z', 'working', 'pending-closed', 'iamzn0000502')`).run()
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('502', 'AMZN.US', 'gone')`).run()
+  const tid = db.prepare(`INSERT INTO trades (symbol, side, status, opened_at, closed_at, label_raw) VALUES ('AMZN.US', 'SELL', 'closed', '2026-07-21T12:00:00Z', '2026-07-21T18:00:00Z', ?)`).run(tagged('iamzn0000502')).lastInsertRowid
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-07-22T00:00:00Z') })
+  assert.equal(r.filled, 1)
+  assert.equal(db.prepare(`SELECT status FROM pending_orders WHERE order_id = '502'`).get().status, 'filled')
+  assert.equal(db.prepare(`SELECT origin FROM trades WHERE id = ?`).get(tid).origin, 'bot_pending_fill', 'lineage is still stamped')
+  assert.equal(db.prepare(`SELECT 1 FROM trade_plans WHERE trade_id = ?`).get(tid), undefined, 'no plan in hindsight on a closed trade')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM action_log WHERE path = ?`).get(PLAN_WRITE_FAILED_PATH).n, 0, 'skipped, not failed')
+})
+
+/** A pending-closed row whose fill the reconciler adopted (none_adopted) and the order gone at the broker. */
+function linkedFill(db, { rowTrigger = 'price<99', fill = 99.8, monitored = 'none_adopted' } = {}) {
+  db.prepare(`INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note, intent_id, invalidation_trigger)
+    VALUES ('US30', '8h', '601', 1, 100, 98, 104, 1, '2026-07-21T00:00:00Z', '2026-07-28T00:00:00Z', 'working', 'pending-closed', 'ius300000601', ?)`).run(rowTrigger)
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, status) VALUES ('601', 'US30', 'gone')`).run()
+  const tid = Number(db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, opened_at, label_raw) VALUES ('US30', 'BUY', 'open', ?, '2026-07-21T12:00:00Z', ?)`).run(fill, tagged('ius300000601')).lastInsertRowid)
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, initial_risk, current_sl, current_tp, status, invalidation_trigger)
+    VALUES ('US30', ?, 'long', ?, 2, 97.8, 104, 'active', ?)`).run(tid, fill, monitored)
+  return tid
+}
+
+test('#65: the fill\'s monitored row takes the row\'s premise re-checked at the fill; an unknown fill is not armed; a row without one leaves none_adopted; a direct writer\'s premise is kept', () => {
+  const cases = [
+    { name: 'premise inside the fill-anchored band', fill: 99.8, expect: 'price<99' },            // stop anchored at 97.8: 97.8 < 99 < 99.8
+    { name: 'gap through the premise', fill: 98.9, expect: 'unreadable:fill_outside_band' },      // the fill is already past the premise
+    { name: 'no fill on the row', fill: null, expect: 'unreadable:fill_unknown' },                // not armed, never silent
+    { name: 'row placed without a premise', rowTrigger: null, expect: 'none_adopted' },           // the momentum / legacy population
+    { name: 'a direct writer stamped the premise first', monitored: 'price<99.5', expect: 'price<99.5' },
+  ]
+  for (const c of cases) {
+    const db = initDB(':memory:')
+    const tid = linkedFill(db, c)
+    const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-07-22T00:00:00Z') })
+    assert.equal(r.filled, 1, c.name)
+    assert.equal(db.prepare(`SELECT invalidation_trigger FROM monitored_positions WHERE trade_id = ?`).get(tid).invalidation_trigger, c.expect, c.name)
+  }
 })
