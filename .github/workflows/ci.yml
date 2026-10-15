@@ -5,6 +5,9 @@ name: CI
 # keeper — the code that touches real money) runs here.
 on:
   pull_request:
+    # Codex P1 on #1383: `edited` so a Protected-change-authorised line added to
+    # (or removed from) the PR body after the push re-runs the boundary job.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -65,4 +68,8 @@ jobs:
         with:
           fetch-depth: 0
       - name: Protected boundary
+        # The PR body reaches the script as an environment variable, never
+        # interpolated into the shell line: a body is free text.
+        env:
+          PROTECTED_AUTHORISED: ${{ github.event.pull_request.body }}
         run: bash scripts/check-protected-boundary.sh "origin/${{ github.base_ref }}"

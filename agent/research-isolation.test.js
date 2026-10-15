@@ -567,3 +567,45 @@ other('./not-an-import.js')`
   assert.deepEqual(r.unresolved.map(u => [u.kind, u.fn]), [['load()', 'c']])
   assert.ok(!r.specs.includes('./not-an-import.js'))
 })
+
+// ── Claude · № 15,074 16-Oct (owner on #1381: "add a marker in a follow-up"; claude-builder) ──
+// Expected outcomes: the script's own exit-code contract (0 identical or
+// authorised, 1 differing, 2 no base); the marker form is self-derived.
+test('the boundary script passes a differing protected path only when the PR body names it in a Protected-change-authorised line', async () => {
+  const { mkdirSync, writeFileSync, copyFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { execFileSync, spawnSync } = await import('node:child_process')
+  const { mkdtempSync } = await import('./test-support/temp-dir.js') // removed at exit: the gate's TMPDIR hygiene check
+  const dir = mkdtempSync(join(tmpdir(), 'boundary-'))
+  const git = (...a) => execFileSync('git', a, { cwd: dir, stdio: 'pipe' }).toString()
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+  mkdirSync(join(dir, 'scripts')); mkdirSync(join(dir, 'agent'), { recursive: true })
+  copyFileSync(join(ROOT, 'scripts/check-protected-boundary.sh'), join(dir, 'scripts/check-protected-boundary.sh'))
+  writeFileSync(join(dir, 'agent/loop.js'), 'export const a = 1\n')
+  git('add', '-A'); git('commit', '-qm', 'base')
+  git('checkout', '-qb', 'work')
+  writeFileSync(join(dir, 'agent/loop.js'), 'export const a = 2\n')
+  git('commit', '-qam', 'change loop')
+  const run = (env) => spawnSync('bash', ['scripts/check-protected-boundary.sh', 'main'], { cwd: dir, env: { ...process.env, ...env }, encoding: 'utf8' })
+  const plain = run({ PROTECTED_AUTHORISED: '' })
+  assert.equal(plain.status, 1, plain.stdout + plain.stderr)
+  assert.match(plain.stdout, /FAIL — protected path\(s\) differ[\s\S]*agent\/loop\.js/)
+  const marked = run({ PROTECTED_AUTHORISED: 'Scan only what is open.\n\nProtected-change-authorised: agent/loop.js (owner, § 15,032·C)\n' })
+  assert.equal(marked.status, 0, 'RED before: the job had no way to carry the owner\'s authorisation — ' + marked.stdout + marked.stderr)
+  assert.match(marked.stdout, /OK — protected path\(s\) differ from main under an owner-authorisation marker:\n {2}agent\/loop\.js/)
+  const wrong = run({ PROTECTED_AUTHORISED: 'Protected-change-authorised: agent/services/risk.js (owner)\n' })
+  assert.equal(wrong.status, 1, 'a marker naming a different path authorises nothing')
+  assert.match(wrong.stdout, /FAIL[\s\S]*agent\/loop\.js/)
+  // locally, with no PR body, HEAD's commit message carries the line
+  git('commit', '-q', '--amend', '-m', 'change loop\n\nProtected-change-authorised: agent/loop.js (owner, test)')
+  const fromCommit = spawnSync('bash', ['scripts/check-protected-boundary.sh', 'main'], { cwd: dir, env: { ...process.env, PROTECTED_AUTHORISED: undefined }, encoding: 'utf8' })
+  assert.equal(fromCommit.status, 0, fromCommit.stdout + fromCommit.stderr)
+})
+
+test('the CI boundary job hands the PR body to the script as an environment variable, not a shell interpolation, and runs when the body is edited', () => {
+  const yml = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')
+  // Codex P1 on #1383: a marker added to the body after the push must re-run the job; a removed one must un-green it
+  assert.match(yml, /on:\n {2}pull_request:\n(?: {4}#[^\n]*\n)* {4}types: \[opened, synchronize, reopened, edited\]\n/)
+  const job = yml.slice(yml.indexOf('  protected-boundary:'))
+  assert.match(job, /env:\n {10}PROTECTED_AUTHORISED: \$\{\{ github\.event\.pull_request\.body \}\}\n {8}run: bash scripts\/check-protected-boundary\.sh "origin\/\$\{\{ github\.base_ref \}\}"/)
+})
