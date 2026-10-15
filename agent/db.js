@@ -1742,7 +1742,11 @@ export function initDB(dbPath, startupDiagnosticOptions) {
   // on every postmortem + confluence capture at entry.
   const pmCols = db.prepare("PRAGMA table_info(trade_postmortems)").all();
   const pmColNames = new Set(pmCols.map(c => c.name));
-  for (const [col, type] of [["result", "TEXT"], ["lesson", "TEXT"], ["alpha_decay", "TEXT"], ["entry_quality", "TEXT"]]) {
+  for (const [col, type] of [["result", "TEXT"], ["lesson", "TEXT"], ["alpha_decay", "TEXT"], ["entry_quality", "TEXT"],
+    // Claude · № 15,001 15-Oct (owner: "#35 forming bar — repair on next run" after № 14,989; claude-builder): when the stored bars were last read back against the clock rule
+    // (closed bars only, the newest re-fetched). NULL = never: a full row is
+    // re-read ONCE by the aftermath extension, then skipped as before.
+    ["bars_verified_at", "TEXT"]]) {
     if (!pmColNames.has(col)) db.exec(`ALTER TABLE trade_postmortems ADD COLUMN ${col} ${type}`);
   }
   // Daily ATR history — the 252-day baseline the vol-gate percentile is

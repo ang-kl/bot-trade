@@ -6,11 +6,12 @@
 // 32 days of candles for a replay whose slowest rule caps at 120 MINUTES —
 // weeks of fetching for no additional verdict.
 //
-// What this must never do: touch anything except bars_json. The
-// classification, r_multiple, lesson — all of it was judged under the 12-bar
-// verdict window and stays as judged (see REPLAY_AFTERMATH_BARS's comment).
-// A row's top-up appends aftermath bars, dedupes on timestamp, keeps
-// chronological order, and stops at the row's own target.
+// What this must never do: touch anything except bars_json and its
+// verification stamp (bars_verified_at, № 15,001). The classification,
+// r_multiple, lesson — all of it was judged under the 12-bar verdict window
+// and stays as judged (see REPLAY_AFTERMATH_BARS's comment). A row's top-up
+// appends CLOSED aftermath bars, re-reads the newest stored one, dedupes on
+// timestamp, keeps chronological order, and stops at the row's own target.
 //
 // Batched and resumable BY CONSTRUCTION: the candidate predicate is "short of
 // target with history fully traded", so a re-run after any interruption picks
@@ -18,7 +19,7 @@
 // progress.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { tfMs } from '../lib/timeframes.js'
+import { tfMs, barCloseMs } from '../lib/timeframes.js'
 import { REPLAY_AFTERMATH_BARS, sqliteMs } from './loss-postmortem.js'
 
 /**
@@ -59,7 +60,8 @@ export function targetAfterBars(barMs) {
 }
 
 /**
- * Top up stored replay windows from broker history. Writes bars_json ONLY.
+ * Top up stored replay windows from broker history. Writes bars_json and
+ * bars_verified_at ONLY.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {(symbol:string, timeframe:string, count:number, endTimeMs:number) => Promise<Array<{t:number,o:number,h:number,l:number,c:number,v?:number}>>} fetchBars
@@ -97,6 +99,7 @@ export async function applyAftermathExtension(db, fetchBars, {
   // closed trades), so this guards the order rather than repairs it.
   const rows = db.prepare(`
     SELECT pm.id AS pmId, pm.trade_id AS tradeId, pm.symbol, pm.timeframe, pm.bars_json,
+           pm.created_at, pm.bars_verified_at,
            t.closed_at
       FROM trade_postmortems pm
       JOIN trades t ON t.id = pm.trade_id
@@ -106,8 +109,12 @@ export async function applyAftermathExtension(db, fetchBars, {
     .sort((a, b) => (Number.isFinite(b.closedMs) ? b.closedMs : -Infinity) - (Number.isFinite(a.closedMs) ? a.closedMs : -Infinity) || b.pmId - a.pmId)
   const cursor = parseCursor(from)
 
-  const out = { examined: 0, updated: 0, barsAdded: 0, alreadyFull: 0, historyStillForming: 0, noNewerBarsYet: 0, noBars: 0, errors: 0, remaining: 0, fetches: 0, resumeFrom: null }
-  const upd = db.prepare('UPDATE trade_postmortems SET bars_json = ? WHERE id = ?')
+  const out = { examined: 0, updated: 0, barsAdded: 0, barsReplaced: 0, barsDropped: 0, verified: 0, unavailable: 0, rowsWorked: 0, alreadyFull: 0, historyStillForming: 0, noNewerBarsYet: 0, noBars: 0, errors: 0, remaining: 0, fetches: 0, resumeFrom: null }
+  // Claude · № 15,001 15-Oct (owner: "#35 forming bar — repair on next run" after № 14,989; claude-builder). bars_json and its verification stamp are the only columns written.
+  const updBars = db.prepare('UPDATE trade_postmortems SET bars_json = ? WHERE id = ?')
+  const updBoth = db.prepare('UPDATE trade_postmortems SET bars_json = ?, bars_verified_at = ? WHERE id = ?')
+  const stamp = db.prepare('UPDATE trade_postmortems SET bars_verified_at = ? WHERE id = ?')
+  const verifiedAt = new Date(now).toISOString()
 
   for (const r of rows) {
     const ms = tfMs(r.timeframe) || 3_600_000
@@ -120,12 +127,53 @@ export async function applyAftermathExtension(db, fetchBars, {
     try { bars = JSON.parse(r.bars_json || 'null') } catch { bars = null }
     if (!Array.isArray(bars) || bars.length === 0) { out.noBars++; continue }
 
+    // Claude · № 15,001 15-Oct (owner: "#35 forming bar — repair on next run" after № 14,989; claude-builder). A bar's `t` is its OPEN (ctrader-ws.js: utcTimestampInMinutes)
+    // and the broker's reply includes the bar still forming (fib-strategy.js
+    // S-3). This writer kept it whenever a window reached the present, and
+    // never re-read it: `start` was the newest stored t and the filter was
+    // strictly after it, so the partial high/low/close/volume froze for every
+    // reader. Three rules now:
+    //  · a bar is CLOSED when its open plus one bar-length has passed; only
+    //    closed bars are stored, and one still forming now is dropped from
+    //    the row (the rule applied to what earlier passes stored);
+    //  · the first window starts AT the newest stored bar, so its fresh copy
+    //    replaces the stored one (fresh wins; a closed bar re-read is the
+    //    same bar or the broker's correction);
+    //  · the capture-time bar — the stored bar whose span held the row's
+    //    created_at — is re-read once more, while the row is unverified.
+    // The one-shot: bars_verified_at. A full row is re-read ONCE (the owner's
+    // "repair on the next run"), then skipped as before, so the repair cannot
+    // re-fire on every call and eat the fetch budget.
+    // № 15,036 15-Oct (Codex round 2 on #1379, owner: "Fix both in round 3"; claude-builder): a fetched bar closes per barCloseMs (a synthesised aggregate
+    // with its LAST constituent); a stored bar, which carries no tLast,
+    // at t + ms.
+    // № 15,05x 16-Oct (Codex round 3 on #1379, owner: "Round 4: fix all three"; claude-builder): a stored
+    // array closes per barCloseMs too (calendar months); a stored aggregate
+    // carries no tLast, so one spanning a closure is caught by its fresh
+    // copy below (`dropT`), not here.
+    const closedBar = (b) => Array.isArray(b) && Number.isFinite(Number(b[0])) && barCloseMs(b, ms) <= now
+    const closedFresh = (b) => Number.isFinite(b?.t) && barCloseMs(b, ms) <= now
+    const forming = bars.filter(b => !closedBar(b))
+    if (forming.length) {
+      bars = bars.filter(b => !forming.includes(b))
+      out.barsDropped += forming.length
+      // No fetch needed for a drop: written now, whatever the gates below say.
+      updBars.run(JSON.stringify(bars), r.pmId)
+      if (!bars.length) { out.noBars++; continue }
+    }
+
     const target = targetAfterBars(ms)
     const afterBars = bars.reduce((n, b) => n + (Array.isArray(b) && Number(b[0]) > closedMs ? 1 : 0), 0)
-    if (afterBars >= target) { out.alreadyFull++; continue }
-    if (now < closedMs + (target + 2) * ms) { out.historyStillForming++; continue }
+    const needsVerify = !r.bars_verified_at
+    const full = afterBars >= target
+    if (full && !needsVerify) { out.alreadyFull++; continue }
+    if (!full && now < closedMs + (target + 2) * ms) { out.historyStillForming++; continue }
 
-    if (out.updated >= maxRows || out.errors >= maxErrors || out.fetches >= maxFetches) {
+    // № 15,001 Codex P2 on #1379 (owner: "Fix both"): a row that only
+    // verified (stamped, nothing written) consumes the row budget like an
+    // updated one, so `batch: 1` is one row's broker calls, not the fetch
+    // budget's worth.
+    if (out.rowsWorked >= maxRows || out.errors >= maxErrors || out.fetches >= maxFetches) {
       if (!out.resumeFrom) out.resumeFrom = `${closedMs}:${r.pmId}`
       out.remaining++
       continue
@@ -140,13 +188,40 @@ export async function applyAftermathExtension(db, fetchBars, {
     // bar and steps forward through closures until the row holds the capture
     // convention (target + 2 bars after the close) or the present is reached.
     const want = target + 2
-    const needed = want - afterBars
-    const have = new Set(bars.map(b => Number(b?.[0])))
-    let start = bars.reduce((m, b) => Math.max(m, Number(b?.[0]) || 0), 0)
-    const add = []
+    const needed = Math.max(0, want - afterBars)
+    const have = new Map(bars.map(b => [Number(b?.[0]), b]))
+    const tN = bars.reduce((m, b) => Math.max(m, Number(b?.[0]) || 0), 0)
+    const createdMs = sqliteMs(r.created_at)
+    // № 15,074 16-Oct (Codex P1 on #1382, owner: "Fix both"): the capture-time
+    // bar is the NEWEST stored bar opened at or before created_at. A stored
+    // array carries no tLast, so its span cannot be read as `t + ms`: a legacy
+    // 8h aggregate opened Friday 20:00 with a Monday 00:00 half held a Monday
+    // 01:00 capture, and `createdMs < t + ms` (Saturday 04:00) missed it —
+    // once later passes had appended bars the row was stamped verified with
+    // that partial aggregate never re-read.
+    const tsAtOrBefore = needsVerify && Number.isFinite(createdMs)
+      ? bars.map(b => Number(b?.[0])).filter(t => Number.isFinite(t) && t <= createdMs) : []
+    const tC = tsAtOrBefore.length ? Math.max(...tsAtOrBefore) : null
+    const from = tC != null ? Math.min(tC, tN) : tN
+    let start = from
+    let first = true
+    const add = [], repl = []
     let failed = false
     let reachedNow = false
-    for (let w = 0; w < MAX_WINDOWS && add.length < needed; w++) {
+    let sawNewest = false // the newest stored bar came back: the re-read happened
+    let passedNewest = false // a window reached the newest stored bar's time
+    // № 15,05x 16-Oct (Codex round 3 P1 on #1379, owner: "Round 4"): a STORED bar whose fresh copy is
+    // still forming (a legacy aggregate whose last constituent has not closed:
+    // the stored array has no tLast, so only the re-fetch can tell) is dropped
+    // from the row and the row is not stamped — it reads short and is read
+    // again once the bar has closed.
+    const stored = new Set(bars.map(b => Number(b?.[0])))
+    const dropT = new Set()
+    // № 15,036 15-Oct (Codex round 2 on #1379, owner: "Fix both in round 3"; claude-builder): a verifying row keeps stepping windows until the newest stored
+    // bar is reached (a 1m row captured on Friday and verified on Monday
+    // needs several), bounded by MAX_WINDOWS; it is "unavailable" only once
+    // a window has passed that bar without returning it.
+    for (let w = 0; w < MAX_WINDOWS && (first || add.length < needed || (needsVerify && !sawNewest && !passedNewest)); w++) {
       const endMs = Math.min(now, start + windowSlots * ms)
       if (endMs <= start) { reachedNow = true; break }
       const count = Math.ceil((endMs - start) / ms) + 5
@@ -156,10 +231,23 @@ export async function applyAftermathExtension(db, fetchBars, {
         fresh = await fetchBars(r.symbol, r.timeframe, count, endMs) || []
       } catch { failed = true; break }
       finally { if (throttleMs > 0) await sleep(throttleMs) }
-      const got = fresh
-        .filter(b => b && Number.isFinite(b.t) && b.t > start && b.t <= endMs && !have.has(b.t))
-        .sort((x, y) => x.t - y.t)
-      for (const b of got) { have.add(b.t); add.push([b.t, b.o, b.h, b.l, b.c, b.v ?? null]) }
+      // The first window is inclusive of its start (the bar re-read); later
+      // windows are strictly after the last bar that came back, as before.
+      const inWindow = fresh.filter(b => b && Number.isFinite(b.t) && (first ? b.t >= start : b.t > start) && b.t <= endMs)
+      for (const b of inWindow) if (stored.has(b.t) && !closedFresh(b)) dropT.add(b.t)
+      const got = inWindow.filter(closedFresh).sort((x, y) => x.t - y.t)
+      for (const b of got) {
+        const bar = [b.t, b.o, b.h, b.l, b.c, b.v ?? null]
+        if (b.t === tN) sawNewest = true
+        // № 15,05x 16-Oct (Codex round 3 P1 on #1379, owner: "Round 4"): a stored bar reached in ANY
+        // window is replaced by its fresh copy — the newest bar of a 1m row
+        // captured on Friday and extended on Monday sits several windows
+        // past the capture-time bar, and was marked seen without being replaced.
+        if (have.has(b.t)) repl.push(bar)
+        else { have.set(b.t, bar); add.push(bar) }
+      }
+      first = false
+      if (endMs >= tN) passedNewest = true
       if (endMs >= now) { reachedNow = true; break }
       // The next window starts at the last bar that came back, not at this
       // window's end: the request spans a few slots more than `count`, so a
@@ -169,20 +257,46 @@ export async function applyAftermathExtension(db, fetchBars, {
       start = got.length ? got[got.length - 1].t : endMs
     }
     if (failed) { out.errors++; continue }
-    if (!add.length) {
+    if (!add.length && needed > 0) {
       // The broker has no bar after the row's last one up to now: the history
       // is not there yet (a recent close over a closure), not an error. The
       // row stays a candidate for a later call.
       if (reachedNow) out.noNewerBarsYet++
-      else out.errors++ // MAX_WINDOWS empty windows short of the present: beyond retention or a dead name
-      continue
+      else { out.errors++; continue } // MAX_WINDOWS empty windows short of the present: beyond retention or a dead name
     }
     add.length = Math.min(add.length, needed)
 
-    const merged = [...bars, ...add].sort((a, b) => a[0] - b[0])
-    upd.run(JSON.stringify(merged), r.pmId)
-    out.updated++
-    out.barsAdded += add.length
+    // Merge: a re-read bar replaces the stored one only when it differs;
+    // appends follow; the stamp records that the row was read against the
+    // clock rule, whether or not anything changed.
+    const sameBar = (a, b) => a && b && [0, 1, 2, 3, 4, 5].every(i => (a[i] ?? null) === (b[i] ?? null))
+    const byT = new Map(bars.map(b => [Number(b[0]), b]))
+    let changed = false
+    for (const b of repl) { if (!sameBar(byT.get(b[0]), b)) { byT.set(b[0], b); changed = true; out.barsReplaced++ } }
+    for (const b of add) { byT.set(b[0], b); changed = true }
+    for (const t of dropT) { if (byT.delete(t)) { changed = true; out.barsDropped++ } }
+    // № 15,001 Codex P1 on #1379 (owner: "Fix both"): the stamp says the
+    // newest stored bar was re-read. A row beyond the broker's retention
+    // answers with nothing — `needed` 0, nothing replaced — and must not be
+    // stamped as verified: it records `unavailable:<time>` instead, one
+    // fetch and then skipped like a verified row, but the value says the
+    // broker had nothing, never that the bars were checked.
+    // A row that just dropped a forming stored bar is neither verified nor
+    // unavailable: its newest bar is not closed yet.
+    const stampValue = dropT.size ? null : sawNewest ? verifiedAt : (needsVerify && needed === 0 && !add.length && passedNewest ? `unavailable:${verifiedAt}` : null)
+    if (changed) {
+      const merged = [...byT.values()].sort((a, b) => a[0] - b[0])
+      if (stampValue === verifiedAt) updBoth.run(JSON.stringify(merged), verifiedAt, r.pmId)
+      else updBars.run(JSON.stringify(merged), r.pmId)
+      out.updated++
+      out.barsAdded += add.length
+      out.rowsWorked++
+    } else if (needsVerify && stampValue) {
+      stamp.run(stampValue, r.pmId)
+      out.rowsWorked++
+    }
+    if (needsVerify && stampValue === verifiedAt) out.verified++
+    else if (needsVerify && stampValue) out.unavailable++
   }
   out.examinedTotal = rows.length
   return out

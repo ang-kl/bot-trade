@@ -204,6 +204,10 @@ export function aggregateBars(bars, factor) {
     const chunk = bars.slice(i, i + factor)
     out.push({
       t: chunk[0].t,
+      // № 15,036 15-Oct (Codex round 2 on #1379, owner: "Fix both in round 3"; claude-builder): an aggregate is stamped with its FIRST constituent, but it is
+      // closed only when its LAST constituent has closed — end-anchored
+      // chunks can span a weekend. barCloseMs reads this.
+      tLast: chunk[chunk.length - 1].t,
       o: chunk[0].o,
       h: Math.max(...chunk.map(b => b.h)),
       l: Math.min(...chunk.map(b => b.l)),
@@ -212,4 +216,36 @@ export function aggregateBars(bars, factor) {
     })
   }
   return out
+}
+
+/**
+ * № 15,036 15-Oct (Codex round 2 on #1379, owner: "Fix both in round 3"; claude-builder). When a bar fetched for timeframe `ms` closes: a native bar at
+ * open + period; a synthesised aggregate at its LAST constituent's open plus
+ * the BASE period (fetchPlan), since end-anchored chunks can span a closure
+ * (an 8h chunk of Friday 20:00 + Monday 00:00 4h bars is not closed at
+ * Monday 01:00). A stored bar ([t,…] arrays carry no tLast) falls back to
+ * open + period.
+ */
+export function barCloseMs(bar, ms) {
+  const t = Array.isArray(bar) ? Number(bar[0]) : Number(bar?.t)
+  const tLast = Array.isArray(bar) ? null : bar?.tLast
+  const MONTH = NATIVE_TF_MS['1mo']
+  if (tLast != null && Number.isFinite(Number(tLast))) {
+    const plan = fetchPlan(ms)
+    const baseMs = plan ? ms / plan.factor : ms
+    return baseMs === MONTH ? addUtcMonths(Number(tLast), 1) : Number(tLast) + baseMs
+  }
+  // № 15,05x 16-Oct (Codex round 3 P2 on #1379, owner: "Round 4"): a monthly bar closes at the
+  // next CALENDAR month (nextBarCloseMs models '1mo' the same way), not 30
+  // days on: March 1 + 30 d called a bar closed on the 31st while it was
+  // still forming; February's was withheld past its close. A stored
+  // multi-month array (2mo = 2 × 1mo, no tLast) closes that many months on.
+  if (ms >= MONTH && ms % MONTH === 0) return addUtcMonths(t, ms / MONTH)
+  return t + ms
+}
+
+/** `t` moved `n` calendar months forward in UTC, keeping day and time. */
+function addUtcMonths(t, n) {
+  const d = new Date(t)
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds())
 }

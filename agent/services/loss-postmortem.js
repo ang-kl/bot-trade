@@ -27,7 +27,7 @@
 // hiccup must never stall the loop.
 // ---------------------------------------------------------------------------
 
-import { tfMs } from '../lib/timeframes.js'
+import { tfMs, barCloseMs } from '../lib/timeframes.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { isSymbolMarketOpen } from '../lib/sessions.js'
 
@@ -608,7 +608,14 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     // REPLAY_AFTERMATH_BARS above; the verdict window stays AFTERMATH_BARS).
     const fromMs = (openedMs || closedMs) - 20 * ms
     const toMs = closedMs + (REPLAY_AFTERMATH_BARS + 2) * ms
-    const replay = bars.filter(b => b.t >= fromMs && b.t <= toMs)
+    // Claude · № 15,001 15-Oct (owner: "#35 forming bar — repair on next run" after № 14,989; claude-builder): a bar's `t` is its OPEN (ctrader-ws.js: utcTimestampInMinutes),
+    // and the broker's reply includes the bar still forming (fib-strategy.js
+    // S-3). A capture that ran within the aftermath window stored that bar
+    // with its partial high/low/close/volume and no reader ever re-read it.
+    // Closed bars only: open plus one bar-length has passed. The verdict
+    // above still reads the full reply, as before.
+    // Codex round 2 on #1379: a synthesised bar closes with its LAST constituent (barCloseMs), not at t + ms.
+    const replay = bars.filter(b => b.t >= fromMs && b.t <= toMs && barCloseMs(b, ms) <= now)
     // Flat controller-consumable lesson fields (owner spec). Decay is read
     // over the PRIOR same-key history, before this row lands.
     const result = classifyResult(t)
@@ -627,8 +634,8 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
          result, lesson, alpha_decay, entry_quality, account_id,
          entry_vol_regime, entry_vol_percentile, position_size_ratio_applied,
          stop_loss_expanded_pips, vol_volume_divergence_flag,
-         confluence_tool_count, confluence_conflict_flagged, vol_gate_mode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         confluence_tool_count, confluence_conflict_flagged, vol_gate_mode, bars_verified_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       t.id, t.symbol, t.strategy || null, tf, t.side, t.entry_price, t.exit_price, t.sl_price,
       t.net_pnl, rMult, verdict.classification, verdict.detail,
@@ -655,6 +662,8 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
       t.confluence_tool_count ?? null,
       t.confluence_conflict_flagged ?? null,
       t.vol_gate_mode ?? null,
+      // № 15,001 (#35): the stored bars were read against the clock rule now.
+      new Date(now).toISOString(),
     )
     classified++
   }

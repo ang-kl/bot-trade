@@ -42,13 +42,18 @@
 // a spike on a flat symbol doesn't run a guard sweep (nothing to guard) —
 // it flags the symbol via scan_priority_symbols_json so the next SCAN phase
 // bumps it to the front of the rotation instead of waiting. Toggle:
-// agent_state `spike_scan_priority` ('true' default; 'false' reverts to
-// held-only subscription, the pre-2026-07-26 behaviour).
+// agent_state `spike_scan_priority` ('true' default; 'false' stops the
+// FLAGGING). Claude · № 15,074 16-Oct (Codex P2 on #1382, owner: "Fix both"):
+// the subscription itself always covers the enabled watchlist — the tick-
+// activity measurement reads this stream, and a flag that is off must not
+// silently empty a 24-hour measurement. Before 16-10 'false' also narrowed
+// the stream to held symbols.
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
 import { readTradableUnion } from './watchlists.js'
 import { isSpikeMove, SPIKE_PCT_PER_MIN } from './fast-monitor.js'
+import { noteTick, flushActivity, ACTIVITY_FLUSH_MS } from './tick-activity.js'
 
 /** Pure: is this move big enough to wake the guards? */
 // ---------------------------------------------------------------------------
@@ -231,9 +236,11 @@ export function startGuardian(db, getCreds, deps = {}) {
   let lastEval = new Map()    // symbolId → price at last guard evaluation
   let lastEvalAt = new Map()  // symbolId → ms, watchlist-only spike timing
   let heldIds = new Set()     // symbolIds with an open position — guard sweep vs spike-flag branch
+  let spikeFlagOn = true      // agent_state spike_scan_priority, read each maintenance pass; gates the FLAG, not the stream
   let symbolById = new Map()  // symbolId → symbol string, for flagging
   let sweeping = false
   let lastSweepAt = 0
+  let lastActivityFlushAt = 0
   let stopped = false
 
   const teardown = () => {
@@ -340,6 +347,8 @@ export function startGuardian(db, getCreds, deps = {}) {
     // on the paths that happen to continue would be missing exactly when a
     // symbol is quiet, which is not when you want to lose sight of a position.
     recordSpot(tick.symbolId, price)
+    // Claude · № 15,036 15-Oct (owner "go" after № 15,036: activity screener step 1, measurement; claude-builder): tick count per minute is the broker's tick volume; counted here, every tick, before any early return.
+    noteTick(tick.symbolId, price)
     if (heldIds.has(tick.symbolId)) {
       // §70.6 — THE LOSS CAP, ON EVERY TICK, NOT EVERY MINUTE.
       //
@@ -370,7 +379,7 @@ export function startGuardian(db, getCreds, deps = {}) {
     const now = Date.now()
     const prevPrice = lastEval.get(tick.symbolId)
     const prevAt = lastEvalAt.get(tick.symbolId)
-    if (prevPrice != null && prevAt != null && isSpikeMove(prevPrice, prevAt, price, now, SPIKE_PCT_PER_MIN)) {
+    if (spikeFlagOn && prevPrice != null && prevAt != null && isSpikeMove(prevPrice, prevAt, price, now, SPIKE_PCT_PER_MIN)) {
       const sym = symbolById.get(tick.symbolId)
       if (sym) queueScanPriority(db, sym, now)
     }
@@ -385,8 +394,10 @@ export function startGuardian(db, getCreds, deps = {}) {
       const enabled = (getState(db, 'guardian') || 'true') !== 'false'
       if (!creds?.ready || !enabled) { teardown(); return }
       const held = watchedSymbolIds(db)
-      const spikePriorityOn = (getState(db, 'spike_scan_priority') || 'true') !== 'false'
-      const watchlist = spikePriorityOn ? watchlistSymbolIds(db) : []
+      spikeFlagOn = (getState(db, 'spike_scan_priority') || 'true') !== 'false'
+      // № 15,074 (Codex P2 on #1382): the enabled watchlist is streamed whether
+      // or not spike flagging is on; the flag gates queueScanPriority above.
+      const watchlist = watchlistSymbolIds(db)
       const combined = new Map()
       for (const w of held) combined.set(w.symbolId, w)
       for (const w of watchlist) if (!combined.has(w.symbolId)) combined.set(w.symbolId, w)
@@ -421,6 +432,12 @@ export function startGuardian(db, getCreds, deps = {}) {
       // held symbol. A sweep now runs at least every backstopMs while
       // anything is held, ticks or not.
       if (activeRows(db) > 0 && Date.now() - lastSweepAt >= backstopMs) sweep(creds, 'backstop')
+      // Claude · № 15,036 15-Oct (owner "go" after № 15,036: activity screener step 1, measurement; claude-builder): once a minute the per-symbol tick rates go to agent_state
+      // (tick_activity_json) for GET /state/activity. The ring stays in memory.
+      if (Date.now() - lastActivityFlushAt >= (deps.activityFlushMs ?? ACTIVITY_FLUSH_MS)) {
+        lastActivityFlushAt = Date.now()
+        flushActivity(db, setState, { symbolNames: Object.fromEntries(symbolById) })
+      }
     } catch (e) {
       err = e
       teardown() // rebuilt next tick

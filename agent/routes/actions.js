@@ -2736,7 +2736,7 @@ export default function actionsRouter(db, deps = {}) {
   // service). Resumable: re-POST until `remaining` is 0; the candidate
   // predicate is the progress tracker. A call that stopped on its budget
   // returns `resumeFrom`; posting it back as `from` starts there (W5).
-  // Writes bars_json ONLY — classifications stay as judged.
+  // Writes bars_json and its verification stamp ONLY — classifications stay as judged.
   router.post('/extend-aftermath', async (req, res) => {
     try {
       const { applyAftermathExtension, parseCursor } = await import('../services/aftermath-extend-apply.js')
@@ -2757,7 +2757,8 @@ export default function actionsRouter(db, deps = {}) {
         return byTf[tf] || []
       }
       const out = await applyAftermathExtension(db, fetchBars, { maxRows: batch, from })
-      console.log(`[aftermath] extend applied: updated=${out.updated} barsAdded=${out.barsAdded} noNewerBarsYet=${out.noNewerBarsYet} errors=${out.errors} remaining=${out.remaining}${out.resumeFrom ? ` resumeFrom=${out.resumeFrom}` : ''}`)
+      // № 15,001 (#35): the re-read counters ride on the same line.
+      console.log(`[aftermath] extend applied: updated=${out.updated} barsAdded=${out.barsAdded} barsReplaced=${out.barsReplaced} barsDropped=${out.barsDropped} verified=${out.verified} unavailable=${out.unavailable} noNewerBarsYet=${out.noNewerBarsYet} errors=${out.errors} remaining=${out.remaining}${out.resumeFrom ? ` resumeFrom=${out.resumeFrom}` : ''}`)
       res.json({ ok: true, ...out })
     } catch (err) {
       res.status(502).json({ error: err.message })

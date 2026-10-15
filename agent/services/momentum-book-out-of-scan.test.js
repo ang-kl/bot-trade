@@ -203,7 +203,9 @@ function loopCalls() {
   return { src, calls, conds }
 }
 
-test('S-2 wiring: loop.js calls the book once, gated by nothing but the cTrader credentials — not the symbols block, the scan switch, Scan-off-everywhere or weekend quiet', () => {
+// Claude · № 15,054 16-Oct (owner: one open-market scan rule, no weekend switch; claude-builder): the
+// weekend-quiet gate on the scan branch became `symbols.length === 0` (nothing open or opening soon).
+test('S-2 wiring: loop.js calls the book once, gated by nothing but the cTrader credentials — not the symbols block, the scan switch, Scan-off-everywhere or an empty open-market list', () => {
   const { calls, conds } = loopCalls()
   const book = calls.runMomentumBook || []
   assert.equal(book.length, 1, 'exactly one call of runMomentumBook')
@@ -211,7 +213,7 @@ test('S-2 wiring: loop.js calls the book once, gated by nothing but the cTrader 
   const scanGate = calls.runMomentumShadow?.[0]
   assert.ok(scanGate, 'the shadow is still called')
   const shadowConds = conds(scanGate)
-  for (const gate of ['!symbolsJson', 'allSymbols.length === 0', 'weekendQuiet && symbols.length === 0', '!scanEnabled', '!scanWanted']) {
+  for (const gate of ['!symbolsJson', 'allSymbols.length === 0', 'symbols.length === 0', '!scanEnabled', '!scanWanted']) {
     assert.ok(shadowConds.includes(gate), `the shadow still ranks inside the scan branch (${gate}): ${JSON.stringify(shadowConds)}`)
     assert.ok(!conds(book[0]).includes(gate), `the book is not under ${gate}`)
   }
@@ -229,14 +231,14 @@ test('S-2 wiring: bookEntriesHeld names each reason the scan branch is skipped, 
   assert.ok(i > 0)
   const expr = src.slice(i, src.indexOf('\n      if (allSymbols.length === 0) {', i))
   // Evaluate the loop's own expression over the four switches.
-  const held = (v) => new Function('allSymbols', 'weekendQuiet', 'symbols', 'scanEnabled', 'scanWanted', `let bookEntriesHeld; ${expr}; return bookEntriesHeld`)(v.all, v.quiet, v.sym, v.en, v.want)
-  const base = { all: ['KO.US'], quiet: false, sym: ['KO.US'], en: true, want: true }
+  const held = (v) => new Function('allSymbols', 'symbols', 'scanEnabled', 'scanWanted', `let bookEntriesHeld; ${expr}; return bookEntriesHeld`)(v.all, v.sym, v.en, v.want)
+  const base = { all: ['KO.US'], sym: ['KO.US'], en: true, want: true }
   assert.equal(held(base), null)
   assert.equal(held({ ...base, en: false }), 'Scan disabled')
   assert.equal(held({ ...base, want: false }), 'Scan off on every trading account')
-  assert.equal(held({ ...base, quiet: true, sym: [] }), 'weekend quiet with nothing to scan')
+  assert.equal(held({ ...base, sym: [] }), 'nothing open or opening within the pre-open window')
   assert.equal(held({ ...base, all: [], sym: [] }), 'no enabled symbols')
-  assert.equal(held({ ...base, quiet: true, sym: ['BTCUSD'] }), null, 'quiet with crypto: the scan runs')
+  assert.equal(held({ ...base, all: ['KO.US', 'BTCUSD'], sym: ['BTCUSD'] }), null, 'a Saturday with crypto open: the scan runs')
 })
 
 // ---------------------------------------------------------------------------
