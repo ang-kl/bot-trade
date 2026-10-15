@@ -37,6 +37,7 @@
 
 import { atr, vwap } from './fib-strategy.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
+import { premiseFields } from '../lib/premise.js'
 
 const MIN_BARS = 210            // SMA200 + headroom
 const CUP_MIN = 15              // cup length bounds (bars) — absolute floor/ceiling regardless of the dynamic ratio below
@@ -244,6 +245,8 @@ function searchCupHandle(bars, timeframe, opts, dir) {
       sl,
       tp1,
       tp2: dir === 1 ? tp1 + depthAbs * 0.5 : tp1 - depthAbs * 0.5,
+      // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): back below/above the level the breakout cleared.
+      ...premiseFields({ bias, entry, sl, level: breakoutLevel }),
       conviction,
       rr: Math.round(rrRatio * 100) / 100,
       timeframe,

@@ -17,6 +17,7 @@ import { computeCupHandleSignal, computeInvCupHandleSignal, traceCupHandleSearch
 import { categoriseSymbol } from '../lib/sessions.js'
 import { nativeOptionsFor } from './scanner-profiles.js'
 import { recordBarFetch, recordStarved } from '../lib/bar-path-counters.js'
+import { premiseFields, premiseTriggerForSignal } from '../lib/premise.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
 const ZONE_TOLERANCE = 0.05   // +/-5% of leg range around the 61.8% level
@@ -534,6 +535,8 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
     level618: roundedLevel,
     swingA: swingA.price,
     swingB: swingB.price,
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): the swing origin (the stop is a buffer beyond it).
+    ...premiseFields({ bias, entry, sl, level: swingA.price }),
     timeframe,
     time_cap_minutes: timeCapFor(timeframe) || null,
     strategy: 'fib_618_fade',
@@ -1052,7 +1055,11 @@ export function synthesizeFibSignal(symbol, signal, threshold = 8) {
       strategy: signal.strategy,
       timeframe: signal.timeframe,
       risk_note: `R:R ${signal.rr} to TP1, 61.8% level=${signal.level618}`,
-      invalidation_trigger: `Close beyond swing origin ${signal.swingA}`,
+      // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder):
+      // the strategy's own premise as `price<X`/`price>X` (lib/premise.js),
+      // else the recorded reason — this line used to stamp fib's wording on
+      // every strategy, `undefined` included, and the monitor read none of it.
+      invalidation_trigger: premiseTriggerForSignal(signal),
       time_cap_minutes: signal.time_cap_minutes,
     },
     ms: 0,

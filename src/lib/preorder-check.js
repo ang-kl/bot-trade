@@ -60,6 +60,9 @@ export function padInputs(order) {
       : (Number.isFinite(Number(order.lots)) ? Number(order.lots) : String(order.lots).trim()),
     sl: order?.sl === '' || order?.sl == null ? null : Number(order.sl),
     tp: order?.tp === '' || order?.tp == null ? null : Number(order.tp),
+    // Claude · № 14,745 15-Oct (PR-1; owner: the pad requires a premise): the
+    // price at which the trade's reason has failed; required by the route.
+    invalidation: order?.invalidation === '' || order?.invalidation == null ? null : Number(order.invalidation),
     // Claude · № 13,137 11-Oct (Codex P2 on #1317, round 3): a registry
     // strategy key, when the order carries one, rides BOTH the check and the
     // order so the dry run judges the same proposal the route will. The pad
@@ -77,6 +80,7 @@ export function manualOrderBody({ order, destination }) {
     lots: p.lots != null ? p.lots : undefined,
     sl: p.sl,
     tp: p.tp ? p.tp : undefined,
+    invalidation: p.invalidation,
     ...(p.strategy ? { strategy: p.strategy } : {}),
     ...(destination?.routed ? { account: String(destination.accountId) } : {}),
   }
@@ -92,6 +96,7 @@ export function manualCheckPath({ order, destination }) {
   if (p.lots != null) q.set('lots', String(p.lots))
   if (p.sl != null) q.set('sl', String(p.sl))
   if (p.tp) q.set('tp', String(p.tp))
+  if (p.invalidation != null) q.set('invalidation', String(p.invalidation))
   if (p.strategy) q.set('strategy', p.strategy)
   return `/state/preorder?${q.toString()}`
 }

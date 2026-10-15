@@ -15,6 +15,7 @@ import { atr } from './fib-strategy.js'
 import { volumeProfile } from '../lib/indicators.js'
 import { volumeStructure, inLowVolumeNode } from '../lib/volume-structure.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
+import { premiseFields } from '../lib/premise.js'
 
 const MIN_BARS = 40
 const ATR_PERIOD = 14
@@ -98,6 +99,8 @@ export function computeVpValue(bars, timeframe, opts = {}) {
   return {
     bias, direction_reason, entry, sl, tp1, tp2, conviction, rr, timeframe,
     time_cap_minutes: null,
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): the value-area edge the fade stands on.
+    ...premiseFields({ bias, entry, sl, level: edge }),
     strategy: 'vp_value',
     thesis: bias === 'long'
       ? `Price tested the value-area low (${round2(valPrice)}) on the ${timeframe} volume profile and closed back inside — fading the edge for a rotation up to the POC (${round2(pocPrice)}), stop below the VAL.`

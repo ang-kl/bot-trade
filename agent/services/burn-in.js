@@ -32,6 +32,7 @@ import { getState, setState } from '../db.js'
 import { readTradableUnion } from './watchlists.js'
 import { atrFromBars } from './profit-keeper.js'
 import { relVolFromBars } from './fast-monitor.js'
+import { noPremise } from '../lib/premise.js'
 
 export const DEFAULT_BURN_IN = {
   on: false,
@@ -320,7 +321,7 @@ export async function runBurnIn(db, creds, deps = {}) {
         timeframe: plan.tf,
         time_cap_minutes: plan.capMin,
         synthesis: `BURN-IN micro-quant — ${plan.regime} tape (relVol ${Number.isFinite(relVol) ? relVol.toFixed(2) : '?'}): ${plan.tf} ${bias}, 1×ATR stop, closes in ≤${plan.capMin}m.`,
-        invalidation_trigger: null,
+        invalidation_trigger: noPremise('burnin'), // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder)
         source: 'burnin',
       }
       // maxVolume is the pin, not a ceiling on a risk-based size: burn-in

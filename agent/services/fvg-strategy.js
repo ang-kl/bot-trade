@@ -34,6 +34,7 @@
 import { atr } from './fib-strategy.js'
 import { findFvgZones } from '../lib/indicators.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
+import { premiseFields } from '../lib/premise.js'
 
 const MIN_BARS = 60
 const ATR_PERIOD = 14
@@ -165,6 +166,8 @@ export function computeFvgSignal(bars, timeframe, opts = {}) {
     direction_reason: z.dir === 'bull' ? 'fvg:bull_gap_retrace' : 'fvg:bear_gap_retrace',
     entry: round5(entry),
     sl: round5(sl),
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): the far side of the gap.
+    ...premiseFields({ bias, entry, sl, level: z.dir === 'bull' ? z.bottom : z.top }),
     tp1: round5(tp1),
     tp2: round5(z.dir === 'bull' ? tp1 + slDist : tp1 - slDist),
     conviction,

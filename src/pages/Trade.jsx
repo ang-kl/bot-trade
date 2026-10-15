@@ -755,7 +755,9 @@ export default function Trade() {
   }
 
   const [orderOpen, setOrderOpen] = useState(false)
-  const [order, setOrder] = useState({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
+  // Claude · № 14,745 15-Oct (PR-1; owner choice § 14,744): `invalidation` —
+  // the premise price — is required on every manual order, like the stop.
+  const [order, setOrder] = useState({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '', invalidation: '' })
   const [orderResult, setOrderResult] = useState(null)
   const [placing, setPlacing] = useState(false)
   // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the pad can
@@ -770,7 +772,7 @@ export default function Trade() {
   const padKey = checkKey({ order, destination: padDest })
   const padCheckNow = padCheck && padCheck.key === padKey ? padCheck : null
   const runPadCheck = () => {
-    if (!order.symbol.trim() || !order.sl) { setOrderResult({ ok: false, text: 'Symbol and Stop Loss are required' }); return }
+    if (!order.symbol.trim() || !order.sl || !order.invalidation) { setOrderResult({ ok: false, text: 'Symbol, Stop Loss and Invalidation are required' }); return }
     if (padRunner.current.busy()) return
     const key = padKey
     setPadCheck({ key, busy: true, result: null })
@@ -780,13 +782,13 @@ export default function Trade() {
 
   const placeOrder = async () => {
     const sym = order.symbol.toUpperCase().trim()
-    if (!sym || !order.sl) { setOrderResult({ ok: false, text: 'Symbol and Stop Loss are required' }); return }
+    if (!sym || !order.sl || !order.invalidation) { setOrderResult({ ok: false, text: 'Symbol, Stop Loss and Invalidation are required' }); return }
     // SAFE-0a: the confirm names the account the order will reach — the
     // account this page shows when it shows one (sent as `account`), else the
     // primary broker account — and, after a check of these inputs, the size
     // and money at risk.
     if (!window.confirm(manualOrderConfirmText({
-      side: order.side, symbol: sym, sl: order.sl, tp: order.tp,
+      side: order.side, symbol: sym, sl: order.sl, tp: order.tp, invalidation: order.invalidation,
       destination: padDest.accountId != null ? { accountId: padDest.accountId, traderLogin: padDest.traderLogin } : null,
       viewedAccountId: viewedAccountId(),
       primary: !padDest.routed,
@@ -812,7 +814,7 @@ export default function Trade() {
         } else setOrderResult({ ok: false, text: `Risk manager vetoed: ${r.reason}` })
       } else {
         setOrderResult({ ok: true, text: `${r.side} ${r.symbol} ${r.volume} lots @ ${r.executionPrice ?? 'market'}` })
-        setOrder({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
+        setOrder({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '', invalidation: '' })
         setPadCheck(null) // Claude · № 12,955 10-Oct (ordered № 12,954; claude-builder): the check answered the order just sent
         await load()
       }
@@ -967,6 +969,8 @@ export default function Trade() {
                 placeholder="Lots (auto)" aria-label="Lots — blank sizes by risk" title="Blank = risk-based sizing" className="w-[120px] text-(length:--fs-body)" />
               <Input type="number" step="any" value={order.sl} onChange={e => setOrder(o => ({ ...o, sl: e.target.value }))}
                 placeholder="SL — required" aria-label="Stop loss price (required)" className="w-[120px] text-(length:--fs-body)" />
+              <Input type="number" step="any" value={order.invalidation} onChange={e => setOrder(o => ({ ...o, invalidation: e.target.value }))}
+                placeholder="Invalidation — required" aria-label="Invalidation price (required): the price at which the trade's reason has failed; between the stop and the entry" title="The price at which this trade's reason has failed — between the stop and the entry. The bot closes the trade when price touches it." className="w-[120px] text-(length:--fs-body)" />
               <Input type="number" step="any" value={order.tp} onChange={e => setOrder(o => ({ ...o, tp: e.target.value }))}
                 placeholder="TP" aria-label="Take profit price (optional)" className="w-[120px] text-(length:--fs-body)" />
               {/* accent = the pad's single commit action; the variant no longer

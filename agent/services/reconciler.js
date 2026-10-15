@@ -10,6 +10,7 @@ import { PRODUCER_STRATEGY, recoverTradeReason } from './adopted-reasons.js'
 import { brokerCloseReason, LEGACY_BOOK_STOP, receiptInitiatorUnknown, replaceableCloseReason } from './broker-exit-attribution.js'
 import { horizonForStrategy } from './trade-horizon.js'
 import { stampFilledVolume, noReductionOnRecord, clearFilledVolume } from './filled-volume.js'
+import { noPremise } from '../lib/premise.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
 // treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
@@ -843,10 +844,10 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       } else {
         db.prepare(`
           INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
-            thesis, initial_risk, source, strategy, label_raw, account_id, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+            thesis, initial_risk, source, strategy, label_raw, account_id, status, invalidation_trigger)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
         `).run(symbolName, existingOpen.id, side, entry, sl, tp, thesis, initialRisk,
-          adoptedSource, parsed.strategy || null, label || null, acct)
+          adoptedSource, parsed.strategy || null, label || null, acct, noPremise('adopted'))
       }
       relinked.push({ symbol: symbolName, positionId: posId, tradeId: existingOpen.id, desyncKind })
       try {
@@ -912,12 +913,14 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       // strategy."  
       const tradeId = tradeInsert.lastInsertRowid
 
+      // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1; claude-builder):
+      // an adopted position has no strategy premise; the row says so.
       db.prepare(`
         INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
-          thesis, initial_risk, source, strategy, label_raw, account_id, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+          thesis, initial_risk, source, strategy, label_raw, account_id, status, invalidation_trigger)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
       `).run(symbolName, tradeId, side, entry, sl, tp, thesis, initialRisk,
-        adoptedSource, parsed.strategy || null, label || null, acct)
+        adoptedSource, parsed.strategy || null, label || null, acct, noPremise('adopted'))
 
       return tradeId
     })()

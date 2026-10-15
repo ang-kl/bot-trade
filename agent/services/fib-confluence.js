@@ -23,6 +23,7 @@
 
 import { atr, findSwings } from './fib-strategy.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
+import { premiseFields } from '../lib/premise.js'
 
 const RATIOS = [0.382, 0.5, 0.618, 0.786]
 const MIN_BARS = 40
@@ -100,6 +101,8 @@ export function computeFibConfluence(bars, timeframe /*, opts = {} */) {
 
   return {
     bias, entry, sl, tp1, tp2, conviction, rr, timeframe,
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): the far edge of the stacked zone.
+    ...premiseFields({ bias, entry, sl, level: bias === 'long' ? zoneLo : zoneHi }),
     // PR-D: the zone reacted to, stated where the side is decided.
     direction_reason: bias === 'long' ? `fibconf:support_stack_${cluster.length}` : `fibconf:resistance_stack_${cluster.length}`,
     // How many Fib levels stack in the zone — the Trade-Lesson agent's

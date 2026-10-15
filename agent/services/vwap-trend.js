@@ -13,6 +13,7 @@ import { atr } from './fib-strategy.js'
 import { vwapAnchored } from '../lib/indicators.js'
 import { tfMs } from '../lib/timeframes.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
+import { premiseFields } from '../lib/premise.js'
 
 const DAY_MS = 86_400_000, WEEK_MS = 604_800_000, MONTH_MS = 2_592_000_000
 
@@ -90,6 +91,8 @@ export function computeVwapTrend(bars, timeframe /*, opts = {} */) {
     bias, direction_reason, entry, sl, tp1, tp2, conviction, rr, timeframe,
     time_cap_minutes: null,
     strategy: 'vwap_trend',
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): the VWAP line the pullback held.
+    ...premiseFields({ bias, entry, sl, level: v }),
     thesis: bias === 'long'
       ? `Uptrend on ${timeframe} above a rising VWAP. Price pulled back to the VWAP line and closed above it — buying the pullback, stop below the dip, targets 2R/3R.`
       : `Downtrend on ${timeframe} below a falling VWAP. Price bounced to the VWAP line and closed below it — selling the pullback, stop above the bounce, targets 2R/3R.`,

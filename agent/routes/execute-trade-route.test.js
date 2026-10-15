@@ -63,7 +63,7 @@ function fresh({ halt = true } = {}) {
  * a new order is recorded and refused at once (ORDER_ERROR_EVENT), so a test
  * can read the payload the route sent.
  */
-function fakeBroker(close, fill = null, acceptOnly = false, maxVolume = 100_000_000_000) {
+function fakeBroker(close, fill = null, acceptOnly = false, maxVolume = 100_000_000_000, reconcileEmpty = false) {
   const sent = [], orders = []
   class Socket extends EventEmitter {
     constructor() { super(); this.readyState = 1; setImmediate(() => this.emit('open')) }
@@ -87,7 +87,7 @@ function fakeBroker(close, fill = null, acceptOnly = false, maxVolume = 100_000_
           ctidTraderAccountId: m.payload?.ctidTraderAccountId, symbolId: m.payload?.symbolId, period: m.payload?.period,
           trendbar: close == null ? [] : [{ low: Math.round(close * 100_000) - 50, deltaOpen: 0, deltaHigh: 60, deltaClose: 50, utcTimestampInMinutes: minute - 1, volume: 1 }],
         }],
-        [PT.RECONCILE_REQ]: [PT.RECONCILE_RES, { ctidTraderAccountId: m.payload?.ctidTraderAccountId, position: fill == null ? [] : [{ positionId: 33, price: fill, tradeData: { symbolId: SYM_ID, tradeSide: 'BUY', volume: 1_000_000 } }], order: [] }],
+        [PT.RECONCILE_REQ]: [PT.RECONCILE_RES, { ctidTraderAccountId: m.payload?.ctidTraderAccountId, position: (fill == null || reconcileEmpty) ? [] : [{ positionId: 33, price: fill, tradeData: { symbolId: SYM_ID, tradeSide: 'BUY', volume: 1_000_000 } }], order: [] }],
         [PT.SYMBOL_BY_ID_REQ]: [PT.SYMBOL_BY_ID_RES, {
           ctidTraderAccountId: m.payload?.ctidTraderAccountId,
           symbol: [].concat(m.payload?.symbolId ?? []).map(id => ({ symbolId: id, lotSize: 10_000_000, minVolume: 100_000, maxVolume, stepVolume: 100_000, digits: 5, pipPosition: 4 })),
@@ -100,8 +100,8 @@ function fakeBroker(close, fill = null, acceptOnly = false, maxVolume = 100_000_
   return { Socket, sent, orders }
 }
 
-async function serve(t, db, { close = 1.1, fill = null, acceptOnly = false, maxVolume } = {}) {
-  const broker = fakeBroker(close, fill, acceptOnly, maxVolume)
+async function serve(t, db, { close = 1.1, fill = null, acceptOnly = false, maxVolume, reconcileEmpty = false } = {}) {
+  const broker = fakeBroker(close, fill, acceptOnly, maxVolume, reconcileEmpty)
   _setWebSocketForTests(broker.Socket); t.after(() => _setWebSocketForTests(null))
   const app = express(); app.use(express.json()); app.use('/actions', actionsRouter(db))
   const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)) })
@@ -118,9 +118,10 @@ async function serve(t, db, { close = 1.1, fill = null, acceptOnly = false, maxV
   return { post, broker }
 }
 
-const analysis = (db, { bias = 'long', entry = 1.1, sl = 1.09, tp = 1.135, strategy = 'ema_pullback' } = {}) =>
-  Number(db.prepare(`INSERT INTO analyses (symbol, consensus_bias, overall_conviction, synthesis, entry_price, sl_price, tp1_price, strategy, analyzed_at)
-    VALUES (?, ?, 9, '{}', ?, ?, ?, ?, ?)`).run(SYM, bias, entry, sl, tp, strategy, new Date().toISOString()).lastInsertRowid)
+// `invalidation`: the analysis's premise, stored as the monitor reads it (№ 14,775).
+const analysis = (db, { bias = 'long', entry = 1.1, sl = 1.09, tp = 1.135, strategy = 'ema_pullback', invalidation = null } = {}) =>
+  Number(db.prepare(`INSERT INTO analyses (symbol, consensus_bias, overall_conviction, synthesis, entry_price, sl_price, tp1_price, strategy, analyzed_at, invalidation_trigger)
+    VALUES (?, ?, 9, '{}', ?, ?, ?, ?, ?, ?)`).run(SYM, bias, entry, sl, tp, strategy, new Date().toISOString(), invalidation == null ? null : `price${bias === 'long' ? '<' : '>'}${invalidation}`).lastInsertRowid)
 const approval = db => db.prepare('SELECT id, checks_json FROM risk_events WHERE approved = 1 ORDER BY id LIMIT 1').get()
 const flagged = r => new RegExp(`"${POST_APPROVAL_FLAG}"\\s*:\\s*true`).test(String(r.checks_json || ''))
 
@@ -229,7 +230,7 @@ test('P1: the trade row records the stop and target the broker placed from the f
   const db = fresh({ halt: false })
   t.after(() => db.close())
   const { post, broker } = await serve(t, db, { close: 1.1, fill: 1.104 })
-  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, tp: 1.135 }) })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
   assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
   const o = broker.orders[0]
   assert.equal(o.relativeStopLoss, 1000); assert.equal(o.relativeTakeProfit, 3500)
@@ -247,7 +248,7 @@ test('P1: with no price in the order answer, the fill is read from the position,
   const db = fresh({ halt: false })
   t.after(() => db.close())
   const { post } = await serve(t, db, { close: 1.1, fill: 1.104, acceptOnly: true })
-  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, tp: 1.135 }) })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
   assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
   assert.equal(res.executionPrice, 1.104, 'the fill read from the position')
   const row = db.prepare('SELECT entry_price, sl_price, tp_price FROM trades').get()
@@ -266,7 +267,7 @@ test('P1: the trade plan keeps the gate\'s levels and risk; only the live rows t
   const db = fresh({ halt: false })
   t.after(() => db.close())
   const { post } = await serve(t, db, { close: 1.1, fill: 1.104, acceptOnly: true })
-  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, tp: 1.135 }) })
+  const res = await post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
   assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
   const plan = db.prepare('SELECT planned_entry, planned_sl, planned_tp, risk_dist, planned_r FROM trade_plans').get()
   assert.ok(plan, 'a plan was written')
@@ -278,6 +279,39 @@ test('P1: the trade plan keeps the gate\'s levels and risk; only the live rows t
   const pos = db.prepare('SELECT current_sl, current_tp FROM monitored_positions').get()
   assert.ok(Math.abs(pos.current_sl - 1.094) < 1e-9 && Math.abs(pos.current_tp - 1.139) < 1e-9, `the live position keeps the fill's bracket: ${JSON.stringify(pos)}`)
 })
+
+// Claude · № 14,793 15-Oct (Codex rounds 4–5 on #1374; owner "one rule, then
+// merge"; claude-builder). ORDER_ACCEPTED with no price and the position not
+// yet readable: the fill is unknown. A premise is armed only against a known
+// fill — neither the planned entry nor the market estimate stands in — so
+// the row reads `unreadable:fill_unknown` whatever the market shows; the
+// broker stop governs. A recovered fill is what is judged.
+for (const route of ['execute-trade', 'manual-order']) {
+  const place = (post, db) => route === 'execute-trade'
+    ? post('execute-trade', { analysisId: analysis(db, { entry: 1.1, sl: 1.09, invalidation: 1.095, tp: 1.135 }) })
+    : post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135, strategy: 'ema_pullback' })
+  // the manual route judges the typed premise against its entry estimate (the 1m close) before sending, so a close below 1.095 is a 400 there, not a fill case
+  test(`P1 (${route}): with no fill recovered the premise is not armed; a fill read from the position is what is judged`, async t => {
+    for (const close of route === 'execute-trade' ? [1.094, 1.1] : [1.1]) {
+      const db = fresh({ halt: false })
+      t.after(() => db.close())
+      const { post } = await serve(t, db, { close, fill: 1.104, acceptOnly: true, reconcileEmpty: true })
+      const res = await place(post, db)
+      assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
+      assert.equal(res.executionPrice, null, 'no fill was recovered')
+      assert.equal(db.prepare('SELECT invalidation_trigger FROM monitored_positions').get().invalidation_trigger, 'unreadable:fill_unknown', `market ${close}`)
+    }
+    // the fill recovered from the position (1.104; the market reads 1.094) is what is judged: premise 1.095 sits inside 1.094..1.104
+    const db = fresh({ halt: false })
+    t.after(() => db.close())
+    const { post } = await serve(t, db, { close: route === 'execute-trade' ? 1.094 : 1.1, fill: 1.104, acceptOnly: true })
+    const res = await place(post, db)
+    assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
+    assert.equal(res.executionPrice, 1.104, 'the fill read from the position')
+    assert.equal(db.prepare('SELECT invalidation_trigger FROM monitored_positions').get().invalidation_trigger, 'price<1.095')
+    if (route === 'manual-order') assert.equal(db.prepare('SELECT entry_price FROM trades').get().entry_price, 1.104, 'the manual ledger takes the recovered fill too')
+  })
+}
 
 // Claude · № 13,757 12-Oct (demo stress run D2; owner "Send the cap, record it"; claude-builder).
 // Measured on 47790949: JPYX was sized at 107.87 lots, lotsToVolume capped the
@@ -293,7 +327,7 @@ for (const route of ['execute-trade', 'manual-order']) {
     const { post, broker } = await serve(t, db, { fill: 1.1, maxVolume: 200_000 }) // 0.02 lots at lotSize 10,000,000
     const res = route === 'execute-trade'
       ? await post('execute-trade', { analysisId: analysis(db) })
-      : await post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, tp: 1.135, strategy: 'ema_pullback' })
+      : await post('manual-order', { account: A, symbol: SYM, side: 'BUY', sl: 1.09, invalidation: 1.095, tp: 1.135, strategy: 'ema_pullback' })
     assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
     assert.equal(broker.orders.length, 1)
     assert.equal(broker.orders[0].volume, 200_000, 'the broker received the capped volume')

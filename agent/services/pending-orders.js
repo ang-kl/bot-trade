@@ -24,6 +24,7 @@ import { recordTradePlan, recordPlanWriteFailure, exitRuleFor } from './trade-pl
 import { horizonForStrategy } from './trade-horizon.js'
 import { reconcileLotRecord, ensureOwnLotRecord } from '../lib/lot-size-registry.js'
 import { findLimitFill } from './closed-market-limits.js'
+import { noPremise, premiseTriggerForSignal, premiseAtFill } from '../lib/premise.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -191,6 +192,27 @@ export function linkAdoptedFill(db, row, trade, pos = null) {
       }
     }
   } catch { /* the deadline is management metadata; the next pass is unchanged without it */ }
+  // Claude · № 14,759 15-Oct (Codex round 3 on #1374): the reconciler's adopted
+  // row carries none_adopted; the resting row's premise replaces it, re-checked
+  // at the fill the trade row holds against the fill-anchored stop.
+  try {
+    if (row.invalidation_trigger) {
+      const t = db.prepare(`SELECT entry_price, side FROM trades WHERE id = ?`).get(Number(trade.id))
+      const fill = Number(t?.entry_price)
+      const bias = Number(row.dir) < 0 ? 'short' : 'long'
+      const trigger = premiseAtFill({ trigger: row.invalidation_trigger, bias, fill: Number.isFinite(fill) ? fill : null, sl: pendingFillStop(row, fill) })
+      db.prepare(`UPDATE monitored_positions SET invalidation_trigger = ? WHERE trade_id = ? AND status = 'active' AND (invalidation_trigger IS NULL OR invalidation_trigger LIKE 'none_%')`)
+        .run(trigger, Number(trade.id))
+    }
+  } catch { /* the premise is management metadata; the row keeps none_adopted */ }
+}
+
+/** The stop the broker holds after a limit fills: the row's distance, anchored to the fill. */
+function pendingFillStop(row, fill) {
+  const level = Number(row?.level), sl = Number(row?.sl), f = Number(fill)
+  if (!Number.isFinite(level) || !Number.isFinite(sl)) return null
+  if (!Number.isFinite(f) || f <= 0) return sl
+  return f - (Number(row.dir) < 0 ? -1 : 1) * Math.abs(level - sl)
 }
 
 /**
@@ -288,7 +310,12 @@ export function persistFilledTrade(db, row, pos, accountId = null) {
       row.tp ?? null,
       `Pending fib 61.8% limit filled at broker (order ${row.order_id})`,
       initialRisk,
-      null,
+      // Claude · № 14,757 15-Oct (Codex P1 on #1374): the premise the resting
+      // row was placed with; a legacy row without one says so. № 14,759 (Codex
+      // round 3): re-checked at the FILL against the fill-anchored stop, as the
+      // market paths are — a limit can gap-fill beyond its premise.
+      premiseAtFill({ trigger: row.invalidation_trigger || noPremise('pending_fill'), bias: side === 'BUY' ? 'long' : 'short',
+        fill: executionPrice, sl: pendingFillStop(row, executionPrice) }),
       timeCapAt,
       strategy,
       parsedLabel.source,
@@ -748,8 +775,8 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       // resting order cannot be scoped by anything downstream, and the reads
       // that must scope it silently widen to every account instead.
       db.prepare(`
-        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id, time_cap_minutes, strategy, intent_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?, ?, ?)
+        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id, time_cap_minutes, strategy, intent_id, invalidation_trigger)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?, ?, ?, ?)
       `).run(
         symbol,
         timeframe || null,
@@ -772,6 +799,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         // (persistFilledTrade) instead of assuming the literal.
         signal.strategy || proposal.strategy || 'fib_618_fade',
         placedIntentId,
+        premiseTriggerForSignal(signal), // № 14,757: the premise rides the resting row
       )
       try {
         const { recordSubmitted } = await import('./opportunity-disposition.js')

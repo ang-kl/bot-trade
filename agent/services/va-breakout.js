@@ -50,6 +50,7 @@
 import { atr } from './fib-strategy.js'
 import { volumeStructure, inLowVolumeNode } from '../lib/volume-structure.js'
 import { STRATEGY_PREFILTER_RR } from '../lib/strategy-prefilter-rr.js'
+import { premiseFields } from '../lib/premise.js'
 
 const MIN_BARS = 60            // needs at least two sessions of bars in practice
 const ATR_PERIOD = 14
@@ -158,6 +159,8 @@ export function computeVaBreakout(bars, timeframe, opts = {}) {
     tp2,
     conviction,
     rr,
+    // Claude · № 14,745 15-Oct (owner order § 14,741·A PR-1: the premise as a price; claude-builder): back inside the value area, past the broken edge.
+    ...premiseFields({ bias, entry, sl, level }),
     timeframe,
     time_cap_minutes: null,
     strategy: 'va_breakout',
