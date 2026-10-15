@@ -296,3 +296,23 @@ test('projection reuses one formatter per zone and kind — not one per wall-clo
   // clock about ten times. Uncached this is several thousand.
   assert.ok(built <= 2, `formatters built: ${built}`)
 })
+
+test('nextOpenInfo: a start inside a spring-forward gap opens at the gap boundary; an interval wholly inside the gap is skipped (Codex round 4 on #1388)', async () => {
+  const { nextOpenInfo, epochOfNextIntervalStart } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  // DST begins Sun 2026-03-08 02:00 New York: 02:00–03:00 local does not exist.
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('GAPSTART', 21, ?, 'America/New_York')`)
+    .run(JSON.stringify([{ start: 2 * HOUR + 30 * 60, end: 4 * HOUR }]))
+  const sat = new Date(Date.UTC(2026, 2, 7, 12))
+  // The schedule is open from the first instant after the gap (03:00 EDT =
+  // 07:00Z), which is where isSymbolOpenCached already reads open; the
+  // shifted start (07:30Z) would have been 30 minutes late.
+  assert.equal(nextOpenInfo(db, 'GAPSTART', sat).next_open_at, '2026-03-08T07:00:00.000Z')
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('GAPONLY', 22, ?, 'America/New_York')`)
+    .run(JSON.stringify([{ start: 2 * HOUR + 15 * 60, end: 2 * HOUR + 45 * 60 }]))
+  // No instant of that Sunday reads inside 02:15–02:45, so that occurrence
+  // is skipped: the next opening is the following Sunday, 02:15 EDT = 06:15Z.
+  assert.equal(nextOpenInfo(db, 'GAPONLY', sat).next_open_at, '2026-03-15T06:15:00.000Z')
+  // Outside a gap the helper is the plain projection.
+  assert.equal(epochOfNextIntervalStart(sat, 'UTC', [{ start: 1 * DAY, end: 2 * DAY }], 1 * DAY), sat.getTime() + 36 * HOUR * 1000)
+})

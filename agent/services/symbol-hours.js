@@ -274,14 +274,54 @@ export function nextOpenInfo(db, symbol, now = new Date()) {
   for (const iv of schedule) {
     const a = Number(iv.startSecond ?? iv.start)
     if (!Number.isFinite(a)) continue
-    const t = epochOfNextWeekSecond(now, tz, a)
-    if (best == null || t < best) best = t
+    const t = epochOfNextIntervalStart(now, tz, schedule, a)
+    if (t != null && (best == null || t < best)) best = t
   }
   return {
     open: false,
     next_open_at: best != null ? new Date(best).toISOString() : null,
     source: 'broker',
   }
+}
+
+/** Seconds into the week of a WALL epoch (local fields read as UTC). */
+function sowOfWallEpoch(wallMs) {
+  const d = new Date(wallMs)
+  return ((d.getUTCDay() * 24 + d.getUTCHours()) * 60 + d.getUTCMinutes()) * 60 + d.getUTCSeconds()
+}
+
+/**
+ * The next instant the schedule OPENS at interval start `startSow`, by
+ * membership. Ordinarily the projected start itself. Codex round 4 on
+ * #1388: a start inside a spring-forward gap has no instant whose wall
+ * clock reads it; the projection then lands one gap-length late (03:30
+ * for a 02:30 start), while `isOpenBySchedule` already reads open from the
+ * gap's end (03:00). So a gap start resolves to the first instant after the
+ * gap at which the schedule is open, to the minute, and an interval that
+ * lies wholly inside the gap has no opening that week: null, skipped.
+ */
+export function epochOfNextIntervalStart(now, timeZone, schedule, startSow) {
+  let from = now instanceof Date ? now.getTime() : Number(now)
+  // At most two occurrences are examined: a gap swallows one week's
+  // occurrence at most, and the next week's start reads normally.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const t = epochOfNextWeekSecond(from, timeZone, startSow)
+    const wallT = wallClockEpochMs(t, timeZone)
+    const intended = wallT - sowOfWallEpoch(wallT) * 1000 + Number(startSow) * 1000
+    if (wallT === intended) return t
+    // Gap: step back from the shifted start while the wall clock is still
+    // past the transition, keeping the earliest open instant found.
+    let found = null
+    for (let k = 0; k <= 180; k++) {
+      const u = t - k * 60_000
+      const w = wallClockEpochMs(u, timeZone)
+      if (w < intended) break
+      if (isOpenBySchedule(schedule, sowOfWallEpoch(w))) found = u
+    }
+    if (found != null) return found
+    from = t // no open instant this week: the occurrence is skipped
+  }
+  return null
 }
 
 /**
