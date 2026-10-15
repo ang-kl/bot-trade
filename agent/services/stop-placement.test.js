@@ -113,6 +113,19 @@ test('the unrounded stop/ATR ratio picks the bucket; only the returned row is ro
   assert.deepEqual([n['<0.75'], n['0.75-1'], n['1-1.5'], n['>1.5']], [1, 0, 0, 1], 'bucketed on 0.74996 and 1.50004, not on their rounding')
 })
 
+// № 14,971 (Codex P2 round 3 on #1377; owner "Fix the root cause"): a loser
+// whose exact peak is 0.05004R went into profit, though its row shows 0.05;
+// the bucket figures count exact values, not the rounded row.
+test('bucket figures count exact values: a 0.05004R peak is not "never in profit"', () => {
+  const { db, add } = mkDb()
+  add({ id: 1, entry: 100, exit: 90, bsi: 90, atr: 10, gross: -10, net: -10, mp: { ir: 10, mae: -1, mfe: 0.05004 } })
+  add({ id: 2, entry: 100, exit: 90, bsi: 90, atr: 10, gross: -10, net: -10, mp: { ir: 10, mae: -1, mfe: 0.05 } })
+  const r = stopPlacementReport(db, { now: NOW })
+  assert.equal(r.rows.find(x => x.id === 1).mfeR, 0.05, 'the row shows it rounded')
+  assert.deepEqual(r.buckets.find(b => b.bucket === '1-1.5').losersNeverInProfit, { n: 1, of: 2, share: 0.5 }, 'only the 0.05R peak counts')
+  assert.deepEqual(r.byStrategy[0].losersNeverInProfit, { n: 1, of: 2, share: 0.5 })
+})
+
 test('the stop at entry: broker_sl_initial → floored stop → proposal → initial risk → sl_price (never book-trailed)', () => {
   const base = { entry_price: 100, side: 'BUY' }
   assert.deepEqual(stopAtEntryOf({ ...base, broker_sl_initial: 92, stop_floor: { to: 90 }, proposal_sl: 95, initial_risk: 7, sl_price: 99 }), { stop: 92, risk: 8, source: 'broker_sl_initial' })

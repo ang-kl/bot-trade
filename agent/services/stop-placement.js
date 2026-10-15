@@ -161,9 +161,10 @@ export function reviewRow(t) {
       exitKind,
       slippageR: round(slippageR),
     },
-    // № 14,956 (Codex P2 on #1377; owner "Fix both"): the unrounded ratio
-    // decides the bucket; only the returned row is rounded.
-    stopAtrExact: stopAtr,
+    // № 14,956 / № 14,971 (Codex P2 rounds 1 and 3 on #1377; owner "Fix the
+    // root cause"): every bucket figure is computed from these unrounded
+    // values; only the returned row is rounded.
+    exact: { stopAtr, netR, mfeR, slippageR },
   }
 }
 
@@ -194,10 +195,10 @@ export function bucketStats(rows) {
   }
 }
 
-/** Items are `{ row, stopAtrExact }`; the exact ratio picks the bucket (№ 14,956). */
+/** Items are `{ row, exact }`; the exact ratio picks the bucket and the exact values are counted (№ 14,956, № 14,971). */
 function bucketed(items) {
   const keys = [...STOP_ATR_BUCKETS.map(b => b.key), 'no_atr']
-  return keys.map(key => ({ bucket: key, ...bucketStats(items.filter(i => stopAtrBucket(i.stopAtrExact) === key).map(i => i.row)) }))
+  return keys.map(key => ({ bucket: key, ...bucketStats(items.filter(i => stopAtrBucket(i.exact.stopAtr) === key).map(i => i.exact)) }))
 }
 
 /**
@@ -266,7 +267,7 @@ export function stopPlacementReport(db, { account = 'all', days = STOP_PLACEMENT
     buckets: bucketed(items),
     byStrategy: strategies.map(strategy => {
       const own = items.filter(i => (i.row.strategy ?? 'unknown') === strategy)
-      return { strategy, ...bucketStats(own.map(i => i.row)), buckets: bucketed(own) }
+      return { strategy, ...bucketStats(own.map(i => i.exact)), buckets: bucketed(own) }
     }),
     rows: rows.slice(0, STOP_PLACEMENT_ROW_CAP),
     rowsTruncated: rows.length > STOP_PLACEMENT_ROW_CAP,
