@@ -109,7 +109,7 @@ export async function applyAftermathExtension(db, fetchBars, {
     .sort((a, b) => (Number.isFinite(b.closedMs) ? b.closedMs : -Infinity) - (Number.isFinite(a.closedMs) ? a.closedMs : -Infinity) || b.pmId - a.pmId)
   const cursor = parseCursor(from)
 
-  const out = { examined: 0, updated: 0, barsAdded: 0, barsReplaced: 0, barsDropped: 0, verified: 0, alreadyFull: 0, historyStillForming: 0, noNewerBarsYet: 0, noBars: 0, errors: 0, remaining: 0, fetches: 0, resumeFrom: null }
+  const out = { examined: 0, updated: 0, barsAdded: 0, barsReplaced: 0, barsDropped: 0, verified: 0, unavailable: 0, rowsWorked: 0, alreadyFull: 0, historyStillForming: 0, noNewerBarsYet: 0, noBars: 0, errors: 0, remaining: 0, fetches: 0, resumeFrom: null }
   // Claude · № 15,001 15-Oct (owner: "#35 forming bar — repair on next run" after № 14,989; claude-builder). bars_json and its verification stamp are the only columns written.
   const updBars = db.prepare('UPDATE trade_postmortems SET bars_json = ? WHERE id = ?')
   const updBoth = db.prepare('UPDATE trade_postmortems SET bars_json = ?, bars_verified_at = ? WHERE id = ?')
@@ -161,7 +161,11 @@ export async function applyAftermathExtension(db, fetchBars, {
     if (full && !needsVerify) { out.alreadyFull++; continue }
     if (!full && now < closedMs + (target + 2) * ms) { out.historyStillForming++; continue }
 
-    if (out.updated >= maxRows || out.errors >= maxErrors || out.fetches >= maxFetches) {
+    // № 15,001 Codex P2 on #1379 (owner: "Fix both"): a row that only
+    // verified (stamped, nothing written) consumes the row budget like an
+    // updated one, so `batch: 1` is one row's broker calls, not the fetch
+    // budget's worth.
+    if (out.rowsWorked >= maxRows || out.errors >= maxErrors || out.fetches >= maxFetches) {
       if (!out.resumeFrom) out.resumeFrom = `${closedMs}:${r.pmId}`
       out.remaining++
       continue
@@ -188,6 +192,7 @@ export async function applyAftermathExtension(db, fetchBars, {
     const add = [], repl = []
     let failed = false
     let reachedNow = false
+    let sawNewest = false // the newest stored bar came back: the re-read happened
     for (let w = 0; w < MAX_WINDOWS && (first || add.length < needed); w++) {
       const endMs = Math.min(now, start + windowSlots * ms)
       if (endMs <= start) { reachedNow = true; break }
@@ -205,6 +210,7 @@ export async function applyAftermathExtension(db, fetchBars, {
         .sort((x, y) => x.t - y.t)
       for (const b of got) {
         const bar = [b.t, b.o, b.h, b.l, b.c, b.v ?? null]
+        if (b.t === tN) sawNewest = true
         if (have.has(b.t)) { if (first) repl.push(bar) }
         else { have.set(b.t, bar); add.push(bar) }
       }
@@ -235,15 +241,26 @@ export async function applyAftermathExtension(db, fetchBars, {
     let changed = false
     for (const b of repl) { if (!sameBar(byT.get(b[0]), b)) { byT.set(b[0], b); changed = true; out.barsReplaced++ } }
     for (const b of add) { byT.set(b[0], b); changed = true }
+    // № 15,001 Codex P1 on #1379 (owner: "Fix both"): the stamp says the
+    // newest stored bar was re-read. A row beyond the broker's retention
+    // answers with nothing — `needed` 0, nothing replaced — and must not be
+    // stamped as verified: it records `unavailable:<time>` instead, one
+    // fetch and then skipped like a verified row, but the value says the
+    // broker had nothing, never that the bars were checked.
+    const stampValue = sawNewest ? verifiedAt : (needsVerify && needed === 0 && !add.length ? `unavailable:${verifiedAt}` : null)
     if (changed) {
       const merged = [...byT.values()].sort((a, b) => a[0] - b[0])
-      updBoth.run(JSON.stringify(merged), verifiedAt, r.pmId)
+      if (sawNewest) updBoth.run(JSON.stringify(merged), verifiedAt, r.pmId)
+      else updBars.run(JSON.stringify(merged), r.pmId)
       out.updated++
       out.barsAdded += add.length
-    } else if (needsVerify) {
-      stamp.run(verifiedAt, r.pmId)
+      out.rowsWorked++
+    } else if (needsVerify && stampValue) {
+      stamp.run(stampValue, r.pmId)
+      out.rowsWorked++
     }
-    if (needsVerify) out.verified++
+    if (needsVerify && sawNewest) out.verified++
+    else if (needsVerify && stampValue) out.unavailable++
   }
   out.examinedTotal = rows.length
   return out

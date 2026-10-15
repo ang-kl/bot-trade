@@ -16,7 +16,8 @@ const noSleep = { throttleMs: 0 }
 
 function seedRow(db, { closedAgoMs = 48 * H, afterBars = 5, tf = '15m', symbol = 'ADAUSD', verified = false } = {}) {
   const tfm = tfMsOf(tf)
-  const closedMs = Date.now() - closedAgoMs
+  // № 15,001: on the bar grid, as a broker's bars are (the fake below answers on the grid too)
+  const closedMs = Math.floor((Date.now() - closedAgoMs) / tfm) * tfm
   const bars = Array.from({ length: afterBars + 3 }, (_, i) => {
     const t = closedMs + (i - 2) * tfm
     return [t, 100, 100.5, 99.5, 100, 0]
@@ -36,8 +37,9 @@ const tfMsOf = (tf) => tf === '15m' ? 15 * MIN : tf === '4h' ? 4 * H : tf === '8
 /** A broker that has every bar: returns `count` bars ending at endMs. */
 const fullHistory = async (_sym, tf, count, endMs) => {
   const tfm = tfMsOf(tf)
+  const last = Math.floor(endMs / tfm) * tfm // bars sit on the timeframe grid
   return Array.from({ length: count }, (_, i) => {
-    const t = endMs - (count - 1 - i) * tfm
+    const t = last - (count - 1 - i) * tfm
     return { t, o: 100, h: 100.5, l: 99.5, c: 100, v: 1 }
   })
 }
@@ -383,4 +385,47 @@ test('#35: an unverified full row counts against the budget and is reached from 
   assert.ok(closedAt(db, 1) && closedAt(db, 2), 'both stamped')
   const third = await applyAftermathExtension(db, weekdayBroker(), { ...noSleep, now })
   assert.equal(third.verified, 0); assert.equal(third.alreadyFull, 2, 'nothing left to re-read')
+})
+
+// ── № 15,001 Codex round 1 on #1379 (owner: "Fix both, then merge when green") ──
+test('P1: a full row the broker has nothing for is NOT stamped verified; it records unavailable, one fetch, then is skipped', async () => {
+  const db = initDB(':memory:')
+  const closedMs = Date.UTC(2026, 8, 8, 10)
+  seedAt(db, { closedMs, afterBars: REPLAY_AFTERMATH_BARS + 2 })
+  const bars = storedAll(db); const k = bars.findIndex(b => b[0] === Date.UTC(2026, 8, 8, 12))
+  bars[k] = [bars[k][0], 100, 100.1, 99.9, 100, 0] // the capture-time bar, stored partial
+  db.prepare(`UPDATE trade_postmortems SET bars_json = ?, created_at = '2026-09-08 12:20:00' WHERE id = 1`).run(JSON.stringify(bars))
+  const calls = []
+  const nothing = async (...a) => { calls.push(a); return [] } // beyond retention: a successful, empty answer
+  const one = await applyAftermathExtension(db, nothing, { ...noSleep, now: closedMs + 20 * DAY })
+  assert.equal(calls.length, 1)
+  assert.equal(one.verified, 0, 'RED before: the row was stamped verified although nothing was re-read')
+  assert.equal(one.unavailable, 1); assert.equal(one.errors, 0); assert.equal(one.updated, 0)
+  assert.match(closedAt(db), /^unavailable:/, 'the record says the broker had nothing, not that the bars were checked')
+  assert.deepEqual(storedAll(db)[k], bars[k], 'the partial bar is left as it is, never invented')
+  const two = await applyAftermathExtension(db, nothing, { ...noSleep, now: closedMs + 21 * DAY })
+  assert.equal(calls.length, 1, 'no second fetch'); assert.equal(two.alreadyFull, 1)
+  // a broker that answers with bars but not the newest stored one: the newest bar was not re-read, so the row is
+  // recorded unavailable too (never verified), and the other bars it did return are kept as they came
+  const db2 = initDB(':memory:')
+  seedAt(db2, { closedMs, afterBars: REPLAY_AFTERMATH_BARS + 2 })
+  const tN = storedAll(db2).pop()[0]
+  const partial = async (_s, tf, count, endMs) => (await weekdayBroker()(_s, tf, count, endMs)).filter(b => b.t !== tN)
+  const r2 = await applyAftermathExtension(db2, partial, { ...noSleep, now: closedMs + 20 * DAY })
+  assert.equal(r2.verified, 0); assert.equal(r2.unavailable, 1); assert.match(closedAt(db2), /^unavailable:/, 'the newest bar did not come back: not verified')
+})
+
+test('P2: a verification-only row consumes the row budget — batch 1 is one row, resumable from the cursor', async () => {
+  const db = initDB(':memory:')
+  const now = FRI_20 + 40 * DAY
+  for (let i = 0; i < 3; i++) seedAt(db, { closedMs: FRI_20 - i * DAY, afterBars: REPLAY_AFTERMATH_BARS + 2, symbol: `FULL${i}` })
+  // the stored bars already equal the broker's, so a re-read changes nothing
+  for (const id of [1, 2, 3]) db.prepare('UPDATE trade_postmortems SET bars_json = ? WHERE id = ?').run(JSON.stringify(storedAll(db, id).map(b => [b[0], 100, 100.5, 99.5, 100, 1])), id)
+  const calls = []
+  const first = await applyAftermathExtension(db, weekdayBroker(calls), { ...noSleep, now, maxRows: 1 })
+  assert.equal(first.verified, 1); assert.equal(first.updated, 0)
+  assert.equal(calls.length, 1, 'RED before: batch 1 verified every unverified row up to the fetch budget')
+  assert.equal(first.remaining, 2); assert.match(first.resumeFrom, /^\d+:2$/)
+  const second = await applyAftermathExtension(db, weekdayBroker(calls), { ...noSleep, now, maxRows: 5, from: first.resumeFrom })
+  assert.equal(second.verified, 2); assert.equal(second.remaining, 0); assert.equal(calls.length, 3)
 })

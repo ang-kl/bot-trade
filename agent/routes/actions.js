@@ -2758,7 +2758,7 @@ export default function actionsRouter(db, deps = {}) {
       }
       const out = await applyAftermathExtension(db, fetchBars, { maxRows: batch, from })
       // № 15,001 (#35): the re-read counters ride on the same line.
-      console.log(`[aftermath] extend applied: updated=${out.updated} barsAdded=${out.barsAdded} barsReplaced=${out.barsReplaced} barsDropped=${out.barsDropped} verified=${out.verified} noNewerBarsYet=${out.noNewerBarsYet} errors=${out.errors} remaining=${out.remaining}${out.resumeFrom ? ` resumeFrom=${out.resumeFrom}` : ''}`)
+      console.log(`[aftermath] extend applied: updated=${out.updated} barsAdded=${out.barsAdded} barsReplaced=${out.barsReplaced} barsDropped=${out.barsDropped} verified=${out.verified} unavailable=${out.unavailable} noNewerBarsYet=${out.noNewerBarsYet} errors=${out.errors} remaining=${out.remaining}${out.resumeFrom ? ` resumeFrom=${out.resumeFrom}` : ''}`)
       res.json({ ok: true, ...out })
     } catch (err) {
       res.status(502).json({ error: err.message })
