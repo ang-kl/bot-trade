@@ -162,3 +162,72 @@ test('nextOpenInfo: open symbol → open:true; closed → next interval start pr
   const btc = nextOpenInfo(db, 'BTCUSD', sat)
   assert.equal(btc.next_open_at, null)
 })
+
+// Claude · № 15,08x 16-Oct (Codex P2 round 2 on #1382, owner: "book as a
+// follow-up"; claude-builder). Expected instants are the IANA zone's own
+// rules (America/New_York: DST begins Sun 2026-03-08 02:00 local, ends Sun
+// 2026-11-01 02:00 local) applied to a Monday 09:30 local open — Codex's
+// worked example (Fri 2026-03-06 noon → Mon 09:30 is 13:30Z, not 14:30Z).
+const NY_OPEN_MON_0930 = [{ start: 1 * DAY + 9 * HOUR + 30 * 60, end: 1 * DAY + 16 * HOUR }]
+
+test('nextOpenInfo: a DST change between now and the boundary does not shift next_open_at by an hour (spring)', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('NYSTOCK', 7, ?, 'America/New_York')`)
+    .run(JSON.stringify(NY_OPEN_MON_0930))
+  // Fri 2026-03-06 12:00 EST (17:00Z); DST starts that Sunday.
+  const friNoonEst = new Date(Date.UTC(2026, 2, 6, 17, 0, 0))
+  const read = nextOpenInfo(db, 'NYSTOCK', friNoonEst)
+  assert.equal(read.open, false)
+  // Mon 2026-03-09 09:30 EDT = 13:30Z. The wall-clock-seconds projection
+  // (now + delta) read 14:30Z — one hour late, the whole first half of the
+  // 2 h pre-open window lost.
+  assert.equal(read.next_open_at, '2026-03-09T13:30:00.000Z')
+})
+
+test('nextOpenInfo: the autumn change projects the local open to the later UTC instant (fall)', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('NYSTOCK', 7, ?, 'America/New_York')`)
+    .run(JSON.stringify(NY_OPEN_MON_0930))
+  // Fri 2026-10-30 12:00 EDT (16:00Z); DST ends that Sunday.
+  const friNoonEdt = new Date(Date.UTC(2026, 9, 30, 16, 0, 0))
+  const read = nextOpenInfo(db, 'NYSTOCK', friNoonEdt)
+  assert.equal(read.open, false)
+  // Mon 2026-11-02 09:30 EST = 14:30Z (the old projection read 13:30Z —
+  // an hour early, admitting the symbol to the pre-open window an hour soon).
+  assert.equal(read.next_open_at, '2026-11-02T14:30:00.000Z')
+})
+
+test('nextOpenInfo: no transition in between → unchanged projection', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('NYSTOCK', 7, ?, 'America/New_York')`)
+    .run(JSON.stringify(NY_OPEN_MON_0930))
+  // Fri 2026-07-10 12:00 EDT (16:00Z) → Mon 2026-07-13 09:30 EDT = 13:30Z, 69.5 h later.
+  const friNoonJuly = new Date(Date.UTC(2026, 6, 10, 16, 0, 0))
+  const read = nextOpenInfo(db, 'NYSTOCK', friNoonJuly)
+  assert.equal(read.next_open_at, '2026-07-13T13:30:00.000Z')
+  assert.equal(new Date(read.next_open_at).getTime() - friNoonJuly.getTime(), 69.5 * HOUR * 1000)
+})
+
+test('epochOfNextWeekSecond: UTC is the identity projection; a gap-time target never resolves before the gap ends', async () => {
+  const { epochOfNextWeekSecond, wallClockEpochMs } = await import('./symbol-hours.js')
+  const sat = new Date(Date.UTC(2026, 6, 18, 12))
+  assert.equal(epochOfNextWeekSecond(sat, 'UTC', 1 * DAY), sat.getTime() + 36 * HOUR * 1000)
+  // Same wall second as now → a full week ahead, never "now".
+  assert.equal(epochOfNextWeekSecond(sat, 'UTC', 6 * DAY + 12 * HOUR), sat.getTime() + 7 * DAY * 1000)
+  // Unknown zone → the UTC fallback secondsIntoWeek also takes.
+  assert.equal(epochOfNextWeekSecond(sat, 'Not/AZone', 1 * DAY), sat.getTime() + 36 * HOUR * 1000)
+  // Wall epoch: Sat 2026-03-07 12:00Z is 07:00 EST → wall 07:00 "UTC".
+  const satMar = new Date(Date.UTC(2026, 2, 7, 12))
+  assert.equal(wallClockEpochMs(satMar, 'America/New_York'), Date.UTC(2026, 2, 7, 7))
+  // Sun 2026-03-08 02:30 New York does not exist (02:00 → 03:00). The
+  // documented resolution is the offset read after the gap: 07:30Z
+  // (03:30 EDT), one hour later by the wall clock and not before the
+  // gap's end at 07:00Z. Self-derived: no broker schedule opens inside a
+  // DST gap; this pins the rule, not a broker fact.
+  const inGap = epochOfNextWeekSecond(satMar, 'America/New_York', 2 * HOUR + 30 * 60)
+  assert.ok(inGap >= Date.UTC(2026, 2, 8, 7, 0), 'not before the gap ends')
+  assert.equal(inGap, Date.UTC(2026, 2, 8, 7, 30))
+})
