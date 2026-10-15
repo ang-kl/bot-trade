@@ -399,6 +399,14 @@ export function decideProfitKeeper(cfg, {
  * comparison; the row's recorded peak (mfe_r) is passed only when the row's
  * side and entry are that broker position's — a stale plan estimate or an
  * earlier leg's peak is not evidence for this one.
+ *
+ * № 14,840 (Codex round 2 on #1375, P1; owner "fix both in this PR"): the
+ * evidence is EXIT-SIDE — profit at a price the position could close at.
+ * The peak is mfe_exit_r (recorded at the bid for a long, the ask for a
+ * short; exit-excursion.js), not the mid-based mfe_r. The keeper's close is
+ * a 1m trendbar close, which cTrader quotes on the bid: the exit price for a
+ * long, but not for a short (its exit is the ask, not in hand here), so a
+ * short is judged by its exit-side peak alone.
  */
 export function sinceEntryProfitEvidence(row, bp, price) {
   const td = bp?.tradeData || {}
@@ -412,7 +420,8 @@ export function sinceEntryProfitEvidence(row, bp, price) {
   const entry = brokerEntry ?? rowEntry
   const sameBasis = brokerDir !== 0 && rowDir === brokerDir && brokerEntry != null && rowEntry != null
     && Math.abs(rowEntry - brokerEntry) <= brokerEntry * 1e-9
-  return { profitSide: dir === -1 ? 'SELL' : dir === 1 ? 'BUY' : null, profitEntry: entry, price, mfeR: sameBasis ? row.mfe_r : null }
+  return { profitSide: dir === -1 ? 'SELL' : dir === 1 ? 'BUY' : null, profitEntry: entry,
+    price: dir === 1 ? price : null, mfeR: sameBasis ? row.mfe_exit_r : null }
 }
 
 function keeperPeakBasis(row, bp, accountId) {
@@ -514,7 +523,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp, mp.peak_profit_usd, mp.keeper_peak_state,
               mp.scaled_out, mp.trade_id, mp.account_id, mp.status, t.ctrader_position_id AS position_id,
-              t.sl_price AS original_sl, mp.early_trimmed, mp.initial_risk, mp.mfe_r
+              t.sl_price AS original_sl, mp.early_trimmed, mp.initial_risk, mp.mfe_exit_r
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NULL

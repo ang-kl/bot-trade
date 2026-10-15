@@ -75,7 +75,11 @@ export function tradeManagementOutcome(db, trade) {
       SELECT kind, source, reason, from_value, to_value, price_at, at
         FROM position_events
        WHERE trade_id = ?
-       ORDER BY id
+       -- № 14,840 (Codex round 2 on #1375, P2; owner "fix both in this PR"):
+       -- the native engine's amends are pulled from the sidecar after the
+       -- fact, so a trail_tightened row can carry a newer id than a later
+       -- sl_moved. Order by the time each happened, then the row id.
+       ORDER BY julianday(at), id
     `).all(trade.id)
   } catch { return null }
   if (!events.length) return null
