@@ -1,5 +1,11 @@
 // agent/lib/quiet-hours.js — weekend quiet hours for recommendations.
 //
+// Claude · № 15,054 16-Oct: the SCAN LIST no longer reads the weekend rule or
+// the crypto exemption below — `scanSymbolsNow` at the end of this file is the
+// one open-market rule. `weekendQuietNow`/`quietUntilMs` remain for the
+// decision audit's and heartbeat's `marketOpen` reading; `recommendableToday`
+// for the recommendation day rule.
+//
 // Owner (01-08-2026, Saturday): "i don't need any Telegram recommendation or
 // scan until Monday (1 AM) before Sydney open or day of the market open so it
 // is more realistic with the market's fundamentals."
@@ -61,35 +67,6 @@ export function quietUntilMs(nowMs = Date.now()) {
 }
 
 /**
- * Watchlist entries still scannable during weekend quiet — the crypto
- * exemption. Outside the quiet window the list passes through untouched.
- * Inside it, only crypto survives. `categorise` is injected
- * (lib/sessions.js categoriseSymbol) so this module stays dependency-free
- * and the filter is testable; a categoriser failure counts as NOT crypto —
- * quiet hours fail quiet, never loud.
- *
- * @param {Array<{symbol:string}>} watch enabled watchlist entries
- * @param {(symbol:string)=>string} categorise
- * @returns {{quiet:boolean, symbols:Array<{symbol:string}>}}
- */
-export function quietScanSymbols(watch, categorise, nowMs = Date.now(), opts = {}) {
-  if (!weekendQuietNow(nowMs)) return { quiet: false, symbols: watch }
-  const hoursFor = typeof opts.hoursFor === 'function' ? opts.hoursFor : null
-  const preOpenHours = preOpenHoursFrom(opts.preOpenHours)
-  const preOpen = []
-  const symbols = (watch || []).filter(w => {
-    try { if (categorise(w.symbol) === 'crypto') return true } catch { /* not crypto */ }
-    if (!hoursFor) return false
-    let hours = null
-    try { hours = hoursFor(w.symbol) } catch { return false }
-    if (!inPreOpenWindow(hours, nowMs, preOpenHours)) return false
-    preOpen.push(w.symbol)
-    return true
-  })
-  return { quiet: true, symbols, preOpen }
-}
-
-/**
  * PRE-OPEN WINDOW (owner, 09-08-2026): "some markets which open on Monday
  * should start monitoring and set pre-trade 6 hours before and reacts to the
  * market."
@@ -118,7 +95,12 @@ export function quietScanSymbols(watch, categorise, nowMs = Date.now(), opts = {
  * default runs the other way: this function ADDS symbols to a deliberately
  * silenced window, so "we do not know when it opens" must not become "scan it".
  */
-export const PRE_OPEN_HOURS_DEFAULT = 6
+// Claude · № 15,054 16-Oct (owner: "the pre-order activities are conducted two
+// hours before market-open to place order ahead"; claude-builder): the window
+// is two hours. The 09-08 "6 hours before" default above is superseded by that
+// order; the `pre_open_hours` state override keeps working, and the loop's log
+// line prints the window so the deployed value is read, not assumed.
+export const PRE_OPEN_HOURS_DEFAULT = 2
 const MAX_PRE_OPEN_HOURS = 48
 
 /** Clamp the configured window; a bad value falls back rather than disabling. */
@@ -173,4 +155,52 @@ export function recommendableToday(hours, nowMs = Date.now()) {
   const { msIntoDay } = sgtParts(nowMs)
   const endOfDaySgt = nowMs - msIntoDay + DAY_MS
   return nextMs < endOfDaySgt
+}
+
+/**
+ * Claude · № 15,054 16-Oct (owner: "Build the scan only if market is opened thus
+ * don't need the switch to indicate weekend or weekdays … the pre-order
+ * activities are conducted two hours before market-open to place order ahead.
+ * when market is open, the scan fresh symbols and analysis on pre-order are
+ * also done"; claude-builder).
+ *
+ * ONE OPEN-MARKET RULE for the scan list, no calendar switch. A symbol is in
+ * the rotation when, per its broker schedule (`hoursFor`, the nextOpenInfo
+ * shape {open, next_open_at, source}),
+ *   · its market is OPEN now, or
+ *   · it is closed and opens within the pre-open window (default 2 h): the
+ *     scan analyses it on the last closed session and the closed-market path
+ *     rests a LIMIT at the setup's entry — the pre-order placed ahead; at the
+ *     open the symbol is open and simply scanned again, so the pre-order's
+ *     analysis is refreshed by the ordinary rotation, or
+ *   · its hours are UNKNOWN (no broker schedule, a heuristic source, or a
+ *     resolver that throws): closure needs evidence, so the symbol stays and
+ *     is counted in `unknown`.
+ * Closed and not opening soon: left out until its open. Weekends fall out of
+ * the same rule — on Saturday only crypto is open, so only crypto is scanned;
+ * Sunday 03:00 SGT Sydney FX enters through the window — which is what the
+ * Saturday-to-Monday switch and the crypto exemption used to hard-code. Held
+ * positions are not a scan concern: the monitor refreshes held prices itself
+ * (services/held-prices.js). Batch size, cursor and spike priority are
+ * unchanged.
+ *
+ * @param {Array<{symbol:string}>} watch enabled watchlist entries
+ * @returns {{symbols:Array, skippedClosed:string[], preOpen:string[], unknown:number}}
+ */
+export function scanSymbolsNow(watch, nowMs = Date.now(), opts = {}) {
+  const hoursFor = typeof opts.hoursFor === 'function' ? opts.hoursFor : null
+  const preOpenHours = preOpenHoursFrom(opts.preOpenHours)
+  const skippedClosed = [], preOpen = []
+  let unknown = 0
+  const symbols = (watch || []).filter(w => {
+    if (!hoursFor) { unknown++; return true }
+    let hours = null
+    try { hours = hoursFor(w.symbol) } catch { hours = null }
+    if (!hours || typeof hours !== 'object' || hours.source !== 'broker') { unknown++; return true }
+    if (hours.open === true) return true
+    if (inPreOpenWindow(hours, nowMs, preOpenHours)) { preOpen.push(w.symbol); return true }
+    skippedClosed.push(w.symbol)
+    return false
+  })
+  return { symbols, skippedClosed, preOpen, unknown }
 }

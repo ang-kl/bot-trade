@@ -1,8 +1,7 @@
 // node --test agent/lib/quiet-hours.test.js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { weekendQuietNow, quietUntilMs, quietScanSymbols, recommendableToday } from './quiet-hours.js'
-import { categoriseSymbol } from './sessions.js'
+import { weekendQuietNow, quietUntilMs, recommendableToday, scanSymbolsNow } from './quiet-hours.js'
 
 // SGT = UTC+8. Helper: an SGT wall-clock instant as ms epoch.
 const sgt = (y, m, d, h = 0, min = 0) => Date.UTC(y, m - 1, d, h - 8, min)
@@ -23,28 +22,6 @@ test('quietUntilMs answers Monday 01:00 SGT from anywhere in the window', () => 
   assert.equal(quietUntilMs(sgt(2026, 8, 2, 22, 0)), mondayOne)  // from Sunday
   assert.equal(quietUntilMs(sgt(2026, 8, 3, 0, 30)), mondayOne)  // from Monday 00:30
   assert.equal(quietUntilMs(sgt(2026, 8, 4, 10, 0)), null)       // Tuesday: not quiet
-})
-
-test('quietScanSymbols: crypto-only inside the window, untouched outside', () => {
-  const watch = [
-    { symbol: 'EURUSD' }, { symbol: 'BTCUSD' }, { symbol: 'XAUUSD' },
-    { symbol: 'ETHUSD' }, { symbol: 'NAS100' },
-  ]
-  // Friday night — not quiet: the whole list passes through, same reference.
-  const friday = quietScanSymbols(watch, categoriseSymbol, sgt(2026, 7, 31, 23, 0))
-  assert.equal(friday.quiet, false)
-  assert.equal(friday.symbols, watch)
-  // Sunday — quiet: only crypto survives (owner-approved exemption).
-  const sunday = quietScanSymbols(watch, categoriseSymbol, sgt(2026, 8, 2, 12, 0))
-  assert.equal(sunday.quiet, true)
-  assert.deepEqual(sunday.symbols.map(w => w.symbol), ['BTCUSD', 'ETHUSD'])
-  // No crypto on the watchlist → quiet stays fully quiet.
-  const noCrypto = quietScanSymbols([{ symbol: 'EURUSD' }], categoriseSymbol, sgt(2026, 8, 1, 9, 0))
-  assert.equal(noCrypto.quiet, true)
-  assert.deepEqual(noCrypto.symbols, [])
-  // A throwing categoriser counts as NOT crypto — quiet fails quiet.
-  const boom = quietScanSymbols(watch, () => { throw new Error('boom') }, sgt(2026, 8, 2, 12, 0))
-  assert.deepEqual(boom.symbols, [])
 })
 
 test('recommendableToday: open now, opens today, opens tomorrow, unknown', () => {
@@ -74,9 +51,11 @@ const SUN = Date.parse('2026-08-09T12:00:00Z')   // Sunday 20:00 SGT — deep in
 const hrs = (h) => new Date(SUN + h * 3_600_000).toISOString()
 
 test('a symbol opening inside the window is pre-open; outside it is not', () => {
-  assert.equal(inPreOpenWindow({ open: false, next_open_at: hrs(5) }, SUN), true)
-  assert.equal(inPreOpenWindow({ open: false, next_open_at: hrs(6) }, SUN), true, 'boundary is inclusive')
-  assert.equal(inPreOpenWindow({ open: false, next_open_at: hrs(7) }, SUN), false)
+  // Claude · № 15,054 16-Oct: the default window is the owner's two hours.
+  assert.equal(inPreOpenWindow({ open: false, next_open_at: hrs(1) }, SUN), true)
+  assert.equal(inPreOpenWindow({ open: false, next_open_at: hrs(2) }, SUN), true, 'boundary is inclusive')
+  assert.equal(inPreOpenWindow({ open: false, next_open_at: hrs(3) }, SUN), false)
+  assert.equal(inPreOpenWindow({ open: false, next_open_at: hrs(5) }, SUN, 6), true, 'a wider override still works')
 })
 
 test('already open is NOT pre-open', () => {
@@ -108,38 +87,64 @@ test('the window size rejects the empty values before coercing', () => {
   assert.equal(preOpenHoursFrom(999), 48, 'clamped, not unbounded')
 })
 
-test('THE POINT: quiet-hours now admits a symbol six hours before ITS open', () => {
-  const watch = [
-    { symbol: 'BTCUSD' },   // crypto — already exempt
-    { symbol: 'JPN225' },   // opens in 4h  → pre-open, admitted
-    { symbol: 'GER40' },    // opens in 20h → still quiet
-    { symbol: 'NAS100' },   // no schedule  → still quiet
-  ]
-  const categorise = (s) => (s === 'BTCUSD' ? 'crypto' : 'index')
-  const hoursFor = (s) => ({
-    JPN225: { open: false, next_open_at: hrs(4) },
-    GER40: { open: false, next_open_at: hrs(20) },
-  }[s] ?? null)
-
-  const before = quietScanSymbols(watch, categorise, SUN)
-  assert.deepEqual(before.symbols.map(w => w.symbol), ['BTCUSD'], 'no resolver → today\'s behaviour, unchanged')
-
-  const after = quietScanSymbols(watch, categorise, SUN, { hoursFor })
-  assert.deepEqual(after.symbols.map(w => w.symbol), ['BTCUSD', 'JPN225'])
-  assert.deepEqual(after.preOpen, ['JPN225'], 'and it says WHICH ones it let through')
+// ── Claude · № 15,054 16-Oct (owner: "Build the scan only if market is opened thus don't need the switch to indicate weekend or weekdays … the pre-order activities are conducted two hours before market-open"; claude-builder) ──
+// Expected outcomes: the broker schedule shape nextOpenInfo returns
+// ({open, next_open_at, source}); fixture times are self-derived.
+test('the pre-open window defaults to the owner\'s two hours', () => {
+  assert.equal(PRE_OPEN_HOURS_DEFAULT, 2)
 })
 
-test('a resolver that throws leaves the symbol quiet — quiet hours fail quiet', () => {
-  const watch = [{ symbol: 'GER40' }]
-  const boom = () => { throw new Error('SQLITE_BUSY') }
-  const r = quietScanSymbols(watch, () => 'index', SUN, { hoursFor: boom })
-  assert.deepEqual(r.symbols, [])
+test('scanSymbolsNow: open and pre-open (within 2h) symbols stay, unknown hours stay and are counted, closed-not-soon leaves the rotation', () => {
+  const now = Date.UTC(2026, 9, 15, 3, 0) // Thursday 11:00 SGT: Asian session, US shares closed
+  const H = 3_600_000
+  const hours = {
+    EURUSD: { open: true, next_open_at: null, source: 'broker' },
+    'AAPL.US': { open: false, next_open_at: now + 10.5 * H, source: 'broker' },   // opens 13:30 UTC
+    GER40: { open: false, next_open_at: now + 1.5 * H, source: 'broker' },        // pre-open: within 2 h
+    JPN225: { open: false, next_open_at: now + 2 * H + 60_000, source: 'broker' }, // 2 h 1 min out: not yet
+    NEWSYM: { open: false, next_open_at: null, source: 'heuristic' },              // no broker schedule yet
+  }
+  const watch = Object.keys(hours).map(symbol => ({ symbol }))
+  const pick = scanSymbolsNow(watch, now, { hoursFor: (s) => hours[s] })
+  assert.deepEqual(pick.symbols.map(w => w.symbol), ['EURUSD', 'GER40', 'NEWSYM'])
+  assert.deepEqual(pick.skippedClosed, ['AAPL.US', 'JPN225'], 'RED before: every enabled symbol stayed in the weekday rotation')
+  assert.deepEqual(pick.preOpen, ['GER40']); assert.equal(pick.unknown, 1)
+  // a resolver that throws counts as unknown and keeps the symbol: closure needs evidence
+  const boom = scanSymbolsNow(watch, now, { hoursFor: () => { throw new Error('boom') } })
+  assert.equal(boom.symbols.length, watch.length); assert.equal(boom.unknown, watch.length)
+  // no resolver at all: nothing is skipped
+  assert.equal(scanSymbolsNow(watch, now).skippedClosed.length, 0)
+  // the window override is honoured: JPN225 is inside a 6 h window
+  const wide = scanSymbolsNow(watch, now, { hoursFor: (s) => hours[s], preOpenHours: 6 })
+  assert.deepEqual(wide.preOpen, ['GER40', 'JPN225'])
 })
 
-test('outside quiet hours the list still passes through untouched', () => {
-  const MON = Date.parse('2026-08-10T02:00:00Z') // Monday 10:00 SGT
-  const watch = [{ symbol: 'GER40' }, { symbol: 'BTCUSD' }]
-  const r = quietScanSymbols(watch, () => 'index', MON, { hoursFor: () => null })
-  assert.equal(r.quiet, false)
-  assert.equal(r.symbols.length, 2)
+test('scanSymbolsNow: a weekend needs no switch — on a Saturday only the 24/7 market is open by its own schedule', () => {
+  const SAT = sgt(2026, 8, 1, 12, 0) // Saturday noon SGT
+  const H = 3_600_000
+  const hours = {
+    BTCUSD: { open: true, next_open_at: null, source: 'broker' },
+    EURUSD: { open: false, next_open_at: SAT + 41 * H, source: 'broker' }, // Monday 05:00 SGT
+    NAS100: { open: false, next_open_at: SAT + 41 * H, source: 'broker' },
+  }
+  const watch = Object.keys(hours).map(symbol => ({ symbol }))
+  const sat = scanSymbolsNow(watch, SAT, { hoursFor: (s) => hours[s] })
+  assert.deepEqual(sat.symbols.map(w => w.symbol), ['BTCUSD'], 'the old crypto exemption falls out of the schedule')
+  // Monday 03:00 SGT: EURUSD opens in 2 h and rejoins through the window — the old Monday-01:00 rule is not needed
+  const MON3 = SAT + 39 * H
+  const mon = scanSymbolsNow(watch, MON3, { hoursFor: (s) => hours[s] })
+  assert.deepEqual(mon.symbols.map(w => w.symbol), ['BTCUSD', 'EURUSD', 'NAS100'])
+  assert.deepEqual(mon.preOpen, ['EURUSD', 'NAS100'])
+  const MON0 = SAT + 36 * H // Monday 00:00 SGT: 5 h out, still closed
+  assert.deepEqual(scanSymbolsNow(watch, MON0, { hoursFor: (s) => hours[s] }).symbols.map(w => w.symbol), ['BTCUSD'])
+})
+
+test('the loop builds its scan list through scanSymbolsNow with the broker schedule and no weekend switch', async () => {
+  const { readFileSync } = await import('node:fs')
+  const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const loop = strip(readFileSync(new URL('../loop.js', import.meta.url), 'utf8'))
+  assert.match(loop, /const pick = scanSymbolsNow\(allSymbols, nowForHours\.getTime\(\), \{\s*preOpenHours,\s*hoursFor: \(sym\) => nextOpenInfo\(db, sym, nowForHours\),\s*\}\)/)
+  assert.match(loop, /const symbols = pick\.symbols/)
+  assert.doesNotMatch(loop, /quietScanSymbols|weekdayScanSymbols/)
+  assert.doesNotMatch(loop, /const symbols = weekendQuiet \?/)
 })
