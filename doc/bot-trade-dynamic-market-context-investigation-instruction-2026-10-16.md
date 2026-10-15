@@ -1,13 +1,17 @@
 <!-- Codex · 2026-10-16; codex-footprint: dynamic-market-context-investigation-plan. -->
-# Claude Code instruction: dynamic market context, proactive decisions and loss investigation
+# Claude Code instruction: investigate losses, establish reliable market context and design proactive decisions
 
 **Status: investigation and design instruction. No application implementation or trading activation is authorised by this document.**
 
-Owner direction: symbols must be assessed in their market relationships; expand correlation computation dynamically and make validated market context proactive across proposed orders, working orders and existing positions. This consolidates the earlier loss-investigation prompt and the owner's subsequent requirements. The existing instruction to plan without building remains in effect.
+**Revision 2 — 16 October 2026 SGT.** Supersedes the first instruction merged in PR #1384. Carries forward the owner's reference to Codex №15,004 and the subsequent screenshot review, account statement, market-relationship discussion and explicit dynamic/proactive requirements. Read this entire instruction as one task; do not execute the superseded prompt as a separate competing plan.
+
+Owner direction: assess each symbol through its market, sector, peers and relevant drivers; make correlation coverage dynamic and validated context proactive across proposed orders, working orders and existing positions. Establish actual loss causes before prescribing changes. The instruction to plan without building remains in effect.
 
 ## 1. Objective and permitted work
 
-Investigate whether bot-trade uses the market information it already scans to maximise expected **whole-position net realised profit within the owner's risk limits**. Identify execution defects separately from weaknesses in trading policy. Produce a concrete design for dynamic market coverage and active decisions, together with evidence-backed correction proposals.
+Determine why the supplied trades lost money, whether their exits followed their intended rules, and whether bot-trade uses the market information it already scans to maximise expected **whole-position net realised profit within the owner's risk limits**. Identify execution defects separately from weaknesses in trading policy. Produce evidence-backed correction proposals and a concrete design for reliable dynamic market coverage and active decisions.
+
+Execute in dependency order: **incident reconstruction → input/label correctness → existing data and consumer coverage → proactive policy design → economic and fault-validation plan**. A new controller proposal alone does not complete the investigation. Neither later recovery nor an existing `stop_hunt` label proves the strategy was right. Do not manufacture a single common cause for different incidents.
 
 Read fresh main and the deployed version before working. Use the existing authorised read-only account access available to Claude Code. Inspect code, copied data, broker readbacks and logs; perform offline analysis and write investigation documents. Do not modify application code, tests, configuration, watchlists, risk limits, orders, positions or stops. Do not build, deploy, merge, trigger trades, inject faults, run repair/backfill operations or activate the proposed controller. Verify endpoint side effects rather than relying on the HTTP verb. Do not request secret values in chat.
 
@@ -17,12 +21,12 @@ The owner's latest proactive requirement governs the proposed design even where 
 
 ## 2. Source baseline and limits of the present evidence
 
-At the preparation of this instruction on 16 October 2026 SGT:
+At this redraft's source/runtime refresh on 16 October 2026 SGT:
 
-- Fresh GitHub main was `f9d084a25d3e99f14e7338722b07f603b8acce3b`.
-- A public `/health` response identified commit `f9d084a`, version `0.1.381`, status `ok`. This identifies the public deployment; it does not verify private account state, effective settings, protection or historical execution causes.
+- Fresh GitHub main was `c277bb0f75a3f2d038b7d9a60d426a0f8167d767`. Since the first instruction in PR #1384 (`5d5aa456`), PR #1382 merged application changes as `72ee47a5a6a7902a8f187c8fcf7a54a4d44f2afe`, followed by the test-fixture changes in PR #1385. Those changes were inspected during this redraft.
+- A public `/health` response identified commit `72ee47a`, version `0.1.381`, status `ok`. It did not yet establish deployment of `c277bb0f`. Public health identifies the reported deployment; it does not verify private account state, effective settings, protection, repair completion or historical execution causes.
 - The cloud used to prepare this instruction has no authenticated account binding. Complete private incident reconstruction through the owner's existing authorised Claude access. Do not infer account facts from the public pipeline summary.
-- Source observations below refer to this pinned commit. Recheck them against the implementation and configuration actually deployed during each incident.
+- The correlation, pulse and classification logic referenced below was checked against the current source. Historical links pin the unchanged logic at `f9d084a`; separate links pin the new #1382 work at `72ee47a`. Recheck the implementation and configuration actually deployed during each incident.
 
 | Source at the pinned commit | Confirmed observation | Investigation/design consequence |
 |---|---|---|
@@ -30,16 +34,32 @@ At the preparation of this instruction on 16 October 2026 SGT:
 | [agent/services/correlation-matrix.js:230](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/correlation-matrix.js#L230) | The builder takes the first bounded symbol subset, fetches returns and writes a matrix. | Replace arbitrary coverage truncation in the proposed design with priority, coverage accounting and a bounded scalable scheduler. |
 | [agent/services/correlation-matrix.js:27](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/correlation-matrix.js#L27) | Defaults include hourly returns, 60-return lookback and a maximum matrix age; these are configurable. | Inspect effective settings and source-bar freshness. Specify horizons and update triggers suitable for each decision rather than assuming defaults describe runtime. |
 | [agent/services/correlation-matrix.js:64](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/correlation-matrix.js#L64) | Returns are reduced to arrays; Pearson pairs overlapping array tails. | Audit timestamp alignment upstream. Different sessions or missing bars can pair different intervals; do not assert this occurred without runtime evidence. |
+| [agent/services/correlation-matrix.js:84](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/correlation-matrix.js#L84) | A null Pearson result becomes numeric zero in the stored pairwise matrix. | Undefined correlation, including zero-variance inputs, must remain distinguishable from measured low correlation before active policy uses it. |
 | [agent/services/correlation-matrix.js:194](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/correlation-matrix.js#L194) | Changes between current and previous correlation matrices are already computed. | Reuse and validate existing shift detection rather than implementing a duplicate indicator. |
 | [agent/services/risk.js:1705](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/risk.js#L1705) and `:2567` | Live and curated correlations already participate in admission/exposure vetoes. | Existing cross-market controls are present. Distinguish their concentration-control purpose from setup selection, market-regime reasoning and ongoing management. |
 | [agent/services/risk.js:1996](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/risk.js#L1996) | Market pulse is recorded in the decision checks as advisory and does not itself veto. | Design an explicit active policy contract and trace every consumer; recording pulse alone is insufficient. |
 | [agent/services/market-pulse.js:275](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/market-pulse.js#L275) and `:429` | Group detection and per-symbol context readings exist, with an age check. | Audit coverage, direction conventions and freshness; extend a shared context rather than creating incompatible parallel readings. |
+| [agent/services/market-pulse.js:311](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/market-pulse.js#L311) | Group membership uses absolute correlation, including inverse relationships, but agreement counts raw up/down directions. | Specify and validate factor-relative direction. An inverse pair moving normally can be scored as having no group direction; do not turn that score into an active rule without resolving its interpretation. |
+| [agent/services/market-pulse.js:480](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/market-pulse.js#L480) | Pulse computation loads a stored matrix and stamps a newly built pulse; the reader's age check is against pulse build time. | Carry matrix generation and constituent-bar ages through the context. A fresh pulse timestamp does not establish fresh dependencies. Confirm actual stale-input use before alleging an incident cause. |
 | [agent/services/pending-orders.js:485](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/pending-orders.js#L485) | One working-order invalidation path uses the symbol's closed bar relative to its stored SL. | Inspect all pending paths for context revalidation. This observation alone does not prove the entire pending subsystem has no other controls. |
 | [agent/services/momentum-limit-entry.js:63](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/momentum-limit-entry.js#L63) and `:100` | This limit-entry path evaluates risk and re-evaluates inside durable reservation. | Preserve and extend the last responsible check; do not replace it with a remote assessment that can become stale before reservation. |
 | [agent/services/position-manager.js:383](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/position-manager.js#L383) | A price-based premise can cause full exit. | Define how validated market-context invalidation interacts with existing premise, stop, trailing, keeper and execution ownership. |
 | [agent/services/loss-postmortem.js:107](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/loss-postmortem.js#L107) and `:125` | When one aftermath candle touches both barriers, its closing price selects a verdict; a recovery verdict says the direction was right. | Candle close cannot establish intrabar event order or prove thesis validity. Such labels need explicit uncertainty and must not automatically train the proposed calibration policy. |
+| [agent/services/loss-postmortem.js:294](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/loss-postmortem.js#L294) | The decay flag uses the last five symbol/strategy/timeframe postmortems; this query has no account or policy-version filter. | Audit the intended pooling and consumers. Five possibly dependent outcomes are not sufficient evidence for an automatic system-wide recalibration. |
+| [agent/services/news-calendar.js:1](https://github.com/ang-kl/bot-trade/blob/f9d084a25d3e99f14e7338722b07f603b8acce3b/agent/services/news-calendar.js#L1) | A cached economic calendar and optional news-window entry gate already exist. | Reuse and audit available event context. Scheduled currency events do not by themselves provide sector earnings, release surprises or evidence of a fundamental shift. |
+| [agent/services/loss-postmortem.js:608](https://github.com/ang-kl/bot-trade/blob/72ee47a5a6a7902a8f187c8fcf7a54a4d44f2afe/agent/services/loss-postmortem.js#L608) and [repair scope](https://github.com/ang-kl/bot-trade/blob/72ee47a5a6a7902a8f187c8fcf7a54a4d44f2afe/agent/services/aftermath-extend-apply.js#L9) | #1382 stores closed replay bars and provides one-shot repair/verification state. The repair leaves classification columns unchanged; the capture's verdict still reads the full reply. | Verify actual stored data and each verification state. Improved storage does not prove existing labels were corrected or classifyLoss has resolved forming-bar and intrabar ambiguity. |
+| [agent/services/tick-activity.js:1](https://github.com/ang-kl/bot-trade/blob/72ee47a5a6a7902a8f187c8fcf7a54a4d44f2afe/agent/services/tick-activity.js#L1) | #1382 adds completed-minute tick counts, relative activity and price movement; it is measurement only. The ring is bounded in process memory and the persisted readout is a snapshot. | Reuse the measurement. Verify subscription health, warm-up, gaps and historical retention before interpreting quietness, spikes or claiming a full-day calibration sample. It is not an active scan-priority policy or fundamental feed. |
 
 These are source observations and conditional data-quality concerns, not proof of the causes of the account losses. Identify existing functionality before proposing changes.
+
+Two offline probes of the actual extracted pure functions reproduced additional source behaviour, without importing the application, opening a database or contacting a broker:
+
+1. With `A=[0,0,0,0]` and `B=[0.01,-0.01,0.02,-0.02]`, Pearson returned null while the builder stored `A/B=0`.
+2. An `A/B=-0.95` matrix put A and B in one group. Both trending with directions `+1/-1` produced direction 0, agreement 0.5 and `moving=false`; directions `+1/+1` produced agreement 1 and `moving=true` at the existing 0.6 agreement setting. This demonstrates the raw-direction interpretation, not that either synthetic case caused a real loss.
+
+Reproduce and investigate those contracts before specifying automated consumers. Treat them as input/interpretation prerequisites, not evidence that all trading rules should change.
+
+**Related work at the final source refresh:** PR [#1382](https://github.com/ang-kl/bot-trade/pull/1382), consolidating former #1379/#1381, merged at 06:37:40 SGT on 16 October; its application changes were inspected and its commit was reported by public health. It includes forming-bar storage/repair, scanning based on broker opening/pre-open conditions and tick-activity measurement. PR [#1385](https://github.com/ang-kl/bot-trade/pull/1385) merged at 06:39:55 SGT and changes FX-day test fixtures; that is not a production risk-policy fix. PR #1383 was still a draft concerning the protected-boundary authorisation marker. Recheck current status and inspect overlaps before proposing work. Carry completed changes forward, then verify account-specific operational outcomes. A PR description or green test is not evidence that a repair completed, nor permission to trigger one. Do not change or merge these PRs under this instruction.
 
 ## 3. Reconcile the supplied account evidence
 
@@ -87,9 +107,9 @@ Resolve specifically:
 
 ## 4. Audit existing data before asking for more feeds
 
-Inventory data from tick and timeframe scanners, market/sector indices, FX, commodities, correlation, pulse, regimes, candidate decisions, pending orders and monitored positions. For each source record actual coverage, source/account provenance, event time, ingestion time, cadence, retention, missingness, units, session/calendar and consumers.
+Inventory data from tick and timeframe scanners, market/sector indices, FX, commodities, correlation, pulse, regimes, the economic calendar, tick-activity measurement, candidate decisions, pending orders and monitored positions. For each source record actual coverage, source/account provenance, event time, ingestion time, cadence, retention, missingness, units, session/calendar and consumers. Account for the new open-market/pre-open scan selection without confusing the scanning universe with mandatory context coverage: a closed benchmark may still be relevant, with its last observation's age made explicit.
 
-Produce a lineage table: **collected → normalised → stored → related to peers/benchmarks → consumed by a decision → execution outcome**. Classify each gap as missing data, insufficient history, missing relationship, missing consumer, stale input or unverified execution. Avoid requesting a new feed for information already available but unused.
+Produce a lineage table: **collected → normalised → stored → related to peers/benchmarks → consumed by a decision → execution outcome**. Classify each gap as missing data, insufficient history, missing relationship, missing consumer, stale input or unverified execution. For each lifecycle path, show whether context is only displayed, recorded, consulted, capable of changing a decision, or followed by a verified broker action. Avoid requesting a new feed for information already available but unused.
 
 Determine which sources can support only price-regime inference and which can support fundamental explanations. A fundamental-shift claim requires timestamped evidence such as earnings/guidance, rate changes, policy announcements, commodity supply/demand or other relevant drivers. Price co-movement alone does not establish the cause. Label broker tick activity separately from exchange volume where relevant. Do not invent unavailable feeds or catalysts.
 
@@ -107,11 +127,13 @@ Align returns by actual event-time intervals before computing relationships. Def
 
 Evaluate suitable short, intermediate and longer horizons, with robust estimation or shrinkage when supported by the data. Include current correlation, change from prior states, downside co-movement, breadth and relative strength. Estimate cluster risk using verified monetary exposure and sensitivity, not solely ticker counts. Preserve existing hard concentration constraints during any future integration.
 
+Separate statistical relationship, group membership and factor-relative trade exposure. Define signed orientation for inverse links and account for inconsistent sign cycles or weakly joined groups. A connected component is not proof that every pair has the same relationship or that every member should trade in the same raw direction. Keep unknown or unstable orientation explicit. Do not apply the current raw group-agreement reading as a universal direction gate.
+
 Refresh on an appropriate schedule and on material events: new subjects, fills/closures, broker-order changes, volatility or relationship shifts, session transitions and relevant timestamped releases. Specify measured service-level targets from actual dependencies; do not invent a guaranteed latency or threshold.
 
 ## 6. Required design: market structure and propagation
 
-Each symbol must be assessed against its context while preserving its own structure, liquidity, spread and premise. Relationships are conditional and can break; avoid forcing all instruments into a single fixed cluster.
+Each symbol must be assessed against its context while preserving its own structure, liquidity, spread and premise. Relationships are conditional and can break; avoid forcing all instruments into a single fixed cluster. Distinguish market regime, sector rotation and a fundamentally explained shift; do not use those labels interchangeably.
 
 Separate broad market movement, sector/industry movement and symbol-specific residual movement. Test lead/lag relationships after controlling for shared drivers, timestamp alignment and asynchronous trading. A sequence is a predictive hypothesis, not proof of causation.
 
@@ -121,7 +143,7 @@ Distinguish ordinary retracement, chop, broad trend, sector rotation, idiosyncra
 
 ## 7. Required design: proactive decision contract
 
-Define one versioned context assessment shared by decision consumers. It should name the subject, relevant members/factors, event-time cutoff, generation and expiry, coverage/quality, model version, confidence, regime, premise implications and evidence references. Record account-specific policy, risk and execution ownership separately.
+Define one versioned context assessment shared by decision consumers. It should name the subject, relevant members/factors and signed orientation, event-time cutoff, generation and expiry, coverage/quality, model version, confidence, regime, premise implications and evidence references. Include dependency versions and constituent event times; the youngest envelope timestamp cannot conceal the oldest decision-critical input. Record account-specific policy, risk and execution ownership separately.
 
 Specify an active, deterministic policy contract with explicit outcomes such as **allow, allow at a validated reduced size, defer until a stated condition/deadline, refuse, cancel working entry, hold, tighten protection, partially exit or fully exit**. These are proposed decision types, not authorisation to execute now. Define the admissible evidence, strategy compatibility, precedence and owner risk constraints for each outcome. Favourable context never bypasses hard risk or creates a trade without a valid setup. Any change in proposed size must still satisfy broker quantity increments, minimums, costs, margin and the account's hard limits; an infeasible reduced size is not rounded up into additional risk.
 
@@ -137,6 +159,8 @@ Specify an active, deterministic policy contract with explicit outcomes such as 
 
 Design autonomous operation within a defined enabled policy; do not require a human decision for every qualifying trade action. Preserve one account-owned execution path and explicit controller precedence. Safety/premise exits must not wait for a slower statistical confirmation or calibration job. No controller may cancel protective orders as though they were resting entries.
 
+For each proposed active rule, specify a concrete trigger, persistence/quality requirements, strategy applicability, action, risk bound, execution owner, completion evidence and recovery behaviour. Show paired examples where otherwise comparable inputs lead to different decisions when valid market context changes, including a valid hold/entry that should be preserved. A generic confidence score or unconsumed event is not a rule specification. These examples are proposed contracts until validated; do not invent numerical production thresholds to make them executable now.
+
 Do not use the context as a reason to widen an existing stop, average down, expand total permitted risk or retain an invalid premise. A proposed wider **initial** stop requires recalculated smaller sizing and validation under the same monetary limits. Re-entry requires a fresh valid setup and a shared, bounded campaign risk budget.
 
 ## 8. Noise control, faults and degraded operation
@@ -151,7 +175,7 @@ Market information may be shared when provenance and instrument identity permit.
 
 ## 9. Calibration and evaluation
 
-Run market assessment continuously; calibrate policy from complete mature outcomes on a controlled schedule. Keep execution defects out of the labels used to infer strategy failure. Do not recalibrate after every loss or reinterpret an original premise after seeing the result.
+Run market assessment continuously; calibrate policy from complete mature outcomes on a controlled schedule. Keep execution defects out of the labels used to infer strategy failure. Do not recalibrate after every loss or reinterpret an original premise after seeing the result. Audit decay/history pooling across accounts, strategy versions, horizons and market regimes; a shared market observation does not make realised account outcomes interchangeable.
 
 Define whole-position net, PF, win rate, scratches, costs, horizons and cohort eligibility before calculating results. Preserve the owner's applicable official scoreboard definitions; label research cohorts separately. Include open/pending exposure and outcomes crossing dataset boundaries. Assess missingness and selection introduced by existing gates.
 
@@ -173,6 +197,9 @@ Specify the evidence and tests that a later implementation would need. Do not im
 6. Existing protective orders and hard account/portfolio ceilings remain effective through stale feeds, worker failures, restarts and conflicting controller proposals. Quantify residual gaps instead of asserting universal fault tolerance.
 7. The calibration dataset preserves whole positions, actual costs, historical context and ambiguity. No future data or post-hoc premise enters an earlier decision.
 8. Economic acceptance requires evidence of better net outcomes under the same risk limits, with uncertainty, tail losses, false alarms, turnover and missed winners reported. Higher win rate, more blocked trades or green engineering checks alone is insufficient.
+9. Zero-variance or insufficient-overlap pairs remain distinguishable from measured zero correlation. Inverse correlated groups are interpreted using an explicit signed/factor contract; ordinary inverse co-movement is not silently labelled a breakdown by a raw-direction vote.
+10. A stale constituent or matrix cannot acquire validity merely because a new pulse/context envelope was written. The decision record names all critical versions, relevant event times and the precise degraded-mode action.
+11. New tick-activity data distinguishes a genuinely silent observed interval from missing subscription/history, startup and connection gaps. A large relative reading against an unwarmed baseline cannot automatically become confidence in an entry. Existing measurements and available retention are verified before a longer calibration history is claimed.
 
 ## 11. Deliverables and sequence
 
@@ -188,7 +215,13 @@ Produce `doc/loss-investigation-demo-47790949-and-market-context-2026-10-16.md` 
 - A ranked minimal correction/design backlog. For every proposed change name the affected source, underlying contract, incident evidence, regression scenario and verification criteria. Do not present a symptom patch or general new module as an established root-cause fix.
 - A calibration/economic-validation protocol and the exact missing evidence or feeds, if any.
 
-Sequence proposed work by dependency: (1) establish incident causes and input correctness; (2) design dynamic coverage and reliable snapshots; (3) specify active policy consumption and execution arbitration; (4) validate economics and fault scenarios; (5) describe a future bounded activation and rollback plan. A temporary comparison phase can support validation, but the target must be functioning proactive decisions, not indefinite observation. Do not activate any phase in this task.
+Sequence the investigation and proposed work by dependency:
+
+1. **Reconstruct incidents and verify protections.** Complete the statement reconciliation and available broker/decision traces. Report unresolved private evidence precisely; do not replace missing causes with a controller proposal.
+2. **Establish trustworthy inputs and labels.** Resolve the contracts for alignment, unknown correlation, inverse direction, dependency freshness, activity coverage and intrabar ambiguity. Identify what the newly merged and still-open related PRs do and do not address. In particular, inspect `bars_verified_at` state and stored contents: a non-null marker may record an unavailable repair attempt rather than successful verification. Do not infer corrected classification columns from repaired replay bars.
+3. **Map existing coverage and decision consumers.** Show where collected context stops influencing the lifecycle; distinguish missing observations from unused observations and existing controls from proposed controls.
+4. **Design dynamic coverage and active policy.** Specify bounded computation, snapshots, triggers, account-owned reservations, controller precedence and verified actions for every applicable entry, pending and management path.
+5. **Define validation and future activation.** Compare frozen candidate policies against the deployed baseline on separate later periods, specify realistic fault cases, and describe bounded activation/rollback. A temporary comparison phase can support validation, but the target must be functioning proactive decisions, not indefinite observation. Do not implement or activate any phase in this task.
 
 End by answering: what is already implemented; what is collected but unused; what is genuinely missing; which losses were valid protection; which defects are proven; which policy changes have supporting evidence; and what remains unproven. Distinguish completion of this investigation from implementation, activation and improved trading outcomes.
 
@@ -196,6 +229,6 @@ Stop after the investigation report and concrete proposed changes. Do not build 
 
 ## 12. Evidence provenance for this instruction
 
-Prepared from the owner's requests, the uploaded CSV and screenshots, source inspection at the pinned main commit, and a public deployment-identity check. The account-statement reconciliation and six screenshot matches are retained in the preparing cloud's `loss-investigation-2026-10-16` analysis directory. Those local files are not assumed to exist in Claude Code's environment; use the owner's original attachments or a verified project copy and state any missing source.
+Prepared from the owner's requests, the uploaded CSV and screenshots, source inspection, offline pure-function probes, relevant draft PR inspection and a public deployment-identity check. The account-statement reconciliation, six screenshot matches and probe receipts are retained in the preparing cloud's `loss-investigation-2026-10-16` analysis directory. Those local files are not assumed to exist in Claude Code's environment; use the owner's original attachments or a verified project copy and state any missing source.
 
-Conversation reference: Codex №15,006 statement analysis, followed by the owner's investigation-prompt, market-context, proceed and dynamic/proactive requirements. Shared transcript numbering is a recorded lower bound, not a measured full-corpus count. This file is a plan and handoff, not a deployment receipt or evidence that trading behaviour has changed.
+Conversation reference: the owner identifies Codex №15,004, 16 October 2026 04:24 SGT, as the starting response; the retained working evidence includes the preliminary screenshot investigation, №15,006 statement analysis, subsequent market-context requirements, and №15,007–15,009 document publication/merge. The exact №15,004 body is not in the retained working artifacts, so this redraft does not quote or invent its wording. Shared transcript numbering is a recorded lower bound, not a measured full-corpus count. This file is a plan and handoff, not a deployment receipt or evidence that trading behaviour has changed.
