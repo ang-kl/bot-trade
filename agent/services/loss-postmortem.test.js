@@ -709,3 +709,36 @@ test('lossReferenceRisk: a loss is classified against the stop that was hit, not
   assert.equal(lossReferenceRisk({ ...t, sl_price: null }), 2.5, 'no stop: the entry-to-exit move')
   assert.equal(classifyLoss(t, after, closed, { allowPartial: true }).classification, 'thesis_wrong')
 })
+
+// ── Claude · № 15,001 15-Oct (owner: "#35 forming bar — repair on next run" after № 14,989; claude-builder) ──
+test('#35: the capture stores closed bars only — a forming last bar in the broker\'s reply is left out, the verdict unchanged', async () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, volume, opened_at, closed_at,
+                        net_pnl, status, close_reason, label_strategy, label_timeframe)
+    VALUES ('EURUSD', 'BUY', 100, 98, 98, 0.1, datetime('now', '-31 hours'), datetime('now', '-30 hours'),
+            -50, 'closed', 'sl', 'fib_618_fade', '1h')
+  `).run()
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  const H = 3_600_000
+  // A stale loss (> 24 h) classifies on the aftermath it has. Bars on the
+  // close's own hour grid; `now` is 20 minutes into the bar that opened at
+  // close + 30 h, so that bar is the broker's forming one.
+  const forming = closedMs + 30 * H
+  const now = forming + 20 * 60_000
+  const bars = []
+  for (let t = closedMs - 30 * H; t <= forming; t += H) {
+    const late = t > closedMs
+    bars.push({ t, o: 99, h: late ? 101 : 99.5, l: late ? 99 : 98.4, c: late ? 100.5 : 99, v: 10 })
+  }
+  assert.equal(bars[bars.length - 1].t, forming)
+  const res = await runLossPostmortems(db, async () => bars, { now })
+  assert.equal(res.classified, 1)
+  const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
+  assert.equal(pm.classification, 'stop_hunt', 'the verdict reads the full reply, as before')
+  const stored = JSON.parse(pm.bars_json).map(b => b[0])
+  assert.ok(stored.length > 0)
+  assert.ok(stored.every(t => t + 3_600_000 <= now), 'RED before: the forming bar was stored with its partial values')
+  assert.equal(stored[stored.length - 1], forming - 3_600_000, 'the newest stored bar is the last closed one')
+  assert.equal(pm.bars_verified_at, new Date(now).toISOString(), 'stamped: read against the clock rule')
+})
