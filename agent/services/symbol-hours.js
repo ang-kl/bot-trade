@@ -28,12 +28,28 @@ const WEEK_SECONDS = 7 * 24 * 3600
  * `timeZone`. DST-correct: uses Intl to read the wall-clock weekday/time in
  * that zone. Pure apart from Intl; pass 'UTC' in tests for determinism.
  */
+// Codex round 3 on #1388: an Intl.DateTimeFormat costs ~0.1 ms to build and
+// the fold-aware projection reads the wall clock about ten times per
+// schedule start, for every start of every closed symbol (300 symbols × 8
+// starts measured 1,045 ms uncached against 133 ms cached), so formatters
+// are built once per zone and kind and reused. Unknown zones are not
+// cached (the constructor throws; the callers fall back to UTC).
+const FORMATTERS = new Map()
+function zoneFormatter(timeZone, kind, options) {
+  const key = `${kind}|${timeZone}`
+  let fmt = FORMATTERS.get(key)
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', { timeZone, ...options, hour12: false })
+    FORMATTERS.set(key, fmt)
+  }
+  return fmt
+}
+
 export function secondsIntoWeek(now, timeZone = 'UTC') {
   let parts
   try {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-      timeZone, weekday: 'short', hour: '2-digit', minute: '2-digit',
-      second: '2-digit', hour12: false,
+    const fmt = zoneFormatter(timeZone, 'week', {
+      weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit',
     })
     parts = Object.fromEntries(fmt.formatToParts(now).map(p => [p.type, p.value]))
   } catch {
@@ -278,9 +294,9 @@ export function wallClockEpochMs(t, timeZone = 'UTC') {
   const d = t instanceof Date ? t : new Date(t)
   let parts
   try {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-      timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    const fmt = zoneFormatter(timeZone, 'wall', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
     })
     parts = Object.fromEntries(fmt.formatToParts(d).map(p => [p.type, p.value]))
   } catch {

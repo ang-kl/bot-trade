@@ -273,3 +273,26 @@ test('nextOpenInfo: with several starts, the earliest PROJECTED instant wins, no
   const plain = nextOpenInfo(db, 'TWOSTARTS', new Date(Date.UTC(2026, 6, 13, 0, 0, 0)))
   assert.equal(plain.next_open_at, '2026-07-19T05:30:00.000Z')
 })
+
+test('projection reuses one formatter per zone and kind — not one per wall-clock read (Codex round 3 on #1388)', async () => {
+  const { epochOfNextWeekSecond, nextOpenInfo } = await import('./symbol-hours.js')
+  const Real = Intl.DateTimeFormat
+  let built = 0
+  // Count constructions; the cache may already hold the zone from earlier
+  // tests in this file, so the bound is on NEW constructions during the run.
+  Intl.DateTimeFormat = function (...args) { built++; return new Real(...args) }
+  try {
+    const now = new Date(Date.UTC(2026, 2, 6, 17))
+    for (let i = 0; i < 100; i++) epochOfNextWeekSecond(now, 'Europe/Berlin', 1 * DAY + 9 * HOUR)
+    const db = initDB(':memory:')
+    db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('DE', 13, ?, 'Europe/Berlin')`)
+      .run(JSON.stringify([1, 2, 3, 4, 5].map(d => ({ start: d * DAY + 9 * HOUR, end: d * DAY + 17.5 * HOUR }))))
+    for (let i = 0; i < 100; i++) nextOpenInfo(db, 'DE', new Date(Date.UTC(2026, 2, 7, 12)))
+  } finally {
+    Intl.DateTimeFormat = Real
+  }
+  // Two kinds (week clock, wall clock) for one new zone: at most two
+  // constructions across 100 + 500 projections, each of which reads the wall
+  // clock about ten times. Uncached this is several thousand.
+  assert.ok(built <= 2, `formatters built: ${built}`)
+})
