@@ -4654,65 +4654,52 @@ async function runLoop(db) {
       
       const marketClosed = activeSessions.length === 0
 
-      // Weekend quiet hours (owner 01-08-2026): no scan and no Telegram
-      // recommendation from Saturday 00:00 SGT until Monday 01:00 SGT —
-      // a weekend scan reads Friday's stale close dressed up as a signal.
-      // CRYPTO EXEMPTION (owner-approved the same evening): crypto trades a
-      // live 24/7 market, so during quiet the scan narrows to crypto-only
-      // instead of going silent — analyze/recommend/autotrade downstream see
-      // only what was scanned, so the exemption propagates by construction.
-      // ONLY the scan/analyze/recommendation phase is silenced; monitoring,
+      // Claude · № 15,054 16-Oct (owner: "Build the scan only if market is opened thus don't need the switch to indicate weekend or weekdays … the pre-order activities are conducted two hours before market-open to place order ahead"; claude-builder).
+      // ONE OPEN-MARKET RULE (lib/quiet-hours.js scanSymbolsNow): a symbol is in
+      // the rotation when its market is open per the broker schedule, or opens
+      // within the pre-open window (the scan's setup then rests as the closed-
+      // market LIMIT below — the pre-order placed ahead), or its hours are
+      // unknown. Closed and not opening soon: left out until its open. The
+      // Saturday-to-Monday switch and the crypto exemption that used to live
+      // here fall out of the same rule (on Saturday only crypto is open).
+      // ONLY the scan/analyze/recommendation phase is narrowed; monitoring,
       // protection, guards, reconcile and the P&L backfill run unchanged.
-      const { weekendQuietNow, quietUntilMs, quietScanSymbols, preOpenHoursFrom } = await import('./lib/quiet-hours.js')
-      const weekendQuiet = weekendQuietNow()
-
-      // PRE-OPEN WINDOW (owner 09-08-2026): "some markets which open on Monday
-      // should start monitoring and set pre-trade 6 hours before". Quiet hours
-      // and that instruction were in conflict — on a Sunday evening the
-      // symbols about to open were exactly the ones narrowed out of the scan.
-      // A symbol now rejoins the scan when ITS OWN next open is within the
-      // window, read from the broker's schedule rather than a guessed session
-      // table. Everything with nothing opening soon stays quiet as before.
+      const { scanSymbolsNow, preOpenHoursFrom } = await import('./lib/quiet-hours.js')
       const { nextOpenInfo } = await import('./services/symbol-hours.js')
       const preOpenHours = preOpenHoursFrom(getState(db, 'pre_open_hours'))
       const nowForHours = new Date()
-      const quietPick = weekendQuiet
-        ? quietScanSymbols(allSymbols, categoriseSymbol, nowForHours.getTime(), {
-          preOpenHours,
-          hoursFor: (sym) => nextOpenInfo(db, sym, nowForHours),
-        })
-        : null
-      const symbols = weekendQuiet ? quietPick.symbols : allSymbols
-      if (weekendQuiet && quietPick.preOpen?.length) {
-        log(`Pre-open window (${preOpenHours}h) — ${quietPick.preOpen.length} symbol(s) rejoin the scan before their open: ${quietPick.preOpen.join(', ')}`)
+      const pick = scanSymbolsNow(allSymbols, nowForHours.getTime(), {
+        preOpenHours,
+        hoursFor: (sym) => nextOpenInfo(db, sym, nowForHours),
+      })
+      const symbols = pick.symbols
+      if (pick.skippedClosed.length) {
+        log(`Open-market scan — ${symbols.length} of ${allSymbols.length} symbol(s) in the rotation (${pick.preOpen.length} pre-open within ${preOpenHours}h${pick.preOpen.length ? `: ${pick.preOpen.join(', ')}` : ''}; ${pick.unknown} with unknown hours kept; ${pick.skippedClosed.length} closed until their open)`)
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, { stage: 'closed_market_skip', decision: 'skip', reason: `${pick.skippedClosed.length} closed symbol(s) left out of the scan rotation until their open; ${pick.preOpen.length} pre-open within ${preOpenHours}h kept; ${pick.unknown} unknown hours kept`, loopId: loopCount })
+        } catch { /* diagnostics only */ }
       }
 
       bookScanSymbols = (symbols.length ? symbols : allSymbols).map(x => String(typeof x === 'string' ? x : x?.symbol || '').toUpperCase()).filter(Boolean)
       bookEntriesHeld = allSymbols.length === 0 ? 'no enabled symbols'
-        : (weekendQuiet && symbols.length === 0) ? 'weekend quiet with nothing to scan'
+        : symbols.length === 0 ? 'nothing open or opening within the pre-open window'
           : !scanEnabled ? 'Scan disabled'
             : !scanWanted ? 'Scan off on every trading account'
               : null
       if (allSymbols.length === 0) {
         log('No enabled symbols configured')
-      } else if (weekendQuiet && symbols.length === 0) {
-        log(`Weekend quiet hours — no crypto on the watchlist and nothing opening within ${preOpenHours}h, so no scan or recommendations until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); monitoring/protection unaffected`)
+      } else if (symbols.length === 0) {
+        log(`Nothing open or opening within ${preOpenHours}h — no scan this cycle (${allSymbols.length} symbol(s) closed); monitoring/protection unaffected`)
         try {
           const { recordDecision } = await import('./services/decision-log.js')
-          recordDecision(db, { stage: 'weekend_quiet', decision: 'skip', reason: 'weekend quiet hours (Sat 00:00 → Mon 01:00 SGT)', loopId: loopCount })
+          recordDecision(db, { stage: 'closed_market_skip', decision: 'skip', reason: `nothing open or opening within ${preOpenHours}h — no scan this cycle`, loopId: loopCount })
         } catch { /* diagnostics only */ }
       } else if (!scanEnabled) {
         log('Scan disabled — skipping')
       } else if (!scanWanted) {
         log(`Scan off on every trading account (${rosterIds.join(', ')}) — skipping; nothing would use the result`)
       } else {
-        if (weekendQuiet) {
-          log(`Weekend quiet hours — crypto + pre-open scan (${symbols.length} of ${allSymbols.length} symbols) until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); everything with nothing opening within ${preOpenHours}h stays quiet`)
-          try {
-            const { recordDecision } = await import('./services/decision-log.js')
-            recordDecision(db, { stage: 'weekend_quiet', decision: 'skip', reason: 'weekend quiet hours (Sat 00:00 → Mon 01:00 SGT) — non-crypto silenced; crypto exempt', loopId: loopCount })
-          } catch { /* diagnostics only */ }
-        }
         if (marketClosed) {
           log(`Off-hours scan — ${symbols.length} symbol(s), market closed`)
         }
