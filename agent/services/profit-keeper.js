@@ -392,6 +392,29 @@ export function decideProfitKeeper(cfg, {
 // retains that per-unit peak, not the full position's dollars. Added volume
 // or a changed entry/identity starts a new basis; neither proves that the new
 // units experienced the old peak. Legacy peaks have no recoverable size basis.
+/**
+ * Claude · № 14,836 15-Oct (Codex round 1 on #1375; owner "fix both in this
+ * PR"; claude-builder). The profit evidence the since-entry gate may use,
+ * bound to the broker position: its side and entry decide the close's
+ * comparison; the row's recorded peak (mfe_r) is passed only when the row's
+ * side and entry are that broker position's — a stale plan estimate or an
+ * earlier leg's peak is not evidence for this one.
+ */
+export function sinceEntryProfitEvidence(row, bp, price) {
+  const td = bp?.tradeData || {}
+  const brokerDir = td.tradeSide === 1 || td.tradeSide === '1' || td.tradeSide === 'BUY' ? 1
+    : td.tradeSide === 2 || td.tradeSide === '2' || td.tradeSide === 'SELL' ? -1 : 0
+  const rowSide = String(row?.side || '').toUpperCase()
+  const rowDir = rowSide === 'LONG' || rowSide === 'BUY' ? 1 : rowSide === 'SHORT' || rowSide === 'SELL' ? -1 : 0
+  const brokerEntry = Number(bp?.price) > 0 ? Number(bp.price) : null
+  const rowEntry = Number(row?.entry_price) > 0 ? Number(row.entry_price) : null
+  const dir = brokerDir || rowDir
+  const entry = brokerEntry ?? rowEntry
+  const sameBasis = brokerDir !== 0 && rowDir === brokerDir && brokerEntry != null && rowEntry != null
+    && Math.abs(rowEntry - brokerEntry) <= brokerEntry * 1e-9
+  return { profitSide: dir === -1 ? 'SELL' : dir === 1 ? 'BUY' : null, profitEntry: entry, price, mfeR: sameBasis ? row.mfe_r : null }
+}
+
 function keeperPeakBasis(row, bp, accountId) {
   const td = bp.tradeData || {}
   const side = ['LONG', 'BUY'].includes(String(row.side).toUpperCase()) ? 1
@@ -913,7 +936,12 @@ async function profitKeeperPass(db, creds, deps = {}) {
         // authorised after № 14,822; claude-builder): the spec is withheld
         // until the position has shown profit — the monitor's peak or the
         // close already fetched above against the fill.
-        price: prices[td.symbolId], mfeR: r.mfe_r,
+        // № 14,836 (Codex round 1 on #1375, two P1s; owner "fix both in this
+        // PR"): judged against the BROKER's entry and side, never the row's —
+        // a row whose fill was not confirmed holds the plan's estimate, and
+        // the recorded peak counts only when the row's side and entry are the
+        // broker position's own (the peak was measured from that basis).
+        ...sinceEntryProfitEvidence(r, bp, prices[td.symbolId]),
       })
       if (!spec) continue
       trailSpecs.push(spec)

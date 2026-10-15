@@ -1339,3 +1339,55 @@ test('PR-2 through the real keeper: the since-entry spec is withheld until the p
   const peaked = await run({ close: 2.8795, mfeR: 0.3 })
   assert.equal(peaked.out.trailSpecs.length, 1)
 })
+
+// Claude · № 14,836 15-Oct (Codex round 1 on #1375, two P1s; owner "fix both in
+// this PR"; claude-builder). Codex's examples: (1) a long filled at 1.104 whose
+// row holds the plan's 1.100 (fill not confirmed) is losing at 1.102, not in
+// profit; (2) a reversed leg must not inherit the previous leg's peak.
+test('PR-2 round 1: the since-entry profit evidence is the broker position\'s, not the row\'s', async () => {
+  const { sinceEntryProfitEvidence } = await import('./profit-keeper.js')
+  const { hasShownProfit } = await import('./mae-chandelier-observe.js')
+  const judge = (row, bp, price) => {
+    const ev = sinceEntryProfitEvidence(row, bp, price)
+    return hasShownProfit({ side: ev.profitSide, entry: ev.profitEntry, price: ev.price, mfeR: ev.mfeR })
+  }
+  const longBp = { price: 1.104, tradeData: { tradeSide: 1 } }
+  // (1) stale plan estimate on the row: judged against the broker's 1.104
+  assert.equal(judge({ side: 'long', entry_price: 1.100, mfe_r: null }, longBp, 1.102), false, 'losing against the fill')
+  assert.equal(judge({ side: 'long', entry_price: 1.100, mfe_r: 0.4 }, longBp, 1.102), false, 'a peak measured from the stale estimate is not evidence')
+  assert.equal(judge({ side: 'long', entry_price: 1.100, mfe_r: null }, longBp, 1.105), true, 'in profit against the fill')
+  // the row's peak counts when its basis is the broker position's
+  assert.equal(judge({ side: 'long', entry_price: 1.104, mfe_r: 0.4 }, longBp, 1.103), true)
+  // (2) a reversed leg: the broker is short; a long row's peak is not this leg's
+  const shortBp = { price: 1.104, tradeData: { tradeSide: 'SELL' } }
+  assert.equal(judge({ side: 'long', entry_price: 1.104, mfe_r: 0.9 }, shortBp, 1.105), false, 'the earlier leg\'s peak does not qualify')
+  assert.equal(judge({ side: 'long', entry_price: 1.104, mfe_r: 0.9 }, shortBp, 1.103), true, 'the short leg in profit on its own')
+  // no broker price: the close is judged against the row, the peak is not trusted
+  assert.equal(judge({ side: 'short', entry_price: 2.8795, mfe_r: 0.5 }, { tradeData: { tradeSide: 2 } }, 2.88), false)
+  assert.equal(judge({ side: 'short', entry_price: 2.8795, mfe_r: 0.5 }, { tradeData: { tradeSide: 2 } }, 2.87), true)
+})
+
+test('PR-2 round 1 through the real keeper: a row holding the plan estimate is judged against the broker fill', async (t) => {
+  clearAtrCache()
+  t.after(clearAtrCache)
+  const db = mkManagedKeeperDb({ managedOn: true })
+  t.after(() => db.close())
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, scope: 'external', mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22, armProfitUsd: 50, givebackPct: 40 }))
+  // the short row holds 2.8700 (the plan's estimate) with a peak measured from it; the broker filled at 2.8795
+  db.prepare('UPDATE monitored_positions SET entry_price = 2.87, mfe_r = 0.5').run()
+  const deps = keeperDeps()
+  deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': Array.from({ length: 40 }, () => ({ h: 2.95, l: 2.90, c: 2.92 })) })
+  deps.ws.wsGetLastCloses = async () => ({ 1: 2.875 }) // above the stale 2.87 (a loss against it), below the 2.8795 fill (in profit)
+  deps.exec.amendPosition = async () => { throw new Error('must not amend') }
+  let pushed = null
+  deps.exec.pushTrailConfig = async (_c, specs) => { pushed = specs; return true }
+  const inProfit = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+  assert.equal(inProfit.trailSpecs.length, 1, 'short at 2.875 against the 2.8795 fill is in profit')
+  deps.ws.wsGetLastCloses = async () => ({ 1: 2.879 })
+  pushed = null
+  const tiny = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+  assert.equal(tiny.trailSpecs.length, 1)
+  deps.ws.wsGetLastCloses = async () => ({ 1: 2.885 })
+  const losing = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+  assert.equal(losing.trailSpecs.length, 0, 'losing against the fill: the stale-basis peak (0.5) does not qualify it')
+})

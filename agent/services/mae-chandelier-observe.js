@@ -54,8 +54,11 @@ export function wilderAtr(bars, period = DEFAULT_ATR_PERIOD) {
  * the trade's direction. Neither known → no spec (nothing pushed, the plan
  * stop stands). The distance, the peak seed and the engine are unchanged.
  */
-export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits, price, mfeR } = {}) {
-  if (!hasShownProfit({ side, entry, price, mfeR })) return null
+export function sinceEntryTrailSpec({ positionId, accountId, symbolId, side, entry, bars, currentSl, currentTp, digits, price, mfeR, profitSide, profitEntry } = {}) {
+  // № 14,836 (Codex round 1 on #1375): the caller may name the broker's own
+  // side and entry for the profit judgement; the spec's dir and peak seed
+  // stay on side/entry as before.
+  if (!hasShownProfit({ side: profitSide ?? side, entry: profitEntry ?? entry, price, mfeR })) return null
   const atr = wilderAtr(bars, DEFAULT_ATR_PERIOD)
   // Number(null), Number('') and Number(false) are zero, but they are not
   // broker precision. Preserve a genuine zero-digit instrument only.
