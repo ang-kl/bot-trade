@@ -231,3 +231,24 @@ test('epochOfNextWeekSecond: UTC is the identity projection; a gap-time target n
   assert.ok(inGap >= Date.UTC(2026, 2, 8, 7, 0), 'not before the gap ends')
   assert.equal(inGap, Date.UTC(2026, 2, 8, 7, 30))
 })
+
+test('nextOpenInfo: an interval starting inside the fall-back repeated hour opens again in the second fold, not a week later (Codex round 1 on #1388)', async () => {
+  const { nextOpenInfo, isSymbolOpenCached } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  // Sunday 01:30–01:45 New York. On 2026-11-01 the clock reads 01:xx twice
+  // (EDT, then EST after 06:00Z).
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('REPEAT', 9, ?, 'America/New_York')`)
+    .run(JSON.stringify([{ start: 1 * HOUR + 30 * 60, end: 1 * HOUR + 45 * 60 }]))
+  // 05:50Z = 01:50 EDT: the first fold's interval has passed …
+  const now = new Date(Date.UTC(2026, 10, 1, 5, 50, 0))
+  const read = nextOpenInfo(db, 'REPEAT', now)
+  assert.equal(read.open, false)
+  // … but the same wall time comes round at 06:30Z (01:30 EST), and the
+  // cached open test agrees at 06:35Z. The wall-clock delta alone pointed to
+  // 8 November.
+  assert.equal(read.next_open_at, '2026-11-01T06:30:00.000Z')
+  assert.equal(isSymbolOpenCached(db, 'REPEAT', new Date(Date.UTC(2026, 10, 1, 6, 35, 0))).open, true)
+  // Before the first fold the first occurrence is the answer (strictly after now).
+  const early = nextOpenInfo(db, 'REPEAT', new Date(Date.UTC(2026, 10, 1, 5, 20, 0)))
+  assert.equal(early.next_open_at, '2026-11-01T05:30:00.000Z')
+})

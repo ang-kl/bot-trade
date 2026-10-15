@@ -310,8 +310,23 @@ export function epochOfNextWeekSecond(now, timeZone = 'UTC', targetSow) {
   const wallTarget = wallClockEpochMs(nowMs, timeZone) + delta * 1000
   const offsetAt = (t) => wallClockEpochMs(t, timeZone) - t
   const t1 = wallTarget - offsetAt(nowMs)
-  if (wallClockEpochMs(t1, timeZone) === wallTarget) return t1
+  // Codex round 1 on #1388: when the zone falls back, a target inside the
+  // repeated hour occurs TWICE, and the wall-clock delta (measured from
+  // now's first fold) can point a week ahead while the same wall time comes
+  // round again within the hour. So both folds are tried — this week's wall
+  // target and the same target one week back — against the zone's offsets
+  // on either side of the transition, and the earliest instant strictly
+  // after `now` whose wall clock reads the target wins.
+  const offsets = new Set([offsetAt(nowMs), offsetAt(t1), offsetAt(nowMs + W * 1000)])
+  let best = null
+  for (const wall of [wallTarget - W * 1000, wallTarget]) {
+    for (const off of offsets) {
+      const t = wall - off
+      if (t > nowMs && wallClockEpochMs(t, timeZone) === wall && (best == null || t < best)) best = t
+    }
+  }
+  if (best != null) return best
+  // No instant reads the target: it sits inside a spring-forward gap.
   const t2 = wallTarget - offsetAt(t1)
-  if (wallClockEpochMs(t2, timeZone) === wallTarget) return t2
   return Math.max(t1, t2)
 }
