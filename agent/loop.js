@@ -4674,11 +4674,11 @@ async function runLoop(db) {
       })
       const symbols = pick.symbols
       if (pick.skippedClosed.length) {
+        // Codex P2 on #1381 (owner: "Drop the decision rows; keep the log line"): a routine
+        // closure is not a decision about a proposal, so nothing is written
+        // to decision_log — a per-cycle skip row read as an upstream block in
+        // the decision audit and made a healthy day look stuck.
         log(`Open-market scan — ${symbols.length} of ${allSymbols.length} symbol(s) in the rotation (${pick.preOpen.length} pre-open within ${preOpenHours}h${pick.preOpen.length ? `: ${pick.preOpen.join(', ')}` : ''}; ${pick.unknown} with unknown hours kept; ${pick.skippedClosed.length} closed until their open)`)
-        try {
-          const { recordDecision } = await import('./services/decision-log.js')
-          recordDecision(db, { stage: 'closed_market_skip', decision: 'skip', reason: `${pick.skippedClosed.length} closed symbol(s) left out of the scan rotation until their open; ${pick.preOpen.length} pre-open within ${preOpenHours}h kept; ${pick.unknown} unknown hours kept`, loopId: loopCount })
-        } catch { /* diagnostics only */ }
       }
 
       bookScanSymbols = (symbols.length ? symbols : allSymbols).map(x => String(typeof x === 'string' ? x : x?.symbol || '').toUpperCase()).filter(Boolean)
@@ -4691,10 +4691,6 @@ async function runLoop(db) {
         log('No enabled symbols configured')
       } else if (symbols.length === 0) {
         log(`Nothing open or opening within ${preOpenHours}h — no scan this cycle (${allSymbols.length} symbol(s) closed); monitoring/protection unaffected`)
-        try {
-          const { recordDecision } = await import('./services/decision-log.js')
-          recordDecision(db, { stage: 'closed_market_skip', decision: 'skip', reason: `nothing open or opening within ${preOpenHours}h — no scan this cycle`, loopId: loopCount })
-        } catch { /* diagnostics only */ }
       } else if (!scanEnabled) {
         log('Scan disabled — skipping')
       } else if (!scanWanted) {
