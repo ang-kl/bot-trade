@@ -49,6 +49,7 @@
 import { getState, setState } from '../db.js'
 import { readTradableUnion } from './watchlists.js'
 import { isSpikeMove, SPIKE_PCT_PER_MIN } from './fast-monitor.js'
+import { noteTick, flushActivity, ACTIVITY_FLUSH_MS } from './tick-activity.js'
 
 /** Pure: is this move big enough to wake the guards? */
 // ---------------------------------------------------------------------------
@@ -234,6 +235,7 @@ export function startGuardian(db, getCreds, deps = {}) {
   let symbolById = new Map()  // symbolId → symbol string, for flagging
   let sweeping = false
   let lastSweepAt = 0
+  let lastActivityFlushAt = 0
   let stopped = false
 
   const teardown = () => {
@@ -340,6 +342,8 @@ export function startGuardian(db, getCreds, deps = {}) {
     // on the paths that happen to continue would be missing exactly when a
     // symbol is quiet, which is not when you want to lose sight of a position.
     recordSpot(tick.symbolId, price)
+    // Claude · № 15,036 15-Oct (owner "go" after № 15,036: activity screener step 1, measurement; claude-builder): tick count per minute is the broker's tick volume; counted here, every tick, before any early return.
+    noteTick(tick.symbolId, price)
     if (heldIds.has(tick.symbolId)) {
       // §70.6 — THE LOSS CAP, ON EVERY TICK, NOT EVERY MINUTE.
       //
@@ -421,6 +425,12 @@ export function startGuardian(db, getCreds, deps = {}) {
       // held symbol. A sweep now runs at least every backstopMs while
       // anything is held, ticks or not.
       if (activeRows(db) > 0 && Date.now() - lastSweepAt >= backstopMs) sweep(creds, 'backstop')
+      // Claude · № 15,036 15-Oct (owner "go" after № 15,036: activity screener step 1, measurement; claude-builder): once a minute the per-symbol tick rates go to agent_state
+      // (tick_activity_json) for GET /state/activity. The ring stays in memory.
+      if (Date.now() - lastActivityFlushAt >= (deps.activityFlushMs ?? ACTIVITY_FLUSH_MS)) {
+        lastActivityFlushAt = Date.now()
+        flushActivity(db, setState, { symbolNames: Object.fromEntries(symbolById) })
+      }
     } catch (e) {
       err = e
       teardown() // rebuilt next tick

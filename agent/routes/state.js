@@ -5060,6 +5060,24 @@ export default function stateRouter(db) {
   // № 11,596·D·1, ordered № 11,583·D·1; services/trail-status-view.js). The
   // read that makes "the engine holds the since-entry spec" verifiable from
   // outside the gateway. Read-only, never cached.
+  // GET /state/tick-activity?top=50 (the /activity name is the Trade Window's event feed above) — Claude · № 15,036 15-Oct (owner "go" after № 15,036: activity screener step 1, measurement; claude-builder).
+  // The tick rate per symbol per minute off the guardian's spot stream,
+  // ranked by relative activity (last complete minute ÷ its 20-minute
+  // median) and by the last minute's move. A measurement readout: no scan
+  // or entry decision reads it yet (step 2 follows the measured distribution).
+  router.get('/tick-activity', async (req, res) => {
+    try {
+      const { activityReadout, ACTIVITY_STATE_KEY } = await import('../services/tick-activity.js')
+      let isOpen = null
+      try { const sh = await import('../services/symbol-hours.js'); isOpen = (sym) => sh.isSymbolOpenCached(db, sym) } catch { isOpen = null }
+      const out = activityReadout(getState(db, ACTIVITY_STATE_KEY), { top: req.query.top, isOpen })
+      res.set('Cache-Control', 'no-store')
+      res.json(out)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/trail-status', async (req, res) => {
     try {
       const { trailStatusView } = await import('../services/trail-status-view.js')
