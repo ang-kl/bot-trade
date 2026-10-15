@@ -228,3 +228,41 @@ test('a broken query reports ok:false, never an empty scoreboard', () => {
   assert.equal(s.ok, false)
   assert.deepEqual(s.writers, [])
 })
+
+// Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2 step 3; claude-builder).
+// Expected outcome from USDJPY #1846 (14-10, § 14,716): the engine moved the
+// stop 158.866 → 158.71 (journalled `trail_tightened`, source cpp_trail_engine)
+// and the trade closed at 158.731 on it; the record read `stopMoves 0`,
+// `finalStop 158.866`, exit "other". A trail_tightened is a stop move.
+test('PR-2: the native trail engine\'s trail_tightened amend counts as a stop move and attributes the exit', () => {
+  const db = initDB(':memory:')
+  const id = mkTrade(db, { side: 'sell', entry: 158.366, sl: 158.866, exit: 158.731, pnl: -11.5 })
+  recordPositionEvent(db, { tradeId: id, symbol: 'USDJPY', kind: 'trail_tightened', source: 'cpp_trail_engine', fromValue: 158.866, toValue: 158.71 })
+  const o = tradeManagementOutcome(db, db.prepare('SELECT * FROM trades WHERE id = ?').get(id))
+  assert.equal(o.stopMoves, 1)
+  assert.equal(o.originalStop, 158.866, 'R is measured from the stop before the engine moved it')
+  assert.equal(o.finalStop, 158.71)
+  assert.equal(o.exitCause, 'managed_stop')
+  assert.equal(o.causedBy, 'cpp_trail_engine')
+  assert.ok(Math.abs(o.realisedR - (-0.73)) < 1e-9, `−0.73R as the ledger says: ${o.realisedR}`)
+})
+
+// Claude · № 14,840 15-Oct (Codex round 2 on #1375, P2; owner "fix both in this
+// PR"; claude-builder). The native engine's amends are pulled from the sidecar
+// after the fact: its trail_tightened can be journalled AFTER a later sl_moved,
+// with a newer row id but an older time. The story is read in time order.
+test('PR-2 round 2: stop moves are read in the order they happened, not the order they were journalled', () => {
+  const db = initDB(':memory:')
+  const id = mkTrade(db, { side: 'sell', entry: 158.366, sl: 158.866, exit: 158.5, pnl: -5 })
+  const t0 = Date.parse('2026-10-14T08:04:00Z')
+  // the keeper moves the stop at +60 s and is journalled first…
+  recordPositionEvent(db, { tradeId: id, symbol: 'USDJPY', kind: 'sl_moved', source: 'profit_keeper', fromValue: 158.71, toValue: 158.5, atMs: t0 + 60_000 })
+  // …the engine's earlier amend (+35 s) arrives later from the sidecar
+  recordPositionEvent(db, { tradeId: id, symbol: 'USDJPY', kind: 'trail_tightened', source: 'cpp_trail_engine', fromValue: 158.866, toValue: 158.71, atMs: t0 + 35_000 })
+  const o = tradeManagementOutcome(db, db.prepare('SELECT * FROM trades WHERE id = ?').get(id))
+  assert.equal(o.stopMoves, 2)
+  assert.equal(o.originalStop, 158.866, 'the first move in time starts from the plan stop')
+  assert.equal(o.finalStop, 158.5, 'the last move in time is the keeper\'s')
+  assert.equal(o.exitCause, 'managed_stop')
+  assert.equal(o.causedBy, 'profit_keeper')
+})

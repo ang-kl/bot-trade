@@ -300,6 +300,8 @@ for (const route of ['execute-trade', 'manual-order']) {
       assert.equal(res.ok, true, JSON.stringify(res).slice(0, 300))
       assert.equal(res.executionPrice, null, 'no fill was recovered')
       assert.equal(db.prepare('SELECT invalidation_trigger FROM monitored_positions').get().invalidation_trigger, 'unreadable:fill_unknown', `market ${close}`)
+      // № 14,822 (PR-2 step 3): no fill known → no initial-stop stamp (the reconciler's opening-bracket stamp follows)
+      assert.equal(db.prepare('SELECT broker_sl_initial FROM trades').get().broker_sl_initial, null)
     }
     // the fill recovered from the position (1.104; the market reads 1.094) is what is judged: premise 1.095 sits inside 1.094..1.104
     const db = fresh({ halt: false })
@@ -310,6 +312,9 @@ for (const route of ['execute-trade', 'manual-order']) {
     assert.equal(res.executionPrice, 1.104, 'the fill read from the position')
     assert.equal(db.prepare('SELECT invalidation_trigger FROM monitored_positions').get().invalidation_trigger, 'price<1.095')
     if (route === 'manual-order') assert.equal(db.prepare('SELECT entry_price FROM trades').get().entry_price, 1.104, 'the manual ledger takes the recovered fill too')
+    // № 14,822 (PR-2 step 3): broker_sl_initial is the stop sent with the order, anchored to the recovered fill (1.104 − 0.01)
+    const bsl = db.prepare('SELECT broker_sl_initial FROM trades').get().broker_sl_initial
+    assert.ok(Math.abs(bsl - 1.094) < 1e-9, `broker_sl_initial ${bsl}`)
   })
 }
 

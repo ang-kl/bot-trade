@@ -672,6 +672,7 @@ test('V3 M5: the keeper\'s SL ratchet is timed in the amend-latency ring, payloa
 
 test('managed account: the decision step is fenced, the since-entry spec is still pushed', async () => {
   const db = mkManagedKeeperDb({ managedOn: true })
+  db.prepare('UPDATE monitored_positions SET mfe_exit_r = 0.2').run() // № 14,840 (PR-2): a short qualifies on its exit-side peak; its bid close no longer does
   setState(db, 'profit_keeper_json', JSON.stringify({ on: true, scope: 'external', mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22, armProfitUsd: 50, givebackPct: 40 }))
   const bars = Array.from({ length: 40 }, () => ({ h: 2.95, l: 2.90, c: 2.92 })) // ATR 0.05
   let pushed = null
@@ -696,6 +697,7 @@ test('managed since-entry trail survives the next pass without refetching the sa
   clearAtrCache()
   t.after(clearAtrCache)
   const db = mkManagedKeeperDb()
+  db.prepare('UPDATE monitored_positions SET mfe_exit_r = 0.2').run() // № 14,840 (PR-2): a short qualifies on its exit-side peak; its bid close no longer does
   t.after(() => db.close())
   setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
   const before = db.prepare('SELECT * FROM monitored_positions').all()
@@ -733,6 +735,7 @@ test('managed since-entry push omits invalid broker precision without amending o
   clearAtrCache()
   t.after(clearAtrCache)
   const db = mkManagedKeeperDb()
+  db.prepare('UPDATE monitored_positions SET mfe_exit_r = 0.2').run() // № 14,840 (PR-2): a short qualifies on its exit-side peak; its bid close no longer does
   t.after(() => db.close())
   setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
   const before = db.prepare('SELECT * FROM monitored_positions').all()
@@ -770,6 +773,8 @@ for (const managedOn of [true, false]) {
     setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
     db.exec('ALTER TABLE monitored_positions ADD COLUMN digits INTEGER')
     db.exec('UPDATE monitored_positions SET digits = 3')
+    // № 14,822 (PR-2): the close below sits AT the fill; the row has a recorded peak so the spec is still eligible
+    db.exec('UPDATE monitored_positions SET mfe_exit_r = 0.2')
     const before = db.prepare('SELECT * FROM monitored_positions').all()
     const deps = keeperDeps()
     deps.ws.wsGetLastCloses = async () => ({ 1: 2.8795 }) // no keeper action or original trail
@@ -840,6 +845,7 @@ test('since-entry bars are refetched when cached host/account differs or full ba
   clearAtrCache()
   t.after(clearAtrCache)
   const db = mkManagedKeeperDb()
+  db.prepare('UPDATE monitored_positions SET mfe_exit_r = 0.2').run() // № 14,840 (PR-2): a short qualifies on its exit-side peak; its bid close no longer does
   t.after(() => db.close())
   setState(db, 'profit_keeper_json', JSON.stringify({ on: true, mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22 }))
   const bars = Array.from({ length: 40 }, () => ({ h: 2.35, l: 2.30, c: 2.32 }))
@@ -1287,10 +1293,109 @@ test('valid quote-missing broker identity keeps the existing since-entry native 
     f.deps.managedExit.managedExitApplies=()=>managed
     f.deps.ws.wsGetLastCloses=async()=>({})
     f.deps.ws.wsGetTrendbarsBatch=async()=>({'1h':Array.from({length:50},()=>({h:101,l:99,c:100}))})
+    // № 14,822 (PR-2): a missing quote is not profit; the row's recorded peak is what keeps this position eligible
+    f.db.prepare('UPDATE monitored_positions SET mfe_exit_r = 0.2').run()
     const result=await runProfitKeeper(f.db,CREDS,f.deps)
     assert.equal(result.trailSpecsComplete,true)
     assert.equal(result.trailSpecs.length,1)
     assert.equal(result.trailSpecs[0].source,'mae_chandelier_since_entry')
     assert.equal(result.trailSpecs[0].dir,1)
   }
+})
+
+// Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2; the keeper's call
+// site authorised after № 14,822; claude-builder). Through the real keeper:
+// a position whose close sits at its fill and whose row has no recorded peak
+// gets NO since-entry spec (nothing pushed, no amend, no close); the same
+// position with a close in profit, or with a recorded peak, does.
+test('PR-2 through the real keeper: the since-entry spec is withheld until the position has shown profit', async (t) => {
+  clearAtrCache()
+  t.after(clearAtrCache)
+  const bars = Array.from({ length: 40 }, () => ({ h: 2.95, l: 2.90, c: 2.92 }))
+  const run = async ({ close, mfeR }) => {
+    const db = mkManagedKeeperDb({ managedOn: true })
+    t.after(() => db.close())
+    setState(db, 'profit_keeper_json', JSON.stringify({ on: true, scope: 'external', mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22, armProfitUsd: 50, givebackPct: 40 }))
+    if (mfeR != null) db.prepare('UPDATE monitored_positions SET mfe_exit_r = ?').run(mfeR)
+    let pushed = null
+    const deps = keeperDeps()
+    deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': bars })
+    deps.ws.wsGetLastCloses = async () => ({ 1: close })
+    deps.exec.amendPosition = async () => { throw new Error('must not amend') }
+    deps.exec.closePosition = async () => { throw new Error('must not close') }
+    deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+    const out = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+    return { out, pushed }
+  }
+  // the short NATGAS row filled at 2.8795: a close at the fill, no peak on record → nothing
+  const flat = await run({ close: 2.8795 })
+  assert.deepEqual([flat.out.trailSpecs.length, flat.out.trailPushed, flat.out.slMoves, flat.out.closes], [0, 0, 0, 0], JSON.stringify(flat.out))
+  assert.ok(flat.pushed == null || flat.pushed.length === 0, `nothing pushed: ${JSON.stringify(flat.pushed)}`)
+  // a close above the fill on a short is a loss → still nothing
+  const losing = await run({ close: 2.9 })
+  assert.equal(losing.out.trailSpecs.length, 0)
+  // № 14,840 (Codex round 2): the bar close is the bid — not this short's exit price — so a close below the fill alone does not qualify it
+  const bidOnly = await run({ close: 2.87 })
+  assert.equal(bidOnly.out.trailSpecs.length, 0, 'a short is not in profit until its ask (exit side) has been')
+  // an exit-side peak past the fill qualifies, even with the close back at the fill; the distance is unchanged
+  const peaked = await run({ close: 2.8795, mfeR: 0.3 })
+  assert.equal(peaked.out.trailSpecs.length, 1)
+  assert.equal(peaked.pushed[0].source, 'mae_chandelier_since_entry')
+  assert.ok(Math.abs(peaked.pushed[0].trailDistance - 0.15) < 1e-9, '3 × ATR, unchanged')
+})
+
+// Claude · № 14,836 15-Oct (Codex round 1 on #1375, two P1s; owner "fix both in
+// this PR"; claude-builder). Codex's examples: (1) a long filled at 1.104 whose
+// row holds the plan's 1.100 (fill not confirmed) is losing at 1.102, not in
+// profit; (2) a reversed leg must not inherit the previous leg's peak.
+test('PR-2 round 1: the since-entry profit evidence is the broker position\'s, not the row\'s', async () => {
+  const { sinceEntryProfitEvidence } = await import('./profit-keeper.js')
+  const { hasShownProfit } = await import('./mae-chandelier-observe.js')
+  const judge = (row, bp, price) => {
+    const ev = sinceEntryProfitEvidence(row, bp, price)
+    return hasShownProfit({ side: ev.profitSide, entry: ev.profitEntry, price: ev.price, mfeR: ev.mfeR })
+  }
+  const longBp = { price: 1.104, tradeData: { tradeSide: 1 } }
+  // (1) stale plan estimate on the row: judged against the broker's 1.104
+  assert.equal(judge({ side: 'long', entry_price: 1.100, mfe_exit_r: null }, longBp, 1.102), false, 'losing against the fill')
+  assert.equal(judge({ side: 'long', entry_price: 1.100, mfe_exit_r: 0.4 }, longBp, 1.102), false, 'a peak measured from the stale estimate is not evidence')
+  assert.equal(judge({ side: 'long', entry_price: 1.100, mfe_exit_r: null }, longBp, 1.105), true, 'in profit against the fill')
+  // the row's peak counts when its basis is the broker position's
+  assert.equal(judge({ side: 'long', entry_price: 1.104, mfe_exit_r: 0.4 }, longBp, 1.103), true)
+  // (2) a reversed leg: the broker is short; a long row's peak is not this leg's
+  const shortBp = { price: 1.104, tradeData: { tradeSide: 'SELL' } }
+  assert.equal(judge({ side: 'long', entry_price: 1.104, mfe_exit_r: 0.9 }, shortBp, 1.105), false, 'the earlier leg\'s peak does not qualify')
+  assert.equal(judge({ side: 'short', entry_price: 1.104, mfe_exit_r: 0.1 }, shortBp, 1.105), true, 'the short leg on its own exit-side peak')
+  // № 14,840 (Codex round 2): a short's bar close is its bid, not its exit price — it never qualifies a short
+  assert.equal(judge({ side: 'short', entry_price: 1.104, mfe_exit_r: 0 }, shortBp, 1.103), false, 'bid below the fill, ask not yet: not in profit')
+  // no broker price: the peak is not trusted, and a short has no exit-side close
+  assert.equal(judge({ side: 'short', entry_price: 2.8795, mfe_exit_r: 0.5 }, { tradeData: { tradeSide: 2 } }, 2.87), false)
+  // a long's close is its bid, its exit price: judged against the row when the broker gives no price
+  assert.equal(judge({ side: 'long', entry_price: 2.8795, mfe_exit_r: null }, { tradeData: { tradeSide: 1 } }, 2.89), true)
+  assert.equal(judge({ side: 'long', entry_price: 2.8795, mfe_exit_r: null }, { tradeData: { tradeSide: 1 } }, 2.87), false)
+})
+
+test('PR-2 round 1 through the real keeper: a row holding the plan estimate is judged against the broker fill', async (t) => {
+  clearAtrCache()
+  t.after(clearAtrCache)
+  const db = mkManagedKeeperDb({ managedOn: true })
+  t.after(() => db.close())
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, scope: 'external', mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 22, armProfitUsd: 50, givebackPct: 40 }))
+  // the short row holds 2.8700 (the plan's estimate) with an exit-side peak measured from it; the broker filled at 2.8795
+  db.prepare('UPDATE monitored_positions SET entry_price = 2.87, mfe_exit_r = 0.5').run()
+  const deps = keeperDeps()
+  deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': Array.from({ length: 40 }, () => ({ h: 2.95, l: 2.90, c: 2.92 })) })
+  deps.ws.wsGetLastCloses = async () => ({ 1: 2.885 })
+  deps.exec.amendPosition = async () => { throw new Error('must not amend') }
+  let pushed = null
+  deps.exec.pushTrailConfig = async (_c, specs) => { pushed = specs; return true }
+  const stale = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+  assert.equal(stale.trailSpecs.length, 0, 'a peak measured from the stale 2.87 estimate does not qualify the position')
+  assert.ok(pushed == null || pushed.length === 0)
+  // the row's basis is the broker's own fill: its exit-side peak qualifies
+  db.prepare('UPDATE monitored_positions SET entry_price = 2.8795').run()
+  pushed = null
+  const own = await runProfitKeeper(db, { ...CREDS, accountId: 777 }, deps)
+  assert.equal(own.trailSpecs.length, 1)
+  assert.equal(pushed?.length, 1, 'and the spec reaches the engine')
 })

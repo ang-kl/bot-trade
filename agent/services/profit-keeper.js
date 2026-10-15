@@ -392,6 +392,38 @@ export function decideProfitKeeper(cfg, {
 // retains that per-unit peak, not the full position's dollars. Added volume
 // or a changed entry/identity starts a new basis; neither proves that the new
 // units experienced the old peak. Legacy peaks have no recoverable size basis.
+/**
+ * Claude · № 14,836 15-Oct (Codex round 1 on #1375; owner "fix both in this
+ * PR"; claude-builder). The profit evidence the since-entry gate may use,
+ * bound to the broker position: its side and entry decide the close's
+ * comparison; the row's recorded peak (mfe_r) is passed only when the row's
+ * side and entry are that broker position's — a stale plan estimate or an
+ * earlier leg's peak is not evidence for this one.
+ *
+ * № 14,840 (Codex round 2 on #1375, P1; owner "fix both in this PR"): the
+ * evidence is EXIT-SIDE — profit at a price the position could close at.
+ * The peak is mfe_exit_r (recorded at the bid for a long, the ask for a
+ * short; exit-excursion.js), not the mid-based mfe_r. The keeper's close is
+ * a 1m trendbar close, which cTrader quotes on the bid: the exit price for a
+ * long, but not for a short (its exit is the ask, not in hand here), so a
+ * short is judged by its exit-side peak alone.
+ */
+export function sinceEntryProfitEvidence(row, bp, price) {
+  const td = bp?.tradeData || {}
+  const brokerDir = td.tradeSide === 1 || td.tradeSide === '1' || td.tradeSide === 'BUY' ? 1
+    : td.tradeSide === 2 || td.tradeSide === '2' || td.tradeSide === 'SELL' ? -1 : 0
+  const rowSide = String(row?.side || '').toUpperCase()
+  const rowDir = rowSide === 'LONG' || rowSide === 'BUY' ? 1 : rowSide === 'SHORT' || rowSide === 'SELL' ? -1 : 0
+  const brokerEntry = Number(bp?.price) > 0 ? Number(bp.price) : null
+  const rowEntry = Number(row?.entry_price) > 0 ? Number(row.entry_price) : null
+  const dir = brokerDir || rowDir
+  const entry = brokerEntry ?? rowEntry
+  const sameBasis = brokerDir !== 0 && rowDir === brokerDir && brokerEntry != null && rowEntry != null
+    && Math.abs(rowEntry - brokerEntry) <= brokerEntry * 1e-9
+  return { profitSide: dir === -1 ? 'SELL' : dir === 1 ? 'BUY' : null, profitEntry: entry,
+    price: dir === 1 ? price : null, mfeR: sameBasis ? row.mfe_exit_r : null }
+}
+
 function keeperPeakBasis(row, bp, accountId) {
   const td = bp.tradeData || {}
   const side = ['LONG', 'BUY'].includes(String(row.side).toUpperCase()) ? 1
@@ -491,7 +523,7 @@ async function profitKeeperPass(db, creds, deps = {}) {
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp, mp.peak_profit_usd, mp.keeper_peak_state,
               mp.scaled_out, mp.trade_id, mp.account_id, mp.status, t.ctrader_position_id AS position_id,
-              t.sl_price AS original_sl, mp.early_trimmed, mp.initial_risk
+              t.sl_price AS original_sl, mp.early_trimmed, mp.initial_risk, mp.mfe_exit_r
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
@@ -909,6 +941,16 @@ async function profitKeeperPass(db, creds, deps = {}) {
         currentSl: bp.stopLoss ?? r.current_sl ?? null,
         currentTp: bp.takeProfit ?? r.current_tp ?? null,
         digits: brokerDigitsByPosition.get(String(parseInt(r.position_id))),
+        // Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2, this line
+        // authorised after № 14,822; claude-builder): the spec is withheld
+        // until the position has shown profit — the monitor's peak or the
+        // close already fetched above against the fill.
+        // № 14,836 (Codex round 1 on #1375, two P1s; owner "fix both in this
+        // PR"): judged against the BROKER's entry and side, never the row's —
+        // a row whose fill was not confirmed holds the plan's estimate, and
+        // the recorded peak counts only when the row's side and entry are the
+        // broker position's own (the peak was measured from that basis).
+        ...sinceEntryProfitEvidence(r, bp, prices[td.symbolId]),
       })
       if (!spec) continue
       trailSpecs.push(spec)

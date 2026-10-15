@@ -68,7 +68,9 @@ test('the auto fill, the manual order and the execute-trade writers all re-check
   const actions = strip(readFileSync(new URL('../routes/actions.js', import.meta.url), 'utf8'))
   // № 14,793 (Codex round 5, one rule): every writer hands the helper the FILL (executionPrice) — never entryP, never a market estimate
   assert.match(loop, /premiseAtFill\(\{ trigger: synth\.invalidation_trigger[^\n]*fill: executionPrice, sl: executionPrice != null \? slP : null \}\)/)
-  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: premiseTrigger\(premise\)[^\n]*fill: executionPrice,\s*\n\s*sl: anchorBracketToFill\(\{ side, proposalEntry: entry, fill: executionPrice,/)
+  // № 14,822 (PR-2): the manual order's fill-anchored stop is computed once (anchoredSl) for the premise and the initial-stop record
+  assert.match(actions, /const anchoredSl = anchorBracketToFill\(\{ side, proposalEntry: entry, fill: executionPrice, sl: proposal\.sl, tp1: proposal\.tp1 \}\)\.sl/)
+  assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: premiseTrigger\(premise\)[^\n]*fill: executionPrice, sl: anchoredSl \}\)/)
   assert.match(actions, /invalidationTrigger: premiseAtFill\(\{ trigger: synth\.invalidation_trigger \|\| analysis\.invalidation_trigger[^\n]*fill: executionPrice, sl: slHeld \}\)/)
   assert.doesNotMatch(actions, /premiseAtFill\(\{[^\n]*fill: entryP/)
   assert.doesNotMatch(loop, /premiseAtFill\(\{[^\n]*fill: entryP/)

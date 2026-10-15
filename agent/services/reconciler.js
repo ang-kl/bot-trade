@@ -715,7 +715,15 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
            current_sl = CASE WHEN ? = 1 THEN ? ELSE current_sl END,
            current_tp = CASE WHEN ? = 1 THEN ? ELSE current_tp END,
            thesis = CASE WHEN ? IS NOT NULL THEN (COALESCE(thesis, '') || ' | ' || ?) ELSE thesis END,
-           broker_volume_units = ?, broker_sl = ?, broker_tp = ?
+           broker_volume_units = ?, broker_sl = ?, broker_tp = ?,
+           -- Claude · № 14,836 15-Oct (Codex round 1 on #1375, P1; owner "fix both
+           -- in this PR"; claude-builder): a reversal is a new leg — the old leg's
+           -- excursion is not this one's (the since-entry trail reads mfe_r).
+           mfe_r = CASE WHEN ? = 1 THEN 0 ELSE mfe_r END,
+           mae_r = CASE WHEN ? = 1 THEN 0 ELSE mae_r END,
+           -- № 14,840 (Codex round 2): the exit-side excursion the gate reads, too.
+           mfe_exit_r = CASE WHEN ? = 1 THEN 0 ELSE mfe_exit_r END,
+           mae_exit_r = CASE WHEN ? = 1 THEN 0 ELSE mae_exit_r END
          WHERE id = ?`
       ).run(
         updates.side ?? null,
@@ -724,6 +732,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
         'current_tp' in updates ? 1 : 0, updates.current_tp ?? null,
         updates.thesis_note ?? null, updates.thesis_note ?? null,
         bVol, bSl, bTp,
+        updates.side ? 1 : 0, updates.side ? 1 : 0, updates.side ? 1 : 0, updates.side ? 1 : 0,
         row.id,
       )
 

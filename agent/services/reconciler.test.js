@@ -534,6 +534,8 @@ test('tamper watch: a manual REVERSAL flips the managed side and rewrites the th
   seedKnownPosition(db, { positionId: '42' })
   const setState = mkSetState(db)
   reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', volume: 1000, stopLoss: 99, takeProfit: 110 })], [], setState)
+  // № 14,836 (Codex round 1 on #1375): the long leg had reached +0.8R / −0.2R
+  db.prepare(`UPDATE monitored_positions SET mfe_r = 0.8, mae_r = -0.2`).run()
 
   // Owner reverses: netting account flips the same position to SELL at 102.
   const result = reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', tradeSide: 'SELL', openPrice: 102, volume: 1000, stopLoss: 104, takeProfit: 96 })], [], setState)
@@ -547,6 +549,12 @@ test('tamper watch: a manual REVERSAL flips the managed side and rewrites the th
   assert.equal(row.current_sl, 104)
   assert.equal(row.current_tp, 96)
   assert.match(row.thesis, /MANUAL REVERSAL/)
+  // № 14,836: a reversal is a new leg — the old leg's excursion is not this one's
+  assert.deepEqual([row.mfe_r, row.mae_r], [0, 0], 'the excursion starts again on the reversed leg')
+  // and an ordinary pass keeps it
+  db.prepare(`UPDATE monitored_positions SET mfe_r = 0.3`).run()
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', tradeSide: 'SELL', openPrice: 102, volume: 1000, stopLoss: 104, takeProfit: 96 })], [], setState)
+  assert.equal(db.prepare(`SELECT mfe_r FROM monitored_positions`).get().mfe_r, 0.3, 'no reversal, no reset')
 })
 
 // --- duplicate-P&L repair (owner: 4 identical USDIDR cards, -$487.76 each,

@@ -30,7 +30,8 @@ test('sinceEntryTrailSpec: 3 × ATR behind a peak seeded at the entry; missing d
   assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100, bars, digits: undefined }), null)
   assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100, bars: [], digits: 5 }), null)
   assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 0, bars, digits: 5 }), null)
-  const spec = sinceEntryTrailSpec({ positionId: '1', accountId: '2', symbolId: 3, side: 'LONG', entry: 100, bars, digits: 5, currentSl: 90 })
+  // № 14,822 (PR-2): a spec is built only for a position that has shown profit (mfeR > 0 here)
+  const spec = sinceEntryTrailSpec({ positionId: '1', accountId: '2', symbolId: 3, side: 'LONG', entry: 100, bars, digits: 5, currentSl: 90, mfeR: 0.1 })
   assert.equal(spec.positionId, 1)
   assert.equal(spec.ctidTraderAccountId, 2)
   assert.equal(spec.dir, 1)
@@ -41,12 +42,12 @@ test('sinceEntryTrailSpec: 3 × ATR behind a peak seeded at the entry; missing d
   assert.equal(spec.currentTp, null)
   assert.ok(Math.abs(spec.trailDistance - DEFAULT_ATR_MULT * wilderAtr(bars, DEFAULT_ATR_PERIOD)) < 1e-12)
   assert.equal(spec.source, 'mae_chandelier_since_entry')
-  assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'SELL', entry: 100, bars, digits: 5 }).dir, -1)
-  assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'short', entry: 100, bars, digits: 5 }).dir, -1)
+  assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'SELL', entry: 100, bars, digits: 5, mfeR: 0.1 }).dir, -1)
+  assert.equal(sinceEntryTrailSpec({ positionId: 1, accountId: 2, symbolId: 3, side: 'short', entry: 100, bars, digits: 5, price: 99.9 }).dir, -1)
 })
 
 test('the observer is gone: the module exports only the ATR and the trail spec', () => {
-  assert.deepEqual(Object.keys(mod).sort(), ['DEFAULT_ATR_MULT', 'DEFAULT_ATR_PERIOD', 'sinceEntryTrailSpec', 'wilderAtr'])
+  assert.deepEqual(Object.keys(mod).sort(), ['DEFAULT_ATR_MULT', 'DEFAULT_ATR_PERIOD', 'hasShownProfit', 'sinceEntryTrailSpec', 'wilderAtr'])
   for (const gone of ['observePosition', 'decideAdjust', 'recordObserve', 'recordAmendReceipt', 'maeChandelierView', 'storeBars', 'cachedBars', 'noteMid', 'freshMid', 'OBSERVE_STATE_KEY', 'startMaeChandelierObserve']) {
     assert.equal(gone in mod, false, `${gone} was removed with the observer on 03-10-2026`)
   }
@@ -54,10 +55,42 @@ test('the observer is gone: the module exports only the ATR and the trail spec',
 
 test('since-entry precision: absent or invalid metadata cannot become whole-price rounding', () => {
   const input = { positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100,
-    bars: barsFrom(Array.from({ length: 30 }, () => 100)), currentSl: 90, currentTp: 120 }
+    bars: barsFrom(Array.from({ length: 30 }, () => 100)), currentSl: 90, currentTp: 120, mfeR: 0.1 }
   for (const digits of [null, '', ' ', false, true, -1, 2.5, NaN, Infinity]) {
     assert.equal(sinceEntryTrailSpec({ ...input, digits }), null, `invalid precision ${String(digits)} must omit the spec`)
   }
   assert.equal(sinceEntryTrailSpec({ ...input, digits: 0 }).digits, 0, 'an explicit zero-digit instrument is valid')
   assert.equal(sinceEntryTrailSpec({ ...input, digits: '3' }).digits, 3, 'numeric broker metadata retains its precision')
+})
+
+// Claude · № 14,822 15-Oct (owner order § 14,741·A PR-2; owner choice after
+// № 14,822: "peak above entry OR close in profit now"; claude-builder).
+// Expected outcomes from the two production trades of 14-10 (§ 14,716, the
+// stored trade and management-reflection records): GBPUSD #1817, short, fill
+// 1.32092, plan stop 1.32980, the engine moved the stop to 1.32381 at +7 s;
+// USDJPY #1846, short, fill 158.366, plan stop 158.866, moved to 158.71 at
+// +35 s. Neither had shown profit. The spec that armed those amends is now
+// withheld until the position has; the distance is unchanged once it has.
+test('PR-2: no since-entry spec until the position has shown profit — GBPUSD #1817 and USDJPY #1846 reproduced', () => {
+  // 1h bars whose 3 × ATR(22) sits well inside the plan stop, as on 14-10
+  const gbp = { positionId: 248165576, accountId: 46130058, symbolId: 2, side: 'SELL', entry: 1.32092, digits: 5, currentSl: 1.3298, currentTp: 1.3,
+    bars: Array.from({ length: 30 }, () => ({ h: 1.3215, l: 1.3205, c: 1.321 })) } // ATR 0.001 → 3×ATR 0.003 < 0.0089 plan risk
+  assert.equal(sinceEntryTrailSpec({ ...gbp, price: 1.32095 }), null, '+7 s: the close sits at the fill (short, not below it) → no spec')
+  assert.equal(sinceEntryTrailSpec({ ...gbp, price: 1.32092 }), null, 'at the fill exactly is not profit')
+  assert.equal(sinceEntryTrailSpec({ ...gbp }), null, 'no close and no recorded peak → nothing is pushed')
+  const armedGbp = sinceEntryTrailSpec({ ...gbp, price: 1.3205 })
+  assert.ok(armedGbp, 'once the close is below the fill the spec is built')
+  assert.ok(Math.abs(armedGbp.trailDistance - 3 * wilderAtr(gbp.bars, DEFAULT_ATR_PERIOD)) < 1e-12, 'the distance is unchanged')
+  assert.equal(armedGbp.peakPrice, 1.32092, 'the peak is still seeded at the entry')
+  const jpy = { positionId: 248422337, accountId: 46130058, symbolId: 4, side: 'SELL', entry: 158.366, digits: 3, currentSl: 158.866, currentTp: 157,
+    bars: Array.from({ length: 30 }, () => ({ h: 158.45, l: 158.35, c: 158.4 })) }
+  assert.equal(sinceEntryTrailSpec({ ...jpy, price: 158.37 }), null, '+35 s: not in profit → no spec')
+  assert.ok(sinceEntryTrailSpec({ ...jpy, price: 158.37, mfeR: 0.05 }), 'a recorded peak past the fill qualifies even when the close has come back')
+  // long mirror, and unknown values are not profit
+  const lng = { positionId: 1, accountId: 2, symbolId: 3, side: 'LONG', entry: 100, digits: 5, bars: Array.from({ length: 30 }, () => ({ h: 101, l: 99, c: 100 })) }
+  assert.equal(sinceEntryTrailSpec({ ...lng, price: 99.5 }), null)
+  assert.ok(sinceEntryTrailSpec({ ...lng, price: 100.5 }))
+  assert.equal(sinceEntryTrailSpec({ ...lng, price: 'x', mfeR: 'y' }), null)
+  assert.equal(sinceEntryTrailSpec({ ...lng, mfeR: 0 }), null)
+  assert.equal(sinceEntryTrailSpec({ ...lng, mfeR: -0.3 }), null)
 })
