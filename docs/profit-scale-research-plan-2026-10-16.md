@@ -107,7 +107,14 @@ second factor without the first multiplies losses by the same ratio — which is
 - **Output**: per robust cell, mean R and its lower bound under: the exit as traded, let-run to a fixed R target (2R,
   3R), a trail at kR, an exit at the SMA cross (`exitAtMeanPeriod` is an SMA-cross exit, `exitAtMean: {period}`,
   not a time stop), and — only once a separate replay rule exists for it — a holding-period time stop at the
-  measured median hold (4.1 h). The 4-of-269 count of ≥ 2R trades is the number to move. **Granularity
+  time stop derived per eligible cell from the TRAINING portion of its own clean replay (not the pooled 4.1 h median
+  of all 271 trades, which includes the adopted/manual rows this plan excludes; the own stream's median is 2.4 h and
+  each cell differs; Codex round 7). **Cost prerequisite** (Codex round 7, P1): `exit-counterfactual-extended.js`
+  `COST_MODEL` carries no spread, slippage, commission or swap, so a rule that lengthens the hold, adds a partial or
+  exits at another price can rank wrong on a book where costs already turn gross-positive into net-negative; before
+  any rule is selected the replay must price each counterfactual exit net — spread from the broker's quote at the
+  exit, commission from NASA-4's per-account terms, swap from the nights held — and until that exists its figures
+  are labelled gross and select nothing. The 4-of-269 count of ≥ 2R trades is the number to move. **Granularity
   prerequisite** (Codex round 2): `exit-counterfactual-extended.js` filters by account and strategy and groups by
   `GROUP_KEYS` = strategy, timeframe, regime, family, gate tag — not by class, side or source — so today it cannot
   answer "per cell" as step 1 defines a cell; either the class/side/source filters are added to the replay before
@@ -164,7 +171,10 @@ second factor without the first multiplies losses by the same ratio — which is
   `perTradeRiskPct`, `maxRiskCapPct`, the tiered daily cap (`dailyLossFloorUsd`, `dailyLossTierAtUsd`,
   `dailyLossTierSmallPct`, `dailyLossTierLargePct`, the flat `dailyLossLimit` it replaces), `equityStopPct`,
   `maxNotionalXBalance` — read as each account's EFFECTIVE values (`GET /state/config?account=`: global plus the
-  account's overlay), not the code defaults (Codex round 5).
+  account's overlay), not the code defaults (Codex round 5) — including `perTradeRiskUsd` (an absolute override under
+  which `riskBudgetUsd` ignores the percentage) and `drawdownDeriskFactor` (the live sizing path halves later budgets
+  after the 24-hour loss trigger). The replay applies both in chronological order; a scenario that omits them is
+  labelled constant-risk, not engine-equivalent (Codex round 7).
 - **Instrument**: a replay of the same R stream at 0.5 %, 1 %, 2 %, 3 % risk per trade per account: monthly result
   and maximum drawdown in NET R and IN THE ACCOUNT'S DEPOSIT CURRENCY — the modelled commission and swap are subtracted
   at the replayed size, scaled with the lots, never dropped (Codex round 6) — (SGD on 42993489 and 43097342, USD on the other
