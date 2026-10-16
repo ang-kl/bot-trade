@@ -7,35 +7,42 @@ names its data source, its instrument in the repo, and the decision it feeds. Th
 
 ## 0. The arithmetic, measured
 
-Profit per month = Σ over trades of (R realised × risk in USD per trade). Both factors are measured on the five
-accounts' 271 closed trades since 16 September (ledger export of 16-10 00:4xZ; `net_pnl` and `realised_rr` from the
-broker's deals):
+Profit per month = Σ over trades of (R realised × risk per trade in the account's own currency). Both factors are
+measured on the five accounts' 271 closed trades since 16 September (ledger export of 16-10 00:4xZ; `net_pnl` and
+`realised_rr` from the broker's deals). **Money is never pooled across currencies** (Codex round 1): 42993489 and
+43097342 are SGD accounts, 46130058, 46979908 and 47790949 USD accounts (the broker's asset list, read through
+`depositCurrencies` on 16-10), so every money figure below is per currency; R is the only currency-free unit and
+the only one pooled across all five.
 
 | factor | measured | source |
 |---|---|---|
 | R per trade | mean −0.06R, median −0.05R; win rate 48 %; average win +0.66R, average loss −0.72R; profit factor in R 0.85 | `trades.realised_rr`, 269 rows with R |
 | trades ≥ 2R | 4 of 269 | same |
 | trades at the initial stop (≤ −0.9R) | 59 of 269; 148 of 271 closes are broker stop fills | `trades.close_reason` |
-| risk per trade (USD) | median 23, quartiles 5–51, max 1,011 (= net_pnl ÷ realised_rr) | derived; per account below |
+| risk per trade, USD accounts (189 trades) | median 36 USD, quartiles 19–88, max 960 (= net_pnl ÷ realised_rr, 175 rows with a usable R) | derived; per account below |
+| risk per trade, SGD accounts (82 trades) | median 4.8 SGD, quartiles 3.4–6.7, max 1,011 (79 rows) | derived; per account below |
 | hold | median 4.1 h, upper quartile 23 h | `trades.hold_duration_ms` |
 
-| account | n | net USD | median risk USD | ΣR |
-|---|---|---|---|---|
-| 42993489 (live) | 8 | +17 | 0.7 | +1.3 |
-| 43097342 | 74 | +1,541 | 4.8 | −1.3 |
-| 46130058 | 99 | −136 | 35.5 | −10.9 |
-| 46979908 | 29 | −10 | 1.5 | −3.1 |
-| 47790949 | 61 | −1,777 | 92.2 | −1.3 |
+| account | currency | n | net (own currency) | median risk (own currency) | ΣR |
+|---|---|---|---|---|---|
+| 42993489 (live) | SGD | 8 | +17 | 0.7 | +1.3 |
+| 43097342 | SGD | 74 | +1,541 | 4.8 | −1.3 |
+| 46130058 | USD | 99 | −136 | 35.5 | −10.9 |
+| 46979908 | USD | 29 | −10 | 1.5 | −3.1 |
+| 47790949 | USD | 61 | −1,777 | 92.2 | −1.3 |
 
 Two readings follow directly. **The expectancy is zero or below**: at any size, more trades of the same stream add
-noise, not profit. **The size is tens of dollars**: at a median 23 USD of risk, a trade that pays +1R pays 23 USD —
-the "single dollars, tens, hundreds" the owner describes is the risk unit, not the strategy. The largest single
-contributors are not the bot's own stream: the index class's +1,184 USD is one externally opened JPN225 long adopted
-by the reconciler (+1,602 USD, 1.6R); the energy class's −1,477 USD is NATGAS longs (−995 adopted, −612 own).
+noise, not profit. **The size is tens of dollars**: at a median 36 USD of risk on the USD accounts (4.8 SGD on the SGD
+accounts), a trade that pays +1R pays 36 USD or 4.8 SGD — the "single dollars, tens, hundreds" the owner describes is
+the risk unit, not the strategy. The largest single contributors are not the bot's own stream: the index class's
+result is one externally opened JPN225 long adopted by the reconciler on 43097342 (+1,602 SGD, 1.6R); the energy
+class's loss is NATGAS longs (−990 USD adopted on 47790949; the bot's own NATGAS longs −615 USD over 16 trades on the
+USD accounts and −2 SGD over 10 on the SGD accounts).
 
 Thousands a month needs both factors at once, in this order: a positive, proven R per trade first (e.g. +0.3R mean
 over ≥ 30 trades of a cell, lower bound above zero), then a risk unit sized to the account (e.g. 1–2 % of a 10,000
-USD account is 100–200 USD). 0.3R × 150 USD × 60 trades a month ≈ 2,700 USD. 0 R × 23 USD × 270 trades = 0. The
+USD account is 100–200 USD; the same rule in SGD on the SGD accounts). 0.3R × 150 USD × 60 trades a month ≈ 2,700
+USD. 0 R × 36 USD × 190 trades = 0. The
 second factor without the first multiplies losses by the same ratio — which is why size comes last below.
 
 ## 1. Decompose the P&L (where the money comes from and goes)
@@ -57,16 +64,23 @@ second factor without the first multiplies losses by the same ratio — which is
   since #1382), the entry, stop and target as sent.
 - **Instrument**: the existing exit-replay engine (`GET /state/exit-counterfactual`; rules in
   `agent/config/research.json`: `trailR`, `tpR`, `followThroughR`, `exitAtMeanPeriod`, `maxDays`), the bootstrap
-  lower bound (`tick-replay-sim expectancyLowerR`), and NASA-6's train/confirm split (select on 70 % of the span,
-  confirm on the rest; `trainFraction` in research.json).
+  lower bound (`tick-replay-sim expectancyLowerR`). **The exit replay has no holdout today** (Codex round 1):
+  `trainFraction` lives under `barForm.validation` and only `bar-form-research-core.js` calls
+  `trainConfirmSelection`; `exit-counterfactual-extended.js` reads `research.exitReplay` and scores its whole
+  eligible population, so a rule selected and then "confirmed" on the same endpoint reuses its selection sample.
+  Prerequisite for this step: a chronological split in the exit replay (select on the first 70 % of the span,
+  confirm on the rest — NASA-6's rule applied to exits), or every exit figure labelled in-sample.
 - **Output**: per robust cell, mean R and its lower bound under: the exit as traded, let-run to a fixed R target (2R,
-  3R), a trail at kR, a time stop at the mean holding period. The 4-of-269 count of ≥ 2R trades is the number to
-  move.
+  3R), a trail at kR, an exit at the SMA cross (`exitAtMeanPeriod` is an SMA-cross exit, `exitAtMean: {period}`,
+  not a time stop), and — only once a separate replay rule exists for it — a holding-period time stop at the
+  measured median hold (4.1 h). The 4-of-269 count of ≥ 2R trades is the number to move.
 - **Decision it feeds**: whether an exit-policy change is worth an order (the owner's; no exit change without it).
 
 ## 3. Entry quality (why 22 % of trades die at the initial stop)
 
-- **Data**: `trade_postmortems` (MAE/MFE in R, `entry_vol_regime`, premise), the stop-placement review
+- **Data**: `trade_postmortems` (`entry_vol_regime`, the aftermath bars) joined to `monitored_positions` (`mae_r`,
+  `mfe_r`, `invalidation_trigger` — the excursions and the premise live there, as the stop-placement report's join
+  already reads them; Codex round 1), the stop-placement review
   (`GET /state/stop-placement`: stop ÷ ATR buckets, net-R lower bound per bucket), the regime at entry.
 - **Instrument**: existing read-only routes; one new cut by premise distance (the NAS100 #1890 close 4 s after
   entry: a premise 0.007R from the fill) and by spread ÷ stop (`maxSpreadFracOfSL`).
@@ -78,9 +92,13 @@ second factor without the first multiplies losses by the same ratio — which is
 
 - **Data**: steps 1–3; the tick-activity measurement (`GET /state/tick-activity`, selected side only) and the
   session calendar for the hour-of-day cut.
-- **Instrument**: the evidence gate per cell (`GET /state/evidence-gate`; bars in `agent/config/tick-validation.json`:
-  traded `minTrades` 30, `minProfitFactor` 1.3, `maxDrawdownR` 8), the class-routing policy
-  (`agent/config/class-routing.json`, read back at `GET /state/class-routing`), the goal table.
+- **Instrument**: the live evidence gate per cell (`GET /state/evidence-gate`), which judges by its OWN persisted
+  configuration — defaults 30 closes, net-money PF 1.5 over 90 days, no drawdown check (`services/evidence-gate.js`)
+  — not by `agent/config/tick-validation.json`, whose traded bar (30 trades, PF 1.3, 8R drawdown) belongs to the
+  tick-validation importer; the plan reads the gate's configuration as the endpoint returns it and names the
+  validation bar separately for tick cells (Codex round 1). The class-routing policy (`agent/config/class-routing.json`,
+  read back at `GET /state/class-routing`) is introduced by PR #1390 and is a prerequisite of this step until it
+  merges. The goal table.
 - **Output**: a ranked table of cells by expectancy lower bound at n ≥ 30; the routing map re-derived from it (blocks
   and priorities from measurement, not from n = 8); the hours in which the robust cells pay.
 - **Decision it feeds**: the next routing map and the per-cell arming (owner's order per change).
@@ -113,7 +131,7 @@ second factor without the first multiplies losses by the same ratio — which is
 
 | rule | metric | source of the bar | live check |
 |---|---|---|---|
-| No trade without qualifying evidence | entries whose cell fails the evidence gate | § 14,730 objective; tick-validation.json | zero such entries per week in the decision log |
+| No trade without qualifying evidence | entries whose cell fails the evidence gate | § 14,730 objective; the live gate's own configuration (`/state/evidence-gate`); tick-validation.json for tick cells | zero such entries per week in the decision log |
 | Initial-stop losses are a measured share, not a surprise | closes at ≤ −0.9R ÷ closes | step 3's cut (today 22 %) | weekly share within the measured band; a rise names the cell |
 | Longs and shorts are judged apart | PF by side per cell | № 10,884 measured longs PF 0.47 vs shorts 1.77 — re-measured in step 1 | a side below 1.0 PF at n ≥ 30 is routed out |
 | Losses are capped before they compound | daily loss cap hits; equity stop | `dailyLossLimit`, `equityStopPct` (owner's numbers) | cap honoured on every account; each hit logged with its trades |
@@ -143,8 +161,9 @@ order; no new native code.
 
 1. Sources of the figures: the five accounts' trade exports of 16-10 00:4xZ (`trades` rows; `net_pnl` and
    `realised_rr` from the broker's deals through the ledger), the broker's instrument tree (classes), the repo's own
-   configuration files for the limits and bars named. *Self-derived*: the risk-per-trade derivation
-   (net_pnl ÷ realised_rr, 254 of 271 rows), the illustrative arithmetic in §0, the step order.
+   configuration files for the limits and bars named; each account's deposit currency from the broker's asset list
+   (`depositCurrencies`, 16-10). *Self-derived*: the risk-per-trade derivation (net_pnl ÷ realised_rr, 254 of 271
+   rows, per currency), the illustrative arithmetic in §0, the step order.
 2. Population: every closed trade of the five accounts since 16-09 (271), all sources; adopted and manual trades
    are reported apart, not excluded.
 3. Live check: Not Applicable — a planning document; each step it proposes carries its own live check when built.
