@@ -727,6 +727,12 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
   // seed record `trial:<strategy>`); every other enabled account gets an OFF
   // order for that strategy, applied by the `_off` path below.
   const offOrders = new Map() // accountId -> Set(strategy)
+  // Claude · № 15,231 16-Oct (Codex round 1 on #1392; claude-builder): the
+  // entries that come from the owner's `_off` (not `_trial`) — those write an
+  // explicit false even on a cell that follows the global list; a `_trial`
+  // OFF keeps its original hand-pin-only rule (the momentum `_all` switch is
+  // allowed to arm tsmom_long globally after the pins seed, by design: W8).
+  const ownerOff = new Set() // `${accountId}:${entry}`
   let enabledIds = []
   try { enabledIds = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1 ORDER BY account_id').all().map(r => String(r.account_id)) } catch { enabledIds = [] }
   const trialOn = new Map() // accountId -> Set(strategy)
@@ -757,9 +763,17 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
       for (const e of keys) explicitOn.get(id).add(String(e).split(':')[0])
     }
     for (const id of enabledIds) {
-      for (const strategy of cfg._off) {
+      for (const entry of cfg._off) {
+        // Claude · № 15,231 16-Oct (Codex round 1 on #1392; claude-builder): an
+        // `_off` entry may carry a token (`vwap_trend:setb-20261016`), the same
+        // grammar as `_reseed_all`. The token is the seed RECORD's identity: the
+        // 20-09 retirement spent `off:<strategy>` on every deployed account and
+        // the 28-09 restore re-armed without clearing it, so a bare key would be
+        // read as already applied and the order would never land.
+        const strategy = String(entry).split(':')[0]
         if (explicitOn.get(id)?.has(strategy)) continue
-        if (!offOrders.has(id)) offOrders.set(id, new Set()); offOrders.get(id).add(strategy)
+        if (!offOrders.has(id)) offOrders.set(id, new Set()); offOrders.get(id).add(String(entry))
+        ownerOff.add(`${id}:${entry}`)
       }
     }
   } else if ('_off' in cfg) {
@@ -793,12 +807,20 @@ export function seedStrategyPinsFromConfig(db, io, { file = null, log = () => {}
   }
   for (const [accountId, strategies] of offOrders) {
     const done = new Set(Array.isArray(seeded[accountId]) ? seeded[accountId] : [])
-    for (const key of strategies) {
+    for (const entry of strategies) {
+      const key = String(entry).split(':')[0]
       if (!STRATEGY_KEYS.includes(key)) { out.skipped.push(`${accountId}: unknown strategy '${key}' in _off/_trial`); continue }
-      const record = `off:${key}`
+      const record = `off:${entry}`
       const tag = `${accountId}:${key}`
       if (done.has(record)) { out.unchanged.push(`${tag}:off`); continue }
-      if (isHandPinned(db, getState, accountId, key)) {
+      // Claude · № 15,231 16-Oct (Codex round 1 on #1392; claude-builder): write
+      // the explicit `false` cell unless it is already false — a cell that
+      // follows the global list inherits an ON from it, and the trade gate
+      // honours an explicit boolean over the global list, so the false cell is
+      // what makes the OFF hold on every account, hand-pinned or not.
+      const cellNow = readJson(db, getState, acctMatrixKey(String(accountId)))?.strategy?.[key]?.trade
+      const mustWrite = ownerOff.has(`${accountId}:${entry}`) ? cellNow !== false : isHandPinned(db, getState, accountId, key)
+      if (mustWrite) {
         setStage(db, {
           kind: 'strategy', key, stage: 'trade', on: false, accountId,
           actor: 'boot_seed',

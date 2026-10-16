@@ -395,8 +395,8 @@ test('strategy-pin seed: restored intraday keys rearm once on all enabled accoun
   // 28-09 owner restoration supersedes the 20-09 blanket retirement.
   // Claude · № 15,229 16-Oct (owner: "Set B: literal top 6" after № 15,228; claude-builder): the 16-10
   // order cuts three of the 28-09 restoration to `_off`; `_all` is the rest.
-  assert.deepEqual([...cfg._all].sort(), [...STRATEGY_KEYS.filter(k => k !== 'tsmom_long' && !cfg._off.includes(k))].sort(), '_all: every intraday strategy the 16-10 order keeps armed')
-  assert.deepEqual(cfg._off, ['vwap_trend', 'ema_pullback', 'fvg_retrace'], '_off: the 16-10 owner order (Set B) — Claude · № 15,229 16-Oct')
+  assert.deepEqual([...cfg._all].sort(), [...STRATEGY_KEYS.filter(k => k !== 'tsmom_long' && !cfg._off.map(x => x.split(':')[0]).includes(k))].sort(), '_all: every intraday strategy the 16-10 order keeps armed')
+  assert.deepEqual(cfg._off.map(x => x.split(':')[0]), ['vwap_trend', 'ema_pullback', 'fvg_retrace'], '_off: the 16-10 owner order (Set B) — Claude · № 15,229 16-Oct')
   assert.deepEqual([...new Set(cfg._reseed_all.map(s => s.split(':')[0]))].sort(), [...cfg._all].sort(), 'every reseed token names an armed strategy (the setb-20261016 re-arms sit beside the spent restore-20260928 tokens)')
   assert.deepEqual(Object.keys(cfg._trial), ['tsmom_long'], '_trial: the momentum book only')
   assert.equal(cfg._trial.tsmom_long.length, 1, 'one account per system on trial (07-09 P5 reconciled with P9 in the note)')
@@ -512,6 +512,33 @@ test('16-10 Set B: the setb-20261016 tokens re-arm rsi_meanrev and va_breakout O
   const again = seedShipped(db)
   assert.ok(!again.applied.some(t => t.startsWith('111:rsi_meanrev')), 'the token was spent; the later disarm stands')
   assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), false)
+})
+
+test('16-10 Set B, Codex round 1 on #1392: a tokenised _off lands on an account whose bare off record was spent, and writes an explicit false on a cell that follows the global list (Claude · № 15,231 16-Oct)', () => {
+  const db = withAccounts(initDB(':memory:'), ['111', '222', '333'])
+  setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend', 'donchian_breakout']))
+  // 111: the 20-09 retirement spent `off:vwap_trend`, the 28-09 restore pinned it ON again.
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: true, accountId: '111' }, io)
+  setState(db, 'strategy_pins_seeded_json', JSON.stringify({ '111': ['off:vwap_trend', 'vwap_trend:restore-20260928'] }))
+  // 222: no cell at all — inherits vwap_trend from the global list. 333: an explicit per-id ON.
+  assert.equal(armedTradeKeys(db, getState, '222').has('vwap_trend'), true, 'precondition: 222 inherits the global ON')
+  const file = join(mkdtempSync(join(tmpdir(), 'pins-token-')), 'pins.json')
+  writeFileSync(file, JSON.stringify({ _off: ['vwap_trend:setb-20261016'], '333': ['vwap_trend'] }))
+  const r = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(r.skipped, [])
+  assert.ok(r.off.includes('111:vwap_trend'), 'the fresh token lands although the bare record was spent')
+  assert.ok(r.off.includes('222:vwap_trend'), 'the inherited cell is written false')
+  assert.equal(armedTradeKeys(db, getState, '111').has('vwap_trend'), false)
+  assert.equal(armedTradeKeys(db, getState, '222').has('vwap_trend'), false, 'an explicit false beats the global list at the gate')
+  assert.equal(armedTradeKeys(db, getState, '333').has('vwap_trend'), true, 'a per-id ON still wins')
+  const seeded = JSON.parse(getState(db, 'strategy_pins_seeded_json'))
+  assert.ok(seeded['111'].includes('off:vwap_trend:setb-20261016'), 'the record carries the token')
+  const again = seedStrategyPinsFromConfig(db, io, { file })
+  assert.deepEqual(again.off, [], 'seed-once: the second boot changes nothing')
+  // A human re-arms 222 afterwards: the next boot leaves it (the record is spent).
+  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: true, accountId: '222' }, io)
+  seedStrategyPinsFromConfig(db, io, { file })
+  assert.equal(armedTradeKeys(db, getState, '222').has('vwap_trend'), true, 'a later human re-arm stands')
 })
 
 test('_off and _trial on a scratch file: an explicit per-id ON wins over _off; _trial switches the strategy OFF on every account it does not name; malformed blocks are named and skipped', () => {
