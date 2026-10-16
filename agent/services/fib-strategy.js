@@ -1032,10 +1032,16 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   // Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder)
   // A routed-out candidate is still a row — trade_grade 'routed', the token in
   // its thesis — so the record shows the setup existed and why it did not
-  // trade; it is kept out of hot/warm and of `signals` below.
+  // trade; it is kept out of hot/warm and of `signals` below. Its EFFECTIVE
+  // bias is 'skip' (Codex round 1 on #1390): every consumer that reads scan
+  // rows by `bias !== 'skip'` alone — the Telegram scan alert, flip detection,
+  // cluster conviction — would otherwise present a blocked candidate as a
+  // setup. The side it had is kept in `routed_bias` and in the thesis for the
+  // record.
   const routedRowFor = (r, ro) => ({
     symbol: r.symbol,
-    bias: ro.bias,
+    bias: 'skip',
+    routed_bias: ro.bias,
     confidence: ro.conviction ?? 0,
     thesis: `ROUTED OUT (class ${ro.cls}): ${ro.strategy} ${ro.bias} — ${ro.reason}${ro.thesis ? ` · ${ro.thesis}` : ''}`,
     strategy: ro.strategy,

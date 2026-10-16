@@ -33,8 +33,8 @@ function seed(t) {
     'EURUSD', { symbol: 'BTCUSD', enabled: true }, { symbol: 'AAPL.US', enabled: false }, { symbol: 'AUS200', enabled: true }, { symbol: 'HK50', force_skip: true },
   ]))
   const ins = db.prepare('INSERT INTO scans (symbol, bias, confidence, thesis, timeframe, strategy, trade_grade, scanned_at, loop_id) VALUES (?,?,?,?,?,?,?,?,?)')
-  ins.run('NATGAS', 'long', 7, 'ROUTED OUT (class energy): donchian_breakout long — donchian_breakout long routed out of symbol NATGAS by class-routing.json token "*:long" · broke the 20-bar high', '1h', 'donchian_breakout', 'routed', '2026-10-16T01:00:00.000Z', 9)
-  ins.run('SPOTCRUDE', 'long', 6, 'ROUTED OUT (class energy): va_breakout long — va_breakout long routed out of class energy by class-routing.json token "va_breakout:long"', '4h', 'va_breakout', 'routed', '2026-10-16T01:00:00.000Z', 9)
+  ins.run('NATGAS', 'skip', 7, 'ROUTED OUT (class energy): donchian_breakout long — donchian_breakout long routed out of symbol NATGAS by class-routing.json token "*:long" · broke the 20-bar high', '1h', 'donchian_breakout', 'routed', '2026-10-16T01:00:00.000Z', 9)
+  ins.run('SPOTCRUDE', 'skip', 6, 'ROUTED OUT (class energy): va_breakout long — va_breakout long routed out of class energy by class-routing.json token "va_breakout:long"', '4h', 'va_breakout', 'routed', '2026-10-16T01:00:00.000Z', 9)
   ins.run('EURUSD', 'long', 8, 'ok', '4h', 'ema_pullback', 'potential', '2026-10-16T01:00:00.000Z', 9)
   ins.run('NATGAS', 'long', 7, 'older routed row', '1h', 'donchian_breakout', 'routed', '2026-10-15T01:00:00.000Z', 8)
   return db
@@ -67,7 +67,7 @@ test('the view: policy, classes with sources, tiers, blocks per symbol, and the 
   assert.equal(v.lastScan.scannedAt, '2026-10-16T01:00:00.000Z')
   assert.equal(v.lastScan.routedOut, 2, 'the older batch\'s routed row is not counted')
   assert.deepEqual(v.lastScan.byToken, { '*:long': 1, 'va_breakout:long': 1 })
-  assert.deepEqual(v.lastScan.rows.map(r => [r.symbol, r.strategy, r.bias]), [['NATGAS', 'donchian_breakout', 'long'], ['SPOTCRUDE', 'va_breakout', 'long']])
+  assert.deepEqual(v.lastScan.rows.map(r => [r.symbol, r.strategy, r.bias, r.routedSide]), [['NATGAS', 'donchian_breakout', 'skip', 'long'], ['SPOTCRUDE', 'va_breakout', 'skip', 'long']], 'the stored row reads skip; the side it had comes from the thesis')
 })
 
 test('GET /state/class-routing serves the view, uncached', async (t) => {
@@ -89,7 +89,7 @@ test('account-signals: a routed scan row is scan_only on every account, with the
   const db = seed(t)
   upsertAccount(db, { accountId: 'A', isLive: false }); writeWatchlist(db, 'A', ['NATGAS', 'EURUSD'])
   const snapshot = { scans: [
-    { symbol: 'NATGAS', strategy: 'donchian_breakout', timeframe: '1h', bias: 'long', confidence: 7, trade_grade: 'routed', routed_reason: 'donchian_breakout long routed out of symbol NATGAS by class-routing.json token "*:long"' },
+    { symbol: 'NATGAS', strategy: 'donchian_breakout', timeframe: '1h', bias: 'skip', routed_bias: 'long', confidence: 7, trade_grade: 'routed', routed_reason: 'donchian_breakout long routed out of symbol NATGAS by class-routing.json token "*:long"' },
     { symbol: 'EURUSD', strategy: 'ema_pullback', timeframe: '4h', bias: 'long', confidence: 8, trade_grade: 'potential' },
   ] }
   const rows = accountSignals(db, snapshot, { accountId: 'A' }).rows

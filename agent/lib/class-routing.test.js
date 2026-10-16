@@ -118,3 +118,20 @@ test('loadClassRouting: an unreadable file is OFF with its reason; the memo re-r
     assert.equal(p3.enabled, false); assert.match(p3.reason, /unreadable/)
   } finally { rmSync(dir, { recursive: true, force: true }); _resetClassRoutingForTests() }
 })
+
+test('the memo is keyed by validation context: the scanner\'s key-less load never hides the view\'s unknown-strategy warnings (Codex round 1 on #1390)', () => {
+  _resetClassRoutingForTests()
+  const dir = mkdtempSync(join(tmpdir(), 'class-routing-ctx-'))
+  try {
+    const file = join(dir, 'class-routing.json')
+    writeFileSync(file, JSON.stringify({ classes: { energy: { priority: 5, block: ['cup_handel:long'] } } }))
+    const t0 = 1_800_000_000_000
+    const scanner = loadClassRouting({ file, now: t0 })
+    assert.deepEqual(scanner.warnings, [], 'no registry handed in → nothing to warn against')
+    const view = loadClassRouting({ file, knownStrategies: STRATEGY_KEYS, now: t0 + 1_000 })
+    assert.equal(view.warnings.length, 1)
+    assert.match(view.warnings[0], /unknown strategy "cup_handel"/)
+    assert.equal(loadClassRouting({ file, now: t0 + 2_000 }), scanner, 'each context keeps its own memo')
+    assert.equal(loadClassRouting({ file, knownStrategies: STRATEGY_KEYS, now: t0 + 3_000 }), view)
+  } finally { rmSync(dir, { recursive: true, force: true }); _resetClassRoutingForTests() }
+})

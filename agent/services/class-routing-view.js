@@ -61,7 +61,10 @@ export function classRoutingView(db, { batchSize = DEFAULT_BATCH, maxRoutedRows 
       const rows = db.prepare("SELECT symbol, strategy, bias, timeframe, confidence, thesis FROM scans WHERE scanned_at = ? AND trade_grade = 'routed' ORDER BY id").all(last.at)
       const byToken = {}
       for (const r of rows) { const m = /token "([^"]+)"/.exec(r.thesis || ''); const k = m ? m[1] : 'unknown'; byToken[k] = (byToken[k] || 0) + 1 }
-      lastScan = { scannedAt: last.at, routedOut: rows.length, byToken, rows: rows.slice(0, maxRoutedRows) }
+      // A routed row is stored with bias 'skip' (bias-only consumers must never
+      // see it as a setup); the side it had is in its thesis.
+      const sideOf = (r) => { const m = /^ROUTED OUT \([^)]*\): \S+ (long|short)/.exec(r.thesis || ''); return m ? m[1] : null }
+      lastScan = { scannedAt: last.at, routedOut: rows.length, byToken, rows: rows.slice(0, maxRoutedRows).map(r => ({ ...r, routedSide: sideOf(r) })) }
     }
   } catch { /* no scans table yet → the empty readout */ }
   return {

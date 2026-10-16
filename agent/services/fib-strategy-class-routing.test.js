@@ -92,7 +92,9 @@ test('runFibScan: routed candidates are rows with trade_grade routed, out of hot
   assert.equal(routed.length, 2)
   assert.deepEqual(routed.map(x => x.strategy).sort(), ['donchian_breakout', 'va_breakout'])
   assert.match(routed[0].thesis, /^ROUTED OUT \(class energy\): (va_breakout|donchian_breakout) long — .*token "\*:long"/)
-  assert.equal(routed[0].bias, 'long'); assert.equal(routed[0].routed_token, '*:long'); assert.equal(routed[0].asset_class, 'energy')
+  // Effective bias 'skip' (Codex round 1): consumers that test bias alone never see a routed row as a setup; the side is kept for the record.
+  assert.equal(routed[0].bias, 'skip'); assert.equal(routed[0].routed_bias, 'long'); assert.equal(routed[0].routed_token, '*:long'); assert.equal(routed[0].asset_class, 'energy')
+  assert.ok(r.scans.filter(s => s.trade_grade === 'routed').every(s => s.bias === 'skip'), 'every routed row reads skip to bias-only consumers')
   assert.ok(gasRows.some(s => s.strategy === 'rsi2_reversion' && s.trade_grade !== 'routed'), 'the short survived as an ordinary row')
   assert.equal(r.signals.NATGAS.strategy, 'rsi2_reversion')
   assert.deepEqual(Object.keys(r.signalsByStrategy.NATGAS), ['rsi2_reversion'], 'the dispatcher never sees a routed candidate')

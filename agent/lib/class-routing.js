@@ -20,7 +20,11 @@ export const CLASS_ROUTING_FILE = fileURLToPath(new URL('../config/class-routing
 const TOKEN_RE = /^([a-z][a-z0-9_]*|\*)(?::(long|short))?$/ // a strategy key starts with a letter
 const CHECK_MS = 60_000
 const DEFAULT_PRIORITY = 9
-let MEMO = null // { file, mtimeMs, checkedAt, policy }
+// Keyed by file AND validation context (Codex round 1 on #1390): the scanner
+// loads without `knownStrategies` and the view loads with STRATEGY_KEYS; one
+// shared entry would hand the view the scanner's warning-free policy for as
+// long as the file's mtime stood still.
+const MEMO = new Map() // `${file}|${ctx}` → { mtimeMs, checkedAt, policy }
 
 const OFF = (reason, file) => ({ enabled: false, reason, warnings: [], classes: {}, symbols: {}, scanShare: null, source: 'unavailable', file })
 
@@ -70,14 +74,16 @@ export function compilePolicy(raw, { knownStrategies = null, file = null } = {})
  * `knownStrategies` (STRATEGY_KEYS) only adds warnings for unknown keys.
  */
 export function loadClassRouting({ file = CLASS_ROUTING_FILE, knownStrategies = null, now = Date.now() } = {}) {
-  if (MEMO && MEMO.file === file && now - MEMO.checkedAt < CHECK_MS) return MEMO.policy
+  const key = `${file}|${Array.isArray(knownStrategies) ? knownStrategies.join(',') : ''}`
+  const memo = MEMO.get(key)
+  if (memo && now - memo.checkedAt < CHECK_MS) return memo.policy
   let mtimeMs = null
   try { mtimeMs = statSync(file).mtimeMs } catch { mtimeMs = null }
-  if (MEMO && MEMO.file === file && mtimeMs != null && MEMO.mtimeMs === mtimeMs) { MEMO.checkedAt = now; return MEMO.policy }
+  if (memo && mtimeMs != null && memo.mtimeMs === mtimeMs) { memo.checkedAt = now; return memo.policy }
   let policy
   try { policy = compilePolicy(JSON.parse(readFileSync(file, 'utf8')), { knownStrategies, file }) }
   catch (e) { policy = OFF(`class-routing.json unreadable: ${e.message}`, file) }
-  MEMO = { file, mtimeMs, checkedAt: now, policy }
+  MEMO.set(key, { mtimeMs, checkedAt: now, policy })
   return policy
 }
 
@@ -110,4 +116,4 @@ export function isRouted(policy, { cls, symbol, strategy, bias } = {}) {
     || { ok: true, reason: null }
 }
 
-export function _resetClassRoutingForTests() { MEMO = null }
+export function _resetClassRoutingForTests() { MEMO.clear() }
