@@ -24,7 +24,11 @@
  * @returns {string[]} hotSymbols reordered best-first
  */
 export function rankHotSymbols(scans, hotSymbols, { provenEdgeSymbols = new Set() } = {}) {
-  const byName = new Map((scans || []).map(s => [s.symbol, s]))
+  // Claude · № 15,169 16-Oct (Codex round 2 on #1390, owner: "Fix in #1390, merge when green"; claude-builder)
+  // A class-routed row (trade_grade 'routed', appended after a symbol's
+  // surviving rows) must never be the row this last-write-wins map keeps —
+  // a hot symbol would be ranked by the candidate the policy refused.
+  const byName = new Map((scans || []).filter(s => s && s.trade_grade !== 'routed').map(s => [s.symbol, s]))
   const conv = (sym) => Number(byName.get(sym)?.confidence) || 0
   const proven = (sym) => (provenEdgeSymbols.has(sym) ? 1 : 0)
   return [...(hotSymbols || [])].sort((a, b) => {

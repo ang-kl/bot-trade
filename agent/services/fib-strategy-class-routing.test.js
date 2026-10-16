@@ -12,6 +12,9 @@ import assert from 'node:assert/strict'
 import { scanSymbolFib, runFibScan, _setTrendbarFetcherForTests, _resetBarCacheForTests } from './fib-strategy.js'
 import { compilePolicy } from '../lib/class-routing.js'
 import { _resetBarPathCountersForTests } from '../lib/bar-path-counters.js'
+import { rankHotSymbols } from './signal-ranking.js'
+import { fairShareSlots } from './analyze-fair-share.js'
+import { groupAgreement } from './cluster-conviction.js'
 
 const H = 3_600_000
 const CREDS = { host: 'demo.example.com', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '46130058' }
@@ -121,4 +124,28 @@ test('runFibScan with routing off: no routed rows, the legacy cursor, no tiers',
   assert.deepEqual(r.routing, { enabled: false, routedOut: 0, tiers: null })
   assert.doesNotMatch(r.desk_note, /routed out|tiers/)
   assert.equal(r.next_cursor, 0, 'legacy: (0 + 2) % 2')
+})
+
+test('mixed candidates end to end (Codex round 2 on #1390): the downstream consumers read exactly what they would read with the routed rows absent', async (t) => {
+  fresh(t)
+  const symbols = [{ symbol: 'NATGAS' }, { symbol: 'EURUSD' }, { symbol: 'SPOTCRUDE' }]
+  const r = await runFibScan(CREDS, { NATGAS: 51, EURUSD: 52, SPOTCRUDE: 53 }, symbols, { strategies: STRATS, classRouting: POLICY, classOf, cursor: 0, batchSize: 15 })
+  // NATGAS: surviving rsi2 short (5) + two routed longs (8, 6); SPOTCRUDE: surviving donchian long (6) + rsi2 short (5) + routed va_breakout long (8).
+  assert.equal(r.scans.filter(s => s.trade_grade === 'routed').length, 3)
+  const withoutRouted = r.scans.filter(s => s.trade_grade !== 'routed')
+  const hot = [...r.hot, ...r.warm]
+  // THE CONTRACT: a routed row changes nothing downstream — each consumer's
+  // answer over the full row set equals its answer over the surviving rows.
+  // (Which surviving row a consumer keeps per symbol is its own, unchanged rule.)
+  assert.deepEqual(rankHotSymbols(r.scans, hot), rankHotSymbols(withoutRouted, hot))
+  assert.equal(rankHotSymbols(r.scans, hot)[0], 'EURUSD', 'EURUSD (8) first; NATGAS is not lifted by its routed 8')
+  const opts = { slots: 3, lastAnalyzed: {}, now: 1_000 }
+  assert.deepEqual(fairShareSlots(r.scans, hot, opts), fairShareSlots(withoutRouted, hot, opts))
+  assert.ok(!fairShareSlots(r.scans, hot, opts).byStrategy.some(b => b.symbol === 'NATGAS' && b.strategy !== 'rsi2_reversion'), 'NATGAS is attributed to its surviving strategy only')
+  const group = { key: 'energy', label: 'energy', members: { NATGAS: 1, SPOTCRUDE: 1, EURUSD: 1 } }
+  const votes = (rows) => groupAgreement(group, rows.map(sc => ({ symbol: sc.symbol, bias: sc.bias, conviction: sc.confidence })), { minMembers: 3, minRatio: 0.5 })
+  const a = votes(r.scans)
+  assert.ok(a, 'every member still votes'); assert.equal(a.total, 3)
+  assert.deepEqual(a, votes(withoutRouted))
+  assert.equal(a.members.find(m => m.symbol === 'NATGAS').bias, 'short', 'NATGAS votes with its surviving short, not the routed skip')
 })

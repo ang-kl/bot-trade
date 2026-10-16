@@ -67,7 +67,10 @@ export function fairShareSlots(scans, hotSymbols, {
   slots = 3, lastAnalyzed = {}, provenEdgeSymbols = new Set(), now = Date.now(),
 } = {}) {
   const cap = Math.max(0, Math.trunc(Number(slots)) || 0)
-  const byName = new Map((scans || []).map(s => [s.symbol, s]))
+  // Claude · № 15,169 16-Oct (Codex round 2 on #1390, owner: "Fix in #1390, merge when green"; claude-builder)
+  // A class-routed row never enters the map: a scarce analysis slot would
+  // otherwise be attributed to the strategy the policy refused.
+  const byName = new Map((scans || []).filter(s => s && s.trade_grade !== 'routed').map(s => [s.symbol, s]))
   const hot = [...new Set(hotSymbols || [])].filter(sym => byName.has(sym))
   if (cap === 0 || hot.length === 0) return { picked: [], byStrategy: [] }
 

@@ -118,7 +118,19 @@ export function matrixGroups(m, threshold = 0.7) {
  *   ratio:number, best:{symbol,conviction}, members:Array, others:string[]}}
  */
 export function groupAgreement(group, signals, { minMembers = 3, minRatio = 0.75 } = {}) {
-  const bySymbol = new Map((signals || []).map(s => [up(s.symbol), s]))
+  // Claude · № 15,169 16-Oct (Codex round 2 on #1390, owner: "Fix in #1390, merge when green"; claude-builder)
+  // One entry per symbol, and a 'skip' never overwrites a directional entry:
+  // a class-routed row arrives after the symbol's surviving signal with bias
+  // 'skip', and "a 'skip' simply isn't counted" has to hold whatever the row
+  // order. A directional row still replaces an earlier skip.
+  const bySymbol = new Map()
+  for (const s of signals || []) {
+    if (!s) continue
+    const key = up(s.symbol)
+    const cur = bySymbol.get(key)
+    if (cur && dirOfBias(cur.bias) !== 0 && dirOfBias(s.bias) === 0) continue
+    bySymbol.set(key, s)
+  }
   const voting = []
   for (const [sym, beta] of Object.entries(group.members || {})) {
     const sig = bySymbol.get(up(sym))

@@ -176,3 +176,19 @@ test('the 2026-07-29 shape: four correlated longs collapse to one', () => {
   assert.equal(r.bonusBySymbol.NAS100, 1) // 9 + 2 → capped at 10
   assert.equal(Object.keys(r.supersededBy).length, 3)
 })
+
+test('a routed skip row after a member\'s directional row does not silence the vote (Codex round 2 on #1390)', () => {
+  const group = { key: 'g', label: 'g', members: { A: 1, B: 1, C: 1 } }
+  const signals = [
+    { symbol: 'A', bias: 'long', conviction: 7 },
+    { symbol: 'A', bias: 'skip', conviction: 9 },   // the routed row, appended after
+    { symbol: 'B', bias: 'long', conviction: 6 },
+    { symbol: 'C', bias: 'long', conviction: 5 },
+  ]
+  const a = groupAgreement(group, signals, { minMembers: 3, minRatio: 0.75 })
+  assert.ok(a, 'three members still vote')
+  assert.equal(a.total, 3); assert.equal(a.direction, 1); assert.equal(a.best.symbol, 'A')
+  // A directional row AFTER a skip row still replaces it (nothing lost either way round).
+  const b = groupAgreement(group, [signals[1], signals[0], signals[2], signals[3]], { minMembers: 3, minRatio: 0.75 })
+  assert.equal(b.total, 3); assert.equal(b.best.symbol, 'A')
+})
