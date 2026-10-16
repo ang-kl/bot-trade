@@ -7,7 +7,11 @@ names its data source, its instrument in the repo, and the decision it feeds. Th
 
 ## 0. The arithmetic, measured
 
-Profit per month = Σ over trades of (R realised × risk per trade in the account's own currency). Both factors are
+GROSS profit per month = Σ over trades of (R realised × gross risk per trade in the account's own currency); NET
+profit per month = that sum − Σ (commission + swap) per trade. The two are not the same sign on this book: the USD
+own stream reads +206 gross, −237 of costs, −31 net. Every cell ranking (steps 1 and 4) and every sizing scenario
+(step 6) therefore uses NET R (`net_pnl ÷ gross risk`) or subtracts the modelled costs explicitly; a cell that is
+gross-positive and net-negative is never promoted (Codex round 6). Both factors are
 measured on the five accounts' 271 closed trades since 16 September (ledger export of 16-10 00:4xZ; `net_pnl` and
 `realised_rr` from the broker's deals). **The bot's own stream is selected by `origin`** (Codex round 3):
 `cleanBotOrigin()` in `agent/lib/trade-origin.js` — `bot_market_dispatch` (181) and `bot_pending_fill` (43), 224
@@ -62,7 +66,7 @@ second factor without the first multiplies losses by the same ratio — which is
   cached instrument tree (`agent/lib/asset-class.js`, `classOfSymbol` — #1390's deliverable, not on main until it merges; the only class reader on main today is the heuristic `categoriseSymbol` in `lib/sessions.js`, which maps 8 indices and is a fallback, not the source; Codex round 4), `realised_rr`, `net_pnl`, `commission`, `hold_duration_ms`,
   `close_reason`. Period: every closed trade since 16-09, then rolling 30 days.
 - **Instrument**: a read-only route or report (the shape of `GET /state/performance-populations` and
-  `/state/watchlist-stats`), one row per (class, strategy, side, account, source): n, ΣR, mean R, Σ money and median
+  `/state/watchlist-stats`), one row per (class, strategy, side, account, source): n, ΣR gross AND net (`net_pnl ÷ gross risk`), mean net R, Σ money and median
   risk IN THAT ACCOUNT'S DEPOSIT CURRENCY (an account belongs to one currency, so a per-account row never mixes;
   class/strategy/side rollups are per currency, never summed across SGD and USD — Codex round 2), share of that
   money held by the top three trades, share of losses at the initial stop.
@@ -88,7 +92,11 @@ second factor without the first multiplies losses by the same ratio — which is
   and can miss an earlier stop or target — a false counterfactual, not a missing window. The reconciliation
   checks that each window's first bar is at or before the entry (`bars[0].t <= opened_at + 2 × tf`) and either
   re-fetches the row from the entry or excludes it, counted as `clipped`, before any rule is scored.
-- **Instrument**: the existing exit-replay engine (`GET /state/exit-counterfactual`; rules in
+- **Instrument**: the existing exit-replay engine (`GET /state/exit-counterfactual`, called with `?stop=initial`:
+  the broker's first-held stop, `broker_sl_initial`, the denominator `realised_rr` uses; the route's default
+  `stop=recorded` maps through `exit-counterfactual-extended.js stopOf()` to the proposal's `sl_price`, which after a
+  re-anchored fill is the wrong stop and can turn a stop-out into a truncated trade — rows without `broker_sl_initial`
+  take the route's documented fallback and are counted apart; Codex round 6; rules in
   `agent/config/research.json`: `trailR`, `tpR`, `followThroughR`, `exitAtMeanPeriod`, `maxDays`), the bootstrap
   lower bound (`tick-replay-sim expectancyLowerR`). **The exit replay has no holdout today** (Codex round 1):
   `trainFraction` lives under `barForm.validation` and only `bar-form-research-core.js` calls
@@ -158,7 +166,8 @@ second factor without the first multiplies losses by the same ratio — which is
   `maxNotionalXBalance` — read as each account's EFFECTIVE values (`GET /state/config?account=`: global plus the
   account's overlay), not the code defaults (Codex round 5).
 - **Instrument**: a replay of the same R stream at 0.5 %, 1 %, 2 %, 3 % risk per trade per account: monthly result
-  and maximum drawdown in R and IN THE ACCOUNT'S DEPOSIT CURRENCY (SGD on 42993489 and 43097342, USD on the other
+  and maximum drawdown in NET R and IN THE ACCOUNT'S DEPOSIT CURRENCY — the modelled commission and swap are subtracted
+  at the replayed size, scaled with the lots, never dropped (Codex round 6) — (SGD on 42993489 and 43097342, USD on the other
   three; no conversion — none is sourced; Codex round 2). **The hard ceiling bounds the scenarios** (Codex round 5):
   `riskBudgetUsd` clamps every percentage budget at `balance × maxRiskCapPct` (`risk.js:1140`; default 0.015,
   `risk.js:324`), so 0.5 % and 1 % are reachable through `perTradeRiskPct` alone while 2 % and 3 % are not — those
