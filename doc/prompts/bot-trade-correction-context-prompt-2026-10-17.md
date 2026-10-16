@@ -4,7 +4,7 @@
 
 ---
 
-- §2 · **Bootstrap:** read repository instructions/coordination records, then `doc/bot-trade-100-pr-loss-audit-2026-10-17.md` and relevant `doc/100-pr-ledger.md` rows.
+- §2 · **Bootstrap:** read repository instructions/coordination records, then `doc/prompts/bot-trade-100-pr-loss-audit-2026-10-17.md` and relevant `doc/prompts/100-pr-ledger.md` rows.
   - Verify repository, current main, working head, deployed commit and dirty files separately; preserve existing work.
   - Recheck historical findings against current code, configuration and PRs, including #1394. Do not duplicate completed work or trust PR descriptions alone.
   - Load only the active requirement, constraints, source, contrary evidence and next action. Retrieve indexed detail when needed; avoid repeated transcripts.
