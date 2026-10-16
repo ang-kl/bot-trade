@@ -440,5 +440,15 @@ export function entryBarCoverage(bars, trade, rule = {}) {
   if (num(rule.partialAtR) != null) levels.push(at(num(rule.partialAtR)))
   const lo = num(bar[L]), hi = num(bar[H])
   if (lo == null || hi == null) return { status: 'ok' }
-  return levels.some(p => p >= lo && p <= hi) ? { status: 'entry_bar_unresolved' } : { status: 'ok' }
+  if (levels.some(p => p >= lo && p <= hi)) return { status: 'entry_bar_unresolved' }
+  // Codex round 2 on #1394: an exit-at-the-mean rule fires on the bar CLOSE.
+  // The entry bar's close is after the fill, but replayExit skips that bar, so
+  // a close past the mean there would be a missed (certain) exit — counted
+  // with the unresolved rows rather than replayed late.
+  const meanPeriod = rule.exitAtMean && num(rule.exitAtMean.period) > 0 ? Math.round(num(rule.exitAtMean.period)) : null
+  if (meanPeriod != null) {
+    const sma = smaAt(tuples, k, meanPeriod), close = num(bar[C])
+    if (sma != null && close != null && (long ? close > sma : close < sma)) return { status: 'entry_bar_unresolved' }
+  }
+  return { status: 'ok' }
 }

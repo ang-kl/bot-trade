@@ -100,3 +100,12 @@ test('a zero or wrong-side initial stop is no initial stop: excluded and counted
   const r = exitCounterfactualExtended(db, { minSample: 1 })
   assert.equal(r.coverage.no_initial_stop, 2); assert.equal(r.eligible, 1)
 })
+
+test('an exit-at-the-mean rule: a mid-bar fill whose entry-bar close is past the SMA is entry_bar_unresolved (Codex round 2 on #1394)', () => {
+  // Three bars closing 99, 99, 101: SMA(3) on the third bar is 99.67; the fill is inside that bar.
+  const b = [[0, 99, 99.2, 98.8, 99], [60_000, 99, 99.2, 98.8, 99], [120_000, 99.5, 101.2, 99.4, 101]]
+  const trade = { side: 'long', entry: 100, sl: 98, tp: 104, openedAtMs: 150_000 }
+  assert.equal(entryBarCoverage(b, trade, {}).status, 'ok', 'no level is inside the bar')
+  assert.equal(entryBarCoverage(b, trade, { exitAtMean: { period: 3 } }).status, 'entry_bar_unresolved', 'close 101 > SMA 99.67')
+  assert.equal(entryBarCoverage(b, { ...trade, side: 'short', sl: 102, tp: 96 }, { exitAtMean: { period: 3 } }).status, 'ok', 'short: close above the SMA is no mean exit')
+})
