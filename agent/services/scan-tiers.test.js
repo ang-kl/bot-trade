@@ -127,3 +127,12 @@ test('tieredScanBatch: a cursor left by the legacy rotation decodes as a tier-A 
   const empty = tieredScanBatch([], [], 15, 3, { classRank: rankOf, prioritySlots: 8, priorityMaxRank: 3 })
   assert.deepEqual(empty.batch, []); assert.equal(empty.nextCursor, 0); assert.equal(empty.restCount, 0)
 })
+
+test('a run the spike boost fills entirely advances neither tier and keeps the nominal pass length (Codex round 5 on #1390)', () => {
+  const s = [...mk('A', 20, 1), ...mk('B', 28, 5)]
+  const boost = Array.from({ length: 15 }, (_, i) => `B${i}`)
+  const r = selectScanBatch(s, { batchSize: 15, cursor: 3 + 4 * TIER_CURSOR_STRIDE, prioritySpikeSymbols: boost, ...SHARE })
+  assert.equal(r.batch.length, 15); assert.ok(r.batch.every(b => boost.includes(b.symbol)))
+  assert.equal(r.nextCursor, 3 + 4 * TIER_CURSOR_STRIDE, 'neither tier advanced')
+  assert.deepEqual({ a: r.tiers.runsPerPassA, b: r.tiers.runsPerPassB }, { a: 3, b: 2 }, 'nominal 8/7 pricing: ceil(20/8), ceil(13/7) over the 13 non-boosted B')
+})

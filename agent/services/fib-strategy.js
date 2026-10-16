@@ -941,7 +941,10 @@ export function tieredScanBatch(rest, spikeBoost, size, cursor, { classRank, pri
     runsPerPassA: tierA.length && aTook ? Math.ceil(tierA.length / aTook) : null,
     runsPerPassB: tierB.length && bTook ? Math.ceil(tierB.length / bTook) : null,
   })
-  if (remaining <= 0 || pool.length === 0) return { batch: spikeBoost, nextCursor: pool.length ? encode(aStart, bStart) : 0, restCount: pool.length, tiers: tiersOf(0, 0) }
+  // A run the spike boost fills entirely advances neither tier; its pass is
+  // priced from the nominal share so rotationRuns does not collapse to one
+  // and mark every unscanned instrument overdue (Claude · № 15,195 16-Oct (Codex round 5 on #1390, owner: "Round 5: fix both, then merge when green"; claude-builder)).
+  if (remaining <= 0 || pool.length === 0) return { batch: spikeBoost, nextCursor: pool.length ? encode(aStart, bStart) : 0, restCount: pool.length, tiers: tiersOf(aNominal, bNominal) }
   let aTake = Math.min(aNominal, remaining, tierA.length)
   let bTake = Math.min(bNominal, remaining - aTake, tierB.length)
   aTake = Math.min(tierA.length, aTake + (remaining - aTake - bTake))

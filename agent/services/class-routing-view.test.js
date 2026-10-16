@@ -9,6 +9,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
 import { initDB, setState } from '../db.js'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import stateRouter from '../routes/state.js'
 import { classRoutingView, scanUniverse } from './class-routing-view.js'
 import { primeAssetClasses, _resetAssetClassesForTests } from '../lib/asset-class.js'
@@ -100,4 +103,16 @@ test('account-signals: a routed scan row is scan_only on every account, with the
   // A routed row without its reason field still reads as routed, never as a candidate.
   const bare = accountSignals(db, { scans: [{ ...snapshot.scans[0], routed_reason: undefined }] }, { accountId: 'A' }).rows[0]
   assert.equal(bare.eligibility, 'scan_only'); assert.match(bare.reason, /class-routing\.json/)
+})
+
+test('the view mirrors the scanner\'s lower-tier reservation under an over-sized share (Codex round 5 on #1390)', (t) => {
+  const db = seed(t)
+  _resetClassRoutingForTests()
+  const dir = mkdtempSync(join(tmpdir(), 'class-routing-view-'))
+  try {
+    const file = join(dir, 'class-routing.json')
+    writeFileSync(file, JSON.stringify({ scanShare: { prioritySlots: 15, priorityMaxRank: 3 }, classes: { fx: { priority: 2 }, crypto: { priority: 1 }, energy: { priority: 5 } } }))
+    const v = classRoutingView(db, { policyFile: file })
+    assert.deepEqual({ prioritySlots: v.tiers.prioritySlots, tierA: v.tiers.tierA, tierB: v.tiers.tierB, runsPerPassB: v.tiers.runsPerPassB }, { prioritySlots: 14, tierA: 2, tierB: 3, runsPerPassB: 3 }, 'tier B keeps one slot: 3 symbols at 1 a run')
+  } finally { rmSync(dir, { recursive: true, force: true }); _resetClassRoutingForTests() }
 })

@@ -22,8 +22,8 @@ export function scanUniverse(db) {
     .filter(w => w && w.symbol && w.enabled !== false && !w.force_skip)
 }
 
-export function classRoutingView(db, { batchSize = DEFAULT_BATCH, maxRoutedRows = 50 } = {}) {
-  const policy = loadClassRouting({ knownStrategies: STRATEGY_KEYS })
+export function classRoutingView(db, { batchSize = DEFAULT_BATCH, maxRoutedRows = 50, policyFile = undefined } = {}) {
+  const policy = loadClassRouting({ knownStrategies: STRATEGY_KEYS, ...(policyFile ? { file: policyFile } : {}) })
   const seen = new Set()
   const symbols = []
   for (const w of scanUniverse(db)) {
@@ -49,7 +49,10 @@ export function classRoutingView(db, { batchSize = DEFAULT_BATCH, maxRoutedRows 
   let tiers = null
   if (policy.enabled !== false && policy.scanShare) {
     const a = symbols.filter(s => s.tier === 'A').length, b = symbols.length - a
-    const aSlots = Math.min(policy.scanShare.prioritySlots, batchSize), bSlots = batchSize - aSlots
+    // The same clamp tieredScanBatch applies: a non-empty tier B keeps one
+    // slot of a batch of two or more whatever share the policy names (Claude · № 15,195 16-Oct (Codex round 5 on #1390, owner: "Round 5: fix both, then merge when green"; claude-builder)).
+    const aSlots = b > 0 && batchSize >= 2 ? Math.min(policy.scanShare.prioritySlots, batchSize - 1) : Math.min(policy.scanShare.prioritySlots, batchSize)
+    const bSlots = batchSize - aSlots
     tiers = { batchSize, prioritySlots: aSlots, priorityMaxRank: policy.scanShare.priorityMaxRank, tierA: a, tierB: b,
       runsPerPassA: a && aSlots ? Math.ceil(a / aSlots) : null, runsPerPassB: b && bSlots ? Math.ceil(b / bSlots) : null,
       note: 'held symbols leave the rotation while held; a spike run leaves the tail of its windows to the next pass' }
